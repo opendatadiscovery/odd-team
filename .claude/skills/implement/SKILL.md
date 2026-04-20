@@ -19,8 +19,10 @@ Execute work item `$ARGUMENTS`.
 2. **Pre-flight checks**:
    - Status must be `pending` (not blocked, not in-progress)
    - Check `state/file-registry.yaml` — no conflicting in-progress items on same files
+   - Check `adrs/` for any decisions constraining the area being changed
    - Read all affected files listed in the work item
    - If a file doesn't exist where expected, check navigation for updated path
+   - If your planned change would violate an ADR, note it and adjust approach
 
 3. **Set status** — Update work item frontmatter: `status: in-progress`
 
@@ -45,6 +47,7 @@ Execute work item `$ARGUMENTS`.
    - Set work item status to `done`
    - Update `state/PROGRESS.md` counts
    - Update `navigation/domains/*.md` if any pointers changed
+   - If a new architectural decision was made → create draft ADR in `adrs/drafts/`
 
 ## Rules
 

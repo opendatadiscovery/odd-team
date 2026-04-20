@@ -30,6 +30,7 @@ scanners/    → Define what to audit (instructions for focused scans)
 findings/    → Raw audit output (timestamped, per scanner)
 backlog/     → Reviewable work items (atomic, trackable, prioritized)
 navigation/  → Token-efficient knowledge map (pointers, not docs)
+adrs/        → Architectural Decision Records (formalized decisions from code)
 state/       → Coordination (progress, file locks, decisions)
 agents/      → Reusable agent prompts for each role
 ```
@@ -79,6 +80,15 @@ agents/      → Reusable agent prompts for each role
 | **Never** | Full directory traversals or grep across entire repos | Wastes tokens |
 
 The navigation layer converts O(n) exploration into O(1) lookups. Always check navigation first.
+
+## ADRs (Architectural Decision Records)
+
+Before modifying code, check `adrs/` for decisions that constrain the area you're working in. ADRs explain WHY the code is built a certain way — violating them without superseding causes inconsistency.
+
+- Read relevant ADRs before implementation
+- If your change contradicts an ADR → adjust approach or propose superseding
+- If you make a new decision not covered by existing ADRs → create a draft in `adrs/drafts/`
+- ADRs are reverse-engineered from code patterns, not invented from scratch
 
 ## Key Principles
 

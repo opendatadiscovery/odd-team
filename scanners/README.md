@@ -31,6 +31,15 @@ Build the navigation index by mapping features to code entry points, and identif
 ### spec/ (Priority: HIGH)
 Verify the ODD specification matches actual Ingress API behavior.
 
+## Deduplication
+
+Scanners overlap — multiple scanners may discover the same gap from different angles. Before writing findings, the scan protocol requires loading ALL existing findings across all `findings/*/` directories. When a new gap matches an existing finding:
+
+- **Same scanner, same issue** → skip (already covered)
+- **Different scanner, same issue** → create an enrichment entry instead of a duplicate finding. This adds new evidence, a cross-reference, and optionally adjusts severity. The original finding gets a back-link.
+
+This ensures each real-world gap has ONE canonical finding that accumulates evidence over time, rather than N duplicates from N scanners.
+
 ## Scanner Decomposition Rules
 
 1. Each scanner must fit in one session (~100K tokens working context)

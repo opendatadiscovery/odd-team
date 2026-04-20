@@ -31,6 +31,8 @@ So we have first to find out a solution that could be used to run this solution 
 2. We could keep track of all linked places and not to constantly overwrite one edit with another;
 3. We could implement the changes in parallel where applicable and in a shorter sessions to not overwhelm one session with context.
 
+I would only also add a remark that current documentation for the existing features could be incorrect or not full, so we should also identify and close this gap. We should also design and implement the means for the code and feature navigations, as there are a lot of features, many repositories, huge code base, we should help to navigate for "ODD Team" in case we need to implements something new, it should not make to scan too much text in each session as we'll overwhelm sessions and consume too many tokens.
+
 
 ## Ideas for Architectural Decision Records
 * Backward incompatible changes should be avoided until absolutely necessary;

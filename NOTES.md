@@ -53,6 +53,8 @@ the solution if the current set is not sufficient at the moment of the implement
 
 Make sure that we use one source of truth for documentation: for instance, vision, ADRs, features, API descriptions, etc. We could use this repo for Agent specific information and work items, but this repo should not be a reference for users. Agents should rely on and keep up-to-date documentation at https://github.com/opendatadiscovery/documentation.  
 
+Note: https://github.com/opendatadiscovery/odd-docs was originally created to add DevOps run books, but should be merged into the main documentation repo (https://github.com/opendatadiscovery/documentation) to maintain a single source of truth.
+
 ## Ideas for Architectural Decision Records
 * Backward incompatible changes should be avoided until absolutely necessary;
 * Be honest, nobody is ideal, but we should chase engineering perfection: there are a lot of “historical” reasons for implementations and design decisions, we are not going to change everything in one go, we only fix super necessary parts and log others as issues for later considerations;

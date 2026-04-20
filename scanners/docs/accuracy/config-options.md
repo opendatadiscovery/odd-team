@@ -1,6 +1,6 @@
 ---
 id: docs/accuracy/config-options
-target_repo: odd-docs (remote) + odd-platform (local) + odd-collectors (local)
+target_repo: documentation (local: ../documentation) + odd-platform (local) + odd-collectors (local)
 scope: Documented configuration options vs. actual application config
 estimated_items: 15-30
 chunking: Platform config in one session, collectors config in another
@@ -14,7 +14,7 @@ Verify that documented configuration options (environment variables, YAML keys, 
 
 ## Method
 
-1. Fetch configuration/setup documentation from odd-docs
+1. Fetch configuration/setup documentation from the documentation repo
 2. Extract all documented config keys, env vars, and their described behavior
 3. Cross-reference against:
    - `odd-platform-api/src/main/resources/application.yml` (and application-*.yml profiles)

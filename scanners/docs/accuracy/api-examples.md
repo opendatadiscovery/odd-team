@@ -1,6 +1,6 @@
 ---
 id: docs/accuracy/api-examples
-target_repo: odd-docs (remote) + odd-platform-specification (local)
+target_repo: documentation (local: ../documentation) + odd-platform-specification (local)
 scope: Documented API examples vs. actual OpenAPI specification
 estimated_items: 10-25
 chunking: Can likely fit in one session (API docs are bounded)
@@ -14,7 +14,7 @@ Verify that API usage examples in documentation (curl commands, request/response
 
 ## Method
 
-1. Fetch API documentation pages from odd-docs
+1. Fetch API documentation pages from the documentation repo
 2. Extract all API examples (endpoints, request bodies, response shapes)
 3. Cross-reference against `odd-platform-specification/openapi.yaml`
 4. For Ingress API, also check `opendatadiscovery-specification/specification/`

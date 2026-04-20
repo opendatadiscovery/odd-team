@@ -1,6 +1,6 @@
 ---
 id: docs/coverage/missing-references
-target_repo: odd-docs (remote) + odd-platform (local)
+target_repo: documentation (local: ../documentation) + odd-platform (local)
 scope: Documentation pages missing cross-references to code, issues, releases
 estimated_items: 30-60
 chunking: 10 doc pages per session
@@ -18,7 +18,7 @@ Identify documentation pages that lack references to:
 
 ## Method
 
-1. Fetch documentation pages from odd-docs (work through SUMMARY.md listing)
+1. Fetch documentation pages from the documentation repo (work through SUMMARY.md listing)
 2. For each page, check if it contains:
    - Link or reference to source code file(s) implementing the feature
    - Link to related GitHub Issues

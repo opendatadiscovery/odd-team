@@ -1,5 +1,8 @@
 # Architectural Decision Records
 
+**Source of truth**: Accepted ADRs are published to `https://github.com/opendatadiscovery/documentation` (local: `../documentation`).
+**This directory**: Drafts and staging only — work-in-progress before human review and publication.
+
 ADRs capture the WHY behind implementation choices across the ODD ecosystem. They serve as:
 
 1. **Context for new changes** — before modifying code, check if an ADR explains why it's built that way
@@ -46,13 +49,16 @@ What becomes easier or harder as a result of this decision?
 ## How ADRs Are Created
 
 ### Phase 1: Reverse-Engineering (current)
-The `scanners/adrs/reverse-engineer.md` scanner examines the codebase to identify implicit architectural decisions and formulates them as explicit ADRs. These are reviewed by a human before acceptance.
+The `scanners/adrs/reverse-engineer.md` scanner examines the codebase to identify implicit architectural decisions and formulates them as explicit ADR drafts in `adrs/drafts/`.
 
-### Phase 2: Living Documentation
+### Phase 2: Review & Publish
+Human reviews drafts. Accepted ADRs are published to the `documentation` repo (the single source of truth for all user-facing docs). Drafts in this repo are then removed or marked as published.
+
+### Phase 3: Living Documentation
 During implementation of new changes:
-- Check existing ADRs for relevant constraints
-- If a new decision is made that isn't covered → create a new ADR
-- If an existing ADR is invalidated by the change → update status to `superseded` and create replacement
+- Check existing ADRs in the `documentation` repo for relevant constraints
+- If a new decision is made that isn't covered → create a draft in `adrs/drafts/` for review
+- If an existing ADR is invalidated by the change → propose superseding it via a draft
 
 ## ADR Categories
 

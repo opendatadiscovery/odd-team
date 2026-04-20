@@ -1,6 +1,6 @@
 ---
 id: docs/completeness/missing-limitations
-target_repo: odd-docs (remote) + odd-platform (local)
+target_repo: documentation (local: ../documentation) + odd-platform (local)
 scope: Features with undocumented known limitations, corner cases, or constraints
 estimated_items: 20-40
 chunking: By feature domain — one domain per session
@@ -16,7 +16,7 @@ Identify features where documentation exists but fails to mention known limitati
 
 For each feature domain:
 
-1. Read the feature documentation from odd-docs
+1. Read the feature documentation from the documentation repo
 2. Read the implementation code (service layer, especially error handling and edge cases)
 3. Look for:
    - Try/catch blocks that swallow or genericize errors

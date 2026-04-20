@@ -33,6 +33,18 @@ So we have first to find out a solution that could be used to run this solution 
 
 I would only also add a remark that current documentation for the existing features could be incorrect or not full, so we should also identify and close this gap. We should also design and implement the means for the code and feature navigations, as there are a lot of features, many repositories, huge code base, we should help to navigate for "ODD Team" in case we need to implements something new, it should not make to scan too much text in each session as we'll overwhelm sessions and consume too many tokens.
 
+Do not forget about:                                                                                                                                                                                                     
+  https://github.com/opendatadiscovery/odd-great-expectations                                                                                                                                                              
+  https://github.com/opendatadiscovery/odd-models-package                                                                                                                                                                  
+  https://github.com/opendatadiscovery/odd-dbt                                                                                                                                                                             
+  https://github.com/opendatadiscovery/odd-cli                                                                                                                                                                             
+  https://github.com/opendatadiscovery/opendatadiscovery-integration-manifests                                                                                                                                             
+  https://github.com/opendatadiscovery/opendatadiscovery-specification-contracts                                                                                                                                           
+  https://github.com/opendatadiscovery/odd-collector-profiler                                                                                                                                                              
+  https://github.com/opendatadiscovery/odd-spark-adapter                                                                                                                                                                   
+  https://github.com/opendatadiscovery/charts                                                                                                                                                                              
+  https://github.com/opendatadiscovery/odd-airflow-2                                                                                                                                                                       
+  https://github.com/opendatadiscovery/odd-examples    
 
 ## Ideas for Architectural Decision Records
 * Backward incompatible changes should be avoided until absolutely necessary;

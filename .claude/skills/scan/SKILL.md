@@ -28,31 +28,49 @@ Execute the audit scanner at `$ARGUMENTS`.
    - **If no manifest exists**: run enumeration first (follow `/enumerate` protocol inline), then pick first batch
    - Batch size: 10-15 items per session (adjust based on item complexity)
 
-4. **Execute the scan** on the selected batch:
+4. **Load existing findings** — Before scanning, read ALL existing findings files in `findings/`:
+   - Scan every `findings/*/` directory (not just the current scanner's directory — gaps cross scanner boundaries)
+   - Build a mental index of: finding ID, location, short title, severity
+   - During scanning, if you discover a gap that matches an existing finding (same location, same issue), do NOT create a duplicate — instead note an enrichment (see step 5)
+   - Match broadly: same file + same general issue = match, even if wording differs or the scanner that found it was different
+
+5. **Execute the scan** on the selected batch:
    - Follow the scanner's method systematically for EACH item in the batch
    - Apply criteria to each item
    - Record findings as you go
    - Do NOT modify any files in target repos (read-only scan)
 
-5. **Write findings** — Create the output file:
+6. **Write findings** — Create the output file:
    - Path: `findings/{scanner-id-dashed}/YYYY-MM-DD[-batch-N].md`
    - Format: follow `scanners/README.md` output format exactly
    - Include summary counts at the top
    - Note which specific items were covered in this run
+   - **Dedup rules**:
+     - New gap with no prior match → new finding ID (F-NNN), written normally
+     - Gap matches an existing finding from the SAME scanner → skip (already covered)
+     - Gap matches an existing finding from a DIFFERENT scanner → create an enrichment entry (see format below)
+   - **Enrichment format** (append to the findings file):
+     ```
+     ### F-NNN ← enriches F-XXX ({original-scanner-id})
+     - **Original**: F-XXX in `findings/{original-scanner-dir}/{file}.md`
+     - **New evidence**: {what this scanner found that adds to the original}
+     - **Severity adjustment**: {unchanged | escalate to X | de-escalate to X} — {reason}
+     ```
+   - After writing, update the original finding file: append a `- **Cross-ref**: enriched by F-NNN in \`findings/{this-scanner-dir}/{file}.md\`` line to the original finding
 
-6. **Update coverage manifest**:
+7. **Update coverage manifest**:
    - For each item scanned: set `status: scanned`, record `scanned_date` and `scanned_commit`
    - Set `findings_ref` to the findings file path
    - Recalculate `scanned_items` and `coverage_pct`
 
-7. **Update navigation** (MANDATORY):
+8. **Update navigation** (MANDATORY):
    - Every file path discovered during scanning → add to relevant `navigation/domains/*.md`
    - This is a core output, not optional bookkeeping
 
-8. **Update progress** — Edit `state/PROGRESS.md`:
+9. **Update progress** — Edit `state/PROGRESS.md`:
    - If scanner is now 100% covered, mark as completed
 
-9. **Report**:
+10. **Report**:
    - Items scanned this session: N
    - Findings this session: M
    - Coverage progress: X% (Y/Z items total)

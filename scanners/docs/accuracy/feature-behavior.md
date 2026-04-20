@@ -19,6 +19,7 @@ For each feature domain (pick one per session from `navigation/features.yaml`):
 1. Fetch the relevant documentation page(s) from the documentation repo
 2. Read the corresponding code entry points from `navigation/domains/{feature}.md`
 3. Cross-reference: for each claim in the docs, verify it against the code
+4. **Repo boundary check**: if the domain navigation file lists only platform/collectors but the docs claim integration with an external tool, consult `navigation/repos.yaml` to identify any standalone repos that implement that integration. Never conclude "feature doesn't exist" based solely on absence from the two primary target repos.
 
 ## Criteria for a Finding
 
@@ -35,6 +36,7 @@ For each feature domain (pick one per session from `navigation/features.yaml`):
 2. UI elements: do documented components exist in `odd-platform-ui/src/components/`?
 3. Configuration: do documented config keys exist in `application.yml`?
 4. Workflows: does the described sequence match controller→service→repository flow?
+5. **Cross-repo claims**: if docs claim integration with an external tool (profiler, GE, dbt, Spark, etc.), check `navigation/repos.yaml` for a dedicated repo and verify the claim against that repo's actual dependencies and code — not just the two target repos
 
 ## Output
 

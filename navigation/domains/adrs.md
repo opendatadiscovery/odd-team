@@ -3,8 +3,8 @@
 Formalized decisions that constrain how the ODD codebase should be modified.
 
 ## Location
-- ADRs live in: `odd-team/adrs/` (this repo — they span all repos)
-- Draft ADRs: `odd-team/adrs/drafts/` (pending human review)
+- Accepted ADRs: `documentation` repo (single source of truth for all user-facing docs)
+- Draft ADRs (staging): `odd-team/adrs/drafts/` (pending human review, then published to documentation repo)
 
 ## Known Decisions (from NOTES.md, to be formalized)
 These are stated as principles but not yet formalized as ADRs:

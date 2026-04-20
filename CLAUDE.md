@@ -1,6 +1,11 @@
 # ODD Team - AI Maintenance System
 
-This repository is the coordination hub for AI-assisted maintenance of the Open Data Discovery project. It manages gap discovery, work item tracking, navigation, and coordinated implementation across multiple ODD repositories.
+This repository is the **agent workspace** for AI-assisted maintenance of the Open Data Discovery project. It manages gap discovery, work item tracking, navigation, and coordinated implementation across multiple ODD repositories.
+
+**IMPORTANT: This repo is NOT user-facing documentation.** The single source of truth for all user-facing content (vision, ADRs, features, API descriptions, guides) is:
+→ `https://github.com/opendatadiscovery/documentation` (local: `../documentation`)
+
+This repo contains only agent-specific information: scanners, findings, backlog, navigation pointers, coverage manifests, and agent prompts. When implementing documentation fixes, the changes go to the `documentation` repo, not here.
 
 ## Quick Start for Any Session
 
@@ -30,6 +35,7 @@ scanners/    → Define what to audit (instructions for focused scans)
 findings/    → Raw audit output (timestamped, per scanner)
 backlog/     → Reviewable work items (atomic, trackable, prioritized)
 navigation/  → Token-efficient knowledge map (pointers, not docs)
+adrs/        → Architectural Decision Records (formalized decisions from code)
 state/       → Coordination (progress, file locks, decisions)
 agents/      → Reusable agent prompts for each role
 ```
@@ -62,12 +68,12 @@ agents/      → Reusable agent prompts for each role
 
 ## Repository Locations
 
-| Repo | Local Path | Tech Stack |
-|------|-----------|------------|
-| odd-platform | `../odd-platform` | Java 17, Spring Boot, React/TS, PostgreSQL |
-| odd-collectors | `../odd-collectors` | Python, Poetry, 40+ adapters |
-| odd-specification | `../opendatadiscovery-specification` | OpenAPI YAML |
-| odd-docs | Remote: `github.com/opendatadiscovery/odd-docs` | Gitbook markdown |
+| Repo | Local Path | Tech Stack | Role |
+|------|-----------|------------|------|
+| documentation | `../documentation` | Gitbook markdown | **Source of truth** for all user-facing docs, ADRs, features |
+| odd-platform | `../odd-platform` | Java 17, Spring Boot, React/TS, PostgreSQL | Platform code |
+| odd-collectors | `../odd-collectors` | Python, Poetry, 40+ adapters | Collector code |
+| odd-specification | `../opendatadiscovery-specification` | OpenAPI YAML | Ingress API spec |
 
 ## Token Budget Protocol
 
@@ -79,6 +85,15 @@ agents/      → Reusable agent prompts for each role
 | **Never** | Full directory traversals or grep across entire repos | Wastes tokens |
 
 The navigation layer converts O(n) exploration into O(1) lookups. Always check navigation first.
+
+## ADRs (Architectural Decision Records)
+
+Before modifying code, check `adrs/` for decisions that constrain the area you're working in. ADRs explain WHY the code is built a certain way — violating them without superseding causes inconsistency.
+
+- Read relevant ADRs before implementation
+- If your change contradicts an ADR → adjust approach or propose superseding
+- If you make a new decision not covered by existing ADRs → create a draft in `adrs/drafts/`
+- ADRs are reverse-engineered from code patterns, not invented from scratch
 
 ## Key Principles
 

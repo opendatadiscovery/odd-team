@@ -1,6 +1,6 @@
 ---
 id: docs/accuracy/feature-behavior
-target_repo: odd-docs (remote) + odd-platform (local)
+target_repo: documentation (local: ../documentation) + odd-platform (local)
 scope: All documented features vs. actual platform behavior
 estimated_items: 20-40
 chunking: By feature domain — run one domain per session
@@ -16,7 +16,7 @@ Verify that documented feature descriptions accurately reflect the current imple
 
 For each feature domain (pick one per session from `navigation/features.yaml`):
 
-1. Fetch the relevant documentation page(s) from odd-docs
+1. Fetch the relevant documentation page(s) from the documentation repo
 2. Read the corresponding code entry points from `navigation/domains/{feature}.md`
 3. Cross-reference: for each claim in the docs, verify it against the code
 

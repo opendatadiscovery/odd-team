@@ -1,6 +1,6 @@
 ---
 id: docs/coverage/undocumented-features
-target_repo: odd-docs (remote) + odd-platform (local)
+target_repo: documentation (local: ../documentation) + odd-platform (local)
 scope: Platform features with no documentation
 estimated_items: 10-30
 chunking: Can likely fit in one session (enumerate features from routes + API)
@@ -10,7 +10,7 @@ priority: medium
 
 ## Purpose
 
-Identify platform features that have no corresponding documentation page or section in odd-docs.
+Identify platform features that have no corresponding documentation page or section in the documentation repo.
 
 ## Method
 
@@ -19,7 +19,7 @@ Identify platform features that have no corresponding documentation page or sect
    - Top-level OpenAPI endpoint groups in `odd-platform-specification/openapi.yaml`
    - Menu items / navigation in UI components
    - Management pages in `odd-platform-ui/src/components/Management/`
-2. Fetch SUMMARY.md from odd-docs (defines gitbook navigation tree)
+2. Fetch SUMMARY.md from the documentation repo (defines gitbook navigation tree)
 3. Cross-reference: for each feature found in code, check if docs exist
 
 ## Criteria for a Finding

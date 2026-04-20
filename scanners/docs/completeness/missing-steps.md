@@ -1,6 +1,6 @@
 ---
 id: docs/completeness/missing-steps
-target_repo: odd-docs (remote) + odd-platform (local) + odd-collectors (local)
+target_repo: documentation (local: ../documentation) + odd-platform (local) + odd-collectors (local)
 scope: Setup guides, how-tos, and procedures with incomplete steps
 estimated_items: 10-20
 chunking: Platform setup in one session, collector setup in another
@@ -14,7 +14,7 @@ Find documentation procedures (setup guides, how-tos, configuration steps) that 
 
 ## Method
 
-1. Fetch setup/installation/configuration docs from odd-docs
+1. Fetch setup/installation/configuration docs from the documentation repo
 2. Mentally "execute" each procedure:
    - Are all prerequisites listed?
    - Does each step follow logically from the previous?

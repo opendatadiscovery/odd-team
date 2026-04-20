@@ -12,7 +12,8 @@ Last updated: 2026-04-20
 | tests | 7 | 0 | 7 |
 | navigation | 3 | 0 | 3 |
 | spec | 2 | 0 | 2 |
-| **Total** | **23** | **0** | **23** |
+| adrs | 2 | 0 | 2 |
+| **Total** | **25** | **0** | **25** |
 
 ## Backlog Phase
 

@@ -2,6 +2,8 @@
 
 A team of AI maintainers for the [Open Data Discovery](https://github.com/opendatadiscovery) project.
 
+> **This repo is an agent workspace** — scanners, work items, navigation pointers, progress tracking. It is NOT user-facing documentation. The single source of truth for all docs is [opendatadiscovery/documentation](https://github.com/opendatadiscovery/documentation).
+
 ## Mission
 
 1. **Maintain** documentation, codebase, and tests in a traceable, maintainable, useful way
@@ -72,13 +74,17 @@ The codebase is large — multiple repos, hundreds of files per feature. The nav
 | [odd-airflow-2](https://github.com/opendatadiscovery/odd-airflow-2) | Airflow plugin — reports DAG/task metadata |
 | [odd-collector-profiler](https://github.com/opendatadiscovery/odd-collector-profiler) | Data profiling collector |
 
-### Deployment, Tooling, Docs
+### Documentation (Single Source of Truth)
+| Repo | Purpose |
+|------|---------|
+| [documentation](https://github.com/opendatadiscovery/documentation) | **All user-facing docs** — vision, ADRs, features, API, guides |
+
+### Deployment, Tooling
 | Repo | Purpose |
 |------|---------|
 | [charts](https://github.com/opendatadiscovery/charts) | Helm charts for Kubernetes deployment |
 | [odd-cli](https://github.com/opendatadiscovery/odd-cli) | CLI for interacting with ODD Platform |
 | [odd-examples](https://github.com/opendatadiscovery/odd-examples) | Usage examples and reference deployments |
-| [odd-docs](https://github.com/opendatadiscovery/odd-docs) | Gitbook documentation |
 | [opendatadiscovery-integration-manifests](https://github.com/opendatadiscovery/opendatadiscovery-integration-manifests) | Registry of supported integrations |
 
 ## Roadmap

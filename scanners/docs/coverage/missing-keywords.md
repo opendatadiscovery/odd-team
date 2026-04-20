@@ -1,6 +1,6 @@
 ---
 id: docs/coverage/missing-keywords
-target_repo: odd-docs (remote)
+target_repo: documentation (local: ../documentation)
 scope: Documentation pages without search-friendly keywords or metadata
 estimated_items: 20-40
 chunking: All pages in one session (keyword check is fast per page)
@@ -14,7 +14,7 @@ Identify documentation pages that lack keywords, tags, or search-friendly termin
 
 ## Method
 
-1. Fetch documentation pages from odd-docs
+1. Fetch documentation pages from the documentation repo
 2. For each page, assess:
    - Does the page title clearly indicate what it covers?
    - Does the page contain synonyms/aliases for the feature? (e.g., "lineage" page should also mention "data flow", "provenance", "dependency graph")

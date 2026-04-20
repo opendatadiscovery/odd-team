@@ -58,7 +58,7 @@ Deployment:
 
 Meta:
 - opendatadiscovery-integration-manifests
-- odd-docs
+- documentation
 
 ## Criteria for a Finding
 

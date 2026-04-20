@@ -1,6 +1,6 @@
 ---
 id: docs/accuracy/deployment-guides
-target_repo: odd-docs (remote) + charts (local) + odd-platform/docker (local) + odd-examples (local)
+target_repo: documentation (local: ../documentation) + charts (local) + odd-platform/docker (local) + odd-examples (local)
 scope: Deployment documentation vs. actual Helm charts, Docker configs, and example setups
 estimated_items: 10-20
 chunking: One deployment method per session (Helm, Docker, examples)
@@ -14,7 +14,7 @@ Verify that deployment documentation matches actual deployment configurations. W
 
 ## Method
 
-1. Fetch deployment documentation from odd-docs
+1. Fetch deployment documentation from the documentation repo
 2. Cross-reference against actual files:
    - Helm chart `values.yaml` → do documented values exist?
    - Docker compose files → do documented services/env vars exist?

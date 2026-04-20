@@ -1,6 +1,6 @@
 ---
 id: docs/accuracy/architecture-drift
-target_repo: odd-docs (remote) + odd-platform (local) + odd-collectors (local)
+target_repo: documentation (local: ../documentation) + odd-platform (local) + odd-collectors (local)
 scope: Architecture documentation vs. actual system structure
 estimated_items: 10-20
 chunking: One repo per session
@@ -14,7 +14,7 @@ Verify that architecture documentation (system diagrams, component descriptions,
 
 ## Method
 
-1. Fetch architecture/overview pages from odd-docs
+1. Fetch architecture/overview pages from the documentation repo
 2. For each architectural claim, verify against actual code structure:
    - Technology versions (Java version, Spring Boot version, React version, etc.)
    - Module/package structure

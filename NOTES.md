@@ -11,7 +11,7 @@
 
 ### Problem Statement
 We need to:
-1. Assess existing gitbook documentation at https://github.com/opendatadiscovery/odd-docs
+1. Assess existing gitbook documentation at https://github.com/opendatadiscovery/documentation
    - If the doc has missing information about vision and architecture
    - If there are missing "blocks" of functionality in the docs it should be fixed
    - If there are missing "notes" for the implementation about corner cases and known limitations it should be fixed
@@ -44,7 +44,16 @@ Do not forget about:
   https://github.com/opendatadiscovery/odd-spark-adapter                                                                                                                                                                   
   https://github.com/opendatadiscovery/charts                                                                                                                                                                              
   https://github.com/opendatadiscovery/odd-airflow-2                                                                                                                                                                       
-  https://github.com/opendatadiscovery/odd-examples    
+  https://github.com/opendatadiscovery/odd-examples
+  https://github.com/opendatadiscovery/odd-docs
+
+We need to make sure that core implementation details are formulated with ADRs as a part of documentation. For instance, naming convention, multi-reps, pull-push architectues, Spring boot as a core framework, etc.
+After we created a full list of ADRs (including mentioning of known issues, exceptions, examples) we could use them to make new changes in the code. We should also update or create new ADR in case of new changes in 
+the solution if the current set is not sufficient at the moment of the implementation. For the gap analysis for the existing ADRs we need to use codebase for reverse engineer the ADRs.
+
+Make sure that we use one source of truth for documentation: for instance, vision, ADRs, features, API descriptions, etc. We could use this repo for Agent specific information and work items, but this repo should not be a reference for users. Agents should rely on and keep up-to-date documentation at https://github.com/opendatadiscovery/documentation.  
+
+Note: https://github.com/opendatadiscovery/odd-docs was originally created to add DevOps run books, but should be merged into the main documentation repo (https://github.com/opendatadiscovery/documentation) to maintain a single source of truth.
 
 ## Ideas for Architectural Decision Records
 * Backward incompatible changes should be avoided until absolutely necessary;

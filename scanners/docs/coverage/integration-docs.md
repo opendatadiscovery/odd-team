@@ -1,6 +1,6 @@
 ---
 id: docs/coverage/integration-docs
-target_repo: odd-docs (remote) + all integration repos
+target_repo: documentation (local: ../documentation) + all integration repos
 scope: Documentation coverage for standalone integrations (GE, dbt, Spark, Airflow) and tooling (CLI, profiler)
 estimated_items: 10-15
 chunking: Can fit in one session (bounded number of integrations)
@@ -10,7 +10,7 @@ priority: medium
 
 ## Purpose
 
-Identify standalone integration packages and tools that have no documentation in odd-docs, or whose documentation is a stub.
+Identify standalone integration packages and tools that have no documentation in the documentation repo, or whose documentation is a stub.
 
 ## Method
 
@@ -21,7 +21,7 @@ Identify standalone integration packages and tools that have no documentation in
    - odd-airflow-2
    - odd-collector-profiler
    - odd-cli
-2. Fetch SUMMARY.md from odd-docs
+2. Fetch SUMMARY.md from the documentation repo
 3. For each package, check:
    - Does a dedicated doc page exist?
    - Does the page explain: purpose, installation, configuration, usage?

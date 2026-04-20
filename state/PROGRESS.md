@@ -6,13 +6,13 @@ Last updated: 2026-04-20
 
 | Scanner Category | Total Scanners | Completed | Pending |
 |-----------------|---------------|-----------|---------|
-| docs/accuracy | 4 | 0 | 4 |
+| docs/accuracy | 5 | 0 | 5 |
 | docs/completeness | 2 | 0 | 2 |
-| docs/coverage | 3 | 0 | 3 |
-| tests | 5 | 0 | 5 |
-| navigation | 2 | 0 | 2 |
+| docs/coverage | 4 | 0 | 4 |
+| tests | 7 | 0 | 7 |
+| navigation | 3 | 0 | 3 |
 | spec | 2 | 0 | 2 |
-| **Total** | **18** | **0** | **18** |
+| **Total** | **23** | **0** | **23** |
 
 ## Backlog Phase
 
@@ -30,7 +30,9 @@ Phase: **Audit Setup** — system structure created, ready for first scanner run
 
 ## Next Actions
 
-1. Run scanner: `scanners/navigation/feature-entry-points.md` (populates navigation index)
-2. Run scanner: `scanners/tests/collectors-adapters.md` (quick wins, local data)
+1. Run scanner: `scanners/navigation/ecosystem-map.md` (maps all repos, dependencies, versions)
+2. Run scanner: `scanners/navigation/feature-entry-points.md` (populates navigation index)
 3. Run scanner: `scanners/tests/collectors-sdk.md` (bounded scope, one session)
-4. Clone odd-docs repo for documentation scanners
+4. Run scanner: `scanners/tests/core-packages.md` (shared libraries — high blast radius)
+5. Clone odd-docs repo for documentation scanners
+6. Clone/fetch remote repos: odd-dbt, odd-spark-adapter, odd-airflow-2, odd-cli

@@ -54,12 +54,32 @@ The codebase is large — multiple repos, hundreds of files per feature. The nav
 
 ## Target Repositories
 
+### Core
 | Repo | Purpose |
 |------|---------|
 | [odd-platform](https://github.com/opendatadiscovery/odd-platform) | Data discovery platform (Java/Spring Boot + React) |
 | [odd-collectors](https://github.com/opendatadiscovery/odd-collectors) | Metadata extraction adapters (Python, 40+) |
-| [odd-docs](https://github.com/opendatadiscovery/odd-docs) | Gitbook documentation |
 | [opendatadiscovery-specification](https://github.com/opendatadiscovery/opendatadiscovery-specification) | ODD data model and Ingress API spec |
+| [odd-models-package](https://github.com/opendatadiscovery/odd-models-package) | Generated Python models from spec |
+| [opendatadiscovery-specification-contracts](https://github.com/opendatadiscovery/opendatadiscovery-specification-contracts) | Generated code contracts from spec |
+
+### Standalone Integrations
+| Repo | Purpose |
+|------|---------|
+| [odd-great-expectations](https://github.com/opendatadiscovery/odd-great-expectations) | Great Expectations plugin — pushes quality results |
+| [odd-dbt](https://github.com/opendatadiscovery/odd-dbt) | dbt plugin — pushes model/test/lineage metadata |
+| [odd-spark-adapter](https://github.com/opendatadiscovery/odd-spark-adapter) | Spark listener — captures job lineage |
+| [odd-airflow-2](https://github.com/opendatadiscovery/odd-airflow-2) | Airflow plugin — reports DAG/task metadata |
+| [odd-collector-profiler](https://github.com/opendatadiscovery/odd-collector-profiler) | Data profiling collector |
+
+### Deployment, Tooling, Docs
+| Repo | Purpose |
+|------|---------|
+| [charts](https://github.com/opendatadiscovery/charts) | Helm charts for Kubernetes deployment |
+| [odd-cli](https://github.com/opendatadiscovery/odd-cli) | CLI for interacting with ODD Platform |
+| [odd-examples](https://github.com/opendatadiscovery/odd-examples) | Usage examples and reference deployments |
+| [odd-docs](https://github.com/opendatadiscovery/odd-docs) | Gitbook documentation |
+| [opendatadiscovery-integration-manifests](https://github.com/opendatadiscovery/opendatadiscovery-integration-manifests) | Registry of supported integrations |
 
 ## Roadmap
 

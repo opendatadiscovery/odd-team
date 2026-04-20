@@ -13,8 +13,10 @@ Quick orientation for working in the ODD Team maintenance system.
 1. Read and summarize `CLAUDE.md` (2-3 sentences)
 2. Read `state/PROGRESS.md` and show current phase and counts
 3. List available skills:
-   - `/scan <path>` — run an audit scanner
-   - `/triage <path>` — convert findings to work items
+   - `/enumerate <scanner>` — generate coverage manifest (list all items in scope)
+   - `/scan <scanner>` — scan next unscanned batch from manifest
+   - `/coverage [scanner]` — show what's been analyzed vs. what remains
+   - `/triage <findings>` — convert findings to work items
    - `/implement <id>` — execute a work item
    - `/review <id>` — verify completed work
    - `/status` — full progress report
@@ -33,8 +35,10 @@ Quick orientation for working in the ODD Team maintenance system.
 Scanners: {done}/{total} | Backlog: {count} items | Done: {count}
 
 ### Available Commands
-/scan <scanner-path>     — audit a specific aspect
-/triage <findings-path>  — create work items from findings
+/enumerate <scanner>     — list all items in scope (first step)
+/scan <scanner>          — scan next unscanned batch
+/coverage [scanner]      — what's analyzed vs. remaining
+/triage <findings>       — create work items from findings
 /implement <item-id>     — execute approved work item
 /review <item-id>        — verify completed work
 /status                  — detailed progress report

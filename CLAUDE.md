@@ -14,7 +14,9 @@ This repository is the coordination hub for AI-assisted maintenance of the Open 
 | Command | Purpose |
 |---------|---------|
 | `/orient` | Quick orientation — shows state and available actions |
-| `/scan <scanner-path>` | Run an audit scanner against ODD repos |
+| `/enumerate <scanner-path>` | Generate coverage manifest — list ALL items in scope |
+| `/scan <scanner-path>` | Run audit scanner on next unscanned batch from manifest |
+| `/coverage [scanner-path]` | Show what's been scanned vs. what remains |
 | `/triage <findings-path>` | Convert findings into backlog work items |
 | `/implement <item-id>` | Execute an approved work item |
 | `/review <item-id>` | Verify a completed work item |

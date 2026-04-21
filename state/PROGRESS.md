@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-21
+Last updated: 2026-04-21 (triage: docs/accuracy/config-options)
 
 ## Audit Phase
 
@@ -19,15 +19,46 @@ Last updated: 2026-04-21
 
 | Category | Pending | In Progress | Done | Blocked | Total |
 |----------|---------|-------------|------|---------|-------|
-| DOC | 0 | 0 | 0 | 0 | 0 |
+| DOC | 17 | 0 | 0 | 0 | 17 |
 | TST | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **0** | **0** | **0** | **0** | **0** |
+| **Total** | **17** | **0** | **0** | **0** | **17** |
+
+### DOC Backlog (from docs/accuracy/config-options triage — 2026-04-21)
+
+Priority breakdown: **6 critical, 5 high, 6 medium**
+
+**Critical (6):**
+- DOC-001 — document Azure AD OAuth2 provider
+- DOC-003 — document S2S API key authentication
+- DOC-005 — fix email notifications config (wrong key + missing keys)
+- DOC-006 — fix SESSION_PROVIDER env-var default in docs
+- DOC-008 — document attachment storage + warn about ephemeral default (user-reported data loss)
+- DOC-013 — document collector secrets backend (AWS SSM)
+
+**High (5):**
+- DOC-004 — document ingestion auth filter (security-critical default)
+- DOC-007 — complete metrics config documentation
+- DOC-009 — document housekeeping TTL configuration
+- DOC-014 — document full CollectorConfig fields (verify_ssl, chunk_size, etc.)
+- DOC-016 — create adapter configuration reference (60 adapters, large)
+
+**Medium (6):**
+- DOC-002 — document Keycloak PKCE option
+- DOC-010 — document odd.* top-level config (tenant-id, stale-period, activity.partition-period)
+- DOC-011 — document spring.session.timeout and spring.codec.max-in-memory-size
+- DOC-012 — warn about default login-form credentials
+- DOC-015 — update collector repo references to monorepo (add Azure)
+- DOC-017 — fix Python version requirement for collectors
+
+**Pending triage of other scanners:**
+- `docs-accuracy-feature-behavior` (35 findings) — **note**: F-001, F-002, F-024, F-025 are already covered by DOC-005, DOC-006, DOC-007; skip them during triage
+- `docs-coverage-undocumented-features` (8 new + 3 enrichments) — **note**: F-036 is already covered by DOC-008; skip during triage
 
 ## Current Status
 
-Phase: **Audit In Progress** — 3 scanners complete, 0 in progress, 22 remaining.
+Phase: **Audit In Progress** — 3 scanners complete, 0 in progress, 22 remaining. First triage batch landed (17 DOC items).
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)

@@ -1,6 +1,6 @@
-# Collectors Adapters (stub)
+# Collectors Adapters
 
-40+ adapters across 4 collector packages for databases, BI tools, ML platforms, cloud services.
+60 adapters across 4 collector packages for databases, BI tools, ML platforms, cloud services.
 
 ## Package Distribution
 - odd-collector: Generic (postgresql, mysql, snowflake, dbt, tableau, airflow, etc.)
@@ -27,6 +27,26 @@
 - Integration tests use testcontainers where applicable
 - Location: `{collector}/tests/integration/test_{name}.py`
 - Many adapters have NO tests (audit target)
+
+## Secrets Backend (odd-collector)
+- `odd-collector/collector_config.yaml` lines 1-34 — comment block documents secrets_backend
+- Supported provider: `AWSSystemsManagerParameterStore`
+- Config keys: `secrets_backend.provider`, `secrets_backend.region_name`, `secrets_backend.collector_settings_parameter_name`, `secrets_backend.collector_plugins_prefix`
+- Secrets override file config values — **COMPLETELY UNDOCUMENTED**
+
+## Config Examples
+- `odd-collector/config_examples/` — 39 files (generic adapters)
+- `odd-collector-aws/config_examples/` — 11 files (AWS adapters)
+- `odd-collector-gcp/config_examples/` — 3 files (GCP adapters)
+- `odd-collector-azure/config_examples/` — 4 files (Azure adapters)
+- Total: 57 config examples for 60 adapters — **NO REFERENCE DOCS, only examples**
+
+## Documentation
+- `docs/developer-guides/build-and-run/build-and-run-odd-collectors.md` — primary collector docs
+  - References old individual repos (should be monorepo)
+  - Missing odd-collector-azure entirely
+  - Links to old config_examples URL
+  - Lists Python 3.9.1 (should be range)
 
 ## Related Domains
 → collectors-sdk (adapters extend SDK base classes)

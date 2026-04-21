@@ -15,13 +15,24 @@ OAuth2, LDAP, login form, session management (in-memory/PostgreSQL/Redis), RBAC.
 - `odd-platform-api/.../auth/condition/AuthorizationManagerCondition.java` — conditional auth manager loading
 - `odd-platform-api/.../auth/logout/OAuthLogoutSuccessHandler.java` — OAuth logout (e.g., Cognito redirect)
 
-### OAuth2 Providers (from docs, verified in code)
+### OAuth2 Providers (from code — application.yml lines 66-156)
 - Cognito: `provider=cognito`, supports admin-groups, logout-uri
-- GitHub: `provider=github`, supports organization-name, admin-groups
+- GitHub: `provider=github`, supports organization-name, admin-teams
 - Google: `provider=google`, supports allowed-domain
 - Okta: generic OIDC provider
-- Keycloak: generic OIDC provider
+- Keycloak: generic OIDC provider, supports `pkce` option
+- Azure AD: `provider=azure`, supports multi-tenant and single-tenant, admin-groups — **UNDOCUMENTED**
 - Custom OIDC: any issuer-uri based provider
+
+### S2S (Server-to-Server) Authentication
+- Config: `auth.s2s.enabled` (default: false), `auth.s2s.token`
+- Header: `X-API-Key: {token}`
+- **UNDOCUMENTED** — users needing programmatic API access can't discover this
+
+### Ingestion Auth Filter
+- Config: `auth.ingestion.filter.enabled` (default: false)
+- When disabled (default), ingestion endpoints are unprotected even with auth enabled
+- **UNDOCUMENTED** — security-critical gap
 
 ### RBAC / Policies
 - Policy JSON schema: resource types (DATA_ENTITY, TERM, MANAGEMENT), condition operators (all, any, eq, not_eq, match, not_match, is, not_is)

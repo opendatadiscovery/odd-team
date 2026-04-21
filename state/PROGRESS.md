@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-21 (triage: docs/accuracy/config-options + docs/accuracy/feature-behavior)
+Last updated: 2026-04-21 (all 3 completed scanners triaged)
 
 ## Audit Phase
 
@@ -19,11 +19,11 @@ Last updated: 2026-04-21 (triage: docs/accuracy/config-options + docs/accuracy/f
 
 | Category | Pending | In Progress | Done | Blocked | Total |
 |----------|---------|-------------|------|---------|-------|
-| DOC | 44 | 0 | 0 | 0 | 44 |
+| DOC | 51 | 0 | 0 | 0 | 51 |
 | TST | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **44** | **0** | **0** | **0** | **44** |
+| **Total** | **51** | **0** | **0** | **0** | **51** |
 
 ### DOC Backlog
 
@@ -45,13 +45,24 @@ Priority totals across both triaged scanners: **10 critical, 15 high, 19 medium*
 
 **Medium (13):** DOC-021 resolved alert cleanup note · DOC-022 alert auto-resolution · DOC-023 alert UI views · DOC-024 backwards-incompatible schema · DOC-028 SLA URL param · DOC-030 activity filters (4→7) · DOC-032 Data Entity Report/Overview · DOC-033 term-to-term linking · DOC-034 data collaboration API · DOC-041 configuration.md stub · DOC-042 collector.md stub · DOC-043 lineage description · DOC-044 custom-collectors SDK guide
 
-### Pending triage of remaining scanner
+#### From docs/coverage/undocumented-features (DOC-045 .. DOC-051)
 
-- `docs-coverage-undocumented-features` (8 new findings + 3 enrichments) — **skip during triage**: F-036 (covered by DOC-008), F-044 (covered by DOC-038), F-045 (covered by DOC-039), and F-038/F-046 Query Examples will be the only untouched items plus a handful of others
+**High (2):** DOC-045 GenAI · DOC-046 Query Examples
+
+**Medium (5):** DOC-047 Directory · DOC-048 Data Modelling landing · DOC-049 additional-links config · DOC-050 Integration Wizard · DOC-051 Data Quality dashboard
+
+Totals across all 3 triaged scanners: **10 critical, 17 high, 24 medium** (51 items)
+
+### Triage complete for all 3 completed scanners
+
+Ready for human review of priority ordering before implementation begins (per `backlog/README.md` review gate). Next actions after review:
+- Pick priority ordering (suggested: critical → high → medium)
+- Kick off implementation via `/implement DOC-NNN`
+- OR continue audit phase: enumerate one of the 22 remaining scanners
 
 ## Current Status
 
-Phase: **Audit In Progress** — 3 scanners complete, 0 in progress, 22 remaining. Two triage batches landed (44 DOC items total).
+Phase: **Audit In Progress** — 3 scanners complete, 0 in progress, 22 remaining. All triage complete for completed scanners (51 DOC items). Ready for human review of the backlog.
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)

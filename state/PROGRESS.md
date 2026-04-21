@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-21 (triage: docs/accuracy/config-options)
+Last updated: 2026-04-21 (triage: docs/accuracy/config-options + docs/accuracy/feature-behavior)
 
 ## Audit Phase
 
@@ -19,46 +19,39 @@ Last updated: 2026-04-21 (triage: docs/accuracy/config-options)
 
 | Category | Pending | In Progress | Done | Blocked | Total |
 |----------|---------|-------------|------|---------|-------|
-| DOC | 17 | 0 | 0 | 0 | 17 |
+| DOC | 44 | 0 | 0 | 0 | 44 |
 | TST | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **17** | **0** | **0** | **0** | **17** |
+| **Total** | **44** | **0** | **0** | **0** | **44** |
 
-### DOC Backlog (from docs/accuracy/config-options triage — 2026-04-21)
+### DOC Backlog
 
-Priority breakdown: **6 critical, 5 high, 6 medium**
+Priority totals across both triaged scanners: **10 critical, 15 high, 19 medium**
 
-**Critical (6):**
-- DOC-001 — document Azure AD OAuth2 provider
-- DOC-003 — document S2S API key authentication
-- DOC-005 — fix email notifications config (wrong key + missing keys)
-- DOC-006 — fix SESSION_PROVIDER env-var default in docs
-- DOC-008 — document attachment storage + warn about ephemeral default (user-reported data loss)
-- DOC-013 — document collector secrets backend (AWS SSM)
+#### From docs/accuracy/config-options (DOC-001 .. DOC-017)
 
-**High (5):**
-- DOC-004 — document ingestion auth filter (security-critical default)
-- DOC-007 — complete metrics config documentation
-- DOC-009 — document housekeeping TTL configuration
-- DOC-014 — document full CollectorConfig fields (verify_ssl, chunk_size, etc.)
-- DOC-016 — create adapter configuration reference (60 adapters, large)
+**Critical (6):** DOC-001 Azure AD · DOC-003 S2S auth · DOC-005 email config · DOC-006 SESSION_PROVIDER · DOC-008 attachment storage (user-reported data loss) · DOC-013 collector secrets backend
 
-**Medium (6):**
-- DOC-002 — document Keycloak PKCE option
-- DOC-010 — document odd.* top-level config (tenant-id, stale-period, activity.partition-period)
-- DOC-011 — document spring.session.timeout and spring.codec.max-in-memory-size
-- DOC-012 — warn about default login-form credentials
-- DOC-015 — update collector repo references to monorepo (add Azure)
-- DOC-017 — fix Python version requirement for collectors
+**High (5):** DOC-004 ingestion auth filter · DOC-007 metrics config · DOC-009 housekeeping · DOC-014 CollectorConfig fields · DOC-016 adapter reference (large)
 
-**Pending triage of other scanners:**
-- `docs-accuracy-feature-behavior` (35 findings) — **note**: F-001, F-002, F-024, F-025 are already covered by DOC-005, DOC-006, DOC-007; skip them during triage
-- `docs-coverage-undocumented-features` (8 new + 3 enrichments) — **note**: F-036 is already covered by DOC-008; skip during triage
+**Medium (6):** DOC-002 Keycloak PKCE · DOC-010 odd.* · DOC-011 spring.* · DOC-012 login-form defaults · DOC-015 monorepo URLs · DOC-017 Python version
+
+#### From docs/accuracy/feature-behavior (DOC-018 .. DOC-044)
+
+**Critical (4):** DOC-027 DataProfiler/Pandas claim · DOC-029 activity event types · DOC-036 OKTA env var bug · DOC-037 permissions list regeneration
+
+**High (10):** DOC-018 SLACK_PLATFORM-BASE-URL · DOC-019 AlertManager webhook · DOC-020 per-entity alert halt · DOC-025 stale labels terminology · DOC-026 search facets (3→7) · DOC-031 ML Experiment rewrite · DOC-035 GLOSSARY.md stub · DOC-038 Lookup Tables · DOC-039 Relationships/ERD · DOC-040 deployment.md stub
+
+**Medium (13):** DOC-021 resolved alert cleanup note · DOC-022 alert auto-resolution · DOC-023 alert UI views · DOC-024 backwards-incompatible schema · DOC-028 SLA URL param · DOC-030 activity filters (4→7) · DOC-032 Data Entity Report/Overview · DOC-033 term-to-term linking · DOC-034 data collaboration API · DOC-041 configuration.md stub · DOC-042 collector.md stub · DOC-043 lineage description · DOC-044 custom-collectors SDK guide
+
+### Pending triage of remaining scanner
+
+- `docs-coverage-undocumented-features` (8 new findings + 3 enrichments) — **skip during triage**: F-036 (covered by DOC-008), F-044 (covered by DOC-038), F-045 (covered by DOC-039), and F-038/F-046 Query Examples will be the only untouched items plus a handful of others
 
 ## Current Status
 
-Phase: **Audit In Progress** — 3 scanners complete, 0 in progress, 22 remaining. First triage batch landed (17 DOC items).
+Phase: **Audit In Progress** — 3 scanners complete, 0 in progress, 22 remaining. Two triage batches landed (44 DOC items total).
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)

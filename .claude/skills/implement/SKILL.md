@@ -27,6 +27,20 @@ Execute work item `$ARGUMENTS`.
 
 3. **Set status** — Update work item frontmatter: `status: in-progress`
 
+3.5. **Pre-authoring duplication sweep** (MANDATORY for `target_repo: documentation`):
+   - Read `docs/main-concepts.md` **Terms & Aliases** table — it is the canonical synonym map for the project.
+   - Extract the search surface for this work item: (a) each canonical term or alias matching the work item's topic, (b) each config key / env var named in the item, (c) the proposed page-title keywords.
+   - Grep the whole `../documentation/docs/` tree for that surface.
+   - **For every hit outside `affected_files`**, classify the collision and decide the action before authoring:
+     - **Link** — existing mention stays, new page links to it (or vice versa). Cheapest.
+     - **Expand-in-place** — existing mention is the right home; grow it there instead of creating a new page. Update `affected_files` accordingly.
+     - **Consolidate** — existing mention is a redundant copy that should collapse into a teaser pointing to the canonical page. Update `affected_files`.
+     - **New alias entry** — existing mention uses a different name for the same thing; the work item must also add a row to the Terms & Aliases table so future searches land correctly.
+   - Record each decision in the work item's Context section (format: `- {file:line} — {classification} — {brief reason}`). This is the audit trail for why we did or did not touch a given file.
+   - If the sweep reveals the item was mis-scoped (e.g., it proposes a new page but the feature is already fully documented elsewhere), update the work item and stop. Do not author duplicate content.
+
+   Rationale: on 2026-04-22 DOC-003 (S2S) and DOC-013 (collector secrets backend) both shipped as new pages while `Features.md` already had sections for the same features under different names (M2M tokens, Alternative Secrets Backend). No cross-link in either direction. This step makes that class of failure impossible to reach the PR stage.
+
 4. **Implement** — Make changes per acceptance criteria:
    - Work in the target repo directory (e.g., `../odd-platform`)
    - Stay within scope — no adjacent fixes, no unrelated refactoring
@@ -37,6 +51,8 @@ Execute work item `$ARGUMENTS`.
      - Never hand-author `[text](target.md "mention")` links — GitBook's `"mention"` shortcut is editor-native and falls back to raw GitHub URLs when authored in git. Use plain markdown links `[Title](target.md)`.
      - When creating a new page, the same PR must include: the page file, the `SUMMARY.md` entry, and any index/README.md link. Splitting these has caused cached fallbacks on the live site.
      - After commit, grep the diff for `"mention"` — if present in new/modified lines, rewrite as plain links before pushing.
+     - **If the work item introduces an alias or synonym** (detected in step 3.5 or discovered during implementation): add a row to the **Terms & Aliases** table in `docs/main-concepts.md` **in the same PR**. The alias table is the source of truth — leaving it out of the PR guarantees the next implementer rediscovers the same duplication.
+     - **When adding a page for a feature that already has a section in `Features.md`**: the feature's `Features.md` section must be collapsed to a 2-sentence teaser that links to the canonical page. Do not leave two parallel descriptions of the same feature.
 
 5. **Verify**:
    - Check every acceptance criterion is met

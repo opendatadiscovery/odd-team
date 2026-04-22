@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-22 (DOC-003/013/029/035/036 done — critical batch 1 of 5; on top of DOC-001 + DOC-052 already in main)
+Last updated: 2026-04-22 (docs/quality/duplication done; docs/quality/rendering started — 5 new findings surfaced including third S2S duplicate in odd-platform.md)
 
 ## Audit Phase
 
@@ -9,11 +9,12 @@ Last updated: 2026-04-22 (DOC-003/013/029/035/036 done — critical batch 1 of 5
 | docs/accuracy | 5 | 2 | 0 | 3 |
 | docs/completeness | 2 | 0 | 0 | 2 |
 | docs/coverage | 4 | 1 | 0 | 3 |
+| docs/quality | 2 | 1 | 1 | 0 |
 | tests | 7 | 0 | 0 | 7 |
 | navigation | 3 | 0 | 0 | 3 |
 | spec | 2 | 0 | 0 | 2 |
 | adrs | 2 | 0 | 0 | 2 |
-| **Total** | **25** | **3** | **0** | **22** |
+| **Total** | **27** | **4** | **1** | **22** |
 
 ## Backlog Phase
 
@@ -84,7 +85,14 @@ Phase: **Audit In Progress** — 3 scanners complete, 0 in progress, 22 remainin
   - Status: **Ready for triage** → run `/triage findings/docs-coverage-undocumented-features/`
 
 ### Active Scans
-None — all started scanners are complete.
+- `docs/quality/duplication`: **100%** (7/7 alias rows) — **5 findings** (2 high, 3 medium)
+  - Findings: `findings/docs-quality-duplication/2026-04-22.md`
+  - Key: third S2S duplicate hidden in `odd-platform.md` (F-001), orphaned `Adapters.md` (F-002)
+  - Status: **Ready for triage**
+- `docs/quality/rendering`: **11%** (4/37 pages) — **3 findings** (2 high, 1 medium)
+  - Findings: `findings/docs-quality-rendering/2026-04-22.md`
+  - Key: 8 orphan files not in SUMMARY.md (F-R01), M2M duplicate live on odd-platform page (F-R02)
+  - Status: **Ready for triage** + continue scan (33 pages remaining)
 
 ### Recently Completed
 - `docs/accuracy/config-options`: **100%** (2/2 targets) — **14 new findings + 6 enrichments** (3 critical, 5 high, 6 medium)

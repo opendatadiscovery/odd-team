@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-22 (DOC-001 done: Azure AD OAuth2 section expanded)
+Last updated: 2026-04-22 (DOC-052 done: Features.md duplicates collapsed to teasers, cross-linked with dedicated pages)
 
 ## Audit Phase
 
@@ -19,11 +19,11 @@ Last updated: 2026-04-22 (DOC-001 done: Azure AD OAuth2 section expanded)
 
 | Category | Pending | In Progress | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|------|---------|----------|-------|
-| DOC | 48 | 0 | 1 | 0 | 2 | 51 |
+| DOC | 48 | 0 | 2 | 0 | 2 | 52 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **48** | **0** | **1** | **0** | **2** | **51** |
+| **Total** | **48** | **0** | **2** | **0** | **2** | **52** |
 
 ### 2026-04-22 stale-branch re-verification sweep
 

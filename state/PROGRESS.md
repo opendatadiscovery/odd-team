@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-22 (DOC-052 done: Features.md duplicates collapsed to teasers, cross-linked with dedicated pages)
+Last updated: 2026-04-22 (DOC-003/013/029/036 done — critical batch 1 of 5; on top of DOC-001 + DOC-052 already in main)
 
 ## Audit Phase
 
@@ -19,11 +19,11 @@ Last updated: 2026-04-22 (DOC-052 done: Features.md duplicates collapsed to teas
 
 | Category | Pending | In Progress | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|------|---------|----------|-------|
-| DOC | 48 | 0 | 2 | 0 | 2 | 52 |
+| DOC | 44 | 0 | 6 | 0 | 2 | 52 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **48** | **0** | **2** | **0** | **2** | **52** |
+| **Total** | **44** | **0** | **6** | **0** | **2** | **52** |
 
 ### 2026-04-22 stale-branch re-verification sweep
 

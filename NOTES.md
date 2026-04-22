@@ -55,6 +55,12 @@ Make sure that we use one source of truth for documentation: for instance, visio
 
 Note: https://github.com/opendatadiscovery/odd-docs was originally created to add DevOps run books, but should be merged into the main documentation repo (https://github.com/opendatadiscovery/documentation) to maintain a single source of truth.
 
+Be aware that local copies of any repo could be checked out to stale/outdated branch, so we should consider adding to the process for any investigation determining what is the most relevant branch and if it's not obvious we should double-check with the user. 
+
+Tests should be based both on the system's description in the documentation and on the functionality embedded in the code. This means that when creating new tests on an existing codebase, we must evaluate which portion of the code ensures the system's functionality in terms of requirements and expectations (including common sense, user experience, and system vision). 
+At the same time, tests should allow for some leeway in the implementation; we shouldn't just test a specific implementation; we should also check the logic, performance requirements, and compliance with the ADRs. 
+If we determine that the code currently exceeds the implementation "leeway," meaning that there are cases in which it exceeds the acceptable tolerances, we should create a separate test that verifies this tolerance. This test should be annotated, indicating that it exists to verify the constraint. This functionality should be noted in the documentation, and a change request should be created for future use.
+
 ## Ideas for Architectural Decision Records
 * Backward incompatible changes should be avoided until absolutely necessary;
 * Be honest, nobody is ideal, but we should chase engineering perfection: there are a lot of “historical” reasons for implementations and design decisions, we are not going to change everything in one go, we only fix super necessary parts and log others as issues for later considerations;

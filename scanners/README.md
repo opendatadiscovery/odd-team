@@ -10,6 +10,21 @@ Scanners are self-contained instruction sets for auditing specific aspects of th
 4. Results go to `findings/{scanner-id}/YYYY-MM-DD.md`
 5. Any discovered code locations should update `navigation/domains/` files
 
+## MANDATORY pre-scan step for docs scans
+
+**Before** running any scanner whose target is the `documentation` repo (`../documentation`), fetch and checkout `origin/main`:
+
+```bash
+git -C ../documentation fetch origin main
+git -C ../documentation checkout origin/main
+```
+
+**Why**: GitBook's web editor commits straight to `main` as `[GITBOOK-NN]` commits. Any local feature/hotfix branch lags behind quickly. On 2026-04-22 a stale checkout caused the `docs/accuracy/feature-behavior` scan to mis-report 6 backlog items (2 false positives, 4 partials needing narrowing). The live docs site (`docs.opendatadiscovery.org`) reflects `main` — scanning any other branch is scanning fiction. See the stale-branch re-verification note in `state/PROGRESS.md`.
+
+The same rule applies to any other GitBook-synced or remote-managed repo. For remote-only repos (`odd-docs`, `odd-dbt`, `odd-spark-adapter`, `odd-airflow-2`, `odd-cli`), clone fresh or `gh api` fetch rather than trusting a stale checkout.
+
+If a scanner emits a "feature is completely undocumented" / "zero docs" finding, treat it as high false-positive risk: cross-check `origin/main` and the live docs site before accepting into the backlog.
+
 ## Scanner Categories
 
 ### docs/accuracy/ (Priority: CRITICAL)

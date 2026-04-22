@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-22 (DOC-003/013/029/036 done — critical batch 1 of 5; on top of DOC-001 + DOC-052 already in main)
+Last updated: 2026-04-22 (DOC-003/013/029/035/036 done — critical batch 1 of 5; on top of DOC-001 + DOC-052 already in main)
 
 ## Audit Phase
 
@@ -19,11 +19,11 @@ Last updated: 2026-04-22 (DOC-003/013/029/036 done — critical batch 1 of 5; on
 
 | Category | Pending | In Progress | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|------|---------|----------|-------|
-| DOC | 44 | 0 | 6 | 0 | 2 | 52 |
+| DOC | 43 | 0 | 7 | 0 | 2 | 52 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **44** | **0** | **6** | **0** | **2** | **52** |
+| **Total** | **43** | **0** | **7** | **0** | **2** | **52** |
 
 ### 2026-04-22 stale-branch re-verification sweep
 

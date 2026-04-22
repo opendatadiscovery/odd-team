@@ -2,7 +2,7 @@
 name: implement
 description: Execute an approved work item from the backlog — write tests, docs, comments, or spec fixes. One atomic commit per item.
 argument-hint: <work-item-id>
-allowed-tools: Read Grep Glob Edit Write Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
+allowed-tools: Read Grep Glob Edit Write WebFetch Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
 ---
 
 # Implement Work Item
@@ -23,6 +23,7 @@ Execute work item `$ARGUMENTS`.
    - Read all affected files listed in the work item
    - If a file doesn't exist where expected, check navigation for updated path
    - If your planned change would violate an ADR, note it and adjust approach
+   - **If `target_repo: documentation`**: fetch and checkout `origin/main` in `../documentation` before authoring. GitBook commits land directly on main as `[GITBOOK-NN]` commits; any local branch lags. Skipping this step caused the 2026-04-22 stale-branch re-verification sweep (2 false positives, 4 scope narrowings).
 
 3. **Set status** — Update work item frontmatter: `status: in-progress`
 
@@ -32,6 +33,10 @@ Execute work item `$ARGUMENTS`.
    - For tests: write them and verify they pass
    - For docs: write and verify rendering/accuracy
    - For comments: verify accuracy against surrounding code
+   - **For `target_repo: documentation` specifically**:
+     - Never hand-author `[text](target.md "mention")` links — GitBook's `"mention"` shortcut is editor-native and falls back to raw GitHub URLs when authored in git. Use plain markdown links `[Title](target.md)`.
+     - When creating a new page, the same PR must include: the page file, the `SUMMARY.md` entry, and any index/README.md link. Splitting these has caused cached fallbacks on the live site.
+     - After commit, grep the diff for `"mention"` — if present in new/modified lines, rewrite as plain links before pushing.
 
 5. **Verify**:
    - Check every acceptance criterion is met
@@ -48,6 +53,19 @@ Execute work item `$ARGUMENTS`.
    - Update `state/PROGRESS.md` counts
    - Update `navigation/domains/*.md` if any pointers changed
    - If a new architectural decision was made → create draft ADR in `adrs/drafts/`
+
+8. **Post-merge verification** (MANDATORY for `target_repo: documentation`):
+   - After the PR merges to `main`, wait for the GitBook build (typically < 5 minutes).
+   - Compute the live URL for every affected page (`docs/a/b/c.md` → `https://docs.opendatadiscovery.org/a/b/c`; `README.md` collapses to its directory URL).
+   - WebFetch each URL and verify:
+     - Page loads with the intended change visible
+     - No `github.com/opendatadiscovery/documentation/blob/` substrings appear in the body (that's the GitBook fallback signature)
+     - Any relative links touched by this change resolve to `docs.opendatadiscovery.org` URLs, not to GitHub
+     - The sidebar entry is present for any newly-added page
+   - If verification fails, reopen the item: `status: blocked`, add a `## Live-site verification failure` section with the URL, the observed fallback, and the suggested fix (usually: replace `"mention"` with plain link, or ensure SUMMARY.md entry is on main).
+   - If verification passes, note the live URL(s) in the work item's Context section and leave as `done`.
+
+   Non-documentation items skip this step.
 
 ## Rules
 

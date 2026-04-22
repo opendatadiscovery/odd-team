@@ -95,6 +95,15 @@ Before modifying code, check `adrs/` for decisions that constrain the area you'r
 - If you make a new decision not covered by existing ADRs → create a draft in `adrs/drafts/`
 - ADRs are reverse-engineered from code patterns, not invented from scratch
 
+## Documentation Authoring Rules
+
+These rules apply whenever an item's `target_repo` is `documentation` (GitBook-backed).
+
+- **Never hand-author GitBook `"mention"` links.** The `[text](target.md "mention")` shortcut is editor-native — GitBook writes an internal file-reference ID when authored in its web editor. Hand-written in git, it resolves unreliably and can silently fall back to a raw `github.com/.../blob/main/...` URL that then gets cached. Use plain markdown links: `[Title](relative/path.md)`.
+- **Ship the page, the SUMMARY.md entry, and all index/README.md links together in one PR.** Splitting them across PRs has caused fallback caching on the live site (see the 2026-04-22 S2S incident — separate SUMMARY PR left the index link stuck as a GitHub URL).
+- **A DOC item is not `done` until the live URL has been WebFetched and verified.** Post-merge, fetch the affected page(s) on `docs.opendatadiscovery.org` and confirm the change is visible and no raw-GitHub fallbacks were introduced. If verification fails, reopen the item as `blocked` with the live-site evidence.
+- **Before authoring, fetch + checkout `origin/main` of the documentation repo.** GitBook commits directly to main as `[GITBOOK-NN]` commits; any local branch lags. (Same rule as the scan protocol in `scanners/README.md`.)
+
 ## Key Principles
 
 - One work item = one atomic commit

@@ -37,6 +37,9 @@ Find gaps within existing documentation pages — missing sections, incomplete d
 ### docs/coverage/ (Priority: MEDIUM)
 Find features that have no documentation at all.
 
+### docs/quality/ (Priority: HIGH)
+Verify the **published** docs site — not source markdown. Catches rendering issues that source-level scanners can't see: GitBook shortcut fallbacks to raw GitHub URLs, orphaned pages (file exists but not in SUMMARY.md), dead sidebar entries, broken internal link resolution. Every other `docs/*` scanner reads markdown; this one reads `docs.opendatadiscovery.org`.
+
 ### tests/ (Priority: HIGH)
 Find code paths without test coverage — services, repositories, adapters, UI components.
 

@@ -20,11 +20,11 @@ Last updated: 2026-04-22 (docs/quality/duplication done; docs/quality/rendering 
 
 | Category | Pending | In Progress | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|------|---------|----------|-------|
-| DOC | 43 | 0 | 7 | 0 | 2 | 52 |
+| DOC | 48 | 0 | 7 | 0 | 2 | 57 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **43** | **0** | **7** | **0** | **2** | **52** |
+| **Total** | **48** | **0** | **7** | **0** | **2** | **57** |
 
 ### 2026-04-22 stale-branch re-verification sweep
 
@@ -62,9 +62,19 @@ Priority totals across both triaged scanners: **10 critical, 15 high, 19 medium*
 
 **Medium (5):** DOC-047 Directory · DOC-048 Data Modelling landing · DOC-049 additional-links config · DOC-050 Integration Wizard · DOC-051 Data Quality dashboard
 
-Totals across all 3 triaged scanners: **10 critical, 17 high, 24 medium** (51 items)
+#### From docs/quality/duplication (DOC-052 .. DOC-057)
 
-### Triage complete for all 3 completed scanners
+**Critical (1):** DOC-053 collapse M2M section in odd-platform.md (third S2S duplicate, live)
+
+**High (1):** DOC-054 delete orphaned Adapters.md (blocks DOC-042)
+
+**Medium (3):** DOC-055 Architecture.md cross-ref to main-concepts · DOC-056 permissions.md Business Glossary link · DOC-057 oddrn.md Ingestion API link
+
+*(DOC-052 already done — M2M teasers on s2s.md + Features.md)*
+
+Totals across all 4 triaged scanners: **11 critical, 18 high, 27 medium** (56 items; 57 including done DOC-052, minus 2 rejected = 55 actionable)
+
+### Triage complete for all 4 completed scanners
 
 Ready for human review of priority ordering before implementation begins (per `backlog/README.md` review gate). Next actions after review:
 - Pick priority ordering (suggested: critical → high → medium)
@@ -73,7 +83,7 @@ Ready for human review of priority ordering before implementation begins (per `b
 
 ## Current Status
 
-Phase: **Audit In Progress** — 3 scanners complete, 0 in progress, 22 remaining. All triage complete for completed scanners (51 DOC items). Ready for human review of the backlog.
+Phase: **Audit In Progress** — 4 scanners complete, 1 in progress, 22 remaining. All triage complete for completed scanners (56 DOC items). Ready for human review of the backlog.
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)

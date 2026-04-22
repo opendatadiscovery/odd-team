@@ -12,7 +12,7 @@ id: {CATEGORY}-{NNN}  # e.g., TST-012, DOC-005, NAV-003, SPC-001
 title: "Short description of what needs to change"
 category: docs|tests|navigation|spec
 target_repo: odd-platform|odd-collectors|odd-docs|opendatadiscovery-specification
-status: pending|in-progress|done|blocked
+status: pending|in-progress|done|blocked|rejected
 priority: critical|high|medium|low
 affected_files:
   - path/to/file1 (create|modify|read)
@@ -53,8 +53,12 @@ Numbers are sequential within each category.
 ```
 pending → in-progress → done
    ↓
-blocked (when dependency isn't met)
+blocked  (dependency not met)
+   ↓
+rejected (closed without implementation — false positive, obsolete, or superseded)
 ```
+
+A `rejected` item must include a `## Rejection` section at the top of the body documenting why: what changed, what was checked, where the true state lives (link to evidence). The file stays in the backlog as an audit trail — do not delete rejected items.
 
 ## Rules
 

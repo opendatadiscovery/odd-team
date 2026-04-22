@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-21 (all 3 completed scanners triaged)
+Last updated: 2026-04-22 (stale-branch re-verification sweep complete)
 
 ## Audit Phase
 
@@ -17,13 +17,23 @@ Last updated: 2026-04-21 (all 3 completed scanners triaged)
 
 ## Backlog Phase
 
-| Category | Pending | In Progress | Done | Blocked | Total |
-|----------|---------|-------------|------|---------|-------|
-| DOC | 51 | 0 | 0 | 0 | 51 |
-| TST | 0 | 0 | 0 | 0 | 0 |
-| NAV | 0 | 0 | 0 | 0 | 0 |
-| SPC | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **51** | **0** | **0** | **0** | **51** |
+| Category | Pending | In Progress | Done | Blocked | Rejected | Total |
+|----------|---------|-------------|------|---------|----------|-------|
+| DOC | 49 | 0 | 0 | 0 | 2 | 51 |
+| TST | 0 | 0 | 0 | 0 | 0 | 0 |
+| NAV | 0 | 0 | 0 | 0 | 0 | 0 |
+| SPC | 0 | 0 | 0 | 0 | 0 | 0 |
+| **Total** | **49** | **0** | **0** | **0** | **2** | **51** |
+
+### 2026-04-22 stale-branch re-verification sweep
+
+The `documentation` repo was re-scanned against `origin/main` after discovering that the original scan ran on stale branch `hotfix/add_info_for_deployment_on_eks_to_summary`, which lacked ~15 `[GITBOOK-*]` commits merged via the GitBook web editor. Outcome across 26 items touching Features.md:
+
+- **Rejected as false positives (2)**: DOC-025 (labels terminology already cleaned), DOC-051 (Data Quality Dashboard already documented at `Features.md:296`, anchor `#id-7948`)
+- **Narrowed scope (4)**: DOC-020 (alert halt — expand existing mention), DOC-038 (Lookup Tables — migrate to dedicated page), DOC-046 (Query Examples — migrate + expand), DOC-050 (Integration Wizard — merge with DOC-042 hub)
+- **Still-valid on main (20)**: DOC-013, DOC-018, DOC-019, DOC-021, DOC-022, DOC-023, DOC-024, DOC-026, DOC-027, DOC-028, DOC-029, DOC-030, DOC-031, DOC-032, DOC-033, DOC-039, DOC-043, DOC-045, DOC-047, DOC-048
+
+Process fix added to `scanners/README.md`: before scanning the `documentation` repo, fetch and checkout `origin/main`.
 
 ### DOC Backlog
 

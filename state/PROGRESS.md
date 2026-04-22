@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-22 (docs/quality/duplication done; docs/quality/rendering started — 5 new findings surfaced including third S2S duplicate in odd-platform.md)
+Last updated: 2026-04-22 EOD — paused. DOC-053 implemented + verified live; DOC-054 implemented (awaiting merge). See "Resume Tomorrow" at bottom.
 
 ## Audit Phase
 
@@ -118,3 +118,31 @@ Phase: **Audit In Progress** — 4 scanners complete, 1 in progress, 22 remainin
 4. Run scanner: `scanners/tests/core-packages.md` (shared libraries — high blast radius)
 5. Clone odd-docs repo for documentation scanners
 6. Clone/fetch remote repos: odd-dbt, odd-spark-adapter, odd-airflow-2, odd-cli
+
+## Resume Tomorrow (2026-04-23)
+
+**Unmerged — open PRs first:**
+- `documentation` → `feature/doc-054-delete-orphaned-adapters` (commit e4124f7): deletes orphaned `docs/Adapters.md`. After merge, WebFetch `https://docs.opendatadiscovery.org/adapters` → should 404/redirect.
+- `odd-team` → `feature/state-doc-054` (commits 54e943b + 9085c03): marks DOC-054 done, records DOC-053 live-site verification. Merge after DOC-054 doc PR lands.
+
+**Then pick one of:**
+
+**Path A — finish quality cleanup (small, same context):**
+- **DOC-055** (medium, small) — `Architecture.md` Main Concepts cross-ref
+- **DOC-056** (medium, small) — `permissions.md` Business Glossary link
+- **DOC-057** (medium, small) — `oddrn.md` Ingestion API → ODD Specification link
+- All three are non-conflicting, batchable in one session.
+
+**Path B — resume original critical batch (odd-platform.md, serialize):**
+- DOC-005 (critical) email config key names + missing keys
+- DOC-006 (critical) SESSION_PROVIDER default
+- DOC-008 (critical, user-reported data loss) attachment storage warning
+- DOC-027 (critical) DataProfiler / Pandas claim fix (Features.md + dq_visibility.md)
+- DOC-037 (critical) regenerate permissions list from OpenAPI spec
+- All these live under the new pre-authoring sweep protocol (step 3.5). DOC-005/006/008 share `odd-platform.md` — implement sequentially.
+
+**Triage remaining before implementing more:**
+- `findings/docs-quality-rendering/2026-04-22.md` — F-R01 (8 orphan files) + F-R03 (SUMMARY.md escaping) still un-triaged (F-R02 is subsumed by DOC-053 which is done). Cheap one-session task.
+- Complete `docs/quality/rendering` scan (33 of 37 pages still unscanned).
+
+**Recommended first action:** merge the two pending PRs, then Path A (cheap, closes out the quality scanner work cleanly) before opening the heavier critical batch.

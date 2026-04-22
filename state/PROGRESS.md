@@ -20,11 +20,11 @@ Last updated: 2026-04-22 (docs/quality/duplication done; docs/quality/rendering 
 
 | Category | Pending | In Progress | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|------|---------|----------|-------|
-| DOC | 48 | 0 | 7 | 0 | 2 | 57 |
+| DOC | 47 | 0 | 8 | 0 | 2 | 57 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **48** | **0** | **7** | **0** | **2** | **57** |
+| **Total** | **47** | **0** | **8** | **0** | **2** | **57** |
 
 ### 2026-04-22 stale-branch re-verification sweep
 

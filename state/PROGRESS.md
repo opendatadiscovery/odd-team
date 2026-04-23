@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-23 — Critical `odd-platform.md` config batch shipped to `feature/critical-odd-platform-config`: **DOC-006** (SESSION_PROVIDER value in Internal PostgreSQL tab), **DOC-005** (email env-var tab typos + Gmail example), **DOC-018** (nonexistent SLACK_PLATFORM-BASE-URL removed, shared `odd.platform-base-url` clarified), **DOC-008** (new Attachment Storage section with ephemeral-default warning naming K8s/Docker). Four atomic commits on one themed branch, all verified against `application.yml`. Awaiting merge + live-site verification.
+Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hardening` (commit `96b28c4`) after a spot-check uncovered a silent data-loss caveat in the DOC-008 batch that the old bar had passed. The Implementation Quality Bar now has eight gates, two of which (Consumer-read #4, Unset-parameter audit #5) are new and require cited evidence. Work-item lifecycle now includes `review-ready` between `in-progress` and `done`; the implementer cannot self-close. `/review` runs in a separate session. Phase B re-audit of DOC-005/006/008/018 under the new bar surfaced 4 missed caveats (2 in-scope amendments + 2 new backlog items DOC-059/060). Phase C (re-audit of all older done items) is the next standing obligation before any new `/implement` batch may start.
 
 ## Audit Phase
 
@@ -18,13 +18,29 @@ Last updated: 2026-04-23 — Critical `odd-platform.md` config batch shipped to 
 
 ## Backlog Phase
 
-| Category | Pending | In Progress | Done | Blocked | Rejected | Total |
-|----------|---------|-------------|------|---------|----------|-------|
-| DOC | 39 | 0 | 17 | 0 | 2 | 58 |
-| TST | 0 | 0 | 0 | 0 | 0 | 0 |
-| NAV | 0 | 0 | 0 | 0 | 0 | 0 |
-| SPC | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **39** | **0** | **17** | **0** | **2** | **58** |
+| Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
+|----------|---------|-------------|--------------|------|---------|----------|-------|
+| DOC | 41 | 0 | 4 | 13 | 0 | 2 | 60 |
+| TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
+| **Total** | **41** | **0** | **4** | **13** | **0** | **2** | **60** |
+
+Notes on counts: DOC pending net change is +2 → -4 = -2 from the prior 43 number on main's last snapshot (+2 for new DOC-059 and DOC-060 discovered in the re-audit, -4 for DOC-005/006/008/018 which moved to `review-ready` when `batch/critical-odd-platform-config-state` merged). The four `review-ready` items await `/review` in a separate session; only the reviewer may flip them to `done`. DOC-005 and DOC-008 also carry in-scope amendment commits on `feature/doc-005-008-reaudit-caveats` (documentation repo) that must land before the reviewer can sign them off.
+
+### 2026-04-23 pipeline hardening (Phase A) + re-audit (Phase B)
+
+On 2026-04-23 a user spot-check uncovered that `MinioConfig.java` never calls `.region(...)` on the MinIO builder, silently locking attachment storage to `us-east-1`. The miss had shipped on `feature/critical-odd-platform-config` with DOC-008 marked `done`. Root cause: the old Quality Bar stated "verify every functional claim against the code" as a principle but not as a testable gate. Scanners read `application.yml`; they did not read `@Value` consumers or SDK builders.
+
+**Phase A** (commit `96b28c4` on `feature/pipeline-hardening`): rewrote CLAUDE.md (new "The project and the maintainer" attitude section, Quality Bar expanded from six principles to eight gates, two new gates Consumer-read and Unset-parameter audit, workflow ends at `review-ready` not `done`). Updated `scanners/docs/accuracy/config-options.md` and `feature-behavior.md` with consumer-code / SDK audit passes. Created `scanners/docs/accuracy/integration-caveats.md` as a dedicated SDK-builder-audit scanner. Updated `.claude/skills/implement/SKILL.md` (consumer-read audit gate, mandatory `Consumer-read:` commit footer, Phase 2 ends at `review-ready`) and rewrote `.claude/skills/review/SKILL.md` (separate-session requirement, reject-by-default, eight-gate checklist, concrete DOC-008 FAIL example). Updated `backlog/README.md` lifecycle.
+
+**Phase B** (same branch): re-audited DOC-005/006/008/018 under the new bar. Findings in `findings/docs-accuracy-integration-caveats/2026-04-23-reaudit-critical-odd-platform-config.md`:
+- **F-CAV-001 (DOC-005 in-scope)** — `JavaMailSenderImpl` leaves SMTP connect/read/write timeouts unset (infinite default), no implicit-TLS support, no self-signed CA hook, no charset; `EmailNotificationSender.send()` silently aborts recipient loop on first failure. **Severity: high.** Shipped as commit `a725113` on `feature/doc-005-008-reaudit-caveats` (documentation).
+- **F-CAV-002 (DOC-008 in-scope)** — `MinioAsyncClient.builder()` leaves `.httpClient(...)` unset (5-min MinIO-SDK-default timeouts); `RemoteFileUploadServiceImpl.completeFileUpload` stages chunks on local filesystem before REMOTE upload (K8s restart mid-upload loses chunks — same data-loss class as the LOCAL warning already in DOC-008); no retry on transient MinIO/S3 failures. **Severity: high.** Shipped as commit `d8976b1` on `feature/doc-005-008-reaudit-caveats` (documentation).
+- **F-CAV-003 (new DOC-059)** — session-provider caveats: IN_MEMORY no eviction beyond TTL, INTERNAL_POSTGRESQL housekeeping hardcoded to 1 hour, REDIS requires undocumented `spring.data.redis.*` keys. **Severity: medium.** New backlog item.
+- **F-CAV-004 (new DOC-060)** — third `odd.platform-base-url` consumer `StaticArgumentMappingContext.java:16` has a **different default** (`http://your.odd.platform` vs notifications' `http://localhost:8080`) and is undocumented. **Severity: medium.** New backlog item.
+
+**Phase C obligation**: every `done` item closed before 2026-04-23 was self-closed by the implementer. Finding density in Phase B (4 missed caveats across 4 items) is the prior — treat all 13 done items as candidates for re-audit until each passes `/review` under the new bar.
 
 ### 2026-04-22 stale-branch re-verification sweep
 

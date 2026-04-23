@@ -1,6 +1,6 @@
 ---
 name: implement
-description: Work a batch of backlog items end-to-end as a maintainer — hold the Implementation Quality Bar, log follow-ups on disk, ship one PR per repo per batch.
+description: Work a batch of backlog items end-to-end as a maintainer — hold the Implementation Quality Bar, run the consumer-read audit, log follow-ups on disk, flip items to `review-ready`, and ship one PR per repo per batch.
 argument-hint: <work-item-id>
 allowed-tools: Read Grep Glob Edit Write WebFetch Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
 ---
@@ -11,13 +11,15 @@ allowed-tools: Read Grep Glob Edit Write WebFetch Bash(ls *) Bash(find *) Bash(c
 
 If `$ARGUMENTS` is empty, show pending items sorted by priority and ask which to start the batch from.
 
+**You cannot self-mark items `done`.** Phase 2 ends at `status: review-ready` per item. `/review` in a separate session handles the final transition. This is the lesson from 2026-04-23 — self-closed items shipped a silent data-loss caveat (MinIO region) that a separate-session review would have caught.
+
 ## Phase 1 — Plan the batch
 
-1. **Orient** — Read `CLAUDE.md` (team identity, Quality Bar, batching, authoring rules), `navigation/features.yaml`, the relevant `navigation/domains/*.md`, and the work item file for `$ARGUMENTS` (search `backlog/`).
+1. **Orient** — Read `CLAUDE.md` (team identity, Quality Bar, batching, authoring rules), `navigation/features.yaml`, the relevant `navigation/domains/*.md`, and the work item file for `$ARGUMENTS` (search `backlog/`). Special attention to Quality Bar #4 (Consumer-read) and #5 (Unset-parameter audit).
 
 2. **Pre-flight on the starter**:
-   - Status must be `pending` (not `blocked`, not `in-progress`)
-   - Check `state/file-registry.yaml` — no conflicting `in-progress` items on the same files
+   - Status must be `pending` (not `blocked`, not `in-progress`, not `review-ready`)
+   - Check `state/file-registry.yaml` — no conflicting `in-progress` or `review-ready` items on the same files
    - Check `adrs/` for decisions that constrain the area
    - Read every file in `affected_files`; if a path is stale, consult navigation for the updated one
 
@@ -45,72 +47,95 @@ If `$ARGUMENTS` is empty, show pending items sorted by priority and ask which to
 
    Rationale: on 2026-04-22 DOC-003 (S2S) and DOC-013 (collector secrets backend) both shipped as new pages while `Features.md` already had sections for the same features under different names (M2M tokens, Alternative Secrets Backend). No cross-link in either direction. This sweep makes that class of failure impossible to reach a PR.
 
+6. **Consumer-read plan** (MANDATORY for every item whose claims depend on platform / collector code):
+   - For every config key / env var the item touches, list every `@Value` / `@ConfigurationProperties` consumer you will read. Grep if necessary.
+   - For every SDK / external-client integration behind the feature, list the bean factory / builder file you will read. If `navigation/domains/{domain}.md` does not list it, that is a navigation gap — log it as a discovered finding during Phase 2.
+   - Record this plan as a draft of the eventual `Consumer-read:` commit footer. You will refine it as you read.
+
 ## Phase 2 — Execute each item (in order on the batch branch)
 
 Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance criteria are the floor.
 
 1. **Flip status** — set the item's frontmatter to `status: in-progress`.
 
-2. **Author the change** — follow acceptance criteria, hold the full Quality Bar:
+2. **Run the consumer-read audit** (Quality Bar #4 + #5, MANDATORY for integration-backed claims):
+   - Open every `@Value` / `@ConfigurationProperties` consumer for each key the item touches. Record `file:line`.
+   - For every SDK / client builder in the code path, **enumerate every builder parameter** and classify each as `configured | safely-defaulted | caveat-defaulted` (see `CLAUDE.md` Quality Bar #5). Every `caveat-defaulted` parameter is either:
+     - In scope → must be documented as a known limitation (admonition block) in this item's change.
+     - Out of scope → log as a new backlog item with `scanner_source: "discovered-during-{original-ID}"` and, if the code can be fixed, draft a platform-side GitHub issue body in the item's Context.
+   - Open explicit error / retry / timeout handlers for each integration. Undocumented behavior that materially affects operators → finding.
+   - **If you find a caveat that is in scope for the current item, you must ship the caveat in the same PR.** Shipping a fix for the visible bug while leaving the silent caveat for "next time" is the failure mode this audit exists to prevent.
+
+3. **Author the change** — follow acceptance criteria, hold the full Quality Bar:
    - **No duplicates.** Duplication sweep already classified every collision; honor those decisions.
    - **Synonyms and aliases logged.** Any alias encountered or introduced → row in `docs/main-concepts.md` Terms & Aliases table, in this same PR.
-   - **Caveats captured.** If the code carries a known limitation, performance characteristic, or security consideration for this feature, the doc must say so — as a dedicated section, not buried in prose. Undocumented caveats discovered here are findings; log them.
-   - **Code ↔ doc cross-check.** Verify every functional claim against `../odd-platform`, `../odd-collectors`, or `../opendatadiscovery-specification`. Verify every user-visible code path you touch is covered by the doc as a **feature**, **known limitation**, **performance note**, or **security consideration**. Missing coverage in either direction is a finding.
+   - **Caveats captured.** Every caveat surfaced by the consumer-read audit is in the doc as a dedicated section, not prose.
+   - **Code ↔ doc cross-check.** Bidirectional — every functional claim → code evidence; every user-visible code path touched → doc coverage (feature / limitation / performance note / security consideration). Missing either direction is a finding.
    - **Layout and completeness.** If the change adds or renames a page, update `SUMMARY.md` and every index / `README.md` link in the same commit.
    - **No functional changes** to application code — only docs, tests, comments, spec alignment.
 
-3. **Follow-up work auto-logging** — if the change reveals an out-of-scope issue:
+4. **Follow-up work auto-logging** — if the change reveals an out-of-scope issue:
    - **Trivial + related** (typo on an adjacent line, obvious whitespace): fold into the current commit and note in the commit body.
    - **Small + fits the batch**: create `backlog/{cat}/DOC-NNN.md` with full frontmatter and acceptance criteria, update `state/file-registry.yaml`, update `state/PROGRESS.md` counts, add to the batch, reference in the originating item's Context.
    - **Larger or unrelated**: create the work item with full frontmatter (`scanner_source: "discovered-during-{original-ID}"`, `status: pending`, priority, affected_files, found_date), update file-registry, update PROGRESS. Do **not** implement — the triage-review gate still applies. But log everything a cold-start maintainer needs.
+   - **Code bug worth a platform fix** (e.g., DOC-008's missing `.region(...)`): log a backlog item **and** draft a GitHub Issue body in the originating item's Context so the human can open the issue upstream. Do not modify platform code from a docs session.
    - **Scope-changing** (e.g., "fixing this link requires restructuring 5 pages"): stop and surface the judgment call to the user before proceeding.
    - **Never** write "noted as follow-up" or "recommend logging this" without the file on disk. Narration is not logging.
 
-4. **Authoring rules for `target_repo: documentation`**:
+5. **Authoring rules for `target_repo: documentation`**:
    - Never hand-author `[text](target.md "mention")` links — GitBook's `"mention"` shortcut is editor-native and falls back to raw GitHub URLs when written in git. Use plain markdown `[Title](target.md)`.
    - When creating a new page, the same commit must include: the page file, the `SUMMARY.md` entry, and any index / README link. Splitting these has caused cached fallbacks on the live site.
    - When adding a page for a feature that already has a `Features.md` section: the `Features.md` section collapses to a 2-sentence teaser linking to the canonical page. No parallel descriptions.
    - Before committing, grep the working tree for `"mention"` on the lines you touched; rewrite as plain links.
 
-5. **Verify locally**:
+6. **Verify locally**:
    - Every acceptance criterion met
-   - Quality Bar responsibilities held
+   - Every Quality Bar responsibility #1–#8 has citable evidence (file:line for code-backed claims, URL for published pages)
    - Tests (if any) pass, no regressions
 
-6. **Commit** on the batch branch:
+7. **Commit** on the batch branch:
    - Stage only the files this item touches
-   - Message: `{category}: {title} [{ID}]` — e.g., `docs: collapse M2M section to teaser [DOC-053]`
+   - Message format:
+     ```
+     {category}: {title} [{ID}]
 
-7. **Flip status** — set the item's frontmatter to `status: done`.
+     {1–3 sentence what-and-why body}
+
+     Consumer-read:
+     - {file:line}
+     - {file:line}
+     ```
+   - The `Consumer-read:` footer is **mandatory** for any item whose claims are code-backed. Documentation-only grammar / prose polish items (no runtime claim) may omit it; note `Consumer-read: none (prose polish, no code claim)` so review knows you considered it.
+
+8. **Flip status to `review-ready`** — not `done`. Record in the item's Context:
+   - The list of affected pages (for live-site verification).
+   - The consumer-read footer contents (even if already in the commit, duplicating here makes `/review` cheap).
+   - Any caveats surfaced in the consumer-read audit, in-scope or out-of-scope.
 
 ## Phase 3 — Close the batch
 
 1. **Consolidate state updates** on a single odd-team branch:
-   - All `DOC-XXX` frontmatter flips to `done`
+   - All `DOC-XXX` frontmatter flips to `review-ready`
    - `state/file-registry.yaml` status updates
-   - `state/PROGRESS.md` counts
-   - `navigation/domains/*.md` updates if pointers shifted
+   - `state/PROGRESS.md` counts (add a `review-ready` row if not present)
+   - `navigation/domains/*.md` updates if pointers shifted — **especially for bean factories / SDK builders discovered during the consumer-read audit**
    - Any new ADR drafts in `adrs/drafts/`
    - Any new `backlog/{cat}/DOC-NNN.md` follow-up items discovered during the batch
+   - Any drafted GitHub Issue bodies for platform-side fixes
 
 2. **Push and open PRs** — at most one per repo:
-   - Target-repo PR (e.g., `documentation`): body enumerates each item by ID with a one-line summary, links to live-verification notes
-   - odd-team state PR: single PR covering all bookkeeping for the batch
+   - Target-repo PR (e.g., `documentation`): body enumerates each item by ID with a one-line summary. **Explicitly mark the PR as pending review** — not ready to merge until `/review` passes in a separate session.
+   - odd-team state PR: single PR covering all bookkeeping for the batch. Same pending-review marker.
 
-3. **Post-merge verification** (MANDATORY for any batch touching `documentation`):
-   - Wait for the GitBook build (typically < 5 minutes).
-   - For every affected page, compute the live URL (`docs/a/b/c.md` → `https://docs.opendatadiscovery.org/a/b/c`; `README.md` collapses to its directory URL).
-   - WebFetch each URL and verify:
-     - Page loads with the intended change visible
-     - No `github.com/opendatadiscovery/documentation/blob/` substrings appear (GitBook fallback signature)
-     - Relative links touched by this change resolve to `docs.opendatadiscovery.org`, not to GitHub
-     - Sidebar entry present for any newly-added page
-   - If any URL fails: reopen that item as `status: blocked`, add a `## Live-site verification failure` section (URL, observed fallback, suggested fix), and surface to the user. The rest of the batch can stay `done` if their URLs passed.
-   - If all pass: note the live URL(s) in each item's Context and leave as `done`.
+3. **Hand off to review** — the batch does not proceed to merge from this session. Report:
+   - Items moved to `review-ready` (by ID)
+   - Follow-ups logged (by ID)
+   - Consumer-read footers (summarized)
+   - Caveats surfaced (in-scope and out-of-scope)
+   - PR URLs
+   - Instruction to the user: "Run `/review` in a separate session for each item, or `/review batch:{branch-name}` for the batch."
 
-   Non-documentation batches skip live-site verification.
-
-4. **Report to the user** — one concise summary: items completed (by ID), follow-ups logged (by ID), live-URL verifications, open PRs.
+Live-site verification is **not** the implementer's responsibility under the new bar — it moves to `/review` to enforce the separate-session rule. Tech debt remains on the implementer: surface the live-URL list so `/review` does not have to derive it.
 
 ## When to pause and ask the user
 
@@ -118,13 +143,15 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
 - A destructive or irreversible action isn't explicitly authorized (deleting files, force-pushing, dropping data).
 - An ADR conflict forces a material scope decision.
 - A scope-expansion judgment call ("this pulls in 5 more items — expand or split?").
-- The batch is complete — surface one review request with the full list.
+- The consumer-read audit surfaces a caveat whose fix would materially expand the change. Flag and ask.
+- The batch is complete — surface one review-handoff request with the full list.
 
-Silence is not the target; savvy judgment is. Don't bundle unrelated items, don't skip Quality Bar checks to speed through a batch, don't merge logically distinct changes into one commit, don't skip live-site verification.
+Silence is not the target; savvy judgment is. Don't bundle unrelated items, don't skip Quality Bar checks to speed through a batch, don't merge logically distinct changes into one commit, don't skip the consumer-read audit, **don't self-mark items `done`**.
 
 ## Reference
 
-- **Quality Bar (the six responsibilities)** → `CLAUDE.md` "Implementation Quality Bar"
+- **Quality Bar (the eight responsibilities)** → `CLAUDE.md` "Implementation Quality Bar"
 - **Batching rules** → `CLAUDE.md` "Autonomous Execution and Batching"
 - **GitBook authoring gotchas** → `CLAUDE.md` "Documentation Authoring Rules"
-- **Work-item format** → `backlog/README.md`
+- **Work-item format + lifecycle** → `backlog/README.md`
+- **Integration caveat scanner** → `scanners/docs/accuracy/integration-caveats.md` (useful as a checklist when planning consumer-reads)

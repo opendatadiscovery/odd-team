@@ -15,7 +15,7 @@ If `$ARGUMENTS` is empty, show pending items sorted by priority and ask which to
 
 ## Phase 1 — Plan the batch
 
-1. **Orient** — Read `CLAUDE.md` (team identity, Quality Bar, batching, authoring rules), `navigation/features.yaml`, the relevant `navigation/domains/*.md`, and the work item file for `$ARGUMENTS` (search `backlog/`). Special attention to Quality Bar #4 (Consumer-read) and #5 (Unset-parameter audit).
+1. **Orient** — Read `CLAUDE.md` (team identity, nine-gate Quality Bar, batching, authoring rules), `navigation/features.yaml`, `navigation/architecture.md` (integration-pattern + canonical-repo map), the relevant `navigation/domains/*.md`, and the work item file for `$ARGUMENTS` (search `backlog/`). Special attention to Quality Bar #4 (Consumer-read), #5 (Unset-parameter audit), and **#9 (Factual Claim Provenance)** — every factual claim must be traceable to a canonical Source of Truth, not to memory.
 
 2. **Pre-flight on the starter**:
    - Status must be `pending` (not `blocked`, not `in-progress`, not `review-ready`)
@@ -33,9 +33,10 @@ If `$ARGUMENTS` is empty, show pending items sorted by priority and ask which to
 
    Name the batch after the theme it covers (e.g., `feature/docs-quality-xrefs`, `feature/critical-odd-platform-config`). The batch branch will be cut from freshly-fetched `origin/main` of the target repo. The odd-team bookkeeping lives on a parallel branch in this repo.
 
-5. **Pre-authoring duplication sweep** (MANDATORY for `target_repo: documentation`, run per item in the batch):
+5. **Pre-authoring bi-directional duplication sweep** (MANDATORY for `target_repo: documentation`, run per item in the batch):
+   The sweep runs in both directions — existing content you might conflict with, **and** new terms / URLs / repos / aliases you are about to introduce. Introducing an unregistered alias is just as bad as missing an existing duplicate.
    - Read `docs/main-concepts.md` **Terms & Aliases** table — the canonical synonym map.
-   - Build the search surface: each canonical term or alias matching the item's topic, each config key / env var, each proposed page-title keyword.
+   - Build the **existing-content** search surface: each canonical term or alias matching the item's topic, each config key / env var, each proposed page-title keyword.
    - Grep the whole `../documentation/docs/` tree for that surface.
    - **For every hit outside `affected_files`**, classify and decide before authoring:
      - **Link** — existing mention stays, new content links to it (or vice versa).
@@ -43,14 +44,30 @@ If `$ARGUMENTS` is empty, show pending items sorted by priority and ask which to
      - **Consolidate** — existing mention is a redundant copy that should collapse into a teaser pointing to the canonical page. Update `affected_files`.
      - **New alias entry** — existing mention uses a different name for the same thing; the item must also add a row to the Terms & Aliases table.
    - Record each decision in the item's Context (format: `- {file:line} — {classification} — {brief reason}`). This is the audit trail for why a file was or wasn't touched.
+   - Build the **new-content** inventory: every term, config key, URL (outbound GitHub repo link, live-site link, external docs link), and repo name the item is about to introduce. For each:
+     - **Term / alias** → if not already in `main-concepts.md`, the item must add a row. Log the intended row now.
+     - **Outbound URL** (e.g., `https://github.com/opendatadiscovery/odd-dbt`) → name the SoT that justifies the link target (repo README / owner's docs) and plan the Gate 9 verification (WebFetch / `gh repo view`).
+     - **Repo name** (`odd-collector`, `odd-dbt`, `odd-great-expectations`, …) → classify against `navigation/architecture.md` integration patterns (collector / push-client / SDK / platform / spec). If the architecture map doesn't list it, that is a navigation gap — log a discovered finding.
    - If the sweep shows the item is mis-scoped (feature already fully documented elsewhere under a different name), update the work item, drop it from the batch, and **do not** author duplicate content.
 
-   Rationale: on 2026-04-22 DOC-003 (S2S) and DOC-013 (collector secrets backend) both shipped as new pages while `Features.md` already had sections for the same features under different names (M2M tokens, Alternative Secrets Backend). No cross-link in either direction. This sweep makes that class of failure impossible to reach a PR.
+   Rationale: 2026-04-22 — DOC-003 (S2S) and DOC-013 (collector secrets backend) both shipped as new pages while `Features.md` already had sections under different names. 2026-04-23 — DOC-027 authored a GitHub URL (`/odd-collectors`) for a push-client that actually lives at `/odd-dbt`; the bi-directional sweep on the new URL would have forced a Gate 9 WebFetch before the commit. This sweep makes both classes of failure impossible to reach a PR.
 
-6. **Consumer-read plan** (MANDATORY for every item whose claims depend on platform / collector code):
-   - For every config key / env var the item touches, list every `@Value` / `@ConfigurationProperties` consumer you will read. Grep if necessary.
-   - For every SDK / external-client integration behind the feature, list the bean factory / builder file you will read. If `navigation/domains/{domain}.md` does not list it, that is a navigation gap — log it as a discovered finding during Phase 2.
-   - Record this plan as a draft of the eventual `Consumer-read:` commit footer. You will refine it as you read.
+6. **Claim inventory and Source-of-Truth plan** (MANDATORY, supersedes the older Consumer-read plan — it now covers the full Gate 9 surface):
+   Draft the `Sources:` commit footer *before* authoring. For every factual claim the item will make, name the canonical SoT you will verify against. Use the class labels from the Gate 9 SoT table (`CLAUDE.md`).
+   - **Repo** claims (a GitHub URL, a repo role as collector / push-client / SDK / platform): SoT is the repo's live README or `gh repo view` — plan a WebFetch or `gh repo view opendatadiscovery/{name}`.
+   - **Integration** claims (what pushes / pulls, which entity types): SoT is the integration's README / top-level module docstring in the integration repo. Name the file.
+   - **Config key** claims (`application.yml` key behavior, env var semantics): SoT is the platform/collector `application.yml` **plus** every `@Value` / `@ConfigurationProperties` consumer. List each `file:line`.
+   - **SDK / Builder** claims (retry behavior, default region, timeout, connection pooling): SoT is the bean factory / builder file. List the file and the builder method. Plan the unset-parameter audit (Gate 5) here.
+   - **Spec** claims (URL path, verb, request/response shape): SoT is `opendatadiscovery-specification/openapi.yaml`. List the line range.
+   - **Term / alias** claims (feature name, canonical synonym): SoT is `main-concepts.md` Terms & Aliases. If absent, the item must add the row — log it.
+   - **Lifecycle** claims (deprecated / removed / renamed-in-vX.Y): SoT is the release notes / CHANGELOG + a grep of the current `main` for the symbol. Name both.
+   - **Dependency / version** claims (`dataprofiler==0.10.9`, Spring Boot 3.x): SoT is `pyproject.toml` / `build.gradle` / `pom.xml` on current `main`.
+   - **Error / retry / timeout** claims: SoT is the explicit handler file — never "the SDK probably…".
+   - **Cross-repo fact** (where does feature X live): SoT is `repos.yaml` in this workspace + the referenced repo's README.
+   
+   If a claim's SoT is not reachable in under a minute of verification, de-scope the claim or mark the item `blocked` pending SoT. **"I remember from a prior session" is not a SoT.**
+   
+   For each SoT entry, also list `navigation/domains/*.md` or `navigation/architecture.md` as the pointer that led you there — if navigation doesn't list it, that is a navigation gap to log during Phase 2.
 
 ## Phase 2 — Execute each item (in order on the batch branch)
 
@@ -58,23 +75,34 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
 
 1. **Flip status** — set the item's frontmatter to `status: in-progress`.
 
-2. **Run the consumer-read audit** (Quality Bar #4 + #5, MANDATORY for integration-backed claims):
-   - Open every `@Value` / `@ConfigurationProperties` consumer for each key the item touches. Record `file:line`.
-   - For every SDK / client builder in the code path, **enumerate every builder parameter** and classify each as `configured | safely-defaulted | caveat-defaulted` (see `CLAUDE.md` Quality Bar #5). Every `caveat-defaulted` parameter is either:
+2. **Run the Source-of-Truth verification** (Quality Bar #4 + #5 + #9, MANDATORY — covers every claim class in the Gate 9 SoT table, not only integration-backed claims):
+   Work through the claim inventory from Phase 1 step 6. For each claim class, verify against its SoT before writing the claim text.
+   - **Config-key claims**: open every `@Value` / `@ConfigurationProperties` consumer for each key. Record `file:line`.
+   - **SDK / Builder claims**: enumerate every builder parameter and classify each as `configured | safely-defaulted | caveat-defaulted` (Quality Bar #5). Every `caveat-defaulted` parameter is either:
      - In scope → must be documented as a known limitation (admonition block) in this item's change.
-     - Out of scope → log as a new backlog item with `scanner_source: "discovered-during-{original-ID}"` and, if the code can be fixed, draft a platform-side GitHub issue body in the item's Context.
+     - Out of scope → log as a new backlog item with `scanner_source: "discovered-during-{original-ID}"` and, if the code can be fixed, run `/log-issue` to draft the upstream issue.
+   - **Integration claims** (which repo implements the feature, what it pushes/pulls): WebFetch the repo README, or run `gh repo view opendatadiscovery/{name}`. Do not rely on memory — 2026-04-23 DOC-027 shipped with a wrong repo URL because memory said "collectors" and no SoT fetch happened.
+   - **Spec claims**: open `opendatadiscovery-specification/openapi.yaml` on the latest `origin/main` and cite the line range.
+   - **Term / alias claims**: read `main-concepts.md` Terms & Aliases; if the term is missing, the item adds the row.
+   - **Lifecycle claims**: read the release notes / CHANGELOG and grep current `main` for the symbol.
+   - **Dependency / version claims**: read the manifest file on current `main` (`pyproject.toml`, `build.gradle`, `pom.xml`).
+   - **Error / retry / timeout claims**: read the explicit handler file — not "the SDK probably…".
    - Open explicit error / retry / timeout handlers for each integration. Undocumented behavior that materially affects operators → finding.
    - **If you find a caveat that is in scope for the current item, you must ship the caveat in the same PR.** Shipping a fix for the visible bug while leaving the silent caveat for "next time" is the failure mode this audit exists to prevent.
+   - Fill the `Sources:` footer draft with every SoT touched, by class.
 
-3. **Author the change** — follow acceptance criteria, hold the full Quality Bar:
+3. **Author the change** — follow acceptance criteria, hold the full nine-gate Quality Bar:
    - **No duplicates.** Duplication sweep already classified every collision; honor those decisions.
    - **Synonyms and aliases logged.** Any alias encountered or introduced → row in `docs/main-concepts.md` Terms & Aliases table, in this same PR.
    - **Caveats captured.** Every caveat surfaced by the consumer-read audit is in the doc as a dedicated section, not prose.
    - **Code ↔ doc cross-check.** Bidirectional — every functional claim → code evidence; every user-visible code path touched → doc coverage (feature / limitation / performance note / security consideration). Missing either direction is a finding.
    - **Layout and completeness.** If the change adds or renames a page, update `SUMMARY.md` and every index / `README.md` link in the same commit.
+   - **Factual provenance (Gate 9).** Every claim in the text corresponds to a row in your `Sources:` draft. If a claim has no SoT entry, either verify now and add the row, or remove the claim. **No "from memory" claims.**
+   - **Outbound URLs verified.** Every `github.com/opendatadiscovery/...` URL, every live-site link, every external docs link written in this change has been fetched or confirmed against the SoT named in the claim inventory. No hand-authored URLs based on pattern guesses.
    - **No functional changes** to application code — only docs, tests, comments, spec alignment.
 
 4. **Follow-up work auto-logging** — if the change reveals an out-of-scope issue:
+   - **Before creating any new `DOC-NNN`**: grep `backlog/` for the concept (canonical term + aliases from `main-concepts.md`) to confirm it isn't already covered. 2026-04-23 — a retrospective proposed a new "integrations hub" item without checking; DOC-042 already covered it at higher fidelity. The rails catch this only if you run them.
    - **Trivial + related** (typo on an adjacent line, obvious whitespace): fold into the current commit and note in the commit body.
    - **Small + fits the batch**: create `backlog/{cat}/DOC-NNN.md` with full frontmatter and acceptance criteria, update `state/file-registry.yaml`, update `state/PROGRESS.md` counts, add to the batch, reference in the originating item's Context.
    - **Larger or unrelated** (work we still own here): create the work item with full frontmatter (`scanner_source: "discovered-during-{original-ID}"`, `status: pending`, priority, affected_files, found_date), update file-registry, update PROGRESS. Do **not** implement — the triage-review gate still applies. But log everything a cold-start maintainer needs.
@@ -90,7 +118,8 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
 
 6. **Verify locally**:
    - Every acceptance criterion met
-   - Every Quality Bar responsibility #1–#8 has citable evidence (file:line for code-backed claims, URL for published pages)
+   - Every Quality Bar responsibility #1–#9 has citable evidence (file:line for code-backed claims, URL for published pages, SoT class for every factual claim)
+   - Outbound URL sweep: `grep -nE "https?://(github\.com|docs\.opendatadiscovery\.org|.*opendatadiscovery.*)"` across the lines this item touched, verify every hit is in the `Sources:` footer (WebFetched or `gh repo view`'d)
    - Tests (if any) pass, no regressions
 
 7. **Commit** on the batch branch:
@@ -101,15 +130,22 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
 
      {1–3 sentence what-and-why body}
 
-     Consumer-read:
-     - {file:line}
-     - {file:line}
+     Sources:
+     - Config: {file:line}
+     - Config-consumer: {file:line}
+     - Builder: {file:line} ({builder}; {parameters-classified})
+     - Integration: {repo-README-url or gh-repo-view output}
+     - Spec: {openapi.yaml:line-range}
+     - Term: main-concepts.md Terms & Aliases row "{term}"
+     - Repo: https://github.com/opendatadiscovery/{name} ({role: collector | push-client | SDK | platform | spec})
      ```
-   - The `Consumer-read:` footer is **mandatory** for any item whose claims are code-backed. Documentation-only grammar / prose polish items (no runtime claim) may omit it; note `Consumer-read: none (prose polish, no code claim)` so review knows you considered it.
+   - Include only the classes that apply. Legacy `Consumer-read:` footer form is still accepted for items whose only claims are config / builder (strict subset of `Sources:`), but new work should use `Sources:` so review can map each line back to the Gate 9 SoT table.
+   - The footer is **mandatory** for any item whose claims are code-backed or include outbound URLs / repo names. Documentation-only grammar / prose polish items (no factual claim) may omit it; note `Sources: none (prose polish, no factual claim)` so review knows you considered it.
 
 8. **Flip status to `review-ready`** — not `done`. Record in the item's Context:
    - The list of affected pages (for live-site verification).
-   - The consumer-read footer contents (even if already in the commit, duplicating here makes `/review` cheap).
+   - The `Sources:` footer contents (even if already in the commit, duplicating here makes `/review` cheap).
+   - The **outbound URL list** the item touched (every `github.com/opendatadiscovery/*`, `docs.opendatadiscovery.org/*`, and external docs URL written in this change), so Gate 9 can re-fetch without grepping.
    - Any caveats surfaced in the consumer-read audit, in-scope or out-of-scope.
 
 ## Phase 3 — Close the batch
@@ -150,7 +186,9 @@ Silence is not the target; savvy judgment is. Don't bundle unrelated items, don'
 
 ## Reference
 
-- **Quality Bar (the eight responsibilities)** → `CLAUDE.md` "Implementation Quality Bar"
+- **Quality Bar (the nine responsibilities)** → `CLAUDE.md` "Implementation Quality Bar"
+- **Source-of-Truth table (Gate 9 claim classes)** → `CLAUDE.md` "Factual Claim Provenance"
+- **Integration patterns + canonical repos** → `navigation/architecture.md`
 - **Batching rules** → `CLAUDE.md` "Autonomous Execution and Batching"
 - **GitBook authoring gotchas** → `CLAUDE.md` "Documentation Authoring Rules"
 - **Work-item format + lifecycle** → `backlog/README.md`

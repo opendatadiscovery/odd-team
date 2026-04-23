@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-23 — DOC-058 shipped: 17 GitBook `"mention"` shortcuts rewritten as plain markdown links across 9 files in `configuration-and-deployment/`. First batch under the new batch-first `/implement` protocol. Live-site verification pending PR merge.
+Last updated: 2026-04-23 — DOC-058 shipped and **live-verified**: all 9 affected pages on `docs.opendatadiscovery.org` render the rewritten links cleanly, no GitBook fallbacks. First batch under the new batch-first `/implement` protocol — one themed PR, one state PR, one verification pass, zero follow-up interventions needed.
 
 ## Audit Phase
 

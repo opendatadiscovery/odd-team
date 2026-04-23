@@ -20,11 +20,11 @@ Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hard
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 42 | 0 | 0 | 17 | 0 | 2 | 61 |
+| DOC | 40 | 0 | 2 | 17 | 0 | 2 | 61 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **42** | **0** | **0** | **17** | **0** | **2** | **61** |
+| **Total** | **40** | **0** | **2** | **17** | **0** | **2** | **61** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
@@ -128,7 +128,7 @@ Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in
 
 ## Current Status
 
-Phase: **Audit In Progress + Phase C `/review` complete** — 4 scanners complete, 1 in progress, 22 remaining. All triage complete for completed scanners (56 DOC items + DOC-061 follow-up = 57). 17 DOC items have shipped to the documentation repo and are now `/review`-signed-off as `done` (4 from Phase B + 13 from Phase C). The next batch should start from the unblocked critical content-accuracy items (DOC-027, 037, 029-done, 036-done) — DOC-029 and DOC-036 are now done, so the next batch narrows to DOC-027 + DOC-037 plus any same-file follow-ons.
+Phase: **Audit In Progress + content-accuracy batch awaiting `/review`** — 4 scanners complete, 1 in progress, 22 remaining. 17 DOC items `done`. DOC-027 (critical, Pandas→DataProfiler) + DOC-028 (medium, SLA URL placeholder) flipped `review-ready` on 2026-04-23 under the content-accuracy batch on `feature/docs-accuracy-features-fixes` (documentation). Awaiting `/review` in a separate session before the next batch kicks off. Next critical candidate after this batch is DOC-037 (regenerate permissions list from OpenAPI spec).
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)
@@ -188,3 +188,18 @@ Three batches shipped in sequence: docs-quality cleanup (DOC-052..057), authorin
 - Complete `docs/quality/rendering` scan (33 of 37 pages still unscanned).
 
 **Recommended next:** wait for the critical-config batch PR to merge, run live-site verification, then pick up the critical content-accuracy batch (DOC-027 / 037 / 029 / 036) — four critical items across four files, good size for a single batch PR.
+
+### 2026-04-23 content-accuracy batch (DOC-027 + DOC-028)
+
+`feature/docs-accuracy-features-fixes` on `documentation` repo — 2 commits:
+
+- `dc70138 docs: replace Pandas claim with actual DQ integrations [DOC-027]` — `Features.md:98` (Data Quality Test Results Import) and `dq_visibility.md` rewrite. Replaces "Pandas" / "Pandas Profiling" with the accurate set (Great Expectations, dbt tests, odd-collector-profiler powered by Capital One DataProfiler) + custom-framework pointer at `POST /ingestion/entities/datasets/stats`. Consumer-read: `odd-collector-profiler/pyproject.toml:18`, `opendatadiscovery-specification/specification/odd_api.yaml:27`.
+- `8a62bac docs: fix SLA URL placeholder (dataset_id → data_entity_id) [DOC-028]` — `Features.md:260`. Placeholder corrected to match the OpenAPI spec + platform `SLACalculator` path template. Consumer-read: `odd-platform/odd-platform-specification/openapi.yaml:1880,1898`, `odd-platform-api/.../service/sla/SLACalculator.java:64`.
+
+Live URLs for `/review`:
+
+- `https://docs.opendatadiscovery.org/features#data-quality-test-results-import` (DOC-027)
+- `https://docs.opendatadiscovery.org/features#dataset-quality-statuses-sla` (DOC-028)
+- `https://docs.opendatadiscovery.org/dq_visibility` (DOC-027)
+
+No follow-ups surfaced during the consumer-read audit on this batch — both items are prose / spec-alignment fixes with no SDK integration to audit (Gate 5 N/A).

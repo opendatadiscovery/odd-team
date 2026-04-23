@@ -18,17 +18,17 @@ Refuse to run if any of these are true:
 - `$ARGUMENTS` is empty → list every `review-ready` item and ask which to review.
 - The work item status is not `review-ready` → print the status and stop. Only `review-ready` items are reviewable.
 - **You are the same session that implemented the item.** Check the conversation context. If you just ran `/implement` and now `/review` was called without an intervening session boundary, stop and surface that — self-review defeats the gate. The user (or operator of a CI wrapper) must start a fresh session.
-- The work item's commit is missing a `Consumer-read:` footer AND the item's claims are code-backed → reject immediately with "missing Consumer-read footer" and set status to `blocked`.
+- The work item's commit is missing a `Sources:` footer (or the legacy `Consumer-read:` footer) AND the item's claims are factual (code-backed, URL-backed, spec-backed, or terminology-backed) → reject immediately with "missing Sources footer" and set status to `blocked`. Only pure prose-polish items with `Sources: none (prose polish, no factual claim)` are exempt.
 
 ## Protocol
 
 ### 1. Orient
 
 Read, in order:
-- `CLAUDE.md` — team identity, Quality Bar (eight responsibilities), lifecycle.
+- `CLAUDE.md` — team identity, Quality Bar (nine responsibilities), lifecycle, Gate 9 SoT table.
 - `backlog/README.md` — status transitions, rules.
 - The work item file — status, acceptance criteria, Context, Implementation Record.
-- The commit(s) that implemented it — `git log --format=full <branch>` in the target repo. Extract the `Consumer-read:` footer; you will verify every file listed.
+- The commit(s) that implemented it — `git log --format=full <branch>` in the target repo. Extract the `Sources:` footer (or legacy `Consumer-read:`); you will verify every source listed against the SoT table.
 
 ### 2. Verify acceptance criteria — one-by-one, cite evidence
 
@@ -39,7 +39,7 @@ For each `- [ ]` / `- [x]` criterion:
 
 ### 3. Verify Quality Bar responsibilities — each is a gate
 
-Each of the eight responsibilities in `CLAUDE.md` is a gate. Record evidence per gate.
+Each of the nine responsibilities in `CLAUDE.md` is a gate. Record evidence per gate. Every verdict entry (PASS/FAIL/N/A) must end with `via {fetch/grep/read citation}` — no standalone adjectives.
 
 #### Gate 1 — No duplicates
 
@@ -58,16 +58,16 @@ Each of the eight responsibilities in `CLAUDE.md` is a gate. Record evidence per
 - Read the authored doc: is every caveat present as an admonition block (hint, warning, danger) or dedicated section, not buried in prose?
 - **FAIL** if a known limitation from the consumer-read audit is missing from the doc.
 
-#### Gate 4 — Consumer-read evidence (the critical gate)
+#### Gate 4 — Consumer-read evidence (runtime-behavior slice of Gate 9)
 
-For every file listed in the commit's `Consumer-read:` footer:
+For every file listed in the commit's `Sources:` footer under `Config:`, `Config-consumer:`, `Builder:`, or `Handler:` lines (or any file in a legacy `Consumer-read:` footer):
 - Read the file at the cited lines.
 - Verify the doc's claims match what the consumer code actually does.
 - If the consumer feeds an SDK builder, verify Gate 5 against it.
 
 For every config key / env var mentioned in the doc change:
 - Grep the target repo for `@Value.*{key}` (or the Python/pydantic equivalent).
-- If there is a consumer not in the footer, and the consumer affects behavior the doc describes, the footer is incomplete → **FAIL** with "Consumer-read footer missing: {file}".
+- If there is a consumer not in the footer, and the consumer affects behavior the doc describes, the footer is incomplete → **FAIL** with "Sources footer missing consumer: {file}".
 
 #### Gate 5 — Unset-parameter audit
 
@@ -124,6 +124,46 @@ For each affected page (per the Implementation Record's live-URL list):
   - Sidebar entry present for any newly-added page.
 - **FAIL** on any of the above. Quote the failing evidence (URL + observed substring).
 
+#### Gate 9 — Factual claim provenance (the generalization)
+
+Gate 9 is the umbrella that Gates 4 & 5 sit inside. For every claim class in the `Sources:` footer, verify the cited source actually supports the claim. Then sweep for claim classes that should have been cited and weren't.
+
+**Per-class verification:**
+
+- **`Repo:` lines** — For every `github.com/opendatadiscovery/*` URL in the doc change (whether or not it's in the footer): `WebFetch` the target README, grep for the link text / feature name. If the README does not describe the claimed feature, FAIL with `Repo mismatch: {url} does not describe {claimed feature}`. This is the DOC-027 dbt gate — "defensible because it's the monorepo owner" is not acceptable; read the README.
+- **`Integration:` lines** — Cross-check against `docs/integrations/README.md` (canonical integrations hub — DOC-042, once shipped). Before DOC-042 lands, cross-check against `navigation/architecture.md` + `github-organization-overview.md`. FAIL if a push-client is labelled as a collector or vice versa.
+- **`Config:` / `Config-consumer:` lines** — verified under Gate 4.
+- **`Builder:` lines** — verified under Gate 5.
+- **`Spec:` lines** — grep the OpenAPI YAML at the cited path; verify the claim matches the schema / path / operation. FAIL on drift.
+- **`Term:` lines** — open `docs/main-concepts.md` Terms & Aliases; verify the cited row exists and matches the alias being used. FAIL if an alias is used in prose without a table row.
+- **`Lifecycle:` lines** — verify ADR / CHANGELOG / release tag matches the lifecycle claim in the doc.
+- **`Dep:` / `Handler:` / `Cross-repo:` lines** — read the cited file:line; verify the claim.
+
+**Banned rationalizations** (standalone justifications that FAIL review):
+
+- "defensible"
+- "probably correct" / "probably"
+- "looks right" / "looks correct"
+- "canonical owner" (as in "the monorepo is the canonical owner, so the link is fine" — this was the DOC-027 rationalization)
+- "monorepo default"
+- "safe to assume"
+- "presumably"
+- "should be"
+
+Every review note — including "Notes" entries at the end of the verdict — must end in one of:
+- `VERIFIED via {WebFetch URL / grep command / file:line read}`
+- `NOT VERIFIED → logging as DOC-NNN` (or `issues/{repo}/{PREFIX}-NNN.md` for upstream)
+
+If the reviewer catches themselves typing a banned phrase, treat it as a signal to stop and fetch — then rewrite the note with cited evidence.
+
+**Outbound URL sweep** (MANDATORY for every `target_repo: documentation` item):
+
+- `grep -E 'https?://[^)]+' {changed files}` to enumerate every outbound URL touched by the change.
+- For each `github.com/opendatadiscovery/*` URL: `WebFetch` target, grep README for link text / feature name. FAIL on mismatch.
+- For each external URL: `WebFetch`; verify 200 response. Log broken URLs as follow-up backlog items.
+
+This step closes the DOC-027 dbt-link class. It costs ~30 seconds per URL and runs once per review.
+
 ### 4. Check for regressions
 
 - Run the relevant test suite for the target repo (if any).
@@ -154,10 +194,13 @@ For each affected page (per the Implementation Record's live-URL list):
   - Gate 6 (bidirectional coverage) — PASS ({evidence})
   - Gate 7 (layout) — PASS ({evidence})
   - Gate 8 (live-site) — PASS ({URL + observed text}) | DEFERRED (not yet merged)
+  - Gate 9 (factual provenance) — PASS ({per-class summary: Repo URLs VERIFIED via WebFetch of X; Integration category VERIFIED via integrations/README.md; Spec lines VERIFIED via grep of Y}) | FAIL ({specific unverified claim})
+- **Outbound URL sweep**: {count} URLs verified via WebFetch; {count} mismatches caught (list); {count} broken (logged as DOC-NNN)
+- **Banned-phrase check**: none used | self-caught and rewritten (note which)
 - **Regressions**: none | {description}
 - **Navigation**: consistent | {what needs update}
 - **Upstream issues logged**: none | {list of `issues/{repo}/{PREFIX}-NNN.md` paths drafted during this review}
-- **Notes**: {free text, especially if any gate was DEFERRED}
+- **Notes**: {free text, each note ending in `VERIFIED via ...` or `NOT VERIFIED → logging as ...`; no standalone "defensible"/"probably"/"looks right"}
 ```
 
 - **All gates PASS and no deferrals**: flip `status: review-ready` → `status: done`. Update `state/PROGRESS.md` counts.

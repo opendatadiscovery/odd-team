@@ -139,7 +139,7 @@ These rules apply whenever an item's `target_repo` is `documentation` (GitBook-b
 
 Acceptance criteria on a work item are the named deliverables. The Quality Bar is the responsibility the maintainer carries on **every** change regardless of scope. If a Quality Bar check reveals an issue outside the current item's scope, log it as a new backlog item (see "Follow-up work must be logged on disk" below) — never ignore, never just narrate.
 
-Each of the eight responsibilities below is a gate, not a principle. Review will reject an item that cannot cite evidence for each one.
+Each of the nine responsibilities below is a gate, not a principle. Review will reject an item that cannot cite evidence for each one. Gate 9 (Factual claim provenance) generalizes the pattern — the earlier gates are specific applications of its SoT table.
 
 ### 1. No duplicates.
 
@@ -162,17 +162,20 @@ Every claim a doc makes about runtime behavior must be traced to the code that e
 - **Feature claims** — controller → service → repository trace, plus any scheduled / event-driven side effects.
 - **Error / retry / timeout claims** — the explicit handler and config, not "the SDK probably retries".
 
-**Every implementation commit must include a `Consumer-read:` footer** listing the consumer files read during authoring, by `file:line` (or `file:method` for long files). Commits without this footer fail review by default.
+Gate 4 is the runtime-behavior slice of the broader provenance rule in **Gate 9** (see below). Every implementation commit must include a `Sources:` footer citing the canonical source of truth for each factual claim class the change touches. Commits without this footer fail review by default. Prose-polish items with no factual claim write `Sources: none (prose polish, no factual claim)` explicitly — silence is not acceptable.
 
 Example:
 ```
 docs: document attachment storage config [DOC-008]
 
-Consumer-read:
-- odd-platform-api/src/main/resources/application.yml:215-224
-- odd-platform-api/.../config/MinioConfig.java:1-35
-- odd-platform-api/.../service/attachment/remote/RemoteFileUploadServiceImpl.java:1-120
+Sources:
+- Config: odd-platform-api/src/main/resources/application.yml:215-224
+- Config-consumer: odd-platform-api/.../service/attachment/remote/RemoteFileUploadServiceImpl.java:1-120
+- Builder: odd-platform-api/.../config/MinioConfig.java:1-35 (MinioAsyncClient; .region unset → caveat shipped)
+- Repo: https://github.com/minio/minio-java → README §Quickstart (us-east-1 default confirmed)
 ```
+
+Legacy `Consumer-read:` footers on older commits remain valid; new commits use the richer `Sources:` form.
 
 ### 5. Unset-parameter audit for SDK integrations. (Gate)
 
@@ -195,6 +198,36 @@ For every user-visible code path touched by the change, verify the doc covers it
 ### 8. Publishing standards always.
 
 Every doc change ships with live-site verification on `docs.opendatadiscovery.org` (performed by `/review`, not the implementer). Build-time rendering and live-site rendering are not the same system; only the live site is authoritative. If a URL returns a GitHub-fallback substring or the intended change isn't visible, the item reopens as `blocked`.
+
+### 9. Factual claim provenance. (Gate — generalizes Gate 4)
+
+Every factual claim a doc change makes must cite its canonical source of truth in the commit's `Sources:` footer. Memory and plausibility are not sources. Reviewer rationalizations ("defensible", "monorepo default", "probably correct", "looks right", "canonical owner", "safe to assume") are banned as standalone justifications — every review note ends in `VERIFIED via {fetch/grep/read}` or `NOT VERIFIED → logging as DOC-NNN`.
+
+The SoT table below names the canonical source per claim class. Claims without a cited SoT fail review.
+
+| Claim class | Canonical source of truth | Sources-line format |
+|---|---|---|
+| Repo URL / ownership | `navigation/architecture.md` canonical repo table (implementer SoT) + `documentation/docs/developer-guides/github-organization-overview.md` (user-facing companion) + WebFetch of the target README on first introduction | `Repo: {url} → architecture.md row "{repo}"` |
+| Integration category (adapter vs collector vs push adapter vs plugin) | `navigation/architecture.md` "Canonical vocabulary" + `docs/integrations/README.md` (DOC-042, once shipped) | `Integration: {name} → architecture.md §"Canonical vocabulary"` |
+| Config key semantics & default | `application.yml` declaration + **every** `@Value` / `@ConfigurationProperties` consumer + bean factory | `Config: {yml-key} → {consumer:line}` (one bullet per consumer) |
+| SDK client / builder behavior | bean factory + **every** builder parameter classified (Gate 5) | `Builder: {file:line} ({status per param})` |
+| API path / request schema | OpenAPI spec (`odd-platform-specification/openapi.yaml`, `opendatadiscovery-specification/specification/odd_api.yaml`) | `Spec: {yaml-path}:line` |
+| Terminology / alias | `docs/main-concepts.md` Terms & Aliases | `Term: main-concepts.md §Terms — "{alias}"` |
+| Feature lifecycle (GA / Beta / Experimental / Deprecated) | ADR + target repo README / CHANGELOG / release tag | `Lifecycle: {source}` |
+| Dependency / version | `pyproject.toml` / `build.gradle` / `package.json` | `Dep: {file:line}` |
+| Error / retry / timeout behavior | explicit handler code (never "the SDK probably retries") | `Handler: {file:line}` |
+| Cross-repo code reference | target repo clone (not GitHub web UI) | `Cross-repo: {repo}/{file:line}` |
+
+Each claim class has a testable failure mode that Gate 9 catches:
+
+- **Wrong repo URL in an outbound link** (DOC-027 dbt case: `odd-dbt` mis-targeted as `odd-collectors/tree/main/odd-dbt`) — `Repo:` line forces an `architecture.md` lookup that surfaces the mismatch.
+- **Wrong integration category** (e.g., calling a push adapter a "collector", or calling a pull adapter a "collector" instead of naming the collector that hosts it) — `Integration:` line forces cross-checking the canonical vocabulary (adapter = mapper; collector = container of pull adapters; plugin = configured adapter instance; push adapter = push-strategy adapter embedded in the source's runtime).
+- **Wrong default value** (DOC-001 Azure admin-groups read `roles`, not `groups`) — `Config-consumer:` bullet forces reading every `@Value` annotation, where the default lives.
+- **Silent SDK data loss** (DOC-008 MinIO `.region(...)` unset) — `Builder:` line forces parameter-by-parameter enumeration with explicit `configured | safely-defaulted | caveat-defaulted` status.
+- **Drift between doc claim and spec** — `Spec:` line forces a grep of the OpenAPI YAML.
+- **Terminology collision** (M2M vs S2S for the same auth path) — `Term:` line forces an alias-table row in the same PR.
+
+The bi-directional duplication sweep (Gate 1) is scoped at the same time to cover **terms, URLs, and repos being added** as well as those being removed. An implementer introducing `odd-dbt` as a link should grep `docs/` for `dbt` first — hits on `github-organization-overview.md` and `main-concepts.md` would have caught the DOC-027 dbt-link error at authoring time, not at user-review time.
 
 ## Autonomous Execution and Batching
 
@@ -221,6 +254,7 @@ Silence is not the target; savvy judgment is. Don't bundle unrelated items toget
 
 If during implementation or any phase you discover a bug, gap, or adjacent issue not in scope:
 
+- **Before creating a new backlog item — grep the backlog first.** The backlog itself is a canonical source (Gate 9 class: "existing in-flight work"). Search by title keywords, affected files, and scanner source before proposing a new `DOC-NNN`. If an existing item already covers the concept, extend its AC instead of creating a parallel entry. The 2-minute grep cost is lower than the cost of duplicate items fragmenting the implementation path. The 2026-04-23 retrospective caught a proposed "DOC-062 canonical Integrations page" that was already covered by DOC-042 in richer form — exactly the failure class Gate 9 exists to prevent, applied to our own backlog.
 - **Trivial + related** (typo next door, obvious whitespace): fold into the current commit and note in the commit body.
 - **Small + fits the batch**: create a new work item (`backlog/{cat}/DOC-NNN.md`), update `state/file-registry.yaml`, update `state/PROGRESS.md`, implement in the same batch, reference in the originating item's Context.
 - **Larger or unrelated**: create the work item with full frontmatter and `scanner_source: "discovered-during-{original-ID}"`, update file-registry, update PROGRESS. Do **not** implement — the triage-review gate still applies. But log everything needed for a cold-start implementer.

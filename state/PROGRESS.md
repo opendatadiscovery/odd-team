@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-23 — **DOC-063 review-ready** on `feature/docs-canonical-vocabulary` (documentation) + `feature/docs-canonical-vocabulary-state` (odd-team bookkeeping). Seeds the canonical vocabulary (Adapter / Plugin / Collector / Push adapter) into `docs/main-concepts.md` so DOC-042 (Integrations hub) and DOC-062 (tree-wide sweep) can reference it as SoT.
+Last updated: 2026-04-24 — **DOC-027, DOC-028, DOC-063 all flipped `review-ready` → `done`** after a separate-session `/review` pass. PR #23 (content-accuracy batch: DOC-027 + DOC-028) and PR #24 (canonical vocabulary: DOC-063) landed in `documentation` main; GitBook rebuilt; Gate 8 live-site verification PASSed on all three. Per-item verdicts appended to the backlog files with cited evidence per Quality Bar gate and Gate 9 SoT class.
 
 **Content-accuracy batch status (DOC-027 + DOC-028)** — `/review` (separate session) assessed both on 2026-04-23: **Gates 1–7 PASS on both**, **Gate 8 DEFERRED on both** because `feature/docs-accuracy-features-fixes` on `documentation` is 3 commits ahead of `origin/main` (PR not merged yet; live `WebFetch` of `docs.opendatadiscovery.org/features` still renders the OLD Pandas claim + `{dataset_id}` placeholder). Per protocol, both items stay `review-ready` until merge + GitBook rebuild; re-run `/review DOC-027` and `/review DOC-028` afterward to close Gate 8 and flip to `done`. Per-item verdicts appended to the backlog files with cited evidence per gate.
 
@@ -28,11 +28,11 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 41 | 0 | 3 | 17 | 0 | 2 | 63 |
+| DOC | 41 | 0 | 0 | 20 | 0 | 2 | 63 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **41** | **0** | **3** | **17** | **0** | **2** | **63** |
+| **Total** | **41** | **0** | **0** | **20** | **0** | **2** | **63** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
@@ -186,7 +186,7 @@ Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in
 
 ## Current Status
 
-Phase: **Audit In Progress + content-accuracy batch Gates 1–7 signed off, Gate 8 deferred pending merge** — 4 scanners complete, 1 in progress, 22 remaining. 17 DOC items `done`; DOC-027 + DOC-028 remain `review-ready` with a 2026-04-23 `/review` verdict attached (ACCEPTED WITH DEFERRAL on Gate 8 until the PR merges into `documentation` main and GitBook rebuilds). Next critical candidate after this batch closes out is DOC-037 (regenerate permissions list from OpenAPI spec).
+Phase: **Audit In Progress + content-accuracy and canonical-vocabulary batches closed out** — 4 scanners complete, 1 in progress, 22 remaining. 20 DOC items `done` (DOC-027 + DOC-028 + DOC-063 all flipped `review-ready` → `done` on 2026-04-24 after Gate 8 live-site verification passed on `docs.opendatadiscovery.org/features`, `.../use_cases/dq_visibility`, and `.../main-concepts`). Next critical candidate is DOC-037 (regenerate permissions list from OpenAPI spec).
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)

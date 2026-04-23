@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-23 — docs quality batch (DOC-053..057) fully merged and live-verified. Process overhaul: CLAUDE.md reframed around Principal Full-Stack Engineer maintainers + Implementation Quality Bar; `/implement` rewritten as batch-first protocol; DOC-058 logged for the full `"mention"`-shortcut sweep discovered during DOC-056.
+Last updated: 2026-04-23 — DOC-058 shipped: 17 GitBook `"mention"` shortcuts rewritten as plain markdown links across 9 files in `configuration-and-deployment/`. First batch under the new batch-first `/implement` protocol. Live-site verification pending PR merge.
 
 ## Audit Phase
 
@@ -20,11 +20,11 @@ Last updated: 2026-04-23 — docs quality batch (DOC-053..057) fully merged and 
 
 | Category | Pending | In Progress | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|------|---------|----------|-------|
-| DOC | 44 | 0 | 12 | 0 | 2 | 58 |
+| DOC | 43 | 0 | 13 | 0 | 2 | 58 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **44** | **0** | **12** | **0** | **2** | **58** |
+| **Total** | **43** | **0** | **13** | **0** | **2** | **58** |
 
 ### 2026-04-22 stale-branch re-verification sweep
 
@@ -119,10 +119,7 @@ Phase: **Audit In Progress** — 4 scanners complete, 1 in progress, 22 remainin
 
 ## Next Batch Candidates
 
-Path A — the docs-quality cleanup batch — is done and merged. Remaining candidates for the next `/implement` batch, grouped by theme:
-
-**Batch: authoring-hygiene sweep (recommended first — single-theme, 9 files, all low-risk)**
-- **DOC-058** (high, medium) — replace 17 `"mention"` shortcuts with plain links across 9 files in `configuration-and-deployment/`. Independent of any other pending item.
+Two batches shipped in sequence: the docs-quality cleanup (DOC-052..057) and the authoring-hygiene sweep (DOC-058). Remaining candidates for the next `/implement` batch, grouped by theme:
 
 **Batch: critical odd-platform config (serialize on `odd-platform.md`, all critical)**
 - **DOC-005** email config key names + missing keys
@@ -136,4 +133,4 @@ Path A — the docs-quality cleanup batch — is done and merged. Remaining cand
 - `findings/docs-quality-rendering/2026-04-22.md` — F-R01 (8 orphan files) + F-R03 (SUMMARY.md escaping) still un-triaged (F-R02 is subsumed by DOC-053 which is done).
 - Complete `docs/quality/rendering` scan (33 of 37 pages still unscanned).
 
-**Recommended first action:** run the authoring-hygiene batch (DOC-058 alone or grouped with any adjacent `configuration-and-deployment/` work that lands). It's one coherent theme, closes out a systemic risk surfaced during DOC-056, and serves as the first batch-first implementation under the new `/implement` protocol.
+**Recommended next:** open the critical `odd-platform.md` config batch (DOC-005 / 006 / 008 serialized) — user-facing data-loss risk on DOC-008 makes it the highest-value chunk left. Alternative: triage the remaining two `docs/quality/rendering` findings (F-R01 orphan files + F-R03 SUMMARY escaping) for a quick-win next batch while the doc PR for DOC-058 is in review.

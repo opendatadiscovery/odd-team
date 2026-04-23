@@ -21,12 +21,16 @@ Convert findings at `$ARGUMENTS` into backlog work items.
 
 3. **Triage each finding** — For each, decide:
    - **Actionable?** — Reject false positives with brief explanation
-   - **Category** — DOC (documentation), TST (test), NAV (navigation), SPC (specification)
-   - **Granularity** — One work item per logical change (split complex findings, merge trivial ones)
+   - **Work we do here, or a handoff to upstream?** — This is the first split:
+     - **Work we do here** → backlog item under `backlog/{cat}/{ID}.md` (continue with the fields below).
+     - **Handoff to upstream** (the fix lives in a repo we don't directly maintain in this workspace — Java in `odd-platform`, Python in `odd-collectors`, schema in the spec, Helm in `charts`, etc.) → instead of a backlog item, draft a paste-ready GitHub issue at `issues/{repo}/{PREFIX}-NNN.md` via `/log-issue {repo} "title"` (see `issues/README.md` for prefixes). A single finding can produce both — e.g., a missing doc caveat (backlog) **plus** an upstream code fix (issue draft); link them both ways.
+   - **Category** (for backlog items) — DOC (documentation), TST (test), NAV (navigation), SPC (specification)
+   - **Issue type** (for issue drafts) — bug | feature | adjustment; bugs also need `severity`
+   - **Granularity** — One work item / one issue draft per logical change (split complex findings, merge trivial ones)
    - **Priority** — critical (wrong info) > high (missing tests for fragile code) > medium (gaps) > low (cosmetic)
-   - **Affected files** — Which files will be created/modified?
+   - **Affected files** — Which files will be created/modified? (For issue drafts: cite upstream `file:line` in the body, not affected_files in this workspace.)
    - **Dependencies** — Does this item require another to complete first?
-   - **Effort** — small (<30min), medium (30-90min), large (>90min)
+   - **Effort** — small (<30min), medium (30-90min), large (>90min) — for backlog items only; issue drafts have no in-workspace effort once the body is written.
 
 4. **Create work items** — Write to `backlog/{category}/{ID}.md`:
    - Follow format exactly from `backlog/README.md`
@@ -59,5 +63,6 @@ Merge when:
 
 - If `$ARGUMENTS` is empty, list available findings in `findings/` and ask which to triage
 - Don't write implementation details — just acceptance criteria
-- Flag functional bugs → note as "related bug, log as GitHub Issue" in work item
+- Functional bugs in upstream code → draft an issue at `issues/{repo}/{PREFIX}-NNN.md` via `/log-issue` (never just narrate "log as GitHub Issue" in a work item; that disappears the moment the conversation ends). If a doc caveat also ships now, pair the backlog item and the issue draft with two-way links.
 - If two items touch the same file, note dependency explicitly in both
+- A finding that turns into both a backlog item **and** an issue draft must reference each other in their `Context` / `discovered_during:` fields — the audit trail is two-way.

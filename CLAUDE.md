@@ -47,6 +47,7 @@ This repository is the **coordination workspace** for AI-assisted maintenance. I
 | `/triage <findings-path>` | Convert findings into backlog work items |
 | `/implement <item-id>` | Start a batch of work items — run until the batch is naturally complete |
 | `/review <item-id>` | Verify a completed work item (must run in a session separate from `/implement`) |
+| `/log-issue <repo> ["title"]` | Draft an upstream-repo GitHub issue on disk (paste-ready, never auto-filed) |
 | `/status` | Show detailed progress dashboard |
 | `/navigate <feature>` | Find where a feature lives in code |
 
@@ -55,12 +56,15 @@ This repository is the **coordination workspace** for AI-assisted maintenance. I
 ```
 scanners/    → Audit definitions (instructions for focused scans)
 findings/    → Raw audit output (timestamped, per scanner)
-backlog/     → Reviewable work items (atomic, trackable, prioritized)
+backlog/     → Reviewable work items (atomic, trackable, prioritized) — work WE do here
+issues/      → Paste-ready GitHub issue drafts for upstream repos — work we HAND OFF
 navigation/  → Token-efficient knowledge map (pointers, not docs)
 adrs/        → Architectural Decision Records (formalized decisions from code)
 state/       → Coordination (progress, file locks, decisions)
 agents/      → Reusable agent prompts for each workflow phase
 ```
+
+The `backlog/` vs `issues/` split is the work-vs-handoff statement: backlog items get implemented here (we own the doc, the test, the spec change); issue drafts get filed into another repo's GitHub tracker for a maintainer there to pick up. See `issues/README.md` for ID conventions, lifecycle, and the paste-ready body format.
 
 ## Workflow Phases (sequenced responsibilities of one maintainer)
 
@@ -220,7 +224,8 @@ If during implementation or any phase you discover a bug, gap, or adjacent issue
 - **Trivial + related** (typo next door, obvious whitespace): fold into the current commit and note in the commit body.
 - **Small + fits the batch**: create a new work item (`backlog/{cat}/DOC-NNN.md`), update `state/file-registry.yaml`, update `state/PROGRESS.md`, implement in the same batch, reference in the originating item's Context.
 - **Larger or unrelated**: create the work item with full frontmatter and `scanner_source: "discovered-during-{original-ID}"`, update file-registry, update PROGRESS. Do **not** implement — the triage-review gate still applies. But log everything needed for a cold-start implementer.
-- **Never** write "noted as follow-up" or "recommend logging this" without the corresponding file on disk. The backlog is the source of truth; conversation-only notes do not survive.
+- **Upstream code defect** (a defect or gap in code we don't directly maintain in this workspace — `odd-platform` Java, `odd-collectors` Python, the spec, charts, etc.): create a paste-ready GitHub issue draft at `issues/{repo}/{PREFIX}-NNN.md` via `/log-issue` (see `issues/README.md`). The doc-side caveat — if any — ships in the current backlog item now; the upstream fix is handed off via the issue draft. The originating backlog item gains a `## Platform-side follow-up filed` section pointing at the draft path, so the audit trail is two-way. Filing the draft into GitHub is **always** a deliberate human action, never automated — drafts can be queued freely, but `draft → filed` is a manual paste-and-submit.
+- **Never** write "noted as follow-up" or "recommend logging this" without the corresponding file on disk. The backlog and the issues directory together are the source of truth; conversation-only notes do not survive.
 
 ## Key Principles
 

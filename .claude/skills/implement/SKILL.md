@@ -77,10 +77,10 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
 4. **Follow-up work auto-logging** — if the change reveals an out-of-scope issue:
    - **Trivial + related** (typo on an adjacent line, obvious whitespace): fold into the current commit and note in the commit body.
    - **Small + fits the batch**: create `backlog/{cat}/DOC-NNN.md` with full frontmatter and acceptance criteria, update `state/file-registry.yaml`, update `state/PROGRESS.md` counts, add to the batch, reference in the originating item's Context.
-   - **Larger or unrelated**: create the work item with full frontmatter (`scanner_source: "discovered-during-{original-ID}"`, `status: pending`, priority, affected_files, found_date), update file-registry, update PROGRESS. Do **not** implement — the triage-review gate still applies. But log everything a cold-start maintainer needs.
-   - **Code bug worth a platform fix** (e.g., DOC-008's missing `.region(...)`): log a backlog item **and** draft a GitHub Issue body in the originating item's Context so the human can open the issue upstream. Do not modify platform code from a docs session.
+   - **Larger or unrelated** (work we still own here): create the work item with full frontmatter (`scanner_source: "discovered-during-{original-ID}"`, `status: pending`, priority, affected_files, found_date), update file-registry, update PROGRESS. Do **not** implement — the triage-review gate still applies. But log everything a cold-start maintainer needs.
+   - **Upstream code defect or feature gap** (e.g., DOC-008's missing `.region(...)`, DOC-013's SSM pagination silent-truncation): the doc-side caveat ships in the current item; for the upstream code fix, run `/log-issue {repo} "title"` to scaffold `issues/{repo}/{PREFIX}-NNN.md` as a paste-ready GitHub issue draft (see `issues/README.md`). Add a `## Platform-side follow-up filed` section to the originating backlog item pointing at the draft path. Do not modify platform code from a docs session, and do not file the GitHub issue from this session — filing is a deliberate human action.
    - **Scope-changing** (e.g., "fixing this link requires restructuring 5 pages"): stop and surface the judgment call to the user before proceeding.
-   - **Never** write "noted as follow-up" or "recommend logging this" without the file on disk. Narration is not logging.
+   - **Never** write "noted as follow-up" or "recommend logging this" without the file on disk. Narration is not logging — neither for backlog items nor for issue drafts.
 
 5. **Authoring rules for `target_repo: documentation`**:
    - Never hand-author `[text](target.md "mention")` links — GitBook's `"mention"` shortcut is editor-native and falls back to raw GitHub URLs when written in git. Use plain markdown `[Title](target.md)`.
@@ -117,11 +117,11 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
 1. **Consolidate state updates** on a single odd-team branch:
    - All `DOC-XXX` frontmatter flips to `review-ready`
    - `state/file-registry.yaml` status updates
-   - `state/PROGRESS.md` counts (add a `review-ready` row if not present)
+   - `state/PROGRESS.md` counts (add a `review-ready` row if not present; bump the Upstream Issues table for any new draft)
    - `navigation/domains/*.md` updates if pointers shifted — **especially for bean factories / SDK builders discovered during the consumer-read audit**
    - Any new ADR drafts in `adrs/drafts/`
    - Any new `backlog/{cat}/DOC-NNN.md` follow-up items discovered during the batch
-   - Any drafted GitHub Issue bodies for platform-side fixes
+   - Any new `issues/{repo}/{PREFIX}-NNN.md` upstream issue drafts surfaced during the consumer-read audit, with back-references in the originating backlog items
 
 2. **Push and open PRs** — at most one per repo:
    - Target-repo PR (e.g., `documentation`): body enumerates each item by ID with a one-line summary. **Explicitly mark the PR as pending review** — not ready to merge until `/review` passes in a separate session.
@@ -129,11 +129,11 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
 
 3. **Hand off to review** — the batch does not proceed to merge from this session. Report:
    - Items moved to `review-ready` (by ID)
-   - Follow-ups logged (by ID)
+   - Follow-ups logged (by ID — both backlog items and issue drafts)
    - Consumer-read footers (summarized)
    - Caveats surfaced (in-scope and out-of-scope)
    - PR URLs
-   - Instruction to the user: "Run `/review` in a separate session for each item, or `/review batch:{branch-name}` for the batch."
+   - Instruction to the user: "Run `/review` in a separate session for each item, or `/review batch:{branch-name}` for the batch. Any upstream issue drafts under `issues/` are queued for human filing — review their bodies and paste into the target repo's GitHub when ready."
 
 Live-site verification is **not** the implementer's responsibility under the new bar — it moves to `/review` to enforce the separate-session rule. Tech debt remains on the implementer: surface the live-URL list so `/review` does not have to derive it.
 

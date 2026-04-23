@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hardening` (commit `96b28c4`) after a spot-check uncovered a silent data-loss caveat in the DOC-008 batch that the old bar had passed. The Implementation Quality Bar now has eight gates, two of which (Consumer-read #4, Unset-parameter audit #5) are new and require cited evidence. Work-item lifecycle now includes `review-ready` between `in-progress` and `done`; the implementer cannot self-close. `/review` runs in a separate session. Phase B re-audit of DOC-005/006/008/018 under the new bar surfaced 4 missed caveats (2 in-scope amendments + 2 new backlog items DOC-059/060). `/review` signed off DOC-005/006/008/018 as ACCEPTED on 2026-04-23 after the amendment PR (`feature/doc-005-008-reaudit-caveats`, merged to `documentation` main as `eef330c`) landed and live-site verification passed on all four items. **Phase C** (re-audit of all 13 older self-closed done items under the new bar) executed as a single batch on 2026-04-23 — all 13 flipped to `review-ready`; two in-scope amendments shipped on `feature/phase-c-reaudit-amendments` (documentation): DOC-013 "Known limitations" section (SSM pagination silent truncation at 10, no endpoint_url override, no botocore Config override, YAML safe_load aborts startup) and DOC-001 Azure admin-groups claim default (reads `roles`, not `groups`). Phase C awaits `/review` in a separate session.
+Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hardening` (commit `96b28c4`) after a spot-check uncovered a silent data-loss caveat in the DOC-008 batch that the old bar had passed. The Implementation Quality Bar now has eight gates, two of which (Consumer-read #4, Unset-parameter audit #5) are new and require cited evidence. Work-item lifecycle now includes `review-ready` between `in-progress` and `done`; the implementer cannot self-close. `/review` runs in a separate session. Phase B re-audit of DOC-005/006/008/018 under the new bar surfaced 4 missed caveats (2 in-scope amendments + 2 new backlog items DOC-059/060). `/review` signed off DOC-005/006/008/018 as ACCEPTED on 2026-04-23 after the amendment PR (`feature/doc-005-008-reaudit-caveats`, merged to `documentation` main as `eef330c`) landed and live-site verification passed on all four items. **Phase C** (re-audit of all 13 older self-closed done items under the new bar) executed as a single batch on 2026-04-23 — all 13 flipped to `review-ready`; two in-scope amendments shipped on `feature/phase-c-reaudit-amendments` (documentation, merged as `5d2639e`): DOC-013 "Known limitations" section (SSM pagination silent truncation at 10, no endpoint_url override, no botocore Config override, YAML safe_load aborts startup) and DOC-001 Azure admin-groups claim default (reads `roles`, not `groups`). **Phase C `/review` (separate session, 2026-04-23) ACCEPTED all 13 items** — independent re-verification of every consumer-read claim against current `odd-platform` and `odd-collectors` code, all 8 gates assessed per item, 9 documentation pages WebFetched on `docs.opendatadiscovery.org` for Gate 8. One Gate-6 follow-up logged on disk: **DOC-061** (high) — Azure AD `logout-uri` is consumed by `AzureLogoutSuccessHandler.java:30-48` but never documented in the Azure section; logout NPEs without it.
 
 ## Audit Phase
 
@@ -20,13 +20,15 @@ Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hard
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 41 | 0 | 13 | 4 | 0 | 2 | 60 |
+| DOC | 42 | 0 | 0 | 17 | 0 | 2 | 61 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **41** | **0** | **13** | **4** | **0** | **2** | **60** |
+| **Total** | **42** | **0** | **0** | **17** | **0** | **2** | **61** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
+
+On 2026-04-23 the Phase C `/review` pass (separate session) flipped all 13 review-ready items → `done`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Per-item verdicts appended to each backlog file with cited evidence per Quality Bar gate. One Gate-6 follow-up was logged on disk during the review: **DOC-061** (pending, high) — Azure AD `logout-uri` documentation gap (consumer: `AzureLogoutSuccessHandler.java:30-48`; NPE without it). Pending count rises 41 → 42 from this addition; review-ready 13 → 0; done 4 → 17; total 60 → 61.
 
 On 2026-04-23 Phase C flipped 13 older self-closed done items to `review-ready`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Each carries a `## Re-Audit (2026-04-23)` section with per-gate evidence. Two items (DOC-001, DOC-013) required in-scope amendments: DOC-013 added four caveat admonitions to `collectors-secrets-backend.md`, DOC-001 fixed the Azure admin-groups claim default description on `oauth2-oidc.md`. Amendments shipped on `feature/phase-c-reaudit-amendments` (documentation). The remaining 11 items passed without amendment; most are small cross-reference or hygiene items, the two feature items (DOC-003 S2S, DOC-029 activity events) were verified against current consumer code with no drift.
 
@@ -109,9 +111,24 @@ Ready for human review of priority ordering before implementation begins (per `b
 - Kick off implementation via `/implement DOC-NNN`
 - OR continue audit phase: enumerate one of the 22 remaining scanners
 
+## Upstream Issues
+
+Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in `issues/README.md`. The `draft → filed` transition is a deliberate human action — the ODD Team drafts on disk; the maintainer files into the target repo's GitHub tracker.
+
+| Target Repo | Draft | Filed | Closed | Rejected | Total |
+|-------------|-------|-------|--------|----------|-------|
+| odd-platform | 1 | 0 | 0 | 0 | 1 |
+| odd-collectors | 1 | 0 | 0 | 0 | 1 |
+| **Total** | **2** | **0** | **0** | **0** | **2** |
+
+### Active drafts
+
+- **PLT-001** (bug, low severity) — Defensive null handling in `S2sTokenProvider.isValidToken`. Discovered during `/review` of DOC-003 (2026-04-23). Unreachable NPE path under normal deployment because the S2S filter is conditionally registered; but the method is `public` and a 1-line `StringUtils.isBlank(s2sToken)` guard closes it permanently. Doc-side: no caveat needed; DOC-003 already describes the feature correctly. Draft at `issues/odd-platform/PLT-001.md`.
+- **COL-001** (bug, high severity) — AWS SSM secrets backend silently truncates plugin parameters at 10. `_get_secrets_by_prefix` does a single `get_parameters_by_path` call with no paginator; default `MaxResults=10` drops every plugin beyond the first ten with no error and no log warning. Production-critical for any collector with >10 plugins. Doc-side caveat already shipped under DOC-013 ("Known limitations" admonition). Draft at `issues/odd-collectors/COL-001.md`.
+
 ## Current Status
 
-Phase: **Audit In Progress + Phase C awaiting `/review`** — 4 scanners complete, 1 in progress, 22 remaining. All triage complete for completed scanners (56 DOC items). 17 DOC items have shipped to the documentation repo; 4 are already `/review`-signed-off (`done`) and 13 are `review-ready` awaiting Phase C review in a separate session.
+Phase: **Audit In Progress + Phase C `/review` complete** — 4 scanners complete, 1 in progress, 22 remaining. All triage complete for completed scanners (56 DOC items + DOC-061 follow-up = 57). 17 DOC items have shipped to the documentation repo and are now `/review`-signed-off as `done` (4 from Phase B + 13 from Phase C). The next batch should start from the unblocked critical content-accuracy items (DOC-027, 037, 029-done, 036-done) — DOC-029 and DOC-036 are now done, so the next batch narrows to DOC-027 + DOC-037 plus any same-file follow-ons.
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)

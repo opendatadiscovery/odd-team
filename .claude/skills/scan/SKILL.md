@@ -83,5 +83,5 @@ Execute the audit scanner at `$ARGUMENTS`.
 - If manifest shows 100% coverage and no `changed-since-scan` items, report "fully scanned" and suggest re-enumeration if it's been >7 days
 - If the scanner path doesn't exist, list available scanners from `scanners/` and ask which to run
 - Prefer false positives over missed gaps (triager will filter later)
-- If you find a bug in target code, note it in findings but do NOT fix it
+- If you find a bug in target code, note it in findings but do NOT fix it. If the defect is clearly actionable upstream (concrete file:line, operator-visible failure mode, suggested fix obvious), the triager who picks up this scan will draft it as an `issues/{repo}/{PREFIX}-NNN.md` upstream issue (see `issues/README.md` and `/log-issue`); record enough detail in the finding (`file:line`, severity, repro shape) that the triager doesn't have to re-read the code.
 - If an item can't be scanned (file missing, access issue), mark status as `error` with note

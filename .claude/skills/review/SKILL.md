@@ -99,6 +99,10 @@ FAIL — reopen as blocked with "document region caveat"
 - Every functional claim in the authored doc → evidence file:line in the commit or verifiable now.
 - Every user-visible code path touched (controller methods, API endpoints, UI components, SDK calls) → doc coverage as feature / limitation / performance / security.
 - **FAIL** if either direction has gaps the Implementation Record did not log as follow-up work.
+- **"Logged as follow-up"** can mean either path, both on disk:
+  - A new `backlog/{cat}/DOC-NNN.md` item — when the missing coverage is doc-side and we will write it ourselves.
+  - A new `issues/{repo}/{PREFIX}-NNN.md` upstream issue draft — when the missing coverage reflects an upstream code defect or feature gap that needs filing into the target repo's GitHub tracker. Use `/log-issue` to scaffold; see `issues/README.md`.
+  - Narration in the work item ("tracked as a follow-up candidate") **does not satisfy this gate**. The 2026-04-23 DOC-001 review surfaced the Azure `logout-uri` gap and would have reopened DOC-001 as `blocked` had the verdict only narrated; the file `backlog/docs/DOC-061.md` is what made it pass.
 
 #### Gate 7 — Layout and completeness
 
@@ -152,6 +156,7 @@ For each affected page (per the Implementation Record's live-URL list):
   - Gate 8 (live-site) — PASS ({URL + observed text}) | DEFERRED (not yet merged)
 - **Regressions**: none | {description}
 - **Navigation**: consistent | {what needs update}
+- **Upstream issues logged**: none | {list of `issues/{repo}/{PREFIX}-NNN.md` paths drafted during this review}
 - **Notes**: {free text, especially if any gate was DEFERRED}
 ```
 
@@ -172,6 +177,6 @@ If `$ARGUMENTS` starts with `batch:` (e.g., `batch:feature/critical-odd-platform
 - Be strict on acceptance criteria and Quality Bar gates; be lenient on prose style.
 - If a test passes but tests the wrong thing → FAIL.
 - If a doc is technically correct but misleading → FAIL with specific feedback.
-- Never modify the authored files during review. If fixes are obvious and trivial (a typo you happened to spot), log them as a follow-up backlog item and let the implementer roll them in.
+- Never modify the authored files during review. If fixes are obvious and trivial (a typo you happened to spot), log them as a follow-up backlog item and let the implementer roll them in. If the discovery is in upstream code (Java platform, Python collectors, spec, etc.) rather than in our own docs/tests/spec work, log it as an upstream issue draft (`/log-issue {repo} "title"` → `issues/{repo}/{PREFIX}-NNN.md`); never just narrate.
 - If `$ARGUMENTS` is empty → list every item with `status: review-ready` and ask which to review.
 - If `$ARGUMENTS` refers to an item not in `review-ready` → explain the current status and stop.

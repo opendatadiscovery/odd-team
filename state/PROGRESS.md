@@ -111,6 +111,21 @@ Ready for human review of priority ordering before implementation begins (per `b
 - Kick off implementation via `/implement DOC-NNN`
 - OR continue audit phase: enumerate one of the 22 remaining scanners
 
+## Upstream Issues
+
+Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in `issues/README.md`. The `draft → filed` transition is a deliberate human action — the ODD Team drafts on disk; the maintainer files into the target repo's GitHub tracker.
+
+| Target Repo | Draft | Filed | Closed | Rejected | Total |
+|-------------|-------|-------|--------|----------|-------|
+| odd-platform | 1 | 0 | 0 | 0 | 1 |
+| odd-collectors | 1 | 0 | 0 | 0 | 1 |
+| **Total** | **2** | **0** | **0** | **0** | **2** |
+
+### Active drafts
+
+- **PLT-001** (bug, low severity) — Defensive null handling in `S2sTokenProvider.isValidToken`. Discovered during `/review` of DOC-003 (2026-04-23). Unreachable NPE path under normal deployment because the S2S filter is conditionally registered; but the method is `public` and a 1-line `StringUtils.isBlank(s2sToken)` guard closes it permanently. Doc-side: no caveat needed; DOC-003 already describes the feature correctly. Draft at `issues/odd-platform/PLT-001.md`.
+- **COL-001** (bug, high severity) — AWS SSM secrets backend silently truncates plugin parameters at 10. `_get_secrets_by_prefix` does a single `get_parameters_by_path` call with no paginator; default `MaxResults=10` drops every plugin beyond the first ten with no error and no log warning. Production-critical for any collector with >10 plugins. Doc-side caveat already shipped under DOC-013 ("Known limitations" admonition). Draft at `issues/odd-collectors/COL-001.md`.
+
 ## Current Status
 
 Phase: **Audit In Progress + Phase C `/review` complete** — 4 scanners complete, 1 in progress, 22 remaining. All triage complete for completed scanners (56 DOC items + DOC-061 follow-up = 57). 17 DOC items have shipped to the documentation repo and are now `/review`-signed-off as `done` (4 from Phase B + 13 from Phase C). The next batch should start from the unblocked critical content-accuracy items (DOC-027, 037, 029-done, 036-done) — DOC-029 and DOC-036 are now done, so the next batch narrows to DOC-027 + DOC-037 plus any same-file follow-ons.

@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-22 EOD — paused. DOC-053 implemented + verified live; DOC-054 implemented (awaiting merge). See "Resume Tomorrow" at bottom.
+Last updated: 2026-04-23 — both pending PRs merged; DOC-054 live-site verified (adapters → 404). Clean slate to pick next work.
 
 ## Audit Phase
 

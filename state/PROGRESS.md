@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hardening` (commit `96b28c4`) after a spot-check uncovered a silent data-loss caveat in the DOC-008 batch that the old bar had passed. The Implementation Quality Bar now has eight gates, two of which (Consumer-read #4, Unset-parameter audit #5) are new and require cited evidence. Work-item lifecycle now includes `review-ready` between `in-progress` and `done`; the implementer cannot self-close. `/review` runs in a separate session. Phase B re-audit of DOC-005/006/008/018 under the new bar surfaced 4 missed caveats (2 in-scope amendments + 2 new backlog items DOC-059/060). `/review` signed off DOC-005/006/008/018 as ACCEPTED on 2026-04-23 after the amendment PR (`feature/doc-005-008-reaudit-caveats`, merged to `documentation` main as `eef330c`) landed and live-site verification passed on all four items. Phase C (re-audit of all older done items) is the next standing obligation before any new `/implement` batch may start.
+Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hardening` (commit `96b28c4`) after a spot-check uncovered a silent data-loss caveat in the DOC-008 batch that the old bar had passed. The Implementation Quality Bar now has eight gates, two of which (Consumer-read #4, Unset-parameter audit #5) are new and require cited evidence. Work-item lifecycle now includes `review-ready` between `in-progress` and `done`; the implementer cannot self-close. `/review` runs in a separate session. Phase B re-audit of DOC-005/006/008/018 under the new bar surfaced 4 missed caveats (2 in-scope amendments + 2 new backlog items DOC-059/060). `/review` signed off DOC-005/006/008/018 as ACCEPTED on 2026-04-23 after the amendment PR (`feature/doc-005-008-reaudit-caveats`, merged to `documentation` main as `eef330c`) landed and live-site verification passed on all four items. **Phase C** (re-audit of all 13 older self-closed done items under the new bar) executed as a single batch on 2026-04-23 — all 13 flipped to `review-ready`; two in-scope amendments shipped on `feature/phase-c-reaudit-amendments` (documentation): DOC-013 "Known limitations" section (SSM pagination silent truncation at 10, no endpoint_url override, no botocore Config override, YAML safe_load aborts startup) and DOC-001 Azure admin-groups claim default (reads `roles`, not `groups`). Phase C awaits `/review` in a separate session.
 
 ## Audit Phase
 
@@ -20,13 +20,15 @@ Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hard
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 41 | 0 | 0 | 17 | 0 | 2 | 60 |
+| DOC | 41 | 0 | 13 | 4 | 0 | 2 | 60 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **41** | **0** | **0** | **17** | **0** | **2** | **60** |
+| **Total** | **41** | **0** | **13** | **4** | **0** | **2** | **60** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
+
+On 2026-04-23 Phase C flipped 13 older self-closed done items to `review-ready`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Each carries a `## Re-Audit (2026-04-23)` section with per-gate evidence. Two items (DOC-001, DOC-013) required in-scope amendments: DOC-013 added four caveat admonitions to `collectors-secrets-backend.md`, DOC-001 fixed the Azure admin-groups claim default description on `oauth2-oidc.md`. Amendments shipped on `feature/phase-c-reaudit-amendments` (documentation). The remaining 11 items passed without amendment; most are small cross-reference or hygiene items, the two feature items (DOC-003 S2S, DOC-029 activity events) were verified against current consumer code with no drift.
 
 ### 2026-04-23 pipeline hardening (Phase A) + re-audit (Phase B)
 
@@ -41,6 +43,18 @@ On 2026-04-23 a user spot-check uncovered that `MinioConfig.java` never calls `.
 - **F-CAV-004 (new DOC-060)** — third `odd.platform-base-url` consumer `StaticArgumentMappingContext.java:16` has a **different default** (`http://your.odd.platform` vs notifications' `http://localhost:8080`) and is undocumented. **Severity: medium.** New backlog item.
 
 **Phase C obligation**: every `done` item closed before 2026-04-23 was self-closed by the implementer. Finding density in Phase B (4 missed caveats across 4 items) is the prior — treat all 13 done items as candidates for re-audit until each passes `/review` under the new bar.
+
+### 2026-04-23 Phase C — older `done` items re-audited
+
+13 items flipped from self-closed `done` to `review-ready` in a single batch run. Summary of findings:
+
+- **In-scope amendments required (2)**: DOC-013 (SSM pagination silent truncation at 10 + 3 other SDK caveats), DOC-001 (Azure admin-groups default claim wrong). Both shipped on `feature/phase-c-reaudit-amendments` in the documentation repo.
+- **Passed without amendment (11)**: DOC-003 S2S, DOC-029 activity events, DOC-035 Main Concepts, DOC-036 OKTA env var, DOC-052 M2M/secrets-backend teasers, DOC-053 M2M collapse, DOC-054 Adapters.md deletion, DOC-055 Architecture xref, DOC-056 Business Glossary link, DOC-057 Ingestion API link, DOC-058 mention-shortcut sweep.
+- **Platform-side follow-up candidates (not doc fixes)** surfaced in the consumer-read pass but out of scope for doc-only remediation:
+  - `S2sTokenProvider.isValidToken` NPE path when `auth.s2s.enabled=false` and an X-API-Key header is sent (filter not registered in that state, so unreachable in normal deployments; defensive null handling is cheap).
+  - `ssm_parameter_store._get_secrets_by_prefix` silent truncation at 10 results — collector-SDK defect (doc caveat ships now, SDK fix is a separate odd-collectors Issue).
+
+Finding density was 2 in-scope amendments out of 13 re-audits (15%), meaningfully lower than Phase B's 4/4 — consistent with the original items being smaller in scope than the critical odd-platform config cluster.
 
 ### 2026-04-22 stale-branch re-verification sweep
 
@@ -97,7 +111,7 @@ Ready for human review of priority ordering before implementation begins (per `b
 
 ## Current Status
 
-Phase: **Audit In Progress** — 4 scanners complete, 1 in progress, 22 remaining. All triage complete for completed scanners (56 DOC items). 17 DOC items shipped to date (DOC-052..057 docs-quality cleanup; DOC-058 authoring-hygiene; DOC-005/006/008/018 critical `odd-platform.md` config).
+Phase: **Audit In Progress + Phase C awaiting `/review`** — 4 scanners complete, 1 in progress, 22 remaining. All triage complete for completed scanners (56 DOC items). 17 DOC items have shipped to the documentation repo; 4 are already `/review`-signed-off (`done`) and 13 are `review-ready` awaiting Phase C review in a separate session.
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)

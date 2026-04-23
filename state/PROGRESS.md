@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-23 — both pending PRs merged; DOC-054 live-site verified (adapters → 404). Clean slate to pick next work.
+Last updated: 2026-04-23 — docs quality batch (DOC-053..057) fully merged and live-verified. Process overhaul: CLAUDE.md reframed around Principal Full-Stack Engineer maintainers + Implementation Quality Bar; `/implement` rewritten as batch-first protocol; DOC-058 logged for the full `"mention"`-shortcut sweep discovered during DOC-056.
 
 ## Audit Phase
 
@@ -20,11 +20,11 @@ Last updated: 2026-04-23 — both pending PRs merged; DOC-054 live-site verified
 
 | Category | Pending | In Progress | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|------|---------|----------|-------|
-| DOC | 43 | 0 | 12 | 0 | 2 | 57 |
+| DOC | 44 | 0 | 12 | 0 | 2 | 58 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **43** | **0** | **12** | **0** | **2** | **57** |
+| **Total** | **44** | **0** | **12** | **0** | **2** | **58** |
 
 ### 2026-04-22 stale-branch re-verification sweep
 
@@ -62,17 +62,15 @@ Priority totals across both triaged scanners: **10 critical, 15 high, 19 medium*
 
 **Medium (5):** DOC-047 Directory · DOC-048 Data Modelling landing · DOC-049 additional-links config · DOC-050 Integration Wizard · DOC-051 Data Quality dashboard
 
-#### From docs/quality/duplication (DOC-052 .. DOC-057)
+#### From docs/quality/duplication (DOC-052 .. DOC-057) — all done
 
-**Critical (1):** DOC-053 collapse M2M section in odd-platform.md (third S2S duplicate, live)
+All 6 items shipped and live-verified on `docs.opendatadiscovery.org`: DOC-052 M2M/secrets-backend teasers, DOC-053 M2M collapse in odd-platform.md, DOC-054 Adapters.md deletion, DOC-055 Architecture→Main Concepts xref, DOC-056 permissions.md Business Glossary link, DOC-057 oddrn.md Ingestion API link.
 
-**High (1):** DOC-054 delete orphaned Adapters.md (blocks DOC-042)
+#### Discovered during implementation
 
-**Medium (3):** DOC-055 Architecture.md cross-ref to main-concepts · DOC-056 permissions.md Business Glossary link · DOC-057 oddrn.md Ingestion API link
+**DOC-058** (high, medium-effort) — replace all 17 hand-authored GitBook `"mention"` shortcut links across 9 files in `configuration-and-deployment/` with plain markdown links. Surfaced during DOC-056's duplication sweep (line 83 of `permissions.md`), then scope expanded via a full docs-tree grep. Per `CLAUDE.md` "Documentation Authoring Rules": these shortcuts are unreliable outside the GitBook web editor and can silently fall back to raw GitHub URLs. Proactive rewrite prevents the 2026-04-22 S2S cache-fallback class of incident.
 
-*(DOC-052 already done — M2M teasers on s2s.md + Features.md)*
-
-Totals across all 4 triaged scanners: **11 critical, 18 high, 27 medium** (56 items; 57 including done DOC-052, minus 2 rejected = 55 actionable)
+Totals across all 4 triaged scanners + discovered work: **11 critical, 19 high, 27 medium** (57 items; 58 including done DOC-052, minus 2 rejected = 56 actionable; 12 already done).
 
 ### Triage complete for all 4 completed scanners
 
@@ -119,30 +117,23 @@ Phase: **Audit In Progress** — 4 scanners complete, 1 in progress, 22 remainin
 5. Clone odd-docs repo for documentation scanners
 6. Clone/fetch remote repos: odd-dbt, odd-spark-adapter, odd-airflow-2, odd-cli
 
-## Resume Tomorrow (2026-04-23)
+## Next Batch Candidates
 
-**Unmerged — open PRs first:**
-- `documentation` → `feature/doc-054-delete-orphaned-adapters` (commit e4124f7): deletes orphaned `docs/Adapters.md`. After merge, WebFetch `https://docs.opendatadiscovery.org/adapters` → should 404/redirect.
-- `odd-team` → `feature/state-doc-054` (commits 54e943b + 9085c03): marks DOC-054 done, records DOC-053 live-site verification. Merge after DOC-054 doc PR lands.
+Path A — the docs-quality cleanup batch — is done and merged. Remaining candidates for the next `/implement` batch, grouped by theme:
 
-**Then pick one of:**
+**Batch: authoring-hygiene sweep (recommended first — single-theme, 9 files, all low-risk)**
+- **DOC-058** (high, medium) — replace 17 `"mention"` shortcuts with plain links across 9 files in `configuration-and-deployment/`. Independent of any other pending item.
 
-**Path A — finish quality cleanup (small, same context):**
-- **DOC-055** (medium, small) — `Architecture.md` Main Concepts cross-ref
-- **DOC-056** (medium, small) — `permissions.md` Business Glossary link
-- **DOC-057** (medium, small) — `oddrn.md` Ingestion API → ODD Specification link
-- All three are non-conflicting, batchable in one session.
+**Batch: critical odd-platform config (serialize on `odd-platform.md`, all critical)**
+- **DOC-005** email config key names + missing keys
+- **DOC-006** SESSION_PROVIDER default
+- **DOC-008** attachment storage warning (user-reported data loss risk)
+- **DOC-027** DataProfiler / Pandas claim fix (Features.md + dq_visibility.md)
+- **DOC-037** regenerate permissions list from OpenAPI spec
+- All under the new pre-authoring sweep protocol. DOC-005/006/008 share `odd-platform.md` — implement sequentially on one batch branch.
 
-**Path B — resume original critical batch (odd-platform.md, serialize):**
-- DOC-005 (critical) email config key names + missing keys
-- DOC-006 (critical) SESSION_PROVIDER default
-- DOC-008 (critical, user-reported data loss) attachment storage warning
-- DOC-027 (critical) DataProfiler / Pandas claim fix (Features.md + dq_visibility.md)
-- DOC-037 (critical) regenerate permissions list from OpenAPI spec
-- All these live under the new pre-authoring sweep protocol (step 3.5). DOC-005/006/008 share `odd-platform.md` — implement sequentially.
-
-**Triage remaining before implementing more:**
-- `findings/docs-quality-rendering/2026-04-22.md` — F-R01 (8 orphan files) + F-R03 (SUMMARY.md escaping) still un-triaged (F-R02 is subsumed by DOC-053 which is done). Cheap one-session task.
+**Unblocked audit work:**
+- `findings/docs-quality-rendering/2026-04-22.md` — F-R01 (8 orphan files) + F-R03 (SUMMARY.md escaping) still un-triaged (F-R02 is subsumed by DOC-053 which is done).
 - Complete `docs/quality/rendering` scan (33 of 37 pages still unscanned).
 
-**Recommended first action:** merge the two pending PRs, then Path A (cheap, closes out the quality scanner work cleanly) before opening the heavier critical batch.
+**Recommended first action:** run the authoring-hygiene batch (DOC-058 alone or grouped with any adjacent `configuration-and-deployment/` work that lands). It's one coherent theme, closes out a systemic risk surfaced during DOC-056, and serves as the first batch-first implementation under the new `/implement` protocol.

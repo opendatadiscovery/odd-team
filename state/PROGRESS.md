@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hardening` (commit `96b28c4`) after a spot-check uncovered a silent data-loss caveat in the DOC-008 batch that the old bar had passed. The Implementation Quality Bar now has eight gates, two of which (Consumer-read #4, Unset-parameter audit #5) are new and require cited evidence. Work-item lifecycle now includes `review-ready` between `in-progress` and `done`; the implementer cannot self-close. `/review` runs in a separate session. Phase B re-audit of DOC-005/006/008/018 under the new bar surfaced 4 missed caveats (2 in-scope amendments + 2 new backlog items DOC-059/060). Phase C (re-audit of all older done items) is the next standing obligation before any new `/implement` batch may start.
+Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hardening` (commit `96b28c4`) after a spot-check uncovered a silent data-loss caveat in the DOC-008 batch that the old bar had passed. The Implementation Quality Bar now has eight gates, two of which (Consumer-read #4, Unset-parameter audit #5) are new and require cited evidence. Work-item lifecycle now includes `review-ready` between `in-progress` and `done`; the implementer cannot self-close. `/review` runs in a separate session. Phase B re-audit of DOC-005/006/008/018 under the new bar surfaced 4 missed caveats (2 in-scope amendments + 2 new backlog items DOC-059/060). `/review` signed off DOC-005/006/008/018 as ACCEPTED on 2026-04-23 after the amendment PR (`feature/doc-005-008-reaudit-caveats`, merged to `documentation` main as `eef330c`) landed and live-site verification passed on all four items. Phase C (re-audit of all older done items) is the next standing obligation before any new `/implement` batch may start.
 
 ## Audit Phase
 
@@ -20,13 +20,13 @@ Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hard
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 41 | 0 | 4 | 13 | 0 | 2 | 60 |
+| DOC | 41 | 0 | 0 | 17 | 0 | 2 | 60 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **41** | **0** | **4** | **13** | **0** | **2** | **60** |
+| **Total** | **41** | **0** | **0** | **17** | **0** | **2** | **60** |
 
-Notes on counts: DOC pending net change is +2 → -4 = -2 from the prior 43 number on main's last snapshot (+2 for new DOC-059 and DOC-060 discovered in the re-audit, -4 for DOC-005/006/008/018 which moved to `review-ready` when `batch/critical-odd-platform-config-state` merged). The four `review-ready` items await `/review` in a separate session; only the reviewer may flip them to `done`. DOC-005 and DOC-008 also carry in-scope amendment commits on `feature/doc-005-008-reaudit-caveats` (documentation repo) that must land before the reviewer can sign them off.
+Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
 ### 2026-04-23 pipeline hardening (Phase A) + re-audit (Phase B)
 

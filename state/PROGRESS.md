@@ -20,13 +20,13 @@ Last updated: 2026-04-23 — Pipeline hardening landed on `feature/pipeline-hard
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 45 | 0 | 0 | 13 | 0 | 2 | 60 |
+| DOC | 41 | 0 | 4 | 13 | 0 | 2 | 60 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **45** | **0** | **0** | **13** | **0** | **2** | **60** |
+| **Total** | **41** | **0** | **4** | **13** | **0** | **2** | **60** |
 
-Notes on counts: DOC pending increased by 2 (DOC-059 session-provider caveats, DOC-060 third base-url consumer — both discovered by the 2026-04-23 re-audit). The `review-ready` column is zero here because the DOC-005/006/008/018 flips live on `batch/critical-odd-platform-config-state`, which has not merged yet — after that branch merges, main's Done will drop by 4 and Review-Ready will rise by 4 until `/review` runs in a separate session.
+Notes on counts: DOC pending net change is +2 → -4 = -2 from the prior 43 number on main's last snapshot (+2 for new DOC-059 and DOC-060 discovered in the re-audit, -4 for DOC-005/006/008/018 which moved to `review-ready` when `batch/critical-odd-platform-config-state` merged). The four `review-ready` items await `/review` in a separate session; only the reviewer may flip them to `done`. DOC-005 and DOC-008 also carry in-scope amendment commits on `feature/doc-005-008-reaudit-caveats` (documentation repo) that must land before the reviewer can sign them off.
 
 ### 2026-04-23 pipeline hardening (Phase A) + re-audit (Phase B)
 
@@ -35,8 +35,8 @@ On 2026-04-23 a user spot-check uncovered that `MinioConfig.java` never calls `.
 **Phase A** (commit `96b28c4` on `feature/pipeline-hardening`): rewrote CLAUDE.md (new "The project and the maintainer" attitude section, Quality Bar expanded from six principles to eight gates, two new gates Consumer-read and Unset-parameter audit, workflow ends at `review-ready` not `done`). Updated `scanners/docs/accuracy/config-options.md` and `feature-behavior.md` with consumer-code / SDK audit passes. Created `scanners/docs/accuracy/integration-caveats.md` as a dedicated SDK-builder-audit scanner. Updated `.claude/skills/implement/SKILL.md` (consumer-read audit gate, mandatory `Consumer-read:` commit footer, Phase 2 ends at `review-ready`) and rewrote `.claude/skills/review/SKILL.md` (separate-session requirement, reject-by-default, eight-gate checklist, concrete DOC-008 FAIL example). Updated `backlog/README.md` lifecycle.
 
 **Phase B** (same branch): re-audited DOC-005/006/008/018 under the new bar. Findings in `findings/docs-accuracy-integration-caveats/2026-04-23-reaudit-critical-odd-platform-config.md`:
-- **F-CAV-001 (DOC-005 in-scope)** — `JavaMailSenderImpl` leaves SMTP connect/read/write timeouts unset (infinite default), no implicit-TLS support, no self-signed CA hook, no charset; `EmailNotificationSender.send()` silently aborts recipient loop on first failure. **Severity: high.** Ship as PR amendment.
-- **F-CAV-002 (DOC-008 in-scope)** — `MinioAsyncClient.builder()` leaves `.httpClient(...)` unset (5-min MinIO-SDK-default timeouts); `RemoteFileUploadServiceImpl.completeFileUpload` stages chunks on local filesystem before REMOTE upload (K8s restart mid-upload loses chunks — same data-loss class as the LOCAL warning already in DOC-008); no retry on transient MinIO/S3 failures. **Severity: high.** Ship as PR amendment.
+- **F-CAV-001 (DOC-005 in-scope)** — `JavaMailSenderImpl` leaves SMTP connect/read/write timeouts unset (infinite default), no implicit-TLS support, no self-signed CA hook, no charset; `EmailNotificationSender.send()` silently aborts recipient loop on first failure. **Severity: high.** Shipped as commit `a725113` on `feature/doc-005-008-reaudit-caveats` (documentation).
+- **F-CAV-002 (DOC-008 in-scope)** — `MinioAsyncClient.builder()` leaves `.httpClient(...)` unset (5-min MinIO-SDK-default timeouts); `RemoteFileUploadServiceImpl.completeFileUpload` stages chunks on local filesystem before REMOTE upload (K8s restart mid-upload loses chunks — same data-loss class as the LOCAL warning already in DOC-008); no retry on transient MinIO/S3 failures. **Severity: high.** Shipped as commit `d8976b1` on `feature/doc-005-008-reaudit-caveats` (documentation).
 - **F-CAV-003 (new DOC-059)** — session-provider caveats: IN_MEMORY no eviction beyond TTL, INTERNAL_POSTGRESQL housekeeping hardcoded to 1 hour, REDIS requires undocumented `spring.data.redis.*` keys. **Severity: medium.** New backlog item.
 - **F-CAV-004 (new DOC-060)** — third `odd.platform-base-url` consumer `StaticArgumentMappingContext.java:16` has a **different default** (`http://your.odd.platform` vs notifications' `http://localhost:8080`) and is undocumented. **Severity: medium.** New backlog item.
 
@@ -97,7 +97,7 @@ Ready for human review of priority ordering before implementation begins (per `b
 
 ## Current Status
 
-Phase: **Audit In Progress** — 4 scanners complete, 1 in progress, 22 remaining. All triage complete for completed scanners (56 DOC items). Ready for human review of the backlog.
+Phase: **Audit In Progress** — 4 scanners complete, 1 in progress, 22 remaining. All triage complete for completed scanners (56 DOC items). 17 DOC items shipped to date (DOC-052..057 docs-quality cleanup; DOC-058 authoring-hygiene; DOC-005/006/008/018 critical `odd-platform.md` config).
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)
@@ -135,18 +135,25 @@ Phase: **Audit In Progress** — 4 scanners complete, 1 in progress, 22 remainin
 
 ## Next Batch Candidates
 
-Two batches shipped in sequence: the docs-quality cleanup (DOC-052..057) and the authoring-hygiene sweep (DOC-058). Remaining candidates for the next `/implement` batch, grouped by theme:
+Three batches shipped in sequence: docs-quality cleanup (DOC-052..057), authoring-hygiene sweep (DOC-058), and critical `odd-platform.md` config (DOC-005 / 006 / 008 / 018). Remaining candidates for the next `/implement` batch, grouped by theme:
 
-**Batch: critical odd-platform config (serialize on `odd-platform.md`, all critical)**
-- **DOC-005** email config key names + missing keys
-- **DOC-006** SESSION_PROVIDER default
-- **DOC-008** attachment storage warning (user-reported data loss risk)
+**Batch: remaining critical doc-accuracy items (cross-file)**
 - **DOC-027** DataProfiler / Pandas claim fix (Features.md + dq_visibility.md)
-- **DOC-037** regenerate permissions list from OpenAPI spec
-- All under the new pre-authoring sweep protocol. DOC-005/006/008 share `odd-platform.md` — implement sequentially on one batch branch.
+- **DOC-037** regenerate permissions list from OpenAPI spec (permissions.md)
+- **DOC-029** activity event types (Features.md)
+- **DOC-036** OKTA env var bug (oauth2-oidc.md)
+- These don't share a file, so each is its own commit but they theme as "critical content-accuracy fixes."
+
+**Batch: continuation on `odd-platform.md` (non-critical, same file)**
+- **DOC-007** metrics config
+- **DOC-009** housekeeping TTL
+- **DOC-010** odd.* top-level
+- **DOC-011** spring.session.timeout / spring.codec.max-in-memory-size
+- **DOC-019** AlertManager endpoint reference
+- Natural follow-on once the critical batch merges — one file, sequential commits.
 
 **Unblocked audit work:**
 - `findings/docs-quality-rendering/2026-04-22.md` — F-R01 (8 orphan files) + F-R03 (SUMMARY.md escaping) still un-triaged (F-R02 is subsumed by DOC-053 which is done).
 - Complete `docs/quality/rendering` scan (33 of 37 pages still unscanned).
 
-**Recommended next:** open the critical `odd-platform.md` config batch (DOC-005 / 006 / 008 serialized) — user-facing data-loss risk on DOC-008 makes it the highest-value chunk left. Alternative: triage the remaining two `docs/quality/rendering` findings (F-R01 orphan files + F-R03 SUMMARY escaping) for a quick-win next batch while the doc PR for DOC-058 is in review.
+**Recommended next:** wait for the critical-config batch PR to merge, run live-site verification, then pick up the critical content-accuracy batch (DOC-027 / 037 / 029 / 036) — four critical items across four files, good size for a single batch PR.

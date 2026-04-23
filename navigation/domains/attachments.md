@@ -19,6 +19,7 @@ File attachments and links on data entities — LOCAL and REMOTE (S3/MinIO) stor
 - `odd-platform-api/.../service/attachment/remote/` — S3/MinIO storage
   - `RemoteFileUploadServiceImpl.java`
   - `RemoteFilePathConstructor.java`
+- `odd-platform-api/.../config/MinioConfig.java` — MinioAsyncClient bean for REMOTE mode. Uses `io.minio.MinioAsyncClient` with only endpoint + credentials — **no region configured**, so the SDK defaults to `us-east-1` for SigV4 signing. AWS S3 buckets outside `us-east-1` fail. See DOC-008 known-limitation note.
 
 ### UI
 - `odd-platform-ui/src/components/DataEntityDetails/Overview/OverviewAttachments/`
@@ -42,7 +43,11 @@ File attachments and links on data entities — LOCAL and REMOTE (S3/MinIO) stor
 - `DataEntityHousekeepingJob.java` — references attachment cleanup
 
 ## Documentation
-- **None** — feature is completely undocumented. User-reported issue: LOCAL storage is ephemeral in containers, REMOTE config requires source code reading.
+- `docs/configuration-and-deployment/odd-platform.md` — "Attachment Storage Configuration" section (DOC-008 shipped 2026-04-23). Documents all `attachment.*` keys, warns about ephemeral LOCAL default path (K8s/Docker), provides REMOTE S3/MinIO examples, notes the AWS-S3-region known limitation.
+- `docs/Features.md` — "Data Entity Attachments" section (user-facing flow, anchor `#id-6fbe`).
+
+## Known Issues / Code Gaps
+- **Missing region config (platform-side fix needed)**: `MinioConfig.java` does not accept `attachment.remote.region` and does not call `.region(...)` on the MinIO builder. As a result, AWS S3 buckets outside `us-east-1` cannot be used. Fix would add an optional `attachment.remote.region` property and pass it through. Tracked as a related functional bug from DOC-008; a GitHub Issue on `odd-platform` should be opened when the docs PR merges.
 
 ## Related Domains
 - data-entities (attachments belong to entities)

@@ -12,8 +12,9 @@ Execute the audit scanner at `$ARGUMENTS`.
 ## Protocol
 
 1. **Orient** — Read these files (do NOT skip):
-   - `CLAUDE.md` (system overview)
+   - `CLAUDE.md` (system overview — nine-gate Quality Bar and Gate 9 Source-of-Truth table)
    - `navigation/features.yaml` (feature index)
+   - `navigation/architecture.md` (integration-pattern + canonical-repo map; every repo name encountered during the scan is classified against this file)
    - The relevant `navigation/domains/*.md` for the scanner's target domain
 
 2. **Load scanner definition** at `$ARGUMENTS`. Extract:
@@ -37,7 +38,9 @@ Execute the audit scanner at `$ARGUMENTS`.
 5. **Execute the scan** on the selected batch:
    - Follow the scanner's method systematically for EACH item in the batch
    - Apply criteria to each item
-   - Record findings as you go
+   - **Every finding must cite a Source of Truth by Gate 9 class** (Repo / Integration / Config / Builder / Spec / Term / Lifecycle / Dep / Handler / Cross-repo). "The doc says X but the code/SoT says Y" is a finding; "the doc might be wrong" is not. If you cannot cite an SoT, the gap is speculation — either find the SoT or drop the finding.
+   - For every outbound URL referenced in the doc under scan (`github.com/opendatadiscovery/*`, `docs.opendatadiscovery.org/*`, external docs), resolve the URL against `navigation/architecture.md` or (if missing) WebFetch / `gh repo view`. A broken or mis-targeted URL is a finding with SoT class `Repo` or `Integration`.
+   - Record findings as you go, each with its SoT citation inline
    - Do NOT modify any files in target repos (read-only scan)
 
 6. **Write findings** — Create the output file:
@@ -65,6 +68,7 @@ Execute the audit scanner at `$ARGUMENTS`.
 
 8. **Update navigation** (MANDATORY):
    - Every file path discovered during scanning → add to relevant `navigation/domains/*.md`
+   - Every **repo name or integration pattern** discovered (a new collector, a push-client, a platform module the scanner touched) → update `navigation/architecture.md` so future Gate 9 verifications can resolve the repo in O(1) without a fresh WebFetch
    - This is a core output, not optional bookkeeping
 
 9. **Update progress** — Edit `state/PROGRESS.md`:

@@ -20,11 +20,11 @@ Last updated: 2026-04-23 — both pending PRs merged; DOC-054 live-site verified
 
 | Category | Pending | In Progress | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|------|---------|----------|-------|
-| DOC | 45 | 0 | 10 | 0 | 2 | 57 |
+| DOC | 43 | 0 | 12 | 0 | 2 | 57 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **45** | **0** | **10** | **0** | **2** | **57** |
+| **Total** | **43** | **0** | **12** | **0** | **2** | **57** |
 
 ### 2026-04-22 stale-branch re-verification sweep
 

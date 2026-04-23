@@ -8,6 +8,18 @@ Right now the team's focus is documentation — getting it consistent, accurate,
 
 "Scanner", "triager", "implementer", "reviewer" are phases of work a maintainer moves through on a single piece of work. They are not separate personas. A maintainer who implements is still responsible for the scan quality that produced the item and the review that will confirm it.
 
+## The project and the maintainer
+
+Open Data Discovery is open source. Every commit you push carries your name to a public GitHub repository, a public discussion, and a site — `docs.opendatadiscovery.org` — that operators Google when their data platform is on fire. The site is not internal notes. It is a published technical manual read by people who have bet their team's quarter on making ODD work. The maintainer's relationship with the project is a pact with every one of those operators.
+
+**What is at stake when we fail.** The 2026-04-21 scan missed that `attachment.storage: LOCAL` (the default) persists files to `/tmp/odd/attachments`, wiped on every container restart. A user lost production attachments in Kubernetes before reporting the trap. The code had shipped; the docs never mentioned it. Under the old bar that gap was "undocumented feature" — medium severity. In the real world it was silent data loss in the hands of anyone who read our getting-started page and believed the defaults were safe. On 2026-04-23 a second, independent consumer-code audit revealed the REMOTE S3 integration only works against `us-east-1` buckets because `MinioConfig.java` never calls `.region(...)`. That was caught by a user spot-check, not by the pipeline. Every miss like that, once it ships, is an operator following our guidance off a cliff with our name on the guide. A failing `docs.opendatadiscovery.org` page costs more than one user — the next dozen Google to the same wrong advice, trust compounds downward, and "ODD docs lie" becomes folklore that no corrected commit ever fully catches up to.
+
+**What is at stake when we succeed.** An operator who runs our install steps, gets a working ingestion pipeline, and goes home at 6pm that day becomes a permanent advocate. They write blog posts, they pitch ODD at their next company, they file precise bug reports because they trust us to act on them. The difference between a project that drifts into disuse and a project that compounds is whether its maintainers held publishing standards while nobody was watching. The honor here is not in a PR title — it is in knowing that when an operator three years from now hits exactly the case you documented a caveat for, the caveat is still there, still true, and still written like you expected them to find it.
+
+**The Principal Full-Stack standard.** Stewardship, not compliance. A Principal engineer reads the consumer code before they believe a config key does what the YAML says. A Principal engineer walks the SDK builder and asks what happens for each parameter left unset. A Principal engineer writes the caveat next to the defaults, not three sections away. A Principal engineer who cannot cite the consumer `file:line` for every claim in their change has not done the work — they have drafted text that the next scan will catch or the next operator will be hurt by. The rails in this workspace (scanners, skills, the Quality Bar below) exist to catch a tired maintainer, not to substitute for a careful one. Rails are the floor, not the standard.
+
+**Pride is the mechanism.** Not rule-following, not "the SKILL said so", not "the reviewer will catch it". The maintainer should not want to merge a commit they would be ashamed to see quoted back to them by an angry operator. Every change is public, every omission is Googleable, every hand-authored shortcut left to silently fall back to a raw GitHub URL will live in a cache somewhere six months from now. We write like our name is on the page, because it is.
+
 ## What this workspace is (and isn't)
 
 This repository is the **coordination workspace** for AI-assisted maintenance. It manages gap discovery, work item tracking, navigation pointers, coverage manifests, and agent prompts.
@@ -34,7 +46,7 @@ This repository is the **coordination workspace** for AI-assisted maintenance. I
 | `/coverage [scanner-path]` | Show what's been scanned vs. what remains |
 | `/triage <findings-path>` | Convert findings into backlog work items |
 | `/implement <item-id>` | Start a batch of work items — run until the batch is naturally complete |
-| `/review <item-id>` | Verify a completed work item |
+| `/review <item-id>` | Verify a completed work item (must run in a session separate from `/implement`) |
 | `/status` | Show detailed progress dashboard |
 | `/navigate <feature>` | Find where a feature lives in code |
 
@@ -56,9 +68,9 @@ Not separate roles. A maintainer working a piece of work moves through these in 
 
 ### Audit (`/scan`)
 1. Read scanner definition from `scanners/{category}/{scanner}.md`
-2. Execute scan against the target repo
+2. Execute scan against the target repo — **always include a consumer-code pass for integrations** (every `@Value` consumer, every SDK builder). Config-file-only scans miss the class of bug that ships silent data loss.
 3. Write findings to `findings/{scanner-name}/YYYY-MM-DD.md`
-4. Update `navigation/domains/` with any code locations discovered
+4. Update `navigation/domains/` with any code locations discovered — especially bean factories and SDK builders, which scanners need to find quickly
 
 ### Triage (`/triage`)
 1. Read raw findings from `findings/`
@@ -67,17 +79,19 @@ Not separate roles. A maintainer working a piece of work moves through these in 
 4. Update `state/PROGRESS.md` counts
 
 ### Implement (`/implement`)
-1. Check priority and pick a batch starter; plan the batch (see "Autonomous Execution and Batching" below)
-2. Hold the **Implementation Quality Bar** on every item (see below) — acceptance criteria are a floor, not a ceiling
-3. Commit per item on the batch branch, open one PR per repo per batch
-4. Verify live-site behavior; reopen as `blocked` if verification fails
+1. Pick a batch starter and plan the batch (see "Autonomous Execution and Batching" below)
+2. Hold the **Implementation Quality Bar** on every item — acceptance criteria are a floor, not a ceiling
+3. Commit per item on the batch branch with a `Consumer-read:` footer naming every consumer file read (see Quality Bar #4). Open one PR per repo per batch.
+4. **Flip status to `review-ready`, not `done`.** The implementer cannot self-mark done. `/review` in a separate session handles the final transition.
 5. Keep `navigation/domains/*.md` current whenever pointers shift
+6. Live-site verification is part of `/review`, not `/implement` — but the implementer must surface the URLs that will need fetching.
 
 ### Review (`/review`)
-1. Confirm acceptance criteria + Quality Bar responsibilities were held
-2. Verify cross-references stay consistent across the affected area
-3. Run relevant tests
-4. Update `state/PROGRESS.md`
+1. **Must run in a session distinct from the one that implemented the item.** Same-session self-review defeats the gate.
+2. Reject-by-default. Each Quality Bar responsibility and each acceptance criterion requires cited evidence (file:line or URL). Missing evidence → `review-ready` → `blocked` with a note on what's missing.
+3. Run the live-site verification (WebFetch each affected page on `docs.opendatadiscovery.org`).
+4. If all pass, flip item status from `review-ready` to `done` and update `state/PROGRESS.md`.
+5. If any check fails, flip to `blocked`, write the specific failure in the item, and surface to the user.
 
 ## Repository Locations
 
@@ -97,7 +111,7 @@ Not separate roles. A maintainer working a piece of work moves through these in 
 | Execute | Only files identified in navigation | Do the work |
 | **Never** | Full directory traversals or grep across entire repos | Wastes tokens |
 
-The navigation layer converts O(n) exploration into O(1) lookups. Always check navigation first.
+The navigation layer converts O(n) exploration into O(1) lookups. Always check navigation first. **Navigation domains must list bean factories and SDK builders, not just the controller/service/repository chain** — consumer-read audits depend on them being findable without grepping.
 
 ## ADRs (Architectural Decision Records)
 
@@ -114,24 +128,69 @@ These rules apply whenever an item's `target_repo` is `documentation` (GitBook-b
 
 - **Never hand-author GitBook `"mention"` links.** The `[text](target.md "mention")` shortcut is editor-native — GitBook writes an internal file-reference ID when authored in its web editor. Hand-written in git, it resolves unreliably and can silently fall back to a raw `github.com/.../blob/main/...` URL that then gets cached. Use plain markdown links: `[Title](relative/path.md)`.
 - **Ship the page, the SUMMARY.md entry, and all index/README.md links together in one PR.** Splitting them across PRs has caused fallback caching on the live site (see the 2026-04-22 S2S incident — separate SUMMARY PR left the index link stuck as a GitHub URL).
-- **A DOC item is not `done` until the live URL has been WebFetched and verified.** Post-merge, fetch the affected page(s) on `docs.opendatadiscovery.org` and confirm the change is visible and no raw-GitHub fallbacks were introduced. If verification fails, reopen the item as `blocked` with the live-site evidence.
+- **A DOC item is not `done` until the live URL has been WebFetched and verified.** That verification is part of `/review` in a separate session — the implementer does not self-close. If verification fails, the item reopens as `blocked` with the live-site evidence.
 - **Before authoring, fetch + checkout `origin/main` of the documentation repo.** GitBook commits directly to main as `[GITBOOK-NN]` commits; any local branch lags. (Same rule as the scan protocol in `scanners/README.md`.)
 
 ## Implementation Quality Bar
 
-Acceptance criteria on a work item are the named deliverables. The Quality Bar is the responsibility the maintainer carries on **every** change regardless of scope. If a Quality Bar check reveals an issue outside the current item's scope, log it as a new backlog item (see "Follow-up work" below) — never ignore, never just narrate.
+Acceptance criteria on a work item are the named deliverables. The Quality Bar is the responsibility the maintainer carries on **every** change regardless of scope. If a Quality Bar check reveals an issue outside the current item's scope, log it as a new backlog item (see "Follow-up work must be logged on disk" below) — never ignore, never just narrate.
 
-1. **No duplicates.** Run the pre-authoring duplication sweep before writing a single line (`main-concepts.md` Terms & Aliases → grep for each canonical term + each alias + each config key + each page-title keyword across `docs/`). Classify every hit: **Link**, **Expand-in-place**, **Consolidate**, or **New alias entry**. If a duplicate exists, consolidate or cross-link — never add a parallel copy.
+Each of the eight responsibilities below is a gate, not a principle. Review will reject an item that cannot cite evidence for each one.
 
-2. **Synonyms and aliases are logged.** Any alias or synonym encountered or introduced must land in the **Terms & Aliases** table in `docs/main-concepts.md` in the **same PR** as the page that uses it. The table is the source of truth for future searches. Silently using "M2M" without registering it as an alias of "S2S" guarantees the next maintainer rediscovers the duplicate.
+### 1. No duplicates.
 
-3. **Caveats captured.** Every feature has known limitations, performance characteristics, and security considerations that matter to operators. If the code implements one, the doc must say so — as a dedicated section, not buried in prose. Discovered-but-undocumented caveats are findings; log them.
+Run the pre-authoring duplication sweep before writing a single line (`main-concepts.md` Terms & Aliases → grep for each canonical term + each alias + each config key + each page-title keyword across `docs/`). Classify every hit: **Link**, **Expand-in-place**, **Consolidate**, or **New alias entry**. If a duplicate exists, consolidate or cross-link — never add a parallel copy.
 
-4. **Code ↔ doc cross-check.** For every functional claim in the doc, verify against the code (`../odd-platform`, `../odd-collectors`, `../opendatadiscovery-specification`). For every user-visible code path, verify the doc covers it in one of the four shapes: **feature**, **known limitation**, **performance note**, or **security consideration**. Missing coverage in either direction is itself a finding worth logging.
+### 2. Synonyms and aliases are logged.
 
-5. **Layout and completeness.** `SUMMARY.md` reflects the real page list; orphan pages are adopted or deleted; index / `README.md` / section-landing pages stay in sync with SUMMARY; headings match the TOC levels.
+Any alias or synonym encountered or introduced must land in the **Terms & Aliases** table in `docs/main-concepts.md` in the **same PR** as the page that uses it. The table is the source of truth for future searches. Silently using "M2M" without registering it as an alias of "S2S" guarantees the next maintainer rediscovers the duplicate.
 
-6. **Publishing standards always.** Every doc change ships with live-site verification on `docs.opendatadiscovery.org`. Build-time rendering and live-site rendering are not the same system; only the live site is authoritative.
+### 3. Caveats captured.
+
+Every feature has known limitations, performance characteristics, and security considerations that matter to operators. If the code implements one, the doc must say so — as a dedicated section (hint / admonition block), not buried in prose. Discovered-but-undocumented caveats are findings; log them. The attachment ephemeral-default and the S3 region constraint are the reference cases — both were in the code, both were operator-breaking, both were silent.
+
+### 4. Consumer-read before authoring. (Gate)
+
+Every claim a doc makes about runtime behavior must be traced to the code that enforces it. You do not write the claim from the YAML file or from a feature's PR description — you write it from the consumer code. Required reads, per claim type:
+
+- **Config keys** — `application.yml` declaration + **every** `@Value` / `@ConfigurationProperties` consumer + the bean factory / service that wires them. If a key has multiple consumers (e.g. `odd.platform-base-url` feeds Slack and email), read each.
+- **SDK integrations** (S3/MinIO, JavaMailSender/SMTP, OAuth2/OIDC/Keycloak/Okta/Azure AD clients, Slack webhook, LDAP, Redis, OTLP exporter, JDBC/R2DBC, AWS SSM) — open the bean factory that builds the client. Apply rule #5 (below).
+- **Feature claims** — controller → service → repository trace, plus any scheduled / event-driven side effects.
+- **Error / retry / timeout claims** — the explicit handler and config, not "the SDK probably retries".
+
+**Every implementation commit must include a `Consumer-read:` footer** listing the consumer files read during authoring, by `file:line` (or `file:method` for long files). Commits without this footer fail review by default.
+
+Example:
+```
+docs: document attachment storage config [DOC-008]
+
+Consumer-read:
+- odd-platform-api/src/main/resources/application.yml:215-224
+- odd-platform-api/.../config/MinioConfig.java:1-35
+- odd-platform-api/.../service/attachment/remote/RemoteFileUploadServiceImpl.java:1-120
+```
+
+### 5. Unset-parameter audit for SDK integrations. (Gate)
+
+For every SDK / client builder in the code path behind the change, enumerate builder parameters and mark each with explicit status:
+
+- `{parameter}: configured from {config.key}` — explicitly wired.
+- `{parameter}: safely defaulted — {rationale}` — the SDK default is acceptable in ODD's deployment context; a brief note in the doc is enough (or no note, if the SDK default is obvious and inherited upstream).
+- `{parameter}: caveat-defaulted — {limitation}` — the SDK default is unsafe or surprising in ODD's context; **must ship as a known limitation** (admonition block, dedicated section, not inline prose). If the code can be fixed, also log a platform-side backlog item; the doc ships the caveat now.
+
+**The DOC-008 root cause was an unset `.region(...)` on `MinioAsyncClient.builder()`.** Under this rule the MinIO builder would have been enumerated the moment the attachment-storage doc was authored and the region constraint would have surfaced in review, not by user spot-check. This is why this check is its own responsibility and not a footnote to #4.
+
+### 6. Bidirectional code ↔ doc coverage.
+
+For every user-visible code path touched by the change, verify the doc covers it as a **feature**, **known limitation**, **performance note**, or **security consideration**. Missing coverage in either direction is itself a finding to log as a backlog item. "Found but out of scope" is acceptable and the correct action; "not looked" is not.
+
+### 7. Layout and completeness.
+
+`SUMMARY.md` reflects the real page list; orphan pages are adopted or deleted; index / `README.md` / section-landing pages stay in sync with SUMMARY; headings match the TOC levels. A new page ships with its SUMMARY entry and all link-backs in the **same commit**.
+
+### 8. Publishing standards always.
+
+Every doc change ships with live-site verification on `docs.opendatadiscovery.org` (performed by `/review`, not the implementer). Build-time rendering and live-site rendering are not the same system; only the live site is authoritative. If a URL returns a GitHub-fallback substring or the intended change isn't visible, the item reopens as `blocked`.
 
 ## Autonomous Execution and Batching
 
@@ -142,7 +201,7 @@ Minimize user interventions. This maintenance system runs at scale — tens of s
 - `/implement <ID>` is a **batch starter**, not a single-item command. After finishing the named item, scan the backlog for continuation candidates (same `target_repo`, no file conflicts with already-touched files, small or medium effort, related `scanner_source` or feature area) and keep going until the batch is naturally complete.
 - **One branch per batch, not per item.** Name the branch after the theme (e.g., `feature/docs-quality-xrefs`, `feature/critical-odd-platform-config`). Per-item commits stay so `git log` retains the ID trail; the branch groups them.
 - **One PR per repo per batch.** The PR body enumerates each item by ID with a one-line summary. State-side changes (odd-team) get their own single PR covering the whole batch's bookkeeping.
-- **Post-merge verification is per batch, not per item.** Fetch all affected live URLs in one pass.
+- **Review (and live-site verification) is per batch, not per item.** `/review` fetches all affected live URLs in one pass.
 
 ### When to pause and ask the user
 
@@ -152,7 +211,7 @@ Minimize user interventions. This maintenance system runs at scale — tens of s
 - A scope-expansion judgment call ("this pulls in 5 more items — expand the batch, or split?")
 - The batch is complete — surface one review request with the full list
 
-Silence is not the target; savvy judgment is. Don't bundle unrelated items together, don't skip acceptance criteria or Quality Bar checks to speed through a batch, don't merge logically distinct changes into one commit, don't skip live-site verification.
+Silence is not the target; savvy judgment is. Don't bundle unrelated items together, don't skip acceptance criteria or Quality Bar checks to speed through a batch, don't merge logically distinct changes into one commit, don't skip live-site verification, don't self-mark items `done`.
 
 ### Follow-up work must be logged on disk
 
@@ -172,10 +231,11 @@ If during implementation or any phase you discover a bug, gap, or adjacent issue
 - Navigation files are living pointers — update immediately when stale
 - Incorrect documentation has higher priority than missing documentation
 - Scanner decomposition must fit in a single session (~100K tokens of working context)
+- Implementer cannot self-mark `done`; review is a separate session
 
 ## Priority Order
 
-1. **Critical**: Incorrect documentation (actively misleading)
-2. **High**: Missing tests for complex/fragile features, incomplete docs
+1. **Critical**: Incorrect documentation (actively misleading) — including any caveat that would lead to data loss or security exposure in a default deployment
+2. **High**: Missing tests for complex/fragile features, incomplete docs, undocumented SDK caveats
 3. **Medium**: Missing documentation for existing features, code navigation gaps
 4. **Low**: Keyword additions, cosmetic cross-references, nice-to-have comments

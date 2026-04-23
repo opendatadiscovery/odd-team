@@ -1,53 +1,177 @@
 ---
 name: review
-description: Verify a completed work item meets acceptance criteria and has no regressions.
-argument-hint: <work-item-id>
-allowed-tools: Read Grep Glob Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
+description: Verify a `review-ready` work item (or an entire batch) meets every acceptance criterion and every Quality Bar responsibility. Reject by default — each check requires cited evidence. Must run in a session distinct from the `/implement` session that produced the item.
+argument-hint: <work-item-id> | batch:<branch-name>
+allowed-tools: Read Grep Glob WebFetch Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
 ---
 
-# Review Work Item
+# Review Work Item / Batch
 
-Review completed work item `$ARGUMENTS`.
+You are reviewing `$ARGUMENTS`. The item (or batch) is in `status: review-ready`. Your job is to flip it to `done` **only** if every gate below passes with cited evidence. The default verdict is **rejection**. "Looks fine" is not a verdict.
+
+This SKILL exists because `/implement` is not allowed to self-close items. On 2026-04-23 a silent AWS S3 region caveat (`MinioConfig.java` never calling `.region(...)`) shipped under the old bar — every one of the 17 items closed before that date was self-closed by the same session that implemented it. A separate-session review with a checklist would have caught it. This is that checklist.
+
+## Hard prerequisites
+
+Refuse to run if any of these are true:
+
+- `$ARGUMENTS` is empty → list every `review-ready` item and ask which to review.
+- The work item status is not `review-ready` → print the status and stop. Only `review-ready` items are reviewable.
+- **You are the same session that implemented the item.** Check the conversation context. If you just ran `/implement` and now `/review` was called without an intervening session boundary, stop and surface that — self-review defeats the gate. The user (or operator of a CI wrapper) must start a fresh session.
+- The work item's commit is missing a `Consumer-read:` footer AND the item's claims are code-backed → reject immediately with "missing Consumer-read footer" and set status to `blocked`.
 
 ## Protocol
 
-1. **Orient** — Read:
-   - `CLAUDE.md`
-   - The work item file (status should be `done`)
-   - The commit that implemented it (from git log in target repo)
+### 1. Orient
 
-2. **Check acceptance criteria** — For each criterion:
-   - Read the modified/created files
-   - Verify the criterion is actually met (not just superficially)
-   - For "test passes" criteria → run the test
-   - For "doc is accurate" criteria → verify against implementation code
+Read, in order:
+- `CLAUDE.md` — team identity, Quality Bar (eight responsibilities), lifecycle.
+- `backlog/README.md` — status transitions, rules.
+- The work item file — status, acceptance criteria, Context, Implementation Record.
+- The commit(s) that implemented it — `git log --format=full <branch>` in the target repo. Extract the `Consumer-read:` footer; you will verify every file listed.
 
-3. **Check for regressions**:
-   - Run the relevant test suite for the target repo
-   - For doc changes: verify links, references still valid
-   - For code comments: verify accuracy against surrounding code
-   - For test additions: verify they test what they claim
+### 2. Verify acceptance criteria — one-by-one, cite evidence
 
-4. **Check navigation consistency**:
-   - Are file paths in `navigation/domains/*.md` still correct?
-   - Did the change affect any cross-references?
+For each `- [ ]` / `- [x]` criterion:
+- Read the file(s) the criterion references.
+- Write a one-line verdict: `PASS: {evidence file:line or URL}` or `FAIL: {what's missing}`.
+- A criterion is not "superficially met". "Section exists" fails if the section is a placeholder. "Warning present" fails if the warning is buried in prose instead of an admonition block.
 
-5. **Verdict** — Append to work item file:
+### 3. Verify Quality Bar responsibilities — each is a gate
 
-   ```markdown
-   ## Review (YYYY-MM-DD)
-   - **Result**: ACCEPTED | REJECTED
-   - **Criteria check**: [pass/fail per criterion]
-   - **Regressions**: none | [description]
-   - **Notes**: [if rejected, what needs fixing]
-   ```
+Each of the eight responsibilities in `CLAUDE.md` is a gate. Record evidence per gate.
 
-   If REJECTED: set status back to `pending` with explanation.
+#### Gate 1 — No duplicates
+
+- Grep the doc tree for each canonical term the item touches (consult `main-concepts.md` Terms & Aliases).
+- Verify the Implementation Record's duplication-sweep classifications are honest: every hit was either linked, expanded-in-place, consolidated, or aliased.
+- **FAIL** if a parallel copy of the same content exists under a different name with no cross-link.
+
+#### Gate 2 — Synonyms and aliases are logged
+
+- If the item introduced or used an alias (e.g., M2M ↔ S2S, Alternative Secrets Backend ↔ Collector Secrets Backend), check `docs/main-concepts.md` Terms & Aliases for a row in the same PR.
+- **FAIL** if an alias is used in the authored content but not in the table.
+
+#### Gate 3 — Caveats captured
+
+- For each integration touched, list what the implementation record (or Phase 2 audit) claims are the caveats.
+- Read the authored doc: is every caveat present as an admonition block (hint, warning, danger) or dedicated section, not buried in prose?
+- **FAIL** if a known limitation from the consumer-read audit is missing from the doc.
+
+#### Gate 4 — Consumer-read evidence (the critical gate)
+
+For every file listed in the commit's `Consumer-read:` footer:
+- Read the file at the cited lines.
+- Verify the doc's claims match what the consumer code actually does.
+- If the consumer feeds an SDK builder, verify Gate 5 against it.
+
+For every config key / env var mentioned in the doc change:
+- Grep the target repo for `@Value.*{key}` (or the Python/pydantic equivalent).
+- If there is a consumer not in the footer, and the consumer affects behavior the doc describes, the footer is incomplete → **FAIL** with "Consumer-read footer missing: {file}".
+
+#### Gate 5 — Unset-parameter audit
+
+For every SDK / client builder in the consumer-read path:
+- Look up the SDK's official builder parameters.
+- For each parameter, classify: `configured | safely-defaulted | caveat-defaulted`.
+- For every `caveat-defaulted` parameter, verify it's documented in the change as a known limitation.
+- **FAIL** if an SDK builder has an unset parameter with an unsafe default that the doc does not mention. This is the DOC-008 gate.
+
+Example (what a passing verdict looks like for MinIO):
+```
+Gate 5 — MinioAsyncClient.builder() (MinioConfig.java:22)
+  .endpoint(url)         — configured from attachment.remote.url         ✓
+  .credentials(...)      — configured from attachment.remote.{access,secret}-key ✓
+  .region(...)           — caveat-defaulted (us-east-1 only); doc hints at Features.md:XX  ✓
+  .httpClient(...)       — safely-defaulted (OkHttp default timeout acceptable for LAN)    ✓
+PASS
+```
+
+A failing verdict looks like:
+```
+Gate 5 — MinioAsyncClient.builder() (MinioConfig.java:22)
+  .region(...)           — caveat-defaulted (us-east-1 only); doc makes NO mention  ✗
+FAIL — reopen as blocked with "document region caveat"
+```
+
+#### Gate 6 — Bidirectional code ↔ doc coverage
+
+- Every functional claim in the authored doc → evidence file:line in the commit or verifiable now.
+- Every user-visible code path touched (controller methods, API endpoints, UI components, SDK calls) → doc coverage as feature / limitation / performance / security.
+- **FAIL** if either direction has gaps the Implementation Record did not log as follow-up work.
+
+#### Gate 7 — Layout and completeness
+
+- If a page was added / renamed / removed: `SUMMARY.md` entry present? Every `README.md` / index link updated?
+- Orphan pages? Broken section headings? Heading levels match TOC depth?
+- **FAIL** on any inconsistency not explicitly covered by another in-scope item.
+
+#### Gate 8 — Publishing standards (live-site verification)
+
+MANDATORY for every `target_repo: documentation` item. Wait for the GitBook build (typically ≤5 min after merge; if the PR is not yet merged, this gate is deferred until after merge, and the item stays in `review-ready`).
+
+For each affected page (per the Implementation Record's live-URL list):
+- Compute the live URL: `docs/a/b/c.md` → `https://docs.opendatadiscovery.org/a/b/c`; `README.md` collapses to the directory URL.
+- `WebFetch` the URL.
+- Verify:
+  - Page loads with the intended change visible (quote the authored text back).
+  - No `github.com/opendatadiscovery/documentation/blob/` substrings appear anywhere in the rendered HTML (GitBook fallback signature).
+  - Every relative link touched resolves to `docs.opendatadiscovery.org`, not to `github.com`.
+  - Sidebar entry present for any newly-added page.
+- **FAIL** on any of the above. Quote the failing evidence (URL + observed substring).
+
+### 4. Check for regressions
+
+- Run the relevant test suite for the target repo (if any).
+- For doc changes: click-check (programmatically) every link on the affected pages via WebFetch.
+- For code comments: verify against surrounding code.
+- For test additions: verify they test what they claim.
+
+### 5. Check navigation consistency
+
+- Are file paths in `navigation/domains/*.md` still correct after the change?
+- Did the consumer-read audit discover new bean factories / SDK builders? Are they in navigation?
+- If the Implementation Record claims navigation was updated, verify.
+
+### 6. Verdict — append to the work item
+
+```markdown
+## Review (YYYY-MM-DD, session: <short-hash-or-label>)
+- **Result**: ACCEPTED | REJECTED
+- **Acceptance criteria**:
+  - [x] Criterion 1 — PASS ({evidence})
+  - [ ] Criterion 2 — FAIL ({reason})
+- **Quality Bar**:
+  - Gate 1 (duplicates) — PASS ({evidence})
+  - Gate 2 (aliases) — PASS ({evidence}) | N/A
+  - Gate 3 (caveats) — PASS ({evidence})
+  - Gate 4 (consumer-read) — PASS (footer verified: {files}) | FAIL ({missing})
+  - Gate 5 (unset-parameter) — PASS ({SDK builder audit}) | N/A (no SDK in scope) | FAIL ({unset caveat})
+  - Gate 6 (bidirectional coverage) — PASS ({evidence})
+  - Gate 7 (layout) — PASS ({evidence})
+  - Gate 8 (live-site) — PASS ({URL + observed text}) | DEFERRED (not yet merged)
+- **Regressions**: none | {description}
+- **Navigation**: consistent | {what needs update}
+- **Notes**: {free text, especially if any gate was DEFERRED}
+```
+
+- **All gates PASS and no deferrals**: flip `status: review-ready` → `status: done`. Update `state/PROGRESS.md` counts.
+- **Any gate FAIL**: flip `status: review-ready` → `status: blocked`. Leave the verdict in the item. Surface to the user with the specific failure and the fix the implementer needs to do.
+- **Any gate DEFERRED** (typically Gate 8 because the PR isn't merged yet): leave `status: review-ready`. Re-run `/review` after the merge to close out Gate 8.
+
+### 7. Batch mode
+
+If `$ARGUMENTS` starts with `batch:` (e.g., `batch:feature/critical-odd-platform-config`):
+- Identify every item on the branch via `git log` (look for `[DOC-NNN]` in commit messages).
+- Run the per-item protocol for each.
+- Produce one combined verdict table at the end. Individual items may FAIL while others PASS.
 
 ## Rules
 
-- Be strict on acceptance criteria
-- Be lenient on style (if correct and functional, don't nitpick)
-- If test passes but tests the wrong thing → reject
-- If doc is technically correct but misleading → reject with specific feedback
-- If `$ARGUMENTS` is empty, list items with status `done` that haven't been reviewed
+- **Reject is the default.** If you cannot cite evidence for a gate, it fails. Do not mark PASS on faith.
+- Be strict on acceptance criteria and Quality Bar gates; be lenient on prose style.
+- If a test passes but tests the wrong thing → FAIL.
+- If a doc is technically correct but misleading → FAIL with specific feedback.
+- Never modify the authored files during review. If fixes are obvious and trivial (a typo you happened to spot), log them as a follow-up backlog item and let the implementer roll them in.
+- If `$ARGUMENTS` is empty → list every item with `status: review-ready` and ask which to review.
+- If `$ARGUMENTS` refers to an item not in `review-ready` → explain the current status and stop.

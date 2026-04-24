@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-24 — **DOC-027, DOC-028, DOC-063 all flipped `review-ready` → `done`** after a separate-session `/review` pass. PR #23 (content-accuracy batch: DOC-027 + DOC-028) and PR #24 (canonical vocabulary: DOC-063) landed in `documentation` main; GitBook rebuilt; Gate 8 live-site verification PASSed on all three. Per-item verdicts appended to the backlog files with cited evidence per Quality Bar gate and Gate 9 SoT class.
+Last updated: 2026-04-24 — **DOC-037 + DOC-061 shipped `review-ready` on `feature/docs-enable-security-fixes`** (documentation) and `feature/docs-enable-security-fixes-state` (odd-team). DOC-037 closes the last pending critical (permissions-list regeneration — with a Gate-9-flavored scope contraction, see the batch notes below); DOC-061 closes the Gate-6 follow-up surfaced during Phase-C review of DOC-001 (Azure AD logout-uri NPE gap). Earlier on 2026-04-24, **DOC-027, DOC-028, DOC-063 all flipped `review-ready` → `done`** after a separate-session `/review` pass on the content-accuracy + canonical-vocabulary batches. PR #23 (DOC-027 + DOC-028) and PR #24 (DOC-063) landed in `documentation` main; GitBook rebuilt; Gate 8 live-site verification PASSed on all three. Per-item verdicts appended to the backlog files with cited evidence per Quality Bar gate and Gate 9 SoT class.
 
 **Content-accuracy batch status (DOC-027 + DOC-028)** — `/review` (separate session) assessed both on 2026-04-23: **Gates 1–7 PASS on both**, **Gate 8 DEFERRED on both** because `feature/docs-accuracy-features-fixes` on `documentation` is 3 commits ahead of `origin/main` (PR not merged yet; live `WebFetch` of `docs.opendatadiscovery.org/features` still renders the OLD Pandas claim + `{dataset_id}` placeholder). Per protocol, both items stay `review-ready` until merge + GitBook rebuild; re-run `/review DOC-027` and `/review DOC-028` afterward to close Gate 8 and flip to `done`. Per-item verdicts appended to the backlog files with cited evidence per gate.
 
@@ -28,17 +28,57 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 41 | 0 | 0 | 20 | 0 | 2 | 63 |
+| DOC | 39 | 0 | 2 | 20 | 0 | 2 | 63 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **41** | **0** | **0** | **20** | **0** | **2** | **63** |
+| **Total** | **39** | **0** | **2** | **20** | **0** | **2** | **63** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
 On 2026-04-23 the Phase C `/review` pass (separate session) flipped all 13 review-ready items → `done`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Per-item verdicts appended to each backlog file with cited evidence per Quality Bar gate. One Gate-6 follow-up was logged on disk during the review: **DOC-061** (pending, high) — Azure AD `logout-uri` documentation gap (consumer: `AzureLogoutSuccessHandler.java:30-48`; NPE without it). Pending count rises 41 → 42 from this addition; review-ready 13 → 0; done 4 → 17; total 60 → 61.
 
 On 2026-04-23 Phase C flipped 13 older self-closed done items to `review-ready`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Each carries a `## Re-Audit (2026-04-23)` section with per-gate evidence. Two items (DOC-001, DOC-013) required in-scope amendments: DOC-013 added four caveat admonitions to `collectors-secrets-backend.md`, DOC-001 fixed the Azure admin-groups claim default description on `oauth2-oidc.md`. Amendments shipped on `feature/phase-c-reaudit-amendments` (documentation). The remaining 11 items passed without amendment; most are small cross-reference or hygiene items, the two feature items (DOC-003 S2S, DOC-029 activity events) were verified against current consumer code with no drift.
+
+### 2026-04-24 enable-security batch (DOC-037 + DOC-061) — review-ready
+
+Batch: `feature/docs-enable-security-fixes` (documentation), paired with `feature/docs-enable-security-fixes-state` (odd-team). Two commits, one per item, Gate-9 `Sources:` footer on both.
+
+**DOC-037 — permissions-list regeneration.** The 2026-04-20 finding claimed "20+ missing permissions + 4 ghost entries" in `permissions.md`. By 2026-04-24, pre-authoring re-verification against `odd-platform-specification/components.yaml:160-235` showed the live doc already carried all 75 enum entries and zero ghosts — intervening `[GITBOOK-NN]` web-editor commits had closed the primary gap. Classic stale-finding class (the same failure mode the 2026-04-22 re-verification sweep documented). Scope contracted from "regenerate list" to "ship AC #5 (generator/source note) + clean up structural inconsistencies the rewrite surfaces."
+
+What shipped (`728bb52`):
+- New generator hint block pointing at `github.com/opendatadiscovery/odd-platform/blob/main/odd-platform-specification/components.yaml` — closes AC #5 and makes future enum-vs-doc drift self-auditing.
+- **Lookup Table permissions split into their own section** (intro list went 4→5 types). Rationale: operator-managed reference data is not platform administration; grouping `LOOKUP_TABLE_*` with `DATA_SOURCE_*` / `COLLECTOR_*` misled readers.
+- Cross-section miscategorization fixed: `QUERY_EXAMPLE_DATASET_*` (Data entity → Query Example), `QUERY_EXAMPLE_TERM_*` (Term → Query Example), `TERM_CREATE` (Management → Term).
+- Formatting hygiene: unified heading style, unified entry punctuation (`` * `PERMISSION`. Description. ``), removed `&#x20;` HTML-entity cruft on two lines, fixed one typo on `DATASET_FIELD_ENUMS_UPDATE`.
+- Pre-commit verification: `grep | diff` against the enum confirmed 75-for-75 match (only delta is `ALL`, which is not in the enum by design).
+
+Sources footer: `components.yaml:160-235`; `architecture.md` row "odd-platform".
+
+**DOC-061 — Azure AD logout-uri.** Closes the Gate-6 follow-up from DOC-001 Phase-C review on 2026-04-23. Claim trail: `AzureLogoutSuccessHandler.java:30-48` calls `URI.create(provider.getLogoutUri())`; `provider.getLogoutUri()` returns null when the Azure config does not set `logout-uri`; `URI.create(null)` throws NPE; the logout flow returns 500. `ODDOAuth2Properties.java:43` declares `logoutUri` as a generic `OAuth2Provider` field with no `@PostConstruct` null-check. Cognito already documents `logout-uri` at `oauth2-oidc.md:57`; Azure section did not — operators reading only the Azure section had no way to discover the requirement until production broke.
+
+What shipped (`62cf718`):
+- Preamble prose for both tenancy modes mentions `logout-uri` as a mode-differing URI key.
+- `logout-uri` added to single-tenant and multi-tenant YAML + env-var tabs (4 examples total), placed adjacent to existing URI keys.
+- New Notes bullet explains the Azure OIDC logout endpoint shape (`/{tenant-id|organizations|common}/oauth2/v2.0/logout`) and why ODD redirects there on logout.
+- New `{% hint style="warning" %}` admonition explicitly naming `URI.create(provider.getLogoutUri())` and the NPE / 500 failure mode.
+- New troubleshooting bullet tying "logout returns 500 or never completes" back to an unset `logout-uri`.
+
+Sources footer: `AzureLogoutSuccessHandler.java:30-48` + `:21`; `ODDOAuth2Properties.java:43`; `oauth2-oidc.md:57` (Cognito precedent); `architecture.md` row "odd-platform".
+
+**Navigation update** on the state branch: `navigation/domains/authentication.md` Auth Package listing now lists `AzureLogoutSuccessHandler.java` (with the `@Conditional(AzureCondition.class)` and NPE-if-unset note) alongside the generic `OAuthLogoutSuccessHandler.java` — closes the navigation gap that let the handler stay un-pointed-at through the earlier Phase-C re-audit. The same file's Permissions subsection was updated from "58 entries / outdated" to "75 entries / generator hint links back to enum."
+
+**Out-of-scope follow-up candidates, intentionally not filed this session**:
+- Platform-side: `AzureLogoutSuccessHandler` could defensively null-check `provider.getLogoutUri()` (or `@PostConstruct validate()` in `ODDOAuth2Properties` could reject Azure configs with a null `logout-uri`). The doc warning ships now; the code defensiveness is a quality-of-life improvement, not a data-loss risk. Worth a future upstream issue draft but not this session.
+- Meta: the stale-finding-on-DOC-037 pattern (critical flagged in an old scan, resolved by intervening GitBook commits, not caught by scanners because no re-enumeration happened) continues to suggest a coverage-staleness scanner. Already partially addressed by the 2026-04-22 "fetch origin/main before scan" rule; a complementary scanner that diffs `backlog/` findings against current doc state would close the loop. Not filing yet — wait until a second instance of this pattern confirms the pattern before adding machinery.
+
+Effect on counts: review-ready 0 → 2 (DOC-037, DOC-061); pending 41 → 39; total unchanged at 63.
+
+**Open for `/review`** in a separate session (batch form: `/review batch:feature/docs-enable-security-fixes`):
+- WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions` — confirm 5-section layout, generator hint block renders, all 75 enum entries present (run the same grep/diff check the implementer used), no HTML-entity cruft visible.
+- WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc#azure-ad` — confirm `logout-uri` in all 4 config tabs, warning admonition renders as an amber hint, troubleshooting bullet present.
+- Gate 9 outbound-URL sweep: the single new URL introduced is the components.yaml GitHub link — verify it resolves (path + file still exists on `main`).
+- After Gate 8 PASS, flip both items `review-ready` → `done`. After that flip, zero critical-priority pending items remain.
 
 ### 2026-04-23 DOC-063 — canonical vocabulary landed in main-concepts.md
 
@@ -186,7 +226,7 @@ Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in
 
 ## Current Status
 
-Phase: **Audit In Progress + content-accuracy and canonical-vocabulary batches closed out** — 4 scanners complete, 1 in progress, 22 remaining. 20 DOC items `done` (DOC-027 + DOC-028 + DOC-063 all flipped `review-ready` → `done` on 2026-04-24 after Gate 8 live-site verification passed on `docs.opendatadiscovery.org/features`, `.../use_cases/dq_visibility`, and `.../main-concepts`). Next critical candidate is DOC-037 (regenerate permissions list from OpenAPI spec).
+Phase: **Audit In Progress + enable-security batch shipped review-ready** — 4 scanners complete, 1 in progress, 22 remaining. 20 DOC items `done`; 2 `review-ready` awaiting separate-session `/review` (DOC-037 permissions regeneration, DOC-061 Azure logout-uri). After `/review` accepts both, zero `critical`-priority items will remain pending — the backlog shifts from critical-driven to high/medium-driven. Next implementation candidate after that flip is the `odd-platform.md` continuation batch (DOC-007 / 009 / 010 / 011 / 019 — all same-file, sequential).
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)

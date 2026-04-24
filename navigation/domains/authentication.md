@@ -13,7 +13,8 @@ OAuth2, LDAP, login form, session management (in-memory/PostgreSQL/Redis), RBAC.
 ### Auth Package
 - `odd-platform-api/.../auth/` — auth managers, extractors, logout handlers, conditions
 - `odd-platform-api/.../auth/condition/AuthorizationManagerCondition.java` — conditional auth manager loading
-- `odd-platform-api/.../auth/logout/OAuthLogoutSuccessHandler.java` — OAuth logout (e.g., Cognito redirect)
+- `odd-platform-api/.../auth/logout/OAuthLogoutSuccessHandler.java` — Generic OAuth logout handler (e.g., Cognito redirect)
+- `odd-platform-api/.../auth/logout/AzureLogoutSuccessHandler.java` — Azure-specific logout handler (`@Conditional(AzureCondition.class)`); builds redirect from `provider.getLogoutUri()` — **NPE if `logout-uri` unset**
 
 ### OAuth2 Providers (from code — application.yml lines 66-156)
 - Cognito: `provider=cognito`, supports admin-groups, logout-uri
@@ -44,9 +45,9 @@ OAuth2, LDAP, login form, session management (in-memory/PostgreSQL/Redis), RBAC.
 - IN_MEMORY, INTERNAL_POSTGRESQL, REDIS
 - Config: `session.provider` in application.yml
 
-### Permissions (from OpenAPI spec, 58 entries)
-See `odd-platform-specification/components.yaml` lines 158-235 for canonical list.
-Documented list is outdated — missing ~20 permissions, has 4 ghost entries.
+### Permissions (from OpenAPI spec, 75 entries)
+See `odd-platform-specification/components.yaml` lines 160-235 for canonical list (the `Permission` enum).
+Documented at `docs/configuration-and-deployment/enable-security/authorization/permissions.md`; page carries a generator hint linking back to the enum so drift is visible.
 
 ## Tests
 <!-- To be populated -->

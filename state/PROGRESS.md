@@ -1,6 +1,6 @@
 # Progress Dashboard
 
-Last updated: 2026-04-24 — **DOC-037 + DOC-061 shipped `review-ready` on `feature/docs-enable-security-fixes`** (documentation) and `feature/docs-enable-security-fixes-state` (odd-team). DOC-037 closes the last pending critical (permissions-list regeneration — with a Gate-9-flavored scope contraction, see the batch notes below); DOC-061 closes the Gate-6 follow-up surfaced during Phase-C review of DOC-001 (Azure AD logout-uri NPE gap). Earlier on 2026-04-24, **DOC-027, DOC-028, DOC-063 all flipped `review-ready` → `done`** after a separate-session `/review` pass on the content-accuracy + canonical-vocabulary batches. PR #23 (DOC-027 + DOC-028) and PR #24 (DOC-063) landed in `documentation` main; GitBook rebuilt; Gate 8 live-site verification PASSed on all three. Per-item verdicts appended to the backlog files with cited evidence per Quality Bar gate and Gate 9 SoT class.
+Last updated: 2026-04-24 — **Enable-security batch (DOC-037 + DOC-061) flipped `review-ready` → `done`** after a separate-session `/review` pass on `feature/docs-enable-security-fixes` (documentation, merged to main as PR #25 → commit `db15b72`). Both items ACCEPTED. Gate-by-gate evidence appended to each backlog file with citations across Spec, Repo, Handler, Config, Config-consumer SoT classes; outbound-URL sweep ran clean; live-site WebFetch on both pages confirmed the authored content renders with no `github.com/opendatadiscovery/documentation/blob/` fallback substring. Earlier on 2026-04-24, **DOC-027, DOC-028, DOC-063 all flipped `review-ready` → `done`** after a separate-session `/review` pass on the content-accuracy + canonical-vocabulary batches. PR #23 (DOC-027 + DOC-028) and PR #24 (DOC-063) landed in `documentation` main; GitBook rebuilt; Gate 8 live-site verification PASSed on all three. Per-item verdicts appended to the backlog files with cited evidence per Quality Bar gate and Gate 9 SoT class. **Effect: zero critical-priority items remain — the backlog is now high/medium-driven.**
 
 **Content-accuracy batch status (DOC-027 + DOC-028)** — `/review` (separate session) assessed both on 2026-04-23: **Gates 1–7 PASS on both**, **Gate 8 DEFERRED on both** because `feature/docs-accuracy-features-fixes` on `documentation` is 3 commits ahead of `origin/main` (PR not merged yet; live `WebFetch` of `docs.opendatadiscovery.org/features` still renders the OLD Pandas claim + `{dataset_id}` placeholder). Per protocol, both items stay `review-ready` until merge + GitBook rebuild; re-run `/review DOC-027` and `/review DOC-028` afterward to close Gate 8 and flip to `done`. Per-item verdicts appended to the backlog files with cited evidence per gate.
 
@@ -28,17 +28,29 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 39 | 0 | 2 | 20 | 0 | 2 | 63 |
+| DOC | 39 | 0 | 0 | 22 | 0 | 2 | 63 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **39** | **0** | **2** | **20** | **0** | **2** | **63** |
+| **Total** | **39** | **0** | **0** | **22** | **0** | **2** | **63** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
 On 2026-04-23 the Phase C `/review` pass (separate session) flipped all 13 review-ready items → `done`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Per-item verdicts appended to each backlog file with cited evidence per Quality Bar gate. One Gate-6 follow-up was logged on disk during the review: **DOC-061** (pending, high) — Azure AD `logout-uri` documentation gap (consumer: `AzureLogoutSuccessHandler.java:30-48`; NPE without it). Pending count rises 41 → 42 from this addition; review-ready 13 → 0; done 4 → 17; total 60 → 61.
 
 On 2026-04-23 Phase C flipped 13 older self-closed done items to `review-ready`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Each carries a `## Re-Audit (2026-04-23)` section with per-gate evidence. Two items (DOC-001, DOC-013) required in-scope amendments: DOC-013 added four caveat admonitions to `collectors-secrets-backend.md`, DOC-001 fixed the Azure admin-groups claim default description on `oauth2-oidc.md`. Amendments shipped on `feature/phase-c-reaudit-amendments` (documentation). The remaining 11 items passed without amendment; most are small cross-reference or hygiene items, the two feature items (DOC-003 S2S, DOC-029 activity events) were verified against current consumer code with no drift.
+
+### 2026-04-24 enable-security batch (DOC-037 + DOC-061) — `/review` ACCEPTED both
+
+Separate-session `/review` on 2026-04-24 flipped both items `review-ready` → `done`. Per-item verdicts appended to `backlog/docs/DOC-037.md` and `backlog/docs/DOC-061.md` with cited evidence per Quality Bar gate and Gate 9 SoT class.
+
+**DOC-037 — ACCEPTED.** All 5 ACs PASS; Gates 1/3/4/6/7/8/9 PASS; Gates 2/5 N/A. Key evidence: `grep | diff` against `odd-platform-specification/components.yaml:160-235` confirms 75 enum entries match the doc one-for-one (only `ALL` is an intentional addition); generator hint block renders on `docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions`; no `github.com/opendatadiscovery/documentation/blob/` fallback URL in the rendered page; outbound URL to `github.com/opendatadiscovery/odd-platform/blob/main/odd-platform-specification/components.yaml` verified by WebFetch.
+
+**DOC-061 — ACCEPTED.** All 6 ACs PASS; Gates 1/3/4/6/7/8/9 PASS; Gates 2/5 N/A. Key evidence: `AzureLogoutSuccessHandler.java:30-48` confirmed to call `URI.create(provider.getLogoutUri())` with no null guard, vs. `CognitoLogoutSuccessHandler.java:33-35`'s `StringUtils.isEmpty` guard — the doc's Azure-specific framing is accurate. `ODDOAuth2Properties.java:43` has `private String logoutUri;` and `@PostConstruct validate()` (lines 16-28) does not null-check it. Live-site WebFetch of `docs.opendatadiscovery.org/.../oauth2-oidc` renders the warning admonition with the exact authored NPE / 500 wording, the Notes bullet with the endpoint shape for single-tenant / organizations / common, and the new troubleshooting bullet.
+
+**Standing follow-up candidate** (not filed this session; documented in both items' verdict Notes): the Azure vs Cognito asymmetry — Azure handler lacks the null guard Cognito has. Either add `StringUtils.isEmpty` guard to `AzureLogoutSuccessHandler` or extend `ODDOAuth2Properties.validate()` to reject Azure configs with a null `logout-uri`. Doc warning protects operators; code fix is quality-of-life, not data-loss. Defer until a second independent signal motivates filing.
+
+Effect on counts: review-ready 2 → 0; done 20 → 22; total unchanged at 63. **Zero critical-priority items remain** — backlog is now high/medium-driven. Natural next batch candidate is `odd-platform.md` continuation (DOC-007 / 009 / 010 / 011 / 019 — same-file, sequential).
 
 ### 2026-04-24 enable-security batch (DOC-037 + DOC-061) — review-ready
 
@@ -226,7 +238,7 @@ Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in
 
 ## Current Status
 
-Phase: **Audit In Progress + enable-security batch shipped review-ready** — 4 scanners complete, 1 in progress, 22 remaining. 20 DOC items `done`; 2 `review-ready` awaiting separate-session `/review` (DOC-037 permissions regeneration, DOC-061 Azure logout-uri). After `/review` accepts both, zero `critical`-priority items will remain pending — the backlog shifts from critical-driven to high/medium-driven. Next implementation candidate after that flip is the `odd-platform.md` continuation batch (DOC-007 / 009 / 010 / 011 / 019 — all same-file, sequential).
+Phase: **Audit In Progress; critical backlog cleared** — 4 scanners complete, 1 in progress, 22 remaining. 22 DOC items `done` (DOC-037 + DOC-061 flipped `done` on 2026-04-24 after separate-session `/review`); zero `review-ready`; zero `critical`-priority items remain. Backlog now high/medium-driven. Next implementation candidate is the `odd-platform.md` continuation batch (DOC-007 / 009 / 010 / 011 / 019 — all same-file, sequential).
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)

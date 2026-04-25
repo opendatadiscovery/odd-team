@@ -28,7 +28,8 @@ Business terms, definitions, term-to-entity assignments, term hierarchy.
 - `GET /api/terms/{term_id}/entities` — linked entities
 - `GET /api/terms/{term_id}/columns` — linked columns
 - `GET /api/terms/{term_id}/linked_terms` — linked terms
-- `POST/DELETE /api/terms/{term_id}/linked_terms/{linked_term_id}` — term-to-term
+- `POST /api/terms/{term_id}/term` — link an existing term to another term (`addLinkedTermToTerm`)
+- `DELETE /api/terms/{term_id}/term/{linked_term_id}` — remove a term-to-term link (`deleteLinkedTermFromTerm`)
 - `POST/DELETE /api/terms/{term_id}/query_examples` — query examples
 
 ## Documentation

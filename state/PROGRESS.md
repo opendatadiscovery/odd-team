@@ -34,17 +34,63 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 18 | 0 | 0 | 48 | 0 | 2 | 68 |
+| DOC | 15 | 0 | 3 | 48 | 0 | 2 | 68 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **18** | **0** | **0** | **48** | **0** | **2** | **68** |
+| **Total** | **15** | **0** | **3** | **48** | **0** | **2** | **68** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
 On 2026-04-23 the Phase C `/review` pass (separate session) flipped all 13 review-ready items → `done`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Per-item verdicts appended to each backlog file with cited evidence per Quality Bar gate. One Gate-6 follow-up was logged on disk during the review: **DOC-061** (pending, high) — Azure AD `logout-uri` documentation gap (consumer: `AzureLogoutSuccessHandler.java:30-48`; NPE without it). Pending count rises 41 → 42 from this addition; review-ready 13 → 0; done 4 → 17; total 60 → 61.
 
 On 2026-04-23 Phase C flipped 13 older self-closed done items to `review-ready`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Each carries a `## Re-Audit (2026-04-23)` section with per-gate evidence. Two items (DOC-001, DOC-013) required in-scope amendments: DOC-013 added four caveat admonitions to `collectors-secrets-backend.md`, DOC-001 fixed the Azure admin-groups claim default description on `oauth2-oidc.md`. Amendments shipped on `feature/phase-c-reaudit-amendments` (documentation). The remaining 11 items passed without amendment; most are small cross-reference or hygiene items, the two feature items (DOC-003 S2S, DOC-029 activity events) were verified against current consumer code with no drift.
+
+### 2026-04-26 odd-platform.md operator-caveat trio (DOC-049 + DOC-060 + DOC-059) — review-ready
+
+Batch branch: `feature/docs-odd-platform-operator-caveats` (documentation), paired with `feature/docs-odd-platform-operator-caveats-state` (odd-team). Cut from freshly-fetched `origin/main` of `documentation` at `06f766e` (the merged auth-precision PR #37). Three commits, one per item, Gate-9 `Sources:` footer on each. Themed continuation: all three items live on the single file `docs/configuration-and-deployment/odd-platform.md` and surfaced from prior consumer-read re-audits (DOC-049 from F-041 undocumented-features, DOC-059 from the DOC-006 re-audit, DOC-060 from the DOC-018 re-audit). No file conflicts with any in-flight or review-ready item; sequenced DOC-049 → DOC-060 → DOC-059 to keep each commit scoped to a contiguous section of the page.
+
+**DOC-049** (medium, `b96f313`) authors a new `### Additional navigation links (`odd.links`)` H3 inside the existing "Platform-level settings (`odd.*`)" H2. The section documents the `odd.links[].title` + `odd.links[].url` config shape (per `AdditionalLinkProperties.java:6-9`'s record-binding under `@ConfigurationProperties("odd")`), the default-empty-list behavior (per `LinksController.java:22-36` returning `LinkList` when `CollectionUtils.isEmpty(linkProperties.links())`), where the links render in the UI (App Info menu opened from the Information icon, per `AppInfoMenu.tsx:18,55-69`), and a YAML+env-var pair using Spring Boot relaxed-binding indexed-list form (`ODD_LINKS_0_TITLE` / `ODD_LINKS_0_URL`). The H2 intro at line 711 was bumped from "three" to "four" `odd.*` settings and the cross-referenced `odd.platform-base-url` count renumbered from "fourth" to "fifth". A `hint style="info"` admonition warns operators that every signed-in user can read the configured links via the App Info menu and the unauthenticated-by-default `/api/links` endpoint (auth posture verified via `SecurityConstants.WHITELIST_PATHS:96` not including `/api/links`, combined with `AuthorizationCustomizer.java:29` `pathMatchers("/**").authenticated()`) — so secrets must not be embedded in link URLs.
+
+**DOC-060** (medium, `3dee5d4`) rewrites the `odd.platform-base-url` bullet (was line 347) to enumerate all three `@Value` consumers — Slack sender (`SlackMessageGeneratorConfiguration.java:15-18`, default `http://localhost:8080`), email sender (`NotificationConfiguration.java:105`, default `http://localhost:8080`), and integration-parameter substitution (`StaticArgumentMappingContext.java:14-20`, default **`http://your.odd.platform`**). Three accuracy corrections shipped in the same commit:
+1. **Removed false webhook-consumer claim.** The prior bullet listed the webhook sender as a consumer of `odd.platform-base-url`. Negative-evidence read of `WebhookNotificationSender.java:1-31` shows the webhook sender only injects `notifications.receivers.webhook.url` and POSTs the alert JSON directly — never references the platform URL. Citation pinned in the Sources footer so a future scanner does not re-introduce the misclaim.
+2. **Documented the inconsistent default in the third consumer.** Two consumers default to `http://localhost:8080`; the third defaults to the placeholder `http://your.odd.platform` that resolves DNS to nothing on a normal network. A `hint style="warning"` admonition immediately under the bullet explicitly tells operators deploying integrations without notifications that they must set `ODD_PLATFORM_BASE_URL` or integrations using `{platform_url}` substitution will receive the placeholder.
+3. **Reframed the H2 intro** at line 711 — the previous "its only consumers are the notification senders" phrasing is now "the key has both notification and integration consumers and must be set in any non-local deployment regardless of which subsystems are enabled".
+
+**DOC-059** (medium, `0520d05`) restructures the "Select session provider" section from a tabs-only shared layout into per-provider H3 subsections (`### IN_MEMORY (default)`, `### INTERNAL_POSTGRESQL`, `### REDIS`), each carrying a "Characteristics & caveats" H4 list and its own YAML+env-var example tabs. Three accuracy corrections shipped in the same change:
+1. **Migrated all Redis property prefixes** from the legacy Spring Boot 2.x `spring.redis.*` form to the current `spring.data.redis.*` form. `build.gradle:2` confirms odd-platform runs Spring Boot 3.4.10; Spring Boot 3.0 relocated all Redis properties under `spring.data.redis.*` and removed the legacy prefix entirely. A `hint style="warning"` admonition at the end of the REDIS subsection explicitly warns operators that the legacy prefix is silently ignored on Spring Boot 3.x — silent connection failure with confusing fallback to `localhost:6379`. This is the most-impactful caveat surfaced by the batch and the most-likely upgrade footgun for anyone migrating from a Spring Boot 2.x ODD Platform deployment.
+2. **Identified the custom `JooqSessionRepository`.** The new INTERNAL_POSTGRESQL subsection makes explicit that ODD Platform implements a custom `JooqSessionRepository` rather than using the standard Spring Session JDBC, so operators don't fruitlessly look for `spring.session.jdbc.*` keys.
+3. **Documented the hardcoded housekeeping cadence.** `PostgreSQLSessionHousekeepingJobHandler.java:13` carries `@Scheduled(fixedRate = 1, timeUnit = TimeUnit.HOURS)` — the new INTERNAL_POSTGRESQL caveats list documents both the cadence (not configurable) and the sizing implication (up to one hour of post-expiry stragglers in `SPRING_SESSION` / `SPRING_SESSION_ATTRIBUTES`).
+
+**Upstream issue draft filed** — `issues/odd-platform/PLT-007.md` (adjustment, drafted 2026-04-26 during DOC-060 implementation). Proposes unifying the inline `@Value` defaults across the three `odd.platform-base-url` consumers — either Option A (single default declared in `application.yml`, all inline defaults removed) or Option B (fail-fast on unset by removing all defaults and not adding one to `application.yml`). The doc-side caveat shipped under DOC-060 is the immediate operator-facing fix; PLT-007 is the upstream code adjustment that would let the doc drop the warning in a future release. Filed paste-ready on disk; `draft → filed` is a deliberate human action.
+
+**Caveats surfaced and shipped in-scope**:
+- DOC-049 — links visible to every signed-in user (info admonition; warns operators not to embed secrets).
+- DOC-059 IN_MEMORY — JVM-heap session storage, no eviction policy beyond Spring Session expiry; OOM risk under high-traffic deployments running with the shipped `spring.session.timeout: -1` default. Caveats list with explicit pointer to set a finite timeout.
+- DOC-059 INTERNAL_POSTGRESQL — hardcoded hourly housekeeping; up-to-1-hour post-expiry overhang in session tables (sizing implication documented).
+- DOC-059 REDIS — `spring.redis.*` legacy prefix silently ignored on Spring Boot 3.x (warning admonition; the most-impactful caveat in the batch). TLS / pool sizing / timeout inherit Spring Data Redis defaults (caveats list).
+- DOC-060 — integrations-only deployment placeholder default; warning admonition with operator instruction.
+
+**Caveats surfaced and out of scope**:
+- PLT-007 (new this batch) — inconsistent `@Value` defaults across the three `odd.platform-base-url` consumers; doc-side warning ships now, upstream draft queued for human filing.
+- The hourly housekeeping cadence on `PostgreSQLSessionHousekeepingJobHandler` could be made configurable (a `@Scheduled` cron expression backed by a config property would be a small change). Severity low — operators tolerate the 1-hour overhang once they know about it. The doc caveat is the operator-facing fix; no PLT issue drafted.
+
+Effect on counts: pending 18 → 15 (−DOC-049, −DOC-059, −DOC-060); review-ready 0 → 3 (+DOC-049, +DOC-059, +DOC-060). Total unchanged at 68. Upstream-issues `odd-platform` row 4 → 5 (+PLT-007); total drafts 5 → 6.
+
+**Affected live-site URLs (for `/review` Gate 8):**
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform`
+  - DOC-049 anchor: `#additional-navigation-links-odd.links`
+  - DOC-059 anchors: `#in_memory-default`, `#internal_postgresql`, `#redis`, `#session-lifetime-spring-session-timeout` (existing, intra-page link from DOC-059's IN_MEMORY caveats list)
+  - DOC-060 anchor: `#enable-alert-notifications` (existing; bullet + warning admonition render under it)
+- Existing H2 anchor `#select-session-provider` must continue to resolve (DOC-059 backwards-compat).
+
+**Outbound URLs introduced**: 0 new — DOC-049 uses `example.com` illustrative placeholders (IANA-reserved, no fetch needed); DOC-059 references only the pre-existing `https://redis.io/`; DOC-060 introduces no external URLs (only the illustrative `https://odd.your-domain.com` carried over from the prior bullet).
+
+**Banned-phrase check**: clean across all three commits.
+
+**Open for `/review`** in a separate session (batch form: `/review batch:feature/docs-odd-platform-operator-caveats`). After Gate 8 PASS, flip all three items `review-ready` → `done`.
+
+**Drift reconcile in this state commit**: seven items that had transitioned `review-ready → done` in their backlog frontmatter via prior `/review` verdicts still showed as `(review-ready)` in `state/file-registry.yaml` — DOC-004, DOC-026, DOC-037, DOC-061, DOC-063, DOC-064, DOC-065. Updated all seven to `(done)` to bring the registry into agreement with the source-of-truth frontmatter, opportunistically as part of this batch's bookkeeping.
 
 ### 2026-04-26 enable-security auth-precision batch (DOC-002 + DOC-066) — review-ready
 
@@ -486,9 +532,9 @@ Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in
 
 | Target Repo | Draft | Filed | Closed | Rejected | Total |
 |-------------|-------|-------|--------|----------|-------|
-| odd-platform | 4 | 0 | 0 | 0 | 4 |
+| odd-platform | 5 | 0 | 0 | 0 | 5 |
 | odd-collectors | 1 | 0 | 0 | 0 | 1 |
-| **Total** | **5** | **0** | **0** | **0** | **5** |
+| **Total** | **6** | **0** | **0** | **0** | **6** |
 
 ### Active drafts
 
@@ -497,10 +543,11 @@ Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in
 - **PLT-003** (bug, high severity) — ingestion auth filter does not cover `/ingestion/alert/alertmanager`. Discovered during `/review DOC-019` (2026-04-24). `SecurityConstants.WHITELIST_PATHS[96]` includes `/ingestion/**`, and neither `IngestionDataEntitiesFilter.java:20,28` (scoped `/ingestion/entities` only, conditional on `auth.ingestion.filter.enabled=true`) nor `IngestionDataSourceFilter.java:20` (scoped `/ingestion/datasources` only, always active) covers the AlertManager path. Anyone with network reach to the platform can POST arbitrary AlertManager payloads and create Distribution Anomaly alerts on any data entity whose ODDRN they can guess. Doc-side: DOC-065 will correct the misleading security claim in DOC-019 and recommend perimeter controls until the platform-side fix ships. Draft at `issues/odd-platform/PLT-003.md`.
 - **COL-001** (bug, high severity) — AWS SSM secrets backend silently truncates plugin parameters at 10. `_get_secrets_by_prefix` does a single `get_parameters_by_path` call with no paginator; default `MaxResults=10` drops every plugin beyond the first ten with no error and no log warning. Production-critical for any collector with >10 plugins. Doc-side caveat already shipped under DOC-013 ("Known limitations" admonition). Draft at `issues/odd-collectors/COL-001.md`.
 - **PLT-006** (bug, high severity) — `/terms/{id}/overview` renders a blank white page when the term's payload contains a linked `TermRef` with `namespace: null`. Root cause: `ReactiveTermRepositoryImpl.java:211` aggregates the outer `NAMESPACE` table instead of the `assignedTermsNamespace` alias declared at line 196 — so any cross-namespace linked term comes back with `namespace: null`, violating the `TermRef.namespace` `required` declaration in `components.yaml:2566-2569`. Frontend collaborator: `useTermWiki.ts:55-57` non-defensively dereferences `term.namespace.name` in a lazy `useState` initializer, and there's no error boundary around `TermDefinition.tsx:21`, so the unhandled `TypeError` blanks the page with no in-app error. Reproducible on the public demo at `https://demo.oddp.io/terms/10/overview`. Discovered during interactive demo browse 2026-04-26. Draft at `issues/odd-platform/PLT-006.md`.
+- **PLT-007** (adjustment, low severity) — Unify `odd.platform-base-url` default across the three `@Value` consumers. Discovered during DOC-060 implementation (2026-04-26). `NotificationConfiguration.java:105` (email) and `SlackMessageGeneratorConfiguration.java:15` (Slack) default to `http://localhost:8080`; `StaticArgumentMappingContext.java:16` (integration-parameter substitution) defaults to the placeholder string `http://your.odd.platform`. Same logical config key, two contradictory defaults — when an operator does not set the key, integrations and notifications resolve to different values for the same concept, and the integration default isn't a URL the platform will ever serve from. Two suggested approaches in the draft (Option A: declare a single default in `application.yml` and remove inline defaults; Option B: drop all defaults and let Spring Boot fail fast on unset). Doc-side caveat shipped now under DOC-060 as a warning admonition; PLT-007 is the upstream code fix that would let the doc drop the warning in a future release. Draft at `issues/odd-platform/PLT-007.md`.
 
 ## Current Status
 
-Phase: **Audit In Progress; critical backlog cleared; odd-platform.md config batch shipped to review-ready** — 4 scanners complete, 1 in progress, 22 remaining. 22 DOC items `done`; **5 DOC items `review-ready`** (DOC-007 / 009 / 010 / 011 / 019 on `feature/docs-odd-platform-config`); zero `critical`-priority items remain. Backlog now high/medium-driven. PLT-002 (AlertManager OpenAPI spec gap) queued as draft under `issues/odd-platform/` — manual human file-to-GitHub. Next candidate after the 5-item batch merges: `findings/docs-quality-rendering/` orphan-page triage (DOC-038 / 039 / 040 / 041 / 042 stubs) or a content-accuracy fresh batch on `Features.md` (DOC-026 / 029 / 031 / 032 / 033 still pending).
+Phase: **Audit In Progress; critical backlog cleared; odd-platform.md operator-caveat trio shipped to review-ready** — 4 scanners complete, 1 in progress, 22 remaining. 48 DOC items `done`; **3 DOC items `review-ready`** (DOC-049 / DOC-059 / DOC-060 on `feature/docs-odd-platform-operator-caveats`); zero `critical`-priority items remain. Backlog now high/medium-driven (15 pending). PLT-007 (`odd.platform-base-url` inconsistent defaults) drafted on disk during this batch — total 6 upstream drafts queued for human filing under `issues/`. Next candidate after the 3-item batch merges: `findings/docs-quality-rendering/` orphan-page triage (DOC-038 / 039 / 040 / 041 / 042 stubs) or a content-accuracy fresh batch on `Features.md` (DOC-029 / 045 / 046 / 047 / 048 / 050 / 051 still pending).
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)

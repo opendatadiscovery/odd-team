@@ -443,9 +443,9 @@ Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in
 
 | Target Repo | Draft | Filed | Closed | Rejected | Total |
 |-------------|-------|-------|--------|----------|-------|
-| odd-platform | 3 | 0 | 0 | 0 | 3 |
+| odd-platform | 4 | 0 | 0 | 0 | 4 |
 | odd-collectors | 1 | 0 | 0 | 0 | 1 |
-| **Total** | **4** | **0** | **0** | **0** | **4** |
+| **Total** | **5** | **0** | **0** | **0** | **5** |
 
 ### Active drafts
 
@@ -453,6 +453,7 @@ Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in
 - **PLT-002** (enhancement, medium severity) — `POST /ingestion/alert/alertmanager` missing from OpenAPI spec. Discovered during DOC-019 implementation (2026-04-24). Controller carries an explicit `// TODO: define OpenAPI spec based on alert provider contract` — the endpoint works but is absent from Swagger UI and the generated Java/TS clients, forcing operators and downstream tooling to hand-roll HTTP calls. Doc-side payload shape shipped in prose in DOC-019 as a short-term bridge; upstream spec addition will supersede the prose with a cross-link. **Known defect in this draft**: line 56 repeats the same incorrect `"inherits the ingestion auth filter"` claim that DOC-019's review caught. PLT-002 is still `status: draft`, so the correction is safe — fold it into the DOC-065 commit or a paired state commit before filing. Draft at `issues/odd-platform/PLT-002.md`.
 - **PLT-003** (bug, high severity) — ingestion auth filter does not cover `/ingestion/alert/alertmanager`. Discovered during `/review DOC-019` (2026-04-24). `SecurityConstants.WHITELIST_PATHS[96]` includes `/ingestion/**`, and neither `IngestionDataEntitiesFilter.java:20,28` (scoped `/ingestion/entities` only, conditional on `auth.ingestion.filter.enabled=true`) nor `IngestionDataSourceFilter.java:20` (scoped `/ingestion/datasources` only, always active) covers the AlertManager path. Anyone with network reach to the platform can POST arbitrary AlertManager payloads and create Distribution Anomaly alerts on any data entity whose ODDRN they can guess. Doc-side: DOC-065 will correct the misleading security claim in DOC-019 and recommend perimeter controls until the platform-side fix ships. Draft at `issues/odd-platform/PLT-003.md`.
 - **COL-001** (bug, high severity) — AWS SSM secrets backend silently truncates plugin parameters at 10. `_get_secrets_by_prefix` does a single `get_parameters_by_path` call with no paginator; default `MaxResults=10` drops every plugin beyond the first ten with no error and no log warning. Production-critical for any collector with >10 plugins. Doc-side caveat already shipped under DOC-013 ("Known limitations" admonition). Draft at `issues/odd-collectors/COL-001.md`.
+- **PLT-006** (bug, high severity) — `/terms/{id}/overview` renders a blank white page when the term's payload contains a linked `TermRef` with `namespace: null`. Root cause: `ReactiveTermRepositoryImpl.java:211` aggregates the outer `NAMESPACE` table instead of the `assignedTermsNamespace` alias declared at line 196 — so any cross-namespace linked term comes back with `namespace: null`, violating the `TermRef.namespace` `required` declaration in `components.yaml:2566-2569`. Frontend collaborator: `useTermWiki.ts:55-57` non-defensively dereferences `term.namespace.name` in a lazy `useState` initializer, and there's no error boundary around `TermDefinition.tsx:21`, so the unhandled `TypeError` blanks the page with no in-app error. Reproducible on the public demo at `https://demo.oddp.io/terms/10/overview`. Discovered during interactive demo browse 2026-04-26. Draft at `issues/odd-platform/PLT-006.md`.
 
 ## Current Status
 

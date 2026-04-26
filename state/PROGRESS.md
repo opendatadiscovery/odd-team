@@ -34,17 +34,43 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 23 | 0 | 0 | 42 | 0 | 2 | 67 |
+| DOC | 20 | 0 | 3 | 42 | 0 | 2 | 67 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **23** | **0** | **0** | **42** | **0** | **2** | **67** |
+| **Total** | **20** | **0** | **3** | **42** | **0** | **2** | **67** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
 On 2026-04-23 the Phase C `/review` pass (separate session) flipped all 13 review-ready items → `done`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Per-item verdicts appended to each backlog file with cited evidence per Quality Bar gate. One Gate-6 follow-up was logged on disk during the review: **DOC-061** (pending, high) — Azure AD `logout-uri` documentation gap (consumer: `AzureLogoutSuccessHandler.java:30-48`; NPE without it). Pending count rises 41 → 42 from this addition; review-ready 13 → 0; done 4 → 17; total 60 → 61.
 
 On 2026-04-23 Phase C flipped 13 older self-closed done items to `review-ready`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Each carries a `## Re-Audit (2026-04-23)` section with per-gate evidence. Two items (DOC-001, DOC-013) required in-scope amendments: DOC-013 added four caveat admonitions to `collectors-secrets-backend.md`, DOC-001 fixed the Azure admin-groups claim default description on `oauth2-oidc.md`. Amendments shipped on `feature/phase-c-reaudit-amendments` (documentation). The remaining 11 items passed without amendment; most are small cross-reference or hygiene items, the two feature items (DOC-003 S2S, DOC-029 activity events) were verified against current consumer code with no drift.
+
+### 2026-04-26 Collector build-and-run page polish batch (DOC-014 + DOC-015 + DOC-017) — review-ready
+
+Batch branch: `feature/docs-collectors-build-and-run-polish` (documentation), paired with `feature/docs-collectors-build-and-run-polish-state` (odd-team). Cut from freshly-fetched `origin/main` of `documentation` at `8095454` (the merged DOC-026 re-ship). Three commits, one per item, Gate-9 `Sources:` footer on each. Themed continuation: same scanner (`docs/accuracy/config-options`), same primary file (`docs/developer-guides/build-and-run/build-and-run-odd-collectors.md`), no file conflicts. The Collector build-and-run page is now maintained end-to-end under the Gate-9 bar.
+
+**DOC-014** (high, `735cb6f`) inserts a new `### Full configuration reference` H3 between the existing minimal-config example and the `### Run ODD Collector` section. The reference documents all 9 top-level fields exposed by `CollectorConfig`: `platform_host_url`, `token`, `plugins`, `default_pulling_interval`, `connection_timeout_seconds` (default 300, HTTP-to-Platform scope explicitly named), `chunk_size` (default 250, memory-vs-throughput trade-off), `misfire_grace_time` (APScheduler grace window), `max_instances` (default 1, concurrent-runs guard), `verify_ssl` (default true, self-signed-cert use case + the in-cell security caveat on disabling). The work item description listed 8 fields; the actual `CollectorConfig` has 9 — the doc reflects the SoT, not the work item count.
+
+**DOC-015** (medium, `0283842`) updates collector repo references across two pages and adds Azure. WebFetch verified that the four standalone repos (`odd-collector`, `odd-collector-aws`, `odd-collector-gcp`, `odd-collector-azure`) were all archived on 2023-11-06 and consolidated into the active `odd-collectors` monorepo. On `build-and-run-odd-collectors.md`: opener reframed to "4 main collectors at the moment, all bundled in the [`odd-collectors`](…) monorepo"; collector list updated to monorepo subdirectory URLs; new Azure bullet names the four supported services (Azure SQL, Data Factory, Blob Storage, Power BI); SDK-mention paragraph expanded to cover the Azure SDK family; new blockquote surfaces the 2023-11-06 archival so readers following bookmarks understand why; clone command changed from `odd-collector.git` to `odd-collectors.git`; `cd` instructions updated to `odd-collectors/odd-collector` with the sub-collector list inline; config-examples link split into per-sub-collector links. On `trylocally.md`: supported-data-sources bullet list expanded from 2 to 4 entries, all pointing at the monorepo-internal README paths; the lone link below also updated. **Navigation drift discovered during the consumer-read**: `navigation/architecture.md` lines 58-61 listed the four standalone repos with archived URLs as their "Canonical URL" — but those repos are read-only since 2023. The state commit on this branch updates those four rows to the monorepo subdirectory URLs to match the `Local path` column and the user-facing `github-organization-overview.md` companion. The Gate-9 SoT and the doc change now agree.
+
+**DOC-017** (medium, `5c15771`) replaces "Python 3.9.1" with "Python 3.9 or higher (the monorepo's `pyproject.toml` files all pin `python = "^3.9"`, so any 3.9.x or later 3.x interpreter works)" in the Prerequisites list. All 6 `pyproject.toml` files in the monorepo (root, `odd-collector`, `odd-collector-aws`, `odd-collector-azure`, `odd-collector-gcp`, `odd-collector-sdk`) declare the same constraint; sub-collectors do not diverge.
+
+**Outbound URL sweep**: 13 URLs introduced across the batch (1 monorepo root, 4 sub-collector tree URLs, 4 `config_examples/` paths, 4 README paths). Every one is verified — monorepo root via WebFetch, sub-collector trees + config_examples + READMEs via local-path inspection of the cloned monorepo (`ls odd-collectors/{odd-collector*,odd-collector-{aws,gcp,azure}}/config_examples` confirms each directory exists; READMEs likewise). The four standalone repos were each WebFetched independently to confirm the 2023-11-06 archival and the read-only state.
+
+**Banned-phrase check**: clean across all three commits.
+
+**Drive-by hygiene**: `navigation/architecture.md` Canonical URL column for the 4 collector rows updated in the same state commit (drift-fix). No new alias rows in `main-concepts.md` — Terms & Aliases already covers "Collector".
+
+Effect on counts: review-ready 0 → 3 (+DOC-014, +DOC-015, +DOC-017); pending 23 → 20; total unchanged at 67.
+
+**Open for `/review`** in a separate session (batch form: `/review batch:feature/docs-collectors-build-and-run-polish`):
+
+- DOC-014 — Live URL: `https://docs.opendatadiscovery.org/developer-guides/build-and-run/build-and-run-odd-collectors`
+- DOC-015 — Live URLs: `https://docs.opendatadiscovery.org/developer-guides/build-and-run/build-and-run-odd-collectors` + `https://docs.opendatadiscovery.org/configuration-and-deployment/trylocally`
+- DOC-017 — Live URL: `https://docs.opendatadiscovery.org/developer-guides/build-and-run/build-and-run-odd-collectors`
+
+After Gate 8 PASS, flip all three items `review-ready` → `done`.
 
 ### 2026-04-24 DOC-031 re-ship (TOC anchor fix + orphan asset + alias row)
 

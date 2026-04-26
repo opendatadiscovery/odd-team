@@ -55,10 +55,10 @@ Every row states the repo's role and the single URL that is its SoT. When an ite
 | `odd-platform` | Platform | Server + UI; owns Ingress API implementation, auth, UI | <https://github.com/opendatadiscovery/odd-platform> | `../odd-platform` |
 | `opendatadiscovery-specification` | Spec | Source of truth for Ingress API and ODDRN | <https://github.com/opendatadiscovery/opendatadiscovery-specification> | `../opendatadiscovery-specification` |
 | `opendatadiscovery-specification-contracts` | Generated contracts | Multi-language stubs from the spec | <https://github.com/opendatadiscovery/opendatadiscovery-specification-contracts> | — |
-| `odd-collector` | Collector | Generic collector; hosts pull adapters for DBs, BI, streams | <https://github.com/opendatadiscovery/odd-collector> | `../odd-collectors/odd-collector` |
-| `odd-collector-aws` | Collector | Collector hosting AWS-service pull adapters | <https://github.com/opendatadiscovery/odd-collector-aws> | `../odd-collectors/odd-collector-aws` |
-| `odd-collector-azure` | Collector | Collector hosting Azure-service pull adapters | <https://github.com/opendatadiscovery/odd-collector-azure> | `../odd-collectors/odd-collector-azure` |
-| `odd-collector-gcp` | Collector | Collector hosting GCP-service pull adapters | <https://github.com/opendatadiscovery/odd-collector-gcp> | `../odd-collectors/odd-collector-gcp` |
+| `odd-collector` | Collector | Generic collector; hosts pull adapters for DBs, BI, streams | <https://github.com/opendatadiscovery/odd-collectors/tree/main/odd-collector> | `../odd-collectors/odd-collector` |
+| `odd-collector-aws` | Collector | Collector hosting AWS-service pull adapters | <https://github.com/opendatadiscovery/odd-collectors/tree/main/odd-collector-aws> | `../odd-collectors/odd-collector-aws` |
+| `odd-collector-azure` | Collector | Collector hosting Azure-service pull adapters | <https://github.com/opendatadiscovery/odd-collectors/tree/main/odd-collector-azure> | `../odd-collectors/odd-collector-azure` |
+| `odd-collector-gcp` | Collector | Collector hosting GCP-service pull adapters | <https://github.com/opendatadiscovery/odd-collectors/tree/main/odd-collector-gcp> | `../odd-collectors/odd-collector-gcp` |
 | `odd-collector-sdk` | SDK | Python SDK used by collector packages and pull adapters | (inside `odd-collectors` monorepo) | `../odd-collectors/odd-collector-sdk` |
 | `odd-collector-profiler` | Collector | Statistical data profiler collector; uses Capital One `DataProfiler` | <https://github.com/opendatadiscovery/odd-collector-profiler> | `../odd-collector-profiler` |
 | `odd-dbt` | Push adapter | dbt plugin — maps dbt test results + lineage and pushes from dbt runs | <https://github.com/opendatadiscovery/odd-dbt> | — |

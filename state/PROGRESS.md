@@ -34,17 +34,41 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 20 | 0 | 0 | 46 | 0 | 2 | 68 |
+| DOC | 18 | 0 | 2 | 46 | 0 | 2 | 68 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **20** | **0** | **0** | **46** | **0** | **2** | **68** |
+| **Total** | **18** | **0** | **2** | **46** | **0** | **2** | **68** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
 On 2026-04-23 the Phase C `/review` pass (separate session) flipped all 13 review-ready items → `done`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Per-item verdicts appended to each backlog file with cited evidence per Quality Bar gate. One Gate-6 follow-up was logged on disk during the review: **DOC-061** (pending, high) — Azure AD `logout-uri` documentation gap (consumer: `AzureLogoutSuccessHandler.java:30-48`; NPE without it). Pending count rises 41 → 42 from this addition; review-ready 13 → 0; done 4 → 17; total 60 → 61.
 
 On 2026-04-23 Phase C flipped 13 older self-closed done items to `review-ready`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Each carries a `## Re-Audit (2026-04-23)` section with per-gate evidence. Two items (DOC-001, DOC-013) required in-scope amendments: DOC-013 added four caveat admonitions to `collectors-secrets-backend.md`, DOC-001 fixed the Azure admin-groups claim default description on `oauth2-oidc.md`. Amendments shipped on `feature/phase-c-reaudit-amendments` (documentation). The remaining 11 items passed without amendment; most are small cross-reference or hygiene items, the two feature items (DOC-003 S2S, DOC-029 activity events) were verified against current consumer code with no drift.
+
+### 2026-04-26 enable-security auth-precision batch (DOC-002 + DOC-066) — review-ready
+
+Batch branch: `feature/docs-auth-precision-pkce-and-readme` (documentation), paired with `feature/docs-auth-precision-state` (odd-team). Cut from freshly-fetched `origin/main` of `documentation` at `169d944` (the merged DOC-014/068 re-ship). Two commits, one per item, Gate-9 `Sources:` footer on each. Themed continuation: both items live on the `enable-security/` subtree (DOC-002 on `authentication/oauth2-oidc.md`, DOC-066 on `enable-security/README.md`), and both surfaced from prior `/review` precision audits (DOC-066 from the DOC-004 + DOC-012 review pass on 2026-04-24; DOC-002 from the F-051 config-options scanner). No file conflicts with any in-flight or review-ready item.
+
+**DOC-002** (medium, `56a8944`) documents the `pkce` config option on the OAuth2 client. Two doc-side surfaces edited in one commit: (a) the common-parameters bullet list now declares `auth.oauth2.client.{client-id}.pkce` as Optional Boolean (default unset, i.e. disabled), explains that `pkce: true` + empty `client-secret` registers the client as `client_authentication_method=none` (PKCE protects the code exchange), and warns that with a non-empty `client-secret` the platform always uses confidential-client authentication (the `pkce` flag is silently ignored); (b) a new `#### Keycloak with PKCE` worked example in the Keycloak section pairs YAML and env-var tabs with the public-client variant (`pkce: true`, no `client-secret`, `client-authentication-method: none`), a `hint style="warning"` admonition restating the silent-fallback caveat, and a `hint style="info"` note that pkce is a generic OAuth2Provider field, not Keycloak-only. The Gate-5 unset-parameter audit on `ODDOAuth2PropertiesConverter.java:20-24` is the SoT for the silent-fallback caveat — `BooleanUtils.isTrue(pkce) && StringUtils.isBlank(clientSecret)` is the only branch that emits `ClientAuthenticationMethod.NONE`; every other branch calls `setClientSecret(...)` and skips PKCE registration entirely. The platform does not actively reject the `pkce: true` + non-empty `client-secret` combination at startup; the doc caveat is the only operator-facing signal. Out-of-scope upstream defensive-validator improvement noted in the work item; severity low (caveat now warns operators), no PLT issue drafted.
+
+**DOC-066** (low, `5bad623`) tightens the sibling-path table row at `enable-security/README.md:20`. The previous wording asserted "Unauthenticated in all configurations" — accurate under `auth.type` ∈ {`DISABLED`, `OAUTH2`, `LDAP`} (all three apply `SecurityConstants.WHITELIST_PATHS` via the permit-all branch and `AuthorizationCustomizer.java:22`'s `.pathMatchers(WHITELIST_PATHS).permitAll()`), but imprecise under `auth.type=LOGIN_FORM`. `LoginFormSecurityConfiguration.java:49-57` whitelists only five paths (`/actuator/health`, `/favicon.ico`, `/ingestion/entities`, `/ingestion/datasources`, `/api/slack/events`) and sends every other path — including sibling ingestion endpoints like `/ingestion/alert/alertmanager`, `/ingestion/entities/degs/children`, `/ingestion/entities/datasets/stats` — through the `.pathMatchers("/**").authenticated()` catch-all. The amended row now scopes the unauthenticated claim to the three production-path auth modes and notes that LOGIN_FORM session-gates the sibling paths (still insecure in practice because LOGIN_FORM is dev-only per DOC-012, but the mechanism differs). The prose paragraph at line 47 also reframed: "remain unauthenticated even when" → "remain outside the ingestion filter's coverage even when … is set; whether they fall back to UI authentication depends on `auth.type` (see the table above)". The commit body retroactively names three citation gaps the prior commits would have carried (`IngestionDataEntitiesFilter.java:43-60` for DOC-004's `README.md:19` token-validation claim, `odd-collector-sdk/odd_collector_sdk/api/datasource_api.py:21-24` for DOC-004's `README.md:26` Bearer-attachment claim, and `LoginFormSecurityConfiguration.java:70,81` for DOC-012's `@Value` consumer + ADMIN-privileges enforcement) so the audit trail catches up without rewriting history. `affected_files` lists `login-form.md` as a tracking association — no page-content edit was required there, per the work item's Implementation Notes.
+
+**Outbound URL sweep**: 1 new external URL (`https://datatracker.ietf.org/doc/html/rfc7636` — IETF stable URL for RFC 7636, no fetch needed). Internal cross-link `[LOGIN_FORM is documented as dev-only](authentication/login-form.md)` introduced on the README — local file presence verified.
+
+**Banned-phrase check**: clean across both commits.
+
+Effect on counts: pending 20 → 18 (−DOC-002, −DOC-066); review-ready 0 → 2 (+DOC-002, +DOC-066). Total unchanged at 68.
+
+**Affected live-site URLs (for `/review` Gate 8):**
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc` (DOC-002 — anchor `#keycloak-with-pkce` must resolve)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security` (DOC-066)
+
+**Caveats surfaced (in-scope, shipped):** DOC-002 silent-fallback admonition for `pkce: true` + non-empty `client-secret` (operator must choose public-client mode for PKCE to take effect); DOC-066 LOGIN_FORM session-gating distinction.
+
+**Out-of-scope follow-ups (logged or noted):** DOC-002's Implementation Notes call out a missing fail-fast validator for `pkce: true` + non-empty `client-secret`; severity low, no PLT issue drafted (the doc caveat is the operator-facing signal).
+
+After Gate 8 PASS, flip both items `review-ready` → `done`.
 
 ### 2026-04-26 Collector build-and-run page polish batch (DOC-014 + DOC-015 + DOC-017) — review-ready
 

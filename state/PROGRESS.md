@@ -34,11 +34,11 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 15 | 0 | 3 | 48 | 0 | 2 | 68 |
+| DOC | 16 | 0 | 3 | 48 | 0 | 2 | 69 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **15** | **0** | **3** | **48** | **0** | **2** | **68** |
+| **Total** | **16** | **0** | **3** | **48** | **0** | **2** | **69** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
@@ -91,6 +91,8 @@ Effect on counts: pending 18 → 15 (−DOC-049, −DOC-059, −DOC-060); review
 **Open for `/review`** in a separate session (batch form: `/review batch:feature/docs-odd-platform-operator-caveats`). After Gate 8 PASS, flip all three items `review-ready` → `done`.
 
 **Drift reconcile in this state commit**: seven items that had transitioned `review-ready → done` in their backlog frontmatter via prior `/review` verdicts still showed as `(review-ready)` in `state/file-registry.yaml` — DOC-004, DOC-026, DOC-037, DOC-061, DOC-063, DOC-064, DOC-065. Updated all seven to `(done)` to bring the registry into agreement with the source-of-truth frontmatter, opportunistically as part of this batch's bookkeeping.
+
+**Follow-up logged post-batch**: **DOC-069** (low, pending) — Features.md teaser for "Custom navigation links". DOC-049 documented the configuration mechanics on `odd-platform.md` but `Features.md` does not mention the user-visible feature at all; a 3–6 line teaser near the "Recommended panel on the main page" cluster (line 849), cross-linking to the canonical `odd.links` config section, closes the bidirectional code↔doc gap (Gate 6) without diluting Features.md's marketing-facing scope. Mirrors the DOC-019 pattern (Alerting teaser + canonical detail on `odd-platform.md`). Pending count rises 15 → 16; total 68 → 69.
 
 ### 2026-04-26 enable-security auth-precision batch (DOC-002 + DOC-066) — review-ready
 

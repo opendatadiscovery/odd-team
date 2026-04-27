@@ -132,6 +132,7 @@ These rules apply whenever an item's `target_repo` is `documentation` (GitBook-b
 
 - **Never hand-author GitBook `"mention"` links.** The `[text](target.md "mention")` shortcut is editor-native — GitBook writes an internal file-reference ID when authored in its web editor. Hand-written in git, it resolves unreliably and can silently fall back to a raw `github.com/.../blob/main/...` URL that then gets cached. Use plain markdown links: `[Title](relative/path.md)`.
 - **Ship the page, the SUMMARY.md entry, and all index/README.md links together in one PR.** Splitting them across PRs has caused fallback caching on the live site (see the 2026-04-22 S2S incident — separate SUMMARY PR left the index link stuck as a GitHub URL).
+- **In-page TOCs stay synchronized with H2s in the same commit.** Some pages (canonical example: `docs/Features.md` lines 3-29) carry an in-page Table of Contents — a list of links at the top of the page pointing to each H2 section's anchor. When a commit adds, renames, or removes an H2 on such a page, the TOC must add / rename / remove the corresponding row in the **same commit**. A new H2 without a TOC row is discoverable only by scrolling and breaks the convention every other section on the page follows. Reviewer checks this under Gate 7. Detection: read the top ~30 lines of the page being touched; if you see a sequence of `[Title](path.md#anchor)\` lines, that is the TOC. (2026-04-27: DOC-069 shipped a `## Custom navigation links` H2 on `Features.md` without the matching TOC row; caught post-merge by the user. DOC-076 was logged to close the gap.)
 - **A DOC item is not `done` until the live URL has been WebFetched and verified.** That verification is part of `/review` in a separate session — the implementer does not self-close. If verification fails, the item reopens as `blocked` with the live-site evidence.
 - **Before authoring, fetch + checkout `origin/main` of the documentation repo.** GitBook commits directly to main as `[GITBOOK-NN]` commits; any local branch lags. (Same rule as the scan protocol in `scanners/README.md`.)
 
@@ -193,7 +194,7 @@ For every user-visible code path touched by the change, verify the doc covers it
 
 ### 7. Layout and completeness.
 
-`SUMMARY.md` reflects the real page list; orphan pages are adopted or deleted; index / `README.md` / section-landing pages stay in sync with SUMMARY; headings match the TOC levels. A new page ships with its SUMMARY entry and all link-backs in the **same commit**.
+`SUMMARY.md` reflects the real page list; orphan pages are adopted or deleted; index / `README.md` / section-landing pages stay in sync with SUMMARY; headings match the TOC levels. A new page ships with its SUMMARY entry and all link-backs in the **same commit**. **In-page TOCs stay synchronized with the H2s they index** — pages with an in-page TOC at the top (canonical example: `docs/Features.md`) must update that list whenever an H2 is added, renamed, or removed on the page, in the same commit. See "Documentation Authoring Rules" above for the detection signal.
 
 ### 8. Publishing standards always.
 

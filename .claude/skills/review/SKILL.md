@@ -108,6 +108,7 @@ FAIL — reopen as blocked with "document region caveat"
 
 - If a page was added / renamed / removed: `SUMMARY.md` entry present? Every `README.md` / index link updated?
 - Orphan pages? Broken section headings? Heading levels match TOC depth?
+- **In-page TOC sync.** For every page the change touches, read the top ~30 lines. If the page carries an in-page TOC (a sequence of `[Title](path.md#anchor)\` links — canonical example: `docs/Features.md` lines 3-29), enumerate the H2s the change added / renamed / removed and verify each has a matching TOC row added / renamed / removed in the same commit. **FAIL** if a new H2 was added to such a page without a TOC row, or an H2 was renamed without the TOC row updated, or an H2 was removed without the TOC row removed. (DOC-069 shipped a new H2 on `Features.md` without the TOC row; reviewer missed it on first pass; user caught it post-merge — DOC-076 logged.)
 - **FAIL** on any inconsistency not explicitly covered by another in-scope item.
 
 #### Gate 8 — Publishing standards (live-site verification)

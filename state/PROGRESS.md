@@ -84,17 +84,33 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 1 | 0 | 0 | 74 | 4 | 2 | 81 |
+| DOC | 2 | 0 | 0 | 74 | 4 | 2 | 82 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **1** | **0** | **0** | **74** | **4** | **2** | **81** |
+| **Total** | **2** | **0** | **0** | **74** | **4** | **2** | **82** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
 On 2026-04-23 the Phase C `/review` pass (separate session) flipped all 13 review-ready items → `done`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Per-item verdicts appended to each backlog file with cited evidence per Quality Bar gate. One Gate-6 follow-up was logged on disk during the review: **DOC-061** (pending, high) — Azure AD `logout-uri` documentation gap (consumer: `AzureLogoutSuccessHandler.java:30-48`; NPE without it). Pending count rises 41 → 42 from this addition; review-ready 13 → 0; done 4 → 17; total 60 → 61.
 
 On 2026-04-23 Phase C flipped 13 older self-closed done items to `review-ready`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Each carries a `## Re-Audit (2026-04-23)` section with per-gate evidence. Two items (DOC-001, DOC-013) required in-scope amendments: DOC-013 added four caveat admonitions to `collectors-secrets-backend.md`, DOC-001 fixed the Azure admin-groups claim default description on `oauth2-oidc.md`. Amendments shipped on `feature/phase-c-reaudit-amendments` (documentation). The remaining 11 items passed without amendment; most are small cross-reference or hygiene items, the two feature items (DOC-003 S2S, DOC-029 activity events) were verified against current consumer code with no drift.
+
+### 2026-04-30 IA-hierarchy Quality-Bar rule + DOC-082 logged
+
+User feedback on 2026-04-30 (immediately after the bigbatch review): the documentation's SUMMARY.md hierarchy is "chaotic" — pages at the same depth are not always conceptual peers. Three concrete drifts named: `Directory` at top level instead of nested under a Data Discovery pillar; `GenAI assistant` at top level instead of grouped with other active-platform features (Alerting, Notifications, Activity Feed, Data Collaboration); `Build a custom collector` as a sibling of the `Build and run` group instead of nested inside it.
+
+**Rule codified across the rails:**
+
+- **CLAUDE.md Cornerstone 2** extended with "Hierarchy depth must reflect conceptual depth" — pages at the same SUMMARY depth must be conceptual peers; convenience-placements (page lands at root or wrong depth because no clean parent was identified at authoring time) are the failure class to catch.
+- **CLAUDE.md Quality Bar Gate 7** extended with explicit IA-hierarchy-sanity sub-rule and the three concrete drift examples as canonical fail cases.
+- **`/review` SKILL.md Gate 7** extended with the IA-hierarchy review protocol — read SUMMARY entries for the new page and its siblings; verify peers, parent broadness, and the "sibling of a parent group" trap; FAIL on convenience-placements; pre-existing drift not made worse by the current change passes (route to a separate refactor item).
+- **`/implement` SKILL.md** extended with a pre-authoring placement check — walk the conceptual tree before adding a SUMMARY entry; three legitimate outcomes when no clean parent exists (nest under existing parent / expand scope to add the missing pillar / escalate as a placement-judgment call); avoid the "sibling of a parent group" trap.
+- **Memory**: `feedback_ia_hierarchy_sanity.md` added to the user's auto-memory so future sessions hold the rule.
+
+**Concrete refactor logged:** DOC-082 (pending, medium) — re-home Directory + GenAI assistant + Build a custom collector to their conceptual parents in SUMMARY.md. Three drifts treated independently because (a) drift 3 is a small mechanical move that exercises the new Gate 7 rule, (b) drift 1 needs a new Data Discovery pillar landing and warrants Cornerstone-2 alignment, (c) drift 2 (GenAI grouping) requires user decision between Option A (new "Active platform features" group) and Option B (extend an existing pillar) before authoring. The user is the decision-maker on the Option A vs B choice.
+
+**Effect on counts**: pending 1 → 2 (+1: DOC-082); total 81 → 82 (+DOC-082).
 
 ### 2026-04-30 big-batch `/review` verdict (separate session: review-bigbatch) — 6 ACCEPTED → done, 1 REJECTED → blocked, plus PLT-009 + DOC-081 logged
 

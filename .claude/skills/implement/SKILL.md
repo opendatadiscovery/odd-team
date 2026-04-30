@@ -75,7 +75,21 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
 
 1. **Flip status** — set the item's frontmatter to `status: in-progress`.
 
-2. **Run the Source-of-Truth verification** (Quality Bar #4 + #5 + #9, MANDATORY — covers every claim class in the Gate 9 SoT table, not only integration-backed claims):
+2. **Hold the Principal stance — Pre-authoring stance check** (cognitive, MANDATORY before any sub-section is written; the gates verify output, this catches scattered intent at the moment of authoring). Per CLAUDE.md "Pre-authoring stance check (cognitive)", run all five questions for each sub-section the change will introduce:
+
+   1. **What content type is this section?** (Feature / API reference / Configuration / Deployment / ADR / Glossary / Developer guide / Integration / Example / Troubleshooting / Other.) Name it before authoring.
+   2. **Where is the canonical home for this type?** Per Cornerstone 5 + the canonical-home table. Three legitimate outcomes:
+      - Canonical home exists → link to it from the feature page; do not embed.
+      - Canonical home is sparse → extend the canonical home; link from the feature page; both surfaces ship in the same commit.
+      - No canonical home → propose adding one as a Cornerstone-5 decision (escalate to user) OR log a backlog item to add the home, with the embedded content explicitly marked "temporary until DOC-NNN ships the canonical home."
+      The 2026-04-30 lookup-tables / `developer-guides/api-reference` case is the canonical failure of this question — operationalize this question every time you see a `Spec:` line in your draft Sources footer (= API reference content) or a `Config:` line (= configuration reference content), and check the homing.
+   3. **Where does this page sit in the global SUMMARY taxonomy?** Per Cornerstone 2 hierarchy-depth rule. Walk SUMMARY top-down; verify peers at the chosen depth are conceptual peers. The "sibling of a parent group" trap is what this question catches.
+   4. **Does this change preserve the WHY?** Read the change as if it shipped to `docs.opendatadiscovery.org` tomorrow morning and an operator three years from now Googled the affected page. Are they better off, or just looking at locally-correct prose that the global picture undermines?
+   5. **Would I be ashamed to see this change quoted back to me by an angry operator?** The Pride-as-Mechanism rule.
+
+   If any answer reveals a structural mismatch, **stop and address the structural question first** — extend the canonical home, propose the new pillar, or escalate. Do not author over a known mismatch.
+
+3. **Run the Source-of-Truth verification** (Quality Bar #4 + #5 + #9, MANDATORY — covers every claim class in the Gate 9 SoT table, not only integration-backed claims):
    Work through the claim inventory from Phase 1 step 6. For each claim class, verify against its SoT before writing the claim text.
    - **Config-key claims**: open every `@Value` / `@ConfigurationProperties` consumer for each key. Record `file:line`.
    - **SDK / Builder claims**: enumerate every builder parameter and classify each as `configured | safely-defaulted | caveat-defaulted` (Quality Bar #5). Every `caveat-defaulted` parameter is either:
@@ -91,7 +105,7 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
    - **If you find a caveat that is in scope for the current item, you must ship the caveat in the same PR.** Shipping a fix for the visible bug while leaving the silent caveat for "next time" is the failure mode this audit exists to prevent.
    - Fill the `Sources:` footer draft with every SoT touched, by class.
 
-3. **Author the change** — follow acceptance criteria, hold the full nine-gate Quality Bar:
+4. **Author the change** — follow acceptance criteria, hold the full ten-gate Quality Bar:
    - **No duplicates.** Duplication sweep already classified every collision; honor those decisions.
    - **Synonyms and aliases logged.** Any alias encountered or introduced → row in `docs/main-concepts.md` Terms & Aliases table, in this same PR.
    - **Caveats captured.** Every caveat surfaced by the consumer-read audit is in the doc as a dedicated section, not prose.
@@ -107,10 +121,11 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
      4. **Avoid the "sibling of a parent group" trap**: if the candidate placement would put the new page next to a group that has its own subpages, ask whether the new page belongs *inside* that group instead. Past drift example: `Build a custom collector` placed as a sibling of the `Build and run` group instead of nested inside it.
      5. **Existing drift is not yours to fix mid-batch** — if you notice the candidate parent or its surrounding tree carries pre-existing IA drift (e.g., `Directory` shouldn't be top-level), log a separate `DOC-NNN` refactor item; don't bundle the IA refactor into the current item unless the implementer-side AC explicitly covers it. Reviewer Gate 7 will reject *new* convenience drift but accept inherited drift that the current change does not make worse.
    - **Factual provenance (Gate 9).** Every claim in the text corresponds to a row in your `Sources:` draft. If a claim has no SoT entry, either verify now and add the row, or remove the claim. **No "from memory" claims.**
+   - **Content type homing (Gate 10).** For every authored sub-section: identify the content type (per Cornerstone 5 table) and verify the canonical home is targeted, not a feature page. **Signal: if your `Sources:` draft contains 3+ `Spec:` lines for one feature, you are authoring API-reference content; the canonical home is `developer-guides/api-reference`, not the feature page.** Same for 5+ `Config:` / `Config-consumer:` lines (configuration reference content; canonical home `configuration-and-deployment/odd-platform.md`). Three legitimate outcomes: link to canonical home, extend canonical home + link, or escalate as Cornerstone-5 decision. **Do not silently embed.** This catches the 2026-04-30 lookup-tables / `developer-guides/api-reference` failure class — and the four similar `## API surface` sub-sections we shipped in DOC-034 / DOC-047 / DOC-050 (logged as DOC-083 for the systemic refactor).
    - **Outbound URLs verified.** Every `github.com/opendatadiscovery/...` URL, every live-site link, every external docs link written in this change has been fetched or confirmed against the SoT named in the claim inventory. No hand-authored URLs based on pattern guesses.
    - **No functional changes** to application code — only docs, tests, comments, spec alignment.
 
-4. **Follow-up work auto-logging** — if the change reveals an out-of-scope issue:
+5. **Follow-up work auto-logging** — if the change reveals an out-of-scope issue:
    - **Before creating any new `DOC-NNN`**: grep `backlog/` for the concept (canonical term + aliases from `main-concepts.md`) to confirm it isn't already covered. 2026-04-23 — a retrospective proposed a new "integrations hub" item without checking; DOC-042 already covered it at higher fidelity. The rails catch this only if you run them.
    - **Trivial + related** (typo on an adjacent line, obvious whitespace): fold into the current commit and note in the commit body.
    - **Small + fits the batch**: create `backlog/{cat}/DOC-NNN.md` with full frontmatter and acceptance criteria, update `state/file-registry.yaml`, update `state/PROGRESS.md` counts, add to the batch, reference in the originating item's Context.
@@ -119,19 +134,19 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
    - **Scope-changing** (e.g., "fixing this link requires restructuring 5 pages"): stop and surface the judgment call to the user before proceeding.
    - **Never** write "noted as follow-up" or "recommend logging this" without the file on disk. Narration is not logging — neither for backlog items nor for issue drafts.
 
-5. **Authoring rules for `target_repo: documentation`**:
+6. **Authoring rules for `target_repo: documentation`**:
    - Never hand-author `[text](target.md "mention")` links — GitBook's `"mention"` shortcut is editor-native and falls back to raw GitHub URLs when written in git. Use plain markdown `[Title](target.md)`.
    - When creating a new page, the same commit must include: the page file, the `SUMMARY.md` entry, and any index / README link. Splitting these has caused cached fallbacks on the live site.
    - When adding a page for a feature that already has a `Features.md` section: the `Features.md` section collapses to a 2-sentence teaser linking to the canonical page. No parallel descriptions.
    - Before committing, grep the working tree for `"mention"` on the lines you touched; rewrite as plain links.
 
-6. **Verify locally**:
+7. **Verify locally**:
    - Every acceptance criterion met
    - Every Quality Bar responsibility #1–#9 has citable evidence (file:line for code-backed claims, URL for published pages, SoT class for every factual claim)
    - Outbound URL sweep: `grep -nE "https?://(github\.com|docs\.opendatadiscovery\.org|.*opendatadiscovery.*)"` across the lines this item touched, verify every hit is in the `Sources:` footer (WebFetched or `gh repo view`'d)
    - Tests (if any) pass, no regressions
 
-7. **Commit** on the batch branch:
+8. **Commit** on the batch branch:
    - Stage only the files this item touches
    - Message format:
      ```
@@ -151,7 +166,7 @@ Repeat per item. The Quality Bar in `CLAUDE.md` is not optional — acceptance c
    - Include only the classes that apply. Legacy `Consumer-read:` footer form is still accepted for items whose only claims are config / builder (strict subset of `Sources:`), but new work should use `Sources:` so review can map each line back to the Gate 9 SoT table.
    - The footer is **mandatory** for any item whose claims are code-backed or include outbound URLs / repo names. Documentation-only grammar / prose polish items (no factual claim) may omit it; note `Sources: none (prose polish, no factual claim)` so review knows you considered it.
 
-8. **Flip status to `review-ready`** — not `done`. Record in the item's Context:
+9. **Flip status to `review-ready`** — not `done`. Record in the item's Context:
    - The list of affected pages (for live-site verification).
    - The `Sources:` footer contents (even if already in the commit, duplicating here makes `/review` cheap).
    - The **outbound URL list** the item touched (every `github.com/opendatadiscovery/*`, `docs.opendatadiscovery.org/*`, and external docs URL written in this change), so Gate 9 can re-fetch without grepping.

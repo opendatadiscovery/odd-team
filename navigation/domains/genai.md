@@ -12,10 +12,16 @@ AI-powered question answering — proxies natural language questions to an exter
 - Calls external AI endpoint at `{genai.url}/query_data` with `{"question": "..."}` payload
 - Handles timeout errors with configurable request timeout
 
+### Bean factory
+- `odd-platform-api/.../config/WebClientConfiguration.java` — `@Bean("genAiWebClient")` builder; wires `GenAIProperties.url` → `WebClient.baseUrl(...)` and `Duration.ofMinutes(GenAIProperties.requestTimeout)` → `HttpClient.responseTimeout(...)`. WebClient is constructed once at startup; config changes require a Platform restart.
+
 ### Configuration (application.yml lines 17-20)
 - `genai.enabled` — feature toggle (default: false)
-- `genai.url` — external AI service URL (e.g., `http://localhost:5000`)
-- `genai.request_timeout` — timeout in minutes (default: 2)
+- `genai.url` — external AI service URL (Java field default: empty string `""`; commented application.yml example: `http://localhost:5000`)
+- `genai.request_timeout` — timeout in minutes (Java primitive default: `0` → `Duration.ofMinutes(0)` = immediate timeout; commented application.yml example: `2`)
+
+### Exception handler
+- `odd-platform-api/.../controller/exception/ControllerAdvice.java:55-56` — `@ExceptionHandler(GenAIException.class)` + `@ResponseStatus(HttpStatus.INTERNAL_SERVER_ERROR)`; both timeout and non-timeout error paths surface as HTTP 500.
 
 ### Properties
 - `odd-platform-api/.../config/properties/GenAIProperties.java`

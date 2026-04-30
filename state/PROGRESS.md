@@ -84,17 +84,71 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 8 | 0 | 1 | 67 | 1 | 2 | 79 |
+| DOC | 0 | 0 | 7 | 68 | 3 | 2 | 80 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **8** | **0** | **1** | **67** | **1** | **2** | **79** |
+| **Total** | **0** | **0** | **7** | **68** | **3** | **2** | **80** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
 On 2026-04-23 the Phase C `/review` pass (separate session) flipped all 13 review-ready items → `done`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Per-item verdicts appended to each backlog file with cited evidence per Quality Bar gate. One Gate-6 follow-up was logged on disk during the review: **DOC-061** (pending, high) — Azure AD `logout-uri` documentation gap (consumer: `AzureLogoutSuccessHandler.java:30-48`; NPE without it). Pending count rises 41 → 42 from this addition; review-ready 13 → 0; done 4 → 17; total 60 → 61.
 
 On 2026-04-23 Phase C flipped 13 older self-closed done items to `review-ready`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Each carries a `## Re-Audit (2026-04-23)` section with per-gate evidence. Two items (DOC-001, DOC-013) required in-scope amendments: DOC-013 added four caveat admonitions to `collectors-secrets-backend.md`, DOC-001 fixed the Azure admin-groups claim default description on `oauth2-oidc.md`. Amendments shipped on `feature/phase-c-reaudit-amendments` (documentation). The remaining 11 items passed without amendment; most are small cross-reference or hygiene items, the two feature items (DOC-003 S2S, DOC-029 activity events) were verified against current consumer code with no drift.
+
+### 2026-04-30 big-batch (DOC-080 + DOC-077 + DOC-034 + DOC-079 + DOC-047 + DOC-050 + DOC-062) — review-ready, plus DOC-067 + DOC-078 → blocked
+
+Batch branch: `feature/docs-bigbatch-2026-04-30` (documentation), paired with `feature/docs-bigbatch-2026-04-30-state` (odd-team). Cut from freshly-fetched `origin/main` of `documentation` at `72041ca` (the merged DOC-045 GenAI feature page). The user invoked `/implement` with the directive "all pending items in one go (batch)" — 9 items in scope at start. 7 shipped to `review-ready`; 2 marked `blocked` because the work is genuinely unworkable without external state (UI access for screenshot capture; populated upstream README).
+
+**Items shipped (7 commits, one per item, Sources footer on each)**
+
+- **DOC-080** (low, `3fbc1be`) — three small GenAI gaps from DOC-045 review: HTTP 500 status added to both GenAIException paragraphs in genai.md "Platform endpoint" section (matching the BadUserRequestException → HTTP 400 statement); WebClientConfiguration bean factory + ControllerAdvice exception handler entries added to navigation/domains/genai.md; line-18 `genai.request_timeout` default re-framed to Java primitive `0` → `Duration.ofMinutes(0)` immediate timeout (the commented application.yml example `2` is not a default).
+- **DOC-077** (low, `44efff1`) — re-framed `spring.custom-datasource.{url,username,password}` defaults across `lookup-tables.md` and `configuration-and-deployment/odd-platform.md`. The `@Value("${spring.custom-datasource.X:}")` declarations in `R2DBCConfiguration.java:54-69` default to empty string; the JDBC URL / username / password values shown in the doc are the primary `spring.datasource.*` defaults that R2DBCConfiguration cascades to via `StringUtils.isBlank(...)`. Doc now explains the cascade explicitly so a sysadmin who's overridden `spring.datasource.url` predicts the correct `spring.custom-datasource.url` resolution.
+- **DOC-034** (medium, `2c6add7`) — added "### API surface" sub-section under "## Enable Data Collaboration" enumerating 7 routes: 2 outbound to provider (Slack channels list + post message), 4 per-entity threads/history, 1 inbound webhook (`/api/slack/events`). Confirmed Slack manifest's `event_subscriptions.request_url` matches `EventApiController.java:22` (no manifest correction needed; the original DOC-034 finding's uncertainty resolved). Documented `datacollaboration.message-partition-period` binding via `@Value` on `MessageTablePartitionManager.java:19` (separate from `DataCollaborationProperties`, which only carries the two advisory-lock IDs and the retry count).
+- **DOC-079** (low, `ff9be7d`) — `git mv docs/deployment.md docs/configuration-and-deployment/deployment.md` so the file path matches the GitBook URL slug `/configuration-and-deployment/deployment` (GitBook routes from SUMMARY hierarchy, not file paths). SUMMARY entry rewired; 3 sibling back-link files updated `[Deployment Options](../deployment.md)` → `[Deployment Options](deployment.md)`; inline relative links inside the moved page rewired (sibling configuration-and-deployment/X.md → X.md; ../developer-guides; ../integrations). Sources footer correctly stated `Sources: none (file relocation; no factual claim change)`.
+- **DOC-047** (medium, `9f9dc21`) — new `docs/directory.md` page (~80 lines, 5 H2 sections) documenting the Directory feature: 4-level navigation hierarchy (data source types → data sources → entity types → entities) mapped to the 4 backing API endpoints + UI URL pattern. Features.md gained a teaser H2 + matching in-page-TOC row (Quality Bar Gate 7 sync). SUMMARY gained a top-level `Directory` entry next to Features and the pillar landings.
+- **DOC-050** (medium, `e557bf9`) — new `docs/integrations/integration-wizard.md` page (~60 lines, 7 H2 sections) documenting the in-app Integration Wizard. Coordination decision against DOC-042 resolved: the Wizard is **orthogonal** to the Integrations hub (it's a `collector_config.yaml`-snippet generator for the same set of pull adapters); placed nested under the hub. Features.md "Integration Wizards" H2 collapsed from a 4-figure walkthrough to a 2-paragraph teaser pointing at the new page (Cornerstone 2 — single canonical source); H2 anchor `id-6aa7` preserved. Hub README gained a new `## Integration Wizard (in-app UI)` section. SUMMARY entry under the Integrations group, after `odd-cli`.
+- **DOC-062** (high, `dd0f437`) — outbound URL audit on commit `dd0f437`. Sweep classified 95+ ODD-org URLs against `navigation/architecture.md` Canonical Repo Table; 2 doc-side findings shipped (oddrn-models-package legacy display name → canonical odd-models-package; commit-pinned URL on Features.md filtering example → `blob/main/...`) plus 1 navigation gap closed in the state PR (`oddrn-generator` SDK row added to architecture.md). Repeatable scanner shipped at `scanners/docs/quality/outbound-urls.md` with 5 finding classes (mismatch / dead / navigation-gap / stale-pin / terminology-drift); coverage manifest seeded at `state/coverage/docs-quality-outbound-urls.yaml` covering all ~60 .md files.
+
+**Items moved to blocked (2)**
+
+- **DOC-067** (low) — Catalog Overview screenshot. AC1-3 require a live deployment with seeded data (one tag, one domain, one datasource, non-empty Entities report) so all six Overview sections render with content. Not feasible in a docs-only session. AC4 (delete orphan `report.png` if no other page references it) was confirmed independently satisfiable but held for the same commit when an implementer with UI access picks up.
+- **DOC-078** (low) — Tracing Gateway description tightening. Re-fetched the upstream `odd-tracing-gateway` README on 2026-04-30; both `main` and `master` branches still 404. The current cleaned-up `deployment.md` prose remains the stable form until the upstream SoT is populated.
+
+**Effect on counts**: pending 8 → 0 (−9: −7 to review-ready, −2 to blocked); review-ready 1 → 7 (+7); blocked 1 → 3 (+2: DOC-067, DOC-078); total reconciled 79 → 80 (the prior-row "Total 79" was stale because DOC-080 had landed as a pending item between reviews; this batch reconciles to disk-actual count).
+
+**Affected live-site URLs (for `/review` Gate 8)**
+
+- `https://docs.opendatadiscovery.org/genai` (DOC-080 — HTTP 500 lines)
+- `https://docs.opendatadiscovery.org/lookup-tables` (DOC-077 — Direct database access cascade)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` (DOC-077 + DOC-034 + DOC-079 — three changes on same page)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/deployment` (DOC-079 — same content at the canonical URL post-move)
+- `https://docs.opendatadiscovery.org/deployment` (DOC-079 — confirm 404 as expected, not a redirect)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/trylocally` (DOC-079 — back-link)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/quick_launch_on_amazon_elastic_kubernetes_service` (DOC-079 — back-link)
+- `https://docs.opendatadiscovery.org/directory` (DOC-047 — new page)
+- `https://docs.opendatadiscovery.org/features` (DOC-047 + DOC-050 + DOC-062 — Directory teaser + Integration Wizards collapse + commit-pinned URL fix)
+- `https://docs.opendatadiscovery.org/integrations/integrations/integration-wizard` (DOC-050 — new sub-page; nested URL form per DOC-042's GitBook routing finding)
+- `https://docs.opendatadiscovery.org/integrations/integrations` (DOC-050 — hub README has new Integration Wizard section)
+- `https://docs.opendatadiscovery.org/developer-guides/github-organization-overview` (DOC-062 — odd-models-package display fix)
+
+**Outbound URLs introduced**
+
+- `https://github.com/opendatadiscovery/oddrn-generator` (state PR — added to navigation/architecture.md). Verified-clean via WebFetch 2026-04-30.
+
+All other URLs touched in the batch are pre-existing on `origin/main` (no new ODD-org or third-party links written into the doc tree).
+
+**Caveats surfaced (in-scope, shipped this batch)**
+
+- DOC-080: GenAIException → HTTP 500 surfaced explicitly (was already true in code via `ControllerAdvice.java:55-56`; the doc just hadn't said so).
+- DOC-077: `spring.custom-datasource.*` cascade-default behavior surfaced explicitly (operator was getting the right behavior with the wrong mental model).
+- DOC-050: Static-parameter `platform_url` substitution in the Integration Wizard defaults to `http://your.odd.platform` placeholder — surfaced via cross-link to the existing DOC-060 caveat on `odd-platform.md`. No new caveat content; just made the dependency visible from the wizard page.
+
+**Caveats surfaced (out of scope)** — none new.
+
+**Banned-phrase check**: clean across all 7 commits.
+
+**Open for `/review`** in a separate session (batch form: `/review batch:feature/docs-bigbatch-2026-04-30`). Same-session self-review explicitly disallowed per `/implement` rails.
 
 ### 2026-04-26 odd-platform.md operator-caveat trio (DOC-049 + DOC-060 + DOC-059) — done (Gate 8 closeout)
 

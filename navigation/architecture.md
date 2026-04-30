@@ -67,6 +67,7 @@ Every row states the repo's role and the single URL that is its SoT. When an ite
 | `odd-airflow-2` | Push adapter | Airflow 2 plugin — maps DAG/task metadata and pushes | <https://github.com/opendatadiscovery/odd-airflow-2> | — |
 | `odd-spark-adapter` | Push adapter | Spark listener — maps lineage from Spark jobs and pushes | <https://github.com/opendatadiscovery/odd-spark-adapter> | — |
 | `odd-models-package` | SDK | Python Pydantic models generated from the spec | <https://github.com/opendatadiscovery/odd-models-package> | `../odd-models-package` |
+| `oddrn-generator` | SDK | Python helper library: per-source `Generator` subclasses (`PostgresqlGenerator`, `SnowflakeGenerator`, `KafkaGenerator`, `FeastGenerator`, …) for assembling [ODDRN](https://docs.opendatadiscovery.org/oddrn) identifiers. Used by every Python collector and push adapter; also used by the platform's `DirectoryService` to parse incoming ODDRNs. | <https://github.com/opendatadiscovery/oddrn-generator> | — |
 | `odd-cli` | Tooling | CLI for interacting with the Platform; can push ad-hoc metadata | <https://github.com/opendatadiscovery/odd-cli> | — |
 | `charts` | Deployment | Helm charts for Platform + collectors | <https://github.com/opendatadiscovery/charts> | `../charts` |
 | `odd-examples` | Examples | Docker Compose + config examples | <https://github.com/opendatadiscovery/odd-examples> | `../odd-examples` |

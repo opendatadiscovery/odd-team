@@ -9,7 +9,8 @@ Shared SDK library — adapter base classes, job scheduling, Platform API client
 - Plugin base: `odd-collector-sdk/odd_collector_sdk/domain/plugin.py`
 - Filter logic: `odd-collector-sdk/odd_collector_sdk/domain/filter.py`
 - API client: `odd-collector-sdk/odd_collector_sdk/api/`
-- Config loading: uses pyaml-env for YAML + env var substitution
+- Config loading (runtime): `odd-collector-sdk/odd_collector_sdk/domain/collector_config_loader.py` — `CollectorConfigLoader` class. `Collector.__init__` calls `CollectorConfigLoader(config_path, plugin_factory).load()` at `collector.py:61`. Fallback chain `config_path → $CONFIG_PATH → ./collector_config.yaml` at `collector_config_loader.py:23`. Also handles secrets-backend integration + priority-ordered settings/plugins merging. Uses pyaml-env for YAML + env var substitution.
+- Config loading (test-only helper): `odd-collector-sdk/odd_collector_sdk/domain/collector_config.py:29` — `load_config` function. **Not used at runtime** — only caller is `tests/test_module_importer.py:13`. Vestigial; kept for the test path. Do not cite as the runtime loader.
 
 ## CollectorConfig Model
 - `odd-collector-sdk/odd_collector_sdk/domain/collector_config.py` — `CollectorConfig(BaseSettings)` (Pydantic v2 via `pydantic_settings.BaseSettings`)

@@ -84,17 +84,43 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 2 | 0 | 0 | 74 | 4 | 2 | 82 |
+| DOC | 4 | 0 | 0 | 74 | 4 | 2 | 84 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **2** | **0** | **0** | **74** | **4** | **2** | **82** |
+| **Total** | **4** | **0** | **0** | **74** | **4** | **2** | **84** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
 On 2026-04-23 the Phase C `/review` pass (separate session) flipped all 13 review-ready items → `done`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Per-item verdicts appended to each backlog file with cited evidence per Quality Bar gate. One Gate-6 follow-up was logged on disk during the review: **DOC-061** (pending, high) — Azure AD `logout-uri` documentation gap (consumer: `AzureLogoutSuccessHandler.java:30-48`; NPE without it). Pending count rises 41 → 42 from this addition; review-ready 13 → 0; done 4 → 17; total 60 → 61.
 
 On 2026-04-23 Phase C flipped 13 older self-closed done items to `review-ready`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Each carries a `## Re-Audit (2026-04-23)` section with per-gate evidence. Two items (DOC-001, DOC-013) required in-scope amendments: DOC-013 added four caveat admonitions to `collectors-secrets-backend.md`, DOC-001 fixed the Azure admin-groups claim default description on `oauth2-oidc.md`. Amendments shipped on `feature/phase-c-reaudit-amendments` (documentation). The remaining 11 items passed without amendment; most are small cross-reference or hygiene items, the two feature items (DOC-003 S2S, DOC-029 activity events) were verified against current consumer code with no drift.
+
+### 2026-04-30 Mission framing + Cornerstone 5 (content type homing) + Gate 10 + DOC-083 + DOC-084 logged
+
+User feedback on 2026-04-30 (after the IA-hierarchy rule landed): the failure mode the rails were not catching is **scattered intent** — feature pages accumulating content of types that have canonical homes elsewhere in the doc tree. Concrete trigger: `https://docs.opendatadiscovery.org/master-data-management/lookup-tables#api-reference` carries ~1300 words of detailed HTTP endpoint tables (16 endpoints) while `https://docs.opendatadiscovery.org/developer-guides/api-reference` (the dedicated page) has only a "use Swagger UI" pointer. Same drift class shipped in DOC-034 (data-collaboration API surface on `odd-platform.md`), DOC-047 (directory API surface), DOC-050 (integration-wizard API surface). Four feature pages now host API-reference content; the canonical home is empty.
+
+The user's diagnosis: "we just scatterly add some valuable information but we on each step lose the intent — why we are doing that, what is our mission, who we are." Followed by the explicit framing: "WE BELIEVE THAT WITH AI ASSISTANCE THIS LEVEL OF DOCUMENTATION GOT POSSIBLE!!!! PLEASE, PLEASE, PLEASE."
+
+**Rule codified across the rails:**
+
+- **CLAUDE.md "Why this is possible now (the mission)"** — new paragraph in "## The project and the maintainer" stating the world-class-doc ambition, AI-feasibility framing, and "first example" intent. This is the WHY every authoring decision references.
+- **CLAUDE.md "Why the bar slips (the recurring failure mode)"** — companion paragraph naming "scattered intent" as the failure mode, with the lookup-tables / api-reference and the IA-hierarchy convenience-placements as canonical examples.
+- **CLAUDE.md Cornerstone 5 — One canonical home per content type** — new cornerstone after Cornerstone 4. Establishes the rule: every content type (feature, configuration, API reference, deployment, ADR, glossary, developer guide, integration, examples, troubleshooting) has exactly one canonical home; feature pages link, never embed. Includes a per-type canonical-home table.
+- **CLAUDE.md Quality Bar Pre-authoring stance check** — new section before the gates listing five cognitive questions every maintainer runs before authoring a sub-section: content type, canonical home, IA placement, WHY-preservation, Pride-as-Mechanism. The gates verify output; the stance check catches scattered intent at the moment of authoring.
+- **CLAUDE.md Quality Bar Gate 10 — Content type homing** — new gate (10) generalizing Gate 1's no-duplicates rule to content TYPES. Reviewer reads the Sources footer as a content-type signal: 3+ `Spec:` lines = API-reference content, 5+ `Config:` / `Config-consumer:` lines = configuration content, etc. FAIL on embedding fragments of these types on feature pages when canonical homes exist or should exist.
+- **`/implement` SKILL.md** — new step 2 in Phase 2 (Pre-authoring stance check, MANDATORY before any sub-section is written) + Gate 10 added to step 4's authoring-rules list (renumbered from 3-8 to 4-9).
+- **`/review` SKILL.md** — Gate 10 verification protocol (Sources-footer-as-content-type-signal heuristic, three legitimate outcomes, pre-existing drift exception, four canonical drift examples) + Gate 10 row added to verdict template.
+- **Memory**: `feedback_world_class_doc_mission.md` added to the user's auto-memory and indexed in MEMORY.md so future sessions hold the mission framing without depending on CLAUDE.md being in context.
+
+**Concrete refactors logged:**
+
+- **DOC-083** (pending, high) — pull embedded API-reference fragments from `lookup-tables.md`, `odd-platform.md` (data-collaboration), `directory.md`, `integration-wizard.md` to `developer-guides/api-reference` (today: "use Swagger UI" stub; after DOC-083: canonical home for HTTP endpoint documentation). Five-phase plan: audit → migrate → hub coverage on Features → Cornerstone-5 audit on other content types → CLAUDE.md table update.
+- **DOC-084** (pending, medium) — adapter vocabulary refactor to two-axis (pull/push × deployment-shape); reclassifies `odd-tracing-gateway` as a Push adapter sub-shape (standalone proxy / gateway) rather than the orphan "Auxiliary platform component"; restructures `architecture.md` + `github-organization-overview` + `main-concepts` Terms & Aliases + integrations hub; **unblocks DOC-078** (Tracing Gateway documentation) by establishing the canonical home (new sub-page under Push adapters → standalone gateways) and using source-code-as-SoT (the upstream README remains 404).
+
+**Effect on counts**: pending 2 → 4 (+2: DOC-083, DOC-084); total 82 → 84.
+
+**Why these are separate items**: DOC-083 is content-type homing (fixes WHAT KIND of content lives on each page); DOC-084 is adapter vocabulary (fixes the LABELS operators see in navigation); DOC-082 (still pending from the previous round) is IA hierarchy (fixes WHERE pages live in SUMMARY). Three orthogonal axes, three independent refactors. They should be sequenced — DOC-083 first (highest-priority; the canonical-home work unblocks Cornerstone 5 / Gate 10 fully), DOC-084 second (depends on the API-reference home existing per Cornerstone 5), DOC-082 last or in parallel (IA hierarchy is independent of the content-type and vocabulary work).
 
 ### 2026-04-30 IA-hierarchy Quality-Bar rule + DOC-082 logged
 

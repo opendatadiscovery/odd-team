@@ -171,6 +171,41 @@ If the reviewer catches themselves typing a banned phrase, treat it as a signal 
 
 This step closes the DOC-027 dbt-link class. It costs ~30 seconds per URL and runs once per review.
 
+#### Gate 10 — Content type homing (enforces Cornerstone 5)
+
+Gate 10 catches the failure mode that Gate 1 misses: content of a recognizable *type* (API reference, Configuration reference, ADR, Glossary entry, Developer guide, Integration, Deployment, Example, Troubleshooting) authored on a feature page when a canonical home for that type exists elsewhere in the doc tree.
+
+**Per-section verification:**
+
+For every authored sub-section in the change, the reviewer asks:
+1. **What content type is this?** Per CLAUDE.md Cornerstone 5 table.
+2. **Where is the canonical home for this type?** Per the same table.
+3. **Is the change targeting the canonical home, or is it embedding on a feature page?**
+
+**The Sources-footer signal.** The implementer's `Sources:` footer is the strongest content-type signal — read it before reading the prose:
+
+- **3+ `Spec:` lines for one feature** → API reference content. Canonical home: `developer-guides/api-reference`. If the change embeds endpoint tables on a feature page rather than extending the canonical home → **FAIL** with the specific signal cited (e.g., "Sources footer carries `Spec: openapi.yaml:3745-3820 (4 directory endpoints)` + the change embeds a `## API surface` table on `directory.md`; canonical home `developer-guides/api-reference` is the right surface").
+- **5+ `Config:` / `Config-consumer:` lines for one feature, on a non-config page** → Configuration reference content. Canonical home: `configuration-and-deployment/odd-platform.md`. **FAIL** if the feature page embeds the table.
+- **`Lifecycle:` lines** → ADR-class content; lives in `adrs/` (this workspace), not on the feature page. **FAIL** if the feature page embeds the decision rationale rather than cross-linking.
+- **`Term:` lines** → Glossary content; the canonical home is `main-concepts.md` Terms & Aliases. The feature page uses the term and links to the table; the table is the source of truth.
+
+**Three legitimate outcomes that PASS Gate 10** (the implementer should have followed one):
+
+1. **Canonical home exists and contains the relevant content.** Feature page links to the home's section/anchor; embeds at most a 1-2 sentence pointer. **PASS** — verify the link resolves.
+2. **Canonical home exists but is sparse.** Same change extends the canonical home + adds the feature-page link. **PASS** if both surfaces are touched in the same commit; **FAIL** if only the feature page is updated.
+3. **No canonical home today.** The change either (a) adds the canonical home and migrates the embedded content there in the same commit, or (b) logs a backlog item to add the home, with the embedded content explicitly marked "temporary until DOC-NNN ships the canonical home." **FAIL** if neither (a) nor (b) is in evidence.
+
+**Examples of past drift Gate 10 catches** (logged for refactor under DOC-083):
+
+- `lookup-tables.md` `## API reference` (~1300 words; 16 endpoints) — should live on `developer-guides/api-reference` under a Reference-Data section, with a one-line link from the feature page.
+- `odd-platform.md` `### API surface` for data-collaboration (DOC-034) — same pattern; canonical home is `developer-guides/api-reference`.
+- `directory.md` `## API surface` (DOC-047) — same pattern.
+- `integration-wizard.md` `## API surface` (DOC-050) — same pattern.
+
+If the reviewer is flipping a brand-new feature page that ships an API-surface or config-table sub-section to `done` without checking Gate 10, the reviewer is the failure mode this gate exists to catch. **Reject by default; require evidence that the canonical home was the target, not the feature page.**
+
+**Pre-existing drift exception.** A change that *inherits* embedded content of the wrong type without making it worse passes Gate 10 if the drift is logged as a separate refactor item (DOC-083 is the canonical refactor item for the four cases above). The exception applies when the current item's AC scope is genuinely outside the homing decision — not as a license to ship more drift.
+
 ### 4. Check for regressions
 
 - Run the relevant test suite for the target repo (if any).
@@ -202,6 +237,7 @@ This step closes the DOC-027 dbt-link class. It costs ~30 seconds per URL and ru
   - Gate 7 (layout) — PASS ({evidence})
   - Gate 8 (live-site) — PASS ({URL + observed text}) | DEFERRED (not yet merged)
   - Gate 9 (factual provenance) — PASS ({per-class summary: Repo URLs VERIFIED via WebFetch of X; Integration category VERIFIED via integrations/README.md; Spec lines VERIFIED via grep of Y}) | FAIL ({specific unverified claim})
+  - Gate 10 (content type homing) — PASS ({per-sub-section content-type identification + canonical-home target + link/extend/escalate decision}) | N/A (no new sub-sections; pure prose-polish change) | FAIL ({specific embedded fragment that should target a canonical home, e.g., "API-reference content embedded on feature page; canonical home is developer-guides/api-reference"})
 - **Outbound URL sweep**: {count} URLs verified via WebFetch; {count} mismatches caught (list); {count} broken (logged as DOC-NNN)
 - **Banned-phrase check**: none used | self-caught and rewritten (note which)
 - **Regressions**: none | {description}

@@ -43,6 +43,7 @@ Every repo fits one pattern. Classify any new repo mention against this list bef
 | **Deployment** | — | Helm charts | Packaged install for K8s | `charts` |
 | **Examples** | — | Reference configs | Reproducible runs for new users | `odd-examples` |
 | **Meta / registry** | — | YAML/JSON manifests | Registry of supported adapters and capabilities | `opendatadiscovery-integration-manifests` |
+| **Auxiliary platform component** | Standalone Java service deployed alongside the Platform | Long-running JVM process | Receives metadata from operator-supplied custom microservices and forwards into the Platform's Ingestion API after normalising against the ODD Specification | `odd-tracing-gateway` |
 
 The public GitHub Organization Overview page (link above) classifies the same repos using the same vocabulary. If this file and the live page disagree, the doc-repo page is the user-visible source; this file is the implementer SoT — resolve by auditing both against the repo list and opening a DOC item.
 
@@ -72,6 +73,7 @@ Every row states the repo's role and the single URL that is its SoT. When an ite
 | `opendatadiscovery-integration-manifests` | Meta / registry | Registry of supported adapters and capabilities | <https://github.com/opendatadiscovery/opendatadiscovery-integration-manifests> | — |
 | `documentation` | Doc | Published at `docs.opendatadiscovery.org` | <https://github.com/opendatadiscovery/documentation> | `../documentation` |
 | `odd-docs` | Doc (to be merged) | Legacy DevOps run books — target for consolidation into `documentation` | <https://github.com/opendatadiscovery/odd-docs> | — |
+| `odd-tracing-gateway` | Auxiliary platform component | Optional Java service that transfers metadata from custom microservices to the Platform; normalises against the ODD Specification | <https://github.com/opendatadiscovery/odd-tracing-gateway> | — |
 
 ## Gate 9 usage cheatsheet
 

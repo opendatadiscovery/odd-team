@@ -84,17 +84,43 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 0 | 0 | 7 | 68 | 3 | 2 | 80 |
+| DOC | 1 | 0 | 0 | 74 | 4 | 2 | 81 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **0** | **0** | **7** | **68** | **3** | **2** | **80** |
+| **Total** | **1** | **0** | **0** | **74** | **4** | **2** | **81** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
 On 2026-04-23 the Phase C `/review` pass (separate session) flipped all 13 review-ready items → `done`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Per-item verdicts appended to each backlog file with cited evidence per Quality Bar gate. One Gate-6 follow-up was logged on disk during the review: **DOC-061** (pending, high) — Azure AD `logout-uri` documentation gap (consumer: `AzureLogoutSuccessHandler.java:30-48`; NPE without it). Pending count rises 41 → 42 from this addition; review-ready 13 → 0; done 4 → 17; total 60 → 61.
 
 On 2026-04-23 Phase C flipped 13 older self-closed done items to `review-ready`: DOC-001, 003, 013, 029, 035, 036, 052, 053, 054, 055, 056, 057, 058. Each carries a `## Re-Audit (2026-04-23)` section with per-gate evidence. Two items (DOC-001, DOC-013) required in-scope amendments: DOC-013 added four caveat admonitions to `collectors-secrets-backend.md`, DOC-001 fixed the Azure admin-groups claim default description on `oauth2-oidc.md`. Amendments shipped on `feature/phase-c-reaudit-amendments` (documentation). The remaining 11 items passed without amendment; most are small cross-reference or hygiene items, the two feature items (DOC-003 S2S, DOC-029 activity events) were verified against current consumer code with no drift.
+
+### 2026-04-30 big-batch `/review` verdict (separate session: review-bigbatch) — 6 ACCEPTED → done, 1 REJECTED → blocked, plus PLT-009 + DOC-081 logged
+
+**`/review batch:feature/docs-bigbatch-2026-04-30` verdict (2026-04-30, separate session)**:
+
+Doc PR #50 merged to `documentation` `origin/main` as `b776df6` on 2026-04-30 17:22 +0200. Gate 8 live-site verification ran post-merge once GitBook had built (verified by inspecting actual HTML on `docs.opendatadiscovery.org`).
+
+Per-item results:
+- **DOC-080** ACCEPTED. All ACs PASS; Gates 1-9 PASS; Gate 8 confirmed via WebFetch of `/genai` showing the HTTP 500 lines on both GenAIException paragraphs symmetric with the HTTP 400 line.
+- **DOC-077** ACCEPTED. All ACs PASS; Gates 1-9 PASS. Gate 8 verified at `https://docs.opendatadiscovery.org/master-data-management/lookup-tables` (NOT `/lookup-tables` as the implementer's URL list cited — same DOC-079-class file-path-vs-URL-slug discrepancy; logged as **DOC-081** for the same-class realignment of `lookup-tables.md`, `query-examples.md`, `relationships.md`). Sources footer carries a copy-paste artifact ("application.yml:203 (no datacollab — context only)") that does not match this commit's content but the underlying claim verifies via Read of `application.yml:4-7` (primary `spring.datasource.*` defaults). Process-only observation; not a fail.
+- **DOC-034** REJECTED → `blocked`. Gates 1-3 + 5-8 (rendering) PASS; **Gate 4 / Gate 9 FAIL** on the `/api/messages/{message_id}/url` redirect endpoint: doc claims `\`301 Redirect\`` but `DataCollaborationController.java:42-48` returns `HttpStatus.FOUND` (HTTP 302). Spec at `openapi.yaml:1788` also declares `'301': Moved Permanently` — so this is upstream spec/runtime drift; doc trusted the spec but should have verified runtime. Logged **PLT-009** (low, draft) at `issues/odd-platform/PLT-009.md` covering the upstream spec/code drift. Doc-side fix (rewriting one table cell to either match runtime `302 Found` or hedge with a "spec drift" note) ships when DOC-034 is picked back up.
+- **DOC-079** ACCEPTED. All ACs PASS; Gates 1-9 PASS (Gate 4/5/6 N/A — file relocation, no factual change). Gate 8 confirmed via WebFetch of `/configuration-and-deployment/deployment` rendering "Deployment Options" with the 5-option table.
+- **DOC-047** ACCEPTED. All 7 ACs PASS; Gates 1-9 PASS. All 6 source citations VERIFIED via Read (spec endpoints, controller, service `Generator.parse` calls at lines 103/114/144, UI route file with the `'all'` sentinel at line 34, two UI Directory components). Gate 8 confirmed at `/directory` (5 H2 sections rendered) + `/features` (TOC row + teaser).
+- **DOC-050** ACCEPTED. All 7 ACs PASS; Gates 1-9 PASS. All 6 source citations VERIFIED via Read — including character-by-character verification of the 4-value `IntegrationCodeSnippetArgumentTypeEnum` (INTEGER, STRING, BOOLEAN, FLOAT), the `installed=false` constant on lines 27 and 30 of `IntegrationMapper.java`, the case-insensitive `TreeMap` keyed by id in `IntegrationRegistryFactory.java:36`, the single-static-parameter `platform_url` map in `StaticArgumentMappingContext.java:19`, and the full DTO schema chain (`IntegrationOverviewDto` → `IntegrationContentBlockDto` → `IntegrationCodeSnippetDto` → `IntegrationCodeSnippetArgumentDto`). Gate 8 confirmed at `/integrations/integrations/integration-wizard` (7 H2 sections) + `/features` (TOC anchor `#id-6aa7` preserved + teaser collapse confirmed).
+- **DOC-062** ACCEPTED. All ACs PASS; Gates 1-9 PASS. Both URL fixes verified live via WebFetch. The new `oddrn-generator` row in `navigation/architecture.md:70` verified via Read + WebFetch of the live README (329 commits, Python 99.2%, Apache-2.0 — matches implementation log claim). Outbound URL sweep clean (0 commit-pinned URLs remaining; 0 DOC-027-class regressions). Scanner at `scanners/docs/quality/outbound-urls.md` (123 lines) + coverage manifest at `state/coverage/docs-quality-outbound-urls.yaml` (60 items, 4 marked scanned matching the 4 batch-touched files) — both VERIFIED via Read.
+
+**Effect on counts** (vs the earlier "big-batch — review-ready" entry below):
+- review-ready 7 → 0 (−7: 6 to done, 1 to blocked)
+- done 68 → 74 (+6: DOC-080, DOC-077, DOC-079, DOC-047, DOC-050, DOC-062)
+- blocked 3 → 4 (+1: DOC-034)
+- pending 0 → 1 (+1: DOC-081)
+- total 80 → 81 (+DOC-081)
+
+**Issue drafts logged this session**: 1 (`issues/odd-platform/PLT-009.md`, low, draft — spec/runtime status-code drift on `/api/messages/{message_id}/url`).
+
+**Banned-phrase check on the verdict text**: clean (every PASS/FAIL note ends in either "VERIFIED via {Read|WebFetch}" or names a specific finding); no "defensible" / "probably" / "looks right".
 
 ### 2026-04-30 big-batch (DOC-080 + DOC-077 + DOC-034 + DOC-079 + DOC-047 + DOC-050 + DOC-062) — review-ready, plus DOC-067 + DOC-078 → blocked
 

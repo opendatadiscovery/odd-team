@@ -68,11 +68,11 @@ Pipeline-hardening-1 (commit `96b28c4` on `feature/pipeline-hardening`) remains 
 
 | Category | Pending | In Progress | Review-Ready | Done | Blocked | Rejected | Total |
 |----------|---------|-------------|--------------|------|---------|----------|-------|
-| DOC | 9 | 0 | 0 | 64 | 1 | 2 | 76 |
+| DOC | 8 | 0 | 1 | 64 | 1 | 2 | 76 |
 | TST | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | NAV | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
 | SPC | 0 | 0 | 0 | 0 | 0 | 0 | 0 |
-| **Total** | **9** | **0** | **0** | **64** | **1** | **2** | **76** |
+| **Total** | **8** | **0** | **1** | **64** | **1** | **2** | **76** |
 
 Notes on counts: DOC-005/006/008/018 flipped `review-ready` → `done` on 2026-04-23 after `/review` verified all eight Quality Bar gates in a session separate from the implementer. Per-item verdicts appended to each backlog file; the common thread across the four reviews is PASS on Gates 1–8 (Gate 8 confirmed via live-site fetch of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — no GitHub fallback URLs, all in-scope admonitions rendered). Two follow-up items discovered by the re-audit (`DOC-059` session-provider caveats, `DOC-060` third `odd.platform-base-url` consumer) remain `pending` and are tracked for future triage.
 
@@ -604,7 +604,7 @@ Paste-ready GitHub issue drafts for upstream repositories. Format + lifecycle in
 
 ## Current Status
 
-Phase: **Audit In Progress; critical backlog cleared; DOC-044 re-ship cleared `/review` Gate 4 / Gate 9 / Gate 8 in a separate session and is now `done`** — 4 scanners complete, 1 in progress, 22 remaining. 64 DOC items `done`; **0 DOC items `review-ready`**; **1 DOC item `blocked`** (DOC-046, carried from the Data Modelling subtree); zero `critical`-priority items remain. Backlog now high/medium-driven (9 pending). Ten upstream issue drafts queued under `issues/` for human filing (5 `odd-platform` PLT-* + 5 `odd-collectors` COL-*). Next candidates: `Features.md` feature-page expansions (DOC-038 Lookup Tables, DOC-045 GenAI, DOC-047 Directory, DOC-050 Integration Wizard), stub cleanup (DOC-040 Deployment Options + DOC-041 configuration.md), the `docs/` outbound-URL audit (DOC-062), or the data-collaboration API (DOC-034).
+Phase: **Audit In Progress; critical backlog cleared; DOC-038 Lookup Tables page shipped to `review-ready` (rescoped content migration + augment closes the Master Data structural gap)** — 4 scanners complete, 1 in progress, 22 remaining. 64 DOC items `done`; **1 DOC item `review-ready`** (DOC-038 on `feature/docs-lookup-tables-page`); **1 DOC item `blocked`** (DOC-046, carried from the Data Modelling subtree); zero `critical`-priority items remain. Backlog now high/medium-driven (8 pending). Ten upstream issue drafts queued under `issues/` for human filing (5 `odd-platform` PLT-* + 5 `odd-collectors` COL-*). Next candidates after the DOC-038 batch clears review: `Features.md` feature-page expansions (DOC-045 GenAI, DOC-047 Directory, DOC-050 Integration Wizard), stub cleanup (DOC-040 Deployment Options + DOC-041 configuration.md), the `docs/` outbound-URL audit (DOC-062), or the data-collaboration API (DOC-034).
 
 ### Completed Scans
 - `docs/accuracy/feature-behavior`: **100%** (18/18 domains) — **35 findings** (8 critical, 11 high, 16 medium)

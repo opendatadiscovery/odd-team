@@ -26,8 +26,11 @@ LOOKUP_TABLE_CREATE, LOOKUP_TABLE_UPDATE, LOOKUP_TABLE_DELETE, LOOKUP_TABLE_DEFI
 ## Tests
 <!-- To be populated -->
 
-## Documentation
-- **None** — feature is completely undocumented
+## Documentation (verified 2026-04-30)
+- User-facing page: `docs/lookup-tables.md` (DOC-038, review-ready) — creation flow, structure tab, 9 PG field types (LookupTableFieldType: VARCHAR/INTEGER/SERIAL/DECIMAL/BOOLEAN/DATE/TIME/JSON/UUID), data tab walkthrough, vs-regular-Data-Entity comparison, direct-DB and API access paths, the 9 LOOKUP_TABLE_* RBAC permissions table, and the 16-endpoint /api/referencedata/ API surface (table CRUD / column CRUD / row CRUD / search).
+- SUMMARY placement: nested under a new `master-data-management.md` pillar landing (sibling of `data-modelling.md`) per CLAUDE.md Cornerstone 2 + main-concepts.md:72 governance-map. Pillar landing introduces the broader Master Data Management surface; Lookup Tables is the only child today.
+- Features.md ## Lookup Tables H2 collapsed to a 2-paragraph teaser linking the new page; #id-3353 anchor preserved for back-compat.
+- API name asymmetry: code/spec namespace is `ReferenceData` / `/api/referencedata/`; user-facing page label is "Lookup Tables"; navigation-section label is "Master Data". The doc page calls all three out explicitly to bridge searches.
 
 ## Related Domains
 - data-entities (lookup tables link to entities)

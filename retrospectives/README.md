@@ -74,7 +74,36 @@ Do *not* add an LSN for:
 
 ## Files in this directory (status as of 2026-05-01)
 
-| File | Status | Phase that populates it |
+| File | Status | Phase |
 |---|---|---|
 | `_template.md` | scaffold | Phase 1 |
-| `LSN-NNN-{slug}.md` × ~7 | not yet | Phase 2 |
+| `LSN-001-attachment-ephemeral-default.md` | populated | Phase 2 |
+| `LSN-002-minio-region-unset.md` | populated | Phase 2 |
+| `LSN-003-dbt-wrong-repo-link.md` | populated | Phase 2 |
+| `LSN-004-s2s-fallback-cache.md` | populated | Phase 2 |
+| `LSN-005-features-toc-desync.md` | populated | Phase 2 |
+| `LSN-006-lookup-tables-content-homing.md` | populated | Phase 2 |
+| `LSN-007-summary-convenience-placements.md` | populated | Phase 2 |
+| `LSN-008-stale-branch-false-positives.md` | populated | Phase 2 |
+| `LSN-009-backlog-internal-duplication.md` | populated | Phase 2 |
+| `LSN-010-azure-admin-groups-wrong-default.md` | populated | Phase 2 |
+
+## Index by gate / playbook informed
+
+When looking up "which retrospectives justify this rule?", grep this section.
+
+| Gate / playbook | Retrospectives |
+|---|---|
+| Gate 1 — No duplicates (bi-directional sweep) | LSN-003, LSN-009 |
+| Gate 2 — Synonyms and aliases logged | LSN-004 |
+| Gate 3 — Caveats captured | LSN-001, LSN-002 |
+| Gate 4 — Consumer-read before authoring | LSN-001, LSN-002, LSN-010 |
+| Gate 5 — Unset-parameter audit for SDK integrations | LSN-002 |
+| Gate 7 — Layout and completeness | LSN-005, LSN-007 |
+| Gate 9 — Factual claim provenance | LSN-001, LSN-002, LSN-003, LSN-009, LSN-010 |
+| Gate 10 — Content type homing | LSN-006 |
+| Cornerstone 2 — Aspect deep dive (hierarchy depth) | LSN-007 |
+| Cornerstone 5 — One canonical home per content type | LSN-006 |
+| Documentation authoring rule — ship together | LSN-004 |
+| Documentation authoring rule — fetch origin/main first | LSN-008 |
+| Implementer cannot self-mark `done` | LSN-002 |

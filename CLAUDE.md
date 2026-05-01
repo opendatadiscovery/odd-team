@@ -65,7 +65,7 @@ The workspace is being reorganised into a layered architecture so the framework 
 3. (Authoring sessions) `pillars/{active}/{cornerstones,gates,authoring,canonical-homes}.md` — pillar rules.
 4. (When invoking a specific protocol) `playbooks/{name}.md` — the executable shape.
 
-**Migration status (2026-05-01):** Phases 0.5 (ADR draft), 1 (scaffold), 2 (retrospective extraction), and 3 (doc-pillar extraction from CLAUDE.md) have shipped on `feature/refactor-pillar-architecture`. Documentation-pillar content (Cornerstones 1-5, doc Quality Bar gates, GitBook authoring rules, canonical-homes table) now lives in `pillars/documentation/`. Phase 4 distils universal gates into `playbooks/`; Phase 5 slims skill SKILL.md files; Phase 6 ships the pillar template + memory cleanup.
+**Migration status (2026-05-01):** Phases 0.5 (ADR draft), 1 (scaffold), 2 (retrospective extraction), 3 (doc-pillar extraction from CLAUDE.md), and 4 (PROTOCOL playbooks in `playbooks/`) have shipped on `feature/refactor-pillar-architecture`. Documentation-pillar content lives in `pillars/documentation/`; universal gates have executable PROTOCOL form in `playbooks/`. Phase 5 slims skill SKILL.md files into orchestrators; Phase 6 ships the pillar template + memory cleanup.
 
 ## Active pillar — documentation
 
@@ -183,15 +183,18 @@ Before modifying code, check `adrs/` for decisions that constrain the area you'r
 
 Acceptance criteria on a work item are the named deliverables. The Quality Bar is the responsibility the maintainer carries on **every** change regardless of scope. If a Quality Bar check reveals an issue outside the current item's scope, log it as a new backlog item (see "Follow-up work must be logged on disk" below) — never ignore, never just narrate.
 
-**Pre-authoring stance check.** A cognitive ritual run before every sub-section, not just at item start: (1) what content type is this section, (2) where is its canonical home, (3) where does this page sit in SUMMARY taxonomy, (4) does this change preserve the WHY, (5) would I be ashamed to see this quoted back to me by an angry operator. Local optimization is the single largest source of structural drift; the only thing that catches it is a stance check fired at the moment of authoring. The five-question checklist with worked examples lives in the active pillar's gates file (`pillars/documentation/gates.md` "Pre-authoring stance check" for documentation work).
+**Pre-authoring stance check** → `playbooks/pre-authoring-stance.md`. Cognitive ritual run before every sub-section, not just at item start. Five questions: (1) what content type, (2) where is its canonical home, (3) where does this page sit in SUMMARY taxonomy, (4) does this change preserve the WHY, (5) would I be ashamed to see this quoted back to me by an angry operator. Local optimization is the single largest source of structural drift; the only thing that catches it is this check fired at the moment of authoring. The active pillar's gates file plugs pillar-specific canonical-homes and cornerstones into the procedure.
 
-**Universal gates.** Apply across every pillar (tests, features, code-quality once activated). Phase 4 of `adrs/drafts/refactor-to-pillar-architecture.md` distils these into `playbooks/` PROTOCOL files; until then, the executable detail and case-law live in the active pillar's gates file.
+**Universal gates.** Apply across every pillar (tests, features, code-quality once activated). The executable PROTOCOL form lives in `playbooks/`; the active pillar's gates file specialises each protocol with pillar-specific extensions and case-law.
 
-- **Gate 4 — Consumer-read before authoring.** Every runtime claim traces to the code that enforces it (config-key consumer, SDK builder, error/retry handler). Future: `playbooks/consumer-read.md`.
-- **Gate 5 — Unset-parameter audit for SDK integrations.** Enumerate every SDK builder parameter; classify each as `configured | safely-defaulted | caveat-defaulted`. Future: `playbooks/unset-parameter-audit.md`.
-- **Gate 6 — Bidirectional code ↔ doc coverage.** Every user-visible code path documented as feature / known limitation / performance / security; missing coverage either way is a finding.
-- **Gate 8 — Publishing standards.** Live-site verification is authoritative; build-time and live-site rendering are not the same system. Future: `playbooks/live-site-verification.md`.
-- **Gate 9 — Factual claim provenance** (generalises Gate 4). Every claim cites a canonical SoT in the commit's `Sources:` footer. Memory and plausibility are not sources. Banned reviewer phrases ("defensible", "probably correct", "looks right", "canonical owner", "monorepo default", "safe to assume", "presumably", "should be") require `VERIFIED via {fetch/grep/read}` or `NOT VERIFIED → log as DOC-NNN`. Future: `playbooks/claim-inventory.md`.
+- **Gate 1 — No duplicates** (bi-directional sweep) → `playbooks/duplication-sweep.md`. Existing-content + new-content + backlog-internal sweeps before authoring.
+- **Gate 4 — Consumer-read before authoring** → `playbooks/consumer-read.md`. Every runtime claim traces to the code that enforces it (config-key consumer, SDK builder, error/retry handler).
+- **Gate 5 — Unset-parameter audit for SDK integrations** → `playbooks/unset-parameter-audit.md`. Enumerate every SDK builder parameter; classify each as `configured | safely-defaulted | caveat-defaulted`.
+- **Gate 6 — Bidirectional code ↔ doc coverage.** Every user-visible code path documented as feature / known limitation / performance / security; missing coverage either way is a finding. (Pillar-specific procedure; documentation: `pillars/documentation/gates.md` Gate 6.)
+- **Gate 8 — Publishing standards** → `playbooks/live-site-verification.md`. Live-site verification is authoritative; build-time and live-site rendering are not the same system.
+- **Gate 9 — Factual claim provenance** (generalises Gate 4) → `playbooks/claim-inventory.md`. Every claim cites a canonical SoT in the commit's `Sources:` footer. Banned reviewer phrases ("defensible", "probably correct", "looks right", "canonical owner", "monorepo default", "safe to assume", "presumably", "should be") require `VERIFIED via {fetch/grep/read}` or `NOT VERIFIED → log as DOC-NNN`.
+
+**Follow-up on disk** → `playbooks/follow-up-on-disk.md`. Every discovery becomes a tracked artefact (commit-body note, new backlog item, extended AC, or upstream issue draft); never a conversation-only narration. Invoked from any phase that discovers an out-of-scope issue.
 
 **Pillar-specific gates.** Layer pillar-specific rules on top of the universal ones. For documentation: Gate 1 (no duplicates, bi-directional sweep), Gate 2 (synonyms and aliases logged in `docs/main-concepts.md`), Gate 3 (caveats captured as admonition blocks), Gate 7 (layout — SUMMARY sync, in-page TOC sync, IA hierarchy sanity), Gate 10 (content-type homing — generalises Gate 1 to content TYPES; enforces Cornerstone 5). Full text in `pillars/documentation/gates.md`; case-law in `retrospectives/`.
 
@@ -218,14 +221,7 @@ Silence is not the target; savvy judgment is. Don't bundle unrelated items toget
 
 ### Follow-up work must be logged on disk
 
-If during implementation or any phase you discover a bug, gap, or adjacent issue not in scope:
-
-- **Before creating a new backlog item — grep the backlog first.** The backlog itself is a canonical source (Gate 9 class: "existing in-flight work"). Search by title keywords, affected files, and scanner source before proposing a new `DOC-NNN`. If an existing item already covers the concept, extend its AC instead of creating a parallel entry. The 2-minute grep cost is lower than the cost of duplicate items fragmenting the implementation path. The 2026-04-23 retrospective caught a proposed "DOC-062 canonical Integrations page" that was already covered by DOC-042 in richer form — exactly the failure class Gate 9 exists to prevent, applied to our own backlog.
-- **Trivial + related** (typo next door, obvious whitespace): fold into the current commit and note in the commit body.
-- **Small + fits the batch**: create a new work item (`backlog/{cat}/DOC-NNN.md`), update `state/file-registry.yaml`, update `state/PROGRESS.md`, implement in the same batch, reference in the originating item's Context.
-- **Larger or unrelated**: create the work item with full frontmatter and `scanner_source: "discovered-during-{original-ID}"`, update file-registry, update PROGRESS. Do **not** implement — the triage-review gate still applies. But log everything needed for a cold-start implementer.
-- **Upstream code defect** (a defect or gap in code we don't directly maintain in this workspace — `odd-platform` Java, `odd-collectors` Python, the spec, charts, etc.): create a paste-ready GitHub issue draft at `issues/{repo}/{PREFIX}-NNN.md` via `/log-issue` (see `issues/README.md`). The doc-side caveat — if any — ships in the current backlog item now; the upstream fix is handed off via the issue draft. The originating backlog item gains a `## Platform-side follow-up filed` section pointing at the draft path, so the audit trail is two-way. Filing the draft into GitHub is **always** a deliberate human action, never automated — drafts can be queued freely, but `draft → filed` is a manual paste-and-submit.
-- **Never** write "noted as follow-up" or "recommend logging this" without the corresponding file on disk. The backlog and the issues directory together are the source of truth; conversation-only notes do not survive.
+Any phase that discovers a bug, gap, or adjacent issue out of scope routes through `playbooks/follow-up-on-disk.md`. The protocol covers: grep-the-backlog-first (canonical failure: `retrospectives/LSN-009-backlog-internal-duplication.md`), scope classification (trivial-fold-into-commit / small-batch-item / larger-deferred-item / upstream-issue-draft via `/log-issue`), and the rule: never write "noted as follow-up" or "recommend logging this" without the corresponding file on disk. The backlog and the issues directory together are the source of truth; conversation-only notes do not survive across sessions.
 
 ## Key Principles
 

@@ -13,7 +13,7 @@ Each of the ten gates below is a gate, not a principle. Review will reject an it
 
 - **Gate 9 (Factual claim provenance)** generalises the runtime-claim pattern — Gates 4, 5, the term/alias side of Gate 2, and the repo/integration claims that surface in Gate 1 are specific applications of its SoT table.
 - **Gate 10 (Content type homing)** generalises the no-duplicates pattern to content TYPES — Gate 1 (no parallel copies of the same content) and Gate 7 (single home for layout/IA) are specific applications of its homing rule.
-- **Gates 4, 5, 9** have universal cores that apply across pillars (tests, features, code-quality once activated). Phase 4 of `adrs/drafts/refactor-to-pillar-architecture.md` distils those cores into `playbooks/{consumer-read,unset-parameter-audit,claim-inventory}.md`. The gate sections below are the documentation pillar's specialisation — they will reference the playbooks once Phase 4 ships.
+- **Gates 1, 4, 5, 8, 9** have universal cores that apply across pillars. The executable PROTOCOL form lives in `playbooks/{duplication-sweep,consumer-read,unset-parameter-audit,live-site-verification,claim-inventory}.md`. The gate sections below are the documentation pillar's specialisation — they cite the playbook for the universal procedure and add doc-specific extensions (SoT classes, examples, case-law).
 
 ## Pre-authoring stance check (cognitive — runs before any sub-section is written)
 
@@ -52,7 +52,7 @@ Every claim a doc makes about runtime behavior must be traced to the code that e
 
 Gate 4 is the runtime-behavior slice of the broader provenance rule in **Gate 9** (see below). Every implementation commit must include a `Sources:` footer citing the canonical source of truth for each factual claim class the change touches. The footer format lives in `pillars/documentation/authoring.md` "The `Sources:` footer".
 
-After Phase 4 of `adrs/drafts/refactor-to-pillar-architecture.md`, the executable procedure for this gate lives in `playbooks/consumer-read.md`; this section becomes the doc-pillar specialisation.
+The executable procedure for this gate lives in `playbooks/consumer-read.md`. This section is the documentation pillar's specialisation: the table above maps doc-claim shapes to required reads, and the case-law cites the doc-side incidents.
 
 ## 5. Unset-parameter audit for SDK integrations. (Gate)
 
@@ -64,7 +64,7 @@ For every SDK / client builder in the code path behind the change, enumerate bui
 
 Canonical failure: `retrospectives/LSN-002-minio-region-unset.md` — the MinIO `MinioAsyncClient.builder()` shipped without `.region(...)`, restricting REMOTE S3 to `us-east-1`. Under this rule the builder would have been enumerated the moment the attachment-storage doc was authored and the region constraint would have surfaced in review, not by user spot-check. This is why this check is its own responsibility and not a footnote to Gate 4.
 
-After Phase 4, the executable procedure lives in `playbooks/unset-parameter-audit.md`.
+The executable procedure lives in `playbooks/unset-parameter-audit.md`. This section is the documentation pillar's specialisation: SDK builders relevant to the documentation surface (S3/MinIO, JavaMailSender/SMTP, OAuth2/OIDC, Slack webhook, LDAP, Redis, OTLP, JDBC/R2DBC, AWS SSM) and the doc-side admonition pattern for `caveat-defaulted` parameters.
 
 ## 6. Bidirectional code ↔ doc coverage.
 
@@ -112,7 +112,7 @@ Each claim class has a testable failure mode that Gate 9 catches:
 
 The bi-directional duplication sweep (Gate 1) is scoped at the same time to cover **terms, URLs, and repos being added** as well as those being removed. An implementer introducing `odd-dbt` as a link should grep `docs/` for `dbt` first — hits on `github-organization-overview.md` and `main-concepts.md` would have caught the LSN-003 dbt-link error at authoring time, not at user-review time.
 
-After Phase 4, the executable claim-inventory procedure lives in `playbooks/claim-inventory.md`; the SoT table above is the documentation-pillar specialisation.
+The executable claim-inventory procedure lives in `playbooks/claim-inventory.md`. The SoT table above is the documentation-pillar specialisation — each row is the documentation pillar's SoT class with `Sources:` footer format.
 
 ## 10. Content type homing. (Gate — generalizes Gate 1 to content TYPES; enforces Cornerstone 5)
 

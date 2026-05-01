@@ -1,6 +1,6 @@
 ---
 name: review
-description: Verify a `review-ready` work item (or an entire batch) meets every acceptance criterion and every Quality Bar responsibility. Reject by default — each check requires cited evidence. Must run in a session distinct from the `/implement` session that produced the item.
+description: Verify a `review-ready` work item (or an entire batch) meets every acceptance criterion and every Quality Bar gate. Reject by default — each check requires cited evidence. Must run in a session distinct from the `/implement` session that produced the item.
 argument-hint: <work-item-id> | batch:<branch-name>
 allowed-tools: Read Grep Glob WebFetch Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
 ---
@@ -9,217 +9,65 @@ allowed-tools: Read Grep Glob WebFetch Bash(ls *) Bash(find *) Bash(cd *) Bash(g
 
 You are reviewing `$ARGUMENTS`. The item (or batch) is in `status: review-ready`. Your job is to flip it to `done` **only** if every gate below passes with cited evidence. The default verdict is **rejection**. "Looks fine" is not a verdict.
 
-This SKILL exists because `/implement` is not allowed to self-close items. On 2026-04-23 a silent AWS S3 region caveat (`MinioConfig.java` never calling `.region(...)`) shipped under the old bar — every one of the 17 items closed before that date was self-closed by the same session that implemented it. A separate-session review with a checklist would have caught it. This is that checklist.
+This skill exists because `/implement` is not allowed to self-close items. The lesson is `retrospectives/LSN-002-minio-region-unset.md` — every item closed before the separate-session-review rule was self-closed by the same session that implemented it.
 
 ## Hard prerequisites
 
 Refuse to run if any of these are true:
 
 - `$ARGUMENTS` is empty → list every `review-ready` item and ask which to review.
-- The work item status is not `review-ready` → print the status and stop. Only `review-ready` items are reviewable.
-- **You are the same session that implemented the item.** Check the conversation context. If you just ran `/implement` and now `/review` was called without an intervening session boundary, stop and surface that — self-review defeats the gate. The user (or operator of a CI wrapper) must start a fresh session.
-- The work item's commit is missing a `Sources:` footer (or the legacy `Consumer-read:` footer) AND the item's claims are factual (code-backed, URL-backed, spec-backed, or terminology-backed) → reject immediately with "missing Sources footer" and set status to `blocked`. Only pure prose-polish items with `Sources: none (prose polish, no factual claim)` are exempt.
+- The work item status is not `review-ready` → print the status and stop.
+- **You are the same session that implemented the item.** If `/implement` and `/review` were called in the same session without an intervening boundary, stop and surface that — self-review defeats the gate.
+- The work item's commit is missing a `Sources:` footer (or the legacy `Consumer-read:` footer) **and** the item's claims are factual → reject immediately with "missing Sources footer" and set status to `blocked`. Pure prose-polish items with `Sources: none (prose polish, no factual claim)` are exempt.
+
+## What to load
+
+1. `CLAUDE.md` — universal framework + Quality Bar overview.
+2. `pillars/{active}/{pillar,gates,authoring,canonical-homes,cornerstones}.md` — pillar rules.
+3. `backlog/README.md` — status transitions.
+4. The work item file — status, acceptance criteria, Context, Implementation Record.
+5. The commit(s) that implemented it — `git log --format=full <branch>` in the target repo. Extract the `Sources:` footer; you will verify every cited source.
 
 ## Protocol
 
-### 1. Orient
-
-Read, in order:
-- `CLAUDE.md` — team identity, Quality Bar (nine responsibilities), lifecycle, Gate 9 SoT table.
-- `backlog/README.md` — status transitions, rules.
-- The work item file — status, acceptance criteria, Context, Implementation Record.
-- The commit(s) that implemented it — `git log --format=full <branch>` in the target repo. Extract the `Sources:` footer (or legacy `Consumer-read:`); you will verify every source listed against the SoT table.
-
-### 2. Verify acceptance criteria — one-by-one, cite evidence
+### 1. Verify acceptance criteria — one-by-one, cite evidence
 
 For each `- [ ]` / `- [x]` criterion:
 - Read the file(s) the criterion references.
 - Write a one-line verdict: `PASS: {evidence file:line or URL}` or `FAIL: {what's missing}`.
-- A criterion is not "superficially met". "Section exists" fails if the section is a placeholder. "Warning present" fails if the warning is buried in prose instead of an admonition block.
+- "Section exists" fails if the section is a placeholder. "Warning present" fails if the warning is buried in prose instead of an admonition block.
 
-### 3. Verify Quality Bar responsibilities — each is a gate
+### 2. Verify Quality Bar gates — each is a gate
 
-Each of the nine responsibilities in `CLAUDE.md` is a gate. Record evidence per gate. Every verdict entry (PASS/FAIL/N/A) must end with `via {fetch/grep/read citation}` — no standalone adjectives.
+Run each gate by invoking its playbook in **verification mode** (re-derive what the implementer should have produced; check the change against it). Pillar-specific specialisations live in `pillars/{active}/gates.md`. Every verdict entry (PASS/FAIL/N/A) ends with `via {fetch/grep/read citation}` — no standalone adjectives.
 
-#### Gate 1 — No duplicates
+| Gate | Playbook | What review verifies |
+|---|---|---|
+| Gate 1 — No duplicates | `playbooks/duplication-sweep.md` | Implementation Record's classifications are honest; no parallel copy of the same content under a different name with no cross-link. |
+| Gate 2 — Aliases logged | (pillar-specific; `pillars/documentation/gates.md` Gate 2) | If the item used or introduced an alias, the alias table has a row in the same PR. |
+| Gate 3 — Caveats captured | (pillar-specific; `pillars/documentation/gates.md` Gate 3) | Every caveat the consumer-read audit surfaced is in the doc as an admonition block, not buried in prose. |
+| Gate 4 — Consumer-read | `playbooks/consumer-read.md` | Every file cited in `Sources:` `Config:` / `Config-consumer:` / `Builder:` / `Handler:` lines matches what the consumer code actually does. Grep the target repo for `@Value` consumers not in the footer; FAIL if a behavior-affecting consumer is missing. |
+| Gate 5 — Unset-parameter audit | `playbooks/unset-parameter-audit.md` | Every SDK builder in scope has every parameter classified; every `caveat-defaulted` parameter is documented as a known limitation. The `retrospectives/LSN-002` gate. |
+| Gate 6 — Bidirectional code ↔ doc | (pillar-specific) | Every functional claim → code evidence. Every user-visible code path touched → doc coverage as feature / limitation / performance / security. Missing either direction is a finding (filed via `playbooks/follow-up-on-disk.md` — narration alone fails this gate). |
+| Gate 7 — Layout and completeness | (pillar-specific; `pillars/documentation/gates.md` Gate 7) | SUMMARY entry; index/README links; in-page TOC sync (`retrospectives/LSN-005`); IA hierarchy sanity (`retrospectives/LSN-007`). |
+| Gate 8 — Publishing standards | `playbooks/live-site-verification.md` | Live-site WebFetch per affected URL; no GitHub-fallback substring (`retrospectives/LSN-004`). DEFERRED if PR not yet merged; item stays `review-ready`. |
+| Gate 9 — Factual claim provenance | `playbooks/claim-inventory.md` | Every cited source actually supports the claim. Per-class: `Repo:` lines WebFetched (`retrospectives/LSN-003`); `Integration:` lines cross-checked against `navigation/architecture.md`; `Spec:` lines grep'd in OpenAPI YAML; etc. **Outbound URL sweep mandatory**. **Banned-phrase check**: every note ends in `VERIFIED via …` or `NOT VERIFIED → log as DOC-NNN`. |
+| Gate 10 — Content type homing | (pillar-specific; `pillars/documentation/gates.md` Gate 10) | Read the `Sources:` footer as a content-type signal: 3+ `Spec:` lines on a feature page → API reference content embedded incorrectly (`retrospectives/LSN-006`). 5+ `Config:` lines on a non-config page → configuration reference embedded incorrectly. |
 
-- Grep the doc tree for each canonical term the item touches (consult `main-concepts.md` Terms & Aliases).
-- Verify the Implementation Record's duplication-sweep classifications are honest: every hit was either linked, expanded-in-place, consolidated, or aliased.
-- **FAIL** if a parallel copy of the same content exists under a different name with no cross-link.
-
-#### Gate 2 — Synonyms and aliases are logged
-
-- If the item introduced or used an alias (e.g., M2M ↔ S2S, Alternative Secrets Backend ↔ Collector Secrets Backend), check `docs/main-concepts.md` Terms & Aliases for a row in the same PR.
-- **FAIL** if an alias is used in the authored content but not in the table.
-
-#### Gate 3 — Caveats captured
-
-- For each integration touched, list what the implementation record (or Phase 2 audit) claims are the caveats.
-- Read the authored doc: is every caveat present as an admonition block (hint, warning, danger) or dedicated section, not buried in prose?
-- **FAIL** if a known limitation from the consumer-read audit is missing from the doc.
-
-#### Gate 4 — Consumer-read evidence (runtime-behavior slice of Gate 9)
-
-For every file listed in the commit's `Sources:` footer under `Config:`, `Config-consumer:`, `Builder:`, or `Handler:` lines (or any file in a legacy `Consumer-read:` footer):
-- Read the file at the cited lines.
-- Verify the doc's claims match what the consumer code actually does.
-- If the consumer feeds an SDK builder, verify Gate 5 against it.
-
-For every config key / env var mentioned in the doc change:
-- Grep the target repo for `@Value.*{key}` (or the Python/pydantic equivalent).
-- If there is a consumer not in the footer, and the consumer affects behavior the doc describes, the footer is incomplete → **FAIL** with "Sources footer missing consumer: {file}".
-
-#### Gate 5 — Unset-parameter audit
-
-For every SDK / client builder in the consumer-read path:
-- Look up the SDK's official builder parameters.
-- For each parameter, classify: `configured | safely-defaulted | caveat-defaulted`.
-- For every `caveat-defaulted` parameter, verify it's documented in the change as a known limitation.
-- **FAIL** if an SDK builder has an unset parameter with an unsafe default that the doc does not mention. This is the DOC-008 gate.
-
-Example (what a passing verdict looks like for MinIO):
-```
-Gate 5 — MinioAsyncClient.builder() (MinioConfig.java:22)
-  .endpoint(url)         — configured from attachment.remote.url         ✓
-  .credentials(...)      — configured from attachment.remote.{access,secret}-key ✓
-  .region(...)           — caveat-defaulted (us-east-1 only); doc hints at Features.md:XX  ✓
-  .httpClient(...)       — safely-defaulted (OkHttp default timeout acceptable for LAN)    ✓
-PASS
-```
-
-A failing verdict looks like:
-```
-Gate 5 — MinioAsyncClient.builder() (MinioConfig.java:22)
-  .region(...)           — caveat-defaulted (us-east-1 only); doc makes NO mention  ✗
-FAIL — reopen as blocked with "document region caveat"
-```
-
-#### Gate 6 — Bidirectional code ↔ doc coverage
-
-- Every functional claim in the authored doc → evidence file:line in the commit or verifiable now.
-- Every user-visible code path touched (controller methods, API endpoints, UI components, SDK calls) → doc coverage as feature / limitation / performance / security.
-- **FAIL** if either direction has gaps the Implementation Record did not log as follow-up work.
-- **"Logged as follow-up"** can mean either path, both on disk:
-  - A new `backlog/{cat}/DOC-NNN.md` item — when the missing coverage is doc-side and we will write it ourselves.
-  - A new `issues/{repo}/{PREFIX}-NNN.md` upstream issue draft — when the missing coverage reflects an upstream code defect or feature gap that needs filing into the target repo's GitHub tracker. Use `/log-issue` to scaffold; see `issues/README.md`.
-  - Narration in the work item ("tracked as a follow-up candidate") **does not satisfy this gate**. The 2026-04-23 DOC-001 review surfaced the Azure `logout-uri` gap and would have reopened DOC-001 as `blocked` had the verdict only narrated; the file `backlog/docs/DOC-061.md` is what made it pass.
-
-#### Gate 7 — Layout and completeness
-
-- If a page was added / renamed / removed: `SUMMARY.md` entry present? Every `README.md` / index link updated?
-- Orphan pages? Broken section headings? Heading levels match TOC depth?
-- **In-page TOC sync.** For every page the change touches, read the top ~30 lines. If the page carries an in-page TOC (a sequence of `[Title](path.md#anchor)\` links — canonical example: `docs/Features.md` lines 3-29), enumerate the H2s the change added / renamed / removed and verify each has a matching TOC row added / renamed / removed in the same commit. **FAIL** if a new H2 was added to such a page without a TOC row, or an H2 was renamed without the TOC row updated, or an H2 was removed without the TOC row removed. (DOC-069 shipped a new H2 on `Features.md` without the TOC row; reviewer missed it on first pass; user caught it post-merge — DOC-076 logged.)
-- **IA hierarchy sanity.** When the change adds, moves, or renames a page, read the SUMMARY entries for the new page and its siblings (the entries immediately above and below at the same depth, plus any other entries at the same depth in the same section group). Verify per CLAUDE.md Cornerstone 2 "Hierarchy depth must reflect conceptual depth":
-  - **Are the new page's siblings conceptual peers?** Other top-level entries should be peer pillar landings or peer foundational concepts. Other children of a parent should be peer sub-features of that parent.
-  - **If top-level**: does this page warrant peer status with `Main Concepts`, `Architecture`, `ODDRN`, `Features`, `Use cases`, the pillar landings? Top-level placement is the strongest claim a SUMMARY entry can make. "Convenience top-level" because no clean parent was identified is a fail.
-  - **If nested**: is the parent the conceptually broadest reasonable one? Does the parent's existing child set form a peer group this page joins? If the parent has only one or two children today, would the page fit better under a different parent that already has the right peer set?
-  - **Is the page a sibling of a parent it should be inside?** A page that is conceptually a sub-topic of an adjacent parent group should nest inside that group, not sit next to it. (Canonical drift: `Build a custom collector` next to `Build and run` instead of inside it.)
-  - **FAIL** on placements where the chosen depth is "convenience" rather than "structural fit." Cite the specific peer mismatch in the verdict (e.g., "DOC-XXX placed `Foo` at top level next to `Main Concepts`; conceptually `Foo` is a Data Discovery sub-feature and should nest under a `Data Discovery` pillar landing — propose either expanding scope to add the landing first, or rejecting the placement"). The implementer must choose between (a) restructuring the placement to fit existing IA, (b) expanding scope to add the missing parent landing first, or (c) escalating the placement decision as a Cornerstone-2 discussion before re-shipping. **Pre-existing drift** that the current change inherits without making worse is not a per-change fail — log it as a separate DOC-NNN refactor item (canonical example: DOC-082 for the `Directory` / `GenAI assistant` / `Build a custom collector` IA drifts identified 2026-04-30).
-- **FAIL** on any inconsistency not explicitly covered by another in-scope item.
-
-#### Gate 8 — Publishing standards (live-site verification)
-
-MANDATORY for every `target_repo: documentation` item. Wait for the GitBook build (typically ≤5 min after merge; if the PR is not yet merged, this gate is deferred until after merge, and the item stays in `review-ready`).
-
-For each affected page (per the Implementation Record's live-URL list):
-- Compute the live URL: `docs/a/b/c.md` → `https://docs.opendatadiscovery.org/a/b/c`; `README.md` collapses to the directory URL.
-- `WebFetch` the URL.
-- Verify:
-  - Page loads with the intended change visible (quote the authored text back).
-  - No `github.com/opendatadiscovery/documentation/blob/` substrings appear anywhere in the rendered HTML (GitBook fallback signature).
-  - Every relative link touched resolves to `docs.opendatadiscovery.org`, not to `github.com`.
-  - Sidebar entry present for any newly-added page.
-- **FAIL** on any of the above. Quote the failing evidence (URL + observed substring).
-
-#### Gate 9 — Factual claim provenance (the generalization)
-
-Gate 9 is the umbrella that Gates 4 & 5 sit inside. For every claim class in the `Sources:` footer, verify the cited source actually supports the claim. Then sweep for claim classes that should have been cited and weren't.
-
-**Per-class verification:**
-
-- **`Repo:` lines** — For every `github.com/opendatadiscovery/*` URL in the doc change (whether or not it's in the footer): `WebFetch` the target README, grep for the link text / feature name. If the README does not describe the claimed feature, FAIL with `Repo mismatch: {url} does not describe {claimed feature}`. This is the DOC-027 dbt gate — "defensible because it's the monorepo owner" is not acceptable; read the README.
-- **`Integration:` lines** — Cross-check against `docs/integrations/README.md` (canonical integrations hub — DOC-042, once shipped). Before DOC-042 lands, cross-check against `navigation/architecture.md` + `github-organization-overview.md`. FAIL if a push-client is labelled as a collector or vice versa.
-- **`Config:` / `Config-consumer:` lines** — verified under Gate 4.
-- **`Builder:` lines** — verified under Gate 5.
-- **`Spec:` lines** — grep the OpenAPI YAML at the cited path; verify the claim matches the schema / path / operation. FAIL on drift.
-- **`Term:` lines** — open `docs/main-concepts.md` Terms & Aliases; verify the cited row exists and matches the alias being used. FAIL if an alias is used in prose without a table row.
-- **`Lifecycle:` lines** — verify ADR / CHANGELOG / release tag matches the lifecycle claim in the doc.
-- **`Dep:` / `Handler:` / `Cross-repo:` lines** — read the cited file:line; verify the claim.
-
-**Banned rationalizations** (standalone justifications that FAIL review):
-
-- "defensible"
-- "probably correct" / "probably"
-- "looks right" / "looks correct"
-- "canonical owner" (as in "the monorepo is the canonical owner, so the link is fine" — this was the DOC-027 rationalization)
-- "monorepo default"
-- "safe to assume"
-- "presumably"
-- "should be"
-
-Every review note — including "Notes" entries at the end of the verdict — must end in one of:
-- `VERIFIED via {WebFetch URL / grep command / file:line read}`
-- `NOT VERIFIED → logging as DOC-NNN` (or `issues/{repo}/{PREFIX}-NNN.md` for upstream)
-
-If the reviewer catches themselves typing a banned phrase, treat it as a signal to stop and fetch — then rewrite the note with cited evidence.
-
-**Outbound URL sweep** (MANDATORY for every `target_repo: documentation` item):
-
-- `grep -E 'https?://[^)]+' {changed files}` to enumerate every outbound URL touched by the change.
-- For each `github.com/opendatadiscovery/*` URL: `WebFetch` target, grep README for link text / feature name. FAIL on mismatch.
-- For each external URL: `WebFetch`; verify 200 response. Log broken URLs as follow-up backlog items.
-
-This step closes the DOC-027 dbt-link class. It costs ~30 seconds per URL and runs once per review.
-
-#### Gate 10 — Content type homing (enforces Cornerstone 5)
-
-Gate 10 catches the failure mode that Gate 1 misses: content of a recognizable *type* (API reference, Configuration reference, ADR, Glossary entry, Developer guide, Integration, Deployment, Example, Troubleshooting) authored on a feature page when a canonical home for that type exists elsewhere in the doc tree.
-
-**Per-section verification:**
-
-For every authored sub-section in the change, the reviewer asks:
-1. **What content type is this?** Per CLAUDE.md Cornerstone 5 table.
-2. **Where is the canonical home for this type?** Per the same table.
-3. **Is the change targeting the canonical home, or is it embedding on a feature page?**
-
-**The Sources-footer signal.** The implementer's `Sources:` footer is the strongest content-type signal — read it before reading the prose:
-
-- **3+ `Spec:` lines for one feature** → API reference content. Canonical home: `developer-guides/api-reference`. If the change embeds endpoint tables on a feature page rather than extending the canonical home → **FAIL** with the specific signal cited (e.g., "Sources footer carries `Spec: openapi.yaml:3745-3820 (4 directory endpoints)` + the change embeds a `## API surface` table on `directory.md`; canonical home `developer-guides/api-reference` is the right surface").
-- **5+ `Config:` / `Config-consumer:` lines for one feature, on a non-config page** → Configuration reference content. Canonical home: `configuration-and-deployment/odd-platform.md`. **FAIL** if the feature page embeds the table.
-- **`Lifecycle:` lines** → ADR-class content; lives in `adrs/` (this workspace), not on the feature page. **FAIL** if the feature page embeds the decision rationale rather than cross-linking.
-- **`Term:` lines** → Glossary content; the canonical home is `main-concepts.md` Terms & Aliases. The feature page uses the term and links to the table; the table is the source of truth.
-
-**Three legitimate outcomes that PASS Gate 10** (the implementer should have followed one):
-
-1. **Canonical home exists and contains the relevant content.** Feature page links to the home's section/anchor; embeds at most a 1-2 sentence pointer. **PASS** — verify the link resolves.
-2. **Canonical home exists but is sparse.** Same change extends the canonical home + adds the feature-page link. **PASS** if both surfaces are touched in the same commit; **FAIL** if only the feature page is updated.
-3. **No canonical home today.** The change either (a) adds the canonical home and migrates the embedded content there in the same commit, or (b) logs a backlog item to add the home, with the embedded content explicitly marked "temporary until DOC-NNN ships the canonical home." **FAIL** if neither (a) nor (b) is in evidence.
-
-**Examples of past drift Gate 10 catches** (logged for refactor under DOC-083):
-
-- `lookup-tables.md` `## API reference` (~1300 words; 16 endpoints) — should live on `developer-guides/api-reference` under a Reference-Data section, with a one-line link from the feature page.
-- `odd-platform.md` `### API surface` for data-collaboration (DOC-034) — same pattern; canonical home is `developer-guides/api-reference`.
-- `directory.md` `## API surface` (DOC-047) — same pattern.
-- `integration-wizard.md` `## API surface` (DOC-050) — same pattern.
-
-If the reviewer is flipping a brand-new feature page that ships an API-surface or config-table sub-section to `done` without checking Gate 10, the reviewer is the failure mode this gate exists to catch. **Reject by default; require evidence that the canonical home was the target, not the feature page.**
-
-**Pre-existing drift exception.** A change that *inherits* embedded content of the wrong type without making it worse passes Gate 10 if the drift is logged as a separate refactor item (DOC-083 is the canonical refactor item for the four cases above). The exception applies when the current item's AC scope is genuinely outside the homing decision — not as a license to ship more drift.
-
-### 4. Check for regressions
+### 3. Check for regressions
 
 - Run the relevant test suite for the target repo (if any).
-- For doc changes: click-check (programmatically) every link on the affected pages via WebFetch.
+- For doc changes: WebFetch every link on the affected pages.
 - For code comments: verify against surrounding code.
 - For test additions: verify they test what they claim.
 
-### 5. Check navigation consistency
+### 4. Check navigation consistency
 
 - Are file paths in `navigation/domains/*.md` still correct after the change?
 - Did the consumer-read audit discover new bean factories / SDK builders? Are they in navigation?
 - If the Implementation Record claims navigation was updated, verify.
 
-### 6. Verdict — append to the work item
+### 5. Verdict — append to the work item
 
 ```markdown
 ## Review (YYYY-MM-DD, session: <short-hash-or-label>)
@@ -228,29 +76,29 @@ If the reviewer is flipping a brand-new feature page that ships an API-surface o
   - [x] Criterion 1 — PASS ({evidence})
   - [ ] Criterion 2 — FAIL ({reason})
 - **Quality Bar**:
-  - Gate 1 (duplicates) — PASS ({evidence})
-  - Gate 2 (aliases) — PASS ({evidence}) | N/A
-  - Gate 3 (caveats) — PASS ({evidence})
-  - Gate 4 (consumer-read) — PASS (footer verified: {files}) | FAIL ({missing})
-  - Gate 5 (unset-parameter) — PASS ({SDK builder audit}) | N/A (no SDK in scope) | FAIL ({unset caveat})
-  - Gate 6 (bidirectional coverage) — PASS ({evidence})
-  - Gate 7 (layout) — PASS ({evidence})
-  - Gate 8 (live-site) — PASS ({URL + observed text}) | DEFERRED (not yet merged)
-  - Gate 9 (factual provenance) — PASS ({per-class summary: Repo URLs VERIFIED via WebFetch of X; Integration category VERIFIED via integrations/README.md; Spec lines VERIFIED via grep of Y}) | FAIL ({specific unverified claim})
-  - Gate 10 (content type homing) — PASS ({per-sub-section content-type identification + canonical-home target + link/extend/escalate decision}) | N/A (no new sub-sections; pure prose-polish change) | FAIL ({specific embedded fragment that should target a canonical home, e.g., "API-reference content embedded on feature page; canonical home is developer-guides/api-reference"})
+  - Gate 1 — PASS ({evidence}) | FAIL ({specific failure})
+  - Gate 2 — PASS / N/A / FAIL
+  - Gate 3 — PASS / FAIL
+  - Gate 4 — PASS (footer verified: {files}) / FAIL ({missing consumer})
+  - Gate 5 — PASS ({SDK builder audit}) / N/A (no SDK in scope) / FAIL ({unset caveat})
+  - Gate 6 — PASS ({evidence}) / FAIL
+  - Gate 7 — PASS ({evidence}) / FAIL
+  - Gate 8 — PASS ({URL + observed text}) / DEFERRED (not yet merged) / FAIL
+  - Gate 9 — PASS ({per-class verification summary}) / FAIL ({specific unverified claim})
+  - Gate 10 — PASS ({per-sub-section content-type identification}) / N/A (pure prose polish) / FAIL ({embedded fragment that should target a canonical home})
 - **Outbound URL sweep**: {count} URLs verified via WebFetch; {count} mismatches caught (list); {count} broken (logged as DOC-NNN)
 - **Banned-phrase check**: none used | self-caught and rewritten (note which)
 - **Regressions**: none | {description}
 - **Navigation**: consistent | {what needs update}
 - **Upstream issues logged**: none | {list of `issues/{repo}/{PREFIX}-NNN.md` paths drafted during this review}
-- **Notes**: {free text, each note ending in `VERIFIED via ...` or `NOT VERIFIED → logging as ...`; no standalone "defensible"/"probably"/"looks right"}
+- **Notes**: {free text, every note ending in `VERIFIED via ...` or `NOT VERIFIED → logging as ...`}
 ```
 
-- **All gates PASS and no deferrals**: flip `status: review-ready` → `status: done`. Update `state/PROGRESS.md` counts.
+- **All gates PASS, no deferrals**: flip `status: review-ready` → `status: done`. Update `state/PROGRESS.md` counts.
 - **Any gate FAIL**: flip `status: review-ready` → `status: blocked`. Leave the verdict in the item. Surface to the user with the specific failure and the fix the implementer needs to do.
-- **Any gate DEFERRED** (typically Gate 8 because the PR isn't merged yet): leave `status: review-ready`. Re-run `/review` after the merge to close out Gate 8.
+- **Any gate DEFERRED** (typically Gate 8 because the PR isn't merged yet): leave `status: review-ready`. Re-run `/review` after merge to close out Gate 8.
 
-### 7. Batch mode
+### 6. Batch mode
 
 If `$ARGUMENTS` starts with `batch:` (e.g., `batch:feature/critical-odd-platform-config`):
 - Identify every item on the branch via `git log` (look for `[DOC-NNN]` in commit messages).
@@ -263,6 +111,4 @@ If `$ARGUMENTS` starts with `batch:` (e.g., `batch:feature/critical-odd-platform
 - Be strict on acceptance criteria and Quality Bar gates; be lenient on prose style.
 - If a test passes but tests the wrong thing → FAIL.
 - If a doc is technically correct but misleading → FAIL with specific feedback.
-- Never modify the authored files during review. If fixes are obvious and trivial (a typo you happened to spot), log them as a follow-up backlog item and let the implementer roll them in. If the discovery is in upstream code (Java platform, Python collectors, spec, etc.) rather than in our own docs/tests/spec work, log it as an upstream issue draft (`/log-issue {repo} "title"` → `issues/{repo}/{PREFIX}-NNN.md`); never just narrate.
-- If `$ARGUMENTS` is empty → list every item with `status: review-ready` and ask which to review.
-- If `$ARGUMENTS` refers to an item not in `review-ready` → explain the current status and stop.
+- Never modify the authored files during review. Trivial fixes get logged as a follow-up backlog item via `playbooks/follow-up-on-disk.md`. Upstream-code discoveries get logged as issue drafts via `/log-issue`. Never just narrate.

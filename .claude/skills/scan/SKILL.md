@@ -38,8 +38,9 @@ Execute the audit scanner at `$ARGUMENTS`.
 5. **Execute the scan** on the selected batch:
    - Follow the scanner's method systematically for EACH item in the batch
    - Apply criteria to each item
-   - **Every finding must cite a Source of Truth by Gate 9 class** (Repo / Integration / Config / Builder / Spec / Term / Lifecycle / Dep / Handler / Cross-repo). "The doc says X but the code/SoT says Y" is a finding; "the doc might be wrong" is not. If you cannot cite an SoT, the gap is speculation — either find the SoT or drop the finding.
-   - For every outbound URL referenced in the doc under scan (`github.com/opendatadiscovery/*`, `docs.opendatadiscovery.org/*`, external docs), resolve the URL against `navigation/architecture.md` or (if missing) WebFetch / `gh repo view`. A broken or mis-targeted URL is a finding with SoT class `Repo` or `Integration`.
+   - **Every finding must cite a Source of Truth by Gate 9 class** (Repo / Integration / Config / Builder / Spec / Term / Lifecycle / Dep / Handler / Cross-repo / Backlog) — full table in `pillars/{active}/gates.md` Gate 9 + executable procedure in `playbooks/claim-inventory.md`. "The doc says X but the code/SoT says Y" is a finding; "the doc might be wrong" is not. If you cannot cite an SoT, the gap is speculation — either find the SoT or drop the finding.
+   - For SDK-backed integrations, run `playbooks/unset-parameter-audit.md` (Gate 5) — every unset builder parameter with an unsafe SDK default is a finding (`retrospectives/LSN-002` is the canonical case).
+   - For every outbound URL referenced in the doc under scan (`github.com/opendatadiscovery/*`, `docs.opendatadiscovery.org/*`, external docs), resolve the URL against `navigation/architecture.md` or (if missing) WebFetch / `gh repo view`. A broken or mis-targeted URL is a finding with SoT class `Repo` or `Integration` (`retrospectives/LSN-003` is the canonical case).
    - Record findings as you go, each with its SoT citation inline
    - Do NOT modify any files in target repos (read-only scan)
 

@@ -38,6 +38,38 @@ This repository is the **coordination workspace** for AI-assisted maintenance. I
 
 **The `documentation` repo is a published technical manual.** Consistency, accuracy, layout, and completeness matter on every change, whether there are readers today or not. Treat every doc-repo change with publishing standards — verify live URLs post-merge, keep SUMMARY.md and index pages in sync, never leave half-finished cross-references, never ship half-authored content hoping the next session finishes it.
 
+## Pillars and architecture (in-progress refactor)
+
+The workspace is being reorganised into a layered architecture so the framework scales beyond the current documentation focus. The decision is captured in `adrs/drafts/refactor-to-pillar-architecture.md`; what's below is a forward-declaration so any session lands on the right files even mid-migration.
+
+**Layers:**
+
+| Layer | Directory | What it holds |
+|---|---|---|
+| Universal framework | `CLAUDE.md` | Identity, mission, workflow phases, universal gates, skill protocol, layout, token budget, pillar registry. Target ~10-12k chars after Phase 3. |
+| Pillars | `pillars/{name}/` | Domain-specific content. Each pillar has `pillar.md` (overview + the bar), `cornerstones.md`, `gates.md`, `authoring.md`, `canonical-homes.md`. |
+| Playbooks | `playbooks/` | Reusable PROTOCOL-format operational protocols (`trigger / inputs / procedure / exit / on-fail / case-law`). Universal-gate side of the framework. |
+| Retrospectives | `retrospectives/` | Case law — one file per lesson (`LSN-NNN`). Gates and playbooks cite these by ID rather than embed cases inline. |
+| State | `state/PROGRESS.md` (live state only) + `state/log/YYYY-MM-DD.md` (chronological history) | Splits in Phase 2. |
+
+**Active pillars:**
+
+| Pillar | Path | Status |
+|---|---|---|
+| documentation | `pillars/documentation/pillar.md` | active (currently in pillar-extraction migration) |
+| tests | — | not yet activated |
+| features | — | not yet activated |
+| code-quality | — | not yet activated |
+
+**Session boot — what to load:**
+
+1. `CLAUDE.md` (this file) — universal framework.
+2. `pillars/{active}/pillar.md` — pillar overview + the bar.
+3. (Authoring sessions) `pillars/{active}/{cornerstones,gates,authoring,canonical-homes}.md` — pillar rules.
+4. (When invoking a specific protocol) `playbooks/{name}.md` — the executable shape.
+
+**Migration status (2026-05-01):** Phase 1 of the refactor has scaffolded the pillar/playbook/retrospective directories with frontmatter and placeholders. Documentation-pillar content (Cornerstones 1-5, doc Quality Bar gates, GitBook authoring rules, canonical-homes table) currently still lives in this `CLAUDE.md` file; Phase 3 will move it into `pillars/documentation/`. Until that phase ships, treat `CLAUDE.md` as the authoritative source for doc-pillar rules and `pillars/documentation/pillar.md` for the pillar's mission framing.
+
 ## Documentation purpose & audience
 
 `docs.opendatadiscovery.org` is a **navigation panel for users to grasp the platform without prior context**, plus a deep-dive reference for operators and developers. The four cornerstones below are constraints the maintainer holds on every doc change — they are upstream of the IA decisions, the Quality Bar gates, and the cross-link expectations encoded later in this file. When a structural question comes up ("does this feature deserve its own page?", "where does this content belong?", "is this duplication acceptable?"), resolve it by reading these cornerstones, not by analogy to the most recent change.

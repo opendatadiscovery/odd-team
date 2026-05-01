@@ -65,7 +65,7 @@ The workspace is being reorganised into a layered architecture so the framework 
 3. (Authoring sessions) `pillars/{active}/{cornerstones,gates,authoring,canonical-homes}.md` — pillar rules.
 4. (When invoking a specific protocol) `playbooks/{name}.md` — the executable shape.
 
-**Migration status (2026-05-01):** Phases 0.5 (ADR draft), 1 (scaffold), 2 (retrospective extraction), 3 (doc-pillar extraction from CLAUDE.md), 4 (PROTOCOL playbooks in `playbooks/`), and 5 (skill SKILL.md slimming into orchestrators) have shipped on `feature/refactor-pillar-architecture`. Documentation-pillar content lives in `pillars/documentation/`; universal gates have executable PROTOCOL form in `playbooks/`; skills (`/implement`, `/review`, `/scan`) are thin orchestrators that call playbooks. Phase 6 ships the pillar template + memory cleanup.
+**Migration status (2026-05-01):** All seven phases (0.5 ADR draft / 1 scaffold / 2 retrospective extraction / 3 doc-pillar extraction from CLAUDE.md / 4 PROTOCOL playbooks / 5 skill SKILL.md slimming / 6 pillar template + memory cleanup) have shipped on `feature/refactor-pillar-architecture`. Documentation-pillar content lives in `pillars/documentation/`; universal gates have executable PROTOCOL form in `playbooks/`; skills (`/implement`, `/review`, `/scan`) are thin orchestrators; `pillars/_template/` is the scaffold for new pillars (`tests`, `features`, `code-quality` when activated). The next pillar's bootstrap is a copy + author flow; CLAUDE.md does not need to be rewritten when a new pillar activates — only the active-pillar pointer block updates.
 
 ## Active pillar — documentation
 

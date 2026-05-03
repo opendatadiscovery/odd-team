@@ -151,3 +151,13 @@ In every case the work shipped reads well in isolation, but the global picture i
 - **Bullet-list endpoint enumerations** — short bullet lists of HTTP verbs + `/api/` paths embedded inside a feature-page H3 (canonical example: `Features.md:356-359` term-to-term API bullets caught by DOC-087). Bullets are the same drift class as tables; collapse to a one-line cross-link.
 
 Phase A regex sweeps run with these patterns are the ground truth for "what content has drifted onto feature pages"; the homing rule above is the ground truth for "what to do about each hit." The patterns evolve — when a future scan surfaces a heading shape this list does not capture, extend the list in the same commit that surfaces the gap (`retrospectives/LSN-006-lookup-tables-content-homing.md` is the canonical retrospective for this gate; case-law extends the patterns rather than replacing them).
+
+## Beyond the 10 gates — the doc-product editorial audit
+
+The 10 gates above verify **per-item quality of execution**: did the maintainer author this item correctly? They do not verify **doc-product completeness of coverage**: does the manual cohere when read together? Every retrospective `LSN-001` through `LSN-010` is a finding caught by user spot-check, not by the gates' machinery — the gates fire on what is *authored*, not on what is *absent* or *incoherent across pages*. `retrospectives/LSN-011-doc-product-coherence-not-self-detecting.md` names this structural pattern.
+
+`/review` runs `playbooks/doc-product-editorial-read.md` end-to-end on every invocation, after the per-item gates and before the verdict. The audit's stance is editorial: the reviewer reads `documentation/docs/**/*.md` end-to-end as the documentation owner — the way an operator three years from now will read it — and surfaces every coherence finding (internal contradiction, conceptual drift, cross-audience absence, reader-flow defect, parallel surfaces with drift, dead admonitions, half-finished narratives, IA / hierarchy incoherence, phantom config keys, unresolved references) as a tracked DOC-NNN follow-up via `playbooks/follow-up-on-disk.md`.
+
+Editorial findings **do not block the per-item verdict**. The 10 gates above remain the sole authority for `review-ready` → `done` or `blocked`. The audit extends the backlog as parallel work; the doc product as a whole stays at the bar by progressive closure of the editorial backlog over time.
+
+Token budget is intentionally not a constraint for the audit. The session may be long. The reviewer cares about the full picture; tokens and time are spent in service of perfection.

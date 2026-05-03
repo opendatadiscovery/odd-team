@@ -67,7 +67,25 @@ Run each gate by invoking its playbook in **verification mode** (re-derive what 
 - Did the consumer-read audit discover new bean factories / SDK builders? Are they in navigation?
 - If the Implementation Record claims navigation was updated, verify.
 
-### 5. Verdict — append to the work item
+### 5. Doc-product editorial audit — read the manual end-to-end as its owner
+
+Run `playbooks/doc-product-editorial-read.md` end-to-end. **This is mandatory on every `/review` run, regardless of what the current item touched.** The audit's scope is the doc product as a whole, not the affected pages of the current batch.
+
+This step is **not a checklist of gates**; it is a **stance**. Read every `documentation/docs/**/*.md` end-to-end as the documentation owner — the way an operator three years from now will read it — and surface every coherence finding. The 10 Quality Bar gates verify each item is locally correct; this audit verifies the doc product as a whole coheres.
+
+The audit catalogs failure shapes (internal contradiction, conceptual drift, cross-audience absence, reader-flow defect, parallel surfaces with drift, dead admonitions, half-finished narratives, etc. — full table in the playbook). A finding that does not fit any catalogued shape is still a finding; log it and propose a new shape category.
+
+Every finding is logged as a `DOC-NNN` follow-up via `playbooks/follow-up-on-disk.md` — never narrated in conversation. The follow-up cites source `file:line`, the inconsistent / ambiguous passage verbatim, the failure shape, and the recommended-fix direction.
+
+Token budget is **intentionally not a constraint** here. The session may be long. Per the user's directive (2026-05-03): the reviewer cares about the full picture; tokens and time are spent in service of perfection.
+
+The audit's findings **do not block the per-item verdict**. The 10 gates remain the sole authority for `review-ready` → `done` or `blocked`. The editorial findings extend the backlog as parallel work. An item can flip to `done` while this audit logs 20 follow-ups — the item shipped correctly; the doc product still has work.
+
+If the doc tree exceeds session budget, partition by subtree (e.g., cover `configuration-and-deployment/**` this session; queue `integrations/**` for next) and note the partition state in `state/PROGRESS.md`. The next `/review` resumes where this one stopped. **Do not skip subtrees silently.**
+
+The case for this step's existence is `playbooks/doc-product-editorial-read.md` § case-law: seven prior `/implement` + `/review` sessions passed in 2026-04…05 without catching the Data Collaboration absence, the Features.md alerting cross-link defects, or the Slack-used-twice ambiguity — all caught in one user spot-check on 2026-05-03 (DOC-091 / DOC-092 / DOC-093). The audit exists so that this class of finding is caught by `/review`, not by user spot-check after the fact.
+
+### 6. Verdict — append to the work item
 
 ```markdown
 ## Review (YYYY-MM-DD, session: <short-hash-or-label>)
@@ -91,14 +109,19 @@ Run each gate by invoking its playbook in **verification mode** (re-derive what 
 - **Regressions**: none | {description}
 - **Navigation**: consistent | {what needs update}
 - **Upstream issues logged**: none | {list of `issues/{repo}/{PREFIX}-NNN.md` paths drafted during this review}
+- **Doc-product editorial findings** (audit ran per `playbooks/doc-product-editorial-read.md`):
+  - **Coverage this run**: {full tree | subtree list — e.g., "covered `configuration-and-deployment/**` + `developer-guides/**`; queued `integrations/**` for next /review"}
+  - **Findings**:
+    - DOC-NNN ({priority}, {failure_shape}) — {one-line summary}. Source: `{file:line}`.
+    - … (one bullet per finding; `none surfaced this run` if zero)
 - **Notes**: {free text, every note ending in `VERIFIED via ...` or `NOT VERIFIED → logging as ...`}
 ```
 
-- **All gates PASS, no deferrals**: flip `status: review-ready` → `status: done`. Update `state/PROGRESS.md` counts.
-- **Any gate FAIL**: flip `status: review-ready` → `status: blocked`. Leave the verdict in the item. Surface to the user with the specific failure and the fix the implementer needs to do.
-- **Any gate DEFERRED** (typically Gate 8 because the PR isn't merged yet): leave `status: review-ready`. Re-run `/review` after merge to close out Gate 8.
+- **All gates PASS, no deferrals**: flip `status: review-ready` → `status: done`. Update `state/PROGRESS.md` counts. Editorial findings (if any) are logged as separate follow-ups; they do not block the flip.
+- **Any gate FAIL**: flip `status: review-ready` → `status: blocked`. Leave the verdict in the item. Surface to the user with the specific failure and the fix the implementer needs to do. Editorial findings are still logged independently.
+- **Any gate DEFERRED** (typically Gate 8 because the PR isn't merged yet): leave `status: review-ready`. Re-run `/review` after merge to close out Gate 8. Editorial findings are still logged.
 
-### 6. Batch mode
+### 7. Batch mode
 
 If `$ARGUMENTS` starts with `batch:` (e.g., `batch:feature/critical-odd-platform-config`):
 - Identify every item on the branch via `git log` (look for `[DOC-NNN]` in commit messages).

@@ -147,8 +147,9 @@ Not separate roles. A maintainer working a piece of work moves through these in 
 1. **Must run in a session distinct from the one that implemented the item.** Same-session self-review defeats the gate.
 2. Reject-by-default. Each Quality Bar responsibility and each acceptance criterion requires cited evidence (file:line or URL). Missing evidence → `review-ready` → `blocked` with a note on what's missing.
 3. Run the live-site verification (WebFetch each affected page on `docs.opendatadiscovery.org`).
-4. If all pass, flip item status from `review-ready` to `done` and update `state/PROGRESS.md`.
-5. If any check fails, flip to `blocked`, write the specific failure in the item, and surface to the user.
+4. **Run the doc-product editorial audit** — `playbooks/doc-product-editorial-read.md`. Read `documentation/docs/**/*.md` end-to-end as the documentation owner; surface every coherence finding (internal contradictions, conceptual drift, cross-audience absence, reader-flow defects, parallel surfaces with drift, dead admonitions, half-finished narratives, etc.) as a tracked DOC-NNN follow-up via `playbooks/follow-up-on-disk.md`. Token budget is intentionally not a constraint here — the reviewer cares about the full picture; tokens and time are spent in service of perfection. Editorial findings **do not block the per-item flip**; the 10 Quality Bar gates remain the per-item authority. The audit's case-law is `retrospectives/LSN-011-doc-product-coherence-not-self-detecting.md`.
+5. If all per-item gates pass, flip item status from `review-ready` to `done` and update `state/PROGRESS.md`. Editorial findings (if any) are logged as separate follow-ups; they do not block the flip.
+6. If any per-item gate fails, flip to `blocked`, write the specific failure in the item, and surface to the user. Editorial findings are still logged independently.
 
 ## Repository Locations
 

@@ -87,6 +87,7 @@ Do *not* add an LSN for:
 | `LSN-008-stale-branch-false-positives.md` | populated | Phase 2 |
 | `LSN-009-backlog-internal-duplication.md` | populated | Phase 2 |
 | `LSN-010-azure-admin-groups-wrong-default.md` | populated | Phase 2 |
+| `LSN-011-doc-product-coherence-not-self-detecting.md` | populated | added 2026-05-03 (Phase 7 — review-side editorial-audit machinery) |
 
 ## Index by gate / playbook informed
 
@@ -95,15 +96,18 @@ When looking up "which retrospectives justify this rule?", grep this section.
 | Gate / playbook | Retrospectives |
 |---|---|
 | Gate 1 — No duplicates (bi-directional sweep) | LSN-003, LSN-009 |
-| Gate 2 — Synonyms and aliases logged | LSN-004 |
+| Gate 2 — Synonyms and aliases logged | LSN-004, LSN-011 |
 | Gate 3 — Caveats captured | LSN-001, LSN-002 |
 | Gate 4 — Consumer-read before authoring | LSN-001, LSN-002, LSN-010 |
 | Gate 5 — Unset-parameter audit for SDK integrations | LSN-002 |
 | Gate 7 — Layout and completeness | LSN-005, LSN-007 |
 | Gate 9 — Factual claim provenance | LSN-001, LSN-002, LSN-003, LSN-009, LSN-010 |
 | Gate 10 — Content type homing | LSN-006 |
+| Cornerstone 1 — Discoverability without context | LSN-011 |
 | Cornerstone 2 — Aspect deep dive (hierarchy depth) | LSN-007 |
+| Cornerstone 4 — Three audiences, AI-maintained consistency | LSN-011 |
 | Cornerstone 5 — One canonical home per content type | LSN-006 |
+| Playbook — `doc-product-editorial-read.md` | LSN-006, LSN-007, LSN-011 |
 | Documentation authoring rule — ship together | LSN-004 |
 | Documentation authoring rule — fetch origin/main first | LSN-008 |
 | Implementer cannot self-mark `done` | LSN-002 |

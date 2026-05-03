@@ -66,6 +66,7 @@ While reading, watch for the failure shapes below. Each shape's example is from 
 | **Unresolved reference** | "The X feature" mentioned but X never defined; example value looks real but is a placeholder; an acronym used without expansion. (A SQL snippet using a placeholder hostname that looks like a real service.) |
 | **Cross-audience absence** | Feature documented on operator + developer surfaces but absent from the user-facing landing. (2026-05-03: Data Collaboration on `odd-platform.md#enable-data-collaboration` + `api-reference.md#data-collaboration` + `navigation/domains/collaboration.md` but nothing on Features.md — DOC-091 is the resulting follow-up.) |
 | **Parallel surfaces with drift** | Two pages cover the same content type without a single canonical home; one is richer than the other or carries a caveat the other lacks. (`retrospectives/LSN-006-lookup-tables-content-homing.md`.) |
+| **Intra-page redundancy** | A single page covers the same conceptual content in 2+ sections (prose definition followed by a table re-stating the same definitions; an "X vs Y strategies" H2 next to an "X, Y, Z, W" H2 next to a "Terms & Aliases" row that re-defines X/Y/Z/W in full). The reader sees the same content multiple times in succession and is left wondering whether they missed a distinction. **Distinct from `Parallel surfaces with drift`** which is the cross-page version of the same shape. (2026-05-03: `main-concepts.md` repeats Adapter / Plugin / Collector / Push adapter in 4 sections — `## The architecture chain` prose + `## Push vs Pull strategies` + `## Adapter, Plugin, Collector, Push adapter` table + Terms & Aliases full-definition rows. Surfaced by user spot-check after two consecutive editorial-audit runs missed it because the catalog had no within-page entry — DOC-114 is the resulting follow-up and the canonical case-law for this shape.) |
 | **Half-finished narrative** | Section opens a thread it doesn't close: "First, we'll cover X. Then Y." [section ends after X]. A walkthrough that promises three steps and delivers two. |
 | **Cross-link mismatch** | The link text promises one thing; the target delivers another. ("[detailed configuration steps]" → target is a one-paragraph teaser; "[the four halt-timestamp fields]" → target lists three.) |
 | **IA / hierarchy incoherence** | A page placed at SUMMARY depth that does not match its conceptual depth — a sub-feature placed as a peer of a primary pillar, or a primary pillar buried under a thematic group. (`retrospectives/LSN-007-summary-convenience-placements.md`.) |
@@ -73,6 +74,23 @@ While reading, watch for the failure shapes below. Each shape's example is from 
 | **Phantom config key / endpoint / file** | Documented entity that no longer exists in code (renamed, removed, or never merged). Watch especially for items shipped before a rename was completed upstream. |
 
 If a finding does not fit any shape above and the reviewer can't articulate it in less than two sentences, log it anyway with `failure_shape: uncategorised — needs editorial review` and surface to the user — the catalog should grow rather than the finding be dropped.
+
+### 3.5 Per-page coherence check (NEW — addresses the within-page failure mode)
+
+Cross-page failure shapes (Parallel surfaces with drift, Internal contradiction, Conceptual drift, Cross-audience absence) are caught while reading the doc product end-to-end. **Within-page** redundancy and incoherence are a different failure mode that the cross-page reading stance does not naturally surface — the reviewer reads each H2 in succession and treats it as the next topic, instead of asking "does this *page* repeat itself?"
+
+Before moving to the next file, run this per-page check on every page of substance (≥3 H2 sections):
+
+1. **List the H2s in order.** Read just the headings; ignore the body for a moment.
+2. **For each adjacent pair of H2s, ask: do these two sections cover the same conceptual ground?** Watch especially for:
+   - Prose definition followed by a table re-stating the same definitions.
+   - "X vs Y strategies" H2 next to an "X, Y, Z, W" overview H2.
+   - A Terms & Aliases (or Glossary) section whose rows carry full definitions instead of alias-only pointers — the rows should link back to the canonical home, not duplicate it.
+   - Two H2s that both end with "see [Other H2 on this same page] for details" pointing at each other.
+3. **If 2+ H2s cover the same conceptual ground**, that is an `Intra-page redundancy` finding. Log it as a DOC-NNN per § 4 below.
+4. **Special case for `Terms & Aliases` (or any glossary table)**: confirm each row's "What it is" column carries a one-line summary, NOT a full re-definition that overlaps with content elsewhere on the page or in the doc tree. Glossary tables are alias registries; if the table is doing the work of the canonical home, the canonical home is missing OR the table is overbuilt.
+
+This check is fast (the H2 list is the entire input) and catches a class the cross-page reading stance demonstrably misses — `retrospectives/LSN-011` case-law extends with the 2026-05-03 user spot-check on `main-concepts.md` (DOC-114), which two consecutive editorial-audit runs missed because the reviewer read the page H2-by-H2 rather than asking "does the page cohere with itself?"
 
 ### 4. Log every finding
 

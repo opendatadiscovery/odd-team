@@ -11,7 +11,7 @@
   - A1 17/19 (89%) — 2 FAILs (DOC-099, DOC-103)
   - A2 19/20 (95%) — 1 FAIL (DOC-114)
   - A3 17/19 (89%) — 2 FAILs (DOC-099, DOC-108)
-  - A4 14/20 (70%) — 6 FAILs (DOC-094, DOC-095, DOC-096, DOC-101, DOC-103, DOC-108, DOC-110, DOC-111)
+  - A4 13/20 (65%) — 7 FAILs (DOC-094, DOC-095, DOC-096, DOC-101, DOC-103, DOC-108, DOC-110, DOC-111, DOC-116, DOC-117) — drags the average; concentrated on Features.md (multiple in-flight) + EKS quick-launch + lookup-tables.md (Medium image dependency)
   - A5 20/20 (100%)
   - A6 7/7 (100%) — 13 N/A
   - A7 18/20 (90%) — 2 FAILs (DOC-103, DOC-105+DOC-107)
@@ -20,7 +20,7 @@
   - A10 19/20 (95%) — 1 FAIL (DOC-103)
   - A11f 20/20 (100%)
   - A12 16/20 (80%) — 4 FAILs (DOC-103, DOC-111, DOC-113)
-- **Open FAILs** (DOC items linked from cells): 14 distinct items (DOC-094, DOC-095, DOC-096, DOC-099, DOC-100, DOC-101, DOC-102, DOC-103, DOC-105, DOC-107, DOC-108, DOC-109, DOC-110, DOC-111, DOC-113, DOC-114, DOC-115).
+- **Open FAILs** (distinct DOC items linked from cells): 19 items (DOC-094, DOC-095, DOC-096, DOC-099, DOC-100, DOC-101, DOC-102, DOC-103, DOC-105, DOC-107, DOC-108, DOC-109, DOC-110, DOC-111, DOC-113, DOC-114, DOC-115, DOC-116, DOC-117). Plus DOC-088, DOC-097, DOC-098, DOC-104, DOC-106, DOC-112 from prior audits not surfaced this run = 25 total open.
 - **Code-side coverage** (A11-reverse): not yet started.
 - **Last audit run**: 2026-05-03 (baseline run #1 — 20 pages from entry surfaces + aspect landings + 5 config-deployment pages).
 
@@ -47,7 +47,7 @@ Twelve columns per page:
 | docs/Overview.md | ✗(DOC-103) | ✓ | ✗(DOC-103) | ✗(DOC-103) | ✓ | — | ✗(DOC-103) | ✓ | — | ✗(DOC-103) | ✓ | ✗(DOC-103) | FAIL | 2026-05-03 |
 | docs/Architecture.md | ✗(DOC-099+DOC-115) | ✓ | ✗(DOC-099) | ✓ | ✓ | — | ✓ | ✗(DOC-099) | — | ✗(DOC-099) | ✓ | ✓ | FAIL | 2026-05-03 |
 | docs/main-concepts.md | ✗(DOC-114+DOC-115) | ✗(DOC-114) | ✗(DOC-099) | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | ✓ | ✓ | FAIL | 2026-05-03 |
-| docs/Features.md | ✓ | ✓ | ✓ | ✗(DOC-094,095,096,101,110) | ✓ | ✓ | ✓ | ✓ | ✗(DOC-109) | ✓ | ✗(DOC-109) | ✗(DOC-113) | FAIL | 2026-05-03 |
+| docs/Features.md | ✓ | ✓ | ✓ | ✗(DOC-094,095,096,101,110,116,117) | ✓ | ✓ | ✓ | ✓ | ✗(DOC-109) | ✓ | ✗(DOC-109) | ✗(DOC-113) | FAIL | 2026-05-03 |
 | docs/oddrn.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | ✓ | ✓ | PASS | 2026-05-03 |
 | docs/quick_start.md | | | | | | | | | | | | | | |
 | docs/platform.md | | | | | | | | | | | | | | |
@@ -64,7 +64,7 @@ Twelve columns per page:
 | docs/data-modelling/query-examples.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-03 |
 | docs/data-modelling/relationships.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-03 |
 | docs/master-data-management.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-03 |
-| docs/master-data-management/lookup-tables.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-03 |
+| docs/master-data-management/lookup-tables.md | ✓ | ✓ | ✓ | ✗(DOC-117) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | FAIL | 2026-05-03 |
 | docs/configuration-and-deployment/deployment.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-03 |
 | docs/configuration-and-deployment/trylocally.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-113) | FAIL | 2026-05-03 |
 | docs/configuration-and-deployment/quick_launch_on_amazon_elastic_kubernetes_service.md | ✓ | ✓ | ✓ | ✗(DOC-111) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-111) | FAIL | 2026-05-03 |
@@ -151,6 +151,8 @@ These DOC items predate or were surfaced during the framework's first baseline. 
 | DOC-113 | A12 | (cross-page batch — 13 files) | low | pending |
 | DOC-114 | A2 | docs/main-concepts.md | high | pending; blocked by DOC-115 |
 | **DOC-115** | **A1** (canonical-home decision) | **docs/main-concepts.md + docs/Architecture.md** | **high** | **NEW — baseline-audit finding** |
+| **DOC-116** | **A4** (Features.md broader shadow-anchor sweep) | **docs/Features.md** (13 H2/H3 anchors + 9 TOC entries) | **low** | **NEW — surfaced during self-audit verification** |
+| **DOC-117** | **A4 + A11f** (Medium image host fragility) | **docs/Features.md (52) + docs/master-data-management/lookup-tables.md (14)** | **low** | **NEW — surfaced during self-audit verification** |
 
 ## Audit history
 
@@ -158,3 +160,4 @@ These DOC items predate or were surfaced during the framework's first baseline. 
 |---|---|---|---|---|
 | 2026-05-03 | framework-codification | 0 | 0 | Framework written; dashboard scaffolded; no per-page cells filled this run. |
 | 2026-05-03 | baseline-run-1 | 20 | 1 (DOC-115) | First baseline. Entry surfaces (7) + Use_cases.md + aspect landings (7: data-modelling, query-examples, relationships, master-data-management, lookup-tables, directory, genai) + 5 configuration-and-deployment pages (deployment, trylocally, EKS quick-launch, odd-platform, collectors-secrets-backend). Most aspect/feature/integration pages PASS — they were authored under the world-class bar already. Findings concentrate on entry surfaces (parallel-surface drift, sparse Architecture.md, 4× redundancy on main-concepts.md, half-finished orphans) and one heavy operator page (odd-platform.md hyphenated env-vars). DOC-115 newly surfaced: canonical-home decision between main-concepts.md and Architecture.md that DOC-114 + DOC-099 both depend on. 40 pages remain un-audited (use-case sub-pages + enable-security subtree + developer-guides + integrations); next baseline run continues. |
+| 2026-05-04 | self-audit-verification | 0 (no new pages) | 2 (DOC-116, DOC-117) | Self-audit at user request ("do we have logged all the findings?"). Two observations from the baseline read had been noted in conversation but not yet committed to disk: DOC-116 (Features.md broader legacy shadow-anchor sweep — DOC-094 fixed only the duplicate id-128d pair; 13 other shadow anchors remain on H2/H3s + 9 in-page TOC entries target them) and DOC-117 (Medium image host fragility — 66 image references across Features.md + lookup-tables.md depend on cdn-images-1.medium.com + miro.medium.com; same defect class as DOC-101 outbound URL canonicalisation but for images). Re-classified `lookup-tables.md` from PASS to FAIL on A4 due to DOC-117. Confirms the framework's self-audit step works: the user's question forced a check and surfaced two on-disk gaps. |

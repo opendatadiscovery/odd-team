@@ -38,9 +38,12 @@ Ownership, tags, labels, discussions, activity feed, notifications.
 - `datacollaboration.slack-oauth-token`
 
 ## Documentation
-- `documentation/docs/Features.md#manual-object-tagging`
-- `documentation/docs/Features.md#activity-feed-for-monitoring-changes`
-- `documentation/docs/configuration-and-deployment/odd-platform.md#enable-data-collaboration`
+- `documentation/docs/Features.md#manual-object-tagging` — tagging sub-feature
+- `documentation/docs/Features.md#activity-feed-for-monitoring-changes` — activity-feed sub-feature
+- `documentation/docs/Features.md#data-collaboration` — Data Collaboration (Slack messaging) user-facing showcase
+- `documentation/docs/configuration-and-deployment/odd-platform.md#enable-data-collaboration` — operator config home for Data Collaboration
+- `documentation/docs/developer-guides/api-reference.md#data-collaboration` — developer API home for Data Collaboration
+- `documentation/docs/main-concepts.md#terms-and-aliases` — Slack alert webhook vs Slack collaboration app taxonomic disambiguation
 
 ## Related Domains
 - data-entities (ownership assigned to entities)

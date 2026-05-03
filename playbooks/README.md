@@ -59,6 +59,7 @@ When a retrospective adds new case-law that changes the procedure, update the pl
 | `claim-inventory.md` | active | Phase 4 | drafting the `Sources:` commit footer | Gate 9 (`pillars/documentation/gates.md`) |
 | `live-site-verification.md` | active | Phase 4 | reviewing a merged item | Gate 8 (`pillars/documentation/gates.md`) |
 | `follow-up-on-disk.md` | active | Phase 4 | any phase discovering an out-of-scope issue | "Follow-up work must be logged on disk" (`CLAUDE.md`) |
+| `doc-product-editorial-read.md` | active | Phase 7 (added 2026-05-03) | every `/review` session, after the per-item gates and before the verdict | `/review` SKILL Step 5 (`.claude/skills/review/SKILL.md`) |
 
 ## Sub-protocol relationships
 
@@ -66,3 +67,4 @@ When a retrospective adds new case-law that changes the procedure, update the pl
 - `playbooks/claim-inventory.md` invokes `playbooks/consumer-read.md` for the `Config` / `SDK` / `Feature` / `Error` classes; invokes `playbooks/unset-parameter-audit.md` for the `Builder` class; invokes `playbooks/duplication-sweep.md` step 3 for the `Backlog` class.
 - `playbooks/duplication-sweep.md` step 2 invokes `playbooks/claim-inventory.md` for new outbound URLs.
 - `playbooks/follow-up-on-disk.md` invokes `playbooks/duplication-sweep.md` step 3 for the grep-backlog-first rule.
+- `playbooks/doc-product-editorial-read.md` invokes `playbooks/follow-up-on-disk.md` for every editorial finding surfaced (every finding is a tracked DOC-NNN, never narrated).

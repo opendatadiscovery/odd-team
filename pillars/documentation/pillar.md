@@ -22,15 +22,24 @@ Every change in this pillar either holds that bar or proves the bar wasn't real.
 
 ## Concrete quality criteria
 
-These are the specific axes the bar above is measured on. Each is enforced by a Cornerstone (`pillars/documentation/cornerstones.md`), a gate (`pillars/documentation/gates.md`), or both.
+The bar above is operationalised as **twelve doc-quality axes** in `pillars/documentation/quality-framework.md`. Each axis carries a positive specification of what world-class docs require, a PASS shape, derived failure shapes, and an audit cue. The framework also defines two execution modes: a **per-page systematic audit** the reviewer walks for every page (axes 1-10, 11-forward, 12) and a **code-side coverage sweep** for the reverse direction (axis 11-reverse — features implemented but never documented).
 
-- **Structurally clean.** Every page sits at the conceptual depth its content warrants. SUMMARY hierarchy reflects the conceptual tree; convenience-placements are caught at review time. (Cornerstone 2 + Gate 7.)
-- **Complete coverage.** Every user-visible code path is described as a feature, a known limitation, a performance note, or a security consideration. Missing coverage in either direction is a finding to log. (Gate 6 — Bidirectional code ↔ doc coverage.)
-- **No duplication that shouldn't exist.** Detail content lives in exactly one canonical location; every other mention is a cross-link. (Cornerstone 2 + Gate 1 + Gate 10.)
-- **Consistent references.** Every term, alias, repo URL, integration name, config key, API path is traced to its canonical source of truth. Memory and plausibility are not sources. (Gate 9 — Factual claim provenance.)
-- **Top-quality topics.** Every topic carries the operator-relevant detail an experienced reader expects: caveats, RBAC, runtime constraints, error/retry behavior, deployment-context defaults. Surface-only descriptions fail the bar. (Gate 3 — Caveats captured + Gate 4 — Consumer-read.)
-- **Three audiences in one tree.** Users, operators, and developers (incl. AI) navigate the same source without friction. Configuration is its own audience surface; ADRs are their own surface; canonical homes per content type prevent any audience's content from leaking onto another's surface. (Cornerstones 3, 4, 5.)
-- **Live-site verified.** Every change is verified on `docs.opendatadiscovery.org`, not just on local build. Build-time and live-site rendering are not the same system. (Gate 8 — Publishing standards.)
+The twelve axes:
+
+1. **Canonical-home discipline** — every content type has exactly one home; pages link rather than embed. (Cornerstones 2 + 5.)
+2. **Intra-page coherence** — a single page does not repeat itself; glossary tables carry alias-only pointers, not full re-definitions. (DOC-114 case-law.)
+3. **Cross-page coherence** — same fact, same answer, everywhere; concepts named consistently. (LSN-004 case-law.)
+4. **Reference integrity** — every link's text matches its target; every anchor resolves; no redirect chains; no commit-pinned URL rot. (DOC-101, DOC-102, DOC-110 case-law.)
+5. **Claim provenance** — every claim traces to a named SoT; no banned phrases. (Gate 9 — `pillars/documentation/gates.md`.)
+6. **Operator depth** — every operator-relevant default, caveat, RBAC rule, retry/timeout, side-effect, performance and security consideration is captured. (Gates 3 + 4; LSN-001, LSN-002 case-law.)
+7. **Reader-flow integrity** — getting-started flows complete; "see X for details" delivers; admonitions point at fix-paths. (DOC-105, DOC-107 case-law.)
+8. **Vocabulary consistency** — terms used per the alias registry; aliases registered; ambiguities disambiguated. (Gate 2; LSN-004 case-law.)
+9. **Audience completeness** — every feature on every audience surface (user / operator / developer) where its audience needs it. (DOC-091 case-law.)
+10. **IA placement** — page sits at the SUMMARY depth its conceptual depth warrants. (Gate 7; LSN-007 case-law.)
+11. **Bidirectional code↔doc fidelity** — both directions: doc claims are true and complete (forward); implemented features are documented on every surface that needs them (reverse). (Gate 6; LSN-001/002/010 case-law.)
+12. **Prose and rendering** — one voice; no typos, broken markdown, escaped artefacts, mixed indentation. (DOC-111, DOC-112, DOC-113 case-law.)
+
+Coverage is measured against `(pages × axes) + (code-features × audience-surfaces)` so progress has a denominator. The audit dashboard lives at `state/doc-quality-coverage.md`.
 
 ## Success signals
 
@@ -50,6 +59,7 @@ These are the specific axes the bar above is measured on. Each is enforced by a 
 
 Beyond the universal framework in `CLAUDE.md`, every authoring session in this pillar loads:
 
+- `pillars/documentation/quality-framework.md` — the twelve doc-quality axes + per-page audit + code-side coverage sweep procedures
 - `pillars/documentation/cornerstones.md` — Cornerstones 1-5, the IA constraints
 - `pillars/documentation/gates.md` — Doc-pillar gates (specializations of the universal Quality Bar)
 - `pillars/documentation/authoring.md` — GitBook authoring rules, Sources-footer, live-verify

@@ -6,23 +6,23 @@
 
 ## Headline metrics
 
-- **Per-page coverage**: 20 / 60 pages audited (33%).
+- **Per-page coverage**: 42 / 60 pages audited (70%).
 - **Per-axis pass rate** (over audited cells, excluding N/A):
-  - A1 17/19 (89%) — 2 FAILs (DOC-099, DOC-103)
-  - A2 19/20 (95%) — 1 FAIL (DOC-114)
-  - A3 17/19 (89%) — 2 FAILs (DOC-099, DOC-108)
-  - A4 13/20 (65%) — 7 FAILs (DOC-094, DOC-095, DOC-096, DOC-101, DOC-103, DOC-108, DOC-110, DOC-111, DOC-116, DOC-117) — drags the average; concentrated on Features.md (multiple in-flight) + EKS quick-launch + lookup-tables.md (Medium image dependency)
-  - A5 20/20 (100%)
-  - A6 7/7 (100%) — 13 N/A
-  - A7 18/20 (90%) — 2 FAILs (DOC-103, DOC-105+DOC-107)
-  - A8 19/20 (95%) — 1 FAIL (DOC-099)
-  - A9 14/15 (93%) — 1 FAIL (DOC-109) — 5 N/A
-  - A10 19/20 (95%) — 1 FAIL (DOC-103)
-  - A11f 20/20 (100%)
-  - A12 16/20 (80%) — 4 FAILs (DOC-103, DOC-111, DOC-113)
-- **Open FAILs** (distinct DOC items linked from cells): 19 items (DOC-094, DOC-095, DOC-096, DOC-099, DOC-100, DOC-101, DOC-102, DOC-103, DOC-105, DOC-107, DOC-108, DOC-109, DOC-110, DOC-111, DOC-113, DOC-114, DOC-115, DOC-116, DOC-117). Plus DOC-088, DOC-097, DOC-098, DOC-104, DOC-106, DOC-112 from prior audits not surfaced this run = 25 total open.
+  - A1 38/40 (95%) — 2 FAILs (DOC-099, DOC-103)
+  - A2 40/42 (95%) — 2 FAILs (DOC-114, DOC-102)
+  - A3 38/40 (95%) — 2 FAILs (DOC-099, DOC-108)
+  - A4 31/42 (74%) — 11 FAILs concentrated on Features.md (DOC-110, DOC-116, DOC-117), policies.md (DOC-120), integration-wizard.md (DOC-102), github-organization-overview.md (DOC-098), odd-platform.md (DOC-108), Use_cases.md (DOC-107), Overview.md (DOC-103), EKS quick-launch (DOC-111), lookup-tables.md (DOC-117) — DOC-094, DOC-095, DOC-096, DOC-101 closed this run
+  - A5 42/42 (100%)
+  - A6 13/13 (100%) — 29 N/A (developer-facing pages without operator-relevant claims)
+  - A7 38/42 (90%) — 4 FAILs (DOC-103, DOC-105, DOC-107, DOC-118 [how-to-contribute], DOC-122 [build-and-run/README])
+  - A8 41/42 (98%) — 1 FAIL (DOC-099)
+  - A9 22/23 (96%) — 1 FAIL (DOC-109) — 19 N/A (single-audience pages)
+  - A10 41/42 (98%) — 1 FAIL (DOC-103)
+  - A11f 42/42 (100%)
+  - A12 31/42 (74%) — 11 FAILs (DOC-103, DOC-111, DOC-113 across multiple pages, DOC-112, DOC-119, DOC-121) — DOC-100 closed this run
+- **Open FAILs** (distinct DOC items linked from cells): 23 items (DOC-098, DOC-099, DOC-102, DOC-103, DOC-105, DOC-107, DOC-108, DOC-109, DOC-110, DOC-111, DOC-112, DOC-113, DOC-114, DOC-115, DOC-116, DOC-117, DOC-118, DOC-119, DOC-120, DOC-121, DOC-122). Plus DOC-088, DOC-097, DOC-104, DOC-106 from prior audits not currently surfaced in cells = 25 total open. **Closed this run**: DOC-094, DOC-095, DOC-096, DOC-100, DOC-101 (5).
 - **Code-side coverage** (A11-reverse): not yet started.
-- **Last audit run**: 2026-05-03 (baseline run #1 — 20 pages from entry surfaces + aspect landings + 5 config-deployment pages).
+- **Last audit run**: 2026-05-04 (post-merge audit run #2 + 22 newly-audited pages — developer-guides/* (7 pages) + enable-security/* (13 pages) + integrations entry surfaces (2 pages)).
 
 ## Per-page audit cells
 
@@ -47,7 +47,7 @@ Twelve columns per page:
 | docs/Overview.md | ✗(DOC-103) | ✓ | ✗(DOC-103) | ✗(DOC-103) | ✓ | — | ✗(DOC-103) | ✓ | — | ✗(DOC-103) | ✓ | ✗(DOC-103) | FAIL | 2026-05-03 |
 | docs/Architecture.md | ✗(DOC-099+DOC-115) | ✓ | ✗(DOC-099) | ✓ | ✓ | — | ✓ | ✗(DOC-099) | — | ✗(DOC-099) | ✓ | ✓ | FAIL | 2026-05-03 |
 | docs/main-concepts.md | ✗(DOC-114+DOC-115) | ✗(DOC-114) | ✗(DOC-099) | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | ✓ | ✓ | FAIL | 2026-05-03 |
-| docs/Features.md | ✓ | ✓ | ✓ | ✗(DOC-094,095,096,101,110,116,117) | ✓ | ✓ | ✓ | ✓ | ✗(DOC-109) | ✓ | ✗(DOC-109) | ✗(DOC-113) | FAIL | 2026-05-03 |
+| docs/Features.md | ✓ | ✓ | ✓ | ✗(DOC-110,DOC-116,DOC-117) | ✓ | ✓ | ✓ | ✓ | ✗(DOC-109) | ✓ | ✗(DOC-109) | ✗(DOC-113) | FAIL | 2026-05-04 (post-batch re-audit; DOC-094,095,096,101 closed) |
 | docs/oddrn.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | ✓ | ✓ | PASS | 2026-05-03 |
 | docs/quick_start.md | | | | | | | | | | | | | | |
 | docs/platform.md | | | | | | | | | | | | | | |
@@ -68,30 +68,30 @@ Twelve columns per page:
 | docs/configuration-and-deployment/deployment.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-03 |
 | docs/configuration-and-deployment/trylocally.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-113) | FAIL | 2026-05-03 |
 | docs/configuration-and-deployment/quick_launch_on_amazon_elastic_kubernetes_service.md | ✓ | ✓ | ✓ | ✗(DOC-111) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-111) | FAIL | 2026-05-03 |
-| docs/configuration-and-deployment/odd-platform.md | ✓ | ✗(DOC-102) | ✗(DOC-108) | ✗(DOC-108) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | FAIL | 2026-05-03 |
+| docs/configuration-and-deployment/odd-platform.md | ✓ | ✗(DOC-102) | ✗(DOC-108) | ✗(DOC-108) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | FAIL | 2026-05-04 (post-batch re-audit; DOC-100 closed) |
 | docs/configuration-and-deployment/collectors-secrets-backend.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-03 |
-| docs/configuration-and-deployment/enable-security/README.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authentication/README.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authentication/disabled-authentication.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authentication/login-form.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authentication/oauth2-oidc.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authentication/ldap.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authentication/s2s.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authorization/README.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authorization/policies.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authorization/permissions.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authorization/roles.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authorization/owners.md | | | | | | | | | | | | | | |
-| docs/configuration-and-deployment/enable-security/authorization/user-owner-association.md | | | | | | | | | | | | | | |
-| docs/developer-guides/api-reference.md | | | | | | | | | | | | | | |
-| docs/developer-guides/how-to-contribute.md | | | | | | | | | | | | | | |
-| docs/developer-guides/github-organization-overview.md | | | | | | | | | | | | | | |
-| docs/developer-guides/custom-collectors.md | | | | | | | | | | | | | | |
-| docs/developer-guides/build-and-run/README.md | | | | | | | | | | | | | | |
-| docs/developer-guides/build-and-run/build-and-run-odd-platform.md | | | | | | | | | | | | | | |
-| docs/developer-guides/build-and-run/build-and-run-odd-collectors.md | | | | | | | | | | | | | | |
-| docs/integrations/README.md | | | | | | | | | | | | | | |
-| docs/integrations/integration-wizard.md | | | | | | | | | | | | | | |
+| docs/configuration-and-deployment/enable-security/README.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authentication/README.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authentication/disabled-authentication.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authentication/login-form.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authentication/oauth2-oidc.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-121) | FAIL | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authentication/ldap.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-113) | FAIL | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authentication/s2s.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authorization/README.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authorization/policies.md | ✓ | ✓ | ✓ | ✗(DOC-120) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-113) | FAIL | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authorization/permissions.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authorization/roles.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-113) | FAIL | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authorization/owners.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-113) | FAIL | 2026-05-04 |
+| docs/configuration-and-deployment/enable-security/authorization/user-owner-association.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-113) | FAIL | 2026-05-04 |
+| docs/developer-guides/api-reference.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-04 (DOC-101 closed) |
+| docs/developer-guides/how-to-contribute.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✗(DOC-118) | ✓ | ✓ | ✓ | ✓ | ✗(DOC-113) | FAIL | 2026-05-04 |
+| docs/developer-guides/github-organization-overview.md | ✓ | ✓ | ✓ | ✗(DOC-098) | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-098+DOC-112) | FAIL | 2026-05-04 |
+| docs/developer-guides/custom-collectors.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-04 |
+| docs/developer-guides/build-and-run/README.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✗(DOC-122) | — | ✓ | ✓ | ✓ | ✓ | FAIL | 2026-05-04 |
+| docs/developer-guides/build-and-run/build-and-run-odd-platform.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-04 |
+| docs/developer-guides/build-and-run/build-and-run-odd-collectors.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✗(DOC-119) | FAIL | 2026-05-04 |
+| docs/integrations/README.md | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-04 |
+| docs/integrations/integration-wizard.md | ✓ | ✗(DOC-102) | ✓ | ✗(DOC-102) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | FAIL | 2026-05-04 |
 | docs/integrations/collectors/odd-collector.md | | | | | | | | | | | | | | |
 | docs/integrations/collectors/odd-collector-aws.md | | | | | | | | | | | | | | |
 | docs/integrations/collectors/odd-collector-azure.md | | | | | | | | | | | | | | |
@@ -129,14 +129,14 @@ These DOC items predate or were surfaced during the framework's first baseline. 
 | DOC-NNN | Axis(es) | Page | Priority | Status |
 |---|---|---|---|---|
 | DOC-088 | A1 | docs/developer-guides/api-reference.md | high | pending |
-| DOC-094 | A4 | docs/Features.md | high | review-ready |
-| DOC-095 | A4 | docs/Features.md | high | review-ready |
-| DOC-096 | A4 | docs/Features.md | high | review-ready |
+| DOC-094 | A4 | docs/Features.md | high | **done (closed 2026-05-04 post-merge — Gate 8 verified live)** |
+| DOC-095 | A4 | docs/Features.md | high | **done (closed 2026-05-04 post-merge — Gate 8 verified live)** |
+| DOC-096 | A4 | docs/Features.md | high | **done (closed 2026-05-04 post-merge — Gate 8 verified live)** |
 | DOC-097 | A1 | (4 orphan pages — superseded by DOC-103/104/105/106) | medium | pending |
 | DOC-098 | A4 + A12 | docs/developer-guides/github-organization-overview.md | medium | pending |
 | DOC-099 | A1 + A3 + A8 + A10 | docs/Architecture.md | medium | pending; blocked by DOC-115 |
-| DOC-100 | A12 | docs/configuration-and-deployment/odd-platform.md | low | review-ready |
-| DOC-101 | A4 | (4 pages with Slack URLs) | low | review-ready |
+| DOC-100 | A12 | docs/configuration-and-deployment/odd-platform.md | low | **done (closed 2026-05-04 post-merge — Gate 8 verified live)** |
+| DOC-101 | A4 | (4 pages with Slack URLs) | low | **done (closed 2026-05-04 post-merge — Gate 8 verified live)** |
 | DOC-102 | A2 + A4 | docs/integrations/integration-wizard.md, docs/configuration-and-deployment/odd-platform.md | high | pending |
 | DOC-103 | A1 + A3 + A4 + A7 + A10 + A12 | docs/Overview.md | medium | pending |
 | DOC-104 | A1 | docs/Data_Compliance_DS.md | low | pending |
@@ -150,9 +150,14 @@ These DOC items predate or were surfaced during the framework's first baseline. 
 | DOC-112 | A12 | docs/developer-guides/github-organization-overview.md | low | pending |
 | DOC-113 | A12 | (cross-page batch — 13 files) | low | pending |
 | DOC-114 | A2 | docs/main-concepts.md | high | pending; blocked by DOC-115 |
-| **DOC-115** | **A1** (canonical-home decision) | **docs/main-concepts.md + docs/Architecture.md** | **high** | **NEW — baseline-audit finding** |
-| **DOC-116** | **A4** (Features.md broader shadow-anchor sweep) | **docs/Features.md** (13 H2/H3 anchors + 9 TOC entries) | **low** | **NEW — surfaced during self-audit verification** |
-| **DOC-117** | **A4 + A11f** (Medium image host fragility) | **docs/Features.md (52) + docs/master-data-management/lookup-tables.md (14)** | **low** | **NEW — surfaced during self-audit verification** |
+| DOC-115 | A1 (canonical-home decision) | docs/main-concepts.md + docs/Architecture.md | high | pending |
+| DOC-116 | A4 (Features.md broader shadow-anchor sweep) | docs/Features.md (13 H2/H3 anchors + 9 TOC entries) | low | pending |
+| DOC-117 | A4 + A11f (Medium image host fragility) | docs/Features.md (52) + docs/master-data-management/lookup-tables.md (14) | low | pending |
+| **DOC-118** | **A7** (half-finished narrative — page intro promises three paths, body delivers two) | **docs/developer-guides/how-to-contribute.md** | **high** | **NEW — surfaced during 2026-05-04 post-merge audit** |
+| **DOC-119** | **A12** (rendering defect — concatenated `export` statements on one line; same defect class as DOC-100) | **docs/developer-guides/build-and-run/build-and-run-odd-collectors.md** (M1 troubleshooting code block) | **high** | **NEW — surfaced during 2026-05-04 post-merge audit** |
+| **DOC-120** | **A4** (dead anchor — 7 broken `policies.md#con` + `#condition-operations` references in a single section) | **docs/configuration-and-deployment/enable-security/authorization/policies.md** | **high** | **NEW — surfaced during 2026-05-04 post-merge audit; live-site WebFetch confirmed broken** |
+| **DOC-121** | **A12** (prose polish — stray-character typo `john,davidyam` in Keycloak example) | **docs/configuration-and-deployment/enable-security/authentication/oauth2-oidc.md** | **low** | **NEW — surfaced during 2026-05-04 post-merge audit** |
+| **DOC-122** | **A7** (sparse landing page — section README has no contents block linking sub-pages) | **docs/developer-guides/build-and-run/README.md** | **low** | **NEW — surfaced during 2026-05-04 post-merge audit** |
 
 ## Audit history
 
@@ -161,3 +166,4 @@ These DOC items predate or were surfaced during the framework's first baseline. 
 | 2026-05-03 | framework-codification | 0 | 0 | Framework written; dashboard scaffolded; no per-page cells filled this run. |
 | 2026-05-03 | baseline-run-1 | 20 | 1 (DOC-115) | First baseline. Entry surfaces (7) + Use_cases.md + aspect landings (7: data-modelling, query-examples, relationships, master-data-management, lookup-tables, directory, genai) + 5 configuration-and-deployment pages (deployment, trylocally, EKS quick-launch, odd-platform, collectors-secrets-backend). Most aspect/feature/integration pages PASS — they were authored under the world-class bar already. Findings concentrate on entry surfaces (parallel-surface drift, sparse Architecture.md, 4× redundancy on main-concepts.md, half-finished orphans) and one heavy operator page (odd-platform.md hyphenated env-vars). DOC-115 newly surfaced: canonical-home decision between main-concepts.md and Architecture.md that DOC-114 + DOC-099 both depend on. 40 pages remain un-audited (use-case sub-pages + enable-security subtree + developer-guides + integrations); next baseline run continues. |
 | 2026-05-04 | self-audit-verification | 0 (no new pages) | 2 (DOC-116, DOC-117) | Self-audit at user request ("do we have logged all the findings?"). Two observations from the baseline read had been noted in conversation but not yet committed to disk: DOC-116 (Features.md broader legacy shadow-anchor sweep — DOC-094 fixed only the duplicate id-128d pair; 13 other shadow anchors remain on H2/H3s + 9 in-page TOC entries target them) and DOC-117 (Medium image host fragility — 66 image references across Features.md + lookup-tables.md depend on cdn-images-1.medium.com + miro.medium.com; same defect class as DOC-101 outbound URL canonicalisation but for images). Re-classified `lookup-tables.md` from PASS to FAIL on A4 due to DOC-117. Confirms the framework's self-audit step works: the user's question forced a check and surfaced two on-disk gaps. |
+| 2026-05-04 | post-merge-batch-closeout-+-baseline-run-2 | 22 newly audited + 4 re-audited (Features.md, odd-platform.md, main-concepts.md cells unchanged; api-reference.md as new entry post-DOC-101 closure) | 5 (DOC-118, DOC-119, DOC-120, DOC-121, DOC-122) | Post-merge closeout of `feature/docs-editorial-audit-closeout` batch (DOC-094, 095, 096, 100, 101 → done — Gate 8 closed via live-site WebFetch on each affected URL). Continued baseline with developer-guides subtree (7 pages: api-reference, how-to-contribute, github-organization-overview, custom-collectors, build-and-run/README, build-and-run-odd-platform, build-and-run-odd-collectors) + enable-security subtree (13 pages: README + authentication/{README, disabled, login-form, oauth2-oidc, ldap, s2s} + authorization/{README, policies, permissions, roles, owners, user-owner-association}) + integrations entry surfaces (2 pages: README, integration-wizard). New FAILs concentrate on developer-onboarding pages (DOC-118 how-to-contribute half-finished narrative; DOC-122 build-and-run/README sparse landing) and a recurring rendering-defect class (DOC-119 M1 export concatenation — second instance of DOC-100 pattern). DOC-120 caught by per-link audit cue on policies.md (7 broken `#con` / `#condition-operations` anchors in a single section) and live-site-WebFetch-confirmed. DOC-121 caught by per-page cross-example consistency read (Keycloak example has `john,davidyam` typo while every other admin-principals example on the page uses the canonical `john,david`). 18 pages remain un-audited (push-adapters/* + collectors/odd-collector-* + use-case sub-pages + remaining root-level singletons quick_start.md, platform.md, dc_data_compliance.md, Data_Compliance_DS.md, de_deprecation.md, dq_visibility.md, viz_preparation.md, service_presales.md); next /review run continues with integrations/* sub-pages and Use_cases sub-pages. **Validation of framework's third invocation**: 5 new findings on developer-guides + enable-security surfaces — none would have been caught by the per-item gates which fired cleanly on the closing batch. The systematic per-page walk continues to surface structural / coherence defects that per-commit verification machinery cannot see. |

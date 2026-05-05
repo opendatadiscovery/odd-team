@@ -35,7 +35,7 @@ SLA monitoring, quality test results, assertions, profiling, expectations integr
 ## Documentation
 - `documentation/docs/Features.md#data-quality-test-results-import` — test results import
 - `documentation/docs/Features.md#dataset-quality-statuses-sla` — SLA statuses
-- `documentation/docs/dq_visibility.md` — use case (contains outdated Pandas Profiling claim)
+- `documentation/docs/use-cases/dq-visibility.md` — use case (Pandas Profiling claim was corrected by DOC-027 / done; path realigned by DOC-085)
 - **Not documented**: DQ dashboard page (`/data-quality`), filters, standalone page UX
 
 ## Related Domains

@@ -1,3 +1,84 @@
+# Last updated 2026-05-06 — `feature/docs-active-platform-and-gateway-2026-05-06` batch review-ready (DOC-084 + DOC-131 + DOC-137 + DOC-078 superseded)
+
+User-invoked `/implement` with directive "please prepare a batch with as much items as feasible and possible from the implementation point of view". Three remaining `pending` docs items in the backlog (DOC-084 large, DOC-131 large, DOC-137 small) plus the supersession of DOC-078 (blocked) all shipped on a single batch branch — `feature/docs-active-platform-and-gateway-2026-05-06` (documentation, cut from `origin/main` `be8fae3`) + `feature/state-active-platform-and-gateway-2026-05-06` (odd-team).
+
+## Items moved to `review-ready`
+
+| ID | Status flip | Commit | Theme |
+|---|---|---|---|
+| DOC-084 | pending → review-ready | (doc-repo) `0572218` | Two-axis adapter taxonomy (pull/push × deployment shape) + canonical home for `odd-tracing-gateway` at `integrations/auxiliary/odd-tracing-gateway.md` sourced from the gateway's Java code; deployment.md collapse to teaser; integrations hub + main-concepts.md + Architecture.md + github-organization-overview.md vocabulary alignment. State-side commit on the parallel odd-team branch carries the `navigation/architecture.md` "Auxiliary platform component" → two-axis-with-Push-adapter-standalone-gateway refactor. |
+| DOC-131 | pending → review-ready | (doc-repo) `e95ed44` | Active-platform-features pillar landing + 5 sub-pages (alerting / notifications / activity-feed / data-collaboration / genai). genai.md moved via git-mv from `docs/` to `docs/active-platform-features/`. Features.md H2 sections collapsed to teasers. Cross-link sweep across Architecture.md, main-concepts.md, configuration-and-deployment/odd-platform.md, and the API-reference sub-pages. |
+| DOC-137 | pending → review-ready | (doc-repo) `3718198` | Features.md L3 disclaimer rephrased to drop the Management-as-pillar conflation introduced by DOC-136 — destinations now split by kind: three governance pillars (read-oriented), Management section (operator-mutating), Active platform features (event-driven). Sweep verified post-fix: `pillar.*Management` zero conflations, `four pillars` zero hits. |
+| DOC-078 | blocked → review-ready | (no separate commit — superseded) | Tighten the gateway description on deployment.md once the upstream README is populated → SoT-blocker resolved by DOC-084's source-as-SoT approach + Phase F deployment.md collapse. Close as **superseded by DOC-084**, not as wontfix. Body of DOC-078 updated with the supersession rationale. |
+
+## Why this scope
+
+The user asked the implement skill to maximise the feasible batch. Three items were `pending` in the backlog (DOC-084, DOC-131, DOC-137); two were large and one was small. Conflict matrix:
+- DOC-084 ↔ DOC-131: shared touch on `docs/SUMMARY.md` and `docs/main-concepts.md`, but in disjoint sub-sections (DOC-084 adds the integrations/auxiliary entry + extends Terms & Aliases for the gateway; DOC-131 replaces the top-level GenAI entry with the active-platform-features group + extends the architecture-chain prose).
+- DOC-137 ↔ DOC-131: both touch `docs/Features.md` but in disjoint sites (DOC-137 fixes L3 disclaimer; DOC-131 collapses 4 H2 sections to teasers). DOC-137 also benefits from DOC-131's existence — the rephrased disclaimer references the new active-platform-features pillar as one of the canonical-home destinations.
+- DOC-084 ↔ DOC-137: no overlap.
+
+Implementation order: Phase A (architecture.md vocabulary) on the odd-team state branch first; then on the documentation branch — DOC-084 (Phases B + C + D + E + F) as one commit, DOC-131 (Phases A + B + C) as one commit, DOC-137 as one commit. Per-item commits preserve the ID trail in `git log`.
+
+## New artefacts created
+
+- **Pillar landing**: `docs/active-platform-features.md` — modelled on `data-discovery.md` and `master-data-management.md`. The 6th top-level pillar after Data Discovery / Data Modelling / Master Data Management / Management; sits in SUMMARY between Master Data Management and Use cases.
+- **Sub-pages under the new pillar**: `docs/active-platform-features/{alerting,notifications,activity-feed,data-collaboration,genai}.md` — five sub-pages migrated from Features.md and from the orphan top-level `docs/genai.md`. genai.md preserved its history via `git mv`.
+- **Integrations sub-tree**: `docs/integrations/auxiliary/odd-tracing-gateway.md` — new canonical home for the tracing gateway under a new `auxiliary/` directory inside the integrations hub.
+
+## Sources methodology this batch
+
+- **DOC-084 source-as-SoT**: the upstream `odd-tracing-gateway` README is 404 (re-verified per DOC-078 case-law). The new sub-page sources every factual claim from the gateway's Java code instead — `Application.java`, `TracesController.java` (gRPC OTLP receiver), `EntitiesController.java` (REST adapter-contract `GET /entities`), `AppProperties.java` / `DockerProperties.java` / `K8sProperties.java` / `HttpProperties.java` (config keys), `{Default,Docker,K8s}ServiceNameResolver.java` (resolver chain), `HttpSpanProcessor.java` (instrumentation libraries accepted), `CacheRepositoryImpl.java` (Redis backing store), `build.gradle` lines 95-110 (Jib targets + ports), `.github/workflows/release-build.yaml` lines 60-67 (GHCR retag on releases), `test/test-app/docker/docker-compose.yaml` (canonical wiring example). Cited as `Cross-repo:` lines in the commit's Sources footer.
+- **Image-name discrepancy surfaced**: build.gradle Jib pushes to Docker Hub as `opendatadiscovery/odd-traces-gateway` (plural "traces"); release-build.yaml retags to GHCR as `ghcr.io/opendatadiscovery/odd-tracing-gateway` (singular "tracing"). Both are real published images. Documented inline as a known-naming caveat with operator guidance: prefer GHCR pinned-version for production, Docker Hub `latest` for evaluation.
+- **DOC-131 content migration**: no fresh SoT verification — the migration is mechanical content transplanting from Features.md and the orphan genai.md. Existing claims preserved verbatim with their original `Sources:` chains intact (the original implementing items that authored the claims are referenced in DOC-131's commit body).
+
+## Cross-link rewires this batch
+
+Inbound references to the migrated content rewired to the new canonical homes (Cornerstone-2 single-canonical-source, not 2-click-through-teaser):
+
+- `Architecture.md` cross-cutting concerns rows for Alerting / Data Collaboration / GenAI proxy → `active-platform-features/{alerting,data-collaboration,genai}.md`.
+- `main-concepts.md` AI aspects bullet → `active-platform-features/genai.md`.
+- `configuration-and-deployment/odd-platform.md` Enable-Alert-Notifications + AlertManager-Integration + Enable-Data-Collaboration + GenAI-Configuration cross-links to Features.md → all four rewired to the corresponding new active-platform-features sub-pages.
+- `developer-guides/api-reference/alerts.md` (3 sites) → rewired to `active-platform-features/alerting.md` / `notifications.md` / `activity-feed.md`.
+- `developer-guides/api-reference/data-collaboration.md` (2 sites) → rewired to `active-platform-features/data-collaboration.md`.
+- `developer-guides/github-organization-overview.md` `odd-tracing-gateway` entry → rewired to `integrations/auxiliary/odd-tracing-gateway.md`; spec-entry description updated to reflect the gateway's actual data flow (Platform pulls from gateway via adapter-contract entities API, not "gateway forwards to Platform").
+- `Features.md` Schema-Diff section internal cross-link to Activity Feed → rewired to `active-platform-features/activity-feed.md`.
+
+In-page TOC at the top of `Features.md` continues to point at the (now-teaser) H2 anchors on Features.md itself — Cornerstone-1 says the in-page TOC + page scrolling are the canonical Features-landing reading paths; the teasers serve those paths and link forward to canonical homes for detail.
+
+## Live-site URLs `/review` will need to fetch (Gate 8)
+
+- `https://docs.opendatadiscovery.org/active-platform-features` — new pillar landing
+- `https://docs.opendatadiscovery.org/active-platform-features/alerting` — migrated content
+- `https://docs.opendatadiscovery.org/active-platform-features/notifications` — new content (extracted from Features.md alerting + odd-platform.md user-facing description)
+- `https://docs.opendatadiscovery.org/active-platform-features/activity-feed` — migrated content
+- `https://docs.opendatadiscovery.org/active-platform-features/data-collaboration` — migrated content
+- `https://docs.opendatadiscovery.org/active-platform-features/genai` — moved page; verify cross-links resolve
+- `https://docs.opendatadiscovery.org/integrations/integrations/auxiliary/odd-tracing-gateway` — new gateway page (URL slug derived from SUMMARY hierarchy)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/deployment` — collapsed gateway teaser
+- `https://docs.opendatadiscovery.org/integrations/integrations` — three-shape-aware framing + new gateway row
+- `https://docs.opendatadiscovery.org/main-concepts` — three-shape push-adapter prose + Standalone gateway alias row + GenAI bullet rewire
+- `https://docs.opendatadiscovery.org/architecture` — cross-cutting-concerns rewires + push-client(standalone gateway) row link rewire
+- `https://docs.opendatadiscovery.org/developer-guides/github-organization-overview` — gateway description tightening + spec entry rephrase
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` — 4 cross-link rewires
+- `https://docs.opendatadiscovery.org/developer-guides/api-reference/alerts` — 3 cross-link rewires
+- `https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration` — 2 cross-link rewires
+- `https://docs.opendatadiscovery.org/features` — DOC-137 disclaimer rephrase + 4 H2 sections collapsed to teasers; in-page TOC entries continue to land on the (now-teaser) H2 anchors
+
+The orphan top-level `https://docs.opendatadiscovery.org/genai` URL becomes a 404 after this batch (page moved to `/active-platform-features/genai`). GitBook does not auto-redirect renamed paths; if external sites have linked to `/genai` directly, they will break. The `Sources:` footer of the DOC-131 commit names the old path; the move was deliberate (DOC-082 Drift 2 — convenience-placement at top level vs canonical home under the active-platform-features pillar).
+
+## Items still pending or blocked after this batch
+
+| ID | Status | Note |
+|---|---|---|
+| DOC-046 | blocked | Document Query Examples feature (full standalone section) — pre-existing; not in this batch's scope |
+| DOC-034 | blocked | Document data collaboration API endpoints + verify Slack manifest URL — DOC-088 partly addressed; DOC-131 surfaces the user-facing description on `active-platform-features/data-collaboration.md` but the API-reference work itself stays on DOC-034 |
+| DOC-067 | blocked | Capture fresh Catalog Overview screenshot — blocked on live deployment with seeded data; not feasible in docs-only session |
+
+DOC-130 (review-ready) carries over from a prior batch — typo fix on Architecture.md.
+
+---
+
 # Last updated 2026-05-06 — editorial follow-ups batch reviewed and closed; 5 items flipped `review-ready` → `done` (Gate 8 verified live) + 1 editorial follow-up DOC-137 logged
 
 `/review batch:feature/docs-editorial-followups-2026-05-06` ran in a session distinct from the `/implement` session that produced the items (post-`/clear` boundary verified per the `/review` skill prerequisites). The doc-repo PR (#60) merged at `826199a` on `origin/main` of `opendatadiscovery/documentation` before the review ran; **Gate 8 verified live via WebFetch on every affected URL**, and all 5 batch items passed every Quality Bar gate. Each item flipped from `review-ready` to `done`. The doc-product editorial audit (Step 5) covered the batch-affected pages plus a sample of bigbatch-introduced new pages (data-discovery.md, management.md, api-reference sub-pages, build-and-run/custom-collectors.md, data-discovery/directory.md) end-to-end and surfaced 1 coherence finding logged as a separate `pending` follow-up (DOC-137).

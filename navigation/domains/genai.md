@@ -27,10 +27,10 @@ AI-powered question answering — proxies natural language questions to an exter
 - `odd-platform-api/.../config/properties/GenAIProperties.java`
 
 ## Documentation (verified 2026-04-30)
-- User-facing page: `docs/genai.md` (DOC-045, review-ready) — 7 H2 sections covering what gets proxied (request shape diagram), the 3 config keys with @ConfigurationProperties / Java-field defaults caveats, external service contract (POST {url}/query_data with JSON {"question": "..."}; raw-JSON-string response shape un-quoted + Java-unescaped), platform endpoint /api/genai/ask, UI-API-only status, 6 Known limitations.
-- Configuration reference: `docs/configuration-and-deployment/odd-platform.md` "## GenAI Configuration" — 3 keys with field-default vs commented-yaml-example caveats + warning admonition + working YAML / env-var tabs + cross-link to genai.md.
-- Features.md teaser at "## GenAI assistant" between Vector Store Metadata and Data Modelling.
-- main-concepts.md AI-aspects bullet rewired from a stale Features.md pointer to genai.md.
+- User-facing page: `docs/active-platform-features/genai.md` (DOC-131 moved from `docs/genai.md`) — 7 H2 sections covering what gets proxied (request shape diagram), the 3 config keys with @ConfigurationProperties / Java-field defaults caveats, external service contract (POST {url}/query_data with JSON {"question": "..."}; raw-JSON-string response shape un-quoted + Java-unescaped), platform endpoint /api/genai/ask, UI-API-only status, 6 Known limitations.
+- Configuration reference: `docs/configuration-and-deployment/odd-platform.md` "## GenAI Configuration" — 3 keys with field-default vs commented-yaml-example caveats + warning admonition + working YAML / env-var tabs + cross-link to active-platform-features/genai.md.
+- Features.md teaser at "## GenAI assistant" between Vector Store Metadata and Data Modelling — points at active-platform-features/genai.md.
+- main-concepts.md AI-aspects bullet points at active-platform-features/genai.md (post-DOC-131).
 
 ## Caveats (consumer-read audit, 2026-04-30)
 

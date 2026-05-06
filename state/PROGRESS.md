@@ -1,4 +1,73 @@
-# Last updated 2026-05-06 — `/implement batch:feature/docs-doc131-pillar-relpath-fix-2026-05-06 + feature/state-doc131-doc138-2026-05-06` — DOC-131 unblocked + DOC-138 Phase A ADR draft
+# Last updated 2026-05-06 — `/review` for DOC-130 + DOC-131 + NAV-001 — three items closed, two editorial follow-ups logged
+
+User-invoked `/review` with directive "all items" in a fresh post-`/clear` session. The three items in `review-ready` (DOC-130, DOC-131, NAV-001) all flip to `done`. Editorial audit (`playbooks/doc-product-editorial-read.md` seventh invocation) reaches **per-page baseline coverage 71 / 71 (100%) for the first time** since the framework was instated 2026-05-03 — 12 new pages baselined this run + 2 batch-affected pages re-audited; 2 new editorial follow-ups logged (DOC-139, DOC-140).
+
+## Items moved this run
+
+| ID | Status flip | Reason |
+|---|---|---|
+| DOC-130 | review-ready → **done** | Subsumption verified — DOC-128's full Architecture.md rewrite (`caa3d8a`, PR #59) replaced the L13 ODDRN paragraph with correct grammar; grep returns 0 hits for `to built` across `docs/`; live-site WebFetch on `/architecture` confirms the rewritten paragraph renders without the typo. AC1-3 PASS; AC4 N/A (no separate commit; DOC-128's `Sources:` footer covers the rewrite). |
+| DOC-131 | review-ready → **done** | Re-review post relpath-fix-merge (PR #62 at `4c1c324`). Phase D Gate 8 — the prior /review's only FAIL — now PASSES: `curl + grep` against rendered HTML on `https://docs.opendatadiscovery.org/active-platform-features` confirms 6 cross-link targets resolve to internal `/...` paths with no `github.com/.../blob/main/...` fallback substring (only the standard "Edit on GitHub" link remains, which is GitBook's per-page edit-source link, not a fallback). All 5 sub-pages HTTP 200; orphan `/genai` correctly redirects 307→200 to the new path. All 10 Quality Bar gates PASS. |
+| NAV-001 | review-ready → **done** | Single-line path correction verified — `navigation/domains/lookup-tables.md:30` reads `docs/master-data-management/lookup-tables.md` (correct post-DOC-081 path); `grep -rn 'docs/lookup-tables\.md' navigation/` returns 0 hits; commit `634542b` references "post-DOC-081 master-data-management/ canonical path" satisfying AC3. New-path file exists; old-path file gone. |
+
+## Items added this run
+
+| ID | Status | Priority | Source | Reason |
+|---|---|---|---|---|
+| **DOC-139** | pending | low | discovered-during-review-batch-feature-docs-doc131-pillar-relpath-fix-2026-05-06-editorial-audit | A2 (intra-page coherence) — `docs/active-platform-features/alerting.md` L148-152 `## Setting up alert types` thin/redundant section overlapping with `## Halt notifications per entity` (both reference the same Notification Settings button; the second section is a 5-line restatement that adds no operational information). Sub-shape extends DOC-114's case-law to "same operation described twice on the same page." |
+| **DOC-140** | pending | low | discovered-during-review-batch-feature-docs-doc131-pillar-relpath-fix-2026-05-06-editorial-audit | A2 (intra-page coherence) — `docs/active-platform-features/genai.md` L101 known-limitations bullet says "The warning admonition above is the operator-facing fix" but no warning admonition exists on the page (only an `info` hint at L65 about no-auth). Regression from DOC-086 collapse (which removed the warning admonition without updating the bullet); carried forward by DOC-131 `git mv`. Sub-shape: "dangling intra-page reference to content removed by an earlier rewrite." |
+
+## Editorial audit summary (run #7)
+
+The seventh invocation reaches **full per-page baseline** for the first time since the framework was instated. 12 new pages baselined this run:
+
+- **6 active-platform-features pages** (DOC-131): pillar landing + 5 sub-pages (alerting, notifications, activity-feed, data-collaboration, genai)
+- **1 tracing-gateway page** (DOC-084): `integrations/auxiliary/odd-tracing-gateway.md` — comprehensive operator coverage with data-flow diagram, Helm + Compose install, full config table, 3 known-limitation admonitions
+- **5 deferred api-reference sub-pages** (DOC-088): `developer-guides/api-reference/{data-collaboration,directory,glossary,lineage,query-examples}.md`
+
+2 batch-affected pages re-audited (Architecture.md, main-concepts.md). 1 row marked MOVED (`docs/genai.md` → `docs/active-platform-features/genai.md`). 3 prior-FAIL cells flipped FAIL→PASS this run (Architecture.md A1 + A3 + A12; main-concepts.md A3) due to DOC-128 + DOC-130 closure already on main since PR #59.
+
+Per-axis pass rates after run #7:
+
+| Axis | Pass rate | Notes |
+|---|---|---|
+| A1 Canonical-home | 60/60 (100%) | DOC-099, DOC-128, DOC-088 closed; all new pages PASS |
+| A2 Intra-page coherence | 58/60 (97%) | 2 new FAILs: DOC-139 (alerting.md), DOC-140 (genai.md) |
+| A3 Cross-page coherence | 58/58 (100%) | DOC-128 closed |
+| A4 Reference integrity | 57/60 (95%) | DOC-117 + DOC-109 (pre-existing); DOC-129 closed |
+| A5 Claim provenance | 60/60 (100%) | |
+| A6 Operator depth | 19/19 (100%) | |
+| A7 Reader-flow | 60/60 (100%) | |
+| A8 Vocabulary consistency | 59/59 (100%) | DOC-099, DOC-127 closed |
+| A9 Audience completeness | 39/40 (98%) | DOC-109 (pre-existing) |
+| A10 IA placement | 59/59 (100%) | DOC-131 verified — Active platform features at top-level conceptually correct |
+| A11f Bidirectional code↔doc fidelity (forward) | 60/60 (100%) | |
+| A12 Prose and rendering | 60/60 (100%) | DOC-130 closed via DOC-128 subsumption |
+
+**Open editorial FAILs** (4 distinct DOC items): DOC-109 (pre-existing), DOC-117 (pre-existing), DOC-139 (new this run), DOC-140 (new this run). The framework's seventh invocation continues to validate the systematic-walk approach: 2 new findings on first-baseline pages that the per-item Quality Bar gates' commit-focused inspection cannot see.
+
+**Code-side coverage (axis A11-reverse)** remains the next open frontier; the 8 catalogues table at the bottom of `state/doc-quality-coverage.md` is unchanged this run.
+
+## Counts (after this run)
+
+- `done`: +3 (DOC-130, DOC-131, NAV-001 — all flipped from `review-ready`).
+- `review-ready`: -3 (the three closed); previously 14 → now 11.
+- `pending`: +2 (DOC-139, DOC-140 — newly logged); previously 0 → now 2.
+- `in-progress`: unchanged at 1 (DOC-138 Phase A awaiting user review of the ADR).
+- `blocked`: unchanged at 3 (DOC-046, DOC-034, DOC-067).
+- `done` / `superseded` / `rejected`: +3 done; superseded + rejected unchanged.
+- Total backlog: 132 → 134 (+2 from new DOC-139 + DOC-140).
+
+## Hand-off
+
+- DOC-139 + DOC-140 are pending, low priority, small effort. Recommended fold into next documentation polish batch (sibling A2 coherence findings on active-platform-features sub-pages; one commit can cover both — see each item's "Adjacent fold" note).
+- The 5 still-active items (DOC-088 not actually pending — already closed in PR #59 per dashboard; DOC-109 pre-existing pending; DOC-117 pre-existing pending; DOC-046 / DOC-034 / DOC-067 blocked) are unchanged.
+- DOC-138 awaits user review of the ADR draft; Phase B starts as a separate `/implement` run after the ADR is approved.
+- Per-page editorial baseline now 100% — next editorial audits become re-audits of batch-affected pages + investigation of axis A11-reverse (code-side coverage sweep) per `pillars/documentation/quality-framework.md` Mode 2.
+
+---
+
+# Prior — 2026-05-06 — `/implement batch:feature/docs-doc131-pillar-relpath-fix-2026-05-06 + feature/state-doc131-doc138-2026-05-06` — DOC-131 unblocked + DOC-138 Phase A ADR draft
 
 User-invoked `/implement` with directive "please prepare a batch with as much items as feasible and possible from the implementation point of view". Backlog assessment: only one item was `pending` (DOC-138, large, depends_on DOC-131); three items `blocked` (DOC-046 / DOC-034 / DOC-067 — DOC-046 likely actually done per prior `data-modelling/query-examples.md` page existence but not flipped, DOC-034 still genuinely blocked on upstream PLT-009, DOC-067 still blocked on a live deployment); DOC-131 `blocked` with a documented fix path. The feasible batch is DOC-131 (small unblock) + DOC-138 Phase A (ADR draft — Phase A is an explicit gate before Phase B per the AC structure).
 

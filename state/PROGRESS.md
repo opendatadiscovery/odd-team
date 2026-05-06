@@ -1,3 +1,36 @@
+# Last updated 2026-05-06 — bigbatch reviewed; 7 items closed; 4 editorial follow-ups logged
+
+`/review batch:feature/docs-bigbatch-2026-05-06` ran in a session distinct from the `/implement` session that produced the items (post-`/clear` boundary verified). All 7 batch items passed every Quality Bar gate with cited evidence and flipped from `review-ready` to `done`. The doc-product editorial audit (Step 5) covered the active-pillar tree end-to-end and surfaced 4 coherence findings that **do not block** the per-item flips (per Step 5's authority rule); each is logged as a separate `pending` follow-up.
+
+## Items flipped `review-ready` → `done`
+
+| ID | Verdict | Theme |
+|---|---|---|
+| DOC-082 (Drifts 1 + 3 only) | ACCEPTED | Data Discovery pillar landing + Build a custom collector re-home (Drift 2 deferred to DOC-131 — `pending`) |
+| DOC-088 | ACCEPTED | api-reference single-page → hub + 9 per-feature sub-pages |
+| DOC-109 (Option B) | ACCEPTED | Management canonical home + 6-site cross-link sweep |
+| DOC-117 (Path A) | ACCEPTED | 66 Medium-CDN figure images self-hosted to `.gitbook/assets/medium-*.png` |
+| DOC-128 (Path A) | ACCEPTED | Architecture.md Cornerstone-2 rewrite (subsumes DOC-129 Site #1 + DOC-130) |
+| DOC-129 (Sites #2 + #3) | ACCEPTED | Magic-link sweep — how-to-contribute.md L14 + trylocally.md L80 |
+| DOC-130 | ACCEPTED (via DOC-128 subsumption) | Architecture.md L13 typo eliminated by DOC-128's full rewrite |
+
+## Editorial follow-ups logged this run
+
+| ID | Priority | Failure shape | Source |
+|---|---|---|---|
+| DOC-132 | low | A4 magic-link case-variant + multi-word residue | README.md L37 + use-cases.md L4/L6/L8/L10/L12 (6 sites; DOC-129's case-sensitive single-word regex missed `[Here]` + `[Read more]` variants) |
+| DOC-133 | low | A4 wrong-anchor sub-shape | Features.md L329 — `[Owner](Features.md#manual-object-tagging)` lands on Tags section instead of Owner content |
+| DOC-134 | low | Gate-3 caveat-as-admonition | Features.md L424 — Data Collaboration Discussions tab visibility caveat in narrative prose; should be `{% hint style="warning" %}` block |
+| DOC-135 | low | Parallel surfaces with drift | trylocally.md L10 — `ODD Collector – a lightweight service` repeats DOC-099 Phase A category-vs-implementation conflation pattern |
+
+## Editorial audit coverage this run
+
+- **Deep-read end-to-end**: README.md, main-concepts.md, Architecture.md, Features.md (820 lines), data-discovery.md + directory.md, data-modelling.md, master-data-management.md, management.md, genai.md, use-cases.md, integrations/README.md, integration-wizard.md, developer-guides/api-reference.md + alerts/relationships sub-pages, build-and-run/README.md + custom-collectors.md, github-organization-overview.md, oddrn.md, configuration-and-deployment/odd-platform.md (first 200 lines), deployment.md (first 100 lines), trylocally.md, enable-security/README.md + authorization/owners.md, SUMMARY.md.
+- **Skimmed via cross-link / grep audits** (not deep-read end-to-end): integrations/{collectors,push-adapters}/*.md sub-pages, enable-security/{authentication,authorization}/*.md (other than owners.md), use-cases/*.md children, api-reference/*.md sub-pages other than alerts + relationships.
+- Subtree partition note: no findings expected from the skim-only files based on cross-link and term-usage spot checks; full deep-read of those subtrees can be queued for the next `/review` if a future implementation surfaces concerns.
+
+---
+
 # Last updated 2026-05-06 — bigbatch (DOC-082 partial + DOC-088 + DOC-109 + DOC-117 + DOC-128 + DOC-129 + DOC-130) review-ready
 
 Bigbatch shipped on `feature/docs-bigbatch-2026-05-06` (documentation) + `feature/state-bigbatch-2026-05-06` (odd-team). User-invoked `/implement` with the directive "as much as feasible from the implementation point of view"; user expanded scope on 2026-05-06 by approving recommended paths for all 4 path-decision-blocked items (DOC-128 Path A, DOC-117 Path A, DOC-082 Drift 2 Option A, DOC-109 Option B). Drift 2 of DOC-082 then surfaced as the single largest unit by far — roughly equal to DOC-088 + DOC-128 + DOC-117 + DOC-109 combined — and was deferred mid-batch via a confirmation pause; the deferred work is logged as new item DOC-131. The other 6 items shipped within one Claude session at full Quality-Bar attention.

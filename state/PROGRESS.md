@@ -1,4 +1,66 @@
-# Last updated 2026-05-07 — `/review batch:feature/docs-active-platform-features-polish-2026-05-06` — DOC-139 + DOC-140 done; NAV-002 logged
+# Last updated 2026-05-07 — `/implement batch:feature/state-doc034-doc046-nav002-doc138-2026-05-07` — DOC-034 + DOC-046 + NAV-002 review-ready; DOC-138 Phase B done, Phase C/D/E gated on user decision
+
+User-invoked `/implement` with directive "implement all the rest items in a single batch" + Phase A approval for DOC-138's ADR. Backlog state at session start: 1 pending (NAV-002); 1 in-progress (DOC-138 Phase A done, Phase B not started); 3 blocked (DOC-034, DOC-046, DOC-067). Of the five non-done items, three were autonomously implementable + two genuinely couldn't proceed in this session (DOC-067 needs live deployment for screenshot capture; DOC-138 Phase C/D/E gated on Phase B URL-retirement decision). The implementer ran Phase B verification + the three doable items.
+
+Two-PR batch shipped:
+
+| Branch | Repo | Item(s) | Commit(s) |
+|---|---|---|---|
+| `feature/docs-doc034-2026-05-07` | documentation | DOC-034 — single-cell rewrite at `docs/developer-guides/api-reference/data-collaboration.md:23` (`301 Redirect` → `302 Found` with PLT-009 spec/runtime drift hedge inline). The original blocker (DOC-083 collapsing the affected `## API surface` H3) dissolved when DOC-083 merged 2026-05-06; the buggy claim was carried forward into the api-reference subpage during DOC-088's split (`1da5e69`). | (next commit) |
+| `feature/state-doc034-doc046-nav002-doc138-2026-05-07` | odd-team | NAV-002 — 2-line edit on `navigation/domains/genai.md` L20 + L37 (`empty string ""` → `null`). DOC-046 — close-out (no doc commit needed; bug indirectly fixed by DOC-088 migration; close-out note + status flip). DOC-138 — Phase B verification report appended to ADR (still in `drafts/`); backlog item status note updated; four user-decision options surfaced for Phase C/D/E gate. State bookkeeping (this entry + DOC-034 / DOC-046 / NAV-002 frontmatter flips). | (next commit) |
+
+## Items moved this run
+
+| ID | Status flip | Reason |
+|---|---|---|
+| DOC-034 | blocked → **review-ready** | Original blocker (DOC-083 review-ready collapse of the affected `## API surface` H3) dissolved post-DOC-083 merge. Buggy `301 Redirect` claim carried forward to `docs/developer-guides/api-reference/data-collaboration.md:23` via DOC-088 split (commit `1da5e69`); single-cell rewrite to `302 Found` with the PLT-009 spec/runtime drift hedge inline. Verified via Read of `DataCollaborationController.java:42-48` (`HttpStatus.FOUND`) + `openapi.yaml:1788` (declares `301 Moved Permanently` — drift, tracked in PLT-009 draft). |
+| DOC-046 | blocked → **review-ready** | **No new doc commit needed.** The term-side endpoint paths were corrected indirectly by DOC-088's api-reference split (commit `1da5e69`). The post-DOC-088 file at `docs/developer-guides/api-reference/query-examples.md:41-42` carries the correct singular `queryexample` paths (POST without `/{example_id}` suffix; DELETE with). Verified via Read of `openapi.yaml:2908` (POST) + `:2931` (DELETE). Close-out note added; `/review` confirms on the live site. |
+| NAV-002 | pending → **review-ready** | Two-line edit on `navigation/domains/genai.md` L20 + L37 — `empty string ""` → `null` (no field initializer — JVM reference-type default). Verified via Read of `GenAIProperties.java:8-12` (no field initializers on `String url`). AC3 sweep verification: `grep -nE 'empty string\|""' navigation/` returns zero hits matching `url\|baseurl\|genai\|string`. No live-site verification needed (workspace-internal file). |
+| DOC-138 | in-progress (Phase A) → in-progress (Phase B done, Phase C/D/E deferred) | Phase B verification ran. Q1 answer: URLs WILL change (~22 URL retirements + 1 deliberate oddrn retirement). Q2 answer: home URL behavior unknown without live test (high risk). Q3 answer: 167 inbound-link occurrences across `docs/`; GitBook auto-resolves source-relative links so sweep is verification not rewrite, except 6 `oddrn.md` references (mandatory rewrites under Phase D). Phase B report appended to `adrs/drafts/summary-top-level-restructure.md`. Four user-decision options surfaced; Phase C/D/E gated on user pick. |
+
+## Items not picked up
+
+- **DOC-067** (blocked, low) — needs UI screenshot capture from a deployed environment with seeded data (one tag, one domain, one datasource, non-empty Entities report). Not feasible from a docs-editing session; remains blocked. Same disposition as 2026-05-06 batch.
+
+## Phase B finding — material decision required from user
+
+The ADR's Trade-off 1 ("URL-slug stability vs. conceptual peers") was anticipated. Phase B's verification confirms the URL-change scenario is the actual outcome, not the slug-stable scenario. The ADR explicitly defers to the user on this trade-off:
+
+> "If URLs change, this ADR is amended (or rejected pending a redirect strategy); if URLs are slug-stable across SUMMARY-depth changes, the trade-off vanishes and the proposal proceeds."
+
+Four options surfaced (full text in `adrs/drafts/summary-top-level-restructure.md` § Phase B verification report → Recommendation):
+
+1. Accept URL retirement, ship as-drafted (~22 URLs change).
+2. Ship the structural change but keep `docs/README.md` outside `## Introduction` (preserve home URL).
+3. Defer pending GitBook redirect-manifest authoring (zero external disruption; verification of redirect support required).
+4. Defer pending source-file moves (largest refactor; cleanest end-state).
+
+**Recommendation in the ADR**: Option 2 + Option 3 in sequence; Option 1 fallback.
+
+## Counts (after this run)
+
+- `done`: unchanged at 134.
+- `review-ready`: 0 → 3 (+ DOC-034, DOC-046, NAV-002).
+- `pending`: 1 → 0 (- NAV-002).
+- `in-progress`: unchanged at 1 (DOC-138 — Phase A + Phase B done; Phase C/D/E deferred).
+- `blocked`: 3 → 1 (- DOC-034, - DOC-046; only DOC-067 remains blocked).
+- `rejected`: unchanged at 2.
+- `superseded`: unchanged at 1.
+- Total backlog: unchanged at 142.
+
+## Hand-off
+
+- **Run `/review` in a separate session** to verify DOC-034 + DOC-046 + NAV-002 against the 10 Quality Bar gates. Live-site verification (Gate 8) requires WebFetch on:
+  - `https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration` — confirm the `/api/messages/{message_id}/url` row renders `302 Found` (not `301 Redirect`); the bolded "**Spec / runtime drift:**" sentence renders.
+  - `https://docs.opendatadiscovery.org/developer-guides/api-reference/query-examples` — confirm term-side POST renders `/api/terms/{term_id}/queryexample` (singular, no `/{example_id}` suffix); DELETE renders `/api/terms/{term_id}/queryexample/{example_id}` (singular).
+  - NAV-002 is workspace-internal — no live-site verification.
+- **DOC-138 Phase C/D/E remain deferred** until the user picks one of the four options. The chosen option is captured as a decision-amendment to the ADR's "Decision" section; the ADR then moves from `drafts/` to `accepted`.
+- **DOC-067 remains blocked** — needs deployment-side screenshot capture; same disposition as prior batches.
+- Backlog at 142; pending pool: 0; review-ready pool: 3; blocked pool: 1.
+
+---
+
+# Prior — 2026-05-07 — `/review batch:feature/docs-active-platform-features-polish-2026-05-06` — DOC-139 + DOC-140 done; NAV-002 logged
 
 User-invoked `/review` with batch scope; this is review run #8 of the doc-quality framework. Both items in `review-ready` flip to `done` post-merge of PR #63 (`749fee6` on `origin/main` of `opendatadiscovery/documentation` 2026-05-06). One workspace-internal navigation finding logged via `playbooks/follow-up-on-disk.md` step 4 navigation-consistency check.
 

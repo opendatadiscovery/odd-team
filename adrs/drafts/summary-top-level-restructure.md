@@ -215,14 +215,106 @@ The restructure is reversible by SUMMARY-only revert. The content edits (Phase D
 
 The rollback is not destructive but is non-trivial. Phase B verification is the cheapest insurance against needing it.
 
+## Phase B verification report (2026-05-07)
+
+User approved the ADR's structural intent (Phase A) on 2026-05-07. Phase B verification was run in the same session before any SUMMARY edit. Findings below.
+
+### Question 1 — GitBook URL-slug behaviour
+
+**Answer: URLs DO change when a top-level page becomes a child of a `##` group.**
+
+Verified via WebFetch of existing `##` group children:
+
+| URL probed | Status | Evidence |
+|---|---|---|
+| `/integrations/integrations/odd-collector` | **200** ✓ | Page renders: H1 "odd-collector (generic)" |
+| `/integrations/collectors/odd-collector` | **404** ✗ | "The URL `integrations/collectors/odd-collector` does not exist" — the source-tree intermediate dir `collectors/` is flattened away |
+| `/data-discovery` | **200** ✓ | Current top-level page; H1 "Data Discovery" |
+| `/oddrn` | **200** ✓ | Current top-level page; H1 "ODDRN" |
+| `/configuration-and-deployment/odd-platform` | (200 inferred) | Body text matched Configure ODD Platform |
+
+**Pattern**: For a direct child of a `##` group, GitBook URL = `/{group_slug}/{filename_slug}` (intermediate source-tree directories flattened). For a nested child of an Overview README parent, URL inherits the Overview's URL prefix.
+
+**Implication for the proposal**:
+
+| Page | Current URL | Post-restructure URL | Delta |
+|---|---|---|---|
+| `data-discovery.md` | `/data-discovery` | `/features/data-discovery` | URL changes |
+| `data-modelling.md` | `/data-modelling` | `/features/data-modelling` | URL changes |
+| `master-data-management.md` | `/master-data-management` | `/features/master-data-management` | URL changes |
+| `active-platform-features.md` | `/active-platform-features` | `/features/active-platform-features` | URL changes |
+| `management.md` | `/management` | `/features/management` | URL changes |
+| `use-cases.md` | `/use-cases` | `/use-cases/use-cases` | URL changes (group + filename) |
+| `Features.md` | `/features` | `/features/features` (probable) | URL changes |
+| `main-concepts.md` | `/main-concepts` | `/introduction/main-concepts` | URL changes |
+| `Architecture.md` | `/architecture` | `/introduction/architecture` | URL changes |
+| `oddrn.md` | `/oddrn` | (deleted — Phase D) | URL retired |
+
+**9 pillar-page URLs change + 1 URL retirement.** Plus the nested children inherit new prefixes:
+
+| Nested page | Current URL | Post-restructure URL |
+|---|---|---|
+| `data-discovery/directory.md` | `/data-discovery/directory` | `/features/data-discovery/directory` |
+| `data-modelling/query-examples.md` | `/data-modelling/query-examples` | `/features/data-modelling/query-examples` |
+| `data-modelling/relationships.md` | `/data-modelling/relationships` | `/features/data-modelling/relationships` |
+| `master-data-management/lookup-tables.md` | `/master-data-management/lookup-tables` | `/features/master-data-management/lookup-tables` |
+| `active-platform-features/{alerting,notifications,activity-feed,data-collaboration,genai}.md` | `/active-platform-features/{slug}` | `/features/active-platform-features/{slug}` |
+| `use-cases/{five sub-pages}.md` | `/use-cases/{slug}` | `/use-cases/use-cases/{slug}` |
+
+**Total external-bookmark surface affected: ~22 URLs change + 1 retired.**
+
+This is exactly the trade-off the ADR's "Trade-off 1" anticipated. Per the ADR, this triggers one of: (a) accept URL retirement with deliberate documentation, (b) ADR amendment with redirect strategy, (c) source-file move so URLs change naturally.
+
+### Question 2 — README-as-group-landing rendering at the root URL
+
+**Answer: Unknown without live test. High risk.**
+
+No existing scenario on the live site directly mirrors the proposed shape (a *root* `docs/README.md` nested under a `##` group). The closest analogue is `docs/integrations/README.md` (in a subdirectory) which renders at `/integrations/integrations` — i.e., it does NOT render at `/integrations/`. By that analogy, `docs/README.md` nested under `## Introduction` would likely render at `/introduction/` or `/introduction/README` rather than at `/`.
+
+**Risk**: the home URL `https://docs.opendatadiscovery.org/` may break. Operators who bookmark the root, the README's own self-references, search-engine indexing, and any "canonical home" links into the docs tree would all need attention.
+
+The only way to fully verify is to ship the change and observe. A pre-flight option: keep `docs/README.md` *outside* the `## Introduction` group (i.e., as a sibling to the groups, depth 0) so the home URL is unambiguously preserved; the `## Introduction` group then carries `Main Concepts` + `Architecture` only. This is a small amendment to the ADR's proposed shape.
+
+### Question 3 — Cross-link sweep enumeration
+
+**Answer: 167 inbound link occurrences across `docs/` to the moved-page filenames.**
+
+Counted via:
+```
+grep -rEn '\b(data-discovery|data-modelling|master-data-management|active-platform-features|management|use-cases|oddrn|Features|Architecture|main-concepts)\.md\b' docs/ | grep -v '^docs/SUMMARY.md' | wc -l
+```
+
+**Critical caveat**: GitBook resolves source-relative links by source-tree path, not URL. The Phase E sweep is therefore mostly *verification* (links resolve), not *rewrite* (no path edits needed) — because the source files at `docs/data-discovery.md` etc. don't move; only their SUMMARY parent changes. Internal cross-links auto-update; what breaks is *external* references (Slack-shared links, bookmarks, search indexing).
+
+The `oddrn.md` references ARE mandatory rewrites (the page is deleted in Phase D). Counting just `oddrn.md` references in the grep above: ~6 inbound sites (`Architecture.md`, `main-concepts.md`, `developer-guides/build-and-run/custom-collectors.md`, `developer-guides/api-reference/directory.md`, `developer-guides/github-organization-overview.md`).
+
+### Recommendation for the user (decision needed)
+
+The structural intent is settled and well-justified. The mechanics surface a real trade-off that the user must decide before Phase C/D/E ship.
+
+**Options:**
+
+1. **Accept URL retirement, ship as-drafted.** ~22 URLs change, 1 retires. Documented in commit body as deliberate URL retirement under the publishing-standards trade-off (parallel to the ODDRN URL retirement that Trade-off 3 already accepts). External bookmarks break; SEO indexing rebuilds over weeks. Low engineering cost; high external-link disruption.
+
+2. **Ship the structural change but keep `docs/README.md` outside `## Introduction`.** Address Question 2's risk pre-emptively. Mitigates the home-URL risk but leaves the 9 pillar-page URL retirements in scope. Smaller scope of breakage, but the proposal's "every depth-0 node is a `##` group" shape is amended (a single page sits at depth 0 alongside groups).
+
+3. **Defer Phase C/D/E pending a redirect strategy.** GitBook supports `redirects.yaml` (or similar configuration) for old-path → new-path mappings. Author the redirect manifest first; ship the SUMMARY restructure with redirects in place; external links auto-rewrite. Zero external-link disruption; higher engineering cost (redirect manifest authored + verified; need to confirm GitBook honors it on this site).
+
+4. **Defer Phase C/D/E pending source-file moves.** Move `docs/data-discovery.md` → `docs/features/data-discovery.md` etc. so the URL change is "natural" (the source-tree change explains the URL change). Largest scope; cleanest end-state; Phase E sweep becomes wide because source-relative links inside the moved files break.
+
+**Recommendation**: Option 2 + Option 3 in sequence. Keep `docs/README.md` at depth 0 (preserves home URL); ship the rest of the restructure with a redirect manifest for the 9 pillar pages + nested children. If GitBook redirect support is unavailable on this hosting tier, fall back to Option 1 (accept retirement) with the deliberate-URL-retirement note in the merge commit body.
+
+**Phase C/D/E remain deferred until the user picks an option.** Phase A (this ADR) and Phase B (this report) are complete; the gate to authoring is the user's pick on the four options above.
+
 ## Status
 
-**Draft**, awaiting:
-1. User review of this ADR (Phase A gate per DOC-138).
-2. If approved as drafted, Phase B verification report.
-3. If amended during review, redrafting + a second user-review pass.
+**Draft**, awaiting user decision on Phase B's URL-retirement question (the four options at the end of "Phase B verification report" above).
 
-This ADR moves to `accepted` status (filename `adrs/summary-top-level-restructure.md`, no longer in `drafts/`) after Phase B answers are captured and the user explicitly approves the implementation plan. The Phase B answers append a "## Phase B verification report" section to this ADR before the move.
+Phase A: ✅ done (ADR draft delivered, user-approved 2026-05-07).
+Phase B: ✅ done (verification report appended above 2026-05-07).
+Phase C/D/E: ⏸ deferred pending user pick on the four options.
+
+This ADR moves to `accepted` status (filename `adrs/summary-top-level-restructure.md`, no longer in `drafts/`) once the user picks an option AND the chosen option is captured as an amendment to the "Decision" section above. Until then, the ADR carries the structural intent + Phase B verification, but the implementation plan is not finalised.
 
 ## Related
 

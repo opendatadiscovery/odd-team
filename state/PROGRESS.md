@@ -1,3 +1,83 @@
+# Last updated 2026-05-06 — `/implement batch:feature/docs-doc131-pillar-relpath-fix-2026-05-06 + feature/state-doc131-doc138-2026-05-06` — DOC-131 unblocked + DOC-138 Phase A ADR draft
+
+User-invoked `/implement` with directive "please prepare a batch with as much items as feasible and possible from the implementation point of view". Backlog assessment: only one item was `pending` (DOC-138, large, depends_on DOC-131); three items `blocked` (DOC-046 / DOC-034 / DOC-067 — DOC-046 likely actually done per prior `data-modelling/query-examples.md` page existence but not flipped, DOC-034 still genuinely blocked on upstream PLT-009, DOC-067 still blocked on a live deployment); DOC-131 `blocked` with a documented fix path. The feasible batch is DOC-131 (small unblock) + DOC-138 Phase A (ADR draft — Phase A is an explicit gate before Phase B per the AC structure).
+
+Two-PR batch shipped on parallel branches:
+
+| Branch | Repo | Item | Commit |
+|---|---|---|---|
+| `feature/docs-doc131-pillar-relpath-fix-2026-05-06` | documentation | DOC-131 — drop ..-prefix from 7 cross-link paths in `docs/active-platform-features.md` across 5 lines (16, 33, 39, 40, 41); bare relative paths matching the sibling-pillar convention | `6910be5` |
+| `feature/state-doc131-doc138-2026-05-06` | odd-team | DOC-138 Phase A — new ADR draft `adrs/drafts/summary-top-level-restructure.md` capturing the proposal, Cornerstone-2/5 rationale, three trade-offs, three open implementation questions for Phase B, phasing A through F, sequencing with DOC-131, risks + rollback. State bookkeeping (this entry + file-registry + DOC-131 / DOC-138 frontmatter flips). | (next commit on this branch) |
+
+## Items moved this run
+
+| ID | Status flip | Reason |
+|---|---|---|
+| DOC-131 | blocked → **review-ready** | Fix path documented in the prior `/review`'s Review block was applied verbatim; sibling-convention verified pre-fix (4 sibling landings × 0 hits on `\(\.\./`); post-fix verification (0 hits on `\.\.` in the file). Live-site WebFetch deferred to `/review` per Gate 8 — confirm none of the previously-fallback links render as `github.com/.../blob/main/...` substrings on `https://docs.opendatadiscovery.org/active-platform-features` post-merge. |
+| DOC-138 | pending → **in-progress** (Phase A delivered) | Phase A's two ACs met (ADR draft authored + surfaced for user review). Item stays `in-progress` (not `review-ready`) because Phase B–F ACs are not in scope for this batch — the user-review-of-the-ADR is the explicit next gate. After user approves the ADR, a future `/implement` run starts Phase B (URL-slug + README-as-home + cross-link-sweep verification report); the item flips to `review-ready` only when all phases ship. |
+
+## Why this scope
+
+The user asked the implement skill to maximise the feasible batch. The backlog state at session start was thin:
+
+- DOC-138 (pending, large) — depends_on DOC-131. Phase A explicitly says "Phase B does not start until the ADR is approved" — the AC structure makes Phase A a hard gate. So the feasible Phase A scope is "ship the ADR draft + surface for user review."
+- DOC-131 (blocked, large in original scope but the fix is small — 5 line edits) — the prior `/review`'s Review block documents the fix path step-by-step. Unblockable by applying the documented fix.
+- DOC-046 / DOC-034 / DOC-067 (blocked) — DOC-046 *appears* substantively done given the existence of `docs/data-modelling/query-examples.md` with comprehensive content; the blocked status looks stale and warrants a separate `/review` triage pass — out of scope for an implement batch. DOC-034 genuinely blocked on upstream `issues/odd-platform/PLT-009.md` (status-code verification on `/api/messages/{message_id}/url`). DOC-067 blocked on a live deployment with seeded data (cannot be unblocked from a docs-editing session).
+
+So the maximal feasible batch is DOC-131 + DOC-138 Phase A. Both ship; one PR per repo.
+
+## ADR summary (DOC-138 Phase A deliverable)
+
+`adrs/drafts/summary-top-level-restructure.md` proposes promoting `Introduction`, `Features`, and `Use cases` to `##` groups (mirroring the existing `## Integrations` / `## Configuration and Deployment` / `## Developer Guides` shape); nesting the four feature pillars + `Management` under `## Features` (Management at the bottom of the group, preserving the DOC-137 "kinds" framing where governance pillars / active-platform features / Management are three peer feature kinds); folding `oddrn.md` content into `main-concepts.md#oddrn` (Cornerstone-5 — ODDRN is conceptually a vocabulary entry, exactly what Main Concepts is for; the dedicated page becomes redundant). **Group naming** chosen during Phase A drafting (user feedback 2026-05-06): `Introduction` over the initial `Overview` because `## Overview / [Overview](README.md)` reduplicates and tells a first-time visitor nothing — the convention across existing groups is `group = the topic, first page = "Overview" of that topic`. `Introduction` reads cleanly with `Overview / Main Concepts / Architecture` underneath.
+
+Three trade-offs surfaced explicitly:
+1. **URL-slug stability vs. conceptual peers** — accepting the proposal *may* change the URLs of moved pages depending on GitBook's slug-derivation behaviour. Phase B Question 1 verifies; the decision is accepted but the *how* gates on Phase B's answer.
+2. **README-as-home vs. README-as-group-landing** — `docs/README.md` is the home URL today; the proposal nests it under `## Introduction`. Phase B Question 2 verifies whether the home URL stays at `/`.
+3. **ODDRN-as-page vs. ODDRN-as-section** — `https://docs.opendatadiscovery.org/oddrn` becomes a 404 (deliberate URL retirement, documented in the merge commit body).
+
+Three open implementation questions deferred to Phase B (pre-flight implementation reading):
+1. GitBook URL-slug behaviour for nested pillar landings — verified by inspecting live URLs of pages currently under `## Integrations` / `## Configuration and Deployment` / `## Developer Guides`.
+2. README-as-group-landing rendering at the root URL — verified by WebFetching the existing group-landing pages.
+3. Cross-link sweep enumeration — `grep -rE` count + per-file list across `docs/` for all moved-page references.
+
+The ADR's decision is to accept the structural intent now; the answers to the three open questions either confirm the proposal proceeds as authored or identify a constraint that amends the ADR before Phase C (the SUMMARY edit) starts.
+
+## Sequencing with DOC-131
+
+DOC-131's fix ships on its own PR as a precondition for the Phase B–F implementation. After this batch's two PRs merge, DOC-131 closes via `/review` (live-site WebFetch confirms no GitHub-fallback substring on the pillar landing); DOC-138 awaits user review of the ADR before Phase B starts.
+
+The dependency is conditional and self-resolving: today `active-platform-features.md` is at depth 0 where bare relative paths are correct (DOC-131's fix); after Phase C–E ship, the page would be at depth 1 (child of `## Features`) where `..`-prefixed paths would be correct again. So Phase E's cross-link sweep is the natural place to re-add the `..` prefix if needed (gated on Phase B Question 1's answer about whether SUMMARY-depth changes the page's URL slug — if the URL stays `/active-platform-features` because the source path is unchanged, no re-add is needed; the relative paths from the file's own directory are what matter, not its SUMMARY position).
+
+## Items still pending or blocked after this run
+
+| ID | Status | Note |
+|---|---|---|
+| DOC-046 | blocked | Document Query Examples feature (full standalone section) — likely substantively done given existence of `docs/data-modelling/query-examples.md` with comprehensive content; the blocked status appears stale. Recommend a triage pass to verify and flip to `done` (or to identify the residual work). Out of scope for this batch (status review, not implementation). |
+| DOC-034 | blocked | Document data collaboration API endpoints + verify Slack manifest URL — Gate 4/9 fail on `/api/messages/{message_id}/url` status code; upstream issue `issues/odd-platform/PLT-009.md` blocks. |
+| DOC-067 | blocked | Capture fresh Catalog Overview screenshot — blocked on live deployment with seeded data. |
+| DOC-130 | review-ready | Typo fix on Architecture.md — carries over from prior batch; `/review` of the prior PR (#61) flipped this from review-ready to subsumed, but the backlog item still reads `review-ready`. May be candidate for `/review` close-out as subsumed/done. |
+| NAV-001 | review-ready | Navigation pointer update for lookup-tables file move — carries over from prior batch. |
+| **DOC-131** | **review-ready (this run)** | Fix applied; awaiting `/review` live-site WebFetch verification. |
+| **DOC-138** | **in-progress (Phase A delivered)** | Awaiting user review of the ADR; if approved, Phase B starts as a separate `/implement` run. |
+
+## Counts (after this run)
+
+- `blocked`: -1 (DOC-131 unblocked); 4 → 3 remaining (DOC-046, DOC-034, DOC-067).
+- `review-ready`: +1 (DOC-131); previously 13 from prior batches — now 14.
+- `in-progress`: +1 (DOC-138 Phase A delivered); previously 0 — now 1.
+- `pending`: -1 (DOC-138 leaves pending); previously 1 — now 0.
+- `done` / `superseded` / `rejected`: unchanged.
+- Total backlog: unchanged at 132.
+
+## Hand-off to /review
+
+Run `/review batch:feature/docs-doc131-pillar-relpath-fix-2026-05-06` in a separate session. Affected live URL list:
+- `https://docs.opendatadiscovery.org/active-platform-features` — confirm no `github.com/opendatadiscovery/documentation/blob/main/...` substring on any of the five previously-fallback links (the page's own internal cross-links to `main-concepts`, `configuration-and-deployment/odd-platform`, `developer-guides/api-reference`, `developer-guides/api-reference/alerts`, `developer-guides/api-reference/data-collaboration`).
+
+DOC-138 Phase A's user-review gate is the PR-comment thread on the odd-team PR — not a `/review` skill invocation. Phase A's deliverable (the ADR draft) is the artefact for review; the item itself doesn't go through `/review` until Phases B–F ship and all ACs are met.
+
+---
+
 # Last updated 2026-05-06 — `/review batch:feature/docs-active-platform-and-gateway-2026-05-06` — DOC-084 / DOC-137 / DOC-078 closed; DOC-131 blocked on Gate 8 (pillar-landing relative-path fallback)
 
 `/review batch:feature/docs-active-platform-and-gateway-2026-05-06` ran in a session distinct from the implement session that produced the items (the post-`/clear` boundary on the same workspace; the prior implement session closed at `c2e9c2c`). The doc-repo PR (#61) merged at `f65e843` on `origin/main` of `opendatadiscovery/documentation` before the review ran; the odd-team state PR (#104) merged at `c2e9c2c`. **Gate 8 verified live via WebFetch on every affected URL** — 1 fallback-cache event surfaced on the active-platform-features pillar landing, isolating DOC-131 to `blocked`. The other three items (DOC-084, DOC-137, DOC-078) flipped to `done`.

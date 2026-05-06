@@ -1,16 +1,16 @@
-# Last updated 2026-05-06 — editorial follow-ups batch reviewed; 5 items ACCEPTED (Gate 8 DEFERRED pending PR merge) + 1 editorial follow-up DOC-137 logged
+# Last updated 2026-05-06 — editorial follow-ups batch reviewed and closed; 5 items flipped `review-ready` → `done` (Gate 8 verified live) + 1 editorial follow-up DOC-137 logged
 
-`/review batch:feature/docs-editorial-followups-2026-05-06` ran in a session distinct from the `/implement` session that produced the items (post-`/clear` boundary verified per the `/review` skill prerequisites). All 5 batch items passed every Quality Bar gate except Gate 8 (DEFERRED — PR not yet merged), so each item remains `review-ready` and will flip to `done` post-merge after a Gate-8 close-out re-run. The doc-product editorial audit (Step 5) covered the batch-affected pages plus a sample of bigbatch-introduced new pages (data-discovery.md, management.md, api-reference sub-pages, build-and-run/custom-collectors.md, data-discovery/directory.md) end-to-end and surfaced 1 coherence finding logged as a separate `pending` follow-up (DOC-137).
+`/review batch:feature/docs-editorial-followups-2026-05-06` ran in a session distinct from the `/implement` session that produced the items (post-`/clear` boundary verified per the `/review` skill prerequisites). The doc-repo PR (#60) merged at `826199a` on `origin/main` of `opendatadiscovery/documentation` before the review ran; **Gate 8 verified live via WebFetch on every affected URL**, and all 5 batch items passed every Quality Bar gate. Each item flipped from `review-ready` to `done`. The doc-product editorial audit (Step 5) covered the batch-affected pages plus a sample of bigbatch-introduced new pages (data-discovery.md, management.md, api-reference sub-pages, build-and-run/custom-collectors.md, data-discovery/directory.md) end-to-end and surfaced 1 coherence finding logged as a separate `pending` follow-up (DOC-137).
 
-## Items reviewed (status remains `review-ready` until Gate 8 close-out)
+## Items flipped `review-ready` → `done`
 
-| ID | Verdict | Gate 8 status | Theme |
-|---|---|---|---|
-| DOC-132 | ACCEPTED | DEFERRED | Magic-link sweep extended — 6 sites rephrased; both sweep regexes return 0 hits |
-| DOC-133 | ACCEPTED | DEFERRED | Features.md L329 wrong-anchor cross-link rewired to user-owner-association.md |
-| DOC-134 | ACCEPTED | DEFERRED | Features.md L424 Discussions tab caveat elevated to `{% hint style="warning" %}` admonition |
-| DOC-135 | ACCEPTED | DEFERRED | trylocally.md L10 Collector framing — disambiguates category vs implementation |
-| DOC-136 | ACCEPTED | DEFERRED | Features.md front-of-page purpose disclaimer (orientation paragraph + 1 editorial follow-up DOC-137) |
+| ID | Verdict | Theme |
+|---|---|---|
+| DOC-132 | ACCEPTED | Magic-link sweep extended — 6 sites rephrased; both sweep regexes return 0 hits; live URLs render descriptive link text |
+| DOC-133 | ACCEPTED | Features.md L329 wrong-anchor rewired; live target page H1 "User-owner association" verified |
+| DOC-134 | ACCEPTED | Features.md L424 Discussions tab caveat elevated to `{% hint style="warning" %}` admonition; live render confirms structured warning element |
+| DOC-135 | ACCEPTED | trylocally.md L10 Collector framing rephrased; live render confirms lowercase code-formatted `odd-collector` + Collector "family" cross-link |
+| DOC-136 | ACCEPTED | Features.md front-of-page purpose disclaimer; live render confirms orientation paragraph above manual TOC. Editorial follow-up DOC-137 logged for A8 vocabulary defect — does not block the per-item flip |
 
 ## Editorial follow-up logged this run
 
@@ -29,15 +29,17 @@
 
 - **use-cases.md L5 H3 backslash-escape** — the implementer flagged `### Deprecation for Data Engineer \ Analyst` (with the literal backslash) for live-site verification. **VERIFIED via Read** of `docs/SUMMARY.md:19` (canonical SUMMARY entry — same backslash form) + `docs/use-cases/de-deprecation.md:1` (H1 — same form) + DOC-127 closure note ("5 H3s now match SUMMARY canonical form char-for-char, verified live"). The backslash is the canonical form across all three sites; live rendering verified by DOC-127 (closed 2026-05-06 post-merge `feature/docs-coherence-followups-2026-05-05`). **No DOC-137 follow-up needed** for this caveat.
 
-## Live-site verification (next session — `/review` re-run after PR merge)
+## Live-site verification (Gate 8) — performed and PASSED this run
 
-Each item carries the live-URL list in its "Implementation status" block. High-level sweep when the `/review` runs the post-merge close-out:
+Per-item live-URL evidence is recorded in each backlog item's `Live-site verification (Gate 8)` AC row. WebFetch results this run:
 
-- `https://docs.opendatadiscovery.org/` (DOC-132 README)
-- `https://docs.opendatadiscovery.org/use-cases` (DOC-132 — verify all 5 use-case bullets)
-- `https://docs.opendatadiscovery.org/Features` (DOC-133 + DOC-134 + DOC-136 — verify L329 link target, L428-430 admonition, L3 disclaimer)
-- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association` (DOC-133 rewire target)
-- `https://docs.opendatadiscovery.org/configuration-and-deployment/trylocally` (DOC-135)
+- `https://docs.opendatadiscovery.org/` — README L37 rephrase rendered (DOC-132)
+- `https://docs.opendatadiscovery.org/use-cases` — all 5 descriptive link texts rendered (DOC-132)
+- `https://docs.opendatadiscovery.org/features` — disclaimer paragraph + L329 cross-link target + Discussions warning admonition all rendered (DOC-133 + DOC-134 + DOC-136)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association` — H1 "User-owner association" rendered (DOC-133 rewire target)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/trylocally` — L10 Collector framing rephrase rendered (DOC-135)
+
+Note: `https://docs.opendatadiscovery.org/Features` (capital F) returns 404 on this GitBook deployment; the live URL is the lowercase `/features` form. Not a regression; GitBook normalises page paths to lowercase.
 
 ---
 

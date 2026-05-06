@@ -43,6 +43,13 @@ NAV-001 (review-ready) carries over — navigation pointer update for lookup-tab
 - `done`: +3 (DOC-084, DOC-137, DOC-078)
 - `blocked`: +1 (DOC-131)
 - `review-ready`: -4 (the four items reviewed this run); DOC-130 + NAV-001 still review-ready from prior batches
+- `pending`: +1 (DOC-138 — see follow-up below)
+
+## Follow-up logged this run (user feedback during /review)
+
+| ID | Priority | Theme | Source |
+|---|---|---|---|
+| DOC-138 | medium | Top-level SUMMARY restructure — promote Overview / Features / Use cases to `##` groups (parallel to Integrations); nest feature pillars + Management under Features (Management at bottom); fold ODDRN into Main Concepts. ADR-class decision; depends_on DOC-131 | User feedback during `/review batch:feature/docs-active-platform-and-gateway-2026-05-06` (2026-05-06) — Cornerstone-2 hierarchy-depth alignment at the SUMMARY root level |
 
 ---
 

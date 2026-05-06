@@ -1,3 +1,46 @@
+# Last updated 2026-05-06 — editorial follow-ups batch reviewed; 5 items ACCEPTED (Gate 8 DEFERRED pending PR merge) + 1 editorial follow-up DOC-137 logged
+
+`/review batch:feature/docs-editorial-followups-2026-05-06` ran in a session distinct from the `/implement` session that produced the items (post-`/clear` boundary verified per the `/review` skill prerequisites). All 5 batch items passed every Quality Bar gate except Gate 8 (DEFERRED — PR not yet merged), so each item remains `review-ready` and will flip to `done` post-merge after a Gate-8 close-out re-run. The doc-product editorial audit (Step 5) covered the batch-affected pages plus a sample of bigbatch-introduced new pages (data-discovery.md, management.md, api-reference sub-pages, build-and-run/custom-collectors.md, data-discovery/directory.md) end-to-end and surfaced 1 coherence finding logged as a separate `pending` follow-up (DOC-137).
+
+## Items reviewed (status remains `review-ready` until Gate 8 close-out)
+
+| ID | Verdict | Gate 8 status | Theme |
+|---|---|---|---|
+| DOC-132 | ACCEPTED | DEFERRED | Magic-link sweep extended — 6 sites rephrased; both sweep regexes return 0 hits |
+| DOC-133 | ACCEPTED | DEFERRED | Features.md L329 wrong-anchor cross-link rewired to user-owner-association.md |
+| DOC-134 | ACCEPTED | DEFERRED | Features.md L424 Discussions tab caveat elevated to `{% hint style="warning" %}` admonition |
+| DOC-135 | ACCEPTED | DEFERRED | trylocally.md L10 Collector framing — disambiguates category vs implementation |
+| DOC-136 | ACCEPTED | DEFERRED | Features.md front-of-page purpose disclaimer (orientation paragraph + 1 editorial follow-up DOC-137) |
+
+## Editorial follow-up logged this run
+
+| ID | Priority | Failure shape | Source |
+|---|---|---|---|
+| DOC-137 | low | A8 (vocabulary consistency) — canonical-term over-extension | Features.md L3 (DOC-136 disclaimer) — labels Management as one of four "per-pillar canonical homes"; canonical taxonomy in main-concepts.md / data-discovery.md / master-data-management.md distinguishes the three **governance pillars** from the operator-mutating Management surface |
+
+## Editorial audit coverage this run
+
+- **Re-audited (batch-affected)**: README.md, use-cases.md, Features.md, configuration-and-deployment/trylocally.md.
+- **Sampled (bigbatch-introduced new pages — first-baseline read)**: data-discovery.md, data-discovery/directory.md, management.md, developer-guides/api-reference.md (hub), developer-guides/api-reference/{alerts, integrations, relationships, reference-data}.md, developer-guides/build-and-run/custom-collectors.md.
+- **Skim-verified**: surfacing-only inspection of integrations/{collectors,push-adapters}/* sub-pages already audited in prior runs; no follow-ups surfaced this run on those subtrees.
+- **Coverage delta**: 4 batch-affected pages re-audited (no axis change for README.md / use-cases.md / Features.md beyond the editorial follow-up logged on Features.md A8; trylocally.md A8 re-passes after the L10 rephrase). 9 new bigbatch pages baseline-audited as PASS rows (data-discovery.md, data-discovery/directory.md, management.md, api-reference/{alerts, integrations, relationships, reference-data}.md sample, build-and-run/custom-collectors.md, api-reference.md hub re-audit). 5 api-reference sub-pages remain un-baselined (data-collaboration, directory, glossary, lineage, query-examples) — queued for the next `/review`.
+
+## Surfaced caveat resolved (no DOC follow-up needed)
+
+- **use-cases.md L5 H3 backslash-escape** — the implementer flagged `### Deprecation for Data Engineer \ Analyst` (with the literal backslash) for live-site verification. **VERIFIED via Read** of `docs/SUMMARY.md:19` (canonical SUMMARY entry — same backslash form) + `docs/use-cases/de-deprecation.md:1` (H1 — same form) + DOC-127 closure note ("5 H3s now match SUMMARY canonical form char-for-char, verified live"). The backslash is the canonical form across all three sites; live rendering verified by DOC-127 (closed 2026-05-06 post-merge `feature/docs-coherence-followups-2026-05-05`). **No DOC-137 follow-up needed** for this caveat.
+
+## Live-site verification (next session — `/review` re-run after PR merge)
+
+Each item carries the live-URL list in its "Implementation status" block. High-level sweep when the `/review` runs the post-merge close-out:
+
+- `https://docs.opendatadiscovery.org/` (DOC-132 README)
+- `https://docs.opendatadiscovery.org/use-cases` (DOC-132 — verify all 5 use-case bullets)
+- `https://docs.opendatadiscovery.org/Features` (DOC-133 + DOC-134 + DOC-136 — verify L329 link target, L428-430 admonition, L3 disclaimer)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association` (DOC-133 rewire target)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/trylocally` (DOC-135)
+
+---
+
 # Last updated 2026-05-06 — editorial follow-ups batch (DOC-132 + 133 + 134 + 135 + 136) review-ready
 
 Editorial follow-ups batch shipped on `feature/docs-editorial-followups-2026-05-06` (documentation, cut from `origin/main` `045ffad`) + `feature/state-editorial-followups-2026-05-06` (odd-team). User-invoked `/implement` with directive "as much items as feasible and possible from the implementation point of view". Five small items closed in one session: 4 editorial findings logged from the prior `/review batch:feature/docs-bigbatch-2026-05-06` audit (DOC-132 magic-link residue, DOC-133 wrong-anchor cross-link, DOC-134 caveat-as-admonition, DOC-135 Collector framing) + 1 user-feedback follow-up from the same `/review` (DOC-136 Features.md purpose disclaimer). Larger items DOC-131 (DOC-082 Drift 2 — active-platform-features pillar + 5 sub-pages) and DOC-084 (adapter vocabulary refactor) deliberately excluded — both deserve their own batches; DOC-131 also has a file-range conflict with DOC-134 in the Data Collaboration section that the deferral resolves naturally.

@@ -1,3 +1,50 @@
+# Last updated 2026-05-06 — editorial follow-ups batch (DOC-132 + 133 + 134 + 135 + 136) review-ready
+
+Editorial follow-ups batch shipped on `feature/docs-editorial-followups-2026-05-06` (documentation, cut from `origin/main` `045ffad`) + `feature/state-editorial-followups-2026-05-06` (odd-team). User-invoked `/implement` with directive "as much items as feasible and possible from the implementation point of view". Five small items closed in one session: 4 editorial findings logged from the prior `/review batch:feature/docs-bigbatch-2026-05-06` audit (DOC-132 magic-link residue, DOC-133 wrong-anchor cross-link, DOC-134 caveat-as-admonition, DOC-135 Collector framing) + 1 user-feedback follow-up from the same `/review` (DOC-136 Features.md purpose disclaimer). Larger items DOC-131 (DOC-082 Drift 2 — active-platform-features pillar + 5 sub-pages) and DOC-084 (adapter vocabulary refactor) deliberately excluded — both deserve their own batches; DOC-131 also has a file-range conflict with DOC-134 in the Data Collaboration section that the deferral resolves naturally.
+
+## Items moved to `review-ready`
+
+| ID | Status flip | Commit | Theme |
+|---|---|---|---|
+| DOC-132 | pending → review-ready | c0a4522 | Magic-link sweep — case-variant + multi-word residue (6 sites: README L37 + use-cases L4/L6/L8/L10/L12) |
+| DOC-133 | pending → review-ready | fec7d00 | Features.md L329 wrong-anchor cross-link → user-owner-association.md |
+| DOC-134 | pending → review-ready | aa490eb | Features.md L424 Discussions-tab caveat elevated to `{% hint style="warning" %}` block |
+| DOC-135 | pending → review-ready | 31c8152 | trylocally.md L10 Collector category-vs-implementation framing |
+| DOC-136 | pending → review-ready | be8fae3 | Features.md front-of-page purpose disclaimer (orientation paragraph) |
+
+## Items still pending after this batch
+
+- **DOC-131** (pending, large) — DOC-082 Drift 2 follow-up (active-platform-features pillar + 5 sub-pages).
+- **DOC-084** (pending, large) — Adapter vocabulary refactor.
+
+## Caveats and side-effects surfaced
+
+- **use-cases.md L5 H3 backslash-escape** — `### Deprecation for Data Engineer \ Analyst` carries a backslash-escape that may render as a literal backslash on the live site. Adjacent to DOC-132's L6 link-text rephrase but distinct defect class (heading typo, not magic-link). Not folded into DOC-132 — out of scope; flagged in DOC-132's "Caveats surfaced" block + here for `/review` to verify against live-site rendering and decide whether to log as DOC-137 follow-up.
+
+## Live-site verification (next session — `/review`)
+
+The full live-URL list per item is in each item's "Implementation status" block. High-level sweep:
+
+- `https://docs.opendatadiscovery.org/` (README L37 — DOC-132)
+- `https://docs.opendatadiscovery.org/use-cases` (5 use-case bullets — DOC-132; also: verify L5 H3 rendering for the surfaced caveat)
+- `https://docs.opendatadiscovery.org/Features` (front-of-page disclaimer + L329 wrong-anchor + L424 caveat admonition — DOC-133, DOC-134, DOC-136)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association` (DOC-133 rewire target resolves)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/trylocally` (DOC-135 L10 rephrase + intra-page cross-link to main-concepts.md)
+
+## Sources footers (summarised)
+
+- DOC-132: `none (cross-link cleanup, no factual claim)`
+- DOC-133: `Cross-link target: user-owner-association.md (verified)` + sweep result
+- DOC-134: `none (Gate-3 caveat formatting fix, no factual claim)`
+- DOC-135: `Term: main-concepts.md §Terms — Collector` + `Cross-doc: Architecture.md:24` + `Case-law: DOC-099 Phase A` + `Consumer-read: trylocally.md:54,81`
+- DOC-136: 7-target IA verification (`data-discovery.md` / `data-modelling.md` / `master-data-management.md` / `management.md` / `main-concepts.md` / `developer-guides/api-reference.md` / `configuration-and-deployment/odd-platform.md`) + `#data-governance-map` anchor at `main-concepts.md:41`
+
+## Follow-ups logged
+
+No new backlog items logged this batch. The use-cases.md L5 H3 typo is captured in DOC-132's "Caveats surfaced" block as out-of-scope; `/review` decides on DOC-137 promotion.
+
+---
+
 # Last updated 2026-05-06 — bigbatch reviewed; 7 items closed; 4 editorial follow-ups logged
 
 `/review batch:feature/docs-bigbatch-2026-05-06` ran in a session distinct from the `/implement` session that produced the items (post-`/clear` boundary verified). All 7 batch items passed every Quality Bar gate with cited evidence and flipped from `review-ready` to `done`. The doc-product editorial audit (Step 5) covered the active-pillar tree end-to-end and surfaced 4 coherence findings that **do not block** the per-item flips (per Step 5's authority rule); each is logged as a separate `pending` follow-up.

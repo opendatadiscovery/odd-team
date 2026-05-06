@@ -1,3 +1,58 @@
+# Last updated 2026-05-06 — `/review batch:feature/docs-active-platform-and-gateway-2026-05-06` — DOC-084 / DOC-137 / DOC-078 closed; DOC-131 blocked on Gate 8 (pillar-landing relative-path fallback)
+
+`/review batch:feature/docs-active-platform-and-gateway-2026-05-06` ran in a session distinct from the implement session that produced the items (the post-`/clear` boundary on the same workspace; the prior implement session closed at `c2e9c2c`). The doc-repo PR (#61) merged at `f65e843` on `origin/main` of `opendatadiscovery/documentation` before the review ran; the odd-team state PR (#104) merged at `c2e9c2c`. **Gate 8 verified live via WebFetch on every affected URL** — 1 fallback-cache event surfaced on the active-platform-features pillar landing, isolating DOC-131 to `blocked`. The other three items (DOC-084, DOC-137, DOC-078) flipped to `done`.
+
+## Items flipped this run
+
+| ID | Status flip | Reason |
+|---|---|---|
+| DOC-084 | review-ready → **done** | Two-axis adapter taxonomy + gateway canonical home — every AC met, every gate PASS via cited evidence, all 9 affected URLs render correctly on the live site |
+| DOC-131 | review-ready → **blocked** | Gate 8 fail on `https://docs.opendatadiscovery.org/active-platform-features` — 5 internal cross-link targets render as `github.com/.../blob/main/...` GitHub-fallback URLs because the source `docs/active-platform-features.md` uses `..`-prefixed relative paths from a top-level page (`..` resolves outside `docs/`, GitBook can't reach the targets, falls back). Sibling pillar landings (data-discovery.md, master-data-management.md, management.md) verified via grep — they use no `..` prefix. The five sub-pages under `active-platform-features/` and the gateway sub-page render correctly. |
+| DOC-137 | review-ready → **done** | Features.md L3 disclaimer rephrase — both grep sweeps return 0 conflations, live URL renders the rephrase, banned-phrase check clean |
+| DOC-078 | review-ready → **done** | Superseded by DOC-084 — the AC is verifiably met (deployment.md collapse + new canonical home authored from gateway's java source as SoT) even though no separate commit shipped for this item |
+
+## Live-site verification (Gate 8) — performed and logged this run
+
+16 URLs WebFetched. 15 PASS, 1 FAIL (the active-platform-features pillar landing).
+
+- **PASS**: `https://docs.opendatadiscovery.org/{active-platform-features/alerting,active-platform-features/notifications,active-platform-features/activity-feed,active-platform-features/data-collaboration,active-platform-features/genai,integrations/integrations,integrations/integrations/odd-tracing-gateway,configuration-and-deployment/deployment,main-concepts,architecture,developer-guides/github-organization-overview,configuration-and-deployment/odd-platform,developer-guides/api-reference/alerts,developer-guides/api-reference/data-collaboration,features}` — every page renders the intended change; no GitHub-fallback substring on any of the 15.
+- **FAIL**: `https://docs.opendatadiscovery.org/active-platform-features` — 5 internal cross-link targets render as `github.com/opendatadiscovery/documentation/blob/main/{configuration-and-deployment/odd-platform.md,developer-guides/api-reference.md,developer-guides/api-reference/alerts.md,developer-guides/api-reference/data-collaboration.md,main-concepts.md}` because the source uses `..`-prefixed paths from depth 0 (top-level pillar landing) where `..` resolves outside `docs/`. New variant of LSN-004 fallback-cache event (different cause, same symptom) — captured in DOC-131's Review block with the fix path for the implementer.
+- **URL slug correction noted**: the predicted gateway URL `integrations/integrations/auxiliary/odd-tracing-gateway` 404s on the live site; the actual URL is `integrations/integrations/odd-tracing-gateway` (GitBook flattens the intermediate `auxiliary/` directory the same way it flattens `collectors/` and `push-adapters/` in URL slugs). Source-tree path + SUMMARY entry are correct; the URL slug is GitBook's deterministic transform. No DOC-NNN follow-up needed.
+
+## Doc-product editorial audit (Step 5) — performed
+
+- **Re-audited (batch-affected pages)**: Features.md, Architecture.md, main-concepts.md, configuration-and-deployment/odd-platform.md, configuration-and-deployment/deployment.md, integrations/README.md, developer-guides/github-organization-overview.md, developer-guides/api-reference/alerts.md, developer-guides/api-reference/data-collaboration.md, SUMMARY.md.
+- **Baseline-audited (new pages introduced this batch)**: active-platform-features.md (axis A4 reference-integrity FAIL — rolled into DOC-131 Gate 8; not double-logged as a separate editorial follow-up); active-platform-features/{alerting, notifications, activity-feed, data-collaboration, genai}.md (all axes PASS); integrations/auxiliary/odd-tracing-gateway.md (all axes PASS).
+- **Still queued for next /review (un-baselined api-reference sub-pages from prior /review)**: developer-guides/api-reference/{directory, glossary, lineage, query-examples}.md — 4 pages remain un-baselined. (api-reference/data-collaboration.md baseline-credited this run because it was directly modified by DOC-131's cross-link rewire and verified live.)
+- **Editorial findings surfaced this run beyond the per-item gates**: **none surfaced this run.** The active-platform-features pillar-landing relative-path bug is a per-item Gate 8 FAIL on DOC-131, not an editorial-audit DOC-NNN.
+
+## Items still pending or blocked after this run
+
+| ID | Status | Note |
+|---|---|---|
+| DOC-046 | blocked | Document Query Examples feature (full standalone section) — pre-existing |
+| DOC-034 | blocked | Document data collaboration API endpoints + verify Slack manifest URL — pre-existing |
+| DOC-067 | blocked | Capture fresh Catalog Overview screenshot — blocked on live deployment with seeded data |
+| **DOC-131** | **blocked** | **active-platform-features pillar landing — relative-path fallback-cache event; fix path documented in the item's Review block** |
+
+DOC-130 (review-ready) carries over from a prior batch — typo fix on Architecture.md.
+NAV-001 (review-ready) carries over — navigation pointer update for lookup-tables file move.
+
+## Counts (after this run)
+
+- `done`: +3 (DOC-084, DOC-137, DOC-078)
+- `blocked`: +1 (DOC-131)
+- `review-ready`: -4 (the four items reviewed this run); DOC-130 + NAV-001 still review-ready from prior batches
+- `pending`: +1 (DOC-138 — see follow-up below)
+
+## Follow-up logged this run (user feedback during /review)
+
+| ID | Priority | Theme | Source |
+|---|---|---|---|
+| DOC-138 | medium | Top-level SUMMARY restructure — promote Overview / Features / Use cases to `##` groups (parallel to Integrations); nest feature pillars + Management under Features (Management at bottom); fold ODDRN into Main Concepts. ADR-class decision; depends_on DOC-131 | User feedback during `/review batch:feature/docs-active-platform-and-gateway-2026-05-06` (2026-05-06) — Cornerstone-2 hierarchy-depth alignment at the SUMMARY root level |
+
+---
+
 # Last updated 2026-05-06 — `feature/docs-active-platform-and-gateway-2026-05-06` batch review-ready (DOC-084 + DOC-131 + DOC-137 + DOC-078 superseded)
 
 User-invoked `/implement` with directive "please prepare a batch with as much items as feasible and possible from the implementation point of view". Three remaining `pending` docs items in the backlog (DOC-084 large, DOC-131 large, DOC-137 small) plus the supersession of DOC-078 (blocked) all shipped on a single batch branch — `feature/docs-active-platform-and-gateway-2026-05-06` (documentation, cut from `origin/main` `be8fae3`) + `feature/state-active-platform-and-gateway-2026-05-06` (odd-team).

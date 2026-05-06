@@ -1,3 +1,59 @@
+# Last updated 2026-05-06 — bigbatch (DOC-082 partial + DOC-088 + DOC-109 + DOC-117 + DOC-128 + DOC-129 + DOC-130) review-ready
+
+Bigbatch shipped on `feature/docs-bigbatch-2026-05-06` (documentation) + `feature/state-bigbatch-2026-05-06` (odd-team). User-invoked `/implement` with the directive "as much as feasible from the implementation point of view"; user expanded scope on 2026-05-06 by approving recommended paths for all 4 path-decision-blocked items (DOC-128 Path A, DOC-117 Path A, DOC-082 Drift 2 Option A, DOC-109 Option B). Drift 2 of DOC-082 then surfaced as the single largest unit by far — roughly equal to DOC-088 + DOC-128 + DOC-117 + DOC-109 combined — and was deferred mid-batch via a confirmation pause; the deferred work is logged as new item DOC-131. The other 6 items shipped within one Claude session at full Quality-Bar attention.
+
+## Items moved to `review-ready`
+
+| ID | Status flip | Commit | Theme |
+|---|---|---|---|
+| DOC-082 | pending → review-ready (Drifts 1 + 3 only; Drift 2 → DOC-131) | a88feb1 (Drift 1) + 8390830 (Drift 3) | IA refactor — Cornerstone-2 hierarchy depth |
+| DOC-088 | pending → review-ready | 1da5e69 | API Reference (b)-promotion: single-page → hub + 9 per-feature sub-pages |
+| DOC-128 | pending → review-ready (Path A) | caa3d8a | Architecture.md full Cornerstone-2-grade rewrite |
+| DOC-129 | pending → review-ready (site #1 subsumed by DOC-128) | 875d822 | Magic-link sweep, sites #2 + #3 |
+| DOC-130 | pending → review-ready (subsumed by DOC-128) | (caa3d8a, fold) | Architecture.md L13 typo |
+| DOC-117 | pending → review-ready (Path A) | 330664d | 66 Medium-CDN figure images self-hosted |
+| DOC-109 | pending → review-ready (Option B) | b4ee37e | Management canonical home + cross-link sweep |
+
+## New items
+
+- **DOC-131** (pending, large) — DOC-082 Drift 2 deferred follow-up. Author the active-platform-features pillar landing + 5 sub-pages (Alerting, Notifications, Activity Feed, Data Collaboration, GenAI assistant) by migrating content from Features.md + odd-platform.md.
+
+## Items still pending after this batch
+
+- **DOC-084** (pending, large) — Adapter vocabulary refactor + odd-tracing-gateway sub-page. Out of scope for this batch.
+- **DOC-131** (pending, large) — DOC-082 Drift 2 follow-up (just created).
+
+## Caveats and side-effects surfaced
+
+- **Cloudflare blocks on cdn-images-1.medium.com `/max/900/` images** — 10 of the 66 Medium images under DOC-117 returned Cloudflare-challenge HTML when fetched directly from cdn-images-1.medium.com. miro.medium.com/v2/resize:fit:800/{slug} served them successfully. Documented in DOC-117's commit body. No upstream issue logged because the migration succeeded; the case is captured as case-law for future image-migration cycles.
+- **Architecture.md cross-cutting-concerns row pointing at GenAI assistant** — DOC-128 Path A page links to `genai.md` (current top-level path). When DOC-131 (DOC-082 Drift 2) ships and `genai.md` moves to `active-platform-features/genai.md`, Architecture.md's cross-link will need updating. Logged as a known follow-up in DOC-131 frontmatter.
+- **`Management → Datasources` deletion-flow language on Features.md L698** was reframed during DOC-109's cross-link sweep; the original "deleted from the Management page" was vague — the new "from the [Management → Datasources](management.md) view" is precise. Flagged here in case `/review` wants to verify the UI behavior matches the new framing.
+- **Double-`.png.png` filenames on 14 of the 66 self-hosted images** — when the original Medium URL slug already contained `.png`, the auto-generated filename was `medium-<slug>.png.png`. Functionally correct (the references match the file names) and aesthetically suboptimal; not worth a follow-up unless an editorial sweep wants to normalise them.
+
+## Live-site verification (next session — `/review`)
+
+The full live-URL list is in each item's "Implementation status" block. High-level sweep:
+
+- `https://docs.opendatadiscovery.org/architecture` (DOC-128 + DOC-129 site #1 + DOC-130)
+- `https://docs.opendatadiscovery.org/data-discovery` + `https://docs.opendatadiscovery.org/data-discovery/directory` (DOC-082 Drift 1)
+- `https://docs.opendatadiscovery.org/developer-guides/build-and-run/custom-collectors` (DOC-082 Drift 3)
+- `https://docs.opendatadiscovery.org/developer-guides/api-reference` + 9 sub-page URLs (DOC-088)
+- `https://docs.opendatadiscovery.org/management` (DOC-109)
+- `https://docs.opendatadiscovery.org/Features` (DOC-117 figures + DOC-088 anchors + DOC-109 cross-links)
+- `https://docs.opendatadiscovery.org/master-data-management/lookup-tables` (DOC-117 figures + DOC-088 anchor)
+- `https://docs.opendatadiscovery.org/main-concepts` (DOC-082 Drift 1 row)
+- `https://docs.opendatadiscovery.org/developer-guides/how-to-contribute` (DOC-129 site #2)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/trylocally` (DOC-129 site #3)
+- Plus old URLs returning 404: `/directory`, `/developer-guides/custom-collectors`, `/genai` is unchanged (still at /genai post-DOC-082; will move under DOC-131).
+
+## How to `/review` this batch
+
+```
+/review batch:feature/docs-bigbatch-2026-05-06
+```
+
+The batch is large — 7 items, 8 doc commits, plus the odd-team state branch. Recommend reviewing per-item rather than bulk; commit boundaries match item boundaries. Live-site verification is the load-bearing gate (Gate 8) for every item.
+
 # Progress Dashboard
 
 > **Retrospective extraction (Phase 2, 2026-05-01).** Structured per-incident retrospectives have been extracted to `retrospectives/LSN-NNN-{slug}.md`. Activity-log entries below remain as historical context — section headers that map to a structured retrospective carry a `→ LSN-NNN` pointer. See `retrospectives/README.md` for the LSN-by-gate index. The `state/log/YYYY-MM-DD.md` split planned by `adrs/drafts/refactor-to-pillar-architecture.md` is deferred to a later phase; for now this file remains the chronological history.

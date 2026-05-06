@@ -1,4 +1,56 @@
-# Last updated 2026-05-06 — `/review` for DOC-130 + DOC-131 + NAV-001 — three items closed, two editorial follow-ups logged
+# Last updated 2026-05-06 — `/implement batch:feature/docs-active-platform-features-polish-2026-05-06 + feature/state-doc139-doc140-2026-05-06` — DOC-139 + DOC-140 review-ready, PLT-008 draft accuracy folded
+
+User-invoked `/implement` with directive "please prepare a batch with as much items as feasible and possible from the implementation point of view". Backlog state at session start: **2 pending** (DOC-139 + DOC-140 — both small, both A2 intra-page coherence on active-platform-features sub-pages, both explicitly marked "Adjacent fold" candidates by their own backlog notes); 3 blocked (DOC-034 / DOC-046 / DOC-067 — DOC-034 partially superseded by DOC-083 review-ready collapse, but resolving inside this batch would either edit content DOC-083 will overwrite or expand scope into the new canonical home `developer-guides/api-reference.md#data-collaboration`; defer); 1 in-progress (DOC-138 Phase A awaiting user review of the ADR — cannot start Phase B). Maximal feasible batch is DOC-139 + DOC-140.
+
+Two-PR batch shipped on parallel branches:
+
+| Branch | Repo | Item | Commit |
+|---|---|---|---|
+| `feature/docs-active-platform-features-polish-2026-05-06` | documentation | DOC-139 — drop redundant `## Setting up alert types` H2 (5 lines + figure) on `docs/active-platform-features/alerting.md` after consumer-read confirmed Path A (NotificationSettings.tsx form contains exactly four halt-type controls; no separate subscription operation; the H2 was a Features.md-era survival) | `63d3510` |
+| `feature/docs-active-platform-features-polish-2026-05-06` | documentation | DOC-140 — rewrite `docs/active-platform-features/genai.md` L101 known-limitation bullet (Path B + folded factual fix). Drops dangling "warning admonition above" reference (DOC-086 collapsed `## Configuration` to canonical-home pointer; admonition does not exist on this page). Bullet now self-contained with inline mitigation + cross-link to canonical home. Folded fix: `url` field default corrected from "empty string" to `null` per `GenAIProperties.java:8-12` Read (matches DOC-089's canonical-home correction); "Three defaults" miscount dropped. | `a9d115b` |
+| `feature/state-doc139-doc140-2026-05-06` | odd-team | State bookkeeping (this entry + file-registry + DOC-139/DOC-140 frontmatter flips) + folded PLT-008 draft accuracy fix: corrected `baseUrl` runtime claim from "empty string (Java `String` field default)" to "`null` (Java reference-type field default — `String url;` has no initializer)"; revised Option A's `url = ""` POJO suggestion to leave `url` null + rely on Option B's `@NotBlank(WhenEnabled)`; updated cross-reference URLs to the post-DOC-131 paths (`/active-platform-features/genai`). Filing into GitHub remains a deliberate human action — this fix preserves draft status while ensuring the body is accurate when the operator acts. | (next commit on this branch) |
+
+## Items moved this run
+
+| ID | Status flip | Reason |
+|---|---|---|
+| DOC-139 | pending → **review-ready** | Path A (drop the H2) chosen via consumer-read of `NotificationSettings.tsx` (form contains only four halt-type AlertTypeRange controls; no subscription operation) + `DataEntityController.java:405-419` (the only endpoints wired to the Notification Settings button are `getAlertConfig` + `updateAlertConfig`, already documented in `## Halt notifications per entity`). Live-site URL for `/review` Gate 8: `https://docs.opendatadiscovery.org/active-platform-features/alerting`. |
+| DOC-140 | pending → **review-ready** | Path B (rewrite, no admonition restoration) chosen per AC recommendation: Cornerstone-5 — restoring the warning admonition would re-introduce the duplication DOC-086 explicitly removed. Folded factual fix on the `url` default ("empty string" → `null`) verified via Read of `GenAIProperties.java:8-12`. Sweep verification: 0 dangling-reference hits across `docs/active-platform-features/`. Live-site URL for `/review` Gate 8: `https://docs.opendatadiscovery.org/active-platform-features/genai`. |
+
+## Folded follow-ups (no new backlog items created)
+
+- **DOC-140 → genai.md `url` default factual fix** — trivial-fold-into-commit per `playbooks/follow-up-on-disk.md`. Bullet was already being rewritten; the "empty string" claim was post-DOC-089-stale; one-word fix shipped in the same commit.
+- **DOC-140 → PLT-008 draft accuracy fix** — same factual misclaim was carried forward into the upstream-issue draft. Single-file odd-team commit on the state branch; preserves draft status (`github_issue_url:` and `github_issue_number:` remain empty); ensures the body is accurate when filed.
+
+## Items not picked up
+
+- **DOC-034** (blocked, medium) — `## API surface` table cell on `odd-platform.md` for `/api/messages/{message_id}/url` claims `301 Redirect` but runtime is `HttpStatus.FOUND` (302). Excluded from this batch because **DOC-083 (review-ready)** has already collapsed the affected `## API surface` H3 on `odd-platform.md` to a one-line pointer at `developer-guides/api-reference.md#data-collaboration` (commit `efe5910` on `feature/docs-content-type-homing-api-reference`). Resolving DOC-034 inside this batch would either (a) edit content DOC-083 will overwrite, or (b) expand scope into the new canonical home `api-reference.md#data-collaboration` (which is a different file requiring its own consumer-read pass for the redirect status code). Recommended path: wait for DOC-083 to merge, then re-scope DOC-034 to fix the status-code claim on `developer-guides/api-reference.md` (or close as superseded if `api-reference.md`'s text is already accurate).
+- **DOC-046** (blocked, large) — full standalone Query Examples page; deferred per backlog status.
+- **DOC-067** (blocked, low) — needs UI screenshot capture from a deployed environment; not feasible from a docs-editing session.
+- **DOC-138** (in-progress, large) — Phase A ADR awaiting user approval before Phase B–F can start.
+
+## Counts (after this run)
+
+- `done`: unchanged.
+- `review-ready`: 0 → 2 (+ DOC-139, DOC-140).
+- `pending`: 2 → 0 (- DOC-139, DOC-140).
+- `in-progress`: unchanged at 1 (DOC-138 Phase A).
+- `blocked`: unchanged at 3 (DOC-034, DOC-046, DOC-067).
+- `done` / `superseded` / `rejected`: unchanged.
+- Total backlog: unchanged at 134.
+
+## Hand-off
+
+- **Run `/review` in a separate session** to verify DOC-139 + DOC-140 against the 10 Quality Bar gates. Live-site verification (Gate 8) requires WebFetch on the two affected URLs:
+  - `https://docs.opendatadiscovery.org/active-platform-features/alerting` — confirm the `## Setting up alert types` H2 no longer renders; the page transitions from the unenforced-distribution-anomaly admonition directly to `## API surface`.
+  - `https://docs.opendatadiscovery.org/active-platform-features/genai` — confirm the L101 bullet renders without "warning admonition above"; the cross-link to canonical config home resolves to `/configuration-and-deployment/odd-platform#genai-configuration`.
+- The `/review` editorial audit (run #8) re-audits the two batch-affected pages; both should flip A2 FAIL → PASS, taking A2 to 60/60 (100%) and the global per-axis pass-rate dashboard back to its peak after the 2026-05-06 baseline run.
+- **PLT-008 draft remains unfiled** — the fix in this batch ensures the draft body is accurate; the deliberate human-action of filing into GitHub is unchanged.
+- Backlog continues at 134; no new follow-ups created from this batch.
+
+---
+
+# Prior — 2026-05-06 — `/review` for DOC-130 + DOC-131 + NAV-001 — three items closed, two editorial follow-ups logged
 
 User-invoked `/review` with directive "all items" in a fresh post-`/clear` session. The three items in `review-ready` (DOC-130, DOC-131, NAV-001) all flip to `done`. Editorial audit (`playbooks/doc-product-editorial-read.md` seventh invocation) reaches **per-page baseline coverage 71 / 71 (100%) for the first time** since the framework was instated 2026-05-03 — 12 new pages baselined this run + 2 batch-affected pages re-audited; 2 new editorial follow-ups logged (DOC-139, DOC-140).
 

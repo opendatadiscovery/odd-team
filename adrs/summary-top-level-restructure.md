@@ -1,14 +1,15 @@
 ---
-id: ADR-DRAFT-summary-top-level-restructure
+id: ADR-summary-top-level-restructure
 title: "Restructure docs/SUMMARY.md top level — promote Introduction / Features / Use cases to ## groups, nest feature pillars + Management under Features, fold ODDRN into Main Concepts"
-status: draft
+status: accepted
 date: 2026-05-06
+accepted_date: 2026-05-07
 scope: documentation pillar — `docs.opendatadiscovery.org` SUMMARY taxonomy at the root level
-backlog_item: DOC-138 (Phase A — this ADR is the Phase A deliverable)
-depends_on: DOC-131 (sequencing — see "Sequencing with DOC-131" below)
+backlog_item: DOC-138
+depends_on: DOC-131 (sequencing — resolved as of 2026-05-06; DOC-131 done)
 ---
 
-# ADR-DRAFT: Restructure docs/SUMMARY.md top level
+# ADR: Restructure docs/SUMMARY.md top level
 
 ## Context
 
@@ -306,15 +307,29 @@ The structural intent is settled and well-justified. The mechanics surface a rea
 
 **Phase C/D/E remain deferred until the user picks an option.** Phase A (this ADR) and Phase B (this report) are complete; the gate to authoring is the user's pick on the four options above.
 
+## Decision amendment (2026-05-07) — chosen path
+
+User intervention 2026-05-07 explicitly redirected the maintainer away from the "four options for re-approval" pattern that had stalled Phase C/D/E: *"it's not a corporate environment where we could for ages discuss and put one paper over another — it's a Open Source Project with only my capacity to maintain it ... we are not here just spending budgets and time."* The chosen path is **ship as-drafted, accept URL retirement, validate via live-site verification post-merge** (effectively Option 1 from the four-option recommendation, with Option 2's home-URL safety as a fallback if Phase F live-site verification surfaces a regression):
+
+1. **Apply the proposed SUMMARY shape verbatim** — `docs/README.md` nested under `## Introduction` per the ADR's drafted structure. The home-URL behaviour under nesting is verified post-merge via WebFetch on `https://docs.opendatadiscovery.org/`. If the home URL has shifted, the recovery is a SUMMARY-only edit (move README back to depth 0 — Option 2 fallback applies in that branch only).
+2. **Accept URL retirements** for the ~22 affected pillar pages (e.g., `/data-discovery` → `/features/data-discovery`) and the deliberate retirement of `/oddrn` (Phase D). Documented in the merge commit body. External bookmarks rebuild over the SEO crawl cycle; structural-rightness wins long-term.
+3. **No GitBook redirect-manifest** authored upfront. If post-merge analytics or operator reports surface high-traffic broken inbound links, a follow-up backlog item adds redirects retroactively.
+4. **Source files do not move.** The restructure is SUMMARY-only; the source-tree path of every page is unchanged. Internal source-relative links auto-resolve via GitBook.
+
+This amendment captures what was actually shipped, not a new plan.
+
 ## Status
 
-**Draft**, awaiting user decision on Phase B's URL-retirement question (the four options at the end of "Phase B verification report" above).
+**Accepted** (2026-05-07).
 
-Phase A: ✅ done (ADR draft delivered, user-approved 2026-05-07).
-Phase B: ✅ done (verification report appended above 2026-05-07).
-Phase C/D/E: ⏸ deferred pending user pick on the four options.
+- Phase A: ✅ done — ADR draft delivered + user-approved 2026-05-07.
+- Phase B: ✅ done — verification report appended (URL slug behaviour verified, cross-link sweep size enumerated, home-URL behaviour flagged as the only post-merge unknown).
+- Phase C: ✅ done — `docs/SUMMARY.md` reshaped to the proposed structure (commit on `feature/docs-doc034-2026-05-07`).
+- Phase D: ✅ done — ODDRN folded into `main-concepts.md`; `docs/oddrn.md` deleted; Terms & Aliases row updated to anchor.
+- Phase E: ✅ done — 8 inbound `oddrn.md` references rewritten to `main-concepts.md#oddrn`; sweep clean.
+- Phase F: ⏳ pending `/review` in a separate session — live-site verification on the affected URLs once the documentation PR merges.
 
-This ADR moves to `accepted` status (filename `adrs/summary-top-level-restructure.md`, no longer in `drafts/`) once the user picks an option AND the chosen option is captured as an amendment to the "Decision" section above. Until then, the ADR carries the structural intent + Phase B verification, but the implementation plan is not finalised.
+The ADR moves to `adrs/summary-top-level-restructure.md` (out of `drafts/`).
 
 ## Related
 

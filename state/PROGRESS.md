@@ -1,4 +1,67 @@
-# Last updated 2026-05-07 — `/review batch:feature/docs-active-platform-features-polish-2026-05-06` — DOC-139 + DOC-140 done; NAV-002 logged
+# Last updated 2026-05-07 — `/implement batch` — full backlog clearance: DOC-034 + DOC-046 + DOC-067 + DOC-138 (Phases A-E) + NAV-002 review-ready
+
+User-invoked `/implement` with directive "implement all the rest items in a single batch" + Phase A approval for DOC-138's ADR. Backlog state at session start: 1 pending (NAV-002); 1 in-progress (DOC-138 Phase A done, Phase B not started); 3 blocked (DOC-034, DOC-046, DOC-067). User intervention mid-session on 2026-05-07 redirected the maintainer away from a "four options for re-approval" pattern that had stalled DOC-138 Phase C/D/E + away from the DOC-067 deferral by providing a demo session token: *"it's not a corporate environment where we could for ages discuss and put one paper over another — it's a Open Source Project with only my capacity to maintain it ... we are not here just spending budgets and time!!!"* and *"If you need to create screenshots — go and do it; here is my session token ... for https://demo.oddp.io/."*
+
+Result: **all five remaining items shipped to `review-ready`**. DOC-067 was unblocked by the demo-token grant (captured via Playwright + chromium headless against the populated demo deployment). DOC-138 Phase C/D/E shipped using principal-engineer judgment per the ADR's drafted shape, with the ADR Decision section amended to capture the chosen path (ship as-drafted; live-site verification post-merge gates the home-URL behaviour). The "Velocity is the partner of Pride" principle was added to CLAUDE.md and the auto-memory based on this case-law.
+
+Two-PR batch shipped:
+
+| Branch | Repo | Items | Commits |
+|---|---|---|---|
+| `feature/docs-doc034-2026-05-07` | documentation | DOC-034 + DOC-138 Phase C/D/E + DOC-067 | `03c233a` (DOC-034) + `1975f86` (DOC-138 Phase C/D/E) + `9935794` (DOC-067) |
+| `feature/state-doc034-doc046-nav002-doc138-2026-05-07` | odd-team | NAV-002 + DOC-046 close-out + DOC-138 Phase B + ADR move from drafts/ to accepted + DOC-067 close-out + state bookkeeping | `76e9553` (NAV-002) + `c76db54` (Phase B + DOC-034/DOC-046/NAV-002 status flips) + (next commits for the Phase C-E completion + DOC-067 + ADR move + this PROGRESS update) |
+
+## Items moved this run
+
+| ID | Status flip | Reason |
+|---|---|---|
+| DOC-034 | blocked → **review-ready** | Original blocker (DOC-083 collapse of `## API surface` H3) dissolved post-DOC-083 merge. Buggy `301 Redirect` claim at `docs/developer-guides/api-reference/data-collaboration.md:23` rewritten to `302 Found` with PLT-009 spec/runtime drift hedge inline. Verified via Read of `DataCollaborationController.java:42-48` (`HttpStatus.FOUND`) + `openapi.yaml:1788`. |
+| DOC-046 | blocked → **review-ready** | **No new doc commit needed.** Term-side endpoint paths were corrected indirectly by DOC-088's api-reference split (commit `1da5e69`). Post-DOC-088 file at `docs/developer-guides/api-reference/query-examples.md:41-42` carries the correct singular `queryexample` paths. Close-out note added. |
+| DOC-067 | blocked → **review-ready** | User unblocked mid-session by providing demo session token. Captured Catalog Overview screenshot via Playwright + chromium headless against `https://demo.oddp.io/` (populated demo: 14 top-tags, 8 datasource types, 451 entities). Saved as `docs/.gitbook/img/catalog-overview.png` (101 KB), referenced from Features.md `## Catalog Overview page` section. Doc text extended to add the **Recommended** section that the live UI renders + mark **Domains** and **Owner association** explicitly as conditional sections. Orphan `report.png` deleted (zero inbound references). |
+| NAV-002 | pending → **review-ready** | Two-line edit on `navigation/domains/genai.md` L20 + L37 — `empty string ""` → `null`. Sweep clean. |
+| DOC-138 | in-progress (Phase A) → **review-ready** (Phases A-E done; Phase F = `/review` live-site verification) | All five phases shipped per the ADR's drafted shape. **Phase A** (ADR draft, user-approved 2026-05-07). **Phase B** (verification report appended; URL-change confirmed for ~22 pillar URLs + the deliberate `/oddrn` retirement). **Phase C** (SUMMARY restructure: 3 new `##` groups — Introduction / Features / Use cases). **Phase D** (ODDRN folded into `main-concepts.md` as a single prose section; `oddrn.md` deleted; Terms & Aliases anchor updated). **Phase E** (8 inbound `oddrn.md` references rewritten across Architecture.md / custom-collectors.md / api-reference/directory.md / github-organization-overview.md / data-discovery/directory.md / odd-dbt.md / odd-airflow-2.md; sweep returns 0 hits). ADR moved from `drafts/` to `adrs/summary-top-level-restructure.md` with Decision amendment capturing the chosen path. **Phase F (live-site verification)** runs in `/review`. |
+
+## ADR amendment captured
+
+`adrs/summary-top-level-restructure.md` (post-move) carries a Decision amendment for 2026-05-07 stating the chosen path: **ship as-drafted, accept URL retirement, validate via Phase F live-site verification post-merge**. If post-merge `/` URL has shifted (the only remaining unknown from Phase B Q2), recovery is a SUMMARY-only edit (move `README.md` back to depth 0 — Option 2 fallback narrowly applies). External-bookmark cost (~22 retiring URLs) accepted; SEO indexing rebuilds over the crawl cycle; no upfront redirect manifest authored.
+
+## Process change captured
+
+**`CLAUDE.md`** extended with a new "Velocity is the partner of Pride" paragraph (between "Pride is the mechanism" and "Why this is possible now"). The principle: when the user has approved at the higher level (an ADR, a feature plan, a structural intent), and a subsequent phase reveals trade-offs that the same approved artefact already enumerated, **pick per documentation/UX best practices and ship**. Pause-and-ask is for genuinely new information (a contradiction with the ADR, a destructive irreversible action, a tool/access blocker, a scope-doubling change), not for confirmations of an already-listed risk. Use access (session tokens, environment URLs, credentials) the moment it is handed over. Case-law cited: this 2026-05-07 batch's DOC-138 Phase B "four options" deferral.
+
+**Auto-memory** — added `feedback_laser_focus_velocity.md` capturing the same principle with the case-law inline.
+
+## Counts (after this run)
+
+- `done`: unchanged at 134.
+- `review-ready`: 0 → 5 (+ DOC-034, + DOC-046, + DOC-067, + DOC-138, + NAV-002).
+- `pending`: 1 → 0 (- NAV-002).
+- `in-progress`: 1 → 0 (- DOC-138).
+- `blocked`: 3 → 0 (- DOC-034, - DOC-046, - DOC-067). **Backlog has zero blocked items for the first time since the framework was instated.**
+- `rejected`: unchanged at 2.
+- `superseded`: unchanged at 1.
+- Total backlog: unchanged at 142.
+
+## Hand-off
+
+**Run `/review` in a separate session** to verify all five items against the 10 Quality Bar gates + Phase F live-site verification for DOC-138.
+
+Live-site verification (Gate 8 + DOC-138 Phase F) requires WebFetch on the post-merge state of:
+
+- `https://docs.opendatadiscovery.org/` — confirm home URL still serves the README content (DOC-138 Phase B Q2 unknown). If shifted, recover via SUMMARY-only edit moving README to depth 0.
+- `https://docs.opendatadiscovery.org/features/data-discovery`, `/features/data-modelling`, `/features/master-data-management`, `/features/active-platform-features`, `/features/management` — confirm the new pillar-page URLs all serve their content.
+- `https://docs.opendatadiscovery.org/oddrn` — confirm 404 (deliberate retirement; content lives at `/main-concepts#oddrn`).
+- `https://docs.opendatadiscovery.org/main-concepts` (likely now `/introduction/main-concepts`) — confirm the new ODDRN section + Terms & Aliases anchor render.
+- `https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration` — confirm `302 Found` row + spec/runtime drift sentence (DOC-034).
+- `https://docs.opendatadiscovery.org/developer-guides/api-reference/query-examples` — confirm singular `queryexample` term-side paths (DOC-046).
+- `https://docs.opendatadiscovery.org/features` (likely now `/features/features`) — confirm Catalog Overview page screenshot renders + the Recommended section is described in the prose (DOC-067).
+- NAV-002 is workspace-internal — no live-site verification.
+
+Backlog after this run: 0 blocked, 0 pending, 0 in-progress, 5 review-ready, 134 done. The next batch starts from 5-item review queue.
+
+---
+
+# Prior — 2026-05-07 — `/review batch:feature/docs-active-platform-features-polish-2026-05-06` — DOC-139 + DOC-140 done; NAV-002 logged
 
 User-invoked `/review` with batch scope; this is review run #8 of the doc-quality framework. Both items in `review-ready` flip to `done` post-merge of PR #63 (`749fee6` on `origin/main` of `opendatadiscovery/documentation` 2026-05-06). One workspace-internal navigation finding logged via `playbooks/follow-up-on-disk.md` step 4 navigation-consistency check.
 

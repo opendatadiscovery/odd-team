@@ -17,7 +17,7 @@ AI-powered question answering — proxies natural language questions to an exter
 
 ### Configuration (application.yml lines 17-20)
 - `genai.enabled` — feature toggle (default: false)
-- `genai.url` — external AI service URL (Java field default: empty string `""`; commented application.yml example: `http://localhost:5000`)
+- `genai.url` — external AI service URL (Java field default: `null` — `String url;` has no initializer in `GenAIProperties.java:10`; commented application.yml example: `http://localhost:5000`)
 - `genai.request_timeout` — timeout in minutes (Java primitive default: `0` → `Duration.ofMinutes(0)` = immediate timeout; commented application.yml example: `2`)
 
 ### Exception handler
@@ -34,7 +34,7 @@ AI-powered question answering — proxies natural language questions to an exter
 
 ## Caveats (consumer-read audit, 2026-04-30)
 
-- `genai.url` defaults to empty string (Java field default). Documented + flagged for upstream fix (PLT-008).
+- `genai.url` defaults to `null` (no field initializer — JVM reference-type default). Documented + flagged for upstream fix (PLT-008).
 - `genai.request_timeout` defaults to 0 (Java primitive default) → `Duration.ofMinutes(0)` immediate timeout. Documented + flagged for upstream fix (PLT-008).
 - `application.yml:19-20` commented examples (`http://localhost:5000`, `2`) look like defaults but are not — same misframing class as DOC-077 (spring.custom-datasource) and DOC-008 (MinIO region).
 - No authentication added by the platform on outbound calls.

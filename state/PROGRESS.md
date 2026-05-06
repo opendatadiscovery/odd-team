@@ -1,4 +1,65 @@
-# Last updated 2026-05-06 — `/implement batch:feature/docs-active-platform-features-polish-2026-05-06 + feature/state-doc139-doc140-2026-05-06` — DOC-139 + DOC-140 review-ready, PLT-008 draft accuracy folded
+# Last updated 2026-05-07 — `/review batch:feature/docs-active-platform-features-polish-2026-05-06` — DOC-139 + DOC-140 done; NAV-002 logged
+
+User-invoked `/review` with batch scope; this is review run #8 of the doc-quality framework. Both items in `review-ready` flip to `done` post-merge of PR #63 (`749fee6` on `origin/main` of `opendatadiscovery/documentation` 2026-05-06). One workspace-internal navigation finding logged via `playbooks/follow-up-on-disk.md` step 4 navigation-consistency check.
+
+## Items moved this run
+
+| ID | Status flip | Reason |
+|---|---|---|
+| DOC-139 | review-ready → **done** | All 10 Quality Bar gates PASS. Gate 4 consumer-read re-verified via Read of NotificationSettings.tsx:50/77-79/81-100 (exactly four AlertTypeRange controls; only `updateDataEntityAlertsConfig` dispatched on submit; modal copy "Select the type of notifications and the period for which you want to disable notifications" — purely halt config) + DataEntityController.java:404-421 (`getAlertConfig` + `updateAlertConfig`, the only Notification-Settings-button-wired endpoints, both already documented in `## Halt notifications per entity`). Gate 8 live-site WebFetch on `https://docs.opendatadiscovery.org/active-platform-features/alerting` confirmed `## Setting up alert types` H2 + figure absent; H2 sequence renders as Alert types → Alert views → Alert lifecycle → Backwards-incompatible schema → Halt notifications per entity → API surface → Where to next; no `github.com/.../blob/main/...` fallback substring (only GitBook's standard "Edit on GitHub" + commit-footer chrome per `retrospectives/LSN-004` precedent). Gate 10 PASS — intra-page redundancy A2 sub-shape resolved; canonical-home discipline preserved. |
+| DOC-140 | review-ready → **done** | All 10 Quality Bar gates PASS. Gate 4 consumer-read re-verified via Read of GenAIProperties.java:8-12 (three private fields, no initializers; `String url` → JVM reference-type default `null`; `int requestTimeout` → JVM primitive default `0`; `boolean enabled` → JVM default `false`). Gate 8 live-site WebFetch on `https://docs.opendatadiscovery.org/active-platform-features/genai` confirmed L101 bullet starts with "**`@ConfigurationProperties` defaults bite when only `genai.enabled` is set.**" (no "Three" miscount); phrase "warning admonition above" absent; `url` default rendered as "null" not "empty string"; cross-link to "Configure ODD Platform → GenAI Configuration" with rendered href `/configuration-and-deployment/odd-platform#genai-configuration` resolves HTTP 200 directly with no GitHub-fallback substring. Gate 9 cross-doc claim (canonical home `odd-platform.md#genai-configuration` L1021-1025 says `url` default = `null`) re-verified via `sed -n '1015,1035p'`. Gate 10 PASS — Cornerstone 5 enforced (configuration-reference content lives on canonical home; feature page links rather than embeds). PLT-008 state-side fix (commit `512b1d9`) independently verified via grep — L18 reads `null`, L87 reads `private String url; // leave as null`, L117 cross-references the post-DOC-131 paths. |
+
+## Items added this run
+
+| ID | Status | Priority | Source | Reason |
+|---|---|---|---|---|
+| **NAV-002** | pending | low | discovered-during-review-batch-feature-docs-active-platform-features-polish-2026-05-06-navigation-consistency-check | `/review` step 4 caught `navigation/domains/genai.md` L20 + L37 still claiming `genai.url` Java field default = "empty string" after DOC-089 (canonical home, 2026-05-03) and DOC-140 (feature page, 2026-05-06) corrected the same misclaim on the published-doc surface. Same workspace-internal staleness shape as NAV-001 (lookup-tables.md path lag) but on a factual claim. Single-file 2-line edit. Does not block DOC-140's flip — published doc is correct; workspace navigation pointer is workspace-internal staleness logged for the next state-side bookkeeping batch. Verified via Read of GenAIProperties.java:8-12 confirming `String url;` has no initializer. |
+
+## Doc-product editorial audit summary (run #8)
+
+The eighth invocation of `playbooks/doc-product-editorial-read.md` re-audits the 2 batch-affected pages (alerting.md, genai.md). Per-page baseline carries forward at 71/71 (100%) — established in run #7. Both batch-affected pages had A2 FAILs from run #7 (DOC-139 + DOC-140 — surfaced by run #7 itself); both flip FAIL→PASS this run as DOC-139 + DOC-140 close. **A2 axis reaches 100% (60/60) for the first time since the framework was instated 2026-05-03** — both newly-logged A2 FAILs from run #7 close in run #8.
+
+Per-axis pass rates after run #8:
+
+| Axis | Pass rate | Notes |
+|---|---|---|
+| A1 Canonical-home | 60/60 (100%) | unchanged |
+| A2 Intra-page coherence | **60/60 (100%)** | **DOC-139 + DOC-140 closed this run; A2 reaches 100% for the first time** |
+| A3 Cross-page coherence | 58/58 (100%) | unchanged |
+| A4 Reference integrity | 57/60 (95%) | unchanged (DOC-117 + DOC-109 pre-existing) |
+| A5 Claim provenance | 60/60 (100%) | unchanged |
+| A6 Operator depth | 19/19 (100%) | unchanged |
+| A7 Reader-flow | 60/60 (100%) | unchanged |
+| A8 Vocabulary consistency | 59/59 (100%) | unchanged |
+| A9 Audience completeness | 39/40 (98%) | unchanged (DOC-109 pre-existing) |
+| A10 IA placement | 59/59 (100%) | unchanged |
+| A11f Bidirectional code↔doc fidelity (forward) | 60/60 (100%) | unchanged |
+| A12 Prose and rendering | 60/60 (100%) | unchanged |
+
+**Open editorial FAILs after run #8** (2 distinct DOC items): DOC-109 (pre-existing pending), DOC-117 (pre-existing pending). **Closed this run** (2 items): DOC-139 + DOC-140. **New FAILs logged this run**: 0 on the published doc tree. **Workspace-internal finding**: NAV-002 (not counted against any per-axis dashboard cell — workspace-internal navigation pointer staleness, not a published-doc finding).
+
+The framework's eighth invocation closes its own findings: the two A2 sub-shapes surfaced in run #7 (DOC-114 case-law extensions) close cleanly in run #8 with consumer-read verification + canonical-home cross-linking + factual fact-check folding. The systematic per-page walk + per-item Quality Bar gates compose into a self-cleaning loop. Code-side coverage (axis A11-reverse) remains the next open frontier; the 8 catalogues table at the bottom of `state/doc-quality-coverage.md` is unchanged.
+
+## Counts (after this run)
+
+- `done`: +2 (DOC-139, DOC-140) — direct count post-run = 134.
+- `review-ready`: 2 → 0 (- DOC-139, - DOC-140; both → done).
+- `pending`: 0 → 1 (+ NAV-002).
+- `in-progress`: unchanged at 1 (DOC-138 Phase A).
+- `blocked`: unchanged at 3 (DOC-034, DOC-046, DOC-067).
+- `rejected`: unchanged at 2.
+- `superseded`: unchanged at 1.
+- Total backlog: 141 → 142 (+ NAV-002). **Note**: prior `/implement` PROGRESS entry on 2026-05-06 mis-stated the total as 134 (it was tracking the `done` count, not the total). Direct `find backlog -name '*.md' -not -name 'README*' | xargs awk -F': ' '/^status:/ {print $2}' | sort | uniq -c` post-run gives 134 done + 1 pending + 1 in-progress + 3 blocked + 2 rejected + 1 superseded = 142 total.
+
+## Hand-off
+
+- **NAV-002 queued** for the next state-side bookkeeping batch (or fold into the next `/implement` batch's odd-team state branch if a doc-side item touches the same workspace concern).
+- **DOC-138** (in-progress, large) — Phase A ADR awaiting user approval before Phase B–F can start; unchanged.
+- Backlog at 135; pending pool: 1 (NAV-002 only); review-ready pool: 0.
+
+---
+
+# Prior — 2026-05-06 — `/implement batch:feature/docs-active-platform-features-polish-2026-05-06 + feature/state-doc139-doc140-2026-05-06` — DOC-139 + DOC-140 review-ready, PLT-008 draft accuracy folded
 
 User-invoked `/implement` with directive "please prepare a batch with as much items as feasible and possible from the implementation point of view". Backlog state at session start: **2 pending** (DOC-139 + DOC-140 — both small, both A2 intra-page coherence on active-platform-features sub-pages, both explicitly marked "Adjacent fold" candidates by their own backlog notes); 3 blocked (DOC-034 / DOC-046 / DOC-067 — DOC-034 partially superseded by DOC-083 review-ready collapse, but resolving inside this batch would either edit content DOC-083 will overwrite or expand scope into the new canonical home `developer-guides/api-reference.md#data-collaboration`; defer); 1 in-progress (DOC-138 Phase A awaiting user review of the ADR — cannot start Phase B). Maximal feasible batch is DOC-139 + DOC-140.
 

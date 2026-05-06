@@ -1,6 +1,6 @@
 ---
 id: ADR-DRAFT-summary-top-level-restructure
-title: "Restructure docs/SUMMARY.md top level — promote Overview / Features / Use cases to ## groups, nest feature pillars + Management under Features, fold ODDRN into Main Concepts"
+title: "Restructure docs/SUMMARY.md top level — promote Introduction / Features / Use cases to ## groups, nest feature pillars + Management under Features, fold ODDRN into Main Concepts"
 status: draft
 date: 2026-05-06
 scope: documentation pillar — `docs.opendatadiscovery.org` SUMMARY taxonomy at the root level
@@ -42,7 +42,7 @@ The proposal aligns the top level on a single shape — **every depth-0 node is 
 Accept the proposal. The new top-level shape is:
 
 ```
-## Overview
+## Introduction
 * [Overview](README.md)                    ← group landing (same shape as integrations/README.md)
 * [Main Concepts](main-concepts.md)        ← absorbs ODDRN content; oddrn.md deleted
 * [Architecture](Architecture.md)
@@ -84,9 +84,13 @@ Accept the proposal. The new top-level shape is:
 
 The decision is to accept this shape pending Phase B verification of three open implementation questions (see "Open questions" below). The structural intent is settled by this ADR; Phase B answers determine the exact mechanics (URL slugs, README-as-home behaviour, cross-link sweep size).
 
+### Group-name convention
+
+The pattern across the existing `##` groups is **group = the topic, first page = "Overview" of that topic** (`## Integrations` → `[Overview](integrations/README.md)`). Applying that pattern at the orientation level: the first group's first page is `[Overview](README.md)`; the group itself names the topic that page overviews. **The group name `Introduction`** was chosen during Phase A drafting (user feedback 2026-05-06) over alternatives (`## Overview` / `## Open Data Discovery` / `## Solution at first glance` / `## The platform`). `## Overview` was rejected because `Overview → Overview` reduplicates and tells a first-time visitor nothing — group names should describe what's *inside*, not restate the type of content. `Introduction` is the formal-doc-convention reading; it scans cleanly with `Overview / Main Concepts / Architecture` underneath; it does not collide with the "ODD Platform" component name (which is one of several components on `main-concepts.md`); and it does not lock the tone to marketing copy.
+
 ### Why each piece is sound
 
-- **`## Overview` group** — orientation content (home page + Main Concepts + Architecture) clusters together rather than scattering at root. Mirrors the existing `## Integrations` / `## Configuration and Deployment` / `## Developer Guides` pattern; same convention as `[Overview](integrations/README.md)` for the group's landing. The reader who lands on the home page sees the orientation set co-located.
+- **`## Introduction` group** — orientation content (home page + Main Concepts + Architecture) clusters together rather than scattering at root. Mirrors the existing `## Integrations` / `## Configuration and Deployment` / `## Developer Guides` pattern; same convention as `[Overview](integrations/README.md)` for the group's landing. The reader who lands on the home page sees the orientation set co-located.
 
 - **`## Features` group with feature pillars + Management nested** — today the four feature-pillar landings (`data-discovery.md`, `data-modelling.md`, `master-data-management.md`, `active-platform-features.md`) and `management.md` sit at SUMMARY top level **as peers of `main-concepts.md` and `Architecture.md`**. That is a Cornerstone-2 hierarchy-depth violation: a feature-pillar landing is not a conceptual peer of the platform-vocabulary surface. DOC-082 patched local drifts; DOC-131 carved out the active-platform-features pillar; this ADR finishes the Cornerstone-2 alignment at the root.
 
@@ -108,9 +112,9 @@ Accepting the proposal **may** change the URLs of the moved pages (e.g., `/data-
 
 ### 2. README-as-home vs. README-as-group-landing
 
-`docs/README.md` today is the home page served at `https://docs.opendatadiscovery.org/`. The proposal nests it under `## Overview` as the group's landing. Two questions follow: (a) does the home URL still resolve at `/` after this nesting? (b) if not, where does the user landing on `/` go?
+`docs/README.md` today is the home page served at `https://docs.opendatadiscovery.org/`. The proposal nests it under `## Introduction` as the group's landing. Two questions follow: (a) does the home URL still resolve at `/` after this nesting? (b) if not, where does the user landing on `/` go?
 
-The convention exists today — `integrations/README.md` is the `## Integrations` group's landing and renders at `https://docs.opendatadiscovery.org/integrations/integrations`. Applying the same shape to `docs/README.md` under `## Overview` is structurally consistent. The behavioural unknown is whether GitBook treats the *root* `README.md` differently from a *subdirectory* `README.md`.
+The convention exists today — `integrations/README.md` is the `## Integrations` group's landing and renders at `https://docs.opendatadiscovery.org/integrations/integrations`. Applying the same shape to `docs/README.md` under `## Introduction` is structurally consistent. The behavioural unknown is whether GitBook treats the *root* `README.md` differently from a *subdirectory* `README.md`.
 
 **Resolution path**: Phase B Question 2. Same gate as trade-off 1 — accept the structural intent now, verify the mechanics in Phase B before any SUMMARY edit.
 
@@ -141,7 +145,7 @@ The pattern across these three groups is the ground truth. If the slugs include 
 
 ### Question 2 — README-as-group-landing rendering at the root URL
 
-**Background**: `docs/README.md` is the home URL today. The proposal nests it under `## Overview` as the group's landing.
+**Background**: `docs/README.md` is the home URL today. The proposal nests it under `## Introduction` as the group's landing.
 
 **Question**: After the nesting, does `docs/README.md` still render at `https://docs.opendatadiscovery.org/` (the root URL), or does its URL change?
 
@@ -149,7 +153,7 @@ The pattern across these three groups is the ground truth. If the slugs include 
 - `docs/integrations/README.md` → `https://docs.opendatadiscovery.org/integrations/integrations` (verified during the 2026-05-06 review batch)
 - The behaviour for a *root* `README.md` under a `##` group is the unknown. Since `docs/README.md` is at the top of the source tree, the URL likely stays `/` even after SUMMARY nesting (the source-tree path is what determines the URL slug, not the SUMMARY position) — but verify before relying.
 
-**Answer determines**: whether the home URL stability is preserved (proposal proceeds) or changes (compensating action: keep `README.md` outside the `## Overview` group, or accept the home URL change with a redirect strategy).
+**Answer determines**: whether the home URL stability is preserved (proposal proceeds) or changes (compensating action: keep `README.md` outside the `## Introduction` group, or accept the home URL change with a redirect strategy).
 
 ### Question 3 — Cross-link sweep enumeration
 

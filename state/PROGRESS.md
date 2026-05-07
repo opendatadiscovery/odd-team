@@ -1,4 +1,55 @@
-# Last updated 2026-05-07 — `/review DOC-150` — DOC-150 done; editorial audit surfaced DOC-154 (reverse-link inventory under-counted by ~16 sites)
+# Last updated 2026-05-07 — `/implement` batch — DOC-149 + DOC-151 + DOC-152 + DOC-153 + DOC-154 → review-ready; pending-queue cleared
+
+User-invoked `/implement all the remaining items in the backlog in one go` after `/review DOC-150` completed. All five remaining `pending` docs items shipped on `feature/docs-doc149-cleanup-batch-2026-05-07` (documentation repo) under the post-DOC-150 cornerstone authority. Five-commit batch (one per item ID) on a single branch, single PR.
+
+## What shipped
+
+- **DOC-149** (high) — Reverse-link cleanup across Data Discovery + Data Lineage subtree (5 files, 22 instances + 1 H2 section). `data-discovery.md` `## Other Data Discovery features` H2 (L22-35) removed entirely (Option C — let Features.md remain canonical home for inline-on-Features features). L9 narrative + L56 Where-to-next rewritten as non-link. Detail-page reverse-links (`search.md`, `tagging.md`, `groups-domains.md`, `data-objects.md`) all rewritten — non-link prose where the surface didn't have a forward target; cross-links to canonical bucket-landing homes where it did (e.g., `data-objects.md` ML experiments → `groups-domains.md#relationship-to-ml-experiments`).
+- **DOC-154** (high) — Gap-closure cleanup beyond DOC-149 (16 sites across 11 files). `management.md` `## Other Management surfaces` H2 (L31-37) bullet titles unwrapped from Features.md reverse-links; description forward-links to canonical config-side homes preserved (s2s.md, odd-platform.md, collectors-secrets-backend.md). API-reference `glossary.md` L22 stale Features.md reference rewritten; `alerts.md` L53 distribution-anomaly-halt admonition link re-targeted to `active-platform-features/alerting.md` (canonical home per Cornerstone 5). Configuration / use-case / main-concepts.md sites all re-targeted to bucket-landing canonical homes or rewritten as non-link inline references.
+- **DOC-151** (medium) — `tagging.md` "four `TAG_*` RBAC permissions" → "three `TAG_*` RBAC permissions"; table trimmed to three actual permissions (TAG_CREATE / TAG_UPDATE / TAG_DELETE per `components.yaml:158-260`). Separate sentence after the table for `TAG_ASSIGNMENT_UPDATED` activity-event marker (per `components.yaml:3167-3197` ActivityEventType enum). Mirror fix on `Features.md` L93 + `tagging.md` L63 Where-to-next bullet. Reference shape: `business-glossary.md` L49-61.
+- **DOC-152** (low) — `Architecture.md` L38 search-facet enumeration aligned with `data-discovery/search.md` L19-27 (post-DOC-142 canonical home): seven facets — Datasource, Type, Namespace, Owner, Tag, Groups, Statuses (was: "entity class, data source, namespace, owner, tag, type, group" — conflated entity-class tab strip with a facet, missed Statuses). Cross-link added Architecture.md → search.md.
+- **DOC-153** (low) — Six-pillar differentiation consolidated to `main-concepts.md` `## Data Governance map → Pillar differentiation` (Option A). Five pillar landings (`data-discovery.md`, `data-quality.md`, `data-lineage.md`, `data-glossary.md`, `master-data-management.md`) replaced their `Why this is a separate pillar` sections with a single-sentence cross-link plus a one-line pillar-specific hook. `data-modelling.md` had no analogous section — left as-is. Drift-by-construction now impossible.
+
+Verification: `grep -rn 'Features\.md#' docs/ | grep -v 'docs/Features\.md:' | grep -v 'docs/SUMMARY\.md:'` returns clean — no reverse-links to Features.md anchors remain on any surface below the index.
+
+## Counts (after this run)
+
+- `done`: 143 (unchanged — pending review).
+- `review-ready`: 0 → **5** (+5: DOC-149, DOC-151, DOC-152, DOC-153, DOC-154).
+- `pending`: 5 → **0** (-5: all flipped to review-ready).
+- `in-progress`: unchanged at 0.
+- `blocked`: 5 (unchanged — DOC-141..145 still flagged blocked; once DOC-149 lands and is `done`, those should re-flow through `/review` because their original Gate 7 reverse-link defect is fixed by DOC-149).
+- `rejected`: unchanged at 2.
+- `superseded`: unchanged at 1.
+- Total backlog: 156 (unchanged — no new items logged this run).
+
+## Hand-off
+
+**This batch ships to a single PR pending review.**
+
+- Documentation repo PR — push complete on `feature/docs-doc149-cleanup-batch-2026-05-07`. PR creation URL: `https://github.com/opendatadiscovery/documentation/pull/new/feature/docs-doc149-cleanup-batch-2026-05-07`. (gh CLI not installed in this session; the maintainer or `/review` can open the PR through the GitHub web UI.)
+- odd-team repo PR — pushed on `feature/state-doc149-cleanup-batch-2026-05-07` for the bookkeeping (DOC-149/151/152/153/154 frontmatter + this PROGRESS.md update).
+- **Next step**: `/review DOC-149` (or `/review batch:feature/docs-doc149-cleanup-batch-2026-05-07`) in a separate session — per-item Quality Bar gates with cited evidence, live-site verification on each affected page (URLs listed in the documentation PR body), and the doc-product editorial audit per `playbooks/doc-product-editorial-read.md`. Five items in `review-ready` — review-ready batch is the largest single review surface this workspace has seen.
+- **Coupled effect on DOC-141..145**: DOC-149's reverse-link removal resolves the Gate 7 IA-coherence failures that left those items `blocked`. After `/review DOC-149` flips it to `done`, DOC-141..145 should re-enter `/review` to confirm the underlying defect is fixed (they should flip from `blocked` to either `done` directly or `review-ready` if a re-review is wanted). Surface this to `/review` rather than auto-flipping here.
+
+## Sources footer (this run)
+
+```
+Sources:
+- Cornerstone (just shipped 2026-05-07): pillars/documentation/cornerstones.md L22-37 (commit e94aa1e, DOC-150)
+- Canonical homes: pillars/documentation/canonical-homes.md L18 (Feature description cross-link direction)
+- Spec (DOC-151): odd-platform/odd-platform-specification/components.yaml:158-260 Permission enum + :3167-3197 ActivityEventType enum
+- Reference shape (DOC-151): docs/data-glossary/business-glossary.md L49-61 (TERM_* + TERM_ASSIGNMENT_UPDATED canonical handling)
+- Canonical home (DOC-152): docs/data-discovery/search.md L19-27 (post-DOC-142, on origin/main 2026-05-07)
+- Failure-shape (DOC-153): playbooks/doc-product-editorial-read.md "parallel content with drift potential"
+- Verification: `grep -rn 'Features\.md#' docs/` post-batch returns 0 hits outside Features.md / SUMMARY.md
+- Backlog: DOC-149 (review-ready), DOC-151 (review-ready), DOC-152 (review-ready), DOC-153 (review-ready), DOC-154 (review-ready); DOC-150 (done — predecessor cornerstone)
+- Case-law cited: retrospectives/LSN-012-cornerstone-codified-wrong-pattern.md
+```
+
+---
+
+# Prior — 2026-05-07 — `/review DOC-150` — DOC-150 done; editorial audit surfaced DOC-154 (reverse-link inventory under-counted by ~16 sites)
 
 User-invoked `/review DOC-150` after PR #116 merged (`feature/state-doc150-cornerstone-no-reverse-links-2026-05-07`). Per-item gates all PASS (state-repo cornerstone update — N/A on Gates 2/3/4/5/6/8; PASS on Gates 1/7/9/10). Verdict block appended to `backlog/docs/DOC-150.md`.
 

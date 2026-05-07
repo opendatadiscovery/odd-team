@@ -59,6 +59,27 @@ Live-site verification (Gate 8 + DOC-138 Phase F) requires WebFetch on the post-
 
 Backlog after this run: 0 blocked, 0 pending, 0 in-progress, 5 review-ready, 134 done. The next batch starts from 5-item review queue.
 
+## Backlog logged 2026-05-07 (post-screenshot batch)
+
+User directive 2026-05-07: enrich Data Discovery with dedicated feature pages + create new Data Lineage / Data Glossary / Data Quality pillars; preserve "Active platform features and Management at the bottom" ordering. **7 new backlog items logged** (umbrella + 6 decomposition items):
+
+| ID | Scope | Effort |
+|---|---|---|
+| **DOC-141** | Umbrella — IA refactor sprint coordination + target SUMMARY shape under `## Features` (Discovery → Modelling → Master Data → Quality → Lineage → Glossary → Active Platform Features → Management) | large |
+| DOC-142 | Carve out Search and Filtering → `data-discovery/search.md` | medium |
+| DOC-143 | Carve out Manual Object Tagging → `data-discovery/tagging.md` | small |
+| DOC-144 | Carve out Data Entity Groups + Domains framing → `data-discovery/groups-domains.md` | medium |
+| DOC-145 | NEW Data Lineage pillar — landing + Data Objects + Microservices subpages | large |
+| DOC-146 | NEW Data Glossary pillar — landing + Business Glossary subpage (consolidates Dictionary terms + Term-to-Entity descriptive associations) | large |
+| DOC-147 | NEW Data Quality pillar — landing + Test Results Import + Dashboard + SLA Statuses subpages | large |
+
+All 7 items in `pending`. The umbrella DOC-141 closes only when all 6 sub-items close. No inter-dependencies between sub-items; can ship in any order or as one mega-batch. Pre-authoring stance check required at every sub-page authoring decision.
+
+Counts after logging:
+- pending: 0 → 7 (+ DOC-141..147).
+- review-ready: unchanged at 5.
+- Total backlog: 142 → 149.
+
 ---
 
 # Prior — 2026-05-07 — `/review batch:feature/docs-active-platform-features-polish-2026-05-06` — DOC-139 + DOC-140 done; NAV-002 logged

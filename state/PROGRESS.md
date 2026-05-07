@@ -1,4 +1,66 @@
-# Last updated 2026-05-07 — `/implement DOC-150` — Cornerstone 2 superseded (no reverse-link rule); LSN-012 filed; pillar-pillar consistency aligned; DOC-149 unblocked
+# Last updated 2026-05-07 — `/review DOC-150` — DOC-150 done; editorial audit surfaced DOC-154 (reverse-link inventory under-counted by ~16 sites)
+
+User-invoked `/review DOC-150` after PR #116 merged (`feature/state-doc150-cornerstone-no-reverse-links-2026-05-07`). Per-item gates all PASS (state-repo cornerstone update — N/A on Gates 2/3/4/5/6/8; PASS on Gates 1/7/9/10). Verdict block appended to `backlog/docs/DOC-150.md`.
+
+## Verdict — DOC-150
+
+**ACCEPTED**. All 7 acceptance criteria PASS with cited evidence. Quality Bar gates: Gate 1 PASS, Gate 7 PASS, Gate 9 PASS, Gate 10 PASS; Gates 2/3/4/5/6/8 N/A (no alias / no caveat / no consumer / no SDK / no code / no live URL touched on a state-repo cornerstone update). Banned-phrase check clean; outbound URL sweep clean (0 URLs in change); navigation consistent.
+
+## Doc-product editorial audit — coverage this run
+
+**Audit scope this run**: post-cornerstone reverse-link grep sweep across `documentation/docs/**/*.md` (`grep -rn 'Features\.md#' docs/` on `origin/main` of the documentation repo, post-PR-#66-merge `9d141a1`). The cornerstone change has zero documentation-repo touch, so the per-page systematic re-audit value is in a post-DOC-149 + post-DOC-154 merge run, not now. The grep sweep is the literal application of LSN-012's forcing question — the cornerstone's new rule defines the blast-radius scope; the right validation is to grep for sites the rule now forbids.
+
+**Findings logged** (1):
+
+- **DOC-154** (high, A1 + A4 + A10, reverse-link inventory under-counted) — DOC-149's 22-instance / 5-file inventory misses ~16 additional reverse-link sites:
+  - `management.md` L31-37 — `## Other Management surfaces` H2 (same shape as DOC-149's `data-discovery.md` H2 fix; 3 reverse-link bullets — M2M tokens, Custom navigation links, Alternative Secrets Backend)
+  - `data-discovery/directory.md` L33 + L48 — Catalog Overview reverse-links (sibling-shape to DOC-149's data-discovery.md L9 + L56 fixes)
+  - `active-platform-features/alerting.md` L47 — Recommended-panel reverse-link
+  - `developer-guides/api-reference/glossary.md` L22 — term-to-term-links Cornerstone-5 content-migration, not just link rewrite
+  - `developer-guides/api-reference/alerts.md` L53 — Distribution-anomaly-halt admonition reverse-link in a table cell
+  - `configuration-and-deployment/enable-security/authentication/s2s.md` L3 — M2M alias parenthetical reverse-link
+  - `configuration-and-deployment/collectors-secrets-backend.md` L3 — Alternative-secrets-backend alias parenthetical reverse-link
+  - `configuration-and-deployment/odd-platform.md` L743 + L881 — Auto-cleanup-of-resolved-alerts + Data-entity-attachments reverse-links
+  - `use-cases/viz-preparation.md` L10 + `use-cases/dc-data-compliance.md` L8 — metadata-storage reverse-links
+  - `main-concepts.md` L94 + L104 — Terms & Aliases "Where used" cells targeting Features.md anchors instead of bucket-landing canonical homes
+
+  Filed at `backlog/docs/DOC-154.md`. Does not block DOC-149's merge or the unblocking of DOC-141..145 — DOC-149's AC scope was the user-flagged batch's 5 files; DOC-154 carries the gap-closure for the rest of the tree. Bundling the two in the same batch is the implementer's call.
+
+**Editorial findings do not block the per-item verdict** — DOC-150 ships clean.
+
+**Queued for next `/review`**: full per-page systematic re-audit on the 11 files DOC-154 will touch (post-DOC-149 + post-DOC-154 merges); resume per-page baseline rotation per `state/doc-quality-coverage.md`.
+
+## Counts (after this run)
+
+- `done`: 142 → **143** (+1: DOC-150).
+- `review-ready`: 1 → **0** (-1: DOC-150).
+- `pending`: 4 → **5** (+1: DOC-154; -0: DOC-150 already off pending).
+- `in-progress`: unchanged at 0.
+- `blocked`: 5 (unchanged — DOC-141..145 still blocked on DOC-149).
+- `rejected`: unchanged at 2.
+- `superseded`: unchanged at 1.
+- Total backlog: 155 → **156** (+1 from DOC-154).
+
+## Hand-off
+
+- **Next batch starter**: `/implement DOC-149` — the cornerstone update has shipped; DOC-149 has documented authority to remove the reverse-link pattern. The doc-side fix is 5 files / ~22 cross-link rewrites + 1 H2 section removal — still surgical.
+- **Coordination on DOC-149 ↔ DOC-154**: DOC-149's implementer should read DOC-154 before starting. Several DOC-154 sites (`directory.md`, `main-concepts.md` aliases, `odd-platform.md` L881, the use-case pages) couple to DOC-149's Catalog Overview / Data Entity Attachments / metadata-storage placement decisions. Bundling DOC-149 + DOC-154 + DOC-151 in one batch is reasonable; splitting (DOC-149 first, DOC-154 + DOC-151 second) is also reasonable. Implementer's call per scope-fit + cohesion.
+- **DOC-152 + DOC-153 remain as documented in the prior `/review` hand-off**: DOC-152 is a small architecture.md L38 fix; DOC-153 needs a maintainer Option-A-vs-Option-B decision before implementation.
+
+## Sources footer (this commit)
+
+```
+Sources:
+- Cornerstone-just-shipped: pillars/documentation/cornerstones.md:24-37 (commit e94aa1e, DOC-150; 2026-05-07)
+- Failure-case grep (documentation repo, post-PR-#66-merge 9d141a1): grep -rn 'Features\.md#' documentation/docs/ → 39 hits across 13 files; 23 inside DOC-149 inventory; 16 outside (DOC-154 inventory)
+- Backlog: DOC-150 (review-ready → done), DOC-149 (pending — primary cleanup), DOC-154 (pending — gap-closure cleanup; new this run), DOC-141..145 (blocked, unblocked by DOC-149)
+- Editorial-audit playbook: playbooks/doc-product-editorial-read.md
+- Case-law cited (LSN): retrospectives/LSN-012-cornerstone-codified-wrong-pattern.md (the forcing question this audit applied: "what doc-product shape does the rule produce if applied literally?")
+```
+
+---
+
+# Prior — 2026-05-07 — `/implement DOC-150` — Cornerstone 2 superseded (no reverse-link rule); LSN-012 filed; pillar-pillar consistency aligned; DOC-149 unblocked
 
 User-invoked `/implement DOC-150` to land the cornerstone update that supersedes the rule producing DOC-149's reverse-link defect. Single-item batch on odd-team (no co-resident continuation candidates — the rest of the 2026-05-07 follow-ups DOC-149/151/152/153 target the documentation repo).
 

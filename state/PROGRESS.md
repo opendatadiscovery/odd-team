@@ -1,4 +1,91 @@
-# Last updated 2026-05-07 — `/review batch:feature/docs-doc149-cleanup-batch-2026-05-07` — DOC-149 + DOC-151 + DOC-152 + DOC-153 + DOC-154 → done; editorial audit logs DOC-155 + DOC-156
+# Last updated 2026-05-07 — `/review feature/docs-features-md-carve-out-2026-05-07` — ad-hoc carve-out ACCEPTED; PR #68 merged; editorial audit logs DOC-157/158/159
+
+User-invoked `/review feature/docs-features-md-carve-out-2026-05-07` in a session distinct from the `/implement` session that produced the carve-out (post-`/clear`). Documentation-repo PR #68 (commit `d150fa3`) merged to `origin/main` as `80ff438` 2026-05-07 — review runs against post-merge state.
+
+This was an **ad-hoc carve-out**, not a tracked DOC-NNN backlog item. Authority for the work: direct user feedback during prior `/review batch:feature/docs-doc149-cleanup-batch-2026-05-07` session ("all the features should belong to a 'bucket' or module... Are you limited to create a number of new subpages below the page with the topic with details and just leave a short description in Features/Overview and mainly all needed references???") + Cornerstone 2 (DOC-150 — Features.md is the index; rich features get dedicated detail pages) + Cornerstone 5 (canonical homes). The carve-out completes the structural job DOC-149/154 left half-done (DOC-149/154 fixed cross-link direction; this PR migrates substantive prose off Features.md so it is uniformly teaser-shaped).
+
+## Verdict — ACCEPTED
+
+The carve-out passes every applicable Quality Bar gate with cited evidence (Read + Bash + WebFetch).
+
+| Surface | What shipped | Verification |
+|---|---|---|
+| 8 new detail pages | `data-discovery/{catalog-overview, statuses, attachments, schema-diff, business-names, vector-stores, metadata-stale}.md` (7) + `integrations/ingestion-filters.md` (1) | All 8 pages have YAML frontmatter description + H1 + content + Where-to-next + bucket cross-link; all 27 referenced figures resolve in `.gitbook/assets/`; all cross-link targets exist; all anchor targets exist on target pages (verified via Read + grep) |
+| `Features.md` | Becomes uniformly teaser-shaped — every previously-substantive section reduced to 1-3 sentence intro + cross-link to canonical home; Metadata Storage stays inline (no dedicated detail page); TOC at L5-38 retargets carved-out entries; H2 count = 34, TOC entries = 34 (one-to-one) | `grep -c "^## " docs/Features.md` returns 34; intra-page anchor `Features.md#metadata-storage` preserved (allowed per Cornerstone 2 — index-internal navigation is fine) |
+| `data-discovery.md` | `## Subsections` list grows from 4 to 11 entries organized into 4 reading-order groups (Discovery entry paths / Annotating entities / Specialty cataloguing / Change and freshness signals) | Verified live via WebFetch on `docs.opendatadiscovery.org/features/data-discovery` — all 11 entries + 4 group headings render |
+| `data-discovery/groups-domains.md` | "Relationship to ML Experiments" section gains the catalog-view-not-tracker info admonition + a sentence on lineage participation (lifted from old Features.md L79-87 ML Experiments section); Features.md keeps a 2-paragraph teaser pointing at `groups-domains.md#relationship-to-ml-experiments` | Verified live via WebFetch — admonition renders |
+| `SUMMARY.md` | +8 entries (7 under Data Discovery, 1 under Integrations); ordering reflects conceptual flow (Catalog Overview first under Data Discovery — the "home page" entry path) | Verified via diff — exactly 8 lines added |
+| `integrations/README.md` | Hub `## Where to next` gains 3 entries (Ingestion filters, Integration Wizard, Collector secrets backend); ingestion filters bullet at L105 gains "See the dedicated [Ingestion filters] page" cross-link | Verified via Read + WebFetch (page renders with the new ingestion filters cross-link) |
+
+## Quality Bar gates
+
+- **Gate 1 (no duplicates)** — PASS via `grep -rn "data-discovery/(catalog-overview\|statuses\|attachments\|schema-diff\|business-names\|vector-stores\|metadata-stale)\.md\|integrations/ingestion-filters\.md" docs/` returns hits only on `Features.md`, `SUMMARY.md`, and `data-discovery.md` (the index, navigation, and bucket landing — the three legitimate canonical surfaces). New pages don't duplicate existing content; they extract from Features.md (which becomes teaser-only) and re-home content per Cornerstone 5.
+- **Gate 2 (aliases logged)** — N/A. No new aliases introduced (technical name vs business name is a feature concept; Vector Store / Vector are first-class types per the spec, not aliases).
+- **Gate 3 (caveats captured)** — PASS. The LOCAL-is-ephemeral danger admonition is preserved on `attachments.md` L9-11 (forward-link to Attachment Storage Configuration); the catalog-view-not-tracker info admonition is preserved on `groups-domains.md` "Relationship to ML Experiments" section; the Catalog Overview vs entity Overview tab disambiguation is preserved as an info admonition on `catalog-overview.md` L66-68.
+- **Gate 4 (consumer-read)** — N/A for most pages (structural carve-out — content faithfully migrated, not newly authored from code). One refined claim: `attachments.md` L23 ties the prior "20MB" upload limit to `attachment.max-file-size` (megabytes; default 20). VERIFIED via Read of `configuration-and-deployment/odd-platform.md:892` (canonical config home) — claim consistent. `statuses.md` L25-26 cascading-row enumeration (metadata values, ownerships, lineage, tags, terms, alerts, messages, metrics, attachments, task runs, group relations, dataset structure / enum values for datasets) is **verbatim** from `odd-platform.md:745` (the canonical config home).
+- **Gate 5 (unset-parameter audit)** — N/A. No SDK builders in scope.
+- **Gate 6 (bidirectional code↔doc)** — PASS for the carve-out's announced scope; reciprocal back-links from operator-side surfaces to the new feature pages are missing (logged as DOC-157 — the gap is pre-existing and multiplied by the 8 new pages, not introduced by the carve-out).
+- **Gate 7 (layout)** — PASS. SUMMARY.md adds exactly 8 entries (no orphans, no collisions); `data-discovery.md` Subsections list updated; Features.md TOC matches H2 count exactly (34 = 34); no in-page TOC drift on Features.md.
+- **Gate 8 (publishing standards)** — PASS via WebFetch. All 8 new detail pages render correctly on `docs.opendatadiscovery.org` at `/features/data-discovery/{catalog-overview, statuses, attachments, schema-diff, business-names, vector-stores, metadata-stale}` and `/integrations/integrations/ingestion-filters` — H1, content, cross-links, admonitions all present and correct. The `/features/data-discovery` bucket-landing page shows 11 entries grouped under 4 reading-order group headings. The `groups-domains.md` ML Experiments admonition renders with the catalog-view-not-tracker copy.
+- **Gate 9 (factual claim provenance)** — PASS for the carve-out. Commit `d150fa3` `Sources:` footer cites the structural authorities (Cornerstone 2 / Cornerstone 1 / Cornerstone 5 / canonical-homes Feature description + Integrations hub rows / verbatim user feedback / DOC-149/154 backlog cross-references). Banned-phrase check clean. Outbound URL sweep: 4 GitHub-direct URLs total — 2 on `vector-stores.md` (specification — explicitly canonical per `main-concepts.md` Terms & Aliases) and 2 on `ingestion-filters.md` (figure caption + capability-matrix cross-link — both **carried forward verbatim from old Features.md**, pre-existing pattern logged as DOC-159 for Cornerstone-5 decision).
+- **Gate 10 (content type homing)** — PASS. The carve-out IS the canonical-home enforcement: each new page is the dedicated detail page for its feature (Cornerstone 5 outcome 1), eliminating the embedded-on-Features.md content drift. Features.md sections are now uniformly index-shaped (1-3 sentence teaser + cross-link to canonical home), per Cornerstone 1.
+
+**Outbound URL sweep** (Gate 9): 4 GitHub-direct URLs verified. 2 legitimate (specification — canonical per main-concepts.md design); 2 carried forward (ingestion-filters figure caption + capability-matrix link — pre-existing pattern; logged as DOC-159 for Cornerstone-5 decision).
+
+**Banned-phrase check**: none used (commit message + new page content).
+
+**Regressions**: none. Cornerstone 2 (no reverse-links to `Features.md#anchor`) holds — `grep -rn "\.\./Features\.md#" docs/data-discovery/ docs/integrations/` returns zero matches; new detail pages do not reverse-link.
+
+**Navigation**: consistent. `navigation/domains/*.md` — no updates needed (the carve-out doesn't change code/feature pointers; it's user-doc-only structural reorganization).
+
+## Doc-product editorial audit — coverage this run
+
+**Audit scope**: post-batch state of the `documentation/docs/**/*.md` tree, end-to-end. Token budget intentionally not constrained per `playbooks/doc-product-editorial-read.md`. This audit ran against `origin/main` post-PR-#68-merge (commit `80ff438`).
+
+**Subtrees audited**: `data-discovery/**` (full + 8 new pages), `integrations/**` (focus on README.md hub + new `ingestion-filters.md`), `Features.md` (full diff against pre-carve-out state), `SUMMARY.md` (placement check), spot-checks on `configuration-and-deployment/odd-platform.md` (housekeeping + attachment-storage + detecting-stale-metadata sections — to assess Cornerstone 3 reciprocal cross-link gap), `active-platform-features/alerting.md` (backwards-incompatible schema change section — same), `developer-guides/api-reference/*` (no carve-out impact), `main-concepts.md` (vocabulary surface — Cornerstone 5 sweep for Features.md cross-links), `management.md` (post-DOC-154 state validated).
+
+**Findings logged** (3):
+
+- **DOC-157** (medium, Cornerstone 3 reciprocal cross-link coverage gaps surfaced by carve-out) — 8 new feature pages forward-link to operator-side configurations (`odd-platform.md` L745 housekeeping + L777 detecting-stale-metadata + L879 attachment-storage), RBAC permissions (`permissions.md` 4 rows), alert rule (`alerting.md` L91 backwards-incompatible-schema-change), and adapter coverage (`odd-collector.md` PostgreSQL section). Reverse direction is missing on every site. Pre-existing pattern multiplied by carve-out; the 2026-04-28 user spot-check on `features#id-6fbe` ↔ `attachment-storage-configuration` is the canonical case-law. Filed at `backlog/docs/DOC-157.md`. Small (~30-45 min) fix for the 8 sites.
+- **DOC-158** (low, Cornerstone 5 application on `main-concepts.md`) — L9 Business Glossary disambiguation callout + L68 Data Modeling availability callout cross-link to `Features.md` as a whole instead of the canonical bucket landing / detail page (`data-glossary/business-glossary.md` and `data-discovery/schema-diff.md` respectively). Pre-existing; the new `schema-diff.md` page makes the L68 mismatch sharper. Filed at `backlog/docs/DOC-158.md`. Trivial (~5 min) fix.
+- **DOC-159** (low, Cornerstone 5 decision) — `ingestion-filters.md` L70 figure caption + L86 prose link to `github.com/opendatadiscovery/odd-collectors` for the per-adapter capability matrix and per-adapter config examples. Both carried forward verbatim from old Features.md. Per `canonical-homes.md` L26 ("No canonical home today" for examples / sample configs), the doc tree has no canonical home for these content types — this batch concretely surfaces the gap. Three resolution options (status quo / matrix page / config-examples subtree); recommended Option 1 (accept the gap, formalize the deferral on `canonical-homes.md`) for the user. Filed at `backlog/docs/DOC-159.md`. Decision item, not a writing item.
+
+**Editorial findings do not block the per-item verdict** — the carve-out ships as ACCEPTED. The findings extend the backlog as parallel work.
+
+## Counts (after this run)
+
+- `done`: 148 (unchanged — the carve-out wasn't a tracked DOC item; no item flips to `done`).
+- `review-ready`: 0 (unchanged).
+- `pending`: 2 → **5** (+3: DOC-157, DOC-158, DOC-159 — editorial follow-ups logged this run).
+- `in-progress`: unchanged at 0.
+- `blocked`: 5 (unchanged — DOC-141..145 still flagged; the underlying defect was fixed by DOC-149/154 → done; surface to the maintainer whether to flip those to `done` directly or re-run `/review` against the affected subtrees).
+- `rejected`: unchanged at 2.
+- `superseded`: unchanged at 1.
+- Total backlog: 158 → **161** (+3).
+
+## Hand-off
+
+- **Documentation-repo PR #68 already merged** (commit `d150fa3` on `origin/main` as `80ff438` 2026-05-07). No further doc-side action this run.
+- **odd-team-repo PR for this `/review`**: pushed on `feature/state-review-features-md-carve-out-2026-05-07` covering this PROGRESS.md update + DOC-157/158/159 follow-up files + file-registry.yaml entries. State-only; no documentation-repo touch.
+- **Next `/implement` candidates**: DOC-155 (medium, ~10 min), DOC-156 (low, ~10 min), DOC-157 (medium, ~30-45 min), DOC-158 (low, ~5 min), DOC-159 (decision item — surface to user before writing). DOC-155 + DOC-156 + DOC-158 + DOC-157 are all small-to-medium documentation-repo edits; pair them in a single batch ("post-carve-out cohesion sweep"). DOC-159 needs a Cornerstone-5 decision first.
+- **Possible state-side polish**: the carve-out should arguably have been logged as a DOC-NNN item before the work began (so the `/implement` → `/review` boundary stays clean). The lesson: ad-hoc work surfacing from `/review` user-feedback should land as a backlog item with explicit AC before implementation, not as a structural follow-on with implicit AC. No retrospective owed yet — flag if the pattern recurs.
+
+## Sources footer (this run)
+
+```
+Sources:
+- Branch / commit Reads: documentation/docs/Features.md (post-carve-out + pre-carve-out via `git show 158ea97:docs/Features.md`), documentation/docs/data-discovery/{catalog-overview,statuses,attachments,schema-diff,business-names,vector-stores,metadata-stale}.md, documentation/docs/integrations/ingestion-filters.md, documentation/docs/data-discovery.md, documentation/docs/data-discovery/groups-domains.md, documentation/docs/SUMMARY.md, documentation/docs/integrations/README.md, documentation/docs/active-platform-features/alerting.md, documentation/docs/management.md (post-DOC-154 state), documentation/docs/main-concepts.md, documentation/docs/configuration-and-deployment/odd-platform.md (L745 + L777 + L879 + L892), documentation/docs/integrations/collectors/odd-collector.md (L1250)
+- Pillar files Reads: pillars/documentation/{cornerstones,canonical-homes,gates}.md
+- Playbook Read: playbooks/follow-up-on-disk.md
+- Bash verifications: tree-wide `grep -rn 'Features\.md#' docs/` returns only `docs/Features.md:5` (intra-page anchor, allowed); `grep -c "^## " docs/Features.md` returns 34 (matches TOC); 27 referenced figures all exist in `docs/.gitbook/assets/`; cross-link target file existence + anchor existence verified via grep
+- WebFetch verifications (Gate 8): all 8 new detail pages live + correct H1/content; data-discovery bucket landing live with 11 entries + 4 reading-order groups; groups-domains.md ML Experiments admonition live
+- Backlog: DOC-157 / DOC-158 / DOC-159 (pending — new this run)
+- Case-law cited: retrospectives/LSN-001 (Cornerstone 3 attachment-storage gap), LSN-003 (outbound-URL canonical-home discipline), LSN-006 (Cornerstone-5 content-type homing), LSN-012 (cornerstone codified wrong pattern → DOC-149/150 chain that DOC-157/158/159 follows up)
+```
+
+---
+
+# Prior — 2026-05-07 — `/review batch:feature/docs-doc149-cleanup-batch-2026-05-07` — DOC-149 + DOC-151 + DOC-152 + DOC-153 + DOC-154 → done; editorial audit logs DOC-155 + DOC-156
 
 User-invoked `/review batch:feature/docs-doc149-cleanup-batch-2026-05-07` in a session distinct from the `/implement` session that produced the batch. PR #67 (documentation) merged 2026-05-07 — review runs against `origin/main` post-merge.
 

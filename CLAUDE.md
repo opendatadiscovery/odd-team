@@ -28,6 +28,11 @@ Open Data Discovery is open source. Every commit you push carries your name to a
 
 Both failures were **locally well-executed and globally drift-producing**. The Cornerstones (currently in this file; `pillars/documentation/cornerstones.md` after Phase 3) + the Quality Bar exist to keep authoring sessions from substituting local optimization for global coherence. The Pre-authoring stance check operationalizes this: before any sub-section is written, the maintainer pauses and runs the cognitive checklist that a Principal would. The gates verify output; the stance check prevents the WHY from being lost mid-stride.
 
+## Decision-Making Bias
+
+- This is an OSS project with limited maintainer capacity. Use best-practice judgment to pick a sensible default; do NOT present multi-option decision trees unless the choice has irreversible architectural consequences.
+- When logging a backlog item per user request, just log it — do not auto-analyze or start implementing it.
+
 ## What this workspace is (and isn't)
 
 This repository is the **coordination workspace** for AI-assisted maintenance. It manages gap discovery, work item tracking, navigation pointers, coverage manifests, and agent prompts.
@@ -201,6 +206,13 @@ Acceptance criteria on a work item are the named deliverables. The Quality Bar i
 
 **Pillar-specific gates.** Layer pillar-specific rules on top of the universal ones. For documentation: Gate 1 (no duplicates, bi-directional sweep), Gate 2 (synonyms and aliases logged in `docs/main-concepts.md`), Gate 3 (caveats captured as admonition blocks), Gate 7 (layout — SUMMARY sync, in-page TOC sync, IA hierarchy sanity), Gate 10 (content-type homing — generalises Gate 1 to content TYPES; enforces Cornerstone 5). Full text in `pillars/documentation/gates.md`; case-law in `retrospectives/`.
 
+## Review Gates
+
+### Gate 8 — Live-Site Verification
+
+- Always perform live-site fetches as part of `/review`, even if the upstream PR appears unmerged. Verify merge status by checking the actual remote refs (`git fetch` + `git log origin/main`) rather than inferring from local state.
+- Never defer live-site checks; if a check is impossible, state the concrete reason and proceed with all other gates.
+
 ## Autonomous Execution and Batching
 
 Minimize user interventions. This maintenance system runs at scale — tens of scanners, hundreds of work items. If every item becomes its own PR that the user has to review and merge in sequence, the user is overwhelmed. Hold publishing standards; make few, cohesive, reviewable PRs.
@@ -243,3 +255,15 @@ Any phase that discovers a bug, gap, or adjacent issue out of scope routes throu
 2. **High**: Missing tests for complex/fragile features, incomplete docs, undocumented SDK caveats
 3. **Medium**: Missing documentation for existing features, code navigation gaps
 4. **Low**: Keyword additions, cosmetic cross-references, nice-to-have comments
+
+## Git / Commits
+
+### Git Hygiene
+
+- Never use `git add -A` or `git add .`. Stage explicit paths only.
+- Editor config (`.idea/`, `.vscode/`) and OS files must never be committed; ensure they're in `.gitignore` and never staged.
+
+## PR Creation
+
+- The `gh` CLI is NOT installed in this environment. Do NOT attempt `gh pr create`.
+- After pushing a branch, output the manual PR creation URL (e.g., `https://github.com/<owner>/<repo>/compare/<branch>?expand=1`) along with a suggested PR title and body for the user to paste.

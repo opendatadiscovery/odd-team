@@ -1,3 +1,54 @@
+# Last updated 2026-05-07 — `/implement` batch — DOC-155 + DOC-156 + DOC-157 + DOC-158 + DOC-159 → review-ready; pending-queue cleared; DOC-160 logged
+
+User-invoked `/implement all the remaining items in the backlog in one go` after `/review feature/docs-features-md-carve-out-2026-05-07` accepted the ad-hoc carve-out and logged DOC-157/158/159 as editorial follow-ups. All five `pending` docs items shipped in a single batch on `feature/docs-editorial-followups-2026-05-07` (documentation repo, 4 commits — DOC-159 is workspace-only) plus `feature/state-editorial-followups-2026-05-07` (odd-team repo, 1 commit covering bookkeeping + DOC-159 canonical-homes.md edit + DOC-160 follow-up).
+
+Theme: **Cornerstones 2 / 3 / 5 cleanup** — finishing the IA-refactor's reciprocal cross-link work and applying canonical-home discipline to the use-case + vocabulary surfaces; recording the Cornerstone-5 deferral for the per-adapter capability matrix + config-examples content types.
+
+## What shipped
+
+- **DOC-155** (medium) — `data-modelling.md` gains `## Why this is a separate pillar` H2 between `## UI entry points` and `## Where to next` (commit `2e570d1`). Closes the 5-of-6 pillar-landing consistency gap left by DOC-153 — the only governance pillar landing without the cross-link to `main-concepts.md#pillar-differentiation`. Pattern matches the 5 peer landings; uses the "contract-oriented" framing from main-concepts.md#pillar-differentiation L79. Verified by `grep -A 1 "## Why this is a separate pillar" docs/data-*.md docs/master-data-management.md` returning 6-of-6 with consistent shape.
+- **DOC-156** (low) — Use-case pages canonical-home retargets (commit `e64657f`). `dq-visibility.md` L7 — three GitHub-direct integration links (`odd-great-expectations`, `odd-dbt`, `odd-collector-profiler`) retargeted to `../integrations/{push-adapters,collectors}/*.md` canonical homes; Capital One DataProfiler GitHub link kept as external upstream library. `service-presales.md` L10 + L19 — both `[API]` cross-links retargeted from `https://github.com/.../odd-platform-specification` to `../developer-guides/api-reference.md`. Same shape as `LSN-003` applied to use-case narrative. Spot-check across the doc tree surfaces additional sites on `trylocally.md` + `relationships.md` — logged as **DOC-160** follow-up (per the AC's "Background sweep — log additional findings as separate items"). Doc-PR AC: `grep -rn "github.com/opendatadiscovery/odd-(great-expectations|dbt|collector-profiler|...)" docs/use-cases/` + `grep -rn "github.com/opendatadiscovery/odd-platform/.*specification" docs/use-cases/` both return zero hits.
+- **DOC-157** (medium) — Reciprocal back-links from operator-side surfaces to the 8 new feature pages (commit `15d4ab0`). 10 cross-links across 4 files: `odd-platform.md` (housekeeping ttl → `statuses.md`; stale-metadata intro → `metadata-stale.md`; attachment storage intro → `attachments.md`); `permissions.md` (4 RBAC bullet rows extended with parenthetical feature-page back-links — `DATA_ENTITY_STATUS_UPDATE` / `DATA_ENTITY_ATTACHMENT_MANAGE` / `DATA_ENTITY_INTERNAL_NAME_UPDATE` / `DATASET_FIELD_INTERNAL_NAME_UPDATE`); `alerting.md` (backwards-incompatible schema change H2 → `schema-diff.md`); `odd-collector.md` (PostgreSQL spotlight → `vector-stores.md`; L1250 cross-adapter capability list extended with `ingestion-filters.md` cross-link for the filter mechanism's user-facing surface). Cornerstone 3 (Configuration is a separate audience surface — bidirectional cross-links between feature pages and configuration sections are mandatory) made operational on the carve-out's 8 new pages. Forward-link audit verified (the new feature pages already cross-link the operator-side surface in the forward direction).
+- **DOC-158** (low) — `main-concepts.md` Cornerstone-5 retargets (commit `511c8e3`). L9 disambiguation callout `[Features.md](Features.md)` → `[Business Glossary](data-glossary/business-glossary.md)` (canonical home for the in-app feature); L68 "Data Modeling — partially available" availability bullet "the DEG / schema-diff sections in [Features.md]" → `[Dataset schema diff](data-discovery/schema-diff.md)` (DEG cross-linked earlier in the same sentence; schema-diff.md is the post-carve-out canonical home). AC verification: `grep -n 'Features\.md\b' docs/main-concepts.md` returns 0 hits. Doc-tree spot-check (`grep -rn 'Features\.md\b' docs/ | grep -v Features.md | grep -v SUMMARY.md`) surfaces 2 remaining hits on `README.md` L34 + `Architecture.md` L3 — both legitimate navigation-page → index references (Cornerstone 1).
+- **DOC-159** (low) — Cornerstone-5 deferral on `pillars/documentation/canonical-homes.md` (Option 1 chosen per work item recommendation + CLAUDE.md velocity principle). Workspace-only edit — extended "Examples / sample configs" row L26 with concrete use-site annotation (`ingestion-filters.md` L70 PostgreSQL filter setup template figure caption); added new "Per-adapter capability matrix" row capturing the cross-adapter feature table content type with the same deferral status, citing concrete use-sites on `ingestion-filters.md` L86 + `data-modelling/relationships.md` L29 + L58 (sister-pattern to DOC-160). Per the work item's recommendation: "the matrix has limited reader value pre-deployment; a parallel doc-tree matrix risks drift relative to per-collector pages; revisit when a per-collector authoring batch gives the matrix a natural home."
+
+## Follow-ups logged
+
+- **DOC-160** (pending, low) — doc-tree-wide spot-check follow-up from DOC-156's broader sweep. Two affected files: `docs/configuration-and-deployment/trylocally.md` L72-75 + L80 (per-collector README links — `integrations/collectors/{name}.md` canonical homes now exist post-DOC-042) and `docs/data-modelling/relationships.md` L29 + L58 (per-adapter Relationships matrix on monorepo README — sister-pattern with DOC-159's deferral). Small effort (~10-15 min total).
+
+## Sources footers (per commit)
+
+`2e570d1` (DOC-155): canonical home `docs/main-concepts.md#pillar-differentiation` (created by DOC-153 commit `e539bf4`); pattern source — 5 peer pillar landings post-DOC-153.
+
+`e64657f` (DOC-156): canonical-home rule `pillars/documentation/canonical-homes.md` Integrations + API reference rows; target pages verified to exist on `origin/main`; case-law `LSN-003` (outbound URL bypassing canonical home) + `LSN-006` (Cornerstone-5).
+
+`15d4ab0` (DOC-157): Cornerstone 3 + Gate 6; forward-link audit (existing) on the 6 new feature pages; target pages verified; case-law `LSN-001` (attachment-storage user-spot-check that flagged the original Cornerstone-3 gap).
+
+`511c8e3` (DOC-158): Cornerstone 5; canonical-home rule `pillars/documentation/canonical-homes.md` Glossary / Feature description rows; target pages verified (data-glossary/business-glossary.md H1 = "Business Glossary"; data-discovery/schema-diff.md H1 = "Dataset schema diff"); case-law `LSN-006`.
+
+DOC-159 (workspace-only): work-item recommendation Option 1 + CLAUDE.md velocity principle ("pick the best option using documentation / UX best practices and ship"). Concrete use-sites verified on `ingestion-filters.md` L70 + L86 + sister-pattern on `data-modelling/relationships.md` L29 + L58.
+
+## Counts (after this batch)
+
+- `pending`: 5 → **1** (-5: DOC-{155,156,157,158,159} flipped to `review-ready`; +1: DOC-160 new editorial-sweep follow-up).
+- `review-ready`: 0 → **5** (+5: DOC-{155,156,157,158,159}).
+- `in-progress`: unchanged at 0.
+- `done`: unchanged at 148 (review session in this `/implement` cannot self-mark done).
+- `blocked`: 5 (unchanged — DOC-141..145 still flagged blocked per their `Why this batch is blocked` records; the underlying Gate 7 reverse-link defect was fixed by DOC-149 → done; surface to `/review` whether to flip them to `done` directly or re-run review).
+- `rejected` / `superseded`: unchanged at 2 / 1.
+- Total backlog: 161 → **162** (+1: DOC-160).
+
+## Hand-off
+
+- **Documentation-repo PR**: pushed on `feature/docs-editorial-followups-2026-05-07` (4 commits: DOC-155, DOC-156, DOC-157, DOC-158). Pending review.
+- **odd-team-repo PR**: pushed on `feature/state-editorial-followups-2026-05-07` (1 commit covering DOC-{155..159} status flips + DOC-159 canonical-homes.md edit + DOC-160 new follow-up + state/file-registry.yaml + state/PROGRESS.md update). Pending review.
+- **PR creation URLs** output for the user to paste (`gh` CLI is not installed in this environment per CLAUDE.md).
+- **Live-site verification** is `/review`'s responsibility — surfaced affected pages: `data-modelling.md`, `use-cases/dq-visibility.md`, `use-cases/service-presales.md`, `configuration-and-deployment/odd-platform.md`, `configuration-and-deployment/enable-security/authorization/permissions.md`, `active-platform-features/alerting.md`, `integrations/collectors/odd-collector.md`, `main-concepts.md`.
+- **Next `/implement` candidate**: DOC-160 (low, ~10-15 min) is the only `pending` item post-batch. Pair with the next batch when adjacent files are touched, or sequence standalone.
+- **DOC-141..145 unblock decision** (carried forward from prior `/review`): the maintainer's call — flip to `done` directly (the underlying defect is fixed by DOC-149 → done; evidence in DOC-149's verdict), OR re-run `/review` against the data-discovery + data-lineage subtree to confirm.
+
+---
+
 # Last updated 2026-05-07 — `/review feature/docs-features-md-carve-out-2026-05-07` — ad-hoc carve-out ACCEPTED; PR #68 merged; editorial audit logs DOC-157/158/159
 
 User-invoked `/review feature/docs-features-md-carve-out-2026-05-07` in a session distinct from the `/implement` session that produced the carve-out (post-`/clear`). Documentation-repo PR #68 (commit `d150fa3`) merged to `origin/main` as `80ff438` 2026-05-07 — review runs against post-merge state.

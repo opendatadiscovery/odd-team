@@ -1,4 +1,43 @@
-# Last updated 2026-05-07 — `/implement` batch — DOC-155 + DOC-156 + DOC-157 + DOC-158 + DOC-159 → review-ready; pending-queue cleared; DOC-160 folded back into DOC-156
+# Last updated 2026-05-07 — `/review` batch:DOC-155-159 (feature/docs-editorial-followups-2026-05-07) — ACCEPTED ×5; editorial audit logs DOC-161
+
+`/review all` (no-arg) ran in a session distinct from the `/implement` session that produced DOC-{155..159}. All five items flipped from `review-ready` → `done`. The mandatory `playbooks/doc-product-editorial-read.md` audit ran end-to-end on the partition described below; one new follow-up — DOC-161 — was logged independently and does not block the per-item flips.
+
+## Verdicts
+
+- **DOC-155** (medium) — ACCEPTED. Live-site verified at `docs.opendatadiscovery.org/features/data-modelling.md`: H2 ordering `Subsections / UI entry points / Why this is a separate pillar / Where to next` confirms placement; section text matches AC verbatim; `grep -A 1` returns 6-of-6 pillar landings with consistent shape.
+- **DOC-156** (low) — ACCEPTED. Live-site verified on 3 pages (`/use-cases/use-cases/dq-visibility.md`, `/use-cases/use-cases/service-presales.md`, `/configuration-and-deployment/trylocally?nocache=1`); 8 retargets (3 dq-visibility + 2 service-presales + 5 trylocally fold-in) plus the preserved Capital One DataProfiler / `git clone` URLs. CDN cache-staleness on initial fetch logged as a session note (cache-buster `?nocache=1` is the workaround).
+- **DOC-157** (medium) — ACCEPTED. Live-site verified on 4 pages (`odd-platform.md`, `permissions.md`, `alerting.md`, `odd-collector.md`); 9 of 10 cross-links live-verified; the 10th (odd-collector L1250 `[Ingestion filters](../ingestion-filters.md)` cross-link) past WebFetch's processing window for the 1300+ line page (tool-limitation, source-verified at L1250 on origin/main).
+- **DOC-158** (low) — ACCEPTED. Live-site verified at `/introduction/main-concepts.md`: L9 callout retargeted to `/features/data-glossary/business-glossary.md`, L68 schema-diff retargeted to `/features/data-discovery/schema-diff.md`, no remaining `Features.md` links. The 2 remaining `Features.md\b` references doc-tree-wide (`README.md` L34 + `Architecture.md` L3) are legitimate "navigation surfaces above the index".
+- **DOC-159** (low) — ACCEPTED. Workspace-only Option 1 deferral verified at `pillars/documentation/canonical-homes.md` L26-27 (extended "Examples / sample configs" row + new "Per-adapter capability matrix" row, both with concrete-use-site annotations + Option-1-recommendation rationale + re-evaluation trigger).
+
+## Editorial audit (mandatory per `/review`; ran end-to-end per `playbooks/doc-product-editorial-read.md`)
+
+**Coverage this run** — partitioned: covered SUMMARY, README, Architecture, Features.md (post-carve-out teaser-only verification), main-concepts.md, all 6 pillar landings (data-{discovery,quality,lineage,glossary,modelling}, master-data-management), 1 spot-check on a new feature page (`data-discovery/attachments.md`), all 5 use-case pages (`dq-visibility`, `service-presales`, plus the 3 not in DOC-156's scope), `configuration-and-deployment/{trylocally,odd-platform}.md` + `enable-security/authorization/permissions.md`, `active-platform-features/{alerting,genai}.md`, `integrations/collectors/odd-collector.md`, `integrations/ingestion-filters.md`. **Queued for next `/review`**: remaining `data-discovery/{search,directory,tagging,business-names,statuses,vector-stores,schema-diff,metadata-stale,groups-domains,catalog-overview}.md` (beyond the spot-check); the remaining sub-pages of `data-modelling/`, `data-glossary/`, `data-quality/`, `data-lineage/`, `master-data-management/`; `active-platform-features/{notifications,activity-feed,data-collaboration}.md`; `management.md`; `configuration-and-deployment/{deployment,collectors-secrets-backend}.md` + the rest of `enable-security/**` (auth/auth subtree); `developer-guides/{api-reference/*,build-and-run/*,how-to-contribute,github-organization-overview}.md`; `integrations/{integration-wizard,collectors/{odd-collector-aws,odd-collector-azure,odd-collector-gcp,odd-collector-profiler}}.md`; `integrations/push-adapters/{odd-airflow-2,odd-cli,odd-spark-adapter,odd-tracing-gateway}.md`.
+
+**Findings**:
+- **DOC-161** (low, *parallel surfaces with drift / Cornerstone-5 + canonical-home gap*) — `docs/active-platform-features/genai.md` L112 cross-links the `POST /api/genai/ask` endpoint description to the OpenAPI YAML on GitHub instead of a doc-product canonical home in the api-reference subtree. The api-reference subtree currently has NO GenAI sub-page; the home is sparse for this content. Same Cornerstone-5 application as DOC-156, on a feature page (rather than narrative), with a different fix shape (Cornerstone-5 outcome 2 — extend the canonical home, then retarget). Recommended: Option 1 (new `developer-guides/api-reference/genai.md` sub-page following the post-DOC-088 hub-and-spokes pattern). Source: `docs/active-platform-features/genai.md` L112.
+
+## Counts (after this `/review` run)
+
+- `pending`: 0 → **1** (+1: DOC-161 from editorial audit).
+- `review-ready`: 5 → **0** (-5: DOC-{155..159} flipped to `done`).
+- `in-progress`: unchanged at 0.
+- `done`: 148 → **153** (+5: DOC-{155..159}).
+- `blocked`: 5 (unchanged — DOC-141..145 carried-forward unblock decision still pending).
+- `rejected` / `superseded`: unchanged at 2 / 1.
+- Total backlog: 161 → **162** (+1: DOC-161 from editorial audit).
+
+## Hand-off
+
+- **Documentation-repo PR #69** is merged on `origin/main` (verified via `git log` + live-site WebFetch confirming the 5 doc commits). DOC-{155..158} doc-side changes live; DOC-159 was workspace-only.
+- **odd-team-repo PR #121** is merged on `main` (state-side bookkeeping for the batch).
+- **State-side commit for this `/review`**: per-item verdicts appended to `backlog/docs/DOC-{155..159}.md` + status flipped to `done`; new `backlog/docs/DOC-161.md` follow-up file created; this PROGRESS.md updated.
+- **Next `/implement` candidate**: DOC-161 if the user authorizes a small batch on the api-reference subtree. Backlog is otherwise at 1 `pending` (DOC-161) + 5 `blocked` (DOC-141..145 carried-forward decision); broader `pending` queue is empty.
+- **Carried-forward DOC-141..145 unblock decision**: still the maintainer's call.
+
+---
+
+## Prior batch — `/implement` (DOC-155 + DOC-156 + DOC-157 + DOC-158 + DOC-159 → review-ready; DOC-160 folded back into DOC-156)
 
 User-invoked `/implement all the remaining items in the backlog in one go` after `/review feature/docs-features-md-carve-out-2026-05-07` accepted the ad-hoc carve-out and logged DOC-157/158/159 as editorial follow-ups. All five `pending` docs items shipped in a single batch on `feature/docs-editorial-followups-2026-05-07` (documentation repo — 4 commits at first, then **a 5th fold-in commit** per user instruction) plus `feature/state-editorial-followups-2026-05-07` (odd-team repo — bookkeeping commit covering DOC-{155..159} status flips + DOC-159 canonical-homes.md edit + state updates). DOC-159 is workspace-only.
 

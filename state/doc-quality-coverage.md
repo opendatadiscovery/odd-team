@@ -6,7 +6,7 @@
 
 ## Headline metrics
 
-- **Per-page coverage**: 71 / 71 pages audited (100%) — per-page baseline complete since run #7. Run #8 (this run) re-audits the 2 batch-affected pages (alerting.md, genai.md) post-DOC-139 + DOC-140 closure. Code-side coverage (axis A11-reverse) remains not-yet-started.
+- **Per-page coverage**: 70 / 70 pages audited (100%) — `oddrn.md` deleted this run (DOC-138 Phase D — folded into `main-concepts.md#oddrn`); per-page baseline complete (71 → 70 after deletion). Run #9 (this run) re-audits the batch-affected pages post-DOC-034 + DOC-067 + DOC-138 closure + spot-checks 9 screenshot-placement pages from the untracked screenshot commits (`bff7239` + `289e619`); all PASS. Code-side coverage (axis A11-reverse) remains not-yet-started.
 - **Per-axis pass rate** (over audited cells, excluding N/A):
   - A1 60/60 (100%) — DOC-099 closed; DOC-128 closed (Architecture.md rewrite as Cornerstone-2 architectural overview); DOC-088 closed (api-reference hub split into per-feature sub-pages); all 12 new pages PASS A1 baseline.
   - A2 60/60 (100%) — DOC-114 closed; **DOC-139 closed this run** (alerting.md `## Setting up alert types` thin/redundant section dropped); **DOC-140 closed this run** (genai.md L101 known-limitations bullet rewritten — dangling "warning admonition above" reference removed; bullet now cross-links to canonical home). **A2 reaches 100% for the first time since the framework was instated.**
@@ -22,7 +22,7 @@
   - A12 60/60 (100%) — DOC-130 closed via DOC-128 rewrite subsumption; README.md A12 + Features.md A12 + odd-platform.md A12 all PASS (DOC-125 + DOC-126 closed in prior runs).
 - **Open FAILs** (distinct DOC items linked from cells): 2 items (DOC-109 — pre-existing pending; DOC-117 — pre-existing pending). **Closed this run** (2 items): DOC-139 (A2 — alerting.md redundant section dropped via commit `63d3510`); DOC-140 (A2 — genai.md dangling reference rewritten via commit `a9d115b`). **New FAILs logged this run**: 0 on the published doc tree. **Workspace-internal finding logged separately**: NAV-002 (`navigation/domains/genai.md` L20 + L37 stale "empty string" claim for `genai.url` Java field default; same factual misclaim DOC-089 + DOC-140 corrected on the published-doc surface but not propagated to the workspace navigation pointer; not counted against any per-axis dashboard cell — workspace-internal staleness, not a published-doc finding).
 - **Code-side coverage** (A11-reverse): not yet started.
-- **Last audit run**: 2026-05-07 (review run #8 — `feature/docs-active-platform-features-polish-2026-05-06` post-merge review pass for DOC-139 + DOC-140; 2 batch-affected pages re-audited; 0 new editorial follow-ups on published doc; 1 workspace-internal navigation follow-up logged as NAV-002).
+- **Last audit run**: 2026-05-07 (review run #9 — `feature/docs-doc034-2026-05-07` post-merge review pass for DOC-034 + DOC-046 + DOC-067 + DOC-138 + NAV-002; batch-affected pages re-audited; 9 screenshot-placement pages spot-checked from untracked commits `bff7239` + `289e619`; `oddrn.md` deleted (folded into `main-concepts.md#oddrn`); 0 new editorial findings on published doc; 1 workspace-internal commit-discipline follow-up logged as DOC-148).
 
 ## Per-page audit cells
 
@@ -48,7 +48,7 @@ Twelve columns per page:
 | docs/Architecture.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | ✓ | ✓ | PASS | 2026-05-06 (post-doc131-pillar-relpath-fix-2026-05-06 re-audit; DOC-128 closed — Architecture.md rewritten as Cornerstone-2 architectural overview, A3 sparseness resolved; DOC-129 closed via PR #60 + DOC-128 rewrite — L9 magic-link replaced; DOC-130 closed via DOC-128 subsumption — L13 ODDRN paragraph rewritten with correct grammar) |
 | docs/main-concepts.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | ✓ | ✓ | PASS | 2026-05-06 (post-doc131-pillar-relpath-fix-2026-05-06 re-audit; DOC-128 closed — Architecture.md rewrite resolved the cross-page content-density coherence issue; AI-aspects bullet correctly cross-links to active-platform-features/genai.md post-DOC-131) |
 | docs/Features.md | ✓ | ✓ | ✓ | ✗(DOC-117) | ✓ | ✓ | ✓ | ✗(DOC-137) | ✗(DOC-109) | ✓ | ✗(DOC-109) | ✓ | FAIL | 2026-05-06 (post-editorial-followups review — DOC-133 + DOC-134 + DOC-136 ship-side cells unchanged; DOC-137 newly logged on A8 — disclaimer over-extends "pillar" canonical term to include Management) |
-| docs/oddrn.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | — | ✓ | ✓ | ✓ | PASS | 2026-05-03 |
+| ~~docs/oddrn.md~~ | — | — | — | — | — | — | — | — | — | — | — | — | DELETED 2026-05-07 (DOC-138 Phase D — content folded into `main-concepts.md#oddrn` per ADR `summary-top-level-restructure.md`; ODDRN remains a vocabulary entry, now correctly homed on the concept index per Cornerstone 2) |
 | ~~docs/quick_start.md~~ | — | — | — | — | — | — | — | — | — | — | — | — | DELETED 2026-05-05 (DOC-105 closed) |
 | ~~docs/platform.md~~ | — | — | — | — | — | — | — | — | — | — | — | — | DELETED 2026-05-04 (DOC-106 closed) |
 | docs/use-cases.md | ✓ | ✓ | ✓ | ✓ | ✓ | — | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | PASS | 2026-05-06 (post-coherence-followups-2026-05-05 re-audit; DOC-127 closed — 3 H3 edits aligned parent with child H1 + SUMMARY canonical form; A3 + A8 now PASS) |

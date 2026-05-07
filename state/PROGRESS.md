@@ -1,4 +1,81 @@
-# Last updated 2026-05-07 — `/review batch:feature/docs-doc034-2026-05-07` — 5 items done; Phase F live-site verification ✓; DOC-148 logged for untracked screenshot commits
+# Last updated 2026-05-07 — `/implement batch:feature/docs-ia-refactor-pillars-2026-05-07` — full backlog clearance: 8 items review-ready (DOC-141..148); IA refactor sprint shipped
+
+User-invoked `/implement` with directive "all the remaining items in the backlog in one go". Backlog state at session start: 8 pending (DOC-141..148); 0 in-progress; 0 review-ready; 0 blocked. Per `CLAUDE.md` "Velocity is the partner of Pride" the maintainer executed the user-approved DOC-141 target shape directly without re-surfacing trade-offs the umbrella already enumerated.
+
+Result: **all 8 items shipped to `review-ready`**. The IA refactor sprint produced 12 new pages, collapsed 11 Features.md H2 sections to teasers, restructured SUMMARY.md under `## Features` to the user-named ordering, and swept 11 cross-link sites. DOC-148 retroactive screenshot audit close-out is also state-only; structural claims VERIFIED, point-in-time count claims accepted as captures.
+
+Two-PR batch shipped:
+
+| Branch | Repo | Items | Commits |
+|---|---|---|---|
+| `feature/docs-ia-refactor-pillars-2026-05-07` | documentation | DOC-141 + DOC-142 + DOC-143 + DOC-144 + DOC-145 + DOC-146 + DOC-147 | `0466040` (single batch commit per DOC-138 precedent — IA refactor SUMMARY restructure ships atomically) |
+| `feature/state-doc141-ia-refactor-2026-05-07` | odd-team | All 8 status flips + DOC-148 close-out + state bookkeeping | (this commit) |
+
+## Items moved this run
+
+| ID | Status flip | Reason |
+|---|---|---|
+| DOC-141 (umbrella) | pending → **review-ready** | All 6 sub-items (DOC-142..147) shipped in the same commit `0466040`. SUMMARY.md restructured per the umbrella's target shape: Overview / Data Discovery (4 sub-pages) / Data Modelling / Master Data Management / Data Quality (NEW) / Data Lineage (NEW) / Data Glossary (NEW) / Active platform features / Management. User-named ordering preserved. |
+| DOC-142 | pending → **review-ready** | New page `docs/data-discovery/search.md` carries Features.md L50-92 content (seven facets, info / question icons, FTSConstants reference, indexing-and-ranking) plus Cornerstone-1 H2 sequence. Features.md teaser collapse + SUMMARY entry + data-discovery.md subsections list. |
+| DOC-143 | pending → **review-ready** | New page `docs/data-discovery/tagging.md` enriches Features.md L142-150 with the four `TAG_*` permissions table, the read-side / Management-side split (Cornerstone 5), tag-driven discovery cross-references. Features.md teaser collapse + SUMMARY entry + data-discovery.md subsections list. |
+| DOC-144 | pending → **review-ready** | New page `docs/data-discovery/groups-domains.md` with both DEG-as-primitive and DEG-as-Domain framings. Includes the relationship to ML Experiments (DEG of class `ML_EXPERIMENT`), Group lineage cross-link, DEG metadata model. Features.md L152-158 teaser + SUMMARY entry + main-concepts Terms & Aliases row update. |
+| DOC-145 | pending → **review-ready** | New pillar Data Lineage shipped — landing (`data-lineage.md`) + `data-objects.md` + `microservices.md`. Carries Features.md L94-114 content, cross-links to API Reference → Lineage for the `lineage_depth` / `expanded_entity_ids` query parameters (already documented there; no duplication per Cornerstone 5). Features.md teasers + SUMMARY entries + main-concepts.md Data Governance map row update. |
+| DOC-146 | pending → **review-ready** | New pillar Data Glossary shipped — landing (`data-glossary.md`) + `business-glossary.md`. Consolidates Features.md L184-201 + L259-307 (Dictionary terms + Associating Terms walkthrough) into one canonical home. Seven `TERM_*` permissions table verified against `odd-platform-specification/components.yaml`. Cross-link to `developer-guides/api-reference/glossary.md` updated to point at the new home. |
+| DOC-147 | pending → **review-ready** | New pillar Data Quality shipped — landing (`data-quality.md`) + `test-results-import.md` + `dashboard.md` + `sla-statuses.md`. Consolidates Features.md L115-124 + L211-219 + L373-413 (4 Features.md H2s into one pillar). **Two factual corrections** during the carve-out: (1) "Custom Values Anomalies" → "Column Values Anomalies" matching the live UI (per Features.md L124 screenshot caption); (2) the SLA colour mapping is **not** "Minor=green / Major=yellow / Critical=red" but is computed by `SLACalculator.getSLAColour` from aggregate severity weights — the new `sla-statuses.md` documents the actual logic. URL pattern `/api/datasets/{id}/sla` verified at `SLACalculator.java:64`. |
+| DOC-148 | pending → **review-ready** | Audit close-out logged in-item: structural alt-text claims VERIFIED (Management sidebar 9 areas in `odd-platform-ui/src/components/Management/*`; `LOOKUP_TABLE_CREATE` at `components.yaml:194`; SUMMARY structure post-IA-refactor); point-in-time count claims accepted as captures (no re-verification possible without re-running the demo capture). Retroactive Sources block recorded. **No new doc commit needed** — the published doc is correct; this is a procedural-trail close-out. |
+
+## Critical fact-checks during DOC-147 carve-out (Gate 4 / Gate 9)
+
+1. **`SLACalculator.java:64`** verified URL pattern `"/api/datasets/%s/sla".formatted(datasetId)` — matches the doc claim.
+2. **`SLACalculator.getSLAColour` logic** is computed from aggregate severity weights, not a per-severity-to-colour mapping. The Features.md L219 prose oversimplified this; new `sla-statuses.md` documents the real logic with the actual rules: Red on any Critical failure / all-Major failure / specific Major-Minor patterns; Yellow on partial Major failure / all-Minor failure / no tests defined; Green otherwise.
+3. **`components.yaml`** verified TERM_* permissions count at seven (TERM_CREATE / TERM_UPDATE / TERM_DELETE / TERM_OWNERSHIP_{CREATE,UPDATE,DELETE} / TERM_TAGS_UPDATE) plus `TERM_ASSIGNMENT_UPDATED` activity-event marker. `business-glossary.md` table matches.
+4. **`components.yaml`** verified TAG_* permissions: TAG_CREATE / TAG_UPDATE / TAG_DELETE (under Management permissions) plus `TAG_ASSIGNMENT_UPDATED` activity marker. `tagging.md` table matches.
+5. **Features.md L382 "Custom Values Anomalies" vs L124 "Column Values Anomalies"** — the live UI says "Column Values" (per the screenshot alt-text captured 2026-05-07). New `dashboard.md` uses "Column Values Anomalies"; the Features.md teaser also corrected.
+
+## Cross-link sweep — VERIFIED clean
+
+`grep -rn 'Features.md#search-and-filtering\|...|Features.md#data-quality-dashboard-filtering' docs/` returns zero matches across the documentation repo post-sweep. 11 inbound sites rewritten across Architecture.md / use-cases (5 files) / activity-feed.md / api-reference (glossary + lineage) / permissions.md / 5 integration pages / data-discovery/directory.md.
+
+## Counts (after this run)
+
+- `done`: unchanged at 139.
+- `review-ready`: 0 → **8** (+ DOC-141 + DOC-142 + DOC-143 + DOC-144 + DOC-145 + DOC-146 + DOC-147 + DOC-148).
+- `pending`: 8 → **0**. **First time the backlog has zero pending items since the framework was instated.**
+- `in-progress`: unchanged at 0.
+- `blocked`: unchanged at 0.
+- `rejected`: unchanged at 2.
+- `superseded`: unchanged at 1.
+- Total backlog: unchanged at 150.
+
+## Hand-off
+
+**Run `/review` in a separate session** to verify all 8 items against the 10 Quality Bar gates + Gate 8 live-site verification.
+
+Live-site URLs to fetch in `/review`:
+
+- `https://docs.opendatadiscovery.org/features/data-discovery/search` — DOC-142.
+- `https://docs.opendatadiscovery.org/features/data-discovery/tagging` — DOC-143.
+- `https://docs.opendatadiscovery.org/features/data-discovery/groups-domains` — DOC-144.
+- `https://docs.opendatadiscovery.org/features/data-lineage` — DOC-145 pillar landing.
+- `https://docs.opendatadiscovery.org/features/data-lineage/data-objects` — DOC-145.
+- `https://docs.opendatadiscovery.org/features/data-lineage/microservices` — DOC-145.
+- `https://docs.opendatadiscovery.org/features/data-glossary` — DOC-146 pillar landing.
+- `https://docs.opendatadiscovery.org/features/data-glossary/business-glossary` — DOC-146.
+- `https://docs.opendatadiscovery.org/features/data-quality` — DOC-147 pillar landing.
+- `https://docs.opendatadiscovery.org/features/data-quality/test-results-import` — DOC-147.
+- `https://docs.opendatadiscovery.org/features/data-quality/dashboard` — DOC-147.
+- `https://docs.opendatadiscovery.org/features/data-quality/sla-statuses` — DOC-147.
+- `https://docs.opendatadiscovery.org/features/features` — Features.md post-collapse (every teaser renders + cross-link works).
+- `https://docs.opendatadiscovery.org/introduction/main-concepts` — main-concepts.md Governance map updated rows.
+- DOC-148 is workspace-state-only; no live-site verification needed.
+
+URL retirements expected post-merge: `Features.md#search-and-filtering` / `#manual-object-tagging` / `#data-entity-groups` / `#end-to-end-data-objects-lineage` / `#end-to-end-microservices-lineage` / `#dictionary-terms` / `#associating-terms-with-data-entities-through-descriptive-information` / `#data-quality-test-results-import` / `#dataset-quality-statuses-sla` / `#data-quality-dashboard` / `#data-quality-dashboard-filtering` — these anchors no longer have content; URL paths to the new homes are listed above. External-bookmark cost accepted (per the same DOC-138 ADR Trade-off pattern).
+
+Backlog after this run: **0 pending, 0 in-progress, 0 blocked, 8 review-ready, 139 done**. The next batch starts from the 8-item review queue.
+
+---
+
+# Prior — 2026-05-07 — `/review batch:feature/docs-doc034-2026-05-07` — 5 items done; Phase F live-site verification ✓; DOC-148 logged for untracked screenshot commits
 
 User-invoked `/review` in a separate session from the `/implement` batch that produced the 5 review-ready items. All 5 items VERIFIED across acceptance criteria + 10 Quality Bar gates + Phase F live-site verification on 9 URLs. Two untracked screenshot commits on the same doc PR (`bff7239` + `289e619`, 9 screenshots without per-commit `Sources:` footer) surfaced a procedural finding logged as DOC-148.
 

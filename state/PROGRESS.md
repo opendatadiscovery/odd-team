@@ -1,4 +1,54 @@
-# Last updated 2026-05-07 — `/review batch:feature/state-doc141-ia-refactor-2026-05-07` — DOC-146 + DOC-147 + DOC-148 done; DOC-141..145 blocked on user-flagged IA finding; 5 follow-ups logged (DOC-149..DOC-153)
+# Last updated 2026-05-07 — `/implement DOC-150` — Cornerstone 2 superseded (no reverse-link rule); LSN-012 filed; pillar-pillar consistency aligned; DOC-149 unblocked
+
+User-invoked `/implement DOC-150` to land the cornerstone update that supersedes the rule producing DOC-149's reverse-link defect. Single-item batch on odd-team (no co-resident continuation candidates — the rest of the 2026-05-07 follow-ups DOC-149/151/152/153 target the documentation repo).
+
+## What shipped
+
+- `pillars/documentation/cornerstones.md` Cornerstone 2 — second bullet of the bucket-attribution rule replaced; "Other {bucket} features" sub-list pattern removed; **`Features.md` is the index — cross-link direction is one-way** rule added; **migration corollary** named (inline content on bucket landing OR carve out a dedicated detail page; never reverse-link); cross-cutting-features rule clarified (cross-links travel outward to related buckets' landings, never back to a `Features.md` anchor); failure-mode case-law inline with verbatim user feedback + DOC-149/150/PR-#66/PR-#65 cross-references.
+- `pillars/documentation/canonical-homes.md` L18 — Feature description row clarified: `Features.md` is the **index**, per-feature detail pages under aspect landings are the **details**, cross-link direction is one-way.
+- `pillars/documentation/gates.md` Pre-authoring stance check Q3 — bucket-attribution clause clarified: bucket landing must home the feature as inline content **or** as a `## Subsections` entry pointing at a dedicated detail page; never as a reverse-link to `Features.md`. Cites LSN-012.
+- `retrospectives/LSN-012-cornerstone-codified-wrong-pattern.md` filed — case-law for "well-intentioned codification entrenches wrong shape; same-day course-correction after user reads the resulting doc product." Forcing question: when codifying a new framework rule that prescribes link direction, content placement, or cross-page structure, ask what shape the doc product takes if the rule is applied literally on the next two authoring sessions, and whether that shape preserves the index/detail and discoverability invariants the existing cornerstones already protect.
+- `retrospectives/README.md` — LSN-012 indexed under Gate 7 + Cornerstone 2 (bucket-attribution + index/detail direction) + `playbooks/doc-product-editorial-read.md` + `playbooks/pre-authoring-stance.md`.
+- `backlog/docs/DOC-150.md` — status flipped pending → review-ready.
+
+## Counts (after this run)
+
+- `done`: 142 (unchanged).
+- `review-ready`: 0 → **1** (+1: DOC-150).
+- `pending`: 5 → **4** (-1: DOC-150).
+- `in-progress`: unchanged at 0.
+- `blocked`: 5 (unchanged — DOC-141..145 still blocked on DOC-149).
+- `rejected`: unchanged at 2.
+- `superseded`: unchanged at 1.
+- Total backlog: 155 (unchanged).
+
+## Hand-off
+
+**This batch ships to PR pending review.** Live-site verification not applicable (state-repo-only change; no `docs.opendatadiscovery.org` URLs touched).
+
+**Next batch starter**: `/implement DOC-149` once this PR lands — the cornerstone update now gives the doc-side cleanup documented authority; DOC-149 then unblocks DOC-141..145. The doc-side fix is 5 files / ~22 cross-link rewrites + 1 H2 section removal — surgical, not a rewrite.
+
+**Optional same-batch additions for the DOC-149 implementer** (per the prior `/review` hand-off, unchanged):
+
+- DOC-151 (tagging.md "four TAG_* RBAC permissions" → "three TAG_* RBAC permissions" + separate activity-event call-out; mirror fix on Features.md L93). Same files as DOC-149's cross-link rewrites already touch.
+- DOC-152 (Architecture.md L38 search-facet enumeration update). Local edit, ~5 min.
+
+**DOC-153 is its own decision** — Option A (consolidate) vs. Option B (accept parallel) is a maintainer call before authoring; surface to the user before the implementer touches the four pillar landings.
+
+## Sources footer (this commit)
+
+```
+Sources:
+- Cornerstone-being-superseded: pillars/documentation/cornerstones.md:24-33 (introduced by commit 62a5011, 2026-05-07)
+- User feedback verbatim: backlog/docs/DOC-150.md:27, backlog/docs/DOC-149.md:27 (2026-05-07 /review session)
+- Failure case (documentation repo): docs/data-discovery.md L22-35 ## Other Data Discovery features H2 + 22 reverse-link instances inventoried in DOC-149
+- Backlog: DOC-150 (this, status pending → review-ready), DOC-149 (blocks DOC-141..145), DOC-141..145 (review-ready, blocked on Gate 7)
+- Case-law: retrospectives/LSN-012-cornerstone-codified-wrong-pattern.md (filed in this same change)
+```
+
+---
+
+# Prior — 2026-05-07 — `/review batch:feature/state-doc141-ia-refactor-2026-05-07` — DOC-146 + DOC-147 + DOC-148 done; DOC-141..145 blocked on user-flagged IA finding; 5 follow-ups logged (DOC-149..DOC-153)
 
 User-invoked `/review batch:feature/state-doc141-ia-refactor-2026-05-07` with a critical IA-direction comment:
 

@@ -14,19 +14,29 @@ Identify platform features that have no corresponding documentation page or sect
 
 ## Method
 
-1. Enumerate features from odd-platform source:
-   - UI routes in `odd-platform-ui/src/routes/` (each route = potential feature)
-   - Top-level OpenAPI endpoint groups in `odd-platform-specification/openapi.yaml`
-   - Menu items / navigation in UI components
-   - Management pages in `odd-platform-ui/src/components/Management/`
-2. Fetch SUMMARY.md from the documentation repo (defines gitbook navigation tree)
-3. Cross-reference: for each feature found in code, check if docs exist
+Enumeration must run **all** of the following axes. Route + controller + OpenAPI axes alone are blind to cross-cutting capabilities (the i18n-class miss; see `retrospectives/LSN-013-research-punted-on-substrate-draft.md` and `adrs/drafts/code-lineage-substrate.md`):
+
+1. **UI routes axis** — `odd-platform-ui/src/routes/` (each route = potential feature).
+2. **Controllers / OpenAPI axis** — REST controllers + top-level OpenAPI endpoint groups in `odd-platform-specification/openapi.yaml`.
+3. **Menu / Management axis** — Menu items in UI components; Management pages in `odd-platform-ui/src/components/Management/`.
+4. **UI shell axis (added 2026-05-08 — closes the i18n class)** — Cross-cutting client-side capabilities not reachable from a route:
+   - `odd-platform-ui/src/locales/` (i18n bootstrap; translation resources)
+   - `odd-platform-ui/src/components/shared/elements/AppToolbar/` (each toolbar widget directory = a separate ui-shell node)
+   - `odd-platform-ui/src/theme/` and any `ThemeProvider*` files (theme switching)
+   - `odd-platform-ui/src/components/shared/elements/AppErrorPage/` (error-page family: 404, 500, unauthorized)
+   - Auth flow files: `auth/`, login pages, OIDC/LDAP/S2S provider UIs (these are not in `routes/`)
+   - Any TS file imported directly by `odd-platform-ui/src/index.tsx` is auto-promoted to a ui-shell-bootstrap node.
+   - Any `<Component />` mounted inside the AppToolbar's render is auto-promoted to a ui-shell-widget node.
+5. **Config-prefixes axis (added 2026-05-08)** — Top-level YAML namespaces in `application.yml` mapped to their `@ConfigurationProperties("<prefix>")` consumer class. Each prefix is a node; cross-reference to docs (does any doc page mention the prefix?).
+6. **Cross-reference**: fetch SUMMARY.md from the documentation repo (defines GitBook navigation tree); for each enumerated feature, check whether a doc page exists or is planned.
 
 ## Criteria for a Finding
 
-- Feature has UI route but no documentation page
-- Feature has OpenAPI endpoints but no API documentation
-- Feature appears in platform menu but is not mentioned in docs at all
+- Feature has UI route but no documentation page (axis 1)
+- Feature has OpenAPI endpoints but no API documentation (axis 2)
+- Feature appears in platform menu but is not mentioned in docs at all (axis 3)
+- **Cross-cutting UI capability with no documentation** — i18n / theme / auth / error pages / toolbar widgets / app-shell bootstraps not appearing in any doc page (axis 4 — the i18n-class fix)
+- **Config prefix with no documentation** — a `@ConfigurationProperties` prefix that is not mentioned in any deployment / configuration doc page (axis 5)
 - Feature has been added in recent releases (check git log) with no doc update
 
 ## Output

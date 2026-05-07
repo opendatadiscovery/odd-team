@@ -1,4 +1,92 @@
-# Last updated 2026-05-07 — `/implement batch:feature/docs-ia-refactor-pillars-2026-05-07` — full backlog clearance: 8 items review-ready (DOC-141..148); IA refactor sprint shipped
+# Last updated 2026-05-07 — `/review batch:feature/state-doc141-ia-refactor-2026-05-07` — DOC-146 + DOC-147 + DOC-148 done; DOC-141..145 blocked on user-flagged IA finding; 5 follow-ups logged (DOC-149..DOC-153)
+
+User-invoked `/review batch:feature/state-doc141-ia-refactor-2026-05-07` with a critical IA-direction comment:
+
+> *"I didn't like the approach to put 'Other Data Discovery features' with the references for details to Features/Overview — it breaks the concept: Features/Overview is an index of all the features with brief description to grasp the entire functionality of the platform and it should have links to the detailed explanations of the features in the dedicated sections — not vice versa where we have references for index from some dedicated pages — this is crazy and stupid."*
+
+This is a binding IA principle. Reviewer applied it as a Gate 7 hard rule and audited the whole batch + the closely-coupled prior PR #66 (`feature/docs-feature-bucket-attribution-2026-05-07`, commit `531d093`) that introduced the offending H2 section on `data-discovery.md`.
+
+## Verdict per item
+
+| ID | Verdict | Reason |
+|---|---|---|
+| **DOC-141** (umbrella) | **review-ready → blocked** | Gate 7 FAIL — user-flagged IA finding spans 4 of 6 sub-items + a sibling-batch deliverable. Acceptance criteria all met (12 pages shipped, SUMMARY restructured, Features.md collapsed, cross-link sweep clean, live site renders). The umbrella's intent landed; the cross-link layer needs one more pass. Stays `blocked` until DOC-149 ships. |
+| **DOC-142** (search.md) | **review-ready → blocked** | Gate 7 FAIL — 2 reverse cross-links to Features.md anchors at L27 + L57. All other gates PASS. Live-site renders. |
+| **DOC-143** (tagging.md) | **review-ready → blocked** | Gate 7 FAIL — 3 reverse cross-links at L17 + L44 + L60. **Gate 9 FAIL** — page L28 says "exposes **four** `TAG_*` RBAC permissions" with `TAG_ASSIGNMENT_UPDATED` listed as a permission row when it is actually an `ActivityEventType` enum entry at `components.yaml:3173`, not a Permission. Mirror defect on Features.md L93 teaser. business-glossary.md L49-61 handles the analogous TERM_* case correctly (7 permissions table + separate activity-event call-out at L61). Logged as DOC-151. |
+| **DOC-144** (groups-domains.md) | **review-ready → blocked** | Gate 7 FAIL — 4 reverse cross-links, including the most explicit instance batch-wide at L60: `[ML Experiments section in Features.md](../Features.md#ml-experiments) — the DEG-of-class-ML_EXPERIMENT use case.` Names the target as "section in Features.md" — canonical example of the user-flagged defect. |
+| **DOC-145** (Data Lineage pillar) | **review-ready → blocked** | Gate 7 FAIL — 2 reverse cross-links on `data-lineage/data-objects.md` at L7 + L24. Pillar landing + microservices.md are clean. |
+| **DOC-146** (Data Glossary pillar) | **review-ready → done** ✓ | All gates PASS. Reference implementation for the batch — zero reverse-links to Features.md anchors, TERM_* permissions table correctly separates 7 RBAC + 1 activity-event marker, faithful Wikipedia-About-style consolidation of Features.md L184-201 + L259-307 with all 8 medium-CDN screenshots preserved. |
+| **DOC-147** (Data Quality pillar) | **review-ready → done** ✓ | All gates PASS. Carries the batch's most operator-load-bearing fact-correction — the SLA colour computation rewrite based on the actual `SLACalculator.getSLAColour` logic (verified end-to-end via `read odd-platform-api/.../SLACalculator.java`). The old Features.md L211-219 framing ("Minor=green / Major=yellow / Critical=red") was a per-severity-to-colour mapping the code does not implement; new `sla-statuses.md` documents the actual aggregate-severity-weight logic AND warns about the misleading framing. /api/datasets/{id}/sla URL pattern verified at L64. Column Values Anomalies label corrected vs. live UI. |
+| **DOC-148** (retroactive screenshot audit) | **review-ready → done** ✓ | All checkable gates PASS. Audit close-out delivered in-item: Management UI sidebar 9 areas verified via `find odd-platform-ui/src/components/Management -maxdepth 1 -type d`; LOOKUP_TABLE_CREATE verified at `components.yaml:194`; SUMMARY structure verified post-IA-refactor. Point-in-time count claims accepted as captures. |
+
+## The user-flagged IA finding — full inventory
+
+The reverse-link defect: **detail pages and bucket landings cross-linking to `Features.md` anchors** as if `Features.md` were a peer reference page. The user's principle: `Features.md` is the **index**; cross-link direction is one-way (index → detail), never reverse. The `## Other Data Discovery features` H2 section on `data-discovery.md` (10 bullets pointing at Features.md anchors) is the most egregious case — and it was introduced by PR #66 (`feature/docs-feature-bucket-attribution-2026-05-07`, commit `531d093`), not by this batch (PR #65). But this batch (PR #65) introduced 11 detail-page-level reverse-links of the same shape.
+
+**22 reverse-link instances across 5 files + 1 H2 section header on `data-discovery.md`:**
+
+| Source file | Lines |
+|---|---|
+| `docs/data-discovery.md` | L9 (inline narrative) + L22-35 (the `## Other Data Discovery features` H2 with 10 bullets — PR #66) + L26 (Catalog Overview anchor) + L27 (Recommended panel anchor) + L28 (Adding Business Names anchor) + L29 (Data Entity Statuses anchor) + L30 (Data Entity Attachments anchor) + L31 (Dataset schema diff anchor) + L32 (Metadata stale anchor) + L33 (Vector Store Metadata anchor) + L34 (Filters anchor) + L35 (ML Experiments anchor) + L56 (Where-to-next: Catalog Overview anchor) |
+| `docs/data-discovery/search.md` | L27 (inline `[statuses]` link), L57 (Where-to-next: Catalog Overview) |
+| `docs/data-discovery/tagging.md` | L17 (inline Catalog Overview), L44 (Tag-driven discovery list bullet), L60 (Where-to-next bullet) |
+| `docs/data-discovery/groups-domains.md` | L7 (Catalog Overview inline), L46 (ML Experiments inline), L56 (Where-to-next: Catalog Overview), **L60 (Where-to-next: "ML Experiments section in Features.md" — most explicit reverse-link in the entire doc tree)** |
+| `docs/data-lineage/data-objects.md` | L7 (ML experiments inline), L24 (ML experiments in Group lineage explanation) |
+
+**Root cause:** `pillars/documentation/cornerstones.md` Cornerstone 2 L24-33 (added in commit `62a5011` on 2026-05-07) explicitly endorses the "Other {bucket} features" sub-list pattern that produces this defect. The cornerstone gave implementers cover to ship the wrong shape. **The fix requires both a doc-side cleanup AND a cornerstone update; one without the other is incoherent.**
+
+## Follow-ups logged
+
+| ID | Priority | Title | Reason |
+|---|---|---|---|
+| **DOC-149** | high | Remove reverse cross-links from detail pages and bucket landings to Features.md anchors | Doc-side cleanup of the 22 reverse-link instances; depends on DOC-150; blocks DOC-141..145. |
+| **DOC-150** | high | Update Cornerstone 2 — Features.md is index-only; no reverse-links from below | State-side cornerstone update that supersedes the rule that produced DOC-149's defect. Blocks DOC-149. |
+| **DOC-151** | medium | Fix tagging.md "four `TAG_*` RBAC permissions" misclassification | Gate 9 finding from DOC-143 review — separate 3 RBAC + 1 activity-event marker per the business-glossary.md L49-61 reference shape. Mirror fix on Features.md L93 teaser. |
+| **DOC-152** | low | Architecture.md L38 search-facet enumeration outdated | Editorial-audit finding — the seven-facet list ("entity class, data source, namespace, owner, tag, type, group") doesn't match the new search.md (Datasource / Type / Namespace / Owner / Tag / Groups / Statuses); pre-existing drift surfaced by cross-reference. |
+| **DOC-153** | low | Pillar landings — six-pillar comparison parallel content | Editorial-audit finding — four pillar landings carry textually-divergent "Why this is a separate pillar" sections that restate the same six-pillar differentiation. Consolidate to main-concepts.md or accept as design intent. |
+
+## Per-batch live-site WebFetch — VERIFIED
+
+- `https://docs.opendatadiscovery.org/features/data-discovery/search` — H1 "Search and Filtering" + Faceted search / Per-result transparency / Technical details ✓
+- `https://docs.opendatadiscovery.org/features/data-quality` — H1 + 3 subsections ✓
+- `https://docs.opendatadiscovery.org/features/data-glossary/business-glossary` — H1 + 8 H2 sections ✓
+- `https://docs.opendatadiscovery.org/features/data-lineage/data-objects` — H1 + 5 H2 sections ✓
+
+PR #65 propagated to origin/main; live-site rendering matches the authored shape on every spot-checked URL.
+
+## Doc-product editorial audit — partition state
+
+**Covered this run**: the 12 newly-created pages + Features.md collapse + SUMMARY.md restructure + main-concepts.md cross-link updates + Architecture.md L37-38 cross-reference + 5 use-case + 5 integration + 2 api-reference + permissions.md + activity-feed.md + directory.md cross-link sweep targets.
+
+**Queued for next `/review`**: the rest of `configuration-and-deployment/**`, the rest of `integrations/**`, the rest of `developer-guides/**`, `Architecture.md` end-to-end (only the L37-38 region was on the batch's path), and the broader `main-concepts.md` non-Data-Governance-map sections.
+
+## Counts (after this run)
+
+- `done`: 139 → **142** (+3: DOC-146, DOC-147, DOC-148).
+- `review-ready`: 8 → **0** (all 8 flipped — 3 to done, 5 to blocked).
+- `pending`: 0 → **5** (+5: DOC-149, DOC-150, DOC-151, DOC-152, DOC-153).
+- `in-progress`: unchanged at 0.
+- `blocked`: 0 → **5** (+5: DOC-141, DOC-142, DOC-143, DOC-144, DOC-145; all unblocked once DOC-149 ships).
+- `rejected`: unchanged at 2.
+- `superseded`: unchanged at 1.
+- Total backlog: 150 → **155** (+5 from DOC-149..153).
+
+## Hand-off
+
+**Next batch starter**: `/implement DOC-150` — the cornerstone update is the gate; once it lands, `/implement DOC-149` carries out the doc-side cleanup which unblocks DOC-141..145. The doc-side fix is 5 files / ~22 cross-link rewrites + 1 H2 section removal — surgical, not a rewrite.
+
+**Optional same-batch additions** (no hard dependencies, can ship alongside DOC-149 as one cohesive doc-side batch):
+
+- DOC-151 (tagging.md "four TAG_* RBAC permissions" → "three TAG_* RBAC permissions" + separate activity-event call-out; mirror fix on Features.md L93). Same files as DOC-149's cross-link rewrites already touch.
+- DOC-152 (Architecture.md L38 search-facet enumeration update). Local edit, ~5 min.
+
+**DOC-153 is its own decision** — Option A (consolidate to main-concepts.md) vs. Option B (accept parallel) is a maintainer call before authoring; surface to the user before the implementer touches the four pillar landings.
+
+`/review` re-run on DOC-141..145 expected after DOC-149 + DOC-150 ship: at that point Gate 7 should clear and the items can flip to `done`.
+
+---
+
+# Prior — 2026-05-07 — `/implement batch:feature/docs-ia-refactor-pillars-2026-05-07` — full backlog clearance: 8 items review-ready (DOC-141..148); IA refactor sprint shipped
 
 User-invoked `/implement` with directive "all the remaining items in the backlog in one go". Backlog state at session start: 8 pending (DOC-141..148); 0 in-progress; 0 review-ready; 0 blocked. Per `CLAUDE.md` "Velocity is the partner of Pride" the maintainer executed the user-approved DOC-141 target shape directly without re-surfacing trade-offs the umbrella already enumerated.
 

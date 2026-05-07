@@ -60,6 +60,8 @@ When a retrospective adds new case-law that changes the procedure, update the pl
 | `live-site-verification.md` | active | Phase 4 | reviewing a merged item | Gate 8 (`pillars/documentation/gates.md`) |
 | `follow-up-on-disk.md` | active | Phase 4 | any phase discovering an out-of-scope issue | "Follow-up work must be logged on disk" (`CLAUDE.md`) |
 | `doc-product-editorial-read.md` | active | Phase 7 (added 2026-05-03) | every `/review` session, after the per-item gates and before the verdict | `/review` SKILL Step 5 (`.claude/skills/review/SKILL.md`) |
+| `deep-research.md` | active | added 2026-05-08 | drafting any proposal (ADR / pillar / skill) with ≥3 technical decisions; or about to write "open questions for human review" listing technical choices | CLAUDE.md ADR section; `feedback_research_dont_punt.md` (auto-memory); LSN-013 |
+| `pause-and-ask.md` | active (rev 2 — research-backed) | added 2026-05-08 | discrete-option decision needed → use Anthropic's `AskUserQuestion` tool per documented schema; banned: "your call" / "want me to..." / multi-option open-enders in narrative | CLAUDE.md "When to pause and ask the user"; `feedback_pause_and_ask_well.md` (auto-memory); LSN-014 (original miss), LSN-015 (intuition-authored rev 1 contradicted schema) |
 
 ## Sub-protocol relationships
 

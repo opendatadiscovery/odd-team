@@ -187,6 +187,8 @@ Before modifying code, check `adrs/` for decisions that constrain the area you'r
 - If you make a new decision not covered by existing ADRs → create a draft in `adrs/drafts/`
 - ADRs are reverse-engineered from code patterns, not invented from scratch
 
+**Drafting an ADR (or any proposal) with multiple technical decisions** → fire `playbooks/deep-research.md` **before** writing the Decision section. Do the research in-band (parallel-researcher pattern: `STACK / SCHEMA / DOC-LINKAGE / PITFALLS / PROBES / SUMMARY` artefacts in `adrs/drafts/research/{slug}/`) and ship a research-backed opinionated draft. Do NOT end a draft with "Open questions for human review" listing technical choices (extractor toolchain, schema, format, granularity) the maintainer could resolve via WebSearch + WebFetch + workspace files — that punts the maintainer's research onto the user. Case-law: `retrospectives/LSN-013-research-punted-on-substrate-draft.md`.
+
 ## Implementation Quality Bar
 
 Acceptance criteria on a work item are the named deliverables. The Quality Bar is the responsibility the maintainer carries on **every** change regardless of scope. If a Quality Bar check reveals an issue outside the current item's scope, log it as a new backlog item (see "Follow-up work must be logged on disk" below) — never ignore, never just narrate.
@@ -233,6 +235,8 @@ Minimize user interventions. This maintenance system runs at scale — tens of s
 - The batch is complete — surface one review request with the full list
 
 Silence is not the target; savvy judgment is. Don't bundle unrelated items together, don't skip acceptance criteria or Quality Bar checks to speed through a batch, don't merge logically distinct changes into one commit, don't skip live-site verification, don't self-mark items `done`.
+
+**HOW to ask, once you've decided to ask** → `playbooks/pause-and-ask.md` (revision 2 — research-backed; cites Anthropic Agent SDK docs + `AskUserQuestion` schema + gsd-build advisor pattern). The bullets above name the **when**; the playbook names the **how**. Default mechanism: Anthropic's `AskUserQuestion` tool (1-4 questions, 2-4 options each, recommended option first with `(Recommended)` suffix, `Other` is automatic, `multiSelect` for non-mutually-exclusive choices). Plain-text questions only for genuinely-open answers the agent cannot enumerate. Banned closers: *"your call"*, *"want me to..."*, *"let me know how to proceed"*, multi-option open-enders in narrative ("adopt / defer / reject?") without an `AskUserQuestion` call. Plan-mode caveat: do not use AskUserQuestion to ask "Is my plan ready?" — use `ExitPlanMode`. Case-law: `retrospectives/LSN-014-vague-interview-closers.md` (original miss), `retrospectives/LSN-015-intuition-authored-playbook.md` (meta-miss — revision 1 of this playbook was authored from intuition and contradicted Anthropic's schema).
 
 ### Follow-up work must be logged on disk
 

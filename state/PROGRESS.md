@@ -1,4 +1,76 @@
-# Last updated 2026-05-07 — `/implement` batch — DOC-149 + DOC-151 + DOC-152 + DOC-153 + DOC-154 → review-ready; pending-queue cleared
+# Last updated 2026-05-07 — `/review batch:feature/docs-doc149-cleanup-batch-2026-05-07` — DOC-149 + DOC-151 + DOC-152 + DOC-153 + DOC-154 → done; editorial audit logs DOC-155 + DOC-156
+
+User-invoked `/review batch:feature/docs-doc149-cleanup-batch-2026-05-07` in a session distinct from the `/implement` session that produced the batch. PR #67 (documentation) merged 2026-05-07 — review runs against `origin/main` post-merge.
+
+## Verdict — all five items ACCEPTED
+
+All five items pass every applicable Quality Bar gate with cited evidence (Read + Bash + WebFetch). Verdict blocks appended to `backlog/docs/DOC-{149,151,152,153,154}.md`. Status flipped `review-ready` → `done` on each.
+
+| Item | Result | Gates run | Live-site verified |
+|---|---|---|---|
+| DOC-149 | ACCEPTED | 1, 7, 8, 9, 10 PASS; 2/3/4/5/6 N/A | data-discovery, data-lineage/data-objects |
+| DOC-151 | ACCEPTED | 1, 3, 4, 6, 7, 8, 9, 10 PASS; 2/5 N/A | tagging.md (live "three" + activity-event marker confirmed) |
+| DOC-152 | ACCEPTED | 1, 6, 7, 8, 9, 10 PASS; 2/3/4/5 N/A | architecture.md (seven-facet enumeration confirmed live) |
+| DOC-153 | ACCEPTED | 1, 7, 8, 9, 10 PASS; 2/3/4/5/6 N/A | main-concepts.md#pillar-differentiation, data-quality landing |
+| DOC-154 | ACCEPTED | 1, 2, 3, 7, 8, 9, 10 PASS; 4/5/6 N/A | management.md (Other Management surfaces unwrapped from reverse-links confirmed live) |
+
+**Tree-wide grep verification** (Bash): `grep -rn 'Features\.md#' docs/ | grep -v 'docs/Features\.md:' | grep -v 'docs/SUMMARY\.md:'` returns **zero matches**. Cornerstone 2 (Features.md is the index — cross-link direction is one-way) is now enforced across the entire `docs/` tree.
+
+**Spec verification for DOC-151** (Bash awk on `odd-platform/odd-platform-specification/components.yaml`): `Permission` enum L221-223 = TAG_CREATE / TAG_UPDATE / TAG_DELETE (three rows); `ActivityEventType` enum L3173 = TAG_ASSIGNMENT_UPDATED (one row, distinct enum). Cited line numbers in commit body `2c9880d` match exactly.
+
+## Doc-product editorial audit — coverage this run
+
+**Audit scope**: post-batch state of the `documentation/docs/**/*.md` tree, end-to-end. Token budget intentionally not constrained per `playbooks/doc-product-editorial-read.md`.
+
+**Subtrees audited**: `data-discovery/**`, `data-lineage/**`, `data-glossary/**`, `data-quality/**`, `data-modelling/**`, `master-data-management/**`, `active-platform-features/**`, `use-cases/**`, all 6 governance pillar landings (`data-{discovery,modelling,quality,lineage,glossary}.md`, `master-data-management.md`), `management.md`, `active-platform-features.md`, `Architecture.md`, `main-concepts.md`, `Features.md`, `developer-guides/api-reference.md` + sub-pages, `integrations/README.md`, plus spot-checks on `configuration-and-deployment/`. The full pillar / cross-cutting / use-case / api-reference surface was walked.
+
+**Findings logged** (2):
+
+- **DOC-155** (medium, IA placement / pillar-landing consistency) — `data-modelling.md` lacks the `## Why this is a separate pillar` cross-link to `main-concepts.md#pillar-differentiation` that 5 of 6 governance pillar landings carry post-DOC-153. DOC-153's AC line 65 explicitly named data-modelling.md as in-scope but the implementer's velocity-call (don't introduce a new section into a previously-section-less landing) was reasonable yet creates a 5-of-6 consistency gap. Filed at `backlog/docs/DOC-155.md`. Small (~10 min) fix.
+- **DOC-156** (low, canonical-home discipline / cross-link integrity) — Two narrative use-case pages cross-link past canonical doc-homes to GitHub repo URLs:
+  - `use-cases/dq-visibility.md` L7 — `[Great Expectations]`, `[dbt tests]`, `[odd-collector-profiler]` should target `integrations/push-adapters/*.md` and `integrations/collectors/*.md` (canonical-homes table Integrations row).
+  - `use-cases/service-presales.md` L10 + L19 — both `[API]` cross-links should target `developer-guides/api-reference.md` (canonical-homes table API reference row), not `github.com/.../odd-platform-specification`.
+  Same shape as `LSN-003` applied to use-case narrative. Filed at `backlog/docs/DOC-156.md`. Small (~10 min) fix.
+
+**Editorial findings do not block the per-item verdict** — all five items ship as `done`. The findings extend the backlog as parallel work.
+
+## Counts (after this run)
+
+- `done`: 143 → **148** (+5: DOC-149, DOC-151, DOC-152, DOC-153, DOC-154).
+- `review-ready`: 5 → **0** (-5: all flipped to done).
+- `pending`: 0 → **2** (+2: DOC-155, DOC-156 — editorial follow-ups logged this run).
+- `in-progress`: unchanged at 0.
+- `blocked`: 5 (unchanged — DOC-141..145 still flagged blocked per their `Why this batch is blocked` records; the underlying reverse-link defect is now fixed by DOC-149 → done; surface to the user / next `/review` whether to flip them to `done` directly or re-run `/review` against the data-discovery + data-lineage subtree to confirm).
+- `rejected`: unchanged at 2.
+- `superseded`: unchanged at 1.
+- Total backlog: 156 → **158** (+2).
+
+## Hand-off
+
+- **Documentation-repo PR #67 already merged** (commit `158ea97` on `origin/main` 2026-05-07). No further doc-side action this run.
+- **odd-team-repo PR for this `/review`**: pushed on `feature/state-review-doc149-cleanup-batch-2026-05-07` covering verdict-block appends + status flips on DOC-149/151/152/153/154 + DOC-155/156 follow-ups + this PROGRESS.md update.
+- **DOC-141..145 unblock**: surface to the maintainer. The Gate 7 reverse-link defect that left those items `blocked` is now resolved by DOC-149's tree-wide cleanup. The maintainer's call: flip to `done` directly (the underlying defect is fixed, evidence in DOC-149's verdict), OR re-run `/review` on the affected files to confirm. Either is defensible.
+- **Next `/implement` candidates**: DOC-155 (medium, ~10 min) and DOC-156 (low, ~10 min) are small-batch-sized and target the documentation repo. Pair them in a single small batch or sequence them. Neither is urgent.
+- **DOC-083 (open, larger refactor)**: api-reference content-migration. DOC-154's resolution of the `api-reference/glossary.md` and `api-reference/alerts.md` reverse-links treated those surfaces as already-canonical homes; the larger systemic refactor (migrating embedded API content from feature pages to api-reference) remains DOC-083's scope.
+
+## Sources footer (this run)
+
+```
+Sources:
+- Backlog item Reads: backlog/docs/DOC-{149,150,151,152,153,154}.md
+- Pillar files Reads: pillars/documentation/{pillar,cornerstones,gates,authoring,canonical-homes}.md
+- Playbook Read: playbooks/follow-up-on-disk.md
+- Doc-tree Reads (verification): docs/{Features,Architecture,main-concepts}.md, docs/data-{discovery,quality,lineage,glossary,modelling}.md, docs/master-data-management.md, docs/management.md, docs/active-platform-features.md, docs/use-cases.md + 5 use-case sub-pages, docs/data-discovery/{search,tagging,groups-domains,directory}.md, docs/data-lineage/data-objects.md, docs/data-glossary/business-glossary.md, docs/data-modelling/{query-examples,relationships}.md, docs/active-platform-features/{alerting,activity-feed}.md, docs/configuration-and-deployment/{collectors-secrets-backend.md,enable-security/authentication/s2s.md,enable-security/authorization/permissions.md,odd-platform.md L730-900}, docs/developer-guides/api-reference.md, docs/developer-guides/api-reference/{glossary,alerts}.md, docs/integrations/README.md, docs/SUMMARY.md
+- Bash verifications: tree-wide `grep -rn 'Features\.md#' docs/` clean; `grep -n "TAG_" docs/Features.md docs/data-discovery/tagging.md` matches "three" + activity-event marker; spec awk-extract `components.yaml:221-223` (Permission) + `:3173` (ActivityEventType) verified
+- WebFetch verifications (Gate 8): `docs.opendatadiscovery.org/{features/data-discovery, features/data-discovery/tagging.md, features/data-discovery/groups-domains.md, features/data-lineage/data-objects.md, features/management.md, features/data-quality, introduction/architecture.md, introduction/main-concepts.md}` — all live, all match authored markdown
+- Spec: odd-platform/odd-platform-specification/components.yaml:221-223 (Permission TAG_CREATE/UPDATE/DELETE) + :3173 (ActivityEventType TAG_ASSIGNMENT_UPDATED)
+- Backlog: DOC-{149,151,152,153,154} (review-ready → done), DOC-155 (pending — new), DOC-156 (pending — new)
+- Case-law cited: retrospectives/LSN-003 (outbound-URL canonical-home discipline), LSN-006 (Cornerstone-5 content-type homing), LSN-012 (cornerstone codified wrong pattern → DOC-149/150)
+```
+
+---
+
+# Prior — 2026-05-07 — `/implement` batch — DOC-149 + DOC-151 + DOC-152 + DOC-153 + DOC-154 → review-ready; pending-queue cleared
 
 User-invoked `/implement all the remaining items in the backlog in one go` after `/review DOC-150` completed. All five remaining `pending` docs items shipped on `feature/docs-doc149-cleanup-batch-2026-05-07` (documentation repo) under the post-DOC-150 cornerstone authority. Five-commit batch (one per item ID) on a single branch, single PR.
 

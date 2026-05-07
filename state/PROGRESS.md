@@ -1,4 +1,68 @@
-# Last updated 2026-05-07 — `/implement batch` — full backlog clearance: DOC-034 + DOC-046 + DOC-067 + DOC-138 (Phases A-E) + NAV-002 review-ready
+# Last updated 2026-05-07 — `/review batch:feature/docs-doc034-2026-05-07` — 5 items done; Phase F live-site verification ✓; DOC-148 logged for untracked screenshot commits
+
+User-invoked `/review` in a separate session from the `/implement` batch that produced the 5 review-ready items. All 5 items VERIFIED across acceptance criteria + 10 Quality Bar gates + Phase F live-site verification on 9 URLs. Two untracked screenshot commits on the same doc PR (`bff7239` + `289e619`, 9 screenshots without per-commit `Sources:` footer) surfaced a procedural finding logged as DOC-148.
+
+## Items moved this run
+
+| ID | Status flip | Reason |
+|---|---|---|
+| **DOC-034** | review-ready → **done** | All 10 gates PASS. The 2026-04-30 Gate 4/9 fail (`301 Redirect` claim mismatch with runtime `HttpStatus.FOUND`) is fully resolved by the single-cell rewrite at `data-collaboration.md:23` — runtime answer (302 Found) leads, spec/runtime drift hedge inline. VERIFIED via Read of `DataCollaborationController.java:42-48` (HttpStatus.FOUND on L45) + `openapi.yaml:1788` (`'301': Moved Permanently`) + WebFetch of live URL (302 Found + drift sentence rendered; zero GitHub fallback). |
+| **DOC-046** | review-ready → **done** | All 10 gates PASS. Close-out only — no new doc commit on this batch. The 2026-04-27 Gate 9 fail (plural `queryexamples` + extra `/{example_id}` segment on term-side endpoints) was resolved indirectly during DOC-088's api-reference split (commit `1da5e69`, 2026-05-06). VERIFIED via Read of `developer-guides/api-reference/query-examples.md:41-42` + spec match at `openapi.yaml:2908` (POST) and `:2931` (DELETE) + WebFetch of live URL (singular form rendered). |
+| **DOC-067** | review-ready → **done** | All 10 gates PASS. Catalog Overview screenshot (`catalog-overview.png`, 101 KB) shipped at `Features.md:172` with descriptive alt-text; `report.png` deleted (orphan); doc text reconciled with what `Overview.tsx` actually renders (Recommended section added; Domains + Owner association marked conditional). VERIFIED via Read + WebFetch of `https://docs.opendatadiscovery.org/features/features` (figure rendered, four-column Recommended bullet, conditional sections explicit). The Recommended section addition closes a long-standing Gate 6 bidirectional code↔doc miss. |
+| **DOC-138** | review-ready → **done** | All 10 gates PASS; **Phase F live-site verification PASSES on all 9 URLs**. Top-level SUMMARY restructure shipped per the ADR's drafted shape: 3 new `##` groups (Introduction / Features / Use cases); ODDRN folded into `main-concepts.md` (110 lines post-fold, within Cornerstone-2 budget); `oddrn.md` deleted; 8 inbound `oddrn.md` references rewritten to `main-concepts.md#oddrn` (sweep clean). Phase B Q2 unknown (home URL behaviour) resolved correctly — `/` still serves README content. URL retirements per ADR Trade-off 1 confirmed: `/oddrn` returns 404; `/main-concepts` is now `/introduction/main-concepts`; ~22 pillar pages now under `/features/{slug}` or `/introduction/{slug}`; all new URLs render correctly with no GitHub-fallback substring. |
+| **NAV-002** | review-ready → **done** | All applicable gates PASS. Workspace-internal two-line edit; `navigation/domains/genai.md` L20 + L37 corrected from `genai.url` "empty string" default → `null` (no field initializer per `GenAIProperties.java:8-12`). Sweep verification clean. No live-site verification needed (workspace-internal file). |
+
+## Items added this run
+
+| ID | Status | Priority | Source | Reason |
+|---|---|---|---|---|
+| **DOC-148** | pending | low | discovered-during-review-batch-feature-docs-doc034-2026-05-07-v2-batch-mode-untracked-commits | The two screenshot-batch commits on PR #64 (`bff7239` 5 screenshots + `289e619` 4 screenshots) shipped without per-commit `Sources:` footer per `pillars/documentation/authoring.md` rule + without a corresponding DOC-NNN backlog entry. The screenshots themselves add operator value; the discipline gap is procedural. Spot-checks during this review confirmed the structural alt-text claims that are codebase-verifiable (e.g., `LOOKUP_TABLE_CREATE` permission VERIFIED at `components.yaml:194`); remaining demo-state count claims are point-in-time captures. DOC-148 captures the audit trail + names the actionable spot-checks for a future implementer. |
+
+## Live-site verification — Phase F (DOC-138) + Gate 8 (DOC-034 + DOC-046 + DOC-067)
+
+| URL | Status | Verification |
+|---|---|---|
+| `https://docs.opendatadiscovery.org/` | 200 | H1 "Overview"; README content rendered; Phase B Q2 home-URL preserved. |
+| `https://docs.opendatadiscovery.org/oddrn` | **404** (deliberate) | "URL `oddrn` does not exist" — Phase D retirement per ADR Trade-off 1. |
+| `https://docs.opendatadiscovery.org/introduction/main-concepts` | 200 | H1 "Main Concepts"; `## ODDRN` section + Terms & Aliases anchor rendered. |
+| `https://docs.opendatadiscovery.org/introduction/architecture` | 200 | H1 "Architecture"; ODDRN cross-link resolves to `/introduction/main-concepts.md#oddrn`. |
+| `https://docs.opendatadiscovery.org/features/data-discovery` | 200 | H1 "Data Discovery". |
+| `https://docs.opendatadiscovery.org/features/data-modelling` | 200 | H1 "Data Modelling". |
+| `https://docs.opendatadiscovery.org/features/master-data-management` | 200 | H1 "Master Data Management". |
+| `https://docs.opendatadiscovery.org/features/active-platform-features` | 200 | H1 "Active platform features". |
+| `https://docs.opendatadiscovery.org/features/management` | 200 | H1 "Management". |
+| `https://docs.opendatadiscovery.org/features/features` | 200 | DOC-067: Catalog Overview section + figure + Recommended (4 columns) + Domains conditional + Owner association conditional rendered. |
+| `https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration` | 200 | DOC-034: redirect-row table cell renders "302 Found" + "Spec / runtime drift" inline. |
+| `https://docs.opendatadiscovery.org/developer-guides/api-reference/query-examples` | 200 | DOC-046: term-side rows render with singular `queryexample` form. |
+
+**Zero `github.com/opendatadiscovery/documentation/blob/` substrings** observed across all 12 verified URLs. (DOC-131's pre-existing GitBook fallback-cache concern post-PR#62 remains resolved.)
+
+## Doc-product editorial findings (audit per `playbooks/doc-product-editorial-read.md`)
+
+- **Coverage this run**: re-audited 4 batch-affected pages (`main-concepts.md` post-ODDRN-fold; `Features.md` post-DOC-067 + post-screenshot batches; `developer-guides/api-reference/data-collaboration.md` post-DOC-034; `navigation/domains/genai.md` post-NAV-002). Plus spot-check of 8 Phase E cross-link rewrite sites + 9 screenshot-placement pages (alt-text + adjacent prose). Per-page baseline remains 71/71 (one page deleted: `oddrn.md`; the deletion is captured in `state/doc-quality-coverage.md`).
+- **Findings**:
+  - **DOC-148** (low, A11-forward / commit-discipline) — 9 demo-captured screenshots shipped on PR #64 without per-commit `Sources:` footer. Logged this run; no published-doc surface FAIL implied (alt-text spot-checked claims VERIFIED). Source: `bff7239` + `289e619` commit bodies on the documentation repo.
+
+## Counts (after this run)
+
+- `done`: 134 → **139** (+ DOC-034, + DOC-046, + DOC-067, + DOC-138, + NAV-002).
+- `review-ready`: 5 → **0** (all flipped).
+- `pending`: 7 → **8** (+ DOC-148).
+- `in-progress`: unchanged at 0.
+- `blocked`: unchanged at 0.
+- `rejected`: unchanged at 2.
+- `superseded`: unchanged at 1.
+- Total backlog: 149 → **150**.
+
+## Hand-off
+
+- **DOC-141 umbrella + 6 sub-items** (DOC-142..147) remain in `pending`. Next `/implement` run: pick up the IA refactor sprint (data-discovery enrichment + new Data Lineage / Glossary / Quality pillars). Pre-authoring stance check required at every sub-page authoring decision (per `CLAUDE.md` "Why the bar slips" + `playbooks/pre-authoring-stance.md`).
+- **DOC-148** (pending, low) sits behind the IA refactor batch — pick up when convenient; no doc-content blocker.
+- **PLT-008 + PLT-009 + PLT-010** drafts on disk in `issues/odd-platform/` — filing into GitHub remains a deliberate human action.
+
+---
+
+# Prior — 2026-05-07 — `/implement batch` — full backlog clearance: DOC-034 + DOC-046 + DOC-067 + DOC-138 (Phases A-E) + NAV-002 review-ready
 
 User-invoked `/implement` with directive "implement all the rest items in a single batch" + Phase A approval for DOC-138's ADR. Backlog state at session start: 1 pending (NAV-002); 1 in-progress (DOC-138 Phase A done, Phase B not started); 3 blocked (DOC-034, DOC-046, DOC-067). User intervention mid-session on 2026-05-07 redirected the maintainer away from a "four options for re-approval" pattern that had stalled DOC-138 Phase C/D/E + away from the DOC-067 deferral by providing a demo session token: *"it's not a corporate environment where we could for ages discuss and put one paper over another — it's a Open Source Project with only my capacity to maintain it ... we are not here just spending budgets and time!!!"* and *"If you need to create screenshots — go and do it; here is my session token ... for https://demo.oddp.io/."*
 

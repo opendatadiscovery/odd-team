@@ -17,6 +17,7 @@ from lineage_extractor import __version__
 from lineage_extractor.extractors import run_extraction
 from lineage_extractor.manifest import load_manifest, save_manifest
 from lineage_extractor.repo import resolve_repo_path
+from lineage_extractor.validators import format_result, validate_sidecar
 
 
 @click.group()
@@ -98,6 +99,39 @@ def scan(
 
     save_manifest(lineage_dir / "manifest.yaml", result.manifest)
     click.echo(result.summary)
+
+
+@main.command("validate-sidecar")
+@click.argument("paths", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--strict",
+    is_flag=True,
+    help="Treat warnings as errors (exit non-zero on any warning).",
+)
+def validate_sidecar_cmd(paths: tuple[Path, ...], strict: bool) -> None:
+    """Validate one or more per-node enrichment sidecars against the schema.
+
+    Used by the /enrich skill (DOC-164 slice 5+) after each file-analyser
+    invocation. Pure parser — no LLM calls. Catches missing required fields,
+    missing required sections, doc-link entries without WebFetch verification,
+    and (as warnings) banned phrases per CLAUDE.md Gate 9.
+    """
+    if not paths:
+        raise click.UsageError("provide at least one sidecar path")
+
+    failed = 0
+    warned = 0
+    for path in paths:
+        result = validate_sidecar(path)
+        click.echo(format_result(result))
+        if not result.ok:
+            failed += 1
+        if result.warnings:
+            warned += 1
+    click.echo("")
+    click.echo(f"summary: {len(paths) - failed} ok, {failed} failed, {warned} with warnings")
+    if failed or (strict and warned):
+        sys.exit(1)
 
 
 @main.command()

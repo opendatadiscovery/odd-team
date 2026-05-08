@@ -47,7 +47,7 @@ def run_extraction(
     if manifest is None:
         manifest = Manifest(repo=repo)
 
-    enabled_axes = axes or {"ui_shell"}
+    enabled_axes = axes or set(_AXIS_REGISTRY.keys())
 
     nodes: list[Node] = []
     edges: list[Edge] = []
@@ -102,8 +102,15 @@ def _register_axis(name: str):
     return deco
 
 
-# UI-shell axis is the first slice — implementation stub here, real tree-sitter
-# queries land in commit 2 on this branch (lineage_extractor/extractors/ui_shell.py).
+# Axis registrations (each axis lives in its own module).
+from lineage_extractor.extractors.config_prefixes import extract_config_prefixes  # noqa: E402
+from lineage_extractor.extractors.controllers import extract_controllers  # noqa: E402
+from lineage_extractor.extractors.openapi_tags import extract_openapi_tags  # noqa: E402
+from lineage_extractor.extractors.ui_routes import extract_ui_routes  # noqa: E402
 from lineage_extractor.extractors.ui_shell import extract_ui_shell  # noqa: E402
 
 _register_axis("ui_shell")(extract_ui_shell)
+_register_axis("controllers")(extract_controllers)
+_register_axis("openapi_tags")(extract_openapi_tags)
+_register_axis("ui_routes")(extract_ui_routes)
+_register_axis("config_prefixes")(extract_config_prefixes)

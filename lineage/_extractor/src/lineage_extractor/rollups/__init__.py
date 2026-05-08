@@ -8,10 +8,14 @@ from __future__ import annotations
 from pathlib import Path
 
 from lineage_extractor.nodes import Edge, Node
+from lineage_extractor.rollups.controllers_rollup import write_controllers_rollup
+from lineage_extractor.rollups.openapi_tags_rollup import write_openapi_tags_rollup
 from lineage_extractor.rollups.ui_shell_rollup import write_ui_shell_rollup
 
 _ROLLUP_REGISTRY = {
     "ui_shell": write_ui_shell_rollup,
+    "controllers": write_controllers_rollup,
+    "openapi_tags": write_openapi_tags_rollup,
 }
 
 

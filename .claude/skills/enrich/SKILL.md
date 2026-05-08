@@ -64,7 +64,27 @@ For each node in the worklist, read `lineage/{repo}/edges.jsonl` and collect:
 
 This goes into the file-analyser's prompt as `SCAFFOLD_EDGES`.
 
-### 5. Spawn the file-analyser per node
+### 4.5. Cache check (slice 6+)
+
+Before spawning `file-analyser` for a node, check whether the sidecar is already current:
+
+- If `lineage/{repo}/understanding/{slug}.md` does NOT exist → CACHE MISS, proceed to spawn.
+- If the sidecar exists, parse its frontmatter:
+  - `enriched_at_commit` — substrate commit at which the sidecar was authored
+  - `prompt_version` — the file-analyser prompt version that authored it
+  - (planned: `extracted_at_commit`, `model`, `scaffold_hash` for finer cache keys)
+- Compare to the current substrate state (manifest's `last_scan_commit`) AND the current file-analyser prompt version (read the frontmatter of `.claude/agents/file-analyser.md` — typically `file-analyser/0.1.0` for slice 5/6).
+- **Skip the spawn IF:**
+  - `enriched_at_commit == last_scan_commit` (substrate hasn't moved)
+  - `prompt_version == current file-analyser version` (prompt unchanged)
+  - The node's source file hasn't changed since `enriched_at_commit` (use `git -C ../{repo} log --oneline <enriched_at_commit>..HEAD -- <source_path>` — empty output = unchanged)
+- **Force re-enrichment** when the maintainer passes `--no-cache` or `--force`. Default is cache-on; this is the cheap/fast path.
+
+Cache hits are reported as `<node-id>: cached (no change since <commit>)`. Cache misses fall through to the spawn step.
+
+The cache invariant per the ADR: an enrichment is reused iff `(node_id, scaffold_hash_of_file, prompt_version, model)` matches. MVP slice-6 collapses this to `(node_id, source_unchanged_since_enriched_at_commit, prompt_version)` — the source-unchanged check is a proxy for `scaffold_hash`. Future slices may add explicit content-hash keys if false-cache-misses surface.
+
+### 5. Spawn the file-analyser per cache-missed node
 
 Invoke the `file-analyser` subagent via the `Agent` tool, one node at a time (parallel-spawn is fine for independent nodes — they don't share state). Construct the prompt as:
 

@@ -45,6 +45,8 @@ REQUIRED_SECTIONS = [
     "docs_link_semantic",
     "implicit_adrs",
     "bugs_limitations_corner_cases",
+    "security",
+    "performance",
     "sources",
     "confidence_per_field",
 ]
@@ -153,12 +155,16 @@ def validate_sidecar(path: Path) -> SidecarValidationResult:
         content = sections[section_name].strip()
         if not content:
             result.errors.append(f"required section is empty: ## {section_name}")
-        elif content in ("[]", "(none)") and section_name not in {"implicit_adrs", "bugs_limitations_corner_cases"}:
-            # Empty arrays only valid on the two "may legitimately be []" sections.
+        elif content in ("[]", "(none)") and section_name not in {
+            "implicit_adrs", "bugs_limitations_corner_cases",
+            "security", "performance",
+        }:
+            # Empty arrays only valid on sections that may legitimately have no
+            # content (a tiny utility class with no security/perf relevance is fine).
             result.errors.append(
-                f"section ## {section_name} contains '[]'/'(none)' — only implicit_adrs "
-                "and bugs_limitations_corner_cases may be intentionally empty; other "
-                "sections must have content or 'N/A — <reason>'"
+                f"section ## {section_name} contains '[]'/'(none)' — only implicit_adrs, "
+                "bugs_limitations_corner_cases, security, and performance may be "
+                "intentionally empty; other sections must have content or 'N/A — <reason>'"
             )
 
     # 7. confidence_per_field must reference each populated section.
@@ -167,7 +173,7 @@ def validate_sidecar(path: Path) -> SidecarValidationResult:
         for required in [
             "understanding", "concepts", "dependencies_semantic",
             "tests_coverage_semantic", "docs_link_semantic", "implicit_adrs",
-            "bugs_limitations_corner_cases",
+            "bugs_limitations_corner_cases", "security", "performance",
         ]:
             if required not in cpf:
                 result.errors.append(
@@ -192,9 +198,10 @@ def validate_sidecar(path: Path) -> SidecarValidationResult:
     if "docs_link_semantic" in sections:
         docs_block = sections["docs_link_semantic"]
         # Count `url:` occurrences and `last_verified_status:` occurrences. They
-        # must be equal (every URL has a status).
+        # must be equal (every URL has a status). Both must be at field position
+        # (start of line + optional whitespace + dash); prose mentions don't count.
         url_count = len(re.findall(r"^\s*-?\s*url:", docs_block, re.MULTILINE))
-        status_count = len(re.findall(r"last_verified_status:", docs_block))
+        status_count = len(re.findall(r"^\s*last_verified_status:", docs_block, re.MULTILINE))
         if url_count != status_count:
             result.errors.append(
                 f"docs_link_semantic: {url_count} URL(s) but {status_count} "

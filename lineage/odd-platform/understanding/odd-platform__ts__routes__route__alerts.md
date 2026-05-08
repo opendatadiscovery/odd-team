@@ -88,6 +88,23 @@ This module is the URL-shape contract for the Alerts feature in the platform UI.
 - "Renaming any of the three string literals (`all`, `my`, `dependents`) in this module silently breaks the inner `<AlertsRoutes>` component's `<Route path='all|my|dependents'>` declarations because the inner component hard-codes the same strings instead of importing them from this module. The `AlertsRoutes` object is therefore a single source of truth for *callers* but not for the route definitions." — evidence: alertsRoutes.ts:2-6 (declares the literals) + components/Alerts/AlertsRoutes/AlertsRoutes.tsx:12,13,15 (re-hardcodes the same literals) — severity: LOW
 - "No unit tests target this module or any other module under `odd-platform-ui/src/routes/`. A typo in `BASE_PATH` (e.g. `/alert`) would not be caught by the build or by tests; it would surface only when a human user clicks an alerts link." — evidence: `find odd-platform-ui/src -name '*.test.*' -o -name '*.spec.*' | xargs grep alertsPath` returned no matches — severity: LOW
 
+## security
+
+- **auth_mode_relevance**: `INTERNAL_ONLY` — UI declarative module. This file exports plain TypeScript string literals (`/alerts`, `/alerts/all|my|dependents`) consumed by React Router on the client side; it carries no auth predicates, no fetch calls, and no role/permission checks. The `auth.type` (`DISABLED | LOGIN_FORM | OAUTH2 | LDAP`) enforcement happens server-side at the Spring Security configuration on the `odd-platform-api` module, which protects the `/api/alerts*` endpoints the in-page `<AlertsRoutes>` view actually calls — not these client URL strings. Auth mode does not branch the behaviour of this module under any of the four `auth.type` values. — evidence: alertsRoutes.ts:1-13 (no auth-related imports or branches).
+- **ingestion_filter_relevance**: `N/A — UI route declaration, not on the ingestion HTTP surface`. The `auth.ingestion.filter.enabled` flag (default `false` per https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security, WebFetched 2026-05-08, status 200) only gates `POST /ingestion/entities` server-side; it has no relationship to UI routes.
+- **authorization_assertions**: []
+- **owner_scoping**: `N/A — code is not data-scoped`. The Owner-based hide/show gate for the `My Objects` and `Dependents` tabs lives one layer up at `components/Alerts/AlertsTabs/AlertsTabs.tsx:30,36` (`hidden: !showMyAndDepends`); the route module exposes all three sub-paths unconditionally, and that is by design — a user who deep-links to `/alerts/my` without an Owner association will still hit the route and the back-end endpoint, where the actual data filter is applied.
+- **data_exposure**: `"The literal strings '/alerts', '/alerts/all', '/alerts/my', '/alerts/dependents' are emitted into the rendered HTML/JS bundle for every authenticated session and discoverable to anyone who can fetch the SPA bundle → no audience restriction at this layer; under auth.type=DISABLED the bundle is reachable unauthenticated"` — these are non-secret URL shapes and parallel the public source on GitHub, so disclosure is not a confidentiality concern; recorded for completeness.
+- **known_security_gaps**: []
+
+## performance
+
+- **hot_paths**: [`"alertsPath(path?)` is invoked at component render time by `ToolbarTabs.tsx:72` (global toolbar, rendered on every navigation) and by `AlertsTabs.tsx` whenever the alerts page renders — the function body is one truthy check + one template-literal concatenation, so the cost is negligible (O(1), no allocations beyond the string literal)" — evidence: alertsRoutes.ts:10-13 + components/shared/elements/AppToolbar/ToolbarTabs/ToolbarTabs.tsx:71-74]
+- **throughput_characteristics**: `N/A — declarative URL-shape module, not on a request/response or streaming path. No batching, no async, no I/O.`
+- **resource_allocation**: `Trivial — three `as const` string literal slots plus one `BASE_PATH` constant; the bundle-size cost is a few dozen bytes after minification. No memory pooling, no DB connection, no outbound HTTP.` — evidence: alertsRoutes.ts:1-13.
+- **scaling_characteristics**: `Stateless and pure — `alertsPath` is a referentially transparent function with no closure over mutable state, no module-level mutation, and no side effects, so it scales horizontally with the React render tree at zero cost.` — evidence: alertsRoutes.ts:10-13.
+- **known_performance_gaps**: []
+
 ## sources
 
 - understanding ← odd-platform-ui/src/routes/alertsRoutes.ts:1-13 + odd-platform-ui/src/components/App.tsx:64 + odd-platform-ui/src/components/Alerts/AlertsTabs/AlertsTabs.tsx:1-58 + odd-platform-ui/src/components/Alerts/AlertsRoutes/AlertsRoutes.tsx:10-22 + odd-platform-ui/src/components/shared/elements/AppToolbar/ToolbarTabs/ToolbarTabs.tsx:71-74
@@ -109,6 +126,13 @@ This module is the URL-shape contract for the Alerts feature in the platform UI.
 - bugs_limitations_corner_cases.[substrate metadata gap] ← odd-platform-ui/src/routes/alertsRoutes.ts:2-6 vs. NODE_METADATA from orchestrator prompt
 - bugs_limitations_corner_cases.[hard-coded literals re-declared in AlertsRoutes.tsx] ← odd-platform-ui/src/routes/alertsRoutes.ts:2-6 + odd-platform-ui/src/components/Alerts/AlertsRoutes/AlertsRoutes.tsx:12,13,15
 - bugs_limitations_corner_cases.[no test coverage for routes/] ← shell: `find odd-platform-ui/src -name '*.test.*' -o -name '*.spec.*' | xargs grep alertsPath` returned no matches
+- security.auth_mode_relevance ← odd-platform-ui/src/routes/alertsRoutes.ts:1-13 (no auth branches) + WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security (2026-05-08, status 200; auth.type values DISABLED / LOGIN_FORM / OAUTH2 / LDAP)
+- security.ingestion_filter_relevance ← WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security (2026-05-08, status 200; auth.ingestion.filter.enabled defaults to false, gates POST /ingestion/entities)
+- security.owner_scoping ← odd-platform-ui/src/routes/alertsRoutes.ts:1-13 (no scoping) + odd-platform-ui/src/components/Alerts/AlertsTabs/AlertsTabs.tsx:30,36 (Owner-gated tab visibility lives one layer up)
+- security.data_exposure ← odd-platform-ui/src/routes/alertsRoutes.ts:1-6 (literals shipped into JS bundle)
+- performance.hot_paths.[0] ← odd-platform-ui/src/routes/alertsRoutes.ts:10-13 + odd-platform-ui/src/components/shared/elements/AppToolbar/ToolbarTabs/ToolbarTabs.tsx:71-74
+- performance.resource_allocation ← odd-platform-ui/src/routes/alertsRoutes.ts:1-13
+- performance.scaling_characteristics ← odd-platform-ui/src/routes/alertsRoutes.ts:10-13
 
 ## confidence_per_field
 
@@ -119,5 +143,7 @@ This module is the URL-shape contract for the Alerts feature in the platform UI.
 - docs_link_semantic: HIGH
 - implicit_adrs: HIGH
 - bugs_limitations_corner_cases: HIGH
+- security: HIGH
+- performance: HIGH
 
 ## Maintainer notes

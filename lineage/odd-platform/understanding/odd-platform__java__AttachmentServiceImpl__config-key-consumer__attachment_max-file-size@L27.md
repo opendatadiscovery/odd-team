@@ -85,6 +85,49 @@ This `@Value`-injected field reads the YAML key `attachment.max-file-size` (in m
 - bugs_limitations_corner_cases.[1] ← AttachmentServiceImpl.java:27 + application.yml:217
 - bugs_limitations_corner_cases.[2] ← AttachmentServiceImpl.java:61 + FileInput.tsx:19
 - bugs_limitations_corner_cases.[3] ← AttachmentServiceImpl.java:27-89 + retrospectives/LSN-001-attachment-ephemeral-default.md
+- security.auth_mode_relevance ← AttachmentServiceImpl.java:23-25 (`@Service` — service layer, not on the HTTP surface) + WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security on 2026-05-08, status 200 (auth modes verified verbatim: DISABLED / LOGIN_FORM / OAUTH2 / LDAP)
+- security.ingestion_filter_relevance ← AttachmentServiceImpl.java:23-25 (`@Service`) + WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security on 2026-05-08 (ingestion filter property `auth.ingestion.filter.enabled` is gated on `POST /ingestion/entities` only — attachment upload runs on the UI/API surface)
+- security.authorization_assertions ← AttachmentServiceImpl.java:23-89 (no `@PreAuthorize`, no `permissionService.hasPermission(...)` programmatic check; service layer relies on upstream controller/policy enforcement)
+- security.owner_scoping ← AttachmentServiceImpl.java:27-28 (config-key consumer — value is a scalar Integer, not a data scope)
+- security.data_exposure ← AttachmentServiceImpl.java:60-62 (cap value × 1_000_000 returned to UI via `DataEntityUploadOptions`)
+- security.known_security_gaps.[0] ← AttachmentServiceImpl.java:70-78 + DataEntityAttachmentController.java:54-62 + FileInput.tsx:39 (port of bugs_limitations_corner_cases.[0] HIGH-severity finding into security vocabulary)
+- performance.hot_paths.[0] ← AttachmentServiceImpl.java:60-62 (`getUploadOptions()` returns `maxFileSize * 1_000_000` — runs on every UI upload-options fetch, i.e. every time the user opens an attachment-upload dialog)
+- performance.hot_paths.[1] ← AttachmentServiceImpl.java:70-78 (the cap is conceptually checked client-side per upload — see implicit_adrs.[1] for the absence of server-side enforcement)
+- performance.throughput_characteristics ← AttachmentServiceImpl.java:65-78 (per-upload chunked: `initiateFileUpload` + `uploadFileChunk` + `completeFileUpload` — single-item upload session, no batch endpoint)
+- performance.resource_allocation ← AttachmentServiceImpl.java:27-28 + application.yml:217 (Integer field, default `20` MB) + dependencies_semantic.requires-config (interaction with `spring.codec.max-in-memory-size` ceiling)
+- performance.scaling_characteristics ← AttachmentServiceImpl.java:27-28 (single `@Value`-bound scalar; no per-tenant / per-data-entity / per-owner override mechanism in this file)
+- performance.known_performance_gaps.[0] ← AttachmentServiceImpl.java:27 + retrospectives/LSN-001-attachment-ephemeral-default.md (cap-vs-storage-tier interaction: 20 MB default × N concurrent uploads against LOCAL ephemeral `/tmp/odd/attachments` is the LSN-001 risk surface)
+- performance.known_performance_gaps.[1] ← AttachmentServiceImpl.java:27 + application.yml:14-15 (`spring.codec.max-in-memory-size: 20MB`) — operator must raise codec limit in lockstep when raising the attachment cap, otherwise uploads fail at the WebFlux codec layer with `DataBufferLimitException`
+
+## security
+
+- **auth_mode_relevance**: `INTERNAL_ONLY` — this is a `@Service`-layer `@Value` consumer (AttachmentServiceImpl.java:23-25), not an HTTP endpoint. The auth mode does not gate this code directly. The upstream controller (`DataEntityAttachmentController#getUploadOptions`) runs under whichever of `LOGIN_FORM | OAUTH2 | LDAP` is selected via `auth.type`; verified verbatim against `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security` on 2026-05-08 (status 200). When `auth.type=DISABLED` the controller path is unauthenticated and the cap value reaches anonymous callers.
+- **ingestion_filter_relevance**: `NO — UI/API surface, not ingestion`. Attachment upload runs on `/api/v3/data_entity/{id}/upload/...`, which is the UI/API path. The ingestion filter (`auth.ingestion.filter.enabled`, default `false`) gates only `POST /ingestion/entities`; verified verbatim against the same WebFetch on 2026-05-08.
+- **authorization_assertions**: `[]` — no `@PreAuthorize`, no programmatic `permissionService.hasPermission(...)` call in this file (AttachmentServiceImpl.java:23-89). Service-layer code; authorization, if any, lives upstream on the controller or downstream on `LinkService` / `FileService`. The absence here is recorded in `known_security_gaps` below.
+- **owner_scoping**: `N/A — config-key consumer, not data-scoped`. The injected value is a scalar `Integer` (AttachmentServiceImpl.java:27-28), not a data shape that could be filtered by owner.
+- **data_exposure**: `"DataEntityUploadOptions.maxSize (cap × 1_000_000 bytes) → any caller of GET /api/v3/data_entity/{id}/upload/options under the active auth.type mode"` — evidence: AttachmentServiceImpl.java:60-62. The exposed value is the cap itself (default 20_000_000 bytes); not sensitive, but readable by anonymous callers when `auth.type=DISABLED`.
+- **known_security_gaps**:
+  - `"server-side enforcement bypass — the per-file cap is exposed to the UI as a hint but no service-layer code re-validates upload size; a non-browser caller (curl, script, misbehaving SDK) can POST chunks whose accumulated size exceeds attachment.max-file-size and the FileService accepts them. The cap is purely a UI-side filter in the React FileInput component."` — evidence: AttachmentServiceImpl.java:70-78 (no size guard) + DataEntityAttachmentController.java:54-62 (controller passes chunk through unchecked) + FileInput.tsx:39 (`file.size <= maxFileSizeInBytes` is the only filter) — severity: HIGH
+  - `"absence of authorization assertion at this layer — no @PreAuthorize and no permissionService.hasPermission(...) call; reliance is on upstream controller wiring. If the controller layer also lacks an explicit gate (to be confirmed by a controller-layer enrichment), the upload-options endpoint is gated only by authentication, not by data-entity ownership."` — evidence: AttachmentServiceImpl.java:23-89 — severity: MEDIUM
+
+## performance
+
+- **hot_paths**:
+  - `"getUploadOptions() executes on every UI upload-options fetch — i.e. every time a user opens the attachment-upload dialog on a data entity detail page; multiplies maxFileSize × 1_000_000 inline and returns synchronously via Mono.just(...)"` — evidence: AttachmentServiceImpl.java:60-62
+  - `"the per-file cap is conceptually checked on every upload attempt (currently client-side only — see security.known_security_gaps.[0]); a server-side enforcement port would put the cap on the per-upload critical path"` — evidence: AttachmentServiceImpl.java:70-78 (current absence) + AttachmentServiceImpl.java:27 (cap field)
+- **throughput_characteristics**:
+  - `"single-item upload session per uploadId — chunked via initiateFileUpload + uploadFileChunk(per chunk) + completeFileUpload; no batch endpoint that uploads multiple files in one round-trip"` — evidence: AttachmentServiceImpl.java:65-78
+  - `"reactive Mono signature on getUploadOptions() — non-blocking, no DB round-trip (returns the resolved @Value directly)"` — evidence: AttachmentServiceImpl.java:60-62
+- **resource_allocation**:
+  - `"the 20 MB default cap (application.yml:217) is the de-facto memory ceiling for a single attachment upload — together with spring.codec.max-in-memory-size (default 20 MB at application.yml:14-15) it bounds how much the WebFlux codec will buffer per request"` — evidence: AttachmentServiceImpl.java:27 + application.yml:217 + application.yml:14-15
+  - `"@Value-injected Integer (boxed) read once at bean construction — no per-request property resolution overhead"` — evidence: AttachmentServiceImpl.java:27-28
+- **scaling_characteristics**:
+  - `"cluster-wide single configuration value — no per-tenant, per-data-entity, or per-owner override mechanism in this file; every node in the cluster reads the same attachment.max-file-size at boot"` — evidence: AttachmentServiceImpl.java:27-28
+  - `"stateless service bean — the cap value is process-local but identical across replicas if YAML/env are uniform; horizontal scaling does not affect cap behaviour"` — evidence: AttachmentServiceImpl.java:23-31 (`@Service`, `@RequiredArgsConstructor`, no shared mutable state)
+- **known_performance_gaps**:
+  - `"cap-vs-storage-tier interaction: with the LOCAL storage default (LSN-001), a 20 MB cap × N concurrent uploads writes to ephemeral /tmp/odd/attachments and is wiped on container restart; raising the cap (e.g. 100 MB) without switching to REMOTE storage proportionally increases the data-loss surface on restart"` — evidence: AttachmentServiceImpl.java:27 + retrospectives/LSN-001-attachment-ephemeral-default.md — severity: HIGH
+  - `"cap-vs-codec-ceiling coupling: raising attachment.max-file-size above spring.codec.max-in-memory-size (default 20 MB at application.yml:14-15) silently fails at the WebFlux codec layer with DataBufferLimitException before this consumer's value is reached; the two keys must be raised in lockstep but neither the field nor the application.yml comment surfaces the dependency"` — evidence: AttachmentServiceImpl.java:27 + application.yml:14-15 + application.yml:217 — severity: MEDIUM
+  - `"absence of total-upload / per-data-entity / per-tenant quota means a single user can fill storage by repeated max-cap uploads — the per-file cap alone does not bound aggregate consumption"` — evidence: AttachmentServiceImpl.java:27-62 (no quota fields) — severity: MEDIUM
 
 ## confidence_per_field
 
@@ -95,6 +138,8 @@ This `@Value`-injected field reads the YAML key `attachment.max-file-size` (in m
 - docs_link_semantic: HIGH
 - implicit_adrs: HIGH
 - bugs_limitations_corner_cases: HIGH
+- security: HIGH
+- performance: HIGH
 
 ## Maintainer notes
 

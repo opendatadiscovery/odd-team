@@ -207,6 +207,112 @@ factual, file:line-cited, no speculation.
 
 If none, write `[]`.
 
+## security
+
+**Sparse, file-local signals about how this code interacts with ODD's security
+model.** Use ODD's actual concept names verbatim — auth modes (DISABLED /
+LOGIN_FORM / OAUTH2 / LDAP), the S2S ingestion filter, the authorization
+framework (Policies / Permissions / Roles / Owners / User-owner association).
+Do NOT use generic categories like "authentication_required: HIGH/MEDIUM/LOW".
+Per-file information is necessarily incomplete; the concept-merger reducer
+aggregates across files for feature-level posture.
+
+Canonical references for the vocabulary you use here (cite as `documents`
+links if relevant):
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security` — auth modes + ingestion filter
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication` — DISABLED / LOGIN_FORM / OAUTH2 / LDAP / S2S sub-pages
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization` — Policies / Permissions / Roles / Owners / User-owner association
+
+Required sub-fields (each may be `[]` or `N/A — <reason>` if genuinely absent):
+
+- **auth_mode_relevance**: which authentication modes apply to this code path.
+  Values: `DISABLED | LOGIN_FORM | OAUTH2 | LDAP | S2S | INTERNAL_ONLY | N/A`.
+  Notes:
+  - `INTERNAL_ONLY` = code is not on the HTTP surface (a service / config /
+    bean factory etc.) — auth mode doesn't apply directly, but you may still
+    note that this code's behaviour shifts based on the active mode (e.g.
+    LoginFormSecurityConfiguration is gated by `auth.type=LOGIN_FORM`).
+  - For controllers: usually `LOGIN_FORM | OAUTH2 | LDAP` (the three modes
+    that protect UI/API). DISABLED skips auth entirely, so DISABLED-relevant
+    code is rare. S2S applies to ingestion-only paths.
+  - `@ConditionalOnProperty(value="auth.type", havingValue="...")` is a
+    direct signal — record it verbatim.
+- **ingestion_filter_relevance**: does this code participate in
+  `POST /ingestion/entities` flow? `YES — gated by auth.ingestion.filter.enabled`
+  / `NO — UI/API surface, not ingestion` / `N/A — not HTTP`. The
+  `IngestionDataEntitiesFilter` and any `AbstractIngestionFilter` subclass
+  carry `YES` here.
+- **authorization_assertions**: list of permission / role / policy gates
+  this code enforces. Use ODD's vocabulary (Permission enum names,
+  @PreAuthorize expressions, programmatic `permissionService.hasPermission(...)`
+  calls). For each entry:
+  `"{Spring Security expression or programmatic check}" — evidence: file:line`.
+  If no gate is present, that's an `[]` AND a candidate `known_security_gaps`
+  entry (controllers without authorization gates are usually a finding —
+  unless the gate lives on the generated `*Api` interface or downstream
+  service, which is itself a finding worth surfacing).
+- **owner_scoping**: does this code respect the ODD ownership model?
+  Values: `RESPECTS — filters by current user's owners` /
+  `BYPASSES — returns data across owners (admin path)` /
+  `N/A — code is not data-scoped`. Cite the file:line that confirms.
+  For controllers reading data entities, this is critical: a controller
+  that returns Alerts without owner-scoping shows ALL alerts to ALL
+  authenticated users — that may or may not be intentional; surface it.
+- **data_exposure**: list of what data this code lets out and to which
+  audience. Format: `"{data shape} → {audience under which auth mode}"`.
+  Examples:
+  - `"Alert payload (id, status, lastReason, severity, dataEntity ref) → any authenticated user, no owner filter applied at controller layer"`
+  - `"Full request body logged at INFO via @Slf4j on entry — potential PII risk if request includes user-supplied descriptions"`
+  - `"/actuator/env exposes resolved config including masked-but-present credentials → any caller able to reach the actuator port (default: same port as app)"`
+- **known_security_gaps**: list of file-local concerns the maintainer would
+  want to know. Use ODD vocabulary; don't generic-paraphrase. Each entry:
+  `"{statement, in ODD's terms}" — evidence: file:line — severity: HIGH | MEDIUM | LOW`.
+  Examples:
+  - `"controller has no @PreAuthorize; relies on the generated AlertApi interface for authorization wiring (which has no annotations either)" — evidence: AlertController.java:1-95 — severity: MEDIUM`
+  - `"endpoint accepts unauthenticated traffic when auth.type=DISABLED — no fail-closed behaviour" — evidence: AlertController.java:1 + auth.type wiring in OAuthSecurityConfiguration.java — severity: LOW (DISABLED is dev-only per docs)`
+  - `"S2S filter not applied on this path (filter only registers on /ingestion/entities) — direct API access bypasses the data-entity scope filter even with auth.s2s.enabled=true" — evidence: IngestionDataEntitiesFilter.java:21 (path matcher) — severity: HIGH`
+
+The aggregated picture (was the WHOLE feature properly defended? does the
+ALERT feature have consistent owner-scoping across all 5 endpoints?) is
+the concept-merger's job — your job here is the per-file substrate it
+builds on.
+
+## performance
+
+**Sparse, file-local signals about latency-critical paths, throughput
+characteristics, resource allocation, and scaling behaviour.** Per-file is
+necessarily incomplete; concept-merger aggregates.
+
+Required sub-fields (each may be `[]` or `N/A — <reason>`):
+
+- **hot_paths**: list of operations in this file that run on the request /
+  rendering / event critical path. Examples:
+  - `"list endpoint runs synchronously, no pagination, scans all alerts for the current user — O(N) over alert table" — evidence: file:line`
+  - `"ingestion filter applies on every POST /ingestion/entities — adds DB round-trip per request to validate token" — evidence: file:line`
+  - `"metric extractor invoked on every Prometheus scrape (default 15s)" — evidence: file:line`
+- **throughput_characteristics**: list of batch / single / sync / async /
+  streaming concerns. Examples:
+  - `"single-item PUT per status change — no bulk-update endpoint"`
+  - `"batch upload accepts up to 100MB chunked via initiateFileUpload + uploadPart + completeUpload"`
+  - `"reactive Mono/Flux signature — non-blocking but per-call DB round-trip"`
+- **resource_allocation**: list of memory / CPU / I/O / DB-connection /
+  outbound-HTTP concerns. Examples:
+  - `"loads full DataEntity neighbour graph into memory before serialising — bounded by getNeighbours() depth limit (default 1)"`
+  - `"opens a new MinIO HTTP client per request when storage=REMOTE — no client pooling"`
+  - `"WebClient configured with 1MB max-in-memory — may truncate large genai responses (spring.codec.max-in-memory-size = 20MB cap)"`
+- **scaling_characteristics**: list of statefulness / locking / queueing /
+  pagination concerns. Examples:
+  - `"stateless controller — instances scale horizontally"`
+  - `"uses Postgres advisory lock id 90 (partition.advisory-lock-id) to serialise partition job — collides with notifications.wal lock if shared DB"`
+  - `"endpoint has no pagination — list size grows O(N) with alert count; 10K+ rows degrades response time"`
+- **known_performance_gaps**: list of file-local concerns. Same format as
+  `known_security_gaps`:
+  `"{statement}" — evidence: file:line — severity: HIGH | MEDIUM | LOW`.
+
+The aggregated assessment ("the alert feature has these performance
+strengths, these weak points, these cross-file inconsistencies") is the
+concept-merger's job.
+
 ## sources
 
 Every claim above traces to a file:line or to a WebFetched URL. Format:
@@ -218,6 +324,12 @@ Every claim above traces to a file:line or to a WebFetched URL. Format:
 - docs_link_semantic.declared_docs.[0] ← {source_annotation_file:line} + WebFetch {url}
 - implicit_adrs.[0] ← {file:line}
 - bugs_limitations_corner_cases.[0] ← {file:line}
+- security.auth_mode_relevance ← {file:line where the auth-mode coupling appears}
+- security.authorization_assertions.[0] ← {file:line of the @PreAuthorize / programmatic check}
+- security.known_security_gaps.[0] ← {file:line + reasoning anchor}
+- performance.hot_paths.[0] ← {file:line of the operation}
+- performance.scaling_characteristics.[0] ← {file:line of the lock/state/pagination evidence}
+- performance.known_performance_gaps.[0] ← {file:line + reasoning anchor}
 
 ## confidence_per_field
 
@@ -228,6 +340,8 @@ Every claim above traces to a file:line or to a WebFetched URL. Format:
 - docs_link_semantic: HIGH | MEDIUM | LOW
 - implicit_adrs: HIGH | MEDIUM | LOW
 - bugs_limitations_corner_cases: HIGH | MEDIUM | LOW
+- security: HIGH | MEDIUM | LOW
+- performance: HIGH | MEDIUM | LOW
 
 (If a field has no content, mark its confidence as `N/A`.)
 

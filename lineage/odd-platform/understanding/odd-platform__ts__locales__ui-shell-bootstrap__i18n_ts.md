@@ -222,6 +222,126 @@ no language detector; everything ships in the main JS bundle.
   in `findings/docs-coverage-undocumented-features/2026-05-08.md#F-047`. —
   severity: MEDIUM
 
+## security
+
+- **auth_mode_relevance**: `INTERNAL_ONLY` — this module is client-side
+  bootstrap code that runs in the browser and is not on the HTTP surface;
+  none of `DISABLED` / `LOGIN_FORM` / `OAUTH2` / `LDAP` couple to its
+  behaviour. The `localStorage('i18nextLng')` read on line 22 and the
+  `i18next.init({...})` call on lines 27-31 execute identically regardless
+  of the platform's active `auth.type`. There is no `@ConditionalOnProperty`
+  analogue, no auth-aware branch, no token check. Auth-mode-name vocabulary
+  verified verbatim against the live ODD docs (WebFetch
+  `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security`,
+  2026-05-08, status 200) — the page lists exactly
+  `auth.type (DISABLED / LOGIN_FORM / OAUTH2 / LDAP)`.
+- **ingestion_filter_relevance**: `N/A — not HTTP, not ingestion path`. This
+  module never participates in the `POST /ingestion/entities` flow; the
+  `auth.ingestion.filter.enabled` knob has no relationship to any code in
+  this file.
+- **authorization_assertions**: `[]` — no Spring Security expressions, no
+  Permission / Role / Policy gates, no programmatic `permissionService.hasPermission(...)`
+  calls. This is a UI bootstrap module; authorization is irrelevant by design.
+- **owner_scoping**: `N/A — code is not data-scoped`. The module operates
+  on a six-element static locale list; it does not query, filter, or
+  expose any data-entity, alert, owner, or other ODD domain object.
+- **data_exposure**:
+  - "`localStorage('i18nextLng')` value (a 2-letter locale code from the
+    closed set `{en, es, ch, fr, ua, hy}`) → any JavaScript executing on
+    the same browser origin (extensions, XSS payloads, devtools), under
+    every auth mode (`DISABLED` / `LOGIN_FORM` / `OAUTH2` / `LDAP`)." —
+    evidence: `odd-platform-ui/src/locales/i18n.ts:22` (read) +
+    `odd-platform-ui/src/components/shared/elements/AppToolbar/SelectLanguage/SelectLanguage.tsx:30`
+    (write). The persisted value is a UI preference — not a credential,
+    not PII, not a session identifier.
+- **known_security_gaps**:
+  - "Bootstrap calls `localStorage.getItem('i18nextLng')` unguarded on line
+    22; in browser configurations where `localStorage` access throws
+    (privacy mode in some Safari/Firefox builds, certain iframe sandboxes),
+    the import-for-side-effects at `src/index.tsx:23` raises before
+    `<App />` renders, denying the entire UI to the user. This is an
+    availability concern, not a confidentiality one — but it means the
+    `auth.type=LOGIN_FORM` login screen itself becomes unreachable in
+    those browsers." — evidence: `odd-platform-ui/src/locales/i18n.ts:22`
+    (no try/catch around the `localStorage` access) +
+    `odd-platform-ui/src/index.tsx:23` (side-effect import order). —
+    severity: LOW
+  - "`localStorage('i18nextLng')` is plain-text and origin-scoped, so any
+    JS on the origin (browser extensions, an XSS payload elsewhere in the
+    SPA) can read or overwrite it. Reading it leaks only the user's UI
+    language preference; overwriting it forces the next page-load to
+    bootstrap the chosen locale (or fall back to `'en'` via the line
+    23-25 whitelist if the injected value is outside the six-element set).
+    No security boundary is crossed — but the value is not encrypted,
+    not signed, and not tied to the authenticated session." — evidence:
+    `odd-platform-ui/src/locales/i18n.ts:22-25` (whitelist guard bounds
+    the impact of an attacker-controlled value to the six valid locales)
+    + `SelectLanguage.tsx:30` (write side, also unsigned). — severity: LOW
+
+## performance
+
+- **hot_paths**:
+  - "Module-load runs once per app boot — synchronously imports six locale
+    JSON bundles (lines 3-8), constructs the `resources` map (lines 10-17),
+    reads `localStorage` once (line 22), and calls `i18n.use(initReactI18next).init({...})`
+    once (lines 27-31). Because `src/index.tsx:23` does
+    `import 'locales/i18n';` before `<App />` mounts, this work is on
+    the critical path of first paint." — evidence:
+    `odd-platform-ui/src/locales/i18n.ts:1-33` + `odd-platform-ui/src/index.tsx:23`.
+  - "Every React component that calls `useTranslation()` reads from this
+    module's exported i18next singleton on each render, walking the
+    in-memory `resources` map for the active language and (on cache miss)
+    the six-element `fallbackLng` chain (line 30). On a typical platform
+    page — DataEntityDetails, Search, Alerts list — this fires hundreds
+    of times per render cycle." — evidence:
+    `odd-platform-ui/src/locales/i18n.ts:27-31,33` (the singleton export)
+    + the `useTranslation` import in `SelectLanguage.tsx:2,19` as the
+    representative consumer.
+- **throughput_characteristics**: `N/A — not a request-handling, batching,
+  or streaming path`. The module is a one-shot module-scope singleton
+  initialiser; there is no per-request work, no queue, no batch boundary.
+- **resource_allocation**:
+  - "All six locale JSON files are bundled into the main JS chunk via
+    static `import` declarations (lines 3-8), regardless of which locale
+    the user actually selects. Total payload bounded at ~120 KB
+    uncompressed for the locale layer (per the bundle-size note in
+    `bugs_limitations_corner_cases.[4]` above)." — evidence:
+    `odd-platform-ui/src/locales/i18n.ts:3-8`.
+  - "A single `i18next` instance is held in module-scope memory after
+    `init({...})` returns (line 33's `export default i18n;`). Memory
+    footprint is the `resources` map (six locale dictionaries) plus
+    i18next's internal caches — bounded, not per-user, not per-render." —
+    evidence: `odd-platform-ui/src/locales/i18n.ts:10-17,27-31,33`.
+- **scaling_characteristics**:
+  - "Stateful at module level — the `i18next` singleton on line 33 holds
+    the active language and resource map in process memory for the
+    lifetime of the SPA tab." — evidence: `odd-platform-ui/src/locales/i18n.ts:27-33`.
+  - "Stateless across the platform backend — no API call, no per-user
+    server record, no DB row is touched by the language preference; it
+    lives entirely in the browser's `localStorage`. Switching browsers,
+    devices, or clearing site data resets the user to `'en'`." —
+    evidence: `odd-platform-ui/src/locales/i18n.ts:22` (browser-only
+    persistence) + `SelectLanguage.tsx:30` (write side, also browser-only).
+- **known_performance_gaps**:
+  - "No code-splitting on locale — every user pays the full ~120 KB
+    locale payload in the main JS bundle even though only one locale is
+    active at a time. The conventional i18next pattern is dynamic
+    `import()` per-locale or `i18next-http-backend` lazy loading; neither
+    is used here. Bounded today, but adding a seventh locale grows the
+    main bundle linearly." — evidence:
+    `odd-platform-ui/src/locales/i18n.ts:3-8` (static imports, not
+    `import()`). Already surfaced as
+    `bugs_limitations_corner_cases.[4]` above. — severity: LOW
+  - "`fallbackLng` is the full six-element array `['en','es','ch','fr','ua','hy']`
+    on line 30 rather than the conventional `'en'`. On a missing key,
+    i18next walks all six locales in order before giving up. Per-render
+    cost is small (in-memory map lookups), but for a key genuinely
+    missing across all locales, the lookup does six failed map probes
+    instead of one. Already surfaced as
+    `bugs_limitations_corner_cases.[0]` above as a UX concern; the
+    secondary effect is a marginal performance one." — evidence:
+    `odd-platform-ui/src/locales/i18n.ts:30`. — severity: LOW
+
 ## sources
 
 - understanding ← `odd-platform-ui/src/locales/i18n.ts:1-33` +
@@ -272,6 +392,58 @@ no language detector; everything ships in the main JS bundle.
   + directory listing of `translations/`
 - bugs_limitations_corner_cases.[5] ← three WebFetch results (2026-05-08) +
   `findings/docs-coverage-undocumented-features/2026-05-08.md#F-047`
+- security.auth_mode_relevance ← `odd-platform-ui/src/locales/i18n.ts:1-33`
+  (no auth-mode-coupling code present in the entire file) +
+  `odd-platform-ui/src/index.tsx:23` (side-effect import unconditional on
+  any auth wiring) + WebFetch
+  `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security`
+  (2026-05-08, status 200) for the verbatim auth-mode names
+  `DISABLED / LOGIN_FORM / OAUTH2 / LDAP`.
+- security.ingestion_filter_relevance ← `odd-platform-ui/src/locales/i18n.ts:1-33`
+  (no HTTP request handling, no `/ingestion/**` path matcher, no filter chain).
+- security.authorization_assertions ← `odd-platform-ui/src/locales/i18n.ts:1-33`
+  (no `@PreAuthorize`, no `permissionService` call, no Spring Security
+  expression — this is a TS module, not a Java controller).
+- security.owner_scoping ← `odd-platform-ui/src/locales/i18n.ts:1-33`
+  (the file's six-element static locale list and `i18nextLng` localStorage
+  read have no relationship to the ownership model).
+- security.data_exposure.[0] ← `odd-platform-ui/src/locales/i18n.ts:22`
+  (read) + `odd-platform-ui/src/components/shared/elements/AppToolbar/SelectLanguage/SelectLanguage.tsx:30`
+  (write — `localStorage.setItem('i18nextLng', lang)`) + the closed-set
+  whitelist on `odd-platform-ui/src/locales/i18n.ts:23-25`.
+- security.known_security_gaps.[0] ← `odd-platform-ui/src/locales/i18n.ts:22`
+  (unguarded `localStorage.getItem` call) +
+  `odd-platform-ui/src/index.tsx:23` (side-effect import order — module
+  load happens before `<App />` mounts, so a throw here denies the entire
+  UI including the login screen).
+- security.known_security_gaps.[1] ← `odd-platform-ui/src/locales/i18n.ts:22-25`
+  (whitelist guard bounds attacker-controlled values to the six valid
+  locales) + `SelectLanguage.tsx:30` (write side, also unsigned and
+  origin-scoped).
+- performance.hot_paths.[0] ← `odd-platform-ui/src/locales/i18n.ts:1-33`
+  (the bootstrap body) + `odd-platform-ui/src/index.tsx:23` (the
+  side-effect importer that places this work on the critical path of
+  first paint).
+- performance.hot_paths.[1] ← `odd-platform-ui/src/locales/i18n.ts:27-31,33`
+  (the singleton export) +
+  `odd-platform-ui/src/components/shared/elements/AppToolbar/SelectLanguage/SelectLanguage.tsx:2,19`
+  (representative `useTranslation()` consumer).
+- performance.resource_allocation.[0] ← `odd-platform-ui/src/locales/i18n.ts:3-8`
+  (six static `import` declarations — no dynamic `import()`).
+- performance.resource_allocation.[1] ← `odd-platform-ui/src/locales/i18n.ts:10-17,27-31,33`
+  (the `resources` map + `init({...})` call + default-export of the
+  configured singleton).
+- performance.scaling_characteristics.[0] ← `odd-platform-ui/src/locales/i18n.ts:27-33`
+  (the singleton lives in module-scope memory for the SPA tab's lifetime).
+- performance.scaling_characteristics.[1] ← `odd-platform-ui/src/locales/i18n.ts:22`
+  (browser-only `localStorage` persistence) + `SelectLanguage.tsx:30`
+  (write side — also browser-only, no API call).
+- performance.known_performance_gaps.[0] ← `odd-platform-ui/src/locales/i18n.ts:3-8`
+  (static imports, not dynamic `import()`); cross-references
+  `bugs_limitations_corner_cases.[4]` above.
+- performance.known_performance_gaps.[1] ← `odd-platform-ui/src/locales/i18n.ts:30`
+  (the six-element `fallbackLng` array); cross-references
+  `bugs_limitations_corner_cases.[0]` above.
 
 ## confidence_per_field
 
@@ -282,5 +454,7 @@ no language detector; everything ships in the main JS bundle.
 - docs_link_semantic: HIGH
 - implicit_adrs: HIGH
 - bugs_limitations_corner_cases: HIGH
+- security: HIGH
+- performance: HIGH
 
 ## Maintainer notes

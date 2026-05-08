@@ -105,8 +105,10 @@ def _register_axis(name: str):
 # Axis registrations (each axis lives in its own module).
 from lineage_extractor.extractors.controllers import extract_controllers  # noqa: E402
 from lineage_extractor.extractors.openapi_tags import extract_openapi_tags  # noqa: E402
+from lineage_extractor.extractors.ui_routes import extract_ui_routes  # noqa: E402
 from lineage_extractor.extractors.ui_shell import extract_ui_shell  # noqa: E402
 
 _register_axis("ui_shell")(extract_ui_shell)
 _register_axis("controllers")(extract_controllers)
 _register_axis("openapi_tags")(extract_openapi_tags)
+_register_axis("ui_routes")(extract_ui_routes)

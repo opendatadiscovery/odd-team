@@ -130,7 +130,7 @@ axis: <verbatim>
 extracted_at_commit: <git rev-parse HEAD of the target repo at enrichment time — read it via Bash if needed; if Bash isn't available, use the substrate manifest's last_scan_commit>
 enriched_at_commit: <same — the commit you read FROM>
 extractor_version: 0.1.0
-prompt_version: file-analyser/0.1.0
+prompt_version: file-analyser/0.2.0
 enrichment_status: complete | partial | stale | failed
 confidence_overall: HIGH | MEDIUM | LOW
 session_id: <Claude Code session id if available; otherwise "session-2026-05-08-NN" where NN is sequence within the session>
@@ -191,17 +191,54 @@ What this code conceptually depends on, distinct from syntactic imports:
 
 ## implicit_adrs
 
-ADRs the code embodies but no `adrs/` file documents. Each entry: one sentence
-naming the decision + the file:line evidence + a confidence:
+**Architectural decisions the code embodies INTENTIONALLY but no `adrs/` file
+documents yet.** Reserve this section for observations where you can point to
+*evidence of intent*: a comment explaining WHY (`// thin proxy — owner is the
+remote LLM service`), an exception message that frames a constraint
+(`throw new IllegalStateException("S3 region must be set")`), a naming
+convention applied consistently across the file, a
+`@ConditionalOnProperty(matchIfMissing = true)` that encodes a default-on
+stance, an explicit `if-disabled-fail-open` block, an `@deprecated` annotation
+explaining the migration path, etc.
 
-- "{decision in one sentence}" — evidence: file:line — confidence: HIGH | MEDIUM | LOW
+Each entry: one sentence naming the decision + the file:line evidence + a
+quoted intent_anchor (the comment / exception text / annotation that proves
+intent) + a confidence:
 
-If the node embodies no implicit ADR (e.g. it's pure plumbing), write `[]`.
+- "{decision in one sentence}" — evidence: file:line — intent_anchor: "{verbatim quote from comment / exception / annotation / convention}" — confidence: HIGH | MEDIUM | LOW
+
+If the node embodies no implicit ADR (e.g. it's pure plumbing, or every
+"decision-shaped" observation is actually a gap with no defending intent),
+write `[]`. Routing observations without intent into this section forces the
+reducer (adr-archaeologist) to reclassify them via its 3-question wisdom
+test (`.claude/agents/adr-archaeologist.md` Rule 0) and adds noise to the
+ADR catalog; cite intent at this layer or route to
+`bugs_limitations_corner_cases`.
+
+**Routing examples:**
+
+| Observation | Routes to | Why |
+|---|---|---|
+| `// LOCAL is dev-only; REMOTE for prod` adjacent to `@ConditionalOnProperty(matchIfMissing = true, havingValue = "LOCAL")` | `implicit_adrs` | Comment shows intent; `matchIfMissing` shows default-on stance |
+| Controller has no `@PreAuthorize` and no programmatic auth check in the downstream service either | `bugs_limitations_corner_cases` | Absence with no comment / exception / convention defending it = gap |
+| `throw new IllegalStateException("S3 region must be set")` at boot | `implicit_adrs` | Exception message frames an explicit fail-fast constraint |
+| `auth.ingestion.filter.enabled` defaults to `true` per `@ConditionalOnProperty(matchIfMissing = true)` | `implicit_adrs` | The `matchIfMissing = true` IS the decision |
+| GenAI URL accepts any string — no `@URL` constraint, no allowlist, no comment | `bugs_limitations_corner_cases` | No validation, no defending intent = gap |
+| Naming convention: every `*Api` interface is OpenAPI-generated; controller implements it via `*ApiDelegate` pattern across the controller package | `implicit_adrs` | Convention applied consistently = intentional pattern |
+| Method returns `null` on missing user instead of `Optional.empty()` with no doc/comment | `bugs_limitations_corner_cases` | Inconsistency without defending intent = gap |
 
 ## bugs_limitations_corner_cases
 
-Things a careful operator should know that aren't currently surfaced. Tone:
-factual, file:line-cited, no speculation.
+**Things a careful operator should know that aren't currently surfaced** —
+the gap-shaped observations: absences (no auth, no validation, no retry, no
+rate-limit, no pagination), buggy defaults, off-by-one path mismatches,
+undocumented behaviour, error-handling holes, etc. This is where observations
+land when there is **NO evidence of intent** — the absence is just an absence.
+
+Tone: factual, file:line-cited, no speculation. The reducer (adr-archaeologist)
+clusters these into `refactoring-scopes.md` candidates the maintainer triages
+into DOC-NNN / TEST-NNN / SEC-NNN / PERF-NNN backlog items or sprint groupings
+("GenAI hardening", "Authorization audit", "Attachment hardening").
 
 - "{statement}" — evidence: file:line — severity: HIGH | MEDIUM | LOW
 
@@ -384,6 +421,7 @@ into your output. Otherwise leave the heading present with empty body.)
 5. **Skipping sections** — every section must have content or an explicit "N/A — <reason>". Empty sections (`[]` for arrays where you didn't try) is dishonest.
 6. **Verbose `understanding`** — 2-4 sentences. If you need more, the node is too coarse-grained and you should defer detail to `concepts`.
 7. **Padding** — slop counts as a quality failure. A 100-line sidecar that says nothing useful is rejected over a 60-line sidecar that's substantive.
+8. **Routing gap-shaped observations to `implicit_adrs`** — if you observe an absence (no auth, no validation, no retry, no rate-limit, no pagination, missing audit logging) and there is NO comment / exception / naming-convention / annotation defending the absence, the observation is gap-shaped — route to `bugs_limitations_corner_cases`. The adr-archaeologist's 3-question wisdom test will reclassify misroutes, but routing correctly here reduces noise in the ADR catalog. The discriminator is *evidence of intent* visible in the file you Read, not your judgement of whether the absence is justifiable.
 
 ## Exit
 

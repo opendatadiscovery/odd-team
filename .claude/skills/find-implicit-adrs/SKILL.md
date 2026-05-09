@@ -1,15 +1,24 @@
 ---
 name: find-implicit-adrs
-description: Run the adr-archaeologist reducer subagent over the per-node enrichment sidecars to surface architectural decisions the code embodies but that aren't yet captured in `adrs/`. Cross-references against existing ADRs to classify each candidate as `promote` (new), `extend-existing` (the ADR exists but doesn't cover the recurring pattern), `drift` (code disagrees with ADR), or `unique-load-bearing` (single-sidecar but architecturally significant). Emits `lineage/{repo}/implicit-adrs.md`.
+description: Run the adr-archaeologist reducer subagent over the per-node enrichment sidecars + concepts.yaml + existing adrs/. Applies the 3-question wisdom test (per Nygard 2011 / adr.github.io / AWS Prescriptive Guidance) to distinguish DELIBERATE architectural decisions from IMPLEMENTATION GAPS. Emits TWO artefacts: `lineage/{repo}/implicit-adrs.md` (real ADR candidates only — backbone decisions, classified as promote / extend-existing / drift / unique-load-bearing) AND `lineage/{repo}/refactoring-scopes.md` (gap-shaped findings — absent features, missing validation, buggy defaults — actionable as DOC-NNN / TEST-NNN / SEC-NNN / PERF-NNN backlog items, NOT as ADRs).
 argument-hint: [<repo>] [--show] [--diff]
 allowed-tools: Read Grep Glob Bash(ls *) Bash(jq *) Bash(diff *)
 ---
 
 # Find implicit ADRs (DOC-164 slice 8+)
 
-Run the **adr-archaeologist** reducer to surface the architectural decisions ODD's codebase embodies but that aren't yet written down in `adrs/`. The reducer reads every per-node sidecar's `implicit_adrs` block, clusters by recurring pattern, cross-references against `adrs/` (drafts and accepted), and produces a ranked list of promotion / extension / drift / unique-load-bearing candidates the maintainer triages into actual `adrs/drafts/{slug}.md` files.
+Run the **adr-archaeologist** reducer to surface the architectural decisions ODD's codebase embodies but that aren't yet written down in `adrs/` AND, critically, to separate them from implementation gaps that the substrate also surfaces. The reducer reads every per-node sidecar's `implicit_adrs` + `bugs_limitations_corner_cases` blocks + concepts.yaml's security/performance aggregates, applies the **3-question wisdom test** to each candidate (per Nygard 2011 / adr.github.io / AWS Prescriptive Guidance) to determine whether it qualifies as an ADR (deliberate architectural decision with rationale + structural impact) or as a refactoring scope (gap-shaped finding that doesn't belong in the ADR catalog), and produces two artefacts ranked + classified accordingly.
 
-This is the third reducer in the agentic-code-ontology layer (per `adrs/drafts/agentic-code-ontology.md` rev 2). The first per-node enrichment slice was `/enrich`. The first reducer was `/concepts`. The second reducer was `/doc-gap-check`. `/find-implicit-adrs` (slice 8) consumes the same sidecars + the existing ADR set.
+The 3-question wisdom test (see `.claude/agents/adr-archaeologist.md` Rule 0 for full text):
+1. Is the absence (or pattern) intentional, with a stated rationale?
+2. Does it have structural impact, or is it a missing feature within an existing structure?
+3. Would adding the absent thing be refactoring or a structural change?
+
+If 2 of 3 questions lean "gap" → `refactoring-scopes.md`. Otherwise → `implicit-adrs.md`.
+
+**Why this matters (case-law):** slice 8's first run promoted "GenAI requests not authenticated" as ADR-005. The maintainer reviewed: that's not an architectural decision — that's a limited/buggy implementation. Polluting the ADR catalog with gap-shaped findings burns trust in the catalog as a decision log. Refactoring scopes are valuable but they have their own home. See `~/.claude/projects/.../memory/feedback_adr_vs_refactoring_scope.md` for the rule.
+
+This is the third reducer in the agentic-code-ontology layer (per `adrs/drafts/agentic-code-ontology.md` rev 2). The first per-node enrichment slice was `/enrich`. The first reducer was `/concepts`. The second reducer was `/doc-gap-check`. `/find-implicit-adrs` (slice 8) consumes the same sidecars + concepts.yaml + the existing ADR set.
 
 ## Argument forms
 
@@ -49,31 +58,38 @@ Invoke via `Agent` tool with `subagent_type: adr-archaeologist`. Construct the p
 REPO: <repo>
 WORKSPACE_ROOT_ABS: <absolute>
 SIDECAR_DIR_ABS: /home/.../lineage/{repo}/understanding/
+CONCEPTS_YAML_PATH: /home/.../lineage/{repo}/concepts.yaml
 EXISTING_ADRS_DIR_ABS: /home/.../adrs/
 EXISTING_IMPLICIT_ADRS: <verbatim or "(none)">
+EXISTING_REFACTORING_SCOPES: <verbatim or "(none)">
 SUBSTRATE_LAST_SCAN_COMMIT: <from manifest.yaml>
-TARGET_PATH: lineage/{repo}/implicit-adrs.md
+TARGET_ADR_PATH: lineage/{repo}/implicit-adrs.md
+TARGET_SCOPES_PATH: lineage/{repo}/refactoring-scopes.md
 SIDECAR_COUNT: <N>
 ```
 
-The subagent's tool surface per its frontmatter: `Read, Glob, Grep, Write`. It writes the report and replies with `Wrote: ...` + `Candidates: ...`.
+The subagent's tool surface per its frontmatter: `Read, Glob, Grep, Write`. It writes BOTH files and replies with `Wrote ADRs: ...` + `Wrote scopes: ...` + `Summary: ...`.
 
 ### 4. Validate
 
 After completion:
-- Confirm `lineage/{repo}/implicit-adrs.md` exists.
-- Parse YAML frontmatter (`generated_at`, `total_candidates`, etc.).
-- Verify each candidate has `category`, `support_count`, `surfaced_by`, `decision_statement`, `evidence`, `proposed_action`, `severity`.
-- Spot-check 3-5 candidates: do their `surfaced_by` sidecar references resolve? Are the decision_statements non-trivial?
+- Confirm BOTH `lineage/{repo}/implicit-adrs.md` AND `lineage/{repo}/refactoring-scopes.md` exist.
+- Parse YAML frontmatter on each.
+- Verify each ADR candidate has `category`, `support_count`, `surfaced_by`, `decision_statement`, `evidence`, `proposed_action`, `severity`.
+- Verify each refactoring scope has `category`, `surfaced_by`, `statement`, `evidence`, `proposed_remedy`, `severity`, `suggested_backlog_grouping`.
+- **Spot-check 3-5 ADR candidates against the wisdom test**: read the candidate's evidence; mentally apply the 3 questions; if 2 of 3 lean "gap," the candidate is misclassified — flag for review and ask the subagent to reclassify (or surface to maintainer for verdict).
+- Spot-check 3-5 refactoring scopes: do they cite real sidecar lines? Is the proposed_remedy actionable?
+- Verify NO candidate appears in both files.
 
 ### 5. Report
 
-- Report path
-- Counts: `<P> promote / <E> extend-existing / <D> drift / <U> unique-load-bearing = <N> total`
-- Severity: `<H> HIGH / <M> MEDIUM / <L> LOW`
-- Top-5 HIGH candidates (one-liners with candidate IDs)
-- Drift count (drift findings warrant immediate maintainer attention — code/ADR disagreement)
-- Suggested next: `/test-coverage` (slice 8b) or `/code-walk <feature>` (slice 9 — feature-advisor) once implicit ADRs are reviewed.
+- Report paths (both files)
+- ADR counts: `<P> promote / <E> extend-existing / <D> drift / <U> unique-load-bearing = <Na> total ADR candidates (<H> HIGH, <M> MEDIUM, <L> LOW)`
+- Refactoring scope counts: `<Ns> total scopes (<C> CRITICAL, <H> HIGH, <M> MEDIUM, <L> LOW); <K> candidates failed the wisdom test and were reclassified from ADR to scope`
+- Top-5 HIGH ADR candidates + Top-5 CRITICAL refactoring scopes (one-liners)
+- Drift count (drift ADRs warrant immediate attention — code/ADR disagreement)
+- Cross-references between files (where a refactoring scope deviates from a co-surfaced ADR)
+- Suggested next: maintainer triages ADR candidates into `adrs/drafts/` AND triages refactoring scopes into backlog items (DOC-NNN / TEST-NNN / SEC-NNN / PERF-NNN) or sprint groupings ("GenAI hardening sprint", "Authorization audit batch", etc.).
 
 ## Rules
 

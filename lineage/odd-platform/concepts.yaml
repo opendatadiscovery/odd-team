@@ -1,16 +1,16 @@
 ---
-catalog_version: 1
-generated_at: "2026-05-08T20:30:00Z"
+catalog_version: 2
+generated_at: "2026-05-10T00:00:00Z"
 generated_at_commit: ede5d277
-sidecar_count: 15
-canonical_vocabulary_source: "documentation/docs/main-concepts.md"
-canonical_vocabulary_fetched_at: "2026-05-08T20:30:00Z"
+sidecar_count: 20
+canonical_vocabulary_source: "documentation/docs/main-concepts.md (live at https://docs.opendatadiscovery.org/introduction/main-concepts)"
+canonical_vocabulary_fetched_at: "2026-05-10T00:00:00Z"
 prompt_version: "concept-merger/0.1.0"
 ---
 
-# concepts.yaml — first concept-merger pass over odd-platform sidecars
+# concepts.yaml — refreshed concept-merger pass after batch 2026-05-10A
 #
-# This catalog clusters concepts surfaced across 15 per-node enrichment sidecars
+# This catalog clusters concepts surfaced across 20 per-node enrichment sidecars
 # spanning five substrate axes (controllers, openapi_tags, ui_routes, ui_shell,
 # config_prefixes). Concepts that match canonical names in
 # `documentation/docs/main-concepts.md` use the canonical name verbatim;
@@ -20,6 +20,13 @@ prompt_version: "concept-merger/0.1.0"
 # Per-concept security_aggregate / performance_aggregate fields aggregate
 # sparse per-file signals into feature-level posture. Confidence drops where
 # contributing sidecars carry incomplete signals.
+#
+# Batch 2026-05-10A added 5 method-level sidecars:
+#   - AlertController#getAllAlerts (Alert concept refresh)
+#   - DataEntityAttachmentController#uploadFileChunk (Attachment concept refresh)
+#   - ActivityController#getActivity (new Activity Feed concept)
+#   - DataCollaborationController#postMessageInSlack (new Slack collaboration app concept)
+#   - CollectorController#regenerateCollectorToken (new Collector + Token Rotation concepts)
 
 entities:
 
@@ -37,18 +44,27 @@ entities:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DirectoryController"
       - "odd-platform java AlertController controller-method:changeAlertStatus"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController"
+      - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
+      - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
+      - "odd-platform java ActivityController controller-method:getActivity"
     contributors:
       - "DataEntityController: entities[DataEntity, DataEntityRef, DataEntityDetails, DataEntityList, DataEntityGroup, ...]"
       - "openapi-tag:dataEntity: entities[Data Entity, DataEntityGroup, DataEntityRef, DataEntityDetails, ...]"
       - "DataEntityAttachmentController: operations are scoped per data entity (`/api/dataentities/{data_entity_id}/...`)"
       - "DirectoryController: entities[Data Source Type, Data Source, Data Entity Type, Data Entity, ODDRN]"
       - "AlertManagerController: entity_oddrn is the routing key onto a Data Entity"
+      - "DataEntityAttachmentController.uploadFileChunk: data_entity_id path variable bound but never forwarded; uploadId is the authoritative session key"
+      - "DataCollaborationController.postMessageInSlack: data_entity_id is required in MessageRequest body; existence checked, ownership NOT checked"
+      - "ActivityController.getActivity: ActivityState payload carries old_state/new_state diffs for every tracked field on each data entity"
     evidence:
       - "DataEntityController.md:concepts.entities.[DataEntity]"
       - "openapi-tag-dataEntity.md:concepts.entities.[Data Entity]"
       - "DataEntityAttachmentController.md:concepts.operations.[list-data-entity-attachments]"
       - "DirectoryController.md:concepts.entities.[Data Entity]"
       - "AlertManagerController.md:concepts.invariants.[entity_oddrn-only routing]"
+      - "uploadFileChunk.md:concepts.invariants.[0] (dataEntityId cosmetic at chunk-upload)"
+      - "postMessageInSlack.md:bugs_limitations_corner_cases.[3] (data_entity existence checked, ownership not)"
+      - "getActivity.md:security.data_exposure.[0] (full diff payload per data entity)"
     security_aggregate:
       overall: LOW
       auth_modes_relevant:
@@ -58,10 +74,10 @@ entities:
       ingestion_filter_relevance: NO
       authorization_consistency:
         verdict: INCONSISTENT
-        detail: "17 mutating endpoints gated by SECURITY_RULES (DATA_ENTITY_*); 27+ read endpoints fall through to .authenticated() with no role/owner gate; DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM rules silently disabled by `/term` vs `/terms` path mismatch (SecurityConstants.java:237-242 vs DataEntityApi.java:148, 542)"
+        detail: "17 mutating endpoints gated by SECURITY_RULES (DATA_ENTITY_*); 27+ read endpoints fall through to .authenticated() with no role/owner gate; DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM rules silently disabled by `/term` vs `/terms` path mismatch (SecurityConstants.java:237-242 vs DataEntityApi.java:148, 542); attachment chunk path gate authorises against URL's data_entity_id but file lands against uploadId's originating entity (cross-entity hijack); Activity feed cross-owner exposure repeats the same admin-path-without-admin-gate failure mode."
       owner_scoping:
         verdict: MIXED
-        detail: "Owner-scoped: `/my`, `/my/upstream`, `/my/downstream` (delegated to reactor Context). Bypasses owner: `/popular`, `getDataEntityDetails`, `getDataEntityActivity`, `getDataEntityMessages`, lineage reads, DEG children/items/lineage. Mutations gated per-resource by DATA_ENTITY policy resolver. Directory non-owner-scoped catalog-wide view."
+        detail: "Owner-scoped: `/my`, `/my/upstream`, `/my/downstream` (delegated to reactor Context). Bypasses owner: `/popular`, `getDataEntityDetails`, `getDataEntityActivity`, `getDataEntityMessages`, lineage reads, DEG children/items/lineage, global Activity feed (ALL/UPSTREAM/DOWNSTREAM type-dispatch paths), Slack-message posting (cross-owner posting accepted). Mutations gated per-resource by DATA_ENTITY policy resolver. Directory non-owner-scoped catalog-wide view."
       strengths:
         - "Mutating endpoints centralised in SECURITY_RULES with DATA_ENTITY policy context (SecurityConstants.java:194-324)"
         - "DATA_ENTITY policy resolver evaluates user policies against resource owner/namespace/datasource/class/type"
@@ -71,23 +87,33 @@ entities:
         - "All 27+ read endpoints (`getDataEntityDetails`, `getDataEntityAlerts`, `getDataEntityMessages`, `getDataEntityActivity`, `getDataEntityMetrics`, lineage reads) carry no role/owner/permission gate — auth-mode-only reads of every entity's full payload"
         - "`getDataEntityActivity` exposes who-changed-what audit trail to any authenticated user"
         - "`getDataEntityMessages` exposes Slack-thread content to any authenticated user (cross-tenant exposure if Slack workspace has multiple sensitive channels)"
+        - "Global `/api/activity` returns audit trails across every owner — including ActivityState old/new diffs of descriptions, business names, ownership changes, custom metadata — to ANY authenticated user (getActivity.md:security.known_security_gaps.[0] severity HIGH)"
+        - "Slack-message posting accepts any user-supplied data_entity_id with no owner check — cross-tenant message injection (postMessageInSlack.md:security.known_security_gaps.[2] severity HIGH)"
+        - "Attachment chunk hijack: caller with DATA_ENTITY_ATTACHMENT_MANAGE on entity X who learns another user's uploadId for entity Z can post chunks via X's URL — gate authorises path entity, service forwards to uploadId entity (uploadFileChunk.md:security.known_security_gaps.[0] severity MEDIUM)"
         - "Authorization layer is path-string-coupled with no compile-time/test-time guard against drift; the term mismatch is the canonical example, no integration test currently catches such drift"
         - "Attachment subsystem (a per-entity feature) has its own systemic security weaknesses — see Attachment concept's security_aggregate"
         - "Under auth.type=DISABLED, every endpoint becomes anonymously reachable"
       cross_file_inconsistencies:
         - "DataEntityController and DataEntityAttachmentController both authorize via SECURITY_RULES path-pattern matchers, but DataEntityController has a verified path-mismatch failure (term/terms) and DataEntityAttachmentController has a read-path asymmetry (POST/PUT/DELETE gated, GET unprotected)"
         - "openapi-tag:dataEntity sidecar reports zero authorization at spec layer; controller sidecar reports the runtime gates that actually apply — contract-vs-runtime mismatch is a documented systemic issue"
+        - "uploadFileChunk gate evaluates against URL's data_entity_id while file row resolves by uploadId — same controller surface, two different identity sources, no service-side cross-validation"
       contributing_files:
         - "DataEntityController.md"
         - "openapi-tag-dataEntity.md"
         - "DataEntityAttachmentController.md"
         - "DirectoryController.md"
+        - "uploadFileChunk.md"
+        - "postMessageInSlack.md"
+        - "getActivity.md"
       evidence:
         - "DataEntityController.md:security.known_security_gaps.[0] (term path mismatch)"
         - "DataEntityController.md:security.known_security_gaps.[1] (auth-mode-only reads)"
         - "DataEntityController.md:security.authorization_assertions (verbatim mapping table reproduced from SecurityConstants.java:98-355)"
         - "openapi-tag-dataEntity.md:security.known_security_gaps.[0,1,2] (no spec-level authz)"
         - "DataEntityAttachmentController.md:security.known_security_gaps.[0] (read-path asymmetry)"
+        - "uploadFileChunk.md:security.known_security_gaps.[0] (cross-entity hijack)"
+        - "postMessageInSlack.md:security.known_security_gaps.[2] (cross-owner posting)"
+        - "getActivity.md:security.known_security_gaps.[0] (global activity cross-owner)"
     performance_aggregate:
       overall: LOW
       hot_paths:
@@ -96,16 +122,18 @@ entities:
         - "GET /api/dataentities/popular and /api/dataentities/my* — recommendation-panel hot paths invoked on every catalog-overview render — DataEntityController"
         - "GET /api/dataentities/{id}/metrics — Prometheus-style metric query on Metrics tab open — DataEntityController"
         - "GET /api/directory and /api/directory/datasources?prefix={prefix} — Directory landing/drill down loads ALL data sources via dataSourceRepository.list() (no pagination) — DirectoryController"
+        - "POST /api/dataentities/{id}/files/uploads/{uploadId}/chunks — N invocations per upload (1 per chunk); per-chunk DB SELECT via checkProcessingUploadById + filesystem write to /tmp/odd/chunks/{uploadId}/{index} — uploadFileChunk"
+        - "GET /api/activity (and /api/activity/counts) — global audit-feed listing; 4 parallel aggregation queries on counts call; on critical path of activity-feed UI render — getActivity"
       throughput_shape:
         verdict: SINGLE_ITEM_ONLY
-        detail: "All 40 mutating endpoints take a single dataEntityId path variable; no bulk-update endpoint for description/name/status/ownership/tags/terms/metadata/alert config. Bulk operator workflows (tag-namespace, status-batch) require N round-trips."
+        detail: "All 40 mutating endpoints take a single dataEntityId path variable; no bulk-update endpoint for description/name/status/ownership/tags/terms/metadata/alert config. Bulk operator workflows (tag-namespace, status-batch) require N round-trips. Per-chunk upload is single-chunk-per-request (no batch chunk endpoint). Activity feed is single-window per call (no batch / multi-window endpoint)."
       scaling_shape:
         verdict: UNPAGINATED
-        detail: "Lineage endpoints unbounded `lineageDepth` + unbounded `expandedEntityIds`. Page/Size pagination required but unconstrained at controller (no @Max). Directory landing has no pagination on type-card list. `getDataEntityClasses`/`getDomains`/`getDataEntitiesUsage` are platform-wide aggregates with no caching."
+        detail: "Lineage endpoints unbounded `lineageDepth` + unbounded `expandedEntityIds`. Page/Size pagination required but unconstrained at controller (no @Max). Directory landing has no pagination on type-card list. `getDataEntityClasses`/`getDomains`/`getDataEntitiesUsage` are platform-wide aggregates with no caching. Activity feed `size` parameter unbounded (no @Max). Attachment chunk staging keyed only by uploadId (per-instance local filesystem) regardless of attachment.storage mode."
       strengths:
         - "All 40 endpoints reactive Mono<ResponseEntity<...>> — non-blocking I/O, request thread released during DB await (DataEntityController.java:84-453)"
         - "Stateless controller — instances scale horizontally; no in-memory state, no locking, no advisory locks (DataEntityController.java:71-81)"
-        - "Activity stream uses cursor pagination (`lastEventId` + `lastEventDateTime`) — appropriate for append-only audit data, avoids deep-offset cliffs (DataEntityController.java:351-365)"
+        - "Activity stream uses cursor pagination (`lastEventId` + `lastEventDateTime`) — appropriate for append-only audit data, avoids deep-offset cliffs (DataEntityController.java:351-365 + ActivityController.java:34-35)"
       weaknesses:
         - "No upper bound on pagination `size` parameter at the controller — caller can pass `size=2147483647` per spec (components.yaml:4213-4229)"
         - "No max-depth bound on lineage endpoints; `lineageDepth=1000000` reaches LineageService unmodified (DataEntityController.java:256-273)"
@@ -115,19 +143,28 @@ entities:
         - "No bulk-operation endpoints for any per-entity attribute — UI bulk workflows pay N round-trips"
         - "Directory landing page loads all data sources unfiltered into memory (DirectoryServiceImpl.java:48-50) — O(N) memory + parsing on every hit"
         - "Reflection-based ODDRN-property extraction in Directory is unmemoised (DirectoryServiceImpl.java:153-171)"
+        - "Multi-instance attachment chunk staging broken for BOTH LOCAL and REMOTE storage backends — chunk path /tmp/odd/chunks is hardcoded, not config-driven (uploadFileChunk.md:performance.known_performance_gaps.[0])"
+        - "Activity counts endpoint issues 4 parallel aggregation queries per call — 4x DB load on every counts refresh (getActivity.md:performance.known_performance_gaps.[1])"
       cross_file_inconsistencies:
         - "Activity stream uses cursor pagination; everything else uses offset pagination — single inconsistent shape across the controller's 40 endpoints"
         - "Directory carries platform-wide aggregates without pagination; DataEntityController list endpoints carry pagination but no caps — different unscoped patterns for the same Data Entity concept"
+        - "Chunk staging path /tmp/odd/chunks is the same for LOCAL and REMOTE storage; class-level Attachment sidecar identified LOCAL multi-instance risk, method-level uploadFileChunk sidecar reveals it's storage-mode-independent"
       contributing_files:
         - "DataEntityController.md"
         - "openapi-tag-dataEntity.md"
         - "DirectoryController.md"
         - "DataEntityAttachmentController.md"
+        - "uploadFileChunk.md"
+        - "getActivity.md"
       evidence:
         - "DataEntityController.md:performance.hot_paths.[0-6]"
         - "DataEntityController.md:performance.known_performance_gaps.[0-7]"
         - "openapi-tag-dataEntity.md:performance.known_performance_gaps.[0-4]"
         - "DirectoryController.md:performance.known_performance_gaps.[0-4]"
+        - "uploadFileChunk.md:performance.hot_paths.[0]"
+        - "uploadFileChunk.md:performance.known_performance_gaps.[0,1,2]"
+        - "getActivity.md:performance.hot_paths.[0-2]"
+        - "getActivity.md:performance.known_performance_gaps.[0-3]"
 
   - name: "Alert"
     canonical_in_docs: true
@@ -142,18 +179,21 @@ entities:
       - "odd-platform openapi tags openapi-tag:alert"
       - "odd-platform ts routes route:alerts"
       - "odd-platform java AlertController controller-method:changeAlertStatus"
+      - "odd-platform java AlertController controller-method:getAllAlerts"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController"
     contributors:
       - "AlertController: entities[Alert, AlertList, AlertStatusFormData, AlertTotals]"
       - "openapi-tag:alert: entities[Alert, AlertList, AlertStatus, AlertStatusFormData, AlertTotals]"
       - "alerts route: entities[Alert, AlertTab (all/my/dependents)]"
       - "AlertController.changeAlertStatus: entities[Alert, AlertStatus, AlertStatusFormData]"
+      - "AlertController.getAllAlerts: entities[AlertList, Page]; operations[list-open-alerts-platform-wide (paged, no filter)]"
       - "DataEntityController: getDataEntityAlerts / getDataEntityAlertsCounts / getAlertConfig / updateAlertConfig (per-entity alert listings + halt config)"
     evidence:
       - "AlertController.md:concepts.entities.[Alert]"
       - "openapi-tag-alert.md:concepts.entities.[Alert]"
       - "alerts-route.md:concepts.entities.[Alert]"
       - "changeAlertStatus.md:concepts.entities.[Alert]"
+      - "getAllAlerts.md:concepts.entities.[AlertList, Page]"
       - "DataEntityController.md:concepts.operations.data-entity-alerts-config-listings"
     security_aggregate:
       overall: LOW
@@ -164,39 +204,45 @@ entities:
       ingestion_filter_relevance: NO
       authorization_consistency:
         verdict: UNGATED
-        detail: "All 5 AlertController endpoints carry no @PreAuthorize and no SECURITY_RULES entry — fall through to .authenticated() only. The generated AlertApi interface has zero authorization annotations. Per-entity alert listings on DataEntityController also lack permission gates. Only `updateAlertConfig` is gated (`DATA_ENTITY_ALERT_CONFIG_UPDATE` per SecurityConstants.java:304-307)."
+        detail: "All 5 AlertController endpoints carry no @PreAuthorize and no SECURITY_RULES entry — fall through to .authenticated() only. getAllAlerts method-level sidecar verified absence: `SecurityConstants.java:98-295` contains `PUT /api/alerts/{alert_id}/status` rule but NO entry for `GET /api/alerts`. Per-entity alert listings on DataEntityController also lack permission gates. Only `updateAlertConfig` is gated (`DATA_ENTITY_ALERT_CONFIG_UPDATE` per SecurityConstants.java:304-307). The registered `changeAlertStatus` rule pairs `ALERT` resource type with `DATASET_FIELD_ADD_TERM` permission constant (SecurityConstants.java:295-296) — a cross-domain enum mismatch is itself a finding (getAllAlerts.md:security.known_security_gaps.[1] severity MEDIUM)."
       owner_scoping:
         verdict: MIXED
-        detail: "`getAllAlerts` returns all alerts platform-wide with no owner filter (admin-path-without-admin-gate). `getAssociatedUserAlerts` (`/my`) and `getDependentEntitiesAlerts` (`/dependents`) are owner-scoped at runtime via reactor Context principal resolution — correctness delegated to AlertService.listByOwner / listDependentObjectsAlerts. `changeAlertStatus` does NOT check the caller owns the alert or its referenced data entity (BYPASSES at the mutation path)."
+        detail: "`getAllAlerts` returns all alerts platform-wide via flat `WHERE STATUS = OPEN` jOOQ query with no owner join (ReactiveAlertRepositoryImpl.java:142-157) — admin-path-without-admin-gate. `getAssociatedUserAlerts` (`/my`) and `getDependentEntitiesAlerts` (`/dependents`) are owner-scoped at runtime via reactor Context principal resolution — correctness delegated to AlertService.listByOwner / listDependentObjectsAlerts. `changeAlertStatus` does NOT check the caller owns the alert or its referenced data entity (BYPASSES at the mutation path). Live alerting doc recommends getAllAlerts tab for 'stewards and admins watching the full alert surface' — doc-code audience mismatch (getAllAlerts.md:docs_link_semantic.doc_drift_findings.[0])."
       strengths:
         - "Service-layer reopen-guard: `AlertServiceImpl.updateStatus` rejects manual reopen with 400 if open alert of same type already exists for the entity (AlertServiceImpl.java:124-131)"
         - "Closed enum AlertStatus (OPEN / RESOLVED / RESOLVED_AUTOMATICALLY) — clients cannot introduce new states without OpenAPI change"
         - "@ActivityLog AOP records ALERT_STATUS_UPDATED on every service-mediated mutation (AlertServiceImpl.java:112-113)"
       weaknesses:
-        - "`getAllAlerts` returns the entire platform's alert stream to ANY authenticated user — no admin gate, no role check (severity HIGH per AlertController sidecar)"
+        - "`getAllAlerts` returns the entire platform's alert stream to ANY authenticated user — no admin gate, no role check (severity HIGH per AlertController + getAllAlerts.md:security.known_security_gaps.[0]; rediscovered REFACTOR-024 per orchestrator note)"
         - "`changeAlertStatus` accepts mutation with no permission gate — any authenticated user can resolve/reopen any alert by id"
         - "Reopen-conflict guard is read-then-write without serialisable fence — two concurrent OPEN requests for sibling alerts on same entity can both pass the guard (severity MEDIUM)"
         - "Owner-scoped `/my` / `/dependents` rely on reactor Context propagation — a misordered WebFilter could silently degrade to empty or unscoped output"
         - "Spec declares NO security: block on alert-tagged operations and NO error-response contracts (only `200`); consumers reading the spec cannot derive auth requirements"
         - "Under auth.type=DISABLED, anonymous read of every alert AND anonymous mutation of any alert"
+        - "Pagination unbounded at all three layers (controller, AlertApi interface, repository) — `size=1_000_000` produces unbounded jOOQ query (getAllAlerts.md:bugs_limitations_corner_cases.[1] severity MEDIUM)"
+        - "Asymmetry between sibling endpoints: `PUT /api/alerts/{alert_id}/status` IS in SECURITY_RULES; `GET /api/alerts` is absent — no defending comment or annotation (getAllAlerts.md:security.known_security_gaps.[1])"
       cross_file_inconsistencies:
         - "AlertController per-class mutations are ungated; DataEntityController.updateAlertConfig (the per-entity halt-config mutation) IS gated by DATA_ENTITY_ALERT_CONFIG_UPDATE — same conceptual feature, two different gating models"
         - "Spec-tag:alert reports `security: []` at spec; AlertController reports auth-mode-only at runtime — same conclusion (no permission gate) but reached via different layers"
+        - "Live alerting doc names the All-tab audience as 'stewards and admins'; code enforces 'any authenticated user' — doc-code audience divergence (getAllAlerts.md:docs_link_semantic.doc_drift_findings.[0])"
       contributing_files:
         - "AlertController.md"
         - "openapi-tag-alert.md"
         - "changeAlertStatus.md"
+        - "getAllAlerts.md"
         - "alerts-route.md"
         - "DataEntityController.md"
       evidence:
         - "AlertController.md:security.known_security_gaps.[1] (getAllAlerts severity HIGH)"
         - "AlertController.md:security.known_security_gaps.[2] (changeAlertStatus ungated)"
+        - "getAllAlerts.md:security.known_security_gaps.[0] (no SecurityRule entry, no owner predicate, doc-code audience drift)"
+        - "getAllAlerts.md:security.known_security_gaps.[1] (asymmetry with PUT status rule + cross-domain enum mismatch)"
         - "openapi-tag-alert.md:security.known_security_gaps.[0] (no spec-level security)"
         - "changeAlertStatus.md:security.known_security_gaps.[0] (no @PreAuthorize, severity HIGH)"
     performance_aggregate:
       overall: MEDIUM
       hot_paths:
-        - "GET /api/alerts (`getAllAlerts`) — paged list across global alert population, primary 'All' view, fired on every alerts UI tab activation — AlertController + alerts route"
+        - "GET /api/alerts (`getAllAlerts`) — paged list across global alert population, primary 'All' view, fired on every alerts UI tab activation alongside /api/alerts/totals; downstream is paged SELECT FROM alert WHERE status=OPEN with no owner join via createAlertJoinQuery (getAllAlerts.md:performance.hot_paths.[0])"
         - "GET /api/alerts/totals (`getAlertTotals`) — three count queries on every alerts-page render to populate tab badges — AlertController"
         - "PUT /api/alerts/{alert_id}/status (`changeAlertStatus`) — single-item mutation, plus @ActivityLog AOP fires synchronous activity-row INSERT every call — AlertController.changeAlertStatus"
         - "POST /ingestion/alert/alertmanager — webhook from Prometheus AlertManager, can fire multiple-times-per-minute on noisy systems (group_interval default 5m) — AlertManagerController (separate concept; cross-references)"
@@ -205,7 +251,7 @@ entities:
         detail: "No batch resolve / batch reopen / batch list endpoint. A consumer needing to resolve 100 alerts must issue 100 sequential PUT calls. Pagination is offset-based only (no cursor) on the three list endpoints."
       scaling_shape:
         verdict: UNPAGINATED
-        detail: "Pagination params (page/size) declared but unconstrained at controller (no @Max). Spec carries no `maximum` on `SizeParam`; spec-conformant `size=2147483647` is permissible. No streaming, no SSE."
+        detail: "Pagination params (page/size) declared but unconstrained at controller (no @Max). Spec carries no `maximum` on `SizeParam`; spec-conformant `size=2147483647` is permissible. No streaming, no SSE. OFFSET=(page-1)*size means deep-pagination cost grows linearly with page; keyset pagination not implemented (getAllAlerts.md:performance.known_performance_gaps.[1])."
       strengths:
         - "All 5 endpoints reactive `Mono<ResponseEntity<...>>` — non-blocking I/O (AlertController.java:21, 30, 36, 44, 52)"
         - "Stateless controller — horizontal scaling unconstrained at the controller layer"
@@ -217,23 +263,28 @@ entities:
         - "Reopen-conflict guard is not transactionally fenced (read-then-write race window)"
         - "Single-item-only `changeAlertStatus` — bulk operator workflows pay N round-trips"
         - "Activity-row INSERT fires on every status change regardless of whether status actually changed (no idempotency / no-op short-circuit)"
+        - "Deep-pagination on getAllAlerts uses OFFSET arithmetic — Postgres scans and discards (page-1)*size rows on every deep-page request (getAllAlerts.md:performance.known_performance_gaps.[1])"
+        - "No HTTP-level test exists for `GET /api/alerts` — regressions in OpenAPI routing, WebFlux config, Jackson, or jOOQ silently break the endpoint with the build green (getAllAlerts.md:bugs_limitations_corner_cases.[3])"
       cross_file_inconsistencies:
         - "Cursor pagination on getDataEntityActivity (DataEntityController) but offset pagination on every alert list endpoint — cross-controller inconsistency for what could be the same alert-stream concept"
       contributing_files:
         - "AlertController.md"
         - "openapi-tag-alert.md"
         - "changeAlertStatus.md"
+        - "getAllAlerts.md"
         - "alerts-route.md"
       evidence:
         - "AlertController.md:performance.hot_paths.[0-2]"
         - "AlertController.md:performance.known_performance_gaps.[0-3]"
         - "openapi-tag-alert.md:performance.known_performance_gaps.[0-4]"
         - "changeAlertStatus.md:performance.known_performance_gaps.[0-2]"
+        - "getAllAlerts.md:performance.hot_paths.[0]"
+        - "getAllAlerts.md:performance.known_performance_gaps.[0-3]"
 
   - name: "AlertManager Webhook Receiver"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "Inbound HTTP webhook receiver at `POST /ingestion/alert/alertmanager` that accepts Prometheus AlertManager-shaped payloads and materialises each as a `DISTRIBUTION_ANOMALY` Alert keyed by the `entity_oddrn` label. Distinct from the platform's internal Alert lifecycle: external write-only ingress, no `*Api` interface, hand-rolled DTO, unauthenticated by design (operator-delegated network controls) (AlertManagerController sidecar `understanding`)."
+    description: "Inbound HTTP webhook receiver at `POST /ingestion/alert/alertmanager` that accepts Prometheus AlertManager-shaped payloads and materialises each as a `DISTRIBUTION_ANOMALY` Alert keyed by the `entity_oddrn` label. Distinct from the platform's internal Alert lifecycle: external write-only ingress, no `*Api` interface, hand-rolled DTO, unauthenticated by design (operator-delegated network controls) (AlertManagerController sidecar `understanding`). Live `main-concepts.md` Terms & Aliases lists 'Slack alert webhook' as an outgoing variant; this is the INCOMING AlertManager-shaped variant, not yet listed."
     axes_present:
       - controllers
     nodes:
@@ -302,16 +353,100 @@ entities:
       Conceptually this is an inbound write surface for an operator's external
       alerting infrastructure (Prometheus AlertManager) into the ODD Alert
       lifecycle. Distinct from the internal Alert concept — the spec, controller
-      shape, auth posture, and routing are all different. The substrate's
-      docs canonical-vocabulary does not name this concept; the live
-      `configuration-and-deployment/odd-platform#prometheus-alertmanager-integration`
-      page documents it but main-concepts.md does not register it as an alias
-      or first-class concept.
+      shape, auth posture, and routing are all different. main-concepts.md
+      Terms & Aliases lists 'Slack alert webhook' as an outgoing-only variant
+      ('Slack notifications', 'Slack incoming webhook'); the inbound
+      AlertManager-shaped receiver is the conceptual sibling not yet listed
+      as a canonical alias.
+
+  - name: "Activity Feed"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "Platform-wide audit-trail surface exposing append-only events tracking who changed what (descriptions, business names, ownership, tags, terms, custom metadata, dataset fields, alerts, halt-config). Reached via `GET /api/activity` (windowed by beginDate/endDate + 9 filter facets) and `GET /api/activity/counts` (aggregate totals). Four visibility modes via `type` query parameter (ALL / MY_OBJECTS / DOWNSTREAM / UPSTREAM). Cursor pagination via `(lastEventId, lastEventDateTime)` — the typo `lasEventId` exists on the public controller signature (ActivityController.getActivity.md `bugs_limitations_corner_cases[0]`). vocabulary_status: codebase-anchored, doc-side-partially-covered (live `features/active-platform-features/activity-feed` describes the UI surface but main-concepts.md does not name 'Activity Feed' as a canonical term)."
+    vocabulary_status: "codebase-anchored, doc-side-partially-covered"
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java ActivityController controller-method:getActivity"
+    contributors:
+      - "ActivityController.getActivity: entities[Activity, ActivityType, ActivityEventType, ActivityState, AssociatedOwner, DataEntityRef]; operations[list-activity, audit-trail-read, filter-by-window, filter-by-owner-scope, filter-by-event-type, cursor-paginate-activity]"
+    evidence:
+      - "getActivity.md:concepts.entities.[Activity, ActivityType, ActivityEventType, ActivityState]"
+      - "getActivity.md:concepts.operations.[list-activity, audit-trail-read]"
+      - "getActivity.md:concepts.invariants.[2] (four-way type dispatch)"
+    security_aggregate:
+      overall: LOW
+      auth_modes_relevant:
+        - LOGIN_FORM
+        - OAUTH2
+        - LDAP
+      ingestion_filter_relevance: NO
+      authorization_consistency:
+        verdict: UNGATED
+        detail: "ActivityController.getActivity carries no @PreAuthorize, no programmatic permissionService check. Generated ActivityApi interface has no auth annotations (grep verified). `/api/activity` is not in SecurityConstants.SECURITY_RULES (SecurityConstants.java:98-356) and not in WHITELIST_PATHS — falls through to pathMatchers('/**').authenticated(). Live `/configuration-and-deployment/enable-security/authorization` (verified 200, 2026-05-10) documents the Policies/Permissions/Roles framework but per-endpoint wiring for /api/activity is absent."
+      owner_scoping:
+        verdict: MIXED
+        detail: "type=null (default) and type=ALL → fetchAllActivities returns cross-owner audit trail (no owner filter). type=MY_OBJECTS → fetchMyActivities filters via authIdentityProvider.fetchAssociatedOwner() (the only path that respects caller ownership). type=UPSTREAM/DOWNSTREAM → fetchDependentActivities walks lineage graph WITHOUT caller-ownership filter — anyone can ask 'what changed upstream of X' regardless of whether they own X. Two distinct dispatch paths (`if (type == null)` + `case ALL`) both lead to fetchAllActivities — a future refactor updating only one branch silently bypasses any new gate (getActivity.md:security.known_security_gaps.[1])."
+      strengths:
+        - "Cursor pagination on `(lastEventId, lastEventDateTime)` — append-only audit data shape; avoids deep-offset cliffs (ActivityController.java:34-35)"
+        - "Service-layer null-date validation throws BadUserRequestException — belt-and-braces defence beyond OpenAPI required:true (ActivityServiceImpl.java:98-100)"
+      weaknesses:
+        - "`/api/activity` (and `/api/activity/counts`) globally readable by any authenticated user — exposes who-changed-what audit trail across every owner including ActivityState old/new diffs of descriptions, business names, ownership changes, custom metadata (getActivity.md:security.known_security_gaps.[0] severity HIGH)"
+        - "userIds/ownerIds filter parameters not validated — submitting candidate id lists allows enumeration of which users/owners have generated platform activity (severity MEDIUM)"
+        - "DescriptionActivityStateDto carries free-text user-supplied descriptions — if sensitive content ever lands there (incident notes, customer ids, internal tickets), the activity feed surfaces it cross-owner with no redaction (severity MEDIUM)"
+        - "Under auth.type=DISABLED, anonymous read of the entire cross-owner audit trail"
+        - "Public-API parameter typo `lasEventId` (missing `t`) on the controller signature — generated client SDKs carry the typo permanently (severity LOW; ActivityService interface fixes it at line 42)"
+      cross_file_inconsistencies:
+        - "Per-entity getDataEntityActivity (DataEntityController) uses the same cursor pattern but is reached from a different route and has different scoping — both endpoints expose the same payload, the global one is the larger blast radius"
+      contributing_files:
+        - "getActivity.md"
+      evidence:
+        - "getActivity.md:security.known_security_gaps.[0] (cross-owner audit-trail exposure HIGH)"
+        - "getActivity.md:security.known_security_gaps.[1] (two-branch dispatch refactor risk MEDIUM)"
+        - "getActivity.md:security.known_security_gaps.[2] (userIds/ownerIds enumeration MEDIUM)"
+        - "getActivity.md:security.known_security_gaps.[3] (DISABLED-mode anonymous read LOW)"
+    performance_aggregate:
+      overall: MEDIUM
+      hot_paths:
+        - "GET /api/activity (fetchAllActivities) — single PostgreSQL query against `activity` table filtered by 8 facets + cursor; with no `size` upper bound, wide-window queries trigger full-window scans — getActivity.md:performance.hot_paths.[0]"
+        - "GET /api/activity/counts — 4 parallel aggregation queries per call via Mono.zip (totalCount, myObjectsCount, downstreamCount, upstreamCount) — getActivity.md:performance.hot_paths.[2]"
+        - "fetchDependentActivities — lineage-graph resolution BEFORE the activity query; for deep lineage graphs the resolution step dominates latency — getActivity.md:performance.hot_paths.[1]"
+      throughput_shape:
+        verdict: SINGLE_ITEM_ONLY
+        detail: "Single-window per call. No batch / multi-window endpoint. UI rendering a multi-window dashboard issues N separate calls."
+      scaling_shape:
+        verdict: HORIZONTALLY_SCALABLE
+        detail: "Stateless controller — instances scale horizontally. Read-only path, no locks. Cursor pagination scales linearly with page count. Bounded only by DB connection pool and Postgres planner."
+      strengths:
+        - "Reactive Mono/Flux end-to-end — non-blocking on the request thread"
+        - "Cursor pagination over an append-only `activity` table — appropriate index shape, avoids offset cliffs"
+      weaknesses:
+        - "`size` parameter has no @Max constraint and no programmatic upper bound — `size=Integer.MAX_VALUE` only safeguarded by the DB query plan (getActivity.md:performance.known_performance_gaps.[0] severity MEDIUM)"
+        - "Counts endpoint fans out to 4 aggregation queries per call — for a UI polling counts on a refresh interval, DB load is 4x apparent endpoint count; no caching, no debouncing, no aggregate table (severity LOW)"
+        - "Cursor predicate must be backed by `(created_at DESC, id DESC)` composite index on `activity` — if absent, deep-window scans degrade (out-of-scope at the controller layer; surface for repository review)"
+        - "fetchDependentActivities walks the lineage graph on the hot path — no precomputed dependency-set on the activity row (severity LOW; deployment-dependent)"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "getActivity.md"
+      evidence:
+        - "getActivity.md:performance.hot_paths.[0-2]"
+        - "getActivity.md:performance.known_performance_gaps.[0-3]"
+    notes: |
+      Activity Feed surfaces in main-concepts.md only implicitly via the
+      `Data Discovery` and `Data Security` pillars — neither name "Activity
+      Feed" or "audit trail" as a canonical term. Live `features/active-platform-features/activity-feed`
+      page (verified 200, 2026-05-10) describes the UI feature but omits the
+      `type` parameter (MY_OBJECTS/UPSTREAM/DOWNSTREAM/ALL), the visibility
+      model (who can see what), and the cursor pagination mechanics. The
+      `/developer-guides/api-reference/activity` page returns 404 — there is
+      NO first-party API-reference home for this surface. Recommended as a
+      canonicalisation candidate: add "Activity Feed" to main-concepts.md
+      Terms & Aliases AND create the missing api-reference page.
 
   - name: "Attachment"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "Per-data-entity attachments — uploaded files (chunked multipart upload) and external links — accessible under `/api/dataentities/{data_entity_id}/{attachments|files|links}*`. Files use a 3-step state machine (initiate → upload-part(s) → complete) keyed by a server-issued `uploadId` UUID. Storage backend is operator-configurable (LOCAL filesystem default vs REMOTE S3-compatible) (DataEntityAttachmentController + AttachmentServiceImpl + attachment config-prefix sidecars)."
+    description: "Per-data-entity attachments — uploaded files (chunked multipart upload) and external links — accessible under `/api/dataentities/{data_entity_id}/{attachments|files|links}*`. Files use a 3-step state machine (initiate → upload-part(s) → complete) keyed by a server-issued `uploadId` UUID. Storage backend is operator-configurable (LOCAL filesystem default vs REMOTE S3-compatible); however chunk staging path `/tmp/odd/chunks` is hardcoded and storage-mode-independent (DataEntityAttachmentController + AttachmentServiceImpl + uploadFileChunk + attachment config-prefix sidecars)."
     axes_present:
       - controllers
       - config_prefixes
@@ -319,14 +454,17 @@ entities:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController"
       - "odd-platform java AttachmentServiceImpl config-key-consumer:attachment.max-file-size@L27"
       - "odd-platform yaml application.yml config-prefix:attachment"
+      - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
     contributors:
       - "DataEntityAttachmentController: entities[DataEntityAttachments, DataEntityFile, DataEntityLink, DataEntityUpload, uploadId]"
       - "AttachmentServiceImpl@L27: entities[DataEntityUploadOptions, DataEntityFile, attachment upload session]"
       - "attachment config-prefix: entities[attachment storage backend, S3-compatible bucket, local filesystem path, attachment upload session, attachment file size cap]"
+      - "uploadFileChunk: entities[uploadId, index, Part, dataEntityId]; operations[parse-chunk-index, delegate-chunk-upload, lift-to-200-ok]; invariants[uploadId is authoritative session key, dataEntityId cosmetic at chunk-upload]"
     evidence:
       - "DataEntityAttachmentController.md:concepts.entities.[DataEntityAttachments]"
       - "AttachmentServiceImpl@L27.md:concepts.entities.[DataEntityUploadOptions]"
       - "attachment-config-prefix.md:concepts.entities.[attachment storage backend, S3-compatible bucket]"
+      - "uploadFileChunk.md:concepts.invariants.[0] (uploadId authoritative; dataEntityId cosmetic)"
     security_aggregate:
       overall: LOW
       auth_modes_relevant:
@@ -336,91 +474,107 @@ entities:
       ingestion_filter_relevance: NO
       authorization_consistency:
         verdict: INCONSISTENT
-        detail: "POST/PUT/DELETE on `/files/**` and `/links/**` gated by DATA_ENTITY_ATTACHMENT_MANAGE (SecurityConstants.java:247-276); GET endpoints (`getAttachments`, `getUploadOptions`, `downloadFile`) carry NO permission gate — only authentication required. Six gates on writes, zero gates on reads."
+        detail: "POST/PUT/DELETE on `/files/**` and `/links/**` gated by DATA_ENTITY_ATTACHMENT_MANAGE (SecurityConstants.java:247-276); GET endpoints (`getAttachments`, `getUploadOptions`, `downloadFile`) carry NO permission gate — only authentication required. Six gates on writes, zero gates on reads. Chunk-upload path matches `POST /api/dataentities/{data_entity_id}/files/**` glob and IS gated — but the gate evaluates against URL's data_entity_id while the file row resolves by uploadId, enabling cross-entity hijack (uploadFileChunk.md:security.known_security_gaps.[0])."
       owner_scoping:
         verdict: BYPASSES
-        detail: "Read endpoints return data without owner filtering. `getAttachments` and `downloadFile` accept dataEntityId only, no caller-identity, no ownership filter. Combined with the missing-GET-gate, any authenticated user can read every data entity's attachments and download every file. Whether this is intentional read-availability or a missed gate is unresolved."
+        detail: "Read endpoints return data without owner filtering. `getAttachments` and `downloadFile` accept dataEntityId only, no caller-identity, no ownership filter. Combined with the missing-GET-gate, any authenticated user can read every data entity's attachments and download every file. Whether this is intentional read-availability or a missed gate is unresolved. Chunk-upload write path is N/A (no data returned), but the cross-entity hijack is owner-scoping-adjacent — gate context entity (path) and mutated entity (uploadId) diverge."
       strengths:
         - "DATA_ENTITY_ATTACHMENT_MANAGE permission centralised in SECURITY_RULES with DATA_ENTITY policy context (per-entity policy evaluation)"
         - "Live doc page acknowledges DATA_ENTITY_ATTACHMENT_MANAGE in `#rbac` section (operators can find the gate)"
+        - "Chunked-upload state machine requires the uploadId's FilePojo to be in PROCESSING state (FileServiceImpl.java:93-102) — guards against late chunk arrivals after completion"
       weaknesses:
         - "Read-path authorization asymmetry — GET endpoints unprotected (severity HIGH per controller sidecar). Live doc names DATA_ENTITY_ATTACHMENT_MANAGE but is silent on read-side posture"
-        - "Server-side attachment.max-file-size cap is advertised via getUploadOptions but NOT enforced on the chunked upload path — non-browser caller can submit arbitrary-size files (severity HIGH per consumer + controller sidecars)"
+        - "Server-side attachment.max-file-size cap is advertised via getUploadOptions but NOT enforced on the chunked upload path — non-browser caller can submit arbitrary-size chunks (severity HIGH per consumer + controller + uploadFileChunk sidecars; tracked as REFACTOR-013 HIGH)"
         - "S3 credentials (attachment.remote.access-key, attachment.remote.secret-key) exposed via /actuator/env by default (Spring Boot Actuator's standard exposure list with endpoint.env.enabled: true) — Spring's default key-pattern sanitisation masks values but the keys themselves leak (severity HIGH per config-prefix sidecar)"
-        - "Cross-entity uploadId hijack: a user with DATA_ENTITY_ATTACHMENT_MANAGE on entity X who learns another user's uploadId Y issued for entity Z can post chunks via `POST /api/dataentities/X/files/uploads/Y/chunks` — gate authorises path's data entity, service forwards to uploadId's data entity (severity MEDIUM)"
-        - "No audit logging on attachment download — exfiltrating insider leaves no trace (severity MEDIUM)"
+        - "Cross-entity uploadId hijack: a user with DATA_ENTITY_ATTACHMENT_MANAGE on entity X who learns another user's uploadId Y issued for entity Z can post chunks via `POST /api/dataentities/X/files/uploads/Y/chunks` — gate authorises path's data entity, service forwards to uploadId's data entity. Confirmed at method level (uploadFileChunk.md:security.known_security_gaps.[0] MEDIUM)"
+        - "Same-`index` race: client retries chunk index=3 while prior attempt still flushing — `transferTo` is last-writer-wins; assembled file may silently include partial bytes from the prior attempt (uploadFileChunk.md:bugs_limitations_corner_cases.[4] MEDIUM)"
+        - "No audit logging on attachment download (severity MEDIUM); no audit logging on chunk acceptance either — cross-entity hijack leaves no application-side trace (uploadFileChunk.md:security.known_security_gaps.[2] MEDIUM)"
         - "No virus / malware scanning on upload — storage backends are passive byte sinks; live doc advertises 'no restriction on file type' (severity MEDIUM)"
-        - "Content-Disposition filename injection on download — `filename=\" + dto.fileName()` unsanitised (CR/LF → header injection, quote/semicolon → header truncation; filename is attacker-controlled from upload form data) (severity MEDIUM)"
+        - "Content-Disposition filename injection on download — `filename=\" + dto.fileName()` unsanitised (severity MEDIUM)"
+        - "No rate limit / per-uploadId concurrency cap — thousands of in-flight chunks against one uploadId amplify the disk-DOS surface against /tmp/odd/chunks (uploadFileChunk.md:bugs_limitations_corner_cases.[5] MEDIUM)"
       cross_file_inconsistencies:
-        - "Server-side enforcement bypass surfaces in TWO sidecars (controller + AttachmentServiceImpl@L27 consumer) — same root cause documented at both layers; cross-ref strengthens the systemic-finding signal"
-        - "Live doc danger box on LOCAL ephemerality (LSN-001) is consistent across config-prefix and controller sidecars; YAML default still ships `/tmp/odd/attachments` — operator following defaults vs operator following docs diverge"
+        - "Server-side enforcement bypass surfaces in THREE sidecars (controller + AttachmentServiceImpl@L27 consumer + uploadFileChunk method) — same root cause documented at three layers; cross-ref strengthens the systemic-finding signal"
+        - "Live doc danger box on LOCAL ephemerality (LSN-001) is consistent across config-prefix and controller sidecars; YAML default still ships `/tmp/odd/attachments`; uploadFileChunk reveals chunk path /tmp/odd/chunks is ALSO ephemeral AND storage-mode-independent — operator following defaults vs operator following docs diverge"
       contributing_files:
         - "DataEntityAttachmentController.md"
         - "AttachmentServiceImpl@L27.md"
         - "attachment-config-prefix.md"
+        - "uploadFileChunk.md"
       evidence:
         - "DataEntityAttachmentController.md:security.known_security_gaps.[0-5]"
         - "AttachmentServiceImpl@L27.md:security.known_security_gaps.[0] (server-side bypass HIGH)"
         - "attachment-config-prefix.md:security.known_security_gaps.[0] (S3 creds via /actuator/env HIGH)"
+        - "uploadFileChunk.md:security.known_security_gaps.[0-3] (hijack, no virus scan, no audit log, no size enforcement)"
     performance_aggregate:
       overall: LOW
       hot_paths:
         - "downloadFile — every UI download click streams Resource via reactive pipeline; LOCAL → page-cache, REMOTE → one S3 GetObject per request — DataEntityAttachmentController"
-        - "uploadFileChunk — once per chunk per upload (N invocations for N-MB file at default chunk size) — DataEntityAttachmentController"
+        - "uploadFileChunk — once per chunk per upload (N invocations for N-MB file at default chunk size); each call dispatches Integer.parseInt(index), checkProcessingUploadById DB SELECT, then FilePart.transferTo filesystem write (uploadFileChunk.md:performance.hot_paths.[0])"
         - "getAttachments — every entity-detail page load (Attachments tab); two parallel DB reads via Mono.zip — DataEntityAttachmentController"
         - "getUploadOptions — every upload-dialog open; multiplies maxFileSize × 1_000_000 inline — AttachmentServiceImpl@L27"
       throughput_shape:
         verdict: STREAMING
-        detail: "Chunked upload supports multi-part transfers but no single-request multi-chunk batch endpoint. Single-file download per request — no Range request support. Bulk-create on links via DataEntityLinkListFormData (single-request multi-link create); updates and deletes are single-item per request."
+        detail: "Chunked upload supports multi-part transfers but no single-request multi-chunk batch endpoint. Single-file download per request — no Range request support. Bulk-create on links via DataEntityLinkListFormData (single-request multi-link create); updates and deletes are single-item per request. Each chunk POST carries TLS + HTTP-framing overhead per chunk."
       scaling_shape:
         verdict: STATEFUL_LOCKED
-        detail: "Chunked-upload session state lives in storage backend keyed by uploadId. For LOCAL storage this is a per-instance filesystem path (`/tmp/odd/attachments`) — chunks staged on instance A cannot be completed by instance B without a shared volume. A horizontally-scaled deployment with LOCAL storage produces intermittent failures whenever the load balancer routes uploadFileChunk and completeFileUpload to different instances. REMOTE (S3) is shared by construction."
+        detail: "Chunked-upload session state lives in storage backend keyed by uploadId. For LOCAL storage the finalised file path is per-instance filesystem — chunks staged on instance A cannot be completed by instance B without a shared volume. Chunk staging path /tmp/odd/chunks is hardcoded in FileUtils.CHUNK_BASE_PATH (FileUtils.java:24) and is storage-mode-independent — applies to BOTH attachment.storage=LOCAL AND REMOTE. The class-level sidecar identified the LOCAL multi-instance risk; the method-level uploadFileChunk sidecar reveals it's universal."
       strengths:
         - "Chunk persistence streams via FilePart.transferTo(Path) — chunk-bounded memory; aggregate memory pressure scales with concurrent in-flight chunks, NOT total upload size"
         - "Stateless controller (only injected service collaborator) — horizontal scaling unconstrained at controller layer"
         - "Reactive Mono/Flux — non-blocking on server I/O thread"
       weaknesses:
         - "LSN-001 — LOCAL default writes to ephemeral `/tmp/odd/attachments`; container/pod restart wipes all uploaded files. YAML still ships this default despite live doc danger box (severity HIGH)"
-        - "Multi-instance LOCAL storage broken: chunk staging directory keyed by uploadId only, no replica id; cross-replica chunk assembly is undefined (severity HIGH)"
+        - "Multi-instance LOCAL storage broken: chunk staging directory keyed by uploadId only, no replica id; cross-replica chunk assembly is undefined. uploadFileChunk method-level finding extends scope: this applies to REMOTE storage too because the chunk staging path is upstream of the storage-backend dispatch (severity HIGH; uploadFileChunk.md:performance.known_performance_gaps.[0])"
         - "LSN-002 — REMOTE on AWS S3 silently restricted to us-east-1 (MinioConfig.minioClient() omits .region(...); MinIO SDK defaults to us-east-1 for SigV4) (severity HIGH)"
         - "MinIO SDK HTTP-client timeouts (~5min) not configurable — slow networks combined with large attachment.max-file-size produce unrecoverable socket timeouts"
-        - "No client-side resume protocol: downloadFile does not honour Range requests; flaky-connection user must restart from byte 0 on each retry"
+        - "Per-chunk DB round-trip via checkProcessingUploadById gating each chunk write — for a 200-MB upload split into 200 × 1-MB chunks that's 200 DB SELECTs against `file` table (uploadFileChunk.md:performance.known_performance_gaps.[1] LOW)"
+        - "No client-side resume protocol: downloadFile does not honour Range requests; flaky-connection user must restart from byte 0 on each retry. Chunk endpoint accepts (uploadId, index) but does not advertise which chunks the server has already accepted — recovering client must re-upload all or query out-of-band (uploadFileChunk.md:performance.known_performance_gaps.[2] LOW)"
         - "REMOTE bucket not auto-created and not auto-validated for existence at boot — typos boot cleanly, fail on first upload"
         - "No pagination on getAttachments — Mono.zip materialises both file list and link list fully in memory before serialisation (memory spike per request; combined with no API pagination, this is DoS-against-platform)"
         - "Reflection-based ODDRN-property extraction in Directory unmemoised; affects per-data-source attachment property listing"
       cross_file_inconsistencies:
         - "controller sidecar reports REMOTE-backend HTTP client pooling unconfirmed pending MinioConfig sidecar; config-prefix sidecar confirms a single shared MinioAsyncClient bean (no custom OkHttpClient pooling) — cross-file complement, not contradiction"
-        - "Storage-tier × file-size interaction surfaces in all three sidecars (LOCAL ephemeral × 20MB cap × N concurrent uploads = LSN-001 risk surface)"
+        - "Storage-tier × file-size interaction surfaces in all four sidecars (LOCAL ephemeral × 20MB cap × N concurrent uploads = LSN-001 risk surface)"
+        - "uploadFileChunk method-level sidecar promotes the LOCAL-only multi-instance finding to a storage-mode-independent one — the chunk path was assumed config-driven, the method-level evidence (FileUtils.CHUNK_BASE_PATH constant) shows it's hardcoded"
       contributing_files:
         - "DataEntityAttachmentController.md"
         - "AttachmentServiceImpl@L27.md"
         - "attachment-config-prefix.md"
+        - "uploadFileChunk.md"
       evidence:
         - "DataEntityAttachmentController.md:performance.known_performance_gaps.[0-4]"
         - "AttachmentServiceImpl@L27.md:performance.known_performance_gaps.[0-2]"
         - "attachment-config-prefix.md:performance.known_performance_gaps.[0-2]"
+        - "uploadFileChunk.md:performance.known_performance_gaps.[0-2]"
     notes: |
       "Attachment" is not in main-concepts.md as a canonical term but is a
       first-class platform feature with its own live doc page
       (`features/data-discovery/attachments`), per-entity REST surface,
       RBAC permission (DATA_ENTITY_ATTACHMENT_MANAGE), config-prefix
       (`attachment.*`), and two retrospectives (LSN-001, LSN-002).
-      Surface as a canonicalisation candidate.
+      Surface as a canonicalisation candidate. Method-level uploadFileChunk
+      sidecar adds the chunk-staging path universality finding (REMOTE
+      storage also affected by multi-instance breakage) and the
+      cross-entity hijack vulnerability shape.
 
   - name: "Attachment Storage Backend"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "Operator-configured storage tier for attachment uploads — `LOCAL` (filesystem path inside container, default `/tmp/odd/attachments`) vs `REMOTE` (S3-compatible object storage). Selected via `attachment.storage` `@ConditionalOnProperty` switch on MinioConfig / LocalFile* / RemoteFile* beans (attachment config-prefix sidecar `concepts.entities` + `implicit_adrs[0]`)."
+    description: "Operator-configured storage tier for attachment uploads — `LOCAL` (filesystem path inside container, default `/tmp/odd/attachments`) vs `REMOTE` (S3-compatible object storage). Selected via `attachment.storage` `@ConditionalOnProperty` switch on MinioConfig / LocalFile* / RemoteFile* beans. Note: chunk staging path `/tmp/odd/chunks` is hardcoded and applies to BOTH modes (uploadFileChunk method-level finding) (attachment config-prefix sidecar `concepts.entities` + `implicit_adrs[0]` + uploadFileChunk sidecar)."
     axes_present:
       - config_prefixes
+      - controllers
     nodes:
       - "odd-platform yaml application.yml config-prefix:attachment"
+      - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
     contributors:
       - "attachment config-prefix: entities[attachment storage backend, S3-compatible bucket, local filesystem path]"
+      - "uploadFileChunk: finding that chunk staging path /tmp/odd/chunks is independent of attachment.storage (FileUtils.CHUNK_BASE_PATH constant)"
     evidence:
       - "attachment-config-prefix.md:concepts.entities.[attachment storage backend, S3-compatible bucket]"
       - "attachment-config-prefix.md:implicit_adrs.[0] (storage-mode @ConditionalOnProperty)"
       - "attachment-config-prefix.md:bugs_limitations_corner_cases.[0,1] (LSN-001, LSN-002)"
+      - "uploadFileChunk.md:bugs_limitations_corner_cases.[0] (chunk path storage-mode-independent)"
     notes: |
       Storage backend is a sub-concept of Attachment but operationally
       distinct enough to merit its own catalog entry: it carries its own
@@ -428,9 +582,11 @@ entities:
       (LSN-001 ephemerality, LSN-002 us-east-1 pin), and its own
       operator configuration surface. The Attachment concept's
       security_aggregate and performance_aggregate already aggregate
-      storage-backend signals (S3 creds in /actuator/env, LOCAL ephemeral
-      multi-instance breakage). This entry exists to give the storage
-      backend a referenceable concept name for catalog navigation.
+      storage-backend signals. Method-level uploadFileChunk sidecar adds
+      a critical finding: the chunk-staging path is NOT switched by
+      attachment.storage — it's a hardcoded `/tmp/odd/chunks` constant,
+      so REMOTE-storage deployments still suffer the per-instance
+      multi-replica failure mode.
 
   - name: "GenAI Assistant"
     canonical_in_docs: true
@@ -581,6 +737,239 @@ entities:
       evidence:
         - "DirectoryController.md:performance.known_performance_gaps.[0-4]"
 
+  - name: "Slack collaboration app"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "Full Slack app for in-app per-entity Discussions threads — bidirectional integration via OAuth bot token (`datacollaboration.slack-oauth-token`) plus the Slack Events API webhook to read replies back into the platform (main-concepts.md Terms & Aliases: 'Slack collaboration app' aka 'Slack Events API', 'Slack OAuth integration', 'Data Collaboration Slack'). Outbound delivery is decoupled from HTTP request via `202 Accepted` + Postgres-advisory-lock-elected sender queue (DataCollaborationMessageSenderJob). The platform's only single-leader-elected background job in this catalog."
+    axes_present:
+      - controllers
+      - config_prefixes
+    nodes:
+      - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
+    contributors:
+      - "DataCollaborationController.postMessageInSlack: entities[MessageRequest, Message, MessagePojo, MessageChannelDto, MessageProviderDto, DataEntityPojo]; operations[enqueue-slack-message, resolve-channel-by-id, resolve-data-entity, persist-pending-message]"
+    evidence:
+      - "postMessageInSlack.md:concepts.entities.[MessageRequest, Message, MessagePojo]"
+      - "postMessageInSlack.md:concepts.operations.[enqueue-slack-message, resolve-channel-by-id, resolve-data-entity, persist-pending-message]"
+      - "postMessageInSlack.md:implicit_adrs.[3,4] (decoupled 202+queue + Postgres-advisory-lock single-sender)"
+    security_aggregate:
+      overall: LOW
+      auth_modes_relevant:
+        - LOGIN_FORM
+        - OAUTH2
+        - LDAP
+      ingestion_filter_relevance: NO
+      authorization_consistency:
+        verdict: UNGATED
+        detail: "POST /api/datacollaboration/providers/slack/messages has NO @PreAuthorize, NO SecurityRule in SecurityConstants.SECURITY_RULES, and NO programmatic permission check in DataCollaborationServiceImpl.createAndSendMessage. Falls through to AuthorizationCustomizer.pathMatchers('/**').authenticated() catch-all (postMessageInSlack.md:security.known_security_gaps.[0] HIGH). The class is @ConditionalOnDataCollaboration-gated so endpoints return 404 when datacollaboration.enabled=false — but no permission gate above the authenticated-only baseline."
+      owner_scoping:
+        verdict: BYPASSES
+        detail: "Service accepts any user-supplied data_entity_id with only existence + hollow-check (DataCollaborationServiceImpl.java:50-52); NO ownership check. User A can attach a message to a data entity owned by user B's owner — cross-tenant message-injection path (postMessageInSlack.md:security.known_security_gaps.[2] HIGH). Channel_id is also fully user-supplied (DataCollaborationController.java:34-37); no server-side mapping of `(data_entity, allowed_channels)`. Users without an owner association can still post — MessagePojo.ownerId is null (postMessageInSlack.md:security.known_security_gaps.[1] MEDIUM)."
+      strengths:
+        - "Disabled-by-default via @ConditionalOnDataCollaboration + application.yml:205 ships enabled: false explicitly"
+        - "Fail-fast empty-check on `datacollaboration.slack-oauth-token` at boot — `throw new IllegalArgumentException` when unset (DataCollaborationConfiguration.java:23-25)"
+        - "Spring's default Sanitizer masks `token`-suffixed keys via /actuator/env — `slack-oauth-token` matches the pattern so values are masked (postMessageInSlack.md:bugs_limitations_corner_cases.[8] LOW)"
+        - "AsyncMethodsClient built once at boot — shared across all requests; no per-request client allocation (DataCollaborationConfiguration.java:27)"
+      weaknesses:
+        - "No authorization gate on POST — any authenticated user can post to any Slack channel the bot can reach, attached to any data_entity_id (postMessageInSlack.md:security.known_security_gaps.[0] HIGH)"
+        - "Cross-tenant posting: user A can attach a message to user B's owned entity (postMessageInSlack.md:security.known_security_gaps.[2] HIGH)"
+        - "Channel-id fully user-supplied; no `(data_entity, allowed_channels)` server-side mapping (postMessageInSlack.md:security.known_security_gaps.[3] MEDIUM)"
+        - "No body validation: MessageRequest.text is `required` only — no max-length, no sanitisation; 4MB body accepted and persisted; Slack's per-message ~40KB limit only hits AFTER 202 has returned (postMessageInSlack.md:bugs_limitations_corner_cases.[1] MEDIUM)"
+        - "No audit logging — `messages` row records ownerId but not the calling user's id when no owner association; no log.info on the post path (postMessageInSlack.md:bugs_limitations_corner_cases.[6] MEDIUM)"
+        - "No rate limit / throttling — single authenticated user can flood the messages table; sender thread is the bottleneck, not the inbound (postMessageInSlack.md:bugs_limitations_corner_cases.[7] MEDIUM)"
+        - "Slack error leak: SlackAPIException messages persisted to messages.failure_reason via `markMessageAsFailed(message.getUuid(), e.getMessage())` — literal Slack error strings (`invalid_auth`, `token_revoked`) become a token-state oracle if surfaced via read endpoints (postMessageInSlack.md:security.known_security_gaps.[4] LOW)"
+        - "Slack rate-limit handling is non-discriminating — every Exception caught at DataCollaborationMessageSenderJob.java:55 retried 3× with fixed 1-second sleep, regardless of whether it's 429/auth/channel error (postMessageInSlack.md:bugs_limitations_corner_cases.[5] MEDIUM)"
+      cross_file_inconsistencies:
+        - "Live /developer-guides/api-reference/data-collaboration documents the endpoint but omits authentication/authorization, request validation, and rate-limit behaviour — operators reading the docs cannot infer the security model (postMessageInSlack.md:docs_link_semantic.doc_drift_findings.[0,1])"
+        - "Live /active-platform-features/data-collaboration returns 404 even though source exists in documentation/docs/active-platform-features/data-collaboration.md — operators Googling 'odd data collaboration' currently land on broken page (postMessageInSlack.md:docs_link_semantic.doc_drift_findings.[2] HIGH for doc-drift)"
+      contributing_files:
+        - "postMessageInSlack.md"
+      evidence:
+        - "postMessageInSlack.md:security.known_security_gaps.[0-4]"
+        - "postMessageInSlack.md:bugs_limitations_corner_cases.[0-8]"
+    performance_aggregate:
+      overall: MEDIUM
+      hot_paths:
+        - "Per-request Slack `conversations.info` round-trip in DataCollaborationServiceImpl.createAndSendMessage line 53-56 — Slack outage/latency directly drives endpoint latency (postMessageInSlack.md:performance.hot_paths.[0])"
+        - "Per-request dataEntityRepository.get() + authIdentityProvider.fetchAssociatedOwner() — 2 DB round-trips before queueing (postMessageInSlack.md:performance.hot_paths.[1,2])"
+      throughput_shape:
+        verdict: SINGLE_ITEM_ONLY
+        detail: "Single-message POST — no bulk endpoint. Outbound to Slack decoupled via 202 Accepted; single-leader sender drains queue at ~1 message per second (fixed 1-second sleep in DataCollaborationMessageSenderJob.java:60,70)."
+      scaling_shape:
+        verdict: STATEFUL_LOCKED
+        detail: "Sender thread is single-leader across the deployment via Postgres advisory lock id 120 (default `datacollaboration.sender-message-advisory-lock-id`). Horizontal scaling of the API process does NOT linearly scale Slack delivery — only one node ever holds the lock and drains the queue. Inbound endpoint scales horizontally (stateless); outbound is single-writer-by-design."
+      strengths:
+        - "Decoupled 202+queue+sender pattern — outbound Slack failure doesn't cascade to inbound 5xx"
+        - "Caffeine cache on channels (max 1, TTL 1 minute) — bounded memory; bounded refetch cadence (SlackMessageProviderClient.java:38-44)"
+        - "Postgres-advisory-lock single-leader avoids external queue dependency — preserves Postgres-as-only-dependency posture"
+      weaknesses:
+        - "Sender throughput bounded at ~1 msg/sec by fixed sleep — backlog of 1000 messages takes >16 minutes to drain at best (postMessageInSlack.md:performance.known_performance_gaps.[0] LOW)"
+        - "Caffeine channel-cache miss every minute boundary triggers full conversations.list walk (paginated 200/page); workspace with N channels pays O(N/200) Slack round-trips/min idle (postMessageInSlack.md:performance.known_performance_gaps.[1] LOW)"
+        - "No pagination/cap on inbound — pathological user can attach 10K messages to single entity, growth unbounded by sender drain rate"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "postMessageInSlack.md"
+      evidence:
+        - "postMessageInSlack.md:performance.hot_paths.[0-2]"
+        - "postMessageInSlack.md:performance.throughput_characteristics"
+        - "postMessageInSlack.md:performance.scaling_characteristics"
+        - "postMessageInSlack.md:performance.known_performance_gaps.[0,1]"
+    notes: |
+      Canonical in main-concepts.md Terms & Aliases as "Slack collaboration
+      app" with explicit aliases "Slack Events API / Slack OAuth integration
+      / Data Collaboration Slack". Distinct from "Slack alert webhook"
+      (outgoing-only notifications via notifications.receivers.slack.url) —
+      the collaboration app is bidirectional. The single-leader sender via
+      Postgres advisory lock is an architecturally significant pattern not
+      seen elsewhere in the catalog so far; surface for invariant-tracking.
+
+  - name: "Collector"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "Container of pull adapters plus the runtime around them (main-concepts.md verbatim). Authenticated to the platform via a shared-secret bearer token used by S2S `IngestionDataEntitiesFilter` on `/ingestion/entities`. Platform-level infrastructure (no Owner association). Managed via `/api/collectors/*` endpoints — list, create, update, delete, regenerate-token. Token rotation is an in-place UPDATE with no grace window."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
+    contributors:
+      - "CollectorController.regenerateCollectorToken: entities[Collector, Token (40-char alphanumeric shared secret), TokenPojo, CollectorDto]; operations[regenerate-collector-token, rotate-ingestion-secret, return-plaintext-token]"
+    evidence:
+      - "regenerateCollectorToken.md:concepts.entities.[Collector, Token, TokenPojo, CollectorDto]"
+      - "regenerateCollectorToken.md:concepts.operations"
+      - "regenerateCollectorToken.md:concepts.invariants.[0-3]"
+    security_aggregate:
+      overall: LOW
+      auth_modes_relevant:
+        - LOGIN_FORM
+        - OAUTH2
+        - LDAP
+      ingestion_filter_relevance: NO
+      authorization_consistency:
+        verdict: CONSISTENT
+        detail: "Endpoint IS gated: SecurityConstants.java:135-137 registers `SecurityRule(NO_CONTEXT, PUT /api/collectors/{collector_id}/token, COLLECTOR_TOKEN_REGENERATE)`. Permission is MANAGEMENT-tier per PolicyPermissionDto.java:58. No @PreAuthorize on controller (consistent with the centralised-SECURITY_RULES pattern). Live `/configuration-and-deployment/enable-security/authorization/permissions` (verified 200, 2026-05-10) documents COLLECTOR_TOKEN_REGENERATE verbatim. The gate is correctly wired — the weakness is what the operation EXPOSES, not whether it's gated."
+      owner_scoping:
+        verdict: N/A
+        detail: "Collector is a global resource — platform-level infrastructure, not data-scoped. MANAGEMENT-tier permission gates globally; no per-collector ACL beyond the policy."
+      strengths:
+        - "Gated by COLLECTOR_TOKEN_REGENERATE Permission (MANAGEMENT tier) via SECURITY_RULES — declarative authorization (regenerateCollectorToken.md:security.authorization_assertions.[0])"
+        - "Centralised gate declaration consistent with the platform-wide SecurityConstants.SECURITY_RULES pattern — no scattered @PreAuthorize"
+        - "Token entropy is 40 alphanumeric chars ≈ 238 bits of input space — adequate length for a shared secret"
+      weaknesses:
+        - "Token entropy uses `RandomStringUtils.randomAlphanumeric(40)` which delegates to ThreadLocalRandom (non-CSPRNG); should use `RandomStringUtils.secure().nextAlphanumeric(40)` or explicit SecureRandom (regenerateCollectorToken.md:security.known_security_gaps.[1] HIGH)"
+        - "Token plaintext returned in response body on rotation — any reverse-proxy / browser-history / response-logging middleware records the new credential; no `Cache-Control: no-store`, no sensitive-body header (regenerateCollectorToken.md:security.known_security_gaps.[0] MEDIUM)"
+        - "Token stored in plaintext in the TOKEN table — DB read/replica/backup carries credentials in the clear; IngestionDataEntitiesFilter.java:55-58 confirms plaintext `.equals(...)` check (no hashing layer) (regenerateCollectorToken.md:security.known_security_gaps.[3] HIGH)"
+        - "Token rotation not audit-logged — grep for log.* against CollectorController/CollectorServiceImpl/TokenGeneratorImpl/ReactiveTokenRepositoryImpl returned zero matches. TOKEN.updated_by column is the only forensic trail but is overwritten on next rotation — single-state, not append-only (regenerateCollectorToken.md:security.known_security_gaps.[2] HIGH)"
+        - "Under auth.type=DISABLED the gate is bypassed entirely — TokenGeneratorImpl.java:30-31 falls through to `regenerate(tokenPojo, null)` with NULL updated_by. Any caller reaching the platform can rotate any collector's token and receive plaintext (regenerateCollectorToken.md:security.known_security_gaps.[4] HIGH in DISABLED deployments)"
+        - "No rotation grace period — in-flight ingestion using old token will 401 the moment UPDATE commits (regenerateCollectorToken.md:security.known_security_gaps.[5] HIGH operational severity)"
+        - "No rate-limit on rotation — stolen MANAGEMENT-permission session can rotate every collector's token in a loop, breaking platform-wide ingestion (regenerateCollectorToken.md:security.known_security_gaps.[6] MEDIUM)"
+      cross_file_inconsistencies:
+        - "Live `/configuration-and-deployment/enable-security/authentication` enumerates S2S auth mode without explaining how its credential is rotated; `/permissions` names COLLECTOR_TOKEN_REGENERATE without operational guidance (no rotation grace period, plaintext-in-response shape) (regenerateCollectorToken.md:docs_link_semantic.doc_drift_findings.[0])"
+      contributing_files:
+        - "regenerateCollectorToken.md"
+      evidence:
+        - "regenerateCollectorToken.md:security.known_security_gaps.[0-6]"
+        - "regenerateCollectorToken.md:bugs_limitations_corner_cases.[0-7]"
+    performance_aggregate:
+      overall: HIGH
+      hot_paths:
+        - "PUT /api/collectors/{collector_id}/token — synchronous from caller's perspective: 1 DB SELECT with joins (NAMESPACE + TOKEN), in-memory mutation, 1 DB UPDATE RETURNING. 2 DB round-trips total. Not on the ingestion hot path. (regenerateCollectorToken.md:performance.hot_paths.[0])"
+      throughput_shape:
+        verdict: SINGLE_ITEM_ONLY
+        detail: "Single-collector PUT — no bulk-rotate endpoint. Rotating N collectors makes N requests."
+      scaling_shape:
+        verdict: HORIZONTALLY_SCALABLE
+        detail: "Stateless controller. No locks, no advisory locks. Last-write-wins for concurrent rotations on same collector_id — no optimistic locking (no @Version column, no WHERE updated_at = :prev)."
+      strengths:
+        - "Reactive Mono signature — non-blocking on WebFlux thread"
+        - "Stateless — instances scale horizontally without coordination"
+        - "Minimal resource footprint per call (one CollectorDto + one TokenPojo + projection)"
+      weaknesses:
+        - "No bulk-rotate endpoint — rotating all collectors after a credential leak requires N HTTP calls (regenerateCollectorToken.md:performance.known_performance_gaps.[0] LOW)"
+        - "Concurrent-rotation race produces silently-discarded credentials — operators issuing rapid retries may walk away with a token that is not actually the persisted one (regenerateCollectorToken.md:performance.known_performance_gaps.[1] LOW)"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "regenerateCollectorToken.md"
+      evidence:
+        - "regenerateCollectorToken.md:performance.hot_paths"
+        - "regenerateCollectorToken.md:performance.known_performance_gaps.[0,1]"
+    notes: |
+      Collector is canonical in main-concepts.md ("a container of pull adapters
+      plus the runtime around them"). The Token Rotation operation surfaces
+      multiple architectural concerns (in-place UPDATE, plaintext storage,
+      plaintext-in-response, non-CSPRNG entropy, no audit, no grace period,
+      no rate limit) — see also the related "Collector Token" concept entry.
+
+  - name: "Collector Token"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "40-character alphanumeric shared-secret bearer token used by an ODD collector to authenticate `POST /ingestion/entities` requests against the S2S `IngestionDataEntitiesFilter`. Stored in plaintext in the TOKEN table; compared via literal `.equals(...)` (no hashing layer). Rotation is an in-place UPDATE; no overlap window between old and new (regenerateCollectorToken sidecar `concepts.invariants.[1-3]`). vocabulary_status: codebase-anchored, doc-side-partially-covered (main-concepts.md mentions S2S authentication but not the token-rotation contract; live `/permissions` names COLLECTOR_TOKEN_REGENERATE Permission)."
+    vocabulary_status: "codebase-anchored, doc-side-partially-covered"
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
+    contributors:
+      - "regenerateCollectorToken: entities[Token (40-char alphanumeric shared secret), TokenPojo]; invariants[in-place UPDATE no overlap; plaintext in DB; plaintext in response; .equals-based filter check]"
+    evidence:
+      - "regenerateCollectorToken.md:concepts.entities.[Token]"
+      - "regenerateCollectorToken.md:concepts.invariants.[1,2,3]"
+      - "regenerateCollectorToken.md:implicit_adrs.[1,2,3]"
+    security_aggregate:
+      overall: LOW
+      auth_modes_relevant:
+        - S2S
+        - LOGIN_FORM
+        - OAUTH2
+        - LDAP
+      ingestion_filter_relevance: YES
+      authorization_consistency:
+        verdict: CONSISTENT
+        detail: "S2S filter consumes the token via plaintext-equality at IngestionDataEntitiesFilter.java:55-58. Token rotation gated by COLLECTOR_TOKEN_REGENERATE (MANAGEMENT). The token IS the auth credential for ingestion — not authorized BY something, but authorizing OF something."
+      owner_scoping:
+        verdict: N/A
+        detail: "Token is a global infrastructure credential, not data-scoped."
+      strengths:
+        - "Token is opaque random string used over TLS-protected transport (the only sanctioned ingress)"
+        - "40-char alphanumeric ≈ 238 bits of input space — long enough that brute-force is infeasible (assuming RNG quality)"
+      weaknesses:
+        - "RandomStringUtils.randomAlphanumeric(40) uses ThreadLocalRandom (non-CSPRNG) — actual entropy depends on RNG quality, not just length. Should use `.secure().nextAlphanumeric(40)` (regenerateCollectorToken.md:security.known_security_gaps.[1] HIGH)"
+        - "Stored in plaintext in TOKEN table — DB compromise carries credentials in the clear (regenerateCollectorToken.md:security.known_security_gaps.[3] HIGH)"
+        - "Plaintext returned in response body on rotation — any middleware on the response path records the credential (regenerateCollectorToken.md:security.known_security_gaps.[0] MEDIUM)"
+        - "No rotation grace period — in-place UPDATE invalidates the old token immediately (regenerateCollectorToken.md:security.known_security_gaps.[5] HIGH operational)"
+        - "No audit log — historical 'who rotated when' unrecoverable; updated_by column overwrites on each rotation (regenerateCollectorToken.md:security.known_security_gaps.[2] HIGH)"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "regenerateCollectorToken.md"
+      evidence:
+        - "regenerateCollectorToken.md:security.known_security_gaps.[1,3,0,5,2]"
+        - "regenerateCollectorToken.md:concepts.invariants.[1-3]"
+    performance_aggregate:
+      overall: HIGH
+      hot_paths:
+        - "Token validation on every /ingestion/entities POST — IngestionDataEntitiesFilter does literal `.equals(...)` against in-DB token value (regenerateCollectorToken.md:concepts.invariants.[3])"
+      throughput_shape:
+        verdict: SINGLE_ITEM_ONLY
+        detail: "One token per collector; no bulk-token API. The expensive throughput surface is /ingestion/entities itself, not token operations."
+      scaling_shape:
+        verdict: HORIZONTALLY_SCALABLE
+        detail: "Token validation is a single DB SELECT per ingestion request. No locking. Stateless across replicas."
+      strengths:
+        - "Plaintext-equality check is O(1) — bounded cost per ingestion request"
+      weaknesses:
+        - "Per-ingestion-request DB hit for token validation — no in-memory cache observed (likely intentional given the rotation contract: in-place UPDATE invalidates immediately)"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "regenerateCollectorToken.md"
+      evidence:
+        - "regenerateCollectorToken.md:concepts.invariants.[3]"
+    notes: |
+      Surface as canonicalisation candidate. main-concepts.md names S2S auth
+      mode and the Ingestion authentication filter, but does not name "Collector
+      Token" or "shared-secret rotation" as a first-class concept. The
+      operational mechanics (in-place UPDATE, plaintext-in-response, no grace
+      window) live entirely in the code; a `Token Rotation` section under
+      enable-security would close the loop.
+
   - name: "Locale Bundle"
     canonical_in_docs: false
     canonical_candidate: true
@@ -694,9 +1083,15 @@ entities:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DirectoryController"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController"
+      - "odd-platform java ActivityController controller-method:getActivity"
+      - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
+      - "odd-platform java AlertController controller-method:getAllAlerts"
+      - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
     contributors:
       - "All controller sidecars: security.auth_mode_relevance lists DISABLED/LOGIN_FORM/OAUTH2/LDAP (with auth-mode names verbatim from the live enable-security doc)"
       - "AlertManagerController: auth_mode_relevance is `NONE — operator-delegated network-layer auth` (the singular exception — `/ingestion/**` whitelist exempts the path from the UI authentication chain)"
+      - "CollectorController.regenerateCollectorToken: also implicates S2S — the rotated token is the S2S credential the ingestion filter validates (collector-token surface is producer-side of S2S)"
     evidence:
       - "AlertController.md:security.auth_mode_relevance"
       - "AlertManagerController.md:security.auth_mode_relevance (NONE)"
@@ -704,6 +1099,11 @@ entities:
       - "DataEntityAttachmentController.md:security.auth_mode_relevance"
       - "DirectoryController.md:security.auth_mode_relevance"
       - "GenAIController.md:security.auth_mode_relevance"
+      - "getActivity.md:security.auth_mode_relevance"
+      - "postMessageInSlack.md:security.auth_mode_relevance"
+      - "regenerateCollectorToken.md:security.auth_mode_relevance"
+      - "getAllAlerts.md:security.auth_mode_relevance"
+      - "uploadFileChunk.md:security.auth_mode_relevance"
     notes: |
       Cross-cutting infrastructural concept named in main-concepts.md's
       `Data Security (governance-level)` callout that points at
@@ -727,21 +1127,24 @@ entities:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController"
       - "odd-platform openapi tags openapi-tag:dataEntity"
       - "odd-platform openapi tags openapi-tag:alert"
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
     contributors:
       - "Every UI/API surface sidecar: ingestion_filter_relevance: NO — UI/API surface, not ingestion"
       - "AlertManagerController: ingestion_filter_relevance: NO — different path (`/ingestion/alert/alertmanager` is in `/ingestion/**` whitelist namespace but NOT covered by IngestionDataEntitiesFilter)"
+      - "regenerateCollectorToken: PRODUCER-side of the filter — endpoint mints/rotates the credential that IngestionDataEntitiesFilter validates via plaintext `.equals(...)`"
     evidence:
       - "AlertController.md:security.ingestion_filter_relevance"
       - "AlertManagerController.md:security.ingestion_filter_relevance (the asymmetry finding)"
       - "DataEntityController.md:security.ingestion_filter_relevance"
       - "DataEntityAttachmentController.md:security.ingestion_filter_relevance"
+      - "regenerateCollectorToken.md:concepts.invariants.[3] (plaintext-equality check; producer-side coupling)"
 
 audiences:
 
   - name: "ODD Platform UI End-User"
     canonical_in_docs: true
     canonical_candidate: false
-    description: "Authenticated platform users browsing the catalog, navigating entities, viewing alerts, downloading attachments, switching languages, and posing GenAI questions. Surfaces across every controller and UI sidecar."
+    description: "Authenticated platform users browsing the catalog, navigating entities, viewing alerts, downloading attachments, switching languages, posing GenAI questions, posting in-app Slack discussions, and auditing platform activity. Surfaces across every controller and UI sidecar."
     axes_present:
       - controllers
       - ui_routes
@@ -754,18 +1157,30 @@ audiences:
       - "odd-platform ts routes route:alerts"
       - "odd-platform ts components/shared/elements/AppToolbar ui-shell-widget:SelectLanguage"
       - "odd-platform ts locales ui-shell-bootstrap:i18n.ts"
+      - "odd-platform java ActivityController controller-method:getActivity"
+      - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
+      - "odd-platform java AlertController controller-method:getAllAlerts"
+      - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
     contributors:
       - "AlertController.audiences: ODD Platform UI — Alerts navigation pane and per-entity Alerts tabs"
       - "DataEntityController.audiences: virtually every UI screen consumes Data Entity endpoints"
       - "DataEntityAttachmentController.audiences: per-entity Attachments tab, drag-and-drop file uploader, link picker"
       - "alerts route.audiences: signed-in platform users browsing alerts via the AppToolbar `Alerts` tab and the in-page tab strip"
       - "i18n.ts.audiences: platform UI end-users (the language switcher in the user menu reads i18n.languages)"
+      - "getActivity.audiences: Activity Feed page (https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed), operators auditing platform changes, security/compliance reviewers"
+      - "postMessageInSlack.audiences: authenticated ODD UI users posting from the Discussions tab on a data-entity detail page"
+      - "getAllAlerts.audiences: ODD Platform UI — Alerts → All tab (per live alerting doc); platform stewards and admins per the live doc's recommendation"
+      - "uploadFileChunk.audiences: ODD Platform UI — chunked uploader on the per-entity Attachments tab"
     evidence:
       - "AlertController.md:concepts.audiences.[0]"
       - "DataEntityController.md:concepts.audiences.[0]"
       - "DataEntityAttachmentController.md:concepts.audiences.[0]"
       - "alerts-route.md:concepts.audiences"
       - "i18n_ts.md:concepts.audiences"
+      - "getActivity.md:concepts.audiences"
+      - "postMessageInSlack.md:concepts.audiences"
+      - "getAllAlerts.md:concepts.audiences"
+      - "uploadFileChunk.md:concepts.audiences"
 
   - name: "ODD API Consumer"
     canonical_in_docs: false
@@ -781,15 +1196,18 @@ audiences:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController"
       - "odd-platform openapi tags openapi-tag:alert"
       - "odd-platform openapi tags openapi-tag:dataEntity"
+      - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
     contributors:
       - "Multiple controller sidecars: API consumers building integrations against /api/<resource>*"
       - "openapi-tag:alert.audiences: OpenAPI generator + Human readers of the spec navigating by tag in tools like Swagger UI / ReDoc / Stoplight"
       - "openapi-tag:dataEntity.audiences: UI client + platform integrations writing back metadata + operators inspecting alerts/runs/activity"
+      - "uploadFileChunk.audiences: API consumers implementing the 3-step protocol against /api/dataentities/{id}/files/uploads/{upload_id}/chunks"
     evidence:
       - "AlertController.md:concepts.audiences.[1]"
       - "DataEntityController.md:concepts.audiences.[1]"
       - "openapi-tag-alert.md:concepts.audiences"
       - "openapi-tag-dataEntity.md:concepts.audiences"
+      - "uploadFileChunk.md:concepts.audiences"
     notes: |
       "API Consumer" is not in main-concepts.md's vocabulary as a
       first-class audience. Surface as canonicalisation candidate;
@@ -798,7 +1216,7 @@ audiences:
   - name: "Platform Operator"
     canonical_in_docs: true
     canonical_candidate: false
-    description: "Engineers deploying and configuring ODD Platform — set values in `application.yml` / env vars / Helm values; pick auth mode; enable GenAI / configure attachment storage; deploy AlertManager network controls. Maintain `docs.opendatadiscovery.org` is the operator-facing surface (config-prefix sidecars + GenAIProperties + AlertManagerController audiences)."
+    description: "Engineers deploying and configuring ODD Platform — set values in `application.yml` / env vars / Helm values; pick auth mode; enable GenAI / configure attachment storage; deploy AlertManager network controls; rotate collector tokens. Maintain `docs.opendatadiscovery.org` is the operator-facing surface (config-prefix sidecars + GenAIProperties + AlertManagerController + regenerateCollectorToken audiences)."
     axes_present:
       - config_prefixes
       - controllers
@@ -806,14 +1224,17 @@ audiences:
       - "odd-platform yaml application.yml config-prefix:attachment"
       - "odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:GenAIProperties"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController"
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
     contributors:
       - "attachment config-prefix.audiences: platform operators (set via application.yml, env vars, Helm values); MinIO/S3 service operators on receiving end of REMOTE mode"
       - "GenAIProperties.audiences: Platform operators configuring the GenAI proxy via application.yml or GENAI_* env vars"
       - "AlertManagerController.audiences: platform operators configuring AlertManager to push into ODD"
+      - "regenerateCollectorToken.audiences: odd-platform-ui collector settings page (operators rotating leaked / scheduled-rotation tokens), platform admins enforcing credential hygiene"
     evidence:
       - "attachment-config-prefix.md:concepts.audiences"
       - "GenAIProperties.md:concepts.audiences"
       - "AlertManagerController.md:concepts.audiences.[1]"
+      - "regenerateCollectorToken.md:concepts.audiences"
 
   - name: "External LLM Service"
     canonical_in_docs: true
@@ -848,12 +1269,40 @@ audiences:
       Surface as canonicalisation candidate. Distinct from the platform's
       internal Alert audience; this is the inbound system.
 
+  - name: "Slack workspace (bot-installed)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "The operator's Slack workspace where the ODD bot user is installed via OAuth (`datacollaboration.slack-oauth-token` is the bot user token). Receives `chat.postMessage` API calls from the platform's single-leader sender thread. Outbound destination for in-app Discussions threads. main-concepts.md Terms & Aliases names this via the `Slack collaboration app` entry."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
+    contributors:
+      - "postMessageInSlack: the Slack workspace's `chat.postMessage` and `conversations.info` / `conversations.list` API surfaces are the sender thread's outbound consumers"
+    evidence:
+      - "postMessageInSlack.md:dependencies_semantic.requires-runtime (Slack workspace reachability)"
+      - "postMessageInSlack.md:performance.hot_paths.[0] (per-request conversations.info)"
+
+  - name: "ODD Collector (runtime)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "The deployed collector container/process consuming the COLLECTOR_TOKEN_REGENERATE-rotated token to authenticate `POST /ingestion/entities`. The collector audience is downstream of the rotation operation — it's the system that must pick up the new token (typically a config-file change + restart) the moment the in-place UPDATE commits. main-concepts.md names Collector canonically."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
+    contributors:
+      - "regenerateCollectorToken: token rotation is felt at the collector runtime — in-flight ingestion fails the moment UPDATE commits; operator must reconfigure the collector to use the new value"
+    evidence:
+      - "regenerateCollectorToken.md:concepts.invariants.[3]"
+      - "regenerateCollectorToken.md:bugs_limitations_corner_cases.[0] (no rotation grace period)"
+
 invariants:
 
   - name: "Controllers are pass-through delegates with HTTP wiring on generated *Api interfaces"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "Repository-wide convention: controllers carry only `@RestController` + `@RequiredArgsConstructor` + `@Override` on each method. HTTP method/path/produces/consumes annotations live on the OpenAPI-generated `*Api` interface, NOT on the controller class. AlertController, DataEntityController, DataEntityAttachmentController, DirectoryController, GenAIController all follow this. AlertManagerController is the sole exception (hand-coded, no `*Api` interface, has explicit `// TODO: define OpenAPI spec` comment)."
+    description: "Repository-wide convention: controllers carry only `@RestController` + `@RequiredArgsConstructor` + `@Override` on each method. HTTP method/path/produces/consumes annotations live on the OpenAPI-generated `*Api` interface, NOT on the controller class. AlertController, DataEntityController, DataEntityAttachmentController, DirectoryController, GenAIController, ActivityController, DataCollaborationController, CollectorController all follow this. AlertManagerController is the sole exception (hand-coded, no `*Api` interface, has explicit `// TODO: define OpenAPI spec` comment)."
     axes_present:
       - controllers
     nodes:
@@ -863,8 +1312,15 @@ invariants:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DirectoryController"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController"
+      - "odd-platform java ActivityController controller-method:getActivity"
+      - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
+      - "odd-platform java AlertController controller-method:getAllAlerts"
+      - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
     contributors:
-      - "Six controller sidecars: implicit_adrs[0] / [first ADR] verbatim names this convention; AlertManagerController explicitly notes its non-conformance"
+      - "All controller class + method sidecars: implicit_adrs[0] / [first ADR] verbatim names this convention; AlertManagerController explicitly notes its non-conformance"
+      - "postMessageInSlack.implicit_adrs[2]: 'Controller is a thin reactive proxy — every method delegates straight to DataCollaborationService with no per-request business logic'"
+      - "uploadFileChunk.implicit_adrs[0]: same pattern across all 10 methods on DataEntityAttachmentController"
     evidence:
       - "AlertController.md:implicit_adrs.[0]"
       - "DataEntityController.md:implicit_adrs.[0]"
@@ -872,11 +1328,14 @@ invariants:
       - "DirectoryController.md:implicit_adrs.[0]"
       - "GenAIController.md:implicit_adrs.[0]"
       - "AlertManagerController.md:implicit_adrs.[0] (no_openapi_contract — the exception)"
+      - "postMessageInSlack.md:implicit_adrs.[2]"
+      - "uploadFileChunk.md:implicit_adrs.[0]"
+      - "regenerateCollectorToken.md:dependencies_semantic.coupling (CollectorApi generated interface supplies HTTP metadata)"
 
   - name: "Authorization is path-pattern wired in SecurityConstants.SECURITY_RULES, not controller annotations"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "Repository-wide ADR: no controller carries `@PreAuthorize` / `@Secured` / programmatic permission calls. Authorization is enforced externally via `SecurityConstants.SECURITY_RULES` — a list of `(AuthorizationManagerType, PathPatternParserServerWebExchangeMatcher, PolicyPermissionDto)` triples consumed by `AuthorizationCustomizer`. Trade-off: centralised matrix view vs path-string coupling that breaks silently when paths drift (the `/term` vs `/terms` mismatch documented under DataEntityController is the canonical failure mode)."
+    description: "Repository-wide ADR: no controller carries `@PreAuthorize` / `@Secured` / programmatic permission calls. Authorization is enforced externally via `SecurityConstants.SECURITY_RULES` — a list of `(AuthorizationManagerType, PathPatternParserServerWebExchangeMatcher, PolicyPermissionDto)` triples consumed by `AuthorizationCustomizer`. Trade-off: centralised matrix view vs path-string coupling that breaks silently when paths drift (the `/term` vs `/terms` mismatch documented under DataEntityController is the canonical failure mode). Reinforced by method-level sidecars: regenerateCollectorToken (gated via SECURITY_RULES at line 135-137), getAllAlerts (NOT in SECURITY_RULES — fall-through to authenticated()), uploadFileChunk (gated via path-glob matching but with cross-entity-hijack failure mode), postMessageInSlack (NOT in SECURITY_RULES — fall-through ungated), getActivity (NOT in SECURITY_RULES — fall-through ungated)."
     axes_present:
       - controllers
     nodes:
@@ -885,22 +1344,37 @@ invariants:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertController"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DirectoryController"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController"
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
+      - "odd-platform java AlertController controller-method:getAllAlerts"
+      - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
+      - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
+      - "odd-platform java ActivityController controller-method:getActivity"
     contributors:
       - "DataEntityController + DataEntityAttachmentController sidecars: implicit_adrs naming the path-pattern wiring + the term path-mismatch failure"
       - "AlertController: implicit_adrs[1] — authorization-is-service-layer (the alerts variant of the same pattern, where SECURITY_RULES is empty)"
       - "DirectoryController: implicit_adrs[5] — GETs are uniformly authenticated-only across the platform"
       - "GenAIController: implicit_adrs[1] — authorization is wired via path-matcher fall-through (no SECURITY_RULES entry)"
+      - "regenerateCollectorToken.implicit_adrs[0]: example of the pattern WORKING — endpoint gated by COLLECTOR_TOKEN_REGENERATE"
+      - "getAllAlerts.implicit_adrs[0]: example of the FALL-THROUGH default (no rule = catch-all .authenticated())"
+      - "uploadFileChunk.implicit_adrs[2]: gate evaluates against URL's data_entity_id with no service-side cross-validation — pattern's structural failure mode"
+      - "postMessageInSlack.bugs_limitations_corner_cases[0]: no SECURITY_RULES entry → fall-through to authenticated() catch-all"
+      - "getActivity.security.authorization_assertions: no SECURITY_RULES entry; falls through"
     evidence:
       - "DataEntityController.md:implicit_adrs.[0] + bugs_limitations_corner_cases.[0] (term path mismatch)"
       - "DataEntityAttachmentController.md:implicit_adrs.[1]"
       - "AlertController.md:implicit_adrs.[1]"
       - "DirectoryController.md:implicit_adrs.[5]"
       - "GenAIController.md:implicit_adrs.[1]"
+      - "regenerateCollectorToken.md:implicit_adrs.[0]"
+      - "getAllAlerts.md:implicit_adrs.[0]"
+      - "uploadFileChunk.md:implicit_adrs.[2]"
+      - "postMessageInSlack.md:bugs_limitations_corner_cases.[0]"
+      - "getActivity.md:security.authorization_assertions"
 
   - name: "Reactive Mono<ResponseEntity<...>>.map(ResponseEntity::ok) is the uniform success-response pattern"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "Every controller in the catalog returns `Mono<ResponseEntity<...>>` (or `Mono<ResponseEntity<Flux<...>>>` for streaming) with terminal operator `.map(ResponseEntity::ok)` for 200 success or `.thenReturn(ResponseEntity.noContent().build())` for 204 deletes. No exception translation, no status-code branching, no try/catch — non-200/204 responses are produced exclusively by service-thrown exceptions hitting global Spring exception handlers, or by service-emitted Mono.error(...) signals."
+    description: "Every controller in the catalog returns `Mono<ResponseEntity<...>>` (or `Mono<ResponseEntity<Flux<...>>>` for streaming) with terminal operator `.map(ResponseEntity::ok)` for 200 success, `.thenReturn(ResponseEntity.noContent().build())` for 204 deletes, or `HttpStatus.ACCEPTED` (postMessageInSlack) for 202 queue-and-return. No exception translation, no status-code branching, no try/catch — non-200/204 responses are produced exclusively by service-thrown exceptions hitting global Spring exception handlers, or by service-emitted Mono.error(...) signals."
     axes_present:
       - controllers
     nodes:
@@ -910,34 +1384,52 @@ invariants:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DirectoryController"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController"
+      - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
+      - "odd-platform java AlertController controller-method:getAllAlerts"
+      - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
+      - "odd-platform java ActivityController controller-method:getActivity"
     contributors:
-      - "Six controller sidecars: implicit_adrs naming the uniform .map(ResponseEntity::ok) terminal pattern"
+      - "All controller class + method sidecars: implicit_adrs naming the uniform terminal pattern"
+      - "postMessageInSlack: the 202 ACCEPTED variant — explicit choice paired with the queue/sender/lock decomposition"
     evidence:
       - "AlertController.md:implicit_adrs.[2]"
       - "DataEntityController.md:implicit_adrs.[4]"
       - "DataEntityAttachmentController.md:implicit_adrs.[2]"
       - "GenAIController.md:concepts.invariants.[0]"
+      - "uploadFileChunk.md:concepts.invariants.[2]"
+      - "getAllAlerts.md:concepts.invariants.[0]"
+      - "postMessageInSlack.md:implicit_adrs.[3] (202+queue decomposition)"
+      - "regenerateCollectorToken.md:performance.throughput_characteristics"
+      - "getActivity.md:performance.throughput_characteristics"
 
   - name: "Spec carries no security: block; authorization is wholly out-of-band of the OpenAPI contract"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "Both alert and dataEntity OpenAPI tags declare zero `security:` blocks (top-level OR per-operation) and no `components.securitySchemes`. Every authorization decision is invisible to the spec; consumers reading the spec to derive auth requirements get nothing. The contract therefore commits the platform to enforcing auth in Spring Security wiring downstream of the generated `*Api` interface."
+    description: "Both alert and dataEntity OpenAPI tags declare zero `security:` blocks (top-level OR per-operation) and no `components.securitySchemes`. Every authorization decision is invisible to the spec; consumers reading the spec to derive auth requirements get nothing. The contract therefore commits the platform to enforcing auth in Spring Security wiring downstream of the generated `*Api` interface. Reinforced by method-level findings: postMessageInSlack's live API-reference page does not state authentication/authorization model; regenerateCollectorToken's Permission gate is invisible to the OpenAPI contract."
     axes_present:
       - openapi_tags
+      - controllers
     nodes:
       - "odd-platform openapi tags openapi-tag:alert"
       - "odd-platform openapi tags openapi-tag:dataEntity"
+      - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
     contributors:
       - "openapi-tag:alert.implicit_adrs[3]: Authorization is wholly out-of-band of the OpenAPI contract"
       - "openapi-tag:dataEntity.implicit_adrs[0]: spec contains no top-level security: block and no per-operation security: override"
+      - "postMessageInSlack.docs_link_semantic.doc_drift_findings[0]: live api-reference page does not state which Permission gates this endpoint"
+      - "regenerateCollectorToken.docs_link_semantic.doc_drift_findings[0]: live /permissions page names COLLECTOR_TOKEN_REGENERATE without operational guidance"
     evidence:
       - "openapi-tag-alert.md:implicit_adrs.[3]"
       - "openapi-tag-dataEntity.md:implicit_adrs.[0]"
+      - "postMessageInSlack.md:docs_link_semantic.doc_drift_findings.[0]"
+      - "regenerateCollectorToken.md:docs_link_semantic.doc_drift_findings.[0]"
 
   - name: "Pagination parameters declared but unconstrained at spec and controller layers"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "PageParam and SizeParam in components.yaml:4213-4229 are int32 with no minimum, no maximum, no default. Every list endpoint in the catalog references these unconstrained params; controllers do not validate (no `@Min`, `@Max`, `@Size` annotations). A spec-conformant `size=2147483647` is permissible; runtime guardrails (if any) live in service/repository layers. Cross-cutting weakness named in alert-tag, dataEntity-tag, AlertController, DataEntityController sidecars."
+    description: "PageParam and SizeParam in components.yaml:4213-4229 are int32 with no minimum, no maximum, no default. Every list endpoint in the catalog references these unconstrained params; controllers do not validate (no `@Min`, `@Max`, `@Size` annotations). A spec-conformant `size=2147483647` is permissible; runtime guardrails (if any) live in service/repository layers. Cross-cutting weakness named in alert-tag, dataEntity-tag, AlertController, DataEntityController, getActivity, getAllAlerts sidecars."
     axes_present:
       - openapi_tags
       - controllers
@@ -947,22 +1439,28 @@ invariants:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertController"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController"
+      - "odd-platform java AlertController controller-method:getAllAlerts"
+      - "odd-platform java ActivityController controller-method:getActivity"
     contributors:
       - "openapi-tag:alert.implicit_adrs (page/size are required int32 with no min/max/default)"
       - "openapi-tag:dataEntity.implicit_adrs[1]"
       - "AlertController.performance.known_performance_gaps[0]"
       - "DataEntityController.performance.known_performance_gaps[0]"
       - "DataEntityAttachmentController.performance.known_performance_gaps[4]"
+      - "getAllAlerts.bugs_limitations_corner_cases[1]: unbounded at every layer — controller no validation, AlertApi @NotNull @Valid only, repository OFFSET=(page-1)*size with no clamping"
+      - "getActivity.bugs_limitations_corner_cases[3]: size has no documented or enforced upper bound; size=Integer.MAX_VALUE only safeguarded by DB query plan"
     evidence:
       - "openapi-tag-alert.md:performance.known_performance_gaps.[0]"
       - "openapi-tag-dataEntity.md:performance.known_performance_gaps.[3]"
       - "AlertController.md:performance.known_performance_gaps.[0]"
       - "DataEntityController.md:performance.known_performance_gaps.[0]"
+      - "getAllAlerts.md:bugs_limitations_corner_cases.[1]"
+      - "getActivity.md:bugs_limitations_corner_cases.[3]"
 
   - name: "Owner-link is the gate for owner-scoped views"
     canonical_in_docs: true
     canonical_candidate: false
-    description: "Endpoints scoped to the current user's owned/dependent entities (`/api/alerts/my`, `/api/alerts/dependents`, `/api/dataentities/my`, `/api/dataentities/my/upstream`, `/api/dataentities/my/downstream`) require the signed-in user to be linked to an Owner record (Cornerstone of ODD's `User-owner association` per the live security/authorization doc). Without the link, the endpoints return empty pages. UI-side `My Objects` and `Dependents` tabs are hidden entirely (alerts route + AlertController + DataEntityController sidecars)."
+    description: "Endpoints scoped to the current user's owned/dependent entities (`/api/alerts/my`, `/api/alerts/dependents`, `/api/dataentities/my`, `/api/dataentities/my/upstream`, `/api/dataentities/my/downstream`, `/api/activity?type=MY_OBJECTS`) require the signed-in user to be linked to an Owner record (Cornerstone of ODD's `User-owner association` per the live security/authorization doc). Without the link, the endpoints return empty pages. UI-side `My Objects` and `Dependents` tabs are hidden entirely (alerts route + AlertController + DataEntityController + getActivity sidecars)."
     axes_present:
       - controllers
       - openapi_tags
@@ -973,21 +1471,24 @@ invariants:
       - "odd-platform ts routes route:alerts"
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController"
       - "odd-platform openapi tags openapi-tag:dataEntity"
+      - "odd-platform java ActivityController controller-method:getActivity"
     contributors:
       - "AlertController.dependencies_semantic: 'user→owner association — without it, listByOwner / listDependentObjectsAlerts return empty per the live doc's claim'"
       - "alerts route.audiences: 'My Objects and Dependents sub-tabs only surfaced to users linked to an Owner record'"
       - "DataEntityController.dependencies_semantic.requires-feature: 'user→owner association (Owner-link) — without it these endpoints return empty'"
       - "openapi-tag:alert: 'My Objects and Dependents require ... linked to an Owner; without the link ... empty pages'"
+      - "getActivity.security.owner_scoping: 'MY_OBJECTS is the only type-dispatch path that calls fetchAssociatedOwner; caller without an associated owner sees empty Flux, no error'"
     evidence:
       - "AlertController.md:dependencies_semantic.requires-feature.[1]"
       - "alerts-route.md:concepts.audiences"
       - "DataEntityController.md:dependencies_semantic.requires-feature"
       - "openapi-tag-alert.md:security.known_security_gaps.[1]"
+      - "getActivity.md:security.owner_scoping"
 
   - name: "LSN-002-class — primitive default ships disabled-but-broken-when-enabled"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "Recurring failure mode across the catalog: a primitive Java type (`int`, `String`) with no field initializer ships a value (`0`, `null`) that is legal at boot but broken at first use when an operator enables the feature. GenAIProperties.requestTimeout is the canonical example: `int` default 0 → `Duration.ofMinutes(0)` → immediate timeout. AttachmentServiceImpl.maxFileSize has the same `@Value` shape (boxed Integer, no `:default`), saved only by application.yml shipping a value. Live config-doc admonitions exist; the code itself has no fail-fast (LSN-002 retrospective is named verbatim)."
+    description: "Recurring failure mode across the catalog: a primitive Java type (`int`, `String`) with no field initializer ships a value (`0`, `null`) that is legal at boot but broken at first use when an operator enables the feature. GenAIProperties.requestTimeout is the canonical example: `int` default 0 → `Duration.ofMinutes(0)` → immediate timeout. AttachmentServiceImpl.maxFileSize has the same `@Value` shape (boxed Integer, no `:default`), saved only by application.yml shipping a value. Live config-doc admonitions exist; the code itself has no fail-fast (LSN-002 retrospective is named verbatim). Note: DataCollaborationConfiguration takes the OPPOSITE choice — explicit fail-fast empty-check on slack-oauth-token throws IllegalArgumentException at boot."
     axes_present:
       - config_prefixes
     nodes:
@@ -997,17 +1498,61 @@ invariants:
       - "GenAIProperties.bugs_limitations_corner_cases[0]: silent misconfiguration HIGH severity"
       - "GenAIProperties.implicit_adrs[1]: defaults are deliberately unsafe-when-enabled"
       - "AttachmentServiceImpl@L27.bugs_limitations_corner_cases[1]: boot-time crash if attachment.max-file-size is unset"
+      - "postMessageInSlack.implicit_adrs[0]: counter-example — fail-fast on slack-oauth-token (the disciplined response to LSN-002-class risk)"
     evidence:
       - "GenAIProperties.md:bugs_limitations_corner_cases.[0,1]"
       - "GenAIProperties.md:performance.known_performance_gaps.[0]"
       - "AttachmentServiceImpl@L27.md:bugs_limitations_corner_cases.[1]"
+      - "postMessageInSlack.md:implicit_adrs.[0] (fail-fast token — opposite stance)"
+
+  - name: "Decoupled-write pattern — accept-202 with queue-and-single-leader-elected-sender"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "Outbound integrations that depend on an unreliable external service (Slack) accept the inbound request, persist intent to Postgres in PENDING state, return 202 Accepted immediately, and let a single-leader-elected background job drain the queue with retries. The leader election uses a Postgres advisory lock (configurable `datacollaboration.sender-message-advisory-lock-id`, default 120). This preserves the Postgres-as-only-dependency posture while still decoupling caller latency from external service availability. Single example in the catalog so far: DataCollaborationMessageSenderJob for Slack messages."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
+    contributors:
+      - "postMessageInSlack.implicit_adrs[3]: explicit 202+queue+sender decomposition"
+      - "postMessageInSlack.implicit_adrs[4]: Postgres advisory lock for single-sender ordering (preserves Postgres-as-only-dependency)"
+    evidence:
+      - "postMessageInSlack.md:implicit_adrs.[3]"
+      - "postMessageInSlack.md:implicit_adrs.[4]"
+    notes: |
+      Architecturally significant pattern not seen elsewhere in the catalog
+      so far. Surface as a canonicalisation candidate; the maintainer may
+      promote to ADR if future features (e.g., outbound webhooks, email
+      notifications) adopt the same shape.
+
+  - name: "Plaintext-equality shared-secret token model"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "Collector authentication uses a 40-char alphanumeric token stored in plaintext in the TOKEN table; IngestionDataEntitiesFilter validates incoming /ingestion/entities requests via literal `.equals(...)` against the in-DB value. No hashing layer, no HMAC, no per-request signature. Rotation is in-place UPDATE — no overlap window. The model is consistent with the token being a long-random opaque string used over TLS-protected transport, but DB compromise / backup / replica carries credentials in the clear. RandomStringUtils.randomAlphanumeric(40) uses ThreadLocalRandom (non-CSPRNG); should be .secure().nextAlphanumeric(40)."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
+    contributors:
+      - "regenerateCollectorToken.implicit_adrs[1]: token rotation is in-place UPDATE, not append-new-then-revoke-old"
+      - "regenerateCollectorToken.implicit_adrs[2]: token returned in plaintext on rotation, masked on read"
+      - "regenerateCollectorToken.implicit_adrs[3]: token authentication is plaintext-equality against in-DB string; no hashing layer"
+    evidence:
+      - "regenerateCollectorToken.md:implicit_adrs.[1,2,3]"
+      - "regenerateCollectorToken.md:security.known_security_gaps.[1,3]"
+    notes: |
+      Trade-off is explicit in the code: the model assumes (a) TLS protects
+      transport, (b) the DB is trusted, (c) operators rotate when a token
+      is compromised. The catalog records this as an invariant so future
+      audits know the threat model the maintainers chose. Open question:
+      should rotation use a CSPRNG and offer a grace window?
 
 operations:
 
   - name: "List Alerts (three visibility scopes)"
     canonical_in_docs: true
     canonical_candidate: false
-    description: "GET /api/alerts (All), GET /api/alerts/my (owner-scoped), GET /api/alerts/dependents (lineage-downstream-of-owned). Paged via Page+Size query params. Backed by AlertController.getAllAlerts / getAssociatedUserAlerts / getDependentEntitiesAlerts; specified by openapi-tag:alert; UI surfaces via alerts route's `all`/`my`/`dependents` sub-paths."
+    description: "GET /api/alerts (All), GET /api/alerts/my (owner-scoped), GET /api/alerts/dependents (lineage-downstream-of-owned). Paged via Page+Size query params. Backed by AlertController.getAllAlerts / getAssociatedUserAlerts / getDependentEntitiesAlerts; specified by openapi-tag:alert; UI surfaces via alerts route's `all`/`my`/`dependents` sub-paths. getAllAlerts method-level sidecar confirms the All path is fall-through-authenticated() with no owner predicate at the repository — admin-path-without-admin-gate."
     axes_present:
       - controllers
       - openapi_tags
@@ -1016,14 +1561,17 @@ operations:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertController"
       - "odd-platform openapi tags openapi-tag:alert"
       - "odd-platform ts routes route:alerts"
+      - "odd-platform java AlertController controller-method:getAllAlerts"
     contributors:
       - "AlertController.operations: list-all-alerts, list-current-user's-owned-alerts, list-current-user's-dependent-entity-alerts"
       - "openapi-tag:alert.operations: getAllAlerts, getAssociatedUserAlerts, getDependentEntitiesAlerts"
       - "alerts route.invariants: AlertsRoutes literal `all`/`my`/`dependents`"
+      - "getAllAlerts.operations: list-open-alerts-platform-wide (paged, no filter); concepts.invariants[2] confirms no principal parameter / no owner-filter principal resolution"
     evidence:
       - "AlertController.md:concepts.operations"
       - "openapi-tag-alert.md:concepts.operations"
       - "alerts-route.md:concepts.invariants"
+      - "getAllAlerts.md:concepts.operations"
 
   - name: "Change Alert Status"
     canonical_in_docs: true
@@ -1061,16 +1609,19 @@ operations:
   - name: "Chunked File Upload (3-step state machine)"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "Per-data-entity attachment file upload protocol: `initiateFileUpload` (issues server-side uploadId UUID from posted DataEntityUploadFormData) → `uploadFileChunk` (posts each part with index and the same uploadId) → `completeFileUpload` (finalises and returns DataEntityFile). uploadId is the authoritative session key; the path's dataEntityId is effectively cosmetic on uploadFileChunk and completeFileUpload (DataEntityAttachmentController sidecar `concepts.operations.[chunked-file-upload]` + invariants)."
+    description: "Per-data-entity attachment file upload protocol: `initiateFileUpload` (issues server-side uploadId UUID from posted DataEntityUploadFormData) → `uploadFileChunk` (posts each part with index and the same uploadId) → `completeFileUpload` (finalises and returns DataEntityFile). uploadId is the authoritative session key; the path's dataEntityId is effectively cosmetic on uploadFileChunk and completeFileUpload. Method-level uploadFileChunk sidecar verifies: chunk staging path /tmp/odd/chunks is hardcoded constant (FileUtils.CHUNK_BASE_PATH), storage-mode-independent (applies to both LOCAL and REMOTE attachment.storage)."
     axes_present:
       - controllers
     nodes:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController"
+      - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
     contributors:
       - "DataEntityAttachmentController.operations: chunked-file-upload (3-step state machine: initiateFileUpload → uploadFileChunk → completeFileUpload)"
+      - "uploadFileChunk: middle-step semantics — Integer.parseInt on index (NumberFormatException unhandled), delegates to FileServiceImpl.uploadFileChunk which requires PROCESSING-state FilePojo and writes via FilePart.transferTo"
     evidence:
       - "DataEntityAttachmentController.md:concepts.operations.[chunked-file-upload]"
       - "DataEntityAttachmentController.md:concepts.invariants.[1] (uploadId is the authoritative session key)"
+      - "uploadFileChunk.md:concepts.operations + concepts.invariants.[0-3]"
 
   - name: "List Data Entity Attachments"
     canonical_in_docs: true
@@ -1127,7 +1678,74 @@ operations:
       - "SelectLanguage.md:concepts.operations"
       - "i18n_ts.md:concepts.operations"
 
+  - name: "Read Activity Feed (windowed, filtered, type-dispatched)"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "GET /api/activity — return Flux<Activity> windowed by (beginDate, endDate) with up to 9 filter facets (size, datasourceId, namespaceId, tagIds, ownerIds, userIds, type, eventType, lastEventId, lastEventDateTime). type query parameter (ALL / MY_OBJECTS / DOWNSTREAM / UPSTREAM) dispatches between four service paths in ActivityServiceImpl.getActivityList. Cursor pagination via (lastEventId, lastEventDateTime). Sibling GET /api/activity/counts returns 4 aggregate counts in one payload."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java ActivityController controller-method:getActivity"
+    contributors:
+      - "getActivity.operations: list-activity, audit-trail-read, filter-by-window, filter-by-owner-scope, filter-by-event-type, cursor-paginate-activity"
+      - "getActivity.invariants[2]: four-way dispatch in service layer"
+    evidence:
+      - "getActivity.md:concepts.operations"
+      - "getActivity.md:concepts.invariants.[2]"
+
+  - name: "Enqueue Slack Discussion Message"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "POST /api/datacollaboration/providers/slack/messages — deserialise MessageRequest (data_entity_id, channel_id, text), resolve channel via Slack conversations.info, resolve data_entity via dataEntityRepository.get (existence + hollow check), resolve current user's associated owner (nullable), persist Message row in PENDING_SEND state, return 202 Accepted. Actual Slack chat.postMessage call happens later in DataCollaborationMessageSenderJob under a Postgres advisory-lock-elected leader. Gated by @ConditionalOnDataCollaboration class-level → 404 when datacollaboration.enabled=false."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
+    contributors:
+      - "postMessageInSlack.operations: enqueue-slack-message, resolve-channel-by-id, resolve-data-entity, persist-pending-message"
+    evidence:
+      - "postMessageInSlack.md:concepts.operations"
+      - "postMessageInSlack.md:concepts.invariants"
+
+  - name: "Regenerate Collector Token"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "PUT /api/collectors/{collector_id}/token — gated by COLLECTOR_TOKEN_REGENERATE Permission. Loads CollectorDto, hands existing TokenPojo to TokenGenerator.regenerate (mutates in-place: value=RandomStringUtils.randomAlphanumeric(40), updatedAt=now, updatedBy=currentUsername), persists via ReactiveTokenRepository.updateToken, returns Collector with the new plaintext token visible in token.value (showToken=true). In-place UPDATE — no rotation grace, no old/new pair. IngestionDataEntitiesFilter starts rejecting old-token requests the moment UPDATE commits."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
+    contributors:
+      - "regenerateCollectorToken.operations: regenerate-collector-token, rotate-ingestion-secret, return-plaintext-token"
+      - "regenerateCollectorToken.invariants[0-3]: Permission-gated, in-place UPDATE, plaintext-in-response, plaintext-equality validation at IngestionDataEntitiesFilter"
+    evidence:
+      - "regenerateCollectorToken.md:concepts.operations"
+      - "regenerateCollectorToken.md:concepts.invariants.[0-3]"
+    notes: |
+      The operational vocabulary (in-place UPDATE; no grace; plaintext;
+      Permission-gated) is captured here so the catalog has a referent
+      when DOC-NNN follow-ups land for Token Rotation documentation.
+
 canonicalisation_candidates:
+
+  - proposed_canonical: "Activity Feed"
+    rationale: "ActivityController.getActivity is a first-class platform surface — global audit trail with 12 query parameters, four-way type dispatch (ALL/MY_OBJECTS/UPSTREAM/DOWNSTREAM), cursor pagination, and a live UI page (`features/active-platform-features/activity-feed`, verified 200, 2026-05-10). main-concepts.md does not name 'Activity Feed' as a canonical term; the only doc-side coverage is the feature page that omits the `type` parameter, the visibility model, and pagination mechanics. The `/developer-guides/api-reference/activity` page returns 404 — there is NO first-party API-reference home for this surface. HIGH-priority canonicalisation candidate: extend main-concepts.md AND create the missing api-reference page."
+    contributing_concepts:
+      - "Activity (getActivity)"
+      - "ActivityType (getActivity)"
+      - "ActivityEventType (getActivity)"
+      - "ActivityState (getActivity)"
+      - "AssociatedOwner / DataEntityRef (getActivity)"
+    suggested_add_to_docs: true
+
+  - proposed_canonical: "Collector Token (Token Rotation)"
+    rationale: "regenerateCollectorToken sidecar surfaces an architecturally significant operation (in-place UPDATE, no grace window, plaintext in response, plaintext in DB, ThreadLocalRandom RNG) gated by a Permission (COLLECTOR_TOKEN_REGENERATE) that IS documented on the live `/permissions` page (verified 200, 2026-05-10) BUT without operational context. main-concepts.md names Collector and S2S authentication mode separately; the token-as-credential and the rotation contract are not first-class vocabulary. Recommended: add a `Token Rotation` section to the `enable-security` pillar covering (a) who can rotate (Permission name), (b) what happens to in-flight ingestion against the old token, (c) whether rotation is audit-logged, (d) the plaintext-in-response shape of the rotation endpoint."
+    contributing_concepts:
+      - "Token (40-char alphanumeric shared secret) — regenerateCollectorToken"
+      - "TokenPojo (regenerateCollectorToken)"
+      - "regenerate-collector-token operation (regenerateCollectorToken)"
+      - "COLLECTOR_TOKEN_REGENERATE Permission (live /permissions page)"
+    suggested_add_to_docs: true
 
   - proposed_canonical: "Locale Bundle"
     rationale: "Two sidecars (i18n.ts, SelectLanguage) describe the multilingual UI's per-language resource bundle in consistent terms; main-concepts.md does not name 'Locale Bundle', 'Multilingual UI', or 'i18n' anywhere. The platform ships six locales (en/es/ch/fr/ua/hy) with a user-facing language switcher and yet has zero doc-side coverage (canonical F-047 finding). A canonical doc-side concept entry would close the discoverability gap."
@@ -1139,23 +1757,25 @@ canonicalisation_candidates:
     suggested_add_to_docs: true
 
   - proposed_canonical: "Attachment"
-    rationale: "First-class platform feature with its own live doc page (`features/data-discovery/attachments`), per-entity REST surface, RBAC permission (DATA_ENTITY_ATTACHMENT_MANAGE), config-prefix (`attachment.*`), and two retrospectives (LSN-001 LOCAL-ephemeral, LSN-002 us-east-1 pin). Three sidecars (controller + service-layer config-consumer + config-prefix) consistently use 'attachment' as the noun. main-concepts.md does not register it as either a canonical term or alias — recommend extension."
+    rationale: "First-class platform feature with its own live doc page (`features/data-discovery/attachments`), per-entity REST surface, RBAC permission (DATA_ENTITY_ATTACHMENT_MANAGE), config-prefix (`attachment.*`), and two retrospectives (LSN-001 LOCAL-ephemeral, LSN-002 us-east-1 pin). Four sidecars (controller + service-layer config-consumer + config-prefix + uploadFileChunk method) consistently use 'attachment' as the noun. main-concepts.md does not register it as either a canonical term or alias — recommend extension. Method-level uploadFileChunk sidecar adds new doc-gap findings: chunked-upload wire protocol undocumented, max-file-size cap unenforced, cross-entity hijack vulnerability."
     contributing_concepts:
       - "DataEntityAttachments / DataEntityFile / DataEntityLink (controller)"
       - "DataEntityUploadOptions (service)"
       - "attachment storage backend / S3-compatible bucket / local filesystem path / attachment upload session / attachment file size cap (config-prefix)"
+      - "uploadId / index / Part / chunk staging path (uploadFileChunk)"
     suggested_add_to_docs: true
 
   - proposed_canonical: "Attachment Storage Backend"
-    rationale: "Operationally distinct sub-concept of Attachment with its own ADR (LOCAL is matchIfMissing default), retrospectives (LSN-001, LSN-002), and operator-config surface. Currently surfaced only in the attachment config-prefix sidecar but referenceable across the catalog. Useful as a navigation anchor for storage-tier discussions."
+    rationale: "Operationally distinct sub-concept of Attachment with its own ADR (LOCAL is matchIfMissing default), retrospectives (LSN-001, LSN-002), and operator-config surface. Method-level uploadFileChunk sidecar adds critical finding: chunk-staging path `/tmp/odd/chunks` is hardcoded constant (FileUtils.CHUNK_BASE_PATH), NOT switched by attachment.storage — REMOTE-storage deployments still suffer per-instance multi-replica failure. Useful as a navigation anchor for storage-tier discussions."
     contributing_concepts:
       - "attachment storage backend (config-prefix)"
       - "S3-compatible bucket (config-prefix)"
       - "local filesystem path (config-prefix)"
+      - "chunk staging path /tmp/odd/chunks (uploadFileChunk — storage-mode-independent)"
     suggested_add_to_docs: false
 
   - proposed_canonical: "AlertManager Webhook Receiver"
-    rationale: "Distinct concept from the platform's internal Alert lifecycle: external write-only ingress, no `*Api` interface, hand-rolled DTO, unauthenticated by design (operator-delegated). Live `configuration-and-deployment/odd-platform#prometheus-alertmanager-integration` documents the endpoint but main-concepts.md does not register the concept. Cross-references the Alert concept (every webhook payload becomes a DISTRIBUTION_ANOMALY Alert) but the receiver itself has its own auth posture, perf shape, and operator audience."
+    rationale: "Distinct concept from the platform's internal Alert lifecycle: external write-only ingress, no `*Api` interface, hand-rolled DTO, unauthenticated by design (operator-delegated). Live `configuration-and-deployment/odd-platform#prometheus-alertmanager-integration` documents the endpoint but main-concepts.md does not register the concept (it does list 'Slack alert webhook' as the OUTGOING alert webhook — the inbound AlertManager receiver is the conceptual sibling not listed). Cross-references the Alert concept (every webhook payload becomes a DISTRIBUTION_ANOMALY Alert) but the receiver itself has its own auth posture, perf shape, and operator audience."
     contributing_concepts:
       - "ExternalAlert (AlertManagerController)"
       - "AlertManagerRequest (AlertManagerController)"
@@ -1169,6 +1789,7 @@ canonicalisation_candidates:
       - "API consumers building integrations (multiple controller sidecars)"
       - "platform integrations writing back metadata (openapi-tag:dataEntity)"
       - "operators inspecting alerts/runs/activity (openapi-tag:dataEntity)"
+      - "API consumers implementing the 3-step chunked-upload protocol (uploadFileChunk)"
     suggested_add_to_docs: true
 
   - proposed_canonical: "Prometheus AlertManager"
@@ -1177,18 +1798,37 @@ canonicalisation_candidates:
       - "Prometheus AlertManager HTTP webhook caller (AlertManagerController)"
     suggested_add_to_docs: false
 
+  - proposed_canonical: "Decoupled-write pattern (accept-202 + queue + single-leader sender)"
+    rationale: "postMessageInSlack sidecar embodies an architecturally significant pattern: outbound integration to an unreliable external service is decoupled from the inbound HTTP via 202 Accepted + Postgres-advisory-lock-elected sender thread (DataCollaborationMessageSenderJob). Preserves Postgres-as-only-dependency posture. Single example in catalog today; surface for ADR-promotion if future features (outbound webhooks, email notifications) adopt the same shape."
+    contributing_concepts:
+      - "decoupled 202+queue+sender (postMessageInSlack implicit_adrs[3])"
+      - "Postgres advisory lock for single-sender (postMessageInSlack implicit_adrs[4])"
+      - "DataCollaborationMessageSenderJob single-leader election"
+    suggested_add_to_docs: false
+
+  - proposed_canonical: "Plaintext-equality shared-secret token model"
+    rationale: "regenerateCollectorToken sidecar surfaces three coupled invariants: in-place UPDATE rotation, plaintext-in-DB, plaintext `.equals(...)` validation in IngestionDataEntitiesFilter. The model is the implicit ADR underlying the S2S authentication mode; main-concepts.md names S2S but does not document the storage/validation/rotation model. Useful for future audits' threat-model context."
+    contributing_concepts:
+      - "Token (40-char alphanumeric shared secret) (regenerateCollectorToken)"
+      - "in-place UPDATE rotation (regenerateCollectorToken implicit_adrs[1])"
+      - "plaintext-equality validation (regenerateCollectorToken implicit_adrs[3])"
+      - "RandomStringUtils.randomAlphanumeric (non-CSPRNG) (regenerateCollectorToken)"
+    suggested_add_to_docs: false
+
   - proposed_canonical: "LSN-002-class config default failure pattern"
-    rationale: "Two sidecars (GenAIProperties + AttachmentServiceImpl@L27) embody the same architectural pattern: a typed config field with no Java initializer ships a primitive default (`int` 0, boxed `Integer` null) that is legal at boot but broken at first use. LSN-002 retrospective names the regional variant (MinIO us-east-1); the `requestTimeout=0` and `maxFileSize` unset cases are the same root cause in different domains. Useful as a pattern-recognition anchor for future enrichments."
+    rationale: "Two sidecars (GenAIProperties + AttachmentServiceImpl@L27) embody the same architectural pattern: a typed config field with no Java initializer ships a primitive default (`int` 0, boxed `Integer` null) that is legal at boot but broken at first use. LSN-002 retrospective names the regional variant (MinIO us-east-1); the `requestTimeout=0` and `maxFileSize` unset cases are the same root cause in different domains. postMessageInSlack provides the disciplined counter-example: explicit fail-fast empty-check on slack-oauth-token. Useful as a pattern-recognition anchor for future enrichments."
     contributing_concepts:
       - "silent misconfiguration when genai.enabled=true is the only key set (GenAIProperties)"
       - "boot-time crash if attachment.max-file-size is unset (AttachmentServiceImpl@L27)"
       - "LSN-002-class concern flagged in input prompt (GenAIProperties.performance.known_performance_gaps[0])"
+      - "fail-fast on empty slack-oauth-token at boot (postMessageInSlack implicit_adrs[0] — counter-example)"
     suggested_add_to_docs: false
 
   - proposed_canonical: "Authorization path-string drift"
-    rationale: "DataEntityController sidecar surfaces a verified production failure (the `/term` vs `/terms` mismatch silently disabling DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM gates). The ADR-level pattern (path-pattern wired authorization) is the root cause; the concrete path-mismatch instance is the canonical example. Useful for the catalog as a tracked failure-mode concept that cuts across the 'Authorization is path-pattern wired' invariant."
+    rationale: "DataEntityController sidecar surfaces a verified production failure (the `/term` vs `/terms` mismatch silently disabling DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM gates). Reinforced by uploadFileChunk method-level: the gate evaluates against URL's data_entity_id while the file row resolves by uploadId — a different shape of path-vs-identity drift (cross-entity hijack). The ADR-level pattern (path-pattern wired authorization) is the root cause; multiple concrete failure modes exist."
     contributing_concepts:
       - "term path mismatch in SECURITY_RULES (DataEntityController)"
+      - "cross-entity uploadId hijack (uploadFileChunk)"
       - "Authorization layer is path-string-coupled with no compile-time or test-time guard against drift (DataEntityController)"
     suggested_add_to_docs: false
 
@@ -1204,3 +1844,11 @@ canonicalisation_candidates:
       - "data-entity"
     rationale: "Same conceptual entity; main-concepts.md uses 'Data Entity' (capitalised, two words) verbatim. Catalog uses that canonical form throughout."
     canonical_choice: "Data Entity"
+
+  - proposed_merge:
+      - "Slack collaboration app (main-concepts.md canonical)"
+      - "Discussion (UI vocabulary)"
+      - "Data Collaboration (config-prefix vocabulary)"
+      - "Slack message (postMessageInSlack vocabulary)"
+    rationale: "main-concepts.md Terms & Aliases lists 'Slack collaboration app' as canonical with aliases 'Slack Events API / Slack OAuth integration / Data Collaboration Slack'. The catalog uses the canonical name verbatim. postMessageInSlack sidecar's per-method vocabulary (Message/MessageRequest/MessageChannelDto) folds in under this concept."
+    canonical_choice: "Slack collaboration app"

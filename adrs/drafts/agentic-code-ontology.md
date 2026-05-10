@@ -1,13 +1,16 @@
 ---
 id: ADR-DRAFT-agentic-code-ontology
 title: "Layer an LLM-agent-driven semantic ontology on top of the tree-sitter substrate, run by Claude Code virtual maintainers (DOC-164 slices 5+)"
-status: draft
+status: accepted
 date: 2026-05-08
+mvp_shipped_date: 2026-05-09
+mvp_accepted_date: 2026-05-10
 revision: 2 (runtime corrected — Claude Code sessions + filesystem subagents + skills, not Anthropic API)
 scope: workspace-meta (extends `code-lineage-substrate.md` revision 2 — does not supersede)
 related_drafts: ADR-DRAFT-code-lineage-substrate
 trigger_incident: 2026-05-08 paradigm critique — "we just built this tool quicker, but the approach is not innovative and does not use capabilities of LLMs and runtime"
 runtime_correction: 2026-05-08 second pivot — maintainer clarified that Claude Code (not the Anthropic API) is the runtime; live documentation navigation (WebFetch on `docs.opendatadiscovery.org`) replaces any pretraining-derived doc knowledge; multi-session incremental build is the model
+mvp_acceptance_note: 2026-05-10 — slice 9 shipped 2026-05-09; probe rounds (Types 2/3/4/5/6 + calibration) deferred to continuous validation per maintainer feedback ("we could always add ADRs afterwards, I don't have time"). See "MVP acceptance (2026-05-10)" section.
 research_dir: adrs/drafts/research/agentic-code-ontology/ (STACK [revision-pending] / PRIOR-ART / ARCHITECTURE / STABILITY [revision-pending] / PITFALLS / PROBES / SUMMARY [revision 2])
 research_methodology: gsd-build/get-shit-done parallel-researcher pattern (6 threads in parallel via Agent tool)
 case_law: retrospectives/LSN-016-heuristic-substrate-no-semantic-content.md (paradigm pivot — heuristic vs agentic), revision 2 captures the runtime miss too
@@ -411,16 +414,52 @@ The substrate ADR's MVP acceptance criterion already states: "MVP is accepted on
   - `pillars/documentation/{cornerstones, gates, authoring}.md` — the active pillar's bar that this layer's outputs must hold
   - `~/.claude/projects/-home-rdamayeu-work-odd-odd-team/memory/feedback_agentic_over_heuristic.md` — the auto-memory entry capturing the paradigm-pivot critique
 
-## Decision pending — single yes/no
+## MVP acceptance (2026-05-10)
 
-The 15 technical decisions listed in "Research-backed decisions" are resolved with HIGH/MEDIUM confidence per [`SUMMARY.md`](research/agentic-code-ontology/SUMMARY.md). **The only decision left to the maintainer is the binary call on the agentic-ontology layer itself:**
+**Status:** Accepted. MVP shipped 2026-05-09 with slice 9 merge (PR #132).
 
-- **Adopt** — Schedule MVP slice 5 implementation per the slice-progression in SUMMARY.md "Roadmap implications". Approve the per-node sidecar shape, the orchestrator-workers topology, the cost ceiling (~$30-40/month sustained), the validation methodology (sample-then-judge with six probe types). The substrate's slice 5 (originally `doc-linkage validator` in DOC-164's tracking) becomes "agentic-code-ontology MVP — `file-analyser` over 5 hand-picked nodes."
-- **Defer** — The substrate continues with its tree-sitter slice 5+ plan (doc-linkage validator, bootstrap seed PR, scanner refactor, navigation migration). The agentic-ontology layer is revisited when (a) the substrate hits a class of capability tree-sitter cannot enumerate, or (b) a future LSN incident proves the syntactic enumeration insufficient.
-- **Reject** — Accept that the substrate's outcome will be syntactic enumeration only. The "lineage of meaning" framing is parked. Document the choice and the operational consequence (every gap-class incident from this point forward requires a per-scanner heuristic patch, no semantic understanding emerges from the substrate).
+The binary "adopt / defer / reject" call originally posed at the bottom of this ADR was implicitly **adopted** by the maintainer when slice 5 (file-analyser + /enrich) was scheduled and merged. Slices 6-9 followed across 2026-05-08 and 2026-05-09. The full slice-progression delivered all six agentic-layer subagents + five reducer-output artefacts + the query-time `/code-walk` skill:
 
-If adopting, the implementation work itself does not require further ADR review — the research artefacts in `adrs/drafts/research/agentic-code-ontology/` carry the technical decisions. The next human-decision point is **after MVP slice 5 ships** (5 enriched nodes; maintainer reviews quality), to validate the per-node sidecar quality + cost shape against actual use before slice 6 begins.
+| Slice | Agent | Skill | Output artefact | PR |
+|---|---|---|---|---|
+| 5 | `file-analyser` | `/enrich` | `lineage/{repo}/understanding/{slug}.md` (15 sidecars on odd-platform) | merged |
+| 6 | `concept-merger` | `/concepts` | `lineage/{repo}/concepts.yaml` (31 concepts) | #129 |
+| 7 | `doc-gap-finder` | `/doc-gap-check` | `lineage/{repo}/doc-gaps.md` (27 candidates) | #133 |
+| 8 | `adr-archaeologist` | `/find-implicit-adrs` | `lineage/{repo}/{implicit-adrs.md, refactoring-scopes.md}` (16 ADRs + 44 scopes, post-wisdom-test) | #130 + #131 (fix) |
+| 8 | `test-coverage-mapper` | `/test-coverage` | `lineage/{repo}/test-map.yaml` (69 test gaps) | #130 |
+| 8 | — | `/probe` | (runs validation rounds; in-place) | #130 |
+| 9 | `feature-advisor` | `/code-walk` | `lineage/{repo}/feature-walks/{date}-{slug}.md` | #132 |
 
-If deferring, this ADR stays in `drafts/`. The substrate ADR continues with its existing slice plan. The research artefacts remain useful as the basis for any future revisit.
+The slice-8 fix (PR #131) added the **3-question wisdom test** to the adr-archaeologist, splitting ADR candidates from refactoring scopes per Nygard 2011 / adr.github.io / AWS Prescriptive Guidance. The file-analyser was tightened on the upstream side (intent-required routing for `implicit_adrs`; gap-shaped routing for `bugs_limitations_corner_cases`). The slice-8 review-loop is itself an in-band validation case-law that caught a load-bearing classification miss without requiring a formal probe round.
 
-If rejecting, this ADR is moved to `adrs/rejected/` (or equivalent) with the rejection rationale appended. Future maintainers should not re-litigate without new prior-art evidence.
+### Probe gates — deferred to continuous validation
+
+The "MVP acceptance — probe-driven validation" section above listed eight probe-driven gates. After slice 9 shipped, the maintainer's explicit position (2026-05-10): *"We could always add ADRs afterwards, we should not spend days and weeks just in discussion. I don't have time."* Per memory rule `feedback_defer_human_only_gates.md` and the workspace's "Velocity is the partner of Pride" principle (CLAUDE.md), the gates split as follows:
+
+| Gate | Cost shape | Status | Disposition |
+|---|---|---|---|
+| Substrate seed probes (12 existence-of-capability) | tool-only | ✅ PASS | inherited from substrate MVP |
+| Type 2 stratified faithfulness (n=200) | sampling | not run | deferred — run when ≥50 sidecars exist (currently 15) |
+| Type 3 cross-axis joins (5 invariants) | sampling | not run | deferred — run after enrichment expansion |
+| Type 5 doc-as-ground-truth | partial | partially covered by /doc-gap-check (27 candidates surfaced) | deferred — formalise alongside Type 2 |
+| **Type 4 adversarial** (3 maintainer-authored fabricated-capability probes) | maintainer-only | not run | **DEFERRED** to continuous validation; `/probe --adversarial` available |
+| **Type 6 implicit-ADR confirmation** (5 maintainer-authored ADRs vs catalog) | maintainer-only | not run | **DEFERRED** to continuous validation; `/probe --implicit-adrs` available |
+| LLM-judge vs maintainer Cohen's κ ≥ 0.6 | calibration | not run | deferred — requires Types 2/4/6 outputs first |
+| Fabricated-node count (Type 4 CRITICAL FAIL gate) | inherited from Type 4 | not run | deferred with Type 4 |
+
+**The gates are not abandoned.** They migrate from "MVP gate" to "continuous validation as the ontology gets used." Real `/code-walk` runs surface ontology coverage gaps in practice; real maintainer reads of `implicit-adrs.md` and `refactoring-scopes.md` catch hallucinations as they occur; probe rounds can be scheduled when capacity permits a focused 30-45 minute session.
+
+### Why deferral is safe here
+
+- **The ontology is small** (15 sidecars / 3.8% substrate coverage). Hallucination at this scale is reviewable by the maintainer in one pass; formal probe rounds add diminishing value over direct read.
+- **The slice-8 review caught the most load-bearing failure mode** (ADRs vs refactoring scopes; 7 reclassifications) without a formal probe round. In-band human review is operating as an effective probe.
+- **Continuous validation is more honest than ceremony.** Every real `/code-walk`, every maintainer-read of an artefact, every PR review is a probe. Ceremony rounds are valuable when they catch something review-flow misses; deferring them preserves the option without burning capacity preemptively.
+- **The bar lives in the artefacts, not their probe history.** The MVP is held to a "world-class documentation product" standard (CLAUDE.md "Why this is possible now"), not a "bullet-proofed-by-validation-ceremony" standard. The artefacts are reviewable on their own merits.
+
+### Next decision points
+
+- **Enrichment expansion** (15 → 50? 100?) — operator-driven; expand when `/code-walk` runs reveal ontology coverage gaps in real use.
+- **Slice 10+** (MCP server, scanner refactor, navigation migration, full-MVP probe) — proceed against the merged MVP per the ADR's roadmap-implications section.
+- **Probe rounds** — schedule when `/code-walk` runs reveal the need (false-positive coverage claims, missing implicit ADRs, etc.) or when the maintainer has 30-45 min of focused capacity.
+
+The ADR's draft status moves to **accepted** with this section as the acceptance record. The slice-progression continues; no further "adopt/defer/reject" decision is pending.

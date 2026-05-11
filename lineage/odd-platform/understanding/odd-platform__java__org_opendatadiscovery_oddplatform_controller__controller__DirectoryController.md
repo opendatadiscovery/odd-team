@@ -173,7 +173,7 @@ session_id: session-2026-05-08-01
 - dependencies_semantic.requires-feature ← DirectoryServiceImpl.java:25-27,43,103,114 (Generator usage) + DirectoryServiceImpl.java:47-50 (getCountByDataSources + dataSourceRepository.list)
 - dependencies_semantic.requires-runtime ← DirectoryController.java:13-15 (ServerWebExchange + Mono/Flux imports) + DirectoryServiceImpl.java:22-23 (Reactive*Repository)
 - dependencies_semantic.couplings ← DirectoryController.java:20-21 + DirectoryController.java:42 (DataEntityService.getDataEntitiesByDatasourceAndType) — split-service composition is controller-only
-- tests_coverage_semantic.test_files ← /home/rdamayeu/work/odd/odd-platform/odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DirectoryTest.java:30-159
+- tests_coverage_semantic.test_files ← <odd-platform>/odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DirectoryTest.java:30-159
 - tests_coverage_semantic.covered_behaviours ← DirectoryTest.java:57-67,70-85,141-158
 - tests_coverage_semantic.uncovered_behaviours ← Grep of the test (no `getDatasourceEntities` / `getDatasourceEntityTypes` URL or method invocation present)
 - docs_link_semantic.inferred_docs.[0] ← WebFetch https://docs.opendatadiscovery.org/features/data-discovery/directory (status 200, 2026-05-08)

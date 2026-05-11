@@ -152,7 +152,7 @@ constructed once at startup) and at request time (`enabled` is re-read on every
 - dependencies_semantic.requires-config.genai.url ← application.yml:19 (commented out) + GenAIProperties.java:10 (no initializer)
 - dependencies_semantic.requires-config.genai.request_timeout ← application.yml:20 (commented out) + GenAIProperties.java:11 (no initializer)
 - dependencies_semantic.requires-runtime.[EnableConfigurationProperties] ← WebClientConfiguration.java:15
-- tests_coverage_semantic.gaps ← Grep result: `find /home/rdamayeu/work/odd/odd-platform -path "*/test/*" -name "*.java" | xargs grep -l "GenAI"` returns zero matches (verified 2026-05-08)
+- tests_coverage_semantic.gaps ← Grep result: `find <odd-platform> -path "*/test/*" -name "*.java" | xargs grep -l "GenAI"` returns zero matches (verified 2026-05-08)
 - docs_link_semantic.inferred_docs.[0] ← WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform on 2026-05-08, status 200, anchor `genai-configuration` confirmed present + local source corroboration at documentation/docs/configuration-and-deployment/odd-platform.md:1018-1053
 - docs_link_semantic.fetched_excerpts ← WebFetch + documentation/docs/configuration-and-deployment/odd-platform.md:1018-1030
 - docs_link_semantic.doc_drift_findings.[0] ← Cross-check between WebFetch excerpt and GenAIProperties.java:8-12 + application.yml:17-20
@@ -165,7 +165,7 @@ constructed once at startup) and at request time (`enabled` is re-read on every
 - bugs_limitations_corner_cases.[1] ← WebClientConfiguration.java:23 + GenAIProperties.java:11
 - bugs_limitations_corner_cases.[2] ← GenAIProperties.java:1-12
 - bugs_limitations_corner_cases.[3] ← GenAIServiceImpl.java:48-51
-- bugs_limitations_corner_cases.[4] ← Grep result on /home/rdamayeu/work/odd/odd-platform/odd-platform-ui/src for `GenaiApi|genAiQuestion|/genai/` (verified 2026-05-08, zero non-generated-source matches)
+- bugs_limitations_corner_cases.[4] ← Grep result on <odd-platform>/odd-platform-ui/src for `GenaiApi|genAiQuestion|/genai/` (verified 2026-05-08, zero non-generated-source matches)
 - security.auth_mode_relevance ← GenAIController.java:13-24 (no @PreAuthorize, no auth annotations) + GenAIProperties.java:1-13 (typed POJO, not on HTTP surface)
 - security.ingestion_filter_relevance ← GenAIController.java:13-24 (route is `/api/genai/ask` per GenaiApi, not under `/ingestion/entities`)
 - security.authorization_assertions.[empty] ← GenAIController.java:13-24 (no @PreAuthorize / permissionService call)

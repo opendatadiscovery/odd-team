@@ -56,7 +56,7 @@ session_id: session-2026-05-10-01
     "Authorization regression — no test asserts whether an authenticated non-admin user can read all platform alerts (the current code permits it; a future tightening to admin-only would have no test to break)",
     "Empty-result behaviour — no test asserts the shape of `AlertList` when zero open alerts exist"
   ]
-- test_files: [] — N/A. `find /home/rdamayeu/work/odd/odd-platform -path '*test*' -name 'AlertController*'` returned zero matches (run during enrichment session 2026-05-10). The two Alert-adjacent test files (`AlertMapperTest.java`, `AlertIngestionTest.java`) exercise mapping and ingestion, not the HTTP surface.
+- test_files: [] — N/A. `find <odd-platform> -path '*test*' -name 'AlertController*'` returned zero matches (run during enrichment session 2026-05-10). The two Alert-adjacent test files (`AlertMapperTest.java`, `AlertIngestionTest.java`) exercise mapping and ingestion, not the HTTP surface.
 - gaps: |
     The method body is three lines (`AlertController.java:39-40`) — a unit test of the controller's own logic would test nothing. The real gap is the integration boundary: there is no test that wires WebFlux routing, OpenAPI-generated `@RequestMapping`, Jackson serialisation, and the JOOQ repository together against an in-memory or test-container Postgres for `GET /api/alerts`. A regression in any of the four layers (OpenAPI generator template, WebFlux routing config, Jackson `ObjectMapper` config, jOOQ schema mapping) would silently break this endpoint with the build still green.
 
@@ -146,7 +146,7 @@ session_id: session-2026-05-10-01
 - dependencies_semantic.couples-to[0] ← `AlertApi.java:135-156` (the `@Operation` + `@RequestMapping` block for `getAllAlerts`) + `AlertController.java:4` (import) + `AlertController.java:35` (`@Override`)
 - dependencies_semantic.couples-to[1] ← `AlertController.java:9, 18, 39` (`AlertService` import, field, call) + `AlertServiceImpl.java:77-80` (service implementation)
 - dependencies_semantic.couples-to[2] ← `AlertServiceImpl.java:70, 78` (repository field + call) + `ReactiveAlertRepositoryImpl.java:142-157` (repository implementation)
-- tests_coverage_semantic.test_files ← `find /home/rdamayeu/work/odd/odd-platform -path '*test*' -name 'AlertController*'` returned zero matches (run 2026-05-10)
+- tests_coverage_semantic.test_files ← `find <odd-platform> -path '*test*' -name 'AlertController*'` returned zero matches (run 2026-05-10)
 - docs_link_semantic.inferred_docs[0] ← WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/alerting` 2026-05-10 status 200
 - docs_link_semantic.inferred_docs[1] ← WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization` 2026-05-10 status 200
 - docs_link_semantic.doc_drift_findings[0] ← WebFetch alerting page 2026-05-10 ("stewards and admins watching the full alert surface") + `SecurityConstants.java:98-295` (no rule for `/api/alerts`) + `AuthorizationCustomizer.java:29-30` (catch-all `.authenticated()`)

@@ -1,16 +1,16 @@
 ---
-catalog_version: 6
-generated_at: "2026-05-12T22:00:00Z"
+catalog_version: 7
+generated_at: "2026-05-12T23:00:00Z"
 generated_at_commit: ede5d277
-sidecar_count: 40
+sidecar_count: 45
 canonical_vocabulary_source: "documentation/docs/main-concepts.md (live at https://docs.opendatadiscovery.org/introduction/main-concepts) + documentation/docs/configuration-and-deployment/enable-security (for authorization vocabulary: Policy/Permission/Role/Owner/User-owner association)"
-canonical_vocabulary_fetched_at: "2026-05-12T22:00:00Z"
+canonical_vocabulary_fetched_at: "2026-05-12T23:00:00Z"
 prompt_version: "concept-merger/0.1.0"
 ---
 
-# concepts.yaml — refreshed concept-merger pass after batch 2026-05-12E
+# concepts.yaml — refreshed concept-merger pass after batch 2026-05-12F
 #
-# This catalog clusters concepts surfaced across 35 per-node enrichment sidecars
+# This catalog clusters concepts surfaced across 45 per-node enrichment sidecars
 # spanning five substrate axes (controllers, openapi_tags, ui_routes, ui_shell,
 # config_prefixes). Concepts that match canonical names in
 # `documentation/docs/main-concepts.md` use the canonical name verbatim;
@@ -40,6 +40,141 @@ prompt_version: "concept-merger/0.1.0"
 #   - OAuthSecurityConfiguration @ConditionalOnProperty(auth.type=OAUTH2) @L71
 #   - LDAPSecurityConfiguration @ConditionalOnProperty(auth.type=LDAP) @L51
 #   - NotificationsProperties — Notifications subsystem (off-by-default; per-channel URL-presence activation)
+#
+# Batch 2026-05-12F adds 5 controller-method sidecars covering the DataEntity
+# primary surface (centerpiece read, ownership, status, lineage) + the
+# canonical S2S ingestion entry point — closing the S2S loop opened by
+# IngestionDataEntitiesFilter in batch B:
+#   - DataEntityController.getDataEntityDetails — `GET /api/dataentities/{id}`.
+#     Single hottest read on the platform. Intentionally outside SECURITY_RULES
+#     (RESOLVES ADR-CANDIDATE-003 borderline_flag — confirmed deliberate
+#     read-collaborative posture on the centerpiece read). Side-effecting
+#     `view_count` increment makes the GET a write at the DB layer. ~10 DB
+#     round-trips per call, no caching, no ETag, unbounded `entities[]`
+#     lineage-shortcut arrays in response. **Cross-owner full-payload
+#     exposure on the centerpiece read** — widest blast radius of the
+#     read-collaborative family.
+#   - DataEntityController.createOwnership — `POST /api/dataentities/{id}/ownership`.
+#     SECURITY_RULES-gated (`DATA_ENTITY_OWNERSHIP_CREATE` per-data-entity).
+#     **STRUCTURAL PERMISSION-BYPASS**: `OwnerService.getOrCreate(owner_name)`
+#     and `TitleService.getOrCreate(title_name)` auto-instantiate directory rows
+#     when the name is novel — a 2nd write path into Owner directory that
+#     BYPASSES `OWNER_CREATE` permission entirely. Title is free text (no
+#     allowlist). Self-grant ambiguity (caller can mint owner + bind to entity
+#     without ownership claim). Activity-feed emission CONFIRMED (`@ActivityLog`
+#     OWNERSHIP_CREATED) — contrast with OwnerController.createOwner which has
+#     NONE.
+#   - DataEntityController.updateStatus — `PUT /api/dataentities/{id}/statuses`.
+#     **HIGH severity ordering bug**: `DataEntityMapperImpl.applyStatus` sets
+#     `pojo.setStatus(...)` BEFORE the `if (statusDto.getId() != pojo.getStatus())`
+#     check — condition is always false → `statusUpdatedAt` NEVER bumped on
+#     status transition → 30-day housekeeping TTL broken (the
+#     `DataEntityHousekeepingJob` query depends on `STATUS_UPDATED_AT`).
+#     Cross-batch validation with batch-D `HousekeepingTTLProperties`. **POSITIVE
+#     FINDING**: audit-log emission CONFIRMED (programmatic `logStatusChangeEvents`
+#     in DataEntityInternalStateServiceImpl.java:164-169, not AOP `@ActivityLog`)
+#     — REFINES batch-E `no-audit-log-on-mutations` 3-sidecar theme: NOT
+#     codebase-wide; specifically RBAC mutations (Policy/Role/Owner), NOT
+#     DataEntity mutations.
+#   - DataEntityController.getDataEntityDownstreamLineage — `GET /api/dataentities/{id}/lineage/downstream`.
+#     Single-query recursive-CTE traversal (Postgres `WITH RECURSIVE`). Dual
+#     client-driven inputs: `lineage_depth` + `expanded_entity_ids`. **HIGH
+#     severity bugs**: null-Integer NPE on missing `lineage_depth` (`Integer`
+#     autoboxes to primitive `int` at the service boundary; docs claim
+#     "Unset returns the platform's default depth" — UNIMPLEMENTED); no
+#     `@Max(...)` cap on depth (depth=10000 against a dense graph is permitted
+#     → DoS-amplification vector); no CTE cycle guard (diamond DAGs
+#     amplify intermediate rows). **Cross-owner graph enumeration vector** —
+#     wider than alerts/activity/search because lineage edges leak causal
+#     connections across owner boundaries even when individual entities are
+#     not separately enumerable.
+#   - IngestionController.postDataEntityList — `POST /ingestion/entities`.
+#     **CLOSES THE S2S LOOP** (2-sidecar with batch-B `IngestionDataEntitiesFilter`):
+#     default-off unauth at CONTROLLER side confirmed — no `@PreAuthorize`,
+#     authentication delegated EXCLUSIVELY to the `IngestionDataEntitiesFilter`
+#     filter which is `@ConditionalOnProperty(name="auth.ingestion.filter.enabled",
+#     havingValue="true")` and DEFAULTS to false. Bundled deployment ships
+#     `/ingestion/entities` UNAUTHENTICATED. Datasource scoping is
+#     payload-driven (the caller chooses `data_source_oddrn` in the body).
+#     **MAJOR DOC-DRIFT**: live S2S doc example uses `X-API-Key` header (the
+#     global `S2sAuthenticationFilter` admin-everywhere credential), but
+#     `IngestionDataEntitiesFilter` requires `Authorization: Bearer <token>`
+#     (path-scoped per-datasource token) — operator copy-paste-from-docs
+#     verbatim succeeds against one filter, fails against the other. No
+#     canonical doc page exists for `POST /ingestion/entities` itself
+#     (configuration-and-deployment/data-ingestion → 404). OpenAPI declares
+#     201, controller returns 200 — 2-sidecar status-code drift with
+#     OwnerController.createOwner.
+#
+# CRITICAL CROSS-BATCH TRIANGULATIONS reached / strengthened in batch F:
+#
+# - **Read-collaborative cross-owner enumeration** — now 5-SIDECAR triangulated:
+#   getAllAlerts (A) + getActivity (B) + search (E) + getDataEntityDownstreamLineage (F)
+#   + getDataEntityDetails (F). The DataEntityDetails sidecar is the CENTERPIECE
+#   read — the widest single blast radius. STRENGTHENS the existing invariant
+#   to a load-bearing CROSS-CUTTING posture.
+#
+# - **DISABLED-mode bypasses SECURITY_RULES** — now 11-SIDECAR triangulated
+#   (8 carried from batches B/C/E + 3 new from batch F: getDataEntityDetails +
+#   createOwnership + updateStatus). The Auth Mode (DISABLED branch) is the
+#   dominant load-bearing weakness across the entire platform surface.
+#
+# - **Permission-bypass via Owner auto-create (NEW INVARIANT, batch F)** —
+#   createOwnership auto-instantiates Owner + Title rows without checking
+#   OWNER_CREATE / TITLE_CREATE-equivalent permissions. The documented
+#   `OWNER_CREATE` permission gate on `POST /api/owners` is incomplete —
+#   any caller with `DATA_ENTITY_OWNERSHIP_CREATE` on any data entity can
+#   mint Owner directory entries via this side-door. New codebase-wide
+#   invariant; analog risk on any future auto-create-on-missing semantics.
+#
+# - **TTL retention broken by statusUpdatedAt nullification (NEW INVARIANT,
+#   cross-batch finding D + F)** — batch D's HousekeepingTTLProperties +
+#   batch F's updateStatus combine to surface a NEW cross-batch defect:
+#   the 30-day data-entity-delete retention TTL relies on
+#   `DATA_ENTITY.STATUS_UPDATED_AT`, which is NEVER bumped on status transition
+#   because of an ordering bug in `DataEntityMapperImpl.applyStatus` (sets
+#   the status BEFORE the prior-status check). The HousekeepingTTLProperties
+#   feature documentation says 30-day retention; the code does not deliver it.
+#   Two-sidecar emerges only when both sides exist (each individual sidecar
+#   surfaces a partial finding; the cross-batch view is the load-bearing one).
+#
+# - **Audit-log presence asymmetry (REFINEMENT of batch-E theme, batch F)** —
+#   batch E's "no-audit-log-on-mutations" 3-sidecar theme (Role + Policy +
+#   Owner) refined: NOT codebase-wide. **RBAC mutations** (Policy / Role /
+#   Owner) carry no audit signal. **DataEntity mutations** (updateStatus,
+#   createOwnership) DO emit audit signals — programmatic
+#   `logStatusChangeEvents` (DataEntityInternalStateServiceImpl) and
+#   `@ActivityLog(OWNERSHIP_CREATED)` (OwnershipServiceImpl) respectively.
+#   The codebase has a 2-TIER AUDIT STORY:
+#     Tier 1 (audited): DataEntity-scoped mutations (status / ownership /
+#                       description / business-name / tags / terms / metadata /
+#                       alert-config / DataEntityGroup membership).
+#     Tier 2 (unaudited): RBAC-scoped mutations (Policy / Role / Owner).
+#   The asymmetry is invariant-shaped: the platform DOES capture activity for
+#   data-content changes but NOT for authorization-model changes — the
+#   inverse of what a security-conscious operator would expect.
+#
+# - **OpenAPI status-code drift** — now 2-SIDECAR (OwnerController.createOwner
+#   batch E + IngestionController.postDataEntityList batch F). Both endpoints
+#   declare `201 Created` in the spec, return `200 OK` in code. The
+#   `BaseIngestionTest` locks in the 200, so the test suite enforces the
+#   drift. Strengthen as cross-cutting hygiene REFACTOR candidate.
+#
+# - **Doc-vs-code spelling/format mismatch** — now 2-SIDECAR (OAuth2
+#   `username-attribute` (docs) vs `userNameAttribute` (POJO) batch D +
+#   S2S `X-API-Key` (docs example) vs `Authorization: Bearer` (code
+#   IngestionDataEntitiesFilter) batch F). Both are "operator copy-paste
+#   from docs silently fails to work" failures. Strengthen as cross-cutting
+#   doc-drift invariant.
+#
+# - **ADR-CANDIDATE-003 borderline_flag RESOLVED** — getDataEntityDetails
+#   primary-source confirms intentional read-collaborative posture on the
+#   CENTERPIECE read (the single hottest endpoint, deliberately outside
+#   SECURITY_RULES, consistent with 27+ other GETs on the same controller).
+#   Promoted from "borderline_flag for human review" to a STABLE
+#   read-collaborative-by-design posture. The doc-gap is that the live
+#   `/configuration-and-deployment/enable-security/authorization` page
+#   does NOT name this stance; the gap is doc-side, not code-side.
 #
 # Batch 2026-05-12E adds 5 controller-method sidecars covering the RBAC
 # administration surface + a NEW search-area controller:
@@ -238,7 +373,7 @@ entities:
   - name: "Data Entity"
     canonical_in_docs: true
     canonical_candidate: false
-    description: "The platform's unit of metadata — datasets, transformers, consumers, quality tests, groups, and inputs — addressable by ODDRN. The central domain object spanning catalog navigation, lineage, alerts, ownership, tags, terms, descriptions, status, metadata, and discussions (DataEntityController sidecar `understanding`)."
+    description: "The platform's unit of metadata — datasets, transformers, consumers, quality tests, groups, and inputs — addressable by ODDRN. The central domain object spanning catalog navigation, lineage, alerts, ownership, tags, terms, descriptions, status, metadata, and discussions. **Batch F** completes the centerpiece-read + ownership-binding + status-lifecycle + lineage-graph surface: getDataEntityDetails (the platform's single hottest endpoint; view-count side-effect; cross-owner full-payload exposure on the CENTERPIECE READ), createOwnership (Owner+Title auto-create-on-miss bypassing OWNER_CREATE permission), updateStatus (HIGH-severity ordering bug breaking 30-day housekeeping TTL; programmatic audit-log emission confirmed), getDataEntityDownstreamLineage (recursive-CTE; null-Integer NPE; no depth cap; cross-owner graph enumeration vector)."
     axes_present:
       - controllers
       - openapi_tags
@@ -253,6 +388,11 @@ entities:
       - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
       - "odd-platform java ActivityController controller-method:getActivity"
       - "odd-platform java SearchController controller-method:search"
+      - "odd-platform java DataEntityController controller-method:getDataEntityDetails"
+      - "odd-platform java DataEntityController controller-method:createOwnership"
+      - "odd-platform java DataEntityController controller-method:updateStatus"
+      - "odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage"
+      - "odd-platform java IngestionController controller-method:postDataEntityList"
     contributors:
       - "DataEntityController: entities[DataEntity, DataEntityRef, DataEntityDetails, DataEntityList, DataEntityGroup, ...]"
       - "openapi-tag:dataEntity: entities[Data Entity, DataEntityGroup, DataEntityRef, DataEntityDetails, ...]"
@@ -263,16 +403,11 @@ entities:
       - "DataCollaborationController.postMessageInSlack: data_entity_id is required in MessageRequest body; existence checked, ownership NOT checked"
       - "ActivityController.getActivity: ActivityState payload carries old_state/new_state diffs for every tracked field on each data entity"
       - "SearchController.search: catalog-wide paginated enumeration of every non-EXCLUDE_FROM_SEARCH Data Entity row — names, ODDRNs, descriptions, ownership, tags, custom metadata, term linkages, datasource, namespace, statuses. Default `my_objects=false` returns aggregations across the entire catalog without any owner predicate. Third read-collaborative cross-owner-enumeration surface alongside getAllAlerts + getActivity."
-    evidence:
-      - "DataEntityController.md:concepts.entities.[DataEntity]"
-      - "openapi-tag-dataEntity.md:concepts.entities.[Data Entity]"
-      - "DataEntityAttachmentController.md:concepts.operations.[list-data-entity-attachments]"
-      - "DirectoryController.md:concepts.entities.[Data Entity]"
-      - "AlertManagerController.md:concepts.invariants.[entity_oddrn-only routing]"
-      - "uploadFileChunk.md:concepts.invariants.[0] (dataEntityId cosmetic at chunk-upload)"
-      - "postMessageInSlack.md:bugs_limitations_corner_cases.[3] (data_entity existence checked, ownership not)"
-      - "getActivity.md:security.data_exposure.[0] (full diff payload per data entity)"
-      - "search.md:concepts.entities (DataEntity searched against) + security.known_security_gaps.[0] (catalog-wide cross-owner enumeration HIGH)"
+      - "DataEntityController.getDataEntityDetails (batch F): entities[DataEntityDetails (34-field payload), DataEntityDetailsDto, NotFoundException, soft-delete state with includeDeleted(true)]; CENTERPIECE READ — 4 ADRs (read-collaborative GET intentionally outside SECURITY_RULES on the hottest endpoint; soft-deleted entities returned by design; read-as-write `view_count` increment inside `@ReactiveTransactional`; multi-stage Mono.zip enrichment). Resolves ADR-CANDIDATE-003 borderline as DELIBERATE."
+      - "DataEntityController.createOwnership (batch F): entities[Ownership, OwnershipFormData, OwnershipPojo, OwnerPojo (auto-created via getOrCreate), TitlePojo (auto-created via getOrCreate)]; operations[bind-owner-to-data-entity with optional DEG propagation, search-index refresh, mark `data_entity_filled.OWNERS`]; 4 ADRs incl. **activity-feed emission ASYMMETRY**: @ActivityLog(OWNERSHIP_CREATED) IS present on OwnershipServiceImpl.create vs OwnerController.createOwner which has NONE; **permission-bypass side-door**: owner/title auto-create via getOrCreate bypasses OWNER_CREATE; DEG propagation with onConflict-doUpdate cascade."
+      - "DataEntityController.updateStatus (batch F): entities[DataEntityStatus, DataEntityStatusFormData, DataEntityStatusEnum (UNASSIGNED/DRAFT/STABLE/DEPRECATED/DELETED closed 5-member enum)]; 6 ADRs incl. settable-property-not-state-machine; switchable-statuses-encode-auto-flip-intent in isSwitchable boolean; soft-delete-is-the-deletion-model; programmatic activity-event emission via logStatusChangeEvents (NOT @ActivityLog AOP). **HIGH-severity ordering bug**: DataEntityMapperImpl.applyStatus@L242-253 sets `pojo.setStatus(...)` BEFORE the if-check → `statusUpdatedAt` NEVER bumped → 30-day housekeeping TTL broken. **POSITIVE FINDING**: audit-log emission CONFIRMED for DataEntity mutations."
+      - "DataEntityController.getDataEntityDownstreamLineage (batch F): entities[LineagePojo edges in `lineage` table, DataEntityLineage graph DTO, LineageDepth wrapper, DataEntityLineageNode/Edge]; 2 ADRs (single-query recursive-CTE via Postgres WITH RECURSIVE; dual-input client-driven expansion model with depth + expandedEntityIds). **HIGH-severity bugs**: null-Integer NPE on missing `lineage_depth` (docs claim 'Unset returns the platform's default depth' — UNIMPLEMENTED); no `@Max(...)` cap on depth (DoS-amplification vector); no CTE cycle guard; cross-owner graph enumeration."
+      - "IngestionController.postDataEntityList (batch F): entities[DataEntityList (data_source_oddrn + items[]), IngestionService, BadUserRequestException]; CANONICAL S2S ingestion entry point — controller is 4-line proxy; authentication delegated EXCLUSIVELY to IngestionDataEntitiesFilter (`auth.ingestion.filter.enabled` defaults false → bundled deployment ships UNAUTHENTICATED). 4 ADRs (OpenAPI-contract-driven path; filter-based-auth-not-annotation; code-side empty-list validation; 200-vs-201 spec drift)."
     security_aggregate:
       overall: LOW
       auth_modes_relevant:
@@ -290,18 +425,24 @@ entities:
         - "Mutating endpoints centralised in SECURITY_RULES with DATA_ENTITY policy context (SecurityConstants.java:194-324)"
         - "DATA_ENTITY policy resolver evaluates user policies against resource owner/namespace/datasource/class/type"
         - "Per-resource permission model exists (Permissions / Roles / Owners / User-owner association per ODD vocabulary)"
+        - "**Audit-log emission CONFIRMED for DataEntity mutations (batch F POSITIVE FINDING)** — `updateStatus` emits `DATA_ENTITY_STATUS_UPDATED` activity events with explicit `oldState` + `newState` payloads (programmatic, NOT AOP `@ActivityLog`); `createOwnership` emits `OWNERSHIP_CREATED` via `@ActivityLog` on OwnershipServiceImpl.create. DataEntity mutations are TIER-1 AUDITED — contrast with TIER-2 RBAC mutations (Role/Policy/Owner) which have NO audit. The platform has a 2-tier audit story; this concept is on the audited side. (updateStatus.md:implicit_adrs.[4] + createOwnership.md:implicit_adrs.[1])"
       weaknesses:
         - "DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM gates SILENTLY DISABLED by `/term` (SecurityConstants.java:237-242) vs `/terms` (DataEntityApi.java:148, 542) path mismatch — any authenticated user can attach/detach terms on any entity"
         - "All 27+ read endpoints (`getDataEntityDetails`, `getDataEntityAlerts`, `getDataEntityMessages`, `getDataEntityActivity`, `getDataEntityMetrics`, lineage reads) carry no role/owner/permission gate — auth-mode-only reads of every entity's full payload"
+        - "**CENTERPIECE READ CROSS-OWNER EXPOSURE (batch F — RESOLVES ADR-CANDIDATE-003 borderline_flag as INTENTIONAL DELIBERATE posture)** — `getDataEntityDetails` (`GET /api/dataentities/{id}`) is the single hottest endpoint on the platform; any authenticated user (any anonymous caller under DISABLED) receives the FULL 34-field DataEntityDetails payload — ownership[] list, internalDescription, externalDescription, tags[], terms[], metadataFieldValues[], dataSource, linkedUrlList[], viewCount, isStale, sourceList[]/targetList[]/outputList[]/inputList[], including SOFT-DELETED entities (`includeDeleted(true)` is deliberate). 4th read-collaborative cross-owner-enumeration surface — WIDEST blast radius (the platform's primary UI read). The doc-gap is that live `/configuration-and-deployment/enable-security/authorization` does NOT name this posture. (getDataEntityDetails.md:security.known_security_gaps.[0] severity HIGH; bugs_limitations_corner_cases.[0])"
+        - "**Read-as-write `view_count` increment on every GET (batch F)** — `getDataEntityDetails` UPDATE-s `data_entity.view_count` inside `@ReactiveTransactional` on every successful read. Unauthenticated under DISABLED → any caller can inflate any entity's `view_count` arbitrarily to push it to the top of `getPopular` ranking. Hot-key contention on the platform's most-popular entities. No idempotency, no rate-limit, no debouncing. (getDataEntityDetails.md:security.known_security_gaps.[3] severity MEDIUM; performance.known_performance_gaps.[0])"
         - "`getDataEntityActivity` exposes who-changed-what audit trail to any authenticated user"
         - "`getDataEntityMessages` exposes Slack-thread content to any authenticated user (cross-tenant exposure if Slack workspace has multiple sensitive channels)"
         - "Global `/api/activity` returns audit trails across every owner — including ActivityState old/new diffs of descriptions, business names, ownership changes, custom metadata — to ANY authenticated user (getActivity.md:security.known_security_gaps.[0] severity HIGH)"
         - "**Catalog-wide search enumeration (batch E)** — `POST /api/search` + paginated `GET /api/search/{search_id}/results` enumerates every non-EXCLUDE_FROM_SEARCH Data Entity in the platform with no owner predicate to ANY authenticated user. Same admin-path-without-admin-gate failure mode as getAllAlerts / getActivity but WIDER blast radius (the search surface is the platform's primary catalog discovery vector). search.md:security.known_security_gaps.[0] severity HIGH"
+        - "**Lineage-graph cross-owner enumeration (batch F)** — `GET /api/dataentities/{id}/lineage/downstream` (sibling `/upstream`) returns the FULL reachable lineage subgraph from any rooted entity, including entities owned by other teams. Lineage edges encode causal connections — leaking the existence of a downstream transformer or consumer reveals another team's internal pipeline structure even if their individual entities are not separately enumerable. Wider than alerts/activity/search because graphs traverse owner boundaries. Combined with no `lineage_depth` upper-bound cap and no CTE cycle guard, this is also a DoS-amplification vector. (getDataEntityDownstreamLineage.md:security.known_security_gaps.[0,1] severity HIGH)"
         - "Slack-message posting accepts any user-supplied data_entity_id with no owner check — cross-tenant message injection (postMessageInSlack.md:security.known_security_gaps.[2] severity HIGH)"
         - "Attachment chunk hijack: caller with DATA_ENTITY_ATTACHMENT_MANAGE on entity X who learns another user's uploadId for entity Z can post chunks via X's URL — gate authorises path entity, service forwards to uploadId entity (uploadFileChunk.md:security.known_security_gaps.[0] severity MEDIUM)"
+        - "**Owner-auto-create permission-bypass via createOwnership (batch F)** — `POST /api/dataentities/{id}/ownership` calls `OwnerService.getOrCreate(owner_name)` which silently creates a fresh `OwnerPojo` when the name is novel. Any caller with `DATA_ENTITY_OWNERSHIP_CREATE` can mint new Owner directory entries WITHOUT holding `OWNER_CREATE` permission. Same auto-create pattern on Title (`title_name` becomes a Title directory row with no allowlist, no length cap, no audit). Structural permission-escalation surface: the documented `OWNER_CREATE` permission gate on `POST /api/owners` is incomplete — this endpoint is a second write path into the Owner directory. (createOwnership.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[0,1] severity MEDIUM)"
+        - "**Status-update self-grant ambiguity + cross-tenant assignment (batch F)** — `createOwnership` accepts any caller-supplied `owner_name` (including names that don't correspond to the caller). A Policy granting `DATA_ENTITY_OWNERSHIP_CREATE` without `\"is\": \"dataEntity:owner\"` condition is functionally root on any entity's ownership; the docs do not enumerate default Policies. Self-grant feasibility undocumented. (createOwnership.md:bugs_limitations_corner_cases.[6,7] severity MEDIUM)"
         - "Authorization layer is path-string-coupled with no compile-time/test-time guard against drift; the term mismatch is the canonical example, no integration test currently catches such drift"
         - "Attachment subsystem (a per-entity feature) has its own systemic security weaknesses — see Attachment concept's security_aggregate"
-        - "Under auth.type=DISABLED, every endpoint becomes anonymously reachable"
+        - "Under auth.type=DISABLED, every endpoint becomes anonymously reachable — now 11-SIDECAR triangulated; getDataEntityDetails + createOwnership + updateStatus join the 8 prior sidecars (batch F corroboration on the entire DataEntity primary surface)"
       cross_file_inconsistencies:
         - "DataEntityController and DataEntityAttachmentController both authorize via SECURITY_RULES path-pattern matchers, but DataEntityController has a verified path-mismatch failure (term/terms) and DataEntityAttachmentController has a read-path asymmetry (POST/PUT/DELETE gated, GET unprotected)"
         - "openapi-tag:dataEntity sidecar reports zero authorization at spec layer; controller sidecar reports the runtime gates that actually apply — contract-vs-runtime mismatch is a documented systemic issue"
@@ -315,6 +456,10 @@ entities:
         - "postMessageInSlack.md"
         - "getActivity.md"
         - "search.md"
+        - "getDataEntityDetails.md"
+        - "createOwnership.md"
+        - "updateStatus.md"
+        - "getDataEntityDownstreamLineage.md"
       evidence:
         - "DataEntityController.md:security.known_security_gaps.[0] (term path mismatch)"
         - "DataEntityController.md:security.known_security_gaps.[1] (auth-mode-only reads)"
@@ -325,11 +470,21 @@ entities:
         - "postMessageInSlack.md:security.known_security_gaps.[2] (cross-owner posting)"
         - "getActivity.md:security.known_security_gaps.[0] (global activity cross-owner)"
         - "search.md:security.known_security_gaps.[0] (catalog-wide cross-owner enumeration HIGH)"
+        - "getDataEntityDetails.md:security.known_security_gaps.[0] (centerpiece read cross-owner exposure HIGH; ADR-CANDIDATE-003 borderline_flag RESOLVED as DELIBERATE)"
+        - "getDataEntityDetails.md:security.known_security_gaps.[1] (DISABLED-mode anonymous read of entire catalog detail HIGH)"
+        - "getDataEntityDetails.md:security.known_security_gaps.[3] (view-count is unauthenticated-write surface MEDIUM)"
+        - "createOwnership.md:security.known_security_gaps.[0] (Owner-auto-create permission-bypass via getOrCreate MEDIUM)"
+        - "createOwnership.md:security.known_security_gaps.[1] (self-grant ambiguity MEDIUM)"
+        - "createOwnership.md:security.known_security_gaps.[2] (DISABLED anonymously reachable HIGH)"
+        - "updateStatus.md:security.known_security_gaps.[0] (DISABLED bypass HIGH; soft-delete cascade exposure)"
+        - "getDataEntityDownstreamLineage.md:security.known_security_gaps.[0] (graph-shaped cross-owner enumeration HIGH)"
+        - "getDataEntityDownstreamLineage.md:security.known_security_gaps.[1] (no depth cap + no rate limit — DoS-amplification HIGH)"
+        - "getDataEntityDownstreamLineage.md:security.known_security_gaps.[2] (DISABLED reachability HIGH)"
     performance_aggregate:
       overall: LOW
       hot_paths:
-        - "GET /api/dataentities/{id} (getDataEntityDetails) — single hottest endpoint, multi-table JOIN, every UI navigation hits it — DataEntityController"
-        - "GET /api/dataentities/{id}/lineage/{downstream|upstream} — graph walk with caller-controlled depth, no upper bound — DataEntityController + openapi-tag:dataEntity"
+        - "**GET /api/dataentities/{id} (getDataEntityDetails) — single hottest endpoint on the platform; batch F primary-source detailed**: 1 CTE select (multi-JOIN over data_entity + namespace + datasource + entity-class join) + 5 parallel reactive lookups (enrich-class: dependencies + last-task-runs + DEG-children + DEG-children-count + consumers-count) + 1 parent-DEG lookup + 4 parallel reactive lookups (enrich-details: metadata + dataset-versions + terms + tags) + 1 UPDATE view_count → ~10 reactive sub-queries per call. No caching, no `@Cacheable`, no ETag, no `Cache-Control`. Every page-mount, tab-switch, deep-link, refresh hits this. (getDataEntityDetails.md:performance.hot_paths.[0])"
+        - "GET /api/dataentities/{id}/lineage/{downstream|upstream} — graph walk with caller-controlled depth, no upper bound — DataEntityController + openapi-tag:dataEntity. **Batch F primary-source detailed**: recursive-CTE intermediate rows grow with branching-factor × `lineage_depth`; diamond DAGs paid in full inside the CTE before outer `selectDistinct` deduplication; 100K-node downstream subgraph fully materialised in JVM heap via `.collectList()` before serialisation. (getDataEntityDownstreamLineage.md:performance.hot_paths.[0-2])"
         - "GET /api/dataentities/popular and /api/dataentities/my* — recommendation-panel hot paths invoked on every catalog-overview render — DataEntityController"
         - "GET /api/dataentities/{id}/metrics — Prometheus-style metric query on Metrics tab open — DataEntityController"
         - "GET /api/directory and /api/directory/datasources?prefix={prefix} — Directory landing/drill down loads ALL data sources via dataSourceRepository.list() (no pagination) — DirectoryController"
@@ -349,10 +504,16 @@ entities:
       weaknesses:
         - "No upper bound on pagination `size` parameter at the controller — caller can pass `size=2147483647` per spec (components.yaml:4213-4229)"
         - "No max-depth bound on lineage endpoints; `lineageDepth=1000000` reaches LineageService unmodified (DataEntityController.java:256-273)"
-        - "DataEntityGroup lineage (`/api/dataentitygroups/{id}/lineage`) accepts no depth parameter at all (openapi.yaml:2418-2433)"
+        - "**Batch F primary-source detailed**: NO `@Min(1)` lower bound enforced via `@Min(1)` on the generated `DataEntityApi` but NO `@Max(...)` upper bound. Missing `lineage_depth` causes null-Integer NPE on autoboxing to primitive `int` at LineageService boundary — docs claim 'Unset returns the platform's default depth' which is UNIMPLEMENTED. `expanded_entity_ids` has no `maxItems` cap — exceeds Postgres 32K-parameter prepared-statement limit silently. (getDataEntityDownstreamLineage.md:bugs_limitations_corner_cases.[0-2] severity HIGH)"
+        - "**No CTE cycle guard on lineage recursion (batch F)** — `UNION ALL` body without visited-set; only termination is `tDepth.lessThan(lineageDepth.getDepth())`. Diamond-shaped DAGs amplify intermediate rows before outer `selectDistinct` deduplication. (getDataEntityDownstreamLineage.md:bugs_limitations_corner_cases.[3,7] severity MEDIUM)"
+        - "**View-count UPDATE on hottest read is write-bound under load (batch F primary-source)** — `data_entity.view_count` is row-locked O(reads); popular entities become write-throughput bottlenecks; defeats Postgres read replicas (the endpoint is permanently primary-only at the DB layer). Mitigation options unimplemented: async batch increment, sample-and-aggregate, separate counter table. (getDataEntityDetails.md:performance.known_performance_gaps.[0] severity MEDIUM)"
+        - "**~10 DB round-trips per detail-page render with NO caching (batch F primary-source)** — the most-used endpoint is also the most DB-intensive read in the system. Caffeine cache keyed by `dataEntityId` with short TTL + invalidation on mutation endpoints would cut detail-page DB load by ~90% for repeated views. (getDataEntityDetails.md:performance.known_performance_gaps.[1] severity MEDIUM)"
+        - "**No HTTP cache headers on getDataEntityDetails (batch F)** — every refresh re-transfers the full 34-field payload AND triggers a view-count UPDATE. ETag derived from `(updated_at, view_count)` + `Cache-Control: max-age=10` would handle browser 304s. (getDataEntityDetails.md:performance.known_performance_gaps.[2] severity LOW)"
+        - "**Unbounded `entities[]`/`sourceList[]`/`targetList[]`/`outputList[]`/`inputList[]`/`datasetsList[]` lineage-shortcut arrays in DataEntityDetails response (batch F)** — a DEG with 10K children produces a 10K-row response. No paging, no truncation, no `@Size(max=...)` constraint. (getDataEntityDetails.md:performance.known_performance_gaps.[3] severity LOW)"
         - "No caching on platform-wide aggregates `getDataEntityClasses` / `getDomains` / `getDataEntitiesUsage`"
         - "No `@Timed` / Micrometer / structured logging at the controller layer — latency regressions invisible at controller boundary"
-        - "No bulk-operation endpoints for any per-entity attribute — UI bulk workflows pay N round-trips"
+        - "No bulk-operation endpoints for any per-entity attribute — UI bulk workflows pay N round-trips (batch F: updateStatus single-id only — no bulk status-change endpoint covering arbitrary entity lists; propagate=true only helps when batch is exactly a DEG's children)"
+        - "**updateStatus DEG-propagation transaction has no member-count cap (batch F)** — a 10K-member DEG transition runs the full cascade (lineage / group-relations / parent-group-relations / statistics / filled-flag) inside ONE `@ReactiveTransactional` boundary. Lock acquisition fan-out scales linearly with member count. Scheduled `DataEntityStatusSwitchJob` also has no per-tick batch cap. (updateStatus.md:performance.known_performance_gaps.[1,2] severity MEDIUM)"
         - "Directory landing page loads all data sources unfiltered into memory (DirectoryServiceImpl.java:48-50) — O(N) memory + parsing on every hit"
         - "Reflection-based ODDRN-property extraction in Directory is unmemoised (DirectoryServiceImpl.java:153-171)"
         - "Multi-instance attachment chunk staging broken for BOTH LOCAL and REMOTE storage backends — chunk path /tmp/odd/chunks is hardcoded, not config-driven (uploadFileChunk.md:performance.known_performance_gaps.[0])"
@@ -369,6 +530,10 @@ entities:
         - "uploadFileChunk.md"
         - "getActivity.md"
         - "search.md"
+        - "getDataEntityDetails.md"
+        - "createOwnership.md"
+        - "updateStatus.md"
+        - "getDataEntityDownstreamLineage.md"
       evidence:
         - "DataEntityController.md:performance.hot_paths.[0-6]"
         - "DataEntityController.md:performance.known_performance_gaps.[0-7]"
@@ -379,6 +544,10 @@ entities:
         - "getActivity.md:performance.hot_paths.[0-2]"
         - "getActivity.md:performance.known_performance_gaps.[0-3]"
         - "search.md:performance.hot_paths.[0] + performance.known_performance_gaps.[0-3]"
+        - "getDataEntityDetails.md:performance.hot_paths.[0] + performance.known_performance_gaps.[0-5] (view-count hot-key contention; ~10 round-trips no caching; no HTTP cache headers; unbounded lineage-shortcut arrays; no observability; hot-key defeats read replicas)"
+        - "createOwnership.md:performance.throughput_characteristics + performance.known_performance_gaps.[0,1] (DEG propagation O(N) child inserts inside transaction; activity-handler re-queries ownership list twice per event)"
+        - "updateStatus.md:performance.hot_paths.[0,1] + performance.known_performance_gaps.[0-3] (no bulk endpoint; DEG propagation unbounded; auto-flip job unbounded; activity event fires unconditionally)"
+        - "getDataEntityDownstreamLineage.md:performance.hot_paths.[0-2] + performance.known_performance_gaps.[0-4] (no depth cap HIGH; no expanded_entity_ids cap MEDIUM; full-graph in-memory materialisation MEDIUM; no CTE cycle guard MEDIUM; no caching LOW)"
 
   - name: "Alert"
     canonical_in_docs: true
@@ -2140,6 +2309,219 @@ entities:
       default-leak — overriding application.yml without re-supplying
       housekeeping block binds 0 days and hard-deletes on next cycle).
 
+  - name: "Lineage Graph Traversal"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "**NEW CONCEPT, batch 2026-05-12F** — the platform's lineage-graph read interface. `GET /api/dataentities/{id}/lineage/downstream` (sibling `/upstream`) returns the FULL reachable lineage subgraph from a rooted data entity, walked via a single Postgres `WITH RECURSIVE` CTE (`ReactiveLineageRepositoryImpl.java:122-176`). Two client-driven inputs control the traversal: `lineage_depth` (recursion depth bound) + `expandedEntityIds` (depth-1 fan-out around selected nodes for UI progressive expansion). Edges are persisted as `LineagePojo` rows in the `lineage` table (parent_oddrn ↔ child_oddrn). Response is a `DataEntityLineage` graph DTO (root + downstream + upstream + nodes + edges + children-count/parents-count maps). main-concepts.md names `Data Lineage` as a Data Governance pillar (`### Data Lineage`) but does NOT name the API surface, the recursion-bound mechanism, the dual-input expansion model, or the cross-owner enumeration semantics. The closest doc anchor is `/features/data-lineage` (verified 200, 2026-05-12) which describes lineage as a discoverable graph and refers readers to `/developer-guides/api-reference/lineage` (also 200) for API details. **The API-reference page contains TWO doc-drift findings** (per getDataEntityDownstreamLineage.md:docs_link_semantic.doc_drift_findings): (1) claims `lineage_depth` defaults to platform's default when unset — UNIMPLEMENTED (null-Integer NPE on the service boundary); (2) describes `expanded_entity_ids` as 'IDs of Data Entity Group entities' — code accepts ANY data-entity IDs (parameter is `List<Long>` with no group-class filter). Sibling features replicate the lineage pattern: DataEntityGroup lineage (`/api/dataentitygroups/{id}/lineage`) accepts no depth parameter at all (openapi.yaml:2418-2433); microservices lineage via OpenTelemetry; ML experiment/model lineage."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage"
+    contributors:
+      - "getDataEntityDownstreamLineage.md:concepts.entities (DataEntity root, LineagePojo edges, DataEntityLineage response DTO, LineageDepth wrapper, DataEntityLineageNode/Edge)"
+      - "getDataEntityDownstreamLineage.md:concepts.operations (resolve root → recursive walk → fan-out at expandedEntityIds → merge + distinct → fetch metadata → compute counts → map to DataEntityLineage)"
+      - "getDataEntityDownstreamLineage.md:implicit_adrs.[0] (single-query recursive-CTE) + implicit_adrs.[1] (dual-input client-driven expansion model)"
+    evidence:
+      - "getDataEntityDownstreamLineage.md:concepts.entities + concepts.operations + concepts.invariants.[0-3]"
+      - "getDataEntityDownstreamLineage.md:implicit_adrs.[0,1]"
+      - "getDataEntityDownstreamLineage.md:dependencies_semantic.couples-to (LineageService.getLineage + ReactiveLineageRepositoryImpl.lineageCte)"
+    security_aggregate:
+      overall: LOW
+      auth_modes_relevant:
+        - LOGIN_FORM
+        - OAUTH2
+        - LDAP
+        - DISABLED
+      ingestion_filter_relevance: NO
+      authorization_consistency:
+        verdict: UNGATED
+        detail: "NO SECURITY_RULES entry — falls through to `pathMatchers('/**').authenticated()` catch-all (AuthorizationCustomizer.java:29-30). No `@PreAuthorize`, no programmatic permission check. Read-collaborative-GET ADR-CANDIDATE-003 posture surfaced on a graph-shaped vector. Under `auth.type=DISABLED`, anonymously reachable."
+      owner_scoping:
+        verdict: BYPASSES
+        detail: "Returned graph is NOT filtered by caller's owner relationships. The `lineage` table itself carries NO owner column; `LineageServiceImpl.getLineage(...)` performs no per-row owner check (lines 87-122); repository walk filters only by `LINEAGE.IS_DELETED.isFalse()`. Authenticated caller sees every entity reachable from the root via lineage edges, including entities owned by other teams."
+      strengths:
+        - "Single-query recursive-CTE traversal — one DB round-trip, not BFS-per-node (efficient at the query layer)"
+        - "Client-driven progressive-expansion model — UI can ask for shallow tree first then expand on click, bounding initial response size"
+      weaknesses:
+        - "**Graph-shaped cross-owner enumeration vector (HIGH)** — lineage edges encode causal connections; leaking the existence of a downstream transformer / consumer reveals another team's internal pipeline structure even if their entities are not separately enumerable via other endpoints. 5th surface in the read-collaborative invariant (after getAllAlerts + getActivity + search + getDataEntityDetails). (getDataEntityDownstreamLineage.md:security.known_security_gaps.[0])"
+        - "**No `lineage_depth` upper-bound cap + no rate-limit — DoS-amplification vector (HIGH)** — `@Min(1)` enforces a lower bound but no `@Max(...)` exists; depth=10000 against a dense subgraph is permissible. The CTE row count grows multiplicatively with depth; no cycle guard inside the recursion (only outer `selectDistinct`). (getDataEntityDownstreamLineage.md:security.known_security_gaps.[1])"
+        - "**DISABLED-mode reachability (HIGH)** — 11th sidecar in the DISABLED-bypass cross-cutting invariant; anonymous network probe can drive cross-owner enumeration AND DoS-amplification. (getDataEntityDownstreamLineage.md:security.known_security_gaps.[2])"
+        - "**Null-`lineage_depth` NPE returns 500 to caller (MEDIUM)** — generic 500 leaks server-side exception trace; docs claim 'Unset returns the platform's default depth' which is UNIMPLEMENTED. Doc-drift + error-handling-hole compounded. (getDataEntityDownstreamLineage.md:security.known_security_gaps.[3])"
+      cross_file_inconsistencies:
+        - "Concept name 'Lineage' is canonical in main-concepts.md (`Data Lineage` Data Governance pillar) but the API surface, recursion-bound mechanism, dual-input expansion model, and cross-owner-enumeration posture are all undocumented at the concept layer. Sub-page `/developer-guides/api-reference/lineage` covers the parameters but with two inaccuracies (the null-default claim + the group-only `expanded_entity_ids` claim)."
+      contributing_files:
+        - "getDataEntityDownstreamLineage.md"
+      evidence:
+        - "getDataEntityDownstreamLineage.md:security.known_security_gaps.[0-3]"
+        - "getDataEntityDownstreamLineage.md:bugs_limitations_corner_cases.[0-7]"
+    performance_aggregate:
+      overall: LOW
+      hot_paths:
+        - "Every lineage-canvas open in the UI issues a `GET /api/dataentities/{id}/lineage/downstream` AND `/upstream`; each subsequent click on a node to expand re-issues the same endpoint with an updated `expanded_entity_ids` list — fully synchronous, fully un-cached"
+        - "Recursive-CTE materialises one row per (depth, parent_oddrn, child_oddrn) tuple inside the recursion — highest-DB-cost read on the entity-detail screen"
+        - "Per-oddrn metadata fetch loads every entity referenced anywhere in the edge set + every group oddrn — a 10K-edge response triggers a 20K-oddrn metadata fetch in the same Mono assembly"
+      throughput_shape:
+        verdict: SINGLE_ITEM_ONLY
+        detail: "Single Mono pipeline per request — one request → one response holding the full graph; no streaming variant; no batching of multiple lineage requests"
+      scaling_shape:
+        verdict: UNPAGINATED
+        detail: "Stateless controller scales horizontally; the bottleneck is unbounded Postgres recursive-CTE cost on diamond-shaped DAGs + full-graph in-memory materialisation in JVM heap before serialisation"
+      strengths:
+        - "Stateless controller — horizontal scaling unconstrained at this layer"
+        - "Reactive `Mono` signature — non-blocking on the request thread"
+      weaknesses:
+        - "**No upper bound on `lineage_depth` parameter (HIGH)** — operators cannot defend a small Postgres instance against a depth=10000 request without an external WAF/reverse-proxy validation rule"
+        - "**No cap on `expanded_entity_ids` list length (MEDIUM)** — a multi-thousand-ID list hits the Postgres 32K-parameter prepared-statement limit before producing a useful error message"
+        - "**Full-graph in-memory materialisation (MEDIUM)** — no streaming response and no pagination cursor; a 100K-node downstream subgraph holds its full edge list + per-node metadata in heap before serialisation"
+        - "**No CTE-level cycle guard (MEDIUM)** — diamond DAGs and true cycles inflate intermediate row counts inside the CTE before final pruning at outer `selectDistinct`"
+        - "**No caching (LOW)** — identical repeated calls re-walk the CTE and re-fetch every entity's metadata"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "getDataEntityDownstreamLineage.md"
+      evidence:
+        - "getDataEntityDownstreamLineage.md:performance.hot_paths.[0-2]"
+        - "getDataEntityDownstreamLineage.md:performance.known_performance_gaps.[0-4]"
+    notes: |
+      NEW concept captured in batch 2026-05-12F. Single-sidecar
+      primary-source (getDataEntityDownstreamLineage). The sibling
+      `/upstream` endpoint runs the same flow with `LineageStreamKind.UPSTREAM`
+      — same code path, mirror semantics. DataEntityGroup-lineage
+      (`/api/dataentitygroups/{id}/lineage`) extends the pattern to
+      groups (no depth parameter on that variant — DEG-lineage is
+      always one-hop).
+
+      main-concepts.md names `Data Lineage` as a Data Governance pillar
+      but does not name the API surface or the dual-input expansion
+      mechanism. Recommended canonicalisation: extend main-concepts.md's
+      Data Lineage section with a 'Lineage Graph Traversal' sub-concept
+      naming `GET /api/dataentities/{id}/lineage/{downstream|upstream}`,
+      the `lineage_depth` recursion bound, and the `expanded_entity_ids`
+      progressive-expansion fan-out. Plus fix two doc-bugs on
+      `/developer-guides/api-reference/lineage`:
+        (a) Correct the `lineage_depth` 'Unset returns the platform's
+            default depth' claim — there IS no default; unset is a 500.
+        (b) Correct the `expanded_entity_ids` 'IDs of Data Entity Group
+            entities' claim — the parameter accepts any data-entity IDs,
+            not just groups.
+
+      Strong member of the Read-collaborative cross-owner enumeration
+      cross-cutting invariant (5-sidecar) — graph-shaped enumeration is
+      a UNIQUE blast-radius shape: lineage edges leak causal connections
+      even when individual entities are not separately enumerable.
+
+  - name: "S2S Ingestion Pipeline"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "**NEW CONCEPT, batch 2026-05-12F — completes the S2S surface** — the canonical Server-to-Server ingestion path from a collector (or any HTTP client) to the ODD Platform metadata catalog. Path: `POST /ingestion/entities` accepting a `DataEntityList` payload (`data_source_oddrn` + list of `DataEntity` items). The pipeline composes THREE distinct concerns: (1) PATH-WHITELISTING — `/ingestion/**` is in `SecurityConstants.WHITELIST_PATHS` (line 95-96), exempted from the UI authentication chain in EVERY mode (DISABLED/LOGIN_FORM/OAUTH2/LDAP); (2) PATH-SCOPED AUTH — `IngestionDataEntitiesFilter` (batch B) is `@ConditionalOnProperty(\"auth.ingestion.filter.enabled\", havingValue=\"true\")` and matches `POST /ingestion/entities` only, validating `Authorization: Bearer <token>` against the matched datasource's per-datasource TOKEN row (or fallback to parent collector's TOKEN row); (3) CONTROLLER — `IngestionController.postDataEntityList` (batch F) is a 4-line proxy with NO `@PreAuthorize` that delegates to `IngestionServiceImpl.ingest(...)` (inside `@ReactiveTransactional`). Datasource scoping is PAYLOAD-DRIVEN, NOT TOKEN-DRIVEN at the controller layer: the caller chooses which datasource by writing `data_source_oddrn` in the body; the filter validates the token against THAT datasource. **`auth.ingestion.filter.enabled` defaults FALSE** — bundled deployment ships `/ingestion/entities` UNAUTHENTICATED, and the UI auth modes do NOT protect it because it is whitelisted. Distinct from the GLOBAL `S2sAuthenticationFilter` (`auth.s2s.enabled`, single shared `X-API-Key` cluster-wide token granting ADMIN globally) — see batch C cross-cutting 'S2S composes-not-mutex' invariant. Two auth filters with different headers, different scope, different token sources — operators conflate them (doc-drift invariant 'Doc-vs-code spelling/format mismatch' captures this). main-concepts.md names `ODD Specification` as the wire contract and `Server-to-server (S2S) authentication` in Terms & Aliases; this concept records the actual code-side pipeline."
+    axes_present:
+      - controllers
+      - config_prefixes
+    nodes:
+      - "odd-platform java IngestionController controller-method:postDataEntityList"
+      - "odd-platform java IngestionDataEntitiesFilter config-key-consumer:auth.ingestion.filter.enabled@L20"
+      - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
+    contributors:
+      - "IngestionController.postDataEntityList (batch F): the CONTROLLER side. 4-line reactive proxy with NO @PreAuthorize. Authentication delegated to the filter. Datasource lookup is payload-driven (`dataSourceRepository.getIdByOddrnForUpdate(dataEntityList.getDataSourceOddrn())`). 4 ADRs: OpenAPI-contract-driven path; filter-based-auth-not-annotation; code-side empty-list validation; 200-vs-201 spec drift."
+      - "IngestionDataEntitiesFilter@L20 (batch B): the FILTER side. `@ConditionalOnProperty(\"auth.ingestion.filter.enabled\", havingValue=\"true\")` — default FALSE. Path matcher hard-coded `POST /ingestion/entities` only. Token comparison plaintext `String.equals(...)`. Body-buffered-before-auth-check (reads full body to extract `dataSourceOddrn` BEFORE validating token — DoS-amplification vector)."
+      - "CollectorController.regenerateCollectorToken (batch A): the TOKEN-MANAGEMENT side. Mints/rotates the 40-char alphanumeric plaintext-stored shared secret that the filter validates. In-place UPDATE — no rotation grace window."
+    evidence:
+      - "postDataEntityList.md:concepts.invariants + implicit_adrs.[0-3] + bugs_limitations_corner_cases.[0-8]"
+      - "IngestionDataEntitiesFilter@L20.md (batch B): concepts.invariants.[0-4] + implicit_adrs.[0-3] + security.known_security_gaps.[0-4]"
+      - "regenerateCollectorToken.md:concepts.invariants.[1-3] (plaintext-equality across the rotate-side AND verify-side)"
+    security_aggregate:
+      overall: LOW
+      auth_modes_relevant:
+        - S2S
+        - DISABLED
+        - LOGIN_FORM
+        - OAUTH2
+        - LDAP
+      ingestion_filter_relevance: YES
+      authorization_consistency:
+        verdict: INCONSISTENT
+        detail: "Default-off insecure: `auth.ingestion.filter.enabled=false` ships in `application.yml:48`. The four UI auth modes do NOT protect this path (`/ingestion/**` is in WHITELIST_PATHS). When the filter IS enabled, per-datasource bearer-token auth is enforced. When disabled (default), ANY caller able to reach `POST /ingestion/entities` can submit a `DataEntityList` payload targeting ANY datasource. **CONFIRMED FROM TWO ANGLES**: WIRING side (IngestionDataEntitiesFilter batch B) + CONTROLLER side (postDataEntityList batch F) — the controller has no `@PreAuthorize` to act as defence-in-depth."
+      owner_scoping:
+        verdict: N/A
+        detail: "Ingestion path is not owner-scoped. The filter authenticates the CALLER (collector/datasource via shared-secret token) but does not associate the request with an ODD Owner. Token = identity-of-collector, not identity-of-user. Ingested entities are not stamped with `created_by_owner` from the calling collector."
+      strengths:
+        - "Disabled-by-default for the per-datasource auth path — operator must opt in to ingestion auth enforcement"
+        - "Per-datasource tokens stored in DB (when filter enabled) — different from the single-shared-secret S2S model"
+        - "`@ReactiveTransactional` on IngestionServiceImpl.ingest ensures per-batch atomicity"
+        - "Path matcher per filter subclass — IngestionDataEntitiesFilter ↔ /ingestion/entities, IngestionDataSourceFilter ↔ /ingestion/datasources — discoverable by file name"
+      weaknesses:
+        - "**Default-off ingestion auth (HIGH, LSN-001-class)** — bundled deployment ships `/ingestion/entities` reachable without credentials. Operator-trap: the property `auth.ingestion.filter.enabled` is NOT surfaced in any live doc (configuration-and-deployment/data-ingestion → 404; data-ingestion → 404). 2-sidecar primary-source confirmed (batch B + batch F)."
+        - "**Datasource scoping is payload-driven, not token-driven, at the controller (HIGH under default-off)** — controller passes the entire `Mono<DataEntityList>` to the service unchanged; service resolves the datasource BY ODDRN FROM THE PAYLOAD. When filter is OFF, the controller blindly trusts the payload's `data_source_oddrn`. (postDataEntityList.md:bugs_limitations_corner_cases.[2])"
+        - "**Plaintext-equality `.equals()` not constant-time (MEDIUM)** — `IngestionDataEntitiesFilter.java:56` uses `String.equals(...)`, not `MessageDigest.isEqual(...)`. (IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[1])"
+        - "**Body-buffered-before-auth (MEDIUM)** — filter reads full request body to extract `dataSourceOddrn` BEFORE validating token. Attacker submitting 20MB payloads with invalid tokens forces the platform to buffer+parse before rejecting — heap-pressure DoS. (IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[4])"
+        - "**Unknown `data_source_oddrn` returns 5xx, not 404 (MEDIUM)** — no `@ExceptionHandler(NotFoundException)` returning 404 on the reactive ingestion path. (postDataEntityList.md:bugs_limitations_corner_cases.[4])"
+        - "**`X-API-Key` (S2S) vs `Authorization: Bearer` (this filter) doc-drift (MEDIUM)** — operator copy-paste-from-docs-using-X-API-Key fails when only `auth.ingestion.filter.enabled=true` is set. Live S2S doc curl example uses `X-API-Key` (the OTHER filter). See cross-cutting invariant 'Doc-vs-code spelling/format mismatch'. (postDataEntityList.md:docs_link_semantic.doc_drift_findings.[1])"
+        - "**No canonical doc page for the endpoint (MEDIUM)** — `configuration-and-deployment/data-ingestion` returns 404; `data-ingestion` returns 404. The entire `/ingestion/*` surface is under-documented except for the S2S sub-page's brief mention. (postDataEntityList.md:docs_link_semantic.doc_drift_findings.[0])"
+      cross_file_inconsistencies:
+        - "Live `/configuration-and-deployment/enable-security/authentication/s2s` page conflates the two auth filters — the page documents `auth.s2s.enabled` + `auth.s2s.token` + `X-API-Key` header but does NOT mention `auth.ingestion.filter.enabled` + `Authorization: Bearer` + `IngestionDataEntitiesFilter`. Operators reading only the S2S page miss the path-scoped filter entirely."
+        - "OpenAPI status-code drift: spec declares `201 Created` (odd_api.yaml:23-25); controller returns `200 OK`; tests lock in 200. 2-sidecar status-code drift with OwnerController.createOwner — see cross-cutting invariant 'OpenAPI 200-vs-201 status-code drift'."
+      contributing_files:
+        - "postDataEntityList.md"
+        - "IngestionDataEntitiesFilter@L20.md"
+        - "regenerateCollectorToken.md"
+      evidence:
+        - "postDataEntityList.md:security.known_security_gaps.[0-5]"
+        - "postDataEntityList.md:bugs_limitations_corner_cases.[0-8]"
+        - "IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[0-4]"
+        - "regenerateCollectorToken.md:concepts.invariants.[3] (plaintext-equality)"
+    performance_aggregate:
+      overall: MEDIUM
+      hot_paths:
+        - "Every `POST /ingestion/entities` incurs: full-body reactive parse (up to 20MB), Jackson deserialise to DataEntityList, empty-check, service-call to IngestionServiceImpl.ingest. When filter active, body parsed TWICE (filter + controller)"
+        - "Per-ingestion DB writes: datasource SELECT-FOR-UPDATE + bulk dedup-and-upsert (bulkUpdate + bulkCreate inside the transaction) + processor chain + OTLP metric export"
+        - "Synchronous response — HTTP connection held for the duration of the pipeline; bursty collectors with slow downstream processors cause cascading timeouts"
+      throughput_shape:
+        verdict: BATCH_FRIENDLY
+        detail: "Per-request can carry hundreds-to-thousands of DataEntity items (one collector-tick batched). No streaming or chunking — whole list buffered to 20MB cap"
+      scaling_shape:
+        verdict: HORIZONTALLY_SCALABLE
+        detail: "Stateless controller. Per-datasource row-level lock (`getIdByOddrnForUpdate`) serialises concurrent ingestions for SAME datasource; cross-datasource scales linearly"
+      strengths:
+        - "Reactive non-blocking signature"
+        - "Per-datasource lock isolation — different collectors / datasources scale linearly"
+        - "Idempotency-by-ODDRN at the data layer (upsert on existing rows)"
+      weaknesses:
+        - "**Synchronous-blocking-on-pipeline (LOW)** — no async-accept mode; HTTP connection held for full pipeline duration. (postDataEntityList.md:performance.known_performance_gaps.[0])"
+        - "**Duplicate body parse when filter active (MEDIUM)** — filter parses body for dataSourceOddrn, controller re-parses for DataEntityList. (IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[0])"
+        - "**OTLP metric export inside per-request flow (MEDIUM)** — slow/unhealthy OTLP backend slows every ingestion request. No timeout/circuit-breaker. (postDataEntityList.md:performance.known_performance_gaps.[2])"
+        - "**No token cache** — every ingestion request re-fetches datasource (and possibly collector) from DB. (IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[2])"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "postDataEntityList.md"
+        - "IngestionDataEntitiesFilter@L20.md"
+      evidence:
+        - "postDataEntityList.md:performance.hot_paths.[0-1] + performance.known_performance_gaps.[0-2]"
+        - "IngestionDataEntitiesFilter@L20.md:performance.hot_paths + performance.known_performance_gaps.[0-2]"
+    notes: |
+      NEW concept captured in batch 2026-05-12F — completes the S2S
+      ingestion surface that batch B's IngestionDataEntitiesFilter
+      opened. 2-sidecar primary-source on the inbound side (filter +
+      controller) + 1-sidecar primary-source on the token-management
+      side (CollectorController.regenerateCollectorToken from batch A).
+
+      main-concepts.md already names canonical S2S concepts (`Server-to-server
+      (S2S) authentication` and `Ingestion authentication filter` in
+      Terms & Aliases). This concept records the actual code-side
+      PIPELINE — the three concerns (path-whitelisting + path-scoped
+      auth filter + controller) that compose into the operator-facing
+      experience.
+
+      Recommended canonicalisation: this entry IS the canonical
+      pipeline concept; main-concepts.md's existing aliases are correct.
+      The doc-side gap is the absence of an end-to-end
+      `/configuration-and-deployment/data-ingestion` page that explains
+      the pipeline as one unit; today the three concerns are split across
+      `enable-security/authentication/s2s` (briefly) and zero canonical
+      pages for the ingestion-controller-side and the
+      ingestion-auth-filter-side. The cross-cutting invariants
+      'Doc-vs-code spelling/format mismatch' (Authorization-vs-X-API-Key
+      conflation) and 'OpenAPI 200-vs-201 status-code drift' both surface
+      via this concept.
+
   - name: "ODDRN"
     canonical_in_docs: true
     canonical_candidate: false
@@ -2193,6 +2575,11 @@ entities:
       - "odd-platform java OwnerController controller-method:createOwner"
       - "odd-platform java PermissionController controller-method:getResourcePermissions"
       - "odd-platform java SearchController controller-method:search"
+      - "odd-platform java DataEntityController controller-method:getDataEntityDetails"
+      - "odd-platform java DataEntityController controller-method:createOwnership"
+      - "odd-platform java DataEntityController controller-method:updateStatus"
+      - "odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage"
+      - "odd-platform java IngestionController controller-method:postDataEntityList"
     contributors:
       - "All controller sidecars: security.auth_mode_relevance lists DISABLED/LOGIN_FORM/OAUTH2/LDAP (with auth-mode names verbatim from the live enable-security doc)"
       - "AlertManagerController: auth_mode_relevance is `NONE — operator-delegated network-layer auth` (the singular exception — `/ingestion/**` whitelist exempts the path from the UI authentication chain)"
@@ -2211,6 +2598,11 @@ entities:
       - "OwnerController.createOwner (batch 2026-05-12E): RBAC directory sidecar. SECURITY_RULES OWNER_CREATE NO_CONTEXT at SecurityConstants.java:143. Same DISABLED-bypass + LOGIN_FORM-ADMIN-everywhere shapes. Plus identity-decoupled-CRUD invariant: no auth-mode flow auto-creates an Owner on first login (LDAP/OAuth2/LOGIN_FORM all skip this); operators must MANUALLY pre-create per-user Owner rows OR accept association requests."
       - "PermissionController.getResourcePermissions (batch 2026-05-12E): RBAC READ-side sidecar. NO SECURITY_RULES entry (deliberate — read-collaborative posture). Endpoint is the canonical reveal of two HIGH auth-mode-bypass findings: (a) under DISABLED, response is EMPTY while mutation endpoints are simultaneously `.permitAll()` — UI shows 'you can do nothing' while API accepts everything (silent UI-vs-API contradiction); (b) under LOGIN_FORM, response is ALWAYS the FULL admin permission set regardless of UI-configured policies (LOGIN_FORM-ADMIN-everywhere bypass). Cross-corroborates Auth Mode (LOGIN_FORM branch) — now 3-sidecar."
       - "SearchController.search (batch 2026-05-12E): NEW search-area sidecar. NO SECURITY_RULES entry — falls through to `.authenticated()` catch-all. Under DISABLED, anonymously reachable. Default `my_objects=false` returns aggregations over the entire catalog (owner-bypass). Third read-collaborative cross-owner enumeration surface (after getAllAlerts batch A + getActivity batch B) — wider blast radius than either since search paginates the WHOLE catalog by name/ODDRN/descriptions/ownership/tags."
+      - "DataEntityController.getDataEntityDetails (batch 2026-05-12F): DATAENTITY PRIMARY SURFACE sidecar — the platform's single hottest endpoint. NO SECURITY_RULES entry. Under DISABLED, anonymous read of every entity's full 34-field DataEntityDetails payload (including soft-deleted entities — `includeDeleted(true)` is deliberate). **RESOLVES ADR-CANDIDATE-003 borderline_flag**: the read-collaborative posture is INTENTIONAL on the centerpiece read; consistent with 27+ other GETs on the same controller. Also: under DISABLED any anonymous caller can inflate any entity's `view_count` (the GET is a write at the DB layer). Centerpiece embodiment of the Auth Mode DISABLED weakness."
+      - "DataEntityController.createOwnership (batch 2026-05-12F): DATAENTITY OWNERSHIP-BINDING sidecar. SECURITY_RULES-gated under non-DISABLED (`DATA_ENTITY_OWNERSHIP_CREATE` per-data-entity at SecurityConstants.java:215-217). Under DISABLED, anonymous callers can bind any Owner (including auto-created via getOrCreate) to any data entity, and emit OWNERSHIP_CREATED activity events with undefined caller identity (the `@ActivityLog` fires, but `ActivityContextInfo` lacks principal). Under LOGIN_FORM with `getAuthorities(true)` ADMIN-for-all, every form-authenticated user effectively holds DATA_ENTITY_OWNERSHIP_CREATE everywhere."
+      - "DataEntityController.updateStatus (batch 2026-05-12F): DATAENTITY STATUS-LIFECYCLE sidecar. SECURITY_RULES-gated under non-DISABLED (`DATA_ENTITY_STATUS_UPDATE` per-data-entity at SecurityConstants.java:277-281). Under DISABLED, anonymous callers can flip ANY data entity to DELETED, triggering the soft-delete cascade (lineage / group-relations / parent-group-relations / statistics / filled-flag) — effectively wholesale catalog deletion to anonymous traffic. HIGH-severity blast radius under DISABLED specifically because of the cascade fan-out."
+      - "DataEntityController.getDataEntityDownstreamLineage (batch 2026-05-12F): DATAENTITY LINEAGE-GRAPH sidecar. NO SECURITY_RULES entry — falls through to `.authenticated()`. Under DISABLED, anonymous callers can drive arbitrarily-expensive recursive-CTE queries (no `@Max` cap on `lineage_depth`; no CTE cycle guard) AND enumerate the full reachable graph from any rooted entity, including entities owned by other teams. Graph-shaped cross-owner-enumeration vector under DISABLED — combined with DoS-amplification this is the highest-stakes lineage read under DISABLED."
+      - "IngestionController.postDataEntityList (batch 2026-05-12F): S2S INGESTION CONTROLLER sidecar — CLOSES THE LOOP opened by IngestionDataEntitiesFilter (batch B). Path `/ingestion/**` is in `SecurityConstants.WHITELIST_PATHS` (line 95-96), exempted from the UI authentication chain in every mode (DISABLED/LOGIN_FORM/OAUTH2/LDAP). Authentication is EXCLUSIVELY the responsibility of IngestionDataEntitiesFilter (`auth.ingestion.filter.enabled` defaults false). Under DEFAULT-OFF, ANY caller able to reach the platform's HTTP port can ingest arbitrary data entities into any datasource by writing its ODDRN in the payload — DEFAULT-OFF unauth confirmed at the CONTROLLER side. Two-sidecar with IngestionDataEntitiesFilter batch B."
     evidence:
       - "AlertController.md:security.auth_mode_relevance"
       - "AlertManagerController.md:security.auth_mode_relevance (NONE)"
@@ -2260,7 +2652,7 @@ entities:
         - "Live `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security` enumerates the four values verbatim; per-mode sub-pages exist for DISABLED / LOGIN_FORM / OAUTH2 / LDAP / S2S"
         - "OAUTH2 + LDAP both apply `AuthorizationCustomizer` and run at `Ordered.HIGHEST_PRECEDENCE` (LDAP) — production modes carry the strongest enforcement; the asymmetry is downward (LOGIN_FORM ↓ DISABLED)"
       weaknesses:
-        - "**8-sidecar triangulated insecure-default failure mode (HIGH severity)** — EIGHT independent sidecars converge on the same operator trap (4 from batch B/C wiring side + 4 from batch E RBAC-primary-surface side): WIRING (batch B/C): (a) `application.yml:34` ships `auth.type: DISABLED` as the default (DisabledAuthSecurityConfiguration@L10 + AppInfoController@L18 + AuthorizationManagerCondition@L11 all anchor on this; DisabledAuthSecurityConfiguration is the CANONICAL evidence — the chain is literally `.csrf(...disable).anyExchange().permitAll()` with no CORS, no AuthorizationCustomizer, no S2S wiring); (b) `application.yml:48` ships `auth.ingestion.filter.enabled: false` (IngestionDataEntitiesFilter@L20 not registered → `/ingestion/entities` unauthenticated regardless of `auth.type`); (c) NO `matchIfMissing=true` on any of the four `*SecurityConfiguration` classes' `@ConditionalOnProperty`; (d) DISABLED is ALSO silent — no `@Slf4j` boot WARN. **RBAC PRIMARY SURFACE (batch E corroboration — wider blast radius than originally framed)**: (e) RoleController.createRole — `POST /api/roles` reachable unauthenticated under DISABLED (createRole.md:security.known_security_gaps.[2]); (f) PolicyController.createPolicy — `POST /api/policies` reachable unauthenticated under DISABLED, full MANAGEMENT/ALL escalation chain open via Role + Policy CRUD both bypassed (createPolicy.md:security.known_security_gaps.[0]); (g) OwnerController.createOwner — `POST /api/owners` reachable unauthenticated under DISABLED, anonymous directory-population unrestrained (createOwner.md:security.known_security_gaps.[3]); (h) PermissionController.getResourcePermissions — under DISABLED the response is EMPTY (UI shows 'no permissions') WHILE mutation endpoints are simultaneously `.permitAll()`-reachable — UI-vs-API contradiction (getResourcePermissions.md:security.known_security_gaps.[0]). Combined: a DISABLED-mode deployment exposes the FULL RBAC mutation surface to anonymous network callers AND silently misleads the UI about what's enforced. Live `disabled-authentication` page declares it 'the default configuration' with a single 'DO NOT use in your production environment!' admonition but does NOT enumerate the blast radius. Canonical LSN-001/002-shape failure. (DisabledAuthSecurityConfiguration@L10.md:security.known_security_gaps.[0-5] + AppInfoController@L18.md:security.known_security_gaps.[0,1,2] + AuthorizationManagerCondition@L11.md:security.known_security_gaps.[1,2] + IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[0,3] + createRole + createPolicy + createOwner + getResourcePermissions batch E sidecars)"
+        - "**11-sidecar triangulated insecure-default failure mode (HIGH severity — most-corroborated insecure-default in the whole catalog)** — ELEVEN independent sidecars converge on the same operator trap (4 from batch B/C wiring side + 4 from batch E RBAC-primary-surface side + 3 from batch F DataEntity primary-surface side): WIRING (batch B/C): (a) `application.yml:34` ships `auth.type: DISABLED` as the default (DisabledAuthSecurityConfiguration@L10 + AppInfoController@L18 + AuthorizationManagerCondition@L11 all anchor on this; DisabledAuthSecurityConfiguration is the CANONICAL evidence — the chain is literally `.csrf(...disable).anyExchange().permitAll()` with no CORS, no AuthorizationCustomizer, no S2S wiring); (b) `application.yml:48` ships `auth.ingestion.filter.enabled: false` (IngestionDataEntitiesFilter@L20 not registered → `/ingestion/entities` unauthenticated regardless of `auth.type`); (c) NO `matchIfMissing=true` on any of the four `*SecurityConfiguration` classes' `@ConditionalOnProperty`; (d) DISABLED is ALSO silent — no `@Slf4j` boot WARN. **RBAC PRIMARY SURFACE (batch E corroboration)**: (e) RoleController.createRole — `POST /api/roles` reachable unauthenticated under DISABLED (createRole.md:security.known_security_gaps.[2]); (f) PolicyController.createPolicy — `POST /api/policies` reachable unauthenticated under DISABLED, full MANAGEMENT/ALL escalation chain open via Role + Policy CRUD both bypassed (createPolicy.md:security.known_security_gaps.[0]); (g) OwnerController.createOwner — `POST /api/owners` reachable unauthenticated under DISABLED, anonymous directory-population unrestrained (createOwner.md:security.known_security_gaps.[3]); (h) PermissionController.getResourcePermissions — under DISABLED the response is EMPTY (UI shows 'no permissions') WHILE mutation endpoints are simultaneously `.permitAll()`-reachable — UI-vs-API contradiction (getResourcePermissions.md:security.known_security_gaps.[0]). **DATAENTITY PRIMARY SURFACE (batch F corroboration — widest blast radius)**: (i) getDataEntityDetails — `GET /api/dataentities/{id}` anonymous read of EVERY entity's full 34-field details payload under DISABLED, including soft-deleted entities (getDataEntityDetails.md:security.known_security_gaps.[1] HIGH); (j) createOwnership — `POST /api/dataentities/{id}/ownership` anonymously reachable: anonymous callers can mint Owner directory rows + bind owners to data entities (createOwnership.md:security.known_security_gaps.[2] HIGH); (k) updateStatus — `PUT /api/dataentities/{id}/statuses` anonymously reachable: anonymous callers can soft-delete ANY data entity (with the soft-delete cascade affecting lineage / group-relations / statistics — effectively wholesale catalog deletion to anonymous traffic) (updateStatus.md:security.known_security_gaps.[0] HIGH). Combined: a DISABLED-mode deployment exposes the FULL RBAC mutation surface AND the FULL DataEntity primary-surface (centerpiece read, ownership-binding, status-mutation, lineage-graph) to anonymous network callers AND silently misleads the UI about what's enforced. Live `disabled-authentication` page declares it 'the default configuration' with a single 'DO NOT use in your production environment!' admonition but does NOT enumerate the 11-sidecar blast radius. Canonical LSN-001/002-shape failure. (DisabledAuthSecurityConfiguration@L10.md:security.known_security_gaps.[0-5] + AppInfoController@L18.md:security.known_security_gaps.[0,1,2] + AuthorizationManagerCondition@L11.md:security.known_security_gaps.[1,2] + IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[0,3] + createRole + createPolicy + createOwner + getResourcePermissions batch E sidecars + getDataEntityDetails + createOwnership + updateStatus batch F sidecars)"
         - "**LOGIN_FORM runs WITHOUT AUTHORIZATION + ADMIN-FOR-ALL — 3-sidecar triangulated (HIGH severity — REFACTOR-073 validated, plus batch-E read-side corroboration)** — `LoginFormSecurityConfiguration.java:55-57` configures `.authorizeExchange(... .pathMatchers(permittedPaths).permitAll().pathMatchers(\"/**\").authenticated())` only; it does NOT wire `new AuthorizationCustomizer(permissionService, extractors)` the way OAuth (line 98) and LDAP (line 145) do. Combined with `getAuthorities(true)` at line 81 (every LOGIN_FORM user is ADMIN), the effective posture is 'any valid credential pair = full platform access'. Batch-E READ-side corroboration: PermissionController.getResourcePermissions returns the FULL admin permission set for every caller under LOGIN_FORM (the static admin authority + the seeded Administrator policy carrying `'ALL'` on every contextual resource type — getResourcePermissions.md:security.known_security_gaps.[1]). The endpoint cannot distinguish a real admin from 'platform is in single-tenant dev mode'. Batch-E MUTATION-side corroboration: RoleController.createRole reachable in LOGIN_FORM mode for every form-authenticated user (createRole.md:bugs_limitations_corner_cases under DISABLED + S2S sections, with LOGIN_FORM-ADMIN being the third bypass shape). Operators using LOGIN_FORM for staging may believe per-resource gating is honoured when it is not. Live `/enable-security/authorization` describes the framework without naming the precondition (OAUTH2 or LDAP). 3-sidecar: LoginFormSecurityConfiguration@L31 + getResourcePermissions + createRole. (LoginFormSecurityConfiguration@L31.md:bugs_limitations_corner_cases.[0] + security.known_security_gaps.[0] + getResourcePermissions.md:security.known_security_gaps.[1] + createRole.md:security.known_security_gaps via S2S+DISABLED sections)"
         - "**S2S composes-not-mutex — X-API-Key grants ADMIN across all /** paths under LOGIN_FORM/OAUTH2/LDAP (HIGH severity)** — `S2sAuthenticationFilter.java:31-39` hard-codes `User.withUsername(\"ADMIN\")...roles(\"ADMIN\")` (admin=true) on a valid `X-API-Key` match. The filter is added at `SecurityWebFiltersOrder.HTTP_BASIC` order in EACH of the three interactive modes (`LoginFormSecurityConfiguration.java:61-63` + `OAuthSecurityConfiguration.java:108-110` + `LDAPSecurityConfiguration.java:149-151`), and runs BEFORE the interactive-auth challenge. So when an operator enables `auth.s2s.enabled=true` alongside any of LOGIN_FORM/OAUTH2/LDAP, a single shared `auth.s2s.token` string grants ADMIN across the ENTIRE `/**` UI/API surface (not just `/ingestion/entities` which has its own separate `IngestionDataEntitiesFilter`). Under DISABLED, S2S is silently ignored (DisabledAuthSecurityConfiguration does not read `auth.s2s.enabled`). Live `enable-security/authentication/s2s` page confirms 'they can call any endpoint that admins can call' but the per-mode `oauth2-oidc` / `login-form` / `ldap` pages do NOT cross-link or warn. (OAuthSecurityConfiguration@L71.md:bugs_limitations_corner_cases.[5] + security.known_security_gaps.[0] + LDAPSecurityConfiguration@L51.md:bugs_limitations_corner_cases.[S2S admin everywhere] + LoginFormSecurityConfiguration@L31.md:implicit_adrs.[2] + DisabledAuthSecurityConfiguration@L10.md:bugs_limitations_corner_cases.[2])"
         - "**LDAP substring-collision admin escalation (HIGH severity)** — `LDAPSecurityConfiguration.java:96` uses `containsIgnoreCase` (a SUBSTRING matcher imported from `OperationUtils` at line 48) for admin-group matching, NOT `Set::contains` over equality. An admin-groups config of `['Admin']` matches `cn=Administrators` AND `cn=NonAdminContractors`. Configuring `admin-groups: ['ops']` may inadvertently promote anyone in a group named `devops`, `noops`, or `oopsgroup`. Live LDAP docs only say 'A list granting admin permissions' — no warning. (LDAPSecurityConfiguration@L51.md:bugs_limitations_corner_cases.[containsIgnoreCase substring collision] + security.known_security_gaps.[substring admin match])"
@@ -2312,6 +2704,11 @@ entities:
         - "createOwner.md"
         - "getResourcePermissions.md"
         - "search.md"
+        - "getDataEntityDetails.md"
+        - "createOwnership.md"
+        - "updateStatus.md"
+        - "getDataEntityDownstreamLineage.md"
+        - "postDataEntityList.md"
       evidence:
         - "AppInfoController@L18.md:security.known_security_gaps.[0] (DISABLED-default fingerprinting MEDIUM)"
         - "AppInfoController@L18.md:bugs_limitations_corner_cases.[0,1] (no @Value default; no enum validation)"
@@ -2354,6 +2751,11 @@ entities:
         - "ODDLDAPProperties.md:bugs_limitations_corner_cases.[3] (empty adminGroups → no admins HIGH)"
         - "ODDLDAPProperties.md:bugs_limitations_corner_cases.[4] (AD.domain unvalidated MEDIUM)"
         - "ODDLDAPProperties.md:bugs_limitations_corner_cases.[5] (Properties silently ignored when auth.type ≠ LDAP LOW)"
+        - "getDataEntityDetails.md:security.known_security_gaps.[0,1] (centerpiece read cross-owner exposure + DISABLED anonymous read of catalog detail metadata HIGH)"
+        - "createOwnership.md:security.known_security_gaps.[2] (DISABLED bypass of DATA_ENTITY_OWNERSHIP_CREATE HIGH)"
+        - "updateStatus.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[7] (DISABLED bypass of DATA_ENTITY_STATUS_UPDATE; soft-delete cascade reachable anonymously HIGH)"
+        - "getDataEntityDownstreamLineage.md:security.known_security_gaps.[0,1,2] (graph cross-owner enumeration + no depth cap DoS amplification + DISABLED reachability HIGH)"
+        - "postDataEntityList.md:security.known_security_gaps.[0,2] (default-off ingestion auth + cross-tenant under filter-OFF — confirms WIRING-side default-off from CONTROLLER side; CLOSES THE S2S LOOP)"
     notes: |
       Cross-cutting infrastructural concept named in main-concepts.md's
       `Data Security (governance-level)` callout that points at
@@ -2422,6 +2824,39 @@ entities:
       No-audit-log on RBAC mutations (Role + Policy + Owner 3-sidecar)
       + Read-collaborative cross-owner enumeration (now 3-sidecar:
       getAllAlerts + getActivity + search).
+
+      Batch 2026-05-12F adds 5 controller-method sidecars covering the
+      DataEntity primary surface + the canonical S2S ingestion controller.
+      Three of the five (getDataEntityDetails + createOwnership +
+      updateStatus) add DataEntity-side corroboration to the DISABLED-mode
+      weakness, raising it to 11-SIDECAR triangulated — the most-corroborated
+      insecure-default in the whole catalog. The fourth (lineage) adds the
+      graph-shaped cross-owner enumeration variant; the fifth (postDataEntityList)
+      CLOSES THE S2S LOOP opened by IngestionDataEntitiesFilter in batch B
+      (default-off unauth confirmed from BOTH the WIRING side and the
+      CONTROLLER side).
+
+      Batch F also surfaces THREE NEW/REFINED cross-cutting invariants:
+      (1) Permission-bypass via Owner auto-create — createOwnership
+      auto-creates Owner via getOrCreate without OWNER_CREATE permission
+      check; structural permission-escalation side-door.
+      (2) TTL retention broken by statusUpdatedAt nullification — batch D's
+      HousekeepingTTLProperties + batch F's updateStatus combine to surface
+      a cross-batch defect: the 30-day data-entity-delete TTL relies on a
+      field that's never bumped on status transition (ordering bug in
+      DataEntityMapperImpl.applyStatus).
+      (3) Audit-log presence ASYMMETRY (REFINEMENT of batch-E theme) —
+      RBAC mutations (Role/Policy/Owner) have NO audit; DataEntity mutations
+      (updateStatus, createOwnership) DO emit audit signals. The codebase
+      has a 2-tier audit story: DataEntity-scoped writes are TIER-1
+      audited; RBAC-scoped writes are TIER-2 unaudited. Inverse of the
+      expected security-conscious posture.
+
+      Batch F also RESOLVES ADR-CANDIDATE-003 borderline_flag — the
+      read-collaborative posture on the CENTERPIECE READ (`GET /api/dataentities/{id}`)
+      is DELIBERATE and consistent with 27+ other GETs on the same
+      controller; the doc-gap is that live `/configuration-and-deployment/enable-security/authorization`
+      does NOT name this stance.
 
   - name: "Ingestion Filter"
     canonical_in_docs: true
@@ -2715,6 +3150,10 @@ audiences:
       - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
       - "odd-platform java AlertController controller-method:getAllAlerts"
       - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
+      - "odd-platform java DataEntityController controller-method:getDataEntityDetails"
+      - "odd-platform java DataEntityController controller-method:createOwnership"
+      - "odd-platform java DataEntityController controller-method:updateStatus"
+      - "odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage"
     contributors:
       - "AlertController.audiences: ODD Platform UI — Alerts navigation pane and per-entity Alerts tabs"
       - "DataEntityController.audiences: virtually every UI screen consumes Data Entity endpoints"
@@ -2725,6 +3164,10 @@ audiences:
       - "postMessageInSlack.audiences: authenticated ODD UI users posting from the Discussions tab on a data-entity detail page"
       - "getAllAlerts.audiences: ODD Platform UI — Alerts → All tab (per live alerting doc); platform stewards and admins per the live doc's recommendation"
       - "uploadFileChunk.audiences: ODD Platform UI — chunked uploader on the per-entity Attachments tab"
+      - "getDataEntityDetails.audiences: ODD Platform UI — the per-entity detail page's Overview tab + every other tab that opens via the same entity context (Lineage, Alerts, Activity, Discussions, Metrics, Test Reports, Structure, Linked Items, Query Examples) — the platform's single hottest read path on the UI"
+      - "createOwnership.audiences: ODD Platform UI — the Data Entity overview / Owners panel uses this endpoint to add an owner to a data entity; the primary UI surface where the user-supplied owner_name + title_name may unintentionally create directory entries"
+      - "updateStatus.audiences: ODD Platform UI — entity-detail page status dropdown calls this endpoint; in-platform `DataEntityStatusSwitchJob` writes through the same service path but originates server-side"
+      - "getDataEntityDownstreamLineage.audiences: ODD Platform UI — the lineage canvas on the data-entity detail page; the UI sets `lineage_depth` and accumulates `expanded_entity_ids` as the user expands nodes"
     evidence:
       - "AlertController.md:concepts.audiences.[0]"
       - "DataEntityController.md:concepts.audiences.[0]"
@@ -2735,6 +3178,10 @@ audiences:
       - "postMessageInSlack.md:concepts.audiences"
       - "getAllAlerts.md:concepts.audiences"
       - "uploadFileChunk.md:concepts.audiences"
+      - "getDataEntityDetails.md:concepts.audiences"
+      - "createOwnership.md:concepts.audiences"
+      - "updateStatus.md:concepts.audiences"
+      - "getDataEntityDownstreamLineage.md:concepts.audiences"
 
   - name: "ODD API Consumer"
     canonical_in_docs: false
@@ -2751,17 +3198,26 @@ audiences:
       - "odd-platform openapi tags openapi-tag:alert"
       - "odd-platform openapi tags openapi-tag:dataEntity"
       - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
+      - "odd-platform java DataEntityController controller-method:getDataEntityDetails"
+      - "odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage"
+      - "odd-platform java IngestionController controller-method:postDataEntityList"
     contributors:
       - "Multiple controller sidecars: API consumers building integrations against /api/<resource>*"
       - "openapi-tag:alert.audiences: OpenAPI generator + Human readers of the spec navigating by tag in tools like Swagger UI / ReDoc / Stoplight"
       - "openapi-tag:dataEntity.audiences: UI client + platform integrations writing back metadata + operators inspecting alerts/runs/activity"
       - "uploadFileChunk.audiences: API consumers implementing the 3-step protocol against /api/dataentities/{id}/files/uploads/{upload_id}/chunks"
+      - "getDataEntityDetails.audiences: third-party API consumers calling GET /api/dataentities/{id} to build dashboards, exports, or compliance scans (often reading the OpenAPI spec to discover the 34-field DataEntityDetails payload because no doc page enumerates it)"
+      - "getDataEntityDownstreamLineage.audiences: third-party API consumers reading /api/dataentities/{id}/lineage/downstream directly — no contract caveat tells them what depth is safe to ask for; live API-reference page has two doc-bugs"
+      - "postDataEntityList.audiences: odd-collector / odd-collector-sdk HTTP clients pushing data-entity definitions; odd-platform operators standing up an ingestion pipeline; security reviewers auditing the S2S surface"
     evidence:
       - "AlertController.md:concepts.audiences.[1]"
       - "DataEntityController.md:concepts.audiences.[1]"
       - "openapi-tag-alert.md:concepts.audiences"
       - "openapi-tag-dataEntity.md:concepts.audiences"
       - "uploadFileChunk.md:concepts.audiences"
+      - "getDataEntityDetails.md:concepts.audiences"
+      - "getDataEntityDownstreamLineage.md:concepts.audiences"
+      - "postDataEntityList.md:concepts.audiences"
     notes: |
       "API Consumer" is not in main-concepts.md's vocabulary as a
       first-class audience. Surface as canonicalisation candidate;
@@ -2794,6 +3250,8 @@ audiences:
       - "odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:EmailSenderProperties"
       - "odd-platform java org.opendatadiscovery.oddplatform.datacollaboration.config config-properties-class:DataCollaborationProperties"
       - "odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties"
+      - "odd-platform java IngestionController controller-method:postDataEntityList"
+      - "odd-platform java DataEntityController controller-method:updateStatus"
     contributors:
       - "attachment config-prefix.audiences: platform operators (set via application.yml, env vars, Helm values); MinIO/S3 service operators on receiving end of REMOTE mode"
       - "GenAIProperties.audiences: Platform operators configuring the GenAI proxy via application.yml or GENAI_* env vars"
@@ -2814,6 +3272,8 @@ audiences:
       - "EmailSenderProperties.audiences: platform operator configuring SMTP relay credentials + transport; alert recipient receiving full alert payload rendered via email.ftlh"
       - "DataCollaborationProperties.audiences: odd-platform operators tuning the Data Collaboration background-job plumbing (advisory-lock IDs + retry budget)"
       - "HousekeepingTTLProperties.audiences: odd-platform operators tuning database growth; DBAs sizing the alert/search/data-entity tables; compliance / data-retention reviewers who need to know what's purged and when"
+      - "postDataEntityList.audiences: operators standing up an ingestion pipeline; security reviewers auditing the S2S surface (default-off auth, payload-driven datasource scoping, doc-drift around X-API-Key vs Authorization: Bearer)"
+      - "updateStatus.audiences: operators triaging data-entity lifecycle (DRAFT/STABLE/DEPRECATED/DELETED), DBAs auditing the 30-day data-entity-delete TTL window (currently BROKEN by statusUpdatedAt nullification bug), reviewers verifying soft-delete cascade semantics"
     evidence:
       - "attachment-config-prefix.md:concepts.audiences"
       - "GenAIProperties.md:concepts.audiences"
@@ -2834,6 +3294,8 @@ audiences:
       - "EmailSenderProperties.md:concepts.audiences"
       - "DataCollaborationProperties.md:concepts.audiences"
       - "HousekeepingTTLProperties.md:concepts.audiences"
+      - "postDataEntityList.md:concepts.audiences"
+      - "updateStatus.md:concepts.audiences"
 
   - name: "External LLM Service"
     canonical_in_docs: true
@@ -2885,19 +3347,22 @@ audiences:
   - name: "ODD Collector (runtime)"
     canonical_in_docs: true
     canonical_candidate: false
-    description: "The deployed collector container/process consuming the COLLECTOR_TOKEN_REGENERATE-rotated token to authenticate `POST /ingestion/entities`. The collector audience is downstream of the rotation operation — it's the system that must pick up the new token (typically a config-file change + restart) the moment the in-place UPDATE commits. main-concepts.md names Collector canonically."
+    description: "The deployed collector container/process consuming the COLLECTOR_TOKEN_REGENERATE-rotated token to authenticate `POST /ingestion/entities`. The collector audience is downstream of the rotation operation — it's the system that must pick up the new token (typically a config-file change + restart) the moment the in-place UPDATE commits. **Batch F**: postDataEntityList is the canonical S2S endpoint the collector authenticates against — the collector's only production code path into the platform's metadata catalog. main-concepts.md names Collector canonically."
     axes_present:
       - controllers
     nodes:
       - "odd-platform java CollectorController controller-method:regenerateCollectorToken"
       - "odd-platform java IngestionDataEntitiesFilter config-key-consumer:auth.ingestion.filter.enabled@L20"
+      - "odd-platform java IngestionController controller-method:postDataEntityList"
     contributors:
       - "regenerateCollectorToken: token rotation is felt at the collector runtime — in-flight ingestion fails the moment UPDATE commits; operator must reconfigure the collector to use the new value"
       - "IngestionDataEntitiesFilter@L20: when filter enabled, collectors authenticate via Authorization: Bearer <token>; sidecar names odd-collector + odd-collector-sdk as the HTTP clients ingesting data entities"
+      - "postDataEntityList (batch F): the actual ingestion entry point the collector POSTs to; batched DataEntityList payloads carry per-tick scan results; collector typically batches hundreds-to-thousands of items per HTTP call"
     evidence:
       - "regenerateCollectorToken.md:concepts.invariants.[3]"
       - "regenerateCollectorToken.md:bugs_limitations_corner_cases.[0] (no rotation grace period)"
       - "IngestionDataEntitiesFilter@L20.md:concepts.audiences"
+      - "postDataEntityList.md:concepts.audiences (odd-collector / odd-collector-sdk HTTP clients)"
 
   - name: "External Prometheus Instance"
     canonical_in_docs: false
@@ -3187,7 +3652,7 @@ invariants:
   - name: "Owner-link is the gate for owner-scoped views"
     canonical_in_docs: true
     canonical_candidate: false
-    description: "Endpoints scoped to the current user's owned/dependent entities (`/api/alerts/my`, `/api/alerts/dependents`, `/api/dataentities/my`, `/api/dataentities/my/upstream`, `/api/dataentities/my/downstream`, `/api/activity?type=MY_OBJECTS`, `POST /api/search { my_objects: true }`) require the signed-in user to be linked to an Owner record (Cornerstone of ODD's `User-owner association` per the live security/authorization doc). Without the link, the endpoints return empty pages. UI-side `My Objects` and `Dependents` tabs are hidden entirely (alerts route + AlertController + DataEntityController + getActivity + search sidecars). NOTE batch E: Owner directory entries are created via `POST /api/owners` (gated by OWNER_CREATE), but NO auth-mode flow auto-creates Owners on first login — operators must MANUALLY pre-create per-user Owner rows OR accept association requests (createOwner.md:dependencies_semantic.couples-to → OwnerAssociationRequestServiceImpl is the SEPARATE user-claim flow). The 'Owner-link' invariant therefore depends on a separate manual setup step that is undocumented as a prerequisite."
+    description: "Endpoints scoped to the current user's owned/dependent entities (`/api/alerts/my`, `/api/alerts/dependents`, `/api/dataentities/my`, `/api/dataentities/my/upstream`, `/api/dataentities/my/downstream`, `/api/activity?type=MY_OBJECTS`, `POST /api/search { my_objects: true }`) require the signed-in user to be linked to an Owner record (Cornerstone of ODD's `User-owner association` per the live security/authorization doc). Without the link, the endpoints return empty pages. UI-side `My Objects` and `Dependents` tabs are hidden entirely (alerts route + AlertController + DataEntityController + getActivity + search sidecars). NOTE batch E: Owner directory entries are created via `POST /api/owners` (gated by OWNER_CREATE), but NO auth-mode flow auto-creates Owners on first login — operators must MANUALLY pre-create per-user Owner rows OR accept association requests (createOwner.md:dependencies_semantic.couples-to → OwnerAssociationRequestServiceImpl is the SEPARATE user-claim flow). The 'Owner-link' invariant therefore depends on a separate manual setup step that is undocumented as a prerequisite. **Batch F reinforcement**: a SECOND write path into the Owner directory exists via `DataEntityController.createOwnership` — `OwnerService.getOrCreate(owner_name)` silently creates Owner rows when the name is novel, BYPASSING the `OWNER_CREATE` permission gate (see cross-cutting invariant 'Permission-bypass via Owner auto-create'). Operators following the documented happy path (manual pre-create via `POST /api/owners`) are unaware that `POST /api/dataentities/{id}/ownership` can mint Owner directory entries as a side-effect of the binding operation. The Owner-link dependency becomes more confused: an Owner directory can grow via TWO orthogonal write paths, neither of which is documented as a creation surface in the live `/authorization/owners` page."
     axes_present:
       - controllers
       - openapi_tags
@@ -3589,29 +4054,59 @@ invariants:
       (REFACTOR-NNN-shape — a small focused 2-file fix with high
       defence-in-depth value).
 
-  - name: "No-audit-log on RBAC mutations"
+  - name: "No-audit-log on RBAC mutations (audit-log presence asymmetry — REFINED in batch F)"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "**NEW INVARIANT, batch 2026-05-12E** — codebase-wide hygiene gap on the RBAC primary surface: no Role / Policy / Owner mutation emits an audit signal. 3-sidecar triangulated: (a) `RoleServiceImpl.create/.update/.delete` (lines 39-92) emit NO `@Slf4j` log calls, publish NO events, and INSERT into NO audit table; (b) `PolicyServiceImpl.create/.update/.delete` (lines 62-95) have the same absence — no `log.info`, no audit-table insert, no event publication; (c) `OwnerServiceImpl.create` is also missing `@ActivityLog` annotation (verified by grep: `@ActivityLog` appears in `AlertHaltConfigServiceImpl`, `AlertServiceImpl`, `DataEntityInternalStateServiceImpl`, `DataEntityServiceImpl`, `DataEntityGroupServiceImpl` ONLY — none of the three RBAC primary-surface services). The platform's activity feed (`/api/activity` — see Activity Feed concept from batch A) covers DataEntity + Owner activity but does NOT extend to Role / Policy / Permission / Owner-directory mutations. **Consequence**: a hijacked admin account or any S2S API-key holder (which gets ADMIN by default per S2sAuthenticationFilter — REFACTOR-108) can rewrite the authorization model, create new high-privilege Roles, attach them to existing Owners through other endpoints, or replace Policy bindings — and leave no trail in the platform's logs unless an external mechanism (database audit trigger, network IDS, Postgres pg_audit extension) is separately configured. Highest-leverage audit gap in the RBAC surface."
+    description: "**REFINED INVARIANT, batch 2026-05-12F** (originally surfaced in batch E as 'codebase-wide hygiene gap' — REFINEMENT: the gap is NOT codebase-wide; the platform has a 2-tier audit story). **Tier 2 (RBAC mutations) — UNAUDITED**: no Role / Policy / Owner mutation emits an audit signal. 3-sidecar primary source from batch E: (a) `RoleServiceImpl.create/.update/.delete` (lines 39-92) emit NO `@Slf4j` log calls, publish NO events, and INSERT into NO audit table; (b) `PolicyServiceImpl.create/.update/.delete` (lines 62-95) have the same absence; (c) `OwnerServiceImpl.create` is missing `@ActivityLog` annotation. The platform's activity feed (`/api/activity` per batch A getActivity) covers DataEntity-side activity but does NOT extend to Role / Policy / Permission / Owner-directory mutations. **Tier 1 (DataEntity mutations) — AUDITED (REFINED in batch F)**: batch F's primary-source updateStatus + createOwnership sidecars CONFIRM that DataEntity mutations DO emit audit signals: (i) `DataEntityInternalStateServiceImpl.changeStatusForDataEntities` (lines 73-98) PROGRAMMATICALLY constructs and emits `DATA_ENTITY_STATUS_UPDATED` activity events with `oldState`/`newState` JSON payloads (not via AOP `@ActivityLog` because the mutation is bulk and oldState must be captured per-pojo before the in-place mutation — explicit per implicit_adrs.[4]); (ii) `OwnershipServiceImpl.create` is annotated `@ActivityLog(event = OWNERSHIP_CREATED)` and `OwnershipCreatedActivityHandler` captures BEFORE/AFTER ownership state for the data-entity. **The 2-tier audit asymmetry**: DataEntity-scoped writes (status / ownership / description / business-name / tags / terms / metadata / alert-config / DataEntityGroup membership) are TIER-1 AUDITED — these are the data-content changes operators expect to see in the activity feed. RBAC-scoped writes (Policy / Role / Owner-directory) are TIER-2 UNAUDITED — these are the authorization-model changes that should be MORE audited, not less. The asymmetry is the INVERSE of what a security-conscious operator would expect. **Consequence**: a hijacked admin account or any S2S API-key holder (which gets ADMIN by default per S2sAuthenticationFilter — REFACTOR-108) can rewrite the authorization model, create new high-privilege Roles, attach them to existing Owners through other endpoints, or replace Policy bindings — and leave no trail in the platform's logs. Highest-leverage audit gap in the RBAC surface."
     axes_present:
       - controllers
     nodes:
       - "odd-platform java RoleController controller-method:createRole"
       - "odd-platform java PolicyController controller-method:createPolicy"
       - "odd-platform java OwnerController controller-method:createOwner"
+      - "odd-platform java DataEntityController controller-method:updateStatus"
+      - "odd-platform java DataEntityController controller-method:createOwnership"
     contributors:
-      - "createRole.md:security.known_security_gaps.[1]: no audit logging on role mutations — `RoleServiceImpl.create/.update/.delete` emit no Slf4j, publish no events, insert no audit table; cross-axis activity feed does NOT cover Role / Policy / Permission. HIGH severity"
-      - "createPolicy.md:security.known_security_gaps.[1] + bugs_limitations_corner_cases.[1]: no audit logging on policy mutations — `PolicyServiceImpl.create` has no `log.info/warn/audit` call. The `policy` table is single-state, no audit history table. Security incident review of 'who authored this MANAGEMENT/ALL policy?' has no in-application answer. HIGH severity"
-      - "createOwner.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[4]: no `@ActivityLog` on OwnerServiceImpl.create (grep verified — only 5 service files carry the annotation, none of them Owner). Owner directory changes invisible to audit even when they cascade into ownership-row changes that ARE recorded. MEDIUM severity"
+      - "createRole.md:security.known_security_gaps.[1]: TIER-2 UNAUDITED — `RoleServiceImpl.create/.update/.delete` emit no Slf4j, publish no events, insert no audit table; cross-axis activity feed does NOT cover Role / Policy / Permission. HIGH severity"
+      - "createPolicy.md:security.known_security_gaps.[1] + bugs_limitations_corner_cases.[1]: TIER-2 UNAUDITED — `PolicyServiceImpl.create` has no `log.info/warn/audit` call. The `policy` table is single-state, no audit history table. Security incident review of 'who authored this MANAGEMENT/ALL policy?' has no in-application answer. HIGH severity"
+      - "createOwner.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[4]: TIER-2 UNAUDITED — no `@ActivityLog` on OwnerServiceImpl.create (grep verified — only 5 service files carry the annotation, none of them Owner). Owner directory changes invisible to audit even when they cascade into ownership-row changes that ARE recorded. MEDIUM severity"
+      - "updateStatus.md:implicit_adrs.[4] (batch F): TIER-1 AUDITED (REFINEMENT) — `DataEntityInternalStateServiceImpl.changeStatusForDataEntities` (lines 155-182) emits DATA_ENTITY_STATUS_UPDATED events PROGRAMMATICALLY (oldState captured pre-mutation, newState resolved post-mutation, both JSON-serialised). NOT @ActivityLog AOP because the mutation is bulk; the asymmetric pattern is explicit. CONFIRMS DataEntity mutations are audited."
+      - "createOwnership.md:implicit_adrs.[1] (batch F): TIER-1 AUDITED (REFINEMENT) — `OwnershipServiceImpl.create` is annotated `@ActivityLog(event = OWNERSHIP_CREATED)` and `OwnershipCreatedActivityHandler` captures BEFORE/AFTER ownership state for the data-entity. EXPLICIT CONTRAST with OwnerController.createOwner from batch E (no @ActivityLog) — the audit decision is per-write, and ownership-binding IS audited while Owner-directory CRUD is NOT."
     evidence:
-      - "createRole.md:security.known_security_gaps.[1] (HIGH)"
-      - "createPolicy.md:security.known_security_gaps.[1] (HIGH)"
-      - "createOwner.md:security.known_security_gaps.[0] (MEDIUM)"
+      - "createRole.md:security.known_security_gaps.[1] (HIGH — TIER-2 unaudited)"
+      - "createPolicy.md:security.known_security_gaps.[1] (HIGH — TIER-2 unaudited)"
+      - "createOwner.md:security.known_security_gaps.[0] (MEDIUM — TIER-2 unaudited)"
+      - "updateStatus.md:implicit_adrs.[4] (TIER-1 audited — REFINEMENT confirming the asymmetry)"
+      - "createOwnership.md:implicit_adrs.[1] (TIER-1 audited — REFINEMENT confirming the asymmetry; explicit contrast vs createOwner)"
     notes: |
-      NEW cross-cutting hygiene invariant captured in batch 2026-05-12E.
-      3-sidecar primary-source triangulated. Highest-leverage gap in the
-      RBAC surface — every other security weakness assumes attack visibility
-      via logs; this one says logs don't exist.
+      REFINED cross-cutting hygiene invariant in batch 2026-05-12F. Originally
+      captured in batch E as a 3-sidecar 'codebase-wide' hygiene gap; batch F
+      primary-source corroboration on DataEntity-side updateStatus + createOwnership
+      shows the gap is NOT codebase-wide — it is specifically the RBAC primary
+      surface. The platform has a 2-tier audit story:
+
+        Tier 1 (DataEntity-scoped writes — AUDITED):
+          - status updates (programmatic logStatusChangeEvents)
+          - ownership-bindings (@ActivityLog OWNERSHIP_CREATED)
+          - description / business-name updates (per Activity Feed concept)
+          - tag / term additions and removals (per Activity Feed concept)
+          - custom-metadata updates (per Activity Feed concept)
+          - alert-config updates (per Activity Feed concept)
+          - DataEntityGroup membership changes (per Activity Feed concept)
+
+        Tier 2 (RBAC-scoped writes — UNAUDITED):
+          - Policy create / update / delete
+          - Role create / update / delete
+          - Owner directory create (Owner-controller side, not ownership binding)
+
+      The asymmetry is the INVERSE of what a security-conscious operator
+      would expect: data-content changes (which are themselves audit-trail-shaped
+      via the activity feed) are TIER-1 AUDITED; authorization-model changes
+      (which control WHO can do what) are TIER-2 UNAUDITED.
+
+      Highest-leverage gap in the RBAC surface — every other security
+      weakness assumes attack visibility via logs; this one says logs
+      don't exist for the most-load-bearing mutations.
 
       Recommended cleanup options (in increasing scope):
 
@@ -3620,10 +4115,12 @@ invariants:
           OwnerServiceImpl.create. Minimum-cost, log-only audit trail.
 
         - Add `@ActivityLog` annotations matching the existing pattern in
-          AlertServiceImpl + DataEntityServiceImpl. Surfaces in the
-          activity feed. Requires extending the ActivityEventType enum to
-          cover RBAC mutations + extending the ActivityState renderer to
-          handle Role/Policy/Owner-mutation payloads.
+          AlertServiceImpl + DataEntityServiceImpl + OwnershipServiceImpl
+          (the batch F evidence shows the pattern is alive and proven on
+          the DataEntity side). Surfaces in the activity feed. Requires
+          extending the ActivityEventType enum to cover RBAC mutations +
+          extending the ActivityState renderer to handle
+          Role/Policy/Owner-mutation payloads.
 
         - Introduce a dedicated `rbac_audit` append-only table written via
           `BaseSoftDeleteCRUDRepository`'s mutation lifecycle hooks. Full
@@ -3637,43 +4134,253 @@ invariants:
   - name: "Read-collaborative cross-owner enumeration"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "**STRENGTHENED INVARIANT, batch 2026-05-12E — now 3-sidecar** — Repository-wide read-side posture (ADR-CANDIDATE-003): GET / read-shaped endpoints fall through to `pathMatchers('/**').authenticated()` and return data across owners with no owner predicate. Three corroborating surfaces all share the same admin-path-without-admin-gate failure mode: (a) `getAllAlerts` (batch A — `GET /api/alerts` returns alerts across all data entities regardless of caller's Owner; getAllAlerts.md:security.known_security_gaps.[0] HIGH); (b) `getActivity` (batch B — `GET /api/activity` returns global audit trail to any authenticated user, including old/new diffs of descriptions / business names / ownership / custom metadata; getActivity.md:security.known_security_gaps.[0] HIGH); (c) `search` (batch E — `POST /api/search` + `GET /api/search/{search_id}/results` paginates the entire catalog: every non-EXCLUDE_FROM_SEARCH Data Entity row including name / ODDRN / descriptions / ownership / tags / custom metadata / term linkages; search.md:security.known_security_gaps.[0] HIGH). Search is the WIDEST blast radius — the catalog enumeration vector. Each surface independently authored, none gated by a Permission, all fall through to authenticated() + no owner predicate. **Live docs do not warn about this posture on any of the three surfaces**: `/features/alerts`, `/features/active-platform-features/activity-feed`, and `/features/data-discovery/search` are all silent on WHO can see what. The pattern is the platform's deliberate stance (ADR-CANDIDATE-003 — read-collaborative tradeoff: ODD's catalog is intentionally cross-owner-readable to facilitate cross-team collaboration), but the docs do not name this stance, do not warn operators evaluating the platform's security model, and do not enumerate which endpoints honour vs bypass owner-scoping. Aggregated cross-cutting case-law for any future doc-gap-finder or refactoring-scopes pass."
+    description: "**STRENGTHENED INVARIANT, batch 2026-05-12F — now 5-sidecar; ADR-CANDIDATE-003 RESOLVED as DELIBERATE** — Repository-wide read-side posture: GET / read-shaped endpoints fall through to `pathMatchers('/**').authenticated()` and return data across owners with no owner predicate. **FIVE corroborating surfaces** all share the same admin-path-without-admin-gate failure mode: (a) `getAllAlerts` (batch A — `GET /api/alerts` returns alerts across all data entities regardless of caller's Owner; getAllAlerts.md:security.known_security_gaps.[0] HIGH); (b) `getActivity` (batch B — `GET /api/activity` returns global audit trail to any authenticated user, including old/new diffs of descriptions / business names / ownership / custom metadata; getActivity.md:security.known_security_gaps.[0] HIGH); (c) `search` (batch E — `POST /api/search` + `GET /api/search/{search_id}/results` paginates the entire catalog: every non-EXCLUDE_FROM_SEARCH Data Entity row including name / ODDRN / descriptions / ownership / tags / custom metadata / term linkages; search.md:security.known_security_gaps.[0] HIGH); (d) `getDataEntityDownstreamLineage` (batch F — `GET /api/dataentities/{id}/lineage/downstream` returns the FULL reachable lineage subgraph including entities owned by other teams; lineage edges leak causal connections; getDataEntityDownstreamLineage.md:security.known_security_gaps.[0] HIGH); (e) **`getDataEntityDetails` (batch F — THE CENTERPIECE READ)** — `GET /api/dataentities/{id}` returns the FULL 34-field DataEntityDetails payload (ownership[], descriptions, tags, terms, metadataFieldValues[], linkedUrlList[], etc.) for ANY entity to ANY authenticated user; the platform's single hottest endpoint and the WIDEST single blast radius (getDataEntityDetails.md:security.known_security_gaps.[0] HIGH). Each surface independently authored, none gated by a Permission, all fall through to authenticated() + no owner predicate. **Live docs do not warn about this posture on any of the five surfaces**: `/features/alerts`, `/features/active-platform-features/activity-feed`, `/features/data-discovery/search`, `/features/data-lineage`, and `/features/data-discovery` are all silent on WHO can see what. The pattern is the platform's deliberate stance (ADR-CANDIDATE-003 — read-collaborative tradeoff: ODD's catalog is intentionally cross-owner-readable to facilitate cross-team collaboration). **Batch F RESOLVES the ADR-CANDIDATE-003 borderline_flag** — the getDataEntityDetails primary-source confirms the posture is intentional on the centerpiece read (consistent with 27+ other GETs on the same controller); the doc-gap is doc-side, not code-side. Each of the 5 sub-shapes has wider blast radius than the prior: enumerate alerts (admin context only) → enumerate audit-log diffs → enumerate the entire catalog index → enumerate the entire reachable lineage subgraph from any pivot → enumerate every entity's FULL detail payload."
     axes_present:
       - controllers
     nodes:
       - "odd-platform java AlertController controller-method:getAllAlerts"
       - "odd-platform java ActivityController controller-method:getActivity"
       - "odd-platform java SearchController controller-method:search"
+      - "odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage"
+      - "odd-platform java DataEntityController controller-method:getDataEntityDetails"
     contributors:
       - "getAllAlerts.md:security.known_security_gaps.[0] (cross-owner alerts list HIGH) + concepts.invariants.[admin-path-without-admin-gate]"
       - "getActivity.md:security.known_security_gaps.[0] (global activity cross-owner HIGH)"
       - "search.md:security.known_security_gaps.[0] (catalog-wide cross-owner enumeration HIGH) + bugs_limitations_corner_cases.[0]"
+      - "getDataEntityDownstreamLineage.md:security.known_security_gaps.[0] (graph-shaped cross-owner enumeration HIGH; lineage edges leak causal pipeline structure even when individual entities are not separately visible)"
+      - "getDataEntityDetails.md:security.known_security_gaps.[0] (CENTERPIECE READ cross-owner full-payload exposure HIGH; widest single blast radius — the platform's hottest endpoint)"
     evidence:
       - "getAllAlerts.md:security.known_security_gaps.[0]"
       - "getActivity.md:security.known_security_gaps.[0]"
       - "search.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[0]"
+      - "getDataEntityDownstreamLineage.md:security.known_security_gaps.[0]"
+      - "getDataEntityDetails.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[0] + implicit_adrs.[0] (the centerpiece embodiment of ADR-CANDIDATE-003 — the read-collaborative posture is intentional)"
     notes: |
-      STRENGTHENED in batch 2026-05-12E from 2-sidecar to 3-sidecar
-      triangulated. Search is the widest blast radius — the catalog
-      enumeration vector. The combined finding spans three first-class
-      platform surfaces, all sharing the same posture, none documented
-      in their respective live pages.
+      STRENGTHENED in batch 2026-05-12F from 3-sidecar to 5-sidecar
+      triangulated. Lineage adds the GRAPH-shaped cross-owner enumeration
+      (causal-connection leak via reachable downstream graphs); getDataEntityDetails
+      adds the CENTERPIECE READ — the single hottest endpoint with the
+      widest blast radius (full 34-field detail payload).
 
       ADR-CANDIDATE-003 (read-collaborative borderline) was originally
-      surfaced via getAllAlerts + getActivity in batch B. Batch E
-      promotes this to a STABLE 3-sidecar pattern that no future audit
-      should treat as accidental: this IS the platform's intended posture,
-      and the doc gap is that the posture is undocumented.
+      surfaced via getAllAlerts + getActivity in batch B. Batch E promoted
+      this to a 3-sidecar pattern. **Batch F RESOLVES the borderline_flag**
+      via the getDataEntityDetails primary-source: the posture is
+      INTENTIONAL on the centerpiece read, consistent with 27+ other GETs
+      on the same controller. The platform DELIBERATELY ships
+      read-collaborative; the doc-gap is doc-side, not code-side.
 
-      Three DOC-NNN candidates flow from this invariant:
+      Five DOC-NNN candidates flow from this invariant:
         (a) `/features/alerts` page: add a 'Who can see this' section
             naming the read-collaborative posture explicitly.
         (b) `/features/active-platform-features/activity-feed` page:
             same treatment; emphasise that the activity feed exposes
             who-changed-what across owners.
         (c) `/features/data-discovery/search` page: same treatment;
-            the catalog search surface is the WIDEST cross-owner
-            enumeration vector and the doc must explicitly name it.
+            the catalog search surface is the WIDEST single-page
+            cross-owner enumeration vector.
+        (d) `/features/data-lineage` page: same treatment; lineage
+            edges leak causal connections even when individual entity
+            visibility would otherwise be limited.
+        (e) `/features/data-discovery` (or `/features/data-discovery/catalog-overview`):
+            CENTERPIECE READ posture — `GET /api/dataentities/{id}`
+            returns the full 34-field payload to any authenticated user;
+            this is the single most consequential doc-gap and the
+            highest-traffic endpoint.
+
+      A higher-leverage one-pass cleanup would be to extend the
+      `/configuration-and-deployment/enable-security/authorization` page
+      with a 'Read-side posture' section naming the read-collaborative
+      stance, listing all five surfaces, and explicitly enumerating
+      which endpoints DO and DO NOT honour owner-scoping. That single
+      page change closes the systemic gap on all five surfaces.
+
+  - name: "Permission-bypass via Owner auto-create (side-door write path)"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "**NEW INVARIANT, batch 2026-05-12F** — codebase-wide structural permission-bypass pattern. The documented `OWNER_CREATE` permission is supposed to gate Owner directory growth via `POST /api/owners` (per batch E createOwner). But `DataEntityController.createOwnership` (`POST /api/dataentities/{id}/ownership`) accepts a free-text `owner_name` and calls `OwnerService.getOrCreate(name)` which silently INSERT-s a fresh `OwnerPojo` when the name is novel (`OwnerServiceImpl.java:39-42`). Any caller with `DATA_ENTITY_OWNERSHIP_CREATE` on any data entity can mint Owner directory entries WITHOUT holding `OWNER_CREATE`. SAME pattern on Title — `TitleService.getOrCreate(title_name)` (`TitleServiceImpl.java:19-22`) auto-creates Title rows; there is NO documented Title-create permission gate at all (Title is fully free text — no enum, no allowlist, no length cap on the `title_name` field, `components.yaml:450-451` declares only `type: string`). **The codebase has a 2-tier directory-growth story**: explicit-path-grow via `POST /api/owners` (gated by `OWNER_CREATE` per SECURITY_RULES) AND side-door-grow via `POST /api/dataentities/{id}/ownership` (gated only by `DATA_ENTITY_OWNERSHIP_CREATE`). The asymmetry is silent: no doc warns operators; no @Slf4j log call captures the side-effect; the `@ActivityLog(OWNERSHIP_CREATED)` audit event fires for the ownership-binding but NOT for the Owner/Title-directory growth. **Codebase-wide analog risk**: any future endpoint with auto-create-on-missing semantics (`getOrCreate`, `findOrInsert`, `ensureExists`) inherits this side-door pattern unless it explicitly checks the create-side permission. Recommended remediation: extend `OwnerService.getOrCreate(...)` to take a `caller-must-hold(OWNER_CREATE)` constraint OR factor the auto-create into an explicit `createIfAbsent` method that checks the permission AND emits an audit signal. Same for `TitleService.getOrCreate`."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java DataEntityController controller-method:createOwnership"
+      - "odd-platform java OwnerController controller-method:createOwner"
+    contributors:
+      - "createOwnership.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[0,1] (Owner-auto-create via getOrCreate bypasses OWNER_CREATE; Title-auto-create has no permission gate at all)"
+      - "createOwner.md (batch E reference): OWNER_CREATE is the documented permission gating Owner directory growth — but is incomplete because createOwnership side-doors past it"
+    evidence:
+      - "createOwnership.md:security.known_security_gaps.[0] (MEDIUM)"
+      - "createOwnership.md:bugs_limitations_corner_cases.[0] (MEDIUM)"
+      - "createOwnership.md:bugs_limitations_corner_cases.[1] (MEDIUM — Title-auto-create with no permission)"
+      - "createOwner.md:implicit_adrs.[0] (the OWNER_CREATE gate that the side-door bypasses)"
+    notes: |
+      NEW cross-cutting invariant captured in batch 2026-05-12F. The
+      pattern is structurally similar to the "Authorization is path-pattern
+      wired in SecurityConstants.SECURITY_RULES" failure mode (gates assume
+      paths are the only entry points), but the specific shape is "the
+      service-layer auto-create-on-missing pattern bypasses the
+      controller-layer permission check that was supposed to gate that
+      side effect."
+
+      Codebase-wide audit candidate: grep for `getOrCreate(`, `findOrInsert(`,
+      `ensureExists(` across all `*ServiceImpl.java` files; for each match,
+      determine which controllers can call this path and whether they hold
+      the relevant create-side permission. Likely findings beyond the
+      current 2-sidecar evidence: Tag (TagService.getOrCreate from tag-add
+      endpoints), Term (TermService.getOrCreate from term-add endpoints),
+      Namespace.
+
+      Surface as canonicalisation candidate AND a refactoring-scope item.
+      Three DOC-NNN candidates flow from this invariant:
+        (a) `/authorization/permissions` page: name the side-door
+            (POST /api/dataentities/{id}/ownership as a 2nd write path
+            into Owner directory) explicitly.
+        (b) `/authorization/owners` page: clarify that Owner directory
+            entries can be created via TWO paths and which permissions
+            gate each.
+        (c) Add a new `/authorization/title-and-tag-vocabularies` page (or
+            a section on the existing permissions page) explaining that
+            Title and Tag vocabularies grow via free-text mutation side-effects
+            with no allowlist.
+
+  - name: "TTL retention broken by statusUpdatedAt nullification (cross-batch finding D + F)"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "**NEW CROSS-BATCH INVARIANT, batch 2026-05-12F** — load-bearing cross-batch defect surfaced only when batch D's HousekeepingTTLProperties + batch F's updateStatus sidecars are combined. The platform's 30-day data-entity-delete retention TTL relies on `DATA_ENTITY.STATUS_UPDATED_AT` (queried by `DataEntityHousekeepingJob.java:73-82` as `STATUS_UPDATED_AT <= now - housekeeping.ttl.data_entity_delete_days`). But `DataEntityMapperImpl.applyStatus` (lines 242-253) sets `pojo.setStatus(statusDto.getId())` on line 247 BEFORE the `if (statusDto.getId() != pojo.getStatus())` check on line 249 — at the point of the check, `pojo.getStatus()` already equals `statusDto.getId()`, so the condition is always FALSE and `statusUpdatedAt` is NEVER set on ANY status transition. The housekeeping query then evaluates `STATUS_UPDATED_AT <= cutoff` against a NULL column — NULL `<= ` cutoff evaluates to NULL (≈ false in SQL three-valued logic) — and the soft-deleted entities are NEVER hard-deleted. Two-fold defect: (a) the documented 30-day retention window is BROKEN — soft-deleted entities accumulate indefinitely instead of being purged after 30 days; (b) the soft-delete cascade (lineage / group-relations / parent-group-relations / statistics / filled-flag) is INVISIBLE to the housekeeping TTL — the cascade fires on the status-flip but the cleanup-after-TTL never fires. Two-sidecar pattern that emerges ONLY when both sides exist: batch D's HousekeepingTTLProperties surfaces 'retention claim 30 days'; batch F's updateStatus surfaces 'ordering bug nulls the column the retention claim depends on'. Neither sidecar alone reveals the defect — the cross-batch view is load-bearing. Fix is trivial (capture the prior status before mutating, or use a boolean local before `setStatus`); the bug is present at the verified commit ede5d277. HIGH severity: combines doc-vs-code drift AND silent-data-bloat AND the LSN-001-shape pattern of 'feature ships disabled-but-broken'."
+    axes_present:
+      - controllers
+      - config_prefixes
+    nodes:
+      - "odd-platform java DataEntityController controller-method:updateStatus"
+      - "odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties"
+    contributors:
+      - "updateStatus.md:bugs_limitations_corner_cases.[0] (HIGH — DataEntityMapperImpl.applyStatus ordering bug at lines 242-253; statusUpdatedAt NEVER bumped on any transition)"
+      - "HousekeepingTTLProperties.md (batch D): `housekeeping.ttl.data_entity_delete_days` (default 30) is consumed by `DataEntityHousekeepingJob` which queries `STATUS_UPDATED_AT <= now - N days` — the predicate depends on the column being correctly updated on every status transition"
+    evidence:
+      - "updateStatus.md:bugs_limitations_corner_cases.[0] (HIGH)"
+      - "updateStatus.md:dependencies_semantic.requires-config (housekeeping.ttl.data_entity_delete_days)"
+      - "HousekeepingTTLProperties.md:concepts.invariants (TTL surface covers DATA_ENTITY table; depends on STATUS_UPDATED_AT being maintained)"
+    notes: |
+      CROSS-BATCH cross-cutting invariant captured in batch 2026-05-12F.
+      The pattern is: a load-bearing defect that emerges only when two
+      independently-authored sidecars are combined. Neither sidecar
+      alone reveals it:
+        - HousekeepingTTLProperties surfaces 'retention is 30 days'.
+        - updateStatus surfaces 'statusUpdatedAt never bumped'.
+        - Combined: the 30-day retention is broken because the field the
+          query depends on is never updated.
+
+      This is the second cross-batch invariant in the catalog (after
+      "Retention claim vs code drift" which combined ActivityTablePartitionManager
+      batch B + HousekeepingTTLProperties batch D). The pattern recurs:
+      operational features that span configuration + mutation + job sides
+      can have defects that only the cross-axis view surfaces.
+
+      Recommended cleanup (3-line fix in DataEntityMapperImpl.applyStatus):
+
+        public void applyStatus(DataEntityPojo pojo, DataEntityStatusDto status) {
+            final boolean changed = status.getId() != pojo.getStatus();
+            pojo.setStatus(status.getId());
+            if (changed) {
+                pojo.setStatusUpdatedAt(LocalDateTime.now());
+            }
+        }
+
+      Plus a regression test asserting `statusUpdatedAt` is bumped on real
+      transitions and unchanged on no-op writes.
+
+      Two DOC-NNN candidates flow from this invariant:
+        (a) `/features/data-discovery/statuses` page: warn that the 30-day
+            retention window is currently broken (or document the
+            workaround until fix lands).
+        (b) `/configuration-and-deployment/odd-platform#housekeeping`
+            page: same caveat on the `housekeeping.ttl.data_entity_delete_days`
+            entry.
+
+      Surface as canonicalisation candidate AND a refactoring-scope item
+      (small focused 3-line fix with HIGH defence-in-depth value;
+      coordinates with the LSN-001 pattern of insecure/broken defaults).
+
+  - name: "OpenAPI 200-vs-201 status-code drift"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "**NEW INVARIANT, batch 2026-05-12F — now 2-sidecar** — repository-wide cross-cutting hygiene defect: ODD's OpenAPI spec declares `201 Created` for creation endpoints, but the controller implementation returns `200 OK` instead. The drift is silent (no compile-time guard) and the test suite locks it in (tests assert `isOk()` 200, so a fix that aligns to spec would break tests). Two-sidecar primary-source corroborated: (a) OwnerController.createOwner (batch E — same drift on `POST /api/owners`, `PUT /api/owners/{id}`); (b) IngestionController.postDataEntityList (batch F — `POST /ingestion/entities` declared 201 in `opendatadiscovery-specification/specification/odd_api.yaml:23-25`, implementation returns 200 at `IngestionController.java:44`, `BaseIngestionTest.java:79` locks in 200). NOTE: sibling endpoints on IngestionController DO match the spec (`postDataSetStatsList` line 82 + `ingestMetrics` line 89 both return 201) — `postDataEntityList` is the only divergence on its controller. Also: `createRole`, `createPolicy` exhibit the same shape per batch E. Operators consuming the published OpenAPI spec to generate SDKs (e.g. odd-collector-sdk) receive 200 where they expect 201 — HTTP semantics make both acceptable, but the spec/code mismatch is unresolved and the canonical artefact (spec vs implementation) is unclear. **Codebase-wide audit candidate**: grep all controllers for `ResponseEntity.ok()` on POST methods; cross-reference with OpenAPI spec's declared status codes. Likely findings: every `*Controller.create*` method on a controller that implements an OpenAPI-generated `*Api` interface."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java OwnerController controller-method:createOwner"
+      - "odd-platform java IngestionController controller-method:postDataEntityList"
+      - "odd-platform java RoleController controller-method:createRole"
+      - "odd-platform java PolicyController controller-method:createPolicy"
+    contributors:
+      - "createOwner.md:docs_link_semantic.doc_drift_findings.[0] (batch E): spec declares 201, controller returns 200; same drift on createRole + createPolicy"
+      - "postDataEntityList.md:docs_link_semantic.doc_drift_findings.[2] (batch F): spec declares 201 (`odd_api.yaml:23-25`), controller returns 200 (`IngestionController.java:44`), test locks in 200 (`BaseIngestionTest.java:79`). Sibling endpoints (postDataSetStatsList + ingestMetrics) on the same controller DO return 201 — `postDataEntityList` is the only divergence."
+    evidence:
+      - "createOwner.md:docs_link_semantic.doc_drift_findings.[0] (MEDIUM)"
+      - "postDataEntityList.md:docs_link_semantic.doc_drift_findings.[2] (MEDIUM)"
+      - "postDataEntityList.md:implicit_adrs.[3] (the inconsistency is intentional per the upsert-vs-insert distinction; the unresolved question is which side of the spec/code split is canonical)"
+    notes: |
+      NEW cross-cutting hygiene invariant captured in batch 2026-05-12F.
+      2-sidecar primary-source triangulated (batch E + F).
+
+      The drift has shipped — test suites lock in the implementation,
+      not the spec. A fix to align EITHER side must coordinate:
+        - Fix the spec (declare 200 everywhere): silently changes the
+          contract for downstream SDK consumers; aligns to test reality.
+        - Fix the implementation (return 201 to match spec): breaks every
+          existing test that asserts isOk(); surfaces the drift to test
+          maintainers in a single CI run.
+
+      The maintainer's call. The catalog records the pattern so future
+      audits + DOC-NNN passes have a discoverable anchor.
+
+      Surface as canonicalisation candidate AND a refactoring-scope item
+      (small focused per-endpoint alignment; ~6-10 files touched depending
+      on audit scope).
+
+  - name: "Doc-vs-code spelling/format mismatch (operator copy-paste-from-docs silently fails)"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "**NEW INVARIANT, batch 2026-05-12F — now 2-sidecar** — repository-wide cross-cutting doc-drift pattern: live docs show a verbatim YAML key or HTTP header that does NOT match what the code actually binds/expects. Operator copy-paste-from-docs verbatim succeeds against the docs but silently fails against the code. Two-sidecar primary-source corroborated: (a) OAuth2 `username-attribute` vs `userNameAttribute` (batch D — live `/configuration-and-deployment/enable-security/authentication/oauth2-oidc` documents `username-attribute` in the Common-to-All-Providers section; POJO field at `ODDOAuth2Properties.java:44` is `private String userNameAttribute;`. Spring relaxed binding converts `username-attribute` → `usernameAttribute` (single word, NOT split), `user-name-attribute` → `userNameAttribute`. To bind to the POJO field operators MUST write `user-name-attribute` in YAML — the docs verbatim is `username-attribute` which silently binds to nothing. ODDOAuth2Properties.md:docs_link_semantic.doc_drift_findings.[3]); (b) S2S `X-API-Key` vs `Authorization: Bearer` (batch F — live `/configuration-and-deployment/enable-security/authentication/s2s` page shows a `curl -X POST https://{platform_host}/ingestion/entities -H \"X-API-Key: {long_random_token}\"` example. The example uses the `X-API-Key` header which is consumed by the GLOBAL `S2sAuthenticationFilter` (`auth.s2s.enabled`, single shared cluster-wide token grants ADMIN globally). The PATH-SCOPED `IngestionDataEntitiesFilter` (`auth.ingestion.filter.enabled`, per-datasource bearer tokens stored in the TOKEN table) requires `Authorization: Bearer <token>` instead. Operators reading the docs and using `X-API-Key` succeed only if they enabled `auth.s2s.enabled=true`; under the OTHER property `auth.ingestion.filter.enabled=true` the same header fails with 401. postDataEntityList.md:docs_link_semantic.doc_drift_findings.[1]). Both failure modes are 'docs are correct, but operator following them lands in a different code path than the docs intend.' **Codebase-wide audit candidate**: WebFetch every live config-and-deployment page; cross-reference verbatim YAML keys and curl examples with the consumer-code that parses them."
+    axes_present:
+      - controllers
+      - config_prefixes
+    nodes:
+      - "odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDOAuth2Properties"
+      - "odd-platform java IngestionController controller-method:postDataEntityList"
+    contributors:
+      - "ODDOAuth2Properties.md:docs_link_semantic.doc_drift_findings.[3] (batch D — username-attribute kebab single-word vs userNameAttribute camelCase split — operator YAML copy-paste silently fails to bind)"
+      - "postDataEntityList.md:docs_link_semantic.doc_drift_findings.[1] (batch F — S2S doc curl example uses X-API-Key but IngestionDataEntitiesFilter requires Authorization: Bearer)"
+    evidence:
+      - "ODDOAuth2Properties.md:docs_link_semantic.doc_drift_findings.[3] (HIGH operator-impact)"
+      - "postDataEntityList.md:docs_link_semantic.doc_drift_findings.[1] (MEDIUM operator-impact)"
+    notes: |
+      NEW cross-cutting doc-drift invariant captured in batch 2026-05-12F.
+      2-sidecar primary-source triangulated.
+
+      Both failure modes share the shape: the docs are correct WITHIN
+      their own scope but the operator-facing landing page does NOT
+      explain which scope they apply to (or worse: implies they apply
+      to a different scope). The operator's path of least resistance
+      (copy-paste verbatim) lands in a different code path.
+
+      Codebase-wide audit candidate:
+        - WebFetch every live `/configuration-and-deployment/*` page.
+        - Extract every YAML key and curl example.
+        - Cross-reference YAML keys against `@Value(...)` + `@ConfigurationProperties` consumer code via Spring relaxed-binding semantics.
+        - Cross-reference curl headers against `Filter` / `WebFilter` / controller-annotation consumers.
+
+      Two DOC-NNN candidates flow from this invariant:
+        (a) `/configuration-and-deployment/enable-security/authentication/oauth2-oidc`
+            page: correct `username-attribute` → `user-name-attribute`
+            in the Common-to-All-Providers section.
+        (b) `/configuration-and-deployment/enable-security/authentication/s2s`
+            page: distinguish between `X-API-Key` (global S2S) and
+            `Authorization: Bearer` (path-scoped IngestionDataEntitiesFilter)
+            in the curl example; the conflated recommendation
+            'combining S2S with auth.ingestion.filter.enabled: true'
+            currently obscures which header to use for which filter.
+
+      Surface as canonicalisation candidate (DOC-NNN-shape).
 
 operations:
 
@@ -3966,6 +4673,159 @@ operations:
       `/api/referencedata/search` replicate the same session-UUID
       pattern.
 
+  - name: "Read Data Entity Details (centerpiece read)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "`GET /api/dataentities/{data_entity_id}` — the platform's single hottest read endpoint. NO `@PreAuthorize`, NO SECURITY_RULES entry, falls through to `pathMatchers('/**').authenticated()` (and `permitAll()` under DISABLED). Pure delegation to `DataEntityService.getDetails(long)`: 1 CTE select (multi-JOIN, `baseDimensionsSelect`) + 5 parallel reactive lookups (enrich-class: dependencies + last-task-runs + DEG-children + DEG-children-count + consumers-count) + 1 parent-DEG lookup + 4 parallel reactive lookups (enrich-details: metadata + dataset-versions + terms + tags) + 1 UPDATE `view_count` → ~10 round-trips per call. `@ReactiveTransactional` wraps the chain INCLUDING the view-count UPDATE — every read is also a write at the DB layer. Soft-deleted entities ARE returned (`.includeDeleted(true)` is deliberate; UI needs this to render the `isStale` flag). Returns the FULL 34-field `DataEntityDetails` payload — ownership[], descriptions, tags, terms, metadataFieldValues[], dataSource, linkedUrlList[], sourceList[]/targetList[]/outputList[]/inputList[], viewCount, isStale, manuallyCreated, suiteUrl/suiteName/expectation/severity. Centerpiece embodiment of the read-collaborative posture (ADR-CANDIDATE-003 RESOLVED as INTENTIONAL on this endpoint)."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java DataEntityController controller-method:getDataEntityDetails"
+    contributors:
+      - "getDataEntityDetails.md:concepts.operations: delegate getDetails(Long), CTE select, error-on-missing, enrich-entity-class (5-zip), enrich parent-DEGs, enrich-details (4-zip), side-effect view_count UPDATE, map DTO, lift to 200 OK"
+      - "getDataEntityDetails.md:implicit_adrs.[0] (read-collaborative GET intentionally outside SECURITY_RULES) + implicit_adrs.[1] (soft-deleted entities returned by design) + implicit_adrs.[2] (read-as-write view_count increment) + implicit_adrs.[3] (multi-stage zip-merge enrichment)"
+    evidence:
+      - "getDataEntityDetails.md:concepts.operations + concepts.invariants.[0-3]"
+      - "getDataEntityDetails.md:implicit_adrs.[0-3]"
+    notes: |
+      Operation vocabulary captured for future DOC-NNN follow-ups on the
+      centerpiece read. Two doc-gaps surface from this operation:
+        (a) `/features/data-discovery/catalog-overview` lists 5 of the 34
+            DataEntityDetails fields (description, owners, tags, terms,
+            custom metadata). Operators must read the OpenAPI spec to
+            know what the endpoint returns.
+        (b) The view-count side-effect is UNDOCUMENTED. Live docs do not
+            state that a GET request mutates state at the DB layer.
+            Operators auditing for read-only access paths, building
+            read-replicas, or applying transactional-isolation tuning
+            have no published signal.
+
+  - name: "Bind Owner to Data Entity (with optional DEG propagation)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "`POST /api/dataentities/{data_entity_id}/ownership` — gated by `DATA_ENTITY_OWNERSHIP_CREATE` per-data-entity Permission via SECURITY_RULES (SecurityConstants.java:215-217). `OwnershipServiceImpl.create` runs under `@ReactiveTransactional` + `@ActivityLog(event = OWNERSHIP_CREATED)`: `Mono.zip(ownerService.getOrCreate(owner_name), titleService.getOrCreate(title_name))` → ownership-row INSERT → optional propagation to children if data-entity is a DEG → search-index refresh → mark `data_entity_filled.OWNERS` → mapDto. **Side-effecting auto-create**: novel `owner_name` silently creates an Owner directory row; novel `title_name` silently creates a Title directory row. Both side-doors past their respective create-side permissions. **Activity-event emission CONFIRMED** for the ownership-binding (contrast OwnerController.createOwner which has NONE — the audit decision is per-write). DEG propagation (`propagate=true` on a Data Entity Group target) cascades the ownership row to every child via `createOrUpdate` with `onConflictOnConstraint(...).doUpdate().set(TITLE_ID, excluded)` — children with existing ownership rows for this Owner are RE-TITLED, NOT skipped."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java DataEntityController controller-method:createOwnership"
+    contributors:
+      - "createOwnership.md:concepts.operations: bind-owner-to-data-entity — `Mono.zip(ownerService.getOrCreate, titleService.getOrCreate) → ownershipRepository.create → optional propagation to children if data-entity is a DEG → search-index refresh → markEntityFilled(OWNERS) → mapDto`"
+      - "createOwnership.md:implicit_adrs.[0] (per-data-entity SecurityRule with DATA_ENTITY policy resolver context) + implicit_adrs.[1] (activity-feed emission via @ActivityLog) + implicit_adrs.[2] (reactive transactional at service) + implicit_adrs.[3] (DEG-propagation onConflict-doUpdate cascade)"
+    evidence:
+      - "createOwnership.md:concepts.operations + concepts.invariants.[0-4]"
+      - "createOwnership.md:implicit_adrs.[0-3]"
+    notes: |
+      Operation vocabulary captured for future DOC-NNN follow-ups on the
+      ownership-binding surface. Six doc-gaps surface from this operation:
+        (a) Permission DATA_ENTITY_OWNERSHIP_CREATE listed with one-sentence
+            description; no enumeration of who holds it by default.
+        (b) Self-grant feasibility undocumented.
+        (c) Owner auto-create side-effect via getOrCreate undocumented.
+        (d) Title auto-create side-effect via getOrCreate undocumented.
+        (e) DEG propagation semantics (`propagate: true` cascade to
+            children, onConflict-doUpdate-title) undocumented.
+        (f) Duplicate-prevention surface error shape (raw DB constraint
+            violation, not graceful 409 Conflict) undocumented.
+
+      The OWNERSHIP_CREATED activity event payload shape
+      (`OwnershipActivityStateDto` = `(ownerName, titleName)`) is also
+      undocumented on the activity-feed doc page.
+
+  - name: "Update Data Entity Status (lifecycle with cascade)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "`PUT /api/dataentities/{data_entity_id}/statuses` — gated by `DATA_ENTITY_STATUS_UPDATE` per-data-entity Permission via SECURITY_RULES (SecurityConstants.java:277-281). Body is `Mono<DataEntityStatusFormData>` carrying target `DataEntityStatus` (one of UNASSIGNED / DRAFT / STABLE / DEPRECATED / DELETED) + optional `propagate` + optional `status_switch_time` (REQUIRED when target is DRAFT or DEPRECATED — `isSwitchable=true` on the enum). Delegates to `DataEntityService.updateStatus(...)` → `DataEntityInternalStateServiceImpl.changeStatusForDataEntities(...)` which mutates the pojo + cascades on DELETED transitions (soft-delete cascade: lineage relations + group relations + parent-group relations + statistics + `MANUALLY_CREATED` filled-flag) OR on restore-from-DELETED transitions (mirror cascade). **Programmatic activity-event emission** via `logStatusChangeEvents(oldStates, ids)` — captures `DATA_ENTITY_STATUS_UPDATED` events with explicit `oldState`/`newState` JSON payloads PER POJO (NOT AOP `@ActivityLog` because the mutation is bulk; oldState must be captured per-pojo BEFORE the in-place mutation). DEG propagation (`propagate=true` on a Data Entity Group target) fetches all member oddrns + applies status to each plus the parent. Scheduled `DataEntityStatusSwitchJob` runs every 10 minutes (ShedLock 9-minute window) and uses the SAME write path to bulk-flip entities whose `status_switch_time <= now` to DELETED."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java DataEntityController controller-method:updateStatus"
+    contributors:
+      - "updateStatus.md:concepts.operations: update-data-entity-status, propagate-status-to-group-members, schedule-status-auto-switch-to-deleted, soft-delete-data-entity, restore-deleted-data-entity"
+      - "updateStatus.md:implicit_adrs.[0-5] (settable-resource-property NOT state-machine; closed 5-member enum; isSwitchable boolean encodes auto-flip-to-DELETED; soft-delete IS the deletion model; programmatic activity-event emission per-pojo; propagate as per-call opt-in for DEGs)"
+    evidence:
+      - "updateStatus.md:concepts.operations + concepts.invariants.[0-4]"
+      - "updateStatus.md:implicit_adrs.[0-5]"
+    notes: |
+      Operation vocabulary captured for future DOC-NNN follow-ups on
+      data-entity status updates. Two doc-gaps surface:
+        (a) The API endpoint surface (`PUT /api/dataentities/{id}/statuses`)
+            and the `propagate` request-body flag's semantics
+            (group-only, silently ignored on non-groups) are not
+            documented on `/features/data-discovery/statuses`.
+        (b) Auto-flip job 10-minute cadence + 9-minute ShedLock window
+            is not documented — operators wondering when a DRAFT/DEPRECATED
+            entity will tip into DELETED cannot derive precision.
+
+      Cross-batch defect: the HIGH-severity statusUpdatedAt ordering bug
+      (DataEntityMapperImpl.applyStatus@L242-253) interacts with batch D's
+      HousekeepingTTLProperties to break the 30-day data-entity-delete TTL
+      — see cross-cutting invariant "TTL retention broken by
+      statusUpdatedAt nullification". Recommended cleanup: 3-line fix
+      in applyStatus + regression test.
+
+  - name: "Traverse Lineage Graph (recursive-CTE)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "`GET /api/dataentities/{data_entity_id}/lineage/downstream` (sibling `/upstream`) — NO SECURITY_RULES entry, falls through to `.authenticated()`. Three-line delegation to `LineageService.getLineage(dataEntityId, lineageDepth, expandedEntityIds, LineageStreamKind.DOWNSTREAM)`. Service issues a single Postgres `WITH RECURSIVE` CTE walking `lineage` table rows from the root entity's `oddrn` for `depth` hops (`ReactiveLineageRepositoryImpl.lineageCte`); UNIONed with a depth-1 fan-out around any IDs in `expandedEntityIds` (`getLineageRelationsForDepthOne`); merged + distinct; per-oddrn metadata fetch (entity + datasource + namespace + group metadata); children-count / parents-count maps; assemble + map to `DataEntityLineage` graph DTO. Two client-driven inputs: `lineage_depth` (recursion depth bound — `@Min(1)`, no `@Max`) + `expandedEntityIds` (depth-1 fan-out around selected nodes for UI progressive expansion). No streaming variant; the full graph is `.collectList()`-materialised in heap before serialisation. No cycle guard in the recursion (only outer `selectDistinct`)."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage"
+    contributors:
+      - "getDataEntityDownstreamLineage.md:concepts.operations: resolve root by id (404 if not found), recursively walk lineage edges DOWNSTREAM for lineage_depth hops, fan out depth-1 set around expanded_entity_ids, merge + distinct, fetch entity+datasource+namespace+group metadata, compute children-count/parents-count maps, assemble + map to DataEntityLineage"
+      - "getDataEntityDownstreamLineage.md:implicit_adrs.[0] (single-query recursive-CTE — one DB round-trip, not BFS-per-node) + implicit_adrs.[1] (client-driven progressive expansion via dual-input split)"
+    evidence:
+      - "getDataEntityDownstreamLineage.md:concepts.operations + concepts.invariants.[0-3]"
+      - "getDataEntityDownstreamLineage.md:implicit_adrs.[0,1]"
+    notes: |
+      Operation vocabulary captured for future DOC-NNN follow-ups on the
+      lineage-graph surface. Two doc-bugs are live on
+      `/developer-guides/api-reference/lineage`:
+        (a) `lineage_depth` 'Unset returns the platform's default depth'
+            claim is UNIMPLEMENTED — there is no default; unset is a
+            500 NPE.
+        (b) `expanded_entity_ids` 'IDs of Data Entity Group entities'
+            claim is incorrect — code accepts ANY data-entity IDs.
+
+      Sibling `/api/dataentitygroups/{id}/lineage` accepts no depth
+      parameter at all (openapi.yaml:2418-2433) — DEG-lineage is
+      always one-hop. This shape inconsistency is undocumented.
+
+      The lineage-graph cross-owner enumeration is one of the five
+      surfaces in the read-collaborative cross-cutting invariant —
+      lineage edges leak causal connections between entities owned by
+      different teams.
+
+  - name: "Ingest Data Entity List (S2S)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "`POST /ingestion/entities` — canonical S2S ingestion entry point. Path is in `SecurityConstants.WHITELIST_PATHS` (`/ingestion/**`), so exempted from the UI authentication chain in every mode. Authentication delegated EXCLUSIVELY to the path-scoped `IngestionDataEntitiesFilter` (gated by `auth.ingestion.filter.enabled`, defaults FALSE). Bundled deployment ships UNAUTHENTICATED. Controller is a 4-line proxy: deserialise `Mono<DataEntityList>` (carrying `data_source_oddrn` + `items: List<DataEntity>`), reject empty `items` with 400 (`BadUserRequestException`), delegate to `IngestionServiceImpl.ingest(...)` inside `@ReactiveTransactional`, return 200 OK (NOTE: spec declares 201 — 2-sidecar status-code drift). Datasource scoping is PAYLOAD-DRIVEN: the service resolves the datasource via `dataSourceRepository.getIdByOddrnForUpdate(dataEntityList.getDataSourceOddrn())` — the caller chooses by writing the ODDRN in the body. Dedup-by-ODDRN at the data layer (existing entities UPDATEd, new ones INSERTed) — idempotent at the upsert level."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java IngestionController controller-method:postDataEntityList"
+    contributors:
+      - "postDataEntityList.md:concepts.operations: accept-data-entity-list, reject-empty-payload-400, delegate-to-ingestion-service, return-200-OK"
+      - "postDataEntityList.md:implicit_adrs.[0] (OpenAPI-contract-driven path) + implicit_adrs.[1] (filter-based-auth-not-annotation) + implicit_adrs.[2] (empty-payload validation co-located in controller, not OpenAPI schema) + implicit_adrs.[3] (200 vs 201 inconsistency with sibling endpoints)"
+    evidence:
+      - "postDataEntityList.md:concepts.operations + concepts.invariants.[0-4]"
+      - "postDataEntityList.md:implicit_adrs.[0-3]"
+    notes: |
+      Operation vocabulary captured for future DOC-NNN follow-ups on the
+      S2S ingestion surface. Five doc-gaps surface:
+        (a) NO live ODD page documents the endpoint mechanics
+            (configuration-and-deployment/data-ingestion → 404).
+        (b) S2S sub-page's curl example uses `X-API-Key` (the OTHER
+            filter's header) — see doc-drift invariant.
+        (c) `auth.ingestion.filter.enabled` is NOT surfaced in any
+            live doc.
+        (d) Unknown `data_source_oddrn` returns 5xx instead of 404.
+        (e) Body-size-cap behaviour (20MB → 500 DataBufferLimitException,
+            not 413 Payload Too Large) is undocumented.
+
+      The endpoint completes the S2S Ingestion Pipeline concept —
+      see entities section for the cross-axis composition view.
+
 canonicalisation_candidates:
 
   - proposed_canonical: "Activity Feed"
@@ -4250,6 +5110,69 @@ canonicalisation_candidates:
       - "OwnerAssociationRequestController.createOwnerAssociationRequest: separate user-claim flow (batch E)"
       - "AuthIdentityProviderImpl.java:23-53: no OwnerService.create / getOrCreate call on login (batch E)"
       - "Live `/authorization/owners` page silence on creation mechanics + association mechanics + sprawl prevention (batch E)"
+    suggested_add_to_docs: true
+
+  - proposed_canonical: "Lineage Graph Traversal"
+    rationale: "NEW concept from batch 2026-05-12F (getDataEntityDownstreamLineage). The platform's lineage-graph read interface — `GET /api/dataentities/{id}/lineage/downstream` (sibling `/upstream`) — walks `lineage` table edges via Postgres `WITH RECURSIVE` CTE with two client-driven inputs (`lineage_depth` recursion bound + `expandedEntityIds` progressive expansion fan-out). main-concepts.md names `Data Lineage` as a Data Governance pillar but does NOT name the API surface, the recursion-bound mechanism, the dual-input expansion model, or the cross-owner-enumeration semantics. Two doc-bugs on `/developer-guides/api-reference/lineage` (the null-default claim + the group-only `expanded_entity_ids` claim) need correction. Strong member of the Read-collaborative cross-owner enumeration invariant (5-sidecar) — graph-shaped enumeration is a unique blast-radius shape because lineage edges leak causal connections between entities owned by different teams. HIGH-priority canonicalisation candidate: extend main-concepts.md's Data Lineage section + fix the API-reference doc-bugs."
+    contributing_concepts:
+      - "DataEntity root (getDataEntityDownstreamLineage)"
+      - "LineagePojo edges in `lineage` table"
+      - "DataEntityLineage response graph DTO"
+      - "LineageDepth wrapper for recursion bound"
+      - "DataEntityLineageNode / DataEntityLineageEdge"
+      - "Single-query recursive-CTE traversal (implicit_adrs.[0])"
+      - "Client-driven progressive-expansion model (implicit_adrs.[1])"
+    suggested_add_to_docs: true
+
+  - proposed_canonical: "S2S Ingestion Pipeline"
+    rationale: "NEW concept from batch 2026-05-12F that CLOSES the loop opened by batch B's IngestionDataEntitiesFilter. The pipeline composes three concerns into the operator-facing S2S ingestion surface: (1) path-whitelisting (`/ingestion/**` is in `SecurityConstants.WHITELIST_PATHS`); (2) path-scoped auth filter (`IngestionDataEntitiesFilter` gated by `auth.ingestion.filter.enabled`, defaults FALSE — bundled deployment ships UNAUTHENTICATED); (3) controller (`IngestionController.postDataEntityList`, 4-line proxy with no `@PreAuthorize`). Distinct from the GLOBAL `S2sAuthenticationFilter` (`auth.s2s.enabled`, X-API-Key, single shared cluster-wide token granting ADMIN globally). main-concepts.md names canonical S2S aliases ('Server-to-server (S2S) authentication', 'Ingestion authentication filter') but does NOT explain the end-to-end pipeline. The doc-side gap is the absence of a canonical `/configuration-and-deployment/data-ingestion` page (today the URL returns 404). HIGH-priority canonicalisation candidate: create the missing data-ingestion operator-facing page that walks the pipeline end-to-end."
+    contributing_concepts:
+      - "POST /ingestion/entities controller (postDataEntityList batch F)"
+      - "IngestionDataEntitiesFilter path-scoped auth (batch B)"
+      - "CollectorController.regenerateCollectorToken — mints/rotates the per-datasource shared secret (batch A)"
+      - "WHITELIST_PATHS exemption from UI auth chain"
+      - "Payload-driven datasource scoping (data_source_oddrn in body)"
+      - "Default-off auth (auth.ingestion.filter.enabled=false ships in application.yml:48)"
+    suggested_add_to_docs: true
+
+  - proposed_canonical: "Permission-bypass via Owner auto-create (side-door write path)"
+    rationale: "NEW cross-cutting invariant from batch 2026-05-12F. `DataEntityController.createOwnership` calls `OwnerService.getOrCreate(owner_name)` and `TitleService.getOrCreate(title_name)` which silently create directory rows when the name is novel — bypassing `OWNER_CREATE` permission and any Title-create permission gate that would otherwise exist. Documented `OWNER_CREATE` permission on `POST /api/owners` is incomplete because of the side-door. Codebase-wide analog risk: any future auto-create-on-missing pattern (`getOrCreate`, `findOrInsert`, `ensureExists`) inherits this shape unless the create-side permission is explicitly checked. Three DOC-NNN candidates flow: (a) `/authorization/permissions` page should name the side-door; (b) `/authorization/owners` page should clarify the two write paths; (c) new `/authorization/title-and-tag-vocabularies` page (or section) for free-text vocabulary growth."
+    contributing_concepts:
+      - "OwnerService.getOrCreate side-door (createOwnership batch F)"
+      - "TitleService.getOrCreate side-door (createOwnership batch F)"
+      - "Documented OWNER_CREATE permission gate on POST /api/owners (createOwner batch E)"
+      - "Codebase-wide audit candidates: TagService.getOrCreate, TermService.getOrCreate, NamespaceService"
+    suggested_add_to_docs: true
+
+  - proposed_canonical: "TTL retention broken by statusUpdatedAt nullification (cross-batch finding D + F)"
+    rationale: "NEW cross-batch invariant from batch 2026-05-12F. Load-bearing defect that emerges only when batch D's HousekeepingTTLProperties + batch F's updateStatus are combined: the 30-day data-entity-delete retention TTL relies on `DATA_ENTITY.STATUS_UPDATED_AT`, which is NEVER bumped on status transition because of an ordering bug in `DataEntityMapperImpl.applyStatus` (sets the status BEFORE the prior-status check; condition is always false). The HousekeepingTTLProperties feature documentation says 30-day retention; the code does not deliver it. Second cross-batch invariant in the catalog (after 'Retention claim vs code drift' which combined batches B + D). Trivial 3-line fix in DataEntityMapperImpl.applyStatus + regression test. HIGH-priority refactoring-scope item."
+    contributing_concepts:
+      - "DataEntityMapperImpl.applyStatus ordering bug (updateStatus batch F)"
+      - "HousekeepingTTLProperties.data_entity_delete_days TTL (batch D)"
+      - "DataEntityHousekeepingJob STATUS_UPDATED_AT predicate"
+    suggested_add_to_docs: true
+
+  - proposed_canonical: "Audit-log presence asymmetry (2-tier audit story)"
+    rationale: "REFINED cross-cutting invariant from batch 2026-05-12F. Originally surfaced in batch E as a 3-sidecar 'codebase-wide no-audit-log-on-RBAC-mutations' hygiene gap; batch F primary-source corroboration on DataEntity-side updateStatus + createOwnership shows the gap is NOT codebase-wide. The platform has a 2-TIER AUDIT STORY: DataEntity-scoped writes (status updates, ownership-binding, description, etc.) ARE audited (TIER 1 — via @ActivityLog or programmatic emission). RBAC-scoped writes (Policy / Role / Owner-directory) are NOT audited (TIER 2 — no @Slf4j, no events, no audit table). The asymmetry is the INVERSE of what a security-conscious operator would expect: data-content changes get audit; authorization-model changes (which control WHO can do what) do NOT. Three DOC-NNN candidates flow: audit-trail expectation undocumented across `/authorization/policies`, `/authorization/roles`, `/authorization/owners`."
+    contributing_concepts:
+      - "Tier 1 AUDITED: updateStatus + createOwnership (batch F)"
+      - "Tier 2 UNAUDITED: createRole + createPolicy + createOwner (batch E)"
+      - "Activity feed (batch A getActivity) covers DataEntity activity but NOT RBAC"
+    suggested_add_to_docs: true
+
+  - proposed_canonical: "OpenAPI 200-vs-201 status-code drift (codebase-wide)"
+    rationale: "NEW cross-cutting hygiene invariant from batch 2026-05-12F — now 2-sidecar primary-source triangulated (batch E createOwner + batch F postDataEntityList). Spec declares 201 Created; controller returns 200 OK; tests lock in 200. Drift has shipped — fix requires coordinating spec vs implementation vs tests. Codebase-wide audit candidate: every controller-method that implements an OpenAPI-generated `*Api` interface. Likely 6-10 endpoints affected. Surfaces via `/developer-guides/api-reference/*` for SDK consumers."
+    contributing_concepts:
+      - "OwnerController.createOwner (batch E)"
+      - "IngestionController.postDataEntityList (batch F)"
+      - "RoleController.createRole + PolicyController.createPolicy (batch E — same pattern)"
+    suggested_add_to_docs: false
+
+  - proposed_canonical: "Doc-vs-code spelling/format mismatch (operator copy-paste-from-docs silently fails)"
+    rationale: "NEW cross-cutting doc-drift invariant from batch 2026-05-12F — now 2-sidecar primary-source triangulated (batch D ODDOAuth2Properties.username-attribute + batch F postDataEntityList.X-API-Key). Live docs show a verbatim YAML key or HTTP header that does NOT match what the code binds/expects. Operator copy-paste-from-docs verbatim succeeds against the docs but silently fails against the code. Two DOC-NNN fixes flow directly from this invariant: (a) `/configuration-and-deployment/enable-security/authentication/oauth2-oidc`: `username-attribute` → `user-name-attribute`; (b) `/configuration-and-deployment/enable-security/authentication/s2s`: distinguish `X-API-Key` (global S2S) from `Authorization: Bearer` (path-scoped IngestionDataEntitiesFilter)."
+    contributing_concepts:
+      - "ODDOAuth2Properties username-attribute (kebab single-word) vs userNameAttribute (camelCase split) (batch D)"
+      - "S2S X-API-Key example vs IngestionDataEntitiesFilter Authorization: Bearer requirement (batch F)"
     suggested_add_to_docs: true
 
   - proposed_merge:

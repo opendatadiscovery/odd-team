@@ -607,3 +607,89 @@ Three high-leverage themes for batch F:
 3. **IngestionController.* methods** — S2S ingestion endpoint that REFACTOR-073's S2S-composes-not-mutex pattern centres on. Closes the S2S loop completely. Pair with the batch-B IngestionDataEntitiesFilter and batch-A AlertManagerController sidecars.
 
 Until the next batch fires, the held-back spot-check set should be matched against batch A + batch B + batch C + batch D + batch E log entries above. Misses → candidate node-picks for batch F.
+
+---
+
+## Batch 2026-05-12F — DataEntity mega-tag + S2S Ingestion loop close (5 nodes)
+
+- **Date**: 2026-05-12 (sidecars + 4 of 5 reducers landed late evening; commit 2026-05-13)
+- **Branch**: `feature/agentic-ontology-enrichment-batch-2026-05-12F`
+- **Substrate commit**: `ede5d277` (40 prior sidecars + 5 new = 45 total; **11.4% coverage**)
+- **Theme**: DataEntity mega-tag method deepening (5 controller-methods) + closing the S2S ingestion loop with batch-B IngestionDataEntitiesFilter.
+- **Rule 5 compliance**: 0 leaks across all committed-artefact directories.
+- **Partial reducer phase**: 4 of 5 reducer artefacts refreshed cleanly (concept-merger + doc-gap-finder + adr-archaeologist dual-output). **test-coverage-mapper agent hit a stream idle timeout BEFORE writing** — test-map.yaml shows stale sidecar_count: 40. Deferred to batch G's reducer phase (will fold batch-F test gaps in then). Not stale-because-wrong; stale-because-doesn't-yet-include-batch-F.
+
+### Sidecars added (5)
+
+| Sidecar | Concept(s) | Headline finding |
+|---|---|---|
+| `DataEntityController.getDataEntityDetails` | Data Entity | **Resolves ADR-CANDIDATE-003 borderline_flag** via primary source — read-collaborative GET intentionally outside SECURITY_RULES on the centerpiece read. Plus read-as-write `view_count` increment (4th cross-owner blast-radius surface; row-level write-contention on popular entities under DISABLED). |
+| `DataEntityController.createOwnership` | Data Entity, Owner | **NEW HIGH structural finding: Owner auto-create BYPASSES OWNER_CREATE permission**. createOwnership auto-instantiates Owner if missing — the side-door past batch-E's OwnerController gate. Plus Title auto-create no allowlist; self-grant ambiguity. |
+| `DataEntityController.updateStatus` | Data Entity, Activity Feed | **NEW HIGH cross-batch finding**: `applyStatus` ordering bug nulls `statusUpdatedAt` on every transition → breaks 30-day housekeeping TTL retention (combines with batch-D HousekeepingTTLProperties). **POSITIVE**: audit-log emission CONFIRMED present (programmatic, not AOP) — refines batch-E's no-audit-log-on-mutations theme to RBAC-specific, NOT codebase-wide. |
+| `DataEntityController.getDataEntityDownstreamLineage` | Lineage Graph Traversal (NEW concept) | **VALIDATES REFACTOR-044** (lineageDepth no upper-bound cap) from primary source. Plus null-Integer NPE on missing `lineage_depth` (int primitive can't be null); no CTE cycle guard (diamond-DAG amplification); cross-owner graph enumeration (5th sidecar of the read-collaborative pattern). |
+| `IngestionController.postDataEntityList` | S2S Ingestion Pipeline (NEW concept), Ingestion Filter | **CLOSES THE S2S LOOP** with batch-B IngestionDataEntitiesFilter. Controller-side confirmation: no `@PreAuthorize` backup gate — entirely relies on the filter (which defaults OFF). Major doc-drift: live S2S doc uses `X-API-Key` example but code expects `Authorization: Bearer` — operator-trap (copy-paste verbatim fails to auth, possibly leading operators to disable the filter). No canonical operator-facing doc page for `POST /ingestion/entities`. OpenAPI 200/201 status drift (2nd sidecar). |
+
+### Reducer diffs
+
+| Reducer | Before → After | Net |
+|---|---|---|
+| concept-merger | 73 → **84 concepts** | +11 (catalog_v7; 2 new entities — Lineage Graph Traversal, S2S Ingestion Pipeline) |
+| doc-gap-finder | 83 → (sidecar_count: 45; full counts to be verified post-merge) | refreshed |
+| adr-archaeologist (ADRs) | 53 → **61 ADRs** | +8 (054-061: read-as-write view-count, soft-deleted-by-id reads, zip-merge enrichment, lineage recursive-CTE + progressive expansion, status state machine, service-layer transactional boundary, programmatic activity emission for bulk, ingestion controller validation split). **ADR-CANDIDATE-003 borderline_flag RESOLVED → intentional** (9-sidecar support). |
+| adr-archaeologist (scopes) | 210 → **199 refactoring scopes** | **-11 net (deduplicated)** — the count went DOWN this batch because the agent consolidated duplicate entries that previously appeared in both the main and "Cross-cutting" sections; batch-F actually ADDED ~28 new scopes but removed ~39 duplicate entries from prior batches. **Key new HIGH scopes**: REFACTOR-198 (statusUpdatedAt-nullification breaks TTL — cross-batch D+F), REFACTOR-199 + REFACTOR-206 (Owner + Title auto-create-on-miss permission-bypass). **REFACTOR-073/185 (DISABLED-mode bypass) now 11-sidecar — strongest single finding in the catalog.** |
+| test-coverage-mapper | 252 → DEFERRED | stale at batch-E count (sidecar_count: 40). Stream timeout; deferred to batch G's reducer phase. |
+
+**0 wisdom-test fails on batch F — 6th consecutive batch**.
+
+### Known-bug validators / cross-batch validations
+
+| Pre-existing finding | Result this batch | Detail |
+|---|---|---|
+| **ADR-CANDIDATE-003** (borderline_flag — read-collaborative posture) | **RESOLVED → intentional** | `getDataEntityDetails` primary source on the centerpiece read explicitly uses `.includeDeleted(true)` + `isStale` flag + read-as-write view-count — 4 intent-anchored ADRs collectively confirm the read-collaborative posture is deliberate. The maintainer can de-borderline and promote. |
+| **REFACTOR-044** (lineageDepth no cap) | **VALIDATED from primary source** | `getDataEntityDownstreamLineage` confirms no upper-bound cap; recursive-CTE walks to client-driven depth. |
+| **REFACTOR-073** (DISABLED-mode bypass) | **VALIDATED + STRENGTHENED — 11-sidecar** | 3 new batch-F sidecars confirm DISABLED bypass: getDataEntityDetails + createOwnership + updateStatus. Now load-bearing across the platform's mutation + read surface. |
+| **REFACTOR-024** (read-collaborative cross-owner enumeration) | **VALIDATED + WIDENED — 6-sidecar** | Centerpiece read + lineage traversal both confirm cross-owner unfiltered. Strongest cross-batch finding. |
+| **HousekeepingTTLProperties 30-day defaults** (batch D) | **CROSS-BATCH BUG SURFACED** | batch-D's housekeeping TTL relies on `statusUpdatedAt`; batch-F's updateStatus nulls that field on every transition. The 30-day retention TTL effectively never fires. Two batches independently illuminated the bug — exactly the cross-sidecar emergence the ontology is designed to produce. |
+
+### Cross-batch triangulation (escalations this batch)
+
+| Pattern | Sidecar count | Status this batch |
+|---|---|---|
+| **DISABLED-mode bypasses SECURITY_RULES** | **11** | strongest single finding — 8 prior + 3 new |
+| **Read-collaborative cross-owner enumeration** | **6** | borderline resolved to intentional; doc-side alignment captured as sprint candidate |
+| **OpenAPI 200/201 status-code drift** | 2 | OwnerController.createOwner E + IngestionController.postDataEntityList F |
+| **Doc-vs-code spelling/format mismatch** | 2 | OAuth2 username-attribute D + S2S Authorization-vs-X-API-Key F |
+| **Audit-log-on-mutations refinement** | RBAC-specific (not codebase-wide) | updateStatus PROVES DataEntity mutations emit audit; refines batch-E theme |
+| **Permission-bypass via auto-create-on-miss** (NEW) | 1 + suspected pattern | createOwnership: Owner + Title auto-create bypasses OWNER_CREATE; codebase-wide audit needed (Tag? Term? Namespace?) |
+| **TTL retention broken by statusUpdatedAt nullification** (NEW cross-batch D+F) | 2 | HousekeepingTTLProperties (D) + updateStatus (F) |
+
+### Notable new findings (spot-check candidates this batch)
+
+- **S2S `POST /ingestion/entities` accepts any unauth caller under default deployment** (controller-side primary source confirms batch-B filter-side finding). The most-load-bearing security gap in the platform — and the most-likely operator-trap given the X-API-Key-vs-Authorization-Bearer doc drift.
+- **`statusUpdatedAt` nullification silently breaks the 30-day TTL retention** — operators expect 30-day retention; status updates make it never fire. Cross-batch finding that emerges only when both ends are enriched.
+- **Owner + Title auto-create-on-miss BYPASSES the dedicated create-side permission gates** — createOwnership can mint Owners without OWNER_CREATE permission. Pattern likely repeats on other entities (Tag / Term / Namespace).
+- **Centerpiece read `GET /api/data-entities/{id}` is intentionally read-collaborative** — primary source resolution of the long-standing borderline_flag.
+- **`view_count` row-level write-contention on popular entities** — every read takes a write lock on a hot row; popular entities throttle.
+- **Lineage diamond-DAG amplification + null-Integer NPE** — recursive-CTE with no cycle guard + missing `lineage_depth` default crashes the endpoint.
+
+### Cumulative ontology state (after this batch lands)
+
+| Layer | Count |
+|---|---|
+| Substrate scaffold | 395 nodes / 479 edges |
+| Sidecars | **45** (11.4% coverage) |
+| concepts.yaml | catalog_version 7 (84 concepts; 19 invariants; 2 new entities) |
+| doc-gaps.md | refreshed (sidecar_count: 45) |
+| implicit-adrs.md | **61 ADR candidates** (17 HIGH / 39 MEDIUM / 5 LOW) |
+| refactoring-scopes.md | **199 refactoring scopes** (58 HIGH / 92 MEDIUM / 49 LOW; deduplicated) |
+| test-map.yaml | **STALE at 252 gaps (sidecar_count: 40)** — batch-F test-coverage-mapper timed out; refresh deferred to batch G |
+
+### Next-batch planning notes
+
+Three high-leverage themes for batch G:
+
+1. **Re-run test-coverage-mapper FIRST** (to fold in batch-F test gaps before any new sidecars land — cleanest catch-up). Then proceed with new node enrichment.
+2. **Repository layer** — still 0 enriched. Where transaction boundaries, advisory-lock interactions, tenant-isolation enforcement, jOOQ FTS injection territory live.
+3. **DataEntityController.* further deepening** — 4 of 40+ methods enriched now. Still 36+ uncovered methods on the mega-tag — addOwnership / addTerm / addTag / updateDescription / metadataField operations / etc.
+
+Until batch G fires, the held-back spot-check set should be matched against batch A + B + C + D + E + F log entries above. Misses → candidate node-picks for batch G.

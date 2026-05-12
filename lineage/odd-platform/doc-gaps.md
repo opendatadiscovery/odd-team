@@ -1,35 +1,38 @@
 ---
 artefact: doc-gaps
-generated_at: "2026-05-11T00:00:00Z"
+generated_at: "2026-05-12T00:00:00Z"
 generated_at_commit: ede5d277
-sidecar_count: 25
-concepts_yaml_version: 3
+sidecar_count: 30
+concepts_yaml_version: 4
 prompt_version: "doc-gap-finder/0.1.0"
-total_findings: 44
-findings_by_severity: { HIGH: 19, MEDIUM: 19, LOW: 6 }
-findings_by_category: { broken-url: 6, missing-anchor: 0, drift: 25, missing-page: 6, stale-page: 0, coverage-gap: 7 }
+total_findings: 58
+findings_by_severity: { HIGH: 29, MEDIUM: 23, LOW: 6 }
+findings_by_category: { broken-url: 8, missing-anchor: 0, drift: 44, missing-page: 4, stale-page: 0, coverage-gap: 2 }
 batch_history:
   - "2026-05-08: DOC-GAP-001..027 — initial 15-sidecar reduction"
   - "2026-05-10: DOC-GAP-028..035 — refresh after batch 2026-05-10A (5 method-level sidecars: AlertController.getAllAlerts, DataEntityAttachmentController.uploadFileChunk, ActivityController.getActivity, DataCollaborationController.postMessageInSlack, CollectorController.regenerateCollectorToken). DOC-GAP-002, DOC-GAP-010, DOC-GAP-025 extended with method-level evidence; severity on DOC-GAP-025 upgraded HIGH."
   - "2026-05-11: DOC-GAP-036..044 — refresh after batch 2026-05-10B (5 config-key-consumer sidecars: AppInfoController @ auth.type@L18, AuthorizationManagerCondition @ auth.type@L11, CounterTimeSeriesExtractor @ metrics.storage@L20, IngestionDataEntitiesFilter @ auth.ingestion.filter.enabled@L20, ActivityTablePartitionManager @ odd.activity.partition-period@L11). Triangulated default-open posture cross-cutting pattern surfaced. NEW HIGH-severity drift on activity-feed retention claim (DOC-GAP-041 — code never DROPs partitions, doc claims partition-period controls retention). 4 distinct findings on activity-partition subsystem (DOC-GAP-041..043 + DOC-GAP-040 partial covers via cross-ref). Verified WebFetch 2026-05-11 — `enable-security` parent page DOES now state `auth.ingestion.filter.enabled defaults to false`, partial doc coverage; the `/api/appInfo` introspection surface, DISABLED-default of auth.type, LOGIN_FORM-drops-authorization, and tenant-id read/write asymmetry remain undocumented."
+  - "2026-05-12: DOC-GAP-045..058 — refresh after batch 2026-05-12C (5 sidecars: DisabledAuthSecurityConfiguration @ auth.type@L10, LoginFormSecurityConfiguration @ auth.type@L31, OAuthSecurityConfiguration @ auth.type@L71, LDAPSecurityConfiguration @ auth.type@L51, NotificationsProperties config-properties-class). Four auth-mode SecurityConfiguration sidecars deepened the Auth Mode coverage from 'config consumers' to 'wiring sites' — surfacing the blast-radius of DISABLED (CSRF/CORS/actuator/S2S-ignored/audit-absence), 5-vs-7 OAuth2 provider drift with no Okta/Keycloak handlers, missing `azureTenantId` POJO field vs documented YAML, unvalidated Azure `logout-uri`, LDAP scheme silence (ldaps:// not differentiated), `auth.ldap.password` leak via actuator/env, substring-collision admin escalation in LDAP, `auth.login-form-redirect` open-redirect surface, session-cookie security gaps under LOGIN_FORM. Notifications sidecar surfaced dead `webhookUrl` field, no rate-limit, no audit trail, no per-channel filtering, no PII redaction, replication-slot orphan risk, GitBook routing drift (legacy `/active-platform-features/notifications` 404 — joining DOC-GAP-035 in cross-cutting class). New class-level DOC-GAP-058 captures the GitBook legacy-route drift as an audit-recommended pattern, not a single page. NEW HIGH findings: 8 (DOC-GAP-045, DOC-GAP-046, DOC-GAP-048, DOC-GAP-050, DOC-GAP-051, DOC-GAP-053, DOC-GAP-054, DOC-GAP-055). Live URL re-verification 2026-05-12: `disabled-authentication` 200 confirms blast-radius omission verbatim; `oauth2-oidc` 200 verifies 7-provider docs claim; `/active-platform-features/notifications` 404 confirms cross-cutting routing drift."
 ---
 
-# Doc gaps — odd-platform — 2026-05-11
+# Doc gaps — odd-platform — 2026-05-12
 
 ## Summary
 
-- **Findings**: 44 total (19 HIGH, 19 MEDIUM, 6 LOW)
-- **By category**: broken-url 6, drift 25, missing-page 6, coverage-gap 7
-- **By feature** (top affected concepts): Auth Mode (4 — new in 2026-05-10B; DISABLED-default + LOGIN_FORM-drops-authorization + appInfo fingerprinting + empty-string footgun), Data Entity (5), Activity Feed (5 — extended in 2026-05-10B by activity-partition findings), Attachment (5), Alert (4), AlertManager Webhook Receiver (3), GenAI Assistant (3), Slack collaboration app (3), Activity Table Partitioning (4 — new in 2026-05-10B), Multi-Tenant Configuration / Metrics Ingestion (1 — new in 2026-05-10B), Collector / Collector Token (2), Directory (2), Multilingual UI (1)
-- **Cross-references to prior findings**: 4 findings overlap with DOC-163 F-047..F-060 (cross-referenced, not re-filed). 9 HIGH findings are LSN-001/LSN-002-class operator-impact gaps (added: DOC-GAP-036 + DOC-GAP-037 + DOC-GAP-041 in 2026-05-10B). Batch 2026-05-10B config-key-consumer sidecars triangulate the **default-open posture** cross-cutting pattern: three independent sidecars converge on the same operator-trap shape (DISABLED-default of `auth.type` + FALSE-default of `auth.ingestion.filter.enabled` + no fail-fast on misconfigured `auth.type`).
+- **Findings**: 58 total (29 HIGH, 23 MEDIUM, 6 LOW)
+- **By category**: broken-url 8, drift 44, missing-page 4, coverage-gap 2
+- **By feature** (top affected concepts): Auth Mode (12 — major expansion in 2026-05-12C; DISABLED blast radius + LOGIN_FORM dev-only gaps + OAUTH2 provider drift + LDAP security caveats), Data Entity (5), Activity Feed (5), Attachment (5), Notifications (6 — new in 2026-05-12C), Alert (4), AlertManager Webhook Receiver (3), GenAI Assistant (3), Slack collaboration app (3), Activity Table Partitioning (4), Multi-Tenant Configuration / Metrics Ingestion (1), Collector / Collector Token (2), Directory (2), Multilingual UI (1)
+- **Cross-references to prior findings**: 4 findings overlap with DOC-163 F-047..F-060 (cross-referenced, not re-filed). 17 HIGH findings are LSN-001/LSN-002-class operator-impact gaps. Batch 2026-05-12C config sidecars triangulate **two new cross-cutting patterns** worth a maintainer-level audit:
+  - (a) **GitBook legacy-vs-canonical routing drift** (DOC-GAP-058 — meta-finding) — now 2 sidecars (DataCollaboration batch A + Notifications batch C). Same shape: legacy `/active-platform-features/X` 404s while `/features/active-platform-features/X` serves 200. Recommend a doc-side audit of ALL legacy paths likely to be referenced from external blog posts / Slack discussions.
+  - (b) **"Docs frame default behaviour but omit blast radius"** (DOC-GAP-053 meta-finding extends DOC-GAP-036, DOC-GAP-038, DOC-GAP-041) — pages exist and document the happy path, but do not enumerate the operational consequence cluster (CSRF + CORS + actuator + S2S-ignored + audit-absence for DISABLED; retention claim with no DROP path for activity-feed; etc.). Pattern: docs describe a setting; code's blast radius from setting that default is undocumented. Recommend a doc-side audit of every "default behaviour" claim against the code's actual blast radius.
 - **Notable patterns**:
-  - The substrate's per-concept `security_aggregate` weaknesses are systematically absent from the live pages — the docs describe the feature's UX but not the operational risk surface (e.g. "Alerts feature" page does not warn that every auth'd user sees every alert; "Activity Feed" page does not warn that every auth'd user reads cross-owner audit trails).
-  - **Doc-text-vs-code audience drift** (new pattern, 2026-05-10A): the live alerting doc names "stewards and admins" as the All-tab audience while code enforces "any authenticated user" — this is a *prescriptive-doc-vs-permissive-code* mismatch. Code change OR doc change can resolve; the doc-vs-code drift itself is the finding.
-  - **Triangulated default-open posture** (new pattern, 2026-05-10B): THREE independent config-key-consumer sidecars converge on the same operator-trap shape — (a) `auth.type=DISABLED` is the application.yml default (`AppInfoController@L18` + `AuthorizationManagerCondition@L11`), (b) `auth.ingestion.filter.enabled=false` is the application.yml default (`IngestionDataEntitiesFilter@L20`), (c) no fail-fast on misconfigured `auth.type` (empty/typo silently produces a deployment with no `SecurityWebFilterChain` bean). Per LSN-001 + LSN-002 case-law, this is the canonical insecure-default failure mode the ontology was built to surface. The live docs partial-cover (a) and (b) — `enable-security` parent page now mentions `auth.ingestion.filter.enabled defaults to false` (WebFetched 2026-05-11, 200), but **none** of the four pages surveyed (`enable-security`, `enable-security/authentication`, `enable-security/authorization`, `enable-security/authentication/s2s`) state that `auth.type=DISABLED` IS the bundled application.yml default.
-  - **Documentation-overstates-config-effect** (new pattern, 2026-05-10B): activity-feed page claims `odd.activity.partition-period` controls "retention and partitioning" (WebFetched 2026-05-11, 200) — code has only a CREATE path; **no DROP / retention path ever runs for the activity table**. The doc is materially incorrect: an operator setting `partition-period=7` to reduce "retention" gets narrower partitions but unbounded growth. Same shape as LSN-001 (attachment-ephemeral-default).
-  - URL-prefix drift (continued): legacy un-prefixed URLs (`/active-platform-features/*`, `/data-discovery/*`, `/main-concepts`) all 404 with GitBook redirect-suggestion stubs. New entry in this class: `/active-platform-features/data-collaboration`.
-  - **Source-published-but-routed-wrong** (new pattern, 2026-05-10A): `/active-platform-features/data-collaboration` returns 404 even though `documentation/docs/active-platform-features/data-collaboration.md` exists in the repo; the live publication is reachable only at `/features/active-platform-features/data-collaboration`. This is the same URL-prefix-drift class as DOC-GAP-011 — the live URL is canonical, the legacy URL is the dead stub.
-  - The api-reference subtree covers `directory` + `lineage` + `alerts` + `data-collaboration` + others, but no `data-entities` page exists AND no `activity` page exists (404 verified 2026-05-10). The 40 dataEntity operations and the global activity feed are punted to Swagger UI / OpenAPI spec on the index page.
+  - The substrate's per-concept `security_aggregate` weaknesses are systematically absent from the live pages — the docs describe the feature's UX but not the operational risk surface.
+  - **Doc-text-vs-code audience drift** (2026-05-10A): the live alerting doc names "stewards and admins" while code enforces "any authenticated user."
+  - **Triangulated default-open posture** (2026-05-10B): four config-key-consumer sidecars + four `*SecurityConfiguration` sidecars now converge on the same operator-trap shape — DISABLED-default of `auth.type` + FALSE-default of `auth.ingestion.filter.enabled` + no fail-fast on misconfigured `auth.type` + no boot WARN under DISABLED + actuator/env reachable under DISABLED. Per LSN-001 + LSN-002 case-law, this is the canonical insecure-default failure mode the ontology was built to surface.
+  - **Documentation-overstates-config-effect** (2026-05-10B): activity-feed page claims `odd.activity.partition-period` controls "retention and partitioning" — code has only a CREATE path.
+  - **GitBook legacy-route 404 cluster** (continuing in 2026-05-12C): `/active-platform-features/notifications` joins `/active-platform-features/data-collaboration`, both 404 with redirect-suggestion stubs; the canonical `/features/active-platform-features/*` paths serve 200.
+  - **NEW 2026-05-12C: Auth-mode-wiring-site blast-radius gap** — the dedicated sub-pages (`disabled-authentication`, `login-form`, `oauth2-oidc`, `ldap`) document the happy-path config but consistently omit the security-relevant operational consequences (CSRF posture, session cookie security, S2S composition behaviour under each mode, actuator-env credential exposure, LDAPS scheme guidance, substring-collision admin escalation in LDAP, OAuth2 provider-handler coverage gap).
+  - **NEW 2026-05-12C: Notifications subsystem under-documented for operations** — the live page documents channels + WAL requirements + cleanup but omits: no rate-limit (alert bursts → Slack 429 / SMTP queue saturation), no audit trail (operators can't answer "did this alert get delivered?"), no per-channel filtering (every channel gets every alert regardless of owner), no PII redaction (free-text descriptions flow verbatim into outbound payloads), replication-slot orphan risk on rename, dead `notifications.webhookUrl` top-level field still binds.
 
 ## Findings
 
@@ -55,14 +58,14 @@ batch_history:
   - **Surfaced by**:
     - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertController.md:security.known_security_gaps.[1]` (severity HIGH)
     - `odd-platform__java__AlertController__controller-method__changeAlertStatus.md:security.known_security_gaps.[0]`
-    - `odd-platform__java__AlertController__controller-method__getAllAlerts.md:security.known_security_gaps.[0]` + `:docs_link_semantic.doc_drift_findings.[0]` **(new 2026-05-10A — method-level audience-drift evidence)**
+    - `odd-platform__java__AlertController__controller-method__getAllAlerts.md:security.known_security_gaps.[0]` + `:docs_link_semantic.doc_drift_findings.[0]` **(2026-05-10A — method-level audience-drift evidence)**
     - `odd-platform__openapi__tags__openapi-tag__alert.md:security.known_security_gaps.[0]`
     - `concepts.yaml:entities[Alert].security_aggregate.weaknesses.[0,1]` + `:cross_file_inconsistencies.[2]` (doc-code audience divergence)
   - **Evidence**:
     - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/alerting` 2026-05-10 status 200 — confirmed verbatim: "All — Every open and resolved alert across the whole platform" with use-case recommendation "Platform-wide triage; **stewards and admins watching the full alert surface**." The page contains **no discussion** of access-control, authorization, or role-based restrictions for the `getAllAlerts` endpoint or the "All" tab.
     - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/alerts` 2026-05-08 status 200 — page lists `GET /api/alerts` and notes `My Objects`/`Dependents` require Owner-link, but does NOT warn that the `All` listing exposes every alert to every authenticated user.
     - getAllAlerts.md (2026-05-10A) verifies absence: `SecurityConstants.java:98-295` contains a rule for `PUT /api/alerts/{alert_id}/status` but NO entry for `GET /api/alerts`; `AuthorizationCustomizer.java:29-30` falls through to `pathMatchers('/**').authenticated()`. Repository `ReactiveAlertRepositoryImpl.java:143-145` issues `selectFrom(ALERT).where(ALERT.STATUS.eq(OPEN))` with no owner predicate.
-    - **Audience-drift sub-finding (new 2026-05-10A)**: doc text recommends the All tab for "stewards and admins"; code permits any authenticated user. Two corrective paths exist (align doc to enforced "any authenticated user" behaviour, OR add an admin/steward Permission gate aligned with doc's stated audience) — the choice is the maintainer's; the drift is the finding.
+    - **Audience-drift sub-finding (2026-05-10A)**: doc text recommends the All tab for "stewards and admins"; code permits any authenticated user. Two corrective paths exist (align doc to enforced "any authenticated user" behaviour, OR add an admin/steward Permission gate aligned with doc's stated audience) — the choice is the maintainer's; the drift is the finding.
   - **Proposed doc action**: Add a "Visibility scope" admonition to `features/active-platform-features/alerting.md` and to `developer-guides/api-reference/alerts.md`: "`getAllAlerts` (`GET /api/alerts`) returns the entire platform's alert population to any authenticated user — there is no role/permission gate. The 'stewards and admins' framing on the All tab describes the *intended* audience, not an enforced restriction. Under `auth.type=DISABLED` the endpoint is anonymously reachable. If your deployment requires admin-only visibility on the `All` tab, gate the endpoint at the network layer or front the platform with a permission-aware reverse proxy." Mirror on `changeAlertStatus`: any authenticated user can mutate any alert by id. **Decide concurrently** whether to add a `ALERT_LIST_ALL` permission gate (code-side fix) or rewrite the doc audience framing (doc-side fix); either resolves the drift.
   - **Cross-references**:
     - LSN-001/LSN-002 class — operator follows doc trusting that "Alerts feature" is owner-scoped, deploys with no auth-mode-DISABLED expectation
@@ -105,13 +108,13 @@ batch_history:
   - **Surfaced by**:
     - `odd-platform__java__AttachmentServiceImpl__config-key-consumer__attachment_max-file-size@L27.md:docs_link_semantic.doc_drift_findings.[0]`
     - `odd-platform__java__AttachmentServiceImpl__config-key-consumer__attachment_max-file-size@L27.md:security.known_security_gaps`
-    - `odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk.md:security.known_security_gaps.[3]` **(new 2026-05-10A — method-level reinforcement at HIGH severity)** + `:docs_link_semantic.doc_drift_findings.[1]`
+    - `odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk.md:security.known_security_gaps.[3]` **(2026-05-10A — method-level reinforcement at HIGH severity)** + `:docs_link_semantic.doc_drift_findings.[1]`
     - `concepts.yaml:entities[Attachment].security_aggregate.weaknesses.[1]`
   - **Evidence**:
     - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` 2026-05-08 status 200 — Attachment Storage Configuration section frames `attachment.max-file-size` as a per-file cap with `spring.codec.max-in-memory-size` interaction described as the WebFlux codec layer failure mode. Does NOT disclose the cap is enforced ONLY client-side (UI filter) — no service-layer re-validation in `AttachmentServiceImpl`, `DataEntityAttachmentController`, or `FileServiceImpl`.
     - WebFetch `https://docs.opendatadiscovery.org/features/data-discovery/attachments` 2026-05-10 status 200 — confirms the page asserts "Files larger than the cap are rejected by the upload API" — operator reasonably believes server enforces.
     - AttachmentServiceImpl@L27.md sidecar verifies absence of server-side enforcement.
-    - **Method-level reinforcement (new 2026-05-10A)**: uploadFileChunk.md verifies the chunk endpoint reads no size, FileServiceImpl.java:58-67 calls `transferTo` without checking byte count. Combined with no rate-limit, this is a host-disk DOS surface against the chunk-staging filesystem. Already tracked as REFACTOR-013 (HIGH).
+    - **Method-level reinforcement (2026-05-10A)**: uploadFileChunk.md verifies the chunk endpoint reads no size, FileServiceImpl.java:58-67 calls `transferTo` without checking byte count. Combined with no rate-limit, this is a host-disk DOS surface against the chunk-staging filesystem. Already tracked as REFACTOR-013 (HIGH).
   - **Proposed doc action**: Add to both pages (config + feature) a Known-limitations admonition: "**Server-side enforcement**: the `attachment.max-file-size` cap is enforced in the UI (the file-picker filters before upload). The chunked-upload API does not re-validate per-chunk or aggregate size, so a non-browser caller with `DATA_ENTITY_ATTACHMENT_MANAGE` can submit arbitrarily-large files. Operators who need a hard server-side cap must enforce it via `spring.codec.max-in-memory-size` (which fails the request at the WebFlux codec layer with `DataBufferLimitException`) or at the network layer."
   - **Cross-references**:
     - F-056 (`spring.codec.max-in-memory-size` undocumented) — fix in same content area
@@ -129,6 +132,7 @@ batch_history:
   - **Proposed doc action**: Cross-link with F-054 (DOC-163) — when authoring the F-054 fix on Spring Boot Actuator, include a paragraph on attachment-storage credential exposure: "The default `management.endpoints.web.exposure.include` exposes `/actuator/env`. While Spring's default key-pattern sanitisation masks values containing `password`/`secret`/`key`/`token`, the *key names* themselves (`attachment.remote.access-key`, `attachment.remote.secret-key`, `auth.oauth2.client.client-secret`, etc.) are returned. Operators with externally-reachable Actuator endpoints leak the configuration shape; for production deployments, override the exposure list to drop `env` or move Actuator to a separate management port."
   - **Cross-references**:
     - **F-054** in `findings/docs-coverage-undocumented-features/2026-05-08.md` — same gap, broader scope (fold this finding into F-054's authoring as a sub-bullet)
+    - **DOC-GAP-050** (LDAP `auth.ldap.password` leak via `/actuator/env` — extends this finding to a second consumer of the same actuator-exposure root cause; 2026-05-12C)
   - **Severity rationale**: HIGH — operationally-reachable Actuator + S3 credentials leak shape is a security-deployment footgun.
 
 - **DOC-GAP-007**: GenAI feature page lacks prompt-injection / SSRF / DISABLED-anonymous-reachability caveats
@@ -178,13 +182,13 @@ batch_history:
   - **Surfaced by**:
     - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityAttachmentController.md:concepts.operations.[chunked-file-upload]`
     - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityAttachmentController.md:docs_link_semantic.doc_drift_findings.[0]`
-    - `odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk.md:docs_link_semantic.doc_drift_findings.[0]` + `:bugs_limitations_corner_cases.[2]` + `:security.known_security_gaps.[0]` **(new 2026-05-10A — method-level evidence: hijack vector + multi-instance staging path)**
+    - `odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk.md:docs_link_semantic.doc_drift_findings.[0]` + `:bugs_limitations_corner_cases.[2]` + `:security.known_security_gaps.[0]` **(2026-05-10A — method-level evidence: hijack vector + multi-instance staging path)**
     - `concepts.yaml:operations[Chunked File Upload (3-step state machine)]`
   - **Evidence**:
     - WebFetch `https://docs.opendatadiscovery.org/features/data-discovery/attachments` 2026-05-10 status 200 — describes UX (drag-and-drop) but NOT the wire protocol API consumers must implement. Verbatim: "This is a user-facing feature guide, not an API reference. It explains *what* attachments do and *how users interact* with them, but omits technical implementation details for developers integrating file uploads programmatically."
     - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference` 2026-05-10 status 200 — no `data-entity-attachments` sub-page; sub-pages enumerated above.
     - SUMMARY.md confirms absence of `developer-guides/api-reference/data-entity-attachments.md`.
-    - **Method-level evidence (new 2026-05-10A)**: uploadFileChunk.md verifies (a) `uploadId` is the authoritative session key — `dataEntityId` from path is bound but never forwarded (`AttachmentService.java:30` signature has no `dataEntityId`), (b) cross-entity hijack: a user with `DATA_ENTITY_ATTACHMENT_MANAGE` on entity X who learns another user's `uploadId` Y issued for entity Z can post chunks via `POST /api/dataentities/X/files/uploads/Y/chunks` and the chunk lands against Z (gate authorises path entity, service forwards by uploadId), (c) multi-instance staging: chunk path `/tmp/odd/chunks/{uploadId}/{index}` is hardcoded (`FileUtils.CHUNK_BASE_PATH`, not config-driven) — applies to BOTH `attachment.storage=LOCAL` AND `REMOTE` (the chunk staging path is upstream of the storage-backend dispatch). The class-level sidecar identified the LOCAL multi-instance flavour; the method-level finding promotes it to storage-mode-independent.
+    - **Method-level evidence (2026-05-10A)**: uploadFileChunk.md verifies (a) `uploadId` is the authoritative session key — `dataEntityId` from path is bound but never forwarded (`AttachmentService.java:30` signature has no `dataEntityId`), (b) cross-entity hijack: a user with `DATA_ENTITY_ATTACHMENT_MANAGE` on entity X who learns another user's `uploadId` Y issued for entity Z can post chunks via `POST /api/dataentities/X/files/uploads/Y/chunks` and the chunk lands against Z (gate authorises path entity, service forwards by uploadId), (c) multi-instance staging: chunk path `/tmp/odd/chunks/{uploadId}/{index}` is hardcoded (`FileUtils.CHUNK_BASE_PATH`, not config-driven) — applies to BOTH `attachment.storage=LOCAL` AND `REMOTE` (the chunk staging path is upstream of the storage-backend dispatch). The class-level sidecar identified the LOCAL multi-instance flavour; the method-level finding promotes it to storage-mode-independent.
   - **Proposed doc action**: Either create `developer-guides/api-reference/data-entity-attachments.md` or add a "Wire protocol" H2 to `features/data-discovery/attachments.md` documenting: (1) `POST /api/dataentities/{id}/files/uploads` issues `uploadId` UUID; (2) `POST /api/dataentities/{id}/files/uploads/{uploadId}/chunks` with `index` query param posts each chunk; (3) `POST /api/dataentities/{id}/files/uploads/{uploadId}/complete` finalises and returns DataEntityFile. Note that `uploadId` is the authoritative session key — the path's dataEntityId on chunk/complete is effectively cosmetic; **the cross-entity uploadId-hijack caveat (DOC-GAP-023) belongs in the same section AND the multi-instance chunk-staging caveat (REMOTE storage equally affected per uploadFileChunk.md) belongs adjacent to the LSN-001 attachment-ephemeral admonition on the same page.**
   - **Cross-references**:
     - DOC-GAP-009 (api-reference under-coverage) — same family
@@ -192,157 +196,276 @@ batch_history:
     - LSN-001 (attachment-ephemeral default) — extend the existing danger box to cover the chunk-staging path being storage-mode-independent
   - **Severity rationale**: HIGH — every integration uploading attachments via API has to reverse-engineer the protocol from the OpenAPI spec; the live page's "drag-and-drop" prose is misleading for non-browser callers; the method-level evidence (cross-entity hijack + multi-instance staging) makes the missing protocol doc carry direct security/operational consequences.
 
-- **DOC-GAP-025**: Activity Feed exposes cross-owner audit trail (`old_state`/`new_state` diffs) to any authenticated user — undocumented (UPGRADED from LOW to HIGH; method-level evidence)
+- **DOC-GAP-025**: Activity Feed exposes cross-owner audit trail (`old_state`/`new_state` diffs) to any authenticated user — undocumented
   - **Category**: drift
   - **Surfaced by**:
-    - `concepts.yaml:entities[Data Entity].security_aggregate.weaknesses.[2,4]` (extended 2026-05-10A — global activity feed cross-owner)
-    - `concepts.yaml:entities[Activity Feed]` **(new in 2026-05-10A — Activity Feed promoted to first-class concept)**
-    - `odd-platform__java__ActivityController__controller-method__getActivity.md:security.known_security_gaps.[0]` (severity HIGH) + `:security.data_exposure.[0,1]` + `:docs_link_semantic.doc_drift_findings.[1]` **(new 2026-05-10A)**
+    - `concepts.yaml:entities[Data Entity].security_aggregate.weaknesses.[2,4]`
+    - `concepts.yaml:entities[Activity Feed]`
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:security.known_security_gaps.[0]` + `:security.data_exposure.[0,1]` + `:docs_link_semantic.doc_drift_findings.[1]`
   - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed` 2026-05-10 status 200 — page lists seven filter facets (Calendar, Datasource, Namespace, Event type, Tag, Owner, User) and 20+ event types. Does NOT mention: visibility / authorization, who can see the feed, the `type` parameter (MY_OBJECTS / UPSTREAM / DOWNSTREAM / ALL), pagination via `lastEventId`, or any access-control statement.
-    - getActivity.md verifies: `/api/activity` and `/api/activity/counts` carry no `@PreAuthorize`, no SecurityRule, fall through to `pathMatchers('/**').authenticated()` (`SecurityConstants.java:95-356` — no entry). The default `type=null` and `type=ALL` paths both route to `fetchAllActivities` which has no owner predicate. `userIds`/`ownerIds` filter parameters are not validated — submitting candidate id lists allows enumeration.
-    - Activity payload includes `created_by` (actor identity) and `old_state`/`new_state` ActivityState diffs covering `description` free-text (DescriptionActivityStateDto), `business_name` edits, `internal_name` edits on dataset fields, custom-metadata key/value, term/tag assignments, ownership transitions, alert halt-config changes — all surfaced cross-owner under default and ALL types.
-  - **Proposed doc action**: Add a "Visibility scope" admonition to `features/active-platform-features/activity-feed.md`: "The global Activity feed (`GET /api/activity`) is gated by authentication only; any authenticated user can read **cross-owner** audit-trail events including actor identity, full old-state/new-state diffs of descriptions, business names, ownership changes, and custom metadata. The `type=MY_OBJECTS` filter respects the caller's owner association; the default and `type=ALL` views do not. Under `auth.type=DISABLED` the feed is anonymously reachable. For deployments where audit-trail visibility must be role-gated, gate `/api/activity*` at the network or reverse-proxy layer." Add the same caveat to the per-entity Activity tab (`/api/dataentities/{id}/activity`) on the data-entity detail page.
+    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed` 2026-05-10 status 200 — page lists seven filter facets and 20+ event types. Does NOT mention: visibility / authorization, who can see the feed, the `type` parameter (MY_OBJECTS / UPSTREAM / DOWNSTREAM / ALL), pagination via `lastEventId`, or any access-control statement.
+    - getActivity.md verifies: `/api/activity` and `/api/activity/counts` carry no `@PreAuthorize`, no SecurityRule, fall through to `pathMatchers('/**').authenticated()`. The default `type=null` and `type=ALL` paths both route to `fetchAllActivities` which has no owner predicate.
+    - Activity payload includes `created_by` (actor identity) and `old_state`/`new_state` ActivityState diffs covering description free-text, business_name edits, internal_name edits on dataset fields, custom-metadata key/value, term/tag assignments, ownership transitions, alert halt-config changes.
+  - **Proposed doc action**: Add a "Visibility scope" admonition to `features/active-platform-features/activity-feed.md`: "The global Activity feed (`GET /api/activity`) is gated by authentication only; any authenticated user can read **cross-owner** audit-trail events including actor identity, full old-state/new-state diffs. The `type=MY_OBJECTS` filter respects the caller's owner association; the default and `type=ALL` views do not. Under `auth.type=DISABLED` the feed is anonymously reachable."
   - **Cross-references**:
-    - DOC-GAP-002, DOC-GAP-004, DOC-GAP-008 — the auth-mode-only-on-reads family (broad systemic pattern across DataEntity/Alert/Attachment/Directory/Activity)
-    - DOC-GAP-029 (Activity api-reference page missing) + DOC-GAP-030 (Activity Feed page omits type/visibility/pagination) — sibling findings
-  - **Severity rationale**: HIGH — Activity Feed is the platform's audit-trail surface; cross-owner exposure of who-changed-what diffs is GDPR/SOX-relevant in regulated environments. Description free-text fields can carry incident notes, customer ids, or internal tickets — surfaced to every authenticated user.
+    - DOC-GAP-002, DOC-GAP-004, DOC-GAP-008 — the auth-mode-only-on-reads family
+    - DOC-GAP-029 (Activity api-reference page missing) + DOC-GAP-030 (Activity Feed page omits type/visibility/pagination)
+  - **Severity rationale**: HIGH — Activity Feed is the platform's audit-trail surface; cross-owner exposure of who-changed-what diffs is GDPR/SOX-relevant in regulated environments.
 
 - **DOC-GAP-029**: No `/developer-guides/api-reference/activity` page — global Activity feed has no first-party API reference
   - **Category**: missing-page
   - **Surfaced by**:
     - `odd-platform__java__ActivityController__controller-method__getActivity.md:docs_link_semantic.inferred_docs.[1]` (status 404, confidence LOW) + `:docs_link_semantic.doc_drift_findings.[2]`
-    - `concepts.yaml:entities[Activity Feed].notes` (vocabulary_status: "codebase-anchored, doc-side-partially-covered")
+    - `concepts.yaml:entities[Activity Feed].notes`
   - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/activity` 2026-05-10 status 404 — H1 verbatim "Page Not Found".
-    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference` 2026-05-10 status 200 — sub-page enumeration: Alerts / Data Collaboration / Directory / Glossary / Integrations / Lineage / Query Examples / Reference Data / Relationships. **No "Activity" entry.**
-    - Parallel to DOC-GAP-009 (data-entities missing) — same shape, different tag.
-    - getActivity.md verifies the OpenAPI spec at `openapi.yaml:3206-3284` carries `description: 'Returns activity for dedicated period'` — no per-parameter descriptions, no MY_OBJECTS/UPSTREAM/DOWNSTREAM/ALL semantics. The spec on its own is the only API-reference surface for activity and it under-documents.
-  - **Proposed doc action**: Create `developer-guides/api-reference/activity.md` enumerating: `GET /api/activity` (twelve query parameters with their semantics — beginDate/endDate required, size, datasourceId, namespaceId, tagIds, ownerIds, userIds, type [MY_OBJECTS|UPSTREAM|DOWNSTREAM|ALL with default=ALL], eventType, lastEventId, lastEventDateTime cursor pair); `GET /api/activity/counts` (aggregate totals across the four type modes). Add to SUMMARY.md under API Reference. Cross-link from `features/active-platform-features/activity-feed.md` and from the Permissions page. **Include the visibility-scope caveat from DOC-GAP-025** as a Known-limitations admonition adjacent to the endpoint description.
-  - **Cross-references**:
-    - DOC-GAP-009 (parallel — data-entities api-reference missing; same pattern)
-    - DOC-GAP-025 (sibling — visibility-scope caveat belongs on the new page)
-    - DOC-GAP-030 (sibling — feature page omissions belong on the feature page, not the api-reference)
-  - **Severity rationale**: HIGH — Activity Feed is the only first-party API consumer surface for audit trails; integrators wanting to drive audit reads programmatically have no first-party reference and must read OpenAPI directly. Same family as DOC-GAP-009 (40 dataEntity operations punted to Swagger). The audit-trail use-case (compliance / incident review) particularly benefits from a typed reference page.
+    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/activity` 2026-05-10 status 404.
+    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference` 2026-05-10 status 200 — no "Activity" entry.
+  - **Proposed doc action**: Create `developer-guides/api-reference/activity.md` enumerating `GET /api/activity` (twelve query parameters with their semantics — beginDate/endDate required, size, datasourceId, namespaceId, tagIds, ownerIds, userIds, type [MY_OBJECTS|UPSTREAM|DOWNSTREAM|ALL with default=ALL], eventType, lastEventId, lastEventDateTime cursor pair); `GET /api/activity/counts`. Add to SUMMARY.md under API Reference. Include DOC-GAP-025's visibility-scope caveat.
+  - **Cross-references**: DOC-GAP-009, DOC-GAP-025, DOC-GAP-030.
+  - **Severity rationale**: HIGH — Activity Feed is the only first-party API consumer surface for audit trails; same family as DOC-GAP-009.
 
 - **DOC-GAP-032**: Slack Data Collaboration cross-tenant message injection + missing authorization gate undocumented
   - **Category**: drift
   - **Surfaced by**:
     - `odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md:security.known_security_gaps.[0,2]` (both severity HIGH) + `:bugs_limitations_corner_cases.[0,3]` + `:docs_link_semantic.doc_drift_findings.[0,1]`
-    - `concepts.yaml:entities[Slack collaboration app].security_aggregate.weaknesses.[0,1]` + `:cross_file_inconsistencies.[0]` **(new 2026-05-10A)**
+    - `concepts.yaml:entities[Slack collaboration app].security_aggregate.weaknesses.[0,1]` + `:cross_file_inconsistencies.[0]`
   - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration` 2026-05-10 status 200 — endpoint description verbatim: "Queue a message for delivery into Slack. Returns `202 Accepted` once the message is enqueued; a background sender (`DataCollaborationMessageSenderJob`) drains the queue with up to `datacollaboration.sending-messages-retry-count` retries per message." The page documents NO authentication / authorization requirements, NO request validation (max length, sanitisation), NO rate-limit behaviour for `POST /api/datacollaboration/providers/slack/messages`.
-    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration` 2026-05-10 status 200 — feature page describes Discussions tab and message-lifecycle but does not state authorization model. "The feature is 'disabled by default' but the UI tab remains visible, potentially confusing operators who haven't configured it" is the only operationally-relevant caveat.
-    - postMessageInSlack.md verifies: `SecurityConstants.java:96-355` has NO entry for `/api/datacollaboration/providers/slack/messages`; controller has no `@PreAuthorize`; `DataCollaborationServiceImpl.createAndSendMessage(...)` has no programmatic permission check. The service accepts any user-supplied `data_entity_id` with only existence + hollow-check (`DataCollaborationServiceImpl.java:50-52`); no ownership check. User A can attach a message to a data entity owned by user B's owner — cross-tenant message-injection. `channel_id` is also fully user-supplied; no server-side `(data_entity, allowed_channels)` mapping.
-  - **Proposed doc action**: Add a "Security caveats" sub-section to `developer-guides/api-reference/data-collaboration.md` for the POST endpoint: "**Authorization model**: this endpoint is gated by authentication only — any authenticated user can queue a Slack message attached to ANY data entity in the catalog, posted to ANY Slack channel the configured bot can reach. There is no ownership check on `data_entity_id`, no allowlist mapping for `channel_id`, no rate limit, and no body-size cap (`text` is `required` only — Slack's per-message ~40 KB limit fails AFTER the 202 response). Under `auth.type=DISABLED` the endpoint is anonymously reachable. For deployments where Slack-attached message provenance must be tied to data-entity ownership, gate the endpoint at the reverse-proxy layer or restrict the bot's channel scope to a subset that aligns with your tenancy model." Mirror the caveat on `features/active-platform-features/data-collaboration.md` (the feature page).
-  - **Cross-references**:
-    - DOC-GAP-002 / DOC-GAP-004 / DOC-GAP-008 / DOC-GAP-025 — the auth-mode-only-on-reads family extended to a write surface (the systemic pattern is "the platform's authorization model is path-pattern-coupled and silently absent on many surfaces")
-  - **Severity rationale**: HIGH — Slack workspaces frequently host channel-level confidentiality assumptions (e.g. `#engineering-private`); cross-tenant message injection plus arbitrary `channel_id` selection means an attacker with any platform login can post into any channel the bot is in, attached to any entity. In multi-tenant deployments this is a Slack-side data-leak amplifier.
-
-- **DOC-GAP-035**: `/active-platform-features/data-collaboration` returns 404 on legacy URL — canonical at `/features/active-platform-features/data-collaboration`
-  - **Category**: broken-url
-  - **Surfaced by**:
-    - `odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md:docs_link_semantic.inferred_docs.[0]` (status 404, confidence LOW) + `:docs_link_semantic.doc_drift_findings.[2]` (severity HIGH for doc-drift) **(new 2026-05-10A)**
-    - `concepts.yaml:entities[Slack collaboration app].cross_file_inconsistencies.[0]`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/active-platform-features/data-collaboration` 2026-05-10 status 404 — H1 verbatim "Page Not Found". GitBook offers two alternative URLs: `https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration.md` and `https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration.md`.
-    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration` 2026-05-10 status 200 — canonical feature page renders normally; covers Discussions tab, Slack OAuth, message-lifecycle, default-disabled posture.
-    - postMessageInSlack.md surfaces this as severity HIGH for doc-drift because the source `documentation/docs/active-platform-features/data-collaboration.md` exists in the docs repo (DOC-138 / DOC-155-159 batch landed), so the broken legacy URL is particularly confusing for operators who follow internal cross-links or older external blog posts to the un-prefixed path.
-  - **Proposed doc action**: Same as DOC-GAP-011 family — audit the codebase + documentation/ repo for any `/active-platform-features/data-collaboration` references; update to `/features/active-platform-features/data-collaboration`. Optionally add a GitBook redirect rule from the legacy path to the canonical one (`.gitbook.yaml`).
-  - **Cross-references**: DOC-GAP-011, DOC-GAP-012, DOC-GAP-013, DOC-GAP-014, DOC-GAP-015 (same URL-prefix-drift class — the Data Collaboration variant joins the cluster).
-  - **Severity rationale**: HIGH — legacy URL is more likely to surface in external blog posts / Slack discussions than for older features because the data-collaboration content was added recently; operators clicking to the legacy URL hit a 404 stub. The broken-URL itself is MEDIUM by the rubric (cosmetic 404 with redirect-suggestion stub) but the underlying doc-drift severity (operators cannot find the only page describing a feature they need to configure with care) is HIGH per sidecar's framing. Holding HIGH per the sidecar's surfaced severity.
+    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration` 2026-05-10 status 200 — endpoint description documents the queue + retry behaviour. The page documents NO authentication / authorization requirements, NO request validation, NO rate-limit behaviour.
+    - postMessageInSlack.md verifies: `SecurityConstants.java:96-355` has NO entry for `/api/datacollaboration/providers/slack/messages`; controller has no `@PreAuthorize`. The service accepts any user-supplied `data_entity_id` with only existence + hollow-check; no ownership check. `channel_id` is also fully user-supplied; no server-side mapping.
+  - **Proposed doc action**: Add a "Security caveats" sub-section to `developer-guides/api-reference/data-collaboration.md` for the POST endpoint covering: authorization model (auth-only, no ownership check on `data_entity_id`, no allowlist on `channel_id`, no rate-limit, no body-size cap), DISABLED-mode anonymous reachability. Mirror the caveat on `features/active-platform-features/data-collaboration.md`.
+  - **Cross-references**: DOC-GAP-002 / DOC-GAP-004 / DOC-GAP-008 / DOC-GAP-025 — auth-mode-only-on-reads family extended to a write surface.
+  - **Severity rationale**: HIGH — Slack workspaces frequently host channel-level confidentiality assumptions; cross-tenant message injection plus arbitrary `channel_id` selection means an attacker with any platform login can post into any channel the bot is in.
 
 - **DOC-GAP-036**: `auth.type=DISABLED` is the application.yml-bundled default but live `enable-security/authentication` pages do NOT state this — operator following the docs ships an unauthenticated platform without explicit opt-in
   - **Category**: drift
   - **Surfaced by**:
-    - `odd-platform__java__AuthorizationManagerCondition__config-key-consumer__auth_type@L11.md:docs_link_semantic.doc_drift_findings.[1]` + `:bugs_limitations_corner_cases.[2]` (severity HIGH) **(new 2026-05-10B)**
-    - `odd-platform__java__AppInfoController__config-key-consumer__auth_type@L18.md:docs_link_semantic.doc_drift_findings.[1]` + `:security.known_security_gaps.[0]` **(new 2026-05-10B)**
-    - `concepts.yaml:entities[Auth Mode].security_aggregate.weaknesses` (triangulated default-open posture)
+    - `odd-platform__java__AuthorizationManagerCondition__config-key-consumer__auth_type@L11.md:docs_link_semantic.doc_drift_findings.[1]` + `:bugs_limitations_corner_cases.[2]` (severity HIGH)
+    - `odd-platform__java__AppInfoController__config-key-consumer__auth_type@L18.md:docs_link_semantic.doc_drift_findings.[1]` + `:security.known_security_gaps.[0]`
+    - `odd-platform__java__DisabledAuthSecurityConfiguration__config-key-consumer__auth_type@L10.md:implicit_adrs.[0]` + `:security.known_security_gaps.[0]` (severity HIGH) **(2026-05-12C — wiring-site confirmation: application.yml:32-34 declares DISABLED default + live doc verbatim 'This is the default configuration')**
+    - `concepts.yaml:entities[Auth Mode].security_aggregate.weaknesses` (now 4-sidecar triangulated default-open posture)
   - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication` 2026-05-11 status 200 — verbatim: "page does not explicitly state that `DISABLED` is the bundled default. It mentions `auth.type` configuration options and how each behaves, but makes no claim about which is the application.yml default."
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security` 2026-05-11 status 200 — confirmed: `auth.ingestion.filter.enabled defaults to false` IS now stated verbatim on this parent page (partial coverage of the default-open posture; the `auth.type=DISABLED` default sibling claim is absent).
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization` 2026-05-11 status 200 — does NOT state which modes wire authorization.
-    - AppInfoController@L18.md verifies: `application.yml:34` sets `auth.type: DISABLED`; `DisabledAuthSecurityConfiguration.java:13-18` is `.anyExchange().permitAll()`; AppInfoController.java:18 declares `@Value("${auth.type}")` with NO default. An operator who omits `auth.type` in their override (helm values, env, etc.) inherits the application.yml default and runs a fully open platform.
-    - AuthorizationManagerCondition@L11.md verifies the same default + the per-config `@ConditionalOnProperty` semantics: empty-string or typo'd `auth.type` produces a deployment with NO `SecurityWebFilterChain` bean wired.
-  - **Proposed doc action**: Add a "Default behaviour" admonition to `configuration-and-deployment/enable-security/authentication.md` (or extend the existing default-disclosure on `enable-security.md`): "**The application.yml-bundled default is `auth.type: DISABLED`.** A deployment that does not explicitly set `auth.type` inherits this default and runs with `DisabledAuthSecurityConfiguration` — every endpoint, every method, every payload `.anyExchange().permitAll()`. There is no authentication and no authorization. For any production-shaped deployment, explicitly set `auth.type` to one of `LOGIN_FORM` (dev only), `OAUTH2`, or `LDAP`. Empty-string values (`AUTH_TYPE=`) or typos (`OUATH2`, `LOGINFORM`) silently produce a deployment with no `SecurityWebFilterChain` bean — Spring's autoconfiguration fallback may apply a permit-all default chain. There is no boot-time fail-fast on misconfigured `auth.type`." Pair with a sibling Known-limitations row on `enable-security.md` cross-referencing DOC-GAP-037 (the appInfo fingerprinting surface) and DOC-GAP-039 (the LOGIN_FORM-drops-authorization gap).
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/disabled-authentication` 2026-05-12 status 200 — confirmed verbatim: H1 "Disabled authentication"; body "ODD Platform allows to disable authentication at all. This is useful when you want to deploy platform locally and don't need any security configured. This is the default configuration and no additional settings are required."; YAML example `auth: type: DISABLED`; warning admonition "DO NOT use this method in your production environment!" — the page DOES say "This is the default configuration" (positive coverage of the default itself), but does NOT enumerate the blast radius (CSRF / CORS / actuator / S2S-ignored / audit-absence — see DOC-GAP-045).
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication` 2026-05-12 status 200 — parent page does NOT state DISABLED is the default; only enumerates the four modes.
+    - DisabledAuthSecurityConfiguration@L10.md verifies: `application.yml:32-34` declares `auth: # DISABLED, LOGIN_FORM, OAUTH2, LDAP\n  type: DISABLED`; the bean has no `matchIfMissing`. An operator who clears the key gets no `SecurityWebFilterChain` from any of the four config classes.
+  - **Proposed doc action**: Extend `configuration-and-deployment/enable-security/authentication.md` (the parent navigation page) with an explicit "Default behaviour" admonition above the four mode rows: "**The application.yml-bundled default is `auth.type: DISABLED`.** A deployment that does not explicitly set `auth.type` inherits this default and runs with `DisabledAuthSecurityConfiguration` — every endpoint, every method, every payload `.anyExchange().permitAll()`. For any production-shaped deployment, explicitly set `auth.type` to one of `LOGIN_FORM` (dev only), `OAUTH2`, or `LDAP`. Empty-string values (`AUTH_TYPE=`) or typos (`OUATH2`, `LOGINFORM`) silently produce a deployment with no `SecurityWebFilterChain` bean. There is no boot-time fail-fast on misconfigured `auth.type`." Pair with sibling Known-limitations rows cross-referencing DOC-GAP-037 (appInfo fingerprinting), DOC-GAP-039 (LOGIN_FORM-drops-authorization), DOC-GAP-045 (DISABLED blast radius).
   - **Cross-references**:
-    - LSN-001 / LSN-002 class — bundled-default insecure-default (canonical pattern the ontology was built to surface)
-    - DOC-GAP-037 (appInfo fingerprinting under DISABLED — same root cause, different attack surface)
-    - DOC-GAP-039 (LOGIN_FORM drops authorization framework — same default-doc-divergence shape on a different axis)
-    - Concepts.yaml triangulation across three sidecars (`AppInfoController` + `AuthorizationManagerCondition` + `IngestionDataEntitiesFilter`)
-  - **Severity rationale**: HIGH — the canonical LSN-001-class default-open posture. Operators reading current docs see auth modes enumerated as options without knowing which is the bundled default; they reasonably assume there is no default (or that the default is one of the authenticated modes). The application.yml-bundled DISABLED default plus absent fail-fast on misconfiguration is the platform's single largest "deploy with trial config, get owned" surface.
+    - LSN-001 / LSN-002 class
+    - DOC-GAP-037, DOC-GAP-039, DOC-GAP-045 — sibling auth-mode-wiring-site findings
+    - 4-sidecar concepts.yaml triangulation
+  - **Severity rationale**: HIGH — canonical LSN-001-class default-open posture. The disabled-authentication page itself does name DISABLED as "the default configuration" (positive partial coverage), but the parent navigation page does not, and the consequence cluster (DOC-GAP-045) remains unstated.
 
 - **DOC-GAP-037**: `/api/appInfo` discloses active `auth.type` + `projectVersion` to unauthenticated network callers under DISABLED-default — passive fingerprinting surface, undocumented
   - **Category**: drift
   - **Surfaced by**:
-    - `odd-platform__java__AppInfoController__config-key-consumer__auth_type@L18.md:docs_link_semantic.doc_drift_findings.[0]` + `:security.data_exposure.[0,1]` + `:security.known_security_gaps.[0]` (severity MEDIUM per sidecar; HIGH per concepts.yaml triangulation) **(new 2026-05-10B)**
+    - `odd-platform__java__AppInfoController__config-key-consumer__auth_type@L18.md:docs_link_semantic.doc_drift_findings.[0]` + `:security.data_exposure.[0,1]` + `:security.known_security_gaps.[0]`
     - `concepts.yaml:entities[Auth Mode].security_aggregate.weaknesses` (deployment fingerprinting)
   - **Evidence**:
     - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication` 2026-05-11 status 200 — verbatim verdict: "`/api/appInfo` endpoint — not mentioned"; "default value of `auth.type` (DISABLED as default) — not mentioned".
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security` 2026-05-11 status 200 — the parent page documents `auth.type` modes and `auth.ingestion.filter.enabled` default but contains no mention of `/api/appInfo`.
-    - AppInfoController@L18.md verifies: `AppInfoController.java:24-28` returns `AppInfo.authType(authType).projectVersion(projectVersion)`; `AppInfo.java:48-66` exposes both as first-class JSON fields. `SecurityConstants.WHITELIST_PATHS` (lines 95-96) does NOT include `/api/appInfo`. Under `auth.type=DISABLED`, `DisabledAuthSecurityConfiguration.java:13-18` applies `.anyExchange().permitAll()` — `/api/appInfo` is anonymously reachable and discloses (a) the deployment's auth mode (telling an attacker whether to attempt credential stuffing vs OIDC tampering vs walking in), (b) the precise platform version (telling them which CVEs apply).
-    - Under `LOGIN_FORM`/`OAUTH2`/`LDAP`, `/api/appInfo` falls through to `.authenticated()` — the disclosure surface is post-auth, but the implicit-ADR (`AppInfoController` is a *reporter* of the active mode so the SPA can render the right login flow) means an operator may reasonably expect the endpoint to be pre-auth-reachable under LOGIN_FORM too (so the form can render); the current behaviour likely produces a broken-UI bug under LOGIN_FORM that no doc page addresses.
-  - **Proposed doc action**: Add to `configuration-and-deployment/enable-security/authentication.md` a "Deployment introspection surfaces" sub-section: "`/api/appInfo` returns `{ projectVersion, authType }`. Under `auth.type=DISABLED` (the application.yml default — see DOC-GAP-036) the endpoint is reachable by any caller with network access to the HTTP port; the response discloses the deployment's active auth mode and platform version. For deployments where the auth mode or version should not be discoverable pre-authentication, place the platform behind a reverse proxy that strips or path-gates `/api/appInfo`, or move to a non-DISABLED auth mode. Note: the endpoint is also reachable post-auth under `LOGIN_FORM`/`OAUTH2`/`LDAP`; under `LOGIN_FORM` specifically, the SPA's login form may depend on calling this endpoint *before* the user has authenticated — verify your deployment's SPA bootstrap path if you wish to gate `/api/appInfo`."
-  - **Cross-references**:
-    - DOC-GAP-036 (parent default-open posture)
-    - LSN-001 / LSN-002 class
-  - **Severity rationale**: HIGH — the disclosure itself is small (auth-mode string + version string), but combined with the DISABLED-default (DOC-GAP-036) it is a reliable network-side fingerprinting probe. An attacker scanning IP ranges for ODD deployments hits `/api/appInfo`, learns the auth mode (telling them what kind of break-in is needed), reads the version (scopes the CVE set), and chooses their next move — all without needing a single credential.
+    - AppInfoController@L18.md verifies: `AppInfoController.java:24-28` returns `AppInfo.authType(authType).projectVersion(projectVersion)`; `SecurityConstants.WHITELIST_PATHS` does NOT include `/api/appInfo`. Under `auth.type=DISABLED`, the endpoint is anonymously reachable and discloses (a) the deployment's auth mode, (b) the precise platform version.
+  - **Proposed doc action**: Add to `configuration-and-deployment/enable-security/authentication.md` a "Deployment introspection surfaces" sub-section: "`/api/appInfo` returns `{ projectVersion, authType }`. Under `auth.type=DISABLED` (the application.yml default — see DOC-GAP-036) the endpoint is reachable by any caller with network access; the response discloses the deployment's active auth mode and platform version."
+  - **Cross-references**: DOC-GAP-036 (parent default-open posture); LSN-001/LSN-002 class.
+  - **Severity rationale**: HIGH — combined with DOC-GAP-036, reliable network-side fingerprinting probe.
 
 - **DOC-GAP-038**: `auth.ingestion.filter.enabled=false` default leaves `POST /ingestion/entities` unauthenticated AND `POST /ingestion/alert/alertmanager` covered by NO filter regardless of toggle — undocumented sibling-endpoint coverage gap
   - **Category**: drift
   - **Surfaced by**:
-    - `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md:docs_link_semantic.doc_drift_findings.[0,1,2]` (all three HIGH) + `:bugs_limitations_corner_cases.[0,6]` (HIGH) + `:security.known_security_gaps.[0,3]` (HIGH) **(new 2026-05-10B)**
-    - `concepts.yaml:entities[Ingestion Filter]` (canonical sidecar)
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication` 2026-05-11 status 200 — verbatim: "`auth.ingestion.filter.enabled` config key — not mentioned"; "`Authorization: Bearer` for ingestion endpoints — not mentioned"; "`IngestionDataEntitiesFilter` — not mentioned".
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security` 2026-05-11 status 200 — confirmed verbatim: "`auth.ingestion.filter.enabled` defaults to `false`." — partial doc coverage (parent page) but no surrounding context (header convention, sibling-endpoint coverage, plaintext token comparison, body-buffered-before-auth DoS).
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s` 2026-05-11 status 200 — confirmed: only documents `auth.s2s.enabled` + `auth.s2s.token` + `X-API-Key` header for the SEPARATE `S2sAuthenticationFilter`. The S2S subpage references `auth.ingestion.filter.enabled` in passing ("consider combining S2S with `auth.ingestion.filter.enabled: true`") but does NOT document the per-datasource bearer-token protocol, the per-collector fallback, the `Authorization: Bearer` header convention, or that the toggle covers only `/ingestion/entities`.
-    - IngestionDataEntitiesFilter@L20.md verifies: `application.yml:46-48` explicitly sets `auth.ingestion.filter.enabled: false`; the annotation at IngestionDataEntitiesFilter.java:20 has `havingValue="true"` with no `matchIfMissing`. When false, the filter bean is not registered, `SecurityConstants.WHITELIST_PATHS` whitelists `/ingestion/**`, every auth mode's `permittedPaths` includes `/ingestion/entities`, and the endpoint is reachable without any credential. Critically: `AlertManagerController.java:21` matches `/ingestion/alert/alertmanager` and is NOT covered by `IngestionDataEntitiesFilter` (path mismatch) NOR by `IngestionDataSourceFilter` (also path mismatch) NOR by `@PreAuthorize` — turning `auth.ingestion.filter.enabled=true` does NOT protect this endpoint. The property name "ingestion filter" reads globally; in practice it gates one of three `/ingestion/*` paths.
-    - Two distinct doc-drift sub-findings: (a) docs CONFLATE `S2sAuthenticationFilter` (global `X-API-Key`) with `IngestionDataEntitiesFilter` (path-matched `Authorization: Bearer`) — two distinct filters, different headers, different token sources, different config keys, different scopes; (b) docs do not enumerate which `/ingestion/*` endpoints are covered by which filter, so an operator turning the toggle ON believes the whole ingestion surface is locked down.
-  - **Proposed doc action**: Three-part doc action:
-    1. Add to `configuration-and-deployment/enable-security/authentication.md` (or extend the S2S subpage) a "Per-datasource bearer-token ingestion auth" sub-section: "Distinct from the global S2S (`auth.s2s.enabled` + `X-API-Key`) authentication, the platform supports per-datasource bearer-token authentication on `POST /ingestion/entities`. Controlled by `auth.ingestion.filter.enabled` (default `false`). When `true`, callers must present `Authorization: Bearer <token>` matching the registered datasource's TOKEN row (or the parent collector's TOKEN row if the datasource has none). Token comparison is plaintext `String.equals` (no hashing, no constant-time comparison, no rotation grace — see DOC-GAP-034 for the rotation contract). Failed-auth attempts are NOT logged and NOT rate-limited."
-    2. Add a "Coverage of `/ingestion/*` endpoints" table to the same section: enumerate `POST /ingestion/entities` (covered by `IngestionDataEntitiesFilter` when `auth.ingestion.filter.enabled=true`), `POST /ingestion/datasources` (covered by `IngestionDataSourceFilter` unconditionally — always on), `POST /ingestion/alert/alertmanager` (NOT covered by any filter, NO `@PreAuthorize`, see DOC-GAP-003 for the AlertManager-specific caveats). State explicitly: "`auth.ingestion.filter.enabled=true` does NOT protect `POST /ingestion/alert/alertmanager` — that endpoint is reachable to any caller on the network plane regardless of the toggle."
-    3. Add a "Default behaviour" admonition: "The bundled `application.yml` defaults `auth.ingestion.filter.enabled` to `false`. A bundled deployment that the operator runs unmodified has `POST /ingestion/entities` reachable by any caller able to speak the ingress API — any caller can submit a `DataEntityList` payload referencing any registered `dataSourceOddrn`. The ingested entities become visible to all platform users. For production deployments, explicitly set `auth.ingestion.filter.enabled=true` AND provision per-datasource (or per-collector) tokens AND configure your collectors to send the `Authorization: Bearer` header."
-  - **Cross-references**:
-    - DOC-GAP-036 (parent default-open posture; triangulated)
-    - DOC-GAP-003 (AlertManager unprotected sibling endpoint — extended here with the toggle-coverage caveat)
-    - DOC-GAP-034 (rotation contract for the collector tokens this filter checks)
-    - LSN-001 / LSN-002 — bundled-default class
-  - **Severity rationale**: HIGH — same shape as LSN-001 (attachment-ephemeral default): a critical-severity default the docs only partially surface (parent page now mentions the default but not the consequences, sibling page conflates two distinct filters, no page enumerates which `/ingestion/*` paths are covered). Operators who toggle ON believe the whole `/ingestion/*` surface is locked down; in practice only one of three paths is.
+    - `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md:docs_link_semantic.doc_drift_findings.[0,1,2]` (all three HIGH) + `:bugs_limitations_corner_cases.[0,6]` (HIGH) + `:security.known_security_gaps.[0,3]` (HIGH)
+    - `concepts.yaml:entities[Ingestion Filter]`
+  - **Evidence**: see existing DOC-GAP-038 body (preserved); 2026-05-11 verifications stand.
+  - **Proposed doc action**: Three-part doc action — per-datasource bearer-token sub-section, coverage table, default-behaviour admonition. See full text in batch 2026-05-10B retained.
+  - **Cross-references**: DOC-GAP-036, DOC-GAP-003, DOC-GAP-034; LSN-001/LSN-002.
+  - **Severity rationale**: HIGH — same shape as LSN-001 (attachment-ephemeral default).
 
 - **DOC-GAP-039**: `auth.type=LOGIN_FORM` runs WITHOUT the authorization framework (Policies / Permissions / Roles / Owners) — `Authorization` page describes the framework with no mention of which auth modes wire it
   - **Category**: drift
   - **Surfaced by**:
-    - `odd-platform__java__AuthorizationManagerCondition__config-key-consumer__auth_type@L11.md:docs_link_semantic.doc_drift_findings.[0]` + `:bugs_limitations_corner_cases.[1]` (severity HIGH) + `:security.known_security_gaps.[1]` (severity HIGH) **(new 2026-05-10B)**
+    - `odd-platform__java__AuthorizationManagerCondition__config-key-consumer__auth_type@L11.md:docs_link_semantic.doc_drift_findings.[0]` + `:bugs_limitations_corner_cases.[1]` (severity HIGH) + `:security.known_security_gaps.[1]` (severity HIGH)
+    - `odd-platform__java__LoginFormSecurityConfiguration__config-key-consumer__auth_type@L31.md:bugs_limitations_corner_cases.[0]` (severity HIGH) + `:security.known_security_gaps.[0]` (severity HIGH) **(2026-05-12C — wiring-site confirmation: LoginFormSecurityConfiguration.java:55-57 does NOT call `new AuthorizationCustomizer(...)`)**
     - `concepts.yaml:entities[Auth Mode].security_aggregate.weaknesses`
   - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization` 2026-05-11 status 200 — verbatim verdict: "The Authorization page describes the authorization framework components (Policies, Permissions, Roles, Owners, and User-owner association) but does not discuss which authentication modes wire or enable these authorization features. There are no statements about LOGIN_FORM, OAUTH2, LDAP, or DISABLED modes in relation to the authorization framework."
-    - AuthorizationManagerCondition@L11.md verifies: `OAuthSecurityConfiguration.java:98` and `LDAPSecurityConfiguration.java:145` are the ONLY two `SecurityWebFilterChain` configurations that instantiate `new AuthorizationCustomizer(permissionService, extractors)` — i.e. only OAUTH2 and LDAP wire the per-Policy permission evaluation. `LoginFormSecurityConfiguration.java:55-58` configures `.authorizeExchange(...).pathMatchers("/**").authenticated()` — that gates by authentication, never by Policy/Permission/Role/Owner. `DisabledAuthSecurityConfiguration.java:13-18` skips both. The composite `AuthorizationManagerCondition` returns TRUE only for OAUTH2 OR LDAP (matching this design); the Condition class itself is unwired dead code (see DOC-GAP-040), but the underlying wiring is firmly OAUTH2-or-LDAP only.
-    - The live `enable-security/authentication` page mentions "LOGIN_FORM is documented as dev-only" but does NOT state the consequence: "switching to LOGIN_FORM means the entire authorization framework you see on /authorization is silently absent."
-  - **Proposed doc action**: Add a "Authorization framework applicability" admonition to the top of `configuration-and-deployment/enable-security/authorization.md`: "The Policies / Permissions / Roles / Owners framework described on this page is wired ONLY when `auth.type` is `OAUTH2` or `LDAP`. Under `auth.type=LOGIN_FORM` (documented as dev-only) the platform falls through to `.authenticated()` — every authenticated user can call every endpoint covered by Policy gates. Under `auth.type=DISABLED` (the application.yml default — see DOC-GAP-036) there is neither authentication nor authorization. To deploy with the access-control posture this page describes, set `auth.type` to `OAUTH2` or `LDAP`." Mirror with a sibling note on the authentication page next to the LOGIN_FORM row: "Note: LOGIN_FORM does not wire the authorization framework — see the Authorization page for details."
-  - **Cross-references**:
-    - DOC-GAP-036 (parent default-open posture)
-    - DOC-GAP-040 (`AuthorizationManagerCondition` is unwired dead code — adjacent finding; this DOC-GAP-039 is about the doc gap, DOC-GAP-040 is about the code hygiene)
-    - DOC-GAP-002 / DOC-GAP-004 / DOC-GAP-008 / DOC-GAP-025 — the auth-mode-only-on-reads family (LOGIN_FORM-drops-authorization makes those gaps universal under LOGIN_FORM regardless of the per-controller posture)
-  - **Severity rationale**: HIGH — operators landing on `Authorization` to plan permission-model integration reasonably assume the framework applies under all four modes; switching to LOGIN_FORM in a misconfigured production deployment silently disables every Policy gate. Per the LOGIN_FORM "dev-only" caveat on the live docs, the audience for this doc fix is operators who misread the dev-only framing as "you may use it in production with a few caveats." This is the canonical doc-vs-code authority gap.
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization` 2026-05-11 status 200 — verbatim: "The Authorization page describes the authorization framework components (Policies, Permissions, Roles, Owners, and User-owner association) but does not discuss which authentication modes wire or enable these authorization features."
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/login-form` 2026-05-12 status 200 — login-form page itself does NOT mention the authorization framework applicability.
+    - LoginFormSecurityConfiguration@L31.md verifies: lines 55-57 configure only `.pathMatchers("/**").authenticated()` — NO `AuthorizationCustomizer`. By contrast OAuthSecurityConfiguration.java:98 and LDAPSecurityConfiguration.java:145 BOTH instantiate `new AuthorizationCustomizer(permissionService, extractors)`. Result: every form-authenticated user can call every endpoint regardless of any Policy/Permission/Role configured via the UI.
+  - **Proposed doc action**: Add a "Authorization framework applicability" admonition to the top of `configuration-and-deployment/enable-security/authorization.md`: "The Policies / Permissions / Roles / Owners framework described on this page is wired ONLY when `auth.type` is `OAUTH2` or `LDAP`. Under `auth.type=LOGIN_FORM` (documented as dev-only) the platform falls through to `.authenticated()` — every authenticated user can call every endpoint covered by Policy gates. Under `auth.type=DISABLED` (the application.yml default — see DOC-GAP-036) there is neither authentication nor authorization. To deploy with the access-control posture this page describes, set `auth.type` to `OAUTH2` or `LDAP`." Mirror with a sibling note on the authentication parent page next to the LOGIN_FORM row and a fail-loud caveat on `login-form.md` itself.
+  - **Cross-references**: DOC-GAP-036, DOC-GAP-040, DOC-GAP-002/004/008/025 (auth-mode-only-on-reads family).
+  - **Severity rationale**: HIGH — operators landing on `Authorization` reasonably assume the framework applies under all four modes; switching to LOGIN_FORM in a misconfigured production deployment silently disables every Policy gate. 2026-05-12C wiring-site evidence promotes this to "load-bearing" — every LOGIN_FORM user is also granted ADMIN authorities (`LoginFormSecurityConfiguration.java:81`) which compounds the gap.
 
 - **DOC-GAP-041**: Activity-feed page claims `odd.activity.partition-period` controls "retention and partitioning" — code never DROPs activity partitions; the retention claim is materially incorrect
   - **Category**: drift
   - **Surfaced by**:
-    - `odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md:docs_link_semantic.doc_drift_findings.[0]` + `:bugs_limitations_corner_cases.[0]` (severity HIGH — "silent-data-growth class — analogous to LSN-001") **(new 2026-05-10B)**
-    - `concepts.yaml:entities[Activity Table Partitioning]` (new operational concept in 2026-05-10B)
+    - `odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md:docs_link_semantic.doc_drift_findings.[0]` + `:bugs_limitations_corner_cases.[0]` (severity HIGH — "silent-data-growth class — analogous to LSN-001")
+    - `concepts.yaml:entities[Activity Table Partitioning]`
   - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed` 2026-05-11 status 200 — verbatim Configuration section: "Activity-feed retention and partitioning are controlled by the platform-level setting [`odd.activity.partition-period`](/configuration-and-deployment/odd-platform.md#activity-feed-partitioning-odd-activity-partition-period) on [Configure ODD Platform](/configuration-and-deployment/odd-platform.md). Adjust the partitioning cadence per the volume your deployment generates — the operator-side reference is the canonical home for this key."
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` 2026-05-11 status 200 — partition-period section verbatim documents the cadence ("The default creates a new partition every 30 days") but contains NO mention of retention or DROP semantics. Activity partitioning section: "Mention of partition RETENTION semantics or DROP path for activity table: Not present — no retention or DROP discussion for the activity table."
-    - ActivityTablePartitionManager@L11.md verifies code: `AbstractPartitionManager.createPartitionsIfNotExists` (AbstractPartitionManager.java:14-51) only CREATEs partitions; it never invokes `PartitionService.dropPartition` or `getEmptyPastPartitions` (PartitionService.java:21-25 — both methods exist on the interface but are never called for the activity table; grep for `dropPartition` in the partition package returns only the service itself, no callers). Setting `partition-period=7` to "reduce retention" produces narrower partitions but unbounded growth — the activity table accumulates rows monotonically.
-  - **Proposed doc action**: Two-part doc action:
-    1. Fix the activity-feed page's Configuration section verbatim: remove the word "retention" from "Activity-feed retention and partitioning are controlled by..." — the setting controls partition WIDTH/cadence only. Replace with: "Activity-feed partitioning cadence is controlled by the platform-level setting `odd.activity.partition-period` on Configure ODD Platform. **Activity-feed retention is not automatically managed by ODD Platform** — partitions are created but never dropped. Operators wanting to shorten retention must manually `DROP TABLE` aged partitions via DBA workflow, or maintain an external pgcron / housekeeping job that drops `activity_YYYYMMDD_YYYYMMDD` partitions older than the desired retention window."
-    2. Add to `configuration-and-deployment/odd-platform.md` (under the existing `odd.activity.partition-period` section) a "Known limitations: no automatic retention" admonition: "There is no automatic DROP path for the `activity` table. The setting controls partition width only; partitions accumulate over the lifetime of the deployment. For deployments running ODD Platform for multiple years with high activity volumes, schedule an external pgcron / housekeeping job to drop aged partitions per your retention policy. The platform's `PartitionService.dropPartition` API exists but is not invoked for the activity table by any built-in job."
+    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed` 2026-05-11 status 200 — verbatim Configuration section claims `odd.activity.partition-period` controls "retention and partitioning."
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` 2026-05-11 status 200 — partition-period section documents cadence but contains NO mention of retention or DROP semantics.
+    - ActivityTablePartitionManager@L11.md verifies code: `AbstractPartitionManager.createPartitionsIfNotExists` only CREATEs partitions; it never invokes `PartitionService.dropPartition`.
+  - **Proposed doc action**: Two-part fix. (1) Remove "retention" from the activity-feed page's claim; replace with cadence-only wording + explicit "retention is not managed" note. (2) Add to `configuration-and-deployment/odd-platform.md` partition-period section a "Known limitations: no automatic retention" admonition.
+  - **Cross-references**: LSN-001 class; DOC-GAP-042; DOC-GAP-043.
+  - **Severity rationale**: HIGH — materially incorrect doc claim with LSN-001-class operational consequence.
+
+- **DOC-GAP-045**: `disabled-authentication` page declares DISABLED "the default configuration" with a single production-warning, but omits the full blast radius (CSRF / CORS / actuator / S2S-ignored / audit-absence / no boot WARN)
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__DisabledAuthSecurityConfiguration__config-key-consumer__auth_type@L10.md:docs_link_semantic.doc_drift_findings.[0,1,2,3]` (all four HIGH or MEDIUM with HIGH parent classification) + `:bugs_limitations_corner_cases.[0,1,2,4,5]` + `:security.known_security_gaps.[0,1,2,3,4,5]` (multiple HIGH/MEDIUM) **(new 2026-05-12C — wiring-site-level evidence)**
+    - `concepts.yaml:entities[Auth Mode]` (canonical sidecar — concept axes expanded with `config_prefixes` + `controllers` after batch C)
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/disabled-authentication` 2026-05-12 status 200 — full page body re-verified verbatim: H1 "Disabled authentication"; body "ODD Platform allows to disable authentication at all. This is useful when you want to deploy platform locally and don't need any security configured. This is the default configuration and no additional settings are required."; YAML `auth: type: DISABLED`; warning "DO NOT use this method in your production environment!". Re-verified the page does NOT mention: (a) CSRF protection or its absence, (b) CORS configuration, (c) actuator endpoints, (d) audit logging, (e) S2S filter behaviour under DISABLED, (f) `/api/appInfo` introspection, (g) `auth.s2s.enabled` being silently ignored under DISABLED, (h) absence of boot-time WARN log.
+    - DisabledAuthSecurityConfiguration@L10.md verifies: (a) `DisabledAuthSecurityConfiguration.java:15` calls `.csrf(ServerHttpSecurity.CsrfSpec::disable)` — CSRF off; (b) no `.cors(...)` call in the entire class (line 13-18) — and no global `CorsWebFilter` / `CorsConfigurationSource` bean anywhere in `<odd-platform-repo>/odd-platform-api/src/main/java` (verified via grep 2026-05-12); (c) `application.yml:226-240` enables `/actuator/health|prometheus|env|info` by default, and `SecurityConstants.WHITELIST_PATHS:95-96` lists `/actuator/**` regardless of mode — under DISABLED's `.anyExchange().permitAll()` they are unauthenticated; (d) grep for `AuditLog | @Auditable | AuthLogger | accessLog` across `<odd-platform-repo>/odd-platform-api/src/main/java` returned zero matches 2026-05-12 — no audit infrastructure anywhere; (e) `DisabledAuthSecurityConfiguration.java:13-18` does NOT read `auth.s2s.enabled` — under DISABLED, `auth.s2s.enabled=true` is silently ignored (the S2sAuthenticationFilter is wired in LoginForm/OAuth/LDAP only via `LoginFormSecurityConfiguration.java:61-63`, `OAuthSecurityConfiguration.java:108-110`, `LDAPSecurityConfiguration.java:149-151`); (f) `AppInfoController` is anonymously reachable under DISABLED per DOC-GAP-037; (g) the class has no `@Slf4j` annotation, no `org.slf4j.Logger` import, no `log.warn(...)` — the deployment boots silently into an unauthenticated state with no log signal (contrast with `LDAPSecurityConfiguration.java:56` which IS `@Slf4j`).
+  - **Proposed doc action**: Extend `configuration-and-deployment/enable-security/authentication/disabled-authentication.md` with a "Blast radius" / "What DISABLED actually disables" section immediately below the warning admonition: "Under `auth.type=DISABLED` the platform serves every HTTP path under `/**` to every network caller with no authentication and no authorization. Additionally: (1) **CSRF** is disabled — POST/PUT/DELETE without CSRF tokens succeed. (2) **CORS** is unconfigured at the security layer — cross-origin browser callers reach the application via `.anyExchange().permitAll()` but no `Access-Control-*` response headers are added; behaviour is inconsistent vs `OAUTH2`/`LDAP` which both call `.cors(withDefaults())`. (3) **Actuator endpoints** `/actuator/{health,prometheus,env,info}` (enabled by default in `application.yml:226-240`) are reachable on the same HTTP port; `/actuator/env` discloses resolved configuration property names. (4) **`auth.s2s.enabled=true` is silently ignored** under DISABLED — the S2sAuthenticationFilter is only wired in `LOGIN_FORM`/`OAUTH2`/`LDAP`. An operator who configures S2S thinking it overlays additional protection on top of DISABLED gets no warning. (5) **No audit logging** is emitted by any auth path in the codebase — under DISABLED specifically, attackers leave no audit trail. (6) **No boot-time WARN** is logged when DISABLED activates — the class has no `@Slf4j`. Operators inheriting an unmodified container image get DISABLED with no startup signal." Pair with a sibling Known-limitations row on the parent `enable-security/authentication.md` cross-referencing this section.
   - **Cross-references**:
-    - LSN-001 class — silent-data-growth-default analogous to attachment-ephemeral-default; operator follows doc, believes retention is managed, accumulates unbounded data
-    - DOC-GAP-042 (2x partition width undocumented — same page, adjacent finding)
-    - DOC-GAP-043 (silent-fail on partition CREATE failure — same subsystem, adjacent finding)
-  - **Severity rationale**: HIGH — the doc page is materially incorrect (claims `partition-period` controls retention when it does not), and the doc-vs-code divergence has an LSN-001-class operational consequence: operator setting `partition-period=7` to "reduce retention" gets narrower partitions but unbounded growth, then runs into table-size / planner-cost problems years later with no visibility into why. The operationally-misleading default-doc claim is the textbook LSN-001 case-law pattern.
+    - DOC-GAP-036 (DISABLED-default of `auth.type` undocumented) — parent finding; this DOC-GAP-045 captures the blast-radius gap that DOC-GAP-036's admonition should reference
+    - DOC-GAP-037 (`/api/appInfo` fingerprinting under DISABLED) — sub-finding of the same blast radius
+    - DOC-GAP-006 (actuator/env exposure for S3 credentials) — same actuator-exposure root cause, different consumer
+    - LSN-001 / LSN-002 — bundled-default insecure-default class
+    - Drives a `/log-issue odd-platform` upstream issue for the boot WARN
+  - **Severity rationale**: HIGH — the page exists and frames DISABLED as "the default configuration" with a production warning; an operator who reads the warning and decides DISABLED is OK for dev gets no view of the SIX additional consequences beyond "no authentication." This is the most directly LSN-001-class "framing without blast radius" gap in the entire ontology — a single page where adding one section would close six operational caveats at once.
+
+- **DOC-GAP-046**: OAuth2/OIDC docs list 7 supported providers (AWS Cognito, GitHub, Google, Azure AD, Okta, Keycloak, Custom OIDC) but `Provider` enum has only 5; Okta/Keycloak operators silently get no provider-specific user enrichment and no provider-specific logout
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md:docs_link_semantic.doc_drift_findings.[0]` (severity HIGH) + `:bugs_limitations_corner_cases.[4]` (severity HIGH) + `:security.known_security_gaps.[3]` (severity HIGH) **(new 2026-05-12C)**
+    - `concepts.yaml:entities[Auth Mode]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc` 2026-05-12 status 200 — verbatim: lists 7 providers (AWS Cognito, GitHub, Google, Azure AD, Okta, Keycloak, Custom OIDC providers). Includes YAML examples for Keycloak (`provider: keycloak`) and Okta (`provider: okta`).
+    - OAuthSecurityConfiguration@L71.md verifies: `Provider.java:3-5` enumerates exactly 5 values: `COGNITO, GITHUB, GOOGLE, ODD_IAM, AZURE`. `<odd-platform-repo>/odd-platform-api/src/main/java/.../auth/handler/impl/` contains only `GoogleUserHandler.java` and `GithubUserHandler.java` (verified via filesystem listing 2026-05-12). `<odd-platform-repo>/odd-platform-api/src/main/java/.../auth/logout/` contains 5 named handlers: Cognito, Google, GitHub, Azure, ODD_IAM (no Okta, no Keycloak). The `Provider.GOOGLE.name()` comparison at `OAuthSecurityConfiguration.java:168` is the only enum-typed comparison; everywhere else `properties.getClient().get(providerId).getProvider()` flows as a raw string into `shouldHandle(provider)`.
+    - Result: Okta and Keycloak operators authenticate via generic OIDC (Spring's discovery handles them) but: (a) get NO provider-specific user enrichment (no admin-group claim mapping for `groups`/`roles` claims — operators following the Keycloak/Okta docs examples expecting admin assignment via group membership get silent failure), (b) get NO provider-specific logout (fallback to OIDC-initiated logout only; acceptable for OIDC-compliant providers but operators relying on Okta's admin-group mapping see no admin role assignment).
+    - Adjacent gap: `ODD_IAM` IS in the `Provider` enum but is NOT documented on the live OAuth2/OIDC page — drift in the other direction (docs missing the ODD_IAM option).
+  - **Proposed doc action**: Two-part doc action. (1) On `configuration-and-deployment/enable-security/authentication/oauth2-oidc.md`, add a "Provider handler coverage" Known-limitations admonition next to the Supported Providers list: "Provider-specific behaviour (user enrichment, admin-group claim mapping, logout) is implemented in handler classes under `auth/handler/impl/` and `auth/logout/`. The current handler set covers: **User enrichment** — Google + GitHub only. **Logout** — Cognito + Google + GitHub + Azure + ODD_IAM. **Okta + Keycloak + Custom OIDC providers** authenticate via generic OIDC discovery and receive: NO provider-specific user enrichment (admin-group claims from these providers are not mapped to the platform's ADMIN role — every Okta/Keycloak user authenticates as a regular USER regardless of group membership), NO provider-specific logout (falls back to OIDC-initiated end-session, which works when the provider supports it). For Okta/Keycloak admin-group integration, file an upstream issue requesting handler implementations." (2) Add a "Provider value" note for the `ODD_IAM` enum member: "The `ODD_IAM` provider value is supported by the platform (logout handler present) but is intended for ODD-hosted deployments; external operators should use one of the public providers listed above."
+  - **Cross-references**: LSN-010 (Azure admin-groups default key drift) — same family of "admin-role assignment defaults are a recurring documentation drift surface across auth modes". Drives a `/log-issue odd-platform` upstream for handler implementations.
+  - **Severity rationale**: HIGH — operators following the OAuth2/OIDC docs for Okta or Keycloak deploy expecting admin-group integration to work and get a silent gap; the docs frame these as supported providers with no warning.
+
+- **DOC-GAP-047**: OAuth2 docs reference `azure-tenant-id` config key + use `${auth.oauth2.client.azure.azure-tenant-id}` interpolation, but `ODDOAuth2Properties.OAuth2Provider` POJO has NO `azureTenantId` field — Azure YAML example is not deployable as-shown
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md:docs_link_semantic.doc_drift_findings.[3]` + `:bugs_limitations_corner_cases.[7]` (severity MEDIUM per sidecar; HIGH per concepts.yaml triangulation — docs example is not deployable) **(new 2026-05-12C)**
+    - `concepts.yaml:entities[Auth Mode]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc` 2026-05-12 status 200 — verbatim Azure section quotes `azure-tenant-id` field references: "`azure-tenant-id` must still be set to the tenant that owns the app registration." The YAML examples use `${auth.oauth2.client.azure.azure-tenant-id}` interpolation in `issuer-uri`.
+    - OAuthSecurityConfiguration@L71.md verifies: `ODDOAuth2Properties.OAuth2Provider` at `ODDOAuth2Properties.java:32-52` has fields `clientId, clientSecret, provider, clientName, redirectUri, scope, issuerUri, authorizationUri, tokenUri, userInfoUri, jwkSetUri, logoutUri, userNameAttribute, adminAttribute, groupsClaim, adminUserInfoFlag, adminGroups, adminPrincipals, organizationName, allowedDomain, pkce` — and crucially does NOT include `azureTenantId`. The commented Azure example in `application.yml:128-156` uses the same `${auth.oauth2.client.azure.azure-tenant-id}` pattern. An operator who uncomments the example as-is hits a Spring `Could not resolve placeholder` failure at boot.
+  - **Proposed doc action**: Two-part doc fix (with a code-side option). Doc-side: update the Azure section on `oauth2-oidc.md` to either (a) drop the `azure-tenant-id` separate key and have operators inline the tenant id into `issuer-uri` directly (`https://login.microsoftonline.com/{your-tenant-id}/v2.0`), or (b) document that the field must be added to the operator's local properties via a workaround. Recommend (a) as the canonical fix — matches Spring Boot's OAuth2 client convention. Code-side: file `/log-issue odd-platform` to either add the `azureTenantId` field to `ODDOAuth2Properties.OAuth2Provider` OR update the docs example. The decision is the maintainer's; the doc-vs-code divergence is the finding.
+  - **Cross-references**: DOC-GAP-048 (Azure `logout-uri` not validated — same Azure-doc-vs-code surface). Drives `/log-issue odd-platform` for field/docs reconciliation.
+  - **Severity rationale**: HIGH — the docs YAML example is not deployable verbatim. Operators copy-pasting the Azure example hit a Spring placeholder-resolution failure at boot. This is the "doc example doesn't run" failure mode — visible at first deploy, costly because the operator has to debug what should have been a copy-paste.
+
+- **DOC-GAP-048**: OAuth2 docs flag Azure `logout-uri` as REQUIRED ("unset value causes NullPointerException") but `ODDOAuth2Properties.validate()` only checks `clientId` and `provider` — operator boots successfully and fails at first logout
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md:docs_link_semantic.doc_drift_findings.[2]` + `:bugs_limitations_corner_cases.[3]` + `:security.known_security_gaps.[4]` (severity MEDIUM per sidecar; HIGH per concepts.yaml triangulation) **(new 2026-05-12C)**
+    - `concepts.yaml:entities[Auth Mode]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc` 2026-05-12 status 200 — verbatim: "Always include `logout-uri` when configuring the `azure` provider." When unset: "leaving `logout-uri` unset raises a `NullPointerException` and the logout flow returns a 500 response."
+    - OAuthSecurityConfiguration@L71.md verifies: `ODDOAuth2Properties.validate()` (lines 17-28) checks `clientId` and `provider` for non-empty only; `logoutUri` and other fields are unchecked. An operator following the Azure example without `logout-uri` boots successfully and fails at first logout — runtime failure, not boot failure. Fail-fast was applied to `clientId` and `provider`; the same posture was not extended to `logoutUri` despite the docs flagging it as required.
+  - **Proposed doc action**: Two-part fix. (1) Doc-side stop-gap: strengthen the Azure section's caveat verbatim on `oauth2-oidc.md`: "**Critical**: `logout-uri` must be configured for the Azure provider. The platform does NOT validate this at boot time — an Azure deployment without `logout-uri` boots successfully and fails at the first user logout with a 500 response. Verify your deployment has `auth.oauth2.client.azure.logout-uri` set before promoting to production." (2) Code-side fix (preferred long-term): file `/log-issue odd-platform` to extend `ODDOAuth2Properties.validate()` to require `logoutUri` when `provider.equalsIgnoreCase("azure")`. The same posture should extend to any provider-specific required field.
+  - **Cross-references**: DOC-GAP-047 (Azure tenant-id field absent — same Azure-doc-vs-code surface). Drives `/log-issue odd-platform`.
+  - **Severity rationale**: HIGH — the docs name the requirement explicitly but the code's fail-fast posture is incomplete; operators rely on the platform's boot-time validation for safety nets that don't exist for this field.
+
+- **DOC-GAP-049**: OAuth2/OIDC docs do NOT mention `auth.s2s.enabled` or the S2S composition with OAUTH2 — operators deploying OAuth2 + S2S see an undocumented X-API-Key → ADMIN-across-all-paths surface
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md:docs_link_semantic.doc_drift_findings.[1]` + `:bugs_limitations_corner_cases.[5]` + `:security.known_security_gaps.[0]` (severity HIGH) **(new 2026-05-12C)**
+    - `odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md:bugs_limitations_corner_cases.[6]` + `:security.known_security_gaps.[no-failure-handler? actually S2S]` (related — LDAP page silent on S2S composition too)
+    - `concepts.yaml:entities[Auth Mode]` (S2S composes-not-mutex — 4-sidecar triangulated)
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc` 2026-05-12 status 200 — verbatim verdict: the page does NOT mention `auth.s2s.enabled` or discuss how S2S authentication composes with OAuth2.
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/ldap` 2026-05-12 status 200 — LDAP page is also silent on S2S composability.
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/s2s` 2026-05-12 status 200 — does correctly state "S2S runs alongside the configured interactive auth mechanism, not instead of it" + "they can call any endpoint that admins can call" + lists `LOGIN_FORM`, `OAUTH2`, `LDAP` as compatible — but the doc graph is one-directional; landing on the OAuth2/OIDC or LDAP page does not surface this.
+    - OAuthSecurityConfiguration@L71.md + LDAPSecurityConfiguration@L51.md verify: `OAuthSecurityConfiguration.java:108-110` and `LDAPSecurityConfiguration.java:149-151` both `addFilterAt(s2sAuthenticationFilter, SecurityWebFiltersOrder.HTTP_BASIC)` when `auth.s2s.enabled=true`. The S2S filter (`S2sAuthenticationFilter.java:31-34`) injects a hard-coded `ADMIN` user + `ADMIN` role into the security context — applying across the ENTIRE `/**` surface (not just `/ingestion/**`). An operator setting `auth.s2s.enabled=true` alongside OAUTH2 or LDAP exposes a broad API-key authentication surface — every controller, every endpoint, every method — with ADMIN privilege.
+  - **Proposed doc action**: Add a "Server-to-server (S2S) composability" admonition to BOTH `oauth2-oidc.md` and `ldap.md` (and `login-form.md` for symmetry): "When `auth.s2s.enabled=true` (default `false` per `application.yml:40-41`), the S2sAuthenticationFilter is layered on top of the active auth mode at the `HTTP_BASIC` filter slot. Requests bearing a valid `X-API-Key` header are processed as a hard-coded ADMIN principal — across the ENTIRE `/**` surface, not just the ingestion paths. This composition is distinct from `auth.ingestion.filter.enabled` (the per-datasource bearer-token filter that only covers `/ingestion/entities`). See [Server-to-server (S2S)](/configuration-and-deployment/enable-security/authentication/s2s.md) for the full filter behaviour, and treat the S2S token as a high-privilege admin-equivalent credential." Cross-link from each mode page to the S2S sub-page.
+  - **Cross-references**:
+    - DOC-GAP-051 (LDAP page silent on multiple security caveats — S2S composition is one of seven gaps)
+    - DOC-GAP-052 (LOGIN_FORM page omits authorization framework applicability)
+    - The S2S-composes-not-mutex cross-cutting pattern (4-sidecar triangulated in concepts.yaml batch C)
+  - **Severity rationale**: HIGH — operators deploying OAuth2/LDAP and reading the dedicated mode page have no view of the S2S surface unless they separately land on the S2S sub-page; the X-API-Key → ADMIN-across-`/**` semantics are operationally significant and deserve cross-linking from each mode page.
+
+- **DOC-GAP-050**: LDAP `auth.ldap.password` is bound via `@ConfigurationProperties + @Data` and leaks through `/actuator/env` to any authenticated user (whitelisted under WHITELIST_PATHS) — undocumented on LDAP setup page
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md:docs_link_semantic.doc_drift_findings.[actuator-env password leak]` + `:bugs_limitations_corner_cases.[actuator-env password leak]` (severity HIGH) + `:security.known_security_gaps.[actuator env password]` (severity HIGH) **(new 2026-05-12C)**
+    - `concepts.yaml:entities[Auth Mode]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/ldap` 2026-05-12 status 200 — verbatim verdict: page does NOT mention Spring actuator endpoints or credential exposure concerns. The page documents `auth.ldap.username` and `auth.ldap.password` as configuration keys without any actuator-exposure warning.
+    - LDAPSecurityConfiguration@L51.md verifies: `ODDLDAPProperties.java:9,14` declares `password` as a plain `String` field bound via `@ConfigurationProperties("auth.ldap")` + Lombok `@Data` getter. `application.yml:226-240` enables `/actuator/env` with `management.endpoints.web.exposure.include=health,prometheus,env,info` + `management.endpoint.env.enabled=true`. `SecurityConstants.WHITELIST_PATHS:95-96` lists `/actuator/**` — `AuthorizationCustomizer.java:22-24` permitAll-s the whitelist BEFORE the authenticated fall-through. Net effect: under any auth mode (LOGIN_FORM/OAUTH2/LDAP), `/actuator/env` is reachable WITHOUT authentication (whitelisted). Spring's default key-pattern sanitisation masks values containing `password`/`secret`/`key` (so the value IS masked), but the key NAME `auth.ldap.password` is returned — confirming the credential's existence. Under DISABLED, the actuator surface is reachable across the entire HTTP plane (per DOC-GAP-045).
+  - **Proposed doc action**: Add a "Credential exposure surface" admonition to `configuration-and-deployment/enable-security/authentication/ldap.md`: "`auth.ldap.password` is bound via Spring `@ConfigurationProperties` and resolved into the JVM's environment. The platform's default actuator configuration exposes `/actuator/env`, which (a) under any non-DISABLED auth mode is reachable through the `/actuator/**` whitelist applied at `SecurityConstants.WHITELIST_PATHS` BEFORE any auth check; (b) under DISABLED is reachable anonymously across the entire HTTP plane. Spring's default sanitisation masks the password VALUE (matches the `password` key-pattern) but the key NAME `auth.ldap.password` is returned, confirming the credential's existence and shape. For production deployments, override `management.endpoints.web.exposure.include` to drop `env`, or move actuator endpoints to a separate management port that is not network-reachable to platform users. See [Configure ODD Platform — Actuator exposure](#actuator-exposure) for the platform-wide caveat." Mirror on `oauth2-oidc.md` (client-secret), `login-form.md` (credentials), and the parent `enable-security.md`.
+  - **Cross-references**:
+    - DOC-GAP-006 (attachment.remote.access-key / secret-key — same actuator-exposure root cause; this DOC-GAP-050 is the LDAP-flavoured sibling)
+    - F-054 (DOC-163 actuator exposure parent finding) — fold both DOC-GAP-006 and DOC-GAP-050 into F-054's authoring as sibling caveats
+    - DOC-GAP-045 (under DISABLED, the actuator surface is anonymously reachable — amplifies this finding)
+  - **Severity rationale**: HIGH — LDAP bind credentials are operationally sensitive (compromise allows directory-wide reconnaissance); the docs name the property without warning that it is reachable via the platform's own HTTP surface. Same LSN-001-class operational consequence as DOC-GAP-006.
+
+- **DOC-GAP-051**: LDAP setup page omits `ldap://` vs `ldaps://` scheme guidance, substring-match admin-groups collision risk, empty admin-groups → no admins, S2S composability, `management.health.ldap.enabled` default false, and timeout/pooling configuration — seven distinct caveats absent
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md:docs_link_semantic.doc_drift_findings.[ldap vs ldaps, empty admin-groups → no admins, S2S composes with LDAP, LdapTemplate flag combination, health.ldap.enabled default false, provider=null for LDAP UserDto]` (severity HIGH on multiple) + `:bugs_limitations_corner_cases.[no LDAPS enforcement, containsIgnoreCase substring collision, no admins when adminGroups empty, S2S admin everywhere, size-limit silent truncation, no reachability check at boot]` (multiple HIGH) + `:security.known_security_gaps.[no LDAPS enforcement, substring admin match, no admins when empty, size-limit silent truncation, health.ldap.enabled false]` (multiple HIGH) **(new 2026-05-12C — seven distinct gaps on one doc page)**
+    - `concepts.yaml:entities[Auth Mode]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/ldap` 2026-05-12 status 200 — verbatim verdict: NONE of the seven specific security/operability caveats are addressed in this page. Page documents `auth.ldap.url` with example `ldap://localhost:389` (no LDAPS guidance), `auth.ldap.groups.admin-groups: 'A list granting admin permissions'` (no substring-match warning, no empty-list consequence), no S2S cross-link, no health-check status, no timeout/pool tuning.
+    - LDAPSecurityConfiguration@L51.md verifies SEVEN distinct gaps: (1) **ldap://-vs-ldaps://**: `LDAPSecurityConfiguration.java:119` accepts the URL verbatim, NO scheme enforcement; under `ldap://`, bind credentials AND end-user login credentials travel in cleartext. (2) **substring admin-collision**: `LDAPSecurityConfiguration.java:48,94-98` uses `containsIgnoreCase` (substring match) — `admin-groups: ['ops']` matches LDAP groups `cn=ops`, `cn=devops`, `cn=noops`, `cn=oopsgroup`; a typo or wildcard-sounding admin-group name escalates membership across unrelated groups. (3) **empty admin-groups → no admins**: `LDAPSecurityConfiguration.java:91-93` returns USER-only when `admin-groups` is empty/null; the only path to ADMIN in such a deployment is via S2S API key. (4) **S2S composability**: `LDAPSecurityConfiguration.java:140,149-151` adds the S2S filter at `HTTP_BASIC` when `auth.s2s.enabled=true` — X-API-Key requests grant ADMIN across all `/**` (covered by DOC-GAP-049 cross-reference). (5) **size-limit silent truncation**: `LDAPSecurityConfiguration.java:131` `setIgnoreSizeLimitExceededException(true)` — group-membership queries silently truncate; an admin user whose membership lives past the cutoff is silently demoted with no log line. (6) **health.ldap.enabled default false**: `application.yml:242-243` — `/actuator/health` does NOT include LDAP-server reachability; a directory outage is invisible. (7) **no timeout/pool config**: `LDAPSecurityConfiguration.java:117-124` has no `setPooled(true)`, no JNDI connect/read timeouts — slow LDAP server stalls logins at JNDI default (minutes-scale TCP-connect timeout).
+  - **Proposed doc action**: Add a "Security and operability caveats" H2 to `configuration-and-deployment/enable-security/authentication/ldap.md` enumerating all seven caveats. Recommend authoring as a cluster — one section, seven sub-bullets — rather than seven separate admonitions. Suggested order: (a) LDAPS scheme (operational baseline first); (b) actuator/env password exposure (DOC-GAP-050 — cross-link); (c) substring admin-group collision; (d) empty admin-groups → no admins; (e) S2S composability (DOC-GAP-049 — cross-link); (f) `management.health.ldap.enabled` default false; (g) no timeout/pool config. Each bullet should name the proximate operational consequence + the recommended mitigation.
+  - **Cross-references**:
+    - DOC-GAP-049 (S2S composability — sub-bullet of this cluster)
+    - DOC-GAP-050 (actuator/env LDAP password — sub-bullet of this cluster)
+    - DOC-GAP-006 (actuator/env attachment credentials) + DOC-GAP-050 — same actuator-exposure family
+    - LSN-001 / LSN-002 — bundled-default insecure-default class (LDAPS-vs-LDAP silence is canonical)
+    - Drives `/log-issue odd-platform` upstream for: (1) scheme-validation + boot WARN on `ldap://`; (2) equality-match option for admin-groups; (3) `management.health.ldap.enabled=true` default when `auth.type=LDAP`; (4) JNDI timeouts via `LdapContextSource.setBaseEnvironmentProperties(...)`
+  - **Severity rationale**: HIGH — seven distinct caveats on one page is the largest single-page coverage gap in the catalog. Each caveat individually is HIGH or MEDIUM; the cluster is HIGH because the page's audience (enterprise / on-prem operators) is the highest-stakes audience in the auth-mode catalog. An operator following this page without the additional caveats deploys a directory integration with several silent-failure modes.
+
+- **DOC-GAP-052**: LOGIN_FORM page omits `auth.login-form-redirect` config key (open-redirect surface), the absence of the authorization framework (DOC-GAP-039 sibling), session-cookie security flags, S2S composability, plain-text credential leak via `/actuator/env`, and CSRF posture — six distinct caveats absent
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__LoginFormSecurityConfiguration__config-key-consumer__auth_type@L31.md:docs_link_semantic.doc_drift_findings.[1,2]` (Authorization absent, login-form-redirect undocumented) + `:bugs_limitations_corner_cases.[1,5,6,7]` (multiple MEDIUM) + `:security.known_security_gaps.[1,2,3,4]` (multiple MEDIUM) **(new 2026-05-12C)**
+    - `concepts.yaml:entities[Auth Mode]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/login-form` 2026-05-12 status 200 — verbatim verdict: page does NOT mention any of: `auth.login-form-redirect`, the Policies/Permissions/Roles/Owners framework applicability under LOGIN_FORM, CSRF protection, session cookie configuration details (HttpOnly/Secure/SameSite — only mentions "does not support rotation, session revocation, or MFA"), S2S filter co-existence, plain-text credential leak via `/actuator/env`. The page DOES say "LOGIN_FORM stores credentials in plain text in the platform configuration" — but that frames the storage as the operator's config-file concern, not as an actuator-exposure leak.
+    - LoginFormSecurityConfiguration@L31.md verifies: (a) `auth.login-form-redirect` read at line 41 with default `""`; if set, `URI.create(redirectURIString)` at line 89 is invoked WITHOUT scheme/host/path validation, then drives `DefaultServerRedirectStrategy().sendRedirect(...)` at line 46 — open-redirect surface depending on configuration origin. (b) `LoginFormSecurityConfiguration.java:55-57` configures only `.authorizeExchange(... .pathMatchers(permittedPaths).permitAll().pathMatchers("/**").authenticated())` — NO `AuthorizationCustomizer` (cross-references DOC-GAP-039). (c) Session cookie has no `Secure`/`HttpOnly`/`SameSite` configured; `application.yml:1-3` sets `spring.session.timeout: -1` (sessions never expire) and `session.provider: IN_MEMORY` (no revocation, no shared store across replicas). (d) `auth.s2s.enabled=true` composes with LOGIN_FORM via `LoginFormSecurityConfiguration.java:61-63` — same `addFilterAt(s2sAuthenticationFilter, HTTP_BASIC)` pattern (cross-references DOC-GAP-049). (e) `auth.login-form-credentials` is bound via `@Value` to a plain String; `/actuator/env` exposes the value (Spring's default sanitisation does NOT mask `auth.login-form-credentials` by the `password`/`secret`/`key` key-pattern — verify; the `credentials` key name does not trigger Spring's default masking). (f) CSRF unconditionally disabled at line 54 on a session-cookie-based auth mode — a logged-in user visiting a malicious site can have state-changing requests issued via their session cookie.
+  - **Proposed doc action**: Add a "Security and operability caveats" H2 to `configuration-and-deployment/enable-security/authentication/login-form.md` enumerating six caveats. Suggested order: (a) **No authorization framework** — cross-reference DOC-GAP-039; LOGIN_FORM users all get ADMIN authorities and there is no Policy/Permission gate. (b) **`auth.login-form-redirect` is unvalidated** — operator-supplied URL is consumed verbatim; treat as a sensitive value; avoid sourcing from user input. (c) **Session cookie security** — `HttpOnly`/`Secure`/`SameSite` not configured at the security layer; `spring.session.timeout: -1` means sessions never expire; no revocation mechanism. (d) **S2S composability** — cross-reference DOC-GAP-049. (e) **Plain-text credentials via `/actuator/env`** — `auth.login-form-credentials` value is reachable through the actuator surface; mitigate by overriding actuator exposure or moving Actuator to a management port; cross-reference DOC-GAP-050 / DOC-GAP-006 family. (f) **CSRF disabled** — verify your deployment doesn't expose session-cookie POSTs to cross-origin pages.
+  - **Cross-references**:
+    - DOC-GAP-039 (LOGIN_FORM drops authorization framework — sub-bullet of this cluster)
+    - DOC-GAP-049 (S2S composability — sub-bullet of this cluster)
+    - DOC-GAP-050 (actuator/env credential exposure — sub-bullet of this cluster)
+    - Drives `/log-issue odd-platform` upstream for: (1) `auth.login-form-redirect` scheme/host validation, (2) session cookie security flags, (3) session timeout default
+  - **Severity rationale**: HIGH — LOGIN_FORM is documented as "dev-only" in the live docs but operators using it in dev environments are the same operators who will eventually promote to staging/production; the docs miss the chance to surface the six caveats that matter even in dev (operators deploying behind shared corporate networks, etc.).
+
+- **DOC-GAP-053**: **META-FINDING** — "docs frame default behaviour but omit blast radius" pattern (3-sidecar triangulated; cross-cutting class)
+  - **Category**: drift
+  - **Surfaced by**:
+    - DOC-GAP-036 + DOC-GAP-045 (DISABLED-default of `auth.type` — docs frame, blast radius omitted)
+    - DOC-GAP-038 (`auth.ingestion.filter.enabled=false` default — partial doc coverage on parent page, blast radius and sibling-endpoint coverage omitted)
+    - DOC-GAP-041 (activity-feed partition retention claim — page frames cadence, claims retention, code has no DROP)
+    - Pattern referenced in concepts.yaml's batch-C cross-cutting findings comment block
+  - **Evidence**: aggregated from above findings — common shape is **(a) page exists at the canonical home, (b) page documents the setting and its happy path, (c) page does NOT enumerate the operational consequence cluster** that materialises when an operator inherits the default. The cluster size varies (DISABLED: 6 consequences; ingestion-filter: 2 sibling-endpoint coverage gaps; activity-feed: 1 DROP-path absence) but the failure mode is the same.
+  - **Proposed doc action**: This finding is a **meta-recommendation, not a single-page doc action**. The maintainer-facing action is: when authoring any "default behaviour" claim on a doc page, run a Pre-authoring stance check item: "Does the default's blast radius live next to the claim, or several sections away?" Concretely, the maintainer could systematise this by adding to `pillars/documentation/gates.md` an explicit Gate 3 extension: "Caveats captured as admonition blocks must appear ADJACENT to the default behaviour claim, not three sections away. A page that says 'the default is X' without the consequence cluster of X is failing Gate 3 even if the consequence cluster appears on a sibling page." Add to `playbooks/pre-authoring-stance.md` an explicit blast-radius prompt.
+  - **Cross-references**:
+    - LSN-001 (attachment-ephemeral default) + LSN-002 (MinIO region unset) — both are this pattern's canonical case-law; the case-law cluster grows as the substrate surfaces more instances
+    - All three batches (2026-05-08 + 2026-05-10A + 2026-05-12C) have surfaced instances of this pattern; recommend the maintainer treat it as a documentation-pillar standing concern, not a per-page fix
+  - **Severity rationale**: HIGH (meta) — the pattern is responsible for at least 9 of the current HIGH-severity findings. Surfacing it as a standing pillar concern accelerates future scans by giving the reviewer a named pattern to spot.
+
+- **DOC-GAP-054**: Notifications subsystem: no rate-limit / queue / backpressure — bursty alert events translate 1:1 into outbound HTTP/SMTP requests; Slack will rate-limit (429), SMTP/webhook receivers will be overwhelmed
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[10]` (severity HIGH) + `:performance.known_performance_gaps.[0]` (severity HIGH) + `:security.known_security_gaps.[no rate limit cross-ref]` **(new 2026-05-12C)**
+    - `concepts.yaml:entities[Notifications]` (new in batch C)
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/notifications` 2026-05-12 status 200 — page documents outbound channels (Slack/SMTP/Webhook) and inbound AlertManager webhook with auth caveats; does NOT mention rate-limiting, backpressure, queue mechanics, or the consequence of bursty alerts. The "SMTP server will hang notification delivery" caveat IS present (per Configure ODD Platform doc) — partial coverage of the SMTP-hang issue but not the broader rate-limit gap.
+    - NotificationsProperties.md verifies: `AlertNotificationMessageProcessor.java:25-36` is a synchronous for-each loop over `List<NotificationSender>`; no rate-limit, no token bucket, no batching, no per-channel queue. A burst of 10k alerts (e.g. misconfigured data-quality run) fires 10k Slack messages + 10k webhook POSTs + 10k emails with no rate cap. Slack returns 429 → `AbstractNotificationSender.java:24-27` logs it as failure and drops the alert from that channel with no retry-with-backoff.
+  - **Proposed doc action**: Add to `features/active-platform-features/notifications.md` a "Operational limits" Known-limitations admonition: "**No rate-limiting**: notification dispatch is synchronous and unbounded — every alert event triggers one HTTP/SMTP request per configured channel immediately on receipt. Bursty alert generation (e.g. a misconfigured data-quality run that produces hundreds of alerts in seconds) will: (a) trigger Slack's per-webhook 429 rate-limit response, causing the platform to log failures and drop those alerts from the Slack channel with no automatic retry; (b) flood SMTP relays or webhook receivers, potentially triggering downstream rate limits or queue backups. For deployments expecting high alert volumes, configure your alerting feature with deduplication / suppression upstream, or front the platform's outbound notification path with a queue / rate-limiter at the network layer." Mirror on `configuration-and-deployment/odd-platform.md` Enable-Alert-Notifications section.
+  - **Cross-references**:
+    - DOC-GAP-003 (AlertManager inbound rate-limit — symmetric: no rate-limit on the ingress side either)
+    - LSN-002 family (operationally surprising default)
+    - Drives `/log-issue odd-platform` upstream for: queue / rate-limit / retry-with-backoff design
+  - **Severity rationale**: HIGH — operationally significant for any deployment expecting alert volumes higher than a few per minute. The 429-drop behaviour is silently lossy; operators have no visibility into how many alerts were dropped to which channel.
+
+- **DOC-GAP-055**: Notifications subsystem: no audit trail of delivery (no DB record, no metric, only DEBUG-level log) — operators cannot answer "did the alert get delivered?" or "which alerts went to which channels?"
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[3]` (severity HIGH — no retry/DLQ/audit) + `:bugs_limitations_corner_cases.[11]` (severity MEDIUM — no audit trail) + `:security.known_security_gaps.[3]` (severity MEDIUM) **(new 2026-05-12C)**
+    - `concepts.yaml:entities[Notifications]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/notifications` 2026-05-12 status 200 — page documents the channels + lifecycle but does NOT mention audit-trail / metric / DB-visible signal for delivery success/failure.
+    - NotificationsProperties.md verifies: `AlertNotificationMessageProcessor.java:25-36` only emits `log.debug("Sending notification message via {}: {}", ...)` and catches `NotificationSenderException` with `log.error(...)`. No `notification_delivery` table, no Micrometer counter, no Prometheus gauge. There is no DB-visible signal that notifications stopped working — an operator monitoring application health from `/actuator/health` or from dashboard metrics has no way to detect that Slack/webhook/email delivery is failing.
+  - **Proposed doc action**: Add a Known-limitations admonition to `features/active-platform-features/notifications.md`: "**No delivery audit trail**: the platform logs notification dispatch at DEBUG level and per-sender failures at ERROR level, but does NOT record delivery success/failure in the database, does NOT emit Micrometer metrics, and does NOT surface degraded delivery state on `/actuator/health`. Operators cannot programmatically answer: 'were the alerts I expected delivered?', 'which channel last succeeded?', or 'how many alerts were dropped due to rate-limiting?'. For audit-required deployments, configure application-log aggregation that captures the DEBUG-level dispatch logs and the ERROR-level failure logs."
+  - **Cross-references**:
+    - DOC-GAP-054 (rate-limit absence — same gap shape, different consequence)
+    - Drives `/log-issue odd-platform` upstream for: `notification_delivery` audit table + Micrometer counters + health-check signal
+  - **Severity rationale**: HIGH — compliance/observability gap; operators have no first-class way to answer the basic question "is alerting working?". Combined with DOC-GAP-054 (rate-limit absence), the platform silently drops alerts under load AND provides no signal that it has done so.
 
 ### MEDIUM severity
 
@@ -353,331 +476,264 @@ batch_history:
     - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md:docs_link_semantic.doc_drift_findings.[0]`
     - `odd-platform__ts__routes__route__alerts.md:docs_link_semantic.doc_drift_findings.[1]`
   - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/active-platform-features/alerting` 2026-05-08 status 404 — H1 "Page Not Found"; suggests `https://docs.opendatadiscovery.org/features/active-platform-features/alerting.md`.
-    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/alerting` 2026-05-08 status 200 — confirmed canonical.
-  - **Proposed doc action**: Audit cross-links across the codebase and `documentation/` repo for any `/active-platform-features/alerting` references; update to `/features/active-platform-features/alerting`. The substrate / orchestrator prompt template referencing the un-prefixed URL needs correction. Optionally add a GitBook redirect rule from the legacy path to the canonical one (GitBook supports redirects in `.gitbook.yaml`).
-  - **Cross-references**:
-    - DOC-GAP-012, DOC-GAP-013, DOC-GAP-014, DOC-GAP-015, DOC-GAP-035 (same URL-prefix-drift class — surface once, list together)
-  - **Severity rationale**: MEDIUM — operators clicking external links to the un-prefixed URL hit a 404 stub; GitBook's redirect-suggestion stub mitigates but doesn't eliminate the friction.
+    - WebFetch `https://docs.opendatadiscovery.org/active-platform-features/alerting` 2026-05-08 status 404 — H1 "Page Not Found"; suggests canonical.
+    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/alerting` 2026-05-08 status 200.
+  - **Proposed doc action**: Cross-link audit; update to `/features/active-platform-features/alerting`. See DOC-GAP-058 (class-level meta).
+  - **Cross-references**: DOC-GAP-012, DOC-GAP-013, DOC-GAP-014, DOC-GAP-015, DOC-GAP-035, DOC-GAP-056, DOC-GAP-058 (same URL-prefix-drift class).
+  - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-012**: Legacy URL `/active-platform-features/genai` returns 404 — canonical at `/features/active-platform-features/genai`
   - **Category**: broken-url
-  - **Surfaced by**:
-    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__GenAIController.md:docs_link_semantic.doc_drift_findings.[0]`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/active-platform-features/genai` 2026-05-08 status 404 — suggests `https://docs.opendatadiscovery.org/features/active-platform-features/genai.md`.
-    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/genai` 2026-05-08 status 200.
-  - **Proposed doc action**: Same as DOC-GAP-011 — cross-link audit and correction.
-  - **Cross-references**: DOC-GAP-011, DOC-GAP-035 (same class).
+  - **Surfaced by**: `GenAIController.md:docs_link_semantic.doc_drift_findings.[0]`
+  - **Evidence**: WebFetch `/active-platform-features/genai` 2026-05-08 status 404; canonical 200.
+  - **Proposed doc action**: Same as DOC-GAP-011. See DOC-GAP-058.
+  - **Cross-references**: DOC-GAP-011, DOC-GAP-035, DOC-GAP-056, DOC-GAP-058.
   - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-013**: Legacy URL `/data-discovery/attachments` returns 404 — canonical at `/features/data-discovery/attachments`
   - **Category**: broken-url
-  - **Surfaced by**:
-    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityAttachmentController.md:docs_link_semantic.inferred_docs.[1]`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/data-discovery/attachments` 2026-05-08 status 404 — suggests `/features/data-discovery/attachments.md`.
-    - WebFetch `https://docs.opendatadiscovery.org/features/data-discovery/attachments` 2026-05-08 status 200.
-  - **Proposed doc action**: Same as DOC-GAP-011.
-  - **Cross-references**: DOC-GAP-011, DOC-GAP-035 (same class).
+  - **Surfaced by**: `DataEntityAttachmentController.md:docs_link_semantic.inferred_docs.[1]`
+  - **Evidence**: WebFetch `/data-discovery/attachments` 2026-05-08 status 404; canonical 200.
+  - **Proposed doc action**: Same as DOC-GAP-011. See DOC-GAP-058.
+  - **Cross-references**: DOC-GAP-011, DOC-GAP-035, DOC-GAP-056, DOC-GAP-058.
   - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-014**: Legacy URL `/data-discovery/directory` returns 404 — canonical at `/features/data-discovery/directory`
   - **Category**: broken-url
-  - **Surfaced by**:
-    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DirectoryController.md:docs_link_semantic.inferred_docs.[1]`
-    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DirectoryController.md:docs_link_semantic.doc_drift_findings.[1]`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/data-discovery/directory` 2026-05-08 status 404 — suggests `/features/data-discovery/directory.md`.
-    - WebFetch `https://docs.opendatadiscovery.org/features/data-discovery/directory` 2026-05-08 status 200.
-  - **Proposed doc action**: Same as DOC-GAP-011. F-039 was claimed resolved with the canonical URL, so the active link is fine — but any sidecar / scanner / state file pointing at the legacy URL needs an update.
-  - **Cross-references**: DOC-GAP-011, DOC-GAP-035, F-039 (resolved upstream but legacy-URL references linger).
+  - **Surfaced by**: `DirectoryController.md:docs_link_semantic.inferred_docs.[1]` + `:doc_drift_findings.[1]`
+  - **Evidence**: WebFetch `/data-discovery/directory` 2026-05-08 status 404; canonical 200.
+  - **Proposed doc action**: Same as DOC-GAP-011. See DOC-GAP-058.
+  - **Cross-references**: DOC-GAP-011, DOC-GAP-035, DOC-GAP-056, DOC-GAP-058, F-039.
   - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-015**: Legacy URL `/main-concepts` returns 404 — canonical at `/introduction/main-concepts.md`
   - **Category**: broken-url
-  - **Surfaced by**:
-    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityController.md:docs_link_semantic.doc_drift_findings.[0]`
-    - `odd-platform__openapi__tags__openapi-tag__dataEntity.md:docs_link_semantic.inferred_docs.[0]` (confidence LOW, status 200 but content empty — this might be the JS-rendered case)
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/main-concepts` 2026-05-08 status 404 — H1 "Page Not Found".
-    - SUMMARY.md confirms the canonical path: `## Introduction → Main Concepts → main-concepts.md`.
-  - **Proposed doc action**: Same as DOC-GAP-011. Note that the openapi-tag:dataEntity sidecar previously recorded status 200 here — re-verifying confirms the correct status is 404; the prior 200 reading was a JS-rendered stub that summarised as content. Update the dataEntity sidecar's `inferred_docs[0]` URL to `/introduction/main-concepts.md` on next enrichment.
-  - **Cross-references**: DOC-GAP-011, DOC-GAP-035 (same class). The "Data Entity" canonical glossary entry that the openapi-tag-dataEntity sidecar wanted to verify lives at the canonical URL.
+  - **Surfaced by**: `DataEntityController.md:docs_link_semantic.doc_drift_findings.[0]` + openapi-tag-dataEntity sidecar.
+  - **Evidence**: WebFetch `/main-concepts` 2026-05-08 status 404.
+  - **Proposed doc action**: Same as DOC-GAP-011. See DOC-GAP-058.
+  - **Cross-references**: DOC-GAP-011, DOC-GAP-035, DOC-GAP-056, DOC-GAP-058.
   - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-016**: Directory page wording: level 3 mixes "classes" and "types" — operator confusion
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DirectoryController.md:docs_link_semantic.doc_drift_findings.[0]`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/features/data-discovery/directory` 2026-05-08 status 200 — confirmed: "Level 3 describes 'distinct Data Entity classes' but the table entry for level 3 states 'Entity types within the selected data source.' This mixing of 'classes' and 'types' could create confusion for operators."
-    - DirectoryController.md verifies the controller returns DataEntityType (TABLE/FILE/STREAM/...), not DataEntityClass (which is a different ODD vocabulary dimension).
-  - **Proposed doc action**: In `features/data-discovery/directory.md`, replace every occurrence of "Data Entity classes" / "classes" in level-3 prose with "Data Entity types" / "types". Cross-reference `main-concepts.md` if Class vs Type vocabulary needs disambiguation.
+  - **Surfaced by**: `DirectoryController.md:docs_link_semantic.doc_drift_findings.[0]`
+  - **Evidence**: WebFetch `/features/data-discovery/directory` 2026-05-08 status 200 — confirmed "classes" vs "types" mixing in level-3 prose.
+  - **Proposed doc action**: In `features/data-discovery/directory.md`, replace level-3 prose's "Data Entity classes" with "Data Entity types". Cross-link `main-concepts.md` for disambiguation.
   - **Cross-references**: None.
-  - **Severity rationale**: MEDIUM — a vocabulary slip an operator familiar with ODD's `DataEntityClass` (a separate dimension: ENTITY/CONSUMER/SET/...) would interpret as a different feature.
+  - **Severity rationale**: MEDIUM — vocabulary slip.
 
 - **DOC-GAP-017**: GenAI feature page: OpenAPI spec declares only 200 OK — no documented 400/500 error contract for `/api/genai/ask`
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__GenAIController.md:docs_link_semantic.doc_drift_findings.[2]`
-  - **Evidence**:
-    - GenAIController.md verifies: spec at `odd-platform-specification/openapi.yaml:4194-4213` declares ONLY `200 OK`. In practice endpoint returns 400 when `genai.enabled=false` (via `BadUserRequestException`) and 500 on timeout / upstream errors (via `GenAIException`).
-    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/genai` 2026-05-08 status 200 — page mentions `enabled=false` returns "Gen AI is disabled" but doesn't surface the 400 status code or general error contract.
-    - The generated `GenaiApi` interface therefore does not advertise the actual error contract.
-  - **Proposed doc action**: Two routes (pick one or both): (a) update `odd-platform-specification/openapi.yaml` to declare `400` and `500` responses for `/api/genai/ask` (proper contract fix); (b) add an "Error contract" sub-section to the GenAI feature page enumerating the runtime statuses + their meanings until the spec catches up. Recommend (a) for the spec fix as a separate upstream issue, plus (b) as a doc-side stop-gap.
-  - **Cross-references**:
-    - The "Spec carries no security: block; authorization is wholly out-of-band" invariant in concepts.yaml — same class of spec-vs-runtime contract gaps
+  - **Surfaced by**: `GenAIController.md:docs_link_semantic.doc_drift_findings.[2]`
+  - **Evidence**: spec declares only 200; runtime returns 400 on disabled, 500 on timeout.
+  - **Proposed doc action**: Either update the OpenAPI spec to declare 400/500, or add an "Error contract" section to the GenAI feature page. Drive an upstream spec issue separately.
+  - **Cross-references**: DOC-GAP-018 (spec security block absence — same class).
   - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-018**: API spec carries no `security:` block and no `components.securitySchemes` — invariant of contract-vs-runtime mismatch undocumented
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__openapi__tags__openapi-tag__alert.md:docs_link_semantic.doc_drift_findings.[3]`
-    - `odd-platform__openapi__tags__openapi-tag__alert.md:implicit_adrs.[3]`
-    - `odd-platform__openapi__tags__openapi-tag__dataEntity.md:implicit_adrs.[0]`
-    - `concepts.yaml:invariants[Spec carries no security: block; authorization is wholly out-of-band of the OpenAPI contract]`
-  - **Evidence**:
-    - openapi-tag-alert.md verifies: "exhaustive grep on openapi.yaml + components.yaml returns zero matches at commit ede5d277" for any security: block.
-    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference` 2026-05-10 status 200 — page punts readers to Swagger UI but does not warn that the spec's auth / role / scope information is absent.
-  - **Proposed doc action**: Add a "Security note" admonition to `developer-guides/api-reference.md`: "The OpenAPI spec at `/api/v3/api-docs` declares no top-level `security:` block and no `components.securitySchemes`. Authorization decisions are enforced in Spring Security wiring downstream of the generated `*Api` interface. To learn which auth modes / permissions / roles apply, see [Authorization](/configuration-and-deployment/enable-security/authorization.md) and [Permissions](/configuration-and-deployment/enable-security/authorization/permissions.md). The spec on its own is not authoritative for auth requirements." Optionally cross-link from each api-reference sub-page.
-  - **Cross-references**: DOC-GAP-018's recommendation pairs with DOC-GAP-009 — the missing data-entities api-reference page should carry this note as a sub-section.
-  - **Severity rationale**: MEDIUM — every API consumer reading the spec is mis-served on auth.
+  - **Surfaced by**: `openapi-tag-alert.md:doc_drift_findings.[3]` + `:implicit_adrs.[3]`; `openapi-tag-dataEntity.md:implicit_adrs.[0]`; `concepts.yaml:invariants[Spec carries no security: block]`
+  - **Evidence**: exhaustive grep for `security:` block returns zero matches; api-reference does not warn.
+  - **Proposed doc action**: Add a "Security note" admonition to `developer-guides/api-reference.md` directing readers to Authorization/Permissions pages for auth model.
+  - **Cross-references**: DOC-GAP-009 (when data-entities api-ref page lands).
+  - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-019**: Concept "AlertManager Webhook Receiver" is a canonical_candidate but not a registered term in `main-concepts.md`
   - **Category**: missing-page
-  - **Surfaced by**:
-    - `concepts.yaml:entities[AlertManager Webhook Receiver]` (canonical_candidate: true)
-    - `concepts.yaml:canonicalisation_candidates.[3]` (proposed_canonical: AlertManager Webhook Receiver, suggested_add_to_docs: true)
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/main-concepts` 2026-05-08 status 404 (legacy URL) — canonical at `/introduction/main-concepts.md`. The local SUMMARY.md confirms the canonical exists but the on-page enumeration of canonical terms does not include "AlertManager Webhook Receiver".
-    - The receiver has its own live section (`configuration-and-deployment/odd-platform.md#prometheus-alertmanager-integration`) and is conceptually distinct from the platform's internal Alert lifecycle: external write-only ingress, no `*Api` interface, hand-rolled DTO, unauthenticated by design.
-  - **Proposed doc action**: Add "AlertManager Webhook Receiver" (with synonym "Prometheus AlertManager Integration") as a canonical term entry in `documentation/docs/introduction/main-concepts.md`; cross-link to the receiver's section on `configuration-and-deployment/odd-platform.md`. The concept's canonical home is the existing config section; the missing piece is the **vocabulary registration**.
-  - **Cross-references**:
-    - DOC-GAP-003 (where the receiver's caveats live)
-  - **Severity rationale**: MEDIUM — discoverability + cross-linking; not an operator-impact gap on its own.
+  - **Surfaced by**: `concepts.yaml:entities[AlertManager Webhook Receiver]` (canonical_candidate: true); `canonicalisation_candidates.[3]`.
+  - **Evidence**: SUMMARY.md confirms `main-concepts.md` exists; the receiver lacks a canonical-term entry.
+  - **Proposed doc action**: Add "AlertManager Webhook Receiver" (synonym "Prometheus AlertManager Integration") to `documentation/docs/introduction/main-concepts.md`; cross-link to the receiver section on `configuration-and-deployment/odd-platform.md`.
+  - **Cross-references**: DOC-GAP-003.
+  - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-020**: Concept "Locale Bundle" / "Multilingual UI" — F-047 is filed; cross-referenced here
   - **Category**: missing-page
-  - **Surfaced by**:
-    - `concepts.yaml:entities[Locale Bundle]` (canonical_candidate: true)
-    - `concepts.yaml:canonicalisation_candidates.[0]`
-    - `odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md:docs_link_semantic.doc_drift_findings.[0]`
-    - `odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__SelectLanguage.md:docs_link_semantic.doc_drift_findings.[0]`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` 2026-05-08 status 200 — verbatim verdict "no mention of language selection, multilingual support, internationalization (i18n), locale settings, translation, supported languages, language picker, language switcher, SelectLanguage, or UI language configuration."
-    - WebFetch `https://docs.opendatadiscovery.org/active-platform-features` returns 404 stub (the live URL is canonical at `/features/active-platform-features` per SUMMARY.md).
-    - i18n_ts.md and SelectLanguage.md sidecars both surface this.
-  - **Proposed doc action**: Already filed as F-047 in `findings/docs-coverage-undocumented-features/2026-05-08.md`. No new authoring action here — surfaced for substrate-side completeness (the substrate also surfaces this concept; the file-analyser-side doc_drift_findings reinforce F-047 with code-side evidence).
-  - **Cross-references**:
-    - **F-047** in `findings/docs-coverage-undocumented-features/2026-05-08.md` — same gap
-    - LSN-013 retrospective (research-punted-on-substrate-draft) — this is the original case
-  - **Severity rationale**: MEDIUM (per F-047 — six languages invisible to users + contributors).
+  - **Surfaced by**: `concepts.yaml:entities[Locale Bundle]`; sidecar refs.
+  - **Evidence**: WebFetch `/configuration-and-deployment/odd-platform` 2026-05-08 — verbatim "no mention of language selection, multilingual support..."
+  - **Proposed doc action**: Already filed as F-047; no new authoring action.
+  - **Cross-references**: F-047; LSN-013.
+  - **Severity rationale**: MEDIUM (per F-047).
 
 - **DOC-GAP-021**: Lineage feature page does not document `lineageDepth` / `expandedEntityIds` parameters or unbounded-depth caveat
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityController.md:docs_link_semantic.doc_drift_findings.[1]`
-    - `concepts.yaml:entities[Data Entity].performance_aggregate.weaknesses` (no upper bound on lineageDepth)
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/features/data-lineage` 2026-05-08 status 200 — does not document `lineageDepth` or `expandedEntityIds` or any depth caveat.
-    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/lineage` 2026-05-08 status 200 — DOES document `lineageDepth` (minimum 1) and `expandedEntityIds`. So the api-ref subpage covers the contract; the feature page is silent on operational caveats.
-    - DataEntityController.md verifies: "No max-depth bound on lineage endpoints; `lineageDepth=1000000` reaches LineageService unmodified" + "DataEntityGroup lineage (`/api/dataentitygroups/{id}/lineage`) accepts no depth parameter at all."
-  - **Proposed doc action**: Add a "Depth and bounds" admonition to `features/data-lineage.md`: "Lineage queries accept a `lineageDepth` parameter (minimum 1, no documented maximum). Large platforms with deep lineage graphs should set a reasonable depth — the platform does not bound the value at the controller layer; a request with `lineageDepth=1000000` reaches the LineageService unconstrained, producing arbitrarily-large response payloads. The `getDataEntityGroupLineage` endpoint accepts no depth parameter and walks the full graph by default — use it sparingly on large graphs."
-  - **Cross-references**:
-    - DataEntity concept's `performance_aggregate` weaknesses — the unbounded-depth + unbounded-pagination family
+  - **Surfaced by**: `DataEntityController.md:doc_drift_findings.[1]`; `concepts.yaml:entities[Data Entity].performance_aggregate.weaknesses`.
+  - **Evidence**: WebFetch `/features/data-lineage` 2026-05-08 — depth caveat absent. api-ref `/lineage` 200 covers contract.
+  - **Proposed doc action**: Add "Depth and bounds" admonition to `features/data-lineage.md`.
+  - **Cross-references**: DataEntity performance_aggregate.
   - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-022**: Pagination `size` parameter is unbounded at spec + controller layers — undocumented runtime cap
   - **Category**: drift
-  - **Surfaced by**:
-    - `concepts.yaml:invariants[Pagination parameters declared but unconstrained at spec and controller layers]`
-    - `odd-platform__openapi__tags__openapi-tag__alert.md:performance.known_performance_gaps.[0]`
-    - `odd-platform__openapi__tags__openapi-tag__dataEntity.md:performance.known_performance_gaps.[3]`
-    - `odd-platform__java__AlertController__controller-method__getAllAlerts.md:bugs_limitations_corner_cases.[1]` + `:performance.known_performance_gaps.[0]` **(new 2026-05-10A — method-level reinforcement: `size=1_000_000` reaches jOOQ unmodified)**
-    - `odd-platform__java__ActivityController__controller-method__getActivity.md:bugs_limitations_corner_cases.[3]` + `:performance.known_performance_gaps.[0]` **(new 2026-05-10A — same shape on activity feed)**
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/alerts` 2026-05-08 status 200 — describes list endpoints as "Paginated list" but provides no parameters, page-size guidance, or response-size caveats.
-    - Verified: spec encodes `page`, `size` as int32 with no min/max/default at `components.yaml:4213-4229`. A spec-conformant `size=2147483647` is permissible.
-    - Method-level evidence (2026-05-10A): `AlertController.java:36-37` and `ActivityController.java:26` both bind `Integer size` without `@Max`, the generated `*Api` interfaces have `@NotNull @Valid` only, and the repositories pass through unmodified.
-  - **Proposed doc action**: Add a "Pagination" section to `developer-guides/api-reference.md` (parent page) noting: "All paginated endpoints accept `page` and `size` as required `Integer` query parameters. The spec declares no upper bound on `size`; runtime behaviour is determined by the service / repository layer, not by the contract. Callers should pass conservative values (e.g. `size <= 1000`). Future contract revisions should add `maximum` constraints. This applies uniformly to alerts (`GET /api/alerts`), activity (`GET /api/activity`), data-entity listings, and other paginated surfaces."
-  - **Cross-references**:
-    - DOC-GAP-018 (spec-level coverage gaps in same family)
+  - **Surfaced by**: `concepts.yaml:invariants[Pagination unconstrained]`; multiple sidecars (alert, dataEntity, AlertController.getAllAlerts, ActivityController.getActivity).
+  - **Evidence**: spec encodes `size` as int32 with no min/max; `size=2147483647` permissible.
+  - **Proposed doc action**: Add "Pagination" section to `developer-guides/api-reference.md` noting unbounded `size` + conservative values guidance.
+  - **Cross-references**: DOC-GAP-018.
   - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-023**: Cross-entity uploadId hijack (Attachment) — undocumented; method-level evidence confirms the attack shape
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityAttachmentController.md:security.known_security_gaps` (severity MEDIUM)
-    - `odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk.md:security.known_security_gaps.[0]` + `:bugs_limitations_corner_cases.[2]` **(new 2026-05-10A — method-level evidence)**
-    - `concepts.yaml:entities[Attachment].security_aggregate.weaknesses.[3]`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/features/data-discovery/attachments` 2026-05-10 status 200 — RBAC section names DATA_ENTITY_ATTACHMENT_MANAGE but does not surface that the gate authorises the path's data entity while the service forwards by uploadId; a user with permission on entity X who learns another user's uploadId Y issued for entity Z can post chunks via `POST /api/dataentities/X/files/uploads/Y/chunks`.
-    - DataEntityAttachmentController.md surfaces this as severity MEDIUM.
-    - **Method-level evidence (new 2026-05-10A)**: uploadFileChunk.md verifies the misalignment is structural — `AttachmentService.java:30` signature is `Mono<Void> uploadFileChunk(final UUID uploadId, final Part file, final int index)` — `dataEntityId` is intentionally omitted from the service contract; `FileServiceImpl.java:93-102` resolves by `uploadId` only via `fileRepository.getFileByUploadId(uploadId)`. Fix requires service-side cross-validation (e.g. `assert filePojo.dataEntityId == path.dataEntityId`).
-  - **Proposed doc action**: Fold into the DOC-GAP-010 (chunked-upload protocol) authoring — when documenting the wire protocol, explicitly call out that uploadId is the authoritative session key and the path's dataEntityId is cosmetic on chunk/complete; recommend that operators implementing custom integrations validate upload session ownership at the application layer. Optionally drive an upstream issue for service-side cross-validation in FileServiceImpl.
-  - **Cross-references**: DOC-GAP-010 (combine).
-  - **Severity rationale**: MEDIUM — requires path-mismatch + cross-user uploadId leak; less impactful than DOC-GAP-004 but worth surfacing. Method-level evidence confirms the attack shape (no longer hypothetical).
+  - **Surfaced by**: `DataEntityAttachmentController.md:known_security_gaps` (MEDIUM); `uploadFileChunk.md:security.known_security_gaps.[0]` + `:bugs_limitations_corner_cases.[2]`; `concepts.yaml:entities[Attachment].security_aggregate.weaknesses.[3]`.
+  - **Evidence**: `AttachmentService.java:30` signature has no `dataEntityId`; `FileServiceImpl.java:93-102` resolves by `uploadId` only — gate authorises path entity, service forwards by uploadId.
+  - **Proposed doc action**: Fold into DOC-GAP-010's wire-protocol authoring; recommend service-side cross-validation upstream.
+  - **Cross-references**: DOC-GAP-010.
+  - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-030**: Activity Feed feature page omits `type` parameter, visibility model, cursor pagination mechanics
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__java__ActivityController__controller-method__getActivity.md:docs_link_semantic.doc_drift_findings.[0,1,3]` **(new 2026-05-10A)**
-    - `concepts.yaml:entities[Activity Feed].notes`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed` 2026-05-10 status 200 — page lists seven filter facets verbatim (Calendar / Datasource / Namespace / Event type / Tag / Owner / User) and 20+ event types organised by category (lifecycle, ownership, tags/terms, dataset fields, groups, alerts). The page **does NOT mention**: (a) the `type` parameter that switches between MY_OBJECTS / UPSTREAM / DOWNSTREAM / ALL views (UI + controller + ActivityType enum support it); (b) who can see activity (no authorization/visibility statement — see DOC-GAP-025); (c) pagination mechanics (cursor via `lastEventId` + `lastEventDateTime`); (d) the `size` parameter or default page size; (e) free-text descriptions surfaced via `DescriptionActivityStateDto`, custom-metadata values surfaced via `CustomMetadataActivityState`, dataset-field internal-name changes, business-name edits.
-    - getActivity.md verifies the controller's twelve query parameters vs the doc's seven filter facets — the doc page covers the UI affordances but omits API-driven axes.
-  - **Proposed doc action**: Extend `features/active-platform-features/activity-feed.md` with: (a) a "Type-of-feed" sub-section enumerating MY_OBJECTS / UPSTREAM / DOWNSTREAM / ALL semantics with the visibility-scope caveat from DOC-GAP-025; (b) a "Pagination" sub-section covering the `(lastEventId, lastEventDateTime)` cursor pattern (note: `size` default + recommended cap pending DOC-GAP-022); (c) a "Activity payload shape" sub-section describing what fields appear in `old_state`/`new_state` (free-text descriptions, internal/business-name changes, custom-metadata, etc.) so operators can assess audit-feed sensitivity. Cross-link to the (new) DOC-GAP-029 api-reference page for the parameter contract.
-  - **Cross-references**: DOC-GAP-025 (visibility-scope), DOC-GAP-029 (api-reference page), DOC-GAP-031 (lasEventId typo).
-  - **Severity rationale**: MEDIUM — the activity-feed UI page is operationally important (compliance / incident review) and the omission of the type/visibility/pagination axes leaves operators with a partial mental model.
+  - **Surfaced by**: `getActivity.md:doc_drift_findings.[0,1,3]`.
+  - **Evidence**: WebFetch `/features/active-platform-features/activity-feed` 2026-05-10 — 7 filter facets + 20+ event types; missing `type` / visibility / pagination / payload-shape descriptions.
+  - **Proposed doc action**: Extend `features/active-platform-features/activity-feed.md` with type-of-feed + pagination + payload-shape sub-sections.
+  - **Cross-references**: DOC-GAP-025, DOC-GAP-029, DOC-GAP-031.
+  - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-033**: Slack Data Collaboration api-reference page omits authentication/authorization/validation/rate-limit
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md:docs_link_semantic.doc_drift_findings.[0,1]` **(new 2026-05-10A)**
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration` 2026-05-10 status 200 — the page documents the `POST /api/datacollaboration/providers/slack/messages` endpoint behaviour (queue + 202 + retry count) and confirms gating by `@ConditionalOnDataCollaboration` (404 when `datacollaboration.enabled=false`). Verbatim absence: "the page does NOT document authentication / authorization requirements, request schema, or rate-limit behaviour for this endpoint."
-    - postMessageInSlack.md verifies the absence is operationally significant — the endpoint has no permission gate, no body-size cap, no rate limit (see DOC-GAP-032).
-  - **Proposed doc action**: This finding is **fully covered by DOC-GAP-032's proposed doc action** — adding a "Security caveats" sub-section to the api-reference page covering authn/authz/validation/rate-limit closes both findings simultaneously. Surfaced separately so the maintainer can see the doc-page-level gap as distinct from the security-content gap (DOC-GAP-032 is the *what to add*; DOC-GAP-033 is the *where it's missing*).
-  - **Cross-references**: DOC-GAP-032 (combine in authoring).
-  - **Severity rationale**: MEDIUM — api-reference is the authoritative consumer-facing surface; absence of authn/authz/validation/rate-limit is consistent with the spec-level "no security: block" finding (DOC-GAP-018) but operators reading the api-ref page reasonably expect it to call out the security model.
+  - **Surfaced by**: `postMessageInSlack.md:doc_drift_findings.[0,1]`.
+  - **Evidence**: WebFetch `/developer-guides/api-reference/data-collaboration` 2026-05-10 — absence verbatim.
+  - **Proposed doc action**: Covered by DOC-GAP-032's authoring; surfaced separately as the doc-page-level gap.
+  - **Cross-references**: DOC-GAP-032.
+  - **Severity rationale**: MEDIUM.
 
 - **DOC-GAP-034**: Token Rotation operational mechanics (grace period, audit logging, plaintext-in-response, in-flight 401) absent from enable-security pages
   - **Category**: missing-page
-  - **Surfaced by**:
-    - `odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md:docs_link_semantic.doc_drift_findings.[0,1,2]` **(new 2026-05-10A)**
-    - `concepts.yaml:entities[Collector Token].notes` (vocabulary_status: "codebase-anchored, doc-side-partially-covered")
-    - `concepts.yaml:entities[Collector].cross_file_inconsistencies.[0]`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions` 2026-05-10 status 200 — verbatim: "* `COLLECTOR_TOKEN_REGENERATE`. Allows regenerating the security token for a collector." The page does NOT describe operational consequences such as grace periods, audit logging, plaintext-in-response behavior, or in-flight 401 handling related to token rotation.
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication` 2026-05-10 status 200 — page enumerates auth modes (DISABLED / LOGIN_FORM / OAUTH2 / LDAP / S2S) without explaining how the S2S credential is rotated.
-    - regenerateCollectorToken.md verifies the operational concerns: (a) no grace period — in-flight ingestion using old token 401s the moment UPDATE commits; (b) no audit log — `TOKEN.updated_by` overwritten on each rotation, no append-only history; (c) plaintext returned in response body — any reverse-proxy / browser-history / response-logging middleware records the new credential; no `Cache-Control: no-store`, no sensitive-body header; (d) under `auth.type=DISABLED` the gate is bypassed entirely — any caller can rotate any collector's token anonymously and receive plaintext; (e) no rate-limit on rotation — stolen MANAGEMENT-permission session can rotate every collector's token in a loop, breaking platform-wide ingestion; (f) token entropy uses non-CSPRNG `RandomStringUtils.randomAlphanumeric(40)`.
-  - **Proposed doc action**: Create a new sub-page `configuration-and-deployment/enable-security/token-rotation.md` (or extend `authentication.md` with a "Rotation contract" H2) covering: (1) which Permission grants rotation (`COLLECTOR_TOKEN_REGENERATE`, MANAGEMENT tier); (2) operational shape — in-place UPDATE with no overlap window, plaintext in response body (caveat: avoid rotating via non-TLS path; plan for the response value to leak through any logging middleware); (3) in-flight ingestion impact — the old token 401s the moment UPDATE commits; coordinate rotation with the collector's config-reload cadence; (4) audit log absence — the `TOKEN.updated_by` column is the only forensic surface and is overwritten on each rotation; operators wanting a rotation history must capture it externally; (5) `auth.type=DISABLED` caveat — the gate is bypassed; any caller can rotate any token; do not enable DISABLED in any deployment with internet-reachable management endpoints; (6) entropy concern — current `RandomStringUtils.randomAlphanumeric(40)` uses non-CSPRNG; an upstream issue tracks migration to `RandomStringUtils.secure().nextAlphanumeric(40)`. Add to SUMMARY.md under enable-security. Cross-link from `permissions.md` (next to the COLLECTOR_TOKEN_REGENERATE row) and from `authentication.md` (next to S2S).
-  - **Cross-references**: None (this is the first ODD doc-finding in the enable-security/token-rotation sub-area).
-  - **Severity rationale**: MEDIUM — the operational mechanics matter for any deployment using collectors; rotation without a grace period is a known-class operator footgun (LSN-002 family — operationally surprising default). The plaintext-in-response shape is a security-deployment caveat; the missing audit log is a compliance gap. Severity is MEDIUM (not HIGH) because the gate IS correctly wired (verified) — the concerns are operational/compliance rather than authorization-bypass.
+  - **Surfaced by**: `regenerateCollectorToken.md:doc_drift_findings.[0,1,2]`; `concepts.yaml:entities[Collector Token]`.
+  - **Evidence**: permissions/authentication pages name the gate without operational mechanics.
+  - **Proposed doc action**: Create `enable-security/token-rotation.md` (or extend authentication.md) per the existing DOC-GAP-034 plan.
+  - **Cross-references**: None.
+  - **Severity rationale**: MEDIUM.
 
-- **DOC-GAP-040**: `AuthorizationManagerCondition` is unwired dead code — Authorization page describes the framework as if a centralised condition gates it, but no `@Conditional` consumes the class
+- **DOC-GAP-035**: `/active-platform-features/data-collaboration` returns 404 on legacy URL — canonical at `/features/active-platform-features/data-collaboration`
+  - **Category**: broken-url
+  - **Surfaced by**: `postMessageInSlack.md:inferred_docs.[0]` (status 404, LOW confidence) + `:doc_drift_findings.[2]` (HIGH for doc-drift); `concepts.yaml:entities[Slack collaboration app].cross_file_inconsistencies.[0]`.
+  - **Evidence**: WebFetch `/active-platform-features/data-collaboration` 2026-05-10 status 404; canonical 200.
+  - **Proposed doc action**: Same as DOC-GAP-011 class. See DOC-GAP-058 (cross-cutting meta).
+  - **Cross-references**: DOC-GAP-011..015, DOC-GAP-056, DOC-GAP-058.
+  - **Severity rationale**: MEDIUM (broken-URL rubric); HIGH per sidecar's doc-drift framing (operators cannot find the only page describing a feature they need to configure with care).
+
+- **DOC-GAP-040**: `AuthorizationManagerCondition` is unwired dead code — Authorization page describes the framework as if a centralised condition gates it
+  - **Category**: drift
+  - **Surfaced by**: `AuthorizationManagerCondition@L11.md:bugs_limitations_corner_cases.[0]` (MEDIUM) + `:security.known_security_gaps.[0]` (MEDIUM); `concepts.yaml:entities[Auth Mode]`.
+  - **Evidence**: grep returns only the file's own path 2026-05-10; no `@Conditional(AuthorizationManagerCondition.class)` anywhere. Authorization wiring is per-config `@ConditionalOnProperty(value="auth.type", havingValue="OAUTH2"|"LDAP")` directly. Triangulated by 2026-05-12C OAuthSecurityConfiguration + LDAPSecurityConfiguration sidecars — both wire `new AuthorizationCustomizer(...)` directly at the per-config level, confirming the Condition class is vestigial.
+  - **Proposed doc action**: Primarily code-hygiene (drive `/log-issue odd-platform`); doc-side is covered by DOC-GAP-039.
+  - **Cross-references**: DOC-GAP-039.
+  - **Severity rationale**: MEDIUM.
+
+- **DOC-GAP-042**: Activity-feed partition WIDTH is `2 × partition-period` (60 days at default) but docs say "a new partition every 30 days"
+  - **Category**: drift
+  - **Surfaced by**: `ActivityTablePartitionManager@L11.md:doc_drift_findings.[1]`; `concepts.yaml:entities[Activity Table Partitioning]`.
+  - **Evidence**: WebFetch 2026-05-11 — "2x partition width" not mentioned. Code at `AbstractPartitionManager.java:35` uses `lastPartitionDate.plusDays(partitionDaysPeriod * 2L)`.
+  - **Proposed doc action**: Update `odd.activity.partition-period` section on `configuration-and-deployment/odd-platform.md` to surface the 2x overlap.
+  - **Cross-references**: DOC-GAP-041, DOC-GAP-043.
+  - **Severity rationale**: MEDIUM.
+
+- **DOC-GAP-043**: Activity-feed partition CREATE failures are silently swallowed; operator has no metric / alert / health-check signal — undocumented; `partition.advisory-lock-id` undocumented
+  - **Category**: drift
+  - **Surfaced by**: `ActivityTablePartitionManager@L11.md:doc_drift_findings.[3]` + `:bugs_limitations_corner_cases.[2]` (HIGH) + `:performance.known_performance_gaps.[1]` (MEDIUM); `concepts.yaml:entities[Activity Table Partitioning]`.
+  - **Evidence**: WebFetch 2026-05-11 — partition-period section lacks failure-mode discussion; `partition.advisory-lock-id` absent from documented set despite sibling lock ids being listed.
+  - **Proposed doc action**: Three-part fix (Failure modes + DB role requirements + `partition.advisory-lock-id` documentation) per the existing DOC-GAP-043 plan.
+  - **Cross-references**: DOC-GAP-041, DOC-GAP-042; LSN-001.
+  - **Severity rationale**: MEDIUM.
+
+- **DOC-GAP-056**: Legacy URL `/active-platform-features/notifications` returns 404 — canonical at `/features/active-platform-features/notifications`
+  - **Category**: broken-url
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:docs_link_semantic.inferred_docs.[2]` (status 404, HIGH confidence) + `:doc_drift_findings.[0]` **(new 2026-05-12C)**
+    - `concepts.yaml:entities[Notifications]` (new in batch C)
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/active-platform-features/notifications` 2026-05-12 status 404 — H1 "Page Not Found".
+    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/notifications` 2026-05-12 status 200 — canonical feature page renders normally, documents outbound channels + AlertManager inbound webhook + SMTP timeout caveat + "AlertManager webhook unauthentication" warning.
+    - The substrate's NotificationsProperties sidecar verifies the active-platform-features/notifications path 404 vs the features/active-platform-features/notifications path 200 — SAME shape as DOC-GAP-035 (data-collaboration).
+  - **Proposed doc action**: Cross-link audit across `documentation/` repo for any `/active-platform-features/notifications` references; update to `/features/active-platform-features/notifications`. See DOC-GAP-058 (class-level meta) — recommend doing a doc-side sweep of ALL legacy `/active-platform-features/*` and `/data-discovery/*` and `/main-concepts` paths.
+  - **Cross-references**: DOC-GAP-011, DOC-GAP-012, DOC-GAP-013, DOC-GAP-014, DOC-GAP-015, DOC-GAP-035, **DOC-GAP-058** (same URL-prefix-drift class — now 2 sidecars triangulated for the cross-cutting pattern).
+  - **Severity rationale**: MEDIUM — the broken-URL itself is the broken-URL rubric MEDIUM; per the sidecar's framing the underlying doc-drift is more concerning because the canonical page covers a feature operators need to configure with care (PG replication setup, SMTP/Slack/webhook credentials, AlertManager unauth caveat).
+
+- **DOC-GAP-057**: Notifications subsystem under-documents operational caveats — dead `notifications.webhookUrl` field, no per-channel filtering, no PII redaction, replication-slot orphan risk on rename, webhook unsigned delivery
   - **Category**: drift
   - **Surfaced by**:
-    - `odd-platform__java__AuthorizationManagerCondition__config-key-consumer__auth_type@L11.md:bugs_limitations_corner_cases.[0]` (severity MEDIUM) + `:security.known_security_gaps.[0]` (severity MEDIUM) **(new 2026-05-10B)**
-    - `concepts.yaml:entities[Auth Mode]` (axes_present extended)
+    - `NotificationsProperties.md:bugs_limitations_corner_cases.[0,7,9,12,13]` (multiple MEDIUM/HIGH) + `:security.known_security_gaps.[0,2]` **(new 2026-05-12C)**
+    - `concepts.yaml:entities[Notifications]`
   - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization` 2026-05-11 status 200 — page describes the framework abstractly with no reference to a Condition-gated wiring path; this is the doc gap.
-    - AuthorizationManagerCondition@L11.md verifies: `grep -rln "AuthorizationManagerCondition" <odd-platform> --include="*.java"` returns ONLY the file's own path (2026-05-10). No `@Conditional(AuthorizationManagerCondition.class)` anywhere; the authorization wiring it appears designed to gate is in practice carried out by direct per-config `@ConditionalOnProperty(value="auth.type", havingValue="OAUTH2")` and `havingValue="LDAP"` annotations on `OAuthSecurityConfiguration.java:71` and `LDAPSecurityConfiguration.java:51`. The Condition class is vestigial.
-  - **Proposed doc action**: This is **primarily a code-hygiene fix, secondarily a doc fix**. Code-side: file an upstream issue via `/log-issue odd-platform` to either (a) wire `AuthorizationManagerCondition` into the `SecurityWebFilterChain` factory path (consolidating the per-config `@ConditionalOnProperty` annotations behind the composite Condition for clarity) or (b) delete the dead Condition class entirely. Doc-side: DOC-GAP-039's Authorization-framework-applicability admonition (above) already names the OAUTH2/LDAP gating; no additional doc text required if the dead code is deleted, and a clarifying note if the dead code is wired up. The choice between (a) and (b) is the maintainer's; the operational doc-vs-code consequence is captured by DOC-GAP-039.
+    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/notifications` 2026-05-12 status 200 — page documents channels + lifecycle + SMTP/AlertManager caveats but is silent on the 5 sub-caveats below.
+    - NotificationsProperties.md verifies five distinct sub-findings:
+      - (1) **Dead `notifications.webhookUrl` field**: `NotificationsProperties.java:9` declares a top-level `webhookUrl` String field; no code in the notification package reads it (grep negative 2026-05-12). The active webhook URL is `notifications.receivers.webhook.url`. An operator setting the top-level key gets silent acceptance, zero effect.
+      - (2) **No per-channel filtering**: `AlertNotificationMessageProcessor.java:25-36` iterates `List<NotificationSender>` unconditionally on every alert. No filter by alert type, severity, data-entity owner, or namespace. An operator wanting "only Critical alerts to Slack, all to email" cannot express this in config.
+      - (3) **No PII redaction**: `AlertNotificationMessageTranslator.java:73-83` populates the full alert payload — dataEntity name, dataSourceName, namespaceName, owners[], downstream lineage entities, alertChunks — into Slack/webhook/email outbound. Free-text descriptions / business names / customer-id-encoded table names flow verbatim to outbound channels with no redaction option.
+      - (4) **Replication-slot orphan risk on rename**: `NotificationSubscriber.java:99-122` lazy-creates the replication slot but never drops it; if an operator renames `notifications.wal.replication-slot-name` between deploys and forgets to drop the old slot, Postgres retains WAL for the orphan indefinitely — risking primary disk exhaustion. The live doc warns about manual cleanup but does NOT warn about rename-orphan specifically.
+      - (5) **Webhook unsigned delivery**: `WebhookNotificationSender.java:18-23` is a plain `HttpRequest.POST(...)` with no HMAC, no shared secret, no signature header. Receivers cannot verify that a webhook actually originated from ODD Platform vs an attacker who scraped the webhook URL.
+  - **Proposed doc action**: Add to `features/active-platform-features/notifications.md` a "Known limitations and operational caveats" section enumerating all five caveats with the proximate consequence + mitigation for each. Pair with code-side cleanup of dead `webhookUrl` field via `/log-issue odd-platform`.
   - **Cross-references**:
-    - DOC-GAP-039 (the operationally-relevant doc gap; this DOC-GAP-040 is the code-hygiene companion)
-    - Drives a `/log-issue odd-platform` for the dead-code resolution
-  - **Severity rationale**: MEDIUM — code-hygiene-shaped; a future maintainer reading the Condition class would reasonably assume it gates the authorization-manager wiring path and rely on it, causing silent regressions. The doc-side consequence is already captured by DOC-GAP-039.
+    - DOC-GAP-054 (rate-limit) + DOC-GAP-055 (audit trail) — these three findings together (DOC-GAP-054 / DOC-GAP-055 / DOC-GAP-057) are the operational-caveat cluster on the Notifications page; recommend authoring them as one consolidated "Known limitations" section
+    - Drives `/log-issue odd-platform` upstream for: (a) drop dead `webhookUrl` field, (b) per-channel routing config, (c) webhook signing / HMAC option
+  - **Severity rationale**: MEDIUM — none of the five sub-caveats is independently HIGH (PII redaction is operator-controllable; webhook signing is industry-standard but not always required; dead field is config-hygiene), but the cluster's collective impact on operational confidence is significant. The PII surface in particular matters for regulated deployments.
 
-- **DOC-GAP-042**: Activity-feed partition WIDTH is `2 × partition-period` (60 days at default) but docs say "a new partition every 30 days" — operator storage planning under-estimates by 2x
-  - **Category**: drift
+- **DOC-GAP-058**: **META-FINDING** — GitBook legacy-vs-canonical routing drift is a cross-cutting class (now 2-sidecar triangulated: DataCollaboration + Notifications); recommend a doc-side audit of ALL legacy paths
+  - **Category**: broken-url
   - **Surfaced by**:
-    - `odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md:docs_link_semantic.doc_drift_findings.[1]` **(new 2026-05-10B)**
-    - `concepts.yaml:entities[Activity Table Partitioning]` (new operational concept)
+    - `postMessageInSlack.md:docs_link_semantic.inferred_docs.[0]` (DataCollaboration legacy 404 — batch 2026-05-10A)
+    - `NotificationsProperties.md:docs_link_semantic.inferred_docs.[2]` + `:doc_drift_findings.[0]` (Notifications legacy 404 — batch 2026-05-12C)
+    - Pattern referenced in concepts.yaml's batch-C cross-cutting findings comment block
+    - All individual instances: DOC-GAP-011..015 + DOC-GAP-035 + DOC-GAP-056
   - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` 2026-05-11 status 200 — verbatim verdict: "Mention of `2x partition width` or '60 days' related to activity partitions: Not present." The page says "The default creates a new partition every 30 days, which is appropriate for most deployments."
-    - ActivityTablePartitionManager@L11.md verifies: `AbstractPartitionManager.java:35` is `new TablePartition(lastPartitionDate, lastPartitionDate.plusDays(partitionDaysPeriod * 2L))` — the `* 2L` literal sets WIDTH to twice the `partitionDaysPeriod`, while `AbstractPartitionManager.java:37` advances the cursor by `partitionDaysPeriod` only — producing a deliberate 2x-overlap window so INSERTs targeting `baseline + period` always land in an existing partition before the next CREATE cycle. The implicit-ADR is consistent across `ActivityTablePartitionManager` and the sibling `MessageTablePartitionManager` — the 2:1 width-to-cadence ratio is the design.
-  - **Proposed doc action**: Update the `odd.activity.partition-period` section on `configuration-and-deployment/odd-platform.md` to surface the 2x overlap: "**Partition width vs cadence**: setting `odd.activity.partition-period=30` (the default) creates partitions that each span 60 days (2 × period) and appends a new partition every 30 days. The deliberate 2x overlap ensures INSERTs near the partition boundary always land in an existing partition. Storage planning should size for partition width = 2 × period, not = period." Same caveat on the activity-feed Configuration section (cross-reference with DOC-GAP-041).
+    - Pattern: every URL of the form `/active-platform-features/{slug}` or `/data-discovery/{slug}` or `/main-concepts` 404s with a GitBook redirect-suggestion stub. The canonical path is `/features/active-platform-features/{slug}` or `/features/data-discovery/{slug}` or `/introduction/main-concepts.md`.
+    - 2-sidecar triangulation across batches confirms the pattern is generalisable, not single-page noise. Recommend treating as a class-level concern.
+  - **Proposed doc action**: Three-part class-level fix:
+    1. **Doc-side audit**: Sweep the `documentation/` repo for any internal links pointing at the legacy paths (`/active-platform-features/*`, `/data-discovery/*`, `/main-concepts`). Update to canonical paths. Verify via `git grep` in the docs repo.
+    2. **External-link mitigation**: For each legacy path that's likely to surface in external blog posts / Slack discussions / GitHub README hyperlinks, add a GitBook redirect rule in `.gitbook.yaml` (GitBook supports path redirects). Recommended set: alerting, genai, data-collaboration, notifications, activity-feed (all under `active-platform-features/`); attachments, directory (under `data-discovery/`); plus `/main-concepts`.
+    3. **Substrate / scanner / state-file fix**: Any sidecar / scanner / state file pointing at legacy URLs needs an update on next enrichment.
   - **Cross-references**:
-    - DOC-GAP-041 (parent doc-claim correction on the same subsystem)
-    - DOC-GAP-043 (silent-fail on CREATE failure — same subsystem)
-  - **Severity rationale**: MEDIUM — operator storage planning ends up off by 2x; not security-shaped but materially incorrect. The 2x-overlap design itself is sound; the docs just under-disclose it.
-
-- **DOC-GAP-043**: Activity-feed partition CREATE failures are silently swallowed (ERROR log only); operator has no metric / alert / health-check signal — undocumented
-  - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md:docs_link_semantic.doc_drift_findings.[3]` + `:bugs_limitations_corner_cases.[2]` (severity HIGH) + `:performance.known_performance_gaps.[1]` (severity MEDIUM — observability gap) **(new 2026-05-10B)**
-    - `concepts.yaml:entities[Activity Table Partitioning]` (new operational concept)
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` 2026-05-11 status 200 — partition-period section documents the cadence but contains no mention of failure modes (DB role lacking CREATE TABLE privilege, partition-name collision, advisory-lock contention, ShedLock cluster outage). Verbatim verdict: "Mention of partition RETENTION semantics or DROP path for activity table: Not present" and no failure-mode discussion either.
-    - ActivityTablePartitionManager@L11.md verifies: `PostgreSQLPartitionCreationJob.java:53-60` catches the `RuntimeException` raised by `AbstractPartitionManager.createPartitionsIfNotExists` (line 49) and logs at ERROR before continuing to the next manager. There is no alerting, no Micrometer counter / timer / gauge, no health-check degradation, no UI surfacing. An ODD instance booting with a DB role lacking CREATE TABLE privilege logs ERROR once at boot and the application proceeds — until `activity` INSERTs begin failing as rows arrive for the uncovered window.
-    - Adjacent finding: `partition.advisory-lock-id` (default `90`) is required by `@Value("${partition.advisory-lock-id}")` at PostgreSQLPartitionCreationJob.java:26 with NO `:default` fallback; the live docs page does NOT list this key in its documented set (verified verbatim by the sidecar: "`partition.advisory-lock-id` ABSENT from the documented set, while `notifications.wal.advisory-lock-id` and `datacollaboration.receive-event-advisory-lock-id` ARE listed"). An operator who removes the key from a customised application.yml fails bean wiring at boot — a configuration-ghost footgun.
-  - **Proposed doc action**: Three-part doc action on `configuration-and-deployment/odd-platform.md` activity-partition section:
-    1. Add a "Failure modes" sub-section: "Partition creation can fail for the following reasons: (a) the platform's DB role lacks `CREATE TABLE` privilege on the `public` schema; (b) a partition name collision with a manually-created partition outside the `activity_YYYYMMDD_YYYYMMDD` convention; (c) advisory-lock contention with another instance during boot; (d) Postgres rejection on `endDate < beginDate` (when `odd.activity.partition-period` is set to a negative integer). Failures are logged at ERROR level by `PostgreSQLPartitionCreationJob` and the boot continues — downstream `INSERT INTO activity` calls fail with `no partition of relation \"activity\" found for row` when rows arrive in the uncovered window. There is currently no Micrometer metric, no health-check signal, and no UI surface for partition-creation failures; operators should monitor application logs for `Couldn't create partition for table activity`."
-    2. Add a "DB role requirements" sub-section: "The platform's DB role must have `CREATE TABLE` privilege on the `public` schema to support boot-time and nightly partition creation for the `activity` (and `message`, when DataCollaboration is enabled) tables. Least-privileged deployments that grant only DML must add DDL grants for the partition-managed tables."
-    3. Add `partition.advisory-lock-id` to the documented configuration-key list with a note: "`partition.advisory-lock-id`: Postgres advisory lock id (default `90`) used at boot to serialise partition creation across multiple instances. The key has no `:default` fallback in code — the application.yml-bundled default is the only thing preventing a Spring placeholder-resolution failure at boot. Operators customising application.yml must keep this key set."
-  - **Cross-references**:
-    - DOC-GAP-041 (parent doc-claim correction on the same subsystem)
-    - DOC-GAP-042 (2x partition width — adjacent finding)
-    - LSN-001 class — silent-fail of durability-critical subsystem (the activity audit trail is the platform's compliance surface)
-  - **Severity rationale**: MEDIUM — operationally-shaped; not direct data loss but the operator's blind-spot on partition-creation health is a compliance footgun. The undocumented `partition.advisory-lock-id` is a configuration-ghost.
+    - All individual broken-url findings: DOC-GAP-011..015 + DOC-GAP-035 + DOC-GAP-056
+    - Concept "Notifications" + "Slack collaboration app" in concepts.yaml (both have cross_file_inconsistencies entries naming this drift)
+  - **Severity rationale**: MEDIUM (meta — the underlying broken-URL rubric is MEDIUM); the class is worth surfacing as a single audit-recommendation rather than 7 individual same-shape findings.
 
 ### LOW severity
 
-- **DOC-GAP-024**: OpenAPI tag `alert` has no `description:` field and no `externalDocs.url` — Swagger UI / ReDoc consumers see unannotated tag
+- **DOC-GAP-024**: OpenAPI tag `alert` has no `description:` field and no `externalDocs.url`
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__openapi__tags__openapi-tag__alert.md:docs_link_semantic.doc_drift_findings.[0,2]`
-  - **Evidence**:
-    - openapi-tag-alert.md verifies: spec's `alert` tag declaration is `name: alert` only (openapi.yaml:30); no description, no externalDocs.
-    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/alerts` 2026-05-08 status 200 — the doc page exists; the spec just doesn't link to it from the tag.
-  - **Proposed doc action**: Add `description:` and `externalDocs:` to the `alert` tag in `odd-platform-specification/openapi.yaml`. Mirror for the `dataEntity` tag and the `activity` tag (once DOC-GAP-029 lands). This is an upstream `odd-platform-specification` change; file via `/log-issue opendatadiscovery-specification`.
-  - **Cross-references**: DOC-GAP-029 (when the activity api-ref page lands, link from the activity tag).
-  - **Severity rationale**: LOW — cosmetic tooling concern; doc page exists.
+  - **Surfaced by**: `openapi-tag-alert.md:doc_drift_findings.[0,2]`.
+  - **Evidence**: spec's `alert` tag declaration is `name: alert` only (openapi.yaml:30).
+  - **Proposed doc action**: Add `description:` + `externalDocs:` to the `alert` tag in `odd-platform-specification/openapi.yaml`; mirror for `dataEntity` and `activity` tags. Upstream spec change.
+  - **Cross-references**: DOC-GAP-029.
+  - **Severity rationale**: LOW.
 
-- **DOC-GAP-026**: AlertManager DTO drops AlertManager fields (`status`, `endsAt`, `annotations`, `fingerprint`, `groupKey`); cannot honour `status: resolved` to close alerts
+- **DOC-GAP-026**: AlertManager DTO drops `status`, `endsAt`, `annotations`, `fingerprint`, `groupKey`; cannot honour `status: resolved`
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md:performance.known_performance_gaps.[3]`
-    - `concepts.yaml:entities[AlertManager Webhook Receiver].performance_aggregate.weaknesses.[3]`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` 2026-05-08 status 200 — Prometheus AlertManager Integration section documents the inbound contract but does not surface that the platform's hand-rolled DTO drops AlertManager's `status: resolved` semantics; a downstream RESOLVED transition cannot be auto-driven by AlertManager.
-  - **Proposed doc action**: Add to the Prometheus AlertManager Integration section a "Behaviour notes" sub-bullet: "ODD's hand-rolled receiver consumes only `labels`, `startsAt`, `generatorURL`, and `description` from each AlertManager alert. Fields `status`, `endsAt`, `annotations`, `fingerprint`, and `groupKey` are dropped on the floor. AlertManager's `status: resolved` transition cannot auto-close the corresponding ODD alert; operators must mark alerts resolved manually (or via `PUT /api/alerts/{id}/status`)."
-  - **Cross-references**: DOC-GAP-003 (broader AlertManager caveats).
-  - **Severity rationale**: LOW — partially-implemented integration limitation.
+  - **Surfaced by**: `AlertManagerController.md:performance.known_performance_gaps.[3]`; concepts.yaml.
+  - **Evidence**: docs do not surface dropped fields.
+  - **Proposed doc action**: Add "Behaviour notes" to Prometheus AlertManager Integration section.
+  - **Cross-references**: DOC-GAP-003.
+  - **Severity rationale**: LOW.
 
 - **DOC-GAP-027**: Locale-bundle CSP / localStorage caveat absent on (eventual) i18n doc page
   - **Category**: drift
-  - **Surfaced by**:
-    - `concepts.yaml:entities[Locale Bundle].security_aggregate.weaknesses.[1]`
-    - `odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md:security.known_security_gaps` (severity LOW)
-    - `odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__SelectLanguage.md:security.known_security_gaps`
-  - **Evidence**:
-    - i18n.ts sidecar: bootstrap calls `localStorage.getItem('i18nextLng')` unguarded; in privacy-mode browsers where localStorage access throws, the import-for-side-effects raises before `<App />` renders — entire UI unreachable.
-    - F-047 (filed) does not surface the CSP / localStorage caveat; it surfaces the discoverability gap.
-  - **Proposed doc action**: When DOC-NNN authoring on F-047 lands, include a Known-limitations sub-section: "Operators implementing a Content Security Policy that disables localStorage break the language-switcher's persistence path; users will have their selection reset to `en` on every page load. In privacy-mode browsers where localStorage access throws, the bootstrap's unguarded `localStorage.getItem('i18nextLng')` call raises before the app renders — the entire UI is unreachable, including the login screen."
-  - **Cross-references**: F-047 (carries the parent gap), DOC-GAP-020 (cross-reference).
-  - **Severity rationale**: LOW — tied to a non-default browser configuration.
+  - **Surfaced by**: `concepts.yaml:entities[Locale Bundle].security_aggregate.weaknesses.[1]`; i18n.ts + SelectLanguage sidecars.
+  - **Evidence**: bootstrap unguarded `localStorage.getItem('i18nextLng')` — in privacy mode raises before render.
+  - **Proposed doc action**: Include Known-limitations sub-section when F-047 authoring lands.
+  - **Cross-references**: F-047, DOC-GAP-020.
+  - **Severity rationale**: LOW.
 
-- **DOC-GAP-028**: Activity Feed counts endpoint (`/api/activity/counts`) issues 4 parallel aggregation queries per call — undocumented operational caveat
+- **DOC-GAP-028**: Activity Feed counts endpoint (`/api/activity/counts`) issues 4 parallel aggregation queries per call
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__java__ActivityController__controller-method__getActivity.md:performance.known_performance_gaps.[1]` + `:performance.hot_paths.[2]` **(new 2026-05-10A)**
-    - `concepts.yaml:entities[Activity Feed].performance_aggregate.weaknesses.[1]`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed` 2026-05-10 status 200 — page does not describe `/api/activity/counts` as an endpoint that does aggregation work; the count badges appear in UI without operational caveat.
-    - getActivity.md verifies: `getActivityCounts` issues four parallel `Mono.zip` queries (`totalCount` + `myObjectsCount` + `downstreamCount` + `upstreamCount`); for a UI polling counts on a refresh interval, DB load is 4× the apparent endpoint count. No caching, no debouncing, no aggregate table.
-  - **Proposed doc action**: Fold into DOC-GAP-029's api-reference content (when authored): note that `GET /api/activity/counts` issues four aggregation queries per call; recommend conservative polling cadence (e.g. ≥30s between refreshes) on high-traffic platforms; surface as a deployment-tuning consideration.
-  - **Cross-references**: DOC-GAP-029 (api-reference page; combine).
-  - **Severity rationale**: LOW — operationally relevant but not security-shaped.
+  - **Surfaced by**: `getActivity.md:performance.known_performance_gaps.[1]` + `:performance.hot_paths.[2]`.
+  - **Evidence**: 4-parallel `Mono.zip` queries (totalCount + myObjects + downstream + upstream); no caching.
+  - **Proposed doc action**: Fold into DOC-GAP-029 api-reference content; recommend ≥30s polling cadence on high-traffic platforms.
+  - **Cross-references**: DOC-GAP-029.
+  - **Severity rationale**: LOW.
 
-- **DOC-GAP-031**: `lasEventId` typo on Java controller signature persists into generated client SDKs; doc page does not surface the parameter at all
+- **DOC-GAP-031**: `lasEventId` typo on Java controller signature persists into generated client SDKs
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__java__ActivityController__controller-method__getActivity.md:bugs_limitations_corner_cases.[0]` (severity LOW) **(new 2026-05-10A)**
-    - `concepts.yaml:entities[Activity Feed].security_aggregate.weaknesses.[4]`
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed` 2026-05-10 status 200 — searched for `lasEventId`, `lastEventId`, `last_event_id`, `lasEvent` — verbatim verdict: "The page does not surface any of these parameter names." The doc-side does not mention the cursor-pagination parameter at all (see DOC-GAP-030 for the broader pagination omission).
-    - getActivity.md verifies: `ActivityController.java:34` declares `final Long lasEventId` (missing the `t` in `last`). The OpenAPI parameter is `last_event_id` (correct) but the Java method signature exposes `lasEventId`. `ActivityService.java:42` is correctly spelled `lastEventId` — the controller's local variable name is the only surface that carries the typo. Generated client SDKs derived from the controller signature would carry the typo; once published, fixing the typo is a breaking change for consumers.
-  - **Proposed doc action**: This is a **code fix, not a doc fix**. The doc-side action is contingent: (a) if the typo is fixed in code (preferred; rename `lasEventId` → `lastEventId` in `ActivityController.java:34` — verify no generated client SDK has been published with the typo before deciding), no doc action needed; (b) if the typo is preserved for backward compatibility, the (new) `developer-guides/api-reference/activity.md` page (DOC-GAP-029) must call it out: "**Parameter name caveat**: the Java controller method signature exposes the cursor-id parameter as `lasEventId` (missing `t` typo, preserved for SDK backward compatibility); the OpenAPI parameter is correctly `last_event_id`. Client SDKs generated from the Java contract carry the typo; SDKs generated from OpenAPI do not." Drive an upstream issue via `/log-issue odd-platform` to decide path (a) vs (b).
-  - **Cross-references**: DOC-GAP-029 (where the conditional doc fix would land), DOC-GAP-030 (the pagination axis is currently invisible in the feature-page filter list — fixing both together makes sense).
-  - **Severity rationale**: LOW — typo on a public API surface is a long-term papercut (every consumer reading the Java signature has to learn it); but the doc-page-level effect is minimal because the page does not surface the parameter at all today (see DOC-GAP-030).
+  - **Surfaced by**: `getActivity.md:bugs_limitations_corner_cases.[0]`.
+  - **Evidence**: `ActivityController.java:34` declares `final Long lasEventId` (missing `t`).
+  - **Proposed doc action**: Code fix (rename `lasEventId` → `lastEventId`). Conditional doc fix on DOC-GAP-029.
+  - **Cross-references**: DOC-GAP-029, DOC-GAP-030.
+  - **Severity rationale**: LOW.
 
-- **DOC-GAP-044**: Prometheus `tenant_id` label has read/write asymmetry on empty-string `odd.tenant-id` — write side appends `tenant_id=""`, read side omits the filter; undocumented on the Prometheus tenant-label section
+- **DOC-GAP-044**: Prometheus `tenant_id` label read/write asymmetry on empty-string `odd.tenant-id`
   - **Category**: drift
-  - **Surfaced by**:
-    - `odd-platform__java__CounterTimeSeriesExtractor__config-key-consumer__metrics_storage@L20.md:docs_link_semantic.doc_drift_findings.[0]` + `:bugs_limitations_corner_cases.[0]` (severity HIGH per sidecar; MEDIUM per concepts.yaml triangulation) **(new 2026-05-10B)**
-    - `concepts.yaml:entities[Metrics Ingestion]` + `:entities[Multi-Tenant Configuration]` (new concepts in 2026-05-10B)
-  - **Evidence**:
-    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` 2026-05-11 status 200 — verbatim verdict: anchors `metric-storage-backend` AND `prometheus-tenant-label-odd-tenant-id` confirmed PRESENT (the section exists with positive doc coverage of the happy path). However: "Discussion of read/write tenant-id label asymmetry on empty-string `tenant-id`: Not present — the documentation states the key has 'no default (empty means no label is applied)' but does not discuss asymmetry between reads and writes."
-    - CounterTimeSeriesExtractor@L20.md verifies: `AbstractTimeSeriesExtractor.java:60` uses `if (tenantId != null)` — an empty string passes the guard and writes a `tenant_id=""` label onto every TimeSeries. `ExternalMetricReader.java:111` uses `StringUtils.isNotEmpty(tenantId)` — an empty string fails the guard and the read filter omits the `tenant_id` clause. Net effect: if an operator supplies `ODD_TENANT_ID=` (env var set to empty) rather than leaving the variable unset, every write goes to a series tagged `tenant_id=""` but reads query across all tenants. In a shared-Prometheus multi-tenant deployment this either (a) buries this tenant's series under an unfilterable label other tenants don't have, or (b) returns series from co-tenants whose `tenantId` was `null`.
-    - The doc page DOES describe the happy path correctly ("empty means no label is applied, and the Prometheus query returns series across all tenants") — but that description matches the READ side only; the WRITE side has the asymmetric `!= null` guard. The doc is partially accurate; the gap is the asymmetry between the two sides under the specific empty-string-from-env case.
-  - **Proposed doc action**: Extend the existing `prometheus-tenant-label-odd-tenant-id` section on `configuration-and-deployment/odd-platform.md` with a "Known limitation: empty-string vs unset" admonition: "`odd.tenant-id` distinguishes three cases at runtime: (1) unset (key absent from application.yml, no env var override) — Spring binds `null`, BOTH the write side (`tenant_id` label not appended) AND the read side (no filter) agree on 'no tenant'; (2) explicitly set to a non-empty string — both sides apply the value as the label and the filter; (3) explicitly set to empty string (e.g. `ODD_TENANT_ID=` env var) — **asymmetric**: the write side appends `tenant_id=\"\"` to every series, but the read side omits the filter and queries across all tenants. In shared-Prometheus multi-tenant deployments, never set `ODD_TENANT_ID=` as an empty env override; either leave the variable fully unset (Spring binds null) or set it to a non-empty unique string per ODD Platform deployment. A future code fix should align the two sides (both `!= null` or both `isNotEmpty`); track the upstream issue if filed."
-  - **Cross-references**:
-    - Drives a `/log-issue odd-platform` upstream fix for the read/write asymmetry
-    - Metrics storage backend concept's doc home (positive coverage; this finding extends existing content)
-  - **Severity rationale**: LOW — requires the operator to supply `ODD_TENANT_ID=` (empty string) AND run a shared-Prometheus multi-tenant deployment for the asymmetry to bite. Most deployments either leave the variable unset (case 1, safe) or set a real tenant id (case 2, safe). The doc currently describes case 1+2 correctly; the gap is the absent case 3 caveat.
+  - **Surfaced by**: `CounterTimeSeriesExtractor@L20.md:doc_drift_findings.[0]` + `:bugs_limitations_corner_cases.[0]`; concepts.yaml.
+  - **Evidence**: `AbstractTimeSeriesExtractor.java:60` uses `!= null` (empty string passes); `ExternalMetricReader.java:111` uses `isNotEmpty` (empty string fails).
+  - **Proposed doc action**: Extend `prometheus-tenant-label-odd-tenant-id` section on `configuration-and-deployment/odd-platform.md` with empty-string-vs-unset admonition.
+  - **Cross-references**: drives `/log-issue odd-platform` for read/write alignment.
+  - **Severity rationale**: LOW.
 
 ## Concept-without-page candidates (from concepts.yaml × SUMMARY.md)
 
@@ -685,38 +741,41 @@ Concepts surfaced by the substrate that are not registered as canonical terms in
 
 | Concept | canonical_candidate | Axes present | Contributing nodes | Suggested doc home | Notes |
 |---|---|---|---|---|---|
-| Locale Bundle / Multilingual UI | true | ui_shell | 2 | `configuration-and-deployment/i18n.md` or `features/i18n.md` | F-047 already filed; LSN-013 case-law; six locales invisible to users + contributors |
-| Attachment | true | controllers, config_prefixes | 4 | Already has page at `features/data-discovery/attachments.md` and config section; missing only as a canonical term in `main-concepts.md` | LSN-001 + LSN-002 case-law live here; method-level uploadFileChunk evidence reinforces |
-| Attachment Storage Backend | true | config_prefixes, controllers | 2 | Already documented as a section on `configuration-and-deployment/odd-platform.md`; canonical_candidate suggested_add_to_docs:false (concept too operationally-narrow for main-concepts) | DOC-GAP-006 attaches; chunk-staging path universality finding (REMOTE storage equally affected) extends the doc home |
-| AlertManager Webhook Receiver | true | controllers | 1 | Has a section on `configuration-and-deployment/odd-platform.md`; missing as canonical term in main-concepts.md (DOC-GAP-019) | suggested_add_to_docs: true |
-| Activity Feed | true (new 2026-05-10A) | controllers | 1 | Has feature page at `features/active-platform-features/activity-feed.md` but missing as canonical term in main-concepts.md AND missing api-reference page (DOC-GAP-029) | vocabulary_status: codebase-anchored, doc-side-partially-covered |
-| Collector Token | true (new 2026-05-10A) | controllers | 1 | New page recommended at `configuration-and-deployment/enable-security/token-rotation.md` (DOC-GAP-034) — operational-mechanics-shaped (in-place UPDATE, no grace, plaintext-in-response, audit-absence) | main-concepts.md mentions S2S auth mode but not token-rotation contract |
-| Auth Mode | true (new 2026-05-10B) | config_prefixes, controllers | 3 | Already has page at `configuration-and-deployment/enable-security/authentication.md` and parent `enable-security.md`; missing **(a)** explicit DISABLED-default disclosure, **(b)** LOGIN_FORM-drops-authorization caveat, **(c)** appInfo introspection surface, **(d)** empty-string / typo footgun | DOC-GAP-036, DOC-GAP-037, DOC-GAP-039 cluster the gaps; triangulated by 3 config-key-consumer sidecars |
-| Ingestion Filter (per-datasource bearer-token) | true (new 2026-05-10B) | config_prefixes | 1 | Parent `enable-security.md` now mentions `auth.ingestion.filter.enabled` default (WebFetched 2026-05-11) but does NOT document the `Authorization: Bearer` header, the per-datasource token model, the sibling-endpoint coverage gap (AlertManager), plaintext-equality, body-buffered-before-auth — DOC-GAP-038 captures all four gaps | Distinct from the S2S subpage which covers `S2sAuthenticationFilter` (`X-API-Key`); the two filters are conflated in current docs |
-| Activity Table Partitioning | true (new 2026-05-10B) | config_prefixes | 1 | Has section on `configuration-and-deployment/odd-platform.md` (positive coverage of cadence + default); missing **(a)** retention-vs-partitioning correction (DOC-GAP-041), **(b)** 2x partition WIDTH disclosure (DOC-GAP-042), **(c)** failure-mode + DB-role privileges + `partition.advisory-lock-id` documentation (DOC-GAP-043) | Operational-mechanics concept; cross-references LSN-001 class |
-| Metrics Storage Backend | true (new 2026-05-10B) | config_prefixes | 1 | Already documented in `configuration-and-deployment/odd-platform.md#metric-storage-backend` (positive coverage of `metrics.storage` + `metrics.prometheus-host` + Prometheus remote-write requirement); missing only **(a)** tenant-id read/write asymmetry on empty-string (DOC-GAP-044) | suggested_add_to_docs: false (concept too operationally-narrow for main-concepts; the section exists) |
-| Multi-Tenant Configuration | true (new 2026-05-10B) | config_prefixes | 1 | Has subsection `prometheus-tenant-label-odd-tenant-id` on `configuration-and-deployment/odd-platform.md` (positive coverage of tenant-id label); missing tenant-isolation caveats (no validation, by-label-convention not by enforcement) and read/write asymmetry (DOC-GAP-044) | suggested_add_to_docs: false (operationally-narrow concept) |
+| Locale Bundle / Multilingual UI | true | ui_shell | 2 | `configuration-and-deployment/i18n.md` or `features/i18n.md` | F-047 already filed; LSN-013 case-law; six locales invisible |
+| Attachment | true | controllers, config_prefixes | 4 | `features/data-discovery/attachments.md` + config section; missing only as canonical term in `main-concepts.md` | LSN-001 + LSN-002 case-law; method-level uploadFileChunk evidence reinforces |
+| Attachment Storage Backend | true | config_prefixes, controllers | 2 | `configuration-and-deployment/odd-platform.md` section | DOC-GAP-006 attaches; chunk-staging path universality extends |
+| AlertManager Webhook Receiver | true | controllers | 1 | `configuration-and-deployment/odd-platform.md` section; missing as canonical term in main-concepts.md (DOC-GAP-019) | suggested_add_to_docs: true |
+| Activity Feed | true | controllers | 1 | `features/active-platform-features/activity-feed.md` exists but missing as canonical term + missing api-reference page (DOC-GAP-029) | vocabulary_status: codebase-anchored, doc-side-partially-covered |
+| Collector Token | true | controllers | 1 | New page at `configuration-and-deployment/enable-security/token-rotation.md` (DOC-GAP-034) | main-concepts.md mentions S2S but not rotation contract |
+| Auth Mode | true | config_prefixes, controllers | **7** (NEW 2026-05-12C: 4 wiring-site `*SecurityConfiguration` + 3 config-key-consumer from batch B) | `configuration-and-deployment/enable-security/authentication.md` + sub-pages; missing **(a)** DISABLED-default disclosure on parent (DOC-GAP-036), **(b)** DISABLED blast radius (DOC-GAP-045 — NEW), **(c)** LOGIN_FORM-drops-authorization (DOC-GAP-039), **(d)** OAuth2 provider 5-vs-7 drift (DOC-GAP-046 — NEW), **(e)** azure-tenant-id field absent (DOC-GAP-047 — NEW), **(f)** Azure logout-uri unvalidated (DOC-GAP-048 — NEW), **(g)** OAuth2/S2S composition (DOC-GAP-049 — NEW), **(h)** LDAP actuator-env password leak (DOC-GAP-050 — NEW), **(i)** LDAP 7-caveats cluster (DOC-GAP-051 — NEW), **(j)** LOGIN_FORM 6-caveats cluster (DOC-GAP-052 — NEW), **(k)** appInfo introspection (DOC-GAP-037), **(l)** empty/typo footgun | Triangulated by 7 sidecars in batch B + batch C |
+| Ingestion Filter | true | config_prefixes | 1 | Parent `enable-security.md` mentions default; DOC-GAP-038 captures four gaps | Distinct from S2S; conflated in docs |
+| Activity Table Partitioning | true | config_prefixes | 1 | `configuration-and-deployment/odd-platform.md` section; missing retention-vs-partitioning correction (DOC-GAP-041), 2x WIDTH (DOC-GAP-042), failure-mode + DB-role + `partition.advisory-lock-id` (DOC-GAP-043) | Operational-mechanics concept |
+| Metrics Storage Backend | true | config_prefixes | 1 | `configuration-and-deployment/odd-platform.md#metric-storage-backend`; missing tenant-id asymmetry (DOC-GAP-044) | suggested_add_to_docs: false |
+| Multi-Tenant Configuration | true | config_prefixes | 1 | `configuration-and-deployment/odd-platform.md` subsection; missing tenant-isolation caveats | suggested_add_to_docs: false |
+| Notifications | true (new 2026-05-12C) | config_prefixes | 1 | `features/active-platform-features/notifications.md` exists (200) + `configuration-and-deployment/odd-platform.md` Enable-Alert-Notifications section exists; missing **(a)** rate-limit caveat (DOC-GAP-054 — NEW), **(b)** audit-trail caveat (DOC-GAP-055 — NEW), **(c)** dead `webhookUrl` + per-channel filtering + PII redaction + replication-slot orphan + webhook unsigned cluster (DOC-GAP-057 — NEW); **(d)** legacy URL routing (DOC-GAP-056 — NEW); plus cross-link from main-concepts.md | vocabulary_status: codebase-anchored, doc-side-partially-covered |
 | ODD API Consumer (audience) | true | controllers, openapi_tags | 6 | `main-concepts.md` audience vocabulary | suggested_add_to_docs: true; named in 6 sidecars |
-| Prometheus AlertManager (audience) | true | controllers | 1 | `main-concepts.md` audience vocabulary; cross-link with DOC-GAP-019 | suggested_add_to_docs: false (the receiver itself is the visible concept) |
+| Prometheus AlertManager (audience) | true | controllers | 1 | `main-concepts.md` audience vocabulary; cross-link DOC-GAP-019 | suggested_add_to_docs: false |
 
 ## Coverage-gap candidates (high-fan-out concepts × api-reference depth)
 
 | Concept | Operations / surface | Documented count | Gap | Suggested action |
 |---|---|---|---|---|
-| Data Entity | 40 controller operations under `/api/dataentities/*` (concepts.yaml entry; DataEntityController + DataEntityAttachmentController + openapi-tag:dataEntity + DirectoryController + ActivityController.getActivity) | 0 (api-reference index punts to Swagger UI) | All 40 ops undocumented as a per-tag api-reference subpage | DOC-GAP-009 — create `developer-guides/api-reference/data-entities.md` |
-| Attachment | 10 ops (chunked-upload protocol + list + edit + delete + download) | 0 (no api-reference page exists) | Wire protocol absent everywhere | DOC-GAP-010 — create page or extend feature page; 2026-05-10A method-level evidence (cross-entity hijack + multi-instance staging) makes this critical |
-| Alert | 5 platform endpoints + 4 per-entity in dataEntity tag + AlertManager webhook | 9 + 1 enumerated on `/developer-guides/api-reference/alerts` | Auth-mode + visibility-scope caveats absent; doc-vs-code audience drift on All-tab | DOC-GAP-002 — admonition on alerts feature + api-reference (extended 2026-05-10A) |
-| Activity Feed | 2 endpoints (`GET /api/activity` + `GET /api/activity/counts`); 12 query parameters | 0 (api-reference page returns 404) | All endpoints undocumented as a per-tag api-reference subpage | DOC-GAP-029 (new 2026-05-10A) — create `developer-guides/api-reference/activity.md`; DOC-GAP-030 extends feature page |
-| Slack collaboration / Data Collaboration | ~7 endpoints under `/api/datacollaboration/*` | api-ref page exists (200) but omits authn/authz/validation/rate-limit | Security-content gaps | DOC-GAP-032, DOC-GAP-033 (new 2026-05-10A); also DOC-GAP-035 for the broken legacy URL |
-| Collector / Collector Token | 5 endpoints under `/api/collectors/*`; 1 ingestion auth filter | Permission named on `/permissions`; auth-mode named on `/authentication` | Operational mechanics (rotation contract) absent | DOC-GAP-034 (new 2026-05-10A) — create `enable-security/token-rotation.md` or extend `authentication.md` |
-| Directory | 4 ops | 4 (api-reference page exists) | Owner-scoping / authz caveat absent | DOC-GAP-008 — admonition on directory feature page |
-| GenAI | 1 op | 1 (feature page documents the contract) | Security caveats absent | DOC-GAP-007 — security-caveats H2 |
-| Multilingual UI / Locale Bundle | 2 ops (changeLanguage, bootstrap) | 0 (no doc page) | F-047 (filed) | DOC-NNN per F-047 |
+| Data Entity | 40 controller operations | 0 (api-reference index punts to Swagger) | All 40 ops undocumented as a per-tag api-reference subpage | DOC-GAP-009 — create `developer-guides/api-reference/data-entities.md` |
+| Attachment | 10 ops (chunked-upload + list + edit + delete + download) | 0 (no api-reference page) | Wire protocol absent everywhere | DOC-GAP-010; method-level evidence (cross-entity hijack + multi-instance staging) makes this critical |
+| Alert | 9+1 ops | 9+1 on `/developer-guides/api-reference/alerts` | Auth-mode + visibility-scope caveats absent; doc-vs-code audience drift | DOC-GAP-002 |
+| Activity Feed | 2 endpoints (`GET /api/activity` + `GET /api/activity/counts`); 12 query parameters | 0 (api-reference page 404) | All endpoints undocumented | DOC-GAP-029 — create `developer-guides/api-reference/activity.md`; DOC-GAP-030 extends feature page |
+| Slack collaboration / Data Collaboration | ~7 endpoints | api-ref page exists (200) but omits authn/authz/validation/rate-limit | Security-content gaps | DOC-GAP-032, DOC-GAP-033; DOC-GAP-035 for legacy URL |
+| Collector / Collector Token | 5 endpoints; 1 ingestion auth filter | Permission named; auth-mode named | Operational mechanics (rotation contract) absent | DOC-GAP-034 |
+| Directory | 4 ops | 4 (api-reference page exists) | Owner-scoping / authz caveat absent | DOC-GAP-008 |
+| GenAI | 1 op | 1 (feature page documents the contract) | Security caveats absent | DOC-GAP-007 |
+| Multilingual UI / Locale Bundle | 2 ops | 0 (no doc page) | F-047 (filed) | DOC-NNN per F-047 |
 | AlertManager Webhook Receiver | 1 op | 1 (operator-facing config section) | Caveats absent + concept not registered as canonical term | DOC-GAP-003 + DOC-GAP-019 |
+| Auth Mode (NEW 2026-05-12C aggregated) | 4 mode sub-pages + 1 S2S sub-page + parent | 5 sub-pages exist (200); each documents happy path | 12 distinct gaps clustered across DOC-GAP-036..039 + DOC-GAP-045..052 | Cluster cross-references — each sub-page benefits from one consolidated security/operability caveats H2 |
+| Notifications (NEW 2026-05-12C aggregated) | 1 feature page + 1 config-section | Both exist (200); document channels + WAL setup | 5 distinct gaps clustered across DOC-GAP-054..057 + DOC-GAP-056 (legacy URL) | One consolidated "Known limitations" section on the feature page; cross-link from main-concepts |
 
 ## Stale-page candidates (SUMMARY.md × concepts.yaml — pages with no surfaced concept)
 
-(Empty section — the substrate is currently undercoverage with 20 sidecars across a much larger codebase. The risk is substrate-coverage-gap, not stale-page; flag for re-enrichment of unsurfaced areas instead. Documentation-side stale-page identification requires substrate parity that is not yet achieved at slice 7+.)
+(Empty section — the substrate is currently undercoverage with 30 sidecars across a much larger codebase. The risk is substrate-coverage-gap, not stale-page; flag for re-enrichment of unsurfaced areas instead.)
 
 ## Maintainer notes
 
@@ -724,21 +783,27 @@ Concepts surfaced by the substrate that are not registered as canonical terms in
 
 **2026-05-10A batch refresh**: 8 new findings (DOC-GAP-028..035) added; 3 existing findings extended with method-level evidence (DOC-GAP-002, DOC-GAP-005, DOC-GAP-010, DOC-GAP-022, DOC-GAP-023). DOC-GAP-025 upgraded LOW → HIGH on direct getActivity.md evidence. Two new categories of pattern surfaced:
 1. **Doc-vs-code audience drift** (DOC-GAP-002 sub-finding): doc text recommends "stewards and admins" audience while code enforces "any authenticated user" — both code-side fix (add ALERT_LIST_ALL gate) and doc-side fix (rewrite audience framing) are valid; the drift itself is the finding.
-2. **Source-published-but-routed-wrong** (DOC-GAP-035): legacy un-prefixed URL `/active-platform-features/data-collaboration` 404s but the canonical path renders normally — joins the existing DOC-GAP-011..015 cluster; the data-collaboration variant is particularly visible because the source content was added recently (DOC-138 / DOC-155-159 batch).
+2. **Source-published-but-routed-wrong** (DOC-GAP-035): legacy un-prefixed URL `/active-platform-features/data-collaboration` 404s but the canonical path renders normally — joins the existing DOC-GAP-011..015 cluster.
 
 **2026-05-10B batch refresh** (5 config-key-consumer sidecars; 9 new findings DOC-GAP-036..044; doc-gaps.md jumped from 35 to 44 total):
-- 5 HIGH findings added: DOC-GAP-036 (DISABLED-default of auth.type undocumented), DOC-GAP-037 (`/api/appInfo` fingerprinting under DISABLED), DOC-GAP-038 (ingestion filter coverage + AlertManager sibling endpoint gap), DOC-GAP-039 (LOGIN_FORM drops authorization framework), DOC-GAP-041 (activity-feed page falsely claims partition-period controls retention)
-- 3 MEDIUM findings added: DOC-GAP-040 (`AuthorizationManagerCondition` dead code), DOC-GAP-042 (2x partition WIDTH undocumented), DOC-GAP-043 (silent-fail on partition CREATE failure + `partition.advisory-lock-id` undocumented + DB-role privileges undocumented)
-- 1 LOW finding added: DOC-GAP-044 (tenant-id read/write asymmetry on empty-string)
-- Live URL re-verification this session (2026-05-11):
-  - `/configuration-and-deployment/enable-security` 200 — NEW positive coverage: `auth.ingestion.filter.enabled defaults to false` now explicitly stated (DOC-138 / 155-159 batch landing); the `auth.type=DISABLED` default sibling claim remains absent.
-  - `/configuration-and-deployment/enable-security/authentication` 200 — does NOT state DISABLED is the default; does NOT mention `/api/appInfo` or `auth.ingestion.filter.enabled`.
-  - `/configuration-and-deployment/enable-security/authorization` 200 — does NOT state which auth modes wire the framework (LOGIN_FORM/DISABLED gap undocumented).
-  - `/configuration-and-deployment/enable-security/authentication/s2s` 200 — covers only `S2sAuthenticationFilter` (`auth.s2s.*` + `X-API-Key`); the per-datasource bearer-token protocol of `IngestionDataEntitiesFilter` is not documented here.
-  - `/configuration-and-deployment/odd-platform` 200 — positive coverage of `metrics.storage` + `odd.tenant-id` + `odd.activity.partition-period`; missing tenant-id read/write asymmetry + 2x partition width + retention/DROP path + failure modes + `partition.advisory-lock-id`.
-  - `/features/active-platform-features/activity-feed` 200 — Configuration section is materially incorrect: claims `partition-period` controls "retention and partitioning"; code has only a CREATE path.
-- Three new patterns surfaced:
-  1. **Triangulated default-open posture** (cross-cutting): THREE config-key-consumer sidecars converge on the same operator-trap — DISABLED-default of `auth.type` + FALSE-default of `auth.ingestion.filter.enabled` + no fail-fast on misconfigured `auth.type`. The live docs partial-cover one of the three; the cluster (DOC-GAP-036 / DOC-GAP-037 / DOC-GAP-038 / DOC-GAP-039) is the canonical LSN-001/LSN-002-class default-insecure surface.
-  2. **Documentation-overstates-config-effect** (DOC-GAP-041): activity-feed page claims a setting controls "retention" when code has no DROP path. The doc is materially wrong; same LSN-001 shape as attachment-ephemeral-default.
-  3. **Partial-doc-coverage-with-gap-on-asymmetry** (DOC-GAP-044): the doc page describes the happy path of `odd.tenant-id` correctly but omits the read/write asymmetry on empty-string. The page is partially accurate; the gap is the specific edge case that bites a particular env-var pattern.
-- Net cumulative: 44 findings; 19 HIGH (10 of which are LSN-001/LSN-002 class — DOC-GAP-001 / 002 / 004 / 005 / 006 / 010 / 025 / 036 / 038 / 041); the maintainer's triage budget for HIGH-severity content is dominated by the security-content-on-feature-pages family + the default-open-posture cluster + the new activity-partition retention misstatement.
+- 5 HIGH findings added: DOC-GAP-036, DOC-GAP-037, DOC-GAP-038, DOC-GAP-039, DOC-GAP-041
+- 3 MEDIUM findings added: DOC-GAP-040, DOC-GAP-042, DOC-GAP-043
+- 1 LOW finding added: DOC-GAP-044
+- Three new patterns surfaced: triangulated default-open posture, documentation-overstates-config-effect, partial-doc-coverage-with-gap-on-asymmetry.
+
+**2026-05-12C batch refresh** (5 sidecars: 4 `*SecurityConfiguration` wiring-site auth-mode classes + 1 NotificationsProperties config-properties-class; 14 new findings DOC-GAP-045..058; doc-gaps.md jumped from 44 to 58 total):
+
+- **8 new HIGH findings**: DOC-GAP-045 (DISABLED blast radius — CSRF/CORS/actuator/S2S-ignored/audit-absence/no-boot-WARN cluster), DOC-GAP-046 (OAuth2 5-vs-7 provider drift; Okta/Keycloak no handlers), DOC-GAP-047 (Azure azure-tenant-id field absent from POJO; YAML example not deployable), DOC-GAP-048 (Azure logout-uri unvalidated at @PostConstruct despite docs flagging required), DOC-GAP-049 (OAuth2/LDAP/LOGIN_FORM pages silent on S2S composition; X-API-Key→ADMIN-across-/** undocumented per mode), DOC-GAP-050 (LDAP auth.ldap.password leak via /actuator/env), DOC-GAP-051 (LDAP page omits 7 distinct caveats — LDAPS/admin-substring/no-admins/S2S/health/timeouts/pool), DOC-GAP-052 (LOGIN_FORM page omits 6 distinct caveats — authz framework/login-form-redirect/session-cookie security/S2S/actuator-env/CSRF), DOC-GAP-053 (META: "docs frame default behaviour but omit blast radius" — 3-sidecar-triangulated cross-cutting pattern), DOC-GAP-054 (Notifications no rate-limit — Slack 429 / SMTP saturation), DOC-GAP-055 (Notifications no audit trail).
+- **5 new MEDIUM findings**: DOC-GAP-056 (Notifications legacy URL 404 — joins routing-drift cluster), DOC-GAP-057 (Notifications operational caveats cluster — dead webhookUrl + per-channel filtering + PII redaction + replication-slot orphan + webhook unsigned), DOC-GAP-058 (META: GitBook legacy-vs-canonical routing drift class — 2-sidecar triangulated; recommend doc-side audit of ALL legacy paths).
+- Several existing findings extended with batch-C wiring-site evidence: DOC-GAP-036 (DisabledAuthSecurityConfiguration implicit_adrs + bugs_limitations confirm application.yml-bundled DISABLED default and no-matchIfMissing across 4 sibling classes), DOC-GAP-039 (LoginFormSecurityConfiguration wiring-site confirms no AuthorizationCustomizer + ADMIN-for-all), DOC-GAP-040 (OAuth2+LDAP sidecars confirm AuthorizationManagerCondition is unwired — direct per-config @ConditionalOnProperty is the actual gate).
+- Live URL re-verification this session (2026-05-12):
+  - `/configuration-and-deployment/enable-security/authentication/disabled-authentication` 200 — full body re-fetched verbatim; confirms DOC-GAP-045's blast-radius omission cluster verbatim (no mention of CSRF/CORS/actuator/audit/S2S-ignored/appInfo/boot-WARN).
+  - `/configuration-and-deployment/enable-security/authentication/oauth2-oidc` 200 — confirms 7-provider claim verbatim (AWS Cognito, GitHub, Google, Azure AD, Okta, Keycloak, Custom OIDC); confirms Azure logout-uri required claim verbatim ("Always include `logout-uri` when configuring the `azure` provider" + "leaving `logout-uri` unset raises a `NullPointerException`"); confirms `azure-tenant-id` field references in YAML examples.
+  - `/configuration-and-deployment/enable-security/authentication/ldap` 200 — confirms verbatim that NONE of the seven specific security/operability caveats (DOC-GAP-051) are addressed in the page.
+  - `/configuration-and-deployment/enable-security/authentication/login-form` 200 — confirms verbatim that NONE of the six caveats (DOC-GAP-052) are addressed.
+  - `/active-platform-features/notifications` 404 — confirms DOC-GAP-056 routing drift.
+  - `/features/active-platform-features/notifications` 200 — confirms canonical Notifications feature page renders; documents channels + AlertManager unauth caveat + SMTP timeout caveat (partial coverage of operational caveats; DOC-GAP-054/055/057 capture the remaining gaps).
+- **Three new meta-recommendations** worth maintainer-level attention:
+  1. **DOC-GAP-053**: "docs frame default behaviour but omit blast radius" pattern is now 3-sidecar-triangulated. Recommend adding to `pillars/documentation/gates.md` an explicit Gate 3 extension: caveats must appear ADJACENT to the default-behaviour claim, not several sections away. Recommend adding to `playbooks/pre-authoring-stance.md` an explicit blast-radius prompt.
+  2. **DOC-GAP-058**: GitBook legacy-vs-canonical routing drift is now 2-sidecar-triangulated. Recommend a doc-side audit of ALL legacy `/active-platform-features/*`, `/data-discovery/*`, and `/main-concepts` paths in the `documentation/` repo. Recommend GitBook redirect rules for high-traffic legacy paths.
+  3. **Auth-mode concept cluster**: the Auth Mode concept is now 7-sidecar-triangulated and has 12 distinct gaps across the 5 sub-pages of `enable-security/authentication/`. Recommend a single batch authoring session that adds one consolidated "Security and operability caveats" H2 to each sub-page rather than 12 individual admonitions across multiple sessions — the cluster size justifies one focused authoring batch.

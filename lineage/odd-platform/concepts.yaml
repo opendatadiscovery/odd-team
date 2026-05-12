@@ -1,14 +1,14 @@
 ---
-catalog_version: 5
-generated_at: "2026-05-12T18:00:00Z"
+catalog_version: 6
+generated_at: "2026-05-12T22:00:00Z"
 generated_at_commit: ede5d277
-sidecar_count: 35
-canonical_vocabulary_source: "documentation/docs/main-concepts.md (live at https://docs.opendatadiscovery.org/introduction/main-concepts)"
-canonical_vocabulary_fetched_at: "2026-05-12T18:00:00Z"
+sidecar_count: 40
+canonical_vocabulary_source: "documentation/docs/main-concepts.md (live at https://docs.opendatadiscovery.org/introduction/main-concepts) + documentation/docs/configuration-and-deployment/enable-security (for authorization vocabulary: Policy/Permission/Role/Owner/User-owner association)"
+canonical_vocabulary_fetched_at: "2026-05-12T22:00:00Z"
 prompt_version: "concept-merger/0.1.0"
 ---
 
-# concepts.yaml — refreshed concept-merger pass after batch 2026-05-12D
+# concepts.yaml — refreshed concept-merger pass after batch 2026-05-12E
 #
 # This catalog clusters concepts surfaced across 35 per-node enrichment sidecars
 # spanning five substrate axes (controllers, openapi_tags, ui_routes, ui_shell,
@@ -40,6 +40,116 @@ prompt_version: "concept-merger/0.1.0"
 #   - OAuthSecurityConfiguration @ConditionalOnProperty(auth.type=OAUTH2) @L71
 #   - LDAPSecurityConfiguration @ConditionalOnProperty(auth.type=LDAP) @L51
 #   - NotificationsProperties — Notifications subsystem (off-by-default; per-channel URL-presence activation)
+#
+# Batch 2026-05-12E adds 5 controller-method sidecars covering the RBAC
+# administration surface + a NEW search-area controller:
+#   - RoleController.createRole — POST /api/roles, SECURITY_RULES-gated
+#     (ROLE_CREATE NO_CONTEXT). Surfaces a NEW codebase-wide invariant:
+#     Administrator-name reservation asymmetry — `update` + `delete` check
+#     `UserProviderRole.values()` to reject mutations against the seeded
+#     predefined names, but `create` does NOT. If the seeded Administrator
+#     row is hard-deleted, this endpoint can re-create one with
+#     attacker-chosen policy bindings.
+#   - PolicyController.createPolicy — POST /api/policies, SECURITY_RULES-gated
+#     (POLICY_CREATE MANAGEMENT-tier). SAME Administrator-name reservation
+#     asymmetry as RoleController (PolicyServiceImpl.java:76, 87 vs
+#     PolicyServiceImpl.java:62-69). NO anti-elevation guard —
+#     `{resource: {type: MANAGEMENT}, permissions: [ALL]}` is a legal
+#     policy shape identical to the seeded Administrator.
+#   - OwnerController.createOwner — POST /api/owners, SECURITY_RULES-gated
+#     (OWNER_CREATE NO_CONTEXT). Confirms the **identity-decoupled directory
+#     CRUD** invariant: no auth-flow (LDAP / OAUTH2 / LOGIN_FORM) calls
+#     `OwnerService.create` on first login — operators must MANUALLY pre-create
+#     per-user Owner rows. `getOrCreate` exists but is invoked ONLY by
+#     `OwnerAssociationRequestServiceImpl.createOwnerAssociationRequest`
+#     (the user-claim flow), never on auto-creation. Also: `name UNIQUE` on
+#     `owner` is non-partial — soft-deleted rows permanently block re-creation
+#     under the same name (V0_0_1__init.sql vs V0_0_89__update_user_owner.sql
+#     which DID get a partial-unique migration applied elsewhere). OpenAPI 201
+#     vs impl 200 drift (same shape as POST /api/roles).
+#   - PermissionController.getResourcePermissions — GET /api/resource/{type}/{id}/permissions,
+#     `.authenticated()` fall-through (no SECURITY_RULES entry). The
+#     CANONICAL read-side of the platform's authorization model: same
+#     `PermissionService` + same `ContextualPermissionExtractor` graph the
+#     mutation enforcer uses. Authoritative-not-UI-hint by design (a forged
+#     response would not bypass mutation enforcement). BUT two HIGH
+#     auth-mode-bypass findings: (a) under `auth.type=DISABLED` the endpoint
+#     returns an empty permission set while mutation endpoints accept any
+#     caller (UI says 'you can do nothing'; API says 'anyone can do
+#     anything' — silent contradiction); (b) under `auth.type=LOGIN_FORM`
+#     EVERY caller is admin (static `getAuthorities(true)` at
+#     LoginFormSecurityConfiguration.java:74-82), so the endpoint always
+#     returns the FULL permission set regardless of UI-configured policies.
+#   - SearchController.search — NEW search area. POST /api/search creates a
+#     server-side `search_facets` row (session-as-server-state) and returns
+#     facet counts + a UUID; sibling GET /api/search/{search_id}/results
+#     returns paginated `DataEntityList` rows. NO SECURITY_RULES entry,
+#     `.authenticated()` only, OWNER-BYPASS by default — any authenticated
+#     user can paginate the entire catalog (REFACTOR-024-shape with wider
+#     blast radius). Postgres `to_tsquery(?)` syntax-error vector via
+#     `JooqFTSHelper.tsQuery` (split on space + append `:*` + join with `&` —
+#     a query like `foo!bar` becomes malformed tsquery). `search_facets`
+#     persists user query text verbatim — PII concern at the 30-day
+#     housekeeping floor.
+#
+# CRITICAL CROSS-CUTTING FINDINGS triangulated by batch E (3+ independent sidecars):
+#
+# - **DISABLED-mode bypasses SECURITY_RULES** — now 8-sidecar triangulated:
+#   batch C: AppInfoController@L18 + AuthorizationManagerCondition@L11 +
+#   DisabledAuthSecurityConfiguration@L10 + IngestionDataEntitiesFilter@L20
+#   (4 sidecars).
+#   batch E: PolicyController.createPolicy + RoleController.createRole +
+#   OwnerController.createOwner + PermissionController.getResourcePermissions
+#   (4 more sidecars). The Auth Mode (DISABLED branch) security_aggregate
+#   reflects this as the dominant weakness — RBAC primary-surface
+#   endpoints are reachable unauthenticated, and the read-side permission
+#   discovery endpoint contradicts the actual mutation posture.
+#
+# - **LOGIN_FORM ADMIN-for-all bypass** — now 3-sidecar triangulated:
+#   LoginFormSecurityConfiguration@L31 (batch C — `getAuthorities(true)` at
+#   line 81 hard-codes admin) + RoleController.createRole (batch E — admin
+#   sees full RBAC mutation surface) + PermissionController.getResourcePermissions
+#   (batch E — endpoint returns full permission set for every caller in
+#   LOGIN_FORM mode regardless of UI-configured policies). The
+#   Auth Mode (LOGIN_FORM branch) security_aggregate weakness now carries
+#   the read-side corroboration.
+#
+# - **Administrator-name reservation asymmetry (NEW INVARIANT, batch E)** —
+#   2-sidecar primary-source: RoleController.createRole + PolicyController.createPolicy.
+#   In both `update` + `delete` paths the service explicitly rejects mutations
+#   against the seeded `Administrator` name (RoleServiceImpl.java:67-69 +
+#   81-84; PolicyServiceImpl.java:76, 87). In the `create` path NEITHER
+#   service checks. The only thing protecting the reserved name on creation
+#   is the partial-unique DB index (which depends on the seeded row still
+#   existing). Codebase-wide CRUD-defensive asymmetry pattern. NEW
+#   cross-cutting invariant.
+#
+# - **Read-collaborative cross-owner enumeration** — now 3-sidecar
+#   triangulated: getAllAlerts (A) + getActivity (B) + search (E). The
+#   search surface is the WIDEST: the entire catalog is paginate-able by
+#   any authenticated user with no owner predicate (REFACTOR-024 shape).
+#   Strengthened on the existing Owner-link concept + ADR-CANDIDATE-003.
+#
+# - **Legacy-vs-canonical GitBook IA drift** — now 3-sidecar (3 distinct
+#   doc-page 404s with canonical 200 siblings): data-collaboration (A) +
+#   notifications (C) + search-related (E — search lives at
+#   `features/data-discovery/search` 200 while no `/active-platform-features/search`
+#   exists; the batch E sidecar verified this specifically as a NEGATIVE
+#   result, completing the index-link-rot observation across THREE
+#   parallel feature surfaces).
+#
+# - **No-audit-log-on-RBAC-mutations (NEW INVARIANT, batch E)** —
+#   3-sidecar: RoleController.createRole + PolicyController.createPolicy +
+#   OwnerController.createOwner. None of `RoleServiceImpl.create`,
+#   `PolicyServiceImpl.create`, `OwnerServiceImpl.create` emit
+#   `@Slf4j` log lines, publish events, or insert into any audit table.
+#   `OwnerServiceImpl.create` is also missing `@ActivityLog` (verified
+#   by grep — only AlertHaltConfig / AlertService / DataEntityInternalState /
+#   DataEntity / DataEntityGroup carry it). A hijacked admin or any S2S
+#   API-key holder can rewrite the authorization model invisibly. The
+#   activity feed (`/api/activity` per batch A getActivity) does NOT
+#   cover Role / Policy / Permission / Owner mutations. NEW cross-cutting
+#   hygiene invariant.
 #
 # Batch 2026-05-12D adds 5 config-properties-class sidecars deepening per-mode
 # and per-feature config surfaces — and DELIBERATELY triangulating earlier
@@ -142,6 +252,7 @@ entities:
       - "odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk"
       - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
       - "odd-platform java ActivityController controller-method:getActivity"
+      - "odd-platform java SearchController controller-method:search"
     contributors:
       - "DataEntityController: entities[DataEntity, DataEntityRef, DataEntityDetails, DataEntityList, DataEntityGroup, ...]"
       - "openapi-tag:dataEntity: entities[Data Entity, DataEntityGroup, DataEntityRef, DataEntityDetails, ...]"
@@ -151,6 +262,7 @@ entities:
       - "DataEntityAttachmentController.uploadFileChunk: data_entity_id path variable bound but never forwarded; uploadId is the authoritative session key"
       - "DataCollaborationController.postMessageInSlack: data_entity_id is required in MessageRequest body; existence checked, ownership NOT checked"
       - "ActivityController.getActivity: ActivityState payload carries old_state/new_state diffs for every tracked field on each data entity"
+      - "SearchController.search: catalog-wide paginated enumeration of every non-EXCLUDE_FROM_SEARCH Data Entity row — names, ODDRNs, descriptions, ownership, tags, custom metadata, term linkages, datasource, namespace, statuses. Default `my_objects=false` returns aggregations across the entire catalog without any owner predicate. Third read-collaborative cross-owner-enumeration surface alongside getAllAlerts + getActivity."
     evidence:
       - "DataEntityController.md:concepts.entities.[DataEntity]"
       - "openapi-tag-dataEntity.md:concepts.entities.[Data Entity]"
@@ -160,6 +272,7 @@ entities:
       - "uploadFileChunk.md:concepts.invariants.[0] (dataEntityId cosmetic at chunk-upload)"
       - "postMessageInSlack.md:bugs_limitations_corner_cases.[3] (data_entity existence checked, ownership not)"
       - "getActivity.md:security.data_exposure.[0] (full diff payload per data entity)"
+      - "search.md:concepts.entities (DataEntity searched against) + security.known_security_gaps.[0] (catalog-wide cross-owner enumeration HIGH)"
     security_aggregate:
       overall: LOW
       auth_modes_relevant:
@@ -183,6 +296,7 @@ entities:
         - "`getDataEntityActivity` exposes who-changed-what audit trail to any authenticated user"
         - "`getDataEntityMessages` exposes Slack-thread content to any authenticated user (cross-tenant exposure if Slack workspace has multiple sensitive channels)"
         - "Global `/api/activity` returns audit trails across every owner — including ActivityState old/new diffs of descriptions, business names, ownership changes, custom metadata — to ANY authenticated user (getActivity.md:security.known_security_gaps.[0] severity HIGH)"
+        - "**Catalog-wide search enumeration (batch E)** — `POST /api/search` + paginated `GET /api/search/{search_id}/results` enumerates every non-EXCLUDE_FROM_SEARCH Data Entity in the platform with no owner predicate to ANY authenticated user. Same admin-path-without-admin-gate failure mode as getAllAlerts / getActivity but WIDER blast radius (the search surface is the platform's primary catalog discovery vector). search.md:security.known_security_gaps.[0] severity HIGH"
         - "Slack-message posting accepts any user-supplied data_entity_id with no owner check — cross-tenant message injection (postMessageInSlack.md:security.known_security_gaps.[2] severity HIGH)"
         - "Attachment chunk hijack: caller with DATA_ENTITY_ATTACHMENT_MANAGE on entity X who learns another user's uploadId for entity Z can post chunks via X's URL — gate authorises path entity, service forwards to uploadId entity (uploadFileChunk.md:security.known_security_gaps.[0] severity MEDIUM)"
         - "Authorization layer is path-string-coupled with no compile-time/test-time guard against drift; the term mismatch is the canonical example, no integration test currently catches such drift"
@@ -200,6 +314,7 @@ entities:
         - "uploadFileChunk.md"
         - "postMessageInSlack.md"
         - "getActivity.md"
+        - "search.md"
       evidence:
         - "DataEntityController.md:security.known_security_gaps.[0] (term path mismatch)"
         - "DataEntityController.md:security.known_security_gaps.[1] (auth-mode-only reads)"
@@ -209,6 +324,7 @@ entities:
         - "uploadFileChunk.md:security.known_security_gaps.[0] (cross-entity hijack)"
         - "postMessageInSlack.md:security.known_security_gaps.[2] (cross-owner posting)"
         - "getActivity.md:security.known_security_gaps.[0] (global activity cross-owner)"
+        - "search.md:security.known_security_gaps.[0] (catalog-wide cross-owner enumeration HIGH)"
     performance_aggregate:
       overall: LOW
       hot_paths:
@@ -219,6 +335,7 @@ entities:
         - "GET /api/directory and /api/directory/datasources?prefix={prefix} — Directory landing/drill down loads ALL data sources via dataSourceRepository.list() (no pagination) — DirectoryController"
         - "POST /api/dataentities/{id}/files/uploads/{uploadId}/chunks — N invocations per upload (1 per chunk); per-chunk DB SELECT via checkProcessingUploadById + filesystem write to /tmp/odd/chunks/{uploadId}/{index} — uploadFileChunk"
         - "GET /api/activity (and /api/activity/counts) — global audit-feed listing; 4 parallel aggregation queries on counts call; on critical path of activity-feed UI render — getActivity"
+        - "POST /api/search — search session creation runs THREE concurrent queries per call (entity-class facet aggregation + catalog-wide countByState + owner-scoped countByState (unconditional, even when my_objects=false)) + 1 INSERT into search_facets. Hit on every keystroke / facet click in the UI search bar after debounce — search"
       throughput_shape:
         verdict: SINGLE_ITEM_ONLY
         detail: "All 40 mutating endpoints take a single dataEntityId path variable; no bulk-update endpoint for description/name/status/ownership/tags/terms/metadata/alert config. Bulk operator workflows (tag-namespace, status-batch) require N round-trips. Per-chunk upload is single-chunk-per-request (no batch chunk endpoint). Activity feed is single-window per call (no batch / multi-window endpoint)."
@@ -240,7 +357,7 @@ entities:
         - "Reflection-based ODDRN-property extraction in Directory is unmemoised (DirectoryServiceImpl.java:153-171)"
         - "Multi-instance attachment chunk staging broken for BOTH LOCAL and REMOTE storage backends — chunk path /tmp/odd/chunks is hardcoded, not config-driven (uploadFileChunk.md:performance.known_performance_gaps.[0])"
         - "Activity counts endpoint issues 4 parallel aggregation queries per call — 4x DB load on every counts refresh (getActivity.md:performance.known_performance_gaps.[1])"
-      cross_file_inconsistencies:
+        - "Search endpoint runs unconditional `my_objects` aggregation cost on every call — even when caller's SearchFormData.my_objects=false the owner-scoped countByState(state, owner) still runs to populate the UI's 'My objects' badge count. A short-circuit would halve per-call DB work in the common case (search.md:performance.known_performance_gaps.[0])"
         - "Activity stream uses cursor pagination; everything else uses offset pagination — single inconsistent shape across the controller's 40 endpoints"
         - "Directory carries platform-wide aggregates without pagination; DataEntityController list endpoints carry pagination but no caps — different unscoped patterns for the same Data Entity concept"
         - "Chunk staging path /tmp/odd/chunks is the same for LOCAL and REMOTE storage; class-level Attachment sidecar identified LOCAL multi-instance risk, method-level uploadFileChunk sidecar reveals it's storage-mode-independent"
@@ -251,6 +368,7 @@ entities:
         - "DataEntityAttachmentController.md"
         - "uploadFileChunk.md"
         - "getActivity.md"
+        - "search.md"
       evidence:
         - "DataEntityController.md:performance.hot_paths.[0-6]"
         - "DataEntityController.md:performance.known_performance_gaps.[0-7]"
@@ -260,6 +378,7 @@ entities:
         - "uploadFileChunk.md:performance.known_performance_gaps.[0,1,2]"
         - "getActivity.md:performance.hot_paths.[0-2]"
         - "getActivity.md:performance.known_performance_gaps.[0-3]"
+        - "search.md:performance.hot_paths.[0] + performance.known_performance_gaps.[0-3]"
 
   - name: "Alert"
     canonical_in_docs: true
@@ -1613,6 +1732,414 @@ entities:
       Surface as a canonicalisation candidate: doc-side extension,
       not a vocabulary-drift merge.
 
+  - name: "Policy (Authorization)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "A named JSON document of `statements` over resource types `DATA_ENTITY | TERM | QUERY_EXAMPLE | MANAGEMENT` granting specific `permissions` or the `ALL` wildcard. Policies are validated server-side against `schema/policy_schema.json` (JSON Schema V201909) at every create + update; the persisted text column is always schema-valid. A Policy is inert until bound to a Role via `role_to_policy`. The seeded `Administrator` policy is reserved by name on UPDATE + DELETE (PolicyServiceImpl.java:76, 87) but NOT on CREATE (PolicyServiceImpl.java:62-69 — name-asymmetry invariant). Authorization gate on CREATE is `POLICY_CREATE` (MANAGEMENT tier) wired in SECURITY_RULES line 163-164, **bypassed under `auth.type=DISABLED`**. Canonical doc anchor: `configuration-and-deployment/enable-security/authorization/policies` (200, 2026-05-12)."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java PolicyController controller-method:createPolicy"
+      - "odd-platform java PermissionController controller-method:getResourcePermissions"
+    contributors:
+      - "PolicyController.createPolicy: entities[Policy, PolicyFormData (name + policy JSON string), PolicyDetails, PolicyPojo, PolicyStatementDto, PolicyPermissionDto, PolicyTypeDto]; operations[create-policy, validate-policy-json-schema, persist-policy, return-policy-details]"
+      - "PermissionController.getResourcePermissions: PolicyDto (the materialised policy graph evaluated at the read-side); the resolver flattens roles → policies → statements identical to the mutation enforcer"
+    evidence:
+      - "createPolicy.md:concepts.entities + concepts.invariants.[0-4]"
+      - "createPolicy.md:implicit_adrs.[1] (JSON-Schema-at-write-time) + implicit_adrs.[2] (MANAGEMENT non-contextual)"
+      - "getResourcePermissions.md:concepts.entities (PolicyDto materialised graph) + implicit_adrs.[1] (authoritative-not-UI-hint)"
+    security_aggregate:
+      overall: LOW
+      auth_modes_relevant:
+        - LOGIN_FORM
+        - OAUTH2
+        - LDAP
+        - DISABLED
+      ingestion_filter_relevance: NO
+      authorization_consistency:
+        verdict: INCONSISTENT
+        detail: "SECURITY_RULES wires POLICY_CREATE / POLICY_UPDATE / POLICY_DELETE at lines 163-168 (NO_CONTEXT MANAGEMENT-tier), but the gate is bypassed under `auth.type=DISABLED` (DisabledAuthSecurityConfiguration.java:13-18 — `anyExchange().permitAll()`). Sibling `GET /api/policies/schema` (PolicyController.java:60-63) has NO SECURITY_RULES entry — falls through to `.authenticated()`. Under `auth.type=LOGIN_FORM` the AuthorizationCustomizer is NOT wired (cross-ref Auth Mode aggregate) so SECURITY_RULES is INERT — every form-authenticated user is ADMIN with effective POLICY_CREATE."
+      owner_scoping:
+        verdict: "N/A"
+        detail: "Policies are global authorization documents; the `policy` table has no `owner_id` column. MANAGEMENT-tier permission gates them globally."
+      strengths:
+        - "JSON-Schema-at-write-time invariant — PolicyJSONValidator loads the schema once at construction (V201909) and validates per request; persisted text column is always schema-valid (createPolicy.md:implicit_adrs.[1])"
+        - "Administrator policy reserved by name on UPDATE + DELETE (createPolicy.md:implicit_adrs.[3])"
+        - "Soft-delete-aware partial UNIQUE INDEX `policy_name_unique` on `policy(name) WHERE deleted_at IS NULL` (V0_0_55__add_policies_and_roles.sql:30) — deleted policy's name reusable; live duplicates rejected at DB layer"
+      weaknesses:
+        - "**Administrator-name reservation asymmetry (HIGH for defence-in-depth)** — `update` + `delete` reject mutations against the seeded Administrator name; `create` does NOT. If the seeded row is ever soft-deleted, a custom Administrator policy with arbitrary statements becomes creatable. Cross-cutting NEW invariant — see 'Administrator-name reservation asymmetry on CRUD'. (createPolicy.md:security.known_security_gaps.[5])"
+        - "**No anti-elevation guard (HIGH)** — `{resource: {type: MANAGEMENT}, permissions: [ALL]}` is a legal policy shape identical to the seeded Administrator. POLICY_CREATE is functionally root-on-the-platform; the docs do not flag this. (createPolicy.md:security.known_security_gaps.[2])"
+        - "**No audit log on policy mutations (HIGH)** — `PolicyServiceImpl.create` has no `@Slf4j` log calls, no event publication, no audit-table insert (createPolicy.md:bugs_limitations_corner_cases.[1]). A security incident reviewer cannot answer 'who authored this MANAGEMENT/ALL policy on date X?' Cross-cutting invariant — see 'No-audit-log on RBAC mutations'."
+        - "**Under `auth.type=DISABLED`, POLICY_CREATE is bypassed entirely (HIGH on DISABLED deployments)** — `anyExchange().permitAll()` short-circuits SECURITY_RULES. Any network-reachable caller can create MANAGEMENT/ALL policies; full escalation requires also creating + binding a role (POST /api/roles is similarly bypassed). DISABLED + reachable network port + RBAC primary-surface = catastrophic exposure. (createPolicy.md:security.known_security_gaps.[0])"
+        - "**PolicyJSONValidator raises IllegalArgumentException, not BadUserRequestException (MEDIUM)** — invalid schema may surface as 500 rather than 400. (createPolicy.md:security.known_security_gaps.[3])"
+        - "**Duplicate-name POST surfaces as DB UNIQUE-constraint violation (MEDIUM)** — service has no pre-check; second POST with same name falls through to repository INSERT and hits `unique_violation` SQLSTATE 23505 unhandled (createPolicy.md:security.known_security_gaps.[4])"
+      cross_file_inconsistencies:
+        - "Policy schema endpoint `GET /api/policies/schema` is NOT gated by any Permission — any authenticated user can fetch the live JSON Schema. Not a vulnerability per se, but the docs do not document the endpoint at all. (createPolicy.md:bugs_limitations_corner_cases.[5])"
+        - "Pattern parallels Role + Owner: all three have the same Administrator-name-on-update-but-not-create asymmetry, and none of three emit audit logs. The catalog records this cross-pattern via the 'Administrator-name reservation asymmetry' and 'No-audit-log on RBAC mutations' cross-cutting invariants."
+      contributing_files:
+        - "createPolicy.md"
+        - "getResourcePermissions.md"
+      evidence:
+        - "createPolicy.md:security.known_security_gaps.[0-6]"
+        - "getResourcePermissions.md:security.known_security_gaps.[0-2]"
+    performance_aggregate:
+      overall: HIGH
+      hot_paths:
+        - "Single POST per policy-creation: JSON-Schema parse + 1 DB INSERT. Not on ingestion / UI hot path; admin operation (createPolicy.md:performance.hot_paths.[0])"
+      throughput_shape:
+        verdict: SINGLE_ITEM_ONLY
+        detail: "No bulk-create endpoint; bootstrapping a complex RBAC scheme requires N HTTP calls. Reactive Mono signature, non-blocking, single DB round-trip (createPolicy.md:performance.throughput_characteristics.[0])"
+      scaling_shape:
+        verdict: HORIZONTALLY_SCALABLE
+        detail: "Stateless controller; unique-name index serializes concurrent same-name inserts (one wins, others throw) — DB-level concurrency safety (createPolicy.md:performance.scaling_characteristics.[0])"
+      strengths:
+        - "JsonSchema loaded ONCE at validator construction — no per-request schema reparse"
+      weaknesses:
+        - "No bulk-create endpoint (LOW) — bootstrapping a custom RBAC model is N HTTP calls"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "createPolicy.md"
+      evidence:
+        - "createPolicy.md:performance.known_performance_gaps.[0]"
+    notes: |
+      Anchored on `configuration-and-deployment/enable-security/authorization/policies`
+      live page (200, 2026-05-12). The page documents the policy JSON shape
+      but does NOT name the POLICY_CREATE Permission, does NOT mention the
+      seeded Administrator policy, does NOT warn about auth.type=DISABLED
+      bypassing the gate. Surface 5 DOC-GAP candidates from
+      createPolicy.md:docs_link_semantic.doc_drift_findings.[A-E].
+
+  - name: "Role (Authorization)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "A named bundle of Policy references that can be attached to an Owner (and through the user→owner mapping, to authenticated users) to grant authorization permissions. Two predefined roles seeded by V0_0_56: `Administrator` (all permissions on every resource type) and `User` (regular user with no permissions by default). Custom roles are created via `POST /api/roles` (gated by `ROLE_CREATE` NO_CONTEXT, SecurityConstants.java:169) and bound to Policies via `role_to_policy`. The platform's authoritative mapping from policy graphs to authenticated subjects. Canonical doc anchor: `configuration-and-deployment/enable-security/authorization/roles` (200, 2026-05-12)."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java RoleController controller-method:createRole"
+      - "odd-platform java PermissionController controller-method:getResourcePermissions"
+      - "odd-platform java OwnerController controller-method:createOwner"
+    contributors:
+      - "RoleController.createRole: entities[Role (id, name, policies), RoleFormData (request body: name + policies[]), RolePojo, RoleDto, UserProviderRole.ADMIN/.USER (predefined seeded roles), ROLE_CREATE permission (PolicyPermissionDto)]; operations[accept POST /api/roles, map to RolePojo, INSERT role_to_policy rows]"
+      - "PermissionController.getResourcePermissions: RoleService.getCurrentUserRoles is the policy-resolution path — `PolicyServiceImpl.java:103-107` flattens roles → policies → statements identical to the mutation enforcer"
+      - "OwnerController.createOwner: RoleFormData carries an optional `roles[]`; service `ownerToRoleRepository.createRelations(ownerId, roleIds)` writes one row per role per new Owner"
+    evidence:
+      - "createRole.md:concepts.entities + concepts.invariants.[0-4]"
+      - "createRole.md:implicit_adrs.[0] (uniform SECURITY_RULES gating) + implicit_adrs.[1] (predefined-name mutation-only protection) + implicit_adrs.[2] (rewrite-on-update / insert-on-create) + implicit_adrs.[3] (ReactiveTransactional)"
+      - "getResourcePermissions.md:dependencies_semantic.couples-to (RoleService.getCurrentUserRoles)"
+      - "createOwner.md:concepts.entities (OwnerToRole link side effect) + dependencies_semantic.couples-to (ownerToRoleRepository.createRelations)"
+    security_aggregate:
+      overall: LOW
+      auth_modes_relevant:
+        - LOGIN_FORM
+        - OAUTH2
+        - LDAP
+        - DISABLED
+        - S2S
+      ingestion_filter_relevance: NO
+      authorization_consistency:
+        verdict: INCONSISTENT
+        detail: "SECURITY_RULES gates ROLE_CREATE / ROLE_UPDATE / ROLE_DELETE at lines 169-173 (NO_CONTEXT MANAGEMENT-tier). GET /api/roles is permitAll under SECURITY_RULES — any authenticated user can list roles. Under `auth.type=DISABLED` the gate is INERT (DisabledAuthSecurityConfiguration). Under `auth.type=LOGIN_FORM` the AuthorizationCustomizer is NOT wired and every form-authenticated user is ADMIN with effective ROLE_CREATE. Under any non-DISABLED mode with `auth.s2s.enabled=true`, any X-API-Key caller is injected as ADMIN (S2sAuthenticationFilter.java:31-39) and holds ROLE_CREATE globally — REFACTOR-108."
+      owner_scoping:
+        verdict: "N/A"
+        detail: "Roles are platform-global; not owned by any Owner. They ARE the binding between Permission bundles and Owners. GET /api/roles is permitAll under SECURITY_RULES (no list-roles gate)."
+      strengths:
+        - "`@ReactiveTransactional` wraps the create flow (RoleServiceImpl.java:50) — no orphan role rows without their policy relations (createRole.md:implicit_adrs.[3])"
+        - "Partial-unique partial-index `role_name_unique` on `role(name) WHERE deleted_at IS NULL` (V0_0_55__add_policies_and_roles.sql:42) — DB-level name uniqueness enforcement"
+        - "Role-policy relation is rewritten ENTIRELY on every update (`deleteRoleRelationsExcept` then `createRelations`); INSERT-only on create. Edges owned by Role, not Policy (createRole.md:implicit_adrs.[2])"
+      weaknesses:
+        - "**Administrator-name reservation asymmetry on create (HIGH)** — `update` (RoleServiceImpl.java:67-69) + `delete` (lines 81-84) check `UserProviderRole.values()`; `create` (lines 51-61) does NOT. If the seeded Administrator row is hard-deleted (e.g. direct SQL bypassing soft-delete), this endpoint can recreate a row named `Administrator` with attacker-chosen policies. The unique-index is the only fence and depends on the seeded row remaining present. (createRole.md:security.known_security_gaps.[0])"
+        - "**No audit log on role mutations (HIGH)** — `RoleServiceImpl.create/.update/.delete` emit no `@Slf4j` log lines, publish no events, and insert into no audit table. A hijacked admin can rewrite the authorization model invisibly. Activity feed does NOT cover Role / Policy / Permission mutations. (createRole.md:security.known_security_gaps.[1])"
+        - "**Under `auth.type=DISABLED`, ROLE_CREATE is bypassed entirely (HIGH on DISABLED deployments)** — combined with anonymous ADMIN principal under DISABLED, an attacker can issue `POST /api/roles` with a custom Administrator-equivalent policy attached. (createRole.md:security.known_security_gaps.[2])"
+        - "**Under LOGIN_FORM/OAUTH2/LDAP with `auth.s2s.enabled=true`, any X-API-Key holder can create roles (HIGH — REFACTOR-108)** — S2sAuthenticationFilter.java:31-39 grants ADMIN globally, not scoped to ingestion. (createRole.md:security.known_security_gaps.[3])"
+        - "**No validation that policy ids reference live, non-soft-deleted Policies (MEDIUM)** — FK-error surfaces as 500; soft-deleted Policy ids may still satisfy the FK depending on `role_to_policy` semantics (unverified). (createRole.md:security.known_security_gaps.[4])"
+        - "**Role rows vs. LDAP / OAuth2 group mapping confusion (MEDIUM — doc gap)** — LDAP admin-groups + OAuth2 admin claims map DIRECTLY to `UserProviderRole.ADMIN/.USER`, NOT to platform Role rows. Operators reasonably expect a role named `admins` to be auto-granted to LDAP users in `admin-groups`; it is not. (createRole.md:security.known_security_gaps.[7])"
+        - "**Case-sensitivity mismatch (LOW)** — delete uses `equalsIgnoreCase`; update uses case-sensitive `.equals`. Inconsistent guard. (createRole.md:bugs_limitations_corner_cases.[case-sensitivity mismatch])"
+      cross_file_inconsistencies:
+        - "Role + Policy + Owner CRUD all share the same Administrator-name-on-update-but-not-create asymmetry pattern AND the no-audit-log pattern. Catalog records both as cross-cutting invariants."
+        - "Live `/authorization/roles` page describes Roles as 'useful for combining multiple policies together' but does NOT document the `POST /api/roles` creation surface, the ROLE_CREATE permission, the partial-unique-name index, the predefined-name protection, the spec-vs-code 201-vs-200 drift, the audit-logging absence, or the LDAP/OAuth2-group-mapping relationship."
+      contributing_files:
+        - "createRole.md"
+        - "getResourcePermissions.md"
+        - "createOwner.md"
+      evidence:
+        - "createRole.md:security.known_security_gaps.[0-7]"
+        - "createOwner.md:dependencies_semantic.requires-runtime (owner_to_role table)"
+    performance_aggregate:
+      overall: HIGH
+      hot_paths:
+        - "Single POST per role-creation: 3 DB calls (roleRepository.create → roleToPolicyRepository.createRelations(N rows) → roleRepository.getDto). N = policies.length, typically 1-10 (createRole.md:performance.hot_paths.[0])"
+      throughput_shape:
+        verdict: SINGLE_ITEM_ONLY
+        detail: "No batch-create endpoint; admin migrating 100 Roles issues 100 POSTs (createRole.md:performance.throughput_characteristics.[0])"
+      scaling_shape:
+        verdict: HORIZONTALLY_SCALABLE
+        detail: "Stateless controller; concurrent creates of the same name race at the DB unique-index (createRole.md:performance.scaling_characteristics.[0])"
+      strengths:
+        - "Reactive Mono signature — non-blocking I/O preserved"
+      weaknesses:
+        - "No bulk-create endpoint (LOW)"
+        - "No upper bound on `RoleFormData.policies[]` size (components.yaml:3368-3379) — a 10000-policy request produces 10000 INSERTs into role_to_policy in one transaction (createRole.md:performance.known_performance_gaps.[1])"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "createRole.md"
+      evidence:
+        - "createRole.md:performance.known_performance_gaps.[0,1]"
+    notes: |
+      Anchored on `configuration-and-deployment/enable-security/authorization/roles`
+      live page (200, 2026-05-12). Live page omits API-creation guidance,
+      ROLE_CREATE Permission name, predefined-name protection rules, spec-vs-code
+      drift, audit-logging absence, and Role-row-vs-LDAP/OAuth-group mapping.
+      Five distinct doc-drift findings flow from this concept (createRole.md:
+      docs_link_semantic.doc_drift_findings.[0-4]).
+
+  - name: "Owner (Authorization directory entry)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "A platform-managed directory entry representing a Data Owner — 'people who manage and maintain a particular data entity or term' (live owners doc verbatim). Owners are NOT Users — Owners are objects in the `owner` table; Users authenticate via LDAP/OAuth2/LOGIN_FORM and must SEPARATELY associate with an Owner via `POST /api/owner_association_request` (`OwnerAssociationRequestServiceImpl.java:52-76`). **No auth flow auto-creates an Owner on first login** — operators must manually pre-create per-user Owner rows (or accept the manual association request). Owner directory CRUD is gated by SECURITY_RULES (OWNER_CREATE / OWNER_UPDATE / OWNER_DELETE NO_CONTEXT). Owner directory is identity-decoupled from the authenticated principal. Canonical doc anchor: `configuration-and-deployment/enable-security/authorization/owners` (200, 2026-05-12)."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java OwnerController controller-method:createOwner"
+    contributors:
+      - "OwnerController.createOwner: entities[Owner (response payload), OwnerFormData (name + optional roles[]), OwnerPojo (jOOQ row), OwnerToRole (join-table link)]; operations[create-owner-with-optional-roles — single transactional insert + per-role link insert + read-back as DTO]"
+      - "implicit_adrs.[1]: Owner-creation decoupled from user identity by design — request body carries only `name` + optional `roles`; controller never reads the security context; user→owner mapping is created only through the SEPARATE association-request flow"
+    evidence:
+      - "createOwner.md:concepts.entities + concepts.invariants.[0-2]"
+      - "createOwner.md:implicit_adrs.[0] (SECURITY_RULES gating) + implicit_adrs.[1] (identity-decoupled directory CRUD) + implicit_adrs.[2] (ReactiveTransactional at service)"
+    security_aggregate:
+      overall: LOW
+      auth_modes_relevant:
+        - LOGIN_FORM
+        - OAUTH2
+        - LDAP
+        - DISABLED
+      ingestion_filter_relevance: NO
+      authorization_consistency:
+        verdict: INCONSISTENT
+        detail: "SECURITY_RULES gates OWNER_CREATE NO_CONTEXT at line 143 — caller needs a Policy granting OWNER_CREATE. Under `auth.type=DISABLED` the rule is INERT (DisabledAuthSecurityConfiguration bypasses the chain). Under LOGIN_FORM, AuthorizationCustomizer is not wired and every form-authenticated user is ADMIN."
+      owner_scoping:
+        verdict: "N/A"
+        detail: "Owner directory entries are top-level; they have no `owner_id` parent. OWNER_CREATE is a global capability."
+      strengths:
+        - "`@ReactiveTransactional` boundary at the service — owner row + role-link rows + read-back are atomic (createOwner.md:implicit_adrs.[2])"
+        - "Identity-decoupled directory CRUD pattern — admin creates Owner as a directory entry; Owner is claimed via separate association request flow. Three-controller split (`OwnerController` for CRUD, `OwnerAssociationRequestController` for user-claim, downstream `UserOwnerMappingService` callers) reinforces the separation (createOwner.md:implicit_adrs.[1])"
+      weaknesses:
+        - "**Owner-creation emits NO activity-feed event (MEDIUM)** — `@ActivityLog` is NOT applied to `OwnerServiceImpl.create` (grep verified — only AlertHaltConfig / Alert / DataEntityInternalState / DataEntity / DataEntityGroup carry it). Owner directory changes are invisible to the audit, even when they cascade into ownership-row changes that ARE recorded. Same shape as the no-audit-log on Policy + Role. (createOwner.md:security.known_security_gaps.[0])"
+        - "**Non-partial `name UNIQUE` blocks soft-delete recovery (MEDIUM)** — `owner.name varchar(255) NOT NULL UNIQUE` is a plain (non-partial) unique constraint; a soft-deleted owner (`deleted_at` set, row remains) permanently holds the name. The `user_owner_mapping` table received a partial-unique migration (`V0_0_89__update_user_owner.sql:9-15`) but the `owner` table did not. Operators recovering from an accidental delete cannot 'just re-create'. (createOwner.md:security.known_security_gaps.[2])"
+        - "**Input validation one-sided (LOW)** — `@NotNull` on `name`, NO `@NotBlank`/`@Size`/`@Pattern`. Empty strings, whitespace-only, homoglyph-attack names, and 256-char names pass. Mitigated by OWNER_CREATE permission gate. (createOwner.md:security.known_security_gaps.[1])"
+        - "**Under `auth.type=DISABLED`, OWNER_CREATE is anonymously reachable (LOW — corollary of REFACTOR-073)** — combined with absence of rate-limit and absence of audit log, the directory can be populated with arbitrary names without trace (createOwner.md:security.known_security_gaps.[3])"
+        - "**No identity auto-creation on first login (operator confusion)** — Live owners doc states 'Every ODD Platform user should associate themselves with one of the existing owners' — implying the association is manual. The code confirms this: no auth flow (`AuthIdentityProviderImpl.java`, `LDAPSecurityConfiguration.java`, `OAuthSecurityConfiguration.java`) calls `OwnerService.create` or `getOrCreate` on login. `getOrCreate` is invoked ONLY from `OwnerAssociationRequestServiceImpl.createOwnerAssociationRequest`. Doc-code alignment, but operator-discoverability gap. (createOwner.md:docs_link_semantic.doc_drift_findings.[2])"
+      cross_file_inconsistencies:
+        - "OpenAPI declares 201 Created (`OwnerApi.java:57`) but controller returns 200 OK (`OwnerController.java:26`). Same drift on `updateOwner` (OpenAPI 201 for an update — unusual). Sibling Role + Policy CRUD share the same 200-vs-201 drift; class-wide inconsistency. (createOwner.md:docs_link_semantic.doc_drift_findings.[0])"
+        - "Live owners doc explicitly disclaims coverage of: owner creation mechanics, OWNER_CREATE permission, association-request mechanics, and owner-sprawl prevention. Each IS a real concern in the code; doc-gap NOT contradiction. (createOwner.md:docs_link_semantic.doc_drift_findings.[1])"
+      contributing_files:
+        - "createOwner.md"
+      evidence:
+        - "createOwner.md:security.known_security_gaps.[0-3]"
+        - "createOwner.md:docs_link_semantic.doc_drift_findings.[0-2]"
+    performance_aggregate:
+      overall: HIGH
+      hot_paths: []
+      throughput_shape:
+        verdict: SINGLE_ITEM_ONLY
+        detail: "One owner per request; no bulk-create variant. Per-request: 1 INSERT into `owner` + N INSERTs into `owner_to_role` + 1 SELECT-with-joins read-back. Three round-trips simple case; 2+N with roles (createOwner.md:performance.throughput_characteristics.[1])"
+      scaling_shape:
+        verdict: HORIZONTALLY_SCALABLE
+        detail: "Stateless controller; `@ReactiveTransactional` boundary at the service holds a DB connection through INSERT + role-links + read-back. Connection-pool contention scales with request rate × transaction duration (createOwner.md:performance.scaling_characteristics.[1])"
+      strengths:
+        - "Reactive non-blocking signature — no thread held during DB awaits"
+      weaknesses:
+        - "No method-level observability (LOW) — no `@Timed`, no Micrometer counter, no structured log; admin-time op so impact bounded (createOwner.md:performance.known_performance_gaps.[0])"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "createOwner.md"
+      evidence:
+        - "createOwner.md:performance.known_performance_gaps.[0,1]"
+    notes: |
+      Owner is a tricky concept — main-concepts.md does not explicitly name
+      it, but the live `/authorization/owners` page does. The catalog uses
+      "Owner (Authorization directory entry)" to disambiguate from the
+      adjacent "User-owner association" concept (the user → owner mapping
+      table, not modelled here) and "Ownership" (the owner ↔ data-entity
+      relation, also not modelled here). All three are part of ODD's
+      authorization vocabulary per `enable-security/authorization`. Five
+      doc-drift findings: 201-vs-200 + creation mechanics absent + OWNER_CREATE
+      undocumented + association mechanics undocumented + sprawl-prevention
+      undocumented. The identity-decoupled directory CRUD invariant is
+      a single-sidecar canonical observation worth surfacing as
+      ADR-CANDIDATE — see canonicalisation_candidates.
+
+  - name: "Permission (Authorization)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "An enumerated capability granted by a Policy statement. ODD's `PolicyPermissionDto` enum carries permissions across five categories per live docs (Data entity / Term / Query Example / Lookup table / Management) — though the code's `PermissionResourceType` enum exposes only FOUR contextual values (DATA_ENTITY / TERM / QUERY_EXAMPLE / MANAGEMENT). The `Permission` OpenAPI-generated enum mirrors `PolicyPermissionDto` by name. Read-side discovery via `GET /api/resource/{type}/{id}/permissions` — server-side evaluation of the SAME policy graph the mutation enforcer uses. Authoritative-not-UI-hint by design (forged response does NOT bypass mutation gating). Canonical doc anchor: `configuration-and-deployment/enable-security/authorization/permissions` (200, 2026-05-12)."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java PermissionController controller-method:getResourcePermissions"
+      - "odd-platform java PolicyController controller-method:createPolicy"
+      - "odd-platform java RoleController controller-method:createRole"
+    contributors:
+      - "PermissionController.getResourcePermissions: entities[Permission (response item — enum value), PermissionResourceType (path param enum — DATA_ENTITY / TERM / QUERY_EXAMPLE / MANAGEMENT — maps 1-1 to PolicyTypeDto), PolicyDto, DataEntityPolicyResolverContext]; operations[evaluate-current-user-permissions-on-contextual-resource]"
+      - "PermissionController.implicit_adrs.[0]: read-side permission discovery is a first-class endpoint, not a derived computation client-side"
+      - "PermissionController.implicit_adrs.[1]: authoritative server-side evaluation, not UI-only hint — the response is the SAME permission set that would be enforced if the user attempted the mutation, computed via the SAME policy graph"
+      - "PermissionController.implicit_adrs.[2]: resource-type ↔ context coupling encoded at the enum (`PolicyTypeDto.hasContext`), not at the controller"
+      - "PermissionController.implicit_adrs.[3]: read-side endpoint deliberately left out of SECURITY_RULES — catch-all `.authenticated()` only"
+      - "PolicyController.createPolicy: PolicyPermissionDto enum is the catalog of permissions a policy statement can grant"
+      - "RoleController.createRole: ROLE_CREATE is itself a PolicyPermissionDto value (MANAGEMENT tier) — every Permission gates a CRUD operation somewhere"
+    evidence:
+      - "getResourcePermissions.md:concepts.entities + concepts.invariants.[0-4]"
+      - "getResourcePermissions.md:implicit_adrs.[0-3]"
+      - "createPolicy.md:concepts.entities (PolicyPermissionDto)"
+      - "createRole.md:concepts.entities (ROLE_CREATE permission)"
+    security_aggregate:
+      overall: LOW
+      auth_modes_relevant:
+        - LOGIN_FORM
+        - OAUTH2
+        - LDAP
+        - DISABLED
+      ingestion_filter_relevance: NO
+      authorization_consistency:
+        verdict: UNGATED
+        detail: "`GET /api/resource/{permission_resource_type}/{resource_id}/permissions` has NO SECURITY_RULES entry — falls through to `pathMatchers('/**').authenticated()`. Intentional per implicit_adrs.[3] (read-collaborative posture; the answer reveals only what the policy graph would grant the same caller anyway). BUT: under `auth.type=DISABLED` the response is empty while mutation endpoints are simultaneously `.permitAll()` — UI shows 'you can do nothing'; API says 'anyone can do anything'. Under `auth.type=LOGIN_FORM` the response is ALWAYS the full admin permission set (every caller is admin per `getAuthorities(true)` at LoginFormSecurityConfiguration.java:74-82)."
+      owner_scoping:
+        verdict: RESPECTS
+        detail: "Context resolution includes the caller's associated owner — DataEntityPermissionExtractor.java:51-55 explicitly fetches `authIdentityProvider.fetchAssociatedOwner()` and includes it in the `DataEntityPolicyResolverContext`. Ownership-conditional policies evaluate against the caller's owner."
+      strengths:
+        - "Authoritative-not-UI-hint design — read endpoint and mutation enforcer share one evaluation graph; forged response cannot bypass mutation gating (getResourcePermissions.md:implicit_adrs.[1])"
+        - "Resource-type ↔ context coupling encoded at the enum (`PolicyTypeDto.hasContext`) — invariant guarded by `BadUserRequestException` at the service layer (getResourcePermissions.md:implicit_adrs.[2])"
+        - "Per-call recomputation against live policy/role tables — no caching layer hides a stale-permission window (getResourcePermissions.md:concepts.invariants.[4])"
+      weaknesses:
+        - "**Under `auth.type=DISABLED`, endpoint returns empty Flux while mutation endpoints are unprotected (HIGH — UI-vs-API contradiction)** — DisabledAuth's `permitAll()` skips the security filter chain, so `ReactiveSecurityContextHolder.getContext()` is empty; the role/policy chain cascades through `Mono.just(List.of())` to no permissions. UI buttons all disabled; direct API caller can perform every mutation. Silent deception. (getResourcePermissions.md:security.known_security_gaps.[0])"
+        - "**Under `auth.type=LOGIN_FORM`, returns ALL permissions for every caller (HIGH bypass undermining per-policy returns)** — the static admin authority hard-coded in LoginFormSecurityConfiguration.java:74-82 + the seeded Administrator policy carrying `'ALL'` on every contextual resource type. The endpoint cannot distinguish a real admin from 'platform is in single-tenant dev mode'. Operators using LOGIN_FORM for staging may believe per-resource gating is honoured when it is not. (getResourcePermissions.md:security.known_security_gaps.[1])"
+        - "**Lookup-table permissions unreachable through this endpoint (MEDIUM doc gap)** — `PermissionResourceType` exposes DATA_ENTITY/TERM/QUERY_EXAMPLE/MANAGEMENT only; LOOKUP_TABLE_* live as non-contextual MANAGEMENT permissions. A UI rendering buttons for a specific lookup table cannot ask 'what can I do on lookup table X?' through this endpoint. (getResourcePermissions.md:bugs_limitations_corner_cases.[2])"
+        - "**Resource-existence response asymmetry (MEDIUM)** — DATA_ENTITY: missing resource → 404 via NotFoundException (DataEntityPermissionExtractor.java:64-66). TERM / QUERY_EXAMPLE extractor existence-check behaviour not verified — if they return empty Mono on miss instead of throwing, controller emits 200-with-empty (indistinguishable from 'you have no permissions here'). (getResourcePermissions.md:bugs_limitations_corner_cases.[4])"
+      cross_file_inconsistencies:
+        - "Live `/authorization/permissions` page lists 5 categories (Data entity / Term / Query Example / Lookup table / Management) but `PermissionResourceType` enum exposes 4. Doc-code shape mismatch. (getResourcePermissions.md:docs_link_semantic.doc_drift_findings.[1])"
+        - "Live `/authorization/permissions` lists Lookup table as a category, but the seeded Administrator policy (V0_0_56 + V0_0_88) covers DATA_ENTITY / TERM / QUERY_EXAMPLE / MANAGEMENT only — no LOOKUP_TABLE migration. Administrator's effective scope on lookup tables depends on whether `policyPermissionExtractor` treats `'ALL'` on MANAGEMENT as expanding to every LOOKUP_TABLE_* constant. Unverified at this node. (getResourcePermissions.md:docs_link_semantic.doc_drift_findings.[2])"
+      contributing_files:
+        - "getResourcePermissions.md"
+      evidence:
+        - "getResourcePermissions.md:security.known_security_gaps.[0-2]"
+        - "getResourcePermissions.md:docs_link_semantic.doc_drift_findings.[0-2]"
+    performance_aggregate:
+      overall: LOW
+      hot_paths:
+        - "Per-resource-page-render request — the controller induces 4 DB round-trips per call: (a) getRolesPolicies jOOQ; (b) dataEntityService.getDimensions; (c) tagRepository.listDataEntityDtos; (d) authIdentityProvider.fetchAssociatedOwner. Hot path on every data-entity / term / query-example detail page button-state computation (getResourcePermissions.md:performance.hot_paths.[0])"
+      throughput_shape:
+        verdict: SINGLE_ITEM_ONLY
+        detail: "Per-resource call shape — no batch variant. A UI rendering a list of N data entities issues N requests × 4 DB queries = 4N — N+1 scaled by fan-out (getResourcePermissions.md:performance.throughput_characteristics.[0])"
+      scaling_shape:
+        verdict: UNPAGINATED
+        detail: "Stateless controller; per-resource call shape forces UI N+1 for list views; no caching at any layer (per-call re-runs the full 4-query fan-out)"
+      strengths:
+        - "Stateless — horizontal scaling unconstrained at this layer"
+      weaknesses:
+        - "**No batch variant (HIGH on list-view rendering)** — N × 4 DB round-trips for an N-entity catalog page. A `POST /api/resource/{type}/permissions` accepting `{resource_ids: [...]}` returning `Map<resourceId, List<Permission>>` would reduce fan-out to one policies+roles fetch plus one batched extractor fetch. (getResourcePermissions.md:performance.known_performance_gaps.[0])"
+        - "**No per-request caching of getRolesPolicies (MEDIUM)** — within a single page render multiple resources re-fetch the same policy list for the same user. A request-scoped Mono.cache() would eliminate. (getResourcePermissions.md:performance.known_performance_gaps.[1])"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "getResourcePermissions.md"
+      evidence:
+        - "getResourcePermissions.md:performance.known_performance_gaps.[0-2]"
+    notes: |
+      The read-side dual of the mutation-enforcement chain. The implicit ADRs
+      from this sidecar are load-bearing — they reveal that ODD deliberately
+      shares ONE policy-evaluation graph between read and enforce paths,
+      avoiding UI-shaped permission caches. Surface this as a NEW
+      canonicalisation candidate ('Authoritative server-side permission
+      evaluation graph (shared read + enforce)'). DOC-GAP candidates from
+      getResourcePermissions.md:docs_link_semantic.doc_drift_findings.[0-2]:
+      the entire read-side discovery model is undocumented across three live
+      pages.
+
+  - name: "Search Session"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "Server-side persistent state representing one user's current catalog-search context. `POST /api/search` does NOT return entity rows directly — it creates a `search_facets` row keyed by a server-generated UUID, returns aggregated facet counts + the UUID, and requires the caller to call `GET /api/search/{search_id}/results` for paginated rows. The same UUID is used by `getSearchFacetList`, `updateSearchFacets`, `getFiltersForFacet`, and `highlightDataEntity` — every search interaction is bound to a persistent session row. Trade-off: server retains query state across multi-step UI interactions (facet drill-down, pagination, highlighting) at the cost of an unbounded `search_facets` table requiring housekeeping (`SearchFacetsHousekeepingJob` + `housekeeping.ttl.search_facets_days`, default 30 days). Sibling features (`/api/terms/search`, `/api/queryexample/search`, `/api/referencedata/search`) replicate the same UUID pattern. NOT named in main-concepts.md."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java SearchController controller-method:search"
+      - "odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties"
+    contributors:
+      - "SearchController.search: entities[SearchFacetsPojo (persisted search-session row in search_facets table, keyed by UUID), SearchFormData (request body — query: string + my_objects: boolean + filters: {...}), SearchFacetsData (response payload — search_id: UUID + aggregated facet counts), FacetStateDto (in-memory representation)]; operations[create-search-session]"
+      - "SearchController.implicit_adrs.[0]: search-session-as-server-state pattern — every search interaction is bound to a persistent session row"
+      - "HousekeepingTTLProperties.search_facets_days: time-based retention 30-day default at YAML floor"
+    evidence:
+      - "search.md:concepts.entities (SearchFormData, SearchFacetsPojo, SearchFacetsData, FacetStateDto) + concepts.invariants.[2]"
+      - "search.md:implicit_adrs.[0] (session-as-server-state)"
+    security_aggregate:
+      overall: LOW
+      auth_modes_relevant:
+        - LOGIN_FORM
+        - OAUTH2
+        - LDAP
+        - DISABLED
+      ingestion_filter_relevance: NO
+      authorization_consistency:
+        verdict: UNGATED
+        detail: "`POST /api/search` has NO SECURITY_RULES entry — falls through to catch-all `.authenticated()`. Same for `GET /api/search/{search_id}/results`, `PUT /api/search/{search_id}`, `GET /api/search/{search_id}/facet/{facet_type}`, `GET /api/search/{search_id}/data_entities/{data_entity_id}/highlights`. Any authenticated user can search the entire catalog. Under DISABLED, anonymously reachable."
+      owner_scoping:
+        verdict: BYPASSES
+        detail: "Default `my_objects=false` path returns aggregations over the ENTIRE catalog (SearchServiceImpl.java:122-130 `countByState(state)` runs without owner predicate). Owner-filter applied ONLY when caller explicitly toggles `my_objects=true` on `SearchFormData` (SearchServiceImpl.java:104-108). Catalog enumeration of NON-`EXCLUDE_FROM_SEARCH` entities is the default behaviour."
+      strengths:
+        - "Server-generated v4 UUID — unguessable in O(2^60) attempts; no per-user owner column on `search_facets` is bounded by the UUID's unpredictability"
+        - "TTL-bounded retention via `housekeeping.ttl.search_facets_days` (default 30 days) — `SearchFacetsHousekeepingJob` deletes rows older than the TTL"
+      weaknesses:
+        - "**Catalog-wide cross-owner enumeration (HIGH) — same shape as REFACTOR-024 with WIDER blast radius** — any authenticated user can paginate `POST /api/search` + `GET /api/search/{search_id}/results` to enumerate every non-EXCLUDE_FROM_SEARCH data entity in the platform — name, ODDRN, descriptions, ownership, tags, custom metadata, term linkages. Live `features/data-discovery/search` doc says NOTHING about WHO can search. Third surface corroborating ADR-CANDIDATE-003 (read-collaborative); strengthens cross-cutting invariant `Read-collaborative cross-owner enumeration`. (search.md:security.known_security_gaps.[0] HIGH)"
+        - "**`to_tsquery` syntax-error vector via raw user input (MEDIUM)** — `JooqFTSHelper.tsQuery` splits on space + appends `:*` + joins with `&`; queries containing tsquery metacharacters not space-separated (`foo!bar`, `foo|bar`, `(foo)`, `a<->b`) become malformed `to_tsquery(?)` and Postgres raises `syntax error in tsquery` surfacing as 500. No sanitisation, no escape, no error mapping. Conversely a balanced tsquery expression silently re-interprets. (search.md:security.known_security_gaps via bugs_limitations_corner_cases.[1])"
+        - "**Unbounded query length + unbounded `search_facets` writes (MEDIUM)** — `SearchFormData.query` has no maxLength; every POST persists a new row keyed by UUID. Combined with REFACTOR-141 (housekeeping default-leak: overriding application.yml without re-supplying the housekeeping block silently binds 0 days and hard-deletes search-session rows on the next 15-minute housekeeping cycle), pathological case is also a data-loss vector. (search.md:bugs_limitations_corner_cases.[2,3])"
+        - "**Search-session UUID has no per-user owner-binding (LOW under read-collaborative posture)** — `searchFacetRepository.get(searchId)` returns the session regardless of who created it. Under any future owner-scoped search tightening this becomes HIGH. (search.md:security.known_security_gaps.[2])"
+        - "**Persistent query text — PII concern (LOW depending on threat model)** — `search_facets.query` stores raw query text verbatim with no redaction, no encryption. Users searching for sensitive terms (employee names, customer IDs, GDPR identifiers) leave a 30-day DB trail readable by any operator with DB access. (search.md:security.known_security_gaps.[3])"
+        - "**Under `auth.type=DISABLED`, anonymously reachable (MEDIUM)** — corollary of REFACTOR-073; cross-references the Auth Mode DISABLED-default trap. (search.md:security.known_security_gaps.[1])"
+      cross_file_inconsistencies:
+        - "Live `features/data-discovery/search` page (200, 2026-05-12) is silent on WHO can search; the code enforces 'any authenticated user'. ADR-CANDIDATE-003 third corroborating surface alongside `getDataEntityDetails`, `getAllAlerts`, and `getActivity`."
+        - "Live page enumerates 7 facets (Datasource / Type / Namespace / Owner / Tag / Groups / Statuses) but `FacetType` enum carries an additional `ENTITY_CLASSES` facet AND a top-level `my_objects` boolean flag. (search.md:docs_link_semantic.doc_drift_findings.[2])"
+      contributing_files:
+        - "search.md"
+        - "HousekeepingTTLProperties.md (TTL retention surface)"
+      evidence:
+        - "search.md:security.known_security_gaps.[0-3]"
+        - "search.md:bugs_limitations_corner_cases.[0-8]"
+    performance_aggregate:
+      overall: LOW
+      hot_paths:
+        - "`POST /api/search` runs THREE concurrent queries per call inside `getFacetsData` via `Mono.zip` (SearchServiceImpl.java:122-155): (a) entity-class facet aggregation, (b) catalog-wide `countByState(state)`, (c) owner-scoped `countByState(state, owner)` — the third ALWAYS runs even when `my_objects=false`. Plus `searchFacetRepository.create(pojo)` row insert. Hot path on every keystroke / facet click after UI debounce (search.md:performance.hot_paths.[0])"
+      throughput_shape:
+        verdict: SINGLE_ITEM_ONLY
+        detail: "Single-request POST per search session; no batch endpoint, no streaming. Triple-aggregation fan-out per call is fixed cost regardless of `my_objects` toggle (search.md:performance.throughput_characteristics)"
+      scaling_shape:
+        verdict: UNPAGINATED
+        detail: "Stateless controller scales horizontally. `search_facets` grows monotonically until housekeeping cycle (15-min cadence). NO pagination on `search` itself (only sibling `getSearchResults` accepts `page` + `size` — both `@NotNull` but NO `@Min`/`@Max`, unbounded `size` structurally accepted). NO caching at any layer (search.md:performance.scaling_characteristics)"
+      strengths:
+        - "Reactive non-blocking signature — no thread held during DB await"
+      weaknesses:
+        - "**Unconditional my_objects aggregation cost (MEDIUM)** — `getFacetsData` always runs owner-scoped `countByState(state, owner)` even when `my_objects=false`. A short-circuit on `state.isMyObjects()` would halve per-call DB work in the common case (search.md:performance.known_performance_gaps.[0])"
+        - "**No max-size on SearchFormData.query / getSearchResults pagination (MEDIUM)** — same shape as REFACTOR-024 pagination concern; `size=1_000_000` triggers a query bounded only by Postgres / network buffers (search.md:performance.known_performance_gaps.[1])"
+        - "**`to_tsquery(?)` reconstruction per request (LOW)** — `JooqFTSHelper.tsQuery` re-tokenises and re-builds the `to_tsquery` argument on every call; Postgres-side parse cost per request"
+        - "**No HTTP-level caching (LOW)** — catalog is read-heavy and search returns slow-changing aggregates; no `@Cacheable`, no ETag, no `Cache-Control` (search.md:performance.known_performance_gaps.[3])"
+      cross_file_inconsistencies: []
+      contributing_files:
+        - "search.md"
+      evidence:
+        - "search.md:performance.known_performance_gaps.[0-3]"
+    notes: |
+      The Search Session concept emerges from a SINGLE primary-source sidecar
+      (SearchController.search batch E). Marked canonical_candidate because
+      main-concepts.md does not name it — the closest existing canonical home
+      is `features/data-discovery/search`, which describes the user-facing
+      catalog search experience but does NOT name the server-side session
+      mechanism or the per-user `search_facets` row. Surface as canonicalisation
+      candidate for vocabulary extension.
+
+      Cross-references HousekeepingTTLProperties (batch D — TTL retention for
+      `search_facets_days`) and intersects REFACTOR-141 (housekeeping
+      default-leak — overriding application.yml without re-supplying
+      housekeeping block binds 0 days and hard-deletes on next cycle).
+
   - name: "ODDRN"
     canonical_in_docs: true
     canonical_candidate: false
@@ -1661,6 +2188,11 @@ entities:
       - "odd-platform java LDAPSecurityConfiguration config-key-consumer:auth.type@L51"
       - "odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDOAuth2Properties"
       - "odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDLDAPProperties"
+      - "odd-platform java RoleController controller-method:createRole"
+      - "odd-platform java PolicyController controller-method:createPolicy"
+      - "odd-platform java OwnerController controller-method:createOwner"
+      - "odd-platform java PermissionController controller-method:getResourcePermissions"
+      - "odd-platform java SearchController controller-method:search"
     contributors:
       - "All controller sidecars: security.auth_mode_relevance lists DISABLED/LOGIN_FORM/OAUTH2/LDAP (with auth-mode names verbatim from the live enable-security doc)"
       - "AlertManagerController: auth_mode_relevance is `NONE — operator-delegated network-layer auth` (the singular exception — `/ingestion/**` whitelist exempts the path from the UI authentication chain)"
@@ -1674,6 +2206,11 @@ entities:
       - "LDAPSecurityConfiguration@L51: CANONICAL sidecar for the LDAP branch — WIRES `AuthorizationCustomizer(permissionService, extractors)` at line 145; SecurityWebFilterChain runs at `Ordered.HIGHEST_PRECEDENCE` at line 136. Admin-group match uses `containsIgnoreCase` (line 96) — a SUBSTRING match enabling substring-collision admin escalation (`admin-groups: ['ops']` matches `devops`/`oopsgroup`). NO scheme enforcement on `auth.ldap.url` (plaintext `ldap://` accepted; bind creds + end-user creds in cleartext). `auth.ldap.password` exposed via `/actuator/env`. Active Directory branch silently ignores `dn-pattern` and `user-filter` config. S2S additively composable at HTTP_BASIC at line 149-151."
       - "ODDOAuth2Properties (batch 2026-05-12D): CANONICAL config-POJO sidecar for the OAUTH2 branch. `@ConfigurationProperties(\"auth.oauth2\")` with single `Map<String, OAuth2Provider> client` field — operators register N OAuth2/OIDC clients keyed by registrationId. `@PostConstruct validate()` (lines 16-19) enforces ONLY `clientId` + `provider` non-empty per client; every other field (Azure-required `logoutUri`, GitHub-required `read:org` scope, URL formats) is unvalidated. Provider field is a FREE STRING — `Provider` enum at Provider.java:3-5 lists 5 values (`COGNITO, GITHUB, GOOGLE, ODD_IAM, AZURE`) but the field accepts any string; consumer-side dispatch via `equalsIgnoreCase(Provider.X.name())` silently routes typos / Okta / Keycloak through generic OIDC. Validates 3 batch-C OAuth claims from primary source: (a) Provider enum 5 values vs docs 7 (Okta + Keycloak unmapped); (b) `azureTenantId` ABSENT from POJO — `application.yml:128-156` Azure example uses `${auth.oauth2.client.azure.azure-tenant-id}` placeholder only, not a POJO field; (c) Azure `logoutUri` is NPE-prone at `AzureLogoutSuccessHandler.java:39` (`URI.create(provider.getLogoutUri())` with no null guard, vs `CognitoLogoutSuccessHandler.java:33-35` which DOES guard). NEW doc-drift finding: live docs at `/oauth2-oidc` use field key `username-attribute` (kebab single-word) but POJO field is `userNameAttribute` (camelCase split User+Name) — Spring relaxed binding requires `user-name-attribute` (kebab triple-word), NOT `username-attribute`. Operator copy-paste-from-docs verbatim fails to bind silently."
       - "ODDLDAPProperties (batch 2026-05-12D): CANONICAL config-POJO sidecar for the LDAP branch. `@ConfigurationProperties(\"auth.ldap\")` with six top-level fields (`url`, `username`, `password`, `base`, `dnPattern`, `userFilter.filter`) + nested `Group` block (`searchBase`, `filter`, `adminGroups`) + nested `ActiveDirectory` block (`enabled`, `domain`). `@PostConstruct validate()` (lines 40-49) enforces TWO and ONLY TWO invariants: URL non-empty AND at least one of {dnPattern, userFilter.filter}; every other field unvalidated (password, base, adminGroups, AD.domain). Validates batch-C LDAP claims AND REFINES the actuator-env credential-leak finding: Spring Boot 3.4.10's `management.endpoint.env.show-values: NEVER` default DOES sanitise `/actuator/env` (the password appears as `******` in actuator). The DURABLE leak surface is Lombok `@Data`-generated `toString()` — `EmailSenderProperties.java:6-10` + `ODDLDAPProperties.java:10,14` both declare `@Data` with no `@ToString.Exclude` on the password field. Any `log.info(\"props = {}\", properties)` (or future code adding such a line) emits the password in cleartext. The actuator-env scope from batch C was overbroad; the Lombok-toString scope is precise. `adminGroups` confirmed `Set<String>` (substring-collision risk at `LDAPSecurityConfiguration.java:96` `containsIgnoreCase`). Also surfaces: AD.domain unvalidated; ldap:// vs ldaps:// scheme not enforced; absent admin-groups silently produces zero-admin LDAP deployment."
+      - "RoleController.createRole (batch 2026-05-12E): RBAC primary-surface sidecar. SECURITY_RULES POLICY_CREATE-class gate (ROLE_CREATE NO_CONTEXT at SecurityConstants.java:169). Under DISABLED: gate INERT (`auth.type=DISABLED` bypasses entire SECURITY_RULES table — RBAC mutation endpoint reachable unauthenticated; LSN-001 shape). Under LOGIN_FORM: AuthorizationCustomizer not wired AND every form-authenticated user is ADMIN via `getAuthorities(true)` — effective ROLE_CREATE for everyone. Under any non-DISABLED mode with `auth.s2s.enabled=true`: S2sAuthenticationFilter.java:31-39 injects ADMIN globally — REFACTOR-108 (S2S admin-everywhere reaches RBAC, not just /ingestion)."
+      - "PolicyController.createPolicy (batch 2026-05-12E): RBAC primary-surface sidecar. SECURITY_RULES POLICY_CREATE MANAGEMENT-tier gate at SecurityConstants.java:163-164. Same DISABLED-bypass shape. Plus: live `/oauth2-oidc` / `/login-form` / `/ldap` per-mode pages do NOT cross-link to `/permissions` page that DOES list POLICY_CREATE — operators can't tell which auth modes actually enforce it. The policy schema endpoint `GET /api/policies/schema` is NOT in SECURITY_RULES (falls through to `.authenticated()`) — undocumented but reachable for schema-introspection."
+      - "OwnerController.createOwner (batch 2026-05-12E): RBAC directory sidecar. SECURITY_RULES OWNER_CREATE NO_CONTEXT at SecurityConstants.java:143. Same DISABLED-bypass + LOGIN_FORM-ADMIN-everywhere shapes. Plus identity-decoupled-CRUD invariant: no auth-mode flow auto-creates an Owner on first login (LDAP/OAuth2/LOGIN_FORM all skip this); operators must MANUALLY pre-create per-user Owner rows OR accept association requests."
+      - "PermissionController.getResourcePermissions (batch 2026-05-12E): RBAC READ-side sidecar. NO SECURITY_RULES entry (deliberate — read-collaborative posture). Endpoint is the canonical reveal of two HIGH auth-mode-bypass findings: (a) under DISABLED, response is EMPTY while mutation endpoints are simultaneously `.permitAll()` — UI shows 'you can do nothing' while API accepts everything (silent UI-vs-API contradiction); (b) under LOGIN_FORM, response is ALWAYS the FULL admin permission set regardless of UI-configured policies (LOGIN_FORM-ADMIN-everywhere bypass). Cross-corroborates Auth Mode (LOGIN_FORM branch) — now 3-sidecar."
+      - "SearchController.search (batch 2026-05-12E): NEW search-area sidecar. NO SECURITY_RULES entry — falls through to `.authenticated()` catch-all. Under DISABLED, anonymously reachable. Default `my_objects=false` returns aggregations over the entire catalog (owner-bypass). Third read-collaborative cross-owner enumeration surface (after getAllAlerts batch A + getActivity batch B) — wider blast radius than either since search paginates the WHOLE catalog by name/ODDRN/descriptions/ownership/tags."
     evidence:
       - "AlertController.md:security.auth_mode_relevance"
       - "AlertManagerController.md:security.auth_mode_relevance (NONE)"
@@ -1695,6 +2232,11 @@ entities:
       - "LDAPSecurityConfiguration@L51.md:security.auth_mode_relevance + implicit_adrs.[AuthorizationCustomizer mode-agnostic] + implicit_adrs.[containsIgnoreCase admin match] + security.known_security_gaps.[actuator env password] + security.known_security_gaps.[no LDAPS enforcement] + security.known_security_gaps.[substring admin match]"
       - "ODDOAuth2Properties.md:security.auth_mode_relevance + docs_link_semantic.doc_drift_findings.[0,1,2,3,4] + implicit_adrs.[0-3] + bugs_limitations_corner_cases.[0-6] + security.known_security_gaps.[0-4]"
       - "ODDLDAPProperties.md:security.auth_mode_relevance + docs_link_semantic.doc_drift_findings.[0-4] + implicit_adrs.[0-3] + bugs_limitations_corner_cases.[0-6] + security.known_security_gaps.[0-5]"
+      - "createRole.md:security.known_security_gaps.[2] (DISABLED bypass) + security.known_security_gaps.[3] (S2S admin-everywhere) + bugs_limitations_corner_cases.[DISABLED mode bypass]"
+      - "createPolicy.md:security.known_security_gaps.[0] (DISABLED bypass MANAGEMENT-tier RBAC unreachable from policy gate) + bugs_limitations_corner_cases.[0]"
+      - "createOwner.md:security.known_security_gaps.[3] (DISABLED anonymously reachable) + bugs_limitations_corner_cases.[6]"
+      - "getResourcePermissions.md:security.known_security_gaps.[0] (DISABLED UI-vs-API contradiction HIGH) + security.known_security_gaps.[1] (LOGIN_FORM ALL permissions for every caller HIGH)"
+      - "search.md:security.known_security_gaps.[0] (catalog-wide cross-owner enumeration HIGH) + security.known_security_gaps.[1] (DISABLED anonymously reachable MEDIUM)"
     security_aggregate:
       overall: LOW
       auth_modes_relevant:
@@ -1718,8 +2260,8 @@ entities:
         - "Live `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security` enumerates the four values verbatim; per-mode sub-pages exist for DISABLED / LOGIN_FORM / OAUTH2 / LDAP / S2S"
         - "OAUTH2 + LDAP both apply `AuthorizationCustomizer` and run at `Ordered.HIGHEST_PRECEDENCE` (LDAP) — production modes carry the strongest enforcement; the asymmetry is downward (LOGIN_FORM ↓ DISABLED)"
       weaknesses:
-        - "**4-sidecar triangulated insecure-default failure mode (HIGH severity)** — FOUR independent sidecars converge on the same operator trap: (a) `application.yml:34` ships `auth.type: DISABLED` as the default (DisabledAuthSecurityConfiguration@L10 + AppInfoController@L18 + AuthorizationManagerCondition@L11 all anchor on this; DisabledAuthSecurityConfiguration is the CANONICAL evidence — the chain is literally `.csrf(...disable).anyExchange().permitAll()` with no CORS, no AuthorizationCustomizer, no S2S wiring); (b) `application.yml:48` ships `auth.ingestion.filter.enabled: false` (IngestionDataEntitiesFilter@L20 not registered → `/ingestion/entities` unauthenticated regardless of `auth.type`); (c) NO `matchIfMissing=true` on any of the four `*SecurityConfiguration` classes' `@ConditionalOnProperty` — operator unsetting `auth.type` (env `AUTH_TYPE=`) or typoing it (`disabled` lowercase, `DSIABLED`) silently produces NO SecurityWebFilterChain from any of the four; (d) DISABLED is ALSO silent — no `@Slf4j` boot WARN tells the operator the deployment is unauthenticated (DisabledAuthSecurityConfiguration has no logger imports vs LDAPSecurityConfiguration which IS `@Slf4j`). Live `disabled-authentication` page declares it 'the default configuration' with a single 'DO NOT use in your production environment!' admonition but does NOT enumerate the blast radius (no CSRF, no CORS, no audit, no S2S, `/actuator/{health,prometheus,env,info}` reachable). Canonical LSN-001/002-shape failure. (DisabledAuthSecurityConfiguration@L10.md:security.known_security_gaps.[0-5] + AppInfoController@L18.md:security.known_security_gaps.[0,1,2] + AuthorizationManagerCondition@L11.md:security.known_security_gaps.[1,2] + IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[0,3])"
-        - "**LOGIN_FORM runs WITHOUT AUTHORIZATION (HIGH severity — REFACTOR-073 validated)** — `LoginFormSecurityConfiguration.java:55-57` configures `.authorizeExchange(... .pathMatchers(permittedPaths).permitAll().pathMatchers(\"/**\").authenticated())` only; it does NOT wire `new AuthorizationCustomizer(permissionService, extractors)` the way OAuth (line 98) and LDAP (line 145) do. Every form-authenticated user can call every endpoint regardless of any Policy/Permission/Role configured via the platform UI. Combined with `getAuthorities(true)` at line 81 (every LOGIN_FORM user is ADMIN), the effective posture is 'any valid credential pair = full platform access'. Live `/enable-security/authorization` describes the framework without naming the precondition (OAUTH2 or LDAP). An operator running LOGIN_FORM in production (against docs' dev-only guidance but plausible) inherits authenticated-but-fully-authorized. (LoginFormSecurityConfiguration@L31.md:bugs_limitations_corner_cases.[0] + security.known_security_gaps.[0])"
+        - "**8-sidecar triangulated insecure-default failure mode (HIGH severity)** — EIGHT independent sidecars converge on the same operator trap (4 from batch B/C wiring side + 4 from batch E RBAC-primary-surface side): WIRING (batch B/C): (a) `application.yml:34` ships `auth.type: DISABLED` as the default (DisabledAuthSecurityConfiguration@L10 + AppInfoController@L18 + AuthorizationManagerCondition@L11 all anchor on this; DisabledAuthSecurityConfiguration is the CANONICAL evidence — the chain is literally `.csrf(...disable).anyExchange().permitAll()` with no CORS, no AuthorizationCustomizer, no S2S wiring); (b) `application.yml:48` ships `auth.ingestion.filter.enabled: false` (IngestionDataEntitiesFilter@L20 not registered → `/ingestion/entities` unauthenticated regardless of `auth.type`); (c) NO `matchIfMissing=true` on any of the four `*SecurityConfiguration` classes' `@ConditionalOnProperty`; (d) DISABLED is ALSO silent — no `@Slf4j` boot WARN. **RBAC PRIMARY SURFACE (batch E corroboration — wider blast radius than originally framed)**: (e) RoleController.createRole — `POST /api/roles` reachable unauthenticated under DISABLED (createRole.md:security.known_security_gaps.[2]); (f) PolicyController.createPolicy — `POST /api/policies` reachable unauthenticated under DISABLED, full MANAGEMENT/ALL escalation chain open via Role + Policy CRUD both bypassed (createPolicy.md:security.known_security_gaps.[0]); (g) OwnerController.createOwner — `POST /api/owners` reachable unauthenticated under DISABLED, anonymous directory-population unrestrained (createOwner.md:security.known_security_gaps.[3]); (h) PermissionController.getResourcePermissions — under DISABLED the response is EMPTY (UI shows 'no permissions') WHILE mutation endpoints are simultaneously `.permitAll()`-reachable — UI-vs-API contradiction (getResourcePermissions.md:security.known_security_gaps.[0]). Combined: a DISABLED-mode deployment exposes the FULL RBAC mutation surface to anonymous network callers AND silently misleads the UI about what's enforced. Live `disabled-authentication` page declares it 'the default configuration' with a single 'DO NOT use in your production environment!' admonition but does NOT enumerate the blast radius. Canonical LSN-001/002-shape failure. (DisabledAuthSecurityConfiguration@L10.md:security.known_security_gaps.[0-5] + AppInfoController@L18.md:security.known_security_gaps.[0,1,2] + AuthorizationManagerCondition@L11.md:security.known_security_gaps.[1,2] + IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[0,3] + createRole + createPolicy + createOwner + getResourcePermissions batch E sidecars)"
+        - "**LOGIN_FORM runs WITHOUT AUTHORIZATION + ADMIN-FOR-ALL — 3-sidecar triangulated (HIGH severity — REFACTOR-073 validated, plus batch-E read-side corroboration)** — `LoginFormSecurityConfiguration.java:55-57` configures `.authorizeExchange(... .pathMatchers(permittedPaths).permitAll().pathMatchers(\"/**\").authenticated())` only; it does NOT wire `new AuthorizationCustomizer(permissionService, extractors)` the way OAuth (line 98) and LDAP (line 145) do. Combined with `getAuthorities(true)` at line 81 (every LOGIN_FORM user is ADMIN), the effective posture is 'any valid credential pair = full platform access'. Batch-E READ-side corroboration: PermissionController.getResourcePermissions returns the FULL admin permission set for every caller under LOGIN_FORM (the static admin authority + the seeded Administrator policy carrying `'ALL'` on every contextual resource type — getResourcePermissions.md:security.known_security_gaps.[1]). The endpoint cannot distinguish a real admin from 'platform is in single-tenant dev mode'. Batch-E MUTATION-side corroboration: RoleController.createRole reachable in LOGIN_FORM mode for every form-authenticated user (createRole.md:bugs_limitations_corner_cases under DISABLED + S2S sections, with LOGIN_FORM-ADMIN being the third bypass shape). Operators using LOGIN_FORM for staging may believe per-resource gating is honoured when it is not. Live `/enable-security/authorization` describes the framework without naming the precondition (OAUTH2 or LDAP). 3-sidecar: LoginFormSecurityConfiguration@L31 + getResourcePermissions + createRole. (LoginFormSecurityConfiguration@L31.md:bugs_limitations_corner_cases.[0] + security.known_security_gaps.[0] + getResourcePermissions.md:security.known_security_gaps.[1] + createRole.md:security.known_security_gaps via S2S+DISABLED sections)"
         - "**S2S composes-not-mutex — X-API-Key grants ADMIN across all /** paths under LOGIN_FORM/OAUTH2/LDAP (HIGH severity)** — `S2sAuthenticationFilter.java:31-39` hard-codes `User.withUsername(\"ADMIN\")...roles(\"ADMIN\")` (admin=true) on a valid `X-API-Key` match. The filter is added at `SecurityWebFiltersOrder.HTTP_BASIC` order in EACH of the three interactive modes (`LoginFormSecurityConfiguration.java:61-63` + `OAuthSecurityConfiguration.java:108-110` + `LDAPSecurityConfiguration.java:149-151`), and runs BEFORE the interactive-auth challenge. So when an operator enables `auth.s2s.enabled=true` alongside any of LOGIN_FORM/OAUTH2/LDAP, a single shared `auth.s2s.token` string grants ADMIN across the ENTIRE `/**` UI/API surface (not just `/ingestion/entities` which has its own separate `IngestionDataEntitiesFilter`). Under DISABLED, S2S is silently ignored (DisabledAuthSecurityConfiguration does not read `auth.s2s.enabled`). Live `enable-security/authentication/s2s` page confirms 'they can call any endpoint that admins can call' but the per-mode `oauth2-oidc` / `login-form` / `ldap` pages do NOT cross-link or warn. (OAuthSecurityConfiguration@L71.md:bugs_limitations_corner_cases.[5] + security.known_security_gaps.[0] + LDAPSecurityConfiguration@L51.md:bugs_limitations_corner_cases.[S2S admin everywhere] + LoginFormSecurityConfiguration@L31.md:implicit_adrs.[2] + DisabledAuthSecurityConfiguration@L10.md:bugs_limitations_corner_cases.[2])"
         - "**LDAP substring-collision admin escalation (HIGH severity)** — `LDAPSecurityConfiguration.java:96` uses `containsIgnoreCase` (a SUBSTRING matcher imported from `OperationUtils` at line 48) for admin-group matching, NOT `Set::contains` over equality. An admin-groups config of `['Admin']` matches `cn=Administrators` AND `cn=NonAdminContractors`. Configuring `admin-groups: ['ops']` may inadvertently promote anyone in a group named `devops`, `noops`, or `oopsgroup`. Live LDAP docs only say 'A list granting admin permissions' — no warning. (LDAPSecurityConfiguration@L51.md:bugs_limitations_corner_cases.[containsIgnoreCase substring collision] + security.known_security_gaps.[substring admin match])"
         - "**LDAP plaintext-on-wire + actuator credential leak (HIGH severity)** — `LDAPSecurityConfiguration.java:117-124` accepts the `auth.ldap.url` verbatim with NO scheme enforcement: `ldap://` URLs cause bind credentials + every end-user login credential to travel in cleartext. `auth.ldap.password` is bound via `@ConfigurationProperties + @Data` on `ODDLDAPProperties` and surfaces in `/actuator/env` (Spring's default sanitisation masks `password`-suffixed keys but the key NAMES leak; combined with WHITELIST_PATHS including `/actuator/**`, the actuator port is on the same HTTP port as the app with no auth gate). Live LDAP docs do not surface either the LDAPS-vs-LDAP distinction or the actuator credential exposure. (LDAPSecurityConfiguration@L51.md:security.known_security_gaps.[no LDAPS enforcement] + security.known_security_gaps.[actuator env password])"
@@ -1765,6 +2307,11 @@ entities:
         - "LDAPSecurityConfiguration@L51.md"
         - "ODDOAuth2Properties.md"
         - "ODDLDAPProperties.md"
+        - "createRole.md"
+        - "createPolicy.md"
+        - "createOwner.md"
+        - "getResourcePermissions.md"
+        - "search.md"
       evidence:
         - "AppInfoController@L18.md:security.known_security_gaps.[0] (DISABLED-default fingerprinting MEDIUM)"
         - "AppInfoController@L18.md:bugs_limitations_corner_cases.[0,1] (no @Value default; no enum validation)"
@@ -1847,6 +2394,34 @@ entities:
       ODDLDAPProperties D password + ODDOAuth2Properties D clientSecret) is
       Lombok `@Data`-generated `toString()` if logged or custom-serialised.
       Surfaced as a separate cross-cutting invariant (4-sidecar triangulated).
+
+      Batch 2026-05-12E adds 5 RBAC-and-search-area sidecars (RoleController.
+      createRole + PolicyController.createPolicy + OwnerController.createOwner
+      + PermissionController.getResourcePermissions + SearchController.search).
+      These corroborate the Auth Mode aggregate's two dominant weaknesses
+      from the RBAC primary-surface and the read-side angles:
+
+      (1) DISABLED-mode-bypass weakness — now 8-SIDECAR triangulated
+      (was 4 from wiring side; +4 from batch E: every RBAC mutation
+      endpoint reachable unauthenticated AND the read-side
+      permission-discovery endpoint silently misleads UI consumers).
+      DISABLED is now the most-corroborated insecure-default in the
+      whole catalog.
+
+      (2) LOGIN_FORM-ADMIN-for-all weakness — now 3-SIDECAR triangulated
+      (LoginFormSecurityConfiguration@L31 wiring + getResourcePermissions
+      read-side + createRole RBAC-mutation side). The read-side endpoint
+      returns the FULL admin permission set for every caller under
+      LOGIN_FORM regardless of UI-configured policies — the most
+      diagnostic single test for whether per-resource gating is
+      effective.
+
+      Batch E also surfaces THREE NEW cross-cutting invariants captured
+      under `invariants:` further down — Administrator-name reservation
+      asymmetry on CRUD (Role + Policy 2-sidecar primary source) +
+      No-audit-log on RBAC mutations (Role + Policy + Owner 3-sidecar)
+      + Read-collaborative cross-owner enumeration (now 3-sidecar:
+      getAllAlerts + getActivity + search).
 
   - name: "Ingestion Filter"
     canonical_in_docs: true
@@ -2455,7 +3030,7 @@ invariants:
   - name: "Authorization is path-pattern wired in SecurityConstants.SECURITY_RULES, not controller annotations"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "Repository-wide ADR: no controller carries `@PreAuthorize` / `@Secured` / programmatic permission calls. Authorization is enforced externally via `SecurityConstants.SECURITY_RULES` — a list of `(AuthorizationManagerType, PathPatternParserServerWebExchangeMatcher, PolicyPermissionDto)` triples consumed by `AuthorizationCustomizer`. **CRITICAL precondition** (verified batch 2026-05-12C): the AuthorizationCustomizer is wired ONLY by `OAuthSecurityConfiguration.java:98` and `LDAPSecurityConfiguration.java:145` — `LoginFormSecurityConfiguration.java:55-57` does NOT wire it (only `.pathMatchers(\"/**\").authenticated()`), and `DisabledAuthSecurityConfiguration.java:13-18` is permit-all. Under LOGIN_FORM or DISABLED the entire SECURITY_RULES table is INERT — every per-rule manager(...) call is silently absent. Trade-off: centralised matrix view vs path-string coupling that breaks silently when paths drift (the `/term` vs `/terms` mismatch documented under DataEntityController is the canonical failure mode) PLUS auth-mode coupling that breaks silently when LOGIN_FORM is picked. Reinforced by method-level sidecars: regenerateCollectorToken (gated via SECURITY_RULES at line 135-137), getAllAlerts (NOT in SECURITY_RULES — fall-through to authenticated()), uploadFileChunk (gated via path-glob matching but with cross-entity-hijack failure mode), postMessageInSlack (NOT in SECURITY_RULES — fall-through ungated), getActivity (NOT in SECURITY_RULES — fall-through ungated). The LDAP `containsIgnoreCase` admin-match (substring-collision admin escalation) is a SECOND structural failure mode of path-pattern + name-based authorization."
+    description: "Repository-wide ADR: no controller carries `@PreAuthorize` / `@Secured` / programmatic permission calls. Authorization is enforced externally via `SecurityConstants.SECURITY_RULES` — a list of `(AuthorizationManagerType, PathPatternParserServerWebExchangeMatcher, PolicyPermissionDto)` triples consumed by `AuthorizationCustomizer`. **CRITICAL precondition** (verified batch 2026-05-12C): the AuthorizationCustomizer is wired ONLY by `OAuthSecurityConfiguration.java:98` and `LDAPSecurityConfiguration.java:145` — `LoginFormSecurityConfiguration.java:55-57` does NOT wire it (only `.pathMatchers(\"/**\").authenticated()`), and `DisabledAuthSecurityConfiguration.java:13-18` is permit-all. Under LOGIN_FORM or DISABLED the entire SECURITY_RULES table is INERT — every per-rule manager(...) call is silently absent. Trade-off: centralised matrix view vs path-string coupling that breaks silently when paths drift (the `/term` vs `/terms` mismatch documented under DataEntityController is the canonical failure mode) PLUS auth-mode coupling that breaks silently when LOGIN_FORM is picked. Reinforced by method-level sidecars: regenerateCollectorToken (gated via SECURITY_RULES at line 135-137), getAllAlerts (NOT in SECURITY_RULES — fall-through to authenticated()), uploadFileChunk (gated via path-glob matching but with cross-entity-hijack failure mode), postMessageInSlack (NOT in SECURITY_RULES — fall-through ungated), getActivity (NOT in SECURITY_RULES — fall-through ungated). The LDAP `containsIgnoreCase` admin-match (substring-collision admin escalation) is a SECOND structural failure mode of path-pattern + name-based authorization. **Batch E reinforcement on the RBAC primary surface**: RoleController.createRole + PolicyController.createPolicy + OwnerController.createOwner are textbook examples of the pattern WORKING — each gated NO_CONTEXT against a Permission (ROLE_CREATE / POLICY_CREATE / OWNER_CREATE) wired in SECURITY_RULES with no controller-level annotations. PermissionController.getResourcePermissions is the deliberate read-side INTENTIONAL absence — the read endpoint reveals only the caller's own resolved permissions and is therefore intentionally left out of SECURITY_RULES. SearchController.search is a third read-collaborative fall-through (no SECURITY_RULES entry) that also exhibits the cross-owner-enumeration failure mode."
     axes_present:
       - controllers
     nodes:
@@ -2473,6 +3048,11 @@ invariants:
       - "odd-platform java LoginFormSecurityConfiguration config-key-consumer:auth.type@L31"
       - "odd-platform java OAuthSecurityConfiguration config-key-consumer:auth.type@L71"
       - "odd-platform java LDAPSecurityConfiguration config-key-consumer:auth.type@L51"
+      - "odd-platform java RoleController controller-method:createRole"
+      - "odd-platform java PolicyController controller-method:createPolicy"
+      - "odd-platform java OwnerController controller-method:createOwner"
+      - "odd-platform java PermissionController controller-method:getResourcePermissions"
+      - "odd-platform java SearchController controller-method:search"
     contributors:
       - "DataEntityController + DataEntityAttachmentController sidecars: implicit_adrs naming the path-pattern wiring + the term path-mismatch failure"
       - "AlertController: implicit_adrs[1] — authorization-is-service-layer (the alerts variant of the same pattern, where SECURITY_RULES is empty)"
@@ -2488,6 +3068,11 @@ invariants:
       - "OAuthSecurityConfiguration@L71: PRECONDITION-side — `.authorizeExchange(new AuthorizationCustomizer(permissionService, extractors))` at line 98 is THE wiring point under OAUTH2"
       - "LDAPSecurityConfiguration@L51: PRECONDITION-side — same AuthorizationCustomizer wiring at line 145 under LDAP; SecurityWebFilterChain at `Ordered.HIGHEST_PRECEDENCE`"
       - "LDAPSecurityConfiguration@L51.implicit_adrs[containsIgnoreCase admin match]: SECONDARY structural failure mode of name-based authorization — substring match invites substring-collision admin escalation"
+      - "RoleController.createRole.implicit_adrs[0]: example of the pattern WORKING — `POST /api/roles → ROLE_CREATE` (SecurityConstants.java:169), NO_CONTEXT, uniform pattern across NAMESPACE / POLICY / ROLE / TAG / OWNER mutation endpoints"
+      - "PolicyController.createPolicy.implicit_adrs[0]: example of the pattern WORKING for MANAGEMENT-tier permissions — `POST /api/policies → POLICY_CREATE` (SecurityConstants.java:163-164)"
+      - "OwnerController.createOwner.implicit_adrs[0]: example of the pattern WORKING — `POST /api/owners → OWNER_CREATE` (SecurityConstants.java:143)"
+      - "PermissionController.getResourcePermissions.implicit_adrs[3]: example of the pattern's read-side INTENTIONAL absence — `GET /api/resource/.../permissions` deliberately falls through to catch-all `.authenticated()`; the convention is GETs typically fall through and SECURITY_RULES enumerates MUTATIONS"
+      - "SearchController.search: example of the FALL-THROUGH default for a read surface (no SECURITY_RULES entry; falls through to `.authenticated()`) AND of the pattern's structural failure mode (read-collaborative cross-owner enumeration with NO owner predicate — same admin-path-without-admin-gate shape as getAllAlerts + getActivity)"
     evidence:
       - "DataEntityController.md:implicit_adrs.[0] + bugs_limitations_corner_cases.[0] (term path mismatch)"
       - "DataEntityAttachmentController.md:implicit_adrs.[1]"
@@ -2504,6 +3089,11 @@ invariants:
       - "OAuthSecurityConfiguration@L71.md:implicit_adrs.[0] + security.authorization_assertions.[0] (.authorizeExchange(new AuthorizationCustomizer(...)))"
       - "LDAPSecurityConfiguration@L51.md:implicit_adrs.[AuthorizationCustomizer mode-agnostic] + security.authorization_assertions.[1]"
       - "LDAPSecurityConfiguration@L51.md:implicit_adrs.[containsIgnoreCase admin match] + security.known_security_gaps.[substring admin match]"
+      - "createRole.md:implicit_adrs.[0] (SECURITY_RULES uniform gating)"
+      - "createPolicy.md:implicit_adrs.[0] (declarative-not-annotation-driven authorization)"
+      - "createOwner.md:implicit_adrs.[0] (SECURITY_RULES centralisation)"
+      - "getResourcePermissions.md:implicit_adrs.[3] (intentional fall-through for read endpoints)"
+      - "search.md:implicit_adrs.[1] (fall-through to .authenticated() for the read-collaborative search surface)"
 
   - name: "Reactive Mono<ResponseEntity<...>>.map(ResponseEntity::ok) is the uniform success-response pattern"
     canonical_in_docs: false
@@ -2575,6 +3165,7 @@ invariants:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController"
       - "odd-platform java AlertController controller-method:getAllAlerts"
       - "odd-platform java ActivityController controller-method:getActivity"
+      - "odd-platform java SearchController controller-method:search"
     contributors:
       - "openapi-tag:alert.implicit_adrs (page/size are required int32 with no min/max/default)"
       - "openapi-tag:dataEntity.implicit_adrs[1]"
@@ -2583,6 +3174,7 @@ invariants:
       - "DataEntityAttachmentController.performance.known_performance_gaps[4]"
       - "getAllAlerts.bugs_limitations_corner_cases[1]: unbounded at every layer — controller no validation, AlertApi @NotNull @Valid only, repository OFFSET=(page-1)*size with no clamping"
       - "getActivity.bugs_limitations_corner_cases[3]: size has no documented or enforced upper bound; size=Integer.MAX_VALUE only safeguarded by DB query plan"
+      - "SearchController.search.performance.known_performance_gaps[1]: `getSearchResults` size on the generated SearchApi carries @NotNull but no @Min/@Max — same shape as REFACTOR-024; `size=1_000_000` accepted structurally"
     evidence:
       - "openapi-tag-alert.md:performance.known_performance_gaps.[0]"
       - "openapi-tag-dataEntity.md:performance.known_performance_gaps.[3]"
@@ -2590,11 +3182,12 @@ invariants:
       - "DataEntityController.md:performance.known_performance_gaps.[0]"
       - "getAllAlerts.md:bugs_limitations_corner_cases.[1]"
       - "getActivity.md:bugs_limitations_corner_cases.[3]"
+      - "search.md:performance.known_performance_gaps.[1] + scaling_characteristics"
 
   - name: "Owner-link is the gate for owner-scoped views"
     canonical_in_docs: true
     canonical_candidate: false
-    description: "Endpoints scoped to the current user's owned/dependent entities (`/api/alerts/my`, `/api/alerts/dependents`, `/api/dataentities/my`, `/api/dataentities/my/upstream`, `/api/dataentities/my/downstream`, `/api/activity?type=MY_OBJECTS`) require the signed-in user to be linked to an Owner record (Cornerstone of ODD's `User-owner association` per the live security/authorization doc). Without the link, the endpoints return empty pages. UI-side `My Objects` and `Dependents` tabs are hidden entirely (alerts route + AlertController + DataEntityController + getActivity sidecars)."
+    description: "Endpoints scoped to the current user's owned/dependent entities (`/api/alerts/my`, `/api/alerts/dependents`, `/api/dataentities/my`, `/api/dataentities/my/upstream`, `/api/dataentities/my/downstream`, `/api/activity?type=MY_OBJECTS`, `POST /api/search { my_objects: true }`) require the signed-in user to be linked to an Owner record (Cornerstone of ODD's `User-owner association` per the live security/authorization doc). Without the link, the endpoints return empty pages. UI-side `My Objects` and `Dependents` tabs are hidden entirely (alerts route + AlertController + DataEntityController + getActivity + search sidecars). NOTE batch E: Owner directory entries are created via `POST /api/owners` (gated by OWNER_CREATE), but NO auth-mode flow auto-creates Owners on first login — operators must MANUALLY pre-create per-user Owner rows OR accept association requests (createOwner.md:dependencies_semantic.couples-to → OwnerAssociationRequestServiceImpl is the SEPARATE user-claim flow). The 'Owner-link' invariant therefore depends on a separate manual setup step that is undocumented as a prerequisite."
     axes_present:
       - controllers
       - openapi_tags
@@ -2606,17 +3199,23 @@ invariants:
       - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController"
       - "odd-platform openapi tags openapi-tag:dataEntity"
       - "odd-platform java ActivityController controller-method:getActivity"
+      - "odd-platform java SearchController controller-method:search"
+      - "odd-platform java OwnerController controller-method:createOwner"
     contributors:
       - "AlertController.dependencies_semantic: 'user→owner association — without it, listByOwner / listDependentObjectsAlerts return empty per the live doc's claim'"
       - "alerts route.audiences: 'My Objects and Dependents sub-tabs only surfaced to users linked to an Owner record'"
       - "DataEntityController.dependencies_semantic.requires-feature: 'user→owner association (Owner-link) — without it these endpoints return empty'"
       - "openapi-tag:alert: 'My Objects and Dependents require ... linked to an Owner; without the link ... empty pages'"
       - "getActivity.security.owner_scoping: 'MY_OBJECTS is the only type-dispatch path that calls fetchAssociatedOwner; caller without an associated owner sees empty Flux, no error'"
+      - "SearchController.search: `my_objects=true` triggers `state.isMyObjects()` branch in `getSearchResults` (SearchServiceImpl.java:104-108) — only this path applies an owner predicate; default `my_objects=false` enumerates the entire catalog. The badge count `myObjectsTotalCount` is computed via `fetchAssociatedOwner()` even when toggle is off."
+      - "OwnerController.createOwner.implicit_adrs[1]: identity-decoupled directory CRUD — no auth-mode flow auto-creates an Owner on first login; the Owner-link the OTHER invariants depend on requires a separate manual creation/association step"
     evidence:
       - "AlertController.md:dependencies_semantic.requires-feature.[1]"
       - "alerts-route.md:concepts.audiences"
       - "DataEntityController.md:dependencies_semantic.requires-feature"
       - "openapi-tag-alert.md:security.known_security_gaps.[1]"
+      - "search.md:security.owner_scoping (BYPASSES default; RESPECTS only when my_objects=true)"
+      - "createOwner.md:implicit_adrs.[1] (identity-decoupled directory CRUD)"
       - "getActivity.md:security.owner_scoping"
 
   - name: "LSN-002-class — primitive default ships disabled-but-broken-when-enabled"
@@ -2921,19 +3520,22 @@ invariants:
   - name: "Legacy-vs-canonical GitBook IA drift"
     canonical_in_docs: false
     canonical_candidate: true
-    description: "Cross-cutting doc-IA invariant: ODD's documentation has TWO parallel path schemes for active platform features — `active-platform-features/{slug}` (legacy / index-linked) and `features/active-platform-features/{slug}` (canonical / current). The canonical path returns 200; the legacy path returns 404 even though the active-platform-features index page links to it. Triangulated across 2 sidecars: (a) DataCollaboration (batch 2026-05-10A, postMessageInSlack.docs_link_semantic.doc_drift_findings[2]) — `/active-platform-features/data-collaboration` returns 404 vs canonical `/features/active-platform-features/data-collaboration` 200. (b) Notifications (batch 2026-05-12C, NotificationsProperties.docs_link_semantic.doc_drift_findings[0]) — `/active-platform-features/notifications` returns 404 vs canonical `/features/active-platform-features/notifications` 200. The drift class is index-page-link-rot: the parent index page (or a sibling navigational element) carries the legacy path while the page itself has been moved to the canonical path. Operators Googling 'odd data collaboration' or 'odd notifications' currently land on broken pages."
+    description: "Cross-cutting doc-IA invariant: ODD's documentation has TWO parallel path schemes for active platform features — `active-platform-features/{slug}` (legacy / index-linked) and `features/active-platform-features/{slug}` (canonical / current). The canonical path returns 200; the legacy path returns 404 even though the active-platform-features index page links to it. **3-SIDECAR TRIANGULATED (batch E)**: (a) DataCollaboration (batch 2026-05-10A, postMessageInSlack.docs_link_semantic.doc_drift_findings[2]) — `/active-platform-features/data-collaboration` returns 404 vs canonical `/features/active-platform-features/data-collaboration` 200. (b) Notifications (batch 2026-05-12C, NotificationsProperties.docs_link_semantic.doc_drift_findings[0]) — `/active-platform-features/notifications` returns 404 vs canonical `/features/active-platform-features/notifications` 200. (c) Search (batch 2026-05-12E, search.md:docs_link_semantic.inferred_docs[1]) — `/features/active-platform-features/search` returns 404 (negative result captured deliberately so future doc-gap passes don't retry it) vs canonical `/features/data-discovery/search` 200. Notably, search lives under `data-discovery` rather than `active-platform-features` — the docs IA splits the search feature OUT of the parallel pattern but the page exists at canonical only. The drift class is index-page-link-rot: the parent index page (or a sibling navigational element) carries the legacy path while the page itself has been moved. Operators Googling 'odd data collaboration', 'odd notifications', or 'odd search' currently land on a mix of broken pages and unexpected paths."
     axes_present:
       - controllers
       - config_prefixes
     nodes:
       - "odd-platform java DataCollaborationController controller-method:postMessageInSlack"
       - "odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties"
+      - "odd-platform java SearchController controller-method:search"
     contributors:
       - "postMessageInSlack.docs_link_semantic.doc_drift_findings[2]: 404 on /active-platform-features/data-collaboration"
       - "NotificationsProperties.docs_link_semantic.doc_drift_findings[0]: 404 on /active-platform-features/notifications"
+      - "search.md:docs_link_semantic.inferred_docs[1]: 404 on /features/active-platform-features/search — search lives under data-discovery instead, but the negative result for an active-platform-features path completes the triangulation"
     evidence:
       - "postMessageInSlack.md:docs_link_semantic.doc_drift_findings.[2]"
       - "NotificationsProperties.md:docs_link_semantic.doc_drift_findings.[0]"
+      - "search.md:docs_link_semantic.inferred_docs.[1] (negative result, status 404)"
     notes: |
       Surface as a cross-cutting pattern for doc-gap-finder — likely the
       active-platform-features index page (or `SUMMARY.md`) carries the
@@ -2941,6 +3543,137 @@ invariants:
       both at once. Candidate DOC-NNN consolidation: audit the
       active-platform-features index for ALL features (not just these two)
       and verify each link's destination returns 200.
+
+      Batch E adds a NEGATIVE-RESULT third corroborating sidecar: search
+      doesn't even live under `active-platform-features` — it lives under
+      `features/data-discovery/search`. So the IA drift here is a
+      DIFFERENT shape: not just legacy-vs-canonical-path but also
+      pillar-misclassification (search is conceptually data-discovery but
+      operators searching for it on the active-platform-features index
+      get a 404). 3-sidecar triangulated with this caveat noted.
+
+  - name: "Administrator-name reservation asymmetry on CRUD"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "**NEW INVARIANT, batch 2026-05-12E** — codebase-wide CRUD-defensive asymmetry pattern on the RBAC primary surface. `RoleServiceImpl` + `PolicyServiceImpl` both protect the seeded `Administrator` predefined name on **update** + **delete** paths but NOT on **create**. Specifically: (a) `RoleServiceImpl.update` (line 67-69) + `.delete` (lines 81-84) explicitly check `UserProviderRole.values()` (case-sensitive `.equals` on update, case-insensitive `.equalsIgnoreCase` on delete — itself an internal inconsistency) and reject with `BadUserRequestException` if the target name matches the predefined enum; `RoleServiceImpl.create` (lines 51-61) has NO such check. (b) `PolicyServiceImpl.update` (line 76) + `.delete` (line 87) explicitly filter `policy -> !policy.getName().equals(ADMINISTRATOR_POLICY)` and raise `BadUserRequestException(\"Administrator policy cannot be updated/deleted\")`; `PolicyServiceImpl.create` (lines 62-69) has NO such check. The only thing protecting the reserved name on creation is the partial-unique DB index — `role_name_unique` on `role(name) WHERE deleted_at IS NULL` (V0_0_55__add_policies_and_roles.sql:42) + `policy_name_unique` on `policy(name) WHERE deleted_at IS NULL` (V0_0_55__add_policies_and_roles.sql:30) — both of which depend on the seeded row still being present. If an operator hard-deletes the seeded Administrator row (e.g. direct SQL `DELETE FROM role WHERE name='Administrator'` bypassing the soft-delete API), this endpoint can recreate it with attacker-chosen policy bindings. The recreated row binds to existing user-owner mappings that referenced the original Administrator id (FK semantics depend on `owner_to_role` and `role_to_policy` cascade behaviour, not verified in this pass). Asymmetry is silent: no comment, no exception, no doc warning. **OwnerController also exhibits a related-but-different shape**: there is no seeded 'Administrator' Owner row to begin with, so the name-reservation pattern doesn't directly apply — but the same `OwnerServiceImpl.update`/`.delete` paths perform existence/cascade guards while `.create` does not enforce uniqueness beyond the DB constraint. The pattern across all three services (Role + Policy + Owner) is 'destructive mutations validate; create paths don't', a codebase-wide CRUD-defensive asymmetry. Recommended cleanup: extract a `RbacNameValidator` helper that checks `UserProviderRole.values()` + `ADMINISTRATOR_POLICY` and invoke it from all three `create` paths, OR move the protected-name check into the `BaseSoftDeleteCRUDRepository.create` template method."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java RoleController controller-method:createRole"
+      - "odd-platform java PolicyController controller-method:createPolicy"
+    contributors:
+      - "createRole.md:bugs_limitations_corner_cases.[0]: predefined-name protection asymmetry — `update` + `delete` check `UserProviderRole.values()`; `create` does NOT. The only fence is `role_name_unique` partial index. HIGH severity per implicit_adrs.[1] + security.known_security_gaps.[0]"
+      - "createPolicy.md:bugs_limitations_corner_cases.[3]: Administrator name reserved on UPDATE/DELETE but NOT on CREATE. If the seeded Administrator policy is ever soft-deleted, a custom Administrator could be re-created with arbitrary statements. Defence-in-depth would be to symmetrise across all three endpoints (implicit_adrs.[3])"
+    evidence:
+      - "createRole.md:bugs_limitations_corner_cases.[0] + implicit_adrs.[1] + security.known_security_gaps.[0]"
+      - "createPolicy.md:bugs_limitations_corner_cases.[3] + implicit_adrs.[3] + security.known_security_gaps.[5]"
+    notes: |
+      NEW cross-cutting invariant captured in batch 2026-05-12E. 2-sidecar
+      primary-source (Role + Policy). Both services define identical-shape
+      protections on update + delete and identical-shape absence on create.
+      Recommended single-change cleanup:
+
+        - Extract `RbacNameValidator` helper:
+            void validateNonReservedName(String name, ...) throws BadUserRequestException
+
+        - Call from RoleServiceImpl.create + PolicyServiceImpl.create with
+          {UserProviderRole.ADMIN, UserProviderRole.USER, "Administrator"}
+          arguments.
+
+        - OR push the check into the soft-delete-aware base repository's
+          `create` template method, where the partial-unique index already
+          enforces uniqueness — convert the SQL state translation into a
+          clean `BadUserRequestException`.
+
+      Surface as canonicalisation candidate AND a refactoring-scope item
+      (REFACTOR-NNN-shape — a small focused 2-file fix with high
+      defence-in-depth value).
+
+  - name: "No-audit-log on RBAC mutations"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "**NEW INVARIANT, batch 2026-05-12E** — codebase-wide hygiene gap on the RBAC primary surface: no Role / Policy / Owner mutation emits an audit signal. 3-sidecar triangulated: (a) `RoleServiceImpl.create/.update/.delete` (lines 39-92) emit NO `@Slf4j` log calls, publish NO events, and INSERT into NO audit table; (b) `PolicyServiceImpl.create/.update/.delete` (lines 62-95) have the same absence — no `log.info`, no audit-table insert, no event publication; (c) `OwnerServiceImpl.create` is also missing `@ActivityLog` annotation (verified by grep: `@ActivityLog` appears in `AlertHaltConfigServiceImpl`, `AlertServiceImpl`, `DataEntityInternalStateServiceImpl`, `DataEntityServiceImpl`, `DataEntityGroupServiceImpl` ONLY — none of the three RBAC primary-surface services). The platform's activity feed (`/api/activity` — see Activity Feed concept from batch A) covers DataEntity + Owner activity but does NOT extend to Role / Policy / Permission / Owner-directory mutations. **Consequence**: a hijacked admin account or any S2S API-key holder (which gets ADMIN by default per S2sAuthenticationFilter — REFACTOR-108) can rewrite the authorization model, create new high-privilege Roles, attach them to existing Owners through other endpoints, or replace Policy bindings — and leave no trail in the platform's logs unless an external mechanism (database audit trigger, network IDS, Postgres pg_audit extension) is separately configured. Highest-leverage audit gap in the RBAC surface."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java RoleController controller-method:createRole"
+      - "odd-platform java PolicyController controller-method:createPolicy"
+      - "odd-platform java OwnerController controller-method:createOwner"
+    contributors:
+      - "createRole.md:security.known_security_gaps.[1]: no audit logging on role mutations — `RoleServiceImpl.create/.update/.delete` emit no Slf4j, publish no events, insert no audit table; cross-axis activity feed does NOT cover Role / Policy / Permission. HIGH severity"
+      - "createPolicy.md:security.known_security_gaps.[1] + bugs_limitations_corner_cases.[1]: no audit logging on policy mutations — `PolicyServiceImpl.create` has no `log.info/warn/audit` call. The `policy` table is single-state, no audit history table. Security incident review of 'who authored this MANAGEMENT/ALL policy?' has no in-application answer. HIGH severity"
+      - "createOwner.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[4]: no `@ActivityLog` on OwnerServiceImpl.create (grep verified — only 5 service files carry the annotation, none of them Owner). Owner directory changes invisible to audit even when they cascade into ownership-row changes that ARE recorded. MEDIUM severity"
+    evidence:
+      - "createRole.md:security.known_security_gaps.[1] (HIGH)"
+      - "createPolicy.md:security.known_security_gaps.[1] (HIGH)"
+      - "createOwner.md:security.known_security_gaps.[0] (MEDIUM)"
+    notes: |
+      NEW cross-cutting hygiene invariant captured in batch 2026-05-12E.
+      3-sidecar primary-source triangulated. Highest-leverage gap in the
+      RBAC surface — every other security weakness assumes attack visibility
+      via logs; this one says logs don't exist.
+
+      Recommended cleanup options (in increasing scope):
+
+        - Add `@Slf4j` log.info("created policy {name} by {currentUser}")
+          to PolicyServiceImpl.create, RoleServiceImpl.create,
+          OwnerServiceImpl.create. Minimum-cost, log-only audit trail.
+
+        - Add `@ActivityLog` annotations matching the existing pattern in
+          AlertServiceImpl + DataEntityServiceImpl. Surfaces in the
+          activity feed. Requires extending the ActivityEventType enum to
+          cover RBAC mutations + extending the ActivityState renderer to
+          handle Role/Policy/Owner-mutation payloads.
+
+        - Introduce a dedicated `rbac_audit` append-only table written via
+          `BaseSoftDeleteCRUDRepository`'s mutation lifecycle hooks. Full
+          forensic trail; coordinates with the existing soft-delete pattern.
+
+      Surface as canonicalisation candidate AND a refactoring-scope item.
+      Three DOC-NNN candidates flow from this invariant (audit-trail
+      expectation undocumented across `/authorization/policies`,
+      `/authorization/roles`, `/authorization/owners` live pages).
+
+  - name: "Read-collaborative cross-owner enumeration"
+    canonical_in_docs: false
+    canonical_candidate: true
+    description: "**STRENGTHENED INVARIANT, batch 2026-05-12E — now 3-sidecar** — Repository-wide read-side posture (ADR-CANDIDATE-003): GET / read-shaped endpoints fall through to `pathMatchers('/**').authenticated()` and return data across owners with no owner predicate. Three corroborating surfaces all share the same admin-path-without-admin-gate failure mode: (a) `getAllAlerts` (batch A — `GET /api/alerts` returns alerts across all data entities regardless of caller's Owner; getAllAlerts.md:security.known_security_gaps.[0] HIGH); (b) `getActivity` (batch B — `GET /api/activity` returns global audit trail to any authenticated user, including old/new diffs of descriptions / business names / ownership / custom metadata; getActivity.md:security.known_security_gaps.[0] HIGH); (c) `search` (batch E — `POST /api/search` + `GET /api/search/{search_id}/results` paginates the entire catalog: every non-EXCLUDE_FROM_SEARCH Data Entity row including name / ODDRN / descriptions / ownership / tags / custom metadata / term linkages; search.md:security.known_security_gaps.[0] HIGH). Search is the WIDEST blast radius — the catalog enumeration vector. Each surface independently authored, none gated by a Permission, all fall through to authenticated() + no owner predicate. **Live docs do not warn about this posture on any of the three surfaces**: `/features/alerts`, `/features/active-platform-features/activity-feed`, and `/features/data-discovery/search` are all silent on WHO can see what. The pattern is the platform's deliberate stance (ADR-CANDIDATE-003 — read-collaborative tradeoff: ODD's catalog is intentionally cross-owner-readable to facilitate cross-team collaboration), but the docs do not name this stance, do not warn operators evaluating the platform's security model, and do not enumerate which endpoints honour vs bypass owner-scoping. Aggregated cross-cutting case-law for any future doc-gap-finder or refactoring-scopes pass."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java AlertController controller-method:getAllAlerts"
+      - "odd-platform java ActivityController controller-method:getActivity"
+      - "odd-platform java SearchController controller-method:search"
+    contributors:
+      - "getAllAlerts.md:security.known_security_gaps.[0] (cross-owner alerts list HIGH) + concepts.invariants.[admin-path-without-admin-gate]"
+      - "getActivity.md:security.known_security_gaps.[0] (global activity cross-owner HIGH)"
+      - "search.md:security.known_security_gaps.[0] (catalog-wide cross-owner enumeration HIGH) + bugs_limitations_corner_cases.[0]"
+    evidence:
+      - "getAllAlerts.md:security.known_security_gaps.[0]"
+      - "getActivity.md:security.known_security_gaps.[0]"
+      - "search.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[0]"
+    notes: |
+      STRENGTHENED in batch 2026-05-12E from 2-sidecar to 3-sidecar
+      triangulated. Search is the widest blast radius — the catalog
+      enumeration vector. The combined finding spans three first-class
+      platform surfaces, all sharing the same posture, none documented
+      in their respective live pages.
+
+      ADR-CANDIDATE-003 (read-collaborative borderline) was originally
+      surfaced via getAllAlerts + getActivity in batch B. Batch E
+      promotes this to a STABLE 3-sidecar pattern that no future audit
+      should treat as accidental: this IS the platform's intended posture,
+      and the doc gap is that the posture is undocumented.
+
+      Three DOC-NNN candidates flow from this invariant:
+        (a) `/features/alerts` page: add a 'Who can see this' section
+            naming the read-collaborative posture explicitly.
+        (b) `/features/active-platform-features/activity-feed` page:
+            same treatment; emphasise that the activity feed exposes
+            who-changed-what across owners.
+        (c) `/features/data-discovery/search` page: same treatment;
+            the catalog search surface is the WIDEST cross-owner
+            enumeration vector and the doc must explicitly name it.
 
 operations:
 
@@ -3120,6 +3853,118 @@ operations:
       The operational vocabulary (in-place UPDATE; no grace; plaintext;
       Permission-gated) is captured here so the catalog has a referent
       when DOC-NNN follow-ups land for Token Rotation documentation.
+
+  - name: "Create Policy"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "POST /api/policies — gated by POLICY_CREATE MANAGEMENT-tier Permission via SECURITY_RULES (SecurityConstants.java:163-164). Service validates the inbound policy JSON against `schema/policy_schema.json` (V201909) via `PolicyJSONValidator.validate(...)` before persistence; non-empty ValidationMessage set raises `IllegalArgumentException`. Maps to `PolicyPojo`, INSERTs via `ReactivePolicyRepository.create` (soft-delete-aware base). Returns 200 OK with `PolicyDetails`. Note: spec declares 201 (openapi.yaml:3517-3534) but controller returns 200 — same drift as POST /api/roles + POST /api/owners. Bypassed under `auth.type=DISABLED`."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java PolicyController controller-method:createPolicy"
+    contributors:
+      - "createPolicy.md:concepts.operations: create-policy, validate-policy-json-schema, persist-policy, return-policy-details"
+      - "createPolicy.md:implicit_adrs.[1]: JSON-Schema-at-write-time invariant"
+    evidence:
+      - "createPolicy.md:concepts.operations + concepts.invariants.[0-4]"
+      - "createPolicy.md:implicit_adrs.[0-4]"
+    notes: |
+      Operation vocabulary captured for future DOC-NNN follow-ups on
+      `/authorization/policies`. The endpoint is the keys-to-the-kingdom
+      permission (a policy with MANAGEMENT/ALL bound to a role you belong
+      to grants full administrative power). Doc admonition + audit-logging
+      uplift recommended.
+
+  - name: "Create Role"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "POST /api/roles — gated by ROLE_CREATE NO_CONTEXT Permission via SECURITY_RULES (SecurityConstants.java:169). RoleServiceImpl.create runs under `@ReactiveTransactional`: INSERT into `role` + N INSERTs into `role_to_policy` (where N = `policies[]` length) + read-back via `roleRepository.getDto(id)`. Returns 200 OK with `Role`. Note: spec declares 201 (openapi.yaml:3629) but controller returns 200 — same drift as POST /api/policies + POST /api/owners. Predefined Administrator + User names are protected from UPDATE + DELETE but NOT from CREATE (see Administrator-name reservation asymmetry invariant). Bypassed under `auth.type=DISABLED`."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java RoleController controller-method:createRole"
+    contributors:
+      - "createRole.md:concepts.operations: accept-POST-/api/roles, map-to-RolePojo + INSERT, INSERT role_id↔policy_id rows, re-read RoleDto"
+      - "createRole.md:implicit_adrs.[3]: @ReactiveTransactional wraps the create flow"
+    evidence:
+      - "createRole.md:concepts.operations + concepts.invariants.[0-4]"
+      - "createRole.md:implicit_adrs.[0-3]"
+    notes: |
+      Operation vocabulary captured for future DOC-NNN follow-ups on
+      `/authorization/roles`. The live roles page documents only what a
+      Role IS (the two seeded values) — does not name the API surface,
+      ROLE_CREATE permission, name-protection rules, audit-logging
+      absence, or LDAP/OAuth2-group mapping relationship.
+
+  - name: "Create Owner"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "POST /api/owners — gated by OWNER_CREATE NO_CONTEXT Permission via SECURITY_RULES (SecurityConstants.java:143). OwnerServiceImpl.create runs under `@ReactiveTransactional`: INSERT into `owner` + N INSERTs into `owner_to_role` (where N = `roles[]` length) + read-back via `ownerRepository.getDto(id)`. Returns 200 OK with `Owner`. Note: spec declares 201 but controller returns 200 — class-wide drift. **Identity-decoupled directory CRUD** — request body carries only `name` + optional `roles`; controller never reads security context; user→owner mapping is created only through the SEPARATE `POST /api/owner_association_request` flow. **NO auth-mode flow auto-creates an Owner on first login**. Bypassed under `auth.type=DISABLED`."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java OwnerController controller-method:createOwner"
+    contributors:
+      - "createOwner.md:concepts.operations: create-owner-with-optional-roles (single transactional insert + per-role link insert + read-back as DTO)"
+      - "createOwner.md:implicit_adrs.[1]: identity-decoupled directory CRUD (separate user-claim flow)"
+    evidence:
+      - "createOwner.md:concepts.operations + concepts.invariants.[0-2]"
+      - "createOwner.md:implicit_adrs.[0-2]"
+    notes: |
+      Operation vocabulary captured for future DOC-NNN follow-ups on
+      `/authorization/owners`. The live owners page documents what an
+      Owner IS but explicitly disclaims coverage of: creation mechanics,
+      OWNER_CREATE permission, association-request mechanics, sprawl
+      prevention. Five doc-drift findings flow from this operation
+      (createOwner.md:docs_link_semantic.doc_drift_findings.[0-2]).
+
+  - name: "Query Resource Permissions"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "GET /api/resource/{permission_resource_type}/{resource_id}/permissions — NO SECURITY_RULES entry, falls through to `pathMatchers('/**').authenticated()`. PermissionService delegates to a per-resource-type `ContextualPermissionExtractor`; the extractor (a) loads the caller's roles → policies via `PolicyService.getCurrentUserPolicies`, (b) loads the resource context (e.g. data-entity dimensions + tags + caller's associated owner), (c) evaluates every policy statement against the context via `PolicyPermissionExtractor`, (d) emits the union as a `Flux<Permission>`. Authoritative-not-UI-hint: same evaluation graph the mutation enforcer uses, so a forged response does NOT bypass mutation gating. BUT auth-mode-coupled: under DISABLED returns empty (UI silent-divergence); under LOGIN_FORM returns full admin set (every caller is admin). Hot path on every UI permission-check (4 DB round-trips per call)."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java PermissionController controller-method:getResourcePermissions"
+    contributors:
+      - "getResourcePermissions.md:concepts.operations: evaluate-current-user-permissions-on-contextual-resource (load roles → load policies → load resource context → evaluate statements → emit permission set)"
+      - "getResourcePermissions.md:implicit_adrs.[1]: authoritative server-side evaluation, not UI-only hint"
+    evidence:
+      - "getResourcePermissions.md:concepts.operations + concepts.invariants.[0-4]"
+      - "getResourcePermissions.md:implicit_adrs.[0-3]"
+    notes: |
+      Operation vocabulary captured for future DOC-NNN follow-ups on the
+      read-side authorization model. THREE live pages document the
+      authorization vocabulary (`/authorization`, `/authorization/permissions`,
+      `/authorization/policies`) and none mention this endpoint, the UI's
+      consumption pattern, contextual vs non-contextual evaluation, or the
+      Administrator role's ALL-permission default. Highest-leverage doc
+      gap in the RBAC surface.
+
+  - name: "Search Catalog (faceted, session-as-server-state)"
+    canonical_in_docs: true
+    canonical_candidate: false
+    description: "POST /api/search — NO SECURITY_RULES entry, falls through to `pathMatchers('/**').authenticated()`. Creates a server-side `search_facets` row keyed by a server-generated UUID; returns aggregated facet counts + the UUID + `total` + `myObjectsTotalCount`. Does NOT return result rows — caller must issue `GET /api/search/{search_id}/results` for paginated `DataEntityList`. Inbound `SearchFormData` → mapped to `FacetStateDto` via `FacetStateDto.removeUnselected` → persisted via `ReactiveSearchFacetRepository::create` → aggregation via `Mono.zip(entityClassFacet, allCount, myObjectsCount)` running three concurrent queries (the myObjectsCount UNCONDITIONALLY). Postgres FTS via `to_tsquery(?)` + `JooqFTSHelper.tsQuery` (split on space + append `:*` + join with `&`). Owner-bypass by default (`my_objects=false` enumerates whole catalog). PII-persistent query text in `search_facets.query`. Same session UUID also used by `getSearchFacetList`, `updateSearchFacets`, `getFiltersForFacet`, `highlightDataEntity`."
+    axes_present:
+      - controllers
+    nodes:
+      - "odd-platform java SearchController controller-method:search"
+    contributors:
+      - "search.md:concepts.operations: create-search-session (POST /api/search), delegate-to-service (pass-through)"
+      - "search.md:implicit_adrs.[0]: search-session-as-server-state pattern"
+    evidence:
+      - "search.md:concepts.operations + concepts.invariants.[0-4]"
+      - "search.md:implicit_adrs.[0-2]"
+    notes: |
+      Operation vocabulary captured for future DOC-NNN follow-ups on the
+      search surface. The live `/features/data-discovery/search` page
+      documents seven UI facets but is silent on WHO can search,
+      query-syntax semantics, the server-side session mechanism, the
+      `myObjectsTotalCount` unconditional aggregation cost, and the
+      30-day persistent query-text retention. Sibling
+      `/api/terms/search`, `/api/queryexample/search`, and
+      `/api/referencedata/search` replicate the same session-UUID
+      pattern.
 
 canonicalisation_candidates:
 
@@ -3354,6 +4199,58 @@ canonicalisation_candidates:
       - "datacollaboration.receive-event-advisory-lock-id=110 (DataCollaborationProperties batch D)"
       - "datacollaboration.sender-message-advisory-lock-id=120 (DataCollaborationProperties batch D)"
     suggested_add_to_docs: false
+
+  - proposed_canonical: "Administrator-name reservation asymmetry on CRUD"
+    rationale: "2-sidecar primary-source triangulated cross-cutting CRUD-defensive asymmetry from batch 2026-05-12E. `RoleServiceImpl` + `PolicyServiceImpl` both protect the seeded `Administrator` predefined name on UPDATE + DELETE paths but NOT on CREATE. The only fence on creation is the partial-unique DB index, which depends on the seeded row remaining present. Recommended cleanup: extract `RbacNameValidator` helper + invoke from all three create paths. Codebase-wide refactoring scope ~2 files."
+    contributing_concepts:
+      - "RoleServiceImpl.update/.delete check `UserProviderRole.values()`; RoleServiceImpl.create does NOT (batch E)"
+      - "PolicyServiceImpl.update/.delete reject `ADMINISTRATOR_POLICY` name; PolicyServiceImpl.create does NOT (batch E)"
+      - "role_name_unique + policy_name_unique partial indexes depend on seeded row presence (V0_0_55__add_policies_and_roles.sql:30, 42)"
+    suggested_add_to_docs: false
+
+  - proposed_canonical: "No-audit-log on RBAC mutations"
+    rationale: "3-sidecar primary-source triangulated cross-cutting hygiene gap from batch 2026-05-12E. None of `RoleServiceImpl.create/.update/.delete`, `PolicyServiceImpl.create/.update/.delete`, `OwnerServiceImpl.create` emit @Slf4j log lines, publish events, or insert into any audit table. `@ActivityLog` is absent from OwnerServiceImpl (grep-verified — applied only to Alert/AlertHaltConfig/DataEntity/DataEntityGroup/DataEntityInternalState services). The activity feed (`/api/activity`) does NOT cover Role/Policy/Permission/Owner-directory mutations. A hijacked admin (or any S2S API-key holder which gets ADMIN by default — REFACTOR-108) can rewrite the authorization model invisibly. HIGH-priority cleanup: add @Slf4j audit log calls (cheapest), OR add @ActivityLog annotations (medium scope, surfaces in existing audit UI), OR introduce a dedicated rbac_audit table (largest scope, fully forensic)."
+    contributing_concepts:
+      - "RoleServiceImpl.create/.update/.delete: no @Slf4j, no events, no audit table (batch E)"
+      - "PolicyServiceImpl.create/.update/.delete: same absence (batch E)"
+      - "OwnerServiceImpl.create: missing @ActivityLog (grep-verified, batch E)"
+      - "Activity feed does NOT cover RBAC mutations (cross-axis from batch A getActivity)"
+    suggested_add_to_docs: true
+
+  - proposed_canonical: "Read-collaborative cross-owner enumeration"
+    rationale: "3-sidecar primary-source triangulated cross-cutting read-side posture from batch 2026-05-12E. Three first-class read surfaces (getAllAlerts batch A + getActivity batch B + search batch E) all share the same admin-path-without-admin-gate failure mode — fall-through to `.authenticated()`, no owner predicate, cross-owner data returned to any authenticated caller. Search is the WIDEST blast radius — the catalog enumeration vector. This IS the platform's deliberate posture (ADR-CANDIDATE-003 read-collaborative tradeoff) but is undocumented. HIGH-priority doc-extension: three live pages (`/features/alerts`, `/features/active-platform-features/activity-feed`, `/features/data-discovery/search`) need explicit 'Who can see this' sections naming the read-collaborative stance."
+    contributing_concepts:
+      - "getAllAlerts.security.known_security_gaps.[0] (cross-owner alerts list HIGH, batch A)"
+      - "getActivity.security.known_security_gaps.[0] (global activity cross-owner HIGH, batch B)"
+      - "search.security.known_security_gaps.[0] (catalog-wide cross-owner enumeration HIGH, batch E)"
+      - "ADR-CANDIDATE-003 (read-collaborative borderline) — now 3-sidecar STABLE pattern"
+    suggested_add_to_docs: true
+
+  - proposed_canonical: "Search Session (server-side session-as-state)"
+    rationale: "NET-NEW canonical-candidate concept from batch 2026-05-12E (SearchController.search). The platform's catalog-search interaction is bound to a persistent `search_facets` row keyed by a server-generated UUID — `POST /api/search` creates the session, returns counts + UUID; subsequent calls (`getSearchResults`, `getSearchFacetList`, `updateSearchFacets`, `getFiltersForFacet`, `highlightDataEntity`) all reference the same UUID. Sibling features (`/api/terms/search`, `/api/queryexample/search`, `/api/referencedata/search`) replicate the same pattern. Cost: unbounded `search_facets` table with PII-persistent query text at 30-day default housekeeping floor. main-concepts.md does not name this pattern; the closest doc anchor is `/features/data-discovery/search` which describes the user experience but not the server-side mechanism."
+    contributing_concepts:
+      - "SearchController.search creates a `search_facets` row keyed by UUID (batch E)"
+      - "Sibling search endpoints (terms/queryexample/referencedata) replicate the pattern (batch E)"
+      - "HousekeepingTTLProperties.search_facets_days TTL retention (batch D)"
+      - "REFACTOR-141 housekeeping default-leak intersection (TTL is operator-tuneable, defaults to 30 days at YAML floor; 0 days if YAML floor is overridden without re-supplying the block)"
+    suggested_add_to_docs: true
+
+  - proposed_canonical: "Authoritative server-side permission evaluation graph (shared read + enforce)"
+    rationale: "Single-sidecar canonical observation from batch 2026-05-12E (PermissionController.getResourcePermissions). The platform deliberately exposes `GET /api/resource/{type}/{id}/permissions` as a first-class read-side surface that runs the SAME policy-evaluation graph the mutation enforcer uses. Trade-off: forged response cannot bypass mutation gating (authoritative-not-UI-hint); cost is 4 DB round-trips per call with no caching. Worth surfacing because the design intent is invisible to operators reading SECURITY_RULES — the read endpoint has no rule entry, looking like an oversight when it's intentional. HIGH-priority doc-extension: extend `/authorization` page with a 'Read-side permission discovery' section naming this endpoint AND explaining why it has no SECURITY_RULES gate (the answer is bounded to the caller's own resolved permissions). Plus add a batch-variant performance recommendation (POST /api/resource/{type}/permissions for list-view N+1 elimination)."
+    contributing_concepts:
+      - "PermissionController.getResourcePermissions (batch E)"
+      - "Shared `PermissionService` + `ContextualPermissionExtractor` graph between read endpoint and AuthorizationCustomizer (batch E)"
+      - "Per-request 4-query fan-out (policies + dimensions + tags + owner)"
+    suggested_add_to_docs: true
+
+  - proposed_canonical: "Identity-decoupled directory CRUD (Owner)"
+    rationale: "Single-sidecar canonical observation from batch 2026-05-12E (OwnerController.createOwner). The platform's design intent is `OwnerController` for admin-time directory CRUD (just `name` + optional `roles`, no security-context read) + `OwnerAssociationRequestController` for user-claim-via-association + downstream `UserOwnerMappingService` for the actual binding. **Crucially: no auth-mode flow auto-creates an Owner on first login** — operators must manually pre-create per-user Owner rows OR accept association requests. This is the design intent, but the live owners doc says 'Every ODD Platform user should associate themselves with one of the existing owners' which implies the association is a USER-initiated step against EXISTING owners; operators are not told they need to pre-create them. Worth surfacing because every Owner-link-dependent endpoint (the entire 'Owner-link is the gate for owner-scoped views' invariant) cascades onto this prerequisite, which itself is undocumented."
+    contributing_concepts:
+      - "OwnerController.createOwner: directory CRUD operation (batch E)"
+      - "OwnerAssociationRequestController.createOwnerAssociationRequest: separate user-claim flow (batch E)"
+      - "AuthIdentityProviderImpl.java:23-53: no OwnerService.create / getOrCreate call on login (batch E)"
+      - "Live `/authorization/owners` page silence on creation mechanics + association mechanics + sprawl prevention (batch E)"
+    suggested_add_to_docs: true
 
   - proposed_merge:
       - "alert (singular variants: 'alert', 'Alert', 'alerts')"

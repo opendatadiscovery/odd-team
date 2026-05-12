@@ -1,16 +1,17 @@
 ---
 artefact: refactoring-scopes
-generated_at: "2026-05-12T17:30:00+02:00"
+generated_at: "2026-05-12T21:00:00+02:00"
 generated_at_commit: ede5d277
-sidecar_count: 35
+sidecar_count: 40
 prompt_version: "adr-archaeologist/0.2.0"
-total_scopes: 182
-scopes_by_severity: { CRITICAL: 0, HIGH: 48, MEDIUM: 86, LOW: 48 }
+total_scopes: 210
+scopes_by_severity: { CRITICAL: 0, HIGH: 57, MEDIUM: 99, LOW: 54 }
 scopes_by_category: { missing-auth: 11, missing-retry: 3, missing-rate-limit: 6, missing-sanitisation: 2, missing-audit: 8, missing-validation: 30, missing-pagination: 1, missing-quota: 1, missing-test: 4, buggy-default: 12, path-mismatch: 1, deferred-failure: 1, header-injection: 1, race-condition: 4, error-mapping: 4, observability: 7, missing-grace-period: 1, weak-rng: 1, plaintext-at-rest: 1, response-cache-leak: 1, idempotency: 1, transactional-consistency: 2, multi-instance-fs: 1, contract-typo: 1, enumeration-vector: 1, dual-path: 1, dead-code: 3, info-disclosure: 1, missing-fail-fast: 2, label-asymmetry: 1, batch-isolation: 1, missing-retention: 2, missing-doc-prereq: 1, timezone-implicit: 1, body-before-auth: 1, missing-constant-time: 1, duplicate-parse: 1, hard-coded-path: 1, missing-cors: 1, missing-warn-log: 1, silent-feature-ignored: 1, missing-csrf: 2, missing-actuator-gating: 1, open-redirect: 1, missing-default: 2, fragile-parsing: 2, credential-leak: 3, session-cookie-flags: 1, no-brute-force-defence: 1, no-failure-handler: 1, doc-code-drift: 3, no-multi-replica-session: 1, no-config-field: 2, fragile-wiring: 1, scheme-enforcement: 1, substring-collision: 1, no-admin-path: 1, size-limit-silent-trunc: 1, ad-config-ignored: 1, no-health-check: 1, owner-mapping-drift: 1, no-retry-no-dlq: 1, partial-delivery: 1, unsigned-webhook: 1, status-code-narrow: 1, no-channel-filter: 1, advisory-lock-collision: 2, pii-disclosure: 1, replication-slot-orphan: 1, smtp-timeout: 1, lombok-tostring-leak: 1, partial-home-properties: 1, advisory-lock-registry: 1, primitive-default-leak: 1, jooq-precedence-bug: 1, block-in-transaction: 1, no-dryrun: 1, sequential-connection: 1, no-backlog-metric: 1, lock-window-race: 1, missing-tls-trust: 1, smtp-implicit-tls: 1, smtp-oauth2: 1, no-email-validation: 1, port-default-zero: 1, npe-on-boxed-bool: 1, recipient-parse-fragile: 1, no-conn-pool: 1, no-reply-headers: 1, no-upper-bound: 1, refactor-risk: 1, no-validated: 2, doc-spelling-drift: 1, url-no-validation: 1, empty-map-passes: 1, provider-conditional-unvalidated: 1, scope-required-unvalidated: 1, ad-domain-unvalidated: 1, postconstruct-gated-by-conditional: 1 }
 batch_2026_05_10A_summary: { added_scopes: 23, strengthened_scopes: 4 }
 batch_2026_05_10B_summary: { added_scopes: 24, strengthened_scopes: 1 }
 batch_2026_05_12C_summary: { added_scopes: 49, strengthened_scopes: 1 }
 batch_2026_05_12D_summary: { added_scopes: 42, strengthened_scopes: 4 }
+batch_2026_05_12E_summary: { added_scopes: 28, strengthened_scopes: 3 }
 ---
 
 # Refactoring scopes — odd-platform — 2026-05-12

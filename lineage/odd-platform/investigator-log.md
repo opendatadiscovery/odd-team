@@ -493,3 +493,117 @@ The config-properties-class layer is now well-covered (7/9 = 77.8%; remaining: `
 3. **controller-method deepening** — 6 of 203 enriched (3.0%). The methods most likely to surface remaining spot-checks would be on under-enriched controllers: `DataEntityController.*` methods (5 sub-controllers covered at class level but only 1 method); `IngestionController.*` methods; `OwnerController` family; `PolicyController` (RBAC).
 
 Until the next batch fires, the held-back spot-check set should be matched against batch A + batch B + batch C + batch D log entries above. Misses → candidate node-picks for batch E.
+
+---
+
+## Batch 2026-05-12E — RBAC primary + Search new-area (5 nodes)
+
+- **Date**: 2026-05-12
+- **Branch**: `feature/agentic-ontology-enrichment-batch-2026-05-12E`
+- **Substrate commit**: `ede5d277` (35 prior sidecars + 5 new = 40 total; 8.9% → **10.1%** coverage — crossed 10% milestone)
+- **Theme**: closes the loop on REFACTOR-073 / REFACTOR-008 / ADR-CANDIDATE-002/003 from the actual RBAC mutation surface. 4 RBAC-primary controller-methods (PolicyController + RoleController + OwnerController + PermissionController) + 1 new-area diversity (SearchController). All 5 are controller-method nodes (deepening that kind: 6/203 → 11/203, 5.4%).
+- **Rule 5 compliance**: all 5 sidecars + 4 reducer outputs verified clean. Pre-commit grep across all committed-artefact directories: 0 matches.
+- **Rate-limit handling**: 3 of 4 reducer agents (doc-gap / adr-archaeologist / test-coverage) hit Anthropic's account rate limit late in their runs (resets 9:50pm Europe/Warsaw). File-system inspection confirmed all 4 reducer artefacts had been WRITTEN before the limit hit (mod times 18:04-18:18, all carrying batch-E frontmatter). Same pattern as batch B's concept-merger limit hit — the work landed; only the exit-message reply was truncated. Proceeded with the commit phase.
+
+### Sidecars added (5)
+
+| Sidecar | Source | Concept(s) | implicit_adrs | bugs_limitations | Notable findings |
+|---|---|---|---|---|---|
+| `PolicyController.createPolicy` | `controller/PolicyController.java:19` | **Policy (NEW)**, Authorization | 5 (declarative SECURITY_RULES, schema-validation-at-write, NO_CONTEXT MANAGEMENT permissions, Administrator-name reservation on update/delete, soft-delete-aware partial UNIQUE index) | 7 | **Keys-to-the-kingdom endpoint**. POLICY_CREATE MANAGEMENT-tier correctly wired in `SecurityConstants.java:163-164` — BUT BYPASSED under `auth.type=DISABLED` (`DisabledAuthSecurityConfiguration.java:14-18` short-circuits ALL SECURITY_RULES). Plus Administrator-name asymmetry (present on update/delete, missing on create); no audit logging; no anti-elevation guard. 5 doc-drift findings on Policies live page. |
+| `RoleController.createRole` | `controller/RoleController.java:19` | **Role (NEW)**, Authorization | 4 (uniform SECURITY_RULES gating, predefined-name mutation-only protection, role-to-policy rewrite-on-update + insert-on-create, ReactiveTransactional) | 10 | **Predefined-name protection asymmetry**: `update` + `delete` check `UserProviderRole.values()` to block modifying 'Administrator' / 'User'; `create` does NOT. Only DB-layer partial unique index `role_name_unique` prevents recreation. Plus S2S implicit ADMIN, no audit on RBAC mutations, no policy-id validation, Role-rows-vs-LDAP-group-mapping operator confusion. 5 doc-drift findings — live `/authorization/roles` documents 2 predefined roles but NO content on creation API. |
+| `OwnerController.createOwner` | `controller/OwnerController.java:21` | **Owner (NEW)**, Authorization | 3 (centralised SECURITY_RULES gate at `SecurityConstants.java:143` (OWNER_CREATE); **identity-decoupled directory CRUD** with user-association as a separate flow; service-layer @ReactiveTransactional) | 7 | **OpenAPI 201 vs impl 200 status-code drift** (the OpenAPI-generated-controller pattern is supposed to prevent contract drift, yet here it is). **No auto-Owner-on-LDAP/OAuth-login** — OAuth2/LDAP users authenticate but have no Owner unless an admin creates one → cannot be assigned as data-entity owner, cannot use `/my*` ownership-scoped queries. Onboarding gap. Non-partial UNIQUE blocks soft-delete recovery. No activity-feed event on owner create. Unbounded owner sprawl. Anonymous reach under DISABLED. |
+| `PermissionController.getResourcePermissions` | `controller/PermissionController.java:19` | **Permission (NEW)**, Authorization | 4 (**shared read+enforce evaluation graph** — POSITIVE design; **authoritative-not-UI-hint** — POSITIVE; resource-type↔context enum coupling; deliberate `.authenticated()` fall-through) | 6 | 2 HIGH auth-mode-bypass findings: (a) **DISABLED + getResourcePermissions returns empty/null silent contradiction** (API says "you have nothing" but SECURITY_RULES bypassed = user has everything → UI hides buttons user CAN use); (b) **LOGIN_FORM static-admin-ALL bypass** (user has ADMIN at enforcement but per-policy returns mix → UI shows limited permissions). Per-resource N+1 perf gap. Zero tests. 3 doc-drift findings — entire read-side surface undocumented across 3 live pages. |
+| `SearchController.search` | `controller/SearchController.java:59` | **Search Session (NEW)**, Data Discovery | 3 (**search-session-as-server-state** — unique-load-bearing; centralised-SECURITY_RULES corroboration; controllers-as-delegates corroboration) | 9 | **HIGH: catalog-wide cross-owner enumeration** (REFACTOR-024-shape with wider blast radius — search is the workhorse read endpoint). `to_tsquery` syntax-error vector via raw user input through `JooqFTSHelper.tsQuery` (Postgres FTS injection / DoS). Unbounded search_facets writes intersecting REFACTOR-141 housekeeping default-leak (compounding cross-batch finding). Unbounded query length. No rate-limit. Search-session UUID has no per-user binding. Persistent query text PII risk. 3 doc-drift findings — canonical `/features/data-discovery/search` silent on WHO can search + query syntax + pagination; alternative `/features/active-platform-features/search` is **404** (3rd legacy-vs-canonical drift instance). |
+
+### Reducer diffs
+
+| Reducer | Artefact | Before → After | Net | Highlights |
+|---|---|---|---|---|
+| concept-merger | `concepts.yaml` | 60 → **73 concepts** | +13 | catalog_version 5 → 6. 26 entities (+5: Policy, Role, Owner, Permission, Search Session) / 16 operations (+5) / **20 invariants** (+3) / 11 audiences. 35 canonicalisation candidates. Security aggregates on ~25 concepts; perf on ~25. |
+| doc-gap-finder | `doc-gaps.md` | 71 → **83 candidates** | +12 | 41 HIGH / 34 MEDIUM / 8 LOW. Categories: broken-url 9, drift 64, missing-page 5, coverage-gap 2, meta 3 (+1 new meta finding). |
+| adr-archaeologist (ADRs) | `implicit-adrs.md` | 48 → **53 ADRs** | +5 | 15 HIGH / 34 MEDIUM / 4 LOW. 51 promote + 2 unique-load-bearing. **0 wisdom-test fails** (5th consecutive batch). |
+| adr-archaeologist (scopes) | `refactoring-scopes.md` | 182 → **210 refactoring scopes** | +28 | 0 CRITICAL / 57 HIGH / 99 MEDIUM / 54 LOW. Category taxonomy now ~80 distinct labels (rich refactoring backlog index). Notable new categories: `lombok-tostring-leak`, `partial-home-properties`, `advisory-lock-collision`, `advisory-lock-registry`, `substring-collision`, `contract-typo`, `doc-spelling-drift`, `weak-rng`, `primitive-default-leak`, `jooq-precedence-bug`, plus 30+ more. |
+| test-coverage-mapper | `test-map.yaml` | 215 → **252 test gaps** | +37 | **71 CRITICAL** / 88 HIGH / 67 MEDIUM / 26 LOW. CRITICAL: 54 → 71 (+17). HIGH: 76 → 88 (+12). NEW category: `missing-binding` (6 entries — RBAC primary endpoints have no `@ConfigurationProperties` binding tests / authorization tests). 67 test files indexed (up from 65 — agent found 2 additional test files that prior runs missed). |
+
+### Known-bug validators / continuations
+
+| Pre-existing finding | Result this batch | Detail |
+|---|---|---|
+| **REFACTOR-073** — default-DISABLED + no-fail-fast (8-sidecar pre-batch) | **VALIDATED + STRENGTHENED — now per-endpoint confirmed across the RBAC mutation surface** | PolicyController + RoleController + OwnerController + PermissionController all surface DISABLED-mode-bypass behaviour. The blast radius is the ENTIRE SECURITY_RULES chain. |
+| **REFACTOR-024** — read-collaborative cross-owner enumeration (alerts; activity-feed) | **VALIDATED + WIDENED — catalog-wide via SearchController** | search surfaces the entire catalog regardless of ownership; wider blast radius than alerts/activity. |
+| **ADR-CANDIDATE-002** — centralised SECURITY_RULES | **VALIDATED 4-times this batch** | All 4 RBAC mutation endpoints honour SECURITY_RULES correctly (positive baseline — the design is correctly applied). |
+| **ADR-CANDIDATE-003** — read-collaborative GET endpoints | **VALIDATED on Search read** | SearchController.search is `.authenticated()` fall-through, matching the read-collaborative posture. |
+
+### Cross-batch triangulation (multi-batch patterns escalated)
+
+| Pattern | Sidecar count | Sidecars surfacing it | Captured as |
+|---|---|---|---|
+| **DISABLED-mode bypasses SECURITY_RULES** | **8** (4 carried from B/C + 4 NEW this batch on RBAC mutation surface) | AppInfoController + AuthorizationManagerCondition + IngestionDataEntitiesFilter (B) + DisabledAuthSecurityConfiguration (C) + PolicyController + RoleController + OwnerController + PermissionController (E) | REFACTOR-073 strengthened — now load-bearing across the RBAC primary surface |
+| **LOGIN_FORM ADMIN-for-all (silent bypass)** | **3** (NEW this batch) | LoginFormSecurityConfiguration (C) + RoleController (E) + PermissionController (E) | NEW HIGH-severity refactoring scope cluster |
+| **Administrator-name reservation create-vs-update asymmetry** | **2** (NEW invariant this batch) | RoleController.createRole + PolicyController.createPolicy | NEW concepts.yaml invariant + NEW cross-cutting REFACTOR for CRUD-defensive-symmetry |
+| **No-audit-log-on-RBAC-mutations** | **3** (NEW invariant this batch) | RoleController + PolicyController + OwnerController create operations | NEW concepts.yaml invariant + NEW cross-cutting REFACTOR |
+| **Read-collaborative cross-owner enumeration** | **3** | getAllAlerts (A) + getActivity (B) + search (E) | REFACTOR-024 strengthened; search has wider blast radius |
+| **Legacy-vs-canonical GitBook routing drift** | **3** | data-collaboration (A) + notifications (C) + search (E) | DOC-GAP-058 strengthened (now 3-sidecar; maintainer recommendation for doc-side audit reinforced) |
+| **OpenAPI-generated controller contract drift** | **1** (NEW finding shape) | OwnerController OpenAPI 201 vs impl 200 status drift | NEW hygiene REFACTOR — the pattern that's supposed to prevent contract drift surfaced a contract drift |
+| Plus carried forward from prior batches | | | Lombok-toString leak (4-sidecar); partial-home @ConfigurationProperties (2-sidecar); advisory-lock collision (3-sidecar); REFACTOR-085 retention drift (2-sidecar); S2S composes-not-mutex (4-sidecar batch C); etc. |
+
+### Notable new findings (spot-check candidates this batch)
+
+**Authorization / privilege-escalation (HIGH):**
+
+- **POLICY_CREATE unauthenticated under DISABLED default deployment** ← `PolicyController.createPolicy` validates SECURITY_RULES gating wired correctly but bypassed by DISABLED mode. Combined with no audit logging and no anti-elevation guard, an attacker on the network of a default deployment can create policies granting MANAGEMENT/ALL to a role they then assign to themselves.
+- **Administrator-name reservation create-vs-update asymmetry** ← both Policy and Role check `UserProviderRole.values()` on update + delete but NOT on create. Only DB partial unique index protects against recreating the predefined 'Administrator' / 'User' names. Defensive programming added late as a band-aid on update/delete, never propagated to create.
+- **LOGIN_FORM static-admin-ALL bypass undermines per-policy returns** ← `PermissionController.getResourcePermissions` returns per-policy permissions but LOGIN_FORM users have ADMIN at enforcement layer regardless. UI/server divergence.
+- **`/api/permissions` returns empty under DISABLED while SECURITY_RULES bypassed** ← user has all permissions at enforcement, API says they have none. UI hides buttons the user can actually use → operability degradation + operator confusion.
+
+**Data-discovery / search (HIGH):**
+
+- **Catalog-wide cross-owner enumeration via `/api/search`** ← entire platform catalog enumerable by any authenticated user. Wider than REFACTOR-024 (alerts) or activity-feed.
+- **`to_tsquery` syntax-error / DoS vector** ← raw user input through `JooqFTSHelper.tsQuery`. Crafted query can either crash the FTS parser or cause expensive query plans.
+- **Search-session UUID has no per-user binding** ← session-id is the only identifier; no link to the calling principal. UUID guessing could allow cross-user session enumeration.
+
+**Onboarding / identity (HIGH):**
+
+- **No auto-Owner-on-LDAP/OAuth-login** ← OAuth2 / LDAP users authenticate but cannot be assigned ownership without an admin manually creating an Owner entity per user. Operator-facing onboarding gap.
+- **OpenAPI 201 vs impl 200 status-code drift on `POST /api/owners`** ← the OpenAPI-generated-controller pattern that's supposed to prevent contract drift surfaced a drift. Hygiene-class REFACTOR.
+
+**Cross-batch invariants now codebase-wide:**
+
+- **Lombok-toString sensitive-field leak** — 4-sidecar (batch D), already documented; no new instances this batch but the RBAC mutations don't have new sensitive-field surfaces to extend it.
+- **Advisory-lock-ID collision** — 3-sidecar (batches B+C+D), already documented; this batch's search-session-as-server-state pattern uses different concurrency (no advisory locks), so doesn't extend.
+- **No-audit-log-on-mutations** — 3-sidecar codebase-wide (RoleController + PolicyController + OwnerController this batch). RBAC mutations leave no trace.
+
+### Cumulative ontology state (after this batch lands)
+
+| Layer | Count |
+|---|---|
+| Substrate scaffold | 395 nodes / 479 edges (unchanged) |
+| Sidecars | **40** (10.1% coverage — crossed 10% milestone) |
+| concepts.yaml | catalog_version 6 (73 concepts; **20 invariants**) |
+| doc-gaps.md | **83 candidates** (41 HIGH) |
+| implicit-adrs.md | **53 ADR candidates** (15 HIGH) |
+| refactoring-scopes.md | **210 refactoring scopes** (57 HIGH; ~80 distinct category labels) |
+| test-map.yaml | **252 test gaps** (71 CRITICAL / 88 HIGH) |
+
+### Substrate coverage by kind (after batch E)
+
+- `controller-method`: **11/203** (5.4%; +5 batch-E)
+- `config-key-consumer`: 10/73 (13.7%)
+- `controller`: 7/36 (19.4%)
+- `openapi-tag`: 2/35 (5.7%)
+- `config-prefix`: 1/14 (7.1%)
+- `route`: 1/12 (8.3%)
+- `config-properties-class`: 7/9 (77.8%)
+- `i18n-resource`: 0/6 (0%)
+- `ui-shell-widget`: 1/5 (20.0%)
+- `ui-shell-bootstrap`: 1/1, `ui-shell-app-entry`: 0/1
+
+### Next-batch planning notes
+
+Three high-leverage themes for batch F:
+
+1. **Repository layer** — still 0 enriched. `*RepositoryImpl` (jOOQ + R2DBC reactive). Where transaction boundaries, advisory-lock interactions, tenant-isolation enforcement, and the bulk of SQL injection / SQL-aware optimisation lives. Pairs with batch-D advisory-lock-collision finding + batch-E `JooqFTSHelper.tsQuery` injection vector.
+2. **DataEntityController.* method deepening** — 0 of 40+ methods enriched (class is enriched at the class level only). DataEntity is the platform's largest tag (40 operations across CRUD/relationships/lineage/alerts/activity/messaging). The "mega-tag" tension (per ADR-CANDIDATE-008) means this is the highest-traffic mutation+read surface.
+3. **IngestionController.* methods** — S2S ingestion endpoint that REFACTOR-073's S2S-composes-not-mutex pattern centres on. Closes the S2S loop completely. Pair with the batch-B IngestionDataEntitiesFilter and batch-A AlertManagerController sidecars.
+
+Until the next batch fires, the held-back spot-check set should be matched against batch A + batch B + batch C + batch D + batch E log entries above. Misses → candidate node-picks for batch F.

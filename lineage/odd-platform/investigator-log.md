@@ -268,3 +268,121 @@ Suggested batch 2026-05-10C themes:
 - **Notification / messaging surface**: not yet enriched. Could surface notification routing concerns the maintainer's spot-checks may cover.
 
 Until the next batch fires, the held-back spot-check set should be matched against batch A + batch B log entries above. Misses → candidate node-picks for batch 2026-05-10C.
+
+---
+
+## Batch 2026-05-12C — auth-surface deepening + notifications new-area (5 nodes)
+
+- **Date**: 2026-05-12
+- **Branch**: `feature/agentic-ontology-enrichment-batch-2026-05-12C`
+- **Substrate commit**: `ede5d277` (25 prior sidecars + 5 new = 30 total; 6.3% → 7.6% coverage of 395 substrate nodes)
+- **Theme**: closes loop on batch-B's REFACTOR-073 (default-DISABLED + no-fail-fast triangulation) by enriching the 4 `*SecurityConfiguration` beans (one per auth mode) + opens a new area via `NotificationsProperties` (config-properties-class deepening; 1 of 9 enriched pre-batch).
+- **Rule 5 compliance**: all 5 sidecars + all 4 reducer outputs verified by pre-commit grep — 0 `/home/USER/...` paths in artefact content. The new policy is operating cleanly across 9 spawned agents this batch.
+
+### Sidecars added (5)
+
+| Sidecar | Source | Concept(s) | implicit_adrs | bugs_limitations | security gaps | perf gaps | doc-drift | test gaps |
+|---|---|---|---|---|---|---|---|---|
+| `DisabledAuthSecurityConfiguration @ auth.type@L10` | `config/DisabledAuthSecurityConfiguration.java:10` | Auth Mode (DISABLED branch) | 3 (DISABLED-is-default-by-design, explicit-chain-as-statement-of-intent, four-way-enum-mode-selection) | 8 (no CORS, no boot WARN on DISABLED activation, S2S silently ignored, no CSRF, actuator unauthenticated, no audit logging, missing-key fall-through, case-sensitive typo failure) | 6 | — | partial-positive (live `disabled-authentication` page 200 carries "default" + production warning, BUT omits full blast radius) | zero |
+| `LoginFormSecurityConfiguration @ auth.type@L31` | `config/LoginFormSecurityConfiguration.java:31` | Auth Mode (LOGIN_FORM branch) | 5 (dev-only intent, **ADMIN-for-all**, additive S2S, CSRF-disabled convention, hand-coded permit-all paths) | 9 (HIGH authorization-absence, MEDIUM open-redirect on `auth.login-form-redirect`, plaintext-credential leak via `/actuator/env`, session cookies without Secure/HttpOnly/SameSite, never-expiring sessions, etc.) | several | — | 3 (Authorization page omits LOGIN_FORM precondition; `auth.login-form-redirect` undocumented; S2S+LOGIN_FORM ADMIN-overlap undocumented) | zero — **VALIDATES REFACTOR-073** by confirming LOGIN_FORM runs WITHOUT `AuthorizationCustomizer` at `LoginFormSecurityConfiguration.java:55-57` (vs OAuth at .java:98 + LDAP at .java:145) |
+| `OAuthSecurityConfiguration @ auth.type@L71` | `config/OAuthSecurityConfiguration.java:71` | Auth Mode (OAUTH2 branch) | 6 (inline-authorization wiring, **S2S-composes-not-mutex**, Google `allowedDomain` URL-mutation, conditional multi-client chooser, handler-chain strategy pattern, fail-closed `GrantedAuthoritiesMapper`) | 9 (HIGH standout: **S2S filter grants ADMIN across all `/**` when composed with OAUTH2** — privilege-escalation; Okta/Keycloak documented but code lacks user-enrichment + provider-specific logout handlers) | several | — | 4 (Provider enum lists 5 values but docs claim 7 providers; S2S composition not surfaced in OAuth2 docs; Azure `logout-uri` flagged required-in-docs but not `@PostConstruct`-validated; `azureTenantId` absent from POJO despite docs YAML referencing it) | mostly uncovered |
+| `LDAPSecurityConfiguration @ auth.type@L51` | `config/LDAPSecurityConfiguration.java:51` | Auth Mode (LDAP branch) | 6 (mode-agnostic AuthorizationCustomizer wiring, LDAP-as-enterprise-OAuth2-sibling, dedicated AD branch, **containsIgnoreCase admin match**, S2S composable across modes, LdapTemplate fail-loud-tolerate-size-limit) | 10 (3 HIGH: `auth.ldap.password` exposed via default-enabled `/actuator/env` on permitAll path; no `ldap://` vs `ldaps://` scheme enforcement; **substring-collision admin escalation** via `containsIgnoreCase` on admin-groups; MEDIUM: empty `admin-groups` deployment has zero LDAP-path to ADMIN — only S2S can grant admin) | several | — | 7 (none of HIGH caveats surface in live LDAP / authentication / S2S docs — all 200) | zero |
+| `NotificationsProperties` | `notification/config/NotificationsProperties.java` | **Notifications (NEW)**, Email, Slack, Webhook | 6 (off-by-default condition, per-channel URL-presence activation, fail-soft fan-out, **leader-elected single-thread WAL consumer**, **lazy-create-no-drop replication artefacts**, per-recipient email loop) | 14 (HIGH: no retry/DLQ/audit, email silent-partial-delivery, no rate-limiting, SMTP infinite timeouts; MEDIUM: dead `webhookUrl` field, advisory-lock collision risk, no per-channel routing, **unsigned webhooks**, replication-slot orphan, PII surface) | several | several | 1 (legacy `/active-platform-features/notifications` 404 vs canonical `/features/active-platform-features/notifications` 200 — same shape as batch A's data-collaboration finding) | zero |
+
+### Reducer diffs
+
+| Reducer | Artefact | Before → After | Net | What changed |
+|---|---|---|---|---|
+| concept-merger | `concepts.yaml` | 42 → **55 concepts** | **+13** | catalog_version 3 → 4. 20 entities / 11 operations / **13 invariants** / 11 audiences. New concepts: Notifications, Email-channel, Slack-channel, Webhook-channel, Deployment Introspection, AlertManager Webhook Receiver, plus 4-mode Auth Mode branches. Security aggregates on 18 concepts (up from 13); performance on 17 (up from 13). New cross-cutting **invariants** captured: lazy-create-no-drop, dead-code-in-load-bearing-positions, 202+queue+advisory-lock single-sender, default-DISABLED+no-fail-fast, legacy-vs-canonical doc-paths, S2S-composes-not-mutex, ADMIN-for-all in LOGIN_FORM. |
+| doc-gap-finder | `doc-gaps.md` | 44 → **58 candidates** | **+14** | 29 HIGH / 23 MEDIUM / 6 LOW. Categories: broken-url 8, drift 44, missing-page 4, coverage-gap 2. DOC-GAP-053 captures **meta-pattern** *"docs frame default behaviour but omit blast radius"* (now corroborated across `disabled-authentication`, ingestion-filter, activity-feed retention). DOC-GAP-058 captures **meta-pattern** *"GitBook legacy-vs-canonical routing drift"* (data-collaboration + notifications + likely more). Auth Mode concept now 7-sidecar triangulated with 12 distinct doc-gaps across 5 sub-pages of `enable-security/authentication/`. Two meta-recommendations: (1) add Gate 3 adjacency rule to `pillars/documentation/gates.md`; (2) doc-side audit of legacy `/active-platform-features/*` paths. |
+| adr-archaeologist (ADRs) | `implicit-adrs.md` | 28 → **44 ADR candidates** | **+16** | 13 HIGH / 27 MEDIUM / 4 LOW. 42 promote + 2 unique-load-bearing. **0 wisdom-test fails** (3rd consecutive batch). |
+| adr-archaeologist (scopes) | `refactoring-scopes.md` | 91 → **140 refactoring scopes** | **+49** | 0 CRITICAL / 43 HIGH / 70 MEDIUM / 27 LOW. New IDs include REFACTOR-099 / 108 / 113 / 117-119 / 127-130 among others. Strengthened: REFACTOR-073 (now 4-sidecar triangulated for default-DISABLED + no-fail-fast — DisabledAuthSecurityConfiguration validates batch-B's finding from primary source). |
+| test-coverage-mapper | `test-map.yaml` | 132 → **180 test gaps** | **+48** | 46 CRITICAL / 65 HIGH / 45 MEDIUM / 24 LOW. CRITICAL: 32 → 46 (+14). HIGH: 44 → 65 (+21). All 4 SecurityConfigurations + NotificationsProperties fully uncovered; HIGH-aggregate concepts landed at top severity. 65 test files indexed (unchanged corpus). 0 sidecar-quality findings. |
+
+### Known-bug validators
+
+| Pre-existing finding | Rediscovered by | Verdict |
+|---|---|---|
+| **REFACTOR-073** — default-DISABLED + no-fail-fast (batch-B 3-sidecar triangulated) | `DisabledAuthSecurityConfiguration @ auth.type@L10.md` | ✅ **VALIDATED** — now 4-sidecar triangulated. The DisabledAuthSecurityConfiguration sidecar confirmed from primary source: shipped default is DISABLED (no `matchIfMissing`-needed because `application.yml:34` explicitly carries `auth.type: DISABLED`); no boot WARN on activation; S2S silently ignored; actuator unauthenticated. Strengthened existing scope. |
+| **LOGIN_FORM-without-AuthorizationCustomizer** (batch-B AuthorizationManagerCondition implication) | `LoginFormSecurityConfiguration @ auth.type@L31.md` | ✅ **VALIDATED** — confirmed from primary source at `LoginFormSecurityConfiguration.java:55-57` (vs OAuth at .java:98 + LDAP at .java:145 which both wire `AuthorizationCustomizer`). Means LOGIN_FORM mode has no policy/permission enforcement; combined with ADMIN-for-all, every authenticated LOGIN_FORM user has admin. |
+
+### Cross-batch triangulation (multi-batch patterns now emergent)
+
+The ontology is producing the cross-sidecar pattern-emergence the ADR's success criteria name. Across A+B+C the following patterns triangulated:
+
+| Pattern | Sidecar count | Sidecars surfacing it | Captured as |
+|---|---|---|---|
+| **Default-DISABLED + no-fail-fast** | 4 | AppInfoController + AuthorizationManagerCondition + IngestionDataEntitiesFilter (B) + DisabledAuthSecurityConfiguration (C) | REFACTOR-073 (strengthened to 4 surfaced_by) + concepts.yaml invariant |
+| **S2S composes-not-mutex (privilege escalation)** | 4 | DisabledAuthSecurityConfiguration silently-ignores + LoginFormSecurityConfiguration additive + OAuthSecurityConfiguration composes (ADMIN-everywhere) + LDAPSecurityConfiguration composable (all C) | new ADR-CANDIDATE for composition stance + new HIGH-severity REFACTOR for ADMIN-blast-radius + concepts.yaml invariant |
+| **Lazy-create-no-drop pattern** | 2 | ActivityTablePartitionManager (B) + NotificationsProperties replication slots (C) | concepts.yaml invariant + cross-cutting REFACTOR scope |
+| **Dead code in load-bearing positions** | 2 | AuthorizationManagerCondition (B) + NotificationsProperties.webhookUrl (C) | concepts.yaml invariant + hygiene-audit REFACTOR |
+| **202+queue+Postgres-advisory-lock single-sender** | 2 | postMessageInSlack (A) + NotificationsProperties WAL consumer (C) | concepts.yaml invariant + candidate ADR for codebase concurrency convention |
+| **Legacy-vs-canonical GitBook routing drift** | 2 | data-collaboration (A) + notifications (C) | DOC-GAP-058 (class-level finding + maintainer recommendation for doc-side audit of legacy paths) |
+| **Docs frame default behaviour but omit blast radius** | 3+ | `disabled-authentication` doc + `enable-security` ingestion-filter + activity-feed retention | DOC-GAP-053 (class-level finding) |
+| **Plaintext-equality token model** | 2 | regenerateCollectorToken (A) + IngestionDataEntitiesFilter:56 (B) | strengthened existing entries |
+
+### Notable new findings (spot-check candidates)
+
+**Security / authorization (HIGH, NEW this batch):**
+
+- **S2S filter grants ADMIN across all `/**` when composed with OAUTH2** ← `OAuthSecurityConfiguration.java:71` + the S2S composition pattern across 4 SecurityConfigurations. Privilege-escalation vector — if S2S is enabled alongside any authenticated mode, S2S-tokens become admin-grants.
+- **`auth.ldap.password` exposed via default-enabled `/actuator/env`** on a permitAll-ed whitelist path ← `LDAPSecurityConfiguration.java`. Operators leak LDAP bind password to any unauthenticated `/actuator/env` caller.
+- **No `ldap://` vs `ldaps://` scheme enforcement** ← `LDAPSecurityConfiguration.java`. Bind + user credentials transit cleartext if operator misconfigures URL.
+- **`containsIgnoreCase` substring match on admin-groups admits substring-collision admin escalation** ← `LDAPSecurityConfiguration.java`. Admin-groups `["admin"]` matches "non-admins", "system-administrators", "admin-readonly" etc.
+- **`LoginFormSecurityConfiguration` grants ADMIN to every authenticated user** ← `LoginFormSecurityConfiguration.java` (sidecar's "ADMIN-for-all" implicit ADR). Dev-only intent — but if operator runs LOGIN_FORM in production, every user is admin.
+- **Open-redirect surface on `auth.login-form-redirect`** ← `LoginFormSecurityConfiguration.java:41`. Redirect URI unvalidated.
+- **Plaintext credentials leak via `/actuator/env`** (LOGIN_FORM mode) ← `LoginFormSecurityConfiguration.java`. Same actuator pattern as LDAP.
+
+**Concurrency / data-integrity (HIGH, NEW):**
+
+- **`NotificationsProperties` SMTP infinite timeouts** — no SMTP send timeout configured → notification thread can hang indefinitely on unresponsive SMTP server, eventually exhausting the leader-elected single-thread WAL consumer.
+- **`NotificationsProperties` email silent-partial-delivery** — per-recipient loop with no per-recipient outcome tracking; some recipients receive, some don't, no audit trail.
+- **`NotificationsProperties` advisory-lock collision risk** — uses an advisory lock ID that may collide with `ActivityTablePartitionManager`'s advisory-lock-90 (shared DB collision risk).
+
+**Doc-product meta-patterns (HIGH, NEW):**
+
+- **DOC-GAP-053** — *"docs frame default behaviour but omit its blast radius"* — corroborated by `disabled-authentication`, `enable-security` ingestion-filter, activity-feed retention. **Meta-recommendation**: add Gate 3 adjacency rule to `pillars/documentation/gates.md` requiring "consequence cluster" on any page documenting a default.
+- **DOC-GAP-058** — *"GitBook legacy-vs-canonical routing drift"* — corroborated by data-collaboration and notifications. **Meta-recommendation**: doc-side audit of all legacy `/active-platform-features/*`, `/data-discovery/*`, `/main-concepts` paths with GitBook redirect rules.
+
+### Cumulative ontology state (after this batch lands)
+
+| Layer | Count | Note |
+|---|---|---|
+| Substrate scaffold | 395 nodes / 479 edges | unchanged (5 axes from substrate slices 1-4) |
+| Sidecars | **30** | 7.6% coverage of 395 substrate nodes |
+| concepts.yaml | catalog_version 4 (55 concepts) | refreshed with batch-C concepts + invariants |
+| doc-gaps.md | **58 candidates** | 29 HIGH / 23 MEDIUM / 6 LOW |
+| implicit-adrs.md | **44 ADR candidates** | 13 HIGH / 27 MEDIUM / 4 LOW |
+| refactoring-scopes.md | **140 refactoring scopes** | 43 HIGH / 70 MEDIUM / 27 LOW |
+| test-map.yaml | **180 test gaps** | 46 CRITICAL / 65 HIGH / 45 MEDIUM / 24 LOW |
+| existing ADRs catalogued | 5 | unchanged |
+| feature-walks | 0 | none run yet (slice 9 query-time is on-demand) |
+
+### Substrate coverage by kind (after batch C)
+
+- `controller-method` (203 total; 6 enriched — 3.0%)
+- `config-key-consumer` (73 total; **10 enriched** — 13.7%; +4 batch-C SecurityConfigurations + 5 batch-B)
+- `controller` (36 total; 7 enriched — 19.4%)
+- `openapi-tag` (35 total; 2 enriched — 5.7%)
+- `config-prefix` (14 total; 1 enriched — 7.1%)
+- `route` (12 total; 1 enriched — 8.3%)
+- `config-properties-class` (9 total; **2 enriched** — 22.2%; +1 batch-C NotificationsProperties)
+- `i18n-resource` (6 total; 0 enriched — 0%)
+- `ui-shell-widget` (5 total; 1 enriched — 20.0%)
+- `ui-shell-bootstrap` (1 total; 1 enriched)
+- `ui-shell-app-entry` (1 total; 0 enriched)
+
+### Next-batch planning notes
+
+Three high-leverage themes for batch 2026-05-12D (or later):
+
+1. **Config-properties-class deepening**: 7 of 9 still unenriched. Likely high-yield candidates:
+   - `ODDOAuth2Properties` — pairs with batch-C OAuthSecurityConfiguration; full OAuth provider config
+   - `ODDLDAPProperties` — pairs with batch-C LDAPSecurityConfiguration; LDAP connection + bind config
+   - `EmailSenderProperties` — sibling of NotificationsProperties; SMTP config + auth
+   - `DataCollaborationProperties` — pairs with batch A's postMessageInSlack; Slack OAuth + channel routing
+   - `HousekeepingTTLProperties` — likely resolves the ActivityTablePartitionManager retention-claim drift (if retention IS handled, it's here)
+2. **Repository layer**: zero `*RepositoryImpl` enriched. The jOOQ + R2DBC reactive repo layer is where transaction boundaries, advisory-lock interactions, and tenant-isolation enforcement live.
+3. **Service layer (deeper than controllers)**: `AlertServiceImpl`, `DataEntityServiceImpl`, `IngestionService`, `NotificationsDispatcher` — the service-layer logic that controllers delegate to. Where ownership-scoping, validation, and authorization assertions live.
+
+Until the next batch fires, the held-back spot-check set should be matched against batch A + batch B + batch C log entries above. Misses → candidate node-picks for batch D.

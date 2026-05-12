@@ -56,7 +56,7 @@ Reactive HTTP handler for `PUT /api/collectors/{collector_id}/token`: rotates th
   - "Integration test of S2S filter coupling: an ingestion request using the OLD token after rotation receives 401 `Token is not correct`."
   - "Test of the response-body shape: token.value MUST be the full 40-char plaintext (showToken=true on the regenerate path), distinguishing this endpoint from list / get endpoints that mask via `mapValue` to `******{last6}`."
 - test_files:
-  - "/home/rdamayeu/work/odd/odd-platform/odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/CollectorRepositoryImplTest.java — repository-layer test for CollectorRepository (not the token-rotation flow; covers list / create / update / delete data access)."
+  - "<odd-platform>/odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/CollectorRepositoryImplTest.java — repository-layer test for CollectorRepository (not the token-rotation flow; covers list / create / update / delete data access)."
 - gaps: |
     The entire token-rotation business path is untested at controller, service, and
     integration layers. A regression that (a) silently disables COLLECTOR_TOKEN_REGENERATE

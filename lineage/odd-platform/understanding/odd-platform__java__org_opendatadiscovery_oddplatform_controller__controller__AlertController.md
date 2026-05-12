@@ -166,7 +166,7 @@ session_id: session-2026-05-08-01
 - dependencies_semantic.requires-feature ← WebFetch alerting page (status 200, 2026-05-08, fetched excerpt)
 - dependencies_semantic.requires-runtime ← AlertController.java:13 (`reactor.core.publisher.Mono`), 23, 38, 46, 54 (`ServerWebExchange exchange`)
 - dependencies_semantic.couples-to ← AlertController.java:4 (`import ... AlertApi`), 9 (`import ... AlertService`), 16 (`@RequiredArgsConstructor`), 17 (`implements AlertApi`), 18 (`final AlertService alertService`)
-- tests_coverage_semantic.test_files ← `find /home/rdamayeu/work/odd/odd-platform -path '*test*' -name 'AlertController*'` returned no matches (run during enrichment session 2026-05-08)
+- tests_coverage_semantic.test_files ← `find <odd-platform> -path '*test*' -name 'AlertController*'` returned no matches (run during enrichment session 2026-05-08)
 - docs_link_semantic.inferred_docs[0] ← WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/alerting.md` 2026-05-08, status 200
 - docs_link_semantic.inferred_docs[1] ← WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/alerts` 2026-05-08, status 200
 - docs_link_semantic.doc_drift_findings[0] ← WebFetch `https://docs.opendatadiscovery.org/active-platform-features/alerting` 2026-05-08, status 404 (page-not-found stub) — the live page actually lives at `/features/active-platform-features/alerting.md`
@@ -174,7 +174,7 @@ session_id: session-2026-05-08-01
 - implicit_adrs[0] ← AlertController.java:15-17 + AlertApi.java:64-69, 106-110, 147-151, 190-194 (HTTP mapping annotations on interface methods)
 - implicit_adrs[1] ← AlertController.java:1-58 (no security annotations or imports) + AlertService.java:18-32 (interface signatures take no principal argument)
 - implicit_adrs[2] ← AlertController.java:21-57 (uniform `.map(ResponseEntity::ok)` terminal pattern; no `onErrorResume` / `switchIfEmpty` / try-catch)
-- bugs_limitations_corner_cases[0] ← `find /home/rdamayeu/work/odd/odd-platform -path '*test*' -name 'AlertController*'` empty result
+- bugs_limitations_corner_cases[0] ← `find <odd-platform> -path '*test*' -name 'AlertController*'` empty result
 - bugs_limitations_corner_cases[1] ← AlertController.java:35-41 (no security on `getAllAlerts`)
 - bugs_limitations_corner_cases[2] ← AlertController.java:21-27 + WebFetch api-reference/alerts page fetched excerpt about `400 Bad Request` on manual reopen
 - security.auth_mode_relevance ← AlertController.java:1-58 (no `@ConditionalOnProperty`, always wired) + LoginFormSecurityConfiguration.java:31 + OAuthSecurityConfiguration.java:71 + LDAPSecurityConfiguration.java:51 + DisabledAuthSecurityConfiguration.java:10 (`@ConditionalOnProperty(value = "auth.type", havingValue = "...")` wiring per mode) + WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security` 2026-05-08 status 200 (auth mode list verbatim: DISABLED / LOGIN_FORM / OAUTH2 / LDAP)

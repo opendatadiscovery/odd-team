@@ -63,7 +63,7 @@ on the controller), so every route on this controller returns
 - gaps: |
     There are zero Java test files under
     `odd-platform-api/src/test/java/.../datacollaboration/` (verified by `find`
-    of `/home/rdamayeu/work/odd/odd-platform` for `src/test` files referencing
+    of `<odd-platform>` for `src/test` files referencing
     `datacollaboration`; no matches). A regression that landed an authorization
     gap (cross-owner posting), an unset Slack token leak, or a malformed
     `MessageRequest` would not be caught by the existing test suite. The

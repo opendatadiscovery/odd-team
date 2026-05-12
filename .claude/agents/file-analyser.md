@@ -45,6 +45,35 @@ You enrich exactly ONE node per invocation. If you need to look at neighbour fil
 
 You have `Read`, `Grep`, `Glob`, `WebFetch`, `Write` tools. You do NOT have `Edit` or `Bash`. You read code; you do not change it. Your `Write` calls go to one path only: `lineage/{repo}/understanding/{slug}.md`.
 
+### Rule 5 — No absolute filesystem paths in artefact output (privacy + internal-structure discipline)
+
+**The sidecar is committed and pushed to a public GitHub repo. Never write absolute filesystem paths containing personal identifiers into the sidecar.** This includes `/home/USER/...`, `C:\Users\USER\...`, `/Users/USER/...`, internal hostnames, internal IPs.
+
+The orchestrator's prompt gives you absolute paths (REPO_ROOT_ABS, WORKSPACE_ROOT_ABS, SIDECAR_TARGET) so you can `Read` / `Grep` / `Glob` against the actual filesystem — that is fine. What is NOT fine is **echoing those absolute paths into the sidecar's content** (especially in `sources:` blocks, `evidence:` citations, or quoted Bash/Grep commands).
+
+Use these forms in the sidecar:
+
+- **Repo-relative paths** (preferred for source file citations): `odd-platform-api/src/main/java/.../File.java:LL` (no leading slash, no host directory).
+- **Placeholder shorthand** for Bash/Grep evidence citations: `grep -rln 'X' <odd-platform-repo>` (NOT `grep -rln 'X' /home/USER/work/odd/odd-platform`).
+- **Workspace-relative paths**: `lineage/{repo}/...`, `pillars/{name}/...`, `playbooks/...` (no leading slash).
+
+**Banned patterns** (validation rejects sidecars containing these in artefact content):
+
+- `/home/<anything>/...`
+- `/Users/<anything>/...`
+- `C:\Users\<anything>\...`
+- Any absolute path starting with `/` that is not a generic shorthand like `/api/...` (HTTP path) or `/etc/...` (well-known config path explicitly cited from the source code).
+
+**Worked example** — Bash command as evidence:
+
+| Bad (in artefact) | Good (in artefact) |
+|---|---|
+| `find /home/USER/work/odd/odd-platform -name 'AlertController*'` | `find <odd-platform-repo> -name 'AlertController*'` |
+| `grep -rln 'X' /home/USER/work/odd/odd-platform` | `grep -rln 'X' <odd-platform-repo>` |
+| `cat /home/USER/work/odd/odd-team/CLAUDE.md` | `cat <odd-team>/CLAUDE.md` |
+
+**Reason:** committed artefacts on a public repo. Personal username paths are PII (the maintainer's real username) AND internal-filesystem-structure disclosure (deployment-relevant intel). Per memory rule `feedback_no_absolute_paths_in_artefacts.md` and case-law 2026-05-11 (the cleanup batch that motivated this rule).
+
 ## Input shape (the prompt you receive)
 
 The /enrich skill (or a maintainer running you ad-hoc) gives you:

@@ -435,13 +435,13 @@ lineage/_extractor/src/lineage_extractor/enrichment/validators.py
 
 **Workspace context:**
 
-- `/home/rdamayeu/work/odd/odd-team/CLAUDE.md` — Quality Bar gates; Velocity is the partner of Pride; Pre-authoring stance check; the "scattered intent" failure mode.
-- `/home/rdamayeu/work/odd/odd-team/adrs/drafts/code-lineage-substrate.md` — substrate ADR revision 2; phase plan; the 5-axis MVP; the i18n trigger incident.
-- `/home/rdamayeu/work/odd/odd-team/adrs/drafts/research/code-lineage-substrate/SCHEMA.md` — node ID shape; 7-edge taxonomy; JSONL-vs-Markdown discipline.
-- `/home/rdamayeu/work/odd/odd-team/adrs/drafts/research/code-lineage-substrate/SUMMARY.md` — phase-1/phase-2/phase-3 sequencing; "MVP acceptance is probe-driven, not coverage-%-driven."
-- `/home/rdamayeu/work/odd/odd-team/lineage/odd-platform/manifest.yaml` — current scaffold state (extractor v0.1.0, 395 nodes, 479 edges, 5 axes shipped).
-- `/home/rdamayeu/work/odd/odd-team/lineage/odd-platform/rollups/ui-shell.md` — concrete sample of what scaffold rollups look like today (the join-point for enrichment).
-- `/home/rdamayeu/work/odd/odd-team/retrospectives/LSN-001-attachment-ephemeral-default.md`, `LSN-002-minio-region-unset.md` — the silent-SDK-default class, which `bugs_limitations_corner_cases` is designed to surface.
+- `<odd-team>/CLAUDE.md` — Quality Bar gates; Velocity is the partner of Pride; Pre-authoring stance check; the "scattered intent" failure mode.
+- `<odd-team>/adrs/drafts/code-lineage-substrate.md` — substrate ADR revision 2; phase plan; the 5-axis MVP; the i18n trigger incident.
+- `<odd-team>/adrs/drafts/research/code-lineage-substrate/SCHEMA.md` — node ID shape; 7-edge taxonomy; JSONL-vs-Markdown discipline.
+- `<odd-team>/adrs/drafts/research/code-lineage-substrate/SUMMARY.md` — phase-1/phase-2/phase-3 sequencing; "MVP acceptance is probe-driven, not coverage-%-driven."
+- `<odd-team>/lineage/odd-platform/manifest.yaml` — current scaffold state (extractor v0.1.0, 395 nodes, 479 edges, 5 axes shipped).
+- `<odd-team>/lineage/odd-platform/rollups/ui-shell.md` — concrete sample of what scaffold rollups look like today (the join-point for enrichment).
+- `<odd-team>/retrospectives/LSN-001-attachment-ephemeral-default.md`, `LSN-002-minio-region-unset.md` — the silent-SDK-default class, which `bugs_limitations_corner_cases` is designed to surface.
 
 **Rejected sources (named so future maintainers don't re-litigate):**
 

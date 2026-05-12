@@ -386,3 +386,110 @@ Three high-leverage themes for batch 2026-05-12D (or later):
 3. **Service layer (deeper than controllers)**: `AlertServiceImpl`, `DataEntityServiceImpl`, `IngestionService`, `NotificationsDispatcher` — the service-layer logic that controllers delegate to. Where ownership-scoping, validation, and authorization assertions live.
 
 Until the next batch fires, the held-back spot-check set should be matched against batch A + batch B + batch C log entries above. Misses → candidate node-picks for batch D.
+
+---
+
+## Batch 2026-05-12D — config-properties-class deepening (5 nodes)
+
+- **Date**: 2026-05-12
+- **Branch**: `feature/agentic-ontology-enrichment-batch-2026-05-12D`
+- **Substrate commit**: `ede5d277` (30 prior sidecars + 5 new = 35 total; 7.6% → 8.9% coverage)
+- **Theme**: config-properties-class deepening (1 of 9 enriched pre-batch → 7 of 9 post-batch). 4 of 5 nodes pair with prior-batch SecurityConfigurations / postMessageInSlack / NotificationsProperties — closing semantic loops from a second angle. 1 known-bug-validator/-resolver (HousekeepingTTLProperties for REFACTOR-085 activity-feed retention drift).
+- **Rule 5 compliance**: all 5 sidecars + 4 reducer outputs verified clean. Pre-commit grep across `lineage/ backlog/ adrs/ playbooks/ pillars/ state/ navigation/ scanners/ findings/ issues/ retrospectives/ .claude/agents/` → 0 matches.
+
+### Sidecars added (5)
+
+| Sidecar | Source | Concept(s) | implicit_adrs | bugs_limitations | doc-drift | test gaps |
+|---|---|---|---|---|---|---|
+| `ODDOAuth2Properties` | `auth/ODDOAuth2Properties.java` | Auth Mode (OAUTH2) | 4 (map-keyed schema, narrow-fail-fast, provider-as-string, **Lombok-bundle**) | 7 (clientSecret-not-`@ToString.Exclude`'d, no URL validation, empty-map passes validation, Azure-logoutUri NPE-prone at `AzureLogoutSuccessHandler.java:39`, no scheme enforcement, etc.) | 5 (**`username-attribute` vs `userNameAttribute` docs-vs-code spelling mismatch**, undocumented `adminUserInfoFlag` for ODD_IAM, Provider 5-vs-7 confirmed 2nd-angle, `azureTenantId` POJO-absent confirmed 2nd-angle) | zero |
+| `ODDLDAPProperties` | `auth/ODDLDAPProperties.java` | Auth Mode (LDAP) | 4 | 7 (4 HIGH: substring-collision admin via `Set<String> adminGroups`; password Lombok-`toString()`-leak refines batch-C `/actuator/env` claim; no `ldap://` vs `ldaps://` scheme enforcement; empty `admin-groups` yields zero LDAP-admin path) | 5 (new vs live LDAP page) | zero |
+| `EmailSenderProperties` | `notification/config/EmailSenderProperties.java` | Notifications (Email channel) | 3 (presence-gated channel, fail-fast on blank fields, protocol pass-through) | **15** (most of any sidecar) — HIGH: SMTP timeouts unset (2-sidecar with NotificationsProperties), STARTTLS-only, no `ssl.trust`, Lombok-`toString` password leak, no `@Email` on sender, port=0 silent default, Boolean nullability NPE risk, **recipient list outside POJO (partial-home)**, silent partial delivery, PII surface, no OAUTH2 / connection pool / Reply-To / DKIM | docs cover 4 of 15 caveats verbatim (positive doc signal); 11 undocumented | zero |
+| `DataCollaborationProperties` | `datacollaboration/config/DataCollaborationProperties.java` | Slack collaboration app | 3 (fail-fast `@PostConstruct` validator, **lock-IDs-as-properties for collision-avoidance**, Postgres-as-only-runtime-dependency) | 6 (**partial-home — binds only 3 of 7 `datacollaboration.*` keys**; no lock-id-equality invariant; no upper bound on retry; no cross-subsystem lock-id-collision check; OAuth-token-elsewhere refactor risk; no `@Validated` / JSR-303) | 2 (unstated lock-id-collision risk, undocumented retry-count-zero semantics) | zero |
+| `HousekeepingTTLProperties` | `housekeeping/config/HousekeepingTTLProperties.java` | **Housekeeping TTL retention (NEW)** | 3 (30/30/30 default uniformity, `@Scheduled(fixedRate=15 min)` + ShedLock concurrency, presence-gated by `housekeeping.enabled`) | several — **the headline**: POJO has **NO `activity*Days` or `messageDays` field**; time-based retention for activity / message tables does NOT exist in the codebase. `EmptyPartitionsHousekeepingJob` subclasses drop **empty** past partitions only. Plus jOOQ-precedence bug. | 2 (housekeeping subsystem Java-vs-YAML default cliff; 3-vs-5 jobs framing) | zero |
+
+### Reducer diffs
+
+| Reducer | Artefact | Before → After | Net | Highlights |
+|---|---|---|---|---|
+| concept-merger | `concepts.yaml` | 55 → **60 concepts** | +5 | catalog_version 4 → 5. **17 invariants** (+4: Lombok-toString-sensitive-field-leak, partial-home @ConfigurationProperties pattern, advisory-lock-collision-risk-across-subsystems, retention-claim-vs-code-drift strengthening). Security aggregates on 19; performance on 18. New concept: Housekeeping TTL retention. 29 canonicalisation candidates. |
+| doc-gap-finder | `doc-gaps.md` | 58 → **71 candidates** | +13 | 35 HIGH / 29 MEDIUM / 7 LOW. New category: **`meta`** (2 entries — DOC-GAP-067 Lombok-toString 4-sidecar triangulated; DOC-GAP-068 partial-home 2-sidecar triangulated). 4 existing findings strengthened (S3 credentials, activity-feed retention now 2-angle, OAuth2 5-vs-7 now 2-angle, LDAP password Lombok-vs-actuator refinement). 13 new candidates (DOC-GAP-059..071). |
+| adr-archaeologist (ADRs) | `implicit-adrs.md` | 44 → **48 ADRs** | +4 | 13 HIGH / 31 MEDIUM / 4 LOW. 46 promote + 2 unique-load-bearing. **0 wisdom-test fails** (4th consecutive batch). Most batch-D sidecar-level ADRs clustered or strengthened existing entries. |
+| adr-archaeologist (scopes) | `refactoring-scopes.md` | 140 → **182 refactoring scopes** | **+42** | 0 CRITICAL / 48 HIGH / 86 MEDIUM / 48 LOW. New: REFACTOR-141 (primitive-default-leak), REFACTOR-142 (jOOQ-precedence bug), REFACTOR-155 (Azure-logoutUri NPE), REFACTOR-156 (azureTenantId doc drift), among others. |
+| test-coverage-mapper | `test-map.yaml` | 180 → **215 test gaps** | +35 | 54 CRITICAL / 76 HIGH / 59 MEDIUM / 26 LOW. **+4 cross-cutting patterns** (no-@ConfigurationProperties-binding-tests class; no-@ToString.Exclude-assertion-tests class; no-advisory-lock-collision-tests; no-housekeeping-job-tests). **+18 double_jeopardy entries** (behaviours both untested AND undocumented). |
+
+### Known-bug validators / resolvers
+
+| Pre-existing finding | Result | Verdict | Detail |
+|---|---|---|---|
+| **REFACTOR-085** — `ActivityTablePartitionManager` retention/DROP drift (batch B) | **CONFIRMED FROM 2ND ANGLE** | ✅ drift REAL | `HousekeepingTTLProperties` has no `activity*Days` field; **time-based retention for activity + message tables does not exist anywhere in the codebase**. The drift was not just one file missing it — it's globally absent. REFACTOR-085 strengthened. |
+| **batch-C `/actuator/env` password-leak claim** (multiple sidecars) | **REFINED / REFUTED-AT-NARROW-CLAIM** | ✅ refined | Spring Boot 3.4.10's default `management.endpoint.env.show-values: NEVER` DOES mask values in `/actuator/env`. The DURABLE leak surface is Lombok-`@Data`-generated `toString()` if the properties bean is ever logged. **4-sidecar triangulated** across batches B+C+D. Captured as DOC-GAP-067 + concepts.yaml invariant + cross-cutting REFACTOR. |
+| **batch-C OAuth2 5-vs-7 provider drift** | **CONFIRMED FROM 2ND ANGLE** | ✅ drift REAL | `ODDOAuth2Properties` Provider enum has exactly 5 values; docs claim 7 (adds Okta/Keycloak/Custom-OIDC, omits ODD_IAM). |
+| **batch-C Azure `tenantId` POJO-absent** | **CONFIRMED FROM 2ND ANGLE** | ✅ drift REAL | `ODDOAuth2Properties` has no `azureTenantId` field; further refined: Azure `logoutUri` NPE-prone at `AzureLogoutSuccessHandler.java:39` (`URI.create(getLogoutUri())` with no null guard, vs Cognito's defensive `isEmpty` check). |
+
+### Cross-batch triangulation (multi-batch patterns continue to strengthen)
+
+| Pattern | Sidecar count | Sidecars surfacing it | Captured as |
+|---|---|---|---|
+| **Lombok-toString sensitive-field leak** | **4** | Notifications (C hint) + EmailSenderProperties + ODDLDAPProperties + ODDOAuth2Properties (all D) | DOC-GAP-067 meta + concepts.yaml invariant + cross-cutting REFACTOR replacing the overbroad batch-B/C `/actuator/env` framings |
+| **Partial-home @ConfigurationProperties** | **2** | DataCollaborationProperties + EmailSenderProperties (both D) | DOC-GAP-068 meta + concepts.yaml invariant + REFACTOR for consolidate-prefix-bindings hygiene sprint |
+| **Advisory-lock-ID collision risk across subsystems** | **3** | NotificationsProperties (C) + DataCollaborationProperties (D) + ActivityTablePartitionManager lock-90 (B) | concepts.yaml invariant + candidate ADR for central advisory-lock-ID registry |
+| **REFACTOR-085 retention drift confirmation** | **2** | ActivityTablePartitionManager (B) + HousekeepingTTLProperties (D) | strengthened REFACTOR-085 |
+| **Default-DISABLED + no-fail-fast** | 4 | from batches B+C (unchanged) | REFACTOR-073 |
+| **S2S composes-not-mutex (privilege escalation)** | 4 | batch C SecurityConfigurations | REFACTOR (batch C) |
+| **202+queue+Postgres-advisory-lock single-sender** | 2 | postMessageInSlack (A) + NotificationsProperties (C) | candidate ADR |
+| **Dead code in load-bearing positions** | 2 | AuthorizationManagerCondition (B) + NotificationsProperties.webhookUrl (C) | concepts.yaml invariant |
+| **Legacy-vs-canonical GitBook routing drift** | 2 | data-collaboration (A) + notifications (C) | DOC-GAP-058 |
+| **Docs frame default behaviour but omit blast radius** | 3+ | `disabled-authentication` + `enable-security` ingestion-filter + activity-feed retention | DOC-GAP-053 |
+| **Plaintext-equality token model** | 2 | regenerateCollectorToken (A) + IngestionDataEntitiesFilter:56 (B) | existing strengthened |
+| **Docs-vs-code spelling mismatch** (NEW) | 1 | `username-attribute` vs `userNameAttribute` in ODDOAuth2Properties (D) | DOC-GAP candidate; relaxed-binding hides the bug |
+
+### Notable new findings (spot-check candidates this batch)
+
+**Architectural / refactoring (HIGH, NEW):**
+
+- **Lombok-`@Data` `toString()` leaks sensitive Properties fields codebase-wide** ← 4-sidecar triangulated (Email/LDAP/OAuth2 passwords + Slack client-secret; Notifications hinted at it). Maintainer remediation: add `@ToString.Exclude` / `@JsonIgnore` to every sensitive Properties field across the codebase. REPLACES the overbroad batch-B/C `/actuator/env` framings.
+- **Partial-home @ConfigurationProperties pattern** ← `DataCollaborationProperties` binds 3 of 7 `datacollaboration.*` keys; `NotificationsProperties` recipients live outside the POJO. Refactor: consolidate prefix bindings.
+- **Advisory-lock-ID collision risk across 3 subsystems** ← partition manager (lock 90) + notifications WAL + data-collaboration sender. No central registry; collisions silent.
+- **Activity / message tables have no time-based retention anywhere in codebase** ← `HousekeepingTTLProperties` confirms drift from 2nd angle. Operators relying on "retention and partitioning" doc claim will see unbounded growth.
+- **Azure `logoutUri` NPE-prone at `AzureLogoutSuccessHandler.java:39`** ← `URI.create(getLogoutUri())` with no null guard; Cognito branch has defensive `isEmpty` check (asymmetric defensive programming).
+- **OAuth2 docs vs code spelling drift** (`username-attribute` vs `userNameAttribute`) ← operator copy-paste from docs yaml verbatim fails to bind without Spring's relaxed-binding tolerance.
+
+**Doc-product meta-patterns (now in `meta` category):**
+
+- **DOC-GAP-067** — Lombok-toString sensitive-field-leak class (4-sidecar)
+- **DOC-GAP-068** — Partial-home @ConfigurationProperties class (2-sidecar)
+
+### Cumulative ontology state (after this batch lands)
+
+| Layer | Count |
+|---|---|
+| Substrate scaffold | 395 nodes / 479 edges (unchanged) |
+| Sidecars | **35** (8.9% coverage) |
+| concepts.yaml | catalog_version 5 (60 concepts; **17 invariants**) |
+| doc-gaps.md | **71 candidates** (35 HIGH) |
+| implicit-adrs.md | **48 ADR candidates** (13 HIGH) |
+| refactoring-scopes.md | **182 refactoring scopes** (48 HIGH) |
+| test-map.yaml | **215 test gaps** (54 CRITICAL / 76 HIGH) |
+
+### Substrate coverage by kind (after batch D)
+
+- `controller-method`: 6/203 (3.0%)
+- `config-key-consumer`: 10/73 (13.7%)
+- `controller`: 7/36 (19.4%)
+- `openapi-tag`: 2/35 (5.7%)
+- `config-prefix`: 1/14 (7.1%)
+- `route`: 1/12 (8.3%)
+- `config-properties-class`: **7/9** (77.8%; +5 batch-D — now the most-covered kind by %)
+- `i18n-resource`: 0/6 (0%)
+- `ui-shell-widget`: 1/5 (20.0%)
+- `ui-shell-bootstrap`: 1/1, `ui-shell-app-entry`: 0/1
+
+### Next-batch planning notes
+
+The config-properties-class layer is now well-covered (7/9 = 77.8%; remaining: `AdditionalLinkProperties`, `MetricExporterProperties`). Three high-leverage themes for batch E (or later):
+
+1. **Repository layer** — still 0 enriched. `*RepositoryImpl` files where transaction boundaries, advisory-lock interactions, tenant-isolation enforcement live. Pairs with batch-D's advisory-lock-collision finding.
+2. **Service layer (deeper than controllers)** — still 0 enriched. `AlertServiceImpl`, `DataEntityServiceImpl`, `IngestionService`, `NotificationsDispatcher`, `HousekeepingJobManager`, `MessageProviderConsumer`. Where ownership-scoping, validation, authorization assertions, and the actual job-execution logic live.
+3. **controller-method deepening** — 6 of 203 enriched (3.0%). The methods most likely to surface remaining spot-checks would be on under-enriched controllers: `DataEntityController.*` methods (5 sub-controllers covered at class level but only 1 method); `IngestionController.*` methods; `OwnerController` family; `PolicyController` (RBAC).
+
+Until the next batch fires, the held-back spot-check set should be matched against batch A + batch B + batch C + batch D log entries above. Misses → candidate node-picks for batch E.

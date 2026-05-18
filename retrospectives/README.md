@@ -89,6 +89,11 @@ Do *not* add an LSN for:
 | `LSN-010-azure-admin-groups-wrong-default.md` | populated | Phase 2 |
 | `LSN-011-doc-product-coherence-not-self-detecting.md` | populated | added 2026-05-03 (Phase 7 — review-side editorial-audit machinery) |
 | `LSN-012-cornerstone-codified-wrong-pattern.md` | populated | added 2026-05-07 (DOC-150 — cornerstone update after same-day course-correction on bucket-attribution rule) |
+| `LSN-013-research-punted-on-substrate-draft.md` | populated | Phase 7 — research-punt caselaw |
+| `LSN-014-vague-interview-closers.md` | populated | Phase 7 — pause-and-ask UX |
+| `LSN-015-intuition-authored-playbook.md` | populated | Phase 7 — playbook authoring discipline |
+| `LSN-016-heuristic-substrate-no-semantic-content.md` | populated | added 2026-05-08 (paradigm pivot — heuristic substrate vs agentic ontology) |
+| `LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md` | populated | added 2026-05-19 (methodology pivot — entry-point + feature-flow + 4-class test matrix) |
 
 ## Index by gate / playbook informed
 

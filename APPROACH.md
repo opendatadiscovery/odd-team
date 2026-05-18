@@ -4,22 +4,26 @@ A portable methodology for building a queryable, self-maintaining ontology of an
 
 **Audience.** Two readers: (a) the human engineer of a new project who wants to bring this approach over without reinventing it; (b) Claude Code itself, invoked from that new project, pointed at this workspace, asked to bootstrap the same approach for a different stack.
 
-**Scope of portability.** The METHODOLOGY ports: three-layer architecture, sidecar schema, reducer subagent shapes, case-law format, probe protocol, Quality Bar rules. The CONCRETE INSTANCES do not: per-language tree-sitter extractors, project-specific node kinds (controllers vs CLI commands vs GraphQL resolvers), the case-law file contents (LSN incidents are project-specific), the canonical concept page. Copy the framework; author the instances.
+**Scope of portability.** The METHODOLOGY ports: four-layer architecture, sidecar schema, reducer subagent shapes, entry-point principle, feature-flow composition, 4-class test matrix, case-law format, probe protocol, Quality Bar rules. The CONCRETE INSTANCES do not: per-language tree-sitter extractors, project-specific node kinds (controllers vs CLI commands vs GraphQL resolvers), entry-point classes (Django views vs Express handlers vs Lambda functions), the case-law file contents (LSN incidents are project-specific), the canonical concept page. Copy the framework; author the instances.
+
+**Revision history.** Rev 1 (2026-05-12): initial portability surface with three-layer architecture (substrate / per-node enrichment / reducers). Rev 2 (2026-05-19): fourth layer added — feature-anchored synthesis with entry-point traversal, feature-flow composition, and 4-class test matrix. Trigger: LSN-017 (per-node scan cannot see cross-layer user effects). Anchor ADR: `adrs/drafts/feature-anchored-ontology.md`.
 
 ---
 
 ## 1. Mission — what this gives you
 
-A single coherent answer to six questions any non-trivial codebase eventually faces:
+A single coherent answer to eight questions any non-trivial codebase eventually faces:
 
 1. **Onboarding** — new dev (human or AI) walks in and gets a working mental model of dependencies, concepts, and approaches from versioned artefacts, not tribal knowledge.
 2. **Impact analysis** — "I want to add X" returns a structured map: affected concepts, related controllers/services, doc pages that must update, tests that must extend, ADRs that constrain the change.
 3. **ADR archaeology** — implicit decisions ("we always do Y, just never wrote it down") surface as ADR candidates from cross-file pattern emergence. Drift from existing ADRs surfaces as code-vs-decision gaps.
-4. **Test-coverage map** — every code behaviour declared on the per-node sidecar has a known test (covered) or a known absent test (gap, ranked by criticality).
+4. **Test-coverage map** — every code behaviour declared on the per-node sidecar has a known test (covered) or a known absent test (gap, ranked by criticality). Now extended per feature × test-class (unit / integration / performance / security).
 5. **Security + performance posture** — sparse per-file signals aggregate into per-concept assessments: this feature's auth posture, its hot paths, its known gaps — with file:line evidence.
-6. **Doc-drift detection** — every doc-link claim is bidirectionally verified against the live published doc. Code says X, doc says Y; the substrate surfaces both.
+6. **Doc-drift detection** — every doc-link claim is bidirectionally verified against the live published doc. Code says X, doc says Y; the substrate surfaces both. Documentation is the audit target, not the source of truth.
+7. **Feature-flow composition** *(layer 4, rev 2)* — per-feature user-observable behaviour is composed from entry-point sidecar chains. Cross-layer multipliers (UI dispatch-multiplicity × backend per-call delta) land as feature-drift entries, not as buried single-sidecar findings. The view_count doubling bug (`retrospectives/LSN-017`) is the canonical case the layer catches.
+8. **Per-feature control matrix** *(layer 4, rev 2)* — every feature has a 4-cell row: unit / integration / performance / security. Empty cells are uncontrolled dimensions; covered cells are pinned. A feature can be fully unit-tested and still fail integration (view_count doubling); pass integration and fail performance (sequential scans at scale); pass for the happy actor and fail for the adversarial one. The matrix forces explicit coverage along all four orthogonal axes.
 
-The outcome is **lineage of meaning, not paths** — see `retrospectives/LSN-016` for the case-law that forced this framing.
+The outcome is **lineage of meaning, not paths, anchored on user-observable features** — see `retrospectives/LSN-016` (heuristic-vs-agentic pivot) and `retrospectives/LSN-017` (per-node-vs-feature-anchored pivot) for the case-law that forced this framing.
 
 ---
 
@@ -35,15 +39,16 @@ The approach defeats both by **layering**: heuristic gives stable IDs cheaply (t
 
 ---
 
-## 3. The three-layer architecture
+## 3. The four-layer architecture
 
 | Layer | Lives in | What it produces | Why this layer exists |
 |---|---|---|---|
 | **1. Substrate** (deterministic) | `lineage/_extractor/` Python driver; tree-sitter parsers per language | `nodes.jsonl` (one node per code entity) + `edges.jsonl` (containment, calls, configures, exposes, mounts, references) + `manifest.yaml` (commit anchor, axis versions) | Stable IDs are the join key for everything downstream. Deterministic enumeration is cheap and never hallucinates a node. A heuristic walker is the ONLY layer that should be heuristic. |
-| **2. Enrichment** (agentic) | `.claude/agents/file-analyser.md`; one Markdown sidecar per node at `lineage/{repo}/understanding/{slug}.md` | Per-node `understanding`, `concepts`, `dependencies_semantic`, `tests_coverage_semantic`, `docs_link_semantic`, `implicit_adrs`, `bugs_limitations_corner_cases`, `security`, `performance`, `sources`, `confidence_per_field` | A subagent reads ONE node end-to-end, walks 1-hop neighbours when material, WebFetches the live published doc for any claimed link, and emits a sidecar a maintainer would be proud to ship. Per-file context window stays manageable; semantic content is the deliverable. |
-| **3. Reducers** (agentic, cross-file) | `.claude/agents/{concept-merger,adr-archaeologist,doc-gap-finder,test-coverage-mapper,feature-advisor}.md`; outputs at `lineage/{repo}/{concepts.yaml,implicit-adrs.md,refactoring-scopes.md,doc-gaps.md,test-map.yaml,feature-walks/}` | Cross-sidecar emergence: shared concepts; recurring ADR patterns; doc divergences; test gaps; impact assessments for proposed features | Single-file enrichment can't see patterns. The reducer steps back across all sidecars + canonical docs and surfaces what no single sidecar could. The 11-sidecar "DISABLED-mode bypass" finding in ODD's `investigator-log.md` is the proof: emergence only the cross-product can produce. |
+| **2. Per-node enrichment** (agentic) | `.claude/agents/file-analyser.md`; one Markdown sidecar per node at `lineage/{repo}/understanding/{slug}.md` | Per-node `understanding`, `concepts`, `dependencies_semantic`, `tests_coverage_semantic` (with per-behaviour `test_class`), `docs_link_semantic`, `implicit_adrs`, `bugs_limitations_corner_cases`, `security`, `performance`, **`upstream_callers`**, **`downstream_side_effects`**, `sources`, `confidence_per_field` | A subagent reads ONE node end-to-end, walks 1-hop neighbours when material, WebFetches the live published doc for any claimed link, and emits a sidecar a maintainer would be proud to ship. Each sidecar carries the call-graph references (upstream + downstream) and user/externally-observable consequences, enabling layer-4 composition. Per-file context window stays manageable; semantic content is the deliverable. Schema v0.3.0 (rev 2). |
+| **3. Cross-file reducers** (agentic, cross-file) | `.claude/agents/{concept-merger,adr-archaeologist,doc-gap-finder,test-coverage-mapper,feature-advisor}.md`; outputs at `lineage/{repo}/{concepts.yaml,implicit-adrs.md,refactoring-scopes.md,doc-gaps.md,test-map.yaml,feature-walks/}` | Cross-sidecar emergence: shared concepts; recurring ADR patterns; doc divergences; test gaps; impact assessments for proposed features | Single-file enrichment can't see patterns. The reducer steps back across all sidecars + canonical docs and surfaces what no single sidecar could. The 18-sidecar "DISABLED-mode bypass" finding in ODD's `investigator-log.md` is the proof: emergence only the cross-product can produce. |
+| **4. Feature-anchored synthesis** (agentic, cross-layer) | `.claude/agents/feature-flow-builder.md`; output at `lineage/{repo}/feature-flows.yaml` | Per-feature observed-vs-expected user-observable behaviour, composed from entry-point sidecar chains. Each entry: contributing_nodes, amplification_factor, cross-layer drift annotations, and a 4-class test matrix (unit / integration / performance / security). | Reducers compose by *concept*. The feature layer composes by *user-observable boundary*. The view_count doubling bug (LSN-017) cannot be surfaced by either layer 2 or layer 3 alone — the cross-layer product (UI dispatch-multiplicity × backend per-call delta) lives only at the system's external boundary, which is layer 4's home. |
 
-**Rule of layering**: lower layers never depend on higher layers. The substrate doesn't read sidecars. Sidecars don't read each other. Reducers don't read source code (they read sidecars). The flow is one-way; the dependencies are clear.
+**Rule of layering**: lower layers never depend on higher layers. The substrate doesn't read sidecars. Sidecars don't read each other (per-node scope only — but they DO record cross-references for layer 4). Cross-file reducers don't read source code (they read sidecars). Feature-flow synthesis reads sidecars + reducer outputs + the substrate's edge graph (it does not re-read source code). The flow is one-way; the dependencies are clear.
 
 ---
 
@@ -66,6 +71,24 @@ Project-specific kinds are added per stack. ODD's MVP set: `controller`, `contro
 - Storage: `repository`, `dao`, `migration`.
 - External integrations: `sdk-builder`, `bean-factory`, `client-config`.
 - Interface surfaces: `cli-entrypoint`, `route`, `openapi-tag`, `event-channel`.
+
+**Entry-point classes** *(rev 2)* — a subset of node kinds that mark **where the system meets an external observer**. Entry-points are the unit of analysis for layer-4 feature synthesis; each batch picks 1-3 entry points and traverses downstream. Canonical entry-point classes:
+
+| Class | Examples |
+|---|---|
+| UI route mount | React route handlers, Next.js pages, Vue components on a router |
+| UI handler | Button onClick, form onSubmit, drag-drop onDrop |
+| REST operation | Each OpenAPI op regardless of caller; SOAP method; gRPC unary call |
+| Scheduled job | Spring `@Scheduled`, Quartz job, Celery beat task, K8s CronJob |
+| Webhook receiver | Inbound HTTP receiver for external events (AlertManager, Slack, S2S ingestion) |
+| WAL/event listener | Replication-slot consumer, Kafka subscriber, Redis pub/sub listener |
+| SDK builder | AWS SDK builder, Boto3 client config, Azure SDK builder |
+| Boot-time evaluation | `@PostConstruct`, `@Configuration` class evaluation, `application.yml` resolution |
+| Test class | `test_axis`-classified test files (unit / integration / performance / security) |
+
+**Add an entry-point class when a probe surfaces user-observable behaviour the substrate doesn't have a unit of analysis for.** Don't pre-design entry-point classes for cases the maintainer hasn't observed.
+
+**Test files become a substrate axis** *(`test_axis`, rev 2)* — each test file is classified by content + naming: `@WebFluxTest`/`@SpringBootTest` + Testcontainers → `integration`; mock-heavy `@ExtendWith(MockitoExtension)` → `unit`; benchmark / EXPLAIN ANALYZE → `performance`; auth-mode-matrix / `*AuthorizationTest` → `security`. Untyped tests are themselves a coverage gap. The classification feeds the per-feature 4-class matrix in layer 4.
 
 **Add a kind whenever a probe surfaces a class of code the substrate can't address.** Don't pre-design kinds for cases you haven't hit.
 
@@ -120,8 +143,15 @@ the source file.
 - requires-runtime: [<runtime/infra dependencies>]
 
 ## tests_coverage_semantic
-- covered_behaviours: [<behaviours with a known test>]
-- uncovered_behaviours: [<behaviours with no test>]
+- covered_behaviours:
+  - behaviour: "<one sentence>"
+    test_class: unit | integration | performance | security    # rev 2
+    test_files: [<paths>]
+- uncovered_behaviours:
+  - behaviour: "<one sentence>"
+    test_class: unit | integration | performance | security    # rev 2
+    criticality: CRITICAL | HIGH | MEDIUM | LOW
+    gap_id: TEST-GAP-NNN
 - test_files: [<existing test files referencing this node>]
 - gaps: |
     <free-form paragraph describing what isn't tested and why it matters>
@@ -161,6 +191,27 @@ the source file.
 - scaling_characteristics: [<how this scales horizontally/vertically>]
 - known_performance_gaps: [<gaps, with evidence + severity>]
 
+## upstream_callers                                              # rev 2 — feature-flow input
+For each call-site that reaches this node, record the entry-point context:
+- entry_point: "<axis>:<descriptor>"   # e.g. "ui_route:/dataentities/{id}/overview"
+  caller_node: "<node_id of immediate caller>"
+  multiplicity_per_trigger: <N> | unresolved
+  evidence: "<file:line>"
+  observation_class: ui-call | rest-call | scheduled-trigger | webhook | wal-event | sdk-call | boot-eval
+
+If a caller is known but not yet enriched, record a REFERENCE entry with `unresolved: true`
+to be filled on a later pass. References are first-class — they accumulate the partial picture.
+
+## downstream_side_effects                                       # rev 2 — feature-flow input
+For each user-observable or externally-observable consequence of this node's execution:
+- side_effect_class: db-write | activity-emit | external-call | sse-push | cache-mutate | log-emit | metric-emit | page-render | header-set | redirect-issue
+  description: "<one sentence — what an external observer sees change>"
+  evidence: "<file:line>"
+  cardinality_per_call: <N> | <conditional-expression>
+  reachable_from_entry_points: ["<axis>:<descriptor>", ...]   # union across passes
+
+If a downstream callee is not yet enriched, leave a REFERENCE entry with `unresolved: true`.
+
 ## sources
 - understanding ← <file:line>
 - <field> ← <file:line> + <neighbour-file:line>
@@ -187,11 +238,12 @@ Three structural rules apply to the schema:
 |---|---|---|---|
 | `concept-merger` | All sidecars' `concepts` + `security` + `performance` blocks; canonical concepts doc | `concepts.yaml` | Deduplicated concept catalog with per-concept security/performance aggregates and `contributing_files` lists. Anchored on the project's canonical concepts page. |
 | `adr-archaeologist` | All sidecars' `implicit_adrs` + `bugs_limitations_corner_cases`; existing `adrs/` | `implicit-adrs.md` + `refactoring-scopes.md` | ADR candidates classified `promote / extend-existing / drift / unique-load-bearing`. The 3-question wisdom test (Nygard 2011 / adr.github.io / AWS Prescriptive Guidance) splits real ADRs from implementation gaps; gaps land in `refactoring-scopes.md`. |
-| `doc-gap-finder` | All sidecars' `docs_link_semantic` blocks; live doc URLs via WebFetch; canonical concepts page | `doc-gaps.md` | DOC-NNN candidates: broken URLs, missing anchors, code-doc drift, missing pages, coverage gaps, stale pages. |
-| `test-coverage-mapper` | All sidecars' `tests_coverage_semantic` blocks; actual test files via Glob+Grep | `test-map.yaml` | TEST-GAP-NNN candidates ranked by node criticality (`concepts.yaml` security_aggregate × performance_aggregate × node-count). Verifies sidecar `test_files` claims; surfaces sidecar-quality findings. |
-| `feature-advisor` | All sidecars + concepts.yaml + implicit-adrs.md + refactoring-scopes.md + doc-gaps.md + test-map.yaml + existing `adrs/`; live docs via WebFetch | `feature-walks/{date}-{slug}.md` | Query-time impact analysis. Maintainer asks "I want to add X — what's affected?" before writing code. |
+| `doc-gap-finder` | All sidecars' `docs_link_semantic` blocks; live doc URLs via WebFetch; canonical concepts page; **(rev 2)** feature-flows.yaml | `doc-gaps.md` | DOC-NNN candidates: broken URLs, missing anchors, code-doc drift, missing pages, coverage gaps, stale pages, **(rev 2)** feature-control-gaps (features uncontrolled along one or more axes whose doc page doesn't warn). |
+| `test-coverage-mapper` | All sidecars' `tests_coverage_semantic` blocks; actual test files via Glob+Grep; **(rev 2)** feature-flows.yaml; `test_axis` substrate classifications | `test-map.yaml` | TEST-GAP-NNN candidates ranked by node criticality. **(rev 2)** Also dual-keyed by `per_feature` matrix: for each feature × test_class (unit / integration / performance / security), `covered` + `uncovered` + `verdict`. |
+| `feature-advisor` | All sidecars + concepts.yaml + implicit-adrs.md + refactoring-scopes.md + doc-gaps.md + test-map.yaml + **(rev 2)** feature-flows.yaml + existing `adrs/`; live docs via WebFetch | `feature-walks/{date}-{slug}.md` | Query-time impact analysis. Maintainer asks "I want to add X — what's affected?" before writing code. |
+| **`feature-flow-builder`** *(rev 2)* | All sidecars' `upstream_callers` + `downstream_side_effects` blocks; substrate's edge graph; concepts.yaml; `test_axis` classifications | `feature-flows.yaml` | Per-feature observed-vs-expected user-observable behaviour, composed from entry-point sidecar chains. `amplification_factor` where multipliers stack across layers; `cross_layer_drift` annotations; per-feature 4-class test matrix; cross-references to refactoring-scopes / doc-gaps / test-gaps that contribute. |
 
-The five reducer outputs together form the **payload**. The substrate + sidecars are inputs to the payload; the payload is what a maintainer consumes day-to-day.
+The six reducer outputs together form the **payload**. The substrate + sidecars are inputs to the payload; the payload is what a maintainer consumes day-to-day. `feature-flows.yaml` is the **product surface** — it expresses the system as users observe it, anchored on code-derived truth.
 
 ---
 
@@ -201,12 +253,15 @@ These are universal across projects. They appear in `file-analyser.md` and the r
 
 1. **Live URLs only for documentation.** A subagent's knowledge of project documentation comes from `WebFetch` results in the current session. Never from pretraining. `last_verified_status` is required on every doc-link entry; broken links surface as doc-gap findings rather than being silently coerced to "looks right".
 2. **Code-anchor mandate (Gate 9).** Every claim in a sidecar has a `## sources` entry citing `file:line` (or doc URL + date + status). A claim with no anchor is rejected at validation. A claim whose anchor doesn't resolve is rejected.
-3. **One sidecar per node per invocation.** No cross-node bleed. Walk neighbours for context, but emit the sidecar for the target node only.
+3. **One sidecar per node per invocation.** No cross-node bleed. Walk neighbours for context, but emit the sidecar for the target node only. *(rev 2 — record cross-references in `upstream_callers` / `downstream_side_effects`; resolve them in later passes; never silently inline neighbour findings into the current node's body.)*
 4. **No source code modification by file-analyser.** The subagent has `Read, Grep, Glob, WebFetch, Write` — no `Edit`, no `Bash`. Findings outside the current node's scope become tracked artefacts (commit-body notes / backlog items / upstream issue drafts), not patches.
 5. **No absolute filesystem paths in committed artefacts.** Use repo-relative paths in `sources:` blocks. The artefacts get pushed to a public repository; personal home directories and internal hostnames must not leak.
 6. **Banned phrases.** "probably", "likely", "should", "looks right", "presumably", "defensible", "canonical owner", "monorepo default", "safe to assume". Replace with `confidence: LOW + one-line reason` or `VERIFIED via {fetch/grep/read}`.
-7. **Maintainer-curated entries survive refresh.** A `Maintainer notes` block in a sidecar; a `maintainer_curated: true` flag in `concepts.yaml`. The reducer preserves these across re-runs.
+7. **Maintainer-curated entries survive refresh.** A `Maintainer notes` block in a sidecar; a `maintainer_curated: true` flag in `concepts.yaml` / `feature-flows.yaml`. The reducer preserves these across re-runs.
 8. **Probe-driven acceptance, not coverage-%-driven.** A passing probe round means the substrate handles the categories you tested for; it does NOT mean exhaustive. See section 7.
+9. ***(rev 2)* Code is truth; documentation is the audit target.** Features emerge from code-walk, never from a docs-derived catalog. Doc-gap-finder compares code-anchored feature facts to published docs; drift surfaces as DOC-GAP-NNN. The ontology cannot start from a feature list extracted from docs because the feature list must itself be derivable from code (and docs may be stale, inconsistent, or silent about features the code has — including bugs that produce user-observable effects). Case-law: `retrospectives/LSN-017`.
+10. ***(rev 2)* Entry points are the unit of analysis.** Batch planning picks 1-3 entry points (not 5 random code nodes) and traverses outward. The same code is visited many times — that is the structural justification for the ontology. References act as placeholders during early passes; later passes flesh them. Re-visiting the same code from a new entry-point context is expected and welcomed.
+11. ***(rev 2)* Features are controlled along four orthogonal axes.** Unit / integration / performance / security. A feature can be fully unit-tested and still fail integration (the canonical view_count case). The per-feature test matrix has a 4-cell row; empty cells are gaps, covered cells are pinned. Test classification is automatic from `test_axis` substrate annotations.
 
 ---
 
@@ -245,7 +300,12 @@ Five files are pure-copy: `APPROACH.md` (this one), the subagent system prompts 
 
 **Step 2 — Identify your project's universal axes.** Files (always) and concepts (always). The substrate extractor's `files.py` walks every source file; the `concepts.py` extractor reads your concepts.yaml and emits concept nodes. These two axes work day one with zero project-specific code.
 
-**Step 3 — Identify your project's specific axes.** Walk your codebase and answer: what are the high-leverage SLICES — the kinds of code where a missing entry would be load-bearing? ODD's set is `controllers + openapi_tags + ui_routes + ui_shell + config_prefixes`. A Django project might pick `views + urls + management_commands + celery_tasks + settings_modules + migrations`. A Go service might pick `http_handlers + grpc_handlers + cmd_entrypoints + cobra_commands + config_consumers`. **Don't pre-design every axis.** Pick the 3-5 highest-leverage to ship MVP; add axes when a probe surfaces a class you missed.
+**Step 3 — Identify your project's specific axes AND your entry-point classes.** Walk your codebase and answer two questions:
+
+- *Specific axes* — what are the high-leverage SLICES, the kinds of code where a missing entry would be load-bearing? ODD's set is `controllers + openapi_tags + ui_routes + ui_shell + config_prefixes`. A Django project might pick `views + urls + management_commands + celery_tasks + settings_modules + migrations`. A Go service might pick `http_handlers + grpc_handlers + cmd_entrypoints + cobra_commands + config_consumers`.
+- *Entry-point classes (rev 2)* — which of your nodes are the **user-observable boundaries** the system meets? UI route mounts, button onClick handlers, REST operations, scheduled jobs, webhook receivers, WAL listeners, SDK builders, boot-time configuration evaluators, CLI entrypoints, test files (as test_axis). Entry-point classes are the units for layer-4 feature synthesis. Mark each node-kind in your substrate with `entry_point: true | false`; the false set is pure-internal (services, repositories, mappers), the true set is your traversal-starting positions.
+
+**Don't pre-design every axis or every entry-point class.** Pick the 3-5 highest-leverage of each to ship MVP; add axes / entry-point classes when a probe surfaces a class you missed.
 
 **Step 4 — Author your canonical concepts page.** A single Markdown document (`docs/main-concepts.md` or equivalent) naming the domain vocabulary the project uses: entities, lifecycle states, key operations. The concept-merger anchors clustering on this page. Extensions surface as `canonical_candidate: true` entries to be triaged into the docs.
 
@@ -254,17 +314,23 @@ Five files are pure-copy: `APPROACH.md` (this one), the subagent system prompts 
 **Step 6 — Run the cycle.**
 
 ```
-substrate scan         → nodes.jsonl + edges.jsonl + rollups (10 minutes)
-enrich --batch <axis>  → 5 sidecars (1 session)
-reduce concept-merger  → concepts.yaml refresh
-reduce adr-archaeologist → implicit-adrs.md + refactoring-scopes.md refresh
-reduce doc-gap-finder  → doc-gaps.md refresh
-reduce test-coverage-mapper → test-map.yaml refresh
-probe                  → adversarial round catches blind spots
+substrate scan                    → nodes.jsonl + edges.jsonl + rollups (10 minutes)
+enrich --batch <entry-points>     → 5 sidecars (1 session) — rev 2: entry-point-anchored,
+                                    each sidecar records upstream_callers + downstream_side_effects
+                                    + per-behaviour test_class
+reduce concept-merger             → concepts.yaml refresh
+reduce adr-archaeologist          → implicit-adrs.md + refactoring-scopes.md refresh
+reduce doc-gap-finder             → doc-gaps.md refresh (rev 2: feature-control-gap class)
+reduce test-coverage-mapper       → test-map.yaml refresh (rev 2: per_feature 4-class matrix)
+reduce feature-flow-builder       → feature-flows.yaml refresh                ← rev 2 NEW
+probe Type-7 (user-observable)    → live-demo verification of feature invariants  ← rev 2 NEW
+probe Type-4..Type-6 (adversarial / implicit-ADR confirmation) → existing
 commit + open PR
 ```
 
-Cadence: one batch per session is comfortable; the manifest carries `last_scan_commit` / `last_enriched_commit` so the next session resumes from disk state. Investigator-log (or equivalent) carries a one-paragraph batch summary so a new session can pick up cold.
+Cadence: one batch per session is comfortable; the manifest carries `last_scan_commit` / `last_enriched_commit` / `last_entry_point_traversal_commit` so the next session resumes from disk state. Investigator-log (or equivalent) carries a one-paragraph batch summary so a new session can pick up cold.
+
+**Batch-planning unit (rev 2)** — a batch picks 1-3 entry points (not 5 random code nodes) and traverses outward. Each entry-point chain produces a sidecar set with cross-references. Unresolved hops leave references that later passes resolve. Re-visiting the same code from a new entry-point context is the structural justification for the ontology — not a redundancy.
 
 ---
 
@@ -280,6 +346,18 @@ A probe is a four-step exercise (see `lineage/PROBES.md` for the worked example)
 **Acceptance is probe-driven, not coverage-%-driven.** A probe round (seed set + adversarial round of 3 from a maintainer who didn't write the seeds) must score ≥2-of-3 PASS. `coverage_pct` over the substrate's own enumeration is meaningful relative to known axes, never the acceptance criterion.
 
 **The probe list extends with every miss.** When an incident produces an LSN retrospective, the rule-that-emerged includes a probe that would have caught it. `lineage/PROBES.md` is a continuously-runnable regression suite for the substrate's coverage.
+
+**Probe classes** *(extended in rev 2)*:
+
+| Class | Form | What it acceptance-tests |
+|---|---|---|
+| Type-1..Type-3 | Structural seed probes | Substrate's deterministic enumeration covers known axes correctly |
+| Type-4 | Adversarial (3 unannounced probes from maintainer) | Substrate doesn't have hidden blind-spots on capability-negation / cross-product / synonym-swap shapes |
+| Type-5 | Doc-linkage faithfulness | Bidirectional drift check: live doc page content vs sidecar understanding |
+| Type-6 | Implicit-ADR confirmation | Maintainer writes 5 ADRs they know are followed; ≥3 must surface in `implicit-adrs.md` top-10 |
+| **Type-7 *(rev 2)*** | **User-observable invariants — executable** | **Maintainer authors single-sentence user-facing promises ("opening detail page registers as 1 view"); each is run live against a demo/staging instance. Ontology must surface the invariant under a feature-flow node; live probe must confirm OR fail-and-be-cited as a known caveat. A FAIL where ontology was silent = methodology miss → log as LSN.** |
+
+Type-7 probes are the closure of the feature-anchored layer. They convert documented features into runnable acceptance tests against live behaviour. Each batch should add 2-3 Type-7 probes; each gets refreshed at each `/probe` invocation.
 
 ---
 
@@ -365,8 +443,14 @@ What's NOT a discipline (deliberate non-optimisation):
 | A reducer finds a doc-vs-code drift that a maintainer didn't already know | Divergence detection is working. |
 | A retrospective produces an LSN whose rule lives as a playbook | Case-law is compounding into executable guardrails. |
 | The next session opens, reads `state/PROGRESS.md` + `investigator-log.md`'s tail, and picks up cold | Multi-session incremental build is real; tribal knowledge has externalised. |
+| ***(rev 2)*** Two entry-point traversals converge on the same downstream node, surfacing a shared fact | Layer-4 composition is working. The same code visited from multiple entry-point chains accumulates meaning. |
+| ***(rev 2)*** A feature-flow's `observed_vs_expected` flags a drift that no single sidecar contains | Cross-layer amplification / drift detection is working — the canonical view_count-doubling shape. |
+| ***(rev 2)*** A Type-7 probe FAILS against a feature-flow that already flagged the drift | The methodology is producing actionable acceptance criteria for the live system. |
+| ***(rev 2)*** A Type-7 probe FAILS where the ontology was silent | The methodology has a blind-spot — log as LSN, add to the rule set. (LSN-017-class incidents.) |
+| ***(rev 2)*** A feature's 4-class test matrix shows non-empty cells in all four axes | The feature is structurally controlled — the empty-cells discipline is biting. |
+| ***(rev 2)*** A documented feature appears in `feature-flows.yaml` with a matching `observed_vs_expected.expected` (drift = 0) | Code↔doc gap has narrowed to zero for this feature — the bridge is being built. |
 
-If a quarter goes by and none of these signals fire, the approach isn't taking hold — likely the sidecar quality is too shallow (Gate 9 not enforced), or the canonical concepts page hasn't been authored, or the project-specific axes don't actually cover the high-leverage code.
+If a quarter goes by and none of these signals fire, the approach isn't taking hold — likely the sidecar quality is too shallow (Gate 9 not enforced), or the canonical concepts page hasn't been authored, or the project-specific axes don't actually cover the high-leverage code, or *(rev 2)* entry-point traversals aren't reaching the user-observable boundary (sidecars stop at services without recording downstream side-effects).
 
 ---
 
@@ -374,14 +458,16 @@ If a quarter goes by and none of these signals fire, the approach isn't taking h
 
 This document is the methodology surface. The depth lives elsewhere in this workspace:
 
-- `adrs/drafts/code-lineage-substrate.md` — substrate design (revision 2, research-backed). Anchors. Run modes. Tree-sitter stack choice rationale.
-- `adrs/drafts/agentic-code-ontology.md` — enrichment + reducer design (revision 2, runtime-corrected). Sidecar schema. Subagent shapes. Why hybrid not pure-agent.
+- `adrs/drafts/code-lineage-substrate.md` — substrate design (revision 3, research-backed). Anchors. Run modes. Tree-sitter stack choice rationale.
+- `adrs/drafts/agentic-code-ontology.md` — enrichment + reducer design (revision 3, runtime-corrected). Sidecar schema. Subagent shapes. Why hybrid not pure-agent.
+- **`adrs/drafts/feature-anchored-ontology.md`** *(rev 2)* — fourth-layer design. Entry-point principle. Feature-flow composition. 4-class test matrix. Type-7 probes. Schema v0.3.0 migration.
 - `adrs/drafts/research/code-lineage-substrate/` and `adrs/drafts/research/agentic-code-ontology/` — research artefacts produced via the gsd-build/get-shit-done parallel-researcher pattern.
 - `retrospectives/LSN-013` — research-punt case-law (why ADRs don't end with "open questions for human review").
 - `retrospectives/LSN-016` — heuristic-vs-agentic case-law (why a tree-sitter substrate alone is not lineage; why Claude Code is the runtime, not the Anthropic API).
-- `lineage/PROBES.md` — probe-driven validation as worked example (the i18n class, the security-default class, the housekeeping class).
+- **`retrospectives/LSN-017`** *(rev 2)* — per-node-vs-feature-anchored case-law (why per-node enrichment misses cross-layer user-observable composition; the view_count doubling probe).
+- `lineage/PROBES.md` — probe-driven validation as worked example (the i18n class, the security-default class, the housekeeping class). *(rev 2: extended with Type-7 user-observable invariant class.)*
 - `CLAUDE.md` — workspace-operating bar (Principal Full-Stack standard, Quality Bar, autonomous-execution discipline). The `.claude/` directory is the executable form.
 - `pillars/documentation/` — active pillar's cornerstones, gates, canonical-homes table, authoring rules. Template for activating new pillars.
-- `playbooks/` — PROTOCOL-format universal rules (deep-research, pause-and-ask, consumer-read, live-site-verification, follow-up-on-disk, …).
+- `playbooks/` — PROTOCOL-format universal rules (deep-research, pause-and-ask, consumer-read, live-site-verification, follow-up-on-disk, …). *(rev 2 will add: `entry-point-traversal.md`, `feature-flow-composition.md`.)*
 
-If you're a Claude Code session invoked from another project pointed at this workspace: read this file end-to-end, then drop into the ADRs for the design rationale, then read one or two representative sidecars in `lineage/odd-platform/understanding/` to see the schema in practice. That's enough to bootstrap.
+If you're a Claude Code session invoked from another project pointed at this workspace: read this file end-to-end, then drop into the ADRs for the design rationale (start with `feature-anchored-ontology.md` if you're new to rev 2; otherwise the foundational pair first), then read one or two representative sidecars in `lineage/odd-platform/understanding/` to see the schema in practice. That's enough to bootstrap.

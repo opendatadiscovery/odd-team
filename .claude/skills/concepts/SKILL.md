@@ -15,9 +15,21 @@ This skill is the second reducer in the agentic-code-ontology layer (per `adrs/d
 
 | Form | Behaviour |
 |---|---|
-| `/concepts [<repo>]` | Default. Run `concept-merger` against `lineage/{repo}/understanding/` (default repo: `odd-platform`). Produces or refreshes `lineage/{repo}/concepts.yaml`. Preserves any concept entries flagged `maintainer_curated: true` from a prior version. |
+| `/concepts [<repo>]` | Default. Run `concept-merger` in **incremental mode** (per `playbooks/reducer-incremental-mode.md`) against `lineage/{repo}/understanding/` (default repo: `odd-platform`). Refreshes `lineage/{repo}/concepts.yaml` by appending+annotating only the sidecars whose `node_id` is not yet in the prior catalog's `processed_node_ids`. Preserves any concept entries flagged `maintainer_curated: true` from a prior version. |
+| `/concepts --full [<repo>]` | Forces FULL mode — re-reads every sidecar and regenerates the catalog from scratch. Use when prior catalog is corrupt, `prompt_version` bumped, or after a schema change. |
 | `/concepts --show [<repo>]` | Read-only. Print the existing catalog's summary (concept counts per category, top-N concepts by node-count, canonicalisation candidates list). No subagent invocation; no writes. |
 | `/concepts --diff [<repo>]` | Read-only. Compare the existing `concepts.yaml` to a freshly-generated one (in a temp file) and surface the diff. Useful for previewing what a refresh would change before committing it. |
+
+## Incremental input resolution
+
+Before spawning the subagent in default (`incremental`) mode, the skill computes:
+
+- `PROCESSED_NODE_IDS` — read from prior `concepts.yaml`'s frontmatter `processed_node_ids:` field. If the field is missing (pre-v0.2 catalog), fall back to `--full` for this run.
+- `NEW_SIDECAR_FILES` — `Glob lineage/{repo}/understanding/*.md` minus the set whose YAML frontmatter `node_id:` is in `PROCESSED_NODE_IDS`. Empty set → report "Nothing to refresh (no new sidecars)" and exit without invoking the subagent.
+- `PRIOR_HEAD` — one line per concept from prior `concepts.yaml`, derived via `grep -E '^  - name:'` + per-entry `contributing_files` length count. Use the compact-head shape from `playbooks/reducer-incremental-mode.md`.
+- `CURATED_ENTRIES` — verbatim YAML of every concept entry with `maintainer_curated: true`, extracted by parsing the prior catalog.
+
+These four values + `MODE: incremental` get passed to the subagent in place of the legacy `EXISTING_CATALOG` block.
 
 ## Prerequisites
 

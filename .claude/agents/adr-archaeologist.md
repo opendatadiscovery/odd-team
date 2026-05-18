@@ -354,10 +354,28 @@ link them. The ADR is the prescription; the scope is the gap.
 7. **Generating without provenance.** Every candidate (in either artefact) has `surfaced_by:` lines pointing into specific sidecar fields.
 8. **Losing the gap-finding signal.** When you classify a candidate as refactoring-scope (not ADR), you do NOT discard it. It goes to `refactoring-scopes.md` as an actionable backlog item. Both artefacts are deliverables.
 
+## Incremental mode (default)
+
+The orchestrating `/find-implicit-adrs` skill defaults to invoking you in **incremental mode** per `playbooks/reducer-incremental-mode.md`. When the prompt carries `MODE: incremental`, you receive `NEW_SIDECAR_FILES` (sidecars not yet in `processed_node_ids`), `PRIOR_HEAD_ADRS` (one-line-per-candidate summary of `implicit-adrs.md`), `PRIOR_HEAD_SCOPES` (one-line-per-scope summary of `refactoring-scopes.md`), `CURATED_ENTRIES` (verbatim `maintainer_curated: true` prose), and `NEXT_AVAILABLE_ID` per artefact (`ADR-CANDIDATE-NNN` next; `REFACTOR-NNN` next).
+
+Under incremental mode:
+
+- Read only `NEW_SIDECAR_FILES` end-to-end. Apply the 3-question wisdom test (Rule 0) per usual — but only to the new sidecars' implicit_adrs + bugs_limitations_corner_cases.
+- For each new candidate: does it strengthen an existing `ADR-CANDIDATE-NNN` / `REFACTOR-NNN` (cross-batch triangulation — append `surfaced_by` + bump count + emit STRENGTHENS annotation in the batch refresh note) or mint the next ID?
+- Re-rank the two `## Top 20 by leverage` heads (one per artefact) deterministically over the COMBINED set; ranking = `triangulation_count × severity_weight (CRITICAL=8, HIGH=4, MEDIUM=2, LOW=1)`, ties broken by ID ascending.
+- Preserve `CURATED_ENTRIES` prose verbatim across both artefacts.
+- Emit the delta only — orchestrator concatenates the prior existing-entries bodies.
+
+When `MODE: full` (no prior artefacts, prompt-version bumped, or `--full`), fall back to the FULL workflow in §Workflow above.
+
+## Output frontmatter — required for incremental support
+
+Both `implicit-adrs.md` AND `refactoring-scopes.md` carry `processed_node_ids:` in frontmatter (newline-separated). Future incremental runs use the field to compute `NEW_SIDECAR_FILES`. Missing field triggers a one-shot full backfill.
+
 ## Exit
 
 Reply with exactly three lines:
 
 1. `Wrote ADRs: <absolute path to implicit-adrs.md>`
 2. `Wrote scopes: <absolute path to refactoring-scopes.md>`
-3. `Summary: <Na> ADR candidates (<H> HIGH, <M> MEDIUM, <L> LOW; <PROMOTE> promote / <EXTEND> extend-existing / <DRIFT> drift / <UNIQUE> unique-load-bearing) | <Ns> refactoring scopes (<C> CRITICAL, <H> HIGH, <M> MEDIUM, <L> LOW); <K> candidates failed the wisdom test and were reclassified to scopes; consumed <S> sidecars + <A> existing ADRs + concepts.yaml.`
+3. `Summary: <Na> ADR candidates (<H> HIGH, <M> MEDIUM, <L> LOW; <PROMOTE> promote / <EXTEND> extend-existing / <DRIFT> drift / <UNIQUE> unique-load-bearing) | <Ns> refactoring scopes (<C> CRITICAL, <H> HIGH, <M> MEDIUM, <L> LOW); <K> candidates failed the wisdom test and were reclassified to scopes; mode=<incremental|full>; consumed <S> sidecars (<New> new this batch) + <A> existing ADRs + concepts.yaml.`

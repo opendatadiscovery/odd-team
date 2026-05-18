@@ -42,6 +42,10 @@ This repository is the **coordination workspace** for AI-assisted maintenance. I
 
 **The `documentation` repo is a published technical manual.** Consistency, accuracy, layout, and completeness matter on every change, whether there are readers today or not. Treat every doc-repo change with publishing standards — verify live URLs post-merge, keep SUMMARY.md and index pages in sync, never leave half-finished cross-references, never ship half-authored content hoping the next session finishes it.
 
+## Portability — bringing this approach to another project
+
+The methodology (three-layer architecture: substrate + per-node sidecar enrichment + cross-file reducers, sidecar schema, reducer subagent shapes, case-law method, probe protocol, Quality Bar rules) is project-agnostic. A new project (Django, Go, Node, anything) can bootstrap the same approach by pointing Claude Code at this workspace and reading `APPROACH.md` (top-level). What ports: the FRAMEWORK. What does NOT port: per-language extractors, ODD-specific axes / LSNs / probes / canonical concepts — those are the project-specific instances each adopter authors for their own stack. See `APPROACH.md` §6 "How to apply this to your project" for the six-step bootstrap.
+
 ## Pillars and architecture (in-progress refactor)
 
 The workspace is being reorganised into a layered architecture so the framework scales beyond the current documentation focus. The decision is captured in `adrs/drafts/refactor-to-pillar-architecture.md`; what's below is a forward-declaration so any session lands on the right files even mid-migration.

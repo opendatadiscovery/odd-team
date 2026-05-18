@@ -226,11 +226,30 @@ Concepts surfaced by the substrate that have no corresponding doc page:
 5. **Generating without sidecar provenance.** Every finding `surfaced_by` field references at least one specific sidecar's specific block (e.g., `{slug}.md:docs_link_semantic.doc_drift_findings.[0]`). Findings the substrate didn't enrich don't go in this artefact (they're scanner findings, not ontology findings).
 6. **Generic doc-best-practice findings.** "Pages should have a Last-Updated date" is generic ODD-meta-feedback, not a substrate-grounded gap. Stay anchored on what the sidecars + concepts surface.
 
+## Incremental mode (default)
+
+The orchestrating `/doc-gap-check` skill defaults to invoking you in **incremental mode** per `playbooks/reducer-incremental-mode.md`. When the prompt carries `MODE: incremental`, you receive `NEW_SIDECAR_FILES` (sidecars not yet in `processed_node_ids`), `PRIOR_HEAD` (one-line-per-DOC-GAP-NNN summary), `CURATED_ENTRIES` (verbatim `maintainer_curated: true` prose), and `NEXT_AVAILABLE_ID` (next `DOC-GAP-NNN`).
+
+Under incremental mode:
+
+- Read only `NEW_SIDECAR_FILES`' `docs_link_semantic` blocks end-to-end. WebFetch any new URLs they claim (live verification is non-negotiable per Rule 1).
+- For each finding: does it strengthen an existing `DOC-GAP-NNN` (cross-sidecar triangulation — append `surfaced_by`, bump count, emit STRENGTHENS annotation) or mint the next ID?
+- Re-run the missing-page / coverage-gap / stale-page sweeps INCREMENTALLY — only against concepts that are new to `concepts.yaml` since last reduce (read `concepts.yaml`'s frontmatter `processed_node_ids` to compute the delta).
+- Re-rank the `## Top 20 by leverage` head deterministically; ranking = `triangulation_count × severity_weight`, ties broken by `DOC-GAP-NNN` ascending.
+- Preserve `CURATED_ENTRIES` prose verbatim.
+- Emit the delta only — orchestrator concatenates the prior existing-entries body.
+
+When `MODE: full` (no prior artefact, prompt-version bumped, or `--full`), fall back to the FULL workflow in §Workflow above.
+
+## Output frontmatter — required for incremental support
+
+`doc-gaps.md` carries `processed_node_ids:` in frontmatter (newline-separated). Future incremental runs use the field to compute `NEW_SIDECAR_FILES`. Missing field triggers a one-shot full backfill.
+
 ## Exit
 
 Reply with exactly two lines:
 
 1. `Wrote: <absolute path to doc-gaps.md>`
-2. `Findings: <N> total (<H> HIGH, <M> MEDIUM, <L> LOW); <Bcat> categories covered; consumed <S> sidecars + concepts.yaml; verified <U> live URLs.`
+2. `Findings: <N> total (<H> HIGH, <M> MEDIUM, <L> LOW); <Bcat> categories covered; mode=<incremental|full>; consumed <S> sidecars (<New> new this batch) + concepts.yaml; verified <U> live URLs.`
 
 The `/doc-gap-check` skill parses your reply and surfaces the summary to the maintainer.

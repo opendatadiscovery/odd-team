@@ -32,6 +32,23 @@ A FAIL is one of three classes:
 - **Extractor bug** — the axis exists but the extractor's query missed the code-location. Patch the query. PATCH version bump.
 - **Annotation gap** — the node exists but lacks `documents:`. Either add the annotation (if a doc page exists) or log the doc as missing.
 
+## Universal axes (added 2026-05-18)
+
+Two axes are part of the substrate REGARDLESS of project, language, or pillar — they ship in extractor v0.2.0 and run on every scan:
+
+| Axis | Probe class it answers | What FAILs |
+|---|---|---|
+| `files` (kind `file`) | "Did the substrate visit every source file in scope?" | Any file in scope (matching default extensions + skip-dir patterns from `extractors/files.py`) that does NOT appear as a `kind:file` node is a hard FAIL — extractor bug. A file node WITHOUT at least one `declared_in` edge from a non-file node AND without an attached sidecar is an UNCOVERED file — the maintainer-visible coverage gap. |
+| `concepts` (kind `concept`) | "Does the concept catalog round-trip into the substrate?" | Every entry under `concepts.yaml`'s `entities` / `operations` / `invariants` / `audiences` should produce a `kind:concept` node + `embodied_by` edges to its listed `nodes:`. A catalog entry that fails to produce a node is an extractor bug. A concept with `embodied_by` edges pointing at non-existent node IDs is a concept-merger sidecar-quality finding. |
+
+Universal probes (run them on every project that adopts this approach, not just ODD):
+
+- **File-coverage probe.** Pick 5 random files from the codebase (any extension). Each must appear as a `kind:file` node. If any does not, classify the FAIL: (a) extension not in `DEFAULT_EXTENSIONS` → add it; (b) directory in `DEFAULT_SKIP_DIRS` that shouldn't be → remove it; (c) extractor bug → patch.
+- **Declared-in-coverage probe.** Pick 5 nodes from a random axis (e.g., 5 `controller-method` nodes). Each must have exactly one outgoing `declared_in` edge to a `kind:file` node whose path matches the node's path prefix. Any node missing the edge surfaces a path-shape extractor mismatch.
+- **Concept round-trip probe.** Pick 3 entries from `concepts.yaml`'s `entities:` block. Each must produce a `kind:concept` node; each listed `nodes:` value must produce an `embodied_by` edge. Mismatches are concept-merger output-quality findings.
+
+These universal probes complement (do NOT replace) the project-specific seed set below — which remains ODD-shaped.
+
 ## Seed probe set
 
 These are the probes the user could pick on day one. Each is a real ODD platform/collector capability with known code-locations.

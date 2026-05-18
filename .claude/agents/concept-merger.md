@@ -259,11 +259,29 @@ canonicalisation_candidates:
 8. **Aggregating sparse signals into false confidence.** If only 1 of 3 contributing sidecars carries a hot_path entry, the performance_aggregate.hot_paths lists that one entry — it does NOT generalise to "the concept has these hot paths" with confidence: HIGH. Concept-level confidence is bounded by the **density** of contributing signals, not the strength of any single signal.
 9. **Using generic security categories instead of ODD's vocabulary.** When recording auth_modes_relevant, use `LOGIN_FORM | OAUTH2 | LDAP | DISABLED | S2S | INTERNAL_ONLY` verbatim. When recording authorization, use `Policies / Permissions / Roles / Owners / User-owner association` from ODD's docs, not "RBAC / ACL / IAM" generic terms.
 
+## Incremental mode (default)
+
+The orchestrating `/concepts` skill defaults to invoking you in **incremental mode** per `playbooks/reducer-incremental-mode.md`. When the prompt carries `MODE: incremental`, you receive `NEW_SIDECAR_FILES` (only sidecars whose `node_id` is NOT in the prior catalog's `processed_node_ids`), `PRIOR_HEAD` (one-line-per-concept summary of the prior catalog), `CURATED_ENTRIES` (verbatim prose of `maintainer_curated: true` entries), and `NEXT_AVAILABLE_ID` per category.
+
+Under incremental mode:
+
+- Read only `NEW_SIDECAR_FILES` end-to-end.
+- For each new sidecar, decide: does it strengthen an existing concept (append node-id to the existing entry's `nodes:` list + bump triangulation count + emit a STRENGTHENS annotation in the batch refresh note) or surface a new concept (mint a new entry under the right category)?
+- Preserve `CURATED_ENTRIES` prose verbatim — only auto-derived fields (`contributing_files`, `nodes`, `evidence`, `axes_present`) update.
+- Re-rank the `## Top 20 by leverage` head deterministically over the COMBINED set (existing entries from PRIOR_HEAD + new entries this batch); ranking = `triangulation_count × severity_weight (security_overall × 2 + performance_overall × 1)`, ties broken by alphabetical concept name.
+- Emit the delta only — your write is the new frontmatter + Top-20 head + Refresh note + new entries. The orchestrator concatenates the prior existing-entries body.
+
+When `MODE: full` (no prior catalog, prompt-version bumped, or maintainer-forced), fall back to the FULL workflow in §Workflow above.
+
+## Output frontmatter — required for incremental support
+
+Add `processed_node_ids:` to the catalog frontmatter (newline-separated list of every `node_id` whose sidecar contributed to this catalog version). Future incremental runs of this reducer use the field to compute `NEW_SIDECAR_FILES`. Missing field on the next invocation triggers a one-shot full backfill.
+
 ## Exit
 
 Reply with exactly two lines:
 
 1. `Wrote: <absolute path to concepts.yaml>`
-2. `Catalog: <N concepts (E entities, O operations, I invariants, A audiences); C canonicalisation candidates; consumed <S> sidecars; aggregated security on <Sx> concepts and performance on <Px> concepts>`
+2. `Catalog: <N concepts (E entities, O operations, I invariants, A audiences); C canonicalisation candidates; mode=<incremental|full>; consumed <S> sidecars (<New> new this batch); aggregated security on <Sx> concepts and performance on <Px> concepts>`
 
 The orchestrator (the `/concepts` skill) parses your reply and surfaces the catalog summary to the maintainer.

@@ -3,7 +3,7 @@ id: ADR-DRAFT-code-lineage-substrate
 title: "Introduce a code-lineage substrate as the exhaustive enumeration layer for scanners, navigation, and future cross-pillar audits"
 status: draft
 date: 2026-05-08
-revision: 2 (research-backed; 8 open questions converted to firm recommendations)
+revision: 3 (2026-05-18 — file-axis + concept-axis added as universal node kinds; portability moved to APPROACH.md)
 scope: workspace-meta (this repo's audit infrastructure) + cross-pillar (documentation, tests, features, code-quality)
 related_drafts: ADR-DRAFT-workspace-pillar-architecture
 trigger_incident: i18n undocumented-features miss (2026-05-08) — see Examples
@@ -132,6 +132,20 @@ edge_count: 27093
 - **Extractor versioning** — semver. MAJOR bump = schema change; MINOR = new axis or new edge type; PATCH = bug fix in extractor with no schema impact. MAJOR/MINOR force full rebuild; PATCH does not.
 - **Branch-mode safety** — branch artifacts live at `lineage/{repo}/branch-{slug}.delta.json` and are never read by scanners running in incremental/full mode against main. Stale branch artifacts are garbage-collected when the underlying ref is gone.
 - **Failed extraction** — extractor errors are logged to `lineage/{repo}/last-error.log` and the prior good artifact is retained. Anchor does not advance.
+
+### Revision 3 (2026-05-18) — universal axes + portability extraction
+
+Two universal node kinds added to the substrate (extractor v0.2.0):
+
+- **`kind: file` (axis: `files`)** — pre-pass walks every source file in scope (default 29 extensions across JVM / JS-TS / Python / Go / Rust / Ruby / PHP / config + shell / UI markup; per-project tuneable) and emits one node per file. Each file node carries `language`, repo-relative `path`, `line_count`, `size_bytes`. Universal post-process emits `declared_in` edges from every non-file node to its parent file node. Fixes the axis-first-taxonomy coverage gap: `coverage = (files-with-sidecar / files-in-scope)` is now a real monotonic ratio. LSN-016 guardrail preserved — file nodes carry syntactic facts only; semantic content arrives via the file-analyser at the per-file sidecar layer.
+
+- **`kind: concept` (axis: `concepts`)** — post-pass reads `lineage/{repo}/concepts.yaml` emitted by the concept-merger reducer and emits one node per catalog entry across the four categories (entities, operations, invariants, audiences) with `embodied_by` edges pointing at the contributing node IDs. Smoke test against ODD's current `concepts.yaml`: 84 concept nodes + 303 `embodied_by` edges. Query shape: "which files embody the Policy concept?" becomes a graph traversal instead of a free-text search through 5197 lines of YAML.
+
+**Extractor ordering** (in `extractors/__init__.py`): `files` first (scaffold for `declared_in`), project-specific axes next in alphabetical order for determinism, `concepts` last (depends on sidecars + concept-merger having run).
+
+**Portability extraction.** The methodology side of this ADR (three-layer architecture, sidecar schema, reducer subagent shapes, probe protocol, case-law shape, Quality Bar rules) moved to top-level `APPROACH.md` — a portable, project-agnostic surface that a new project (Django, Go, anything) can read end-to-end and bootstrap from without copying ODD-specific content. The substrate ADR remains the long-form design rationale; APPROACH.md is the "how to apply this elsewhere" digest. Per the 2026-05-18 retrospective: portability is methodology-level (substrate-vs-enrichment-vs-reducers shape, sidecar fields, agent prompts, probe protocol) and explicitly NOT artefact-level (axes, LSNs, probes, canonical concepts are project-specific). Copy the framework; author the instances.
+
+**Version bump.** Extractor `0.1.0 → 0.2.0` (MINOR — schema change, forces full rebuild on next scan per the rules in `lineage/README.md`).
 
 ### Research-backed decisions (revision 2 — 2026-05-08)
 

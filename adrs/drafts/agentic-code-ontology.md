@@ -5,7 +5,7 @@ status: accepted
 date: 2026-05-08
 mvp_shipped_date: 2026-05-09
 mvp_accepted_date: 2026-05-10
-revision: 2 (runtime corrected — Claude Code sessions + filesystem subagents + skills, not Anthropic API)
+revision: 3 (2026-05-18 — incremental reducer mode + Top-20-head convention + portability surface at APPROACH.md)
 scope: workspace-meta (extends `code-lineage-substrate.md` revision 2 — does not supersede)
 related_drafts: ADR-DRAFT-code-lineage-substrate
 trigger_incident: 2026-05-08 paradigm critique — "we just built this tool quicker, but the approach is not innovative and does not use capabilities of LLMs and runtime"
@@ -17,6 +17,18 @@ case_law: retrospectives/LSN-016-heuristic-substrate-no-semantic-content.md (par
 ---
 
 # ADR-DRAFT: Agentic Code Ontology (atop the tree-sitter substrate)
+
+## Revision 3 (2026-05-18) — incremental reducer mode, Top-20-head, portability
+
+Three additions on this revision:
+
+1. **Incremental reducer mode** (`playbooks/reducer-incremental-mode.md`) — default for all four reducers (concept-merger, adr-archaeologist, doc-gap-finder, test-coverage-mapper). The reducer subagent reads only `NEW_SIDECAR_FILES` (sidecars whose `node_id` is not in the prior artefact's `processed_node_ids:` frontmatter field) + `PRIOR_HEAD` (one-line-per-entry compact summary of the prior artefact) + `CURATED_ENTRIES` (verbatim `maintainer_curated: true` prose) + `NEXT_AVAILABLE_ID`. The orchestrator concatenates the prior existing-entries body with the reducer's delta. Cuts per-batch reducer tokens ~40-60%. Triggered by 2026-05-12 batch F's `test-coverage-mapper` stream-idle timeout (`lineage/odd-platform/investigator-log.md:14-16`) where the reducer's full-mode read on the 7103-line prior `test-map.yaml` exhausted session budget before any output could land. `--full` flag on every reducer skill forces FULL fallback (prompt-version bumps, corrupt artefacts, schema changes).
+
+2. **Top-20-head convention** — every reducer artefact carries a `## Top 20 by leverage` section immediately after frontmatter, ranked by `(triangulation_count × severity_weight)` with `CRITICAL=8, HIGH=4, MEDIUM=2, LOW=1`. Refreshed each batch; auto-recomputed (not maintainer-curated). The maintainer reads 20 lines and absorbs the batch's highest-leverage findings without scrolling 1000+ line artefacts.
+
+3. **Portability surface at `APPROACH.md`** — methodology-level distillation (three-layer architecture, sidecar schema, reducer subagent shapes, probe protocol, case-law shape, Quality Bar) split out from this ADR into a top-level file a Django/Go/Node project can read end-to-end to bootstrap the same approach. This ADR remains the long-form design rationale (why hybrid not pure-agent, MVP acceptance, prior-art, runtime correction); APPROACH.md is the portable digest.
+
+The substrate ADR (revision 3 same date) gains the universal `file` + `concept` node kinds (extractor v0.2.0); the sidecar + reducer schemas in THIS ADR are unchanged structurally (only the `processed_node_ids:` frontmatter field is added to each reducer's output for incremental-mode bookkeeping).
 
 ## Context
 

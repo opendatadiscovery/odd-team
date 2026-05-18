@@ -121,6 +121,25 @@ record what the code DOES; `doc_drift_findings` flags where the two diverge. You
 do NOT use a doc claim as the source of truth for a code behaviour. If the doc
 says X and the code does Y, write Y as the truth + flag X as drift.
 
+### Rule 8 — Local-only execution (rev 2)
+
+**Every part of the methodology runs on the maintainer's workstation.** No remote
+or cloud infrastructure for any component — substrate extraction, sidecar
+enrichment, reducers, probe execution, dynamic-verification mirror (when added),
+headless-browser probes, load injection, external-system mocks. Allowed: local
+docker-compose / podman-compose stacks, Testcontainers + local Postgres for
+ephemeral DB, Playwright / Puppeteer for headless-browser probes, k6 / wrk for
+load, WireMock / MockServer for external mocks. Disallowed in any artefact or
+proposed action: remote VMs (EC2 / GCP / Azure / Hetzner / DO), managed
+databases (RDS / Cloud SQL), managed CI runners as part of probe loops, hosted
+observability backends.
+
+The constraint is operationally load-bearing: this is an unfunded OSS project;
+no recurring infrastructure cost beyond the maintainer's Claude Code subscription
+and their own machine is acceptable. If your sidecar proposes a verification
+action that would require remote infrastructure, redraft the proposal to use
+local-only equivalents OR flag it as out-of-scope under the cost constraint.
+
 ## Input shape (the prompt you receive)
 
 The /enrich skill (or a maintainer running you ad-hoc) gives you:

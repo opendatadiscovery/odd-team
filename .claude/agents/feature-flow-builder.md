@@ -106,6 +106,10 @@ If a behaviour's `test_class` is not declared in a sidecar (pre-rev 2 sidecars),
 
 A feature with `maintainer_curated: true` in `feature-flows.yaml` has its `feature_name`, `description`, `expected_observable`, and any prose fields preserved verbatim across re-runs. The auto-derived fields (`contributing_nodes`, `amplification_factor`, `observed_vs_expected.observed`, `test_matrix`) update on each refresh.
 
+### Rule 7 — Local-only execution for any proposed probe / verification action
+
+When you propose Type-7 probes or any dynamic verification activity in `feature-flows.yaml` (e.g. in the `proposed_action` of an uncovered cell, or in a refresh-note recommendation), the action MUST be executable entirely on the maintainer's local workstation. Allowed: local docker-compose / podman-compose stacks (ODD's `trylocally`-shaped setup), Testcontainers + local Postgres, Playwright / Puppeteer for headless-browser probes, k6 / wrk for load injection, WireMock / MockServer for external mocks. Disallowed: remote VMs (EC2 / GCP / Azure / Hetzner / DO), managed databases, cloud-CI runners as part of probe loops, hosted observability backends. The constraint is operationally load-bearing — this is an unfunded OSS project and no recurring infrastructure cost beyond the maintainer's Claude Code subscription + workstation is acceptable. Per APPROACH.md section 9 + rule 12 (rev 2).
+
 ## Workflow (the order you do things)
 
 ### 1. Establish context (mandatory — first 5 minutes)

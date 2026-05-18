@@ -15,9 +15,22 @@ This skill is the third reducer in the agentic-code-ontology layer (per `adrs/dr
 
 | Form | Behaviour |
 |---|---|
-| `/doc-gap-check [<repo>]` | Default. Run `doc-gap-finder` against the sidecar set + concepts.yaml + live docs (default repo: `odd-platform`). Produces or refreshes `lineage/{repo}/doc-gaps.md`. Preserves any maintainer-curated entries from a prior version. |
+| `/doc-gap-check [<repo>]` | Default. Run `doc-gap-finder` in **incremental mode** (per `playbooks/reducer-incremental-mode.md`) against the sidecar set + concepts.yaml + live docs (default repo: `odd-platform`). Refreshes `lineage/{repo}/doc-gaps.md` by appending+annotating only the sidecars whose `node_id` is not yet in the prior artefact's `processed_node_ids`. Preserves any maintainer-curated entries from a prior version. |
+| `/doc-gap-check --full [<repo>]` | Forces FULL mode — re-reads every sidecar and re-WebFetches every URL from scratch. Use when prior artefact is corrupt or after a sweep recalibration. |
 | `/doc-gap-check --show [<repo>]` | Read-only. Print the existing report's summary (counts per category + severity, top-5 highest-severity findings, cross-references). No subagent invocation. |
 | `/doc-gap-check --diff [<repo>]` | Read-only. Compare the existing `doc-gaps.md` to a freshly-generated one (in a temp file) and surface the diff. Useful for previewing what a refresh would change. |
+
+## Incremental input resolution
+
+Before spawning the subagent in default (`incremental`) mode, the skill computes:
+
+- `PROCESSED_NODE_IDS` — read from prior `doc-gaps.md`'s frontmatter `processed_node_ids:`. Missing → `--full` fallback.
+- `NEW_SIDECAR_FILES` — sidecars whose `node_id` is not in `PROCESSED_NODE_IDS`. Empty set → exit.
+- `PRIOR_HEAD` — one line per existing `DOC-GAP-NNN` from prior `doc-gaps.md`, derived via `grep -E '^## DOC-GAP-'` + severity + category. Compact-head shape per the playbook.
+- `CURATED_ENTRIES` — verbatim Markdown of every entry flagged `maintainer_curated: true`.
+- `NEXT_AVAILABLE_ID` — max existing `DOC-GAP-NNN` + 1.
+
+These get passed to the subagent in place of the legacy "full prior artefact" block. Live URLs are still re-verified per Rule 1 (the playbook does NOT relax the live-URL requirement — only the prior-artefact-reading cost).
 
 ## Prerequisites
 

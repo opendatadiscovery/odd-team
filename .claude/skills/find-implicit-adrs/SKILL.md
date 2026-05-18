@@ -24,9 +24,23 @@ This is the third reducer in the agentic-code-ontology layer (per `adrs/drafts/a
 
 | Form | Behaviour |
 |---|---|
-| `/find-implicit-adrs [<repo>]` | Default. Run `adr-archaeologist` against the sidecar set + `adrs/`. Produces or refreshes `lineage/{repo}/implicit-adrs.md`. |
+| `/find-implicit-adrs [<repo>]` | Default. Run `adr-archaeologist` in **incremental mode** (per `playbooks/reducer-incremental-mode.md`) against the sidecar set + `adrs/`. Refreshes `lineage/{repo}/implicit-adrs.md` AND `lineage/{repo}/refactoring-scopes.md` by appending+annotating only the sidecars whose `node_id` is not yet in the prior artefacts' `processed_node_ids`. |
+| `/find-implicit-adrs --full [<repo>]` | Forces FULL mode — re-reads every sidecar and regenerates both artefacts from scratch. Use when prior artefacts are corrupt, `prompt_version` bumped, or after a wisdom-test re-calibration. |
 | `/find-implicit-adrs --show [<repo>]` | Read-only. Print the existing report's summary (counts per category + severity, top-5 candidates). |
 | `/find-implicit-adrs --diff [<repo>]` | Read-only. Compare existing report to a fresh run; surface the diff. |
+
+## Incremental input resolution
+
+Before spawning the subagent in default (`incremental`) mode, the skill computes:
+
+- `PROCESSED_NODE_IDS` — UNION of the `processed_node_ids:` frontmatter from BOTH `implicit-adrs.md` AND `refactoring-scopes.md`. If either field is missing, fall back to `--full`.
+- `NEW_SIDECAR_FILES` — sidecars whose `node_id` is not in `PROCESSED_NODE_IDS`. Empty set → exit.
+- `PRIOR_HEAD_ADRS` — one line per existing ADR candidate from `implicit-adrs.md`, derived via `grep -E '^## ADR-CANDIDATE-'` + severity tag. Compact-head shape per the playbook.
+- `PRIOR_HEAD_SCOPES` — one line per existing refactoring scope from `refactoring-scopes.md`, derived via `grep -E '^### REFACTOR-'` + severity + category tags.
+- `CURATED_ENTRIES` — verbatim Markdown of every entry flagged `maintainer_curated: true` across both artefacts.
+- `NEXT_AVAILABLE_ID` — max existing `ADR-CANDIDATE-NNN` + 1; max existing `REFACTOR-NNN` + 1.
+
+These get passed to the subagent in place of the legacy "full prior artefact" block.
 
 ## Prerequisites
 

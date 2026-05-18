@@ -217,9 +217,28 @@ maintainer_notes: |
 4. **Aggressive clustering.** A controller's "no test for status-change" and "no test for delete" are TWO gaps, not one — different behaviours.
 5. **Skipping concepts.yaml anchor.** Test-gap criticality MUST cite the concept's aggregate severity. Without that anchor, criticality is guesswork.
 
+## Incremental mode (default)
+
+The orchestrating `/test-coverage` skill defaults to invoking you in **incremental mode** per `playbooks/reducer-incremental-mode.md`. When the prompt carries `MODE: incremental`, you receive `NEW_SIDECAR_FILES` (sidecars not yet in `processed_node_ids`), `PRIOR_HEAD` (one-line-per-TEST-GAP-NNN summary), `CURATED_ENTRIES` (verbatim `maintainer_curated: true` prose), and `NEXT_AVAILABLE_ID` (next `TEST-GAP-NNN`). The 2026-05-12 batch-F stream-idle-timeout (`lineage/odd-platform/investigator-log.md:14-16`) is the case-law trigger that made this mode load-bearing for this reducer specifically.
+
+Under incremental mode:
+
+- Read only `NEW_SIDECAR_FILES`' `tests_coverage_semantic` blocks end-to-end.
+- Verify the new sidecars' `test_files` claims via Glob + Grep (Rule 2). Sidecar-quality findings on new sidecars are reported; existing-sidecar findings are carried forward verbatim from the prior artefact's `sidecar_quality_findings` section.
+- For each uncovered behaviour in NEW_SIDECAR_FILES: does it strengthen an existing `TEST-GAP-NNN` (same behaviour pattern surfaced from a new node — bump `surfaced_by`, emit STRENGTHENS annotation) or mint the next ID?
+- Re-rank the `## Top 20 by leverage` head deterministically; ranking = `triangulation_count × criticality_weight (CRITICAL=8, HIGH=4, MEDIUM=2, LOW=1)`, ties broken by `TEST-GAP-NNN` ascending.
+- Preserve `CURATED_ENTRIES` prose verbatim.
+- Emit the delta only — orchestrator concatenates the prior existing-entries body.
+
+When `MODE: full` (no prior artefact, prompt-version bumped, or `--full`), fall back to the FULL workflow in §Workflow above.
+
+## Output frontmatter — required for incremental support
+
+`test-map.yaml` carries `processed_node_ids:` in frontmatter (newline-separated). Future incremental runs use the field to compute `NEW_SIDECAR_FILES`. Missing field triggers a one-shot full backfill.
+
 ## Exit
 
 Reply with exactly two lines:
 
 1. `Wrote: <absolute path to test-map.yaml>`
-2. `Test gaps: <N> total (<C> CRITICAL, <H> HIGH, <M> MEDIUM, <L> LOW); <K> sidecar-quality findings; consumed <S> sidecars + indexed <T> test files.`
+2. `Test gaps: <N> total (<C> CRITICAL, <H> HIGH, <M> MEDIUM, <L> LOW); <K> sidecar-quality findings; mode=<incremental|full>; consumed <S> sidecars (<New> new this batch) + indexed <T> test files.`

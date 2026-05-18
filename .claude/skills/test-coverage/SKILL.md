@@ -15,9 +15,23 @@ This is the fourth reducer in the agentic-code-ontology layer. The reducer runs 
 
 | Form | Behaviour |
 |---|---|
-| `/test-coverage [<repo>]` | Default. Run test-coverage-mapper. Produces or refreshes `lineage/{repo}/test-map.yaml`. |
+| `/test-coverage [<repo>]` | Default. Run test-coverage-mapper in **incremental mode** (per `playbooks/reducer-incremental-mode.md`). Refreshes `lineage/{repo}/test-map.yaml` by appending+annotating only the sidecars whose `node_id` is not yet in the prior artefact's `processed_node_ids`. **Required-default after the 2026-05-12 batch-F stream-idle-timeout** (`lineage/odd-platform/investigator-log.md:14-16`) where the reducer's full-mode run on 7103-line prior test-map exhausted session budget. |
+| `/test-coverage --full [<repo>]` | Forces FULL mode — re-reads every sidecar and re-indexes every test file. High token cost; use only when prior map is corrupt. |
 | `/test-coverage --show [<repo>]` | Read-only. Print summary (counts per criticality + category, top-5 CRITICAL test gaps). |
 | `/test-coverage --diff [<repo>]` | Read-only. Compare existing map to a fresh run; surface the diff. |
+
+## Incremental input resolution
+
+Before spawning the subagent in default (`incremental`) mode, the skill computes:
+
+- `PROCESSED_NODE_IDS` — read from prior `test-map.yaml`'s frontmatter `processed_node_ids:`. Missing → `--full` fallback.
+- `NEW_SIDECAR_FILES` — sidecars whose `node_id` is not in `PROCESSED_NODE_IDS`. Empty set → exit.
+- `PRIOR_HEAD` — one line per existing `TEST-GAP-NNN` from prior `test-map.yaml`, derived via grep `gap_id: TEST-GAP-` + criticality + category. Compact-head shape per the playbook.
+- `CURATED_ENTRIES` — verbatim YAML of every entry flagged `maintainer_curated: true`.
+- `NEXT_AVAILABLE_ID` — max existing `TEST-GAP-NNN` + 1.
+- `EXISTING_SIDECAR_QUALITY_FINDINGS` — verbatim from prior artefact's `sidecar_quality_findings:` section; carried forward unchanged.
+
+These get passed to the subagent in place of the legacy "full prior artefact" block.
 
 ## Prerequisites
 

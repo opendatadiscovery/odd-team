@@ -1,11 +1,11 @@
 ---
 artefact: refactoring-scopes
-generated_at: "2026-05-12T22:45:00+02:00"
+generated_at: "2026-05-18T00:00:00Z"
 generated_at_commit: ede5d277
-sidecar_count: 45
+sidecar_count: 50
 prompt_version: "adr-archaeologist/0.2.0"
-total_scopes: 199
-scopes_by_severity: { CRITICAL: 0, HIGH: 58, MEDIUM: 92, LOW: 49 }
+total_scopes: 211
+scopes_by_severity: { CRITICAL: 0, HIGH: 63, MEDIUM: 97, LOW: 51 }
 scopes_by_category: { missing-auth: 11, missing-retry: 3, missing-rate-limit: 6, missing-sanitisation: 2, missing-audit: 8, missing-validation: 30, missing-pagination: 1, missing-quota: 1, missing-test: 4, buggy-default: 12, path-mismatch: 1, deferred-failure: 1, header-injection: 1, race-condition: 4, error-mapping: 4, observability: 7, missing-grace-period: 1, weak-rng: 1, plaintext-at-rest: 1, response-cache-leak: 1, idempotency: 1, transactional-consistency: 2, multi-instance-fs: 1, contract-typo: 1, enumeration-vector: 1, dual-path: 1, dead-code: 3, info-disclosure: 1, missing-fail-fast: 2, label-asymmetry: 1, batch-isolation: 1, missing-retention: 2, missing-doc-prereq: 1, timezone-implicit: 1, body-before-auth: 1, missing-constant-time: 1, duplicate-parse: 1, hard-coded-path: 1, missing-cors: 1, missing-warn-log: 1, silent-feature-ignored: 1, missing-csrf: 2, missing-actuator-gating: 1, open-redirect: 1, missing-default: 2, fragile-parsing: 2, credential-leak: 3, session-cookie-flags: 1, no-brute-force-defence: 1, no-failure-handler: 1, doc-code-drift: 3, no-multi-replica-session: 1, no-config-field: 2, fragile-wiring: 1, scheme-enforcement: 1, substring-collision: 1, no-admin-path: 1, size-limit-silent-trunc: 1, ad-config-ignored: 1, no-health-check: 1, owner-mapping-drift: 1, no-retry-no-dlq: 1, partial-delivery: 1, unsigned-webhook: 1, status-code-narrow: 1, no-channel-filter: 1, advisory-lock-collision: 2, pii-disclosure: 1, replication-slot-orphan: 1, smtp-timeout: 1, lombok-tostring-leak: 1, partial-home-properties: 1, advisory-lock-registry: 1, primitive-default-leak: 1, jooq-precedence-bug: 1, block-in-transaction: 1, no-dryrun: 1, sequential-connection: 1, no-backlog-metric: 1, lock-window-race: 1, missing-tls-trust: 1, smtp-implicit-tls: 1, smtp-oauth2: 1, no-email-validation: 1, port-default-zero: 1, npe-on-boxed-bool: 1, recipient-parse-fragile: 1, no-conn-pool: 1, no-reply-headers: 1, no-upper-bound: 1, refactor-risk: 1, no-validated: 2, doc-spelling-drift: 1, url-no-validation: 1, empty-map-passes: 1, provider-conditional-unvalidated: 1, scope-required-unvalidated: 1, ad-domain-unvalidated: 1, postconstruct-gated-by-conditional: 1 }
 batch_2026_05_10A_summary: { added_scopes: 23, strengthened_scopes: 4 }
 batch_2026_05_10B_summary: { added_scopes: 24, strengthened_scopes: 1 }
@@ -13,6 +13,7 @@ batch_2026_05_12C_summary: { added_scopes: 49, strengthened_scopes: 1 }
 batch_2026_05_12D_summary: { added_scopes: 42, strengthened_scopes: 4 }
 batch_2026_05_12E_summary: { added_scopes: 28, strengthened_scopes: 3 }
 batch_2026_05_12F_summary: { added_scopes: 17, strengthened_scopes: 5 }
+batch_2026_05_13G_summary: { added_scopes: 12, strengthened_scopes: 4, new_scopes_by_severity: { HIGH: 5, MEDIUM: 5, LOW: 2 }, new_scopes_by_category: { buggy-default: 1, missing-validation: 2, missing-sanitisation: 1, missing-rate-limit: 1, missing-index: 1, missing-filter: 1, name-behaviour-drift: 1, missing-error-translation: 1, missing-defence-in-depth: 1, permission-bypass: 1, performance-redundant-query: 1 } }
 ---
 
 # Refactoring scopes — odd-platform — 2026-05-12
@@ -2414,3 +2415,431 @@ The maintainer reading the ADR sees the gaps the ADR does NOT defend; the mainta
 ## Maintainer notes
 
 (Free-form section preserved across refreshes. Empty on first run.)
+# Refresh note — batch 2026-05-13-G
+
+Batch G surfaces the consequences of three months of incremental DataEntityController growth: the per-method drilldown reveals one PRIMARY-SOURCE-PROVEN authorization bug (REFACTOR-217 — SecurityRule `/term` singular vs OpenAPI `/terms` plural; the SecurityRule never matches the real path, silently disabling DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM for ANY authenticated user), one HIGH-severity stored-content-injection surface (REFACTOR-218 — Markdown description body stored verbatim + UI renders via `rehype-raw` without `rehype-sanitize`), and CLOSURE OF THE VIEW_COUNT INFLATION LOOP (REFACTOR-220 — `getPopular` ranks by `view_count DESC`, `getDataEntityDetails` increments it unconditionally on every read; any authenticated caller — or any anonymous caller under DISABLED — can promote any entity to the home-page top by scripting `GET /api/dataentities/{id}` calls; REFACTOR-201 from batch F is now PRIMARY-SOURCE CONFIRMED). Twelve net-new scopes total + four STRENGTHENS annotations on prior scopes. The wisdom-test routing was clean — every gap-shaped finding traces to an absence-with-no-rationale (no comment defends, no SecurityRule documents, no spec text articulates) and adding the defence is implementation within existing structure rather than a structural redesign.
+
+# STRENGTHENS annotations
+
+- **STRENGTHENS REFACTOR-073** (No boot-time security-posture validator — DISABLED-mode bypass): now an 18-sidecar cluster with addDataEntityTerm, upsertDataEntityInternalDescription, createDataEntityTagsRelations, getMyObjects (DISABLED produces silent empty Flux), getPopular (DISABLED-mode anonymous home-page read) all joining the DISABLED-bypass triangulation. The home-page surface joining the cluster is consequential — Popular's anonymous reachability under DISABLED means the platform's first impression is anonymously accessible without any boot-time warning.
+
+- **STRENGTHENS REFACTOR-024** (Cross-owner read of platform alerts — read-collaborative cross-owner gap): now a 7-sidecar cluster. `getPopular.md:security.known_security_gaps[2]` confirms multi-tenant deployments cannot constrain Popular to caller's own team — same read-collaborative shape as Alerts / Activity / Search / DataEntityDetails. `getMyObjects` is the deliberate OPPOSITE (owner-scoped via JOIN); the contrast makes the gap's intentionality vs. carelessness distinction harder to argue (`getMyObjects` proves the project knows how to scope by owner).
+
+- **STRENGTHENS REFACTOR-199** (Owner auto-create-on-miss bypasses OWNER_CREATE permission): the Tag side-channel (REFACTOR-223) joins as a parallel pattern with one critical difference — the Tag auto-create is spec-acknowledged (so it's promoted to ADR-CANDIDATE-065) while Owner/Title remains undocumented. The "directory side-channel via per-resource write permission" family now has 3 confirmed members (Owner, Title, Tag) and the architectural-vs-incidental classification needs to be articulated case-by-case.
+
+- **STRENGTHENS REFACTOR-201** (View-count UPDATE inside @ReactiveTransactional GET → inflation): PRIMARY-SOURCE CONFIRMED via `getPopular.md:bugs_limitations_corner_cases[0]`. The consumer half of the loop is now visible: `ReactiveDataEntityRepositoryImpl.java:633` ranks exclusively by `view_count DESC`. The full chain (producer at `getDataEntityDetails` + consumer at `getPopular`) is end-to-end verified. The REFACTOR-201 finding from batch F is no longer hypothetical — the inflation attack works.
+
+# New refactoring scopes (REFACTOR-217 .. REFACTOR-228)
+
+---
+
+## REFACTOR-217 — SecurityRule `/term` singular vs OpenAPI `/terms` plural — path mismatch silently disables DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM permission gates
+
+**Severity**: HIGH
+**Category**: buggy-default (path-mismatch class)
+**Surfaced by**:
+- `addDataEntityTerm.md:bugs_limitations_corner_cases[0]` (the POST mismatch — headline finding)
+- `addDataEntityTerm.md:bugs_limitations_corner_cases[1]` (the DELETE mismatch — same shape, same root cause)
+
+**Description**: `SecurityConstants.java:237-239` registers `new PathPatternParserServerWebExchangeMatcher("/api/dataentities/{data_entity_id}/term", POST)` (SINGULAR `term`); the OpenAPI spec at `openapi.yaml:973` declares the operation path as `/api/dataentities/{data_entity_id}/terms` (PLURAL). The controller `@Override` (`DataEntityController.java:149-156`) inherits the plural path from the generated `DataEntityApi`. `AuthorizationCustomizer.customize` (`AuthorizationCustomizer.java:24-30`) only invokes the `manager(rule.type(), extractors, permissionService, rule.permission())` permission check when `rule.matcher()` matches the request — the SINGULAR matcher does NOT match the PLURAL request path. The customizer's fallback at line 29-30 is `.pathMatchers("/**").authenticated()`. **Net effect: ANY authenticated user under LOGIN_FORM/OAUTH2/LDAP can `POST /api/dataentities/{id}/terms` and link any term to any data entity, regardless of whether their Policy set includes `DATA_ENTITY_ADD_TERM`.** The identical path-mismatch applies to the DELETE counterpart (`SecurityConstants.java:240-242` registers `…/term/{term_id}` SINGULAR vs `openapi.yaml:1042` PLURAL `…/terms/{term_id}`). The DataEntityPermissionExtractor / Policy-resolver pipeline is unreachable for term-linking on data entities.
+
+**Primary source citations**:
+- `SecurityConstants.java:237-239` (POST rule — SINGULAR `/term`)
+- `SecurityConstants.java:240-242` (DELETE rule — SINGULAR `/term/{term_id}`)
+- `openapi.yaml:973` (POST operation — PLURAL `/terms`)
+- `openapi.yaml:1042` (DELETE operation — PLURAL `/terms/{term_id}`)
+- `AuthorizationCustomizer.java:24-30` (path-pattern dispatch + fallback to `.authenticated()`)
+- `DataEntityController.java:149-156` (POST `addDataEntityTerm` — inherits PLURAL path from `DataEntityApi`)
+- `DataEntityController.java:158-163` (DELETE `deleteTermFromDataEntity` — same)
+
+**Existing-ADR-or-implied-prescription**: The live Permissions doc (`https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions`, verified by batch F WebFetch on 2026-05-12 at status 200) lists `DATA_ENTITY_ADD_TERM` and `DATA_ENTITY_DELETE_TERM` and describes them as "allows adding/removing terms to/from a data entity." The IMPLIED prescription is that those permissions gate the term-link/unlink operations. The code intent (the SecurityRule entry exists, the permission enum exists, the UI `WithPermissions` wrap exists — `OverviewTerms.tsx:31, 94`) confirms the intended behaviour. ADR-CANDIDATE-062 (Two-permission split) is the prescription this scope violates: the architectural intent is fine-grained per-data-entity permission gating, and a path-string typo silently nullifies it.
+
+**Proposed remedy**: Change the SecurityRule path strings to PLURAL to match the OpenAPI surface:
+```
+SecurityConstants.java:238  →  "/api/dataentities/{data_entity_id}/terms"
+SecurityConstants.java:241  →  "/api/dataentities/{data_entity_id}/terms/{term_id}"
+```
+Add a `@WebFluxTest` regression in `DataEntityControllerTest` that asserts a user WITHOUT `DATA_ENTITY_ADD_TERM` receives 403 on `POST /api/dataentities/{id}/terms`. A single test would have caught this on commit. Cross-reference REFACTOR-009 (no compile-time / test-time guard against SECURITY_RULES path-pattern drift) — the long-term remedy is a build-time check that every OpenAPI path with a SECURITY_RULES match has a literal-string match.
+
+**Severity rationale**: HIGH — silently disables authorization on a per-data-entity write surface; ANY authenticated user can link any term to any data entity; the UI's `WithPermissions` wrap creates a false sense of protection (UI hides the button while the server accepts the request from anyone). Under DISABLED mode, the gap is anonymous reachable. This is the highest-severity finding on the term-management surface and aligns with the format of REFACTOR-008 (an earlier identification of this exact bug). REFACTOR-217 is the PRIMARY-SOURCE confirmation with full triangulation.
+
+**Suggested backlog grouping**: SEC-NNN authorization-audit sprint. Pair with TEST-GAP-017 (the authorization regression test) and REFACTOR-009 (the build-time path-pattern guard).
+
+---
+
+## REFACTOR-218 — Markdown / HTML description body stored verbatim without backend sanitisation; UI renders via `rehype-raw` without `rehype-sanitize` — stored-content-injection / potential stored-XSS
+
+**Severity**: HIGH
+**Category**: missing-sanitisation
+**Surfaced by**:
+- `upsertDataEntityInternalDescription.md:bugs_limitations_corner_cases[0]` (headline finding — no backend sanitisation + UI pulls rehype-raw + no rehype-sanitize anywhere)
+- `upsertDataEntityInternalDescription.md:security.known_security_gaps[0]` (security restatement)
+- `upsertDataEntityInternalDescription.md:concepts.invariants[3]`
+
+**Description**: `setInternalDescription` (`ReactiveDataEntityRepositoryImpl.java:430-438`) writes the request body verbatim into the `internal_description` `text` column. There is no `Jsoup.clean`, no `Encode.html`, no allowlist, no length cap, no `@Size` on the form-data DTO. The UI renders via `@uiw/react-markdown-preview@4.2.2` (`Markdown.tsx:113-124`), which transitively pulls in `rehype-raw@6.1.1` (`pnpm-lock.yaml:5922`). `rehype-raw` parses raw HTML embedded in Markdown into AST nodes that `react-markdown` then renders. NO `rehype-sanitize` is configured anywhere in the UI (`grep -rln 'rehype-sanitize' odd-platform-ui/` returns 0 matches). NO `skipHtml` prop is passed. Whether `<script>` survives depends on `react-markdown`'s default allowed-elements schema, but `<img src=x onerror=…>`, `<a href="javascript:…">`, `<iframe>`, `<style>`, and HTML-comment-based payloads are not categorically excluded. A future minor-version bump of any of the rendering libraries can widen the surface invisibly. Every description-display surface (entity-detail Description tab, activity-feed event-detail dialog rendering old/new description JSON, lineage tooltips if they show descriptions, search-result snippets) is downstream of this gap. The writer is `DATA_ENTITY_DESCRIPTION_UPDATE`-gated under non-DISABLED auth modes; the readers include any authenticated user with `DATA_ENTITY_VIEW` (effectively every catalog visitor) — **one malicious / careless writer reaches every reader.**
+
+**Primary source citations**:
+- `ReactiveDataEntityRepositoryImpl.java:430-438` (verbatim store)
+- `Markdown.tsx:113-124` (`MDEditor.Markdown` invocation with no `skipHtml`)
+- `pnpm-lock.yaml:5922` (`rehype-raw@6.1.1` transitive dependency)
+- absence of `rehype-sanitize` in the entire UI tree (grep evidence: 0 matches)
+- `V0_0_1__init.sql:80` (`internal_description text` column, unbounded length)
+- `components.yaml:2188-2194` (no `maxLength` constraint at OpenAPI level)
+
+**Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-063 (NEW THIS BATCH) — "Description is stored as raw Markdown / free-text with no backend transformation; UI is the sole renderer." The ADR captures the storage-format intent; this REFACTOR captures the missing defence-in-depth that the ADR does NOT absolve. The ADR says "UI renders Markdown"; the scope says "UI must also sanitise it (the current renderer + raw-HTML config does not)."
+
+**Proposed remedy**: Two-layer defence:
+1. **Backend (server-side):** Apply `Jsoup.clean(body, Safelist.relaxed())` or equivalent OWASP-recommended sanitiser at the service layer in `DataEntityInternalStateServiceImpl.updateDescription` BEFORE the repository call. Add a `@Size(max = 65535)` annotation on `InternalDescriptionFormData.internal_description` (or whatever maximum the operator team agrees is reasonable) so OpenAPI-generated validation enforces it.
+2. **UI (client-side):** Add `rehype-sanitize` to the `MDEditor.Markdown` plugin pipeline in `Markdown.tsx`. Configure an allowlist that excludes raw `<script>`, `<style>`, `<iframe>`, and `javascript:` URLs. Pair with `skipHtml` prop as a belt-and-braces measure for non-raw-HTML rendering surfaces.
+
+A `@WebFluxTest` should store `<script>alert(1)</script>` and `<img src=x onerror=...>` and assert the round-tripped content is sanitised. A UI snapshot test should render a description containing `<script>` and assert the script tag is absent in the DOM.
+
+**Severity rationale**: HIGH — stored-content-injection / potential stored-XSS on the platform's largest free-text write surface. Combined with REFACTOR-073 (DISABLED-mode bypass) and the activity-feed cross-owner read (REFACTOR-053 / REFACTOR-024 cluster), the writer reaches the largest possible reader set. Defence-in-depth at both layers is the standard remedy.
+
+**Suggested backlog grouping**: SEC-NNN content-injection sprint. Pair with the REFACTOR-220 view_count inflation, REFACTOR-225 ownership lineage SPoF, and the broader read-collaborative blast-radius family for a coordinated audit.
+
+---
+
+## REFACTOR-219 — `upsertDataEntityInternalDescription` silently returns 200 OK with empty body when the data entity does not exist — misleading "upsert" semantic
+
+**Severity**: MEDIUM
+**Category**: missing-error-translation
+**Surfaced by**:
+- `upsertDataEntityInternalDescription.md:bugs_limitations_corner_cases[1]`
+- `upsertDataEntityInternalDescription.md:concepts.invariants[2]`
+
+**Description**: `setInternalDescription` is `DSL.update(DATA_ENTITY).set(INTERNAL_DESCRIPTION, …).where(DATA_ENTITY.ID.eq(dataEntityId)).returning()` (`ReactiveDataEntityRepositoryImpl.java:432-435`). If `dataEntityId` does not exist, the query updates 0 rows, the `mono(query).map(r -> r.into(DataEntityPojo.class))` returns `Mono.empty`, the rest of the reactive pipeline collapses, and the controller returns `200 OK` with an empty body — NOT `404 Not Found`. The operation is documented as an "upsert" (`openapi.yaml:929-930`, `summary: "Upsert DataEntity's internal description"`) — implying CREATE-or-UPDATE semantics. The implementation is pure UPDATE with silent no-op on missing entity. Compare with the sibling `updateStatus` (`DataEntityServiceImpl.java:467`) which calls `.switchIfEmpty(() -> Mono.error(new NotFoundException("DataEntity", id)))` to convert missing-entity into 404. The description path has no such guard. Operators using the API by id (e.g. from a script that scrapes ids from search results) cannot distinguish "wrote successfully" from "id is wrong / soft-deleted." Activity feed shows nothing in the no-op case (the `@ActivityLog(DESCRIPTION_UPDATED)` AOP advice on `updateDescription` does NOT emit an event because empty Mono short-circuits the advice).
+
+**Primary source citations**:
+- `ReactiveDataEntityRepositoryImpl.java:430-438` (UPDATE only, no INSERT branch, no existence check)
+- `DataEntityServiceImpl.java:323-333` (`upsertDescription` has no `NotFoundException` path)
+- `DataEntityServiceImpl.java:467` (the sibling `updateStatus` showing the right pattern)
+- `openapi.yaml:929-930` (the misleading "Upsert" summary)
+- `DataEntityInternalStateServiceImpl.java:54-71` (the full empty-mono-propagating pipeline)
+
+**Existing-ADR-or-implied-prescription**: implicit prescription in the sibling `updateStatus` codepath — the project's convention is to translate empty result on a per-id mutation to 404. This scope is an inconsistency, not a structural decision; remedying it is refactoring within the existing service-layer pattern.
+
+**Proposed remedy**: Add `.switchIfEmpty(() -> Mono.error(new NotFoundException("DataEntity", dataEntityId)))` at the appropriate point in `DataEntityServiceImpl.upsertDescription` (or `DataEntityInternalStateServiceImpl.updateDescription`). Update the OpenAPI summary from "Upsert" to "Update" (the operationId rename is a breaking-name change; surface as a deprecation-and-rename in a separate scope or accept the cosmetic miscalling as low-priority). Add a `@WebFluxTest` asserting that a non-existent `dataEntityId` returns 404.
+
+**Severity rationale**: MEDIUM — operator UX trap, not a security gap. The bug is silent failure detection on a write path used by both UI and external scripts. The fix is local, well-bounded, and has a clear sibling-pattern precedent.
+
+**Suggested backlog grouping**: DOC-NNN companion (the OpenAPI summary is misleading) + a refactoring item (the NotFoundException translation) under a "DataEntityController API consistency" sprint.
+
+---
+
+## REFACTOR-220 — `view_count` inflation loop PRIMARY-SOURCE CONFIRMED — home-page Popular ranking trivially manipulable
+
+**Severity**: HIGH
+**Category**: missing-rate-limit + missing-defence-in-depth
+**Surfaced by**:
+- `getPopular.md:bugs_limitations_corner_cases[0]` (the closure of the loop — primary-source confirmation)
+- `getPopular.md:security.known_security_gaps[0]` (security restatement)
+
+**Description**: PRIMARY-SOURCE CONFIRMATION of the inflation loop:
+- **Producer**: `getDataEntityDetails` (`DataEntityController.java:139-147`) calls `incrementViewCount(id)` (`ReactiveDataEntityRepositoryImpl.java:173-180`) on every read; no rate-limit, no client-id check, no idempotency, no sampling, no per-user cap (per batch-F sidecar).
+- **Consumer**: `getPopular` ranks exclusively by `view_count DESC` (`ReactiveDataEntityRepositoryImpl.java:633`, sole orderBy; the `id DESC` at line 963 is only a tiebreaker).
+- **Auth posture**: Neither endpoint carries a SECURITY_RULES entry; both fall through to `.pathMatchers("/**").authenticated()` (`AuthorizationCustomizer.java:29-30`); under `auth.type=DISABLED` both are anonymously reachable.
+
+**A scripted loop of N calls to `GET /api/dataentities/{id}` from a single authenticated caller pushes entity {id} to the top of `GET /api/dataentities/popular` after sufficient N.** Under DISABLED (the default), the attacker need not even authenticate. The Popular strip on the platform's home page is therefore a **manipulable first impression** — a malicious caller can promote any entity (including a deceptively-named one — e.g. `"production-database-credentials"`) to the top of the recommendations strip.
+
+**Primary source citations**:
+- `ReactiveDataEntityRepositoryImpl.java:633` (the sole orderBy: `.orderBy(DATA_ENTITY.VIEW_COUNT.sort(SortOrder.DESC))`)
+- `ReactiveDataEntityRepositoryImpl.java:173-180` (`incrementViewCount` — unconditional UPDATE on every read)
+- `DataEntityController.java:139-147` (no rate-limit on the producer)
+- `DataEntityController.java:307-313` (no rate-limit on the consumer)
+- `SecurityConstants.java:90-355` (no rule on either path — verified by grep returning ZERO matches)
+- `DisabledAuthSecurityConfiguration.java:14-17` (anonymous DISABLED-mode access enables unauthenticated inflation)
+
+**Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-066 (NEW THIS BATCH) — Popular ranking is exclusively `view_count DESC` by intentional design. The ADR documents the minimalism. This scope is the missing-anti-abuse layer the ADR explicitly notes the absence of. ADR-CANDIDATE-003 (read-collaborative GET posture) is the cross-cutting prescription this scope inherits — the GET-uniform-authenticated stance does NOT defend against intra-authenticated-tier abuse.
+
+**Proposed remedy**: Layered mitigations, ordered by ROI:
+1. **Sampling**: Instead of incrementing on every read, increment with probability 1/N (e.g. 1/100) — preserves rank ordering at scale while raising the cost of inflation 100x.
+2. **Per-user-per-entity-per-window cap**: Combine view_count with a `(user_id, data_entity_id, day_bucket)` table or in-memory Caffeine cache. Limit increments to N per user per entity per day.
+3. **Time-decay**: Replace `view_count DESC` with `view_count * exp(-age_days * decay_constant)` to reduce the asymmetry between an entity that hit high view-count years ago vs. an entity actively trending now.
+4. **Anti-abuse signal**: IP-rate-limit, signed-request, or bot-detection at the controller boundary.
+5. **Human-curated override**: An admin-curated "featured entities" list overriding (or supplementing) the algorithmic ranking.
+
+A regression test should: (a) loop 1000 reads on entity X, (b) assert X reaches position 0 in `getPopular`, (c) after mitigation lands, the test should FAIL — confirming the regression is closed.
+
+**Severity rationale**: HIGH — primary-source-confirmed manipulability of the platform's home-page recommendation strip; trivial to exploit; under DISABLED mode (the default), no authentication required; the social impact (a deceptively-named entity promoted to the top of every operator's home page) is reputational at minimum and security-relevant at maximum (e.g., the entity name is a phishing lure).
+
+**Suggested backlog grouping**: SEC-NNN OR PERF-NNN — depending on the chosen mitigation strategy. The sampling fix is PERF; the per-user cap is SEC. Pair with REFACTOR-221 (missing view_count index — same scaling locus) and REFACTOR-222 (EXCLUDE_FROM_SEARCH not applied on Popular).
+
+---
+
+## REFACTOR-221 — No index on `data_entity.view_count` — every Popular page render is a sequential scan + sort
+
+**Severity**: MEDIUM
+**Category**: missing-index
+**Surfaced by**:
+- `getPopular.md:bugs_limitations_corner_cases[4]`
+- `getPopular.md:performance.known_performance_gaps[0]`
+- `getPopular.md:performance.scaling_characteristics`
+
+**Description**: The Popular ranking `ORDER BY view_count DESC` is executed without an index on `view_count`. Verified across all 91 Liquibase migration files: only `V0_0_10__add_counters.sql` (adds the column with `DEFAULT 0`) and `V0_0_37__update_view_count.sql` (adds `NOT NULL`) touch the column — no `CREATE INDEX` statement on `view_count` anywhere. For a deployment with 10K+ data entities (a realistic scale), every Popular page-load is a sequential scan + in-memory sort. Worst-case Postgres plan: `Sort -> Seq Scan on data_entity ... Filter: (NOT hollow AND status != deleted_id)`. For N=10K entities this is ~1ms; for N=100K it's ~10-100ms depending on row width and shared_buffers. The lack of index defeats the otherwise-correct intuition that ranking by a counter should be O(K log K) where K = page size.
+
+**Primary source citations**:
+- `ReactiveDataEntityRepositoryImpl.java:633` (the orderBy)
+- `V0_0_10__add_counters.sql:1-2` (column added with DEFAULT 0 — no index)
+- `V0_0_37__update_view_count.sql:1-3` (NOT NULL constraint — no index)
+- `grep -rln 'view_count' <odd-platform-repo>/odd-platform-api/src/main/resources/db/migration` (verified returning only the column-add and NOT-NULL migrations)
+
+**Existing-ADR-or-implied-prescription**: none directly; ADR-CANDIDATE-066 (Popular ranking signal minimalism) implies the maintainer would want this to scale.
+
+**Proposed remedy**: Add a Liquibase migration:
+```sql
+CREATE INDEX idx_data_entity_view_count_desc
+ON data_entity (view_count DESC)
+WHERE hollow = false AND status != <DELETED_id>;
+```
+This is a partial descending B-tree index on the popular-eligible rows. The query becomes `Index Scan + Limit` which is O(K) for page size K instead of O(N) for total rows N.
+
+**Severity rationale**: MEDIUM — performance gap that becomes acute at deployment scale (100K+ entities) but is invisible on small deployments. Worth fixing proactively because the home-page render is the most-frequent query in the catalog UX.
+
+**Suggested backlog grouping**: PERF-NNN scaling-prep sprint. Pair with REFACTOR-220 (the inflation surface that this index speeds up the attack against — but the index is fix-anyway because the attack vector exists with or without it).
+
+---
+
+## REFACTOR-222 — `EXCLUDE_FROM_SEARCH` flag is NOT applied to `listPopular` — internal / hidden entities surface on the platform's home page
+
+**Severity**: MEDIUM
+**Category**: missing-filter
+**Surfaced by**:
+- `getPopular.md:bugs_limitations_corner_cases[1]`
+- `getPopular.md:concepts.invariants[3]`
+- `getPopular.md:security.known_security_gaps[1]`
+
+**Description**: Every other list-shaped surface in the codebase respects `EXCLUDE_FROM_SEARCH` — verified at NINE distinct locations: `ReactiveSearchEntrypointRepositoryImpl.java:91, 117, 149, 181, 555`, `ReactiveSearchFacetRepositoryImpl.java:167, 461, 575`, `JooqFTSHelper.java:149`, plus `ReactiveDataEntityRepositoryImpl.java:448` (countByState) and `:974` (getDataEntityDefaultConditions). The `cteDataEntitySelect` used by `listPopular` (`ReactiveDataEntityRepositoryImpl.java:909-939`) applies `HOLLOW.isFalse()` (line 918) and `addSoftDeleteFilter` (line 916) — but NOT `EXCLUDE_FROM_SEARCH`. An operator who marks an entity `exclude_from_search=true` (typically to hide internal artefacts: ingestion-test fixtures, deprecated migrations, scratch tables) has a published expectation that the entity is hidden from list-shaped surfaces — Popular silently violates that expectation. If the entity has a high `view_count` (which can happen because internal entities get heavy view-traffic from the operator team itself, or via inflation per REFACTOR-220), it surfaces to all users on the home page.
+
+**Primary source citations**:
+- `ReactiveDataEntityRepositoryImpl.java:909-939` (cteDataEntitySelect — no EXCLUDE_FROM_SEARCH predicate)
+- `ReactiveDataEntityRepositoryImpl.java:970-976` (`getDataEntityDefaultConditions` shows the project's pattern of applying all three filters together: HOLLOW + STATUS + EXCLUDE_FROM_SEARCH)
+- `ReactiveSearchEntrypointRepositoryImpl.java:91`, `JooqFTSHelper.java:149` (the widely-applied pattern at 9 sibling locations)
+
+**Existing-ADR-or-implied-prescription**: implicit — the project consistently applies EXCLUDE_FROM_SEARCH at all list-shaped surfaces. Popular is the sole exception. The exception is unexplained; no comment defends it.
+
+**Proposed remedy**: Add `.and(DATA_ENTITY.EXCLUDE_FROM_SEARCH.isFalse())` to the `cteDataEntitySelect` line 909-939 — OR refactor the three filters (HOLLOW + STATUS + EXCLUDE_FROM_SEARCH) into a single helper method that ALL list-shaped surfaces use uniformly. The refactor is preferable because it prevents the inconsistency from recurring.
+
+**Severity rationale**: MEDIUM — inconsistency that exposes internal artefacts on a public-facing surface; severity depends on what operators put in EXCLUDE_FROM_SEARCH entities (for regulated-data deployments, this is a potential disclosure path).
+
+**Suggested backlog grouping**: SEC-NNN or PERF-NNN consistency sweep. Pair with REFACTOR-220 (Popular hardening sprint).
+
+---
+
+## REFACTOR-223 — Tag side-door — `DATA_ENTITY_TAGS_UPDATE` mints global Tag directory rows without `TAG_CREATE` permission; scope-asymmetry pollutes the tag dropdown across tenants
+
+**Severity**: MEDIUM
+**Category**: permission-bypass
+**Surfaced by**:
+- `createDataEntityTagsRelations.md:bugs_limitations_corner_cases[0]` (the side-door)
+- `createDataEntityTagsRelations.md:security.known_security_gaps[0]`
+- `createDataEntityTagsRelations.md:security.known_security_gaps[1]` (cross-tenant pollution)
+
+**Description**: A caller with `DATA_ENTITY_TAGS_UPDATE` on any single data entity can submit `tag_name_list: ['arbitrary-new-name']` and a new row appears in the global `tag` directory (visible to every other user via `GET /api/tags/popular`). The documented permission story ("`TAG_CREATE` controls the Tag directory") is incomplete: `DATA_ENTITY_TAGS_UPDATE` also grows the directory, by spec-acknowledged design (ADR-CANDIDATE-065 — auto-create-on-miss). The **scope asymmetry** exacerbates the consequence: `TAG_CREATE` is `MANAGEMENT`-scoped (always unconditional, granted via admin Policies only) while `DATA_ENTITY_TAGS_UPDATE` is `DATA_ENTITY`-scoped and therefore conditionally grantable via `"is": "dataEntity:owner"`. A per-data-entity-owner Policy can therefore mint global tag rows that pollute the popular-tags surface for users with no permission on their data entity. There is no concept of organisation, tenant, or namespace at the Tag directory level — once a Tag row exists, it is globally visible. Combined with the absence of tag-name validation (REFACTOR — no length/pattern/charset; see `createDataEntityTagsRelations.md:bugs_limitations_corner_cases[4]`), this enables denial-of-service-shaped pollution (saturate the directory with junk names, degrading the popular-tags query).
+
+**Primary source citations**:
+- `TagServiceImpl.java:80-86, 105-110, 144-159` (auto-create via getOrCreateTagsByName)
+- `SecurityConstants.java:138` (`TAG_CREATE` gates POST /api/tags)
+- `SecurityConstants.java:212-214` (`DATA_ENTITY_TAGS_UPDATE` gates PUT /api/dataentities/{id}/tags)
+- `PolicyPermissionDto.java:24` (`DATA_ENTITY_TAGS_UPDATE(DATA_ENTITY)` — DATA_ENTITY scope)
+- `PolicyPermissionDto.java:62` (`TAG_CREATE(MANAGEMENT)` — MANAGEMENT scope)
+- `TagController.java:36-44` (`getPopularTagList` — no per-tenant scoping)
+
+**Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-065 (Tag auto-create) documents the UX intent. ADR-CANDIDATE-062 (Two-permission split) documents the per-resource permission intent. The scope-asymmetry consequence — that per-data-entity-owners side-door the management-level gate — is NOT documented anywhere. This is the unintended consequence of the two ADRs interacting; the maintainer can either accept it (and document it as "tag dropdown is shared globally; per-tenant isolation is out of scope") or harden it (require TAG_CREATE for novel names; downgrade to "use only EXISTING tags" for the per-data-entity write).
+
+**Proposed remedy**: Three options for the maintainer to choose:
+1. **Accept and document**: Add a paragraph to ADR-CANDIDATE-065 articulating that the Tag directory is intentionally shared globally and not tenant-isolated. Document the side-door in the Permissions doc.
+2. **Harden — require TAG_CREATE for novel names**: In `TagServiceImpl.getOrCreateTagsByName`, check the caller's permissions and reject the call (with a clear error) when novel names are submitted by a caller without `TAG_CREATE`. UX trade-off: per-data-entity-owners must request admin help to introduce new tags.
+3. **Harden — allowlist only**: Reject `tag_name_list` items not already in the directory. Force all tag creation through `POST /api/tags`. UX trade-off: bigger break with the spec acknowledgment.
+
+A regression test should assert the chosen behaviour after the choice is made.
+
+**Severity rationale**: MEDIUM — pattern-shape permission-bypass with global blast-radius (every other authenticated user sees the polluted directory). Severity is bounded by the absence of name-length validation (REFACTOR — see same sidecar for the bounded-DoS angle); without that, the side-door's social impact dominates the security impact.
+
+**Suggested backlog grouping**: SEC-NNN authorization-audit sprint. Pair with REFACTOR-199 (Owner auto-create side-door) and REFACTOR-206 (Title auto-create side-door) — these three share the "directory growth via per-resource permission" pattern.
+
+---
+
+## REFACTOR-224 — `getMyObjects` returns silent empty Flux for unlinked users — operator-UX trap
+
+**Severity**: LOW
+**Category**: missing-error-translation (UX framing)
+**Surfaced by**:
+- `getMyObjects.md:bugs_limitations_corner_cases[0]`
+- `getMyObjects.md:security.known_security_gaps[0]`
+
+**Description**: A user authenticated under LOGIN_FORM/OAUTH2/LDAP who has not been linked to an `Owner` record via `OwnerAssociationRequest` admin-resolution OR direct `POST /api/owners/{owner_id}/users` mapping receives `200 OK` with body `[]` from `GET /api/dataentities/my`. There is no 401, no 403, no `OwnerNotAssociatedException`, no flash banner via `getDataEntitiesUsage`, no header signalling "you need an owner link." A new user landing on the `Recommended → My Objects` panel sees an empty strip with no explanation, indistinguishable from "I own nothing yet." The cure is documented elsewhere (operator must accept their association request via `/management/owner-associations`) but this endpoint's response shape gives the consumer no signal.
+
+**Primary source citations**:
+- `DataEntityServiceImpl.java:212-216` (the `.flatMapMany` on an empty `fetchAssociatedOwner()` produces empty Flux; no `.switchIfEmpty(Mono.error(...))`)
+- `AuthIdentityProviderImpl.java:50-53` (no fallback for unlinked users)
+- live `catalog-overview` doc fetched_excerpt: "Both sections require the signed-in user to be linked to an Owner record for personalized functionality to work"
+
+**Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-015 (Owner-scoped routes) documents the architecture. The UX-affordance gap is implicit — the live doc tells operators to expect owner-linking, but the API doesn't signal when the link is missing.
+
+**Proposed remedy**: Two options:
+1. **Add a sentinel error**: `.switchIfEmpty(Mono.error(new OwnerNotAssociatedException("Current user is not linked to an Owner; ask your administrator to accept your owner-association request")))`. The UI then catches this and renders a flash banner. Breaking change for existing UI clients that expect empty Flux on no owner — needs UI coordination.
+2. **Add a response header**: Emit `X-Owner-Link-Status: missing` when the owner lookup is empty. Non-breaking; UI can choose to surface the banner.
+
+Either remedy needs a `@WebFluxTest` regression that asserts the chosen signal for the unlinked case.
+
+**Severity rationale**: LOW — UX gap, not a security or correctness gap. The empty Flux IS technically correct. The fix is UX polish.
+
+**Suggested backlog grouping**: DOC-NNN OR UX-NNN — depending on whether the remedy is "document the gotcha" or "fix the signal." TEST-GAP-020 already names the test that would cover the un-linked case.
+
+---
+
+## REFACTOR-225 — `getMyObjectsWithUpstream` / `getMyObjectsWithDownstream` — owner-scoping is a single-point-of-failure at the anchor set (no JOIN-side defence-in-depth)
+
+**Severity**: MEDIUM
+**Category**: missing-defence-in-depth
+**Surfaced by**:
+- `getMyObjects.md:bugs_limitations_corner_cases[5]`
+- `getMyObjects.md:security.known_security_gaps[2]`
+
+**Description**: The lineage variants of `/my` (`getMyObjectsWithUpstream` / `getMyObjectsWithDownstream`) use a DIFFERENT code path from the base `/my`. They call `DataEntityRelationsServiceImpl.getDependentDataEntityOddrns(streamKind)` which: (a) fetches the user's owned data entities (anchor — owner-scoped), (b) traverses the lineage graph one hop (`lineageRepository.getLineageRelations(oddrns, LineageDepth.empty(), streamKind)`), (c) returns the reached oddrns FILTERED to exclude the originally-owned set (`Predicate.not(oddrns::contains)` at line 37). Then `repository.listByOddrns(oddrns, false, false, page, size)` returns those non-owned entities WITHOUT applying any owner filter at the SQL — the assumption is that the input oddrn set is already scoped correctly. **A regression in (a) — e.g. `fetchAssociatedOwner()` returning a wrong owner, or the WebFilter dropping the principal — leaks unscoped lineage neighbours.** The owner-scoping invariant is therefore SINGLE-POINT-OF-FAILURE at `DataEntityRelationsServiceImpl.java:26` for the lineage variants, vs. defended at the JOIN-side WHERE clause for the base `/my` path. Latent today: the code is correct; the gap is the missing defence-in-depth.
+
+**Primary source citations**:
+- `DataEntityRelationsServiceImpl.java:25-31` (the lineage anchor; owner-scope at the entry only)
+- `DataEntityServiceImpl.java:219-225` (the post-listAssociated chain)
+- `ReactiveDataEntityRepositoryImpl.java:listByOddrns` (no `ownership.owner_id` JOIN filter)
+- contrast with `ReactiveDataEntityRepositoryImpl.java:526-527` (the base `/my` JOIN-side defence)
+
+**Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-015 (Owner-scoped routes) documents the architecture but doesn't articulate the defence-in-depth requirement. The base `/my` path defends at the JOIN; the lineage variants defend only at the anchor — the asymmetry is undocumented.
+
+**Proposed remedy**: Add a JOIN-side filter to `listByOddrns` when the consumer context is owner-scoped — OR add a service-layer assertion that the input oddrns are owner-scoped. The simpler remedy: pass an `Optional<OwnerId>` through the lineage-expansion path and apply the filter at the SQL. A regression test should: (a) mock `fetchAssociatedOwner()` to return a different owner, (b) assert the lineage variants emit empty Flux (or 403) rather than leaking neighbours.
+
+**Severity rationale**: MEDIUM — latent vulnerability; the code is correct today but a future refactor that introduces a fallback owner-id (or that misorders the WebFilter chain) would surface the gap. The defence-in-depth principle says don't trust a single anchor when the consequence is cross-owner data exposure.
+
+**Suggested backlog grouping**: SEC-NNN authorization-audit sprint. Pair with REFACTOR-217 (the path-mismatch on terms — both are "the rule fires correctly at one place; what defends if it doesn't?" failures).
+
+---
+
+## REFACTOR-226 — `createDataEntityTagsRelations` operationId vs implementation drift — PUT replace-all semantics under create-language naming
+
+**Severity**: MEDIUM
+**Category**: name-behaviour-drift
+**Surfaced by**:
+- `createDataEntityTagsRelations.md:bugs_limitations_corner_cases[1]`
+- `createDataEntityTagsRelations.md:docs_link_semantic.doc_drift_findings[1]`
+
+**Description**: The OpenAPI spec, the operationId, the controller method name, and the spec summary all say "create" / "creates" for an operation that diffs-and-deletes. A consumer reading the spec who sends `PUT /api/dataentities/{id}/tags` with `tag_name_list: ['new-tag']` expecting "add new-tag, keep existing" will discover that ALL OTHER internal tags on the data entity are deleted. The UI's redux action is correctly named `updateDataEntityTagsActionType`, masking this drift from UI users — but third-party API consumers reading only the spec have no warning. The actual semantic is "replace internal tag set; preserve external tag set" and is documented in neither the OpenAPI description nor the Permissions doc. **An ingestion-pipeline mistake by a third-party consumer would silently delete a data entity's internal tag history.** Compare with `PUT /api/dataentities/{id}/description` which IS named with update-language (`upsertDataEntityInternalDescription`, "Upsert ... description") even though the implementation is UPDATE-not-UPSERT — at least the verb-shape implies overwrite.
+
+**Primary source citations**:
+- `openapi.yaml:1173-1175` (`summary: "Creates tags relations for DataEntity entity"` + `operationId: createDataEntityTagsRelations`)
+- `DataEntityController.java:244` (method named `createDataEntityTagsRelations`)
+- `TagServiceImpl.java:113-120` (the actual diff-and-delete logic)
+- `odd-platform-ui/src/redux/thunks/dataentities.thunks.ts:46` (UI uses the correct `updateDataEntityTagsActionType` action name)
+
+**Existing-ADR-or-implied-prescription**: implicit — API contract consistency. The spec text should match the implementation semantics.
+
+**Proposed remedy**: Three layers of fix:
+1. **OpenAPI summary update**: `summary: "Replace internal tag set for DataEntity entity"` (the current text is misleading even after one understands the behaviour).
+2. **OpenAPI description expansion**: add explicit text — "Replaces the data entity's internal tag set with the provided list. External (ingested) tag relations are preserved. Tags that exist in the directory are linked; tags that do not exist are auto-created (see `TAG_CREATE` permission for the alternative path)."
+3. **Operation rename** (breaking — for v2 of the spec): `replaceDataEntityTagsRelations`. Pair with a deprecation period on the create-named variant.
+
+**Severity rationale**: MEDIUM — spec/implementation contract drift on a write path with silent destructive consequences for unsuspecting API consumers.
+
+**Suggested backlog grouping**: DOC-NNN OpenAPI consistency sprint. Pair with REFACTOR-219 (the upsertDescription misleading-summary case).
+
+---
+
+## REFACTOR-227 — Description-update side-effect bypasses `DATA_ENTITY_ADD_TERM` permission via `[[ns:term]]` injection
+
+**Severity**: MEDIUM
+**Category**: permission-bypass
+**Surfaced by**:
+- `upsertDataEntityInternalDescription.md:security.known_security_gaps[3]`
+
+**Description**: A caller with only `DATA_ENTITY_DESCRIPTION_UPDATE` (no `DATA_ENTITY_ADD_TERM` permission) can still create term-relation rows by injecting `[[ns:term]]` mentions into the description body. `DataEntityServiceImpl.upsertDescription` (line 328) invokes `termService.handleDataEntityDescriptionTerms` unconditionally. `TermServiceImpl.handleDataEntityDescriptionTerms` (line 200) emits `TERM_ASSIGNMENT_UPDATED` regardless of the caller's term-write permission. The dedicated `DATA_ENTITY_ADD_TERM` permission (`SecurityConstants.java:237-239`) is BYPASSED by the description-write path. The Policy framework's separation between "edit description" and "link terms" — captured in ADR-CANDIDATE-062 (Two-permission split) — is structurally undermined for the description-mediated term-link case. Combined with REFACTOR-217 (the path-mismatch silently disables `DATA_ENTITY_ADD_TERM` ANYWAY), the practical impact is low TODAY but the latent gap is structural: even after REFACTOR-217 is fixed, this side-channel will remain unless explicitly addressed.
+
+**Primary source citations**:
+- `DataEntityServiceImpl.java:328` (`termService.handleDataEntityDescriptionTerms` invoked unconditionally)
+- `TermServiceImpl.java:200` (the method emits `TERM_ASSIGNMENT_UPDATED` regardless of caller's term-write permission)
+- `SecurityConstants.java:194-197` (DESCRIPTION_UPDATE rule)
+- `SecurityConstants.java:237-239` (ADD_TERM rule — the rule that should also gate the side-channel)
+
+**Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-062 (Two-permission split) is the prescription this scope violates. ADR-CANDIDATE-064 (Manual vs description-link coexistence) documents the dual-channel model that creates the side-channel — the architectural intent is OK; the missing permission check at the inner channel is the gap.
+
+**Proposed remedy**: In `TermServiceImpl.handleDataEntityDescriptionTerms`, check that the caller has `DATA_ENTITY_ADD_TERM` on the data entity before allowing description-mediated term-relation writes. Alternatively, document this as an intentional simplification (description-edit implies term-link consent) and remove `DATA_ENTITY_ADD_TERM` from the permission model — but this would conflict with ADR-CANDIDATE-062. The Permissions doc should articulate whichever decision is made.
+
+**Severity rationale**: MEDIUM — structural permission-bypass; latent today because REFACTOR-217 silently disables the dedicated permission anyway, but becomes acute once REFACTOR-217 is fixed.
+
+**Suggested backlog grouping**: SEC-NNN authorization-audit sprint. Bundle with REFACTOR-217 — fixing 217 without addressing 227 leaves the side-channel open.
+
+---
+
+## REFACTOR-228 — `TermAssignmentActivityHandler` re-queries the data-entity's full term list TWICE per assignment for BEFORE/AFTER state capture — O(N) cost per O(1) operation
+
+**Severity**: LOW
+**Category**: performance-redundant-query
+**Surfaced by**:
+- `addDataEntityTerm.md:performance.known_performance_gaps[0]`
+- `addDataEntityTerm.md:performance.resource_allocation`
+
+**Description**: `@ActivityLog(event = TERM_ASSIGNMENT_UPDATED)` on `TermServiceImpl.linkTermWithDataEntity` triggers `TermAssignmentActivityHandler` (line 20-61), which captures BEFORE and AFTER terms-list state by re-querying `termRepository.getDataEntityTerms(dataEntityId)` TWICE per call (line 29-43 and 41-43). For data-entities with many terms (50+), this is two full-list queries per single-term-link write — an O(N) cost on a single-term-link write. The cost is acceptable for typical term counts but a hidden quadratic-shape cost on extreme cases where an entity has hundreds of terms and the operator team is bulk-linking via the UI's N parallel calls.
+
+**Primary source citations**:
+- `TermAssignmentActivityHandler.java:45-50` (the `getDataEntityTerms` calls)
+- `TermAssignmentActivityHandler.java:29-43` (BEFORE/AFTER capture)
+- `TermServiceImpl.java:169` (the `@ActivityLog` annotation triggering the handler)
+
+**Existing-ADR-or-implied-prescription**: implicit — write-time activity capture should be O(1) where the data permits. The handler could compute the BEFORE state from the in-flight pojo plus the term-being-added, avoiding the re-query.
+
+**Proposed remedy**: Refactor `TermAssignmentActivityHandler` to:
+1. Capture BEFORE state once at the entry of `linkTermWithDataEntity` (before the INSERT).
+2. Derive AFTER state by appending the new term to the BEFORE state (or by removing for the delete path).
+3. Eliminate the re-query.
+
+OR: emit the activity event with ONLY the diff (the added/removed term), and reconstruct full state at read time by replaying the activity feed.
+
+**Severity rationale**: LOW — performance gap on a per-write operation; bounded by the per-entity term count. Worth fixing for a deployment with heavy taxonomy use, otherwise cosmetic.
+
+**Suggested backlog grouping**: PERF-NNN write-path optimization sprint.
+
+---
+
+# Cross-references with concepts.yaml security_aggregate / performance_aggregate
+
+For the affected concepts in this batch:
+
+- **DataEntity (`concepts.yaml:entities[data-entity]`)** — security_aggregate.weaknesses gets:
+  - REFACTOR-217 (path mismatch on term linking)
+  - REFACTOR-218 (Markdown stored-XSS surface)
+  - REFACTOR-220 (view_count inflation)
+  - REFACTOR-225 (lineage owner-scope SPoF)
+  - REFACTOR-227 (description side-channels DATA_ENTITY_ADD_TERM)
+  - performance_aggregate.weaknesses gets:
+  - REFACTOR-221 (no view_count index)
+  - REFACTOR-228 (term-assignment 2x O(N) query)
+- **Tag (`concepts.yaml:entities[tag]`)** — security_aggregate.weaknesses gets:
+  - REFACTOR-223 (Tag side-door past TAG_CREATE)
+- **DataEntityRef / Popular (`concepts.yaml:entities[popular-list]`)** — gets:
+  - REFACTOR-220, REFACTOR-221, REFACTOR-222
+
+# Cross-references with implicit-adrs.delta.md
+
+| ADR-CANDIDATE | Related REFACTOR (gap the ADR does NOT defend) |
+|---|---|
+| ADR-CANDIDATE-062 (Two-permission split) | REFACTOR-217 (path mismatch nullifies one of the splits) + REFACTOR-227 (description side-channel bypasses one of the splits) |
+| ADR-CANDIDATE-063 (Markdown storage) | REFACTOR-218 (no sanitisation — the defence-in-depth the ADR explicitly defers to the UI but the UI doesn't provide) |
+| ADR-CANDIDATE-064 (Term two-channel) | REFACTOR-227 (the side-channel that the dual-channel design opens) |
+| ADR-CANDIDATE-065 (Tag auto-create spec-acknowledged) | REFACTOR-223 (the scope-asymmetry consequence the spec acknowledgment does NOT defend) |
+| ADR-CANDIDATE-066 (Popular ranking minimalism) | REFACTOR-220 (inflation) + REFACTOR-221 (no index) + REFACTOR-222 (no EXCLUDE_FROM_SEARCH filter) |
+| ADR-CANDIDATE-067 (@ReactiveTransactional read/write asymmetry) | none directly — the read-side asymmetry IS the intent; the producer-side TX on getDataEntityDetails is the deliberate exception (cross-ref REFACTOR-220 producer half) |
+| ADR-CANDIDATE-015 strengthen (Owner-scoped) | REFACTOR-224 (silent empty Flux UX trap) + REFACTOR-225 (lineage SPoF) |
+| ADR-CANDIDATE-001 strengthen (Controllers as delegates) | n/a |
+| ADR-CANDIDATE-003 strengthen (read-collaborative GET) | REFACTOR-220 (the read-collaborative posture does NOT defend against intra-authenticated abuse) |
+| ADR-CANDIDATE-073 strengthen (DISABLED-bypass cluster) | inherits the cluster's posture |
+
+# Maintainer notes
+
+Of the twelve net-new scopes, three (REFACTOR-217, REFACTOR-218, REFACTOR-220) are HIGH-severity and warrant near-term attention:
+
+- **REFACTOR-217** is the smallest fix (two path-string changes + one regression test) with the largest impact (silent disablement of two production permission gates).
+- **REFACTOR-218** is medium-effort (server-side sanitiser + UI plugin) with large surface (every description-display point is downstream).
+- **REFACTOR-220** is the most strategic — it requires choosing among five mitigation candidates (sampling / per-user cap / time-decay / anti-abuse / curated override), all of which are PERF-or-SEC trade-offs the maintainer should reason about together rather than piecemeal.
+
+Of the four STRENGTHENS, REFACTOR-201 → REFACTOR-220 promotion (now PRIMARY-SOURCE confirmed) is the most consequential — the inflation attack is no longer hypothetical.
+
+The wisdom-test routing in this batch was unusually clean: no candidate sat on the intent-vs-gap fence. The pre-existing case-law (especially the slice-8-review precedent for GenAI absences being GAPS not ADRs) held: each gap-shaped finding traces to an absence with no rationale (no comment, no spec text, no doc page defends), and each ADR-shaped finding has an explicit intent_anchor at file:line. The pattern this batch reaffirms: a single sidecar can produce BOTH an ADR-CANDIDATE and a REFACTOR — the ADR captures the intentional design choice, the REFACTOR captures the unintended consequence the choice does not absolve.

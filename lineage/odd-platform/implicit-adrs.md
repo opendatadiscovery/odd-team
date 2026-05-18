@@ -1,13 +1,13 @@
 ---
 artefact: implicit-adrs
-generated_at: "2026-05-12T22:45:00+02:00"
+generated_at: "2026-05-18T00:00:00Z"
 generated_at_commit: ede5d277
-sidecar_count: 45
+sidecar_count: 50
 existing_adrs_count: 5
 prompt_version: "adr-archaeologist/0.2.0"
-total_candidates: 61
-candidates_by_category: { promote: 59, extend-existing: 0, drift: 0, unique-load-bearing: 2 }
-candidates_by_severity: { HIGH: 17, MEDIUM: 39, LOW: 5 }
+total_candidates: 67
+candidates_by_category: { promote: 65, extend-existing: 0, drift: 0, unique-load-bearing: 2 }
+candidates_by_severity: { HIGH: 18, MEDIUM: 44, LOW: 5 }
 wisdom_test_reclassifications: 7
 batch_2026_05_10A_summary: { added_adrs: 7, strengthened_adrs: 4, added_scopes: 23, strengthened_scopes: 4 }
 batch_2026_05_10B_summary: { added_adrs: 5, strengthened_adrs: 2, added_scopes: 24, strengthened_scopes: 1 }
@@ -15,6 +15,7 @@ batch_2026_05_12C_summary: { added_adrs: 16, strengthened_adrs: 6, added_scopes:
 batch_2026_05_12D_summary: { added_adrs: 4, strengthened_adrs: 6, added_scopes: 42, strengthened_scopes: 4 }
 batch_2026_05_12E_summary: { added_adrs: 5, strengthened_adrs: 4, added_scopes: 28, strengthened_scopes: 3 }
 batch_2026_05_12F_summary: { added_adrs: 8, strengthened_adrs: 7, added_scopes: 17, strengthened_scopes: 5 }
+batch_2026_05_13G_summary: { added_adrs: 6, strengthened_adrs: 7, added_scopes: 12, strengthened_scopes: 4, wisdom_test_passes: 6 }
 ---
 
 # Implicit ADRs surfaced — odd-platform — 2026-05-12
@@ -1271,3 +1272,241 @@ The wisdom-test-mass-failure pattern did NOT recur in batch 2026-05-12F. The bat
 ## Maintainer notes
 
 (Free-form section preserved across refreshes. Empty on first run.)
+
+# Refresh note — batch 2026-05-13-G
+
+Batch G adds five controller-method sidecars under `DataEntityController` — the canonical home-page surfaces of the platform: term-linking write (`addDataEntityTerm`), description write (`upsertDataEntityInternalDescription`), tag-relations write (`createDataEntityTagsRelations`), owner-scoped reads (`getMyObjects` + its lineage siblings), and the home-page recommendation read (`getPopular`). These five sites are PRIMARY-SOURCE confirmations of three previously-borderline ADR candidates: ADR-CANDIDATE-001 (controllers-as-delegates) gets five more witnesses, ADR-CANDIDATE-003 (read-collaborative posture on GETs) becomes a 4-sidecar lock with `getPopular` as the home-page surface, and ADR-CANDIDATE-015 (owner-scoped routes) is **promoted from borderline to primary-source** by `getMyObjects` — the method literally takes no principal parameter, with the principal flowing through reactor `Context` and resolved at the service layer. Six new ADR candidates emerge from this batch: a deliberate two-permission split for description vs. internal-name vs. add-term writes, Markdown-as-storage-format intent, the term-linkage manual-vs-description coexistence design (PK includes `is_description_link`), the spec-acknowledged tag auto-create-on-miss UX trade-off, the view_count-DESC ranking minimalism, and the deliberate `@ReactiveTransactional` boundary asymmetry across read/write (single-SELECT reads stay outside TX; write paths span TX boundaries). All six pass the wisdom test: each has an explicit intent_anchor at file:line (annotation, spec text, or stable class-level constant); each is structural and consistent across the codebase; none is a missing-feature framing. The gap-shaped consequences (path-mismatch silently disabling DATA_ENTITY_ADD_TERM, no Markdown sanitisation, no rate-limit on view_count, no EXCLUDE_FROM_SEARCH on Popular, etc.) route to `refactoring-scopes.delta.md`.
+
+# STRENGTHENS annotations
+
+- **STRENGTHENS ADR-CANDIDATE-001** (Controllers are pass-through delegates on OpenAPI-generator-emitted `*Api` interfaces): five new sidecars confirm — `addDataEntityTerm.md:understanding` (four-line method); `upsertDataEntityInternalDescription.md:understanding` (four-line pipeline); `createDataEntityTagsRelations.md:understanding` (five-line method); `getMyObjects.md:understanding` (four-line pass-through); `getPopular.md:understanding` (four-line pass-through). All five `@Override` methods on the generated `DataEntityApi` interface; none carries HTTP-routing annotations; all delegate to the service layer immediately. The pattern now spans 19 sidecars across controllers (Alert, DataEntity, DataEntityAttachment, AppInfo, GenAI, Term, Tag, Activity, DataCollaboration, IngestionData, Owner, Policy, Search — and now 5 more DataEntityController methods).
+
+- **STRENGTHENS ADR-CANDIDATE-003** (GET endpoints intentionally outside `SECURITY_RULES`; only mutating routes carry permission gates): `getMyObjects.md:concepts.invariants[6]` and `getPopular.md:concepts.invariants[5]` both verify by direct grep that no SECURITY_RULES entry exists for `/api/dataentities/my` or `/api/dataentities/popular`. Combined with `getDataEntityDetails` (batch F) and the broader DataEntityController read surface, this is now a 4-sidecar lock that the GET-uniformly-authenticated stance is intentional, not an oversight. `getPopular` is the home-page surface where this is most consequential: the platform's first-impression read is auth-only.
+
+- **STRENGTHENS ADR-CANDIDATE-015** (Owner-scoped reads are exposed as separate first-class endpoints — `/my`, `/my/upstream`, `/my/downstream`): **PROMOTED FROM BORDERLINE TO PRIMARY-SOURCE.** `getMyObjects.md:implicit_adrs[0]` is the architectural anchor — the controller method body itself is the evidence: `(page, size, exchange) → dataEntityService.listAssociated(page, size).map(ResponseEntity::ok)`, no Authentication/Principal/owner-id parameter. Principal flows via `ReactiveSecurityContextHolder.getContext()` inside `AuthIdentityProviderImpl.fetchAssociatedOwner()`. Owner-scoping is enforced as a SQL JOIN at the repository layer (`JOIN OWNERSHIP ON ... WHERE OWNERSHIP.OWNER_ID = ?`). The deliberate asymmetry vs. cross-owner reads (centerpiece detail, lineage, alerts, popular) — those take no principal and emit identical payloads for every caller — confirms the architectural intent. The borderline marker from batch A is now resolved as INTENT.
+
+- **STRENGTHENS ADR-CANDIDATE-007** (Reactive endpoints expose uniform `Mono<ResponseEntity<T>>` return type with `.map(ResponseEntity::ok)` pattern): all five new sidecars use this exact shape. `getPopular.md` and `getMyObjects.md` show the streaming variant (`Mono<ResponseEntity<Flux<T>>>`) which is the documented sub-pattern.
+
+- **STRENGTHENS ADR-CANDIDATE-002** (Authorization wiring at `SecurityConstants.SECURITY_RULES` path-matcher layer, programmatic not annotation-based): `addDataEntityTerm.md:bugs_limitations_corner_cases[0]` documents the consequence — when the SecurityRule path string drifts from the OpenAPI surface, the rule silently never fires (no compile-time check). `upsertDataEntityInternalDescription.md:security.authorization_assertions` and `createDataEntityTagsRelations.md:security.authorization_assertions` show the same wiring pattern enforced cleanly for the description-update and tags-update endpoints. The pattern is structural; the term-linking case is a path-string typo (REFACTOR-217), not a violation of the pattern itself.
+
+- **STRENGTHENS ADR-CANDIDATE-050** (Read-side permission discovery and write-side authorization enforcement share OWNER-CONTEXT-RESOLUTION pattern): `createDataEntityTagsRelations.md:implicit_adrs[0]` cites the same `DataEntityPermissionExtractor` → `DataEntityPolicyResolverContext` → `PolicyPermissionExtractor.extractDataEntityPermissions` chain — consistent with batch-E findings.
+
+- **STRENGTHENS ADR-CANDIDATE-059** (Multi-step per-data-entity write paths use `@ReactiveTransactional` at the service layer, never at the controller): all three new write-method sidecars confirm — `addDataEntityTerm.md:implicit_adrs[0]` (TermServiceImpl), `upsertDataEntityInternalDescription.md:implicit_adrs[6]` (DataEntityServiceImpl + DataEntityInternalStateServiceImpl, nested), `createDataEntityTagsRelations.md:implicit_adrs[2]` (DataEntityServiceImpl + TagServiceImpl, nested). The "nested @ReactiveTransactional on outer + inner service" sub-pattern is itself worth surfacing.
+
+# New ADR candidates (ADR-CANDIDATE-062..ADR-CANDIDATE-067)
+
+## ADR-CANDIDATE-062 — Two-permission split on data-entity write surface (DESCRIPTION_UPDATE distinct from INTERNAL_NAME_UPDATE distinct from ADD_TERM distinct from TAGS_UPDATE)
+
+**Severity**: MEDIUM
+**Classification**: promote
+**Support count**: 3 sidecars (this batch) + cross-ref to batch-F sidecar
+**Axes present**: controllers
+**Surfaced by**:
+- `upsertDataEntityInternalDescription.md:implicit_adrs[5]` ("Description-write is gated by a DEDICATED permission `DATA_ENTITY_DESCRIPTION_UPDATE`, distinct from `DATA_ENTITY_INTERNAL_NAME_UPDATE` — administrators can grant edit rights to descriptions independently of name edits.")
+- `addDataEntityTerm.md:implicit_adrs[4]` (the intended `DATA_ENTITY_ADD_TERM` registration as a SEPARATE per-data-entity permission)
+- `createDataEntityTagsRelations.md:implicit_adrs[0]` (the per-data-entity `DATA_ENTITY_TAGS_UPDATE` rule)
+
+**Decision statement**: The platform's per-data-entity write surface is intentionally decomposed into FOUR (or more) DISTINCT permission constants — `DATA_ENTITY_DESCRIPTION_UPDATE`, `DATA_ENTITY_INTERNAL_NAME_UPDATE`, `DATA_ENTITY_ADD_TERM` (+ `DATA_ENTITY_DELETE_TERM`), `DATA_ENTITY_TAGS_UPDATE` — rather than a single coarse-grained `DATA_ENTITY_WRITE`. Each maps to a distinct `SecurityRule` entry in `SecurityConstants.SECURITY_RULES`. This enables operators to author Policies that grant edit rights at a fine grain (e.g., "data stewards can update descriptions but not names; tag editors can update tags but not terms"). The split is uniform across DataEntityController's write surface — every write operation has a dedicated permission, not a shared one.
+
+**Evidence**:
+- `upsertDataEntityInternalDescription.md` says: "two separate SECURITY_RULES entries for the two adjacent endpoints, registered in immediate succession but with distinct permission constants — the maintainers deliberately split the privilege model" (cites `PolicyPermissionDto.java:18` and `SecurityConstants.java:194-200`)
+- `addDataEntityTerm.md` says: "SecurityConstants.SECURITY_RULES[237-239] declares the INTENT to gate this endpoint with DATA_ENTITY resource type + DATA_ENTITY_ADD_TERM permission" (separate from DESCRIPTION_UPDATE at 194-197 and TAGS_UPDATE at 212-214)
+- `createDataEntityTagsRelations.md` says: "Per-data-entity authorization on tag-relation management — SecurityConstants.SECURITY_RULES[212-214] registers PUT /api/dataentities/{data_entity_id}/tags with AuthorizationManagerType.DATA_ENTITY and DATA_ENTITY_TAGS_UPDATE"
+
+**Rationale (wisdom test 3-question)**:
+1. *Is the split intentional?* YES — three separate `SecurityRule` entries in `SecurityConstants.SECURITY_RULES` registered for sibling endpoints with distinct permission constants. The same maintainer wrote them in sequence and chose distinct names; `PolicyPermissionDto` enumerates DATA_ENTITY_DESCRIPTION_UPDATE, DATA_ENTITY_INTERNAL_NAME_UPDATE, DATA_ENTITY_ADD_TERM, DATA_ENTITY_DELETE_TERM, DATA_ENTITY_TAGS_UPDATE separately. INTENTIONAL.
+2. *Structural impact?* YES — affects the Policy framework's authoring surface, the per-resource extractor wiring, and the runtime authorization decision per endpoint.
+3. *Refactoring or structural?* STRUCTURAL — combining these into a single `DATA_ENTITY_WRITE` would change the security model.
+→ ADR-CANDIDATE.
+
+**Existing ADR**: none directly; partial overlap with ADR-CANDIDATE-002 (SECURITY_RULES wiring) and ADR-CANDIDATE-051 (resource-type↔context coupling). This candidate adds the FINE-GRAINED-PERMISSIONS layer on top.
+
+**Proposed action**: Promote to `adrs/drafts/data-entity-fine-grained-permissions.md`. The ADR should enumerate the current split (description / internal_name / add_term / delete_term / tags / metadata / status / ownership / attachment / custom_metadata) and articulate the operator authoring affordance the split provides.
+
+**Severity rationale**: MEDIUM — pattern-shaping decision (fine-grained policy authoring) confirmed across 3+ sidecars with consistent rule shape; not load-bearing for security in itself (each permission is enforced) but architecturally significant for the operator's Policy authoring experience.
+
+---
+
+## ADR-CANDIDATE-063 — Description / internal_name fields are stored as raw Markdown / free-text with no backend transformation; UI is the sole renderer
+
+**Severity**: MEDIUM
+**Classification**: promote
+**Support count**: 1 sidecar (load-bearing — primary write surface; cross-ref to controller-level sidecar)
+**Axes present**: controllers, services, repositories
+**Surfaced by**:
+- `upsertDataEntityInternalDescription.md:implicit_adrs[0]` ("Description is stored as raw Markdown / free-text with no backend transformation — the platform delegates rendering entirely to the UI.")
+- `upsertDataEntityInternalDescription.md:concepts.invariants[3]` (no backend sanitisation; `text` column unbounded; UI uses `@uiw/react-markdown-preview` with `rehype-raw`)
+
+**Decision statement**: The internal_description field is stored as the raw Markdown text the client submits — no server-side transformation, no HTML escape, no length cap, no sanitisation. The OpenAPI summary at `openapi.yaml:929-930` explicitly states "in markdown format." Rendering is entirely the UI's responsibility (`@uiw/react-markdown-preview` + `rehype-raw`). The platform's storage layer treats the description as opaque text — only the term-linker (`[[ns:term]]`) regex inspects content for side effects (term relations). The architectural decision is: descriptions are a UI-rendered surface; the platform does not interpret their content beyond the term-linker.
+
+**Evidence**:
+- `upsertDataEntityInternalDescription.md` says: "the OpenAPI description states the format intent inline" (`openapi.yaml:929-930` — "Upserts DataEntity's internal description in markdown format")
+- `upsertDataEntityInternalDescription.md` says: "`setInternalDescription` is `DSL.update(DATA_ENTITY).set(INTERNAL_DESCRIPTION, …)` — writes verbatim, normalising only empty-string-to-null"
+
+**Rationale (wisdom test 3-question)**:
+1. *Intentional?* YES — explicit in the OpenAPI summary ("in markdown format"). The decision is stated.
+2. *Structural impact?* YES — affects the rendering pipeline, the search-index processing (FTS weight B), the activity-feed payload shape, and the trust boundary (UI renderer is the sole interpreter).
+3. *Refactoring or structural?* STRUCTURAL — switching to "server-rendered HTML" or "AST stored" would be a major redesign.
+→ ADR-CANDIDATE for the storage-format intent.
+
+**Note on split**: the no-sanitisation absence is a separate GAP-shaped concern (REFACTOR-218 — stored-XSS surface). The ADR is "we store Markdown raw"; the gap is "but we should also sanitise it." Per the prompt's split-rule, ADR-CANDIDATE-063 captures the intent; REFACTOR-218 captures the absent defence.
+
+**Existing ADR**: none; mentioned in batch-F sidecars indirectly via the activity-feed-leakage finding.
+
+**Proposed action**: Promote to `adrs/drafts/data-entity-description-markdown-storage.md`. The ADR should articulate the intent (Markdown is the contract; UI is the renderer; term-linker is the sole content interpreter) and separately reference REFACTOR-218 as the defence-in-depth gap the ADR does not absolve.
+
+**Severity rationale**: MEDIUM — pattern-shaping decision affecting the largest free-text write surface in the platform; structurally significant because the trust-boundary placement (UI = sole renderer) is the architecture, not an implementation detail.
+
+---
+
+## ADR-CANDIDATE-064 — Manual term-link vs description-link COEXISTENCE — PK includes `is_description_link` so both row types persist independently for the same `(data_entity, term)` pair
+
+**Severity**: MEDIUM
+**Classification**: promote
+**Support count**: 2 sidecars
+**Axes present**: controllers, services, schema
+**Surfaced by**:
+- `addDataEntityTerm.md:implicit_adrs[3]` ("Manual link uses `is_description_link = FALSE` by default; description-link rows are managed separately by the description-parsing pipeline")
+- `upsertDataEntityInternalDescription.md:implicit_adrs[1]` ("Glossary terms are auto-linked from description bodies via the `[[namespace:term]]` syntax — terms are not assigned separately from the description text, the description IS the term-assignment mechanism for inline references.")
+
+**Decision statement**: The `data_entity_to_term` table's primary key is `(data_entity_id, term_id, is_description_link)` — a three-column composite that intentionally permits TWO rows for the same `(data_entity, term)` pair: one row with `is_description_link = FALSE` (manual link via `POST /api/dataentities/{id}/terms`), and one row with `is_description_link = TRUE` (auto-link from `[[ns:term]]` mentions in the description). The two channels coexist as separate rows. `removeTermFromDataEntity` filters `IS_DESCRIPTION_LINK.isFalse()` so description-link rows are NOT deletable via the manual-link DELETE endpoint; description-link rows lifecycle is governed by the description-parsing pipeline. The architectural decision: keep description-driven term inference structurally orthogonal to operator-driven explicit assignment.
+
+**Evidence**:
+- `addDataEntityTerm.md` says: "the PK `(data_entity_id, term_id, is_description_link)` allows BOTH a manual link AND a description-link mention of the same (data-entity, term) pair to coexist as separate rows" (`V0_0_77__data_entity_term_description.sql:13-14`)
+- `addDataEntityTerm.md` says: `removeTermFromDataEntity` filter `IS_DESCRIPTION_LINK.isFalse()` (`TermRelationsRepositoryImpl.java:84`)
+- `upsertDataEntityInternalDescription.md` says: "the regex `\\[\\[([^:]*?):([^\\]]*?)\\]\\]` is a stable class-level constant, encoding the syntax as part of the platform's contract with description authors"
+
+**Rationale (wisdom test 3-question)**:
+1. *Intentional?* YES — migration `V0_0_77` explicitly adds `is_description_link` to the PK; the `removeTermFromDataEntity` filter for `isFalse()` is explicit defensive code; the term-linker regex is a class-level constant.
+2. *Structural impact?* YES — affects the schema, the API surface (two channels), the delete semantics, and the audit-feed shape.
+3. *Refactoring or structural?* STRUCTURAL — collapsing the two channels into one would require schema migration + reconciliation of orphaned rows.
+→ ADR-CANDIDATE.
+
+**Existing ADR**: none.
+
+**Proposed action**: Promote to `adrs/drafts/term-linkage-two-channel-model.md`. The ADR should document the PK design, the regex syntax (`[[namespace:term]]`) as part of the description contract, and the deletion-channel separation.
+
+**Severity rationale**: MEDIUM — pattern-shaping schema decision with operator-visible UX consequences (a description-mentioned term cannot be unlinked via the Terms panel; the user must edit the description). Worth documenting so operators understand the dual-channel model.
+
+---
+
+## ADR-CANDIDATE-065 — Tag auto-create-on-miss is INTENTIONAL and spec-acknowledged (rare distinction vs. Owner / Title side-channels)
+
+**Severity**: MEDIUM
+**Classification**: promote
+**Support count**: 1 sidecar (load-bearing — explicitly documented at the OpenAPI spec layer, making this an INTENT anchor where Owner/Title equivalents are silent)
+**Axes present**: controllers, services, OpenAPI spec
+**Surfaced by**:
+- `createDataEntityTagsRelations.md:implicit_adrs[1]` ("Tag auto-creation on data-entity tag assignment is INTENTIONAL and documented at the spec layer — the OpenAPI description `openapi.yaml:1174` explicitly reads 'Also creates corresponding tags in the system if they don't exist.'")
+
+**Decision statement**: When a caller submits `PUT /api/dataentities/{id}/tags` with `tag_name_list: ['novel-name']` for a tag name that does not yet exist in the global `tag` directory, the platform auto-creates the Tag row (with `important = false`) as a side effect of the per-data-entity tag-relation write. This is **explicitly documented** in the OpenAPI spec (`openapi.yaml:1174`: "Also creates corresponding tags in the system if they don't exist."). The decision encodes "tagging is a low-friction operation; gate it at the data-entity level, not the directory level." Auto-created tags are intentionally NON-IMPORTANT (the dedicated `POST /api/tags` route is the only path that can set `important = true`). This is structurally similar to the Owner / Title auto-create side-channels (REFACTOR-199, REFACTOR-206) but DIFFERS in that the spec documents it.
+
+**Evidence**:
+- `createDataEntityTagsRelations.md` says: "the OpenAPI description `openapi.yaml:1174` explicitly reads 'Also creates corresponding tags in the system if they don't exist.' This is a deliberate UX decision (typing a new tag in the UI just works, no separate admin step), and the spec-level acknowledgment distinguishes this from the Owner/Title parallel where the auto-create is undocumented and incidental."
+- `createDataEntityTagsRelations.md` says: "`important = false` default for auto-created tags is hardcoded — `TagServiceImpl.divideTagsByExistence:155` reads `.map(n -> new TagPojo().setName(n).setImportant(false))`"
+
+**Rationale (wisdom test 3-question)**:
+1. *Intentional?* YES — STATED IN THE OPENAPI SPEC. This is the clearest intent_anchor of any candidate in this batch.
+2. *Structural impact?* YES — operator-authoring affordance, side-channel permission semantics, directory growth pattern.
+3. *Refactoring or structural?* STRUCTURAL — adding a "require TAG_CREATE for auto-create" gate would change the operator-facing UX and Policy authoring model.
+→ ADR-CANDIDATE.
+
+**Note on split**: the scope-asymmetry consequence (caller with `DATA_ENTITY_TAGS_UPDATE` can side-door past the management-level `TAG_CREATE` gate, polluting the global Tag directory) is a SEPARATE limitation — REFACTOR-223. The ADR captures the intent; the scope is the unintended-consequence layer that the spec acknowledgment does NOT defend.
+
+**Existing ADR**: none directly; partially overlaps with the batch-F findings on Owner / Title auto-create (REFACTOR-199, REFACTOR-206), which are gap-shaped (no spec acknowledgment).
+
+**Proposed action**: Promote to `adrs/drafts/tag-auto-create-spec-acknowledged.md`. The ADR should articulate: (a) the UX trade-off (low-friction tagging), (b) the `important = false` default and what that means semantically, (c) the cross-reference to REFACTOR-223 (scope-asymmetry) as the gap the ADR does NOT defend.
+
+**Severity rationale**: MEDIUM — pattern-shaping UX decision that distinguishes the Tag side-channel from the Owner / Title parallels via spec-level acknowledgment. Worth promoting both because the intent is clear AND because the maintainer needs to articulate the trade-off the spec text glosses over.
+
+---
+
+## ADR-CANDIDATE-066 — Popular ranking is exclusively `view_count DESC` with `id DESC` tiebreaker — single-signal minimalism, no time-decay, no anti-abuse, no signal-mix
+
+**Severity**: MEDIUM
+**Classification**: promote
+**Support count**: 1 sidecar (load-bearing — the home-page recommendation surface)
+**Axes present**: controllers, services, repositories
+**Surfaced by**:
+- `getPopular.md:implicit_adrs[0]` ("Popular ranking signal is `view_count DESC` exclusively — no signal-mixing, no time-decay, no anti-abuse.")
+
+**Decision statement**: The home-page "popular data entities" recommendation strip (`GET /api/dataentities/popular`) ranks entities exclusively by `data_entity.view_count` in descending order, with `data_entity.id DESC` as the sole tiebreaker. There is no time-decay, no per-class weighting, no recency boost, no owner-scoped popularity, no admin curation, no anti-abuse signal. The ranking signal is the same monotone counter incremented on every `getDataEntityDetails` read (read-as-write per `getDataEntityDetails.md:implicit_adrs[2]` from batch F). The architectural decision: "popularity" = cumulative reads, period. The simplest definition possible. Trade-off explicitly accepted: legitimate-interest reads, bot reads, hot-link reads, and scripted-inflation reads all count equally.
+
+**Evidence**:
+- `getPopular.md` says: "the explicit `.orderBy(DATA_ENTITY.VIEW_COUNT.sort(SortOrder.DESC))` builder call paired with the `incrementViewCount` step that the producer half guarantees populates the counter on every read — both halves of the loop are intent-anchored at distinct file:line citations" (`ReactiveDataEntityRepositoryImpl.java:633` + `:173-180`)
+
+**Rationale (wisdom test 3-question)**:
+1. *Intentional?* YES — the orderBy is a deliberate `.orderBy(DATA_ENTITY.VIEW_COUNT.sort(SortOrder.DESC))` builder call; the producer half (`incrementViewCount` in `getDataEntityDetails`) closes the loop. Two separate methods, one ranking signal, one tiebreaker — the minimalism is the decision.
+2. *Structural impact?* YES — affects the home-page first-impression UX, the ranking-signal-hardening surface (every mitigation candidate — sampling, time-decay, owner-scoping, anti-abuse — is structural), and the storage layer (view_count is the sole counter column).
+3. *Refactoring or structural?* STRUCTURAL — switching to a multi-signal ranking would require new columns, new aggregation jobs, and a new ranking algorithm.
+→ ADR-CANDIDATE.
+
+**Note on split**: the inflation-attack surface (REFACTOR-220 — primary-source-confirmed) is the GAP-shaped consequence — the ADR captures the design choice; the scope captures the missing anti-abuse. The minimalism is intentional; the absence of rate-limit is a refactoring item, NOT a redesign.
+
+**Existing ADR**: none; cross-references `getDataEntityDetails.md:implicit_adrs[2]` (the producer half from batch F).
+
+**Proposed action**: Promote to `adrs/drafts/popular-ranking-signal.md`. The ADR should articulate: (a) the single-signal minimalism, (b) the trade-off accepted (gaming surface), (c) the cross-reference to REFACTOR-220 as the anti-abuse gap, (d) the bootstrap-deployment behaviour (all entities at view_count=0, ranking degenerates to id DESC = "newest").
+
+**Severity rationale**: MEDIUM — pattern-shaping recommendation-surface decision affecting the platform's first-impression for every operator. Worth documenting because every "improve Popular ranking" proposal needs to know the current minimum baseline.
+
+---
+
+## ADR-CANDIDATE-067 — `@ReactiveTransactional` boundary asymmetry — list-shaped reads stay OUTSIDE TX; per-resource writes ARE INSIDE TX (multi-step)
+
+**Severity**: MEDIUM
+**Classification**: promote
+**Support count**: 4 sidecars (this batch — 3 writes + 1 read; cross-ref to multi-batch pattern)
+**Axes present**: controllers, services
+**Surfaced by**:
+- `getPopular.md:implicit_adrs[3]` ("No transactional boundary on the read path — `listPopular` is a single SELECT, no side-effect, no view-count touch.")
+- `addDataEntityTerm.md:implicit_adrs[0]` (service-level `@ReactiveTransactional` on writes, controller-level absence)
+- `upsertDataEntityInternalDescription.md:implicit_adrs[6]` (nested `@ReactiveTransactional` on outer + inner service)
+- `createDataEntityTagsRelations.md:implicit_adrs[2]` (duplicate `@ReactiveTransactional` annotation on outer + inner service — defensive intent)
+
+**Decision statement**: The platform applies `@ReactiveTransactional` selectively: per-resource write paths (description, internal_name, terms, tags, ownership, status, attachment, metadata) carry `@ReactiveTransactional` at the SERVICE LAYER — never at the controller. Multi-step writes (write + FTS-vector refresh + filled-flag toggle + activity-log emission + cross-service side effects) span ONE transaction. Conversely, list-shaped reads (`listPopular`, `listAssociated`, `listByOwner`) carry NO `@ReactiveTransactional` — they are single SELECTs with no side effects. `getDataEntityDetails` (batch F) is the deliberate exception on the read side: it carries `@ReactiveTransactional` BECAUSE of the read-as-write view_count UPDATE. The asymmetry is structural: the TX boundary is a function of whether the operation mutates state, not a uniform pattern.
+
+**Evidence**:
+- `getPopular.md` says: "No transactional boundary on the read path... Contrast with `getDataEntityDetails` (batch F implicit_adrs[2]) which carries `@ReactiveTransactional` to wrap the read + the view-count UPDATE in one transaction. `listPopular` reads `view_count` but never writes — the producer/consumer asymmetry is the implicit decision: the consumer half does not amplify the loop."
+- `upsertDataEntityInternalDescription.md` says: "nested transactional annotations on both layers reflect the intent that a partial-failure state (e.g. description written but term-relations not updated) is forbidden."
+- `createDataEntityTagsRelations.md` says: "Reactive transactional boundary is duplicated — both `DataEntityServiceImpl.upsertTags` and `TagServiceImpl.updateRelationsWithDataEntity` carry `@ReactiveTransactional`. The outer-tx encloses the inner one (Spring's default `PROPAGATION_REQUIRED`)."
+
+**Rationale (wisdom test 3-question)**:
+1. *Intentional?* YES — uniform pattern: writes carry the annotation, reads do not, except where the read mutates (getDataEntityDetails). The pattern is consistent across 7+ writes and 3+ reads. Defensive duplicate-annotation on nested services (Tags, Description) is intentional.
+2. *Structural impact?* YES — affects connection-pool usage, partial-failure semantics, isolation level inheritance, and the rule "controllers are TX-naive."
+3. *Refactoring or structural?* STRUCTURAL — switching to "all paths transactional" or "all paths non-transactional" would be a redesign.
+→ ADR-CANDIDATE.
+
+**Existing ADR**: partial overlap with ADR-CANDIDATE-059 (which says "Multi-step per-data-entity write paths use service-layer @ReactiveTransactional"). This candidate EXTENDS-EXISTING by adding the read-side asymmetry and the nested-annotation defensive pattern.
+
+**Proposed action**: EXTEND existing `adrs/drafts/{ADR-CANDIDATE-059's file when promoted}.md` to articulate the read-side asymmetry AND the nested-annotation pattern. Alternatively, create `adrs/drafts/reactive-transactional-boundary-asymmetry.md` as a fresh ADR if ADR-CANDIDATE-059 hasn't been promoted yet.
+
+**Severity rationale**: MEDIUM — pattern-shaping decision on transaction-boundary placement, confirmed across 4 sidecars in this batch alone (and 7+ across the wider repo).
+
+---
+
+# Maintainer notes
+
+Wisdom-test routing results for this batch:
+
+| Candidate | Test result | Routed to |
+|---|---|---|
+| Two-permission split (description / name / term / tag) | INTENT (3 SecurityRules + 4 PolicyPermissionDto enums with distinct scopes) | ADR-CANDIDATE-062 |
+| Markdown-as-storage + UI-as-renderer | INTENT (OpenAPI spec text "in markdown format") | ADR-CANDIDATE-063 |
+| Term manual-vs-description coexistence (3-column PK) | INTENT (migration V0_0_77 + explicit `.isFalse()` filter) | ADR-CANDIDATE-064 |
+| Tag auto-create-on-miss | INTENT (OpenAPI spec text "Also creates corresponding tags") | ADR-CANDIDATE-065 |
+| Popular ranking minimalism (view_count DESC, id DESC tiebreaker) | INTENT (explicit `.orderBy` builder call paired with producer-side increment) | ADR-CANDIDATE-066 |
+| @ReactiveTransactional read/write asymmetry | INTENT (uniform pattern across 7+ writes, 3+ reads, with deliberate exception on getDataEntityDetails) | ADR-CANDIDATE-067 |
+| SecurityRule `/term` vs `/terms` path mismatch | GAP (silent bug, no rationale) | REFACTOR-217 |
+| Markdown body stored without sanitisation | GAP (absence with no rationale; absence of rehype-sanitize) | REFACTOR-218 |
+| `upsertDescription` silent 200-OK on missing entity | GAP (the `Mono.empty` propagation has no rationale; sibling `updateStatus` does have `switchIfEmpty(NotFoundException)`) | REFACTOR-219 |
+| view_count UPDATE inside GET → inflation loop | GAP (no anti-abuse defence; PRIMARY-SOURCE confirms REFACTOR-201) | REFACTOR-220 |
+| No index on data_entity.view_count | GAP (absence; no rationale) | REFACTOR-221 |
+| EXCLUDE_FROM_SEARCH not applied to listPopular | GAP (inconsistency vs. 9 sibling locations that DO apply it) | REFACTOR-222 |
+| Tag side-door past TAG_CREATE | GAP (the scope-asymmetry consequence ADR-CANDIDATE-065 does not defend) | REFACTOR-223 |
+| getMyObjects silent empty-Flux for unlinked user | GAP (no `switchIfEmpty(OwnerNotAssociatedException)`) | REFACTOR-224 |
+| getMyObjectsWithUpstream/Downstream lineage owner-scope SPoF | GAP (no JOIN-side defence-in-depth) | REFACTOR-225 |
+| createTagsRelations name-vs-behaviour drift (createXxx for REPLACE-ALL) | GAP (operationId / spec text contradicts implementation) | REFACTOR-226 |
+| Term-linking side-channel via description bypasses DATA_ENTITY_ADD_TERM | GAP (the description-update side-effect emits TERM_ASSIGNMENT_UPDATED without checking the term-write permission) | REFACTOR-227 |
+| Activity-handler 2x O(N) re-query for term BEFORE/AFTER | GAP (performance; no caching) | REFACTOR-228 |
+
+All six ADR candidates this batch passed the 3-question wisdom test cleanly — each has an explicit intent_anchor at file:line (annotation, spec text, or class-level constant), each is structurally significant, and each is consistent across the codebase rather than a local optimization.

@@ -693,3 +693,97 @@ Three high-leverage themes for batch G:
 3. **DataEntityController.* further deepening** — 4 of 40+ methods enriched now. Still 36+ uncovered methods on the mega-tag — addOwnership / addTerm / addTag / updateDescription / metadataField operations / etc.
 
 Until batch G fires, the held-back spot-check set should be matched against batch A + B + C + D + E + F log entries above. Misses → candidate node-picks for batch G.
+
+---
+
+## Batch 2026-05-13-G — DataEntity round-2 method-level deepening (5 nodes)
+
+- **Date**: 2026-05-13 (orchestration + reducer merges 2026-05-18 due to retry of 2 stream-timeout agents)
+- **Branch**: `feature/agentic-ontology-enrichment-batch-2026-05-13-G`
+- **Substrate commit**: `ede5d277` (45 prior sidecars + 5 new = **50 total; 12.7% coverage of 395 substrate nodes**)
+- **Theme**: DataEntityController method-level deepening round 2 — five high-leverage methods chosen against next-batch planning notes from batch F: known-bug validation (term path-mismatch from TEST-GAP-017) + new-area attack-surface exploration (XSS / Markdown rendering) + pattern-check (Tag auto-create vs Owner/Title batch-F sub-pattern) + ADR-CANDIDATE-015 primary-source confirmation (owner-scoped reads) + cross-batch loop closure (view_count from getDataEntityDetails → getPopular ranking).
+- **Pre-batch catch-up**: `/test-coverage` refreshed first to fold in batch-F sidecars (sidecar_count: 40 → 45; +34 TEST-GAPs; total 252 → 286). Cleanest catch-up per batch-F next-batch notes.
+- **Source repo**: re-cloned at `/home/raman/work/odd/odd-platform` (commit ede5d277) — was missing from the working tree before this batch; needed for file-analyser primary-source reads.
+- **Retry note**: 2 of 5 file-analyser agents (createDataEntityTagsRelations + getPopular) hit stream-idle timeouts on first attempt (likely WebFetch-induced); both succeeded on retry with explicit "no WebFetch" mode (source-only primary-read).
+
+### Sidecars added (5)
+
+| Sidecar | Concept(s) | Headline finding |
+|---|---|---|
+| `DataEntityController.addDataEntityTerm` | Term Linkage (NEW), Term | **CONFIRMED FROM 3 PRIMARY SOURCES**: `SecurityConstants.java:237-239` registers `/term` (singular) while `openapi.yaml:973` declares `/terms` (plural); `AuthorizationCustomizer.java:24-30` falls through to `.authenticated()` on no-match; DATA_ENTITY_ADD_TERM is NEVER ENFORCED. DELETE counterpart has the identical bug (SecurityConstants.java:240-242). The CRITICAL test-pin gap (TEST-GAP-017) is now PRIMARY-SOURCE backed. |
+| `DataEntityController.upsertDataEntityInternalDescription` | Internal Description (NEW), Markdown Rendering Pipeline (NEW), FTS Search Vector (NEW) | **Stored-XSS surface**: Markdown description stored verbatim (no Jsoup.clean) + UI pulls rehype-raw@6.1.1 without rehype-sanitize. Plus "upsert" misleading — pure UPDATE with silent 200 OK on missing entity. Plus term-linking side-channel (DATA_ENTITY_DESCRIPTION_UPDATE → [[ns:term]] auto-creates term_relations bypassing DATA_ENTITY_ADD_TERM). Plus activity-feed leakage of full description payload cross-owner. |
+| `DataEntityController.createDataEntityTagsRelations` | Tag (NEW), Tag Directory Consumers (NEW audience) | **REFINES BATCH-F AUTO-CREATE PATTERN**: Tag auto-create-on-miss is EXPLICITLY SPEC-DOCUMENTED (`openapi.yaml:1174` "Also creates corresponding tags in the system if they don't exist") — distinguishes from batch-F Owner/Title UNDOCUMENTED auto-create. Structural gap is SCOPE-ASYMMETRY: DATA_ENTITY_TAGS_UPDATE (DATA_ENTITY-scoped, grantable to per-entity owners) writes into MANAGEMENT-scoped TAG_CREATE territory. Per-data-entity-owner globally pollutes Tag directory; cross-tenant Tag pollution enabled. Plus name-vs-behaviour drift: `createXxx` operationId for REPLACE-ALL semantic. |
+| `DataEntityController.getMyObjects` | User-Owner Mapping (NEW) | **ADR-CANDIDATE-015 PRIMARY-SOURCE CONFIRMED**: controller method body (DataEntityController.java:283-289) takes only (page, size, exchange) — no Authentication/Principal/owner-id. Principal flows via `ReactiveSecurityContextHolder.getContext()` → `AuthIdentityProviderImpl.fetchAssociatedOwner()` → `user_owner_mapping` lookup → JOIN OWNERSHIP at SQL layer. Plus unlinked-user silent empty Flux UX trap. Plus lineage-variant single-point-of-failure (getMyObjectsWithUpstream/Downstream rely on anchor-set correctness; no JOIN-side owner filter on response). Plus LOGIN_FORM+LDAP both produce provider=null cross-mode bleed. |
+| `DataEntityController.getPopular` | Popular Entities Ranking (NEW), ODD Platform Home-Page Visitors (NEW audience) | **CLOSES THE view_count CROSS-BATCH LOOP**: REFACTOR-201 PRIMARY-SOURCE CONFIRMED. Producer (getDataEntityDetails, batch F) + Consumer (getPopular: `ReactiveDataEntityRepositoryImpl.java:633` `view_count DESC` sole ranking; no anti-abuse signal, no rate-limit, no index). NEW finding: EXCLUDE_FROM_SEARCH is broadly applied at 9 sites but NOT in listPopular's CTE — internal/staging entities surface on home page. Inflation attack confirmed end-to-end. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Net |
+|---|---|---|
+| concept-merger | 84 → **105 concepts** | +21 (catalog_v8; 7 new entities, 5 new operations, 7 new invariants, 2 new audiences + 6 new canonicalisation candidates + 8 STRENGTHENS on existing concepts). Mode = incremental-delta. |
+| doc-gap-finder | 95 → **103 findings** | +8 (DOC-GAP-096..103 — 4 HIGH + 3 MEDIUM + 1 LOW) + 6 STRENGTHENS on existing findings (DOC-GAP-001 path-mismatch PRIMARY-SOURCE confirmed; DOC-GAP-009 api-reference gap; DOC-GAP-053 META; DOC-GAP-077 Permissions page omissions). 5 live URLs WebFetched. |
+| adr-archaeologist (ADRs) | 61 → **67 ADR candidates** | +6 (ADR-CANDIDATE-062..067 — 1 HIGH + 5 MEDIUM) + 7 STRENGTHENS (ADR-CANDIDATE-001 controllers-as-delegates now 19-sidecar; ADR-CANDIDATE-003 read-collaborative now 4-sidecar; **ADR-CANDIDATE-015 PROMOTED FROM BORDERLINE TO PRIMARY-SOURCE**; ADR-CANDIDATE-007, ADR-CANDIDATE-002, ADR-CANDIDATE-050, ADR-CANDIDATE-059). 6 wisdom-test passes (0 fails — 7th consecutive batch). |
+| adr-archaeologist (scopes) | 199 → **211 refactoring scopes** | +12 (REFACTOR-217..228 — 5 HIGH + 5 MEDIUM + 2 LOW). **Key HIGH scopes**: REFACTOR-217 (SecurityRule /term vs /terms path mismatch — PRIMARY-SOURCE PROVEN), REFACTOR-218 (Markdown stored-XSS — backend + UI rehype-raw + no sanitize), REFACTOR-220 (view_count inflation loop CLOSED — REFACTOR-201 primary-source confirmed), REFACTOR-221 (no view_count index — sequential scan + sort on every Popular render), REFACTOR-222 (EXCLUDE_FROM_SEARCH not applied to /popular). **4 STRENGTHENS**: REFACTOR-073 (DISABLED-mode bypass) → **18-sidecar cluster**; REFACTOR-024 (cross-owner read) → 7-sidecar; REFACTOR-199 (Owner auto-create) → Tag joins as parallel-pattern; REFACTOR-201 (view_count inflation) → PRIMARY-SOURCE CONFIRMED. |
+| test-coverage-mapper | 286 → **312 test gaps** | +26 net-new (TEST-GAP-287..312 — 5 CRITICAL + 10 HIGH + 5 MEDIUM + 6 LOW) + 8 STRENGTHENS (TEST-GAP-017 path-mismatch primary-source pin; TEST-GAP-018, 020, 002 ADR-CANDIDATE-015 confirmation; TEST-GAP-256, 259 view_count loop closure; TEST-GAP-104, 108, 133, 134 DISABLED-bypass cluster expansion to 17 endpoints). 0 new sidecar-quality findings (all 5 batch-G sidecar `test_files` claims grep-verified clean against the live odd-platform clone). 7 new double-jeopardy entries. |
+
+**0 wisdom-test fails on batch G — 7th consecutive batch**.
+
+### Known-bug validators / cross-batch validations
+
+| Pre-existing finding | Result this batch | Detail |
+|---|---|---|
+| **TEST-GAP-017** (term path-mismatch `/term` vs `/terms`) | **PRIMARY-SOURCE PROVEN — three independent citations** | `SecurityConstants.java:237-239` (singular registration) + `openapi.yaml:973` (plural declaration) + `AuthorizationCustomizer.java:24-30, 29-30` (dispatch + `.authenticated()` fall-through). DELETE counterpart at SecurityConstants.java:240-242 vs openapi.yaml:1042 has identical bug. REFACTOR-217 created with file:line evidence. |
+| **ADR-CANDIDATE-015** (Owner-scoped routes — borderline since batch A) | **PROMOTED TO PRIMARY-SOURCE** | `getMyObjects` controller method body is the architectural anchor. Resolution chain primary-source documented: ReactiveSecurityContextHolder → AuthIdentityProviderImpl.fetchAssociatedOwner → user_owner_mapping → JOIN OWNERSHIP. The contrast with cross-owner reads (centerpiece detail, lineage, alerts, popular — all no-principal-and-cross-owner) makes the deliberate asymmetry visible. Borderline flag resolved. |
+| **REFACTOR-201** (view_count UPDATE inside @ReactiveTransactional GET → inflation) | **PRIMARY-SOURCE CONFIRMED end-to-end** | Producer (getDataEntityDetails, batch F) + Consumer (getPopular, batch G — `ReactiveDataEntityRepositoryImpl.java:633` view_count DESC sole ranking). No rate-limit, no anti-abuse, no index. Inflation attack works. |
+| **REFACTOR-073** (DISABLED-mode bypass) | **VALIDATED + STRENGTHENED — 18-sidecar cluster** | 5 new batch-G sidecars all flag DISABLED-mode anonymous reachability. Cumulative cluster now reaches 17 endpoints across batches A-G; getPopular (home-page surface) joining is consequential — first-impression read of the platform is anonymously accessible without boot-time warning. |
+| **REFACTOR-024** (read-collaborative cross-owner) | **VALIDATED + STRENGTHENED — 7-sidecar** | getPopular joins as the home-page surface confirming cross-owner read-collaborative posture. Contrast with getMyObjects (deliberate JOIN-side owner filter) makes the intentionality vs. carelessness question sharper. |
+| **REFACTOR-199** (Owner auto-create-on-miss bypass) | **REFINED — sub-pattern split** | createDataEntityTagsRelations confirms Tag auto-create is SPEC-DOCUMENTED (openapi.yaml:1174). Sub-pattern split: (a) undocumented Owner/Title (batch F) → REFACTOR-199; (b) spec-documented-with-scope-asymmetry Tag (batch G) → REFACTOR-223. Three confirmed members of the "directory side-channel via per-resource write permission" family. |
+
+### Cross-batch triangulation (escalations this batch)
+
+| Pattern | Sidecar count | Status this batch |
+|---|---|---|
+| **DISABLED-mode bypasses SECURITY_RULES** | **18** | strongest single finding — 13 prior + 5 new; reaches 17 endpoints across A-G |
+| **Read-collaborative cross-owner enumeration** | **7** | getPopular as home-page surface joins; ADR-CANDIDATE-003 now 4-sidecar locked |
+| **Permission-bypass via auto-create-on-miss** | **3** | Owner (F) + Title (F) + Tag (G — with spec-asymmetry sub-pattern); pattern split into documented vs undocumented sub-classes |
+| **Doc-vs-code spelling/format mismatch / spec-vs-impl drift** | **5** | OAuth2 username-attribute (D) + S2S Authorization-vs-X-API-Key (F) + IngestionController 200-vs-201 (F) + createDataEntityTagsRelations create-vs-replace-all (G) + getMyObjectsWithUpstream/Downstream owned-vs-non-owned (G) |
+| **OpenAPI 200/201 status-code drift** | 4 | unchanged from F (Owner / Role / Policy / postDataEntityList) |
+| **view_count UPDATE→READ inflation loop closure** | 2 cross-batch | producer (F) + consumer (G); REFACTOR-201 PRIMARY-SOURCE CONFIRMED |
+| **Authorization path-pattern mismatch** (NEW class — batch G) | 2 | term singular vs plural + DELETE counterpart; new failure-mode class not previously surfaced |
+| **Markdown rendering security** (NEW finding — batch G) | 1 | single sidecar; severity HIGH; UI rehype-raw+no-sanitize + backend no-Jsoup.clean |
+| **Anchor-set-derived endpoints with no defence-in-depth** (NEW class — batch G) | 3 | getMyObjects + getMyObjectsWithUpstream/Downstream; NEW class of cross-cutting risk |
+| **Operation name vs behaviour drift** (NEW finding — batch G) | 2 | createDataEntityTagsRelations + upsertDataEntityInternalDescription |
+
+### Notable new findings (spot-check candidates this batch)
+
+- **SecurityRule `/term` vs `/terms` path mismatch silently disables DATA_ENTITY_ADD_TERM** — PRIMARY-SOURCE confirmed via three independent file:line citations. ANY authenticated user can link/unlink any term to any data entity. One-line fix in SecurityConstants.java; TEST-GAP-017 regression-pin.
+- **Markdown description is the largest free-text injection surface on the platform** — three-way cluster: stored-XSS via rehype-raw+no-sanitize+no-backend-sanitisation (REFACTOR-218); DISABLED-mode anonymous body rewrite (TEST-GAP-294); term-linking side-channel via [[ns:term]] auto-link (TEST-GAP-295).
+- **getPopular closes the view_count inflation loop** — REFACTOR-201 primary-source confirmed from consumer side. Home-page first impression is publicly manipulable; under DISABLED, no auth even required.
+- **EXCLUDE_FROM_SEARCH bypass on Popular** — internal/staging entities marked hidden-from-search surface on the home page. 1 of 10 list-shape application sites missed.
+- **Owner-scoped routes architectural pattern primary-source confirmed** — ADR-CANDIDATE-015 promoted from borderline. The Reactor Context → AuthIdentityProvider → user_owner_mapping → JOIN OWNERSHIP chain is the canonical owner-scoping mechanism.
+- **Tag auto-create-on-miss is intentional UX trade-off with scope-asymmetry consequence** — refines batch-F Owner/Title pattern: documented vs undocumented sub-classes. Per-data-entity-owner globally pollutes Tag directory; cross-tenant pollution enabled.
+- **getMyObjectsWithUpstream/Downstream OpenAPI summary is literally wrong** — claims "owned by current user with upstream dependencies"; actual response is NON-owned entities reachable from owned set. Security-impact gap in multi-tenant deployments. NEW HIGH doc-drift (DOC-GAP-099).
+- **getMyObjects silent empty-Flux for unlinked users** — 200 OK + [] body indistinguishable from "owns nothing"; no error, no header, no troubleshooting flow in docs.
+- **Lineage-variant single-point-of-failure** — anchor-set-derived endpoints with no defence-in-depth; regression in fetchAssociatedOwner leaks lineage neighbours. NEW class of cross-cutting risk.
+
+### Cumulative ontology state (after this batch lands)
+
+| Layer | Count |
+|---|---|
+| Substrate scaffold | 395 nodes / 479 edges |
+| Sidecars | **50** (12.7% coverage; +5 from batch F) |
+| concepts.yaml | catalog_version 8 (**105 concepts**; 35 entities / 26 operations / 31 invariants / 13 audiences; 48 canonicalisation candidates; 8 batch-G STRENGTHENS recorded) |
+| doc-gaps.md | **103 findings** (53 HIGH / 40 MEDIUM / 10 LOW; +8 from batch F) |
+| implicit-adrs.md | **67 ADR candidates** (18 HIGH / 44 MEDIUM / 5 LOW; +6 from batch F) |
+| refactoring-scopes.md | **211 refactoring scopes** (63 HIGH / 97 MEDIUM / 51 LOW; +12 from batch F) |
+| test-map.yaml | **312 test gaps** (81 CRITICAL / 109 HIGH / 88 MEDIUM / 34 LOW; +26 from batch F catchup); 7 batch-G double-jeopardy entries; 0 new sidecar-quality findings |
+
+### Next-batch planning notes
+
+Three high-leverage themes for batch H:
+
+1. **Repository layer** — still 0 enriched. With the source repo now reliably cloned at `/home/raman/work/odd/odd-platform`, the substrate axis (currently jOOQ-based + `Reactive*RepositoryImpl` shape) is reachable. Where transaction boundaries, advisory-lock interactions, tenant-isolation enforcement, jOOQ FTS injection territory live. Pick anchors: `ReactiveDataEntityRepositoryImpl` (the largest by far), `ReactiveLineageRepositoryImpl` (cycle-detection territory), `ReactiveOwnershipRepositoryImpl` (Owner-scoping enforcement).
+2. **DataEntityController.* further deepening** — 9 of 40 methods enriched after batches F + G. 31+ uncovered methods on the mega-tag — `addDataEntityDataEntityGroup`, `deleteDataEntityFromDataEntityGroup`, `getDataEntityActivity`, `getDataEntityAlerts`, `getDataEntityMessages`, `getDataEntityMetrics`, `getDataEntityUpstreamLineage`, `deleteTermFromDataEntity`, `deleteOwnership`, `updateOwnership`, `upsertDataEntityInternalName`, `upsertDataEntityMetadataFieldValue`, `getMessages`, `getDataEntityGroupsLineage`, etc. Symmetric DELETE/UPDATE methods are high-leverage (likely confirm or refute Owner/Tag/Title symmetric bypasses).
+3. **Anchor-set defence-in-depth audit** — batch G's NEW cross-cutting pattern. Enumerate every controller method that resolves owner via `fetchAssociatedOwner` and computes a derived response set (lineage, recommendations, search-scope filters). For each, the question is: does the derived-set logic apply a JOIN-side owner filter, or does it rely on anchor-set correctness? Only enrichment can answer; potential single-batch theme.
+
+Until batch H fires, the held-back spot-check set should be matched against batch A + B + C + D + E + F + G log entries above. Misses → candidate node-picks for batch H.

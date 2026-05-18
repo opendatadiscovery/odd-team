@@ -463,6 +463,7 @@ This document is the methodology surface. The depth lives elsewhere in this work
 - `adrs/drafts/code-lineage-substrate.md` — substrate design (revision 3, research-backed). Anchors. Run modes. Tree-sitter stack choice rationale.
 - `adrs/drafts/agentic-code-ontology.md` — enrichment + reducer design (revision 3, runtime-corrected). Sidecar schema. Subagent shapes. Why hybrid not pure-agent.
 - **`adrs/drafts/feature-anchored-ontology.md`** *(rev 2)* — fourth-layer design. Entry-point principle. Feature-flow composition. 4-class test matrix. Type-7 probes. Schema v0.3.0 migration.
+- **`adrs/drafts/dynamic-verification-layer.md`** *(rev 2 — draft)* — fifth-layer design. Local-only writable mirror via docker-compose. probe-runner subagent + /probe-run skill + probe and probe-run artefacts. The methodology principle "inferred truth is provisional; measured truth is canonical." 5-slice rollout starting with view_count F-001.
 - `adrs/drafts/research/code-lineage-substrate/` and `adrs/drafts/research/agentic-code-ontology/` — research artefacts produced via the gsd-build/get-shit-done parallel-researcher pattern.
 - `retrospectives/LSN-013` — research-punt case-law (why ADRs don't end with "open questions for human review").
 - `retrospectives/LSN-016` — heuristic-vs-agentic case-law (why a tree-sitter substrate alone is not lineage; why Claude Code is the runtime, not the Anthropic API).

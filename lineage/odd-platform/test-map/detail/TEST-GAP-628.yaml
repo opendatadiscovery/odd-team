@@ -1,0 +1,27 @@
+gap_id: TEST-GAP-628
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java OwnerController controller-method:deleteOwner"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "deleteOwner.md:bugs_limitations_corner_cases.[6] (getOwnerList surfaces SOFT-DELETED owners selectively — by-id vs list asymmetry — severity MEDIUM)"
+  - "deleteOwner.md:security.known_security_gaps.[2] (Soft-deleted owners visible via GET /api/owners/{id} — severity MEDIUM)"
+behaviour: |-
+  **SOFT-DELETED OWNERS VISIBLE INCONSISTENTLY: invisible via list (`GET /api/owners`); visible via by-id (`GET /api/owners/{id}`).** The list query at `ReactiveOwnerRepositoryImpl.java:86-121` uses `enrichSelect` which calls `listCondition` (inherited from ReactiveAbstractSoftDeleteCRUDRepository.listCondition at lines 86-94) which adds `deleted_at IS NULL`. So soft-deleted owners do NOT appear in the listing — operators get a clean directory after delete. **HOWEVER**: the `getDto` query at `ReactiveOwnerRepositoryImpl.java:65-83` does NOT apply the soft-delete filter on OWNER (`WHERE OWNER.ID.eq(id)` without `deleted_at IS NULL`). Direct `GET` of an owner-by-id via `OwnerService.getOwnerDtoById` (OwnerServiceImpl.java:102-107) RETURNS the soft-deleted row + `.switchIfEmpty(Mono.error(NotFoundException))` only fires when the ID does not exist at all. **The visibility of a soft-deleted owner is INCONSISTENT across list vs by-id queries** — list hides them; by-id surfaces them. A direct API consumer who learns an owner-id (from cached search results, from a stale lineage view, from a UI bookmark, from a stale owner_association_request linking to the soft-deleted owner) can read the soft-deleted owner's full DTO including its previously-attached roles and the (now soft-deleted) user_owner_mapping row. **If a soft-deleted owner's name is sensitive (e.g. PII the platform stored), the by-id surface leaks it.** The asymmetry is unstated.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/OwnerSoftDeleteVisibilityAsymmetryTest.java"
+  name: "deleteOwner_softDeletedOwnerInvisibleViaList_butVisibleViaGetById"
+evidence:
+  - "deleteOwner.md says (bugs_limitations_corner_cases.[6]): 'The getOwnerList endpoint surfaces SOFT-DELETED owners selectively — the list query at ReactiveOwnerRepositoryImpl.java:86-121 uses enrichSelect which calls listCondition (inherited from ReactiveAbstractSoftDeleteCRUDRepository.listCondition) which adds deleted_at IS NULL. So soft-deleted owners do NOT appear in the listing. However, the getDto query at ReactiveOwnerRepositoryImpl.java:65-83 does NOT apply the soft-delete filter on OWNER (WHERE OWNER.ID.eq(id) without deleted_at IS NULL). The visibility of a soft-deleted owner is INCONSISTENT across list vs by-id queries — list hides them; by-id surfaces them.'"
+  - "deleteOwner.md says (security.known_security_gaps.[2]): 'A direct API consumer who learns an owner-id (from cached search results, from a stale lineage view, from a UI bookmark) can read the soft-deleted owner's full DTO including its previously-attached roles and the (now soft-deleted) user_owner_mapping row. If a soft-deleted owner's name is sensitive (e.g. PII the platform stored), the by-id surface leaks it.'"
+  - "Source: ReactiveOwnerRepositoryImpl.java:65-83 (getDto no deleted_at filter) vs ReactiveOwnerRepositoryImpl.java:86-121 (list filtered) + OwnerServiceImpl.java:102-107 (getOwnerDtoById consumer)"
+cross_references:
+  - "F-006 family soft-delete visibility patterns"
+  - "TEST-GAP-628 (this gap pairs with TEST-GAP-345 family soft-delete-orphan-binding repository-tier asymmetry)"
+  - "concepts.yaml — soft-delete information disclosure family"
+proposed_action: |-
+  Add `OwnerSoftDeleteVisibilityAsymmetryTest` with three test methods: (a) seed Owner with id O and roles; DELETE /api/owners/{O}; GET /api/owners; assert O is NOT in the response list (pins list-filtered behaviour); (b) GET /api/owners/{O}; assert the response DTO IS returned with the original name + roles (pins by-id unfiltered behaviour); (c) repeat (b) after explicit re-creation of a new owner with the same name; assert the by-id query against the SOFT-DELETED owner's old id still returns the soft-deleted DTO (not the new owner). All pin the current asymmetry. Future fix that filters deleted_at in getDto query will break tests (b) and (c).
+batch: 2026-05-20-P
+feature_id: F-006

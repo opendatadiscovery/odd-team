@@ -1,0 +1,90 @@
+name: Register Data Source from Collector (S2S, upsert by ODDRN)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-10
+  - P-09
+description: |-
+  **NEW OPERATION, batch 2026-05-20-P** — the S2S boot-of-collector endpoint
+  `POST /ingestion/datasources` handled by `IngestionController.createDataSource`
+  (`IngestionController.java:47-73`; the substrate's node-label `createDataSourceEntity`
+  is a synonym). A Collector POSTs a `DataSourceList` payload to register or
+  update the datasources it will subsequently ingest into. The path is
+  ALWAYS authenticated by the SIBLING `IngestionDataSourceFilter` (unconditional
+  `@Component`, NOT gated by `auth.ingestion.filter.enabled`) which validates
+  the `Authorization: Bearer <token>` header against the COLLECTOR table and
+  writes the matched `collectorId` into the WebSession's
+  `COLLECTOR_ID_SESSION_KEY` attribute BEFORE the controller method runs.
+  The controller reads that session attribute (fail-loud
+  `IllegalStateException("Collector id is null")` if missing), validates that
+  every payload item has non-empty `name` + `oddrn`, and delegates to
+  `DataSourceIngestionServiceImpl.createDataSources(collectorId, ...)` which
+  upserts by ODDRN inside one `@ReactiveTransactional` boundary.
+
+  The CRITICAL ASYMMETRY with the sibling `postDataEntityList`: this filter
+  is ALWAYS-ON (no `@ConditionalOnProperty`); the data-entity filter is
+  OFF-by-default. Both share the same `/ingestion/**` WHITELIST_PATHS, so
+  the four UI auth modes (DISABLED / LOGIN_FORM / OAUTH2 / LDAP) layer no
+  additional defence for either path.
+
+  The merge semantics on UPDATE are deliberately PARTIAL: only `name` +
+  `description` flow from the new payload. Existing `connection_url`,
+  `active` flag, `type`, `namespace_id`, `collector_id`, `token_id`,
+  soft-delete flag, all timestamps — all PRESERVED (`DataSourceIngestionServiceImpl.java:74-92`).
+  An operator who renames a datasource in the UI and re-runs the collector
+  will see their UI-side rename OVERWRITTEN by the collector's payload; no
+  log records the overwrite. A collector that genuinely needs to update
+  `connection_url` CANNOT do so via this endpoint.
+
+  Namespace is INHERITED from the COLLECTOR, NOT the payload (the
+  collector-scoped tenancy model, `DataSourceIngestionServiceImpl.java:99-111`).
+  Any `namespace_name` in the payload is silently ignored.
+
+  Response is hard-coded 200 OK with empty body (`Mono<ResponseEntity<Void>>`);
+  the platform-assigned `id` of the registered datasource is NOT echoed —
+  callers must call `GET /api/datasources` separately to discover the id.
+  The OpenAPI contract for the operation may declare a response shape; the
+  Java return type is hard-coded `Void` regardless.
+
+  Cross-references: the operation anchors F-008 (P-10:F-001 Batch Ingestion),
+  surfaces the `two_ingestion_filters_asymmetric_auth` invariant (sibling
+  invariant in this batch), and contributes a NEW invocation site to
+  REFACTOR-185 (the DISABLED-mode bypass — the filter still requires a
+  valid collector token even under DISABLED, but DISABLED + open UI lets
+  an attacker create the collector first, then call this endpoint).
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java IngestionController controller-method:createDataSourceEntity
+contributors:
+  - 'createDataSourceEntity.md:concepts.operations: extract-collector-id-from-websession, fail-loud-on-missing-collector-id, validate-payload-non-empty-name-and-oddrn, delegate-to-service-with-collector-id, upsert-datasources-by-oddrn-merge-name-and-description, return-200-on-success'
+  - 'createDataSourceEntity.md:concepts.invariants.[0-6]: filter-delegated auth + WebSession identity + partial-merge upsert + namespace-from-collector inheritance + hard-coded 200 response'
+  - 'createDataSourceEntity.md:implicit_adrs.[0-3]: WebSession-attribute identity propagation; datasource-auth always-on vs data-entity-auth opt-in asymmetry; partial-merge upsert semantics; namespace-from-collector tenancy model'
+evidence:
+  - createDataSourceEntity.md:understanding (the 25-line proxy + filter delegation pattern end-to-end)
+  - createDataSourceEntity.md:concepts.entities.[DataSourceList, CollectorDto, NamespacePojo, DataSourcePojo]
+  - createDataSourceEntity.md:concepts.operations
+  - createDataSourceEntity.md:concepts.invariants.[0-6]
+  - createDataSourceEntity.md:bugs_limitations_corner_cases.[0-9]
+  - createDataSourceEntity.md:security.authorization_assertions
+  - createDataSourceEntity.md:implicit_adrs.[0-3]
+notes: |-
+  This operation is the FIRST step in a collector's lifecycle per the
+  custom-collectors developer guide (WebFetched 2026-05-20 status 200:
+  "Register data sources with the Platform via POST /ingestion/datasources
+  once at startup"). The doc page tells custom-collector authors to call
+  this endpoint but does NOT specify: (a) the HTTP method semantics on
+  re-registration (the platform UPSERTs by ODDRN — only `name` +
+  `description` flow); (b) the response code (200 OK, NOT 201 Created —
+  asymmetric with `POST /api/datasources` UI path which DOES return 201);
+  (c) the empty-response-body contract; (d) the namespace inheritance;
+  (e) the session-state requirement (the COLLECTOR_ID is bound to the
+  WebSession for the connection's lifetime — clustered deployments
+  without sticky sessions surface 500 on session loss).
+
+  The S2S doc page recommends combining `auth.s2s.enabled` with
+  `auth.ingestion.filter.enabled: true` but the `auth.ingestion.filter.enabled`
+  property gates ONLY `/ingestion/entities`. It does NOT gate
+  `/ingestion/datasources` — that path has its own always-on filter
+  (`IngestionDataSourceFilter`). The asymmetry is invisible to operators
+  reading the docs.

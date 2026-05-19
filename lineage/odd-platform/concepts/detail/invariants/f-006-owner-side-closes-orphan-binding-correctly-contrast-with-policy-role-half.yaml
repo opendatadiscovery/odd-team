@@ -1,0 +1,136 @@
+name: F-006 Owner-side closes orphan-binding CORRECTLY (contrast with Policy/Role half — WRONG)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+description: |-
+  **NEW INVARIANT, batch 2026-05-20-P** — PRIMARY-SOURCE confirmed at
+  `OwnerServiceImpl.java:97` + `ReactiveOwnerToRoleRepositoryImpl.java:52-56`.
+  The F-006 family canonicalisation candidate ("orphan-binding permission
+  leak") surfaced in batch H originally identified the WRONG pattern at
+  the Policy/Role half: `ReactivePolicyRepositoryImpl.getRolesPolicies`
+  (lines 32-35) joins `role_to_policy` → `policy` with NO `deleted_at`
+  filter, returning soft-deleted policies that retain surviving
+  role-to-policy bindings → orphan-binding permission leak.
+
+  **This batch's findings (Owner-side) reveal the CORRECT pattern at
+  the Owner half**: when an Owner is deleted via
+  `DELETE /api/owners/{owner_id}`, the OwnerServiceImpl explicitly
+  HARD-DELETES the role-binding join rows BEFORE soft-deleting the
+  Owner row:
+
+    ```java
+    // OwnerServiceImpl.java:96-99
+    .then(ownerToRoleRepository.deleteOwnerRelationsExcept(id, List.of()))
+    .then(ownerRepository.delete(id))
+    .then();
+    ```
+
+  Where `ownerToRoleRepository.deleteOwnerRelationsExcept(id, List.of())`
+  threads through `ReactiveOwnerToRoleRepositoryImpl.java:52-56`:
+
+    ```java
+    DSL.delete(OWNER_TO_ROLE)
+       .where(OWNER_TO_ROLE.OWNER_ID.eq(ownerId)
+              .and(OWNER_TO_ROLE.ROLE_ID.notIn(roleIds)))  // empty
+    ```
+
+  With `roleIds = List.of()` the `NOT IN ()` is always-true; the
+  predicate reduces to `OWNER_ID = ?`. Result: **a `DSL.delete` (hard
+  DELETE), not an UPDATE — every OWNER_TO_ROLE row for this owner is
+  PHYSICALLY removed before the owner row enters soft-deleted state.**
+  No orphan binding survives.
+
+  **The contrast surface map**:
+
+    | Side    | Binding table     | On entity delete   | Read-side reads it? | Permission leak? |
+    |---------|-------------------|--------------------|---------------------|------------------|
+    | OWNER   | owner_to_role     | HARD-DELETE         | N/A (no rows)        | NO (closed)      |
+    | POLICY  | role_to_policy    | (no cascade)       | YES (no filter)     | YES (orphan)     |
+    | ROLE    | role_to_policy    | (no cascade)       | YES (no filter)     | YES (orphan)     |
+
+  The Owner-side does this correctly. The Policy/Role-side does NOT —
+  ReactivePolicyRepositoryImpl batch H surfaced the missing
+  `deleted_at IS NULL` filter on the LEFT JOIN. The Role-repo batch N
+  surfaced the SYMMETRIC mirror — three custom dto methods (`getDto`,
+  `listDto`, `getByName`) all do the LEFT JOIN against POLICY with no
+  `deleted_at` filter.
+
+  **The F-006 family canonicalisation must now distinguish the THREE
+  patterns**:
+
+    1. **CORRECT (Owner half)**: deletion of the parent entity
+       (OWNER) is paired with a HARD-DELETE of the binding rows
+       BEFORE the parent's soft-delete completes. The binding can't
+       outlive the parent's deletion. Read-side queries cannot
+       surface stale bindings — they don't exist.
+
+    2. **WRONG (Policy/Role half — joins read soft-deleted)**:
+       deletion of the parent entity (POLICY) is a soft-delete with
+       NO accompanying binding cleanup. The binding rows survive.
+       Read-side queries that LEFT JOIN policy WITHOUT `deleted_at
+       IS NULL` filter surface the soft-deleted policy with its
+       surviving binding — orphan-binding permission leak.
+
+    3. **WRONG (Role half — symmetric mirror)**: same as 2, with
+       Role as the entity and the same three custom dto methods
+       failing to filter the joined POLICY's `deleted_at`.
+
+  **The recommended cleanup paths for the WRONG halves** (following
+  the Owner-side as the gold standard):
+
+    - **Cheapest** (Policy side): add `deleted_at IS NULL` filter on
+      the joined POLICY rows in ReactivePolicyRepositoryImpl.getRolesPolicies
+      lines 32-35 (READ-side fix — masks the symptom, doesn't
+      cleanup the data).
+
+    - **Symmetric cleanup** (Role side): same fix on
+      ReactiveRoleRepositoryImpl's three dto methods.
+
+    - **Owner-side parity** (Policy / Role side): mirror the
+      `deleteRelations`-before-soft-delete pattern. On
+      PolicyServiceImpl.delete, HARD-delete the role_to_policy
+      rows for that policy BEFORE soft-deleting the policy. On
+      RoleServiceImpl.delete, similarly. This is the WRITE-side fix
+      — cleans up the data; no read-side filter needed.
+
+  **Severity**: HIGH — the contrast is structural; the WRONG halves
+  remain HIGH-severity leak surfaces. This invariant exists to
+  surface the Owner-side as the correctness reference, NOT to
+  reduce the WRONG halves' severity.
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+nodes:
+  - odd-platform java OwnerController controller-method:deleteOwner
+  - odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
+contributors:
+  - 'deleteOwner.md:implicit_adrs.[1] (Role bindings (OWNER_TO_ROLE) are HARD-DELETED on owner delete — this is the F-006 family pattern done CORRECTLY at this surface)'
+  - 'deleteOwner.md:concepts.invariants.[0] (Soft-delete on the owner row + hard-delete on role bindings — asymmetric persistence)'
+  - 'deleteOwner.md:dependencies_semantic.couples-to (ReactiveOwnerToRoleRepository.deleteOwnerRelationsExcept — physical-DELETE)'
+  - 'ReactivePolicyRepositoryImpl.md (batch H): getRolesPolicies missing deleted_at filter — the WRONG pattern'
+  - 'ReactiveRoleRepositoryImpl.md (batch N): three dto methods missing deleted_at filter on joined POLICY — symmetric mirror WRONG pattern'
+evidence:
+  - deleteOwner.md:implicit_adrs.[1] (intent_anchor — CORRECT pattern; F-006 family done correctly)
+  - deleteOwner.md:concepts.invariants.[0] (asymmetric persistence shape)
+  - deleteOwner.md:dependencies_semantic.couples-to (`ReactiveOwnerToRoleRepository.deleteOwnerRelationsExcept` = physical DELETE)
+  - ReactivePolicyRepositoryImpl.md (batch H): security.known_security_gaps + concepts.invariants surfacing the missing deleted_at filter
+  - ReactiveRoleRepositoryImpl.md (batch N): concepts.invariants surfacing the three custom dto methods' symmetric missing filter
+  - rbac-soft-delete-persistence-role-policy-aggregation-symmetric-policy-mirror invariant (existing, batch N)
+notes: |-
+  **Required back-links**:
+
+    - From `rbac-soft-delete-persistence-role-policy-aggregation-symmetric-policy-mirror`
+      invariant: add cross-reference TO this invariant identifying
+      the Owner-side as the gold standard for the cleanup path.
+
+    - From the F-006 feature-flow detail page: cite this invariant
+      as the CORRECT-pattern anchor.
+
+  This invariant exists to make the F-006 family canonicalisation
+  *prescriptive*, not just *descriptive*. Without an Owner-side
+  reference, the maintainer's only choice for the cleanup is to
+  invent a pattern; with this reference, the Owner-side mirror is
+  the named gold standard.

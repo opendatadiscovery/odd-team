@@ -3,30 +3,65 @@ category: missing-edge-case
 criticality: HIGH
 node_ids:
 - odd-platform java OwnerController controller-method:createOwner
+- odd-platform java OwnerController controller-method:deleteOwner
 surfaced_by:
 - createOwner.md:tests_coverage_semantic.uncovered_behaviours.[2]
-behaviour: Name uniqueness — `owner.name varchar(255) NOT NULL UNIQUE` (V0_0_1__init.sql)
-  is a plain (non-partial) unique constraint. A soft-deleted owner (`deleted_at` set,
-  row remains) permanently holds the name; `INSERT INTO owner (name, ...)` fails for
-  that name with an opaque DB error. The `user_owner_mapping` table received a partial-unique
-  migration (V0_0_89) but the `owner` table did not. Operators recovering from an
-  accidental delete cannot 'just re-create' an owner with the same name; the encountered
-  DB error is uncatch-translated to a useful 409/400.
+- deleteOwner.md:docs_link_semantic.doc_drift_findings.[3] (cross-batch correction
+  — supersedes createOwner's incorrect partial-vs-non-partial claim)
+behaviour: 'Name uniqueness — `owner.name varchar(255) NOT NULL UNIQUE` (V0_0_1__init.sql)
+  was originally a plain (non-partial) unique constraint per the createOwner sidecar.
+  CORRECTED batch P — the deleteOwner sidecar surface re-examined the migration
+  history and found V0_0_64__remove_is_deleted_field.sql:68-70 EXPLICITLY drops
+  the original implicit unique index AND recreates it as PARTIAL: `DROP INDEX IF
+  EXISTS owner_name_unique; CREATE UNIQUE INDEX IF NOT EXISTS owner_name_unique
+  ON owner (name) WHERE owner.deleted_at IS NULL;`. So a soft-deleted owner''s name
+  IS freed for re-creation. The createOwner sidecar''s MEDIUM-severity claim of
+  ''non-partial UNIQUE blocking re-creation'' is SUPERSEDED. **The current behaviour
+  is: (a) `DELETE /api/owners/{id}` soft-deletes via UPDATE setting `deleted_at`;
+  (b) the partial-unique-index predicate excludes the soft-deleted row; (c) a subsequent
+  `POST /api/owners {name: X}` with the same X SUCCEEDS, creating a NEW Owner with
+  a fresh id and the same name.** This is the SAME pattern as `policy_name_unique`,
+  `role_name_unique`, `tag_name_unique`, `title_name_unique` in the same migration
+  script. The test gap REMAINS — no test asserts the round-trip (create → soft-delete
+  → re-create); a future migration that drops the partial predicate would silently
+  break this operator workflow. The proposed test is REORIENTED: instead of asserting
+  the CURRENT BUGGY behaviour, assert the CURRENT WORKING behaviour and pin it as
+  contract.'
 test_files_existing:
 - odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/OwnerRepositoryImplTest.java
-  (repository-layer only; does not exercise the soft-delete-then-recreate path)
+  (repository-layer only; the testDeletesOwner test asserts soft-delete via empty-get,
+  but does not exercise the re-create-same-name path)
 test_files_proposed:
   path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/OwnerSoftDeleteRecoveryTest.java
-  name: createOwner_afterSoftDeleteOfSameName_currentlyFailsWith500
+  name: createOwner_afterSoftDeleteOfSameName_succeedsWithFreshId
 evidence:
 - 'createOwner.md says: ''Soft-deleted owners block re-creation under the same name
-  — the owner table''s UNIQUE on name is a plain (non-partial) unique constraint'''
-- createOwner.md:bugs_limitations_corner_cases.[2] severity MEDIUM
-- 'concepts.yaml:entities[Owner (Authorization directory entry)].security_aggregate.weaknesses.[1]
-  verbatim: ''**Non-partial `name UNIQUE` blocks soft-delete recovery (MEDIUM)**'''
+  — the owner table''s UNIQUE on name is a plain (non-partial) unique constraint''
+  — SUPERSEDED batch P'
+- 'deleteOwner.md says (docs_link_semantic.doc_drift_findings.[3]): ''**Cross-batch
+  correction (supersedes createOwner sidecar)** — the createOwner sidecar (batch
+  session-2026-05-12-E) claims `owner.name UNIQUE` is non-partial and that ''Soft-deleted
+  owners block re-creation under the same name'' (bugs_limitations_corner_cases[2]
+  + security.known_security_gaps[2], severity MEDIUM each). The claim is WRONG. V0_0_64__remove_is_deleted_field.sql:68-70
+  drops the original implicit unique index and recreates it as PARTIAL: `CREATE UNIQUE
+  INDEX IF NOT EXISTS owner_name_unique ON owner (name) WHERE owner.deleted_at IS
+  NULL;`. After soft-delete via this controller, a subsequent POST /api/owners {name:
+  X} with the same X succeeds because the partial predicate excludes the soft-deleted
+  row.'''
+- 'createOwner.md:bugs_limitations_corner_cases.[2] severity MEDIUM — SUPERSEDED'
+- 'V0_0_64__remove_is_deleted_field.sql:68-70 — the partial-unique migration'
 cross_references:
 - concepts.yaml:entities[Owner (Authorization directory entry)].security_aggregate.weaknesses.[1]
-proposed_action: 'Add an integration test: (a) create owner `O`; (b) soft-delete `O`;
-  (c) re-POST /api/owners with `name=''O''`; (d) assert current behaviour (DB error
-  / 500). Once the maintainer adds a partial-unique migration for `owner.name` (parallel
-  to V0_0_89), flip assertion to expect 200 with the new owner.'
+  (the entry text references a non-partial constraint — also needs correction in
+  the next concepts.yaml refresh)
+- F-006 (RBAC soft-delete persistence family — same partial-unique-index pattern
+  for policy/role/tag/title)
+- TEST-GAP-235 (sibling 201-vs-200 status-code drift)
+proposed_action: 'Add an integration test: (a) create owner `O`; (b) soft-delete `O`
+  via DELETE /api/owners/{id}; (c) re-POST /api/owners with `name=''O''`; (d) assert
+  the second create SUCCEEDS with a fresh id and the same name (the CORRECT current
+  behaviour, NOT a 500). Pin the operator workflow; future regression of the partial-index
+  predicate would re-introduce the buggy behaviour the createOwner sidecar originally
+  reported.'
+batch: 2026-05-20-P-SUPERSEDED
+feature_id: F-006

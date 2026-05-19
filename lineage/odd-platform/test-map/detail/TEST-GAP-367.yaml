@@ -3,8 +3,13 @@ category: missing-security
 criticality: HIGH
 node_ids:
 - odd-platform java service service:AlertServiceImpl
+- odd-platform java AlertManagerController controller-method:postAlerts
 surfaced_by:
 - AlertServiceImpl.md:bugs_limitations_corner_cases.[3]
+- AlertManagerController#postAlerts.md:bugs_limitations_corner_cases.[5] (generator_url_no_scheme_allowlist
+  — primary source at method tier)
+- AlertManagerController#postAlerts.md:security.known_security_gaps.[5] (generatorURL
+  scheme unconstrained at the controller boundary)
 behaviour: 'AlertManager webhook `generatorURL` XSS / open-redirect — line 168 builds
   the URL via `UriComponentsBuilder.fromUri(externalAlert.getGeneratorURL())`; line
   185 embeds it in the alert chunk description as `String.format("Distribution Anomaly.
@@ -12,7 +17,18 @@ behaviour: 'AlertManager webhook `generatorURL` XSS / open-redirect — line 168
   host URLs. If the UI renders the description as a clickable link or innerHTML, this
   is a stored-XSS / open-redirect surface — and the AlertManager endpoint is unauthenticated
   (combined with TEST-GAP-365 spoof), so any caller can plant the payload. Cross-references
-  the F-004 XSS finding (TEST-GAP-293) but on a different ingress surface.'
+  the F-004 XSS finding (TEST-GAP-293) but on a different ingress surface. STRENGTHENED
+  batch P — the AlertManagerController#postAlerts sidecar PRIMARY-SOURCE adds the
+  controller-boundary half: ExternalAlert.java:13 declares `generatorURL` as type
+  `URI`. The URI type validates wire-shape but does NOT constrain scheme. The controller
+  at AlertManagerController.java:24 passes the payload verbatim to the service with
+  NO scheme-allowlist validation. Combined with the unauthenticated receiver and
+  REFACTOR-024 cross-owner read on `GET /api/alerts`, the attack chain is: (a) any
+  caller plants `generatorURL=javascript:alert(1)` → (b) AlertServiceImpl.java:168-185
+  builds the description String containing the payload verbatim → (c) every authenticated
+  user sees the alert on the All tab → (d) UI render path may execute the script
+  if it uses innerHTML or a-href without sanitisation. Cross-link to the existing
+  dynamic-verification probe P-009 (XSS render probe).'
 test_class: missing-security
 test_files_existing: []
 test_files_proposed:
@@ -22,17 +38,27 @@ evidence:
 - 'AlertServiceImpl.md says: ''The AlertManager webhook payload''s `generatorURL` is
   propagated verbatim into the alert chunk description rendered in the UI (severity
   MEDIUM — escalates to HIGH if the UI renders description as innerHTML)'''
+- 'postAlerts.md says (bugs_limitations_corner_cases.[5]): ''Generator URL is passed
+  through without scheme allowlist: ExternalAlert.generatorURL is `URI` (ExternalAlert.java:13)
+  — the URI type validates wire-shape but does not constrain scheme. AlertServiceImpl.java:168-172
+  builds a query-augmented URL via UriComponentsBuilder, then AlertServiceImpl.java:185
+  embeds the result in the chunk description as `String.format("Distribution Anomaly.
+  URL: %s", queryUrl)`. The chunk description is then rendered back in the platform
+  UI on the alerts feed.'''
 - 'AlertServiceImpl.java:168 (URL build) + 185 (description embedding)'
-- 'AlertManagerController.java:21-26 — unauthenticated endpoint'
+- 'ExternalAlert.java:13 (URI type, no scheme constraint)'
+- 'AlertManagerController.java:21-26, 24 (no validation at controller boundary)'
 cross_references:
 - TEST-GAP-293 (F-004 description XSS — sibling stored-XSS surface)
 - TEST-GAP-365 (spoof angle — same webhook surface)
+- TEST-GAP-014 (anonymous reach — necessary precondition)
 - P-009 (XSS render probe — existing dynamic-verification probe; could be extended
   to this surface)
+- F-007 (P-07:F-001 AlertManager Integration drift facet generator_url_no_scheme_allowlist)
 proposed_action: Add `AlertManagerWebhookXSSTest` POSTing payloads with `generatorURL`
   values of (a) `javascript:alert(1)`, (b) `https://attacker.example/?x=<script>`,
   (c) a control https URL; assert the stored alert chunk description preserves the
   payload verbatim and pin the current behaviour. Pair with a UI-render-path verification
   probe (browser_events observe kind from the dynamic-verification slice 8 protocol).
-batch: 2026-05-19-I
-feature_id: null
+batch: 2026-05-20-P-STRENGTHENED
+feature_id: F-007

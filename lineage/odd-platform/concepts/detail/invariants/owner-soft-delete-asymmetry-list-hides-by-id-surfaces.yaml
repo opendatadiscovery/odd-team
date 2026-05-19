@@ -1,0 +1,107 @@
+name: Owner soft-delete asymmetry — list hides, by-id surfaces
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+  - P-08
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20-P** —
+  PRIMARY-SOURCE confirmed at `ReactiveOwnerRepositoryImpl.java:65-83`
+  vs `:86-121`. The visibility of a SOFT-DELETED Owner is INCONSISTENT
+  across the `list` query and the `getDto` (by-id) query.
+
+  **The asymmetry**:
+
+    - `list` query (`ReactiveOwnerRepositoryImpl.java:86-121`) uses
+      `enrichSelect` which calls `listCondition` — INHERITED from
+      `ReactiveAbstractSoftDeleteCRUDRepository.listCondition` at
+      lines 86-94 of the parent class. This adds `deleted_at IS NULL`
+      to the WHERE. **Soft-deleted owners do NOT appear in the listing
+      response** — operators viewing the Management → Owners tab see
+      a clean directory after delete.
+
+    - `getDto` query (`ReactiveOwnerRepositoryImpl.java:65-83`) does
+      NOT apply the soft-delete filter on OWNER (`WHERE OWNER.ID.eq(id)`
+      without `deleted_at IS NULL`). **Direct `GET` of an owner-by-id
+      via `OwnerService.getOwnerDtoById` RETURNS the soft-deleted row.**
+      The `switchIfEmpty(Mono.error(NotFoundException))` at
+      `OwnerServiceImpl.java:106` only fires when the ID does not
+      exist AT ALL.
+
+  **Visibility chart**:
+
+    | Read path                          | Soft-deleted owner visible? |
+    |------------------------------------|-----------------------------|
+    | `GET /api/owners` (list)           | NO (filter applied)         |
+    | `GET /api/owners/{owner_id}` (id)  | YES (no filter on get)      |
+    | FTS / catalog search via `search_entrypoint` | YES until next vector refresh (delete does NOT refresh — see sibling invariant `owner-rename-fts-vector-refresh-in-update-not-delete`) |
+    | OWNERSHIP join from data-entity surface | NO if the join filters OWNER.deleted_at; varies per query — auditable surface |
+
+  **The operator-confusing consequence**: an operator who cached a
+  bookmark to `Management → Owners → Bob (id=42)` and then deleted
+  Bob via the UI: the listing page no longer shows Bob, but the
+  bookmark URL `https://platform/management/owners/42` STILL renders
+  Bob's full DTO (including his previously-attached roles and the
+  soft-deleted user_owner_mapping row).
+
+  **The security-positive interpretation**: the asymmetry preserves
+  the audit history (a privileged operator investigating "what
+  happened to Owner 42?" can still read the row to see the
+  `deleted_at` timestamp + the historical role bindings — though
+  the OWNER_TO_ROLE rows have been hard-deleted, so the role binding
+  history is NOT recoverable from the read path).
+
+  **The security-negative interpretation**: if a soft-deleted owner's
+  name is sensitive (e.g. PII the platform stored), the by-id surface
+  LEAKS it. An API consumer that learned the id (from cached search
+  results, from a stale lineage view, from a UI bookmark) can read
+  the soft-deleted owner's full DTO. Whether this is a leak depends
+  on the operator's data-classification posture — for a typical ODD
+  deployment, owner names are not PII; for some enterprise deployments
+  they are.
+
+  **The maintainer-decision question**: should `getDto` apply the
+  same soft-delete filter as `list`? Three options:
+    (a) **Strict**: filter `deleted_at IS NULL` in `getDto` too —
+        soft-deleted owners become 404 across all read surfaces. UX
+        improvement; loses the audit-history readback.
+    (b) **Status-quo**: keep the asymmetry. Add a doc-side note in
+        the live `/owners` page documenting the read-after-delete
+        behaviour.
+    (c) **New "deleted owner" surface**: add a separate
+        `GET /api/owners/deleted` admin-only endpoint that lists
+        soft-deleted owners; preserve the strict filter on the main
+        `getDto` endpoint.
+
+  **Severity**: MEDIUM — operator confusion + potential information
+  disclosure (data-classification-dependent). Not actively misleading
+  in default deployments (owner names are typically not PII) but
+  inconsistent with the listing semantics.
+axes_present:
+  - controllers
+  - repositories_reactive
+nodes:
+  - odd-platform java OwnerController controller-method:deleteOwner
+  - odd-platform java repository reactive repository:ReactiveOwnerRepositoryImpl
+contributors:
+  - 'deleteOwner.md:bugs_limitations_corner_cases.[6] (getOwnerList surfaces SOFT-DELETED owners selectively — list hides via inherited listCondition; getDto by id does NOT filter)'
+  - 'deleteOwner.md:security.known_security_gaps.[2] (Soft-deleted owners visible via GET /api/owners/{id} but invisible via GET /api/owners — asymmetry unstated; severity MEDIUM)'
+evidence:
+  - deleteOwner.md:bugs_limitations_corner_cases.[6] (PRIMARY SOURCE — ReactiveOwnerRepositoryImpl.java:65-83 getDto vs :86-121 list; severity MEDIUM)
+  - deleteOwner.md:security.known_security_gaps.[2] (potential information disclosure if owner names are sensitive)
+notes: |-
+  Pairs with:
+
+    - `owner-rename-fts-vector-refresh-in-update-not-delete`
+      invariant (new in this batch) — describes the FTS-side staleness
+      after delete; this invariant describes the by-id surface; both
+      compound to make the post-delete visibility of the owner
+      INCONSISTENT across THREE surfaces (list / by-id / FTS).
+
+    - `delete-owner-with-cascade-block` operation (new in this batch)
+      — the operation whose semantics produce this asymmetry.
+
+  Doc-side recommended action: extend the live `/owners` page with
+  a "Visibility after delete" subsection: enumerate the three
+  surfaces (list / by-id / FTS) and the three different post-delete
+  visibilities. Backlog: DOC-NNN follow-up.

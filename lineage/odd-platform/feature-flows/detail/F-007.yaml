@@ -7,6 +7,91 @@ drift_class_summary:
 - unauthenticated_payload_trust
 - cross_tenant_alert_creation
 - no_idempotency_no_audit
+- alerting_doc_supersede_2026_05_20_was_404_now_200
+batch_extensions:
+- batch: P
+  entry_point_added: |-
+    controller-method:postAlerts (the AlertManagerController#alertManagerWebhook
+    method, single-method @PostMapping at `ingestion/alert/alertmanager`).
+    Hop-1 of F-007's chain previously cited the class-level
+    AlertManagerController sidecar from batch H + the AlertServiceImpl
+    sidecar from batch I; this batch closes hop-1 at the METHOD TIER
+    with PRIMARY-SOURCE confirmation of the three drift facets named
+    in the drift_class_summary header — all anchored at
+    AlertManagerController.java:21-26.
+  contributing_nodes_added:
+  - odd-platform java AlertManagerController controller-method:postAlerts
+  notes: |-
+    Method-tier primary-source evidence for the three load-bearing
+    F-007 drift facets:
+    (1) `unauthenticated_payload_trust` confirmed at AlertManagerController.java:21-26 —
+    the four-line handler has NO `@PreAuthorize`, NO `@Secured`, NO
+    `@ConditionalOnProperty`, NO programmatic auth check, NO header
+    inspection. Auth wiring is delegated entirely to
+    `SecurityConstants.WHITELIST_PATHS[2]` (`/ingestion/**`) which
+    exempts the path from the UI auth chain across all four `auth.type`
+    modes, AND to the absence of any path matcher in
+    `IngestionDataEntitiesFilter` (line 28 binds to `/ingestion/entities`
+    POST only). The endpoint accepts any AlertManager-shaped JSON from
+    any caller with network reach under all auth modes. The live doc
+    page now documents this verbatim — refreshed 2026-05-20 status 200,
+    excerpt: "The AlertManager webhook endpoint is not authenticated.
+    ODD Platform whitelists the entire `/ingestion/**` namespace in
+    Spring Security, and the ingestion auth filter controlled by
+    `auth.ingestion.filter.enabled` only guards `/ingestion/entities`
+    (POST) — it does not cover `/ingestion/alert/alertmanager`."
+    The doc-side intent is operator-delegated network-layer auth.
+    (2) `cross_tenant_alert_creation` confirmed at AlertManagerController.java:24 —
+    `req.getAlerts()` is delegated verbatim to
+    `AlertService.handleExternalAlerts` with NO validation step between.
+    Downstream at AlertServiceImpl.java:178 the `entity_oddrn` label
+    is mapped directly to `AlertPojo.dataEntityOddrn` with no check
+    that (a) the entity_oddrn refers to an existing DataEntity row,
+    (b) the calling principal (if any) is authorised to alert on it.
+    A POST with `labels.entity_oddrn=<any-data-entity-oddrn>` produces
+    an OPEN alert attributed to that data entity, visible on the target
+    entity's page to every authenticated user. Compounded with
+    REFACTOR-024 (cross-owner GET /api/alerts) — every authenticated
+    user sees forged alerts on the platform-wide All tab.
+    (3) `no_idempotency_no_audit` confirmed at AlertManagerController.java:21-26 +
+    AlertServiceImpl.java:151-191 vs 222-227 — the method does not
+    inspect any `Idempotency-Key` header; the request DTO has no
+    idempotency-key field; the downstream `handleExternalAlerts`
+    deliberately SKIPS the `AlertActionResolver` (which IS used by
+    the in-platform ingestion path at AlertServiceImpl.java:222-227
+    for de-duplication via AlertUniqueConstraint snapshots). The
+    `createAlerts` private helper (lines 261-300) issues INSERT …
+    RETURNING with NO `.onConflict(...)` clause. Prometheus's standard
+    retry policy duplicates rows. The method has NO audit log — no
+    `log.info(...)` at entry, no `@Timed` Micrometer counter, no
+    per-call correlation-id capture. From the operator's perspective
+    the only post-hoc signal that a webhook arrived is the alert table
+    rows themselves; forensic reconstruction of "who POSTed what when"
+    after a forge incident is not possible.
+    NEW SUPERSEDE — the live doc page
+    `https://docs.opendatadiscovery.org/features/active-platform-features/alerting`
+    was 404 in the 2026-05-08 batch H enrichment; refreshed 2026-05-20
+    in batch P returns status 200. The page now exists and cross-links
+    to this endpoint, documents the Distribution Anomaly halt-toggle
+    limitation ("the Distribution Anomaly halt toggle doesn't enforce
+    suppression on AlertManager-driven alerts, recommending operators
+    use Prometheus Alertmanager configuration layers instead to manage
+    alert noise"). The prior 404 finding is SUPERSEDED — flag
+    `superseded_by: batch-P 2026-05-20`. Also new: batch P adds two
+    SECONDARY drift facets via the sidecar's bugs_limitations_corner_cases
+    block: (a) silent loss of timestamp offset (ExternalAlert.startsAt
+    is LocalDateTime; Jackson strips RFC3339 timezone offsets — the
+    embedded Prometheus query URL is keyed by ODD server's local time
+    not the alert's actual time; mirror of batch I `misaligned_timestamp_contract`
+    facet); (b) DTO silently drops AlertManager wire fields (`status`,
+    `endsAt`, `annotations`, `fingerprint`, `groupKey`, `groupLabels`,
+    `commonLabels`, `commonAnnotations`, `externalURL`, `version`,
+    `receiver` are all silently dropped — most operationally impactful
+    drop is `status: resolved`, the platform never sees the field;
+    doc-cross-link confirmed via live alerting page excerpt). Both
+    secondary facets are non-headline but represent the architectural
+    DTO-shape coupling between AlertManagerController and the wire
+    format.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: AlertManager webhook ingestion — ungated cross-tenant alert creation
@@ -70,6 +155,7 @@ description: 'The platform exposes a webhook receiver at `POST /ingestion/alert/
   '
 contributing_nodes:
 - odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
+- odd-platform java AlertManagerController controller-method:postAlerts
 - odd-platform java AlertServiceImpl
 - odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
 chain:
@@ -82,6 +168,38 @@ chain:
     IngestionDataEntitiesFilter match (the filter is /ingestion/entities POST only). The path falls through to the WebFilterChain's
     default `.authenticated()` requirement under non-DISABLED auth modes; bypassed entirely under DISABLED.
   unresolved: false
+- hop: 1-method-tier
+  node: odd-platform java AlertManagerController controller-method:postAlerts
+  sidecar: odd-platform__java__AlertManagerController__controller-method__postAlerts.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    AlertManagerController.java:21-26 — the 4-line handler body:
+    `@PostMapping(path = "ingestion/alert/alertmanager")
+    public Mono<ResponseEntity<Void>> alertManagerWebhook(
+      @RequestBody final Mono<AlertManagerRequest> request) {
+        return request.flatMap(req ->
+          alertService.handleExternalAlerts(req.getAlerts()))
+          .map(o -> ResponseEntity.noContent().build());
+    }` — no `@PreAuthorize`, no `@Secured`, no
+    `@ConditionalOnProperty`, no programmatic auth check, no header
+    inspection, no `@Valid` on the request body. The inner DTO
+    `AlertManagerRequest` (lines 28-32) is hand-rolled with a single
+    field (`List<ExternalAlert> alerts`); the explicit
+    `// TODO: define OpenAPI spec based on alert provider contract`
+    at line 20 marks the unfinished spec-first migration. Success
+    response is always 204 No Content (line 25 — `.map(o ->
+    ResponseEntity.noContent().build())` discards the inner signal
+    entirely). The method is the SOLE method on the controller class
+    (verified — single `@PostMapping`, no other handlers). All three
+    F-007 drift facets (unauthenticated_payload_trust,
+    cross_tenant_alert_creation, no_idempotency_no_audit) confirmed
+    PRIMARY-SOURCE at the method tier. NEW supersede recorded — the
+    `/features/active-platform-features/alerting` doc page was 404 in
+    batch H but returns status 200 in batch P (refreshed 2026-05-20),
+    so the previously-recorded "Alerting feature page returns 404"
+    finding is superseded.
+  unresolved: false
+  resolved_in_batch: P
 - hop: 2
   node: odd-platform java AlertServiceImpl
   sidecar: odd-platform__java__service__service__AlertServiceImpl.md
@@ -301,39 +419,68 @@ test_matrix:
     - 'Cross-tenant attribution: POST with entity_oddrn of a data entity owned by a DIFFERENT tenant → alert created'
     - Forge-and-display compound — POST anonymous + GET /api/alerts as second anonymous user → forged alert visible
     - S2S-token absence — assert webhook accepts any payload without authentication header
-control_summary: '0 of 4 cells PROBED — feature emerged from batch-H primary-source
-
+control_summary: |-
+  0 of 4 cells PROBED — feature emerged from batch-H primary-source
   audit; no probe authored yet. The headline behaviour (anonymous AlertManager
-
   POST creating cross-tenant alerts visible on the platform-wide All tab) is the
-
   highest-leverage candidate for the next probe round. Proposed P-NNN — POST
-
   AlertManager-shaped payload to the docker-compose stack with AUTH_TYPE=DISABLED
-
   + verify alert row appears in GET /api/alerts AND assert attacker-chosen entity_oddrn
-
   was accepted verbatim. Batch-I closes hop-2 with AlertServiceImpl primary-source
-
   confirmation — entity_oddrn-trusted path PROVEN at line 178, AlertActionResolver
-
   asymmetry PROVEN (handleExternalAlerts skips the resolver, applyAlertActions uses
-
   it). Three NEW facets surface — (1) AlertActionResolver asymmetry; (2) generator-URL-embedded-in-chunk
-
   UI render surface; (3) ExternalAlert.startsAt timezone-naive (embedded Prometheus
+  query window misaligned).
 
-  query window misaligned).'
+  Batch P closes hop-1 at the METHOD TIER with PRIMARY-SOURCE confirmation
+  of the three load-bearing drift facets (unauthenticated_payload_trust,
+  cross_tenant_alert_creation, no_idempotency_no_audit) directly at the
+  4-line `alertManagerWebhook` body (AlertManagerController.java:21-26). The
+  method has zero auth annotations, zero validation annotations, zero
+  header inspection, zero audit logging, and the inner static
+  `AlertManagerRequest` DTO is the deliberate hand-rolled alternative
+  to OpenAPI-contract generation (per the explicit
+  `// TODO: define OpenAPI spec based on alert provider contract` at line 20).
+  Hop-1 is now PRIMARY-SOURCE at both the class tier (batch H) AND the
+  method tier (batch P). NEW SUPERSEDE recorded — the live doc page
+  `https://docs.opendatadiscovery.org/features/active-platform-features/alerting`
+  was 404 in the batch-H 2026-05-08 enrichment; refreshed 2026-05-20 in
+  batch P returns status 200. The page now cross-links to this endpoint
+  and documents the Distribution Anomaly halt-toggle limitation. The prior
+  404 finding is superseded; the doc-product surface has improved between
+  batches H and P. Two new SECONDARY drift facets (timestamp offset stripping
+  + DTO silently drops wire fields including `status: resolved`) are
+  evidence-anchored at the controller-method tier and complement the
+  existing chain's primary facets without changing the headline.
+  The HIGHEST-LEVERAGE probe candidates remain unchanged from batch H/I —
+  anonymous POST under DISABLED for the headline regression-pin, the
+  cross-tenant attribution surface for the entity_oddrn-trust contract,
+  and the duplicate-POST surface for the missing-idempotency contract.
+  The doc-side improvement (the alerting page now exists) does NOT
+  reduce the security-side findings — the verbatim doc text confirms
+  the unauthenticated posture is INTENDED-as-documented, which makes
+  the operator-side network-controls reliance EXPLICIT but does not
+  reduce the cross-pillar compound surface (F-007 + REFACTOR-024 forge-and-display).
 related_refactoring_scopes:
 - REFACTOR-024
 - REFACTOR-073
 related_test_gaps: []
+related_test_gaps_batch_p_candidates:
+- TEST-GAP-NNN (`@WebFluxTest(AlertManagerController.class)` + WebTestClient smoke test asserting 204 on a valid payload — the smallest meaningful regression pin; deferred to test-coverage-mapper)
+- TEST-GAP-NNN (anonymous-POST-under-DISABLED regression-pin for the unauthenticated_payload_trust facet)
+- TEST-GAP-NNN (cross-tenant attribution + forge-and-display compound with REFACTOR-024)
+- TEST-GAP-NNN (idempotency / duplicate-POST surface)
 related_doc_gaps: []
+related_doc_gaps_batch_p_candidates:
+- DOC-GAP-NNN (cross-feature compound surface F-007 + REFACTOR-024 not documented as a compound on the alerting page; deferred to doc-gap-finder)
+- DOC-GAP-NNN (alerting page silent on the cross-link to the broader `/configuration-and-deployment/enable-security` WHITELIST_PATHS scope)
 related_concepts:
 - Alert
 - Ingestion (External Webhook)
 related_retrospectives:
 - LSN-017
+- LSN-018  # coherence-supersede protocol — the alerting-page 404→200 supersede is the load-bearing case here
 related_probes: null
 probe_verifications: []
 maintainer_curated: false

@@ -1,0 +1,97 @@
+name: UPSERT-by-ODDRN partial-merge — only name + description propagate on re-registration
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-10
+description: |-
+  **NEW INVARIANT, batch 2026-05-20-P** — PRIMARY-SOURCE confirmed at
+  `DataSourceIngestionServiceImpl.java:74-92`. The re-registration
+  semantics of `POST /ingestion/datasources` are deliberately PARTIAL:
+  only `name` + `description` from the payload propagate onto an
+  existing row matched by ODDRN. Every other field — `connection_url`,
+  `active` flag, `type`, `namespace_id`, `collector_id`, `token_id`,
+  soft-delete flag, all `created_at` / `updated_at` timestamps,
+  custom fields — is PRESERVED from the existing row.
+
+  **The mechanism** (`DataSourceIngestionServiceImpl.prepareForUpdate`):
+  the mapper does `new DataSourcePojo(existingPojo).setName(payload.getName()).setDescription(payload.getDescription())`
+  — copy-construct from the existing row, then overwrite ONLY two
+  fields. The intent is operator-protective: an operator who manually
+  edits `connection_url` in the UI after the collector's initial
+  registration will NOT see their edit overwritten on the collector's
+  next startup.
+
+  **The trade-off**: a collector that genuinely needs to update
+  `connection_url` (e.g. the source's hostname changed) CANNOT do so
+  via `POST /ingestion/datasources`. Only `name` + `description` are
+  propagated through `prepareForUpdate`. The collector author has no
+  way to know this; the response is 200 OK regardless. An operator
+  who genuinely needs to update `connection_url` must use the UI's
+  `PUT /api/datasources/{id}` (a different controller, requires UI
+  auth).
+
+  **The asymmetry on FIRST registration**: `prepareForCreate` (lines
+  94-97) inserts a NEW row from the payload — at that moment ALL
+  fields the payload carries flow through (subject to namespace
+  inheritance from the Collector; see sibling
+  `namespace-inherited-from-collector-not-payload-collector-scoped-tenancy`
+  invariant). The MERGE on RE-REGISTRATION is the partial path; the
+  CREATE on FIRST registration is the full path. The asymmetry is
+  silent in the docs.
+
+  **The operator-impacting consequences**:
+
+    1. **A renamed datasource (UI-side rename) is OVERWRITTEN on the
+       next collector tick** — the collector's payload always carries
+       its source-discovered `name`; that name beats the operator's
+       UI-side rename. No log records the overwrite.
+
+    2. **Connection-URL changes cannot be pushed through the collector**
+       — operators must use the UI path. Asymmetric with how the
+       collector would naturally express the change.
+
+    3. **The `active` flag cannot be flipped via re-registration** —
+       a collector that wants to deactivate a datasource (e.g. the
+       source was decommissioned) cannot signal that via this endpoint.
+       Must use the UI.
+
+    4. **`type` is fixed at first registration** — a collector cannot
+       reclassify a datasource (e.g. POSTGRES → MYSQL after an
+       infrastructure migration) via re-registration.
+
+  **Severity**: MEDIUM — the partial-merge is INTENTIONAL but
+  silent. The custom-collectors doc page (WebFetched 2026-05-20
+  status 200) tells custom-collector authors to call
+  `POST /ingestion/datasources once at startup` but does not name
+  which fields are propagated, which are preserved, or what fallback
+  the operator has for non-propagated fields.
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java IngestionController controller-method:createDataSourceEntity
+contributors:
+  - 'createDataSourceEntity.md:concepts.invariants.[5] (Merge semantics on UPDATE: only name + description propagated — intent_anchor)'
+  - 'createDataSourceEntity.md:implicit_adrs.[2] (Re-registration is UPSERT by ODDRN with PARTIAL-MERGE semantics — consistent application across create + update paths)'
+  - 'createDataSourceEntity.md:bugs_limitations_corner_cases.[6] (Re-registration only propagates name + description; operator-facing asymmetry)'
+  - 'createDataSourceEntity.md:docs_link_semantic.doc_drift_findings.[0] (custom-collectors page silent on UPSERT semantics)'
+evidence:
+  - createDataSourceEntity.md:concepts.invariants.[5] (PRIMARY SOURCE — DataSourceIngestionServiceImpl.java:74-92 prepareForUpdate)
+  - createDataSourceEntity.md:implicit_adrs.[2] (intent_anchor — the consistent pattern across create + update; no comment defends the SPECIFIC field choices)
+  - createDataSourceEntity.md:bugs_limitations_corner_cases.[6] (severity MEDIUM)
+  - createDataSourceEntity.md:docs_link_semantic.doc_drift_findings.[0] (the custom-collectors developer guide silent on UPSERT mechanics)
+notes: |-
+  Pairs with:
+
+    - `two-ingestion-filters-asymmetric-auth` invariant — explains the
+      always-on auth layer that gates this endpoint.
+
+    - `namespace-inherited-from-collector-not-payload-collector-scoped-tenancy`
+      invariant (new in this batch) — the namespace-handling rule that
+      compounds the partial-merge story (namespace is ALSO not propagated
+      from the payload — but for a different reason: it's inherited
+      from the Collector, not preserved from existing row).
+
+  Doc-side recommended action: extend the custom-collectors developer
+  guide with a "Re-registration semantics" subsection: enumerate the
+  fields that propagate (`name`, `description`) vs preserved (everything
+  else) vs inherited from Collector (`namespace_id`).

@@ -20,6 +20,13 @@ drift_class_summary:
 - role_create_administrator_name_asymmetry_mirror
 - role_service_predefined_name_case_sensitivity_mismatch
 - four_sidecar_audit_silence_pattern_role_repo_confirmation
+- five_sidecar_audit_silence_pattern_owner_delete_confirmation
+- owner_delete_owner_to_role_hard_delete_closes_orphan_binding_owner_side
+- owner_association_request_orphan_rows_persist_on_owner_delete
+- delete_search_vector_not_refreshed_owner_side
+- delete_no_not_found_validation_owner_side
+- soft_deleted_owner_visible_via_get_by_id_but_hidden_from_list
+- cascade_check_non_atomic_owner_delete_mirror
 batch_extensions:
 - batch: K
   entry_point_added: 'service:OwnershipServiceImpl (the ownership-lifecycle service backing the 3 /api/dataentities/{id}/ownership controller methods — adds the OWNER_CREATE-bypass and the USR003 cross-batch correction)'
@@ -82,6 +89,138 @@ batch_extensions:
     the Policy half batch-H established. ZERO direct unit tests for any path
     through this repository (Grep verified — only OwnerRepositoryImplTest:37
     uses bulkCreate for fixture setup, no Role-specific test class exists).
+- batch: P
+  entry_point_added: |-
+    controller-method:deleteOwner (DELETE /api/owners/{owner_id}) — the
+    directory-level destruction verb for the Owner entity, sibling of
+    createOwner + updateOwner on the same controller. The endpoint
+    runs a transactional three-leg cascade-block check
+    (termOwnership.existsByOwner + ownership.existsByOwner +
+    userOwnerMapping.isOwnerAssociated) and either soft-deletes the
+    Owner row AND hard-deletes ALL of the Owner's role bindings — or
+    fails with HTTP 400 USR004 CascadeDeleteException. This is the
+    FIFTH corroborating sidecar for the audit-silence pattern: the
+    4-sidecar pattern from batch N (RoleController + PolicyController
+    + ReactivePolicyRepositoryImpl + ReactiveRoleRepositoryImpl) is
+    EXTENDED to 5-sidecar with OwnerServiceImpl.delete (no
+    @ActivityLog) as the corroborating addition. Positive case-law
+    contrast: unlike the POLICY/ROLE half (where soft-delete leaves
+    orphan grants), the OWNER delete HARD-DELETES owner_to_role rows
+    — F-006's permission_persistence_after_soft_delete family pattern
+    is done CORRECTLY on this surface.
+  contributing_nodes_added:
+  - odd-platform java OwnerController controller-method:deleteOwner
+  - odd-platform java OwnerServiceImpl
+  cross_batch_corrections:
+  - prior_claim: |-
+      createOwner sidecar (batch session-2026-05-12-E)
+      bugs_limitations_corner_cases[2] + security.known_security_gaps[2]
+      claim owner.name UNIQUE is non-partial and that 'Soft-deleted
+      owners block re-creation under the same name' (both severity
+      MEDIUM).
+    correction: |-
+      Both claims are WRONG. V0_0_64__remove_is_deleted_field.sql:68-70
+      drops the original index and recreates it as PARTIAL
+      (`CREATE UNIQUE INDEX IF NOT EXISTS owner_name_unique ON owner
+      (name) WHERE owner.deleted_at IS NULL;`). After soft-delete via
+      DELETE /api/owners/{id}, the name is freed and a subsequent
+      POST /api/owners with the same name succeeds. The createOwner
+      sidecar's MEDIUM-severity claims are SUPERSEDED by the batch-P
+      deleteOwner sidecar; the partial-unique-index pattern is the
+      same as policy_name_unique / role_name_unique / tag_name_unique
+      / title_name_unique in the same migration. Per LSN-018
+      coherence-supersede protocol the supersede note is recorded as
+      `superseded_by: deleteOwner sidecar (session-2026-05-20-P)` on
+      the createOwner sidecar's two entries.
+  notes: |-
+    Seven new drift facets surface from the Owner-deletion destruction
+    verb. The HIGH-severity audit-silence finding (5th corroborating
+    sidecar) refines the cross-batch concept catalog entry from
+    '4-sidecar' to '5-sidecar' with the recommendation to ELEVATE the
+    audit-log gap to first-priority. Listed in descending severity:
+    (1) FIVE-SIDECAR AUDIT-SILENCE PATTERN (HIGH) —
+    OwnerServiceImpl.delete (lines 87-100) has NO @ActivityLog
+    annotation. The activity feed does NOT record 'owner named X was
+    deleted by Y at T'. Combined with the role-binding HARD-delete
+    (irreversible) and the soft-delete-on-Owner-row (name freed for
+    re-creation), the audit story is: an operator can delete an
+    Owner and then re-create a different Owner with the same name,
+    with NO trace anywhere except (a) the row's deleted_at timestamp
+    (no operator-readable surface) and (b) the absence of OWNER_TO_ROLE
+    rows (no historical record). The 5-sidecar audit-silence pattern
+    (RoleController + PolicyController + ReactivePolicyRepositoryImpl
+    + ReactiveRoleRepositoryImpl + OwnerServiceImpl) is now CONFIRMED;
+    the audit-log gap is the highest-priority RBAC drift in the
+    catalog.
+    (2) OWNER_TO_ROLE HARD-DELETE CLOSES ORPHAN-BINDING (POSITIVE
+    CASE-LAW, NO SEVERITY) — Owner deletion HARD-DELETES owner_to_role
+    rows via ownerToRoleRepository.deleteOwnerRelationsExcept(id,
+    List.of()) (OwnerServiceImpl.java:97 →
+    ReactiveOwnerToRoleRepositoryImpl.java:52-56 DSL.delete). The
+    F-006 family pattern permission_persistence_after_soft_delete is
+    closed CORRECTLY on the OWNER side: a deleted Owner does NOT
+    continue to confer their previously-attached roles' permissions
+    because the role-binding row is physically removed. This is the
+    POSITIVE case-law contrast to the POLICY/ROLE half (where
+    soft-delete leaves orphan grants). Surface for documentation:
+    'Owner deletion hard-deletes role bindings; Policy and Role
+    deletions use soft-delete + leave bindings'.
+    (3) OWNER_ASSOCIATION_REQUEST ORPHAN ROWS PERSIST (HIGH) — the
+    cascade-block at OwnerServiceImpl.java:90-91 checks termOwnership
+    + ownership + userOwnerMapping but NOT owner_association_request.
+    The table has an FK to owner(id) with NO ON DELETE clause;
+    Owner uses soft-delete (UPDATE deleted_at) so the FK is never
+    consulted. A PENDING or APPROVED owner_association_request for
+    the just-deleted Owner persists. If an operator re-creates an
+    Owner with the same name (partial-unique-index allows it), the
+    orphan request is NOT automatically re-linked — they have
+    different ids; the orphan continues pointing into soft-deleted
+    space. Mirrors F-006's cascade-incompleteness pattern (batch I
+    PolicyServiceImpl.delete).
+    (4) FTS SEARCH-VECTOR NOT REFRESHED ON DELETE (MEDIUM) —
+    OwnerServiceImpl.update (line 82) calls updateSearchVectors(owner)
+    refreshing both searchEntrypointRepository and
+    termSearchEntrypointRepository. OwnerServiceImpl.delete does
+    NOT. The FTS index continues to surface the deleted Owner's
+    name in catalog search results until other events refresh the
+    affected entities' vectors. MIRRORS the existing
+    delete_search_vector_not_refreshed facet from batch K
+    OwnershipServiceImpl — now on the OWNER side too.
+    (5) DELETE NO NotFound VALIDATION — IDEMPOTENCY INDISTINGUISHABLE
+    (MEDIUM) — OwnerServiceImpl.delete has no switchIfEmpty(Mono.error(
+    NotFoundException)) on ownerRepository.delete(id). The soft-delete
+    UPDATE returns empty Mono if no row matched; the .then() and
+    .thenReturn(noContent()) propagate empty as success → HTTP 204.
+    Caller cannot distinguish 'I deleted it', 'it was already
+    deleted', 'it never existed'. The update path DOES switchIfEmpty
+    (line 73); the asymmetry between delete and update is unstated.
+    MIRRORS the existing delete_no_not_found_validation facet from
+    batch K OwnershipServiceImpl — now on the OWNER side too.
+    (6) SOFT-DELETED OWNER VISIBLE VIA GET-BY-ID BUT HIDDEN FROM
+    LIST (MEDIUM) — getOwnerList uses enrichSelect which adds
+    deleted_at IS NULL. getDto does NOT apply the soft-delete filter
+    on OWNER side. Direct GET /api/owners/{id} returns the soft-deleted
+    row + switchIfEmpty(Mono.error(NotFoundException)) only fires
+    when the ID does not exist at all. Visibility of a soft-deleted
+    Owner is INCONSISTENT across list vs by-id queries — list hides
+    them, by-id surfaces them. If a soft-deleted Owner's name is
+    sensitive PII the by-id surface leaks it.
+    (7) CASCADE-CHECK NON-ATOMIC WITH DELETE (LOW) — the three
+    existsBy* reads and ownerRepository.delete run inside one
+    @ReactiveTransactional boundary but the reads do NOT acquire
+    row-level locks (no SELECT FOR UPDATE, no advisory lock). Under
+    READ COMMITTED a concurrent POST /api/dataentities/{id}/ownership
+    racing with DELETE /api/owners/{id} is theoretically able to
+    slip a fresh OWNERSHIP row past the existence check. Mirrors
+    F-006 batch I cascade_check_non_atomic facet — same shape,
+    different table.
+    Cross-batch correction recorded: createOwner sidecar's claim
+    that owner.name UNIQUE is non-partial is SUPERSEDED — the index
+    IS partial (WHERE deleted_at IS NULL per V0_0_64); after
+    soft-delete the name is freed for re-creation. Both
+    bugs_limitations_corner_cases[2] and security.known_security_gaps[2]
+    on the createOwner sidecar are flagged `superseded_by: batch-P
+    deleteOwner sidecar (session-2026-05-20-P)`.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: RBAC policy lifecycle — soft-delete with permission-grant persistence
@@ -154,6 +293,7 @@ contributing_nodes:
 - odd-platform java ControllerAdvice
 - odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
 - odd-platform java RoleServiceImpl
+- odd-platform java OwnerController controller-method:deleteOwner
 chain:
 - hop: 1
   node: odd-platform java PolicyController controller-method:createPolicy
@@ -696,16 +836,58 @@ control_summary: |-
   governed by the same pillar. A future maintainer triage may split F-006
   into per-resource sub-features (POLICY / ROLE / OWNERSHIP / OWNER) but the
   current shape preserves the pillar anchor.
+
+  Batch-P adds OwnerController.deleteOwner primary-source — the 5TH
+  CORROBORATING SIDECAR for the audit-silence pattern, refining the
+  cross-batch concept catalog entry from '4-sidecar' to '5-sidecar'
+  with the recommendation to elevate the audit-log gap to first-priority.
+  Six new drift facets (audit-silence + owner_association_request
+  orphan + delete_search_vector_not_refreshed_owner_side +
+  delete_no_not_found_validation_owner_side + soft_deleted_owner_visible_by_id_only +
+  cascade_check_non_atomic_owner_delete_mirror) + one positive
+  case-law contrast facet (OWNER_TO_ROLE hard-delete CLOSES the
+  orphan-binding pattern on the Owner side — F-006's headline drift
+  is done CORRECTLY on this surface, contrast with the POLICY/ROLE
+  half where soft-delete leaves orphan grants). Cross-batch correction:
+  createOwner sidecar's claim that `owner.name UNIQUE` is non-partial
+  is SUPERSEDED — the index IS partial per V0_0_64; after soft-delete
+  the name is freed for re-creation. Per LSN-018 the supersede note
+  is recorded on the createOwner sidecar via the `superseded_by`
+  protocol. The Owner side of the RBAC mutation surface is now
+  PRIMARY-SOURCE at controller-method tier — together with the
+  earlier batch-K OwnershipServiceImpl + batch-N two-half Policy/Role
+  coverage, F-006 spans the full RBAC lifecycle (Policy + Role +
+  Ownership + Owner) at the primary-source tier. A future maintainer
+  triage may split F-006 into per-resource sub-features (POLICY /
+  ROLE / OWNERSHIP / OWNER lifecycle); the current shape preserves
+  the pillar anchor.
 related_refactoring_scopes:
 - REFACTOR-073
 related_test_gaps: []
+related_test_gaps_batch_p_candidates:
+- TEST-GAP-NNN (deleteOwner cascade-block leg coverage — separate test per cascade-leg to prevent OR-to-AND regression)
+- TEST-GAP-NNN (deleteOwner role-binding hard-delete regression-pin — verify owner_to_role rows are physically removed)
+- TEST-GAP-NNN (deleteOwner search-vector NOT refreshed on delete — pin the current behaviour OR fix the gap)
+- TEST-GAP-NNN (deleteOwner idempotency / non-existent id — assert silent 204 OR add 404)
+- TEST-GAP-NNN (createOwner / updateOwner / deleteOwner audit-log integration test — verify activity feed receives OWNER_CREATED / OWNER_UPDATED / OWNER_DELETED events)
 related_doc_gaps: []
+related_doc_gaps_batch_p_candidates:
+- DOC-GAP-NNN (live /authorization/permissions page silent on OWNER_DELETE cascade-error contract — operators encountering USR004 in production cannot consult docs)
+- DOC-GAP-NNN (live /authorization/owners page silent on owner deletion semantics — soft-delete + partial-name-reuse + role-binding hard-delete + orphan-association behaviour)
+- DOC-GAP-NNN (positive case-law contrast: Owner-side orphan-binding closure vs POLICY/ROLE-side persistence — surface for ADR / doc page)
+related_refactoring_scopes_batch_p_candidates:
+- REFACTOR-NNN (owner_association_request cascade-incompleteness — add the 4th cascade-leg or set ON DELETE behaviour)
+- REFACTOR-NNN (deleteOwner search-vector refresh — restore symmetry with updateOwner's updateSearchVectors call)
+- REFACTOR-NNN (createOwner sidecar superseded entries cleanup — apply the LSN-018 superseded_by flag to bugs_limitations_corner_cases[2] + security.known_security_gaps[2])
 related_concepts:
 - Policy (Authorization)
 - Permission (Authorization)
 - Role (Authorization)
+- Owner-Lifecycle Audit Silence (Audit-log Presence Asymmetry — 5-sidecar refinement)
+- Owner-Side Orphan-Binding Closure (positive case-law contrast)
 related_retrospectives:
 - LSN-017
+- LSN-018  # the createOwner supersede is the load-bearing coherence-correction case in this batch
 related_probes: null
 probe_verifications: []
 maintainer_curated: false

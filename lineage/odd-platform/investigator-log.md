@@ -1408,3 +1408,59 @@ Theme M next: Anchor-set defence audit (cross-cutting; ~5 controllers — getDat
 - Coherence-sweep candidate count grew 27.8k → 29.8k (linear with new artefacts; fanout dominant — most are one anchor matching N test-gaps via same class). Audit pass deferred.
 - F-001 + F-003 merge candidate still maintainer-pending.
 
+
+## Batch 2026-05-20-P — Controllers: Ingestion + AlertManager + Owner trio + Permission (5/5 nodes; LSN-018 PRODUCING REAL VALUE)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: 88 prior + 5 new = **93 total**; 0 deferred (1 PHANTOM — sidecar documents methodology miss)
+- **Theme**: Controllers deeper — IngestionController.createDataSourceEntity + AlertManagerController.postAlerts + OwnerController.{updateOwner,deleteOwner} + PermissionController.getPolicyPermissions (PHANTOM)
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `IngestionController.createDataSourceEntity` | P-10 | TWO ingestion filters ASYMMETRIC: `/datasources` ALWAYS-auth-required (unconditional `@Component`) vs `/entities` OPT-IN (auth.ingestion.filter.enabled=false default). Collector identity via stringly-typed `COLLECTOR_ID_SESSION_KEY` WebSession attribute (NOT Principal) — cluster-deployment-without-sticky-sessions produces HTTP 500 not 401. UPSERT-by-ODDRN PARTIAL-MERGE (only name + description propagate). |
+| `AlertManagerController.postAlerts` | P-07 | METHOD-TIER primary-source confirmation of F-007's 3 named drift facets (unauthenticated_payload_trust + cross_tenant_alert_creation + no_idempotency_no_audit). 4 ancillary corner-cases. **SUPERSEDE**: prior class-level sidecar's 404 finding on alerting page → 200 in this session. |
+| `OwnerController.updateOwner` | P-09 | Owner-name rename SAFE for USER_OWNER_MAPPING (FK by `owner.id` at V0_0_4:3, NOT by name — **DISAMBIGUATES from REFACTOR-355** OIDC_USERNAME-rename which IS unsafe). 5 concerns: no @ActivityLog, empty/omitted roles silently DELETES all role-links (HIGH destructive default), name collision returns 400 not 409, case-sensitive no normalization, OpenAPI 201-vs-controller 200. |
+| `OwnerController.deleteOwner` | P-09 | **5th audit-silence sidecar** (no @ActivityLog); 3-leg cascade-block + HARD-DELETE on OWNER_TO_ROLE + SOFT-DELETE on owner.deleted_at; **closes orphan-binding CORRECTLY on Owner side** (positive case-law contrast to F-006 Policy/Role half which does it WRONGLY); race-window between cascade-check and delete; FTS search vector NOT refreshed; orphan owner_association_request rows. **SUPERSEDE**: createOwner sidecar's claim of non-partial UNIQUE on owner.name is WRONG (V0_0_64 made it partial). |
+| `PermissionController.getPolicyPermissions` | P-09 | **PHANTOM NODE** — method does NOT exist on PermissionController.java (file 27 lines; single method is getResourcePermissions already enriched). Synthetic-node walker emitted candidate from rationale-only synthesis without method-existence verification. Negative finding documented as substrate_quality canonicalisation_candidate; methodology gap surfaced. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 253 → **267 concepts** | +14 new (3 operations + 10 invariants + 1 canonicalisation_candidate) + 3 strengthened + **2 SUPERSEDED** (createOwner partial-unique-index correction + alertmanager-receiver 404→200). Coherence: 3 strengthens, 2 supersedes, 3 conflicts surfaced (all resolved). |
+| adr-archaeologist (ADRs) | 139 → **145** | +6 (140-145) + 6 strengthened (ADR-002/006/014/015/027/067). ADR-015 owner-scoping mechanism now **19-SIDECAR** (was 17). ADR-140 Ingestion-endpoint auth ASYMMETRIC by design HIGH; ADR-141 Collector identity via WebSession attribute HIGH; ADR-142 UPSERT-by-ODDRN partial-merge HIGH; ADR-143/144/145 MEDIUM. |
+| adr-archaeologist (scopes) | 418 → **435** | +17 (419-435) + 4 strengthened. **REFACTOR-185 now 17+18-SIDECAR** (createDataSourceEntity + filter-class additions). HIGH: REFACTOR-419 cluster fragility; -425 destructive empty roles; -426 no audit on Owner mutations; -427 owner_association_request orphans; -431 no audit on datasource registration. REFACTOR-435 substrate-quality phantom-node MEDIUM. |
+| doc-gap-finder | 165 → **172 detail / 184 reported** | +7 (178-184) + 5 strengthened + 1 SUPERSEDED (DOC-GAP-011 wording-correction). 3 HIGH + 4 MEDIUM new. DOC-GAP-082 META now 17+ surfaces. |
+| test-coverage-mapper | 616 → **631 indexed (107 CRITICAL)** | +16 (618-633) + 9 strengthened + 1 SUPERSEDED (TEST-GAP-239 partial-index correction). 2 NEW CRITICAL: TEST-GAP-618 IngestionController createDataSource asymmetric auth; TEST-GAP-622 updateOwner empty-roles destructive. |
+| feature-flow-builder | 18 → **19 features** (+1 new, +4 extended) | **F-019 / P-08:F-003 Owner Lifecycle Management** (NEW — the createOwner/updateOwner/deleteOwner trinity now coherent user-observable feature; 13 facets). F-006 RBAC: 5-SIDECAR audit-silence + positive case-law contrast. F-007 AlertManager: METHOD-TIER primary source for 3 facets. F-008 Batch Ingestion: 5 architectural-asymmetry facets. F-011 Principal-to-Owner: OWNER.NAME rename safe disambiguation. Coherence: strengthens=4 supersedes=1 conflicts_surfaced=0. |
+
+### Coverage state after batch P
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 93 | **23.5%** (was 22.3%) |
+| Effective coverage | 171 | **43.3%** (was 41.3%) |
+| Features discovered | 19 (was 18) | +1 NEW (F-019 Owner Lifecycle Management) |
+| Total test-gaps | 631 indexed (632 written, 1 broken) | 107 CRITICAL (was 106) |
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-185 DISABLED-mode bypass**: now **17-18 SIDECAR** (createDataSourceEntity adds new invocation site; STRONGEST in catalog reaffirmed)
+- **ADR-015 owner-scoping mechanism**: now **19-SIDECAR** (updateOwner + deleteOwner add 2 touch-points)
+- **F-006 audit-silence pattern**: now **5-SIDECAR** (deleteOwner + updateOwner extend Role+Policy closure)
+- **F-006 positive case-law contrast**: Owner-side OWNER_TO_ROLE hard-delete CLOSES orphan-binding pattern that Policy/Role half does WRONGLY — first POSITIVE pattern in F-006 (canonicalisation candidate)
+- **F-011 rename hazard surface complete**: OWNER.NAME rename SAFE (FK by owner.id) vs OIDC_USERNAME rename UNSAFE (REFACTOR-391)
+- **LSN-018 Rule 6 production fire #2-5**: 5 supersedes across registries this batch (concept-merger 2 + doc-gap-finder 1 + test-coverage-mapper 1 + feature-flow-builder 1)
+
+### Follow-ups (logged, not blocking)
+
+- **TEST-GAP-363 broken YAML** introduced this batch (strengthen-edit corrupted scalar). Auto-quarantined to `.broken-yaml-pending-fix`; data preserved in `.broken-yaml-backup`. Recoverable next batch.
+- 3 broken-YAML files persist from earlier batches (lineage-graph-traversal, manage-ownership-lifecycle-with-deg-cascade, run-housekeeping-cycle-five-jobs).
+- 199 detail-without-index in refactoring-scopes; 78 in implicit-adrs (legacy batch-J + ongoing canonical-append-pattern). rebuild_indexes.py reconstructs from detail/ so functional. Markdown indexes lag.
+- 13 detail-without-index + 4 index-without-detail in doc-gaps.
+- **PHANTOM-NODE methodology miss** captured as REFACTOR-435 + substrate_quality concept. Future sprint-themes entries should run a "method-existence verification" (Grep for the method name in the source_file) BEFORE adding to the theme queue.
+- Coherence-sweep candidates: 29.8k (batch O) → 33.1k (batch P; linear growth, fanout-dominated).
+

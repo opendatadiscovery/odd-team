@@ -1,0 +1,28 @@
+gap_id: TEST-GAP-619
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java IngestionController controller-method:createDataSourceEntity"
+pillars_affected: [P-10]
+surfaced_by:
+  - "createDataSourceEntity.md:concepts.invariants.[2] (IllegalStateException on missing COLLECTOR_ID_SESSION_KEY produces HTTP 500, not 401)"
+  - "createDataSourceEntity.md:dependencies_semantic.coupling.[2] (Session-based state coupling between filter and controller — stringly-typed SessionConstants.COLLECTOR_ID_SESSION_KEY)"
+  - "createDataSourceEntity.md:tests_coverage_semantic.uncovered_behaviours (Controller-boundary 5xx path)"
+behaviour: |-
+  **COLLECTOR-ID SESSION-BRIDGE FRAGILITY — HTTP 500 leak instead of 401 on missing session attribute.** The contract between IngestionDataSourceFilter (writer of `COLLECTOR_ID_SESSION_KEY` in WebSession at IngestionDataSourceFilter.java:37-38) and IngestionController.createDataSource (reader at lines 50-57) is stringly-typed and fragile: `SessionConstants.COLLECTOR_ID_SESSION_KEY` is `public static String COLLECTOR_ID_SESSION_KEY = "collectorId"` (NOT final — SessionConstants.java:4). If the session attribute is null (filter didn't run, session expired, or session attribute lost in a cluster-deployment hop without sticky sessions), the controller throws `IllegalStateException("Collector id is null")` at line 54 — which propagates as HTTP **500 Internal Server Error**, NOT 401 Unauthorized. An operator probing the endpoint without going through the filter cannot distinguish 'session missing' from 'server crashed'. Cluster deployments without sticky sessions (default `session.provider: IN_MEMORY` per application.yml:30, default `spring.session.timeout: -1` per line 2-3) compound the risk — the second-hop request from a load balancer can land on a different node with no session state, producing 500 errors that look like server failures. NO test exercises this contract. A refactor that (a) renames the stringly-typed key in only one of the two files, (b) changes the filter to NOT set the session attribute (e.g. switch to a principal-based identity), (c) changes the controller to read from `Mono<Principal>` instead of `exchange.getSession()` — would land green in CI even though the runtime contract is broken.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceTest.java (service-tier only; covers happy path + empty-collector NotFoundException but NOT the controller-boundary 500-vs-401 path)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/IngestionDataSourceFilterIntegrationTest.java"
+  name: "createDataSource_validTokenButMissingSessionAttribute_returns500WithIllegalStateException"
+evidence:
+  - "createDataSourceEntity.md says (concepts.invariants.[2]): 'If COLLECTOR_ID_SESSION_KEY is null (filter did not run, session expired, session attribute lost), the controller throws IllegalStateException(Collector id is null) (line 54) — which propagates to the default reactive error handler as HTTP 500 Internal Server Error. There is no 401 conversion. An operator probing the endpoint without going through the filter cannot distinguish session missing from server crashed.'"
+  - "createDataSourceEntity.md says (dependencies_semantic.coupling.[2]): 'Session-based state coupling between filter and controller. The filter writes one key; the controller reads it via stringly-typed lookup. A refactor that renames the key in either place silently desyncs the contract; a misspelling in the controller would throw IllegalStateException(Collector id is null) at runtime, not at compile-time.'"
+  - "Source: IngestionDataSourceFilter.java:37-38 (writer) + IngestionController.java:50-58 (reader) + SessionConstants.java:4 (NOT final, public static String)"
+cross_references:
+  - "F-008 (P-10:F-001 Batch Ingestion) — sibling /ingestion/entities path uses entirely different identity-resolution (payload-driven via dataSourceOddrn) — the asymmetry"
+  - "REFACTOR-073 (collector-token session binding — adjacent concept)"
+proposed_action: |-
+  Add `IngestionDataSourceFilterIntegrationTest` that posts /ingestion/datasources with a valid bearer token BUT BYPASSES the filter (e.g. via a test-specific WebTestClient.mutateWith() removing the filter chain) — asserts the controller throws `IllegalStateException("Collector id is null")` producing HTTP 500 (NOT 401). Pins the current contract; future refactor that introduces principal-based identity must flip the test. Plus a sibling test: under simulated cluster split (session attribute manually cleared between request hops), same 500 result.
+batch: 2026-05-20-P
+feature_id: F-008

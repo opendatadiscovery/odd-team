@@ -1,0 +1,82 @@
+name: Update Owner (PUT) — name + role-set replace
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  **NEW OPERATION, batch 2026-05-20-P** — the reactive `PUT /api/owners/{owner_id}`
+  handler (`OwnerController.java:47-54`) — five lines of WebFlux delegation
+  that read `Mono<OwnerFormData>` from the body, call
+  `ownerService.update(ownerId, form)`, and wrap the resulting `Owner` in
+  200 OK. The transactional shape lives one layer down at
+  `OwnerServiceImpl.update` (`OwnerServiceImpl.java:69-85`) — `@ReactiveTransactional`,
+  five-step pipeline: (1) `ownerRepository.get(id).switchIfEmpty → NotFoundException`
+  → HTTP 404; (2) `OwnerMapper.applyToPojo` applying the form's new `name`
+  and `roles` to the existing pojo; (3) `ownerRepository.update(pojo)`;
+  (4) destructive role-rebind via
+  `ownerToRoleRepository.deleteOwnerRelationsExcept(ownerId, newRoles).then(createRelations(ownerId, newRoles))`;
+  (5) search-vector refresh via `updateChangedOwnerVectors` against BOTH
+  the data-entity search entrypoint and the term search entrypoint via
+  `Mono.zip` — all inside one DB transaction.
+
+  Authorization is enforced centrally by `SecurityConstants.SECURITY_RULES[144-145]`
+  (`OWNER_UPDATE` NO_CONTEXT) — the controller carries NO `@PreAuthorize`.
+
+  **Load-bearing characteristics**:
+
+    - **Rename does NOT orphan USER_OWNER_MAPPING** — the FK is by
+      `owner.id` (bigserial PK), stable across name changes. The
+      USER_OWNER_MAPPING rows continue to point at the same Owner
+      identity. **This is the SAFE direction of rename**, in CONTRAST
+      to REFACTOR-391's OIDC_USERNAME-rename which orphans
+      USER_OWNER_MAPPING — see the disambiguation invariant
+      `owner-name-rename-safe-vs-oidc-username-rename-unsafe-two-rename-surfaces`.
+
+    - **Role-set replacement is set-based, not diff-based** — empty
+      `roles` field is DESTRUCTIVE (removes all role bindings); see
+      sibling HIGH-severity invariant
+      `update-owner-empty-roles-silently-deletes-all-bindings`.
+
+    - **OpenAPI declares HTTP 201 for an UPDATE; controller returns 200**
+      — class-wide drift (same pattern on `createOwner`).
+
+    - **NO @ActivityLog on OwnerServiceImpl.update** — strengthens the
+      `no-audit-log-on-rbac-mutations` invariant (6th sidecar in the
+      pattern at the OWNER mutation surface; deleteOwner adds a 7th).
+
+    - **Rename collision propagates as USR003 / HTTP 400, NOT 409
+      Conflict** — partial unique index `owner_name_unique ON owner(name)
+      WHERE deleted_at IS NULL` catches collisions; jOOQ raises
+      `UniqueConstraintException` → `ControllerAdvice.handleUniqueConstraint`
+      → HTTP 400 with `ErrorCode.UNIQUE_CONSTRAINT`. Same translation
+      pattern as F-006 batch-K cross-batch correction.
+
+    - **Search vectors refresh INSIDE the transaction** — choice trades
+      response latency for read-after-write consistency.
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java OwnerController controller-method:updateOwner
+contributors:
+  - 'updateOwner.md:concepts.operations: update-owner-name-and-roles (5-step transactional pipeline) + role-set-diff-by-replace + search-vector-refresh'
+  - 'updateOwner.md:concepts.invariants.[0-6]: reactive transactional + rename safety + 404 on missing id + 201-vs-200 drift + set-based role replacement + name overwrite + search vector refresh in transaction'
+  - 'updateOwner.md:implicit_adrs.[0-3]: centralised SecurityConstants gate + service-level transaction + set-replacement role rebind + search-vector refresh inside transaction'
+evidence:
+  - updateOwner.md:concepts.operations + concepts.invariants
+  - updateOwner.md:bugs_limitations_corner_cases.[0-6]
+  - updateOwner.md:security.authorization_assertions
+  - updateOwner.md:security.known_security_gaps.[0-4]
+  - updateOwner.md:docs_link_semantic.doc_drift_findings.[0-2]
+notes: |-
+  Owner rename is a privileged, broad-impact write: it mutates a row
+  read by every Ownership join, every USER_OWNER_MAPPING-bridged
+  lookup, every search query, and the owner-listing in the UI. Five
+  distinct correctness contracts are bundled into this one endpoint
+  (UPDATE owner.name + DELETE/INSERT owner_to_role + UPDATE search
+  vectors × 2 + read-back) and not a single one is HTTP-asserted.
+
+  The live owners doc page (WebFetched 2026-05-20 status 200) is
+  SILENT on Owner-rename semantics — does not describe USER_OWNER_MAPPING
+  survival, audit-log absence, name-collision behaviour (USR003 vs 409),
+  case-sensitivity rules, or idempotence semantics.

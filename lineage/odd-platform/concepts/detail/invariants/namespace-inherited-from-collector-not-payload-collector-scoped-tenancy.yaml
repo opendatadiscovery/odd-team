@@ -1,0 +1,86 @@
+name: Namespace inherited from Collector, not payload — collector-scoped tenancy model
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-10
+  - P-08
+description: |-
+  **NEW INVARIANT, batch 2026-05-20-P** — PRIMARY-SOURCE confirmed at
+  `DataSourceIngestionServiceImpl.java:99-111` (`mapDataSources`).
+  Every datasource registered via `POST /ingestion/datasources` is
+  stamped with the COLLECTOR'S namespace_id, NOT any namespace
+  information from the payload. The `mapper.mapIngestionModel(ds,
+  extractFieldFromNullableObject(c.namespace(), NamespacePojo::getId),
+  c.collectorPojo().getId())` call passes the Collector's namespace_id
+  unconditionally; any `namespace_name` field on the `DataSource`
+  payload is SILENTLY IGNORED.
+
+  **The architectural model**: the platform's namespace-as-collector-
+  tenant pattern. A Collector belongs to ONE namespace (configured at
+  Collector creation in the UI's Management → Collectors tab), and
+  every datasource the Collector registers inherits that namespace.
+  Namespaces act as cross-pillar filter dimensions (per
+  `system-mission.md` P-08 Namespaces sub-feature) — search facets,
+  directory drill-down, and tag scoping all use namespace boundaries.
+  By tying each Collector to a single namespace, the platform
+  guarantees a Collector's datasources are namespace-scoped
+  consistently.
+
+  **The trade-off**: a Collector cannot register datasources in
+  MULTIPLE namespaces — one Collector = one namespace. Operators
+  wanting multi-namespace datasources from a single collector
+  process must run multiple Collector entities (each with its own
+  token + namespace).
+
+  **The protective security invariant**: cross-collector namespace
+  assignment is BLOCKED by design. A stolen Collector A token CANNOT
+  register datasources into Collector B's namespace — the mapper
+  hard-codes the namespace_id from the matched Collector. This is a
+  protective invariant for the platform's per-namespace authorization
+  model.
+
+  **The silently-dropped-field gap**: the upstream Ingestion API
+  contract's `DataSource` model has a `namespace_name` field (per
+  the ODD Specification). A custom-collector author setting
+  `namespace_name = "my-team"` in the payload would see the
+  datasource appear under the Collector's pre-configured namespace,
+  NOT under `my-team`. No log records the silent drop. No doc warns
+  about it.
+
+  **Severity**: MEDIUM — the design is intentional and security-
+  positive (prevents cross-collector tenancy bleed), but operators
+  reading the Ingestion API contract may assume the `namespace_name`
+  field is honoured. The asymmetry is invisible to operators.
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java IngestionController controller-method:createDataSourceEntity
+contributors:
+  - 'createDataSourceEntity.md:concepts.invariants.[6] (Namespace is INHERITED from the COLLECTOR, not the payload — primary-source DataSourceIngestionServiceImpl.java:99-111)'
+  - 'createDataSourceEntity.md:implicit_adrs.[3] (Namespace is inherited from Collector, NOT from payload — collector-scoped tenancy model)'
+  - 'createDataSourceEntity.md:bugs_limitations_corner_cases.[5] (Namespace-from-payload is SILENTLY IGNORED)'
+  - 'createDataSourceEntity.md:security.data_exposure.[3] (Cross-collector namespace assignment is BLOCKED by design — the mapper hard-codes the namespace_id; protective invariant)'
+evidence:
+  - createDataSourceEntity.md:concepts.invariants.[6] (PRIMARY SOURCE)
+  - createDataSourceEntity.md:implicit_adrs.[3] (intent_anchor + confidence HIGH)
+  - createDataSourceEntity.md:bugs_limitations_corner_cases.[5] (severity MEDIUM)
+  - createDataSourceEntity.md:security.data_exposure.[3] (protective)
+notes: |-
+  Pairs with:
+
+    - `upsert-by-oddrn-partial-merge-collector-driven-only-name-description`
+      invariant — the partial-merge story compounds the namespace
+      story: namespace is ALSO not propagated from the payload, but
+      for a DIFFERENT reason (inherited from Collector, vs preserved
+      from existing row).
+
+    - `two-ingestion-filters-asymmetric-auth` invariant — the always-
+      on filter is what makes the COLLECTOR_ID_SESSION_KEY available
+      to the controller (and thence to the service-layer mapper).
+
+  Doc-side recommended action: extend the custom-collectors developer
+  guide with a "Namespace inheritance" note: "The datasource's
+  namespace is inherited from the Collector entity that authenticated
+  the request, NOT from any `namespace_name` field in the payload.
+  To register datasources in multiple namespaces, run multiple
+  Collector entities."

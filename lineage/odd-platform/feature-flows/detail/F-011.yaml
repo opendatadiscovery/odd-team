@@ -22,6 +22,10 @@ drift_class_summary:
 - azure_logout_npe_no_token_revoke_local_only
 - cognito_logout_silent_no_op_on_empty_uri
 - oauth_provider_quirks_pattern_diverges_from_abstract_base
+- owner_name_rename_safe_for_user_owner_mapping_fk_by_id_not_name
+- owner_update_no_audit_log_no_per_owner_scope
+- owner_update_empty_roles_silently_destroys_bindings
+- owner_update_openapi_201_vs_impl_200_drift_class_wide
 cross_pillar_relationships:
 - pillar_id: P-01
   kind: feeds
@@ -48,6 +52,99 @@ cross_pillar_relationships:
 batch_origin: K
 created_in_batch: K
 batch_extensions:
+- batch: P
+  entry_point_added: |-
+    controller-method:updateOwner (PUT /api/owners/{owner_id}) — the
+    Owner directory's rename + role-rebind surface. This is the LOAD-BEARING
+    CONTRAST to the batch-O F-011 drift facet
+    `github_ghes_hard_coded_login_rename_orphan`: the OIDC_USERNAME side
+    of the rename hazard surface ORPHANS USER_OWNER_MAPPING (REFACTOR-391
+    — handler uses `oidc_username='login'` which is a free-rename string;
+    no stable-id fallback). This batch-P entry-point closes the SAFE
+    half of the hazard surface: PUT /api/owners/{owner_id} renames
+    OWNER.NAME without orphaning USER_OWNER_MAPPING because the FK is
+    by `owner.id` (the bigserial PK, stable across name changes), NOT
+    by name. The two findings together describe the complete rename
+    hazard surface: OIDC_USERNAME side is dangerous, OWNER.NAME side
+    is safe.
+  contributing_nodes_added:
+  - odd-platform java OwnerController controller-method:updateOwner
+  - odd-platform java OwnerServiceImpl
+  notes: |-
+    The load-bearing finding is the DISAMBIGUATION between the OIDC_USERNAME
+    rename hazard (REFACTOR-391, batch O) and the OWNER.NAME rename
+    safety (this batch). Five distinct concerns surface on the OWNER.NAME
+    rename surface — the rename itself is SAFE for USER_OWNER_MAPPING
+    but the five other concerns are real:
+    (1) **USER_OWNER_MAPPING SURVIVES RENAME (SAFETY INVARIANT, NO
+    SEVERITY)** — `user_owner_mapping.owner_id REFERENCES owner(id)`
+    (V0_0_4__add_user_owner_mapping.sql:3) — the FK is by the bigserial
+    PK, stable across name changes. PUT /api/owners/{owner_id} renames
+    `owner.name` via `OwnerMapper.applyToPojo` + `ReactiveAbstractCRUDRepository.updateOne`;
+    USER_OWNER_MAPPING rows continue to point at the same Owner
+    identity. This is the LOAD-BEARING CONTRAST to REFACTOR-391's
+    GitHub-login-rename orphan: OIDC_USERNAME rename ORPHANS the
+    mapping (irreparable without stable-id fallback); OWNER.NAME
+    rename PRESERVES the mapping. Surface for documentation: "Owner
+    rename is safe for user-owner associations; OIDC username rename
+    is hazardous — see REFACTOR-391".
+    (2) **OWNER UPDATE EMITS NO ACTIVITY-FEED EVENT (MEDIUM)** —
+    `OwnerServiceImpl.update` (lines 68-85) has NO `@ActivityLog`
+    annotation. The activity feed does NOT record "owner X renamed
+    from A to B by C at T" or "owner X had roles [A,B] before, now
+    has [B,C]". The role-rebind is silently destructive of audit
+    history. Mirrors batch-K + batch-P audit-silence pattern; this
+    is the 6TH corroborating sidecar (Owner CREATE + Owner UPDATE +
+    Owner DELETE + Policy CRUD + Role CRUD + Repository tiers all
+    audit-silent) — refining the cross-batch concept catalog entry
+    to "6-sidecar audit-silence pattern" for the Owner side of the
+    RBAC mutation surface specifically.
+    (3) **EMPTY `roles` FIELD SILENTLY DESTROYS ROLE BINDINGS (HIGH)** —
+    `OwnerFormData.roles` is OpenAPI-optional (`components.yaml:419-422`,
+    no `required` marker); `getRoleIdsList` (`OwnerServiceImpl.java:117-122`)
+    collapses both null AND empty list to `List.of()`. The update
+    transaction then calls `deleteOwnerRelationsExcept(ownerId, List.of()).then(
+    createRelations(ownerId, List.of()))` — the first half DELETES
+    all current role-links (since no existing link is in the empty
+    set); the second half INSERTS nothing. **An operator updating
+    ONLY the owner name (omitting `roles` to mean "don't touch")
+    INSTEAD REMOVES ALL role assignments.** This is a silent,
+    destructive UX hazard: the form's `roles` is treated as
+    REPLACE-NULL-WITH-EMPTY, not as IGNORE-IF-OMITTED. The UI in
+    practice always sends the current `roles` list, so the hazard
+    is masked in normal UI flows — but any API consumer (script,
+    integration) that omits `roles` will silently strip ALL roles
+    from the Owner. Severity HIGH because it is destructive AND
+    silent.
+    (4) **RENAME COLLISION IS PROPAGATED AS USR003/HTTP 400, NOT
+    409 Conflict (MEDIUM)** — the `owner_name_unique` partial unique
+    index (V0_0_64__remove_is_deleted_field.sql:70) catches the
+    second rename to the same active name; jOOQ raises `DataAccessException`
+    → `ExceptionUtils.translateDatabaseException` →
+    `UniqueConstraintException` → `ControllerAdvice.handleUniqueConstraint`
+    → HTTP 400 with `ErrorCode.UNIQUE_CONSTRAINT` (per F-006 batch-K
+    cross-batch-correction enumeration). The client receives 400,
+    not the canonically-correct 409 Conflict. NO test verifies this
+    code path; NO API doc indicates which code the client should
+    expect on collision.
+    (5) **OPENAPI DECLARES HTTP 201 FOR AN UPDATE — IMPLEMENTATION
+    RETURNS 200 (MEDIUM)** — `openapi.yaml:196` declares `responses.'201':
+    'The resource has been successfully updated'` for the `updateOwner`
+    operationId. The controller returns `ResponseEntity.ok = 200`
+    (`OwnerController.java:53`). Doubly anomalous: (a) declaring 201
+    for a PUT-update is itself unusual (201 canonically signals
+    POST-creation); (b) the implementation disagrees with the spec.
+    Class-wide pattern: createOwner sibling has the IDENTICAL 201-vs-200
+    drift. Not a per-method oversight.
+    Additional finding (5th distinct concern, refined per LSN-018):
+    OWNER_UPDATE permission scope is GLOBAL (`SecurityConstants.java:144-145`
+    uses `NO_CONTEXT`) — a caller with OWNER_UPDATE can rename ANY
+    Owner row, including unrelated owners they have no
+    USER_OWNER_MAPPING-association with. There is NO per-Owner scoping
+    at this gate; consistent with the read-collaborative posture
+    documented elsewhere but undocumented for the WRITE side. The
+    live permissions doc names `OWNER_UPDATE` as 'Allows editing an
+    existing owner.' — silent on which owners.
 - batch: O
   entry_point_added: |-
     oauth-handler-tier: 5 sidecars resolving the UPSTREAM-of-hop-1 OAuth
@@ -289,6 +386,8 @@ contributing_nodes:
 - odd-platform java GrantedAuthorityExtractor
 - odd-platform java UserDto
 - odd-platform java UserProviderRole
+- odd-platform java OwnerController controller-method:updateOwner
+- odd-platform java OwnerServiceImpl
 chain:
 - hop: 0
   node: 'odd-platform java auth handler/logout:* (4 sidecars in batch O)'
@@ -1006,11 +1105,55 @@ control_summary: |-
   + LOGIN_FORM↔LDAP bleed remain the two HIGHEST-LEVERAGE probe candidates,
   unchanged from batch K, now with explicit SQL-layer evidence at lines
   121-125 for the maintainer to use as the regression-pin oracle.
+
+  Batch-P adds OwnerController.updateOwner primary-source — the
+  load-bearing CONTRAST to the OIDC_USERNAME rename hazard surfaced
+  in batch O. The OWNER.NAME rename surface PRESERVES USER_OWNER_MAPPING
+  intact because the FK is by `owner.id` (the bigserial PK), NOT by
+  name (V0_0_4__add_user_owner_mapping.sql:3). Together with REFACTOR-391
+  (GitHub-login-rename orphan — OIDC_USERNAME side is hazardous), the
+  two findings describe the COMPLETE rename hazard surface: the
+  OIDC_USERNAME side is the dangerous direction; the OWNER.NAME side
+  is the safe direction. Cite BOTH in any future "owner-mapping
+  stability" documentation. Five additional concerns on the OWNER.NAME
+  rename surface: (1) no audit-log on update (6th audit-silence
+  sidecar for the Owner side of the RBAC mutation surface,
+  complementing the 5-sidecar pattern surfaced by batch-P's deleteOwner);
+  (2) empty `roles` field silently destroys ALL role bindings (HIGH —
+  destructive UX hazard); (3) rename collision propagates as USR003 /
+  HTTP 400 not 409 Conflict (consistent with the batch-K cross-batch
+  correction pattern); (4) OpenAPI declares 201 for the PUT-update
+  but the implementation returns 200 (class-wide drift mirrored on
+  the createOwner sibling); (5) OWNER_UPDATE permission scope is
+  GLOBAL — a caller with OWNER_UPDATE can rename ANY Owner row
+  regardless of USER_OWNER_MAPPING-association. The disambiguation
+  finding (OWNER.NAME vs OIDC_USERNAME rename safety) is the headline;
+  the five secondary concerns are the operator-visible surface that
+  should be documented on the live owners page. NO probe required —
+  the safe-rename invariant is structurally provable from the schema
+  (V0_0_4__add_user_owner_mapping.sql:3 FK declaration); the regression-pin
+  for the OIDC_USERNAME side already exists at batch O via REFACTOR-391.
 related_refactoring_scopes:
 - REFACTOR-203
 - REFACTOR-024
+- REFACTOR-391  # batch-O GitHub login rename orphan — the OIDC_USERNAME side of the rename hazard surface; this F-011 entry now closes the OWNER.NAME safe-rename half of the same surface
+- REFACTOR-355  # batch-O OIDC_USERNAME cross-provider duplication — orthogonal to OWNER.NAME rename
 related_test_gaps: []
+related_test_gaps_batch_p_candidates:
+- TEST-GAP-NNN (OWNER.NAME rename does NOT orphan USER_OWNER_MAPPING — the load-bearing safe-rename invariant; regression-pin)
+- TEST-GAP-NNN (PUT /api/owners/{id} with roles=[] DESTROYS all role bindings — pin the destructive UX hazard)
+- TEST-GAP-NNN (PUT /api/owners/{id} rename collision → HTTP 400 USR003 not 409 — pin the contract)
+- TEST-GAP-NNN (PUT /api/owners/{id} returns 200 not 201 — pin the OpenAPI-vs-impl drift)
+- TEST-GAP-NNN (OWNER_UPDATE permission scope assertion — caller WITHOUT permission gets 403, WITH permission can rename ANY Owner including unrelated ones)
 related_doc_gaps: []
+related_doc_gaps_batch_p_candidates:
+- DOC-GAP-NNN (live owners page silent on rename mechanics — USER_OWNER_MAPPING survival, audit-log absence, role-rebind diff semantics, name-collision behaviour)
+- DOC-GAP-NNN (live permissions page names OWNER_UPDATE without enumerating scope — "Allows editing an existing owner" is silent on which owners + on what is mutated transactionally)
+- DOC-GAP-NNN (cross-link "rename hazard surface" — OIDC_USERNAME side dangerous (REFACTOR-391) vs OWNER.NAME side safe (this batch); compound documentation gap)
+related_refactoring_scopes_batch_p_candidates:
+- REFACTOR-NNN (empty-roles destructive-default UX — add explicit confirmation step OR partial-update mechanism)
+- REFACTOR-NNN (rename collision should return 409 Conflict not 400 USR003 — error-code correction)
+- REFACTOR-NNN (OpenAPI 201-vs-200 class-wide pattern — Owner controller methods declare wrong response code)
 related_concepts:
 - Principal-to-Owner Resolution
 - USER_OWNER_MAPPING
@@ -1019,9 +1162,11 @@ related_concepts:
 - Server-to-Server (S2S) Authentication
 - OAuth Provider-Quirks Strategy (ADR-CANDIDATE-034)
 - OAuth Logout Chain-of-Responsibility
+- Owner-Mapping Stability (rename hazard surface — OIDC side dangerous vs OWNER side safe)
 related_retrospectives:
 - LSN-017
 - LSN-001
+- LSN-018  # the rename-hazard disambiguation strengthens the OIDC_USERNAME hazard surface; coherence-strengthens not supersedes
 related_probes: null
 probe_verifications: []
 maintainer_curated: false

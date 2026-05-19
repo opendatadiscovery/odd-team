@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-631
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java AlertManagerController controller-method:postAlerts"
+pillars_affected: [P-07]
+surfaced_by:
+  - "postAlerts.md:bugs_limitations_corner_cases.[6] (No rate limit, no payload-size limit, no batch-cardinality cap — severity MEDIUM)"
+  - "postAlerts.md:performance.known_performance_gaps.[0] (No rate limit; bounded unbounded-row-growth risk under attack — severity MEDIUM)"
+  - "postAlerts.md:security.known_security_gaps.[3] (No audit log on entry — severity HIGH)"
+behaviour: |-
+  **NO RATE-LIMIT + NO AUDIT-LOG ON THE UNAUTHENTICATED WEBHOOK = UNBOUNDED ROW INSERTS AND ZERO FORENSIC RECONSTRUCTION.** Four compounding gaps at the AlertManager webhook entry point: (1) `@Valid` is NOT on `@RequestBody final Mono<AlertManagerRequest>` (AlertManagerController.java:22) — even if the inner DTO carried `@NotNull` / `@Size` annotations they would not fire; (2) there is NO path-level rate-limiter WebFilter; the only throughput constraint is the @ReactiveTransactional boundary on AlertServiceImpl.handleExternalAlerts (which serialises per-batch but doesn't cap cross-batch volume); (3) NO `log.info(...)` at controller entry, NO Micrometer `@Timed` counter, NO per-call correlation-id capture — forensic reconstruction of `who POSTed what when` after a forge incident is NOT possible — only the resulting alert rows persist; (4) the Activity feed events emitted from createAlerts at AlertServiceImpl.java:302-325 are `OPEN_ALERT_RECEIVED` events on the data entity (operational signal of the alert), NOT a request-level audit trail (no record of source-of-POST). Combined with the unauthenticated receiver (TEST-GAP-014), the cross-tenant attribution surface (TEST-GAP-015), and the no-idempotency duplicate-row hazard (TEST-GAP-366) — a misconfigured AlertManager (or a malicious caller) can flood ODD with thousands of duplicate alerts per minute with zero defensive surface and zero forensic trail. NO test pins this absence.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AlertManagerWebhookRateAndAuditTest.java"
+  name: "alertManagerWebhook_acceptsHighVolumeOfDuplicatePosts_noRateLimit_noAuditTrail"
+evidence:
+  - "postAlerts.md says (bugs_limitations_corner_cases.[6]): 'No rate limit, no payload-size limit, no batch-cardinality cap on the path. A misconfigured AlertManager (or a malicious caller, since the path is unauthenticated) can flood ODD with alerts, each one creating an AlertPojo row + AlertChunkPojo row inside @ReactiveTransactional handleExternalAlerts.'"
+  - "postAlerts.md says (security.known_security_gaps.[3]): 'No audit log on entry: no log.info(...) at controller entry, no Micrometer @Timed counter, no per-call correlation-id capture. Forensic reconstruction of who POSTed what when after a forge incident is not possible — only the resulting alert rows persist.' (severity HIGH)"
+  - "postAlerts.md says (performance.known_performance_gaps.[0]): 'No rate limit, no payload-size cap, no batch-cardinality cap — a misconfigured AlertManager (or unauthenticated attacker) can create unbounded AlertPojo + AlertChunkPojo + ActivityCreateEvent rows.'"
+  - "Source: AlertManagerController.java:21-26 (no rate limit annotation, no body-size constraint, no log statement, no @Timed) + AlertServiceImpl.java:152-191 (the loop materialises one alert+chunk per input array entry) + AlertServiceImpl.java:302-325 (Activity events are entity-side, not request-side)"
+cross_references:
+  - "F-007 (P-07:F-001 AlertManager Integration) drift facets no_rate_limit + no_audit_log"
+  - "TEST-GAP-363 (consolidated AlertManager webhook auth-gating)"
+  - "TEST-GAP-366 (no-idempotency — amplifies the no-rate-limit risk)"
+proposed_action: |-
+  Add `AlertManagerWebhookRateAndAuditTest`. (a) POST 1000 well-formed AlertManager payloads in rapid succession (no auth); assert all return 204; assert alert table has 1000 rows; pin the current unbounded-write behaviour; (b) grep through application logs for any `audit` or `correlation-id` entry tied to one of the POSTs; assert NONE present; pin the audit-silence behaviour; (c) POST a payload with batch cardinality 10000 alerts; assert it succeeds (no per-batch cap) — pin the no-cap behaviour. Future fixes (rate limiter / @Timed counter / per-call log entry / batch cap) will break these tests deliberately.
+batch: 2026-05-20-P
+feature_id: F-007

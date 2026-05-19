@@ -1,0 +1,117 @@
+name: PUT /api/owners empty-roles silently deletes all role bindings
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+  - P-08
+description: |-
+  **NEW HIGH-SEVERITY BUG-CLASS INVARIANT, batch 2026-05-20-P** —
+  PRIMARY-SOURCE confirmed at `OwnerServiceImpl.java:71, 76-81, 117-122`.
+  An API caller (script, integration, malformed UI request) who omits
+  the `roles` field on `PUT /api/owners/{owner_id}` — reasonably
+  expecting "don't touch roles" semantics — instead SILENTLY STRIPS
+  ALL role bindings from the Owner. The form's `roles` field is
+  treated as REPLACE-NULL-WITH-EMPTY, not as IGNORE-IF-OMITTED.
+
+  **The mechanism**:
+
+    1. `OwnerFormData.roles` is OpenAPI-optional (`components.yaml:419-422`;
+       `requiredMode` not declared; no `required` marker on the field).
+
+    2. `getRoleIdsList` (`OwnerServiceImpl.java:117-122`) collapses
+       BOTH null `roles` and EMPTY list `roles: []` to `List.of()`:
+       ```
+       private List<Long> getRoleIdsList(final OwnerFormData formData) {
+         if (CollectionUtils.isEmpty(formData.getRoles())) {
+           return List.of();
+         }
+         ...
+       }
+       ```
+
+    3. The update transaction calls
+       `deleteOwnerRelationsExcept(ownerId, List.of()).then(createRelations(ownerId, List.of()))`
+       (`OwnerServiceImpl.java:76-81`):
+        - The first half `deleteOwnerRelationsExcept(ownerId, List.of())`
+          issues `DELETE FROM owner_to_role WHERE owner_id = ? AND
+          role_id NOT IN ()` — Postgres handles the empty-NOT-IN as
+          always-true, so ALL existing role-links are deleted.
+        - The second half `createRelations(ownerId, List.of())` inserts
+          nothing.
+
+  **The destructive consequence**: an Owner who had role bindings
+  `[ADMIN, MANAGER]` before the PUT call (with the body omitting
+  `roles`) now has `[]` — completely role-stripped. The next
+  authorization-resolution call for any USER_OWNER_MAPPING-bound
+  user resolves to ZERO Policies → effectively no permissions.
+
+  **Why the UI masks the hazard**: the UI in practice always sends
+  the current `roles` list (`owners.thunks.ts` per UI source code) —
+  it loads the Owner, lets the user edit the name + role checkboxes,
+  and PUTs back the COMPLETE state. So the hazard is invisible in
+  normal UI flows.
+
+  **Why API consumers hit the hazard**: a script that wants to rename
+  an Owner without touching roles will reasonably PUT
+  `{ name: "newname" }` (omitting `roles`). The platform interprets
+  that as "rename + strip all roles". There is NO confirmation step,
+  NO 'are you sure' check, NO partial-update mechanism, NO PATCH
+  endpoint. Combined with the `no-audit-log-on-rbac-mutations`
+  invariant — role-stripping is silent AND irreversible from logs.
+
+  **The contract design defence**: per REST semantics, PUT is canonical
+  full-replace. The contract's behaviour is internally consistent.
+  But the OpenAPI contract carries `roles` as OPTIONAL (the marker is
+  absent in `components.yaml:419-422`), which is the BUG: optional
+  in the schema, destructive in the implementation. Either:
+    (a) mark `roles` as REQUIRED in the contract (the implementation's
+        actual semantics — at least operators reading the OpenAPI spec
+        learn the field cannot be omitted); OR
+    (b) introduce a PATCH endpoint for partial updates; OR
+    (c) interpret omitted/null roles as "preserve" (would break PUT
+        REST canon but match operator expectations).
+
+  **Severity**: HIGH — destructive-default UX hazard; silent;
+  irreversible from audit; not surfaced anywhere in the live docs;
+  the live permissions page describes `OWNER_UPDATE` as 'Allows
+  editing an existing owner' with no caveat about role-binding
+  destruction.
+axes_present:
+  - controllers
+  - services
+nodes:
+  - odd-platform java OwnerController controller-method:updateOwner
+contributors:
+  - 'updateOwner.md:concepts.invariants.[4] (Role-set replacement is set-based, not diff-based — empty roles is destructive, not don''t-touch)'
+  - 'updateOwner.md:bugs_limitations_corner_cases.[3] (Empty roles silently destroys role bindings — severity HIGH)'
+  - 'updateOwner.md:security.known_security_gaps.[2] (Empty roles field silently destroys all role bindings — destructive-default UX hazard)'
+  - 'updateOwner.md:implicit_adrs.[2] (Role-rebinding is set-replacement, not field-merge — convention inherited across update methods)'
+evidence:
+  - updateOwner.md:concepts.invariants.[4] (PRIMARY SOURCE — OwnerServiceImpl.java:76-81 + getRoleIdsList lines 117-122)
+  - updateOwner.md:bugs_limitations_corner_cases.[3] (severity HIGH; OpenAPI 419-422 optional + service-layer empty-list collapse + DB-layer destructive replace)
+  - updateOwner.md:security.known_security_gaps.[2] (severity HIGH — combined with no-audit-log gap)
+  - updateOwner.md:implicit_adrs.[2] (intent_anchor — the convention is consistent; replace semantics intentional)
+notes: |-
+  Cross-references:
+
+    - `no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f`
+      invariant — the role-stripping leaves NO audit trail. An operator
+      cannot reconstruct "Owner X had roles [A, B] before, now has []"
+      after the fact.
+
+    - `update-owner-with-role-rebind` operation (new in this batch) — the
+      operation that hosts this bug.
+
+  Doc-side recommended action: extend the live owners page and the
+  permissions page with an explicit warning: "API consumers calling
+  PUT /api/owners/{owner_id}: the `roles` field is treated as a
+  REPLACE-SET. Omitting `roles` or sending `roles: []` STRIPS ALL
+  role bindings from the Owner. Always send the complete current
+  `roles` list." Equivalent severity to LSN-001 (the attachment-
+  storage default that wiped production data on restart) — same
+  shape: a reasonable expectation produces destructive behaviour
+  silently.
+
+  Backlog action proposed: file DOC-NNN follow-up + log upstream
+  GitHub issue for the OpenAPI contract: mark `roles` as required,
+  OR introduce a PATCH endpoint for partial updates.

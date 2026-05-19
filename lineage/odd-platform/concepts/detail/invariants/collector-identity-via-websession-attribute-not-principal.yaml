@@ -1,0 +1,112 @@
+name: Collector identity propagates via WebSession attribute (not Spring Security Principal)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-10
+  - P-09
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20-P** — cluster-fragility
+  surface. The `IngestionDataSourceFilter` and the `IngestionController.createDataSource`
+  share state through a stringly-typed WebSession attribute
+  (`SessionConstants.COLLECTOR_ID_SESSION_KEY = "collectorId"`,
+  `SessionConstants.java:4`), NOT through Spring Security's
+  `ReactiveSecurityContextHolder` / `Mono<Principal>` mechanism. This is
+  a DELIBERATE architectural choice (the platform's two auth pipelines —
+  UI and ingestion — are kept orthogonal) but it carries operational
+  trade-offs the docs do not surface.
+
+  **The contract**:
+    - `IngestionDataSourceFilter.java:36-38` writes the matched
+      Collector's id into the WebSession via
+      `t.getT2().getAttributes().put(SessionConstants.COLLECTOR_ID_SESSION_KEY,
+      t.getT1().getId())`.
+    - `IngestionController.java:50-58` reads the same attribute via
+      `exchange.getSession().map(ws -> ws.getAttribute(SessionConstants.COLLECTOR_ID_SESSION_KEY))`.
+    - `SessionConstants.COLLECTOR_ID_SESSION_KEY` is `public static
+      String` (NOT `final`, NOT `@Nonnull`) — a stringly-typed key
+      shared by import name across the two files.
+
+  **The trade-offs**:
+
+    1. **No type-safety on the bridge** — a refactor that renames the
+       key in only one of the two files silently desyncs the contract;
+       a misspelling in the controller would throw
+       `IllegalStateException("Collector id is null")` at runtime,
+       not at compile-time.
+
+    2. **Cluster deployments without sticky sessions are NOT supported**
+       — `session.provider: IN_MEMORY` (`application.yml:30`, default)
+       means each platform instance has its own session store. A
+       collector's `POST /ingestion/datasources` (request 1, lands on
+       instance A — session created) followed by a follow-up request
+       on instance B sees NO session attribute. The codebase ships
+       `session.provider: REDIS` and `session.provider: INTERNAL_POSTGRESQL`
+       as alternatives but the default is IN_MEMORY.
+
+    3. **Session-state-loss surfaces as HTTP 500, not 401** — if the
+       WebSession's COLLECTOR_ID_SESSION_KEY is missing for ANY reason
+       (cluster + no sticky sessions, session expired, filter didn't
+       run), the controller throws `IllegalStateException("Collector
+       id is null")` (`IngestionController.java:54`) which propagates
+       to HTTP 500. There is no 401 conversion (the parent
+       `AbstractIngestionFilter.filter` line 40 only catches
+       `AccessDeniedException`, not `IllegalStateException`). An
+       operator debugging a collector that suddenly fails sees a 500
+       and reasonably concludes "platform crashed"; the correct
+       interpretation is "session lost — re-establish the connection."
+
+    4. **Sessions never expire** — `spring.session.timeout: -1`
+       (`application.yml:2-3`) means the session map grows
+       monotonically on a long-running platform with many collector
+       connections. 1000 lifetime collector connections holds 1000
+       session entries until process restart.
+
+  **Why this exists** (implicit ADR confirmed at `createDataSourceEntity.md`
+  implicit_adrs.[0]): the design choice is deliberate. The filter could
+  have wrapped the matched Collector into a Spring Security `Authentication`
+  object and pushed it into `ReactiveSecurityContextHolder` — that
+  would let the controller read it via `Mono<Principal>` or
+  `@AuthenticationPrincipal`. Instead, the codebase explicitly opts
+  for WebSession state, which (a) avoids touching the SecurityContext
+  (the `/ingestion/**` path is in `WHITELIST_PATHS` so the
+  SecurityWebFilterChain doesn't run for it); (b) keeps the ingestion
+  auth pipeline orthogonal to the UI auth pipeline; (c) trades type-
+  safety for architectural separation.
+
+  **Severity**: MEDIUM — the design is intentional and the security
+  posture is sound; the operational gap is the cluster-deployment
+  story being undocumented. No live doc warns operators that
+  `/ingestion/datasources` is sensitive to session-state loss.
+axes_present:
+  - controllers
+  - filters
+nodes:
+  - odd-platform java IngestionController controller-method:createDataSourceEntity
+contributors:
+  - 'createDataSourceEntity.md:implicit_adrs.[0] (Collector identity propagates via WebSession attribute, not Spring Security Principal — deliberate intent_anchor)'
+  - 'createDataSourceEntity.md:concepts.invariants.[1-2] (WebSession-bridge contract + 500-on-missing-attribute fail-loud)'
+  - 'createDataSourceEntity.md:bugs_limitations_corner_cases.[0-1] (session-loss surfaces as 5xx not 401; cluster without sticky sessions breaks)'
+  - 'createDataSourceEntity.md:dependencies_semantic.coupling.[2] (session-based state coupling between filter and controller)'
+  - 'createDataSourceEntity.md:performance.resource_allocation (session-bound state grows monotonically with collector connections)'
+  - 'createDataSourceEntity.md:performance.scaling_characteristics (cluster-without-sticky-sessions BREAKS the session-bridge)'
+evidence:
+  - createDataSourceEntity.md:implicit_adrs.[0] (intent_anchor — deliberate WebSession choice; SecurityContext alternative explicitly rejected)
+  - createDataSourceEntity.md:concepts.invariants.[1] (WebSession-bridge contract)
+  - createDataSourceEntity.md:concepts.invariants.[2] (5xx-not-401 fail-loud semantics)
+  - createDataSourceEntity.md:bugs_limitations_corner_cases.[0] (session-loss = HTTP 500; severity MEDIUM)
+  - createDataSourceEntity.md:bugs_limitations_corner_cases.[1] (cluster without sticky sessions; severity MEDIUM)
+  - createDataSourceEntity.md:dependencies_semantic.coupling.[2] (filter/controller session-state coupling)
+  - createDataSourceEntity.md:security.known_security_gaps.[1] (5xx vs 401 info-leak; severity LOW)
+notes: |-
+  Cross-references:
+
+    - `two-ingestion-filters-asymmetric-auth` invariant — explains the
+      sibling `IngestionDataSourceFilter` and why it's unconditional.
+
+    - `upsert-by-oddrn-partial-merge-collector-driven-only-name-description`
+      invariant — the operation enabled by this session bridge.
+
+  Doc-side recommended action: extend the custom-collectors developer
+  guide with a "Cluster deployment" subsection naming the
+  cluster-without-sticky-sessions gap and listing the two alternative
+  session providers (REDIS / INTERNAL_POSTGRESQL).

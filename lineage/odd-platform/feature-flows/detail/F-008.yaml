@@ -12,6 +12,11 @@ drift_class_summary:
 - plaintext_equality_token_compare_timing_side_channel
 - notfoundexception_surfaces_as_5xx_info_leak
 - cross_mode_login_form_vs_wildcard_alertmanager_divergence
+- asymmetric_auth_between_ingestion_filters
+- collector_id_websession_attribute_stringly_typed
+- upsert_partial_merge_name_and_description_only
+- namespace_inherited_from_collector_payload_silently_dropped
+- session_state_loss_5xx_not_401
 batch_extensions:
 - batch: O
   entry_point_added: |-
@@ -69,6 +74,108 @@ batch_extensions:
     Hop-0 (the auth-gating layer) is now PRIMARY-SOURCE CONFIRMED at the
     filter class level. This strengthens REFACTOR-185 (sixteenth invocation
     site) and the existing F-008 facet `default_off_unauthenticated_ingestion_at_filter_layer`.
+- batch: P
+  entry_point_added: |-
+    controller-method:createDataSourceEntity (POST /ingestion/datasources)
+    — the SIBLING S2S entry-point on the same IngestionController that
+    F-008's existing chain hop-1 (postDataEntityList) carries. The
+    datasource-registration entry-point uses a DIFFERENT authentication
+    mechanism (path-scoped IngestionDataSourceFilter — UNCONDITIONAL,
+    not gated by `auth.ingestion.filter.enabled`) and a DIFFERENT
+    identity-propagation mechanism (WebSession `COLLECTOR_ID_SESSION_KEY`
+    stringly-typed attribute, NOT payload-ODDRN resolution). The
+    asymmetry IS architecturally significant — the two ingestion
+    endpoints encode the same pillar (P-10 Batch Ingestion / S2S API)
+    with INCONGRUOUS auth-defaulting and identity-binding choices.
+  contributing_nodes_added:
+  - odd-platform java IngestionController controller-method:createDataSourceEntity
+  notes: |-
+    Five new drift facets surface from the datasource-registration
+    sibling entry-point that complement F-008's existing entity-ingestion
+    facets. The asymmetry is the load-bearing finding: F-008 was
+    canonically pinned on `POST /ingestion/entities` (default-OFF auth,
+    payload-ODDRN identity); this batch extends F-008 to the sibling
+    `POST /ingestion/datasources` (ALWAYS-ON auth, session-attribute
+    identity) and surfaces the architectural inconsistency.
+    (1) ASYMMETRIC AUTH BETWEEN INGESTION FILTERS — `IngestionDataSourceFilter`
+    (sibling auth filter) is `@Component` UNCONDITIONAL (no
+    `@ConditionalOnProperty`, no `matchIfMissing` knob — verified
+    IngestionDataSourceFilter.java:15-20 implicit via class-level annotation
+    pattern + dependencies_semantic.requires-feature in batch P sidecar).
+    `IngestionDataEntitiesFilter` is `@ConditionalOnProperty(value=
+    "auth.ingestion.filter.enabled", havingValue="true")` (batch O sidecar +
+    application.yml:48 ships `false`). So `/ingestion/datasources` is
+    ALWAYS auth-required at the filter layer regardless of the operator's
+    `auth.ingestion.filter.enabled` choice; `/ingestion/entities` is auth-required
+    ONLY when the operator opted in. The property name
+    `auth.ingestion.filter.enabled` reads as "lock down ingestion globally"
+    but its scope is one endpoint. The asymmetry is structurally encoded
+    in the two filter classes' registration annotations and is invisible
+    to operators reading the S2S doc.
+    (2) COLLECTOR_ID_SESSION_KEY WEBSESSION-ATTRIBUTE IDENTITY (stringly-typed) —
+    the filter writes the matched Collector id into
+    `exchange.getSession().getAttributes().put(SessionConstants.COLLECTOR_ID_SESSION_KEY,
+    collectorId)` (IngestionDataSourceFilter.java:36-38); the controller
+    reads it back via `exchange.getSession().map(ws ->
+    ws.getAttribute(SessionConstants.COLLECTOR_ID_SESSION_KEY))`
+    (IngestionController.java:50-58). The shared constant is
+    `SessionConstants.COLLECTOR_ID_SESSION_KEY = "collectorId"` —
+    NOT `final`, NOT type-safe, NOT a Spring `@SessionAttribute`-bound
+    binding. A refactor that renames the constant in only one of the
+    two files silently desyncs the contract; a misspelling on the
+    controller side throws `IllegalStateException("Collector id is null")`
+    at RUNTIME (line 54), not at COMPILE-TIME. Compounding: session
+    state is `IN_MEMORY` (application.yml:30) with `spring.session.timeout: -1`
+    — sessions never expire AND each platform instance has its own
+    session store. CLUSTER DEPLOYMENTS WITHOUT STICKY SESSIONS are
+    STRUCTURALLY UNSUPPORTED on this endpoint; second-hop requests
+    landing on a different node throw 5xx with `"Collector id is null"`.
+    No doc warns about this.
+    (3) UPSERT PARTIAL-MERGE (name + description only) — re-registering
+    an existing-ODDRN datasource OVERWRITES `name` + `description` from
+    the payload and PRESERVES everything else (`connection_url`,
+    `active`, `type`, `namespace_id`, `collector_id`, `token_id`,
+    soft-delete flag, timestamps). A collector that genuinely needs
+    to update `connection_url` (the source's hostname changed) CANNOT
+    do so via this endpoint; the response is 200 OK regardless. The
+    asymmetric-merge is silent — no log, no diff in the response body
+    (`Mono<ResponseEntity<Void>>`). Mirrors F-008's existing `silent_destruction_replace_not_merge`
+    facet but with INVERTED polarity: the entity-ingestion path is
+    DESTRUCTIVE-REPLACE; the datasource-registration path is
+    PROTECTIVE-MERGE — but protective in the wrong direction (collector
+    updates are silently lost). Both surfaces are undocumented.
+    (4) NAMESPACE INHERITED FROM COLLECTOR; PAYLOAD `namespace_name`
+    SILENTLY DROPPED — `DataSourceIngestionServiceImpl.mapDataSources`
+    (line 99-111) hardcodes the namespace_id from `CollectorDto.namespace()`,
+    NEVER from the payload. A custom-collector author setting
+    `namespace_name = "my-team"` in the payload sees the datasource
+    appear under the Collector's PRE-CONFIGURED namespace. No log, no
+    doc. Architectural intent (collector-scoped tenancy model) is sound
+    BUT operator-invisible — a collector author cannot predict the
+    behaviour from the docs.
+    (5) SESSION-STATE-LOSS SURFACES AS HTTP 500 not 401 — IngestionController.java:54
+    throws `IllegalStateException("Collector id is null")` when the
+    session attribute is missing; the parent `AbstractIngestionFilter.filter`
+    catches ONLY `AccessDeniedException` (line 40) to emit 401. The
+    `IllegalStateException` propagates to the default reactive error
+    handler as HTTP 500. Mirrors F-008's existing
+    `notfoundexception_surfaces_as_5xx_info_leak` facet at batch O —
+    SAME shape, SAME diagnostic confusion, DIFFERENT origin. An attacker
+    probing with a valid token but lost session distinguishes
+    "filter-ON, session OK" (401 on bad token) from "filter-ON, session lost"
+    (5xx on missing collector_id) — minor info-leak.
+    REFACTOR-185 17th invocation site at the datasource-registration
+    endpoint primary-source confirmed. Hop-0 of the F-008 chain remains
+    `IngestionDataEntitiesFilter` for the entity-ingestion path; this
+    batch adds a SECOND hop-0 (`IngestionDataSourceFilter`) that protects
+    the SIBLING datasource-registration path with INCONGRUOUS defaults.
+    The Audit-log Presence Asymmetry canonicalisation candidate gains
+    a 5th data point (no @ActivityLog / no activity event on
+    `createDataSource` — DataSourceIngestionServiceImpl.java:41-72
+    has NO `activityEventEmitter` reference). Cross-link: F-006
+    audit-silence pattern + F-018 ingestion-side audit-silence facet
+    + F-011 user_owner_mapping mutation no-audit + this F-008
+    datasource-registration no-audit = 5-pillar audit silence pattern.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Ingestion-replace destruction surface
@@ -108,6 +215,7 @@ contributing_nodes:
 - odd-platform java auth filter:IngestionDataEntitiesFilter
 - odd-platform java IngestionController controller-method:postDataEntityList (UNRESOLVED — sibling controller sidecar not
   in this batch; ref via service-tier upstream_callers)
+- odd-platform java IngestionController controller-method:createDataSourceEntity
 - odd-platform java service service:IngestionService
 - odd-platform java service service:LineageServiceImpl
 - odd-platform java MetadataIngestionRequestProcessor (UNRESOLVED — processor sidecar not yet enriched; ref only)
@@ -588,6 +696,169 @@ observed_vs_expected:
       LoginFormSecurityConfiguration.java:49-51 +
       SecurityConstants.java:95-96 + AuthorizationCustomizer.java:22
       + DisabledAuthSecurityConfiguration.java:13-18. Severity: MEDIUM.
+  - facet: asymmetric auth between sibling ingestion filters — datasource always-on / entities default-off (batch P — controller-method primary source)
+    observed: |-
+      `IngestionDataSourceFilter` (sibling auth filter at
+      `/ingestion/datasources` POST) is `@Component` UNCONDITIONAL — no
+      `@ConditionalOnProperty`, the bean is ALWAYS registered.
+      `IngestionDataEntitiesFilter` (the F-008 hop-0 filter at
+      `/ingestion/entities` POST) is `@ConditionalOnProperty(value=
+      "auth.ingestion.filter.enabled", havingValue="true")` and
+      application.yml:48 ships `false`. So
+      `POST /ingestion/datasources` is ALWAYS auth-required at the
+      filter layer regardless of the `auth.ingestion.filter.enabled`
+      property; `POST /ingestion/entities` is auth-required ONLY when
+      the operator opts in. The property name reads as "lock down
+      ingestion globally" but its scope is one endpoint. Per batch-P
+      IngestionController.createDataSourceEntity sidecar
+      coherence_check.strengthens[0] + dependencies_semantic.requires-feature
+      IngestionDataSourceFilter (unconditional registration) +
+      dependencies_semantic.requires-config (`auth.ingestion.filter.enabled`
+      has no effect on this endpoint).
+    expected: |-
+      Either (a) unify auth-gating across the `/ingestion/**` namespace
+      via a single feature-flag with documented sub-scope, OR (b)
+      document the asymmetry explicitly in the S2S doc with a side-by-side
+      table of which paths each filter protects + the property's actual
+      scope.
+    drift_class: asymmetric_auth_between_ingestion_filters
+    provenance: |-
+      STATIC — primary-source in batch P IngestionController.createDataSourceEntity
+      sidecar coherence_check + invariants[0] + dependencies_semantic +
+      docs_link_semantic.doc_drift_findings[1]. The two filter classes'
+      registration shapes are the architectural evidence. Severity:
+      MEDIUM (operator-invisible architectural inconsistency in the
+      auth-defaulting model).
+  - facet: COLLECTOR_ID_SESSION_KEY stringly-typed WebSession-attribute identity (batch P)
+    observed: |-
+      `IngestionDataSourceFilter.java:36-38` writes the matched
+      Collector id into the WebSession via
+      `t.getT2().getAttributes().put(SessionConstants.COLLECTOR_ID_SESSION_KEY,
+      t.getT1().getId())`. `IngestionController.java:50-58` reads it
+      back via `exchange.getSession().map(ws ->
+      ws.getAttribute(SessionConstants.COLLECTOR_ID_SESSION_KEY))`. The
+      shared constant `SessionConstants.COLLECTOR_ID_SESSION_KEY =
+      "collectorId"` is NOT `final` AND NOT type-safe (no Spring
+      `@SessionAttribute`-bound binding). A refactor that renames the
+      constant in only one of the two files silently desyncs the
+      contract; a misspelling on the controller side throws
+      `IllegalStateException("Collector id is null")` at RUNTIME (line
+      54), not at compile time. Compounding: session state is `IN_MEMORY`
+      (application.yml:30) with `spring.session.timeout: -1` — sessions
+      never expire AND each platform instance has its own session
+      store. Clustered deployments without sticky sessions are
+      structurally unsupported: second-hop requests landing on a
+      different node throw 5xx with `"Collector id is null"`.
+    expected: |-
+      Either (a) use Spring Security's `Authentication` object to
+      carry collector identity (the filter could wrap the matched
+      Collector into a `UsernamePasswordAuthenticationToken` and push
+      it into `ReactiveSecurityContextHolder`, controller reads via
+      `@AuthenticationPrincipal` or `Mono<Principal>`), OR (b) document
+      the session-bridge dependency + the cluster-without-sticky-sessions
+      constraint + the 5xx-vs-401 distinction.
+    drift_class: collector_id_websession_attribute_stringly_typed
+    provenance: |-
+      STATIC — primary-source in batch P IngestionController.createDataSourceEntity
+      sidecar invariants[1,2] + dependencies_semantic.coupling[2] +
+      implicit_adrs[0] + bugs_limitations_corner_cases[0,1] +
+      SessionConstants.java:4. The stringly-typed contract is the
+      architectural shape; the cluster-deployment incompatibility is
+      the bugs-limitations consequence. Severity: MEDIUM (architectural
+      drift; cluster-deployment incompatibility is a separate
+      operationally-visible consequence).
+  - facet: upsert partial-merge — only name + description propagated on UPDATE (batch P)
+    observed: |-
+      `DataSourceIngestionServiceImpl.prepareForUpdate` (lines 74-92)
+      copy-constructs from the existing `DataSourcePojo` then OVERWRITES
+      ONLY `name` + `description` from the new payload. The existing
+      `connection_url`, `active`, `type`, `namespace_id`, `collector_id`,
+      `token_id`, soft-delete flag, all timestamps, AND any custom
+      fields are PRESERVED. A collector that genuinely needs to update
+      `connection_url` (the source's hostname changed) CANNOT do so
+      via this endpoint; only `name` and `description` propagate
+      through the mapper. The response is 200 OK regardless. The
+      asymmetric-merge is silent — no log, no diff in the response
+      body (`Mono<ResponseEntity<Void>>` discards the assigned ids
+      AND the merged-pojo state). An operator who renames a datasource
+      in the UI sees their rename OVERWRITTEN by the collector's
+      payload (collector wins); an operator who needs to update
+      `connection_url` cannot do so via the S2S path. The asymmetry
+      mirrors F-008's existing
+      `silent_destruction_replace_not_merge` facet with INVERTED
+      polarity (protective-merge vs destructive-replace) but BOTH are
+      undocumented.
+    expected: |-
+      Either (a) propagate all non-null payload fields (full overwrite
+      with null-skip semantics), OR (b) document the partial-merge
+      contract on the custom-collectors doc page + list the explicit
+      set of fields the S2S path can update vs the UI-only fields.
+    drift_class: upsert_partial_merge_name_and_description_only
+    provenance: |-
+      STATIC — primary-source in batch P IngestionController.createDataSourceEntity
+      sidecar invariants[5] + implicit_adrs[2] (the partial-merge ADR
+      is deliberately narrow) + bugs_limitations_corner_cases[6] +
+      DataSourceIngestionServiceImpl.java:74-92. Mirrors F-008's
+      existing `silent_destruction_replace_not_merge` facet with
+      INVERTED polarity. Severity: MEDIUM.
+  - facet: namespace inherited from Collector — payload namespace_name silently dropped (batch P)
+    observed: |-
+      `DataSourceIngestionServiceImpl.mapDataSources` (lines 99-111)
+      hardcodes the namespace_id from `CollectorDto.namespace()`
+      (`MappingUtils.extractFieldFromNullableObject(c.namespace(),
+      NamespacePojo::getId)`), NEVER from the payload. A custom-collector
+      author setting `namespace_name = "my-team"` in the payload sees
+      the datasource appear under the Collector's PRE-CONFIGURED
+      namespace. No log records the silent drop. No doc warns about
+      it. The architectural intent (collector-scoped tenancy model —
+      a Collector belongs to ONE namespace, and every datasource the
+      Collector registers inherits that namespace) is SOUND but
+      operator-invisible: a collector author cannot predict the
+      behaviour from the docs.
+    expected: |-
+      Either (a) honour the payload's `namespace_name` field (look up
+      or create the namespace at write time, BUT enforce that the
+      Collector's pre-configured namespace covers it), OR (b) document
+      the collector-scoped tenancy model with an explicit note that
+      payload namespace fields are silently inherited from the Collector.
+    drift_class: namespace_inherited_from_collector_payload_silently_dropped
+    provenance: |-
+      STATIC — primary-source in batch P IngestionController.createDataSourceEntity
+      sidecar invariants[6] + implicit_adrs[3] (the tenancy ADR is
+      sound but undocumented) + bugs_limitations_corner_cases[5] +
+      DataSourceIngestionServiceImpl.java:99-111. Severity: MEDIUM.
+  - facet: session-state-loss surfaces as HTTP 500 not 401 (batch P)
+    observed: |-
+      `IngestionController.java:54` throws
+      `IllegalStateException("Collector id is null")` when
+      `COLLECTOR_ID_SESSION_KEY` is missing from the session (filter
+      didn't run, session expired, session attribute lost). The parent
+      `AbstractIngestionFilter.filter` catches ONLY `AccessDeniedException`
+      (line 40) to emit 401; `IllegalStateException` propagates to
+      the default reactive error handler as HTTP 500. An operator
+      debugging a collector that suddenly fails would see a 500 in
+      the logs and reasonably conclude "platform crashed" — the
+      correct interpretation is "session lost — re-authenticate by
+      re-establishing the connection". No 401 conversion. No
+      operator-facing error contract documented. Mirrors F-008's
+      existing batch-O facet
+      `notfoundexception_surfaces_as_5xx_info_leak` with SAME shape,
+      SAME diagnostic confusion, DIFFERENT origin (session-state loss
+      vs unknown-datasource).
+    expected: |-
+      Either (a) catch `IllegalStateException` in
+      `AbstractIngestionFilter.filter` and convert to 401 with a generic
+      "Token is not correct" message, OR (b) document the 5xx-on-session-loss
+      contract explicitly with a deployment-guidance note (enable
+      sticky sessions OR switch `session.provider` to `REDIS` /
+      `INTERNAL_POSTGRESQL` for HA collector flows).
+    drift_class: session_state_loss_5xx_not_401
+    provenance: |-
+      STATIC — primary-source in batch P IngestionController.createDataSourceEntity
+      sidecar bugs_limitations_corner_cases[0] +
+      security.known_security_gaps[1] + IngestionController.java:53-55
+      + AbstractIngestionFilter.java:40. Severity: LOW (info-leak) /
+      MEDIUM (operator-debug misleading).
 test_matrix:
   unit:
     state: GAP
@@ -642,25 +913,44 @@ test_matrix:
     - Cross-tenant ingestion under filter-ON — caller with token for datasource A posts payload naming datasource B
     - Soft-delete-undelete vector — attacker with collector token resurrects previously-removed entities
     - No audit log on ingestion-driven UPDATEs (ActivityIngestionRequestProcessor only emits DATA_ENTITY_CREATED)
-control_summary: '0 of 4 cells PROBED — feature emerged from batch-I primary-source audit of
-
+control_summary: |-
+  0 of 4 cells PROBED — feature emerged from batch-I primary-source audit of
   IngestionService + LineageServiceImpl. The two destructive surfaces
-
   (metadata-delete-on-absence + lineage-replace-on-each-call) are the highest-leverage
-
   candidates for the next probe round. Proposed P-NNN — local docker-compose stack
-
   + ingest entity with metadata {a:1,b:2} + ingest entity with metadata {a:1} only
-
   + assert b is GONE from /api/dataentities/{id}/metadata. Symmetric probe for
-
   lineage replacement. Existing integration tests cover happy-path / schema-change
-
   / lineage-materialisation / alert-generation but NEVER exercise the destructive
-
   surfaces — a regression that "fixes" the delete-on-absence semantics (e.g. a
+  maintainer adding MERGE semantics in a refactor) would land green in CI.
 
-  maintainer adding MERGE semantics in a refactor) would land green in CI.'
+  Batch P adds the sibling `POST /ingestion/datasources` entry-point
+  (IngestionController.createDataSourceEntity) — the S2S datasource-registration
+  endpoint. Five new drift facets surface from the architectural-asymmetry angle:
+  (1) `IngestionDataSourceFilter` is UNCONDITIONAL `@Component` (no
+  `@ConditionalOnProperty`) while the F-008 hop-0 `IngestionDataEntitiesFilter`
+  is conditional on `auth.ingestion.filter.enabled` (default `false`) — so
+  `/ingestion/datasources` is ALWAYS auth-required, `/ingestion/entities` is
+  default-off; the asymmetry between sibling filters is invisible to operators
+  reading the S2S doc; (2) Collector identity propagates via WebSession-attribute
+  (`SessionConstants.COLLECTOR_ID_SESSION_KEY` — stringly-typed, non-final, no
+  Spring `@SessionAttribute` binding) rather than via Spring Security Principal;
+  (3) Upsert semantics are PARTIAL-MERGE — only `name` + `description` propagate
+  on update, all other fields preserved (mirrors F-008's `silent_destruction_replace_not_merge`
+  with INVERTED polarity — protective vs destructive, but both undocumented);
+  (4) Namespace inherited from Collector — payload `namespace_name` silently
+  dropped; (5) Session-state-loss surfaces as HTTP 500 not 401 — operator-debug
+  misleading. The Audit-log Presence Asymmetry canonicalisation candidate gains
+  a 5th data point (createDataSource has no @ActivityLog / no activity event;
+  DataSourceIngestionServiceImpl.java:41-72 has zero `activityEventEmitter`
+  references). REFACTOR-185 17th invocation site primary-source confirmed at the
+  datasource-registration endpoint. Two-half S2S ingestion coverage (`/entities`
+  + `/datasources`) is now PRIMARY-SOURCE COMPLETE at the controller-method tier.
+  The architectural-asymmetry finding is the headline — the two sibling endpoints
+  in the same `IngestionController` class encode INCONGRUOUS auth-defaulting +
+  identity-propagation choices; documenting this asymmetry is the highest-leverage
+  doc-gap candidate downstream from this batch.
 related_refactoring_scopes:
 - REFACTOR-073
 - REFACTOR-185
@@ -680,6 +970,14 @@ related_retrospectives:
 - LSN-001
 related_features:
 - F-007
+- F-019  # batch-P Owner Lifecycle Management — uses the same partial-merge / no-audit / no-per-Owner-scope patterns surfaced by createDataSourceEntity
+related_test_gaps_batch_p_candidates:
+- TEST-GAP-NNN (IngestionDataSourceFilterIntegrationTest — session-bridge contract, soft-deleted-Collector tokens, cross-collector token-share race; deferred to test-coverage-mapper reducer)
+related_doc_gaps_batch_p_candidates:
+- DOC-GAP-NNN (custom-collectors page silent on UPSERT / response code / session-state / namespace inheritance; deferred to doc-gap-finder)
+- DOC-GAP-NNN (S2S doc conflates `auth.s2s.enabled` with `auth.ingestion.filter.enabled` — silent on the asymmetric path coverage; deferred to doc-gap-finder)
+related_refactoring_scopes_batch_p_candidates:
+- REFACTOR-NNN (collector identity via WebSession-attribute stringly-typed contract — refactor to Spring Security Principal; deferred to adr-archaeologist)
 related_probes: null
 probe_verifications: []
 maintainer_curated: false

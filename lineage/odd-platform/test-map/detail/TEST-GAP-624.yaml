@@ -1,0 +1,28 @@
+gap_id: TEST-GAP-624
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java OwnerController controller-method:updateOwner"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "updateOwner.md:bugs_limitations_corner_cases.[2] (Rename collision propagated as USR003 / HTTP 400, NOT 409 Conflict — severity MEDIUM)"
+  - "updateOwner.md:concepts.invariants.[3] (OpenAPI declares 201 for an UPDATE; controller returns 200)"
+  - "updateOwner.md:bugs_limitations_corner_cases.[0] (OpenAPI 201-vs-200 drift)"
+behaviour: |-
+  **TWO STATUS-CODE DRIFTS in updateOwner: (1) rename-collision as 400 USR003 not 409 Conflict; (2) OpenAPI 201 vs controller 200.** Drift 1: rename to a name already held by another ACTIVE Owner triggers the partial-unique index `owner_name_unique ON owner(name) WHERE deleted_at IS NULL` (V0_0_64__remove_is_deleted_field.sql:70) → jOOQ DataAccessException → UniqueConstraintException → ControllerAdvice.handleUniqueConstraint → HTTP 400 with `ErrorCode.UNIQUE_CONSTRAINT` (USR003). The client receives 400 NOT the canonically-correct 409 Conflict. NO test verifies this code path; NO API doc indicates which code the client should expect on collision. Drift 2: openapi.yaml:195-201 declares `responses.'201': 'The resource has been successfully updated'` for updateOwner operation, but the controller returns ResponseEntity.ok = 200 (OwnerController.java:53). The drift is DOUBLY anomalous: (a) declaring 201 for a PUT-update is itself unusual (201 canonically signals POST-creation); (b) the implementation disagrees with the spec. This is the SAME class-wide drift as createOwner (also 201 declared, 200 returned — see TEST-GAP-235). Sibling Role + Policy CRUD share the same pattern. Both drifts surface to API consumers as silent operational hazards: clients written against the OpenAPI spec expect 201 (incorrect today), clients debugging collision errors see USR003 BAD_REQUEST instead of CONFLICT.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/OwnerUpdateStatusCodeDriftTest.java"
+  name: "updateOwner_collisionReturns400USR003_notHTTP409_AND_successReturns200_notHTTP201"
+evidence:
+  - "updateOwner.md says (bugs_limitations_corner_cases.[2]): 'Rename collision is propagated as USR003 / HTTP 400, NOT 409 Conflict — the owner_name_unique partial unique index catches the second rename to the same active name; jOOQ raises DataAccessException → ExceptionUtils.translateDatabaseException → UniqueConstraintException → ControllerAdvice.handleUniqueConstraint → HTTP 400 with ErrorCode.UNIQUE_CONSTRAINT. The client receives 400, not the canonically-correct 409 Conflict.'"
+  - "updateOwner.md says (concepts.invariants.[3]): 'OpenAPI declares HTTP 201 for an UPDATE. openapi.yaml:195-201 declares responses.201: The resource has been successfully updated for the updateOwner operationId. The controller returns ResponseEntity.ok = 200 (OwnerController.java:53).'"
+  - "Source: openapi.yaml:195-201 + OwnerController.java:53 + V0_0_64__remove_is_deleted_field.sql:70 + F-006 batch-K cross_batch_corrections[0]"
+cross_references:
+  - "TEST-GAP-235 (sibling 201-vs-200 status-code drift on createOwner — class-wide pattern)"
+  - "F-006 batch-K cross_batch_corrections[0] (USR003 vs 409 translation path)"
+  - "concepts.yaml:entities[Owner (Authorization directory entry)] (the directory-write surface)"
+proposed_action: |-
+  Add `OwnerUpdateStatusCodeDriftTest` with three methods: (a) seed two active owners A, B; PUT /api/owners/{B} with `{name: A.name}`; assert HTTP 400 with body containing `errorCode: USR003` (pins current USR003 path), document expected 409; (b) PUT /api/owners/{id} happy path; assert HTTP 200 (pins implementation), document expected 201 per OpenAPI spec; (c) rename to a name held by SOFT-DELETED owner; assert HTTP 200 (the partial-unique-index allows this — pins the recovery-path correctness).
+batch: 2026-05-20-P
+feature_id: F-006

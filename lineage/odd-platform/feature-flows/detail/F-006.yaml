@@ -16,6 +16,10 @@ drift_class_summary:
 - deg_propagation_cascade_audit_absent_below_parent
 - delete_search_vector_not_refreshed
 - delete_no_not_found_validation
+- role_repo_left_join_no_policy_deleted_at_filter_mirror
+- role_create_administrator_name_asymmetry_mirror
+- role_service_predefined_name_case_sensitivity_mismatch
+- four_sidecar_audit_silence_pattern_role_repo_confirmation
 batch_extensions:
 - batch: K
   entry_point_added: 'service:OwnershipServiceImpl (the ownership-lifecycle service backing the 3 /api/dataentities/{id}/ownership controller methods — adds the OWNER_CREATE-bypass and the USR003 cross-batch correction)'
@@ -28,6 +32,56 @@ batch_extensions:
   cross_batch_corrections:
   - prior_claim: batch-F DataEntityController.createOwnership sidecar bugs_limitations_corner_cases[2] + known_security_gaps[3] claim that ownership-duplicate produces 5xx
     correction: PRIMARY-SOURCE in batch K — the duplicate surface is HTTP 400 USR003 (`UniqueConstraintException 'Ownership for this data entity and owner already exists'`) via JooqReactiveOperations.mono → onErrorMap(DataAccessException → ExceptionUtils.translateDatabaseException) → UniqueConstraintException → ControllerAdvice.handleUniqueConstraint → HttpStatus.BAD_REQUEST. ErrorCode.UNIQUE_CONSTRAINT.USR003, resolvable=true, retryable=false. Confirmed at ExceptionUtils.java:69-71 + ErrorCode.java:11 + ControllerAdvice.java:36-40.
+- batch: N
+  entry_point_added: |-
+    repository-tier:ReactiveRoleRepositoryImpl (the ROLE half of the RBAC mutation
+    surface — paired structurally with batch-H ReactivePolicyRepositoryImpl as the
+    POLICY half. Three custom dto methods getDto / listDto / getByName + inherited
+    CRUD with soft-delete. The getByName method is the AUTHORIZATION HOT PATH for
+    every authorized HTTP request whose user has no explicit owner-attached role,
+    resolving 'Administrator' or 'User' seeded names to RoleDto with attached policies.)
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
+  notes: |-
+    Four new drift facets surface, three of them DIRECT MIRRORS of batch-H Policy
+    findings — closing the symmetric coverage of the RBAC mutation surface
+    (Policy + Role together):
+    (1) Role-repo LEFT JOIN without `policy.deleted_at IS NULL` filter (mirror of
+    batch-H drift on `ReactivePolicyRepositoryImpl.getRolesPolicies`) — the three
+    custom dto methods (getDto/listDto/getByName at lines 45-48, 67-70, 87-90)
+    aggregate policies via LEFT JOIN with NO deleted_at filter on POLICY. A
+    soft-deleted policy with surviving role_to_policy edges shows up in the
+    returned RoleDto's policy_relations array — UI displays it to operators with
+    no indication that the policy is gone. PolicyServiceImpl.delete CASCADE
+    defence covers normal flows; direct DB UPDATE setting `policy.deleted_at`
+    bypasses it.
+    (2) Role-create `Administrator` / `User` name asymmetry (mirror of batch-H
+    Policy name asymmetry) — V0_0_55__add_policies_and_roles.sql:42 +
+    V0_0_64__remove_is_deleted_field.sql:88-90 enforce `role_name_unique WHERE
+    deleted_at IS NULL` which FREES the predefined names if the seeded rows are
+    ever soft-deleted. RoleServiceImpl.update (line 68) and .delete (lines 81-84)
+    reject the predefined names; RoleServiceImpl.create (lines 51-61) has NO
+    name check. A direct DB UPDATE soft-deleting the seeded Administrator row
+    leaves the name available + roleRepository.create succeeds with
+    attacker-chosen policy bindings.
+    (3) RoleService predefined-name case-sensitivity mismatch — line 68 uses
+    case-SENSITIVE `.equals(UserProviderRole.ADMIN.getValue())`; line 82 uses
+    case-INSENSITIVE `.equalsIgnoreCase(role.getName())`. An operator can
+    CREATE a role named 'administrator' (lowercase) bypassing the unique index
+    (it's a different string), CANNOT delete it (case-insensitive guard
+    matches), CAN update it (case-sensitive guard does NOT match) — the
+    case-sensitivity-mismatch DRIFT recorded in batch E now confirmed at the
+    service-vs-repo schema-byte-comparison level.
+    (4) FOUR-SIDECAR audit-silence pattern confirmation — the
+    "no-audit-log-on-RBAC-mutations" cross-batch concept catalog entry is
+    REFINED with a fourth corroborating sidecar (RoleController batch E +
+    PolicyController batch E + ReactivePolicyRepositoryImpl batch H + this
+    ReactiveRoleRepositoryImpl batch N). Both halves of the RBAC mutation
+    surface (Policy + Role) are forensically silent at the repository layer.
+    Hop on the Role half is now PRIMARY-SOURCE — adds the symmetric mirror of
+    the Policy half batch-H established. ZERO direct unit tests for any path
+    through this repository (Grep verified — only OwnerRepositoryImplTest:37
+    uses bulkCreate for fixture setup, no Role-specific test class exists).
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: RBAC policy lifecycle — soft-delete with permission-grant persistence
@@ -98,6 +152,8 @@ contributing_nodes:
 - odd-platform java TitleServiceImpl
 - odd-platform java ExceptionUtils
 - odd-platform java ControllerAdvice
+- odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
+- odd-platform java RoleServiceImpl
 chain:
 - hop: 1
   node: odd-platform java PolicyController controller-method:createPolicy
@@ -421,6 +477,130 @@ observed_vs_expected:
     drift_class: delete_no_not_found_validation
     provenance: STATIC — primary-source in batch K OwnershipServiceImpl sidecar
       bugs_limitations_corner_cases[3] + OwnershipServiceImpl.java:81-97
+  - facet: Role-repo LEFT JOIN no policy.deleted_at filter — MIRROR of batch-H Policy half
+    observed: |-
+      `ReactiveRoleRepositoryImpl` three custom dto methods (getDto at lines
+      45-48, listDto at 67-70, getByName at 87-90) LEFT JOIN `policy` via
+      `role_to_policy` and aggregate via `jsonArrayAgg(POLICY.*)` WITHOUT a
+      `policy.deleted_at IS NULL` predicate. A soft-deleted policy with
+      surviving `role_to_policy` edges shows up in the returned RoleDto's
+      policy_relations array. The structural mirror of batch-H finding on
+      `ReactivePolicyRepositoryImpl.getRolesPolicies` — both halves of the
+      RBAC mutation surface produce the same shape of orphan-binding drift.
+      `PolicyServiceImpl.delete` CascadeDeleteException defence
+      (PolicyServiceImpl.java:89-92) protects normal flows; direct DB UPDATE
+      setting `policy.deleted_at` bypasses, AND a future refactor weakening
+      the cascade check re-opens the gap on BOTH halves simultaneously.
+      Combined with the AUTHORIZATION HOT PATH at PolicyServiceImpl.java:103-104
+      consuming ReactivePolicyRepositoryImpl.getRolesPolicies on every authorized
+      request, AND the Role dto views surfacing in `/api/roles` admin UI, the
+      "stale-policy-still-grants" semantic is the cross-half regression risk.
+    expected: |-
+      Add `AND policy.deleted_at IS NULL` to every LEFT JOIN against POLICY
+      across BOTH ReactiveRoleRepositoryImpl AND ReactivePolicyRepositoryImpl.
+      Single-line fix per JOIN; two repositories.
+    drift_class: role_repo_left_join_no_policy_deleted_at_filter_mirror
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveRoleRepositoryImpl sidecar
+      bugs_limitations_corner_cases[0] DRIFT-FACET-A +
+      security.known_security_gaps[0] + ReactiveRoleRepositoryImpl.java:45-48,
+      67-70, 87-90 + V0_0_55__add_policies_and_roles.sql:44-53 (role_to_policy
+      FK with NO cascade) + cross-ref batch-H ReactivePolicyRepositoryImpl
+      sidecar known_security_gaps[0]. Severity: HIGH.
+  - facet: Role-create Administrator/User name asymmetry — MIRROR of batch-H Policy half
+    observed: |-
+      The partial unique index `role_name_unique ON role(name) WHERE deleted_at IS NULL`
+      (V0_0_55__add_policies_and_roles.sql:42; recreated by
+      V0_0_64__remove_is_deleted_field.sql:88-90) FREES the predefined seeded
+      names ('Administrator', 'User' per V0_0_56__add_predefined_roles_and_policies.sql:33-36)
+      whenever the seeded rows are soft-deleted. `RoleServiceImpl.update` (line 68)
+      rejects mutations targeting the predefined names via
+      `UserProviderRole.ADMIN.getValue().equals(updated.getName())` check.
+      `RoleServiceImpl.delete` (lines 81-84) rejects via
+      `Arrays.stream(UserProviderRole.values()).anyMatch(r -> r.getValue().equalsIgnoreCase(role.getName()))`.
+      `RoleServiceImpl.create` (lines 51-61) has NO such check. A direct DB
+      UPDATE soft-deleting the seeded Administrator row leaves the name
+      available + roleRepository.create succeeds with attacker-chosen
+      RoleFormData (which includes the policies-to-bind list). Mirrors the
+      Policy half's `Administrator`-name asymmetry exactly. REFACTOR family
+      for cross-symmetric audit: add the same name check on `create` in
+      BOTH RoleServiceImpl AND PolicyServiceImpl + add the "soft-deleted
+      seeded rows" detection at boot.
+    expected: |-
+      Add `Arrays.stream(UserProviderRole.values()).anyMatch(...)` rejection in
+      RoleServiceImpl.create + add an analogous check in PolicyServiceImpl.create
+      (the Policy seeded name is 'Administrator' too) + add a boot-time integrity
+      check that detects soft-deleted seeded-name rows and either restores or
+      raises a startup error.
+    drift_class: role_create_administrator_name_asymmetry_mirror
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveRoleRepositoryImpl sidecar
+      bugs_limitations_corner_cases[2] DRIFT-FACET-C +
+      security.known_security_gaps[2] + V0_0_55__add_policies_and_roles.sql:42 +
+      V0_0_64__remove_is_deleted_field.sql:88-90 +
+      V0_0_56__add_predefined_roles_and_policies.sql:33-36 +
+      RoleServiceImpl.java:51-61 vs 68 vs 81-84 + cross-ref batch-E
+      RoleController.createRole sidecar + batch-H ReactivePolicyRepositoryImpl
+      sidecar known_security_gaps[2]. Severity: HIGH.
+  - facet: RoleService predefined-name case-sensitivity mismatch (update vs delete)
+    observed: |-
+      RoleServiceImpl.java:68 uses case-SENSITIVE
+      `UserProviderRole.ADMIN.getValue().equals(updated.getName())` for the
+      update guard. RoleServiceImpl.java:82 uses case-INSENSITIVE
+      `r.getValue().equalsIgnoreCase(role.getName())` for the delete guard.
+      An operator can CREATE a role named 'administrator' (lowercase) because
+      the create path has NO name check AND the unique index treats it as a
+      different string from 'Administrator' (Postgres VARCHAR byte-comparison
+      is case-sensitive). They then CANNOT delete it (case-insensitive guard
+      matches the lowercase variant against the enum's 'Administrator'). They
+      CAN update it (case-sensitive guard does NOT match the lowercase variant).
+      The asymmetry creates an undeletable role row that an attacker could
+      use to persist privileged bindings.
+    expected: |-
+      Uniform case-insensitive checks across all three guards
+      (create/update/delete) OR uniform case-sensitive checks + boot-time
+      assertion that no role exists with a case-variant of a predefined name.
+    drift_class: role_service_predefined_name_case_sensitivity_mismatch
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveRoleRepositoryImpl sidecar
+      security.known_security_gaps[3] DRIFT-FACET-D + RoleServiceImpl.java:68
+      vs 82 + V0_0_55__add_policies_and_roles.sql:42 (partial unique index —
+      case-sensitive by default in Postgres). Severity: MEDIUM. Cross-ref:
+      batch-E RoleController.createRole sidecar pre-recorded this finding;
+      batch-N confirms at the repository-tier evidence chain.
+  - facet: 4-sidecar audit-silence pattern — Role-repo confirmation
+    observed: |-
+      `ReactiveRoleRepositoryImpl.java:1-94` has NO `@Slf4j`-emitted log lines
+      on create/update/delete; `ReactiveAbstractSoftDeleteCRUDRepository.java:1-118`
+      ALSO emits no application-level log on the success paths; `RoleServiceImpl.java:39-92`
+      emits no log line, no event publication, no audit-table write. Combined
+      with the prior 3-sidecar confirmation
+      (RoleController batch E + PolicyController batch E + ReactivePolicyRepositoryImpl
+      batch H), this is the FOURTH corroborating sidecar of the
+      no-audit-log-on-RBAC-mutations pattern. A privileged caller (or an S2S
+      API-key holder per REFACTOR-108) who creates/mutates/deletes Roles
+      leaves NO trail in the platform logs OR in the activity feed (the
+      `/api/activity` surface does not extend to Role / Policy / Permission
+      mutations — confirmed across all four sidecars).
+    expected: |-
+      At minimum, INFO-level structured log on every RBAC mutation
+      (RoleServiceImpl + PolicyServiceImpl + OwnershipServiceImpl) with
+      principal + target id + name + action. Ideally, an audit-table row
+      written in the same transaction. The 4-sidecar pattern is strong enough
+      evidence for the maintainer to elevate the audit-log gap to a
+      first-priority backlog item.
+    drift_class: four_sidecar_audit_silence_pattern_role_repo_confirmation
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveRoleRepositoryImpl sidecar
+      bugs_limitations_corner_cases[1] DRIFT-FACET-B +
+      security.known_security_gaps[1] + ReactiveRoleRepositoryImpl.java:1-94 +
+      ReactiveAbstractSoftDeleteCRUDRepository.java:1-118 +
+      ReactiveAbstractCRUDRepository.java:35-36 + RoleServiceImpl.java:39-92 +
+      cross-ref batch-E RoleController + batch-E PolicyController + batch-H
+      ReactivePolicyRepositoryImpl sidecars (the 3 prior corroborating points).
+      Severity: HIGH. Cross-ref `system-mission.md` line 267 + the
+      `no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f`
+      concept catalog entry — this batch refines it to "4-sidecar".
 test_matrix:
   unit:
     state: GAP
@@ -472,6 +652,29 @@ control_summary: |-
   with the delete itself (race-window for concurrent role-binding mutations);
   (3) schema-validation failure surfaces as 500 not 400 (IllegalArgumentException
   missing ControllerAdvice handler).
+
+  Batch-N adds ReactiveRoleRepositoryImpl primary-source — the ROLE half of
+  the RBAC mutation surface, structurally paired with batch-H ReactivePolicyRepositoryImpl
+  as the POLICY half. Four NEW drift facets, three direct MIRRORS of batch-H
+  Policy findings: (1) LEFT JOIN against POLICY without `policy.deleted_at IS
+  NULL` filter at three sites (ReactiveRoleRepositoryImpl.java:45-48, 67-70,
+  87-90) — soft-deleted policies surface in RoleDto.policy_relations via the
+  `/api/roles` admin UI + transitively contribute to permission computation
+  if the dto view is ever consumed by the extractor chain; (2) Administrator/User
+  name asymmetry — RoleServiceImpl.create has NO name check while .update/.delete
+  do (the partial unique index frees the names on soft-delete, exactly mirroring
+  the Policy half); (3) case-sensitivity mismatch — RoleServiceImpl.update uses
+  case-SENSITIVE `.equals(...)`, RoleServiceImpl.delete uses case-INSENSITIVE
+  `.equalsIgnoreCase(...)` — an operator can create 'administrator' (lowercase),
+  cannot delete it, can update it. FOURTH facet: the 4-SIDECAR audit-silence
+  pattern is now CONFIRMED (RoleController batch E + PolicyController batch E +
+  ReactivePolicyRepositoryImpl batch H + ReactiveRoleRepositoryImpl batch N) —
+  the cross-batch concept-catalog entry
+  `no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f`
+  is refined to "4-sidecar" with the recommendation to elevate the audit-log gap
+  to first-priority. ZERO direct unit tests for any path through this repository
+  (verified via Grep against `<odd-platform-repo>/odd-platform-api/src/test/**/*Role*`).
+  Two-half RBAC coverage of the mutation surface is now PRIMARY-SOURCE COMPLETE.
 
   Batch-K adds OwnershipServiceImpl primary-source — REFACTOR-199 PRIMARY-SOURCE
   PROVEN at line 52 (the `OWNER_CREATE` bypass via `ownerService.getOrCreate`

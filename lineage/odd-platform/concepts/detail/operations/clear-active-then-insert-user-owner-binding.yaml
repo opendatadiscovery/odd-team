@@ -1,0 +1,174 @@
+name: |-
+  Clear-active-then-insert user-owner binding (the persistence-layer atomicity contract)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  **NEW OPERATION, batch 2026-05-19N — SQL-LAYER PRIMARY SOURCE from
+  ReactiveUserOwnerMappingRepositoryImpl.**
+
+  The two-step write pattern that enforces the at-most-one-active-mapping
+  invariant for the user_owner_mapping table. Distinct from a simple
+  UPSERT — the maintainer explicitly chose the clear-active-then-insert
+  pattern over `ON CONFLICT DO UPDATE` to preserve the audit-history-by-
+  soft-delete trail across each transition.
+
+  **The pattern, layer by layer**:
+
+    Service layer (UserOwnerMappingServiceImpl.createRelation,
+    UserOwnerMappingServiceImpl.java:15-18):
+      `repository.deleteRelation(username, provider)
+       .then(repository.createRelation(username, provider, ownerId))`
+      The OUTER clear step targets the (oidc_username, provider) tuple
+      — clears any active row where THIS user previously mapped to
+      ANY owner.
+
+    Repository layer (ReactiveUserOwnerMappingRepositoryImpl.createRelation,
+    lines 41-51):
+      `deleteActiveRelationByOwner(ownerId)
+       .then(insertInto(USER_OWNER_MAPPING).values(ownerId, ...))`
+      The INNER clear step targets the (owner_id) — clears any active
+      row where THIS owner previously had ANY user mapped.
+
+    INSERT step: positional `.values(ownerId, oidcUsername, provider,
+      DSL.val(null, DATE))` (line 45). NO `ON CONFLICT` clause. The
+      INSERT relies on the two preceding clears having cleaned both
+      partial unique indexes' constraint surfaces.
+
+  **The two partial unique indexes the pattern enforces**
+  (V0_0_89__update_user_owner.sql:9-15):
+    - `unique_deleted_at_per_owner ON user_owner_mapping(owner_id)
+      WHERE deleted_at IS NULL`
+    - `user_owner_mapping_oidc_username_provider_deleted_key ON
+      user_owner_mapping(oidc_username, provider)
+      WHERE deleted_at IS NULL`
+  Both indexes are PARTIAL — they apply only to non-soft-deleted rows.
+  Soft-deleted rows accumulate without contention.
+
+  **The contract**: at any moment, AT MOST ONE active row exists for
+  each (owner_id) AND AT MOST ONE active row exists for each
+  (oidc_username, provider). The two clears together close the only
+  two surfaces that could violate the contract:
+    - clear-by-username-provider (outer/service) closes the
+      `oidc_username_provider_deleted_key` index's surface
+    - clear-by-owner-id (inner/repository) closes the
+      `unique_deleted_at_per_owner` index's surface
+
+  **The non-atomic gap**: NEITHER the repository's `createRelation`
+  NOR `UserOwnerMappingServiceImpl.createRelation` carries
+  `@ReactiveTransactional`. The reactive `.then()` operator chains
+  Monos but does NOT imply a single transaction; the three statements
+  (outer DELETE + inner DELETE + INSERT) potentially happen across
+  THREE distinct R2DBC connections under reactive backpressure. If
+  ANY step fails between the clears and the INSERT, the user is left
+  in an unmapped state with NO replacement (per
+  bugs_limitations_corner_cases.[6] in the batch-N sidecar).
+
+  **The compensating mechanism** lives at the controller-entry boundary:
+  OwnerAssociationRequestServiceImpl.java:53 carries `@ReactiveTransactional`
+  at the request-approval method level, so transitive calls to
+  `userOwnerMappingService.createRelation` (line 184-189) are atomic
+  within that flow. BUT: the manual-mapping endpoint
+  (`POST /api/owners/associations/manual` at
+  OwnerAssociationRequestServiceImpl.java:109-114) does NOT carry the
+  annotation; the operator-direct path is NOT atomic. The
+  fast-track path (createOwnerAssociationRequest with
+  DIRECT_OWNER_SYNC permission, lines 65-67) DOES carry @ReactiveTransactional
+  on the entry method.
+
+  **Why clear-active-then-insert and not upsert**: per the batch-N
+  sidecar's implicit_adrs.[1], the maintainer's design intent is
+  **preserve the soft-delete history at every transition** (an
+  `ON CONFLICT DO UPDATE` upsert would mutate the existing row's
+  owner_id in place, losing the audit trail of the prior binding).
+  The two clears together cover both partial unique indexes so that
+  the audit history is symmetric: every prior binding from BOTH
+  directions (this user previously mapped to which owner; this owner
+  previously had which user) is soft-deleted at the moment of the new
+  binding. A future operator inspecting `user_owner_mapping WHERE
+  deleted_at IS NOT NULL` sees the FULL transition history for a
+  given user OR a given owner.
+
+  **The operation is the LOAD-BEARING write path for owner-scoping**:
+  every owner-scoped read in the platform consumes the OwnerPojo
+  returned by `getAssociatedOwner` from the active mapping; the
+  active mapping is the only row this operation produces. Misconfiguring
+  the clear steps (e.g. a regression that adds an `ON CONFLICT DO
+  UPDATE` to the INSERT thinking it's safer) would silently mutate
+  existing mappings in place — losing the audit trail across
+  transitions.
+nodes:
+- odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
+contributors:
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl batch N (PRIMARY SOURCE):
+  concepts.operations.[createRelation; deleteRelation;
+  deleteActiveRelationByOwner; getConditions helper] +
+  concepts.invariants.[2] (clear-active-then-insert pattern, NOT
+  upsert) + implicit_adrs.[1] (clear-active-then-insert as the
+  application-side enforcement of the at-most-one invariant — the
+  maintainer's deliberate choice over upsert)
+- |-
+  UserOwnerMappingServiceImpl (cross-reference at
+  UserOwnerMappingServiceImpl.java:15-18): the outer clear-by-(username,
+  provider) step that pairs with the repository's inner
+  clear-by-(owner_id) — together enforce both partial unique indexes
+- |-
+  OwnerAssociationRequestServiceImpl (cross-reference at
+  OwnerAssociationRequestServiceImpl.java:53): the @ReactiveTransactional
+  at the request-approval method that COMPENSATES for the multi-statement
+  non-atomicity in createRelation
+evidence:
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl.md:concepts.operations.[createRelation
+  at line 41-51; deleteRelation at line 54-62; deleteActiveRelationByOwner
+  at line 65-74]
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl.md:concepts.invariants.[2]
+  (clear-active-then-insert pattern, NOT upsert)
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl.md:implicit_adrs.[1]
+  (clear-active-then-insert is the application-side enforcement of the
+  at-most-one invariant; preserves soft-delete history at every
+  transition; deliberate over upsert)
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[6]
+  (no @ReactiveTransactional on the multi-statement createRelation;
+  partial-failure consistency bug surface)
+- |-
+  V0_0_89__update_user_owner.sql:9-15 — the TWO partial unique indexes
+  that the two-clear pattern enforces
+notes: |-
+  NEW operation captured in batch N. The operation is one of three
+  distinguishable write paths into user_owner_mapping (alongside
+  deleteRelation and deleteActiveRelationByOwner) but is the LOAD-BEARING
+  one — every successful owner-association request, every operator-manual
+  mapping, and every admin-fast-track binding flows through this
+  operation.
+
+  Cross-cutting connections:
+    - Pairs with the user-owner-mapping entity concept — this is the
+      operation that PRODUCES the active row
+    - Cross-references the provider-null-cross-mode-bleed invariant —
+      the same provider-null branch in getConditions applies to BOTH
+      the read (getAssociatedOwner) and the write (the inner clear-by-
+      owner-id step does NOT use provider, but the outer service-tier
+      clear-by-(username, provider) DOES — and that uses the same
+      branch via getConditions)
+    - Pairs with the audit-log-presence-asymmetry invariant — the
+      operation emits NO audit log on success; an operator auditing
+      "who linked alice to owner X on date Y" has no in-application
+      answer
+
+  Recommended documentation:
+    (a) Document the two-step pattern on the user-owner-association
+        operator page — operators need to know that creating a new
+        binding ALSO clears any prior binding for the same user OR the
+        same owner (and that the prior binding's soft-delete record
+        is preserved in the table)
+    (b) Add a regression test pinning the contract: insert (alice, X);
+        insert (alice, Y); assert the (alice, X) row is now soft-deleted
+        AND the (alice, Y) row is active
+    (c) Add @ReactiveTransactional to UserOwnerMappingServiceImpl
+        OR document the partial-failure case at the operator surface

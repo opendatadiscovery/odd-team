@@ -48,4 +48,26 @@ Cross-link with the housekeeping subsystem ADRs (ADR-CANDIDATE-045/-046) and the
 
 **Severity rationale**: MEDIUM — pattern-shaping decision that affects every edge table in the schema. Less codebase-wide than ADR-CANDIDATE-068 (which affects every CRUDable entity), but the same conceptual depth — the rule for "edge vs domain" is structural.
 
+## STRENGTHENS — Batch N (Tag-relation + Term-link-table primary-source — 7 NEW edge-table tables confirm the pattern; V0_0_91 term_to_term asymmetry surfaced as drift)
+
+**Two batch-N repository sidecars confirm the edge-table hard-delete pattern at SEVEN additional join tables**:
+
+1. **ReactiveTagRepositoryImpl** — Tag's three relation tables (`tag_to_data_entity`, `tag_to_dataset_field`, `tag_to_term`) are hard-delete by design. The class extends `ReactiveAbstractSoftDeleteCRUDRepository<TagRecord, TagPojo>` (line 44) for the TAG DIRECTORY entry, but every `delete*Relations` method uses `DSL.delete(...)` (hard delete) at lines 217-323 (six hard-delete methods spanning the three relation tables). The asymmetric base-class choice (soft-delete on directory; hard-delete on relations via direct DSL) is the architectural statement. Implicit_adrs[3] in the sidecar names this explicitly: "Soft-delete on `tag`, hard-delete on `tag_to_*` relations". Composes with ADR-CANDIDATE-128 NEW (the `onDuplicateKeyIgnore` create-side that matches the hard-delete delete-side — relation rows EITHER exist OR don't; there's no soft-state-in-between).
+
+2. **ReactiveTermRepositoryImpl** — Term has THREE link tables all hard-delete: `data_entity_to_term`, `dataset_field_to_term`, `tag_to_term`. The V0_0_76 migration (`V0_0_76__term_relations_hard_delete.sql:1-22`) is named verbatim — the maintainer DELETED rows with `deleted_at IS NOT NULL` then DROPPED the column at THREE places. The V0_0_77 migration extended the PK to include `is_description_link` (lines 13-14, 28-29) — that PK extension ONLY works with hard-delete semantics (a soft-deleted row would block re-insertion of the same `(de, term, FALSE)` tuple).
+
+3. **NEW asymmetric drift surface — `term_to_term`**: V0_0_91 (`V0_0_91__add_term_to_term.sql:6`) RETAINS `deleted_at TIMESTAMP` on the `term_to_term` link table — UNLIKE its V0_0_76-cleaned siblings. The application code at 7 distinct read sites (lines 198-199, 227-231, 324-325, 345, 429-430, 448-454, 472-491, 510-523 of ReactiveTermRepositoryImpl) DOES NOT filter `term_to_term.deleted_at IS NULL`. This is either:
+   - **(a) Dead schema** — the V0_0_76 hard-delete decision was intended for ALL term-link tables but the V0_0_91 migration was incomplete; a future V0_0_NNN migration mirroring V0_0_76's data_entity_to_term cleanup would close the inconsistency.
+   - **(b) Missing-filter** — the V0_0_91 migration deliberately retained the column for a future soft-delete feature that has not been implemented; the application code missed adding the filter.
+
+   Either way, the asymmetry against the V0_0_76 hard-delete decision is the architectural drift. Documented as REFACTOR-356 NEW (HIGH — schema-vs-application drift on a load-bearing audit-trail table). Today no code path writes `term_to_term.deleted_at`, so the concern is theoretical; but a direct DB UPDATE setting it (operator hot-fix) would NOT remove the relationship from any read path, producing soft-delete-resurrection behaviour that NO other term-link table exhibits.
+
+**Cross-batch maintainer-extension reinforcement**: The V0_0_76 migration's pattern (RENAME the table, DROP COLUMN deleted_at) is now triangulated against TWO migration generations: V0_0_3 (original Ownership omission) + V0_0_76 (term relations cleanup) + V0_0_77 (PK-extension that depends on hard-delete) + V0_0_91 (term_to_term inconsistency — to be resolved). The architectural rule "edges are hard-delete" is the dominant pattern with one documented exception that REFACTOR-356 captures as a conformance task.
+
+**New batch-N gap surfaces**:
+- REFACTOR-356 NEW — `term_to_term.deleted_at` retained in V0_0_91 but never filtered at 7+ read sites; schema-vs-application drift (HIGH).
+- REFACTOR-380 NEW — Tag resurrection of soft-deleted tag does NOT restore relations (the architecture's accept-the-risk clause: hard-delete-relations means resurrected tags lose attachment history).
+
+**Severity unchanged**: MEDIUM — the additional confirmations strengthen the pattern. The seven NEW edge-tables (3 Tag-relation + 3 Term-link + 1 term_to_term) bring the total to 10+ edge tables documented under this ADR. The V0_0_91 inconsistency is itself the ADR's first documented drift — recorded as a conformance task per the maintainer-extension contract.
+
 ---

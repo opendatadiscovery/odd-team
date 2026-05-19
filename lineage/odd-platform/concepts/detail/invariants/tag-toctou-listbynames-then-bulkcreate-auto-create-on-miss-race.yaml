@@ -1,0 +1,219 @@
+name: |-
+  Tag TOCTOU race — listByNames then bulkCreate auto-create-on-miss
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+- P-09
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19N — SQL-LAYER PRIMARY
+  SOURCE from ReactiveTagRepositoryImpl** — the auto-create-on-miss UX
+  for tag-relations has a Time-Of-Check / Time-Of-Use race window between
+  `TagServiceImpl.getOrCreateTagsByName` and the underlying repository
+  primitives.
+
+  **The race window**:
+    1. `TagServiceImpl.divideTagsByExistence` (TagServiceImpl.java:144-159)
+       calls `tagRepository.listByNames(tagNames)` — returns the set of
+       existing tag rows for the candidate names.
+    2. `TagServiceImpl.getOrCreateTagsByName` filters the input by the
+       existing-set and calls `tagRepository.bulkCreate(tagsToCreate)`
+       (TagServiceImpl.java:80-86 → ReactiveAbstractCRUDRepository.bulkCreate
+       at lines 113-126) for the remainder.
+    3. Between (1) and (2), a CONCURRENT caller can insert the same
+       novel name. Under PostgreSQL READ COMMITTED isolation (the
+       default for R2DBC + jOOQ-Reactive), the first caller's listByNames
+       snapshot does NOT see the second caller's uncommitted INSERT.
+    4. The first caller's `bulkCreate` reaches Postgres with the
+       now-conflicting name; hits the `tag_name_unique` partial index
+       (V0_0_64__remove_is_deleted_field.sql:105); receives a
+       `unique_violation` SQLSTATE 23505 which the
+       `ExceptionUtils.translateDatabaseException` chain
+       (ExceptionUtils.java:54-56) translates to a
+       `UniqueConstraintException("Tag with this name already exists")`.
+    5. **There is no caller-side retry** — neither `TagServiceImpl`
+       nor any upstream service catches the exception to re-fetch and
+       re-attempt. The user sees a 5xx-level error on a normal-looking
+       PUT request (the OpenAPI shape is `200 OK` for happy path; the
+       race surfaces as the global ControllerAdvice catch-all).
+
+  **The ingestData upsert path is SAFE**: the parallel write path used by
+  `ExternalTagIngestionRequestProcessor` calls `tagRepository.ingestData`
+  which issues `INSERT ... ON CONFLICT (name) WHERE deleted_at IS NULL DO
+  UPDATE SET name = EXCLUDED.name RETURNING *`
+  (ReactiveTagRepositoryImpl.java:191-213). The `ON CONFLICT` clause
+  serialises concurrent novel-name inserts at the DB level and returns
+  the existing row's id — no race surface. The asymmetry between
+  `bulkCreate` (no ON CONFLICT) and `ingestData` (ON CONFLICT DO UPDATE)
+  is INTENTIONAL per the batch-N repository sidecar's implicit_adrs.[6]:
+  `TagController.createTag` (operator-explicit creation gated by
+  `TAG_CREATE`) MUST fail on duplicate to surface the error; ingestion-
+  side calls MUST not fail because a tag with the same name was added
+  moments earlier by a parallel pipeline. **The race surface is at the
+  bulkCreate (UI tag-assignment) path**.
+
+  **Triggering scenarios in real deployments**:
+    (a) Two end-users concurrently apply a novel tag X to two different
+        entities. One succeeds; the other hits the race; the loser sees
+        the 5xx-level surface.
+    (b) A single user double-clicks a UI submit. React state may
+        deduplicate; if the UI does NOT debounce, the second click
+        races the first.
+    (c) An automation script applies a tag to many entities in parallel.
+        The first batch wins; subsequent batches with the same novel
+        name race.
+
+  **The DB-side `tag_name_unique` partial index is the PROTECTION**
+  (V0_0_64__remove_is_deleted_field.sql:105 + ReactiveTagRepositoryImpl
+  batch N implicit_adrs.[0]) — without it, both racers would succeed and
+  produce two distinct tag rows with the same name (the silent-duplicate
+  case is WORSE than the explicit 5xx surface, so the protection is
+  appropriate at the DB layer). The gap is in the SERVICE layer's
+  failure-handling: a UniqueConstraintException loser should re-read
+  via listByNames and reuse the now-existing tag id, not surface as a
+  5xx error to the user.
+
+  **Pair with REFACTOR-223 (Tag side-door class)** — the auto-create
+  surface is wide-open per the spec-documented design intent, but the
+  TOCTOU race surfaces the operational fragility: the wide-open
+  auto-create UX produces 5xx errors under concurrent load. The pairing
+  is the diagnostic — the side-door creates the bug class; the TOCTOU
+  surfaces it operationally.
+
+  **Companion finding — same auto-create-on-miss class affects other
+  tables**:
+    - Owner auto-create at OwnerServiceImpl.getOrCreate (batch F finding;
+      Owner has a similar partial unique index `owner_name_unique` per
+      V0_0_64).
+    - Namespace auto-create at NamespaceServiceImpl (batch K finding via
+      TermServiceImpl.upsertTags transitive path);
+      `namespace_name_unique` partial index per V0_0_64.
+    - Title auto-create at OwnershipServiceImpl path (similar shape).
+  **The TOCTOU race shape applies to every "auto-create-on-miss"
+  service-tier method that does listBy → bulkCreate without the DB-side
+  ON CONFLICT protection.** This invariant captures the Tag-specific
+  instance; the cross-cutting auto-create-class finding is captured at
+  the spec-documented-auto-create-with-scope-asymmetry invariant.
+nodes:
+- odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+contributors:
+- |-
+  ReactiveTagRepositoryImpl batch N (PRIMARY SOURCE): concepts.invariants.[
+  hard-delete vs soft-delete asymmetry; tag-name partial-unique-index as
+  race protection] + implicit_adrs.[0] (partial-unique-index-as-race-protection
+  — the platform's only locking mechanism for the auto-create-on-miss
+  path) + implicit_adrs.[6] (bulkCreate is the ONE create path that does
+  NOT use onConflict — the dual-method design rationale: TagController
+  MUST fail on duplicate, ingestion-side MUST not fail) +
+  bugs_limitations_corner_cases.[0] (TOCTOU between listByNames and
+  bulkCreate in TagServiceImpl.getOrCreateTagsByName — HIGH) +
+  tests_coverage_semantic.uncovered_behaviours.[ingestData concurrent
+  novel name; bulkCreate concurrent duplicate name]
+evidence:
+- |-
+  ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[0] (PRIMARY
+  SOURCE — HIGH severity) — evidence:
+    TagServiceImpl.java:80-86 (the writeback step) +
+    TagServiceImpl.java:144-159 (the read step) +
+    ReactiveAbstractCRUDRepository.java:113-126 (bulkCreate without
+    onConflict) +
+    ExceptionUtils.java:30-36, 54-56 (the translation to
+    UniqueConstraintException)
+- |-
+  ReactiveTagRepositoryImpl.md:implicit_adrs.[0] (partial-unique-index-as-race-protection;
+  the DB-side mediation is the platform's only locking mechanism)
+- |-
+  ReactiveTagRepositoryImpl.md:implicit_adrs.[6] (the dual-method
+  design: bulkCreate fails on duplicate; ingestData upserts via ON
+  CONFLICT — the asymmetry is INTENTIONAL for the two callers)
+- |-
+  V0_0_64__remove_is_deleted_field.sql:105 — the tag_name_unique partial
+  unique index that serialises the race at the DB level
+axes_present:
+- repositories_reactive
+- services
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: availability-and-UX
+mitigations_unimplemented:
+- |-
+  Add a service-layer retry-on-UniqueConstraintException loop in
+  TagServiceImpl.getOrCreateTagsByName: on first UniqueConstraintException,
+  re-fetch listByNames, filter out the now-existing names, and re-attempt
+  bulkCreate with the (now-empty or now-smaller) residual. Bounded retry
+  count (max 2 attempts).
+- |-
+  Migrate TagServiceImpl.getOrCreateTagsByName to use ingestData (the
+  upsert path) instead of bulkCreate. The upsert returns the existing
+  row's id; the caller wraps the result list into the relation-create
+  call. Single repository method covers BOTH the operator-explicit
+  TagController.createTag path (which keeps using the FAIL-ON-DUPLICATE
+  semantic) AND the UI tag-assignment path (which uses UPSERT). Requires
+  routing decision at TagController.createTag (which wants the 400 on
+  duplicate) vs the assign-tag-to-entity flow (which wants the
+  return-existing).
+- |-
+  Wrap the listByNames + bulkCreate pair in a @ReactiveTransactional
+  with isolation = SERIALIZABLE on TagServiceImpl.updateRelationsWithDataEntity
+  (currently READ COMMITTED). Serialisable would cause the race losers
+  to fail with serialisation-failure (40001) which is RETRY-able rather
+  than the silent-no-recovery 5xx today.
+- |-
+  Add a regression test:
+    (a) Set up parallel Mono<Void> with the same tag name list;
+    (b) Run them concurrently via Mono.zip / StepVerifier with parallel
+        scheduler;
+    (c) Assert that ONE succeeds AND the other surfaces
+        UniqueConstraintException (pinning the current — buggy —
+        behaviour as a regression baseline) OR assert BOTH return the
+        same Tag id (under the proposed retry-or-upsert fix).
+- |-
+  Document the TOCTOU race window in the API reference for the
+  data-entity-tags-update endpoint — operators can plan retry strategies
+  client-side until the server fix lands.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-19N. Primary
+  source is the ReactiveTagRepositoryImpl repository sidecar's
+  bugs_limitations_corner_cases.[0] — the TOCTOU between
+  TagServiceImpl.divideTagsByExistence (listByNames) and the subsequent
+  TagServiceImpl.upsertTags (bulkCreate). The race is at the SERVICE
+  layer; the repository's DB-side `tag_name_unique` partial index is the
+  load-bearing protection that prevents silent-duplicate data corruption,
+  at the cost of surfacing the race as a 5xx error to the user.
+
+  Class shape: this is one instance of a CROSS-CUTTING bug class —
+  every auto-create-on-miss service-tier method that does listBy →
+  bulkCreate without the DB-side ON CONFLICT protection has the same
+  race surface. Other instances:
+    - Owner auto-create (batch F finding)
+    - Namespace auto-create (batch K finding via TermServiceImpl)
+    - Title auto-create (similar shape)
+
+  Cross-cutting connections:
+    - Pairs with spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
+      — the side-door creates the wide-open surface; the TOCTOU
+      surfaces the operational fragility under concurrent load
+    - Pairs with permission-bypass-via-owner-auto-create-side-door-write-path
+      — same architectural shape on Owner
+    - Pairs with the batch-N
+      `ingestData-upsert-with-returning-conflict-trigger` operation —
+      the SAFE counterpart that the race-prone path should migrate to
+    - Cross-references ReactiveTagRepositoryImpl.md:performance.hot_paths.[0]
+      — every Collector batch lands here; the race is dormant in the
+      ingestData path but live in the bulkCreate path
+
+  Companion testing gap: the batch-N sidecar's
+  tests_coverage_semantic.uncovered_behaviours block names this race as
+  a HIGH-severity uncovered test case (`testBulkCreate_ConcurrentDuplicateName_
+  ThrowsUniqueConstraintException`, `testIngestData_ConcurrentNovelName_
+  DoesNotThrow`). The repository has ZERO direct test coverage —
+  TagRepositoryImplTest exercises only happy paths.
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Document the auto-create-on-miss race window for tag-assignment
+        callers
+    (b) Fix the service layer (retry-on-conflict OR migrate to ingestData
+        upsert path)
+    (c) Add the regression tests pinning the race behaviour as a
+        baseline

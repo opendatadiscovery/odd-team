@@ -28,12 +28,74 @@ description: |-
   and vice versa" (WebFetched 2026-05-19 status 200) — schema enforcement
   is application-side via clear-active-then-insert pattern, NOT a partial
   unique index.
+
+  **STRENGTHENED BATCH N (2026-05-19N) — REPOSITORY-LAYER PRIMARY SOURCE
+  NOW PINNED.** ReactiveUserOwnerMappingRepositoryImpl
+  (`repository/reactive/repository/ReactiveUserOwnerMappingRepositoryImpl.java`,
+  128 lines) is the SQL primary source for every USER_OWNER_MAPPING read
+  and write. The class exposes six method-level operations:
+    - createRelation (line 41-51) — CLEAR-ACTIVE-THEN-INSERT pattern
+      via `deleteActiveRelationByOwner(ownerId).then(insert)`
+    - deleteRelation (line 54-62) — soft-delete by (oidc_username, provider)
+    - deleteActiveRelationByOwner (line 65-74) — soft-delete by owner_id
+    - getAssociatedOwner (line 77-85) — the LOAD-BEARING owner-scoping
+      primitive consumed by AuthIdentityProviderImpl.fetchAssociatedOwner
+    - isOwnerAssociated (line 88-96) — boolean existence consumed by
+      OwnerServiceImpl.delete cascade-block
+    - getUserRolesByOwner (line 99-114) — 4-way JOIN ROLE ← ROLE_TO_POLICY
+      ← OWNER_TO_ROLE → USER_OWNER_MAPPING; the AUTHORIZATION HOT PATH
+      consumed by RoleServiceImpl.getCurrentUserRoles
+
+  **NEW PRIMARY-SOURCE FINDINGS BATCH N**:
+    (a) **PROVIDER-NULL CROSS-MODE BLEED PRIMARY SOURCE PINNED AT SQL
+        LAYER** — getConditions helper at lines 116-127 builds
+        `OIDC_USERNAME.eq(oidcUsername) AND DELETED_AT.isNull() AND
+         (StringUtils.isNotEmpty(provider) ? PROVIDER.eq(provider) :
+         PROVIDER.isNull())`. The branch fires the IS NULL predicate
+        for BOTH null AND empty-string provider. (Strengthens
+        provider-null-cross-mode-bleed invariant from 1-sidecar to
+        2-sidecar with SQL-layer primary source.)
+    (b) **Cross-provider username row-duplication in external JOINs**
+        (NEW HIGH invariant) — FOUR sibling repositories
+        (ReactiveAlertRepositoryImpl, ReactiveActivityRepositoryImpl,
+        ReactiveOwnerAssociationRequestRepositoryImpl,
+        ReactiveOwnerRepositoryImpl) LEFT JOIN user_owner_mapping on
+        OIDC_USERNAME ONLY without the provider half of the compound
+        key. Two-row coexistence (alice, null) + (alice, GITHUB)
+        produces Cartesian-product row duplication in alert / activity
+        / owner-display read paths.
+    (c) **Soft-delete-only growth** — three "delete" methods are all
+        UPDATE statements setting deleted_at = generateNow(). No
+        `DELETE FROM user_owner_mapping` anywhere. Table grows
+        monotonically.
+    (d) **Clear-active-then-insert pattern** — createRelation issues
+        deleteActiveRelationByOwner(ownerId) FIRST, then INSERT.
+        UserOwnerMappingServiceImpl.createRelation ADDS an outer
+        clear by (username, provider). Two-step clear enforces both
+        partial unique indexes from V0_0_89:
+          - unique_deleted_at_per_owner ON (owner_id) WHERE
+            deleted_at IS NULL
+          - user_owner_mapping_oidc_username_provider_deleted_key ON
+            (oidc_username, provider) WHERE deleted_at IS NULL
+    (e) **No @ReactiveTransactional on multi-statement createRelation**
+        — the inner DELETE + INSERT chain via .then() is NOT atomic
+        across R2DBC connections; OwnerAssociationRequestServiceImpl
+        wraps in @ReactiveTransactional but UserOwnerMappingServiceImpl
+        does NOT.
+
+  Single-Mono lookup at fetchAssociatedOwner is the doc-side invariant
+  verbatim at "one user can be associated only with one owner and vice
+  versa" (WebFetched 2026-05-19 status 200) — schema enforcement is
+  application-side via the clear-active-then-insert pattern AND DB-side
+  via the two partial unique indexes added in V0_0_89.
 nodes:
 - odd-platform java DataEntityController controller-method:getMyObjects
 - odd-platform java service service:AuthIdentityProviderImpl
+- odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
 contributing_files:
 - odd-platform__java__DataEntityController__controller-method__getMyObjects.md
 - odd-platform__java__service__service__AuthIdentityProviderImpl.md
+- odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl.md
 evidence:
 - getMyObjects.md:concepts.entities[USER_OWNER_MAPPING row]
 - getMyObjects.md:implicit_adrs.[0] (ADR-CANDIDATE-015 primary source)
@@ -50,6 +112,27 @@ evidence:
   AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[0,1]
   (LOGIN_FORM/LDAP cross-mode bleed PRIMARY SOURCE; S2S 'ADMIN' literal
   collision NEW HIGH severity)
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl.md (batch N — NEW REPOSITORY
+  LAYER PRIMARY SOURCE):
+    concepts.entities[USER_OWNER_MAPPING jOOQ Tables constant;
+      UserOwnerMappingPojo; OwnerPojo; RoleDto;
+      unique_deleted_at_per_owner partial unique index;
+      user_owner_mapping_oidc_username_provider_deleted_key partial
+      unique index]
+    + concepts.operations[createRelation; deleteRelation;
+      deleteActiveRelationByOwner; getAssociatedOwner; isOwnerAssociated;
+      getUserRolesByOwner; getConditions helper]
+    + concepts.invariants[1,2,3,4,5,6,7] (soft-delete only;
+      clear-active-then-insert; case-sensitive .eq(); empty/null
+      provider collapse; positional INSERT; DELETED_AT IS NULL filter
+      coverage; no race-window-safe primitives)
+    + implicit_adrs.[0,1,2,3] (soft-delete-only via deleted_at;
+      clear-active-then-insert; provider-null deliberate collapse;
+      service-layer-agnostic persistence)
+    + bugs_limitations_corner_cases.[0] (provider-null cross-mode bleed
+      PRIMARY SOURCE — HIGH) + [1] (cross-provider username row
+      duplication in external JOINs — MEDIUM)
 contributors:
 - |-
   getMyObjects (batch G): entities[USER_OWNER_MAPPING row];
@@ -61,10 +144,23 @@ contributors:
   provider; single-Mono Owner contract; stateless / no-cache by deliberate
   omission]; bugs[LOGIN_FORM/LDAP cross-mode bleed HIGH; S2S 'ADMIN'
   literal collision NEW HIGH]
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl (batch N — STRENGTHENS — SQL
+  layer): the AUTHORITATIVE site for the (oidc_username, provider)
+  compound key contract. 128-line repository class implementing 6
+  public methods. PRIMARY-SOURCE confirmation for: provider-null
+  cross-mode bleed (SQL WHERE clause); soft-delete only (UPDATE-not-DELETE
+  pattern); clear-active-then-insert (two partial unique indexes from
+  V0_0_89); case-sensitive .eq() on both oidc_username AND provider;
+  DELETED_AT IS NULL filter coverage on every read path.
+  NEW finding: cross-provider username row-duplication in external
+  JOINs (NEW MEDIUM-going-on-HIGH invariant — 4 sibling repositories
+  violate the compound-key contract on display-name resolution).
 axes_present:
 - controllers
 - services
 - config_prefixes
+- repositories_reactive
 security_aggregate:
   overall: MEDIUM
   auth_modes_relevant:
@@ -83,10 +179,24 @@ security_aggregate:
       AuthIdentityProviderImpl.java:23-53; the case-sensitive .eq()
       lookup at ReactiveUserOwnerMappingRepositoryImpl.java:116-127 is
       the load-bearing SQL.
+      **STRENGTHENED batch N**: the SQL primary source is now
+      independently pinned at the repository layer; the getConditions
+      helper IS the WHERE clause. End-to-end pinning: HTTP → service
+      (AuthIdentityProvider) → SQL (UserOwnerMappingRepo) is
+      consistent on the happy-path contract.
   owner_scoping:
     verdict: RESPECTS
-    detail: Owner-id is the principal-derived parameter passed into the OWNERSHIP
-      JOIN at the SQL layer
+    detail: |-
+      Owner-id is the principal-derived parameter passed into the
+      OWNERSHIP JOIN at the SQL layer.
+      **STRENGTHENED batch N** — ReactiveUserOwnerMappingRepositoryImpl
+      is the persistence-layer enforcement of the owner-scoping
+      mechanism. Every owner-scoped read in the platform consumes the
+      OwnerPojo this repository's getAssociatedOwner returns. The
+      case-sensitive .eq() predicates at lines 119 and 122 are the
+      SQL-layer load-bearing component of the entire defence-in-depth
+      anchor-set pattern documented in ADR-CANDIDATE-015
+      (DataEntityController.getMyObjects sidecar batch G).
   strengths:
   - Composite-key (oidc_username, provider) correctly isolates owner identity across
     OAuth2 providers
@@ -97,18 +207,28 @@ security_aggregate:
     at AuthIdentityProviderImpl — 15 callsites all funnel through three
     Monos (getCurrentUser / getCurrentUserProviderRole /
     fetchAssociatedOwner)
+  - |-
+    **STRENGTHENED batch N**: the SQL primary source has TWO partial
+    unique indexes from V0_0_89 as the DB-side safety net —
+    `unique_deleted_at_per_owner ON (owner_id) WHERE deleted_at IS NULL`
+    AND `user_owner_mapping_oidc_username_provider_deleted_key ON
+    (oidc_username, provider) WHERE deleted_at IS NULL`. Together they
+    enforce "at most one ACTIVE row per owner AND at most one ACTIVE
+    row per (username, provider)". The two-step clear-active pattern at
+    the service layer is the application-side complement.
   weaknesses:
   - |-
     **LOGIN_FORM and LDAP both produce provider=null → cross-mode user-identity
     bleed during auth.type migrations (HIGH severity — RAISED from previous
-    LOW-MEDIUM, batch K primary-source confirmation)**. Two HIGH-severity
-    scenarios:
+    LOW-MEDIUM, batch K primary-source confirmation; SQL-LAYER PRIMARY-SOURCE
+    UPGRADED batch N)**. Two HIGH-severity scenarios:
       (a) Migration LOGIN_FORM → LDAP retaining usernames silently inherits
           old user-owner mappings without invalidation
       (b) Concurrent LOGIN_FORM + LDAP deployments with overlapping
           usernames silently collide
     No mode-check, no warning log, no fail-fast.
-    (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[0])
+    (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[0] +
+    ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[0])
   - |-
     **S2S 'ADMIN' literal collision with operator-named users (NEW HIGH
     severity, batch K)** — S2sAuthenticationFilter.java:31 hardcodes
@@ -117,6 +237,43 @@ security_aggregate:
     caller resolves to THAT user's Owner. Case-sensitivity mitigates but
     does not eliminate.
     (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[1])
+  - |-
+    **NEW MEDIUM batch N — Cross-provider username row-duplication in
+    external JOINs**. FOUR sibling repositories (Alert / Activity /
+    Owner / OwnerAssociationRequest) LEFT JOIN user_owner_mapping on
+    OIDC_USERNAME ONLY without the provider half of the compound key.
+    Two-row coexistence produces Cartesian-product row duplication in
+    alert / activity / owner-display read paths during cross-mode
+    deployments or auth-mode migrations.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[1]
+    + docs_link_semantic.doc_drift_findings.[3])
+  - |-
+    **NEW LOW batch N — Empty-string vs null provider indistinguishable**
+    — the `StringUtils.isNotEmpty(provider)` branch fires the IS NULL
+    predicate for BOTH null AND empty-string. The partial unique index
+    `user_owner_mapping_oidc_username_provider_deleted_key` IS on
+    (oidc_username, provider) so empty-string and null could theoretically
+    coexist (Postgres treats them as distinct values in unique
+    constraints). But the read path bypasses the empty-string row.
+    Unreachable rows; latent data-corruption surface.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[3])
+  - |-
+    **NEW MEDIUM batch N — Positional INSERT values; schema-evolution
+    fragility.** Line 45 passes values positionally
+    `.values(ownerId, oidcUsername, provider, DSL.val(null, DATE))`. A
+    future migration that adds a column BETWEEN existing columns would
+    silently break the INSERT. Plus a TYPE MISMATCH on deleted_at
+    (DSL.val(null, DATE) vs TIMESTAMP column).
+    (ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[4,5])
+  - |-
+    **NEW MEDIUM batch N — No @ReactiveTransactional on multi-statement
+    createRelation**. The inner DELETE + INSERT chain via .then() is NOT
+    atomic across R2DBC connections. UserOwnerMappingServiceImpl is also
+    NOT annotated; OwnerAssociationRequestServiceImpl IS annotated at
+    the entry method (so transitive callers are atomic within that
+    flow). If the UPDATE succeeds and the INSERT fails (partial unique
+    index violation), the user is left in an unmapped state.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[6])
   - DISABLED mode = no SecurityContext = empty Flux degradation indistinguishable
     from owning-nothing
   - No fail-fast for unlinked user — 200 OK with [] body is the only signal (silent
@@ -124,6 +281,21 @@ security_aggregate:
   - Per-request principal lookup (no session cache) — multiplicative on /my call rate
 performance_aggregate:
   overall: MEDIUM
+  hot_paths:
+  - |-
+    **STRENGTHENED batch N — TWO HOT PATHS NOW SQL-PRIMARY-SOURCE PINNED**:
+      Hot path 1 — getAssociatedOwner — invoked by
+        AuthIdentityProviderImpl.fetchAssociatedOwner on every owner-
+        scoped read (15 distinct upstream callsites per
+        AuthIdentityProviderImpl audiences). Two-table JOIN at lines
+        79-84. Single page-load (Recommended + My Objects + My Alerts)
+        triggers 3-5 sequential identical queries.
+      Hot path 2 — getUserRolesByOwner — invoked transitively from
+        PolicyServiceImpl.getCurrentUserPolicies on EVERY authorized
+        HTTP request via the RBAC permission framework. 4-way JOIN
+        with jsonArrayAgg over policy column. This is the SINGLE
+        MOST-FREQUENT query against user_owner_mapping.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:performance.hot_paths.[0,1])
   weaknesses:
   - Per-request DB round-trip for principal lookup — short-lived session cache would
     eliminate this for high-RPS callers
@@ -133,16 +305,48 @@ performance_aggregate:
     Recommended + My Objects + My Alerts) triggers 3-5 sequential
     identical queries.
     (AuthIdentityProviderImpl.md:performance.hot_paths.[0])
+  - |-
+    **STRENGTHENED batch N** — the RBAC permission framework's
+    `policyService.getCurrentUserPolicies()` invokes getUserRolesByOwner
+    on EVERY authorized HTTP request. No caching at repository, service,
+    or extractor level. For a busy platform with N authorized req/s,
+    this is N+M DB calls (N for permission resolution, M ≪ N for
+    mutations). A short-TTL request-scoped or user-scoped cache would
+    significantly reduce DB load.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:performance.known_performance_gaps.[0])
+  - |-
+    **NEW LOW batch N — Soft-delete-only table growth.** Without
+    operator-driven pruning, the user_owner_mapping table grows
+    monotonically with every binding change. A platform with 1000 users
+    churning mappings monthly accumulates ~12,000 rows annually — small
+    enough that the partial unique indexes' WHERE-clause coverage keeps
+    query times bounded, but the operator may not know they can
+    `DELETE FROM user_owner_mapping WHERE deleted_at IS NOT NULL`
+    safely.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:performance.known_performance_gaps.[1])
 notes: |-
-  STRENGTHENED batch 2026-05-19K. The runtime resolver
-  AuthIdentityProviderImpl is now primary-source pinned at the SERVICE
-  layer; the persistence-layer USER_OWNER_MAPPING row is the gate, and
-  this concept captures both the row and the runtime contract.
+  STRENGTHENED batch 2026-05-19N — REPOSITORY-LAYER PRIMARY SOURCE
+  PINNED. The runtime resolver AuthIdentityProviderImpl (batch K) is now
+  paired with the SQL primary source ReactiveUserOwnerMappingRepositoryImpl
+  (batch N) — end-to-end pinning of the owner-scoping mechanism's
+  persistence layer:
+    HTTP layer — getMyObjects controller method (batch G)
+    Service layer — AuthIdentityProviderImpl (batch K)
+    Persistence layer — ReactiveUserOwnerMappingRepositoryImpl (batch N)
 
-  New invariants surfaced in batch K (each promoted to its own
+  New invariants surfaced in batch N (each promoted to its own
   invariant concept):
-    - LOGIN_FORM/LDAP provider=null cross-mode bleed (NEW HIGH)
-    - S2S 'ADMIN' username literal collision (NEW HIGH)
+    - LOGIN_FORM/LDAP provider=null cross-mode bleed — UPGRADED to
+      2-sidecar SQL primary source (batch N)
+    - Cross-provider username row-duplication in external JOINs
+      (NEW MEDIUM-going-on-HIGH invariant, batch N)
+    - Clear-active-then-insert user-owner binding (NEW operation —
+      see batch-N operations)
+
+  Existing batch K invariants preserved (each promoted to its own
+  invariant concept in prior batches):
+    - LOGIN_FORM/LDAP provider=null cross-mode bleed (NEW HIGH at batch K)
+    - S2S 'ADMIN' username literal collision (NEW HIGH at batch K)
     - AuthIdentityProvider (per-request principal resolution chokepoint)
       [new entity concept]
     - Resolve Current Principal and Associated Owner [new operation]
@@ -155,3 +359,14 @@ notes: |-
         before migrating)
     (c) Document the S2S username='ADMIN' literal on the S2S auth doc
         page until the code-fix lands
+
+  **NEW batch N — TWO MORE DOC-NNN candidates**:
+    (d) Document the multi-row-per-oidc_username schema permission on
+        the user-owner-association doc page — operators' mental model
+        is "one user, one mapping" but the schema permits two-row
+        coexistence; an operator inspecting USER_OWNER_MAPPING needs
+        the docs
+    (e) Add an operator-facing audit-script in the operations playbook
+        to scan for cross-provider username overlap (e.g.
+        `SELECT oidc_username, COUNT(*) FROM user_owner_mapping WHERE
+         deleted_at IS NULL GROUP BY oidc_username HAVING COUNT(*) > 1`)

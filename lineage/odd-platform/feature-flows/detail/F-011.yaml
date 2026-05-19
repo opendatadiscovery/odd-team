@@ -11,6 +11,12 @@ drift_class_summary:
 - single_chokepoint_no_caching
 - silent_authority_drop
 - compound_key_silent_in_docs
+- provider_null_cross_mode_bleed_sql_primary_source
+- cross_provider_username_row_duplication_external_joins
+- positional_insert_schema_evolution_fragility
+- no_reactive_transactional_multi_statement_create_relation
+- soft_delete_only_table_growth_no_pruning
+- type_mismatch_deleted_at_insert_DATE_vs_TIMESTAMP
 cross_pillar_relationships:
 - pillar_id: P-01
   kind: feeds
@@ -36,6 +42,71 @@ cross_pillar_relationships:
     (per-Owner alert / activity / discussion scoping).'
 batch_origin: K
 created_in_batch: K
+batch_extensions:
+- batch: N
+  entry_point_added: |-
+    repository-tier:ReactiveUserOwnerMappingRepositoryImpl (the persistence-layer
+    bean owning every read and write to the `user_owner_mapping` table — the
+    PRIMARY SOURCE for the provider-null cross-mode bleed at the SQL layer.
+    The companion vertex to batch-K's AuthIdentityProviderImpl primary-source —
+    the principal-layer producer of `(username, null)` for LOGIN_FORM/LDAP/S2S
+    + the SQL-layer consumer that resolves them to a single OwnerPojo via the
+    `WHERE OIDC_USERNAME=? AND DELETED_AT IS NULL AND PROVIDER IS NULL`
+    pattern.)
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
+  notes: |-
+    Six new drift facets surface from the SQL-layer side of the
+    Principal-to-Owner Resolution chokepoint:
+    (1) provider-null cross-mode bleed PRIMARY-SOURCE at SQL layer —
+    `getConditions(oidcUsername, provider)` helper at lines 116-127 builds
+    the WHERE clause `OIDC_USERNAME.eq(oidcUsername) AND DELETED_AT.isNull()
+    AND (StringUtils.isNotEmpty(provider) ? PROVIDER.eq(provider) :
+    PROVIDER.isNull())` — empty-string AND null both produce the IS-NULL
+    predicate. This is the SQL-layer twin of AuthIdentityProviderImpl.java:32
+    that produces UserDto(name, null) for LOGIN_FORM/LDAP/S2S. The
+    architectural triangle is closed at three points: principal layer (Auth
+    sidecar), SQL layer (this sidecar), schema (V0_0_55__add_policies_and_roles.sql:1-2
+    `ADD COLUMN IF NOT EXISTS provider VARCHAR(255)` nullable).
+    (2) cross-provider username row-duplication in external JOINs — four
+    OTHER repositories (ReactiveAlertRepositoryImpl.java:83-86,
+    ReactiveActivityRepositoryImpl.java:156-158,
+    ReactiveOwnerAssociationRequestRepositoryImpl.java:80-84,
+    ReactiveOwnerRepositoryImpl.java:77-78) LEFT JOIN `user_owner_mapping ON
+    OIDC_USERNAME` only (no provider equality clause). If two ACTIVE rows
+    exist for (alice, null) AND (alice, GITHUB), the LEFT JOIN matches BOTH
+    rows and produces row duplication — alerts/activity feeds duplicate the
+    same event, and Owner display becomes non-deterministic (Postgres
+    physical row order). RARE in practice but ROW-DUPLICATION is more severe
+    than incorrect display.
+    (3) Positional INSERT schema-evolution fragility — line 45
+    `.values(ownerId, oidcUsername, provider, DSL.val(null, DATE))` passes
+    values positionally without column names. A future migration that
+    REORDERS columns (jOOQ regen would silently keep working) would target
+    wrong columns.
+    (4) No @ReactiveTransactional on multi-statement createRelation — line 41-51
+    issues TWO SQL statements (deleteActiveRelationByOwner UPDATE + INSERT)
+    chained via `.then()`. The reactive `.then()` operator does NOT imply
+    a single transaction; if the UPDATE succeeds and the INSERT fails (partial
+    unique index violation against `user_owner_mapping_oidc_username_provider_deleted_key`),
+    the UPDATE's soft-delete of the previous mapping is NOT rolled back —
+    the user is left unmapped. Depends on whether the caller's service is
+    @ReactiveTransactional (UserOwnerMappingServiceImpl is NOT;
+    OwnerAssociationRequestServiceImpl IS).
+    (5) Soft-delete-only table growth — every binding-change soft-deletes
+    the prior row and inserts a new one; the table grows monotonically with
+    NO operator-driven pruning (`DELETE FROM user_owner_mapping WHERE
+    deleted_at < NOW() - INTERVAL '...'` lives nowhere in the codebase).
+    Operationally a 1000-user platform churning mappings monthly accumulates
+    ~12K rows annually — bounded by partial unique indexes but undocumented.
+    (6) TYPE MISMATCH on `deleted_at` INSERT — line 45 declares
+    `DSL.val(null, DATE)` but the schema column is `TIMESTAMP WITHOUT TIME
+    ZONE`. Postgres tolerates the null cast; a future non-null literal in
+    the same position would break. Code smell + latent migration-time bug.
+    Hop-3 (ReactiveUserOwnerMappingRepositoryImpl) is now PRIMARY-SOURCE
+    CONFIRMED at every method body. ZERO direct unit tests
+    (`ReactiveOwnerAssociationRequestRepositoryImplTest.java:50` uses it as
+    fixture setup only, not a test of this repository).
 feature_name: Principal-to-Owner resolution — the per-request chokepoint that
   resolves Spring Authentication → UserDto(username, provider) → OwnerPojo via
   USER_OWNER_MAPPING JOIN
@@ -91,7 +162,7 @@ description: |-
 contributing_nodes:
 - odd-platform java service service:AuthIdentityProviderImpl
 - odd-platform java AuthIdentityProvider
-- odd-platform java ReactiveUserOwnerMappingRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
 - odd-platform java S2sAuthenticationFilter
 - odd-platform java LoginFormSecurityConfiguration
 - odd-platform java LDAPSecurityConfiguration
@@ -127,17 +198,29 @@ chain:
   unresolved: false
   resolved_in_batch: K
 - hop: 3
-  node: odd-platform java ReactiveUserOwnerMappingRepositoryImpl
-  sidecar: '(not separately enriched — context from AuthIdentityProviderImpl sidecar)'
+  node: odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
+  sidecar: odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl.md
   multiplicity_per_trigger: 1
   evidence: |-
     ReactiveUserOwnerMappingRepositoryImpl.java:77-85 — the JOIN SQL builder; line
     83 uses `jooqReactiveOperations.mono` (single-row return, not flux). Lines
-    116-127 — the WHERE clause construction with the `(PROVIDER.eq(provider) if
-    non-empty else PROVIDER.isNull())` branch — the SOURCE of the cross-mode
-    bleed: when provider==null, the `WHERE OIDC_USERNAME=? AND PROVIDER IS NULL`
-    pattern matches every non-OAUTH2 user uniformly.
+    116-127 — the `getConditions(oidcUsername, provider)` helper that builds the
+    WHERE clause: `OIDC_USERNAME.eq(oidcUsername) AND DELETED_AT.isNull() AND
+    (StringUtils.isNotEmpty(provider) ? PROVIDER.eq(provider) : PROVIDER.isNull())`
+    — the SQL-LAYER PRIMARY SOURCE of the cross-mode bleed: when provider==null
+    OR empty-string, the `WHERE OIDC_USERNAME=? AND PROVIDER IS NULL` pattern
+    matches every non-OAUTH2 user uniformly. Lines 41-51 — createRelation is
+    `deleteActiveRelationByOwner(ownerId).then(insert)` (NO @ReactiveTransactional;
+    partial-failure leaves user unmapped). Lines 99-114 — getUserRolesByOwner
+    4-way JOIN (ROLE LEFT JOIN ROLE_TO_POLICY ON ROLE.ID JOIN POLICY ON
+    POLICY_ID JOIN OWNER_TO_ROLE ON ROLE.ID JOIN USER_OWNER_MAPPING) with
+    jsonArrayAgg — invoked on EVERY authorized HTTP request via
+    RoleServiceImpl.getCurrentUserRoles. Architectural triangle of provider-null
+    bleed closed at THREE vertices: principal layer (Auth sidecar),
+    SQL layer (THIS — line 121-125 branch), schema (V0_0_55__add_policies_and_roles.sql:1-2
+    nullable provider column).
   unresolved: false
+  resolved_in_batch: N
 - hop: 4
   node: 'odd-platform java *PermissionExtractor / *ServiceImpl (15 callsites)'
   sidecar: '(15 distinct consumers — referenced from AuthIdentityProviderImpl sidecar concepts.audiences)'
@@ -315,6 +398,164 @@ observed_vs_expected:
     provenance: STATIC — primary-source in batch K AuthIdentityProviderImpl sidecar
       docs_link_semantic.doc_drift_findings[0] + AuthIdentityProviderImpl.java:29-33 +
       ReactiveUserOwnerMappingRepositoryImpl.java:116-127 + live doc WebFetched 2026-05-19
+  - facet: provider-null cross-mode bleed PRIMARY-SOURCE at SQL layer (batch N)
+    observed: |-
+      `ReactiveUserOwnerMappingRepositoryImpl.getConditions(oidcUsername,
+      provider)` at lines 116-127 is the SQL-layer manifestation of the
+      provider-null cross-mode bleed: the branch
+      `if (StringUtils.isNotEmpty(provider)) conditions.add(PROVIDER.eq(provider));
+      else conditions.add(PROVIDER.isNull());` produces the
+      `WHERE PROVIDER IS NULL` predicate for ANY null OR empty-string
+      provider. This is the SQL-LAYER twin of AuthIdentityProviderImpl.java:32
+      that produces `UserDto(name, null)` for LOGIN_FORM/LDAP/S2S. The
+      schema (V0_0_55__add_policies_and_roles.sql:1-2) declares `provider
+      VARCHAR(255)` as NULLABLE — null is a first-class value, not a
+      sentinel. The architectural triangle is now closed at three vertices:
+      (a) principal-layer producer (AuthIdentityProviderImpl batch K
+      sidecar), (b) SQL-layer consumer (THIS batch's primary source —
+      ReactiveUserOwnerMappingRepositoryImpl.java:116-127), (c) schema
+      (V0_0_55 nullable provider column). A migration mitigation must
+      touch ALL THREE vertices.
+    expected: |-
+      Distinguish non-OAuth2 modes at the principal layer
+      (LOGIN_FORM/LDAP/S2S produce distinct provider strings) + a migration
+      backfilling existing rows. OR document the cross-mode collapse
+      explicitly + require operators to avoid overlapping usernames across
+      modes during deployments.
+    drift_class: provider_null_cross_mode_bleed_sql_primary_source
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveUserOwnerMappingRepositoryImpl
+      sidecar bugs_limitations_corner_cases[0] +
+      security.known_security_gaps[0] + implicit_adrs[2] +
+      ReactiveUserOwnerMappingRepositoryImpl.java:116-127 +
+      V0_0_55__add_policies_and_roles.sql:1-2 +
+      AuthIdentityProviderImpl.java:29-33. Severity: HIGH.
+  - facet: cross-provider username row-duplication in external JOINs (batch N)
+    observed: |-
+      Four OTHER repositories LEFT JOIN `user_owner_mapping ON OIDC_USERNAME`
+      ONLY (no provider equality clause):
+      - ReactiveAlertRepositoryImpl.java:83-86
+      - ReactiveActivityRepositoryImpl.java:156-158
+      - ReactiveOwnerAssociationRequestRepositoryImpl.java:80-84
+      - ReactiveOwnerRepositoryImpl.java:77-78
+      If two ACTIVE user_owner_mapping rows exist for the same oidc_username
+      under different providers (alice@null + alice@GITHUB — common in
+      concurrent LOGIN_FORM + OAUTH2 deployments where both users have
+      actively mapped to Owners), the LEFT JOIN matches BOTH rows and
+      produces a Cartesian product. Effect: alerts/activity entries get
+      DUPLICATED (one per matching mapping); Owner display becomes
+      non-deterministic (Postgres physical row order). The case is rare —
+      requires overlapping usernames AND both users mapped — but
+      row-duplication on alerts is operationally serious.
+    expected: |-
+      Add the provider equality clause to the four external JOINs OR
+      document "OIDC_USERNAME alone is the implicit primary-display key —
+      operators must enforce uniqueness via naming convention."
+    drift_class: cross_provider_username_row_duplication_external_joins
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveUserOwnerMappingRepositoryImpl
+      sidecar bugs_limitations_corner_cases[1] +
+      security.known_security_gaps[2] +
+      docs_link_semantic.doc_drift_findings[3] +
+      ReactiveAlertRepositoryImpl.java:83-86 +
+      ReactiveActivityRepositoryImpl.java:156-158 +
+      ReactiveOwnerAssociationRequestRepositoryImpl.java:80-84 +
+      ReactiveOwnerRepositoryImpl.java:77-78 +
+      ReactiveUserOwnerMappingRepositoryImpl.java:116-127. Severity: MEDIUM.
+  - facet: Positional INSERT schema-evolution fragility (batch N)
+    observed: |-
+      `ReactiveUserOwnerMappingRepositoryImpl.createRelation` at line 45
+      uses `.values(ownerId, oidcUsername, provider, DSL.val(null, DATE))`
+      — passing values POSITIONALLY without column names. The schema order
+      MUST be (owner_id, oidc_username, provider, deleted_at) for this to
+      be correct. Per V0_0_4__add_user_owner_mapping.sql:3-4 +
+      V0_0_55__add_policies_and_roles.sql:1-2 + V0_0_89__update_user_owner.sql:1-2
+      the actual current order matches — but a future migration that
+      ADDS a column BETWEEN existing columns (e.g. `created_at TIMESTAMP
+      DEFAULT NOW()` inserted between `provider` and `deleted_at`) would
+      cause jOOQ codegen to update its model AND the literal `.values(...)`
+      call would silently insert into the wrong columns. Latent migration-time
+      bug — only triggered by future schema evolution. The maintainer should
+      have used `.set(USER_OWNER_MAPPING.OWNER_ID, ownerId).set(...)` or
+      `.columns(...).values(...)` form.
+    expected: |-
+      Refactor to `.set(...)` per-column form for schema-evolution safety.
+    drift_class: positional_insert_schema_evolution_fragility
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveUserOwnerMappingRepositoryImpl
+      sidecar bugs_limitations_corner_cases[4] + concepts.invariants[5] +
+      ReactiveUserOwnerMappingRepositoryImpl.java:44-46 +
+      V0_0_4__add_user_owner_mapping.sql:3-4 +
+      V0_0_89__update_user_owner.sql:1-2. Severity: LOW.
+  - facet: No @ReactiveTransactional on multi-statement createRelation (batch N)
+    observed: |-
+      `createRelation` (lines 41-51) issues TWO SQL statements
+      (deleteActiveRelationByOwner UPDATE + INSERT) chained via `.then()`.
+      The reactive `.then()` operator chains Monos but does NOT imply
+      a single transaction — the two statements happen on potentially
+      different R2DBC connections under reactive backpressure. If the
+      UPDATE succeeds and the INSERT fails (partial unique index
+      violation against
+      `user_owner_mapping_oidc_username_provider_deleted_key` because the
+      outer service-layer clear-by-(username, provider) was not applied),
+      the UPDATE's soft-delete of the previous mapping is NOT rolled back.
+      The user is left UNMAPPED. Depends on whether the caller's service
+      is @ReactiveTransactional: UserOwnerMappingServiceImpl is NOT;
+      OwnerAssociationRequestServiceImpl IS (line 53 — so the standard
+      approval path is atomic; the operator-manual path
+      UserOwnerMappingServiceImpl.createRelation directly is NOT).
+    expected: |-
+      Either @ReactiveTransactional on the repository's createRelation OR
+      on UserOwnerMappingServiceImpl.createRelation. Either fix is one-line.
+    drift_class: no_reactive_transactional_multi_statement_create_relation
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveUserOwnerMappingRepositoryImpl
+      sidecar bugs_limitations_corner_cases[6] + concepts.invariants[7] +
+      ReactiveUserOwnerMappingRepositoryImpl.java:41-51 +
+      UserOwnerMappingServiceImpl.java:14-18 +
+      OwnerAssociationRequestServiceImpl.java:53. Severity: MEDIUM.
+  - facet: soft-delete-only table growth — no operator pruning path (batch N)
+    observed: |-
+      All three 'delete' methods (deleteRelation, deleteActiveRelationByOwner,
+      the embedded clear in createRelation) are UPDATE statements setting
+      `DELETED_AT = generateNow()`. No `DELETE FROM user_owner_mapping`
+      exists in the codebase (Grep-verified). Every binding-change
+      soft-deletes the prior row and inserts a new one — the table grows
+      MONOTONICALLY. A 1000-user platform churning mappings monthly
+      accumulates ~12K rows annually. Partial unique indexes bound query
+      times for the operationally-active subset, but the soft-deleted
+      historical rows accumulate forever with no documented operator-
+      driven pruning path (no Housekeeping job exists for this table).
+    expected: |-
+      Either (a) add a HousekeepingJob entry for user_owner_mapping with a
+      configurable TTL on deleted_at (mirror of the existing AlertHousekeepingJob),
+      OR (b) document the safe-to-prune semantic for operators
+      (`DELETE FROM user_owner_mapping WHERE deleted_at IS NOT NULL`).
+    drift_class: soft_delete_only_table_growth_no_pruning
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveUserOwnerMappingRepositoryImpl
+      sidecar implicit_adrs[0] + docs_link_semantic.doc_drift_findings[2] +
+      performance.known_performance_gaps[1] +
+      ReactiveUserOwnerMappingRepositoryImpl.java:56-74 +
+      V0_0_89__update_user_owner.sql:1-15. Severity: LOW.
+  - facet: type mismatch on deleted_at INSERT — DATE vs TIMESTAMP (batch N)
+    observed: |-
+      Line 45 of ReactiveUserOwnerMappingRepositoryImpl declares the type
+      of the null literal as `DSL.val(null, DATE)`. The schema column is
+      `TIMESTAMP WITHOUT TIME ZONE` (V0_0_89__update_user_owner.sql:2).
+      Postgres tolerates this because casting NULL to either type is
+      equivalent — but the type mismatch is a code smell that would cause
+      confusion or breakage if someone later changes the value to a non-null
+      literal (e.g. for an audit-export or restoration utility).
+    expected: |-
+      Change to `DSL.val(null, TIMESTAMP)` to match the schema.
+    drift_class: type_mismatch_deleted_at_insert_DATE_vs_TIMESTAMP
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveUserOwnerMappingRepositoryImpl
+      sidecar bugs_limitations_corner_cases[5] + concepts.invariants[5] +
+      ReactiveUserOwnerMappingRepositoryImpl.java:45 +
+      V0_0_89__update_user_owner.sql:2. Severity: LOW (cosmetic; no runtime
+      impact today).
 test_matrix:
   unit:
     state: GAP
@@ -368,6 +609,31 @@ control_summary: |-
   first-mode's Owner). Local docker-compose probe stack is sufficient: ODD
   platform + Postgres + an LDAP server (e.g. OpenLDAP docker image) + a
   LOGIN_FORM user with the same username.
+
+  Batch N adds ReactiveUserOwnerMappingRepositoryImpl primary-source — the
+  SQL-LAYER twin of the AuthIdentityProviderImpl batch-K primary source. The
+  cross-mode bleed architectural triangle is now CLOSED at three vertices:
+  (a) principal layer producer (AuthIdentityProviderImpl.java:32 — UserDto(name,
+  null) for LOGIN_FORM/LDAP/S2S), (b) SQL layer consumer (THIS batch —
+  ReactiveUserOwnerMappingRepositoryImpl.java:121-125 — the
+  `StringUtils.isNotEmpty(provider) ? PROVIDER.eq(provider) : PROVIDER.isNull()`
+  branch), (c) schema (V0_0_55__add_policies_and_roles.sql:1-2 nullable
+  `provider VARCHAR(255)` column). A migration mitigation must touch ALL THREE
+  vertices simultaneously. Six new drift facets surface: provider-null bleed
+  PRIMARY SOURCE at SQL layer + cross-provider username row-duplication in
+  external JOINs (four other repositories LEFT JOIN on OIDC_USERNAME only —
+  alerts/activity feed duplicate; Owner display non-deterministic on naming
+  collision) + positional INSERT schema-evolution fragility (line 45) + no
+  @ReactiveTransactional on multi-statement createRelation (partial-failure
+  leaves user unmapped) + soft-delete-only table growth (no operator pruning
+  path, no Housekeeping job) + type mismatch DATE vs TIMESTAMP on
+  deleted_at INSERT. ZERO direct unit tests at this repository
+  (`ReactiveOwnerAssociationRequestRepositoryImplTest.java:50` uses it only
+  for fixture setup). The chokepoint is now PRIMARY-SOURCE COMPLETE at every
+  layer of the chain (principal + SQL + schema); the S2S 'ADMIN' collision
+  + LOGIN_FORM↔LDAP bleed remain the two HIGHEST-LEVERAGE probe candidates,
+  unchanged from batch K, now with explicit SQL-layer evidence at lines
+  121-125 for the maintainer to use as the regression-pin oracle.
 related_refactoring_scopes:
 - REFACTOR-203
 - REFACTOR-024

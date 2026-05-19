@@ -45,6 +45,54 @@ description: |-
       SOFT-DELETE-on-cascade path is REVERSIBLE; the HARD-DELETE-on-user
       path is NOT — the asymmetry is intentional but undocumented at
       the operator surface.
+
+  **STRENGTHENED batch 2026-05-19N** — FOUR ADDITIONAL repository
+  sidecars confirm the inherited `deleted_at` mechanism on the
+  remaining CRUDable platform entities:
+    - **ReactiveTermRepositoryImpl** (batch N) — `term` table uses
+      `deleted_at` timestamp (V0_0_35:9-16); every read filters
+      `TERM.DELETED_AT IS NULL` (verified at lines 143, 156, 188, 234,
+      257, 279, 367, 387, 403, 432, 451, 461, 505 — 13 distinct sites).
+      Partial unique index `term_name_namespace_unique ON
+      term(name, namespace_id) WHERE deleted_at IS NULL` (V0_0_35:16).
+      Soft-delete enables term-name-reuse after soft-delete; consistent
+      with the Policy pattern.
+    - **ReactiveTagRepositoryImpl** (batch N) — `tag` table uses
+      `deleted_at` timestamp; partial unique index `tag_name_unique
+      ON tag(name) WHERE deleted_at IS NULL` (V0_0_64:105). The
+      `is_deleted` boolean column was DROPPED in V0_0_64 — Tag is
+      another example of the platform's convergence on deleted_at as
+      the canonical predicate.
+    - **ReactiveRoleRepositoryImpl** (batch N) — `role` table uses
+      `deleted_at`; partial unique index `role_name_unique ON role(name)
+      WHERE deleted_at IS NULL` (V0_0_55:42, recreated by V0_0_58 then
+      V0_0_64). The `is_deleted` column was DROPPED in V0_0_64 — Role
+      has the CLEANER schema vs the batch-H Policy-side (Policy retains
+      `is_deleted` as dead schema; Role does NOT).
+    - **ReactiveUserOwnerMappingRepositoryImpl** (batch N) —
+      `user_owner_mapping` table uses `deleted_at` timestamp; TWO
+      partial unique indexes from V0_0_89:
+        `unique_deleted_at_per_owner ON (owner_id) WHERE deleted_at IS NULL`
+        `user_owner_mapping_oidc_username_provider_deleted_key ON
+        (oidc_username, provider) WHERE deleted_at IS NULL`
+      DISTINCT FROM the soft-delete-aware-recreation pattern of the
+      sibling tables — here the SCHEMA-side enforcement is the two
+      partial unique indexes, NOT a name-unique index; the
+      `at-most-one-active-row` invariant is enforced at TWO dimensions
+      (owner_id AND username,provider tuple). No `DELETE FROM` anywhere
+      in the codebase (verified by Grep) — the table grows monotonically
+      with every binding change.
+
+  **NEW FIFTH-MECHANISM ASYMMETRY surfaced batch N**: the
+  `term_to_term` table (V0_0_91__add_term_to_term.sql:6) retains a
+  `deleted_at` column despite the V0_0_76 commitment to hard-delete
+  relationship-edge tables (which dropped deleted_at from 3 sibling
+  link tables). The application layer NEVER filters
+  `term_to_term.deleted_at` across 7 read sites — confirmed at
+  primary source. Captured at the dedicated
+  `term-to-term-deleted-at-schema-drift-v0_0_76-vs-v0_0_91` invariant
+  (batch N).
+
   Edge tables between hard-deletable entities don't need their
   own soft-delete; the activity-feed audit stream is the source of truth for historical
   state (where activity logs exist — note that DEG-membership flips do NOT emit
@@ -64,8 +112,11 @@ description: |-
   hook. **Highest-leverage hygiene gap discovered at batch H** — surfaced by triangulating
   the 4 repository sidecars side-by-side. **Batch L confirms the 4th mechanism
   (HARD-DELETE) at TWO MORE SITES — the relationship-edge cluster pattern is now
-  multi-site primary-source confirmed, matching the dedicated
-  `hard-delete-on-relationship-edges-confirmed-cross-batch` invariant**.
+  multi-site primary-source confirmed**. **Batch N confirms FOUR MORE
+  deleted_at sites (Term, Tag, Role, UserOwnerMapping) AND surfaces the
+  FIFTH-MECHANISM ASYMMETRY (term_to_term retains deleted_at despite
+  V0_0_76's hard-delete commitment) — the platform's persistence-layer
+  deletion shape is now 4-mechanism × 8-site primary-source confirmed**.
 axes_present:
   - repositories_reactive
   - controllers
@@ -74,6 +125,10 @@ nodes:
   - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
   - odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
   - odd-platform java repository reactive repository:ReactiveOwnershipRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
   - odd-platform java DataEntityController controller-method:deleteTermFromDataEntity
   - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
 contributors:
@@ -110,6 +165,43 @@ contributors:
     commits to removal; cascade path is reversible) +
     bugs_limitations_corner_cases.[5] (HARD vs soft-delete cascade
     semantic gap — undocumented asymmetry)
+  - |-
+    ReactiveTermRepositoryImpl batch N (NEW SITE FOR `deleted_at`
+    cluster): concepts.invariants.[every read filters
+    TERM.DELETED_AT IS NULL; 13 distinct sites verified;
+    term link tables (data_entity_to_term, dataset_field_to_term,
+    tag_to_term, term_ownership) had deleted_at DROPPED in V0_0_76]
+    + implicit_adrs.[0] (deleted_at via base class extension) +
+    implicit_adrs.[1] (term_to_term retains deleted_at — the
+    ASYMMETRIC fifth mechanism)
+  - |-
+    ReactiveTagRepositoryImpl batch N (NEW SITE FOR `deleted_at`
+    cluster): concepts.invariants.[soft-delete is mediated by
+    deleted_at IS NULL at the tag table level; the is_deleted boolean
+    column was removed in V0_0_64] + implicit_adrs.[0]
+    (partial-unique-index-as-race-protection)
+  - |-
+    ReactiveRoleRepositoryImpl batch N (NEW SITE FOR `deleted_at`
+    cluster): concepts.invariants.[every CRUD read and the inherited
+    delete are auto-scoped to deleted_at IS NULL; partial unique index
+    role_name_unique WHERE deleted_at IS NULL at V0_0_55:42; V0_0_64
+    DROPPED the is_deleted column — Role has the cleaner schema vs
+    batch-H Policy] + implicit_adrs.[0] (extends
+    ReactiveAbstractSoftDeleteCRUDRepository)
+  - |-
+    ReactiveUserOwnerMappingRepositoryImpl batch N (NEW SITE — DISTINCT
+    sub-pattern of `deleted_at` mechanism): all THREE 'delete' methods
+    are UPDATE statements setting deleted_at = generateNow(); no
+    DELETE FROM anywhere in the codebase (verified). TWO partial unique
+    indexes from V0_0_89:
+      unique_deleted_at_per_owner ON (owner_id) WHERE deleted_at IS NULL
+      user_owner_mapping_oidc_username_provider_deleted_key ON
+      (oidc_username, provider) WHERE deleted_at IS NULL
+    Distinct from the soft-delete-aware-RECREATION pattern of the
+    sibling tables — here the schema-side enforcement is two partial
+    unique indexes on TWO dimensions, NOT a single name-unique index.
+    + implicit_adrs.[0] (soft-delete only) + implicit_adrs.[1]
+    (clear-active-then-insert pattern)
 evidence:
   - ReactivePolicyRepositoryImpl.md:implicit_adrs.[0] + V0_0_55__add_policies_and_roles.sql:27,30
   - ReactiveDataEntityRepositoryImpl.md:concepts.invariants.[0] + implicit_adrs.[0]
@@ -128,6 +220,33 @@ evidence:
     concepts.invariants.[5] + implicit_adrs.[3] +
     bugs_limitations_corner_cases.[5] (HARD vs SOFT-DELETE asymmetry
     on group_entity_relations)
+  - |-
+    ReactiveTermRepositoryImpl.md (batch N):
+    concepts.invariants.[every-read-filters-deleted_at-null] +
+    implicit_adrs.[0] (soft-delete via base class) +
+    implicit_adrs.[1] (link-tables-hard-delete; term_to_term retains
+    deleted_at — ASYMMETRIC) + V0_0_35__add_terms.sql:9-16 +
+    V0_0_76__term_relations_hard_delete.sql:1-22 +
+    V0_0_91__add_term_to_term.sql:6
+  - |-
+    ReactiveTagRepositoryImpl.md (batch N):
+    concepts.invariants.[soft-delete via deleted_at; is_deleted column
+    DROPPED in V0_0_64] + implicit_adrs.[0]
+    (partial-unique-index-as-race-protection) +
+    V0_0_64__remove_is_deleted_field.sql:105
+  - |-
+    ReactiveRoleRepositoryImpl.md (batch N):
+    concepts.invariants.[1-4] (soft-delete via deleted_at; role_name_unique
+    partial index; recreation after soft-delete; is_deleted column
+    DROPPED in V0_0_64 cleaner than Policy) +
+    implicit_adrs.[0,1] (soft-delete via base; partial-unique-index
+    enables recreation)
+  - |-
+    ReactiveUserOwnerMappingRepositoryImpl.md (batch N):
+    concepts.invariants.[1] (soft-delete only; no DELETE FROM anywhere)
+    + concepts.invariants.[2] (clear-active-then-insert) +
+    implicit_adrs.[0,1] (soft-delete via deleted_at + the migration
+    sequence V0_0_4 → V0_0_55 → V0_0_89 IS the design narrative)
 notes: |-
   Cross-batch architectural-hygiene invariant surfaced ONLY by triangulating
   the 4 batch-H repository sidecars together. None of the individual sidecars
@@ -143,6 +262,30 @@ notes: |-
   hard-delete-on-relationship-edges-confirmed-cross-batch invariant
   captures the relationship-edge cluster pattern; this invariant
   remains the platform-wide-mechanism map.
+
+  **STRENGTHENED batch 2026-05-19N** — FOUR ADDITIONAL deleted_at sites
+  now primary-source pinned (Term, Tag, Role, UserOwnerMapping). The
+  platform's persistence-layer deletion shape is now 4-mechanism ×
+  8-repository-site primary-source confirmed:
+    Mechanism 1 (deleted_at timestamp): 6 sites — Policy, Role, Tag,
+      Term, UserOwnerMapping, and historically Owner (the user_owner_mapping
+      sub-pattern adds TWO partial unique indexes instead of one
+      name-unique index — the at-most-one-active-row contract is
+      enforced at two dimensions)
+    Mechanism 2 (is_deleted boolean): 1 site — Lineage
+    Mechanism 3 (STATUS state-machine): 1 site — DataEntity (subclass
+      override)
+    Mechanism 4 (HARD-DELETE): 3 sites — Ownership, data_entity_to_term,
+      group_entity_relations (+ term_ownership migration drop site)
+
+  **The FIFTH-MECHANISM ASYMMETRY**: term_to_term (V0_0_91) retains
+  deleted_at despite V0_0_76's hard-delete commitment for the sibling
+  link tables. The application code never filters term_to_term.deleted_at
+  at 7 read sites. Either V0_0_91 should have followed V0_0_76's
+  cleanup pattern (drop the column) OR the application should filter
+  the column. Captured at the dedicated
+  `term-to-term-deleted-at-schema-drift-v0_0_76-vs-v0_0_91` invariant
+  (batch N).
 
   Recommended cleanup paths (in increasing scope):
 
@@ -161,7 +304,13 @@ notes: |-
       surprising) in the ParentClass's Javadoc so a maintainer reading the parent
       sees the override contract before refactoring.
 
-  Five DOC-NNN candidates flow from this invariant:
+    - **NEW batch N** — clean up the term_to_term ASYMMETRIC EXCEPTION:
+      add a V0_0_NNN migration mirroring V0_0_76 (DROP COLUMN deleted_at
+      FROM term_to_term) OR add the filter at all 7 application read
+      sites in ReactiveTermRepositoryImpl. Either fix brings term_to_term
+      into line with the platform's intent.
+
+  Six DOC-NNN candidates flow from this invariant:
     (a) Add a 'Persistence layer conventions' note to the internal Architecture docs
         naming the 4 mechanisms.
     (b) Document the soft-delete-aware-recreation invariant on the Policies + Roles
@@ -176,3 +325,8 @@ notes: |-
         groups-domains + business-glossary feature pages (operators
         reasoning "will my memberships come back after entity
         restore?" need this knowledge).
+    (f) **NEW from batch N** — Document the user_owner_mapping
+        soft-delete-only schema (no row-level restore; monotonic
+        growth; operator-driven pruning is safe via DELETE FROM
+        WHERE deleted_at IS NOT NULL) on the user-owner-association
+        operator page.

@@ -28,34 +28,32 @@ public <T> Flux<T> flux(Query query) {
 - Other errors → generic `DatabaseException` (with a single `log.error("Database exception", e)`).
 
 The per-constraint dispatch is a CURATED ENUMERATION at `ExceptionUtils.java:38-83`. Each known constraint name maps to a tailored message. The relevant branches identified in this batch's sidecars:
-- `POLICY_NAME_UNIQUE` → `"Policy with this name already exists"` (line 60-62)
-- `OWNERSHIP_DATA_ENTITY_ID_OWNER_ID_KEY` → `"Ownership for this data entity and owner already exists"` (line 69-71)
-- (additional branches in the file for other named entities)
+- `policy_name_unique` → `"Policy with this name already exists"` (lines ~58-60).
+- `role_name_unique` → `"Role with this name already exists"` (lines 57-59).
+- `OWNERSHIP_DATA_ENTITY_ID_OWNER_ID_KEY` → `"Owner is already attached to this data entity"` (paraphrased per Ownership sidecar).
+- Plus the parallel branches for `owner_name`, `namespace_name`, `data_source_name`, `collector_name`, `tag_name`, `title_name`, `term_name_namespace` — every named-entity table's partial-unique-index gets a branch.
 
-The decision codifies:
-- **(a)** Repository methods never leak raw `org.springframework.dao.DataAccessException` to the API layer. Every R2DBC call is wrapped at `JooqReactiveOperations.mono` / `.flux`; the `.onErrorMap` registration is at the wrapper level, not the repository level. The repository is unaware of the translation; the contract is at the framework boundary.
-- **(b)** The translation is CURATED, not derived. Every known constraint name is explicitly mapped to a user-facing message. Adding a new constraint (a new partial unique index per ADR-CANDIDATE-070, a new FK, a new CHECK) requires a corresponding `if (message.contains(NEW_CONSTRAINT_NAME))` branch in `formatMessage`. The maintainer cost is acknowledged: every schema migration that adds a constraint must be paired with an `ExceptionUtils` update.
-- **(c)** The translation produces typed exceptions with HTTP-mapping-friendly error codes. `UniqueConstraintException` carries `ErrorCode.UNIQUE_CONSTRAINT` (`ErrorCode.java:11` — code=`USR003`, resolvable=true). The `ControllerAdvice.handleUniqueConstraintException` (lines 36-40) maps this to HTTP 400. The chain is: SQLSTATE 23505 → `UniqueConstraintException` → HTTP 400 + USR003 + friendly message — no raw Postgres errors reach the client.
-- **(d)** The pattern is uniformly applied. No `Reactive*Repository` in the codebase bypasses `JooqReactiveOperations`; every repository acquires connections via `.mono(...)` / `.flux(...)`. The architecture forecloses "leaky-Postgres-errors" as a possibility.
+The architectural choices encoded:
+- **(a)** Centralisation at the connection wrapper. The translation lives in ONE place; every repository's queries inherit the contract by construction. A repository CANNOT bypass the translation (it would have to instantiate its own `DatabaseClient`, which the platform's DI does not provide).
+- **(b)** Per-constraint name-keyed dispatch. The constraint name is the only piece of structured data Postgres surfaces on a 23505 error; the translation table is a curated enumeration of every known constraint name. The pattern is a static-dispatch table, not a regex parser.
+- **(c)** Typed exceptions → HTTP-status mapping at the controller advice layer. `UniqueConstraintException` → 400 BadRequest with USR003 error code (per the controller advice). The repository never decides the HTTP status; the typed exception is the contract handed off to the controller advice.
+- **(d)** The platform never returns raw Postgres error text to the API consumer. Every error surface is operator-actionable or user-recoverable.
 
 **Wisdom test**: PASS. All three questions resolve toward ADR:
-1. *Intentional?* YES — the `ExceptionUtils` class is `@UtilityClass` and the method is explicitly named `translateDatabaseException`. Every known unique-index name is enumerated; the per-constraint friendly message dispatch IS the curation. The `JooqReactiveOperations` wrapper applies the translation uniformly via `.onErrorMap(DataAccessException.class, ...)` — a single architectural choke point.
-2. *Structural impact?* YES — affects every repository (no repository can leak raw errors), every schema migration (must coordinate with ExceptionUtils for new constraints), every controller's error surface (uniform USR-coded errors), and the operator-facing error UX (resolvable=true means the UI knows to surface the message as user-correctable).
-3. *Refactoring or structural?* STRUCTURAL — switching to per-repository error handling, or to a generic "all DB errors are 500", would require rewriting every repository, every controller, and the error-code contract. The chokepoint is architectural.
-→ ADR-CANDIDATE.
+1. *Intentional?* YES — the `@UtilityClass`-annotated `ExceptionUtils` is named for the purpose; the curated 50-line constraint-name enumeration is documented-as-code. The `onErrorMap` wiring at `JooqReactiveOperations.java:41, 48` is the structural anchor.
+2. *Structural impact?* YES — affects every repository's error surface, every controller advice's exception-handling contract, every operator-facing error message, every schema migration's reviewer discipline (a new constraint without an `ExceptionUtils` branch silently falls through to 500).
+3. *Refactoring or structural?* STRUCTURAL — switching to "let raw `DataAccessException` propagate" would force every controller method to handle Postgres-specific exception types, distributing the translation responsibility across 50+ controllers. The centralised pattern IS the architecture.
 
 **Evidence**:
-- `ReactivePolicyRepositoryImpl.md` says: "Unique-constraint violations from the DB are translated to a project-specific `UniqueConstraintException` carrying a HUMAN-READABLE message keyed by index name — NOT propagated as the raw jOOQ DataAccessException — through a centralised translation layer (`ExceptionUtils.translateDatabaseException`) wired into every R2DBC query via `JooqReactiveOperations`'s `.onErrorMap(DataAccessException.class, ...)`. The decision is uniform: every Reactive*Repository inherits this translation; no repository can leak raw Postgres errors to the API layer."
-- `ReactiveOwnershipRepositoryImpl.md` says: "**Duplicate-prevention is database-constraint-driven, with friendly-error translation at the repository utility layer.** ... This is a **deliberate two-layer pattern**: DB enforces the invariant; the repository wrapper translates DB-level errors to application-level errors with HTTP-mapping-friendly types."
-- `JooqReactiveOperations.java:41, 48` — the `.onErrorMap` registration on both `.mono(...)` and `.flux(...)`
-- `ExceptionUtils.java:30-36` — the dispatch shape
-- `ExceptionUtils.java:38-83` — the curated per-constraint enumeration
-- `ControllerAdvice.java:36-40` — the HTTP 400 mapping
+- `ReactivePolicyRepositoryImpl.md` says: "Unique-constraint violations from the DB are translated to a project-specific `UniqueConstraintException` carrying a HUMAN-READABLE message keyed by index name — NOT propagated as the raw jOOQ DataAccessException — through a centralised translation layer..."
+- `ReactiveOwnershipRepositoryImpl.md` says: "Database errors are translated centrally via `ExceptionUtils.translateDatabaseException` to typed application exceptions (`UniqueConstraintException` with a per-index-keyed message); the `OWNERSHIP_DATA_ENTITY_ID_OWNER_ID_KEY` branch produces an operator-friendly message."
+- `JooqReactiveOperations.java:41, 48` — the `.onErrorMap(DataAccessException.class, ExceptionUtils::translateDatabaseException)` chain
+- `ExceptionUtils.java:30-83` — the curated translation table
 
 **Existing ADR**: none. Composes with:
-- **ADR-CANDIDATE-070** (NEW — partial unique index for soft-delete-aware name recreation) — the DB-layer enforcement that this ADR's translation surface relies on.
-- **ADR-CANDIDATE-068** (NEW — two-tier soft-delete taxonomy) — the soft-delete model that produces the "duplicate after recreate" UX flow.
-- **ADR-CANDIDATE-001** (existing — controllers-as-delegates) — the controller layer relies on the typed exceptions; ControllerAdvice does the HTTP mapping.
+- **ADR-CANDIDATE-068** (NEW — two-tier soft-delete) — soft-delete-aware uniqueness violations all flow through this translation table.
+- **ADR-CANDIDATE-070** (NEW — partial unique index) — the index names this translation table maps from.
+- ADR-CANDIDATE-001 (existing — controllers as delegates) — the typed exceptions are the contract the controller delegate hands off to the controller advice.
 
 **Co-surfaced gaps** (link from `refactoring-scopes.md`):
 - REFACTOR-232 (cross-batch correction: createOwnership duplicate-key is HTTP 400 + USR003, NOT 5xx as batch-F stated; the misclaim corrects via this ADR's translation pattern).
@@ -71,5 +69,18 @@ The decision codifies:
 Cross-link with ADR-CANDIDATE-001 (controller-layer) — the typed exceptions are the contract handed off from the repository wrapper to the controller advice.
 
 **Severity rationale**: HIGH — codebase-wide error-handling architecture. Affects every repository, every controller error surface, every schema migration, every operator-facing error message. Compatible-change calculus for any future maintainer requires understanding this translation pattern.
+
+## STRENGTHENS — Batch N (Role primary-source — `role_name_unique` curated branch verified at ExceptionUtils.java:57-59)
+
+**One additional batch-N repository sidecar confirms the per-constraint name-keyed translation pattern at the Role mutation surface**:
+
+**ReactiveRoleRepositoryImpl** — Role's duplicate-name handling traces explicitly through this ADR's chokepoint. The sidecar's implicit_adrs[2] says: "Unique-constraint violations from the DB are translated to a project-specific `UniqueConstraintException` carrying a HUMAN-READABLE message keyed by index name ... ExceptionUtils.java:57-59 (ROLE_NAME_UNIQUE → 'Role with this name already exists')". The Role-specific branch JOIN this ADR's curated enumeration; the maintainer reading `ExceptionUtils.java` can see Owner / Namespace / DataSource / Collector / Tag / Role / Policy / Title / Term variants all enumerated at lines 39-82 — a long curated table that is the per-table evidence of the centralised translation discipline.
+
+**Cross-table consistency observation (batch N)**: The translation table is now triangulated against THREE primary-source repositories — Policy (batch H), Ownership (batch I), Role (batch N). Each repository's sidecar names a specific `ExceptionUtils` branch verbatim. The maintainer-extension contract is the curated enumeration: every new constraint needs a matching branch.
+
+**New batch-N maintainer-discipline gap surfaced**:
+- The Role duplicate-name flow goes UnconstraintException → HTTP status (400/409 per the GlobalExceptionHandler chain, NOT verified by tests). The Role-sidecar's bugs_limitations_corner_cases[5] notes the HTTP status mapping is unverified; this is the same maintenance-discipline gap noted in the existing co-surfaced gaps list (no test pins the contract). Not a new scope; documented as the existing gap.
+
+**Severity unchanged**: HIGH — the Role evidence reinforces the codebase-wide claim. The translation table is now confirmed across 9+ tables (every named-entity); the pattern is uniform.
 
 ---

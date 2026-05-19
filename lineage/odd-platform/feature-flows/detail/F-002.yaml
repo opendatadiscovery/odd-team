@@ -19,6 +19,12 @@ drift_class_summary:
 - description_link_protection_silent_204_via_api
 - activity_event_fires_on_no_op_delete
 - silent_204_on_non_existent_ids
+- v0_0_76_vs_v0_0_91_link_table_schema_asymmetry
+- term_to_term_deleted_at_dead_schema_or_missing_filter
+- has_description_relations_parent_soft_delete_corner
+- get_term_details_dto_12_join_hot_path_amplification
+- count_by_state_unconditional_fts_join_asymmetry
+- list_term_ref_dtos_count_vs_list_filter_mismatch
 batch_extensions:
 - batch: K
   entry_point_added: 'service:TermServiceImpl (all 17 methods including the auto-link side-channel)'
@@ -43,6 +49,43 @@ batch_extensions:
     protection (UI hides the X but API call returns 204 silently), activity
     event fires on no-op delete (BEFORE=AFTER), silent-204 on non-existent
     ids.
+- batch: N
+  entry_point_added: |-
+    repository-tier:ReactiveTermRepositoryImpl (the persistence-layer hub for every
+    term read + the three link-table read shapes that drive P-06:F-001 + the
+    TermPermissionExtractor hot path; 15 public methods across single-row lookups,
+    paginated lists, FTS-ranked suggestions, faceted search, and the
+    hasDescriptionRelations rename-protection guard)
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+  notes: |-
+    Six new drift facets surface from primary-source repository-tier audit:
+    (1) V0_0_76 vs V0_0_91 link-table schema asymmetry — V0_0_76__term_relations_hard_delete
+    DROPPED `deleted_at` from data_entity_to_term / dataset_field_to_term /
+    tag_to_term / term_ownership, but V0_0_91__add_term_to_term re-introduced
+    `deleted_at` on term_to_term per line 6; (2) term_to_term.deleted_at is
+    NEVER filtered at 7 read sites (lines 198-199, 227-231, 324-325, 345,
+    429-430, 448-454, 472-491, 510-523) — either dead schema or missing filter;
+    (3) hasDescriptionRelations parent-soft-delete corner — lines 415, 425
+    filter `DATA_ENTITY.STATUS.ne(DELETED.getId())`, so a Term mentioned only
+    in a soft-deleted entity's description CAN be renamed/hard-deleted, then
+    restoring the entity leaves the `[[ns:term]]` text dangling; (4)
+    getTermDetailsDto 12-JOIN + 7 jsonArrayAgg + 4 countDistinct query
+    (lines 194-238) invoked by TermPermissionExtractor.getContext on EVERY
+    authorized request to a TERM-scoped endpoint (HOT PATH for permission
+    resolution); (5) countByState unconditional JOIN to TERM_SEARCH_ENTRYPOINT
+    even when state.getQuery() is empty (line 361 vs findByState conditional
+    join at 296-298) — count-vs-list desynchronisation for Terms missing FTS
+    rows; (6) listTermRefDtos count-vs-list filter mismatch — `fetchCount(nameQuery)`
+    ignores the `updatedAt` date range filter that the paginated list DOES
+    respect (lines 113-114, 133), reported `total` higher than actual. Hop-3
+    (ReactiveTermRepositoryImpl) — previously '(referenced from TermServiceImpl
+    sidecar coupling)' — now PRIMARY-SOURCE CONFIRMED. ZERO direct test
+    coverage (NamespaceServiceImplTest mocks existsByNamespace; no
+    *RepositoryTest* class exists). The repository-tier read-collaborative
+    posture is now SQL-anchored: every read returns Terms across every
+    namespace to every authenticated user, paginated, with no per-namespace
+    or per-owner scoping at this layer.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Term linking with permission gate
@@ -71,10 +114,11 @@ contributing_nodes:
 - odd-platform java SecurityConstants (the SECURITY_RULES singular path declaration — line 237-242)
 - odd-platform java AuthorizationCustomizer (the dispatch chain with .authenticated() fall-through)
 - odd-platform java service service:TermServiceImpl
-- odd-platform java ReactiveTermRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
 - odd-platform java TermRelationsRepositoryImpl
 - odd-platform java DataEntityDescriptionUnhandledTermRepository
 - odd-platform java TermAssignmentActivityHandler
+- odd-platform java service permission extractor:TermPermissionExtractor
 chain:
 - hop: 1
   node: odd-platform java DataEntityController controller-method:addDataEntityTerm
@@ -106,15 +150,26 @@ chain:
   unresolved: false
   resolved_in_batch: K
 - hop: 3
-  node: odd-platform java ReactiveTermRepositoryImpl
-  sidecar: '(referenced from TermServiceImpl sidecar coupling)'
+  node: odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+  sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
   multiplicity_per_trigger: 1
   evidence: |-
     ReactiveTermRepositoryImpl.java:162-179 — the cross-namespace lookup
-    `getByNameAndNamespace(List)` (no tenant filter). Lines 408-433 —
-    `hasDescriptionRelations` (the description-mention guard query). Line 143
-    — `.where(TERM.DELETED_AT.isNull())` on every fetch (soft-delete-aware).
+    `getByNameAndNamespace(List)` (no tenant filter; case-INSENSITIVE OR-chain
+    for the regex-parsed [[ns:term]] mentions; sole caller TermServiceImpl.findTermsInDescription).
+    Lines 409-438 — `hasDescriptionRelations` 3-EXISTS guard
+    (data-entity-description + dataset-field-description + term-to-term branches;
+    parent-soft-delete corner at 415, 425). Lines 194-238 —
+    `getTermDetailsDto` 12-JOIN + 4 countDistinct + 7 jsonArrayAgg HOT PATH
+    consumed by TermPermissionExtractor on every authorized TERM-scoped
+    request. Line 79 — extends `ReactiveAbstractSoftDeleteCRUDRepository`
+    (soft-delete on `term` only; link tables hard-deleted per V0_0_76 except
+    `term_to_term` which retains `deleted_at` but is never filtered).
+    Soft-delete filter on TERM at every read site (lines 143, 156, 188, 234,
+    257, 279, 367, 387, 403, 432, 451, 461, 505); NO filter on POLICY-equivalent
+    soft-delete (which doesn't exist here — link tables are the parallel).
   unresolved: false
+  resolved_in_batch: N
 - hop: 1b
   node: odd-platform java DataEntityController controller-method:deleteTermFromDataEntity
   sidecar: odd-platform__java__DataEntityController__controller-method__deleteTermFromDataEntity.md
@@ -479,6 +534,140 @@ observed_vs_expected:
       bugs_limitations_corner_cases[6] + TermRelationsRepositoryImpl.java:81-87
       (no existence check) + TermServiceImpl.java:184-195 (no
       NotFoundException translation). Severity: LOW.
+  - facet: V0_0_76 vs V0_0_91 link-table schema asymmetry (batch N — repository-tier)
+    observed: |-
+      Migration V0_0_76__term_relations_hard_delete.sql:1-22 DROPPED the
+      `deleted_at` column from data_entity_to_term, dataset_field_to_term,
+      tag_to_term, and term_ownership tables — committing the platform to
+      HARD-DELETE for these link tables. Migration V0_0_91__add_term_to_term.sql:6
+      then created a NEW link table `term_to_term` WITH a `deleted_at TIMESTAMP`
+      column. The asymmetry is either intentional future-soft-delete provision
+      that the application code does not yet exercise, OR an oversight in the
+      V0_0_76 cleanup — the migration history alone does not resolve which.
+      The user-observable consequence is the DRIFT-FACET-A bug below.
+    expected: |-
+      Either (a) drop `term_to_term.deleted_at` in a V0_0_NNN migration mirroring
+      V0_0_76's link-table cleanup, OR (b) add the `term_to_term.deleted_at IS NULL`
+      filter to every term_to_term read site + a documented soft-delete contract
+      for term-to-term links.
+    drift_class: v0_0_76_vs_v0_0_91_link_table_schema_asymmetry
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      concepts.invariants[1] + V0_0_76__term_relations_hard_delete.sql:1-22 +
+      V0_0_91__add_term_to_term.sql:6. Severity: LOW (recorded as evidence of
+      design drift; not currently exploited).
+  - facet: term_to_term.deleted_at not filtered — dead schema or missing filter
+    observed: |-
+      ReactiveTermRepositoryImpl reads `term_to_term` at 7 distinct sites
+      (lines 198-199, 227-231, 324-325, 345, 429-430, 448-454, 472-491,
+      510-523) WITHOUT a `term_to_term.deleted_at IS NULL` filter. Effect:
+      a `term_to_term` row with `deleted_at = NOW()` (set by a future
+      operator hot-fix or migration) is STILL returned by
+      `getLinkedTermsByTargetTermId`, `listByTerm`, `getTermByIdAndLinkedTermId`,
+      and `getTermDetailsDto`'s assigned-terms aggregation. Theoretical
+      today (no code path writes the column), but a regression vector for any
+      future soft-delete activation on term-to-term.
+    expected: |-
+      Either match the schema intent — add the filter to every read site —
+      OR drop the column.
+    drift_class: term_to_term_deleted_at_dead_schema_or_missing_filter
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      bugs_limitations_corner_cases[0] + security.known_security_gaps[0] +
+      V0_0_91__add_term_to_term.sql:6. Severity: LOW.
+  - facet: hasDescriptionRelations parent-soft-delete corner case
+    observed: |-
+      ReactiveTermRepositoryImpl.java:415, 425 filter
+      `DATA_ENTITY.STATUS.ne(DataEntityStatusDto.DELETED.getId())` on the
+      data-entity-description and dataset-field-description branches of
+      the rename-protection / delete-protection guard. A Term mentioned ONLY
+      in a soft-deleted data-entity's description (or dataset-field belonging
+      to one) is treated as 'not mentioned' and CAN be renamed or hard-deleted.
+      When the data-entity is later restored via
+      `PUT /api/dataentities/{id}/status -> ACTIVE`, the description's
+      `[[ns:term]]` text now references a non-existent or differently-named
+      Term — silently downgrades to 'unhandled' on the next description edit
+      OR remains as broken-link text. The 3 EXISTS branches have ASYMMETRIC
+      filters — data-entity uses STATUS, term-to-term uses TARGET deleted_at.
+    expected: |-
+      Either document the restore-soft-deleted-entity interaction with Term
+      lifecycle OR include soft-deleted-parent rows in the existence guard
+      (with a documented operator-cleanup workflow).
+    drift_class: has_description_relations_parent_soft_delete_corner
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      bugs_limitations_corner_cases[1] + security.known_security_gaps[1] +
+      ReactiveTermRepositoryImpl.java:415, 425, 432 +
+      TermServiceImpl.java:125-145, 154-165. Severity: MEDIUM.
+  - facet: getTermDetailsDto 12-JOIN HOT PATH — TermPermissionExtractor amplification
+    observed: |-
+      `ReactiveTermRepositoryImpl.getTermDetailsDto` (lines 194-238) issues a
+      single query with 11 LEFT JOINs + 1 hard JOIN + 7 jsonArrayAgg
+      projections + 4 countDistinct aggregates + GROUP BY over
+      `TERM.fields() + NAMESPACE.fields()`. The intermediate row count scales
+      O(N x M x P x Q x R x S) BEFORE the countDistinct aggregates reduce —
+      for a Term with 10 owners x 20 tags x 100 data-entities x 50
+      dataset-fields x 20 query-examples x 10 assigned-terms, the
+      intermediate is ~2M rows. CRITICALLY: this method is invoked by
+      `TermPermissionExtractor.getContext(resourceId)` (line 43) on EVERY
+      authorized request that traverses a TERM-scoped SecurityRule
+      (`PUT /api/terms/{id}`, `POST /api/terms/{id}/ownership`, etc. per
+      SecurityConstants.java:174-188) — the permission-resolution HOT PATH.
+      No caching layer at any tier. A heavily-linked Term (1000+ relations
+      per dimension) could push permission-evaluation latency into seconds
+      on every request.
+    expected: |-
+      Either (a) split into N targeted queries for the 4 aggregate counts
+      + a thin row fetch, OR (b) cache the TermDetailsDto per-resource with
+      explicit invalidation on Term mutation, OR (c) document an upper bound
+      on linked-entity counts per Term + raise a 503 when exceeded.
+    drift_class: get_term_details_dto_12_join_hot_path_amplification
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      bugs_limitations_corner_cases[4] + performance.hot_paths[0] +
+      performance.known_performance_gaps[1] +
+      ReactiveTermRepositoryImpl.java:194-238 + TermPermissionExtractor.java:43 +
+      SecurityConstants.java:174-188. Severity: MEDIUM (correctness preserved;
+      latency-ceiling undocumented).
+  - facet: countByState unconditional FTS JOIN — count-vs-list desynchronisation
+    observed: |-
+      `ReactiveTermRepositoryImpl.countByState` (line 361) joins
+      `TERM_SEARCH_ENTRYPOINT` UNCONDITIONALLY, regardless of whether the
+      state has an FTS predicate. `findByState` (lines 296-298) makes the
+      same JOIN CONDITIONAL on `state.getQuery()` being non-empty. A Term
+      whose `term_search_entrypoint` row is missing (e.g. a Term created
+      via a path that bypasses `TermServiceImpl.updateSearchVectors`) would
+      appear in the paginated `findByState` list but NOT in the count. The
+      caller's pagination math (`total` vs items rendered) becomes
+      desynchronised — last page may be empty, or vice-versa.
+    expected: |-
+      Make the JOIN conditional symmetric with `findByState`, OR document the
+      invariant "every Term must have a term_search_entrypoint row" and add
+      a boot-time integrity check.
+    drift_class: count_by_state_unconditional_fts_join_asymmetry
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      bugs_limitations_corner_cases[7] + performance.known_performance_gaps[2] +
+      ReactiveTermRepositoryImpl.java:296-298 vs 361. Severity: MEDIUM.
+  - facet: listTermRefDtos count-vs-list filter mismatch — wrong pagination ceiling
+    observed: |-
+      `ReactiveTermRepositoryImpl.listTermRefDtos` (lines 108-135) applies a
+      `updatedAt` date-range filter to the paginated list query (lines 113-114)
+      BUT `pageifyResult(records, mapper, fetchCount(nameQuery))` (line 133)
+      uses the inherited `fetchCount` which through the soft-delete base's
+      `listCondition(query)` only filters on `name` + `deleted_at IS NULL`.
+      The reported `total` is HIGHER than the actual filtered result count.
+      UI sees the wrong pagination ceiling — operator clicks page N+1 and
+      sees an empty page where `total / size` indicated more results existed.
+    expected: |-
+      Override `fetchCount` to accept the same filter parameter set as the
+      paginated list query — keep `total` and `data` in sync.
+    drift_class: list_term_ref_dtos_count_vs_list_filter_mismatch
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      bugs_limitations_corner_cases[10] + performance.known_performance_gaps[3] +
+      ReactiveTermRepositoryImpl.java:113-114, 133 + inherited fetchCount in
+      ReactiveAbstractCRUDRepository. Severity: MEDIUM.
 test_matrix:
   unit:
     state: GAP
@@ -540,6 +729,31 @@ control_summary: |-
   cells remain GAP — `TermServiceImpl` has ZERO direct test coverage
   (TermServiceImplTest does not exist; `DataEntityServiceTest.java:80` mocks
   TermService but never exercises it).
+
+  Batch N extends with repository-tier PRIMARY-SOURCE CONFIRMATION at
+  ReactiveTermRepositoryImpl (hop-3 — previously a coupling reference, now
+  fully resolved). Six NEW drift facets surface: (1) V0_0_76 vs V0_0_91
+  link-table schema asymmetry (term_to_term retains `deleted_at` while
+  sibling link tables had it dropped — either dead schema or missing filter);
+  (2) term_to_term.deleted_at is NEVER filtered at 7 distinct read sites
+  (lines 198-199, 227-231, 324-325, 345, 429-430, 448-454, 472-491, 510-523)
+  — a regression vector for any future soft-delete activation; (3)
+  hasDescriptionRelations parent-soft-delete corner — lines 415, 425 exclude
+  `DATA_ENTITY.STATUS = DELETED` from the existence guard, so a Term mentioned
+  only in a soft-deleted entity's description can be renamed/hard-deleted,
+  leaving a dangling `[[ns:term]]` reference on restore; (4) getTermDetailsDto
+  12-JOIN + 7 jsonArrayAgg + 4 countDistinct (lines 194-238) is the
+  TermPermissionExtractor HOT PATH invoked on every TERM-scoped authorized
+  request — Cartesian intermediate fan-out O(N×M×P×Q×R×S) before reduction,
+  no caching; (5) countByState unconditional FTS JOIN (line 361) creates
+  count-vs-list desynchronisation against findByState's conditional JOIN
+  (296-298); (6) listTermRefDtos fetchCount ignores the `updatedAt` date
+  filter (113-114, 133), producing wrong pagination ceiling. ZERO direct
+  test coverage at the repository tier (NamespaceServiceImplTest mocks
+  existsByNamespace only; no *RepositoryTest* class). The repository
+  policy-agnostic invariant is preserved — every business rule (rename
+  protection, duplicate prevention, FTS refresh orchestration) lives in
+  TermServiceImpl; the repository is a thin persistence shell.
 
   Batch L extends the feature with the DELETE half PRIMARY-SOURCE CONFIRMED.
   The SecurityConstants path-mismatch bug is symmetric — line 240-242

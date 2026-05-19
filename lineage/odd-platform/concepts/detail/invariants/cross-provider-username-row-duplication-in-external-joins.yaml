@@ -1,0 +1,225 @@
+name: |-
+  Cross-provider username row-duplication in external JOINs (Alert / Activity / Owner / OwnerAssociationRequest)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+- P-07
+- P-08
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19N — surfaced by
+  primary-source examination of ReactiveUserOwnerMappingRepositoryImpl
+  combined with cross-file grep across FOUR sibling repositories that
+  consume USER_OWNER_MAPPING for display-name resolution.**
+
+  ReactiveUserOwnerMappingRepositoryImpl is the AUTHORITATIVE site for the
+  (oidc_username, provider) compound key — `getConditions` at lines 116-127
+  always pairs `OIDC_USERNAME.eq(oidcUsername)` with a provider
+  discriminator (`PROVIDER.eq(provider)` OR `PROVIDER.isNull()`). The
+  authoritative compound-key shape is the load-bearing contract.
+
+  **HOWEVER**: FOUR sibling repositories LEFT JOIN
+  `USER_OWNER_MAPPING` for display-name resolution WITHOUT carrying
+  the provider half of the compound key:
+
+    Site 1 — ReactiveAlertRepositoryImpl.java:83-86 — joins on
+      `ALERT.STATUS_UPDATED_BY = USER_OWNER_MAPPING.OIDC_USERNAME AND
+       USER_OWNER_MAPPING.DELETED_AT.isNull()`. NO provider equality
+       predicate.
+
+    Site 2 — ReactiveActivityRepositoryImpl.java:156-158 — joins on
+      `USER_OWNER_MAPPING.OIDC_USERNAME = ACTIVITY.CREATED_BY AND
+       USER_OWNER_MAPPING.DELETED_AT.isNull()`. Same shape.
+
+    Site 3 — ReactiveOwnerAssociationRequestRepositoryImpl.java:80-84 —
+      same LEFT JOIN shape, OIDC_USERNAME-only.
+
+    Site 4 — ReactiveOwnerRepositoryImpl.java:77-78 — same LEFT JOIN
+      shape, OIDC_USERNAME-only.
+
+  **Consequence — row duplication**: if two ACTIVE user_owner_mapping rows
+  exist for the SAME `oidc_username` under DIFFERENT providers (e.g.
+  `(alice, null, owner=X)` from LOGIN_FORM and `(alice, GITHUB, owner=Y)`
+  from OAUTH2), the LEFT JOIN matches BOTH rows for any alert / activity /
+  ownership-request / owner row whose author/updater field equals
+  'alice'. The result set produces a Cartesian product — the SAME alert /
+  activity event is duplicated once per matching mapping, with the owner
+  display column populated non-deterministically (depending on Postgres
+  physical row order; depending on the planner's hash-join build side;
+  depending on tuple visibility under MVCC).
+
+  **The schema permits the two-row coexistence**: V0_0_89's partial
+  unique index `user_owner_mapping_oidc_username_provider_deleted_key`
+  is on `(oidc_username, provider) WHERE deleted_at IS NULL` — meaning
+  (alice, null) and (alice, GITHUB) are DISTINCT tuples both permitted
+  by the index. The authoritative compound key was DESIGNED to support
+  this case (per the maintainer's batch-K OAuth2-only-non-null-provider
+  ADR); the display-side JOINs in the four sibling repositories were
+  apparently authored WITHOUT awareness of the compound-key intent.
+
+  **Triggering scenarios**:
+    (a) Operator runs LOGIN_FORM + OAUTH2 concurrently (a valid
+        composition per the live authentication doc; both modes share
+        the same SECURITY_RULES skeleton and can be combined per
+        SecurityConstants.java:33-50). A user 'alice' authenticates via
+        LOGIN_FORM AND via OAUTH2 at different times, with both Owner
+        bindings active. Alert / activity entries authored by either
+        identity duplicate-render under both Owner display names.
+    (b) Operator migrates LOGIN_FORM → OAUTH2 retaining usernames; the
+        old (alice, null) mapping is left in place per the soft-delete-
+        only design; the new (alice, github) mapping is added.
+        Subsequent alert reads duplicate every alice-authored alert
+        across the two mappings until an operator manually clears the
+        old row.
+    (c) An operator MANUALLY inserts a user_owner_mapping row via
+        `POST /api/owners/associations/manual` with an empty-string
+        provider value — that row coexists with a true-null-provider
+        row in the same partial unique index (Postgres treats empty
+        string and null as distinct in unique constraints, per
+        bugs_limitations_corner_cases.[3] in the batch-N sidecar). Two
+        rows; both match the LEFT JOIN's OIDC_USERNAME predicate.
+
+  **What makes this MEDIUM-going-on-HIGH rather than just MEDIUM**:
+  ReactiveAlertRepositoryImpl is on the ALERT-LISTING + PER-ENTITY-
+  ALERT-LIST hot paths (cross-references batch-L per-entity-alert-listing
+  + batch-D/F getAllAlerts read-collaborative posture). A row-duplication
+  bug at this layer means:
+    (i) operators auditing 'who resolved which alert' see duplicate
+        entries with inconsistent author attribution — incident-review
+        forensics fails for the cross-provider username case;
+    (ii) the per-entity Alert tab in the UI shows duplicate Slack-style
+         notifications for each alert lifecycle event when the resolver
+         user is cross-provider-named;
+    (iii) the count surfaces (`/api/alerts/totals/*`) over-count when
+          duplicates inflate the rowset.
+  ReactiveActivityRepositoryImpl is on the GLOBAL ACTIVITY FEED — the
+  central audit-trail surface (per system-mission.md line 207). A
+  duplicated activity-feed render makes the GLOBAL audit feed
+  forensically unreliable for cross-provider-named users.
+
+  **The bug is DORMANT in the common case** (a deployment running a
+  single auth mode with no migration history has at most one active row
+  per oidc_username, so no JOIN duplication fires). It SURFACES on
+  composed deployments and on auth-mode migrations.
+nodes:
+- odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
+contributors:
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl batch N (AUTHORITATIVE source for
+  the compound key contract): concepts.operations.[getConditions] +
+  invariants.[3,4,6] + docs_link_semantic.doc_drift_findings.[3] (external
+  JOINs OIDC_USERNAME only — primary source for the divergence) +
+  bugs_limitations_corner_cases.[1] (cross-provider username display
+  collision in external JOINs)
+- |-
+  ReactiveAlertRepositoryImpl batch H (the most-cited offending external
+  JOIN site — lines 83-86; cross-referenced by ReactiveUserOwnerMappingRepositoryImpl
+  batch N at docs_link_semantic.doc_drift_findings.[3]). The Alert
+  repository was the canonical site for the read-collaborative cross-owner
+  enumeration finding; this new finding identifies a SECOND class of bug
+  on the same repository — display-name JOIN row duplication.
+evidence:
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[1]
+  (cross-provider username display collision in external JOINs) +
+  docs_link_semantic.doc_drift_findings.[3] (PRIMARY SOURCE — names the
+  four offending external JOIN sites)
+- |-
+  Cross-batch evidence for the FOUR external JOIN sites:
+    Site 1 — ReactiveAlertRepositoryImpl.java:83-86 — LEFT JOIN on
+      OIDC_USERNAME only
+    Site 2 — ReactiveActivityRepositoryImpl.java:156-158 — LEFT JOIN
+      on OIDC_USERNAME only
+    Site 3 — ReactiveOwnerAssociationRequestRepositoryImpl.java:80-84 —
+      LEFT JOIN on OIDC_USERNAME only
+    Site 4 — ReactiveOwnerRepositoryImpl.java:77-78 — LEFT JOIN on
+      OIDC_USERNAME only
+- |-
+  V0_0_89__update_user_owner.sql:13-15 — partial unique index on
+  (oidc_username, provider) permits two-row coexistence with the
+  same oidc_username
+- |-
+  Per-Postgres semantics: empty string and null are DISTINCT values in
+  unique constraint indexes; the partial index does NOT collapse
+  (alice, '') and (alice, null) into a single tuple — both rows can
+  exist simultaneously
+axes_present:
+- repositories_reactive
+triangulation_count: 1
+cross_batch: true
+severity: MEDIUM
+severity_dim: correctness-and-audit
+mitigations_unimplemented:
+- |-
+  Add a `provider` column equality predicate to each of the four external
+  JOIN sites:
+    Site 1 — ReactiveAlertRepositoryImpl.java:83-86: change LEFT JOIN to
+      include `AND USER_OWNER_MAPPING.PROVIDER = ALERT.STATUS_UPDATED_BY_PROVIDER`
+      (requires adding a `status_updated_by_provider` column to alert
+      table, or correlating via the user_owner_mapping table on a
+      pre-resolved owner_id at write time)
+    Sites 2-4: similar shape change — requires either a new schema
+      column to carry the provider, OR a write-time pre-resolution of
+      owner_id (the better fix — resolve the principal to an OwnerPojo
+      at write time and store owner_id on the alert/activity/etc., then
+      LEFT JOIN on OWNER.id without the user_owner_mapping intermediate)
+- |-
+  Add a build-time invariant scanner that flags any new repository LEFT
+  JOIN against USER_OWNER_MAPPING that lacks a PROVIDER predicate — the
+  cross-provider row-duplication bug class repeats every time a new
+  display-name surface is added without awareness of the compound key.
+- |-
+  Document the multi-row-per-oidc_username schema permission on the
+  user-owner-association doc page; the operator's mental model is
+  "one user, one mapping" but the schema is "one user-per-provider, many
+  rows can coexist for the same oidc_username string." A future operator
+  inspecting USER_OWNER_MAPPING wondering "why does alice have two rows"
+  needs the docs.
+- |-
+  Add an operator-facing audit-script in the operations playbook that
+  scans `SELECT oidc_username, COUNT(*) FROM user_owner_mapping WHERE
+  deleted_at IS NULL GROUP BY oidc_username HAVING COUNT(*) > 1` —
+  surface every overlap to the operator at audit time so they can plan
+  the migration cleanup.
+- |-
+  Add regression tests at each of the four offending repositories
+  exercising the two-row scenario:
+    (a) Insert (alice, null, owner=X);
+    (b) Insert (alice, GITHUB, owner=Y);
+    (c) Insert an alert with STATUS_UPDATED_BY='alice';
+    (d) Read `/api/alerts` — assert exactly ONE row is returned
+        (the fix) OR assert TWO rows (the current — buggy — behaviour)
+        as a pin until the fix lands.
+notes: |-
+  NEW invariant captured in batch 2026-05-19N. Surfaced by triangulating
+  the ReactiveUserOwnerMappingRepositoryImpl PRIMARY SOURCE (the
+  authoritative compound key contract) against the four external sibling
+  repositories that violate the compound-key contract on JOIN.
+
+  The bug is DORMANT in single-auth-mode deployments — every operator
+  running just LOGIN_FORM or just LDAP or just OAUTH2 has at most one
+  active row per oidc_username and the LEFT JOIN's missing provider
+  predicate never matters. The bug SURFACES on:
+    (a) auth-mode migrations
+    (b) composed auth-mode deployments
+    (c) operator-manual cleanup mistakes (the empty-string-vs-null
+        provider case via the manual association endpoint)
+
+  Cross-cutting connections:
+    - Pairs with "LOGIN_FORM/LDAP provider=null cross-mode bleed" —
+      both stem from the (oidc_username, provider) compound key being
+      load-bearing while inconsistently consumed
+    - Cross-references "user-owner-mapping" entity — the compound key
+      shape's two-row coexistence is the schema-side enabler
+    - Cross-references read-collaborative-cross-owner-enumeration —
+      the same Alert + Activity + Owner repositories are the read
+      surfaces that already exhibit cross-owner posture; this finding
+      adds a CORRECTNESS bug on top of the documented POSTURE
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Document the two-row schema permission on user-owner-association
+    (b) Document the cross-provider username audit query on the
+        operations playbook
+    (c) Update the FOUR offending repository JOINs to carry the provider
+        predicate (CODE FIX preferred over DOC-only mitigation)

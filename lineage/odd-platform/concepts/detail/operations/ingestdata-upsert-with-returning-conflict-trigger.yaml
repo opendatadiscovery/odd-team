@@ -1,0 +1,173 @@
+name: |-
+  ingestData upsert with RETURNING-trigger conflict-target (Tag)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+- P-10
+description: |-
+  **NEW OPERATION, batch 2026-05-19N — SQL-LAYER PRIMARY SOURCE from
+  ReactiveTagRepositoryImpl.**
+
+  `ingestData(List<TagPojo> tags)` (ReactiveTagRepositoryImpl.java:199-210)
+  — the bulk upsert that powers the Tag ingestion-side write path.
+  Used by `ExternalTagIngestionRequestProcessor` (FINALIZING phase of
+  the IngestionService pipeline) and by `TagServiceImpl.getOrInjectTagByName`
+  to support tag-relations for ingested data entities.
+
+  **The SQL shape**:
+    `INSERT INTO tag (name, ...)
+       VALUES (...), (...), ...
+       ON CONFLICT (name) WHERE deleted_at IS NULL
+       DO UPDATE SET name = EXCLUDED.name
+       RETURNING *`
+
+  **The three architecturally-distinguishing features**:
+
+    1. **Dynamic conflict-target via Indexes.TAG_NAME_UNIQUE.getFields()**
+       (lines 199-202): the conflict-target is computed from the
+       jOOQ-generated index handle rather than the literal `TAG.NAME`
+       field reference. Implication: a migration that changes the index
+       to `(name, namespace_id)` (for example, to add namespace-scoped
+       tags) would automatically propagate to the upsert without code
+       change. (Per batch-N sidecar implicit_adrs.[1].)
+
+    2. **Hardcoded `WHERE TAG.DELETED_AT.isNull()` partial-index
+       predicate** (line 207): the partial-index predicate is hardcoded
+       and depends on the index's predicate remaining
+       `deleted_at IS NULL`. Implication: a migration that broadens
+       the predicate would NOT propagate; the upsert would silently
+       fail to match conflicts. The asymmetry vs feature 1 is
+       intentional — shape-evolution-friendly conflict targets at the
+       cost of predicate-evolution coupling.
+
+    3. **RETURNING-trigger via no-op `DO UPDATE SET name =
+       EXCLUDED.name`** (line 209): the conflicting row's name is set
+       to itself. The semantic-equivalent of `DO NOTHING` would NOT
+       return the existing row's id; the no-op update exists SOLELY
+       to trigger the RETURNING clause. The caller
+       (`TagServiceImpl.getOrInjectTagByName`) needs the id of every
+       row (existing or newly inserted) to build TagToDataEntityPojo
+       relations. (Per batch-N sidecar implicit_adrs.[2].)
+
+  **The dual-method design — ingestData vs bulkCreate**:
+  ReactiveTagRepositoryImpl carries TWO conflict-handling methods on
+  the Tag write path, with EXPLICITLY DIFFERENT semantics:
+
+    - **ingestData** (this operation): UPSERT — concurrent novel-name
+      inserts are SAFE; the ON CONFLICT clause serialises the race
+      at the DB level and returns the existing row's id. The
+      ExternalTagIngestionRequestProcessor uses this path for the
+      ingestion-side write.
+
+    - **bulkCreate** (inherited from ReactiveAbstractCRUDRepository,
+      lines 113-126): FAIL-ON-DUPLICATE — no ON CONFLICT clause; a
+      collision raises `unique_violation` SQLSTATE 23505 which
+      ExceptionUtils translates to UniqueConstraintException("Tag
+      with this name already exists"). TagController.createTag
+      (operator-explicit creation gated by TAG_CREATE) uses this path.
+
+  **The maintainer's intent** (per batch-N sidecar implicit_adrs.[6]):
+  the dual-method design is deliberate — TagController.createTag MUST
+  fail on duplicate to surface the error to the operator (a 400
+  response is preferable to silent merge); ingestion-side calls MUST
+  NOT fail because a tag with the same name was added moments earlier
+  by a parallel pipeline (the Collector's batch must succeed).
+
+  **The TOCTOU race shape** — the bulkCreate path has a TOCTOU
+  vulnerability described at the
+  `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`
+  invariant (batch N). The ingestData path is SAFE because of the ON
+  CONFLICT clause. The cross-cutting bug class — every "auto-create-
+  on-miss" service-tier method that does listBy → bulkCreate WITHOUT
+  the DB-side ON CONFLICT protection — has the same race surface.
+  The recommended fix at the auto-create surfaces is to MIGRATE to
+  the ingestData upsert path.
+
+  **Performance characteristics**: the upsert is partitioned by
+  `JooqReactiveOperations.executeInPartitionReturning` at BATCH_SIZE
+  (typically 1000); a 5000-row upsert at BATCH_SIZE=1000 is 5
+  sequential round-trips in the caller's transaction
+  (Flux.concat, not Flux.merge — sequential). Each partition is a
+  separate `INSERT ... ON CONFLICT ... DO UPDATE` statement. The
+  RETURNING clause materialises the result set across all partitions.
+
+  **The operation is on the COLLECTOR INGESTION HOT PATH** — every
+  Collector batch with novel tags lands here once per batch via
+  ExternalTagIngestionRequestProcessor.process. The upsert's
+  per-row cost is bounded by the partial unique index (`tag_name_unique`)
+  scan; the total cost scales linearly with novel-tag count.
+nodes:
+- odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+contributors:
+- |-
+  ReactiveTagRepositoryImpl batch N (PRIMARY SOURCE):
+  concepts.operations.[ingestData — bulk upsert with INSERT ... ON
+  CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET name =
+  EXCLUDED.name RETURNING *] +
+  concepts.invariants.[the upsert sets TAG.NAME = DSL.excluded(TAG.NAME)
+  on conflict — a no-op update that exists solely to trigger the
+  RETURNING clause] +
+  implicit_adrs.[1] (dynamic conflict-target via Indexes.TAG_NAME_UNIQUE.getFields()) +
+  implicit_adrs.[2] (RETURNING-trigger via no-op DO UPDATE) +
+  implicit_adrs.[6] (the dual-method design: bulkCreate fails on
+  duplicate, ingestData upserts; deliberately different contracts for
+  TagController.createTag vs ingestion-side calls)
+- |-
+  ExternalTagIngestionRequestProcessor (cross-reference — the
+  ingestion-side caller): the FINALIZING-phase processor that calls
+  TagServiceImpl.getOrInjectTagByName which calls ingestData for the
+  full novel-tag set of the batch
+- |-
+  TagServiceImpl.getOrInjectTagByName (cross-reference — the
+  service-tier API consumer): wraps the upsert for the
+  fetch-or-create-by-name semantic; returns the TagPojo with id for
+  every name in the input list
+evidence:
+- |-
+  ReactiveTagRepositoryImpl.md:concepts.operations.ingestData (line
+  199-210 in the source file)
+- |-
+  ReactiveTagRepositoryImpl.md:implicit_adrs.[1,2,6]
+  (the three architectural choices that distinguish this upsert)
+- |-
+  ReactiveTagRepositoryImpl.md:performance.hot_paths.[0]
+  (the Collector ingestion hot path)
+- |-
+  ReactiveTagRepositoryImpl.md:performance.throughput_characteristics.[2]
+  (executeInPartitionReturning partitioning at BATCH_SIZE)
+- |-
+  V0_0_64__remove_is_deleted_field.sql:105 — the tag_name_unique
+  partial unique index that the upsert pins to
+notes: |-
+  NEW operation captured in batch N. The upsert is the architectural
+  counterpart to the (race-prone) bulkCreate path on the same table —
+  the maintainer's deliberate dual-method design.
+
+  Cross-cutting connections:
+    - Pairs with the Tag entity — this is one of two write paths into
+      the Tag directory
+    - Pairs with the spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
+      invariant — the side-door creates the wide-open surface; this
+      upsert is the SAFE write path that the side-door routes through
+      for the ingestion case
+    - Pairs with the tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race
+      invariant — the recommended mitigation for the TOCTOU race is
+      to MIGRATE the bulkCreate path to use this upsert
+    - Cross-references the architectural pattern: every Reactive*Repository
+      that needs auto-create-on-miss semantics should consider the
+      RETURNING-trigger pattern; today only Tag uses it (Owner +
+      Namespace + Title etc. use the race-prone bulkCreate path)
+
+  Recommended documentation:
+    (a) Document the dual-method design (ingestData vs bulkCreate) at
+        the internal architecture page on persistence-layer conventions
+        — the contrast is load-bearing and operators can confuse the
+        two
+    (b) Migrate the other auto-create-on-miss service-tier methods
+        (OwnerServiceImpl.getOrCreate, NamespaceServiceImpl.getOrCreate,
+        etc.) to the RETURNING-trigger pattern; closes the
+        cross-cutting TOCTOU bug class
+    (c) Add a regression test asserting the RETURNING clause's
+        behaviour on concurrent novel-name inserts (the maintainer's
+        intent: both racers receive the same row's id)

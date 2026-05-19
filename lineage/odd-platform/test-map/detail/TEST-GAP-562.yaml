@@ -1,0 +1,35 @@
+gap_id: TEST-GAP-562
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveRoleRepositoryImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "ReactiveRoleRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[3] (getDto returns a role bound to a SOFT-DELETED policy)"
+  - "ReactiveRoleRepositoryImpl.md:bugs_limitations_corner_cases.[0] (DRIFT-FACET-A — mirror of batch-H Policy)"
+  - "ReactiveRoleRepositoryImpl.md:security.known_security_gaps.[0]"
+behaviour: |-
+  **RBAC Role.getDto missing policy.deleted_at filter — SYMMETRIC mirror of batch-H Policy finding (TEST-GAP-345).** getDto/listDto/getByName do NOT filter soft-deleted POLICIES on the LEFT JOIN. The SQL at ReactiveRoleRepositoryImpl.java:45-48, 67-70, 87-90 joins `policy` without `policy.deleted_at IS NULL` predicate, so a soft-deleted policy with surviving `role_to_policy` edges shows up in the aggregated `policy_relations` JSON returned to the caller. Combined with the absence of a cascade between `policy.deleted_at` and `role_to_policy` (V0_0_55__add_policies_and_roles.sql:52 — FK only on hard-delete), a UI screen rendering 'this Role's policies' will display soft-deleted entries to operators with no indication that the policy is gone. **Today PolicyServiceImpl.delete defends by raising CascadeDeleteException if `isPolicyAttachedToRole` returns true, but: (a) direct DB UPDATE setting `policy.deleted_at` bypasses the defence; (b) a future refactor weakening the cascade check would silently re-open the gap.** This is the structural mirror of batch-H Policy finding — both halves of the RBAC mutation surface have the same shape of asymmetry. CRITICAL via mirror — same gap, second confirming sidecar across both halves.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveRoleRepositorySoftDeletePolicyOrphanBindingTest.java"
+  name: "getDto_listDto_getByName_softDeletedPolicyWithSurvivingRoleBinding_stillReturned_pinsBatchHMirror"
+evidence:
+  - "ReactiveRoleRepositoryImpl.md says (uncovered_behaviours.[3]): 'getDto(id) returns a role bound to a SOFT-DELETED policy: the policy STILL appears in the aggregated policy_relations array (no policy.deleted_at IS NULL filter at ReactiveRoleRepositoryImpl.java:45-48). Pin the current (potentially-buggy) behaviour — mirrors batch-H's getRolesPolicies finding.'"
+  - "ReactiveRoleRepositoryImpl.md says (bugs_limitations_corner_cases.[0]): 'getDto/listDto/getByName do NOT filter soft-deleted POLICIES on the LEFT JOIN.' severity: HIGH"
+  - "ReactiveRoleRepositoryImpl.md says (security.known_security_gaps.[0]): 'a soft-deleted MANAGEMENT/ALL policy bound to a role continues to grant ALL Management permissions to users in that role IF the dto view is consumed by the permission-extractor chain.' severity: HIGH"
+  - "ReactiveRoleRepositoryImpl.java:45-48, 67-70, 87-90 (LEFT JOIN without deleted_at filter on POLICY)"
+  - "V0_0_55__add_policies_and_roles.sql:44-53 (role_to_policy FK with NO cascade)"
+  - "PolicyServiceImpl.java:89-92 (the service-layer defence)"
+cross_references:
+  - "TEST-GAP-345 (batch-H Policy mirror — getRolesPolicies orphan-binding)"
+  - "TEST-GAP-403 (service-tier race window)"
+  - "TEST-GAP-407 (service does not compensate)"
+  - "F-009 (RBAC)"
+  - "P-09:F-001"
+  - "REFACTOR-NNN: add `AND policy.deleted_at IS NULL` to ALL 3 JOIN sites in ReactiveRoleRepositoryImpl"
+proposed_action: |-
+  Testcontainers test. (a) Seed: Administrator-equivalent policy P1; Role R1 bound to P1 via role_to_policy. (b) Direct UPDATE: SET policy.deleted_at = NOW() ON P1 (bypassing the service defence). (c) Call getDto(R1.id). Assert: the response includes P1 with its full statements (the soft-deleted policy is still aggregated). (d) Mirror with getByName(R1.name) → same result. (e) Mirror with listDto(page=1, size=10, query=null) → R1's policy_relations includes P1. (f) Test comment: 'PINS the current buggy behaviour. Future fix MUST add AND policy.deleted_at IS NULL to the three JOIN sites — this test FLIPS to expect empty policy_relations.' Cross-reference TEST-GAP-345 (Policy mirror).
+batch: 2026-05-19-N
+feature_id: F-009

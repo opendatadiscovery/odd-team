@@ -64,4 +64,20 @@ Cross-link with the housekeeping subsystem ADRs (ADR-CANDIDATE-045/-046) — the
 
 **Severity rationale**: MEDIUM — DB-layer pattern that affects every named-entity table. Less load-bearing than ADR-CANDIDATE-068 (the soft-delete taxonomy itself) but the partial-unique-index is the structural element that enables -068's soft-delete to be operator-friendly. Without this ADR, future maintainers might "fix" the partial-index (e.g. drop the `WHERE deleted_at IS NULL` clause "to enforce uniqueness everywhere") and silently break the recreate-after-delete UX.
 
+## STRENGTHENS — Batch N (Term + Role + Tag + UserOwnerMapping — three NEW partial-unique-index migrations confirm the cross-table-consistency claim)
+
+**Four batch-N sidecars provide primary-source confirmation that this DB-layer pattern is uniform across the platform's named-entity tables**:
+
+1. **Term** — `term_name_namespace_unique ON term(name, namespace_id) WHERE deleted_at IS NULL` (V0_0_35__add_terms.sql:16). Note the COMPOSITE-key shape: name + namespace_id (NOT just name) — Term names are unique WITHIN a namespace, not globally. The partial-index design extends to multi-column keys without losing the soft-delete-aware uniqueness rule.
+2. **Role** — `role_name_unique ON role (name) WHERE deleted_at IS NULL` (V0_0_55:42, recreated by V0_0_58 + V0_0_64:88-90). The migration history is the intent narrative: V0_0_55 introduces the index with `deleted_at IS NULL`; V0_0_58 toggled briefly to `is_deleted IS FALSE`; V0_0_64 converged BACK to `deleted_at IS NULL` and DROPPED the `is_deleted` column. The migration file V0_0_64 is named `remove_is_deleted_field` — the maintainer EXPLICITLY consolidated on `deleted_at IS NULL` as the canonical predicate.
+3. **Tag** — `tag_name_unique ON tag (name) WHERE tag.deleted_at IS NULL` (V0_0_36 + V0_0_57 + V0_0_64:103-105). Three iteration migrations refined the index; the final form V0_0_64:103-105 explicitly re-creates with `WHERE deleted_at IS NULL` after the `is_deleted` column removal. The Tag-specific pattern composes with ADR-CANDIDATE-125 NEW (the `ingestData` upsert's `ON CONFLICT WHERE deleted_at IS NULL DO UPDATE` clause matches the index predicate exactly — application-side echo of the schema-side rule).
+4. **user_owner_mapping** — TWO partial unique indexes per V0_0_89:9-15: `unique_deleted_at_per_owner ON (owner_id) WHERE deleted_at IS NULL` + `user_owner_mapping_oidc_username_provider_deleted_key ON (oidc_username, provider) WHERE deleted_at IS NULL`. Notably, the second index treats NULL provider as a UNIQUE VALUE — `(alice, NULL)` is one row; `(alice, 'github')` is another row — composing with ADR-CANDIDATE-130 NEW (the provider-null collapse architecture).
+
+**Cross-table consistency reinforcement (batch N)**: The partial-unique-index pattern now has primary-source evidence at FIVE additional tables (term + role + tag-directory + tag-relation analogue + user_owner_mapping x2). The V0_0_64 migration's name (`remove_is_deleted_field`) plus the explicit DROP/CREATE INDEX statements is the strongest single intent anchor — the maintainer deliberately CONSOLIDATED the entire platform on `deleted_at IS NULL` as the soft-delete predicate. The `is_deleted` boolean column is dead schema except where it remained accidentally (REFACTOR-239 — Policy is the documented exception).
+
+**New batch-N gap reinforcement**:
+- The Administrator/User-name asymmetry (REFACTOR-189) is now confirmed at TWO mutation surfaces (PolicyServiceImpl + RoleServiceImpl). The partial-unique-index design is correct; the gap is the SERVICE-LAYER missing-name-reservation on `.create` paths combined with the index's "deleted name is freed" UX. Batch-N RoleServiceImpl strengthens the case (DRIFT-FACET-C in the sidecar).
+
+**Severity unchanged**: MEDIUM. The cross-table evidence reinforces the codebase-wide claim; the gap surface (REFACTOR-189) is now 2-sidecar across the RBAC mutation surface with the same structural shape.
+
 ---

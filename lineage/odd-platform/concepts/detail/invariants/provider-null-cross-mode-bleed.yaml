@@ -4,10 +4,11 @@ canonical_candidate: true
 pillar_affinity:
 - P-09
 description: |-
-  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19K** — a security boundary
-  failure during auth-mode migration scenarios, surfaced by primary-source
-  examination of `AuthIdentityProviderImpl.java:29-33`. The line
-  `if (authentication instanceof OAuth2AuthenticationToken oauthToken)
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19K — STRENGTHENED TO
+  SQL-LAYER GROUND TRUTH IN BATCH N (2026-05-19N)** — a security boundary
+  failure during auth-mode migration scenarios, originally surfaced by
+  primary-source examination of `AuthIdentityProviderImpl.java:29-33`. The
+  line `if (authentication instanceof OAuth2AuthenticationToken oauthToken)
   { return new UserDto(name, registrationId); } else { return new
   UserDto(name, null); }` collapses ALL non-OAuth2 auth flows into the
   null-provider bucket: LOGIN_FORM (which wraps UsernamePasswordAuthenticationToken
@@ -15,17 +16,32 @@ description: |-
   (ProviderManager wraps LdapAuthenticationProvider per
   LDAPSecurityConfiguration.java:82 with provider=null), and S2S
   (S2sAuthenticationFilter.java:38 with provider=null) — all three produce
-  `UserDto(username, null)`. The downstream USER_OWNER_MAPPING lookup at
-  `ReactiveUserOwnerMappingRepositoryImpl.java:116-127` builds
-  `WHERE OIDC_USERNAME = ? AND DELETED_AT IS NULL AND PROVIDER IS NULL` (the
-  `PROVIDER.isNull()` branch fires when provider is null/empty). Net effect:
-  a LOGIN_FORM user `alice` and an LDAP user `alice` BOTH produce the same
-  lookup key (alice, null) and BOTH resolve to the SAME OwnerPojo via the
-  same active user_owner_mapping row. **The codepath has NO mode-check, NO
-  warning log, NO fail-fast.** Migration scenarios with overlapping
-  usernames silently grant the second-mode user the first-mode user's
-  owner-link. The maintainer's design intent was per-IDP OAuth2 namespace
-  via `getAuthorizedClientRegistrationId()`; LOGIN_FORM and LDAP are each
+  `UserDto(username, null)`.
+
+  **BATCH N PRIMARY-SOURCE UPGRADE — SQL-LAYER CONFIRMATION**: the
+  downstream USER_OWNER_MAPPING lookup is now SQL-LAYER GROUND TRUTH at
+  `ReactiveUserOwnerMappingRepositoryImpl.java:116-127`. The
+  `getConditions(oidcUsername, provider)` private helper builds the
+  exact WHERE clause:
+    `USER_OWNER_MAPPING.OIDC_USERNAME.eq(oidcUsername)`
+    `AND USER_OWNER_MAPPING.DELETED_AT.isNull()`
+    `AND (StringUtils.isNotEmpty(provider) ? PROVIDER.eq(provider)
+                                            : PROVIDER.isNull())`
+  Line 121-125 IS the branch — the source of the bleed at the SQL primary
+  source. **The branch fires the IS NULL predicate for BOTH null AND
+  empty-string provider** — an explicit-empty-string provider sent through
+  `POST /api/owners/associations/manual` would land in the same bucket as
+  a true-null provider.
+
+  Net effect: a LOGIN_FORM user `alice` and an LDAP user `alice` BOTH
+  produce the same lookup key (alice, null) and BOTH resolve to the SAME
+  OwnerPojo via the same active user_owner_mapping row. **The codepath
+  has NO mode-check, NO warning log, NO fail-fast.** Migration scenarios
+  with overlapping usernames silently grant the second-mode user the
+  first-mode user's owner-link.
+
+  The maintainer's design intent was per-IDP OAuth2 namespace via
+  `getAuthorizedClientRegistrationId()`; LOGIN_FORM and LDAP are each
   "local" to the deployment and the maintainer chose not to distinguish
   them — accepting the migration-time bleed. **The decision is undocumented.**
   The live `/configuration-and-deployment/enable-security/authentication`
@@ -40,8 +56,24 @@ description: |-
   operator runs LOGIN_FORM and S2S, S2S username 'ADMIN' (uppercase)
   collides with a LOGIN_FORM user named 'ADMIN' (the companion S2S literal
   collision invariant).
+
+  **Batch N — the architectural triangle is now SQL-anchored end-to-end**:
+    Vertex 1 — Principal layer (AuthIdentityProviderImpl.java:29-33,
+                batch K) — the else-branch that produces provider=null
+    Vertex 2 — Persistence layer
+                (ReactiveUserOwnerMappingRepositoryImpl.java:116-127,
+                batch N PRIMARY SOURCE NEW) — the SQL WHERE clause that
+                resolves provider=null to the bleed bucket
+    Vertex 3 — Schema layer (V0_0_55__add_policies_and_roles.sql:1-2 +
+                V0_0_89__update_user_owner.sql:1-15) — the schema
+                permission for provider to be nullable (no NOT NULL
+                constraint on the provider column; the partial unique
+                index `user_owner_mapping_oidc_username_provider_deleted_key`
+                accepts (alice, null) as a valid (oidc_username, provider)
+                tuple)
 nodes:
 - odd-platform java service service:AuthIdentityProviderImpl
+- odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
 contributors:
 - |-
   AuthIdentityProviderImpl batch K: bugs_limitations_corner_cases.[0]
@@ -51,6 +83,21 @@ contributors:
   (HIGH severity — security crossover during migration; undocumented) +
   docs_link_semantic.doc_drift_findings.[0] (HIGH doc-drift; the compound
   key is silent in the live user-owner-association docs)
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl batch N (NEW PRIMARY SOURCE — SQL
+  layer): concepts.invariants.[3] (case-sensitive .eq() on oidc_username
+  AND provider) + concepts.invariants.[4] (empty/null provider collapses
+  to PROVIDER IS NULL) + bugs_limitations_corner_cases.[0]
+  (PROVIDER-NULL CROSS-MODE BLEED PRIMARY SOURCE) +
+  implicit_adrs.[2] (provider-null deliberate collapse — the SQL-layer
+  manifestation of an architectural decision: only OAuth2 federates
+  per-IDP and warrants a per-provider namespace; LOGIN_FORM, LDAP, and
+  S2S share a single null-provider bucket) +
+  security.known_security_gaps.[0] (HIGH severity, SQL primary source
+  confirmation) +
+  docs_link_semantic.doc_drift_findings.[1] (HIGH doc-drift; provider-null
+  collapse for LOGIN_FORM, LDAP, S2S is undocumented — PRIMARY SOURCE for
+  the cross-mode bleed mechanism)
 evidence:
 - |-
   AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[0] (PRIMARY
@@ -66,10 +113,24 @@ evidence:
 - |-
   AuthIdentityProviderImpl.md:docs_link_semantic.doc_drift_findings.[0]
   (HIGH doc-drift — compound key silent in user-owner-association doc)
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl.md:concepts.invariants.[3,4] +
+  bugs_limitations_corner_cases.[0] +
+  implicit_adrs.[2] +
+  security.known_security_gaps.[0] +
+  docs_link_semantic.doc_drift_findings.[1]
+  (BATCH N PRIMARY SOURCE — SQL LAYER) — evidence:
+    ReactiveUserOwnerMappingRepositoryImpl.java:116-127 (the getConditions
+    helper IS the SQL primary source) +
+    V0_0_55__add_policies_and_roles.sql:1-2 (provider VARCHAR(255)
+    nullable) +
+    V0_0_89__update_user_owner.sql:13-15 (partial unique index on
+    (oidc_username, provider) accepts null)
 axes_present:
 - services
-triangulation_count: 1
-cross_batch: false
+- repositories_reactive
+triangulation_count: 2
+cross_batch: true
 severity: HIGH
 severity_dim: security
 mitigations_unimplemented:
@@ -94,7 +155,7 @@ mitigations_unimplemented:
   identified as (alice, github)).
 - |-
   Add a docs admonition on `/configuration-and-deployment/enable-security/authentication`
-  for the auth-mode migration playbook: "Before changing auth.type from
+  for the auth-mode migration playbook - "Before changing auth.type from
   LOGIN_FORM to LDAP, audit user_owner_mapping for overlapping usernames
   and explicitly clear/recreate the bindings."
 - |-
@@ -106,7 +167,22 @@ mitigations_unimplemented:
     (d) Asserts BOTH resolve to the same Owner X (pins the current
         behaviour explicitly) OR asserts the second resolves to empty
         (under the proposed fix).
+  **STRENGTHENED batch N** — the test now has the SQL-layer ground truth
+  to assert at (ReactiveUserOwnerMappingRepositoryImpl.getAssociatedOwner
+  is the canonical resolver) and the test schema can be set up directly
+  via the repository.
 notes: |-
+  STRENGTHENED batch 2026-05-19N — SQL-LAYER GROUND TRUTH NOW PINNED.
+  The invariant was 1-sidecar inferred at batch K (the principal-layer
+  primary source); batch N adds the SQL-layer primary source at
+  ReactiveUserOwnerMappingRepositoryImpl. The architectural triangle is
+  now SQL-anchored end-to-end:
+    Vertex 1 — Principal layer (AuthIdentityProviderImpl batch K)
+    Vertex 2 — Persistence layer (ReactiveUserOwnerMappingRepositoryImpl
+                batch N — NEW)
+    Vertex 3 — Schema layer (V0_0_55 + V0_0_89 migrations)
+
+  Original batch K notes (preserved):
   NEW HIGH-severity invariant captured in batch 2026-05-19K. The first of
   three security-related findings on AuthIdentityProviderImpl (the other
   two: S2S username='ADMIN' literal collision; no auto-create on first
@@ -129,6 +205,12 @@ notes: |-
       — both rely on the same else-branch
     - Cross-references the "User-Owner Mapping" entity — the compound key
       shape is the persistence-layer manifestation of this invariant
+    - **NEW batch N** — pairs with
+      "cross-provider-username-row-duplication-in-external-joins"
+      invariant — both rely on the (oidc_username, provider) compound
+      key but the FOUR external repositories (Alert / Activity /
+      OwnerAssociationRequest / Owner) JOIN on OIDC_USERNAME alone,
+      surfacing a SECOND class of cross-provider collision
 
   Three DOC-NNN candidates flow from this invariant:
     (a) Document the compound key shape on the user-owner-association doc

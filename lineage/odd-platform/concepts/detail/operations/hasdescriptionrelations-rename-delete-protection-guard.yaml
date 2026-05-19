@@ -1,0 +1,169 @@
+name: |-
+  hasDescriptionRelations rename/delete protection guard (Term)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-06
+description: |-
+  **NEW OPERATION, batch 2026-05-19N — SQL-LAYER PRIMARY SOURCE from
+  ReactiveTermRepositoryImpl.**
+
+  `hasDescriptionRelations(termId)` (ReactiveTermRepositoryImpl.java:409-438)
+  — the LOAD-BEARING guard that determines whether a Term can be safely
+  renamed or hard-deleted. Composed of three nested EXISTS subqueries
+  OR-combined into a single SELECT; each subquery checks whether the
+  Term is mentioned in any ACTIVE description (where "active" varies
+  by table:
+    - data_entity_to_term + dataset_field_to_term branches use
+      `DATA_ENTITY.STATUS.ne(DataEntityStatusDto.DELETED.getId())` on
+      the parent data-entity's STATUS state-machine
+    - term_to_term branch uses `TERM.DELETED_AT.isNull()` on the
+      TARGET term's deleted_at timestamp).
+
+  **The three subqueries**:
+
+    Subquery 1 — data_entity_to_term description-mention check
+    (lines 410-416):
+      `EXISTS (SELECT 1 FROM data_entity_to_term
+                 JOIN data_entity ON ...
+                 WHERE TERM_ID = ? AND IS_DESCRIPTION_LINK.isTrue() AND
+                       DATA_ENTITY.STATUS.ne(DELETED.getId()))`
+
+    Subquery 2 — dataset_field_to_term description-mention check
+    (lines 417-426) — the 4-table chain through dataset_field →
+    dataset_structure → dataset_version → data_entity by oddrn-match
+    at line 422:
+      `EXISTS (SELECT 1 FROM dataset_field_to_term
+                 JOIN dataset_field ON ...
+                 JOIN dataset_structure ON ...
+                 JOIN dataset_version ON ...
+                 JOIN data_entity ON DATA_ENTITY.ODDRN = DATASET_VERSION.DATASET_ODDRN
+                 WHERE TERM_ID = ? AND IS_DESCRIPTION_LINK.isTrue() AND
+                       DATA_ENTITY.STATUS.ne(DELETED.getId()))`
+
+    Subquery 3 — term_to_term description-mention check
+    (lines 427-433):
+      `EXISTS (SELECT 1 FROM term_to_term
+                 JOIN term ON TERM.ID = TARGET_TERM_ID
+                 WHERE ASSIGNED_TERM_ID = ? AND IS_DESCRIPTION_LINK.isTrue() AND
+                       TERM.DELETED_AT.isNull())`
+
+  **OR-combined**: any one subquery returning TRUE means the term is
+  "still mentioned" and the operation should be REFUSED.
+
+  **The two consumers**:
+
+    Consumer 1 — `TermServiceImpl.updateTerm` rename-protection
+    (TermServiceImpl.java:128): blocks a Term from being renamed
+    while any active description mentions it. The service surfaces
+    HTTP 400 BadUserRequestException "Can't update term, which was
+    mentioned in description" via the global ControllerAdvice.
+
+    Consumer 2 — `TermServiceImpl.delete` deletion-protection
+    (TermServiceImpl.java:156): blocks a Term from being hard-deleted
+    while any active description mentions it. Same HTTP 400 surface.
+
+  **The guard's strengths** (per the batch-N sidecar's
+  implicit_adrs.[4]): the maintainer DELIBERATELY designed the guard
+  to scan all three link tables (else a Term could be deleted while
+  still mentioned in a dataset-field's description). The guard's
+  three subqueries with their distinct soft-delete predicates reflect
+  the platform's broader three-soft-delete-mechanisms invariant.
+
+  **The guard's weakness** — the parent-soft-delete bypass corner case
+  (bugs_limitations_corner_cases.[1] in the batch-N sidecar; see also
+  the dedicated `hasdescriptionrelations-parent-soft-delete-bypass`
+  invariant): lines 415 and 425 filter `STATUS.ne(DELETED)` on the
+  data-entity / dataset-field branches. A Term mentioned ONLY in a
+  soft-deleted data-entity's description (or in the description of a
+  dataset-field belonging to a soft-deleted data-entity) is treated
+  as 'not mentioned' — the EXISTS returns FALSE — and the Term can
+  be renamed or hard-deleted. When the data-entity is later restored,
+  the description's `[[ns:term]]` text now references a
+  now-renamed-or-deleted Term. The intent is to permit catalog
+  cleanup after entity-deletion waves; the consequence is
+  dangling-reference-on-restore.
+
+  **Schema-drift sibling** — the term_to_term branch (subquery 3) has
+  a SEPARATE corner case: the `term_to_term` table retains a
+  `deleted_at` column (V0_0_91:6) DESPITE V0_0_76's hard-delete
+  commitment for sibling link tables. The application never filters
+  `term_to_term.deleted_at` at any of 7 read sites including this
+  guard's subquery 3. Captured at the
+  `term-to-term-deleted-at-schema-drift-v0_0_76-vs-v0_0_91`
+  invariant (batch N).
+
+  **The operation is on the WRITE-PROTECTION path**: every Term
+  update/delete attempt invokes this guard before committing. The
+  EXISTS subqueries are short-circuit (Postgres short-circuits on
+  OR-EXISTS once the first subquery matches); typical performance is
+  sub-millisecond on small row counts.
+nodes:
+- odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+contributors:
+- |-
+  ReactiveTermRepositoryImpl batch N (PRIMARY SOURCE):
+  concepts.operations.[hasDescriptionRelations(termId) — the load-bearing
+  rename-protection / delete-protection guard] +
+  concepts.invariants.[hasDescriptionRelations excludes parents with
+  STATUS = DELETED — the deliberate corner case] +
+  implicit_adrs.[5] (hasDescriptionRelations is the SINGLE point of
+  enforcement for the Term-rename-protection / Term-delete-protection
+  invariant; three EXISTS subqueries, three distinct soft-delete
+  predicates; the asymmetry is INTENTIONAL) +
+  bugs_limitations_corner_cases.[1] (returns FALSE for Terms mentioned
+  only in soft-deleted entities — corner case; MEDIUM severity) +
+  performance.hot_paths.[1] (every Term update or delete attempt
+  invokes the guard)
+- |-
+  TermServiceImpl batch K (the consumer — cross-reference):
+  TermServiceImpl.java:128 (updateTerm consumer); TermServiceImpl.java:156
+  (delete consumer); both surface 400 BadUserRequestException
+  "Can't update/delete term, which was mentioned in description"
+evidence:
+- |-
+  ReactiveTermRepositoryImpl.md:concepts.operations.hasDescriptionRelations
+  (line 409-438 in the source file)
+- |-
+  ReactiveTermRepositoryImpl.md:implicit_adrs.[5]
+  (hasDescriptionRelations as the SINGLE point of enforcement)
+- |-
+  ReactiveTermRepositoryImpl.md:bugs_limitations_corner_cases.[1]
+  (parent-soft-delete bypass — MEDIUM)
+- |-
+  ReactiveTermRepositoryImpl.md:performance.hot_paths.[1]
+  (every Term update or delete attempt — three EXISTS subqueries
+  short-circuit OR-combined)
+- |-
+  Cross-batch: TermServiceImpl batch K
+  (TermServiceImpl.java:128, 156 — the two consumers; rename-protection
+  + delete-protection)
+notes: |-
+  NEW operation captured in batch N. The single repository method is
+  the platform's TERM-WRITE-PROTECTION enforcer — every authenticated
+  rename or delete of a Term routes through it.
+
+  Cross-cutting connections:
+    - Pairs with the Term Linkage entity — this guard protects the
+      term-link-mention semantics
+    - Pairs with the hasdescriptionrelations-parent-soft-delete-bypass
+      invariant (batch N) — surfaces the corner case where the guard
+      bypasses
+    - Pairs with the term-to-term-deleted-at-schema-drift-v0_0_76-vs-v0_0_91
+      invariant (batch N) — subquery 3 has a separate
+      schema-drift gap on its `term_to_term` reference
+    - Cross-references the three-soft-delete-mechanisms-across-the-repository-layer
+      invariant — the guard's three subqueries each use a DIFFERENT
+      soft-delete predicate reflecting the platform's architectural
+      inconsistency
+
+  Recommended documentation:
+    (a) Document the rename-protection / delete-protection on the
+        business-glossary operator page — operators encountering the
+        400 message need the context
+    (b) Document the parent-soft-delete corner case (the operator-visible
+        consequence of restoring a soft-deleted entity whose description
+        mentions a Term that has since been renamed or deleted)
+    (c) Add a regression test pinning the corner case (per the
+        hasdescriptionrelations-parent-soft-delete-bypass invariant's
+        recommended test)

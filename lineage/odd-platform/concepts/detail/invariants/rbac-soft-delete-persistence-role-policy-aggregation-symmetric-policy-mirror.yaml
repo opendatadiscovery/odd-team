@@ -1,0 +1,198 @@
+name: |-
+  RBAC soft-delete persistence — Role aggregation methods don't filter soft-deleted Policies (symmetric Policy mirror)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19N — symmetric mirror of
+  batch-H's ReactivePolicyRepositoryImpl.getRolesPolicies finding** —
+  ReactiveRoleRepositoryImpl's THREE custom dto methods (getDto / listDto
+  / getByName) all do a LEFT JOIN against the POLICY table for the
+  attached-policies aggregation. NONE of the three methods filter
+  `POLICY.deleted_at IS NULL` on the joined POLICY rows. A soft-deleted
+  policy with surviving `role_to_policy` bindings is materialised into
+  the aggregated `policy_relations` JSON returned to the caller.
+
+  **The three offending methods**:
+    - `getDto(id)` at ReactiveRoleRepositoryImpl.java:42-52 — single-row
+      Role lookup with attached-policies aggregation; LEFT JOIN on
+      ROLE_TO_POLICY + POLICY; soft-delete filter on ROLE.deleted_at
+      (correct) but NOT on POLICY.deleted_at.
+    - `listDto(page, size, nameQuery)` at lines 54-79 — paginated Role
+      list with CTE pagination + LEFT JOIN aggregation; same shape;
+      same missing POLICY filter.
+    - `getByName(name)` at lines 82-93 — Role lookup by name with
+      attached-policies; the AUTHORIZATION HOT PATH for the
+      `getUserProviderRole()` fallback (RoleServiceImpl.java:125);
+      same shape; same missing POLICY filter.
+
+  **The symmetric Policy mirror**: ReactivePolicyRepositoryImpl batch H
+  surfaced this exact bug shape on the parallel surface — Policy's
+  `getRolesPolicies` (the inverse-direction JOIN, from Roles → Policies
+  per a role-id list) does NOT filter `policy.deleted_at IS NULL` either.
+  The two repositories together exhibit the BUG SYMMETRICALLY across the
+  RBAC mutation surface:
+    - Role-repo: Role.getDto/listDto/getByName → POLICY (this batch N)
+    - Policy-repo: Policy.getRolesPolicies → POLICY by role-id (batch H)
+
+  **The bug shape applies BOTH directions**: regardless of which side
+  initiates the read (a Role being rendered with its attached policies,
+  or the RBAC permission framework resolving a user's roles to their
+  policies), a soft-deleted Policy with a surviving `role_to_policy`
+  edge silently confers permissions transitively. The service-layer
+  defence at PolicyServiceImpl.delete (lines 89-92) — `isPolicyAttachedToRole`
+  → CascadeDeleteException — is the SOLE defence in normal operator
+  flow; ANY service-bypassing path (DB-direct UPDATE, schema migration
+  mistake, future refactor weakening the cascade-check) re-opens the gap
+  at BOTH read sides.
+
+  **The Role-side schema-side analysis** (batch N strengthening): the FK
+  on `role_to_policy.policy_id REFERENCES policy(id)` has NO `ON DELETE
+  CASCADE` and NO trigger removing role_to_policy rows when
+  `policy.deleted_at` is set (per V0_0_55__add_policies_and_roles.sql:52).
+  This is consistent with the soft-delete intent (the bound edge should
+  survive if the policy is restored), BUT means a soft-deleted policy
+  silently retains its bindings. The application-tier defence is
+  PolicyServiceImpl.delete + isPolicyAttachedToRole; this defence does
+  NOT exist on the Role side — RoleServiceImpl.delete (line 89) directly
+  removes role_to_policy edges before soft-deleting the role (acceptable
+  because it removes the binding cleanly), but the SYMMETRIC defence —
+  a Role-side check refusing to delete a Role whose attached policies
+  include a soft-deleted one — does NOT exist. There is no operator
+  signal that a Role currently aggregates soft-deleted policies into
+  its dto view.
+
+  **Why HIGH severity** (same as batch H Policy-side finding): the bug
+  applies on the AUTHORIZATION HOT PATH (getByName is called for every
+  authorized HTTP request whose user has no explicit owner-attached
+  roles per RoleServiceImpl.java:96-101, 123-126 — see
+  resolve-roles-to-policies operation invariant). A soft-deleted
+  Administrator policy with surviving Administrator-role bindings would
+  continue to confer the ALL-permissions wildcard to users in the
+  Administrator role until an operator audited the policy table directly.
+  The lack of audit log on RBAC mutations (companion invariant) means
+  the soft-delete event itself is forensically invisible.
+
+  **The fix is one line per method**: `AND policy.deleted_at IS NULL` in
+  each LEFT JOIN's ON-clause or WHERE-clause. The pattern is uniform
+  across both repositories (Role + Policy). A single sweep of the RBAC
+  repositories closes the BOTH-DIRECTIONS exposure.
+nodes:
+- odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
+contributors:
+- |-
+  ReactivePolicyRepositoryImpl batch H (ORIGINAL PRIMARY SOURCE — the
+  inverse direction): concepts.invariants.[1] (getRolesPolicies does NOT
+  filter deleted_at) + bugs_limitations_corner_cases.[0] (orphan-binding
+  permission leak HIGH) + security.known_security_gaps.[0]
+- |-
+  ReactiveRoleRepositoryImpl batch N (NEW PRIMARY SOURCE — symmetric
+  Role-side mirror): concepts.invariants.[the three custom JOIN methods
+  filter soft-deleted ROLES but DO NOT filter soft-deleted POLICIES] +
+  bugs_limitations_corner_cases.[DRIFT-FACET-A — P-09:F-001 RBAC
+  soft-delete-persistence drift mirror of batch-H; HIGH severity] +
+  implicit_adrs.[the schema-side FK without ON DELETE CASCADE is the
+  enabler; the application-tier defence lives only at PolicyServiceImpl;
+  the Role side has no symmetric defence]
+- |-
+  RoleServiceImpl (cross-reference): RoleServiceImpl.java:89 calls
+  roleRepository.deleteByRole prior to soft-deleting the Role itself —
+  the Role-side delete path DOES clean up edges, but there is no
+  read-side filter that would surface a Role with soft-deleted policies
+  to an admin auditor BEFORE delete
+evidence:
+- |-
+  ReactiveRoleRepositoryImpl.md:concepts.invariants.[1] (PRIMARY SOURCE
+  — batch N) — evidence:
+    ReactiveRoleRepositoryImpl.java:45-48, 67-70, 87-90 (the three LEFT
+    JOIN sites without policy.deleted_at filter) +
+    V0_0_55__add_policies_and_roles.sql:52 (role_to_policy FK with NO
+    cascade) +
+    PolicyServiceImpl.java:89-92 (the service-layer defence — only on
+    Policy.delete, NOT mirrored on Role-side reads)
+- |-
+  ReactiveRoleRepositoryImpl.md:bugs_limitations_corner_cases.[DRIFT-FACET-A]
+  (HIGH severity — symmetric mirror of batch H)
+- |-
+  ReactivePolicyRepositoryImpl.md:bugs_limitations_corner_cases.[0]
+  (the ORIGINAL PRIMARY SOURCE for the SAME bug class — batch H finding
+  on the inverse direction)
+- |-
+  ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[0]
+  (the HIGH severity classification batch H established)
+axes_present:
+- repositories_reactive
+triangulation_count: 2
+cross_batch: true
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+- |-
+  Add `AND policy.deleted_at IS NULL` to the LEFT JOIN's ON-clause in
+  EACH of the three custom Role methods:
+    Site 1 — ReactiveRoleRepositoryImpl.java:45-48 (getDto)
+    Site 2 — ReactiveRoleRepositoryImpl.java:67-70 (listDto)
+    Site 3 — ReactiveRoleRepositoryImpl.java:87-90 (getByName)
+  AND apply the same fix to the batch-H Policy-side mirror at
+  ReactivePolicyRepositoryImpl.java:32-35 (getRolesPolicies).
+  The bug is symmetric; the fix is symmetric.
+- |-
+  Add a build-time invariant scanner that flags any LEFT JOIN against
+  the POLICY table that lacks a `policy.deleted_at IS NULL` predicate.
+  The bug class repeats every time a new RBAC read surface is added.
+- |-
+  Add a Role-side defence symmetric to PolicyServiceImpl.delete: when
+  reading a Role's policies via getDto/listDto/getByName, log a warning
+  if any aggregated PolicyPojo has non-null deleted_at — operators
+  auditing the system would see the warning even if the fix above
+  hasn't landed.
+- |-
+  Add a regression test pinning the current behaviour:
+    (a) Create a Policy, soft-delete it (UPDATE policy SET deleted_at = NOW());
+    (b) Create a Role bound to the soft-deleted Policy via role_to_policy;
+    (c) Call getByName(role.name) — assert the policy_relations array
+        INCLUDES the soft-deleted policy (current — buggy — behaviour
+        as regression baseline) OR EXCLUDES it (under the fix).
+- |-
+  Document the soft-delete-persistence behaviour on the Roles operator
+  page until the fix lands — operators need to know that a soft-deleted
+  Policy may still confer permissions transitively if a Role still binds
+  it; the cascade-delete defence on PolicyServiceImpl.delete is the
+  only barrier and is bypassable.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-19N. The bug
+  shape is the SYMMETRIC MIRROR of the batch-H ReactivePolicyRepositoryImpl
+  finding. Both repositories (Role + Policy) exhibit the same shape of
+  forensic-silent drift; both rely on the absent application-tier
+  defence to compensate for the missing repository-tier filter; both
+  are bypassable.
+
+  The two-sidecar architectural-mirror is the diagnostic — the batch-H
+  finding was a one-shot observation on the Policy side; batch N
+  confirms the SAME bug class on the Role side. Together they show
+  that the platform's RBAC mutation surface is INCONSISTENTLY soft-
+  delete-aware at the persistence layer (soft-delete column writes
+  correctly; soft-delete filter at READ time is missing on the
+  AGGREGATION JOINS).
+
+  Cross-cutting connections:
+    - Pairs with ReactivePolicyRepositoryImpl batch-H finding (same
+      bug class, inverse direction)
+    - Pairs with three-soft-delete-mechanisms-across-the-repository-layer
+      — the architectural-mechanism map; this invariant is a specific
+      instance of the broader inconsistency
+    - Cross-references no-audit-log-on-rbac-mutations — the missing
+      audit means the soft-delete event itself is forensically
+      invisible, compounding the read-path bug
+    - Cross-references resolve-roles-to-policies (the per-request
+      authorization hot-path operation) — getByName's role-resolution
+      path is on the AUTHORIZATION HOT PATH
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Add the deleted_at filter at all FOUR sites (3 in Role-repo,
+        1 in Policy-repo) — same PR fixes both directions
+    (b) Document the cascade-delete defence (PolicyServiceImpl.delete +
+        isPolicyAttachedToRole) on the operator-facing Policies page
+        with a caveat about the read-side gap

@@ -1295,3 +1295,61 @@ Theme M next: Anchor-set defence audit (cross-cutting; ~5 controllers — getDat
 - 3 broken-yaml files persist from batch J/K (lineage-graph-traversal.yaml, manage-ownership-lifecycle-with-deg-cascade.yaml, run-housekeeping-cycle-five-jobs.yaml). Quarantined.
 - 115 detail-without-index in refactoring-scopes (batch-J *-strengthen orphans + batch-K/L canonical patterns); doc-gaps has 11 detail-without-index + 4 index-without-detail (batch-F orphans 084-088).
 
+
+## Batch 2026-05-19-N — Repository continuation: Term + Tag + Search + User-owner mapping + Role (4/5 nodes; SIXTH autonomous batch)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: ede5d277 (79 prior + 4 new = **83 total**; 1 deferred — ReactiveSearchEntrypointRepositoryImpl socket-errored; below 3-failure threshold)
+- **Theme**: Repository-tier continuation — Term + Tag + Search + UserOwnerMapping + Role
+
+### Sidecars added (4)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `ReactiveTermRepositoryImpl` | P-06 + P-09 | F-002 (Term-to-Entity Linkage) repository-tier; `term_to_term.deleted_at` V0_0_76-vs-V0_0_91 SCHEMA-DRIFT — column retained but NEVER filtered at any of 7 read sites; `hasDescriptionRelations` excludes parent `STATUS=DELETED` → Term mentioned only in soft-deleted entity dangles on entity restore (MEDIUM corner-case); `getTermDetailsDto` 12-JOIN + 7 jsonArrayAgg fanout on permission-resolution HOT PATH via `TermPermissionExtractor` (every authorized TERM-scoped request); zero direct test coverage of any of 15 public methods. |
+| `ReactiveTagRepositoryImpl` | P-01 | REFACTOR-223 repository-side substrate CONFIRMED + NEW HIGH TOCTOU `listByNames`→`bulkCreate` race in `getOrCreateTagsByName`; MEDIUM: case-sensitive `listByNames` silently forks case-duplicate rows (`PII` vs `pii`); 6 implicit_adrs (partial-unique-index, dynamic conflict-target, RETURNING-trigger no-op, soft/hard delete asymmetry, onDuplicateKeyIgnore relations, bulkCreate-vs-ingestData dual contract). |
+| `ReactiveUserOwnerMappingRepositoryImpl` | P-09 | **PRIMARY-SOURCE of provider-null cross-mode bleed at lines 121-125** (SQL-layer ground truth — was 5-sidecar inferred from upstream; now SQL-layer manifestation of AuthIdentityProviderImpl ADR); NEW HIGH: 4 external repos (Alert/Activity/OwnerAssociationRequest/Owner) JOIN on `OIDC_USERNAME` ONLY without provider clause → cross-provider username collision row-duplication; clear-active-then-insert two-clear pattern is the persistence-layer twin of the principal-resolution ADR. |
+| `ReactiveRoleRepositoryImpl` | P-09 | 4-SIDECAR audit-silence pattern CLOSED (RoleController E + PolicyController E + ReactivePolicyRepositoryImpl H + this N); `getDto`/`listDto`/`getByName` LEFT JOIN POLICY WITHOUT `policy.deleted_at IS NULL` is the **symmetric mirror** of batch-H's `getRolesPolicies` finding — soft-deleted policy still bound to a role surfaces in policy_relations aggregation; partial unique index `role_name_unique WHERE deleted_at IS NULL` makes `Administrator`/`User` name gap exploitable across BOTH halves of RBAC mutation surface. |
+| `ReactiveSearchEntrypointRepositoryImpl` | DEFERRED | socket-errored ~10min in (0 tokens). Pairs with REFACTOR-229 + batch-M facet-aggregator finding remain unaddressed at write-side this batch. Next-batch retry candidate. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 238 → **246 concepts** | +8 net-new (5 invariants + 3 operations) + 6 strengthened. NEW HIGH invariants: provider-null cross-mode bleed SQL-layer PRIMARY-SOURCE; cross-provider username row-duplication in external JOINs; Tag TOCTOU listByNames→bulkCreate race; RBAC soft-delete persistence Role/Policy aggregation SYMMETRIC mirror; hasDescriptionRelations parent soft-delete bypass; term_to_term.deleted_at schema-drift V0_0_76-vs-V0_0_91. |
+| adr-archaeologist (ADRs) | 122 → **131** | +9 (123-131) + 5 strengthened. ADR-CANDIDATE-130 NEW HIGH: provider-null collapse architectural triangle (principal+SQL+schema vertices closed). |
+| adr-archaeologist (scopes) | 352 → **389** | +37 (353-389) + 6 strengthened. THREE NEW HIGH consequences of ADR-130: REFACTOR-353 LOGIN_FORM↔LDAP bleed; REFACTOR-354 S2S 'ADMIN' literal collision; REFACTOR-355 cross-provider OIDC_USERNAME-only LEFT JOIN row-duplication. REFACTOR-356 Term V0_0_91 schema-vs-application drift; REFACTOR-357 RBAC soft-delete-filter symmetric mirror. |
+| doc-gap-finder | 155 → **160** | +5 (168-172) + 9 strengthened. NEW: Tag tagging-surface FIRST 3 DOC-GAPs (DOC-GAP-168 directory side-door via DATA_ENTITY_TAGS_UPDATE per-entity permission mints global Tag-directory rows; DOC-GAP-169 case-sensitivity divergence; DOC-GAP-170 delete-then-recreate loses relations). DOC-GAP-172 LOW: term_to_term schema-drift. DOC-GAP-106 + DOC-GAP-112 closed FOUR-CORNERED across RBAC primary surface. |
+| test-coverage-mapper | 522 → **577 gaps** | +55 (524-578); 100 → **103 CRITICAL**. 3 NEW CRITICAL: TEST-GAP for provider-null cross-mode bleed SQL primary source; cross-provider OIDC-only JOIN row-duplication on 4 repos; Role getDto missing policy.deleted_at filter (symmetric to batch-H Policy TEST-GAP-345). |
+| feature-flow-builder | 17 → **18 features** (+1 new) | **F-018 / P-01:F-006 Manual Object Tagging** (NEW; primary drift: REFACTOR-223 directory-side-door — promoted from drift-facet to standalone pillar feature). F-002 + F-006 + F-011 EXTENDED (6/4/6 new drift facets each). F-002 hop-3 resolved. F-011 SQL-layer PRIMARY-SOURCE — provider-null architectural triangle CLOSED. |
+
+### Coverage state after batch N
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 83 | **21.0%** (was 20.0%) |
+| Effective coverage | 157 | **39.7%** (was 36.5%) |
+| Features discovered | 18 (was 17) | 1 NEW pillar-anchored feature (F-018) |
+| Features with ≥1 cell PROBED | 4 | unchanged |
+| Total test-gaps | 577 (was 522) | 103 CRITICAL (was 100) |
+
+### Cross-batch triangulation deltas
+
+- **Provider-null cross-mode bleed ARCHITECTURAL TRIANGLE CLOSED**: principal layer (batch K/G inferred) + SQL layer (batch N PRIMARY-SOURCE at UserOwnerMapping:121-125) + schema layer (V0_0_x migrations + partial unique index)
+- **RBAC audit-silence pattern**: now 4-SIDECAR closed (RoleController-E + PolicyController-E + ReactivePolicyRepositoryImpl-H + ReactiveRoleRepositoryImpl-N)
+- **ADR-015 owner-scoping mechanism**: now at JOIN-source repo → **17-sidecar** (was 16)
+- **REFACTOR-223 (Tag auto-create-on-miss)**: substrate-finding promoted with repository-side TOCTOU primary source + F-018 pillar-anchored feature elevation
+- **Term-side schema-drift**: NEW class of finding — V0_0_76-vs-V0_0_91 retained-but-unfiltered columns at 7 read sites
+- **Cross-provider OIDC_USERNAME-only LEFT JOINs**: NEW HIGH propagating across 4 sibling external repos
+- **DOC-GAP-099 + DOC-GAP-105 + DOC-GAP-115**: untouched this batch (controller/service tier — no new evidence in repo-tier sidecars)
+- **Tagging surface FIRST 3 DOC-GAPs**: tagging-feature documentation never reviewed pre-batch-N
+
+### Follow-ups (logged, not blocking)
+
+- `ReactiveSearchEntrypointRepositoryImpl` DEFERRED — socket-errored. Pairs with REFACTOR-229 + batch-M facet-aggregator finding remain WRITE-SIDE unaddressed. Next-batch retry candidate (priority: HIGH for FTS triangulation closure).
+- 3 broken-YAML files persist from earlier batches (lineage-graph-traversal.yaml, manage-ownership-lifecycle-with-deg-cascade.yaml, run-housekeeping-cycle-five-jobs.yaml). Quarantined.
+- **152 detail-without-index** in refactoring-scopes (batch-J `-strengthen-batch-J` legacy + batch-K/L/M/N canonical-append-pattern entries lacking index lines). The reducers grep detail/ directly so this is functionally OK; rebuild_indexes.py reconstructs index.yaml from detail/. Markdown index lags but data is intact.
+- **6 detail-without-index** + **4 index-without-detail** in doc-gaps (batch-F orphans 084-088).
+- F-001 + F-003 merge candidate still maintainer-pending (P-01:F-001 Popular Entities Ranking).
+

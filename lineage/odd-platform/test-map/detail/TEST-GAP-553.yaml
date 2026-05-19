@@ -1,0 +1,34 @@
+gap_id: TEST-GAP-553
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveUserOwnerMappingRepositoryImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "ReactiveUserOwnerMappingRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[3] (**PROVIDER-NULL CROSS-MODE BLEED PIN**)"
+  - "ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[0] (PROVIDER-NULL CROSS-MODE BLEED — PRIMARY SOURCE)"
+  - "ReactiveUserOwnerMappingRepositoryImpl.md:security.known_security_gaps.[0]"
+  - "ReactiveUserOwnerMappingRepositoryImpl.md:docs_link_semantic.doc_drift_findings.[1] (HIGH doc-drift)"
+behaviour: |-
+  **PROVIDER-NULL CROSS-MODE BLEED — PRIMARY SOURCE at the SQL layer.** getAssociatedOwner(alice, null) returns the SAME OwnerPojo regardless of which auth mode the caller is in. Set up a USER_OWNER_MAPPING row with (owner_id=X, oidc_username='alice', provider=null, deleted_at=null). Assert that `getAssociatedOwner('alice', null)` returns X. Then issue `getAssociatedOwner('alice', '')` — must ALSO return X (the `StringUtils.isNotEmpty` branch fires the IS NULL predicate for empty string as well as null). NO test asserts this. The runtime callers (LOGIN_FORM, LDAP, S2S all produce provider=null at AuthIdentityProviderImpl.java:32) ALL hit this path. A LOGIN_FORM user 'alice' and an LDAP user 'alice' BOTH resolve to the SAME user_owner_mapping row via `WHERE OIDC_USERNAME = 'alice' AND DELETED_AT IS NULL AND PROVIDER IS NULL`. **Security crossover during migration; undocumented.**
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveUserOwnerMappingRepositoryImplSecurityTest.java"
+  name: "getAssociatedOwner_providerNullCrossModeBleed_loginFormLdapS2sAllResolveSameOwner_pinsHighSeveritySecurityGap"
+evidence:
+  - "ReactiveUserOwnerMappingRepositoryImpl.md says (uncovered_behaviours.[3]): 'PROVIDER-NULL CROSS-MODE BLEED PIN — getAssociatedOwner(alice, null) returns the SAME OwnerPojo regardless of which auth mode the caller is in.'"
+  - "ReactiveUserOwnerMappingRepositoryImpl.md says (bugs_limitations_corner_cases.[0]): 'Three high-risk scenarios: (a) operator migrates LOGIN_FORM → LDAP retaining user names; the new LDAP user inherits the LOGIN_FORM user's Owner without invalidation; (b) concurrent LOGIN_FORM + LDAP deployments with overlapping usernames silently collide; (c) S2S username=ADMIN collides with an operator-named user ADMIN.' severity: HIGH"
+  - "ReactiveUserOwnerMappingRepositoryImpl.md says (security.known_security_gaps.[0]): 'NO mode-check, NO warning log, NO fail-fast.' severity: HIGH"
+  - "ReactiveUserOwnerMappingRepositoryImpl.java:121-125 (the IS-NULL predicate)"
+  - "AuthIdentityProviderImpl.java:29-33 (the principal-layer twin)"
+  - "concepts/detail/invariants/provider-null-cross-mode-bleed.yaml (the tracked invariant)"
+cross_references:
+  - "F-006"
+  - "P-09:F-001"
+  - "REFACTOR-NNN candidate: distinguish LOGIN_FORM / LDAP / S2S at the principal layer (provider='LOGIN_FORM' / 'LDAP' / 'S2S' instead of null)"
+  - "system-mission.md §Pillar P-09 — read-collaborative posture + LSN-NNN candidate"
+proposed_action: |-
+  Testcontainers test. (a) Seed mapping (owner X, username='alice', provider=null, deleted_at=null). (b) getAssociatedOwner('alice', null) → X. (c) getAssociatedOwner('alice', '') → STILL X (the StringUtils.isNotEmpty empty-string collapse). (d) Seed second mapping (owner Y, username='alice', provider='GITHUB'). (e) getAssociatedOwner('alice', null) → STILL X (GITHUB row is excluded — provider-discrimination). (f) getAssociatedOwner('alice', 'GITHUB') → Y. (g) **CRITICAL pin**: under LOGIN_FORM + LDAP simultaneous deployment with overlapping usernames, the LOGIN_FORM user 'alice' inherits the LDAP user 'alice's Owner — this test pins the current behaviour AND documents the security gap. Future fix introducing per-mode provider values flips this test to expect Mono.empty() in the cross-mode scenario.
+batch: 2026-05-19-N
+feature_id: F-006

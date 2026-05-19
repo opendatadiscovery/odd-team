@@ -74,6 +74,72 @@ Use these forms in the sidecar:
 
 **Reason:** committed artefacts on a public repo. Personal username paths are PII (the maintainer's real username) AND internal-filesystem-structure disclosure (deployment-relevant intel). Per memory rule `feedback_no_absolute_paths_in_artefacts.md` and case-law 2026-05-11 (the cleanup batch that motivated this rule).
 
+### Rule 6 — Entry-point context is first-class (rev 2 / 0.3.0)
+
+**Every sidecar records its node's relationship to entry points.** An entry point
+is a place where the system meets an external observer — UI route mount, UI button
+onClick, REST operation, scheduled job, webhook receiver, WAL listener, SDK builder,
+boot-time `@Configuration` evaluation, CLI entrypoint, test file. (See APPROACH.md
+section 4.1 for the full entry-point class table.)
+
+You record this relationship in TWO new sidecar sections:
+
+- **`upstream_callers`** — for each call-site that reaches this node, the entry
+  point that ultimately triggers it, the immediate caller, and the multiplicity
+  per trigger (e.g. `2` if a React useEffect dispatches the call twice per mount).
+- **`downstream_side_effects`** — for each user/externally-observable consequence
+  of this node's execution, the side-effect class (db-write / activity-emit /
+  external-call / sse-push / cache-mutate / log-emit / metric-emit / page-render
+  / header-set / redirect-issue), the cardinality per call, and the entry points
+  from which this side effect is reachable.
+
+**References are first-class.** If a caller is known but not yet enriched, OR if
+a downstream callee is not yet enriched, record a REFERENCE entry with
+`unresolved: true`. Future passes resolve them. The view_count doubling bug
+(LSN-017) is the canonical case: the backend sidecar correctly recorded `+1
+per call`; the UI sidecar would have recorded `dispatches ×2 per mount`; the
+layer-4 reducer composes those into `+2 per UI page-open`. Each sidecar's job
+is to record its half precisely; never silently elide a caller or callee just
+because the other half hasn't been written yet.
+
+**The same code visited from multiple entry-point contexts is expected and welcomed.**
+A `view_count` UPDATE is reached from UI detail-mount, third-party API consumers,
+lineage-canvas selection, and Popular ranking compute. Each visit produces a
+different feature-level fact about the same node. The node's full meaning is the
+union of facts gathered across all entry-point traversals.
+
+### Rule 7 — Code is truth; documentation is the audit target (rev 2)
+
+**Never derive feature facts from documentation.** Documentation may be stale,
+inconsistent, or silent about features the code has (including bugs that produce
+user-observable effects). Feature facts come from the code-walk; doc-gap-finder
+compares those facts to live docs and surfaces drift.
+
+In your sidecar, this rule manifests as: `docs_link_semantic` records what the
+docs SAY; `understanding` + `concepts` + `upstream_callers` + `downstream_side_effects`
+record what the code DOES; `doc_drift_findings` flags where the two diverge. You
+do NOT use a doc claim as the source of truth for a code behaviour. If the doc
+says X and the code does Y, write Y as the truth + flag X as drift.
+
+### Rule 8 — Local-only execution (rev 2)
+
+**Every part of the methodology runs on the maintainer's workstation.** No remote
+or cloud infrastructure for any component — substrate extraction, sidecar
+enrichment, reducers, probe execution, dynamic-verification mirror (when added),
+headless-browser probes, load injection, external-system mocks. Allowed: local
+docker-compose / podman-compose stacks, Testcontainers + local Postgres for
+ephemeral DB, Playwright / Puppeteer for headless-browser probes, k6 / wrk for
+load, WireMock / MockServer for external mocks. Disallowed in any artefact or
+proposed action: remote VMs (EC2 / GCP / Azure / Hetzner / DO), managed
+databases (RDS / Cloud SQL), managed CI runners as part of probe loops, hosted
+observability backends.
+
+The constraint is operationally load-bearing: this is an unfunded OSS project;
+no recurring infrastructure cost beyond the maintainer's Claude Code subscription
+and their own machine is acceptable. If your sidecar proposes a verification
+action that would require remote infrastructure, redraft the proposal to use
+local-only equivalents OR flag it as out-of-scope under the cost constraint.
+
 ## Input shape (the prompt you receive)
 
 The /enrich skill (or a maintainer running you ad-hoc) gives you:
@@ -159,7 +225,7 @@ axis: <verbatim>
 extracted_at_commit: <git rev-parse HEAD of the target repo at enrichment time — read it via Bash if needed; if Bash isn't available, use the substrate manifest's last_scan_commit>
 enriched_at_commit: <same — the commit you read FROM>
 extractor_version: 0.1.0
-prompt_version: file-analyser/0.2.0
+prompt_version: file-analyser/0.3.0
 enrichment_status: complete | partial | stale | failed
 confidence_overall: HIGH | MEDIUM | LOW
 session_id: <Claude Code session id if available; otherwise "session-2026-05-08-NN" where NN is sequence within the session>
@@ -191,12 +257,36 @@ What this code conceptually depends on, distinct from syntactic imports:
 
 ## tests_coverage_semantic
 
-- covered_behaviours: [<behaviours the existing test suite covers>]
-- uncovered_behaviours: [<behaviours that should be covered but aren't, per your reading>]
+**Rev 2 (file-analyser/0.3.0).** Every behaviour entry — covered or uncovered — carries
+a `test_class` annotation from the orthogonal set `unit | integration | performance |
+security`. The classes:
+
+- **unit** — invariant verifiable in isolation, with mocks at boundaries (e.g.
+  `incrementViewCount() — +1 delta on call`).
+- **integration** — chain across layer boundaries (UI dispatch → backend → DB)
+  via real Spring + Testcontainers. The view_count-doubling-class bugs live
+  here.
+- **performance** — measurable budget (latency p99, query count, memory,
+  throughput at concurrency N).
+- **security** — auth-gate enforcement, owner-scoping, data-exposure boundary,
+  side-effect blast radius. Tests across the auth-mode matrix.
+
+Format:
+
+- covered_behaviours:
+  - behaviour: "<one sentence — what is asserted>"
+    test_class: unit | integration | performance | security
+    test_files: [<file:line — where the assertion lives>]
+- uncovered_behaviours:
+  - behaviour: "<one sentence — what should be asserted>"
+    test_class: unit | integration | performance | security
+    criticality: CRITICAL | HIGH | MEDIUM | LOW
+    note: "<one-line reasoning, if helpful>"
 - test_files: [<file paths of relevant test files you found via Grep — file:line where applicable>]
 - gaps: |
     Free-form prose: where would a regression most likely land that the
-    current tests would miss?
+    current tests would miss? Which test_class has the worst coverage on
+    this node — and which class would catch the highest-leverage gap?
 
 ## docs_link_semantic
 
@@ -379,6 +469,100 @@ The aggregated assessment ("the alert feature has these performance
 strengths, these weak points, these cross-file inconsistencies") is the
 concept-merger's job.
 
+## upstream_callers
+
+**Rev 2 (file-analyser/0.3.0).** Every call-site that reaches this node, recorded with
+its entry-point context. The point: a node's full meaning is the union of facts gathered
+across all entry-point traversals that touch it. Records here feed the layer-4
+feature-flow-builder reducer.
+
+For each upstream caller (immediate caller — the function that calls this node directly):
+
+- entry_point: "<axis>:<descriptor>"   # e.g. "ui_route:/dataentities/{id}/overview"
+                                          OR  "rest:GET /api/dataentities/{id}"
+                                          OR  "scheduled:DataEntityStatusSwitchJob"
+                                          OR  "webhook:AlertManagerWebhook"
+                                          OR  "wal:debezium-dataentity"
+                                          OR  "sdk:s3-region-builder"
+                                          OR  "boot:@PostConstruct(NotificationsConfig)"
+                                          OR  "unresolved" if you cannot yet identify the entry point
+  caller_node: "<node_id of immediate caller>"   # if the caller is a substrate node;
+                                                   # otherwise free-form file:line
+  multiplicity_per_trigger: <N> | unresolved      # how many times this node fires per
+                                                   # one external trigger of the entry-point
+  evidence: "<file:line>"
+  observation_class: ui-call | rest-call | scheduled-trigger | webhook | wal-event | sdk-call | boot-eval
+
+If a caller is **known but not yet enriched**, record a REFERENCE entry with
+`unresolved: true` (and as much context as you have). References are first-class —
+they accumulate the partial picture. Future passes flesh them. Never silently elide
+a caller you cannot fully classify.
+
+If multiplicity is non-trivial (more than 1 per trigger), explain WHY in the
+`evidence` field. The canonical case: a React useEffect dependency-array that
+re-fires when the response itself updates a tracked value (LSN-017 — the
+view_count doubling) produces `multiplicity_per_trigger: 2 — useEffect dep-array
+contains a value derived from the fetch response, line N-M`.
+
+Example (DataEntityController.getDataEntityDetails seen from UI side):
+
+- entry_point: "ui_route:/dataentities/{id}/overview"
+  caller_node: "ts react-component:DataEntityDetails.tsx"
+  multiplicity_per_trigger: 2
+  evidence: "DataEntityDetails.tsx:56-64 — useEffect dispatches fetchDataEntityDetails;
+             dep-array contains details.status?.status (derived from response), causing
+             a second dispatch after the first fetch resolves"
+  observation_class: ui-call
+
+## downstream_side_effects
+
+**Rev 2 (file-analyser/0.3.0).** Every user-observable or externally-observable
+consequence of this node's execution. The point: layer-4 composes amplification
+factors and drift annotations from these records — make them precise.
+
+For each side effect:
+
+- side_effect_class: db-write | activity-emit | external-call | sse-push | cache-mutate | log-emit | metric-emit | page-render | header-set | redirect-issue
+- description: "<one sentence — what does an external observer see change?>"
+- evidence: "<file:line>"
+- cardinality_per_call: <N> | <conditional-expression>
+                                 # e.g. 1 (always), 0..N (depends on payload size),
+                                 #      "1 if entity exists else 0"
+- reachable_from_entry_points: ["<axis>:<descriptor>", ...]
+                                 # union across passes; populate from the
+                                 # entry_point values you recorded in upstream_callers,
+                                 # AND any references inherited from already-enriched
+                                 # upstream sidecars.
+
+If a downstream callee is **known but not yet enriched**, leave a REFERENCE entry
+with `unresolved: true`. The reducer fills it on a later pass.
+
+The `side_effect_class` set is the user/external boundary. Internal calls
+(service → service, mapper → mapper, helper → helper) that produce no
+externally observable change are NOT side effects in this sense — they're
+implementation. If a node only produces internal calls without a terminal
+external observation, its `downstream_side_effects` may legitimately be `[]`,
+but record the downstream nodes as `references` in the sidecar so the chain
+can resolve when those nodes are enriched.
+
+Example (DataEntityController.getDataEntityDetails):
+
+- side_effect_class: db-write
+  description: "Increments data_entity.view_count by 1 per call (per row, hot)"
+  evidence: "ReactiveDataEntityRepositoryImpl.java:173-180 — incrementViewCount(id)
+             runs inside @ReactiveTransactional on the controller path"
+  cardinality_per_call: 1
+  reachable_from_entry_points:
+    - "ui_route:/dataentities/{id}/overview"
+    - "rest:GET /api/dataentities/{id}"
+    - "ui_route:/dataentities/{id}/lineage (anchor)"   # if applicable per later passes
+
+- side_effect_class: page-render
+  description: "Returns 34-field DataEntityDetails payload to the caller"
+  evidence: "DataEntityController.java:139-147"
+  cardinality_per_call: 1
+  reachable_from_entry_points: [...]
+
 ## sources
 
 Every claim above traces to a file:line or to a WebFetched URL. Format:
@@ -396,6 +580,8 @@ Every claim above traces to a file:line or to a WebFetched URL. Format:
 - performance.hot_paths.[0] ← {file:line of the operation}
 - performance.scaling_characteristics.[0] ← {file:line of the lock/state/pagination evidence}
 - performance.known_performance_gaps.[0] ← {file:line + reasoning anchor}
+- upstream_callers.[0] ← {file:line of the calling site}             # rev 2
+- downstream_side_effects.[0] ← {file:line of the side-effect site}  # rev 2
 
 ## confidence_per_field
 
@@ -408,6 +594,8 @@ Every claim above traces to a file:line or to a WebFetched URL. Format:
 - bugs_limitations_corner_cases: HIGH | MEDIUM | LOW
 - security: HIGH | MEDIUM | LOW
 - performance: HIGH | MEDIUM | LOW
+- upstream_callers: HIGH | MEDIUM | LOW     # rev 2 — LOW if many unresolved refs
+- downstream_side_effects: HIGH | MEDIUM | LOW  # rev 2 — LOW if downstream callees not yet enriched
 
 (If a field has no content, mark its confidence as `N/A`.)
 

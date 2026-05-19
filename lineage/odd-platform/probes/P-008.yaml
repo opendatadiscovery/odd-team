@@ -1,0 +1,85 @@
+---
+probe_id: P-008
+feature_id: F-005
+test_class: integration
+verified_against_commit: ede5d277
+prompt_version: probe-runner/0.1.0
+maintainer_curated: true
+stack_profile: odd-minimal
+expected_outcome: |
+  TEST-GAP-279 / DOC-GAP-089 (batch G): `lineage_depth` is declared as
+  `required: false` in OpenAPI but `LineageService.getLineage(int depth, ...)`
+  uses a primitive `int` for the parameter. When the caller omits
+  lineage_depth, autoboxing null → int throws NullPointerException → 500.
+  The live API-reference doc CLAIMS "Unset returns the platform's default
+  depth" — but there IS no default in code; the documented behaviour is
+  unimplementable.
+
+  Probe omits the lineage_depth query parameter and asserts the response is
+  5xx (pinning the NPE bug). When the fix lands (either OpenAPI default, or
+  Spring @DefaultValue, or a null-check in LineageService), the assertion
+  flips to assert 200 + a sensible default depth in the response.
+---
+
+# P-008 — lineage_depth omitted → 500 NPE (TEST-GAP-279 / DOC-GAP-089)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1008, '//probe-source-P-008/db', 'probe-source-P-008')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1008, '//probe-source-P-008/db/tables/p008_lineage_target', 'p008_lineage_target',
+              1008, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+act:
+  # Omit lineage_depth on the query string. With the documented contract
+  # (default depth) the server should return 200; with the actual NPE bug,
+  # the server returns 500.
+  - kind: rest
+    method: GET
+    path: /api/dataentities/1008/lineage/downstream
+    expect_any_status: true       # we expect 5xx; act-step would otherwise mark as failure
+    capture_as: lineage_response
+
+observe:
+  - kind: sql
+    query: |
+      SELECT 1 AS sanity_marker
+    capture_as: sanity_marker
+
+assert:
+  # The bug: 500 returned (or other 5xx). When the fix lands, this flips
+  # to 200 + a sensible response shape.
+  # `last_response_status` is the act-step's HTTP status code.
+  - "last_response_status >= 500"
+  - "last_response_status < 600"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: []   # not currently a REFACTOR — it's TEST-GAP + DOC-GAP shaped
+  test_gaps: [TEST-GAP-279]
+  doc_gaps: [DOC-GAP-089]
+  related_concepts: ["Lineage Graph Traversal", "Data Entity"]
+  retrospectives: [LSN-017]
+
+realism_caveats: |
+  - The probe relies on `expect_any_status: true` on the act-step REST call —
+    a runner feature added to support probes that intentionally exercise
+    error paths. The runner records the status but does NOT mark the step
+    as failed for non-2xx responses when this flag is set.
+  - When the fix lands (default-on-server-side OR @DefaultValue), the
+    expected status becomes 200 and the assertion flips. Also the response
+    body shape becomes assertable (e.g. assert lineage.nodes is non-null).

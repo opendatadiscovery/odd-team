@@ -1,0 +1,86 @@
+---
+probe_id: P-002
+feature_id: F-001
+test_class: security
+verified_against_commit: ede5d277
+prompt_version: probe-runner/0.1.0
+maintainer_curated: true
+stack_profile: odd-minimal
+expected_outcome: |
+  Under auth.type=DISABLED (the probe-minimal stack's default), an anonymous
+  unauthenticated caller can successfully GET /api/dataentities/{id} AND the
+  call still increments view_count. Pins the DISABLED-mode bypass cluster
+  (REFACTOR-073, 18-sidecar triangulated) AS OBSERVABLE — not just inferred.
+  When the fail-closed fix ships, this probe's assertions flip: anonymous
+  reachability under DISABLED becomes the regression target.
+---
+
+# P-002 — view_count anonymous inflation under auth.type=DISABLED
+
+arrange:
+  - kind: docker-compose-up
+
+  # Schema: data_source minimal (id, oddrn, name); data_entity minimal
+  # (id, oddrn, external_name, data_source_id, type_id, view_count, timestamps).
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1002, '//probe-source-P-002/db', 'probe-source-P-002')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1002, '//probe-source-P-002/db/tables/p002_disabled', 'p002_disabled',
+              1002, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      SELECT view_count FROM data_entity WHERE id = 1002
+    capture_as: initial_view_count
+
+act:
+  # No Authorization header — anonymous. Under DISABLED, backend's filter chain
+  # falls through to .permitAll() and the call should succeed with 200.
+  - kind: rest
+    method: GET
+    path: /api/dataentities/1002
+    count: 10
+    inter_step_pause_ms: 50
+    headers: {}   # explicitly empty — no auth
+
+observe:
+  - kind: sql
+    query: |
+      SELECT view_count FROM data_entity WHERE id = 1002
+    capture_as: final_view_count
+
+assert:
+  # Pins the bypass: 10 anonymous calls under DISABLED inflate view_count by 10.
+  # This assertion FAILS the day fail-closed lands — at which point the probe
+  # is rewritten to assert the new behaviour (e.g. 401 / 403).
+  - "final_view_count - initial_view_count == 10"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-073, REFACTOR-220]
+  test_gaps: [TEST-GAP-104, TEST-GAP-309]
+  doc_gaps: [DOC-GAP-082]
+  related_concepts: ["Popular Entities Ranking", "Data Entity"]
+  retrospectives: [LSN-017]
+
+realism_caveats: |
+  - Probe runs against auth.type=DISABLED which IS the default of the probe-minimal
+    stack. To probe LOGIN_FORM / OAUTH2 / LDAP behaviour, a separate probe with a
+    different stack profile (extending odd-minimal with auth backends) is needed —
+    deferred to slice 3.
+  - The DISABLED-bypass cluster covers 18 sidecars across batches A-G; this single
+    probe verifies ONE endpoint of the cluster. A full security regression suite
+    would author 18 probes mirroring the cluster's structure.

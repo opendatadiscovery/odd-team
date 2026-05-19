@@ -265,3 +265,245 @@ session_id: session-2026-05-12-F-DataEntityDetails
 
 ## Maintainer notes
 
+## probe_verifications
+
+<!-- Auto-managed by lineage/_extractor/probe-runtime/runner.py — appended after each layer-5 probe-run that touches this node's contributing-features. Each entry cites a probe-run artefact under lineage/{repo}/probe-runs/. Per dynamic-verification ADR Rule 4. -->
+
+- probe_id: P-001
+  probe_run_id: R-20260519T014121Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T01:41:21+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T014819Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T01:48:19+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T015052Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T01:50:52+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T015056Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T01:50:56+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T015058Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T01:50:58+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T015104Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T01:51:04+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T020255Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:02:55+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T020259Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:02:59+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T020301Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:03:01+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T020307Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:03:07+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T020744Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:07:44+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T020748Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:07:48+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T020751Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:07:51+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T020757Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:07:57+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T021148Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:11:48+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T021152Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:11:52+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T021154Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:11:54+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T021200Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:12:00+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T022658Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:26:58+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T022702Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:27:02+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T022705Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:27:05+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T022710Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:27:10+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T022947Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:29:47+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T022953Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:29:53+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T022956Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:29:56+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T023002Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:30:02+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T023231Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:32:31+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T023236Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:32:36+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T023238Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:32:38+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T023244Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:32:44+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T023643Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:36:43+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T023647Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:36:47+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T023650Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:36:50+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T023657Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:36:57+00:00
+  verdict: "all assertions passed"

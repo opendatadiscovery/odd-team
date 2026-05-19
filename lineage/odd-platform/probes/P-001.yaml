@@ -1,0 +1,87 @@
+---
+probe_id: P-001
+feature_id: F-001
+test_class: integration
+verified_against_commit: ede5d277
+prompt_version: probe-runner/0.1.0
+maintainer_curated: true
+stack_profile: odd-minimal
+expected_outcome: |
+  Five sequential GET /api/dataentities/{id} requests increment data_entity.view_count
+  by exactly +5 — confirming the documented backend per-call delta of +1. Pins the
+  backend half of the view_count loop (REFACTOR-201). The UI doubling that produces
+  +2 per page-open is a separate concern requiring a headless-browser probe (slice 3).
+---
+
+# P-001 — view_count backend per-call delta
+
+arrange:
+  - kind: docker-compose-up
+
+  # Schema verified live against ghcr.io/opendatadiscovery/odd-platform:0.20.0
+  # post-V0_0_71 (data_source.active/connection_url/pulling_interval dropped).
+  # Minimal columns sufficient for GET /api/dataentities/{id} to return 200 OK.
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1001, '//probe-source-P-001/db', 'probe-source-P-001')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1001, '//probe-source-P-001/db/tables/p001_table', 'p001_table',
+              1001, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      SELECT view_count FROM data_entity WHERE id = 1001
+    capture_as: initial_view_count
+
+act:
+  - kind: rest
+    method: GET
+    path: /api/dataentities/1001
+    count: 5
+    inter_step_pause_ms: 100
+
+observe:
+  - kind: sql
+    query: |
+      SELECT view_count FROM data_entity WHERE id = 1001
+    capture_as: final_view_count
+
+  - kind: latency_distribution
+    over: "all act steps"
+    capture_percentiles: [p50, p95, p99]
+    capture_as: latency_curve
+
+assert:
+  # The backend delta: +1 per call × 5 calls = +5
+  # Captures auto-coerce SQL CSV strings to int when possible.
+  - "final_view_count - initial_view_count == 5"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-201, REFACTOR-220]
+  test_gaps: [TEST-GAP-256, TEST-GAP-259]
+  doc_gaps: [DOC-GAP-085, DOC-GAP-101]
+  related_concepts: ["Popular Entities Ranking", "Data Entity"]
+  retrospectives: [LSN-017]
+
+realism_caveats: |
+  - Probes the BACKEND view_count delta only, not the UI amplification factor.
+    The UI useEffect dep-array doubling (LSN-017) requires a headless-browser
+    probe, deferred to slice 3.
+  - Stack is built from ghcr.io/opendatadiscovery/odd-platform:0.20.0 — may
+    diverge from substrate commit ede5d277 in subtle ways. The probe is a
+    methodology validation, not a guarantee of bit-identity with the substrate.
+  - Probe does not exercise the soft-delete cascade or the soft-delete-then-restore
+    branch; those would compose differently on view_count.

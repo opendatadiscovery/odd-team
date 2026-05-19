@@ -1,0 +1,109 @@
+---
+probe_id: P-004
+feature_id: F-001
+test_class: integration
+verified_against_commit: ede5d277
+prompt_version: probe-runner/0.1.0
+maintainer_curated: true
+stack_profile: odd-minimal
+expected_outcome: |
+  Opening /dataentities/{id}/overview in headless Chromium triggers TWO
+  XHR requests to GET /api/dataentities/{id} per page-mount (due to the
+  useEffect dep-array bug at DataEntityDetails.tsx:56-64 where
+  details.status?.status is in the array and changes after the first fetch
+  resolves). Each XHR increments view_count by 1, so a single page-open
+  inflates view_count by +2. This empirically pins LSN-017 — the
+  user-observable doubling that the static methodology could not surface
+  on its own.
+
+  When the useEffect dep-array bug is fixed (remove details.status?.status
+  from the array), this probe's assertions flip: xhr_count becomes 1, and
+  delta becomes 1.
+---
+
+# P-004 — UI page-open doubles view_count (LSN-017 empirical proof)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1004, '//probe-source-P-004/db', 'probe-source-P-004')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1004, '//probe-source-P-004/db/tables/p004_ui_probe', 'p004_ui_probe',
+              1004, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      SELECT view_count FROM data_entity WHERE id = 1004
+    capture_as: initial_view_count
+
+act:
+  - kind: browser
+    # SPA route is /dataentities/{id} — the React Router auto-redirects to
+    # /dataentities/{id}/overview (the default tab). Either URL lands on the
+    # same DataEntityDetails.tsx mount.
+    path: /dataentities/1004
+    base: "http://localhost:18080"
+    # `load` + long post_settle is the empirical pattern: networkidle returns
+    # too early (before the React tree's lazy chunks + sub-component effects
+    # have settled). The useEffect dep-array re-fire happens AFTER the first
+    # detail response resolves — usually 1-3 seconds in.
+    wait_until: load
+    timeout_ms: 30000
+    post_settle_ms: 6000
+    # Regex: EXACT match on the detail fetch URL only. Excludes sub-paths
+    # (/alerts/counts, /files/uploads, /attachments — those are tab-content
+    # fetches that ALSO fire twice but are not the headline view_count signal).
+    xhr_filter_regex: '^http://localhost:18080/api/dataentities/1004(\?.*)?$'
+
+observe:
+  - kind: sql
+    query: |
+      SELECT view_count FROM data_entity WHERE id = 1004
+    capture_as: final_view_count
+
+assert:
+  # The headline assertion: UI fires 2 backend GETs per page-open.
+  - "xhr_count == 2"
+
+  # The user-observable consequence: view_count grows by 2 per page-open.
+  # If the UI fix lands (single useEffect fire) AND the backend per-call
+  # delta stays +1, this assertion would change to == 1.
+  - "final_view_count - initial_view_count == 2"
+
+  # Cross-check: the two facts compose deterministically.
+  - "final_view_count - initial_view_count == xhr_count"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-201, REFACTOR-220]
+  test_gaps: [TEST-GAP-256, TEST-GAP-259, TEST-GAP-309]
+  doc_gaps: [DOC-GAP-085, DOC-GAP-101]
+  related_concepts: ["Popular Entities Ranking", "Data Entity"]
+  retrospectives: [LSN-017]
+
+realism_caveats: |
+  - Uses Playwright's headless Chromium against the SPA served by odd-platform
+    on port 18080. The SPA is bundled in the backend's docker image, so this
+    probe exercises the EXACT UI bundle shipped with ghcr.io/opendatadiscovery/
+    odd-platform:latest. When the image is rebuilt with a UI fix, this probe
+    flips from PASS-PINNING-BUG to PASS-PASSING (xhr_count goes 2→1; delta
+    goes 2→1).
+  - React StrictMode in development causes double-mounts that would push the
+    expected xhr_count to 4 (2 mounts × 2 useEffect fires each). Production
+    builds (which is what ships in the image) do NOT have StrictMode double-
+    mounts; expected count is 2.
+  - Probe runs headless. A maintainer wanting to visually confirm can run
+    `headless=False` interactively against the same brought-up stack.

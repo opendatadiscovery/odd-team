@@ -27,6 +27,12 @@ drift_class_summary:
 - delete_no_not_found_validation_owner_side
 - soft_deleted_owner_visible_via_get_by_id_but_hidden_from_list
 - cascade_check_non_atomic_owner_delete_mirror
+- six_sidecar_audit_silence_pattern_ui_tier_confirmation
+- catalogue_vs_grant_render_asymmetry_ui_visible_half
+- soft_deleted_policies_visible_in_role_chip_lists_ui_manifestation
+- administrator_name_ui_guard_case_sensitive_string_match
+- create_path_role_form_no_predefined_name_reject_ui_complicit
+- principal_aware_list_fork_ui_silent_no_filtered_messaging
 batch_extensions:
 - batch: K
   entry_point_added: 'service:OwnershipServiceImpl (the ownership-lifecycle service backing the 3 /api/dataentities/{id}/ownership controller methods — adds the OWNER_CREATE-bypass and the USR003 cross-batch correction)'
@@ -221,6 +227,127 @@ batch_extensions:
     bugs_limitations_corner_cases[2] and security.known_security_gaps[2]
     on the createOwner sidecar are flagged `superseded_by: batch-P
     deleteOwner sidecar (session-2026-05-20-P)`.
+- batch: Q
+  entry_point_added: |-
+    UI-tier (2 sidecars): react-component:PolicyList (Management →
+    Policies tab) + react-component:RolesList (Management → Roles tab).
+    The two UI-tier sidecars close the SPA-side render of the RBAC
+    catalogue surfaces. PolicyList consumes GET /api/policies through
+    `fetchPolicyList` thunk → `PolicyController.getPolicyList` →
+    `PolicyServiceImpl.list` (ADMIN branch → `policyRepository.list`;
+    non-ADMIN branch → in-memory `getRolePolicies`). RolesList consumes
+    GET /api/roles through `fetchRolesList` thunk →
+    `RoleController.getRolesList` → `RoleServiceImpl.list` (principal-aware
+    fork — ADMIN vs non-ADMIN). The two UI surfaces are STRUCTURALLY
+    SYMMETRIC — identical WithPermissions wrapping pattern, identical
+    InfiniteScroll + debounced-search shell, identical `WithPermissions
+    permissionTo={Permission.X_CREATE}` for the Create CTA, identical
+    name-string-coupled 'Administrator' / 'User' guards.
+  contributing_nodes_added:
+  - odd-platform ts react-component:PolicyList
+  - odd-platform ts react-component:RolesList
+  notes: |-
+    SIX new drift facets surface from the UI tier of the RBAC
+    surface, plus the SIX-SIDECAR audit-silence refinement (the 5-sidecar
+    pattern from batch P + the UI tier this batch = 6-sidecar). Listed
+    in descending severity:
+    (1) SIX-SIDECAR AUDIT-SILENCE PATTERN — UI TIER IS FORENSICALLY
+    SILENT TOO (HIGH) — verified by Grep on `mixpanel|amplitude|segment
+    |gtag|posthog|track(` across `<odd-platform-ui>/src` returning ZERO
+    matches. PolicyList + RolesList neither emit analytics events on
+    mutations NOR display authorship metadata on rows (only id + name
+    rendered; no created_at, no created_by). The successful create /
+    update / delete toasts vanish in ~5 seconds with no persistent UI
+    audit panel. The 5-sidecar pattern (RoleController batch E +
+    PolicyController batch E + ReactivePolicyRepositoryImpl batch H +
+    ReactiveRoleRepositoryImpl batch N + OwnerServiceImpl batch P) is
+    REFINED to 6-SIDECAR with the addition of the UI tier. This is the
+    FIRST UI-side corroboration of the cross-batch audit-silence
+    finding; the audit-silence is platform-wide across server AND
+    client.
+    (2) CATALOGUE-VS-GRANT RENDER ASYMMETRY UI-VISIBLE HALF (HIGH) —
+    PolicyList renders the catalogue auto-filtered by `deleted_at IS
+    NULL` (the inherited soft-delete base-class filter in
+    `policyRepository.list`); the LIST UI shows a CONSISTENT view —
+    soft-deleted policies are GONE. The OPERATING reality per
+    F-006 batch-H + batch-N + this batch's UI evidence: a role bound
+    to a soft-deleted policy continues to confer permissions via the
+    unfiltered `getRolesPolicies` JOIN. **The UI is the surface where
+    the misperception manifests** — operator sees 'gone', backend keeps
+    granting. PolicyList.tsx:1-128 cannot surface this drift at this
+    layer; it is invisible to operators who never inspect the SQL
+    layer. UI manifestation of F-006 drift_class
+    `soft_delete_aware_visibility_inconsistency`.
+    (3) SOFT-DELETED POLICIES STILL VISIBLE IN PER-ROW POLICY CHIPS
+    (MEDIUM) — RolesList renders Role rows via `RoleItem.tsx:42-48`
+    which maps `policies.map(policy => policy.name)`. The underlying
+    `roleRepository.listDto` LEFT JOIN against POLICY has NO
+    `policy.deleted_at IS NULL` predicate (per batch-N invariants[1] +
+    F-006 drift_class `role_repo_left_join_no_policy_deleted_at_filter_mirror`).
+    A Role whose Policy has been soft-deleted but whose `role_to_policy`
+    edge survives WILL render the deleted Policy's name in the chip
+    list, with no visual differentiation. Operational-intelligence
+    leak: an attacker reading the role catalog can enumerate historical
+    Policy names that were once attached and then deleted.
+    (4) ADMINISTRATOR-NAME UI GUARD IS CASE-SENSITIVE STRING MATCH +
+    INHERITS BACKEND CASE-SENSITIVITY MISMATCH (MEDIUM) — PolicyItem.tsx:23
+    + PolicyForm.tsx:28 + RoleItem.tsx:24-25 + RoleForm.tsx:28, 90 all
+    hardcode `name === 'Administrator'` (or `=== 'User'`) for hide-Edit/Delete
+    affordance. Server-side: `RoleServiceImpl.update` (line 68) uses
+    case-SENSITIVE `.equals` (consistent with UI); `RoleServiceImpl.delete`
+    (line 82) uses case-INSENSITIVE `.equalsIgnoreCase` (INCONSISTENT
+    with UI). Net effect — an operator who creates 'administrator'
+    (lowercase) sees Edit AND Delete buttons in the UI (UI is
+    case-sensitive — doesn't match 'Administrator'), clicks Delete →
+    server-side rejects 'Role is predefined and cannot be deleted',
+    UI shows server error. UI manifestation of F-006 drift_class
+    `role_service_predefined_name_case_sensitivity_mismatch`.
+    (5) CREATE-PATH NAME ASYMMETRY UI ENABLES THE F-006 ADMINISTRATOR-NAME
+    RE-CREATION ATTACK (HIGH) — RolesList → RoleForm.tsx:80-95 declares
+    only `rules={{required: true, validate: value => !!value.trim()}}`
+    for the Role name field. NO predefined-name reject, NO length cap,
+    NO charset filter, NO case-insensitive predefined-name check. The
+    UI is the operator-facing trigger of F-006 drift_class
+    `role_create_administrator_name_asymmetry_mirror` — an attacker
+    with ADMIN role or S2S API key can (a) direct-DB-UPDATE the seeded
+    Administrator row's `deleted_at`, (b) open
+    `/management/roles/createRole`, (c) name the new role 'Administrator'
+    + attach any Policy from the autocomplete (including
+    MANAGEMENT/ALL), (d) submit succeeds — the partial unique index
+    permits re-use of the freed name. UI is COMPLICIT.
+    (6) PRINCIPAL-AWARE LIST FORK IS UI-SILENT (MEDIUM) — both PolicyList
+    and RolesList have a server-side principal-aware fork
+    (`PolicyServiceImpl.list` ADMIN vs non-ADMIN branching; same shape
+    in `RoleServiceImpl.list`). The UI renders the filtered set with
+    NO 'showing N of M' messaging, NO admin contact-CTA, NO
+    'filtered-by-your-access' disclaimer. A non-ADMIN seeing one Role
+    labelled 'User' may reasonably conclude 'the platform has only one
+    role configured' — they have no UI affordance indicating the list
+    is principal-filtered. UX defect with security implications: an
+    attacker can argue 'role X doesn't exist' citing the empty UI
+    surface.
+    Additionally, the `WithPermissions` HOC convention (`return
+    hasAccessTo(permissionTo) ? <>{children}</> : null`) HIDES
+    forbidden affordances rather than DISABLING them — operators
+    without RBAC permissions see a read-only list with NO buttons,
+    no visual cue that the affordance exists. The UI side of the
+    read-collaborative posture (ADR-CANDIDATE-003 / REFACTOR-024).
+    Cross-batch coherence: the UI-side findings STRENGTHEN F-006's
+    existing drift_classes
+    `soft_delete_aware_visibility_inconsistency`,
+    `role_repo_left_join_no_policy_deleted_at_filter_mirror`,
+    `role_service_predefined_name_case_sensitivity_mismatch`,
+    `role_create_administrator_name_asymmetry_mirror`, and
+    `four_sidecar_audit_silence_pattern_role_repo_confirmation` /
+    `five_sidecar_audit_silence_pattern_owner_delete_confirmation`
+    (the latter pair refined to 6-SIDECAR). No conflicts; no
+    supersedes. NEW finding only on the UI tier specifically: the
+    LSN-017 dep-array doubling pattern is EXPLICITLY ABSENT from both
+    PolicyList and RolesList — the `useEffect([fetchX, query])` is
+    GUARDED by `if (!query)`, so the effect fires on mount + on
+    query-clear, NOT on every keystroke. Recorded as a NEGATIVE
+    finding (LSN-017-safe by structure) so a future scan need not
+    re-investigate.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: RBAC policy lifecycle — soft-delete with permission-grant persistence
@@ -294,6 +421,8 @@ contributing_nodes:
 - odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
 - odd-platform java RoleServiceImpl
 - odd-platform java OwnerController controller-method:deleteOwner
+- odd-platform ts react-component:PolicyList
+- odd-platform ts react-component:RolesList
 chain:
 - hop: 1
   node: odd-platform java PolicyController controller-method:createPolicy

@@ -19,6 +19,9 @@ drift_class_summary:
 - name_field_case_sensitive_no_normalisation_no_validation
 - per_owner_authorization_scoping_absent_global_owner_crud_permission
 - disabled_mode_anonymous_reach_destructive_verb
+- empty_roles_destructive_update_reachable_from_ui_in_three_clicks
+- owner_lifecycle_audit_silence_six_sidecar_ui_tier_corroboration
+- soft_deleted_owner_correctly_hidden_from_ui_list_positive_finding
 cross_pillar_relationships:
 - pillar_id: P-09
   kind: feeds
@@ -55,6 +58,107 @@ cross_pillar_relationships:
     the full consumer list.
 batch_origin: P
 created_in_batch: P
+batch_extensions:
+- batch: Q
+  entry_point_added: |-
+    UI-tier: react-component:OwnersList (the SOLE UI surface in the platform
+    that invokes the Owner-lifecycle trinity — POST / PUT / DELETE
+    /api/owners[/{id}]). OwnersList is the operator-facing trigger for ALL 13
+    F-019 load-bearing drift facets. Each surfaces as a clickable affordance
+    behind a permission gate (OWNER_CREATE / OWNER_UPDATE / OWNER_DELETE).
+    The component composes `OwnerForm` (Create/Edit dialog, shared component
+    branching on `ownerId` presence) + `EditableOwnerItem` (per-row card
+    with `ConfirmationDialog` on Delete) inside an `InfiniteScroll` over
+    paginated Owner DTOs (size=100, search-debounce 500ms).
+  contributing_nodes_added:
+  - odd-platform ts react-component:OwnersList
+  notes: |-
+    THREE findings surface from the UI tier of the Owner-lifecycle trinity,
+    all of which STRENGTHEN existing F-019 facets — the HIGH-severity
+    elevation of the empty-roles destructive UPDATE from API-consumer-only
+    hazard to UI-OPERATOR-REACHABLE-IN-THREE-CLICKS is the headline.
+    Listed in descending severity:
+    (1) EMPTY-ROLES DESTRUCTIVE UPDATE IS REACHABLE FROM UI IN 3 CLICKS —
+    NO CONFIRMATION (HIGH) — Flow: (1) Edit on an Owner row → opens
+    `OwnerForm` with existing roles as TagItems (`OwnerForm.tsx:95-103`);
+    (2) click X on each TagItem (`onRemoveClick={handleRemove(idx)}` at
+    line 101); (3) click Save (enabled because `formState.isValid` only
+    checks the `name` field — `OwnerForm.tsx:77` declares `rules={{required:
+    true, validate: value => !!value.trim()}}` for `name` and NOTHING for
+    `roles`). The submitted `OwnerFormData` carries `roles: []`. Per F-019
+    batch-P updateOwner sidecar bugs_limitations_corner_cases[3] +
+    `OwnerServiceImpl.java:71, 76-81, 117-122`, this triggers
+    `deleteOwnerRelationsExcept(ownerId, List.of()).then(createRelations(
+    ownerId, List.of()))` — DELETES all role-bindings (no audit, no
+    recovery). The UI provides NO confirmation modal, NO red-warning
+    banner, NO before/after diff. The Delete affordance HAS a confirmation
+    modal (`EditableOwnerItem.tsx:55-72` — `'<owner-name> will be deleted
+    permanently'`); the more-irreversible Update-with-empty-roles does
+    NOT. Asymmetry is load-bearing: the API-side DELETE is REVERSIBLE
+    (soft-delete + partial-unique-index name re-use per V0_0_64) while the
+    UPDATE-empty-roles role-strip is IRREVERSIBLE (role bindings are
+    hard-deleted per F-019 batch P). Mirrors the F-019 drift facet
+    `empty_roles_field_silently_destroys_bindings` and ELEVATES it from
+    API-consumer-only to UI-OPERATOR-REACHABLE. The UI surface is the
+    operator-facing trigger of REFACTOR-425.
+    (2) 6-SIDECAR AUDIT-SILENCE OPERATOR-FACING TRIGGER (HIGH) — The
+    Create / Edit / Delete affordances on `OwnersList.tsx` are the THREE
+    primary triggers of the audit-silent path. An operator acting through
+    the UI cannot later audit 'who renamed Owner X from Alice to Bob at T'
+    because the platform records no event (per F-019 batch-P
+    `forensic_silence_on_owner_lifecycle_mutations`). The UI itself
+    provides NO local audit affordance (no 'recent changes' panel, no
+    operator's-own-mutation history; verified by reading OwnersList.tsx:1-134
+    end-to-end). Combined with the destructive-empty-roles UX (above), an
+    operator can silently strip all roles from any Owner and leave no
+    trace anywhere except the `owner_to_role` row count delta. The UI tier
+    is the 6th corroborating sidecar of the 6-sidecar audit-silence
+    pattern this feature carries (extends the 5-sidecar finding from F-006
+    batch P with the UI-side evidence — matching the parallel batch-Q
+    finding on F-006/F-008/F-011 UI tiers).
+    (3) SOFT-DELETED OWNER VISIBILITY ASYMMETRY POSITIVE HALF — UI LIST
+    CORRECTLY HIDES SOFT-DELETED OWNERS (no severity; positive finding) —
+    The OwnersList component consumes `getOwnerList` via
+    `OwnerController.java:30-38` → `OwnerServiceImpl.list` →
+    `ReactiveOwnerRepositoryImpl.list` which calls `enrichSelect` →
+    `listCondition` (inherited from `ReactiveAbstractSoftDeleteCRUDRepository`)
+    which adds `deleted_at IS NULL` per the F-019 batch-P deleteOwner
+    sidecar invariants. **The visible-in-UI Owner directory CORRECTLY
+    HIDES soft-deleted Owners**. The asymmetric by-id surface (`GET
+    /api/owners/{id}` returns soft-deleted rows per F-019
+    `soft_deleted_owner_visible_via_get_by_id_only`) is NOT reachable from
+    this list UI. POSITIVE finding for OwnersList: the list view is the
+    SAFE consumer of the visibility asymmetry. Surfaces a doc-gap
+    candidate (the live docs should explain that 'the Owners tab shows
+    only active Owners; soft-deleted Owners persist as directory rows
+    visible via direct API calls but hidden here').
+    Additionally surfaces: (a) update completion does NOT trigger a list
+    refetch (the `useEffect` dep-array at `OwnersList.tsx:44-46` is
+    `[isOwnerCreating, isOwnerDeleting, query]` — missing
+    `isOwnerUpdating`; the update path relies on the redux response DTO
+    to hydrate `byId` — fragile if a partial DTO returns); (b) page-1
+    refetch on create/delete completion is gated by `if (!query)` — a
+    just-created or just-deleted owner is INVISIBLE to a user with an
+    active search query until they clear the search; (c) the search-vs-paginate
+    race window (no AbortController integration) can interleave unrelated
+    owners into the list under fast typing + concurrent scroll; (d)
+    permission-gates HIDE rather than DISABLE — operators without
+    OWNER_CREATE see no `Create Owner` button (no visual cue the affordance
+    exists), same for Edit/Delete; (e) under `auth.type=DISABLED` the UI
+    page mounts anonymously AND the Owner CRUD it invokes is anonymously
+    executable (the 17th REFACTOR-185 surface per F-019 batch P, now
+    operator-UI-facing). Cross-batch coherence: STRENGTHENS the F-019
+    drift facets `empty_roles_field_silently_destroys_bindings` (HIGH
+    severity elevation),
+    `forensic_silence_on_owner_lifecycle_mutations` (6th corroborating
+    sidecar — UI tier), `soft_deleted_owner_visible_via_get_by_id_only`
+    (positive half — UI list correctly hides), and
+    `disabled_mode_anonymous_reach_destructive_verb` (UI-tier operator
+    trigger). No conflicts; no supersedes. UI permission gates use the
+    consistent platform `WithPermissions` HOC pattern (mirror of batch-Q
+    PolicyList + RolesList + CollectorsList finding on F-006 + F-008):
+    HIDE not DISABLE; client-side gates are UX-only and not security
+    boundaries.
 discovered_from_entry_point: rest:POST /api/owners + PUT /api/owners/{owner_id} + DELETE /api/owners/{owner_id}
 description: |-
   The Owner Lifecycle Management feature is the operator-facing CRUD
@@ -138,6 +242,7 @@ contributing_nodes:
 - odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
 - odd-platform java SecurityConstants
 - odd-platform java ControllerAdvice
+- odd-platform ts react-component:OwnersList
 chain:
 - hop: 1a
   node: odd-platform java OwnerController controller-method:createOwner

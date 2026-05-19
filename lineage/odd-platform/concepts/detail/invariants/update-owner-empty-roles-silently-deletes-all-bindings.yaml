@@ -1,4 +1,4 @@
-name: PUT /api/owners empty-roles silently deletes all role bindings
+name: PUT /api/owners empty-roles silently deletes all role bindings (STRENGTHENED batch Q — UI-tier reachability)
 canonical_in_docs: false
 canonical_candidate: true
 pillar_affinity:
@@ -45,11 +45,20 @@ description: |-
   authorization-resolution call for any USER_OWNER_MAPPING-bound
   user resolves to ZERO Policies → effectively no permissions.
 
-  **Why the UI masks the hazard**: the UI in practice always sends
+  **Batch-P claim about UI masking the hazard — REFUTED in batch Q**:
+  the batch-P invariant text claimed "the UI in practice always sends
   the current `roles` list (`owners.thunks.ts` per UI source code) —
   it loads the Owner, lets the user edit the name + role checkboxes,
   and PUTs back the COMPLETE state. So the hazard is invisible in
-  normal UI flows.
+  normal UI flows." **Batch Q's OwnersList sidecar REFUTES this**:
+  the OwnerForm dialog allows the operator to REMOVE every role
+  TagItem via the X-icon (`OwnerForm.tsx:101 onRemoveClick={handleRemove(idx)}`).
+  The `roles` field has NO validation. The Save button remains enabled.
+  Submission dispatches `updateOwner({ ownerId, ownerFormData })` with
+  `roles: []` — which is exactly the destructive payload. The UI is
+  NOT a defence; it is a 3-click trigger. See the new sibling
+  invariant
+  `destructive-empty-roles-update-reachable-from-ui-three-clicks-no-confirmation`.
 
   **Why API consumers hit the hazard**: a script that wants to rename
   an Owner without touching roles will reasonably PUT
@@ -76,21 +85,58 @@ description: |-
   the live permissions page describes `OWNER_UPDATE` as 'Allows
   editing an existing owner' with no caveat about role-binding
   destruction.
+
+  **BATCH Q EXTENSION — UI-TIER REACHABILITY ELEVATES THE SEVERITY**:
+  the OwnersList sidecar confirms the destructive default is reachable
+  from operator UI in three clicks (Edit Owner → remove all role
+  TagItems → Save). The OwnerForm has no validation on `roles`; Save
+  remains enabled because formState.isValid only checks `name`. The
+  asymmetry: DELETE-Owner has a confirmation modal; UPDATE-with-empty-
+  roles (more destructive) does not. See sibling invariant
+  `destructive-empty-roles-update-reachable-from-ui-three-clicks-no-confirmation`
+  for the full operator-facing reachability analysis.
 axes_present:
   - controllers
   - services
+  - ui_components
 nodes:
   - odd-platform java OwnerController controller-method:updateOwner
+  - odd-platform ts react-component component:OwnersList
 contributors:
   - 'updateOwner.md:concepts.invariants.[4] (Role-set replacement is set-based, not diff-based — empty roles is destructive, not don''t-touch)'
   - 'updateOwner.md:bugs_limitations_corner_cases.[3] (Empty roles silently destroys role bindings — severity HIGH)'
   - 'updateOwner.md:security.known_security_gaps.[2] (Empty roles field silently destroys all role bindings — destructive-default UX hazard)'
   - 'updateOwner.md:implicit_adrs.[2] (Role-rebinding is set-replacement, not field-merge — convention inherited across update methods)'
+  - |-
+    **NEW batch Q — OwnersList.md (UI-tier REACHABILITY of the destructive
+    default)**: bugs_limitations_corner_cases.[5] (HIGH — Empty-roles
+    destructive UPDATE is fully reachable from the UI — three clicks,
+    no warning; flow: Edit on Owner row → opens OwnerForm with existing
+    roles as TagItems → click X on each TagItem → click Save; submitted
+    OwnerFormData carries roles: []; per F-019 batch-P this triggers
+    deleteOwnerRelationsExcept(ownerId, []).then(createRelations(ownerId, []))
+    — DELETES all role-bindings — no audit, no recovery) +
+    security.known_security_gaps.[0] (HIGH — UI surface is the
+    operator-facing trigger of the F-019 batch-P drift facet
+    `empty_roles_field_silently_destroys_bindings`; operator or anyone
+    shoulder-surfing operator's session can strip all roles from any
+    Owner with zero confirmation) + coherence_notes (kind=strengthens
+    target=F-019 target_drift_facet=`empty_roles_field_silently_destroys_bindings`
+    — escalates from "API-consumer-only hazard, UI in practice always
+    sends the current roles list" to "UI-REACHABLE-DESTRUCTIVE-DEFAULT"
+    with this sidecar's evidence)
 evidence:
   - updateOwner.md:concepts.invariants.[4] (PRIMARY SOURCE — OwnerServiceImpl.java:76-81 + getRoleIdsList lines 117-122)
   - updateOwner.md:bugs_limitations_corner_cases.[3] (severity HIGH; OpenAPI 419-422 optional + service-layer empty-list collapse + DB-layer destructive replace)
   - updateOwner.md:security.known_security_gaps.[2] (severity HIGH — combined with no-audit-log gap)
   - updateOwner.md:implicit_adrs.[2] (intent_anchor — the convention is consistent; replace semantics intentional)
+  - |-
+    **NEW batch Q — OwnersList.md:bugs_limitations_corner_cases.[5] +
+    security.known_security_gaps.[0] + coherence_notes (HIGH — UI-tier
+    reachability of the destructive default; 3-click reachability;
+    no confirmation modal; the UI is COMPLICIT — provides no defence
+    + the more-reversible delete operation DOES have a confirmation
+    modal; OwnerForm.tsx:40-43, 95-103, 108-117)**
 notes: |-
   Cross-references:
 
@@ -99,19 +145,32 @@ notes: |-
       cannot reconstruct "Owner X had roles [A, B] before, now has []"
       after the fact.
 
-    - `update-owner-with-role-rebind` operation (new in this batch) — the
+    - `update-owner-with-role-rebind` operation (new in batch P) — the
       operation that hosts this bug.
+
+    - **NEW batch Q** —
+      `destructive-empty-roles-update-reachable-from-ui-three-clicks-no-confirmation`
+      invariant — the sibling UI-tier elevation; documents the
+      operator-facing trigger surface as a distinct invariant.
+
+    - **NEW batch Q** — `hard-delete-on-relationship-edges-confirmed-cross-batch`
+      invariant — the owner_to_role row hard-deletion semantic that
+      makes the destruction irreversible.
 
   Doc-side recommended action: extend the live owners page and the
   permissions page with an explicit warning: "API consumers calling
   PUT /api/owners/{owner_id}: the `roles` field is treated as a
   REPLACE-SET. Omitting `roles` or sending `roles: []` STRIPS ALL
   role bindings from the Owner. Always send the complete current
-  `roles` list." Equivalent severity to LSN-001 (the attachment-
-  storage default that wiped production data on restart) — same
-  shape: a reasonable expectation produces destructive behaviour
-  silently.
+  `roles` list. The UI's Edit-Owner dialog allows removing all role
+  TagItems via the X icon — Save with an empty roles array triggers
+  the same destructive behaviour. No confirmation modal warns the
+  operator." Equivalent severity to LSN-001 (the attachment-storage
+  default that wiped production data on restart) — same shape: a
+  reasonable expectation produces destructive behaviour silently.
 
   Backlog action proposed: file DOC-NNN follow-up + log upstream
   GitHub issue for the OpenAPI contract: mark `roles` as required,
-  OR introduce a PATCH endpoint for partial updates.
+  OR introduce a PATCH endpoint for partial updates. **PLUS NEW batch
+  Q** — file UI-side follow-up to add a confirmation modal in the
+  OwnerForm when `roles.length === 0 && previousRoles.length > 0`.

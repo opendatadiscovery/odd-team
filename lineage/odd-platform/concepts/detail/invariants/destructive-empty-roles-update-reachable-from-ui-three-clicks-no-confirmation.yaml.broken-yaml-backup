@@ -1,0 +1,181 @@
+name: Destructive empty-roles UPDATE reachable from UI in three clicks (Edit Owner → remove all role TagItems → Save) with NO confirmation
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  **NEW HIGH-severity BUG-CLASS INVARIANT, batch 2026-05-20-Q (OwnersList
+  primary source)** — UI-tier elevation of the existing batch-P
+  `update-owner-empty-roles-silently-deletes-all-bindings` invariant
+  (which was scoped to "API-consumer-only hazard; UI in practice
+  always sends the current roles list"). This sidecar's primary-
+  source evidence ESCALATES the hazard: the destructive default is
+  REACHABLE FROM THE OPERATOR UI in three clicks.
+
+  **The three clicks**:
+
+    1. Click `Edit` on an Owner row in `/management/owners`
+       (`EditableOwnerItem.tsx:41-54` — gated by `OWNER_UPDATE`
+       permission, hidden when absent). The OwnerForm dialog opens
+       with the Owner's existing roles rendered as TagItems
+       (`OwnerForm.tsx:95-103`).
+
+    2. Click the X icon on each TagItem to remove all role bindings
+       (`OwnerForm.tsx:101` — `onRemoveClick={handleRemove(idx)}`).
+       The `useFieldArray` (`OwnerForm.tsx:40-43`) has NO validation
+       rules on the `roles` field — `formState.isValid` is gated by
+       the `name` field's `rules={{ required: true, validate: value
+       => !!value.trim() }}` (`OwnerForm.tsx:77`) and remains TRUE
+       throughout the removal sequence.
+
+    3. Click `Save` (`OwnerForm.tsx:108-117`) — the Save button is
+       enabled because `formState.isValid === true`. The submission
+       dispatches `updateOwner({ ownerId, ownerFormData })` with
+       `roles: []`.
+
+  **The destructive consequence** (per the batch-P invariant
+  `update-owner-empty-roles-silently-deletes-all-bindings`):
+  `OwnerServiceImpl.update` (lines 71, 76-81, 117-122) calls
+  `deleteOwnerRelationsExcept(ownerId, List.of()).then(createRelations(ownerId, List.of()))`.
+  The Postgres empty-NOT-IN treats all existing role-links as
+  matching, so ALL role bindings are HARD-DELETED from
+  `owner_to_role`. The change is invisible to the platform's audit
+  trail (per the `no-audit-log-on-rbac-mutations` 6-sidecar pattern
+  including this UI tier).
+
+  **The asymmetry between UX choices**:
+    - The DELETE-Owner verb has a `ConfirmationDialog` with the
+      warning "<owner-name> will be deleted permanently"
+      (`EditableOwnerItem.tsx:55-72`). The DELETE is SOFT (per F-019
+      batch-P — `deleted_at` timestamp, name re-usable via partial
+      unique index).
+    - The UPDATE-with-empty-roles role-strip has NO confirmation
+      modal, NO red-warning banner, NO before/after diff. The
+      role-bindings are HARD-DELETED (irreversible — `owner_to_role`
+      rows are physically removed, no soft-delete column on the
+      edge table per F-019 `hard-delete-on-relationship-edges-confirmed-cross-batch`).
+    - The MORE-REVERSIBLE operation (delete) carries a confirmation
+      barrier; the MORE-DESTRUCTIVE operation (role-strip) does not.
+
+  **Why HIGH severity**: this is the operator-facing trigger of an
+  irreversible role-stripping operation with no audit trail. The
+  combination of:
+    (a) UI reachability in three clicks;
+    (b) no confirmation modal;
+    (c) no audit log (`no-audit-log-on-rbac-mutations` 6-sidecar
+        pattern);
+    (d) hard-delete on the `owner_to_role` edges (irreversible);
+    (e) the soft-delete-on-Owner-row semantic (the Owner survives
+        but is role-less);
+  means that an operator (or anyone shoulder-surfing an operator's
+  session) can silently strip all role bindings from any Owner with
+  zero confirmation, zero forensic trace anywhere except the
+  `owner_to_role` row-count delta.
+
+  **The mitigation surface is the OwnerForm dialog**: adding a
+  confirmation modal "Are you sure you want to remove ALL role
+  bindings from <Owner-name>? This cannot be undone." gated on the
+  `roles.length === 0` condition is a 5-line UI change. The deeper
+  fix is at the API layer — interpret omitted `roles` as "preserve"
+  per the batch-P invariant's mitigation list.
+
+  **Cross-batch coherence (LSN-018)**: this sidecar STRENGTHENS the
+  batch-P `update-owner-empty-roles-silently-deletes-all-bindings`
+  invariant by establishing the operator-facing trigger surface. It
+  ALSO strengthens the `no-audit-log-on-rbac-mutations` 6-sidecar
+  pattern by adding the UI tier as the seventh corroborating evidence
+  point — the UI affords the operation, no audit captures it, the
+  destruction is irreversible.
+axes_present:
+  - ui_components
+  - services
+  - controllers
+nodes:
+  - odd-platform ts react-component component:OwnersList
+  - odd-platform java OwnerController controller-method:updateOwner
+contributors:
+  - |-
+    OwnersList.md:bugs_limitations_corner_cases.[5] (HIGH — Empty-roles
+    destructive UPDATE is fully reachable from the UI — three clicks,
+    no warning) + security.known_security_gaps.[0] (HIGH — UI surface
+    is the operator-facing trigger of the F-019 batch-P drift facet
+    `empty_roles_field_silently_destroys_bindings`) + coherence_notes
+    kind=strengthens target=F-019 target_drift_facet=`empty_roles_field_silently_destroys_bindings`
+  - |-
+    updateOwner.md (batch P, prior sidecar):concepts.invariants.[4] +
+    bugs_limitations_corner_cases.[3] + security.known_security_gaps.[2]
+    + implicit_adrs.[2] (PRIMARY SOURCE for the destructive semantic
+    at the API layer)
+evidence:
+  - |-
+    OwnersList.md:bugs_limitations_corner_cases.[5] (HIGH; OwnerForm.tsx:40-43,
+    95-103, 108-117 — useFieldArray with no validation; Save enabled
+    because formState.isValid only checks name; submission dispatches
+    updateOwner with roles: [])
+  - |-
+    OwnersList.md:security.known_security_gaps.[0] (HIGH — three-click
+    UI reachability of the destructive default; cross-link to F-019
+    batch-P trinity sidecars)
+  - |-
+    OwnersList.md:coherence_notes (the strengthens-F-019 note —
+    "The batch-P F-019 finding escalates from 'API-consumer-only
+    hazard, UI in practice always sends the current roles list' to
+    'UI-REACHABLE-DESTRUCTIVE-DEFAULT' with this sidecar's evidence")
+  - |-
+    Updated invariant `update-owner-empty-roles-silently-deletes-all-bindings`
+    (batch P): the destructive default is now reachable from operator UI
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+  - batch-P `update-owner-empty-roles-silently-deletes-all-bindings`
+  - F-019 batch-P drift_class `empty_roles_field_silently_destroys_bindings`
+  - `no-audit-log-on-rbac-mutations` 6-sidecar pattern
+  - `hard-delete-on-relationship-edges-confirmed-cross-batch`
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    UI-side (lowest cost): add a `ConfirmationDialog` wrapper in
+    `OwnerForm` that intercepts Save when `roles.length === 0 &&
+    previousRoles.length > 0`. Warning text: "This will remove ALL
+    role bindings from <Owner-name> permanently. This cannot be
+    undone. Continue?" — gated by a "Yes, remove all roles" button.
+  - |-
+    UI-side (UX nicety): show a red "warning" banner on the form
+    when the operator removes the last TagItem — "Removing the last
+    role will strip all permissions from this Owner."
+  - |-
+    API-side (definitive fix): the batch-P invariant's mitigation
+    list — mark `roles` as REQUIRED in the OpenAPI contract, OR
+    introduce a PATCH endpoint for partial updates, OR interpret
+    omitted/null roles as "preserve".
+  - |-
+    Doc-side: extend `/configuration-and-deployment/enable-security/authorization/owners`
+    with explicit guidance: "Editing an Owner with no role bindings
+    permanently removes all role attachments. Always retain at least
+    one role binding unless you intend the Owner to have zero
+    permissions."
+  - |-
+    Audit-side: pair with the `no-audit-log-on-rbac-mutations`
+    mitigation — wire `@ActivityLog(OWNER_UPDATED)` on
+    OwnerServiceImpl.update so role-rebinding leaves a trace.
+notes: |-
+  The asymmetry (destructive-update has no confirmation, less-destructive
+  delete has one) is the FIRST UX-level evidence that the platform's
+  UX convention "delete needs confirmation; edit does not" was applied
+  without reasoning about which operation is actually more destructive
+  in the platform's semantics.
+
+  Cross-references:
+    - `update-owner-empty-roles-silently-deletes-all-bindings` (batch P,
+      the API-layer invariant this sidecar elevates)
+    - `no-audit-log-on-rbac-mutations` (the audit-silence companion;
+      this sidecar adds the UI tier — 7th corroborating sidecar in
+      the pattern)
+    - `hard-delete-on-relationship-edges-confirmed-cross-batch` (the
+      `owner_to_role` row hard-deletion semantic)
+    - F-019 / P-08:F-003 Owner Lifecycle Management
+    - LSN-001 (the attachment-storage default that wiped production
+      data on restart — same SHAPE: a reasonable expectation produces
+      destructive behaviour silently)

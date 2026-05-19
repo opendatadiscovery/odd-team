@@ -1,0 +1,778 @@
+feature_id: F-020
+pillar_id: P-08
+pillar_anchored_id: P-08:F-004
+pillar_anchored_feature_name: Collector Lifecycle Management
+primary_drift_class: ui_vs_api_asymmetry_under_disabled_collector_permission_family_refactor_185_19th_surface
+drift_class_summary:
+- ui_vs_api_asymmetry_under_disabled_collector_permission_family_refactor_185_19th_surface
+- token_one_shot_visibility_no_recovery_without_rotate
+- token_rotation_no_grace_period_old_token_401s_immediately
+- token_rotation_no_security_effect_on_default_deployment_auth_ingestion_filter_disabled
+- token_visibility_detection_via_fragile_substring_prefix_sniff
+- token_plaintext_rendered_into_dom_text_node_no_password_input_obfuscation
+- anonymous_list_enumeration_under_disabled_leaks_last_six_chars_of_every_token
+- collectors_tab_audit_silence_no_analytics_no_persistent_audit_panel
+- collector_id_websession_attribute_stringly_typed_cluster_without_sticky_sessions_breaks
+- search_clear_silently_rewinds_pagination_to_page_1_no_undo
+- delete_of_collector_on_page_n_silently_rewinds_to_page_1_view
+- backend_endpoints_accept_anonymous_mutations_regardless_under_disabled
+cross_pillar_relationships:
+- pillar_id: P-10
+  kind: feeds
+  via: |-
+    Collector lifecycle is the credential-authoring surface for the Batch
+    Ingestion pillar (F-008). Tokens minted here are consumed by
+    `IngestionDataEntitiesFilter` (opt-in, default-off per
+    `application.yml:48`) on `POST /ingestion/entities` AND by
+    `IngestionDataSourceFilter` (always-on, no
+    `@ConditionalOnProperty`) on `POST /ingestion/datasources`. The two
+    filters have INCONGRUOUS auth defaulting; this feature is the
+    single UI that mints the credential they BOTH consume. Cross-link
+    to F-008 batch P architectural-asymmetry finding.
+- pillar_id: P-09
+  kind: feeds
+  via: |-
+    Collector lifecycle UI consumes RBAC via four COLLECTOR_*
+    permissions (CREATE / UPDATE / DELETE / TOKEN_REGENERATE) gated at
+    `SecurityConstants.java:127-137`. The `WithPermissions` HOC at the
+    UI layer is the UX-level mirror of the backend SECURITY_RULES; the
+    UI HIDES forbidden affordances rather than DISABLING them. Cross-link
+    to F-006 RBAC pillar feature.
+- pillar_id: P-08
+  kind: shares_data_with
+  via: |-
+    Sibling P-08 Management UI surface; same WithPermissions wrapper
+    pattern, same UI-vs-API asymmetry concern under DISABLED, same
+    forensic-silence pattern as F-019 Owner Lifecycle Management. The
+    Management section's daily-ops sequence (per `management.md` lines
+    42-53) lists Collectors as the second-most-frequently-used
+    operator surface after Datasources.
+batch_origin: Q
+created_in_batch: Q
+discovered_from_entry_point: ui_route:/management/collectors
+description: |-
+  The Collector Lifecycle Management feature is the operator-facing CRUD
+  + token-rotation + secret-issuance surface under
+  `Management → Collectors` (the `/management/collectors` SPA route).
+  Five operator capabilities composed by `CollectorsList.tsx:1-128`
+  + sibling `CollectorForm.tsx` (modal create/edit dialog) +
+  `CollectorItem.tsx` (per-row card with edit/delete affordances) +
+  `CollectorItemToken.tsx` (the token-display surface with copy-on-
+  reveal + regenerate-on-mask):
+
+  - **Register a Collector** (`POST /api/collectors`) — gated by
+    `Permission.COLLECTOR_CREATE` permission. Mints a Collector row in
+    the `collector` table + auto-issues a 40-character plaintext token
+    via `RandomStringUtils.randomAlphanumeric(40)` and writes a row to
+    the `token` table.
+  - **Edit a Collector's name/description/namespace** (`PUT /api/collectors/{id}`)
+    — gated by `COLLECTOR_UPDATE`. Note: the form does NOT collect a
+    token field — token is server-issued, not operator-supplied.
+  - **Delete a Collector** (`DELETE /api/collectors/{id}`) — gated by
+    `COLLECTOR_DELETE`. Removes the collector row.
+  - **Regenerate a Collector's token** (`PUT /api/collectors/{id}/token`)
+    — gated by `COLLECTOR_TOKEN_REGENERATE`. Invalidates the prior
+    secret IMMEDIATELY (no grace period); in-flight ingestion using
+    the prior token starts 401-ing immediately. The new token is
+    returned as 40-character plaintext ONCE; subsequent reads return
+    `******{last6}`.
+  - **List and search Collectors** (`GET /api/collectors/list`) —
+    NO SecurityRule entry (read-collaborative posture per
+    ADR-CANDIDATE-003 / REFACTOR-024 family); any authenticated user
+    can enumerate the catalog (returning name + namespace + masked
+    token).
+
+  As of batch Q, the feature emerges from the convergence of the
+  UI-tier `CollectorsList` sidecar (the operator-facing affordance
+  surface for the trinity) with the previously-enriched backend
+  controller sidecars (`CollectorController` at batches D/E +
+  `regenerateCollectorToken` at batch D/E enrichment). The feature
+  is anchored under pillar P-08 Management & Administration per the
+  system-mission.md sub-feature seed: `Collectors tab (issue + rotate
+  tokens; OwnerController#createOwner sidecar evidence)`.
+
+  The user-observable reality, per the batch-Q UI sidecar audit, surfaces
+  TWELVE load-bearing drift facets. The HIGH-severity headline is the
+  19TH-SIDECAR REFACTOR-185 facet: under `auth.type=DISABLED`, the
+  UI's `WithPermissions` wrappers HIDE the Add / Edit / Delete /
+  Regenerate buttons (because `/api/identity` returns empty
+  `permissions`) WHILE the BACKEND endpoints ACCEPT ANONYMOUS
+  MUTATIONS regardless (per `DisabledAuthSecurityConfiguration.java:11-19`
+  `.anyExchange().permitAll()` bypassing `SecurityConstants.java:127-137`).
+  An attacker bypassing the UI mints new collectors + copies the
+  plaintext response token + uses it to bootstrap a hostile collector
+  identity via the sibling `POST /ingestion/datasources`. The compound
+  attack surface under default DISABLED extends through the ENTIRE
+  collector boot-of-self chain.
+
+  Secondary load-bearing drifts: (a) token rotation has NO UI warning
+  about no-grace-period semantic AND no security effect on default
+  deployment (auth.ingestion.filter.enabled=false neutralises token
+  validation on /ingestion/entities); (b) token-visibility detection
+  via fragile substring-prefix sniff (`substring(0, 6) === '******'`)
+  — a future backend mask-format change would silently break and leak
+  fragments to clipboards; (c) token plaintext rendered into DOM as
+  text node (no `<input type='password'>` obfuscation, no Reveal-on-
+  hover, no auto-hide timer); (d) anonymous list-enumeration under
+  DISABLED leaks last-6-chars of every token (the mask format
+  includes them); (e) 6th UI-tier corroboration of the platform-wide
+  audit-silence pattern (no analytics, no console.log, no persistent
+  audit panel — the toast vanishes in ~5 seconds).
+
+  This feature did NOT appear in earlier batches because the UI-tier
+  `CollectorsList` sidecar only enriched in batch Q; the backend
+  CollectorController sidecars existed but were not paired with the
+  UI tier to form a coherent user-observable lifecycle feature.
+  Prefers EXTENDING F-008 (which carries the credential CONSUMERS —
+  the two ingestion filters) was rejected per Rule 0: F-020 is a
+  distinct USER-OBSERVABLE Management capability (CRUD the producer
+  ecosystem) vs F-008's S2S Ingestion surface (CONSUME credentials
+  for batch metadata writes). Cross-link to F-008 records the
+  credential bridge between the two pillars.
+contributing_nodes:
+- odd-platform ts react-component:CollectorsList
+- odd-platform java CollectorController controller-method:registerCollector
+- odd-platform java CollectorController controller-method:updateCollector
+- odd-platform java CollectorController controller-method:deleteCollector
+- odd-platform java CollectorController controller-method:regenerateCollectorToken
+- odd-platform java CollectorController controller-method:getCollectorsList
+- odd-platform java service service:CollectorServiceImpl
+- odd-platform java repository reactive repository:ReactiveCollectorRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveTokenRepositoryImpl
+- odd-platform java SecurityConstants
+- odd-platform java DisabledAuthSecurityConfiguration
+chain:
+- hop: 1a
+  node: odd-platform ts react-component:CollectorsList
+  sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    CollectorsList.tsx:1-128 is the entry-point UI surface mounted at
+    `/management/collectors`. Renders search box + Add CTA (gated by
+    `WithPermissions permissionTo={Permission.COLLECTOR_CREATE}`) +
+    InfiniteScroll of CollectorItem rows. On mount fires
+    `fetchCollectorsList({page: 1, size: 30})` via redux thunk
+    (`CollectorsList.tsx:44-46`). The useEffect dep array is
+    `[isCollectorDeleting, query, size]`; refetch on delete-completion
+    AND on query-clear, NOT on every keystroke (the LSN-017 doubling
+    pattern is structurally ABSENT per CollectorsList.tsx:44-46
+    + :48-50 — primitive booleans/string in deps, no fetch-result
+    derivation).
+  unresolved: false
+  resolved_in_batch: Q
+- hop: 1b
+  node: odd-platform java CollectorController controller-method:registerCollector
+  sidecar: (controller-method sidecar — enriched at earlier batch via CollectorController class-tier; not yet enriched as a standalone method node)
+  multiplicity_per_trigger: 1
+  evidence: |-
+    CollectorController.java:14-52 exposes the five-endpoint surface
+    (list/get, register, update, delete, regenerate-token). Each
+    endpoint independently authorized via `SecurityConstants.SECURITY_RULES`
+    at lines 127-137. registerCollector accepts `CollectorFormData`
+    (name + namespaceName + description — NO token field), returns a
+    `Collector` whose `token` is server-generated via
+    `CollectorServiceImpl.create` + `RandomStringUtils.randomAlphanumeric(40)`.
+    The response carries the 40-char plaintext token ONCE; subsequent
+    GETs return `******{last6}`.
+  unresolved: true
+- hop: 1c
+  node: odd-platform java CollectorController controller-method:updateCollector
+  sidecar: (controller-method sidecar — not yet enriched as a standalone method node)
+  multiplicity_per_trigger: 1
+  evidence: |-
+    CollectorController.java updateCollector — PUT /api/collectors/{id}.
+    Updates name / description / namespaceName via CollectorServiceImpl.update;
+    leaves token + token_id + auth credentials intact. The form schema
+    and the wire contract are deliberately separated (CollectorFormData
+    has 3 fields; Collector response has 7 fields including the
+    server-issued token).
+  unresolved: true
+- hop: 1d
+  node: odd-platform java CollectorController controller-method:deleteCollector
+  sidecar: (controller-method sidecar — not yet enriched as a standalone method node)
+  multiplicity_per_trigger: 1
+  evidence: |-
+    CollectorController.java deleteCollector — DELETE /api/collectors/{id}.
+    Triggers CollectorServiceImpl.delete; cascade-blocks if active
+    datasources reference the collector (per the standard service-tier
+    cascade pattern). On the UI side, EditableCollectorItem opens a
+    ConfirmationDialog before dispatching the delete thunk (mirrors
+    F-019 OwnersList delete pattern).
+  unresolved: true
+- hop: 1e
+  node: odd-platform java CollectorController controller-method:regenerateCollectorToken
+  sidecar: (controller-method sidecar — enriched at prior batch as `CollectorController__controller-method__regenerateCollectorToken.md` per CollectorsList sidecar cross-reference)
+  multiplicity_per_trigger: 1
+  evidence: |-
+    CollectorController.java regenerateCollectorToken — PUT /api/collectors/{id}/token.
+    Generates a new 40-char plaintext token via
+    `RandomStringUtils.randomAlphanumeric(40)`, updates the `token`
+    table's value column for the bound token_id, returns the new
+    plaintext to the caller. NO grace period (the old token starts
+    401-ing immediately on `IngestionDataEntitiesFilter` per F-008
+    batch O `plaintext_equality_token_compare_timing_side_channel`
+    facet + IngestionDataSourceFilter's always-on path). Existing
+    CollectorController.regenerateCollectorToken sidecar's
+    bugs_limitations_corner_cases[0] (HIGH severity) describes the
+    operational consequence; the UI ConfirmationDialog
+    (`CollectorItemToken.tsx:37-50`) reads only 'Are you sure?' —
+    DOES NOT warn about no-grace-period or no-security-effect-on-default.
+  unresolved: false
+  resolved_in_batch: pre-Q (prior CollectorController.regenerateCollectorToken sidecar)
+- hop: 1f
+  node: odd-platform java CollectorController controller-method:getCollectorsList
+  sidecar: (controller-method sidecar — not yet enriched as a standalone method node)
+  multiplicity_per_trigger: 1
+  evidence: |-
+    CollectorController.java getCollectorsList — GET /api/collectors/list.
+    Returns paginated CollectorList (`items: Collector[], pageInfo`).
+    NO SecurityRule entry at `SecurityConstants.java` (verified via
+    grep — only the four mutation verbs are registered). The read
+    surface is anonymously reachable to any authenticated user (and
+    to anonymous network callers under DISABLED). The masked-token
+    response includes `******{last6}` per `TokenMapper.java:15-18` —
+    last-6-chars leaked even on the masked-read path.
+  unresolved: true
+- hop: 2
+  node: odd-platform java service service:CollectorServiceImpl
+  sidecar: '(service-tier sidecar — not yet enriched as a standalone node; cross-referenced via the controller-method sidecars)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    CollectorServiceImpl owns the transactional shape for the five
+    lifecycle verbs: token generation on create + regenerate, token
+    masking on list/get reads (delegating to TokenMapper), cascade-block
+    on delete (blocks if active datasources). NO `@ActivityLog` on any
+    method (the audit-silence pattern this feature inherits from F-006
+    + F-019 + F-011). Pairs with `RandomStringUtils.randomAlphanumeric(40)`
+    for secret generation.
+  unresolved: true
+- hop: 3
+  node: odd-platform java repository reactive repository:ReactiveCollectorRepositoryImpl
+  sidecar: '(repository-tier sidecar — not yet enriched as a standalone node)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveCollectorRepositoryImpl extends
+    ReactiveAbstractSoftDeleteCRUDRepository (mirrors the F-019 Owner
+    side soft-delete pattern). The `listCondition` overrides apply
+    `deleted_at IS NULL`. The companion `ReactiveTokenRepositoryImpl.java:30-39`
+    writes the plaintext token to the `token` table on create +
+    regenerate (raw string write — no hash, no encryption at rest;
+    F-008 batch O `plaintext_equality_token_compare_timing_side_channel`
+    cross-link).
+  unresolved: true
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    Per-call: 1-3 writes against the Collector + Token tables.
+    - REGISTER: 1× INSERT collector + 1× INSERT token + N× update FTS
+      vectors (if applicable).
+    - UPDATE: 1× SELECT collector + 1× UPDATE collector.
+    - DELETE: cascade-check + 1× UPDATE collector SET deleted_at OR
+      1× error response (USR004 CascadeDeleteException).
+    - REGENERATE-TOKEN: 1× SELECT collector + 1× UPDATE token.value.
+    - LIST: 0 writes (pure read; but no SecurityRule).
+    Side-effects fan out to: `IngestionDataSourceFilter` (which
+    consumes the token to populate WebSession-attribute Collector
+    identity for `POST /ingestion/datasources`) +
+    `IngestionDataEntitiesFilter` (which consumes the token to gate
+    `POST /ingestion/entities` IFF
+    `auth.ingestion.filter.enabled=true`).
+  evidence: |-
+    CollectorController.java:14-52 + CollectorServiceImpl (token
+    generation via RandomStringUtils.randomAlphanumeric(40) +
+    cascade-block + token rotation) +
+    `ReactiveTokenRepositoryImpl.java:30-39` (token table write) +
+    SecurityConstants.java:127-137 (four COLLECTOR_* permission gates) +
+    application.yml:48 (filter default-off) +
+    DisabledAuthSecurityConfiguration.java:11-19 (DISABLED bypass) +
+    IngestionDataEntitiesFilter.java:38-56 (the token-consuming path).
+  cardinality_per_call: 1-3 writes per call (varies by verb)
+amplification_factor: 1
+amplification_factor_provenance: |-
+  STATIC — per-call multiplicity is 1 against the directory (one
+  Collector + Token row pair per register; one UPDATE per update /
+  rotate / delete). No active probe yet; the amplification factor is
+  recorded as 1.
+observed_vs_expected:
+  facets:
+  - facet: UI-vs-API asymmetry under DISABLED — REFACTOR-185 19th surface
+    observed: |-
+      Under `auth.type=DISABLED`, the UI HIDES Add / Edit / Delete /
+      Regenerate buttons (because `/api/identity` returns empty
+      `permissions` → `WithPermissions` returns null per
+      `WithPermissions.tsx:27-29` → buttons absent from DOM, not
+      rendered grayed-out). Operators inspecting the UI see a
+      READ-ONLY surface and may infer 'this deployment is locked
+      down'. The BACKEND endpoints ACCEPT ANONYMOUS MUTATIONS
+      regardless — `DisabledAuthSecurityConfiguration.java:11-19`
+      sets `.anyExchange().permitAll()` and bypasses
+      `SecurityConstants.java:127-137`. A direct `curl POST /api/collectors`
+      succeeds with no auth. The UI is QUIETER than the API on this
+      surface — security-critical UI-vs-API asymmetry. NEW 19TH
+      SIDECAR contribution to REFACTOR-185 (the COLLECTOR_* permission
+      family was not in the prior 16/17/18-sidecar enumerations).
+    expected: |-
+      Either (a) align the UI to render a warning banner under
+      DISABLED ('This deployment runs with auth.type=DISABLED — all
+      mutations are anonymously reachable via direct REST calls')
+      OR (b) align the BACKEND to honour the SecurityRule entries
+      even under DISABLED, OR (c) document the asymmetry explicitly
+      on the live `/configuration-and-deployment/enable-security` page.
+      Current state: operators have no signal.
+    drift_class: ui_vs_api_asymmetry_under_disabled_collector_permission_family_refactor_185_19th_surface
+    provenance: |-
+      STATIC — primary-source in CollectorsList sidecar (batch Q)
+      bugs_limitations_corner_cases[1] + security.known_security_gaps[0]
+      + DisabledAuthSecurityConfiguration.java:11-19 +
+      SecurityConstants.java:127-137 + WithPermissions.tsx:11-32.
+      Severity: HIGH.
+  - facet: token rotation has NO UI warning about no-grace-period
+    observed: |-
+      The token-rotation ConfirmationDialog at
+      `CollectorItemToken.tsx:37-50` reads only 'Are you sure you
+      want to regenerate token for this collector?' / 'Regenerate
+      token for "{collector.name}"?'. NEITHER line warns that
+      in-flight ingestion using the prior token will start 401-ing
+      IMMEDIATELY (per the existing
+      `CollectorController.regenerateCollectorToken.md` sidecar's
+      bugs_limitations_corner_cases[0]), NOR that the operator must
+      redeploy the collector with the new token, NOR that rotation
+      invalidates the prior secret platform-wide. The backend sidecar
+      describes the operational consequence; the UI affordance does
+      not surface it.
+    expected: |-
+      The ConfirmationDialog should warn 'Rotating this token has no
+      grace period. Any collector or ingestion call using the prior
+      token will start receiving 401 errors immediately. Make sure
+      to update your collector deployment with the new token value
+      before rotating.' Plus surface the no-security-effect-on-default
+      caveat (separate facet below).
+    drift_class: token_rotation_no_grace_period_old_token_401s_immediately
+    provenance: |-
+      STATIC — primary-source in CollectorsList sidecar (batch Q)
+      bugs_limitations_corner_cases[3] + security.known_security_gaps[3]
+      + CollectorItemToken.tsx:37-50 + the existing
+      CollectorController.regenerateCollectorToken sidecar
+      bugs_limitations_corner_cases[0] (HIGH severity).
+      Severity: MEDIUM.
+  - facet: token rotation has NO security effect when auth.ingestion.filter.enabled=false (default)
+    observed: |-
+      The platform's default deployment ships `auth.ingestion.filter.enabled:
+      false` (per `application.yml:48` + F-008 batch O drift facet
+      `default_off_unauthenticated_ingestion_at_filter_layer`). Under
+      this default, `POST /ingestion/entities` is anonymously
+      reachable regardless of the token value (the filter is not
+      registered as a bean per `@ConditionalOnProperty matchIfMissing=false`).
+      An operator rotating a 'leaked' token via this UI on a default
+      deployment is rotating a credential that has ZERO security
+      effect on the entity-ingestion path. The UI promises a security
+      property (token rotation) the default deployment does not
+      enforce. Cornerstone-3 (configuration-as-separate-audience-surface)
+      failure that compounds with REFACTOR-185.
+    expected: |-
+      Either (a) ship `auth.ingestion.filter.enabled: true` by default
+      (production-secure default) OR (b) add a UI warning to the
+      token-rotation ConfirmationDialog 'Token rotation has no
+      security effect on /ingestion/entities until you enable
+      auth.ingestion.filter.enabled in application.yml. See the
+      Security configuration page.' OR (c) document the dependency
+      explicitly on the live `/features/management` Collectors
+      doc page.
+    drift_class: token_rotation_no_security_effect_on_default_deployment_auth_ingestion_filter_disabled
+    provenance: |-
+      STATIC — primary-source in CollectorsList sidecar (batch Q)
+      bugs_limitations_corner_cases[4] + security.known_security_gaps[4]
+      + application.yml:48 +
+      IngestionDataEntitiesFilter.md bugs_limitations_corner_cases[0].
+      Severity: HIGH (cross-Cornerstone-3 failure).
+  - facet: token visibility detection via fragile substring-prefix sniff
+    observed: |-
+      `CollectorItemToken.tsx:25-27` sets `setIsHidden(collector.token.value.substring(0,
+      6) === '******')`. The detection is a LITERAL 6-star prefix
+      sniff; backend masks via `TokenMapper.java:15-18` as `"******" +
+      value.substring(value.length() - 6)`. A future backend change
+      to the mask format (e.g. shortening to 4 stars, switching to a
+      Unicode block character, prepending whitespace) silently breaks
+      detection — the UI would offer the Copy button on a masked
+      value, leaking `******abc123`-style fragments to the operator's
+      clipboard. No automated test guards against this. No regex, no
+      version negotiation with the backend.
+    expected: |-
+      Either (a) match via regex `/^\\*{6}/` (slightly more robust)
+      OR (b) add a `tokenVisible: boolean` field to the Collector wire
+      contract so the UI doesn't have to infer visibility from value
+      shape OR (c) add an automated test pinning the mask-format
+      contract between TokenMapper.java and CollectorItemToken.tsx.
+    drift_class: token_visibility_detection_via_fragile_substring_prefix_sniff
+    provenance: |-
+      STATIC — primary-source in CollectorsList sidecar (batch Q)
+      bugs_limitations_corner_cases[0] + security.known_security_gaps[2]
+      + CollectorItemToken.tsx:25-27 + TokenMapper.java:15-18.
+      Severity: MEDIUM.
+  - facet: token plaintext rendered into DOM text node — no obfuscation
+    observed: |-
+      The token displayed in `<Token>{collector.token.value}</Token>`
+      (`CollectorItemToken.tsx:34`) is rendered DIRECTLY INTO THE DOM
+      as plaintext when `isHidden === false`. Any browser extension,
+      screenshot tool, accessibility screen reader, or DOM-inspection
+      tool captures the credential. No `<input type='password'>`-style
+      obfuscation; no Reveal-on-hover affordance; no auto-hide-after-N-seconds
+      timer. The visible warning admonition ('Save token in a secure
+      location. You will not be able to retrieve it again.') at
+      `CollectorItem.tsx:87-98` is the SOLE operational mitigation.
+    expected: |-
+      Either (a) render the visible token inside `<input
+      type='password' readonly />` with a Reveal toggle (the
+      industry-standard secret-input pattern) OR (b) add an
+      auto-hide-after-30-seconds timer OR (c) require explicit
+      operator click on a 'Reveal token' button before showing the
+      plaintext. Defence-in-depth even given the existing warning.
+    drift_class: token_plaintext_rendered_into_dom_text_node_no_password_input_obfuscation
+    provenance: |-
+      STATIC — primary-source in CollectorsList sidecar (batch Q)
+      bugs_limitations_corner_cases[2] + security.known_security_gaps[1]
+      + CollectorItemToken.tsx:34. Severity: MEDIUM.
+  - facet: anonymous list-enumeration under DISABLED leaks last-6-chars of every token
+    observed: |-
+      `GET /api/collectors/list` has NO SecurityRule entry at
+      `SecurityConstants.java` (only the four mutation verbs are
+      registered) — consistent with the platform-wide read-collaborative
+      posture (REFACTOR-024 family). Under DISABLED, the read is
+      anonymously reachable. Response masks tokens as `******{last6}`
+      per `TokenMapper.java:15-18`. An anonymous probe under DISABLED
+      can enumerate every collector's name + namespace + last-6-token-chars
+      + createdAt + updatedAt. The last-6-chars exposure is small
+      (~36 bits weakened from the 40-char total — still
+      computationally infeasible to brute-force) but is UNNECESSARY
+      information disclosure for a credential mask.
+    expected: |-
+      Either (a) change the mask format to omit the last-6-chars
+      (full obfuscation, e.g. `***********`) OR (b) gate
+      `GET /api/collectors/list` with a permission entry in
+      `SecurityConstants.java` (departure from the read-collaborative
+      posture but appropriate for credential-table read).
+    drift_class: anonymous_list_enumeration_under_disabled_leaks_last_six_chars_of_every_token
+    provenance: |-
+      STATIC — primary-source in CollectorsList sidecar (batch Q)
+      security.known_security_gaps[5] + SecurityConstants.java grep
+      (no /api/collectors GET rule) + TokenMapper.java:15-18.
+      Severity: MEDIUM.
+  - facet: one-shot token visibility — no recovery without rotate
+    observed: |-
+      A freshly created or regenerated collector arrives with
+      `token.value` as the full 40-char plaintext; once the page
+      reloads (refetch of the list), the API returns `******{last6}`
+      and the UI flips into `isHidden === true` mode (per
+      `CollectorItemToken.tsx:25-27`). There is no 'show token again'
+      affordance — the operator MUST copy on first display or
+      regenerate to see it again. Regenerate invalidates the prior
+      secret (no grace period). The live `/features/management` doc
+      page does NOT document this one-shot visibility — operators
+      who fail to copy on first display lose access to the secret
+      with no recovery.
+    expected: |-
+      Either (a) document the one-shot visibility on the live doc
+      page explicitly ('Tokens are shown ONCE; copy them now or you
+      will need to regenerate, which invalidates the prior secret')
+      OR (b) keep the plaintext visible in browser-session memory
+      until the operator confirms 'I have copied this' (with a
+      checkbox + auto-clear on navigation).
+    drift_class: token_one_shot_visibility_no_recovery_without_rotate
+    provenance: |-
+      STATIC — primary-source in CollectorsList sidecar (batch Q)
+      concepts.invariants[1] + docs_link_semantic.doc_drift_findings[2]
+      + CollectorItemToken.tsx:25-27. Severity: MEDIUM.
+  - facet: audit silence — UI tier — 6th corroborating sidecar
+    observed: |-
+      `CollectorsList.tsx:1-128` + `collectors.thunks.ts:1-100` emit
+      NO analytics events on Create / Update / Delete / Regenerate
+      (verified by grep on
+      `mixpanel|amplitude|segment|gtag|posthog|track(` across
+      `<odd-platform-ui>/src` returning ZERO matches). No
+      console.log on mutations. Successful create / update / delete
+      / regenerate toasts vanish within ~5 seconds. NO persistent
+      audit panel. An operator wishing to know 'who registered
+      Collector X when' has NO UI affordance to consult. The UI tier
+      adds a 6TH corroborating sidecar to the platform-wide
+      audit-silence pattern (RoleController batch E + PolicyController
+      batch E + ReactivePolicyRepositoryImpl batch H +
+      ReactiveRoleRepositoryImpl batch N + OwnerServiceImpl batch P +
+      UI tier batch Q across PolicyList + RolesList + OwnersList +
+      CollectorsList).
+    expected: |-
+      Either (a) emit @ActivityLog events on the four Collector
+      mutation verbs (matching the OWNER_*_CREATED / UPDATED /
+      DELETED naming convention) OR (b) document the audit-silence
+      explicitly + recommend operators consult database audit
+      streams (Postgres logical replication / pgaudit) for
+      Collector lifecycle visibility.
+    drift_class: collectors_tab_audit_silence_no_analytics_no_persistent_audit_panel
+    provenance: |-
+      STATIC — primary-source in CollectorsList sidecar (batch Q)
+      implicit_adrs (no client-side analytics finding) + grep
+      verification across `<odd-platform-ui>/src` returning zero
+      analytics-SDK references. Severity: HIGH (refines the
+      5-sidecar pattern to 6-SIDECAR with platform-wide UI tier
+      corroboration).
+  - facet: collector identity via WebSession attribute — stringly-typed
+    observed: |-
+      Cross-feature finding inherited from F-008 batch P: the
+      registered Collector's identity propagates to ingestion via
+      `SessionConstants.COLLECTOR_ID_SESSION_KEY` ("collectorId"
+      string) — NOT type-safe, NOT a Spring `@SessionAttribute`-bound
+      binding. A misspelling on the controller side throws
+      `IllegalStateException("Collector id is null")` at RUNTIME, not
+      COMPILE-TIME. Session state is `IN_MEMORY` with
+      `spring.session.timeout: -1` (sessions never expire AND each
+      platform instance has its own session store). CLUSTER DEPLOYMENTS
+      WITHOUT STICKY SESSIONS are STRUCTURALLY UNSUPPORTED on the
+      datasource-registration endpoint that consumes this identity.
+    expected: |-
+      Either (a) introduce a `@SessionAttribute("collectorId") Long
+      collectorId` binding for compile-time safety OR (b) switch the
+      collector-identity propagation to a per-request header /
+      claim-based mechanism that survives node hops without sticky
+      sessions OR (c) document the cluster-stickiness constraint on
+      the live integrations doc page.
+    drift_class: collector_id_websession_attribute_stringly_typed_cluster_without_sticky_sessions_breaks
+    provenance: |-
+      STATIC — primary-source via F-008 batch P
+      bugs_limitations_corner_cases[1] cross-link;
+      IngestionDataSourceFilter.java:36-38 +
+      IngestionController.java:50-58 +
+      SessionConstants.COLLECTOR_ID_SESSION_KEY + application.yml:30.
+      Severity: MEDIUM (cluster-deployment hazard).
+  - facet: search-clear silently rewinds pagination
+    observed: |-
+      Clearing the search input (`setQuery('')` via X button or
+      backspace) triggers the `useEffect` at
+      `CollectorsList.tsx:44-46` (`if (!query) dispatch(fetchCollectorsList({page:
+      1, size: 30}))`), silently rewinding pagination back to page 1.
+      A user who has scrolled to page 5 and clears the search loses
+      their scroll position with no warning toast, no undo. The
+      `total` count badge (`CollectorsList.tsx:48-50`) similarly
+      lags during search (frozen to unfiltered total per the local
+      `totalCollectors` state).
+    expected: |-
+      Either (a) preserve the pagination cursor across search-clear
+      (refetch only when an explicit 'Reset list' affordance is
+      clicked) OR (b) document the behaviour ('clearing the search
+      box returns you to page 1; your scroll position will be lost').
+    drift_class: search_clear_silently_rewinds_pagination_to_page_1_no_undo
+    provenance: |-
+      STATIC — primary-source in CollectorsList sidecar (batch Q)
+      bugs_limitations_corner_cases[7] + CollectorsList.tsx:44-46
+      + :59-62. Severity: LOW.
+  - facet: delete-of-collector-on-page-N silently rewinds to page-1 view
+    observed: |-
+      The dep-array effect at `CollectorsList.tsx:44-46` re-runs on
+      every `isCollectorDeleting` flip (true → false). When a delete
+      completes, the effect dispatches `fetchCollectorsList({page:
+      1, size: 30})` — silently REWINDING from the current scroll
+      position back to page 1. An operator who deletes a collector
+      on (say) page 5 loses their scroll position with no UI signal.
+    expected: |-
+      Either (a) refresh only the affected row (granular state
+      update via the slice) rather than wholesale page-1 refetch OR
+      (b) preserve the scroll position via a `scrollRestoration`
+      mechanism + restore after refetch.
+    drift_class: delete_of_collector_on_page_n_silently_rewinds_to_page_1_view
+    provenance: |-
+      STATIC — primary-source in CollectorsList sidecar (batch Q)
+      performance.hot_paths + performance.known_performance_gaps +
+      CollectorsList.tsx:44-46. Severity: LOW.
+  - facet: backend endpoints accept anonymous mutations regardless under DISABLED
+    observed: |-
+      `DisabledAuthSecurityConfiguration.java:11-19` registers a
+      SecurityWebFilterChain that calls `.csrf().disable()` +
+      `.authorizeExchange().anyExchange().permitAll()` — bypassing
+      the SecurityRule entries at SecurityConstants.java:127-137 for
+      ALL four COLLECTOR_* permissions. A direct
+      `curl POST /api/collectors` (or PUT / DELETE / token-regen)
+      succeeds with no auth. The Compound attack surface under
+      default DISABLED: anyone on the network can `POST /api/collectors`
+      (no UI signal of the gap), copy the response token, and
+      `POST /ingestion/datasources` with that token (per F-008 batch
+      P architectural asymmetry — IngestionDataSourceFilter is
+      always-on but accepts the just-minted legitimate token) to
+      bootstrap a hostile collector identity. The DISABLED-mode
+      bypass extends through the ENTIRE collector boot-of-self chain.
+    expected: |-
+      Either (a) honour SecurityRule entries even under DISABLED
+      (departure from the DISABLED-mode contract — DISABLED is
+      explicitly 'dev-only' per the docs) OR (b) require explicit
+      operator confirmation when starting the platform under DISABLED
+      ('You are running with auth.type=DISABLED. This is appropriate
+      only for development. All endpoints including Management +
+      Ingestion are anonymously reachable.').
+    drift_class: backend_endpoints_accept_anonymous_mutations_regardless_under_disabled
+    provenance: |-
+      STATIC — primary-source in CollectorsList sidecar (batch Q)
+      security.known_security_gaps[0] +
+      DisabledAuthSecurityConfiguration.java:11-19 +
+      SecurityConstants.java:127-137 + REFACTOR-185.md cross-link.
+      Severity: LOW (corollary of REFACTOR-185 — DISABLED is
+      dev-only per docs).
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - "Render test: Add collector button visible when Permission.COLLECTOR_CREATE is in allowedPermissions and HIDDEN otherwise"
+    - "Render test: Edit / Delete / Regenerate buttons follow the same permission-gating pattern"
+    - "Token-visibility test: a Collector with token.value starting with `******` flips isHidden true and renders the Regenerate button rather than the Copy button"
+    - "Token-visibility test: a Collector with token.value of a 40-char alphanumeric string flips isHidden false and renders the warning admonition + Copy button"
+    - "Regression test for the substring(0,6) sentinel — if the backend changes the mask format (e.g. drops to 4 stars), the UI should NOT silently offer Copy on a masked value"
+    - "Search-debounce test: typing into the search box fires handleSearch after 500ms; pressing Enter fires immediately; clearing the input refetches page 1"
+    - "Pagination test: scrolling past the bottom triggers fetchNextPage only when hasNext is true"
+    - "Delete-refetch test: after a successful delete, isCollectorDeleting flips true→false and the dep-array effect re-fires a page-1 fetch"
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - "End-to-end Collector lifecycle: POST → PUT → regenerate token → DELETE, verifying state at each transition"
+    - "Cross-layer test: under auth.type=DISABLED, usePermissions returns hasAccessTo(*) false for every Permission, the UI renders no action buttons, BUT a direct POST /api/collectors from the same browser session succeeds (validates the UI-vs-API asymmetry — REFACTOR-185 19th surface)"
+    - "Token rotation no-grace-period test: rotate a token while an active ingestion call is in-flight using the prior token; assert the in-flight call receives 401 immediately on the next request"
+    - "Token rotation no-security-effect-on-default test: under default auth.ingestion.filter.enabled=false, rotate a token + assert /ingestion/entities still accepts requests with the OLD token (because the filter is not registered)"
+    - "Anonymous list enumeration under DISABLED test: under auth.type=DISABLED, GET /api/collectors/list without auth header returns 200 with the full list including last-6-token-chars"
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - "Token generation cost — RandomStringUtils.randomAlphanumeric(40) per register / regenerate; assert sub-50ms latency for 100 concurrent registrations"
+    - "Token-mask serialisation cost — TokenMapper applied per row on every list fetch; assert sub-10ms per row at 1000-collector scale"
+    - "Search debounce + InfiniteScroll concurrent-fetch race — assert eventually-consistent under fast typing + scroll"
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - "Authorization regression — caller WITHOUT COLLECTOR_CREATE / UPDATE / DELETE / TOKEN_REGENERATE permission gets 403 on the respective endpoint"
+    - "DISABLED-mode anonymous reach regression-pin — POST / PUT / DELETE / token-regen all succeed without auth header"
+    - "UI-vs-API asymmetry regression-pin — UI hides buttons + direct REST call succeeds → red-test (the asymmetry should not silently improve OR worsen)"
+    - "Audit-feed regression-pin — verify NO activity events emitted on any of the four COLLECTOR_* verbs (pins the current audit-silence contract)"
+    - "Token plaintext-in-DOM regression-pin — assert the visible token IS rendered as a text node (NOT inside `<input type='password'>`) — pin the current contract OR fix the gap"
+control_summary: |-
+  0 of 4 cells PROBED — feature emerged from batch Q primary-source
+  audit of the CollectorsList UI-tier sidecar paired with prior
+  CollectorController backend sidecars. The trinity-plus-rotation
+  converged on 2026-05-20 (batch Q) — the user-observable Collector
+  Lifecycle Management feature is now ENUMERATED at the UI tier with
+  full primary-source citations across the four CRUD-plus-rotation
+  verbs.
+
+  The HIGHEST-LEVERAGE probe candidates are:
+  (a) **UI-vs-API asymmetry regression-pin (REFACTOR-185 19th surface)**
+      — under auth.type=DISABLED, render the /management/collectors
+      page (no Add button visible) AND issue a direct
+      `curl POST /api/collectors` from the same network namespace +
+      assert the curl succeeds with no auth + the token returned is
+      a valid 40-char string. Pin the asymmetry as a regression-pin
+      so a future fix to EITHER side surfaces in the test signal.
+  (b) **Token rotation no-grace-period regression-pin** — register
+      a collector + start an ingestion loop using the token + rotate
+      the token + assert the ingestion loop receives 401 on the
+      NEXT request (no grace period; no in-flight tolerance). Pin
+      the current operational contract so a future grace-period
+      addition doesn't silently break audit-export pipelines.
+  (c) **Token rotation no-security-effect-on-default regression-pin**
+      — under default `auth.ingestion.filter.enabled: false`, rotate
+      a token + assert `/ingestion/entities` STILL ACCEPTS the OLD
+      token (because the filter is not registered). Pin the
+      operational shape so operators reading the test signal
+      understand the dependency between rotation and filter-enable.
+
+  Local docker-compose probe stack is sufficient: ODD platform +
+  Postgres + a pre-seeded Collector + a curl client. No external
+  auth required (in fact, DISABLED-mode is the load-bearing test
+  context for facet 1).
+
+  Cross-feature coherence: this feature LIVES INSIDE pillar P-08
+  Management & Administration but FEEDS pillar P-10 Integrations &
+  Ingestion via the credential the two ingestion filters consume.
+  Cross-link partners: F-008 (Batch Ingestion — the credential
+  consumer pair; architectural-asymmetry finding under batch P;
+  the 19th REFACTOR-185 surface anchored here), F-019 (Owner
+  Lifecycle Management — sibling P-08 Management UI surface with
+  matching WithPermissions pattern + audit-silence + DISABLED-mode
+  bypass), F-006 (RBAC — COLLECTOR_* permission family is governed
+  by the same SecurityConstants gating mechanism), F-011
+  (Principal-to-Owner Resolution — the auth-mode posture this
+  feature inherits via the central auth pipeline).
+
+  REFACTOR-185 advances from 18-SIDECAR to 19-SIDECAR with this
+  feature's UI-tier evidence. The compound attack surface under
+  default DISABLED extends through the entire collector boot-of-self
+  chain: anyone on the network can POST /api/collectors (no UI
+  signal), copy the response token, and POST /ingestion/datasources
+  with that token (per F-008 batch P architectural asymmetry —
+  IngestionDataSourceFilter is always-on but accepts the just-minted
+  legitimate token).
+related_refactoring_scopes:
+- REFACTOR-185  # 19th invocation site — UI-vs-API asymmetry under DISABLED on the COLLECTOR_* permission family
+related_test_gaps_batch_q_candidates:
+- TEST-GAP-NNN (REFACTOR-185 19th-surface regression-pin — UI hides + curl succeeds under DISABLED)
+- TEST-GAP-NNN (Token rotation no-grace-period regression-pin)
+- TEST-GAP-NNN (Token rotation no-security-effect-on-default regression-pin)
+- TEST-GAP-NNN (Anonymous list-enumeration last-6-chars leak under DISABLED)
+- TEST-GAP-NNN (Token-visibility substring sniff regression-pin — mask-format contract between TokenMapper and CollectorItemToken)
+- TEST-GAP-NNN (Collector lifecycle audit-silence regression-pin — all four verbs emit no activity events)
+related_doc_gaps_batch_q_candidates:
+- DOC-GAP-NNN (live /features/management Collectors page silent on one-shot token visibility — no-recover-without-rotate)
+- DOC-GAP-NNN (live /features/management Collectors page silent on no-grace-period token rotation)
+- DOC-GAP-NNN (live /features/management Collectors page silent on auth.ingestion.filter.enabled=false neutralising token security on /ingestion/entities)
+- DOC-GAP-NNN (live /features/management Collectors page silent on UI-vs-API asymmetry under DISABLED — REFACTOR-185 19th surface)
+- DOC-GAP-NNN (live /features/management Collectors page silent on cluster-without-sticky-sessions limitation of WebSession-attribute collector-identity)
+related_refactoring_scopes_batch_q_candidates:
+- REFACTOR-NNN (Collector lifecycle audit-log gap — add @ActivityLog OR custom audit event emission to CollectorServiceImpl methods)
+- REFACTOR-NNN (Token rotation UI warning — add no-grace-period + no-security-effect-on-default caveats to the ConfirmationDialog)
+- REFACTOR-NNN (Token plaintext-in-DOM hardening — render visible token inside `<input type='password' readonly />` with Reveal toggle)
+- REFACTOR-NNN (Token-mask contract — add automated test pinning the mask-format between TokenMapper.java and CollectorItemToken.tsx OR add a tokenVisible boolean field to the wire contract)
+- REFACTOR-NNN (Token-mask last-6-chars omission — change TokenMapper to fully obfuscate masked-read responses)
+- REFACTOR-NNN (DISABLED-mode warning banner — under auth.type=DISABLED, render a UI banner explicitly warning operators about the anonymous-mutation surface)
+related_concepts:
+- Collector (Management — credential-bearing entity)
+- Token (40-char shared-secret)
+- COLLECTOR_* permission family (CREATE / UPDATE / DELETE / TOKEN_REGENERATE)
+- read-collaborative posture (REFACTOR-024 family — Collector list reachable to any authenticated user; under DISABLED, anonymously)
+- UI-vs-API asymmetry under DISABLED (REFACTOR-185 — operator-facing UI signal vs anonymous-API reality)
+- Audit-log Presence Asymmetry (cross-batch canonicalisation candidate — 6-sidecar pattern)
+related_retrospectives:
+- LSN-017  # cross-layer effects — the UI tier alone cannot show the API-tier anonymous reach
+- LSN-018  # pre-emit coherence — verified that CollectorsList sidecar's REFACTOR-185 19th-surface claim does NOT contradict existing 16/17/18-sidecar counters
+- LSN-001  # destructive defaults — auth.ingestion.filter.enabled=false is a permissive-default-hides-operator-error pattern
+related_probes: null
+probe_verifications: []
+related_features:
+- F-008  # Batch Ingestion — the credential consumer pair; architectural-asymmetry under batch P
+- F-019  # Owner Lifecycle Management — sibling P-08 Management UI with matching WithPermissions + audit-silence + DISABLED-mode bypass
+- F-006  # RBAC — the COLLECTOR_* permission family is governed by SecurityConstants gating mechanism
+- F-011  # Principal-to-Owner Resolution — the auth-mode posture this feature inherits via the central auth pipeline
+maintainer_curated: false
+batch_origin_note: |-
+  2026-05-20 batch Q — NEW pillar-anchored feature minted from the
+  convergence of the CollectorsList UI-tier sidecar with prior
+  CollectorController backend sidecars (registerCollector +
+  updateCollector + deleteCollector + regenerateCollectorToken +
+  getCollectorsList — the five-endpoint surface). The Collector
+  lifecycle is a coherent user-observable Management surface (per
+  the live /features/management Collectors-tab description: 'Registered
+  Collectors and their tokens. Issue new tokens, view existing token
+  IDs, regenerate or revoke.') that warrants standalone feature-flow
+  treatment rather than scattering its drift facets across F-008
+  (the credential consumer) or F-019 (sibling Management UI). F-020
+  anchors the lifecycle as a single feature with 12 load-bearing
+  drift facets and cross-links to F-008 (credential consumer pair),
+  F-019 (sibling Management UI), F-006 (permission family), and
+  F-011 (auth-mode posture).
+
+  Per Rule 0 evaluation: the substitution from EXTEND-F-008 to MINT-F-020
+  is justified because (a) the Collector lifecycle is a USER-OBSERVABLE
+  Management capability — operators CRUD the producer ecosystem
+  through this UI; (b) F-008 carries the credential-CONSUMER side
+  (the two ingestion filters that GATE on the token) — operators
+  ingesting metadata; (c) the two are distinct user-observable
+  contracts, share data (the token) but encode different operator
+  workflows. The substrate evidence supports separation: F-020 emerges
+  from a complete UI + backend trinity that lives under P-08
+  Management; F-008 lives under P-10 Integrations & Ingestion. The
+  cross-pillar `feeds` relationship is recorded above.

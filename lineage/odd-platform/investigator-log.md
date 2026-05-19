@@ -1464,3 +1464,69 @@ Theme M next: Anchor-set defence audit (cross-cutting; ~5 controllers — getDat
 - **PHANTOM-NODE methodology miss** captured as REFACTOR-435 + substrate_quality concept. Future sprint-themes entries should run a "method-existence verification" (Grep for the method name in the source_file) BEFORE adding to the theme queue.
 - Coherence-sweep candidates: 29.8k (batch O) → 33.1k (batch P; linear growth, fanout-dominated).
 
+
+## Batch 2026-05-20-Q — UI-axis: AppToolbar + RBAC + Owner + Collector lists (5/5; LSN-018 phantom-prevention pre-fired)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: 93 prior + 5 new = **98 total**; 0 deferred. **FIRST UI-axis batch in the ontology.**
+- **Theme**: UI-axis — Auth + RBAC + Settings surfaces (LoginForm originally a PHANTOM; substituted with AppToolbar)
+
+### Pre-Phase-1 path corrections (LSN-018 phantom-node prevention)
+
+The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firing file-analysers. Outcome:
+- **5/5 original paths were wrong**:
+  - 1 PHANTOM: LoginForm.tsx — no component by that name exists in odd-platform-ui. Auth model is OIDC-redirect-only with no local login form. **Substituted**: AppToolbar.tsx (the actual user-facing auth surface)
+  - 4 directory-naming typos: Policies/Policies.tsx → PolicyList/PolicyList.tsx, Roles/Roles.tsx → RolesList/RolesList.tsx, Owners/Owners.tsx → OwnersList/OwnersList.tsx, Collectors/Collectors.tsx → CollectorsList/CollectorsList.tsx
+- Corrections committed before Phase 1: this is the LSN-018 phantom-node prevention working end-to-end. Methodology cost of correction: ~30 seconds; methodology cost without correction: 5 wasted file-analyser cycles + 5 phantom sidecars.
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `AppToolbar` (substitute for phantom LoginForm) | P-09 | Only user-facing auth UI surface; Identity wire has NO provider field → **POSITIVE: NOT a leak surface for F-011 provider-null cross-mode bleed**; Management tab visible to ALL authenticated users (unpermissioned visibility); logout = full-page navigation deferring to backend chain. Zero test files. |
+| `PolicyList` | P-09 | 5 ADRs, 5 security gaps (1 HIGH catalogue-vs-grant soft-delete asymmetry). **REFUTED LSN-017 doubling hypothesis** (stable thunk ref). CONFIRMED LSN-001 catalogue-vs-GRANT pattern: permissions shown as JSON-schema CODES not labels. |
+| `RolesList` | P-09 | **F-006 audit-silence now 6-SIDECAR** (UI tier added). Soft-deleted ROLES invisible BUT soft-deleted POLICIES still render in chip list (F-006 drift_class A UI manifestation). RoleForm has NO predefined-name validation → viable exploit path for batch-H/N create-path asymmetry. |
+| `OwnersList` | P-08 | **Destructive empty-roles UPDATE is REACHABLE FROM UI in 3 clicks with NO confirmation modal** (while more-reversible Delete has one). Elevates batch-P REFACTOR-425 from API-only to UI-operator-reachable. GET /api/owners has NO SecurityRule — any authenticated user reads full directory. 17th DISABLED-mode anonymous surface. |
+| `CollectorsList` | P-08+P-10 | Tokens returned as 40-char PLAINTEXT on register/regenerate, rendered as DOM text. UI distinguishes plaintext-vs-masked via FRAGILE substring-prefix sniff with no test. **UI-vs-API asymmetry under DISABLED: UI hides COLLECTOR_* mutation buttons while backend endpoints accept anonymous mutations — NEW REFACTOR-185 facet**. **REFACTOR-185 now 19-SIDECAR (NEW STRONGEST count)**. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 267 → **274 indexed (276 written; 2 quarantined)** | +9 new (1 entity + 7 invariants + 1 operation) + 6 strengthened. 2 BROKEN-YAML quarantined (`destructive-empty-roles-update-reachable-from-ui-three-clicks-no-confirmation.yaml` + `plaintext-token-rendered-into-dom-fragile-substring-prefix-sniff-masking.yaml` — backtick scalars; data preserved in `.broken-yaml-backup`). Coherence: strengthens=6 supersedes=0 conflicts_surfaced=0 positive_findings=3. |
+| adr-archaeologist (ADRs) | 145 → **150** | +5 (146-150) + 5 strengthened. ADR-001 to 23-sidecar UI-shell mirror; ADR-003 to 12-sidecar UI-tier confirmation. 8 candidates failed wisdom test → reclassified to scopes. |
+| adr-archaeologist (scopes) | 435 → **455** | +20 (436-455) + 7 strengthened. **REFACTOR-185 NOW 19-SIDECAR — NEW STRONGEST COUNT** (was 17-18). REFACTOR-425 elevated to UI-REACHABLE. REFACTOR-426 audit-silence now 6-SIDECAR with UI tier. |
+| doc-gap-finder | 184 → **190** | +6 (185-190) + 5 strengthened. NEW HIGH: DOC-187 UI-vs-API asymmetry under DISABLED operator-trap; DOC-188 empty-roles UI-reachable destructive UPDATE. DOC-082 META now 17→24-sidecar; DOC-083 8→9+; DOC-137 5→9. |
+| test-coverage-mapper | 632 → **657 detail (656 indexed)** | +25 (634-658) + 1 strengthened. **3 NEW CRITICAL** (TEST-643 UI exploit chain for create-path asymmetry; TEST-647 empty-roles destructive UI; TEST-652 UI-vs-API asymmetry under DISABLED). 110 CRITICAL total. **5 LSN-017 negative findings recorded** (useEffect doubling does NOT exhibit in batch-Q components). |
+| feature-flow-builder | 19 → **20 features** (+1 new, +4 extended) | **F-020 / P-08:F-004 Collector Lifecycle Management** (NEW — minted per system-mission.md P-08 sub-feature seed; credential-AUTHORING side under Management, distinct from F-008 credential-CONSUMER side under Integrations). F-006/F-008/F-011/F-019 extended. Coherence: strengthens=4 supersedes=0 conflicts_surfaced=0. |
+
+### Coverage state after batch Q
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 98 | **24.8%** (was 23.5%) |
+| Effective coverage | 188 | **47.6%** (was 43.3%) |
+| Features discovered | 20 (was 19) | +1 NEW (F-020 Collector Lifecycle Management) |
+| Total test-gaps | 656 indexed (657 written; 1 broken from batch P) | 110 CRITICAL (was 107) |
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-185 DISABLED-mode bypass**: now **19-SIDECAR** (UI-vs-API asymmetry from CollectorsList adds a NEW facet beyond filter/controller surfaces). STRONGEST in catalog reaffirmed.
+- **F-006 audit-silence pattern**: now **6-SIDECAR** (UI tier added: PolicyList + RolesList + AppToolbar all forensically silent)
+- **F-019 Owner Lifecycle Management**: UI-tier elevated batch-P REFACTOR-425 (empty-roles destructive UPDATE) from API-only to UI-operator-reachable
+- **F-011 Principal-to-Owner Resolution**: AppToolbar POSITIVE finding — Identity wire has NO provider field, RULES OUT provider-null leak at UI surface
+- **LSN-001 catalogue-vs-grant pattern**: 3rd surface (Cognito empty-logout + admin-groups silent + PolicyList JSON-schema codes)
+- **LSN-017 doubling**: explicit NEGATIVE findings recorded for 4/5 UI components (useEffect dep-arrays are guarded by `if (!query)` or primitive deps)
+- **LSN-018 phantom-node prevention**: PRE-PHASE-1 fire saved 5 file-analyser cycles
+
+### Follow-ups (logged, not blocking)
+
+- **2 new BROKEN-YAML quarantines** (concept-merger emit-bug — backtick scalars): `destructive-empty-roles-update-reachable-from-ui-three-clicks-no-confirmation.yaml` + `plaintext-token-rendered-into-dom-fragile-substring-prefix-sniff-masking.yaml`. Data preserved in `.broken-yaml-backup`. Recoverable next batch.
+- 1 broken-yaml from batch P (TEST-GAP-363) persists.
+- 3 broken-yaml from earlier batches persist (lineage-graph-traversal, manage-ownership-lifecycle-with-deg-cascade, run-housekeeping-cycle-five-jobs).
+- 199 detail-without-index in refactoring-scopes; 78 in implicit-adrs (legacy + ongoing canonical-append).
+- 17 detail-without-index + 4 index-without-detail in doc-gaps.
+- Coherence-sweep candidates: 33k (P) → 36k (Q; linear growth, fanout-dominated).
+- F-001 + F-003 merge candidate still maintainer-pending.
+

@@ -26,6 +26,10 @@ drift_class_summary:
 - owner_update_no_audit_log_no_per_owner_scope
 - owner_update_empty_roles_silently_destroys_bindings
 - owner_update_openapi_201_vs_impl_200_drift_class_wide
+- ui_identity_render_has_no_provider_field_positive_negative_no_leak
+- ui_has_no_local_login_form_invariant_framework_defaults_only
+- management_tab_rendered_to_all_authenticated_users_ux_visibility
+- logout_full_page_navigation_defer_session_termination_to_backend
 cross_pillar_relationships:
 - pillar_id: P-01
   kind: feeds
@@ -319,6 +323,101 @@ batch_extensions:
     CONFIRMED at every method body. ZERO direct unit tests
     (`ReactiveOwnerAssociationRequestRepositoryImplTest.java:50` uses it as
     fixture setup only, not a test of this repository).
+- batch: Q
+  entry_point_added: |-
+    UI-tier: react-component:AppToolbar (the SPA's persistent top-of-viewport
+    fixed-position bar mounted unconditionally on every authenticated route at
+    `App.tsx:56`). This is the CLIENT-SIDE RENDER of the principal-to-owner
+    resolution result. `AppToolbar.tsx:74` reads `{owner?.name ??
+    identity?.username}` — the user-identifier label that displays the resolved
+    Owner name (preferred) or the auth-provider username (fallback). The same
+    precedence convention is used in 5 OTHER components
+    (ActivityItem.tsx:184/77, DataEntityAlertItem.tsx:60, AlertItem.tsx:86,
+    ActiveAssociationRequest.tsx:65-67). The substitute target replaces a
+    PHANTOM original target — there is NO `LoginForm` React component anywhere
+    in `odd-platform-ui/src` (verified by Grep returning ZERO matches); LOGIN_FORM
+    + LDAP login UI are rendered by Spring Security framework defaults at
+    `LoginFormSecurityConfiguration.java:58` + `LDAPSecurityConfiguration.java:147`.
+    Recording 'UI has NO local login form' as an invariant.
+  contributing_nodes_added:
+  - odd-platform ts react-component:AppToolbar
+  notes: |-
+    THREE findings surface from the UI tier of the principal-to-owner
+    resolution capability, all of which STRENGTHEN existing F-011 facets +
+    one POSITIVE NEGATIVE finding (the toolbar is NOT a leak surface).
+    Listed by polarity:
+    (1) POSITIVE NEGATIVE — UI IS NOT A LEAK SURFACE FOR PROVIDER-NULL
+    CROSS-MODE BLEED (no severity; positive case-law) — The Identity wire
+    schema at `components.yaml:131-139` has NO `provider` field on Identity
+    (verified by direct read). The toolbar at AppToolbar.tsx:74 reads only
+    `identity?.username`. So the SPA cannot render the active provider,
+    cannot expose `(null)` for provider, and is NOT a leak surface for the
+    provider-null cross-mode bleed F-011 catalogues. The cross-mode bleed
+    risk is invisible at this UI tier — provider-rendering surfaces that DO
+    exist (AssociatedUser at `components.yaml:370-376` — owner-association
+    request flow) need separate scrutiny. Rules out provider-null leak at
+    UI surface for the user-identifier label specifically. POSITIVE case-law
+    contrast to the SQL layer (batch-N row duplication in external JOINs):
+    the UI tier doesn't propagate provider null-ness because it doesn't
+    consume provider at all.
+    (2) UI HAS NO LOCAL LOGIN FORM (NEW INVARIANT) — Grep on `login|Login`
+    across `odd-platform-ui/src` returns ZERO matches. The `auth.type=
+    LOGIN_FORM` mode renders Spring Security's framework-default form
+    (`LoginFormSecurityConfiguration.java:58` — `.formLogin(formLoginSpec
+    -> formLoginSpec.authenticationSuccessHandler(authHandler))`); the
+    `LDAP` mode uses `LDAPSecurityConfiguration.java:147` —
+    `.formLogin(Customizer.withDefaults())`. The `OAUTH2` mode redirects
+    to the provider's hosted login. The `DISABLED` mode skips login. **The
+    SPA's primary auth-affordance surface is AppToolbar** — it shows the
+    authenticated-user identifier + exposes the Logout affordance.
+    AppToolbar is mounted unconditionally regardless of auth state (App.tsx
+    has no auth predicate around the mount), which means under DISABLED
+    the toolbar still renders. New invariant for the F-011 chain: there is
+    NO SPA-side reauth dialog; `redux/lib/unauthenticatedMiddleware.ts:3-9`
+    reloads the page on any 401 payload (the convention is 'hard-reload on
+    auth failure').
+    (3) MANAGEMENT TAB RENDERED TO ALL AUTHENTICATED USERS — UX VISIBILITY
+    OF READ-COLLABORATIVE POSTURE (MEDIUM) — `ToolbarTabs.tsx:34-82`
+    enumerates ALL nine top-level navigation tabs (Catalog / Directory /
+    Data Quality / Data Modelling / Master Data / Management / Dictionary /
+    Alerts / Activity) UNCONDITIONALLY — no `useAppSelector(getGlobalPermissions)`
+    predicate. The downstream Management UI is permission-gated at the
+    PAGE level (e.g. `WithPermissionsProvider` wraps `<LookupTables>` in
+    App.tsx:78-87), but the TAB itself is visible to every authenticated
+    user. Operators with zero `*_MANAGE` permissions still see the
+    `Management` tab; clicking through yields a permission-denied page
+    rather than a hidden-tab UX. STRENGTHENS the F-019 drift facet
+    `per_owner_authorization_scoping_absent_global_owner_crud_permission`
+    and the F-011-related read-collaborative posture (ADR-CANDIDATE-003 /
+    REFACTOR-024 family). UI-side evidence that the posture is also
+    UX-visible.
+    (4) LOGOUT BUTTON IS FULL-PAGE NAVIGATION — IMPLICIT ADR (no severity;
+    convention-of-platform) — `AppToolbar.tsx:35-37` issues
+    `window.location.href = '/logout'` rather than a redux dispatch +
+    state-cleanup sequence. The intent: defer ALL session-termination
+    logic to the backend handler chain (OAuthSecurityConfiguration.java:100
+    `logoutSuccessHandler(logoutHandler)` + 7 handler classes in
+    `org.opendatadiscovery.oddplatform.auth.logout.*`). The SPA does not
+    attempt to participate in revocation, it simply hands off. STRENGTHENS
+    the batch-O F-011 drift facets `azure_logout_npe_no_token_revoke_local_only`
+    + `cognito_logout_silent_no_op_on_empty_uri` — the SPA-side click
+    handler is IDENTICAL across all 4 auth modes; the asymmetry is
+    entirely backend-handler-controlled. The UI provides NO operator
+    feedback that Azure logout doesn't revoke at the IdP — operators may
+    believe they've fully logged out when they haven't, especially on
+    shared workstations.
+    Additionally: silent identity-fetch failure renders an EMPTY username
+    label (App.tsx:48 swallows error via `.catch(() => {})` + AppToolbar.tsx:74
+    falls through to empty string when both owner and identity are null);
+    `identity.permissions` is imported but UNUSED on this surface — gated
+    UI affordances would be the natural place to consume this and don't.
+    Cross-batch coherence: STRENGTHENS the F-011 chain by closing the
+    UI-tier rendering of the resolution result + records the POSITIVE
+    negative finding (UI tier is NOT a leak surface for provider-null).
+    No conflicts; no supersedes. The phantom-target substitution
+    (LoginForm → AppToolbar) yields a new invariant ('UI has no local
+    login form') that completes the picture of where the four auth modes
+    are rendered.
 feature_name: Principal-to-Owner resolution — the per-request chokepoint that
   resolves Spring Authentication → UserDto(username, provider) → OwnerPojo via
   USER_OWNER_MAPPING JOIN
@@ -388,6 +487,7 @@ contributing_nodes:
 - odd-platform java UserProviderRole
 - odd-platform java OwnerController controller-method:updateOwner
 - odd-platform java OwnerServiceImpl
+- odd-platform ts react-component:AppToolbar
 chain:
 - hop: 0
   node: 'odd-platform java auth handler/logout:* (4 sidecars in batch O)'

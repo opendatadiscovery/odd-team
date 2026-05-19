@@ -17,6 +17,11 @@ drift_class_summary:
 - upsert_partial_merge_name_and_description_only
 - namespace_inherited_from_collector_payload_silently_dropped
 - session_state_loss_5xx_not_401
+- ui_vs_api_asymmetry_under_disabled_collector_permission_family
+- token_rotation_no_ui_warning_no_security_effect_on_default
+- token_visibility_substring_prefix_sniff_fragile
+- collector_token_plaintext_dom_text_node_no_obfuscation
+- anonymous_list_enumeration_leaks_last_6_chars_of_every_token
 batch_extensions:
 - batch: O
   entry_point_added: |-
@@ -176,6 +181,98 @@ batch_extensions:
     audit-silence pattern + F-018 ingestion-side audit-silence facet
     + F-011 user_owner_mapping mutation no-audit + this F-008
     datasource-registration no-audit = 5-pillar audit silence pattern.
+- batch: Q
+  entry_point_added: |-
+    UI-tier: react-component:CollectorsList (Management → Collectors tab) —
+    the authoring surface for the credential consumed by BOTH ingestion
+    filters this feature carries (IngestionDataEntitiesFilter at hop-0
+    + IngestionDataSourceFilter at the sibling endpoint added in batch P).
+    The UI does NOT directly participate in the ingestion path itself
+    (CollectorsList lives at /management/collectors and calls /api/collectors/*
+    endpoints, not /ingestion/*), but it IS the operator-facing trigger
+    of the token-rotation + revoke + new-collector-register surface that
+    governs every credential the two filters accept. The sidecar surfaces
+    a NEW REFACTOR-185 facet not previously in the 16/17/18-sidecar
+    enumeration: the COLLECTOR_* permission family adds a 19TH SURFACE
+    via the UI-vs-API asymmetry under DISABLED.
+  contributing_nodes_added:
+  - odd-platform ts react-component:CollectorsList
+  notes: |-
+    THREE new drift facets surface from the UI tier of the
+    credential-authoring surface, plus the REFACTOR-185 19th-site
+    refinement. Listed in descending severity:
+    (1) UI-VS-API ASYMMETRY UNDER DISABLED — REFACTOR-185 19TH SURFACE
+    (HIGH) — under `auth.type=DISABLED`, the UI's `WithPermissions`
+    wrappers HIDE the Add / Edit / Delete / Regenerate buttons because
+    `/api/identity` returns an empty `permissions` array (the SecurityContext
+    is unpopulated). Operators see a READ-ONLY surface and may infer
+    'this deployment is locked down'. But the BACKEND REST endpoints
+    ACCEPT ANONYMOUS MUTATIONS regardless — `DisabledAuthSecurityConfiguration.java:11-19`
+    sets `.anyExchange().permitAll()` and the SecurityRule entries at
+    `SecurityConstants.java:127-137` for COLLECTOR_CREATE / UPDATE /
+    DELETE / TOKEN_REGENERATE are bypassed. A direct `curl POST /api/collectors`
+    succeeds with no auth. **The UI is QUIETER than the API**: an
+    attacker bypassing the UI mints new collectors + copies the
+    plaintext token from the response + uses it to bootstrap a hostile
+    collector identity via the sibling `POST /ingestion/datasources`
+    (which is ALWAYS-ON auth-filtered, but the just-minted token is a
+    legitimate credential). REFACTOR-185 advances from 18-SIDECAR to
+    19-SIDECAR. The compound surface under default DISABLED: anyone
+    on the network can `POST /api/collectors` (no UI signal), copy
+    the response token, and `POST /ingestion/datasources` with that
+    token (per the batch-P architectural asymmetry finding) — the
+    DISABLED-mode bypass extends through the ENTIRE collector
+    boot-of-self chain.
+    (2) TOKEN-ROTATION HAS NO UI WARNING ABOUT NO-SECURITY-EFFECT ON
+    DEFAULT DEPLOYMENT (HIGH) — The token-rotation ConfirmationDialog
+    (`CollectorItemToken.tsx:38-49`) reads only 'Are you sure you want
+    to regenerate token for this collector?' The UI promises a security
+    property (token rotation) the default deployment does not enforce
+    (`auth.ingestion.filter.enabled=false` per `application.yml:48`
+    means `POST /ingestion/entities` is anonymously reachable
+    regardless of token value — the 16th REFACTOR-185 surface
+    confirmed at batch O). An operator rotating a 'leaked' token on a
+    default deployment is rotating a credential that has ZERO security
+    effect on the entity-ingestion path. Cornerstone-3
+    (configuration-as-separate-audience-surface) failure that compounds
+    with REFACTOR-185.
+    (3) TOKEN-VISIBILITY DETECTION VIA SUBSTRING-PREFIX SNIFF (MEDIUM)
+    — `CollectorItemToken.tsx:25-27` sets `setIsHidden(collector.token.value.substring(0,
+    6) === '******')`. The detection is a literal 6-star prefix sniff;
+    backend masks via `TokenMapper.java:15-18` as `'******' +
+    value.substring(value.length() - 6)`. A future backend change to
+    the mask format (e.g. dropping to 4 stars, switching to a Unicode
+    block character, prepending whitespace) silently breaks detection
+    — the UI would offer the Copy button on a masked value, leaking
+    `******abc123`-style fragments to the operator's clipboard. No
+    automated test guards against this. ALSO: the token is rendered
+    as plaintext DOM text node when visible (`CollectorItemToken.tsx:34`),
+    not in `<input type='password'>` — any browser extension /
+    screenshot tool / accessibility reader captures the 40-character
+    credential by default.
+    Additionally: under DISABLED, `GET /api/collectors/list` is
+    anonymously reachable (NO SecurityRule entry per SecurityConstants
+    grep — read-collaborative pattern per REFACTOR-024 family).
+    Anonymous probe enumerates every collector's name + namespace +
+    last-6-token-chars (the mask format reveals last-6). Minor
+    information leak on credential mask. Cross-batch coherence:
+    STRENGTHENS REFACTOR-185 (16 → 19 SIDECAR — Owner trinity batch P
+    adds 17 + createDataSourceEntity adds 17 partially in some
+    counters; COLLECTOR_* UI permission family adds the 19th distinct
+    drift surface), STRENGTHENS the asymmetric-auth-between-filters
+    finding (batch P) — the UI is the SAME credential-authoring surface
+    for two endpoints with INCONGRUOUS auth defaulting, and the UI
+    gives operators no signal that the SAME token participates in TWO
+    different auth postures. STRENGTHENS the audit-silence pattern:
+    `CollectorsList` emits NO analytics events, NO console.log on
+    mutations, NO persistent audit panel — adding a 6th UI-tier
+    corroboration of the platform-wide audit-silence finding (mirror
+    of batch-Q PolicyList + RolesList finding on F-006). No conflicts;
+    no supersedes. Explicit LSN-017 NEGATIVE finding recorded — the
+    useEffect dep-array at CollectorsList.tsx:44-46 has primitive
+    booleans + a string in deps, NOT a fetch-result derivation — the
+    LSN-017 amplification shape is structurally ABSENT from this
+    component.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Ingestion-replace destruction surface
@@ -222,6 +319,7 @@ contributing_nodes:
 - odd-platform java LineageIngestionRequestProcessor (UNRESOLVED — processor sidecar not yet enriched; ref only)
 - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 - odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+- odd-platform ts react-component:CollectorsList
 chain:
 - hop: 0
   node: odd-platform java auth filter:IngestionDataEntitiesFilter

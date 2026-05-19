@@ -1,0 +1,222 @@
+---
+artefact: feature-flows
+generated_at: "2026-05-19T00:00:00Z"
+generated_at_commit: ede5d277
+sidecar_count: 50
+prompt_version: feature-flow-builder/0.1.0
+total_features: 1
+features_by_amplification:
+  drift: 1     # F-001 — view_count doubling under UI traffic
+  clean: 0
+  partial: 0
+test_matrix_summary:
+  features_fully_controlled: 0
+  features_partially_controlled: 1     # F-001 — 3 of 4 cells PROBED after slice-2 probe round
+  features_uncontrolled: 0
+processed_node_ids:
+  - "odd-platform java DataEntityController controller-method:getDataEntityDetails"
+  - "odd-platform java DataEntityController controller-method:getPopular"
+  # UI component sidecar not yet authored — placeholder reference below
+batch_history:
+  - "2026-05-19 (slice-2 manual seed): F-001 authored by hand for the first dynamic-verification experiment. Subsequent batches will refresh via the feature-flow-builder reducer once the UI component sidecar lands."
+---
+
+# feature-flows — odd-platform — first manual entry (slice-2 of dynamic-verification ADR)
+
+# F-001 is the canonical case the rev-2 methodology was built to catch:
+# view_count amplification across UI dispatch × backend per-call delta.
+# Manually composed here for the first-experiment probe round. The
+# feature-flow-builder reducer will refresh on next batch — including
+# the UI component sidecar once it's enriched.
+
+features:
+  - feature_id: F-001
+    feature_name: "Detail-page view tracking"
+    discovered_from_entry_point: "ui_route:/dataentities/{id}/overview"
+    description: |
+      Opening a data entity's detail page in the UI registers a view in the
+      backend's view_count column on the data_entity table. The view_count
+      column is the sole signal for the home-page Popular ranking. The
+      user-observable promise (per `data-discovery/catalog-overview.md`):
+      "Popular shows the most-viewed or most-used data entities."
+      The user-observable reality, per LSN-017 + this first probe round:
+      opening the detail page once registers as +2 views, not +1, due to a
+      useEffect dependency-array bug in the React component.
+
+    contributing_nodes:
+      - "ts react-component:DataEntityDetails.tsx (UNRESOLVED — sidecar not yet enriched; ref only)"
+      - "ts redux/thunks:dataentities.thunks.ts:35-40 (UNRESOLVED — sidecar not yet enriched; ref only)"
+      - "odd-platform java DataEntityController controller-method:getDataEntityDetails"
+      - "odd-platform java ReactiveDataEntityRepositoryImpl.incrementViewCount (UNRESOLVED — sidecar enriched at class level; method-line not yet refreshed under v0.3.0)"
+      - "odd-platform java DataEntityController controller-method:getPopular"
+
+    chain:
+      - hop: 1
+        node: "ts react-component:DataEntityDetails.tsx"
+        sidecar: "(not yet enriched)"
+        multiplicity_per_trigger: 2
+        evidence: "DataEntityDetails.tsx:56-64 — useEffect dependency-array contains details.status?.status (derived from fetch response), causing the effect to re-fire after the first fetch resolves"
+        unresolved: true
+        # When the UI sidecar lands, this hop's evidence + multiplicity move from
+        # this inline note into the sidecar's `upstream_callers` block.
+
+      - hop: 2
+        node: "ts thunk:fetchDataEntityDetails"
+        sidecar: "(not yet enriched)"
+        multiplicity_per_trigger: 1
+        evidence: "dataentities.thunks.ts:35-40 — handleResponseAsyncThunk wrapping dataEntityApi.getDataEntityDetails"
+        unresolved: true
+
+      - hop: 3
+        node: "odd-platform java DataEntityController controller-method:getDataEntityDetails"
+        sidecar: "odd-platform__java__DataEntityController__controller-method__getDataEntityDetails.md"
+        multiplicity_per_trigger: 1
+        evidence: "DataEntityController.java:139-147 — thin reactive pass-through to DataEntityServiceImpl.getDetails"
+        unresolved: false
+
+      - hop: 4
+        node: "odd-platform java ReactiveDataEntityRepositoryImpl.incrementViewCount"
+        sidecar: "(class-level only; method-line refresh pending)"
+        multiplicity_per_trigger: 1
+        evidence: "ReactiveDataEntityRepositoryImpl.java:173-180 — UPDATE data_entity SET view_count = view_count + 1 WHERE id = ?, inside @ReactiveTransactional on the service path"
+        unresolved: false
+
+    terminal_side_effect:
+      side_effect_class: db-write
+      description: "Increments data_entity.view_count by 1 per call; per-row hot UPDATE"
+      evidence: "ReactiveDataEntityRepositoryImpl.java:173-180"
+      cardinality_per_call: 1
+
+    amplification_factor: 2  # 2 (UI useEffect) × 1 (thunk) × 1 (controller) × 1 (repository) = 2
+    amplification_factor_provenance: "PARTIALLY MEASURED — backend half (hops 3-4 = 1×1) measured by P-001 (run R-20260519T002102Z-P-001); UI half (hops 1-2 = 2×1) remains inferred from code-walk; full chain product confirmed in slice 3 via headless-browser probe"
+
+    observed_vs_expected:
+      # Multiple facets, each with its own measurement provenance.
+      facets:
+        - facet: "backend per-call delta"
+          observed: "+1 view_count per GET /api/dataentities/{id}"
+          expected: "+1 (matches intent)"
+          drift_class: null
+          provenance: "MEASURED — P-001 ran 5 sequential GETs; observed final_view_count - initial_view_count = 5 (run R-20260519T002102Z-P-001)"
+
+        - facet: "UI page-open delta"
+          observed: "+2 view_count per page-open (inferred from code-walk)"
+          expected: "+1 per logical page-open (per the operator-facing UX intent)"
+          drift_class: ui_amplification
+          provenance: "INFERRED — slice 3 headless-browser probe will confirm"
+
+        - facet: "anonymous reachability under DISABLED"
+          observed: "anonymous caller successfully fetches detail AND increments view_count; 10 anon calls → +10 view_count"
+          expected: "either documented anonymous-OK posture OR 401/403"
+          drift_class: disabled_mode_bypass
+          provenance: "MEASURED — P-002 ran 10 unauthenticated GETs against probe-stack with AUTH_TYPE=DISABLED; observed final_view_count - initial_view_count = 10 (run R-20260519T002213Z-P-002)"
+
+        - facet: "detail-read latency baseline (small seed, single entity)"
+          observed: "p50=74ms, p95=153ms, p99=1741ms (50 calls; the p99 outlier is JIT/warmup on the first call)"
+          expected: "establish a baseline; bound is empirical, not documented"
+          drift_class: null
+          provenance: "MEASURED — P-003 ran 50 sequential GETs (run R-20260519T002521Z-P-003)"
+
+      surfaced_by:
+        - "lineage/odd-platform/understanding/odd-platform__java__DataEntityController__controller-method__getDataEntityDetails.md (backend half — batch F)"
+        - "odd-platform-ui/src/components/DataEntityDetails/DataEntityDetails.tsx:56-64 (UI half — code-walk during LSN-017 trigger conversation)"
+        - "live probe-runs/2026-05-19-P-001.yaml — backend +1 per call empirically confirmed"
+        - "live probe-runs/2026-05-19-P-002.yaml — DISABLED-mode anonymous reachability empirically confirmed"
+        - "live probe-runs/2026-05-19-P-003.yaml — latency baseline at small N"
+
+    test_matrix:
+      unit:
+        state: GAP
+        covered: []
+        uncovered:
+          - "ReactiveDataEntityRepositoryImpl.incrementViewCount — assert +1 delta on call (an isolated unit equivalent would mock the JDBC layer; the integration-class probe P-001 already pins the observable behaviour end-to-end)"
+          - "DataEntityDetails.tsx — assert useEffect dispatches exactly once per mount (target for slice-3 Playwright probe)"
+          - "fetchDataEntityDetails thunk — assert one network call per dispatch"
+      integration:
+        state: PROBED-PASSING
+        covered:
+          - behaviour: "5 sequential GET /api/dataentities/{id} increments view_count by exactly 5"
+            pinned_by_probe_run: "R-20260519T002102Z-P-001"
+            cell_evidence: "lineage/odd-platform/probe-runs/2026-05-19-P-001.yaml — final_view_count=5, initial_view_count=0"
+        uncovered:
+          - "Open detail page via UI → assert DB view_count += 2 per page-open (target for slice-3 Playwright probe)"
+          - "Multiple sequential page-opens — assert linear accumulation (extension of P-001)"
+          - "Concurrent page-opens — assert no lost-update"
+          - "Popular ranking — assert entity with inflated view_count rises (cross-feature probe)"
+      performance:
+        state: PROBED-PASSING
+        covered:
+          - behaviour: "Detail-read latency baseline (single entity, small seed): p50=74ms, p95=153ms, p99=1741ms (50 calls)"
+            pinned_by_probe_run: "R-20260519T002521Z-P-003"
+            cell_evidence: "lineage/odd-platform/probe-runs/2026-05-19-P-003.yaml — latency_curve.* + final_view_count=50 sanity"
+            caveat: "p99 outlier driven by first-call JIT warmup; p95 is the steady-state reference"
+        uncovered:
+          - "view_count UPDATE under 100 concurrent detail-reads — assert no row-level lock starvation (deferred to slice 3 with k6 load injection)"
+          - "Popular page render p99 under 50K-entity catalog — assert <200ms (deferred to slice 3 with seeded large dataset)"
+          - "view_count column index regression — EXPLAIN ANALYZE uses Index Scan not Seq Scan (the absence of the index is itself REFACTOR-221; performance probe at scale will surface the consequence)"
+      security:
+        state: PROBED-PINNING-BUG
+        covered:
+          - behaviour: "Under auth.type=DISABLED, anonymous unauthenticated caller successfully fetches detail AND inflates view_count by 10 across 10 anon calls"
+            pinned_by_probe_run: "R-20260519T002213Z-P-002"
+            cell_evidence: "lineage/odd-platform/probe-runs/2026-05-19-P-002.yaml — final_view_count-initial_view_count==10 with no Authorization header"
+            note: "PINNING-BUG: documents the current DISABLED-bypass behaviour. When fail-closed lands, P-002's assertion flips (expect 401/403) and the probe becomes the regression-pin for the fix. Empirical confirmation of REFACTOR-073's 18-sidecar cluster — at least 1 of 17 endpoints empirically demonstrated."
+        uncovered:
+          - "Rate-limit absence — single authenticated caller can pump 10K views in N seconds (deferred to slice 3 with k6 load + auth)"
+          - "Cross-tenant inflation — caller in tenant A pumps tenant B's entity to A's home page (deferred — multi-tenant probe stack)"
+
+    control_summary: "3/14 cells PROBED (1 PROBED-PINNING-BUG security + 1 PROBED-PASSING integration + 1 PROBED-PASSING performance baseline) + 11 cells remaining GAP. First end-to-end empirical validation of the methodology loop. Slice 3 adds UI/headless-browser probe for the +2 doubling fact, scaling probes for performance class, additional security probes for the remaining 16 DISABLED-bypass endpoints."
+
+    related_refactoring_scopes:
+      - REFACTOR-201  # view_count UPDATE inside @ReactiveTransactional GET — inflation surface
+      - REFACTOR-220  # view_count inflation loop closure (batch G primary-source)
+      - REFACTOR-221  # no index on view_count
+      - REFACTOR-073  # DISABLED-mode bypass (cumulative cluster — 18-sidecar)
+    related_test_gaps:
+      - TEST-GAP-256  # view-count side effect not tested
+      - TEST-GAP-259  # transactional rollback not tested
+      - TEST-GAP-260  # N+1 round-trip count regression
+      - TEST-GAP-309  # inflation regression
+      - TEST-GAP-310  # EXCLUDE_FROM_SEARCH bypass
+      - TEST-GAP-312  # no view_count index
+    related_doc_gaps:
+      - DOC-GAP-085  # view-count UPDATE inside GET undocumented
+      - DOC-GAP-101  # Popular ranking signal undocumented
+    related_concepts:
+      - "Popular Entities Ranking"
+      - "Data Entity"
+    related_retrospectives:
+      - LSN-017
+
+    related_probes:
+      - probe_id: P-001
+        test_class: integration
+        status: "EXECUTED PASS — run R-20260519T002102Z-P-001"
+        last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-001.yaml"
+      - probe_id: P-002
+        test_class: security
+        status: "EXECUTED PASS — run R-20260519T002213Z-P-002 (PROBED-PINNING-BUG; assertion flips when fail-closed lands)"
+        last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-002.yaml"
+      - probe_id: P-003
+        test_class: performance
+        status: "EXECUTED PASS — run R-20260519T002521Z-P-003 (baseline; bounds tightened in slice 3 once multi-run calibration data lands)"
+        last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-003.yaml"
+
+    maintainer_curated: true   # this entry is manually composed for slice 2;
+                               # preserved across feature-flow-builder refreshes
+
+partial_features: []
+
+cyclic_chains: []
+
+batch_refresh_note: |
+  Slice-2 manual seed of feature-flows.yaml. Single feature F-001 authored by
+  hand from the LSN-017 case-law + existing batch-F/G sidecars. Two UI-side
+  nodes (DataEntityDetails.tsx, the redux thunk) are recorded as
+  `unresolved: true` references — they will be sidecar-enriched in a later
+  batch, at which point feature-flow-builder reducer refresh will replace the
+  manual chain with the auto-composed one.
+  Three probes (P-001 / P-002 / P-003) authored to validate the loop closes
+  end-to-end. Probe execution + measurement-feedback follows in the same
+  session; measured values will land in `observed_vs_expected.observed` with
+  `provenance: measured (run-R-NNN)`.

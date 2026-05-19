@@ -1,0 +1,65 @@
+# Probe-stack: minimal ODD writable mirror for slice-2 first-experiment.
+#
+# Scope: Postgres + odd-platform backend ONLY. No enricher, no UI image,
+# no collectors, no sample-postgresql. Backend exposes its REST API on
+# the host's 18080 (offset from demo.yaml's 8080 to avoid colliding with
+# the maintainer's own dev stacks). Postgres exposes 15432.
+#
+# Pinned image tag (per dynamic-verification ADR Rule 5 — probe versioning):
+#   ghcr.io/opendatadiscovery/odd-platform:0.20.0
+# substrate's last_scan_commit = ede5d277 ≈ this image's release line.
+# When the substrate advances past 0.20.x, bump this tag + bump every
+# probe's verified_against_commit field.
+#
+# Lifecycle: ephemeral. The probe-runner brings up via `docker-compose -f
+# this-file up -d`, polls /actuator/health until 200, runs the probe, then
+# tears down via `docker-compose -f this-file down -v` (volume destroyed).
+#
+# All defaults are LOCAL-ONLY per APPROACH.md section 5 rule 12. No remote
+# infra; no production-shaped credentials; ephemeral volumes only.
+
+version: "3.3"
+
+services:
+  probe-database:
+    image: postgres:13.2-alpine
+    container_name: probe-database
+    restart: "no"   # ephemeral; restart=no avoids accidental persistence
+    environment:
+      POSTGRES_USER: odd-platform
+      POSTGRES_PASSWORD: odd-platform-password
+      POSTGRES_DB: odd-platform
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odd-platform -d odd-platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  probe-odd-platform:
+    image: ghcr.io/opendatadiscovery/odd-platform:0.20.0
+    container_name: probe-odd-platform
+    restart: "no"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://probe-database:5432/odd-platform
+      SPRING_DATASOURCE_USERNAME: odd-platform
+      SPRING_DATASOURCE_PASSWORD: odd-platform-password
+      # Default to DISABLED auth so REST probes can exercise the system
+      # without a token. Security-class probes that need LOGIN_FORM / OAUTH2 /
+      # LDAP override this via the probe's arrange.config_override step.
+      AUTH_TYPE: DISABLED
+      # Expose actuator's health endpoint for the runner's wait-for-ready loop
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info
+    depends_on:
+      probe-database:
+        condition: service_healthy
+    ports:
+      - "18080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s

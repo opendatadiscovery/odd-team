@@ -1,0 +1,89 @@
+name: Cascade soft-delete lineage edges
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW OPERATION, batch 2026-05-19H** — the entity status-change soft-delete
+  / restore cascade for lineage edges. When an entity transitions to DELETED state
+  (or is restored), every lineage edge touching the entity oddrn on EITHER end is
+  flipped via `softDeleteLineageRelations(Collection<String> dataEntityOddrns)` (UPDATE
+  is_deleted=true) or `restoreLineageRelations(...)` (UPDATE is_deleted=false). The
+  canonical implementation is `ReactiveLineageRepositoryImpl.softDeleteLineageRelations`
+  (lines 92-99) + `restoreLineageRelations` (lines 102-109) — paired symmetric methods
+  with identical OR-predicate shape: `LINEAGE.CHILD_ODDRN.in(dataEntityOddrns).or(LINEAGE.PARENT_ODDRN.in(dataEntityOddrns))`.
+  The WHERE clause matches edges where AT LEAST ONE endpoint is in the input list.
+  Both methods use `.returning()` to emit the flipped rows back as a Flux. Caller:
+  `DataEntityInternalStateServiceImpl.softDeleteDataEntities` (line 126) + `restoreDeletedDataEntityRelations`
+  (line 133) — both invoked under `@ReactiveTransactional` at the parent method (DataEntityInternalStateServiceImpl.java:101).
+  The cascade is the lineage-side of the entity STATUS state-machine: when DataEntityInternalStateServiceImpl
+  changes an entity to DELETED, this method ensures all incident lineage edges are
+  soft-deleted in the same transaction; on restore, the symmetric operation runs.
+  **Important asymmetry with the lineage repository''s OTHER soft-delete mechanism**:
+  the SOFT-DELETE-VIA-IS_DELETED-FLAG approach (used by the cascade methods + every
+  read''s `IS_DELETED.isFalse()` filter) is DIFFERENT from the ingestion''s ESTABLISHER-KEYED
+  HARD-DELETE primitive (`batchDeleteByEstablisherOddrn` + `batchInsertLineages` with
+  onConflictDoNothing — physical DELETE + idempotent batch INSERT). The lineage table
+  carries BOTH mechanisms: cascade soft-deletes for entity-lifecycle events; rewrite-by-establisher
+  hard-deletes for ingestion-rewrite. The two mechanisms coexist; the activity-feed
+  audit trail bridges them by capturing each entity status change. **NEW BATCH H —
+  no covering index for the OR-predicate**: `LINEAGE.CHILD_ODDRN.in(...).or(LINEAGE.PARENT_ODDRN.in(...))`
+  cannot use the (parent_oddrn, child_oddrn, establisher_oddrn) PK efficiently for
+  the CHILD_ODDRN leg (PK starts with parent_oddrn); a separate index on `(child_oddrn,
+  is_deleted)` would help. For a soft-delete cascade involving many entity oddrns,
+  may degrade to sequential scan. (V0_0_79__data_deprecation.sql:11-12 adds is_deleted
+  with NO covering index.)'
+axes_present:
+- repositories_reactive
+nodes:
+- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+contributors:
+- 'ReactiveLineageRepositoryImpl (batch H): operations[softDeleteLineageRelations,
+  restoreLineageRelations] — paired symmetric UPDATE is_deleted=true/false methods
+  with OR-predicate matching edges where AT LEAST ONE endpoint is in the input list.
+  Both methods return the flipped rows via .returning(). Caller wraps in @ReactiveTransactional
+  at the parent method (DataEntityInternalStateServiceImpl.java:101). performance.known_performance_gaps.[3]
+  identifies the MEDIUM-severity index gap on the OR-predicate''s CHILD_ODDRN leg.'
+- 'DataEntityInternalStateServiceImpl (cross-ref from ReactiveLineageRepositoryImpl.md:upstream_callers):
+  `softDeleteDataEntities` line 126 + `restoreDeletedDataEntityRelations` line 133.
+  Both invoked under @ReactiveTransactional on the parent method. The cascade is the
+  lineage-side of the entity STATUS state-machine.'
+evidence:
+- ReactiveLineageRepositoryImpl.md:concepts.operations.[softDeleteLineageRelations,
+  restoreLineageRelations]
+- ReactiveLineageRepositoryImpl.md:upstream_callers (DataEntityInternalStateServiceImpl.java:126
+  + 133)
+- ReactiveLineageRepositoryImpl.md:performance.known_performance_gaps.[3] (no covering
+  index for OR-predicate on either-endpoint MEDIUM)
+- ReactiveLineageRepositoryImpl.md:concepts.invariants.[0] (soft-delete via is_deleted
+  flag is canonical at lineage read time)
+notes: 'NEW operation captured in batch H. Sibling to:
+
+    - the DataEntity STATUS state-machine cascade (DataEntityInternalStateServiceImpl)
+  — entity-side soft-delete
+
+    - the ownership hard-delete (ReactiveOwnershipRepositoryImpl) — edge-side hard-delete
+
+
+  Together these three form the "entity DELETED state propagation" picture: when
+  an entity transitions to DELETED, the DataEntity STATUS is flipped, the incident
+  lineage edges are soft-deleted, and the ownership edges (if any) are physically
+  deleted. The three mechanisms cooperate via the activity-feed audit trail.
+
+
+  Recommended fixes:
+
+
+    (1) MEDIUM-leverage: add a partial index on (child_oddrn, is_deleted) WHERE is_deleted
+  = false to support the OR-predicate on either-endpoint at lines 95, 105. Closes
+  the sequential-scan hazard for soft-delete cascades involving many entity oddrns.
+
+
+    (2) LOW-leverage: document the soft-delete cascade semantics explicitly on the
+  Data Entity Status / Lifecycle live page so operators understand what happens to
+  lineage when they delete an entity (and what happens to lineage when they restore
+  one).
+
+
+  Doc-gap candidate: extend the Data Entity Lifecycle live page with a "Cascade behaviours
+  on DELETED" subsection covering lineage soft-delete + ownership hard-delete + activity-feed
+  emission.
+
+  '

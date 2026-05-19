@@ -1,0 +1,242 @@
+name: Ownership (binding edge)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW CONCEPT, batch 2026-05-19H** — the `ownership` table row capturing
+  the (data_entity_id, owner_id, title_id) binding. Distinct from the Owner directory
+  entry (the platform-managed Owner row) and from the User-Owner Mapping (the per-user
+  oidc_username → owner_id binding). Ownership is the EDGE table connecting Owners
+  to Data Entities with an optional Title attribute. Hard-delete only — the `ownership`
+  table has NO `deleted_at` column (V0_0_3__add_ownership.sql:10-22 declares id, data_entity_id,
+  owner_id, role_id only; V0_0_53__rename_role_to_title.sql renames role_id→title_id;
+  no deleted_at addition in any of 5 ownership-mentioning migrations). Operators retrieving
+  historical ownership state must reconstruct from the activity-feed audit trail,
+  not from the ownership table. Duplicate prevention is at the DATABASE layer via
+  the `UNIQUE (data_entity_id, owner_id)` constraint (V0_0_3:17); the violation translates
+  to HTTP 400 (USR003) with friendly message "Ownership for this data entity and owner
+  already exists" via JooqReactiveOperations.mono(...).onErrorMap(...) → ExceptionUtils.translateDatabaseException
+  → OWNERSHIP_DATA_ENTITY_ID_OWNER_ID_KEY-specific message (ExceptionUtils.java:69-71).
+  The repository is `ReactiveOwnershipRepositoryImpl` — 8 thin jOOQ-reactive methods
+  (get, create, createOrUpdate, delete, deleteByDataEntityAndOwner, updateTitle, existsByOwner,
+  getOwnershipsByDataEntityId). Each method signature takes Long ids or POJO collections;
+  NO method takes an Authentication / Principal / Owner / ServerWebExchange — the
+  principal-derived owner-id is resolved at the SERVICE layer (via authIdentityProvider.fetchAssociatedOwner()
+  per ADR-CANDIDATE-015) BEFORE reaching this repository. **The repository does NOT
+  participate in the owner-scoping JOIN for /my reads** — that JOIN is built locally
+  inside ReactiveDataEntityRepositoryImpl#listByOwner at lines 526-527, not via this
+  class. The architectural separation: ReactiveOwnershipRepository owns CRUD on the
+  `ownership` row; sibling repositories embed JOIN OWNERSHIP into their own queries
+  when filtering their primary entity by owner (12 JOIN OWNERSHIP sites surfaced by
+  grep across the repository layer). Three signature operations exist exclusively
+  to serve the DEG-propagation path: `createOrUpdate` (batched UPSERT via executeInPartitionReturning
+  1000-row partitions, with `.onConflictOnConstraint(OWNERSHIP_DATA_ENTITY_ID_OWNER_ID_KEY).doUpdate().set(TITLE_ID,
+  EXCLUDED)` — title-overwriting semantics) + `deleteByDataEntityAndOwner` (operator-precedence-safe
+  OR-chain of explicit AND-pairs reduced over Condition::or). The activity-feed handlers
+  (OwnershipCreatedActivityHandler, OwnershipUpdatedActivityHandler, OwnershipDeletedActivityHandler)
+  call `getOwnershipsByDataEntityId(dataEntityId)` TWICE per ownership-write event
+  to capture BEFORE/AFTER state for activity-feed JSON diffs. `OwnerService.delete`
+  calls `existsByOwner(ownerId)` to gate cascade-delete (refuse with CascadeDeleteException
+  if any ownership row references the owner). **CROSS-BATCH CORRECTION (batch H)**:
+  the batch-F createOwnership sidecar incorrectly stated the duplicate-key surface
+  error is 5xx — the actual surface is HTTP 400 (USR003) with friendly message via
+  ExceptionUtils + ControllerAdvice.handleUniqueConstraint mapping; downstream artefacts
+  inheriting the batch-F misclaim should be corrected.'
+axes_present:
+- controllers
+- repositories_reactive
+nodes:
+- odd-platform java DataEntityController controller-method:createOwnership
+- odd-platform java repository reactive repository:ReactiveOwnershipRepositoryImpl
+contributors:
+- 'createOwnership.md (batch F): entities[Ownership, OwnershipFormData, OwnershipPojo,
+  OwnerPojo (auto-created via getOrCreate), TitlePojo (auto-created via getOrCreate)];
+  operations[bind-owner-to-data-entity with optional DEG propagation, search-index
+  refresh, mark data_entity_filled.OWNERS]; the controller-method-level surface for
+  the binding-creation HTTP path.'
+- 'ReactiveOwnershipRepositoryImpl (batch H): entities[OwnershipPojo (id, data_entity_id,
+  owner_id, title_id; no deleted_at), OwnershipDto (joined OWNERSHIP / OWNER / TITLE
+  read shape), OwnershipRecord (jOOQ TableRecord), OWNERSHIP_DATA_ENTITY_ID_OWNER_ID_KEY
+  (the named unique constraint imported from generated Keys)]; 8 operations covering
+  the full CRUD lifecycle + the DEG-propagation primitives + activity-handler reads
+  + existence-gate for OwnerService.delete cascade. 5 ADRs: (1) hard-delete by design
+  (ownership is an edge table; reconstruction relies on activity-feed audit trail
+  — parallel pattern at V0_0_76__term_relations_hard_delete.sql:8-13 on term_ownership);
+  (2) duplicate-prevention is database-constraint-driven with friendly-error translation
+  via ExceptionUtils (centralised onErrorMap at JooqReactiveOperations.java:41); (3)
+  batched UPSERT is title-overwriting (the DEG-propagation contract built into the
+  only batch-insert method — there is no createIgnore variant); (4) batched DELETE
+  uses OR-chain of explicit AND-pairs (operator-precedence-safe — each AND-pair closed
+  before OR-combining); (5) repository takes NO principal — all owner-id parameters
+  arrive pre-resolved at the service layer per ADR-CANDIDATE-015.'
+evidence:
+- createOwnership.md:concepts.entities + concepts.invariants.[*]
+- createOwnership.md:bugs_limitations_corner_cases.[2] (batch-F INCORRECT 5xx claim
+  — corrected in batch H)
+- ReactiveOwnershipRepositoryImpl.md:concepts.entities + concepts.operations + concepts.invariants
+- ReactiveOwnershipRepositoryImpl.md:implicit_adrs.[0,1,2,3,4]
+- ReactiveOwnershipRepositoryImpl.md:docs_link_semantic.doc_drift_findings.[2] (the
+  cross-batch correction)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: 'Authorization is enforced UPSTREAM at the controller via SecurityRule
+      registered at SecurityConstants.SECURITY_RULES[215-227] for the three `DATA_ENTITY_OWNERSHIP_*`
+      permissions; the repository trusts that authorization has already happened.
+      Under DISABLED, the upstream gate is bypassed and the repository is reachable
+      from anonymous callers. Under LOGIN_FORM the AuthorizationCustomizer is NOT
+      wired (cross-ref Auth Mode aggregate) so SECURITY_RULES is INERT — every form-authenticated
+      user effectively has DATA_ENTITY_OWNERSHIP_CREATE/UPDATE/DELETE. The repository
+      has NO @PreAuthorize, NO programmatic permission check, NO method-level access-control
+      annotation — defence-in-depth is null. Consistent posture with every other Reactive*Repository
+      in the codebase (every repository trusts upstream).'
+  owner_scoping:
+    verdict: N/A
+    detail: 'The repository operates on `(ownership_id)` and `(data_entity_id, owner_id)`
+      parameters with NO implicit owner-scoping. Owner-scoping for `/my`-shaped reads
+      is built at SIBLING repositories (ReactiveDataEntityRepositoryImpl#listByOwner
+      at lines 526-527 builds the JOIN OWNERSHIP locally); this repository neither
+      knows about nor enforces the caller''s owner-link. This is the correct architectural
+      posture per ADR-CANDIDATE-015 (owner-link resolution at the service via authIdentityProvider.fetchAssociatedOwner(),
+      owner-id flows as a Long parameter into siblings, NOT through this class).'
+  strengths:
+  - DB-constraint-driven uniqueness via `UNIQUE (data_entity_id, owner_id)` (V0_0_3:17)
+    — duplicate creates fail at the DB layer, not requiring a pre-flight existsBy
+    check
+  - Centralised friendly-error translation via ExceptionUtils.translateDatabaseException
+    (JooqReactiveOperations.java:41) maps unique-constraint violations to HTTP 400
+    (USR003) with human-readable message — no raw Postgres errors leak to the API
+  - Operator-precedence-safe OR-chain in deleteByDataEntityAndOwner (lines 98-101)
+    — each AND-pair is closed BEFORE OR-combining; jOOQ wraps each Condition in parentheses
+    at SQL generation; no `A AND (B OR C) AND D` ambiguity
+  - Activity-feed audit trail via @ActivityLog(OWNERSHIP_CREATED/UPDATED/DELETED)
+    annotations on OwnershipServiceImpl + the three AbstractOwnershipActivityHandler
+    subclasses — every ownership mutation is forensically traced (TIER-1 audited per
+    the audit-asymmetry invariant)
+  weaknesses:
+  - '**Hard-delete is irreversible at the data layer**; recovery depends on the activity-feed
+    audit trail being intact. A regression that disabled `@ActivityLog(event = OWNERSHIP_DELETED)`
+    on OwnershipServiceImpl.delete (line 77) would silently break the only post-deletion
+    reconstruction path. The repository''s delete method is unaware of and unprotective
+    of the audit trail. (ReactiveOwnershipRepositoryImpl.md:security.known_security_gaps.[1]
+    LOW)'
+  - '**No defence-in-depth — repository trusts upstream authorization without redundant
+    checks**. A regression in the controller-layer SecurityRule (e.g. accidentally
+    dropping the DATA_ENTITY_OWNERSHIP_DELETE entry from SecurityConstants.SECURITY_RULES)
+    would allow any caller to invoke delete(ownershipId) without authorization. (ReactiveOwnershipRepositoryImpl.md:security.known_security_gaps.[0]
+    LOW)'
+  - '**Owner-auto-create permission-bypass via createOwnership (batch F upstream finding)**
+    — `POST /api/dataentities/{id}/ownership` calls `OwnerService.getOrCreate(owner_name)`
+    which silently creates a fresh Owner. Any caller with DATA_ENTITY_OWNERSHIP_CREATE
+    can mint Owner directory entries WITHOUT holding OWNER_CREATE permission. The
+    repository itself is not the gap site (the Owner-auto-create lives in OwnerService.getOrCreate
+    at upstream), but the binding flow exposes the gap. (createOwnership.md:security.known_security_gaps.[0]
+    MEDIUM)'
+  cross_file_inconsistencies:
+  - 'Batch-F createOwnership sidecar incorrectly stated the duplicate-key surface
+    error is 5xx; batch-H ReactiveOwnershipRepositoryImpl CORRECTS: actual surface
+    is HTTP 400 (USR003) via UniqueConstraintException + ControllerAdvice.handleUniqueConstraint
+    mapping. Downstream artefacts inheriting the misclaim should be corrected. (ReactiveOwnershipRepositoryImpl.md:docs_link_semantic.doc_drift_findings.[2])'
+  - Three test files exercise the repository at the BaseIntegrationTest level (`OwnershipRepositoryImplTest.java`
+    — happy-path create/get/updateTitle/delete; service-layer mocked at `OwnershipServiceImplTest.java`),
+    but `createOrUpdate` / `deleteByDataEntityAndOwner` / `existsByOwner` / `getOwnershipsByDataEntityId`
+    + duplicate-prevention error surface are UNTESTED — see ReactiveOwnershipRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours
+  contributing_files:
+  - createOwnership.md
+  - ReactiveOwnershipRepositoryImpl.md
+  evidence:
+  - createOwnership.md:security.known_security_gaps.[0] (Owner-auto-create permission-bypass
+    MEDIUM)
+  - ReactiveOwnershipRepositoryImpl.md:security.known_security_gaps.[0,1]
+  - ReactiveOwnershipRepositoryImpl.md:concepts.invariants.[1] (duplicate prevention
+    is DB-constraint-level, surface error is HTTP 400)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - '`getOwnershipsByDataEntityId(dataEntityId)` is invoked TWICE per ownership write
+    event by activity-feed handlers (BEFORE + AFTER state capture) — a 3-way JOIN
+    over OWNERSHIP / OWNER / TITLE filtered by data_entity_id. For data-entities with
+    many owners (>10), per-write activity-emission cost is two such joined SELECTs
+    in addition to the actual write. (ReactiveOwnershipRepositoryImpl.md:performance.hot_paths.[0])'
+  - '`existsByOwner(ownerId)` is invoked once per `OwnerService.delete` call to gate
+    cascade-delete. The query is `SELECT EXISTS (SELECT * FROM ownership WHERE owner_id
+    = ?)` — but the migration history adds NO standalone index on `owner_id`; the
+    (data_entity_id, owner_id) unique constraint''s index has `data_entity_id` as
+    leading column. PostgreSQL may not use this index efficiently for owner-only lookups
+    on large deployments. (ReactiveOwnershipRepositoryImpl.md:performance.known_performance_gaps.[2])'
+  throughput_shape:
+    verdict: MIXED
+    detail: 'Single-row CRUD (get/create/delete/updateTitle) — one DB round-trip per
+      call, non-blocking. Batch CRUD (createOrUpdate / deleteByDataEntityAndOwner)
+      — createOrUpdate partitions at 1000 rows via executeInPartitionReturning; deleteByDataEntityAndOwner
+      does NOT partition (builds a single OR-chain WHERE clause and issues one DELETE
+      — for very large input collections the WHERE clause grows linearly which may
+      hit PostgreSQL''s statement-size limits at extreme cardinality). No bulk-read
+      variant — getOwnershipsByDataEntityId takes a single dataEntityId; callers needing
+      per-data-entity ownership lists for multiple entities must loop and N+1.'
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: 'Stateless — @Repository is a singleton bean; the only state is the two
+      injected dependencies (jooqReactiveOperations, jooqQueryHelper) which are themselves
+      stateless. Horizontal scaling unconstrained at this layer. Sequential partition
+      execution for createOrUpdate: executeInPartitionReturning uses `Flux::concat`
+      (not `Flux::merge`) to combine partition results, serialising the DB round-trips
+      — for O(10K) children, 10 sequential INSERT-ON-CONFLICT batches inside a single
+      @ReactiveTransactional hold the DB connection for cumulative duration.'
+  strengths:
+  - Stateless repository — horizontal scaling unconstrained
+  - Reactive R2DBC throughout — non-blocking I/O; no thread held during DB await
+  - Per-call allocations bounded; OwnershipPojo / OwnershipDto are small; Flux<OwnershipDto>
+    materialises lazily per emitted record
+  - DB-level constraint serialises concurrent same-row inserts — one wins, others
+    throw at constraint level (mapped to 400)
+  weaknesses:
+  - '**No bulk-read variant for getOwnershipsByDataEntityId** (LOW) — activity-feed
+    handlers call this method serially; bulk-import scenario emitting OWNERSHIP_CREATED
+    events for many data-entities would N+1. No method on the interface supports `Collection<Long>`
+    input. (ReactiveOwnershipRepositoryImpl.md:performance.known_performance_gaps.[0])'
+  - '**Activity-handler issues TWO `getOwnershipsByDataEntityId` calls per ownership-write
+    event** — once in `getContextInfo` (BEFORE state) and once in `getUpdatedState`
+    (AFTER state). For data-entities with many owners, doubles the activity-emission
+    cost per write. (ReactiveOwnershipRepositoryImpl.md:performance.known_performance_gaps.[1])'
+  - '**`existsByOwner` may not benefit from a leading-column index on owner_id (MEDIUM)**
+    — the migration history declares no standalone owner_id index. For operator deployments
+    with O(M) ownerships, `existsByOwner` could degrade to sequential scan. (ReactiveOwnershipRepositoryImpl.md:performance.known_performance_gaps.[2])'
+  - '**Sequential partition execution for createOrUpdate** (LOW for typical DEG cardinality
+    <1000, MEDIUM if any operator has DEGs with O(10K) children) — `Flux::concat`
+    serialises the partition INSERT-ON-CONFLICT batches inside a single @ReactiveTransactional
+    boundary'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - createOwnership.md
+  - ReactiveOwnershipRepositoryImpl.md
+  evidence:
+  - createOwnership.md:performance.throughput_characteristics + performance.known_performance_gaps.[0,1]
+  - ReactiveOwnershipRepositoryImpl.md:performance.hot_paths.[0]
+  - ReactiveOwnershipRepositoryImpl.md:performance.known_performance_gaps.[0,1,2]
+notes: 'NEW concept captured in batch H. Distinct from Owner directory entry (the
+  platform-managed Owner row) and from User-Owner Mapping (the per-user oidc_username
+  → owner_id binding) — Ownership is the EDGE between Owner and DataEntity, with an
+  optional Title attribute. Three sibling repositories embed JOIN OWNERSHIP for their
+  own owner-scoped read queries: ReactiveDataEntityRepositoryImpl, ReactiveAlertRepositoryImpl,
+  ReactiveSearchEntrypointRepositoryImpl + others; this repository owns CRUD on the
+  ownership ROW itself.
+
+  Strong member of the ADR-CANDIDATE-015 (owner-scoping-by-principal-resolution-at-service)
+  cross-cutting pattern — every method signature confirms the architectural commitment.
+  See ''Owner-scoped routes — controllers take NO principal parameter'' invariant.
+
+  Cross-batch correction propagated from batch-F: duplicate-key surface error is HTTP
+  400 (USR003), NOT 5xx as the batch-F createOwnership sidecar stated. The error-translation
+  path is JooqReactiveOperations.onErrorMap → ExceptionUtils.translateDatabaseException
+  → UniqueConstraintException → ControllerAdvice.handleUniqueConstraint → HttpStatus.BAD_REQUEST.
+
+  Doc-gap candidate: extend `/configuration-and-deployment/enable-security/authorization/permissions`
+  with explicit text on how DATA_ENTITY_OWNERSHIP_CREATE/UPDATE/DELETE behave on duplicate-key
+  collisions (HTTP 400, USR003 — not 5xx); the live page is silent on the error shape.
+
+  '

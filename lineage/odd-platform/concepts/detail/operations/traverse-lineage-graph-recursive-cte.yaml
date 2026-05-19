@@ -13,11 +13,26 @@ description: '`GET /api/dataentities/{data_entity_id}/lineage/downstream` (sibli
   inputs: `lineage_depth` (recursion depth bound — `@Min(1)`, no `@Max`) + `expandedEntityIds`
   (depth-1 fan-out around selected nodes for UI progressive expansion). No streaming
   variant; the full graph is `.collectList()`-materialised in heap before serialisation.
-  No cycle guard in the recursion (only outer `selectDistinct`).'
+  No cycle guard in the recursion (only outer `selectDistinct`). **Batch H — SQL PRIMARY-SOURCE
+  CONFIRMATION + REPOSITORY-LEVEL DETAIL**: ReactiveLineageRepositoryImpl batch-H
+  sidecar provides the canonical implementation. The CTE (lineageCte at lines 150-176)
+  has seed = edges touching the root oddrn set in the chosen direction at depth=1;
+  recursive step = JOIN cte on direction-appropriate equality, depth+1, `tDepth <
+  lineageDepth` AND not deleted. DOWNSTREAM direction follows parent→child; UPSTREAM
+  follows child→parent. Soft-delete filter `IS_DELETED.isFalse()` applied at both
+  seed (line 167) and recursive step (line 174). Outer query is `selectDistinct(cte.field(LINEAGE.PARENT_ODDRN),
+  cte.field(LINEAGE.CHILD_ODDRN)).from(cte.getName())` — deduplicates the FINAL projection
+  but does NOT prune intermediate CTE rows. The depth bound is the SOLE termination
+  mechanism — no Postgres `WITH ... CYCLE` clause, no LIMIT, no visited-set guard.
+  `LineageDepth.empty()` (value=-1, empty=true) caller-pattern terminates after seed
+  step because `tDepth.lessThan(-1)` is FALSE on first iteration (this is the batch-G
+  anchor-set defence-in-depth caller at DataEntityRelationsServiceImpl.java:34).'
 axes_present:
 - controllers
+- repositories_reactive
 nodes:
 - odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
+- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
 contributors:
 - 'getDataEntityDownstreamLineage.md:concepts.operations: resolve root by id (404
   if not found), recursively walk lineage edges DOWNSTREAM for lineage_depth hops,
@@ -26,9 +41,28 @@ contributors:
 - getDataEntityDownstreamLineage.md:implicit_adrs.[0] (single-query recursive-CTE
   — one DB round-trip, not BFS-per-node) + implicit_adrs.[1] (client-driven progressive
   expansion via dual-input split)
+- 'ReactiveLineageRepositoryImpl.md:concepts.operations.[getLineageRelations(Set,LineageDepth,LineageStreamKind)
+  — the recursive-CTE traversal] + concepts.operations.[lineageCte (private CTE assembly)]:
+  SQL primary source for the CTE shape, seed + recursive step, direction toggle (DOWNSTREAM
+  vs UPSTREAM), and the soft-delete filter applied at both seed (line 167) and recursive
+  step (line 174).'
+- 'ReactiveLineageRepositoryImpl.md:implicit_adrs.[2]: SQL primary source for the
+  single-query design — the CTE walks N hops in ONE DB round-trip; the depth-1 fan-out
+  is a SEPARATE query merged downstream by LineageServiceImpl. The split signals an
+  intentional ''recursive walk for the main subgraph + one-hop expansion for UI clicks''
+  protocol.'
+- 'ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[0,1,2,3,7]: no
+  cycle-detection inside the recursive CTE (HIGH); diamond-DAG cost amplification
+  (MEDIUM); no JOIN-side owner filter (HIGH); no upper bound on lineageDepth (HIGH);
+  LineageDepth.empty() semantics are call-site folklore (MEDIUM).'
 evidence:
 - getDataEntityDownstreamLineage.md:concepts.operations + concepts.invariants.[0-3]
 - getDataEntityDownstreamLineage.md:implicit_adrs.[0,1]
+- ReactiveLineageRepositoryImpl.md:concepts.operations + concepts.invariants.[3,4,5]
+  (CTE assembly + depth-bound-as-sole-terminator + LineageDepth.empty() seed-only)
+- ReactiveLineageRepositoryImpl.md:implicit_adrs.[2] (single-query recursive-CTE +
+  the split between recursive walk and depth-1 progressive-expansion)
+- ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[0,1,2,3,7]
 notes: "Operation vocabulary captured for future DOC-NNN follow-ups on the\nlineage-graph\
   \ surface. Two doc-bugs are live on\n`/developer-guides/api-reference/lineage`:\n\
   \  (a) `lineage_depth` 'Unset returns the platform's default depth'\n      claim\
@@ -39,4 +73,13 @@ notes: "Operation vocabulary captured for future DOC-NNN follow-ups on the\nline
   \ shape inconsistency is undocumented.\n\nThe lineage-graph cross-owner enumeration\
   \ is one of the five\nsurfaces in the read-collaborative cross-cutting invariant\
   \ —\nlineage edges leak causal connections between entities owned by\ndifferent\
-  \ teams.\n"
+  \ teams.\n\n**Batch H repository-level detail**: the recursive-CTE has 5 specific\
+  \ failure modes\nnow primary-source-confirmed at the SQL layer: no cycle guard (HIGH),\
+  \ no owner JOIN\n(HIGH), no upper bound on depth (HIGH), diamond-DAG amplification\
+  \ (MEDIUM), and the\nLineageDepth.empty() folklore (MEDIUM — the `empty` flag is\
+  \ NEVER read inside\nlineageCte; only the depth integer is consulted; `empty()` means\
+  \ 'seed-only', not\n'zero edges returned'). The two-overload split (`getLineageRelations(Set,\
+  \ LineageDepth,\nLineageStreamKind)` for the recursive walk + `getLineageRelationsForDepthOne(List<Long>,\n\
+  LineageStreamKind)` for the progressive-expansion fan-out) is the canonical 'recursive\n\
+  walk for main subgraph + one-hop expansion for UI clicks' protocol — IMPLICIT\nADR\
+  \ #2 at the repository.\n"

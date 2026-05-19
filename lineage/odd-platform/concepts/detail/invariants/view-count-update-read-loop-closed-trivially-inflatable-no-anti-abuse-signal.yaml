@@ -13,11 +13,22 @@ description: 'Producer half: getDataEntityDetails increments data_entity.view_co
   Under DISABLED the attacker need not authenticate. Additionally: no index on data_entity.view_count
   (verified across all 91 migration files) — every Popular page render is a sequential
   scan + in-memory sort. REFACTOR-201 confirmed from primary source (the closure of
-  the loop).'
+  the loop). **Batch H — SQL PRIMARY-SOURCE TRIANGULATED**: ReactiveDataEntityRepositoryImpl
+  batch-H sidecar provides the canonical SQL for BOTH halves of the loop: incrementViewCount
+  (lines 173-180) is bare `UPDATE data_entity SET view_count = view_count + 1 WHERE
+  id = ?` with no rate-limiting layer; listPopular ORDER BY DATA_ENTITY.VIEW_COUNT.sort(SortOrder.DESC)
+  is the SOLE order signal at line 633. The repository sidecar adds two performance
+  observations: (a) `view_count = view_count + 1` IS atomic per-statement in Postgres
+  (no lost-update race even under concurrent calls); but (b) Postgres row-locks on
+  popular entities become write-bottlenecks, and the missing view_count index degrades
+  popular-list rendering to full-table scan + top-N sort for catalogs >100K entities.
+  The closure is uniform: producer + consumer share one SQL file, one method per side,
+  no anti-abuse defence at any layer.'
 contributing_files:
 - getPopular.md
-- getDataEntityDetails.md (batch F producer half)
-triangulation_count: 2
+- getDataEntityDetails.md
+- ReactiveDataEntityRepositoryImpl.md
+triangulation_count: 3
 cross_batch: true
 severity: HIGH
 severity_dim: security
@@ -27,6 +38,14 @@ evidence:
 - getPopular.md:implicit_adrs.[0] (ranking by view_count DESC)
 - getPopular.md:security.known_security_gaps.[0] HIGH
 - getDataEntityDetails.md:implicit_adrs.[2] (the producer half — batch F)
+- ReactiveDataEntityRepositoryImpl.md:concepts.invariants.[7] (read-as-write — SQL
+  primary source)
+- ReactiveDataEntityRepositoryImpl.md:implicit_adrs.[2] (read-as-write decision —
+  intentional caller-controlled side effect)
+- ReactiveDataEntityRepositoryImpl.md:security.known_security_gaps.[3] (view-count
+  inflation surface structural — SQL-primary-source confirmation)
+- ReactiveDataEntityRepositoryImpl.md:performance.known_performance_gaps.[0] (no view_count
+  index MEDIUM — full-table scan + top-N sort hazard)
 mitigations_unimplemented:
 - Rate-limit getDataEntityDetails (per-caller, per-entity, per-window)
 - Sample the view_count increment (probability 1/N)
@@ -36,3 +55,7 @@ mitigations_unimplemented:
 - CREATE INDEX idx_data_entity_view_count_desc ON data_entity (view_count DESC) WHERE
   hollow = false AND status != <DELETED_id> — partial descending B-tree index on popular-eligible
   rows
+- Async batch view-count increment via outbox pattern to relieve row-lock contention
+  on popular entities
+- Separate counter table or Postgres advisory-counter to decouple write throughput
+  from the data_entity row

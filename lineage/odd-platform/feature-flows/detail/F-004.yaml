@@ -14,13 +14,19 @@ description: 'Operators edit a data entity''s description via PUT /api/dataentit
   '
 contributing_nodes:
 - odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
-- odd-platform java ReactiveDataEntityRepositoryImpl.upsertInternalDescription — the
-  verbatim UPDATE
+- odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 terminal_side_effect:
   side_effect_class: db-write
   description: UPDATE data_entity SET internal_description = ? — stored verbatim,
     no sanitisation
-  evidence: ReactiveDataEntityRepositoryImpl line ~340
+  evidence: 'ReactiveDataEntityRepositoryImpl.java:430-438 (setInternalDescription).
+    Batch-H primary-source confirmation: the exact SQL shape is `DSL.update(DATA_ENTITY).set(DATA_ENTITY.INTERNAL_DESCRIPTION,
+    newDescription).where(DATA_ENTITY.ID.eq(dataEntityId)).returning()` (lines 432-435).
+    The SOLE pre-write transformation is `newDescription = StringUtils.isEmpty(description)
+    ? null : description` (line 431) — no Jsoup.clean, no Encode.html, no length cap,
+    no allowlist. Wrapped by `DataEntityServiceImpl.upsertDescription` @ReactiveTransactional
+    (line 324) → `DataEntityInternalStateServiceImpl.updateDescription` @ReactiveTransactional
+    + @ActivityLog(DESCRIPTION_UPDATED).'
   cardinality_per_call: 1
 amplification_factor: 1
 observed_vs_expected:
@@ -32,7 +38,8 @@ observed_vs_expected:
       render (UI rehype-sanitize); ideally defence-in-depth at both
     drift_class: external_lib_assumes_sanitisation
     provenance: MEASURED — P-007 (run R-20260519T012123Z-P-007) PUT the XSS payload,
-      GET back, SELECT raw column; all 3 dangerous-tag substrings present verbatim
+      GET back, SELECT raw column; all 3 dangerous-tag substrings present verbatim.
+      Batch-H primary-source SQL confirmation at ReactiveDataEntityRepositoryImpl.java:430-438.
   - facet: Markdown body sanitisation — UI render (defence-in-depth, slice-5)
     observed: "DANGEROUS TAGS reach the rendered DOM via react-markdown + rehype-raw\
       \ + no rehype-sanitize:\n  - <script> tag present in document body (dom_has_script_tag\
@@ -107,12 +114,30 @@ observed_vs_expected:
       evasion catalog entries to widen the empirical attack-surface envelope.
 
       '
+  - facet: empty-string normalisation on description writes (batch H — STATIC)
+    observed: 'StringUtils.isEmpty(description) is normalised to NULL before the UPDATE
+      (line 431); an empty body and a payload-omitted body both produce `internal_description
+      = NULL`'
+    expected: Documented behaviour — operator clearing the description should produce
+      NULL, not empty string (consistent with how the UI distinguishes "no description"
+      from "empty description")
+    drift_class: null
+    provenance: STATIC — primary-source verification in batch-H ReactiveDataEntityRepositoryImpl
+      sidecar invariants/concepts (line 431). No probe yet — proposed local probe
+      could PUT empty body and assert SELECT returns NULL.
 test_matrix:
   unit:
     state: GAP
     covered: []
     uncovered:
     - Description-write service — assert payload sanitised pre-DB
+    - 'setInternalDescription empty-string → NULL normalisation (batch-H static
+      finding)'
+    - 'setInternalDescription missing-id silent no-op (batch-H: bare update().where(ID.eq(id)).returning()
+      with no .switchIfEmpty NotFoundException at the repo layer; service path at
+      DataEntityServiceImpl.upsertDescription:325-333 does NOT switchIfEmpty either)'
+    note: 'Batch-H confirms ZERO direct unit/integration test coverage on the repository
+      class.'
   integration:
     state: PROBED-PINNING-BUG
     covered:
@@ -123,7 +148,7 @@ test_matrix:
       note: 'PINNING-BUG: REFACTOR-218 backend-side empirically confirmed. Fix adds
         sanitisation; assertion flips.'
     uncovered:
-    - Body-size limit enforcement
+    - Body-size limit enforcement (batch-H confirms no length cap at the repo layer)
     - Term-mention side-channel via description ([[ns:term]] auto-creates term_relations
       without DATA_ENTITY_ADD_TERM)
   performance:
@@ -131,6 +156,9 @@ test_matrix:
     covered: []
     uncovered:
     - Body-size limit enforcement
+    - 'FTS-vector rebuild on every description write (batch-H notes the caller (DataEntityServiceImpl)
+      orchestrates a SearchEntrypoint vector refresh on each write; cost grows with
+      description size + tag count)'
   security:
     state: PROBED-PINNING-BUG
     covered:
@@ -150,9 +178,16 @@ test_matrix:
     - XSS execution via script-tag content (Playwright on('dialog') + on('request')
       for /attacker.example/leak — slice-6 candidate)
     - Term-mention side-channel via [[ns:term]] auto-link (TEST-GAP-295)
+    - 'SQL-injection vector in getHighlightedResult (batch-H known_security_gaps[0])
+      — raw `.formatted()` SQL with user-controllable internal_description as one
+      of two interpolated parameters. Separate downstream feature (FTS highlight)
+      but the description IS the upstream source.'
 control_summary: '2 of 4 cells PROBED — integration + security both PROBED-PINNING-BUG.
   Slice-5 adds UI-render-side empirical measurement: P-009 refined REFACTOR-218 from
-  inferred-full-XSS to measured-partial-XSS (tags pass, attributes stripped).'
+  inferred-full-XSS to measured-partial-XSS (tags pass, attributes stripped). Batch-H
+  adds primary-source SQL confirmation (ReactiveDataEntityRepositoryImpl.java:430-438)
+  and surfaces a downstream SQL-injection surface in getHighlightedResult (lines 799-806)
+  that consumes the same internal_description column.'
 related_refactoring_scopes:
 - REFACTOR-218
 related_test_gaps:

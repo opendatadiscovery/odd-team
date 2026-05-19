@@ -5,12 +5,25 @@ description: 'Platform-detected and externally-injected issues against catalog e
   including failed jobs, data-quality test failures, schema incompatibilities, and
   distribution anomalies. Three visibility scopes: All / My Objects (owner-linked)
   / Dependents (downstream-by-lineage). Alert lifecycle: OPEN (Platform creates) →
-  RESOLVED (Operator) / RESOLVED_AUTOMATICALLY (Platform when condition clears) (AlertController
-  + alert openapi-tag sidecars).'
+  RESOLVED (Operator) / RESOLVED_AUTOMATICALLY (Platform when condition clears). **Batch
+  H** adds the PRIMARY-SOURCE persistence layer via ReactiveAlertRepositoryImpl —
+  19-method repository owning every ALERT and ALERT_CHUNK SQL operation. SQL-level
+  confirmation of REFACTOR-024: `listAllWithStatusOpen` at line 143-145 is `selectFrom(ALERT).where(ALERT.STATUS.eq(OPEN))`
+  with NO owner predicate, NO permission filter, NO role check. Repository carries
+  no @ReactiveTransactional; transactions live at AlertServiceImpl. `getOpenAlertsForEntities`
+  is the ONLY method using FOR UPDATE (line 133 — explicit comment frames the FDQT
+  ingestion-race intent); the mutation path (`updateAlertStatus`, `resolveAutomatically`)
+  has NO FOR UPDATE — deliberate asymmetry. `createAlerts` issues `INSERT ... RETURNING`
+  with NO ON CONFLICT — AlertManager webhook retries can produce duplicate alerts.
+  NEW batch-H bug: `listByOwner` at line 177 uses platform-wide `countAlertsWithStatusOpen()`
+  as empty-result counter, not owner-scoped variant — UI badge misreports total when
+  owner has zero alerts. (AlertController + alert openapi-tag + alerts route + ReactiveAlertRepositoryImpl
+  sidecars.)'
 axes_present:
 - controllers
 - openapi_tags
 - ui_routes
+- repositories_reactive
 nodes:
 - odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertController
 - odd-platform openapi tags openapi-tag:alert
@@ -18,6 +31,7 @@ nodes:
 - odd-platform java AlertController controller-method:changeAlertStatus
 - odd-platform java AlertController controller-method:getAllAlerts
 - odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController
+- odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
 contributors:
 - 'AlertController: entities[Alert, AlertList, AlertStatusFormData, AlertTotals]'
 - 'openapi-tag:alert: entities[Alert, AlertList, AlertStatus, AlertStatusFormData,
@@ -28,6 +42,21 @@ contributors:
   (paged, no filter)]'
 - 'DataEntityController: getDataEntityAlerts / getDataEntityAlertsCounts / getAlertConfig
   / updateAlertConfig (per-entity alert listings + halt config)'
+- 'ReactiveAlertRepositoryImpl (batch H): entities[AlertPojo, AlertChunkPojo, AlertDto
+  (POJO + chunks + DataEntityPojo + OwnerPojo composite), AlertRecord, Page<AlertDto>,
+  AlertStatusEnum, DataEntityStatusDto.DELETED, LINEAGE (CTE), USER_OWNER_MAPPING,
+  OWNER, OWNERSHIP, DATA_ENTITY]; 19 operations (list-open-platform-wide + by-owner
+  + dependent via lineage CTE; per-data-entity reads; counts; reopen-guard probe `openAlertWithTheSameTypeExistsForDataEntity`;
+  bulk INSERT `createAlerts` via executeInPartitionReturning 1000-row partitions;
+  status mutation; bulk auto-resolve; chunk creation; `getDataEntityIdByAlertId` for
+  AlertResourceExtractor); 4 ADRs (no @ReactiveTransactional at repository — transactions
+  live at AlertServiceImpl service-layer; FOR UPDATE on ingestion-path getOpenAlertsForEntities
+  with explicit comment naming the FDQT-multi-source race; status_updated_by username
+  string resolves to OWNER via LEFT JOIN USER_OWNER_MAPPING with DELETED_AT IS NULL
+  soft-delete-aware predicate; activity emission lives at the service layer by composition
+  not inheritance — repository has zero activity package imports). **REFACTOR-024
+  SQL-PRIMARY-SOURCE CONFIRMED**: listAllWithStatusOpen at lines 143-145 has no owner
+  predicate.'
 evidence:
 - AlertController.md:concepts.entities.[Alert]
 - openapi-tag-alert.md:concepts.entities.[Alert]
@@ -35,6 +64,10 @@ evidence:
 - changeAlertStatus.md:concepts.entities.[Alert]
 - getAllAlerts.md:concepts.entities.[AlertList, Page]
 - DataEntityController.md:concepts.operations.data-entity-alerts-config-listings
+- ReactiveAlertRepositoryImpl.md:concepts.entities + concepts.operations + concepts.invariants.[0,1,2]
+  + implicit_adrs.[0,1,2,3]
+- ReactiveAlertRepositoryImpl.md:bugs_limitations_corner_cases.[0] (cross-owner read
+  HIGH — REFACTOR-024 SQL-primary-source confirmation)
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -52,7 +85,13 @@ security_aggregate:
       per SecurityConstants.java:304-307). The registered `changeAlertStatus` rule
       pairs `ALERT` resource type with `DATASET_FIELD_ADD_TERM` permission constant
       (SecurityConstants.java:295-296) — a cross-domain enum mismatch is itself a
-      finding (getAllAlerts.md:security.known_security_gaps.[1] severity MEDIUM).'
+      finding (getAllAlerts.md:security.known_security_gaps.[1] severity MEDIUM).
+      **Batch H confirms at SQL primary source**: ReactiveAlertRepositoryImpl has
+      NO authorization annotations whatsoever on 19 methods; defence-in-depth is null;
+      a direct service-bypass invocation reaches the SQL with no caller-ID check.
+      However, `getDataEntityIdByAlertId` PARTICIPATES in authorization indirectly
+      — AlertResourceExtractor calls it to resolve the DataEntity ID for SecurityConstants.SECURITY_RULES
+      lines 295-296 permission evaluation on PUT /api/alerts/{alert_id}/status.'
   owner_scoping:
     verdict: MIXED
     detail: '`getAllAlerts` returns all alerts platform-wide via flat `WHERE STATUS
@@ -63,7 +102,13 @@ security_aggregate:
       `changeAlertStatus` does NOT check the caller owns the alert or its referenced
       data entity (BYPASSES at the mutation path). Live alerting doc recommends getAllAlerts
       tab for ''stewards and admins watching the full alert surface'' — doc-code audience
-      mismatch (getAllAlerts.md:docs_link_semantic.doc_drift_findings.[0]).'
+      mismatch (getAllAlerts.md:docs_link_semantic.doc_drift_findings.[0]). **Batch
+      H confirms**: per-method at SQL primary source — BYPASSES: listAllWithStatusOpen,
+      getAlertsByDataEntityId, getAlertsCountByDataEntityId, countAlertsWithStatusOpen,
+      countDependentObjectsAlerts; RESPECTS (via caller-supplied ownerId; service
+      trusts the caller): listByOwner, countAlertsWithStatusOpenByOwner, getObjectsOddrnsByOwner,
+      listDependentObjectsAlerts. The trust boundary is the service layer, not the
+      repository.'
   strengths:
   - 'Service-layer reopen-guard: `AlertServiceImpl.updateStatus` rejects manual reopen
     with 400 if open alert of same type already exists for the entity (AlertServiceImpl.java:124-131)'
@@ -71,15 +116,35 @@ security_aggregate:
     introduce new states without OpenAPI change
   - '@ActivityLog AOP records ALERT_STATUS_UPDATED on every service-mediated mutation
     (AlertServiceImpl.java:112-113)'
+  - '**Batch H — FOR UPDATE on the ingestion-side `getOpenAlertsForEntities` is deliberate
+    and well-commented**: lines 130-132 explicit comment frames the FDQT (Failed-Data-Quality-Test
+    alerts from multiple sources) concurrent-write race intent; the lock-on-read on
+    ingestion path is intentional defence-in-depth at the SQL layer. The mutation-path
+    asymmetry (no FOR UPDATE on UI-driven updateAlertStatus) is a separate decision
+    — the platform tolerates the read-then-write race on user-driven status changes.'
+  - '**Batch H — `USER_OWNER_MAPPING.DELETED_AT IS NULL` LEFT JOIN soft-delete-aware
+    convention**: applied consistently across 3 read sites (lines 84-85, 106-107,
+    499-502) for resolving alert.status_updated_by username string → OwnerPojo. A
+    soft-deleted user-owner binding silently breaks the join (alert returned, OwnerPojo
+    resolves NULL on LEFT JOIN) — the audit identity is durable, the OWNER display
+    is best-effort.'
   weaknesses:
   - '`getAllAlerts` returns the entire platform''s alert stream to ANY authenticated
     user — no admin gate, no role check (severity HIGH per AlertController + getAllAlerts.md:security.known_security_gaps.[0];
-    rediscovered REFACTOR-024 per orchestrator note)'
+    rediscovered REFACTOR-024 per orchestrator note). **Batch H — SQL PRIMARY-SOURCE
+    CONFIRMED**: ReactiveAlertRepositoryImpl.java:143-145 is the canonical SQL — `selectFrom(ALERT).where(ALERT.STATUS.eq(OPEN))`
+    with no owner / role / permission filter. The outer-select pagination wrapper
+    (createAlertJoinQuery lines 474-483, createAlertOuterSelect lines 485-507) adds
+    DATA_ENTITY + USER_OWNER_MAPPING + OWNER + ALERT_CHUNK joins but NO owner predicate.
+    8th-sidecar surface in the read-collaborative cross-owner invariant.'
   - '`changeAlertStatus` accepts mutation with no permission gate — any authenticated
     user can resolve/reopen any alert by id'
   - Reopen-conflict guard is read-then-write without serialisable fence — two concurrent
     OPEN requests for sibling alerts on same entity can both pass the guard (severity
-    MEDIUM)
+    MEDIUM). **Batch H — SQL PRIMARY-SOURCE CONFIRMED**: openAlertWithTheSameTypeExistsForDataEntity
+    (lines 397-420) is read-only SELECT EXISTS over a self-join CTE; updateAlertStatus
+    (lines 297-306) is UPDATE with no FOR UPDATE. No DB-level UNIQUE (data_entity_oddrn,
+    type) WHERE status = OPEN partial-index constraint to back-stop the race.
   - Owner-scoped `/my` / `/dependents` rely on reactor Context propagation — a misordered
     WebFilter could silently degrade to empty or unscoped output
   - 'Spec declares NO security: block on alert-tagged operations and NO error-response
@@ -92,6 +157,20 @@ security_aggregate:
   - 'Asymmetry between sibling endpoints: `PUT /api/alerts/{alert_id}/status` IS in
     SECURITY_RULES; `GET /api/alerts` is absent — no defending comment or annotation
     (getAllAlerts.md:security.known_security_gaps.[1])'
+  - '**NEW BATCH H — AlertManager webhook bypasses S2S/IngestionDataEntitiesFilter
+    (HIGH)**: `AlertManagerController.alertManagerWebhook` (`AlertManagerController.java:21-26`)
+    is at `POST /ingestion/alert/alertmanager` — a path the ingestion filter does
+    NOT match (the filter matches `/ingestion/entities` POST only). Combined with
+    `auth.type=DISABLED`, any caller can POST AlertManager-shaped payloads and create
+    OPEN alerts attributed to ANY data entity ODDRN — the payload''s `labels.entity_oddrn`
+    field is untrusted. `AlertServiceImpl.java:178` sets dataEntityOddrn from external
+    label without validation against the calling principal. (ReactiveAlertRepositoryImpl.md:security.known_security_gaps.[1])'
+  - '**NEW BATCH H — `createAlerts` has NO ON CONFLICT semantics (MEDIUM)**: lines
+    332-342 build INSERT ... RETURNING with no `.onConflict(...)` clause and no SELECT-then-INSERT
+    idempotency check. The AlertManager webhook path (`handleExternalAlerts`) calls
+    this WITHOUT the `AlertActionResolver` de-duplication used by the ingestion path
+    (`applyAlertActions`) — a Prometheus retry on a transient network error produces
+    duplicate ALERT rows.'
   cross_file_inconsistencies:
   - AlertController per-class mutations are ungated; DataEntityController.updateAlertConfig
     (the per-entity halt-config mutation) IS gated by DATA_ENTITY_ALERT_CONFIG_UPDATE
@@ -100,6 +179,14 @@ security_aggregate:
     at runtime — same conclusion (no permission gate) but reached via different layers'
   - Live alerting doc names the All-tab audience as 'stewards and admins'; code enforces
     'any authenticated user' — doc-code audience divergence (getAllAlerts.md:docs_link_semantic.doc_drift_findings.[0])
+  - '**Batch H — AlertHousekeepingJob operates on this repository''s tables but uses
+    a SEPARATE JDBC `Connection` (not R2DBC)** — AlertHousekeepingJob.java:24 (sync)
+    vs JooqReactiveOperations.java:28 (reactive). The two share no transaction scope.
+    A read in this repository can interleave with a housekeeping DELETE producing
+    either state (row present or Mono.empty); no FOR SHARE lock on read paths to prevent
+    this. The race is benign (eventual consistency) but the documented manual-RESOLVED
+    bug at AlertHousekeepingJob.java:28-34 means reads silently shrink as housekeeping
+    purges past TTL.'
   contributing_files:
   - AlertController.md
   - openapi-tag-alert.md
@@ -107,6 +194,7 @@ security_aggregate:
   - getAllAlerts.md
   - alerts-route.md
   - DataEntityController.md
+  - ReactiveAlertRepositoryImpl.md
   evidence:
   - AlertController.md:security.known_security_gaps.[1] (getAllAlerts severity HIGH)
   - AlertController.md:security.known_security_gaps.[2] (changeAlertStatus ungated)
@@ -117,6 +205,12 @@ security_aggregate:
   - openapi-tag-alert.md:security.known_security_gaps.[0] (no spec-level security)
   - changeAlertStatus.md:security.known_security_gaps.[0] (no @PreAuthorize, severity
     HIGH)
+  - ReactiveAlertRepositoryImpl.md:security.known_security_gaps.[0] (REFACTOR-024
+    SQL-primary-source confirmation HIGH)
+  - ReactiveAlertRepositoryImpl.md:security.known_security_gaps.[1] (AlertManager
+    webhook bypasses IngestionDataEntitiesFilter HIGH)
+  - ReactiveAlertRepositoryImpl.md:bugs_limitations_corner_cases.[1] (reopen guard
+    race SQL-primary-source MEDIUM)
 performance_aggregate:
   overall: MEDIUM
   hot_paths:
@@ -131,23 +225,44 @@ performance_aggregate:
   - POST /ingestion/alert/alertmanager — webhook from Prometheus AlertManager, can
     fire multiple-times-per-minute on noisy systems (group_interval default 5m) —
     AlertManagerController (separate concept; cross-references)
+  - '**Batch H — `listAllWithStatusOpen` SQL primary-source detail**: window-fn-based
+    pagination (`COUNT(*) OVER () + ROW_NUMBER() OVER (ORDER BY ...)`) materialises
+    the total count for the entire result set BEFORE returning the page slice; for
+    a platform with 100K+ open alerts this is full ALERT scan + page slice in one
+    query (JooqQueryHelper.java:73-90).'
+  - '**Batch H — `getOpenAlertsForEntities` is on the ingestion hot path** (every
+    ingestion request via AlertServiceImpl.applyAlertActions → AlertActionResolver).
+    The FOR UPDATE clause holds row-level locks on every matched ALERT row for the
+    duration of the surrounding @ReactiveTransactional — on high-ingestion-rate platforms
+    with many concurrent DQ tests, this is a write-bottleneck on the ALERT table.'
+  - '**Batch H — `createAlerts` runs on every ingestion request producing new alerts**.
+    Batched at 1000 per partition via executeInPartitionReturning; typical ingestion
+    produces O(1)-O(100) alerts per request (single batch); a backwards-incompatible-schema-change
+    across 5 datasets each with 100 fields would still fit in one batch.'
   throughput_shape:
     verdict: SINGLE_ITEM_ONLY
-    detail: No batch resolve / batch reopen / batch list endpoint. A consumer needing
+    detail: 'No batch resolve / batch reopen / batch list endpoint. A consumer needing
       to resolve 100 alerts must issue 100 sequential PUT calls. Pagination is offset-based
-      only (no cursor) on the three list endpoints.
+      only (no cursor) on the three list endpoints. **Batch H confirms batched ingestion-side
+      writes via 1000-row partitions but no public bulk-mutation API.**'
   scaling_shape:
     verdict: UNPAGINATED
-    detail: Pagination params (page/size) declared but unconstrained at controller
+    detail: 'Pagination params (page/size) declared but unconstrained at controller
       (no @Max). Spec carries no `maximum` on `SizeParam`; spec-conformant `size=2147483647`
       is permissible. No streaming, no SSE. OFFSET=(page-1)*size means deep-pagination
       cost grows linearly with page; keyset pagination not implemented (getAllAlerts.md:performance.known_performance_gaps.[1]).
+      **Batch H — `(page-1)*size` produces negative offset for page=0** at lines 147,
+      169, 189, 233 (no @Min(1) clamp); Postgres returns 500 error.'
   strengths:
   - All 5 endpoints reactive `Mono<ResponseEntity<...>>` — non-blocking I/O (AlertController.java:21,
     30, 36, 44, 52)
   - Stateless controller — horizontal scaling unconstrained at the controller layer
   - AlertController constructor-injected as singleton (no per-request bean creation
     overhead)
+  - '**Batch H — single-round-trip reads via jsonArrayAgg for ALERT_CHUNK materialisation
+    (line 80)** — no per-chunk fan-out; one query per AlertDto. Batch INSERT via
+    executeInPartitionReturning at 1000-row partitions keeps ingestion-side writes
+    bounded to ⌈N/1000⌉ round-trips.'
   weaknesses:
   - No upper bound on `size` parameter — caller can request arbitrary response body
     and DB load
@@ -164,16 +279,42 @@ performance_aggregate:
   - No HTTP-level test exists for `GET /api/alerts` — regressions in OpenAPI routing,
     WebFlux config, Jackson, or jOOQ silently break the endpoint with the build green
     (getAllAlerts.md:bugs_limitations_corner_cases.[3])
+  - '**NEW BATCH H — `listByOwner` empty-result total uses platform-wide count (MEDIUM
+    UX bug)**: line 177 passes `countAlertsWithStatusOpen()` (counts ALL platform-wide
+    open alerts) into pageifyResult as the empty-record total counter, instead of
+    `countAlertsWithStatusOpenByOwner(ownerId)`. When the owner has zero alerts, the
+    UI''s pagination badge reports the platform-wide count, not the owner-scoped count
+    (which would be 0). Latent: surfaces only on empty result; visible only as a UI
+    badge / pagination metadata mismatch. (ReactiveAlertRepositoryImpl.md:bugs_limitations_corner_cases.[5]
+    + performance.known_performance_gaps.[0])'
+  - '**NEW BATCH H — Recursive lineage CTE in `listDependentObjectsAlerts` has no
+    upper bound (LOW)**: cycle-detection works via `parent_oddrn || parent_oddrn`
+    array-membership check but no recursion-depth ceiling, no LIMIT, no Postgres `WITH
+    RECURSIVE ... CYCLE` clause. A runaway recursive CTE on a heavily-fanout graph
+    manifests as Postgres CPU saturation, not a clean application error.'
+  - '**NEW BATCH H — `jsonArrayAgg` for ALERT_CHUNK materialisation may produce very
+    large JSON per alert (LOW)**: for an alert with thousands of chunks (chronically-failing
+    DQ test ingested over a year), the JSON aggregate inflates the row size; cost
+    of serialising/deserialising 10MB JSON per row is non-trivial.'
+  - '**NEW BATCH H — No method-level observability** (no `@Timed`, no Micrometer counters,
+    no structured log entries on any of 19 methods). Latency regressions invisible
+    at the repository boundary.'
   cross_file_inconsistencies:
   - Cursor pagination on getDataEntityActivity (DataEntityController) but offset pagination
     on every alert list endpoint — cross-controller inconsistency for what could be
     the same alert-stream concept
+  - '**Batch H — `AlertHousekeepingJob` uses synchronous JDBC; this repository uses
+    reactive R2DBC** — two share no transaction scope; read-and-housekeeping interleave
+    is benign but documented. The manual-RESOLVED housekeeping bug at AlertHousekeepingJob.java:28-34
+    is consumer-observable at this repository''s reads (alerts silently disappear
+    on next 15-min cycle).'
   contributing_files:
   - AlertController.md
   - openapi-tag-alert.md
   - changeAlertStatus.md
   - getAllAlerts.md
   - alerts-route.md
+  - ReactiveAlertRepositoryImpl.md
   evidence:
   - AlertController.md:performance.hot_paths.[0-2]
   - AlertController.md:performance.known_performance_gaps.[0-3]
@@ -181,3 +322,7 @@ performance_aggregate:
   - changeAlertStatus.md:performance.known_performance_gaps.[0-2]
   - getAllAlerts.md:performance.hot_paths.[0]
   - getAllAlerts.md:performance.known_performance_gaps.[0-3]
+  - ReactiveAlertRepositoryImpl.md:performance.hot_paths.[0-2]
+  - ReactiveAlertRepositoryImpl.md:performance.known_performance_gaps.[0-4]
+  - ReactiveAlertRepositoryImpl.md:bugs_limitations_corner_cases.[5] (listByOwner
+    empty counter mismatch MEDIUM)

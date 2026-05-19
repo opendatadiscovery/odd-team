@@ -1,10 +1,11 @@
 name: Read-collaborative cross-owner enumeration
 canonical_in_docs: false
 canonical_candidate: true
-description: '**STRENGTHENED INVARIANT, batch 2026-05-12F — now 5-sidecar; ADR-CANDIDATE-003
-  RESOLVED as DELIBERATE** — Repository-wide read-side posture: GET / read-shaped
+description: '**STRENGTHENED INVARIANT, batch 2026-05-13G — 5-sidecar; ADR-CANDIDATE-003
+  RESOLVED as DELIBERATE; batch 2026-05-19H — NOW 7-SIDECAR with two repository-layer
+  SQL primary-source confirmations** — Repository-wide read-side posture: GET / read-shaped
   endpoints fall through to `pathMatchers(''/**'').authenticated()` and return data
-  across owners with no owner predicate. **FIVE corroborating surfaces** all share
+  across owners with no owner predicate. **SEVEN corroborating surfaces** all share
   the same admin-path-without-admin-gate failure mode: (a) `getAllAlerts` (batch A
   — `GET /api/alerts` returns alerts across all data entities regardless of caller''s
   Owner; getAllAlerts.md:security.known_security_gaps.[0] HIGH); (b) `getActivity`
@@ -21,29 +22,46 @@ description: '**STRENGTHENED INVARIANT, batch 2026-05-12F — now 5-sidecar; ADR
   returns the FULL 34-field DataEntityDetails payload (ownership[], descriptions,
   tags, terms, metadataFieldValues[], linkedUrlList[], etc.) for ANY entity to ANY
   authenticated user; the platform''s single hottest endpoint and the WIDEST single
-  blast radius (getDataEntityDetails.md:security.known_security_gaps.[0] HIGH). Each
-  surface independently authored, none gated by a Permission, all fall through to
-  authenticated() + no owner predicate. **Live docs do not warn about this posture
-  on any of the five surfaces**: `/features/alerts`, `/features/active-platform-features/activity-feed`,
+  blast radius (getDataEntityDetails.md:security.known_security_gaps.[0] HIGH); **(f)
+  `ReactiveAlertRepositoryImpl.listAllWithStatusOpen` (batch H — SQL PRIMARY-SOURCE
+  CONFIRMATION of REFACTOR-024)** — the canonical SQL is `selectFrom(ALERT).where(ALERT.STATUS.eq(OPEN))`
+  at lines 143-145 with NO owner predicate, NO permission filter, NO role check; outer
+  pagination wrapper adds DATA_ENTITY + USER_OWNER_MAPPING + OWNER + ALERT_CHUNK joins
+  but no owner clause; **(g) `ReactiveLineageRepositoryImpl.getLineageRelations(Set,
+  LineageDepth, LineageStreamKind)` (batch H — SQL PRIMARY-SOURCE CONFIRMATION of
+  REFACTOR-203)** — the recursive-CTE walks `lineage` table edges with `WHERE IS_DELETED.isFalse()`
+  only; lineage table has NO owner column (V0_0_2 + V0_0_17 + V0_0_79 confirm); the
+  CTE is the graph-shaped cross-owner enumeration SINK at the SQL layer. Each surface
+  independently authored, none gated by a Permission, all fall through to authenticated()
+  + no owner predicate. **Live docs do not warn about this posture on any of the five
+  HTTP surfaces**: `/features/alerts`, `/features/active-platform-features/activity-feed`,
   `/features/data-discovery/search`, `/features/data-lineage`, and `/features/data-discovery`
   are all silent on WHO can see what. The pattern is the platform''s deliberate stance
   (ADR-CANDIDATE-003 — read-collaborative tradeoff: ODD''s catalog is intentionally
-  cross-owner-readable to facilitate cross-team collaboration). **Batch F RESOLVES
-  the ADR-CANDIDATE-003 borderline_flag** — the getDataEntityDetails primary-source
-  confirms the posture is intentional on the centerpiece read (consistent with 27+
-  other GETs on the same controller); the doc-gap is doc-side, not code-side. Each
-  of the 5 sub-shapes has wider blast radius than the prior: enumerate alerts (admin
-  context only) → enumerate audit-log diffs → enumerate the entire catalog index →
-  enumerate the entire reachable lineage subgraph from any pivot → enumerate every
-  entity''s FULL detail payload.'
+  cross-owner-readable to facilitate cross-team collaboration). **Batch F RESOLVED
+  the ADR-CANDIDATE-003 borderline_flag**; batch H adds the SQL primary-source confirmation
+  that the persistence layer ALSO embodies the posture — there is no defence-in-depth
+  at the repository layer, and three different soft-delete mechanisms (deleted_at
+  / is_deleted / STATUS) across the repository layer share a common "no owner column,
+  no JOIN-time owner filter" posture. The fix for each surface is a one-line WHERE
+  clause at the SQL layer + the corresponding upstream service-layer principal resolution;
+  today neither half exists. Each of the 7 sub-shapes has wider blast radius than
+  the prior: enumerate alerts (admin context only) → enumerate audit-log diffs → enumerate
+  the entire catalog index → enumerate the entire reachable lineage subgraph from
+  any pivot → enumerate every entity''s FULL detail payload → SAME at the SQL layer
+  (alert + lineage repositories confirm the controller-layer findings).'
 axes_present:
 - controllers
+- repositories_reactive
 nodes:
 - odd-platform java AlertController controller-method:getAllAlerts
 - odd-platform java ActivityController controller-method:getActivity
 - odd-platform java SearchController controller-method:search
 - odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
 - odd-platform java DataEntityController controller-method:getDataEntityDetails
+- odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 contributors:
 - getAllAlerts.md:security.known_security_gaps.[0] (cross-owner alerts list HIGH)
   + concepts.invariants.[admin-path-without-admin-gate]
@@ -56,6 +74,18 @@ contributors:
 - getDataEntityDetails.md:security.known_security_gaps.[0] (CENTERPIECE READ cross-owner
   full-payload exposure HIGH; widest single blast radius — the platform's hottest
   endpoint)
+- 'ReactiveAlertRepositoryImpl.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[0]
+  (REFACTOR-024 SQL PRIMARY-SOURCE CONFIRMATION HIGH — listAllWithStatusOpen at lines
+  143-145 has no owner predicate; outer JOIN adds DATA_ENTITY + USER_OWNER_MAPPING
+  + OWNER + ALERT_CHUNK but no owner clause)'
+- 'ReactiveLineageRepositoryImpl.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[2]
+  (REFACTOR-203 SQL PRIMARY-SOURCE CONFIRMATION HIGH — recursive-CTE has no owner
+  JOIN, only is_deleted filter; lineage table schema has no owner column V0_0_2 +
+  V0_0_17 + V0_0_79; repository is the graph-shaped cross-owner enumeration SINK)'
+- 'ReactiveDataEntityRepositoryImpl.md:security.known_security_gaps.[1] + security.owner_scoping
+  (BYPASSES at JOIN time — every method signature lacks principal/owner parameter;
+  list-shape methods return rows with no per-tenant filter; the repository is the
+  authoritative read source for cross-owner data entity enumeration)'
 evidence:
 - getAllAlerts.md:security.known_security_gaps.[0]
 - getActivity.md:security.known_security_gaps.[0]
@@ -64,6 +94,12 @@ evidence:
 - getDataEntityDetails.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[0]
   + implicit_adrs.[0] (the centerpiece embodiment of ADR-CANDIDATE-003 — the read-collaborative
   posture is intentional)
+- ReactiveAlertRepositoryImpl.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[0]
+  (SQL primary source REFACTOR-024 HIGH)
+- ReactiveLineageRepositoryImpl.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[2]
+  (SQL primary source REFACTOR-203 HIGH)
+- ReactiveDataEntityRepositoryImpl.md:security.owner_scoping + security.known_security_gaps.[1]
+  (BYPASSES at JOIN time — repository-layer confirmation across 9 list-shape methods)
 notes: "STRENGTHENED in batch 2026-05-12F from 3-sidecar to 5-sidecar\ntriangulated.\
   \ Lineage adds the GRAPH-shaped cross-owner enumeration\n(causal-connection leak\
   \ via reachable downstream graphs); getDataEntityDetails\nadds the CENTERPIECE READ\
@@ -73,10 +109,19 @@ notes: "STRENGTHENED in batch 2026-05-12F from 3-sidecar to 5-sidecar\ntriangula
   \ 3-sidecar pattern. **Batch F RESOLVES the borderline_flag**\nvia the getDataEntityDetails\
   \ primary-source: the posture is\nINTENTIONAL on the centerpiece read, consistent\
   \ with 27+ other GETs\non the same controller. The platform DELIBERATELY ships\n\
-  read-collaborative; the doc-gap is doc-side, not code-side.\n\nFive DOC-NNN candidates\
-  \ flow from this invariant:\n  (a) `/features/alerts` page: add a 'Who can see this'\
-  \ section\n      naming the read-collaborative posture explicitly.\n  (b) `/features/active-platform-features/activity-feed`\
-  \ page:\n      same treatment; emphasise that the activity feed exposes\n      who-changed-what\
+  read-collaborative; the doc-gap is doc-side, not code-side.\n\n**Batch H** adds\
+  \ THREE repository-layer SQL primary-source\nconfirmations: ReactiveAlertRepositoryImpl\
+  \ (listAllWithStatusOpen\nat lines 143-145 has no owner predicate); ReactiveLineageRepositoryImpl\n\
+  (recursive-CTE walks lineage edges with is_deleted filter only —\nthe lineage table\
+  \ has no owner column at all); ReactiveDataEntityRepositoryImpl\n(every list-shape\
+  \ method on the repository returns rows with no per-tenant\nfilter; the repository's\
+  \ 982 lines + 35+ methods contain ZERO authorization\nannotations and ZERO principal\
+  \ parameters in any signature). The catalog\nnow has the controller-layer + repository-layer\
+  \ + SQL-layer confirmation\nthat the read-collaborative posture is uniform end-to-end.\n\
+  \nSix DOC-NNN candidates flow from this invariant:\n  (a) `/features/alerts` page:\
+  \ add a 'Who can see this' section\n      naming the read-collaborative posture\
+  \ explicitly.\n  (b) `/features/active-platform-features/activity-feed` page:\n\
+  \      same treatment; emphasise that the activity feed exposes\n      who-changed-what\
   \ across owners.\n  (c) `/features/data-discovery/search` page: same treatment;\n\
   \      the catalog search surface is the WIDEST single-page\n      cross-owner enumeration\
   \ vector.\n  (d) `/features/data-lineage` page: same treatment; lineage\n      edges\
@@ -84,9 +129,14 @@ notes: "STRENGTHENED in batch 2026-05-12F from 3-sidecar to 5-sidecar\ntriangula
   \ be limited.\n  (e) `/features/data-discovery` (or `/features/data-discovery/catalog-overview`):\n\
   \      CENTERPIECE READ posture — `GET /api/dataentities/{id}`\n      returns the\
   \ full 34-field payload to any authenticated user;\n      this is the single most\
-  \ consequential doc-gap and the\n      highest-traffic endpoint.\n\nA higher-leverage\
-  \ one-pass cleanup would be to extend the\n`/configuration-and-deployment/enable-security/authorization`\
+  \ consequential doc-gap and the\n      highest-traffic endpoint.\n  (f) **NEW**:\
+  \ extend `/configuration-and-deployment/enable-security/authorization`\n      with\
+  \ a 'Persistence layer posture' subsection explaining\n      that the Reactive*Repository\
+  \ classes carry NO authorization\n      annotations and serve as the SQL-primary-source\
+  \ implementation\n      of the read-collaborative stance; defence-in-depth at the\n\
+  \      repository layer is null by deliberate convention.\n\nA higher-leverage one-pass\
+  \ cleanup would be to extend the\n`/configuration-and-deployment/enable-security/authorization`\
   \ page\nwith a 'Read-side posture' section naming the read-collaborative\nstance,\
-  \ listing all five surfaces, and explicitly enumerating\nwhich endpoints DO and\
-  \ DO NOT honour owner-scoping. That single\npage change closes the systemic gap\
-  \ on all five surfaces.\n"
+  \ listing all five HTTP surfaces + the repository-layer\nconfirmations from batch\
+  \ H, and explicitly enumerating which endpoints\nDO and DO NOT honour owner-scoping.\
+  \ That single page change closes\nthe systemic gap on all surfaces.\n"

@@ -1,11 +1,11 @@
 ---
 artefact: refactoring-scopes
-generated_at: "2026-05-18T00:00:00Z"
+generated_at: "2026-05-19T14:30:00Z"
 generated_at_commit: ede5d277
-sidecar_count: 50
+sidecar_count: 55
 prompt_version: "adr-archaeologist/0.2.0"
-total_scopes: 211
-scopes_by_severity: { CRITICAL: 0, HIGH: 63, MEDIUM: 97, LOW: 51 }
+total_scopes: 227
+scopes_by_severity: { CRITICAL: 0, HIGH: 66, MEDIUM: 106, LOW: 55 }
 scopes_by_category: { missing-auth: 11, missing-retry: 3, missing-rate-limit: 6, missing-sanitisation: 2, missing-audit: 8, missing-validation: 30, missing-pagination: 1, missing-quota: 1, missing-test: 4, buggy-default: 12, path-mismatch: 1, deferred-failure: 1, header-injection: 1, race-condition: 4, error-mapping: 4, observability: 7, missing-grace-period: 1, weak-rng: 1, plaintext-at-rest: 1, response-cache-leak: 1, idempotency: 1, transactional-consistency: 2, multi-instance-fs: 1, contract-typo: 1, enumeration-vector: 1, dual-path: 1, dead-code: 3, info-disclosure: 1, missing-fail-fast: 2, label-asymmetry: 1, batch-isolation: 1, missing-retention: 2, missing-doc-prereq: 1, timezone-implicit: 1, body-before-auth: 1, missing-constant-time: 1, duplicate-parse: 1, hard-coded-path: 1, missing-cors: 1, missing-warn-log: 1, silent-feature-ignored: 1, missing-csrf: 2, missing-actuator-gating: 1, open-redirect: 1, missing-default: 2, fragile-parsing: 2, credential-leak: 3, session-cookie-flags: 1, no-brute-force-defence: 1, no-failure-handler: 1, doc-code-drift: 3, no-multi-replica-session: 1, no-config-field: 2, fragile-wiring: 1, scheme-enforcement: 1, substring-collision: 1, no-admin-path: 1, size-limit-silent-trunc: 1, ad-config-ignored: 1, no-health-check: 1, owner-mapping-drift: 1, no-retry-no-dlq: 1, partial-delivery: 1, unsigned-webhook: 1, status-code-narrow: 1, no-channel-filter: 1, advisory-lock-collision: 2, pii-disclosure: 1, replication-slot-orphan: 1, smtp-timeout: 1, lombok-tostring-leak: 1, partial-home-properties: 1, advisory-lock-registry: 1, primitive-default-leak: 1, jooq-precedence-bug: 1, block-in-transaction: 1, no-dryrun: 1, sequential-connection: 1, no-backlog-metric: 1, lock-window-race: 1, missing-tls-trust: 1, smtp-implicit-tls: 1, smtp-oauth2: 1, no-email-validation: 1, port-default-zero: 1, npe-on-boxed-bool: 1, recipient-parse-fragile: 1, no-conn-pool: 1, no-reply-headers: 1, no-upper-bound: 1, refactor-risk: 1, no-validated: 2, doc-spelling-drift: 1, url-no-validation: 1, empty-map-passes: 1, provider-conditional-unvalidated: 1, scope-required-unvalidated: 1, ad-domain-unvalidated: 1, postconstruct-gated-by-conditional: 1 }
 batch_2026_05_10A_summary: { added_scopes: 23, strengthened_scopes: 4 }
 batch_2026_05_10B_summary: { added_scopes: 24, strengthened_scopes: 1 }
@@ -14,6 +14,7 @@ batch_2026_05_12D_summary: { added_scopes: 42, strengthened_scopes: 4 }
 batch_2026_05_12E_summary: { added_scopes: 28, strengthened_scopes: 3 }
 batch_2026_05_12F_summary: { added_scopes: 17, strengthened_scopes: 5 }
 batch_2026_05_13G_summary: { added_scopes: 12, strengthened_scopes: 4, new_scopes_by_severity: { HIGH: 5, MEDIUM: 5, LOW: 2 }, new_scopes_by_category: { buggy-default: 1, missing-validation: 2, missing-sanitisation: 1, missing-rate-limit: 1, missing-index: 1, missing-filter: 1, name-behaviour-drift: 1, missing-error-translation: 1, missing-defence-in-depth: 1, permission-bypass: 1, performance-redundant-query: 1 } }
+batch_2026_05_19H_summary: { added_scopes: 16, strengthened_scopes: 6, new_scopes_by_severity: { HIGH: 3, MEDIUM: 9, LOW: 4 }, new_scopes_by_category: { missing-sanitisation: 1, missing-defence-in-depth: 2, missing-auth: 1, error-mapping: 1, ux-bug: 1, idempotency: 1, performance-redundant-work: 1, race-condition: 1, missing-index: 1, dead-code: 1, missing-cache: 1, misleading-code: 1, misleading-api: 1, dual-driver-race: 1, observability: 1 } }
 ---
 
 # Refactoring scopes — odd-platform — 2026-05-12
@@ -3247,5 +3248,199 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 **Discriminating context**: `@ActivityLog(event = TERM_ASSIGNMENT_UPDATED)` on `TermServiceImpl.linkTermWithDataEntity` triggers `TermAssignmentActivityHandler` (line 20-61), which captures BEFORE and AFTER terms-list state by re-querying `termRepository.getDataEntityTerms(dataEntityId)` TWICE per call (line 29-43 and 41-43). For data-entities with many terms (50+), this is two full-list queries per single-term-link write — an O(N) cost on a single-term-link write. The cost is acceptable for typical term counts but a hidden quadratic-shape cost on extreme cases where an entity has hundreds of terms and the operator team…
 
 **Full detail**: `detail/REFACTOR-228.md`
+
+---
+
+## Refresh note (2026-05-19H batch — reactive-repository layer deepening)
+
+Five new sidecars (`ReactiveDataEntityRepositoryImpl`, `ReactiveLineageRepositoryImpl`, `ReactiveOwnershipRepositoryImpl`, `ReactivePolicyRepositoryImpl`, `ReactiveAlertRepositoryImpl`) — the repository-axis batch. **16 new scopes added** (REFACTOR-229..244). **6 existing scopes strengthened**: REFACTOR-024, REFACTOR-082, REFACTOR-202, REFACTOR-203, REFACTOR-207, REFACTOR-222 — all now confirmed at the SQL primary source.
+
+The 5 highest-leverage 2026-05-19H additions are:
+- **REFACTOR-229 (SQL-format injection vector in `getHighlightedResult` via `String.formatted()` on user-writable inputs; HIGH — anonymous remote SQL injection under DISABLED-mode)**
+- **REFACTOR-230 (`getRolesPolicies` RBAC hot path returns soft-deleted policies — orphan role_to_policy bindings still grant permissions; HIGH)**
+- **REFACTOR-231 (AlertManager webhook payload-driven alert creation with no caller-ID check — entity_oddrn from untrusted payload; HIGH; extends REFACTOR-082)**
+- **REFACTOR-232 (cross-batch correction: createOwnership duplicate-key is HTTP 400 + USR003, NOT 5xx as batch-F stated; MEDIUM correction-priority)**
+- **REFACTOR-233 (listByOwner empty-result counter uses platform-wide count, not owner-scoped; MEDIUM UX bug)**
+
+**Cross-cutting findings (batch H)**:
+- (a) The repository layer is uniformly transaction-free (5/5 repositories — strengthens ADR-CANDIDATE-067)
+- (b) SQL-injection surface area is narrow but exists at ONE site (REFACTOR-229) — the platform's convention is parameterised jOOQ DSL; this is the lone violator
+- (c) RBAC observability is broken across three layers: no audit on mutations (REFACTOR-188) + no soft-delete filter on hot path (REFACTOR-230) + no method-level observability (REFACTOR-244)
+- (d) Owner-scoping is anchor-set single-point-of-failure with no JOIN-side defence-in-depth (REFACTOR-225 + REFACTOR-237 — 2-sidecar SQL-layer confirmation; ADR-CANDIDATE-075 codifies the architecture, the gap is the missing depth)
+- (e) Cross-batch correction propagation: batch-F's createOwnership 5xx-on-duplicate misclaim corrected at SQL primary source via REFACTOR-232
+
+## REFACTOR-229 — SQL-format injection vector in `ReactiveDataEntityRepositoryImpl.getHighlightedResult` via `String.formatted(text, tsQuery)` on user-writable inputs
+
+**Severity**: HIGH
+**Category**: missing-sanitisation + injection
+
+**Discriminating context**: `getHighlightedResult` (`ReactiveDataEntityRepositoryImpl.java:799-806`) builds raw SQL by calling `String.formatted(text, tsQuery)` and feeds the resulting string into `DSL.field(sql, String.class)`. The two `%s` slots accept user-writable data (description / tags / search query). Under `auth.type=DISABLED` (default deployment), both gates are bypassed: anonymous network probes can write the payload AND trigger the read. This is the only raw-SQL-format path identified across the 5-repository batch.
+
+**Full detail**: `detail/REFACTOR-229.md`
+
+---
+
+## REFACTOR-230 — `ReactivePolicyRepositoryImpl.getRolesPolicies` (RBAC hot path) returns SOFT-DELETED policies — orphan role_to_policy bindings still grant permissions
+
+**Severity**: HIGH
+**Category**: missing-defence-in-depth (authorization)
+
+**Discriminating context**: `getRolesPolicies` (`ReactivePolicyRepositoryImpl.java:32-35`) is invoked on EVERY authorized HTTP request through both permission extractors. The JOIN has **no `policy.deleted_at IS NULL` predicate**. Combined with the absence of FK cascade between `policy.deleted_at` and `role_to_policy.policy_id`, a soft-deleted policy with surviving role bindings continues to confer permissions. The service-layer defence at `PolicyServiceImpl.delete` (line 89-92) is single-layer; any path bypassing it (direct DB UPDATE, future refactor) creates the orphan-binding gap.
+
+**Full detail**: `detail/REFACTOR-230.md`
+
+---
+
+## REFACTOR-231 — AlertManager webhook payload-driven alert creation with no caller-ID check — `entity_oddrn` from untrusted payload determines which data entity the alert attaches to
+
+**Severity**: HIGH
+**Category**: missing-auth + missing-validation
+
+**Discriminating context**: `AlertManagerController.alertManagerWebhook` (path `POST /ingestion/alert/alertmanager`) carries no `@PreAuthorize`, is not matched by IngestionDataEntitiesFilter. The service consumes `externalAlert.getLabels().get("entity_oddrn")` (`AlertServiceImpl.java:178`) directly from the payload, then calls `alertRepository.createAlerts(...)` (`ReactiveAlertRepositoryImpl.java:332-342`) which issues `INSERT … RETURNING` with no validation, no caller-ID check, no oddrn-ownership check. The payload's `entity_oddrn` is UNTRUSTED yet DECIDES which data entity the alert attaches to. Anonymous remote alert injection possible under DISABLED-mode default.
+
+**Full detail**: `detail/REFACTOR-231.md`
+
+---
+
+## REFACTOR-232 — Cross-batch correction: `createOwnership` duplicate-key surfaces as HTTP 400 + USR003, NOT 5xx as batch-F stated; the ExceptionUtils translation path is the canonical fix-up
+
+**Severity**: MEDIUM (cross-batch correction-priority)
+**Category**: error-mapping
+
+**Discriminating context**: The batch-F sidecar `createOwnership.md:bugs_limitations_corner_cases[2]` line 149 incorrectly stated that the duplicate-key path surfaces as 5xx. The SQL primary-source inspection at `ReactiveOwnershipRepositoryImpl.java:52-58` + `JooqReactiveOperations.java:41` + `ExceptionUtils.java:69-71` + `ControllerAdvice.java:36-40` confirms the actual surface is HTTP 400 with `USR003` and the friendly message `'Ownership for this data entity and owner already exists'`. The misclaim should be propagated as a substrate correction; downstream artefacts (DOC-NNN drafts, API-reference docs, integration-test expectations) inherited the wrong shape.
+
+**Full detail**: `detail/REFACTOR-232.md`
+
+---
+
+## REFACTOR-233 — `ReactiveAlertRepositoryImpl.listByOwner` empty-result counter uses platform-wide count, not owner-scoped count — UX badge misreports total when caller's owner has zero alerts
+
+**Severity**: MEDIUM
+**Category**: ux-bug (label-asymmetry / wrong-count)
+
+**Discriminating context**: `listByOwner` (lines 160-179) passes `countAlertsWithStatusOpen()` (line 177) — the platform-wide count — into `pageifyResult` as the `emptyRecordTotalCounter`. The expected method is `countAlertsWithStatusOpenByOwner(ownerId)`. When the caller's owner has zero open alerts, the response's `Page.total` reports the platform-wide count instead of zero. The UI's pagination badge silently misreports.
+
+**Full detail**: `detail/REFACTOR-233.md`
+
+---
+
+## REFACTOR-234 — `ReactiveAlertRepositoryImpl.createAlerts` has no idempotency on AlertManager webhook retries — INSERT without ON CONFLICT; Prometheus retry produces duplicate ALERT rows
+
+**Severity**: MEDIUM
+**Category**: idempotency
+
+**Discriminating context**: `createAlerts` (`ReactiveAlertRepositoryImpl.java:332-342`) builds a sequence of INSERT statements with no `.onConflict(...)` clause. The AlertManager webhook path (`AlertServiceImpl.handleExternalAlerts`) bypasses the `AlertActionResolver` de-duplication used by the ingestion path. Prometheus AlertManager retries failed webhook deliveries — each retry produces a duplicate ALERT row. No `external_alert_fingerprint` UNIQUE constraint backstops the de-duplication.
+
+**Full detail**: `detail/REFACTOR-234.md`
+
+---
+
+## REFACTOR-235 — Recursive CTE in `ReactiveAlertRepositoryImpl.getChildOddrnsLinageByOwnOddrnsCte` uses array-membership cycle check that is O(N²) in jOOQ-emitted SQL on heavy-fanout graphs
+
+**Severity**: MEDIUM
+**Category**: performance-redundant-work (recursive-CTE evaluation cost)
+
+**Discriminating context**: `getChildOddrnsLinageByOwnOddrnsCte` (`ReactiveAlertRepositoryImpl.java:429-454`) is a SEPARATE recursive CTE from `ReactiveLineageRepositoryImpl`'s lineage-canvas CTE (REFACTOR-207). It accumulates parent oddrns in a `String[]` field per row and adds `notEqual(DSL.all(parentOddrnArrayField))` as cycle prevention. The check works for sane graphs but the array grows linearly per iteration; total work for D-depth, B-branching is O(D × B^D × N). For deep+branchy lineages the cost spikes into multi-million-row CTE evaluation; Postgres CPU saturation manifests.
+
+**Full detail**: `detail/REFACTOR-235.md`
+
+---
+
+## REFACTOR-236 — Alert reopen-guard read-then-write race lacks DB-level UNIQUE constraint backstop (SQL-layer confirmation; STRENGTHENS REFACTOR-037)
+
+**Severity**: MEDIUM
+**Category**: race-condition (defence-in-depth at SQL layer)
+
+**Discriminating context**: SQL primary-source confirmation of REFACTOR-037 (existing). The read `openAlertWithTheSameTypeExistsForDataEntity` (lines 397-420) has NO `FOR UPDATE`; the write `updateAlertStatus` (lines 297-306) has NO `FOR UPDATE`; the service composition at `AlertServiceImpl.java:124-131` runs outside any `@ReactiveTransactional` boundary (per ADR-CANDIDATE-073 + ADR-CANDIDATE-067). There is NO `CREATE UNIQUE INDEX ... WHERE status = 'OPEN'` partial-index constraint to backstop concurrent reopen attempts at the schema level.
+
+**Full detail**: `detail/REFACTOR-236.md`
+
+---
+
+## REFACTOR-237 — Owner-scoping in lineage is anchor-set single-point-of-failure (no JOIN-side defence-in-depth at lineage CTE); SQL-layer confirmation that STRENGTHENS REFACTOR-225
+
+**Severity**: MEDIUM
+**Category**: missing-defence-in-depth (authorization)
+
+**Discriminating context**: SQL primary-source confirmation: the lineage table has NO owner column (verified across all 4 migrations — V0_0_2 + V0_0_17 + V0_0_26 + V0_0_79). JOIN-side filtering at the lineage CTE is structurally impossible. The CTE at `ReactiveLineageRepositoryImpl.java:163-175` filters ONLY on `is_deleted`; no owner predicate. The anchor-set defence at `DataEntityRelationsServiceImpl.java:26` (`fetchAssociatedOwner()`) is the single defence point for `/my` lineage variants. ADR-CANDIDATE-075 (NEW) codifies the architecture; this scope is the missing defence-in-depth.
+
+**Full detail**: `detail/REFACTOR-237.md`
+
+---
+
+## REFACTOR-238 — No covering index for soft-delete OR-predicate on either-endpoint in `softDeleteLineageRelations` / `restoreLineageRelations` — cascade degrades to sequential scan
+
+**Severity**: MEDIUM
+**Category**: missing-index
+
+**Discriminating context**: `softDeleteLineageRelations` (lines 92-99) and `restoreLineageRelations` (102-109) use `LINEAGE.CHILD_ODDRN.in(...).or(LINEAGE.PARENT_ODDRN.in(...))`. The PK `(parent, child, establisher)` supports the parent_oddrn leg only; the child_oddrn leg has NO covering index (V0_0_17:119 adds only `lineage_establisher_oddrn`). For ≥1M lineage rows, Postgres degrades to sequential scan; soft-delete cascades stall for seconds-to-minutes under load.
+
+**Full detail**: `detail/REFACTOR-238.md`
+
+---
+
+## REFACTOR-239 — `policy.is_deleted` column is dead schema — soft-delete base writes only `deleted_at`; schema reader misled into expecting boolean tracking
+
+**Severity**: MEDIUM
+**Category**: dead-code (schema-level)
+
+**Discriminating context**: DDL declares `is_deleted boolean NOT NULL DEFAULT FALSE` on `policy` (V0_0_55:26). The soft-delete base writes ONLY `deleted_at` (`ReactiveAbstractSoftDeleteCRUDRepository.java:106-110`); the application never writes `is_deleted`. The column is always `FALSE` even for soft-deleted rows; a schema reader / DBA / forensic SQL user reaches the wrong conclusion. The same pattern is dead schema across multiple platform tables. Cross-link with ADR-CANDIDATE-068 (the soft-delete inheritance taxonomy clarifies that `deleted_at` is the contract; `is_deleted` is vestigial).
+
+**Full detail**: `detail/REFACTOR-239.md`
+
+---
+
+## REFACTOR-240 — `ReactivePolicyRepositoryImpl.getRolesPolicies` is on the RBAC hot path with no caching — every authorized HTTP request hits Postgres
+
+**Severity**: MEDIUM
+**Category**: missing-cache (performance hot-path)
+
+**Discriminating context**: `getRolesPolicies` (`ReactivePolicyRepositoryImpl.java:32-38`) is invoked on EVERY authorized HTTP request through both `ManagementPermissionExtractor` and `AbstractContextualPermissionExtractor`. No caching at any layer. For a stable `(roleIds)` set, the result is stable for the lifetime of the role-policy edges (only RBAC-directory mutations invalidate). Short-TTL request-scoped or `@Cacheable` cache would absorb 99%+ of DB load. The platform has Spring Cache infrastructure available; the RBAC hot path is the largest single uncached read in the platform.
+
+**Full detail**: `detail/REFACTOR-240.md`
+
+---
+
+## REFACTOR-241 — `getLineageRelations(List<String>)` builds OR-predicate where both conjuncts are logically equivalent — decorative SQL misleads future maintainers
+
+**Severity**: LOW
+**Category**: misleading-code
+
+**Discriminating context**: `ReactiveLineageRepositoryImpl.java:113-117` builds `WHERE is_deleted = false AND ((parent in oddrns AND child in oddrns) OR (child in oddrns AND parent in oddrns))`. The two OR-branches are LOGICALLY EQUIVALENT under conjunction commutativity. Postgres collapses the predicate; the source is misleading. A future maintainer "simplifying" the apparent redundancy to a broader OR-of-either-endpoint semantic would silently change the DEG-internal-lineage assembly contract. The existing test does not distinguish the two semantics.
+
+**Full detail**: `detail/REFACTOR-241.md`
+
+---
+
+## REFACTOR-242 — `LineageDepth.empty()` semantics are call-site folklore — the `empty` flag is never read; only the `-1` value matters
+
+**Severity**: LOW
+**Category**: misleading-API (call-site folklore)
+
+**Discriminating context**: `LineageDepth.empty()` returns `new LineageDepth(-1, true)` but `lineageCte` (lines 150-176) NEVER reads the `boolean empty` field. The recursion terminates because `tDepth.lessThan(-1)` is FALSE on the first iteration → seed-only output. The name `empty()` is misleading: callers reading `DataEntityRelationsServiceImpl.java:34` (`getLineageRelations(set, LineageDepth.empty(), kind)`) might plausibly expect zero edges; actual behaviour is "seed-only (one-hop)". The `boolean empty` field appears vestigial; the class signature lies about its semantics.
+
+**Full detail**: `detail/REFACTOR-242.md`
+
+---
+
+## REFACTOR-243 — `AlertHousekeepingJob` uses JDBC `Connection` while `ReactiveAlertRepositoryImpl` uses R2DBC `DatabaseClient` — no shared transaction scope; read-then-purge race produces silent state transitions
+
+**Severity**: LOW
+**Category**: dual-driver-race (latent)
+
+**Discriminating context**: The platform splits scheduled-job paths (synchronous JDBC) and request paths (reactive R2DBC) — `AlertHousekeepingJob.java:24` uses JDBC `Connection`; `JooqReactiveOperations.java:28` uses R2DBC `DatabaseClient`. The two share no transaction scope. A read in flight while housekeeping commits a DELETE produces either a stale row in the UI (then the next refresh shows it gone) or `Mono.empty()` if the DELETE committed first. Benign UX confusion, not a correctness gap. The pattern repeats across `DataEntityHousekeepingJob` and `EmptyPartitionsHousekeepingJob`.
+
+**Full detail**: `detail/REFACTOR-243.md`
+
+---
+
+## REFACTOR-244 — No method-level observability across the 5 reactive-repository batch — no `@Timed`, no Micrometer counters, no log entries; latency regressions invisible at the repository boundary
+
+**Severity**: LOW
+**Category**: observability (cross-cutting)
+
+**Discriminating context**: Across all 5 repository sidecars in batch H, the consistent finding: zero `@Timed`, zero `Counter`, zero log emissions on success paths. RBAC mutations are FORENSICALLY SILENT at the persistence layer (REFACTOR-188 cross-link). A latency regression in any of the 19+ methods on `ReactiveAlertRepositoryImpl` or 30+ on `ReactiveDataEntityRepositoryImpl` surfaces ONLY through downstream R2DBC connection-pool / WebFlux histogram aggregates. AOP-driven repository instrumentation would close the gap; the absence is acceptable for early-stage but blocks scale-time regression detection.
+
+**Full detail**: `detail/REFACTOR-244.md`
 
 ---

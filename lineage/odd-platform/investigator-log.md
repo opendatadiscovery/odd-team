@@ -837,3 +837,66 @@ Per dynamic-verification ADR slice 5: each batch's investigator-log entry now re
 Each PASS/FAIL run merged a `## probe_verifications` entry into the contributing sidecars under `lineage/odd-platform/understanding/` (per dynamic-verification ADR Rule 4).
 
 ---
+
+## Batch 2026-05-19-H — Repository layer (5 nodes; FIRST rev-2 batch on sharded artefacts)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate commit**: `ede5d277` (50 prior sidecars + 5 new = **55 total**)
+- **Theme**: Repository layer — `Reactive*RepositoryImpl` files. Closes batch G's open theme (transaction boundaries / advisory-lock interactions / tenant-isolation enforcement / jOOQ FTS-injection territory).
+- **FIRST batch under rev-2 mechanics**: sharded registry artefacts (slice 6) + reducer prompts spawning grep-then-narrow-Read against the sharded indexes (slice 7) + emergent feature registry sharded from day 1 (slice 9) + coverage metrics on manifest (slice 8). Validated end-to-end in this batch.
+- **Substrate-axis gap surfaced**: The substrate (nodes.jsonl) does NOT yet enumerate repository nodes; the 5 batch-H sidecars use synthetic `node_id: ... repository:Reactive*RepositoryImpl` IDs. The coverage `## Integrity audit` block surfaces this as "Sidecars referencing nodes NOT in substrate: 5". **LSN candidate**: log as `LSN-018-repository-axis-gap` in a follow-up — the substrate's axis set needs `repository` added for clean denominator semantics. The methodology accommodated the gap gracefully (sidecars + feature-flow chains both reference the synthetic IDs; reducers consumed without issue).
+
+### Sidecars added (5)
+
+| Sidecar | Headline finding |
+|---|---|
+| `ReactiveDataEntityRepositoryImpl` | **NEW HIGH: SQL-format injection in `getHighlightedResult` (lines 799-806) via raw `String.formatted()` on user-controllable inputs** — the only raw-SQL-format path across the 5-repository batch; under DISABLED-mode anonymous remote SQL injection. Plus F-001 / F-003 / F-004 hops primary-source confirmed. REFACTOR-222 EXCLUDE_FROM_SEARCH inconsistency primary-source confirmed. |
+| `ReactiveLineageRepositoryImpl` | **REFACTOR-202 cycle/diamond amplification + REFACTOR-203 cross-owner enumeration both PRIMARY-SOURCE confirmed at SQL layer**. **NEW pattern**: anchor-set defence-in-depth bifurcated — `DataEntityRelationsServiceImpl` is the positive case; `LineageServiceImpl.getLineage` is the negative case. |
+| `ReactiveOwnershipRepositoryImpl` | **CROSS-BATCH CORRECTION**: batch-F `createOwnership` sidecar's "5xx surface on duplicate-key" claim is WRONG. Actual surface is HTTP 400 + `USR003`. **Orchestrator-hypothesis refuted**: this repository does NOT own the JOIN OWNERSHIP for `/my` reads — that lives in `ReactiveDataEntityRepositoryImpl#listByOwner:526-527`. |
+| `ReactivePolicyRepositoryImpl` | **NEW HIGH: `getRolesPolicies` (per-request RBAC hot path) does NOT filter soft-deleted policies** — soft-deleted policies still grant permissions. Plus 5 implicit ADRs including the canonical `policy_name_unique` partial UNIQUE INDEX `WHERE deleted_at IS NULL` pattern from primary source. |
+| `ReactiveAlertRepositoryImpl` | **NEW HIGH: AlertManager webhook `POST /ingestion/alert/alertmanager` is NOT gated by IngestionDataEntitiesFilter** — untrusted `entity_oddrn` label admits cross-tenant alert creation (extends REFACTOR-082). REFACTOR-024 PRIMARY-SOURCE confirmed at SQL layer. REFACTOR-188 narrowed: alert activity emission at service layer, not repository. |
+
+### Reducer diffs (rev-2 sharded; all 5 ran without timeout/rate-limit)
+
+| Reducer | Before → After | Delta | Highlights |
+|---|---|---|---|
+| concept-merger | 153 → **160 concepts** | +7 net-new (1 entity / 3 invariants / 3 operations); 8 strengthened | New invariants codify repo-layer patterns: **three soft-delete mechanisms across the persistence layer**, **repository transactional boundary at service layer not repository** (5/5 repos uniformly transaction-free), **DB-uniqueness with centralised friendly-error translation** (USR-codes via ExceptionUtils). |
+| adr-archaeologist (ADRs) | 67 → **75 candidates** | +8 new (068-075); 2 strengthened (058 + 067) | **0 wisdom-test fails** (8th consecutive batch). ADR-067 `@ReactiveTransactional` boundary asymmetry now **9-sidecar**. ADR-075 NEW: "repositories take no Principal" — codebase-wide architectural finding (HIGH). |
+| adr-archaeologist (scopes) | 211 → **227 scopes** | +16 new (229-244); 6 strengthened (024, 082, 202, 203, 207, 222) | **REFACTOR-229 SQL-format injection** (HIGH). **REFACTOR-230 getRolesPolicies soft-delete bypass** (HIGH). **REFACTOR-231 AlertManager webhook payload-driven alert creation** (HIGH; extends REFACTOR-082). **REFACTOR-232 cross-batch correction**: createOwnership = HTTP 400/USR003, NOT 5xx. REFACTOR-024 strengthened to **full-stack 8-sidecar** (controller+service+repository SQL). |
+| doc-gap-finder | 103 → **112 findings** | +9 new (104-112); 8 strengthened | **DOC-GAP-104 SQL-injection** (first in catalog). **DOC-GAP-105 Lineage CTE no defence** — supersedes DOC-GAP-021 with 4-angle primary-source. **DOC-GAP-106 getRolesPolicies returns soft-deleted policies**. **DOC-GAP-107 AlertManager webhook bypass**. **DOC-GAP-108 cross-batch correction** (5xx→400/USR003). DOC-GAP-082 now **13-sidecar** (DISABLED-mode bypass cluster). WebFetch denied this session — same constraint as batches D/E/F/G; inherited verifications cited. |
+| test-coverage-mapper | 312 → **364 gaps** | +52 new (313-364); 11 strengthened | **4 NEW CRITICAL**: TEST-GAP-316 (FTS SQL-injection), TEST-GAP-345 (getRolesPolicies soft-delete), TEST-GAP-356 (REFACTOR-024 SQL-layer), TEST-GAP-363 (AlertManager webhook unauth). 13 HIGH / 27 MEDIUM / 8 LOW. **0 sidecar-quality findings** (all test_files claims grep-verified). |
+| feature-flow-builder | 5 → **7 features** | +2 new (F-006, F-007); 4 extended (F-001, F-003, F-004, F-005) | **F-006 NEW: RBAC policy lifecycle** — soft-delete + permission-grant persistence. **F-007 NEW: AlertManager webhook ingestion** — ungated cross-tenant alert creation. F-001 / F-003 / F-004 / F-005 each gained extended_features delta with primary-source SQL evidence and new facets. |
+
+### Rev-2 mechanics validation (FIRST batch under sharded artefacts — empirical cost-ceiling test)
+
+- **Reducer context budget**: All 5 reducers operated within their per-batch budget (vs 200-800 KB monolithic-input pattern of batches A-G). **ZERO rate-limit hits this batch. ZERO stream-idle timeouts.** The cost-ceiling promise of rev-2 principle 7 is empirically validated on the first batch.
+- **Grep-then-narrow-Read pattern**: adr-archaeologist hit the read-limit on full index files (25K-token Read cap) and naturally fell back to Grep-then-narrow — exactly the rev-2 design ("never load the full index"). Output as `index-batch-H-append.md` files which the orchestrator merged into the live indexes.
+- **Cross-batch correction propagation**: ReactiveOwnershipRepositoryImpl sidecar surfaced batch-F's `createOwnership` 5xx-claim is wrong; the correction propagated as REFACTOR-232 + DOC-GAP-108 across 3 reducer artefacts. The architecture supports cross-batch corrections without resurfacing as duplicates.
+- **Emergent-feature registry** (rev-2 principle 8): 2 new features (F-006, F-007) discovered organically; NOT pre-enumerated. 4 existing features extended without merge. Zero auto-merges; zero maintainer-triage-ambiguous cases.
+
+### Cumulative state after batch H
+
+| Layer | Count |
+|---|---|
+| Substrate scaffold | 395 nodes / 479 edges (unchanged) |
+| Sidecars | **55** (13.9% direct; **16.5% effective coverage** via feature-flow chains) |
+| Features | **7** (5 prior + 2 new) — 4 with ≥1 PROBED cell |
+| concepts/ | catalog v9; **160 concepts** |
+| implicit-adrs/ | **75 ADR candidates** (22 HIGH / 48 MEDIUM / 5 LOW) |
+| refactoring-scopes/ | **227 scopes** (66 HIGH / 106 MEDIUM / 55 LOW) |
+| doc-gaps/ | **112 findings** (58 HIGH / 43 MEDIUM / 11 LOW) |
+| test-map/ | **364 test gaps** (85 CRITICAL / 122 HIGH / 115 MEDIUM / 42 LOW) |
+
+### Next-batch planning notes
+
+Three high-leverage themes for batch I:
+
+1. **Service layer** — `AlertServiceImpl`, `DataEntityServiceImpl`, `IngestionService`, `NotificationsDispatcher`, `PolicyServiceImpl`. The integration-tier between controllers and repositories. ZERO enriched. Will resolve UNRESOLVED references in the new F-006 / F-007 chains + extend F-001 / F-003 / F-005 with service-layer hops. The lost-update race surfaced in F-006 (`PolicyServiceImpl.update` lines 71-81 outside `@ReactiveTransactional`) is a candidate primary-source target.
+2. **Anchor-set defence-in-depth audit** — batch H's NEW pattern from ReactiveLineageRepositoryImpl. Enumerate every controller method resolving owner via `fetchAssociatedOwner` then computing a derived response set. Narrower scope than service layer; can pair with #1.
+3. **UI-axis sidecars** — `DataEntityDetails.tsx` + redux thunks. Resolve remaining UNRESOLVED references in F-001's chain (the UI useEffect dep-array bug at hop 1). Pairs with the live dynamic-verification P-001/P-004 probes that already pin the +2 behaviour empirically.
+
+Plus follow-ups from this batch:
+- **`LSN-018-repository-axis-gap`** — write the retrospective; propose a `repository` axis for the substrate (slice 10 candidate).
+- **`shard.py` improvement** — the feature-flow-builder occasionally writes YAML scalars containing unquoted `: ` or leading `@` which break parsing. 3 of 7 F-NNN detail files needed post-write quoting fixes this batch. Add a yaml-safe-dump validator in either the sharder or the feature-flow-builder prompt's emit rules.
+

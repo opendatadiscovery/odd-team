@@ -1,0 +1,94 @@
+name: Database-level uniqueness with centralised friendly-error translation
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW INVARIANT, batch 2026-05-19H** — load-bearing architectural convention
+  surfaced across 3 of the 5 batch-H repository sidecars. Uniqueness invariants are
+  enforced at the DATABASE layer via UNIQUE constraints (or partial UNIQUE indexes
+  for soft-delete-aware-recreation); duplicate violations are translated to a project-specific
+  `UniqueConstraintException` carrying a HUMAN-READABLE message keyed by the constraint
+  name — NOT propagated as the raw jOOQ `DataAccessException` — through a centralised
+  translation layer (`ExceptionUtils.translateDatabaseException`) wired into every
+  R2DBC query via `JooqReactiveOperations`''s `.onErrorMap(DataAccessException.class,
+  ExceptionUtils::translateDatabaseException)` (JooqReactiveOperations.java:41, 48).
+  The translation is uniform — every Reactive*Repository inherits it; no repository
+  can leak raw Postgres errors to the API layer. **Specific instances confirmed at
+  the SQL primary source**: (a) `ReactivePolicyRepositoryImpl` — Policy name uniqueness
+  enforced via partial unique index `policy_name_unique ON policy(name) WHERE deleted_at
+  IS NULL` (V0_0_55__add_policies_and_roles.sql:30). Duplicate INSERT fails as SQLSTATE
+  23505 → UniqueConstraintException with message "Policy with this name already exists"
+  (ExceptionUtils.java:60-62). Repository has no service-layer pre-check; a duplicate
+  INSERT just fails at the DB layer; (b) `ReactiveOwnershipRepositoryImpl` — UNIQUE
+  (data_entity_id, owner_id) constraint (V0_0_3__add_ownership.sql:17). Duplicate
+  INSERT translates to HTTP 400 (USR003) with message "Ownership for this data entity
+  and owner already exists" (ExceptionUtils.java:69-71). **CROSS-BATCH CORRECTION**:
+  the batch-F createOwnership sidecar incorrectly stated the surface error is 5xx
+  — the actual surface is HTTP 400 with USR003 ErrorCode + friendly message via the
+  ExceptionUtils translation path + ControllerAdvice.handleUniqueConstraint mapping
+  to HttpStatus.BAD_REQUEST; (c) `ReactiveLineageRepositoryImpl` — batchInsertLineages
+  uses `.onConflict(...).doNothing()` (ON CONFLICT DO NOTHING via jOOQ `onDuplicateKeyIgnore`)
+  against the (parent, child, establisher) PK established at V0_0_17:117 — SILENT
+  duplicate-skip instead of error translation. Different shape (no exception path);
+  the contract is "duplicates are silently skipped" enabling the ingestion-rewrite-by-establisher
+  flow to operate without read-before-write logic. **The design choice**: DB enforces
+  the invariant; the repository wrapper translates DB-level errors to application-level
+  errors with HTTP-mapping-friendly types. The choice avoids pre-flight `existsBy`
+  lookups on every create (saves one round-trip) at the cost of a try-and-catch error-handling
+  pattern in callers. Centralised at ExceptionUtils + uniform across the repository
+  layer.'
+axes_present:
+- repositories_reactive
+nodes:
+- odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveOwnershipRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+contributors:
+- 'ReactivePolicyRepositoryImpl (batch H): implicit_adrs.[2] — unique-constraint violations
+  translated to UniqueConstraintException carrying HUMAN-READABLE message keyed by
+  index name. ExceptionUtils.translateDatabaseException is the centralised translation
+  layer; policy_name_unique → "Policy with this name already exists" (ExceptionUtils.java:60-62).
+  Soft-delete-aware partial unique index enables recreation after soft-delete.'
+- 'ReactiveOwnershipRepositoryImpl (batch H): implicit_adrs.[1] + concepts.invariants.[1]
+  + cross-batch-correction — duplicate-prevention via DB-constraint with friendly-error
+  translation. OWNERSHIP_DATA_ENTITY_ID_OWNER_ID_KEY → "Ownership for this data entity
+  and owner already exists" (ExceptionUtils.java:69-71). CORRECTS batch-F misclaim
+  that the surface error is 5xx — actual is HTTP 400 (USR003).'
+- 'ReactiveLineageRepositoryImpl (batch H): implicit_adrs.[3] + concepts.operations
+  — idempotent batch insert via onConflictDoNothing against PK (parent, child, establisher).
+  Different shape: silent duplicate-skip rather than error translation. Enables ingestion
+  rewrite-by-establisher to operate without read-before-write logic.'
+evidence:
+- ReactivePolicyRepositoryImpl.md:implicit_adrs.[2] + concepts.invariants.[2]
+- ReactiveOwnershipRepositoryImpl.md:implicit_adrs.[1] + concepts.invariants.[1]
+- ReactiveOwnershipRepositoryImpl.md:docs_link_semantic.doc_drift_findings.[2] (CROSS-BATCH
+  CORRECTION — duplicate-key surface is HTTP 400, not 5xx)
+- ReactiveLineageRepositoryImpl.md:implicit_adrs.[3] (onDuplicateKeyIgnore + PK migration)
+notes: "Cross-batch architectural convention surfaced across 3 of the 5 batch-H repository\n\
+  sidecars. The convention is uniform; the surface differs by use case:\n\n  - Soft-delete-aware\
+  \ entity uniqueness (Policy / Role / Owner / etc.): partial unique\n    index WHERE\
+  \ deleted_at IS NULL enables recreation; duplicate of LIVE row → HTTP 400\n    via\
+  \ ExceptionUtils translation.\n  - Hard-delete edge uniqueness (Ownership / TermOwnership):\
+  \ plain unique constraint;\n    duplicate → HTTP 400 via ExceptionUtils translation.\n\
+  \  - Idempotent batch-insert (Lineage): onConflictDoNothing; duplicate silently\
+  \ skipped;\n    no exception path.\n\nThe centralised translation at ExceptionUtils.translateDatabaseException\
+  \ (lines 30-83)\nenumerates every known unique index name and maps it to a tailored\
+  \ message. The pattern\nis deliberate-and-curated — each new unique index added\
+  \ in a future migration MUST be\nregistered in ExceptionUtils to surface a friendly\
+  \ message; absence falls through to the\ngeneric DatabaseException with a less helpful\
+  \ message.\n\nCROSS-BATCH CORRECTION propagated from batch H: the batch-F createOwnership\
+  \ sidecar's\nbugs_limitations_corner_cases[2] stated the duplicate-key surface error\
+  \ is 5xx. The actual\nsurface is HTTP 400 (USR003) with the friendly message. The\
+  \ correction should propagate to\nany downstream artefact that quotes the batch-F\
+  \ claim verbatim.\n\nRecommended cleanup paths:\n\n  - Audit every new unique index\
+  \ added in a future migration; ensure ExceptionUtils\n    has a matching translation\
+  \ branch with a tailored message.\n\n  - Document the duplicate-key surface error\
+  \ shape (HTTP 400 + USR003 + friendly message)\n    in the OpenAPI spec response\
+  \ schemas for endpoints that can produce duplicates\n    (POST /api/policies, POST\
+  \ /api/dataentities/{id}/ownership, POST /api/roles, etc.).\n    The live OpenAPI\
+  \ today does NOT declare a 400 response with this message shape;\n    API consumers\
+  \ reading the spec cannot anticipate the surface.\n\nThree DOC-NNN candidates flow\
+  \ from this invariant:\n  (a) OpenAPI spec update: declare 400-Bad-Request response\
+  \ with USR003 error code +\n      friendly message on every endpoint that can produce\
+  \ a unique-constraint violation.\n  (b) Public 'API errors' doc page (if it exists)\
+  \ or new docs page: enumerate the USR003\n      cases (Policy / Role / Owner / Ownership\
+  \ / etc.) and their friendly messages.\n  (c) Cross-batch correction in any artefact\
+  \ that inherits the batch-F createOwnership\n      5xx misclaim.\n"

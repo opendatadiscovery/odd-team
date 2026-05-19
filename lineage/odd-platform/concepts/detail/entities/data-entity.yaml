@@ -4,16 +4,24 @@ canonical_candidate: false
 description: 'The platform''s unit of metadata — datasets, transformers, consumers,
   quality tests, groups, and inputs — addressable by ODDRN. The central domain object
   spanning catalog navigation, lineage, alerts, ownership, tags, terms, descriptions,
-  status, metadata, and discussions. **Batch F** completes the centerpiece-read +
-  ownership-binding + status-lifecycle + lineage-graph surface: getDataEntityDetails
-  (the platform''s single hottest endpoint; view-count side-effect; cross-owner full-payload
-  exposure on the CENTERPIECE READ), createOwnership (Owner+Title auto-create-on-miss
-  bypassing OWNER_CREATE permission), updateStatus (HIGH-severity ordering bug breaking
-  30-day housekeeping TTL; programmatic audit-log emission confirmed), getDataEntityDownstreamLineage
-  (recursive-CTE; null-Integer NPE; no depth cap; cross-owner graph enumeration vector).'
+  status, metadata, and discussions. **Batch F** completed the centerpiece-read +
+  ownership-binding + status-lifecycle + lineage-graph surface; **Batch H** adds the
+  PRIMARY-SOURCE persistence layer via ReactiveDataEntityRepositoryImpl (982 lines,
+  35+ public methods) — the SQL-level confirmation of every batch-F + batch-G finding:
+  (a) STATUS-column soft-delete OVERRIDE of the inherited deleted_at base (lines 109-123);
+  (b) EXCLUDE_FROM_SEARCH inconsistency confirmed at the cteDataEntitySelect helper
+  (lines 909-939 omit predicate; lines 448, 974 apply it) — REFACTOR-222 is now SQL-primary-source;
+  (c) view_count increment at lines 173-180 with no rate-limit, no idempotency, no
+  index on view_count (full-table scan + top-N sort for /popular); (d) verbatim description
+  storage at lines 430-438 — F-004 fingerprint; (e) **NEW SQL-injection vector at
+  lines 799-806** — `getHighlightedResult` interpolates user-controllable text +
+  query via `String.formatted(...)` into raw SQL (HIGH severity, only raw-SQL-format
+  path in the file); (f) repository has NO @ReactiveTransactional — atomicity delegated
+  to caller service-layer.'
 axes_present:
 - controllers
 - openapi_tags
+- repositories_reactive
 nodes:
 - odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController
 - odd-platform openapi tags openapi-tag:dataEntity
@@ -30,6 +38,7 @@ nodes:
 - odd-platform java DataEntityController controller-method:updateStatus
 - odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
 - odd-platform java IngestionController controller-method:postDataEntityList
+- odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 contributors:
 - 'DataEntityController: entities[DataEntity, DataEntityRef, DataEntityDetails, DataEntityList,
   DataEntityGroup, ...]'
@@ -85,6 +94,37 @@ contributors:
   IngestionDataEntitiesFilter (`auth.ingestion.filter.enabled` defaults false → bundled
   deployment ships UNAUTHENTICATED). 4 ADRs (OpenAPI-contract-driven path; filter-based-auth-not-annotation;
   code-side empty-list validation; 200-vs-201 spec drift).'
+- 'ReactiveDataEntityRepositoryImpl (batch H): entities[DataEntityPojo, DataEntityDimensionsDto,
+  DataEntityDetailsDto, DataEntityCTEQueryConfig, DataEntityStatusDto.DELETED, DATA_ENTITY.HOLLOW,
+  DATA_ENTITY.EXCLUDE_FROM_SEARCH, DATA_ENTITY.VIEW_COUNT, SEARCH_ENTRYPOINT]; the
+  982-line persistence centerpiece with 35+ public methods. 6 ADRs at the repository
+  level: (1) soft-delete-via-STATUS-state-machine OVERRIDES the parent class''s deleted_at
+  semantics (lines 109-123 — passes null for deletedAtField in constructor, overrides
+  getDeleteChangedFields + addSoftDeleteFilter; the parent helpers that touch deletedAtField
+  would NPE — deliberate substitution); (2) hollow-entities-unconditionally-shielded
+  from CTE-based lists (HOLLOW.isFalse() at line 918; only raw get / listByOddrns(...,
+  includeHollow=true) reach them); (3) read-as-write view_count increment is intentional
+  caller-controlled side effect (lines 173-180; method-only, no rate limit; F-001
+  fingerprint confirmed at SQL); (4) all list-shape queries share one CTE-builder
+  helper (cteDataEntitySelect lines 909-939) layered with custom conditions / sort
+  / FTS / limit-offset; the 9 list-shape methods compose from this single helper;
+  (5) aggregated relations (owners/titles/ownership/tags/metadata) via jsonArrayAgg
+  in one round-trip (lines 295-304, 768-797, 880-887) — no N+1 fan-out; (6) repository
+  is deliberately UNTRANSACTIONAL — transaction boundaries live at service-layer
+  callers (DataEntityServiceImpl.@ReactiveTransactional at lines 197, 324). **SECURITY-HIGH**:
+  SQL-injection vector in getHighlightedResult (lines 799-806; String.formatted into
+  raw SQL with user-controllable text + tsQuery; JooqFTSHelper.tsQuery does NOT escape
+  single-quotes). **SECURITY-MEDIUM**: owner-scoping BYPASSED at JOIN time (every
+  method signature lacks principal/owner parameter; ReactiveDataEntityRepository.java:1-119
+  interface confirms). **REFACTOR-222 PRIMARY-SOURCE CONFIRMED**: cteDataEntitySelect
+  OMITS EXCLUDE_FROM_SEARCH (lines 909-939) vs getDataEntityDefaultConditions APPLIES
+  it (line 974) — affects listPopular / listByOwner / listByTerm / getDimensions(id|oddrns|ids)
+  / getDetails(id) / getQuerySuggestions; findByState re-applies via JooqFTSHelper.resultFacetStateConditions
+  (line 149). **PERFORMANCE-HIGH**: no index on view_count, full-table scan + top-N
+  sort per /popular call. **TEST-ZERO**: zero direct test coverage of ReactiveDataEntityRepositoryImpl
+  (verified by exhaustive grep — no DataEntityRepositoryTest exists at any test layer);
+  highest-stake regression site is the EXCLUDE_FROM_SEARCH inconsistency drift +
+  the soft-delete STATUS override + the SQL-injection vector in getHighlightedResult.'
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -100,7 +140,12 @@ security_aggregate:
       mismatch (SecurityConstants.java:237-242 vs DataEntityApi.java:148, 542); attachment
       chunk path gate authorises against URL's data_entity_id but file lands against
       uploadId's originating entity (cross-entity hijack); Activity feed cross-owner
-      exposure repeats the same admin-path-without-admin-gate failure mode.
+      exposure repeats the same admin-path-without-admin-gate failure mode. **Batch
+      H confirms at the SQL primary source**: ReactiveDataEntityRepositoryImpl has
+      NO authorization annotation at the repository layer (every method signature
+      lacks principal/owner parameter; ReactiveDataEntityRepository.java:1-119 interface
+      confirms). The repository trusts upstream controller-layer authorization gates
+      with NO defence-in-depth.
   owner_scoping:
     verdict: MIXED
     detail: 'Owner-scoped: `/my`, `/my/upstream`, `/my/downstream` (delegated to reactor
@@ -108,7 +153,12 @@ security_aggregate:
       `getDataEntityMessages`, lineage reads, DEG children/items/lineage, global Activity
       feed (ALL/UPSTREAM/DOWNSTREAM type-dispatch paths), Slack-message posting (cross-owner
       posting accepted). Mutations gated per-resource by DATA_ENTITY policy resolver.
-      Directory non-owner-scoped catalog-wide view.'
+      Directory non-owner-scoped catalog-wide view. **Batch H SQL primary source confirms
+      BYPASSES at JOIN time**: every list-shape method on the repository (listPopular,
+      findByState, getDimensions, getDetails, getQuerySuggestions, listByOddrns) returns
+      rows with NO per-tenant filter at the SQL layer; owner-scoping is the CALLER''s
+      responsibility (listByOwner accepts ownerId as parameter; the repository does
+      NOT verify the caller IS that owner).'
   strengths:
   - Mutating endpoints centralised in SECURITY_RULES with DATA_ENTITY policy context
     (SecurityConstants.java:194-324)
@@ -122,6 +172,12 @@ security_aggregate:
     mutations are TIER-1 AUDITED — contrast with TIER-2 RBAC mutations (Role/Policy/Owner)
     which have NO audit. The platform has a 2-tier audit story; this concept is on
     the audited side. (updateStatus.md:implicit_adrs.[4] + createOwnership.md:implicit_adrs.[1])'
+  - '**Hollow-entities unconditionally shielded from CTE-based lists (batch H SQL primary
+    source)** — cteDataEntitySelect line 918 applies HOLLOW.isFalse() in every list-shape
+    query; the only escape hatches are raw get() and listByOddrns(..., includeHollow=true).
+    Hollow rows (ingestion placeholders) carry exclude_from_search=true from birth
+    (buildHollowRecord lines 862-864) — dual-flagged. The defence-in-depth shielding
+    keeps ingestion-placeholder rows away from user-facing surfaces.'
   weaknesses:
   - DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM gates SILENTLY DISABLED by `/term`
     (SecurityConstants.java:237-242) vs `/terms` (DataEntityApi.java:148, 542) path
@@ -146,7 +202,10 @@ security_aggregate:
     read. Unauthenticated under DISABLED → any caller can inflate any entity''s `view_count`
     arbitrarily to push it to the top of `getPopular` ranking. Hot-key contention
     on the platform''s most-popular entities. No idempotency, no rate-limit, no debouncing.
-    (getDataEntityDetails.md:security.known_security_gaps.[3] severity MEDIUM; performance.known_performance_gaps.[0])'
+    (getDataEntityDetails.md:security.known_security_gaps.[3] severity MEDIUM; performance.known_performance_gaps.[0]).
+    **Batch H SQL primary source confirms**: incrementViewCount at ReactiveDataEntityRepositoryImpl.java:173-180
+    is bare UPDATE ... view_count = view_count + 1 with no rate limit and no per-caller
+    throttle.'
   - '`getDataEntityActivity` exposes who-changed-what audit trail to any authenticated
     user'
   - '`getDataEntityMessages` exposes Slack-thread content to any authenticated user
@@ -199,9 +258,34 @@ security_aggregate:
     currently catches such drift
   - Attachment subsystem (a per-entity feature) has its own systemic security weaknesses
     — see Attachment concept's security_aggregate
-  - Under auth.type=DISABLED, every endpoint becomes anonymously reachable — now 11-SIDECAR
-    triangulated; getDataEntityDetails + createOwnership + updateStatus join the 8
-    prior sidecars (batch F corroboration on the entire DataEntity primary surface)
+  - Under auth.type=DISABLED, every endpoint becomes anonymously reachable — now 12-SIDECAR
+    triangulated; ReactiveDataEntityRepositoryImpl (batch H) joins the 11 prior sidecars
+    as the SQL-layer confirmation that the persistence layer has no auth check whatsoever.
+  - '**NEW BATCH H — SQL-injection vector in getHighlightedResult (HIGH)** — ReactiveDataEntityRepositoryImpl.java:799-806
+    builds raw SQL via `String.formatted(text, tsQuery)` and passes the resulting
+    string to `DSL.field(sql, String.class)`. The `text` parameter is the server-assembled
+    `searchableString` from DataEntityHighlightConverter.convert(...) which includes
+    user-controllable fields (`internal_name`, `internal_description`, tags). The
+    `query` parameter passes through JooqFTSHelper.tsQuery which only does prefix-matching,
+    NOT escaping. A user-writable `internal_description` containing `'); DROP TABLE
+    data_entity; --` would land verbatim into the `text` slot of `ts_headline(''english'',
+    ''%s'', ...)`, breaking out of the SQL string literal. Attack surface gated by
+    DATA_ENTITY_DESCRIPTION_UPDATE (writer-side) + DATA_ENTITY_VIEW (reader-side)
+    — both bypassed under auth.type=DISABLED. This is the only raw-SQL-format path
+    in the 982-line file. (ReactiveDataEntityRepositoryImpl.md:bugs_limitations_corner_cases.[0]
+    + security.known_security_gaps.[0])'
+  - '**NEW BATCH H — REFACTOR-222 confirmed at SQL primary source (MEDIUM)** — `cteDataEntitySelect`
+    helper (lines 909-939) is the CTE-builder consumed by 9 list-shape methods (`listPopular`,
+    `listByOwner`, `listByTerm`, `getDEGExperimentRuns`, `getDimensions(id|oddrns|ids)`,
+    `getDetails(id)`, `getQuerySuggestions`) and OMITS `EXCLUDE_FROM_SEARCH.isFalse()`.
+    Other paths route through `getDataEntityDefaultConditions` (lines 970-976) which
+    DOES apply the filter — `countByState`, `countByDatasourceAndType`, `getDataSourceEntityTypeIds`,
+    `getCountByDataSources`, `getDataEntityDomainsInfo`, `getDataEntityWithOwnership`.
+    `findByState` re-adds the predicate via `JooqFTSHelper.resultFacetStateConditions`
+    line 149, so it IS filtered. The inconsistency means entities flagged exclude_from_search=true
+    ARE included in popular / my-objects / by-term / by-DEG / details / suggestions;
+    NOT included in count-by-state, statistics, search facet, count-by-datasource.
+    (ReactiveDataEntityRepositoryImpl.md:bugs_limitations_corner_cases.[1])'
   cross_file_inconsistencies:
   - DataEntityController and DataEntityAttachmentController both authorize via SECURITY_RULES
     path-pattern matchers, but DataEntityController has a verified path-mismatch failure
@@ -213,6 +297,14 @@ security_aggregate:
   - uploadFileChunk gate evaluates against URL's data_entity_id while file row resolves
     by uploadId — same controller surface, two different identity sources, no service-side
     cross-validation
+  - 'Batch H: ReactiveDataEntityRepositoryImpl uses STATUS-column soft-delete state-machine
+    while siblings (ReactiveOwnershipRepositoryImpl is hard-delete; ReactiveAlertRepositoryImpl
+    is hard-delete + housekeeping TTL; ReactivePolicyRepositoryImpl is deleted_at-timestamp
+    soft-delete) — three different deletion mechanisms across four repositories share
+    the same `Reactive*Repository` naming convention but ship inconsistent persistence
+    semantics. A maintainer reading one repository to infer the platform''s convention
+    will reach the wrong conclusion. See ''Soft-delete by STATUS state-machine vs
+    deleted_at timestamp'' cross-cutting invariant.'
   contributing_files:
   - DataEntityController.md
   - openapi-tag-dataEntity.md
@@ -226,6 +318,7 @@ security_aggregate:
   - createOwnership.md
   - updateStatus.md
   - getDataEntityDownstreamLineage.md
+  - ReactiveDataEntityRepositoryImpl.md
   evidence:
   - DataEntityController.md:security.known_security_gaps.[0] (term path mismatch)
   - DataEntityController.md:security.known_security_gaps.[1] (auth-mode-only reads)
@@ -258,6 +351,16 @@ security_aggregate:
   - getDataEntityDownstreamLineage.md:security.known_security_gaps.[1] (no depth cap
     + no rate limit — DoS-amplification HIGH)
   - getDataEntityDownstreamLineage.md:security.known_security_gaps.[2] (DISABLED reachability
+    HIGH)
+  - ReactiveDataEntityRepositoryImpl.md:security.known_security_gaps.[0] (SQL-injection
+    in getHighlightedResult HIGH)
+  - ReactiveDataEntityRepositoryImpl.md:security.known_security_gaps.[1] (owner-scoping
+    bypass at JOIN time MEDIUM)
+  - ReactiveDataEntityRepositoryImpl.md:security.known_security_gaps.[2] (EXCLUDE_FROM_SEARCH
+    inconsistency at CTE-builder helper MEDIUM)
+  - ReactiveDataEntityRepositoryImpl.md:security.known_security_gaps.[3] (view-count
+    inflation surface structural MEDIUM — SQL-primary-source confirmation of F-001+F-003)
+  - ReactiveDataEntityRepositoryImpl.md:bugs_limitations_corner_cases.[0] (SQL-injection
     HIGH)
 performance_aggregate:
   overall: LOW
@@ -293,6 +396,16 @@ performance_aggregate:
     (entity-class facet aggregation + catalog-wide countByState + owner-scoped countByState
     (unconditional, even when my_objects=false)) + 1 INSERT into search_facets. Hit
     on every keystroke / facet click in the UI search bar after debounce — search
+  - '**Batch H SQL primary source**: `findByState(state, page, size, owner)` at ReactiveDataEntityRepositoryImpl.java:651-727
+    — catalog search result-list with six LEFT JOINs + CTE materialisation + facet
+    conditions + status-priority CASE in outer ORDER BY; the platform''s heaviest
+    list-shape query. Called on every search keystroke / facet change.'
+  - '**Batch H SQL primary source**: `getDataEntitySearchFields(id)` lines 762-796
+    — seven LEFT JOINs on a single root entity (HEAVIEST fan-out on the class); called
+    once per data-entity highlight render.'
+  - '**Batch H SQL primary source**: `incrementViewCount(id)` lines 173-180 — bare
+    UPDATE inside DataEntityServiceImpl.getDetails ''s @ReactiveTransactional; one
+    write per detail render; row-locked on popular entities (hot-key contention bottleneck).'
   throughput_shape:
     verdict: SINGLE_ITEM_ONLY
     detail: All 40 mutating endpoints take a single dataEntityId path variable; no
@@ -307,7 +420,11 @@ performance_aggregate:
       landing has no pagination on type-card list. `getDataEntityClasses`/`getDomains`/`getDataEntitiesUsage`
       are platform-wide aggregates with no caching. Activity feed `size` parameter
       unbounded (no @Max). Attachment chunk staging keyed only by uploadId (per-instance
-      local filesystem) regardless of attachment.storage mode.
+      local filesystem) regardless of attachment.storage mode. **Batch H confirms
+      pagination as `(page-1)*size`** at ReactiveDataEntityRepositoryImpl.java:632
+      and 6 other paginated list methods — caller passing page=0 produces negative
+      offset → Postgres 500 error; no `validatePage(int page)` utility enforcing page
+      >= 1.
   strengths:
   - All 40 endpoints reactive Mono<ResponseEntity<...>> — non-blocking I/O, request
     thread released during DB await (DataEntityController.java:84-453)
@@ -316,6 +433,11 @@ performance_aggregate:
   - Activity stream uses cursor pagination (`lastEventId` + `lastEventDateTime`) —
     appropriate for append-only audit data, avoids deep-offset cliffs (DataEntityController.java:351-365
     + ActivityController.java:34-35)
+  - '**Batch H — single-statement CTE assembly via cteDataEntitySelect helper** —
+    every list-shape method uses ONE CTE-builder helper (lines 909-939) layered with
+    DataEntityCTEQueryConfig per call site; one round-trip per list, no N+1 fan-out;
+    jsonArrayAgg over aggregated relations (owners/titles/ownership/tags/metadata)
+    keeps the entire detail assembly in one query (lines 295-304, 768-797, 880-887).'
   weaknesses:
   - No upper bound on pagination `size` parameter at the controller — caller can pass
     `size=2147483647` per spec (components.yaml:4213-4229)
@@ -378,6 +500,25 @@ performance_aggregate:
     — even when caller's SearchFormData.my_objects=false the owner-scoped countByState(state,
     owner) still runs to populate the UI's 'My objects' badge count. A short-circuit
     would halve per-call DB work in the common case (search.md:performance.known_performance_gaps.[0])
+  - '**NEW BATCH H — No index on data_entity.view_count (MEDIUM)** — `listPopular`
+    issues `ORDER BY view_count DESC` (ReactiveDataEntityRepositoryImpl.java:633)
+    against `data_entity`; the migration audit found NO `view_count` index in any
+    of 91 migration files. For 100K+ entity catalogs this degrades linearly to full
+    table scan + sort. The small LIMIT (typically 5-20) lets Postgres use a top-N
+    sort, but the lack of index is a known scaling hazard. (ReactiveDataEntityRepositoryImpl.md:performance.known_performance_gaps.[0])'
+  - '**NEW BATCH H — 7-LEFT-JOIN fan-out on `getDataEntitySearchFields` (LOW)** —
+    lines 768-797 join OWNERSHIP / OWNER / TITLE / TAG_TO_DATA_ENTITY / TAG / METADATA_FIELD_VALUE
+    / METADATA_FIELD on a single root row; for entities with many tags + many metadata
+    + many owners, query-plan cost grows multiplicatively. Mapper-side dedup is required
+    on jsonArrayAgg over a fan-out to avoid N×M duplicates inside the JSON arrays
+    (not verified in batch H — pending integration test). (ReactiveDataEntityRepositoryImpl.md:performance.known_performance_gaps.[2]
+    + bugs_limitations_corner_cases.[7])'
+  - '**NEW BATCH H — Pagination `(page-1)*size` does NOT validate page >= 1 across
+    7 list methods (LOW)** — listPopular (line 632), listByOddrns (line 250), listByOwner
+    (line 530), findByState (line 722), getDimensions (line 390), getDEGEntities/Experiment
+    (lines 530, 589), getQuerySuggestions (variants). A page=0 caller produces negative
+    offset; Postgres rejects with a 500 error. A single `validatePage(int page)` utility
+    would close 7 occurrences. (ReactiveDataEntityRepositoryImpl.md:bugs_limitations_corner_cases.[5])'
   - Activity stream uses cursor pagination; everything else uses offset pagination
     — single inconsistent shape across the controller's 40 endpoints
   - Directory carries platform-wide aggregates without pagination; DataEntityController
@@ -398,6 +539,7 @@ performance_aggregate:
   - createOwnership.md
   - updateStatus.md
   - getDataEntityDownstreamLineage.md
+  - ReactiveDataEntityRepositoryImpl.md
   evidence:
   - DataEntityController.md:performance.hot_paths.[0-6]
   - DataEntityController.md:performance.known_performance_gaps.[0-7]
@@ -420,3 +562,11 @@ performance_aggregate:
   - getDataEntityDownstreamLineage.md:performance.hot_paths.[0-2] + performance.known_performance_gaps.[0-4]
     (no depth cap HIGH; no expanded_entity_ids cap MEDIUM; full-graph in-memory materialisation
     MEDIUM; no CTE cycle guard MEDIUM; no caching LOW)
+  - ReactiveDataEntityRepositoryImpl.md:performance.hot_paths.[0-4] (getDetails CTE;
+    findByState catalog search; getDataEntitySearchFields fan-out; listPopular; getQuerySuggestions)
+  - ReactiveDataEntityRepositoryImpl.md:performance.known_performance_gaps.[0] (no
+    view_count index MEDIUM)
+  - ReactiveDataEntityRepositoryImpl.md:performance.known_performance_gaps.[2] (7-LEFT-JOIN
+    fan-out LOW)
+  - ReactiveDataEntityRepositoryImpl.md:performance.known_performance_gaps.[4] (deep-pagination
+    OFFSET cost LOW)

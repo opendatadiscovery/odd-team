@@ -11,34 +11,82 @@ description: 'The Popular ranking surface (Catalog Overview''s "Popular" strip) 
 
   with high view_count surfaces on the platform''s home page.
 
+  Batch-H primary-source confirmation: the inconsistency is wider than F-003
+
+  initially surfaced. `cteDataEntitySelect` (the CTE-builder helper consumed
+
+  by 9 list-shape methods — `listPopular`, `listByOwner`, `listByTerm`,
+
+  `getDEGExperimentRuns`, `getDimensions(id|oddrns|ids)`, `getDetails(id)`,
+
+  `getQuerySuggestions`) ALL omit the EXCLUDE_FROM_SEARCH predicate. Only
+
+  `findByState` (via `JooqFTSHelper.resultFacetStateConditions`) and the
+
+  `getDataEntityDefaultConditions` helper (used by count/statistics paths)
+
+  apply the filter. The popular tab is therefore one of MANY surfaces
+
+  affected — operators marking `exclude_from_search=true` cannot reliably
+
+  hide an entity from any of the 9 affected list shapes.
+
   '
 contributing_nodes:
 - odd-platform java DataEntityController controller-method:getPopular
-- odd-platform java ReactiveDataEntityRepositoryImpl.listPopular — the CTE that omits
-  EXCLUDE_FROM_SEARCH
+- odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 terminal_side_effect:
   side_effect_class: page-render
   description: Returns ranked DataEntityRef list to the home-page strip
-  evidence: DataEntityController.getPopular → DataEntityServiceImpl.listPopular →
-    repository CTE
+  evidence: 'DataEntityController.getPopular → DataEntityServiceImpl.listPopular →
+    ReactiveDataEntityRepositoryImpl.listPopular at line 629-649. Primary-source SQL:
+    `cteConfig.orderBy(DATA_ENTITY.VIEW_COUNT.sort(SortOrder.DESC))` (line 633) is
+    the SOLE ranking signal; `cteDataEntitySelect` (lines 909-939) is the shared CTE
+    helper that omits EXCLUDE_FROM_SEARCH.'
   cardinality_per_call: 1
 amplification_factor: 1
 observed_vs_expected:
   facets:
-  - facet: EXCLUDE_FROM_SEARCH consistency
+  - facet: EXCLUDE_FROM_SEARCH consistency (popular surface)
     observed: entity with exclude_from_search=true + view_count=999 appears in /api/dataentities/popular
       response
     expected: hidden-from-search entities consistently excluded across all list-shape
       surfaces (9 sites apply the filter)
     drift_class: filter_application_inconsistency
     provenance: MEASURED — P-006 (run R-20260519T011813Z-P-006) seeded the entity,
-      GET'd /api/dataentities/popular, asserted appears_in_popular == True
+      GET'd /api/dataentities/popular, asserted appears_in_popular == True. Batch-H
+      primary-source SQL confirmation at ReactiveDataEntityRepositoryImpl.java:909-939
+      (cteDataEntitySelect — no EXCLUDE_FROM_SEARCH predicate; only HOLLOW.isFalse()
+      at line 918 and the soft-delete branch).
+  - facet: EXCLUDE_FROM_SEARCH wider inconsistency surface (batch H — STATIC)
+    observed: 'cteDataEntitySelect at lines 909-939 is consumed by 9 list-shape methods
+      — listPopular (line 633), listByOwner (line 526-527), listByTerm, getDEGExperimentRuns,
+      getDimensions(id|oddrns|ids), getDetails(id), getQuerySuggestions — NONE apply
+      EXCLUDE_FROM_SEARCH. Only findByState (via JooqFTSHelper.resultFacetStateConditions
+      line 149) and getDataEntityDefaultConditions (line 974 — used by countByDatasourceAndType,
+      getDataSourceEntityTypeIds, getCountByDataSources, getDataEntityDomainsInfo,
+      getDataEntityWithOwnership) DO apply it. The Popular case is one of many; my-objects,
+      by-term, and even by-id details fall under the same gap.'
+    expected: One canonical filter helper applied across all user-facing list shapes
+    drift_class: filter_application_inconsistency
+    provenance: |-
+      STATIC — primary-source verification in batch-H ReactiveDataEntityRepositoryImpl
+      sidecar bugs_limitations_corner_cases[1] + invariants[2]. A Type-7 probe should
+      assert the same hidden-from-search entity surfaces in GET /api/dataentities/my,
+      GET /api/dataentities/{deg-id}/children (DEG-experiment-runs path), and the
+      detail GET — proposed slice-N: local probe-stack with 1 hidden entity + 6 GETs.
 test_matrix:
   unit:
     state: GAP
     covered: []
     uncovered:
     - listPopular CTE — assert EXCLUDE_FROM_SEARCH applied
+    - cteDataEntitySelect — assert EXCLUDE_FROM_SEARCH unified across all 9 consumers
+      (the regression-catcher for any partial fix)
+    - findByState retains EXCLUDE_FROM_SEARCH via resultFacetStateConditions even
+      if the cte helper changes (defensive regression test)
+    note: 'Batch-H confirms ZERO test coverage on the repository class — no DataEntityRepositoryTest
+      exists.'
   integration:
     state: PROBED-PINNING-BUG
     covered:
@@ -51,11 +99,14 @@ test_matrix:
     uncovered:
     - Soft-deleted entities consistently excluded
     - Hollow entities consistently excluded
+    - Same hidden-from-search entity surfaces in GET /api/dataentities/my, GET /api/dataentities/{deg-id}/children,
+      GET /api/dataentities/{id} detail (batch-H wider-surface fact)
   performance:
     state: GAP
     covered: []
     uncovered:
-    - No view_count index — Popular query plan at scale (REFACTOR-221)
+    - No view_count index — Popular query plan at scale (REFACTOR-221, batch-H confirms
+      from primary source — repo sidecar known_performance_gaps[0])
   security:
     state: PROBED-PINNING-BUG
     covered:
@@ -63,8 +114,12 @@ test_matrix:
       pinned_by_probe_run: R-20260519T011813Z-P-006
     uncovered:
     - DISABLED-mode anonymous Popular read (sub-case of REFACTOR-073)
+    - getHighlightedResult SQL-injection vector exploitable on hidden entities (batch-H
+      known_security_gaps[0] — separate concern from F-003 but on the same repo)
 control_summary: 2 of 4 cells PROBED — integration (PROBED-PINNING-BUG) + security
-  (PROBED-PINNING-BUG).
+  (PROBED-PINNING-BUG). Batch-H adds primary-source SQL confirmation (cteDataEntitySelect
+  909-939, listPopular line 633) + surfaces the wider 9-list-shape inconsistency (only
+  one of 9 paths is empirically probed; the rest remain GAP).
 related_refactoring_scopes:
 - REFACTOR-222
 - REFACTOR-221

@@ -1,0 +1,248 @@
+feature_id: F-006
+feature_name: RBAC policy lifecycle — soft-delete with permission-grant persistence
+discovered_from_entry_point: rest:POST /api/policies
+description: 'Operators manage RBAC policies via the /api/policies CRUD endpoints
+
+  (POST/GET/PUT/DELETE). Each policy is a named JSON authorization rule (resource
+  +
+
+  permissions + conditions); the moment a policy is BOUND to a role via the role-policy
+
+  edge, it becomes operative authorization on every authorized request — resolved
+
+  on the hot path by `getRolesPolicies(roleIds)` which JOINs policy ↔ role_to_policy.
+
+
+  The lifecycle has TWO load-bearing pieces of state: the soft-delete column
+
+  `policy.deleted_at` (UPDATE-not-DELETE on `DELETE /api/policies/{id}`) AND the
+
+  role-binding edges in `role_to_policy`. The maintainer-documented intent (live
+
+  /authorization/policies page — verified 2026-05-12 status 200 via batch-E sibling
+
+  sidecar) is that a soft-deleted policy''s name can be re-used (the partial unique
+
+  index `policy_name_unique ON policy(name) WHERE deleted_at IS NULL` enables this),
+
+  AND that deleted policies should no longer grant permissions.
+
+
+  The user-observable reality, per batch-H primary-source code-walk of
+
+  ReactivePolicyRepositoryImpl + PolicyServiceImpl: the `getRolesPolicies` JOIN
+
+  (ReactivePolicyRepositoryImpl.java:32-35) DOES NOT carry a `deleted_at IS NULL`
+
+  filter on the policy side. The service-layer cascade-delete defence
+
+  (PolicyServiceImpl.java:89-92, CascadeDeleteException on bound policies) prevents
+
+  the normal soft-delete path from leaving orphans — BUT any direct DB UPDATE setting
+
+  `policy.deleted_at` (a hot-fix script, a migration mistake, a future refactor
+
+  weakening the service-layer check) creates the orphan-binding security gap: the
+
+  soft-deleted policy''s statements continue to confer permissions on every
+
+  authorized request, with NO application log line on policy mutations (forensic
+
+  silence: zero `log.info` / audit-table-write on policy create/update/delete).
+
+  '
+contributing_nodes:
+- odd-platform java PolicyController controller-method:createPolicy
+- odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+- odd-platform java PolicyServiceImpl
+- odd-platform java ManagementPermissionExtractor
+- odd-platform java AbstractContextualPermissionExtractor
+chain:
+- hop: 1
+  node: odd-platform java PolicyController controller-method:createPolicy
+  sidecar: odd-platform__java__PolicyController__controller-method__createPolicy.md
+  multiplicity_per_trigger: 1
+  evidence: 'PolicyController.createPolicy → PolicyServiceImpl.create → ReactivePolicyRepository.create
+    (POST entry point — one of the four CRUD verbs; sibling DELETE path is the soft-delete-driving
+    verb)'
+  unresolved: false
+- hop: 2
+  node: odd-platform java PolicyServiceImpl
+  sidecar: '(not yet enriched — referenced as call context only)'
+  multiplicity_per_trigger: 1
+  evidence: 'PolicyServiceImpl.create (line 67) → policyRepository::create. For DELETE
+    path: PolicyServiceImpl.delete (line 85-93) → get(id) (existence) → cascade defence
+    via isPolicyAttachedToRole (line 89-92, CascadeDeleteException) → policyRepository.delete(id)
+    (line 93) which inherits soft-delete from ReactiveAbstractSoftDeleteCRUDRepository.
+    No @ReactiveTransactional on create/update/delete (read-then-write race surface
+    on update). For getCurrentUserPolicies hot path: PolicyServiceImpl line 106 →
+    policyRepository::getRolesPolicies.'
+  unresolved: true
+- hop: 3
+  node: odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+  sidecar: odd-platform__java__repository_reactive__repository__ReactivePolicyRepositoryImpl.md
+  multiplicity_per_trigger: 1
+  evidence: 'ReactivePolicyRepositoryImpl.java:32-38 (getRolesPolicies — the AUTHORIZATION
+    HOT PATH JOIN, missing deleted_at filter). Inherited from ReactiveAbstractSoftDeleteCRUDRepository:
+    create (INSERT … RETURNING — DB enforces partial unique index policy_name_unique),
+    delete (UPDATE policy SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL
+    RETURNING — soft-delete), update (UPDATE … WHERE id = ? AND deleted_at IS NULL
+    RETURNING). Side effects: pure DB writes on policy table; NO activity-event emission
+    at this layer (forensic silence).'
+  unresolved: false
+- hop: 4
+  node: odd-platform java ManagementPermissionExtractor
+  sidecar: '(not yet enriched — referenced as transitive consumer of getRolesPolicies
+    hot path)'
+  multiplicity_per_trigger: 'N (every authorized request — N = req/s × per-request
+    extractor invocations)'
+  evidence: 'ManagementPermissionExtractor.java:33 → policyService.getCurrentUserPolicies()
+    → policyRepository.getRolesPolicies(roleIds). Runs on EVERY authorized request
+    that traverses the permission framework — the hot path consumer. AbstractContextualPermissionExtractor.java:27
+    is the symmetric resource-scoped consumer.'
+  unresolved: true
+terminal_side_effect:
+  side_effect_class: db-write
+  description: UPDATE policy SET deleted_at = NOW() ON DELETE — soft-delete that
+    silently retains permission-granting capability via the orphan role_to_policy
+    edges + the unfiltered getRolesPolicies JOIN
+  evidence: 'ReactivePolicyRepositoryImpl.java:19 (extends ReactiveAbstractSoftDeleteCRUDRepository)
+    + ReactiveAbstractSoftDeleteCRUDRepository.java:50-59 (soft-delete UPDATE) +
+    ReactivePolicyRepositoryImpl.java:32-35 (getRolesPolicies JOIN without deleted_at
+    filter on policy side). The terminal effect is the soft-delete UPDATE; the SECURITY-RELEVANT
+    consequence is that subsequent getRolesPolicies reads still surface the deleted
+    policy as long as role_to_policy edges exist.'
+  cardinality_per_call: 1
+amplification_factor: 1
+amplification_factor_provenance: 'STATIC — confirmed from primary source. No active
+  probe yet for this feature. The amplification factor of 1 reflects per-request
+  authorization resolution: one DELETE-policy call produces one UPDATE, but the soft-deleted
+  policy continues to influence permission resolution on EVERY subsequent authorized
+  request (N requests after the delete) because getRolesPolicies has no deleted_at
+  filter. The structural ''amplification'' is the silent-permission-grant persistence,
+  not a per-request mathematical product.'
+observed_vs_expected:
+  facets:
+  - facet: soft-deleted policy continues to grant permissions
+    observed: 'getRolesPolicies(roleIds) returns soft-deleted policies via the unfiltered
+      JOIN — if any role_to_policy edge survives the policy''s soft-delete, the
+      policy''s statements continue to grant permissions to every user holding that
+      role on every authorized request. PolicyServiceImpl.delete blocks the normal
+      soft-delete path via CascadeDeleteException when isPolicyAttachedToRole returns
+      true, but: (a) a direct DB UPDATE setting deleted_at bypasses the defence;
+      (b) a future refactor weakening the cascade check re-opens the gap.'
+    expected: A soft-deleted policy should NOT grant permissions. The repository-layer
+      defence is to add `AND policy.deleted_at IS NULL` to the JOIN at line 32-35.
+    drift_class: soft_delete_aware_visibility_inconsistency
+    provenance: STATIC — primary-source verification in batch-H ReactivePolicyRepositoryImpl
+      sidecar known_security_gaps[0] + bugs_limitations_corner_cases[0]. Proposed
+      Type-7 probe — seed a policy + bind to role + soft-delete via direct DB UPDATE
+      + assert getRolesPolicies still returns the policy + assert hasManagementPermission
+      still returns true (local docker-compose probe stack).
+  - facet: Administrator policy name asymmetry compound risk (cross-batch finding)
+    observed: 'Batch-E surfaced PolicyServiceImpl.update / .delete reject `Administrator`
+      by name (lines 76, 87) but create (lines 62-69) does NOT. Batch-H confirms:
+      the repository layer enforces policy_name_unique WHERE deleted_at IS NULL —
+      the partial unique index frees the name on soft-delete. If the seeded Administrator
+      row is ever soft-deleted by any path (today no service-layer path does so because
+      of the rejection; a direct DB UPDATE setting deleted_at on the Administrator
+      row could), the name is freed AND PolicyServiceImpl.create has no name-protection
+      — a new policy named `Administrator` with attacker-chosen statements could
+      be created. The repository''s soft-delete-aware uniqueness design is correct
+      in isolation; the gap is the missing service-layer create-time name check.'
+    expected: Symmetric name protection across create/update/delete OR a non-soft-deletable
+      seeded-row mechanism (e.g. immutable flag on the policy row)
+    drift_class: cross_phase_protection_asymmetry
+    provenance: STATIC — primary-source verification in batch-H ReactivePolicyRepositoryImpl
+      sidecar known_security_gaps[2] + batch-E sibling sidecar known_findings on
+      Administrator-name asymmetry
+  - facet: RBAC mutations are forensically silent
+    observed: ZERO log.info / log.warn / audit-table-write on policy create/update/delete
+      at the repository, service, AND controller layers (batch-E + batch-H consistent
+      finding). A security incident reviewer reconstructing 'who created/modified/deleted
+      the MANAGEMENT/ALL policy on date X' has zero in-application records. The
+      only log line is `log.error("Database exception", e)` in ExceptionUtils.translateDatabaseException
+      on non-uniqueness DB errors.
+    expected: At minimum, INFO-level structured log on every policy mutation with
+      principal, target id, name, action. Ideally, an audit-table row written in
+      the same transaction.
+    drift_class: forensic_silence_on_security_mutations
+    provenance: STATIC — primary-source verification in batch-H ReactivePolicyRepositoryImpl
+      sidecar known_security_gaps[1] + the 3-sidecar pattern across batch E (controller
+      + service + repository) + batch-H (repository confirms persistence-layer silence).
+  - facet: read-then-write race on update path
+    observed: |-
+      PolicyServiceImpl.update (lines 71-81) issues `policyRepository.get(id)`
+      then `policyRepository.update(...)` — two separate R2DBC calls OUTSIDE any
+      @ReactiveTransactional. Two concurrent PUTs on the same policy can lost-update.
+    expected: |-
+      @ReactiveTransactional on update OR an optimistic-concurrency token
+      (version column)
+    drift_class: lost_update_race
+    provenance: STATIC — primary-source verification in batch-H ReactivePolicyRepositoryImpl
+      sidecar bugs_limitations_corner_cases[1].
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - getRolesPolicies returns soft-deleted policies (pin the current behaviour)
+    - getRolesPolicies short-circuits on empty/null roleIds (line 29-31)
+    - delete on already-soft-deleted policy completes empty (idCondition adds deleted_at
+      IS NULL)
+    - update never mutates deleted_at (defence against undelete-via-update)
+    - 'create with duplicate-name vs live policy raises UniqueConstraintException
+      (USR003, "Policy with this name already exists")'
+    - 'create with duplicate-name vs soft-deleted policy succeeds (partial-index
+      semantics)'
+    note: 'Batch-H confirms ZERO test coverage anywhere across PolicyRepository (verified
+      by exhaustive grep — only PolicyDeserializerTest exists, no DB interaction).'
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - bulkCreate / bulkUpdate transactional rollback on partial constraint violation
+    - End-to-end RBAC mutation lifecycle — POST create + bind to role + DELETE +
+      verify ManagementPermissionExtractor no longer grants the permission (the
+      headline behaviour for the soft-delete contract)
+    - Concurrent PUTs on the same policy lost-update detection
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - getRolesPolicies per-request latency under N roles × M policies/role
+    - Authorization hot-path cache absence — assert N+1 DB calls under load
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - Soft-deleted policy + surviving role_to_policy edge → permission still granted
+      (the headline regression-pin)
+    - Administrator-name asymmetry — under direct DB hot-fix, can a new Administrator
+      with attacker statements be created?
+    - Forensic-trail completeness — assert every mutation emits SOME log line OR
+      audit row
+control_summary: 0 of 4 cells PROBED — feature emerged from batch-H primary-source
+  audit; no probe authored yet. The headline behaviour (soft-deleted policy continues
+  to grant permissions when role_to_policy edges survive) is the highest-leverage
+  candidate for the next probe round. Proposed P-NNN — local docker-compose stack
+  + seed policy + bind to role + DIRECT DB UPDATE setting deleted_at + assert getRolesPolicies
+  still returns the policy AND a subsequent /authorization-gated request succeeds.
+related_refactoring_scopes:
+- REFACTOR-073
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+- Policy (Authorization)
+- Permission (Authorization)
+- Role (Authorization)
+related_retrospectives:
+- LSN-017
+related_probes: null
+probe_verifications: []
+maintainer_curated: false
+batch_origin: '2026-05-19 batch H — net-new feature surfaced from ReactivePolicyRepositoryImpl
+  sidecar enrichment. Backbone of the RBAC lifecycle now visible at the SQL layer;
+  the soft-delete-still-grants-permissions surface is the canonical primary-source
+  confirmation of the policy-management drift that batch-E previewed at the controller
+  layer.'

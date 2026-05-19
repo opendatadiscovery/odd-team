@@ -1,0 +1,105 @@
+name: Repository transactional boundary at service-layer, not repository
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW INVARIANT, batch 2026-05-19H** — load-bearing architectural convention
+  surfaced across all 5 sibling `Reactive*Repository` sidecars. ODD Platform repositories
+  are intentionally UNTRANSACTIONAL — no `@ReactiveTransactional` / `@Transactional`
+  annotation at the class or method level. Transaction boundaries live ONE LAYER UP
+  at the service-layer caller. The convention is uniform: every Reactive*Repository
+  is `@Repository @RequiredArgsConstructor` only (the 5 batch-H sidecars all confirm).
+  This allows individual repository methods to compose freely under EITHER a shared
+  transaction (when a caller wraps several calls in @ReactiveTransactional) OR no
+  transaction (when a caller fires-and-forgets). The trade-off: callers can FORGET
+  to wrap and silently lose atomicity. Specific instances confirmed at the SQL primary
+  source: (a) `ReactiveDataEntityRepositoryImpl`: writes (incrementViewCount / setInternalDescription
+  / setInternalName / updateDEG / createHollow) are method-only; transactional scope
+  lives in DataEntityServiceImpl.@ReactiveTransactional at lines 197, 324; (b) `ReactiveLineageRepositoryImpl`:
+  mutation methods (batchDeleteByEstablisherOddrn / batchInsertLineages / softDeleteLineageRelations
+  / restoreLineageRelations) have no @ReactiveTransactional; LineageServiceImpl.replaceLineagePaths
+  is @ReactiveTransactional at LineageServiceImpl.java:124-133, wrapping the delete+insert
+  pair as the atomicity contract for "rewrite an establisher''s edges"; (c) `ReactiveOwnershipRepositoryImpl`:
+  class is @Repository @RequiredArgsConstructor only (lines 27-28); OwnershipServiceImpl.create/delete/update
+  carry @ReactiveTransactional at lines 49, 78, 101; (d) `ReactivePolicyRepositoryImpl`:
+  inherited single-row create/update/delete on `ReactiveAbstractCRUDRepository` have
+  NO @ReactiveTransactional (lines 103-110, 158-173) — only BULK variants (113, 129)
+  do. PolicyServiceImpl.update (lines 71-81) issues policyRepository.get(id) then
+  policyRepository.update(...) — two separate R2DBC calls OUTSIDE any @ReactiveTransactional
+  → lost-update race possible; (e) `ReactiveAlertRepositoryImpl`: class declaration
+  has no annotation (lines 63-65); AlertServiceImpl.handleExternalAlerts + applyAlertActions
+  carry @ReactiveTransactional (lines 152, 201); AlertServiceImpl.updateStatus DELIBERATELY
+  does NOT carry the annotation (lines 111-113) — the platform tolerates the read-then-write
+  race on user-driven status changes (the reopen-conflict guard catches the data-integrity
+  case at the application level). **The convention is consistent**; the gap is at
+  the service-layer authoring. A future maintainer writing a new controller / job
+  / admin tool that invokes a repository method directly WITHOUT wrapping in @ReactiveTransactional
+  would observe non-atomic behaviour with no rollback on partial failure and no defensive
+  check at the repository signature. **Highest-leverage caveat for a future feature
+  author** — every Reactive*Repository is a thin SQL surface; atomicity is the CALLER''s
+  responsibility.'
+axes_present:
+- repositories_reactive
+nodes:
+- odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveOwnershipRepositoryImpl
+- odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
+contributors:
+- 'ReactiveDataEntityRepositoryImpl (batch H): implicit_adrs.[5] — the repository
+  is deliberately untransactional; transaction boundaries live one layer up at the
+  service. Allows individual repository methods to compose freely. Trade-off: callers
+  can forget to wrap and silently lose atomicity.'
+- 'ReactiveLineageRepositoryImpl (batch H): concepts.invariants.[5] + implicit_adrs.[1]
+  — no @ReactiveTransactional on this repository class (lines 37-39: only @Repository
+  + @RequiredArgsConstructor). Atomicity contract for the ingestion-rewrite-by-establisher
+  flow lives at LineageServiceImpl.replaceLineagePaths''s @ReactiveTransactional.'
+- 'ReactiveOwnershipRepositoryImpl (batch H): concepts.invariants.[6] — class is @Repository
+  @RequiredArgsConstructor only; OwnershipServiceImpl.create/delete/update carry @ReactiveTransactional;
+  multi-statement consistency depends on caller transaction.'
+- 'ReactivePolicyRepositoryImpl (batch H): concepts.invariants.[4] + bugs_limitations_corner_cases.[1]
+  — single-statement INSERT/UPDATE on inherited create/update have NO @ReactiveTransactional;
+  only bulkCreate/bulkUpdate (113, 129) do. PolicyServiceImpl.update issues read-then-write
+  outside any transaction — LOST-UPDATE RACE possible.'
+- 'ReactiveAlertRepositoryImpl (batch H): concepts.invariants.[1] + implicit_adrs.[0]
+  — class declaration has no @ReactiveTransactional; AlertServiceImpl ingestion-write
+  paths (handleExternalAlerts, applyAlertActions) carry the annotation; AlertServiceImpl.updateStatus
+  deliberately does NOT (the platform tolerates the read-then-write race on user-driven
+  status changes).'
+evidence:
+- ReactiveDataEntityRepositoryImpl.md:implicit_adrs.[5]
+- ReactiveLineageRepositoryImpl.md:concepts.invariants.[5] + implicit_adrs.[1]
+- ReactiveOwnershipRepositoryImpl.md:concepts.invariants.[6]
+- ReactivePolicyRepositoryImpl.md:concepts.invariants.[4] + bugs_limitations_corner_cases.[1]
+  (LOST-UPDATE race on Policy update — concrete instance of the gap)
+- ReactiveAlertRepositoryImpl.md:concepts.invariants.[1] + implicit_adrs.[0]
+notes: "Cross-batch architectural convention surfaced by triangulating the 5 batch-H\n\
+  repository sidecars together. Every Reactive*Repository is a thin SQL surface;\n\
+  atomicity is the caller's responsibility. The convention is uniform; the gap is\n\
+  the lack of defensive signalling at the repository signature (no @Transactional\n\
+  -required annotation, no NPE on missing context, no compile-time guard).\n\nThe\
+  \ batch-H ReactivePolicyRepositoryImpl finding identifies a CONCRETE LOST-UPDATE\n\
+  race on PolicyServiceImpl.update: read-then-write outside any @ReactiveTransactional;\n\
+  client A reads policy v1, client B reads v1, A writes v2, B writes v3 BASED ON v1\n\
+  (success, but A's v2 was clobbered). The update_at column moves monotonically so\n\
+  no exception is raised. Service-level fix: wrap PolicyServiceImpl.update in @ReactiveTransactional\n\
+  with isolation = SERIALIZABLE, or introduce an optimistic-concurrency token (a `version`\n\
+  field on PolicyPojo).\n\nThe batch-H ReactiveAlertRepositoryImpl finding identifies\
+  \ a DELIBERATE absence on\nAlertServiceImpl.updateStatus — the platform tolerates\
+  \ the read-then-write race on\nuser-driven status changes; the reopen-conflict guard\
+  \ catches the data-integrity case\nat the application level. This is a different\
+  \ shape: explicit choice not to wrap.\n\nRecommended cleanup paths:\n\n  - Audit\
+  \ every service-layer method that calls a Reactive*Repository to confirm\n    @ReactiveTransactional\
+  \ is present on read-then-write paths.\n\n  - Introduce a project-internal `@RequiresTransaction`\
+  \ annotation on repository\n    methods that callers MUST wrap (e.g. `update`, `delete`,\
+  \ `replaceLineagePaths`).\n    Verify at build time via Spring AOP or custom Checkstyle\
+  \ rule.\n\n  - Document the convention in a top-level repository conventions doc\
+  \ (internal\n    /architecture page) so future maintainers reading any Reactive*Repository\
+  \ class\n    can infer the atomicity contract from a single canonical location.\n\
+  \nFour DOC-NNN candidates flow from this invariant:\n  (a) Internal Architecture\
+  \ doc: 'Persistence layer conventions' — name the\n      service-layer transaction\
+  \ convention; list the @ReactiveTransactional sites\n      across the codebase.\n\
+  \  (b) Public Roles/Policies/Owners doc pages: note the lost-update race possibility\n\
+  \      on Policy update (PolicyServiceImpl.update is currently un-transactional)\n\
+  \      so operators can plan for it; alternatively, fix the bug at the service layer.\n\
+  \  (c) Public Alerts doc page: note the deliberate read-then-write tolerance on\n\
+  \      changeAlertStatus + the reopen-conflict guard at the application layer.\n"

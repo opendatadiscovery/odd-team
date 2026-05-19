@@ -24,8 +24,7 @@ contributing_nodes:
 - ts redux/thunks:dataentities.thunks.ts:35-40 (UNRESOLVED — sidecar not yet enriched;
   ref only)
 - odd-platform java DataEntityController controller-method:getDataEntityDetails
-- odd-platform java ReactiveDataEntityRepositoryImpl.incrementViewCount (UNRESOLVED
-  — sidecar enriched at class level; method-line not yet refreshed under v0.3.0)
+- odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 - odd-platform java DataEntityController controller-method:getPopular
 chain:
 - hop: 1
@@ -49,24 +48,32 @@ chain:
   evidence: DataEntityController.java:139-147 — thin reactive pass-through to DataEntityServiceImpl.getDetails
   unresolved: false
 - hop: 4
-  node: odd-platform java ReactiveDataEntityRepositoryImpl.incrementViewCount
-  sidecar: (class-level only; method-line refresh pending)
+  node: odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
+  sidecar: odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
   multiplicity_per_trigger: 1
-  evidence: ReactiveDataEntityRepositoryImpl.java:173-180 — UPDATE data_entity SET
-    view_count = view_count + 1 WHERE id = ?, inside @ReactiveTransactional on the
-    service path
+  evidence: 'ReactiveDataEntityRepositoryImpl.java:173-180 — `incrementViewCount`
+    issues `UPDATE data_entity SET view_count = view_count + 1 WHERE id = ?`. Batch-H
+    primary-source confirmation: the method is invoked by `DataEntityServiceImpl.getDetails`
+    inside `@ReactiveTransactional` (DataEntityServiceImpl.java:197, 207, 488-495)
+    — the +1 mutation is wrapped in the same transaction as the read; the post-mutation
+    value is read back via `Mono<Long>` return and propagated to the response DTO
+    at line 488-495. No defensive existence check at the repo layer; missing-id silently
+    no-ops (Mono.empty).'
   unresolved: false
+  resolved_in_batch: H
 terminal_side_effect:
   side_effect_class: db-write
   description: Increments data_entity.view_count by 1 per call; per-row hot UPDATE
-  evidence: ReactiveDataEntityRepositoryImpl.java:173-180
+  evidence: ReactiveDataEntityRepositoryImpl.java:173-180 (incrementViewCount) — confirmed
+    from primary source via batch-H repository sidecar
   cardinality_per_call: 1
 amplification_factor: 2
 amplification_factor_provenance: FULLY MEASURED end-to-end — P-004 (run R-20260519T010758Z-P-004)
   observed xhr_count=2 AND view_count delta=2 in a single UI page-open via headless
   Chromium. The full chain product is empirically confirmed. LSN-017's headline (`opening
   a detail page registers as +2 views`) is no longer inferred — it is the measured
-  truth.
+  truth. Batch-H adds primary-source SQL confirmation at ReactiveDataEntityRepositoryImpl.java:173-180
+  for hop-4.
 observed_vs_expected:
   facets:
   - facet: backend per-call delta
@@ -74,7 +81,8 @@ observed_vs_expected:
     expected: +1 (matches intent)
     drift_class: null
     provenance: MEASURED — P-001 ran 5 sequential GETs; observed final_view_count
-      - initial_view_count = 5 (run R-20260519T003701Z-P-001)
+      - initial_view_count = 5 (run R-20260519T003701Z-P-001). Primary-source SQL
+      confirmation in batch-H ReactiveDataEntityRepositoryImpl sidecar (line 173-180).
   - facet: UI page-open delta
     observed: +2 view_count per page-open; UI fires 2 sequential GET /api/dataentities/{id}
       per mount
@@ -99,9 +107,25 @@ observed_vs_expected:
     drift_class: null
     provenance: MEASURED — P-003 ran 50 sequential GETs against :latest image (run
       R-20260519T003916Z-P-003)
+  - facet: 'inflation-attack surface confirmed at repo layer (batch H)'
+    observed: 'No rate limit at any layer of the chain — repository `incrementViewCount`
+      is method-only (no per-caller throttle); consumer `listPopular` orders exclusively
+      by `view_count`; under DISABLED auth, any anonymous network probe can pump views.
+      Combined with F-003''s missing EXCLUDE_FROM_SEARCH filter on the popular CTE,
+      a single attacker can drive ANY entity (including hidden ones) to top-1 of the
+      home page.'
+    expected: rate-limit / authz / popular-CTE-exclusion at SOME layer
+    drift_class: structural_amplification_surface
+    provenance: STATIC — ReactiveDataEntityRepositoryImpl.java:173-180 + 630-649 (no
+      throttle, no auth, no exclude_from_search) per batch-H sidecar's known_security_gaps[3].
+      A future Type-7 probe pumping 10K views from one caller and verifying ranking
+      shift would close the empirical proof — proposed local k6 + curl + DB SELECT
+      probe.
   surfaced_by:
   - lineage/odd-platform/understanding/odd-platform__java__DataEntityController__controller-method__getDataEntityDetails.md
     (backend half — batch F)
+  - lineage/odd-platform/understanding/odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
+    (repository primary-source — batch H)
   - odd-platform-ui/src/components/DataEntityDetails/DataEntityDetails.tsx:56-64 (UI
     half — code-walk during LSN-017 trigger conversation)
   - live probe-runs/2026-05-19-P-001.yaml — backend +1 per call empirically confirmed
@@ -115,7 +139,9 @@ test_matrix:
     uncovered:
     - ReactiveDataEntityRepositoryImpl.incrementViewCount — assert +1 delta on call
       (an isolated unit equivalent would mock the JDBC layer; the integration-class
-      probe P-001 already pins the observable behaviour end-to-end)
+      probe P-001 already pins the observable behaviour end-to-end). Batch-H sidecar
+      confirms ZERO test coverage on this repository class (no DataEntityRepositoryTest
+      exists).
     - DataEntityDetails.tsx — assert useEffect dispatches exactly once per mount (target
       for slice-3 Playwright probe)
     - fetchDataEntityDetails thunk — assert one network call per dispatch
@@ -157,7 +183,8 @@ test_matrix:
       slice 3 with seeded large dataset)
     - view_count column index regression — EXPLAIN ANALYZE uses Index Scan not Seq
       Scan (the absence of the index is itself REFACTOR-221; performance probe at
-      scale will surface the consequence)
+      scale will surface the consequence). Batch-H confirms the missing index from
+      primary source — repo sidecar known_performance_gaps[0].
   security:
     state: PROBED-PINNING-BUG
     covered:
@@ -175,11 +202,13 @@ test_matrix:
       (deferred to slice 3 with k6 load + auth)
     - Cross-tenant inflation — caller in tenant A pumps tenant B's entity to A's home
       page (deferred — multi-tenant probe stack)
-control_summary: 3/14 cells PROBED (1 PROBED-PINNING-BUG security + 1 PROBED-PASSING
+control_summary: |-
+  3/14 cells PROBED (1 PROBED-PINNING-BUG security + 1 PROBED-PASSING
   integration + 1 PROBED-PASSING performance baseline) + 11 cells remaining GAP. First
-  end-to-end empirical validation of the methodology loop. Slice 3 adds UI/headless-browser
-  probe for the +2 doubling fact, scaling probes for performance class, additional
-  security probes for the remaining 16 DISABLED-bypass endpoints.
+  end-to-end empirical validation of the methodology loop. Batch-H adds primary-source
+  SQL confirmation at the repository layer (ReactiveDataEntityRepositoryImpl.java:173-180);
+  chain hop-4 now `resolved: true`. The unit-test cell remains GAP — the repository
+  has ZERO direct test coverage per batch-H sidecar.
 related_refactoring_scopes:
 - REFACTOR-201
 - REFACTOR-220

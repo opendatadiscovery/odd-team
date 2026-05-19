@@ -1,14 +1,14 @@
 ---
 artefact: implicit-adrs
-generated_at: "2026-05-18T00:00:00Z"
+generated_at: "2026-05-19T14:30:00Z"
 generated_at_commit: ede5d277
-sidecar_count: 50
+sidecar_count: 55
 existing_adrs_count: 5
 prompt_version: "adr-archaeologist/0.2.0"
-total_candidates: 67
-candidates_by_category: { promote: 65, extend-existing: 0, drift: 0, unique-load-bearing: 2 }
-candidates_by_severity: { HIGH: 18, MEDIUM: 44, LOW: 5 }
-wisdom_test_reclassifications: 7
+total_candidates: 75
+candidates_by_category: { promote: 71, extend-existing: 0, drift: 0, unique-load-bearing: 4 }
+candidates_by_severity: { HIGH: 22, MEDIUM: 48, LOW: 5 }
+wisdom_test_reclassifications: 24
 batch_2026_05_10A_summary: { added_adrs: 7, strengthened_adrs: 4, added_scopes: 23, strengthened_scopes: 4 }
 batch_2026_05_10B_summary: { added_adrs: 5, strengthened_adrs: 2, added_scopes: 24, strengthened_scopes: 1 }
 batch_2026_05_12C_summary: { added_adrs: 16, strengthened_adrs: 6, added_scopes: 49, strengthened_scopes: 1 }
@@ -16,6 +16,7 @@ batch_2026_05_12D_summary: { added_adrs: 4, strengthened_adrs: 6, added_scopes: 
 batch_2026_05_12E_summary: { added_adrs: 5, strengthened_adrs: 4, added_scopes: 28, strengthened_scopes: 3 }
 batch_2026_05_12F_summary: { added_adrs: 8, strengthened_adrs: 7, added_scopes: 17, strengthened_scopes: 5 }
 batch_2026_05_13G_summary: { added_adrs: 6, strengthened_adrs: 7, added_scopes: 12, strengthened_scopes: 4, wisdom_test_passes: 6 }
+batch_2026_05_19H_summary: { added_adrs: 8, strengthened_adrs: 2, added_scopes: 16, strengthened_scopes: 6, wisdom_test_passes: 8, wisdom_test_reclassifications: 17, sidecars_consumed: 5 }
 ---
 
 # Implicit ADRs surfaced — odd-platform — 2026-05-12
@@ -1357,5 +1358,114 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 **Severity**: MEDIUM
 
 **Full detail**: `detail/ADR-CANDIDATE-067.md`
+
+---
+
+## Refresh note (2026-05-19H batch — reactive-repository layer deepening)
+
+Five new sidecars added (`ReactiveDataEntityRepositoryImpl`, `ReactiveLineageRepositoryImpl`, `ReactiveOwnershipRepositoryImpl`, `ReactivePolicyRepositoryImpl`, `ReactiveAlertRepositoryImpl`) — the repository-axis batch, deepening the substrate from the controller/service tiers (batches A-G) into the persistence layer.
+
+**Net result**: **+8 new ADR candidates** (ADR-CANDIDATE-068..075) — (1) **Two-tier soft-delete inheritance taxonomy** (`ReactiveAbstractSoftDeleteCRUDRepository` base + the override pattern for rich-lifecycle subclasses like DataEntity's status-machine); (2) **Edge tables are HARD-DELETE by design** (the architectural exception to soft-delete-by-default; `V0_0_76__term_relations_hard_delete.sql` is the canonical commit); (3) **Partial unique index `(name) WHERE deleted_at IS NULL`** (the DB-layer enforcement enabling soft-delete-aware name recreation); (4) **Centralised DB-error translation** via `ExceptionUtils.translateDatabaseException` wired in `JooqReactiveOperations.onErrorMap` (HTTP-friendly per-constraint friendly-error pattern); (5) **Establisher-keyed lineage edge provenance** — `establisher_oddrn` enables non-destructive rewrite-by-establisher ingestion contract; (6) **Selective `FOR UPDATE` on ingestion-read paths only** (verbatim inline-comment intent anchor at `ReactiveAlertRepositoryImpl.java:130-132`; user-driven mutation reads deliberately unfenced); (7) **Soft-delete-aware identity LEFT JOIN** (`USER_OWNER_MAPPING.DELETED_AT IS NULL` produces best-effort display; username string is the audit identity); (8) **Repositories take NO Principal/Authentication parameter** — owner-scoping is caller-resolved at service via `authIdentityProvider.fetchAssociatedOwner()`; owner-id flows as a Long parameter into sibling repositories that build JOIN OWNERSHIP locally.
+
+**2 existing ADR candidates strengthened**:
+- **ADR-CANDIDATE-067** (`@ReactiveTransactional` boundary asymmetry) — now **9-sidecar** support (4 from batch G + 5 from batch H — the repository layer is **uniformly transaction-free** across ALL 5 repositories examined; not a single `@ReactiveTransactional` annotation at any repository class. The convention is structural at the layer level).
+- **ADR-CANDIDATE-058** (data-entity status state machine + soft-delete-as-state) — strengthened with the repository-layer primary-source evidence (`ReactiveDataEntityRepositoryImpl.java:103, 109-123` — the deliberate override of `getDeleteChangedFields` + `addSoftDeleteFilter` AND the `null` constructor argument for `deletedAtField` is the implementation-level intent anchor; now also positioned as the canonical RICH-LIFECYCLE OVERRIDE case study under ADR-CANDIDATE-068).
+
+**16 new refactoring scopes added** (REFACTOR-229..244). The 8 highest-leverage 2026-05-19H additions are:
+- **REFACTOR-229 (SQL-format injection vector in `getHighlightedResult` via `String.formatted()` on user-writable inputs; HIGH — the only raw-SQL-format path identified across the 5-repository batch; combined with DISABLED-mode bypass, anonymous remote SQL injection possible)**
+- **REFACTOR-230 (`getRolesPolicies` (RBAC hot path) does NOT filter soft-deleted policies — orphan role_to_policy bindings still grant permissions; HIGH; the JOIN at `ReactivePolicyRepositoryImpl.java:32-35` lacks `AND policy.deleted_at IS NULL`)**
+- **REFACTOR-231 (AlertManager webhook payload-driven alert creation with no caller-ID check — `entity_oddrn` from untrusted payload determines which data entity the alert attaches to; HIGH; extends REFACTOR-082's auth surface with the SQL-sink confirmation chain)**
+- **REFACTOR-232 (cross-batch correction: `createOwnership` duplicate-key is HTTP 400 + USR003, NOT 5xx as batch-F stated; the ExceptionUtils translation path is the canonical fix-up; MEDIUM correction-priority)**
+- **REFACTOR-233 (`listByOwner` empty-result counter uses platform-wide count, not owner-scoped count — UX badge misreports total when caller's owner has zero alerts; MEDIUM)**
+- **REFACTOR-234 (`createAlerts` has no idempotency on AlertManager webhook retries — INSERT without ON CONFLICT; Prometheus retry produces duplicate ALERT rows; MEDIUM; companion to REFACTOR-231)**
+- **REFACTOR-235 (Recursive CTE in `ReactiveAlertRepositoryImpl.getChildOddrnsLinageByOwnOddrnsCte` uses array-membership cycle check that is O(N²) on heavy-fanout graphs; MEDIUM; distinct from REFACTOR-207's lineage CTE — two separate recursive-CTE call sites with cycle gaps)**
+- **REFACTOR-236 (Alert reopen-guard read-then-write race lacks DB-level UNIQUE constraint backstop; MEDIUM; SQL-layer confirmation strengthening REFACTOR-037)**
+
+Additional new scopes (REFACTOR-237..244): owner-scoping anchor-set defence-in-depth gap (lineage SQL layer; strengthens REFACTOR-225); missing covering index for soft-delete OR-predicate on either-endpoint; `policy.is_deleted` dead column; `getRolesPolicies` uncached (RBAC hot path performance); misleading OR-predicate in `getLineageRelations(List)`; `LineageDepth.empty()` call-site folklore; AlertHousekeepingJob JDBC-vs-R2DBC dual-driver race; no method-level observability across all 5 repositories.
+
+**6 existing scopes strengthened**:
+- **REFACTOR-024** (cross-owner read of getAllAlerts — now full-stack triangulated: controller → service → SQL primary source at `ReactiveAlertRepositoryImpl.java:143-145`)
+- **REFACTOR-082** (AlertManager webhook unauthenticated — now SQL-sink confirmed; the consequence chain spawns NEW REFACTOR-231 + REFACTOR-234)
+- **REFACTOR-202** (lineage_depth NPE + no upper bound — full-stack triangulated; SQL primary source at `ReactiveLineageRepositoryImpl.java:174` confirms no defensive check)
+- **REFACTOR-203** (lineage cross-owner enumeration — SCHEMA evidence added; the lineage table has NO owner column across all 4 migrations; JOIN-side owner filtering is structurally impossible without a JOIN to data_entity → ownership)
+- **REFACTOR-207** (lineage CTE no cycle detection — SQL primary source confirmation; now the third recursive-CTE site identified across the platform, alongside REFACTOR-235)
+- **REFACTOR-222** (EXCLUDE_FROM_SEARCH inconsistency in `listPopular` — blast radius widened from Popular-only to 6+ list-shape surfaces, all consuming the same `cteDataEntitySelect` helper at `ReactiveDataEntityRepositoryImpl.java:909-939`)
+
+**Cross-cutting findings (batch H)**:
+- **(a) The repository layer is uniformly transaction-free** — 5/5 repositories, 90+ method signatures, ZERO `@ReactiveTransactional`. This is the strongest single architectural-pattern confirmation in the catalog after the controllers-as-delegates pattern (ADR-CANDIDATE-001, 18-sidecar) and the centralised SECURITY_RULES pattern (ADR-CANDIDATE-002, 18-sidecar). The repository-layer convention is now codified as part of ADR-CANDIDATE-067's extended scope.
+- **(b) The soft-delete architecture is a TWO-TIER taxonomy** — ADR-CANDIDATE-068 (NEW) is the base + override extension point; ADR-CANDIDATE-058 (existing — strengthened) is the canonical override case study for data_entity; ADR-CANDIDATE-069 (NEW) is the hard-delete exception for edge tables. The three together describe the full lifecycle architecture.
+- **(c) Owner-scoping is anchor-set single-point-of-failure with no JOIN-side defence-in-depth** — REFACTOR-225 (batch G) + REFACTOR-237 (batch H NEW) is now 2-sidecar at the SQL primary source. The lineage table has no owner column; the anchor-set computation at `DataEntityRelationsServiceImpl.java:26` is the only defence. A regression in `fetchAssociatedOwner()` propagates undetected. ADR-CANDIDATE-075 (NEW) codifies the architecture; the gap is the missing defence-in-depth.
+- **(d) The error-translation chain is centralised at `ExceptionUtils`** — ADR-CANDIDATE-071 (NEW). The pattern is uniform across all repositories; the batch-F misclaim about `createOwnership` returning 5xx is corrected via the primary-source path inspection (REFACTOR-232).
+- **(e) RBAC observability is broken across THREE layers** — REFACTOR-188 (no audit log on RBAC mutations, batch E) + REFACTOR-230 (no soft-delete filter on getRolesPolicies, batch H) + REFACTOR-244 (no method-level observability across repositories, batch H). The triad means a soft-deleted policy could continue granting permissions to a user, without any log entry, without any metric, without any operator-visible signal.
+
+## ADR-CANDIDATE-068 — Two-tier soft-delete inheritance taxonomy — `ReactiveAbstractSoftDeleteCRUDRepository` base provides `deleted_at` timestamp default; subclasses override `getDeleteChangedFields` + `addSoftDeleteFilter` for richer lifecycles (status-machine override at DataEntity)
+
+**Classification**: promote
+**Severity**: HIGH
+
+**Full detail**: `detail/ADR-CANDIDATE-068.md`
+
+---
+
+## ADR-CANDIDATE-069 — Edge tables are HARD-DELETE by design; reconstruction relies on the activity-feed audit trail — the architectural exception to soft-delete-by-default
+
+**Classification**: promote
+**Severity**: MEDIUM
+
+**Full detail**: `detail/ADR-CANDIDATE-069.md`
+
+---
+
+## ADR-CANDIDATE-070 — Partial unique index `(name) WHERE deleted_at IS NULL` enables soft-delete-aware name recreation across all named-entity tables
+
+**Classification**: promote
+**Severity**: MEDIUM
+
+**Full detail**: `detail/ADR-CANDIDATE-070.md`
+
+---
+
+## ADR-CANDIDATE-071 — Centralised DB-error translation via `ExceptionUtils.translateDatabaseException` wired in `JooqReactiveOperations.onErrorMap` — every Reactive*Repository inherits HTTP-friendly errors
+
+**Classification**: promote
+**Severity**: HIGH
+
+**Full detail**: `detail/ADR-CANDIDATE-071.md`
+
+---
+
+## ADR-CANDIDATE-072 — Establisher-keyed lineage edge provenance — `establisher_oddrn` enables non-destructive rewrite-by-establisher ingestion contract
+
+**Classification**: unique-load-bearing
+**Severity**: HIGH
+
+**Full detail**: `detail/ADR-CANDIDATE-072.md`
+
+---
+
+## ADR-CANDIDATE-073 — Selective `FOR UPDATE` on ingestion-read paths only — explicit-comment intent at the concurrent-write surface; user-driven mutation reads deliberately unfenced
+
+**Classification**: unique-load-bearing
+**Severity**: MEDIUM
+
+**Full detail**: `detail/ADR-CANDIDATE-073.md`
+
+---
+
+## ADR-CANDIDATE-074 — Soft-delete-aware identity LEFT JOIN — `USER_OWNER_MAPPING.DELETED_AT IS NULL` produces best-effort identity display; durable username string is the audit identity
+
+**Classification**: promote
+**Severity**: MEDIUM
+
+**Full detail**: `detail/ADR-CANDIDATE-074.md`
+
+---
+
+## ADR-CANDIDATE-075 — Repositories take NO Principal/Authentication parameter — owner-scoping is caller-resolved at the service layer; owner-id flows as a Long parameter into sibling repositories that build the JOIN OWNERSHIP locally
+
+**Classification**: promote
+**Severity**: HIGH
+
+**Full detail**: `detail/ADR-CANDIDATE-075.md`
 
 ---

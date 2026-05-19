@@ -9,13 +9,28 @@ description: 'A named JSON document of `statements` over resource types `DATA_EN
   seeded `Administrator` policy is reserved by name on UPDATE + DELETE (PolicyServiceImpl.java:76,
   87) but NOT on CREATE (PolicyServiceImpl.java:62-69 — name-asymmetry invariant).
   Authorization gate on CREATE is `POLICY_CREATE` (MANAGEMENT tier) wired in SECURITY_RULES
-  line 163-164, **bypassed under `auth.type=DISABLED`**. Canonical doc anchor: `configuration-and-deployment/enable-security/authorization/policies`
+  line 163-164, **bypassed under `auth.type=DISABLED`**. **Batch H adds the SQL primary-source
+  persistence layer** via ReactivePolicyRepositoryImpl — 40-line shell that adds exactly
+  ONE method (`getRolesPolicies`, the policy-by-role JOIN used to resolve current
+  user effective policies on EVERY authorized request) and inherits standard CRUD
+  from `ReactiveAbstractSoftDeleteCRUDRepository`. **Soft-delete uses deleted_at timestamp**,
+  enforced via partial unique index `policy_name_unique ON policy(name) WHERE deleted_at
+  IS NULL` (V0_0_55__add_policies_and_roles.sql:30) — the soft-delete-aware-recreation
+  invariant operators rely on. **NEW HIGH-severity gap (batch H)**: `getRolesPolicies`
+  at lines 32-35 does NOT filter `deleted_at IS NULL` — a soft-deleted policy with
+  surviving role_to_policy bindings continues to confer permissions; PolicyServiceImpl
+  defends only at the cascade-delete check (lines 89-92); any DB-direct UPDATE setting
+  deleted_at, schema migration mistake, or future refactor weakening the cascade re-opens
+  the gap. The fix is one line: AND policy.deleted_at IS NULL in the JOIN. Canonical
+  doc anchor: `configuration-and-deployment/enable-security/authorization/policies`
   (200, 2026-05-12).'
 axes_present:
 - controllers
+- repositories_reactive
 nodes:
 - odd-platform java PolicyController controller-method:createPolicy
 - odd-platform java PermissionController controller-method:getResourcePermissions
+- odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
 contributors:
 - 'PolicyController.createPolicy: entities[Policy, PolicyFormData (name + policy JSON
   string), PolicyDetails, PolicyPojo, PolicyStatementDto, PolicyPermissionDto, PolicyTypeDto];
@@ -23,12 +38,34 @@ contributors:
 - 'PermissionController.getResourcePermissions: PolicyDto (the materialised policy
   graph evaluated at the read-side); the resolver flattens roles → policies → statements
   identical to the mutation enforcer'
+- 'ReactivePolicyRepositoryImpl (batch H): entities[PolicyPojo, PolicyRecord, POLICY
+  jOOQ table, ROLE_TO_POLICY jOOQ table, policy_name_unique partial unique index,
+  Role (referenced via ROLE_TO_POLICY.ROLE_ID, not loaded here)]; operations[getRolesPolicies
+  (the per-request authorization hot path — JOIN policy ⋈ role_to_policy filtered
+  by role_id list), inherited create / update / get / list / delete / bulkCreate /
+  bulkUpdate from ReactiveAbstractSoftDeleteCRUDRepository, soft-delete writes ONLY
+  deleted_at timestamp (NOT is_deleted boolean — that column is functionally dead
+  schema)]; 5 ADRs (soft-delete via deleted_at timestamp consistent with every CRUDable
+  platform entity; partial unique index on (name) WHERE deleted_at IS NULL enables
+  soft-delete-aware-recreation; ExceptionUtils.translateDatabaseException centralised
+  unique-constraint-to-UniqueConstraintException translation; repository is policy-AGNOSTIC
+  — all business invariants live at PolicyServiceImpl; is_deleted boolean DDL column
+  is dead schema — base only writes deleted_at). PolicyServiceImpl is the sole non-test
+  caller (8 distinct call sites at lines 47/58/67/74/79/85/93/106). getRolesPolicies
+  is on the AUTHORIZATION HOT PATH — invoked by ManagementPermissionExtractor.getNonContextualPermissions
+  AND AbstractContextualPermissionExtractor.getContextualResourcePermissions on EVERY
+  authorized HTTP request that traverses the permission framework.'
 evidence:
 - createPolicy.md:concepts.entities + concepts.invariants.[0-4]
 - createPolicy.md:implicit_adrs.[1] (JSON-Schema-at-write-time) + implicit_adrs.[2]
   (MANAGEMENT non-contextual)
 - getResourcePermissions.md:concepts.entities (PolicyDto materialised graph) + implicit_adrs.[1]
   (authoritative-not-UI-hint)
+- ReactivePolicyRepositoryImpl.md:concepts.invariants.[0,1,2,3,4]
+- ReactivePolicyRepositoryImpl.md:implicit_adrs.[0,1,2,3,4]
+- ReactivePolicyRepositoryImpl.md:bugs_limitations_corner_cases.[0] (getRolesPolicies
+  no deleted_at filter HIGH)
+- ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[0,1,2,3]
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -39,17 +76,23 @@ security_aggregate:
   ingestion_filter_relevance: false
   authorization_consistency:
     verdict: INCONSISTENT
-    detail: SECURITY_RULES wires POLICY_CREATE / POLICY_UPDATE / POLICY_DELETE at
+    detail: 'SECURITY_RULES wires POLICY_CREATE / POLICY_UPDATE / POLICY_DELETE at
       lines 163-168 (NO_CONTEXT MANAGEMENT-tier), but the gate is bypassed under `auth.type=DISABLED`
       (DisabledAuthSecurityConfiguration.java:13-18 — `anyExchange().permitAll()`).
       Sibling `GET /api/policies/schema` (PolicyController.java:60-63) has NO SECURITY_RULES
       entry — falls through to `.authenticated()`. Under `auth.type=LOGIN_FORM` the
       AuthorizationCustomizer is NOT wired (cross-ref Auth Mode aggregate) so SECURITY_RULES
       is INERT — every form-authenticated user is ADMIN with effective POLICY_CREATE.
+      **Batch H confirms at SQL primary source**: ReactivePolicyRepositoryImpl has
+      NO authorization annotations whatsoever; defence-in-depth is null; a direct
+      service-bypass invocation reaches the SQL with no caller-ID check. Authorization
+      is the upstream controller / service layer''s responsibility.'
   owner_scoping:
     verdict: N/A
-    detail: Policies are global authorization documents; the `policy` table has no
-      `owner_id` column. MANAGEMENT-tier permission gates them globally.
+    detail: 'Policies are global authorization documents; the `policy` table has no
+      `owner_id` column. MANAGEMENT-tier permission gates them globally. **Batch H
+      SQL primary source confirms**: V0_0_55__add_policies_and_roles.sql:19-28 — no
+      tenant column, no owner column; ReactiveAbstractCRUDRepository global selects.'
   strengths:
   - JSON-Schema-at-write-time invariant — PolicyJSONValidator loads the schema once
     at construction (V201909) and validates per request; persisted text column is
@@ -58,6 +101,16 @@ security_aggregate:
   - Soft-delete-aware partial UNIQUE INDEX `policy_name_unique` on `policy(name) WHERE
     deleted_at IS NULL` (V0_0_55__add_policies_and_roles.sql:30) — deleted policy's
     name reusable; live duplicates rejected at DB layer
+  - '**Batch H — centralised friendly-error translation via ExceptionUtils.translateDatabaseException**
+    (JooqReactiveOperations.java:41) — every R2DBC query maps `DataAccessException`
+    → `UniqueConstraintException` with per-constraint human-readable message (e.g.
+    POLICY_NAME_UNIQUE → "Policy with this name already exists"). No raw Postgres
+    errors leak to the API. (ReactivePolicyRepositoryImpl.md:implicit_adrs.[2])'
+  - '**Batch H — soft-delete-via-deleted_at is the consistent pattern across every
+    CRUDable platform entity** (role, owner, data_source, collector, namespace, tag,
+    term, data_entity NB — DataEntity overrides to STATUS-state-machine via subclass).
+    The architectural commitment: every operator-facing entity is soft-delete-recoverable;
+    only join tables and immutable audit-like tables use hard delete. (ReactivePolicyRepositoryImpl.md:implicit_adrs.[0])'
   weaknesses:
   - '**Administrator-name reservation asymmetry (HIGH for defence-in-depth)** — `update`
     + `delete` reject mutations against the seeded Administrator name; `create` does
@@ -70,7 +123,12 @@ security_aggregate:
   - '**No audit log on policy mutations (HIGH)** — `PolicyServiceImpl.create` has
     no `@Slf4j` log calls, no event publication, no audit-table insert (createPolicy.md:bugs_limitations_corner_cases.[1]).
     A security incident reviewer cannot answer ''who authored this MANAGEMENT/ALL
-    policy on date X?'' Cross-cutting invariant — see ''No-audit-log on RBAC mutations''.'
+    policy on date X?'' Cross-cutting invariant — see ''No-audit-log on RBAC mutations''.
+    **Batch H confirms at SQL primary source**: ReactivePolicyRepositoryImpl + its
+    soft-delete + abstract-CRUD parents emit ZERO security-relevant log lines on
+    {create, update, delete} — ExceptionUtils.translateDatabaseException emits one
+    log.error ONLY on non-uniqueness DB errors (ExceptionUtils.java:34). Persistence-layer
+    code is forensically silent on the RBAC mutation path.'
   - '**Under `auth.type=DISABLED`, POLICY_CREATE is bypassed entirely (HIGH on DISABLED
     deployments)** — `anyExchange().permitAll()` short-circuits SECURITY_RULES. Any
     network-reachable caller can create MANAGEMENT/ALL policies; full escalation requires
@@ -80,7 +138,48 @@ security_aggregate:
     (MEDIUM)** — invalid schema may surface as 500 rather than 400. (createPolicy.md:security.known_security_gaps.[3])'
   - '**Duplicate-name POST surfaces as DB UNIQUE-constraint violation (MEDIUM)** —
     service has no pre-check; second POST with same name falls through to repository
-    INSERT and hits `unique_violation` SQLSTATE 23505 unhandled (createPolicy.md:security.known_security_gaps.[4])'
+    INSERT and hits `unique_violation` SQLSTATE 23505 unhandled (createPolicy.md:security.known_security_gaps.[4]).
+    **Batch H REFINES**: actual surface is HTTP 400 (USR003) with friendly message
+    "Policy with this name already exists" via ExceptionUtils.translateDatabaseException
+    + ControllerAdvice.handleUniqueConstraint mapping to HttpStatus.BAD_REQUEST —
+    NOT 5xx as some prior sidecars suggested. (ReactivePolicyRepositoryImpl.md:concepts.invariants.[2]
+    + ExceptionUtils.java:60-62)'
+  - '**NEW BATCH H — getRolesPolicies returns SOFT-DELETED policies that still have
+    surviving role bindings (HIGH)**: the SQL JOIN at ReactivePolicyRepositoryImpl.java:32-35
+    selects every policy row where `policy.id = role_to_policy.policy_id AND role_to_policy.role_id
+    IN (...)` with NO `policy.deleted_at IS NULL` predicate. Combined with the absence
+    of a cascade between `policy.deleted_at` and `role_to_policy`, a soft-deleted
+    policy with surviving role bindings continues to confer permissions on users in
+    those roles. Today PolicyServiceImpl.delete defends by raising CascadeDeleteException
+    if `isPolicyAttachedToRole` returns true (PolicyServiceImpl.java:89-92), BUT:
+    (a) any DB-direct UPDATE setting deleted_at (operator hot-fix, schema migration
+    mistake, broken admin script) bypasses the defence; (b) any future refactor weakening
+    the service-layer check re-opens the gap. The correct repository-layer defence
+    is `AND policy.deleted_at IS NULL` in the JOIN''s WHERE clause. Combined with
+    no audit-log on policy mutations, an orphan-binding-leaked permission would be
+    forensically invisible. (ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[0]
+    + bugs_limitations_corner_cases.[0])'
+  - '**NEW BATCH H — Soft-delete recreation invariant + Administrator-name asymmetry
+    compound risk (MEDIUM)**: PolicyServiceImpl.update / .delete reject `Administrator`
+    by name, but `create` does NOT. The repository layer enforces uniqueness via `policy_name_unique
+    WHERE deleted_at IS NULL`, so a duplicate-Administrator INSERT against the live
+    seeded row will fail with UniqueConstraintException. HOWEVER, if the seeded Administrator
+    row is ever soft-deleted by any path (today no service-layer path soft-deletes
+    Administrator because of the rejection at PolicyServiceImpl.java:87-88, but a
+    direct DB UPDATE setting `policy.deleted_at` on the Administrator row could do
+    it), the partial unique index would free the name AND PolicyServiceImpl.create
+    has no name-protection check — a new policy named `Administrator` with attacker-chosen
+    statements could be created. The repository''s partial-unique-index design is
+    correct; the gap is in the service layer''s create-path missing-symmetry, but
+    the repository''s soft-delete-aware uniqueness rule MAKES the gap exploitable.
+    (ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[2])'
+  - '**NEW BATCH H — No service-layer transaction boundary across read-then-write
+    update path (MEDIUM)**: PolicyServiceImpl.update (lines 71-81) issues `policyRepository.get(id)`
+    then `policyRepository.update(...)` — two separate R2DBC calls outside any @ReactiveTransactional.
+    A concurrent UPDATE of the same policy by a different caller can interleave: client
+    A reads policy v1, client B reads v1, A writes v2, B writes v3 BASED ON v1 (success,
+    but A''s v2 was clobbered). The `update_at` column moves monotonically so no exception
+    is raised. Lost-update race. (ReactivePolicyRepositoryImpl.md:bugs_limitations_corner_cases.[1])'
   cross_file_inconsistencies:
   - Policy schema endpoint `GET /api/policies/schema` is NOT gated by any Permission
     — any authenticated user can fetch the live JSON Schema. Not a vulnerability per
@@ -89,34 +188,80 @@ security_aggregate:
     asymmetry, and none of three emit audit logs. The catalog records this cross-pattern
     via the ''Administrator-name reservation asymmetry'' and ''No-audit-log on RBAC
     mutations'' cross-cutting invariants.'
+  - '**Batch H — is_deleted boolean DDL column is dead schema**: V0_0_55__add_policies_and_roles.sql:26
+    declares `is_deleted boolean NOT NULL DEFAULT FALSE` but the soft-delete base
+    repository (ReactiveAbstractSoftDeleteCRUDRepository.java:106-110) only writes
+    `deleted_at`. A schema reader expecting is_deleted to track delete state will
+    reach a wrong conclusion. Either remove the column or trigger-mirror it. (ReactivePolicyRepositoryImpl.md:bugs_limitations_corner_cases.[3])'
   contributing_files:
   - createPolicy.md
   - getResourcePermissions.md
+  - ReactivePolicyRepositoryImpl.md
   evidence:
   - createPolicy.md:security.known_security_gaps.[0-6]
   - getResourcePermissions.md:security.known_security_gaps.[0-2]
+  - ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[0] (getRolesPolicies
+    missing deleted_at filter HIGH)
+  - ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[1] (RBAC mutations
+    forensically silent HIGH — confirms 3-sidecar pattern at SQL layer)
+  - ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[2] (soft-delete-recreation
+    + Administrator-asymmetry compound MEDIUM)
+  - ReactivePolicyRepositoryImpl.md:bugs_limitations_corner_cases.[0,1,2] (HIGH-severity
+    orphan-binding leak; lost-update race; UniqueConstraintException 400 confirmation)
 performance_aggregate:
   overall: HIGH
   hot_paths:
   - 'Single POST per policy-creation: JSON-Schema parse + 1 DB INSERT. Not on ingestion
     / UI hot path; admin operation (createPolicy.md:performance.hot_paths.[0])'
+  - '**NEW BATCH H — `getRolesPolicies` is on the AUTHORIZATION HOT PATH**: ManagementPermissionExtractor.getNonContextualPermissions
+    (ManagementPermissionExtractor.java:31-41) AND AbstractContextualPermissionExtractor.getContextualResourcePermissions
+    (AbstractContextualPermissionExtractor.java:24-35) both call `policyService.getCurrentUserPolicies()`
+    → `policyRepository.getRolesPolicies(roleIds)` on EVERY authorized HTTP request
+    that traverses the permission framework. The query is a single JOIN (policy ⋈
+    role_to_policy) with `WHERE role_id IN (...)` — sub-millisecond on typical row
+    counts (single-digit policies per user). Result list collected to memory; consumed
+    in-memory by the extractor. NO caching at repository, service, or extractor level
+    — every authorized request hits Postgres. (ReactivePolicyRepositoryImpl.md:performance.hot_paths.[0])'
   throughput_shape:
     verdict: SINGLE_ITEM_ONLY
-    detail: No bulk-create endpoint; bootstrapping a complex RBAC scheme requires
-      N HTTP calls. Reactive Mono signature, non-blocking, single DB round-trip (createPolicy.md:performance.throughput_characteristics.[0])
+    detail: 'No bulk-create endpoint; bootstrapping a complex RBAC scheme requires
+      N HTTP calls. Reactive Mono signature, non-blocking, single DB round-trip (createPolicy.md:performance.throughput_characteristics.[0]).
+      **Batch H — no bulk endpoint exposed via service for policies** (PolicyServiceImpl
+      exposes only single-item operations). The base class supports bulkCreate / bulkUpdate
+      with @ReactiveTransactional, but PolicyService does not invoke them.'
   scaling_shape:
     verdict: HORIZONTALLY_SCALABLE
     detail: Stateless controller; unique-name index serializes concurrent same-name
-      inserts (one wins, others throw) — DB-level concurrency safety (createPolicy.md:performance.scaling_characteristics.[0])
+      inserts (one wins, others throw) — DB-level concurrency safety (createPolicy.md:performance.scaling_characteristics.[0]).
+      **Batch H — concurrent UPDATEs of same policy id can lost-update** (no @ReactiveTransactional
+      on read-then-write update path, no optimistic-concurrency token).
   strengths:
   - JsonSchema loaded ONCE at validator construction — no per-request schema reparse
+  - '**Batch H — single-statement JOIN per getRolesPolicies call**, no streaming —
+    `.collectList()` materialises the result. Acceptable for typical role-cardinality
+    (~1-10 policies per user).'
   weaknesses:
   - No bulk-create endpoint (LOW) — bootstrapping a custom RBAC model is N HTTP calls
+  - '**NEW BATCH H — No caching of getRolesPolicies (LOW)**: the result for a stable
+    roleIds set is stable for the lifetime of the role-policy edges (changes only
+    on POST/PUT/DELETE /api/roles or /api/policies). On a busy platform with N authorized
+    req/s, this is N+M DB calls (N for permission resolution, M ≪ N for mutations).
+    A short-TTL request-scoped or user-scoped cache would significantly reduce DB
+    load. Today''s behaviour is correct (always fresh) but not optimised. (ReactivePolicyRepositoryImpl.md:performance.known_performance_gaps.[0])'
+  - '**NEW BATCH H — getRolesPolicies returns FULL policy_text on every call (LOW)**:
+    the `policy` column is text type; typical policies ~1KB, pathological ones could
+    be MB-sized. No projection to omit the policy text when only id/name needed —
+    but every consumer DOES need the policy text to compute permissions, so this is
+    an observation, not a gap. (ReactivePolicyRepositoryImpl.md:performance.known_performance_gaps.[1])'
   cross_file_inconsistencies: []
   contributing_files:
   - createPolicy.md
+  - ReactivePolicyRepositoryImpl.md
   evidence:
   - createPolicy.md:performance.known_performance_gaps.[0]
+  - ReactivePolicyRepositoryImpl.md:performance.hot_paths.[0] (per-request authorization
+    hot path)
+  - ReactivePolicyRepositoryImpl.md:performance.known_performance_gaps.[0,1]
 notes: 'Anchored on `configuration-and-deployment/enable-security/authorization/policies`
 
   live page (200, 2026-05-12). The page documents the policy JSON shape
@@ -128,5 +273,21 @@ notes: 'Anchored on `configuration-and-deployment/enable-security/authorization/
   bypassing the gate. Surface 5 DOC-GAP candidates from
 
   createPolicy.md:docs_link_semantic.doc_drift_findings.[A-E].
+
+  Batch H adds two NEW doc gaps (REPOSITORY-DOC-GAP-A and -B from
+
+  ReactivePolicyRepositoryImpl.md:docs_link_semantic.doc_drift_findings):
+
+  (A) the soft-delete-aware recreation invariant is undocumented on the
+
+      Policies operator page — a deleted policy name is reusable; a re-created
+
+      policy starts fresh with new id and EMPTY role bindings.
+
+  (B) the absence of an FK cascade between policy.deleted_at and
+
+      role_to_policy.policy_id is undocumented — the orphan-binding gap
+
+      that getRolesPolicies leaks is invisible to operators.
 
   '

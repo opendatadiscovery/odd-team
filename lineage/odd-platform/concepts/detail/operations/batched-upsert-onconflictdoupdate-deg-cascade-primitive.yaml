@@ -1,0 +1,78 @@
+name: Batched UPSERT via onConflictDoUpdate (DEG-cascade primitive)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW OPERATION, batch 2026-05-19H** — the batched UPSERT primitive that
+  ENABLES DataEntityGroup ownership propagation across child entities. The canonical
+  implementation is `ReactiveOwnershipRepositoryImpl.createOrUpdate(Collection<OwnershipPojo>)`
+  (lines 61-82) — batched via `executeInPartitionReturning` (1000-row partitions via
+  `JooqReactiveOperations.BATCH_SIZE=1000`), each partition issues `INSERT ... ON
+  CONFLICT ON CONSTRAINT ownership_data_entity_id_owner_id_key DO UPDATE SET title_id
+  = EXCLUDED.title_id RETURNING *`. The semantic is **title-overwriting** (not insert-or-skip):
+  for any row already existing with the same (data_entity_id, owner_id), the title
+  gets RE-TITLED to the incoming value. This is the contract that makes DEG ownership
+  propagation work — a parent DEG''s new-title cascade overwrites each existing child
+  ownership''s title. **Sole caller**: `OwnershipServiceImpl.propagateOwnership.CREATE`
+  at line 145 — the DEG-cascade entry point. There is no parallel `createIgnore` or
+  `createIfMissing` method on this repository — every batch caller MUST accept the
+  title-overwriting semantic. **Trade-off**: the choice prevents the alternative implementation
+  (loop through children, check existence, insert if absent, update if present) from
+  leaking into application code, but it also means there is NO way through this repository
+  to "create a batch of ownerships if-and-only-if they don''t already exist". The
+  caller cannot distinguish inserts-as-new from inserts-as-updates from the returned
+  Flux — every record is the post-update state regardless of whether it was newly-inserted
+  or conflicting-then-updated; there is no `xmax = 0` / `xmax <> 0` distinction. **Performance
+  shape**: sequential partition execution via `Flux::concat` (NOT `Flux::merge`) at
+  JooqReactiveOperations.java:81-83 — for O(10K)-child DEGs, 10 sequential INSERT-ON-CONFLICT
+  batches inside a single @ReactiveTransactional hold the DB connection for cumulative
+  duration. DEGs in practice have <1000 children (the 1000-row partition was sized
+  for this regime); MEDIUM scope if any operator has DEGs with O(10K) children. **Distinct
+  from the lineage repository''s SIMILAR pattern**: `ReactiveLineageRepositoryImpl.batchInsertLineages`
+  (lines 50-58) uses `.onDuplicateKeyIgnore()` (jOOQ shorthand for `ON CONFLICT DO
+  NOTHING`) against the (parent, child, establisher) PK — SILENT-DUPLICATE-SKIP semantic,
+  NOT title-overwrite. Two different DEG-cascade primitives serving two different
+  edge tables.'
+axes_present:
+- repositories_reactive
+nodes:
+- odd-platform java repository reactive repository:ReactiveOwnershipRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+contributors:
+- 'ReactiveOwnershipRepositoryImpl (batch H): operations[createOrUpdate — batched
+  UPSERT via executeInPartitionReturning 1000-row partitions + onConflictOnConstraint(OWNERSHIP_DATA_ENTITY_ID_OWNER_ID_KEY).doUpdate().set(TITLE_ID,
+  EXCLUDED)] + implicit_adrs.[2] (title-overwriting contract built into the only batch-insert
+  method — no createIgnore variant) + bugs_limitations_corner_cases.[2] (caller cannot
+  distinguish inserts from updates from the returned Flux) + bugs_limitations_corner_cases.[4]
+  (sequential partition execution via Flux::concat — 10 sequential round-trips for
+  10K-child DEG).'
+- 'ReactiveLineageRepositoryImpl (batch H): operations[batchInsertLineages — multi-row
+  INSERT with onDuplicateKeyIgnore (ON CONFLICT DO NOTHING) into (parent, child, establisher)
+  tuples] + implicit_adrs.[3] (idempotent batch insert; PK at V0_0_17:117 explicitly
+  added to support the ingestion rewrite-by-establisher flow). DIFFERENT shape — silent-duplicate-skip
+  rather than title-overwrite. Two parallel DEG-cascade primitives for two different
+  edge tables.'
+evidence:
+- ReactiveOwnershipRepositoryImpl.md:concepts.operations + implicit_adrs.[2] + bugs_limitations_corner_cases.[2,4]
+- ReactiveLineageRepositoryImpl.md:concepts.operations.[batchInsertLineages] + implicit_adrs.[3]
+notes: "NEW operation captured in batch H. The Ownership and Lineage repositories\
+  \ both expose\nbatch-INSERT primitives, but with different ON CONFLICT semantics:\n\
+  \n  - Ownership: onConflictOnConstraint.doUpdate.set(TITLE_ID, EXCLUDED) — title-overwriting\n\
+  \    (DEG propagates parent's new title to children)\n  - Lineage: onDuplicateKeyIgnore\
+  \ (ON CONFLICT DO NOTHING) — silent-duplicate-skip\n    (ingestion rewrite-by-establisher\
+  \ is idempotent; duplicate edges are no-ops)\n\nBoth are 1000-row partitioned via\
+  \ executeInPartitionReturning + Flux::concat (sequential\nround-trips, not parallel).\
+  \ The Flux::concat choice is consistent: it preserves return-order\nsemantics so\
+  \ callers can correlate input pojos to output records — but it serializes the\n\
+  partitions, limiting throughput on very large DEG cascades.\n\nRecommended cleanup\
+  \ paths:\n\n  - Consider adding a `createOrSkip` variant on ReactiveOwnershipRepositoryImpl\
+  \ for callers\n    that want \"create new, leave existing unchanged\" semantics.\
+  \ Symmetric to the lineage\n    repository's onDuplicateKeyIgnore. Useful for future\
+  \ admin tools that import\n    ownership data without overwriting operator-curated\
+  \ titles.\n\n  - For O(10K)-child DEG cascades, consider switching `Flux::concat`\
+  \ to a bounded\n    `Flux::flatMap` (with concurrency=N) to parallelise partition\
+  \ execution. Trade-off:\n    breaks return-order semantics; requires testing on\
+  \ the assumption that callers don't\n    rely on the order.\n\n  - Document the\
+  \ title-overwriting semantic on the DEG-propagation operator-facing doc\n    (if\
+  \ one exists). Operators changing a DEG's title may not realize children's titles\n\
+  \    are overwritten.\n\nDoc-gap candidate: extend the DataEntityGroup live doc\
+  \ page with a 'Cascade behaviours\non DEG title change' subsection covering the\
+  \ title-overwriting semantic.\n"

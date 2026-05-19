@@ -51,7 +51,7 @@ live_url_verifications:
 maintainer_curated: false
 confidence_overall: MEDIUM
 confidence_overall_justification: |
-  Local-docs-anchored (the `documentation/` repo at `/home/raman/work/odd/documentation/`
+  Local-docs-anchored (the `documentation/` repo at `documentation/`
   is the canonical content source per CLAUDE.md: "The source of truth for everything
   the public reads (vision, ADRs, features, API descriptions, guides) is →
   https://github.com/opendatadiscovery/documentation (local: ../documentation)").

@@ -286,3 +286,28 @@ The "facets" surface on `SearchController` is realised by TWO sibling reactive e
 - performance: HIGH (pagination plumbing, OFFSET computation, the four-Mono `Mono.zip` shape, side-effect UPDATE on read, absence of caching/observability, unbounded session table — all directly visible at cited lines)
 
 ## Maintainer notes
+
+## Coherence correction — 2026-05-19 — LSN-018
+
+Three claims in this sidecar were FACTUALLY WRONG:
+
+1. `bugs_limitations_corner_cases.[6]` — "search_facets rows accumulate without bound … no TTL eviction"
+2. `performance.known_performance_gaps.[4]` — "Unbounded search_facets table growth — no cleanup job"
+3. `implicit_adrs.[2]` — "TTL TODO unaddressed" (in the sense of "the TODO at V0_0_1__init.sql:207 was never implemented")
+
+**Ground truth (verified 2026-05-19 against upstream code):**
+- `odd-platform-api/src/main/java/.../housekeeping/job/SearchFacetsHousekeepingJob.java` EXISTS and is a `@Component` bean registered in the 5-job housekeeping cycle (`HousekeepingJobManager`).
+- `odd-platform-api/src/main/resources/db/migration/V0_0_52__introduce_housekeeping.sql:1-7` adds `last_accessed_at` to `search_facets` *expressly* to enable TTL eviction.
+- `odd-platform-api/src/main/resources/application.yml:169` ships `housekeeping.ttl.search_facets_days: 30` (default).
+- The TODO comment at V0_0_1__init.sql:207 is OBSOLETE — superseded by V0_0_52 + the job class; the comment was simply not deleted when the feature was implemented.
+
+**Why this sidecar got it wrong:** the file-analyser walked controller → service → repository for the search-facet WRITE path. It did NOT grep for `SearchFacets*Housekeeping*` or `housekeeping.ttl.search_facets_days` outside the controller's reachable graph. The negative inference *"no TTL eviction in the controller chain"* (true) became *"no TTL eviction anywhere"* (false) without further checking.
+
+**Corrected understanding:**
+- search_facets HAS TTL eviction. Default 30 days. Configurable via `housekeeping.ttl.search_facets_days`.
+- F-010 / P-08:F-002 *Housekeeping TTL Enforcement* enumerates the job correctly.
+- The legitimate gap is that `SearchFacetsHousekeepingJob` itself has ZERO test coverage (no unit, no integration), which is now correctly captured as TEST-GAP-523 (re-pointed at F-010).
+
+**Other claims in this sidecar are NOT invalidated by this correction.** TEST-GAP-518 (cross-owner facet enumeration), TEST-GAP-519 (no per-user binding on search_facets), TEST-GAP-521 (UPDATE-on-read of last_accessed_at), the tsquery DoS finding, and the bearer-token-shaped session UUIDs invariant remain valid. Only the three unbounded-growth / TTL-absent claims are superseded.
+
+**Methodology lesson (LSN-018):** entries derived from negative inference within a narrow code-walk scope must be ANNOTATED with the scope of the negation (`asserts_absence_within: <chain>`) and cross-checked against the feature registry before they harden into test-gaps / refactoring-scopes / ADRs. The reducers' coherence-check protocol (LSN-018 §"Rule that emerged" point 2) will surface contradictions like this at emit time rather than batches later by the maintainer's eye.

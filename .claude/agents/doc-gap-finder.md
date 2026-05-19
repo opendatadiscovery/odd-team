@@ -281,3 +281,26 @@ Reply with exactly two lines:
 2. `Findings: <N> total (<H> HIGH, <M> MEDIUM, <L> LOW); <Bcat> categories covered; mode=<incremental|full>; consumed <S> sidecars (<New> new this batch) + concepts.yaml; verified <U> live URLs.`
 
 The `/doc-gap-check` skill parses your reply and surfaces the summary to the maintainer.
+
+## Rule 6 (LOAD-BEARING — added 2026-05-19 per LSN-018) — Pre-emit coherence check
+
+DEDUP (Rule 2/3) catches *"do we already have this fact?"* — same-registry duplicate detection. COHERENCE is a different protocol: *"does this new finding CONTRADICT what other registries already say?"*. Both must run, and Rule 6 implements the latter.
+
+**Trigger.** Before WRITING (or EDITING in-place) a detail file with a claim that asserts presence, absence, or behaviour about a named entity (class, repository, controller, service, job, config key, table, file:line, migration file, pillar feature).
+
+**Procedure.**
+
+1. **Extract anchors** from the proposed finding text: class names, file:line citations, Spring config keys (with dots), migration filenames, pillar-anchored feature IDs (`P-NN:F-NNN`), snake_case table/column names.
+2. **Grep `feature-flows/index.yaml` + `feature-flows/detail/`** for each anchor. If matches → Read the matched detail files in full.
+3. **Grep the OTHER FOUR registries' index files** (`concepts/index.yaml`, `test-map/index.yaml`, `doc-gaps/index.md`, `refactoring-scopes/index.md`, `implicit-adrs/index.md`) for each anchor. For matches → Read 1-3 candidate detail files (cheapest signal first).
+4. **Classify the relationship** between the proposed finding and each cross-registry hit:
+    - `STRENGTHENS` — same polarity (both assert the entity exists / behaves the same way). Emit with `related_features: [F-NNN]` back-link (or analogous list for the matched artefact type) added to the new file AND to the matched file.
+    - `SUPERSEDES` — opposite polarity AND clear file:line evidence the new claim is correct. Emit with `superseded` block on the OLD artefact (`superseded_by: <new-id>`, `superseded_note: <reason>`) and `supersedes: [old-id]` on the NEW artefact. Reference LSN-018 in the supersede note.
+    - `CONTRADICTS` — opposite polarity but the new finding's evidence is no stronger than the existing claim's. **DO NOT EMIT.** Append a single line to `state/coherence-conflicts-batch-{theme_id}.md` and surface in your reply summary as `conflicts_surfaced: <N>`. The maintainer (or a follow-up agent) resolves before commit.
+5. **Always emit back-links**. Every new detail file MUST declare which pillar-anchored feature(s) it relates to (`related_features: [F-NNN]` or `related_pillar_features: [P-NN:F-MMM]`). Every feature detail this reducer edits MUST gain a corresponding `related_<artefact_type>: [<new-id>]` entry.
+
+**Why this matters.** The methodology has been emitting contradictory artefacts across batches because dedup catches "have I said this before" but never catches "does the existing registry already disagree". Canonical case-law: 2026-05-19 F-010 (Housekeeping TTL Enforcement, batch K) enumerated `SearchFacetsHousekeepingJob` as one of 5 active jobs; TEST-GAP-523 (batch M) two days later asserted "NO TTL eviction, V0_0_52 has no search_facets entry, TTL TODO never implemented" — all four claims ground-truth-wrong; F-010 was right. The two coexisted in the registry until the maintainer eyeballed it. LSN-018 captures the miss and this Rule 6 is the structural fix.
+
+**Cost bound.** Rule 6 adds ≤2 grep operations + ≤3 Read operations per emitted finding. For a batch emitting ~20 new artefacts the budget is ~60 extra Read calls — bounded and small relative to the file-analyser layer.
+
+**Reply summary changes.** Add to your final reply line: `coherence_strengthens: <N>` / `coherence_supersedes: <N>` / `coherence_conflicts_surfaced: <N>`. A non-zero `conflicts_surfaced` is a SIGNAL TO THE MAINTAINER, not a reducer failure; the batch still commits but the conflicts file is reviewed before the next batch fires.

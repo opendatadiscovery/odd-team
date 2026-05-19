@@ -8,6 +8,18 @@ allowed-tools: Read Write Edit Bash Glob Grep Agent
 
 This skill is the inner-body of the overnight autonomous loop. One invocation = one full batch end-to-end. `/loop 75m /next-batch` fires this every 75 minutes; each invocation runs to completion synchronously within a single agent turn.
 
+## Path resolution (run BEFORE pre-flight)
+
+The agent-prompt templates in this SKILL use `<WORKSPACE_ROOT>`, `<REPO_ROOT>`, and `<DOCS_REPO>` as placeholders so the SKILL does not embed any maintainer-specific absolute path. The orchestrator (you, the agent invoking the SKILL) MUST substitute them at runtime before passing prompts to subagents. Resolve them like this:
+
+```bash
+WORKSPACE_ROOT=$(git rev-parse --show-toplevel)     # current repo root
+REPO_ROOT=$(realpath "$WORKSPACE_ROOT/../odd-platform")
+DOCS_REPO=$(realpath "$WORKSPACE_ROOT/../documentation")
+```
+
+Substitute these into every Agent prompt below. Never hardcode an absolute path into a committed file (memory: `feedback_no_hardcoded_absolute_paths`).
+
 ## Pre-flight (FIRST 5 actions in order — abort if any fails)
 
 1. **Branch check.** `git rev-parse --abbrev-ref HEAD` must equal `feature/ontology-rev2-sprint-2026-05-19`. If it doesn't, ABORT — surface "wrong branch, halting loop" and exit. Never run on `main`.
@@ -27,14 +39,14 @@ In ONE assistant message, fire 5 Agent tool calls with `subagent_type: file-anal
 ```
 You are the file-analyser subagent. Enrich ONE node end-to-end per your system prompt's non-negotiable rules. This is batch {THEME_ID} of the ODD agentic-ontology rev-2 sprint (autonomous overnight run on feature/ontology-rev2-sprint-2026-05-19).
 
-WORKSPACE_ROOT_ABS: /home/raman/work/odd/odd-team
-REPO_ROOT_ABS: /home/raman/work/odd/odd-platform
+WORKSPACE_ROOT_ABS: <WORKSPACE_ROOT>
+REPO_ROOT_ABS: <REPO_ROOT>
 SCHEMA: v0.3.0 (rev 2) — sidecar MUST include `upstream_callers` and `downstream_side_effects` blocks; every `uncovered_behaviour` needs `test_class`.
 
 TARGET NODE
 - node_id: {synthetic_node_id from theme entry}
 - source file: {source_file from theme entry}
-- output sidecar: /home/raman/work/odd/odd-team/lineage/odd-platform/understanding/{slugified-node-id}.md
+- output sidecar: <WORKSPACE_ROOT>/lineage/odd-platform/understanding/{slugified-node-id}.md
 
 CONTEXT: Theme rationale: {rationale from theme entry}. Cross-reference existing sidecars where material (use Glob/Grep against lineage/odd-platform/understanding/). Live doc WebFetch on `docs.opendatadiscovery.org` for any doc-link claim; if WebFetch is denied this session, inherit verifications from neighbour sidecars at status 200 within the last 11 days per the stale-probe cadence (established pattern across batches D/E/F/G).
 
@@ -92,6 +104,12 @@ Run these Bash commands in sequence:
    python3 lineage/_extractor/registry-shard/rebuild_indexes.py all 2>&1 | tail -25
    ```
    Detail files are the source of truth; this regenerates `concepts/index.yaml`, `test-map/index.yaml`, `feature-flows/index.yaml` from the parseable subset under `detail/`. Also runs `verify-md` for the three markdown artefacts and surfaces any detail-vs-index discrepancies (non-blocking).
+
+3.5. **Coherence sweep (LSN-018 — pre-commit anomaly detector):**
+   ```bash
+   python3 lineage/_extractor/registry-shard/coherence_sweep.py --batch {THEME_ID} 2>&1 | tail -5
+   ```
+   Sweeps the new artefacts emitted this batch (and pre-existing ones) for cross-registry anchor overlaps where one side asserts a NEGATION about an entity another side positively names. Output: `state/coherence-sweep-batch-{THEME_ID}.md`. Empty → batch commits as usual. Non-empty top-tier (no-existing-back-link) candidates → READ the report, decide for each top candidate whether to: (a) supersede the older claim per Rule 6 of the reducer prompts, (b) accept the older claim and rewrite the new artefact, or (c) accept both as legitimately-different facts and add back-links. The sweep does not block the batch by itself — but each unresolved anomaly becomes a follow-up captured in the investigator-log "Follow-ups" section.
 
 4. **Cleanup leftover delta files** (no longer needed after rebuild):
    ```bash
@@ -163,7 +181,7 @@ Reply with EXACTLY ONE of these formats (the loop driver's status surface):
 ## Safety rails (universal)
 
 - NEVER run `git push --force`, `git reset --hard`, `git checkout main`, `rm -rf`, `git branch -D` autonomously.
-- NEVER write to source repos at `/home/raman/work/odd/odd-platform`, `/home/raman/work/odd/documentation`, etc. — these are READ-ONLY from this skill's perspective. Only the workspace at `/home/raman/work/odd/odd-team` is writeable.
+- NEVER write to source repos at `<REPO_ROOT>`, `<DOCS_REPO>`, etc. — these are READ-ONLY from this skill's perspective. Only the workspace at `<WORKSPACE_ROOT>` is writeable.
 - NEVER edit `adrs/drafts/*` — those are maintainer-authored design docs.
 - NEVER edit `CLAUDE.md` or `APPROACH.md` — those are governance surfaces; the maintainer hand-authors changes.
 - If a tool call hits a permission prompt → that's a settings.local.json gap; halt the loop (don't try to bypass).

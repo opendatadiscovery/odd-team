@@ -363,3 +363,59 @@ session_id: session-2026-05-13-G
   feature_id: F-004
   ran_at: 2026-05-19T02:12:17+00:00
   verdict: "all assertions passed"
+- probe_id: P-007
+  probe_run_id: R-20260519T022725Z-P-007
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:27:25+00:00
+  verdict: "all assertions passed"
+- probe_id: P-009
+  probe_run_id: R-20260519T022727Z-P-009
+  outcome: FAIL
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:27:27+00:00
+  verdict: "1 assert(s) failed; first: 'xss_leak_count == 0'"
+- probe_id: P-007
+  probe_run_id: R-20260519T023016Z-P-007
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:30:16+00:00
+  verdict: "all assertions passed"
+- probe_id: P-009
+  probe_run_id: R-20260519T023018Z-P-009
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:30:18+00:00
+  verdict: "all assertions passed"
+- probe_id: P-007
+  probe_run_id: R-20260519T023258Z-P-007
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:32:58+00:00
+  verdict: "all assertions passed"
+- probe_id: P-009
+  probe_run_id: R-20260519T023259Z-P-009
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:32:59+00:00
+  verdict: "all assertions passed"
+- probe_id: P-007
+  probe_run_id: R-20260519T023711Z-P-007
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:37:11+00:00
+  verdict: "all assertions passed"
+- probe_id: P-009
+  probe_run_id: R-20260519T023713Z-P-009
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:37:13+00:00
+  verdict: "all assertions passed"

@@ -30,11 +30,11 @@ If any prerequisite fails, the skill reports the missing piece and exits.
 | `/probe-run --feature <feature-id>` | Slice-5. Resolve `feature_id` against `lineage/{repo}/probes/*.yaml`; run every matching probe in batch mode. Mutually exclusive with positional probe IDs. |
 | `/probe-run --batch <id-1> ...` | Explicit batch-mode flag. Implied when multiple positional IDs are given OR when `--feature` matches more than one probe. |
 | `/probe-run --dry-run <probe-id>` | Validate + parse + report what WOULD execute, but do not bring up the stack. |
-| `/probe-run --show <probe-id>` | Read-only. Print the probe definition + the most recent probe-run artefact for that probe ID. |
+| `/probe-run --show <probe-id>` | Slice-6. Read-only. Print the probe definition + the most recent probe-run artefact's outcome, observed values, and assertion-pass count. No execution, no merge. |
 | `/probe-run --validate <probe-id>` | Read-only. Parse probe + scope-check; exit 0 if well-formed, non-zero otherwise. |
 | `/probe-run <probe-id> --no-merge` | Execute the probe but do NOT merge measured values back into the static layers. Useful for iterating on probe design. |
 | `/probe-run <probe-id> --no-summary` | Slice-5. Skip the per-batch summary artefact + investigator-log append. Useful when running probes in tight iterative loops. |
-| `/probe-run <probe-id> --allow-stale` | Execute even if the probe's `verified_against_commit` lags the substrate by more than the staleness threshold (5 commits). The maintainer takes responsibility. |
+| `/probe-run <probe-id> --allow-stale` | Slice-6. Override the substrate-staleness gate (ADR Rule 5) — execute even if `verified_against_commit` lags the substrate's `last_scan_commit` by more than 5 commits. The runner refuses by default with FATAL when lag > threshold; pass this flag if the maintainer has independently verified the probe still applies. |
 
 ### Slice-5 batch outputs
 
@@ -66,13 +66,14 @@ For `--show` and `--validate` forms, no subagent spawn is needed — the skill d
 
 ### 4. Merge (unless --no-merge)
 
-The runner appends a `## probe_verifications` entry to every contributing sidecar of the probe's `feature_id` (per dynamic-verification ADR Rule 4 — closes the layer-5 → layer-2 feedback loop). Idempotent on `probe_run_id` — re-runs of the same probe don't duplicate entries.
+After each PASS/FAIL run the runner performs two automatic merges:
 
-Future merges (slice-6 candidates, not yet automated):
-- `lineage/{repo}/feature-flows.yaml` — `observed_vs_expected.observed` gains `measured (run-R-NNN at <iso>)`.
+1. **Sidecar confidence merge** (slice 4) — appends a `## probe_verifications` entry to every contributing sidecar of the probe's `feature_id` (per dynamic-verification ADR Rule 4 — closes the layer-5 → layer-2 feedback loop). Idempotent on `probe_run_id`.
+
+2. **Feature-flows stamp** (slice 6) — appends a `probe_verifications:` list entry inside the matching feature's block in `lineage/{repo}/feature-flows.yaml`. Replace-by-probe-id semantic: feature-flows.yaml carries the CURRENT measured state per probe (latest run); the full run history lives in `probe-runs/`. The narrative `observed_vs_expected.facets` block stays maintainer-authored; the auto-stamp is the audit trail (run-IDs, outcomes, test-classes empirically covered, commit pinned).
+
+Still maintainer-authored (slice-7+ candidates):
 - `lineage/{repo}/test-map.yaml` — per-feature matrix cell flips to `PROBED-PASSING` / `PROBED-PINNING-BUG` / `PROBE-TEST-DISAGREEMENT`.
-
-Currently the feature-flows + test-map merges are **manually authored** by the maintainer per slice convention; the sidecar merge runs automatically. The runner's slice-5 batch-summary artefact (`lineage/{repo}/probe-runs/{date}-batch-*.md`) supplies the consolidated view needed for manual feature-flows / test-map edits.
 
 ### 5. Cleanup verification
 

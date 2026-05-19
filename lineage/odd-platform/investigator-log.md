@@ -801,15 +801,15 @@ Per dynamic-verification ADR slice 5: each batch's investigator-log entry now re
 
 | Probe | Feature | Test class | Outcome | Run ID |
 |---|---|---|---|---|
-| `P-001` | `F-001` | integration | **PASS** | `R-20260519T021148Z-P-001` |
-| `P-002` | `F-001` | security | **PASS** | `R-20260519T021152Z-P-002` |
-| `P-003` | `F-001` | performance | **PASS** | `R-20260519T021154Z-P-003` |
-| `P-004` | `F-001` | integration | **PASS** | `R-20260519T021200Z-P-004` |
-| `P-005` | `F-002` | security | **PASS** | `R-20260519T021212Z-P-005` |
-| `P-006` | `F-003` | security | **PASS** | `R-20260519T021215Z-P-006` |
-| `P-007` | `F-004` | security | **PASS** | `R-20260519T021216Z-P-007` |
-| `P-008` | `F-005` | integration | **PASS** | `R-20260519T021217Z-P-008` |
-| `P-009` | `F-004` | security | **PASS** | `R-20260519T021217Z-P-009` |
+| `P-001` | `F-001` | integration | **PASS** | `R-20260519T023643Z-P-001` |
+| `P-002` | `F-001` | security | **PASS** | `R-20260519T023647Z-P-002` |
+| `P-003` | `F-001` | performance | **PASS** | `R-20260519T023650Z-P-003` |
+| `P-004` | `F-001` | integration | **PASS** | `R-20260519T023657Z-P-004` |
+| `P-005` | `F-002` | security | **PASS** | `R-20260519T023708Z-P-005` |
+| `P-006` | `F-003` | security | **PASS** | `R-20260519T023710Z-P-006` |
+| `P-007` | `F-004` | security | **PASS** | `R-20260519T023711Z-P-007` |
+| `P-008` | `F-005` | integration | **PASS** | `R-20260519T023712Z-P-008` |
+| `P-009` | `F-004` | security | **PASS** | `R-20260519T023713Z-P-009` |
 
 ### Layer-5 → layer-2 feedback closure
 

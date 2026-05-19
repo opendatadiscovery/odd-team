@@ -395,3 +395,115 @@ session_id: session-2026-05-12-F-DataEntityDetails
   feature_id: F-001
   ran_at: 2026-05-19T02:12:00+00:00
   verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T022658Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:26:58+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T022702Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:27:02+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T022705Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:27:05+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T022710Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:27:10+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T022947Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:29:47+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T022953Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:29:53+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T022956Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:29:56+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T023002Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:30:02+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T023231Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:32:31+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T023236Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:32:36+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T023238Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:32:38+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T023244Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:32:44+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T023643Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:36:43+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T023647Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:36:47+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T023650Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:36:50+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T023657Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:36:57+00:00
+  verdict: "all assertions passed"

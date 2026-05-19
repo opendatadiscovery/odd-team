@@ -77,11 +77,18 @@ act:
     timeout_ms: 30000
     post_settle_ms: 6000
     xhr_filter_regex: '^http://localhost:18080/api/dataentities/1009(\?.*)?$'
+    # Slice-6: leak_filter_regex matches the SPECIFIC exfil target this probe's
+    # XSS payload would call out to if the onerror handler executed. We
+    # deliberately match ONLY `attacker.example` rather than "any off-platform
+    # URL" — a broader filter would surface legitimate SPA behaviour (e.g. the
+    # UI loads Roboto from Google Fonts, which is a real off-platform request
+    # that has nothing to do with XSS execution). Empirically observed on the
+    # first slice-6 run: 2 Google Fonts URLs would otherwise have falsely
+    # tripped xss_leak_count > 0.
+    leak_filter_regex: 'attacker\.example'
 
 observe:
-  # Slice-5: real UI-render-side assertions via browser_dom_query.
-  # The `browser` act step captures `dom_html` (post-settle page.content());
-  # these observe steps query that captured DOM.
+  # Slice-5: UI-render-side DOM-presence assertions.
   - kind: browser_dom_query
     from: dom_html
     text_contains: "<script>"
@@ -102,6 +109,21 @@ observe:
     text_contains: "onerror="
     capture_as: dom_has_onerror_attr
 
+  # Slice-6: XSS-execution telemetry. browser_events reads the Playwright-
+  # captured page.on('dialog') firings + off-platform request matches. Any
+  # observed dialog or leak request indicates the dangerous markup did
+  # something beyond just landing in the DOM — i.e. the surface materialised
+  # into actual code execution.
+  - kind: browser_events
+    event: dialog
+    capture_as: xss_dialog_fired
+    capture_list_as: xss_dialog_payloads
+
+  - kind: browser_events
+    event: leak
+    capture_as: xss_leak_count
+    capture_list_as: xss_leak_targets
+
   # Backend sanity: verify the description was actually stored. If the DB
   # write failed, the DOM-presence assertions would be vacuously false.
   - kind: sql
@@ -117,22 +139,32 @@ assert:
   # The SPA navigated + fetched the entity (LSN-017's pattern; on this entity
   # it also confirms the rendering pipeline ran).
   - "xhr_count >= 1"
-  # UI-render-side state — pinning the MEASURED truth. When this probe first
-  # ran (R-20260519T020323Z-P-009 on commit ede5d277, react-markdown@7.x with
-  # rehype-raw and NO rehype-sanitize) we observed: dangerous TAGS reach the
-  # DOM (script / img / iframe) but EVENT-HANDLER attributes (onerror=) are
-  # stripped, very likely by React's own attribute-handling in the path that
-  # rehype-raw routes through. The measurement refines the static-layer
-  # inference (REFACTOR-218: "rehype-raw + no sanitize → full XSS surface")
-  # into a partial finding: tags pass, event handlers don't.
-  #
-  # When rehype-sanitize lands, the first three flip to == False (tags
-  # filtered out). The onerror= line is already at the measured-correct
-  # value; it stays.
+  # SLICE-5 — UI-render-side MEASURED truth (DOM-presence facets).
+  # Dangerous TAGS reach the DOM (script / img / iframe) but EVENT-HANDLER
+  # attributes (onerror=) are stripped by React's attribute-handling on
+  # rehype-raw's render path. When rehype-sanitize lands, the first three
+  # flip to == False; the fourth stays. Provenance: R-20260519T020610Z-P-009.
   - "dom_has_script_tag == True"
   - "dom_has_xss_img_id == True"
   - "dom_has_xss_iframe_id == True"
   - "dom_has_onerror_attr == False"
+  # SLICE-6 — UI-render-side MEASURED truth (EXECUTION facets).
+  # Pinning the full F-004 picture: dangerous markup reaches the DOM (above)
+  # BUT does not execute. No alert/confirm/prompt fired (xss_dialog_fired==0),
+  # no off-platform request leaked (xss_leak_count==0). The execution surface
+  # is closed for THIS attack vector by the Chromium HTML-parser's policy of
+  # not executing <script> tags inserted via innerHTML (a long-standing browser
+  # mitigation) + React stripping event-handler attributes.
+  #
+  # This makes REFACTOR-218 a MEASURED-DEFENCE-IN-DEPTH finding: the bug
+  # surface (tag injection) still warrants the rehype-sanitize fix, but the
+  # exploitable attack vector via this PUT path is currently closed by the
+  # browser's own protections. When future code changes (e.g. switching from
+  # react-markdown to dangerouslySetInnerHTML directly, or introducing a
+  # client-side template renderer that DOES execute embedded scripts), these
+  # assertions would flip and the probe would surface the regression.
+  - "xss_dialog_fired == 0"
+  - "xss_leak_count == 0"
 
 cleanup:
   - kind: docker-compose-down

@@ -414,11 +414,18 @@ def _run_browser_step(step: dict, *, captures: dict[str, Any]) -> dict[str, Any]
     xhr_filter_substr = step.get("xhr_filter", "/api/")
     xhr_filter_regex_str = step.get("xhr_filter_regex")
     xhr_filter_regex = re.compile(xhr_filter_regex_str) if xhr_filter_regex_str else None
+    # Slice-6: leak_filter_regex matches requests routed OFF-PLATFORM (XSS leak
+    # vectors — e.g. attacker.example/leak callbacks fired by injected scripts).
+    # Default matches anything NOT pointing at the local stack base.
+    leak_filter_regex_str = step.get("leak_filter_regex")
+    leak_filter_regex = re.compile(leak_filter_regex_str) if leak_filter_regex_str else None
     wait_until = step.get("wait_until", "networkidle")   # one of: load, domcontentloaded, networkidle, commit
     timeout_ms = step.get("timeout_ms", 30_000)
 
     xhr_urls: list[str] = []
     console_errors: list[str] = []
+    dialog_messages: list[dict[str, str]] = []   # slice-6: page.on('dialog') captures
+    leak_urls: list[str] = []                    # slice-6: page.on('request') matching leak filter
     page_status = None
 
     def match_xhr(url: str) -> bool:
@@ -436,6 +443,28 @@ def _run_browser_step(step: dict, *, captures: dict[str, Any]) -> dict[str, Any]
 
                 page.on("request", lambda req: xhr_urls.append(req.url) if match_xhr(req.url) else None)
                 page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+
+                # Slice-6: dialog hook captures alert/confirm/prompt firings —
+                # the direct execution signal for script-based XSS. The handler
+                # must dismiss the dialog or the page hangs.
+                def _on_dialog(dialog):
+                    try:
+                        dialog_messages.append({"type": dialog.type, "message": dialog.message})
+                    finally:
+                        try:
+                            dialog.dismiss()
+                        except Exception:
+                            pass
+                page.on("dialog", _on_dialog)
+
+                # Slice-6: leak-filter hook captures off-platform requests
+                # (XSS exfil callbacks). Only enabled when leak_filter_regex
+                # is set so unrelated probes don't pay for the comparison.
+                if leak_filter_regex is not None:
+                    def _on_leak_request(req):
+                        if leak_filter_regex.search(req.url):
+                            leak_urls.append(req.url)
+                    page.on("request", _on_leak_request)
 
                 response = page.goto(full_url, wait_until=wait_until, timeout=timeout_ms)
                 page_status = response.status if response else None
@@ -467,6 +496,10 @@ def _run_browser_step(step: dict, *, captures: dict[str, Any]) -> dict[str, Any]
             "page_status": page_status,
             "console_errors": console_errors[:10],
             "dom_html_len": 0,
+            "xss_dialog_count": len(dialog_messages),
+            "xss_dialog_messages": dialog_messages,
+            "xss_leak_count": len(leak_urls),
+            "xss_leak_urls": leak_urls[:10],
             "error": f"{type(exc).__name__}: {exc}",
         }
 
@@ -476,6 +509,13 @@ def _run_browser_step(step: dict, *, captures: dict[str, Any]) -> dict[str, Any]
     if dom_html is not None:
         captures["dom_html"] = dom_html
         captures["dom_html_len"] = len(dom_html)
+    # Slice-6: expose dialog + leak captures for browser_events observe kind.
+    captures["xss_dialog_count"] = len(dialog_messages)
+    captures["xss_dialog_messages"] = dialog_messages
+    captures["xss_leak_urls"] = leak_urls
+    captures["xss_leak_count"] = len(leak_urls)
+    captures["console_error_count"] = len(console_errors)
+    captures["console_errors"] = console_errors
 
     return {
         "success": True,
@@ -485,6 +525,10 @@ def _run_browser_step(step: dict, *, captures: dict[str, Any]) -> dict[str, Any]
         "page_status": page_status,
         "console_errors": console_errors[:10],
         "dom_html_len": len(dom_html) if dom_html else 0,
+        "xss_dialog_count": len(dialog_messages),
+        "xss_dialog_messages": dialog_messages,
+        "xss_leak_count": len(leak_urls),
+        "xss_leak_urls": leak_urls[:10],
         "error": None,
     }
 
@@ -552,6 +596,13 @@ def execute_act(steps: list[dict], *, captures: dict[str, Any], verbose: bool) -
                             "xhr_urls_sample": bo["xhr_urls_sample"],
                             "page_status": bo["page_status"],
                             "console_errors": bo["console_errors"],
+                            # Slice-6: surface XSS-execution telemetry in the
+                            # per-act-step record so it lands in the probe-run
+                            # artefact (not just in `captures`).
+                            "xss_dialog_count": bo.get("xss_dialog_count", 0),
+                            "xss_dialog_messages": bo.get("xss_dialog_messages", []),
+                            "xss_leak_count": bo.get("xss_leak_count", 0),
+                            "xss_leak_urls": bo.get("xss_leak_urls", []),
                         },
                         error=bo.get("error"),
                     ))
@@ -657,6 +708,33 @@ def execute_observe(steps: list[dict], *, captures: dict[str, Any], verbose: boo
                 summary = compute_percentiles(latencies, pcts)
                 observed[step["capture_as"]] = summary
                 captures[step["capture_as"]] = summary
+            elif kind == "browser_events":
+                # Slice-6: read the Playwright-captured events (dialog firings +
+                # off-platform leak requests) into observe outputs so probes can
+                # explicitly state which event they're asserting on. The browser
+                # act step already places these into captures under fixed names;
+                # this observe kind copies them into the observed dict + lets the
+                # probe alias them via capture_as.
+                event_kind = step.get("event")   # "dialog" | "leak" | "console_error"
+                src_map = {
+                    "dialog": ("xss_dialog_count", "xss_dialog_messages"),
+                    "leak":   ("xss_leak_count",   "xss_leak_urls"),
+                    "console_error": ("console_error_count", "console_errors"),
+                }
+                if event_kind not in src_map:
+                    observed[step.get("capture_as", "browser_events_unnamed")] = {
+                        "_error": f"browser_events: unknown event {event_kind!r}; allowed: {sorted(src_map)}"
+                    }
+                    continue
+                count_key, list_key = src_map[event_kind]
+                count = captures.get(count_key, 0)
+                values = captures.get(list_key, [])
+                observed[step["capture_as"]] = count
+                captures[step["capture_as"]] = count
+                # Also expose a *_messages or *_urls list alias if requested.
+                if "capture_list_as" in step:
+                    observed[step["capture_list_as"]] = values
+                    captures[step["capture_list_as"]] = values
             elif kind == "browser_dom_query":
                 # Assert against the DOM captured by a preceding `browser` act
                 # step. Slice-5 introduction: enables real UI-render-side
@@ -873,7 +951,7 @@ def validate_probe(probe: dict) -> list[str]:
         errors.append(f"unknown stack_profile {probe['stack_profile']!r}; allowed: {sorted(STACK_PROFILES)}")
     allowed_kinds_arrange = {"docker-compose-up", "sql", "rest", "config_override"}
     allowed_kinds_act = {"rest", "browser"}
-    allowed_kinds_observe = {"sql", "response_field", "response_list_field", "response_contains", "latency_distribution", "browser_dom_query"}
+    allowed_kinds_observe = {"sql", "response_field", "response_list_field", "response_contains", "latency_distribution", "browser_dom_query", "browser_events"}
     for i, step in enumerate(probe.get("arrange", [])):
         if step.get("kind") not in allowed_kinds_arrange:
             errors.append(f"arrange[{i}]: kind {step.get('kind')!r} not allowed")
@@ -1326,6 +1404,250 @@ def merge_probe_into_sidecars(
 
 
 # ============================================================================
+# Slice-6: substrate staleness gate (dynamic-verification ADR Rule 5).
+# A probe's `verified_against_commit` must equal (or lag by ≤ STALE_THRESHOLD)
+# the substrate's current `last_scan_commit`. The runner refuses to execute
+# stale probes unless --allow-stale is set. The staleness count comes from
+# `git rev-list --count <probe-commit>..<substrate-commit>` in the substrate's
+# source repo. If the repo isn't reachable (LOCAL-ONLY operation; no remote
+# clone forced), the gate degrades to "commits-match-or-warn".
+# ============================================================================
+
+STALE_THRESHOLD_DEFAULT = 5
+
+
+def read_substrate_last_scan_commit(workspace_root: Path, repo: str) -> str | None:
+    manifest_path = workspace_root / "lineage" / repo / "manifest.yaml"
+    if not manifest_path.is_file():
+        return None
+    text = manifest_path.read_text(encoding="utf-8")
+    m = re.search(r"^\s*last_scan_commit:\s*([0-9a-f]+)\s*$", text, re.MULTILINE)
+    return m.group(1) if m else None
+
+
+def measure_commit_lag(
+    probe_commit: str,
+    substrate_commit: str,
+    *,
+    source_repo_path: Path,
+) -> int | None:
+    """Count commits between probe_commit and substrate_commit (exclusive .. inclusive).
+
+    Returns None if either commit is unreachable in the source repo, or if
+    the source repo doesn't exist on disk (local-only — never clone remote).
+    Returns 0 if commits match.
+    """
+    if probe_commit == substrate_commit:
+        return 0
+    if not source_repo_path.is_dir():
+        return None
+    # `git` is a safe local-binary verb (not in ALLOWED_VERBS because that gate
+    # is for stack-touching commands; this is a read-only history query).
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(source_repo_path), "rev-list", "--count",
+             f"{probe_commit}..{substrate_commit}"],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        return int(proc.stdout.strip())
+    except ValueError:
+        return None
+
+
+def evaluate_probe_staleness(
+    probe: dict,
+    *,
+    workspace_root: Path,
+    repo: str,
+    threshold: int = STALE_THRESHOLD_DEFAULT,
+) -> dict[str, Any]:
+    """Return a staleness verdict dict.
+
+    Shape:
+      {
+        "probe_commit": "<sha or null>",
+        "substrate_commit": "<sha or null>",
+        "lag_commits": <int or null>,
+        "is_stale": bool,
+        "reason": str (one-line summary)
+      }
+
+    A None lag means we couldn't measure (substrate source repo not on disk);
+    that's NOT stale — the gate is informational in that case.
+    """
+    probe_commit = probe.get("verified_against_commit")
+    substrate_commit = read_substrate_last_scan_commit(workspace_root, repo)
+    source_repo_path = workspace_root.parent / repo
+    if not probe_commit:
+        return {
+            "probe_commit": None, "substrate_commit": substrate_commit,
+            "lag_commits": None, "is_stale": True,
+            "reason": "probe has no verified_against_commit",
+        }
+    if not substrate_commit:
+        return {
+            "probe_commit": probe_commit, "substrate_commit": None,
+            "lag_commits": None, "is_stale": False,
+            "reason": "substrate manifest.yaml missing last_scan_commit; staleness undetermined",
+        }
+    lag = measure_commit_lag(probe_commit, substrate_commit, source_repo_path=source_repo_path)
+    if lag is None:
+        return {
+            "probe_commit": probe_commit, "substrate_commit": substrate_commit,
+            "lag_commits": None, "is_stale": False,
+            "reason": f"source repo {source_repo_path} not on disk; staleness undetermined",
+        }
+    return {
+        "probe_commit": probe_commit, "substrate_commit": substrate_commit,
+        "lag_commits": lag, "is_stale": lag > threshold,
+        "reason": (
+            f"probe at {probe_commit[:8]} lags substrate {substrate_commit[:8]} by "
+            f"{lag} commits (threshold={threshold})"
+        ),
+    }
+
+
+# ============================================================================
+# Slice-6: feature-flows.yaml probe-stamp merge.
+# Parallel to the slice-4 sidecar merge: after each PASS/FAIL probe-run, the
+# runner appends a `probe_verifications:` entry to the matching feature's
+# block in feature-flows.yaml. The maintainer keeps authoring narrative
+# facets manually; the auto-stamp is the audit trail (run-IDs, outcomes,
+# test-classes empirically covered).
+#
+# Per dynamic-verification ADR slice-5 "feature-flows.yaml updates" spec:
+#   "After a probe run, the orchestrator merges measured values into the
+#    static artefacts."
+# Slice 6 lands this for feature-flows.yaml. Test-map.yaml automation is
+# deferred to slice 7+ (currently maintainer-authored).
+#
+# The merge operates on raw YAML text (not parsed-and-rewritten) to preserve
+# comments, key order, and the maintainer's manual structure. We insert a
+# `    probe_verifications:` block inside the matching feature's mapping;
+# if the block already exists, we append (or skip if probe_run_id is already
+# present — idempotency).
+# ============================================================================
+
+def merge_probe_into_feature_flows(
+    run: ProbeRun,
+    *,
+    workspace_root: Path,
+    repo: str,
+    verbose: bool = False,
+) -> Path | None:
+    """Append a probe_verifications entry to the matching feature in feature-flows.yaml.
+
+    Returns the file path if appended; None if the file is missing OR the
+    feature isn't present OR the run outcome is not in {PASS, FAIL}.
+    """
+    if run.outcome not in {"PASS", "FAIL"}:
+        return None
+    if not run.feature_id:
+        return None
+
+    ff_path = workspace_root / "lineage" / repo / "feature-flows.yaml"
+    if not ff_path.is_file():
+        return None
+
+    text = ff_path.read_text(encoding="utf-8")
+
+    # Locate the feature entry: "  - feature_id: F-NNN"
+    feature_marker = f"  - feature_id: {run.feature_id}"
+    f_start = text.find(feature_marker)
+    if f_start == -1:
+        if verbose:
+            print(f"[runner] feature {run.feature_id} not in feature-flows.yaml; skipping merge", file=sys.stderr)
+        return None
+
+    # The feature block runs from f_start to the next "  - feature_id: " OR EOF.
+    next_feature = text.find("\n  - feature_id: ", f_start + len(feature_marker))
+    f_end = next_feature if next_feature != -1 else len(text)
+    feature_block = text[f_start:f_end]
+
+    # Replace-by-probe-id semantic: feature_flows.yaml carries the CURRENT measured
+    # state per probe; probe-runs/ holds the full run history. If this probe_id
+    # already has an entry for this feature, drop the old one before appending
+    # the fresh one. (Drops by probe_id, not by probe_run_id — the run_id is
+    # timestamp-based and changes every run.)
+    old_entry_pattern = re.compile(
+        r"      - probe_id: " + re.escape(run.probe_id) + r"\n"
+        r"(?:        [^\n]*\n)+",
+        re.MULTILINE,
+    )
+    feature_block, n_removed = old_entry_pattern.subn("", feature_block)
+    if n_removed > 0 and verbose:
+        print(f"[runner] feature-flows: replacing {n_removed} prior entry for {run.probe_id}", file=sys.stderr)
+
+    # Compose the new entry (4-space indent for the list item under the
+    # feature's `probe_verifications:` key at 4-space indent).
+    verdict_escaped = yaml.safe_dump(run.verdict_reason, default_style='"').strip()
+    entry_lines = [
+        f"      - probe_id: {run.probe_id}",
+        f"        probe_run_id: {run.probe_run_id}",
+        f"        outcome: {run.outcome}",
+        f"        test_class: {run.test_class}",
+        f"        ran_at: {run.ran_at}",
+        f"        ran_against_substrate_commit: {run.ran_against_substrate_commit}",
+        f"        verdict: {verdict_escaped}",
+        f"        artefact: lineage/{repo}/probe-runs/{dt.datetime.fromisoformat(run.ran_at).strftime('%Y-%m-%d')}-{run.probe_id}.yaml",
+    ]
+    entry_text = "\n".join(entry_lines) + "\n"
+
+    # Check whether `    probe_verifications:` already exists in the feature block.
+    pv_marker = "    probe_verifications:"
+    pv_idx_in_block = feature_block.find(pv_marker)
+    if pv_idx_in_block == -1:
+        # Insert the section before `    maintainer_curated:` (if present) or at end.
+        anchor_in_block = feature_block.find("    maintainer_curated:")
+        if anchor_in_block == -1:
+            # Append at end of block (before any trailing newlines)
+            new_feature_block = feature_block.rstrip() + "\n\n" + (
+                "    probe_verifications:    # auto-managed by lineage/_extractor/probe-runtime/runner.py — slice-6\n"
+                + entry_text
+            )
+        else:
+            new_feature_block = (
+                feature_block[:anchor_in_block]
+                + "probe_verifications:    # auto-managed by lineage/_extractor/probe-runtime/runner.py — slice-6\n".replace(
+                    "probe_verifications:", "    probe_verifications:")
+                + entry_text
+                + "\n"
+                + feature_block[anchor_in_block:]
+            )
+    else:
+        # Append to existing section. Find the section's end: the next "    <key>:"
+        # at the same 4-space indent, or end of feature block.
+        section_start_in_block = pv_idx_in_block
+        rest = feature_block[section_start_in_block + len(pv_marker):]
+        # The section body ends at the next sibling key under the feature ("    key:" at 4-space indent).
+        # Sibling keys begin with "\n    " followed by a non-space. The body itself is "\n      ..." (6-space).
+        # Find the first "\n    X" where X != " " (so not "      ").
+        m_sib = re.search(r"\n    (?=[A-Za-z_])", rest)
+        if m_sib is not None:
+            section_end_in_block = section_start_in_block + len(pv_marker) + m_sib.start()
+        else:
+            # No more siblings — the section extends to the end of the feature block.
+            section_end_in_block = len(feature_block.rstrip())
+        new_feature_block = (
+            feature_block[:section_end_in_block].rstrip()
+            + "\n"
+            + entry_text
+            + feature_block[section_end_in_block:]
+        )
+
+    new_text = text[:f_start] + new_feature_block + text[f_end:]
+    ff_path.write_text(new_text, encoding="utf-8")
+    if verbose:
+        print(f"[runner] merged probe-verification into feature-flows.yaml#{run.feature_id}", file=sys.stderr)
+    return ff_path
+
+
+# ============================================================================
 # Slice-5: probe resolution by feature + per-feature aggregated reporting +
 # investigator-log integration. The /probe-run --feature F-NNN form lets the
 # maintainer ask "run every probe that empirically grounds F-NNN" without
@@ -1600,6 +1922,8 @@ def main(argv: list[str]) -> int:
     p.add_argument("--no-merge", action="store_true", help="Skip the sidecar confidence merge after the probe completes")
     p.add_argument("--batch", action="store_true", help="Run multiple probes against a single shared docker-compose lifecycle (~50s overhead saved per probe after the first).")
     p.add_argument("--no-summary", action="store_true", help="Skip writing the per-batch summary artefact + investigator-log append (slice-5 outputs).")
+    p.add_argument("--allow-stale", action="store_true", help="Override the substrate-staleness gate (dynamic-verification ADR Rule 5). The runner refuses by default to execute probes whose verified_against_commit lags the substrate's last_scan_commit by more than 5 commits.")
+    p.add_argument("--show", action="store_true", help="Read-only: print the probe definition + the most recent probe-run artefact (no execution).")
     args = p.parse_args(argv)
 
     workspace_root = Path(args.workspace_root).resolve()
@@ -1642,6 +1966,73 @@ def main(argv: list[str]) -> int:
                 print(f"OK: {probe_path.name} validates")
         return 4 if had_error else 0
 
+    # --- SHOW MODE (read-only) ---
+    if args.show:
+        for pid in args.probe_id:
+            probe_path = probes_dir / f"{pid}.yaml"
+            probe = parse_probe_yaml(probe_path)
+            print(f"========== Probe {pid} ==========")
+            print(f"Path: {probe_path}")
+            print(f"Feature: {probe.get('feature_id')}")
+            print(f"Test class: {probe.get('test_class')}")
+            print(f"Verified against: {probe.get('verified_against_commit')}")
+            print(f"Stack profile: {probe.get('stack_profile')}")
+            staleness = evaluate_probe_staleness(probe, workspace_root=workspace_root, repo=args.repo)
+            print(f"Staleness: {staleness['reason']}{' [STALE]' if staleness['is_stale'] else ''}")
+            print()
+            print("Expected outcome:")
+            print(probe.get("expected_outcome", "(none)").rstrip())
+            print()
+            runs_dir = workspace_root / PROBE_RUNS_DIR_TEMPLATE.format(repo=args.repo)
+            last_run = None
+            for candidate in sorted(runs_dir.glob(f"*-{pid}.yaml"), reverse=True):
+                last_run = candidate
+                break
+            if last_run is None:
+                print("No probe-run artefact on disk yet.")
+            else:
+                run_data = yaml.safe_load(last_run.read_text(encoding="utf-8"))
+                print(f"Latest run: {last_run.name}")
+                print(f"  Run ID:    {run_data.get('probe_run_id')}")
+                print(f"  Ran at:    {run_data.get('ran_at')}")
+                print(f"  Outcome:   {run_data.get('outcome')}")
+                print(f"  Verdict:   {run_data.get('verdict_reason')}")
+                obs = run_data.get("observe_outcomes") or {}
+                if obs:
+                    print("  Observed values:")
+                    for k, v in obs.items():
+                        v_repr = repr(v) if not isinstance(v, dict) else "{...}"
+                        if len(v_repr) > 120:
+                            v_repr = v_repr[:117] + "..."
+                        print(f"    {k}: {v_repr}")
+                asserts = run_data.get("assert_outcomes") or []
+                if asserts:
+                    print(f"  Assertions: {sum(1 for a in asserts if a.get('passed'))}/{len(asserts)} passed")
+            print()
+        return 0
+
+    # --- STALENESS GATE (ADR Rule 5) — refuse stale probes unless --allow-stale ---
+    staleness_per_probe: dict[str, dict[str, Any]] = {}
+    for pid in args.probe_id:
+        probe_path = probes_dir / f"{pid}.yaml"
+        probe = parse_probe_yaml(probe_path)
+        staleness = evaluate_probe_staleness(probe, workspace_root=workspace_root, repo=args.repo)
+        staleness_per_probe[pid] = staleness
+    stale_probes = [pid for pid, s in staleness_per_probe.items() if s["is_stale"]]
+    if stale_probes and not args.allow_stale:
+        print("FATAL: probe staleness gate refuses execution (per dynamic-verification ADR Rule 5):", file=sys.stderr)
+        for pid in stale_probes:
+            print(f"  - {pid}: {staleness_per_probe[pid]['reason']}", file=sys.stderr)
+        print("Pass --allow-stale to override.", file=sys.stderr)
+        return 4
+    if stale_probes and args.allow_stale:
+        print("WARNING: --allow-stale override engaged. Stale probes:", file=sys.stderr)
+        for pid in stale_probes:
+            print(f"  - {pid}: {staleness_per_probe[pid]['reason']}", file=sys.stderr)
+    elif args.verbose:
+        for pid, s in staleness_per_probe.items():
+            print(f"[staleness] {pid}: {s['reason']}", file=sys.stderr)
+
     # --- BATCH MODE (shared docker-compose lifecycle) ---
     if args.batch or len(args.probe_id) > 1:
         if args.dry_run:
@@ -1655,6 +2046,7 @@ def main(argv: list[str]) -> int:
 
         exit_code = 0
         merge_count = 0
+        ff_merge_count = 0
         for run in runs:
             out_path = write_probe_run(run, workspace_root=workspace_root, repo=args.repo)
             print(f"  {run.probe_id} → {run.outcome} ({out_path.name}) — {run.verdict_reason}")
@@ -1664,6 +2056,12 @@ def main(argv: list[str]) -> int:
                     merge_count += len(updated)
                 except Exception as exc:
                     print(f"    WARNING: sidecar merge failed for {run.probe_id}: {exc}", file=sys.stderr)
+                try:
+                    ff_merged = merge_probe_into_feature_flows(run, workspace_root=workspace_root, repo=args.repo, verbose=args.verbose)
+                    if ff_merged is not None:
+                        ff_merge_count += 1
+                except Exception as exc:
+                    print(f"    WARNING: feature-flows merge failed for {run.probe_id}: {exc}", file=sys.stderr)
             if run.outcome == "FAIL":
                 exit_code = max(exit_code, 1)
             elif run.outcome in {"ERROR", "TIMEOUT", "SCOPE_VIOLATION"}:
@@ -1672,7 +2070,9 @@ def main(argv: list[str]) -> int:
         pass_count = sum(1 for r in runs if r.outcome == "PASS")
         fail_count = sum(1 for r in runs if r.outcome == "FAIL")
         err_count = len(runs) - pass_count - fail_count
-        print(f"\nBatch summary: {pass_count} PASS / {fail_count} FAIL / {err_count} ERROR. {merge_count} sidecar verification entries appended.")
+        print(f"\nBatch summary: {pass_count} PASS / {fail_count} FAIL / {err_count} ERROR. "
+              f"{merge_count} sidecar verification entries appended; "
+              f"{ff_merge_count} feature-flows.yaml verifications stamped.")
 
         # Slice-5: per-feature aggregated reporting + investigator-log integration.
         if not args.no_summary and runs:
@@ -1724,6 +2124,13 @@ def main(argv: list[str]) -> int:
                 print("[runner] no sidecars updated (feature missing OR all contributing nodes are UNRESOLVED)")
         except Exception as exc:
             print(f"WARNING: sidecar merge failed: {exc}", file=sys.stderr)
+        # Slice-6: also stamp feature-flows.yaml.
+        try:
+            ff_merged = merge_probe_into_feature_flows(run, workspace_root=workspace_root, repo=args.repo, verbose=args.verbose)
+            if ff_merged is not None:
+                print(f"Stamped feature-flows.yaml: {ff_merged.relative_to(workspace_root)}")
+        except Exception as exc:
+            print(f"WARNING: feature-flows merge failed: {exc}", file=sys.stderr)
 
     return {
         "PASS": 0,

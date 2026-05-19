@@ -1,0 +1,79 @@
+name: F-001 UI LOOP CLOSURE — Popular-Tile Click Feeds view_count Increment
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+description: |-
+  **NEW INVARIANT, batch 2026-05-19J — UI-LAYER CLOSURE OF F-001**. The Popular
+  column on the home page (rendered as one of four columns inside
+  OwnerEntitiesList) DISPLAYS the inflatable ranking AND is the surface that
+  TRIGGERS view_count increments on click. **The mechanic**: a user clicks a
+  Popular tile → SPA navigates to `/dataentities/{id}/overview` → the entity-detail
+  page mounts → `fetchDataEntityDetails` fires → backend
+  `GET /api/dataentities/{id}` → server-side `incrementViewCount` runs (per batch
+  F + H) → the entity's view_count rises → next Popular refresh ranks it higher
+  → the entity is more likely to be clicked again. **The UI does not break this
+  loop** with any client-side debouncing, idempotency key, per-tab-per-entity
+  "already-counted-this-session" guard, or analytics-only mode. Every Popular-tile
+  click is an authentic detail-read that the server counts. **Combined with
+  LSN-017**: every Popular-tile click costs +2 view_count UPDATEs (the doubling).
+  **Under DISABLED auth**: the loop is reachable anonymously at the API layer, but
+  the UI Recommended panel is HIDDEN on the home page (per Overview.tsx gate) —
+  so the UI-driven inflation path is closed for DISABLED while the API path
+  remains open. Under LOGIN_FORM/OAUTH2/LDAP both UI and API loops are open.
+  **The back-button compounds the loop**: react-router-dom v6's default route
+  component unmount/remount on history navigation means returning to `/` from
+  `/dataentities/{id}/overview` triggers `OwnerEntitiesList`'s `useEffect(...,
+  [])` again, firing all four thunks again. A user clicking Popular → back →
+  clicking again from a remounted Popular observes an ALREADY-UPDATED ranking
+  if their click+back round-trip incremented the clicked entity's view_count
+  past a neighbour — **the loop is observable to the user from the UI in
+  real-time**. **Mitigation candidates (all unimplemented at the UI layer)**:
+  (i) debounce `fetchDataEntityDetails` per `(session, entityId)` pair —
+  first click counts, subsequent clicks within N minutes don't refetch; (ii)
+  intercept the Popular-tile click to dispatch an analytics-only thunk that
+  does NOT trigger `incrementViewCount`; (iii) cache the detail-page mount in
+  Redux so back-and-forward navigation doesn't refire the read.
+contributing_files:
+- PopularStrip.md
+- DataEntityDetails.md
+- fetchDataEntityDetails.md
+triangulation_count: 3
+cross_batch: false
+severity: HIGH
+severity_dim: security
+evidence:
+- 'PopularStrip.md:bugs_limitations_corner_cases.[0] HIGH — F-001 LOOP CLOSURE:
+  the UI surface that displays the inflatable ranking is ALSO the surface that
+  triggers view_count increments on click; the UI does not break this loop with
+  any client-side debouncing, idempotency key, per-tab-per-entity already-counted-this-session
+  guard, or analytics-only mode'
+- 'PopularStrip.md:concepts.invariants[click side-effect (per Popular tile clicked)
+  — FIRES THE F-001 LOOP]'
+- 'DataEntityDetails.md:bugs_limitations_corner_cases.[0] HIGH — LSN-017 combined
+  with F-001 loop closure: every Popular-tile click costs +2 view_count'
+- 'fetchDataEntityDetails.md:performance.hot_paths.[Detail-page mount is a hot
+  path — every entity click in Search/Directory/Catalog Overview lands in
+  DataEntityDetails which fires this thunk]'
+mitigations_unimplemented:
+- 'Debounce fetchDataEntityDetails per (session, entityId) pair — first click
+  counts, subsequent clicks within N minutes do not refetch'
+- 'Intercept the Popular-tile click to dispatch an analytics-only thunk that
+  does NOT trigger incrementViewCount'
+- 'Cache the detail-page mount in Redux so back-and-forward navigation does not
+  refire the read'
+- 'Add UI-side click-tracking with idempotency key — would let the UI sample
+  the ranking signal independently of the read-as-write side-effect'
+notes: |-
+  New invariant captured in batch 2026-05-19J. The F-001 UI loop closure is the
+  user-observable embodiment of the view_count UPDATE→READ loop on the client
+  side. The loop is INTENTIONALLY closed — there is no separate analytics
+  pipeline (no Mixpanel / Amplitude / Segment / GA / PostHog in the UI; verified
+  by grep returning ZERO matches). The implicit decision is "the server-side
+  view_count counter IS our usage metric".
+
+  This decision couples the analytics signal to the read-as-write side-effect
+  (per batch F's `read-as-write` implicit ADR). The coupling makes the F-001
+  inflation surface MAXIMALLY visible to anyone driving the UI: a user can see
+  their inflation take effect within the SPA session by clicking → back →
+  observing the new ranking.

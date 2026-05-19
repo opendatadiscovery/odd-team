@@ -7,6 +7,9 @@ drift_class_summary:
 - external_lib_assumes_sanitisation
 - partial_mitigation_via_unrelated_layer
 - closed_by_browser_mitigation_not_app_layer
+- ui_hides_control_backend_doesnt_enforce
+- silent_write_on_missing_anchor
+- response_decoupled_from_storage
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Data entity description — Markdown content storage
@@ -30,6 +33,7 @@ description: 'Operators edit a data entity''s description via PUT /api/dataentit
 
   '
 contributing_nodes:
+- ts react-component:DataEntityDescription (Overview > Description cluster — InternalDescription + Markdown + useTermWiki)
 - odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
 - odd-platform java service service:DataEntityServiceImpl
 - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
@@ -117,6 +121,154 @@ observed_vs_expected:
       evasion catalog entries to widen the empirical attack-surface envelope.
 
       '
+  - facet: UI rehype-sanitize is ABSENT — PRIMARY-SOURCE CONFIRMED (batch J)
+    observed: |-
+      The shared `<Markdown>` element at
+      `odd-platform-ui/src/components/shared/elements/Markdown/Markdown.tsx:84-127`
+      invokes `MDEditor.Markdown` (read path) and `MDEditor` (edit path) from
+      `@uiw/react-md-editor@3.25.6` with ONLY `components`, `source`,
+      `wrapperElement`, `disableCopy` props — NO `rehypePlugins` override.
+      The library transitively pulls in `@uiw/react-markdown-preview@4.2.2` →
+      `rehype-raw@6.1.1` + 6 other rehype plugins (per `pnpm-lock.yaml:5911-5938`)
+      BUT NEVER `rehype-sanitize`. Grep confirms ZERO matches of
+      `rehype-sanitize` anywhere in the `odd-platform-ui/` source OR in
+      pnpm-lock.yaml. The defence-in-depth depends ENTIRELY on Chromium's
+      HTML-parser policy of not executing scripts inserted via
+      innerHTML/dangerouslySetInnerHTML + React's attribute filtering on
+      rehype-raw's setProperty path (sidecar bugs_limitations_corner_cases[0]
+      severity HIGH). A future code change (switching to dangerouslySetInnerHTML,
+      adopting a client-side template renderer, relaxing CSP, or using SVG
+      payloads with onload) re-opens the surface invisibly. **Defence-in-depth
+      breadth**: every Markdown surface in the UI is affected (alerts, queries,
+      term definitions, owner descriptions, dataset-field descriptions,
+      attachments) because `<Markdown>` is the SOLE Markdown renderer. PRIMARY-SOURCE
+      CONFIRMED batch J.
+    expected: rehype-sanitize configured at the Markdown component level OR
+      application-layer sanitisation upstream
+    drift_class: external_lib_assumes_sanitisation
+    provenance: |-
+      STATIC + MEASURED — primary-source verification at Markdown.tsx:84-127
+      + pnpm-lock.yaml:5911-5938 + DataEntityDescription sidecar
+      bugs_limitations_corner_cases[0] (severity HIGH) + invariants[0] +
+      P-009 slice-5/-6 empirical pin (run R-20260519T020610Z-P-009).
+  - facet: Permission gating is PARTIAL — Edit button gated, content NOT (batch J)
+    observed: |-
+      Only the Edit/Add affordance is gated by `WithPermissions permissionTo={Permission.DATA_ENTITY_DESCRIPTION_UPDATE}`
+      (`InternalDescriptionHeader.tsx:40-50` + `InternalDescriptionPreview.tsx:32-40`).
+      The description CONTENT itself (`<Markdown value={value} />` at
+      InternalDescriptionPreview.tsx:21) renders UNCONDITIONALLY for any caller
+      with `DATA_ENTITY_VIEW` on the entity. A caller without
+      `DATA_ENTITY_DESCRIPTION_UPDATE` still receives the full Markdown render
+      including any embedded HTML payload from a malicious writer. This is the
+      read-collaborative posture (REFACTOR-024 family) — but the specific
+      gating semantic is subtle: a refactor "simplifying" by wrapping
+      OverviewDescription in <WithPermissions> would silently BREAK legitimate
+      read access for non-editors. A reviewer easily mistakes the
+      WithPermissions placement as "description gating" rather than
+      "edit-button gating". PRIMARY-SOURCE CONFIRMED batch J via sidecar
+      bugs_limitations_corner_cases[1] + invariants[1].
+    expected: documented gating model — either explicit "Edit gated, View
+      always" with operator-facing notes OR symmetric content-gating with
+      a separate read permission
+    drift_class: ui_hides_control_backend_doesnt_enforce
+    provenance: STATIC — primary-source verification at
+      InternalDescriptionHeader.tsx:40-50 + InternalDescriptionPreview.tsx:21,32-40
+      + DataEntityDescription sidecar invariants[1] + implicit_adrs[1] (the
+      `WithPermissions` placement around buttons-only is deliberate, per
+      sidecar implicit_adrs[1] intent_anchor).
+  - facet: "[[Namespace:TermName]] mention syntax is undocumented (batch J)"
+    observed: |-
+      The platform-specific term-mention syntax `[[Namespace:TermName]]`
+      (parsed by `useTermWiki.ts:30-228` at `TERM_PATTERN` regex from
+      `lib/constants.ts:177`) is documented ONLY in the InformationIcon
+      tooltip at `InternalDescriptionHeader.tsx:22-28`: "You can link an
+      existing term by entering information about the term according to
+      the pattern [[NamespaceName:TermName]]". No public doc page covers
+      the syntax, its precedence rules, what happens on lookup failure
+      (the inline "Term {termName} not found in namespace {namespaceName}"
+      error at useTermWiki.ts:126), OR the side-effect that mentioning a
+      term AUTO-CREATES a `term_relations` row REGARDLESS of
+      `DATA_ENTITY_ADD_TERM` permission (per batch-G
+      upsertDataEntityInternalDescription sidecar
+      bugs_limitations_corner_cases[3]). Additionally: the UI regex is
+      STRICTER than the backend regex (UI requires non-empty namespace
+      AND term-name; backend allows empty groups per
+      `TermServiceImpl.java:67`) — a latent inconsistency.
+    expected: doc page covering the syntax + the auto-link side-channel +
+      the regex parity contract
+    drift_class: ui_hides_control_backend_doesnt_enforce
+    provenance: STATIC — primary-source verification at
+      DataEntityDescription sidecar invariants[3] + doc_drift_findings[0]
+      + InternalDescriptionHeader.tsx:22-28 + lib/constants.ts:177 +
+      useTermWiki.ts. NEW DOC-GAP candidate.
+  - facet: Shift+Enter save shortcut is undocumented (batch J)
+    observed: |-
+      `useTermWiki.ts:179-184` — `handleSaveMarkdownOnEnter` fires
+      `handleUpdateDescription` ONLY when `e.key === 'Enter' && e.shiftKey`.
+      Quiet power-user shortcut layered atop the explicit Save button. The
+      InformationIcon tooltip at `InternalDescriptionHeader.tsx:20-28`
+      documents the term-mention syntax but NOT the keyboard shortcut.
+      No documentation in any operator-facing surface. PRIMARY-SOURCE
+      CONFIRMED batch J.
+    expected: documented shortcut OR removed if accidental
+    drift_class: null
+    provenance: |-
+      STATIC — primary-source verification at useTermWiki.ts:179-184 + sidecar
+      bugs_limitations_corner_cases (omission) + implicit_adrs[4] (intent —
+      deliberate exclusion of plain Enter). NEW DOC-GAP candidate.
+  - facet: Cancel discards in-flight edits silently (batch J)
+    observed: |-
+      `useTermWiki.ts:46-49` — `toggleEditMode` re-syncs
+      `internalDescription = description` (the redux-stored value) on EVERY
+      flip. A user who clicks Cancel then re-clicks Edit sees the LAST SAVED
+      description, NOT their cancelled work. There is NO autosave, NO draft
+      preservation, NO warn-on-navigate, NO undo. A user editing a long
+      description who accidentally clicks Cancel loses all work
+      irrecoverably. PRIMARY-SOURCE CONFIRMED batch J via sidecar
+      invariants[4] + implicit_adrs[2].
+    expected: at minimum a confirm-discard prompt OR a draft-preservation
+      mechanism (sessionStorage / Redux UI-slice) OR a warn-on-navigate
+    drift_class: null
+    provenance: STATIC — primary-source verification at useTermWiki.ts:46-49
+      + InternalDescriptionEdit.tsx:35 + sidecar implicit_adrs[2] (the
+      `setInternalDescription(description)` line IS the explicit reset —
+      it would have been trivial to omit; the maintainer chose to discard).
+  - facet: Async term-resolution race condition (batch J)
+    observed: |-
+      `useTermWiki.ts:98-149` — `handleMarkdownChange` fires on every editor
+      keystroke; for each `TERM_PATTERN` match it calls
+      `useGetTermByNamespaceAndName` ONCE per unique term (memoised in
+      `fetchedTerms` / `unsuccessfulTerms`). A description with 100 unique
+      unresolved mentions issues 100 PARALLEL HTTP requests on first render
+      (sidecar invariants[6]). The last-write-wins error state at
+      useTermWiki.ts:122-128 does NOT coordinate across in-flight
+      requests. Typing fast in the editor can produce parallel HTTP
+      requests that race; the inline error state may flicker. The
+      `fetchedTerms` cache memoises but does NOT batch. PRIMARY-SOURCE
+      CONFIRMED batch J.
+    expected: debounce per keystroke + batched term-resolution (single
+      `GET /api/terms/resolve?ns=X&names=A,B,C` endpoint) OR a request
+      coalescer at the hook layer
+    drift_class: structural_amplification_surface
+    provenance: STATIC — primary-source verification at useTermWiki.ts:30-228
+      + sidecar invariants[6] + bugs_limitations_corner_cases (the
+      "highest-likelihood regression sites" list).
+  - facet: Spellcheck DOM mutation hard-codes id='md-editor' (batch J)
+    observed: |-
+      `Markdown.tsx:96-101` — `useEffect` queries
+      `document.getElementById('md-editor')?.querySelector('textarea')?.setAttribute('spellcheck',
+      'true')` on mount. The id is HARD-CODED at `Markdown.tsx:105`; two
+      simultaneous `<Markdown editor>` instances on the same page would
+      race for the same DOM id. Bug is DORMANT today (OverviewDescription
+      is single-editor) but the contract is fragile — a multi-editor
+      refactor (e.g. multi-pane comparison view) would race silently.
+      The imperative DOM mutation also bypasses React's state model.
+      PRIMARY-SOURCE CONFIRMED batch J.
+    expected: stable per-instance ID + React-state-driven spellcheck OR
+      removal of the imperative DOM mutation
+    drift_class: null
+    provenance: STATIC — primary-source verification at Markdown.tsx:96-101,
+      :105 + sidecar invariants[6] + bugs_limitations_corner_cases.
   - facet: empty-string normalisation on description writes (batch H — STATIC)
     observed: StringUtils.isEmpty(description) is normalised to NULL before the UPDATE (line 431); an empty body and a payload-omitted
       body both produce `internal_description = NULL`
@@ -223,13 +375,27 @@ test_matrix:
     - SQL-injection vector in getHighlightedResult (batch-H known_security_gaps[0]) — raw `.formatted()` SQL with user-controllable
       internal_description as one of two interpolated parameters. Separate downstream feature (FTS highlight) but the description
       IS the upstream source.
-control_summary: '2 of 4 cells PROBED — integration + security both PROBED-PINNING-BUG. Slice-5 adds UI-render-side empirical
-  measurement: P-009 refined REFACTOR-218 from inferred-full-XSS to measured-partial-XSS (tags pass, attributes stripped).
-  Batch-H adds primary-source SQL confirmation (ReactiveDataEntityRepositoryImpl.java:430-438) and surfaces a downstream SQL-injection
-  surface in getHighlightedResult (lines 799-806) that consumes the same internal_description column. Batch-I adds service-tier
-  confirmation at DataEntityServiceImpl.upsertDescription (lines 323-333) — silent-UPDATE-on-missing-entity (NO pre-existence
-  check, contrast createMetadata at lines 257-258) + response-from-request-payload (NOT post-write DB read, lines 329-332).
-  Two new STATIC facets surface the silent-200-on-missing contract and the response-decoupled-from-storage edge case.'
+control_summary: |-
+  2 of 4 cells PROBED — integration + security both PROBED-PINNING-BUG.
+  Slice-5 adds UI-render-side empirical measurement: P-009 refined REFACTOR-218
+  from inferred-full-XSS to measured-partial-XSS (tags pass, attributes
+  stripped). Batch-H adds primary-source SQL confirmation
+  (ReactiveDataEntityRepositoryImpl.java:430-438) and surfaces a downstream
+  SQL-injection surface in getHighlightedResult (lines 799-806) that consumes
+  the same internal_description column. Batch-I adds service-tier confirmation
+  at DataEntityServiceImpl.upsertDescription (lines 323-333) —
+  silent-UPDATE-on-missing-entity (NO pre-existence check, contrast
+  createMetadata at lines 257-258) + response-from-request-payload (NOT
+  post-write DB read, lines 329-332). Batch-J adds the UI HALF of F-004
+  PRIMARY-SOURCE CONFIRMED: NO rehype-sanitize anywhere in the SOLE Markdown
+  renderer (`Markdown.tsx:84-127` + zero matches in source/lockfile);
+  permission gating is PARTIAL (Edit button gated, content render NOT —
+  read-collaborative posture for descriptions); [[ns:term]] mention syntax
+  is undocumented + auto-creates term_relations bypassing
+  DATA_ENTITY_ADD_TERM; Shift+Enter save shortcut undocumented; Cancel
+  silently discards in-flight edits; async term-resolution race exists.
+  THREE new doc-gap candidates surface this batch (term-mention syntax /
+  Markdown rendering pipeline / partial-gating semantics).
 related_refactoring_scopes:
 - REFACTOR-218
 related_test_gaps:

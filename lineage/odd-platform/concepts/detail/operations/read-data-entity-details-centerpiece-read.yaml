@@ -1,6 +1,9 @@
 name: Read Data Entity Details (centerpiece read)
 canonical_in_docs: true
 canonical_candidate: false
+pillar_affinity:
+- P-01
+- P-09
 description: '`GET /api/dataentities/{data_entity_id}` — the platform''s single hottest
   read endpoint. NO `@PreAuthorize`, NO SECURITY_RULES entry, falls through to `pathMatchers(''/**'').authenticated()`
   (and `permitAll()` under DISABLED). Pure delegation to `DataEntityService.getDetails(long)`:
@@ -15,11 +18,34 @@ description: '`GET /api/dataentities/{data_entity_id}` — the platform''s singl
   tags, terms, metadataFieldValues[], dataSource, linkedUrlList[], sourceList[]/targetList[]/outputList[]/inputList[],
   viewCount, isStale, manuallyCreated, suiteUrl/suiteName/expectation/severity. Centerpiece
   embodiment of the read-collaborative posture (ADR-CANDIDATE-003 RESOLVED as INTENTIONAL
-  on this endpoint).'
+  on this endpoint). **Batch J — UI HALF (P-01 pillar)**: the canonical caller is
+  `DataEntityDetails.tsx` (the per-entity detail-page top-level component) mounting
+  at `/dataentities/:dataEntityId/*`; the fetch is dispatched via `fetchDataEntityDetails`
+  redux-thunk wrapping the OpenAPI-generated `DataEntityApi.getDataEntityDetails`.
+  Every page-mount fires the thunk via `useEffect` at DataEntityDetails.tsx:56-64.
+  **LSN-017 doubling confirmed**: the dep-array contains `details.status?.status`
+  which is itself populated by THIS very thunk''s fulfilled action — first render
+  fetches (status undefined → real value), second render re-fires (status value unchanged),
+  net: TWO `GET /api/dataentities/{id}` calls per page-open, TWO `view_count + 1`
+  UPDATEs. Empirically pinned by probe P-004 (xhr_count=2 + DB delta=2; regex-filtered
+  exact path match). The fulfilled payload fans across THREE redux slices (dataentities
+  + metadata + owners) via independent extraReducers. Error path uses `switchOffErrorMessage:
+  true` → no toast on rejection; `<AppErrorPage>` is the only error surface. No client-side
+  validation of `dataEntityId` (negative / zero / NaN flow through to the backend).
+  No `requestId`-based stale-response guard. UI security inheritance: the thunk has
+  no authorization check; under DISABLED-mode the read is anonymous; under LOGIN_FORM/OAUTH2/LDAP
+  every authenticated user fetches every entity (read-collaborative). UI performance:
+  the mount issues 5 parallel thunks (this one + 4 in the second useEffect: alert-counts,
+  DQ-test-report, SLA-report, resource-permissions) — 6 HTTP calls per mount with
+  LSN-017.'
 axes_present:
 - controllers
+- ui_components
+- ui_redux_thunks
 nodes:
 - odd-platform java DataEntityController controller-method:getDataEntityDetails
+- odd-platform ts react-component component:DataEntityDetails
+- odd-platform ts redux-thunk thunk:fetchDataEntityDetails
 contributors:
 - 'getDataEntityDetails.md:concepts.operations: delegate getDetails(Long), CTE select,
   error-on-missing, enrich-entity-class (5-zip), enrich parent-DEGs, enrich-details
@@ -28,14 +54,101 @@ contributors:
   outside SECURITY_RULES) + implicit_adrs.[1] (soft-deleted entities returned by design)
   + implicit_adrs.[2] (read-as-write view_count increment) + implicit_adrs.[3] (multi-stage
   zip-merge enrichment)
+- 'DataEntityDetails.md (batch J — UI HALF): concepts.operations[dispatch fetchDataEntityDetails
+  on mount + dep-array change, dispatch 4 parallel ancillary fetches mount-only, render
+  conditional Header/Tabs + unconditional Routes, render Skeleton/AppErrorPage as
+  exclusive alternatives]; concepts.invariants[the 5-element dep-array contains 1
+  response-derived value (LSN-017 bug locus)]; bugs_limitations_corner_cases.[0]
+  LSN-017 empirically pinned by P-004 at run R-20260519T010758Z-P-004 (HIGH); implicit_adrs.[0]
+  page-component owns data-fetch lifecycle; implicit_adrs.[1] skeleton + content +
+  error exclusive renders; implicit_adrs.[2] permissions via React Context'
+- 'fetchDataEntityDetails.md (batch J — UI HALF): concepts.operations[dispatch thunk
+  → pending → API call → fulfilled fans to 3 slices → no success toast → no error
+  toast]; concepts.invariants[exactly one HTTP call per dispatch (no de-dup, no retry,
+  no debounce); fulfilled payload fans into THREE slices simultaneously (dataentities
+  + metadata + owners) via independent extraReducers; switchOffErrorMessage suppresses
+  toast not rejectWithValue]; implicit_adrs.[0] project standardises all async data-fetching
+  through handleResponseAsyncThunk; implicit_adrs.[2] fulfilled payload fans across
+  three slices intentionally; bugs_limitations_corner_cases.[self-feeding double-fetch
+  loop HIGH cross-referenced from this thunk + DataEntityDetails dep-array]'
 evidence:
 - getDataEntityDetails.md:concepts.operations + concepts.invariants.[0-3]
 - getDataEntityDetails.md:implicit_adrs.[0-3]
-notes: "Operation vocabulary captured for future DOC-NNN follow-ups on the\ncenterpiece\
-  \ read. Two doc-gaps surface from this operation:\n  (a) `/features/data-discovery/catalog-overview`\
-  \ lists 5 of the 34\n      DataEntityDetails fields (description, owners, tags,\
-  \ terms,\n      custom metadata). Operators must read the OpenAPI spec to\n    \
-  \  know what the endpoint returns.\n  (b) The view-count side-effect is UNDOCUMENTED.\
-  \ Live docs do not\n      state that a GET request mutates state at the DB layer.\n\
-  \      Operators auditing for read-only access paths, building\n      read-replicas,\
-  \ or applying transactional-isolation tuning\n      have no published signal.\n"
+- DataEntityDetails.md:concepts.operations + concepts.invariants + bugs_limitations_corner_cases.[0]
+  + downstream_side_effects (empirical probe P-004 evidence)
+- fetchDataEntityDetails.md:concepts.operations + concepts.invariants + bugs_limitations_corner_cases.[self-feeding-loop]
+  + implicit_adrs.[0,1,2]
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      No @PreAuthorize at controller; UI thunk has no client-side check (DataEntityDetails.tsx:56-64
+      dispatches without validation). DISABLED-mode = anonymous reachable from both API and UI.
+      Under LOGIN_FORM/OAUTH2/LDAP every authenticated user can fetch every entity (read-collaborative).
+  owner_scoping:
+    verdict: BYPASSES
+    detail: Backend GET applies no owner predicate; UI passes only dataEntityId
+      to the thunk; no owner / namespace / role filter at any layer.
+  strengths:
+  - 'Reactive @ReactiveTransactional boundary at the backend service guarantees
+    atomic view_count UPDATE + payload read'
+  - 'Soft-deleted entities surfaced deliberately for UI isStale rendering — defensible
+    UX intent'
+  weaknesses:
+  - 'Read-collaborative cross-owner enumeration (HIGH) — every authenticated user reads
+    every entity full 34-field payload'
+  - 'LSN-017 — view_count inflation 2x cheaper from UI than from API (HIGH under default
+    config) — empirically pinned by P-004'
+  - 'DISABLED-mode anonymous page-open inflates view_count with no audit trail
+    (probe P-002 empirically confirmed)'
+  - 'No client-side dataEntityId validation — negative / zero / NaN flow through
+    the API'
+  - 'AppError.url reflection — backend response URL surfaces in <AppErrorPage>
+    banner; for direct-exposed deployments this reveals internal API paths'
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - 'Backend GET /api/dataentities/{id} p50=106ms p95=202ms p99=1539ms (50-call
+    sample from probe P-003 baseline; p99 driven by JIT warmup)'
+  - 'UI page-mount fires 5 parallel thunks per route navigation (this thunk + 4
+    in the second useEffect); 6 HTTP calls per mount with LSN-017'
+  - 'Backend view_count UPDATE in same @ReactiveTransactional as the SELECT;
+    every read is also a write at the DB layer'
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-request-per-mount; no batching, no GraphQL coalescing
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless backend and UI; LSN-017 amplifies backend view_count UPDATE
+      contention by 2x — the hot-row problem documented in F-001 facet[5] is
+      multiplied by the UI bug
+  weaknesses:
+  - 'LSN-017 doubles network round-trip cost per page-open (MEDIUM) — fix is 1
+    line at DataEntityDetails.tsx:63'
+  - 'No client-side cache between Redux and the network — every dispatch issues
+    a fresh fetch even though Redux already holds the prior payload'
+  - 'No in-flight de-dup or coalescing at the thunk layer'
+  - 'No requestId-based stale-response protection — rapid entity-id switching
+    can overwrite fresh data with late-arriving stale fetches'
+notes: |-
+  Strengthened in batch 2026-05-19J with TWO UI-side sidecars (DataEntityDetails
+  + fetchDataEntityDetails) closing the F-001 chain UI half end-to-end. LSN-017
+  is now empirically pinned by probe P-004 (xhr_count=2 + DB delta=2; regex-filtered
+  exact path match) — the cross-layer bug fingerprint (UI dep-array + backend
+  read-as-write) is the canonical example of "cross-layer user-effects invisible
+  to per-node scans" (the LSN-017 retro title).
+
+  Three doc-gap candidates flow from this strengthen:
+    (a) /features/data-discovery/catalog-overview does NOT mention that opening
+        a detail page inflates Popular ranking by +2 view_count.
+    (b) Operators tuning Popular ranking or auditing read-only access paths
+        have no published signal that opening a detail page mutates state.
+    (c) The LSN-017 2x inflation baseline is documented only in retros; the
+        public docs page makes no mention of the bug or the bug's effect on
+        Popular ranking.

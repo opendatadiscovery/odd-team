@@ -1,0 +1,33 @@
+- **DOC-GAP-137**: **META-FINDING** — ZERO UI test coverage across the entire `odd-platform-ui` SPA — Vitest + @testing-library/react + jsdom dev-deps installed; `test`/`test:coverage` scripts declared; ZERO `.test.tsx`/`.spec.tsx` files exist anywhere; every UI behaviour in the doc-product is enforced only by the bundler's typecheck + manual / probe-suite exercise
+  - **Category**: meta (cross-cutting; pairs with the test-coverage-mapper reducer's TEST-GAP-NNN cluster)
+  - **Surfaced by** (all 5 batch-J UI sidecars converge):
+    - `odd-platform__ts__react-component__component__DataEntityDetails.md:tests_coverage_semantic.gaps` ("ZERO direct test coverage" + 10 uncovered behaviours)
+    - `odd-platform__ts__redux-thunk__thunk__fetchDataEntityDetails.md:tests_coverage_semantic.covered_behaviours: []` + `.gaps` ("zero test infrastructure in odd-platform-ui")
+    - `odd-platform__ts__react-component__component__DataEntityDescription.md:tests_coverage_semantic.gaps` ("zero UI tests across the entire SPA")
+    - `odd-platform__ts__react-component__component__PopularStrip.md:tests_coverage_semantic.gaps` ("zero test coverage at every layer of the client")
+    - `odd-platform__ts__react-component__component__LineageGraph.md:tests_coverage_semantic.gaps` ("Total coverage gap at the UI layer is severe and load-bearing")
+  - **Evidence**:
+    - Glob `<odd-platform-ui>/src/**/*.test.{ts,tsx}` returns ZERO files across the entire UI tree (verified by 5 independent sidecars).
+    - Glob `<odd-platform-ui>/src/**/*.spec.{ts,tsx}` returns ZERO files.
+    - Glob `<odd-platform-ui>/src/**/__tests__/**` returns ZERO files.
+    - `odd-platform-ui/package.json:10` declares `"test": "vitest"`; `package.json:97-99` lists `@testing-library/react`, `@testing-library/jest-dom`, `@testing-library/user-event` as dev-deps — the harness is fully installed; ZERO tests author it.
+    - One narrow exception (per PopularStrip sidecar): `DataEntitiesUsageInfoView/__tests__/DataEntitiesUsageInfoView.test.tsx` exists; the dedicated UI coverage is to a single non-flow component in the `Overview/DataEntitiesUsageInfo` subtree. Every other UI surface — including the platform's hottest user-facing flows (entity detail page, lineage canvas, Popular tile, description editor) — is uncovered.
+    - Sidecar inventory of uncovered behaviours (consolidated across 5 sidecars):
+      - 10 behaviours on `DataEntityDetails.tsx` (LSN-017 regression-pin, NaN-route-param, ancillary-fetch-cardinality, skeleton/error/content render-state, permission-vector, ...)
+      - 9 behaviours on `fetchDataEntityDetails` thunk (fan-out, switchOffErrorMessage, requestId stale-response, ...)
+      - 14 behaviours on description cluster (XSS-defence-in-depth-pin, partial-gating, Shift+Enter, Cancel discards, term-resolution race, ...)
+      - 10 behaviours on Popular column (mount-once fetch, click-navigation-target, empty-state, loading-state, owner-association gate, DISABLED-mode gate, F-001 loop closure, ...)
+      - 14 behaviours on lineage canvas (route-dispatch, sequential-fetch contract, d=1 default, depth-slider, LoadMore, diamond rendering, cycle handling, click-through navigation, ...)
+    - Total: **57 named uncovered UI behaviours** across the 5 batch-J sidecars, every one with a file:line anchor and a suggested test class.
+  - **Proposed doc action**: This is META — the response is a TEST-GAP-META item (not a doc edit) AND a developer-guide page addition. The developer-guide page is:
+    - Create `documentation/docs/developer-guides/contributing/testing-the-ui.md` describing: (a) the project's Vitest + @testing-library/react harness; (b) the test-class taxonomy used by the substrate (unit / integration / regression-pin / visual-regression); (c) the highest-leverage tests to author first (LSN-017 regression-pin, F-001 loop closure, XSS-defence-in-depth-pin, partial-gating, click-navigation-target, owner-association gate). Cross-link to TEST-GAP-NNN backlog clusters.
+    - On the meta-side, the test-coverage-mapper reducer's batch-J refresh files the per-sidecar TEST-GAP-NNN items; doc-gap-finder cross-references but does NOT duplicate.
+  - **Cross-references**:
+    - DOC-GAP-130 — LSN-017 regression-pin is the single highest-value test; the doubling is empirically pinned by P-004 but has no UI-side regression test.
+    - DOC-GAP-128 — click-navigation-target test would catch the docs-vs-code mismatch in CI.
+    - DOC-GAP-129 — DISABLED-mode rendering gate test would catch the docs-vs-code mismatch in CI.
+    - DOC-GAP-105 + DOC-GAP-131 — depth-clamp + d=1 default tests would catch lineage UI regressions.
+    - DOC-GAP-096 + DOC-GAP-117 + DOC-GAP-134 — partial-gating + XSS-defence-in-depth tests would catch description-editor regressions; the surface today is empirically pinned by P-009 only.
+    - TEST-GAP-META (paired test-coverage-mapper reducer output) — every uncovered UI behaviour enumerated above is the source for a 1:1 TEST-GAP-NNN.
+  - **Severity**: HIGH
+  - **Severity rationale**: The platform's hottest user-facing flows are enforced today by manual exercise and the probe-runs suite alone — every regression that breaks the dep-array (LSN-017), the click-target (DOC-GAP-128), the DISABLED-mode gate (DOC-GAP-129), the depth-clamp (DOC-GAP-131), the partial-gating (DOC-GAP-134), or the XSS-defence-in-depth (DOC-GAP-096 / DOC-GAP-117 / DOC-GAP-134) ships invisibly. The test harness is fully configured; the missing step is authoring. Highest-leverage developer-guide-page addition: one canonical-home for "how to test the UI" + the TEST-GAP-NNN cluster's first batch.

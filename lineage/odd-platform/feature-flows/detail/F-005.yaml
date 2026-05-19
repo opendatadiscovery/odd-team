@@ -8,6 +8,9 @@ drift_class_summary:
 - cross_owner_enumeration
 - diamond_DAG_amplification
 - anchor_set_defence_in_depth_partial_application
+- ui_amplification
+- structural_amplification_surface
+- ui_default_masks_backend_caveat
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Downstream lineage traversal — default depth handling
@@ -42,6 +45,7 @@ description: 'The lineage-downstream endpoint accepts an optional lineage_depth 
 
   '
 contributing_nodes:
+- ts react-component:LineageGraph (Lineage tab on data-entity-detail page — shell + d3-hierarchy canvas)
 - odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
 - odd-platform java LineageService.getLineage(int depth, ...)
 - odd-platform java service service:LineageServiceImpl
@@ -175,6 +179,163 @@ observed_vs_expected:
       + implicit_adrs[3] (the deliberate filter as deferred-feature). Proposed local probe — seed a nested DEG (DEG-A containing
       DEG-B containing entity E + lineage edges) + GET /api/dataentitygroups/{A}/lineage + assert DEG-B does not surface in
       the response.
+  - facet: UI uses anchor-set-undefended endpoints (batch J — PRIMARY-SOURCE)
+    observed: |-
+      The UI ALWAYS fetches via `dataEntityApi.getDataEntityDownstreamLineage`
+      / `getDataEntityUpstreamLineage` (`HierarchyLineage.tsx` thunks.ts:19, 36)
+      — i.e. the NEGATIVE-case endpoints (`/api/dataentities/{id}/lineage/downstream`
+      + `/upstream`) confirmed at batch-I as having NO anchor-set defence
+      (LineageServiceImpl.java:54-57 no AuthIdentityProvider field, line 92
+      resolves root by raw dataEntityId with no owner-anchoring). The UI does
+      NOT use the POSITIVE-case endpoints (`/my/upstream` + `/my/downstream`
+      via DataEntityRelationsServiceImpl.getDependentOddrns which DOES call
+      `authIdentityProvider.fetchAssociatedOwner()` before invoking the
+      repository). CONSEQUENCE: every authenticated user (LOGIN_FORM /
+      OAUTH2 / LDAP) enumerates the cross-owner lineage subgraph from the
+      Lineage tab on ANY entity, regardless of owner association. Anonymous
+      callers do the same under DISABLED auth. The UI is the user-observable
+      realisation point for REFACTOR-203. PRIMARY-SOURCE CONFIRMED batch J
+      via LineageGraph sidecar bugs_limitations_corner_cases[8] (severity
+      HIGH — "the user-observable consequence of the security gap; not a UI
+      bug per se, but the UI is the realisation point") + security.owner_scoping.
+    expected: UI uses anchor-set-defended endpoints OR backend adds JOIN-side
+      owner filter to the lineage endpoints used by the canvas
+    drift_class: cross_owner_enumeration
+    provenance: STATIC — primary-source verification at thunks.ts:19, 36
+      (the only fetch surface in the lineage UI tree) + LineageGraph sidecar
+      bugs_limitations_corner_cases[8] + security.owner_scoping. Closes
+      the user-visible half of the REFACTOR-203 cross-owner pattern.
+  - facet: d3-hierarchy renders diamond-DAG duplicates at the UI (batch J)
+    observed: |-
+      `LineageGraph.tsx:40-44` invokes `generateTree(parseData(data), ...)`
+      which builds a `d3-hierarchy` TREE (not a DAG). The `hierarchy(root,
+      childAccessor)` at `generateGraph.ts:68-76, 108-116` walks edges
+      recursively from each node with NO visited-set check; if entity D is
+      reachable from root R via two paths (R→B→D + R→C→D), D appears
+      TWICE in the rendered tree — each instance is a distinct
+      `HierarchyPointNode` with its own `d3attrs.id` UUID. React keys at
+      `LineageGraph.tsx:91` use `node.x${node.y}` (DIFFERENT positions ARE
+      distinct keys), so React mounts two SVG nodes. Cumulative effect:
+      AMPLIFIES the REFACTOR-202 backend recursive-CTE diamond
+      amplification into the UI render layer. Backend produces N rows for
+      a depth-D diamond with branching B; the UI renders all N visually.
+      No client-side dedupe BEFORE the tree builder runs. PRIMARY-SOURCE
+      CONFIRMED batch J via LineageGraph sidecar
+      bugs_limitations_corner_cases[0] + invariants[0].
+    expected: deduplication at the UI (visited-set in generateTree) OR a
+      DAG-aware layout (e.g. dagre, react-flow) OR backend-side
+      canonicalisation that flattens diamonds before serialisation
+    drift_class: diamond_DAG_amplification
+    provenance: STATIC — primary-source verification at generateGraph.ts:68-76,
+      108-116 + LineageGraph.tsx:84-110 (node-per-instance rendering) +
+      LineageGraph sidecar bugs_limitations_corner_cases[0]. Proposed
+      local probe — seed A→B→D and A→C→D + GET lineage + assert
+      duplicate-D in render tree count == 2.
+  - facet: UI silently masks F-005 default-depth NPE — d=1 hardcoded (batch J)
+    observed: |-
+      `constants.ts:74-84` — `defaultLineageQuery: { d: 1, ... }`. The UI
+      ALWAYS sends `lineage_depth=1` even when the URL omits `?d=` —
+      `useQueryParams` at `useQueryParams.ts:38-44` returns `d: 1` for a
+      URL with no query string, and `HierarchyLineage.tsx:47` reads `d`
+      from that. The F-005 NPE-on-null-lineage_depth bug (facet 1 above)
+      surfaces ONLY for direct API callers; FROM THE UI THE FAILURE MODE
+      IS SILENT — the UI silently picks 1, which is BELOW any reasonable
+      "platform default depth" value and may give an artificially shallow
+      first impression of the lineage graph. The "Unset returns the
+      platform's default depth" branch advertised by the live API-reference
+      doc is UNREACHABLE from the UI. PRIMARY-SOURCE CONFIRMED batch J via
+      LineageGraph sidecar invariants[2] + implicit_adrs[0].
+    expected: |-
+      Backend provides a canonical default depth value (via
+      `@RequestParam(defaultValue=)`); UI removes the hardcoded `d=1`
+      override and lets the backend control the default.
+    drift_class: ui_default_masks_backend_caveat
+    provenance: STATIC — primary-source verification at constants.ts:74-84
+      + HierarchyLineage.tsx:40-47 + useQueryParams.ts:38-44 +
+      LineageGraph sidecar invariants[2] + implicit_adrs[0]. The d=1
+      default is applied across 7 components — a coordinated decision
+      not an accident.
+  - facet: No upper-bound on `?d=` URL param (batch J)
+    observed: |-
+      `useQueryParams.ts:36` uses `parseNumbers: true` which converts
+      `?d=999999999` to `d: 999999999`; `HierarchyLineage.tsx:47` passes
+      the value straight to the API. The UI's depth `<AppSelect>` at
+      `LineageControls.tsx:113-117` only EXPOSES [1..20] (per
+      `constants.ts:97-99`) but the URL accepts ANY positive integer. A
+      user hand-editing `?d=10000` triggers a backend recursive-CTE walk
+      to depth 10000 — REFACTOR-202 amplification UNGATED at the UI.
+      Combined with the absence of upper-bound at service+repo tiers
+      (per F-005 batch-I + batch-H facets) and the absence of owner-scope
+      filtering (cross-owner enumeration above), the URL is the maximal
+      attack surface against the lineage subsystem. PRIMARY-SOURCE
+      CONFIRMED batch J.
+    expected: UI clamps `d` to a hard maximum (e.g. Math.min(parseInt(d, 10),
+      20)) OR validates and rejects out-of-range values
+    drift_class: structural_amplification_surface
+    provenance: STATIC — primary-source verification at useQueryParams.ts:33-36
+      + constants.ts:97-99 + LineageGraph sidecar
+      bugs_limitations_corner_cases[1] (severity HIGH —
+      "combined with backend REFACTOR-202 absence of upper bound") +
+      security.known_security_gaps[2] (severity HIGH).
+  - facet: LoadMore monotonic accumulation has no collapse affordance (batch J)
+    observed: |-
+      `dataEntityLineage.slice.ts:206-220` MERGES new nodes into
+      `localDownstreamState.allNodes` via `if (!localDownstreamState.nodeIds.has(node.id))
+      localDownstreamState.allNodes.push(node)`. No remove-this-expansion
+      action, no LRU eviction, no max-size cap. A user clicking LoadMore
+      on 100 leaf nodes in a 10K-node graph accumulates 100×(per-leaf-payload-size)
+      of nodes/edges in the slice AND in the rendered SVG tree until they
+      navigate away. The LoadMoreButton hides itself after click
+      (Node.tsx:174 — `setHideLoadMore(true)`) but the underlying data
+      stays. Module-level mutable globals (`localUpstreamState`,
+      `localDownstreamState` at slice.ts:30-48) live OUTSIDE Redux's
+      Immer drafts — they are NOT in DevTools timeline, NOT in any
+      snapshot. PRIMARY-SOURCE CONFIRMED batch J.
+    expected: collapse-this-branch affordance OR LRU eviction OR
+      max-node-count cap in the slice
+    drift_class: structural_amplification_surface
+    provenance: STATIC — primary-source verification at
+      dataEntityLineage.slice.ts:30-48, 206-220, 285-299 +
+      LoadMoreButton.tsx:55-65 + LineageGraph sidecar
+      bugs_limitations_corner_cases[3] + implicit_adrs[5] (the
+      module-level globals trade Redux observability for accumulator
+      performance — deliberate).
+  - facet: Click-through compounds depth — node.depth becomes new `d` (batch J)
+    observed: |-
+      `Node.tsx:46-52` — clicking a graph node title navigates to
+      `dataEntityLineagePath(entityId, lineageQueryString)` where
+      `lineageQueryString` is built from `useQueryParams({...defaultLineageQuery,
+      d: node.depth || 1})`. The new view opens with `d` set to the
+      CLICKED NODE'S DEPTH — for a node 5 hops out from root, the new
+      view loads with depth=5 (NOT the original `d`). Compounds REFACTOR-202
+      on every click: drill 5 hops in → click → new view fetches lineage
+      to depth=5 around that new root → drill another 5 → click → depth=5
+      again. A casual user clicking through the canvas can rapidly trigger
+      arbitrarily-expensive recursive CTE walks WITHOUT touching the
+      depth slider. PRIMARY-SOURCE CONFIRMED batch J.
+    expected: documented behaviour OR depth-on-click is preserved (not
+      compounded) OR an explicit UI prompt before high-depth navigation
+    drift_class: structural_amplification_surface
+    provenance: STATIC — primary-source verification at Node.tsx:49-52
+      + LineageGraph sidecar implicit_adrs[4] (the click-compounds-depth
+      decision is deliberate per intent_anchor) +
+      bugs_limitations_corner_cases (the consequence is real).
+  - facet: Sequential fetch + 500-class brittle error mode (batch J)
+    observed: |-
+      `HierarchyLineage.tsx:44-67` issues downstream FIRST, then `.then()`
+      upstream — if downstream returns 500 (e.g. the F-005 NPE branch),
+      upstream NEVER fires. The user sees ONE error (downstream) but the
+      UI cannot recover by retrying just upstream. Failure is BINARY:
+      either both succeed (canvas renders) or AppErrorPage shows. No
+      automatic retry, no exponential backoff, no "retry" button on the
+      error page. A flaky network sees the user navigate away. PRIMARY-SOURCE
+      CONFIRMED batch J.
+    expected: parallel fetch (Promise.allSettled) + per-stream error states
+      OR an explicit retry affordance
+    drift_class: null
+    provenance: STATIC — primary-source verification at
+      HierarchyLineage.tsx:44-67, 129-133 + LineageGraph sidecar
+      bugs_limitations_corner_cases[4] + [9].
   - facet: LineageDepth.empty() semantics (batch H — STATIC corner case)
     observed: '`LineageDepth.empty()` returns `new LineageDepth(-1, true)`. The `tDepth.lessThan(-1)` recursive-step termination
       is FALSE on the first iteration (depth starts at 1), so recursion terminates after the SEED step — i.e. only the depth-1
@@ -227,13 +388,33 @@ test_matrix:
       no JOIN-side filter)
     - LineageServiceImpl.getLineage (negative case — no anchor-set defence) vs DataEntityRelationsServiceImpl.getDependentOddrns
       (positive case) — distinct empirical contract per call site
-control_summary: 2 of 4 cells PROBED+EXISTING — integration (PROBED-PINNING-BUG for default-depth + EXISTING for happy-path
-  tree). 6 uncovered behaviours newly surfaced by batch-H primary-source SQL audit (cycle/diamond/soft-delete/empty()/owner-anchor-pattern).
-  Batch-H adds the resolved chain hop for the recursive CTE + folds in REFACTOR-202 + REFACTOR-203 primary-source confirmation
-  + surfaces the anchor-set-defence-in-depth pattern as a NEW drift_class. Batch-I closes the negative-case half of the anchor-set
-  pattern PRIMARY-SOURCE at the service tier (LineageServiceImpl.java:54-57 no AuthIdentityProvider field, 87-122 no fetchAssociatedOwner
-  call) AND adds the no-upper-bound-check service-tier facet (line 96 hands raw int to repo) AND surfaces the DEG-lineage
-  inner-DEG suppression carve-out (line 71 comment).
+control_summary: |-
+  2 of 4 cells PROBED+EXISTING — integration (PROBED-PINNING-BUG for
+  default-depth + EXISTING for happy-path tree). 6 uncovered behaviours newly
+  surfaced by batch-H primary-source SQL audit
+  (cycle/diamond/soft-delete/empty()/owner-anchor-pattern). Batch-H adds the
+  resolved chain hop for the recursive CTE + folds in REFACTOR-202 +
+  REFACTOR-203 primary-source confirmation + surfaces the
+  anchor-set-defence-in-depth pattern as a NEW drift_class. Batch-I closes
+  the negative-case half of the anchor-set pattern PRIMARY-SOURCE at the
+  service tier (LineageServiceImpl.java:54-57 no AuthIdentityProvider field,
+  87-122 no fetchAssociatedOwner call) AND adds the no-upper-bound-check
+  service-tier facet (line 96 hands raw int to repo) AND surfaces the
+  DEG-lineage inner-DEG suppression carve-out (line 71 comment). Batch-J
+  adds the UI HALF PRIMARY-SOURCE CONFIRMED: the lineage canvas
+  (`Lineage.tsx` → `HierarchyLineage` → `LineageProvider` → `Zoom` →
+  `ZoomableLineage` → `LineageGraph`) ALWAYS fetches via the
+  anchor-set-undefended endpoints (`/api/dataentities/{id}/lineage/{down,up}stream`)
+  — never the `/my/{down,up}stream` anchor-set-defended endpoints used by
+  DataEntityRelationsServiceImpl. The UI is the user-observable realisation
+  point of REFACTOR-203. ALSO: d3-hierarchy renders diamond-DAG duplicates
+  (REFACTOR-202 amplified into the visual layer); the UI hardcodes `d=1`
+  default which silently masks the F-005 NPE caveat; the URL `?d=` has NO
+  upper bound + the depth slider exposes [1..20] but the URL accepts ANY
+  integer; LoadMore monotonic accumulation has no collapse affordance;
+  click-through on a node title compounds depth (`d = node.depth`). FIVE
+  new UI-axis drift facets + ZERO unit/integration tests at any layer of
+  the UI tree.
 related_refactoring_scopes:
 - REFACTOR-202
 - REFACTOR-203

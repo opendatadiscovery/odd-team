@@ -1,0 +1,95 @@
+name: Edit Internal Description (Markdown with term-resolution)
+canonical_in_docs: false
+canonical_candidate: false
+pillar_affinity:
+- P-01
+- P-06
+description: |-
+  **NEW CONCEPT, batch 2026-05-19J** — the UI edit operation for entity internal
+  descriptions. Initiated by the Edit/Add button (gated by
+  `<WithPermissions permissionTo={Permission.DATA_ENTITY_DESCRIPTION_UPDATE}>`)
+  which calls `toggleEditMode` from `useTermWiki` — flips editMode state AND
+  re-syncs `internalDescription` from the redux-stored `description` (cancel-then-reopen
+  reverts in-progress edits with NO confirm prompt). In edit mode, `<Markdown
+  editor value={value} onChange={handleMarkdownChange} height={200} />` mounts —
+  `onChange` is wired to `handleRealtimeMarkdownChange` which deduplicates against
+  the previous value, schedules `handleMarkdownChange` (the term-resolving
+  validator), and updates local state. **Term resolution on every keystroke**:
+  for each `[[Namespace:TermName]]` match, `handleMarkdownChange` calls
+  `useGetTermByNamespaceAndName` ONCE per unique term (cached in `fetchedTerms` /
+  `unsuccessfulTerms`); a failed lookup sets `error = 'Term {termName} not found
+  in namespace {namespaceName}'`. Save fires via (a) the Save button or (b) the
+  **undocumented Shift+Enter shortcut** (`handleSaveMarkdownOnEnter` requires
+  `e.key === 'Enter' && e.shiftKey`). Save builds the
+  `DataEntityApiUpsertDataEntityInternalDescriptionRequest` from `entityId` +
+  `internalDescription` and dispatches `updateDataEntityInternalDescription` →
+  `PUT /api/dataentities/{id}/description`. **On success**: `setError('')` +
+  `setEditMode(false)`. **On error**: `setError(response.statusText || 'Unable to
+  update description')` — edit mode stays open so the user can retry. **Save
+  does NOT block on unresolved term mentions** — operators can save broken
+  mentions; backend silently drops them.
+nodes:
+- odd-platform ts react-component component:DataEntityDescription
+contributing_files:
+- odd-platform__ts__react-component__component__DataEntityDescription.md
+evidence:
+- 'DataEntityDescription.md:concepts.operations[render-internal-description;
+  enter-edit-mode; edit-markdown-realtime; resolve-term-mentions-on-change;
+  save-description; save-via-shift-enter; cancel-edit; collapse-on-overflow]'
+- 'DataEntityDescription.md:concepts.invariants[Cancel-and-reopen discards in-flight
+  edits via state re-sync; Term-resolution lookup is best-effort and ASYNC;
+  Term-resolution failures show INLINE errors in the editor without blocking save;
+  Response echo is NEVER read back from the redux store after save]'
+- 'DataEntityDescription.md:implicit_adrs.[2] Cancel-edit semantics intentionally
+  DISCARD in-flight edits; [3] Save-failure error display is INLINE within the
+  editor — the editor stays open with the error visible at the top; [4] Shift+Enter
+  is a save shortcut intentionally hidden from the operator-facing tooltip;
+  [5] Term resolution is fetched on every editor keystroke AND on every
+  description-prop change — the UI prefers correctness over network thrift;
+  [6] Term resolution failures show INLINE errors without blocking save'
+- 'DataEntityDescription.md:bugs_limitations_corner_cases[no autosave, no
+  warn-on-navigate, no draft preservation]'
+axes_present:
+- ui_components
+security_aggregate:
+  overall: HIGH
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: 'Edit affordance is gated by WithPermissions{permissionTo=
+      DATA_ENTITY_DESCRIPTION_UPDATE}; backend write endpoint has matching
+      SecurityRule. Both layers honour the permission.'
+  owner_scoping:
+    verdict: RESPECTS
+    detail: 'Per-entity authorization via DataEntityPermissionExtractor at the
+      backend; UI honours the same permission via the resource-scoped
+      WithPermissions wrapper.'
+  weaknesses:
+  - 'Side-door write path — mentioning a term in a description auto-creates a
+    term_relations row regardless of DATA_ENTITY_ADD_TERM permission (per
+    batch-G finding); DATA_ENTITY_DESCRIPTION_UPDATE becomes a superset'
+  - 'Save does NOT block on unresolved term mentions — a user can intentionally
+    save broken mentions; backend silently drops them'
+performance_aggregate:
+  overall: MEDIUM
+  weaknesses:
+  - 'Term-resolution N+1 risk — every keystroke fires per-unresolved-term HTTP
+    calls; memoised in fetchedTerms/unsuccessfulTerms but NOT batched'
+  - 'No debounce on the editor onChange — `handleMarkdownChange` fires on every
+    React reconciliation; for fast typists this means dozens of term-resolution
+    attempts per second on a description with many mentions'
+notes: |-
+  New concept captured in batch 2026-05-19J. The edit operation is correctly
+  gated at both the UI (button-wrap WithPermissions) and the backend (SecurityRule
+  for the PUT). The two notable UX/security choices are:
+    (a) **No draft preservation** — Cancel discards in-flight edits intentionally;
+        a user accidentally cancelling loses their work with no warning.
+    (b) **Shift+Enter save shortcut** — undocumented in the operator-facing
+        tooltip; only the [[ns:term]] syntax is exposed. A keyboard-shortcut
+        reference page would surface this and similar shortcuts.
+
+  Recommended improvements:
+    (a) Add autosave-on-blur with a clear "Discard changes" button as the
+        explicit revert affordance.
+    (b) Document the Shift+Enter shortcut in the InformationIcon tooltip.
+    (c) Add a "save warns about broken mentions" affordance — the user is told
+        "3 mentions will not link" before save commits.

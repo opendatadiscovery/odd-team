@@ -1,0 +1,19 @@
+- **DOC-GAP-135**: Shift+Enter description-save shortcut is a power-user affordance hidden from the operator-facing tooltip; no keyboard-shortcut reference page anywhere; the only operator-facing documentation of any description-editor shortcut is the `[[Namespace:TermName]]` syntax tooltip (already DOC-GAP-100)
+  - **Category**: drift (undocumented affordance; minor but published-product editorial gap)
+  - **Surfaced by**:
+    - `odd-platform__ts__react-component__component__DataEntityDescription.md:operations[5]` (save-via-shift-enter)
+    - `odd-platform__ts__react-component__component__DataEntityDescription.md:docs_link_semantic.doc_drift_findings[3]` (Shift+Enter shortcut undocumented)
+    - `odd-platform__ts__react-component__component__DataEntityDescription.md:implicit_adrs[4]` (deliberate hidden shortcut)
+  - **Evidence**:
+    - Code primary source `useTermWiki.ts:179-184` — `handleSaveMarkdownOnEnter`: `if (e.key === 'Enter' && e.shiftKey) { handleUpdateDescription(); }` — fires save ONLY on Shift+Enter; plain Enter inserts a newline.
+    - Code primary source `InternalDescriptionEdit.tsx:23` — `<Box onKeyDown={handlePressEnter}>` — the wiring.
+    - Code primary source `InternalDescriptionHeader.tsx:20-28` — InformationIcon tooltip exposes ONLY the term-mention syntax: "You can link an existing term by entering information about the term according to the pattern [[NamespaceName:TermName]]". The tooltip is the ONLY operator-facing documentation of the description editor and does not name the keyboard shortcut.
+    - WebFetch coverage gap: no keyboard-shortcut reference page exists at the platform doc tree (verified via system-mission's SUMMARY.md walk and the absence of any `keyboard-shortcuts.md` in the local docs clone).
+  - **Proposed doc action**: TWO options for the maintainer:
+    - Option A (minimal): Update the InformationIcon tooltip at `InternalDescriptionHeader.tsx:20-28` to include "Press Shift+Enter to save." Affects the UI source; no doc edit.
+    - Option B (full coverage): Add a small "Keyboard shortcuts" section to `documentation/docs/features/data-discovery/catalog-overview.md` or create `documentation/docs/features/data-discovery/description-editor.md` enumerating: (i) `[[Namespace:TermName]]` term-mention syntax (DOC-GAP-100); (ii) Shift+Enter saves; (iii) Cancel discards in-flight edits (no auto-save, no draft preservation — sidecar `implicit_adrs[2]`). Re-publish live.
+  - **Cross-references**:
+    - DOC-GAP-100 — `[[namespace:term]]` description auto-linking syntax undocumented; this batch strengthens to 4-sidecar (was 3-sidecar pre-batch-J).
+    - DOC-GAP-134 (this batch) — partial-gating; both are description-editor-surface findings.
+  - **Severity**: LOW
+  - **Severity rationale**: Cosmetic published-product gap; power users discover the shortcut via experimentation. Not a security/data-loss surface. Single-line tooltip fix OR a small section addition resolves it.

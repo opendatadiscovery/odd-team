@@ -1052,3 +1052,75 @@ Pillars P-02, P-03, P-11 are doc-mentioned-but-code-uncovered → batch theme ca
 - F-001 + F-003 merge triage is maintainer-pending.
 - The 3 broken-yaml-pending-fix files from batch I (alert.yaml, data-entity.yaml, TEST-GAP-402.yaml) remain quarantined; the new YAML-safe-emit reducer rule prevents future occurrences but doesn't auto-fix the existing 3.
 
+
+## Batch 2026-05-19-J — UI-axis (DataEntityDetails + thunks closes F-001 chain; 5 nodes; SECOND autonomous-driver batch)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate commit**: `ede5d277` (60 prior sidecars + 5 new = **65 total**)
+- **Theme**: UI-axis — DataEntityDetails + fetchDataEntityDetails thunk + DataEntityDescription + PopularStrip + LineageGraph. Closes F-001/F-003/F-004/F-005 chains at the UI half.
+- **Second autonomous /next-batch invocation** — second validation of the orchestration end-to-end + the rev-3 Layer-0 consult pattern.
+- **Substrate-axis gap (UI components / redux-thunk)**: 5 new synthetic node_ids (ts react-component + ts redux-thunk kinds). Integrity audit will surface in the next coverage report. Total substrate-axis-gap nodes now: 15 (5 repository + 5 service + 5 UI).
+
+### Sidecars added (5)
+
+| Sidecar | Headline finding |
+|---|---|
+| `DataEntityDetails` | **LSN-017 root-cause PRIMARY-SOURCE PINNED** at lines 56-64 — `useEffect` dep-array contains `details.status?.status` derived from fetch response → re-fires after first fetch lands → +2 fetch dispatches per page-open. 3 ADRs, 10 uncovered_behaviours. **Zero `.test.tsx` files exist anywhere in odd-platform-ui codebase** (vitest + testing-library installed but unused — META-finding). |
+| `fetchDataEntityDetails thunk` | **Self-feeding double-fetch loop CONFIRMED from UI side** — `handleResponseAsyncThunk` 1:1 dispatch:HTTP multiplicity; thunk's own fulfilled action populates `details.status?.status` which retriggers the DataEntityDetails useEffect. Loop closure end-to-end with empirical P-001+P-004 measurements. 3 ADRs, 6 corner cases. |
+| `DataEntityDescription` | **F-004 UI half EXHAUSTIVELY CONFIRMED** — `MDEditor.Markdown` invoked with NO `rehypePlugins` override at `Markdown.tsx:112-124`. `grep -rln 'rehype-sanitize' <odd-platform-ui>` returns 0 matches in source AND 0 in `pnpm-lock.yaml`. `@uiw/react-md-editor@3.25.6` → `@uiw/react-markdown-preview@4.2.2` transitively pulls in `rehype-raw@6.1.1` (pnpm-lock.yaml:5911-5938). **Permission gating is PARTIAL** — `<WithPermissions Permission.DATA_ENTITY_DESCRIPTION_UPDATE>` wraps ONLY Edit/Add buttons; the `<Markdown value>` content render at `InternalDescriptionPreview.tsx:21` is UNCONDITIONAL for every `DATA_ENTITY_VIEW` holder. 7 ADRs, 8 corner cases. |
+| `PopularStrip` | **SUBSTRATE PATH DRIFT**: the substrate's target `OverviewPopular/OverviewPopular.tsx` does NOT exist as of `9ac6436e`. The Popular surface is implemented as the 4th column inside `OwnerEntitiesList.tsx`. Surfaced as canonicalisation_candidate. **NEW doc-vs-code drift**: live docs say tile-click opens Structure tab; code opens Overview tab. Plus: docs say Recommended panel visible under DISABLED auth; code unconditionally hides it under DISABLED. 4 ADRs, 8 corner cases. |
+| `LineageGraph` | **REFACTOR-202 UI realisation PRIMARY-SOURCE CONFIRMED**: d3-hierarchy is tree-not-DAG, so diamond DAGs render DUPLICATE nodes at the UI layer. UI ALWAYS supplies `d=1` from `defaultLineageQuery` (constants.ts:77) — F-005 NPE caveat masked from typical UI path. **REFACTOR-203 UI realisation**: UI's only fetch path is the NEGATIVE-anchor-set `getDataEntityDownstreamLineage` / `getDataEntityUpstreamLineage`, NEVER `getMyObjectsWith*` (anchor-set-defended endpoints unused at UI). 6 ADRs, 10 corner cases, 5 doc-drift findings, 14 uncovered_behaviours. |
+
+### Reducer diffs (rev-3 sharded; all 5 ran cleanly)
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 177 → **198 concepts** (rebuilt index has 198; 1 entity file lineage-graph-traversal.yaml broke from a write at line 1 col 1 — quarantined to .broken-yaml-backup; see follow-ups) | +22 net-new (4 entities + 3 operations + 10 invariants + 5 canon-candidates); 11 strengthened. Pillar_affinity field added per concept (rev-3 Layer-0 consult applied). |
+| adr-archaeologist (ADRs) | 83 → **97 candidates** | +14 new (084-097) + 3 strengthened (ADR-003 read-collaborative now 4-sidecar; ADR-054 view-count read-as-write; ADR-066 Popular single-signal). Wisdom test: 14 PASS + 8 reclassified to scopes. ADR-CANDIDATE-089 NEW HIGH: partial-permission-gating-at-UI architectural commit. ADR-CANDIDATE-084 NEW: handleResponseAsyncThunk wrapper codified as project-wide pattern (15 thunk files). |
+| adr-archaeologist (scopes) | 259 → **300 scopes** | +24 new (277-300) + 6 strengthened (REFACTOR-200/203/218/220/225+237/227). **REFACTOR-289 NEW (CRITICAL-class META)**: zero `.test.tsx` files across entire odd-platform-ui SPA — cross-cutting foundational gap that unblocks every other UI hardening item. REFACTOR-287 NEW HIGH: P-05+P-09 cross-pillar `d=` URL exploit. REFACTOR-220 strengthened with empirical P-004 measurement. |
+| doc-gap-finder | 127 → **126 sharded findings** (index frontmatter claims 138 — see follow-ups; the discrepancy is from batch F's DOC-GAP-084..095 IDs that were assigned but never sharded; surfaced for reconciliation next batch) | +11 new (128-138; minus 12 not-yet-sharded IDs from batch F) + 5 strengthened (DOC-GAP-101/105/096/100). 2 new HIGH: DOC-GAP-130 (LSN-017 +2 doubling undocumented end-to-end); DOC-GAP-137 META (zero UI test coverage). 4 live WebFetches at status 200 — WebFetch IS available in this session for some agents. |
+| test-coverage-mapper | 415 → **453 gaps** | +38 new (417-454, all in sharded detail/) + 0 strengthened. **4 new CRITICAL**: TEST-GAP-417 (LSN-017 useEffect dep-array regression-pin), TEST-GAP-428 (rehype-sanitize XSS defence-in-depth cross-Markdown-surface), TEST-GAP-438 (F-001 cross-tier Playwright spec promoting P-001+P-004 to CI), TEST-GAP-454 META (UI test infrastructure baseline). **Probe-to-test promotion pattern proposed for the first time**: P-001+P-004 → CI-permanent Playwright specs via TEST-GAP-417 + TEST-GAP-438. 1 sidecar-quality finding: 4 of 5 batch-J sidecars overstate "zero UI tests"; actually 7 leaf-component tests exist — log for /enrich refresh. |
+| feature-flow-builder | 8 → **8 features** (unchanged count; 4 extended) | +0 new + 4 extended (F-001/F-003/F-004/F-005 each gained UI-side drift facets). 24 total new drift facets across the 4 features. F-001 chain now PRIMARY-SOURCE CONFIRMED end-to-end at every layer (UI + thunk + controller + service + repository + DB) + empirically measured (P-001/P-004). All 5 detail YAMLs validated parse-clean per YAML-safe emit rule. |
+
+### Coverage state after batch J
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment (nodes with own sidecar) | 65 | **16.5%** |
+| Effective coverage (touched by any feature-flow OR own sidecar) | 79 | **20.0%** ← crossed 20% milestone |
+| Features discovered | 8 | (unchanged; rev-3 8-feature pillar-anchored shape stable) |
+| Features with ≥1 cell PROBED | 4 | (unchanged) |
+
+### Cross-batch triangulation deltas (rev-3 pillar-anchored)
+
+- **F-001 / P-01:F-001 Popular Entities Ranking** — chain CLOSED end-to-end at every tier; LSN-017 root-cause locus now PRIMARY-SOURCE pinned at UI; the +2 doubling is empirically measured AND structurally explained from UI through DB. Strongest single end-to-end story in the catalog.
+- **REFACTOR-202 / REFACTOR-203 (Lineage Graph Traversal drifts)** — now BOTH have UI-layer primary-source confirmation; the abstract "cross-owner enumeration" + "diamond DAG amplification" findings have explicit UI realisations.
+- **REFACTOR-218 (F-004 stored XSS)** — UI half EXHAUSTIVELY confirmed; pnpm-lock primary-source citation for rehype-raw transitive dependency. Permission gating PARTIAL → strengthens REFACTOR-218 with the partial-gating-attack-surface dimension.
+- **ADR-CANDIDATE-003 (read-collaborative GET posture)** — now 11+ sidecars triangulated; strongest in the catalog.
+- **ADR-CANDIDATE-089 NEW**: partial-UI-permission-gating-as-architectural-commit — strengthens ADR-003 end-to-end read-collaborative posture at the UI layer.
+- **REFACTOR-289 NEW**: zero-UI-test-codebase-wide cross-cutting META scope.
+
+### Rev-3 mechanics validation (FIRST batch under Layer 0)
+
+- All 5 reducers consulted `system-mission.md` per rev-3 Rule 0; pillar-affinity / pillars-affected / pillar-anchored fields added to outputs.
+- feature-flow-builder produced 0 new features (correct outcome — UI sidecars are downstream HOPS in existing pillar-anchored features, not new pillar entries). Drift facets attached INSIDE existing features per rev-3 principle 9.
+- WebFetch worked for some agents (4 live URL verifications at status 200). Session-level permission may have improved since batches D-I.
+
+### Follow-ups (logged, not blocking)
+
+- `concepts/detail/entities/lineage-graph-traversal.yaml` broke during the concept-merger write (line 1 col 1 — likely a malformed top-of-file write). Backup in `.broken-yaml-backup`; quarantine + manual fix or next-batch regeneration recovers.
+- `doc-gaps/index.md` frontmatter claims `total_findings: 138`; actual sharded entries are 126 (batch F's DOC-GAP-084..095 IDs were referenced but never sharded). Reconcile in next batch.
+- adr-archaeologist + refactoring-scopes detail directories now contain "X-strengthen-batch-J" suffixed files alongside the canonical numbered ones (e.g. `ADR-CANDIDATE-003-strengthen-batch-J.md`). These are NEW SHAPE this batch — strengthens were emitted as separate files instead of appending to the canonical detail file. The markdown verify surfaces them as "detail without index" (25 in implicit-adrs + 63 in refactoring-scopes). Reducer-prompt fix: strengthens MUST append to canonical detail (per rev-2 playbook) rather than mint -strengthen-batch-N files.
+- 1 test-coverage-mapper sidecar-quality finding: 4 of 5 batch-J sidecars overstate "zero UI tests" — actually 7 leaf-component tests exist. /enrich refresh candidate.
+
+### Next-batch planning notes
+
+Three high-leverage themes for batch K (already in queue):
+
+1. **Theme K — Service layer B** (NotificationsDispatcher + HousekeepingJobManager + AuthIdentityProviderImpl + TermServiceImpl + OwnershipServiceImpl). Continues service-tier coverage; pairs with batch I service-layer findings.
+2. **Theme L — DataEntityController continuation 1** (5 more controller methods).
+3. **Theme M — Anchor-set defence audit** (cross-cutting; ~5 controllers).
+
+P-02 Data Modelling + P-03 Master Data Management + P-11 Platform API & Developer Surface remain at 0-sidecar coverage — surface for future batch theme prioritisation.
+

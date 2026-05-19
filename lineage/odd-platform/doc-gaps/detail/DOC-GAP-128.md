@@ -1,0 +1,20 @@
+- **DOC-GAP-128**: Live `/features/data-discovery/catalog-overview` says "Clicking a tile opens that entity's **Structure** page" but the UI navigates to the **Overview** tab — direct factual contradiction between docs and code, file:line-anchored on both sides
+  - **Category**: drift (live page asserts behaviour the code does not exhibit; click-target string in docs is wrong)
+  - **Surfaced by**:
+    - `odd-platform__ts__react-component__component__PopularStrip.md:docs_link_semantic.doc_drift_findings.[0]`
+    - `odd-platform__ts__react-component__component__PopularStrip.md:tests_coverage_semantic.uncovered_behaviours[1]`
+    - `odd-platform__ts__react-component__component__PopularStrip.md:bugs_limitations_corner_cases[0]` (the F-001 loop closure depends on the navigation target)
+  - **Evidence**:
+    - WebFetched `https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview` 2026-05-19 status 200 — verbatim: "**Clicking a tile opens that entity's Structure page.**"
+    - Local mirror `documentation/docs/data-discovery/catalog-overview.md:54` — same string as live.
+    - Code primary source: `odd-platform-ui/src/components/Overview/OwnerAssociation/OwnerEntitiesList/DataEntityList/DataEntityList.tsx:38` — `<Link to={dataEntityDetailsPath(item.id)}>`.
+    - Route helper: `odd-platform-ui/src/routes/dataEntitiesRoutes.ts:66-73` — `dataEntityDetailsPath(id, path='overview')` — the `path` parameter DEFAULTS to `'overview'`; the call site passes NO override.
+    - Net behaviour: Popular / My-Objects / Upstream / Downstream tile clicks ALL land on `/dataentities/{id}/overview` — never `/dataentities/{id}/structure`.
+    - Sidecar `PopularStrip.md:operations[1]`: "click navigation: `<Link to={dataEntityDetailsPath(item.id)}>` → resolves to `/dataentities/{id}/overview`"
+  - **Proposed doc action**: Update `documentation/docs/data-discovery/catalog-overview.md:54` to read "Clicking a tile opens that entity's Overview tab." — the Overview tab is the canonical entity-detail landing tab; it is also the read surface that fires the view_count increment (closing the F-001 loop — see cross-references). Live page must re-publish from the corrected source. Optionally add one-sentence note that the Overview tab is the view-count producer surface (cross-link DOC-GAP-101 + DOC-GAP-129).
+  - **Cross-references**:
+    - DOC-GAP-101 — Popular ranking signal undocumented; the click-target mismatch was a sub-finding waiting to surface — UI-side primary source now confirms it.
+    - DOC-GAP-129 (this batch) — the DISABLED-mode rendering mismatch on the SAME live page; both findings come from the same WebFetch + the same Overview.tsx code-walk.
+    - LSN-017 — the doubling depends on opening the Overview tab; if the docs were honoured (click → Structure), the F-001 inflation surface would be different (the Structure tab is `/dataentities/{id}/structure`, a different SPA route that does NOT itself fire `fetchDataEntityDetails`; the LSN-017 doubling would still occur on the parent `DataEntityDetails` mount which is route-agnostic, but the documented behaviour would have been the harder path for the loop to close. The current Overview-default makes the loop closure trivial.)
+  - **Severity**: MEDIUM
+  - **Severity rationale**: Cosmetic-but-published — users following the doc literally are surprised by the landing tab; operators auditing the catalog UI for the documented behaviour see a mismatch. Not a security/data-loss surface, but a Principal-engineer-quality fail: a live published manual contains a falsifiable factual claim. The fix is a one-line doc edit AND informs the F-001 / LSN-017 narrative (the click-target IS the producer of the doubling).

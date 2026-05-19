@@ -1,0 +1,24 @@
+- **DOC-GAP-130**: LSN-017 (`+2 view_count` per detail-page-open via the `details.status?.status` dep-array bug) is undocumented end-to-end at the operator-facing layer — live catalog-overview describes the Popular ranking as `most-viewed` without naming the (a) per-page-open multiplicity (+2 not +1); (b) detail-page-open IS the increment trigger (read-as-write); (c) UI bug locus
+  - **Category**: drift (live page describes a feature whose mechanism the docs cannot describe accurately while the bug stands; the ranking signal is empirically 2x what an operator would assume from reading the doc)
+  - **Surfaced by**:
+    - `odd-platform__ts__react-component__component__DataEntityDetails.md:docs_link_semantic.doc_drift_findings[0,1]`
+    - `odd-platform__ts__react-component__component__DataEntityDetails.md:bugs_limitations_corner_cases[0]` (LSN-017 the dep-array bug at lines 56-64)
+    - `odd-platform__ts__redux-thunk__thunk__fetchDataEntityDetails.md:docs_link_semantic.doc_drift_findings[1]`
+    - `odd-platform__ts__redux-thunk__thunk__fetchDataEntityDetails.md:bugs_limitations_corner_cases[self-feeding-loop]`
+    - `odd-platform__ts__react-component__component__PopularStrip.md:bugs_limitations_corner_cases[0]` (the F-001 loop closure on the UI side — Popular tile click triggers the doubling)
+  - **Evidence**:
+    - WebFetched `https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview` 2026-05-19 status 200 — verbatim: "Popular — the most-viewed or most-used data entities across the catalog." Page is SILENT on (a) the per-page-open multiplicity, (b) the read-as-write detail-page contract, (c) any UI-side caveat.
+    - Code primary source: `odd-platform-ui/src/components/DataEntityDetails/DataEntityDetails.tsx:56-64` — the `useEffect` dep-array includes `details.status?.status`. The value is sourced from the previous fetch's response (same Redux slice the dep-array reads from); first fetch returning a defined status flips the dep-array → second identical fetch.
+    - Empirical pin: `lineage/odd-platform/probe-runs/2026-05-19-P-004.yaml` — `xhr_count=2 + DB delta=2` with regex-filtered exact `/api/dataentities/1004` path match.
+    - Backend side: batch-F sidecar `DataEntityController.getDataEntityDetails` + batch-H sidecar `ReactiveDataEntityRepositoryImpl.java:173-180` confirms `incrementViewCount` per successful read — no rate-limit, no idempotency.
+    - Retrospective: `retrospectives/LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md` documents the cross-layer pinning.
+  - **Proposed doc action**: Two-part action:
+    - DOC-side: Update `documentation/docs/data-discovery/catalog-overview.md` Popular section to add: "**How Popular is ranked.** Popular orders by cumulative `view_count` (descending). The `view_count` increments by 1 each time an authenticated user opens an entity's Overview tab via `GET /api/dataentities/{id}`; the read is non-idempotent. **Known caveat (LSN-017):** the current UI fires `fetchDataEntityDetails` twice per Overview-tab mount due to a dep-array bug — every detail-page open contributes **+2** to view_count, not +1. Fix tracked at UI-FIX-NNN; backlog item TEST-NNN pins a regression test once fixed." Combine with the click-target correction (DOC-GAP-128).
+    - CODE-side (separate UI-FIX-NNN backlog item): Remove `details.status?.status` from `DataEntityDetails.tsx:63` dep-array. 1-line fix.
+  - **Cross-references**:
+    - DOC-GAP-101 — Popular ranking signal undocumented (mechanism); DOC-GAP-130 is the same family at the multiplicity angle — now 5-sidecar (4 UI + 1 backend repository).
+    - DOC-GAP-128 — click-target mismatch; the docs say "click → Structure" but code routes to "click → Overview" (the page that fires the doubling); the corrections compose.
+    - DOC-GAP-105 — Lineage no-clamp + service-tier heap-amplification; the UI-side equivalent of "operator-visible inflation surface".
+    - LSN-017 — case-law for cross-layer single-file-scan blindness; the doubling was invisible to backend-only or UI-only scans.
+  - **Severity**: HIGH
+  - **Severity rationale**: The Popular ranking is the platform's marquee recommendation surface. The mechanism's documented form ("most-viewed") and the implementation's reality (+2 per Overview-mount, no clamp, no rate-limit, no audit, read-as-write) diverge by 2x — the recommendation is twice as sensitive to legitimate browsing as an operator would assume, AND the implementation is structurally inflatable (anonymous under DISABLED, authenticated-bot-friendly otherwise). Operators evaluating ODD for a public-facing or multi-team catalog have NO doc-side signal that Popular is manipulable nor that the manipulation surface is twice the documented size. The fix is a one-line UI edit + a doc-side caveat-addition.

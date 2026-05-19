@@ -1,22 +1,60 @@
 name: Internal Description (Markdown body)
 canonical_in_docs: false
 canonical_candidate: true
-description: Free-text Markdown stored verbatim in data_entity.internal_description
+pillar_affinity:
+- P-01
+description: 'Free-text Markdown stored verbatim in data_entity.internal_description
   (Postgres text, unbounded) — the largest per-entity free-text write surface on the
   platform. Distinct from Description (external/ingested), which is owned by the collector
-  ingestion pipeline.
+  ingestion pipeline. **Batch J — UI HALF (P-01 pillar)**: the canonical UI cluster
+  is `DataEntityDetails/Overview/OverviewDescription/` — six TSX files compose:
+  `OverviewDescription` (section shell with collapse-on-overflow), `InternalDescription`
+  (read/edit toggle + useTermWiki hook wiring), `InternalDescriptionHeader` (Edit
+  button + [[ns:term]] syntax tooltip), `InternalDescriptionPreview` (render path
+  via <Markdown value>), `InternalDescriptionEdit` (write path via <Markdown editor>),
+  + the shared `Markdown` element. **Permission gating is PARTIAL**: only the Edit
+  affordance is wrapped in `<WithPermissions
+  permissionTo={Permission.DATA_ENTITY_DESCRIPTION_UPDATE}>`; the description CONTENT
+  is rendered to every authenticated user with DATA_ENTITY_VIEW on the entity. The
+  Markdown rendering pipeline has NO rehype-sanitize (transitively pulls rehype-raw
+  via @uiw/react-markdown-preview) — P-009 empirically pinned dangerous tags reach
+  the DOM (execution blocked only by Chromium HTML-parser policy + React attribute
+  filtering). The `useTermWiki` hook (useTermWiki.ts:30-228) parses `[[Namespace:TermName]]`
+  mentions on every keystroke + every description-prop change — fires
+  GET /api/terms/namespaces/{ns}/names/{name} once per unique unresolved term
+  (memoised in fetchedTerms / unsuccessfulTerms). UI saves via Shift+Enter (undocumented
+  keyboard shortcut) OR Save button → dispatches `updateDataEntityInternalDescription`
+  thunk → PUT /api/dataentities/{id}/description. Cancel re-syncs state to discard
+  in-flight edits (no draft preservation, no autosave). The Markdown wrapper
+  auto-enables spellcheck via DOM mutation on hard-coded id="md-editor" — multiple
+  concurrent editors race on the same id.'
 nodes:
 - odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
+- odd-platform ts react-component component:DataEntityDescription
 contributing_files:
 - odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription.md
+- odd-platform__ts__react-component__component__DataEntityDescription.md
 evidence:
 - upsertDataEntityInternalDescription.md:concepts.entities[DataEntityPojo.internalDescription,
   InternalDescription, InternalDescriptionFormData]
 - upsertDataEntityInternalDescription.md:invariants[no-backend-sanitisation, empty-to-null,
   UPDATE-not-UPSERT]
+- 'DataEntityDescription.md (batch J — UI HALF): concepts.entities[InternalDescription
+  response payload, InternalDescriptionFormData request body, TermRef, Markdown
+  shared UI element, TERM_PATTERN regex, Permission.DATA_ENTITY_DESCRIPTION_UPDATE,
+  useCollapse hook]; concepts.operations[render-internal-description, enter-edit-mode,
+  edit-markdown-realtime, resolve-term-mentions-on-change, save-description, save-via-shift-enter,
+  cancel-edit, collapse-on-overflow]'
+- 'DataEntityDescription.md:concepts.invariants[No rehype-sanitize configured
+  anywhere in the UI; Permission gating is partial — only Edit affordance gated,
+  NEVER content; Response echo is NEVER read back after save; Term-mention regex
+  STRICTER than backend regex; Cancel discards in-flight edits via state re-sync;
+  Term-resolution is best-effort ASYNC; Markdown wrapper auto-enables spellcheck
+  via DOM mutation on hard-coded id]'
 axes_present:
 - controllers
 - openapi_paths
+- ui_components
 security_aggregate:
   overall: HIGH
   auth_modes_relevant:
@@ -28,13 +66,19 @@ security_aggregate:
     detail: 'SecurityRule(DATA_ENTITY, ''/api/dataentities/{id}/description'', PUT,
       DATA_ENTITY_DESCRIPTION_UPDATE) is correctly wired (SecurityConstants.java:194-197),
       DataEntityPermissionExtractor resolves per-entity, supports ''is: dataEntity:owner''
-      Policy scope.'
+      Policy scope. **Batch J UI clarification**: UI gates the Edit affordance with
+      WithPermissions{permissionTo=DATA_ENTITY_DESCRIPTION_UPDATE} but does NOT
+      gate the rendered content — partial-gating semantic.'
   owner_scoping:
     verdict: RESPECTS
-    detail: Per-entity authorization via DataEntityPermissionExtractor
+    detail: Per-entity authorization via DataEntityPermissionExtractor (write side).
+      Read side BYPASSES — content is universally visible to any DATA_ENTITY_VIEW
+      holder.
   strengths:
   - 'Two-permission split: DATA_ENTITY_DESCRIPTION_UPDATE distinct from DATA_ENTITY_INTERNAL_NAME_UPDATE'
   - Reactive @ReactiveTransactional boundary atomic
+  - 'P-009 empirically pinned: script execution blocked by defence-in-depth
+    (Chromium HTML-parser policy + React attribute filtering)'
   weaknesses:
   - 'Stored-XSS surface (HIGH): no backend Markdown/HTML sanitisation + UI rehype-raw@6.1.1
     without rehype-sanitize'
@@ -42,6 +86,15 @@ security_aggregate:
   - DISABLED-mode anonymously reachable wholesale content-injection vector
   - 'Term-linking side effect: DATA_ENTITY_DESCRIPTION_UPDATE bypasses DATA_ENTITY_ADD_TERM
     via [[ns:term]] mentions'
+  - '**Batch J — Partial permission gating** (MEDIUM): Edit button gated, content
+    unconditional; refactor "simplifying" the cluster could silently break read
+    access for non-editors'
+  - '**Batch J — Cancel discards in-flight edits with no warn-on-navigate** —
+    user data loss on accidental cancel/navigate'
+  - '**Batch J — Term-mention regex asymmetry**: UI regex `/\[\[([^:\]]+):([^\]]+)\]\]/g`
+    requires non-empty namespace AND non-empty term-name; backend regex
+    `\[\[([^:]*?):([^\]]*?)\]\]` allows empty groups. A description like `[[:foo]]`
+    is parsed differently across layers.'
 performance_aggregate:
   overall: MEDIUM
   weaknesses:
@@ -51,3 +104,14 @@ performance_aggregate:
     edit
   - Activity-event payload includes FULL description body TWICE (oldState + newState)
     — N edits of 1MB = 2N MB activity-table growth
+  - '**Batch J — Term-resolution N+1 risk**: handleMarkdownChange fires on every
+    editor keystroke; for a description with 100 unique unresolved mentions, 100
+    parallel HTTP requests issue on first render (memoised but NOT batched)'
+notes: |-
+  Strengthened in batch 2026-05-19J with DataEntityDescription UI cluster sidecar
+  closing the F-004 UI half. The cluster is the canonical write+read path for
+  internal_description. Partial-gating semantic is fragile — a refactor that
+  wraps the entire cluster in WithPermissions would silently break read access
+  for non-editors (a class of regression that would be invisible to the existing
+  probe suite which exercises authenticated-writer flows, not authenticated-reader-without-write
+  flows).

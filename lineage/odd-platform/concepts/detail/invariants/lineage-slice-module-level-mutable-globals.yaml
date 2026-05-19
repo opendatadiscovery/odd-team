@@ -1,0 +1,66 @@
+name: Lineage Slice Module-Level Mutable Globals (LoadMore Accumulator)
+canonical_in_docs: false
+canonical_candidate: false
+pillar_affinity:
+- P-05
+description: |-
+  **NEW INVARIANT, batch 2026-05-19J**. The `dataEntityLineage.slice.ts` declares
+  module-level mutable state OUTSIDE the slice's `reducers` —
+  `localUpstreamState` and `localDownstreamState` (lines 30-48). These are mutated
+  freely across actions. **The pattern is unusual for Redux Toolkit** (which
+  usually keeps all state in Immer drafts inside reducers). **The choice
+  optimises for**: cross-fetch accumulation of nodes/edges without storing them
+  in normalised Redux state (memory + dedup is cheaper with native Set/Map than
+  with Immer-tracked objects). **The cost**: (a) state-leak across rootNodeId
+  changes is mitigated by `resetLocalState` (lines 202-203, 281-282), but the
+  reset is `IF rootNodeId === dataEntityId` only — for some flows the globals
+  carry over; (b) the globals are NOT in any DevTools timeline, NOT in any
+  snapshot — debugging means stepping the source. **The pattern says "we trade
+  Redux observability for accumulator performance"**. **Implication for testing**:
+  unit tests of the slice need to reset the module-level globals between test
+  cases — a class of test fragility absent from normal Redux Toolkit usage. A
+  test that fails to reset `localDownstreamState` will see contaminated state
+  from the previous test, manifesting as flaky tests. **The pattern is a latent
+  bug magnet**: a new contributor authoring a sibling slice ("hey, the lineage
+  slice does it this way") could replicate the pattern without understanding
+  the trade-off; a refactor moving to RTK Query or a reducer-based accumulator
+  would need to surface the module-level state.
+contributing_files:
+- LineageGraph.md
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: code-quality
+evidence:
+- 'LineageGraph.md:implicit_adrs.[5] Module-level mutable globals for the LoadMore
+  accumulator — pattern is unusual for Redux Toolkit; the choice optimises for
+  cross-fetch accumulation; the globals are NOT in any DevTools timeline NOT in
+  any snapshot — debugging means stepping the source'
+- 'LineageGraph.md:concepts.entities[Redux slice dataEntityLineageSlice owns the
+  merge-on-fetch logic; the slice''s localUpstreamState/localDownstreamState
+  MODULE-LEVEL globals are NOT React state but mutable cross-action accumulators]'
+- 'LineageGraph.md:downstream_side_effects.[LoadMore monotonic accumulation has
+  no collapse affordance — slice.ts:206-220 MERGES new nodes via
+  `if (!localDownstreamState.nodeIds.has(node.id)) localDownstreamState.allNodes.push(node)`]'
+mitigations_unimplemented:
+- 'Refactor the LoadMore accumulator to live inside the Immer draft of the slice
+  reducer — surfaces in DevTools timeline and supports snapshot-based debugging'
+- 'Add unit tests that explicitly reset the module-level globals between cases
+  (or extract the reset into a beforeEach helper) — surfaces the test-fragility
+  concern'
+- 'Document the pattern in a comment at the slice file — future contributors
+  authoring a sibling slice should understand the trade-off explicitly'
+notes: |-
+  New invariant captured in batch 2026-05-19J. The module-level mutable globals
+  pattern is intentional and load-bearing for the LoadMore performance — but it
+  is a latent bug magnet for a maintainer extending the lineage subsystem.
+
+  The maintainer should consider one of three paths:
+    (a) Document the pattern and keep it (current state).
+    (b) Refactor to live inside the Immer draft — small performance cost,
+        significant observability benefit.
+    (c) Migrate the entire lineage data model to RTK Query (which has native
+        cache + invalidation primitives) — biggest refactor, biggest payoff.
+
+  Path (a) is the cheapest. Path (b) is the maintainability win. Path (c) is the
+  architectural cleanup.

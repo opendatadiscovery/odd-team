@@ -7,6 +7,7 @@ drift_class_summary:
 - ui_amplification
 - disabled_mode_bypass
 - structural_amplification_surface
+- spec_says_X_impl_does_Y
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Detail-page view tracking
@@ -34,26 +35,48 @@ description: 'Opening a data entity''s detail page in the UI registers a view in
 
   '
 contributing_nodes:
-- ts react-component:DataEntityDetails.tsx (UNRESOLVED — sidecar not yet enriched; ref only)
-- ts redux/thunks:dataentities.thunks.ts:35-40 (UNRESOLVED — sidecar not yet enriched; ref only)
+- ts react-component:DataEntityDetails
+- ts redux-thunk:fetchDataEntityDetails
+- ts react-component:PopularStrip (OwnerEntitiesList "Popular" column — F-001/F-003 loop-closure surface)
 - odd-platform java DataEntityController controller-method:getDataEntityDetails
 - odd-platform java service service:DataEntityServiceImpl
 - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 - odd-platform java DataEntityController controller-method:getPopular
 chain:
 - hop: 1
-  node: ts react-component:DataEntityDetails.tsx
-  sidecar: (not yet enriched)
+  node: ts react-component:DataEntityDetails
+  sidecar: odd-platform__ts__react-component__component__DataEntityDetails.md
   multiplicity_per_trigger: 2
-  evidence: DataEntityDetails.tsx:56-64 — useEffect dependency-array contains details.status?.status (derived from fetch response),
-    causing the effect to re-fire after the first fetch resolves
-  unresolved: true
+  evidence: |-
+    DataEntityDetails.tsx:56-64 — useEffect dependency-array contains 5 entries
+    (`dataEntityId`, three group-status flags, AND `details.status?.status`); the
+    5th entry is RESPONSE-DERIVED (sourced from the same Redux slice the dispatch
+    writes to), so first mount fires the effect ONCE → dispatch fires →
+    `details.status` flips from undefined to a concrete enum → dep-array changes
+    → effect re-fires → SECOND dispatch. PRIMARY-SOURCE CONFIRMED batch J.
+    The cycle quiesces at +2 because the second fetch returns the same status.
+    Sidecar bugs_limitations_corner_cases[0] empirically pins LSN-017 via P-004
+    (run R-20260519T010758Z-P-004; xhr_count=2 + DB delta=2 regex-filtered).
+  unresolved: false
+  resolved_in_batch: J
 - hop: 2
-  node: ts thunk:fetchDataEntityDetails
-  sidecar: (not yet enriched)
+  node: ts redux-thunk:fetchDataEntityDetails
+  sidecar: odd-platform__ts__redux-thunk__thunk__fetchDataEntityDetails.md
   multiplicity_per_trigger: 1
-  evidence: dataentities.thunks.ts:35-40 — handleResponseAsyncThunk wrapping dataEntityApi.getDataEntityDetails
-  unresolved: true
+  evidence: |-
+    dataentities.thunks.ts:35-42 — `handleResponseAsyncThunk` (the project-wide
+    Redux Toolkit wrapper at `redux/lib/handleResponseThunk.ts:19-43`) wraps
+    `dataEntityApi.getDataEntityDetails({ dataEntityId })`. ONE HTTP call per
+    dispatch (no client-side cache, no retry, no debounce, no in-flight de-dup
+    — sidecar invariants[0]). Errors are silenced at the toast layer via
+    `switchOffErrorMessage: true` (line 41) but persisted to the loader-slice
+    `errors` map. The fulfilled payload fans into THREE slices simultaneously
+    via three independent extraReducers: `dataentities.slice.ts:97-99`,
+    `metadata.slice.ts:18`, `owners.slice.ts:52-54`. PRIMARY-SOURCE CONFIRMED
+    batch J — hop-2 dispatch-multiplicity per call is exactly 1 (the
+    multiplicity-doubling lives at hop-1 useEffect, not the thunk).
+  unresolved: false
+  resolved_in_batch: J
 - hop: 3
   node: odd-platform java DataEntityController controller-method:getDataEntityDetails
   sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDetails.md
@@ -101,10 +124,18 @@ terminal_side_effect:
     repository sidecar
   cardinality_per_call: 1
 amplification_factor: 2
-amplification_factor_provenance: FULLY MEASURED end-to-end — P-004 (run R-20260519T010758Z-P-004) observed xhr_count=2 AND
-  view_count delta=2 in a single UI page-open via headless Chromium. The full chain product is empirically confirmed. LSN-017's
-  headline (`opening a detail page registers as +2 views`) is no longer inferred — it is the measured truth. Batch-H adds
-  primary-source SQL confirmation at ReactiveDataEntityRepositoryImpl.java:173-180 for hop-4.
+amplification_factor_provenance: |-
+  FULLY MEASURED end-to-end — P-004 (run R-20260519T010758Z-P-004) observed
+  xhr_count=2 AND view_count delta=2 in a single UI page-open via headless
+  Chromium. The full chain product is empirically confirmed. LSN-017's headline
+  (opening a detail page registers as +2 views) is no longer inferred — it is
+  the measured truth. Batch-H adds primary-source SQL confirmation at
+  ReactiveDataEntityRepositoryImpl.java:173-180 for hop-4. Batch-J adds
+  PRIMARY-SOURCE CONFIRMATION at hop-1 (DataEntityDetails.tsx:56-64 dep-array
+  bug — the +2 root cause) AND hop-2 (fetchDataEntityDetails.ts:35-42 thunk
+  one-call-per-dispatch invariant). The +2 amplification is now FULLY anchored
+  at EVERY layer of the chain (UI useEffect + thunk + controller + service +
+  repository + DB).
 observed_vs_expected:
   facets:
   - facet: backend per-call delta
@@ -164,6 +195,157 @@ observed_vs_expected:
     provenance: STATIC — primary-source verification at DataEntityServiceImpl.java:197 (@ReactiveTransactional on getDetails
       — the ONLY read method with the annotation) + 488-495 (the incrementViewCount helper called inside that boundary at
       line 207). No new probe needed; P-004 already pinned the +2 user-visible amplification.
+  - facet: UI dep-array root-cause PRIMARY-SOURCE CONFIRMED (batch J)
+    observed: |-
+      DataEntityDetails.tsx:56-64 — the useEffect dep-array contains 5 entries;
+      4 are externally-driven (dataEntityId + 3 DEG-membership flags) and ONE
+      is response-derived (`details.status?.status` at line 63, read via
+      `getDataEntityDetails(dataEntityId)` selector at line 34). The 5th
+      entry being response-derived is the LSN-017 bug. Sidecar
+      `bugs_limitations_corner_cases[0]` (severity HIGH) names the exact
+      location. The fix is 1 LINE (remove line 63 from the dep array).
+      Operational consequence is doubled inflation throughput from bot-driven
+      page-views — the UI surface is 2x cheaper than direct API calls for
+      view_count inflation.
+    expected: |-
+      Dep-array contains ONLY externally-driven values; response-derived
+      values like details.status?.status MUST NOT appear in the dep array
+      (they create the self-feeding refire loop).
+    drift_class: ui_amplification
+    provenance: |-
+      STATIC + MEASURED — primary-source verification at DataEntityDetails.tsx:56-64
+      (sidecar bugs_limitations_corner_cases[0]) + P-004 empirical pin
+      (run R-20260519T010758Z-P-004, xhr_count=2). Confirmed batch J.
+  - facet: thunk one-call-per-dispatch invariant PRIMARY-SOURCE CONFIRMED (batch J)
+    observed: |-
+      dataentities.thunks.ts:35-42 — the thunk is a thin wrapper around
+      `dataEntityApi.getDataEntityDetails({ dataEntityId })` via
+      `handleResponseAsyncThunk` (the project-wide RTK wrapper at
+      `redux/lib/handleResponseThunk.ts:19-43`). NO client-side caching,
+      NO retry, NO debounce, NO in-flight de-dup (sidecar invariants[0]).
+      Each dispatch issues exactly ONE HTTP call → backend per-call
+      side-effect is +1 view_count (sidecar downstream_side_effects). The
+      hop-2 multiplicity is exactly 1; the +2 amplification of F-001
+      originates entirely at hop-1 (the dep-array bug) NOT here.
+    expected: |-
+      Same — one HTTP call per dispatch is the correct shape; the bug is
+      that hop-1 calls dispatch twice per mount.
+    drift_class: null
+    provenance: |-
+      STATIC — primary-source verification at dataentities.thunks.ts:35-42
+      (sidecar invariants[0]). No probe needed; the hop-2 contract is
+      confirmed at the source. Confirmed batch J.
+  - facet: triple-slice fan-out invariant (batch J — STATIC architectural finding)
+    observed: |-
+      Each fulfilled action fans into THREE independent slice reducers:
+      `dataentities.slice.ts:97-99` (the entity itself, minus metadata +
+      ownership), `metadata.slice.ts:18` (metadataFieldValues chunk),
+      `owners.slice.ts:52-54` (ownership chunk). A future field-name change
+      on the DataEntityDetails contract (e.g. renaming `ownership` to
+      `owners`) could silently break the metadata-slice or owners-slice
+      extraReducer without breaking compilation if the field becomes
+      optional in the OpenAPI spec.
+    expected: documented contract OR a contract test pinning the
+      fan-out invariant
+    drift_class: null
+    provenance: STATIC — primary-source verification at thunk sidecar
+      dependencies_semantic.couples-to (three-slices block) +
+      `dataentities.slice.ts:55` comment (the verbatim intent anchor for
+      the cross-slice partition). Proposed local Vitest test —
+      mock `dataEntityApi.getDataEntityDetails`, dispatch the thunk,
+      assert all three slices land the right partition.
+  - facet: silent-fail toast suppression (batch J — STATIC, UX consequence)
+    observed: |-
+      `switchOffErrorMessage: true` (dataentities.thunks.ts:41) suppresses
+      the global error toast on the rejected path; the AppError still
+      persists to `loader.errors[fetchDataEntityDetails]` and surfaces via
+      the full-page <AppErrorPage> banner only when `isDataEntityDetailsNotFetched`
+      is true. A 5xx on detail-page load shows ONLY the full-page banner;
+      no transient toast. A regression that breaks <AppErrorPage> rendering
+      would leave users with a blank detail page and no feedback.
+    expected: |-
+      Documented behaviour — the silent-toast path is intentional per the
+      project standard pattern (10 other thunk files share
+      `switchOffErrorMessage: true`); the absent regression test is the gap.
+    drift_class: null
+    provenance: STATIC — primary-source verification at
+      dataentities.thunks.ts:41 + thunk sidecar implicit_adrs[1]
+      (selective error-toast suppression pattern documented across 10
+      thunk files). Proposed local Vitest test — mock a rejected response,
+      assert no toast spawned + assert AppError reaches loader.errors.
+  - facet: PopularStrip closes the F-001 inflation loop at the UI (batch J)
+    observed: |-
+      OwnerEntitiesList.tsx:99-105 renders a "Popular" column inside the
+      home-page Recommended panel. Each tile is a `<Link to={dataEntityDetailsPath(item.id)}>`
+      (DataEntityList.tsx:38) which defaults to `/dataentities/{id}/overview`
+      (dataEntitiesRoutes.ts:66-73, default `path='overview'`). Clicking a
+      Popular tile navigates to the entity's Overview tab — which mounts
+      `DataEntityDetails` and fires `fetchDataEntityDetails` → backend +1
+      view_count. THE UI CLOSES THE INFLATION LOOP: clicking the entity
+      that's currently ranked highest raises its view_count, ranking it
+      even higher, drawing more clicks. No client-side debouncing, no
+      idempotency key, no analytics-only mode, no per-session "already
+      counted" guard. Back-button navigation REMOUNTS OwnerEntitiesList
+      → re-fires the popular fetch → user observes the inflation taking
+      effect in real-time within the same SPA session. PRIMARY-SOURCE
+      CONFIRMED batch J via PopularStrip sidecar bugs_limitations_corner_cases[0]
+      (severity HIGH).
+    expected: client-side defence at SOME layer — debounce per (session,
+      entityId), analytics-only thunk that doesn't trigger incrementViewCount,
+      back-navigation cache that doesn't refetch
+    drift_class: ui_amplification
+    provenance: |-
+      STATIC — primary-source verification at PopularStrip sidecar
+      bugs_limitations_corner_cases[0] + DataEntityList.tsx:38 +
+      dataEntitiesRoutes.ts:66-73 (default path='overview') + Node.tsx
+      cross-link sidecar (the lineage-tab click path also navigates back
+      into Overview). Proposed Type-7 probe — local docker-compose stack +
+      Playwright click-Popular-tile + back-navigate + measure DB
+      view_count delta vs Popular position shift across the loop.
+  - facet: PopularStrip DISABLED-mode rendering CONTRADICTS docs (batch J)
+    observed: |-
+      Overview.tsx:25-27, :53-59 — `isShowOwnerAssociation = Boolean(appInfo?.authType
+      && appInfo.authType !== 'DISABLED')`. Under DISABLED auth, the entire
+      OwnerAssociation wrapper does NOT render — meaning the Popular column
+      is hidden from the home page on DISABLED-mode deployments. BUT the
+      live doc (`documentation/docs/data-discovery/catalog-overview.md:43`)
+      states "on auth-disabled deployments the panel is visible but the
+      per-user filtering does not apply" — a DIRECT factual contradiction
+      between docs and code. The UI inflation loop above (via Popular tile)
+      is therefore UNREACHABLE under DISABLED from the home-page UI; the
+      API path `/api/dataentities/popular` remains anonymous-reachable
+      (per batch-G + F-003 facets) but the home-page-UI-driven amplification
+      is closed under DISABLED.
+    expected: docs match code (probably the docs need fixing; the code
+      gate is the correct security posture for a feature gated on
+      user-owner association)
+    drift_class: spec_says_X_impl_does_Y
+    provenance: STATIC — primary-source verification at Overview.tsx:25-27,
+      :53-59 + PopularStrip sidecar doc_drift_findings[1] (WebFetch
+      2026-05-19 status 200 confirms live page silent on this
+      contradiction; local doc explicit per :43). NEW DOC-GAP candidate
+      for doc-gap-finder reducer.
+  - facet: PopularStrip click-target docs mismatch (batch J)
+    observed: |-
+      Live doc page (`https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview`,
+      WebFetched 2026-05-19 status 200) states "Clicking a tile opens that
+      entity's Structure page". The code at DataEntityList.tsx:38 +
+      dataEntitiesRoutes.ts:68 navigates to `/dataentities/{id}/overview`
+      (NOT Structure). **F-001 inflation-loop consequence**: the Overview
+      tab is the read-as-write endpoint that fires `fetchDataEntityDetails`
+      → backend +1 view_count; the Structure tab is a DIFFERENT SPA route
+      (`/dataentities/{id}/structure`, dataEntitiesRoutes.ts:95-104) which
+      MAY OR MAY NOT also fire the increment. If docs are correct + code
+      changes, the Popular click would no longer trigger view_count
+      increment via the Overview-tab read-as-write — breaking the F-001
+      loop's UI closure path.
+    expected: docs and code agree on the click target (probably the docs
+      are wrong given the code is the F-001 inflation-loop closure point)
+    drift_class: spec_says_X_impl_does_Y
+    provenance: STATIC — primary-source verification at DataEntityList.tsx:38
+      + dataEntitiesRoutes.ts:66-73 + PopularStrip sidecar
+      doc_drift_findings[0] (live WebFetch + local doc both show
+      contradiction). NEW DOC-GAP candidate.
   - facet: hot-row contention at service tier (batch I — STATIC, perf consequence)
     observed: 'The @ReactiveTransactional on getDetails (line 197) means concurrent reads of
 
@@ -184,11 +366,16 @@ observed_vs_expected:
     (backend half — batch F)
   - lineage/odd-platform/understanding/odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
     (repository primary-source — batch H)
-  - odd-platform-ui/src/components/DataEntityDetails/DataEntityDetails.tsx:56-64 (UI half — code-walk during LSN-017 trigger
-    conversation)
+  - lineage/odd-platform/understanding/odd-platform__ts__react-component__component__DataEntityDetails.md
+    (UI hop-1 PRIMARY-SOURCE — batch J — useEffect dep-array LSN-017 root cause)
+  - lineage/odd-platform/understanding/odd-platform__ts__redux-thunk__thunk__fetchDataEntityDetails.md
+    (UI hop-2 PRIMARY-SOURCE — batch J — thunk one-call-per-dispatch invariant)
+  - lineage/odd-platform/understanding/odd-platform__ts__react-component__component__PopularStrip.md
+    (F-001 inflation-loop UI closure point — batch J — Popular click → Overview-tab read-as-write)
   - live probe-runs/2026-05-19-P-001.yaml — backend +1 per call empirically confirmed
   - live probe-runs/2026-05-19-P-002.yaml — DISABLED-mode anonymous reachability empirically confirmed
   - live probe-runs/2026-05-19-P-003.yaml — latency baseline at small N
+  - live probe-runs/2026-05-19-P-004.yaml — UI +2 per page-open empirically pinned (the hop-1 root cause)
 test_matrix:
   unit:
     state: GAP
@@ -245,25 +432,25 @@ test_matrix:
       auth)
     - Cross-tenant inflation — caller in tenant A pumps tenant B's entity to A's home page (deferred — multi-tenant probe
       stack)
-control_summary: '3/14 cells PROBED (1 PROBED-PINNING-BUG security + 1 PROBED-PASSING
-
-  integration + 1 PROBED-PASSING performance baseline) + 11 cells remaining GAP. First
-
-  end-to-end empirical validation of the methodology loop. Batch-H adds primary-source
-
-  SQL confirmation at the repository layer (ReactiveDataEntityRepositoryImpl.java:173-180);
-
-  chain hop-4 now `resolved: true`. Batch-I adds service-tier primary-source confirmation
-
-  at DataEntityServiceImpl.getDetails (lines 196-209) — the @ReactiveTransactional
-
-  scope is the read+UPDATE+enrichment boundary; hop-3.5 now `resolved: true`. The unit-test
-
-  cell remains GAP — both repository and service classes have minimal direct test coverage
-
-  (DataEntityServiceTest covers only createMetadata + upsertMetadataFieldValue per batch-I
-
-  sidecar).'
+control_summary: |-
+  3/14 cells PROBED (1 PROBED-PINNING-BUG security + 1 PROBED-PINNING-BUG
+  integration + 1 PROBED-PASSING performance baseline) + 11 cells remaining GAP.
+  First end-to-end empirical validation of the methodology loop. Batch-H adds
+  primary-source SQL confirmation at the repository layer
+  (ReactiveDataEntityRepositoryImpl.java:173-180); chain hop-4 now resolved.
+  Batch-I adds service-tier primary-source confirmation at
+  DataEntityServiceImpl.getDetails (lines 196-209) — the @ReactiveTransactional
+  scope is the read+UPDATE+enrichment boundary; hop-3.5 now resolved. Batch-J
+  adds UI-side PRIMARY-SOURCE CONFIRMATION at hop-1 (DataEntityDetails.tsx:56-64
+  dep-array bug — the +2 root cause) AND hop-2
+  (fetchDataEntityDetails.ts:35-42 thunk one-call-per-dispatch invariant) AND
+  the F-001 inflation-loop UI closure point (PopularStrip → click Popular tile →
+  navigate to Overview tab → fetchDataEntityDetails fires → +1 view_count →
+  ranking shifts). The +2 amplification is now FULLY ANCHORED at every layer of
+  the chain (UI + thunk + controller + service + repository + DB). The unit-test
+  cell remains GAP — BOTH the UI codebase (zero test files entirely; sidecar
+  tests_coverage_semantic confirms) AND the repository/service Java classes
+  have minimal direct test coverage.
 related_refactoring_scopes:
 - REFACTOR-201
 - REFACTOR-220

@@ -1,0 +1,84 @@
+name: Fetch Data Entity Details (Redux Toolkit createAsyncThunk)
+canonical_in_docs: false
+canonical_candidate: false
+pillar_affinity:
+- P-01
+description: |-
+  **NEW CONCEPT, batch 2026-05-19J** — the UI-side Redux Toolkit `createAsyncThunk`
+  (wrapped by the project's local `handleResponseAsyncThunk` helper) that takes
+  `{ dataEntityId }`, calls `dataEntityApi.getDataEntityDetails({ dataEntityId })`
+  (the OpenAPI-generated client for `GET /api/dataentities/{data_entity_id}`), and
+  on `fulfilled` lets the resolved `DataEntityDetails` payload fan into **three**
+  extraReducers — `dataentities.slice` (the entity itself, minus metadata +
+  ownership), `metadata.slice` (the `metadataFieldValues` chunk), and `owners.slice`
+  (the `ownership` chunk) — that together rehydrate the per-entity slice of the
+  Redux store on every detail-page mount or status change. **The producer half of
+  F-001 view_count loop on the UI side** — every dispatch costs the backend +1
+  view_count UPDATE on the entity (and LSN-017 doubles that to +2 per page-open).
+  Dispatched ONLY from `DataEntityDetails.tsx:56-64` (verified by grep — exactly
+  one match in the entire UI tree). Errors are deliberately silenced at the toast
+  layer via `{ switchOffErrorMessage: true }` — but the `rejected` action still
+  writes the `AppError` into `loader.errors[fetchDataEntityDetails]`, where
+  `<AppErrorPage>` renders it as a full-page banner. No client-side caching, no
+  retry, no debounce, no in-flight de-dup. The action-type string is a STABLE
+  prefix (`'dataEntities/fetchDataEntityDetails'`) consumed by the loader-slice
+  matchers.
+nodes:
+- odd-platform ts redux-thunk thunk:fetchDataEntityDetails
+contributing_files:
+- odd-platform__ts__redux-thunk__thunk__fetchDataEntityDetails.md
+evidence:
+- 'fetchDataEntityDetails.md:concepts.operations[dispatch the thunk → write pending
+  to loader.statuses; call dataEntityApi.getDataEntityDetails; on success: write
+  fulfilled + 3 slices fan-out; on success: SKIP success-toast; on error: write
+  rejected + AppError; on error: SKIP error-toast]'
+- 'fetchDataEntityDetails.md:concepts.invariants[exactly one HTTP call per dispatch;
+  fulfilled payload fans into THREE slices simultaneously; action-type is STABLE
+  prefix; errors persisted EVEN WHEN toast suppressed; dispatch loop in
+  DataEntityDetails.tsx gated by 5-element dep array]'
+- 'fetchDataEntityDetails.md:downstream_side_effects[HTTP call GET
+  /api/dataentities/{id}; +1 view_count UPDATE on backend (transitive); pending →
+  fulfilled → 3-slice fan-out + rejected → AppError; NO toast on success or error]'
+- 'fetchDataEntityDetails.md:bugs_limitations_corner_cases.[self-feeding double-fetch
+  loop HIGH; no requestId-based stale-response protection MEDIUM; AppError.message
+  generic-fallback MEDIUM; no retry/debounce/in-flight de-dup MEDIUM; silent
+  client-side stripping of empty external-name entries LOW; no dataEntityId
+  validation LOW]'
+axes_present:
+- ui_redux_thunks
+security_aggregate:
+  overall: MEDIUM
+  authorization_consistency:
+    verdict: UNGATED
+    detail: 'Thunk performs no client-side authorization check; passes only
+      dataEntityId; any authenticated user can dispatch for any entity.'
+  owner_scoping:
+    verdict: BYPASSES
+    detail: 'No owner / namespace / role filter at the thunk layer; backend GET
+      also has no owner predicate.'
+  weaknesses:
+  - 'Front-end side of the read-collaborative posture; cross-confirms REFACTOR-024/203
+    at the UI layer'
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - 'Detail-page mount is a hot path — every entity click in Search/Directory/Catalog
+    Overview lands in <DataEntityDetails> which fires this thunk at least once
+    (twice given the self-feeding refire). Backend hottest read endpoint (per
+    batch F + H).'
+  weaknesses:
+  - '2-dispatch-per-mount baseline (self-feeding refire) — minimum doubles the
+    load on GET /api/dataentities/{id} HIGH'
+  - 'No in-flight de-dup or cache MEDIUM'
+  - '5-thunk parallel salvo on detail-page mount (this thunk + 4 others) MEDIUM'
+notes: |-
+  New concept captured in batch 2026-05-19J. This thunk is the operational hop
+  that closes the F-001 view_count chain on the UI side. Combined with the LSN-017
+  dep-array bug at DataEntityDetails.tsx:56-64, the thunk fires 2x per page-open
+  in steady state — the empirical doubling pinned by probe P-004.
+
+  The thunk's behaviour is well-understood; the gap is zero test coverage. A
+  vitest + @testing-library/react suite mocking `dataEntityApi.getDataEntityDetails`
+  and asserting (a) happy-path fulfilled lands in byId, (b) fan-out to 3 slices,
+  (c) rejected sets AppError, (d) switchOffErrorMessage suppresses toast not
+  reject — would lock down every invariant and ground the regression baseline.

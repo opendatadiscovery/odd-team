@@ -1,21 +1,61 @@
 name: Markdown Rendering Pipeline (rehype-raw without rehype-sanitize)
 canonical_in_docs: false
 canonical_candidate: false
-description: UI-side rendering surface for arbitrary user-authored Markdown bodies,
-  primarily for internal_description. Implemented via @uiw/react-markdown-preview@4.2.2
-  which transitively pulls in rehype-raw@6.1.1 (parses raw HTML embedded in Markdown
-  into AST nodes). NO rehype-sanitize is configured (grep returns 0 matches across
+pillar_affinity:
+- P-01
+- P-09
+description: |-
+  UI-side rendering surface for arbitrary user-authored Markdown bodies, primarily
+  for internal_description. Implemented via @uiw/react-markdown-preview@4.2.2 which
+  transitively pulls in rehype-raw@6.1.1 (parses raw HTML embedded in Markdown into
+  AST nodes). NO rehype-sanitize is configured (grep returns 0 matches across
   odd-platform-ui/). NO skipHtml prop is set. Stored-XSS surface for any caller able
-  to write into a Markdown-rendered field.
+  to write into a Markdown-rendered field. **Batch J — UI HALF (P-01 pillar, with
+  P-09 implications)**: the `<Markdown>` shared element at
+  `components/shared/elements/Markdown/Markdown.tsx:84-127` wraps `@uiw/react-md-editor`'s
+  `MDEditor` (edit mode) and `MDEditor.Markdown` (preview); passes only `source`,
+  `wrapperElement`, `disableCopy`, and three custom `components` overrides (`a`,
+  `div`, `p`); **NO `rehypePlugins` override** so library defaults remain
+  (`rehype-raw`, `rehype-attr`, `rehype-autolink-headings`, `rehype-rewrite`,
+  `rehype-slug`, `rehype-ignore`, `rehype-prism-plus` per pnpm-lock.yaml:5911-5938).
+  **`<Markdown>` is the SOLE Markdown renderer on the platform** — sub-paths that
+  use it include internal descriptions, alert messages, query examples, term
+  definitions, dataset-field descriptions, owner descriptions. A rehype-pipeline
+  change here affects every Markdown surface in the UI. **P-009 slice-5 empirically
+  pinned** (probe run R-20260519T020610Z-P-009 on commit ede5d277): dangerous TAGS
+  reach the rendered DOM (`dom_has_script_tag == True`, `dom_has_xss_img_id ==
+  True`, `dom_has_xss_iframe_id == True`) BUT event-handler attributes are stripped
+  by React's attribute filtering (`dom_has_onerror_attr == False`) AND script
+  execution is blocked by Chromium HTML-parser policy + React's attribute filtering
+  (`xss_dialog_fired == 0`, `xss_leak_count == 0`). These are DEFENCE-IN-DEPTH
+  mitigations, NOT application-layer defences. A future code change (switching to
+  `dangerouslySetInnerHTML`, adopting a client-side template renderer, relaxing
+  CSP, or adopting an SVG payload that uses `onload`) re-opens the surface
+  invisibly. The `<Markdown>` wrapper also auto-enables spellcheck via DOM
+  mutation on a hard-coded `id='md-editor'` (Markdown.tsx:96-101, 105) — multiple
+  concurrent editors would race on the same id.
 nodes:
 - odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
+- odd-platform ts react-component component:DataEntityDescription
 contributing_files:
 - odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription.md
+- odd-platform__ts__react-component__component__DataEntityDescription.md
 evidence:
 - upsertDataEntityInternalDescription.md:bugs_limitations_corner_cases.[0]
 - upsertDataEntityInternalDescription.md:dependencies_semantic.coupling.[3]
+- 'DataEntityDescription.md (batch J — UI HALF): concepts.invariants[No rehype-sanitize
+  configured anywhere in the UI verified by grep 0 matches; permission gating is
+  partial — only the Edit affordance is gated, NEVER the rendered content]'
+- 'DataEntityDescription.md:bugs_limitations_corner_cases.[0] HIGH — full Markdown
+  pipeline has NO rehype-sanitize, P-009 slice-5 empirically confirmed dangerous
+  tags reach DOM with execution blocked only by defence-in-depth mitigations'
+- 'DataEntityDescription.md:bugs_limitations_corner_cases.[1] MEDIUM — permission
+  gating is PARTIAL: only Edit button gated, content render unconditional'
+- 'DataEntityDescription.md:tests_coverage_semantic.covered_behaviours[XSS payload
+  round-trips empirically pinned by probe P-009 slice-5/-6]'
 axes_present:
 - ui_shell
+- ui_components
 - controllers
 security_aggregate:
   overall: HIGH
@@ -23,14 +63,24 @@ security_aggregate:
   - LOGIN_FORM
   - OAUTH2
   - LDAP
+  - DISABLED
   authorization_consistency:
-    verdict: N/A
-    detail: Rendering pipeline downstream of write authorization; auth gate is the
-      writer's permission, not the renderer's
+    verdict: INCONSISTENT
+    detail: 'Rendering pipeline downstream of write authorization; auth gate is the
+      writer''s permission (DATA_ENTITY_DESCRIPTION_UPDATE for internal description),
+      not the renderer''s. **Batch J UI confirms**: the partial-gating semantic
+      (Edit button gated, content render NOT gated) is fragile — a refactor
+      "simplifying" by wrapping the cluster in WithPermissions would silently break
+      read access for non-editors.'
   owner_scoping:
     verdict: BYPASSES
     detail: Every reader of an entity-detail page (DATA_ENTITY_VIEW) is downstream
-      of the writer's payload — one malicious writer reaches every reader
+      of the writer's payload — one malicious writer reaches every reader. The
+      UI provides no per-content authorization layer; the description content is
+      universally visible.
+  strengths:
+  - 'P-009 empirically pinned: script execution blocked by defence-in-depth
+    (Chromium HTML-parser policy + React attribute filtering)'
   weaknesses:
   - No backend sanitisation + rehype-raw on UI without rehype-sanitize = stored-XSS
     surface for description bodies (HIGH)
@@ -39,8 +89,44 @@ security_aggregate:
   - Lineage tooltips (if they display descriptions) would be a third surface
   - Future minor-version bump of @uiw/react-markdown-preview or react-markdown can
     widen the surface invisibly with no test catching the regression
+  - '**Batch J — `<Markdown>` is the SOLE Markdown renderer on the platform**;
+    a rehype-pipeline change to fix THIS feature affects every Markdown surface in
+    the UI (alerts, queries, term definitions, owner descriptions, dataset-field
+    descriptions, attachments)'
+  - '**Batch J — Partial permission gating** (HIGH UX-fragility): Edit button gated,
+    content unconditional. The semantic is subtle enough that a refactor
+    "simplifying" the cluster would silently break legitimate read access for
+    non-editors.'
+  - '**Batch J — Spellcheck DOM-mutation race**: Markdown.tsx:96-101 hard-codes
+    `id="md-editor"` and queries `document.getElementById`; two simultaneous
+    editors on the same page race on the same id.'
 performance_aggregate:
   overall: MEDIUM
   weaknesses:
   - No client-side cap on Markdown body length (mirrors server-side gap) — large descriptions
     stall the render
+  - '**Batch J — Term-resolution N+1 risk**: useTermWiki fetches `[[ns:term]]`
+    mentions ONCE per unique term on every keystroke (memoised via fetchedTerms
+    / unsuccessfulTerms but NOT batched); a description with 100 unique unresolved
+    mentions issues 100 parallel HTTP requests on first render'
+notes: |-
+  Strengthened in batch 2026-05-19J with DataEntityDescription UI cluster sidecar
+  closing the F-004 UI half. P-009 slice-5 empirically pinned the system-level
+  behaviour: dangerous tags reach the rendered DOM but execution is blocked by
+  defence-in-depth mitigations. The application-layer defence (rehype-sanitize)
+  is absent — a future code change can re-open the surface invisibly.
+
+  The DataEntityDescription cluster (InternalDescription, InternalDescriptionPreview,
+  InternalDescriptionEdit, InternalDescriptionHeader, OverviewDescription, Markdown
+  shared element, useTermWiki hook) is the canonical entry point for this rendering
+  pipeline; sibling DatasetFieldDescription cluster shares the same useTermWiki
+  hook.
+
+  Four UI-side findings flow from the strengthen:
+    (a) **Markdown is the SOLE renderer** — rehype-pipeline changes affect every
+        surface globally.
+    (b) **Partial permission gating** — Edit button gated, content unconditional.
+    (c) **Term-resolution N+1 risk** — every keystroke fires per-unresolved-term
+        HTTP calls without batching.
+    (d) **Spellcheck DOM-mutation race** — hard-coded `id='md-editor'` collides
+        across concurrent editor instances.

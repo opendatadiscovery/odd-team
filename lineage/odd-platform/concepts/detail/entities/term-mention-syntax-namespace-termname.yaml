@@ -1,0 +1,91 @@
+name: Term-mention Syntax `[[Namespace:TermName]]`
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-06
+- P-01
+description: |-
+  **NEW CONCEPT, batch 2026-05-19J** — the platform's UI-side inline term-mention
+  syntax for linking Glossary terms from any Markdown body. The pattern `[[Namespace:TermName]]`
+  is parsed by both the UI (via `TERM_PATTERN` regex at `lib/constants.ts:177` —
+  `/\[\[([^:\]]+):([^\]]+)\]\]/g`) and the backend (via `Pattern.compile("\\[\\[([^:]*?):([^\\]]*?)\\]\\]")`
+  at TermServiceImpl.java:67). **The UI regex is STRICTER than the backend regex**:
+  UI requires non-empty namespace AND non-empty term-name (character class `[^:\]]+`
+  forces ≥1 char excluding `:` and `]`); backend allows empty groups (non-greedy
+  `*?` matches zero chars). A description like `[[:foo]]` or `[[foo:]]` is rendered
+  verbatim in UI as raw text (no match) but the backend's `findTermsInDescription`
+  still parses it (with empty group it short-circuits in
+  `handleDataEntityDescriptionTerms`). The asymmetry is a latent inconsistency.
+  **Operator-facing documentation is ONLY a tooltip** at
+  InternalDescriptionHeader.tsx:22-25: "You can link an existing term by entering
+  information about the term according to the pattern [[NamespaceName:TermName]]".
+  No public doc page covers the syntax. The `useTermWiki` hook (useTermWiki.ts:30-228)
+  is the UI-side parser + resolver: scans both persisted description and in-progress
+  editor value; resolves each match against
+  `GET /api/terms/namespaces/{namespaceName}/names/{termName}`; replaces matches
+  with `[name](termPath "definition")` Markdown links on render. Failed resolution
+  shows inline error `'Term {termName} not found in namespace {namespaceName}'`.
+  **Save does NOT block on unresolved mentions** — operators can save descriptions
+  containing broken term mentions; the backend silently drops them in
+  handleDataEntityDescriptionTerms. **Side effect: mentioning a term auto-creates a
+  `term_relations` row regardless of `DATA_ENTITY_ADD_TERM` permission** —
+  DATA_ENTITY_DESCRIPTION_UPDATE bypasses DATA_ENTITY_ADD_TERM via [[ns:term]]
+  mentions (per batch-G upsertDataEntityInternalDescription.md:bugs_limitations_corner_cases.[3]).
+nodes:
+- odd-platform ts react-component component:DataEntityDescription
+contributing_files:
+- odd-platform__ts__react-component__component__DataEntityDescription.md
+evidence:
+- 'DataEntityDescription.md:concepts.entities[TERM_PATTERN regex at lib/constants.ts:177
+  — UI-side term-mention parser, intentionally distinct from backend regex; TermRef
+  parsed term-mentions]'
+- 'DataEntityDescription.md:concepts.operations[resolve-term-mentions-on-change —
+  for each TERM_PATTERN match in editor value, handleMarkdownChange calls
+  useGetTermByNamespaceAndName ONCE per unique term, cached in fetchedTerms /
+  unsuccessfulTerms]'
+- 'DataEntityDescription.md:concepts.invariants[Term-mention regex is STRICTER than
+  the backend regex; Term-resolution lookup is best-effort and ASYNC; Term-resolution
+  failures show INLINE errors in the editor without blocking save]'
+- 'DataEntityDescription.md:implicit_adrs.[0] The platform uses [[Namespace:TermName]]
+  syntax to link Glossary terms from description bodies — terms are assigned BY
+  THE DESCRIPTION TEXT, not via a separate term-attach control'
+- 'DataEntityDescription.md:doc_drift_findings.[DOC-GAP candidate — [[Namespace:TermName]]
+  term-mention syntax is platform-specific and the ONLY operator-facing documentation
+  of it is the InformationIcon tooltip; no public doc page covers the syntax, its
+  precedence rules, what happens on lookup failure, or the side effect that
+  mentioning a term auto-creates a term_relations row regardless of DATA_ENTITY_ADD_TERM
+  permission]'
+axes_present:
+- ui_components
+security_aggregate:
+  overall: MEDIUM
+  weaknesses:
+  - 'Side-door write path — mentioning a term in a description auto-creates a
+    term_relations row regardless of DATA_ENTITY_ADD_TERM permission (per
+    batch-G finding); DATA_ENTITY_DESCRIPTION_UPDATE permission becomes a
+    superset of DATA_ENTITY_ADD_TERM via this side door'
+  - 'UI vs backend regex asymmetry — a description like [[:foo]] is rendered
+    verbatim by UI but parsed by backend with empty namespace group; the
+    asymmetry is a latent inconsistency'
+performance_aggregate:
+  overall: MEDIUM
+  weaknesses:
+  - 'Term-resolution N+1 risk — handleMarkdownChange fires on every editor
+    keystroke; for a description with 100 unique unresolved mentions, 100 parallel
+    HTTP requests issue (memoised in fetchedTerms but NOT batched)'
+notes: |-
+  New concept captured in batch 2026-05-19J. The term-mention syntax is a
+  platform-specific contract that operators learn about only from a tooltip.
+  Recommended canonicalisation: document the syntax + its precedence rules + the
+  auto-create side effect in:
+    (a) /features/data-glossary — the pillar that owns Term entities; describe
+        how mentions auto-link from descriptions
+    (b) /features/data-discovery — the pillar that owns Description editing;
+        describe how to use [[ns:term]] mentions to wire terms inline
+    (c) /developer-guides/api-reference/glossary — the API surface for term
+        resolution endpoints used by the UI parser
+
+  Also surface the UI-vs-backend regex asymmetry as a backlog item: either tighten
+  the backend regex to match UI's character-class allowlist, or loosen the UI
+  regex to match backend's non-greedy permissiveness — pick one to eliminate
+  the latent inconsistency.

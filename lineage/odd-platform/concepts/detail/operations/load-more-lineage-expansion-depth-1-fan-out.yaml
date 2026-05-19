@@ -1,0 +1,81 @@
+name: LoadMore Lineage Expansion (depth-1 fan-out + slice monotonic accumulation)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-05
+description: |-
+  **NEW CONCEPT, batch 2026-05-19J** — the UI mechanic for progressive lineage
+  expansion. Clicking the "Load N more" button (`LoadMoreButton.tsx:55-65`) on a
+  leaf node in the lineage canvas: (a) dispatches a NEW thunk
+  `fetchDataEntityDownstreamLineage({ dataEntityId, lineageDepth: 1, rootNodeId,
+  expandGroups: eag })` — **hardcoded `lineageDepth: 1`** (a depth-1 fan-out
+  around the clicked node, not user-driven depth increase); (b) appends the
+  clicked entity id to the URL `?exd=` (downstream) or `?exu=` (upstream) array.
+  The Redux slice (`dataEntityLineage.slice.ts:206-220`) MERGES the new
+  nodes/edges into local state — `if (!localDownstreamState.nodeIds.has(node.id))
+  localDownstreamState.allNodes.push(node)`. **Critical invariant**: the
+  accumulator grows MONOTONICALLY across LoadMore clicks. There is no "remove this
+  expansion" action, no LRU eviction, no max-size cap. A user clicking LoadMore on
+  100 leaf nodes in a 10K-node graph accumulates 100x payload-size in memory + in
+  the rendered SVG tree. The LoadMoreButton hides itself after click (`Node.tsx:174
+  setHideLoadMore(true)`) but the underlying data stays. The depth-slider in
+  LineageControls (`?d=` URL param) controls the INITIAL load via the
+  `[d, dataEntityId]` useEffect dep; user expansion is always 1-hop at a time.
+  **Two-overload protocol at the SQL repository**: the recursive walk uses
+  `getLineageRelations(Set, LineageDepth, LineageStreamKind)` for the main
+  subgraph; the depth-1 expansion uses `getLineageRelationsForDepthOne(List<Long>,
+  LineageStreamKind)` — separate SQL primitives merged downstream by
+  LineageServiceImpl. The split signals an intentional "recursive walk for main
+  subgraph + one-hop expansion for UI clicks" protocol.
+nodes:
+- odd-platform ts react-component component:LineageGraph
+contributing_files:
+- odd-platform__ts__react-component__component__LineageGraph.md
+evidence:
+- 'LineageGraph.md:concepts.operations[LoadMoreButton.tsx — on click, dispatches
+  fetchDataEntityDownstreamLineage({lineageDepth: 1, ...}) and appends entity id
+  to exd/exu query-param; this is the user-driven expand a specific node operation]'
+- 'LineageGraph.md:concepts.invariants[LoadMore is depth-1 expansion, not user-driven
+  depth increase; clicking Load N more on a leaf node dispatches a NEW fetch with
+  lineageDepth: 1 and appends the node id to exd/exu; the slice MERGES the new
+  nodes/edges into local state]'
+- 'LineageGraph.md:bugs_limitations_corner_cases.[LoadMore monotonic accumulation
+  has no collapse affordance MEDIUM — slice merges new nodes; no remove-expansion,
+  no LRU, no max-size cap]'
+- 'LineageGraph.md:implicit_adrs.[5] Module-level mutable globals for the LoadMore
+  accumulator — pattern is unusual for Redux Toolkit; trades observability for
+  performance'
+axes_present:
+- ui_components
+security_aggregate:
+  overall: MEDIUM
+  weaknesses:
+  - 'LoadMore mechanic increases backend recursive-CTE load — each click is a
+    separate backend SQL round-trip; rapid LoadMore on a wide tree fires many
+    parallel queries with no rate-limit'
+  - 'No upper bound on the number of LoadMore clicks per session — operationally,
+    a user can drive the backend repository hot path arbitrarily via UI clicks'
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - 'Each LoadMore click is a fresh backend round-trip to
+    getLineageRelationsForDepthOne (the per-click hot path per batch-H
+    ReactiveLineageRepositoryImpl sidecar); cost scales with branching factor at
+    the clicked node'
+  weaknesses:
+  - 'Monotonic memory growth at the UI — no eviction, no max-size cap; a user
+    accumulating 100 expansions on a 10K-graph holds 100x payload-size in Redux
+    + in the rendered SVG tree'
+  - 'No re-rendering optimisation as the tree grows — every node mounted as SVG
+    primitives; expansion compounds the no-virtualisation cost'
+notes: |-
+  New concept captured in batch 2026-05-19J. The LoadMore mechanic is the primary
+  way a user expands beyond the initial depth — but it is undocumented in
+  /features/data-lineage. The doc's framing of "configurable upstream / downstream
+  depth" suggests increasing `?d=` is the canonical expansion path; in practice
+  LoadMore is the more granular tool.
+
+  Recommended UX improvement: add a "Collapse this branch" affordance + a
+  max-loadmore-cap warning + per-session expansion budget. Today the design
+  trusts the user not to over-expand a graph; for a curious user or a misbehaving
+  bot, the unbounded accumulation is a UI-side DoS amplification vector.

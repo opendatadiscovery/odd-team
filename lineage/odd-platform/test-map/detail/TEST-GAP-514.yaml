@@ -1,0 +1,39 @@
+gap_id: TEST-GAP-514
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream"
+  - "odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream"
+pillars_affected: [P-05, P-09]
+surfaced_by:
+  - "getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[2] (Unbounded lineage-CTE fan-out when the anchor set is large)"
+  - "getMyObjectsWithUpstream.md:performance.known_performance_gaps.[0, 1, 2] (Anchor-set materialisation has no pagination; Lineage IN-clause is unbounded; In-memory deduplication defeats SQL pagination)"
+  - "getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[4] (Unbounded size at listByOddrns)"
+  - "getMyObjectsWithDownstream.md:performance.* (parallel findings for downstream)"
+behaviour: |-
+  Anchor-set unbounded materialisation + in-memory deduplication regression-pin (MEDIUM — P-05+P-09 cross-pillar; performance + authenticated-insider DoS-amp). Three compounding gaps:
+  (1) **Anchor-set materialisation has no pagination** — `dataEntityRepository.listByOwner(o.getId())` at `DataEntityRelationsServiceImpl.java:27` fetches ALL owned entities for the user (no `(page, size)` parameters). For an admin owner or CI-bot owner owning thousands of entities, this materialises the entire owned-entity table-slice into the JVM before the lineage step.
+  (2) **Lineage IN-clause is unbounded** — `getLineageRelations(oddrns, LineageDepth.empty(), UPSTREAM/DOWNSTREAM)` constructs a CTE with `WHERE PARENT_ODDRN.in(...)` (or `CHILD_ODDRN.in(...)`) where the IN list is the full anchor-set oddrns. Postgres has no hard IN-list cardinality limit but planner cost is non-linear above ~1000 elements.
+  (3) **In-memory deduplication defeats SQL pagination** — `.flatMap.distinct.filter.collectList()` at `DataEntityRelationsServiceImpl.java:35-38` materialises the full deduplicated derived-oddrn set in JVM memory before passing to `listByOddrns`. SQL `LIMIT 5 OFFSET 0` then slices the materialised list, but the cost-per-call is fixed by the unscoped derived set size — the `(page, size)` parameters slice the *materialised* derived set, not the lineage neighbourhood.
+  Combined with the unbounded controller-layer `size` (no `@Max`, no `maximum:` in OpenAPI), this is an authenticated-insider DoS amplification surface — an admin user pulling `/my/upstream?size=Integer.MAX_VALUE` can saturate JVM heap with the full derived oddrn set and stall Postgres CTE evaluation on a wide anchor. NO test exists exercising the boundary. Cross-pillar P-05 (Data Lineage performance gaps) + P-09 (Security — authenticated DoS-amp).
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/MyObjectsLineageAnchorMaterialisationBoundaryTest.java"
+  name: "getMyObjectsWithUpstream_largeAnchorAndUnboundedSize_paymentScalesWithAnchorNotPage_pinsTheDoSAmpVector"
+evidence:
+  - "getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[2]: 'Unbounded lineage-CTE fan-out when the anchor set is large. The lineage-CTE result is then .distinct() + .filter + Collectors.toList() — fully materialised in memory before pagination kicks in at listByOddrns's SQL LIMIT/OFFSET. Memory and DB-CPU cost scale with anchor set size, NOT with the requested page size.' severity: MEDIUM"
+  - "DataEntityRelationsServiceImpl.java:27 (listByOwner with no (page, size))"
+  - "DataEntityRelationsServiceImpl.java:34-38 (CTE call + .distinct + .filter + materialisation)"
+  - "DataEntityServiceImpl.java:223 (SQL pagination AFTER materialisation)"
+  - "getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[4]: 'Unbounded size at listByOddrns. No @Max on the controller, no maximum: in OpenAPI spec, no clamp in the repository.' severity: MEDIUM"
+cross_references:
+  - "TEST-GAP-503 (unbounded pagination size — same DoS-amp pattern at getDataEntityAlerts)"
+  - "TEST-GAP-512 (REFACTOR-225 PRIMARY-SOURCE — co-located)"
+  - "TEST-GAP-019 (similar pattern for lineage depth — DoS-amp)"
+  - "REFACTOR-NNN candidate: add (page, size) to listByOwner used for anchor-set fetch; clamp size at the controller"
+  - "F-005 (Data Lineage)"
+proposed_action: |-
+  Performance-boundary test (marker test — runs separately). (a) Pre-seed 10,000 owned entities for user uA (large anchor set). (b) Add 50,000 single-hop upstream LINEAGE edges (large derived set). (c) GET /api/dataentities/my/upstream?page=1&size=5. (d) Measure: (i) JVM heap allocation, (ii) DB query time on anchor fetch, (iii) DB query time on lineage CTE, (iv) response time. (e) Assert: cost is O(anchor + derived), NOT O(page * size). (f) Repeat with `size=1_000_000`. (g) Test comment 'LOCKS the unbounded-anchor + unbounded-page DoS-amp vector as of 2026-05-19. When the anchor-fetch is paginated AND the controller adds @Max(1000), this test FLIPS to expect O(page * size) cost AND a 400 on size=1000000.' Pair with a `/my/downstream` symmetric test.
+batch: 2026-05-19-M
+feature_id: F-005

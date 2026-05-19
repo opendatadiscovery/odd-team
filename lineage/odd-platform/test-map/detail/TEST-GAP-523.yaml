@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-523
+category: missing-performance
+criticality: LOW
+node_ids:
+  - "odd-platform java SearchController controller-method:facets"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "facets.md:bugs_limitations_corner_cases.[6] (search_facets rows accumulate without bound)"
+  - "facets.md:performance.known_performance_gaps.[4] (Unbounded search_facets table growth)"
+  - "facets.md:implicit_adrs.[2] (Search session is bearer-token-shaped by design — TTL TODO unaddressed)"
+behaviour: |-
+  search_facets table unbounded growth regression-pin (LOW — cross-pillar P-01+P-08; storage cost + bearer-token persistence). Every `POST /api/search` creates a row via `searchFacetRepository::create` (`SearchServiceImpl.java:80`); NO TTL eviction, NO row deletion on user logout, NO archive policy. Operators on long-running platforms see the table grow forever. Combined with TEST-GAP-519 (no user binding), the table is an indefinitely-growing pool of bearer-token-shaped session state with full filter history retained as jsonb. The `V0_0_52__introduce_housekeeping.sql` policy list has NO `search_facets` entry (verified by sidecar grep during enrichment) — the TTL TODO at `V0_0_1__init.sql:207` (`find a way to define TTL`) was never implemented. The `last_accessed_at` field is updated on every read (TEST-GAP-521) but never consumed for cleanup. Storage cost grows monotonically; for a platform with 1000 active users each creating 10 search sessions/day, the table grows by 3.65M rows/year — bounded only by disk. Each row's `filters` jsonb can be arbitrarily large (filter selections, facet states). NO test pins the unbounded growth, NO test exercises a configured TTL housekeeping job (because none exists). Cross-pillar P-01 (Discovery session state lifecycle) + P-08 (Management/operational — operators have no visibility into table size; no operator-facing tooling for session cleanup).
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/SearchFacetTableGrowthTest.java"
+  name: "searchFacetsTable_growsUnboundedWithoutTTL_pinsTheStorageContractGap"
+evidence:
+  - "facets.md:bugs_limitations_corner_cases.[6]: 'search_facets rows accumulate without bound. Every POST /api/search creates a row; no TTL eviction, no row deletion on user logout, no archive policy. Operators on long-running platforms see the table grow forever.' severity: LOW"
+  - "facets.md:performance.known_performance_gaps.[4]: 'Unbounded search_facets table growth — operators on long-running platforms accumulate session rows forever (no TTL, no cleanup job). The unbounded jsonb filters column adds storage cost proportional to filter complexity.' severity: LOW"
+  - "SearchServiceImpl.java:75-82 (create with no expiry)"
+  - "V0_0_1__init.sql:204-211 (no TTL column or trigger; TODO marker)"
+  - "V0_0_52__introduce_housekeeping.sql (no search_facets entry)"
+cross_references:
+  - "TEST-GAP-519 (no per-user binding — combined: indefinitely-growing bearer-token pool)"
+  - "TEST-GAP-521 (UPDATE-on-read of last_accessed_at — the would-be input to a TTL eviction job)"
+  - "REFACTOR-141 (housekeeping TTL governance — sibling concept)"
+  - "REFACTOR-NNN candidate: add search_facets entry to housekeeping schedule keyed on last_accessed_at; add TTL config key"
+  - "F-001 (Search and Filtering)"
+proposed_action: |-
+  Testcontainers integration test. (a) Authenticate user A. (b) POST /api/search 100 times → 100 sessions created. (c) Query `SELECT count(*) FROM search_facets` → assert count is ≥ 100. (d) Trigger ALL existing housekeeping jobs (manually invoke or wait for the schedule). (e) Query `SELECT count(*) FROM search_facets` → assert count UNCHANGED (no housekeeping touches search_facets). (f) Test comment 'LOCKS the unbounded-growth contract as of 2026-05-19. When the TTL housekeeping job for search_facets is added (REFACTOR-NNN), this test FLIPS to expect (a) the housekeeping schedule INCLUDES search_facets, (b) rows older than the configured TTL are pruned. Until then, this test documents the storage gap.' Pair with the V0_0_52__introduce_housekeeping.sql migration verification.
+batch: 2026-05-19-M
+feature_id: F-001

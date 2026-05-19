@@ -2,26 +2,42 @@
 artefact: doc-gaps
 generated_at: "2026-05-19T00:00:00Z"
 generated_at_commit: 80637ed
-sidecar_count: 75
+sidecar_count: 79
 concepts_yaml_version: 9
 prompt_version: "doc-gap-finder/0.1.0"
-total_findings: 146
-findings_by_severity: { HIGH: 74, MEDIUM: 55, LOW: 17 }
-findings_by_category: { broken-url: 9, missing-anchor: 0, drift: 126, missing-page: 8, stale-page: 0, coverage-gap: 4, meta: 8 }
+total_findings: 155
+findings_by_severity: { HIGH: 78, MEDIUM: 60, LOW: 17 }
+findings_by_category: { broken-url: 9, missing-anchor: 0, drift: 135, missing-page: 8, stale-page: 0, coverage-gap: 4, meta: 9 }
 reconciliation_note: |
-  Batch L adds 9 NEW findings (4 HIGH + 5 MEDIUM + 0 LOW) — DOC-GAP-150..158.
-  NEW HIGH: DOC-GAP-150, 153, 156, 157 (4 total).
-  NEW MEDIUM: DOC-GAP-151, 152, 154, 155 (META), 158 (META) (5 total).
+  Batch M adds 9 NEW findings (4 HIGH + 5 MEDIUM + 0 LOW) — DOC-GAP-159..167.
+  NEW HIGH: DOC-GAP-159 (DEG-anchored lineage cross-owner enumeration), DOC-GAP-160
+  (search facets cross-owner cardinality enumeration), DOC-GAP-161 (search session
+  UUIDs as bearer tokens), DOC-GAP-166 (to_tsquery operator-injection on persisted
+  query_string — strengthens DOC-GAP-104/DOC-GAP-080 with persistence dimension).
+  NEW MEDIUM: DOC-GAP-162 (LineageDepth.empty() sentinel encoding fragility),
+  DOC-GAP-163 (DEG-lineage 404 conflation), DOC-GAP-164 (inner-DEG suppression
+  deferred-feature debt), DOC-GAP-165 (DEG-lineage boundary-edge truncation),
+  DOC-GAP-167 META (REV-3 LAYER-0 — pillar P-05 Data Lineage sub-feature
+  overpromise; THIRD pillar-overpromise META after DOC-GAP-149 P-09 and
+  DOC-GAP-158 P-01).
   NEW LOW: 0.
-  STRENGTHENED: DOC-GAP-001 (now 6-sidecar via DELETE-term controller-method primary-source —
-  REFACTOR-217 path-mismatch CONFIRMED for the symmetric DELETE half at FOUR independent
-  primary sources; both ADD and DELETE halves now at 4-source depth each) + DOC-GAP-009
-  (api-reference 40 dataentity ops — now 5 of 40 batch-L operations surface 7 sub-finding
-  classes per operation; data-entities.md page row template now needs 8 columns).
-  Severity buckets: HIGH = 70 + 4 = 74; MEDIUM = 50 + 5 = 55; LOW = 17.
-  Total 74 + 55 + 17 = 146 — matches actual sharded file count (137 + 9 new = 146).
-  Strengthened entries (DOC-GAP-001, DOC-GAP-009) do NOT change severity buckets — only
-  append batch-L evidence to existing entries.
+  STRENGTHENED: DOC-GAP-099 (4-angle controller-method primary source on BOTH
+  /my/upstream and /my/downstream halves — OpenAPI inverse-semantic now confirmed
+  at OpenAPI + service + repository + controller-method layers) + DOC-GAP-105 (now
+  7-angle — DEG-anchored sibling uses simpler non-recursive overload + LineageDepth
+  .empty() sentinel encoding fragility) + DOC-GAP-115 (controller-method-tier
+  completeness — POSITIVE-CASE family 2/2 sidecared + NEGATIVE-CASE family 3/3
+  sidecared) + DOC-GAP-104 (FTS-injection now 2-invocation-site — getHighlightedResult
+  SQL-format-injection + facet-aggregator to_tsquery parser injection at 5 sites) +
+  DOC-GAP-009 (api-reference 40 dataentity ops — adds 3 new operations covered;
+  cumulative ~19/40; row template now needs 9 columns including Visibility model).
+  Severity buckets: HIGH = 74 + 4 = 78; MEDIUM = 55 + 5 = 60; LOW = 17.
+  Total 78 + 60 + 17 = 155 — matches actual sharded file count (146 + 9 new = 155).
+  Strengthened entries (DOC-GAP-099, 105, 115, 104, 009) do NOT change severity
+  buckets — only append batch-M evidence to existing entries.
+  Note: DOC-GAP-099 has a detail/ shard but is not listed in this index (predates
+  the sharding refactor); the batch-M strengthening updates the detail file but
+  does not add a row to the index. This is a known historical state.
 batch_history:
   - "2026-05-08: DOC-GAP-001..027 — initial 15-sidecar reduction"
   - "2026-05-10: DOC-GAP-028..035 — refresh after batch 2026-05-10A (5 method-level sidecars: AlertController.getAllAlerts, DataEntityAttachmentController.uploadFileChunk, ActivityController.getActivity, DataCollaborationController.postMessageInSlack, CollectorController.regenerateCollectorToken). DOC-GAP-002, DOC-GAP-010, DOC-GAP-025 extended with method-level evidence; severity on DOC-GAP-025 upgraded HIGH."
@@ -35,53 +51,58 @@ batch_history:
   - "2026-05-19 (batch I): DOC-GAP-113..127 — refresh after batch 2026-05-19-I (5 service-layer sidecars). FIRST batch of service-layer (business-invariant primary source) coverage in the catalog."
   - "2026-05-19 (batch J): DOC-GAP-128..138 — refresh after batch 2026-05-19-J (5 UI-axis sidecars). NEW HIGH: 2; MEDIUM: 6; LOW: 3. Strengthens DOC-GAP-101, 105, 096, 100, 117."
   - "2026-05-19 (batch K): DOC-GAP-139..149 — refresh after batch 2026-05-19-K (5 service-tier sidecars). NEW HIGH: 5; MEDIUM: 5; LOW: 1. Strengthens DOC-GAP-001, 054, 055, 057, 060, 062, 075, 100, 103, 108. First REV-3 LAYER-0 META (DOC-GAP-149)."
-  - "2026-05-19 (batch L): DOC-GAP-150..158 — refresh after batch 2026-05-19-L (5 DataEntityController method-level sidecars: addDataEntityDataEntityGroup + deleteDataEntityFromDataEntityGroup + getDataEntityAlerts + upsertDataEntityMetadataFieldValue + deleteTermFromDataEntity). 9 NEW findings (4 HIGH + 5 MEDIUM + 0 LOW); 2 STRENGTHENED (DOC-GAP-001 to 6-sidecar via DELETE-term primary-source confirming REFACTOR-217 DELETE half at 4 independent sources; DOC-GAP-009 with 5 of 40 batch-L operations surfacing 7 sub-finding classes forming the api-reference page's 8-column row template). NEW HIGH: DOC-GAP-150 (DEG write-collaborative; gate on CHILD not DEG), DOC-GAP-153 (DEG audit absence + activity-feed page MISREPRESENTS coverage — DOC-CLAIMS-CODE-DOESN'T-DELIVER drift), DOC-GAP-156 (silent-200-on-missing-pair metadata upsert + UI claims success), DOC-GAP-157 (cross-owner alert read on audit-export workaround; 2nd DOC-GAP after DOC-GAP-002). NEW MEDIUM: DOC-GAP-151 (ADD/DELETE permission asymmetry), DOC-GAP-152 (silent-204 vs 400-duplicate idempotence asymmetry), DOC-GAP-154 (HARD-DELETE on relationship edges), DOC-GAP-155 META (@Profile('!integration-test') trap structurally precludes audit-coverage tests; sister-META to DOC-GAP-137), DOC-GAP-158 META (REV-3 LAYER-0 — pillar P-01 DEG-Groups-Domains operations-coverage gap; same shape as DOC-GAP-149 META for P-09). WebFetch GRANTED in current session: 4 live URLs verified at status 200 (groups-domains, authorization/permissions, active-platform-features/alerting, active-platform-features/activity-feed). YAML-safe emit."
+  - "2026-05-19 (batch L): DOC-GAP-150..158 — refresh after batch 2026-05-19-L (5 DataEntityController method-level sidecars). 9 NEW (4 HIGH + 5 MEDIUM + 0 LOW); 2 STRENGTHENED (DOC-GAP-001 + DOC-GAP-009). Second REV-3 LAYER-0 META (DOC-GAP-158 P-01 Data Entity Groups & Domains)."
+  - "2026-05-19 (batch M): DOC-GAP-159..167 — refresh after batch 2026-05-19-M (4 sidecars: getMyObjectsWithUpstream + getMyObjectsWithDownstream + getDataEntityGroupsLineage + SearchController.facets). 9 NEW findings (4 HIGH + 5 MEDIUM + 0 LOW); 5 STRENGTHENED (DOC-GAP-099 to 4-angle; DOC-GAP-105 to 7-angle; DOC-GAP-115 to controller-method-tier completeness; DOC-GAP-104 to 2-invocation-site; DOC-GAP-009 with 3 more operations + 9th column 'Visibility model'). NEW HIGH: DOC-GAP-159 (DEG-anchored lineage cross-owner enumeration; THIRD member of the negative-case lineage family after the per-entity upstream/downstream variants), DOC-GAP-160 (search facets cross-owner cardinality enumeration; facet counts catalog-wide, myObjects toggle scopes results not counts), DOC-GAP-161 (search session UUIDs as bearer tokens; schema has no owner_id column; URL-leakage hands recipients full read+update access), DOC-GAP-166 (to_tsquery operator-injection on PERSISTED search_facets.query_string; strengthens DOC-GAP-104 + DOC-GAP-080 with persistence dimension; broken-session is DoS-shaped). NEW MEDIUM: DOC-GAP-162 (LineageDepth.empty() sentinel encoding fragility — magic -1 encoding silently disabled by future refactor), DOC-GAP-163 (DEG-lineage 404 conflates 3 distinct conditions — DEG-not-found vs DEG-empty vs wrong-entity-type), DOC-GAP-164 (inner-DEG suppression at LineageServiceImpl.java:71-75 is comment-marked deferred-feature but lacks backlog+ADR+test; STRENGTHENS DOC-GAP-124 to 2-sidecar), DOC-GAP-165 (DEG-lineage edges crossing DEG boundary silently filtered; operator sees no external context signal), DOC-GAP-167 META (REV-3 LAYER-0 — pillar P-05 Data Lineage sub-feature overpromise; 7 axes the live page is silent on; THIRD pillar-overpromise META after DOC-GAP-149 P-09 and DOC-GAP-158 P-01; cross-pillar pattern: system-mission's pillar pages systematically over-claim relative to live doc operations-coverage). WebFetch GRANTED in current session: 2 live URLs re-verified at status 200 (features/data-discovery/search; developer-guides/api-reference/lineage) + 4 inherited from sidecars (features/data-lineage; features/data-lineage/data-objects; developer-guides/api-reference; developer-guides/api-reference/data-entity 404). YAML-safe emit."
 maintainer_curated: false
 confidence_overall: HIGH
 ---
 
-# Doc gaps — odd-platform — 2026-05-19 (batch L refresh)
+# Doc gaps — odd-platform — 2026-05-19 (batch M refresh)
 
 ## Summary
 
-- **Findings**: 146 total (74 HIGH, 55 MEDIUM, 17 LOW)
-- **By category**: broken-url 9, drift 126, missing-page 8, coverage-gap 4, meta 8
-- **By feature** (top affected concepts): Auth Mode (15), Data Entity (19 — **batch L adds DOC-GAP-150 + DOC-GAP-151 + DOC-GAP-152 + DOC-GAP-153 + DOC-GAP-154 + DOC-GAP-156 + DOC-GAP-157 + DOC-GAP-158; strengthens DOC-GAP-001 + DOC-GAP-009**), RBAC primary surface (Policy / Role / Owner / Permission) (13), Term/Business Glossary (5 — **batch L strengthens DOC-GAP-001 to 6-sidecar via DELETE-term controller primary-source**), Lineage (8), Ingestion (8), Notifications (10), Search (3), Activity Feed (6 — **batch L adds DOC-GAP-153 + DOC-GAP-155 META the @Profile trap; activity-feed live page MISREPRESENTS coverage on CUSTOM_GROUP_UPDATED**), Attachment (5), Housekeeping TTL (5), DataCollaboration (4), Alert (9 — **batch L adds DOC-GAP-157 cross-owner read on per-entity audit-export workaround; 2nd cross-owner-alert-read DOC-GAP after DOC-GAP-002**), AlertManager Webhook Receiver (5), GenAI Assistant (3), Slack collaboration app (3), Activity Table Partitioning (4), Multi-Tenant Configuration / Metrics Ingestion (1), Collector / Collector Token (2), Directory (2), Multilingual UI (1), Popular ranking surface (5), Data Entity Description cluster (5), UI Test Coverage (1 META), Catalog-overview live-page (2), User-owner association (5), **Data Entity Groups & Domains (DEG) (6 — batch L adds DOC-GAP-150 + DOC-GAP-151 + DOC-GAP-152 + DOC-GAP-153 + DOC-GAP-154 + DOC-GAP-158 META; first batch with DEG-specific coverage at depth)**, **Custom Metadata Fields (1 — batch L adds DOC-GAP-156; FIRST DOC-GAP in catalog for custom-metadata feature)**, **Audit-coverage methodology (1 — batch L adds DOC-GAP-155 META the @Profile('!integration-test') trap)**
-- **Cross-references to prior findings**: 4 findings overlap with DOC-163 F-047..F-060 (cross-referenced, not re-filed). **Batch L adds 9 NEW findings (4 HIGH + 5 MEDIUM + 0 LOW) AND strengthens 2 existing findings (DOC-GAP-001 + DOC-GAP-009) with CONTROLLER-METHOD-tier operator-impact primary-source evidence — extending the batch-K service-tier coverage with 5 controller-method sidecars on the DataEntityController centerpiece:
-  - (aa) **NEW batch L: DOC-GAP-150 — DEG membership writes are a write-collaborative surface**: `DATA_ENTITY_ADD_TO_GROUP` is gated PER CHILD ENTITY, not per parent DEG; any authorized caller can place their entity into ANY manually-created DEG (including DEGs they do not own); the live `groups-domains` page describes Owner stewardship at the DEG level but implementation does NOT enforce DEG-side ownership on the membership-write path. HIGH.
-  - (bb) **NEW batch L: DOC-GAP-151 — DEG membership ADD/DELETE permission asymmetry**: `DATA_ENTITY_ADD_TO_GROUP` and `DATA_ENTITY_DELETE_FROM_GROUP` are TWO DISTINCT permissions; compound-capability framing missing on the Permissions page; Policy authors granting half-pair receive surprise 403. MEDIUM.
-  - (cc) **NEW batch L: DOC-GAP-152 — DEG membership ADD-vs-DELETE CRUD idempotence asymmetry**: ADD raises 400 on duplicate; DELETE returns 204 SILENTLY on no-op; the asymmetry is conventional REST but undocumented on the operations-level surface; API consumers writing reconciliation scripts hit surprise flapping. MEDIUM.
-  - (dd) **NEW batch L: DOC-GAP-153 — DEG membership audit-feed absence + activity-feed page MISREPRESENTS coverage**: live `activity-feed` page describes `CUSTOM_GROUP_UPDATED` as "members or metadata of a custom group were changed" implying membership flips ARE recorded; `addDataEntityToDEG`/`deleteDataEntityFromDEG` carry NO `@ActivityLog`; `DATA_ENTITY_RELATION_UPDATED` enum exists but unused; DOC-CLAIMS-COVERAGE-CODE-PROVIDES-SILENCE drift. HIGH.
-  - (ee) **NEW batch L: DOC-GAP-154 — HARD-DELETE on relationship edges undocumented**: DEG-membership unlink + term-unlink are physical DELETE FROM (V0_0_76 affirmative migration); no API restore path; recovery-surface asymmetry — DEG-membership has NO audit, term-unlink emits TERM_ASSIGNMENT_UPDATED BEFORE/AFTER state. Sibling to DOC-GAP-111 (Ownership HARD-DELETE). MEDIUM.
-  - (ff) **NEW batch L: DOC-GAP-155 META — the @Profile('!integration-test') trap**: `ActivityAspect.java:24` carries `@Profile('!integration-test')`; the AOP aspect driving `@ActivityLog` event emission is DISABLED in integration-test runs; absent `@ActivityLog` annotations on DEG-membership / term-delete / metadata-write paths CANNOT be detected by the integration-test harness — this is the TEST-COVERAGE-MECHANICS gap that explains the survivability of the audit-absence findings to production. Sister-META to DOC-GAP-137 (UI test absence). MEDIUM.
-  - (gg) **NEW batch L: DOC-GAP-156 — `PUT /api/dataentities/{id}/metadata/{metadata_field_id}` silent-200-on-missing-pair**: pure UPDATE; UI hardcodes 'Metadata successfully updated.' on any 200 response; no `@ActivityLog`; no operator-facing doc page for the custom-metadata feature; FIRST DOC-GAP in catalog for the custom-metadata feature. LSN-001 silent-side-effect class. HIGH.
-  - (hh) **NEW batch L: DOC-GAP-157 — `GET /api/dataentities/{id}/alerts` cross-owner read posture on the doc-recommended audit-export workaround**: any authenticated user reads any entity's complete alert history; alerting page is silent on cross-owner reach AND pagination-truncation risks; F-006 shape applied to per-entity surface; SECOND DOC-GAP naming cross-owner alert read after DOC-GAP-002 (`getAllAlerts`). HIGH.
-  - (ii) **NEW batch L: DOC-GAP-158 META — REV-3 LAYER-0 pillar P-01 (Data Discovery) sub-feature overpromise**: `system-mission.md:99` declares "Data Entity Groups & Domains" as P-01 sub-feature with Confidence: HIGH; live `groups-domains` page documents the CONCEPT at depth but is operationally silent (no operator-facing ADD/DELETE membership endpoints, no permissions, no audit, no reversibility, no idempotence); 5 batch-L sub-findings (DOC-GAP-150 + 151 + 152 + 153 + 154) all surface from the same two sidecars; pillar's promise OVER-CLAIMS relative to doc-page operations-coverage in the same shape as DOC-GAP-149 META did for P-09. MEDIUM.
-  - (jj) **STRENGTHENED batch L: DOC-GAP-001 to 6-sidecar — DELETE-term controller-method primary source**: REFACTOR-217 path-mismatch CONFIRMED for the symmetric DELETE half at FOUR independent primary sources (SecurityConstants.java:240-242 singular path; openapi.yaml:1042 plural path; DataEntityController.java:158-163 @Override of generated DataEntityApi; AuthorizationCustomizer.java:24-30 dispatch mechanism with `.pathMatchers('/**').authenticated()` fallback). Both ADD and DELETE halves now confirmed at 4-source depth each. Also surfaces audit-noise complement: `@ActivityLog(TERM_ASSIGNMENT_UPDATED)` fires on no-op deletes producing identical BEFORE/AFTER state JSON — the FORENSIC-NOISE inverse of DOC-GAP-153's forensic-silence on DEG-membership.
-  - (kk) **STRENGTHENED batch L: DOC-GAP-009 — api-reference 40 dataentity ops coverage gap**: now 5 of 40 batch-L operations surface 7 sub-finding classes (permission, scope, idempotence, durability, audit-event, type-validation, cross-owner-read) — the operator-facing data-entities.md page's row template now needs EIGHT columns instead of the typical THREE. Cross-batch coverage now spans description writes (DOC-GAP-097), ownership writes (DOC-GAP-074/075/108/111), term writes (DOC-GAP-001/100/140), tag writes (batch-G), DEG-membership writes (DOC-GAP-150/151/152/153/154), metadata writes (DOC-GAP-156), and alert reads (DOC-GAP-157). The 8 batch-L detail files become the page's reference material.
+- **Findings**: 155 total (78 HIGH, 60 MEDIUM, 17 LOW)
+- **By category**: broken-url 9, drift 135, missing-page 8, coverage-gap 4, meta 9
+- **By feature** (top affected concepts): Auth Mode (15), Data Entity (22 — **batch M adds DOC-GAP-159 + DOC-GAP-162 + DOC-GAP-163 + DOC-GAP-164 + DOC-GAP-165; strengthens DOC-GAP-099 + DOC-GAP-105 + DOC-GAP-115 + DOC-GAP-009**), RBAC primary surface (Policy / Role / Owner / Permission) (13), Term/Business Glossary (5), Lineage (12 — **batch M adds 5 new findings on the lineage cluster + strengthens 3 existing; the lineage feature is now the deepest-covered single feature in the catalog**), Ingestion (8), Notifications (10), Search (6 — **batch M adds DOC-GAP-160 + DOC-GAP-161 + DOC-GAP-166; the search-page doc-coverage gap now spans 6 findings: original DOC-GAP-079 + DOC-GAP-080 + DOC-GAP-081 + the 3 batch-M additions**), Activity Feed (6), Attachment (5), Housekeeping TTL (5), DataCollaboration (4), Alert (9), AlertManager Webhook Receiver (5), GenAI Assistant (3), Slack collaboration app (3), Activity Table Partitioning (4), Multi-Tenant Configuration / Metrics Ingestion (1), Collector / Collector Token (2), Directory (2), Multilingual UI (1), Popular ranking surface (5), Data Entity Description cluster (5), UI Test Coverage (1 META), Catalog-overview live-page (2), User-owner association (5), Data Entity Groups & Domains (DEG) (6), Custom Metadata Fields (1), Audit-coverage methodology (1 META), **DEG-anchored Lineage (4 — batch M adds DOC-GAP-159 + DOC-GAP-163 + DOC-GAP-164 + DOC-GAP-165; first batch with DEG-lineage-specific coverage at depth)**, **Search facets & sessions (3 — batch M adds DOC-GAP-160 + DOC-GAP-161 + DOC-GAP-166; first batch with SearchController.facets coverage)**, **FTS-injection cluster (3 — batch M extends DOC-GAP-104 SQL-format-injection cluster with the to_tsquery parser-injection axis at DOC-GAP-166 + DOC-GAP-080)**
+- **Cross-references to prior findings**: 4 findings overlap with DOC-163 F-047..F-060 (cross-referenced, not re-filed). **Batch M adds 9 NEW findings (4 HIGH + 5 MEDIUM + 0 LOW) AND strengthens 5 existing findings (DOC-GAP-099 + DOC-GAP-105 + DOC-GAP-115 + DOC-GAP-104 + DOC-GAP-009) with FOUR controller-method-tier + SearchController-tier primary-source evidence — closing the lineage-cluster + search-facet-cluster coverage at the controller-method tier:
+  - (aa) **NEW batch M: DOC-GAP-159 — DEG-anchored lineage cross-owner enumeration**: `GET /api/dataentitygroups/{id}/lineage` is the THIRD member of the negative-case lineage family (alongside per-entity upstream/downstream variants); service has NO `AuthIdentityProvider` field; `pathMatchers("/**").authenticated()` is the only gate; for multi-team DEGs (Domains), the per-connected-component partitioning surfaces graph-shaped CO-MEMBERSHIP leakage. HIGH.
+  - (bb) **NEW batch M: DOC-GAP-160 — Search facets cross-owner cardinality enumeration**: facet drill-down on OWNERS / TAGS / GROUPS / NAMESPACES enumerates every owner-name + per-owner entity count catalog-wide; the `myObjects` toggle scopes the RESULT list, NOT the facet COUNTS; live search page is silent on facet-count scoping behaviour. HIGH.
+  - (cc) **NEW batch M: DOC-GAP-161 — Search session UUIDs as bearer tokens**: `search_facets` schema has no `owner_id` / `created_by` / `user_id` column; any UUID-holder can READ, UPDATE, and DRIVE the session; URL-leakage via bug reports / chat messages hands recipients full session access; TODOs at V0_0_1__init.sql:206-207 acknowledge UUID/TTL gaps without defending the unscoped posture as intentional. HIGH.
+  - (dd) **NEW batch M: DOC-GAP-162 — LineageDepth.empty() sentinel encoding fragility**: `(depth=-1, empty=true)` factory at `LineageDepth.java:16-18`; the CTE termination `tDepth < depth` short-circuits via the magic -1, NOT via the `boolean empty` flag; future refactor to `lessThanOrEqual` would silently extend single-hop endpoints to two hops without test signal. MEDIUM.
+  - (ee) **NEW batch M: DOC-GAP-163 — DEG-lineage 404 conflation**: identical "Data entity group {id} doesn't exist" message for DEG-not-found vs DEG-empty vs wrong-entity-type; operator-debugging surprise; live api-reference page does not discriminate. MEDIUM.
+  - (ff) **NEW batch M: DOC-GAP-164 — Inner-DEG suppression deferred-feature debt**: `// Remove this when we will support inner DEGs for DEG lineage` comment at LineageServiceImpl.java:71 lacks backlog + ADR + regression test; future lift will silently change API contract; STRENGTHENS DOC-GAP-124 (batch I) to 2-sidecar primary source. MEDIUM.
+  - (gg) **NEW batch M: DOC-GAP-165 — DEG-lineage boundary-edge truncation**: `getLineageRelations(List<String>)` requires BOTH endpoints in member set; edges crossing DEG boundary silently filtered; operator viewing DEG-lineage sees member entity as graph leaf even when external context exists; design intent (DEG-lineage as inward-facing) is structural but undocumented operator-facing. MEDIUM.
+  - (hh) **NEW batch M: DOC-GAP-166 — to_tsquery operator-injection on PERSISTED search_facets.query_string**: same JooqFTSHelper.tsQuery surface as DOC-GAP-104; persistence dimension makes the broken-session permanent; every facet aggregator at `ReactiveSearchFacetRepositoryImpl.java:182, 267, 469, 582` shares the surface; bearer-token UUIDs (DOC-GAP-161) make any UUID-holder a DoS vector. HIGH.
+  - (ii) **NEW batch M: DOC-GAP-167 META — REV-3 LAYER-0 P-05 Data Lineage pillar overpromise**: `system-mission.md:163-180` declares P-05 with HIGH confidence; live page covers concept-at-depth but operations-at-shallow on 7 distinct axes (auth-posture, anchor-set asymmetry, inner-DEG suppression, boundary edges, recursive-CTE depth, OpenAPI summary correctness, 404 conflation); THIRD pillar-overpromise META after DOC-GAP-149 (P-09) and DOC-GAP-158 (P-01); cross-pillar pattern surfaced. MEDIUM.
+  - (jj) **STRENGTHENED batch M: DOC-GAP-099 to 4-angle**: BOTH /my/upstream AND /my/downstream sidecars confirm the OpenAPI inverse-semantic claim at the controller-method tier; triangulation now spans OpenAPI spec + service-layer + repository-layer + controller-method primary source on BOTH halves; UI label "Upstream/Downstream dependents" at `OwnerEntitiesList.tsx:87` is semantically correct vs OpenAPI summary.
+  - (kk) **STRENGTHENED batch M: DOC-GAP-105 to 7-angle**: DEG-anchored sibling uses simpler non-recursive overload at SAME repository class + LineageDepth.empty() sentinel encoding fragility (NEW axis: encoding-vs-test-coverage gap); architectural split (recursive at membership / non-recursive at edge) is deliberate optimisation but undocumented.
+  - (ll) **STRENGTHENED batch M: DOC-GAP-115 to controller-method-tier completeness**: POSITIVE-CASE family 2/2 sidecared (getMyObjectsWithUpstream + getMyObjectsWithDownstream); NEGATIVE-CASE family 3/3 sidecared (getDataEntityDownstreamLineage + getDataEntityUpstreamLineage + getDataEntityGroupsLineage); the lineage cluster's asymmetry is now backed by the most complete cross-sidecar evidence in the catalog.
+  - (mm) **STRENGTHENED batch M: DOC-GAP-104 to 2-invocation-site**: same JooqFTSHelper.tsQuery surface is invoked by EVERY facet aggregator at `ReactiveSearchFacetRepositoryImpl.java:182, 267, 469, 582` — five distinct facet aggregators share the FTS condition site; the two distinct injection vectors (SQL-format-injection at getHighlightedResult + tsquery-parser-injection at facets) have distinct severity profiles but share the source.
+  - (nn) **STRENGTHENED batch M: DOC-GAP-009 with 3 more operations + 9th column**: api-reference data-entities row template now needs NINE columns (path, method, summary, permission, scope, idempotence, durability, audit-event, **Visibility model**); the new "Visibility model" column distinguishes POSITIVE-CASE anchor-scoped vs NEGATIVE-CASE cross-owner endpoints; cumulative coverage ~19/40 operations.
+
+Batch L-and-prior meta-recommendations (preserved):
+  - **batch L** — see prior frontmatter; DataEntityController-method-tier coverage on DEG-membership + custom-metadata + alert reads.
 
 Batch K-and-prior meta-recommendations (preserved):
-  - **NEW 2026-05-19 batch K: First REV-3 LAYER-0 pillar-overpromise META (DOC-GAP-149)** — system-mission.md authored pillars without cross-validating against live doc coverage; P-09's "User-owner association" sub-feature seed is one-sentence-deep on the live page despite ~31 lines of code encoding 5 load-bearing semantics. Methodology gap surfaced; corrective action is system-mission.md re-author + page extension.
-  - **NEW 2026-05-19 batch K: Cross-batch correction extends to 3-layer triangulation (DOC-GAP-108)** — service-layer OwnershipServiceImpl independently confirms the 400-USR003 path; the misclaim in batch-F is now over-ridden by THREE independent primary sources (repository + service + this DOC-GAP detail file).
-  - **NEW 2026-05-19 batch K: 5 live URLs WebFetched in current session at status 200** — notifications page + user-owner-association page + business-glossary page + odd-platform housekeeping page + authorization/permissions page; all live-doc claims re-verified, no URL decay, no anchor renames.
+  - **batch K**: First REV-3 LAYER-0 pillar-overpromise META (DOC-GAP-149); cross-batch correction extends to 3-layer triangulation (DOC-GAP-108); 5 live URLs WebFetched.
 
 Batch J-and-prior meta-recommendations (preserved):
-  - (aa-kk) **batch J** — see prior frontmatter; UI-axis primary-source coverage closes the consumer-facing loop.
+  - **batch J** — see prior frontmatter; UI-axis primary-source coverage closes the consumer-facing loop.
 
 Batch H-and-prior meta-recommendations (preserved):
   - (n) **batch H: DOC-GAP-082 META 13-sidecar (DISABLED-bypasses-RBAC-primary-surface)**.
   - (o) **batch H: DOC-GAP-083 META 4-layer (No-audit-log on RBAC mutations + ownership-binding-vs-directory-CRUD asymmetry)** — extended to PolicyServiceImpl service-layer in batch I.
-  - (p) **batch H: DOC-GAP-105 supersedes DOC-GAP-021 with SQL primary-source** — extended to 6-angle in batch J.
+  - (p) **batch H: DOC-GAP-105 supersedes DOC-GAP-021 with SQL primary-source** — extended to 6-angle in batch J + 7-angle in batch M.
   - (q) **batch H: CROSS-BATCH CORRECTION (DOC-GAP-108 — 5xx misclaim → 400 USR003)** — extended to 3-layer triangulation in batch K.
   - (r) **batch H: DOC-GAP-106 closes the AUTHORIZATION HOT PATH soft-delete leak**.
-  - (s) **batch H: First SQL-injection finding (DOC-GAP-104)**.
+  - (s) **batch H: First SQL-injection finding (DOC-GAP-104)** — extended to 2-invocation-site in batch M with FTS-parser-injection axis at DOC-GAP-166.
 
 Batch I-and-prior meta-recommendations (preserved):
   - (t) **batch I: DOC-GAP-113 + DOC-GAP-114 — Ingestion silent destruction LSN-001 family**.
-  - (u) **batch I: DOC-GAP-115 — Lineage anchor-set asymmetry positive vs negative case**.
+  - (u) **batch I: DOC-GAP-115 — Lineage anchor-set asymmetry positive vs negative case** — extended to controller-method-tier completeness in batch M.
   - (v) **batch I: DOC-GAP-116 META — Service-tier transaction-boundary pattern is undocumented platform-wide ADR**.
   - (w) **batch I: DOC-GAP-117 — AlertManager webhook XSS via UI markdown render** — UI primary source confirmed at batch J (DOC-GAP-096 cluster).
-  - (x) **batch I: DOC-GAP-105 strengthens to 5-angle** — extended to 6-angle in batch J with UI layer.
+  - (x) **batch I: DOC-GAP-105 strengthens to 5-angle** — extended to 6-angle in batch J + 7-angle in batch M.
   - (y) **batch I: DOC-GAP-122 — PolicyService lost-update race**.
   - (z) **batch I: DOC-GAP-097 + DOC-GAP-083 + DOC-GAP-107 + DOC-GAP-110 + DOC-GAP-073 strengthened with service-layer primary-source confirmation**.
 
@@ -99,7 +120,7 @@ Batch D-and-prior meta-recommendations (preserved): (a)-(d) — see prior frontm
   - **2026-05-12D: Housekeeping subsystem doc completeness** — extended to orchestrator-tier in batch K.
   - **2026-05-12D: OAuth2 docs internal inconsistency**.
   - **2026-05-19 batch H: Repository-layer SQL primary-source confirms 8 existing findings AND surfaces 5 new HIGH**.
-  - **2026-05-19 batch H: First SQL-injection in the catalog (DOC-GAP-104)**.
+  - **2026-05-19 batch H: First SQL-injection in the catalog (DOC-GAP-104)** — extended to FTS-parser-injection axis at batch-M DOC-GAP-166.
   - **2026-05-19 batch H: First cross-batch correction propagated (DOC-GAP-108)** — extended to 3-layer in batch K.
   - **2026-05-19 batch I: Service-layer business-invariant primary-source confirms 6 existing findings AND surfaces 15 new (5 HIGH + 8 MEDIUM + 2 LOW)**.
   - **2026-05-19 batch I: First META on a platform-wide ADR-grade architectural pattern (DOC-GAP-116)**.
@@ -107,14 +128,18 @@ Batch D-and-prior meta-recommendations (preserved): (a)-(d) — see prior frontm
   - **2026-05-19 batch J: UI-axis consumer-surface primary-source confirms 5 existing findings AND surfaces 11 new (2 HIGH + 6 MEDIUM + 3 LOW)**.
   - **2026-05-19 batch J: First META on UI test coverage absence (DOC-GAP-137)**.
   - **2026-05-19 batch J: Two NEW factual doc-vs-code mismatches on the catalog-overview live page (DOC-GAP-128 + DOC-GAP-129)**.
-  - **NEW 2026-05-19 batch K: Service-tier (5 high-traffic services) primary-source confirms 10 existing findings AND surfaces 11 new (5 HIGH + 5 MEDIUM + 1 LOW)** — every service-tier finding ALSO surfaces a maintainer-intent (the implicit_adrs block) that anchors the doc-side action with a quotable design rationale.
-  - **NEW 2026-05-19 batch K: First REV-3 LAYER-0 pillar-overpromise META (DOC-GAP-149)** — system-mission.md authored pillars without cross-validating against live doc coverage.
-  - **NEW 2026-05-19 batch L: DataEntityController-method-tier (5 method-level sidecars) confirms 2 existing findings AND surfaces 9 new (4 HIGH + 5 MEDIUM + 0 LOW)** — every batch-L finding traces to user-visible operator-surprise (write-collaborative DEG; ADD/DELETE permission asymmetry; silent-204; audit absence with doc MISREPRESENTING coverage; HARD-delete; silent-200 metadata; cross-owner alert read). Strengthens DOC-GAP-001 to 6-sidecar (DELETE-term half PRIMARY-SOURCE confirmed at 4 sources). Strengthens DOC-GAP-009 with 5 of 40 batch-L operations forming the api-reference page's load-bearing row template.
-  - **NEW 2026-05-19 batch L: Second REV-3 LAYER-0 pillar-overpromise META (DOC-GAP-158)** — pillar P-01 (Data Discovery) sub-feature "Data Entity Groups & Domains" promises operations-depth coverage; live `groups-domains` page is concept-depth only; 5 batch-L sub-findings demonstrate the operations-coverage gap. Same shape as DOC-GAP-149 META did for P-09. Cross-pillar pattern: system-mission's pillar pages over-claim relative to live doc-page operations-coverage.
-  - **NEW 2026-05-19 batch L: First META on audit-coverage methodology gap (DOC-GAP-155)** — `ActivityAspect.@Profile('!integration-test')` carve-out structurally PRECLUDES integration tests from verifying audit-event emission; explains how the audit-absence findings (DOC-GAP-153 + DOC-GAP-156 + DOC-GAP-001 strengthens) survived to production. Sister-META to DOC-GAP-137 (UI test absence) — together they document the platform's TWO structural test-coverage holes.
-  - **NEW 2026-05-19 batch L: First doc-CLAIMS-COVERAGE-code-DOESN'T-DELIVER drift on activity feed (DOC-GAP-153)** — live `activity-feed` page asserts `CUSTOM_GROUP_UPDATED` covers membership flips; code emits NOTHING. Strongest drift class in the catalog — earlier findings document doc-silence on code behaviour; this finding documents doc-ASSERTING-WRONG-COVERAGE.
-  - **NEW 2026-05-19 batch L: First DOC-GAP for the custom-metadata feature (DOC-GAP-156)** — no operator-facing doc page for the feature itself; the runtime semantics (silent-200, no-type-validation, no-audit, EXTERNAL-overwrite) are entirely undocumented. Feature page is the holding-pattern doc-action.
-  - **NEW 2026-05-19 batch L: 4 live URLs WebFetched in current session at status 200** — groups-domains + authorization/permissions + active-platform-features/alerting + active-platform-features/activity-feed; all live-doc claims re-verified; one DOC-CLAIM-WRONG-COVERAGE drift surfaced (DOC-GAP-153). YAML-safe emit.
+  - **2026-05-19 batch K: Service-tier (5 high-traffic services) primary-source confirms 10 existing findings AND surfaces 11 new (5 HIGH + 5 MEDIUM + 1 LOW)** — every service-tier finding ALSO surfaces a maintainer-intent (the implicit_adrs block) that anchors the doc-side action with a quotable design rationale.
+  - **2026-05-19 batch K: First REV-3 LAYER-0 pillar-overpromise META (DOC-GAP-149)** — system-mission.md authored pillars without cross-validating against live doc coverage.
+  - **2026-05-19 batch L: DataEntityController-method-tier (5 method-level sidecars) confirms 2 existing findings AND surfaces 9 new (4 HIGH + 5 MEDIUM + 0 LOW)** — every batch-L finding traces to user-visible operator-surprise. Strengthens DOC-GAP-001 to 6-sidecar + DOC-GAP-009 with 8-column row template.
+  - **2026-05-19 batch L: Second REV-3 LAYER-0 pillar-overpromise META (DOC-GAP-158 P-01 Data Entity Groups & Domains)**.
+  - **2026-05-19 batch L: First META on audit-coverage methodology gap (DOC-GAP-155)** — `ActivityAspect.@Profile('!integration-test')` carve-out.
+  - **2026-05-19 batch L: First doc-CLAIMS-COVERAGE-code-DOESN'T-DELIVER drift on activity feed (DOC-GAP-153)**.
+  - **2026-05-19 batch L: First DOC-GAP for the custom-metadata feature (DOC-GAP-156)**.
+  - **NEW 2026-05-19 batch M: Lineage cluster controller-method-tier (3 method-level sidecars on the lineage entry points) closes the asymmetry coverage AND surfaces 4 new lineage findings** — POSITIVE-CASE family 2/2 sidecared + NEGATIVE-CASE family 3/3 sidecared; DOC-GAP-099 to 4-angle; DOC-GAP-105 to 7-angle; DOC-GAP-115 to controller-method-tier completeness. The lineage feature is now the deepest-covered single feature in the catalog (12 findings across 3 sub-clusters).
+  - **NEW 2026-05-19 batch M: Third REV-3 LAYER-0 pillar-overpromise META (DOC-GAP-167)** — pillar P-05 (Data Lineage) sub-feature overpromise; 7 distinct axes the live page is silent on; cross-pillar pattern is now 3 instances (P-09 / P-01 / P-05). The pattern is structural; system-mission's pillar pages systematically over-claim relative to live doc operations-coverage. The methodology meta-recommendation in DOC-GAP-167 (item 3) proposes a reviewer-checklist gate to prevent recurrence on P-04 / P-06 / P-07 / P-08 / P-10 / P-11.
+  - **NEW 2026-05-19 batch M: First SearchController-facets coverage (DOC-GAP-160 + DOC-GAP-161 + DOC-GAP-166)** — closes the SearchController.facets coverage gap; 3 new findings on a previously-unsidecared controller surface; search-page doc-coverage gap now spans 6 findings (search.md + facets.md combined).
+  - **NEW 2026-05-19 batch M: FTS-injection cluster extends to PERSISTENCE dimension (DOC-GAP-166 + DOC-GAP-104 STRENGTHEN)** — the JooqFTSHelper.tsQuery surface is invoked at 6 distinct call sites (1 highlight + 5 facet aggregators); the persistence dimension (search_facets.query_string column) makes the broken-session permanent; DoS-shaped vector for any UUID-holder.
+  - **NEW 2026-05-19 batch M: 2 live URLs re-verified in current session at status 200** — features/data-discovery/search + developer-guides/api-reference/lineage; both pages confirm the silence on cross-owner facet count scoping, session UUIDs, tsquery operator escaping, owner-scoping for DEG-lineage, inner-DEG suppression, and 404 conflation. YAML-safe emit.
 
 ## Findings
 
@@ -124,7 +149,7 @@ Batch D-and-prior meta-recommendations (preserved): (a)-(d) — see prior frontm
 
 Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-fidelity discriminating context per entry; full content lives in `detail/{id}.md`. The `registry-search` subagent reads THIS file; reducers read the subagent's surfaced candidates verbatim and decide strengthen-vs-new. Do not hand-edit headline blocks below the index summary unless the entry's discriminating field changes — re-run `shard.py` or rely on the reducer to refresh.
 
-**Total entries**: 146
+**Total entries**: 155
 
 ---
 
@@ -200,7 +225,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-009 — `developer-guides/api-reference` does not document the 40 dataEntity operations — punts to Swagger UI **(batch L: 5 of 40 operations covered by batch-L sidecars; 7 sub-finding classes per operation form the data-entities.md page's load-bearing row template; api-reference page now needs 8-column row structure)**
+## DOC-GAP-009 — `developer-guides/api-reference` does not document the 40 dataEntity operations — punts to Swagger UI **(batch M: 3 more DataEntityController + facets sidecars surface 4 additional sub-finding classes; row template now needs 9 columns including 'Visibility model'; cumulative ~19/40 operations covered)**
 
 **Severity**: HIGH
 **Category**: coverage-gap
@@ -452,7 +477,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-104 — `OwnerRepositoryImpl.search` issues a raw `LIKE %?%` query against user-controlled string parameter; ALL substring patterns work; first SQL-injection-shaped finding in the repository tier; live Owners page page silent
+## DOC-GAP-104 — `getHighlightedResult` SQL-format-injection AND `to_tsquery` operator-injection at every facet aggregator share the `JooqFTSHelper.tsQuery` surface (HIGH; SQL-injection-shaped + parser-DoS-shaped) **(batch M: 2-invocation-site — facet aggregators at 5 distinct sites; persistence dimension at DOC-GAP-166)**
 
 **Severity**: HIGH
 **Category**: drift
@@ -461,7 +486,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-105 — Lineage feature page does not document `lineageDepth` / `expandedEntityIds` parameters or unbounded-depth caveat (**SUPERSEDES DOC-GAP-021 via batch H SQL primary-source; extended to 5-angle in batch I; extended to 6-angle in batch J with UI-layer evidence**)
+## DOC-GAP-105 — Lineage feature page does not document `lineageDepth` / `expandedEntityIds` parameters or unbounded-depth caveat (**SUPERSEDES DOC-GAP-021 via batch H SQL primary-source; extended to 5-angle in batch I; 6-angle in batch J with UI-layer evidence; 7-angle in batch M with DEG-anchored sibling + LineageDepth.empty() sentinel fragility**)
 
 **Severity**: HIGH
 **Category**: drift
@@ -515,7 +540,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-115 — Lineage anchor-set positive-vs-negative-case asymmetry — `/api/dataentity/{id}/lineage` returns DIFFERENT JSON shapes when the anchor entity is or isn't itself in the result set (positive case includes self; negative-case OMITS self); operators consuming the response cannot pre-test for anchor presence; undocumented at every API page
+## DOC-GAP-115 — Lineage anchor-set positive-vs-negative-case asymmetry — `/api/dataentity/{id}/lineage` returns DIFFERENT JSON shapes when the anchor entity is or isn't itself in the result set (positive case includes self; negative-case OMITS self); operators consuming the response cannot pre-test for anchor presence; undocumented at every API page **(batch M: controller-method-tier completeness — POSITIVE-CASE family 2/2 sidecared + NEGATIVE-CASE family 3/3 sidecared)**
 
 **Severity**: HIGH
 **Category**: drift
@@ -640,6 +665,44 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 **Full detail**: `detail/DOC-GAP-157.md`
 
 ---
+
+## DOC-GAP-159 — DEG-anchored lineage cross-owner enumeration — `GET /api/dataentitygroups/{id}/lineage` is the THIRD member of the negative-case lineage family (alongside per-entity upstream/downstream variants); `LineageServiceImpl.getDataEntityGroupLineage` has NO `AuthIdentityProvider` field; `pathMatchers("/**").authenticated()` is the only gate; for multi-team DEGs (Domains), the per-connected-component partitioning surfaces graph-shaped CO-MEMBERSHIP leakage wider than per-entity lineage REFACTOR-203
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-159.md`
+
+---
+
+## DOC-GAP-160 — Search facet drill-down on `/api/search/{search_id}/facet/{facet_type}` enumerates every OWNER NAME + per-owner entity count CATALOG-WIDE — `ReactiveSearchFacetRepositoryImpl.java:339-372` joins OWNER + OWNERSHIP + SEARCH_ENTRYPOINT + DATA_ENTITY with NO `OWNERSHIP.OWNER_ID = ?` predicate; the `myObjects` toggle scopes the RESULT list, NOT the facet COUNTS; an attacker who cannot read an entity directly can INFER its existence via the OWNERS / NAMESPACES / TAGS / GROUPS facet counts
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-160.md`
+
+---
+
+## DOC-GAP-161 — `search_facets` table (PK uuid, query_string varchar(255), filters jsonb) has NO `owner_id` / `created_by` / `user_id` column at the schema layer (`V0_0_1__init.sql:204-211`); any UUID-holder can READ, UPDATE, and DRIVE the session — the UUID is a BEARER TOKEN at the schema layer; copy-pasting a search URL into a bug report or chat message hands the recipient full read+update access; live page silent on UUID semantics
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-161.md`
+
+---
+
+## DOC-GAP-166 — `to_tsquery` operator-injection on PERSISTED `search_facets.query_string` — `JooqFTSHelper.tsQuery` (`JooqFTSHelper.java:164-168`) does NOT escape tsquery operators (`!`, `(`, `)`, `:`, `<->`, `&`, `|`, `'`, `\`); a caller who POSTs a search with `query='foo )('` PERSISTS the row; every subsequent facet aggregator that runs on that row's state fails at `to_tsquery` parse time; session is PERMANENTLY BROKEN; STRENGTHENS DOC-GAP-104 + DOC-GAP-080 with persistence dimension
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-166.md`
+
+---
+
+### MEDIUM severity
 
 ## DOC-GAP-011 — Legacy URL `/active-platform-features/alerting` returns 404 — canonical at `/features/active-platform-features/alerting`
 
@@ -929,7 +992,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-080 — Search live doc page silent on query syntax — `JooqFTSHelper.tsQuery` splits user input on a single space, appends `:*` to each token, joins with `&`, and passes verbatim to Postgres `to_tsquery(?)`; user queries with tsquery-meaningful metacharacters (`!`, `|`, `(`, `)`, `<->`, `:`) silently re-interpret or yield syntax-error 500s
+## DOC-GAP-080 — Search live doc page silent on query syntax — `JooqFTSHelper.tsQuery` splits user input on a single space, appends `:*` to each token, joins with `&`, and passes verbatim to Postgres `to_tsquery(?)`; user queries with tsquery-meaningful metacharacters (`!`, `|`, `(`, `)`, `<->`, `:`) silently re-interpret or yield syntax-error 500s **(batch M: PERSISTENCE dimension at DOC-GAP-166)**
 
 **Severity**: MEDIUM
 **Category**: drift
@@ -1055,7 +1118,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-124 — Inner-DEG suppression in `LineageServiceImpl.getDataEntityGroupLineage` is a deliberate deferred-feature carve-out
+## DOC-GAP-124 — Inner-DEG suppression in `LineageServiceImpl.getDataEntityGroupLineage` is a deliberate deferred-feature carve-out **(batch M STRENGTHENS — controller-method primary source confirms the comment-marked deferred-feature debt; cross-link DOC-GAP-164)**
 
 **Severity**: MEDIUM
 **Category**: drift
@@ -1216,6 +1279,53 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 **Full detail**: `detail/DOC-GAP-158.md`
 
 ---
+
+## DOC-GAP-162 — `LineageDepth.empty()` sentinel encoding fragility — `(depth=-1, empty=true)` factory at `LineageDepth.java:16-18`; the CTE termination `tDepth < depth` short-circuits via the magic -1, NOT via the `boolean empty` flag; future refactor to `lessThanOrEqual` would silently extend single-hop endpoints to two hops without test signal
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-162.md`
+
+---
+
+## DOC-GAP-163 — `getDataEntityGroupsLineage` 404 conflates THREE semantically distinct conditions — DEG ID does not exist + non-DEG-typed entity + DEG-has-no-members — all raise identical "Data entity group {id} doesn't exist"; operator-debugging surprise; live api-reference page does not discriminate
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-163.md`
+
+---
+
+## DOC-GAP-164 — Inner-DEG suppression at `LineageServiceImpl.java:71-75` is comment-marked deferred-feature but lacks backlog + ADR + regression test; future lift will silently change API contract; STRENGTHENS DOC-GAP-124 to 2-sidecar primary source
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-164.md`
+
+---
+
+## DOC-GAP-165 — DEG-lineage edges crossing DEG boundary silently filtered — `getLineageRelations(List<String>)` requires BOTH endpoints in member set; operator viewing DEG-lineage sees member entity as graph leaf even when external context exists; design intent (DEG-lineage as inward-facing) is structural but undocumented operator-facing
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-165.md`
+
+---
+
+## DOC-GAP-167 — **META-FINDING** — REV-3 LAYER-0 pillar P-05 (Data Lineage) sub-feature overpromise — `system-mission.md:163-180` declares P-05 with HIGH confidence; live `/features/data-lineage` covers concept-at-depth but operations-at-shallow on 7 distinct axes (auth-posture, anchor-set asymmetry, inner-DEG suppression, boundary edges, recursive-CTE depth, OpenAPI summary correctness, 404 conflation); THIRD pillar-overpromise META after DOC-GAP-149 (P-09) and DOC-GAP-158 (P-01); cross-pillar pattern surfaced
+
+**Severity**: MEDIUM
+**Category**: drift (meta)
+
+**Full detail**: `detail/DOC-GAP-167.md`
+
+---
+
+### LOW severity
 
 ## DOC-GAP-024 — OpenAPI tag `alert` has no `description:` field and no `externalDocs.url`
 

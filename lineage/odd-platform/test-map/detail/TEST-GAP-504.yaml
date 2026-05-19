@@ -1,0 +1,42 @@
+gap_id: TEST-GAP-504
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataEntityController controller-method:getDataEntityGroupsLineage"
+pillars_affected: [P-05, P-09, P-01]
+surfaced_by:
+  - "getDataEntityGroupsLineage.md:bugs_limitations_corner_cases.[0] (Anchor-set defence-in-depth is NOT applied)"
+  - "getDataEntityGroupsLineage.md:bugs_limitations_corner_cases.[1] (DEG cross-owner enumeration is GRAPH-SHAPED on a per-component basis)"
+  - "getDataEntityGroupsLineage.md:security.known_security_gaps.[0, 1] (Anchor-set defence not applied; cross-owner CO-MEMBERSHIP enumeration)"
+  - "getDataEntityGroupsLineage.md:tests_coverage_semantic.uncovered_behaviours.[9] (Owner-scoping ABSENCE)"
+  - "getDataEntityGroupsLineage.md:docs_link_semantic.doc_drift_findings.[1] (Live API-reference + feature pages do NOT disclose the read-collaborative posture)"
+behaviour: |-
+  DEG-anchored lineage cross-owner regression-pin (CRITICAL — primary-source confirmation of REFACTOR-203 on the DEG-anchored sibling endpoint; cross-pillar P-05+P-09+P-01). `LineageServiceImpl.getDataEntityGroupLineage` (LineageServiceImpl.java:59-85) has NO `AuthIdentityProvider` field (verified at lines 54-57), NO `fetchAssociatedOwner()` call, NO `permissionService.hasPermission(...)` call, NO `@PreAuthorize`, and NO `SecurityRule` entry in `SecurityConstants.SECURITY_RULES` (verified by Grep `dataentitygroups.*lineage` returning zero matches). The path falls through to `AuthorizationCustomizer.java:29-30`'s catch-all `.pathMatchers("/**").authenticated()`. Any authenticated user — regardless of owner association — can read ANY DEG's full member graph + inter-member edges + per-member metadata (id, oddrn, internal/external name, entity_classes, datasource, namespace, status, owners, tags). For multi-team Domains/DEGs the leakage is structurally WIDER than per-entity lineage REFACTOR-203 — the per-connected-component partitioning at `establishDEGRelations` (LineageServiceImpl.java:200-216) surfaces 'team A's entity X is on the same data-pipeline as team B's entity Y' even when the individual entities would not be cross-team-searchable. The DEG itself is a CONCEPTUAL grouping — leaking 'team A and team B both contribute to the Finance Domain' reveals organisational structure that the DEG was designed to represent but not necessarily to disclose to every authenticated user. Under `auth.type=DISABLED` the endpoint is anonymously reachable. The live operator-facing data-lineage and api-reference docs are SILENT on this posture (WebFetched 2026-05-19 status 200 — both). Cross-pillar bump: P-05 (Data Lineage feature exposure) + P-09 (security read-collaborative posture, ADR-CANDIDATE-003) + P-01 (Discovery — DEG cross-owner member enumeration). NO test exists.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/DataEntityGroupLineageCrossOwnerTest.java"
+  name: "getDataEntityGroupsLineage_anyAuthenticatedUser_canReadAnyDEGsLineageGraph_pinsREFACTOR203DEGSibling"
+evidence:
+  - "getDataEntityGroupsLineage.md:bugs_limitations_corner_cases.[0]: 'Anchor-set defence-in-depth is NOT applied — getDataEntityGroupLineage accepts the DEG ID from the controller path and resolves the member set WITHOUT calling authIdentityProvider.fetchAssociatedOwner() or any owner check. The service has no AuthIdentityProvider field. Any authenticated user (or under DISABLED any unauthenticated probe) can read ANY DEG's lineage graph including the member entity metadata for entities owned by other teams.' severity: HIGH"
+  - "getDataEntityGroupsLineage.md:bugs_limitations_corner_cases.[1]: 'DEG cross-owner enumeration is GRAPH-SHAPED on a per-component basis — the response surface is wider than per-entity lineage in one sense: the operator reading a DEG's lineage sees the CO-MEMBERSHIP shape of every team's entities that happen to be in that DEG.' severity: HIGH"
+  - "LineageServiceImpl.java:54-57 (no AuthIdentityProvider field) + 59-85 (no owner-resolution call)"
+  - "AuthorizationCustomizer.java:29-30 (catch-all `.authenticated()`)"
+  - "SecurityConstants.java (no SecurityRule entry; Grep `dataentitygroups.*lineage` returns zero matches)"
+  - "ReactiveGroupEntityRelationRepositoryImpl.java:177-204 (recursive CTE returns ALL members of the DEG regardless of caller ownership)"
+  - "ReactiveLineageRepositoryImpl.java:112-119 (edge fetch returns ALL non-deleted edges between members)"
+  - "WebFetch `https://docs.opendatadiscovery.org/features/data-lineage` 2026-05-19 status 200 (silent on owner-scoping)"
+  - "WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/lineage` 2026-05-19 status 200 (silent on owner-scoping)"
+cross_references:
+  - "TEST-GAP-308 (lineage-variant single-point-of-failure — STRENGTHENED batch M with controller-method primary source)"
+  - "TEST-GAP-415 (getDataEntityGroupLineage service-layer test gap — STRENGTHENED batch M at controller boundary)"
+  - "TEST-GAP-445 (UI realisation point — Lineage tab cross-owner enumeration)"
+  - "TEST-GAP-488 (cross-owner DEG-membership write-side asymmetry)"
+  - "REFACTOR-203 (cross-owner enumeration via lineage graph — DEG-anchored sibling confirmed)"
+  - "concepts.yaml:entities[Data Lineage].security_aggregate (HIGH)"
+  - "concepts.yaml:entities[Data Entity Group].security_aggregate (HIGH)"
+  - "F-005 (Data Lineage), F-011 (Data Entity Groups)"
+proposed_action: |-
+  WebTestClient integration test (Testcontainers). (a) Create Owner X with user uX, Owner Y with user uY. (b) Create DEG D owned by Y; add 3 members owned by Y (entities y1, y2, y3); add 1 inter-member lineage edge y1->y2. (c) Authenticate as uX (NO membership in Y's owner). (d) GET /api/dataentitygroups/D.id/lineage. (e) Assert HTTP 200 with response payload containing y1, y2 as nodes and the y1->y2 edge — uX successfully enumerated Y's DEG (current contract — REFACTOR-203 DEG sibling). (f) Test comment 'LOCKS the DEG-anchored cross-owner enumeration contract as of 2026-05-19 (REFACTOR-203 DEG sibling). When anchor-set defence-in-depth lands at LineageServiceImpl.getDataEntityGroupLineage, this test FLIPS to expect 403 or empty payload.' (g) Secondary DISABLED-mode test: same payload via anonymous client — assert HTTP 200.
+batch: 2026-05-19-M
+feature_id: F-005

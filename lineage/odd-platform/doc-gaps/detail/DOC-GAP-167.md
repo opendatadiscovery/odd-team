@@ -1,0 +1,48 @@
+- **DOC-GAP-167**: **META-FINDING** — REV-3 LAYER-0 pillar P-05 (Data Lineage) sub-feature overpromise — `system-mission.md:163-180` declares P-05 "Data Lineage" with sub-features "Data Objects Lineage" + "Microservices Lineage" and Confidence: HIGH; the live `/features/data-lineage` page (WebFetched 2026-05-19 status 200) covers the CONCEPT at depth (upstream / downstream traceability; per-entity / group / microservices entry points) but is OPERATIONALLY SILENT on (a) the THREE distinct lineage entry points' authorization postures (per-entity upstream/downstream + DEG-anchored + owner-anchored "/my/upstream"), (b) the anchor-set defence-in-depth asymmetry between them (negative-case canvas paths bypass owner-scoping; positive-case "/my" paths apply anchor-scoping), (c) the inner-DEG suppression deferred-feature carve-out, (d) the boundary-edge truncation in DEG-lineage, (e) the recursive-CTE depth handling (no cap, no cycle guard, no owner JOIN per DOC-GAP-105), (f) the OpenAPI inverse-semantic summary for "/my" endpoints (DOC-GAP-099), (g) the 404 conflation for DEG-lineage; FOUR batch-M sub-findings (DOC-GAP-159 + 163 + 164 + 165) all surface from THIS one batch's DEG-lineage + "/my" controller-method sidecars; pillar's promise OVER-CLAIMS operations-depth relative to live doc-page operations-coverage; THIRD pillar-overpromise META after DOC-GAP-149 (P-09) and DOC-GAP-158 (P-01); cross-pillar pattern: system-mission's pillar pages systematically over-claim relative to live doc-page operations-coverage (MEDIUM; methodology gap — the pattern is now 3 instances across 3 pillars)
+  - **Category**: drift (meta)
+  - **Surfaced by**:
+    - `lineage/odd-platform/system-mission.md:163-180` (P-05 Data Lineage pillar declaration, Confidence: HIGH)
+    - `odd-platform__java__DataEntityController__controller-method__getDataEntityGroupsLineage.md:docs_link_semantic.doc_drift_findings.[0,1,2]` (3 drift findings on the SAME live page set) **(NEW batch M)**
+    - `odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream.md:docs_link_semantic.doc_drift_findings.[2]` (live Data Lineage page silent on owner-aware lineage view) **(NEW batch M)**
+    - `odd-platform__java__DataEntityController__controller-method__getMyObjectsWithDownstream.md:docs_link_semantic.doc_drift_findings.[1,2]` (live Data Lineage page silent on the /my/downstream endpoint; API Reference has no Data Entity sub-page) **(NEW batch M)**
+    - Cross-batch: DOC-GAP-115 (batch I — service-layer anchor-set asymmetry) + DOC-GAP-105 (batch H — repository-layer recursive-CTE) + DOC-GAP-099 (batch F — OpenAPI inverse-semantic summary)
+    - Pillar-overpromise META cluster: DOC-GAP-149 (P-09 user-owner association) + DOC-GAP-158 (P-01 Data Entity Groups & Domains) + THIS finding (P-05 Data Lineage)
+  - **Evidence**:
+    - `system-mission.md:163-180` — verbatim pillar declaration:
+      ```
+      ### Pillar P-05 — Data Lineage
+      - One-line capability: Render upstream / downstream traceability across the full ODD entity model...
+      - Sub-feature seed:
+        - Data Objects Lineage (per-entity `/api/dataentity/{id}/lineage`; group-lineage endpoint; recursive-CTE walk with depth-1 expansion fan-out)
+        - Microservices Lineage (sourced from OpenTelemetry traces via `odd-tracing-gateway`)
+      - Confidence: HIGH
+      - Maintainer notes: "...REFACTOR-203 cross-owner enumeration is a known LineageServiceImpl issue."
+      ```
+      The sub-feature seed names three distinct endpoint patterns (per-entity, group-lineage, owner-anchored "/my") but the pillar declaration's Confidence: HIGH does not reflect the operations-depth gap at the live doc layer.
+    - The system-mission.md author acknowledged REFACTOR-203 in the Maintainer notes line but did NOT cross-validate against the live `/features/data-lineage` page's operations-coverage. The live page describes the CONCEPT (upstream/downstream/group/microservices entry points) without disclosing:
+      - The owner-scoping asymmetry across the three lineage entry points
+      - The anchor-set defence-in-depth pattern (positive vs negative case)
+      - The inner-DEG suppression carve-out
+      - The boundary-edge truncation in DEG-lineage
+      - The OpenAPI inverse-semantic summary for "/my" endpoints
+      - The recursive-CTE depth handling
+      - The 404 conflation for DEG-lineage
+    - WebFetch `https://docs.opendatadiscovery.org/features/data-lineage` 2026-05-19 status 200 (sidecar-recorded; current-session re-verification denied) — describes the lineage pillar across data-object + microservices lineage; lists the per-entity Lineage tab + Group lineage entry point + the API Reference page for per-entity / group / microservices APIs; does NOT enumerate the `/my/upstream` and `/my/downstream` endpoints or the owner-aware lineage view. The live page treats the four entry points (per-entity upstream + per-entity downstream + group + "/my") as functionally equivalent without disclosing their authorization-posture inversions.
+    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/lineage` 2026-05-19 status 200 (re-verified in current session) — describes the per-entity + group endpoints with parameter tables; does NOT describe the authorization postures, the inner-DEG suppression, the boundary-edge truncation, or the 404 conflation. The api-reference page is the canonical developer-facing surface; its operations-coverage gap on these axes is structural.
+    - **The pillar's promise vs reality**: the pillar declaration (system-mission.md) promises operations-depth (sub-feature seeds, audience mapping, cross-pillar relationships) at HIGH confidence; the live doc pages cover the concept at depth but the operations at shallow depth. The four batch-M sub-findings (DOC-GAP-159 cross-owner enumeration + DOC-GAP-163 404 conflation + DOC-GAP-164 deferred-feature debt + DOC-GAP-165 boundary truncation) plus the cross-batch DOC-GAP-105 + DOC-GAP-115 + DOC-GAP-099 form the operations-depth gap that the pillar's HIGH confidence does not reflect.
+  - **Proposed doc action**: **Three-part action**.
+    1. **Pillar-side primary**: revise `system-mission.md:163-180` to add a `live_doc_operations_coverage` field with explicit verdicts: "live `/features/data-lineage` covers the concept at depth (4/4 entry points named) but operations at shallow depth (0/7 axes covered: auth-posture, anchor-set asymmetry, inner-DEG suppression, boundary edges, recursive-CTE depth, OpenAPI summary correctness, 404 conflation). Pillar confidence: HIGH at concept layer; MEDIUM at operations layer." Cross-link the seven DOC-GAPs that surface the gap.
+    2. **Doc-side primary**: extend `features/data-lineage.md` with a comprehensive "Visibility model + operations reference" section that consolidates the seven axes into one operator-facing page. The section is the doc-side action that DOC-GAP-115 (batch I) proposed for the anchor-set asymmetry alone; this finding's recommendation broadens the scope to all seven axes.
+    3. **Methodology meta-recommendation**: add to `pillars/documentation/gates.md` (or a new `pillars/documentation/cornerstones.md` entry) a reviewer checklist: "For every system-mission.md pillar with Confidence: HIGH, the reviewer must verify that the live doc pages cover BOTH the concept axis AND the operations axis. If the live doc covers the concept-at-depth but the operations-at-shallow-depth, the pillar's confidence on the operations axis must be downgraded to MEDIUM with a backlog item documenting the operations-coverage gap." This is the procedural fix that prevents the pillar-overpromise META from re-occurring on pillar P-04 / P-06 / P-07 / P-08 / P-10 / P-11.
+  - **Cross-references**:
+    - DOC-GAP-149 META (NEW batch K — REV-3 LAYER-0 P-09 user-owner association overpromise) — first pillar-overpromise META; this finding is the THIRD instance of the same pattern
+    - DOC-GAP-158 META (NEW batch L — REV-3 LAYER-0 P-01 Data Entity Groups & Domains overpromise) — second instance; same shape, different pillar
+    - DOC-GAP-159 (NEW batch M — DEG-anchored lineage cross-owner enumeration) — sub-finding; one of seven axes the pillar over-claims on
+    - DOC-GAP-163 (NEW batch M — DEG-lineage 404 conflation) — sub-finding
+    - DOC-GAP-164 (NEW batch M — inner-DEG suppression deferred-feature) — sub-finding
+    - DOC-GAP-165 (NEW batch M — DEG-lineage boundary-edge truncation) — sub-finding
+    - DOC-GAP-105 (batch H + I + J — lineage recursive-CTE primary source) — sub-finding spans 3 batches; the cross-batch sub-finding-cluster
+    - DOC-GAP-115 (batch I — lineage anchor-set defence-in-depth asymmetry) — sub-finding from the service-layer
+    - DOC-GAP-099 (batch F + this batch M — `/my/upstream` `/my/downstream` OpenAPI inverse-semantic summary; this batch M strengthens to 4-angle) — sub-finding from the OpenAPI layer
+    - LSN-001 / LSN-002 — operator-impact-by-omission class
+  - **Severity rationale**: MEDIUM — the methodology gap is structural (system-mission's pillar pages systematically over-claim relative to live doc operations-coverage); the operator-impact axis is bounded by the existence of the per-pillar sub-findings (DOC-GAP-159 / 163 / 164 / 165 / 105 / 115 / 099) which surface the specific axes. The pillar-overpromise META is the load-bearing pattern for the next pillar-audit pass (P-04 / P-06 / P-07 / P-08 / P-10 / P-11 need the same operations-coverage validation). The MEDIUM severity reflects the third-instance accumulation of the same pattern: three pillars (P-09 / P-01 / P-05) over-claim; the methodology gate (the reviewer checklist in (3) above) is the load-bearing fix.

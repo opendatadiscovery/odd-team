@@ -99,4 +99,32 @@ Cross-link with ADR-CANDIDATE-001 (controller-layer thin-proxy) and ADR-CANDIDAT
 
 **Severity unchanged**: HIGH (codebase-wide authorization architecture). The batch-K strengthening makes the price clearer: the architecture pays the cost of TWO complete failure modes — (a) WebFilter / SecurityConstants drift bypasses gating (REFACTOR-217); (b) service-tier defence-in-depth absence means the failure has no second line. Both are visible only when the gate fails — defence-in-depth at the service layer would surface (a) faster.
 
+## STRENGTHENS — Batch M (`getMyObjectsWithUpstream` + `getMyObjectsWithDownstream` — `listByOddrns` PRIMARY-SOURCE for owner-agnostic-by-design repository methods)
+
+**Primary-source confirmation at `ReactiveDataEntityRepositoryImpl.listByOddrns(Collection<String>, boolean, boolean, Integer, Integer)` (lines 228-253)** — the repository method that batch M's lineage-variant `/my*` endpoints route through is the canonical example of an **owner-agnostic-by-design** repository method. The architectural choice is deliberate: `listByOddrns` is reused across many call sites (lineage tab, group-lineage, search results materialisation) with different scoping rules, so folding owner-scoping into it would couple the method to a specific use case. The design is consistent with this ADR's architectural separation.
+
+**New batch-M evidence**:
+
+1. **`getMyObjectsWithUpstream.md:implicit_adrs.[2]`** (HIGH): "**No defence-in-depth at the derived-set SQL retrieval — `listByOddrns` is owner-agnostic by design.** `ReactiveDataEntityRepositoryImpl.listByOddrns` at lines 228-253 is a generic `WHERE DATA_ENTITY.ODDRN IN (?, ?, ...)` scan with no JOIN against OWNERSHIP. The architectural choice: the input oddrn set is **assumed to be already correctly-scoped** by the caller. This is a deliberate design — `listByOddrns` is reused by many call sites (e.g. lineage tab, group-lineage, search results materialisation) that have different scoping rules; folding owner-scoping into the method would couple the method to a specific use case. The trade-off: the lineage-variant endpoints have NO JOIN-side defence-in-depth — the owner-scoping invariant is single-point-of-failure at `fetchAssociatedOwner` (REFACTOR-225). The base `/my` endpoint uses a DIFFERENT repository method (`listByOwner`, `ReactiveDataEntityRepositoryImpl.java:515-534`) that DOES JOIN OWNERSHIP — the inconsistency between the two paths is itself the architectural finding."
+
+2. **The contrast in repository-method choice**: ReactiveDataEntityRepositoryImpl exposes BOTH `listByOwner` (with JOIN OWNERSHIP — for owner-scoped consumers) AND `listByOddrns` (without JOIN OWNERSHIP — for caller-already-scoped consumers). The two methods serve different architectural patterns: `listByOwner` for endpoints that compute "what does this user own?" at the repository layer; `listByOddrns` for endpoints that compute the oddrn set at the service layer (anchor + expand + filter, per ADR-CANDIDATE-117 NEW) and then materialise the rows. The maintainer's intent: the repository is owner-agnostic by default; per-use-case owner-scoping is the service's responsibility (per this ADR's claim).
+
+3. **`getMyObjectsWithDownstream.md` confirms symmetrically**: "the controller method carries no `@PreAuthorize`, no `@Secured`, no programmatic `permissionService.hasPermission(...)` call at the controller, the generated `DataEntityApi` interface, the service, the relations service, the lineage repository, or the data-entity repository. The only access control is the SecurityWebFilterChain's `.authenticated()` fallback in `AuthorizationCustomizer.java:29-30`. The owner-scoping is purely data-shape (anchor-set + downstream filter); the authorization framework's permission gates are not applied."
+
+**Architectural refinement**: The original ADR-CANDIDATE-075 claim about "auth-invisible repositories" gains a sharper edge in batch M — the `listByOddrns` method is the canonical example of the architecture's deliberate trade-off. The maintainer COULD have written a `listByOddrnsAndOwner(oddrns, ownerId)` variant or added a `Long ownerId` parameter to `listByOddrns` to make the lineage-variant endpoints defended-in-depth at the SQL layer. The maintainer DID NOT — `listByOddrns` stays generic, and the lineage variants' owner-scoping lives entirely at the service-layer anchor set. The ADR's trust-boundary claim is concretely demonstrated: the repository is owner-agnostic-by-design; the service is the single point of enforcement; the price is REFACTOR-225 (no SQL-side defence-in-depth at the listByOddrns layer for the lineage-variant endpoints).
+
+**New batch-M refactoring scopes** (the defence-in-depth ABSENCES this ADR's architecture accepts):
+- REFACTOR-225 STRENGTHENED — anchor-set defence-in-depth absence; controller-method PRIMARY-SOURCE for both UPSTREAM and DOWNSTREAM siblings; the gap is the missing JOIN-side filter at `listByOddrns` for owner-scoped consumers.
+- REFACTOR-346 NEW — in-memory derivation + anchor-set materialisation defeats SQL pagination on `/my/upstream` and `/my/downstream`.
+- REFACTOR-347 NEW — `listByOddrns` pagination has no ORDER BY → unstable pagination across consecutive page reads.
+
+**Cross-batch evidence stack** (now 5-layer):
+- Controller layer (ADR-CANDIDATE-015): no `Authentication` parameter; reactor `Context` is the principal carrier.
+- Service-principal-resolution layer (ADR-CANDIDATE-015 STRENGTHENED via batch K AuthIdentityProviderImpl primary-source): `fetchAssociatedOwner` reads reactor `Context`, resolves owner-id.
+- Service-business-logic layer (BATCH K refinement via TermServiceImpl + OwnershipServiceImpl): NO programmatic permission checks; trusts upstream WebFilter + SecurityConstants enforcement.
+- Service-anchor-set composition layer (BATCH M NEW via DataEntityRelationsServiceImpl): anchor + expand + filter; the service-layer owner-id resolution is the ONLY scoping site.
+- Repository layer (this ADR): no `Authentication` parameter; owner-id is a `Long`; `listByOddrns` is owner-agnostic by design (BATCH M PRIMARY-SOURCE).
+
+**Severity unchanged**: HIGH (codebase-wide authorization architecture). The batch-M strengthening makes the architectural separation concrete at the repository-method choice (`listByOwner` vs `listByOddrns`) and binds the gap (REFACTOR-225) to the ADR's accept-the-risk clause.
+
 ---

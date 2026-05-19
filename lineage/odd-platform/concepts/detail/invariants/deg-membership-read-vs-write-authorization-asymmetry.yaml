@@ -1,0 +1,143 @@
+name: |-
+  DEG-membership read vs write authorization asymmetry
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+  - P-05
+  - P-01
+description: |-
+  NEW INVARIANT, batch 2026-05-19M — the DEG-membership feature exposes
+  fine-grained authorization asymmetry between WRITE operations (gated by
+  RBAC permissions) and READ operations (entirely UNGATED at the DEG layer).
+  **WRITE side**: addDataEntityToDEG (DataEntityServiceImpl.java:388-408)
+  and deleteDataEntityFromDEG (DataEntityServiceImpl.java:411-438) are gated
+  by DATA_ENTITY_ADD_TO_GROUP and DATA_ENTITY_DELETE_FROM_GROUP permissions
+  respectively (verified by SecurityConstants.java:228-236 SecurityRule
+  entries per batch L sidecars on addDataEntityDataEntityGroup +
+  deleteDataEntityFromDataEntityGroup). **READ side**: getDataEntityGroupsLineage
+  (DataEntityController.java:275-281 GET /api/dataentitygroups/{id}/lineage)
+  has NO SecurityRule entry — verified by Grep dataentitygroups.*lineage in
+  SecurityConstants.java returns zero matches; falls through to
+  pathMatchers("/**").authenticated() at AuthorizationCustomizer.java:29-30.
+  The read endpoint also lacks a fetchAssociatedOwner() call at the service
+  layer (LineageServiceImpl has no AuthIdentityProvider field — verified by
+  reading LineageServiceImpl.java:54-57) — there is NO per-DEG ownership check
+  anywhere in the chain. **Operator-facing consequence**: a multi-team DEG
+  (e.g. a Domain) is structurally protected on its WRITE side (only users
+  with DATA_ENTITY_ADD_TO_GROUP/DELETE_FROM_GROUP can mutate membership) but
+  COMPLETELY open on its READ side (any authenticated user can read the
+  full member-graph + reachable edges + per-member metadata via the lineage
+  endpoint, and the listed children via the DEG detail endpoint). The
+  asymmetry is the platform-wide read-collaborative posture (REFACTOR-203
+  / REFACTOR-024 family) applied to the DEG-anchored surface. **Severity**:
+  HIGH — the asymmetry is operationally invisible (the WRITE-side gate
+  suggests RBAC protection; the READ-side bypass undoes it for the most
+  sensitive query — graph-shaped co-membership). The doc surface is silent
+  on the asymmetry.
+axes_present:
+  - controllers
+  - services
+nodes:
+  - odd-platform java DataEntityController controller-method:getDataEntityGroupsLineage
+  - odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup
+  - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
+  - odd-platform java service service:LineageServiceImpl
+  - odd-platform java service service:DataEntityServiceImpl
+contributors:
+  - |-
+    getDataEntityGroupsLineage.md (batch M PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[0] Anchor-set defence-in-depth is NOT
+    applied — the service has no AuthIdentityProvider field; any authenticated
+    user can read ANY DEG lineage graph (HIGH severity);
+    security.authorization_assertions [] — no @PreAuthorize, no @Secured, no
+    programmatic permissionService.hasPermission; crucially no SecurityRule
+    entry in SecurityConstants.SECURITY_RULES (verified Grep zero matches);
+    security.known_security_gaps detail — the write side is authorized
+    per-data-entity (DATA_ENTITY_ADD_TO_GROUP / DELETE_FROM_GROUP); the read
+    side is unauthorized at the DEG layer;
+    implicit_adrs — DEG-lineage is read-collaborative posture applied to
+    DEG-anchored surface.
+  - |-
+    addDataEntityDataEntityGroup.md (batch L cross-reference):
+    SecurityRule entry for DATA_ENTITY_ADD_TO_GROUP at
+    SecurityConstants.java:228-236.
+  - |-
+    deleteDataEntityFromDataEntityGroup.md (batch L cross-reference):
+    SecurityRule entry for DATA_ENTITY_DELETE_FROM_GROUP at
+    SecurityConstants.java:228-236.
+  - |-
+    LineageServiceImpl.md (batch I cross-reference):
+    bugs_limitations_corner_cases.[0,1] — anchor-set defence-in-depth is NOT
+    applied; the service has no AuthIdentityProvider field.
+evidence:
+  - |-
+    DataEntityController.java:275-281 (the DEG-lineage handler — 6-line
+    pass-through with no @PreAuthorize)
+  - |-
+    SecurityConstants.java (no rule for /api/dataentitygroups/{id}/lineage
+    — verified by Grep dataentitygroups.*lineage returns zero matches)
+  - |-
+    SecurityConstants.java:228-236 (the WRITE-side rules:
+    DATA_ENTITY_ADD_TO_GROUP and DATA_ENTITY_DELETE_FROM_GROUP)
+  - |-
+    LineageServiceImpl.java:54-57 (no AuthIdentityProvider field)
+  - |-
+    LineageServiceImpl.java:59-85 (the DEG-lineage method with no
+    fetchAssociatedOwner call)
+  - |-
+    AuthorizationCustomizer.java:29-30 (the catch-all .authenticated())
+  - |-
+    getDataEntityGroupsLineage.md:bugs_limitations_corner_cases.[0] +
+    security.authorization_assertions + security.owner_scoping +
+    security.known_security_gaps
+mitigations_unimplemented:
+  - |-
+    Add a SecurityRule entry for /api/dataentitygroups/{id}/lineage gated by a
+    new DATA_ENTITY_GROUP_READ_LINEAGE permission (or the existing
+    DATA_ENTITY_VIEW permission applied at the DEG layer) — closes the
+    READ-side asymmetry at the gate.
+  - |-
+    Add an anchor-set defence at the service layer — LineageServiceImpl
+    should consume AuthIdentityProvider and resolve the caller owner before
+    enumerating DEG members; filter members to those the caller has owner-side
+    visibility on (with an explicit fall-through to "show the full DEG if
+    caller is on a Domain Admin role").
+  - |-
+    Doc: extend /configuration-and-deployment/enable-security/authorization
+    with a "Read-side posture" section explicitly stating that DEG-lineage
+    READS are cross-owner-readable while DEG-membership WRITES are RBAC-gated
+    — operators must understand the asymmetry.
+  - |-
+    Doc: extend /features/data-lineage with a sub-section on DEG-lineage
+    surfacing the cross-owner-readable posture; the live page is currently
+    silent on the WHO-can-see question for DEG lineage.
+notes: |-
+  This invariant strengthens the broader Read-collaborative cross-owner
+  enumeration pattern by surfacing a SPECIFIC asymmetry: the platform is
+  CAREFUL about WRITE-side gating on DEG membership but DELIBERATE about
+  the BYPASS on the corresponding READ side. The shape is consistent with
+  the platform-wide read-collaborative posture (ADR-CANDIDATE-003) but the
+  asymmetry is operationally surprising — operators reading the
+  /permissions catalog see DATA_ENTITY_ADD_TO_GROUP / DELETE_FROM_GROUP
+  and reasonably assume "DEG membership is RBAC-protected"; the READ-side
+  silence is undisclosed.
+
+  The DEG-lineage read is the WIDER blast — per-connected-component
+  partitioning at LineageServiceImpl.java:200-216 surfaces co-membership
+  shape across owners; a multi-team Domain exposes "team A's entity X
+  shares a pipeline with team B's entity Y" even when the individual
+  entities are not cross-team-searchable.
+
+  Cross-references:
+    - Read-collaborative cross-owner enumeration — the platform-wide
+      posture; this is one specific READ surface where the asymmetry is
+      operationally surprising.
+    - REFACTOR-225 anchor-set single-point-of-failure — DEG-anchored
+      lineage is the EVEN-WIDER blast (no anchor-set at all, not just
+      single-point-of-failure).
+    - DEG-lineage flat-graph operation (get-data-entity-group-lineage-flat-graph)
+      — the operation primitive this asymmetry surfaces on.
+    - Write-collaborative DEG (write-collaborative-deg-no-deg-side-authorization)
+      — the sibling write-side observation; the asymmetry between the two
+      surfaces this invariant.

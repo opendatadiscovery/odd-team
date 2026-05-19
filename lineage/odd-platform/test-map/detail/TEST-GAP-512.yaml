@@ -1,0 +1,43 @@
+gap_id: TEST-GAP-512
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream"
+  - "odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream"
+pillars_affected: [P-05, P-09, P-01]
+surfaced_by:
+  - "getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[0] (REFACTOR-225 PRIMARY-SOURCE confirmation: anchor-set single-point-of-failure with NO JOIN-side defence-in-depth)"
+  - "getMyObjectsWithUpstream.md:security.known_security_gaps.[0] (REFACTOR-225: anchor-set single-point-of-failure for owner-scoping invariant)"
+  - "getMyObjectsWithUpstream.md:implicit_adrs.[2] (No defence-in-depth at the derived-set SQL retrieval)"
+  - "getMyObjectsWithUpstream.md:tests_coverage_semantic.uncovered_behaviours.[7] (Cross-owner leak negative-case)"
+  - "getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[0] (Owner-scoping is single-point-of-failure at DataEntityRelationsServiceImpl.java:26 - REFACTOR-225 SYMMETRIC SIBLING)"
+  - "getMyObjectsWithDownstream.md:security.known_security_gaps.[0] (SYMMETRIC REFACTOR-225)"
+  - "getMyObjectsWithDownstream.md:tests_coverage_semantic.uncovered_behaviours.[2] (Anchor-set integrity REFACTOR-225 regression vector)"
+behaviour: |-
+  REFACTOR-225 PRIMARY-SOURCE regression-pin (CRITICAL — controller-method primary-source for BOTH /my/upstream AND /my/downstream; cross-pillar P-05+P-09+P-01). The owner-scoping invariant for `getMyObjectsWithUpstream` and `getMyObjectsWithDownstream` is enforced at EXACTLY ONE SITE: `DataEntityRelationsServiceImpl.java:26` (`authIdentityProvider.fetchAssociatedOwner()`). The downstream `lineageRepository.getLineageRelations` recursive CTE has NO owner JOIN, NO owner predicate (per batch H ReactiveLineageRepositoryImpl sidecar at ReactiveLineageRepositoryImpl.java:122-176). The final `listByOddrns(oddrns, false, false, page, size)` at `ReactiveDataEntityRepositoryImpl.java:228-253` has NO owner JOIN — only `DATA_ENTITY.ODDRN.in(oddrns)` + soft-delete + hollow filters. **CONTRAST**: the base `/my` endpoint's repository method `listByOwner` (`ReactiveDataEntityRepositoryImpl.java:515-534`) JOINs against OWNERSHIP with `WHERE OWNERSHIP.OWNER_ID = ?` — a regression at `fetchAssociatedOwner` for that path would at worst leak entities the user genuinely co-owns; here the leak is the entire upstream/downstream lineage of an arbitrary anchor. A regression at the single load-bearing call site — e.g. (a) a future refactor adding a fallback owner-id for DISABLED mode, (b) a misordered WebFilter dropping the SecurityContext and `fetchAssociatedOwner` defaulting to a global anchor, (c) a corrupted USER_OWNER_MAPPING row resolving to the wrong owner, (d) a `flatMap`-vs-`map` typo passing through to a hardcoded fallback — leaks the lineage neighbourhood of an unintended anchor to the caller. The downstream `listByOddrns` scan has NO owner filter, so a wrong anchor produces a wrong (but well-formed) response with no SQL-layer trip-wire. The cure is a `listByOddrnsAndOwner(oddrns, ownerId)` repository method (or adding `Long ownerId` to `listByOddrns`) that JOINs against OWNERSHIP — today there is no such method. The endpoint is LATENT today (current code correct) but the architecture provides ZERO defence against a future single-line regression. The /my/upstream and /my/downstream are SYMMETRIC siblings — both inherit the full vulnerability. Cross-pillar bump: P-05 (Data Lineage data exposure) + P-09 (Security — REFACTOR-225 single-point-of-failure) + P-01 (Discovery — base /my path uses JOIN-defended repository; the lineage variants do NOT, the architectural inconsistency is the load-bearing finding).
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/MyObjectsLineageAnchorSetSPOFTest.java"
+  name: "getMyObjectsWithUpstreamAndDownstream_anchorSetRegression_leaksUnscopedLineage_pinsREFACTOR225PrimarySource"
+evidence:
+  - "getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[0]: 'REFACTOR-225 PRIMARY-SOURCE confirmation: anchor-set single-point-of-failure with NO JOIN-side defence-in-depth. The owner-scoping invariant for /my/upstream (and its /my/downstream sibling) is enforced at exactly one site: DataEntityRelationsServiceImpl.java:26 (authIdentityProvider.fetchAssociatedOwner()). The downstream listByOddrns scan at ReactiveDataEntityRepositoryImpl.java:228-253 has NO owner filter.' severity: HIGH"
+  - "getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[0]: 'Owner-scoping is single-point-of-failure at DataEntityRelationsServiceImpl.java:26 (REFACTOR-225 SYMMETRIC SIBLING). The downstream-lineage variant inherits the full REFACTOR-225 latent vulnerability from getMyObjectsWithUpstream.' severity: MEDIUM"
+  - "DataEntityRelationsServiceImpl.java:25-31 (the sole owner-scoping site)"
+  - "DataEntityServiceImpl.java:218-225 (the orchestration entry)"
+  - "ReactiveDataEntityRepositoryImpl.java:228-253 (listByOddrns — no owner filter)"
+  - "ReactiveDataEntityRepositoryImpl.java:515-534 (CONTRAST — listByOwner DOES have JOIN OWNERSHIP)"
+  - "ReactiveLineageRepositoryImpl.java:122-176 (recursive CTE — no owner filter, per batch H)"
+cross_references:
+  - "TEST-GAP-308 (lineage-variant single-point-of-failure — STRENGTHENED batch M with controller-method primary source for BOTH variants)"
+  - "TEST-GAP-445 (UI realisation point — Lineage tab cross-owner enumeration; F-005 UI variant)"
+  - "TEST-GAP-020 (parent class TEST-GAP — names the reactor-Context principal-propagation test gap)"
+  - "REFACTOR-225 (anchor-set single-point-of-failure — primary source confirmed at controller-method tier)"
+  - "concepts.yaml:entities[Data Lineage].security_aggregate (HIGH)"
+  - "concepts.yaml:entities[User-Owner Mapping].security_aggregate (MEDIUM)"
+  - "ADR-CANDIDATE-015 (owner-scoped routes take no principal parameter)"
+  - "F-005 (Data Lineage)"
+proposed_action: |-
+  WebTestClient integration test with mocked `AuthIdentityProvider`. (a) Create Owner A with entities a1, a2; Owner B with entities b1, b2. (b) Create lineage edges a1->a2 (internal to A), b1->b2 (internal to B). (c) Create cross-owner edge a1->b1. (d) Mock `authIdentityProvider.fetchAssociatedOwner()` to return Owner A (current correct behaviour). (e) GET /api/dataentities/my/upstream — assert response contains entities NOT in {a1, a2} but reachable upstream of {a1, a2} (the correct contract: response excludes anchor). (f) GET /api/dataentities/my/downstream — assert symmetric. (g) **Regression vector**: Mock `fetchAssociatedOwner` to return Owner B (simulating a refactor that returns wrong owner). (h) GET /api/dataentities/my/upstream — assert response contains entities reachable upstream of {b1, b2} (the LEAK — the user authenticated as A receives B's lineage neighbourhood). (i) Test comment 'LOCKS the REFACTOR-225 single-point-of-failure as of 2026-05-19. When a listByOddrnsAndOwner repository method is added with JOIN OWNERSHIP defence-in-depth, the regression-vector test (h) FLIPS to expect empty response — the wrong anchor produces no leakage because the JOIN filter intercepts.' This is both a regression-pin AND a vulnerability-proof.
+batch: 2026-05-19-M
+feature_id: F-005

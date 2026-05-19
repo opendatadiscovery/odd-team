@@ -11,3 +11,21 @@
   - **Proposed remedy**: Add a boot-time security-posture validator (REFACTOR-073's prescription) that emits a fail-loud WARN on `auth.type=DISABLED` when (a) a production-profile is active OR (b) the platform port is bound to a non-loopback interface. Optionally fail-fast on those conditions to convert the deployment-time gap into a boot-time refusal. Document the full blast radius on the `disabled-authentication` live page.
   - **Severity rationale**: HIGH — this is the largest known security gap in the platform's default deployment posture; the 11-sidecar triangulation is the strongest evidence base of any finding in the catalog.
   - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening` (the single highest-leverage cross-cutting fix in the catalog)
+
+## STRENGTHENS — Batch M (search-facets + DEG-lineage + /my/upstream + /my/downstream — 4 more anonymous-reach surfaces)
+
+**Four new batch-M sidecars extend the 11-sidecar triangulation to 15-sidecar**. Under `auth.type=DISABLED`, the following batch-M-surfaced endpoints are anonymously reachable:
+
+1. **`GET /api/search/{search_id}` + `GET /api/search/{search_id}/facet/{facet_type}`** — combined with REFACTOR-344 NEW (search_facets has no user binding), an anonymous network probe under DISABLED can create sessions, drill facet aggregators to enumerate every owner / namespace / tag / group, and read the catalog's complete cardinality. Cross-link: `SearchController.facets.md:bugs_limitations_corner_cases.[2]` — "Under `auth.type=DISABLED`, the facet endpoints become anonymously reachable — combined with the cross-owner posture (item 1) and the bearer-token-shaped session UUIDs (item 2), DISABLED auth mode lets any unauthenticated client on the network enumerate the entire catalog cardinality by repeatedly creating sessions and walking facets."
+
+2. **`GET /api/dataentitygroups/{data_entity_group_id}/lineage`** (DEG-lineage) — anonymous callers can enumerate every DEG's full member graph including entity metadata and inter-member lineage edges. Cross-link: `getDataEntityGroupsLineage.md:security.known_security_gaps.[2]` — "DISABLED-mode reachability — the DEG-lineage endpoint is one of the surfaces exposed unauthenticated under `auth.type=DISABLED` (REFACTOR-185 inheritance). Combined with the cross-owner posture above, an unauthenticated network probe can enumerate every DEG's full member graph."
+
+3. **`GET /api/dataentities/my/upstream`** — under DISABLED no SecurityContext is populated; `fetchAssociatedOwner()` emits empty; the anchor set is empty; the response is `[]`. Today's behaviour is SAFE (empty-Flux propagation, not a leak). But a future refactor introducing a fallback owner-id under DISABLED mode (e.g. "default to admin owner in dev mode") would convert this endpoint from "returns empty" to "leaks the entire upstream lineage of the admin owner to anonymous callers". The latent regression vector is the load-bearing signal — REFACTOR-225 + ADR-CANDIDATE-117 NEW codify the architecture's accept-the-risk clause.
+
+4. **`GET /api/dataentities/my/downstream`** — symmetric latent vector to #3.
+
+**Triangulation count**: 15 sidecars (11 prior + 4 batch-M). This is now the strongest single finding in the catalog by a significant margin. The cross-batch evidence confirms the blast radius spans every read AND write surface across the platform's controllers.
+
+**Severity unchanged at HIGH**: the deployment-default risk is unchanged. The maintainer's prescription (boot-time validator per REFACTOR-073) remains the highest-leverage cross-cutting fix.
+
+---

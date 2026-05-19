@@ -11,6 +11,7 @@ drift_class_summary:
 - ui_amplification
 - structural_amplification_surface
 - ui_default_masks_backend_caveat
+- co_membership_leakage
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Downstream lineage traversal — default depth handling
@@ -47,9 +48,11 @@ description: 'The lineage-downstream endpoint accepts an optional lineage_depth 
 contributing_nodes:
 - ts react-component:LineageGraph (Lineage tab on data-entity-detail page — shell + d3-hierarchy canvas)
 - odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
+- odd-platform java DataEntityController controller-method:getDataEntityGroupsLineage (batch M — DEG-anchored variant cross-ref to F-016)
 - odd-platform java LineageService.getLineage(int depth, ...)
 - odd-platform java service service:LineageServiceImpl
 - odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+- odd-platform java ReactiveGroupEntityRelationRepositoryImpl (batch M — DEG-anchored member resolution)
 terminal_side_effect:
   side_effect_class: page-render
   description: Returns LineageGraph payload to the lineage canvas component
@@ -179,6 +182,45 @@ observed_vs_expected:
       + implicit_adrs[3] (the deliberate filter as deferred-feature). Proposed local probe — seed a nested DEG (DEG-A containing
       DEG-B containing entity E + lineage edges) + GET /api/dataentitygroups/{A}/lineage + assert DEG-B does not surface in
       the response.
+  - facet: DEG-anchored variant — co-membership leakage wider than per-entity REFACTOR-203 (batch M — STATIC, PRIMARY-SOURCE)
+    observed: |-
+      The DEG-anchored lineage variant (GET /api/dataentitygroups/{id}/lineage —
+      see F-016) exposes a STRICTLY WIDER read-collaborative blast radius than
+      per-entity REFACTOR-203. Per batch-M getDataEntityGroupsLineage sidecar
+      primary source: NO @PreAuthorize, NO SecurityConstants.SECURITY_RULES entry
+      for the path (verified by Grep `dataentitygroups.*lineage` against
+      SecurityConstants.java — zero matches), NO fetchAssociatedOwner call at any
+      layer (LineageServiceImpl.java:54-57 has no AuthIdentityProvider field).
+      Any authenticated user enumerating DEG IDs reads the full inter-member
+      lineage graph for every DEG; under DISABLED the endpoint is anonymously
+      reachable. Per-entity REFACTOR-203 exposes the lineage neighbourhood of a
+      SINGLE root entity; the DEG-anchored variant exposes the inter-member edge
+      graph across ALL members of the named DEG — and DEGs commonly span owner
+      boundaries (a "Finance" DEG may contain datasets owned by Finance AND ETL
+      jobs owned by Data Engineering); the inter-member edges ARE the cross-owner
+      lineage. The DEG-anchored variant uses a distinct repository overload
+      (`getLineageRelations(List<String>)` at ReactiveLineageRepositoryImpl.java:112-119
+      — a bidirectional IN filter with no recursive CTE) rather than the
+      per-entity recursive walk — but the absence of owner-scoping is identical.
+    expected: |-
+      Same defence-or-document pattern as per-entity REFACTOR-203 — either (a)
+      apply owner-scoping at the DEG read path (verify caller has at least one
+      ownership relation to the DEG or one of its members) or (b) document the
+      cross-owner posture explicitly on the Data Lineage feature page. The
+      DEG-anchored variant is captured as F-016 (P-05:F-002 DEG-Anchored
+      Lineage) — distinct feature_id because the chain, the SQL overload, the
+      404-conflation surface, the inner-DEG carve-out, and the
+      per-connected-component partitioning are all DEG-specific.
+    drift_class: co_membership_leakage
+    provenance: |-
+      STATIC — primary-source in batch-M getDataEntityGroupsLineage sidecar
+      bugs_limitations_corner_cases + invariants + audiences[2,3] +
+      couples-to.AuthorizationCustomizer (no SECURITY_RULES entry verified by
+      Grep). Cross-reference: F-016 is the DEG-anchored feature's full
+      treatment; this facet extends F-005's existing REFACTOR-203 cross-owner
+      coverage to surface the DEG-anchored blast-radius difference here as
+      well, so a reader of F-005 finds the DEG variant via this cross-link.
+      Severity: HIGH (wider blast than per-entity REFACTOR-203).
   - facet: UI uses anchor-set-undefended endpoints (batch J — PRIMARY-SOURCE)
     observed: |-
       The UI ALWAYS fetches via `dataEntityApi.getDataEntityDownstreamLineage`
@@ -414,7 +456,16 @@ control_summary: |-
   integer; LoadMore monotonic accumulation has no collapse affordance;
   click-through on a node title compounds depth (`d = node.depth`). FIVE
   new UI-axis drift facets + ZERO unit/integration tests at any layer of
-  the UI tree.
+  the UI tree. Batch M adds the DEG-anchored variant cross-reference
+  via getDataEntityGroupsLineage primary-source: the read-collaborative
+  posture extends to DEG-anchored reads with a STRICTLY WIDER blast
+  radius (DEGs commonly span owner boundaries — the inter-member edges
+  ARE the cross-owner lineage). The DEG-anchored variant is captured
+  as F-016 (P-05:F-002 DEG-Anchored Lineage) — distinct feature_id
+  because the chain, SQL overload, 404-conflation, inner-DEG carve-out,
+  and per-component partitioning are DEG-specific. One new drift facet
+  (co_membership_leakage) added here so a reader of F-005 finds the
+  DEG variant via cross-link.
 related_refactoring_scopes:
 - REFACTOR-202
 - REFACTOR-203
@@ -426,6 +477,8 @@ related_doc_gaps:
 related_concepts:
 - Lineage Graph Traversal
 - Data Entity
+- Data Entity Group
+- Read-Collaborative Posture
 related_retrospectives:
 - LSN-017
 related_probes: null

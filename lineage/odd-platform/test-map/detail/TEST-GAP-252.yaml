@@ -1,19 +1,32 @@
 gap_id: TEST-GAP-252
 category: missing-security
-criticality: LOW
+criticality: HIGH
 node_ids:
 - odd-platform java SearchController controller-method:search
+- odd-platform java SearchController controller-method:facets
+pillars_affected: [P-01, P-09]
 surfaced_by:
 - search.md:bugs_limitations_corner_cases.[4]
-behaviour: Search-session UUID has no owner column / no per-user binding — `search_facets`
+- facets.md:bugs_limitations_corner_cases.[1] (STRENGTHENED batch M — facet endpoints extend the cross-user enumeration surface)
+- facets.md:security.known_security_gaps.[1] (STRENGTHENED batch M — facet endpoints are the SECOND surface where cross-user enumeration is feasible)
+- facets.md:implicit_adrs.[2] (Search session is bearer-token-shaped by design — schema-level evidence)
+behaviour: 'Search-session UUID has no owner column / no per-user binding — `search_facets`
   rows are keyed solely by a server-generated UUID. A user who guesses or observes
-  another user's `search_id` UUID can call `GET /api/search/{search_id}/results`,
+  another user''s `search_id` UUID can call `GET /api/search/{search_id}/results`,
   `GET /api/search/{search_id}/facet/{facet_type}`, `PUT /api/search/{search_id}`
   (updateSearchFacets), or `GET /api/search/{search_id}/data_entities/{data_entity_id}/highlights`
   against it. UUIDs are server-generated v4-random (high entropy), but the principle
-  of per-user session isolation is violated by absence — under read-collaborative
-  posture this is impact-minimal; under any future owner-scoped search tightening
-  this becomes HIGH.
+  of per-user session isolation is violated by absence. STRENGTHENED batch M — the
+  SearchController#facets sidecar confirms the same posture at the FACET endpoint
+  surface AND extends the impact analysis: an attacker with another user''s search_id
+  can not only read their session state but ALSO drill down via getFiltersForFacet
+  to enumerate the cross-owner catalog cardinality on the victim''s session — combining
+  TEST-GAP-252 (session hijack) + TEST-GAP-518 (cross-owner facet enumeration) means
+  the search session UUID is effectively a bearer token for cross-owner enumeration.
+  Criticality BUMPED from LOW to HIGH given the additional cross-owner facet-count
+  data exposure surface (per concepts.yaml:entities[Search Session].security_aggregate
+  HIGH severity for the cross-owner posture at facet endpoints). Cross-pillar P-01+P-09.
+  See TEST-GAP-519 for the dedicated regression-pin at the facet endpoint surface.'
 test_files_existing: []
 test_files_proposed:
   path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/SearchSessionCrossUserAccessTest.java
@@ -24,9 +37,27 @@ evidence:
 - 'concepts.yaml:entities[Search Session].security_aggregate.weaknesses.[3] verbatim:
   ''**Search-session UUID has no per-user owner-binding (LOW under read-collaborative
   posture)**'''
+- 'STRENGTHENED batch M: facets.md says ''The search_facets table has no user binding
+  — any authenticated user in possession of any other user''s searchId UUID can READ,
+  UPDATE, and DRIVE that session. The schema (V0_0_1__init.sql:204-211) has TODOs
+  for more clever way to generate uuid and define TTL but no maintenance has addressed
+  the unscoped posture in any subsequent migration.'''
+- 'STRENGTHENED batch M: facets.md confirms the search session UUID is effectively
+  a BEARER TOKEN for cross-owner enumeration when combined with the cross-owner facet-count
+  posture (TEST-GAP-518).'
 cross_references:
 - concepts.yaml:entities[Search Session].security_aggregate.weaknesses.[3]
+- TEST-GAP-518 (cross-owner facet-count enumeration — combined: bearer-token-shaped session for cross-owner enumeration)
+- TEST-GAP-519 (search-session cross-user enumeration at facet endpoints — dedicated batch M regression-pin)
+- TEST-GAP-520 (tsquery injection persisted via hijacked session — combined: poison + hijack)
+- ADR-CANDIDATE-003 (read-collaborative posture)
 proposed_action: 'Add an integration test: user A creates a search session; user B
   uses the search_id directly to query `GET /api/search/{search_id}/results`. Assert
   current behaviour (B succeeds — UUID is bearer-token-like). Drives a future owner-scoping
-  decision.'
+  decision. Note batch M adds TEST-GAP-519 for the facet endpoint surface specifically
+  with full mutation + cross-owner-enumeration coverage — that test is the dedicated
+  regression-pin at the facet endpoint family. The two tests together cover the full
+  attack surface (search + facet); the criticality bump from LOW to HIGH reflects
+  the combined surface area discovered at batch M.'
+batch: 2026-05-19-M-STRENGTHENED
+feature_id: F-001

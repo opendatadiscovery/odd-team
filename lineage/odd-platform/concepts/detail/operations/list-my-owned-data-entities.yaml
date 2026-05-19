@@ -1,43 +1,124 @@
 name: List My Owned Data Entities
 canonical_in_docs: true
 canonical_candidate: false
-description: 'GET /api/dataentities/my — returns Flux<DataEntityRef> of entities owned
-  by the calling principal''s resolved Owner. The PRIMARY-SOURCE owner-scoped read:
-  controller takes NO principal parameter; principal flows via reactor Context → AuthIdentityProvider.fetchAssociatedOwner
-  → user_owner_mapping → JOIN OWNERSHIP. Sibling variants: getMyObjectsWithUpstream/Downstream
-  expose the lineage-reachable (NON-owned) subgraph.'
+description: |-
+  GET /api/dataentities/my — returns Flux<DataEntityRef> of entities owned by
+  the calling principal resolved Owner. The PRIMARY-SOURCE owner-scoped read:
+  controller takes NO principal parameter; principal flows via reactor
+  Context → AuthIdentityProvider.fetchAssociatedOwner → user_owner_mapping →
+  JOIN OWNERSHIP. **Sibling variants** (batch M PRIMARY SOURCES):
+  getMyObjectsWithUpstream and getMyObjectsWithDownstream expose the
+  lineage-reachable (NON-owned) subgraph — anchor-set defence-in-depth pattern
+  with single-point-of-failure (REFACTOR-225) and inverse-semantic OpenAPI
+  summary (DOC-GAP-099, 4-angle triangulated).
 nodes:
-- odd-platform java DataEntityController controller-method:getMyObjects
+  - odd-platform java DataEntityController controller-method:getMyObjects
+  - odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream
+  - odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream
 contributing_files:
-- odd-platform__java__DataEntityController__controller-method__getMyObjects.md
+  - odd-platform__java__DataEntityController__controller-method__getMyObjects.md
+  - odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream.md
+  - odd-platform__java__DataEntityController__controller-method__getMyObjectsWithDownstream.md
 evidence:
-- getMyObjects.md:concepts.operations[*]
-- getMyObjects.md:implicit_adrs.[0] (ADR-CANDIDATE-015 primary source)
-- getMyObjects.md:implicit_adrs.[3] (lineage-variant non-owned-but-reachable semantic)
+  - getMyObjects.md:concepts.operations[*]
+  - getMyObjects.md:implicit_adrs.[0] (ADR-CANDIDATE-015 primary source)
+  - getMyObjects.md:implicit_adrs.[3] (lineage-variant non-owned-but-reachable semantic)
+  - |-
+    **NEW batch M** getMyObjectsWithUpstream.md:concepts.operations + implicit_adrs.[0,1,2]
+    + bugs_limitations_corner_cases.[0,1] (REFACTOR-225 + DOC-GAP-099 PRIMARY SOURCES)
+  - |-
+    **NEW batch M** getMyObjectsWithDownstream.md:concepts.operations + implicit_adrs.[0,1,2]
+    + bugs_limitations_corner_cases.[0,1] (REFACTOR-225 SYMMETRIC SIBLING +
+    DOC-GAP-099 DOWNSTREAM half)
 axes_present:
-- controllers
-- openapi_paths
-- ui_routes
+  - controllers
+  - openapi_paths
+  - ui_routes
 security_aggregate:
   overall: MEDIUM
   auth_modes_relevant:
-  - LOGIN_FORM
-  - OAUTH2
-  - LDAP
-  - DISABLED
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
   authorization_consistency:
     verdict: UNGATED
-    detail: No SecurityRule entry, no @PreAuthorize. Falls through to .authenticated().
-      Owner-scoping enforced inside the SQL JOIN, not at the gate.
+    detail: |-
+      No SecurityRule entry, no @PreAuthorize across the entire triplet. All
+      three methods fall through to .authenticated(). Owner-scoping enforced
+      inside the SQL JOIN for the base /my endpoint; anchor-set ONLY at the
+      service tier for the /my/upstream and /my/downstream variants
+      (REFACTOR-225 single-point-of-failure).
   owner_scoping:
-    verdict: RESPECTS
-    detail: JOIN OWNERSHIP WHERE OWNER_ID = ? at ReactiveDataEntityRepositoryImpl.java:526-527
+    verdict: MIXED
+    detail: |-
+      RESPECTS for /my (JOIN OWNERSHIP WHERE OWNER_ID = ? at
+      ReactiveDataEntityRepositoryImpl.java:526-527). PARTIAL for
+      /my/upstream and /my/downstream (anchor-set at
+      DataEntityRelationsServiceImpl.java:26; no JOIN-side defence-in-depth
+      at the response layer's listByOddrns scan — REFACTOR-225 latent
+      single-point-of-failure).
   strengths:
-  - Owner-scoping is a JOIN-side concern (defence-in-depth at the SQL layer)
-  - Stateless controller — horizontally scalable
+    - |-
+      Owner-scoping is a JOIN-side concern at /my (defence-in-depth at the
+      SQL layer)
+    - Stateless controller — horizontally scalable
+    - |-
+      Anchor-set pattern at /my/upstream + /my/downstream proves the
+      project knows how to apply principal-resolution at the service tier
   weaknesses:
-  - Silent empty Flux for unlinked user (no 401/403/404 — information-quality issue)
-  - 'Lineage variants (Upstream/Downstream) have single-point-of-failure: no JOIN-side
-    owner filter on the response'
-  - Page=0 produces negative SQL offset → 500 instead of 400
-  - Unbounded size param → insider DoS vector
+    - |-
+      Silent empty Flux for unlinked user (no 401/403/404 — information-
+      quality issue) — same across all three triplet members
+    - |-
+      Lineage variants (Upstream/Downstream) have SINGLE-POINT-OF-FAILURE
+      (REFACTOR-225) — no JOIN-side owner filter at listByOddrns; a
+      regression at fetchAssociatedOwner leaks lineage neighbourhood of
+      unintended anchor
+    - |-
+      **NEW batch M** — OpenAPI summary for /my/upstream + /my/downstream is
+      the INVERSE of the actual semantic (DOC-GAP-099) — third-party API
+      consumers reading the spec receive cross-tenant lineage neighbours
+      when expecting owner-scoped results
+    - Page=0 produces negative SQL offset → 500 instead of 400
+    - Unbounded size param → insider DoS vector
+    - |-
+      **NEW batch M** — listByOddrns at the lineage-variant endpoints has NO
+      ORDER BY — pagination is UNSTABLE across consecutive requests
+  cross_file_inconsistencies:
+    - |-
+      **NEW batch M** — UI label OwnerEntitiesList.tsx:87 is SEMANTICALLY
+      CORRECT ("Upstream dependents") while the OpenAPI summary at
+      openapi.yaml:843-844 is LITERALLY INCORRECT — contract-vs-
+      implementation drift at the API contract layer (DOC-GAP-099)
+    - |-
+      **NEW batch M** — /developer-guides/api-reference has NO Data Entity
+      sub-page (404 at /developer-guides/api-reference/data-entity); the
+      /my* triplet has nowhere to be documented in the canonical
+      developer-guides home
+  contributing_files:
+    - getMyObjects.md
+    - getMyObjectsWithUpstream.md
+    - getMyObjectsWithDownstream.md
+  evidence:
+    - getMyObjects.md:security.*
+    - getMyObjectsWithUpstream.md:security.* + bugs_limitations_corner_cases.[0,1]
+    - getMyObjectsWithDownstream.md:security.* + bugs_limitations_corner_cases.[0,1]
+notes: |-
+  **STRENGTHENED batch 2026-05-19M to 3-sidecar triangulation** — the
+  ADR-CANDIDATE-015 convention is now confirmed at all three members of the
+  /my* triplet. The triplet composes a coherent owner-anchored discovery
+  surface:
+    /my → what I own (base — JOIN-side defended)
+    /my/upstream → what flows INTO what I own (anchor-set; REFACTOR-225)
+    /my/downstream → what flows OUT of what I own (anchor-set; REFACTOR-225)
+
+  Cross-references:
+    - Expand lineage from owner anchor (operation) — the operation
+      primitive for the /my/upstream + /my/downstream variants.
+    - REFACTOR-225 anchor-set single-point-of-failure (invariant) — the
+      security finding for the lineage variants.
+    - DOC-GAP-099 OpenAPI summary inverse-semantic (invariant) — the
+      contract finding for the lineage variants.
+    - Owner-scoped routes — controllers take NO principal parameter — the
+      controller-shape invariant the three methods jointly anchor.

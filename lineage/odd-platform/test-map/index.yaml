@@ -7,19 +7,19 @@ source_monolith_frontmatter:
   sidecar_count: 55
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 502
+  total_test_gaps: 522
   gaps_by_criticality:
-    CRITICAL: 96
-    HIGH: 159
-    MEDIUM: 185
-    LOW: 62
+    CRITICAL: 100
+    HIGH: 163
+    MEDIUM: 192
+    LOW: 67
   gaps_by_category:
     missing-integration: 102
-    missing-security: 131
-    missing-edge-case: 199
+    missing-security: 138
+    missing-edge-case: 208
     missing-unit: 43
     sidecar-stale: 1
-    missing-performance: 16
+    missing-performance: 20
     missing-binding: 10
   batch_history:
   - '2026-05-08: TEST-GAP-001..069 — initial 15-sidecar reduction'
@@ -110,7 +110,7 @@ source_monolith_frontmatter:
   - odd-platform java repository_reactive repository:ReactiveLineageRepositoryImpl
   - odd-platform java repository_reactive repository:ReactiveOwnershipRepositoryImpl
   - odd-platform java repository_reactive repository:ReactivePolicyRepositoryImpl
-total_entries: 502
+total_entries: 522
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -3563,11 +3563,22 @@ test_gaps_index:
     `tsquery` expression silently re-interprets as that expression (operator chaining,
     prefix-globbing via `:*` is user-controllable). No input sanitisation, no escape
     of metacharacters, no error mapping. `SearchFormData.query` carries no `@Size`/`@Pattern`/max-length
-    constraint.'
+    constraint. STRENGTHENED batch M — the SearchController#facets sidecar confirms
+    the SAME unescaped code path is invoked by FOUR ADDITIONAL facet aggregator call
+    sites (entity-class facet at ReactiveSearchFacetRepositoryImpl.java:182, type
+    facet at 267, owner facet at 469, tag facet at 582 — ALL call ftsCondition(SEARCH_ENTRYPOINT.SEARCH_VECTOR,
+    state.getQuery())). Combined with TEST-GAP-519 (cross-user session hijack), an
+    attacker can permanently POISON another user''s session with a single PUT containing
+    `query = foo ) | (bar` — every subsequent facet read on the session 500s. The
+    persistence of the malformed query in search_facets.query_string is the additional
+    risk vector the facets endpoints surface — the /search endpoint malforms transiently,
+    the facet endpoints malform persistently. Cross-pillar P-01+P-09. Criticality
+    remains HIGH; the facet endpoints multiply the attack surface 4x. See TEST-GAP-520
+    for the dedicated regression-pin proposal at the facet endpoint surface.'
   test_class: missing-security
   criticality: HIGH
   node_id: ''
-  feature_id: null
+  feature_id: F-001
   proposed_test_files_count: 0
   related_refactor_ids: []
   related_doc_gap_ids: []
@@ -3588,19 +3599,27 @@ test_gaps_index:
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-251.yaml
 - gap_id: TEST-GAP-252
-  behaviour: Search-session UUID has no owner column / no per-user binding — `search_facets`
+  behaviour: 'Search-session UUID has no owner column / no per-user binding — `search_facets`
     rows are keyed solely by a server-generated UUID. A user who guesses or observes
-    another user's `search_id` UUID can call `GET /api/search/{search_id}/results`,
+    another user''s `search_id` UUID can call `GET /api/search/{search_id}/results`,
     `GET /api/search/{search_id}/facet/{facet_type}`, `PUT /api/search/{search_id}`
     (updateSearchFacets), or `GET /api/search/{search_id}/data_entities/{data_entity_id}/highlights`
     against it. UUIDs are server-generated v4-random (high entropy), but the principle
-    of per-user session isolation is violated by absence — under read-collaborative
-    posture this is impact-minimal; under any future owner-scoped search tightening
-    this becomes HIGH.
+    of per-user session isolation is violated by absence. STRENGTHENED batch M — the
+    SearchController#facets sidecar confirms the same posture at the FACET endpoint
+    surface AND extends the impact analysis: an attacker with another user''s search_id
+    can not only read their session state but ALSO drill down via getFiltersForFacet
+    to enumerate the cross-owner catalog cardinality on the victim''s session — combining
+    TEST-GAP-252 (session hijack) + TEST-GAP-518 (cross-owner facet enumeration) means
+    the search session UUID is effectively a bearer token for cross-owner enumeration.
+    Criticality BUMPED from LOW to HIGH given the additional cross-owner facet-count
+    data exposure surface (per concepts.yaml:entities[Search Session].security_aggregate
+    HIGH severity for the cross-owner posture at facet endpoints). Cross-pillar P-01+P-09.
+    See TEST-GAP-519 for the dedicated regression-pin at the facet endpoint surface.'
   test_class: missing-security
-  criticality: LOW
+  criticality: HIGH
   node_id: ''
-  feature_id: null
+  feature_id: F-001
   proposed_test_files_count: 0
   related_refactor_ids: []
   related_doc_gap_ids: []
@@ -4363,9 +4382,22 @@ test_gaps_index:
     IS the positive-case sibling — it calls `fetchAssociatedOwner()` BEFORE the same
     repository. The negative case is the entire LineageServiceImpl class. The lineage
     canvas read path (getLineage) and the DEG-lineage read path (getDataEntityGroupLineage)
-    both lack the anchor-set defence — REFACTOR-203 confirmed at the service tier.'
+    both lack the anchor-set defence — REFACTOR-203 confirmed at the service tier.
+    STRENGTHENED batch M — controller-method PRIMARY SOURCE for BOTH /my/upstream
+    AND /my/downstream variants now in place (getMyObjectsWithUpstream.md + getMyObjectsWithDownstream.md):
+    the architecture INCONSISTENCY between base /my (JOIN-defended via listByOwner
+    at ReactiveDataEntityRepositoryImpl.java:515-534) AND the lineage variants (NOT
+    JOIN-defended via listByOddrns at lines 228-253) is the LOAD-BEARING finding.
+    The owner-scoping invariant for the lineage variants is single-point-of-failure
+    at DataEntityRelationsServiceImpl.java:26; the downstream listByOddrns scan has
+    NO defence-in-depth WHERE clause. Criticality BUMPED from HIGH to CRITICAL given
+    cross-pillar P-05+P-09+P-01 bump per REV-3 LAYER-0 rule — the primary-source confirmation
+    at controller-method tier makes the regression vector falsifiable + the architectural
+    inconsistency between /my and /my/upstream-downstream is now documented at 4 angles
+    (controller G + repository H + service I + controller-method M). See TEST-GAP-512
+    for the dedicated regression-pin proposal.'
   test_class: missing-security
-  criticality: HIGH
+  criticality: CRITICAL
   node_id: ''
   feature_id: F-005
   proposed_test_files_count: 0
@@ -5987,7 +6019,17 @@ test_gaps_index:
     at `getRelationsForEntities` (lines 218-233) hits StackOverflowError boundary.
     ALL unpinned. The deferred-feature comment at line 71 (`// Remove this when we
     will support inner DEGs for DEG lineage`) is particularly load-bearing — a future
-    maintainer lifting it has NO regression catcher.'
+    maintainer lifting it has NO regression catcher. STRENGTHENED batch M — controller-boundary
+    PRIMARY SOURCE in place (getDataEntityGroupsLineage.md): the controller-method
+    sidecar confirms ZERO HTTP-level tests at the controller boundary AND surfaces
+    10 distinct bug/limitation findings including: cross-owner enumeration (CRITICAL,
+    REFACTOR-203 DEG sibling — TEST-GAP-504), read-vs-write RBAC asymmetry (TEST-GAP-505),
+    inner-DEG suppression with no test anchor (TEST-GAP-506), 404 conflation across
+    three error modes (TEST-GAP-507), circular DEG-nesting CTE unbounded recursion
+    (TEST-GAP-508), cross-boundary edge filter (TEST-GAP-509), 200/empty-items vs
+    404 asymmetry (TEST-GAP-510), hard-delete race window (TEST-GAP-511). Each is
+    now a dedicated regression-pin. THIS gap remains as the umbrella service-layer
+    entry AND now spans both service AND controller-method tiers.'
   test_class: missing-integration
   criticality: HIGH
   node_id: ''
@@ -7759,3 +7801,579 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-503.yaml
+- gap_id: TEST-GAP-504
+  behaviour: 'DEG-anchored lineage cross-owner regression-pin (CRITICAL — primary-source
+    confirmation of REFACTOR-203 on the DEG-anchored sibling endpoint; cross-pillar
+    P-05+P-09+P-01). `LineageServiceImpl.getDataEntityGroupLineage` (LineageServiceImpl.java:59-85)
+    has NO `AuthIdentityProvider` field (verified at lines 54-57), NO `fetchAssociatedOwner()`
+    call, NO `permissionService.hasPermission(...)` call, NO `@PreAuthorize`, and
+    NO `SecurityRule` entry in `SecurityConstants.SECURITY_RULES` (verified by Grep
+    `dataentitygroups.*lineage` returning zero matches). The path falls through to
+    `AuthorizationCustomizer.java:29-30`''s catch-all `.pathMatchers("/**").authenticated()`.
+    Any authenticated user — regardless of owner association — can read ANY DEG''s
+    full member graph + inter-member edges + per-member metadata (id, oddrn, internal/external
+    name, entity_classes, datasource, namespace, status, owners, tags). For multi-team
+    Domains/DEGs the leakage is structurally WIDER than per-entity lineage REFACTOR-203
+    — the per-connected-component partitioning at `establishDEGRelations` (LineageServiceImpl.java:200-216)
+    surfaces ''team A''s entity X is on the same data-pipeline as team B''s entity
+    Y'' even when the individual entities would not be cross-team-searchable. The
+    DEG itself is a CONCEPTUAL grouping — leaking ''team A and team B both contribute
+    to the Finance Domain'' reveals organisational structure that the DEG was designed
+    to represent but not necessarily to disclose to every authenticated user. Under
+    `auth.type=DISABLED` the endpoint is anonymously reachable. The live operator-facing
+    data-lineage and api-reference docs are SILENT on this posture (WebFetched 2026-05-19
+    status 200 — both). Cross-pillar bump: P-05 (Data Lineage feature exposure) +
+    P-09 (security read-collaborative posture, ADR-CANDIDATE-003) + P-01 (Discovery
+    — DEG cross-owner member enumeration). NO test exists.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-504.yaml
+- gap_id: TEST-GAP-505
+  behaviour: 'DEG-membership read-vs-write authorization asymmetry regression-pin
+    (HIGH — P-01+P-09 cross-pillar). The DEG-membership WRITE paths are gated by Permission-bound
+    SecurityRule entries: `addDataEntityDataEntityGroup` (POST) is gated by `DATA_ENTITY_ADD_TO_GROUP`
+    Permission (`SecurityConstants.java:228-231`); `deleteDataEntityFromDataEntityGroup`
+    (DELETE) is gated by `DATA_ENTITY_DELETE_FROM_GROUP` Permission (`SecurityConstants.java:232-236`).
+    But `getDataEntityGroupsLineage` (GET) is gated only by `.authenticated()` — no
+    DEG-related Permission, no SecurityRule entry, no `@PreAuthorize`. An operator
+    who reads the `permissions.md` page and sees the explicit DEG-management permissions
+    might reasonably assume that DEG-RELATED ENDPOINTS REQUIRE DEG PERMISSIONS — but
+    reading the DEG''s lineage (which surfaces all members + their lineage subgraph)
+    requires none. The asymmetry is operator-surprising: ODD''s published permission
+    vocabulary names DEG operations as gated, but the most data-rich DEG endpoint
+    (the lineage view) is NOT gated. This is consistent with ODD''s read-collaborative
+    posture but contradicts the operator-visible ''manage DEG'' permission vocabulary.
+    NO test exists pinning the asymmetry, so a future tightening (e.g. adding a `DATA_ENTITY_GROUP_VIEW_LINEAGE`
+    permission) would have no regression catcher; conversely a future loosening (e.g.
+    removing the WRITE permissions for consistency) would silently flip the platform
+    from ''partial DEG-RBAC'' to ''no DEG-RBAC''. Cross-pillar P-01 (Discovery — DEG
+    operation vocabulary) + P-09 (Security RBAC clarity).'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-505.yaml
+- gap_id: TEST-GAP-506
+  behaviour: 'Inner-DEG suppression deferred-feature regression-pin (MEDIUM — P-05).
+    The service-layer filter at `LineageServiceImpl.java:71-75` strips DEG-typed edge
+    endpoints AND DEG-typed metadata entries from the response (`relations.stream().filter(r
+    -> !isDegODDRN(r.getChildOddrn(), dict) && !isDegODDRN(r.getParentOddrn(), dict))`
+    + `dict.entrySet().removeIf(e -> isDEG(e.getValue().getDataEntity()))`). The comment
+    `// Remove this when we will support inner DEGs for DEG lineage` (line 71) is
+    the explicit deferred-feature anchor. There is NO corresponding backlog item (`grep
+    "inner DEG\\|nested DEG"` in odd-team/backlog/ returns no matches), NO ADR draft,
+    and NO regression test. A future maintainer attempting to lift the suppression
+    has NO test feedback when they accidentally break the existing API contract —
+    the response shape would silently flip from ''flat graph of non-DEG members''
+    to ''recursive graph including DEG nodes''. The SQL layer DOES support nested
+    DEG traversal (`getDEGEntitiesOddrns` at `ReactiveGroupEntityRelationRepositoryImpl.java:177-204`
+    recursively walks GROUP_ODDRN); only the Java filter suppresses the DEG entries.
+    A regression that drops the Java filter would: (a) increase response payload size
+    by including DEG nodes, (b) potentially break UI rendering (the DEGLineage component
+    does not currently render DEG-typed nodes — verified by sidecar''s `DEGLineage.tsx:18-19`
+    reference), (c) break third-party API contract assumptions. The DEFERRED-FEATURE
+    intent is load-bearing for the current operator contract.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-506.yaml
+- gap_id: TEST-GAP-507
+  behaviour: '404-conflation regression-pin for getDataEntityGroupsLineage (MEDIUM
+    — P-05). `NotFoundException("Data entity group", dataEntityGroupId)` at `LineageServiceImpl.java:62`
+    fires when: (a) the DEG ID does not exist, (b) the ID references a non-DEG-typed
+    entity, OR (c) the DEG exists but has zero non-soft-deleted members. The SQL CTE
+    at `ReactiveGroupEntityRelationRepositoryImpl.java:177-204` selects from `group_entity_relations`
+    keyed on the entity''s oddrn — for cases (a) and (b) the inner subquery `DSL.select(DATA_ENTITY.ODDRN).from(DATA_ENTITY).where(DATA_ENTITY.ID.eq(dataEntityGroupId))`
+    either returns no row OR returns the wrong-typed oddrn, and the outer recursive
+    CTE returns empty in both cases. The error message is identical for all three:
+    ''Data entity group {id} doesn''t exist''. Operators debugging ''why is my DEG-lineage
+    call returning 404?'' cannot discriminate between: (i) the DEG doesn''t exist
+    (their fault — wrong ID), (ii) the entity exists but isn''t a DEG (misleading),
+    (iii) the DEG exists but has no members (legitimate empty state arguably should
+    be 200 with empty items). The live API-reference docs treat this as a single error
+    condition; the code surface treats it as three. NO test pins the conflation, so
+    a future refactor splitting the conditions (e.g. returning 200/[] for case (c)
+    and 404 only for (a)/(b), or differentiating (b) with a distinct error code) has
+    no regression anchor.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-507.yaml
+- gap_id: TEST-GAP-508
+  behaviour: 'Circular DEG-nesting CTE unbounded-recursion regression-pin (MEDIUM
+    — P-05+P-08 cross-pillar). `getDEGEntitiesOddrns` (`ReactiveGroupEntityRelationRepositoryImpl.java:177-204`)
+    has no termination guard other than ''no new GROUP_ODDRN matches''. For a pathological
+    circular DEG-membership (DEG A contains DEG B contains DEG A), the CTE could loop
+    indefinitely — Postgres''s recursive-CTE `UNION ALL` does NOT deduplicate intermediate
+    rows; only the `selectDistinct` at the final wrap deduplicates the FINAL result.
+    The DEG-creation paths do NOT actively prevent circular DEG nesting at the application
+    layer (verified by sidecar''s Grep: no DEG-cycle check anywhere). For a 5-level
+    deep nested DEG with 1000 members at each level, intermediate row count can reach
+    5000+; for true circular nesting the row count could exceed memory bounds. The
+    pathological case is constructible by ANY authenticated operator with `DATA_ENTITY_ADD_TO_GROUP`
+    permission — this is a self-DoS surface accessible to legitimate operators (mistakes),
+    and a deliberate-DoS surface accessible to authenticated attackers. The cure is
+    either (a) add a cycle-detection clause to the recursive CTE, (b) clamp recursion
+    depth at the application layer, or (c) prevent circular DEG creation at the write
+    path. NO test exists exercising the cycle case. Cross-pillar P-05 (Data Lineage
+    performance) + P-08 (Management — DEG creation validation gap).'
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-508.yaml
+- gap_id: TEST-GAP-509
+  behaviour: 'DEG-internal-only edge filter regression-pin (MEDIUM — P-05). `getLineageRelations(List<String>)`
+    at `ReactiveLineageRepositoryImpl.java:112-119` requires BOTH `PARENT_ODDRN.in(oddrns)`
+    AND `CHILD_ODDRN.in(oddrns)`. Edges crossing the DEG boundary are dropped — both
+    edges EXITING the DEG (from a member to a non-member) AND edges ENTERING the DEG
+    (from a non-member to a member). This is a deliberate architectural stance (implicit_adrs.[4]):
+    the DEG-lineage view is INTERNAL to the DEG; external context (upstream sources
+    outside the DEG; downstream consumers outside the DEG) is NOT shown. The operator
+    who wants ''show me everything connected to this DEG'' must use the per-entity
+    lineage endpoints on individual members. An operator viewing a DEG''s lineage
+    cannot tell that ''this DEG''s data flow has upstream sources outside the DEG''
+    or ''this DEG feeds into consumers outside the DEG'' — the live docs do not warn
+    about this. A regression that loosened the filter (e.g. using `.or(...)` instead
+    of `.and(...)`) would silently leak external-edge metadata into the DEG-lineage
+    response, exposing entities owned by OTHER teams not represented in the DEG, materially
+    widening the cross-owner enumeration surface (TEST-GAP-504). The bidirectional
+    filter is therefore load-bearing for BOTH the architectural contract (DEG-internal
+    scope) AND the security envelope (limits cross-owner enumeration to DEG members
+    + their cross-edges).'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-509.yaml
+- gap_id: TEST-GAP-510
+  behaviour: 'DEG-with-members-but-no-edges 200/empty-items contract regression-pin
+    (LOW — P-05). When the DEG has members but none of them share lineage edges, `getLineageRelations(List<String>)`
+    returns an empty Flux, `establishedRelations` is empty, `items` is `List.of()`,
+    and the response is `200 OK` with `{"items": []}`. The DEGLineage React component
+    (`DEGLineage.tsx:18-19`) reads `data?.nodes || []` and `data?.edges || []` which
+    both come out empty; the component then renders an `EmptyContentPlaceholder`.
+    Importantly, this is DISTINCT from the DEG-with-zero-members case (TEST-GAP-507)
+    which produces a 404. The contract is: (a) DEG has zero members → 404; (b) DEG
+    has members but no edges between them → 200 with empty items; (c) DEG has members
+    and edges → 200 with populated items. NO test pins the asymmetry between (a) and
+    (b). A regression that conflated the two states (e.g. switchIfEmpty firing on
+    empty edges instead of empty members) would silently break the UI''s EmptyContentPlaceholder
+    rendering and confuse operators about whether their DEG has members.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-510.yaml
+- gap_id: TEST-GAP-511
+  behaviour: Hard-delete race window 500 regression-pin (LOW — P-05). Between `getDEGEntitiesOddrns`
+    (`LineageServiceImpl.java:61`) and `getDataEntityWithDatasourceMap` (`LineageServiceImpl.java:65`),
+    a DEG member entity could be hard-deleted (rare — typically entities are soft-deleted
+    via `DataEntityInternalStateServiceImpl`). If this race fires, the `Optional.orElseThrow`
+    at `LineageServiceImpl.java:169-173` throws `RuntimeException("Entity with oddrn
+    %s wasn't fetched")` with no error-code mapping → generic 500. The race window
+    for hard-deletes is small but the failure mode is unrecoverable for the caller
+    — the operator sees a 500 with no actionable error message. A test pinning the
+    current 500 behaviour exposes the gap; a future refactor adding `.switchIfEmpty(Mono.empty())`
+    to gracefully skip race-deleted entities (treating them as if they had never existed
+    in the snapshot) would flip this test. NO test exists.
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-511.yaml
+- gap_id: TEST-GAP-512
+  behaviour: 'REFACTOR-225 PRIMARY-SOURCE regression-pin (CRITICAL — controller-method
+    primary-source for BOTH /my/upstream AND /my/downstream; cross-pillar P-05+P-09+P-01).
+    The owner-scoping invariant for `getMyObjectsWithUpstream` and `getMyObjectsWithDownstream`
+    is enforced at EXACTLY ONE SITE: `DataEntityRelationsServiceImpl.java:26` (`authIdentityProvider.fetchAssociatedOwner()`).
+    The downstream `lineageRepository.getLineageRelations` recursive CTE has NO owner
+    JOIN, NO owner predicate (per batch H ReactiveLineageRepositoryImpl sidecar at
+    ReactiveLineageRepositoryImpl.java:122-176). The final `listByOddrns(oddrns, false,
+    false, page, size)` at `ReactiveDataEntityRepositoryImpl.java:228-253` has NO
+    owner JOIN — only `DATA_ENTITY.ODDRN.in(oddrns)` + soft-delete + hollow filters.
+    **CONTRAST**: the base `/my` endpoint''s repository method `listByOwner` (`ReactiveDataEntityRepositoryImpl.java:515-534`)
+    JOINs against OWNERSHIP with `WHERE OWNERSHIP.OWNER_ID = ?` — a regression at
+    `fetchAssociatedOwner` for that path would at worst leak entities the user genuinely
+    co-owns; here the leak is the entire upstream/downstream lineage of an arbitrary
+    anchor. A regression at the single load-bearing call site — e.g. (a) a future
+    refactor adding a fallback owner-id for DISABLED mode, (b) a misordered WebFilter
+    dropping the SecurityContext and `fetchAssociatedOwner` defaulting to a global
+    anchor, (c) a corrupted USER_OWNER_MAPPING row resolving to the wrong owner, (d)
+    a `flatMap`-vs-`map` typo passing through to a hardcoded fallback — leaks the
+    lineage neighbourhood of an unintended anchor to the caller. The downstream `listByOddrns`
+    scan has NO owner filter, so a wrong anchor produces a wrong (but well-formed)
+    response with no SQL-layer trip-wire. The cure is a `listByOddrnsAndOwner(oddrns,
+    ownerId)` repository method (or adding `Long ownerId` to `listByOddrns`) that
+    JOINs against OWNERSHIP — today there is no such method. The endpoint is LATENT
+    today (current code correct) but the architecture provides ZERO defence against
+    a future single-line regression. The /my/upstream and /my/downstream are SYMMETRIC
+    siblings — both inherit the full vulnerability. Cross-pillar bump: P-05 (Data
+    Lineage data exposure) + P-09 (Security — REFACTOR-225 single-point-of-failure)
+    + P-01 (Discovery — base /my path uses JOIN-defended repository; the lineage variants
+    do NOT, the architectural inconsistency is the load-bearing finding).'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-512.yaml
+- gap_id: TEST-GAP-513
+  behaviour: 'DOC-GAP-099 OpenAPI-vs-impl contract regression-pin (HIGH — cross-pillar
+    P-09+P-11+P-05; inverse semantic of the API contract). The OpenAPI spec at `openapi.yaml:843-844`
+    (upstream) and `openapi.yaml:861-862` (downstream) declares: `summary: "Get my
+    objects with upstream/downstream dependencies"` and `description: "Returns list
+    of data entities owned by current user with upstream/downstream dependencies"`.
+    The ACTUAL response semantic is the **INVERSE**: entities the user does **NOT**
+    own that are upstream/downstream-reachable from entities they DO own. The `Predicate.not(oddrns::contains)`
+    filter at `DataEntityRelationsServiceImpl.java:37` explicitly EXCLUDES the user''s
+    owned set from the response. The UI consumer label `Upstream dependents` / `Downstream
+    dependents` (`OwnerEntitiesList.tsx:87,89`) is semantically accurate (the entities
+    are dependents, not the user''s owns). But the OpenAPI summary is the contract
+    layer that third-party API consumers read — multi-tenant operators reading the
+    spec and treating ownership as a tenancy boundary expect tenant-isolated results,
+    will receive cross-tenant upstream/downstream-lineage neighbours, and may silently
+    misinterpret the data ecosystem (e.g. consuming the response as ''my entities''
+    or ''my data ecosystem with my entities included''). The doc-vs-code inversion
+    is the most directly-falsifiable security claim in this slice of the API surface.
+    Triangulated across batch G (`getMyObjects` sidecar), batch H (`ReactiveLineageRepositoryImpl`
+    no-owner-JOIN SQL primary source), batch I (`LineageServiceImpl` NEGATIVE-CASE
+    SIBLING), and now batch M (controller-method primary source for BOTH variants).
+    NO test pins the contract — a future refactor that "fixed" the implementation
+    to MATCH the OpenAPI summary (returning owned entities + their dependencies) would
+    silently flip the response semantics with no regression catcher. Cross-pillar
+    P-09 (Security — operator misreading the spec), P-11 (API spec correctness), P-05
+    (Data Lineage).'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-513.yaml
+- gap_id: TEST-GAP-514
+  behaviour: 'Anchor-set unbounded materialisation + in-memory deduplication regression-pin
+    (MEDIUM — P-05+P-09 cross-pillar; performance + authenticated-insider DoS-amp).
+    Three compounding gaps:
+
+    (1) **Anchor-set materialisation has no pagination** — `dataEntityRepository.listByOwner(o.getId())`
+    at `DataEntityRelationsServiceImpl.java:27` fetches ALL owned entities for the
+    user (no `(page, size)` parameters). For an admin owner or CI-bot owner owning
+    thousands of entities, this materialises the entire owned-entity table-slice into
+    the JVM before the lineage step.
+
+    (2) **Lineage IN-clause is unbounded** — `getLineageRelations(oddrns, LineageDepth.empty(),
+    UPSTREAM/DOWNSTREAM)` constructs a CTE with `WHERE PARENT_ODDRN.in(...)` (or `CHILD_ODDRN.in(...)`)
+    where the IN list is the full anchor-set oddrns. Postgres has no hard IN-list
+    cardinality limit but planner cost is non-linear above ~1000 elements.
+
+    (3) **In-memory deduplication defeats SQL pagination** — `.flatMap.distinct.filter.collectList()`
+    at `DataEntityRelationsServiceImpl.java:35-38` materialises the full deduplicated
+    derived-oddrn set in JVM memory before passing to `listByOddrns`. SQL `LIMIT 5
+    OFFSET 0` then slices the materialised list, but the cost-per-call is fixed by
+    the unscoped derived set size — the `(page, size)` parameters slice the *materialised*
+    derived set, not the lineage neighbourhood.
+
+    Combined with the unbounded controller-layer `size` (no `@Max`, no `maximum:`
+    in OpenAPI), this is an authenticated-insider DoS amplification surface — an admin
+    user pulling `/my/upstream?size=Integer.MAX_VALUE` can saturate JVM heap with
+    the full derived oddrn set and stall Postgres CTE evaluation on a wide anchor.
+    NO test exists exercising the boundary. Cross-pillar P-05 (Data Lineage performance
+    gaps) + P-09 (Security — authenticated DoS-amp).'
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-514.yaml
+- gap_id: TEST-GAP-515
+  behaviour: 'Unstable-pagination `listByOddrns` no-ORDER-BY regression-pin (MEDIUM
+    — P-05). `ReactiveDataEntityRepositoryImpl.java:247-250` builds `DSL.selectFrom(DATA_ENTITY).where(conditions).limit(size).offset(page)`
+    with NO `.orderBy(...)` call. Postgres does NOT guarantee row order without an
+    explicit ORDER BY — the order is implementation-defined. Pagination across pages
+    may produce: (a) duplicate entries between consecutive requests, (b) missing entries
+    between consecutive requests, (c) seemingly random reordering when underlying
+    table is updated. The base `/my` endpoint shares this issue (per batch G TEST-GAP-077)
+    but the symptom is more acute for `/my/upstream` and `/my/downstream` because
+    the derived oddrn set is itself in-memory-materialised (no stable ordering) and
+    then SQL-paginated. The combined effect: an operator paginating through their
+    upstream lineage neighbours sees an effectively random subset on each page. NO
+    test pins the unstable contract. The cure is either (a) `.orderBy(DATA_ENTITY.ID)`
+    for stable keyset ordering, or (b) `.orderBy(DATA_ENTITY.UPDATED_AT.desc())` for
+    recency ordering. The fix is one line; the regression-pin documents the current
+    contract and would FLIP when the fix lands.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-515.yaml
+- gap_id: TEST-GAP-516
+  behaviour: 'Silent empty-Flux 200/`[]` degradation regression-pin (LOW — P-09).
+    A caller with: (a) no `USER_OWNER_MAPPING` row, (b) owner with zero owned entities,
+    (c) owned entities with no upstream/downstream LINEAGE edges, (d) no SecurityContext
+    (e.g. DISABLED mode) — ALL receive HTTP 200 + `[]`. There is no 401, no 403, no
+    `OwnerNotAssociatedException`, no signal in the response distinguishing the four
+    cases. A new operator who runs this endpoint and gets `[]` has no signal whether
+    the platform thinks they own nothing, the platform thinks they''re not linked
+    to an owner, or there''s no upstream/downstream lineage data. The information-quality
+    issue is the same shape as the base `/my` endpoint per batch G — inherited from
+    the silent-empty-Flux degradation at `DataEntityServiceImpl.java:212-216`. NO
+    test pins the contract — a future refactor adding `.switchIfEmpty(Mono.error(new
+    OwnerNotAssociatedException(...)))` would silently flip the contract for callers
+    expecting `[]`. The test should pin both the current silent contract AND the fail-fast
+    alternative.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-516.yaml
+- gap_id: TEST-GAP-517
+  behaviour: '`LineageDepth.empty()` sentinel encoding regression-pin (LOW — P-05;
+    fragile encoding). The `getLineageRelations` implementation guards the recursive
+    branch via `tDepth.lessThan(lineageDepth.getDepth())` (`ReactiveLineageRepositoryImpl.java:174`).
+    With `LineageDepth.empty()` (`LineageDepth.java:16-18`: `depth=-1, empty=true`),
+    the guard becomes `tDepth < -1` (never true) and the recursive UNION ALL never
+    fires — single-hop only. **CRITICAL fragility**: the recursive CTE termination
+    predicate reads ONLY the `int depth` field via `tDepth.lessThan(lineageDepth.getDepth())`;
+    the `boolean empty` flag (set to `true` by `LineageDepth.empty()`) is NEVER read
+    by the CTE. The current behaviour (recursion terminates after seed step when depth=-1)
+    depends on the SQL semantics of `lessThan(-1)`, NOT on an explicit `if (empty)
+    return seed` branch. A future refactor changing the termination predicate to `lessThanOrEqual`
+    would SILENTLY EXPAND this endpoint to two hops without any test catching it —
+    because the `empty()` semantic is encoded only by the magic `-1` integer, not
+    by a dedicated code path. The dual-encoding at `LineageDepth.java:8-19` (boolean
+    `empty` + int `depth`) is misleading — a maintainer reading `LineageDepth.empty()`
+    could reasonably misinterpret it as ''no depth limit / unlimited recursion'' rather
+    than ''single-hop only''. NO test pins the single-hop semantic. Cross-link to
+    batch H DOC-GAP-105 (recursive CTE no upper bound).'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-005
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-517.yaml
+- gap_id: TEST-GAP-518
+  behaviour: 'Cross-owner facet-count enumeration regression-pin (CRITICAL — cross-pillar
+    P-01+P-09; catalog-cardinality exposure surface). Both `GET /api/search/{search_id}`
+    and `GET /api/search/{search_id}/facet/{facet_type}` expose cross-owner catalog
+    cardinality to any authenticated user via facet drill-down. The facet aggregators
+    in `ReactiveSearchFacetRepositoryImpl` apply only `getDataEntityDefaultConditions`
+    (HOLLOW=false, STATUS != DELETED, EXCLUDE_FROM_SEARCH NULL-or-false) with NO `OWNERSHIP`
+    join: entity-class facet at lines 163-249, owner facet at 339-372, tag facet at
+    374-407, type facet at 251-337, group facet at 409-452, status facet at 454-534.
+    The owner facet (`getOwnerFacetForDataEntity`) is the PRIMARY catalog-cardinality
+    discovery surface — it enumerates EVERY OWNER NAME in the platform with the count
+    of entities each owns. An authenticated attacker can: (1) `getFiltersForFacet(OWNERS)`
+    to enumerate every owner name + per-owner entity count, (2) `getFiltersForFacet(NAMESPACES)`
+    to enumerate every namespace, (3) `getFiltersForFacet(TAGS)` / `(GROUPS)` to enumerate
+    the platform''s full tag and group cardinality — all catalog-wide. The single
+    owner-derived input on the path — `authIdentityProvider.fetchAssociatedOwner()`
+    at `SearchServiceImpl.java:128` — feeds ONLY the optional `myObjectsCount` field;
+    if the caller has no owner association, the count switches to `0L` and the request
+    still returns catalog-wide totals successfully. Pairs with REFACTOR-024 (the BATCH
+    alert read) and REFACTOR-340 (the PER-ENTITY alert read): together they form the
+    catalog-wide cross-owner enumeration surface. Live `features/data-discovery/search`
+    doc (WebFetched 2026-05-19 status 200) is SILENT on whether facet counts respect
+    any per-user / per-owner / per-tenant scope — operators may assume the `My Objects`
+    toggle scopes counts (it only scopes the result LIST). Under `auth.type=DISABLED`
+    the endpoints are anonymously reachable.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-001
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-518.yaml
+- gap_id: TEST-GAP-519
+  behaviour: 'Search-session UUID cross-user enumeration regression-pin for the FACET
+    ENDPOINT FAMILY (HIGH — cross-pillar P-01+P-09; second invocation site after TEST-GAP-252
+    at /search). STRENGTHENS TEST-GAP-252 by extending it from /search-create + /search-results
+    to the facet endpoints AND criticality-bumping from LOW to HIGH given the additional
+    data exposure surface (cross-owner facet counts). The `search_facets` table schema
+    (`V0_0_1__init.sql:204-211`) has NO `owner_id` / `created_by` / `user_id` column
+    — the UUID is the sole identifier. `SearchServiceImpl.search` creates a row WITHOUT
+    capturing the caller''s principal (`SearchServiceImpl.java:75-82`); `updateFacets`
+    reads+merges+writes WITHOUT checking ownership (`SearchServiceImpl.java:84-96`);
+    `fetchFacetState(searchId)` does a raw lookup with NO owner predicate (`SearchServiceImpl.java:157-160`);
+    `ReactiveSearchFacetRepositoryImpl.get` (lines 99-106) is a raw UUID-keyed UPDATE-RETURNING.
+    Any authenticated user with knowledge of any other user''s UUID can read AND mutate
+    that user''s session state via: `GET /api/search/{search_id}`, `GET /api/search/{search_id}/facet/{facet_type}`,
+    `PUT /api/search/{search_id}` (updateSearchFacets), `POST /api/search/{search_id}`
+    (searchByQuery resync), `GET /api/search/{search_id}/results`. Concrete impact:
+    (a) an operator who copies a search URL into a bug report exposes their entire
+    saved-filter state including `My Objects` posture, (b) a CSRF-style cross-tab
+    actor with read access to URL bars in the browser can hijack the session, (c)
+    an authenticated attacker can probe `GET /api/search/{guess}/facet/OWNERS` UUIDs
+    — most return 404, but a hit yields full facet drill-down of another user''s session
+    including the cross-owner catalog cardinality (TEST-GAP-518). The UUID space is
+    122-bit `gen_random_uuid()` so brute-force is infeasible, but URL leakage is not.
+    The TODOs at `V0_0_1__init.sql:206-207` (`more clever way to generate uuid` +
+    `find a way to define TTL`) acknowledge maintenance gaps but no migration addresses
+    the unscoped posture. Under `auth.type=DISABLED` the endpoints become anonymously
+    reachable AND unbound — combined effect: any unauthenticated client on the network
+    can probe UUIDs and read facet drill-downs. Cross-pillar P-01 (Discovery — search
+    session state) + P-09 (Security — session ownership model).'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-001
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-519.yaml
+- gap_id: TEST-GAP-520
+  behaviour: 'to_tsquery operator-injection DoS regression-pin — SECOND INVOCATION
+    SITE (HIGH — cross-pillar P-01+P-09; STRENGTHENS TEST-GAP-250 at the facet endpoint
+    surface). `JooqFTSHelper.tsQuery` (`JooqFTSHelper.java:164-168`) does `Arrays.stream(plainQuery.split("
+    ")).map(q -> q + ":*").collect(Collectors.joining("&"))` — every word becomes
+    a `prefix-match` token AND-joined. But if the persisted `query_string` contains
+    characters that to_tsquery treats as syntax (`!`, `(`, `)`, `:`, `<->`, `&`, `|`,
+    `''`, `\\`), they are NOT escaped before reaching the parser. A caller who POSTs
+    a search with `query = ''foo ) | (bar''` PERSISTS that string in `search_facets.query_string`.
+    Every subsequent facet aggregator that joins to SEARCH_ENTRYPOINT (entity-class
+    facet at line 182, type facet at 267, owner facet at 469, tag facet at 582 — ALL
+    FOUR call `ftsCondition(SEARCH_ENTRYPOINT.SEARCH_VECTOR, state.getQuery())`) will
+    fail at SQL-parse time with a Postgres `syntax error in tsquery`, **breaking the
+    session permanently** — the row is reachable but every facet read 500s. The injection
+    is bounded by Postgres tsquery semantics (the parser does not eval SQL — it raises
+    `42601`), but it IS a denial-of-service surface AND it is the SAME code path that
+    batch H flagged on `getHighlightedResult`. The facet endpoints are an ADDITIONAL
+    invocation site for the same bug — meaning: (a) the same input attack reaches
+    FOUR different facet aggregators in this controller surface alone, (b) every UI
+    re-mount on a tampered session re-triggers the 500, (c) combined with TEST-GAP-519
+    (cross-user session hijack) an attacker can permanently poison another user''s
+    session with a single PUT. Cross-link batch H finding on `getHighlightedResult`
+    (TEST-GAP-250 — same code path); this finding STRENGTHENS the existing TEST-GAP-250
+    with a second/third/fourth invocation site at the facet endpoints.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-001
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-520.yaml
+- gap_id: TEST-GAP-521
+  behaviour: 'Side-effect UPDATE-on-read of `last_accessed_at` regression-pin (LOW
+    — P-01). `ReactiveSearchFacetRepositoryImpl.get(UUID)` (lines 99-106) is an UPDATE-RETURNING
+    shape: every `GET /api/search/{search_id}` and `GET /api/search/{search_id}/facet/{facet_type}`
+    call issues an UPDATE on `search_facets.last_accessed_at`. Implications: (a) `GET
+    /api/search/{search_id}` is NOT idempotent at the storage layer — operationally
+    surprising for a GET endpoint, (b) the side-effect UPDATE acquires a row lock;
+    with concurrent UI tabs hitting the same session simultaneously, the write contention
+    can stall, (c) the `last_accessed_at` field exists in the schema but is NEVER
+    READ by any housekeeping job (`V0_0_52__introduce_housekeeping.sql` has NO `search_facets`
+    policy — verified by grep during sidecar enrichment). The field is updated but
+    useless — the design implies a future TTL eviction job that never landed (consistent
+    with the `V0_0_1__init.sql:207` TODO `find a way to define TTL`). NO comment,
+    annotation, or surrounding code defends the side-effect read posture as intentional.
+    NO test pins the contract. A future refactor adding the TTL eviction job would
+    actually USE `last_accessed_at` for the first time; conversely a refactor removing
+    the UPDATE-on-read (treating GET as truly idempotent) would silently break the
+    (currently unused) TTL infrastructure.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-001
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-521.yaml
+- gap_id: TEST-GAP-522
+  behaviour: 'Unbounded-pagination-size on getFiltersForFacet regression-pin (MEDIUM
+    — cross-pillar P-01+P-09; DoS-amp on hot path). Controller params `Integer page,
+    Integer size` (`SearchController.java:33-34`) carry NO validation annotations;
+    OpenAPI `PageParam` / `SizeParam` (`components.yaml:4213-4229`) have NO `minimum:`
+    or `maximum:`; the repository computes `OFFSET = (page - 1) * size` at multiple
+    sites (`ReactiveSearchFacetRepositoryImpl.java:129, 157, 315, 369, 404, 449, 515`)
+    with NO clamping. A caller passing `size=1_000_000` triggers a single facet aggregator
+    query bounded only by Postgres / network buffers and the underlying table cardinality.
+    `page=0` produces a negative OFFSET — Postgres rejects with ''OFFSET must not
+    be negative'' → 500 (or the global exception handler''s mapping) rather than 400
+    with a meaningful message. This is the SAME pattern as TEST-GAP-503 (`getDataEntityAlerts`
+    size) and the AlertController.getAllAlerts size — pattern at MULTIPLE endpoint
+    families. The facets endpoint is particularly impactful because: (a) every Catalog
+    tab load fires `getSearchFacetList`, (b) every facet drill-down fires `getFiltersForFacet`,
+    so this is on the platform''s hottest read path, (c) combined with TEST-GAP-518
+    (cross-owner enumeration), an authenticated attacker can use `size=1_000_000`
+    to enumerate the entire owner taxonomy with one request, (d) under DISABLED-mode
+    the endpoint is anonymously reachable — a single curl saturates Postgres + JVM.
+    The owner-facet aggregator (`ReactiveSearchFacetRepositoryImpl.java:339-372`)
+    is a 4-way JOIN (OWNER LEFT JOIN OWNERSHIP LEFT JOIN SEARCH_ENTRYPOINT LEFT JOIN
+    DATA_ENTITY) — the heaviest facet query, so the DoS-amp factor is highest here.'
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-001
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-522.yaml
+- gap_id: TEST-GAP-523
+  behaviour: search_facets table unbounded growth regression-pin (LOW — cross-pillar
+    P-01+P-08; storage cost + bearer-token persistence). Every `POST /api/search`
+    creates a row via `searchFacetRepository::create` (`SearchServiceImpl.java:80`);
+    NO TTL eviction, NO row deletion on user logout, NO archive policy. Operators
+    on long-running platforms see the table grow forever. Combined with TEST-GAP-519
+    (no user binding), the table is an indefinitely-growing pool of bearer-token-shaped
+    session state with full filter history retained as jsonb. The `V0_0_52__introduce_housekeeping.sql`
+    policy list has NO `search_facets` entry (verified by sidecar grep during enrichment)
+    — the TTL TODO at `V0_0_1__init.sql:207` (`find a way to define TTL`) was never
+    implemented. The `last_accessed_at` field is updated on every read (TEST-GAP-521)
+    but never consumed for cleanup. Storage cost grows monotonically; for a platform
+    with 1000 active users each creating 10 search sessions/day, the table grows by
+    3.65M rows/year — bounded only by disk. Each row's `filters` jsonb can be arbitrarily
+    large (filter selections, facet states). NO test pins the unbounded growth, NO
+    test exercises a configured TTL housekeeping job (because none exists). Cross-pillar
+    P-01 (Discovery session state lifecycle) + P-08 (Management/operational — operators
+    have no visibility into table size; no operator-facing tooling for session cleanup).
+  test_class: missing-performance
+  criticality: LOW
+  node_id: ''
+  feature_id: F-001
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-523.yaml

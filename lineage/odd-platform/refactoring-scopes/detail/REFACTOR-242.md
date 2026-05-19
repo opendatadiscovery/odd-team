@@ -49,4 +49,22 @@ Option (1) is preferred. The rename is breaking for any external consumer of `Li
 
 **Suggested backlog grouping**: `Code-quality cleanup` — bundle with REFACTOR-241 (the misleading OR-predicate; same class of "code-literal-vs-mental-model" gap).
 
+## STRENGTHENS — Batch M (`getMyObjectsWithUpstream` + `getMyObjectsWithDownstream` — controller-method PRIMARY-SOURCE confirms the sole production-caller risk + the new ADR-CANDIDATE-118 codifies the architectural SCOPE decision)
+
+**Primary-source confirmation at DataEntityRelationsServiceImpl.java:34 from the TWO controller-method angles**. Batch M's two controller-method sidecars (`getMyObjectsWithUpstream.md` + `getMyObjectsWithDownstream.md`) name `LineageDepth.empty()` as the single-hop-bound choice for both lineage variants — both endpoints route through `DataEntityRelationsServiceImpl.java:34` which is the sole production caller of the `empty()` factory.
+
+**New batch-M evidence**:
+
+1. **`getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[6]`** (LOW): "**LineageDepth.empty() is fragile encoding — depth=-1 is sentinel, not unlimited.** The current `getLineageRelations` implementation guards the recursive branch via `tDepth.lessThan(lineageDepth.getDepth())` (`ReactiveLineageRepositoryImpl.java:174`). With `LineageDepth.empty()` (`depth=-1`), the guard becomes `tDepth < -1` (never true) and the recursive UNION ALL never fires — single-hop. But a maintainer reading only `lineageRepository.getLineageRelations(oddrns, LineageDepth.empty(), ...)` at `DataEntityRelationsServiceImpl.java:34` could reasonably misinterpret `empty()` as 'no depth limit / unlimited recursion' rather than 'single-hop only'. The class-level `boolean empty` field at `LineageDepth.java:10` is the explicit disambiguation, but it is consulted only at the CTE-construction site, not anywhere that reads the field name."
+
+2. **`getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[5]`** (LOW): "**`LineageDepth.empty()` sentinel is not honored by the recursive CTE.** Per batch-H DOC-GAP-105 finding, the recursive CTE at ReactiveLineageRepositoryImpl.java:174 uses only the `int depth` field via `tDepth.lessThan(lineageDepth.getDepth())`. The `boolean empty` flag (set to `true` by `LineageDepth.empty()`) is never read by the CTE. The current behaviour (recursion terminates after seed step when depth=-1) depends on the SQL semantics of `lessThan(-1)`, NOT on an explicit `if (empty) return seed` branch. A future refactor changing the termination predicate to `lessThanOrEqual` would silently expand this endpoint to two hops without any test catching it — because the `empty()` semantic is encoded only by the magic `-1` integer, not by a dedicated code path."
+
+**New ADR-CANDIDATE-118 (batch M) codifies the architectural decision**: The ADR (NEW batch M) frames the single-hop scope choice for the `/my/upstream` + `/my/downstream` endpoints as the deliberate architectural pattern that THIS REFACTOR's implementation gap does not defend. The ADR endorses the SCOPE choice (single-hop is appropriate for the home-page Recommended panel use case); this REFACTOR catches the IMPLEMENTATION gap (sentinel-encoded; `boolean empty` field vestigial; a single line change to the CTE termination predicate silently doubles the scope). The two artefacts together describe the FULL surface: the architectural decision is sound, the implementation encoding is fragile.
+
+**Architectural refinement**: REFACTOR-242's fix (option 1: rename `empty()` to `seedOnly()` + remove the dead `boolean empty` field) is now load-bearing for TWO production callers (the UPSTREAM + DOWNSTREAM siblings), not one. The sole-caller-update calculus from the original REFACTOR-242 needs to count BOTH `getMyObjectsWithUpstream` and `getMyObjectsWithDownstream` as the contract change scope; the rename touches `DataEntityRelationsServiceImpl.java:34` (the single call site) which both endpoints route through, so the change remains one line at the caller side. The ADR-CANDIDATE-118 NEW must be updated when the rename lands to reflect the new factory name.
+
+**Cross-link to ADR-CANDIDATE-118 NEW**: The ADR's accept-the-risk clause names this gap — "the implementation gap (sentinel encoding) is a known maintainability cost but does not invalidate the architectural decision." The maintainer's triage: keep the encoding (accept future-refactor risk) OR rename + remove dead field (cost: factory-name change, ADR update).
+
+**Severity unchanged**: LOW (naming clarity / future-maintainer risk; not a current bug).
+
 ---

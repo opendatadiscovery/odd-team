@@ -1,0 +1,38 @@
+gap_id: TEST-GAP-513
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream"
+  - "odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream"
+pillars_affected: [P-09, P-11, P-05]
+surfaced_by:
+  - "getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[1] (DOC-GAP-099 PRIMARY-SOURCE confirmation: OpenAPI summary is literally incorrect)"
+  - "getMyObjectsWithUpstream.md:docs_link_semantic.doc_drift_findings.[0] (DOC-GAP-099 PRIMARY SOURCE)"
+  - "getMyObjectsWithUpstream.md:security.known_security_gaps.[NIL but data_exposure-relevant via OpenAPI summary]"
+  - "getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[1] (OpenAPI summary inverts the security-relevant semantic — DOC-GAP-099 DOWNSTREAM half)"
+  - "getMyObjectsWithDownstream.md:security.known_security_gaps.[1] (OpenAPI summary inversion)"
+  - "getMyObjectsWithDownstream.md:tests_coverage_semantic.uncovered_behaviours.[5] (Inverse-semantic OpenAPI summary regression DOC-GAP-099 protection)"
+behaviour: |-
+  DOC-GAP-099 OpenAPI-vs-impl contract regression-pin (HIGH — cross-pillar P-09+P-11+P-05; inverse semantic of the API contract). The OpenAPI spec at `openapi.yaml:843-844` (upstream) and `openapi.yaml:861-862` (downstream) declares: `summary: "Get my objects with upstream/downstream dependencies"` and `description: "Returns list of data entities owned by current user with upstream/downstream dependencies"`. The ACTUAL response semantic is the **INVERSE**: entities the user does **NOT** own that are upstream/downstream-reachable from entities they DO own. The `Predicate.not(oddrns::contains)` filter at `DataEntityRelationsServiceImpl.java:37` explicitly EXCLUDES the user's owned set from the response. The UI consumer label `Upstream dependents` / `Downstream dependents` (`OwnerEntitiesList.tsx:87,89`) is semantically accurate (the entities are dependents, not the user's owns). But the OpenAPI summary is the contract layer that third-party API consumers read — multi-tenant operators reading the spec and treating ownership as a tenancy boundary expect tenant-isolated results, will receive cross-tenant upstream/downstream-lineage neighbours, and may silently misinterpret the data ecosystem (e.g. consuming the response as 'my entities' or 'my data ecosystem with my entities included'). The doc-vs-code inversion is the most directly-falsifiable security claim in this slice of the API surface. Triangulated across batch G (`getMyObjects` sidecar), batch H (`ReactiveLineageRepositoryImpl` no-owner-JOIN SQL primary source), batch I (`LineageServiceImpl` NEGATIVE-CASE SIBLING), and now batch M (controller-method primary source for BOTH variants). NO test pins the contract — a future refactor that "fixed" the implementation to MATCH the OpenAPI summary (returning owned entities + their dependencies) would silently flip the response semantics with no regression catcher. Cross-pillar P-09 (Security — operator misreading the spec), P-11 (API spec correctness), P-05 (Data Lineage).
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/MyObjectsLineageOpenAPIContractInversionTest.java"
+  name: "getMyObjectsWithUpstreamAndDownstream_responseExcludesOwnedEntities_pinsDOC_GAP_099InverseSemantic"
+evidence:
+  - "getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[1]: 'DOC-GAP-099 PRIMARY-SOURCE confirmation: OpenAPI summary is literally incorrect. The actual response is the NON-owned upstream-adjacent set: DataEntityRelationsServiceImpl.java:37 explicitly excludes the owned oddrns via Predicate.not(oddrns::contains). Third-party API consumers building integrations against the OpenAPI contract receive the wrong shape.' severity: HIGH"
+  - "getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[1]: 'OpenAPI summary inverts the security-relevant semantic (DOC-GAP-099 DOWNSTREAM half). Now 3-angle triangulated.' severity: HIGH"
+  - "openapi.yaml:843-844 (upstream summary - literally incorrect)"
+  - "openapi.yaml:861-862 (downstream summary - literally incorrect)"
+  - "DataEntityRelationsServiceImpl.java:37 (the Predicate.not(oddrns::contains) exclusion filter — the SEMANTIC ANCHOR)"
+  - "OwnerEntitiesList.tsx:87 (UI label `Upstream dependents` — semantically accurate)"
+cross_references:
+  - "TEST-GAP-308 (lineage-variant single-point-of-failure — co-located, security half)"
+  - "TEST-GAP-512 (REFACTOR-225 PRIMARY-SOURCE — co-located, security primary)"
+  - "DOC-GAP-099 (OpenAPI summary inversion — primary source confirmed at controller-method tier for BOTH variants)"
+  - "F-005 (Data Lineage)"
+  - "P-11 (Platform API & Developer Surface — spec authoring contract)"
+proposed_action: |-
+  WebTestClient integration test. (a) Create Owner A with entity a1; Owner B with entity b1; lineage edge a1->b1 AND b1->a1 (creating a 2-cycle for both directions). (b) Authenticate as user uA (associated with Owner A). (c) GET /api/dataentities/my/upstream — assert response body contains b1 (the upstream entity) and does NOT contain a1 (the owned entity excluded per Predicate.not). (d) GET /api/dataentities/my/downstream — assert symmetric. (e) Test comment 'LOCKS the DOC-GAP-099 inverse-semantic contract as of 2026-05-19. The OpenAPI summary says response contains owned entities WITH upstream/downstream — IMPLEMENTATION returns non-owned upstream/downstream EXCLUDING the owned set. When the OpenAPI summary is corrected to match the implementation (or vice versa — the implementation is fixed to match the spec), THIS test FLIPS to expect a1 in the response (if implementation changes) or remains green (if only the OpenAPI doc is fixed).' Pair with a contract test in `odd-platform-specification` that asserts the OpenAPI summary text matches a known-correct phrasing — this is the natural complement and the test pair pins both halves of the inversion.
+batch: 2026-05-19-M
+feature_id: F-005

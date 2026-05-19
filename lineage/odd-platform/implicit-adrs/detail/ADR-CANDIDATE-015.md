@@ -32,4 +32,26 @@
 
 **Severity unchanged**: LOW (convention decision). The batch-K strengthening makes the convention's reach explicit (15-callsite blast radius) but does not change the severity of the choice itself.
 
+## STRENGTHENS — Batch M (`getMyObjectsWithUpstream` + `getMyObjectsWithDownstream` — controller-method triplet completion)
+
+**Primary-source TRIPLET CONFIRMED** at controller-method granularity. Batch M's two sidecars are the **third and final members of the `/my*` triplet** at the controller-method layer, completing the cross-batch enumeration with `getMyObjects` (batch G). The convention is now confirmed at controller-method granularity across ALL THREE endpoints in the family:
+
+| Endpoint | Sidecar batch | Controller signature | Principal source |
+|---|---|---|---|
+| `getMyObjects` | batch G | `(page, size, exchange)` | reactor Context via DataEntityServiceImpl.listAssociated |
+| `getMyObjectsWithUpstream` | batch M | `(page, size, exchange)` | reactor Context via DataEntityRelationsServiceImpl.getDependentDataEntityOddrns |
+| `getMyObjectsWithDownstream` | batch M | `(page, size, exchange)` | reactor Context via DataEntityRelationsServiceImpl.getDependentDataEntityOddrns |
+
+The signature is IDENTICAL across all three — none accepts `Authentication`, `Principal`, or owner-id parameters. The convention is now 16-sidecar (15 from batch K + the three controller-method primary sources here; note `getMyObjects` batch G + `getMyObjectsWithUpstream` batch M + `getMyObjectsWithDownstream` batch M = three new controller-method anchors).
+
+**New batch-M evidence**:
+- `getMyObjectsWithUpstream.md:implicit_adrs.[0]` confirms the controller-method takes only `(page, size, exchange)` and routes via DataEntityRelationsServiceImpl which calls `authIdentityProvider.fetchAssociatedOwner()` at line 26 — the reactor-Context anchor.
+- `getMyObjectsWithDownstream.md:implicit_adrs.[0]` is the third controller-layer site confirming ADR-CANDIDATE-015: "Owner-scoped routes - controller takes NO principal parameter (ADR-CANDIDATE-015 primary-source confirmation, third member of the triplet). This method, like its `getMyObjects` and `getMyObjectsWithUpstream` siblings, accepts only `(page, size, exchange)`; no `Authentication`, no `Principal`, no owner-id query/path/body parameter."
+
+**Architectural refinement**: The three `/my*` endpoints constitute the **owner-anchored discovery surface** — the UI's home-page `Recommended` panel (`OwnerEntitiesList.tsx:77-91`) consumes all three to render "My Objects / Upstream dependents / Downstream dependents / Popular". This composition is NEW in batch M (the UI consumer evidence was not articulated in batch G's `getMyObjects` sidecar). The cross-pillar finding: ADR-CANDIDATE-015 is not just about URL design — it's about the **disjoint-slice composition** of the owner-anchored surface where each endpoint answers a different question and the UI assembles them into a coherent product. The new ADR-CANDIDATE-117 (batch M) codifies the anchor + derived-set + exclude-anchor architectural extension as a complementary ADR — ADR-CANDIDATE-015 names the URL shape; ADR-CANDIDATE-117 names the response-shape composition.
+
+**Cross-batch alignment**: ADR-CANDIDATE-015 (controller URL-shape) + ADR-CANDIDATE-105 (batch K — fetchAssociatedOwner single-Mono primitive) + ADR-CANDIDATE-075 (repository corollary) + ADR-CANDIDATE-117 NEW (batch M — anchor + derived-set lineage neighbourhood) + ADR-CANDIDATE-118 NEW (batch M — single-hop scope via LineageDepth.empty) together form the **five-ADR family** describing the platform's full owner-anchored discovery architecture: URL design + identity plumbing + repository trust boundary + response-shape composition + scope semantics.
+
+**Severity unchanged**: LOW (convention decision). The batch-M strengthening completes the triplet enumeration at controller-method primary source but does not change the architectural commitment.
+
 ---

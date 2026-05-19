@@ -3,8 +3,12 @@ category: missing-security
 criticality: HIGH
 node_ids:
 - odd-platform java SearchController controller-method:search
+- odd-platform java SearchController controller-method:facets
+pillars_affected: [P-01, P-09]
 surfaced_by:
 - search.md:bugs_limitations_corner_cases.[1]
+- facets.md:bugs_limitations_corner_cases.[4] (STRENGTHENED batch M — SECOND invocation site, persisted-query path)
+- facets.md:security.known_security_gaps.[2] (STRENGTHENED batch M — facet endpoints add 4 ADDITIONAL invocation sites of the same code path)
 behaviour: 'Postgres `to_tsquery` syntax-error vector — `JooqFTSHelper.tsQuery` (lines
   164-168) splits the inbound query string on a single space character, appends `:*`
   to each non-empty token, joins with `&`, and passes the joined string verbatim into
@@ -14,7 +18,19 @@ behaviour: 'Postgres `to_tsquery` syntax-error vector — `JooqFTSHelper.tsQuery
   in tsquery: ...` surfacing as 500. Conversely, a balanced `tsquery` expression silently
   re-interprets as that expression (operator chaining, prefix-globbing via `:*` is
   user-controllable). No input sanitisation, no escape of metacharacters, no error
-  mapping. `SearchFormData.query` carries no `@Size`/`@Pattern`/max-length constraint.'
+  mapping. `SearchFormData.query` carries no `@Size`/`@Pattern`/max-length constraint.
+  STRENGTHENED batch M — the SearchController#facets sidecar confirms the SAME unescaped
+  code path is invoked by FOUR ADDITIONAL facet aggregator call sites (entity-class
+  facet at ReactiveSearchFacetRepositoryImpl.java:182, type facet at 267, owner facet
+  at 469, tag facet at 582 — ALL call ftsCondition(SEARCH_ENTRYPOINT.SEARCH_VECTOR,
+  state.getQuery())). Combined with TEST-GAP-519 (cross-user session hijack), an
+  attacker can permanently POISON another user''s session with a single PUT containing
+  `query = foo ) | (bar` — every subsequent facet read on the session 500s. The persistence
+  of the malformed query in search_facets.query_string is the additional risk vector
+  the facets endpoints surface — the /search endpoint malforms transiently, the facet
+  endpoints malform persistently. Cross-pillar P-01+P-09. Criticality remains HIGH;
+  the facet endpoints multiply the attack surface 4x. See TEST-GAP-520 for the dedicated
+  regression-pin proposal at the facet endpoint surface.'
 test_files_existing: []
 test_files_proposed:
   path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/SearchFTSQuerySyntaxTest.java
@@ -26,10 +42,24 @@ evidence:
 - search.md:bugs_limitations_corner_cases.[1] severity MEDIUM
 - 'concepts.yaml:entities[Search Session].security_aggregate.weaknesses.[1] verbatim:
   ''**`to_tsquery` syntax-error vector via raw user input (MEDIUM)**'''
+- 'STRENGTHENED batch M: facets.md says ''Persisted state.getQuery() is passed directly
+  to to_tsquery(?) without escaping tsquery operators. The facet endpoints are an
+  ADDITIONAL invocation site for the same bug — meaning: (a) the same input attack
+  reaches FOUR different facet aggregators in this controller surface alone, (b)
+  every UI re-mount on a tampered session re-triggers the 500.'''
 cross_references:
 - concepts.yaml:entities[Search Session].security_aggregate.weaknesses.[1]
+- TEST-GAP-520 (tsquery operator-injection DoS at facet endpoints — dedicated batch M regression-pin with full 4-aggregator parameterised coverage)
+- TEST-GAP-519 (search-session cross-user hijack — combined: attacker permanently poisons another user's session)
+- REFACTOR-NNN candidate: sanitise via quote_literal + phraseto_tsquery, or escape tsquery metacharacters
 proposed_action: 'Add a parameterised `SearchFTSQuerySyntaxTest` covering: (a) `foo!bar`
   → 500 syntax-error; (b) `(foo)` → 500; (c) `a<->b` → 500; (d) `foo:` → 500; (e)
   `foo & bar` (balanced) → 200 with re-interpreted semantics. Drives the fix (either
   sanitise via `quote_literal` + `phraseto_tsquery`, or catch and translate to 400
-  BadUserRequest).'
+  BadUserRequest). Note batch M adds TEST-GAP-520 for the facet endpoint invocation
+  surface specifically (4 facet aggregators + 1 aggregate endpoint = 5 additional
+  call sites) — that test pins the PERSISTENCE half (the /search endpoint malforms
+  transiently; the facet endpoints malform persistently). The two tests together
+  cover the full attack surface.'
+batch: 2026-05-19-M-STRENGTHENED
+feature_id: F-001

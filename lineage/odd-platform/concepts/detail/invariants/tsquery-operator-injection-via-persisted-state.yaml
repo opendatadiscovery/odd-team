@@ -1,0 +1,133 @@
+name: |-
+  tsquery operator-injection via persisted state (DoS via every facet aggregator)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+  - P-01
+description: |-
+  NEW INVARIANT, batch 2026-05-19M — JooqFTSHelper.tsQuery at JooqFTSHelper.java:164-168
+  does not escape Postgres tsquery operators in user-supplied search query text
+  before passing the result to to_tsquery(?) at JooqFTSHelper.java:100-105. The
+  function is a per-word splitter:
+  Arrays.stream(plainQuery.split(" ")).map(q -> q + ":*").collect(Collectors.joining("&"))
+  — every word becomes a "prefix-match" token AND-joined. But if the user-supplied
+  query contains tsquery metacharacters that to_tsquery treats as syntax
+  (!, (, ), :, <->, &, |, single-quote, backslash), those characters are NOT
+  escaped before reaching the Postgres parser. **Two attack surfaces on the
+  persisted query_string in search_facets**: (a) **SQL parser DoS via persistent
+  corruption** — a caller POSTs a search with query = "foo )( bar"; the row is
+  persisted with that query verbatim; every SUBSEQUENT facet aggregator that
+  joins to SEARCH_ENTRYPOINT applying ftsCondition(SEARCH_ENTRYPOINT.SEARCH_VECTOR,
+  state.getQuery()) fails at to_tsquery parse time with Postgres 42601 syntax
+  error in tsquery — the session is permanently broken (the row is reachable
+  but every facet read 500s); (b) **silent semantic re-interpretation** — a
+  balanced tsquery expression that happens to parse (e.g. "foo & bar | baz")
+  re-interprets at to_tsquery time with completely different match semantics
+  than the user expected — the response is "wrong but not failing". **Reached
+  from FIVE distinct invocation sites** in the facet aggregator suite at
+  ReactiveSearchFacetRepositoryImpl.java:182 (entity-class), :267 (type),
+  :339-407 owner aggregator's ftsCondition site, :469 (group), :582 — every
+  facet GET triggers the same parse path. The injection is bounded by Postgres
+  tsquery semantics (the parser does not eval SQL — it raises 42601), but it
+  IS a denial-of-service surface AND it is the SAME code path that batch H
+  flagged on getHighlightedResult. The facet endpoints are SECOND, THIRD, FOURTH,
+  FIFTH, SIXTH invocation sites for the same bug. **Severity**: HIGH.
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+nodes:
+  - odd-platform java SearchController controller-method:search
+  - odd-platform java SearchController controller-method:facets
+  - odd-platform java repository reactive repository:ReactiveSearchFacetRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
+contributors:
+  - |-
+    facets.md (batch M PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[4] tsquery operator-injection on the
+    persisted query_string — SQL parser DoS via persistent corruption; reached
+    from every facet aggregator;
+    security.known_security_gaps.[2] HIGH severity — the facet endpoints are
+    a SECOND invocation site for the same bug;
+    dependencies_semantic.requires-feature — Postgres FTS via to_tsquery;
+    the FTS shape and its operator-injection surface owned by JooqFTSHelper.tsQuery.
+  - |-
+    search.md (batch E cross-reference):
+    bugs_limitations_corner_cases.[1] to_tsquery syntax-error vector via raw
+    user input — queries containing tsquery metacharacters not space-separated
+    become malformed; no sanitisation, no escape, no error mapping (MEDIUM
+    severity at the search-creation site).
+  - |-
+    Cross-batch H — ReactiveDataEntityRepositoryImpl batch sidecar:
+    getHighlightedResult SQL-injection / DoS finding — the SAME JooqFTSHelper
+    code path; this invariant is the cross-batch confirmation that the
+    operator-injection surface is reached from FIVE facet-aggregator sites
+    on top of the original search-creation site.
+evidence:
+  - |-
+    JooqFTSHelper.java:100-105 (field("? @@ to_tsquery(?)", vectorField, query)
+    — the raw to_tsquery invocation)
+  - |-
+    JooqFTSHelper.java:164-168 (the tsQuery split-and-join with NO escape)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:182 (entity-class facet
+    ftsCondition site)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:267 (type facet ftsCondition site)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:339-407 (owner facet aggregator
+    block with FTS condition)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:469 (group facet ftsCondition site)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:582 (additional FTS condition site)
+  - |-
+    facets.md:bugs_limitations_corner_cases.[4] +
+    security.known_security_gaps.[2]
+  - |-
+    search.md:bugs_limitations_corner_cases.[1]
+mitigations_unimplemented:
+  - |-
+    Implement a tsquery-operator escape function in JooqFTSHelper.tsQuery that
+    escapes (, ), !, &, |, :, single-quote, backslash, <-> before tokenizing
+    — single-touch fix for all six invocation sites.
+  - |-
+    Switch from to_tsquery to plainto_tsquery or websearch_to_tsquery (Postgres
+    11+) which handle user-supplied text without operator interpretation —
+    eliminates the entire class of injection.
+  - |-
+    Add a server-side validation step on POST /api/search rejecting query
+    strings containing tsquery metacharacters with HTTP 400 + a structured
+    error code — surface the rejection at the boundary rather than letting
+    the malformed string persist.
+  - |-
+    Add a regression test asserting that a search with query = "foo )( bar"
+    fails fast with 400 (NOT persists then 500s on subsequent facet reads).
+  - |-
+    Add a one-time migration to scrub malformed persisted query_string values
+    from existing search_facets rows — closes the LATENT poison-pill data
+    sitting in production tables.
+notes: |-
+  Cross-batch finding: the tsquery-operator-injection surface is shared
+  between (a) batch E's POST /api/search create-session path, (b) batch H's
+  getHighlightedResult SQL-injection / DoS finding, and (c) batch M's FIVE
+  facet-aggregator invocations (per-keystroke hot-path in the Catalog tab).
+  The shared root cause is a single JooqFTSHelper.tsQuery function with no
+  escape; a one-touch fix closes all six surfaces.
+
+  Operator-facing impact: persisted query_string is a poison pill — once a
+  malformed string lands in search_facets via POST /api/search, EVERY
+  subsequent facet GET on that session 500s. The session is reachable (the
+  row exists) but unusable. The 500 surfaces as a generic error to the UI;
+  the operator has no signal that the session is corrupted (vs the search
+  is degraded vs the DB is failing).
+
+  Cross-references:
+    - Search Catalog (faceted, session-as-server-state) — the POST /api/search
+      creation path that is the FIRST entry point for the malformed query.
+    - Search Session — the persisted server-side state that carries the
+      poison query.
+    - Read-collaborative cross-owner enumeration — the same facet endpoints
+      that suffer this injection ALSO expose catalog-wide cardinality across
+      owners; the two findings compound at the same surfaces.

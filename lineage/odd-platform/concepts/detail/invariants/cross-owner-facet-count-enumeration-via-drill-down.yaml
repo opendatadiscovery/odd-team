@@ -1,0 +1,150 @@
+name: |-
+  Cross-owner facet-count enumeration via drill-down (REFACTOR-024 family extension)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+  - P-01
+description: |-
+  NEW INVARIANT, batch 2026-05-19M — the facet-count surface
+  (GET /api/search/{search_id} via getSearchFacetList +
+  GET /api/search/{search_id}/facet/{facet_type} via getFiltersForFacet)
+  computes ALL facet counts CATALOG-WIDE with no OWNERSHIP join, no
+  principal-derived predicate, no per-user scope. The aggregators at
+  ReactiveSearchFacetRepositoryImpl.java:163-249 (entity-class), :251-337
+  (type), :339-407 (owner), :374-407 (tag), :409-452 (group), :454-534
+  (status) ALL share the same shape: apply getDataEntityDefaultConditions
+  (HOLLOW=false, STATUS != DELETED, EXCLUDE_FROM_SEARCH NULL-or-false), join
+  to SEARCH_ENTRYPOINT, run countDistinct(SEARCH_ENTRYPOINT.DATA_ENTITY_ID)
+  — NO OWNERSHIP join anywhere. The single owner-derived input on the
+  service-layer path is authIdentityProvider.fetchAssociatedOwner() at
+  SearchServiceImpl.java:128-130, which feeds ONLY the optional myObjectsCount
+  alongside the catalog-wide total — the myObjects toggle controls which
+  entities the user SEES in the result list (SearchServiceImpl.java:105-111),
+  NOT the facet counts. **Operator-facing consequence**: an authenticated
+  attacker can drill getFiltersForFacet(OWNERS) to enumerate every owner name
+  + per-owner entity count, then drill (TAGS) / (GROUPS) / (STATUSES) /
+  (TYPES) to enumerate the platform tag and group cardinality — all
+  catalog-wide. An entity that the user cannot read DIRECTLY (because its
+  ID is not known, or because cross-owner reads are intended to be limited)
+  can still be inferred via facet counts incrementing as the entity is
+  added / removed. The owner facet (getOwnerFacetForDataEntity at
+  :339-372) is the PRIMARY catalog-cardinality discovery vector — it
+  enumerates EVERY OWNER NAME in the platform with the count of entities
+  each owns. Pairs with REFACTOR-024 (the BATCH alert read) and REFACTOR-340
+  (the per-entity alert read) — together they form the catalog-wide
+  cross-owner enumeration surface. **Severity**: HIGH.
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+nodes:
+  - odd-platform java SearchController controller-method:facets
+  - odd-platform java service service:SearchServiceImpl
+  - odd-platform java repository reactive repository:ReactiveSearchFacetRepositoryImpl
+contributors:
+  - |-
+    facets.md (batch M PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[0] HIGH — GET /api/search/{search_id} and
+    GET /api/search/{search_id}/facet/{facet_type} expose CROSS-OWNER catalog
+    cardinality to any authenticated user via facet drill-down — the same
+    cross-owner read posture as REFACTOR-024 / REFACTOR-340 applied to the
+    facet-COUNTS surface;
+    security.owner_scoping BYPASSES — facet counts are computed catalog-wide;
+    security.known_security_gaps.[0] HIGH severity — an authenticated caller
+    can drill getFiltersForFacet(OWNERS) to enumerate every owner name +
+    per-owner entity count;
+    implicit_adrs.[1] Catalog-wide facet counts are the design — myObjects
+    is an EXTRA opt-in scope, not a permission boundary.
+  - |-
+    search.md (batch E cross-reference): catalog-wide cross-owner enumeration
+    finding for the SEARCH-RESULTS surface; this invariant is the FACET-COUNTS
+    sibling.
+  - |-
+    Cross-batch L getDataEntityAlerts (cross-reference): REFACTOR-340 per-entity
+    alert-read surface; this invariant is the same posture applied to the
+    facet-drill-down surface.
+evidence:
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:163-249 (entity-class facet
+    aggregator — no OWNERSHIP join)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:251-337 (type facet aggregator)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:339-372 (owner facet aggregator —
+    PRIMARY catalog-cardinality enumeration vector)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:374-407 (tag facet aggregator)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:409-452 (group facet aggregator)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:454-534 (status facet aggregator)
+  - |-
+    SearchServiceImpl.java:122-155 (Mono.zip with allCount catalog-wide
+    + myObjectsCount alongside — both returned as separate fields)
+  - |-
+    SearchServiceImpl.java:128-130 (the ONLY principal-derived input —
+    used for the optional myObjectsCount field)
+  - |-
+    SearchController.java:30-47 (the controller methods — no
+    @PreAuthorize, no @Secured)
+  - |-
+    SecurityConstants.java (no rule entry for any /api/search/* path —
+    verified by Grep search|facet returns zero matches)
+  - |-
+    facets.md:bugs_limitations_corner_cases.[0] +
+    security.owner_scoping +
+    security.known_security_gaps.[0] +
+    implicit_adrs.[1]
+mitigations_unimplemented:
+  - |-
+    Add OWNERSHIP join to every facet aggregator — gated by the caller
+    resolved owner. Refines facet counts to "what entities the caller can
+    see"; eliminates the catalog-cardinality discovery vector.
+  - |-
+    Alternatively: add a config switch facet.scope = catalog | owner |
+    namespace that operators enable in multi-tenant deployments — keeps the
+    current default for collaborative deployments; closes the surface for
+    tenant-isolated deployments.
+  - |-
+    Doc: extend /features/data-discovery/search with a "Facet count scoping"
+    section explicitly stating that facet counts reflect the WHOLE CATALOG
+    (not the caller scope) — operators must understand the discovery
+    surface.
+  - |-
+    Doc: extend /configuration-and-deployment/enable-security/authorization
+    "Read-side posture" section to enumerate the cross-owner facet count
+    surface alongside the other 15 read-collaborative surfaces.
+  - |-
+    Backlog: a REFACTOR-NNN tracked follow-up for the OWNERSHIP-join
+    refactor; cite this invariant as the requirement spec.
+notes: |-
+  Cross-batch finding: the facet-drill-down surface is the SIXTEENTH
+  cross-owner-readable read surface in the platform — adding to the
+  fifteen-surface tally documented at read-collaborative-cross-owner-enumeration
+  (15 sidecars at batch L). With batch M's four sidecars all on or
+  adjacent to anchor-set / cross-owner findings, the total reachable
+  posture surfaces are now 19+ across the codebase.
+
+  Operator-relevant compounding:
+    (a) /api/search/{id}/facet/OWNERS — enumerate every owner name + count;
+    (b) /api/search/{id}/facet/NAMESPACES (via getSearchFacetList aggregate)
+        — enumerate every namespace;
+    (c) /api/search/{id}/facet/TAGS — enumerate every tag + frequency;
+    (d) /api/search/{id}/facet/GROUPS — enumerate every DEG + size;
+    (e) /api/search/{id}/facet/STATUSES — enumerate every status + count;
+    (f) /api/search/{id}/facet/TYPES — enumerate every entity type + count;
+  A single authenticated caller drilling all six facet panels reconstructs
+  most of the catalog topology with no per-entity-read required.
+
+  Cross-references:
+    - Read-collaborative cross-owner enumeration — the broader pattern;
+      this is the SIXTEENTH cross-owner-readable surface.
+    - Search Catalog (faceted, session-as-server-state) — the parent
+      operation that creates the bearer-token session feeding the facet
+      drill-down.
+    - tsquery operator-injection via persisted state — the SAME aggregators
+      that suffer this finding ALSO suffer the tsquery injection.
+    - REFACTOR-024 / REFACTOR-340 — the per-entity alert read family;
+      this invariant extends the cross-owner enumeration to the
+      catalog-cardinality surface.

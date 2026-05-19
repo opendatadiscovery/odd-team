@@ -1,0 +1,31 @@
+gap_id: TEST-GAP-521
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform java SearchController controller-method:facets"
+pillars_affected: [P-01]
+surfaced_by:
+  - "facets.md:bugs_limitations_corner_cases.[5] (fetchFacetState does a side-effect UPDATE of last_accessed_at on every read — every facet GET is a WRITE)"
+  - "facets.md:performance.known_performance_gaps.[1] (Side-effect UPDATE on every read — the last_accessed_at column is never read by any housekeeping job)"
+  - "facets.md:tests_coverage_semantic.uncovered_behaviours.[6] (Stale-session read — last_accessed_at updates on every get(id))"
+behaviour: |-
+  Side-effect UPDATE-on-read of `last_accessed_at` regression-pin (LOW — P-01). `ReactiveSearchFacetRepositoryImpl.get(UUID)` (lines 99-106) is an UPDATE-RETURNING shape: every `GET /api/search/{search_id}` and `GET /api/search/{search_id}/facet/{facet_type}` call issues an UPDATE on `search_facets.last_accessed_at`. Implications: (a) `GET /api/search/{search_id}` is NOT idempotent at the storage layer — operationally surprising for a GET endpoint, (b) the side-effect UPDATE acquires a row lock; with concurrent UI tabs hitting the same session simultaneously, the write contention can stall, (c) the `last_accessed_at` field exists in the schema but is NEVER READ by any housekeeping job (`V0_0_52__introduce_housekeeping.sql` has NO `search_facets` policy — verified by grep during sidecar enrichment). The field is updated but useless — the design implies a future TTL eviction job that never landed (consistent with the `V0_0_1__init.sql:207` TODO `find a way to define TTL`). NO comment, annotation, or surrounding code defends the side-effect read posture as intentional. NO test pins the contract. A future refactor adding the TTL eviction job would actually USE `last_accessed_at` for the first time; conversely a refactor removing the UPDATE-on-read (treating GET as truly idempotent) would silently break the (currently unused) TTL infrastructure.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/SearchFacetGetIsAWriteContractTest.java"
+  name: "getFacets_isUpdateReturning_writesLastAccessedAt_pinsTheNonIdempotentReadContract"
+evidence:
+  - "facets.md:bugs_limitations_corner_cases.[5]: 'fetchFacetState does a side-effect UPDATE of last_accessed_at on every read — every facet GET is a WRITE. Implications: (a) GET /api/search/{search_id} is NOT idempotent at the storage layer; (b) the side-effect UPDATE acquires a row lock; with concurrent UI tabs hitting the same session simultaneously, the write contention can stall; (c) the last_accessed_at field exists in the schema but is NEVER READ by any housekeeping job.' severity: LOW"
+  - "ReactiveSearchFacetRepositoryImpl.java:99-106 (the UPDATE-RETURNING shape on get(id))"
+  - "V0_0_1__init.sql:206-207 (the TTL TODO)"
+  - "V0_0_52__introduce_housekeeping.sql (no search_facets entry — verified by grep)"
+cross_references:
+  - "TEST-GAP-518 (cross-owner facet-count enumeration — co-located)"
+  - "TEST-GAP-523 (unbounded table growth — related; TTL would address both)"
+  - "DOC-GAP-NNN candidate: document that GET on search-session is non-idempotent"
+  - "F-001 (Search and Filtering)"
+proposed_action: |-
+  Testcontainers integration test. (a) Authenticate user A. (b) POST /api/search → A receives session_id S. (c) Query `SELECT last_accessed_at FROM search_facets WHERE id = S` → record timestamp T1. (d) Sleep 100ms. (e) GET /api/search/S. (f) Query `SELECT last_accessed_at FROM search_facets WHERE id = S` → record T2. (g) Assert T2 > T1 (the UPDATE-on-read fired). (h) Sleep 100ms. (i) GET /api/search/S/facet/OWNERS?page=1&size=10. (j) Query `SELECT last_accessed_at FROM search_facets WHERE id = S` → record T3. (k) Assert T3 > T2 (facet GET also writes). (l) Test comment 'LOCKS the GET-is-a-WRITE contract for search-session reads as of 2026-05-19. The last_accessed_at field is updated but not consumed (no TTL eviction). When the TTL eviction job is added, this test stays green AND a new test verifies eviction; when the UPDATE-on-read is removed, this test FLIPS to expect T1==T2==T3.'
+batch: 2026-05-19-M
+feature_id: F-001

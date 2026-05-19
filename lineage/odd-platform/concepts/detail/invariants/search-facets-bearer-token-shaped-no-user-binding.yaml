@@ -1,0 +1,135 @@
+name: |-
+  Search-facets bearer-token-shaped — schema has no per-user binding
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+  - P-01
+description: |-
+  NEW INVARIANT, batch 2026-05-19M (schema-level primary source) — the
+  search_facets table at V0_0_1__init.sql:204-211 is defined as:
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(), query_string varchar(255),
+  filters jsonb (+ last_accessed_at, created_at). There is NO owner_id, NO
+  created_by, NO user_id column — the UUID is the sole identifier. The
+  schema-level decision is reinforced at the service layer: SearchServiceImpl.search
+  creates a new row WITHOUT capturing the caller principal
+  (SearchServiceImpl.java:75-82); updateFacets reads + merges + writes
+  WITHOUT checking ownership (SearchServiceImpl.java:84-96); fetchFacetState(searchId)
+  does a raw lookup with no owner predicate (SearchServiceImpl.java:157-160);
+  ReactiveSearchFacetRepositoryImpl.get(id) is a raw UUID-keyed UPDATE-RETURNING
+  (lines 99-106). **Operator-facing consequence**: search sessions are
+  bearer-token-shaped — any authenticated user in possession of any other
+  user UUID can READ, UPDATE, and DRIVE that session. Concrete impacts:
+  (a) an operator copying a search URL into a bug report exposes their entire
+  saved-filter state including My Objects posture; (b) a CSRF-style cross-tab
+  actor with read access to URL bars can hijack the session; (c) an
+  authenticated attacker probing GET /api/search/{guess} UUIDs either gets
+  "Search not found" 404 or reads another user session 200. The UUID space
+  is 122-bit gen_random_uuid so brute-force is infeasible, but URL leakage
+  is not. **TODO markers acknowledge maintenance gaps but do NOT defend the
+  unscoped posture** — V0_0_1__init.sql:206-207 carries
+  "TODO: find more clever way to generate uuid" + "TODO: find a way to
+  define TTL" — neither addresses the missing owner-binding. The schema
+  went into the initial migration this way and has been retained across all
+  subsequent migrations. **Severity**: HIGH — schema-level decision; lift
+  requires a migration + a back-fill strategy.
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+  - sql_migrations
+nodes:
+  - odd-platform java SearchController controller-method:search
+  - odd-platform java SearchController controller-method:facets
+  - odd-platform java service service:SearchServiceImpl
+  - odd-platform java repository reactive repository:ReactiveSearchFacetRepositoryImpl
+contributors:
+  - |-
+    facets.md (batch M PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[1] HIGH — the search_facets table has no
+    user binding — any authenticated user in possession of any other user
+    searchId UUID can READ, UPDATE, and DRIVE that session;
+    implicit_adrs.[2] Search session is bearer-token-shaped by design at the
+    schema layer; the schema-level decision is reinforced at the service
+    layer with no ownership check at the repository read or write paths;
+    security.known_security_gaps.[1] HIGH — session-state has no per-user
+    binding; cross-link batch E (the same finding on SearchController.search).
+  - |-
+    search.md (batch E cross-reference):
+    bugs_limitations_corner_cases — search-session UUID has no per-user
+    owner-binding (LOW under read-collaborative posture; HIGH under any
+    future owner-scoped search tightening); this batch M sidecar finds
+    that the facet drill-down endpoints inherit the same posture.
+evidence:
+  - |-
+    V0_0_1__init.sql:204-211 (schema definition with TODOs and no
+    owner_id / created_by / user_id column)
+  - |-
+    V0_0_1__init.sql:206-207 (the TODOs that acknowledge UUID/TTL gaps
+    without addressing ownership)
+  - |-
+    SearchServiceImpl.java:75-82 (search creates row without capturing
+    principal)
+  - |-
+    SearchServiceImpl.java:84-96 (updateFacets accepts any caller for
+    any UUID)
+  - |-
+    SearchServiceImpl.java:157-160 (fetchFacetState is a raw UUID lookup
+    with no ownership check)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:99-106 (get is a raw
+    UUID-keyed UPDATE-RETURNING with no user predicate)
+  - |-
+    facets.md:bugs_limitations_corner_cases.[1] +
+    implicit_adrs.[2] +
+    security.known_security_gaps.[1]
+mitigations_unimplemented:
+  - |-
+    Schema migration: add owner_id FK column (nullable; backfill with NULL
+    for legacy rows; new rows get the creator owner-id captured from
+    fetchAssociatedOwner at search-creation time).
+  - |-
+    Service-layer enforcement: ReactiveSearchFacetRepositoryImpl.get(id)
+    becomes get(id, ownerId); update similarly; rows with owner_id=NULL
+    are readable by anyone (legacy), rows with owner_id set are gated by
+    matching the caller's owner.
+  - |-
+    UI surface: a session-shared toggle that explicitly opts-in to sharing
+    the UUID (and then sets owner_id to NULL on the row); operators who
+    want to share a search URL with a colleague explicitly de-scope it.
+  - |-
+    Doc: extend /features/data-discovery/search with a "Session lifecycle"
+    section explaining that search URLs are bearer-tokens for the saved
+    session state — operators should not paste search URLs into bug
+    reports or screenshots without understanding the disclosure.
+  - |-
+    TTL eviction: the V0_0_1__init.sql:207 "TODO: find a way to define TTL"
+    is the OTHER half of the same finding; an unbounded-growth pool of
+    bearer-token-shaped session state is itself a privacy concern; the
+    Housekeeping job currently has no search_facets policy (verified
+    cross-batch).
+notes: |-
+  This invariant is a STRENGTHENING of the batch-E search-session finding
+  (search-session entity, weakness.[3]: "Search-session UUID has no
+  per-user owner-binding LOW under read-collaborative posture"). Batch M
+  upgrades the severity FROM LOW TO HIGH because:
+    (a) The facet drill-down endpoints (getSearchFacetList +
+        getFiltersForFacet) inherit the same posture — the catalog
+        cardinality enumeration via facets compounds the bearer-token
+        risk;
+    (b) The schema-level evidence is explicit (V0_0_1__init.sql:204-211
+        with TODOs that DO NOT mention ownership);
+    (c) The cross-batch confirmation across batch E + batch M shows the
+        decision is structurally consistent (not an oversight at one
+        endpoint).
+
+  Cross-references:
+    - Search Session — the entity vocabulary; this invariant is the
+      structural cause of the entity's bearer-token semantics.
+    - Search Catalog (faceted, session-as-server-state) — the operation
+      that creates the bearer-token row.
+    - tsquery operator-injection via persisted state — the
+      poison-pill class that ALSO sits in the same unscoped row.
+    - Read-collaborative cross-owner enumeration — the broader posture
+      that this is a sub-case of (search-session state is itself
+      cross-readable across all authenticated users).

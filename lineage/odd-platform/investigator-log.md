@@ -1242,3 +1242,56 @@ P-02 Data Modelling + P-03 Master Data Management + P-11 Platform API & Develope
 
 Theme M next: Anchor-set defence audit (cross-cutting; ~5 controllers — getDataEntityUpstreamLineage / getDataEntityGroupsLineage / getMyObjectsWithUpstream / getMyObjectsWithDownstream / SearchController.facets).
 
+
+## Batch 2026-05-19-M — Anchor-set defence audit (4/5 nodes; FIFTH autonomous batch)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: ede5d277 (75 prior + 4 new = **79 total**; 1 deferred — getDataEntityUpstreamLineage socket-errored 2× both attempts; symmetric to batch F downstream sibling, inheritance applied)
+- **Theme**: Anchor-set defence audit — getDataEntityGroupsLineage + getMyObjectsWithUpstream + getMyObjectsWithDownstream + SearchController.facets + getDataEntityUpstreamLineage (DEFERRED)
+
+### Sidecars added (4)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `getDataEntityGroupsLineage` | P-05 + P-01 | DEG-anchored sibling of REFACTOR-203 — cross-owner enumeration via DEG-internal lineage graph; no SecurityRule entry. Co-membership leakage on multi-team DEGs/Domains materially WIDER than per-entity REFACTOR-203. NEW: DEG-membership read vs write authorization asymmetry (write gated; read open). Inner-DEG suppression deferred-feature lacks backlog/ADR/test anchor. |
+| `getMyObjectsWithUpstream` | P-09 + P-01 + P-05 | **REFACTOR-225 PRIMARY-SOURCE CONFIRMED**: anchor-set scoping at DataEntityRelationsServiceImpl.java:26 is single-point-of-failure; listByOddrns at ReactiveDataEntityRepositoryImpl.java:228-253 has NO JOIN-side OWNERSHIP filter (vs listByOwner at :515-534 which DOES). **DOC-GAP-099 PRIMARY-SOURCE CONFIRMED**: openapi.yaml:843-844 says "data entities owned by current user with upstream dependencies" but DataEntityRelationsServiceImpl.java:37 explicitly excludes owned set via `Predicate.not` — the spec is the LYING contract layer. LineageDepth.empty() = `-1` sentinel single-hop encoding. |
+| `getMyObjectsWithDownstream` | P-09 + P-01 + P-05 | Symmetric REFACTOR-225 + DOC-GAP-099 confirmation (now 4-angle triangulated: controller G + repo H + service I + batch M). |
+| `SearchController.facets` | P-01 | NEW HIGH: cross-owner facet-count enumeration via 5 facet aggregators; search-session UUIDs no per-user binding at SCHEMA level (V0_0_1__init.sql:204-211); to_tsquery operator-injection DoS at JooqFTSHelper.java:164-168 reached from EVERY facet aggregator (compounds batch H finding). Side-effect UPDATE on read. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 228 → **238 concepts** | +10 net-new (1 entity + 2 operations + 7 invariants) + 9 strengthened. NEW HIGH invariants: REFACTOR-225 PRIMARY SOURCE; DOC-GAP-099 inverse-semantic 4-angle; DEG read-vs-write auth asymmetry; tsquery injection via persisted state; cross-owner facet enumeration. |
+| adr-archaeologist (ADRs) | 116 → **122** | +6 (117-122) + 3 strengthened (ADR-003 13-sidecar; ADR-015 16-sidecar — controller-method TRIPLET COMPLETED via /my + /my/upstream + /my/downstream; ADR-075 6-sidecar PRIMARY-SOURCE). 2 borderline_flag ADRs (118/121). 0 wisdom-test reclassifications (every implicit_adrs entry had explicit positive intent anchor). |
+| adr-archaeologist (scopes) | 342 → **352** | +10 (343-352) + 6 strengthened (REFACTOR-024 5-batch/5-surface; REFACTOR-185 15-sidecar STRONGEST in catalog; REFACTOR-203 sibling DEG-anchored; REFACTOR-225 BOTH /my halves; REFACTOR-229 SECOND invocation site at facet aggregators; REFACTOR-242 LineageDepth.empty sentinel). **REFACTOR-343 NEW HIGH**: DEG-lineage cross-owner CO-MEMBERSHIP enumeration. **REFACTOR-344 NEW HIGH**: search_facets no user binding bearer-token vector. |
+| doc-gap-finder | 146 → **155** | +9 (159-167) + 5 strengthened (DOC-GAP-099 4-angle triangulated end-to-end; DOC-GAP-105 7-angle; DOC-GAP-115 controller-method-tier 2/2+3/3; DOC-GAP-104 2-invocation-site; DOC-GAP-009 9-column row template). DOC-GAP-167 THIRD pillar-overpromise META (P-05 Data Lineage) — cross-pillar pattern with P-09 + P-01 META. |
+| test-coverage-mapper | 502 → **522 gaps** | +20 (504-523) + 4 strengthened. 3 NEW CRITICAL: TEST-GAP-504 (DEG-anchored lineage cross-owner); TEST-GAP-512 (REFACTOR-225 PRIMARY-SOURCE BOTH /my halves); TEST-GAP-518 (cross-owner facet-count enumeration). 2 reclassifications: TEST-GAP-308 HIGH→CRITICAL, TEST-GAP-252 LOW→HIGH. |
+| feature-flow-builder | 14 → **17 features** (+3 new) | **F-015 / P-09:F-003 My-Objects Anchor-Set Reads** (NEW; primary drift: anchor_set_single_point_of_failure). **F-016 / P-05:F-002 DEG-Anchored Lineage** (NEW; cross-pillar P-05+P-01; primary drift: co_membership_leakage — WIDEST blast). **F-017 / P-01:F-005 Search Filter Facets** (NEW; primary drift: cross_owner_facet_enumeration + bearer-token-shaped session UUIDs + tsquery DoS). F-005 extended. |
+
+### Coverage state after batch M
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 79 | **20.0%** (was 19.0%) ← 20% direct milestone |
+| Effective coverage | 144 | **36.5%** (was 33.7%) |
+| Features discovered | 17 (was 14) | 3 NEW pillar-anchored features |
+| Features with ≥1 cell PROBED | 4 | unchanged |
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-185 DISABLED-mode bypass**: now **15-sidecar** — STRONGEST single finding in the catalog
+- **REFACTOR-024 cross-owner enumeration family**: now **5-batch / 5-surface** (BATCH alerts + per-entity alerts + per-entity catalog search + facet aggregators + lineage-graph traversal)
+- **ADR-CANDIDATE-015 owner-scoping mechanism**: 16-sidecar with controller-method TRIPLET completed (`/my` + `/my/upstream` + `/my/downstream`)
+- **DOC-GAP-099 OpenAPI inverse-semantic**: 4-angle triangulated end-to-end
+- **REFACTOR-225 anchor-set defence**: PRIMARY-SOURCE for BOTH /my/upstream + /my/downstream
+- **REFACTOR-229 FTS SQL-injection**: SECOND invocation site at facet aggregators compounds with REFACTOR-344 (poison-session DoS)
+- **3rd pillar-overpromise META** (DOC-GAP-167 P-05): cross-pillar META pattern across P-09 / P-01 / P-05 — methodology reviewer-checklist gate recommendation
+
+### Follow-ups (logged, not blocking)
+
+- getDataEntityUpstreamLineage DEFERRED — socket-errored both attempts. Symmetric to batch F downstream; logged as deferred-sidecar carve-out. Future-batch retry candidate (likely just enriches identically to downstream).
+- 3 broken-yaml files persist from batch J/K (lineage-graph-traversal.yaml, manage-ownership-lifecycle-with-deg-cascade.yaml, run-housekeeping-cycle-five-jobs.yaml). Quarantined.
+- 115 detail-without-index in refactoring-scopes (batch-J *-strengthen orphans + batch-K/L canonical patterns); doc-gaps has 11 detail-without-index + 4 index-without-detail (batch-F orphans 084-088).
+

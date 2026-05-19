@@ -36,4 +36,37 @@ The remedy is refactoring within the existing call shape — not a structural ch
 
 **Suggested backlog grouping**: `SEC-NNN SQL-injection hardening sprint` — pair with `Authorization audit batch` (DISABLED-mode pre-condition) and `Repository test bootstrap` (the ReactiveDataEntityRepositoryImpl test class needs to exist before this fix lands).
 
+## STRENGTHENS — Batch M (search facets aggregator — SECOND invocation site for tsquery operator injection; compounds REFACTOR-344 session-poisoning)
+
+**SECOND INVOCATION SITE confirmed** at every facet aggregator in `ReactiveSearchFacetRepositoryImpl`. Batch M's `SearchController.facets` sidecar surfaces a separate-but-related code path that uses the SAME `JooqFTSHelper.tsQuery` (`JooqFTSHelper.java:164-168`) without escaping — `JooqFTSHelper.ftsCondition` (`JooqFTSHelper.java:100-105`) is invoked from `ReactiveSearchFacetRepositoryImpl.java:182, 267, 469, 582` (the FTS site in every facet aggregator). Where REFACTOR-229 batch H described the `String.formatted` raw-SQL angle, batch M surfaces the `to_tsquery(?)` operator-injection angle on the PERSISTED `query_string` (the field stored in `search_facets.query_string`).
+
+**New batch-M evidence**:
+
+1. **`SearchController.facets.md:bugs_limitations_corner_cases.[4]`** (HIGH): "**Persisted `state.getQuery()` is passed directly to `to_tsquery(?)` without escaping tsquery operators.** `JooqFTSHelper.tsQuery` (`JooqFTSHelper.java:164-168`) does `Arrays.stream(plainQuery.split(\" \")).map(q -> q + \":*\").collect(Collectors.joining(\"&\"))` — every word becomes a `prefix-match` token AND-joined. But if the persisted `query_string` contains characters that to_tsquery treats as syntax (`!`, `(`, `)`, `:`, `<->`, `&`, `|`, `'`, `\\`), they are NOT escaped before reaching the parser. A caller who POSTs a search with `query = 'foo ) | (bar'` will persist that string in `search_facets.query_string`; every subsequent facet aggregator that joins to SEARCH_ENTRYPOINT will fail at SQL-parse time with a Postgres `syntax error in tsquery`, breaking the session permanently (the row is reachable but every facet read 500s). The injection is bounded by Postgres tsquery semantics (the parser does not eval SQL — it raises `42601`), but it IS a denial-of-service surface AND it is the SAME code path that batch H flagged on `getHighlightedResult`."
+
+2. **`SearchController.facets.md:security.known_security_gaps.[2]`** (HIGH): "**tsquery-operator injection on persisted `query_string` → SQL parser DoS.** `JooqFTSHelper.tsQuery` (`JooqFTSHelper.java:164-168`) does not escape tsquery operators; persisted `query_string` reaches `to_tsquery(?)` directly (`JooqFTSHelper.java:100-105`). A caller who POSTs a search with `query='foo )('` persists the row, then every subsequent facet aggregator that runs on that row's state fails at `to_tsquery` parse time. The session becomes permanently broken (the row is reachable but every facet read 500s). The same code path is the source of batch H finding on `getHighlightedResult`; the facet endpoints are a SECOND invocation site for the same shape."
+
+**Two-batch invocation-site catalogue**:
+
+| Batch | Invocation site | Vector | Impact |
+|---|---|---|---|
+| Batch H | `ReactiveDataEntityRepositoryImpl.getHighlightedResult` (`:799-806`) | `String.formatted(text, tsQuery)` raw-SQL injection | SQL injection (table drop, policy exfiltration); the canonical finding |
+| **Batch M** | **`ReactiveSearchFacetRepositoryImpl` facet aggregators** (`:182, :267, :469, :582`) via `JooqFTSHelper.ftsCondition` (`:100-105`) | **`to_tsquery(?)` parser DoS on persisted `query_string`** | **Permanent session breakage; every facet read 500s for the poisoned session UUID; combined with REFACTOR-344 (`search_facets` has no user binding) means an attacker who poisons a session UUID breaks facet reads for any user who knows that UUID** |
+
+**Compounding factor — REFACTOR-344 cross-link**: The batch-M facet-aggregator invocation site COMPOUNDS with the bearer-token-shaped session vulnerability (REFACTOR-344 NEW). An attacker can:
+1. `POST /api/search` with `query='foo )('` to create a poisoned session UUID.
+2. The session UUID is reachable by any authenticated user who knows it (no user binding per REFACTOR-344).
+3. Anyone who tries to read the session's facets (`GET /api/search/{poisoned_uuid}/facet/{any}`) hits the `to_tsquery` parse error → HTTP 500.
+4. The session is **permanently broken**; there is no operator-side cleanup (the `last_accessed_at` timestamp is updated but no housekeeping deletes the row).
+
+The poison-session attack vector is real and operator-actionable: a malicious caller poisons N session UUIDs, then either shares them (in a bug report, chat, screenshot URL bar) or somehow induces other users to receive them (e.g. via a malicious browser extension that intercepts URLs). The cure is the same as batch H's: escape tsquery operators in `JooqFTSHelper.tsQuery` OR use `DSL.value(...)` to parameterise.
+
+**Architectural alignment**: The fix scope expands from "patch the one `String.formatted` call in getHighlightedResult" to "patch `JooqFTSHelper.tsQuery` at the single source of truth so EVERY consumer (getHighlightedResult AND every facet aggregator AND any future `to_tsquery` consumer) benefits". The two-batch triangulation confirms the helper is the right architectural fix point.
+
+**New cross-link**:
+- **REFACTOR-344 NEW** — `search_facets` has no user binding; the compounding factor for poison-session DoS.
+- **ADR-CANDIDATE-121 NEW** — search-session bearer-token-shaped at the schema layer; the architectural decision that makes session-poisoning possible.
+
+**Severity unchanged at HIGH** — but the two-batch invocation-site catalogue widens the patch scope. The architectural fix (escape at `JooqFTSHelper.tsQuery`) is now the single load-bearing change point.
+
 ---

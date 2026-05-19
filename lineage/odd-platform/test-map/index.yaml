@@ -7,19 +7,19 @@ source_monolith_frontmatter:
   sidecar_count: 55
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 577
+  total_test_gaps: 616
   gaps_by_criticality:
-    CRITICAL: 103
-    HIGH: 177
-    MEDIUM: 215
-    LOW: 82
+    CRITICAL: 106
+    HIGH: 188
+    MEDIUM: 233
+    LOW: 89
   gaps_by_category:
-    missing-integration: 106
-    missing-security: 149
-    missing-edge-case: 230
-    missing-unit: 59
+    missing-integration: 109
+    missing-security: 166
+    missing-edge-case: 240
+    missing-unit: 64
     sidecar-stale: 1
-    missing-performance: 22
+    missing-performance: 26
     missing-binding: 10
   batch_history:
   - '2026-05-08: TEST-GAP-001..069 — initial 15-sidecar reduction'
@@ -110,7 +110,7 @@ source_monolith_frontmatter:
   - odd-platform java repository_reactive repository:ReactiveLineageRepositoryImpl
   - odd-platform java repository_reactive repository:ReactiveOwnershipRepositoryImpl
   - odd-platform java repository_reactive repository:ReactivePolicyRepositoryImpl
-total_entries: 577
+total_entries: 616
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -8352,27 +8352,24 @@ test_gaps_index:
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-522.yaml
 - gap_id: TEST-GAP-523
-  behaviour: search_facets table unbounded growth regression-pin (LOW — cross-pillar
-    P-01+P-08; storage cost + bearer-token persistence). Every `POST /api/search`
-    creates a row via `searchFacetRepository::create` (`SearchServiceImpl.java:80`);
-    NO TTL eviction, NO row deletion on user logout, NO archive policy. Operators
-    on long-running platforms see the table grow forever. Combined with TEST-GAP-519
-    (no user binding), the table is an indefinitely-growing pool of bearer-token-shaped
-    session state with full filter history retained as jsonb. The `V0_0_52__introduce_housekeeping.sql`
-    policy list has NO `search_facets` entry (verified by sidecar grep during enrichment)
-    — the TTL TODO at `V0_0_1__init.sql:207` (`find a way to define TTL`) was never
-    implemented. The `last_accessed_at` field is updated on every read (TEST-GAP-521)
-    but never consumed for cleanup. Storage cost grows monotonically; for a platform
-    with 1000 active users each creating 10 search sessions/day, the table grows by
-    3.65M rows/year — bounded only by disk. Each row's `filters` jsonb can be arbitrarily
-    large (filter selections, facet states). NO test pins the unbounded growth, NO
-    test exercises a configured TTL housekeeping job (because none exists). Cross-pillar
-    P-01 (Discovery session state lifecycle) + P-08 (Management/operational — operators
-    have no visibility into table size; no operator-facing tooling for session cleanup).
-  test_class: missing-performance
-  criticality: LOW
+  behaviour: SearchFacetsHousekeepingJob (the TTL eviction job for `search_facets`)
+    has ZERO test coverage. The class is one of the 5 housekeeping jobs F-010 enumerates
+    (`P-08:F-002 Housekeeping TTL Enforcement`); it deletes rows where `LAST_ACCESSED_AT
+    <= now() - housekeepingTTLProperties.getSearchFacetsDays()` (default 30 days per
+    application.yml:169). No unit test pins the delete predicate; no integration test
+    asserts that the job prunes rows on a real Postgres after `last_accessed_at` ages
+    past TTL; no test asserts that rows NEWER than TTL are PRESERVED. The class belongs
+    to F-010 test_matrix.integration.uncovered (end-to-end 15-min cycle with seeded
+    data including aged-out search_facets rows). Cross-pillar P-01 (search-session
+    lifecycle) + P-08 (operational housekeeping). The original batch-M emission claimed
+    "NO TTL eviction, V0_0_52 has no search_facets entry, TTL TODO never implemented"
+    — all four sub-claims were FACTUALLY WRONG (verified 2026-05-19 against `SearchFacetsHousekeepingJob.java`,
+    `V0_0_52__introduce_housekeeping.sql:1-7`, `application.yml:169`); see LSN-018
+    for the methodology miss.
+  test_class: missing-integration
+  criticality: HIGH
   node_id: ''
-  feature_id: F-001
+  feature_id: F-010
   proposed_test_files_count: 0
   related_refactor_ids: []
   related_doc_gap_ids: []
@@ -9294,3 +9291,850 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-578.yaml
+- gap_id: TEST-GAP-579
+  behaviour: '**Filter-class anchor for default-OFF posture (STRENGTHENS TEST-GAP-116).**
+    The new filter-class sidecar primary-sources the load-bearing chain: (a) `@ConditionalOnProperty(value="auth.ingestion.filter.enabled",
+    havingValue="true")` with NO `matchIfMissing`; (b) `application.yml:48` ships
+    explicit literal `false`; (c) every UI security configuration permits `/ingestion/entities`
+    — LoginFormSecurityConfiguration.java:49-51 lists it in `permittedPaths`, OAUTH2/LDAP
+    route through `SecurityConstants.WHITELIST_PATHS` (`/ingestion/**` wildcard at
+    line 96 + `AuthorizationCustomizer.java:22`), DisabledAuthSecurityConfiguration
+    is `.anyExchange().permitAll()`; (d) `SecurityConstants.SECURITY_RULES` (lines
+    98-355) has NO entry for `/ingestion/entities`. The conclusion is structurally
+    unavoidable: when the filter bean is not registered (the default), the ingestion
+    endpoint is anonymously reachable under EVERY UI auth mode. The bean-non-registration
+    + ServerWebExchangeMatcher (path-based, not auth-aware) means the FilterChain
+    never sees an auth requirement. Same LSN-001 shape — bundled default ships a destruction
+    surface open. This test pins ALL FOUR UI modes simultaneously to lock the no-fallback-defense
+    invariant.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-579.yaml
+- gap_id: TEST-GAP-580
+  behaviour: '**Path coverage IS endpoint-by-endpoint, not feature-by-feature — the
+    toggle name is misleading.** `auth.ingestion.filter.enabled=true` locks down ONLY
+    `/ingestion/entities` (the hardcoded path at IngestionDataEntitiesFilter.java:28).
+    Sibling endpoints are routed differently: (a) `POST /ingestion/datasources` is
+    covered by `IngestionDataSourceFilter` (UNCONDITIONAL — no toggle); (b) `POST
+    /ingestion/alert/alertmanager` (AlertManagerController.java:21) is covered by
+    NO filter AND has NO `@PreAuthorize`. An operator reading the property name reasonably
+    believes ''ingestion'' is locked when toggle=true, and is wrong by one endpoint.
+    STRENGTHENS TEST-GAP-014 (AlertManager webhook anonymous) by providing the filter-class
+    structural confirmation that the toggle does NOT cover the AlertManager surface
+    — the gap is not a defect to be fixed by ''flipping the toggle on'' but requires
+    explicit additional filtering. The asymmetry across the three ingestion endpoints
+    (toggled, always-on, none) is the architectural finding.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-580.yaml
+- gap_id: TEST-GAP-581
+  behaviour: '**Path matcher hard-coded — wildcard refactor or version-suffix would
+    silently bypass.** The path matcher at IngestionDataEntitiesFilter.java:28 is
+    constructed from the literal string `"/ingestion/entities"` + `HttpMethod.POST`.
+    The constructor does NOT accept a path; no `@Value` or property injects one. A
+    future endpoint `POST /ingestion/entities/batch`, `POST /ingestion/entities/v2`,
+    `POST /ingestion/entities/stream`, or a router rewrite (Spring Cloud Gateway,
+    Kubernetes Ingress) presenting `/api/ingestion/entities` prefix would silently
+    bypass the filter. There is no compile-time signal, no test asserting the path
+    scope, and no `@docs` annotation pinning the literal. The maintainer''s intent
+    (per implicit_adrs[0]) is one-filter-class-per-path — but the convention is enforced
+    by code-pattern only, not test or schema.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-581.yaml
+- gap_id: TEST-GAP-582
+  behaviour: '**STRENGTHENS TEST-GAP-122 with filter-class anchor.** The filter class
+    itself confirms the body-buffered-before-auth ordering at file:line level: `super.getBody().collectList()`
+    (line 38) materialises the entire byte stream BEFORE the token check at line 56.
+    The body is parsed to `DataEntityList` to extract `dataSourceOddrn` (line 40)
+    — the datasource identity is in the BODY, not in a header, so the platform cannot
+    route to the correct token without parsing the body first. An attacker submitting
+    20MB invalid-token requests forces materialise + parse before rejection. Per `application.yml:14-15`
+    (`spring.codec.max-in-memory-size: 20MB`), heap pressure scales linearly with
+    concurrent attack requests. The implicit_adr[2] frames this as a structural consequence
+    of the API contract (datasource ODDRN in body); a protocol redesign (e.g. requiring
+    `X-Datasource-Oddrn` header) would unlock auth-first ordering but break the Ingestion
+    API contract. Pin the present ordering so any future protocol change is detected.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-582.yaml
+- gap_id: TEST-GAP-583
+  behaviour: '**NotFoundException → 5xx (NOT 401) — info-leak + misleading status
+    code.** The filter throws `NotFoundException` at line 44 (unknown `dataSourceOddrn`)
+    and lines 50-51 (datasource has null token AND parent collector lookup is empty).
+    The parent `AbstractIngestionFilter.filter` only catches `AccessDeniedException`
+    (line 40) to write 401; other exceptions including `NotFoundException` propagate
+    to the default reactive error handler and surface as 500 Internal Server Error.
+    Behavioral consequence: an attacker probing with arbitrary payload + valid token
+    can DISTINGUISH (a) ''datasource exists, wrong token'' (401) from (b) ''datasource
+    does not exist'' (5xx) — minor info-leak about which ODDRNs are registered. Operationally
+    misleading too: an operator seeing 5xx in collector logs may chase a wrong root
+    cause (think ''platform crashed'') when the actual cause is a half-configured
+    collector record. The fix (catch NotFoundException → 404 OR 401 with neutral message)
+    is one-liner; pin the current behaviour first.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-583.yaml
+- gap_id: TEST-GAP-584
+  behaviour: '**Token caching ABSENT on the auth hot path — every ingestion request
+    re-fetches the datasource (and optionally collector) from PostgreSQL.** `getDtoByOddrn`
+    (line 43) + `getDto` (line 49) are non-cached reactive DB calls. On a high-throughput
+    ingestion stream (hundreds of `POST /ingestion/entities` per second from a busy
+    `odd-collector`), this is N+M extra DB round-trips on the auth path BEFORE the
+    controller''s own DB writes. A short-TTL Caffeine cache keyed by `dataSourceOddrn`
+    would eliminate per-request DB hits with a known invalidation requirement on `regenerateCollectorToken`
+    / datasource-token rotation. The maintainer''s deliberate omission (per the broader
+    no-cache stance — AuthIdentityProviderImpl implicit_adrs[3]) is the design choice:
+    avoid cache-invalidation surface; pay per-request cost.'
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-584.yaml
+- gap_id: TEST-GAP-585
+  behaviour: '**Body parsed TWICE per request — filter to extract dataSourceOddrn
+    + controller for the actual DataEntityList ingest.** The filter at line 40 calls
+    `readBody(dataBuffer, DataEntityList.class)` — full Jackson tree-walk — purely
+    to extract `body.getDataSourceOddrn()`. Then the buffered DataBuffers are re-emitted
+    unchanged via `flatMapIterable(ignored -> dataBuffer)` at line 60 to the controller.
+    The controller (IngestionController.java:38-44) re-deserialises the same payload
+    via the OpenAPI-generated `IngestionApi`''s `Mono<DataEntityList>` parameter binding.
+    For a 20MB payload containing 1000 entities, this is TWO full Jackson tree-walks
+    per request. A streaming `JsonPath`-style extraction of just `dataSourceOddrn`
+    would halve the per-request parse cost. The cost is meaningful at >100 req/s on
+    1000-entity payloads.'
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-585.yaml
+- gap_id: TEST-GAP-586
+  behaviour: '**Cross-mode coverage divergence between LOGIN_FORM (exact-path list)
+    and OAUTH2/LDAP (wildcard `/ingestion/**`).** LoginFormSecurityConfiguration.java:49-51
+    lists `/ingestion/entities` + `/ingestion/datasources` exact-only — so `POST /ingestion/alert/alertmanager`
+    under LOGIN_FORM would FALL THROUGH to `.pathMatchers("/**").authenticated()`
+    and REQUIRE login. BUT OAUTH2/LDAP route through `SecurityConstants.WHITELIST_PATHS`
+    (`/ingestion/**` wildcard at line 96) + `AuthorizationCustomizer.java:22` which
+    DOES permit `/ingestion/alert/alertmanager`. Under DISABLED, every path is permitAll.
+    The mode-by-mode reachability of the alertmanager webhook is INCONSISTENT and
+    undocumented. An operator switching from LOGIN_FORM to OAUTH2 might unknowingly
+    OPEN the alertmanager webhook (from auth-required to anonymous). The cross-mode
+    behaviour divergence affects the SAME endpoint set with the SAME nominal protection
+    but different actual reachability.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-586.yaml
+- gap_id: TEST-GAP-587
+  behaviour: '**Filter ordering vs S2sAuthenticationFilter — undocumented interaction.**
+    Under `auth.s2s.enabled=true` + `auth.ingestion.filter.enabled=true`, a request
+    carrying valid `X-API-Key` (S2S) but NO `Authorization: Bearer <ingestion-token>`
+    header reaches the platform. The S2S filter populates the SecurityContext with
+    ADMIN identity BEFORE the SecurityWebFilterChain. The ingestion filter THEN runs
+    its own check at IngestionDataEntitiesFilter.java:41 via `resolveToken` — and
+    finds NO Bearer header → throws `AccessDeniedException("Token is missed")` → 401.
+    The S2S ADMIN identity does NOT satisfy the ingestion filter''s token check (the
+    ingestion filter is orthogonal to S2S — different mechanism). The S2S doc page
+    WebFetched 2026-05-19 recommends combining both, but the actual combined behaviour
+    is: S2S call to `/ingestion/entities` REQUIRES BOTH `X-API-Key` AND `Authorization:
+    Bearer`. This is undocumented and counter-intuitive to operators trying to use
+    S2S as a ''master key'' for the ingestion path.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-587.yaml
+- gap_id: TEST-GAP-588
+  behaviour: '**hd-claim defence-in-depth — TERMINAL SECURITY decision on Google Workspace
+    domain restriction.** When `auth.oauth2.client.{id}.allowed-domain=odd.com` is
+    configured, Google IDP restriction enforces at TWO points: (a) `OAuthSecurityConfiguration.java:168-175`
+    mutates the authorize URL to append `?hd={allowedDomain}` (steers Google''s account
+    picker — UX hint); (b) THIS handler at GoogleUserHandler.java:49-55 re-verifies
+    the `hd` ID-token claim case-insensitively (the actual security enforcement).
+    The TWO layers compose: a user could bypass the URL hint by editing the URL OR
+    by using a personal `@gmail.com` account (which omits `hd` entirely, making it
+    null) but is STILL rejected by the handler''s hd-claim re-verification. ZERO tests
+    exist on GoogleUserHandler — a regression that removed the hd-null check (line
+    50, the `!StringUtils.equalsIgnoreCase(allowed, null)` predicate) would silently
+    let personal Google accounts authenticate to a Workspace-restricted deployment.
+    Personal accounts: `token.getClaim(''hd'') == null` → `!equalsIgnoreCase(''odd.com'',
+    null) == true` → REJECT with `OAuth2AuthenticationException("invalid_token", "Domain
+    null doesn''t match with allowed domain odd.com")`. A regression-vector class
+    A (defence-in-depth-removal) silently widens the trust boundary.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-588.yaml
+- gap_id: TEST-GAP-589
+  behaviour: '**admin-groups silently NO-OP for Google — operator''s intended ADMIN-by-group
+    never activates.** The `ODDOAuth2Properties.OAuth2Provider.adminGroups : Set<String>`
+    field (line 49) BINDS successfully from `auth.oauth2.client.google.admin-groups:
+    [workspace-admins]` YAML. `GoogleUserHandler.java:1-74` NEVER reads `provider.getAdminGroups()`
+    — the value is silently ignored at every login (compare AbstractOIDCUserHandler.java:44-55
+    which DOES read `getAdminGroups()`; CognitoUserHandler / AzureUserHandler extend
+    the abstract base, Google does not). An operator copying the Cognito/GitHub admin-groups
+    pattern to Google gets ZERO behaviour change AND ZERO warning at boot — every
+    user remains USER role regardless of group membership. Security-policy gap: the
+    intended group-based ADMIN never activates. Combined with no `admin-principals`
+    configured = no admins at all. Live docs WebFetched 2026-05-19 status 200 confirm
+    `admin-groups` documented for AWS Cognito and GitHub only — silence-confirms-silence
+    in the docs is internally consistent BUT the field bind succeeds, which is the
+    operator-hostility trap.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-589.yaml
+- gap_id: TEST-GAP-590
+  behaviour: '**admin-attribute defaults to literal ''email'' for Google — diverges
+    from AbstractOIDCUserHandler default (userNameAttribute).** Line 31 declares `GOOGLE_EMAIL
+    = "email"`; line 58 uses it as the fallback when `provider.adminAttribute` is
+    unset. AbstractOIDCUserHandler.java:33-35 instead falls back to `userNameAttributeName`
+    (the username attribute itself — Cognito uses `cognito:username`, Azure uses `name`).
+    The Google-specific default IS the decision — `email` is the verified Workspace
+    email and the natural admin-list identifier (matching `admin-principals: john@odd.com,david@odd.com`
+    in the docs example). A regression that aligned the fallback with the abstract
+    base (e.g. defaulting to `userNameAttributeName`) would silently demote every
+    admin where `admin-attribute` is unset (a common configuration — operators only
+    set it when they need to override). Six admin-detection branches need coverage:
+    (1) adminPrincipals match → ADMIN; (2) adminPrincipals case-insensitive match
+    → ADMIN; (3) explicit adminAttribute=''sub'' + match → ADMIN; (4) adminAttribute
+    unset → reads ''email'' (the GOOGLE_EMAIL constant) NOT userNameAttribute; (5)
+    non-admin → USER; (6) empty adminPrincipals → USER regardless of claim values.'
+  test_class: missing-unit
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-590.yaml
+- gap_id: TEST-GAP-591
+  behaviour: '**userNameAttribute resolved via Spring ClientRegistration.ProviderDetails.UserInfoEndpoint,
+    NOT via provider.getUserNameAttribute() — Google-specific divergence.** Lines
+    66-68: `request.getClientRegistration().getProviderDetails().getUserInfoEndpoint().getUserNameAttributeName()`.
+    Spring auto-discovers this from `issuer-uri` `.well-known/openid-configuration`
+    OR the explicit `auth.oauth2.client.google.user-name-attribute` YAML field via
+    Spring''s `ClientRegistrationProperties` binding. All other handlers (Cognito,
+    Azure, ODDIAM, GitHub) read `provider.getUserNameAttribute()` (the ODD POJO field)
+    directly. The divergence means: a Google client without `user-name-attribute`
+    in YAML gets Spring''s auto-discovery (typically `name` or `sub`); a Cognito/Azure
+    client without `user-name-attribute` gets the abstract base''s default (`cognito:username`
+    / `name`). The inconsistency is an architectural irregularity — same config field,
+    different read paths. Line 69 fallback to `IdTokenClaimNames.SUB` (''sub'') when
+    Spring''s lookup returns null.'
+  test_class: missing-unit
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-591.yaml
+- gap_id: TEST-GAP-592
+  behaviour: '**`shouldHandle(provider)` contract — case-insensitive Google match,
+    partial-string non-match.** Line 39: `return Provider.GOOGLE.name().equalsIgnoreCase(provider);`.
+    Returns true for ''google'' / ''GOOGLE'' / ''Google'' / ''GoOgLe'' (case-insensitive);
+    returns false for ''GOOGL'' (partial), ''google '' (trailing space), null, empty,
+    ''github'', ''azure''. The dispatcher `OAuthSecurityConfiguration.java:185-189`
+    picks the FIRST `shouldHandle == true` from the `oidcUserHandlers` list — current
+    handlers are uniquely-disjoint by provider string, so first-match-wins is safe
+    today. But CustomOIDCUserHandler.shouldHandle returns true for ANY provider NOT
+    in the `Provider` enum (CustomOIDCUserHandler.java:28-34) — a future handler with
+    OVERLAPPING coverage (e.g. an OktaUserHandler claiming ''okta'' which Custom also
+    claims) depends on Spring''s bean-list ordering for correctness. The fragility
+    is undocumented; the test pins the case-insensitive Google contract AND the non-overlap-today
+    expectation.'
+  test_class: missing-unit
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-592.yaml
+- gap_id: TEST-GAP-593
+  behaviour: '**GitHub username-rename orphans USER_OWNER_MAPPING — silent loss of
+    owner-link.** GitHub allows free login renames (the old name enters 90-day escrow
+    then becomes available to others). The handler uses `login` as the username (line
+    36 `USER_LOGIN = "login"` + line 56 default `adminAttribute = USER_LOGIN`). A
+    user `alice` who logs in once (USER_OWNER_MAPPING row created with `oidc_username=''alice'',
+    provider=''github''`), then renames her GitHub login to `alice2`, presents `(alice2,
+    ''github'')` to AuthIdentityProviderImpl.java:29-30 on next login. The lookup
+    at ReactiveUserOwnerMappingRepositoryImpl.java:116-127 builds `WHERE OIDC_USERNAME
+    = ''alice2'' AND PROVIDER = ''github''` — the prior `(alice, github)` row is orphaned.
+    NO `id`-based fallback (GitHub''s stable numeric `id` is in the OAuth2User attributes
+    but not used as the username). NO migration tool. NO doc warning. Live docs WebFetched
+    2026-05-19 status 200 silent on rename behaviour. This is the GitHub-specific
+    facet of the F-011 `compound_key_silent_in_docs` finding and the AuthIdentityProviderImpl
+    `no_auto_create_on_first_login` cross-cut: after rename, the renamed user appears
+    as a NEW first-time user with NO `My Objects` / `My Alerts` / activity.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-593.yaml
+- gap_id: TEST-GAP-594
+  behaviour: '**Org-membership gate + admin-team gate — TERMINAL authorization decisions
+    on GitHub OAuth2 login.** Two outbound HTTPS calls to api.github.com: (a) `GET
+    /user/orgs` (line 78) to verify `team.organization.login` case-insensitively matches
+    `provider.organizationName`; (b) `GET /user/teams` (line 106, conditional on adminGroups
+    non-empty) to determine ADMIN by team-name membership within that org. Both responses
+    are parsed and used to gate authentication: (1) user not in `organizationName`
+    → `Mono.error(OAuth2AuthenticationException("invalid_token", "User doesn''t belong
+    to organization {orgName}"))` at line 90; (2) user in org + adminGroups empty
+    → USER; (3) user in org + member of a team WHOSE NAME case-insensitively-equals
+    any adminGroups entry AND whose team belongs to organizationName → ADMIN; (4)
+    user in a team named the same as an adminGroups entry BUT in DIFFERENT org → team
+    does NOT contribute to ADMIN (cross-org disambiguation at lines 114-119, 122-131).
+    ZERO tests exist; the chain produces ADMIN-or-USER-or-reject decisions with NO
+    downstream re-check.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-594.yaml
+- gap_id: TEST-GAP-595
+  behaviour: '**admin-principals BYPASS organization-name gate — explicit allowlist
+    beats org gate, but UNDOCUMENTED.** Lines 54-67 fire BEFORE the org check at lines
+    68-96. If the user''s `admin-attribute` claim (default `login`) full-string-case-insensitive-matches
+    any `adminPrincipals` entry, the handler returns ADMIN with NO `/user/orgs` HTTP
+    call AND NO organization-name verification. An operator''s `adminPrincipals: [external-consultant]`
+    makes `external-consultant` ADMIN even if NOT a member of `organizationName` —
+    by design (implicit_adrs[1]). The maintainer''s intent: grant ADMIN to a specific
+    user outside the org (a consultant, an external admin) via the explicit allowlist.
+    Live docs WebFetched 2026-05-19 status 200: `admin-principals` described as ''Direct
+    list of users granted ADMIN role'' WITHOUT flagging the org-bypass semantic. Operator
+    threat model: a misuse can elevate an out-of-org user. The doc drift is MEDIUM
+    severity (deliberate design but undocumented; counter to a reasonable operator
+    mental model where `organization-name` is a global gate).'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-595.yaml
+- gap_id: TEST-GAP-596
+  behaviour: '**GitHub Enterprise Server (GHES) operators silently locked out — `api.github.com`
+    hard-coded.** Line 39: `private final WebClient webClient = WebClient.create("https://api.github.com");`
+    — no `@Value`, no operator-property, no `apiBaseUrl` field on ODDOAuth2Properties.OAuth2Provider
+    (verified by Grep). A GHES deployment with API at `https://github.example.com/api/v3`
+    is structurally incompatible. The handler IS selected if `provider=github` (the
+    GithubCondition only checks the literal string `GITHUB`), so an operator configuring
+    a GHES OAuth client with `provider: github` gets bean instantiation + login attempts
+    that fail with DNS/cert errors to api.github.com. Live docs WebFetched 2026-05-19
+    status 200 silent on GHES. One entire class of GitHub operator silently locked
+    out by hard-coding that could be a one-line addition.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-596.yaml
+- gap_id: TEST-GAP-597
+  behaviour: '**`/user/teams` pagination silently truncated to first page (default
+    30 items) — silent ADMIN demotion possible.** Lines 104-113 fetch `/user/teams`
+    with NO `?page=N`, NO `Link` header handling, NO recursion over pages. GitHub''s
+    `/user/teams` returns ALL teams across ALL orgs the user belongs to (not scoped
+    by ?org). A user in 31+ teams may have their ADMIN-qualifying team beyond the
+    first page, silently demoting them to USER. Rare in single-org deployments; sharper
+    risk for users in many GitHub orgs (e.g. consultants, open-source maintainers).
+    The handler reads the first 30 teams; if `adminGroups` matches a team on page
+    2+, the user gets USER role instead of ADMIN.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-597.yaml
+- gap_id: TEST-GAP-598
+  behaviour: '**No retry, timeout, or rate-limit handling on outbound GitHub calls
+    — transient flake = hard login failure.** GitHub''s REST API enforces rate limits
+    (5000 req/hr authenticated default; secondary limits for abuse). A 403 with `X-RateLimit-Remaining:
+    0`, a 429 status, OR a transient network flake will surface to the user as a HARD
+    login failure — `.bodyToMono(...)` fails-out the Mono via WebClientResponseException
+    propagated to the OAuth2 login flow. NO `.retryWhen` (lines 76-85, 104-113), NO
+    `.timeout(...)`, NO `.onErrorResume(...)`, NO fallback to cached membership signal.
+    The handler hard-codes `WebClient.create(...)` (line 39) without `.responseTimeout(...)`
+    — relies on Reactor Netty default timeouts. A high-traffic login surface (e.g.
+    a SAML-like flow with thousands of automated re-logins, or a shared NAT-IP egress)
+    CAN exhaust the rate limit. Per-user rate-limit is the binding constraint (token
+    is per-user); aggregate platform GitHub-API usage is bounded by sum of per-user
+    limits.'
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-598.yaml
+- gap_id: TEST-GAP-599
+  behaviour: '**NPE on null `provider.getLogoutUri()` — STRENGTHENS TEST-GAP-151 with
+    consumer-side file:line anchor.** Line 39 of AzureLogoutSuccessHandler calls `URI.create(provider.getLogoutUri())`
+    with NO null-guard. Per JDK contract `java.net.URI.create(String)` calls `new
+    URI(str)` which throws NullPointerException on null. The validator at `ODDOAuth2Properties.java:17-28`
+    checks ONLY `clientId` and `provider` for non-empty — `logoutUri` is unchecked.
+    An Azure operator following the live docs but omitting `logout-uri` boots successfully
+    (no boot-time validation) and hits the NPE at FIRST logout attempt (deferred runtime
+    failure). The sibling `CognitoLogoutSuccessHandler.java:33-35` carries the matching
+    guard (`if (StringUtils.isEmpty(provider.getLogoutUri())) return Mono.empty();`);
+    Azure does NOT. Inconsistent guard. Live OAuth2/OIDC docs WebFetched 2026-05-19
+    status 200 state explicitly: "logout-uri must be set for Azure SSO. The Azure-specific
+    logout handler calls URI.create(provider.getLogoutUri()); leaving logout-uri unset
+    raises a NullPointerException and the logout flow returns a 500 response." The
+    drift is operator-visible — docs say required, platform boots without it, failure
+    deferred.'
+  test_class: missing-unit
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-599.yaml
+- gap_id: TEST-GAP-600
+  behaviour: '**`post_logout_redirect_uri` derived from inbound Host header — NO platform-side
+    allowlist; depends entirely on IdP-side enforcement.** Both Azure AND Cognito
+    logout handlers compute the post-logout redirect target via `UriUtils.getBaseUri(requestUri)`
+    (`UriUtils.java:11-22`) which strips path/query/fragment from the INBOUND HTTP
+    request URI and returns scheme+host+port. The Host header is operator-controlled
+    at deployment (via the reverse proxy) but request-controlled at runtime — a forwarded
+    `X-Forwarded-Host` that the proxy trusts and synthesizes into the request URI
+    propagates to the logout endpoint''s `post_logout_redirect_uri` (Azure) / `logout_uri`
+    (Cognito) query param. The platform carries NO `odd.platform-url` / `platform.base-url`
+    config to cross-check against (verified by Grep against application.yml). Mitigations:
+    (a) Azure''s standard App Registration "Logout URL" validation; (b) Cognito''s
+    "Allowed sign-out URLs" app-client allowlist. If an operator has registered wildcard
+    or multiple Logout URLs on the IdP side (e.g. multi-environment App Registration
+    sharing), the IdP-side bound is removed and the inbound Host becomes the open-redirect
+    target. Same shape across 4 sibling OIDC handlers using the same `UriUtils.getBaseUri`
+    helper. Docs silent on the operator-side dependency.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-600.yaml
+- gap_id: TEST-GAP-601
+  behaviour: '**No server-side Azure access/refresh/id token revocation on logout
+    — tokens persist at Azure until natural TTL.** The handler invalidates ONLY the
+    platform-side `WebSession` (line 47 `exchange.getExchange().getSession().flatMap(WebSession::invalidate)`).
+    It does NOT call any Azure token revocation endpoint. Azure AD v2.0 does not expose
+    RFC 7009 token revocation, so even attempting revocation would 404 — but the platform-side
+    caveat is undocumented and operators with stringent immediate-revocation requirements
+    need to know. Compare: `GoogleLogoutSuccessHandler.java:43-54` POSTs to `https://oauth2.googleapis.com/revoke`
+    (active revocation); `GithubLogoutSuccessHandler.java:51-63` DELETEs `/applications/{client_id}/grant`.
+    For Azure (and Cognito and ODD_IAM and Custom): the access token / refresh token
+    / id_token issued by Azure remain valid at Azure until their natural TTLs expire
+    (typical access token: 60-90 minutes; refresh token: up to 90 days for confidential
+    clients). If the token was previously exfiltrated (XSS, non-HttpOnly storage,
+    browser-extension compromise), logging the user out of the platform does NOT invalidate
+    the token at Azure. The implicit ADR (delegate-revocation-to-natural-TTL) is encoded
+    by ABSENCE; docs silent.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-601.yaml
+- gap_id: TEST-GAP-602
+  behaviour: '**shouldHandle contract + 302 Location shape — base coverage for the
+    entire `auth/logout/` package (6 production classes, 0 test files).** Both AzureLogoutSuccessHandler
+    and CognitoLogoutSuccessHandler are uncovered. (a) shouldHandle: Azure returns
+    true for ''azure''/''AZURE''/''Azure'' (case-insensitive equalIgnoreCase at line
+    27); Cognito returns true for ''cognito''/''COGNITO''/''Cognito'' (line 26 via
+    Provider.COGNITO.name()). (b) handle() builds 302 with correct Location URL containing
+    the IdP-specific query params: Azure uses `post_logout_redirect_uri` + `client_id`;
+    Cognito uses `logout_uri` + `client_id` (note: Cognito''s parameter name is `logout_uri`,
+    NOT `post_logout_redirect_uri` — the AWS Cognito `/logout` endpoint wire contract).
+    (c) WebSession invalidation in BOTH handlers. (d) Cognito''s short-circuit: `if
+    (StringUtils.isEmpty(provider.getLogoutUri())) return Mono.empty();` — when logoutUri
+    is empty, NEITHER redirect IS set NOR session is invalidated; the user is left
+    logged in to ODD. The asymmetric guard (Cognito guards, Azure NPEs — see TEST-GAP-599)
+    needs a paired test. Future addition of a 6th provider (Okta/Keycloak per docs)
+    without corresponding handler will silently fall through to `defaultOidcLogoutHandler`
+    — no test asserts the documented provider set has a handler.'
+  test_class: missing-unit
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-602.yaml
+- gap_id: TEST-GAP-603
+  behaviour: '**Empty `provider.getLogoutUri()` → Mono.empty() short-circuit — silent
+    ''logout that doesn''t log out''.** Lines 33-35: `if (StringUtils.isEmpty(provider.getLogoutUri()))
+    return Mono.empty();` returns BEFORE setting redirect AND BEFORE invalidating
+    the session. An operator who omits `logout-uri` from Cognito YAML configuration
+    sees the logout button do nothing visible — NO redirect, NO error, just a response
+    cycle that returns the user to the same page STILL LOGGED IN. This is operator-hostile
+    silent failure: the user clicks logout, the request returns 200, the browser stays
+    on the page with the same session cookie. No log warning, no boot-time check.
+    The Cognito handler is the ONLY one with this guard — Azure NPEs (TEST-GAP-599),
+    Google/GitHub don''t have this code path (different logout shapes), ODDIAM has
+    similar but different fallback. The asymmetry is operator-hostile because the
+    behaviour DIFFERS between Cognito (silent-success-doing-nothing) and Azure (loud-NPE-500).
+    A unified contract would either fail-fast at boot OR consistently silent-success
+    across all handlers.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-603.yaml
+- gap_id: TEST-GAP-604
+  behaviour: '**Cognito `/logout` endpoint signs out of Cognito ONLY — does NOT sign
+    out federated upstream IdPs (Google/Facebook/SAML).** Per AWS Cognito docs (WebFetched
+    2026-05-19 status 200): "The logout endpoint doesn''t sign users out of OIDC or
+    social identity providers (IdPs). To sign users out from their session with an
+    external IdP, direct them to the sign-out page for that provider." This handler
+    ONLY redirects to Cognito''s `/logout` (line 40-46) — it does NOT enumerate or
+    initiate logout flows for any upstream IdP the user authenticated via. An ODD
+    deployment that federates Cognito → Google (a common Cognito User Pool setup)
+    will see a user "logged out" of ODD + Cognito but the user''s Google session remains
+    active — a subsequent login attempt skips the Google password prompt. The ODD
+    docs do not warn about this. For deployments with stringent compliance (immediate
+    global signout), this is a security-policy gap.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-604.yaml
+- gap_id: TEST-GAP-605
+  behaviour: '**Cognito requires the `logout_uri` parameter to be in the App Client''s
+    "Allowed sign-out URLs" allowlist — failure mode is a Cognito-side error page,
+    NOT a 302 back to ODD.** Per AWS Cognito docs: ''if the value of `logout_uri`
+    is one of the Allowed sign-out URLs for your app client, Amazon Cognito redirects
+    users to that URL''. Otherwise the user sees a Cognito error page after logout.
+    This handler dynamically derives the `logout_uri` from `UriUtils.getBaseUri(requestUri)`
+    (line 43) — root URL only, path/query stripped. Operators who deploy ODD behind
+    hostname A but the user accesses via hostname B (load balancer / DNS alias / multi-hostname
+    proxy) get `logout_uri=https://B/`. If B is NOT in the App Client''s Allowed sign-out
+    URLs, the Cognito-side check fails. The ODD docs are silent on this dependency
+    on operator-side AWS Console configuration; the handler dynamically derives the
+    URI from the incoming request, making the coupling implicit. Edge case: a user
+    logging out from `https://odd/dashboard?filter=foo` gets `logout_uri=https://odd/`
+    — only the root URL is passed (the path/query is stripped by UriUtils.getBaseUri).'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-605.yaml
+- gap_id: TEST-GAP-606
+  behaviour: '**No `state` parameter on end-session redirects across all 4 OIDC logout
+    handlers (Azure, Cognito, ODDIAM, Google).** Per RFC 7636 + OIDC RP-Initiated
+    Logout 1.0 §5, `state` is RECOMMENDED to bind the logout request to the user session
+    and prevent CSRF on the post-logout redirect. The platform does not generate one.
+    Azure handler at lines 38-44 only sets `post_logout_redirect_uri` + `client_id`;
+    Cognito at lines 40-46 only sets `client_id` + `logout_uri`. Risk is LOW because
+    the local WebSession is already invalidated by the time the redirect fires (no
+    auth bypass); but an attacker who induces the user to follow a logout link with
+    a crafted state can replay the post-logout redirect. Sibling handlers (Google,
+    GitHub, ODDIAM, Cognito) all omit state — consistent across the chain, but consistently
+    below the OIDC RP-Initiated Logout 1.0 §5 RECOMMENDED bar.'
+  test_class: missing-security
+  criticality: LOW
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-606.yaml
+- gap_id: TEST-GAP-607
+  behaviour: '**Multi-replica deployments without shared session store leave orphaned
+    WebSessions on non-logout-handling pods.** The default Spring WebSession store
+    is in-memory (no `@EnableSpringWebSession` bean, no Redis/Hazelcast wired per
+    `OAuthSecurityConfiguration.java:1-269` ABSENCE). For multi-replica deployments
+    without sticky sessions, the WebSession lives only on the pod that handled the
+    original OAuth2 callback. If the logout request lands on a DIFFERENT pod (sticky-session
+    misconfiguration), `exchange.getExchange().getSession()` resolves an empty session,
+    `WebSession::invalidate` is a no-op on the empty session, AND the user appears
+    logged out on the original pod but their session persists silently on others until
+    natural TTL. A user clicks logout on pod A, the session on pod A is invalidated,
+    but pods B and C still hold the session attribute map if the user''s load balancer
+    routing differed earlier in the session. Affects all 5 OIDC logout handlers identically.'
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-607.yaml
+- gap_id: TEST-GAP-608
+  behaviour: '**No observability across the OAuth2 auth + logout chain — silent decisions,
+    silent failures, silent rejections.** Across all 5 OIDC user handlers + 5 OIDC
+    logout handlers (10 production classes total): (a) NO log statements on rejection
+    paths (`OAuth2AuthenticationException` throws are silent; Spring framework emits
+    its own logs but the auth-decision context is lost); (b) NO log statements on
+    ADMIN role assignment (a successful admin login leaves NO ODD-platform audit trail);
+    (c) NO log statements on logout (the WebSession invalidation site is unlogged);
+    (d) NO metric counters (no Micrometer @Timed, no `@Counted` on auth-decision sites).
+    An operator investigating a security incident has no in-app trail showing ''user
+    X attempted login, rejected due to Y'' or ''user Y was granted ADMIN at time Z''.
+    This is a CROSS-HANDLER finding: ALL OAuth handlers share this characteristic
+    — symmetric across Cognito/Azure/Google/GitHub/ODDIAM user enrichment AND across
+    all 5 logout handlers. Test pins the absence so introduction of observability
+    is a deliberate test update.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-608.yaml
+- gap_id: TEST-GAP-609
+  behaviour: '**WebClient is field-initialised, not Spring-managed — bypasses Spring''s
+    WebClient.Builder + operator-configured connection-pool / SSL / proxy.** Line
+    39: `private final WebClient webClient = WebClient.create("https://api.github.com");`.
+    The WebClient is created at field-init time by EACH bean instance (currently 1
+    per process), bypassing Spring''s `WebClient.Builder` bean and any operator-configured
+    connection-pool / SSL context / proxy settings. A platform deployment behind a
+    corporate proxy needs proxy-aware HTTP — this WebClient has no such hook. No `.responseTimeout(...)`,
+    no `.codec()` customisation, no `.exchangeFunction()` instrumentation. Operationally
+    unusual but real for some enterprise deployments (proxy-required, SSL-pinning,
+    custom user-agent for audit purposes). Pin the field-init contract; future REFACTOR
+    migrating to `WebClient.Builder`-injected pattern flips the test.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-609.yaml
+- gap_id: TEST-GAP-610
+  behaviour: '**Rejection emits literal `''Domain null doesn''t match with allowed
+    domain odd.com''` for personal @gmail.com accounts.** When a non-Workspace user
+    tries to log in to an allowedDomain''d deployment, the `hd` claim is null → the
+    error message at line 53 literally interpolates `null` via `String.format("Domain
+    %s doesn''t match with allowed domain %s", domain, provider.getAllowedDomain())`.
+    The end-user sees the string ''Domain null doesn''t match with allowed domain
+    odd.com'' in the Spring OAuth2 error page. Two issues: (a) UX: ''null'' is an
+    implementation detail leaked to the user; (b) minor info-disclosure: the attacker
+    learns the deployment''s allowedDomain is set (which they could already infer
+    from the `?hd=odd.com` query parameter on the authorize URL, so the disclosure
+    is marginal). The fix is one-line: branch on `domain == null` → friendlier ''Your
+    account is not part of an allowed organization'' message.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-610.yaml
+- gap_id: TEST-GAP-611
+  behaviour: '**No null-guard on `oAuth2Properties.getClient().get(registrationId)`
+    lookup — NPE in pathological reconfigure scenarios.** GoogleUserHandler line 46:
+    `final ODDOAuth2Properties.OAuth2Provider provider = oAuth2Properties.getClient().get(registrationId);`
+    — if `registrationId` isn''t present in the map (Spring framework guarantee violation,
+    but possible during reconfigure-without-restart with dynamic Spring contexts),
+    `provider` is null and line 50 `provider.getAllowedDomain()` throws NPE. ALL handlers
+    share this pattern uniformly: AbstractOIDCUserHandler.java:28, GithubUserHandler.java:52,
+    ODDIAMUserHandler.java:35. Spring guarantees registrationId is bound at registration;
+    only triggers in pathological reconfigure scenarios. Pin the consistent uniformly-no-null-guard
+    pattern across the chain — future addition of null-guards (defensive coding) would
+    be a deliberate shift in the design stance.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-611.yaml
+- gap_id: TEST-GAP-612
+  behaviour: '**STRENGTHENS TEST-GAP-123 with filter-class anchor.** The filter-class
+    sidecar confirms at file:line that the failed-auth paths are silent: `IngestionDataEntitiesFilter.java:55-58`
+    throws `AccessDeniedException("Token is not correct")` with no log call; `AbstractIngestionFilter.java:48`
+    throws `AccessDeniedException("Token is missed")` with no log call; the parent
+    writes the 401 with the verbatim message but emits NO `@Slf4j` log call on EITHER
+    path. `@Slf4j` IS imported in AbstractIngestionFilter (line 10) but only used
+    by `readBody` exception path at line 61 (the Jackson deserialise failure path),
+    NOT for auth failures. NO metric counter on the failure path. A security incident
+    review of ''how many failed-auth attempts in the last hour against /ingestion/entities''
+    cannot be answered from application logs. Combined with TEST-GAP-117 (filter-on
+    activation), TEST-GAP-118 (bearer-token contract), and this gap = the auth surface
+    emits zero audit signal.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-612.yaml
+- gap_id: TEST-GAP-613
+  behaviour: '**STRENGTHENS TEST-GAP-121 with filter-class file:line anchor + at-rest
+    implication.** The filter-class sidecar primary-sources the plaintext-equality
+    contract: `IngestionDataEntitiesFilter.java:56` — `dto.tokenPojo().getValue().equals(token)`.
+    Plaintext `String.equals`, NOT `MessageDigest.isEqual` (not constant-time). The
+    token is also stored at-rest as plaintext in PostgreSQL (TOKEN.value column populated
+    by `RandomStringUtils.randomAlphanumeric(40)` per the rotate-side sidecar). Two-layer
+    concern: (a) timing-based token discovery on a low-latency network is theoretically
+    feasible (62^40 ≈ 2.4e71 search space makes practical attack infeasible, but the
+    principle is violated); (b) DB-read attack (read-only SQL injection elsewhere
+    in the platform, e.g. the recently-flagged FTS SQL-injection in batch H) would
+    yield the live ingestion tokens directly. Implicit ADR encoded: shared-secret
+    stance applies to BOTH `S2sAuthenticationFilter` (sibling — YAML-configured plaintext)
+    AND this filter; the architectural decision is uniform across the auth surface.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-613.yaml
+- gap_id: TEST-GAP-614
+  behaviour: '**ObjectMapper instance allocation per filter subclass instance — minor
+    memory inefficiency vs Jackson''s shared-instance recommendation.** AbstractIngestionFilter.java:32
+    declares `new ObjectMapper()` — each concrete `AbstractIngestionFilter` subclass
+    instantiates its own ObjectMapper at field init. With Spring singletons, TWO ObjectMappers
+    exist (one per concrete filter — IngestionDataEntitiesFilter + IngestionDataSourceFilter).
+    Jackson''s recommended pattern is shared static instance OR injection of the Spring-managed
+    ObjectMapper bean (Spring Boot auto-configures one). The per-class instance is
+    a minor memory inefficiency (~hundreds of KB of cached type metadata × N filter
+    classes). NOT a hot-path bug; pin the current pattern.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-614.yaml
+- gap_id: TEST-GAP-615
+  behaviour: '**GitHub OAuth2 login = 3 sequential outbound HTTPS calls to api.github.com
+    per login** — (1) Spring''s `DefaultReactiveOAuth2UserService.loadUser` `/user`
+    call (OAuthSecurityConfiguration.java:130-131); (2) this handler''s `/user/orgs`
+    (line 78); (3) this handler''s `/user/teams` (line 106, only if `adminGroups`
+    non-empty). Total login latency = sum of three RTT to api.github.com + JSON parse.
+    Typical: 300-600ms; tail latencies > 2s observed in GitHub-API incidents. No caching
+    of org/team membership — every login re-fetches both lists. For a user logging
+    in 10 times per day, 20 GitHub API tokens are consumed per user per day. Bounded
+    but multiplicative; consistent with the broader no-cache stance (AuthIdentityProviderImpl
+    batch K implicit_adrs[3]). The 3-call architecture is structural — GitHub''s `/user`
+    endpoint does NOT return org/team membership, so the handler MUST make the subsequent
+    calls. Pin the cost model.'
+  test_class: missing-performance
+  criticality: LOW
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-615.yaml
+- gap_id: TEST-GAP-616
+  behaviour: '**`adminAttribute` accepts ANY claim string — no whitelist, no schema
+    check; silent-no-op for typos.** Line 57-58: `provider.getAdminAttribute()` is
+    used verbatim as the claim name to look up at line 59 (`token.getClaim(adminPrincipalAttribute)`).
+    An operator with `admin-attribute: arbitrary_claim_name` reads `token.getClaim(''arbitrary_claim_name'')`
+    — if the claim doesn''t exist in the ID-token, the result is null, `containsIgnoreCase(adminPrincipals,
+    null)` returns false, `isAdmin` stays false. Silent-no-op for typos: `admin-attribute:
+    emale` (typo of ''email'') → no admin is EVER assigned. The silent-no-op-on-typo
+    is consistent with the broader OAuth2Properties pattern (REFACTOR-152 + REFACTOR-154
+    capture the unvalidated-string-config class). Affects every OIDC handler (Google,
+    Cognito, Azure, ODDIAM) similarly.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-616.yaml
+- gap_id: TEST-GAP-617
+  behaviour: '**Docs claim ADMIN is determined by ''token claim''; code reads OAuth2User
+    attributes from `/user` JSON — OIDC-vocabulary inappropriate for GitHub OAuth2
+    (no id_token).** Per the live OAuth2/OIDC docs WebFetched 2026-05-19 status 200:
+    ''admin-attribute - Specifies which token claim determines admin status''. The
+    code reads `user.getAttribute(adminAttribute)` (GithubUserHandler.java:57) — these
+    are the OAuth2User''s `getAttributes()` map, populated by `DefaultReactiveOAuth2UserService.loadUser(request)`
+    from GitHub''s `/user` JSON response — NOT id_token claims (GitHub OAuth2 does
+    NOT issue an id_token). The framing ''token claim'' is OIDC-inherited from Google/OIDC
+    handler docs and is technically wrong here. Severity: LOW doc-drift (operationally
+    a non-issue; the documented config keys work as intended). The test pins the actual
+    source of `admin-attribute` lookup so any future change in attribute source (e.g.
+    switching to id_token if GitHub ever issues one) is detected.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-011
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-617.yaml

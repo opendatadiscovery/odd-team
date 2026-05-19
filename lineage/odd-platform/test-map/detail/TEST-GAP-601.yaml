@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-601
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java auth logout:AzureLogoutSuccessHandler"
+pillars_affected: [P-09]
+surfaced_by:
+  - "AzureLogoutSuccessHandler.md:bugs_limitations_corner_cases.[2] (No server-side Azure token revocation)"
+  - "AzureLogoutSuccessHandler.md:security.known_security_gaps.[2]"
+  - "AzureLogoutSuccessHandler.md:implicit_adrs.[0]"
+behaviour: |-
+  **No server-side Azure access/refresh/id token revocation on logout — tokens persist at Azure until natural TTL.** The handler invalidates ONLY the platform-side `WebSession` (line 47 `exchange.getExchange().getSession().flatMap(WebSession::invalidate)`). It does NOT call any Azure token revocation endpoint. Azure AD v2.0 does not expose RFC 7009 token revocation, so even attempting revocation would 404 — but the platform-side caveat is undocumented and operators with stringent immediate-revocation requirements need to know. Compare: `GoogleLogoutSuccessHandler.java:43-54` POSTs to `https://oauth2.googleapis.com/revoke` (active revocation); `GithubLogoutSuccessHandler.java:51-63` DELETEs `/applications/{client_id}/grant`. For Azure (and Cognito and ODD_IAM and Custom): the access token / refresh token / id_token issued by Azure remain valid at Azure until their natural TTLs expire (typical access token: 60-90 minutes; refresh token: up to 90 days for confidential clients). If the token was previously exfiltrated (XSS, non-HttpOnly storage, browser-extension compromise), logging the user out of the platform does NOT invalidate the token at Azure. The implicit ADR (delegate-revocation-to-natural-TTL) is encoded by ABSENCE; docs silent.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/logout/AzureLogoutNoTokenRevocationTest.java"
+  name: "handle_azureLogout_noOutboundRevocationHTTP_pinsTtlOnlyMitigationModel"
+evidence:
+  - "AzureLogoutSuccessHandler.md says (bugs_limitations_corner_cases.[2]): 'No server-side Azure access/refresh token revocation. The handler invalidates only the platform-side WebSession. The OAuth2 access token, refresh token, and id_token issued by Azure remain valid at Azure until their natural TTL expires.' severity: MEDIUM"
+  - "AzureLogoutSuccessHandler.java:31-48 (no outbound revocation HTTP)"
+  - "GoogleLogoutSuccessHandler.java:43-54 (active revocation sibling — contrast)"
+  - "GithubLogoutSuccessHandler.java:51-63 (active revocation sibling — contrast)"
+cross_references:
+  - "F-011"
+  - "P-09:F-001"
+  - "DOC-NNN candidate: Azure logout TTL-only model undocumented"
+proposed_action: |-
+  Unit test on AzureLogoutSuccessHandler with spied WebClient bean. (a) Configure Azure provider with logoutUri. (b) Invoke handle(). (c) Assert: (i) response Location contains the end-session URL; (ii) WebSession.invalidate() called; (iii) NO outbound HTTP call to Azure (no token-revocation endpoint hit). (d) Compare with Google handler: same setup, assert outbound POST to oauth2.googleapis.com/revoke IS made. (e) Pin the deliberate Azure-vs-Google asymmetry. Documents the implicit_adr.
+batch: 2026-05-19-O
+feature_id: F-011

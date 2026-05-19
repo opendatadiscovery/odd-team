@@ -7,6 +7,68 @@ drift_class_summary:
 - silent_destruction_replace_not_merge
 - single_transaction_per_batch_no_per_entity_isolation
 - default_off_unauthenticated_ingestion_at_filter_layer
+- ingestion_filter_path_coverage_incomplete_alertmanager_uncovered
+- body_buffered_before_auth_dos_surface
+- plaintext_equality_token_compare_timing_side_channel
+- notfoundexception_surfaces_as_5xx_info_leak
+- cross_mode_login_form_vs_wildcard_alertmanager_divergence
+batch_extensions:
+- batch: O
+  entry_point_added: |-
+    filter:IngestionDataEntitiesFilter (the auth-filter LAYER preceding
+    IngestionController) — primary-source confirmation of the
+    REFACTOR-185 sixteenth invocation site. The filter sidecar resolves
+    hop-0 (the auth-gating layer) of F-008's chain and adds 5 new drift
+    facets at the auth-layer: body-buffered-before-auth DoS surface,
+    plaintext-equality timing side-channel, hard-coded exact-literal
+    path matcher (sibling /ingestion/alert/alertmanager uncovered),
+    NotFoundException → 5xx info-leak, cross-mode LOGIN_FORM exact-list
+    vs OAUTH2/LDAP /ingestion/** wildcard reachability divergence.
+  contributing_nodes_added:
+  - odd-platform java auth filter:IngestionDataEntitiesFilter
+  notes: |-
+    Five new drift facets surface from the filter-LAYER primary source
+    that complement F-008's existing service-layer destruction facets:
+    (1) Body-buffered-before-auth DoS — line 38
+    `super.getBody().collectList()` materialises the full 20MB payload
+    (per application.yml:14-15 spring.codec.max-in-memory-size: 20MB)
+    BEFORE the token check at line 56. An attacker sending repeated
+    20MB invalid-token requests forces full body materialisation + Jackson
+    parse per attempt; no rate-limit, no per-IP throttle.
+    (2) Plaintext-equality token compare — line 56
+    `dto.tokenPojo().getValue().equals(token)` uses non-constant-time
+    `String.equals`, not `MessageDigest.isEqual`. Combined with at-rest
+    plaintext storage in the TOKEN table (`RandomStringUtils.randomAlphanumeric(40)`
+    generation, raw string write per `ReactiveTokenRepositoryImpl.java:30-39`),
+    the shared-secret stance is consistent but the timing side-channel
+    is theoretical.
+    (3) Path coverage is hard-coded exact-literal `/ingestion/entities` —
+    line 28 builds `PathPatternParserServerWebExchangeMatcher("/ingestion/entities",
+    POST)`. The property name `auth.ingestion.filter.enabled` reads as
+    "lock down ingestion" but covers EXACTLY ONE endpoint. Sibling
+    `/ingestion/alert/alertmanager` (AlertManagerController.java:21) is
+    uncovered by ANY filter AND has NO `@PreAuthorize`. An operator
+    enabling the toggle reasonably believes ingestion is protected; the
+    AlertManager webhook remains open.
+    (4) NotFoundException surfaces as 5xx not 401 — the parent
+    `AbstractIngestionFilter.filter` only catches `AccessDeniedException`
+    to emit 401 (line 40); NotFoundException (thrown on unknown
+    datasource OR empty fallback collector lookup) propagates to the
+    default reactive error handler as 500. An attacker probing the
+    endpoint with valid-token + arbitrary payload can DISTINGUISH
+    'datasource exists, wrong token' (401) from 'datasource does not
+    exist' (5xx) — minor info-leak + operator-debug misleading.
+    (5) Cross-mode coverage divergence — under LOGIN_FORM, the explicit
+    `permittedPaths` list at LoginFormSecurityConfiguration.java:50
+    contains only `/ingestion/entities` + `/ingestion/datasources`
+    (exact), so `/ingestion/alert/alertmanager` would FALL THROUGH to
+    `.pathMatchers("/**").authenticated()`. Under OAUTH2/LDAP, the
+    `SecurityConstants.WHITELIST_PATHS` line 96 contains `/ingestion/**`
+    (wildcard) which DOES permit the alertmanager path. Switching auth
+    modes silently changes the reachability of the alertmanager webhook.
+    Hop-0 (the auth-gating layer) is now PRIMARY-SOURCE CONFIRMED at the
+    filter class level. This strengthens REFACTOR-185 (sixteenth invocation
+    site) and the existing F-008 facet `default_off_unauthenticated_ingestion_at_filter_layer`.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Ingestion-replace destruction surface
@@ -43,6 +105,7 @@ description: "The platform's primary S2S ingestion endpoint `POST /ingestion/ent
   \ each of the three processors looked fine in isolation; together they\nform a destruction surface no operator-facing doc\
   \ warns about."
 contributing_nodes:
+- odd-platform java auth filter:IngestionDataEntitiesFilter
 - odd-platform java IngestionController controller-method:postDataEntityList (UNRESOLVED — sibling controller sidecar not
   in this batch; ref via service-tier upstream_callers)
 - odd-platform java service service:IngestionService
@@ -52,6 +115,34 @@ contributing_nodes:
 - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 - odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
 chain:
+- hop: 0
+  node: odd-platform java auth filter:IngestionDataEntitiesFilter
+  sidecar: odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    IngestionDataEntitiesFilter.java:20-28 — class-level
+    `@ConditionalOnProperty(value="auth.ingestion.filter.enabled",
+    havingValue="true")` (no `matchIfMissing`); constructor builds
+    `PathPatternParserServerWebExchangeMatcher("/ingestion/entities",
+    HttpMethod.POST)` from a HARD-CODED literal. application.yml:48
+    ships the explicit literal `false`, so the bean is NOT registered
+    on the bundled deployment. When registered: body is buffered via
+    `super.getBody().collectList()` (line 38), parsed to DataEntityList
+    to extract `dataSourceOddrn` (line 40), the per-datasource TOKEN
+    is resolved (line 43-51, with collector-token fallback when
+    datasource.token IS NULL), and plaintext-equality compared to the
+    `Authorization: Bearer <token>` header (line 56 — `String.equals`
+    not constant-time). Mismatch throws `AccessDeniedException`
+    (caught by `AbstractIngestionFilter.filter` at line 40, written as
+    401). NotFoundException on unknown datasource/collector propagates
+    to default error handler as 5xx (info-leak distinguishes filter-ON
+    states). EVERY UI auth mode explicitly permits `/ingestion/entities`
+    (LoginForm permittedPaths line 50; SecurityConstants.WHITELIST_PATHS
+    line 96 `/ingestion/**`; DisabledAuthSecurityConfiguration line
+    13-18 `.anyExchange().permitAll()`) — this filter is the ONLY
+    defence, and it is OFF by default.
+  unresolved: false
+  resolved_in_batch: O
 - hop: 1
   node: odd-platform java IngestionController controller-method:postDataEntityList
   sidecar: (not yet enriched — referenced as entry-point context only)
@@ -365,6 +456,138 @@ observed_vs_expected:
     drift_class: undocumented_carve_out
     provenance: STATIC — primary-source verification in batch-I IngestionService sidecar bugs_limitations_corner_cases[4]
       + invariants[6].
+  - facet: body-buffered-before-auth DoS surface (batch O — filter-layer primary source)
+    observed: |-
+      IngestionDataEntitiesFilter.java:37-44 — the auth check requires
+      the body's `dataSourceOddrn` to resolve the per-datasource TOKEN,
+      so the filter MUST materialise + parse the body BEFORE the token
+      comparison at line 56. With `spring.codec.max-in-memory-size: 20MB`
+      (application.yml:14-15), an attacker can repeatedly send 20MB
+      invalid-token payloads — each request forces full body buffer
+      + Jackson parse + datasource-by-ODDRN lookup before rejection.
+      No rate-limit, no per-IP throttle, no concurrent-request cap.
+      Sustained attack saturates heap.
+    expected: |-
+      Either (a) require `X-Datasource-Oddrn` header so the filter can
+      authenticate without body materialisation (breaks the Ingestion
+      API contract); OR (b) per-IP rate-limit; OR (c) max-failed-auth
+      circuit-breaker; OR (d) document the DoS surface with a deployment
+      guidance to deploy behind a WAF / rate-limiting proxy.
+    drift_class: body_buffered_before_auth_dos_surface
+    provenance: |-
+      STATIC — primary-source in batch O IngestionDataEntitiesFilter
+      sidecar bugs_limitations_corner_cases[4] + invariants[5] +
+      IngestionDataEntitiesFilter.java:37-60 + application.yml:14-15.
+      Severity: MEDIUM.
+  - facet: plaintext-equality token compare — non-constant-time + at-rest plaintext (batch O)
+    observed: |-
+      IngestionDataEntitiesFilter.java:56 — `dto.tokenPojo().getValue()
+      .equals(token)` uses `String.equals` (Java's standard non-constant-time
+      compare). The compared TOKEN row stores the secret in plaintext
+      (TokenGeneratorImpl.java:39,49 generates
+      `RandomStringUtils.randomAlphanumeric(40)`; ReactiveTokenRepositoryImpl.java:30-39
+      writes the raw string into TOKEN.value). A 40-char alphanumeric
+      yields ~238 bits of entropy so brute-force is infeasible, but
+      (a) timing-side-channel discovery is theoretically feasible on
+      a low-latency network, and (b) any DB read attack (read-only SQL
+      injection elsewhere) yields the live ingestion tokens.
+    expected: |-
+      Either (a) `MessageDigest.isEqual(...)` constant-time comparison
+      + at-rest hashing (bcrypt / argon2) of tokens, OR (b) document
+      the shared-secret stance + recommend network-layer protection.
+    drift_class: plaintext_equality_token_compare_timing_side_channel
+    provenance: |-
+      STATIC — primary-source in batch O IngestionDataEntitiesFilter
+      sidecar bugs_limitations_corner_cases[6] + invariants[3] +
+      IngestionDataEntitiesFilter.java:56 + companion sidecar
+      `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md`.
+      Severity: MEDIUM.
+  - facet: hard-coded exact-literal path — sibling /ingestion/alert/alertmanager uncovered (batch O)
+    observed: |-
+      IngestionDataEntitiesFilter.java:28 — the path matcher is
+      constructed from a HARD-CODED literal `/ingestion/entities`
+      + POST. No `@Value`, no property injection, no wildcard.
+      Sibling `POST /ingestion/datasources` is covered by
+      `IngestionDataSourceFilter` (unconditional, separate class);
+      sibling `POST /ingestion/alert/alertmanager`
+      (AlertManagerController.java:21) is covered by NO filter AND
+      has NO `@PreAuthorize`. The property name
+      `auth.ingestion.filter.enabled` reads as "lock down ingestion"
+      but the toggle covers ONE endpoint. An operator enabling it
+      reasonably believes ingestion is protected; the alertmanager
+      webhook remains anonymous.
+    expected: |-
+      Either (a) widen the matcher to `/ingestion/**` excluding
+      `/ingestion/datasources` (which has its own filter), OR
+      (b) add per-endpoint sub-toggles
+      (`auth.ingestion.filter.alertmanager.enabled`), OR
+      (c) document the path scope explicitly + cross-link to
+      F-007 AlertManager webhook ingestion's `unauthenticated_payload_trust`
+      facet.
+    drift_class: ingestion_filter_path_coverage_incomplete_alertmanager_uncovered
+    provenance: |-
+      STATIC — primary-source in batch O IngestionDataEntitiesFilter
+      sidecar bugs_limitations_corner_cases[1,2] +
+      security.known_security_gaps[1] + coupling note +
+      IngestionDataEntitiesFilter.java:28 + AlertManagerController.java:17-26
+      + IngestionDataSourceFilter.java:15-20. Cross-link: F-007
+      facet `unauthenticated_payload_trust` is the alertmanager-side
+      mirror. Severity: HIGH.
+  - facet: NotFoundException surfaces as 5xx — info-leak + operator-debug misleading (batch O)
+    observed: |-
+      `AbstractIngestionFilter.filter` (parent at AbstractIngestionFilter.java:40)
+      catches ONLY `AccessDeniedException` to emit a 401 with the
+      message verbatim. The two `NotFoundException` throws in
+      IngestionDataEntitiesFilter.java:43-51 (one on unknown
+      datasource_oddrn; one on empty fallback collector lookup)
+      propagate to the default reactive error handler and surface
+      as 500 Internal Server Error. An attacker probing with valid
+      bearer-token + arbitrary `dataSourceOddrn` distinguishes:
+      (a) datasource EXISTS but wrong token → 401 with
+      "Token is not correct"; (b) datasource DOES NOT EXIST → 5xx;
+      (c) datasource EXISTS but collector lookup fails → 5xx. The
+      5xx-vs-401 dichotomy leaks the datasource registry shape.
+    expected: |-
+      Either (a) map `NotFoundException` to 401 (defend operator-side
+      probing); OR (b) catch and convert to 401 with a generic
+      "Token is not correct" message; OR (c) document the 5xx-on-unknown-datasource
+      contract explicitly.
+    drift_class: notfoundexception_surfaces_as_5xx_info_leak
+    provenance: |-
+      STATIC — primary-source in batch O IngestionDataEntitiesFilter
+      sidecar bugs_limitations_corner_cases[7] + invariants[7] +
+      IngestionDataEntitiesFilter.java:43-51 + AbstractIngestionFilter.java:40.
+      Severity: LOW (info-leak) / MEDIUM (operator-debug misleading).
+  - facet: cross-mode reachability divergence for /ingestion/alert/alertmanager (batch O)
+    observed: |-
+      Under `auth.type=LOGIN_FORM`, the explicit `permittedPaths`
+      list at LoginFormSecurityConfiguration.java:50 contains EXACTLY
+      `/ingestion/entities` + `/ingestion/datasources` (no wildcard).
+      `/ingestion/alert/alertmanager` falls through to
+      `.pathMatchers("/**").authenticated()` and REJECTS anonymous
+      callers (302 to login page). Under `auth.type=OAUTH2` /
+      `LDAP`, the dispatcher uses
+      `SecurityConstants.WHITELIST_PATHS` (line 96) which contains
+      `/ingestion/**` (wildcard) and explicitly `permitAll()`s the
+      alertmanager path. Under `DISABLED`, every path is permitted.
+      The reachability of the alertmanager webhook DIFFERS
+      mode-by-mode WITHOUT operator-facing documentation. An
+      operator migrating from LOGIN_FORM to OAUTH2 might silently
+      open the alertmanager webhook to anonymous callers.
+    expected: |-
+      Either (a) unify the permit lists (LOGIN_FORM should also use
+      a wildcard, OR OAUTH2/LDAP should restrict to the same exact
+      paths as LOGIN_FORM), OR (b) document the cross-mode divergence
+      + the AlertManager-specific consideration in the live
+      enable-security/authentication index page.
+    drift_class: cross_mode_login_form_vs_wildcard_alertmanager_divergence
+    provenance: |-
+      STATIC — primary-source in batch O IngestionDataEntitiesFilter
+      sidecar bugs_limitations_corner_cases[3] +
+      docs_link_semantic.doc_drift_findings[2] +
+      LoginFormSecurityConfiguration.java:49-51 +
+      SecurityConstants.java:95-96 + AuthorizationCustomizer.java:22
+      + DisabledAuthSecurityConfiguration.java:13-18. Severity: MEDIUM.
 test_matrix:
   unit:
     state: GAP
@@ -440,6 +663,7 @@ control_summary: '0 of 4 cells PROBED — feature emerged from batch-I primary-s
   maintainer adding MERGE semantics in a refactor) would land green in CI.'
 related_refactoring_scopes:
 - REFACTOR-073
+- REFACTOR-185
 related_test_gaps: []
 related_doc_gaps: []
 related_concepts:
@@ -447,9 +671,15 @@ related_concepts:
 - Data Entity
 - Lineage Graph Traversal
 - Internal Description (Markdown body)
+- Ingestion Authentication Filter
+- Shared-Secret Tokens (Stored Plaintext)
+- Default-Off Ingestion Auth
+- Ingestion Filter Path-Coverage Incomplete
 related_retrospectives:
 - LSN-017
 - LSN-001
+related_features:
+- F-007
 related_probes: null
 probe_verifications: []
 maintainer_curated: false

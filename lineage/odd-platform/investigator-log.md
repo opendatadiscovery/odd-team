@@ -1353,3 +1353,58 @@ Theme M next: Anchor-set defence audit (cross-cutting; ~5 controllers — getDat
 - **6 detail-without-index** + **4 index-without-detail** in doc-gaps (batch-F orphans 084-088).
 - F-001 + F-003 merge candidate still maintainer-pending (P-01:F-001 Popular Entities Ranking).
 
+
+## Batch 2026-05-20-O — Auth handlers: OAuth provider chain + Logout + Ingestion filter (5/5 nodes; SEVENTH autonomous batch — LSN-018 Rule 6 OPERATIONAL)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: 83 prior + 5 new = **88 total**; 0 deferred (first full-success batch since J)
+- **Theme**: Auth handlers — OAuth provider chain (Google + Github) + Logout (Azure + Cognito) + IngestionDataEntitiesFilter
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `GoogleUserHandler` | P-09 | Silently no-ops `admin-groups` config (documented for Cognito/GitHub, never read by Google handler); 4 implicit ADRs (two-layer hd defence-in-depth, admin-attribute defaults to email, diverges from AbstractOIDCUserHandler, Mono.error rejection); LSN-018 Rule 6: 3 strengthens, back-links to F-011 + ADR-034 + REFACTOR-152 + REFACTOR-154 + ADR-035. |
+| `GithubUserHandler` | P-09 | 8 corner cases (HIGH: username-rename orphans USER_OWNER_MAPPING; MEDIUM: GHES hard-coded incompatible, admin-principals bypass org gate, undocumented); 2 outbound HTTPS to api.github.com for /user/orgs + /user/teams gating. **LSN-018 Rule 6 surfaced CONFLICT** with existing `substring-match-admin-escalation-ldap-containsignorecase.yaml` canonicalisation_candidate — `OperationUtils.containsIgnoreCase` is full-string `equalsIgnoreCase`, NOT substring; concept-merger SUPERSEDED the wrong candidate in this batch. |
+| `AzureLogoutSuccessHandler` | P-09 | Local-only WebSession invalidation (no Azure token revocation, no end_session_endpoint discovery); URI.create(null) NPE if operator omits logout-uri (docs flag as required); post_logout_redirect_uri derived from inbound Host header with no platform-side allowlist (open-redirect class bounded by Azure-side App Registration); **LSN-018 confirmation**: search_facets NOT cleaned at logout but doesn't need to be — F-010 TTL eviction is correct sole reaper. |
+| `CognitoLogoutSuccessHandler` | P-09 | 302 to AWS /logout with client_id + dynamic logout_uri from UriUtils.getBaseUri(); atomic local-session invalidation; silent no-op on empty logoutUri HIGH; no upstream-IdP signout MEDIUM (contrasts with Google/Github which DO revoke). |
+| `IngestionDataEntitiesFilter` | P-10 + P-09 | **STRONGEST**: bundled `auth.type=DISABLED` + `auth.ingestion.filter.enabled=false` default produces unauthenticated centerpiece S2S endpoint reachable by any HTTP caller. Body-buffered-before-auth (DoS class); plaintext-equality token compare (timing-attack class); hard-coded path; orthogonal to all 4 UI auth modes. **REFACTOR-185 SIXTEENTH-SIDECAR**: filter-class layer added — STRONGEST single finding in catalog reaffirmed. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 246 → **253 concepts** | +7 new (4 invariants + 3 canonicalisation_candidates) + 4 strengthened + **1 SUPERSEDED** (substring-match LDAP candidate — LSN-018 Rule 6 first-fire in production). New: oauth-provider-quirks-strategy-pattern, admin-groups-silent-no-op-asymmetric, logout-side-token-revocation-asymmetric, admin-principals-bypass-org-gate, github-enterprise-server-unsupported, oauth-admin-allowlist-full-string-equality (CORRECT canonical replacing the retracted substring claim), github-username-rename-orphans-user-owner-mapping. Coherence: strengthens=4 supersedes=1 conflicts_surfaced=1-resolved. |
+| adr-archaeologist (ADRs) | 131 → **139** | +8 (132-139) + 3 strengthened (ADR-034 OAuth provider-quirks now cross-handler-anchored; ADR-027, ADR-017). 5 HIGH + 3 MEDIUM new. 22 implicit_adrs entries reclassified to scopes via wisdom test (~73% reclass rate). |
+| adr-archaeologist (scopes) | 389 → **418** | +29 (390-418) + 4 strengthened. **REFACTOR-185 now 16-SIDECAR** (filter-class-layer added as new invocation site — reaffirms STRONGEST single finding in catalog). REFACTOR-073 + REFACTOR-155 + REFACTOR-113 strengthened. 4 HIGH + 13 MEDIUM + 12 LOW new. |
+| doc-gap-finder | 160 → **165** | +5 (173-177) + 3 strengthened (DOC-GAP-038 filter-class-layer evidence; DOC-GAP-048 consumer-site NPE at AzureLogoutSuccessHandler.java:39; DOC-GAP-082 META now 14-sidecar). New: DOC-173 Google admin-groups silent no-op HIGH; DOC-174 GHES silent incompatibility MEDIUM; DOC-175 logout-flow provider-asymmetry MEDIUM; DOC-176 GitHub admin-principals bypass org-gate MEDIUM; DOC-177 GitHub username-rename orphans USER_OWNER_MAPPING HIGH. |
+| test-coverage-mapper | 577 → **616 gaps** | +39 (579-617) + 13 strengthened. **+3 CRITICAL**: IngestionDataEntitiesFilter DISABLED+disabled-filter default unauthenticated endpoint, plaintext-equality token timing-attack, body-buffered DoS. 0 test files exist for auth/handler/ + auth/logout/ + IngestionDataEntitiesFilter (verified via Glob — entire packages have zero test coverage). |
+| feature-flow-builder | 18 → **18 features** (+0 new, +2 extended) | **F-008 (P-10:F-001 Batch Ingestion) EXTENDED**: 3 → 8 drift classes (+5 new auth-tier facets); 7 → 8 contributing nodes (+IngestionDataEntitiesFilter); 6 → 11 facets. **F-011 (P-09:F-002 Principal-to-Owner Resolution) EXTENDED**: 13 → 18 drift classes (+5 new OAuth handler-tier facets); 10 → 14 contributing nodes (+4 OAuth handlers); 4 → 5 chain hops (+hop-0 oauth-handler tier); 13 → 18 facets. Strong cross-batch architectural anchoring across all 4 handler sidecars. |
+
+### Coverage state after batch O
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 88 | **22.3%** (was 21.0%) |
+| Effective coverage | 163 | **41.3%** (was 39.7%) |
+| Features discovered | 18 (was 18) | 0 NEW (auth tier extends pillar features) |
+| Total test-gaps | 616 (was 577) | 106 CRITICAL (was 103) |
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-185 DISABLED-mode bypass**: now **16-SIDECAR** — STRONGEST in catalog (filter-class layer added)
+- **ADR-CANDIDATE-034 OAuth provider-quirks**: now cross-batch architectural anchoring across 4 handler sidecars (Google + Github + Microsoft from earlier batches if present)
+- **LSN-018 mechanism OPERATIONAL**: first production-fire of the supersede protocol (substring-match LDAP candidate retracted with primary-source verification)
+- **LSN-018 positive confirmation**: AzureLogoutSuccessHandler confirms F-010 TTL eviction is correct (search_facets cleanup at logout NOT needed because TTL job handles it)
+- **F-011 Principal-to-Owner Resolution**: now spans 5-hop chain (oauth-handler → identity-provider → user-owner-mapping repo → permission-extractor → query layer)
+- **LSN-001 pattern third surface**: Cognito empty-logout-uri silent no-op (after attachment-ephemeral-default + admin-groups silent no-op patterns)
+
+### Follow-ups (logged, not blocking)
+
+- 3 broken-YAML files persist (lineage-graph-traversal, manage-ownership-lifecycle-with-deg-cascade, run-housekeeping-cycle-five-jobs). Quarantined.
+- 181 detail-without-index in refactoring-scopes; 67 in implicit-adrs (batch-J `-strengthen-batch-J` legacy + batch-K/L/M/N/O canonical-append-pattern entries lacking index lines). The reducers grep detail/ directly so this is functionally OK; rebuild_indexes.py reconstructs index.yaml from detail/.
+- 6 detail-without-index + 4 index-without-detail in doc-gaps (batch-F orphans persist).
+- Coherence-sweep candidate count grew 27.8k → 29.8k (linear with new artefacts; fanout dominant — most are one anchor matching N test-gaps via same class). Audit pass deferred.
+- F-001 + F-003 merge candidate still maintainer-pending.
+

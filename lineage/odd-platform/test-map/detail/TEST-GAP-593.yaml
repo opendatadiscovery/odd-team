@@ -1,0 +1,37 @@
+gap_id: TEST-GAP-593
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java auth handler:GithubUserHandler"
+pillars_affected: [P-09]
+surfaced_by:
+  - "GithubUserHandler.md:tests_coverage_semantic.uncovered_behaviours.[8] (Username-rename regression)"
+  - "GithubUserHandler.md:bugs_limitations_corner_cases.[0] (Username = GitHub `login` string — renamable)"
+  - "GithubUserHandler.md:security.known_security_gaps.[0] (GitHub login-rename orphan USER_OWNER_MAPPING)"
+  - "GithubUserHandler.md:docs_link_semantic.doc_drift_findings.[2]"
+behaviour: |-
+  **GitHub username-rename orphans USER_OWNER_MAPPING — silent loss of owner-link.** GitHub allows free login renames (the old name enters 90-day escrow then becomes available to others). The handler uses `login` as the username (line 36 `USER_LOGIN = "login"` + line 56 default `adminAttribute = USER_LOGIN`). A user `alice` who logs in once (USER_OWNER_MAPPING row created with `oidc_username='alice', provider='github'`), then renames her GitHub login to `alice2`, presents `(alice2, 'github')` to AuthIdentityProviderImpl.java:29-30 on next login. The lookup at ReactiveUserOwnerMappingRepositoryImpl.java:116-127 builds `WHERE OIDC_USERNAME = 'alice2' AND PROVIDER = 'github'` — the prior `(alice, github)` row is orphaned. NO `id`-based fallback (GitHub's stable numeric `id` is in the OAuth2User attributes but not used as the username). NO migration tool. NO doc warning. Live docs WebFetched 2026-05-19 status 200 silent on rename behaviour. This is the GitHub-specific facet of the F-011 `compound_key_silent_in_docs` finding and the AuthIdentityProviderImpl `no_auto_create_on_first_login` cross-cut: after rename, the renamed user appears as a NEW first-time user with NO `My Objects` / `My Alerts` / activity.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/handler/GithubUserHandlerLoginRenameRegressionTest.java"
+  name: "githubLogin_renameAfterFirstLogin_orphansUserOwnerMappingRow_silentDataLoss"
+evidence:
+  - "GithubUserHandler.md says (uncovered_behaviours.[8]): 'Username-rename regression: a user logged in once as alice@github (USER_OWNER_MAPPING row created); user renames their GitHub login to alice2; on next login the handler produces OAuth2User with name=alice2; AuthIdentityProviderImpl.fetchAssociatedOwner looks up (alice2, github) → empty Mono; My Objects silently empty. NO ID-based fallback exists.'"
+  - "GithubUserHandler.md says (bugs_limitations_corner_cases.[0]): 'Username = GitHub login string — GitHub users can RENAME, orphaning the USER_OWNER_MAPPING row. The handler uses login as the username (line 36 + line 56 default). A renamed user presents (alice2, github) to AuthIdentityProviderImpl.fetchAssociatedOwner; the prior (alice, github) USER_OWNER_MAPPING row is orphaned. NO id-based fallback. NO migration tool. NO doc warning.' severity: HIGH"
+  - "GithubUserHandler.java:36, 56 + AuthIdentityProviderImpl.java:29-30 + ReactiveUserOwnerMappingRepositoryImpl.java:116-127"
+  - "Glob `*Github*` under odd-platform-api/src/test returns 0 matches (verified)"
+cross_references:
+  - "F-011"
+  - "F-006 (User-Owner Association)"
+  - "P-09:F-001"
+  - "TEST-GAP-471 (provider-null cross-mode bleed — sibling identity-key fragility)"
+  - "TEST-GAP-474 (no auto-create on first login — same silent-empty failure mode)"
+  - "TEST-GAP-553 (provider-null cross-mode bleed — sibling)"
+  - "TEST-GAP-555 (case-sensitivity username — sibling)"
+  - "DOC-NNN candidate: GitHub login-rename silent in docs"
+  - "REFACTOR-NNN candidate: switch to GitHub stable numeric id"
+proposed_action: |-
+  Testcontainers integration test. (1) Configure `auth.type=OAUTH2` + `auth.oauth2.client.github.provider=github` with a stub GitHub OAuth flow. (2) Authenticate user 'alice' via GitHub — first login. (3) Verify USER_OWNER_MAPPING row `(alice, github, owner=X)` is created (via Management UI or test bootstrap). (4) Simulate GitHub login rename: mock GitHub `/user` response to return `login: alice2` on the next login. (5) Re-authenticate via GitHub. (6) Assert: (a) AuthIdentityProviderImpl.fetchAssociatedOwner returns empty for (alice2, github); (b) `GET /api/dataentities/my` returns empty list; (c) the prior `(alice, github)` row is STILL in user_owner_mapping (orphaned); (d) NO warning log; NO header X-Identity-Orphaned. Pin the silent-data-loss; future fix introducing GitHub numeric id as the stable identifier flips this test.
+batch: 2026-05-19-O
+feature_id: F-011

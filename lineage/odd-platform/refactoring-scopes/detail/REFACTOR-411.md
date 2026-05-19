@@ -1,0 +1,13 @@
+- **REFACTOR-411** (NEW 2026-05-19O): All 5 OAuth logout handlers + the OAuth user-enrichment handlers lack `@Slf4j` audit logging — no log emitted on logout success/failure, on hd-mismatch rejection, on admin-grant via admin-principals, or on org-membership-gate failure. An operator investigating a security incident has no in-app trail showing "user X attempted to log in, was rejected due to hd-mismatch" or "user Y was granted ADMIN due to admin-principal match"
+  - **Category**: observability
+  - **Surfaced by**:
+    - `AzureLogoutSuccessHandler.md:bugs_limitations_corner_cases.[3]` (LOW)
+    - `CognitoLogoutSuccessHandler.md` (implied via security.known_security_gaps for no audit on logout)
+    - `GoogleUserHandler.md:security.known_security_gaps.[3]` (MEDIUM)
+    - `GithubUserHandler.md` (implied — handler does not log either)
+  - **Statement**: None of the 5 OAuth logout handlers (Azure / Cognito / Google / GitHub / ODDIAM) carry `@Slf4j` annotations OR log statements on the success / failure paths. None of the user-enrichment handlers (Google / GitHub) log the hd-mismatch rejection, the admin-grant via admin-principals match, the org-membership failure, or the admin-team detection. An operator investigating a security incident has no in-app trail showing the auth decisions. Combined with the absence of an audit-log table for RBAC mutations (REFACTOR-188), the platform's observability surface for security-relevant auth events is empty.
+  - **Evidence**: `AzureLogoutSuccessHandler.java:1-49` (no @Slf4j, no log) + `CognitoLogoutSuccessHandler.java:1-51` (same) + `GoogleUserHandler.java:1-74` (no @Slf4j on class, no log statements) + `GithubUserHandler.java:1-138` (same)
+  - **Existing-ADR-or-implied-prescription**: No existing ADR. The absence is project-wide; the maintainer did not add logging when authoring the handlers. The gap is observability hygiene, not architectural.
+  - **Proposed remedy**: Add `@Slf4j` to each handler class and log key auth decisions: logout success (info), logout failure (warn), hd-mismatch rejection (warn with user-email + allowed-domain), admin-grant via admin-principals (info with username + matched principal), org-membership failure (warn with username + org), admin-team detection (info with username + team). Format logs structurally (key=value) for parsing. The fix is per-handler additions; not a structural change.
+  - **Severity rationale**: MEDIUM — observability gap; affects every operator's security-incident investigation story. Symptom is invisible (no log → no investigation possible).
+  - **Suggested backlog grouping**: `OAuth2 hardening sprint` + `Observability hardening sprint` (paired with REFACTOR-188 RBAC audit gap)

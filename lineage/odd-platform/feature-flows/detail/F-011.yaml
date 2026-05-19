@@ -17,6 +17,11 @@ drift_class_summary:
 - no_reactive_transactional_multi_statement_create_relation
 - soft_delete_only_table_growth_no_pruning
 - type_mismatch_deleted_at_insert_DATE_vs_TIMESTAMP
+- google_admin_groups_silent_no_op_undocumented
+- github_ghes_hard_coded_login_rename_orphan
+- azure_logout_npe_no_token_revoke_local_only
+- cognito_logout_silent_no_op_on_empty_uri
+- oauth_provider_quirks_pattern_diverges_from_abstract_base
 cross_pillar_relationships:
 - pillar_id: P-01
   kind: feeds
@@ -43,6 +48,116 @@ cross_pillar_relationships:
 batch_origin: K
 created_in_batch: K
 batch_extensions:
+- batch: O
+  entry_point_added: |-
+    oauth-handler-tier: 5 sidecars resolving the UPSTREAM-of-hop-1 OAuth
+    handler layer that PRODUCES the OAuth2AuthenticationToken consumed
+    by AuthIdentityProviderImpl.java:29-33. Two enrichment handlers
+    (GoogleUserHandler, GithubUserHandler) — per-provider OIDC/OAuth2
+    role-enrichment that decides ADMIN-or-USER + (where applicable)
+    rejects logins not matching org/domain gates. Two logout handlers
+    (AzureLogoutSuccessHandler, CognitoLogoutSuccessHandler) — provider-
+    specific logout flow that may or may not revoke tokens at the IdP.
+    The 5th handler is the filter-tier IngestionDataEntitiesFilter, which
+    surfaces under F-008 (the Batch Ingestion pillar feature) and is
+    counted there; only the OAuth-handler-tier four contribute to F-011.
+  contributing_nodes_added:
+  - odd-platform java auth handler:GoogleUserHandler
+  - odd-platform java auth handler:GithubUserHandler
+  - odd-platform java auth logout:AzureLogoutSuccessHandler
+  - odd-platform java auth logout:CognitoLogoutSuccessHandler
+  notes: |-
+    Five new drift facets surface at the OAuth-handler tier (the UPSTREAM
+    layer of the F-011 chain). Each facet is a provider-specific drift
+    on the principal-resolution capability — the handlers PRODUCE the
+    OAuth2AuthenticationToken that F-011's hop-2 (AuthIdentityProviderImpl)
+    consumes. The Provider-Quirks-Strategy pattern (ADR-CANDIDATE-034)
+    is the architectural shape that unifies them. The 5 facets are:
+    (1) Google admin-groups silent no-op — GoogleUserHandler does NOT
+    extend AbstractOIDCUserHandler and never reads
+    `provider.getAdminGroups()` (verified Grep against the 74-line class
+    body). Cognito + Azure + Custom + ODDIAM DO read it via the abstract
+    base. An operator setting
+    `auth.oauth2.client.google.admin-groups: [workspace-admins]` sees the
+    field bind on the POJO (ODDOAuth2Properties.java:49) and silently
+    ignored at every login — the user is unconditionally USER unless
+    they match `adminPrincipals` (full-string equality). Live OAuth2/OIDC
+    docs (WebFetched 2026-05-19, status 200) explicitly state
+    `admin-groups` is documented "for AWS Cognito and GitHub only,
+    not for Google" — but the POJO accepts the field. Silent-no-op
+    config = operator hostility; the expected ADMIN-by-group never
+    activates. Severity MEDIUM.
+    (2) GitHub login-rename orphan + GHES hard-coded incompatibility —
+    GithubUserHandler.java:36 + line 56 default `user-name-attribute:
+    login` is the GitHub-mutable username string (free rename, 90-day
+    escrow). A renamed user on next login presents (alice2, github)
+    to AuthIdentityProviderImpl.java:29-30; the prior (alice, github)
+    USER_OWNER_MAPPING row is orphaned. NO id-based fallback. Additionally:
+    line 39 hard-codes `WebClient.create("https://api.github.com")` —
+    GitHub Enterprise Server (GHES) deployments at
+    `https://github.example.com/api/v3` are STRUCTURALLY incompatible
+    (DNS/cert errors on every login). No `@Value`, no operator property,
+    no comment defending the hard-code. Live docs silent on both. The
+    rename-orphan generalises the F-011 compound-key-silent-in-docs
+    finding to the GitHub-specific case; the GHES hard-code is a new
+    operator-class lockout. Severity HIGH (rename-orphan) / MEDIUM (GHES).
+    (3) Azure logout NPE — no token revocation, local-only — Azure
+    handler does NOT extend the abstract base's logout pattern;
+    AzureLogoutSuccessHandler.java:39 calls
+    `URI.create(provider.getLogoutUri())` with NO null-guard. The
+    validator at ODDOAuth2Properties.java:17-28 checks `clientId` +
+    `provider` for non-empty but NOT `logoutUri`. An Azure operator
+    omitting `logout-uri` boots successfully and hits NPE → 500 at
+    first logout attempt. Live docs document this requirement
+    operationally ("'logout-uri must be set for Azure SSO. ... unset
+    raises NullPointerException and the logout flow returns a 500'")
+    but the platform does NOT validate. Additionally: the handler
+    invalidates ONLY the local Spring WebSession (line 47) — there
+    is NO call to revoke the Azure access/refresh/id token at any
+    Microsoft endpoint. Tokens remain valid at Azure until natural
+    TTL (60-90 min access; up to 90 days refresh). Compare:
+    GoogleLogoutSuccessHandler.java:43-54 POSTs to
+    `oauth2.googleapis.com/revoke`; GithubLogoutSuccessHandler.java:51-63
+    DELETEs `/applications/{client_id}/grant`. The NPE + no-revoke
+    asymmetry surfaces as principal-resolution-mode-specific drift on
+    F-011's logout half. Severity HIGH (NPE) / MEDIUM (no-revoke).
+    (4) Cognito logout silent no-op on empty logout-uri —
+    CognitoLogoutSuccessHandler.java:33-35 carries
+    `if (StringUtils.isEmpty(provider.getLogoutUri())) return Mono.empty();`
+    — the ONLY sibling handler with this graceful-degradation guard
+    (Azure has none → NPE; ODDIAM uses `getIssuerUri()` differently;
+    Google + GitHub do not use `logoutUri`). The asymmetric guard means
+    Cognito deployments missing `logout-uri` see the logout button
+    "work" (no error) but the user STAYS LOGGED IN — no redirect, no
+    local session invalidation, no warning. Same LSN-001-pattern as
+    the F-008 default-OFF facet: permissive default hides operator
+    misconfiguration. Severity MEDIUM.
+    (5) OAuth provider-quirks-strategy diverges from abstract base —
+    Cognito, Azure, Custom, ODDIAM all extend `AbstractOIDCUserHandler`;
+    Google + GitHub do NOT. The divergence reasons: Google has the hd
+    domain-claim verification + provider-specific admin-attribute
+    default (`email` not the username attribute) + userNameAttribute
+    read from Spring's ClientRegistration instead of the ODD POJO;
+    GitHub uses non-OIDC `OAuthUserHandler<OAuth2User, OAuth2UserRequest>`
+    (no id_token) + outbound HTTP to /user/orgs + /user/teams (3
+    total calls per login including Spring's pre-handler /user fetch)
+    + admin-principals BYPASS the organization-name gate (lines 54-67
+    fire BEFORE the org check at line 68). The pattern is the
+    architectural ADR-CANDIDATE-034 (provider-quirks accumulate ≥2 →
+    handler drops the abstract base; each handler is bespoke). The
+    F-011 drift implication: provider-resolution behaviour is
+    NON-UNIFORM across the 6 providers — a refactor that touches the
+    abstract base does NOT touch Google or GitHub; a refactor that
+    adds admin-groups support for Google requires ENTIRELY new code
+    (no inheritance shortcut). Severity LOW (architecturally
+    intentional; named for cross-batch coherence).
+    All four handlers feed into AuthIdentityProviderImpl.java:29-33
+    via OAuth2AuthenticationToken.authorizedClientRegistrationId
+    (the REGISTRATION key like `google_corp`, NOT the literal
+    `google`); the registrationId becomes the `provider` field on
+    UserDto and partitions USER_OWNER_MAPPING lookups. This is the
+    UPSTREAM-of-hop-1 evidence for F-011's existing
+    compound_key_silent_in_docs facet.
 - batch: N
   entry_point_added: |-
     repository-tier:ReactiveUserOwnerMappingRepositoryImpl (the persistence-layer
@@ -160,6 +275,10 @@ description: |-
   empty SecurityContext silently propagates rather than fail-fast; no caching
   layer means N×DB round-trips per page load.
 contributing_nodes:
+- odd-platform java auth handler:GoogleUserHandler
+- odd-platform java auth handler:GithubUserHandler
+- odd-platform java auth logout:AzureLogoutSuccessHandler
+- odd-platform java auth logout:CognitoLogoutSuccessHandler
 - odd-platform java service service:AuthIdentityProviderImpl
 - odd-platform java AuthIdentityProvider
 - odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
@@ -171,6 +290,38 @@ contributing_nodes:
 - odd-platform java UserDto
 - odd-platform java UserProviderRole
 chain:
+- hop: 0
+  node: 'odd-platform java auth handler/logout:* (4 sidecars in batch O)'
+  sidecar: |-
+    odd-platform__java__auth__handler__GoogleUserHandler.md +
+    odd-platform__java__auth__handler__GithubUserHandler.md +
+    odd-platform__java__auth__logout__AzureLogoutSuccessHandler.md +
+    odd-platform__java__auth__logout__CognitoLogoutSuccessHandler.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    Per-provider OAuth handlers PRODUCE the OAuth2AuthenticationToken
+    that hop-2 (AuthIdentityProviderImpl) consumes. Login enrichment:
+    GoogleUserHandler.java:70-71 + GithubUserHandler.java:62-65,70-73,93-96
+    construct DefaultOidcUser / DefaultOAuth2User with the
+    ADMIN-or-USER GrantedAuthority — the role decision F-011 hop-2
+    reads at AuthIdentityProviderImpl.java:41-46. The username
+    consumed downstream is provider-specific: Google reads
+    `userNameAttribute` from Spring's ClientRegistration (lines 66-69),
+    GitHub uses the GitHub `login` string (mutable; the rename-orphan
+    surface). Logout: AzureLogoutSuccessHandler.java:31-48 and
+    CognitoLogoutSuccessHandler.java:30-50 are the per-provider logout
+    branches dispatched by OAuthLogoutSuccessHandler.onLogoutSuccess
+    via `shouldHandle(provider)` (the chain-of-responsibility pattern
+    parallel to OAuthUserHandler at OAuthSecurityConfiguration.java:185-201).
+    The handler tier diverges from the abstract base for Google +
+    GitHub (provider-quirks-strategy ADR-CANDIDATE-034). All 4
+    handlers feed AuthIdentityProviderImpl.java:29-33 via the
+    OAuth2AuthenticationToken's `authorizedClientRegistrationId` —
+    the registrationId (e.g. `google_corp`, NOT the literal `google`)
+    becomes UserDto.provider and partitions USER_OWNER_MAPPING
+    lookups.
+  unresolved: false
+  resolved_in_batch: O
 - hop: 1
   node: odd-platform java *SecurityConfiguration
   sidecar: '(distinct sidecars per auth mode — context aggregated from AuthIdentityProviderImpl sidecar dependencies_semantic)'
@@ -556,6 +707,227 @@ observed_vs_expected:
       ReactiveUserOwnerMappingRepositoryImpl.java:45 +
       V0_0_89__update_user_owner.sql:2. Severity: LOW (cosmetic; no runtime
       impact today).
+  - facet: Google admin-groups silently no-op — undocumented config-binding asymmetry (batch O)
+    observed: |-
+      GoogleUserHandler does NOT extend `AbstractOIDCUserHandler`
+      (line 30 directly implements
+      `OAuthUserHandler<OidcUser, OidcUserRequest>`) and the 74-line
+      class body NEVER reads `provider.getAdminGroups()`. The
+      sibling abstract base at AbstractOIDCUserHandler.java:44-55
+      DOES read it (Cognito + Azure + Custom + ODDIAM inherit the
+      behaviour). The POJO at ODDOAuth2Properties.java:49 declares
+      `adminGroups : Set<String>` — the field binds successfully
+      from `auth.oauth2.client.google.admin-groups:
+      [workspace-admins]` YAML at boot, no validation rejects it.
+      An operator copying the Cognito/GitHub admin-groups pattern to
+      Google sees ZERO behaviour change at login — the user is
+      unconditionally USER unless they match `adminPrincipals` (full-string
+      equality on the `admin-attribute` claim, default `email`). Live
+      OAuth2/OIDC docs (WebFetched 2026-05-19, status 200) state
+      explicitly: 'Admin Groups Support: Not mentioned for Google.
+      Admin group functionality (`admin-groups`) is documented for
+      AWS Cognito and GitHub only, not for Google.' Doc/code consistent
+      that admin-groups doesn't work for Google, but the POJO accepts
+      the field — silent-no-op config = operator hostility.
+    expected: |-
+      Either (a) validate at boot (reject if `adminGroups` is set for
+      a `provider=google` client) OR (b) implement admin-groups via
+      Google's `groups` custom claim (Workspace supports this) OR
+      (c) explicitly document the no-op behaviour.
+    drift_class: google_admin_groups_silent_no_op_undocumented
+    provenance: |-
+      STATIC — primary-source in batch O GoogleUserHandler sidecar
+      bugs_limitations_corner_cases[0] + security.known_security_gaps[0]
+      + concepts.invariants[6] + docs_link_semantic.doc_drift_findings[3] +
+      GoogleUserHandler.java:1-74 (no `getAdminGroups()` call) +
+      ODDOAuth2Properties.java:49 (field exists, binds) +
+      AbstractOIDCUserHandler.java:44-55 (the supported analogue) +
+      WebFetch of `/oauth2-oidc` on 2026-05-19, status 200.
+      Severity: MEDIUM.
+  - facet: GitHub login-rename orphan + GHES hard-coded incompatibility (batch O)
+    observed: |-
+      Two compounding GitHub-specific drifts:
+      (a) GithubUserHandler.java:36 (`USER_LOGIN = "login"`) + line 56
+      default `adminAttribute = USER_LOGIN` use the GitHub `login`
+      string as the username consumed by AuthIdentityProviderImpl.java:29-30.
+      GitHub allows free login renames (the old name enters 90-day
+      escrow then becomes available to others). A renamed user
+      `alice → alice2` presents `(alice2, github)` on next login;
+      AuthIdentityProviderImpl resolves via
+      `ReactiveUserOwnerMappingRepositoryImpl.getAssociatedOwner('alice2',
+      'github')` → empty Mono; the prior `(alice, github)`
+      USER_OWNER_MAPPING row is orphaned. NO id-based fallback. NO
+      migration tool. NO doc warning. This is the GitHub-specific
+      manifestation of F-011's existing `compound_key_silent_in_docs`
+      finding.
+      (b) GithubUserHandler.java:39
+      `private final WebClient webClient = WebClient.create("https://api.github.com");`
+      hard-codes the public GitHub.com endpoint. NO `@Value`, no
+      operator-property, no comment defending the hard-code. GitHub
+      Enterprise Server (GHES) deployments expose APIs at
+      `https://github.example.com/api/v3` per the GHES product docs —
+      the handler will be SELECTED if `provider=github` (the
+      GithubCondition only checks the literal string GITHUB), and the
+      outbound calls to `api.github.com` will fail with DNS / cert /
+      403 errors that surface as login failures. An entire class of
+      operator (every GHES deployment) is silently locked out.
+    expected: |-
+      Either (a) use GitHub's stable numeric `id` claim as the
+      principal-resolution key (mutable login → stable id), with a
+      one-time migration to backfill (resolve via Spring Security's
+      attribute resolution); AND/OR (b) make the API base URL
+      operator-configurable (add `apiBaseUrl` to
+      ODDOAuth2Properties.OAuth2Provider, read at line 39); AND
+      (c) document the rename-orphan + GHES limitations.
+    drift_class: github_ghes_hard_coded_login_rename_orphan
+    provenance: |-
+      STATIC — primary-source in batch O GithubUserHandler sidecar
+      bugs_limitations_corner_cases[0,1] + security.known_security_gaps[0]
+      + GithubUserHandler.java:36,39,56 + AuthIdentityProviderImpl.java:29-30
+      + ReactiveUserOwnerMappingRepositoryImpl.java:116-127 +
+      ODDOAuth2Properties.java:31-53 (no apiBaseUrl field) +
+      WebFetch of `/oauth2-oidc` on 2026-05-19, status 200 silent
+      on rename + GHES. Severity: HIGH (rename-orphan) / MEDIUM (GHES).
+  - facet: Azure logout NPE + no token revocation — local-only logout (batch O)
+    observed: |-
+      AzureLogoutSuccessHandler.java:39 calls
+      `URI.create(provider.getLogoutUri())` with NO null-guard. The
+      validator at ODDOAuth2Properties.java:17-28 checks `clientId` +
+      `provider` for non-empty but NOT `logoutUri`. The sibling
+      CognitoLogoutSuccessHandler.java:33-35 carries the matching guard
+      (`if (StringUtils.isEmpty(provider.getLogoutUri())) return
+      Mono.empty();`); Azure does NOT. An operator who follows the
+      live docs but omits `logout-uri` from `auth.oauth2.client.{key}.*`
+      boots successfully and hits NPE → 500 at first logout attempt.
+      Live OAuth2/OIDC docs (WebFetched 2026-05-19, status 200) state
+      OPERATIONALLY: "'logout-uri must be set for Azure SSO. ... leaving
+      logout-uri unset raises a NullPointerException and the logout
+      flow returns a 500 response.'" — but the platform does NOT
+      validate. Additionally: the handler invalidates ONLY the local
+      Spring WebSession (line 47) — there is NO outbound HTTP to any
+      Microsoft endpoint to revoke the Azure access/refresh/id token.
+      Tokens remain valid at Azure until natural TTL (typical access
+      60-90 min; refresh up to 90 days for confidential clients).
+      Compare: GoogleLogoutSuccessHandler.java:43-54 POSTs to
+      `oauth2.googleapis.com/revoke`; GithubLogoutSuccessHandler.java:51-63
+      DELETEs `/applications/{client_id}/grant`. Azure does not expose
+      RFC 7009 revocation in v2.0 — but the platform-side caveat is
+      undocumented and operators with stringent immediate-revocation
+      requirements need to know.
+    expected: |-
+      Either (a) add `StringUtils.isEmpty` early-return guard matching
+      Cognito's pattern; AND (b) add `logoutUri` to
+      ODDOAuth2Properties.validate when `provider=azure`; AND
+      (c) document the no-token-revocation caveat for Azure
+      deployments with stringent compliance requirements.
+    drift_class: azure_logout_npe_no_token_revoke_local_only
+    provenance: |-
+      STATIC — primary-source in batch O AzureLogoutSuccessHandler
+      sidecar bugs_limitations_corner_cases[0,2] +
+      security.known_security_gaps[0,2] +
+      docs_link_semantic.doc_drift_findings[0,3] +
+      AzureLogoutSuccessHandler.java:39,47 +
+      CognitoLogoutSuccessHandler.java:33-35 +
+      GoogleLogoutSuccessHandler.java:43-54 +
+      GithubLogoutSuccessHandler.java:51-63 +
+      ODDOAuth2Properties.java:17-28 +
+      WebFetch of `/oauth2-oidc` on 2026-05-19, status 200.
+      Severity: HIGH (NPE) / MEDIUM (no token revoke).
+  - facet: Cognito logout silent no-op on empty logout-uri — LSN-001 pattern (batch O)
+    observed: |-
+      CognitoLogoutSuccessHandler.java:33-35 carries
+      `if (StringUtils.isEmpty(provider.getLogoutUri())) { return
+      Mono.empty(); }` — the ONLY sibling logout handler with this
+      graceful-degradation guard (Azure has none → NPE; ODDIAM uses
+      getIssuerUri() differently; Google + GitHub do not use
+      logoutUri). The asymmetric guard means: a Cognito deployment
+      that omits `logout-uri` sees the logout button "work" (no
+      error in the response, the HTTP cycle completes) but the user
+      STAYS LOGGED IN — no redirect, no local session invalidation,
+      no Cognito-side session clear, no warning log. The maintainer
+      intent is graceful-degradation (avoid 500 on operator
+      misconfig), but the silent-no-op surface is identical to
+      LSN-001's bundled-default-causes-data-loss pattern: permissive
+      default hides operator error rather than fail-fast. A
+      regression that turned this guard into a `throw new
+      IllegalStateException("logout-uri required")` would tighten
+      the contract but break any deployments intentionally omitting
+      `logoutUri` (none today; lock the contract via test).
+    expected: |-
+      Either (a) emit a one-time WARN log on first
+      `Mono.empty()`-return-path triggering, OR (b) move the
+      requirement to boot-time validation (add to
+      ODDOAuth2Properties.validate when `provider=cognito`), OR
+      (c) document the silent-no-op behaviour explicitly.
+    drift_class: cognito_logout_silent_no_op_on_empty_uri
+    provenance: |-
+      STATIC — primary-source in batch O CognitoLogoutSuccessHandler
+      sidecar implicit_adrs (graceful-degradation choice) +
+      docs_link_semantic.doc_drift_findings (logoutUri omission silent)
+      + invariants[2] + CognitoLogoutSuccessHandler.java:33-35 +
+      AzureLogoutSuccessHandler.java:30-48 (the no-guard sibling) +
+      LSN-001 (the bundled-default-causes-data-loss case law).
+      Severity: MEDIUM.
+  - facet: OAuth provider-quirks-strategy diverges from abstract base (batch O)
+    observed: |-
+      Per ADR-CANDIDATE-034 (the provider-quirks-strategy pattern):
+      Cognito, Azure, Custom, ODDIAM all extend `AbstractOIDCUserHandler`
+      and override two template methods (`getDefault*`); Google +
+      GitHub do NOT.
+      Google diverges because: (a) the `hd` Workspace-domain claim
+      verification has no analogue in the abstract base
+      (GoogleUserHandler.java:49-55 — the second of two layers of
+      defence-in-depth; the first is the `?hd=` URL mutation at
+      OAuthSecurityConfiguration.java:168-175); (b)
+      `userNameAttribute` is read from Spring's
+      `ClientRegistration.ProviderDetails.UserInfoEndpoint`
+      (GoogleUserHandler.java:66-69) NOT from the ODD POJO
+      (the abstract base reads `provider.getUserNameAttribute()`);
+      (c) `adminAttribute` defaults to the literal `'email'` for
+      Google (line 31, GOOGLE_EMAIL), NOT to userNameAttributeName
+      (the abstract base's default at AbstractOIDCUserHandler.java:33-35);
+      (d) admin-groups absent (see the dedicated facet above).
+      GitHub diverges because: (a) the protocol is OAuth2 not OIDC
+      — GithubUserHandler.java:32 declares
+      `OAuthUserHandler<OAuth2User, OAuth2UserRequest>` (non-OIDC
+      variant); (b) GitHub's `/user` payload omits org/team
+      membership → TWO outbound HTTP calls (lines 76-85, 104-113;
+      THREE total per login including Spring's pre-handler /user
+      fetch); (c) admin-principals BYPASS the org-membership gate
+      (lines 54-67 fire BEFORE the org-empty check at line 68 —
+      undocumented; live docs frame admin-principals as 'Direct
+      list of users granted ADMIN role' without flagging the
+      org-bypass semantic).
+      The F-011 implication: the principal-resolution chain is
+      NON-UNIFORM across the 6 providers. A refactor that touches
+      the abstract base does NOT touch Google or GitHub. A
+      refactor that adds admin-groups support for Google requires
+      entirely new code (no inheritance shortcut). The 4 OIDC
+      handlers + 2 bespoke handlers + 1 catch-all (Custom) +
+      5 logout handlers (the parallel logout dispatch chain) form
+      the surface; each carries its own bug class.
+    expected: |-
+      Either (a) consolidate the pattern under a strategy-pattern
+      base (`ProviderUserHandlerStrategy` with hooks for each
+      quirk), OR (b) document the divergent set explicitly +
+      maintain ADR-CANDIDATE-034 as the canonical reference,
+      OR (c) accept the divergence as architecturally intentional
+      (the maintainer's stance per the contrasting handler
+      implementations).
+    drift_class: oauth_provider_quirks_pattern_diverges_from_abstract_base
+    provenance: |-
+      STATIC — primary-source in batch O GoogleUserHandler sidecar
+      implicit_adrs[2] (diverges from AbstractOIDCUserHandler) +
+      GithubUserHandler sidecar implicit_adrs[0,1] +
+      AzureLogoutSuccessHandler sidecar implicit_adrs[1,2] +
+      CognitoLogoutSuccessHandler sidecar implicit_adrs[0] +
+      GoogleUserHandler.java:30 (no `extends`) +
+      GithubUserHandler.java:32 (non-OIDC interface) +
+      CognitoUserHandler.java:16 (extends abstract base) +
+      AzureUserHandler.java:16 (extends abstract base) +
+      CustomOIDCUserHandler.java:19 (extends abstract base) +
+      ADR-CANDIDATE-034. Severity: LOW (architecturally
+      intentional; named for cross-batch coherence).
 test_matrix:
   unit:
     state: GAP
@@ -645,8 +1017,11 @@ related_concepts:
 - UserDto (compound key)
 - Anchor-Set Defence-in-Depth
 - Server-to-Server (S2S) Authentication
+- OAuth Provider-Quirks Strategy (ADR-CANDIDATE-034)
+- OAuth Logout Chain-of-Responsibility
 related_retrospectives:
 - LSN-017
+- LSN-001
 related_probes: null
 probe_verifications: []
 maintainer_curated: false

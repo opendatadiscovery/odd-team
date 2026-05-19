@@ -14,13 +14,22 @@ description: 'The `auth.type` configuration knob selecting the platform''s UI/AP
   chain, no CSRF, no CORS, no S2S wiring, no boot WARN), LoginFormSecurityConfiguration@L31
   (validates REFACTOR-073 — LOGIN_FORM runs WITHOUT AuthorizationCustomizer), OAuthSecurityConfiguration@L71
   (WIRES AuthorizationCustomizer; S2S composes-not-mutex), LDAPSecurityConfiguration@L51
-  (WIRES AuthorizationCustomizer; containsIgnoreCase admin match).'
+  (WIRES AuthorizationCustomizer; containsIgnoreCase admin match). **STRENGTHENED batch
+  2026-05-19-O** with 5 OAuth provider-specific sidecars: GoogleUserHandler + GithubUserHandler
+  (user-enrichment dispatcher chain) + AzureLogoutSuccessHandler + CognitoLogoutSuccessHandler
+  (logout dispatcher chain) + IngestionDataEntitiesFilter (filter-class-layer
+  primary source). Batch O surfaces the OAuth Provider-Quirks Strategy Pattern
+  (each provider diverges from the abstract base uniquely), the admin-groups
+  silent-no-op asymmetry (Google ignores while POJO field binds), and the logout-
+  side token revocation asymmetry (Google + GitHub actively revoke; Cognito +
+  Azure + ODD_IAM rely on session invalidation + natural TTL).'
 axes_present:
 - controllers
 - openapi_tags
 - ui_routes
 - ui_shell
 - config_prefixes
+- filters
 nodes:
 - odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertController
 - odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
@@ -52,6 +61,11 @@ nodes:
 - odd-platform java DataEntityController controller-method:updateStatus
 - odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
 - odd-platform java IngestionController controller-method:postDataEntityList
+- odd-platform java auth handler:GoogleUserHandler
+- odd-platform java auth handler:GithubUserHandler
+- odd-platform java auth logout:AzureLogoutSuccessHandler
+- odd-platform java auth logout:CognitoLogoutSuccessHandler
+- odd-platform java auth filter:IngestionDataEntitiesFilter
 contributors:
 - 'All controller sidecars: security.auth_mode_relevance lists DISABLED/LOGIN_FORM/OAUTH2/LDAP
   (with auth-mode names verbatim from the live enable-security doc)'
@@ -103,12 +117,15 @@ contributors:
   or logout.'
 - 'LDAPSecurityConfiguration@L51: CANONICAL sidecar for the LDAP branch — WIRES `AuthorizationCustomizer(permissionService,
   extractors)` at line 145; SecurityWebFilterChain runs at `Ordered.HIGHEST_PRECEDENCE`
-  at line 136. Admin-group match uses `containsIgnoreCase` (line 96) — a SUBSTRING
-  match enabling substring-collision admin escalation (`admin-groups: [''ops'']` matches
-  `devops`/`oopsgroup`). NO scheme enforcement on `auth.ldap.url` (plaintext `ldap://`
-  accepted; bind creds + end-user creds in cleartext). `auth.ldap.password` exposed
-  via `/actuator/env`. Active Directory branch silently ignores `dn-pattern` and `user-filter`
-  config. S2S additively composable at HTTP_BASIC at line 149-151.'
+  at line 136. Admin-group match uses `containsIgnoreCase` (line 96). **CORRECTED batch O**:
+  `OperationUtils.containsIgnoreCase` is full-string `element::equalsIgnoreCase`,
+  NOT substring (verified by direct Read of OperationUtils.java:7-10). The original
+  substring-collision-admin-escalation claim is FACTUALLY WRONG and is being retracted
+  in the canonicalisation_candidates supersede block. NO scheme enforcement on `auth.ldap.url`
+  (plaintext `ldap://` accepted; bind creds + end-user creds in cleartext).
+  `auth.ldap.password` exposed via `/actuator/env`. Active Directory branch silently
+  ignores `dn-pattern` and `user-filter` config. S2S additively composable at HTTP_BASIC
+  at line 149-151.'
 - 'ODDOAuth2Properties (batch 2026-05-12D): CANONICAL config-POJO sidecar for the
   OAUTH2 branch. `@ConfigurationProperties("auth.oauth2")` with single `Map<String,
   OAuth2Provider> client` field — operators register N OAuth2/OIDC clients keyed by
@@ -142,9 +159,10 @@ contributors:
   on the password field. Any `log.info("props = {}", properties)` (or future code
   adding such a line) emits the password in cleartext. The actuator-env scope from
   batch C was overbroad; the Lombok-toString scope is precise. `adminGroups` confirmed
-  `Set<String>` (substring-collision risk at `LDAPSecurityConfiguration.java:96` `containsIgnoreCase`).
-  Also surfaces: AD.domain unvalidated; ldap:// vs ldaps:// scheme not enforced; absent
-  admin-groups silently produces zero-admin LDAP deployment.'
+  `Set<String>` (full-string-equality semantic via `LDAPSecurityConfiguration.java:96`
+  `containsIgnoreCase` per OperationUtils — CORRECTED batch O; NOT substring as
+  previously claimed). Also surfaces: AD.domain unvalidated; ldap:// vs ldaps:// scheme
+  not enforced; absent admin-groups silently produces zero-admin LDAP deployment.'
 - 'RoleController.createRole (batch 2026-05-12E): RBAC primary-surface sidecar. SECURITY_RULES
   POLICY_CREATE-class gate (ROLE_CREATE NO_CONTEXT at SecurityConstants.java:169).
   Under DISABLED: gate INERT (`auth.type=DISABLED` bypasses entire SECURITY_RULES
@@ -220,6 +238,61 @@ contributors:
   able to reach the platform''s HTTP port can ingest arbitrary data entities into
   any datasource by writing its ODDRN in the payload — DEFAULT-OFF unauth confirmed
   at the CONTROLLER side. Two-sidecar with IngestionDataEntitiesFilter batch B.'
+- 'GoogleUserHandler (batch 2026-05-19-O): OAUTH2-mode Google-specific OIDC user-
+  enrichment handler. `@Conditional(GoogleCondition.class)`-gated. Validates `hd`
+  (hosted-domain) claim against `provider.allowedDomain` if set (lines 49-55).
+  Reads `provider.adminAttribute` claim (default `email`) for admin-principal
+  matching (lines 56-65). Does NOT extend `AbstractOIDCUserHandler` — direct
+  interface implementation; provider-specific quirks (hd-claim verification,
+  Spring-discovered userNameAttribute via ClientRegistration not POJO, email-default
+  admin attribute). SILENTLY IGNORES `admin-groups` config — POJO field binds,
+  handler never reads. Doc-drift: live docs do not name the hd-claim or
+  document the rejection-message-quality (`Domain null doesn''t match` for
+  personal @gmail.com accounts).'
+- 'GithubUserHandler (batch 2026-05-19-O): OAUTH2-mode GitHub OAuth2 user-
+  enrichment handler (non-OIDC variant — implements `OAuthUserHandler<OAuth2User,
+  OAuth2UserRequest>`). Hard-coded singleton WebClient bound to `https://api.github.com`
+  (line 39) — GitHub Enterprise Server (GHES) cannot be supported by this handler;
+  no `apiBaseUrl` config knob. Two outbound HTTP calls per login: `/user/orgs`
+  for organization membership, `/user/teams` for admin-team membership (conditional
+  on adminGroups non-empty). admin-principals BYPASSES organization-name gate
+  (lines 54-67 fire before org-check at line 68 — explicit allowlist beats
+  org gate). Username = mutable `login` string — GitHub username-rename
+  orphans the USER_OWNER_MAPPING row (silent loss of owner-linkage). No retry,
+  no timeout, no rate-limit handling on the outbound calls.'
+- 'AzureLogoutSuccessHandler (batch 2026-05-19-O): OAUTH2-mode Azure-specific
+  logout dispatcher. `@Conditional(AzureCondition.class)`-gated. Constructs the
+  Azure end-session URL via `UriComponentsBuilder.fromUri(URI.create(provider.getLogoutUri()))`
+  with `post_logout_redirect_uri` + `client_id` query params, sets 302 Location,
+  invalidates local WebSession. **NO null guard** on `provider.getLogoutUri()`
+  at line 39 (NPE-prone) — sibling Cognito carries `StringUtils.isEmpty` guard;
+  Azure does not (inconsistent guard pattern). `post_logout_redirect_uri` derived
+  from inbound Host header via `UriUtils.getBaseUri(requestUri)` — no platform-
+  side allowlist; Azure App Registration Logout URLs are the only mitigation.
+  No server-side token revocation (Azure v2.0 has no RFC 7009 endpoint; only
+  end-session redirect closes the IDP-side session). CONFIRMS F-010 search_facets
+  TTL eviction is correct (no logout-time cleanup needed because the row has
+  no user binding).'
+- 'CognitoLogoutSuccessHandler (batch 2026-05-19-O): OAUTH2-mode Cognito-specific
+  logout dispatcher. `@Conditional(CognitoCondition.class)`-gated. Constructs
+  AWS Cognito `/logout` redirect with `client_id` + `logout_uri` (note: lowercase
+  per AWS spec — Cognito convention, NOT the `post_logout_redirect_uri` OIDC
+  name). **HAS** `StringUtils.isEmpty(provider.getLogoutUri())` guard at lines
+  33-35 — graceful-degradation: returns `Mono.empty()` if logoutUri is empty,
+  leaving user SILENTLY logged in (no error, no redirect, no session invalidation).
+  Cognito SOLE sibling with this guard; Azure does NOT. No call to Cognito
+  `/oauth2/revoke` endpoint — AWS Cognito DOES expose RFC 7009 revocation but
+  this handler doesn''t use it. AWS docs explicitly state `/logout` does NOT
+  sign user out of upstream federated IdPs (Google / Facebook / SAML brokers);
+  the handler does not surface this.'
+- 'IngestionDataEntitiesFilter (batch 2026-05-19-O — auth/filter axis): NEW
+  filter-class-layer sidecar complementing the existing config-key-consumer
+  axis. Carries the FILTER CLASS layer evidence (path-matching exact-literal
+  `/ingestion/entities`, body-buffering-before-auth at 20MB max, token-resolution
+  precedence: datasource.token() first then collector.token() fallback,
+  plaintext-equality comparison at line 56, NotFoundException → 5xx not 401
+  surface, duplicate body parse). 16-sidecar REFACTOR-185 triangulation (was
+  15) with auth/filter axis added.'
 evidence:
 - AlertController.md:security.auth_mode_relevance
 - AlertManagerController.md:security.auth_mode_relevance (NONE)
@@ -246,7 +319,7 @@ evidence:
 - LDAPSecurityConfiguration@L51.md:security.auth_mode_relevance + implicit_adrs.[AuthorizationCustomizer
   mode-agnostic] + implicit_adrs.[containsIgnoreCase admin match] + security.known_security_gaps.[actuator
   env password] + security.known_security_gaps.[no LDAPS enforcement] + security.known_security_gaps.[substring
-  admin match]
+  admin match — RETRACTED batch O; full-string equality, not substring]
 - ODDOAuth2Properties.md:security.auth_mode_relevance + docs_link_semantic.doc_drift_findings.[0,1,2,3,4]
   + implicit_adrs.[0-3] + bugs_limitations_corner_cases.[0-6] + security.known_security_gaps.[0-4]
 - ODDLDAPProperties.md:security.auth_mode_relevance + docs_link_semantic.doc_drift_findings.[0-4]
@@ -262,6 +335,26 @@ evidence:
   HIGH)
 - search.md:security.known_security_gaps.[0] (catalog-wide cross-owner enumeration
   HIGH) + security.known_security_gaps.[1] (DISABLED anonymously reachable MEDIUM)
+- GoogleUserHandler.md (batch O):invariants.[6] (admin-groups absent) + bugs_limitations_corner_cases.[0]
+  (admin-groups silent no-op MEDIUM) + docs_link_semantic.doc_drift_findings.[0-4]
+  + implicit_adrs.[0-3]
+- GithubUserHandler.md (batch O):invariants.[0-6] (username = mutable login; full-string
+  org/team matching; admin-principals bypass org; api.github.com hard-coded; no retry/timeout)
+  + bugs_limitations_corner_cases.[0-7] (rename orphan HIGH; GHES MEDIUM; admin-principals
+  bypass MEDIUM; pagination silent truncation LOW; etc.) + docs_link_semantic.doc_drift_findings.[0-4]
+- AzureLogoutSuccessHandler.md (batch O):invariants (no null guard; session-only cleanup;
+  Host-header-derived redirect; hardcoded 302) + bugs_limitations_corner_cases.[0-6]
+  (NPE HIGH; no allowlist MEDIUM; no token revocation MEDIUM; zero test coverage LOW;
+  search_facets-not-cleaned-at-logout LOW informational — F-010 CONFIRMS-correct)
+- CognitoLogoutSuccessHandler.md (batch O):invariants.[1] (empty logoutUri silent
+  no-op) + invariants.[3] (Host-header-derived redirect; AWS Allowed-sign-out-URLs
+  allowlist coupling) + bugs_limitations_corner_cases.[0-5] (silent no-op HIGH; no
+  upstream-IdP signout MEDIUM; allowlist coupling MEDIUM; no token revocation MEDIUM;
+  no CSRF state LOW)
+- IngestionDataEntitiesFilter.md (batch O):concepts.invariants.[0-6] + implicit_adrs.[0-3]
+  + bugs_limitations_corner_cases.[0-9] + security.known_security_gaps.[0-5] (default-OFF
+  HIGH; alertmanager uncovered HIGH; plaintext-equality MEDIUM; body-buffered DoS
+  MEDIUM; failed-auth not logged MEDIUM; no fallback defense HIGH)
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -315,6 +408,14 @@ security_aggregate:
   - OAUTH2 + LDAP both apply `AuthorizationCustomizer` and run at `Ordered.HIGHEST_PRECEDENCE`
     (LDAP) — production modes carry the strongest enforcement; the asymmetry is downward
     (LOGIN_FORM ↓ DISABLED)
+  - 'NEW batch O strength: OAuth Provider-Quirks Strategy Pattern is internally
+    consistent across the 5-class user-handler chain + 5-class logout-handler chain
+    — the chain wiring (shouldHandle dispatcher + @Conditional gate + first-match-wins
+    on Provider.X.name() equalsIgnoreCase) IS symmetric and predictable; the per-provider
+    SUBSTANCE diverges by IDP-protocol-specific need (Google id_token hd-claim, GitHub
+    REST API two-call membership gating, Azure logoutUri reliance on operator config,
+    Cognito graceful-degradation guard). The convention is enforced by code shape;
+    new providers slot into the chain with minimum-viable boilerplate.'
   weaknesses:
   - '**11-sidecar triangulated insecure-default failure mode (HIGH severity — most-corroborated
     insecure-default in the whole catalog)** — ELEVEN independent sidecars converge
@@ -398,14 +499,21 @@ security_aggregate:
     + security.known_security_gaps.[0] + LDAPSecurityConfiguration@L51.md:bugs_limitations_corner_cases.[S2S
     admin everywhere] + LoginFormSecurityConfiguration@L31.md:implicit_adrs.[2] +
     DisabledAuthSecurityConfiguration@L10.md:bugs_limitations_corner_cases.[2])'
-  - '**LDAP substring-collision admin escalation (HIGH severity)** — `LDAPSecurityConfiguration.java:96`
-    uses `containsIgnoreCase` (a SUBSTRING matcher imported from `OperationUtils`
-    at line 48) for admin-group matching, NOT `Set::contains` over equality. An admin-groups
-    config of `[''Admin'']` matches `cn=Administrators` AND `cn=NonAdminContractors`.
-    Configuring `admin-groups: [''ops'']` may inadvertently promote anyone in a group
-    named `devops`, `noops`, or `oopsgroup`. Live LDAP docs only say ''A list granting
-    admin permissions'' — no warning. (LDAPSecurityConfiguration@L51.md:bugs_limitations_corner_cases.[containsIgnoreCase
-    substring collision] + security.known_security_gaps.[substring admin match])'
+  - '**LDAP admin-group full-string equality semantic (RETRACTED batch O — was
+    erroneously labeled substring-collision-admin-escalation)** —
+    `LDAPSecurityConfiguration.java:96` uses `containsIgnoreCase` (a FULL-STRING
+    matcher imported from `OperationUtils.java:7-10` per direct primary-source
+    Read in batch O — `anyMatch(element::equalsIgnoreCase)`, NOT substring).
+    The original substring-collision claim was FACTUALLY WRONG and is retracted
+    in `canonicalisation_candidates/substring-match-admin-escalation-ldap-containsignorecase.yaml`
+    via the LSN-018-supersede pattern. CORRECTED claim: `admin-groups: [''Admin'']`
+    matches LDAP authority `Admin`, `admin`, `ADMIN` — but NOT `Administrator`,
+    `admin-contractors`, or `devops`. The doc-completeness gap remains valid:
+    live LDAP docs say "A list granting admin permissions" without specifying
+    matching semantics. New canonicalisation candidate
+    `oauth-admin-allowlist-full-string-equality-semantics` captures the
+    corrected canonical claim across LDAP + GitHub + Google admin-allowlist
+    callsites.'
   - '**LDAP plaintext-on-wire + actuator credential leak (HIGH severity)** — `LDAPSecurityConfiguration.java:117-124`
     accepts the `auth.ldap.url` verbatim with NO scheme enforcement: `ldap://` URLs
     cause bind credentials + every end-user login credential to travel in cleartext.
@@ -435,15 +543,82 @@ security_aggregate:
     + GithubUserHandler) — admin-group claim mapping silently absent; (b) no provider-specific
     logout (fallback to OIDC-initiated logout only). Drift between code and live docs.
     (OAuthSecurityConfiguration@L71.md:bugs_limitations_corner_cases.[4] + security.known_security_gaps.[3])'
-  - '**OAUTH2 Azure logout-uri unchecked despite docs flagging required (MEDIUM)**
-    — `ODDOAuth2Properties.validate()` only checks `clientId` and `provider` for non-empty;
-    `logoutUri` and `azureTenantId` are unchecked. Live `/oauth2-oidc` docs flag Azure
-    `logout-uri` as required (''unset value causes NullPointerException''). Operator
-    following docs but omitting it boots successfully and fails at first logout. Also
-    `ODDOAuth2Properties.OAuth2Provider` lacks an `azureTenantId` field — the commented
-    Azure example in `application.yml:128-156` references `${auth.oauth2.client.azure.azure-tenant-id}`
-    interpolation but the field doesn''t exist; uncommenting AS-IS fails to bind.
-    (OAuthSecurityConfiguration@L71.md:bugs_limitations_corner_cases.[3,7] + security.known_security_gaps.[4])'
+  - '**OAUTH2 Azure logout-uri unchecked despite docs flagging required (MEDIUM —
+    STRENGTHENED batch O)** — `ODDOAuth2Properties.validate()` only checks `clientId`
+    and `provider` for non-empty; `logoutUri` and `azureTenantId` are unchecked. Live
+    `/oauth2-oidc` docs flag Azure `logout-uri` as required (''unset value causes
+    NullPointerException''). Operator following docs but omitting it boots successfully
+    and fails at first logout. Also `ODDOAuth2Properties.OAuth2Provider` lacks an
+    `azureTenantId` field — the commented Azure example in `application.yml:128-156`
+    references `${auth.oauth2.client.azure.azure-tenant-id}` interpolation but the
+    field doesn''t exist; uncommenting AS-IS fails to bind. **Batch O AzureLogoutSuccessHandler
+    sidecar anchors the NPE at the consumer site** — `AzureLogoutSuccessHandler.java:39`
+    calls `URI.create(provider.getLogoutUri())` with no null-guard; sibling Cognito
+    (`CognitoLogoutSuccessHandler.java:33-35`) DOES carry the matching
+    `StringUtils.isEmpty` guard. Inconsistent guard, asymmetric defence. Operator
+    misconfiguration produces 500 at first logout. (OAuthSecurityConfiguration@L71.md:bugs_limitations_corner_cases.[3,7]
+    + security.known_security_gaps.[4] + AzureLogoutSuccessHandler.md (batch O):bugs_limitations_corner_cases.[0]
+    + CognitoLogoutSuccessHandler.md (batch O):implicit_adrs.[1] — contrast guard)'
+  - '**NEW batch O — OAuth admin-groups silent no-op for Google (MEDIUM severity)**
+    — `ODDOAuth2Properties.OAuth2Provider.adminGroups : Set<String>` binds successfully
+    for ALL providers (the field is provider-agnostic in the POJO) but the runtime
+    read of `provider.getAdminGroups()` is implemented ONLY in `AbstractOIDCUserHandler.java:44-55`
+    (Cognito / Azure / Custom-OIDC) and in `GithubUserHandler.java:99-120`. NOT
+    implemented in `GoogleUserHandler.java:1-74`. An operator setting
+    `auth.oauth2.client.google.admin-groups: [workspace-admins]` (perhaps copying
+    the Cognito/GitHub pattern from docs) sees the field bind at boot, no warning
+    log, no rejection — and at runtime the intended ADMIN-by-group never takes
+    effect; user logs in as USER. Silently fail-open policy gap. LSN-001-pattern
+    applied to OAuth authorization. (GoogleUserHandler.md (batch O):invariants.[6]
+    + bugs_limitations_corner_cases.[0] + docs_link_semantic.doc_drift_findings.[3]
+    + security.known_security_gaps.[0]; concept invariant:
+    admin-groups-silent-no-op-asymmetric-provider-support batch O)'
+  - '**NEW batch O — Logout-side token revocation asymmetric defence-in-depth
+    (MEDIUM severity)** — 2-of-5 OAuth logout handlers actively revoke provider-side
+    tokens (Google: POST `/revoke`; GitHub: DELETE `/applications/{client_id}/grant`);
+    3-of-5 invalidate ONLY the local WebSession (Cognito, Azure, ODD_IAM). Azure
+    AD v2.0 has no RFC 7009 revocation; Cognito DOES expose `/oauth2/revoke` but
+    the ODD handler doesn''t use it. A token exfiltrated from a Cognito/Azure/
+    ODD_IAM session retains authority at the provider after the user "logs out"
+    of ODD Platform until natural TTL (Cognito 1hr access; Azure 60-90 minutes
+    access, 90 days refresh). The docs do not surface this; operators with
+    stringent immediate-revocation compliance requirements need to know.
+    (AzureLogoutSuccessHandler.md + CognitoLogoutSuccessHandler.md batch O —
+    invariants on session-only cleanup; concept invariant:
+    logout-side-token-revocation-asymmetric-defence-in-depth batch O)'
+  - '**NEW batch O — GitHub username-rename orphans USER_OWNER_MAPPING (HIGH
+    severity)** — `GithubUserHandler.java:36` uses GitHub-mutable `login` as
+    username (not the stable numeric `id`). GitHub allows free login renames
+    (90-day escrow then re-issued). Renamed user presents `(alice2, github)` to
+    `AuthIdentityProviderImpl.fetchAssociatedOwner`; the prior `(alice, github)`
+    USER_OWNER_MAPPING row is orphaned. No `id`-based fallback. NO migration tool.
+    NO live-doc warning. Latent failure mode until rename happens. Extension of
+    F-011 `compound_key_silent_in_docs` to GitHub-specific identity drift.
+    (GithubUserHandler.md (batch O):invariants.[0] + bugs_limitations_corner_cases.[0]
+    + security.known_security_gaps.[0]; canonicalisation candidate:
+    github-username-rename-orphans-user-owner-mapping batch O)'
+  - '**NEW batch O — admin-principals BYPASSES organization-name gate (MEDIUM
+    severity, GitHub-specific but generalizable)** — In `GithubUserHandler.java:54-67`,
+    if `adminPrincipals` is non-empty AND the user''s `admin-attribute` claim
+    matches any entry, the handler returns ADMIN WITHOUT checking `organization-name`
+    membership. By design (explicit allowlist beats org gate; consultant /
+    external-admin support) but UNDOCUMENTED in live docs. Operator threat-model
+    risk: misconfiguration can elevate an out-of-org user to ADMIN without
+    organizational visibility. (GithubUserHandler.md (batch O):invariants.[3]
+    + implicit_adrs.[1] + bugs_limitations_corner_cases.[2] +
+    security.known_security_gaps.[1]; concept invariant:
+    admin-principals-bypass-organization-name-gate batch O)'
+  - '**NEW batch O — GitHub Enterprise Server unsupported (hard-coded api.github.com,
+    MEDIUM severity)** — `GithubUserHandler.java:39` carries
+    `WebClient.create("https://api.github.com")` — hard-coded, not operator-
+    configurable. GHES operators configuring `provider: github` (the documented
+    value) get the handler instantiated, the WebClient bound to api.github.com
+    regardless of where their GHES lives — outbound calls fail with DNS/cert
+    errors and login surfaces as a generic OAuth2 failure with no diagnostic.
+    Live docs silent. (GithubUserHandler.md (batch O):invariants.[4]
+    + bugs_limitations_corner_cases.[1] + docs_link_semantic.doc_drift_findings.[1];
+    canonicalisation candidate: github-enterprise-server-unsupported-hardcoded-api-url
+    batch O)'
   - '**OAUTH2 + LDAP multi-replica session breakage (MEDIUM)** — Spring default `WebSession`
     is in-memory per JVM; no `@EnableSpringWebSession` / Redis session store in either
     config. Multi-replica HA deployments require sticky sessions OR a shared session
@@ -561,6 +736,26 @@ security_aggregate:
     page documents `auth.s2s.enabled` + `auth.s2s.token` + `X-API-Key` header but
     does NOT mention `auth.ingestion.filter.enabled` / `Authorization: Bearer` / `IngestionDataEntitiesFilter`.
     Operators reasonably conflate the two ingestion-related filters. (IngestionDataEntitiesFilter@L20.md:docs_link_semantic.doc_drift_findings.[1])'
+  - 'NEW batch O — OAuth Provider-Quirks Strategy Pattern explains the asymmetric
+    per-provider behaviour: each OAuth provider handler diverges from the AbstractOIDCUserHandler
+    base class in a UNIQUE direction (Google: no extends, hd-claim, email-default,
+    Spring-discovered userNameAttribute; GitHub: OAuth2-not-OIDC distinct list, two
+    outbound HTTP calls, org-and-team gating; Azure logout: no null guard; Cognito
+    logout: graceful-degradation guard). The chain wiring is symmetric (shouldHandle
+    + @Conditional + first-match-wins) but the per-provider SUBSTANCE diverges by
+    IDP-protocol need. Consequence: any cross-cutting security change (e.g. add
+    state-param CSRF protection) must be replicated across 5 logout handlers + 6
+    user handlers; risk of partial-rollout silent gaps. (concept invariant:
+    oauth-provider-quirks-strategy-pattern batch O)'
+  - 'NEW batch O — `OperationUtils.containsIgnoreCase` IS FULL-STRING equality, not
+    substring (CORRECTION from primary-source Read at OperationUtils.java:7-10).
+    Used at FOUR call sites: LDAPSecurityConfiguration.java:94-97 (LDAP admin-groups);
+    GithubUserHandler.java:114-119 + 122-131 (GitHub admin-teams, org-scoped);
+    GithubUserHandler.java:135-137 (GitHub org-membership); GoogleUserHandler.java:60
+    (Google admin-principals). All four are case-insensitive FULL-STRING matches.
+    The previously-asserted "substring-collision admin escalation" worked example
+    (`admin-groups: [''ops'']` matches `devops` / `noops`) DOES NOT OCCUR. Retraction
+    block now lives in canonicalisation_candidates/substring-match-admin-escalation-ldap-containsignorecase.yaml.'
   contributing_files:
   - AlertController.md
   - AlertManagerController.md
@@ -592,6 +787,11 @@ security_aggregate:
   - updateStatus.md
   - getDataEntityDownstreamLineage.md
   - postDataEntityList.md
+  - GoogleUserHandler.md (batch O)
+  - GithubUserHandler.md (batch O)
+  - AzureLogoutSuccessHandler.md (batch O)
+  - CognitoLogoutSuccessHandler.md (batch O)
+  - IngestionDataEntitiesFilter.md (batch O auth/filter axis)
   evidence:
   - AppInfoController@L18.md:security.known_security_gaps.[0] (DISABLED-default fingerprinting
     MEDIUM)
@@ -639,7 +839,7 @@ security_aggregate:
   - LDAPSecurityConfiguration@L51.md:security.known_security_gaps.[no LDAPS enforcement]
     (HIGH)
   - LDAPSecurityConfiguration@L51.md:security.known_security_gaps.[substring admin
-    match] (HIGH)
+    match — RETRACTED batch O; full-string equality, not substring]
   - LDAPSecurityConfiguration@L51.md:security.known_security_gaps.[no admins when
     empty] (MEDIUM)
   - LDAPSecurityConfiguration@L51.md:security.known_security_gaps.[size-limit silent
@@ -662,8 +862,8 @@ security_aggregate:
     HIGH)
   - ODDLDAPProperties.md:bugs_limitations_corner_cases.[1] (no LDAPS enforcement HIGH
     — validates batch C)
-  - ODDLDAPProperties.md:bugs_limitations_corner_cases.[2] (adminGroups substring
-    collision HIGH — validates batch C)
+  - ODDLDAPProperties.md:bugs_limitations_corner_cases.[2] (adminGroups full-string
+    equality semantic CORRECTED batch O — was wrongly labelled substring collision)
   - ODDLDAPProperties.md:bugs_limitations_corner_cases.[3] (empty adminGroups → no
     admins HIGH)
   - ODDLDAPProperties.md:bugs_limitations_corner_cases.[4] (AD.domain unvalidated
@@ -683,194 +883,184 @@ security_aggregate:
   - postDataEntityList.md:security.known_security_gaps.[0,2] (default-off ingestion
     auth + cross-tenant under filter-OFF — confirms WIRING-side default-off from CONTROLLER
     side; CLOSES THE S2S LOOP)
-notes: 'Cross-cutting infrastructural concept named in main-concepts.md''s
-
+  - GoogleUserHandler.md (batch O):invariants.[6] + bugs_limitations_corner_cases.[0]
+    + docs_link_semantic.doc_drift_findings.[3] + security.known_security_gaps.[0]
+    (admin-groups silent no-op MEDIUM; LSN-001 pattern applied to OAuth)
+  - GithubUserHandler.md (batch O):invariants.[0,3,4] + bugs_limitations_corner_cases.[0,1,2]
+    + docs_link_semantic.doc_drift_findings.[1,2,4] + security.known_security_gaps.[0,1]
+    (username-rename HIGH; GHES MEDIUM; admin-principals bypass MEDIUM)
+  - AzureLogoutSuccessHandler.md (batch O):bugs_limitations_corner_cases.[0,1,2]
+    + security.known_security_gaps.[0,1,2] (NPE HIGH; no allowlist MEDIUM; no token
+    revocation MEDIUM; CONFIRMS F-010 search_facets TTL eviction correct)
+  - CognitoLogoutSuccessHandler.md (batch O):invariants.[1] + bugs_limitations_corner_cases.[0,1,3]
+    + security.known_security_gaps.[0,1,2,3] (empty-logoutUri silent no-op HIGH;
+    no upstream-IdP signout MEDIUM; no token revocation MEDIUM; no CSRF state LOW)
+  - IngestionDataEntitiesFilter.md (batch O):concepts.invariants + implicit_adrs +
+    bugs_limitations_corner_cases + security.known_security_gaps (filter-class-layer
+    primary source; 16-sidecar REFACTOR-185 with auth/filter axis added)
+notes: |-
+  Cross-cutting infrastructural concept named in main-concepts.md's
   `Data Security (governance-level)` callout that points at
-
   `configuration-and-deployment/enable-security/README.md`. Every
-
   controller sidecar invokes this concept verbatim; the catalog
-
   records it once with the union of nodes that depend on it.
 
-
   Batch 2026-05-10B promoted this from a SIMPLE pointer concept
-
   (auth_modes_relevant list union) to a FULL aggregate with
-
   security_aggregate — because THREE independent sidecars converged
-
   on the same triangulated insecure-default finding.
 
-
   Batch 2026-05-12C completes the wiring-side picture: each of the
-
   four `auth.type` modes now has its own canonical *SecurityConfiguration
-
   sidecar (DisabledAuthSecurityConfiguration / LoginFormSecurityConfiguration /
-
   OAuthSecurityConfiguration / LDAPSecurityConfiguration), making per-mode
-
   claims directly citable rather than inferred. Three triangulated findings
-
   now have 4+ contributing sidecars: (a) the default-DISABLED + no-fail-fast
-
   trap; (b) the S2S composes-not-mutex pattern (X-API-Key grants ADMIN
-
   across all /**); (c) the LOGIN_FORM-without-AuthorizationCustomizer
-
   finding (REFACTOR-073 validated). The aggregate now carries 13 weaknesses
-
   across all four modes plus three previously-implicit cross-mode
-
   inconsistencies.
 
-
   Batch 2026-05-12D adds the canonical config-POJO sidecars for OAUTH2
-
   (`ODDOAuth2Properties`) and LDAP (`ODDLDAPProperties`). This validates
-
   three batch-C claims from the primary source (Provider enum 5 values
-
   vs docs 7; azureTenantId field ABSENT from POJO; Azure logoutUri
-
   NPE-prone) and adds a NEW high-impact doc-drift finding: live OAuth2
-
   docs use field key `username-attribute` (single-word kebab) but the
-
   POJO field is `userNameAttribute` (camelCase split) — operator
-
   copy-paste-from-docs silently fails to bind. Batch D also REFINES
-
   the actuator-env credential-leak claim originally surfaced for LDAP
-
-  in batch C: Spring Boot 3.4.10''s `management.endpoint.env.show-values:
-
+  in batch C: Spring Boot 3.4.10's `management.endpoint.env.show-values:
   NEVER` default DOES sanitise actuator-env (password appears as `******`).
-
   The DURABLE leak surface across all four sensitive config classes
-
   (NotificationsProperties batch C + EmailSenderProperties D password +
-
   ODDLDAPProperties D password + ODDOAuth2Properties D clientSecret) is
-
   Lombok `@Data`-generated `toString()` if logged or custom-serialised.
-
   Surfaced as a separate cross-cutting invariant (4-sidecar triangulated).
 
-
   Batch 2026-05-12E adds 5 RBAC-and-search-area sidecars (RoleController.
-
   createRole + PolicyController.createPolicy + OwnerController.createOwner
-
   + PermissionController.getResourcePermissions + SearchController.search).
-
-  These corroborate the Auth Mode aggregate''s two dominant weaknesses
-
+  These corroborate the Auth Mode aggregate's two dominant weaknesses
   from the RBAC primary-surface and the read-side angles:
 
-
   (1) DISABLED-mode-bypass weakness — now 8-SIDECAR triangulated
-
   (was 4 from wiring side; +4 from batch E: every RBAC mutation
-
   endpoint reachable unauthenticated AND the read-side
-
   permission-discovery endpoint silently misleads UI consumers).
-
   DISABLED is now the most-corroborated insecure-default in the
-
   whole catalog.
 
-
   (2) LOGIN_FORM-ADMIN-for-all weakness — now 3-SIDECAR triangulated
-
   (LoginFormSecurityConfiguration@L31 wiring + getResourcePermissions
-
   read-side + createRole RBAC-mutation side). The read-side endpoint
-
   returns the FULL admin permission set for every caller under
-
   LOGIN_FORM regardless of UI-configured policies — the most
-
   diagnostic single test for whether per-resource gating is
-
   effective.
 
-
   Batch E also surfaces THREE NEW cross-cutting invariants captured
-
   under `invariants:` further down — Administrator-name reservation
-
   asymmetry on CRUD (Role + Policy 2-sidecar primary source) +
-
   No-audit-log on RBAC mutations (Role + Policy + Owner 3-sidecar)
-
   + Read-collaborative cross-owner enumeration (now 3-sidecar:
-
   getAllAlerts + getActivity + search).
 
-
   Batch 2026-05-12F adds 5 controller-method sidecars covering the
-
   DataEntity primary surface + the canonical S2S ingestion controller.
-
   Three of the five (getDataEntityDetails + createOwnership +
-
   updateStatus) add DataEntity-side corroboration to the DISABLED-mode
-
   weakness, raising it to 11-SIDECAR triangulated — the most-corroborated
-
   insecure-default in the whole catalog. The fourth (lineage) adds the
-
   graph-shaped cross-owner enumeration variant; the fifth (postDataEntityList)
-
   CLOSES THE S2S LOOP opened by IngestionDataEntitiesFilter in batch B
-
   (default-off unauth confirmed from BOTH the WIRING side and the
-
   CONTROLLER side).
 
-
   Batch F also surfaces THREE NEW/REFINED cross-cutting invariants:
-
   (1) Permission-bypass via Owner auto-create — createOwnership
-
   auto-creates Owner via getOrCreate without OWNER_CREATE permission
-
   check; structural permission-escalation side-door.
-
-  (2) TTL retention broken by statusUpdatedAt nullification — batch D''s
-
-  HousekeepingTTLProperties + batch F''s updateStatus combine to surface
-
+  (2) TTL retention broken by statusUpdatedAt nullification — batch D's
+  HousekeepingTTLProperties + batch F's updateStatus combine to surface
   a cross-batch defect: the 30-day data-entity-delete TTL relies on a
-
-  field that''s never bumped on status transition (ordering bug in
-
+  field that's never bumped on status transition (ordering bug in
   DataEntityMapperImpl.applyStatus).
-
   (3) Audit-log presence ASYMMETRY (REFINEMENT of batch-E theme) —
-
   RBAC mutations (Role/Policy/Owner) have NO audit; DataEntity mutations
-
   (updateStatus, createOwnership) DO emit audit signals. The codebase
-
   has a 2-tier audit story: DataEntity-scoped writes are TIER-1
-
   audited; RBAC-scoped writes are TIER-2 unaudited. Inverse of the
-
   expected security-conscious posture.
 
-
   Batch F also RESOLVES ADR-CANDIDATE-003 borderline_flag — the
-
   read-collaborative posture on the CENTERPIECE READ (`GET /api/dataentities/{id}`)
-
   is DELIBERATE and consistent with 27+ other GETs on the same
-
   controller; the doc-gap is that live `/configuration-and-deployment/enable-security/authorization`
-
   does NOT name this stance.
 
-  '
+  Batch 2026-05-19-O adds 5 OAuth provider-specific sidecars
+  (GoogleUserHandler + GithubUserHandler at the user-enrichment handler
+  axis; AzureLogoutSuccessHandler + CognitoLogoutSuccessHandler at the
+  logout-handler axis; IngestionDataEntitiesFilter at the auth/filter
+  axis — the latter is the filter-class-layer primary source
+  complementing the existing config-key-consumer axis sidecar).
+
+  Batch O surfaces 4 NEW cross-cutting concepts and 1 SUPERSEDE:
+
+  (1) OAuth Provider-Quirks Strategy Pattern (new invariant) — each
+  OAuth provider handler diverges from `AbstractOIDCUserHandler` in a
+  UNIQUE direction (Google: hd-claim + Spring-discovered userNameAttribute
+  + email-default admin-attribute, drops the abstract base; GitHub:
+  OAuth2-not-OIDC distinct list + two outbound HTTP calls + org-and-team
+  gating; Azure logout: NO null guard; Cognito logout: graceful-
+  degradation guard). Chain wiring is symmetric (shouldHandle +
+  @Conditional + first-match-wins) but per-provider SUBSTANCE diverges.
+  Captures ADR-CANDIDATE-034 at the code level.
+
+  (2) admin-groups silent no-op (asymmetric provider support) (new
+  invariant) — `OAuth2Provider.adminGroups : Set<String>` POJO field
+  binds for ALL providers but the runtime read is implemented ONLY in
+  `AbstractOIDCUserHandler` + `GithubUserHandler`. Google handler
+  SILENTLY IGNORES the field. LSN-001-pattern applied to OAuth
+  authorization: silent fail-open policy gap.
+
+  (3) Logout-side token revocation asymmetric defence-in-depth (new
+  invariant) — 2-of-5 OAuth logout handlers actively revoke provider-
+  side tokens (Google + GitHub); 3-of-5 invalidate ONLY the local
+  WebSession (Cognito + Azure + ODD_IAM). Exfiltrated tokens retain
+  provider-side authority after platform logout until natural TTL —
+  exposure window of 1hr-90days depending on provider.
+
+  (4) admin-principals bypass organization-name gate (new invariant) —
+  GitHub admin-principals match BYPASSES organization-name gate by
+  design (explicit allowlist beats org gate) but undocumented. Operators
+  expecting organization-name as a global gate are surprised.
+
+  (5) SUPERSEDE of substring-match-admin-escalation-ldap-containsignorecase
+  canonicalisation candidate — `OperationUtils.containsIgnoreCase` is
+  FULL-STRING equality (`anyMatch(element::equalsIgnoreCase)`), NOT
+  substring (verified by direct primary-source Read of
+  OperationUtils.java:7-10 in batch O). Four call sites confirmed:
+  LDAPSecurityConfiguration.java:94-97; GithubUserHandler.java:114-119
+  + 122-131 + 135-137; GoogleUserHandler.java:60. New corrected
+  canonicalisation candidate: oauth-admin-allowlist-full-string-equality-semantics.
+  The doc-completeness gap remains valid (admin-allowlist semantics
+  not specified in live docs) but the FACTUAL claim about substring
+  matching is retracted.
+
+  Batch O also surfaces 2 NEW canonicalisation candidates:
+  (a) github-username-rename-orphans-user-owner-mapping — silent
+  loss of owner-linkage on GitHub free-rename (90-day escrow); HIGH
+  severity; extension of F-011 compound_key_silent_in_docs facet.
+  (b) github-enterprise-server-unsupported-hardcoded-api-url —
+  GHES operators cannot use the handler; api.github.com hard-coded
+  at GithubUserHandler.java:39 with no apiBaseUrl config knob.
+
+  Batch O cross-validates F-010 (Housekeeping TTL Enforcement): the
+  AzureLogoutSuccessHandler primary-source Read confirms F-010 correctly
+  enumerates SearchFacetsHousekeepingJob — the search_facets table has
+  no user binding column (V0_0_1__init.sql:204-211) so logout-time
+  cleanup is structurally impossible; TTL eviction is the sole reaper.
+  Positive signal per LSN-018.

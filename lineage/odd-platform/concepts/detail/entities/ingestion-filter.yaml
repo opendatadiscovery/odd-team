@@ -10,13 +10,18 @@ description: 'Token-based authentication filter for `/ingestion/**` endpoints �
   by NO filter and has no `@PreAuthorize`. main-concepts.md `Terms & Aliases` lists
   ''Ingestion authentication filter'' as canonical alias. Default-off per `application.yml:48`
   (`auth.ingestion.filter.enabled: false`) — bundled deployment ships with `/ingestion/entities`
-  unauthenticated.'
+  unauthenticated. **STRENGTHENED batch 2026-05-19-O (IngestionDataEntitiesFilter
+  filter-class-layer primary source)** — the new sidecar carries the FILTER CLASS
+  layer evidence (path-matching, body-buffering, token-resolution, exception flow),
+  complementing the existing config-key-consumer axis sidecar.'
 axes_present:
 - controllers
 - openapi_tags
 - config_prefixes
+- filters
 nodes:
 - odd-platform java IngestionDataEntitiesFilter config-key-consumer:auth.ingestion.filter.enabled@L20
+- odd-platform java auth filter:IngestionDataEntitiesFilter
 - odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
 - odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController
 - odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController
@@ -39,6 +44,19 @@ contributors:
   the credential that IngestionDataEntitiesFilter validates via plaintext `.equals(...)`
   (cross-link: regenerateCollectorToken.implicit_adrs[3] establishes the plaintext-stored-shared-secret
   stance; IngestionDataEntitiesFilter.java:56 carries it across to the verify-side)'
+- 'IngestionDataEntitiesFilter (batch O — auth/filter axis): NEW SIDECAR completes
+  the filter-class-layer evidence. Carries: (a) path matcher is the hard-coded literal
+  `/ingestion/entities` + HttpMethod.POST at line 28 (no `@Value` injection — future
+  endpoints like `/ingestion/entities/batch` or `/v2` silently bypass authentication);
+  (b) token lookup precedence is datasource.token() first, fallback to parent collector.token()
+  — third tier throws NotFoundException not AccessDeniedException, surfacing as
+  5xx not 401 (misleading status for a credential resolution failure); (c) body parsed
+  TWICE — filter parses to extract dataSourceOddrn, controller re-parses the same
+  payload for IngestionApi deserialisation (per-request O(payload-size) Jackson parse
+  duplicated); (d) body-buffered-before-auth at 20MB max — heap-pressure DoS
+  vector. NEW coupling finding: sibling `POST /ingestion/datasources/{id}/dataentities/statistics`
+  + similar nested endpoints have NO ingestion-filter coverage; the property name
+  `auth.ingestion.filter.enabled` is misleading.'
 evidence:
 - IngestionDataEntitiesFilter@L20.md:concepts.invariants.[0-4] (conditional registration;
   default-false in YAML; whitelist on /ingestion/**; AccessDeniedException flow; .equals
@@ -51,6 +69,20 @@ evidence:
 - DataEntityAttachmentController.md:security.ingestion_filter_relevance
 - regenerateCollectorToken.md:concepts.invariants.[3] (plaintext-equality check; producer-side
   coupling)
+- IngestionDataEntitiesFilter.md (batch O auth/filter axis):concepts.invariants.[0-6]
+  (filter-class-layer evidence; path-matcher hard-code; token precedence; body-buffered;
+  duplicate parse; NotFoundException 5xx)
+- IngestionDataEntitiesFilter.md (batch O):implicit_adrs.[0-3] (separate filter OFF
+  by default path-matched per endpoint; plaintext-equality shared-secret stance; body-
+  buffered-before-auth structural; orthogonal to UI auth modes — sole defender when
+  toggle is off)
+- IngestionDataEntitiesFilter.md (batch O):bugs_limitations_corner_cases.[0-9] (default-OFF
+  HIGH; hard-coded path MEDIUM; alertmanager-uncovered HIGH; cross-mode divergence
+  MEDIUM; body-buffered DoS MEDIUM; failed-auth-not-logged MEDIUM; timing-side-channel
+  MEDIUM; NotFoundException→5xx LOW; no token cache MEDIUM; duplicate parse MEDIUM)
+- IngestionDataEntitiesFilter.md (batch O):security.known_security_gaps.[0-5] (default-OFF
+  HIGH; alertmanager uncovered HIGH; plaintext-equality MEDIUM; body-buffered DoS
+  MEDIUM; failed-auth not logged MEDIUM; no fallback defense HIGH)
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -76,7 +108,20 @@ security_aggregate:
       Auth Mode security_aggregate for the privilege-escalation pattern. The two filters
       use different config keys, different headers (`Authorization: Bearer` vs `X-API-Key`),
       different scope (path-matched vs global), different token sources (per-datasource
-      DB rows vs a single shared `auth.s2s.token`). Operators conflate them.'
+      DB rows vs a single shared `auth.s2s.token`). Operators conflate them.
+
+      **STRENGTHENED batch O (IngestionDataEntitiesFilter filter-class-layer
+      sidecar)** — cross-mode SIBLING path coverage divergence newly anchored
+      at file:line. LoginFormSecurityConfiguration.java:49-51 lists `/ingestion/entities`
+      + `/ingestion/datasources` as EXACT-PATH permittedPaths (no wildcard) — so
+      `POST /ingestion/alert/alertmanager` under LOGIN_FORM would FALL THROUGH to
+      `.pathMatchers("/**").authenticated()` and require login. But OAUTH2/LDAP
+      route through `SecurityConstants.WHITELIST_PATHS` (`/ingestion/**` wildcard,
+      line 96) which DOES permit `/ingestion/alert/alertmanager`. Under DISABLED,
+      every path is permitAll. The mode-by-mode reachability of the alertmanager
+      webhook is INCONSISTENT and undocumented across the four auth modes — an
+      operator switching from LOGIN_FORM to OAUTH2 might unknowingly open the
+      alertmanager webhook (IngestionDataEntitiesFilter batch O bugs_limitations_corner_cases[3]).'
   owner_scoping:
     verdict: N/A
     detail: Ingestion path is not owner-scoped. The filter authenticates the CALLER
@@ -144,6 +189,24 @@ security_aggregate:
     conflated. (OAuthSecurityConfiguration@L71.md:security.known_security_gaps.[0]
     + LDAPSecurityConfiguration@L51.md:bugs_limitations_corner_cases.[S2S admin everywhere]
     + LoginFormSecurityConfiguration@L31.md:implicit_adrs.[2] + DisabledAuthSecurityConfiguration@L10.md:bugs_limitations_corner_cases.[2])'
+  - '**NEW (batch O — IngestionDataEntitiesFilter filter-class-layer): NotFoundException
+    surfaces as 5xx not 401 — info-leak distinguishing valid-datasource from invalid-datasource
+    (LOW info-leak / MEDIUM operator-debug)** — The parent only catches `AccessDeniedException`
+    to write a 401 response (AbstractIngestionFilter.java:40). The two `NotFoundException`
+    throws at IngestionDataEntitiesFilter.java:44 and 50-51 propagate to the default
+    reactive error handler and surface as 500 Internal Server Error. An attacker
+    probing the endpoint with arbitrary payload + valid token can distinguish
+    "datasource exists, wrong token" (401) from "datasource does not exist" (5xx)
+    — minor info-leak. An operator hitting a half-configured collector record
+    gets a misleading status code. (IngestionDataEntitiesFilter batch O bugs_limitations_corner_cases[7])'
+  - '**NEW (batch O): No token cache — every ingestion request re-fetches the
+    datasource (and possibly the collector) from PostgreSQL — `getDtoByOddrn`
+    + `getDto` are non-cached reactive DB calls. On a high-throughput ingestion
+    stream (hundreds of `POST /ingestion/entities` per second), this is N+M extra
+    DB round-trips on the hot path. A short-TTL Caffeine cache keyed by
+    `dataSourceOddrn` would eliminate the per-request DB hits with a known
+    invalidation requirement on `regenerateCollectorToken` / `regenerateDatasourceToken`.
+    Severity MEDIUM (IngestionDataEntitiesFilter batch O bugs_limitations_corner_cases[8])'
   cross_file_inconsistencies:
   - 'Live docs site (`enable-security/authentication/s2s`) describes `S2sAuthenticationFilter`
     (auth.s2s.enabled + auth.s2s.token + X-API-Key header) — a SEPARATE filter from
@@ -162,6 +225,15 @@ security_aggregate:
     IngestionDataEntitiesFilter@L20 line 56 establishes the same at the VERIFY side
     (`String.equals` against the in-DB value). Triangulated evidence of the plaintext-token
     model spanning rotate + verify (cross-link to Collector Token concept).
+  - 'NEW (batch O): The new IngestionDataEntitiesFilter filter-class-layer sidecar
+    explicitly LISTS REFACTOR-185 + F-008 in its coherence_check.strengthens
+    block, with filter-class-level evidence that the path-matching exact-literal
+    `/ingestion/entities` (line 28) PLUS the conditional registration (line 20)
+    PLUS the explicit permit across all UI auth modes (LoginFormSecurityConfiguration
+    permittedPaths + SecurityConstants.WHITELIST_PATHS wildcard + DisabledAuth
+    permit-all) collectively means: when filter NOT registered (default + DISABLED),
+    there is ZERO check on the ingestion endpoint. The 15-sidecar REFACTOR-185
+    is now 16-sidecar with the auth/filter axis added.'
   contributing_files:
   - IngestionDataEntitiesFilter@L20.md
   - regenerateCollectorToken.md
@@ -170,6 +242,7 @@ security_aggregate:
   - LoginFormSecurityConfiguration@L31.md
   - OAuthSecurityConfiguration@L71.md
   - LDAPSecurityConfiguration@L51.md
+  - IngestionDataEntitiesFilter.md (batch O — auth/filter axis)
   evidence:
   - IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[0-4]
   - IngestionDataEntitiesFilter@L20.md:bugs_limitations_corner_cases.[0,2,3,5,6,7]
@@ -181,6 +254,9 @@ security_aggregate:
   - LoginFormSecurityConfiguration@L31.md:implicit_adrs.[2] (S2S additive across modes)
   - DisabledAuthSecurityConfiguration@L10.md:bugs_limitations_corner_cases.[2] (S2S
     silently ignored under DISABLED)
+  - IngestionDataEntitiesFilter.md (batch O):concepts.invariants.[0-6] + implicit_adrs.[0-3]
+    + bugs_limitations_corner_cases.[0-9] + security.known_security_gaps.[0-5] +
+    coherence_check.strengthens (REFACTOR-185 + F-008 + companion config-key sidecar)
 performance_aggregate:
   overall: MEDIUM
   hot_paths:
@@ -189,6 +265,11 @@ performance_aggregate:
     later parse), 1 DB SELECT for the datasource, +1 fallback DB SELECT for the collector
     if datasource.token() is null — 2-3 DB round-trips per ingestion request on the
     happy path'
+  - 'NEW batch O: Body re-emit via `flatMapIterable(ignored -> dataBuffer)` at line
+    60 confirmed — DataBuffers re-emitted UNCHANGED into the controller stream;
+    the controller (IngestionController.java:38-44) then re-parses the same payload
+    to its own `Mono<DataEntityList>` via the OpenAPI-generated `IngestionApi`
+    deserialisation. PAYLOAD IS PARSED TWICE per request.'
   throughput_shape:
     verdict: SINGLE_ITEM_ONLY
     detail: Single-request, single-batch — but the filter reads the entire body before
@@ -205,15 +286,19 @@ performance_aggregate:
     to extract `dataSourceOddrn`, then re-emits the original buffers for the controller
     to deserialise the same payload AGAIN. Per-request O(payload-size) Jackson parse
     on a high-throughput ingestion path. A JsonPath-style streaming extraction would
-    avoid the duplicate parse. Severity MEDIUM (IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[0])'
+    avoid the duplicate parse. Severity MEDIUM (IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[0]
+    + IngestionDataEntitiesFilter batch O performance.known_performance_gaps.[0] —
+    cross-corroborated at filter-class-layer)'
   - '**No token cache** — every ingestion request re-fetches the datasource (and possibly
     the collector) from DB. A short-TTL Caffeine cache keyed by `dataSourceOddrn`
     would eliminate per-request DB hits on steady-state ingestion streams. Would require
-    invalidation hook on `regenerateCollectorToken`. Severity MEDIUM (IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[2])'
+    invalidation hook on `regenerateCollectorToken`. Severity MEDIUM (IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[2]
+    + IngestionDataEntitiesFilter batch O performance.known_performance_gaps.[1])'
   - '**Per-filter ObjectMapper** — `AbstractIngestionFilter.java:32` instantiates
     `new ObjectMapper()` per filter instance (instance field, not static). Two ObjectMappers
     exist (one per concrete filter). Minor — Jackson ObjectMapper is documented thread-safe-after-configuration;
-    a shared static instance would be cheaper (IngestionDataEntitiesFilter@L20.md:performance.resource_allocation)'
+    a shared static instance would be cheaper (IngestionDataEntitiesFilter@L20.md:performance.resource_allocation
+    + IngestionDataEntitiesFilter batch O performance.resource_allocation)'
   - '**20MB body buffered before auth** — concurrent invalid-token requests at maximum
     size produce N × 20MB heap pressure during the parse+reject window'
   cross_file_inconsistencies:
@@ -225,9 +310,11 @@ performance_aggregate:
     not be a token-bearing collector to ingest data entities.'' (IngestionDataEntitiesFilter@L20.md:implicit_adrs.[3])'
   contributing_files:
   - IngestionDataEntitiesFilter@L20.md
+  - IngestionDataEntitiesFilter.md (batch O — auth/filter axis)
   evidence:
   - IngestionDataEntitiesFilter@L20.md:performance.hot_paths
   - IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[0,1,2]
+  - IngestionDataEntitiesFilter.md (batch O):performance.hot_paths + performance.known_performance_gaps.[0,1,2]
 notes: 'Batch 2026-05-10B promotes IngestionDataEntitiesFilter from a
 
   sidecar-referenced concept (every controller said "this is not me")
@@ -258,5 +345,32 @@ notes: 'Batch 2026-05-10B promotes IngestionDataEntitiesFilter from a
   composition behaviour citable rather than inferred. Surfaced as a
 
   HIGH-severity weakness in the security_aggregate above.
+
+
+  Batch 2026-05-19-O STRENGTHENS the concept with the filter-class-layer
+
+  primary source. The existing config-key-consumer axis sidecar covered
+
+  the ANNOTATION layer (the `@ConditionalOnProperty` semantic, default-OFF
+
+  YAML, REFACTOR-185 + F-008 wire-up). The new auth/filter axis sidecar
+
+  covers the FILTER CLASS layer (path-matching, body-buffering, token-
+
+  resolution precedence, exception flow, response shapes). Both are
+
+  correct and complementary; no contradiction. The 15-sidecar REFACTOR-185
+
+  triangulation is now 16-sidecar with the auth/filter axis added.
+
+  The new sidecar also surfaces TWO additional concerns: (a) `NotFoundException`
+
+  on unknown datasource/collector surfaces as 5xx not 401 — minor info-leak
+
+  + operator-debug confusion; (b) per-request DB SELECT on the auth path
+
+  with no token cache — N+M extra DB round-trips on high-throughput
+
+  ingestion streams.
 
   '

@@ -1,0 +1,81 @@
+name: OAuth Provider-Quirks Strategy Pattern
+canonical_in_docs: false
+canonical_candidate: true
+description: |-
+  Codebase-wide pattern (instantiated across the 7-class `auth/handler/*` package +
+  the 5-class `auth/logout/*` package) for hosting per-provider OAuth2 / OIDC
+  behaviour: a chain-of-responsibility `List<OAuthUserHandler<T,U>>` and a parallel
+  `List<LogoutSuccessHandler>` injected at `OAuthSecurityConfiguration.java:79-80`
+  + the OAuth2 logout dispatcher; each provider's handler is `@Conditional({Provider}Condition.class)`
+  -gated so only deployments configuring that provider instantiate the bean; dispatch
+  by `shouldHandle(String provider).equalsIgnoreCase(Provider.X.name())` first-match-
+  wins. Established at `OAuthSecurityConfiguration.java:185-201`. The pattern's
+  load-bearing tension is that EACH provider diverges from the `AbstractOIDCUserHandler`
+  / generic-OIDC base in a UNIQUE direction: Google (lines 49-55) adds `hd`-claim
+  re-verification + reads userNameAttribute via Spring's ClientRegistration not the
+  ODD POJO + admin-attribute defaults to `email` not `userNameAttribute` and DOES
+  NOT EXTEND AbstractOIDCUserHandler; GitHub (lines 76-91, 99-120) makes TWO outbound
+  HTTP calls to api.github.com because OAuth2-not-OIDC and implements
+  `OAuthUserHandler<OAuth2User, OAuth2UserRequest>` (distinct injected list);
+  Azure logout (line 39) calls `URI.create(provider.getLogoutUri())` with no null
+  guard while Cognito logout (`CognitoLogoutSuccessHandler.java:33-35`) carries the
+  matching `StringUtils.isEmpty` guard; Google logout (line 43-54) actively calls
+  `oauth2.googleapis.com/revoke` while Cognito + Azure invalidate only the local
+  WebSession; GitHub logout calls `DELETE /applications/{client_id}/grant`. The
+  abstract base `AbstractOIDCUserHandler` is the cookie-cutter path (Cognito /
+  Azure / Custom extend it for shared username + admin-attribute fallback semantics);
+  when a provider's quirks accumulate beyond 2-3, the maintainer drops the abstract
+  base entirely (Google + GitHub). This is ADR-CANDIDATE-034 as observed at the
+  code level — the strategy IS the per-provider divergence, with consistent only
+  in the chain wiring, the @Conditional gate, the shouldHandle dispatcher, and the
+  reactive Mono signature.
+axes_present:
+  - controllers
+  - config_prefixes
+  - filters
+nodes:
+  - odd-platform java auth handler:GoogleUserHandler
+  - odd-platform java auth handler:GithubUserHandler
+  - odd-platform java auth logout:AzureLogoutSuccessHandler
+  - odd-platform java auth logout:CognitoLogoutSuccessHandler
+  - odd-platform java OAuthSecurityConfiguration config-key-consumer:auth.type@L71
+  - odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDOAuth2Properties
+contributors:
+  - 'GoogleUserHandler.implicit_adrs[2]: Google handler diverges from AbstractOIDCUserHandler base class (no inheritance) — provider-specific quirks override generic-OIDC patterns. Cognito/Azure/Custom extend; Google does NOT.'
+  - 'GoogleUserHandler.understanding: "the file declares `OAuthUserHandler<OidcUser, OidcUserRequest>` not `OidcUser/OidcUserRequest`" + the deliberate split at OAuthSecurityConfiguration.java mirrors the protocol distinction'
+  - 'GithubUserHandler.implicit_adrs[0]: OAuth2 (non-OIDC) for GitHub because GitHub does not federate via OIDC id_tokens. The split into two interface variants at OAuthSecurityConfiguration.java:79-80 IS the decision.'
+  - 'GithubUserHandler.implicit_adrs[3]: Two-pass HTTP architecture (org-then-team) instead of GET /user enrichment. GitHub MUST issue outbound HTTP because membership data is not in the OAuth2 user response.'
+  - 'AzureLogoutSuccessHandler.invariants[2]: Session invalidation is the only platform-side cleanup — there is NO call to revoke the Azure access/refresh/id token (vs Google/GitHub that DO call provider revocation endpoints).'
+  - 'CognitoLogoutSuccessHandler.implicit_adrs[0]: ODD logout chain uses internal LogoutSuccessHandler interface with provider-routing semantics; per-provider chain is a superset of Spring''s default OIDC-initiated logout, not a replacement.'
+  - 'CognitoLogoutSuccessHandler.implicit_adrs[1]: Cognito logout treats an empty logoutUri as graceful-degradation (return Mono.empty()) rather than fail-fast. Cognito is the ONLY sibling that has this guard — Azure does NOT.'
+evidence:
+  - GoogleUserHandler.md:implicit_adrs.[2] (no extends AbstractOIDCUserHandler)
+  - GithubUserHandler.md:implicit_adrs.[0] (OAuth2-non-OIDC distinct list)
+  - GithubUserHandler.md:implicit_adrs.[3] (two-pass HTTP)
+  - AzureLogoutSuccessHandler.md:invariants (no token revocation; no logoutUri null-guard)
+  - CognitoLogoutSuccessHandler.md:implicit_adrs.[0,1] (internal interface + graceful-degradation guard)
+  - 'Code anchors: OAuthSecurityConfiguration.java:79-80 (twin injected Lists); 185-201 (chain dispatcher); GoogleUserHandler.java:30 (no AbstractOIDCUserHandler extends); GithubUserHandler.java:32 (OAuth2 variant interface); AzureLogoutSuccessHandler.java:39 (no null guard); CognitoLogoutSuccessHandler.java:33-35 (graceful guard); GoogleLogoutSuccessHandler.java:43-54 (active revoke); GithubLogoutSuccessHandler.java:51-63 (grant DELETE)'
+notes: |-
+  This is the load-bearing structural invariant for batch O — it explains
+  WHY every batch O sidecar's bugs / corner-cases / drift findings appear
+  ASYMMETRICALLY across providers. The maintainer accepted code duplication
+  (Google's lines 56-65 mirror AbstractOIDCUserHandler.java:33-43) in exchange
+  for per-provider behavioural fidelity to each IDP's actual protocol shape.
+  The trade-off: a single change to OAuth behaviour (e.g. adding state-param
+  CSRF protection) must be replicated 5 times — once per logout handler — and
+  similarly 6 times for user handlers. The convention's discipline is enforced
+  by the consistent shouldHandle / @Conditional / chain-of-responsibility shape;
+  the SUBSTANCE of each handler is independently authored.
+
+  ADR-CANDIDATE-034 (per GithubUserHandler sidecar implicit_adrs[0]
+  cross-reference) is the proposed canonical ADR name for this pattern.
+  When the maintainer formalises this ADR, the recommended Decision
+  text is: "Adopt strategy-per-provider for OAuth2 / OIDC user enrichment
+  and logout; use AbstractOIDCUserHandler for cookie-cutter providers
+  (Cognito / Azure / Custom-OIDC); drop the abstract base for providers
+  whose quirks accumulate (Google: hd claim verification, Spring-discovered
+  userNameAttribute, email-default admin attribute; GitHub: OAuth2-not-OIDC,
+  two outbound HTTP calls, org+team membership gating). Maintain symmetry
+  in the chain wiring (shouldHandle + @Conditional + chain-of-responsibility)
+  while accepting asymmetric per-provider implementations." The accepted
+  cost is code duplication; the accepted benefit is per-IDP-quirks fidelity.

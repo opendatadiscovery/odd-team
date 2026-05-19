@@ -1,0 +1,27 @@
+gap_id: TEST-GAP-585
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java auth filter:IngestionDataEntitiesFilter"
+pillars_affected: [P-10]
+surfaced_by:
+  - "IngestionDataEntitiesFilter.md:bugs_limitations_corner_cases.[9] (Body parsed TWICE)"
+  - "IngestionDataEntitiesFilter.md:performance.known_performance_gaps.[0]"
+behaviour: |-
+  **Body parsed TWICE per request — filter to extract dataSourceOddrn + controller for the actual DataEntityList ingest.** The filter at line 40 calls `readBody(dataBuffer, DataEntityList.class)` — full Jackson tree-walk — purely to extract `body.getDataSourceOddrn()`. Then the buffered DataBuffers are re-emitted unchanged via `flatMapIterable(ignored -> dataBuffer)` at line 60 to the controller. The controller (IngestionController.java:38-44) re-deserialises the same payload via the OpenAPI-generated `IngestionApi`'s `Mono<DataEntityList>` parameter binding. For a 20MB payload containing 1000 entities, this is TWO full Jackson tree-walks per request. A streaming `JsonPath`-style extraction of just `dataSourceOddrn` would halve the per-request parse cost. The cost is meaningful at >100 req/s on 1000-entity payloads.
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionFilterDuplicateBodyParseTest.java"
+  name: "ingestionEntities_singleRequest_jacksonTreeWalkedTwice_filterPlusController"
+evidence:
+  - "IngestionDataEntitiesFilter.md says (bugs_limitations_corner_cases.[9]): 'Body is parsed TWICE: filter parses payload to DataEntityList purely to extract dataSourceOddrn, then re-emits the cached buffers for the controller (IngestionController.java:38) to deserialise the SAME payload AGAIN. For a 20MB DataEntityList containing 1000 entities, this is two full Jackson tree-walks per request.' severity: MEDIUM (perf)"
+  - "IngestionDataEntitiesFilter.java:40 (full deserialise)"
+  - "IngestionDataEntitiesFilter.java:60 (re-emit unchanged buffers)"
+  - "IngestionController.java:38-44 (controller re-deserialises)"
+cross_references:
+  - "F-008"
+proposed_action: |-
+  Test using a custom `ObjectMapper` bean wrapped to count deserialise invocations of `DataEntityList`. (a) Boot with `auth.ingestion.filter.enabled=true` and the wrapper. (b) POST `/ingestion/entities` with a single valid payload. (c) Assert deserialise counter incremented TWICE (once in filter, once in controller). (d) Pin the duplicate-parse contract; future JsonPath-style early extraction or shared parsed-payload reactor Context flips the assertion to expect ONE parse.
+batch: 2026-05-19-O
+feature_id: F-008

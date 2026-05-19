@@ -16,3 +16,27 @@
   - **Co-surfaced gaps** (link from `refactoring-scopes.md`): REFACTOR-045 (non-SecureRandom RNG — direct contradiction of the "long-random opaque string" implicit rationale; the actual implementation uses ThreadLocalRandom not SecureRandom), REFACTOR-046 (no rotation audit log — `updated_by` is overwritten on each rotation, single-state forensic trail), REFACTOR-047 (no rotation grace period — in-flight ingestion 401s the moment the UPDATE commits), REFACTOR-048 (token plaintext-at-rest — DB backup carries credentials), REFACTOR-049 (DISABLED-mode bypass — anonymously rotatable).
   - **Proposed action**: Promote to `adrs/drafts/collector-token-rotation-semantics.md` (new ADR). Document the four invariants as a coherent model; explicitly call out that the rationale (TLS + long-random) is implicit and that the listed gaps (NEW REFACTOR-045..049) are the price of the design — operators choosing an ODD deployment with REMOTE collectors over untrusted networks must understand the full set. Doc-side: a new "Token Rotation" section under `/configuration-and-deployment/enable-security` is the canonical home (currently neither the Authentication page nor the Permissions page covers operational rotation).
   - **Severity rationale**: HIGH — security-architecture decision underlying every S2S ingestion request in the platform. A future maintainer who proposes "let's hash tokens at rest" or "let's add a grace window" is making a structural change against this ADR; the ADR forces the conversation to happen.
+
+---
+
+## STRENGTHENED — Batch O (2026-05-19) — IngestionDataEntitiesFilter class-level sidecar reaffirms plaintext-equality at the verify site (third-axis corroboration)
+
+**Batch O adds a THIRD-axis confirmation** via the IngestionDataEntitiesFilter class-level sidecar — covering the actual filter-class implementation (vs. batch B's annotation-layer + batch A's rotate-side views).
+
+**New surfaced_by**:
+- `IngestionDataEntitiesFilter.md:implicit_adrs.[1]` (HIGH) — "Token verification is PLAINTEXT-EQUALITY against a shared secret stored unhashed in PostgreSQL" — evidence: IngestionDataEntitiesFilter.java:56 (`dto.tokenPojo().getValue().equals(token)`) + companion CollectorController sidecar evidence cited in `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md` (`TokenGeneratorImpl.java:39,49` generates `RandomStringUtils.randomAlphanumeric(40)` plaintext; `ReactiveTokenRepositoryImpl.java:30-39` writes the raw string to TOKEN.value) — intent_anchor: "the `String.equals` choice on the verify-side mirrors the plaintext-write on the rotate-side; the project has CONSISTENTLY chosen shared-secret semantics over hashed-credential semantics for the entire collector-token model. The `RandomStringUtils.randomAlphanumeric(40)` length (40 chars × log2(62) ≈ 238 bits of entropy) means brute-force is infeasible, but the timing-side-channel from non-constant-time comparison and the at-rest-plaintext exposure are both architectural consequences of the shared-secret stance. The same stance applies to `S2sAuthenticationFilter` (sibling class — YAML-configured plaintext token compared via `s2sTokenProvider.isValidToken`)."
+
+**Updated support count**: now **3-sidecar triangulated** (rotate-side from batch A + annotation-layer from batch B + filter-class-layer from batch O). The 3-axis confirmation makes this one of the strongest single-ADR triangulations in the catalog. The pattern is project-wide:
+
+- **Rotate side** (CollectorController): `TokenGeneratorImpl.java:39,49` + `ReactiveTokenRepositoryImpl.java:30-39` — plaintext on rotate
+- **Annotation layer** (batch B sidecar): `@ConditionalOnProperty(havingValue="true")` + `application.yml:48` — opt-in posture
+- **Filter-class layer** (batch O — NEW): `IngestionDataEntitiesFilter.java:56` — `String.equals` on verify
+
+**Cross-class confirmation**: `S2sAuthenticationFilter.java:27` (sibling class) uses the SAME plaintext-equality pattern with `s2sTokenProvider.isValidToken` — confirming the architectural stance is PROJECT-WIDE, not specific to ingestion. ODD's S2S auth model is consistently shared-secret semantics across both `auth.ingestion.filter.enabled` and `auth.s2s.enabled` paths.
+
+**Co-surfaced gaps newly confirmed by batch O**:
+- REFACTOR-414 NEW — IngestionDataEntitiesFilter plaintext-equality timing channel (MEDIUM; the existing REFACTOR-079 finding is consolidated here with the filter-class-layer evidence)
+
+**Severity unchanged at HIGH**: the decision is unchanged. The 3-sidecar triangulation strengthens the conviction without changing the architectural commitment.
+
+---

@@ -2,60 +2,73 @@
 artefact: doc-gaps
 generated_at: "2026-05-19T00:00:00Z"
 generated_at_commit: 80637ed
-sidecar_count: 83
+sidecar_count: 88
 concepts_yaml_version: 9
 prompt_version: "doc-gap-finder/0.1.0"
-total_findings: 160
-findings_by_severity: { HIGH: 79, MEDIUM: 63, LOW: 18 }
-findings_by_category: { broken-url: 9, missing-anchor: 0, drift: 139, missing-page: 8, stale-page: 0, coverage-gap: 4, meta: 9 }
+total_findings: 165
+findings_by_severity: { HIGH: 81, MEDIUM: 66, LOW: 18 }
+findings_by_category: { broken-url: 9, missing-anchor: 0, drift: 144, missing-page: 8, stale-page: 0, coverage-gap: 4, meta: 9 }
 reconciliation_note: |
-  Batch N adds 5 NEW findings (1 HIGH + 3 MEDIUM + 1 LOW) — DOC-GAP-168..172.
-  NEW HIGH: DOC-GAP-168 (Tag directory side-door REFACTOR-223 — `DATA_ENTITY_TAGS_UPDATE`
-  permission mints global Tag directory rows; live `/features/data-discovery/tagging`
-  + `/authorization/permissions` pages name TAG_CREATE separately without naming the
-  per-entity permission as a directory-write surface).
-  NEW MEDIUM: DOC-GAP-169 (Tag name case-sensitivity divergence — `listByNames`
-  case-sensitive vs `listMostPopular.query` substring case-insensitive; operators
-  see `PII` and `pii` as two distinct directory rows), DOC-GAP-170 (Tag
-  delete-then-recreate loses ALL prior assignment history + `listMostPopular`
-  is globally-scoped; both halves combined make the side-door's pollution permanent
-  + visible to every user), DOC-GAP-171 (user_owner_mapping monotonic growth +
-  cross-provider username display collisions in 4 sibling repositories' LEFT JOINs
-  — strengthens DOC-GAP-149 META with 2 additional sub-mechanisms).
-  NEW LOW: DOC-GAP-172 (`term_to_term.deleted_at` schema-vs-application drift —
-  V0_0_91 adds the column; ReactiveTermRepositoryImpl reads at 7 sites without
-  filtering; either dead schema or missing filter).
-  STRENGTHENED: DOC-GAP-103 (provider-null cross-mode bleed — now 3-LAYER
-  TRIANGULATED: controller + service + repository; `ReactiveUserOwnerMappingRepositoryImpl.getConditions`
-  is the SQL-layer manifestation) + DOC-GAP-141 (S2S `ADMIN` literal collision —
-  3-LAYER TRIANGULATED: auth-filter + service + repository; case-sensitive `.eq()`
-  predicate confirmed at the SQL layer) + DOC-GAP-149 META (P-09 pillar-overpromise
-  — sub-mechanism count grows 5 → 7 with soft-delete monotonic growth + cross-provider
-  LEFT JOIN display collisions; pillar now 3-layer-confirmed at controller + service +
-  repository) + DOC-GAP-072 (Roles page — 5 → 10 sub-findings with the symmetric
-  Role-side soft-deleted-policy LEFT JOIN gap + case-sensitivity-asymmetry; 4-LAYER
-  TRIANGULATION across the RBAC primary surface) + DOC-GAP-083 META (No-audit-log
-  on RBAC mutations — 4 → 5-sidecar at the RBAC primary surface AND extends to a
-  6th surface: ingestion-side Tag mutations; cross-pillar pattern significance grows
-  P-09 → P-09+P-10+P-01) + DOC-GAP-106 (Authorization HOT PATH soft-delete leak —
-  Role-side LEFT JOIN gap is the SYMMETRIC mirror of the Policy-side; defence-in-depth
-  fix now requires 4 SQL predicates instead of 1; both halves of the Role↔Policy join
-  graph leak soft-deleted policies symmetrically) + DOC-GAP-112 (Policy soft-delete +
-  create-asymmetry — symmetric Role-side mirror confirmed; both halves of the RBAC
-  mutation surface have the same shape of asymmetry; case-sensitivity adds an extra
-  exploit dimension on the Role side) + DOC-GAP-100 (`[[ns:term]]` syntax — 5 → 6
-  sidecars; repository-tier confirms case-INsensitive resolution at the SQL layer;
-  the regex output and the persistence lookup have DIFFERENT case-handling semantics
-  — undocumented case-insensitivity) + DOC-GAP-144 (Term update/delete guard —
-  repository-tier primary source for `hasDescriptionRelations` SQL query + NEW
-  restore-soft-deleted-entity dangling-reference corner case; cross-link DOC-GAP-118).
-  Severity buckets: HIGH = 78 + 1 = 79; MEDIUM = 60 + 3 = 63; LOW = 17 + 1 = 18.
-  Total 79 + 63 + 18 = 160 — matches actual sharded file count (155 + 5 new = 160).
-  Strengthened entries (DOC-GAP-103, 141, 149, 072, 083, 106, 112, 100, 144) do NOT
-  change severity buckets — only append batch-N evidence to existing entries.
-  Note: DOC-GAP-099 has a detail/ shard but is not listed in this index (predates
-  the sharding refactor); the batch-N strengthening does not touch DOC-GAP-099.
-  This is a known historical state.
+  Batch O adds 5 NEW findings (2 HIGH + 3 MEDIUM + 0 LOW) — DOC-GAP-173..177 — and
+  STRENGTHENS 3 existing entries (DOC-GAP-038 + DOC-GAP-048 + DOC-GAP-082 META).
+
+  NEW HIGH:
+  - DOC-GAP-173 (Google `admin-groups` silently no-op — `ODDOAuth2Properties.OAuth2Provider.adminGroups`
+    binds successfully from YAML but `GoogleUserHandler` never reads `provider.getAdminGroups()`;
+    operator copying the Cognito/GitHub admin-groups pattern to Google gets zero behaviour change
+    and zero warning; same family of POJO-binds-but-handler-ignores as DOC-GAP-068 META
+    partial-home pattern, but inverse direction);
+  - DOC-GAP-177 (GitHub username-rename orphans `USER_OWNER_MAPPING` row — GitHub allows free
+    `login` renames; the handler uses `login` as the username key; a renamed user's prior
+    USER_OWNER_MAPPING row is silently orphaned; NO id-based fallback; cross-link to
+    DOC-GAP-149 META which is now 8-sub-mechanism).
+
+  NEW MEDIUM:
+  - DOC-GAP-174 (GitHub Enterprise Server (GHES) silent incompatibility — `GithubUserHandler`
+    hard-codes `WebClient.create("https://api.github.com")` with no operator config knob; GHES
+    deployments fail at first user login; doc-fix + minor code-fix);
+  - DOC-GAP-175 (Logout-flow provider-asymmetry — Google + GitHub actively revoke IdP tokens;
+    Azure + Cognito + ODD_IAM invalidate only the local WebSession; tokens at Azure/Cognito
+    remain valid until natural TTL; live docs document `logout-uri` as uniform mechanism
+    without surfacing this asymmetry; compliance-relevance for regulated industries);
+  - DOC-GAP-176 (GitHub `admin-principals` BYPASSES the `organization-name` membership gate —
+    an `adminPrincipals: [external-consultant]` grants ADMIN even to users not in
+    `organizationName`; live docs describe the two fields independently without flagging
+    precedence; operator threat-model mis-modelling risk).
+
+  STRENGTHENED:
+  - DOC-GAP-038 (Ingestion filter default-OFF + path coverage gap — NEW filter-class-layer
+    primary source from `IngestionDataEntitiesFilter` sidecar; adds 5 dimensions to the
+    doc-action: path-matcher is exact-literal (future endpoints silently uncovered),
+    body-buffered-before-auth DoS surface, plaintext-equality non-constant-time comparison,
+    NotFoundException → 5xx misleading status, REFACTOR-185 cross-link);
+  - DOC-GAP-048 (Azure logout-uri NPE — NEW 2-LAYER TRIANGULATION at the CONSUMER SITE
+    `AzureLogoutSuccessHandler.java:39` `URI.create(provider.getLogoutUri())`; existing
+    evidence was at the validator-tier ABSENCE in `ODDOAuth2Properties.validate()`; consumer
+    sidecar now provides the verbatim NPE site + sibling-asymmetry vs Cognito's
+    `StringUtils.isEmpty` guard at `CognitoLogoutSuccessHandler.java:33-35`);
+  - DOC-GAP-082 META (DISABLED-bypasses-RBAC — now 14-sidecar; was 13 in batch H; NEW
+    filter-class-layer adds the load-bearing path-matching-is-the-gating-mechanism primary
+    source statement; REFACTOR-185 cross-link explicit in sidecar `coherence_check.strengthens`).
+
+  Coherence: strengthens=3 supersedes=0 conflicts_surfaced=0.
+
+  Severity buckets: HIGH = 79 + 2 = 81; MEDIUM = 63 + 3 = 66; LOW = 18 + 0 = 18.
+  Total 81 + 66 + 18 = 165 — matches actual sharded file count (160 + 5 new = 165).
+
+  4 live URLs WebFetched at status 200 (via sidecar primary-source evidence) + 1 direct
+  WebFetch this session for 8-question audit of the OAuth2/OIDC docs page (Google admin-groups
+  silence, hd-claim silence, gmail-personal-account silence, GHES silence, GitHub admin-principals-vs-org-gate silence,
+  GitHub-rename silence, Azure-revocation silence, Cognito-federated-IdP silence — all
+  confirmed undocumented).
+
+  Batch O is the FIRST batch covering the AUTH PROVIDER USER-ENRICHMENT + LOGOUT surface (2
+  user-enrichment handlers Google + GitHub × the same provider's 2 of 5 logout handlers
+  Azure + Cognito × the filter-class layer of IngestionDataEntitiesFilter); the 5 new findings
+  span: per-provider config-bind-vs-handler-coverage asymmetry (DOC-GAP-173), enterprise-vs-public-IdP
+  deployment incompatibility (DOC-GAP-174), cross-provider logout-revocation-vs-end-session
+  asymmetry (DOC-GAP-175), admin-precedence undocumented (DOC-GAP-176), and identity-stability
+  on a mutable provider-identity (DOC-GAP-177). YAML-safe emit.
 batch_history:
   - "2026-05-08: DOC-GAP-001..027 — initial 15-sidecar reduction"
   - "2026-05-10: DOC-GAP-028..035 — refresh after batch 2026-05-10A (5 method-level sidecars: AlertController.getAllAlerts, DataEntityAttachmentController.uploadFileChunk, ActivityController.getActivity, DataCollaborationController.postMessageInSlack, CollectorController.regenerateCollectorToken). DOC-GAP-002, DOC-GAP-010, DOC-GAP-025 extended with method-level evidence; severity on DOC-GAP-025 upgraded HIGH."
@@ -72,23 +85,25 @@ batch_history:
   - "2026-05-19 (batch L): DOC-GAP-150..158 — refresh after batch 2026-05-19-L (5 DataEntityController method-level sidecars). 9 NEW (4 HIGH + 5 MEDIUM + 0 LOW); 2 STRENGTHENED (DOC-GAP-001 + DOC-GAP-009). Second REV-3 LAYER-0 META (DOC-GAP-158 P-01 Data Entity Groups & Domains)."
   - "2026-05-19 (batch M): DOC-GAP-159..167 — refresh after batch 2026-05-19-M (4 sidecars: getMyObjectsWithUpstream + getMyObjectsWithDownstream + getDataEntityGroupsLineage + SearchController.facets). 9 NEW findings (4 HIGH + 5 MEDIUM + 0 LOW); 5 STRENGTHENED."
   - "2026-05-19 (batch N): DOC-GAP-168..172 — refresh after batch 2026-05-19-N (4 repository-tier sidecars: ReactiveTermRepositoryImpl + ReactiveTagRepositoryImpl + ReactiveUserOwnerMappingRepositoryImpl + ReactiveRoleRepositoryImpl). 5 NEW (1 HIGH + 3 MEDIUM + 1 LOW); 9 STRENGTHENED (DOC-GAP-103 to 3-LAYER; DOC-GAP-141 to 3-LAYER; DOC-GAP-149 META to 7-sub-mechanism + 3-layer; DOC-GAP-072 from 5 to 10 sub-findings + 4-LAYER RBAC; DOC-GAP-083 META to 5-sidecar + cross-pillar extension; DOC-GAP-106 with symmetric Role-side LEFT JOIN gap; DOC-GAP-112 with symmetric Role-side mirror; DOC-GAP-100 to 6-sidecar + case-INsensitive resolution dimension; DOC-GAP-144 with repository-tier primary source + restore-dangling-reference corner case). NEW HIGH: DOC-GAP-168 (FIRST DOC-GAP for the tagging surface). 4 live URLs WebFetched at status 200. Batch N is the FIRST batch covering Tag + Term + User-Owner-Mapping repository tiers; the RBAC repository tier (Role) closes the 4-layer triangulation across the RBAC primary surface. YAML-safe emit."
+  - "2026-05-19 (batch O): DOC-GAP-173..177 — refresh after batch 2026-05-19-O (5 sidecars: GoogleUserHandler + GithubUserHandler + AzureLogoutSuccessHandler + CognitoLogoutSuccessHandler + IngestionDataEntitiesFilter). 5 NEW (2 HIGH + 3 MEDIUM + 0 LOW); 3 STRENGTHENED (DOC-GAP-038 with NEW filter-class-layer evidence; DOC-GAP-048 with 2-LAYER TRIANGULATION at consumer-site `URI.create()` NPE; DOC-GAP-082 META to 14-sidecar via path-matching-is-the-gating-mechanism primary-source statement). NEW HIGH: DOC-GAP-173 (Google admin-groups silent no-op) + DOC-GAP-177 (GitHub username-rename orphans USER_OWNER_MAPPING). NEW MEDIUM: DOC-GAP-174 (GHES silent incompatibility) + DOC-GAP-175 (logout-flow provider-asymmetry: Google/GitHub revoke vs Azure/Cognito local-only) + DOC-GAP-176 (GitHub admin-principals BYPASSES organization-name gate). 4 live URLs WebFetched at status 200 via sidecars + 1 direct WebFetch this session for the 8-question audit of the OAuth2/OIDC docs page (all 8 axes confirmed undocumented). Batch O is the FIRST batch covering the AUTH PROVIDER USER-ENRICHMENT + LOGOUT surface; coherence: strengthens=3, supersedes=0, conflicts_surfaced=0. YAML-safe emit."
 maintainer_curated: false
 confidence_overall: HIGH
 ---
 
-# Doc gaps — odd-platform — 2026-05-19 (batch N refresh)
+# Doc gaps — odd-platform — 2026-05-19 (batch O refresh)
 
 ## Summary
 
-- **Findings**: 160 total (79 HIGH, 63 MEDIUM, 18 LOW)
-- **By category**: broken-url 9, drift 139, missing-page 8, coverage-gap 4, meta 9
-- **Cross-references to prior findings**: 4 findings overlap with DOC-163 F-047..F-060 (cross-referenced, not re-filed). Batch N adds 5 NEW findings (1 HIGH + 3 MEDIUM + 1 LOW) AND strengthens 9 existing findings — the highest STRENGTHENED count of any batch to date. The cluster has two structural themes: (a) PERSISTENCE-LAYER MIRRORING — every batch-N strengthened finding is the SYMMETRIC mirror of a previously-tracked controller/service finding at the SQL primary source (DOC-GAP-103, 141, 149, 072, 083, 106, 112, 100, 144 all gain repository-tier confirmation); (b) NEW TAG-SURFACE COVERAGE — DOC-GAP-168 / 169 / 170 are the FIRST 3 DOC-GAPs on the tagging surface (cross-pillar: P-01 Data Discovery × P-09 Security & Access Control × P-10 Integrations & Ingestion via REFACTOR-223 side-door).
+- **Findings**: 165 total (81 HIGH, 66 MEDIUM, 18 LOW)
+- **By category**: broken-url 9, drift 144, missing-page 8, coverage-gap 4, meta 9
+- **Cross-references to prior findings**: 4 findings overlap with DOC-163 F-047..F-060 (cross-referenced, not re-filed). Batch O adds 5 NEW findings (2 HIGH + 3 MEDIUM + 0 LOW) AND strengthens 3 existing findings. The cluster has three structural themes: (a) FIRST coverage of the AUTH PROVIDER USER-ENRICHMENT + LOGOUT surface — 5 sidecars across 2 user-enrichment handlers (Google + GitHub) + 2 of 5 logout handlers (Azure + Cognito) + the filter-class layer of IngestionDataEntitiesFilter; (b) PER-PROVIDER CONFIG-BIND-VS-HANDLER-COVERAGE asymmetry — DOC-GAP-173 (Google admin-groups silently ignored), DOC-GAP-174 (GHES API base URL hard-coded), DOC-GAP-175 (logout revocation asymmetric across 5 sibling handlers); (c) FILTER-CLASS-LAYER strengthening of the ingestion-default-off cluster — DOC-GAP-038 + DOC-GAP-082 META now anchor on the path-matching-is-the-gating-mechanism primary-source statement from the new filter-class sidecar.
 - **Notable patterns**:
-  - **NEW 2026-05-19 batch N: PERSISTENCE-LAYER MIRRORING is the structural insight** — every batch-N strengthened finding is the SYMMETRIC mirror of a previously-tracked controller/service finding at the SQL primary source. The 4-layer triangulation pattern (RBAC primary surface: Role + Policy at controller + service + repository tiers) and the 3-layer triangulation pattern (User-Owner-Mapping chokepoint: auth-filter + service + repository) are now structurally complete.
-  - **NEW 2026-05-19 batch N: FIRST DOC-GAPs on the tagging surface (DOC-GAP-168 + DOC-GAP-169 + DOC-GAP-170)** — REFACTOR-223 side-door + case-sensitivity divergence + delete-recreate lifecycle. Cross-pillar finding cluster (P-01 × P-09 × P-10).
-  - **NEW 2026-05-19 batch N: DOC-GAP-083 META extends to cross-pillar (P-09 + P-10 + P-01)** — the no-audit-log pattern is now confirmed on the ingestion-side Tag mutation surface (via DOC-GAP-168) in addition to the RBAC primary surface (Role + Policy + Owner); the META is no longer RBAC-specific but a platform-wide audit-coverage gap.
-  - **NEW 2026-05-19 batch N: 4 live URLs WebFetched at status 200** — features/data-discovery/tagging + features/data-glossary/business-glossary + configuration-and-deployment/enable-security/authorization/roles + configuration-and-deployment/enable-security/authorization/user-owner-association; all 4 pages confirm silence on the repository-tier primary-source findings.
-  - (Earlier batches' notable-pattern bullets preserved in detail/ shards; the structural insight is the PERSISTENCE-LAYER MIRRORING + the cross-pillar audit-coverage extension at batch N.)
+  - **NEW 2026-05-19 batch O: FIRST coverage of the AUTH PROVIDER USER-ENRICHMENT + LOGOUT surface** — 5 sidecars covering 2 user-enrichment handlers (Google + GitHub) + 2 of 5 logout handlers (Azure + Cognito) + the filter-class layer of IngestionDataEntitiesFilter; 5 NEW DOC-GAPs all on the auth surface; coherence: strengthens=3 supersedes=0 conflicts_surfaced=0.
+  - **NEW 2026-05-19 batch O: PER-PROVIDER CONFIG-BIND-VS-HANDLER-COVERAGE ASYMMETRY is the dominant structural theme** — `ODDOAuth2Properties.OAuth2Provider` POJO binds 15 fields (provider, clientId, clientSecret, scope, redirectUri, clientName, userNameAttribute, adminAttribute, adminPrincipals, adminGroups, allowedDomain, organizationName, logoutUri, issuerUri, adminUserInfoFlag) for every provider configured. Each provider's handler reads a different SUBSET of those fields; the unread fields silently bind successfully at boot. DOC-GAP-173 (Google admin-groups), DOC-GAP-174 (GHES api-base-url missing), DOC-GAP-176 (GitHub admin-principals-vs-org-gate precedence undocumented) are the three new instances of this asymmetry surfacing in batch O. The earlier DOC-GAP-046 + DOC-GAP-069 + DOC-GAP-070 + DOC-GAP-068 META are the related cluster.
+  - **NEW 2026-05-19 batch O: LOGOUT-FLOW PROVIDER ASYMMETRY (DOC-GAP-175)** — Google + GitHub actively revoke IdP tokens; Azure + Cognito + ODD_IAM invalidate only the local WebSession. Compliance-relevance for operators in regulated industries deploying Azure or Cognito. The 5 sibling logout handlers split 2:3 on revocation behaviour; live docs document `logout-uri` as a uniform mechanism without surfacing this split.
+  - **NEW 2026-05-19 batch O: GITHUB-LOGIN-IS-MUTABLE silent identity-loss (DOC-GAP-177)** — GitHub `login` is freely-rename-able by the user; the handler uses it as the identity key in `USER_OWNER_MAPPING`; a rename silently orphans the prior owner-linkage; NO id-based fallback. Adds 1 sub-mechanism to DOC-GAP-149 META (P-09 pillar-overpromise on user-owner association) — META is now 8-sub-mechanism.
+  - **NEW 2026-05-19 batch O: 1 direct WebFetch at status 200 confirms 8 OAuth2/OIDC docs page axes are all undocumented** — Google admin-groups, hd-claim, gmail-personal-account, GHES, GitHub admin-principals-vs-org-gate, GitHub-rename, Azure-revocation, Cognito-federated-IdP — all 8 confirmed undocumented this session. The doc-side action shape for batch O is structurally bounded: one OAuth2/OIDC page authoring pass + one logout-behaviour-matrix admonition + one provider-handler-coverage matrix closes 4 of the 5 new DOC-GAPs in a single doc edit.
+  - (Earlier batches' notable-pattern bullets preserved in detail/ shards; the structural insight is the FIRST AUTH-PROVIDER-USER-ENRICHMENT + LOGOUT coverage + PER-PROVIDER CONFIG-BIND-VS-HANDLER-COVERAGE asymmetry at batch O.)
 
 ## Findings
 
@@ -98,7 +113,7 @@ confidence_overall: HIGH
 
 Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-fidelity discriminating context per entry; full content lives in `detail/{id}.md`. The `registry-search` subagent reads THIS file; reducers read the subagent's surfaced candidates verbatim and decide strengthen-vs-new. Do not hand-edit headline blocks below the index summary unless the entry's discriminating field changes — re-run `shard.py` or rely on the reducer to refresh.
 
-**Total entries**: 160
+**Total entries**: 165
 
 ---
 
@@ -237,7 +252,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-038 — `auth.ingestion.filter.enabled=false` default leaves `POST /ingestion/entities` unauthenticated AND `POST /ingestion/alert/alertmanager` covered by NO filter regardless of toggle — undocumented sibling-endpoint coverage gap
+## DOC-GAP-038 — `auth.ingestion.filter.enabled=false` default leaves `POST /ingestion/entities` unauthenticated AND `POST /ingestion/alert/alertmanager` covered by NO filter regardless of toggle — undocumented sibling-endpoint coverage gap **(batch O: NEW filter-class-layer primary source adds 5 dimensions — path-matcher-exact-literal, body-buffered-before-auth DoS, plaintext-equality non-constant-time, NotFoundException → 5xx misleading, REFACTOR-185 cross-link)**
 
 **Severity**: HIGH
 **Category**: drift
@@ -291,7 +306,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-048 — OAuth2 docs flag Azure `logout-uri` as REQUIRED but `ODDOAuth2Properties.validate()` only checks `clientId` and `provider` — operator boots successfully and fails at first logout
+## DOC-GAP-048 — OAuth2 docs flag Azure `logout-uri` as REQUIRED but `ODDOAuth2Properties.validate()` only checks `clientId` and `provider` — operator boots successfully and fails at first logout **(batch O: 2-LAYER TRIANGULATION — consumer-site NPE at `AzureLogoutSuccessHandler.java:39` `URI.create()` confirmed; sibling-asymmetry vs Cognito's `StringUtils.isEmpty` guard)**
 
 **Severity**: HIGH
 **Category**: drift
@@ -372,7 +387,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-082 — META-FINDING — `auth.type=DISABLED` BYPASSES the entire Authorization framework; ALL admin operations are anonymously reachable on a network-exposed deployment; 13-sidecar triangulated cluster
+## DOC-GAP-082 — META-FINDING — `auth.type=DISABLED` BYPASSES the entire Authorization framework; ALL admin operations are anonymously reachable on a network-exposed deployment; **14-sidecar** triangulated cluster **(batch O: filter-class-layer adds 14th sidecar; REFACTOR-185 cross-link explicit)**
 
 **Severity**: HIGH
 **Category**: meta
@@ -657,6 +672,24 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 **Category**: drift
 
 **Full detail**: `detail/DOC-GAP-168.md`
+
+---
+
+## DOC-GAP-173 — Google `admin-groups` is silently no-op — POJO binds the field but `GoogleUserHandler` never reads `provider.getAdminGroups()`; operator copying Cognito/GitHub admin-groups pattern to Google gets zero behaviour change and zero warning **(NEW batch O — FIRST DOC-GAP on per-provider config-bind-vs-handler-coverage asymmetry)**
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-173.md`
+
+---
+
+## DOC-GAP-177 — GitHub username-rename produces an orphan `USER_OWNER_MAPPING` row — GitHub allows free `login` renames; the handler uses `login` as the username key; a renamed user's prior owner-linkage is silently orphaned; NO id-based fallback **(NEW batch O — FIRST DOC-GAP on the GitHub-specific facet of the compound-key-silent-in-docs family; strengthens DOC-GAP-149 META to 8-sub-mechanism)**
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-177.md`
 
 ---
 
@@ -1238,7 +1271,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-149 — META-FINDING — REV-3 LAYER-0 pillar-overpromise: `system-mission.md` P-09 (Security & Access Control) sub-feature "User-owner association" Confidence: HIGH; live page contains one one-sentence runtime-semantic claim **(batch N: 7-sub-mechanism + 3-layer confirmation)**
+## DOC-GAP-149 — META-FINDING — REV-3 LAYER-0 pillar-overpromise: `system-mission.md` P-09 (Security & Access Control) sub-feature "User-owner association" Confidence: HIGH; live page contains one one-sentence runtime-semantic claim **(batch N: 7-sub-mechanism + 3-layer confirmation; batch O cross-link via DOC-GAP-177 GitHub-rename adds 8th sub-mechanism)**
 
 **Severity**: MEDIUM
 **Category**: meta
@@ -1361,6 +1394,33 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 **Category**: drift
 
 **Full detail**: `detail/DOC-GAP-171.md`
+
+---
+
+## DOC-GAP-174 — `GithubUserHandler` hard-codes `WebClient.create("https://api.github.com")` — GitHub Enterprise Server (GHES) deployments silently incompatible; no `apiBaseUrl` field on `ODDOAuth2Properties.OAuth2Provider`; first user login fails with DNS/cert errors **(NEW batch O — FIRST DOC-GAP on GHES incompatibility)**
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-174.md`
+
+---
+
+## DOC-GAP-175 — Logout-flow provider-asymmetry — Google + GitHub actively REVOKE IdP tokens; Azure + Cognito + ODD_IAM invalidate ONLY the local WebSession; tokens at Azure / Cognito remain valid until natural TTL; compliance-relevance for regulated industries **(NEW batch O — FIRST DOC-GAP on the logout-revocation-vs-end-session asymmetry across 5 sibling handlers)**
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-175.md`
+
+---
+
+## DOC-GAP-176 — GitHub `admin-principals` BYPASSES the `organization-name` membership gate — `adminPrincipals: [external-consultant]` grants ADMIN even to users NOT in `organizationName`; live docs describe the two fields independently without flagging precedence **(NEW batch O — FIRST DOC-GAP on the GitHub admin-principals-vs-org gate precedence)**
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-176.md`
 
 ---
 

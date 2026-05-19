@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-613
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java auth filter:IngestionDataEntitiesFilter"
+pillars_affected: [P-10, P-09]
+surfaced_by:
+  - "IngestionDataEntitiesFilter.md:bugs_limitations_corner_cases.[6] (Plaintext-equality not constant-time — STRENGTHENS TEST-GAP-121)"
+  - "IngestionDataEntitiesFilter.md:security.known_security_gaps.[2]"
+  - "IngestionDataEntitiesFilter.md:implicit_adrs.[1] (Plaintext-equality shared-secret stance)"
+behaviour: |-
+  **STRENGTHENS TEST-GAP-121 with filter-class file:line anchor + at-rest implication.** The filter-class sidecar primary-sources the plaintext-equality contract: `IngestionDataEntitiesFilter.java:56` — `dto.tokenPojo().getValue().equals(token)`. Plaintext `String.equals`, NOT `MessageDigest.isEqual` (not constant-time). The token is also stored at-rest as plaintext in PostgreSQL (TOKEN.value column populated by `RandomStringUtils.randomAlphanumeric(40)` per the rotate-side sidecar). Two-layer concern: (a) timing-based token discovery on a low-latency network is theoretically feasible (62^40 ≈ 2.4e71 search space makes practical attack infeasible, but the principle is violated); (b) DB-read attack (read-only SQL injection elsewhere in the platform, e.g. the recently-flagged FTS SQL-injection in batch H) would yield the live ingestion tokens directly. Implicit ADR encoded: shared-secret stance applies to BOTH `S2sAuthenticationFilter` (sibling — YAML-configured plaintext) AND this filter; the architectural decision is uniform across the auth surface.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionFilterPlaintextEqualityStanceTest.java"
+  name: "ingestionFilter_tokenCompareSite_usesStringEquals_NotMessageDigest_pinsSharedSecretStance"
+evidence:
+  - "IngestionDataEntitiesFilter.md says (bugs_limitations_corner_cases.[6]): 'Plaintext-equality String.equals is not constant-time — timing-based token discovery on a low-latency network is theoretically feasible. For a 40-char alphanumeric token the search space is large (62^40 ≈ 2.4e71), but the principle is violated. MessageDigest.isEqual(...) would mitigate.' severity: MEDIUM"
+  - "IngestionDataEntitiesFilter.md says (implicit_adrs.[1]): 'Token verification is PLAINTEXT-EQUALITY against a shared secret stored unhashed in PostgreSQL. The same stance applies to S2sAuthenticationFilter (sibling class).' confidence: HIGH"
+  - "IngestionDataEntitiesFilter.java:56 (String.equals site)"
+cross_references:
+  - "TEST-GAP-121 (config-key-consumer half — STRENGTHENED with filter-class anchor + at-rest)"
+  - "F-008"
+  - "REFACTOR-NNN candidate: switch to MessageDigest.isEqual + token hashing at-rest"
+proposed_action: |-
+  Reflection-based unit test on IngestionDataEntitiesFilter. (a) Reflect to find the token-compare site at line 56. (b) Assert the compare uses `String.equals(...)` (NOT `MessageDigest.isEqual` and NOT a Mac/HMAC compare). (c) Mirror assertion against `S2sAuthenticationFilter` for consistency check. (d) Pin the design stance (plaintext-equality shared-secret). Future REFACTOR introducing MessageDigest.isEqual flips both asserts.
+batch: 2026-05-19-O
+feature_id: F-008

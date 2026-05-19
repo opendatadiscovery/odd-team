@@ -15,3 +15,40 @@
   - **Co-surfaced gaps** (link from `refactoring-scopes.md`): REFACTOR-078 (default deployment ships with `POST /ingestion/entities` UNAUTHENTICATED — HIGH, LSN-001-shape: docs do not surface `auth.ingestion.filter.enabled`), REFACTOR-079 (plaintext `.equals(...)` not constant-time — corroborates REFACTOR-048 from the verify side; STRENGTHENS ADR-CANDIDATE-017's plaintext-equality model), REFACTOR-080 (hard-coded path matcher — addition of `/ingestion/entities/batch` silently bypasses), REFACTOR-081 (body-buffered-before-auth-check — 20MB DoS amplification), REFACTOR-082 (AlertManager sibling endpoint unprotected and misnamed property), REFACTOR-083 (no failed-auth logging on the ingestion filter), REFACTOR-084 (duplicate body parse — filter materialises DataEntityList then controller re-deserialises).
   - **Proposed action**: Promote to `adrs/drafts/ingestion-endpoint-auth-trust-gradient.md` (new ADR). Document the three-tier trust gradient: registration-mandatory → ingestion-opt-in → external-alert-network-delegated. Cross-link with ADR-CANDIDATE-006 (AlertManager) and ADR-CANDIDATE-017 (token-rotation semantics — the shared-secret model that this ADR's `.equals(...)` verifier consumes). Doc-side: the live `/configuration-and-deployment/enable-security/authentication` page must surface `auth.ingestion.filter.enabled` explicitly with the default-off implication called out as an LSN-001-shape caveat.
   - **Severity rationale**: HIGH — ingestion-auth-architecture decision. Default-off ingestion + the misleadingly-named property + the AlertManager sibling absence together compose the largest known un-defended security gap in the platform (REFACTOR-078 + REFACTOR-082). The ADR codifies the model AND surfaces the gaps the model does not defend.
+
+---
+
+## STRENGTHENED — Batch O (2026-05-19) — IngestionDataEntitiesFilter class-level sidecar confirms 4 sub-decisions from the FILTER CLASS layer (companion to batch B's config-key-consumer-layer view)
+
+**Batch O adds the filter-class-level primary source** (`odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md`) — distinct from batch B's `config-key-consumer` axis sidecar which covered the annotation layer. The new sidecar covers the actual filter-class implementation: path-matching, body-buffering, token-resolution, exception flow, and the orthogonal-to-UI-auth-modes contract.
+
+**New surfaced_by**:
+- `IngestionDataEntitiesFilter.md:implicit_adrs.[0]` (HIGH) — "Ingestion authentication is a SEPARATE filter, OFF by default, deliberately path-matched per endpoint" — evidence: IngestionDataEntitiesFilter.java:19-28 (`@Component` + `@ConditionalOnProperty(havingValue="true")` + hard-coded `"/ingestion/entities"` path matcher in constructor) + IngestionDataSourceFilter.java:15-20 (parallel structure: `@Component` + different path matcher) + AbstractIngestionFilter.java:28-31 (parent accepts a `ServerWebExchangeMatcher` in its constructor, deliberately one-filter-class-per-path) — intent_anchor: the package layout (`auth/filter/*Filter.java`), naming convention (`Ingestion{X}Filter` ↔ `/ingestion/{x}`), the parent's matcher-in-constructor design, and the deliberate split between conditionally-registered (this filter) vs unconditionally-registered (`IngestionDataSourceFilter`) subclasses, all consistently encode the architectural stance: each ingestion endpoint gets its own filter, the operator can toggle the data-entities filter alone, the data-source-registration filter is permanent. The naming + structure + annotation form ARE the design statement.
+- `IngestionDataEntitiesFilter.md:dependencies_semantic.coupling.[1]` (HIGH) — "The single `auth.ingestion.filter.enabled` toggle gates ONLY this filter (per-datasource bearer token on `/ingestion/entities`). It does NOT gate the sibling `IngestionDataSourceFilter` (which is always-on when an Authorization header is present); it does NOT gate the `AlertManagerController` webhook."
+
+**Updated support count**: now **2-sidecar triangulated** (batch B config-key-consumer-axis + batch O filter-class-axis). The two sidecars are COMPLEMENTARY — one views the annotation layer, the other views the filter-class layer. Both confirm the 4 sub-decisions:
+1. Conditional `@ConditionalOnProperty(havingValue="true")` with no `matchIfMissing` AND explicit `false` in YAML (the deliberate visibility decision)
+2. Hard-coded path matcher per-subclass (one-filter-class-per-path naming convention)
+3. Conditional-vs-unconditional sibling registration (bootstrap-order constraint)
+4. Three-tier trust gradient (registration mandatory → ingestion opt-in → alertmanager network-delegated)
+
+**New child ADRs surfaced in batch O** (this ADR is the parent; each child ADR specifies a refinement):
+- ADR-CANDIDATE-138 NEW (body-buffered-before-auth is structural — the wire-contract dependency that forces the per-request heap cost)
+- ADR-CANDIDATE-139 NEW (ingestion filter is the SOLE defender — orthogonal to UI auth modes, no fallback when off)
+
+**Cross-batch reference (the 16-sidecar REFACTOR-185 triangulation)**: the IngestionDataEntitiesFilter class-level sidecar adds the SIXTEENTH supporting evidence for REFACTOR-185 (DISABLED-mode bypass) — under DISABLED, the SecurityWebFilterChain permits `/ingestion/entities` AND this filter's `@ConditionalOnProperty(havingValue="true")` (with `false` default) means the filter is NOT registered. The compound is "DISABLED + filter-OFF = unauthenticated ingestion." REFACTOR-185 is now the strongest single triangulation in the catalog.
+
+**Co-surfaced gaps newly confirmed by batch O**:
+- REFACTOR-185 (existing — DISABLED bypass; STRENGTHENED to 16-sidecar with IngestionDataEntitiesFilter class-level confirmation)
+- REFACTOR-204 (existing — default-off unauth ingestion; STRENGTHENED at filter-class layer)
+- REFACTOR-205 (existing — cross-tenant ingestion under filter-OFF; STRENGTHENED at filter-class layer)
+- REFACTOR-412 NEW — IngestionDataEntitiesFilter body-buffered DoS amplification (MEDIUM)
+- REFACTOR-413 NEW — IngestionDataEntitiesFilter failed-auth attempts not logged (MEDIUM)
+- REFACTOR-415 NEW — IngestionDataEntitiesFilter NotFoundException surfaces as 5xx not 401 (LOW)
+- REFACTOR-416 NEW — IngestionDataEntitiesFilter duplicate body parse (MEDIUM)
+- REFACTOR-417 NEW — IngestionDataEntitiesFilter hard-coded path matcher (MEDIUM)
+- REFACTOR-418 NEW — IngestionDataEntitiesFilter no token cache (MEDIUM)
+
+**Severity unchanged at HIGH**: the architectural decision is unchanged. The 2-sidecar triangulation strengthens the original 1-sidecar finding without changing the load-bearing nature.
+
+---

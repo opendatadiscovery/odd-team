@@ -1,0 +1,26 @@
+gap_id: TEST-GAP-584
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java auth filter:IngestionDataEntitiesFilter"
+pillars_affected: [P-10]
+surfaced_by:
+  - "IngestionDataEntitiesFilter.md:bugs_limitations_corner_cases.[8] (Token caching is absent)"
+  - "IngestionDataEntitiesFilter.md:performance.known_performance_gaps.[1]"
+behaviour: |-
+  **Token caching ABSENT on the auth hot path — every ingestion request re-fetches the datasource (and optionally collector) from PostgreSQL.** `getDtoByOddrn` (line 43) + `getDto` (line 49) are non-cached reactive DB calls. On a high-throughput ingestion stream (hundreds of `POST /ingestion/entities` per second from a busy `odd-collector`), this is N+M extra DB round-trips on the auth path BEFORE the controller's own DB writes. A short-TTL Caffeine cache keyed by `dataSourceOddrn` would eliminate per-request DB hits with a known invalidation requirement on `regenerateCollectorToken` / datasource-token rotation. The maintainer's deliberate omission (per the broader no-cache stance — AuthIdentityProviderImpl implicit_adrs[3]) is the design choice: avoid cache-invalidation surface; pay per-request cost.
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionFilterTokenCacheAbsenceTest.java"
+  name: "ingestionEntities_oneHundredSequentialPosts_dbRoundTripsPerRequest_pinsNoCacheContract"
+evidence:
+  - "IngestionDataEntitiesFilter.md says (bugs_limitations_corner_cases.[8]): 'Token caching is absent. Every ingestion request re-fetches the datasource (and possibly the collector) from PostgreSQL — getDtoByOddrn + getDto are non-cached reactive DB calls. On a high-throughput ingestion stream (hundreds of POST /ingestion/entities per second), this is N+M extra DB round-trips on the hot path.' severity: MEDIUM"
+  - "IngestionDataEntitiesFilter.java:43-54 (no caching)"
+cross_references:
+  - "F-008"
+  - "TEST-GAP-476 (AuthIdentityProviderImpl no-cache contract — same architectural stance)"
+proposed_action: |-
+  Testcontainers + spied repository. (a) Boot with `auth.ingestion.filter.enabled=true`. (b) Spy `ReactiveDataSourceRepository` to count `getDtoByOddrn` invocations. (c) Submit 100 sequential `POST /ingestion/entities` with the SAME datasource ODDRN + valid token. (d) Assert `getDtoByOddrn` invoked exactly 100 times (one per request — no cache). (e) Pin the no-cache contract; future short-TTL Caffeine cache flips the assertion to expect fewer invocations (e.g. 1 + TTL-expirations).
+batch: 2026-05-19-O
+feature_id: F-008

@@ -1,21 +1,69 @@
 name: User-Owner Mapping
 canonical_in_docs: true
 canonical_candidate: false
-description: 'user_owner_mapping table row — the gate that turns an authenticated
-  principal (oidc_username + provider) into an Owner identity. Schema: (owner_id,
-  oidc_username, provider, deleted_at). The PRIMARY mechanism for owner-scoped reads
-  (getMyObjects family); also the per-data-entity authorization Policy''s anchor for
-  ''is: dataEntity:owner'' scoping.'
+pillar_affinity:
+- P-09
+description: |-
+  user_owner_mapping table row — the gate that turns an authenticated
+  principal (oidc_username + provider) into an Owner identity. Schema:
+  (owner_id, oidc_username, provider, deleted_at). The PRIMARY mechanism
+  for owner-scoped reads (getMyObjects family); also the per-data-entity
+  authorization Policy's anchor for 'is: dataEntity:owner' scoping.
+  **STRENGTHENED batch 2026-05-19K** — AuthIdentityProviderImpl sidecar
+  primary-source confirms the row's runtime consumer at
+  `AuthIdentityProviderImpl.java:50-53` (the fetchAssociatedOwner Mono
+  chain) and the case-sensitive `.eq()` lookup at
+  `ReactiveUserOwnerMappingRepositoryImpl.java:116-127`. NEW load-bearing
+  finding: the LOGIN_FORM ↔ LDAP cross-mode bleed is HIGH severity
+  (previously LOW-MEDIUM) — provider=null is the SAME lookup key for both
+  modes, and during auth-mode migration scenarios (a documented operator
+  use case) the second-mode user inherits the first-mode user's Owner.
+  ADDITIONAL: the S2sAuthenticationFilter hardcodes username='ADMIN'
+  (uppercase) and produces UsernamePasswordAuthenticationToken → falls
+  into the else-branch at line 32 → provider=null → if an operator named
+  a LOGIN_FORM/LDAP user 'ADMIN' (case-sensitive exact), the S2S caller
+  inherits that user's Owner-link (NEW HIGH-severity literal collision
+  invariant). The single-Mono lookup at fetchAssociatedOwner is the doc-side
+  invariant verbatim at "one user can be associated only with one owner
+  and vice versa" (WebFetched 2026-05-19 status 200) — schema enforcement
+  is application-side via clear-active-then-insert pattern, NOT a partial
+  unique index.
 nodes:
 - odd-platform java DataEntityController controller-method:getMyObjects
+- odd-platform java service service:AuthIdentityProviderImpl
 contributing_files:
 - odd-platform__java__DataEntityController__controller-method__getMyObjects.md
+- odd-platform__java__service__service__AuthIdentityProviderImpl.md
 evidence:
 - getMyObjects.md:concepts.entities[USER_OWNER_MAPPING row]
 - getMyObjects.md:implicit_adrs.[0] (ADR-CANDIDATE-015 primary source)
 - getMyObjects.md:invariants[oidc_username+provider composite key; single Mono lookup]
+- |-
+  AuthIdentityProviderImpl.md:concepts.entities[USER_OWNER_MAPPING row at
+  ReactiveUserOwnerMappingRepositoryImpl.java:116-127] +
+  concepts.invariants[OAuth2 ONLY auth flow with non-null provider;
+  single-Mono one-Owner-per-user; case-sensitive .eq() lookup] +
+  implicit_adrs.[1,2] (OAuth2-only non-null provider as IDP-namespace
+  choice; single-Mono Owner contract reflecting doc-side at-most-one
+  invariant)
+- |-
+  AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[0,1]
+  (LOGIN_FORM/LDAP cross-mode bleed PRIMARY SOURCE; S2S 'ADMIN' literal
+  collision NEW HIGH severity)
+contributors:
+- |-
+  getMyObjects (batch G): entities[USER_OWNER_MAPPING row];
+  invariants[oidc_username+provider composite key; single Mono lookup]
+- |-
+  AuthIdentityProviderImpl (batch K — STRENGTHENS): entities[USER_OWNER_MAPPING
+  row]; invariants[OAuth2 ONLY auth flow with non-null provider;
+  single-Mono one-Owner-per-user]; implicit_adrs[OAuth2-only non-null
+  provider; single-Mono Owner contract; stateless / no-cache by deliberate
+  omission]; bugs[LOGIN_FORM/LDAP cross-mode bleed HIGH; S2S 'ADMIN'
+  literal collision NEW HIGH]
 axes_present:
 - controllers
+- services
 - config_prefixes
 security_aggregate:
   overall: MEDIUM
@@ -26,9 +74,15 @@ security_aggregate:
   - DISABLED
   authorization_consistency:
     verdict: CONSISTENT
-    detail: 'Single mechanism: ReactiveSecurityContextHolder.getContext() → Authentication.getName()
-      + provider → SELECT user_owner_mapping WHERE oidc_username=? AND deleted_at
-      IS NULL AND (provider=? OR provider IS NULL) → Owner'
+    detail: |-
+      Single mechanism: ReactiveSecurityContextHolder.getContext() →
+      Authentication.getName() + provider → SELECT user_owner_mapping
+      WHERE oidc_username=? AND deleted_at IS NULL AND (provider=? OR
+      provider IS NULL) → Owner. STRENGTHENED batch K: the runtime
+      resolver is now primary-source pinned at
+      AuthIdentityProviderImpl.java:23-53; the case-sensitive .eq()
+      lookup at ReactiveUserOwnerMappingRepositoryImpl.java:116-127 is
+      the load-bearing SQL.
   owner_scoping:
     verdict: RESPECTS
     detail: Owner-id is the principal-derived parameter passed into the OWNERSHIP
@@ -38,9 +92,31 @@ security_aggregate:
     OAuth2 providers
   - 'Single Mono lookup per request — architectural posture: one user, one Owner identity'
   - clear-active-then-insert pattern ensures only ONE active mapping per (user, provider)
+  - |-
+    **STRENGTHENED batch K**: the runtime resolver is a single chokepoint
+    at AuthIdentityProviderImpl — 15 callsites all funnel through three
+    Monos (getCurrentUser / getCurrentUserProviderRole /
+    fetchAssociatedOwner)
   weaknesses:
-  - LOGIN_FORM and LDAP both produce provider=null → cross-mode user-identity bleed
-    during auth.type migrations (LOW-MEDIUM)
+  - |-
+    **LOGIN_FORM and LDAP both produce provider=null → cross-mode user-identity
+    bleed during auth.type migrations (HIGH severity — RAISED from previous
+    LOW-MEDIUM, batch K primary-source confirmation)**. Two HIGH-severity
+    scenarios:
+      (a) Migration LOGIN_FORM → LDAP retaining usernames silently inherits
+          old user-owner mappings without invalidation
+      (b) Concurrent LOGIN_FORM + LDAP deployments with overlapping
+          usernames silently collide
+    No mode-check, no warning log, no fail-fast.
+    (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[0])
+  - |-
+    **S2S 'ADMIN' literal collision with operator-named users (NEW HIGH
+    severity, batch K)** — S2sAuthenticationFilter.java:31 hardcodes
+    username="ADMIN" (uppercase) → provider=null. If an operator created
+    a LOGIN_FORM/LDAP user 'ADMIN' (case-sensitive exact match), the S2S
+    caller resolves to THAT user's Owner. Case-sensitivity mitigates but
+    does not eliminate.
+    (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[1])
   - DISABLED mode = no SecurityContext = empty Flux degradation indistinguishable
     from owning-nothing
   - No fail-fast for unlinked user — 200 OK with [] body is the only signal (silent
@@ -51,3 +127,31 @@ performance_aggregate:
   weaknesses:
   - Per-request DB round-trip for principal lookup — short-lived session cache would
     eliminate this for high-RPS callers
+  - |-
+    **STRENGTHENED batch K**: the per-request DB round-trip is multiplicative
+    across 15 callsites; a single page-load (catalog home rendering
+    Recommended + My Objects + My Alerts) triggers 3-5 sequential
+    identical queries.
+    (AuthIdentityProviderImpl.md:performance.hot_paths.[0])
+notes: |-
+  STRENGTHENED batch 2026-05-19K. The runtime resolver
+  AuthIdentityProviderImpl is now primary-source pinned at the SERVICE
+  layer; the persistence-layer USER_OWNER_MAPPING row is the gate, and
+  this concept captures both the row and the runtime contract.
+
+  New invariants surfaced in batch K (each promoted to its own
+  invariant concept):
+    - LOGIN_FORM/LDAP provider=null cross-mode bleed (NEW HIGH)
+    - S2S 'ADMIN' username literal collision (NEW HIGH)
+    - AuthIdentityProvider (per-request principal resolution chokepoint)
+      [new entity concept]
+    - Resolve Current Principal and Associated Owner [new operation]
+
+  Three DOC-NNN candidates flow from the new findings:
+    (a) Document the (username, provider) compound key shape on
+        user-owner-association doc page
+    (b) Document the auth-mode migration playbook on the authentication
+        doc page (audit user_owner_mapping for overlapping usernames
+        before migrating)
+    (c) Document the S2S username='ADMIN' literal on the S2S auth doc
+        page until the code-fix lands

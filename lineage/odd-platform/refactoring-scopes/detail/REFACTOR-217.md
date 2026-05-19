@@ -30,4 +30,20 @@ Add a `@WebFluxTest` regression in `DataEntityControllerTest` that asserts a use
 
 **Suggested backlog grouping**: SEC-NNN authorization-audit sprint. Pair with TEST-GAP-017 (the authorization regression test) and REFACTOR-009 (the build-time path-pattern guard).
 
+## STRENGTHENS — TermServiceImpl (batch K, SERVICE-LAYER triangulation + COMPOUNDING with defence-in-depth absence)
+
+**Service-layer triangulation confirms the bypass is COMPOUND**. The batch-I sidecar surfaced this from the controller-method side (`addDataEntityTerm`); the batch-K TermServiceImpl sidecar adds the SERVICE-LAYER framing: the service tier has ZERO permission checks (per REFACTOR-318 NEW batch K — defence-in-depth absence), so the path-mismatch IS the SOLE control. Combined, the failure mode is COMPOUNDED: the primary gate fails AND there is no secondary gate.
+
+**New batch-K evidence**:
+- `TermServiceImpl.md:bugs_limitations_corner_cases.[0]` (HIGH): "REFACTOR-217 path-mismatch primary source — `DATA_ENTITY_ADD_TERM` is unenforced for `POST /api/dataentities/{id}/terms`. `SecurityConstants.java:237-239` registers a matcher on `/api/dataentities/{data_entity_id}/term` (singular); OpenAPI declares the operation at `/api/dataentities/{data_entity_id}/terms` (plural — `openapi.yaml:973`). The matcher never fires; the `linkTermWithDataEntity` service method (`TermServiceImpl.java:170-179`) is reachable by any authenticated user."
+- `TermServiceImpl.md:security.authorization_assertions: []` (NEW finding): "N/A. `TermServiceImpl` performs NO service-tier permission checks. All authorization is supposed to happen at the controller perimeter via `SecurityConstants.SECURITY_RULES` matchers in `AuthorizationCustomizer`. The service tier blindly trusts the call. Per the REFACTOR-217 path-mismatch finding, the controller-tier gate does NOT fire for `POST /api/dataentities/{id}/terms` and `DELETE /api/dataentities/{id}/terms/{term_id}` — making the entire term-linkage surface effectively unauthenticated-mutation-allowed."
+
+**Compounding finding**: REFACTOR-217 + REFACTOR-318 NEW = the failure mode where BOTH the primary gate AND the absence of a secondary gate compose. Fixing REFACTOR-217 alone closes the path-mismatch but leaves the defence-in-depth absence; fixing REFACTOR-318 alone (adding service-tier checks) closes the bypass but leaves the path-mismatch in the SECURITY_RULES table as a misleading artefact. Both should be fixed.
+
+**Cross-batch triangulation**:
+- batch-I (addDataEntityTerm controller-method): controller-side framing
+- batch-K (TermServiceImpl PRIMARY SERVICE-LAYER): service-side framing + NEW defence-in-depth absence finding
+
+**Severity unchanged**: HIGH. Cross-link with REFACTOR-318 NEW (defence-in-depth absence at TermServiceImpl), REFACTOR-314 NEW (second SecurityConstants bug — `/api/alerts/{id}/status` PUT gated by DATASET_FIELD_ADD_TERM).
+
 ---

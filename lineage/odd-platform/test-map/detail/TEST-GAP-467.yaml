@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-467
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:HousekeepingJobManager"
+pillars_affected: [P-08]
+surfaced_by:
+  - "HousekeepingJobManager.md:bugs_limitations_corner_cases.[2] (.block() inside transaction anti-pattern)"
+behaviour: |-
+  `.block()` inside transaction anti-pattern. `DataEntityHousekeepingJob.doHousekeeping` (lines 71-82) wraps the entire ~25-table cascade in `DSL.using(connection).transaction(ctx -> {...})`. Inside that transaction, `deleteFiles` (lines 131-143) calls REACTIVE `fileUploadService.deleteFiles(filePojos).block()` at DataEntityHousekeepingJob.java:142. The `.block()` has no explicit timeout (no `.block(Duration)`); a hung MinIO / S3 call hangs the entire housekeeping cycle until either the transport-level read-timeout fires or the 14-minute ShedLock expires. If the S3 call eventually throws, the transaction rolls back ALL ~25 deletes — the next cycle retries the entire batch. Under persistent S3 misconfiguration, data-entity housekeeping never makes progress, and the only signal is log.error at HousekeepingJobManager.java:45. Cross-references REFACTOR-145 batch D.
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/DataEntityHousekeepingS3HangTest.java"
+  name: "s3DeleteHangs_cycleBlocks_transactionRollsBack_nextCycleRetriesEntireBatch"
+evidence:
+  - |-
+    HousekeepingJobManager.md says: '.block() inside transaction anti-pattern. fileUploadService.deleteFiles(filePojos).block() at DataEntityHousekeepingJob.java:142 has no explicit timeout; a hung MinIO / S3 call hangs the entire housekeeping cycle until either the transport-level read-timeout fires or until the 14-minute ShedLock expires.'
+  - "DataEntityHousekeepingJob.java:71 (the transaction wrap)"
+  - "DataEntityHousekeepingJob.java:142 (the .block() call)"
+  - "HousekeepingJobManager.java:45 (the outer catch logging at ERROR)"
+cross_references:
+  - "REFACTOR-145 (.block() inside transaction)"
+  - "LSN-001 / LSN-002 (S3 misconfiguration class)"
+  - "TEST-GAP-465 (related: 14m ShedLock — hang risk amplifies the race)"
+proposed_action: |-
+  Testcontainers-Postgres + WireMock-S3 integration test. Configure attachment storage REMOTE; insert ~5 DELETED data entities with associated file rows. Configure WireMock to hang on DELETE for 5s. Invoke DataEntityHousekeepingJob.doHousekeeping. Assert (a) the call blocks for ≥5s waiting on .block(), (b) after WireMock returns 500, the entire transaction is rolled back (verify by SELECT count(*) FROM data_entity WHERE status='DELETED' returns the same N rows as before), (c) log.error captures the exception at the outer manager. The test pins the hang+rollback contract; promotes to a fix-required regression when .block(Duration) timeout lands.
+batch: 2026-05-19-K
+feature_id: null

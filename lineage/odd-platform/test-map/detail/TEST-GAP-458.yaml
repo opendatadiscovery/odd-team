@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-458
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:NotificationsDispatcher"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "NotificationsDispatcher.md:security.known_security_gaps.[1] (no delivery audit)"
+  - "NotificationsDispatcher.md:bugs_limitations_corner_cases.[1] (no retry / no DLQ / no audit)"
+behaviour: |-
+  No delivery audit at dispatcher — no DB record of which alert went to which channel with what status. The WAL stream's setAppliedLSN and setFlushedLSN are advanced unconditionally after process() returns (NotificationSubscriber.java:83-84) — the dispatcher has no way to signal 'do not advance LSN'. Operators have NO database record of delivery success/failure per alert per channel; they have only grep-greppable receiver-id strings in stdout. Compliance frameworks requiring 'data alerts must be delivered or auditable as undelivered' are not satisfied. Cross-pillar P-09 dimension because the catch-and-log-only stance + the receiver-id leaks in NotificationSenderException.getMessage() (logged at ERROR per AlertNotificationMessageProcessor.java:32-34) is the only forensic surface.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/processor/AlertNotificationDeliveryAuditTest.java"
+  name: "channelFailure_noAuditRow_noPrometheusCounter_onlyLogError"
+evidence:
+  - |-
+    NotificationsDispatcher.md says: 'No delivery audit at dispatcher — no DB record of which alert went to which channel with what status. Operators auditing who-saw-what have nothing beyond log greppable receiver-id strings.'
+  - "AlertNotificationMessageProcessor.java:30-35 (catch-log-only)"
+  - "NotificationSubscriber.java:83-84 (LSN advanced unconditionally)"
+  - "Grep `Counter|Meter|Gauge|@ActivityLog|notification_audit` against odd-platform-api/src/main/java/.../notification returns 0 matches"
+cross_references:
+  - "concepts.yaml:entities[202-queue-postgres-advisory-lock-single-sender-pattern]"
+  - "TEST-GAP-455 (related: WAL replay loop)"
+  - "TEST-GAP-456 (related: exception asymmetry)"
+proposed_action: |-
+  Unit test asserting that a NotificationSenderException from any sender produces (a) one log.error invocation with the receiver id, (b) ZERO DB writes to any audit / notification_delivery table (verify via Testcontainers query 'SELECT count(*) FROM pg_tables WHERE tablename LIKE notification_%' returns the existing publication/slot tables only), (c) ZERO Micrometer Counter increments (verify via SimpleMeterRegistry.getMetersAsString()). This LOCKS the current no-audit posture as the documented contract; promotes to a fix-required regression when audit/metric lands.
+batch: 2026-05-19-K
+feature_id: null

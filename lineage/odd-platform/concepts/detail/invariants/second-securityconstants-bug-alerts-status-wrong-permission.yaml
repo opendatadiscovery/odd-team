@@ -1,0 +1,130 @@
+name: SecurityConstants bug — /api/alerts/{id}/status PUT gated by DATASET_FIELD_ADD_TERM
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+- P-09
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19K.** A second independent
+  SecurityConstants wiring bug surfaced by primary-source examination of
+  `SecurityConstants.java:295-296`. The SecurityRule entry reads:
+  `new SecurityRule(ALERT, new PathPatternParserServerWebExchangeMatcher("/api/alerts/{alert_id}/status", PUT), DATASET_FIELD_ADD_TERM)`
+  This wires the `PUT /api/alerts/{alert_id}/status` endpoint (the alert-status
+  change endpoint backed by `AlertController.changeAlertStatus` per the
+  batch-A AlertController sidecar) to the `DATASET_FIELD_ADD_TERM`
+  permission — a TERM permission applied to an ALERT path. Almost certainly
+  a copy/paste error: the intended permission is plausibly
+  `DATA_ENTITY_ALERT_RESOLVE` (the named permission for the alert-status
+  action) or a comparable ALERT-domain permission. Net effect:
+    (a) An operator with `DATASET_FIELD_ADD_TERM` (a Glossary permission
+        that should NEVER let them touch alerts) can change alert
+        statuses on any data entity.
+    (b) An operator with `DATA_ENTITY_ALERT_RESOLVE` (the named permission
+        operators would assume gates this endpoint) cannot change alert
+        statuses unless they ALSO hold `DATASET_FIELD_ADD_TERM`.
+  Cross-policy implication: a Policy granting "data-quality engineers"
+  `DATASET_FIELD_ADD_TERM` (for the legitimate purpose of linking glossary
+  terms to dataset fields) accidentally grants them alert-status-change
+  on any data entity. Conversely, a Policy granting "incident-response
+  team" `DATA_ENTITY_ALERT_RESOLVE` does NOT actually let them resolve
+  alerts. Both Policies are bug-impacted. **The live docs are silent.**
+  Neither the alerting feature page nor the permissions doc page name
+  the actual permission gating this endpoint. Cross-batch implication:
+  this is the SECOND SecurityConstants wiring bug (the first being
+  REFACTOR-217 — `/term` singular vs `/terms` plural for
+  `DATA_ENTITY_ADD_TERM`); two such bugs in the same authorization
+  wiring file suggest a class of failures that warrants a startup-time
+  invariant (cross-check SECURITY_RULES paths AND permissions against
+  OpenAPI operation tags + a per-permission name-prefix sanity rule).
+  Severity: HIGH because the bypass is silent, the bug is two-way
+  (one permission grants too much, another grants too little), and
+  both permissions are common in real Policies.
+nodes:
+- odd-platform java service service:TermServiceImpl
+- odd-platform java AlertController controller-method:changeAlertStatus
+contributors:
+- |-
+  TermServiceImpl batch K: bugs_limitations_corner_cases.[1] (PRIMARY SOURCE
+  — second SecurityConstants bug surfaced during the Term path-mismatch
+  audit; SecurityConstants.java:295-296 wires alert-status PUT to a Term
+  permission) + security.known_security_gaps.[1] (HIGH severity)
+- |-
+  AlertController.changeAlertStatus batch A existing reference (the
+  endpoint impacted by the wrong-permission wiring)
+evidence:
+- |-
+  TermServiceImpl.md:bugs_limitations_corner_cases.[1] (PRIMARY SOURCE) —
+  evidence: SecurityConstants.java:295-296 (the wrong SecurityRule entry)
+- |-
+  TermServiceImpl.md:security.known_security_gaps.[1] (HIGH severity)
+- |-
+  changeAlertStatus.md (existing batch-A reference — the endpoint backed
+  by the wrong-permission wiring)
+axes_present:
+- services
+- controllers
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+- |-
+  Fix the SecurityConstants entry — change the permission from
+  `DATASET_FIELD_ADD_TERM` to the intended ALERT-domain permission
+  (likely `DATA_ENTITY_ALERT_RESOLVE` or `DATA_ENTITY_STATUS_UPDATE`
+  — pending operator-side decision on which permission was intended).
+  Verify the choice by reading the AlertController sidecar and the
+  permissions doc page; pick the one that names "alert resolution"
+  or "alert status change" semantics.
+- |-
+  Add a build-time scanner that asserts every SecurityRule's permission
+  has a name-prefix matching the URL path's resource (e.g.
+  `/api/alerts/*` paths should only be gated by permissions starting
+  with `ALERT_` or `DATA_ENTITY_ALERT_`). This would have caught both
+  this bug AND REFACTOR-217.
+- |-
+  Add a regression test:
+    (a) Authenticate as a user with `DATASET_FIELD_ADD_TERM` but NOT
+        any alert-domain permission;
+    (b) Call PUT /api/alerts/{alert_id}/status;
+    (c) Assert the response is 403 (under the fix) OR 200 (under the
+        current bug — pins the current behaviour explicitly so the next
+        maintainer cannot silently flip the contract).
+- |-
+  Audit all Policies shipped with ODD Platform's default RBAC
+  configuration and any Policies in operator deployments — identify
+  which Policies grant `DATASET_FIELD_ADD_TERM` and warn operators
+  that those Policies accidentally grant alert-status mutation
+  capability until the fix lands.
+- |-
+  Document the failure mode on the live alerting and permissions doc
+  pages until the fix lands — operators choosing Policies should know
+  the two-way bypass exists.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-19K. Surfaced
+  during the Term path-mismatch audit; the maintainer reading
+  SecurityConstants.java for REFACTOR-217 noticed the alerts-status PUT
+  entry has a Term permission. The two bugs are independent — REFACTOR-217
+  is a path-text mismatch, this is a permission-name mismatch — but both
+  live in SecurityConstants and both went undetected for an unknown
+  duration. Two such bugs in the same authorization-wiring file
+  strongly suggest a third or more await discovery; a build-time
+  scanner would close the class of failures.
+
+  Cross-cutting connections:
+    - Companion of the "Authorization path-mismatch — SECURITY_RULES
+      /term vs OpenAPI /terms" invariant (REFACTOR-217) — same file,
+      different bug class
+    - Cross-references the AlertController.changeAlertStatus operation
+      — that operation's true gate is this wrong permission today
+    - Companion of the "TermServiceImpl service-tier zero permission
+      checks" invariant — both surface the platform's
+      controller-only-authorization posture's failure modes
+
+  Four DOC-NNN candidates flow from this invariant:
+    (a) Code fix — change the permission to the intended ALERT-domain
+        permission
+    (b) Build-time scanner — assert permission/path-prefix consistency
+    (c) Docs warning — operators choosing Policies should know
+    (d) Default Policy audit — identify which shipped Policies are
+        bug-impacted; revise them if any

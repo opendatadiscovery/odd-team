@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-465
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:HousekeepingJobManager"
+pillars_affected: [P-04, P-07, P-08]
+surfaced_by:
+  - "HousekeepingJobManager.md:bugs_limitations_corner_cases.[3] (14m vs 15m ShedLock race)"
+  - "HousekeepingJobManager.md:tests_coverage_semantic.uncovered_behaviours.[3] (ShedLock window)"
+  - "HousekeepingJobManager.md:implicit_adrs.[2] (deliberate 14m equal-bounds choice)"
+behaviour: |-
+  14m-vs-15m ShedLock window race. `lockAtLeastFor = "14m"` and `lockAtMostFor = "14m"` (HousekeepingJobManager.java:26) against `fixedRate = 15` minutes (line 25). A cycle running ≥14 minutes releases the lock before commit; a second instance can acquire at the next 15-minute slot while the first is still finalising its jOOQ transaction. The result: two instances running housekeeping concurrently. AlertHousekeepingJob and SearchFacetsHousekeepingJob DELETEs are idempotent (delete-nonexistent is no-op) but DataEntityHousekeepingJob's ~25-table cascade involves SELECT followed by DELETE — two concurrent instances could read different snapshots and produce divergent cascade behaviour. The 60-second slack is razor-thin under heavy backlog (e.g. thousands of soft-deleted entities with .block() S3 deletes). No multi-instance integration test exercises this.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/HousekeepingShedLockRaceTest.java"
+  name: "cycleExceeds14m_lockReleased_secondInstanceAcquiresBeforeFirstCommits"
+evidence:
+  - |-
+    HousekeepingJobManager.md says: 'A 14-minute lock against a 15-minute schedule is razor-thin. A DataEntityHousekeepingJob cascade against a backlog of thousands of soft-deleted entities can plausibly exceed 14 minutes. Lock release before commit + next-cycle acquisition by a second instance produces undefined cross-instance state.'
+  - "HousekeepingJobManager.java:25-26 (fixedRate=15min + @SchedulerLock lockAtLeastFor/lockAtMostFor=14m)"
+  - "Grep `ShedLock|@SchedulerLock` under odd-platform-api/src/test returns 0 matches in housekeeping context"
+cross_references:
+  - "concepts.yaml:entities[202-queue-postgres-advisory-lock-single-sender-pattern]"
+  - "TEST-GAP-464 (related: per-job isolation — same orchestrator)"
+proposed_action: |-
+  Two-Testcontainers-platform integration test (two simulated platform instances both pointing at one Postgres). On instance-A, inject a 15-minute Thread.sleep into one mock HousekeepingJob. Schedule both instances; let instance-A's cycle start. Assert (a) at minute 14+ε instance-A's ShedLock row in the `shedlock` table expires (`lock_until` <= now()), (b) at minute 15 instance-B's @Scheduled fires and acquires the lock, (c) both instances' runHousekeepingJobs() are running for the same wall-clock interval. The test EXPOSES the race; the fix is `lockAtMostFor ≥ 2 × fixedRate` (e.g. 30m) and the test must update.
+batch: 2026-05-19-K
+feature_id: null

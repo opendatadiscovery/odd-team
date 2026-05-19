@@ -1124,3 +1124,65 @@ Three high-leverage themes for batch K (already in queue):
 
 P-02 Data Modelling + P-03 Master Data Management + P-11 Platform API & Developer Surface remain at 0-sidecar coverage — surface for future batch theme prioritisation.
 
+
+## Batch 2026-05-19-K — Service layer B (5 nodes; THIRD autonomous batch under rev-3 Layer 0)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: ede5d277 (65 prior + 5 new = **70 total**)
+- **Theme**: Service layer B — NotificationsDispatcher + HousekeepingJobManager + AuthIdentityProviderImpl + TermServiceImpl + OwnershipServiceImpl
+- **Headline coverage jump**: effective **20.0% → 30.1%** (+10 percentage points in one batch) thanks to 3 new pillar-anchored features pulling many existing nodes into chains.
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline finding |
+|---|---|---|
+| `NotificationsDispatcher` (real name: AlertNotificationMessageProcessor) | P-07 | Exception-type asymmetry: email RuntimeException bypasses per-sender catch and aborts mid-message; poison-message WAL replay loop (10s back-off blocks subsequent delivery). |
+| `HousekeepingJobManager` | P-08 + P-04 + P-07 | **REFACTOR-142 jOOQ operator-precedence bug PRIMARY-SOURCE PINNED at AlertHousekeepingJob.java:28-34**. REFACTOR-145 .block()-inside-transaction PRIMARY-SOURCE at DataEntityHousekeepingJob.java:142. 14m-vs-15m ShedLock window. |
+| `AuthIdentityProviderImpl` | P-09 | **NEW HIGH: S2S username='ADMIN' literal-collision** at S2sAuthenticationFilter.java:31 — S2S API key holders inherit ADMIN's Owner. **LOGIN_FORM ↔ LDAP provider=null cross-mode bleed** primary-source at lines 29-33. No auto-create-on-first-login UX trap. ADR-CANDIDATE-015 POSITIVE-CASE PRIMARY-SOURCE CONFIRMED. |
+| `TermServiceImpl` | P-06 | REFACTOR-217 service-tier — TermServiceImpl has **ZERO permission checks at service tier** (defence-in-depth absent). **NEW HIGH BUG**: second SecurityConstants path-mismatch — `/api/alerts/{id}/status` PUT gated by `DATASET_FIELD_ADD_TERM` (wrong permission entirely). REFACTOR-227 `[[ns:term]]` auto-link side-channel PRIMARY-SOURCE. REFACTOR-228 triple-re-query PRIMARY-SOURCE. |
+| `OwnershipServiceImpl` | P-09 + P-01 | **REFACTOR-199 primary anchor**: `ownerService.getOrCreate` at OwnershipServiceImpl.java:52 bypasses OWNER_CREATE permission. **Cross-batch correction PRIMARY-SOURCE**: ExceptionUtils.java:69-71 returns HTTP 400 USR003 (NOT 5xx as batch-F claimed). DEG-propagation cascade audit-feed asymmetry (lines 134-148 emit no per-child events). |
+
+### Reducer diffs (rev-3 sharded; all 5 ran cleanly)
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 198 → **212 concepts** (3 broken yaml — 2 batch-K + 1 batch-J carried; see follow-ups) | +16 net-new (2 entities + 9 invariants + 5 operations); 9 strengthened. `permission-bypass-via-owner-auto-create` now 4-way (Owner + Title + Tag + Namespace getOrCreate's). |
+| adr-archaeologist (ADRs) | 97 → **112 candidates** | +15 (098-112) + 4 strengthened (ADR-015 / -040 / -046 / -075). ADR-015 + -075 + new -104/-105/-106 form a 4-ADR authorization-plumbing family now complete end-to-end. Strengthens batch-J followed CANONICAL append pattern (NOT -strengthen-batch-K suffix). |
+| adr-archaeologist (scopes) | 300 → **330 scopes** | +30 (301-330) + 7 strengthened (REFACTOR-142 / -145 / -199 / -206 / -217 / -228 / -232). **REFACTOR-301 NEW HIGH: S2S 'ADMIN' username-collision**. **REFACTOR-314 NEW HIGH: 2nd SecurityConstants bug `/api/alerts/{id}/status` wrong permission**. **REFACTOR-318 NEW HIGH: TermServiceImpl service-tier defence-in-depth absence** (no permission checks at service layer). |
+| doc-gap-finder | 127 → **137 findings** (frontmatter reconciled to actual count) | +11 (139-149) + 10 strengthened. 5 new HIGH (139 SecurityConstants 2nd bug; 140 auto-link side-channel; 141 S2S ADMIN; 142 no auto-create UX trap; 143 WAL poison-message). 5 live WebFetches at status 200. META: DOC-GAP-149 P-09 pillar-overpromise on user-owner-association doc. |
+| test-coverage-mapper | 453 → **486 gaps** | +33 (455-487) + 3 strengthened (TEST-GAP-017 / 211 / 265 — all CRITICAL). 4 new CRITICAL: 455 (WAL replay-loop), 471 (provider=null bleed), 472 (S2S ADMIN collision), 477 (alerts/status wrong permission). 0 sidecar-quality findings. |
+| feature-flow-builder | 8 → **11 features** (+3 new) | **F-009 / P-07:F-002 WAL-driven Notification Delivery** (NEW); **F-010 / P-08:F-002 Housekeeping TTL Enforcement** (NEW; cross-pillar to P-04+P-07); **F-011 / P-09:F-002 Principal-to-Owner Resolution** (NEW; feeds P-01/P-05/P-06/P-07). F-002 + F-006 extended with service-tier hops. ~40 total new drift facets. All 5 detail YAMLs validated parse-clean. |
+
+### Coverage state after batch K
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 70 | **17.7%** (was 16.5%) |
+| Effective coverage | 119 | **30.1%** (was 20.0%) ← **major milestone** |
+| Features discovered | 11 (was 8) | 3 NEW pillar-anchored features (F-009/F-010/F-011) |
+| Features with ≥1 cell PROBED | 4 | unchanged (probes pending for new features) |
+
+The 10-percentage-point effective-coverage jump validates rev-3 Layer-0 anchoring: features-as-pillars naturally pull more nodes into chains, vs the rev-2 bug-pin shape that confined each feature to a narrow drift surface.
+
+### Cross-batch triangulation deltas
+
+- **F-011 NEW HIGH HEADLINE**: S2S 'ADMIN' username-collision — S2S API key holders inherit operator-named 'ADMIN' user's Owner. Single line of code (S2sAuthenticationFilter.java:31). Cross-pillar P-09 + P-10 implications.
+- **REFACTOR-142** jOOQ-precedence: now PRIMARY-SOURCE pinned at exact lines. Empirical fix candidate.
+- **REFACTOR-199** OWNER_CREATE bypass: now PRIMARY-SOURCE pinned at OwnershipServiceImpl.java:52.
+- **REFACTOR-217** path-mismatch: now defence-in-depth at service tier confirmed ABSENT (TermServiceImpl has no permission checks); strengthens cross-tier.
+- **`permission-bypass-via-owner-auto-create`** invariant: now 4-way (Owner + Title + Tag + Namespace getOrCreate's all bypass create-side permissions). Codebase-wide audit candidate.
+- **Cross-batch correction (batch-F 5xx → HTTP 400 USR003)**: now 3-layer triangulated (controller + service + ExceptionUtils primary-source).
+
+### Follow-ups (logged, not blocking)
+
+- 2 NEW broken yaml files this batch: `operations/manage-ownership-lifecycle-with-deg-cascade.yaml` (leading `@` in scalar) + `operations/run-housekeeping-cycle-five-jobs.yaml` (leading backtick in scalar). Both autofix-unfixable; quarantined to `.broken-yaml-backup`. The reducer's YAML-safe-emit rule needs to add backtick to the banned-leading-character set (currently catches `@`/`>`/`|`/`*`/`&`/`?`/`!`/`%` but not backtick).
+- 1 broken yaml carried from batch J: `entities/lineage-graph-traversal.yaml` (line 1 col 1 — malformed top-of-file). Still quarantined.
+- 88 + 5 detail-without-index in implicit-adrs + refactoring-scopes — adr-archaeologist's NEW batch-K strengthens used canonical-append (correct), but batch-J's `*-strengthen-batch-J` files still polluting the detail directory. Future cleanup: rename them OR fold into canonical detail files.
+
+### Next-batch planning notes
+
+Theme L next: DataEntityController continuation 1 (5 controller methods). Pillar P-01 Data Discovery continuation.
+
+P-02 Data Modelling + P-03 Master Data Management + P-11 Platform API & Developer Surface remain 0-sidecar — surface for prioritisation.
+

@@ -1,0 +1,301 @@
+name: AuthIdentityProvider (per-request principal resolution chokepoint)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  **NEW CONCEPT, batch 2026-05-19K** — the load-bearing per-request identity
+  resolution service for ODD Platform's RBAC + owner-scoping model.
+  `AuthIdentityProviderImpl` (the sole implementation of the `AuthIdentityProvider`
+  interface — `auth/AuthIdentityProvider.java:8-14`) exposes three parameter-less
+  reactive Monos: `getCurrentUser()` (returns UserDto(username, provider)),
+  `getCurrentUserProviderRole()` (returns UserProviderRole.ADMIN|USER), and
+  `fetchAssociatedOwner()` (returns OwnerPojo by resolving the
+  user_owner_mapping table). Every callsite invokes a Mono with NO Authentication
+  / Principal / ServerWebExchange parameter — the principal is read inside the
+  service via `ReactiveSecurityContextHolder.getContext()` (lines 25, 39). This
+  is the ARCHITECTURAL ANCHOR for ADR-CANDIDATE-015 (owner-scoped routes via
+  reactor Context). The service is called by 15 internal classes: 9 service
+  classes (SearchServiceImpl, AlertServiceImpl, DataEntityServiceImpl,
+  DataEntityRelationsServiceImpl, ActivityServiceImpl,
+  DataCollaborationServiceImpl, OwnerAssociationRequestServiceImpl,
+  IdentityServiceImpl, RoleServiceImpl) + TokenGeneratorImpl + 4
+  permission/extractor classes (DataEntityPermissionExtractor,
+  TermPermissionExtractor, QueryExamplePermissionExtractor,
+  ManagementPermissionExtractor) + PolicyService + ActivityServiceImpl. **ALL
+  owner-scoped business logic flows through these three Monos.** The service is
+  stateless / no-caching by design — every invocation goes through
+  ReactiveSecurityContextHolder.getContext() AND (for fetchAssociatedOwner) a DB
+  round-trip via ReactiveUserOwnerMappingRepository#getAssociatedOwner. The
+  service is the POSITIVE side of the anchor-set defence-in-depth pattern (per
+  batch-G implicit_adrs[6]): every owner-scoped read path that calls
+  fetchAssociatedOwner feeds the resolved owner-id into a downstream SQL
+  `WHERE OWNERSHIP.OWNER_ID = ?` JOIN; paths that DO NOT call
+  fetchAssociatedOwner (LineageServiceImpl per batch I, ReactiveLineageRepositoryImpl
+  per batch H) are the NEGATIVE case producing unmitigated cross-owner reads.
+  **OAuth2 is the ONLY auth flow that produces a non-null `provider` string** —
+  LOGIN_FORM and LDAP and S2S all produce UserDto(username, null) via the
+  else-branch at line 32. The single-Mono shape (not Flux) reflects the
+  doc-side invariant "one user can be associated only with one owner and vice
+  versa" (live user-owner-association page WebFetched 2026-05-19 status 200).
+  Schema enforcement is application-side via the clear-active-then-insert
+  pattern (createRelation/deleteActiveRelationByOwner at
+  ReactiveUserOwnerMappingRepositoryImpl.java:65-74) — NOT a partial unique
+  index. vocabulary_status: codebase-anchored, doc-side-silently-covered (live
+  user-owner-association page describes the binding contract but does NOT name
+  the implementation site, the (username, provider) compound key, the
+  cross-mode bleed risk, or the S2S username='ADMIN' literal collision).
+nodes:
+- odd-platform java service service:AuthIdentityProviderImpl
+- odd-platform java DataEntityController controller-method:getMyObjects
+contributors:
+- |-
+  AuthIdentityProviderImpl batch K: entities[UserDto (username, provider tuple);
+  UserProviderRole (enum ADMIN | USER); OwnerPojo (the catalog-side Owner
+  resolved per-caller); Authentication subtypes — OAuth2AuthenticationToken
+  (OAUTH2) vs UsernamePasswordAuthenticationToken (LOGIN_FORM, LDAP, S2S);
+  USER_OWNER_MAPPING row; SecurityContext];
+  operations[resolve-principal; branch-on-authentication-type; extract-role;
+  compose-owner-lookup]; invariants[OAuth2 is the ONLY auth flow with non-null
+  provider; getCurrentUser() emits empty (not error) on missing SecurityContext;
+  fetchAssociatedOwner() is single-Mono assuming at-most-one Owner per user;
+  getCurrentUserProviderRole() reads ONLY the first GrantedAuthority via
+  authorities.iterator().next(); class is stateless / no-caching by deliberate
+  omission]; implicit_adrs[reactor-Context principal flow (the architectural
+  anchor for ADR-CANDIDATE-015); OAuth2-only non-null provider as deliberate
+  IDP-namespace choice; single-Mono Owner resolution (one user, at-most-one
+  active Owner); stateless / no-cache by deliberate omission]
+- |-
+  DataEntityController.getMyObjects batch G: anchor-set defence-in-depth
+  positive case — the SearchController my_objects=true + AlertService listByOwner
+  + DataEntityService getMyObjects all call fetchAssociatedOwner and feed
+  resolved owner-id into SQL WHERE clauses
+evidence:
+- AuthIdentityProviderImpl.md:concepts.entities + concepts.operations + concepts.invariants
+- |-
+  AuthIdentityProviderImpl.md:implicit_adrs.[0,1,2,3] (reactor-Context principal
+  flow + OAuth2-only non-null provider + single-Mono Owner + stateless by
+  omission)
+- |-
+  AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[0,1,2,3,4,5]
+  (LOGIN_FORM/LDAP cross-mode bleed; S2S username='ADMIN' collision; no
+  auto-create on first login; empty SecurityContext silent propagation; no
+  caching; silent authority drop)
+- |-
+  AuthIdentityProviderImpl.md:docs_link_semantic.doc_drift_findings.[0,1,2,3]
+  (compound key undocumented; auto-creation gap undocumented; S2S
+  username='ADMIN' literal undocumented; DISABLED-mode empty-context
+  undocumented)
+- getMyObjects.md (batch G — the anchor-set defence-in-depth positive case)
+axes_present:
+- services
+- controllers
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  - INTERNAL_ONLY
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      Single chokepoint — every owner-scoped consumer routes through this
+      service. The three Mono returns are the only principal-resolution
+      primitives in the codebase. No alternate path; no per-caller short-circuit.
+      Consistent across all 4 UI auth modes + S2S — the service is auth-mode
+      agnostic; the branching happens at the Authentication subtype level
+      (OAuth2AuthenticationToken vs UsernamePasswordAuthenticationToken),
+      not at the auth.type level.
+  owner_scoping:
+    verdict: RESPECTS
+    detail: |-
+      This service IS the per-caller owner resolution primitive. Every SQL
+      `JOIN OWNERSHIP ... WHERE OWNERSHIP.OWNER_ID = ?` downstream is
+      parameterised by the Mono this service produces. The architectural
+      anchor for ADR-CANDIDATE-015 — owner-scoped routes take NO principal
+      parameter; principal flows via reactor Context through this service.
+  strengths:
+  - |-
+    Single chokepoint for principal resolution — 15 callsites all funnel
+    through three Monos; one regression-test on this class covers the
+    entire owner-scoping read surface
+  - |-
+    Reactor-Context-based principal flow eliminates the controller-must-thread-Authentication
+    pattern across every service hop (architectural anchor for ADR-CANDIDATE-015)
+  - |-
+    Single-Mono Owner contract enforces "one user, at most one Owner"
+    application-side via clear-active-then-insert pattern in
+    createRelation/deleteActiveRelationByOwner
+  - |-
+    Pure identity resolution — no authorization decisions here; downstream
+    permission/extractor classes consume the resolved owner-id; concerns
+    are cleanly separated
+  weaknesses:
+  - |-
+    **LOGIN_FORM ↔ LDAP cross-mode bleed via provider=null (HIGH severity —
+    NEW invariant batch K)** — A LOGIN_FORM user `alice` and an LDAP user
+    `alice` both produce UserDto("alice", null) at line 32; downstream lookup
+    builds `WHERE OIDC_USERNAME='alice' AND DELETED_AT IS NULL AND PROVIDER
+    IS NULL`. Migration scenarios with overlapping usernames silently grant
+    the second-mode user the first-mode user's Owner-link. NO mode-check,
+    NO warning log, NO fail-fast. Doc-side silent.
+    (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[0] +
+    security.known_security_gaps.[0])
+  - |-
+    **S2S username='ADMIN' literal collision with operator-named users (HIGH
+    severity — NEW invariant batch K)** — S2sAuthenticationFilter.java:31-34
+    hardcodes `User.withUsername("ADMIN").roles("ADMIN")` and wraps in
+    UsernamePasswordAuthenticationToken (provider=null at line 32). Any S2S
+    call that invokes a service using fetchAssociatedOwner looks up
+    `WHERE OIDC_USERNAME='ADMIN' AND PROVIDER IS NULL`. If an operator has
+    named a LOGIN_FORM or LDAP user 'ADMIN' (uppercase, case-sensitive `.eq`
+    match), the S2S caller inherits that user's Owner-link. Latent operator-naming
+    collision; mitigated only by case-sensitivity. Doc-side silent.
+    (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[1] +
+    security.known_security_gaps.[1])
+  - |-
+    **No auto-create of Owner on OAUTH2/LDAP first login (MEDIUM)** — A new
+    federated user has NO USER_OWNER_MAPPING row; fetchAssociatedOwner emits
+    empty Mono. Downstream consumers degrade to empty results with HTTP 200,
+    not 401/403/404. New user sees `My Objects` empty with no on-screen
+    signal directing them to the OwnerAssociationRequest flow. Live doc
+    silent on auto-create.
+    (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[2])
+  - |-
+    **Empty SecurityContext silently propagates rather than fail-fast
+    (MEDIUM)** — Any regression that drops SecurityContext (misordered
+    WebFilter, dev DISABLED mode, future bug) collapses every owner-scoped
+    consumer to empty results without observable error. No logging, no
+    metric, no warning. (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[3])
+  - |-
+    **`getCurrentUserProviderRole` silently drops authorities beyond the
+    first (LOW)** — `authorities.iterator().next().getAuthority()` at line
+    44 is single-shot; today the extractor emits exactly one authority but a
+    future RBAC hierarchy refactor would lose information silently.
+    (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[5])
+  cross_file_inconsistencies:
+  - |-
+    The compound key (username, provider) is silent in the docs — the
+    user-owner-association doc says "one user can be associated only with
+    one owner" but is silent on how "one user" is identified. Migration
+    from LOGIN_FORM to OAUTH2 (or vice versa) silently breaks existing
+    user-owner mappings because OAuth2 user has (alice, github) whereas
+    LOGIN_FORM user had (alice, null).
+  - |-
+    The auto-creation gap is undocumented — neither the authentication
+    doc nor the user-owner-association doc describes whether OAuth2/LDAP
+    auto-creates an Owner on first login (it does NOT). An entire
+    user-onboarding step is invisible in the live docs.
+  - |-
+    The S2S filter username='ADMIN' is undocumented — the live S2S /
+    authentication docs do not warn operators that an operator-named
+    LOGIN_FORM/LDAP user 'ADMIN' would collide.
+  - |-
+    The DISABLED-mode empty-context behaviour is undocumented — the
+    cross-pillar consequence (read-only paths still work, owner-scoped
+    paths return empty body) is not captured.
+  contributing_files:
+  - AuthIdentityProviderImpl.md
+  - getMyObjects.md
+  evidence:
+  - AuthIdentityProviderImpl.md:security.auth_mode_relevance
+  - AuthIdentityProviderImpl.md:security.owner_scoping
+  - AuthIdentityProviderImpl.md:security.known_security_gaps.[0,1,2,3]
+  - AuthIdentityProviderImpl.md:docs_link_semantic.doc_drift_findings.[0,1,2,3]
+  - AuthIdentityProviderImpl.md:implicit_adrs.[0]
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    Principal-lookup DB round-trip on every owner-scoped read — each
+    fetchAssociatedOwner invocation issues `SELECT owner.* FROM
+    user_owner_mapping JOIN owner ON user_owner_mapping.owner_id = owner.id
+    WHERE oidc_username = ? AND deleted_at IS NULL AND (provider = ? OR
+    provider IS NULL)`. 15 callsites multiplicative under heavy UI activity;
+    e.g., catalog home rendering Recommended + My Objects + My Alerts +
+    Activity triggers 3-5 sequential identical queries per page-load.
+    (AuthIdentityProviderImpl.md:performance.hot_paths.[0])
+  - |-
+    Reactor SecurityContext context-switch on every getCurrentUser call —
+    ReactiveSecurityContextHolder.getContext() at lines 25, 39 incurs
+    per-call overhead (in-memory but multiplicative).
+    (AuthIdentityProviderImpl.md:performance.hot_paths.[1])
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      Each principal resolution is independent; no batched lookup for multiple
+      principals. Reactive Mono signatures — non-blocking but per-call DB
+      round-trip.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless service — instances scale horizontally with no coordination.
+      No advisory locks, no in-memory state, no leader-election. No
+      pagination concern (single-row return). No rate-limiting at this
+      service — repeated principal-lookups from a single client hit the DB
+      at request rate.
+  strengths:
+  - Stateless — horizontal scaling unconstrained
+  - Reactive Mono signatures — non-blocking I/O preserved
+  - DB query indexed (OIDC_USERNAME is the primary lookup key per
+    ReactiveUserOwnerMappingRepositoryImpl)
+  weaknesses:
+  - |-
+    No per-request memoization — a single HTTP request can invoke
+    getCurrentUser or fetchAssociatedOwner multiple times (controller +
+    permission extractor + activity-logging path). A reactor-Context
+    attribute carrying the resolved UserDto / OwnerPojo would eliminate
+    duplicate work. (AuthIdentityProviderImpl.md:performance.known_performance_gaps.[0])
+  - |-
+    No per-session caching — within a single user's session, fetchAssociatedOwner
+    returns the same Owner; a short-lived per-session cache would eliminate
+    per-call DB round-trip. Trade-off: cache-invalidation surface vs.
+    per-request DB round-trip; the maintainer's deliberate omission is the
+    architectural posture.
+    (AuthIdentityProviderImpl.md:performance.known_performance_gaps.[1])
+  cross_file_inconsistencies: []
+  contributing_files:
+  - AuthIdentityProviderImpl.md
+  evidence:
+  - AuthIdentityProviderImpl.md:performance.hot_paths.[0,1]
+  - AuthIdentityProviderImpl.md:performance.known_performance_gaps.[0,1]
+notes: |-
+  NEW concept captured in batch 2026-05-19K. Promoted from the
+  `User-Owner Mapping` and `Owner-link is the gate for owner-scoped views`
+  concepts to capture the SERVICE-TIER chokepoint that resolves the
+  oidc_username + provider tuple to an OwnerPojo. Distinct from:
+    - User-Owner Mapping (entity): the persistent row in the
+      user_owner_mapping table
+    - Owner (Authorization directory entry): the platform-managed Owner row
+    - Owner-link is the gate for owner-scoped views (invariant): the
+      architectural posture that owner-link gates /my reads
+  This concept captures the RESOLVER SERVICE that turns SecurityContext into
+  an OwnerPojo — the 15-callsite chokepoint that the invariant relies on.
+
+  Cross-cutting connections:
+    - ADR-CANDIDATE-015 (owner-scoped routes via reactor Context) — this
+      service is the architectural anchor; the parameter-less Mono interface
+      contract IS the design statement
+    - Anchor-set defence-in-depth (positive vs negative cases) invariant —
+      the POSITIVE-CASE PRIMARY-SOURCE PIN; every callsite that consumes
+      fetchAssociatedOwner is in the anchor-set; the negative cases
+      (LineageServiceImpl, ReactiveLineageRepositoryImpl per batches H/I)
+      bypass this service
+
+  Recommended canonicalisation paths:
+    (a) Document the (username, provider) compound key in
+        `/configuration-and-deployment/enable-security/authorization/user-owner-association`
+        — operators migrating between auth modes need to know existing
+        user-owner mappings break
+    (b) Document the auto-creation gap on the same page — describe that
+        OAUTH2/LDAP first login does NOT auto-create an Owner; the user
+        must go through the explicit OwnerAssociationRequest flow
+    (c) Document the S2S username='ADMIN' literal on the S2S auth doc page
+        — warn operators against naming a LOGIN_FORM/LDAP user 'ADMIN'
+        (uppercase exact match)
+    (d) Promote the architectural anchor to an explicit ADR in the
+        codebase — the parameter-less Mono interface contract is currently
+        an undocumented load-bearing decision

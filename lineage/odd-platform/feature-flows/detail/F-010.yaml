@@ -1,0 +1,473 @@
+feature_id: F-010
+pillar_id: P-08
+pillar_anchored_id: P-08:F-002
+pillar_anchored_feature_name: Housekeeping TTL Enforcement
+primary_drift_class: jooq_operator_precedence_bug_with_doc_acknowledgement_no_test
+drift_class_summary:
+- jooq_operator_precedence_bug_with_doc_acknowledgement_no_test
+- docs_three_vs_code_five_job_count
+- shedlock_window_dangerously_close_to_schedule
+- per_job_failure_isolation_undocumented
+- strict_opt_in_vs_default_true_framing
+- block_inside_transaction_anti_pattern
+- no_dry_run_no_preview_no_archive
+- no_observability_metrics_or_audit_log
+- shared_connection_slowest_job_blocks_cycle
+- no_ordering_contract_on_job_list
+- system_scope_no_owner_scoping
+- no_tamper_evident_audit_on_ttl_config_changes
+- cross_pillar_alert_retention_to_p_04
+- cross_pillar_activity_retention_to_p_07
+cross_pillar_relationships:
+- pillar_id: P-04
+  kind: cross_pillar_secondary
+  via: AlertHousekeepingJob purges resolved DQ-failure / schema-break alerts (the
+    Data Quality pillar's alerts are the bulk of the alert table volume; retention
+    is controlled by `housekeeping.ttl.resolved_alerts_days`).
+- pillar_id: P-07
+  kind: cross_pillar_secondary
+  via: Activity feed partitioning interacts with the housekeeping job — the
+    ActivityEmptyPartitionsHousekeepingJob drops empty past partitions for the
+    Activity table (which the Active Platform Features pillar's Activity Feed
+    sub-feature owns). Cross-orchestrator coordination with ActivityTablePartitionManager
+    (creates partitions nightly) — housekeeping (this feature, every 15 min) drops empties.
+batch_origin: K
+created_in_batch: K
+feature_name: Scheduled housekeeping cycle — TTL purge + empty-partition drop (5
+  jobs, every 15 minutes, ShedLock-coordinated)
+discovered_from_entry_point: scheduled-job:@Scheduled(fixedRate=15min)+@SchedulerLock(name=housekeepingJob)
+description: |-
+  HousekeepingJobManager is the Spring `@Component` orchestrator for ODD
+  Platform's housekeeping subsystem — a 48-line class that fires every 15
+  minutes via `@Scheduled(fixedRate=15, timeUnit=TimeUnit.MINUTES)`, holds a
+  14-minute ShedLock named `housekeepingJob`, acquires ONE JDBC `Connection`
+  from `PGConnectionFactory` (bypassing HikariCP), and iterates a
+  constructor-injected `List<HousekeepingJob>` of FIVE discovered beans,
+  invoking each sequentially on the shared connection.
+
+  The five discovered jobs are:
+  - AlertHousekeepingJob (TTL — `housekeeping.ttl.resolved_alerts_days`)
+  - SearchFacetsHousekeepingJob (TTL — `housekeeping.ttl.search_facets_days`)
+  - DataEntityHousekeepingJob (TTL — `housekeeping.ttl.data_entity_delete_days`,
+    cascades ~25 tables incl. `fileUploadService.deleteFiles(...).block()` inside
+    the jOOQ transaction)
+  - ActivityEmptyPartitionsHousekeepingJob (drops EMPTY past partitions of ACTIVITY)
+  - MessageEmptyPartitionsHousekeepingJob (drops EMPTY past partitions of MESSAGE,
+    excludes MESSAGE_PROVIDER_EVENT)
+
+  The class is gated by `@ConditionalOnProperty("housekeeping.enabled",
+  havingValue="true")` with NO `matchIfMissing` — strict opt-in if the key is
+  absent from the resolved configuration; `application.yml:166` ships
+  `housekeeping.enabled: true` and the integration-test profile
+  (`application-integration-test.yml:7-8`) flips it to `false`. The
+  inner try/catch at lines 41-47 catches `Exception` per job and logs at ERROR
+  before continuing — one failing job does NOT abort the cycle; ONE failed
+  Connection acquisition DOES abort all jobs that did not yet run.
+
+  The user-observable promise (per live `/configuration-and-deployment/odd-platform`
+  doc, WebFetched 2026-05-19 status 200): "The platform identifies three
+  cleanup tasks executed by the housekeeping job ... Defaults to true. The job
+  fires every 15 minutes and uses ShedLock for multi-instance coordination."
+  The user-observable reality: code defines FIVE jobs (the doc enumerates
+  three — the two empty-partition-drop jobs are not surfaced); the ShedLock
+  window is exactly 14m / 14m (razor-thin against the 15m schedule); the
+  AlertHousekeepingJob carries a known + acknowledged jOOQ operator-precedence
+  bug that has no source comment, no test, and no tracking issue; per-job
+  failure isolation behaviour is undocumented; the `.block()` inside the
+  DataEntityHousekeepingJob transaction is a latent S3-misconfiguration
+  failure mode that can stall the entire cycle.
+contributing_nodes:
+- odd-platform java service service:HousekeepingJobManager
+- odd-platform java AlertHousekeepingJob
+- odd-platform java SearchFacetsHousekeepingJob
+- odd-platform java DataEntityHousekeepingJob
+- odd-platform java ActivityEmptyPartitionsHousekeepingJob
+- odd-platform java MessageEmptyPartitionsHousekeepingJob
+- odd-platform java EmptyPartitionsHousekeepingJob
+- odd-platform java config-properties:HousekeepingTTLProperties
+- odd-platform java PGConnectionFactory
+- odd-platform java SchedulingConfiguration
+chain:
+- hop: 1
+  node: odd-platform java SchedulingConfiguration
+  sidecar: '(not separately enriched — context from HousekeepingJobManager sidecar dependencies_semantic)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    SchedulingConfiguration.java:13-14 — `@EnableScheduling` +
+    `@EnableSchedulerLock(defaultLockAtMostFor="1h")` configures the Spring
+    task scheduler + the JdbcTemplateLockProvider against `spring.datasource.*`
+    (lines 18-25, `usingDbTime()` for clock-skew tolerance).
+  unresolved: false
+- hop: 2
+  node: odd-platform java service service:HousekeepingJobManager
+  sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    HousekeepingJobManager.java:18 — `@ConditionalOnProperty("housekeeping.enabled",
+    havingValue="true")` (no `matchIfMissing` — strict opt-in). Lines 25-26 —
+    `@Scheduled(fixedRate=15, timeUnit=TimeUnit.MINUTES)` +
+    `@SchedulerLock(name="housekeepingJob", lockAtLeastFor="14m",
+    lockAtMostFor="14m")`. Line 28 — `LockAssert.assertLocked()`. Line 32 —
+    `try (Connection connection = pgConnectionFactory.getConnection())`.
+    Lines 33-35 — sequential for-loop over `housekeepingJobs`. Lines 41-47 —
+    per-job try/catch on `Exception` with ERROR log.
+  unresolved: false
+  resolved_in_batch: K
+- hop: 3a
+  node: odd-platform java AlertHousekeepingJob
+  sidecar: '(not separately enriched — context from HousekeepingJobManager sidecar bugs_limitations_corner_cases[1])'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    AlertHousekeepingJob.java:28-34 — the jOOQ predicate chain with the
+    documented operator-precedence bug: `.where(ALERT.STATUS.eq(RESOLVED))
+    .or(ALERT.STATUS.eq(RESOLVED_AUTOMATICALLY))
+    .and(ALERT.STATUS_UPDATED_AT.lessOrEqual(cutoff))`. The emitted SQL is
+    `WHERE (STATUS = 'RESOLVED') OR (STATUS = 'RESOLVED_AUTOMATICALLY' AND
+    STATUS_UPDATED_AT <= cutoff)` — TTL applies ONLY to
+    RESOLVED_AUTOMATICALLY rows; manual RESOLVED rows are hard-deleted on the
+    very next 15-minute cycle. Live doc acknowledges this verbatim: "a known
+    platform bug currently exempts manual resolutions from the retention
+    check — manual RESOLVED alerts are hard-deleted on the next housekeeping
+    run regardless of this value." No source-level comment, no test, no
+    tracking issue.
+  unresolved: false
+  resolved_in_batch: K
+- hop: 3b
+  node: odd-platform java SearchFacetsHousekeepingJob
+  sidecar: '(not separately enriched)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    SearchFacetsHousekeepingJob.java:21-30 — single-statement DELETE; NOT
+    wrapped in an explicit transaction (auto-commit on the shared connection
+    after the prior job's transaction commits). `log.debug` only on row count.
+  unresolved: false
+- hop: 3c
+  node: odd-platform java DataEntityHousekeepingJob
+  sidecar: '(not separately enriched — context from HousekeepingJobManager sidecar coupling block)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataEntityHousekeepingJob.java:71 — `DSL.using(connection).transaction(ctx -> {...})`
+    wraps the entire ~25-table cascade. Line 142 — `fileUploadService.deleteFiles(filePojos).block()`
+    INSIDE the transaction — reactive Mono blocked synchronously with no
+    explicit timeout. Lines 99-126 — the cascaded jOOQ DELETEs across metadata,
+    ownerships, lineage, tags, terms, alerts, messages, metrics, attachments,
+    task runs, group relations. Lines 268-273 — `deleteOwnerships` removes ALL
+    ownership rows for the soft-deleted entity regardless of Owner identity.
+  unresolved: false
+- hop: 3d
+  node: odd-platform java ActivityEmptyPartitionsHousekeepingJob
+  sidecar: '(not separately enriched — referenced from HousekeepingJobManager sidecar concepts.entities)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ActivityEmptyPartitionsHousekeepingJob extends EmptyPartitionsHousekeepingJob;
+    targets ACTIVITY table. Each cycle issues `SELECT count(*) = 0 FROM <partition>`
+    per past partition (no caching of last-cycle's verdict) then DROPS empty ones.
+  unresolved: false
+- hop: 3e
+  node: odd-platform java MessageEmptyPartitionsHousekeepingJob
+  sidecar: '(not separately enriched — referenced from HousekeepingJobManager sidecar concepts.entities)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    MessageEmptyPartitionsHousekeepingJob extends EmptyPartitionsHousekeepingJob;
+    targets MESSAGE table, excludes MESSAGE_PROVIDER_EVENT.
+  unresolved: false
+terminal_side_effect:
+  side_effect_class: db-delete
+  description: |-
+    Per 15-minute cycle: up to 5 sequential jOOQ DELETE/DROP statements (3 TTL-driven
+    purges + 2 empty-partition drops). On a busy system the DataEntityHousekeepingJob
+    cascade alone can be ~25 distinct DELETE statements per soft-deleted entity, all in
+    one transaction. The terminal effect is the row deletion / partition drop in the
+    Postgres catalog tables.
+  evidence: |-
+    HousekeepingJobManager.java:33-35 (the for-loop) + AlertHousekeepingJob.java:40-43
+    (the DELETE) + SearchFacetsHousekeepingJob.java:23-27 (the DELETE) +
+    DataEntityHousekeepingJob.java:99-126 (the ~25-table cascade) +
+    EmptyPartitionsHousekeepingJob (the DROP PARTITION).
+  cardinality_per_call: 'cycle_jobs × rows_past_TTL (variable; can reach thousands per cycle on busy systems)'
+amplification_factor: '5 jobs × N_eligible_rows_per_job per 15-minute cycle (cluster-wide ONE active instance via ShedLock)'
+amplification_factor_provenance: |-
+  STATIC — confirmed from primary-source in batch K HousekeepingJobManager sidecar.
+  The cluster-wide multiplier is 1 (leader-elected via ShedLock advisory lock — one
+  active instance per 15-min slot). Within a cycle: 5 sequential jobs × per-job
+  row count. The per-job multiplier scales with the soft-delete backlog —
+  unbounded at the schedule level (no rate-limit, no max-rows-per-cycle cap, no
+  pagination of DataEntityHousekeepingJob's ~25-table cascade).
+observed_vs_expected:
+  facets:
+  - facet: AlertHousekeepingJob jOOQ operator-precedence bug
+    observed: |-
+      AlertHousekeepingJob.java:28-34 chains `.where(STATUS.eq(RESOLVED)).or(STATUS.eq(RESOLVED_AUTOMATICALLY)).and(STATUS_UPDATED_AT.lessOrEqual(cutoff))`.
+      jOOQ's fluent-builder precedence binds the `.and(...)` to the most recent
+      `.or(...)`. The emitted SQL is `WHERE (STATUS='RESOLVED') OR
+      (STATUS='RESOLVED_AUTOMATICALLY' AND STATUS_UPDATED_AT <= cutoff)` — the
+      TTL applies ONLY to RESOLVED_AUTOMATICALLY rows; manual RESOLVED rows are
+      hard-deleted on the very next 15-minute cycle regardless of
+      `housekeeping.ttl.resolved_alerts_days`. Live doc acknowledges this
+      verbatim. NO `// TODO`, no `// BUG`, no comment in the source pointing to
+      the docs, no GitHub-issue link, no regression test.
+    expected: |-
+      Manual RESOLVED rows should be retained for `resolved_alerts_days` after
+      status update — symmetric with RESOLVED_AUTOMATICALLY. The fix:
+      parenthesise the predicate as
+      `.where(STATUS.eq(RESOLVED).or(STATUS.eq(RESOLVED_AUTOMATICALLY)))
+      .and(STATUS_UPDATED_AT.lessOrEqual(cutoff))`.
+    drift_class: jooq_operator_precedence_bug_with_doc_acknowledgement_no_test
+    provenance: STATIC — PRIMARY-SOURCE confirmation of REFACTOR-142 in batch K
+      HousekeepingJobManager sidecar bugs_limitations_corner_cases[1] +
+      AlertHousekeepingJob.java:28-34 + WebFetch /configuration-and-deployment/odd-platform 2026-05-19 status 200
+  - facet: 3-vs-5 job count framing in docs
+    observed: |-
+      Live `/configuration-and-deployment/odd-platform` page enumerates "three
+      cleanup tasks executed by the housekeeping job" (WebFetched 2026-05-19,
+      status 200). The `housekeeping/job/` package contains FIVE concrete
+      @Component classes implementing HousekeepingJob; Spring's
+      `List<HousekeepingJob>` injection at HousekeepingJobManager.java:23 picks
+      up all five mechanically. The two empty-partition-drop jobs are not
+      surfaced in the docs.
+    expected: |-
+      Either rename the docs to "three retention-driven tasks plus two
+      empty-partition-drop tasks" OR enumerate all five jobs with their distinct
+      semantics. An operator reading the docs cannot learn that the same 15-min
+      schedule also drops empty activity/message partitions.
+    drift_class: docs_three_vs_code_five_job_count
+    provenance: STATIC — primary-source in batch K HousekeepingJobManager sidecar
+      bugs_limitations_corner_cases[0] + housekeeping/job/ directory listing +
+      WebFetch /configuration-and-deployment/odd-platform 2026-05-19
+  - facet: ShedLock window dangerously close to schedule
+    observed: |-
+      `lockAtLeastFor="14m"` AND `lockAtMostFor="14m"` against `fixedRate=15`
+      minutes (HousekeepingJobManager.java:25-26). 60-second slack between
+      maximum lock and next scheduled invocation. A cycle running ≥14 minutes
+      releases the lock before commit and a second instance can acquire at the
+      next 15-minute slot while the first is still finalising. Most jobs are
+      idempotent at the row-DELETE level, but DataEntityHousekeepingJob's
+      ~25-table cascade reads-then-deletes — concurrent instances could read
+      different snapshots and produce divergent cascade behaviour.
+    expected: |-
+      Either `lockAtMostFor` ≥ `2 × fixedRate` (e.g. 30m) so the lock outlives
+      any plausible cycle duration OR a documented narrative that explains the
+      14m / 15m pairing's intent. Currently undocumented.
+    drift_class: shedlock_window_dangerously_close_to_schedule
+    provenance: STATIC — primary-source in batch K HousekeepingJobManager sidecar
+      bugs_limitations_corner_cases[3] + implicit_adrs[2] + HousekeepingJobManager.java:25-26
+  - facet: per-job failure isolation undocumented
+    observed: |-
+      Inner try/catch at HousekeepingJobManager.java:41-47 catches `Exception`
+      per job and logs at ERROR (`log.error("Error while running a housekeeping
+      job", e)`), then continues to the next job. The docs page describes the
+      cleanup tasks as if they all succeed; the failure-isolation behaviour is
+      undocumented. An operator setting up log aggregation cannot pre-configure
+      a housekeeping-failure alert.
+    expected: |-
+      Either docs explicitly state "one failing job is caught and logged at
+      ERROR; remaining jobs continue" OR a Prometheus counter
+      (`housekeeping_job_failure_total{job=...}`) gives operators a structured
+      signal independent of log-aggregation grep patterns.
+    drift_class: per_job_failure_isolation_undocumented
+    provenance: STATIC — primary-source in batch K HousekeepingJobManager sidecar
+      bugs_limitations_corner_cases[5] + docs_link_semantic.doc_drift_findings[2] +
+      HousekeepingJobManager.java:41-47
+  - facet: strict opt-in vs default-true framing
+    observed: |-
+      `@ConditionalOnProperty("housekeeping.enabled", havingValue="true")` with
+      NO `matchIfMissing` (HousekeepingJobManager.java:18). The shipped
+      `application.yml:166` ships `housekeeping.enabled: true`. Docs say the
+      property "defaults to true" — technically correct only when the bundled
+      application.yml is the resolved config. An operator-customised
+      application.yml that overrides this file without re-supplying the key
+      silently disables housekeeping with NO boot warning.
+    expected: |-
+      Either docs explicitly state "strict opt-in — omitting the key disables
+      housekeeping" OR the code uses `matchIfMissing=true` (default-on
+      regardless of YAML).
+    drift_class: strict_opt_in_vs_default_true_framing
+    provenance: STATIC — primary-source in batch K HousekeepingJobManager sidecar
+      bugs_limitations_corner_cases[6] + docs_link_semantic.doc_drift_findings[3] +
+      HousekeepingJobManager.java:18 + application.yml:166
+  - facet: .block() inside transaction anti-pattern
+    observed: |-
+      DataEntityHousekeepingJob.doHousekeeping (lines 71-82) wraps the ~25-table
+      cascade in `DSL.using(connection).transaction(ctx -> {...})`. Inside,
+      `deleteFiles` (lines 131-143) calls reactive
+      `fileUploadService.deleteFiles(filePojos).block()` at line 142 — NO
+      explicit `.block(Duration)` timeout. If MinIO/S3 is unreachable, the
+      block hangs until transport-level read-timeout or the 14-minute
+      ShedLock expires. If S3 eventually throws, the transaction rolls back ALL
+      ~25 deletes — the next cycle retries the entire batch. Under persistent
+      S3 misconfiguration, housekeeping never makes progress; the only signal is
+      `log.error` at the outer manager catch.
+    expected: |-
+      Either `.block(Duration.ofSeconds(N))` with explicit timeout AND structured
+      failure metric OR S3 deletion moved OUTSIDE the transaction (best-effort
+      post-commit) so DB cleanup completes regardless of S3 reachability.
+    drift_class: block_inside_transaction_anti_pattern
+    provenance: STATIC — REFACTOR-145 PRIMARY-SOURCE confirmation in batch K
+      HousekeepingJobManager sidecar bugs_limitations_corner_cases[2] +
+      DataEntityHousekeepingJob.java:71,142
+  - facet: no dry-run / no preview / no archive
+    observed: |-
+      The three TTL-driven jobs issue jOOQ DELETE directly with no
+      `housekeeping.dry-run=true` config, no `housekeeping.ttl.archive-table`
+      that copies rows before delete, no operator-overrideable gate. A
+      misconfigured `housekeeping.ttl.data_entity_delete_days=1` would
+      immediately cascade through ~25 tables on the next 15-minute cycle with
+      no recovery path. LSN-001 shape — silent default + immediate destructive
+      action + no preview.
+    expected: |-
+      Either a `housekeeping.dry-run=true` mode that logs intended deletions
+      without executing them OR per-job preview metrics
+      (`housekeeping_eligible_rows{job=...}`) that operators can alert on
+      before the destructive cycle runs.
+    drift_class: no_dry_run_no_preview_no_archive
+    provenance: STATIC — primary-source in batch K HousekeepingJobManager sidecar
+      bugs_limitations_corner_cases[5]
+  - facet: no observability — no metrics / no audit log
+    observed: |-
+      Per-job logging is `log.debug` (default-off in production); manager-level
+      logging is `log.debug` (line 30) and `log.error` (lines 36-38, 44-46).
+      No Micrometer counter, no Prometheus gauge, no structured audit event,
+      no @ActivityLog annotation. An operator answering "how much did
+      housekeeping delete yesterday?" must run a SQL count manually.
+      Compliance frameworks requiring "data deletions must be logged and
+      reviewable" are not satisfied.
+    expected: |-
+      At minimum: `housekeeping_deleted_total{table=...}` Prometheus counter +
+      `housekeeping_cycle_duration_seconds` histogram + `housekeeping_backlog{table=...}`
+      gauge. Ideally: structured audit row per deletion (table + row id + cutoff
+      + cycle id) for forensics.
+    drift_class: no_observability_metrics_or_audit_log
+    provenance: STATIC — primary-source in batch K HousekeepingJobManager sidecar
+      bugs_limitations_corner_cases[4] + security.known_security_gaps[0]
+  - facet: shared connection — slowest job blocks cycle
+    observed: |-
+      One `pgConnectionFactory.getConnection()` call at line 32 wraps all five
+      jobs in try-with-resources. A 10-minute DataEntityHousekeepingJob delays
+      AlertHousekeepingJob and SearchFacetsHousekeepingJob by 10 minutes (each
+      sub-second on quiet systems). The architectural decision (resource
+      economy: one TCP handshake vs five per cycle) limits parallelism.
+    expected: |-
+      Either per-job connection (allows parallel execution) OR documented
+      narrative that explains the cycle-time = sum-of-jobs trade-off.
+    drift_class: shared_connection_slowest_job_blocks_cycle
+    provenance: STATIC — primary-source in batch K HousekeepingJobManager sidecar
+      performance.known_performance_gaps[0] + HousekeepingJobManager.java:32-35
+  - facet: no ordering contract on job list
+    observed: |-
+      `List<HousekeepingJob>` injection at line 23 receives beans in Spring's
+      discovered order (class-scan-order-dependent). No @Order annotations on
+      any of the five components, no @DependsOn, no explicit list ordering.
+      Today's five jobs operate on disjoint table sets so order is irrelevant,
+      but the contract is fragile to extension.
+    expected: |-
+      Either explicit @Order annotations per job OR a documented "order
+      irrelevant — jobs must operate on disjoint table sets" contract.
+    drift_class: no_ordering_contract_on_job_list
+    provenance: STATIC — primary-source in batch K HousekeepingJobManager sidecar
+      bugs_limitations_corner_cases[7] + HousekeepingJobManager.java:23
+  - facet: system-scope deletions — no owner-scoping
+    observed: |-
+      The orchestrator and all five jobs operate at system scope, deleting rows
+      across ALL OWNERS without regard to the ODD ownership model. Particularly
+      DataEntityHousekeepingJob.deleteOwnerships (lines 268-273) — a CASCADE
+      step within the data-entity purge — removes ALL ownership rows for the
+      soft-deleted entity regardless of who the Owners are. No tenant-id scope,
+      no per-owner config.
+    expected: |-
+      Either per-tenant housekeeping (`odd.tenant-id`-aware purge cycles) OR
+      documented narrative that housekeeping is a system-level admin
+      operation outside the multi-tenant boundary.
+    drift_class: system_scope_no_owner_scoping
+    provenance: STATIC — primary-source in batch K HousekeepingJobManager sidecar
+      security.owner_scoping
+  - facet: no tamper-evident audit on TTL configuration changes
+    observed: |-
+      A malicious operator with `housekeeping.ttl.*` write access at deploy time
+      (Helm chart override / env var / Spring Cloud Config) could set all three
+      TTLs to `0` and the next housekeeping cycle would silently destroy all
+      RESOLVED alert history, all search-facet history, and all soft-deleted
+      entities (with the ~25-table cascade). There is NO audit trail of the
+      configuration change AND NO audit trail of the deletion. SOX / GDPR
+      records-of-processing requirements (data-retention-policy changes must be
+      logged and reviewable) are not satisfied.
+    expected: |-
+      Either boot-time emission of resolved HousekeepingTTLProperties values
+      into a tamper-evident log channel OR structured audit event on each
+      housekeeping cycle (`audit.housekeeping.cycle{table, deleted, cutoff}`).
+    drift_class: no_tamper_evident_audit_on_ttl_config_changes
+    provenance: STATIC — primary-source in batch K HousekeepingJobManager sidecar
+      security.known_security_gaps[0]
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - housekeeping.enabled=false does NOT register HousekeepingJobManager (no positive assertion)
+    - housekeeping.enabled ABSENT silently no-ops (no matchIfMissing)
+    - '@Scheduled(fixedRate=15min) cadence under slow-cycle conditions'
+    - ShedLock 14m/14m window under multi-instance contention
+    - Per-job exception isolation (one job throws, others still run)
+    - SQLException at connection acquisition aborts the cycle for remaining jobs
+    - Bean discovery order (List<HousekeepingJob> order assertion)
+    - LockAssert.assertLocked() guard under direct method call (no lock held)
+    - AlertHousekeepingJob jOOQ predicate emits the BUGGY SQL (pinning the current behaviour) OR the FIXED SQL (regression-target)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - End-to-end 15-min cycle under docker-compose with all 5 jobs and seeded data
+    - DataEntityHousekeepingJob cascade against thousands of soft-deleted entities (transaction duration vs 14m ShedLock window)
+    - .block() inside transaction with unreachable S3 (assert cycle stalls until ShedLock expires)
+    - ActivityEmptyPartitionsHousekeepingJob drops empty past partitions only (does NOT drop populated current partition)
+    - MessageEmptyPartitionsHousekeepingJob excludes MESSAGE_PROVIDER_EVENT
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Sequential single-connection fan-out — slowest job blocks the cycle
+    - Backlog metric absent (no observable surface for "is housekeeping keeping up?")
+    - lockAtMostFor=14m against fixedRate=15m (60-second slack measurement)
+    - Per-cycle ShedLock DB round-trip (UPSERT against shedlock table)
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - No tamper-evident audit log of TTL configuration changes
+    - No rate-limit / no kill-switch / no preview mechanism on the destructive cycle
+    - Manager-level catch logs at ERROR but does NOT surface to alert / metric
+    - System-scope deletions (no per-tenant scoping; deleteOwnerships cascades regardless of Owner)
+control_summary: |-
+  0 of 4 cells COVERED — feature emerges from batch-K primary-source audit of
+  HousekeepingJobManager. The entire 48-line orchestrator + the five job
+  implementations have NO direct test coverage (verified via grep of
+  `<odd-platform-repo>/odd-platform-api/src/test` for `Housekeeping` returning
+  zero matches). The integration-test profile exists to OPT OUT of housekeeping
+  (`housekeeping.enabled: false` at application-integration-test.yml:8), not to
+  test it. The highest-leverage probe candidates are: (a) the
+  AlertHousekeepingJob jOOQ-precedence bug regression-pin (seed a manual
+  RESOLVED alert older than the TTL + assert it is hard-deleted on the next
+  cycle — PINS the current bug; replacing the assertion when the bug is fixed
+  becomes a single-line edit); (b) the 14m / 15m ShedLock race (multi-instance
+  docker-compose with an injected 15-minute sleep in one job, assert second
+  instance does NOT acquire); (c) the `.block()` + unreachable S3 cycle stall
+  (mock-S3 with infinite hang, assert cycle stalls + entire DataEntity cascade
+  rolls back). Local docker-compose probe stack is sufficient: ODD platform +
+  Postgres + mock-S3 (MinIO with network policy blocking egress) + seeded
+  ALERT / DATA_ENTITY / SEARCH_FACET rows.
+related_refactoring_scopes:
+- REFACTOR-142
+- REFACTOR-145
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+- Housekeeping (TTL Retention)
+- Activity Table Partitioning
+- Alert (resolved)
+- Search Facet
+- Data Entity (soft-deleted)
+- Attachment (S3)
+related_retrospectives:
+- LSN-001
+related_probes: null
+probe_verifications: []
+maintainer_curated: false

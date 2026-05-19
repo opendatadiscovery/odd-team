@@ -1,0 +1,386 @@
+feature_id: F-011
+pillar_id: P-09
+pillar_anchored_id: P-09:F-002
+pillar_anchored_feature_name: Principal-to-Owner Resolution (Owner-Scoping Mechanism)
+primary_drift_class: s2s_admin_username_collision_security_boundary
+drift_class_summary:
+- s2s_admin_username_collision_security_boundary
+- login_form_ldap_provider_null_cross_mode_bleed
+- no_auto_create_on_first_login
+- empty_security_context_silent_propagation
+- single_chokepoint_no_caching
+- silent_authority_drop
+- compound_key_silent_in_docs
+cross_pillar_relationships:
+- pillar_id: P-01
+  kind: feeds
+  via: 'fetchAssociatedOwner() is the load-bearing primitive consumed by /my reads in
+    DataEntityServiceImpl.getMyObjects / .getMyObjectsWithUpstream / .getMyObjectsWithDownstream
+    (anchor-set defence-in-depth at the Data Discovery pillar).'
+- pillar_id: P-05
+  kind: feeds
+  via: 'fetchAssociatedOwner() feeds DataEntityRelationsServiceImpl''s /my/{up,down}stream
+    anchor-set defence (the POSITIVE case of the anchor-set defence-in-depth
+    pattern); LineageServiceImpl (the NEGATIVE case — F-005''s drift facet) does
+    NOT call fetchAssociatedOwner, producing unmitigated cross-owner reads on
+    /api/dataentities/{id}/lineage/{down,up}stream.'
+- pillar_id: P-06
+  kind: feeds
+  via: 'fetchAssociatedOwner() is consumed by TermPermissionExtractor for per-Term
+    permission evaluation (the Data Glossary pillar''s authorization gate
+    consumes this primitive).'
+- pillar_id: P-07
+  kind: feeds
+  via: 'fetchAssociatedOwner() is consumed by AlertServiceImpl.listByOwner +
+    ActivityServiceImpl.MY_OBJECTS activity view + DataCollaborationServiceImpl
+    (per-Owner alert / activity / discussion scoping).'
+batch_origin: K
+created_in_batch: K
+feature_name: Principal-to-Owner resolution — the per-request chokepoint that
+  resolves Spring Authentication → UserDto(username, provider) → OwnerPojo via
+  USER_OWNER_MAPPING JOIN
+discovered_from_entry_point: per-request-resolution:ReactiveSecurityContextHolder.getContext()
+description: |-
+  AuthIdentityProviderImpl is THE canonical per-request identity resolver for
+  ODD Platform's RBAC + owner-scoping model. The class exposes three
+  parameter-less Mono signatures — `getCurrentUser()`, `getCurrentUserProviderRole()`,
+  `fetchAssociatedOwner()` — each reading
+  `ReactiveSecurityContextHolder.getContext()` to extract the active Spring
+  `Authentication`, then either:
+
+  (a) constructing a `UserDto(username, provider)` where `provider` is the
+      OAuth2 client registration id ONLY for `OAuth2AuthenticationToken`
+      (LOGIN_FORM, LDAP, S2S all produce provider=null),
+  (b) reading the first `GrantedAuthority` as a `UserProviderRole` enum
+      (ADMIN | USER),
+  (c) chaining getCurrentUser() into
+      `ReactiveUserOwnerMappingRepository.getAssociatedOwner(username, provider)`
+      to resolve a single `OwnerPojo` via the
+      `USER_OWNER_MAPPING JOIN OWNER` lookup.
+
+  The service is invoked by 15 distinct callsites — 9 services
+  (SearchServiceImpl, AlertServiceImpl, DataEntityServiceImpl,
+  DataEntityRelationsServiceImpl, ActivityServiceImpl,
+  DataCollaborationServiceImpl, OwnerAssociationRequestServiceImpl,
+  IdentityServiceImpl, RoleServiceImpl), TokenGeneratorImpl, and 4
+  permission/extractor classes (DataEntityPermissionExtractor,
+  TermPermissionExtractor, QueryExamplePermissionExtractor,
+  ManagementPermissionExtractor) plus PolicyService. ALL owner-scoped
+  business logic flows through these three Monos — the single chokepoint for
+  principal-to-owner resolution.
+
+  `fetchAssociatedOwner()` is the POSITIVE side of the defence-in-depth
+  anchor-set pattern documented in F-005's drift facet
+  `anchor_set_defence_in_depth_partial_application`: every owner-scoped read
+  path that calls it feeds the resolved owner-id into a downstream SQL
+  `WHERE OWNERSHIP.OWNER_ID = ?` JOIN; paths that DO NOT call it
+  (LineageServiceImpl per batch I, ReactiveLineageRepositoryImpl per batch H)
+  are the NEGATIVE case and produce unmitigated cross-owner reads.
+
+  The user-observable promise (per live `/configuration-and-deployment/enable-security/authorization/user-owner-association`
+  doc, WebFetched 2026-05-19 status 200): "One user can be associated only with
+  one owner and vice versa" + "If a user doesn't have an association with any
+  owner, it's impossible for them to manage data entities or have an
+  owner-based security role." The user-observable reality diverges on multiple
+  facets — LOGIN_FORM and LDAP both collapse to provider=null producing
+  cross-mode bleed; S2S hardcodes username="ADMIN" which collides with
+  operator-named LOGIN_FORM/LDAP users; new OAUTH2/LDAP users have NO Owner
+  auto-created on first login (silent empty results until OwnerAssociationRequest);
+  empty SecurityContext silently propagates rather than fail-fast; no caching
+  layer means N×DB round-trips per page load.
+contributing_nodes:
+- odd-platform java service service:AuthIdentityProviderImpl
+- odd-platform java AuthIdentityProvider
+- odd-platform java ReactiveUserOwnerMappingRepositoryImpl
+- odd-platform java S2sAuthenticationFilter
+- odd-platform java LoginFormSecurityConfiguration
+- odd-platform java LDAPSecurityConfiguration
+- odd-platform java DisabledAuthSecurityConfiguration
+- odd-platform java GrantedAuthorityExtractor
+- odd-platform java UserDto
+- odd-platform java UserProviderRole
+chain:
+- hop: 1
+  node: odd-platform java *SecurityConfiguration
+  sidecar: '(distinct sidecars per auth mode — context aggregated from AuthIdentityProviderImpl sidecar dependencies_semantic)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    Auth-mode wiring populates the SecurityContext per request:
+    - LoginFormSecurityConfiguration.java:30-66 — UsernamePasswordAuthenticationToken (provider=null path).
+    - LDAPSecurityConfiguration.java:50-82 — UsernamePasswordAuthenticationToken via ProviderManager wrapping LdapAuthenticationProvider (provider=null path).
+    - OAuth2 paths produce OAuth2AuthenticationToken with `authorizedClientRegistrationId` (the ONLY non-null provider path).
+    - S2sAuthenticationFilter.java:31-39 — explicit `new UsernamePasswordAuthenticationToken` with username='ADMIN' (provider=null path, hardcoded literal).
+    - DisabledAuthSecurityConfiguration.java:11-19 — NO ServerSecurityContextRepository wiring (SecurityContext stays empty).
+  unresolved: false
+- hop: 2
+  node: odd-platform java service service:AuthIdentityProviderImpl
+  sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    AuthIdentityProviderImpl.java:25-26, 39-40 — `ReactiveSecurityContextHolder.getContext()
+    .map(SecurityContext::getAuthentication)`. Lines 29-33 — instanceof
+    OAuth2AuthenticationToken branch produces (name, registrationId); else branch
+    produces (name, null). Lines 41-46 — `authorities.iterator().next().getAuthority()`
+    → UserProviderRole. Lines 50-53 — `getCurrentUser().flatMap(user ->
+    userOwnerMappingRepository.getAssociatedOwner(user.username(), user.provider()))`.
+    No caching; no error handling; no fallback; no per-request memoisation.
+  unresolved: false
+  resolved_in_batch: K
+- hop: 3
+  node: odd-platform java ReactiveUserOwnerMappingRepositoryImpl
+  sidecar: '(not separately enriched — context from AuthIdentityProviderImpl sidecar)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveUserOwnerMappingRepositoryImpl.java:77-85 — the JOIN SQL builder; line
+    83 uses `jooqReactiveOperations.mono` (single-row return, not flux). Lines
+    116-127 — the WHERE clause construction with the `(PROVIDER.eq(provider) if
+    non-empty else PROVIDER.isNull())` branch — the SOURCE of the cross-mode
+    bleed: when provider==null, the `WHERE OIDC_USERNAME=? AND PROVIDER IS NULL`
+    pattern matches every non-OAUTH2 user uniformly.
+  unresolved: false
+- hop: 4
+  node: 'odd-platform java *PermissionExtractor / *ServiceImpl (15 callsites)'
+  sidecar: '(15 distinct consumers — referenced from AuthIdentityProviderImpl sidecar concepts.audiences)'
+  multiplicity_per_trigger: N (every owner-scoped read or RBAC permission resolution per request)
+  evidence: |-
+    Each owner-scoped consumer threads the resolved OwnerPojo into a downstream
+    `WHERE OWNERSHIP.OWNER_ID = ?` SQL JOIN. Examples:
+    - AlertServiceImpl.listByOwner — filter alert.data_entity_id IN (data_entities
+      owned by the resolved owner).
+    - DataEntityServiceImpl.getMyObjects / .getMyObjectsWithUpstream / .getMyObjectsWithDownstream
+      — the /my anchor-set defence (the POSITIVE case).
+    - SearchServiceImpl.search with my_objects=true — filter results by owner.
+    - ActivityServiceImpl.listMyEvents (MY_OBJECTS activity view).
+    - DataCollaborationServiceImpl — per-Owner discussion thread scoping.
+    - DataEntityPermissionExtractor / TermPermissionExtractor /
+      QueryExamplePermissionExtractor / ManagementPermissionExtractor — feed the
+      resolved owner-id into per-Policy evaluation for "is": "dataEntity:owner"
+      conditions.
+  unresolved: true
+terminal_side_effect:
+  side_effect_class: db-read
+  description: |-
+    Per-call: ONE jOOQ SELECT against `user_owner_mapping JOIN owner` (small,
+    indexed, single-row). The terminal effect is the resolved OwnerPojo (or
+    empty Mono if no mapping exists). Downstream consumers use this to scope
+    SQL JOIN predicates on subsequent reads — the OwnerPojo is the
+    authorization-relevant primitive, not a user-observable HTTP body itself.
+    Side-effect class is db-read at this chokepoint; downstream chains terminate
+    in page-render (the /my reads) or activity-emit (the per-owner activity
+    views) per the consumer's contract.
+  evidence: |-
+    AuthIdentityProviderImpl.java:50-53 + ReactiveUserOwnerMappingRepositoryImpl.java:77-85, 116-127.
+  cardinality_per_call: 'one OwnerPojo (Mono) per call; consumers fire N calls per request (3-5 sequential identical queries observed per page-load)'
+amplification_factor: '3-5 sequential identical DB round-trips per page-load (no per-request memoisation)'
+amplification_factor_provenance: |-
+  STATIC — primary-source in batch K AuthIdentityProviderImpl sidecar
+  performance.hot_paths + bugs_limitations_corner_cases[4]. A single HTTP
+  request invoking `getCurrentUser` or `fetchAssociatedOwner` multiple times
+  (controller for owner-scoping + permission extractor + activity-logging path)
+  triggers N identical DB round-trips. The amplification is a known-and-deliberate
+  no-cache stance (implicit_adrs[3]) but is unbounded — a future page rendering
+  more owner-scoped surfaces would multiply linearly with no architectural
+  guard.
+observed_vs_expected:
+  facets:
+  - facet: S2S 'ADMIN' username / operator-named user 'ADMIN' collision (NEW HIGH)
+    observed: |-
+      S2sAuthenticationFilter.java:31-34 hardcodes
+      `User.withUsername("ADMIN").roles("ADMIN")` and wraps in
+      UsernamePasswordAuthenticationToken (provider=null at
+      AuthIdentityProviderImpl.java:32). Any S2S call invoking a service using
+      `fetchAssociatedOwner` looks up
+      `WHERE OIDC_USERNAME='ADMIN' AND PROVIDER IS NULL`. If an operator has
+      named a LOGIN_FORM or LDAP user 'ADMIN' (uppercase, exact case-sensitive
+      match — the SQL uses `eq`, not `equalIgnoreCase`), the S2S caller's owner
+      lookup resolves to THAT user's Owner. S2S API key holders thereby inherit
+      one specific operator user's owner-scoped reads/mutations. The case
+      sensitivity reduces but does not eliminate the collision.
+    expected: |-
+      S2S callers should either resolve to a system-Owner (separate from any
+      operator user) OR carry an explicit no-owner flag (operations
+      principal-independent). The hardcoded 'ADMIN' username is the boundary
+      failure on naming collision.
+    drift_class: s2s_admin_username_collision_security_boundary
+    provenance: STATIC — PRIMARY-SOURCE in batch K AuthIdentityProviderImpl sidecar
+      bugs_limitations_corner_cases[1] + security.known_security_gaps[1] +
+      S2sAuthenticationFilter.java:31-34 + AuthIdentityProviderImpl.java:29-33 +
+      ReactiveUserOwnerMappingRepositoryImpl.java:116-127
+  - facet: LOGIN_FORM ↔ LDAP cross-mode bleed via provider=null
+    observed: |-
+      A LOGIN_FORM user `alice` and an LDAP user `alice` both produce
+      `UserDto("alice", null)` at AuthIdentityProviderImpl.java:32. The
+      downstream lookup builds `WHERE OIDC_USERNAME='alice' AND DELETED_AT IS
+      NULL AND PROVIDER IS NULL` (ReactiveUserOwnerMappingRepositoryImpl.java:116-127).
+      If both auth modes are configured to point at users that overlap (a
+      common migration scenario), the second-mode user inherits the first-mode
+      user's Owner-link. NO mode-check, NO warning log, NO fail-fast — the
+      migration step is silent.
+    expected: |-
+      Either (a) all non-OAUTH2 modes produce a provider string that
+      distinguishes them (e.g. "LOGIN_FORM" / "LDAP") OR (b) document the
+      cross-mode bleed explicitly and require operators to avoid overlap.
+    drift_class: login_form_ldap_provider_null_cross_mode_bleed
+    provenance: STATIC — primary-source in batch K AuthIdentityProviderImpl sidecar
+      bugs_limitations_corner_cases[0] + security.known_security_gaps[0] +
+      AuthIdentityProviderImpl.java:29-33
+  - facet: no auto-create of Owner on first login under OAUTH2 / LDAP
+    observed: |-
+      A new OAUTH2 or LDAP user authenticated for the first time has NO
+      USER_OWNER_MAPPING row. `fetchAssociatedOwner` chain emits empty Mono.
+      Downstream consumers (AlertService.listByOwner, DataEntityService.listAssociated,
+      SearchServiceImpl.search with my_objects=true, ActivityServiceImpl.listMyEvents)
+      all degrade to empty results with HTTP 200 — NOT 401/403/404. The new
+      user sees `My Objects` empty, `My Alerts` empty, MY_OBJECTS activity
+      empty, with NO on-screen signal directing them to the
+      OwnerAssociationRequest flow.
+    expected: |-
+      Either (a) UI banner / status flag on first login directing the user to
+      request owner-association OR (b) auto-create-on-first-login (configurable;
+      maps to the documented invariant "one user, one owner") OR (c) explicit
+      404/403 response with a "request owner association" hint.
+    drift_class: no_auto_create_on_first_login
+    provenance: STATIC — primary-source in batch K AuthIdentityProviderImpl sidecar
+      bugs_limitations_corner_cases[2] + security.known_security_gaps[3] +
+      AuthIdentityProviderImpl.java:50-53 + OwnerAssociationRequestServiceImpl.java:54-76 +
+      live user-owner-association doc WebFetched 2026-05-19 status 200 silent on first-login
+  - facet: empty SecurityContext silent propagation
+    observed: |-
+      When `ReactiveSecurityContextHolder.getContext()` emits empty (under
+      `auth.type=DISABLED` — DisabledAuthSecurityConfiguration.java:11-19 wires
+      no ServerSecurityContextRepository — OR a future regression where a
+      WebFilter is misordered), `getCurrentUser` emits empty (no
+      `.switchIfEmpty(Mono.error(...))`); every owner-scoped consumer therefore
+      degrades to empty results. There is no logging, no metric, no warning. A
+      regression that broke principal propagation across the entire reactor
+      pipeline would manifest as "every user sees empty My Objects" —
+      diagnosable only by examining each affected endpoint.
+    expected: |-
+      Either (a) `.switchIfEmpty(Mono.error(new UnauthenticatedException()))`
+      with a warning log OR (b) documented narrative that empty SecurityContext
+      is a valid state (DISABLED-mode dev-only) AND a Prometheus counter for
+      "empty-context calls per second" as an observability surface.
+    drift_class: empty_security_context_silent_propagation
+    provenance: STATIC — primary-source in batch K AuthIdentityProviderImpl sidecar
+      bugs_limitations_corner_cases[3] + security.known_security_gaps[2] +
+      AuthIdentityProviderImpl.java:24-35
+  - facet: single chokepoint + no caching = N DB round-trips per page load
+    observed: |-
+      Every fetchAssociatedOwner invocation issues `SELECT owner.* FROM
+      user_owner_mapping JOIN owner ... WHERE oidc_username=? AND deleted_at IS
+      NULL AND (provider=? OR provider IS NULL)`. For a UI rendering catalog
+      home (mounting Recommended → My Objects + My Alerts count + Activity feed
+      simultaneously), a single user page-load triggers 3-5 sequential
+      identical queries to user_owner_mapping. The query is indexed (per the
+      schema migrations) and small, but the absence of even a per-request
+      memoisation (e.g. a reactor Context attribute) is a measurable per-page
+      cost.
+    expected: |-
+      Either (a) per-request memoisation via reactor Context (resolve once per
+      HTTP request, reuse across consumers) OR (b) per-session caching with
+      explicit invalidation on USER_OWNER_MAPPING UPDATE / DELETE.
+    drift_class: single_chokepoint_no_caching
+    provenance: STATIC — primary-source in batch K AuthIdentityProviderImpl sidecar
+      performance.hot_paths + performance.known_performance_gaps[0] +
+      bugs_limitations_corner_cases[4] + implicit_adrs[3] (stateless / no-cache by deliberate omission)
+  - facet: silent authority drop on multi-authority Authentication
+    observed: |-
+      `getCurrentUserProviderRole` reads ONLY the first authority via
+      `authorities.iterator().next().getAuthority()` (line 44). If the
+      GrantedAuthorityExtractor ever emits more than one authority (a future
+      RBAC hierarchy refactor), the second-and-beyond are silently ignored.
+      Today this is fine — the extractor emits exactly USER or ADMIN — but a
+      future change adding (USER, READ_QUERY_EXAMPLE) etc. would silently lose
+      information without test cover.
+    expected: |-
+      Either (a) explicit comment + test asserting "first-authority semantics
+      are intentional; extractor emits exactly one authority" OR (b) aggregate
+      across all authorities (or expose Set<UserProviderRole>).
+    drift_class: silent_authority_drop
+    provenance: STATIC — primary-source in batch K AuthIdentityProviderImpl sidecar
+      bugs_limitations_corner_cases[5] + AuthIdentityProviderImpl.java:41-46
+  - facet: compound (username, provider) key silent in docs
+    observed: |-
+      The user-owner-association doc says "one user can be associated only with
+      one owner" but is silent on how "one user" is identified. The code
+      identifies users by the COMPOUND key (username, provider) where provider
+      is the OAuth2 registrationId or NULL. An operator migrating from
+      LOGIN_FORM to OAUTH2 (or vice versa) discovers their existing user-owner
+      mappings no longer match because the OAuth2 user has (alice, github)
+      whereas the LOGIN_FORM user had (alice, null).
+    expected: |-
+      Documentation should spell out the compound key explicitly + a migration
+      runbook for cross-mode transitions.
+    drift_class: compound_key_silent_in_docs
+    provenance: STATIC — primary-source in batch K AuthIdentityProviderImpl sidecar
+      docs_link_semantic.doc_drift_findings[0] + AuthIdentityProviderImpl.java:29-33 +
+      ReactiveUserOwnerMappingRepositoryImpl.java:116-127 + live doc WebFetched 2026-05-19
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - OAuth2AuthenticationToken case — getCurrentUser returns UserDto(name, registrationId)
+    - Non-OAuth2 case — getCurrentUser returns UserDto(name, null) for LOGIN_FORM / LDAP / S2S
+    - Empty SecurityContext — getCurrentUser emits empty Mono (not error)
+    - getCurrentUserProviderRole first-authority semantics
+    - getCurrentUserProviderRole filter-empty-authorities behaviour
+    - fetchAssociatedOwner chain when USER_OWNER_MAPPING has no row matching
+    - Cross-mode bleed — LOGIN_FORM 'alice' and LDAP 'alice' resolve to the same OwnerPojo
+    - S2S 'ADMIN' colliding with operator-named LOGIN_FORM/LDAP 'ADMIN' user
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - End-to-end /my read under each auth mode (LOGIN_FORM / OAUTH2 / LDAP / S2S / DISABLED)
+    - First-login OAUTH2/LDAP user — assert /my reads return empty + no UI banner
+    - S2S ADMIN-collision regression — seed LDAP user 'ADMIN' + assert S2S call resolves to that user's Owner
+    - Cross-mode bleed — configure both LOGIN_FORM and LDAP + seed overlapping usernames + assert second-mode user inherits first-mode's Owner
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Per-page-load DB round-trip count (assert N≤2 with per-request memoisation, or document N for the no-cache stance)
+    - Repeated principal lookups from single client hit DB at request rate (no rate-limiting at this service)
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - S2S 'ADMIN' collision boundary test (HIGHEST PRIORITY)
+    - LOGIN_FORM ↔ LDAP cross-mode bleed boundary test
+    - Empty SecurityContext under DISABLED mode degrades to empty results across all 15 callsites
+    - First-login OAUTH2/LDAP user cannot self-grant ownership through the empty-fetchAssociatedOwner path
+control_summary: |-
+  0 of 4 cells COVERED — feature emerges from batch-K primary-source audit of
+  AuthIdentityProviderImpl. ZERO direct unit tests for this class (verified via
+  Grep for `AuthIdentityProviderImplTest` / `AuthIdentityProviderTest` under
+  `odd-platform-api/src/test` returning zero matches). Given that this is the
+  SOLE chokepoint for owner-scoping across 15 callsites, a regression in any of
+  the three method bodies silently degrades the entire owner-scoped read
+  surface to either empty results (false negative — user sees nothing they own)
+  or wrong-owner results (false positive — user sees another owner's data).
+  The two highest-leverage probe candidates are: (a) the S2S 'ADMIN' username
+  collision security boundary (configure LDAP with an 'ADMIN' user + a
+  separately-owned set of data entities + issue an S2S call + assert whether
+  the call resolves to a system-Owner OR to the LDAP 'ADMIN' user's Owner —
+  HIGHEST SEVERITY probe); (b) the LOGIN_FORM ↔ LDAP cross-mode bleed (configure
+  both modes with overlapping usernames + assert second-mode user inherits the
+  first-mode's Owner). Local docker-compose probe stack is sufficient: ODD
+  platform + Postgres + an LDAP server (e.g. OpenLDAP docker image) + a
+  LOGIN_FORM user with the same username.
+related_refactoring_scopes:
+- REFACTOR-203
+- REFACTOR-024
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+- Principal-to-Owner Resolution
+- USER_OWNER_MAPPING
+- UserDto (compound key)
+- Anchor-Set Defence-in-Depth
+- Server-to-Server (S2S) Authentication
+related_retrospectives:
+- LSN-017
+related_probes: null
+probe_verifications: []
+maintainer_curated: false

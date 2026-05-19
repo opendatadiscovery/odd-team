@@ -2,35 +2,105 @@ name: Authorization path-mismatch — SECURITY_RULES /term vs OpenAPI /terms sil
   disables permission gate
 canonical_in_docs: false
 canonical_candidate: true
-description: 'SecurityConstants.SECURITY_RULES[237-239,240-242] declares path patterns
-  with SINGULAR ''/term'' and ''/term/{term_id}'' for the DATA_ENTITY_ADD_TERM/DELETE_TERM
-  permission checks. OpenAPI spec at openapi.yaml:973,1042 declares the actual endpoints
-  as PLURAL ''/terms'' and ''/terms/{term_id}''. The generated DataEntityApi interface
-  inherits the plural path; AuthorizationCustomizer.customize only invokes the permission
-  check when the rule''s matcher matches the request — the singular matcher never
-  matches the plural path. Customizer falls through to .pathMatchers(''/**'').authenticated().
-  Net effect: DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM are NEVER ENFORCED
-  for the real endpoints. ANY authenticated user (LOGIN_FORM/OAUTH2/LDAP) can link
-  or unlink terms on any data entity across the platform. ALSO bypassable via the
-  description-write path (different surface, same vulnerability class). Triangulates:
-  addDataEntityTerm (PRIMARY-SOURCE) + upsertDataEntityInternalDescription (the side-channel
-  bypass via [[ns:term]]).'
+pillar_affinity:
+- P-06
+- P-09
+description: |-
+  SecurityConstants.SECURITY_RULES[237-239,240-242] declares path patterns
+  with SINGULAR '/term' and '/term/{term_id}' for the
+  DATA_ENTITY_ADD_TERM/DELETE_TERM permission checks. OpenAPI spec at
+  openapi.yaml:973,1042 declares the actual endpoints as PLURAL '/terms'
+  and '/terms/{term_id}'. The generated DataEntityApi interface inherits
+  the plural path; AuthorizationCustomizer.customize only invokes the
+  permission check when the rule's matcher matches the request — the
+  singular matcher never matches the plural path. Customizer falls through
+  to .pathMatchers('/**').authenticated(). Net effect: DATA_ENTITY_ADD_TERM
+  and DATA_ENTITY_DELETE_TERM are NEVER ENFORCED for the real endpoints.
+  ANY authenticated user (LOGIN_FORM/OAUTH2/LDAP) can link or unlink terms
+  on any data entity across the platform. ALSO bypassable via the
+  description-write path (different surface, same vulnerability class).
+  Triangulates: addDataEntityTerm (PRIMARY-SOURCE) +
+  upsertDataEntityInternalDescription (the side-channel bypass via
+  [[ns:term]]). **STRENGTHENED batch 2026-05-19K** — TermServiceImpl
+  primary-source confirms the service-tier consumers
+  (linkTermWithDataEntity, removeTermFromDataEntity,
+  linkTermWithDatasetField, removeTermFromDatasetField,
+  linkTermWithTerm, removeTermToLinkedTermRelation) all carry ZERO
+  service-tier permission checks. Even if REFACTOR-217 is fixed at the
+  controller-tier, the service-tier surface remains exposed to any
+  caller that reaches it directly. PLUS: a SECOND independent
+  SecurityConstants bug surfaced this batch at
+  SecurityConstants.java:295-296 (alerts-status PUT gated by
+  DATASET_FIELD_ADD_TERM — a Term permission on an Alert path); two
+  such bugs in the same authorization-wiring file suggest a class of
+  failures warranting a startup-time invariant scanner.
 contributing_files:
 - addDataEntityTerm.md
 - upsertDataEntityInternalDescription.md
-triangulation_count: 2
-cross_batch: false
+- TermServiceImpl.md
+triangulation_count: 3
+cross_batch: true
 severity: HIGH
 severity_dim: security
 evidence:
-- addDataEntityTerm.md:bugs_limitations_corner_cases.[0] HEADLINE (path-mismatch on
-  POST)
-- addDataEntityTerm.md:bugs_limitations_corner_cases.[1] (same bug for DELETE)
+- |-
+  addDataEntityTerm.md:bugs_limitations_corner_cases.[0] HEADLINE
+  (path-mismatch on POST)
+- |-
+  addDataEntityTerm.md:bugs_limitations_corner_cases.[1] (same bug for
+  DELETE)
 - addDataEntityTerm.md:security.known_security_gaps.[0]
-- upsertDataEntityInternalDescription.md:security.known_security_gaps.[3] (description-write
-  side-channel bypasses ADD_TERM)
+- |-
+  upsertDataEntityInternalDescription.md:security.known_security_gaps.[3]
+  (description-write side-channel bypasses ADD_TERM)
+- |-
+  TermServiceImpl.md (batch K — STRENGTHENS):
+  bugs_limitations_corner_cases.[0] (REFACTOR-217 path-mismatch
+  PRIMARY-SOURCE pin at service-tier consumer methods
+  linkTermWithDataEntity / removeTermFromDataEntity / linkTermWithDatasetField
+  / removeTermFromDatasetField / linkTermWithTerm /
+  removeTermToLinkedTermRelation) +
+  bugs_limitations_corner_cases.[1] (second SecurityConstants bug
+  NEW HIGH — /api/alerts/{id}/status PUT gated by DATASET_FIELD_ADD_TERM)
+  + security.authorization_assertions[] (TermServiceImpl service-tier
+  has ZERO permission checks — verified via grep PRIMARY SOURCE)
 mitigations_unimplemented:
 - Change SecurityRule path strings to plural to match the OpenAPI surface
 - Add a @WebFluxTest regression that asserts a no-permission user receives 403
 - Build a startup invariant that scans SECURITY_RULES paths against OpenAPI paths
   and fails-fast on mismatch
+- |-
+  **NEW batch K**: Build a startup invariant that scans SECURITY_RULES
+  permissions for name-prefix consistency with the URL path's resource
+  (e.g. `/api/alerts/*` paths should only be gated by permissions starting
+  with `ALERT_` or `DATA_ENTITY_ALERT_`). This would have caught both
+  REFACTOR-217 AND the alert-status DATASET_FIELD_ADD_TERM bug.
+- |-
+  **NEW batch K**: Add @PreAuthorize at TermServiceImpl mutating methods
+  for defence-in-depth — the service-tier-zero-permission-checks posture
+  is the structural enabler that turns controller-tier path-mismatches
+  into actual exploits.
+notes: |-
+  STRENGTHENED batch 2026-05-19K. The path-mismatch invariant is now
+  3-way triangulated:
+    (a) Controller-method PRIMARY SOURCE (addDataEntityTerm batch G)
+    (b) Description-edit side-channel (upsertDataEntityInternalDescription
+        batch G)
+    (c) Service-tier consumer + structural enabler (TermServiceImpl
+        batch K)
+  Plus a sibling SecurityConstants bug surfaced this batch:
+  /api/alerts/{id}/status PUT gated by DATASET_FIELD_ADD_TERM (NEW HIGH
+  severity, captured as its own invariant
+  `second-securityconstants-bug-alerts-status-wrong-permission`).
+
+  Two SecurityConstants wiring bugs in the same file (REFACTOR-217 path-text
+  mismatch AND the alert-status permission-name mismatch) strongly
+  suggest a third or more await discovery; a build-time scanner would
+  close the entire class of failures.
+
+  Companion new invariants surfaced batch K:
+    - TermServiceImpl service-tier zero permission checks (structural enabler)
+    - [[ns:term]] auto-link side-channel — REFACTOR-227 primary source
+      (independent bypass path; persists even when REFACTOR-217 is fixed)
+    - SecurityConstants bug — /api/alerts/{id}/status PUT gated by
+      DATASET_FIELD_ADD_TERM (NEW HIGH, sibling bug)

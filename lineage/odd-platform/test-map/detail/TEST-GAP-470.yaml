@@ -1,0 +1,28 @@
+gap_id: TEST-GAP-470
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform java service service:HousekeepingJobManager"
+pillars_affected: [P-08]
+surfaced_by:
+  - "HousekeepingJobManager.md:bugs_limitations_corner_cases.[8] (no connection-pool integration)"
+  - "HousekeepingJobManager.md:tests_coverage_semantic.uncovered_behaviours.[4] (connection exhaustion)"
+behaviour: |-
+  Connection-pool bypass — `PGConnectionFactory.getConnection()` uses `DriverManager.getConnection` (PGConnectionFactory.java:36). The housekeeping subsystem bypasses HikariCP entirely. Connection-pool exhaustion metrics (HikariCP gauges in JMX) do NOT cover housekeeping connections, and a connection-leak in housekeeping is invisible to pool monitoring. The shared connection is closed by try-with-resources at HousekeepingJobManager.java:32 (closed even on exception via the finally semantic), so the leak risk is bounded — but the architectural smell is that housekeeping connections are off-the-record from the platform's primary connection-pool observability surface. A future regression that broke try-with-resources scoping (e.g. moved connection acquisition outside the try) would leak with no JMX signal.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/HousekeepingConnectionLifecycleTest.java"
+  name: "connectionAcquiredFromDriverManager_notHikari_closedOnExceptionViaTryWithResources"
+evidence:
+  - |-
+    HousekeepingJobManager.md says: 'PGConnectionFactory.getConnection() uses DriverManager.getConnection. The housekeeping subsystem bypasses HikariCP entirely. Connection-pool exhaustion metrics (HikariCP gauges in JMX) do NOT cover housekeeping connections.'
+  - "HousekeepingJobManager.java:32 (pgConnectionFactory.getConnection() in try-with-resources)"
+  - "PGConnectionFactory.java:36 (DriverManager.getConnection(url, props))"
+cross_references:
+  - "concepts.yaml:entities[housekeeping-ttl-retention]"
+  - "TEST-GAP-467 (related: .block() inside transaction on the same connection)"
+proposed_action: |-
+  Testcontainers integration test. Spy or wrap PGConnectionFactory; inject a throwing HousekeepingJob. Invoke runHousekeepingJobs(). Assert (a) PGConnectionFactory.getConnection() called exactly once, (b) Connection.close() called exactly once even though the inner job threw, (c) HikariCP's pool size metric is unchanged (the connection did NOT come from HikariCP). Pins the DriverManager-not-Hikari + try-with-resources cleanup contract.
+batch: 2026-05-19-K
+feature_id: null

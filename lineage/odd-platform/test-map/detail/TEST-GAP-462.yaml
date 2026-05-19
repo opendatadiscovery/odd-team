@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-462
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:NotificationsDispatcher"
+pillars_affected: [P-07]
+surfaced_by:
+  - "NotificationsDispatcher.md:performance.known_performance_gaps.[1] (synchronous fan-out)"
+  - "NotificationsDispatcher.md:implicit_adrs.[1] (sequential synchronous fan-out)"
+behaviour: |-
+  Sequential synchronous fan-out — one slow sender stalls all subsequent senders for the same alert. The dispatcher iterates List<NotificationSender> with a for loop and BLOCKS per sender on .send(...). A misconfigured webhook with a 30s SLA blocks Slack and email delivery for THAT alert. Combined with NotificationSubscriber's single-thread executor (NotificationSubscriberStarter.java:21-23), backpressure on the WAL stream means subsequent ALERT-row WAL messages buffer in stream.readPending() until the synchronous loop returns. End-to-end per-alert latency = (DB roundtrips for translate) + Σ (per-channel network RTT). No timeout per sender (`.send(...)` is blocking with no Duration cap); no parallelism (no thread pool, no async, no per-channel SLA budget).
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/processor/AlertNotificationSequentialFanOutTest.java"
+  name: "slowWebhook_delaysSlackAndEmail_forSameAlert_sequentialNotParallel"
+evidence:
+  - |-
+    NotificationsDispatcher.md says: 'Synchronous fan-out: one slow sender stalls all subsequent senders for the same alert. A misconfigured webhook with a 30s SLA blocks Slack and email delivery for THAT alert.'
+  - "AlertNotificationMessageProcessor.java:25-36 (synchronous loop, no parallelism)"
+  - "NotificationSubscriberStarter.java:21-23 (single-thread executor)"
+  - "AbstractNotificationSender.java:16-30 (blocking HTTP roundtrip, no responseTimeout)"
+cross_references:
+  - "system-mission.md:P-07 Active Platform Features > Notifications"
+  - "TEST-GAP-457 (related: no rate-limiting — same architectural posture)"
+proposed_action: |-
+  Unit test on AlertNotificationMessageProcessor with three @Mock senders [slack, webhook, email] where webhook.send is configured to block for 500ms (Thread.sleep). Measure wallclock for one process(...) call. Assert total elapsed time >= 500ms (proves sequential) AND assert order: slack invoked before webhook invoked before email. Pins the sequential contract; when parallelism lands (thread pool / reactive concatMap → flatMap conversion), this test must be updated AND the new contract pinned.
+batch: 2026-05-19-K
+feature_id: null

@@ -1,7 +1,12 @@
 name: Permission-bypass via Owner auto-create (side-door write path)
 canonical_in_docs: false
 canonical_candidate: true
-description: '**NEW INVARIANT, batch 2026-05-12F** — codebase-wide structural permission-bypass
+pillar_affinity:
+- P-08
+- P-09
+- P-06
+description: |-
+  **NEW INVARIANT, batch 2026-05-12F** — codebase-wide structural permission-bypass
   pattern. The documented `OWNER_CREATE` permission is supposed to gate Owner directory
   growth via `POST /api/owners` (per batch E createOwner). But `DataEntityController.createOwnership`
   (`POST /api/dataentities/{id}/ownership`) accepts a free-text `owner_name` and calls
@@ -17,46 +22,133 @@ description: '**NEW INVARIANT, batch 2026-05-12F** — codebase-wide structural 
   (gated only by `DATA_ENTITY_OWNERSHIP_CREATE`). The asymmetry is silent: no doc
   warns operators; no @Slf4j log call captures the side-effect; the `@ActivityLog(OWNERSHIP_CREATED)`
   audit event fires for the ownership-binding but NOT for the Owner/Title-directory
-  growth. **Codebase-wide analog risk**: any future endpoint with auto-create-on-missing
+  growth. **STRENGTHENED batch 2026-05-19K** — OwnershipServiceImpl primary-source
+  pinned at the SERVICE LAYER (lines 52-53) confirming `getOrCreate` semantics; the
+  service-tier-zero-permission-checks (lines 35-37) is the structural enabler. NEW
+  service-tier instances surfaced this batch (the codebase-wide audit findings the
+  invariant predicted):
+    - TermServiceImpl.upsertTags (line 257) — TAG_CREATE bypass via
+      tagService.getOrCreateTagsByName (operator with TERM_TAGS_UPDATE can
+      create tags without TAG_CREATE)
+    - TermServiceImpl.createTerm + updateTerm (lines 103, 138) — NAMESPACE_CREATE
+      bypass via namespaceService.getOrCreate (operator with TERM_CREATE /
+      TERM_UPDATE can create namespaces without NAMESPACE_CREATE)
+  **Codebase-wide analog risk**: any future endpoint with auto-create-on-missing
   semantics (`getOrCreate`, `findOrInsert`, `ensureExists`) inherits this side-door
   pattern unless it explicitly checks the create-side permission. Recommended remediation:
   extend `OwnerService.getOrCreate(...)` to take a `caller-must-hold(OWNER_CREATE)`
   constraint OR factor the auto-create into an explicit `createIfAbsent` method that
-  checks the permission AND emits an audit signal. Same for `TitleService.getOrCreate`.'
+  checks the permission AND emits an audit signal. Same for `TitleService.getOrCreate`,
+  `TagService.getOrCreateTagsByName`, `NamespaceService.getOrCreate`.
 axes_present:
 - controllers
+- services
 nodes:
 - odd-platform java DataEntityController controller-method:createOwnership
 - odd-platform java OwnerController controller-method:createOwner
+- odd-platform java service service:OwnershipServiceImpl
+- odd-platform java service service:TermServiceImpl
 contributors:
-- createOwnership.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[0,1]
-  (Owner-auto-create via getOrCreate bypasses OWNER_CREATE; Title-auto-create has
-  no permission gate at all)
-- 'createOwner.md (batch E reference): OWNER_CREATE is the documented permission gating
-  Owner directory growth — but is incomplete because createOwnership side-doors past
-  it'
+- |-
+  createOwnership.md:security.known_security_gaps.[0] +
+  bugs_limitations_corner_cases.[0,1] (Owner-auto-create via getOrCreate
+  bypasses OWNER_CREATE; Title-auto-create has no permission gate at all)
+- |-
+  createOwner.md (batch E reference): OWNER_CREATE is the documented permission
+  gating Owner directory growth — but is incomplete because createOwnership
+  side-doors past it
+- |-
+  OwnershipServiceImpl (batch K — STRENGTHENS — service layer):
+  bugs_limitations_corner_cases.[0] REFACTOR-199 primary anchor +
+  bugs_limitations_corner_cases.[1] REFACTOR-206 sibling (Title) +
+  implicit_adrs.[0] (Owner+Title auto-create is INTENTIONAL deliberate
+  side-effect of the ownership-binding endpoint, NOT an oversight; the
+  maintainer chose getOrCreate over create at line 52-53) + security.known_security_gaps.[0]
+  REFACTOR-199 MEDIUM. Service-tier zero permission checks at lines 35-37
+  is the structural enabler.
+- |-
+  TermServiceImpl (batch K — STRENGTHENS — NEW INSTANCES):
+  bugs_limitations_corner_cases.[9] TAG_CREATE bypass via upsertTags +
+  security.known_security_gaps.[3,4] (TAG_CREATE + NAMESPACE_CREATE
+  bypasses). Predicted-by-the-invariant; NOW PRIMARY-SOURCE CONFIRMED.
 evidence:
 - createOwnership.md:security.known_security_gaps.[0] (MEDIUM)
 - createOwnership.md:bugs_limitations_corner_cases.[0] (MEDIUM)
 - createOwnership.md:bugs_limitations_corner_cases.[1] (MEDIUM — Title-auto-create
   with no permission)
 - createOwner.md:implicit_adrs.[0] (the OWNER_CREATE gate that the side-door bypasses)
-notes: "NEW cross-cutting invariant captured in batch 2026-05-12F. The\npattern is\
-  \ structurally similar to the \"Authorization is path-pattern\nwired in SecurityConstants.SECURITY_RULES\"\
-  \ failure mode (gates assume\npaths are the only entry points), but the specific\
-  \ shape is \"the\nservice-layer auto-create-on-missing pattern bypasses the\ncontroller-layer\
-  \ permission check that was supposed to gate that\nside effect.\"\n\nCodebase-wide\
-  \ audit candidate: grep for `getOrCreate(`, `findOrInsert(`,\n`ensureExists(` across\
-  \ all `*ServiceImpl.java` files; for each match,\ndetermine which controllers can\
-  \ call this path and whether they hold\nthe relevant create-side permission. Likely\
-  \ findings beyond the\ncurrent 2-sidecar evidence: Tag (TagService.getOrCreate from\
-  \ tag-add\nendpoints), Term (TermService.getOrCreate from term-add endpoints),\n\
-  Namespace.\n\nSurface as canonicalisation candidate AND a refactoring-scope item.\n\
-  Three DOC-NNN candidates flow from this invariant:\n  (a) `/authorization/permissions`\
-  \ page: name the side-door\n      (POST /api/dataentities/{id}/ownership as a 2nd\
-  \ write path\n      into Owner directory) explicitly.\n  (b) `/authorization/owners`\
-  \ page: clarify that Owner directory\n      entries can be created via TWO paths\
-  \ and which permissions\n      gate each.\n  (c) Add a new `/authorization/title-and-tag-vocabularies`\
-  \ page (or\n      a section on the existing permissions page) explaining that\n\
-  \      Title and Tag vocabularies grow via free-text mutation side-effects\n   \
-  \   with no allowlist.\n"
+- |-
+  OwnershipServiceImpl.md:bugs_limitations_corner_cases.[0] REFACTOR-199
+  primary anchor (PRIMARY SOURCE) — evidence: OwnershipServiceImpl.java:52 +
+  OwnerServiceImpl.java:39-42 + SecurityConstants.java:143, 215-217
+- |-
+  OwnershipServiceImpl.md:bugs_limitations_corner_cases.[1] REFACTOR-206
+  sibling (PRIMARY SOURCE) — evidence: OwnershipServiceImpl.java:53 +
+  TitleServiceImpl.java:19-22 + grep TITLE_CREATE returns zero matches
+- |-
+  OwnershipServiceImpl.md:implicit_adrs.[0] (DELIBERATE design intent —
+  Owner + Title directory auto-creation is intentional side-effect, not
+  oversight)
+- |-
+  TermServiceImpl.md:bugs_limitations_corner_cases.[9] TAG_CREATE bypass
+  via TermServiceImpl.upsertTags (line 257)
+- |-
+  TermServiceImpl.md:security.known_security_gaps.[3] TAG_CREATE bypass
+- |-
+  TermServiceImpl.md:security.known_security_gaps.[4] NAMESPACE_CREATE
+  bypass via TermServiceImpl.createTerm + updateTerm (lines 103, 138)
+triangulation_count: 4
+cross_batch: true
+severity: MEDIUM
+severity_dim: security
+notes: |-
+  STRENGTHENED batch 2026-05-19K — the codebase-wide audit-candidate
+  predicted in this invariant's original 2026-05-12F authorship is NOW
+  PRIMARY-SOURCE CONFIRMED at four service-tier sites:
+    (1) OwnershipServiceImpl.create — getOrCreate(owner_name) at line 52
+        — REFACTOR-199 (cross-batch primary-source confirmation; batch F
+        controller-tier + batch K service-tier)
+    (2) OwnershipServiceImpl.create — getOrCreate(title_name) at line 53
+        — REFACTOR-206 (cross-batch primary-source confirmation; batch F
+        controller-tier + batch K service-tier)
+    (3) TermServiceImpl.upsertTags — getOrCreateTagsByName at line 257
+        — TAG_CREATE bypass (NEW batch K, predicted by 2026-05-12F)
+    (4) TermServiceImpl.createTerm/updateTerm — namespaceService.getOrCreate
+        at lines 103, 138 — NAMESPACE_CREATE bypass (NEW batch K,
+        predicted by 2026-05-12F)
+  Codebase-wide audit pattern is now CONFIRMED, not just suspected.
+
+  The invariant's original analysis: pattern is structurally similar to
+  the "Authorization is path-pattern wired in SecurityConstants.SECURITY_RULES"
+  failure mode (gates assume paths are the only entry points), but the
+  specific shape is "the service-layer auto-create-on-missing pattern
+  bypasses the controller-layer permission check that was supposed to gate
+  that side effect."
+
+  STRENGTHENED architectural finding: the maintainer's OwnershipServiceImpl
+  implicit_adrs.[0] confirms this is DELIBERATE for OwnershipService —
+  Owner+Title directory auto-creation is the intentional convenience UX
+  pattern, not an oversight. The same can be assumed for Title, Tag, and
+  Namespace getOrCreate's. The invariant therefore distinguishes between
+  TWO sub-classes:
+    (a) Deliberate-side-door — the maintainer accepts the auto-create as
+        the convenience; docs should NAME the side-door so operators
+        understand the actual gate set
+    (b) Accidental-side-door — surfaces only when readers expect a single
+        gate and miss the side-door; remediation is explicit permission
+        check
+  All four primary-source instances are class (a) by maintainer intent;
+  the invariant's value is documentation/audit-trail, not bug-fix.
+
+  Surface as canonicalisation candidate AND a refactoring-scope item.
+  Three DOC-NNN candidates flow from this invariant:
+    (a) /authorization/permissions page: name the four side-doors
+        (Owner via Ownership; Title via Ownership; Tag via Term;
+        Namespace via Term) explicitly.
+    (b) /authorization/owners page: clarify that Owner directory
+        entries can be created via TWO paths and which permissions
+        gate each.
+    (c) Add a new /authorization/title-and-tag-vocabularies page (or
+        a section on the existing permissions page) explaining that
+        Title and Tag vocabularies grow via free-text mutation side-effects
+        with no allowlist.

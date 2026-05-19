@@ -1,0 +1,289 @@
+name: WAL Consumer + Postgres Replication Slot
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+- P-08
+description: |-
+  **NEW CONCEPT, batch 2026-05-19K** — the platform's outbound-notification durability
+  pattern: Postgres logical-replication WAL consumed by a single leader-elected thread
+  via a named replication slot + publication. `NotificationSubscriber` (per
+  `NotificationSubscriberStarter.java:21-32` + `NotificationSubscriber.java:39-46`)
+  runs ONE thread named `notification-subscriber-thread` on the elected leader
+  (advisory lock id `notifications.wal.advisory-lock-id`, default 100), polls the
+  named replication slot, and routes each decoded WAL message through a
+  `PostgresWALMessageProcessor` (sole implementor:
+  `AlertNotificationMessageProcessor` at
+  `notification/processor/AlertNotificationMessageProcessor.java:14-37`). The
+  replication slot + publication are LAZILY CREATED on first run if absent and ODD
+  NEVER drops them on shutdown — operator owns cleanup. The processor's role is
+  per-channel fan-out: invokes `NotificationMessageTranslator.translate(...)` to
+  enrich the decoded WAL row into an `AlertNotificationMessage` (multi-statement
+  jOOQ read of `alert_chunk` + alerted data-entity + recursive downstream-lineage
+  CTE), then iterates `List<NotificationSender>` sequentially with synchronous
+  HTTP/SMTP per-sender. Translation runs BEFORE fan-out: translation failures
+  (unknown alert-type code, missing FK) propagate OUT of `process()` to
+  `NotificationSubscriber`'s outer catch which logs and waits 10s before
+  re-acquiring the lock — meaning the SAME WAL LSN is re-delivered indefinitely on
+  a persistently-bad row (poison-message replay loop). Distinct from the
+  202+queue+advisory-lock pattern (DataCollaboration's outbound Slack messages) —
+  THIS pattern uses Postgres WAL streaming as the queue, whereas the 202 pattern
+  uses an in-table queue read via SELECT. **Architectural anchor for the WAL
+  consumer as a durability mechanism** — the platform's only outbound subsystem
+  that survives platform crashes mid-delivery (the WAL stream re-delivers from the
+  last applied LSN on restart). vocabulary_status: codebase-anchored,
+  doc-side-partially-covered (live `/features/active-platform-features/notifications`
+  page describes the fan-out behaviour; live
+  `/configuration-and-deployment/odd-platform` describes the operator's
+  responsibility to enable logical replication on the Postgres cluster — but
+  NEITHER page names the implementation site nor the poison-message-replay loop).
+nodes:
+- odd-platform java service service:NotificationsDispatcher
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:EmailSenderProperties
+contributors:
+- |-
+  NotificationsDispatcher (AlertNotificationMessageProcessor) batch K:
+  entities[PostgresWALMessageProcessor (interface), AlertNotificationMessageProcessor
+  (sole implementor), DecodedWALMessage, AlertNotificationMessage, NotificationSubscriber
+  (the upstream WAL polling thread)]; operations[translate-decoded-WAL-to-AlertNotificationMessage;
+  fan-out-sequential-per-channel; per-sender exception catch-and-log;
+  continue-on-channel-failure; translate-uncaught-propagates-to-outer-catch];
+  invariants[dispatcher runs ONLY inside the leader-elected single-thread WAL consumer
+  (one cluster-wide active instance via advisory lock id 100); dispatcher bean
+  conditional on notifications.enabled (default false); fan-out sequential through
+  List NotificationSender — one slow sender delays all subsequent senders;
+  per-sender NotificationSenderException caught and loop continues; loop iterates
+  every registered sender — no per-channel filter, no severity gate, no
+  owner-match; translation runs BEFORE fan-out — translation failure throws AND
+  is NOT caught here, triggering NotificationSubscriber's 10s back-off
+  re-acquisition loop]
+- |-
+  NotificationsProperties (batch C — existing reference): entities[WalProperties,
+  AlertNotificationMessage]; invariants[WAL subscriber leader-elected via advisory
+  lock id 100; replication-slot + publication lazily created; never dropped]
+evidence:
+- |-
+  NotificationsDispatcher.md:concepts.entities +
+  concepts.invariants[leader-elected-single-thread, conditional-on-notifications,
+  sequential-fan-out, per-sender-catch-and-continue, unconditional-broadcast,
+  translate-uncaught]
+- |-
+  NotificationsDispatcher.md:implicit_adrs.[0,1,2,3] (per-channel
+  catch-and-continue; sequential synchronous fan-out; dispatcher conditional;
+  translate-before-fan-out atomic with bifurcated fail-loud vs fail-soft)
+- NotificationsDispatcher.md:bugs_limitations_corner_cases.[6] (translate-failure WAL replay loop)
+- NotificationsProperties.md (batch C — WAL replication-slot lazy-create semantics)
+axes_present:
+- services
+- config_prefixes
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - INTERNAL_ONLY
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: BYPASSES
+    detail: |-
+      The WAL consumer + dispatcher operate at the database-replication layer —
+      Postgres-level credentials (a REPLICATION-role-granted DB user), not platform
+      RBAC. The `AlertNotificationMessageProcessor` is a Spring @Component invoked
+      from the WAL-consumer thread; no @PreAuthorize, no programmatic permission
+      check. Operates with full platform privileges via DSLContext using the
+      platform's datasource credentials. The fan-out is unconditional: every
+      configured Slack/webhook/email channel receives every alert regardless of
+      which Owner is attached to the alerted entity.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      The AlertNotificationMessage payload INCLUDES `dataEntity.owners[]` (owner
+      name + title) populated by `AlertNotificationMessageTranslator#fetchAlertedDataEntity`,
+      but the dispatcher does NOT consult them for routing. Every channel sees
+      every alert regardless of the alerted entity's Owner.
+  strengths:
+  - |-
+    Durability via WAL streaming — the replication slot retains WAL until the
+    consumer advances setAppliedLSN/setFlushedLSN; platform crashes mid-delivery
+    are replayed on restart (one of only two outbound-delivery durability mechanisms
+    in the platform, alongside the 202+queue+advisory-lock pattern for
+    DataCollaboration)
+  - |-
+    Leader-elected single-thread consumer prevents duplicate delivery across
+    cluster replicas — advisory lock id 100 ensures one cluster-wide active
+    subscriber
+  - |-
+    Disabled-by-default — `notifications.enabled=false` is the gate read by
+    NotificationsFeatureCondition directly from the Spring Environment; bean
+    does not exist if absent
+  weaknesses:
+  - |-
+    **Poison-message WAL replay loop (HIGH severity — NEW invariant batch K)** —
+    a translation failure (unknown alert-type code, missing FK on
+    alerted-data-entity row, null type_id) inside `translate()` bypasses the
+    dispatcher's per-sender catch and reaches `NotificationSubscriber.java:90`'s
+    outer catch. NotificationSubscriber logs, releases the lock, waits 10s, and
+    re-acquires. The SAME WAL LSN is re-delivered indefinitely with 10s back-off
+    between cycles, blocking subsequent WAL messages from being processed. No
+    DLQ, no skip-poison, no manual `setAppliedLSN` advance — operators with a
+    persistently-bad row must clean it up manually OR drop the replication slot
+    (which also drops all in-flight undelivered alerts).
+    (NotificationsDispatcher.md:bugs_limitations_corner_cases.[6])
+  - |-
+    **Exception-type asymmetry between sender impls (HIGH severity — NEW
+    invariant batch K)** — the dispatcher's per-sender try/catch catches
+    `NotificationSenderException` (checked) only. `EmailNotificationSender`
+    wraps `MessagingException | TemplateException | IOException` as
+    `new RuntimeException(...)` at EmailNotificationSender.java:59, NOT as
+    `NotificationSenderException`. Email failure therefore BYPASSES the
+    catch and aborts fan-out for that message — subsequent senders (if email
+    is not last in the list) do NOT receive the alert. Contradicts the
+    implicit catch-and-continue ADR for one channel only.
+    (NotificationsDispatcher.md:bugs_limitations_corner_cases.[0])
+  - |-
+    Lazy-create-no-drop replication-slot mechanic — operator owns cleanup;
+    renaming replication-slot-name between deployments orphans the prior slot
+    and Postgres retains WAL for it indefinitely, risking primary disk
+    exhaustion. (NotificationsProperties.md — existing finding)
+  - |-
+    No delivery audit, no DLQ, no retry — failed deliveries are logged at ERROR
+    and the message is treated as delivered from the dispatcher's perspective;
+    setAppliedLSN advances unconditionally. Operators have NO database record
+    of which alert went to which channel with what status.
+    (NotificationsDispatcher.md:bugs_limitations_corner_cases.[1])
+  - |-
+    PII surface — full AlertNotificationMessage payload (dataEntity.{id, name,
+    dataSourceName, namespaceName, owners[]}, downstream[] lineage) → every
+    Slack channel + webhook endpoint + email inbox, no redaction.
+    (NotificationsDispatcher.md:bugs_limitations_corner_cases.[8])
+  cross_file_inconsistencies:
+  - |-
+    Live `/features/active-platform-features/notifications` says "every channel
+    that is enabled" receives every alert (TRUE per code) but does NOT mention
+    the exception-type asymmetry: email failures abort fan-out (RuntimeException
+    not caught), Slack/webhook failures do not (NotificationSenderException
+    caught). Operator-facing framing is incomplete.
+  - |-
+    Live `/configuration-and-deployment/odd-platform#enable-alert-notifications`
+    warns about manual cleanup of the replication slot but does NOT warn about
+    the rename-orphan scenario (operator renames `notifications.wal.replication-slot-name`
+    between deployments; prior slot retained by Postgres until manual drop).
+  contributing_files:
+  - NotificationsDispatcher.md
+  - NotificationsProperties.md
+  - EmailSenderProperties.md
+  evidence:
+  - NotificationsDispatcher.md:security.owner_scoping
+  - NotificationsDispatcher.md:security.known_security_gaps.[0,1,2]
+  - NotificationsDispatcher.md:bugs_limitations_corner_cases.[0,6]
+  - NotificationsProperties.md:bugs_limitations_corner_cases.[12] (replication-slot orphan)
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - |-
+    Per WAL message: translate() runs (a) one multi-statement jOOQ read of
+    alert_chunk + alerted-data-entity join + recursive downstream-lineage CTE
+    bounded by notifications.message.downstream-entities-depth, then (b)
+    sequential for-loop calling .send(...) on every NotificationSender
+    synchronously. End-to-end per-alert latency ≈ (DB roundtrips for
+    translation) + Σ (per-channel network RTT including potential SMTP hang).
+    Single-thread WAL consumer on leader only — cluster-wide throughput
+    bounded by the dispatcher's serial latency.
+    (NotificationsDispatcher.md:performance.hot_paths.[0])
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      Single-thread WAL consumer per cluster (leader-elected at advisory lock
+      id 100). No batching — one HTTP/SMTP roundtrip per alert per channel.
+      Backpressure on WAL stream: while dispatcher's process() runs, upstream
+      stream.readPending() blocks; subsequent WAL messages queue in Postgres
+      replication-slot buffer until dispatcher returns.
+      (NotificationsDispatcher.md:performance.throughput_characteristics)
+  scaling_shape:
+    verdict: STATEFUL_LOCKED
+    detail: |-
+      Stateful at the cluster level — Postgres advisory lock id 100 + named
+      replication slot + named publication. Horizontal scaling = exactly one
+      active subscriber. Sender bean order is Spring-injection-order-dependent
+      and not stably configurable; slow senders run in undefined position
+      relative to fast senders, affecting per-alert tail latency.
+      (NotificationsDispatcher.md:performance.scaling_characteristics)
+  strengths:
+  - |-
+    Single shared HttpClient bean across Slack + Webhook senders — connection
+    reuse
+  - |-
+    Polling loop sleeps 10ms between empty readPending() calls — bounded idle
+    CPU baseline
+  - |-
+    Recursive downstream CTE bounded by notifications.message.downstream-entities-depth
+    (default 1) — bounded translation cost at default
+  weaknesses:
+  - |-
+    **No rate-limiting — bursty alert events translate 1:1 into outbound
+    deliveries (HIGH severity)** — Slack will rate-limit (429); platform has
+    no retry-with-backoff. Dispatcher catches the failure, logs, drops the
+    alert from that channel.
+    (NotificationsDispatcher.md:performance.known_performance_gaps.[0])
+  - |-
+    Synchronous fan-out — one slow sender stalls all subsequent senders for
+    the same alert; misconfigured webhook with 30s SLA blocks Slack and email
+    delivery for THAT alert. (NotificationsDispatcher.md:performance.known_performance_gaps.[1])
+  - |-
+    Poison-message replay — translation failure triggers
+    NotificationSubscriber's outer catch → 10s back-off → re-acquire → same
+    WAL LSN re-delivered indefinitely; persistently-bad row blocks WAL stream.
+    (NotificationsDispatcher.md:performance.known_performance_gaps.[3])
+  - |-
+    Empty-senders DB cost — translate() runs even when no senders are
+    configured; recursive CTE executed on every WAL event for zero delivery.
+    (NotificationsDispatcher.md:performance.known_performance_gaps.[2])
+  - |-
+    No backlog metric / no delivery metric / no failure-by-channel metric —
+    operators cannot detect "notifications stuck" without log inspection.
+    (NotificationsDispatcher.md:performance.known_performance_gaps.[4])
+  cross_file_inconsistencies: []
+  contributing_files:
+  - NotificationsDispatcher.md
+  - NotificationsProperties.md
+  - EmailSenderProperties.md
+  evidence:
+  - NotificationsDispatcher.md:performance.hot_paths.[0]
+  - NotificationsDispatcher.md:performance.throughput_characteristics
+  - NotificationsDispatcher.md:performance.scaling_characteristics
+  - NotificationsDispatcher.md:performance.known_performance_gaps.[0-4]
+notes: |-
+  NEW concept captured in batch 2026-05-19K. Architectural anchor for the
+  platform's outbound-notification durability pattern. The WAL consumer +
+  Postgres replication slot is one of TWO outbound-delivery durability
+  mechanisms in ODD Platform (the other being the 202+queue+advisory-lock
+  pattern used by DataCollaboration's Slack sender). The two patterns differ
+  in queue mechanism:
+    - WAL Consumer (this concept): Postgres logical-replication WAL streaming
+      from the ALERT table; consumed by leader-elected single-thread; the
+      replication slot retains WAL until consumer advances setAppliedLSN.
+      Durability: survives platform crashes — re-delivers from last applied LSN.
+    - 202+queue+advisory-lock (DataCollaboration): in-table queue read via
+      polling SELECT; consumed by leader-elected single-thread.
+      Durability: survives platform crashes — re-reads queue rows on restart.
+
+  Cross-cutting connections:
+    - This is the load-bearing architectural pattern for P-07 Active Platform
+      Features (Notifications sub-feature) — the platform's outbound surface
+      for alert events.
+    - Pairs with the "Notifications" concept which captures the operator-facing
+      config + sender chain; this concept captures the WAL-consumer +
+      dispatcher mechanic.
+
+  Recommended canonicalisation paths:
+    (a) Add "Notifications WAL Consumer" as a named architectural pattern in
+        the system-mission's "Architectural pillars" list (currently lists
+        platform-server, producer-ecosystem, ui-spa, metadata-store,
+        ingestion-api-wire-contract, ingestion-pipeline; this would be a
+        7th: outbound-notification-pipeline).
+    (b) Document the poison-message replay loop limitation on the live
+        `/features/active-platform-features/notifications` page — operators
+        running ODD with notifications enabled need to know that a
+        persistently-bad ALERT row blocks all subsequent alert delivery.
+    (c) Document the exception-type asymmetry — operators choosing channel
+        order matter (put email LAST in the sender order to minimise the
+        bypass-by-RuntimeException blast radius).

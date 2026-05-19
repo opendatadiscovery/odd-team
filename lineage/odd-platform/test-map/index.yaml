@@ -7,19 +7,19 @@ source_monolith_frontmatter:
   sidecar_count: 55
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 453
+  total_test_gaps: 486
   gaps_by_criticality:
-    CRITICAL: 89
-    HIGH: 146
-    MEDIUM: 163
-    LOW: 55
+    CRITICAL: 93
+    HIGH: 153
+    MEDIUM: 179
+    LOW: 61
   gaps_by_category:
     missing-integration: 100
-    missing-security: 115
-    missing-edge-case: 173
+    missing-security: 127
+    missing-edge-case: 190
     missing-unit: 43
     sidecar-stale: 1
-    missing-performance: 11
+    missing-performance: 15
     missing-binding: 10
   batch_history:
   - '2026-05-08: TEST-GAP-001..069 — initial 15-sidecar reduction'
@@ -110,7 +110,7 @@ source_monolith_frontmatter:
   - odd-platform java repository_reactive repository:ReactiveLineageRepositoryImpl
   - odd-platform java repository_reactive repository:ReactiveOwnershipRepositoryImpl
   - odd-platform java repository_reactive repository:ReactivePolicyRepositoryImpl
-total_entries: 453
+total_entries: 486
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -325,11 +325,24 @@ test_gaps_index:
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-016.yaml
 - gap_id: TEST-GAP-017
-  behaviour: No test asserts that mutating endpoints in SECURITY_RULES actually require
-    their permission; specifically NO test covers the `/term` (singular, in SECURITY_RULES
-    at SecurityConstants.java:237-242) vs `/terms` (plural, in DataEntityApi.java:148,
-    542) mismatch. This is the canonical authorization-path-string-drift failure mode
-    in production today.
+  behaviour: 'REFACTOR-217 path-mismatch — DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM
+    gates SILENTLY DISABLED. SecurityConstants.java:237-239 registers a matcher on
+    `/api/dataentities/{data_entity_id}/term` (singular); OpenAPI declares the operation
+    at `/api/dataentities/{data_entity_id}/terms` (plural — openapi.yaml:973, 1042).
+    The matcher never fires; the linkTermWithDataEntity service method (TermServiceImpl.java:170-179)
+    is reachable by any authenticated user. Same applies to DELETE — SecurityConstants.java:240-242
+    singular vs openapi.yaml:1042 plural — removeTermFromDataEntity (TermServiceImpl.java:184-196)
+    is similarly unenforced. STRENGTHENED batch K — the TermServiceImpl sidecar PRIMARY-SOURCE
+    confirms the service-tier dimension: the service has ZERO @PreAuthorize / hasPermission
+    / permissionService imports (grep verified). Authorization SHOULD fire at the
+    controller-perimeter SECURITY_RULES matcher; it does NOT. The full surface of
+    `linkTermWithDataEntity`, `removeTermFromDataEntity`, `linkTermWithDatasetField`,
+    `removeTermFromDatasetField` is effectively unauthenticated-mutation-allowed.
+    The path-mismatch is the canonical authorization-path-string-drift failure mode
+    in production today, with the service tier offering NO defence-in-depth (no second
+    permission check downstream). Cross-pillar P-06 dimension because TermServiceImpl
+    is the P-06 service-tier consumer. Cross-tier — auth-mode matrix probes per pillar
+    P-06+P-09.'
   test_class: missing-security
   criticality: CRITICAL
   node_id: ''
@@ -2902,6 +2915,7 @@ test_gaps_index:
   detail_path: detail/TEST-GAP-210.yaml
 - gap_id: TEST-GAP-211
   behaviour: '**Known platform bug — `AlertHousekeepingJob.java:28-34`** reads `.where(STATUS.eq(RESOLVED)).or(STATUS.eq(RESOLVED_AUTOMATICALLY)).and(STATUS_UPDATED_AT.lessOrEqual(cutoff))`.
+
     jOOQ''s fluent-builder precedence binds `.and(...)` to the most recent `.or(...)`,
     producing `(STATUS=RESOLVED) OR (STATUS=RESOLVED_AUTOMATICALLY AND STATUS_UPDATED_AT
     <= cutoff)`. TTL applies ONLY to RESOLVED_AUTOMATICALLY; manual RESOLVED rows
@@ -2910,8 +2924,15 @@ test_gaps_index:
     asserts INTENDED behaviour. STRENGTHENED batch H — the repository sidecar confirms
     the consumer-side observability: this repository''s reads will silently shrink
     as the housekeeping job purges past TTL; `get(alertId)` returns Mono.empty() for
-    hard-deleted alerts. The bug remains on the housekeeping job; the repository confirms
-    the consumer-side surface.'
+    hard-deleted alerts. STRENGTHENED batch K — the HousekeepingJobManager sidecar
+    provides the PRIMARY-SOURCE confirmation of REFACTOR-142: the bug lives at AlertHousekeepingJob.java:28-34,
+    has NO `// TODO`/`// BUG` comment, NO GitHub-issue link, NO regression test, and
+    is acknowledged ONLY in the live docs page (WebFetch /configuration-and-deployment/odd-platform
+    2026-05-19 verbatim: ''a known platform bug currently exempts manual resolutions
+    from the retention check — manual RESOLVED alerts are hard-deleted on the next
+    housekeeping run regardless of this value''). The fix: parenthesise as `.where(STATUS.eq(RESOLVED).or(STATUS.eq(RESOLVED_AUTOMATICALLY))).and(STATUS_UPDATED_AT.lessOrEqual(cutoff))`.
+    This is the orchestrator-side primary-source pin AND the persistence-tier and
+    config-tier pins from batches D/H.'
   test_class: missing-edge-case
   criticality: CRITICAL
   node_id: ''
@@ -3746,11 +3767,22 @@ test_gaps_index:
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-264.yaml
 - gap_id: TEST-GAP-265
-  behaviour: Owner-name auto-create permission-bypass — a caller with `DATA_ENTITY_OWNERSHIP_CREATE`
-    for any single data-entity can mint new Owner directory rows WITHOUT holding `OWNER_CREATE`
-    by submitting an owner_name not yet in the directory. The `OwnerService.getOrCreate(name)`
-    invocation at `OwnershipServiceImpl.java:52` is a second write path into the Owner
-    directory parallel to `POST /api/owners`.
+  behaviour: 'Owner-name auto-create permission-bypass (REFACTOR-199) — a caller with
+    `DATA_ENTITY_OWNERSHIP_CREATE` for any single data-entity can mint new Owner directory
+    rows WITHOUT holding `OWNER_CREATE` by submitting an owner_name not yet in the
+    directory. The `OwnerService.getOrCreate(name)` invocation at `OwnershipServiceImpl.java:52`
+    is a second write path into the Owner directory parallel to `POST /api/owners`.
+    STRENGTHENED batch K — the OwnershipServiceImpl sidecar PRIMARY-SOURCE confirms
+    this is a DELIBERATE implicit ADR (Owner + Title directory auto-creation is intentional
+    UX, not an oversight): `ownerService.getOrCreate(formData.getOwnerName())` and
+    `titleService.getOrCreate(formData.getTitleName())` are explicit choices over
+    `ownerService.create(...)` / `titleService.create(...)`. The OwnerServiceImpl.getOrCreate
+    at lines 39-42 uses `.switchIfEmpty(ownerRepository.create(...))` — the upsert
+    pattern is consistent across both directories. SecurityConstants.java:143 (`OWNER_CREATE`
+    gate scope — `/api/owners POST` only) does NOT cover this side-channel. Cross-tier
+    — the bypass spans Controller perimeter (DATA_ENTITY_OWNERSHIP_CREATE gate) and
+    Service tier (getOrCreate-on-miss) with NO defence-in-depth. Cross-pillar P-08+P-09
+    — Management surface bypasses Authorization model gate.'
   test_class: missing-security
   criticality: CRITICAL
   node_id: ''
@@ -6564,3 +6596,657 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-454.yaml
+- gap_id: TEST-GAP-455
+  behaviour: WAL replay-loop regression-pin for poison-message handling. A RuntimeException
+    from translate() (unknown alert-type code at AlertNotificationMessageTranslator.java:87
+    IllegalArgumentException, missing or duplicate alerted-entity rows at lines 94-101
+    IllegalStateException) bypasses AlertNotificationMessageProcessor's per-sender
+    try/catch and reaches NotificationSubscriber.java:90. The subscriber logs the
+    error, releases the advisory lock, waits 10s via Thread.sleep, then re-acquires
+    and re-decodes the SAME WAL LSN. setAppliedLSN/setFlushedLSN are NOT called for
+    the failing LSN at line 83-84 (only called inside the try block AFTER process()
+    returns successfully). The poison message replays indefinitely with 10s back-off
+    between cycles. No test pins this contract — a regression that wrapped translate()
+    in try/catch and advanced LSN on failure would silently drop alerts; a regression
+    that removed the 10s back-off would burn CPU and DB on replay; a regression that
+    broke the FK / type-code constraints upstream would block the entire notification
+    subsystem indefinitely.
+  test_class: missing-edge-case
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-455.yaml
+- gap_id: TEST-GAP-456
+  behaviour: Exception-type asymmetry — EmailNotificationSender wraps MessagingException
+    as raw RuntimeException at EmailNotificationSender.java:59 instead of NotificationSenderException
+    (the checked exception type AlertNotificationMessageProcessor.java:31 catches).
+    When email send fails, the RuntimeException BYPASSES the dispatcher's per-sender
+    try/catch and aborts fan-out for that message. Subsequent senders (if email is
+    not last in Spring's bean-injection order) do NOT receive the alert. This contradicts
+    the implicit ADR 'one bad channel does not block the others' and contradicts the
+    live docs page (notifications page WebFetch 2026-05-19) which states 'every channel
+    that is enabled' receives every alert. Slack and Webhook senders correctly throw
+    NotificationSenderException; email is the outlier.
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-456.yaml
+- gap_id: TEST-GAP-457
+  behaviour: No rate-limiting / no batching / no token bucket. WAL streams alerts
+    as fast as Postgres decodes them; dispatcher runs synchronously; senders block
+    on HTTP/SMTP. A burst of 10k alerts (e.g. a misconfigured DQ run flagging every
+    dataset) translates 1:1 into 10k Slack messages, 10k webhook POSTs, 10k emails.
+    Slack will rate-limit at the receiver (HTTP 429); the AbstractNotificationSender.java:24-27
+    only checks for HTTP 200, treating 429 as a NotificationSenderException — dispatcher
+    logs and drops the alert from that channel. No retry, no exponential backoff,
+    no batching. The 'fan-out to all configured channels' contract collapses under
+    burst load with NO operator-visible signal beyond log.error.
+  test_class: missing-performance
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-457.yaml
+- gap_id: TEST-GAP-458
+  behaviour: No delivery audit at dispatcher — no DB record of which alert went to
+    which channel with what status. The WAL stream's setAppliedLSN and setFlushedLSN
+    are advanced unconditionally after process() returns (NotificationSubscriber.java:83-84)
+    — the dispatcher has no way to signal 'do not advance LSN'. Operators have NO
+    database record of delivery success/failure per alert per channel; they have only
+    grep-greppable receiver-id strings in stdout. Compliance frameworks requiring
+    'data alerts must be delivered or auditable as undelivered' are not satisfied.
+    Cross-pillar P-09 dimension because the catch-and-log-only stance + the receiver-id
+    leaks in NotificationSenderException.getMessage() (logged at ERROR per AlertNotificationMessageProcessor.java:32-34)
+    is the only forensic surface.
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-458.yaml
+- gap_id: TEST-GAP-459
+  behaviour: 'ALL configured senders receive ALL alerts — no per-channel filter by
+    alert type / severity / data-entity owner / namespace. Owner-scoping is BYPASSED
+    at the dispatcher: every channel receives every alert event regardless of which
+    data-entity Owner is attached. The AlertNotificationMessage payload INCLUDES dataEntity.owners[]
+    (populated by AlertNotificationMessageTranslator.java:73-83) but the dispatcher
+    does NOT consult them for routing. Operators wanting ''Critical to Slack only,
+    all to email'' OR ''team-A alerts to team-A''s Slack only'' cannot express that.
+    This is a security/scope gap (cross-team Slack workspaces see other teams'' alerts)
+    AND an operator UX gap.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-459.yaml
+- gap_id: TEST-GAP-460
+  behaviour: Empty-senders silent no-op with continued DB cost. When notifications.enabled=true
+    but ZERO receivers are configured (no notifications.receivers.{slack.url | webhook.url
+    | email.sender}), the @ConditionalOnProperty-gated sender beans never register;
+    List<NotificationSender> is empty. The dispatcher still RUNS — calls messageTranslator.translate(message)
+    on every WAL event (multi-statement jOOQ read incl. recursive CTE on LINEAGE)
+    and then no-ops the empty fan-out loop. DB cost is paid for zero delivery, with
+    no operator-visible warning at boot or per-message. Boot-time validation (e.g.
+    `@Validated` on NotificationsProperties requiring at least one receiver) is absent.
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-460.yaml
+- gap_id: TEST-GAP-461
+  behaviour: PII pass-through — every channel gets full payload regardless of channel
+    security posture. AlertNotificationMessage carries dataEntity.{id,name,dataSourceName,namespaceName,owners[]}
+    + downstream[] lineage entities. Slack (corporate workspace, potentially many
+    viewers), webhook (operator-defined URL, security posture unknown), email (inbox
+    security varies) all receive the same payload. For organisations whose dataset
+    names encode customer/PII identifiers, every dispatched alert leaks them to every
+    channel. No redaction hook, no allowlist, no PII-tag-aware filter at dispatcher
+    level. Cross-pillar P-09 dimension because the payload structure is uniform across
+    channels with different threat models.
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-461.yaml
+- gap_id: TEST-GAP-462
+  behaviour: Sequential synchronous fan-out — one slow sender stalls all subsequent
+    senders for the same alert. The dispatcher iterates List<NotificationSender> with
+    a for loop and BLOCKS per sender on .send(...). A misconfigured webhook with a
+    30s SLA blocks Slack and email delivery for THAT alert. Combined with NotificationSubscriber's
+    single-thread executor (NotificationSubscriberStarter.java:21-23), backpressure
+    on the WAL stream means subsequent ALERT-row WAL messages buffer in stream.readPending()
+    until the synchronous loop returns. End-to-end per-alert latency = (DB roundtrips
+    for translate) + Σ (per-channel network RTT). No timeout per sender (`.send(...)`
+    is blocking with no Duration cap); no parallelism (no thread pool, no async, no
+    per-channel SLA budget).
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-462.yaml
+- gap_id: TEST-GAP-463
+  behaviour: 'Sender iteration order is undefined / Spring-bean-order-dependent. List<NotificationSender>
+    is injected as a bean collection. The order — Slack first? Email last? — depends
+    on Spring''s bean-registration order, which is class-scan-order-dependent in practice.
+    A change to the codebase (rename, package move, conditional registration order
+    change) can silently flip the order. Combined with TEST-GAP-456 (email throws
+    RuntimeException, aborting subsequent senders), the email''s position in the iteration
+    order is load-bearing: if email is LAST, Slack and webhook still receive every
+    alert; if email is FIRST, Slack and webhook receive NONE on email failure. No
+    @Order annotation, no Comparator, no explicit sort.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-463.yaml
+- gap_id: TEST-GAP-464
+  behaviour: Per-job failure isolation regression-pin. The inner try/catch at HousekeepingJobManager.java:41-47
+    catches `Exception` and logs at ERROR (`log.error("Error while running a housekeeping
+    job", e)`), then the outer loop continues to the next job. This is the ONLY mechanism
+    preventing one failed job from cascading. A future refactor that (a) moved the
+    loop body inline (losing the per-iteration try/catch), (b) changed the catch type
+    from `Exception` to a narrower exception (e.g. `SQLException`), or (c) re-threw
+    the exception after logging would silently regress isolation. No test verifies
+    that a RuntimeException in AlertHousekeepingJob.doHousekeeping does NOT prevent
+    DataEntityHousekeepingJob.doHousekeeping from running in the same cycle. Without
+    this isolation, the 14m ShedLock window combined with the .block()-inside-transaction
+    anti-pattern means a single transient S3 failure could indefinitely block all
+    housekeeping.
+  test_class: missing-edge-case
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-464.yaml
+- gap_id: TEST-GAP-465
+  behaviour: '14m-vs-15m ShedLock window race. `lockAtLeastFor = "14m"` and `lockAtMostFor
+    = "14m"` (HousekeepingJobManager.java:26) against `fixedRate = 15` minutes (line
+    25). A cycle running ≥14 minutes releases the lock before commit; a second instance
+    can acquire at the next 15-minute slot while the first is still finalising its
+    jOOQ transaction. The result: two instances running housekeeping concurrently.
+    AlertHousekeepingJob and SearchFacetsHousekeepingJob DELETEs are idempotent (delete-nonexistent
+    is no-op) but DataEntityHousekeepingJob''s ~25-table cascade involves SELECT followed
+    by DELETE — two concurrent instances could read different snapshots and produce
+    divergent cascade behaviour. The 60-second slack is razor-thin under heavy backlog
+    (e.g. thousands of soft-deleted entities with .block() S3 deletes). No multi-instance
+    integration test exercises this.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-465.yaml
+- gap_id: TEST-GAP-466
+  behaviour: 'Master-gate strict-opt-in contract. `@ConditionalOnProperty(value =
+    "housekeeping.enabled", havingValue = "true")` at HousekeepingJobManager.java:18
+    has NO `matchIfMissing` attribute. The shipped application.yml:166 ships `housekeeping.enabled:
+    true`, so deployments using the bundled config get housekeeping by default. Deployments
+    overriding application.yml WITHOUT re-supplying the key (e.g. `--spring.config.location=/etc/odd/myconfig.yml`
+    omitting the key) get strict-opt-in semantics: bean is NOT registered, housekeeping
+    silently does not run, NO log warning at boot. Docs framing as ''defaults to true''
+    is technically correct but masks the strict-opt-in mechanism. A regression that
+    added `matchIfMissing = true` (changing semantics to default-on regardless) OR
+    that removed `@ConditionalOnProperty` entirely would alter operator deployments
+    without breaking any test.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-466.yaml
+- gap_id: TEST-GAP-467
+  behaviour: '`.block()` inside transaction anti-pattern. `DataEntityHousekeepingJob.doHousekeeping`
+    (lines 71-82) wraps the entire ~25-table cascade in `DSL.using(connection).transaction(ctx
+    -> {...})`. Inside that transaction, `deleteFiles` (lines 131-143) calls REACTIVE
+    `fileUploadService.deleteFiles(filePojos).block()` at DataEntityHousekeepingJob.java:142.
+    The `.block()` has no explicit timeout (no `.block(Duration)`); a hung MinIO /
+    S3 call hangs the entire housekeeping cycle until either the transport-level read-timeout
+    fires or the 14-minute ShedLock expires. If the S3 call eventually throws, the
+    transaction rolls back ALL ~25 deletes — the next cycle retries the entire batch.
+    Under persistent S3 misconfiguration, data-entity housekeeping never makes progress,
+    and the only signal is log.error at HousekeepingJobManager.java:45. Cross-references
+    REFACTOR-145 batch D.'
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-467.yaml
+- gap_id: TEST-GAP-468
+  behaviour: No tamper-evident audit log of housekeeping configuration changes or
+    deletions. A malicious operator with `housekeeping.ttl.*` write access at deploy
+    time (Helm chart override, env var, Spring Cloud Config) could set all three TTLs
+    to `0` and the next 15-minute cycle would silently destroy all RESOLVED alert
+    history, all search-facet history, and all soft-deleted entities (with the ~25-table
+    cascade including OWNERSHIP relations). NO audit trail of the config change AND
+    NO audit trail of the deletion. The three TTL-driven jobs issue jOOQ DELETE directly
+    (AlertHousekeepingJob.java:40-43, SearchFacetsHousekeepingJob.java:23-27, DataEntityHousekeepingJob.java:99-126)
+    with NO `housekeeping.dry-run` config, NO `housekeeping.ttl.archive-table`, NO
+    operator-overrideable gate. Compliance frameworks requiring 'changes to data retention
+    policies must be logged' (SOX / GDPR records-of-processing) are not satisfied.
+    Cross-pillar P-09 dimension because the deletion is destructive AND silent.
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-468.yaml
+- gap_id: TEST-GAP-469
+  behaviour: No housekeeping-job ordering contract. The `List<HousekeepingJob>` injection
+    at HousekeepingJobManager.java:23 receives beans in Spring's discovered order,
+    which is NOT explicitly declared. Five jobs today operate on disjoint table sets
+    so order is irrelevant; a future job with cross-job dependencies (e.g. 'a new
+    TermHousekeepingJob must run BEFORE DataEntityHousekeepingJob to avoid stale FK
+    references') would silently inherit whatever order Spring picks. No `@Order` annotations
+    on any of the five existing jobs, no `@DependsOn`, no explicit list ordering in
+    the manager.
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-469.yaml
+- gap_id: TEST-GAP-470
+  behaviour: Connection-pool bypass — `PGConnectionFactory.getConnection()` uses `DriverManager.getConnection`
+    (PGConnectionFactory.java:36). The housekeeping subsystem bypasses HikariCP entirely.
+    Connection-pool exhaustion metrics (HikariCP gauges in JMX) do NOT cover housekeeping
+    connections, and a connection-leak in housekeeping is invisible to pool monitoring.
+    The shared connection is closed by try-with-resources at HousekeepingJobManager.java:32
+    (closed even on exception via the finally semantic), so the leak risk is bounded
+    — but the architectural smell is that housekeeping connections are off-the-record
+    from the platform's primary connection-pool observability surface. A future regression
+    that broke try-with-resources scoping (e.g. moved connection acquisition outside
+    the try) would leak with no JMX signal.
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-470.yaml
+- gap_id: TEST-GAP-471
+  behaviour: LOGIN_FORM ↔ LDAP cross-mode bleed via provider=null. A LOGIN_FORM user
+    `alice` and an LDAP user `alice` both produce `UserDto("alice", null)` at AuthIdentityProviderImpl.java:32
+    (the else branch of the OAuth2AuthenticationToken instanceof check at lines 29-33
+    hard-codes null). The downstream lookup at ReactiveUserOwnerMappingRepositoryImpl.java:116-127
+    builds `WHERE OIDC_USERNAME = 'alice' AND DELETED_AT IS NULL AND PROVIDER IS NULL`.
+    If both auth modes are configured to point at users whose usernames overlap (operator
+    naming convention or migration scenario), the second-mode user silently inherits
+    the first-mode user's Owner-link. The codepath has NO mode-check, NO warning log,
+    NO fail-fast. The migration step (LOGIN_FORM → LDAP, or vice versa) is silent.
+    Cross-pillar bump P-09 because every owner-scoped read path that calls fetchAssociatedOwner
+    inherits this — 15 callsites including SearchServiceImpl, AlertServiceImpl, DataEntityServiceImpl,
+    DataEntityRelationsServiceImpl, ActivityServiceImpl, DataCollaborationServiceImpl,
+    three Permission extractors.
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-471.yaml
+- gap_id: TEST-GAP-472
+  behaviour: 'S2S ''ADMIN'' username-collision regression-pin. S2sAuthenticationFilter.java:31-34
+    builds `User.withUsername("ADMIN").roles("ADMIN")` and wraps in UsernamePasswordAuthenticationToken
+    (provider=null via AuthIdentityProviderImpl.java:32). Any S2S call that invokes
+    a service using `fetchAssociatedOwner` looks up `WHERE OIDC_USERNAME = ''ADMIN''
+    AND PROVIDER IS NULL`. If an operator has named a LOGIN_FORM or LDAP user ''ADMIN''
+    (uppercase, exact case-sensitive match — the SQL uses `eq`, not `equalIgnoreCase`),
+    the S2S caller resolves to THAT user''s Owner. S2S API key holders thereby inherit
+    one specific operator user''s owner-scoped reads/mutations. The uppercase / case-sensitivity
+    reduces but does not eliminate the collision. Auth boundary failure: S2S inherits
+    user identity through user_owner_mapping lookup.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-472.yaml
+- gap_id: TEST-GAP-473
+  behaviour: Empty SecurityContext silently propagates rather than fail-fast. When
+    ReactiveSecurityContextHolder.getContext() emits empty (happens under `auth.type=DISABLED`
+    — no ServerSecurityContextRepository wiring at DisabledAuthSecurityConfiguration.java:11-19
+    — OR under a future regression where a WebFilter is misordered), `getCurrentUser`
+    emits empty (no `.switchIfEmpty(Mono.error(...))`); every owner-scoped consumer
+    therefore degrades to empty results with HTTP 200, NOT 401/403/404. No logging,
+    no metric, no warning. A regression that broke principal propagation across the
+    entire reactor pipeline would manifest as 'every user sees empty My Objects' —
+    diagnosable only by examining each affected endpoint. The 15 callsites of fetchAssociatedOwner
+    / getCurrentUser would all silently degrade simultaneously.
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-473.yaml
+- gap_id: TEST-GAP-474
+  behaviour: No auto-create of Owner on OAUTH2/LDAP first login — silent empty results
+    for unmapped users. A new OAUTH2 or LDAP user authenticated for the first time
+    has NO user_owner_mapping row. fetchAssociatedOwner chain emits empty Mono (line
+    51 → flatMap on a Mono that emits empty). Downstream consumers (AlertService.listByOwner
+    at line 84, DataEntityService.listAssociated, SearchServiceImpl.search with my_objects=true,
+    ActivityServiceImpl.listMyEvents) all degrade to empty results with HTTP 200 —
+    NOT 401/403/404. The new user sees `My Objects` empty, `My Alerts` empty, `MY_OBJECTS`
+    activity empty, and has NO on-screen signal directing them to the OwnerAssociationRequest
+    flow. User-onboarding UX failure + undocumented gap.
+  test_class: missing-edge-case
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-474.yaml
+- gap_id: TEST-GAP-475
+  behaviour: getCurrentUserProviderRole first-authority semantics. AuthIdentityProviderImpl.java:43-44
+    invokes `authorities.iterator().next().getAuthority()` after the `CollectionUtils.isNotEmpty(...)`
+    filter. If GrantedAuthorityExtractor ever emits more than one authority (a future
+    RBAC hierarchy refactor — e.g. (USER, READ_QUERY_EXAMPLE)), the second-and-beyond
+    are silently ignored. If the filter is removed in a regression, an empty authorities
+    collection at iterator().next() throws NoSuchElementException → HTTP 500. Today's
+    GrantedAuthorityExtractor emits exactly USER or ADMIN, so the contract holds —
+    but the assumption is implicit and untested.
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-475.yaml
+- gap_id: TEST-GAP-476
+  behaviour: 'Per-call DB round-trip on the principal-lookup query. Every fetchAssociatedOwner
+    invocation issues `SELECT owner.* FROM user_owner_mapping JOIN owner ... WHERE
+    oidc_username = ? AND deleted_at IS NULL AND (provider = ? OR provider IS NULL)`
+    (ReactiveUserOwnerMappingRepositoryImpl.java:77-85). For a UI rendering catalog
+    home (mounting Recommended → My Objects + My Alerts count + Activity feed simultaneously),
+    a single user page-load triggers 3-5 sequential identical queries to user_owner_mapping.
+    The query is indexed and small, but the absence of even a per-request memoization
+    (e.g. reactor Context attribute) or per-session in-memory cache is a measurable
+    per-page cost. The maintainer''s deliberate absence (implicit ADR) is the trade-off:
+    cache-invalidation surface vs. per-request DB round-trip.'
+  test_class: missing-performance
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-476.yaml
+- gap_id: TEST-GAP-477
+  behaviour: '`/api/alerts/{id}/status` PUT is gated by `DATASET_FIELD_ADD_TERM` —
+    wrong permission regression-pin. SecurityConstants.java:295-296 registers `new
+    SecurityRule(ALERT, new PathPatternParserServerWebExchangeMatcher("/api/alerts/{alert_id}/status",
+    PUT), DATASET_FIELD_ADD_TERM)` — a Term permission applied to an alert-status
+    path. Almost certainly a copy/paste error: the AlertController.changeAlertStatus
+    endpoint should gate on `DATA_ENTITY_ALERT_RESOLVE` (the named permission for
+    that operation). Effect: an operator with `DATASET_FIELD_ADD_TERM` can change
+    alert statuses on any data entity; an operator with `DATA_ENTITY_ALERT_RESOLVE`
+    (the named permission for that operation) cannot. Cross-pillar — P-06 (Term) permission
+    inadvertently grants P-07 (Alerts) capability. Cross-tier — the bug lives at the
+    SecurityConstants tier; AlertController + AlertServiceImpl execute the change
+    unimpeded. This is an INDEPENDENT auth bug discovered while enriching TermServiceImpl;
+    warrants its own regression test surface.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-477.yaml
+- gap_id: TEST-GAP-478
+  behaviour: Auto-link side-channel — description edit bypasses DATA_ENTITY_ADD_TERM
+    permission. A user holding `DATA_ENTITY_DESCRIPTION_UPDATE` (the gate on `PUT
+    /api/dataentities/{id}/description`) can paste `[[finance:Customer]]` into a description;
+    `handleDataEntityDescriptionTerms` (TermServiceImpl.java:201-207) parses the mention
+    and INSERTs into `data_entity_to_term` with `is_description_link=TRUE`. The `DATA_ENTITY_ADD_TERM`
+    permission that gates the direct-link endpoint is NEVER consulted on this path.
+    Even if REFACTOR-217 were fixed at the controller tier (TEST-GAP-017), this side-channel
+    would remain — the auto-link path is SERVICE-tier, not controller-tier, so a service-tier
+    permission check is needed (or a doc admission that description-mention is part
+    of the description-update permission's scope). Cross-pillar P-06+P-09 because
+    the bypass spans glossary semantics + permission model.
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-478.yaml
+- gap_id: TEST-GAP-479
+  behaviour: Description-mention guard on rename/delete — the load-bearing invariant.
+    A term cannot be renamed or deleted while any active (non-soft-deleted parent)
+    description mentions it via `[[ns:term]]`. The guard at TermServiceImpl.java:125-134
+    (update) and 156-160 (delete) raises `BadUserRequestException("Can't update/delete
+    term, which was mentioned in description")` — a 400 surface. The `nameOrNamespaceHasChanged`
+    helper (TermServiceImpl.java:331-335) returns TRUE when BOTH name AND namespace
+    are UNCHANGED — semantically inverted from its name; correctly used at line 125
+    (`if returnTrue → unchanged → skip the description-relation guard`). A future
+    refactor reading the call site by the method name and 'fixing' the if-branch direction
+    would invert the logic and silently allow rename-while-referenced — breaking `[[ns:term]]`
+    resolution across every description in the catalog. NO test pins the guard, NO
+    test pins the misnamed-helper semantics.
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-479.yaml
+- gap_id: TEST-GAP-480
+  behaviour: Unhandled-mention staging — undocumented forward-compatibility feature.
+    A `[[ns:NEW_TERM]]` mention for a non-existent term is NOT dropped; it is staged
+    in `*_unhandled_term` tables (`buildDataEntityUnknownTerms` / `buildDatasetFieldUnknownTerms`
+    / `buildTermUnknownTerms` at TermServiceImpl.java:501-544) and AUTOMATICALLY materialised
+    into a real link row when a matching term is later created (`resolveUnhandledDescriptionMentions`
+    at lines 421-442). Operators authoring descriptions can reference terms they plan
+    to create later, and the platform reconciles when the term arrives. NO test verifies
+    the unhandled→link migration. A regression that removed `resolveUnhandledDescriptionMentions`
+    (or its invocation from createTerm at line 116) would silently break backward-resolution,
+    with no test surface failing — operators would discover the regression only when
+    a description's mention failed to surface as a link after the term was created.
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-480.yaml
+- gap_id: TEST-GAP-481
+  behaviour: Cross-namespace term pollution / no per-tenant scoping. Neither TermServiceImpl
+    nor ReactiveTermRepositoryImpl references `odd.tenant-id` or any tenant scoping.
+    `getByNameAndNamespace(List<TermBaseInfoDto>)` (ReactiveTermRepositoryImpl.java:162-179)
+    joins `term` and `namespace` with NO tenant filter. In any deployment where multiple
+    teams share a single platform instance, a description in team-A's namespace that
+    references `[[team-B-ns:term]]` will silently auto-link to team-B's term. There
+    is no concept-level isolation between namespaces in this code path. The system-mission's
+    read-collaborative posture applies here at write-time too — descriptions can cross-link
+    terms regardless of namespace ownership.
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-481.yaml
+- gap_id: TEST-GAP-482
+  behaviour: 'Regex `\\[\\[([^:]*?):([^\\]]*?)\\]\\]` (TermServiceImpl.java:67) does
+    not handle nested or escaped brackets, has multiple unproven edge cases. A description
+    containing `[[foo[bar]:baz]]` will match `[foo[bar]:baz]` against the FIRST inner
+    `]]`-like pattern, producing an unexpected term lookup. There is no escaping mechanism
+    (`\\[\\[`). Operators writing prose with bracket-heavy content (e.g. array notation
+    in code blocks) may produce unintended term mentions. Other unproven edge cases:
+    empty groups (`[[:foo]]`, `[[foo:]]`), Unicode names, multi-line behaviour (regex
+    compiled with no MULTILINE or DOTALL flags). The case-folding consistency between
+    `buildXUnknownTerms` (lowercases namespace + name) and the later `equalsIgnoreCase`
+    comparison in `isTermUnknown` is also unproven.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-482.yaml
+- gap_id: TEST-GAP-483
+  behaviour: '`delete` is ENTIRELY uncovered. OwnershipServiceImplTest covers `testCreateOwnership`
+    and `testUpdateOwnership` (verified file:line — lines 74-117 and 119-162) but
+    NO `testDeleteOwnership`. The hard-delete behaviour (OwnershipServiceImpl.java:81),
+    the conditional DEG-propagation (lines 82-87), the conditional `markEntityUnfilled(OWNERS)`
+    (lines 88-95), and the activity-feed `OWNERSHIP_DELETED` emission are all uncovered
+    at the service layer. PLUS two specific defects: (a) `delete` does NOT refresh
+    `search_entrypoint` FTS vector (compare lines 69 + 116 for create/update; line
+    81-96 has NO `searchEntrypointRepository.updateChangedOwnershipVectors`), so the
+    FTS index may still surface the deleted owner-name in catalog search results —
+    latent search-index drift; (b) `delete` does NOT validate that the ownership existed
+    (line 81 calls `ownershipRepository.delete(ownershipId)` and short-circuits to
+    `Mono.empty()` if the id doesn''t exist — caller cannot distinguish ''I deleted
+    it'' from ''it wasn''t there''). Cross-pillar P-01 because FTS staleness leaks
+    into Discovery search.'
+  test_class: missing-edge-case
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-483.yaml
+- gap_id: TEST-GAP-484
+  behaviour: 'Duplicate-prevention surface error path — HTTP 400 USR003 contract test
+    (cross-batch correction primary-source pin). No test calls `create(...)` twice
+    with the same `(data_entity_id, owner_id)` and asserts that the second call emits
+    `UniqueConstraintException` (USR003) via the `JooqReactiveOperations.mono(...).onErrorMap(...)`
+    chain. STRENGTHENED — batch H found this; batch K PRIMARY-SOURCE confirms via
+    OwnershipServiceImpl sidecar''s `implicit_adrs.[3]` that the error chain is: jOOQ
+    DataAccessException → JooqReactiveOperations.mono.onErrorMap → ExceptionUtils.translateDatabaseException
+    at ExceptionUtils.java:30-36 → matches SQLStateClass.C23_INTEGRITY_CONSTRAINT_VIOLATION
+    → constructs `UniqueConstraintException("Ownership for this data entity and owner
+    already exists")` per ExceptionUtils.java:69-71 → ControllerAdvice.handleUniqueConstraint
+    maps to HttpStatus.BAD_REQUEST per ControllerAdvice.java:36-40 → response body
+    carries `code: "USR003", resolvable: true, retryable: false` per ErrorCode.java:11.
+    The batch-F sidecar''s `bugs_limitations_corner_cases[2]` and `known_security_gaps[3]`
+    claim of ''5xx surface'' is INCORRECT; the actual surface is 400 USR003 with a
+    friendly message. Test MUST pin 400 (not 500) AND the friendly message AND USR003
+    error code.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-484.yaml
+- gap_id: TEST-GAP-485
+  behaviour: DEG-propagation path is ENTIRELY uncovered. No test sets `formData.propagate
+    = true` and verifies (a) `dataEntityRepository.get(dataEntityId)` is invoked,
+    (b) the `DATA_ENTITY_GROUP` entity-class membership check (`ArrayUtils.contains(pojo.getEntityClassIds(),
+    DATA_ENTITY_GROUP.getId())` at line 127) is exercised, (c) the cascade reads `groupEntityRelationRepository.getDEGEntitiesOddrns(dataEntityId)`
+    and `dataEntityRepository.listByOddrns(...)`, (d) the per-child `OwnershipPojo`
+    construction with the parent's `(owner_id, title_id)` is correct, (e) `ownershipRepository.createOrUpdate(pojos)`
+    is invoked on CREATE-side propagation (with title-overwriting per batch-H), (f)
+    `ownershipRepository.deleteByDataEntityAndOwner(pojos)` is invoked on DELETE-side
+    propagation. NO test asserts the non-DEG short-circuit (silent no-op when entityClassIds
+    does NOT contain DATA_ENTITY_GROUP). NO test asserts the empty-children short-circuit.
+    The DEG-propagation cascade is the load-bearing P-01+P-08 cross-pillar feature
+    for managing ownership on a Data Entity Group. Cross-references batch-H repository
+    sidecar's title-overwriting `createOrUpdate` semantics.
+  test_class: missing-edge-case
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-485.yaml
+- gap_id: TEST-GAP-486
+  behaviour: 'REFACTOR-206 — no allowlist on `title_name` — the Title directory grows
+    with arbitrary caller-supplied strings. OwnershipServiceImpl.java:53 calls `titleService.getOrCreate(formData.getTitleName())`.
+    TitleServiceImpl.getOrCreate at lines 19-22 has NO allowlist, no enum, no `@Pattern`,
+    no `@Size`, no length cap. Any non-existing name becomes a new Title row. There
+    is NO `TITLE_CREATE` permission (verified: grep returns zero matches). Operators
+    expecting a fixed Title vocabulary (''Owner'', ''Steward'', ''Reviewer'') discover
+    the directory accumulates typos, language variants, and free-text strings across
+    the lifetime of the deployment. Sibling pattern to REFACTOR-199 (Owner auto-create)
+    — same `getOrCreate` upsert-by-name antipattern. Cross-pillar P-08+P-09 because
+    Title directory growth is uncontrolled by the auth model.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-486.yaml
+- gap_id: TEST-GAP-487
+  behaviour: Cross-tenant ownership leak — the service is principal-independent, owner_name
+    is taken VERBATIM from the form, never inferred from the authenticated principal.
+    OwnershipServiceImpl.java:52 reads `formData.getOwnerName()` and passes it directly
+    to `ownerService.getOrCreate(...)`. There is NO call to `ReactiveSecurityContextHolder.getContext()`,
+    NO call to `authIdentityProvider.fetchAssociatedOwner()`, NO `Authentication`
+    parameter on any public method. A Policy granting `DATA_ENTITY_OWNERSHIP_CREATE`
+    unconditionally lets the holder grant ANY owner (including a newly-minted one)
+    to ANY data entity. The 'who can grant' is an UPSTREAM Policy decision; 'to whom
+    is granted' is a CALLER decision — deliberately decoupled. The DataEntityPermissionExtractor
+    resolver context contains the data-entity, its tags, and the caller's associated
+    Owner — it does NOT contain the target Owner row from the form. NO test asserts
+    that the service does NOT call `authIdentityProvider.fetchAssociatedOwner()` (a
+    regression that added principal-based owner inference would silently change the
+    contract). Cross-pillar P-08+P-09 — the self-grant surface spans Authorization
+    model + Management.
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-487.yaml

@@ -1,0 +1,148 @@
+name: TermServiceImpl service-tier zero permission checks
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-06
+- P-09
+description: |-
+  **NEW INVARIANT, batch 2026-05-19K** — the entire 552-line `TermServiceImpl`
+  (the service-tier orchestrator for the Business Glossary across 17 methods
+  spanning Term CRUD, Term-to-DataEntity / DatasetField / Term linkage,
+  description-mention auto-link reconciliation, and tag-relation upserts)
+  carries ZERO service-tier permission checks. Verified by Grep:
+  `grep -n '@PreAuthorize\|hasPermission\|hasRole\|permissionService'
+  TermServiceImpl.java` returns ZERO matches. All authorization is
+  controller-tier via `SecurityConstants.SECURITY_RULES` matchers in
+  `AuthorizationCustomizer`. The service blindly trusts the call.
+  **Combined with REFACTOR-217** (the SecurityRule path-mismatch `/term`
+  singular vs OpenAPI `/terms` plural at SecurityConstants.java:237-242),
+  the entire term-linkage surface — `linkTermWithDataEntity`,
+  `removeTermFromDataEntity`, `linkTermWithDatasetField`,
+  `removeTermFromDatasetField`, `linkTermWithTerm`,
+  `removeTermToLinkedTermRelation` — is effectively
+  unauthenticated-mutation-allowed for any authenticated user. **The
+  service-tier absence is the structural enabler**: even if REFACTOR-217
+  were fixed at the controller-tier, the auto-link side-channel via
+  `handleDataEntityDescriptionTerms` (TermServiceImpl.java:201-207) would
+  STILL bypass DATA_ENTITY_ADD_TERM (because it's invoked from
+  DataEntityServiceImpl.upsertDescription which is gated by
+  DATA_ENTITY_DESCRIPTION_UPDATE). The service-tier-zero-checks architecture
+  forces ALL authorization decisions onto the controller-perimeter — a
+  failure mode for any future service-to-service invocation pattern (e.g.,
+  if an internal job or admin tool invokes TermService methods directly,
+  there is NO defence-in-depth). Additionally: cross-namespace pollution is
+  unconstrained (neither TermServiceImpl nor ReactiveTermRepositoryImpl
+  references odd.tenant-id or any tenant scoping); read endpoints
+  (getTerms, getTermByNamespaceAndName, getTermDetails, listByTerm,
+  getDataEntityTerms, getDatasetFieldTerms) return every Term across every
+  namespace to every authenticated user (consistent with the platform's
+  read-collaborative posture per system-mission.md:267, but
+  worth-recording given the namespace concept implies team isolation).
+nodes:
+- odd-platform java service service:TermServiceImpl
+contributors:
+- |-
+  TermServiceImpl batch K: security.authorization_assertions[] (verified
+  empty via grep — PRIMARY SOURCE) + security.known_security_gaps.[0,1,2]
+  (REFACTOR-217 path mismatch + second SecurityConstants bug + description-edit
+  auto-link side-channel) + bugs_limitations_corner_cases.[0,1,2,3] (HIGH
+  severity surface-level finding cluster)
+evidence:
+- |-
+  TermServiceImpl.md:security.authorization_assertions[] (PRIMARY SOURCE —
+  empty after grep verification at `<odd-platform-repo>/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/term/TermServiceImpl.java`)
+- |-
+  TermServiceImpl.md:security.known_security_gaps.[0] REFACTOR-217 path
+  mismatch — evidence: SecurityConstants.java:237-242 + openapi.yaml:973, 1042
+- |-
+  TermServiceImpl.md:security.known_security_gaps.[1] second SecurityConstants
+  bug — evidence: SecurityConstants.java:295-296 (alerts-status PUT gated by
+  DATASET_FIELD_ADD_TERM)
+- |-
+  TermServiceImpl.md:security.known_security_gaps.[2] description-edit
+  auto-link side-channel — evidence: TermServiceImpl.java:201-207 +
+  DataEntityServiceImpl.java:328
+- |-
+  TermServiceImpl.md:bugs_limitations_corner_cases.[3] cross-namespace
+  pollution — evidence: ReactiveTermRepositoryImpl.java:162-179 +
+  TermServiceImpl.java:350-359
+axes_present:
+- services
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+- |-
+  Add service-tier `@PreAuthorize(...)` annotations on each public mutating
+  method that maps to a controller-tier permission — defence-in-depth that
+  closes the gap regardless of whether the controller-tier SecurityRule
+  matchers correctly fire.
+- |-
+  Introduce a service-tier `permissionService.hasPermission(...)` call at
+  the start of each link/unlink method — the same pattern already used by
+  `DataEntityPermissionExtractor` etc. would close the gap.
+- |-
+  Fix REFACTOR-217 at the controller-tier (singular `/term` → plural
+  `/terms` in SecurityConstants.java:237-242) AND fix the second
+  SecurityConstants bug (alerts-status PUT should NOT be gated by
+  DATASET_FIELD_ADD_TERM) — controller-tier mitigations that close the
+  surface-level gates.
+- |-
+  Surface the auto-link side-channel in the docs (add a section to
+  `/features/data-glossary/business-glossary` describing the [[ns:term]]
+  mention behaviour) AND either (a) accept it as the design intent
+  (description-update implies term-link-creation) or (b) require
+  DATA_ENTITY_ADD_TERM at the service-tier when the description-edit creates
+  a term link.
+- |-
+  Add a build-time scanner that asserts every public method on every
+  Reactive*Service that mutates persistence is either annotated with
+  `@PreAuthorize` OR explicitly tagged with a `@NoAuthCheck` annotation
+  with an explanation comment — make the absence of an auth check a
+  loud architectural decision rather than a silent default.
+notes: |-
+  NEW invariant captured in batch 2026-05-19K. The service-tier-zero-checks
+  posture is consistent across the platform — DataEntityServiceImpl,
+  AlertServiceImpl, OwnershipServiceImpl all share the same architecture
+  (authorization is controller-tier, repositories trust upstream, services
+  trust upstream). But TermServiceImpl is the most consequential instance
+  because of the COMBINATION of:
+    (a) service-tier-zero-checks (this invariant);
+    (b) REFACTOR-217 (the controller-tier path-mismatch silently disabling
+        the gates that WERE supposed to fire);
+    (c) the description-edit auto-link side-channel (the architectural
+        path that would BYPASS DATA_ENTITY_ADD_TERM even if (b) were fixed).
+  The three together leave the entire term-linkage surface effectively
+  open to any authenticated user. The platform's read-collaborative
+  posture is intentional (per system-mission.md:267) but the
+  write-collaborative posture on the term-linkage surface is NOT
+  intentional — it's a confluence of three independent failures.
+
+  Cross-cutting connections:
+    - Pairs with the "Authorization path-mismatch — SECURITY_RULES /term
+      vs OpenAPI /terms" invariant — that's the controller-tier
+      manifestation; this is the service-tier enabler
+    - Pairs with the "Spec-documented auto-create with scope-asymmetry —
+      Tag side-door past TAG_CREATE" invariant — same architectural
+      class (service-tier auto-create bypasses controller-tier gates);
+      different surface (term-linkage via [[ns:term]] vs tag-creation
+      via upsertTags)
+    - Companion of the "Permission-bypass via Owner auto-create (side-door
+      write path)" invariant — same architectural class
+    - Cross-cutting case-law for "service-tier defence-in-depth absence" —
+      a structural failure mode of any architecture that places ALL
+      authorization at the perimeter
+
+  Four DOC-NNN candidates flow from this invariant:
+    (a) Code fix — REFACTOR-217 controller-tier + the second
+        SecurityConstants bug (DATASET_FIELD_ADD_TERM on alert-status)
+    (b) Code fix — add @PreAuthorize at TermServiceImpl mutating methods
+        (defence-in-depth)
+    (c) Docs admission — describe the auto-link side-channel on the
+        business-glossary doc page; ADRs the description-edit /
+        term-link contract
+    (d) Architectural ADR — describe the platform's
+        controller-only-authorization posture explicitly (currently
+        implicit); name the trade-off (single chokepoint vs.
+        defence-in-depth)

@@ -6,6 +6,22 @@ primary_drift_class: auth_layer_hides_endpoint
 drift_class_summary:
 - auth_layer_hides_endpoint
 - disabled_mode_bypass
+- description_edit_auto_link_side_channel
+- second_security_constants_misrouted_path
+- no_service_tier_permission_checks
+- term_assignment_handler_triple_re_query
+- tag_create_bypass_via_upsert_tags
+- namespace_create_bypass_via_get_or_create
+- cross_namespace_term_pollution
+- asymmetric_duplicate_insert_handling
+batch_extensions:
+- batch: K
+  entry_point_added: 'service:TermServiceImpl (all 17 methods including the auto-link side-channel)'
+  contributing_nodes_added:
+  - odd-platform java service service:TermServiceImpl
+  - odd-platform java ReactiveTermRepositoryImpl
+  - odd-platform java DataEntityDescriptionUnhandledTermRepository
+  - odd-platform java TermAssignmentActivityHandler
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Term linking with permission gate
@@ -32,6 +48,64 @@ contributing_nodes:
 - odd-platform java DataEntityController controller-method:addDataEntityTerm
 - odd-platform java SecurityConstants (the SECURITY_RULES singular path declaration — line 237-242)
 - odd-platform java AuthorizationCustomizer (the dispatch chain with .authenticated() fall-through)
+- odd-platform java service service:TermServiceImpl
+- odd-platform java ReactiveTermRepositoryImpl
+- odd-platform java DataEntityDescriptionUnhandledTermRepository
+- odd-platform java TermAssignmentActivityHandler
+chain:
+- hop: 1
+  node: odd-platform java DataEntityController controller-method:addDataEntityTerm
+  sidecar: '(batch-G enrichment; not re-read this batch)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    POST /api/dataentities/{id}/terms (PLURAL — openapi.yaml:973). The
+    SecurityRule registered at SecurityConstants.java:237-239 binds to /term
+    (SINGULAR) — the matcher never fires; the gate never sees the request.
+  unresolved: false
+- hop: 2
+  node: odd-platform java service service:TermServiceImpl
+  sidecar: odd-platform__java__service__service__TermServiceImpl.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    TermServiceImpl.linkTermWithDataEntity (lines 170-179) — `@ReactiveTransactional`
+    + `@ActivityLog(TERM_ASSIGNMENT_UPDATED)`. INSERTs `data_entity_to_term` with
+    `is_description_link=FALSE`. On PK collision the repo emits empty; the
+    service translates via `.switchIfEmpty(BadUserRequestException 'Term already
+    assigned to data entity')`. Marks `data_entity_filled.TERMS`. The service
+    performs NO permission check; the controller-tier gate is the SOLE
+    authorization point and it does not fire (REFACTOR-217). The auto-link
+    side-channel `handleDataEntityDescriptionTerms` (lines 201-207) is the
+    OTHER entry into `data_entity_to_term`, invoked from
+    DataEntityServiceImpl.upsertDescription (line 328) when the description
+    body contains `[[ns:term]]` mentions — it bypasses
+    `DATA_ENTITY_ADD_TERM` entirely (only `DATA_ENTITY_DESCRIPTION_UPDATE` is
+    consulted upstream).
+  unresolved: false
+  resolved_in_batch: K
+- hop: 3
+  node: odd-platform java ReactiveTermRepositoryImpl
+  sidecar: '(referenced from TermServiceImpl sidecar coupling)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveTermRepositoryImpl.java:162-179 — the cross-namespace lookup
+    `getByNameAndNamespace(List)` (no tenant filter). Lines 408-433 —
+    `hasDescriptionRelations` (the description-mention guard query). Line 143
+    — `.where(TERM.DELETED_AT.isNull())` on every fetch (soft-delete-aware).
+  unresolved: false
+- hop: 4
+  node: odd-platform java TermAssignmentActivityHandler
+  sidecar: '(referenced from TermServiceImpl sidecar bugs_limitations_corner_cases[4])'
+  multiplicity_per_trigger: 3 (per-link or per-de-link)
+  evidence: |-
+    TermAssignmentActivityHandler.java:30-43 — the triple-re-query pattern.
+    `getContextInfo` calls `getDataEntityTerms` (1st full-list) BEFORE the
+    annotated method; the method itself calls `getDataEntityTerms` at line 188
+    (2nd full-list — drives `markEntityUnfilled` decision for de-link path);
+    the handler's `getUpdatedState` re-queries again (3rd full-list) AFTER.
+    For an entity with 100 terms, a single de-link = 3 full-list re-queries +
+    1 DELETE. REFACTOR-228 primary-source.
+  unresolved: false
+  resolved_in_batch: K
 terminal_side_effect:
   side_effect_class: db-write
   description: INSERT row into data_entity_to_term with is_description_link=false
@@ -46,6 +120,144 @@ observed_vs_expected:
     drift_class: auth_layer_hides_endpoint
     provenance: MEASURED — P-005 (run R-20260519T011344Z-P-005) created a term + POSTed the link as anonymous; observed final_term_count
       - initial_term_count == 1
+  - facet: description-edit auto-link side-channel bypasses DATA_ENTITY_ADD_TERM (batch K — PRIMARY-SOURCE)
+    observed: |-
+      TermServiceImpl.handleDataEntityDescriptionTerms (lines 201-207) is
+      invoked from DataEntityServiceImpl.upsertDescription (line 328) whenever
+      a description body contains `[[ns:term]]` mentions. The regex
+      `\[\[([^:]*?):([^\]]*?)\]\]` at TermServiceImpl.java:67 parses mentions
+      and synthesises `DataEntityToTermPojo` rows with
+      `is_description_link=TRUE` via the `*_unhandled_term` staging tables.
+      A user holding ONLY `DATA_ENTITY_DESCRIPTION_UPDATE` (the gate on PUT
+      /api/dataentities/{id}/description) can paste `[[finance:Customer]]`
+      into a description and create term-link rows — `DATA_ENTITY_ADD_TERM` is
+      NEVER consulted on this path. Even if REFACTOR-217 (the /term vs /terms
+      path mismatch on the direct endpoint) were fixed, this side-channel
+      would remain — the auto-link path is service-tier, not controller-tier.
+    expected: |-
+      Either a service-tier permission check inside handleDataEntityDescriptionTerms
+      (consult `DATA_ENTITY_ADD_TERM` before INSERTing the link rows) OR a
+      documented "description-mention is part of DATA_ENTITY_DESCRIPTION_UPDATE's
+      scope" framing in the Business Glossary doc.
+    drift_class: description_edit_auto_link_side_channel
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      bugs_limitations_corner_cases[2] + security.known_security_gaps[2] +
+      TermServiceImpl.java:201-207, 67 + DataEntityServiceImpl.java:323-333 +
+      SecurityConstants.java:194-197 (the description-update gate) +
+      SecurityConstants.java:237-239 (the link-term gate the side-channel bypasses)
+  - facet: second independent SecurityConstants bug — /api/alerts/{id}/status PUT gated by DATASET_FIELD_ADD_TERM
+    observed: |-
+      SecurityConstants.java:295-296 registers
+      `new SecurityRule(ALERT, new PathPatternParserServerWebExchangeMatcher(
+      "/api/alerts/{alert_id}/status", PUT), DATASET_FIELD_ADD_TERM)` — a Term
+      permission applied to an alert-status path. Almost certainly a
+      copy/paste error: the AlertController.changeAlertStatus endpoint should
+      gate on `DATA_ENTITY_ALERT_RESOLVE`. Effect: an operator with
+      `DATASET_FIELD_ADD_TERM` can change alert statuses on any data entity;
+      an operator with `DATA_ENTITY_ALERT_RESOLVE` (the named permission for
+      that operation) cannot.
+    expected: |-
+      `SecurityRule(... , DATA_ENTITY_ALERT_RESOLVE)` at SecurityConstants.java:295-296
+      replacing the misrouted permission.
+    drift_class: second_security_constants_misrouted_path
+    provenance: |-
+      STATIC — primary-source in batch K TermServiceImpl sidecar
+      understanding (the headline finding) + bugs_limitations_corner_cases[1] +
+      security.known_security_gaps[1] + SecurityConstants.java:295-296.
+      Cross-reference: AlertController sidecar should be augmented with this finding.
+  - facet: zero service-tier permission checks (architectural)
+    observed: |-
+      TermServiceImpl performs NO `@PreAuthorize`, no programmatic
+      `permissionService.hasPermission(...)`, no role gate, no policy lookup
+      at the service layer. All authorization is supposed to happen at the
+      controller perimeter via SecurityConstants.SECURITY_RULES matchers in
+      AuthorizationCustomizer. Per REFACTOR-217 the controller-tier gate does
+      NOT fire for POST/DELETE /api/dataentities/{id}/terms — making the
+      entire term-linkage surface effectively unauthenticated-mutation-allowed
+      under DISABLED + read-collaborative-with-no-gate under LOGIN_FORM/OAUTH2/LDAP.
+    expected: |-
+      Defence-in-depth: service-tier permission checks as a backstop against
+      controller-tier path-mismatch bugs. Or alternatively, an integration test
+      that asserts SecurityConstants paths match every OpenAPI path (preventing
+      the singular/plural divergence class entirely).
+    drift_class: no_service_tier_permission_checks
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      security.authorization_assertions + the absence of any `@PreAuthorize` in TermServiceImpl
+  - facet: TermAssignmentActivityHandler triple-re-query (REFACTOR-228 PRIMARY-SOURCE)
+    observed: |-
+      `removeTermFromDataEntity` (TermServiceImpl.java:184-196) emits
+      `TERM_ASSIGNMENT_UPDATED`; `TermAssignmentActivityHandler.getContextInfo`
+      re-queries `getDataEntityTerms` (1st full-list) BEFORE method execution;
+      the method itself calls `getDataEntityTerms` at line 188 (2nd full-list,
+      drives the markEntityUnfilled decision); the handler's `getUpdatedState`
+      re-queries AGAIN (3rd full-list) AFTER. For a data entity with 100
+      linked terms, a single de-link produces 3 full-list re-queries plus 1
+      DELETE. Same pattern applies to `removeTermFromDatasetField` (lines 226-239).
+    expected: |-
+      Cache the BEFORE state in the activity-feed AOP context so getUpdatedState
+      can compute the diff without a re-query, OR fold the markEntityUnfilled
+      decision into the BEFORE-state query (already fetching the full list).
+    drift_class: term_assignment_handler_triple_re_query
+    provenance: STATIC — REFACTOR-228 PRIMARY-SOURCE in batch K TermServiceImpl
+      sidecar bugs_limitations_corner_cases[4] + TermServiceImpl.java:184-196 +
+      TermAssignmentActivityHandler.java:30-43
+  - facet: TAG_CREATE bypass via upsertTags
+    observed: |-
+      TermServiceImpl.upsertTags (line 257) calls `tagService.getOrCreateTagsByName(names)`
+      which creates new tags as needed — bypassing the `TAG_CREATE` permission
+      that gates `POST /api/tags`. Cross-ref: same pattern in OwnerController#createOwner
+      and the broader `getOrCreate*` family across the platform.
+    expected: |-
+      Either consult `TAG_CREATE` inside `tagService.getOrCreateTagsByName` (move
+      the gate from the controller perimeter to the upsert primitive) OR document
+      "TERM_TAGS_UPDATE includes tag-create scope" explicitly.
+    drift_class: tag_create_bypass_via_upsert_tags
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      bugs_limitations_corner_cases[10] + TermServiceImpl.java:257
+  - facet: NAMESPACE_CREATE bypass via createTerm / updateTerm
+    observed: |-
+      TermServiceImpl.createTerm (line 103) and .updateTerm (line 138) call
+      `namespaceService.getOrCreate(name)` — silently creating namespaces when
+      the caller-supplied name is novel. Bypasses the `NAMESPACE_CREATE`
+      permission that protects POST /api/namespaces.
+    expected: |-
+      Either consult `NAMESPACE_CREATE` inside `namespaceService.getOrCreate`
+      OR document the `TERM_CREATE / TERM_UPDATE` permissions as inclusive of
+      namespace-create scope.
+    drift_class: namespace_create_bypass_via_get_or_create
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      bugs_limitations_corner_cases[10] + TermServiceImpl.java:103, 138
+  - facet: cross-namespace term pollution / no per-tenant scoping
+    observed: |-
+      Neither TermServiceImpl nor ReactiveTermRepositoryImpl references
+      `odd.tenant-id` or any tenant scoping. `getByNameAndNamespace(List)`
+      (ReactiveTermRepositoryImpl.java:162-179) joins `term` and `namespace`
+      with NO tenant filter. A description in team-A's namespace that
+      references `[[team-B-ns:term]]` silently auto-links to team-B's term.
+    expected: |-
+      Per-tenant or per-namespace scoping at the service or repository layer
+      OR documented "the namespace concept is informational, not isolating"
+      framing.
+    drift_class: cross_namespace_term_pollution
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      bugs_limitations_corner_cases[3] + ReactiveTermRepositoryImpl.java:162-179 +
+      TermServiceImpl.java:350-359
+  - facet: linkTermWithDataEntity vs linkTermWithDatasetField asymmetric on duplicate-INSERT
+    observed: |-
+      `linkTermWithDataEntity` (TermServiceImpl.java:173-174) translates the
+      empty INSERT result to `BadUserRequestException 'Term already assigned
+      to data entity'`. `linkTermWithDatasetField` (line 215) has NO
+      `.switchIfEmpty` — a duplicate INSERT silently succeeds, returning an
+      empty Mono that flatMaps onwards into
+      `termRepository.getTermRefDto(relation.getTermId())` with `relation==null`
+      (NullPointerException risk).
+    expected: |-
+      Symmetric `.switchIfEmpty` on both link methods — either both emit 400
+      on duplicate OR both silently succeed (idempotent semantics) with a
+      documented contract.
+    drift_class: asymmetric_duplicate_insert_handling
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      bugs_limitations_corner_cases[5] + TermServiceImpl.java:173-174 vs 215
 test_matrix:
   unit:
     state: GAP
@@ -78,7 +290,24 @@ test_matrix:
       pinned_by_probe_run: R-20260519T011344Z-P-005
     uncovered:
     - Cross-namespace term assignment unconstrained even with path fix (TEST-GAP-289)
-control_summary: 2 of 4 cells PROBED — integration (PROBED-PINNING-BUG) + security (PROBED-PINNING-BUG).
+control_summary: |-
+  2 of 4 cells PROBED — integration (PROBED-PINNING-BUG) + security
+  (PROBED-PINNING-BUG). Batch K extends the chain with full TermServiceImpl
+  service-tier hop primary-source confirmation — the auto-link side-channel
+  (description-mention `[[ns:term]]` → INSERT `data_entity_to_term` with
+  `is_description_link=TRUE`) is the SECOND endpoint bypassing
+  `DATA_ENTITY_ADD_TERM`, and a SECOND independent SecurityConstants bug
+  surfaces (`/api/alerts/{id}/status` PUT gated by `DATASET_FIELD_ADD_TERM` —
+  copy/paste error, alert-status authorization is effectively misrouted).
+  Seven new drift facets surface: description-edit auto-link bypass +
+  misrouted alert-status permission + zero service-tier permission checks +
+  TermAssignmentActivityHandler triple-re-query (REFACTOR-228 primary-source) +
+  TAG_CREATE bypass via upsertTags + NAMESPACE_CREATE bypass via getOrCreate +
+  cross-namespace term pollution + asymmetric duplicate-INSERT handling
+  between data-entity and dataset-field link methods. The unit/performance
+  cells remain GAP — `TermServiceImpl` has ZERO direct test coverage
+  (TermServiceImplTest does not exist; `DataEntityServiceTest.java:80` mocks
+  TermService but never exercises it).
 related_refactoring_scopes:
 - REFACTOR-217
 - REFACTOR-073

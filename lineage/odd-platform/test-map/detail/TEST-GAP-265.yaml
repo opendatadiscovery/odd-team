@@ -2,30 +2,33 @@ gap_id: TEST-GAP-265
 category: missing-security
 criticality: CRITICAL
 node_ids:
-- odd-platform java DataEntityController controller-method:createOwnership
+  - "odd-platform java DataEntityController controller-method:createOwnership"
+  - "odd-platform java service service:OwnershipServiceImpl"
+pillars_affected: [P-08, P-09]
 surfaced_by:
-- createOwnership.md:tests_coverage_semantic.uncovered_behaviours.[5], createOwnership.md:security.known_security_gaps.[0]
-behaviour: Owner-name auto-create permission-bypass — a caller with `DATA_ENTITY_OWNERSHIP_CREATE`
-  for any single data-entity can mint new Owner directory rows WITHOUT holding `OWNER_CREATE`
-  by submitting an owner_name not yet in the directory. The `OwnerService.getOrCreate(name)`
-  invocation at `OwnershipServiceImpl.java:52` is a second write path into the Owner
-  directory parallel to `POST /api/owners`.
+  - "createOwnership.md:tests_coverage_semantic.uncovered_behaviours.[5], createOwnership.md:security.known_security_gaps.[0]"
+  - "OwnershipServiceImpl.md:bugs_limitations_corner_cases.[0] (REFACTOR-199 primary anchor)"
+  - "OwnershipServiceImpl.md:security.known_security_gaps.[0] (Owner directory growth bypasses OWNER_CREATE)"
+  - "OwnershipServiceImpl.md:implicit_adrs.[0] (Owner + Title directory auto-creation is a deliberate side effect)"
+behaviour: |-
+  Owner-name auto-create permission-bypass (REFACTOR-199) — a caller with `DATA_ENTITY_OWNERSHIP_CREATE` for any single data-entity can mint new Owner directory rows WITHOUT holding `OWNER_CREATE` by submitting an owner_name not yet in the directory. The `OwnerService.getOrCreate(name)` invocation at `OwnershipServiceImpl.java:52` is a second write path into the Owner directory parallel to `POST /api/owners`. STRENGTHENED batch K — the OwnershipServiceImpl sidecar PRIMARY-SOURCE confirms this is a DELIBERATE implicit ADR (Owner + Title directory auto-creation is intentional UX, not an oversight): `ownerService.getOrCreate(formData.getOwnerName())` and `titleService.getOrCreate(formData.getTitleName())` are explicit choices over `ownerService.create(...)` / `titleService.create(...)`. The OwnerServiceImpl.getOrCreate at lines 39-42 uses `.switchIfEmpty(ownerRepository.create(...))` — the upsert pattern is consistent across both directories. SecurityConstants.java:143 (`OWNER_CREATE` gate scope — `/api/owners POST` only) does NOT cover this side-channel. Cross-tier — the bypass spans Controller perimeter (DATA_ENTITY_OWNERSHIP_CREATE gate) and Service tier (getOrCreate-on-miss) with NO defence-in-depth. Cross-pillar P-08+P-09 — Management surface bypasses Authorization model gate.
 test_files_existing: []
 test_files_proposed:
-  path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/OwnerAutoCreateBypassTest.java
-  name: createOwnership_withNovelOwnerName_mintsOwnerWithoutOwnerCreatePermission
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/OwnerAutoCreateBypassTest.java"
+  name: "createOwnership_withNovelOwnerName_mintsOwnerWithoutOwnerCreatePermission"
 evidence:
-- 'createOwnership.md says: ''A caller with `DATA_ENTITY_OWNERSHIP_CREATE` for any
-  data-entity can therefore mint new Owner directory entries without holding `OWNER_CREATE`,
-  by side-effecting through this endpoint.'''
-- OwnershipServiceImpl.java:52 (`ownerService.getOrCreate(formData.getOwnerName())`)
-- OwnerServiceImpl.java:39-42 (getOrCreate calls create on miss)
-- SecurityConstants.java:215-217 (this endpoint's gate uses `DATA_ENTITY_OWNERSHIP_CREATE`,
-  not `OWNER_CREATE`)
+  - |-
+    createOwnership.md says: 'A caller with `DATA_ENTITY_OWNERSHIP_CREATE` for any data-entity can therefore mint new Owner directory entries without holding `OWNER_CREATE`, by side-effecting through this endpoint.'
+  - |-
+    OwnershipServiceImpl.md:implicit_adrs.[0] (PRIMARY-SOURCE): 'OwnershipServiceImpl.create (line 52-53) unconditionally invokes ownerService.getOrCreate(formData.getOwnerName()) and titleService.getOrCreate(formData.getTitleName()). The downstream getOrCreate implementations are both getByName(name).switchIfEmpty(create(new XPojo().setName(name))) — a side-effecting upsert by name.'
+  - "OwnershipServiceImpl.java:52 (`ownerService.getOrCreate(formData.getOwnerName())`)"
+  - "OwnerServiceImpl.java:39-42 (getOrCreate calls create on miss)"
+  - "SecurityConstants.java:215-217 (this endpoint's gate uses `DATA_ENTITY_OWNERSHIP_CREATE`, not `OWNER_CREATE`)"
+  - "SecurityConstants.java:143 (`OWNER_CREATE` gates `/api/owners` POST only — NOT this side-channel)"
 cross_references:
-- concepts.yaml:entities[Owner (Authorization directory entry)].security_aggregate.weaknesses
-- 'concepts.yaml NEW INVARIANT: Permission-bypass via Owner auto-create (batch F)'
-proposed_action: 'Test grants caller `DATA_ENTITY_OWNERSHIP_CREATE` only (NO `OWNER_CREATE`),
-  POSTs createOwnership with `owner_name: ''NovelName''`, asserts the `owner` table
-  now contains ''NovelName''. Pins the bypass; promotes to a fix-required regression
-  when REFACTOR for permission-bypass triages.'
+  - "concepts.yaml:entities[Owner (Authorization directory entry)].security_aggregate.weaknesses"
+  - "concepts.yaml NEW INVARIANT: Permission-bypass via Owner auto-create (batch F)"
+  - "REFACTOR-199"
+proposed_action: |-
+  Test grants caller `DATA_ENTITY_OWNERSHIP_CREATE` only (NO `OWNER_CREATE`), POSTs createOwnership with `owner_name: 'NovelName'`, asserts the `owner` table now contains 'NovelName'. Pins the bypass; promotes to a fix-required regression when REFACTOR for permission-bypass triages. Add paired service-tier test (mocking ownerService.getOrCreate to verify it IS called with a novel name, regardless of permission context — locks the service-tier ADR pin).
+batch: 2026-05-19-K-STRENGTHENED

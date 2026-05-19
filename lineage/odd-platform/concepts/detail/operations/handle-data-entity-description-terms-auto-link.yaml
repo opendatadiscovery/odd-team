@@ -1,0 +1,175 @@
+name: Handle Data Entity Description Terms (auto-link reconciliation)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-06
+- P-01
+description: |-
+  **NEW OPERATION, batch 2026-05-19K** — the description-mention auto-link
+  reconciliation operation. Invoked from
+  `DataEntityServiceImpl.upsertDescription` (line 328 of
+  DataEntityServiceImpl) after every description-update on a data-entity.
+  Implementation at `TermServiceImpl.handleDataEntityDescriptionTerms`
+  (lines 201-207) + `findTermsInDescription` (lines 337-360) +
+  `updateDataEntityDescriptionTermsState` (lines 362-389) +
+  `buildDataEntityUnknownTerms` (lines 501-512). The operation flow:
+    1. **Parse** — Static-final `Pattern TERM_PATTERN = compile("\[\[([^:]*?):([^\]]*?)\]\]")`
+       at line 67 is matched against the description text. Each match
+       yields `TermBaseInfoDto(namespaceName, name)`. Matches with empty
+       namespace OR empty name short-circuit (the regex permits empty
+       groups but downstream comparison drops them).
+    2. **Batch-lookup** — `getByNameAndNamespace(List<TermBaseInfoDto>)`
+       at ReactiveTermRepositoryImpl.java:162-179 builds a single
+       OR-chained WHERE clause and runs one DB round-trip; partitions
+       the result into foundTerms (existing terms) + unknownTerms
+       (mentions whose (ns, name) pair has no matching term).
+    3. **Reconcile** — `updateDataEntityDescriptionTermsState` issues
+       4-5 DB statements:
+         (a) Re-query existing data_entity_to_term rows with
+             is_description_link=TRUE for this data-entity;
+         (b) Compute delete-set (existing-rows minus new-foundTerms);
+         (c) Compute create-set (new-foundTerms minus existing-rows);
+         (d) DELETE old rows;
+         (e) INSERT new rows with is_description_link=TRUE;
+         (f) Symmetrically reconcile data_entity_description_unhandled_term
+             for unknownTerms (DELETE stale + INSERT new staging rows).
+    4. **Activity emission** — The operation is annotated with
+       `@ActivityLog(event = TERM_ASSIGNMENT_UPDATED)` at line 200; the
+       activity handler `TermAssignmentActivityHandler` re-queries
+       getDataEntityTerms BEFORE + AFTER the method invocation for
+       BEFORE/AFTER state capture.
+  **Security implication**: this operation creates term-link rows with
+  `is_description_link=TRUE` regardless of whether the caller holds
+  `DATA_ENTITY_ADD_TERM` — only `DATA_ENTITY_DESCRIPTION_UPDATE` is gated
+  at the controller (the `[[ns:term]]` auto-link side-channel — see
+  companion invariant). **Forward-compat side-effect**: a mention for a
+  non-existent term is staged in `data_entity_description_unhandled_term`;
+  when the matching term is later created via `createTerm`,
+  `resolveUnhandledDescriptionMentions` (lines 421-442) drains the
+  staging and materialises real link rows AUTOMATICALLY.
+nodes:
+- odd-platform java service service:TermServiceImpl
+- odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
+contributors:
+- |-
+  TermServiceImpl batch K: concepts.operations[handleDataEntityDescriptionTerms;
+  findTermsInDescription; handleDatasetFieldDescriptionTerms] +
+  concepts.entities[DescriptionParsedTerms; TermBaseInfoDto;
+  DataEntityToTermPojo; DataEntityDescriptionUnhandledTermPojo;
+  ActivityEventTypeDto.TERM_ASSIGNMENT_UPDATED] +
+  concepts.invariants[Description-mention rows stored as is_description_link=TRUE;
+  Description-mention guard blocks rename/delete; Unhandled-mention
+  staging is unidirectional; removeDuplicateNonDescriptionTerms collapses
+  both rows on read] + implicit_adrs.[1,2,3,5] (description-link-flag
+  separation; rename-delete guard; unhandled staging auto-resolution;
+  activity-event asymmetry — emitted on data-entity/dataset-field link
+  changes but NOT on Term-itself CRUD)
+- |-
+  upsertDataEntityInternalDescription batch G existing reference: the
+  invoking controller-method
+evidence:
+- |-
+  TermServiceImpl.md:concepts.operations.handleDataEntityDescriptionTerms
+  (PRIMARY SOURCE) — evidence: TermServiceImpl.java:201-207 +
+  DataEntityServiceImpl.java:328
+- |-
+  TermServiceImpl.md:concepts.operations.findTermsInDescription —
+  evidence: TermServiceImpl.java:337-360 + Pattern at line 67
+- |-
+  TermServiceImpl.md:implicit_adrs.[3] (unhandled-mention staging with
+  auto-resolution)
+- |-
+  TermServiceImpl.md:bugs_limitations_corner_cases.[2] (auto-link
+  side-channel — HIGH severity bypass of DATA_ENTITY_ADD_TERM)
+- |-
+  upsertDataEntityInternalDescription.md (batch G — the
+  controller-method-level reference)
+axes_present:
+- services
+- controllers
+- ui_components
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      The operation creates term-link rows without consulting
+      DATA_ENTITY_ADD_TERM. Only DATA_ENTITY_DESCRIPTION_UPDATE
+      (controller-tier on PUT /api/dataentities/{id}/description) is
+      gated. A user with DESCRIPTION_UPDATE but NOT ADD_TERM can paste
+      `[[finance:Customer]]` into a description and create a link row.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      No per-namespace scoping. Cross-namespace mentions resolve to
+      whichever term matches the (ns, name) tuple regardless of which
+      team owns the namespace.
+  strengths:
+  - Reactive transactional perimeter — the parse + reconcile + activity
+    emission are atomic per request
+  - is_description_link=TRUE flag preserves the provenance of the
+    link — manual links and description-link rows coexist as separate
+    rows
+  - Unhandled-mention staging — mentions for non-existent terms are not
+    silently dropped; they materialise automatically when the matching
+    term is later created (forward-compat)
+  weaknesses:
+  - Auto-link side-channel bypasses DATA_ENTITY_ADD_TERM (HIGH severity)
+  - Cross-namespace pollution unconstrained (MEDIUM)
+  - Unicode and nested-bracket regex edge cases unproven (LOW)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    Runs on EVERY description edit (data-entity or dataset-field). The
+    regex compile is once at class load (Pattern.compile at line 67);
+    per-call cost = regex match (O(N) on description length) + 1 batch
+    DB lookup + 4-5 reconcile DB statements.
+  - |-
+    Triple-re-query via TermAssignmentActivityHandler — getDataEntityTerms
+    is re-queried BEFORE (getContextInfo) AND AFTER (getUpdatedState) the
+    operation; for an entity with 100 linked terms, a single description
+    edit produces 2 full-list re-queries plus the reconcile cost.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: One description edit at a time per @ReactiveTransactional
+      perimeter; no batch description-update API.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless — service horizontally scales.
+notes: |-
+  NEW operation captured in batch 2026-05-19K. The runtime that implements
+  the [[ns:term]] auto-link side-channel. Three batches now triangulate
+  this surface: UI tier (DataEntityDescription batch J), controller tier
+  (upsertDataEntityInternalDescription batch G), service tier (this
+  batch).
+
+  Cross-cutting connections:
+    - Pairs with the "[[ns:term]] auto-link side-channel —
+      REFACTOR-227 primary source" invariant — that invariant captures
+      the security implication; this operation captures the runtime
+    - Pairs with the "Term-mention Syntax `[[Namespace:TermName]]`"
+      entity concept — that entity captures the syntax; this operation
+      captures the reconciliation flow
+    - Pairs with the "Term Linkage" entity concept — that captures the
+      edge; this operation captures the auto-create path
+    - Companion of the "Edit Internal Description (Markdown with
+      term-resolution)" operation (existing) — that's the
+      controller-method-level write; this is the term-reconciliation
+      side-effect
+    - Cross-references the TermAssignmentActivityHandler triple-re-query
+      (REFACTOR-228) — primary-source pinned in this batch K
+      bugs_limitations_corner_cases.[4]
+
+  Three DOC-NNN candidates flow from this operation:
+    (a) Document the [[ns:term]] syntax + auto-link semantics on the
+        business-glossary doc page
+    (b) Document the unhandled-mention staging on the same page
+    (c) Document the description-mention guard on update/delete (renaming
+        a term while it is mentioned by descriptions surfaces as 400
+        BadUserRequest — invisible until hit)

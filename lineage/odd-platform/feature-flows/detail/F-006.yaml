@@ -9,6 +9,25 @@ drift_class_summary:
 - service_tier_transactional_asymmetry
 - forensic_silence_on_rbac_mutations
 - administrator_name_create_path_asymmetry
+- owner_create_bypass_via_ownership_endpoint
+- title_directory_no_allowlist_no_create_permission
+- usr003_400_correction_not_5xx
+- self_grant_decoupling_principal_independent_owner_name
+- deg_propagation_cascade_audit_absent_below_parent
+- delete_search_vector_not_refreshed
+- delete_no_not_found_validation
+batch_extensions:
+- batch: K
+  entry_point_added: 'service:OwnershipServiceImpl (the ownership-lifecycle service backing the 3 /api/dataentities/{id}/ownership controller methods — adds the OWNER_CREATE-bypass and the USR003 cross-batch correction)'
+  contributing_nodes_added:
+  - odd-platform java service service:OwnershipServiceImpl
+  - odd-platform java OwnerServiceImpl
+  - odd-platform java TitleServiceImpl
+  - odd-platform java ExceptionUtils
+  - odd-platform java ControllerAdvice
+  cross_batch_corrections:
+  - prior_claim: batch-F DataEntityController.createOwnership sidecar bugs_limitations_corner_cases[2] + known_security_gaps[3] claim that ownership-duplicate produces 5xx
+    correction: PRIMARY-SOURCE in batch K — the duplicate surface is HTTP 400 USR003 (`UniqueConstraintException 'Ownership for this data entity and owner already exists'`) via JooqReactiveOperations.mono → onErrorMap(DataAccessException → ExceptionUtils.translateDatabaseException) → UniqueConstraintException → ControllerAdvice.handleUniqueConstraint → HttpStatus.BAD_REQUEST. ErrorCode.UNIQUE_CONSTRAINT.USR003, resolvable=true, retryable=false. Confirmed at ExceptionUtils.java:69-71 + ErrorCode.java:11 + ControllerAdvice.java:36-40.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: RBAC policy lifecycle — soft-delete with permission-grant persistence
@@ -74,6 +93,11 @@ contributing_nodes:
 - odd-platform java PolicyServiceImpl
 - odd-platform java ManagementPermissionExtractor
 - odd-platform java AbstractContextualPermissionExtractor
+- odd-platform java service service:OwnershipServiceImpl
+- odd-platform java OwnerServiceImpl
+- odd-platform java TitleServiceImpl
+- odd-platform java ExceptionUtils
+- odd-platform java ControllerAdvice
 chain:
 - hop: 1
   node: odd-platform java PolicyController controller-method:createPolicy
@@ -278,6 +302,125 @@ observed_vs_expected:
     drift_class: error_class_misrepresented
     provenance: STATIC — primary-source verification in batch-I PolicyServiceImpl sidecar bugs_limitations_corner_cases[2]
       + invariants[0] + cross-ref to ControllerAdvice.java:23-66.
+  - facet: OWNER_CREATE bypass via /api/dataentities/{id}/ownership (batch K — REFACTOR-199 PRIMARY-SOURCE)
+    observed: |-
+      OwnershipServiceImpl.create (line 52) unconditionally invokes
+      `ownerService.getOrCreate(formData.getOwnerName())` which auto-creates a
+      new Owner directory row when the supplied name is novel. The documented
+      `OWNER_CREATE` permission (SecurityConstants.java:143) only gates
+      `POST /api/owners` — NOT this endpoint. Any authorized
+      `DATA_ENTITY_OWNERSHIP_CREATE`-holder can therefore mint new Owner
+      directory entries by side-effecting through this service. The
+      documented permission story is incomplete: `OWNER_CREATE` is one of TWO
+      paths into the Owner directory; `DATA_ENTITY_OWNERSHIP_CREATE` is the
+      undocumented second. Same pattern applies to Title via line 53
+      (`titleService.getOrCreate`).
+    expected: |-
+      Either (a) consult `OWNER_CREATE` inside `ownerService.getOrCreate` when
+      a new Owner would be minted OR (b) documented "DATA_ENTITY_OWNERSHIP_CREATE
+      includes Owner-create scope" framing in the Permissions doc.
+    drift_class: owner_create_bypass_via_ownership_endpoint
+    provenance: STATIC — REFACTOR-199 PRIMARY-SOURCE in batch K OwnershipServiceImpl
+      sidecar bugs_limitations_corner_cases[0] + implicit_adrs[0] +
+      docs_link_semantic.doc_drift_findings[0] + OwnershipServiceImpl.java:52 +
+      OwnerServiceImpl.java:39-42 + SecurityConstants.java:143 vs 215-217
+  - facet: Title directory has no allowlist + no TITLE_CREATE permission (REFACTOR-206)
+    observed: |-
+      OwnershipServiceImpl.create (line 53) calls
+      `titleService.getOrCreate(formData.getTitleName())` with no allowlist, no
+      enum, no `@Pattern`, no `@Size`, no length cap. Any caller-supplied
+      string becomes a new Title row. There is NO `TITLE_CREATE` permission
+      (grep `TITLE_CREATE` against `odd-platform-api/src/main/java` returns
+      zero matches). Operators expecting a fixed Title vocabulary discover
+      the directory accumulates typos, language variants, and free-text
+      strings.
+    expected: |-
+      Either (a) an enum of valid titles + form-data `@Pattern` validation OR
+      (b) a `TITLE_CREATE` permission + documented "Titles are operator-curated"
+      framing, with the Management UI adding a Titles tab.
+    drift_class: title_directory_no_allowlist_no_create_permission
+    provenance: STATIC — REFACTOR-206 PRIMARY-SOURCE in batch K OwnershipServiceImpl
+      sidecar bugs_limitations_corner_cases[1] + OwnershipServiceImpl.java:53 +
+      TitleServiceImpl.java:19-22
+  - facet: self-grant decoupling — owner_name is principal-independent
+    observed: |-
+      OwnershipServiceImpl reads `formData.getOwnerName()` (line 52) verbatim
+      from the caller-supplied request body; there is NO call to
+      `authIdentityProvider.fetchAssociatedOwner()`, NO call to
+      `ReactiveSecurityContextHolder.getContext()`, NO `Authentication`
+      parameter on any public method. The caller can name ANY Owner
+      (including a newly auto-created one), not just themselves. A Policy
+      granting `DATA_ENTITY_OWNERSHIP_CREATE` unconditionally allows the
+      holder to grant ANY owner to ANY data entity. The live Policies doc
+      documents the `"is": "dataEntity:owner"` condition but contains no
+      example Policy granting `DATA_ENTITY_OWNERSHIP_CREATE` either
+      unconditionally or with the condition; no live doc enumerates default
+      Policies. An operator cannot determine "in a fresh ODD Platform install,
+      can my regular users grant themselves ownership of any data entity?"
+      without inspecting the seeded Policy table.
+    expected: |-
+      Document the self-grant surface explicitly + enumerate default seeded
+      Policies + (optionally) add an opt-in mode where `owner_name` defaults to
+      `authIdentityProvider.fetchAssociatedOwner()` rather than the form's
+      free-text field.
+    drift_class: self_grant_decoupling_principal_independent_owner_name
+    provenance: STATIC — primary-source in batch K OwnershipServiceImpl sidecar
+      implicit_adrs[5] + docs_link_semantic.doc_drift_findings[4] +
+      OwnershipServiceImpl.java:50-119 + AuthIdentityProviderImpl absence
+  - facet: DEG-propagation cascade emits no per-child activity events
+    observed: |-
+      `@ActivityLog(event = OWNERSHIP_CREATED/UPDATED/DELETED)` annotates only
+      the three public methods (lines 48, 77, 100). The DEG-propagation
+      cascade (`propagateOwnership` at lines 134-148) issues N child
+      ownership writes via `ownershipRepository.createOrUpdate(pojos)` or
+      `deleteByDataEntityAndOwner(pojos)` but emits NO per-child events. The
+      matching `OwnershipCreatedActivityHandler.getUpdatedState` only captures
+      `getDataEntityOwnerships(dataEntityId)` for the PARENT. Operators
+      auditing "when did this child data entity gain owner X" via
+      `ActivityController.getActivity` see no event on the child; they must
+      walk the parent DEG's activity feed and infer the cascade.
+    expected: |-
+      Either (a) per-child activity emission inside `propagateOwnership` OR
+      (b) a single aggregate event on the parent that enumerates the affected
+      children (parent + children list as event payload).
+    drift_class: deg_propagation_cascade_audit_absent_below_parent
+    provenance: STATIC — primary-source in batch K OwnershipServiceImpl sidecar
+      implicit_adrs[2] + invariants[6] + OwnershipServiceImpl.java:48, 77, 100 vs 134-148
+  - facet: DELETE flow does NOT refresh the search_entrypoint FTS vector
+    observed: |-
+      `create` (line 69) and `update` (line 116) call
+      `searchEntrypointRepository.updateChangedOwnershipVectors(ownershipId)`.
+      The `delete` flow (lines 81-96) has NO equivalent call. After a
+      successful delete, the FTS index may still surface the old owner-name in
+      catalog search results until the search vector is refreshed by some
+      other event (e.g. a subsequent create or update on the same data entity).
+      A data entity from which Owner X has been removed continues to surface
+      in "search for owner X" results until the entity is otherwise modified.
+    expected: |-
+      Either (a) `searchEntrypointRepository.clearOwnershipVectors(ownershipId)`
+      in the delete flow OR (b) post-delete `updateChangedOwnershipVectors`
+      called on the OwnershipPojo (DSL.using read-then-clear).
+    drift_class: delete_search_vector_not_refreshed
+    provenance: STATIC — primary-source in batch K OwnershipServiceImpl sidecar
+      bugs_limitations_corner_cases[2] + OwnershipServiceImpl.java:69, 116 vs 81-96
+  - facet: DELETE flow does NOT validate the ownership existed (silent 204)
+    observed: |-
+      Line 81 calls `ownershipRepository.delete(ownershipId)`; per batch-H
+      `bugs_limitations_corner_cases[3]`, the repository's `delete` returns an
+      empty Mono when the id doesn't exist (no NotFoundException). The
+      service propagates the empty: the `flatMap` at line 82 receives no
+      item, the chain short-circuits to `Mono.empty()`, and `.then()` at line
+      96 returns `Mono<Void>` as if successful. `DataEntityController.deleteOwnership`
+      maps to `noContent().build()` (HTTP 204). The caller cannot distinguish
+      "I deleted it" from "it wasn't there to delete." Idempotent-friendly
+      for retries but masks operator typos and double-clicks.
+    expected: |-
+      Either (a) `.switchIfEmpty(Mono.error(new NotFoundException("Ownership", id)))`
+      before propagation OR (b) explicit "delete is idempotent" framing in the
+      OpenAPI doc.
+    drift_class: delete_no_not_found_validation
+    provenance: STATIC — primary-source in batch K OwnershipServiceImpl sidecar
+      bugs_limitations_corner_cases[3] + OwnershipServiceImpl.java:81-97
 test_matrix:
   unit:
     state: GAP
@@ -312,31 +455,44 @@ test_matrix:
     - Soft-deleted policy + surviving role_to_policy edge → permission still granted (the headline regression-pin)
     - Administrator-name asymmetry — under direct DB hot-fix, can a new Administrator with attacker statements be created?
     - Forensic-trail completeness — assert every mutation emits SOME log line OR audit row
-control_summary: '0 of 4 cells PROBED — feature emerged from batch-H primary-source
+control_summary: |-
+  0 of 4 cells PROBED — feature emerged from batch-H primary-source audit; no
+  probe authored yet. The headline behaviour (soft-deleted policy continues to
+  grant permissions when role_to_policy edges survive) is the highest-leverage
+  candidate for the next probe round. Proposed P-NNN — local docker-compose
+  stack + seed policy + bind to role + DIRECT DB UPDATE setting deleted_at +
+  assert getRolesPolicies still returns the policy AND a subsequent
+  /authorization-gated request succeeds.
 
-  audit; no probe authored yet. The headline behaviour (soft-deleted policy continues
+  Batch-I closes hop-2 with PolicyServiceImpl primary-source confirmation —
+  lost-update race PRIMARY-SOURCE PROVEN at lines 71-81 (no @ReactiveTransactional;
+  sibling RoleServiceImpl IS annotated — the asymmetry is the canonical platform
+  regression risk). Three NEW facets surfaced — (1) the race
+  PRIMARY-SOURCE-PROVEN + sibling asymmetry; (2) cascade-delete check non-atomic
+  with the delete itself (race-window for concurrent role-binding mutations);
+  (3) schema-validation failure surfaces as 500 not 400 (IllegalArgumentException
+  missing ControllerAdvice handler).
 
-  to grant permissions when role_to_policy edges survive) is the highest-leverage
-
-  candidate for the next probe round. Proposed P-NNN — local docker-compose stack
-
-  + seed policy + bind to role + DIRECT DB UPDATE setting deleted_at + assert getRolesPolicies
-
-  still returns the policy AND a subsequent /authorization-gated request succeeds.
-
-  Batch-I closes hop-2 with PolicyServiceImpl primary-source confirmation — lost-update
-
-  race PRIMARY-SOURCE PROVEN at lines 71-81 (no @ReactiveTransactional; sibling RoleServiceImpl
-
-  IS annotated — the asymmetry is the canonical platform regression risk). Three NEW
-
-  facets surface — (1) the race PRIMARY-SOURCE-PROVEN + sibling asymmetry; (2) cascade-delete
-
-  check non-atomic with the delete itself (race-window for concurrent role-binding
-
-  mutations); (3) schema-validation failure surfaces as 500 not 400 (IllegalArgumentException
-
-  missing ControllerAdvice handler).'
+  Batch-K adds OwnershipServiceImpl primary-source — REFACTOR-199 PRIMARY-SOURCE
+  PROVEN at line 52 (the `OWNER_CREATE` bypass via `ownerService.getOrCreate`
+  on the /api/dataentities/{id}/ownership path — `DATA_ENTITY_OWNERSHIP_CREATE`
+  is a SECOND undocumented path into the Owner directory). REFACTOR-206
+  PRIMARY-SOURCE PROVEN at line 53 (Title directory has no allowlist + no
+  TITLE_CREATE permission). Cross-batch CORRECTION: the batch-F sidecar's
+  '5xx surface' claim for ownership-duplicate is REPLACED by the verified
+  surface — HTTP 400 USR003 ("Ownership for this data entity and owner already
+  exists") via ExceptionUtils.translateDatabaseException → UniqueConstraintException
+  → ControllerAdvice.handleUniqueConstraint → HttpStatus.BAD_REQUEST. Seven NEW
+  facets surface: OWNER_CREATE bypass + Title-no-allowlist + USR003 correction
+  + self-grant decoupling (owner_name principal-independent) + DEG-propagation
+  cascade audit absent below parent + DELETE search-vector-not-refreshed +
+  DELETE no NotFound validation (silent 204). Note: this batch broadens
+  F-006's scope from POLICY lifecycle to the full RBAC lifecycle including
+  OWNERSHIP — the pillar-anchored feature is "Role-Based Access Control" and
+  the ownership-binding endpoints are the operative authorization mutations
+  governed by the same pillar. A future maintainer triage may split F-006
+  into per-resource sub-features (POLICY / ROLE / OWNERSHIP / OWNER) but the
+  current shape preserves the pillar anchor.
 related_refactoring_scopes:
 - REFACTOR-073
 related_test_gaps: []

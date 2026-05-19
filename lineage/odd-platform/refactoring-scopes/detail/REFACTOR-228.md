@@ -26,4 +26,20 @@ OR: emit the activity event with ONLY the diff (the added/removed term), and rec
 
 **Suggested backlog grouping**: PERF-NNN write-path optimization sprint.
 
+## STRENGTHENS — TermServiceImpl (batch K, TRIPLE-RE-QUERY refinement for removeTermFromDataEntity)
+
+**Triple-re-query refinement at primary source**. The batch-I sidecar framed this as a double-re-query for `linkTermWithDataEntity`; the batch-K TermServiceImpl sidecar adds the TRIPLE-re-query case for `removeTermFromDataEntity` — the method itself ADDS a third `getDataEntityTerms` call inside the method body to drive the `markEntityUnfilled` decision, on top of the handler's two BEFORE/AFTER captures.
+
+**New batch-K evidence**:
+- `TermServiceImpl.md:bugs_limitations_corner_cases.[4]` (MEDIUM): "TermAssignmentActivityHandler triple-re-query (REFACTOR-228 primary source). `removeTermFromDataEntity` (`TermServiceImpl.java:184-196`) emits `TERM_ASSIGNMENT_UPDATED`; `TermAssignmentActivityHandler.getContextInfo` re-queries `getDataEntityTerms` (1st full-list query) BEFORE method execution; the method itself calls `getDataEntityTerms` at line 188 (2nd full-list query, drives `markEntityUnfilled` decision); the handler's `getUpdatedState` re-queries AGAIN (3rd full-list query) AFTER. For a data entity with 100 linked terms, a single de-link produces 3 full-list re-queries plus 1 DELETE. The same triple-re-query pattern applies to `removeTermFromDatasetField` (line 226-239)."
+- `TermServiceImpl.md:performance.known_performance_gaps.[0]` (MEDIUM): same finding from the performance angle.
+
+**Refined remedy** (batch K extension): The original REFACTOR-228 remedy proposed 2-query → 1-query for the link path; the triple-re-query case for the unlink path benefits even more. The `markEntityUnfilled` decision can be made via a `countRemainingTerms(dataEntityId)` query instead of a full-list (`SELECT COUNT(*) FROM data_entity_to_term WHERE data_entity_id = ? AND term_id != ?`) — O(1) instead of O(N). Combined with the handler refactor (compute AFTER state from BEFORE + diff), the per-delink cost reduces from 3 full-list + 1 DELETE to 1 COUNT + 1 DELETE.
+
+**Cross-batch triangulation**:
+- batch-I (addDataEntityTerm controller-method): double-re-query framing on the link path
+- batch-K (TermServiceImpl PRIMARY SERVICE-LAYER): triple-re-query primary source on the unlink path
+
+**Severity unchanged**: LOW (performance gap on per-write operation). The batch-K finding raises the worst-case multiplier from 2× to 3× for the unlink path.
+
 ---

@@ -1,0 +1,106 @@
+name: Exception-type asymmetry between notification senders
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+description: |-
+  **NEW INVARIANT, batch 2026-05-19K** — a silent contract-violation between
+  the dispatcher's per-sender catch and one sender implementation. The
+  dispatcher (`AlertNotificationMessageProcessor.process()` at lines 29-35)
+  catches `NotificationSenderException` (a checked exception extending
+  `Exception`) per-sender, logs at ERROR, and continues to the next sender —
+  the documented "one bad channel does not block the others" stance. Slack
+  and Webhook senders correctly throw `NotificationSenderException`
+  (per AbstractNotificationSender.java:24-29 wrapping HTTP failures).
+  **EmailNotificationSender VIOLATES this contract** at
+  `EmailNotificationSender.java:58-60`: catches `MessagingException |
+  TemplateException | IOException` and throws `new RuntimeException(...)` —
+  NOT `NotificationSenderException`. The unchecked `RuntimeException`
+  BYPASSES the dispatcher's `catch (NotificationSenderException e)` clause
+  and propagates upward, aborting `process()` mid-fan-out. Any senders AFTER
+  email in the iteration order do NOT receive the alert. The
+  `List<NotificationSender>` iteration order is Spring-bean-injection-order,
+  which is package-scan-order-dependent and undefined — operators cannot
+  predict whether email runs first, middle, or last. **The contract
+  violation is doc-side and code-side undocumented.** The live
+  `/features/active-platform-features/notifications` page describes "next
+  channel still runs" behaviour as a uniform property of all channels,
+  contradicted by this one bypass. Operator-facing remediation: either
+  (a) fix EmailNotificationSender to wrap as NotificationSenderException;
+  (b) broaden the dispatcher's catch to `catch (Exception e)`; OR (c)
+  introduce explicit `@Order` annotations to put email LAST so the bypass
+  blast-radius is minimised. Cross-batch implication: any new
+  `NotificationSender` implementation inherits this latent hazard unless
+  the author audits the exception contract.
+nodes:
+- odd-platform java service service:NotificationsDispatcher
+contributors:
+- |-
+  NotificationsDispatcher (AlertNotificationMessageProcessor) batch K:
+  bugs_limitations_corner_cases.[0] (asymmetric exception handling between
+  sender impls — PRIMARY SOURCE) + implicit_adrs.[0] (per-channel
+  catch-and-continue — the contract that email violates) +
+  tests_coverage_semantic.uncovered_behaviours[runtimeexception-bypass]
+evidence:
+- |-
+  NotificationsDispatcher.md:bugs_limitations_corner_cases.[0] (PRIMARY
+  SOURCE) — evidence: AlertNotificationMessageProcessor.java:31 (catches
+  NotificationSenderException only) + EmailNotificationSender.java:58-60
+  (throws raw RuntimeException)
+- |-
+  NotificationsDispatcher.md:implicit_adrs.[0] (per-channel
+  catch-and-continue ADR — the contract email violates)
+- |-
+  NotificationsDispatcher.md:docs_link_semantic.doc_drift_findings.[2]
+  (live doc partial-delivery framing is accurate for Slack/Webhook but
+  silent on the email RuntimeException bypass)
+- |-
+  NotificationsDispatcher.md:tests_coverage_semantic.uncovered_behaviours[3]
+  (no test asserts the asymmetry; a regression to catch (Exception e)
+  would silently fix the bug but break no test)
+axes_present:
+- services
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: durability
+mitigations_unimplemented:
+- |-
+  Fix EmailNotificationSender to wrap `MessagingException | TemplateException
+  | IOException` as `NotificationSenderException` (matching the AbstractNotificationSender
+  pattern at lines 24-29).
+- |-
+  Broaden AlertNotificationMessageProcessor's catch from
+  `catch (NotificationSenderException e)` to `catch (Exception e)` — a
+  one-line fix that closes the bypass at the dispatcher level.
+- |-
+  Add an `@Order(Ordered.LOWEST_PRECEDENCE)` on EmailNotificationSender
+  to push it to the END of the iteration order, minimising the bypass
+  blast-radius (Slack + Webhook would run BEFORE email regardless of
+  Spring's scan order).
+- |-
+  Add a unit test that injects a throwing email sender and asserts the
+  next sender in the list still receives the message — pins the contract.
+notes: |-
+  NEW invariant captured in batch 2026-05-19K. The bypass is a code-bug
+  rather than an architectural decision — the doc-side intent (per the
+  live notifications page) and the code-side intent (per implicit_adrs.[0]
+  on the dispatcher) both describe catch-and-continue as uniform across
+  channels. EmailNotificationSender's RuntimeException wrap is a
+  copy-paste error or an oversight.
+
+  Cross-cutting connections:
+    - Pairs with the "WAL Consumer + Postgres Replication Slot" entity
+      concept — this is the entity's fail-soft path's gap; the
+      fail-loud path's gap is the poison-message replay loop invariant
+    - Companion of the "Sender iteration order undefined" finding —
+      both surface the operator's inability to predict per-channel
+      behaviour
+    - Cross-cutting case-law for "exception-type contract violations
+      between interface implementors" — a single-line code-style audit
+      surface
+
+  One DOC-NNN candidate flows from this invariant:
+    (a) Document the failure mode on the live notifications page (or
+        fix the code) — operators choosing channel order benefit from
+        knowing the asymmetry exists, OR the asymmetry should not exist

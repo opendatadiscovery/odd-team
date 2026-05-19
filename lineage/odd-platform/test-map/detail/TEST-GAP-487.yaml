@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-487
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:OwnershipServiceImpl"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "OwnershipServiceImpl.md:bugs_limitations_corner_cases.[8] (cross-tenant ownership leak)"
+  - "OwnershipServiceImpl.md:security.known_security_gaps.[4] (cross-tenant ownership leak)"
+  - "OwnershipServiceImpl.md:implicit_adrs.[5] (principal-independent owner_name — self-grant decoupling)"
+  - "OwnershipServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[11] (cross-tenant self-grant ambiguity)"
+behaviour: |-
+  Cross-tenant ownership leak — the service is principal-independent, owner_name is taken VERBATIM from the form, never inferred from the authenticated principal. OwnershipServiceImpl.java:52 reads `formData.getOwnerName()` and passes it directly to `ownerService.getOrCreate(...)`. There is NO call to `ReactiveSecurityContextHolder.getContext()`, NO call to `authIdentityProvider.fetchAssociatedOwner()`, NO `Authentication` parameter on any public method. A Policy granting `DATA_ENTITY_OWNERSHIP_CREATE` unconditionally lets the holder grant ANY owner (including a newly-minted one) to ANY data entity. The 'who can grant' is an UPSTREAM Policy decision; 'to whom is granted' is a CALLER decision — deliberately decoupled. The DataEntityPermissionExtractor resolver context contains the data-entity, its tags, and the caller's associated Owner — it does NOT contain the target Owner row from the form. NO test asserts that the service does NOT call `authIdentityProvider.fetchAssociatedOwner()` (a regression that added principal-based owner inference would silently change the contract). Cross-pillar P-08+P-09 — the self-grant surface spans Authorization model + Management.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/OwnershipPrincipalIndependenceTest.java"
+  name: "createOwnership_serviceDoesNotConsultPrincipal_ownerNameVerbatimFromForm"
+evidence:
+  - |-
+    OwnershipServiceImpl.md:implicit_adrs.[5] (PRIMARY-SOURCE): 'Line 52 reads formData.getOwnerName() and passes it directly to ownerService.getOrCreate(...). There is NO call to ReactiveSecurityContextHolder.getContext(), NO call to authIdentityProvider.fetchAssociatedOwner(), NO Authentication parameter on any public method. The architectural posture: who can grant ownership is an UPSTREAM Policy decision; to whom is the ownership granted is a CALLER decision. The two decisions are deliberately decoupled.'
+  - |-
+    OwnershipServiceImpl.md:bugs_limitations_corner_cases.[8]: 'A caller with DATA_ENTITY_OWNERSHIP_CREATE on data-entity X can grant ownership to Owner Y regardless of whether the caller, X, or Y share any organisational boundary.'
+  - "Grep `authIdentityProvider` against OwnershipServiceImpl.java returns zero matches (verified)"
+  - "Grep `ReactiveSecurityContextHolder` against OwnershipServiceImpl.java returns zero matches (verified)"
+cross_references:
+  - "TEST-GAP-265 (related: REFACTOR-199 — same service)"
+  - "concepts.yaml:entities[multi-tenant-configuration-odd-tenant-id]"
+  - "DOC-NNN candidate: self-grant surface in default Policies"
+proposed_action: |-
+  Two Mockito unit tests. (A) `testCreateOwnership_doesNotConsultPrincipal`: construct OwnershipServiceImpl with @Mock authIdentityProvider; invoke create(1L, formData). Verify authIdentityProvider IS NEVER invoked. (B) `testCreateOwnership_ownerNameVerbatim`: invoke create with `formData.getOwnerName() == "TargetOwnerName"`; verify ownerService.getOrCreate INVOKED with EXACTLY "TargetOwnerName" (NOT the caller's username). LOCKS the principal-independence contract; promotes to a fix-required regression when principal-bound ownership semantics land.
+batch: 2026-05-19-K
+feature_id: null

@@ -1,0 +1,132 @@
+name: DEG-propagation cascade audit-feed asymmetry
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+- P-08
+description: |-
+  **NEW INVARIANT, batch 2026-05-19K** — surfaced by primary-source examination
+  of `OwnershipServiceImpl.java:48, 77, 100, 121-149`. The activity-feed
+  audit emission is structurally asymmetric between the user-facing action
+  and the cascade:
+    (a) `@ActivityLog(event = OWNERSHIP_CREATED)` (line 48),
+        `OWNERSHIP_UPDATED` (line 100), `OWNERSHIP_DELETED` (line 77)
+        annotate ONLY the three top-level public methods.
+    (b) The DEG-propagation cascade `propagateOwnership` (lines 134-148)
+        inserts/deletes N child ownership rows via
+        `ownershipRepository.createOrUpdate(pojos)` (CREATE-side cascade
+        for create + update) or `deleteByDataEntityAndOwner(pojos)`
+        (DELETE-side cascade), but emits NO per-child events.
+    (c) `OwnershipCreatedActivityHandler.getUpdatedState` (per
+        OwnershipCreatedActivityHandler.java:33-36) captures
+        `getDataEntityOwnerships(dataEntityId)` for the PARENT
+        data-entity only. The children's ownership changes are invisible
+        at the activity-feed layer.
+  Operator-facing manifestation: an admin calls
+  `POST /api/dataentities/{DEG_ID}/ownership` with `propagate: true`,
+  creating an ownership row on the DEG itself AND on every child of the
+  DEG (potentially thousands of rows). The activity-feed records ONE
+  event for the DEG. The children's owner sections silently change. An
+  operator auditing "when did this child data entity gain owner X?" via
+  `ActivityController.getActivity` for the child sees NO event;
+  they must walk the parent DEG's activity feed and INFER the cascade
+  fan-out. **The architectural choice is intentional** per
+  implicit_adrs.[2]: audit at the user-facing action level (one operator
+  click → one audit row), not at the storage level (one storage operation
+  → one audit row). The trade-off: fewer audit rows + clearer
+  user-intent mapping, BUT cross-entity audit-trail inference is required.
+  Cross-cutting case-law: any operation that fans out to child entities
+  (DEG propagation here; soft-delete cascade on DataEntityHousekeepingJob;
+  Term-rename's auto-update-mentions) inherits this audit-granularity
+  trade-off. **Some inherit deliberately, others don't.** This invariant
+  is the canonical PIN for the "deliberate" case — the maintainer chose
+  it explicitly for ownership propagation.
+nodes:
+- odd-platform java service service:OwnershipServiceImpl
+- odd-platform java DataEntityController controller-method:createOwnership
+contributors:
+- |-
+  OwnershipServiceImpl batch K: concepts.invariants.[7] (Activity-feed
+  emission is per-public-method, not per-cascaded-child — PRIMARY SOURCE)
+  + implicit_adrs.[2] (Activity-feed audit emitted at public-method
+  boundary; deliberate granularity choice) + dependencies_semantic.requires-feature
+  (Activity-feed audit via @ActivityLog AOP advice)
+- |-
+  createOwnership.md (batch F — existing reference): the controller-method
+  level confirmation; @ActivityLog OWNERSHIP_CREATED implicit_adrs.[1]
+evidence:
+- |-
+  OwnershipServiceImpl.md:concepts.invariants.[7] (PRIMARY SOURCE —
+  Activity-feed emission is per-public-method, not per-cascaded-child) —
+  evidence: OwnershipServiceImpl.java:48, 77, 100 (per-public-method
+  @ActivityLog) + OwnershipServiceImpl.java:121-149 (propagateOwnership
+  has no @ActivityLog) + OwnershipCreatedActivityHandler.java:33-36
+  (handler is scoped to single dataEntityId parameter, not the
+  cascade's children)
+- |-
+  OwnershipServiceImpl.md:implicit_adrs.[2] (deliberate granularity choice
+  — audit at user-facing action, not at storage) — intent_anchor:
+  @ActivityLog at the public-method boundary + the explicit ABSENCE on
+  propagateOwnership
+- |-
+  createOwnership.md:implicit_adrs.[1] (activity-feed emission via
+  @ActivityLog — the batch-F controller-method-level finding)
+axes_present:
+- services
+- controllers
+triangulation_count: 2
+cross_batch: true
+severity: LOW
+severity_dim: observability
+mitigations_unimplemented:
+- |-
+  Add a docs section on `/configuration-and-deployment/enable-security/authorization/policies`
+  or the activity-feed doc page describing the audit-granularity choice
+  for DEG propagation — operators auditing child-entity ownership
+  changes need to know the cascade is parent-event-only.
+- |-
+  Add a regression test that:
+    (a) Creates a DEG with N children;
+    (b) Calls POST /api/dataentities/{DEG_ID}/ownership with propagate=true;
+    (c) Asserts ONE OWNERSHIP_CREATED activity event exists (current
+        behaviour) OR asserts N+1 events exist (one parent + N child;
+        under a proposed audit-granularity refinement).
+- |-
+  If the maintainer decides to refine the audit-granularity (e.g. emit
+  per-child events for the cascade), the change is at
+  `propagateOwnership` to invoke the per-child write through the
+  `@ActivityLog`-instrumented path rather than calling
+  `ownershipRepository.createOrUpdate(pojos)` directly.
+notes: |-
+  NEW invariant captured in batch 2026-05-19K. The deliberate-granularity
+  choice is consistent with the rest of the platform's `@ActivityLog`
+  pattern — every audited operation logs at the user-facing entry, not
+  at every persistence side-effect. The asymmetry surfaces operationally
+  only on DEG propagation because that's the platform's main fan-out
+  cascade today; future cascades (e.g. tag-propagation if introduced,
+  attachment-cascade-delete) would inherit the same architectural
+  choice.
+
+  Cross-cutting connections:
+    - Pairs with the "Bind Owner to Data Entity (with optional DEG
+      propagation)" operation concept — that captures the cascade itself;
+      this captures the audit-granularity decision
+    - Pairs with the "Activity Feed" entity concept — the audit
+      destination
+    - Cross-references the "No-audit-log on RBAC mutations
+      (audit-log presence asymmetry)" invariant — that surfaces the
+      INVERSE asymmetry (RBAC mutations have NO audit; this surfaces
+      that ENTITY mutations have audit at the entry level but not at
+      cascade level)
+    - Companion of "Audit-log presence asymmetry (2-tier audit story)"
+      canonicalisation candidate — adds a third tier:
+      (1) entity-level mutations audited;
+      (2) RBAC mutations NOT audited;
+      (3) cascade-propagated mutations audited at entry-level but NOT
+          per-child
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Document the audit-granularity choice for DEG propagation —
+        operators benefit from knowing the audit-trail shape
+    (b) Either refine the audit-granularity (per-child events) or
+        publish the deliberate-omission as an explicit ADR

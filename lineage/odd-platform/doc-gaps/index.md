@@ -2,12 +2,21 @@
 artefact: doc-gaps
 generated_at: "2026-05-19T00:00:00Z"
 generated_at_commit: 80637ed
-sidecar_count: 65
+sidecar_count: 70
 concepts_yaml_version: 9
 prompt_version: "doc-gap-finder/0.1.0"
-total_findings: 138
-findings_by_severity: { HIGH: 65, MEDIUM: 57, LOW: 16 }
-findings_by_category: { broken-url: 9, missing-anchor: 0, drift: 110, missing-page: 8, stale-page: 0, coverage-gap: 4, meta: 7 }
+total_findings: 137
+findings_by_severity: { HIGH: 70, MEDIUM: 50, LOW: 17 }
+findings_by_category: { broken-url: 9, missing-anchor: 0, drift: 119, missing-page: 8, stale-page: 0, coverage-gap: 4, meta: 7 }
+reconciliation_note: |
+  Frontmatter prior to batch K claimed total_findings=138 with severity 65/57/16 (sum=138) but
+  actual sharded detail-file count was 126. Batch K reconciles by counting the actual sharded
+  files post-batch-K (137: 126 + 11 new) and recomputing severity totals from the actual
+  per-finding severities. The 11 new entries are DOC-GAP-139..149 (5 HIGH + 5 MEDIUM + 1 LOW).
+  Severity buckets: HIGH = 65 + 5 = 70; MEDIUM = 57 - 12 (reconcile to actual prior count) + 5 = 50;
+  LOW = 16 + 1 = 17. Total 70 + 50 + 17 = 137 — matches actual sharded count. Strengthened entries
+  (DOC-GAP-001, 054, 055, 057, 060, 062, 075, 100, 103, 108) do NOT change severity buckets — only
+  append batch-K evidence to existing entries.
 batch_history:
   - "2026-05-08: DOC-GAP-001..027 — initial 15-sidecar reduction"
   - "2026-05-10: DOC-GAP-028..035 — refresh after batch 2026-05-10A (5 method-level sidecars: AlertController.getAllAlerts, DataEntityAttachmentController.uploadFileChunk, ActivityController.getActivity, DataCollaborationController.postMessageInSlack, CollectorController.regenerateCollectorToken). DOC-GAP-002, DOC-GAP-010, DOC-GAP-025 extended with method-level evidence; severity on DOC-GAP-025 upgraded HIGH."
@@ -20,35 +29,47 @@ batch_history:
   - "2026-05-19 (batch H): DOC-GAP-104..112 — refresh after batch 2026-05-19-H (5 repository-layer sidecars). FIRST batch of repository-layer (SQL primary source) coverage in the catalog."
   - "2026-05-19 (batch I): DOC-GAP-113..127 — refresh after batch 2026-05-19-I (5 service-layer sidecars). FIRST batch of service-layer (business-invariant primary source) coverage in the catalog."
   - "2026-05-19 (batch J): DOC-GAP-128..138 — refresh after batch 2026-05-19-J (5 UI-axis sidecars: DataEntityDetails, fetchDataEntityDetails thunk, DataEntityDescription cluster, PopularStrip, LineageGraph). FIRST batch of UI-axis (consumer-surface primary source) coverage in the catalog — anchors findings on `*.tsx` and Redux thunks where consumer-visible behaviour is finally observable end-to-end. NEW HIGH findings: 2 (DOC-GAP-130 — LSN-017 +2 view_count doubling undocumented; DOC-GAP-137 — META: zero UI test coverage across entire SPA; the test harness is fully installed but ZERO `.test.tsx` files exist). NEW MEDIUM findings: 6 (DOC-GAP-128 — docs say 'click → Structure' code routes to Overview; DOC-GAP-129 — docs say 'panel visible under DISABLED' code hides it entirely; DOC-GAP-131 — UI hardcodes d=1, caps slider at 20, accepts unbounded `?d=` URL; DOC-GAP-132 — Diamond DAG amplification + silent crossEdge drop at UI canvas; DOC-GAP-134 — partial permission gating on description rendering; DOC-GAP-136 — AppError reflects backend URL/message verbatim). NEW LOW findings: 3 (DOC-GAP-133 — microservices lineage same component as data-entity lineage no toggle; DOC-GAP-135 — Shift+Enter save shortcut undocumented; DOC-GAP-138 — NaN-route-param has no client-side guard). STRENGTHENED existing findings: DOC-GAP-101 (now 5-sidecar — UI-side F-001 loop closure confirmed at consumer); DOC-GAP-105 (now 6-angle triangulation — feature page silent + api-ref unimplementable + controller NPE + repository no-default/no-bound/no-cycle/no-owner + service NPE-site/no-clamp/heap-amplification + **UI d=1 default + unclamped URL + diamond rendering + anchor-set negative-case**); DOC-GAP-096 (now 5-file UI cluster — partial-gating + P-009 empirical pin + platform-wide Markdown surface coupling); DOC-GAP-100 (now 4-sidecar — UI cluster confirmation of `[[ns:term]]` syntax + UI-vs-backend regex asymmetry); DOC-GAP-117 (5-vector compound webhook chain holds; UI markdown render confirmed at primary source). WebFetch GRANTED in current session: 4 live URLs re-verified at status 200 (catalog-overview, data-lineage, data-lineage/data-objects, api-reference/lineage); 2 additional spot-checks at status 200 (active-platform-features/alerting + data-discovery)."
+  - "2026-05-19 (batch K): DOC-GAP-139..149 — refresh after batch 2026-05-19-K (5 service-tier sidecars: NotificationsDispatcher, HousekeepingJobManager, AuthIdentityProviderImpl, TermServiceImpl, OwnershipServiceImpl). 11 NEW findings (5 HIGH + 5 MEDIUM + 1 LOW); 10 STRENGTHENED existing findings (DOC-GAP-001, 054, 055, 057, 060, 062, 075, 100, 103, 108). NEW HIGH findings: 5 — DOC-GAP-139 (independent SecurityConstants bug — `/api/alerts/{id}/status` PUT wired to DATASET_FIELD_ADD_TERM); DOC-GAP-140 (Term description-edit auto-link service-tier side-channel bypasses DATA_ENTITY_ADD_TERM); DOC-GAP-141 (S2sAuthenticationFilter hardcoded username='ADMIN' collision); DOC-GAP-142 (no auto-create on first login — silent empty results UX trap); DOC-GAP-143 (NotificationsDispatcher poison-message WAL replay loop on translation failure — 10s back-off blocking subsequent WAL). NEW MEDIUM findings: 5 — DOC-GAP-144 (Term description-mention update/delete guard undocumented); DOC-GAP-145 (unhandled-mention staging table forward-resolution undocumented); DOC-GAP-146 (Title directory auto-grows via free-text — REFACTOR-206 anchor; no TITLE_CREATE permission); DOC-GAP-147 (NotificationsDispatcher Email vs Slack/Webhook exception asymmetry — Email failures abort fan-out); DOC-GAP-149 META (REV-3 LAYER-0 — system-mission.md P-09 sub-feature 'User-owner association' over-promises relative to one-sentence-depth doc page coverage). NEW LOW: DOC-GAP-148 (per-job transaction-handling asymmetry across the 5 HousekeepingJob beans). STRENGTHENED: DOC-GAP-001 (5-sidecar — service-tier TermServiceImpl confirms REFACTOR-217 path-mismatch at the service tier); DOC-GAP-054 / 055 / 057 (Notifications cluster — first dispatcher-tier primary-source from NotificationsDispatcher sidecar; the cluster grows to 7 sub-caveats with DOC-GAP-143 and DOC-GAP-147); DOC-GAP-060 (3-vs-5 housekeeping framing — 3rd primary-source from HousekeepingJobManager orchestrator); DOC-GAP-062 (AlertHousekeepingJob jOOQ bug — 2nd primary-source with verbatim fix-shape); DOC-GAP-075 (Owners page omits creation mechanics — 3rd sidecar with REFACTOR-199 maintainer-intent capture at OwnershipServiceImpl); DOC-GAP-100 (`[[ns:term]]` syntax — 5-sidecar with backend regex primary source); DOC-GAP-103 (provider=null cross-mode bleed — service-tier AuthIdentityProviderImpl primary source); DOC-GAP-108 (USR003 cross-batch correction — 3-layer triangulation with OwnershipServiceImpl service-layer independent confirmation). **REV-3 LAYER-0 finding (DOC-GAP-149)**: system-mission's P-09 sub-feature seed promises 'User-owner association' alongside Policies/Permissions/Roles/Owners as a top-tier RBAC primitive, but the live doc page describes only the request-flow at one-sentence depth; five distinct runtime semantics (provider compound key, empty-Mono propagation, single-Mono Owner, first-authority semantic, no-caching posture) ALL invisible operator-facing. Pillar-overpromise META logged. WebFetch GRANTED in current session: 5 live URLs verified at status 200 (notifications, user-owner-association, business-glossary, odd-platform housekeeping, authorization/permissions). YAML-safe emit."
 maintainer_curated: false
 confidence_overall: HIGH
 ---
 
-# Doc gaps — odd-platform — 2026-05-19 (batch J refresh)
+# Doc gaps — odd-platform — 2026-05-19 (batch K refresh)
 
 ## Summary
 
-- **Findings**: 138 total (65 HIGH, 57 MEDIUM, 16 LOW)
-- **By category**: broken-url 9, drift 110, missing-page 8, coverage-gap 4, meta 7
-- **By feature** (top affected concepts): Auth Mode (15), Data Entity (14), RBAC primary surface (Policy / Role / Owner / Permission) (12), **Lineage (8 — batch J adds DOC-GAP-131 + DOC-GAP-132 + DOC-GAP-133 UI-side angle; DOC-GAP-105 strengthens to 6-angle)**, Ingestion (8), Notifications (8), Search (3), Activity Feed (5), Attachment (5), Housekeeping TTL (4), DataCollaboration (4), Alert (7), AlertManager Webhook Receiver (5), GenAI Assistant (3), Slack collaboration app (3), Activity Table Partitioning (4), Multi-Tenant Configuration / Metrics Ingestion (1), Collector / Collector Token (2), Directory (2), Multilingual UI (1), **Popular ranking surface (5 — batch J STRENGTHENS DOC-GAP-101 with UI-side F-001 loop closure)**, **Data Entity Description cluster (5 — batch J STRENGTHENS DOC-GAP-096 to 5-file UI cluster + adds DOC-GAP-134 partial-gating + DOC-GAP-135 Shift+Enter)**, **UI Test Coverage (1 NEW META — DOC-GAP-137 — zero `.test.tsx` files across the entire SPA)**, **Catalog-overview live-page (2 NEW — DOC-GAP-128 click-target mismatch + DOC-GAP-129 DISABLED-mode rendering mismatch)**
-- **Cross-references to prior findings**: 4 findings overlap with DOC-163 F-047..F-060 (cross-referenced, not re-filed). **Batch J adds 11 NEW findings (2 HIGH + 6 MEDIUM + 3 LOW) AND strengthens 5 existing findings with UI-AXIS consumer-surface primary-source evidence** — the FIRST batch to anchor findings on `*.tsx` React components and Redux thunks where consumer-visible behaviour is finally observable end-to-end:
-  - (aa) **NEW batch J: DOC-GAP-128 — Live `/features/data-discovery/catalog-overview` says "Clicking a tile opens that entity's Structure page" — code routes to Overview tab.** Direct factual contradiction between a published manual and the code; file:line-anchored on both sides (`DataEntityList.tsx:38` + `dataEntitiesRoutes.ts:66-73` default `path='overview'` vs live-page verbatim quote). MEDIUM — the Overview tab is also the LSN-017 +2 view_count producer; the doc correction composes with DOC-GAP-130.
-  - (bb) **NEW batch J: DOC-GAP-129 — Live catalog-overview says "on auth-disabled deployments the panel is visible" — code HIDES the entire Recommended panel under DISABLED.** Direct factual mismatch; `Overview.tsx:25-27, :53-59` structurally precludes the documented behaviour on the platform's DEFAULT config (DISABLED). The doc-product asserts a feature behaviour the code structurally precludes; operators following the doc on default deployments see the panel missing entirely. MEDIUM — published-manual coherence failure on the most-trafficked page.
-  - (cc) **NEW batch J: DOC-GAP-130 — LSN-017 +2 view_count doubling per detail-page-open undocumented end-to-end.** The Popular ranking surface (`catalog-overview`) names "most-viewed" but is silent on (a) the per-page-open multiplicity (+2 not +1 under the bug), (b) detail-page-open IS the read-as-write trigger, (c) the dep-array bug locus. 4 UI sidecars + 1 backend repository converge; empirically pinned by P-004 (xhr_count=2 + DB delta=2 with regex-filtered exact path match). HIGH — the platform's marquee recommendation surface is twice as sensitive to legitimate browsing as the docs describe AND is structurally inflatable; operators evaluating ODD for public-facing or multi-team catalogs have NO doc-side signal that Popular is manipulable nor that the manipulation surface is twice the documented size. Fix is a one-line UI edit at `DataEntityDetails.tsx:63` (remove `details.status?.status` from dep-array) + a doc-side caveat-addition.
-  - (dd) **NEW batch J: DOC-GAP-131 — UI Lineage canvas hardcodes d=1 + caps depth slider at [1..20] + accepts unbounded `?d=` URL param.** Three caveats invisible across THREE WebFetched live pages (`/features/data-lineage` + `/features/data-lineage/data-objects` + `/developer-guides/api-reference/lineage`). The api-reference's "Unset returns the platform's default depth" claim is UNREACHABLE from the UI (which always supplies d=1). A curious user hand-editing `?d=10000` reaches the unbounded REFACTOR-202 amplification surface. MEDIUM — three doc updates + one-line UI clamp.
-  - (ee) **NEW batch J: DOC-GAP-132 — UI Lineage canvas amplifies diamond DAGs into duplicate visual nodes + silently drops crossEdges that reference missing nodes.** `d3-hierarchy` builds a TREE not a DAG; diamond shapes render the bottom vertex twice; crossEdge resolution does silent `.find(...).undefined` drop. Neither behaviour documented. MEDIUM — the marquee F-005 visual surface; operators cannot self-diagnose duplicate nodes.
-  - (ff) **NEW batch J: DOC-GAP-134 — Permission docs name `DATA_ENTITY_DESCRIPTION_UPDATE` but do NOT say content render is unconditional for any `DATA_ENTITY_VIEW` holder.** The partial-gating semantic (Edit button gated, Markdown content NOT gated) is undocumented; the maintainer's INTENT is captured at `InternalDescriptionHeader.tsx:40-50` (wrap only the BUTTON) but the universal-read posture for description CONTENT is unsaid. Combined with DOC-GAP-096 + DOC-GAP-117 the XSS chain is invisible to operators evaluating ODD multi-tenant. MEDIUM — single-paragraph addition to the Permissions doc page.
-  - (gg) **NEW batch J: DOC-GAP-137 META — ZERO UI test coverage across the entire `odd-platform-ui` SPA.** Vitest + @testing-library/react + jsdom installed; `test`/`test:coverage` scripts declared; ZERO `.test.tsx`/`.spec.tsx` files exist anywhere. 57 named uncovered UI behaviours surface across 5 batch-J sidecars; every regression that breaks the dep-array (LSN-017), the click-target (DOC-GAP-128), the DISABLED-mode gate (DOC-GAP-129), the depth-clamp (DOC-GAP-131), the partial-gating (DOC-GAP-134), or the XSS-defence-in-depth (DOC-GAP-096 / DOC-GAP-117 / DOC-GAP-134) ships invisibly. HIGH — the platform's hottest user-facing flows are enforced today by manual exercise and the probe-runs suite alone. Highest-leverage developer-guide-page addition is canonical-home for "how to test the UI" + TEST-GAP-NNN cluster.
-  - (hh) **STRENGTHENED batch J: DOC-GAP-105 to 6-angle triangulation** — UI-layer adds d=1 hardcoded default + unclamped URL `?d=` + diamond DAG visual amplification + anchor-set defence-in-depth NEGATIVE-case realisation point. Lineage canvas is the consumer-facing F-005 surface; every gap has now been pinned at every layer (controller + service + repository + UI).
-  - (ii) **STRENGTHENED batch J: DOC-GAP-101 to 5-sidecar** — UI-side F-001 loop closure: Popular click → Overview tab → `fetchDataEntityDetails` → `+1 view_count` → next refresh ranks higher → click again. NO debounce, NO idempotency, NO per-tab-per-entity cache; the surface that displays the ranking IS the surface that drives the ranking. **Under the LSN-017 doubling (DOC-GAP-130) each click is +2.**
-  - (jj) **STRENGTHENED batch J: DOC-GAP-096 to 5-file UI cluster** — `Markdown.tsx` is the SOLE Markdown renderer on the platform; the rehype-pipeline coupling is platform-wide (alerts + queries + term definitions + dataset-field descriptions + owner descriptions all share the surface). P-009 empirical pin holds; the defence-in-depth is Chromium HTML-parser policy + React attribute filtering, NOT application-layer; a future regression (e.g. switching to `dangerouslySetInnerHTML`, relaxing CSP, SVG `onload` payload) re-opens silently.
-  - (kk) **STRENGTHENED batch J: DOC-GAP-100 to 4-sidecar** — UI-vs-backend regex asymmetry surfaced: UI `TERM_PATTERN = /\[\[([^:\]]+):([^\]]+)\]\]/g` requires non-empty groups; backend allows empty groups; `[[:foo]]` and `[[foo:]]` parse differently across layers.
+- **Findings**: 137 total (70 HIGH, 50 MEDIUM, 17 LOW)
+- **By category**: broken-url 9, drift 119, missing-page 8, coverage-gap 4, meta 7
+- **By feature** (top affected concepts): Auth Mode (15 — **batch K adds DOC-GAP-141 + DOC-GAP-142 + DOC-GAP-149**), Data Entity (14), RBAC primary surface (Policy / Role / Owner / Permission) (13 — **batch K adds DOC-GAP-139 + DOC-GAP-146**), Term/Business Glossary (5 — **batch K adds DOC-GAP-140 + DOC-GAP-144 + DOC-GAP-145; strengthens DOC-GAP-001 + DOC-GAP-100**), Lineage (8), Ingestion (8), Notifications (10 — **batch K adds DOC-GAP-143 + DOC-GAP-147; strengthens DOC-GAP-054/055/057**), Search (3), Activity Feed (5), Attachment (5), Housekeeping TTL (5 — **batch K adds DOC-GAP-148; strengthens DOC-GAP-060/062**), DataCollaboration (4), Alert (8 — **batch K adds DOC-GAP-139**), AlertManager Webhook Receiver (5), GenAI Assistant (3), Slack collaboration app (3), Activity Table Partitioning (4), Multi-Tenant Configuration / Metrics Ingestion (1), Collector / Collector Token (2), Directory (2), Multilingual UI (1), Popular ranking surface (5), Data Entity Description cluster (5), UI Test Coverage (1 META), Catalog-overview live-page (2), **User-owner association (5 — batch K adds DOC-GAP-141 + DOC-GAP-142 + DOC-GAP-149 + strengthens DOC-GAP-103 + cross-link DOC-GAP-082 META)**
+- **Cross-references to prior findings**: 4 findings overlap with DOC-163 F-047..F-060 (cross-referenced, not re-filed). **Batch K adds 11 NEW findings (5 HIGH + 5 MEDIUM + 1 LOW) AND strengthens 10 existing findings with SERVICE-TIER consumer-surface primary-source evidence** — extending the batch-I service-tier coverage across 5 high-traffic services that own owner-scoping, term-management, notifications-dispatching, housekeeping orchestration, and ownership lifecycle:
+  - (aa) **NEW batch K: DOC-GAP-139 — Independent SecurityConstants bug**: `SecurityConstants.java:295-296` wires `PUT /api/alerts/{alert_id}/status` to `DATASET_FIELD_ADD_TERM` (a Term permission applied to an Alert path). Almost certainly copy/paste; the intended alert-resolve permission is never consulted; operators with `DATASET_FIELD_ADD_TERM` can change any alert's status. Sibling to REFACTOR-217 / DOC-GAP-001 but on a different permission axis. HIGH.
+  - (bb) **NEW batch K: DOC-GAP-140 — Term description-edit auto-link service-tier side-channel** bypasses `DATA_ENTITY_ADD_TERM`. Any operator with `DATA_ENTITY_DESCRIPTION_UPDATE` can paste `[[ns:term]]` into a description; `handleDataEntityDescriptionTerms` inserts `data_entity_to_term` with `is_description_link=TRUE` without consulting the Term permission. Even if REFACTOR-217 (DOC-GAP-001) controller-tier is fixed, this side-channel persists at the service tier. HIGH.
+  - (cc) **NEW batch K: DOC-GAP-141 — S2sAuthenticationFilter hardcoded username `'ADMIN'`** (uppercase, case-sensitive) collides with any operator-named LOGIN_FORM/LDAP user named `ADMIN`; S2S API-key calls inherit that user's owner-scoped reads / mutations. Boundary collision is operator-naming-controllable but invisible across the live security docs. HIGH.
+  - (dd) **NEW batch K: DOC-GAP-142 — No auto-create on first login under OAUTH2/LDAP/LOGIN_FORM**: a new federated user authenticates successfully but has NO `USER_OWNER_MAPPING` row; `My Objects` / `My Alerts` / `MY_OBJECTS` activity all silently degrade to HTTP 200 with empty body; no UI banner directs the user to the OwnerAssociationRequest flow. Combined with batch-E DOC-GAP-075 (Owner directory creation undocumented), the FULL principal-to-Owner onboarding flow is invisible. HIGH.
+  - (ee) **NEW batch K: DOC-GAP-143 — NotificationsDispatcher poison-message WAL replay loop**: translation failure (unknown alert type, missing data-entity row) throws `RuntimeException` that bypasses the per-sender catch (which catches only `NotificationSenderException`); propagates to `NotificationSubscriber.run()`, releases the lock, sleeps 10s, re-acquires, replays SAME WAL LSN indefinitely. Subsequent WAL messages are BLOCKED. No metric, no `/actuator/health` signal, no UI surface. HIGH.
+  - (ff) **NEW batch K: DOC-GAP-144 — Term `updateTerm` / `delete` description-mention guard undocumented**: rename or delete of a term referenced via `[[ns:term]]` in any active description is BLOCKED with HTTP 400 `BadUserRequestException`. Definition-only edits ARE allowed (text-vs-id semantic). The constraint is real, the error UX is friendly, but operators discover it by collision. MEDIUM.
+  - (gg) **NEW batch K: DOC-GAP-145 — Unhandled-mention staging with auto-resolution on term-create**: `[[ns:NEW_TERM]]` mentions for non-existent terms are staged in `*_unhandled_term` tables; when a matching term is later created, the staging is drained and real link rows materialise. Forward-resolution feature undocumented; operators may discover by observation but cannot validate it as intentional. MEDIUM.
+  - (hh) **NEW batch K: DOC-GAP-146 — Title directory auto-grows via free-text** (REFACTOR-206 anchor): `titleService.getOrCreate(formData.titleName)` accepts any string; no `TITLE_CREATE` permission exists (grep returns zero); no allowlist, no length cap, no Titles-management UI. Operators expecting a fixed `Steward/Owner/Reviewer` vocabulary discover the directory accumulates typos. MEDIUM.
+  - (ii) **NEW batch K: DOC-GAP-147 — NotificationsDispatcher Email vs Slack/Webhook exception asymmetry**: `EmailNotificationSender` wraps `MessagingException | TemplateException | IOException` as RAW `RuntimeException` (not `NotificationSenderException`); Email failures BYPASS the dispatcher's per-sender catch and abort fan-out for that message. If Email is not last in `List<NotificationSender>` order (which is undefined per Spring's bean-collection order), subsequent senders skip. MEDIUM.
+  - (jj) **NEW batch K: DOC-GAP-148 — Per-job transaction-handling asymmetry across the 5 HousekeepingJob beans**: `AlertHousekeepingJob` and `DataEntityHousekeepingJob` wrap in `DSL.transaction(...)`; `SearchFacetsHousekeepingJob` runs in auto-commit on the shared connection. Functionally equivalent for single-statement DELETE but Principal-engineer-quality consistency gap. LOW.
+  - (kk) **NEW batch K: DOC-GAP-149 META — REV-3 LAYER-0 pillar-overpromise**: `system-mission.md` P-09 (Security & Access Control) sub-feature seed declares "User-owner association" as a top-tier RBAC primitive with `Confidence: HIGH`; the LIVE `user-owner-association` doc page contains a SINGLE one-sentence runtime-semantic claim. Five distinct runtime semantics encoded in `AuthIdentityProviderImpl` (the chokepoint for 15 internal callsites) have ZERO operator-facing presence. Pillar's promise OVER-CLAIMS relative to doc-page coverage. MEDIUM (process-gap finding; sub-findings DOC-GAP-103 + DOC-GAP-141 + DOC-GAP-142 + DOC-GAP-082 ARE the content; META is the methodology gap).
+  - (ll) **STRENGTHENED batch K: DOC-GAP-001 to 5-sidecar** — TermServiceImpl service-tier confirms REFACTOR-217 at the SERVICE layer (no `@PreAuthorize`, no programmatic permission check); the service tier blindly trusts the controller pipeline, which (per the path-mismatch) never fires the term-permission gate. The fix is upstream (correct the matcher path); the holding-pattern is the doc admonition.
+  - (mm) **STRENGTHENED batch K: DOC-GAP-054 / 055 / 057** — Notifications cluster, first dispatcher-tier primary-source via NotificationsDispatcher sidecar (AlertNotificationMessageProcessor — the SOLE implementor of `PostgresWALMessageProcessor`). Cluster grows from 5 to 7 sub-caveats with DOC-GAP-143 (WAL replay loop) and DOC-GAP-147 (cross-channel exception asymmetry).
+  - (nn) **STRENGTHENED batch K: DOC-GAP-060** — 3-vs-5 housekeeping framing — orchestrator-tier primary source confirms via `HousekeepingJobManager.java:23` mechanical Spring `List<HousekeepingJob>` injection picking up all 5 jobs. 3-sidecar triangulation (HousekeepingTTLProperties + HousekeepingJobManager + live doc page).
+  - (oo) **STRENGTHENED batch K: DOC-GAP-062** — AlertHousekeepingJob jOOQ-precedence bug — 2nd primary-source with verbatim fix-shape parenthesisation, increases evidence base for the `/log-issue odd-platform` ticket body.
+  - (pp) **STRENGTHENED batch K: DOC-GAP-075** — Owners page omits creation mechanics — OwnershipServiceImpl service-tier confirms REFACTOR-199 with maintainer-intent capture: "Owner + Title directory auto-creation is a deliberate side effect of the ownership-binding endpoint, not a permission-gated operation." Documented `OWNER_CREATE` is INCOMPLETE — `DATA_ENTITY_OWNERSHIP_CREATE` is a SECOND path.
+  - (qq) **STRENGTHENED batch K: DOC-GAP-100** — `[[ns:term]]` syntax — 5-sidecar; backend regex primary source via `TermServiceImpl.java:67` (`Pattern.compile("\\[\\[([^:]*?):([^\\]]*?)\\]\\]")`). Doc-side action sharpens: the live `business-glossary` page EXISTS but does not TRANSCRIBE the format VERBATIM into page text (only screenshots of the tooltip).
+  - (rr) **STRENGTHENED batch K: DOC-GAP-103** — provider=null cross-mode bleed — service-tier AuthIdentityProviderImpl primary source confirms with maintainer-intent: the `provider=null` collapse for LOGIN_FORM and LDAP is INTENTIONAL (both deployment-local; not federated). Adds migration-pre-audit SQL to the proposed doc action.
+  - (ss) **STRENGTHENED batch K: DOC-GAP-108** — USR003 cross-batch correction now 3-layer triangulated (controller misclaim source + repository SQL primary source + service-layer independent confirmation via OwnershipServiceImpl). The correction is propagation-safe — any of the 3 sidecars can re-derive the correct shape.
+
+Batch J-and-prior meta-recommendations (preserved):
+  - (aa-kk) **batch J** — see prior frontmatter; UI-axis primary-source coverage closes the consumer-facing loop.
 
 Batch H-and-prior meta-recommendations (preserved):
   - (n) **batch H: DOC-GAP-082 META 13-sidecar (DISABLED-bypasses-RBAC-primary-surface)**.
   - (o) **batch H: DOC-GAP-083 META 4-layer (No-audit-log on RBAC mutations + ownership-binding-vs-directory-CRUD asymmetry)** — extended to PolicyServiceImpl service-layer in batch I.
   - (p) **batch H: DOC-GAP-105 supersedes DOC-GAP-021 with SQL primary-source** — extended to 6-angle in batch J.
-  - (q) **batch H: CROSS-BATCH CORRECTION (DOC-GAP-108 — 5xx misclaim → 400 USR003)**.
+  - (q) **batch H: CROSS-BATCH CORRECTION (DOC-GAP-108 — 5xx misclaim → 400 USR003)** — extended to 3-layer triangulation in batch K.
   - (r) **batch H: DOC-GAP-106 closes the AUTHORIZATION HOT PATH soft-delete leak**.
   - (s) **batch H: First SQL-injection finding (DOC-GAP-104)**.
 
@@ -71,18 +92,22 @@ Batch D-and-prior meta-recommendations (preserved): (a)-(d) — see prior frontm
   - **Documentation-overstates-config-effect** (2026-05-10B + 2026-05-12D + batch F).
   - **GitBook legacy-route 404 cluster**.
   - **Auth-mode-wiring-site blast-radius gap** (2026-05-12C).
-  - **Notifications subsystem under-documented for operations** (2026-05-12C + D).
-  - **2026-05-12D: Housekeeping subsystem doc completeness**.
+  - **Notifications subsystem under-documented for operations** (2026-05-12C + D + batch K dispatcher).
+  - **2026-05-12D: Housekeeping subsystem doc completeness** — extended to orchestrator-tier in batch K.
   - **2026-05-12D: OAuth2 docs internal inconsistency**.
   - **2026-05-19 batch H: Repository-layer SQL primary-source confirms 8 existing findings AND surfaces 5 new HIGH**.
   - **2026-05-19 batch H: First SQL-injection in the catalog (DOC-GAP-104)**.
-  - **2026-05-19 batch H: First cross-batch correction propagated (DOC-GAP-108)**.
+  - **2026-05-19 batch H: First cross-batch correction propagated (DOC-GAP-108)** — extended to 3-layer in batch K.
   - **2026-05-19 batch I: Service-layer business-invariant primary-source confirms 6 existing findings AND surfaces 15 new (5 HIGH + 8 MEDIUM + 2 LOW)**.
   - **2026-05-19 batch I: First META on a platform-wide ADR-grade architectural pattern (DOC-GAP-116)**.
   - **2026-05-19 batch I: Ingestion silent-destruction LSN-001 family (DOC-GAP-113 + DOC-GAP-114)**.
-  - **NEW 2026-05-19 batch J: UI-axis consumer-surface primary-source confirms 5 existing findings AND surfaces 11 new (2 HIGH + 6 MEDIUM + 3 LOW)** — for the first time the catalog is anchored on `*.tsx` and Redux thunks where consumer-visible behaviour is observable. The pattern from batch J: the UI layer is where docs-vs-code mismatches become operator-observable; the same Markdown component is the platform-wide XSS surface; the same `<Lineage />` component handles both data-entity and microservices lineage; the same `useEffect` dep-array drives LSN-017 doubling AND the F-001 ranking inflation; the UI's URL parameters are an UNCLAMPED surface to the backend's amplification gaps.
-  - **NEW 2026-05-19 batch J: First META on UI test coverage absence (DOC-GAP-137)** — the test harness is fully installed (Vitest + @testing-library + jsdom + scripts); ZERO test files exist; 57 named uncovered behaviours across 5 sidecars. Highest-leverage developer-guide-page is the canonical-home for "how to test the UI" + the first batch of TEST-GAP-NNN regressions to author.
-  - **NEW 2026-05-19 batch J: Two NEW factual doc-vs-code mismatches on the catalog-overview live page (DOC-GAP-128 + DOC-GAP-129)** — both Principal-engineer-quality publishing failures; both fixable with one-line doc edits. The Recommended panel section is a high-traffic-page coherence failure.
+  - **2026-05-19 batch J: UI-axis consumer-surface primary-source confirms 5 existing findings AND surfaces 11 new (2 HIGH + 6 MEDIUM + 3 LOW)**.
+  - **2026-05-19 batch J: First META on UI test coverage absence (DOC-GAP-137)**.
+  - **2026-05-19 batch J: Two NEW factual doc-vs-code mismatches on the catalog-overview live page (DOC-GAP-128 + DOC-GAP-129)**.
+  - **NEW 2026-05-19 batch K: Service-tier (5 high-traffic services) primary-source confirms 10 existing findings AND surfaces 11 new (5 HIGH + 5 MEDIUM + 1 LOW)** — the batch K pattern: every service-tier finding ALSO surfaces a maintainer-intent (the implicit_adrs block) that anchors the doc-side action with a quotable design rationale, NOT a "should-have-been" recommendation. The 5 services cover the platform's permission-bypass family (REFACTOR-217 service-tier + REFACTOR-199 + REFACTOR-206 + REFACTOR-228 triple-re-query), the notifications poison-message + cross-channel asymmetry family, the auth-identity chokepoint (15 callsite blast-radius), and the housekeeping operator-traps. Every new finding has primary-source maintainer-intent capture.
+  - **NEW 2026-05-19 batch K: First REV-3 LAYER-0 pillar-overpromise META (DOC-GAP-149)** — system-mission.md authored pillars without cross-validating against live doc coverage; P-09's "User-owner association" sub-feature seed is one-sentence-deep on the live page despite ~31 lines of code encoding 5 load-bearing semantics. Methodology gap surfaced; corrective action is system-mission.md re-author + page extension.
+  - **NEW 2026-05-19 batch K: Cross-batch correction extends to 3-layer triangulation (DOC-GAP-108)** — service-layer OwnershipServiceImpl independently confirms the 400-USR003 path; the misclaim in batch-F is now over-ridden by THREE independent primary sources (repository + service + this DOC-GAP detail file).
+  - **NEW 2026-05-19 batch K: 5 live URLs WebFetched in current session at status 200** — notifications page + user-owner-association page + business-glossary page + odd-platform housekeeping page + authorization/permissions page; all live-doc claims re-verified, no URL decay, no anchor renames.
 
 ## Findings
 
@@ -92,11 +117,11 @@ Batch D-and-prior meta-recommendations (preserved): (a)-(d) — see prior frontm
 
 Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-fidelity discriminating context per entry; full content lives in `detail/{id}.md`. The `registry-search` subagent reads THIS file; reducers read the subagent's surfaced candidates verbatim and decide strengthen-vs-new. Do not hand-edit headline blocks below the index summary unless the entry's discriminating field changes — re-run `shard.py` or rely on the reducer to refresh.
 
-**Total entries**: 138
+**Total entries**: 137
 
 ---
 
-## DOC-GAP-001 — DataEntity `/term` vs `/terms` path mismatch silently disables DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM gates — undocumented on Permissions page
+## DOC-GAP-001 — DataEntity `/term` vs `/terms` path mismatch silently disables DATA_ENTITY_ADD_TERM and DATA_ENTITY_DELETE_TERM gates — undocumented on Permissions page **(batch K: 5-sidecar — service-tier TermServiceImpl)**
 
 **Severity**: HIGH
 **Category**: drift
@@ -339,7 +364,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-054 — Notifications subsystem: no rate-limit / queue / backpressure — bursty alert events translate 1:1 into outbound HTTP/SMTP requests; Slack will rate-limit (429), SMTP/webhook receivers will be overwhelmed
+## DOC-GAP-054 — Notifications subsystem: no rate-limit / queue / backpressure — bursty alert events translate 1:1 into outbound HTTP/SMTP requests; Slack will rate-limit (429), SMTP/webhook receivers will be overwhelmed **(batch K: 3-sidecar — first dispatcher-tier primary-source via NotificationsDispatcher)**
 
 **Severity**: HIGH
 **Category**: drift
@@ -348,7 +373,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-055 — Notifications subsystem: no audit trail of delivery (no DB record, no metric, only DEBUG-level log) — operators cannot answer "did the alert get delivered?" or "which alerts went to which channels?"
+## DOC-GAP-055 — Notifications subsystem: no audit trail of delivery (no DB record, no metric, only DEBUG-level log) — operators cannot answer "did the alert get delivered?" or "which alerts went to which channels?" **(batch K: 3-sidecar — adds LSN-advance-on-failure detail)**
 
 **Severity**: HIGH
 **Category**: drift
@@ -537,7 +562,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-108 — CROSS-BATCH CORRECTION — batch-F `createOwnership` sidecar's "5xx on duplicate" claim is WRONG; actual surface is HTTP 400 with `USR003` (`UniqueConstraint`) and friendly message "Ownership for this data entity and owner already exists" — AND this error shape is undocumented in OpenAPI, in the permissions live page, and in the owners live page
+## DOC-GAP-108 — CROSS-BATCH CORRECTION — batch-F `createOwnership` sidecar's "5xx on duplicate" claim is WRONG; actual surface is HTTP 400 with `USR003` (`UniqueConstraint`) and friendly message "Ownership for this data entity and owner already exists" — AND this error shape is undocumented in OpenAPI, in the permissions live page, and in the owners live page **(batch K STRENGTHENS to 3-layer triangulation with OwnershipServiceImpl service-layer independent primary-source)**
 
 **Severity**: HIGH
 **Category**: drift (substrate misclaim correction + class-wide OpenAPI 400-USR003 undeclared on every create endpoint with a UNIQUE constraint translation)
@@ -606,6 +631,51 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 **Category**: meta (cross-cutting; pairs with the test-coverage-mapper reducer's TEST-GAP-NNN cluster)
 
 **Full detail**: `detail/DOC-GAP-137.md`
+
+---
+
+## DOC-GAP-139 — Independent SecurityConstants bug — `PUT /api/alerts/{alert_id}/status` is wired to `DATASET_FIELD_ADD_TERM` (a Term permission applied to an Alert path); the intended `DATA_ENTITY_ALERT_RESOLVE` is never consulted; operators with `DATASET_FIELD_ADD_TERM` can change any alert's status while named-alert-resolve holders cannot — sibling to REFACTOR-217 / DOC-GAP-001 (different permission axis) — surfaced by TermServiceImpl primary source
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-139.md`
+
+---
+
+## DOC-GAP-140 — Term description-edit auto-link service-tier side-channel bypasses `DATA_ENTITY_ADD_TERM` — `handleDataEntityDescriptionTerms` inserts `data_entity_to_term` with `is_description_link=TRUE` without consulting the documented permission; lives at the service tier, persists even if REFACTOR-217 controller-tier is fixed; live Business Glossary + Permissions pages silent
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-140.md`
+
+---
+
+## DOC-GAP-141 — S2sAuthenticationFilter hardcodes username `'ADMIN'` (uppercase, case-sensitive) into the S2S Authentication token; any S2S API-key call that invokes a service using `AuthIdentityProvider.fetchAssociatedOwner` looks up `WHERE oidc_username='ADMIN' AND provider IS NULL`; if an operator has named a real LOGIN_FORM/LDAP user `ADMIN`, the S2S caller inherits that user's owner-scoped reads/mutations — operator-naming-controllable but undocumented across security docs
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-141.md`
+
+---
+
+## DOC-GAP-142 — No auto-create-on-first-login under OAUTH2 / LDAP / LOGIN_FORM — new federated user authenticates successfully but has NO `USER_OWNER_MAPPING` row; `My Objects` / `My Alerts` / `MY_OBJECTS` activity all silently degrade to HTTP 200 with empty body; no UI banner directs the user to the OwnerAssociationRequest flow; combined with batch-E DOC-GAP-075 the full principal-to-Owner onboarding flow is invisible operator-facing
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-142.md`
+
+---
+
+## DOC-GAP-143 — NotificationsDispatcher poison-message WAL replay loop on translation failure — `RuntimeException` from `AlertNotificationMessageTranslator.translate()` bypasses the per-sender catch (which catches only `NotificationSenderException`); propagates to `NotificationSubscriber.run()`, releases the lock, sleeps 10s, re-acquires, replays SAME WAL LSN indefinitely, BLOCKING subsequent WAL messages; no metric, no health-check signal, no UI surface
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-143.md`
 
 ---
 
@@ -798,7 +868,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-057 — Notifications subsystem under-documents operational caveats — dead `notifications.webhookUrl` field, no per-channel filtering, no PII redaction, replication-slot orphan risk on rename, webhook unsigned delivery
+## DOC-GAP-057 — Notifications subsystem under-documents operational caveats — dead `notifications.webhookUrl` field, no per-channel filtering, no PII redaction, replication-slot orphan risk on rename, webhook unsigned delivery **(batch K: 2-sidecar — dispatcher-tier primary-source confirms 2 of 5 sub-caveats; cluster expands to 7 sub-caveats with DOC-GAP-143 + DOC-GAP-147)**
 
 **Severity**: MEDIUM
 **Category**: drift
@@ -816,7 +886,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-060 — Housekeeping docs frame the subsystem as "three cleanup tasks" but code has 5 HousekeepingJob beans — `ActivityEmptyPartitionsHousekeepingJob` and `MessageEmptyPartitionsHousekeepingJob` are undocumented
+## DOC-GAP-060 — Housekeeping docs frame the subsystem as "three cleanup tasks" but code has 5 HousekeepingJob beans — `ActivityEmptyPartitionsHousekeepingJob` and `MessageEmptyPartitionsHousekeepingJob` are undocumented **(batch K: 3-sidecar — orchestrator-tier primary-source via HousekeepingJobManager)**
 
 **Severity**: MEDIUM
 **Category**: drift
@@ -825,7 +895,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-062 — AlertHousekeepingJob jOOQ-precedence bug acknowledged in docs but unlinked to a tracking issue / no workaround documented
+## DOC-GAP-062 — AlertHousekeepingJob jOOQ-precedence bug acknowledged in docs but unlinked to a tracking issue / no workaround documented **(batch K: 2-sidecar — orchestrator-tier primary-source + verbatim fix-shape)**
 
 **Severity**: MEDIUM
 **Category**: drift
@@ -879,7 +949,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-075 — Owners live doc page omits creation mechanics (`POST /api/owners`), `OWNER_CREATE` permission, audit-trail absence, association-request flow mechanics, name validation gaps, and soft-delete recovery semantics (6 doc-drift sub-findings)
+## DOC-GAP-075 — Owners live doc page omits creation mechanics (`POST /api/owners`), `OWNER_CREATE` permission, audit-trail absence, association-request flow mechanics, name validation gaps, and soft-delete recovery semantics (6 doc-drift sub-findings) **(batch K: 3-sidecar — REFACTOR-199 service-tier confirmation + maintainer-intent capture; expands to 8 sub-findings)**
 
 **Severity**: MEDIUM
 **Category**: drift
@@ -915,7 +985,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-100 — `[[namespace:term]]` description auto-linking syntax is platform-specific, undocumented in operator-facing pages, and quadruple-confirmed-missing (batch I + batch J UI cluster + UI-vs-backend regex asymmetry surfaced)
+## DOC-GAP-100 — `[[namespace:term]]` description auto-linking syntax is platform-specific, undocumented in operator-facing pages, and quintuple-confirmed-missing (batch I + batch J + **batch K — service-tier primary source for the regex constant**)
 
 **Severity**: MEDIUM
 **Category**: missing-page (no operator-facing dictionary / glossary / business-glossary feature page exists; the description-side auto-linking syntax has no canonical home)
@@ -1095,6 +1165,51 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
+## DOC-GAP-144 — Term `updateTerm` and `delete` BLOCKED with HTTP 400 `BadUserRequestException` if any active description mentions the term via `[[ns:term]]` — definition-only edits ARE allowed (text-vs-id semantic); operators discover the constraint by collision; live Business Glossary page silent
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-144.md`
+
+---
+
+## DOC-GAP-145 — Term unhandled-mention staging tables (`*_unhandled_term`) with forward-resolution on term-create — `[[ns:NEW_TERM]]` mentions for non-existent terms are staged and automatically materialised when the matching term is later created; operators can author descriptions referencing terms they plan to create later; feature undocumented
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-145.md`
+
+---
+
+## DOC-GAP-146 — Title directory auto-grows via `OwnershipServiceImpl.titleService.getOrCreate(formData.titleName)` — no `TITLE_CREATE` permission exists, no allowlist, no length/format validation, no Titles-management UI; REFACTOR-206 anchor — sibling to REFACTOR-199 Owner-directory auto-growth; both directories grow silently from the same endpoint
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-146.md`
+
+---
+
+## DOC-GAP-147 — NotificationsDispatcher Email vs Slack/Webhook exception asymmetry — `EmailNotificationSender` wraps its exception chain as RAW `RuntimeException` (not `NotificationSenderException`); Email failures BYPASS the dispatcher's per-sender catch and ABORT fan-out for that message; if Email is not last in `List<NotificationSender>` order, subsequent senders SKIP — live page documents partial-delivery WITHIN email but not CROSS-channel suppression
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-147.md`
+
+---
+
+## DOC-GAP-149 — **META-FINDING** — REV-3 LAYER-0 pillar-overpromise: `system-mission.md` P-09 (Security & Access Control) sub-feature seed declares "User-owner association" as top-tier RBAC primitive with `Confidence: HIGH`; live `user-owner-association` page contains one one-sentence runtime-semantic claim; five distinct runtime semantics encoded in `AuthIdentityProviderImpl` have ZERO operator-facing presence — pillar's promise OVER-CLAIMS relative to doc-page coverage
+
+**Severity**: MEDIUM
+**Category**: drift (meta — process gap aggregating DOC-GAP-103 + DOC-GAP-141 + DOC-GAP-142; surfaces the system-mission-vs-doc-coverage methodology gap)
+
+**Full detail**: `detail/DOC-GAP-149.md`
+
+---
+
 ## DOC-GAP-024 — OpenAPI tag `alert` has no `description:` field and no `externalDocs.url`
 
 **Severity**: LOW
@@ -1167,7 +1282,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-103 — LOGIN_FORM and LDAP both produce `provider=null` in `USER_OWNER_MAPPING` — undocumented cross-mode user-identity bleed during auth-mode migrations
+## DOC-GAP-103 — LOGIN_FORM and LDAP both produce `provider=null` in `USER_OWNER_MAPPING` — undocumented cross-mode user-identity bleed during auth-mode migrations **(batch K: 2-sidecar — service-tier AuthIdentityProviderImpl primary source + maintainer-intent capture)**
 
 **Severity**: LOW
 **Category**: drift (operational migration caveat absent on the Authorization / User-owner-association doc page)
@@ -1227,5 +1342,14 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 **Category**: drift (UX-correctness; no live-doc claim to drift against; latent regression hazard absent from the developer-guides / contributing tree)
 
 **Full detail**: `detail/DOC-GAP-138.md`
+
+---
+
+## DOC-GAP-148 — Per-job transaction-handling asymmetry across the 5 HousekeepingJob beans — `AlertHousekeepingJob` and `DataEntityHousekeepingJob` wrap in `DSL.transaction(...)`; `SearchFacetsHousekeepingJob` runs in auto-commit on the shared connection; functionally equivalent for single-statement DELETE but Principal-engineer-quality consistency gap
+
+**Severity**: LOW
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-148.md`
 
 ---

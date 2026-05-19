@@ -11,3 +11,17 @@
   - **Co-surfaced gaps** (link from `refactoring-scopes.md`): REFACTOR-131 (dead `NotificationsProperties.webhookUrl` field — top-level config key with no consumer; MEDIUM, hygiene), REFACTOR-132 (`notifications.message.downstream-entities-depth` not modeled on POJO — incomplete @ConfigurationProperties surface; LOW).
   - **Proposed action**: Promote to `adrs/drafts/notifications-feature-disabled-by-default.md` (new ADR). Document together with ADR-CANDIDATE-004 (GenAI) and ADR-CANDIDATE-019 (Data Collaboration) as the "heavyweight outbound-integration features ship off-by-default" family. Cross-link with ADR-CANDIDATE-041 (per-channel URL-presence activation) — the two together describe the Notifications feature's full opt-in shape.
   - **Severity rationale**: MEDIUM — deployment-architecture decision; affects operator UX on every fresh ODD deployment with notifications.
+
+## STRENGTHENS — NotificationsDispatcher (batch K)
+
+**Primary-source confirmation at the DISPATCHER consumer**. The `NotificationsDispatcher` (= `AlertNotificationMessageProcessor`) sidecar confirms the `@ConditionalOnNotifications` meta-annotation on the third consumer (the dispatcher itself), elevating support from 1 sidecar (`NotificationsProperties` batch C) to 2 sidecars with full end-to-end coverage. The dispatcher's bean does NOT register when `notifications.enabled=false`; the three-layer gating (Configuration + SubscriberStarter + dispatcher) is now primary-source verified.
+
+**New batch-K evidence**:
+- `NotificationsDispatcher.md:implicit_adrs.[2]` (HIGH confidence): "Dispatcher exists conditionally — disabled by default. The whole bean is gated by `@ConditionalOnNotifications` which reads `notifications.enabled` from the Spring `Environment` with default `false`. Encodes the off-by-default subsystem stance uniformly with the rest of the notification package (NotificationConfiguration, NotificationSubscriberStarter, sender beans all share the same condition)."
+- Intent anchor: "`@ConditionalOnNotifications` on the `@Component`-annotated dispatcher class" (`AlertNotificationMessageProcessor.java:14-15`)
+
+**Cross-batch ADR family alignment**: ADR-CANDIDATE-040 (subsystem-level off-by-default) + ADR-CANDIDATE-041 (per-channel URL-presence activation) + ADR-CANDIDATE-098 (per-channel catch-and-continue) + ADR-CANDIDATE-099 (sequential synchronous fan-out) + ADR-CANDIDATE-100 (translate-before-fan-out atomic) together form the full Notifications-subsystem architectural posture. ADR-CANDIDATE-040 is now positioned as the FOUNDATION of the family.
+
+**Severity unchanged**: MEDIUM (deployment-architecture decision).
+
+---

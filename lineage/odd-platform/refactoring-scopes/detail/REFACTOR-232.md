@@ -40,4 +40,16 @@ The misclaim in the batch-F sidecar — that the surface is 5xx — would have p
 
 **Suggested backlog grouping**: `Substrate correction sprint` (slice 8+ cross-batch propagation) + `DOC-NNN error-codes reference page` (the broader doc-product gap).
 
+## STRENGTHENS — OwnershipServiceImpl (batch K, SERVICE-LAYER primary-source confirmation at ExceptionUtils.java:69-71)
+
+**Service-layer primary-source confirmation at the EXACT ExceptionUtils branch**. The batch-H sidecar surfaced the correction from the repository layer; the batch-K OwnershipServiceImpl sidecar adds the SERVICE-LAYER framing — confirming that `OwnershipServiceImpl.create` (line 59) calls `ownershipRepository.create(ownership)` WITHOUT a preceding existence check (the architectural decision per ADR-CANDIDATE-103 = batch-K ADR-CANDIDATE related to centralised error translation; per ADR-CANDIDATE-071 specifically).
+
+**New batch-K evidence**:
+- `OwnershipServiceImpl.md:concepts.invariants.[4]` (HIGH): "Duplicate prevention is DB-constraint-driven, surfacing as HTTP 400 USR003 (cross-batch correction). `create` calls `ownershipRepository.create(ownership)` at line 59, which delegates to `ReactiveOwnershipRepositoryImpl.create` (plain INSERT, no `ON CONFLICT`). A second create for the same (data_entity_id, owner_id) hits the `UNIQUE (data_entity_id, owner_id)` constraint per `V0_0_3__add_ownership.sql:17`. The `JooqReactiveOperations.mono(query).onErrorMap(DataAccessException.class, ExceptionUtils::translateDatabaseException)` wrapper catches the DataAccessException and `ExceptionUtils.translateDatabaseException` (`ExceptionUtils.java:30-36`) matches `SQLStateClass.C23_INTEGRITY_CONSTRAINT_VIOLATION` → constructs `UniqueConstraintException(\"Ownership for this data entity and owner already exists\")` (`ExceptionUtils.java:69-71`) → `ControllerAdvice.handleUniqueConstraint` maps to `HttpStatus.BAD_REQUEST` (`ControllerAdvice.java:36-40`). Error code `USR003`, `resolvable=true`, `retryable=false` per `ErrorCode.java:11`. **This CORRECTS the batch-F `DataEntityController.createOwnership` sidecar's `bugs_limitations_corner_cases[2]` and `known_security_gaps[3]` claim that the surface is 5xx.**"
+- `OwnershipServiceImpl.md:implicit_adrs.[3]`: the corresponding ADR (ADR-CANDIDATE-071 family) is the architectural prescription for centralised error translation.
+
+**Triangulation complete**: batch-F (controller-method — misclaim), batch-H (repository — correction), batch-K (service-layer — primary-source confirmation at ExceptionUtils.java:69-71). The correction is now triangulated end-to-end at primary source.
+
+**Severity unchanged**: MEDIUM (correction-priority). The triangulation strengthens the maintainer's confidence that the actual surface is 400 USR003.
+
 ---

@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-468
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:HousekeepingJobManager"
+pillars_affected: [P-04, P-08, P-09]
+surfaced_by:
+  - "HousekeepingJobManager.md:security.known_security_gaps.[0] (no tamper-evident audit log)"
+  - "HousekeepingJobManager.md:bugs_limitations_corner_cases.[5] (no dry-run / preview / archival)"
+behaviour: |-
+  No tamper-evident audit log of housekeeping configuration changes or deletions. A malicious operator with `housekeeping.ttl.*` write access at deploy time (Helm chart override, env var, Spring Cloud Config) could set all three TTLs to `0` and the next 15-minute cycle would silently destroy all RESOLVED alert history, all search-facet history, and all soft-deleted entities (with the ~25-table cascade including OWNERSHIP relations). NO audit trail of the config change AND NO audit trail of the deletion. The three TTL-driven jobs issue jOOQ DELETE directly (AlertHousekeepingJob.java:40-43, SearchFacetsHousekeepingJob.java:23-27, DataEntityHousekeepingJob.java:99-126) with NO `housekeeping.dry-run` config, NO `housekeeping.ttl.archive-table`, NO operator-overrideable gate. Compliance frameworks requiring 'changes to data retention policies must be logged' (SOX / GDPR records-of-processing) are not satisfied. Cross-pillar P-09 dimension because the deletion is destructive AND silent.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/HousekeepingAuditAbsenceTest.java"
+  name: "ttlConfigZeroOverride_silentDestruction_noAuditRow_noPrometheusCounter"
+evidence:
+  - |-
+    HousekeepingJobManager.md says: 'There is NO audit trail of the configuration change AND NO audit trail of the deletion. The closest mitigation is restarting the JVM during a cycle (which kills the connection and rolls back the in-progress transaction), but this is operator-aware and time-sensitive.'
+  - "HousekeepingJobManager.java:25-39 (no rate-limit, no kill-switch, no preview check)"
+  - "HousekeepingJobManager.java:36-38, 44-46 (both log.error only, no metric)"
+  - "Grep `Counter|Meter|Gauge|@ActivityLog` against housekeeping/ returns zero matches"
+cross_references:
+  - "concepts.yaml:entities[housekeeping-ttl-retention].security_aggregate.weaknesses"
+  - "TEST-GAP-211 (REFACTOR-142: same orchestrator, jOOQ bug)"
+  - "DOC-NNN candidate: housekeeping audit absence"
+proposed_action: |-
+  Testcontainers test that configures `housekeeping.ttl.resolved_alerts_days=0`. Pre-load 100 RESOLVED_AUTOMATICALLY alerts. Run one cycle. Assert (a) all 100 alerts DELETED (current contract), (b) ZERO rows inserted into any audit table (SELECT count(*) FROM information_schema.tables WHERE table_name LIKE 'audit_%' returns 0 rows matching housekeeping), (c) ZERO Micrometer counter increments (verify via SimpleMeterRegistry), (d) only log.debug at job-level, log.error if any failure. LOCKS the no-audit posture; promotes to a fix-required regression when audit lands.
+batch: 2026-05-19-K
+feature_id: null

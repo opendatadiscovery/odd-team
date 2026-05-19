@@ -1,0 +1,28 @@
+gap_id: TEST-GAP-464
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:HousekeepingJobManager"
+pillars_affected: [P-04, P-07, P-08]
+surfaced_by:
+  - "HousekeepingJobManager.md:implicit_adrs.[0] (per-job failure isolation)"
+  - "HousekeepingJobManager.md:tests_coverage_semantic.uncovered_behaviours.[5] (per-job exception isolation)"
+behaviour: |-
+  Per-job failure isolation regression-pin. The inner try/catch at HousekeepingJobManager.java:41-47 catches `Exception` and logs at ERROR (`log.error("Error while running a housekeeping job", e)`), then the outer loop continues to the next job. This is the ONLY mechanism preventing one failed job from cascading. A future refactor that (a) moved the loop body inline (losing the per-iteration try/catch), (b) changed the catch type from `Exception` to a narrower exception (e.g. `SQLException`), or (c) re-threw the exception after logging would silently regress isolation. No test verifies that a RuntimeException in AlertHousekeepingJob.doHousekeeping does NOT prevent DataEntityHousekeepingJob.doHousekeeping from running in the same cycle. Without this isolation, the 14m ShedLock window combined with the .block()-inside-transaction anti-pattern means a single transient S3 failure could indefinitely block all housekeeping.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/HousekeepingJobManagerFailureIsolationTest.java"
+  name: "oneJobThrowsRuntimeException_remainingJobsStillRun_loopContinues"
+evidence:
+  - |-
+    HousekeepingJobManager.md says: 'A future refactor that moved the loop body inline (or that changed the catch type from Exception to a narrower exception) would silently regress isolation. A unit test that injects a throwing HousekeepingJob and asserts the remaining jobs still run would lock the contract.'
+  - "HousekeepingJobManager.java:41-47 (the inner try/catch around housekeepingJob.doHousekeeping(connection))"
+  - "Grep `Housekeeping` under `<odd-platform-repo>/odd-platform-api/src/test` returns 0 matches"
+cross_references:
+  - "concepts.yaml:entities[housekeeping-ttl-retention]"
+  - "TEST-GAP-211 (REFACTOR-142: jOOQ precedence bug — same orchestrator)"
+proposed_action: |-
+  Unit test: construct HousekeepingJobManager with List<HousekeepingJob> = [@Mock throwingJob (always throws new RuntimeException), @Mock job2, @Mock job3]. Invoke runHousekeepingJobs(). Assert (a) throwingJob.doHousekeeping invoked exactly once, (b) job2.doHousekeeping invoked exactly once, (c) job3.doHousekeeping invoked exactly once, (d) log.error captured the exception's message. LOCKS the per-job isolation contract; the test must update if isolation semantics change.
+batch: 2026-05-19-K
+feature_id: null

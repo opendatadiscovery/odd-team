@@ -1,0 +1,31 @@
+gap_id: TEST-GAP-472
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java service service:AuthIdentityProviderImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[1] (S2S filter hardcodes username='ADMIN')"
+  - "AuthIdentityProviderImpl.md:security.known_security_gaps.[1] (S2S ADMIN / operator-named user collision)"
+  - "AuthIdentityProviderImpl.md:tests_coverage_semantic.uncovered_behaviours.[7] (S2S as ADMIN)"
+behaviour: |-
+  S2S 'ADMIN' username-collision regression-pin. S2sAuthenticationFilter.java:31-34 builds `User.withUsername("ADMIN").roles("ADMIN")` and wraps in UsernamePasswordAuthenticationToken (provider=null via AuthIdentityProviderImpl.java:32). Any S2S call that invokes a service using `fetchAssociatedOwner` looks up `WHERE OIDC_USERNAME = 'ADMIN' AND PROVIDER IS NULL`. If an operator has named a LOGIN_FORM or LDAP user 'ADMIN' (uppercase, exact case-sensitive match — the SQL uses `eq`, not `equalIgnoreCase`), the S2S caller resolves to THAT user's Owner. S2S API key holders thereby inherit one specific operator user's owner-scoped reads/mutations. The uppercase / case-sensitivity reduces but does not eliminate the collision. Auth boundary failure: S2S inherits user identity through user_owner_mapping lookup.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/S2sAuthIdentityAdminCollisionTest.java"
+  name: "s2sCallerSeesOperatorNamedADMINUsersOwner_caseSensitiveCollision"
+evidence:
+  - |-
+    AuthIdentityProviderImpl.md says: 'S2sAuthenticationFilter.java:31-34 builds User.withUsername("ADMIN") and wraps in UsernamePasswordAuthenticationToken. Any S2S call that invokes a service using fetchAssociatedOwner looks up WHERE OIDC_USERNAME = "ADMIN" AND PROVIDER IS NULL. If an operator has named a LOGIN_FORM or LDAP user "ADMIN" (uppercase, exact case-sensitive match — the SQL uses eq, not equalIgnoreCase), the S2S caller will resolve to THAT user''s Owner.'
+  - "S2sAuthenticationFilter.java:31-34 (hardcoded ADMIN literal)"
+  - "AuthIdentityProviderImpl.java:29-33 (instanceof check; S2S filter's token branches to provider=null)"
+  - "ReactiveUserOwnerMappingRepositoryImpl.java:116-127 (the SQL WHERE clause with eq, not equalIgnoreCase)"
+cross_references:
+  - "concepts.yaml:entities[Auth Mode (S2S branch)].security_aggregate.weaknesses"
+  - "TEST-GAP-471 (related: provider=null cross-mode bleed — same provider=null root cause)"
+  - "DOC-NNN candidate: S2S 'ADMIN' username collision risk silent in docs"
+proposed_action: |-
+  Testcontainers integration test. (1) Configure both S2S auth (`auth.s2s.enabled=true`) AND LOGIN_FORM. (2) Seed one `owner` row and one `user_owner_mapping`: (oidc_username='ADMIN', provider=null, owner_id=admin-owner.id). (3) Issue an S2S request with X-API-Key. (4) Assert fetchAssociatedOwner() returns admin-owner. (5) Repeat with `oidc_username='admin'` (lowercase) — assert fetchAssociatedOwner() does NOT return admin-owner (case-sensitive). (6) Repeat with `oidc_username='ADMIN'` and provider='LOGIN_FORM' — assert NOT returned (provider mismatch). The test EXPOSES the case-sensitive collision; the fix requires changing S2S to a reserved username (e.g. 's2s-system' with a non-colliding distinguishing prefix) and the test must update.
+batch: 2026-05-19-K
+feature_id: null

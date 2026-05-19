@@ -1,0 +1,194 @@
+name: Manage Ownership Lifecycle (create/update/delete with DEG cascade)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-08
+- P-09
+description: |-
+  **NEW OPERATION, batch 2026-05-19K** — the service-tier orchestration
+  operation for the full ownership lifecycle. Three @ReactiveTransactional
+  + @ActivityLog-annotated public methods on `OwnershipServiceImpl`:
+    1. **`create(long dataEntityId, OwnershipFormData form)`** (lines
+       47-74) — `Mono.zip(ownerService.getOrCreate(form.getOwnerName()),
+       titleService.getOrCreate(form.getTitleName()))` auto-creates
+       Owner + Title if missing → `ownershipRepository.create(ownership)`
+       INSERT (UNIQUE constraint on data_entity_id + owner_id) →
+       conditional DEG-propagation via propagateIfDEG(CREATE) →
+       searchEntrypointRepository.updateChangedOwnershipVectors →
+       dataEntityFilledService.markEntityFilled(OWNERS) → mapDto.
+    2. **`delete(long ownershipId, Boolean propagate)`** (lines 76-97) —
+       ownershipRepository.delete(ownershipId) hard-DELETE → conditional
+       DEG-propagation via propagateIfDEG(DELETE) → re-query
+       getOwnershipsByDataEntityId; if empty list, markEntityUnfilled(OWNERS).
+       NO search-vector refresh on delete (latent staleness in FTS).
+    3. **`update(long ownershipId, OwnershipUpdateFormData form)`** (lines
+       99-119) — ownershipRepository.get(ownershipId) (NotFound check) →
+       titleService.getOrCreate(form.getTitleName()) auto-creates Title if
+       missing → ownershipRepository.updateTitle(ownershipId, titleId) →
+       conditional DEG-propagation via propagateIfDEG(CREATE — note:
+       CREATE-side branch reuses createOrUpdate UPSERT semantics for
+       title overwriting on existing child rows) → search-vector refresh
+       → ownershipRepository.get(ownershipId) re-fetch (second get for
+       response payload).
+  **DEG cascade** (`propagateIfDEG` at lines 121-132 + `propagateOwnership`
+  at lines 134-149) is OPT-IN via `form.propagate: Boolean`, gated by
+  `DATA_ENTITY_GROUP` entity-class membership on the target. Non-DEG
+  target with propagate=true is silent no-op (NOT error). CREATE-side
+  cascade routes to `ownershipRepository.createOrUpdate` (title-overwriting
+  UPSERT via onConflictOnConstraint.doUpdate.set(TITLE_ID, EXCLUDED));
+  DELETE-side cascade routes to `ownershipRepository.deleteByDataEntityAndOwner`
+  (operator-precedence-safe OR-chain of AND-pairs). **NO service-tier
+  permission check** (lines 35-37) — authorization is enforced UPSTREAM
+  at SecurityConstants.SECURITY_RULES[215-227]. **No principal inference**
+  — owner_name is taken VERBATIM from the form. The architectural
+  posture: 'who can the caller grant to' decision belongs to the upstream
+  Policy resolver; 'to whom is the ownership granted' is a CALLER
+  decision (the form's owner_name). Self-grant is decoupled from upstream
+  authorisation. **CROSS-BATCH CORRECTION** (per batch H + batch K):
+  the batch-F createOwnership sidecar's claim of "5xx duplicate-key
+  surface" is INCORRECT — actual surface is HTTP 400 USR003 via
+  ExceptionUtils.translateDatabaseException →
+  UniqueConstraintException("Ownership for this data entity and owner
+  already exists") → ControllerAdvice.handleUniqueConstraint →
+  HttpStatus.BAD_REQUEST.
+nodes:
+- odd-platform java service service:OwnershipServiceImpl
+- odd-platform java DataEntityController controller-method:createOwnership
+contributors:
+- |-
+  OwnershipServiceImpl batch K: concepts.operations[create; delete; update;
+  propagateIfDEG; propagateOwnership] + concepts.invariants (11
+  invariants — most consequential: @ReactiveTransactional at every
+  public method; No service-tier permission gate; Owner + Title
+  auto-create on miss; Duplicate prevention surfaces as HTTP 400 USR003;
+  No self-grant inference) + implicit_adrs.[0,1,2,3,4,5] (six
+  architectural decisions)
+- |-
+  createOwnership batch F existing reference: the controller-method
+  invocation point. Note: batch-F sidecar's `bugs_limitations_corner_cases.[2]`
+  + `known_security_gaps.[3]` incorrectly claimed 5xx surface — CORRECTED
+  in batch H + batch K.
+evidence:
+- |-
+  OwnershipServiceImpl.md:concepts.operations (PRIMARY SOURCE) —
+  evidence: OwnershipServiceImpl.java:47-149
+- |-
+  OwnershipServiceImpl.md:concepts.invariants.[0-10] (eleven invariants
+  constraining the operation)
+- |-
+  OwnershipServiceImpl.md:implicit_adrs.[3] (cross-batch correction —
+  duplicate-prevention is HTTP 400 USR003, not 5xx)
+- |-
+  OwnershipServiceImpl.md:bugs_limitations_corner_cases.[0,1,2,3,4,5,6]
+  (the surface-level finding cluster including REFACTOR-199 + REFACTOR-206)
+- createOwnership.md:concepts.operations[bind-owner-to-data-entity]
+axes_present:
+- services
+- controllers
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      No service-tier permission check (verified via grep). Authorization
+      is enforced UPSTREAM at the controller's SecurityRule chain. Under
+      DISABLED the chain is bypassed; under LOGIN_FORM the
+      AuthorizationCustomizer is not wired (per LoginFormSecurityConfiguration
+      finding REFACTOR-073).
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      Owner_name is taken VERBATIM from the form, not inferred from the
+      principal. A Policy granting DATA_ENTITY_OWNERSHIP_CREATE without a
+      "is": "dataEntity:owner" condition lets the holder grant ownership
+      on ANY data entity to ANY owner (including a newly auto-created one).
+  strengths:
+  - @ReactiveTransactional at every public method — atomicity for the
+    full lifecycle (owner+title upsert + ownership write + DEG cascade
+    + search-vector refresh + filled-flag toggle)
+  - DEG-propagation is OPT-IN (propagate: Boolean) — operators
+    explicitly choose to cascade
+  - Activity-feed emission at the public-method boundary — each
+    lifecycle action audited
+  - Duplicate prevention via DB-level UNIQUE constraint — friendly HTTP
+    400 USR003 surface (not 5xx)
+  weaknesses:
+  - REFACTOR-199 — Owner directory grows past OWNER_CREATE via
+    side-channel auto-create
+  - REFACTOR-206 — Title directory grows without any permission gate
+    (TITLE_CREATE does not exist)
+  - delete flow does NOT refresh FTS vector (search-result staleness)
+  - delete flow does NOT validate ownership exists (HTTP 204 masks
+    "wasn't there to delete")
+  - DEG-propagation cascade emits NO per-child activity events (deliberate
+    granularity choice; surfaced separately as audit-feed asymmetry
+    invariant)
+  - Self-grant decoupling is undocumented at live doc layer
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    Per request DB round-trips (non-DEG create): ~6-8 (getByName/create
+    Owner + Title; INSERT ownership; UPDATE search_entrypoint; mark
+    filled; activity-handler BEFORE+AFTER getOwnershipsByDataEntityId).
+  - |-
+    DEG cascade adds: 1 SELECT (entityClassIds), 1 SELECT
+    (getDEGEntitiesOddrns), 1 SELECT (listByOddrns), ceil(N/1000)
+    INSERT-with-onConflict batches via executeInPartitionReturning.
+    For N=10K children: ~13 DB round-trips ON TOP of the base 6-8.
+  - |-
+    update path re-fetches ownershipRepository.get TWICE (NotFound check
+    + response-builder re-fetch).
+  throughput_shape:
+    verdict: MIXED
+    detail: |-
+      Single-row CRUD per public method call; DEG cascade adds batched
+      UPSERT/DELETE that grows with child count. createOrUpdate is
+      partitioned at 1000 rows; deleteByDataEntityAndOwner builds a
+      single OR-chain WHERE clause.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless service — instances scale horizontally. @ReactiveTransactional
+      holds DB connection from first getByName through final mark-filled;
+      DEG-create transactions are the long tail.
+notes: |-
+  NEW operation captured in batch 2026-05-19K. The service-tier
+  orchestration operation that complements the existing
+  controller-method-level "Bind Owner to Data Entity" operation
+  (batch F). This batch K captures the FULL three-method lifecycle
+  + the DEG cascade primitive + the cross-batch correction propagation
+  (HTTP 400 USR003, not 5xx).
+
+  Cross-cutting connections:
+    - Pairs with the "Bind Owner to Data Entity (with optional DEG
+      propagation)" operation (existing batch F) — that captures the
+      create flow at the controller-method level; this captures the
+      full three-method lifecycle at the service level
+    - Pairs with the "Ownership (binding edge)" entity concept
+      (existing batch H) — that captures the persistence layer; this
+      captures the orchestration
+    - Pairs with the "Permission-bypass via Owner auto-create
+      (side-door write path)" invariant — that captures REFACTOR-199's
+      structural shape; this operation embodies the side-door
+    - Pairs with the "DEG-propagation cascade audit-feed asymmetry"
+      invariant (new this batch) — that captures the audit-granularity
+      decision; this operation embodies the cascade
+    - Cross-references "Database-uniqueness with centralised friendly-error
+      translation" invariant — the duplicate-prevention surface error
+      mechanism
+
+  Three DOC-NNN candidates flow from this operation:
+    (a) Document the duplicate-prevention surface error (HTTP 400 USR003)
+        on the OpenAPI spec + permissions doc page (currently silent)
+    (b) Document the self-grant decoupling on the policies doc page
+        (currently silent on whether holders of OWNERSHIP_CREATE can
+        grant themselves ownership)
+    (c) Document the DEG-propagation cascade semantics on the
+        owners/policies doc pages — including the title-overwriting
+        CREATE-side cascade on existing children

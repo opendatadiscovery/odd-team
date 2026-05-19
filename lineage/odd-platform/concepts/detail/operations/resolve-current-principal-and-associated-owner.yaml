@@ -1,0 +1,150 @@
+name: Resolve Current Principal and Associated Owner
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  **NEW OPERATION, batch 2026-05-19K** — the per-request identity-resolution
+  operation that turns the active Spring SecurityContext into a UserDto +
+  UserProviderRole + OwnerPojo. The operation is implemented as three
+  parameter-less reactive Monos on `AuthIdentityProviderImpl` (the sole
+  implementation of `AuthIdentityProvider`):
+    1. **`getCurrentUser()`** — `ReactiveSecurityContextHolder.getContext()`
+       → `SecurityContext::getAuthentication` → if `OAuth2AuthenticationToken`,
+       construct `UserDto(name, authorizedClientRegistrationId)`; else
+       construct `UserDto(name, null)` (lines 25-34). The else-branch
+       collapses LOGIN_FORM, LDAP, and S2S all into the null-provider
+       bucket — the source of the cross-mode bleed invariant.
+    2. **`getCurrentUserProviderRole()`** —
+       `ReactiveSecurityContextHolder.getContext()` →
+       `SecurityContext::getAuthentication` →
+       `authorities.iterator().next().getAuthority()` →
+       `UserProviderRole.valueOf(authority)` (lines 38-46). Reads ONLY
+       the first GrantedAuthority; subsequent authorities silently
+       dropped. Returns the enum ADMIN | USER.
+    3. **`fetchAssociatedOwner()`** — `getCurrentUser()` chained via
+       `.flatMap(user -> userOwnerMappingRepository.getAssociatedOwner(
+       user.username(), user.provider()))` (lines 50-53). The
+       downstream `getAssociatedOwner` issues `SELECT owner.* FROM
+       user_owner_mapping JOIN owner ON user_owner_mapping.owner_id =
+       owner.id WHERE oidc_username = ? AND deleted_at IS NULL AND
+       (provider = ? OR provider IS NULL)` per
+       ReactiveUserOwnerMappingRepositoryImpl.java:116-127.
+  **All three Monos take NO Authentication parameter** — the principal is
+  read inside this service via `ReactiveSecurityContextHolder.getContext()`.
+  This is the ARCHITECTURAL ANCHOR for ADR-CANDIDATE-015. The 15 callsites
+  span service-tier owner-scoped reads (SearchServiceImpl, AlertServiceImpl,
+  DataEntityServiceImpl etc.) + permission/extractor classes
+  (DataEntityPermissionExtractor etc.). **Empty-context contract**: if
+  ReactiveSecurityContextHolder.getContext() emits empty (DISABLED mode +
+  no ServerSecurityContextRepository; misordered WebFilter regression),
+  ALL three Monos emit empty (not error). Downstream consumers degrade to
+  empty results with HTTP 200, not 401/403/404. **No-cache contract**:
+  every invocation goes through ReactiveSecurityContextHolder.getContext()
+  AND (for fetchAssociatedOwner) a DB round-trip. Stateless / no-caching
+  by deliberate omission per implicit_adrs.[3].
+nodes:
+- odd-platform java service service:AuthIdentityProviderImpl
+- odd-platform java DataEntityController controller-method:getMyObjects
+contributors:
+- |-
+  AuthIdentityProviderImpl batch K: concepts.operations[resolve-principal;
+  branch-on-authentication-type; extract-role; compose-owner-lookup] +
+  concepts.invariants (5 invariants) + implicit_adrs.[0,1,2,3]
+- |-
+  DataEntityController.getMyObjects batch G: the anchor-set defence-in-depth
+  positive case consuming this operation
+evidence:
+- |-
+  AuthIdentityProviderImpl.md:concepts.operations (PRIMARY SOURCE) —
+  evidence: AuthIdentityProviderImpl.java:23-53
+- |-
+  AuthIdentityProviderImpl.md:concepts.invariants (5 invariants — the
+  semantics constraining this operation)
+- |-
+  AuthIdentityProviderImpl.md:implicit_adrs.[0] (reactor-Context principal
+  flow — the architectural anchor for ADR-CANDIDATE-015)
+- |-
+  AuthIdentityProviderImpl.md:dependencies_semantic.requires-feature
+  (Spring Security WebFlux reactive principal propagation; user_owner_mapping
+  persistence; User-owner association flow)
+- getMyObjects.md (batch G — the consumer-side anchor-set evidence)
+axes_present:
+- services
+- controllers
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  - INTERNAL_ONLY
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      Single chokepoint — the three Mono returns are the only
+      principal-resolution primitives in the codebase. Consistent across
+      all 4 UI auth modes + S2S.
+  owner_scoping:
+    verdict: RESPECTS
+    detail: |-
+      This operation IS the per-caller owner resolution primitive. Every
+      downstream `WHERE OWNERSHIP.OWNER_ID = ?` JOIN is parameterised by
+      the OwnerPojo this operation returns.
+  strengths:
+  - Single chokepoint — 15 callsites all funnel through three Monos
+  - Reactor-Context-based principal flow eliminates the
+    controller-must-thread-Authentication pattern
+  - Pure identity resolution; authorization decisions happen downstream
+    (permission extractors, SecurityRule matchers) — concerns cleanly
+    separated
+  weaknesses:
+  - Cross-mode bleed (LOGIN_FORM + LDAP both produce provider=null)
+  - S2S 'ADMIN' literal collides with operator-named users
+  - No auto-create on OAUTH2/LDAP first login — silent empty results
+  - Empty-SecurityContext silently propagates — regression detection
+    surface
+  - No per-request or per-session caching — multiplicative DB round-trips
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    fetchAssociatedOwner invocation issues a SELECT against
+    user_owner_mapping JOIN owner for every owner-scoped read; 15
+    callsites multiplicative across the platform's HTTP request volume.
+  - |-
+    ReactiveSecurityContextHolder.getContext() invoked twice per
+    getCurrentUser AND once per fetchAssociatedOwner — per-call
+    Reactor context-switch overhead.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Each principal resolution is independent; no batched lookup.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless — scales horizontally with no coordination.
+notes: |-
+  NEW operation captured in batch 2026-05-19K. The architectural anchor
+  for ADR-CANDIDATE-015 — every owner-scoped reader of the platform
+  flows through this operation. The parameter-less Mono interface
+  contract is the LOAD-BEARING design statement.
+
+  Cross-cutting connections:
+    - Pairs with the "AuthIdentityProvider (per-request principal
+      resolution chokepoint)" entity concept — that captures the
+      service-level chokepoint; this operation captures the three-step
+      flow
+    - Pairs with the "Owner-scoped routes — controllers take NO principal
+      parameter; principal flows via reactor Context" invariant — this
+      operation is the runtime that implements that invariant
+    - Pairs with the "Owner-link is the gate for owner-scoped views"
+      invariant — this operation IS the gate
+    - Companion of the "Resolve current user policies (authorization hot
+      path)" operation — both fire per request; this resolves the
+      principal+owner, the other resolves the authorisation policy
+
+  Two DOC-NNN candidates flow from this operation:
+    (a) Document the three-Mono interface contract on an internal
+        architecture doc (currently undocumented; load-bearing decision)
+    (b) Promote ADR-CANDIDATE-015 to a real ADR with this operation as
+        the canonical implementation reference

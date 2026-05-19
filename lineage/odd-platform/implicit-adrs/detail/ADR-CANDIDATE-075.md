@@ -65,4 +65,38 @@ Cross-link with ADR-CANDIDATE-001 (controller-layer thin-proxy) and ADR-CANDIDAT
 
 **Severity rationale**: HIGH — codebase-wide authorization architecture. Affects every repository's signature, every service's composition shape, every test's setup, every future endpoint's wiring discipline. The pattern is load-bearing: a future maintainer who adds a new repository or refactors an existing one must follow this convention or break the architecture. Compatible-change calculus requires understanding this ADR.
 
+## STRENGTHENS — TermServiceImpl + OwnershipServiceImpl + AuthIdentityProviderImpl (batch K — SERVICE-LAYER triangulation)
+
+**Triple service-layer confirmation that the trust boundary lives at the SERVICE LAYER, not at the repository**. Three new batch-K service-tier sidecars confirm the corollary: services consume `authIdentityProvider.fetchAssociatedOwner()` (or DON'T consume it — see TermServiceImpl + OwnershipServiceImpl gaps below) and pass the owner-id as a parameter into sibling repositories. The defence-in-depth ABSENCE at the repository layer (ADR-CANDIDATE-075's accept-the-risk clause) is now triangulated against three NEW service-layer findings.
+
+**New batch-K evidence**:
+
+1. **AuthIdentityProviderImpl.md (PRIMARY-SOURCE chokepoint)** — the service that PRODUCES the owner-id:
+   - `implicit_adrs.[0]` (HIGH): "Per-request principal resolution flows through reactor Context, not method parameters. ... the public contract on `AuthIdentityProvider.java:8-14` is three parameter-less Mono returns — no API accepts an Authentication argument; the maintainer's design choice is that the principal is ALWAYS read from the reactor Context, never threaded through method signatures." (15-callsite blast radius enumerated)
+   - This sidecar is the upstream architectural anchor for the entire owner-scoping plumbing.
+
+2. **TermServiceImpl.md** — confirms the trust-boundary RISK at the service layer (where defence-in-depth could live but doesn't):
+   - `security.authorization_assertions: []` — explicit absence. `TermServiceImpl` performs NO service-tier permission checks. All authorization is supposed to happen at the controller perimeter via `SecurityConstants.SECURITY_RULES` matchers; the service tier blindly trusts the call.
+   - Cross-link: per REFACTOR-217 path-mismatch (`/term` vs `/terms`), the controller-tier gate does NOT fire for `POST /api/dataentities/{id}/terms` and `DELETE /api/dataentities/{id}/terms/{term_id}` — making the entire term-linkage surface effectively unauthenticated-mutation-allowed. The service-tier defence-in-depth ABSENCE (NEW REFACTOR-263 in batch K) means the path-mismatch is the SOLE control.
+   - This is the load-bearing batch-K observation: when controller-tier authorisation is broken (REFACTOR-217), there is NO service-tier safety net (REFACTOR-263 NEW) because the pattern THIS ADR endorses (auth-at-service, not at repository) is itself not exercised at the service tier — Term mutations have no `permissionService.hasPermission(...)` calls. The pattern's "service is single point of enforcement" wording presumes the service ACTUALLY enforces; for Term endpoints it does not.
+
+3. **OwnershipServiceImpl.md** — confirms the trust-boundary at owner-DIRECTORY mutations:
+   - `concepts.invariants.[1]`: "**No service-tier permission gate** — the class is `@Service @RequiredArgsConstructor` only (lines 35-37); there is no `@PreAuthorize`, no programmatic `permissionService.hasPermission(...)`, no `@Secured`. Authorization is enforced upstream at `SecurityConstants.SECURITY_RULES[215-227]`. The service is **architecturally outside** the auth path."
+   - Cross-link: `OwnershipServiceImpl` IS the auto-create-on-miss vector (REFACTOR-199 batch F / batch K primary-source) — the architectural decoupling means an authorised `DATA_ENTITY_OWNERSHIP_CREATE` holder bypasses `OWNER_CREATE`.
+
+**Architectural refinement**: The original ADR-CANDIDATE-075 claim "owner-scoping is caller-resolved at the SERVICE LAYER" is sharpened by the batch-K observation that the service layer does NOT uniformly perform AUTHORISATION (the principal-resolution chokepoint at AuthIdentityProvider IS at the service layer; the per-resource permission checks generally are NOT). The TRUST BOUNDARY claim in the ADR is therefore: services trust the WebFilter chain + SecurityConstants.SECURITY_RULES matcher chain to have already authorised the call BEFORE entering the service; the service consumes the principal-Mono only to RESOLVE owner-id for owner-scoped reads (not to AUTHORISE). The two functions (resolve-principal vs check-permission) live in different layers: principal at the service via AuthIdentityProvider; permission at the WebFilter chain via SecurityConstants + DataEntityPermissionExtractor.
+
+**Cross-batch evidence stack**:
+- Controller layer (ADR-CANDIDATE-015): no `Authentication` parameter; reactor `Context` is the principal carrier.
+- Service-principal-resolution layer (ADR-CANDIDATE-015 STRENGTHENED via batch K AuthIdentityProviderImpl primary-source): `fetchAssociatedOwner` reads reactor `Context`, resolves owner-id.
+- Service-business-logic layer (BATCH K refinement via TermServiceImpl + OwnershipServiceImpl): NO programmatic permission checks; trusts upstream WebFilter + SecurityConstants enforcement.
+- Repository layer (this ADR): no `Authentication` parameter; owner-id is a `Long`.
+
+**New batch-K refactoring scopes** (the defence-in-depth ABSENCES this ADR's trust-boundary accepts):
+- REFACTOR-263 NEW — TermServiceImpl has ZERO service-tier permission checks; defence-in-depth absence (HIGH; combined with REFACTOR-217 path-mismatch, this is the COMPOUNDING failure mode where both the primary gate AND the absence of a secondary gate together produce the cross-owner-mutation surface)
+- REFACTOR-225/237 (batch H/I) already covers the lineage anchor-set defence-in-depth absence.
+- REFACTOR-199 / REFACTOR-206 — Owner / Title auto-create bypass the dedicated `OWNER_CREATE` / `TITLE_CREATE` gates because OwnershipServiceImpl has no service-tier permission check on the directory growth.
+
+**Severity unchanged**: HIGH (codebase-wide authorization architecture). The batch-K strengthening makes the price clearer: the architecture pays the cost of TWO complete failure modes — (a) WebFilter / SecurityConstants drift bypasses gating (REFACTOR-217); (b) service-tier defence-in-depth absence means the failure has no second line. Both are visible only when the gate fails — defence-in-depth at the service layer would surface (a) faster.
+
 ---

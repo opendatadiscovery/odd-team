@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-456
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:NotificationsDispatcher"
+pillars_affected: [P-07]
+surfaced_by:
+  - "NotificationsDispatcher.md:bugs_limitations_corner_cases.[0] (asymmetric exception handling)"
+  - "NotificationsDispatcher.md:tests_coverage_semantic.uncovered_behaviours.[3] (RuntimeException bypass)"
+behaviour: |-
+  Exception-type asymmetry — EmailNotificationSender wraps MessagingException as raw RuntimeException at EmailNotificationSender.java:59 instead of NotificationSenderException (the checked exception type AlertNotificationMessageProcessor.java:31 catches). When email send fails, the RuntimeException BYPASSES the dispatcher's per-sender try/catch and aborts fan-out for that message. Subsequent senders (if email is not last in Spring's bean-injection order) do NOT receive the alert. This contradicts the implicit ADR 'one bad channel does not block the others' and contradicts the live docs page (notifications page WebFetch 2026-05-19) which states 'every channel that is enabled' receives every alert. Slack and Webhook senders correctly throw NotificationSenderException; email is the outlier.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/processor/AlertNotificationMessageProcessorExceptionAsymmetryTest.java"
+  name: "emailRuntimeException_abortsFanOut_subsequentSendersSkipped"
+evidence:
+  - |-
+    NotificationsDispatcher.md says: 'EmailNotificationSender wraps MessagingException as new RuntimeException(...) at EmailNotificationSender.java:59 — NOT as NotificationSenderException. An email failure therefore BYPASSES the dispatcher catch and aborts fan-out for that message.'
+  - "AlertNotificationMessageProcessor.java:31 (catches NotificationSenderException only)"
+  - "EmailNotificationSender.java:58-60 (throws raw RuntimeException)"
+  - "SlackNotificationSender.java + WebhookNotificationSender.java (both extend AbstractNotificationSender.java:24-29 which throws NotificationSenderException)"
+  - "Grep `NotificationSenderException` under odd-platform-api/src/test returns 0 matches"
+cross_references:
+  - "concepts.yaml:entities[NotificationSender] — channel fan-out contract"
+  - "REFACTOR-NNN candidate: wrap EmailNotificationSender exception as NotificationSenderException"
+proposed_action: |-
+  Unit test on AlertNotificationMessageProcessor with three @Mock NotificationSenders: stubSlack (no-op), stubEmail throws new RuntimeException("smtp down"), stubWebhook (no-op). Inject as List in order [slack, email, webhook]. Invoke process(decodedMessage). Assert: (a) stubSlack.send invoked, (b) stubEmail.send invoked (throws), (c) stubWebhook.send NOT invoked (proves the abort). Then flip the order to [slack, webhook, email] and assert all three were invoked. This test EXPOSES the asymmetry; the fix wraps EmailNotificationSender's exception as NotificationSenderException and the test then asserts all three are always invoked regardless of order.
+batch: 2026-05-19-K
+feature_id: null

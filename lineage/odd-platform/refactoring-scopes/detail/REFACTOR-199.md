@@ -7,3 +7,26 @@
   - **Proposed remedy**: Two options. (a) STRICT — `OwnershipServiceImpl.create` should call `ownerService.getByName(name).orElseThrow(NotFoundException::new)` instead of `getOrCreate(name)`; an admin must pre-create the Owner directory entry before any user can assign it. This aligns with ADR-CANDIDATE-049. (b) PERMISSIVE — preserve the auto-create UX but add a defence-in-depth permission check: `OwnershipServiceImpl.create` should `permissionService.hasPermission(OWNER_CREATE)` as a precondition when the owner_name does not exist. Either fix closes the permission-escalation surface. Same fix shape applies to the Title auto-create (REFACTOR-206 — Title.getOrCreate has the same side-door).
   - **Severity rationale**: HIGH — permission-escalation surface; the documented permission gate is bypassable via a side-channel.
   - **Suggested backlog grouping**: `Authorization audit batch` (cross-batch with REFACTOR-073 + the RBAC-tier audit gaps)
+
+## STRENGTHENS — OwnershipServiceImpl (batch K, PRIMARY-SOURCE at OwnershipServiceImpl.java:52)
+
+**Direct primary-source confirmation at the service layer**. The batch-F sidecar surfaced this from the controller-method side (`DataEntityController.createOwnership`); the batch-K OwnershipServiceImpl sidecar adds the SERVICE-LAYER primary anchor at line 52 with the full chain through `OwnerServiceImpl.getOrCreate` to `ownerRepository.create(...)` — confirming the auto-create-on-miss side effect is INTENTIONAL (an implicit ADR per OwnershipServiceImpl.implicit_adrs.[0] NEW batch K = ADR-CANDIDATE-112 — principal-independent owner_name; the auto-create is the consequence of decoupling).
+
+**New batch-K evidence**:
+- `OwnershipServiceImpl.md:bugs_limitations_corner_cases.[0]` (MEDIUM, but anchored as the load-bearing REFACTOR-199 substrate): "REFACTOR-199 (primary anchor): `DATA_ENTITY_OWNERSHIP_CREATE` is a SECOND path into the Owner directory, bypassing `OWNER_CREATE`. ... Any authorized `DATA_ENTITY_OWNERSHIP_CREATE`-holder can therefore mint new Owner directory entries by side-effecting through this service."
+- Intent anchor (from ADR-CANDIDATE-112 NEW batch K): "ownerService.getOrCreate(formData.getOwnerName())" at OwnershipServiceImpl.java:52 — the EXPLICIT `getOrCreate` (vs `getByName(...).orElseThrow`) is the architectural statement.
+
+**Architectural framing**: The batch-K analysis surfaces a NEW lens on this finding — the auto-create is part of an architectural decision (ADR-CANDIDATE-112 — self-grant decoupling), NOT just an oversight. The fix path therefore has TWO valid options:
+- (a) PRESERVE the ADR's principal-independence + add operator-doc disclosing the auto-create side-effect (cheap; preserves intent).
+- (b) CHANGE the ADR by adding a service-tier permission check at line 52 (`permissionService.hasPermission(OWNER_CREATE)` precondition) — closes the bypass but breaks the single-call UX.
+
+The batch-F sidecar's framing ("permission-escalation surface; the documented permission gate is bypassable") and the batch-K sidecar's framing ("part of the deliberate self-grant decoupling") together define the maintainer's triage: is the auto-create a feature (per ADR-CANDIDATE-112) or a defect? The answer affects every downstream gap (REFACTOR-206 Title auto-create has the same shape; REFACTOR-223 TAG_CREATE bypass via TAGS_UPDATE has the same shape).
+
+**Cross-batch triangulation**:
+- batch-F (DataEntityController.createOwnership): controller-side framing
+- batch-H (ReactiveOwnershipRepositoryImpl): repository-side framing — the plain INSERT with no auth check
+- batch-K (OwnershipServiceImpl PRIMARY ANCHOR): service-side primary source + ADR-CANDIDATE-112 (self-grant decoupling) framing
+
+**Severity unchanged**: HIGH (permission-escalation surface; documented gate bypassable). The fix-path triage is now informed by ADR-CANDIDATE-112's framing.
+
+---

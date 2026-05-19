@@ -1,0 +1,176 @@
+name: Run Housekeeping Cycle (five jobs, ShedLock-coordinated)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-08
+- P-04
+- P-07
+description: |-
+  **NEW OPERATION, batch 2026-05-19K** — the master orchestration operation
+  for time-based retention + empty-partition cleanup. Per 15-minute fixed-rate
+  cycle (`@Scheduled(fixedRate = 15, timeUnit = TimeUnit.MINUTES)` at
+  `HousekeepingJobManager.java:25`), the master `runHousekeepingJobs()`
+  method:
+    1. Acquires the named `housekeepingJob` ShedLock with `lockAtLeastFor =
+       "14m"` and `lockAtMostFor = "14m"` (line 26) — exactly 14 minutes,
+       providing cluster-wide mutex with razor-thin 60-second slack against
+       the 15-minute schedule.
+    2. Asserts the lock is held via `LockAssert.assertLocked()` (line 28).
+    3. Acquires ONE JDBC `Connection` from `PGConnectionFactory.getConnection()`
+       (line 32) — bypasses HikariCP, uses `DriverManager.getConnection`
+       directly. The single connection is shared across all five jobs in
+       the cycle via try-with-resources.
+    4. Iterates the constructor-injected `List<HousekeepingJob>` of FIVE
+       beans (lines 33-35): `AlertHousekeepingJob`,
+       `SearchFacetsHousekeepingJob`, `DataEntityHousekeepingJob`,
+       `ActivityEmptyPartitionsHousekeepingJob`,
+       `MessageEmptyPartitionsHousekeepingJob`. Each job's
+       `doHousekeeping(connection)` runs synchronously.
+    5. Each per-job invocation is wrapped in a try/catch at
+       `runHousekeepingJob` (lines 41-47) catching `Exception` (broadest
+       checked-or-unchecked). On failure: log at ERROR with the job's
+       class name, continue to the NEXT job in the loop. Per-job
+       isolation — one failing job does NOT abort the cycle.
+    6. SQLException at connection acquisition (line 36) is caught by an
+       OUTER try/catch and ABORTS the cycle for all jobs that did not yet
+       run — connection-level failure is the only cycle-aborting condition.
+  Strict opt-in via `@ConditionalOnProperty(value = "housekeeping.enabled",
+  havingValue = "true")` with NO `matchIfMissing` (line 18) — absent key =
+  no bean = silent no-op. The shipped `application.yml:166` ships
+  `housekeeping.enabled: true` so deployments using the bundled config get
+  housekeeping by default; custom application.yml that omits the key
+  silently disables the subsystem. The three TTL-driven jobs
+  (`AlertHousekeepingJob`, `SearchFacetsHousekeepingJob`,
+  `DataEntityHousekeepingJob`) consume `HousekeepingTTLProperties` and
+  hard-DELETE rows past the configured cutoff. The two
+  `EmptyPartitionsHousekeepingJob` subclasses drop EMPTY past partitions
+  only (no TTL coupling). Doc-side: live
+  `/configuration-and-deployment/odd-platform#housekeeping` documents the
+  master gate + three TTL keys + the 15-minute cadence + the ShedLock
+  framing, but enumerates only "three cleanup tasks" — the two
+  EmptyPartitions jobs are not surfaced in the docs.
+nodes:
+- odd-platform java service service:HousekeepingJobManager
+- odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
+contributors:
+- |-
+  HousekeepingJobManager batch K: concepts.operations[schedule fixedRate=15min;
+  acquire ShedLock; assert lock; acquire JDBC connection; iterate
+  HousekeepingJob beans; per-job exception isolation; close connection
+  via try-with-resources] + concepts.invariants[Strict opt-in via
+  @ConditionalOnProperty; Single connection per cycle; ShedLock window
+  14m/14m; Per-job failure isolation; Order = bean discovery order; Verbatim
+  three-vs-five framing] + implicit_adrs[Per-job failure isolation; Shared
+  connection; ShedLock window deliberately 14m=14m; Strict opt-in via
+  matchIfMissing-omission; Orchestrator separation from partition-creation]
+- |-
+  HousekeepingTTLProperties batch D existing reference: the config-binding
+  POJO that the three TTL-driven jobs consume
+evidence:
+- |-
+  HousekeepingJobManager.md:concepts.operations (PRIMARY SOURCE) —
+  evidence: HousekeepingJobManager.java:25-39
+- |-
+  HousekeepingJobManager.md:concepts.invariants (6 invariants)
+- |-
+  HousekeepingJobManager.md:implicit_adrs.[0-4] (five architectural
+  decisions embedded in this operation)
+- |-
+  HousekeepingJobManager.md:bugs_limitations_corner_cases.[0] (3-vs-5 job
+  doc-drift) + .[1] (AlertHousekeepingJob jOOQ-precedence bug) + .[2]
+  (.block() inside transaction)
+- |-
+  HousekeepingTTLProperties batch D evidence: the TTL fields consumed by
+  the three TTL-driven jobs
+axes_present:
+- services
+- config_prefixes
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+  - INTERNAL_ONLY
+  authorization_consistency:
+    verdict: BYPASSES
+    detail: |-
+      The orchestrator and all five jobs operate at system scope, deleting
+      rows across ALL OWNERS without regard to the ODD ownership model. No
+      @PreAuthorize, no programmatic permission check. The bean is
+      instantiated regardless of auth.type; cleanup runs under the JVM's
+      DB credentials. Intentional — housekeeping is a system-level admin
+      operation.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      DataEntityHousekeepingJob.deleteOwnerships (per the ~25-table
+      cascade) removes ALL ownership rows for the soft-deleted entity
+      regardless of who the Owners are. The architectural decision is
+      consistent with the system-scope intent.
+  strengths:
+  - Strict opt-in via @ConditionalOnProperty (housekeeping.enabled) —
+    deployments customising config without the key silently disable
+    (fail-CLOSED on missing config)
+  - Per-job isolation — one failing job does NOT abort the cycle;
+    other four jobs still run
+  - ShedLock-coordinated single-instance execution — multi-replica
+    deployments safe by default
+  weaknesses:
+  - No audit / Micrometer metric / Prometheus counter / structured event
+    on the destructive cycle — invisible deletions
+  - No dry-run / preview / archival-before-delete mechanism
+  - jOOQ operator-precedence bug in AlertHousekeepingJob (manual RESOLVED
+    alerts deleted regardless of TTL — known and docs-acknowledged but
+    unfixed)
+  - `.block()` inside jOOQ transaction in DataEntityHousekeepingJob.deleteFiles
+    (S3 hang takes down the entire cycle)
+  - lockAtMostFor=14m vs fixedRate=15m razor-thin race surface under
+    heavy backlog
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    15-min fixed-rate cycle. On busy clusters, a slow
+    DataEntityHousekeepingJob cascade (minutes against a large
+    soft-deleted backlog) holds the ShedLock for up to 14 minutes and
+    may starve other instances.
+  - |-
+    Sequential single-connection fan-out — five jobs run synchronously on
+    one connection; total cycle time = sum of all five jobs' durations.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      No parallelism across jobs. A slow DataEntityHousekeepingJob delays
+      AlertHousekeepingJob + SearchFacetsHousekeepingJob (both fast
+      single-table DELETEs).
+  scaling_shape:
+    verdict: STATEFUL_LOCKED
+    detail: |-
+      ShedLock-coordinated; only ONE platform instance runs housekeeping
+      per 15-minute slot. Horizontal scaling does NOT parallelise
+      housekeeping; it provides failover only.
+notes: |-
+  NEW operation captured in batch 2026-05-19K. The master orchestration
+  step that fires every 15 minutes is now primary-source pinned —
+  prior batches surfaced the operation from the config-key-consumer angle
+  (HousekeepingTTLProperties batch D) without naming the orchestrator's
+  6-step body.
+
+  Cross-cutting connections:
+    - Pairs with the "Housekeeping TTL retention" entity concept — that
+      entity captures the retention surface; this operation captures the
+      orchestration runtime
+    - Pairs with the "jOOQ operator-precedence bug — AlertHousekeepingJob"
+      invariant — that's the bug inside one of the five jobs
+    - Companion of the "Lazy-create-no-drop replication artefacts" and
+      "Activity Table Partitioning" invariants — together they describe
+      the platform's lifecycle-management architecture
+    - Cross-references "Advisory-lock-ID collision risk across subsystems"
+      — housekeepingJob lock is named, not numbered; the lock-name
+      contract is a different shape from the advisory-lock-id contract
+      (notifications.wal, datacollaboration.receive, datacollaboration.sender,
+      partition all use numeric ids)
+
+  Three DOC-NNN candidates flow from this operation:
+    (a) Document the 5 jobs (vs 3 in the live docs) — close the docs gap
+    (b) Document the ShedLock window contract (14m vs 15m razor-thin)
+    (c) Document the per-job failure isolation behaviour — operators
+        setting up log aggregation alerting need to know

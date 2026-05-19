@@ -1,0 +1,137 @@
+name: S2S 'ADMIN' username literal collision with operator-named users
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19K** — a latent security
+  boundary failure surfaced by primary-source examination of
+  `AuthIdentityProviderImpl.java:29-33` cross-referenced against
+  `S2sAuthenticationFilter.java:31-39`. The S2S authentication filter
+  HARDCODES the username string `"ADMIN"` (uppercase) into the
+  `UsernamePasswordAuthenticationToken` it produces for every S2S call:
+  `User.withUsername("ADMIN").roles("ADMIN")`. The
+  AuthIdentityProviderImpl's `getCurrentUser()` branches on the
+  Authentication subtype — `UsernamePasswordAuthenticationToken` falls into
+  the else-branch at line 32 which produces `UserDto("ADMIN", null)`. When
+  ANY S2S call invokes a service using `fetchAssociatedOwner()`, the
+  downstream repository lookup at
+  `ReactiveUserOwnerMappingRepositoryImpl.java:116-127` builds
+  `WHERE OIDC_USERNAME = 'ADMIN' AND DELETED_AT IS NULL AND PROVIDER IS NULL`.
+  If an operator has created a LOGIN_FORM or LDAP user with the EXACT case-sensitive
+  username 'ADMIN' (uppercase) AND that user has an active user_owner_mapping
+  row (provider=null because LOGIN_FORM and LDAP both produce provider=null
+  per the cross-mode bleed invariant), the S2S caller will resolve to THAT
+  user's Owner. S2S API key holders thereby INHERIT one specific operator
+  user's owner-scoped reads and mutations. The SQL match is case-sensitive
+  via jOOQ's `.eq()` (NOT `.equalIgnoreCase()`), so 'admin' / 'Admin' /
+  'aDmIn' would NOT collide — only the exact literal 'ADMIN' (uppercase).
+  This is mitigation by accident, not by design: a developer choosing the
+  literal didn't anticipate the collision. **The docs are silent.** Neither
+  the S2S auth doc page nor the user-owner-association doc nor the auth doc
+  warns operators against naming users 'ADMIN'. Cross-batch implication: the
+  REFACTOR-024 / read-collaborative posture means an authenticated user with
+  any reasonable Policy can already read most of the catalog — but the
+  inheritance of a specific operator user's MUTATION capability via S2S is a
+  privilege escalation pathway that does not exist in the documented threat
+  model. Remediation: (a) Use a sentinel username that cannot collide with
+  any human user (e.g., `__s2s_principal__` with reserved-prefix validation
+  on user creation); (b) Override the AuthIdentityProvider's getCurrentUser
+  for S2S-shape authentications to return a distinct UserDto subtype that
+  short-circuits fetchAssociatedOwner to empty.
+nodes:
+- odd-platform java service service:AuthIdentityProviderImpl
+contributors:
+- |-
+  AuthIdentityProviderImpl batch K: bugs_limitations_corner_cases.[1] (PRIMARY
+  SOURCE — S2sAuthenticationFilter hardcodes username='ADMIN' which collides
+  with operator-named users) + security.known_security_gaps.[1] (operator-naming
+  collision; defendable by operator hygiene but not by code) +
+  docs_link_semantic.doc_drift_findings.[2] (S2S filter username='ADMIN' is
+  undocumented)
+evidence:
+- |-
+  AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[1] (PRIMARY
+  SOURCE) — evidence: S2sAuthenticationFilter.java:31-34 (the hardcoded
+  literal) + AuthIdentityProviderImpl.java:29-33 (the else-branch that
+  collapses non-OAuth2 into provider=null) +
+  ReactiveUserOwnerMappingRepositoryImpl.java:116-127 (the case-sensitive
+  `.eq()` lookup)
+- |-
+  AuthIdentityProviderImpl.md:security.known_security_gaps.[1] (HIGH severity
+  — security boundary failure on operator-naming collision)
+- |-
+  AuthIdentityProviderImpl.md:docs_link_semantic.doc_drift_findings.[2]
+  (live S2S / authentication docs are silent on the collision)
+- |-
+  AuthIdentityProviderImpl.md:tests_coverage_semantic.uncovered_behaviours[7]
+  (no test asserts isolation — a near-miss security vector that operator
+  naming collisions could expose without test cover)
+axes_present:
+- services
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+- |-
+  Replace the hardcoded `"ADMIN"` username in S2sAuthenticationFilter.java:31
+  with a sentinel literal that cannot collide (e.g.
+  `"__s2s_principal_" + UUID.randomUUID()` per filter instance, or a
+  compile-time constant like `"__S2S_PRINCIPAL__"` that is BANNED from
+  human-user creation by adding a validator on OwnerAssociationRequest /
+  Owner / User-creation paths).
+- |-
+  Override AuthIdentityProvider.fetchAssociatedOwner to detect S2S-shape
+  authentications (e.g. inspect the Authentication.getDetails() or
+  authorities containing a distinct S2S marker) and short-circuit to
+  Mono.empty() — S2S callers do NOT need an owner-link because the S2S
+  role is ADMIN.
+- |-
+  Add a startup-time validator that fails fast if any user_owner_mapping
+  row has oidc_username='ADMIN' AND provider IS NULL — operator-deployment
+  hygiene check.
+- |-
+  Add a regression test that:
+    (a) inserts a LOGIN_FORM user named 'ADMIN' with provider=null and
+        an active user_owner_mapping row;
+    (b) invokes an S2S-authenticated request to an owner-scoped endpoint;
+    (c) asserts the S2S caller does NOT resolve to that operator's Owner.
+- |-
+  Document the literal on the
+  `/configuration-and-deployment/enable-security/authentication` or S2S
+  page — warn operators against naming users 'ADMIN' (uppercase) until
+  the code-fix lands.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-19K. The risk is
+  doubly latent: (a) it only triggers on operator-naming collision; (b)
+  it only triggers on case-sensitive exact match. Operators who do not
+  name a user 'ADMIN' are not vulnerable today. But the failure mode is
+  invisible — there is no log line, no metric, no audit event when the
+  collision fires; the S2S caller silently inherits the operator user's
+  owner-link.
+
+  This finding is the third member of the AuthIdentityProviderImpl
+  security cluster (the other two are the LOGIN_FORM/LDAP cross-mode
+  bleed via provider=null AND the no-auto-create-on-first-login gap).
+  All three were latent prior to batch K; this batch's primary-source
+  enrichment surfaced them via the explicit instanceof check on line
+  29 + the verbatim literal on S2sAuthenticationFilter.java:31.
+
+  Cross-cutting connections:
+    - Pairs with the "AuthIdentityProvider (per-request principal
+      resolution chokepoint)" entity concept — this is one of the
+      entity's load-bearing security gaps
+    - Pairs with the "LOGIN_FORM/LDAP cross-mode bleed via provider=null"
+      invariant (also surfaced by batch K) — both rely on the same
+      else-branch at line 32 collapsing non-OAuth2 auth into
+      provider=null
+    - Companion of the "user_owner_mapping is the gate for owner-scoped
+      views" invariant — the gate's input parameters (username, provider)
+      are the surface of this bug
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Code fix — replace the hardcoded literal (highest priority)
+    (b) Docs warning on the S2S auth page (mitigation while code fix
+        lands)
+    (c) Startup-time hygiene validator (defence-in-depth)

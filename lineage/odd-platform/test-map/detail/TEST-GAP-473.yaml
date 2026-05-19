@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-473
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:AuthIdentityProviderImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[3] (empty SecurityContext silent propagation)"
+  - "AuthIdentityProviderImpl.md:tests_coverage_semantic.uncovered_behaviours.[2] (empty SecurityContext)"
+  - "AuthIdentityProviderImpl.md:security.known_security_gaps.[2] (silent degradation)"
+behaviour: |-
+  Empty SecurityContext silently propagates rather than fail-fast. When ReactiveSecurityContextHolder.getContext() emits empty (happens under `auth.type=DISABLED` — no ServerSecurityContextRepository wiring at DisabledAuthSecurityConfiguration.java:11-19 — OR under a future regression where a WebFilter is misordered), `getCurrentUser` emits empty (no `.switchIfEmpty(Mono.error(...))`); every owner-scoped consumer therefore degrades to empty results with HTTP 200, NOT 401/403/404. No logging, no metric, no warning. A regression that broke principal propagation across the entire reactor pipeline would manifest as 'every user sees empty My Objects' — diagnosable only by examining each affected endpoint. The 15 callsites of fetchAssociatedOwner / getCurrentUser would all silently degrade simultaneously.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/AuthIdentityProviderEmptyContextTest.java"
+  name: "emptySecurityContext_getCurrentUserEmptyMono_notErrorNot401_silentDegradation"
+evidence:
+  - |-
+    AuthIdentityProviderImpl.md says: 'When ReactiveSecurityContextHolder.getContext() emits empty, getCurrentUser emits empty (no .switchIfEmpty(Mono.error(...))); every owner-scoped consumer therefore degrades to empty results. There is no logging, no metric, no warning.'
+  - "AuthIdentityProviderImpl.java:24-35 (no switchIfEmpty on context)"
+  - "AuthIdentityProviderImpl.java:50-53 (no switchIfEmpty on getCurrentUser)"
+  - "DisabledAuthSecurityConfiguration.java:11-19 (the dev-mode empty-context case)"
+cross_references:
+  - "concepts.yaml:entities[Auth Mode (DISABLED branch)].security_aggregate.weaknesses"
+  - "TEST-GAP-471 + TEST-GAP-472 (related: provider=null branches in the same instanceof check)"
+proposed_action: |-
+  Unit test with a Reactor test scheduler emitting EMPTY ReactiveSecurityContextHolder.getContext(). Subscribe to AuthIdentityProviderImpl.getCurrentUser(). Assert via StepVerifier.create(mono).expectComplete().verify() (i.e. the Mono completes with NO emission and NO error). Repeat for getCurrentUserProviderRole() and fetchAssociatedOwner(). LOCKS the empty-propagation contract. Promotes to a fix-required regression when fail-fast (Mono.error(...)) lands.
+batch: 2026-05-19-K
+feature_id: null

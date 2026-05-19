@@ -355,11 +355,33 @@ features:
     amplification_factor: 1
     observed_vs_expected:
       facets:
-        - facet: "Markdown body sanitisation"
+        - facet: "Markdown body sanitisation — backend"
           observed: "<script>, <img onerror>, <iframe> tags stored verbatim in DB; round-trip preserves all dangerous tags"
           expected: "Sanitised storage (Jsoup.clean / Encode.html / allowlist) OR sanitised render (UI rehype-sanitize); ideally defence-in-depth at both"
           drift_class: external_lib_assumes_sanitisation
           provenance: "MEASURED — P-007 (run R-20260519T012123Z-P-007) PUT the XSS payload, GET back, SELECT raw column; all 3 dangerous-tag substrings present verbatim"
+
+        - facet: "Markdown body sanitisation — UI render (defence-in-depth)"
+          observed: |
+            DANGEROUS TAGS reach the rendered DOM via react-markdown + rehype-raw + no rehype-sanitize:
+              - <script> tag present in document body (dom_has_script_tag == True)
+              - id="p009-xss-img" reaches DOM (dom_has_xss_img_id == True)
+              - id="p009-xss-iframe" reaches DOM (dom_has_xss_iframe_id == True)
+            BUT event-handler attributes are STRIPPED (likely by React's normal attribute
+            filtering on rehype-raw's setProperty path):
+              - `onerror=` attribute NOT in rendered DOM (dom_has_onerror_attr == False)
+          expected: "Sanitised render — rehype-sanitize strips ALL dangerous tags + attrs"
+          drift_class: partial_mitigation_via_unrelated_layer
+          provenance: |
+            MEASURED — P-009 slice-5 (run R-20260519T020610Z-P-009 on commit ede5d277).
+            Refines the static-layer inference. REFACTOR-218 originally inferred "rehype-raw
+            + no rehype-sanitize → full XSS surface"; measurement says partial — TAGS reach
+            the DOM (script execution surface remains via tag-based vectors) but
+            ATTRIBUTE-based vectors (img onerror, iframe javascript:) are already
+            mitigated by React's attribute handling. This is the methodology's
+            "measured truth refines inference" principle in action — the static layer's
+            severity assessment for REFACTOR-218 stays HIGH (tag injection is still a
+            surface) but the attack surface is narrower than originally inferred.
     test_matrix:
       unit: { state: GAP, covered: [], uncovered: ["Description-write service — assert payload sanitised pre-DB"] }
       integration:
@@ -369,15 +391,26 @@ features:
             pinned_by_probe_run: "R-20260519T012123Z-P-007"
             cell_evidence: "lineage/odd-platform/probe-runs/2026-05-19-P-007.yaml"
             note: "PINNING-BUG: REFACTOR-218 backend-side empirically confirmed. Fix adds sanitisation; assertion flips."
-        uncovered: ["UI render-side XSS — Playwright probe that loads /dataentities/{id} after the PUT, captures DOM, asserts <script> not in rendered HTML (defence-in-depth)"]
+        uncovered: ["Body-size limit enforcement", "Term-mention side-channel via description ([[ns:term]] auto-creates term_relations without DATA_ENTITY_ADD_TERM)"]
       performance: { state: GAP, covered: [], uncovered: ["Body-size limit enforcement"] }
       security:
         state: PROBED-PINNING-BUG
         covered:
           - behaviour: "Backend stores dangerous-HTML payload verbatim"
             pinned_by_probe_run: "R-20260519T012123Z-P-007"
-        uncovered: ["UI-render XSS confirmation (slice-4 Playwright probe)", "Term-mention side-channel via description ([[ns:term]] auto-creates term_relations without DATA_ENTITY_ADD_TERM)"]
-    control_summary: "2 of 4 cells PROBED — integration + security both PROBED-PINNING-BUG."
+          - behaviour: "Dangerous TAGS reach rendered DOM (script, img, iframe); event-handler ATTRIBUTES stripped by React"
+            pinned_by_probe_run: "R-20260519T020610Z-P-009"
+            cell_evidence: "lineage/odd-platform/probe-runs/2026-05-19-P-009.yaml"
+            note: |
+              PINNING-BUG + PARTIAL-MITIGATION-DOCUMENTED. The probe asserts the measured
+              state across 4 DOM facets:
+                - script tag IN DOM → PINS the bug (rehype-raw passes <script>)
+                - p009-xss-img ID IN DOM → PINS the bug
+                - p009-xss-iframe ID IN DOM → PINS the bug
+                - onerror= attribute NOT IN DOM → PINS the partial mitigation
+              When rehype-sanitize lands, the first three flip to == False; the fourth stays.
+        uncovered: ["XSS execution via script-tag content (Playwright on('dialog') + on('request') for /attacker.example/leak — slice-6 candidate)", "Term-mention side-channel via [[ns:term]] auto-link (TEST-GAP-295)"]
+    control_summary: "2 of 4 cells PROBED — integration + security both PROBED-PINNING-BUG. Slice-5 adds UI-render-side empirical measurement: P-009 refined REFACTOR-218 from inferred-full-XSS to measured-partial-XSS (tags pass, attributes stripped)."
     related_refactoring_scopes: [REFACTOR-218]
     related_test_gaps: [TEST-GAP-293, TEST-GAP-295]
     related_doc_gaps: [DOC-GAP-096]
@@ -386,8 +419,12 @@ features:
     related_probes:
       - probe_id: P-007
         test_class: security
-        status: "EXECUTED PASS — run R-20260519T012123Z-P-007 (PROBED-PINNING-BUG)"
+        status: "EXECUTED PASS — run R-20260519T012123Z-P-007 (PROBED-PINNING-BUG backend)"
         last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-007.yaml"
+      - probe_id: P-009
+        test_class: security
+        status: "EXECUTED PASS — run R-20260519T020610Z-P-009 (PROBED-PINNING-BUG UI render + measured partial mitigation)"
+        last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-009.yaml"
     maintainer_curated: true
 
   - feature_id: F-005

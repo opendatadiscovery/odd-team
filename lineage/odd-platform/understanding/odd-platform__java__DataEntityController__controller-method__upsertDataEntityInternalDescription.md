@@ -307,3 +307,59 @@ session_id: session-2026-05-13-G
   feature_id: F-004
   ran_at: 2026-05-19T01:51:19+00:00
   verdict: "all assertions passed"
+- probe_id: P-007
+  probe_run_id: R-20260519T020321Z-P-007
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:03:21+00:00
+  verdict: "all assertions passed"
+- probe_id: P-009
+  probe_run_id: R-20260519T020323Z-P-009
+  outcome: FAIL
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:03:23+00:00
+  verdict: "1 assert(s) failed; first: 'dom_has_onerror_attr == True'"
+- probe_id: P-007
+  probe_run_id: R-20260519T020607Z-P-007
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:06:07+00:00
+  verdict: "all assertions passed"
+- probe_id: P-009
+  probe_run_id: R-20260519T020610Z-P-009
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:06:10+00:00
+  verdict: "all assertions passed"
+- probe_id: P-007
+  probe_run_id: R-20260519T020811Z-P-007
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:08:11+00:00
+  verdict: "all assertions passed"
+- probe_id: P-009
+  probe_run_id: R-20260519T020812Z-P-009
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:08:12+00:00
+  verdict: "all assertions passed"
+- probe_id: P-007
+  probe_run_id: R-20260519T021216Z-P-007
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:12:16+00:00
+  verdict: "all assertions passed"
+- probe_id: P-009
+  probe_run_id: R-20260519T021217Z-P-009
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T02:12:17+00:00
+  verdict: "all assertions passed"

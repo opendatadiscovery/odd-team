@@ -26,13 +26,23 @@ If any prerequisite fails, the skill reports the missing piece and exits.
 | Form | Behaviour |
 |---|---|
 | `/probe-run <probe-id>` | Execute one probe; produce one probe-run artefact; merge measured values into the static layers. |
-| `/probe-run --feature <feature-id>` | Execute every probe whose `feature_id` matches; one probe-run artefact per probe; merge all measurements. |
-| `/probe-run --batch` | Execute every probe whose `verified_against_commit` matches the substrate's current `last_scan_commit`. Shared docker-compose lifecycle across probes that share `stack_profile`. |
+| `/probe-run <id-1> <id-2> ...` | Execute multiple probes in batch mode (shared docker-compose lifecycle). All listed probes must share the same `stack_profile`. Slice-4 capability. |
+| `/probe-run --feature <feature-id>` | Slice-5. Resolve `feature_id` against `lineage/{repo}/probes/*.yaml`; run every matching probe in batch mode. Mutually exclusive with positional probe IDs. |
+| `/probe-run --batch <id-1> ...` | Explicit batch-mode flag. Implied when multiple positional IDs are given OR when `--feature` matches more than one probe. |
 | `/probe-run --dry-run <probe-id>` | Validate + parse + report what WOULD execute, but do not bring up the stack. |
 | `/probe-run --show <probe-id>` | Read-only. Print the probe definition + the most recent probe-run artefact for that probe ID. |
 | `/probe-run --validate <probe-id>` | Read-only. Parse probe + scope-check; exit 0 if well-formed, non-zero otherwise. |
 | `/probe-run <probe-id> --no-merge` | Execute the probe but do NOT merge measured values back into the static layers. Useful for iterating on probe design. |
+| `/probe-run <probe-id> --no-summary` | Slice-5. Skip the per-batch summary artefact + investigator-log append. Useful when running probes in tight iterative loops. |
 | `/probe-run <probe-id> --allow-stale` | Execute even if the probe's `verified_against_commit` lags the substrate by more than the staleness threshold (5 commits). The maintainer takes responsibility. |
+
+### Slice-5 batch outputs
+
+In batch mode (multiple probes, `--batch`, or `--feature`), the runner emits two additional artefacts on top of the per-probe `probe-runs/{date}-P-NNN.yaml` files:
+
+1. **Per-batch summary** at `lineage/{repo}/probe-runs/{date}-batch-{trigger-slug}.md` — markdown table of per-run outcomes + per-feature aggregation (which test-classes per feature this batch empirically covered).
+
+2. **Investigator-log append** — a new `## Probe-runs YYYY-MM-DD — <trigger>` section appended to `lineage/{repo}/investigator-log.md`, cross-referencing the per-batch summary. Per dynamic-verification ADR slice 5 ("each batch's investigator-log entry now carries a probe-runs section alongside reducer diffs"). Idempotent on (date, trigger) — re-running replaces the existing section in place.
 
 ## Protocol
 
@@ -56,10 +66,13 @@ For `--show` and `--validate` forms, no subagent spawn is needed — the skill d
 
 ### 4. Merge (unless --no-merge)
 
-The `probe-runner` subagent handles the merge into:
+The runner appends a `## probe_verifications` entry to every contributing sidecar of the probe's `feature_id` (per dynamic-verification ADR Rule 4 — closes the layer-5 → layer-2 feedback loop). Idempotent on `probe_run_id` — re-runs of the same probe don't duplicate entries.
+
+Future merges (slice-6 candidates, not yet automated):
 - `lineage/{repo}/feature-flows.yaml` — `observed_vs_expected.observed` gains `measured (run-R-NNN at <iso>)`.
 - `lineage/{repo}/test-map.yaml` — per-feature matrix cell flips to `PROBED-PASSING` / `PROBED-PINNING-BUG` / `PROBE-TEST-DISAGREEMENT`.
-- Sidecars — `confidence_per_field` gains `VERIFIED-VIA-PROBE-RUN-R-NNN` or `LOW (superseded by probe-run-R-NNN)`.
+
+Currently the feature-flows + test-map merges are **manually authored** by the maintainer per slice convention; the sidecar merge runs automatically. The runner's slice-5 batch-summary artefact (`lineage/{repo}/probe-runs/{date}-batch-*.md`) supplies the consolidated view needed for manual feature-flows / test-map edits.
 
 ### 5. Cleanup verification
 

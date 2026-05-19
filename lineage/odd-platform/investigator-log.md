@@ -787,3 +787,53 @@ Three high-leverage themes for batch H:
 3. **Anchor-set defence-in-depth audit** — batch G's NEW cross-cutting pattern. Enumerate every controller method that resolves owner via `fetchAssociatedOwner` and computes a derived response set (lineage, recommendations, search-scope filters). For each, the question is: does the derived-set logic apply a JOIN-side owner filter, or does it rely on anchor-set correctness? Only enrichment can answer; potential single-batch theme.
 
 Until batch H fires, the held-back spot-check set should be matched against batch A + B + C + D + E + F + G log entries above. Misses → candidate node-picks for batch H.
+
+## Probe-runs 2026-05-19 — `batch P-001 P-002 P-003 P-004 P-005 P-006 P-007 P-008 P-009` (layer-5 dynamic verification)
+
+Per dynamic-verification ADR slice 5: each batch's investigator-log entry now records the probe-runs that empirically grounded the static ontology updates. This block is appended automatically by `lineage/_extractor/probe-runtime/runner.py` after every batch run.
+
+- **Trigger**: `batch P-001 P-002 P-003 P-004 P-005 P-006 P-007 P-008 P-009`
+- **Probes run**: 9 (9 PASS / 0 FAIL / 0 ERROR)
+- **Features measured**: 5 (`F-001`, `F-002`, `F-003`, `F-004`, `F-005`)
+- **Batch summary**: `lineage/odd-platform/probe-runs/2026-05-19-batch-p-001-p-002-p-003-p-004-p-005-p-006-p-007-p-008-p-009.md`
+
+### Probe-run outcomes
+
+| Probe | Feature | Test class | Outcome | Run ID |
+|---|---|---|---|---|
+| `P-001` | `F-001` | integration | **PASS** | `R-20260519T021148Z-P-001` |
+| `P-002` | `F-001` | security | **PASS** | `R-20260519T021152Z-P-002` |
+| `P-003` | `F-001` | performance | **PASS** | `R-20260519T021154Z-P-003` |
+| `P-004` | `F-001` | integration | **PASS** | `R-20260519T021200Z-P-004` |
+| `P-005` | `F-002` | security | **PASS** | `R-20260519T021212Z-P-005` |
+| `P-006` | `F-003` | security | **PASS** | `R-20260519T021215Z-P-006` |
+| `P-007` | `F-004` | security | **PASS** | `R-20260519T021216Z-P-007` |
+| `P-008` | `F-005` | integration | **PASS** | `R-20260519T021217Z-P-008` |
+| `P-009` | `F-004` | security | **PASS** | `R-20260519T021217Z-P-009` |
+
+### Layer-5 → layer-2 feedback closure
+
+Each PASS/FAIL run merged a `## probe_verifications` entry into the contributing sidecars under `lineage/odd-platform/understanding/` (per dynamic-verification ADR Rule 4).
+
+---
+## Probe-runs 2026-05-19 — `--feature F-004` (layer-5 dynamic verification)
+
+Per dynamic-verification ADR slice 5: each batch's investigator-log entry now records the probe-runs that empirically grounded the static ontology updates. This block is appended automatically by `lineage/_extractor/probe-runtime/runner.py` after every batch run.
+
+- **Trigger**: `--feature F-004`
+- **Probes run**: 2 (2 PASS / 0 FAIL / 0 ERROR)
+- **Features measured**: 1 (`F-004`)
+- **Batch summary**: `lineage/odd-platform/probe-runs/2026-05-19-batch-feature-f-004.md`
+
+### Probe-run outcomes
+
+| Probe | Feature | Test class | Outcome | Run ID |
+|---|---|---|---|---|
+| `P-007` | `F-004` | security | **PASS** | `R-20260519T020607Z-P-007` |
+| `P-009` | `F-004` | security | **PASS** | `R-20260519T020610Z-P-009` |
+
+### Layer-5 → layer-2 feedback closure
+
+Each PASS/FAIL run merged a `## probe_verifications` entry into the contributing sidecars under `lineage/odd-platform/understanding/` (per dynamic-verification ADR Rule 4).
+
+---

@@ -311,3 +311,87 @@ session_id: session-2026-05-12-F-DataEntityDetails
   feature_id: F-001
   ran_at: 2026-05-19T01:51:04+00:00
   verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T020255Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:02:55+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T020259Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:02:59+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T020301Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:03:01+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T020307Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:03:07+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T020744Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:07:44+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T020748Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:07:48+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T020751Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:07:51+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T020757Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:07:57+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T021148Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:11:48+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T021152Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T02:11:52+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T021154Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T02:11:54+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T021200Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T02:12:00+00:00
+  verdict: "all assertions passed"

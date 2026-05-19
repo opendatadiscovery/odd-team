@@ -426,6 +426,7 @@ def _run_browser_step(step: dict, *, captures: dict[str, Any]) -> dict[str, Any]
             return bool(xhr_filter_regex.search(url))
         return xhr_filter_substr in url
 
+    dom_html: str | None = None
     try:
         with sync_playwright() as p:
             browser = p.chromium.launch(headless=True)
@@ -445,6 +446,15 @@ def _run_browser_step(step: dict, *, captures: dict[str, Any]) -> dict[str, Any]
                 # such patterns to surface.
                 page.wait_for_timeout(step.get("post_settle_ms", 1000))
 
+                # Slice-5: capture the post-settle DOM so observe steps can
+                # assert against rendered content (browser_dom_query). The
+                # DOM is captured AFTER post_settle_ms so client-side hydration
+                # has produced its final visible markup.
+                try:
+                    dom_html = page.content()
+                except Exception:
+                    dom_html = None
+
                 context.close()
             finally:
                 browser.close()
@@ -456,12 +466,16 @@ def _run_browser_step(step: dict, *, captures: dict[str, Any]) -> dict[str, Any]
             "xhr_urls_sample": xhr_urls[:10],
             "page_status": page_status,
             "console_errors": console_errors[:10],
+            "dom_html_len": 0,
             "error": f"{type(exc).__name__}: {exc}",
         }
 
     captures["_last_xhr_urls"] = xhr_urls
     captures["xhr_count"] = len(xhr_urls)
     captures["_last_page_status"] = page_status
+    if dom_html is not None:
+        captures["dom_html"] = dom_html
+        captures["dom_html_len"] = len(dom_html)
 
     return {
         "success": True,
@@ -470,6 +484,7 @@ def _run_browser_step(step: dict, *, captures: dict[str, Any]) -> dict[str, Any]
         "xhr_urls_sample": xhr_urls[:10],
         "page_status": page_status,
         "console_errors": console_errors[:10],
+        "dom_html_len": len(dom_html) if dom_html else 0,
         "error": None,
     }
 
@@ -642,6 +657,46 @@ def execute_observe(steps: list[dict], *, captures: dict[str, Any], verbose: boo
                 summary = compute_percentiles(latencies, pcts)
                 observed[step["capture_as"]] = summary
                 captures[step["capture_as"]] = summary
+            elif kind == "browser_dom_query":
+                # Assert against the DOM captured by a preceding `browser` act
+                # step. Slice-5 introduction: enables real UI-render-side
+                # checks (e.g. "is the dangerous <script> tag present in the
+                # rendered page?").
+                #
+                # Two query modes:
+                #   - `text_contains: "<substr>"` — substring presence check.
+                #     Captures a boolean. Use for "is X in the rendered DOM?"
+                #   - `text_count: "<substr>"` — count of occurrences.
+                #     Captures an int. Use for "how many times does X appear?"
+                #
+                # Source is `from: <capture-name>` (defaults to `dom_html`,
+                # the post-settle DOM captured by the most recent browser step).
+                src_name = step.get("from", "dom_html")
+                source = captures.get(src_name)
+                if source is None:
+                    observed[step.get("capture_as", f"dom_query_{src_name}")] = {
+                        "_error": f"no captured DOM named {src_name!r} (run a `browser` act step first)"
+                    }
+                    continue
+                if not isinstance(source, str):
+                    observed[step.get("capture_as", f"dom_query_{src_name}")] = {
+                        "_error": f"capture {src_name!r} is {type(source).__name__}, not str"
+                    }
+                    continue
+                if "text_contains" in step:
+                    needle = step["text_contains"]
+                    present = needle in source
+                    observed[step["capture_as"]] = present
+                    captures[step["capture_as"]] = present
+                elif "text_count" in step:
+                    needle = step["text_count"]
+                    n = source.count(needle)
+                    observed[step["capture_as"]] = n
+                    captures[step["capture_as"]] = n
+                else:
+                    observed[step.get("capture_as", "dom_query_unnamed")] = {
+                        "_error": "browser_dom_query needs either text_contains or text_count"
+                    }
             else:
                 observed[step.get("capture_as", f"unknown_{kind}")] = {"_error": f"unknown observe step kind {kind!r}"}
         except Exception as exc:
@@ -818,7 +873,7 @@ def validate_probe(probe: dict) -> list[str]:
         errors.append(f"unknown stack_profile {probe['stack_profile']!r}; allowed: {sorted(STACK_PROFILES)}")
     allowed_kinds_arrange = {"docker-compose-up", "sql", "rest", "config_override"}
     allowed_kinds_act = {"rest", "browser"}
-    allowed_kinds_observe = {"sql", "response_field", "response_list_field", "response_contains", "latency_distribution"}
+    allowed_kinds_observe = {"sql", "response_field", "response_list_field", "response_contains", "latency_distribution", "browser_dom_query"}
     for i, step in enumerate(probe.get("arrange", [])):
         if step.get("kind") not in allowed_kinds_arrange:
             errors.append(f"arrange[{i}]: kind {step.get('kind')!r} not allowed")
@@ -1271,12 +1326,272 @@ def merge_probe_into_sidecars(
 
 
 # ============================================================================
+# Slice-5: probe resolution by feature + per-feature aggregated reporting +
+# investigator-log integration. The /probe-run --feature F-NNN form lets the
+# maintainer ask "run every probe that empirically grounds F-NNN" without
+# carrying probe IDs in their head; aggregated reporting turns a batch into
+# a feature-level audit; the investigator-log entry preserves the trail.
+# ============================================================================
+
+def resolve_probe_ids_by_feature(feature_id: str, *, workspace_root: Path, repo: str) -> list[str]:
+    """Return probe IDs whose frontmatter feature_id matches.
+
+    Reads every lineage/{repo}/probes/*.yaml; parses frontmatter; returns the
+    IDs in lexical order so batch runs are deterministic.
+    """
+    probes_dir = workspace_root / PROBES_DIR_TEMPLATE.format(repo=repo)
+    if not probes_dir.is_dir():
+        raise FileNotFoundError(f"probes dir missing: {probes_dir}")
+    matches: list[str] = []
+    for path in sorted(probes_dir.glob("*.yaml")):
+        try:
+            probe = parse_probe_yaml(path)
+        except Exception:
+            continue
+        if probe.get("feature_id") == feature_id:
+            matches.append(probe.get("probe_id") or path.stem)
+    return matches
+
+
+def aggregate_runs_per_feature(runs: list[ProbeRun]) -> dict[str, dict[str, Any]]:
+    """Group a list of probe-runs by feature_id; summarise per feature.
+
+    Per-feature dict shape:
+      {
+        "feature_id": "F-001",
+        "total_runs": 4,
+        "pass_count": 4,
+        "fail_count": 0,
+        "error_count": 0,
+        "test_classes_covered": ["integration", "performance", "security"],
+        "runs": [
+          {"probe_id": "P-001", "test_class": "integration", "outcome": "PASS", "run_id": "R-...", "verdict": "..."},
+          ...
+        ],
+      }
+    """
+    by_feature: dict[str, dict[str, Any]] = {}
+    for run in runs:
+        fid = run.feature_id or "(no-feature)"
+        entry = by_feature.setdefault(fid, {
+            "feature_id": fid,
+            "total_runs": 0,
+            "pass_count": 0,
+            "fail_count": 0,
+            "error_count": 0,
+            "test_classes_covered": set(),
+            "runs": [],
+        })
+        entry["total_runs"] += 1
+        if run.outcome == "PASS":
+            entry["pass_count"] += 1
+        elif run.outcome == "FAIL":
+            entry["fail_count"] += 1
+        else:
+            entry["error_count"] += 1
+        if run.outcome in {"PASS", "FAIL"}:
+            entry["test_classes_covered"].add(run.test_class)
+        entry["runs"].append({
+            "probe_id": run.probe_id,
+            "test_class": run.test_class,
+            "outcome": run.outcome,
+            "run_id": run.probe_run_id,
+            "verdict": run.verdict_reason,
+        })
+    # Normalise sets to sorted lists for serialisation
+    for entry in by_feature.values():
+        entry["test_classes_covered"] = sorted(entry["test_classes_covered"])
+    return by_feature
+
+
+def write_batch_summary(
+    runs: list[ProbeRun],
+    *,
+    workspace_root: Path,
+    repo: str,
+    trigger: str,
+) -> Path:
+    """Write a per-batch summary artefact next to the probe-runs.
+
+    The summary is a markdown file at:
+      lineage/{repo}/probe-runs/{date}-batch-{trigger-slug}.md
+
+    Captures:
+      - Trigger (which CLI invocation produced this batch)
+      - One row per run (probe → outcome → verdict)
+      - Per-feature aggregation (which features got measured, which test-classes per feature)
+
+    Per dynamic-verification ADR slice 5 ("per-feature aggregated measurement reporting").
+    """
+    runs_dir = workspace_root / PROBE_RUNS_DIR_TEMPLATE.format(repo=repo)
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    date_str = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    trigger_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", trigger).strip("-").lower() or "batch"
+    # Avoid stuttering `batch-batch-...` when the trigger string itself starts with "batch ".
+    trigger_slug = re.sub(r"^batch-", "", trigger_slug)
+    out_path = runs_dir / f"{date_str}-batch-{trigger_slug}.md"
+
+    by_feature = aggregate_runs_per_feature(runs)
+    pass_total = sum(1 for r in runs if r.outcome == "PASS")
+    fail_total = sum(1 for r in runs if r.outcome == "FAIL")
+    error_total = sum(1 for r in runs if r.outcome not in {"PASS", "FAIL"})
+
+    lines: list[str] = []
+    lines.append(f"# Probe batch summary — {date_str} — `{trigger}`")
+    lines.append("")
+    lines.append(f"- **Probes run**: {len(runs)}")
+    lines.append(f"- **PASS**: {pass_total}")
+    lines.append(f"- **FAIL**: {fail_total}")
+    lines.append(f"- **ERROR / TIMEOUT / SCOPE_VIOLATION**: {error_total}")
+    lines.append(f"- **Features measured**: {len(by_feature)} ({', '.join(sorted(by_feature))})")
+    lines.append("")
+    lines.append("## Per-run outcomes")
+    lines.append("")
+    lines.append("| Probe | Feature | Test class | Outcome | Run ID | Verdict |")
+    lines.append("|---|---|---|---|---|---|")
+    for run in runs:
+        verdict_oneline = run.verdict_reason.replace("|", "\\|").replace("\n", " ")[:200]
+        lines.append(
+            f"| `{run.probe_id}` | `{run.feature_id or '-'}` | {run.test_class} | "
+            f"**{run.outcome}** | `{run.probe_run_id}` | {verdict_oneline} |"
+        )
+    lines.append("")
+    lines.append("## Per-feature aggregation")
+    lines.append("")
+    for fid in sorted(by_feature):
+        entry = by_feature[fid]
+        classes = ", ".join(entry["test_classes_covered"]) or "(none — all runs failed)"
+        lines.append(f"### {fid}")
+        lines.append("")
+        lines.append(
+            f"- **Runs**: {entry['total_runs']} "
+            f"(PASS={entry['pass_count']} / FAIL={entry['fail_count']} / ERROR={entry['error_count']})"
+        )
+        lines.append(f"- **Test classes empirically covered this batch**: {classes}")
+        lines.append("- **Per-probe**:")
+        for r in entry["runs"]:
+            lines.append(
+                f"  - `{r['probe_id']}` ({r['test_class']}) → **{r['outcome']}** — "
+                f"{r['verdict']} (run `{r['run_id']}`)"
+            )
+        lines.append("")
+
+    lines.append("## Layer-5 → layer-2 feedback")
+    lines.append("")
+    lines.append(
+        "Each PASS/FAIL run above triggered a sidecar confidence merge "
+        "(`## probe_verifications` section appended to each contributing sidecar "
+        "in `lineage/{repo}/understanding/`). Per dynamic-verification ADR Rule 4."
+    )
+    lines.append("")
+    lines.append("## Cross-references")
+    lines.append("")
+    lines.append(f"- Per-run artefacts: `lineage/{repo}/probe-runs/{date_str}-P-*.yaml`")
+    lines.append(f"- Feature catalog: `lineage/{repo}/feature-flows.yaml`")
+    lines.append(f"- Investigator log (slice-5 probe-run section): `lineage/{repo}/investigator-log.md`")
+    lines.append("")
+
+    out_path.write_text("\n".join(lines), encoding="utf-8")
+    return out_path
+
+
+def append_to_investigator_log(
+    runs: list[ProbeRun],
+    *,
+    workspace_root: Path,
+    repo: str,
+    trigger: str,
+    batch_summary_path: Path,
+) -> Path | None:
+    """Append a `## Probe-runs YYYY-MM-DD — <trigger>` section to investigator-log.md.
+
+    Per dynamic-verification ADR slice 5: "integration with the existing
+    investigator-log.md format (each batch's investigator-log entry now carries
+    a probe-runs section alongside reducer diffs)".
+
+    Returns the log path if appended; None if the log doesn't exist (silent skip).
+    """
+    log_path = workspace_root / "lineage" / repo / "investigator-log.md"
+    if not log_path.is_file():
+        return None
+
+    date_str = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d")
+    by_feature = aggregate_runs_per_feature(runs)
+    pass_total = sum(1 for r in runs if r.outcome == "PASS")
+    fail_total = sum(1 for r in runs if r.outcome == "FAIL")
+    error_total = sum(1 for r in runs if r.outcome not in {"PASS", "FAIL"})
+
+    block: list[str] = []
+    block.append("")
+    block.append(f"## Probe-runs {date_str} — `{trigger}` (layer-5 dynamic verification)")
+    block.append("")
+    block.append(
+        "Per dynamic-verification ADR slice 5: each batch's investigator-log "
+        "entry now records the probe-runs that empirically grounded the static "
+        "ontology updates. This block is appended automatically by "
+        "`lineage/_extractor/probe-runtime/runner.py` after every batch run."
+    )
+    block.append("")
+    block.append(f"- **Trigger**: `{trigger}`")
+    block.append(f"- **Probes run**: {len(runs)} ({pass_total} PASS / {fail_total} FAIL / {error_total} ERROR)")
+    block.append(f"- **Features measured**: {len(by_feature)} (`{'`, `'.join(sorted(by_feature))}`)")
+    block.append(f"- **Batch summary**: `{batch_summary_path.relative_to(workspace_root)}`")
+    block.append("")
+    block.append("### Probe-run outcomes")
+    block.append("")
+    block.append("| Probe | Feature | Test class | Outcome | Run ID |")
+    block.append("|---|---|---|---|---|")
+    for run in runs:
+        block.append(
+            f"| `{run.probe_id}` | `{run.feature_id or '-'}` | {run.test_class} | "
+            f"**{run.outcome}** | `{run.probe_run_id}` |"
+        )
+    block.append("")
+    block.append("### Layer-5 → layer-2 feedback closure")
+    block.append("")
+    block.append(
+        "Each PASS/FAIL run merged a `## probe_verifications` entry into the "
+        "contributing sidecars under `lineage/" + repo + "/understanding/` "
+        "(per dynamic-verification ADR Rule 4)."
+    )
+    block.append("")
+    block.append("---")
+    block.append("")
+
+    existing = log_path.read_text(encoding="utf-8")
+    # Idempotency: if a probe-runs section for this exact trigger + date already
+    # exists, don't append a duplicate. The runner is expected to be re-runnable
+    # in the same day; the first run writes, the second amends the summary file
+    # only.
+    marker = f"## Probe-runs {date_str} — `{trigger}` (layer-5"
+    if marker in existing:
+        # Replace the existing block. Locate its bounds: from marker line to the
+        # next `## ` heading or EOF.
+        start = existing.index(marker)
+        # find the preceding "\n" to keep prior blank line:
+        # Look for the closing "---\n" that we emit, plus the next "## " or EOF.
+        # Easiest: find from `start` the next "\n## " AFTER skipping our own line.
+        after = existing[start:]
+        next_h2 = re.search(r"\n## ", after[1:])
+        if next_h2:
+            end = start + 1 + next_h2.start() + 1   # newline before next ##
+        else:
+            end = len(existing)
+        new_existing = existing[:start].rstrip() + "\n" + "\n".join(block) + existing[end:]
+        log_path.write_text(new_existing, encoding="utf-8")
+    else:
+        log_path.write_text(existing.rstrip() + "\n" + "\n".join(block), encoding="utf-8")
+    return log_path
+
+
+# ============================================================================
 # CLI
 # ============================================================================
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description="Run a local probe against an ephemeral docker-compose mirror.")
-    p.add_argument("probe_id", nargs="+", help="One or more probe IDs (P-001 P-002 ...). With --batch, all probes must share a stack_profile and are run against a single shared docker-compose lifecycle.")
+    p.add_argument("probe_id", nargs="*", help="One or more probe IDs (P-001 P-002 ...). With --batch, all probes must share a stack_profile and are run against a single shared docker-compose lifecycle. Mutually exclusive with --feature.")
+    p.add_argument("--feature", help="Resolve probe IDs from feature_id (e.g. --feature F-001 runs every probe whose frontmatter feature_id=F-001). Implies --batch when more than one probe matches.")
     p.add_argument("--repo", default="odd-platform", help="Substrate repo (default: odd-platform)")
     p.add_argument("--workspace-root", default=str(WORKSPACE_ROOT_DEFAULT), help="Workspace root (default: this script's grandparent)")
     p.add_argument("--verbose", "-v", action="store_true")
@@ -1284,10 +1599,27 @@ def main(argv: list[str]) -> int:
     p.add_argument("--validate", action="store_true", help="Parse + scope-check; exit 0 if valid")
     p.add_argument("--no-merge", action="store_true", help="Skip the sidecar confidence merge after the probe completes")
     p.add_argument("--batch", action="store_true", help="Run multiple probes against a single shared docker-compose lifecycle (~50s overhead saved per probe after the first).")
+    p.add_argument("--no-summary", action="store_true", help="Skip writing the per-batch summary artefact + investigator-log append (slice-5 outputs).")
     args = p.parse_args(argv)
 
     workspace_root = Path(args.workspace_root).resolve()
     probes_dir = workspace_root / PROBES_DIR_TEMPLATE.format(repo=args.repo)
+
+    # Slice-5: --feature resolves to a list of probe IDs; mutually exclusive with positional probe_ids
+    if args.feature:
+        if args.probe_id:
+            print(f"FATAL: --feature and positional probe IDs are mutually exclusive", file=sys.stderr)
+            return 2
+        resolved = resolve_probe_ids_by_feature(args.feature, workspace_root=workspace_root, repo=args.repo)
+        if not resolved:
+            print(f"FATAL: no probes found with feature_id={args.feature}", file=sys.stderr)
+            return 2
+        args.probe_id = resolved
+        print(f"--feature {args.feature} → {len(resolved)} probe(s): {' '.join(resolved)}")
+
+    if not args.probe_id:
+        print(f"FATAL: must provide probe_id(s) or --feature F-NNN", file=sys.stderr)
+        return 2
 
     # Validate all named probe files exist
     for pid in args.probe_id:
@@ -1341,6 +1673,25 @@ def main(argv: list[str]) -> int:
         fail_count = sum(1 for r in runs if r.outcome == "FAIL")
         err_count = len(runs) - pass_count - fail_count
         print(f"\nBatch summary: {pass_count} PASS / {fail_count} FAIL / {err_count} ERROR. {merge_count} sidecar verification entries appended.")
+
+        # Slice-5: per-feature aggregated reporting + investigator-log integration.
+        if not args.no_summary and runs:
+            trigger = (f"--feature {args.feature}" if args.feature
+                       else f"batch {' '.join(args.probe_id)}")
+            try:
+                summary_path = write_batch_summary(runs, workspace_root=workspace_root, repo=args.repo, trigger=trigger)
+                print(f"Batch summary written: {summary_path.relative_to(workspace_root)}")
+            except Exception as exc:
+                print(f"WARNING: batch summary failed: {exc}", file=sys.stderr)
+                summary_path = None
+            if summary_path is not None:
+                try:
+                    log_path = append_to_investigator_log(runs, workspace_root=workspace_root, repo=args.repo, trigger=trigger, batch_summary_path=summary_path)
+                    if log_path is not None:
+                        print(f"Investigator log updated: {log_path.relative_to(workspace_root)}")
+                except Exception as exc:
+                    print(f"WARNING: investigator-log append failed: {exc}", file=sys.stderr)
+
         return exit_code
 
     # --- SINGLE MODE ---

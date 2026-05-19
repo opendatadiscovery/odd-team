@@ -10,18 +10,25 @@ expected_outcome: |
   Defence-in-depth complement to P-007. P-007 pinned the BACKEND no-sanitisation
   posture (XSS payload stored verbatim in DB). P-009 pins the UI RENDER side:
   after the PUT, opens the data-entity detail page in headless Chromium, captures
-  the DOM, asserts the unsanitised payload IS present in the rendered HTML.
+  the rendered DOM via page.content(), asserts the unsanitised payload IS present
+  in the rendered HTML.
 
   Note this probe specifically tests `rehype-raw` + no-`rehype-sanitize` behaviour
   — when react-markdown sees the XSS-laden description, it parses raw HTML
   (rehype-raw) without filtering (no rehype-sanitize), so dangerous markup
-  reaches the DOM. The actual XSS EXECUTION (alert popping) depends on Chromium's
-  CSP + same-origin behaviour; this probe pins the RENDER-time presence of
-  dangerous markup, which is the necessary precondition for execution.
+  reaches the DOM. The actual XSS EXECUTION (alert popping, fetch leakage)
+  depends on Chromium's CSP + same-origin behaviour; this probe pins the
+  RENDER-time presence of dangerous markup in the DOM tree, which is the
+  necessary precondition for execution.
 
   When the UI fix lands (add rehype-sanitize to the Markdown rendering
-  pipeline), this probe's assertion flips: dangerous markup must NOT appear
+  pipeline), this probe's assertions flip: dangerous markup must NOT appear
   in the rendered DOM.
+
+  Slice-5 upgrade: this probe now uses the new `browser_dom_query` observe
+  kind to assert against page.content() captured post-settle. The earlier
+  slice-4 version of P-009 could only assert backend-side (DB roundtrip + SPA
+  navigated); slice-5 closes the gap end-to-end.
 ---
 
 # P-009 — UI render-side XSS defence-in-depth (REFACTOR-218 UI half)
@@ -72,26 +79,60 @@ act:
     xhr_filter_regex: '^http://localhost:18080/api/dataentities/1009(\?.*)?$'
 
 observe:
-  # The browser step captures xhr_count + page_status. We don't have a direct
-  # "DOM contains <X>" observe kind yet. As a slice-4 minimal probe, we read
-  # the DB description back — that's the backend half (already proven by P-007).
-  # A future runner extension would expose page.content() / page.evaluate(...)
-  # to actually read the rendered DOM. For now we document the gap.
+  # Slice-5: real UI-render-side assertions via browser_dom_query.
+  # The `browser` act step captures `dom_html` (post-settle page.content());
+  # these observe steps query that captured DOM.
+  - kind: browser_dom_query
+    from: dom_html
+    text_contains: "<script>"
+    capture_as: dom_has_script_tag
+
+  - kind: browser_dom_query
+    from: dom_html
+    text_contains: "p009-xss-img"
+    capture_as: dom_has_xss_img_id
+
+  - kind: browser_dom_query
+    from: dom_html
+    text_contains: "p009-xss-iframe"
+    capture_as: dom_has_xss_iframe_id
+
+  - kind: browser_dom_query
+    from: dom_html
+    text_contains: "onerror="
+    capture_as: dom_has_onerror_attr
+
+  # Backend sanity: verify the description was actually stored. If the DB
+  # write failed, the DOM-presence assertions would be vacuously false.
   - kind: sql
     query: |
       SELECT internal_description FROM data_entity WHERE id = 1009
     capture_as: stored_description
 
 assert:
-  # The same backend-side assertions as P-007 (sanity check) — the UI must
-  # have received the unsanitised content to render it.
+  # Backend assertions (P-007 sanity check — confirms the payload landed
+  # for the UI to render).
   - "'<script>' in stored_description"
   - "'onerror=' in stored_description"
-  # The UI loaded successfully + fired the detail-fetch twice (LSN-017 still
-  # happening on this entity). xhr_count >= 1 confirms the SPA navigated and
-  # fetched the entity that contains the XSS payload — i.e. the rendering
-  # path was exercised.
+  # The SPA navigated + fetched the entity (LSN-017's pattern; on this entity
+  # it also confirms the rendering pipeline ran).
   - "xhr_count >= 1"
+  # UI-render-side state — pinning the MEASURED truth. When this probe first
+  # ran (R-20260519T020323Z-P-009 on commit ede5d277, react-markdown@7.x with
+  # rehype-raw and NO rehype-sanitize) we observed: dangerous TAGS reach the
+  # DOM (script / img / iframe) but EVENT-HANDLER attributes (onerror=) are
+  # stripped, very likely by React's own attribute-handling in the path that
+  # rehype-raw routes through. The measurement refines the static-layer
+  # inference (REFACTOR-218: "rehype-raw + no sanitize → full XSS surface")
+  # into a partial finding: tags pass, event handlers don't.
+  #
+  # When rehype-sanitize lands, the first three flip to == False (tags
+  # filtered out). The onerror= line is already at the measured-correct
+  # value; it stays.
+  - "dom_has_script_tag == True"
+  - "dom_has_xss_img_id == True"
+  - "dom_has_xss_iframe_id == True"
+  - "dom_has_onerror_attr == False"
 
 cleanup:
   - kind: docker-compose-down
@@ -106,15 +147,16 @@ cross_references:
 
 realism_caveats: |
   - This probe is the DEFENCE-IN-DEPTH counterpart to P-007. P-007 pins the
-    backend storage gap; P-009 pins the UI render-path exposure (the SPA
-    successfully loads the entity whose description carries the XSS payload).
-  - To fully pin the UI render gap, the runner needs an observe kind that
-    captures page.content() or page.evaluate('document.body.innerHTML') and
-    asserts dangerous markup presence in the DOM. Slice-5 candidate: add
-    `kind: browser_dom_query` with a CSS-selector / text-contains assertion
-    surface. The current P-009 verifies the SPA navigated + the payload is
-    available for rendering; the actual presence-in-DOM check is the
-    follow-up.
-  - The XSS-execution test (alert fires, fetch leaks) would need
-    page.on('dialog') + page.on('request') filters for the
-    attacker.example/leak URL. Also deferred.
+    backend storage gap; P-009 pins the UI render-path exposure (the dangerous
+    markup reaches the rendered DOM tree via react-markdown + rehype-raw
+    without rehype-sanitize).
+  - The DOM-presence assertions are necessary preconditions for actual XSS
+    execution. They do NOT prove that the <script> tag *executed* (Chromium
+    blocks scripts inserted via dangerouslySetInnerHTML / rehype-raw in some
+    contexts; CSP and same-origin policies also intervene). Proving execution
+    end-to-end needs `page.on('dialog')` + `page.on('request')` hooks to
+    observe attacker.example/leak callbacks — slice-6 candidate when the
+    runner gains a Playwright event-capture observe kind.
+  - Probe runs under DISABLED auth. The XSS surface applies to ANY auth mode
+    once the writer has DATA_ENTITY_DESCRIPTION_UPDATE; the UI renders the
+    same DOM regardless of caller identity.

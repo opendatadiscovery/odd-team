@@ -247,3 +247,24 @@ session_id: session-2026-05-13-G
   feature_id: F-002
   ran_at: 2026-05-19T01:51:15+00:00
   verdict: "all assertions passed"
+- probe_id: P-005
+  probe_run_id: R-20260519T020317Z-P-005
+  outcome: PASS
+  test_class: security
+  feature_id: F-002
+  ran_at: 2026-05-19T02:03:17+00:00
+  verdict: "all assertions passed"
+- probe_id: P-005
+  probe_run_id: R-20260519T020807Z-P-005
+  outcome: PASS
+  test_class: security
+  feature_id: F-002
+  ran_at: 2026-05-19T02:08:07+00:00
+  verdict: "all assertions passed"
+- probe_id: P-005
+  probe_run_id: R-20260519T021212Z-P-005
+  outcome: PASS
+  test_class: security
+  feature_id: F-002
+  ran_at: 2026-05-19T02:12:12+00:00
+  verdict: "all assertions passed"

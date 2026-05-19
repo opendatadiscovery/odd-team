@@ -232,3 +232,24 @@ Reactive `GET /api/dataentities/{data_entity_id}/lineage/downstream` controller 
   feature_id: F-005
   ran_at: 2026-05-19T01:51:19+00:00
   verdict: "all assertions passed"
+- probe_id: P-008
+  probe_run_id: R-20260519T020322Z-P-008
+  outcome: PASS
+  test_class: integration
+  feature_id: F-005
+  ran_at: 2026-05-19T02:03:22+00:00
+  verdict: "all assertions passed"
+- probe_id: P-008
+  probe_run_id: R-20260519T020812Z-P-008
+  outcome: PASS
+  test_class: integration
+  feature_id: F-005
+  ran_at: 2026-05-19T02:08:12+00:00
+  verdict: "all assertions passed"
+- probe_id: P-008
+  probe_run_id: R-20260519T021217Z-P-008
+  outcome: PASS
+  test_class: integration
+  feature_id: F-005
+  ran_at: 2026-05-19T02:12:17+00:00
+  verdict: "all assertions passed"

@@ -1,0 +1,164 @@
+name: DEG isManuallyCreatedDEG defensive check (intent-anchored)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-10
+description: |-
+  **NEW INVARIANT, batch 2026-05-19L** — primary-source confirmed at
+  `DataEntityServiceImpl.java:483-486`. The `isManuallyCreatedDEG` predicate
+  is a 4-line defensive check that gates EVERY DEG-membership write:
+
+      private boolean isManuallyCreatedDEG(final DataEntityPojo pojo) {
+          return pojo.getManuallyCreated()
+              && contains(pojo.getEntityClassIds(), DATA_ENTITY_GROUP.getId());
+      }
+
+  The predicate filters the target DEG pojo on BOTH conditions:
+    1. `manuallyCreated = true` — the DEG was created via the UI's
+       `POST /api/dataentitygroups` (gated by `DATA_ENTITY_GROUP_CREATE`),
+       NOT via the ingestion pipeline.
+    2. The pojo's `entityClassIds` contains the `DATA_ENTITY_GROUP` class
+       id (8 per `DataEntityClassDto.java:50`) — the entity is a DEG (or
+       Domain / ML Experiment / DAG / DATABASE_SERVICE / API_SERVICE /
+       KAFKA_SERVICE — the subtypes that share the DATA_ENTITY_GROUP class).
+
+  **Both call sites** in DataEntityServiceImpl use the predicate symmetrically:
+    - `addDataEntityToDEG` line 394: rejects if predicate is false
+    - `deleteDataEntityFromDEG` line 417: same rejection shape
+
+  The shared predicate is the DRY anchor for "the legal-target set for
+  DEG-membership operations is identical for both write directions". A
+  future maintainer wanting to relax (e.g. allow ingested DEGs to receive
+  manual membership writes) changes one line; the constraint is also
+  visible at the API contract level (OpenAPI description at
+  `openapi.yaml:1073`: "Adds data entity to manually created data entity
+  group").
+
+  **The architectural intent** (the implicit ADR — `addDataEntityToDEG`
+  implicit_adrs.[0]): DEGs are a HEAVIER primitive than tags, owners,
+  titles — they carry their own metadata, owners, tags, terms; they are
+  visible on the Catalog Overview's Domains tile; they participate in
+  Group lineage. Creating one accidentally as a SIDE EFFECT of another
+  endpoint (the REFACTOR-199 / REFACTOR-206 / REFACTOR-227 family of
+  side-doors — Owner / Title / Tag auto-create-on-miss) would be more
+  damaging than auto-creating a Tag or Owner row. The architectural
+  decision encodes:
+
+    "DEGs are first-class data entities with their own permission gate
+    (DATA_ENTITY_GROUP_CREATE); membership writes never substitute for
+    DEG creation."
+
+  **This DIVERGES from the REFACTOR-199 / REFACTOR-206 family**:
+  Owner auto-create (`getOrCreate(owner_name)`), Title auto-create
+  (`getOrCreate(title_name)`), Tag auto-create
+  (`getOrCreateTagsByName(...)`), Namespace auto-create
+  (`namespaceService.getOrCreate(name)`) — all of which silently mint
+  directory rows from per-resource permissions. The DEG path is
+  structurally PROTECTED by the up-front predicate. The predicate is the
+  positive case of "do not side-door past the create-permission" —
+  literally the inverse of the structural enabler that the
+  REFACTOR-199 family invariant captures.
+
+  **Why this is itself a load-bearing intent statement** (not just an
+  implementation detail): the predicate's existence + its DUAL gating
+  (both ADD and DELETE check it) + the OpenAPI description naming the
+  constraint together encode a maintainer-explicit boundary. Future
+  refactors must preserve the boundary or explicitly REJECT it. The
+  invariant exists to make that boundary documented + grep-able.
+
+  **The error-message ambiguity is the only documented weakness**: the
+  predicate's failure throws
+  `BadUserRequestException("Entity with id %s is not manually created
+  DEG")`, which conflates three failure modes:
+    (a) the DEG id doesn't exist (no row in `data_entity`)
+    (b) the entity at that id is not manually-created (e.g. ingested DEG,
+        regular dataset, or a deleted entity)
+    (c) the entity at that id has no `DATA_ENTITY_GROUP` class
+  Operators receiving this error cannot distinguish "DEG was deleted"
+  from "I pointed at the wrong entity". 404 for case (a) and 400 for
+  cases (b)+(c) would be more semantic.
+
+  **Pairs with**: the write-collaborative DEG invariant. The DEG-side
+  AUTHORIZATION may be missing (any caller with child-side
+  DATA_ENTITY_ADD_TO_GROUP can write into any DEG), but DEG-side
+  VALIDITY is strictly enforced (the target must be a manually-created
+  DEG). The defensive predicate is the structural answer to "what
+  prevents ingestion-created DEGs from being rewritten by UI callers" —
+  the answer is that they're filtered at the gate, even if they're
+  reachable.
+axes_present:
+  - controllers
+  - services
+nodes:
+  - odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup
+  - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+  - odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+contributors:
+  - |-
+    addDataEntityDataEntityGroup batch L (PRIMARY SOURCE):
+    concepts.invariants.[1] (NO auto-create-on-miss for the DEG — the
+    structural divergence from the REFACTOR-199/206/223 family) +
+    implicit_adrs.[0] (DEG membership writes do NOT auto-create the
+    target DEG — the intent statement is preserved across three layers:
+    predicate, error message, spec) + implicit_adrs.[4] (the predicate
+    is reusable across add + delete — DRY anchor)
+  - |-
+    deleteDataEntityFromDataEntityGroup batch L (PRIMARY SOURCE,
+    SYMMETRIC SHAPE): concepts.invariants.[2] (DEG-type pre-check on
+    delete — same predicate at line 417) + implicit_adrs.[2] (DEG-type
+    pre-check rejects ingested (non-manually-created) DEGs — same
+    intent)
+evidence:
+  - addDataEntityDataEntityGroup.md:concepts.invariants.[1]
+  - addDataEntityDataEntityGroup.md:implicit_adrs.[0,4]
+  - deleteDataEntityFromDataEntityGroup.md:concepts.invariants.[2]
+  - deleteDataEntityFromDataEntityGroup.md:implicit_adrs.[2]
+triangulation_count: 2
+cross_batch: false
+severity: LOW
+severity_dim: design-intent
+mitigations_unimplemented:
+  - |-
+    Disambiguate the error message — refactor the
+    BadUserRequestException(s) at DataEntityServiceImpl.java:393-397 and
+    416-420 to produce:
+      (a) NotFoundException("Data entity", dataEntityGroupId) if no row
+      (b) BadUserRequestException("Entity %s is not a DEG (class
+          mismatch)") if class != DATA_ENTITY_GROUP
+      (c) BadUserRequestException("DEG %s is ingested (not manually
+          created); UI cannot modify ingested DEG membership") if
+          manuallyCreated == false
+  - |-
+    Document the manually-created vs ingested DEG distinction on
+    /features/data-discovery/groups-domains.md — operators evaluating
+    why a DEG visible on the Catalog Overview can't accept manual
+    membership writes (because it was ingested) need this context.
+  - |-
+    Cross-reference this invariant from the
+    "permission-bypass-via-owner-auto-create-side-door-write-path"
+    invariant — the DEG path is the COUNTER-EXAMPLE: the codebase has
+    deliberate side-doors (Owner/Title/Tag/Namespace) AND deliberate
+    non-side-doors (DEG). The contrast clarifies the architectural
+    boundary.
+notes: |-
+  NEW invariant captured in batch 2026-05-19L. The pattern is intent-anchored
+  (the maintainer's explicit ADR per addDataEntityDataEntityGroup
+  implicit_adrs.[0]); the invariant exists to make the intent grep-able
+  and to anchor future refactors against accidentally introducing a DEG
+  side-door.
+
+  Cross-cutting connections:
+    - Inverse of "Permission-bypass via Owner auto-create (side-door
+      write path)" — that captures the deliberate side-door pattern;
+      this captures the deliberate non-side-door pattern. Together they
+      map the platform's auto-create stance.
+    - Pairs with "Write-collaborative DEG — NO DEG-side authorization"
+      — the DEG-side VALIDITY is enforced; the DEG-side AUTHORIZATION
+      is not. The two together characterize the DEG's defensive surface.
+
+  One DOC-NNN candidate:
+    Document the manually-created vs ingested DEG distinction on the
+    operator-facing groups-domains.md page.

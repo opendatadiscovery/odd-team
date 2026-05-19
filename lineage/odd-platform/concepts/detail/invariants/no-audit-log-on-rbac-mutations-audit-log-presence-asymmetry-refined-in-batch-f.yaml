@@ -1,18 +1,19 @@
 name: No-audit-log on RBAC mutations (audit-log presence asymmetry — REFINED in batch
-  F + further confirmed batch H)
+  F + further confirmed batch H + batch L extension)
 canonical_in_docs: false
 canonical_candidate: true
-description: '**REFINED INVARIANT, batch 2026-05-12F** (originally surfaced in batch
-  E as ''codebase-wide hygiene gap'' — REFINEMENT: the gap is NOT codebase-wide; the
+description: |-
+  **REFINED INVARIANT, batch 2026-05-12F** (originally surfaced in batch
+  E as 'codebase-wide hygiene gap' — REFINEMENT: the gap is NOT codebase-wide; the
   platform has a 2-tier audit story). **Tier 2 (RBAC mutations) — UNAUDITED**: no
   Role / Policy / Owner mutation emits an audit signal. 3-sidecar primary source from
   batch E: (a) `RoleServiceImpl.create/.update/.delete` (lines 39-92) emit NO `@Slf4j`
   log calls, publish NO events, and INSERT into NO audit table; (b) `PolicyServiceImpl.create/.update/.delete`
   (lines 62-95) have the same absence; (c) `OwnerServiceImpl.create` is missing `@ActivityLog`
-  annotation. The platform''s activity feed (`/api/activity` per batch A getActivity)
+  annotation. The platform's activity feed (`/api/activity` per batch A getActivity)
   covers DataEntity-side activity but does NOT extend to Role / Policy / Permission
   / Owner-directory mutations. **Tier 1 (DataEntity mutations) — AUDITED (REFINED
-  in batch F)**: batch F''s primary-source updateStatus + createOwnership sidecars
+  in batch F)**: batch F's primary-source updateStatus + createOwnership sidecars
   CONFIRM that DataEntity mutations DO emit audit signals: (i) `DataEntityInternalStateServiceImpl.changeStatusForDataEntities`
   (lines 73-98) PROGRAMMATICALLY constructs and emits `DATA_ENTITY_STATUS_UPDATED`
   activity events with `oldState`/`newState` JSON payloads (not via AOP `@ActivityLog`
@@ -29,104 +30,239 @@ description: '**REFINED INVARIANT, batch 2026-05-12F** (originally surfaced in b
   a hijacked admin account or any S2S API-key holder (which gets ADMIN by default
   per S2sAuthenticationFilter — REFACTOR-108) can rewrite the authorization model,
   create new high-privilege Roles, attach them to existing Owners through other endpoints,
-  or replace Policy bindings — and leave no trail in the platform''s logs. Highest-leverage
+  or replace Policy bindings — and leave no trail in the platform's logs. Highest-leverage
   audit gap in the RBAC surface. **Batch H — SQL PRIMARY-SOURCE CONFIRMATION at the
   persistence layer**: ReactivePolicyRepositoryImpl batch-H sidecar confirms the persistence-layer
   silence on the RBAC mutation path. ZERO log lines on any of {create, update, delete}.
   ExceptionUtils.translateDatabaseException emits one `log.error` ONLY on non-uniqueness
   DB errors (ExceptionUtils.java:34). The repository carries no `@Slf4j` import beyond
   the inherited base class. The 3-sidecar batch-E pattern is now 4-sidecar (3 service-layer
-  + 1 repository-layer) at the SQL primary source. By contrast, batch H''s ReactiveAlertRepositoryImpl
+  + 1 repository-layer) at the SQL primary source. By contrast, batch H's ReactiveAlertRepositoryImpl
   + ReactiveDataEntityRepositoryImpl sidecars confirm that DataEntity-side and Alert-side
   activity emission lives at the SERVICE layer (by composition, not by inheritance);
   the repositories emit nothing but the service layer takes care of activity events
   via @ActivityLog AOP and programmatic ActivityCreateEvent construction. The 2-tier
-  asymmetry is uniform across HTTP / service / persistence layers.'
+  asymmetry is uniform across HTTP / service / persistence layers.
+
+  **BATCH L EXTENSION — TIER-1 EXCEPTIONS DISCOVERED**: the
+  refinement-claim that Tier-1 (DataEntity-scoped writes) is uniformly
+  audited is contradicted at three specific sub-surfaces uncovered by
+  batch L primary sources. These TIER-1 EXCEPTIONS are entity-side
+  writes that ALSO lack audit:
+
+    - **DEG membership writes** (addDataEntityToDEG +
+      deleteDataEntityFromDEG; `DataEntityServiceImpl.java:387-438`) carry
+      NO `@ActivityLog` despite the `DATA_ENTITY_RELATION_UPDATED` enum
+      value existing at `ActivityEventTypeDto.java:12` (reserved but
+      never fired). An operator auditing "who placed entity X into the
+      Finance Domain on date Z" via `ActivityController.getActivity`
+      sees NOTHING. Pairs with the
+      write-collaborative-DEG-no-deg-side-authorization invariant.
+
+    - **Custom-metadata writes** (upsertMetadataFieldValue + create/delete;
+      `DataEntityServiceImpl.java:287-305, 245-283, 307-326`) carry NO
+      `@ActivityLog` despite the `CUSTOM_METADATA_CREATED / UPDATED /
+      DELETED` enum values existing at `ActivityEventTypeDto.java:17-19`
+      (all three reserved but never fired). Pairs with the
+      external-metadata-overwrite-silent-no-origin-check invariant —
+      the no-audit gap compounds the no-origin-check gap: EXTERNAL
+      values can be silently overwritten with no audit record of who
+      did it or when.
+
+    - **Term-unlink no-op DELETE emits an activity event with BEFORE=AFTER
+      state** — the existing observation from `deleteTermFromDataEntity`
+      (`TermAssignmentActivityHandler` re-queries state regardless of
+      whether the row was deleted) is a DIFFERENT-shaped audit defect:
+      activity events ARE emitted, but they cannot distinguish real
+      removals from no-op DELETEs. Audit-trail-NOISE rather than
+      audit-trail-ABSENCE.
+
+  The Tier-1 partial-audit story is now: **Tier 1a (audited)** — status,
+  ownership, description, business-name, tags, term-link, alert-status
+  changes; **Tier 1b (unaudited despite reserved enum values)** — DEG
+  membership writes, custom-metadata writes; **Tier 1c (audit-noisy)**
+  — term-unlink (events fire on no-op). The original "DataEntity
+  mutations are AUDITED" claim is partly false; a future refinement
+  should rename this invariant from a 2-tier story to a 4-tier story
+  (1a / 1b / 1c / 2).
 axes_present:
-- controllers
-- repositories_reactive
+  - controllers
+  - repositories_reactive
+  - services
 nodes:
-- odd-platform java RoleController controller-method:createRole
-- odd-platform java PolicyController controller-method:createPolicy
-- odd-platform java OwnerController controller-method:createOwner
-- odd-platform java DataEntityController controller-method:updateStatus
-- odd-platform java DataEntityController controller-method:createOwnership
-- odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+  - odd-platform java RoleController controller-method:createRole
+  - odd-platform java PolicyController controller-method:createPolicy
+  - odd-platform java OwnerController controller-method:createOwner
+  - odd-platform java DataEntityController controller-method:updateStatus
+  - odd-platform java DataEntityController controller-method:createOwnership
+  - odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup
+  - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
+  - odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue
+  - odd-platform java DataEntityController controller-method:deleteTermFromDataEntity
+  - odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
 contributors:
-- 'createRole.md:security.known_security_gaps.[1]: TIER-2 UNAUDITED — `RoleServiceImpl.create/.update/.delete`
-  emit no Slf4j, publish no events, insert no audit table; cross-axis activity feed
-  does NOT cover Role / Policy / Permission. HIGH severity'
-- 'createPolicy.md:security.known_security_gaps.[1] + bugs_limitations_corner_cases.[1]:
-  TIER-2 UNAUDITED — `PolicyServiceImpl.create` has no `log.info/warn/audit` call.
-  The `policy` table is single-state, no audit history table. Security incident review
-  of ''who authored this MANAGEMENT/ALL policy?'' has no in-application answer. HIGH
-  severity'
-- 'createOwner.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[4]:
-  TIER-2 UNAUDITED — no `@ActivityLog` on OwnerServiceImpl.create (grep verified —
-  only 5 service files carry the annotation, none of them Owner). Owner directory
-  changes invisible to audit even when they cascade into ownership-row changes that
-  ARE recorded. MEDIUM severity'
-- 'updateStatus.md:implicit_adrs.[4] (batch F): TIER-1 AUDITED (REFINEMENT) — `DataEntityInternalStateServiceImpl.changeStatusForDataEntities`
-  (lines 155-182) emits DATA_ENTITY_STATUS_UPDATED events PROGRAMMATICALLY (oldState
-  captured pre-mutation, newState resolved post-mutation, both JSON-serialised). NOT
-  @ActivityLog AOP because the mutation is bulk; the asymmetric pattern is explicit.
-  CONFIRMS DataEntity mutations are audited.'
-- 'createOwnership.md:implicit_adrs.[1] (batch F): TIER-1 AUDITED (REFINEMENT) — `OwnershipServiceImpl.create`
-  is annotated `@ActivityLog(event = OWNERSHIP_CREATED)` and `OwnershipCreatedActivityHandler`
-  captures BEFORE/AFTER ownership state for the data-entity. EXPLICIT CONTRAST with
-  OwnerController.createOwner from batch E (no @ActivityLog) — the audit decision
-  is per-write, and ownership-binding IS audited while Owner-directory CRUD is NOT.'
-- 'ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[1] (batch H): TIER-2
-  UNAUDITED — SQL PRIMARY-SOURCE CONFIRMATION. The repository emits ZERO security-relevant
-  log lines on {create, update, delete}; ExceptionUtils emits one log.error ONLY on
-  non-uniqueness DB errors. Persistence-layer silence on the RBAC mutation path uniformly
-  across the 4-sidecar pattern. The HIGH-severity classification is the same as the
-  service-layer findings — adding the SQL layer means the gap is end-to-end (HTTP
-  → service → persistence) with no silent backup audit at any layer.'
+  - 'createRole.md:security.known_security_gaps.[1]: TIER-2 UNAUDITED — `RoleServiceImpl.create/.update/.delete`
+    emit no Slf4j, publish no events, insert no audit table; cross-axis activity feed
+    does NOT cover Role / Policy / Permission. HIGH severity'
+  - 'createPolicy.md:security.known_security_gaps.[1] + bugs_limitations_corner_cases.[1]:
+    TIER-2 UNAUDITED — `PolicyServiceImpl.create` has no `log.info/warn/audit` call.
+    The `policy` table is single-state, no audit history table. Security incident review
+    of ''who authored this MANAGEMENT/ALL policy?'' has no in-application answer. HIGH
+    severity'
+  - 'createOwner.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[4]:
+    TIER-2 UNAUDITED — no `@ActivityLog` on OwnerServiceImpl.create (grep verified —
+    only 5 service files carry the annotation, none of them Owner). Owner directory
+    changes invisible to audit even when they cascade into ownership-row changes that
+    ARE recorded. MEDIUM severity'
+  - 'updateStatus.md:implicit_adrs.[4] (batch F): TIER-1 AUDITED (REFINEMENT) — `DataEntityInternalStateServiceImpl.changeStatusForDataEntities`
+    (lines 155-182) emits DATA_ENTITY_STATUS_UPDATED events PROGRAMMATICALLY (oldState
+    captured pre-mutation, newState resolved post-mutation, both JSON-serialised). NOT
+    @ActivityLog AOP because the mutation is bulk; the asymmetric pattern is explicit.
+    CONFIRMS DataEntity mutations are audited.'
+  - 'createOwnership.md:implicit_adrs.[1] (batch F): TIER-1 AUDITED (REFINEMENT) — `OwnershipServiceImpl.create`
+    is annotated `@ActivityLog(event = OWNERSHIP_CREATED)` and `OwnershipCreatedActivityHandler`
+    captures BEFORE/AFTER ownership state for the data-entity. EXPLICIT CONTRAST with
+    OwnerController.createOwner from batch E (no @ActivityLog) — the audit decision
+    is per-write, and ownership-binding IS audited while Owner-directory CRUD is NOT.'
+  - 'ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[1] (batch H): TIER-2
+    UNAUDITED — SQL PRIMARY-SOURCE CONFIRMATION. The repository emits ZERO security-relevant
+    log lines on {create, update, delete}; ExceptionUtils emits one log.error ONLY on
+    non-uniqueness DB errors. Persistence-layer silence on the RBAC mutation path uniformly
+    across the 4-sidecar pattern. The HIGH-severity classification is the same as the
+    service-layer findings — adding the SQL layer means the gap is end-to-end (HTTP
+    → service → persistence) with no silent backup audit at any layer.'
+  - |-
+    addDataEntityDataEntityGroup batch L (NEW TIER-1b EXCEPTION):
+    bugs_limitations_corner_cases.[0] (forensic silence on DEG membership
+    changes; @ActivityLog ABSENT despite DATA_ENTITY_RELATION_UPDATED
+    enum value at ActivityEventTypeDto.java:12) +
+    security.known_security_gaps.[1] (audit trail absence for DEG
+    membership flips; MEDIUM severity) +
+    bugs_limitations_corner_cases.[7] (the enum value is reserved-but-never-fired
+    — dead code in load-bearing position)
+  - |-
+    deleteDataEntityFromDataEntityGroup batch L (NEW TIER-1b EXCEPTION,
+    SYMMETRIC): bugs_limitations_corner_cases.[0] (activity-feed absence
+    for DEG membership flips) + security.known_security_gaps.[0]
+    (audit trail absence; MEDIUM severity)
+  - |-
+    upsertDataEntityMetadataFieldValue batch L (NEW TIER-1b EXCEPTION,
+    custom-metadata): bugs_limitations_corner_cases.[5] (no @ActivityLog
+    annotation despite CUSTOM_METADATA_UPDATED enum value exists at
+    ActivityEventTypeDto.java:18; CUSTOM_METADATA_CREATED + UPDATED +
+    DELETED all reserved-but-never-fired) +
+    security.known_security_gaps.[1] (no audit trail for metadata writes;
+    MEDIUM severity)
+  - |-
+    deleteTermFromDataEntity batch L (NEW TIER-1c — AUDIT-NOISY):
+    bugs_limitations_corner_cases.[2] (activity-event fires even on
+    no-op delete — auditors cannot distinguish real removals from
+    no-op DELETEs because BEFORE=AFTER state JSON is identical) +
+    security.known_security_gaps.[3] (audit-trail noise via silent-204
+    + always-fire activity event)
 evidence:
-- createRole.md:security.known_security_gaps.[1] (HIGH — TIER-2 unaudited)
-- createPolicy.md:security.known_security_gaps.[1] (HIGH — TIER-2 unaudited)
-- createOwner.md:security.known_security_gaps.[0] (MEDIUM — TIER-2 unaudited)
-- updateStatus.md:implicit_adrs.[4] (TIER-1 audited — REFINEMENT confirming the asymmetry)
-- createOwnership.md:implicit_adrs.[1] (TIER-1 audited — REFINEMENT confirming the
-  asymmetry; explicit contrast vs createOwner)
-- ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[1] (TIER-2 UNAUDITED
-  SQL primary source HIGH — 4th sidecar in the pattern; persistence-layer confirmation)
-notes: "REFINED cross-cutting hygiene invariant in batch 2026-05-12F. Originally\n\
-  captured in batch E as a 3-sidecar 'codebase-wide' hygiene gap; batch F\nprimary-source\
-  \ corroboration on DataEntity-side updateStatus + createOwnership\nshows the gap\
-  \ is NOT codebase-wide — it is specifically the RBAC primary\nsurface. **Batch H**\
-  \ adds the SQL-layer confirmation via ReactivePolicyRepositoryImpl\n— persistence-layer\
-  \ silence on {create, update, delete} of policies.\n\nThe platform has a 2-tier audit\
-  \ story:\n\n  Tier 1 (DataEntity-scoped writes — AUDITED):\n    - status updates (programmatic\
-  \ logStatusChangeEvents)\n    - ownership-bindings (@ActivityLog OWNERSHIP_CREATED)\n\
-  \    - description / business-name updates (per Activity Feed concept)\n    - tag\
-  \ / term additions and removals (per Activity Feed concept)\n    - custom-metadata\
-  \ updates (per Activity Feed concept)\n    - alert-config updates (per Activity Feed\
-  \ concept)\n    - DataEntityGroup membership changes (per Activity Feed concept)\n\
-  \    - alert status changes (@ActivityLog ALERT_STATUS_UPDATED — batch H confirmed\n\
-  \      at AlertServiceImpl.java:112)\n\n  Tier 2 (RBAC-scoped writes — UNAUDITED\
-  \ end-to-end):\n    - Policy create / update / delete (service + persistence layers)\n\
-  \    - Role create / update / delete\n    - Owner directory create (Owner-controller\
-  \ side, not ownership binding)\n\nThe asymmetry is the INVERSE of what a security-conscious\
-  \ operator\nwould expect: data-content changes (which are themselves audit-trail-shaped\n\
-  via the activity feed) are TIER-1 AUDITED; authorization-model changes\n(which control\
-  \ WHO can do what) are TIER-2 UNAUDITED.\n\nHighest-leverage gap in the RBAC surface\
-  \ — every other security\nweakness assumes attack visibility via logs; this one says\
-  \ logs\ndon't exist for the most-load-bearing mutations. Batch H confirms\nthe gap\
-  \ at the SQL primary source: no `log.info` / `log.warn` / audit-table-write\non any\
-  \ of {create, update, delete} from ReactivePolicyRepositoryImpl.\n\nRecommended cleanup\
-  \ options (in increasing scope):\n\n  - Add `@Slf4j` log.info(\"created policy {name}\
-  \ by {currentUser}\")\n    to PolicyServiceImpl.create, RoleServiceImpl.create,\n\
-  \    OwnerServiceImpl.create. Minimum-cost, log-only audit trail.\n\n  - Add `@ActivityLog`\
-  \ annotations matching the existing pattern in\n    AlertServiceImpl + DataEntityServiceImpl\
-  \ + OwnershipServiceImpl\n    (the batch F + H evidence shows the pattern is alive\
-  \ and proven on\n    the DataEntity + Alert sides). Surfaces in the activity feed.\
-  \ Requires\n    extending the ActivityEventType enum to cover RBAC mutations +\n\
-  \    extending the ActivityState renderer to handle\n    Role/Policy/Owner-mutation\
-  \ payloads.\n\n  - Introduce a dedicated `rbac_audit` append-only table written via\n\
-  \    `BaseSoftDeleteCRUDRepository`'s mutation lifecycle hooks. Full\n    forensic\
-  \ trail; coordinates with the existing soft-delete pattern.\n\nSurface as canonicalisation\
-  \ candidate AND a refactoring-scope item.\nThree DOC-NNN candidates flow from this\
-  \ invariant (audit-trail\nexpectation undocumented across `/authorization/policies`,\n\
-  `/authorization/roles`, `/authorization/owners` live pages).\n"
+  - createRole.md:security.known_security_gaps.[1] (HIGH — TIER-2 unaudited)
+  - createPolicy.md:security.known_security_gaps.[1] (HIGH — TIER-2 unaudited)
+  - createOwner.md:security.known_security_gaps.[0] (MEDIUM — TIER-2 unaudited)
+  - updateStatus.md:implicit_adrs.[4] (TIER-1 audited — REFINEMENT confirming the asymmetry)
+  - createOwnership.md:implicit_adrs.[1] (TIER-1 audited — REFINEMENT confirming the
+    asymmetry; explicit contrast vs createOwner)
+  - ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[1] (TIER-2 UNAUDITED
+    SQL primary source HIGH — 4th sidecar in the pattern; persistence-layer confirmation)
+  - |-
+    addDataEntityDataEntityGroup.md:bugs_limitations_corner_cases.[0] +
+    security.known_security_gaps.[1] +
+    bugs_limitations_corner_cases.[7] (TIER-1b — DEG membership
+    writes unaudited despite reserved enum; NEW MEDIUM batch L)
+  - |-
+    deleteDataEntityFromDataEntityGroup.md:bugs_limitations_corner_cases.[0]
+    + security.known_security_gaps.[0] (TIER-1b — DEG-unbind unaudited
+    symmetric; NEW MEDIUM batch L)
+  - |-
+    upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[5]
+    + security.known_security_gaps.[1] (TIER-1b — custom-metadata writes
+    unaudited despite reserved enum; NEW MEDIUM batch L)
+  - |-
+    deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[2] +
+    security.known_security_gaps.[3] (TIER-1c — audit-noisy; activity
+    event fires on no-op DELETE; NEW MEDIUM batch L)
+notes: |-
+  REFINED cross-cutting hygiene invariant in batch 2026-05-12F. Originally
+  captured in batch E as a 3-sidecar 'codebase-wide' hygiene gap; batch F
+  primary-source corroboration on DataEntity-side updateStatus + createOwnership
+  shows the gap is NOT codebase-wide — it is specifically the RBAC primary
+  surface. **Batch H** adds the SQL-layer confirmation via ReactivePolicyRepositoryImpl
+  — persistence-layer silence on {create, update, delete} of policies.
+
+  **Batch L** extends the 2-tier story to a 4-tier story by discovering
+  TIER-1 EXCEPTIONS (entity-side writes that ALSO lack audit) AND the
+  TIER-1c audit-noisy shape (events fire on no-op):
+
+  Tier 1a (entity-side writes — AUDITED):
+    - status updates (programmatic logStatusChangeEvents)
+    - ownership-bindings (@ActivityLog OWNERSHIP_CREATED)
+    - description / business-name updates
+    - tag / term-link additions and removals
+    - alert-config updates
+    - alert status changes (@ActivityLog ALERT_STATUS_UPDATED — batch H
+      confirmed at AlertServiceImpl.java:112)
+
+  Tier 1b (entity-side writes — UNAUDITED despite reserved enum values —
+  NEW batch L):
+    - DEG membership add/delete (DATA_ENTITY_RELATION_UPDATED enum
+      reserved but @ActivityLog absent)
+    - custom-metadata create/update/delete (CUSTOM_METADATA_CREATED /
+      UPDATED / DELETED enum values all reserved but @ActivityLog absent)
+
+  Tier 1c (entity-side writes — AUDIT-NOISY — NEW batch L):
+    - term-unlink DELETE on non-member: activity-event fires with
+      BEFORE=AFTER state JSON; auditors cannot distinguish real removals
+      from no-op DELETEs
+
+  Tier 2 (RBAC-scoped writes — UNAUDITED end-to-end):
+    - Policy create / update / delete (service + persistence layers)
+    - Role create / update / delete
+    - Owner directory create (Owner-controller side, not ownership binding)
+
+  The 4-tier story shows that audit is selectively applied across the
+  codebase — the audit decision is per-write, and unfortunately the
+  selection is INCONSISTENT (some entity writes audited, some not,
+  some noisy). The maintainer-facing implication: the platform does
+  NOT have a uniform audit story; understanding "is this audited?"
+  requires per-endpoint inspection.
+
+  Recommended cleanup options (in increasing scope):
+
+    - Add `@Slf4j` log.info("created policy {name} by {currentUser}")
+      to PolicyServiceImpl.create, RoleServiceImpl.create,
+      OwnerServiceImpl.create. Minimum-cost, log-only audit trail.
+
+    - Add `@ActivityLog` annotations matching the existing pattern in
+      AlertServiceImpl + DataEntityServiceImpl + OwnershipServiceImpl
+      (the batch F + H evidence shows the pattern is alive and proven on
+      the DataEntity + Alert sides). Surfaces in the activity feed. Requires
+      extending the ActivityEventType enum to cover RBAC mutations +
+      extending the ActivityState renderer to handle
+      Role/Policy/Owner-mutation payloads.
+
+    - **NEW batch L** — wire `@ActivityLog(DATA_ENTITY_RELATION_UPDATED)`
+      on DEG add/delete; wire `@ActivityLog(CUSTOM_METADATA_UPDATED)` on
+      custom-metadata upsert (and the matching CREATED / DELETED on
+      sibling methods). The enum values ALREADY EXIST — only the
+      annotation + handler wiring is missing. Lowest-cost fix in the
+      RBAC space.
+
+    - **NEW batch L** — for Tier 1c (audit-noisy): early-exit the
+      @ActivityLog AOP advice when the DELETE matches zero rows — the
+      handler should not emit a TERM_ASSIGNMENT_UPDATED event with
+      BEFORE=AFTER state. Either short-circuit at the AOP layer OR add
+      a programmatic check at the service.
+
+    - Introduce a dedicated `rbac_audit` append-only table written via
+      `BaseSoftDeleteCRUDRepository`'s mutation lifecycle hooks. Full
+      forensic trail; coordinates with the existing soft-delete pattern.
+
+  Surface as canonicalisation candidate AND a refactoring-scope item.
+  Six DOC-NNN candidates flow from this invariant — three for RBAC
+  surface; three for Tier 1b/1c gaps (DEG memberships, custom-metadata,
+  term-unlink no-op auditing).

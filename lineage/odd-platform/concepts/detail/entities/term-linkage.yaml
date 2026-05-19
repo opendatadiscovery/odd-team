@@ -2,16 +2,18 @@ name: Term Linkage
 canonical_in_docs: false
 canonical_candidate: true
 pillar_affinity:
-- P-06
-- P-01
-- P-09
+  - P-06
+  - P-01
+  - P-09
 description: |-
   Per-(data-entity, term) edge stored in data_entity_to_term, with PK
   (data_entity_id, term_id, is_description_link). Allows manual link
   (is_description_link=FALSE) AND description-parsed link
   ([[ns:term]] regex match, is_description_link=TRUE) to coexist as
   separate rows. Created via POST /api/dataentities/{id}/terms or via the
-  description-edit pipeline. **STRENGTHENED batch 2026-05-19K** —
+  description-edit pipeline. Removed via DELETE
+  /api/dataentities/{id}/terms/{termId} (manual links only — description-link
+  rows are PROTECTED). **STRENGTHENED batch 2026-05-19K** —
   TermServiceImpl primary-source confirms the link-table semantics:
     - is_description_link flag is INTENTIONAL per implicit_adrs.[1] —
       manual + description-link rows coexist; the PK
@@ -25,7 +27,31 @@ description: |-
       implicit_adrs.[3]) — mentions for non-existent terms are NOT silently
       dropped; staged in *_unhandled_term tables; auto-materialised on
       term-create
-  **NEW HIGH findings batch K**:
+  **STRENGTHENED batch 2026-05-19L** — deleteTermFromDataEntity PRIMARY
+  SOURCE on the DELETE half:
+    - REFACTOR-217 DELETE half is now SYMMETRIC PRIMARY-SOURCE CONFIRMED
+      at SecurityConstants.java:240-242 (singular `/term/{term_id}` vs
+      OpenAPI plural `/terms/{term_id}` at openapi.yaml:1042). The
+      DATA_ENTITY_DELETE_TERM gate NEVER FIRES for the real endpoint.
+      The invariant is now 3-way controller-tier triangulated (POST + DELETE)
+      AND service-tier triangulated (TermServiceImpl batch K).
+    - HARD-DELETE on `data_entity_to_term` confirmed at
+      TermRelationsRepositoryImpl.java:81-87 + migration
+      V0_0_76__term_relations_hard_delete.sql:1-6 (deleted_at column
+      DROPPED + tombstoned rows DELETED). Once unlinked, no row-level
+      restore; only the TermAssignmentActivityHandler BEFORE/AFTER JSON
+      state persists.
+    - Description-link rows PROTECTED from API DELETE — the WHERE clause
+      includes `.and(DATA_ENTITY_TO_TERM.IS_DESCRIPTION_LINK.isFalse())`
+      at TermRelationsRepositoryImpl.java:84. UI gates the X button via
+      `!linkedTerm.isDescriptionLink` (TermItem.tsx:46) — bypassable by
+      direct API; the server then silently returns 204 with no actual
+      change.
+    - Silent-204 on no-op DELETE — pairs with the NEW
+      silent-204-on-no-op-delete-vs-400-duplicate-on-no-op-add invariant.
+    - Activity-event fires REGARDLESS of whether a row was deleted —
+      pairs with the audit-trail-noise observation.
+  **NEW HIGH findings batch K** (preserved from prior strengthening):
     - REFACTOR-217 primary-source: SecurityConstants.java:237-242 paths
       are SINGULAR (/term) but OpenAPI declares PLURAL (/terms) — the
       DATA_ENTITY_ADD_TERM / DATA_ENTITY_DELETE_TERM gates NEVER FIRE for
@@ -44,58 +70,78 @@ description: |-
       service or repository layer; descriptions in one namespace can
       auto-link to terms in another namespace
 nodes:
-- odd-platform java DataEntityController controller-method:addDataEntityTerm
-- odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
-- odd-platform java service service:TermServiceImpl
+  - odd-platform java DataEntityController controller-method:addDataEntityTerm
+  - odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
+  - odd-platform java DataEntityController controller-method:deleteTermFromDataEntity
+  - odd-platform java service service:TermServiceImpl
 contributing_files:
-- odd-platform__java__DataEntityController__controller-method__addDataEntityTerm.md
-- odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription.md
-- odd-platform__java__service__service__TermServiceImpl.md
+  - odd-platform__java__DataEntityController__controller-method__addDataEntityTerm.md
+  - odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription.md
+  - odd-platform__java__DataEntityController__controller-method__deleteTermFromDataEntity.md
+  - odd-platform__java__service__service__TermServiceImpl.md
 evidence:
-- |-
-  addDataEntityTerm.md:concepts.entities[DataEntityTermFormData, LinkedTerm,
-  DataEntityToTermPojo, TermAssignmentUpdated]
-- |-
-  upsertDataEntityInternalDescription.md:concepts.operations[parse-and-link-glossary-terms]
-- addDataEntityTerm.md:implicit_adrs.[3] (manual vs description-link separation)
-- |-
-  TermServiceImpl.md (batch K — STRENGTHENS): concepts.entities[TermPojo,
-  NamespacePojo, TermBaseInfoDto, DataEntityToTermPojo,
-  DatasetFieldToTermPojo, TermToTermPojo,
-  DataEntityDescriptionUnhandledTermPojo, LinkedTermDto] +
-  concepts.invariants.[0-7] (term natural key case-insensitive; is_description_link
-  flag separation; soft-delete via deleted_at; description-mention guard;
-  update-without-rename bypasses guard; auto-link triggered only by
-  description-edit endpoints; unhandled staging unidirectional;
-  removeDuplicateNonDescriptionTerms collapse on read) +
-  implicit_adrs.[0-5] (six load-bearing ADRs) +
-  bugs_limitations_corner_cases.[0,1,2,3,4,5] (REFACTOR-217 primary-source;
-  second SecurityConstants bug NEW HIGH; auto-link side-channel HIGH;
-  cross-namespace pollution; REFACTOR-228 triple-re-query; asymmetric
-  switchIfEmpty)
+  - |-
+    addDataEntityTerm.md:concepts.entities[DataEntityTermFormData, LinkedTerm,
+    DataEntityToTermPojo, TermAssignmentUpdated]
+  - |-
+    upsertDataEntityInternalDescription.md:concepts.operations[parse-and-link-glossary-terms]
+  - addDataEntityTerm.md:implicit_adrs.[3] (manual vs description-link separation)
+  - |-
+    deleteTermFromDataEntity.md (batch L — STRENGTHENS — SYMMETRIC DELETE-half
+    PRIMARY SOURCE): concepts.invariants.[1] (HARD DELETE; deleted_at column
+    DROPPED in V0_0_76) + concepts.invariants.[2] (description-linked rows
+    PROTECTED) + concepts.invariants.[3] (silent-204 on no-op) +
+    concepts.invariants.[4] (activity-event fires regardless) +
+    implicit_adrs.[1] (HARD-DELETE deliberate) + implicit_adrs.[2]
+    (description-linked protection deliberate) + implicit_adrs.[3] (the
+    per-data-entity-authorization-via-SecurityRule design intent that
+    DOES NOT MATCH RUNTIME due to the path-bug) +
+    bugs_limitations_corner_cases.[0] HEADLINE — REFACTOR-217 DELETE half
+    SYMMETRIC PRIMARY SOURCE
+  - |-
+    TermServiceImpl.md (batch K — STRENGTHENS): concepts.entities[TermPojo,
+    NamespacePojo, TermBaseInfoDto, DataEntityToTermPojo,
+    DatasetFieldToTermPojo, TermToTermPojo,
+    DataEntityDescriptionUnhandledTermPojo, LinkedTermDto] +
+    concepts.invariants.[0-7] (term natural key case-insensitive; is_description_link
+    flag separation; soft-delete via deleted_at; description-mention guard;
+    update-without-rename bypasses guard; auto-link triggered only by
+    description-edit endpoints; unhandled staging unidirectional;
+    removeDuplicateNonDescriptionTerms collapse on read) +
+    implicit_adrs.[0-5] (six load-bearing ADRs) +
+    bugs_limitations_corner_cases.[0,1,2,3,4,5] (REFACTOR-217 primary-source;
+    second SecurityConstants bug NEW HIGH; auto-link side-channel HIGH;
+    cross-namespace pollution; REFACTOR-228 triple-re-query; asymmetric
+    switchIfEmpty)
 contributors:
-- |-
-  addDataEntityTerm (batch G — controller method): the direct-link
-  HTTP endpoint primary source for the path-mismatch finding
-- |-
-  upsertDataEntityInternalDescription (batch G — controller method): the
-  description-update HTTP endpoint primary source for the side-channel
-- |-
-  TermServiceImpl (batch K — STRENGTHENS — service tier): the load-bearing
-  enabler; the link-table writes happen here. NEW primary source for
-  REFACTOR-217 + REFACTOR-227 + second SecurityConstants bug + cross-namespace
-  pollution + the 17-method service surface with ZERO service-tier
-  permission checks
+  - |-
+    addDataEntityTerm (batch G — controller method): the direct-link
+    HTTP endpoint primary source for the path-mismatch finding
+  - |-
+    upsertDataEntityInternalDescription (batch G — controller method): the
+    description-update HTTP endpoint primary source for the side-channel
+  - |-
+    deleteTermFromDataEntity (batch L — controller method, STRENGTHENS —
+    the SYMMETRIC DELETE-half primary source for REFACTOR-217; the
+    HARD-DELETE-on-relationship-edge confirmation site; the
+    description-link-protection-on-DELETE primary source; the
+    silent-204-on-no-op-DELETE primary source for the term family)
+  - |-
+    TermServiceImpl (batch K — STRENGTHENS — service tier): the load-bearing
+    enabler; the link-table writes happen here. NEW primary source for
+    REFACTOR-217 + REFACTOR-227 + second SecurityConstants bug + cross-namespace
+    pollution + the 17-method service surface with ZERO service-tier
+    permission checks
 axes_present:
-- controllers
-- openapi_paths
-- services
+  - controllers
+  - openapi_paths
+  - services
 security_aggregate:
   overall: HIGH
   auth_modes_relevant:
-  - LOGIN_FORM
-  - OAUTH2
-  - LDAP
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
   authorization_consistency:
     verdict: INCONSISTENT
     detail: |-
@@ -107,7 +153,11 @@ security_aggregate:
       batch K**: service-tier TermServiceImpl has ZERO permission checks
       (verified via grep — primary source); the entire term-linkage
       surface is structurally controller-tier-only, and the controller-tier
-      gate is silently disabled by REFACTOR-217. **NEW HIGH**: SecurityConstants.java:295-296
+      gate is silently disabled by REFACTOR-217. **STRENGTHENED batch L**:
+      DELETE half PRIMARY-SOURCE CONFIRMED at the same SecurityConstants
+      file (lines 240-242) — same bug shape, same fallback to
+      .authenticated(); both controller-tier halves are now structurally
+      pinned. **NEW HIGH (batch K)**: SecurityConstants.java:295-296
       wires /api/alerts/{id}/status PUT to DATASET_FIELD_ADD_TERM (a Term
       permission on an Alert path — almost certainly copy/paste error;
       two-way bypass).
@@ -121,80 +171,126 @@ security_aggregate:
       or any tenant scoping; descriptions in namespace-A can auto-link to
       terms in namespace-B (REFACTOR-218-class drift).
   strengths:
-  - Description-link rows protected from DELETE via API (filter is_description_link=FALSE
-    in TermRelationsRepositoryImpl.java:84)
-  - Duplicate-prevention graceful (onDuplicateKeyIgnore + switchIfEmpty → 400 BadUserRequest,
-    not 5xx)
-  - '@ActivityLog(TERM_ASSIGNMENT_UPDATED) emits BEFORE/AFTER state for audit'
-  - |-
-    **STRENGTHENED batch K**: Description-mention guards on update/delete
-    prevent broken references — renaming a term while it is mentioned by
-    descriptions surfaces as HTTP 400 BadUserRequestException
-    "Can't update/delete term, which was mentioned in description" (per
-    TermServiceImpl.java:125-134, 156-160). The guard checks all three
-    link tables AND filters parent status != DELETED.
-  - |-
-    **STRENGTHENED batch K**: Unhandled-mention staging with
-    auto-resolution is INTENTIONAL forward-compat — operators can
-    reference terms they plan to create later; the platform reconciles
-    when the term arrives (TermServiceImpl.java:421-442).
+    - |-
+      Description-link rows protected from DELETE via API (filter
+      is_description_link=FALSE in TermRelationsRepositoryImpl.java:84) —
+      **STRENGTHENED batch L** — confirmed at the DELETE primary source
+    - Duplicate-prevention graceful (onDuplicateKeyIgnore + switchIfEmpty → 400 BadUserRequest,
+      not 5xx)
+    - '@ActivityLog(TERM_ASSIGNMENT_UPDATED) emits BEFORE/AFTER state for audit'
+    - |-
+      **STRENGTHENED batch K**: Description-mention guards on update/delete
+      prevent broken references — renaming a term while it is mentioned by
+      descriptions surfaces as HTTP 400 BadUserRequestException
+      "Can't update/delete term, which was mentioned in description" (per
+      TermServiceImpl.java:125-134, 156-160). The guard checks all three
+      link tables AND filters parent status != DELETED.
+    - |-
+      **STRENGTHENED batch K**: Unhandled-mention staging with
+      auto-resolution is INTENTIONAL forward-compat — operators can
+      reference terms they plan to create later; the platform reconciles
+      when the term arrives (TermServiceImpl.java:421-442).
   weaknesses:
-  - 'HEADLINE: SecurityRule path mismatch (/term singular vs /terms plural) silently
-    disables DATA_ENTITY_ADD_TERM + DATA_ENTITY_DELETE_TERM (HIGH)'
-  - Term-linking side-effect via description-write path bypasses DATA_ENTITY_ADD_TERM
-    dedicated permission
-  - Cross-namespace term assignment unconstrained even when path is fixed
-  - DISABLED-mode anonymously reachable — anyone can corrupt term linkage
-  - |-
-    **NEW HIGH batch K**: Second SecurityConstants bug —
-    /api/alerts/{id}/status PUT gated by DATASET_FIELD_ADD_TERM (a Term
-    permission on an Alert path). Two-way bypass: operators with
-    DATASET_FIELD_ADD_TERM can change alert statuses; operators with
-    DATA_ENTITY_ALERT_RESOLVE cannot.
-    (TermServiceImpl.md:bugs_limitations_corner_cases.[1])
-  - |-
-    **NEW MEDIUM batch K**: TAG_CREATE bypass via TermServiceImpl.upsertTags
-    — a user with TERM_TAGS_UPDATE can create new tags through
-    tagService.getOrCreateTagsByName, bypassing TAG_CREATE. Same
-    architectural class as REFACTOR-199 (Owner auto-create).
-    (TermServiceImpl.md:bugs_limitations_corner_cases.[10])
-  - |-
-    **NEW MEDIUM batch K**: NAMESPACE_CREATE bypass via createTerm /
-    updateTerm — TERM_CREATE / TERM_UPDATE allows creating namespaces
-    through namespaceService.getOrCreate(name).
-    (TermServiceImpl.md:security.known_security_gaps.[4])
-  - |-
-    **NEW LOW batch K**: BadUserRequestException error messages leak
-    operational state — "Term already assigned to data entity", "Can't
-    update term, which was mentioned in description" — enumeration vector
-    for cross-namespace probing.
-    (TermServiceImpl.md:security.known_security_gaps.[6])
+    - 'HEADLINE: SecurityRule path mismatch (/term singular vs /terms plural) silently
+      disables DATA_ENTITY_ADD_TERM + DATA_ENTITY_DELETE_TERM (HIGH)'
+    - |-
+      **STRENGTHENED batch L** — DELETE half now PRIMARY-SOURCE CONFIRMED;
+      the bug-shape is now symmetrically pinned at both controller methods
+      AND the service tier; REFACTOR-217 fix is one PR covering both
+      SecurityRule paths
+    - Term-linking side-effect via description-write path bypasses DATA_ENTITY_ADD_TERM
+      dedicated permission
+    - Cross-namespace term assignment unconstrained even when path is fixed
+    - DISABLED-mode anonymously reachable — anyone can corrupt term linkage
+    - |-
+      **NEW HIGH batch K**: Second SecurityConstants bug —
+      /api/alerts/{id}/status PUT gated by DATASET_FIELD_ADD_TERM (a Term
+      permission on an Alert path). Two-way bypass: operators with
+      DATASET_FIELD_ADD_TERM can change alert statuses; operators with
+      DATA_ENTITY_ALERT_RESOLVE cannot.
+      (TermServiceImpl.md:bugs_limitations_corner_cases.[1])
+    - |-
+      **NEW MEDIUM batch K**: TAG_CREATE bypass via TermServiceImpl.upsertTags
+      — a user with TERM_TAGS_UPDATE can create new tags through
+      tagService.getOrCreateTagsByName, bypassing TAG_CREATE. Same
+      architectural class as REFACTOR-199 (Owner auto-create).
+      (TermServiceImpl.md:bugs_limitations_corner_cases.[10])
+    - |-
+      **NEW MEDIUM batch K**: NAMESPACE_CREATE bypass via createTerm /
+      updateTerm — TERM_CREATE / TERM_UPDATE allows creating namespaces
+      through namespaceService.getOrCreate(name).
+      (TermServiceImpl.md:security.known_security_gaps.[4])
+    - |-
+      **NEW LOW batch K**: BadUserRequestException error messages leak
+      operational state — "Term already assigned to data entity", "Can't
+      update term, which was mentioned in description" — enumeration vector
+      for cross-namespace probing.
+      (TermServiceImpl.md:security.known_security_gaps.[6])
+    - |-
+      **NEW MEDIUM batch L**: Silent-204 on no-op DELETE compounds with
+      activity-event-fires-regardless — auditors investigating "who removed
+      term T from entity E" cannot distinguish real removals from no-op
+      DELETEs (the activity feed records BEFORE=AFTER for both).
+      (deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[1,2])
 performance_aggregate:
   overall: MEDIUM
   weaknesses:
-  - Activity-handler captures BEFORE+AFTER terms-list by RE-querying twice (2x O(N)
-    per call) — quadratic-shape cost at extreme term counts
-  - No method-level observability (no @Timed, no Micrometer counter)
-  - |-
-    **NEW MEDIUM batch K — REFACTOR-228 PRIMARY-SOURCE**: TermAssignmentActivityHandler
-    triple-re-query — removeTermFromDataEntity emits TERM_ASSIGNMENT_UPDATED;
-    the handler's getContextInfo re-queries getDataEntityTerms (1st full-list)
-    BEFORE method execution; the method itself re-queries (2nd full-list)
-    to drive the markEntityUnfilled decision; the handler's getUpdatedState
-    re-queries AGAIN (3rd full-list) AFTER. For a data entity with 100
-    linked terms, a single de-link produces 3 full-list re-queries plus
-    1 DELETE. Same pattern on removeTermFromDatasetField.
-    (TermServiceImpl.md:bugs_limitations_corner_cases.[4])
-  - |-
-    **NEW MEDIUM batch K**: Broken pagination on listByTerm — total
-    reflects page size not full size; hasNext hard-coded false.
-    (TermServiceImpl.md:performance.known_performance_gaps.[1])
-  - |-
-    **NEW LOW batch K**: Description-edit auto-link runs 4-5 DB statements
-    even on no-op edits (description unchanged); no early-exit when terms
-    == existing description-link set.
-    (TermServiceImpl.md:performance.known_performance_gaps.[3])
+    - Activity-handler captures BEFORE+AFTER terms-list by RE-querying twice (2x O(N)
+      per call) — quadratic-shape cost at extreme term counts
+    - No method-level observability (no @Timed, no Micrometer counter)
+    - |-
+      **NEW MEDIUM batch K — REFACTOR-228 PRIMARY-SOURCE**: TermAssignmentActivityHandler
+      triple-re-query — removeTermFromDataEntity emits TERM_ASSIGNMENT_UPDATED;
+      the handler's getContextInfo re-queries getDataEntityTerms (1st full-list)
+      BEFORE method execution; the method itself re-queries (2nd full-list)
+      to drive the markEntityUnfilled decision; the handler's getUpdatedState
+      re-queries AGAIN (3rd full-list) AFTER. For a data entity with 100
+      linked terms, a single de-link produces 3 full-list re-queries plus
+      1 DELETE. Same pattern on removeTermFromDatasetField.
+      (TermServiceImpl.md:bugs_limitations_corner_cases.[4]) —
+      **STRENGTHENED batch L** — confirmed at the deleteTermFromDataEntity
+      primary source (the controller-method sidecar names the same handler
+      overhead at performance.known_performance_gaps.[0])
+    - |-
+      **NEW MEDIUM batch K**: Broken pagination on listByTerm — total
+      reflects page size not full size; hasNext hard-coded false.
+      (TermServiceImpl.md:performance.known_performance_gaps.[1])
+    - |-
+      **NEW LOW batch K**: Description-edit auto-link runs 4-5 DB statements
+      even on no-op edits (description unchanged); no early-exit when terms
+      == existing description-link set.
+      (TermServiceImpl.md:performance.known_performance_gaps.[3])
 notes: |-
+  STRENGTHENED batch 2026-05-19L. The DELETE-half PRIMARY SOURCE
+  (deleteTermFromDataEntity controller-method sidecar) now triangulates
+  REFACTOR-217 in BOTH directions (POST + DELETE) at the controller
+  tier; combined with the batch-K service-tier zero-permission-checks
+  pin on TermServiceImpl, the path-mismatch invariant is now
+  4-way-confirmed:
+    (a) Controller-method PRIMARY SOURCE for POST
+        (addDataEntityTerm batch G)
+    (b) Controller-method PRIMARY SOURCE for DELETE
+        (deleteTermFromDataEntity batch L)
+    (c) Description-edit side-channel
+        (upsertDataEntityInternalDescription batch G)
+    (d) Service-tier consumer + structural enabler (TermServiceImpl
+        batch K)
+
+  REFACTOR-217 fix is now structurally pinned — one PR changes two
+  SecurityRule path strings from singular to plural; the
+  one-PR-covers-both-halves observation is reinforced.
+
+  Companion new concepts surfaced this batch (cross-references the
+  unlink-term-from-data-entity operation):
+    - unlink-term-from-data-entity (NEW operation) — the symmetric
+      counterpart of link-term-to-data-entity
+    - hard-delete-on-relationship-edges-confirmed-cross-batch (NEW
+      invariant) — adds data_entity_to_term as the third HARD-DELETE
+      relationship-edge site
+    - silent-204-on-no-op-delete-vs-400-duplicate-on-no-op-add (NEW
+      invariant) — the term DELETE's silent-204 is one of three sites
+      in the cluster
+
   STRENGTHENED batch 2026-05-19K. TermServiceImpl primary-source pinned at
   the service layer; the entire 17-method service surface with ZERO
   permission checks is now load-bearingly captured. Three independent

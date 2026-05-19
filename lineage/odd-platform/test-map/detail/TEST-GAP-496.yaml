@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-496
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue"
+pillars_affected: [P-01]
+surfaced_by:
+  - "upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[1] (Silent 200-on-missing data entity)"
+  - "upsertDataEntityMetadataFieldValue.md:tests_coverage_semantic.uncovered_behaviours.[1] (404-on-missing-data-entity path)"
+behaviour: |-
+  silent-200-on-missing-data-entity regression-pin for upsertMetadataFieldValue (HIGH — operator-deceptive). When `dataEntityId` does NOT exist (no data_entity row), the `metadataFieldService.get(metadataFieldId)` still returns the GLOBAL field metadata (metadata_field is a platform-global table — V0_0_1__init.sql:166-173, no scoping column). The UPDATE then matches zero rows in metadata_field_value (FK to data_entity(id) is intact but there's no value row for the non-existent entity), and the response is 200-with-empty-body. UNLIKE `createMetadata` (DataEntityServiceImpl.java:257-258 does `reactiveDataEntityRepository.get(dataEntityId).switchIfEmpty(Mono.error(new NotFoundException))`), the upsert path at line 287-305 NEVER validates the entity exists. Operators following the UI flow have no way to encounter this case (the UI passes the id from the entity page), but API consumers (curl, scripts, automation) targeting a stale or typo'd ID get a silent success. Pair with TEST-GAP-492 (silent-200-on-missing-pair) — together they form the 'three indistinguishable silent-success outcomes' for upsertMetadataFieldValue. Cross-pillar P-01 (Discovery / catalog metadata authority undermined by silent-success on invalid IDs).
+test_class: missing-edge-case
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataEntityServiceTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/DataEntityMetadataUpsertSemanticsTest.java"
+  name: "upsertMetadataFieldValue_nonExistentDataEntityId_returns200WithEmptyBody_pinsTheSilentNoOpContract"
+evidence:
+  - "upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[1]: 'When dataEntityId does not exist (no data_entity row), the metadataFieldService.get(metadataFieldId) still returns the global field metadata, the UPDATE then matches zero rows in metadata_field_value (FK to data_entity(id) is intact but there's no value row for the non-existent entity), and the response is 200-with-empty-body. Unlike createMetadata (DataEntityServiceImpl.java:257-258 does reactiveDataEntityRepository.get(dataEntityId).switchIfEmpty(Mono.error(new NotFoundException))), the upsert path NEVER validates the entity exists.'"
+  - "DataEntityServiceImpl.java:287-305 (no entity-existence check)"
+  - "DataEntityServiceImpl.java:257-258 (the contrast — createMetadata DOES check)"
+  - "DataEntityServiceTest.java:164-191 (existing happy-path test doesn't exercise this)"
+cross_references:
+  - "TEST-GAP-492 (silent-200-on-missing-pair — same root cause, same fix)"
+  - "TEST-GAP-494 (active=NULL — co-located corruption in same endpoint)"
+  - "REFACTOR-NNN candidate: add reactiveDataEntityRepository.get(dataEntityId).switchIfEmpty(NotFoundException) at upsert path"
+proposed_action: |-
+  Testcontainers integration test. (a) Pre-create metadata field F (so the field side resolves). (b) DO NOT create the data entity X. (c) PUT /api/dataentities/99999/metadata/F with body {value: 'test'} where 99999 is unused. (d) Assert HTTP 200 with empty/null response body (current contract). (e) Query `SELECT count(*) FROM metadata_field_value WHERE data_entity_id=99999 AND metadata_field_id=F` returns 0. (f) Test comment 'LOCKS the silent-200-on-missing-data-entity contract as of 2026-05-19. The contrast: createMetadata at DataEntityServiceImpl.java:257-258 DOES validate; upsert at line 287-305 does NOT. When REFACTOR-NNN aligns the two paths, this test FLIPS to expect 404.'
+batch: 2026-05-19-L
+feature_id: null

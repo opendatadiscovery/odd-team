@@ -1,0 +1,153 @@
+name: Silent-204-on-no-op-DELETE vs 400-duplicate-on-no-op-ADD contract asymmetry
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-11
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-19L** — surfaced by
+  cross-reading the addDataEntityDataEntityGroup + deleteDataEntityFromDataEntityGroup
+  sidecar pair. The HTTP response contract is asymmetric across the CRUD
+  pair of DEG-membership writes, in a way that operators writing
+  reconciliation / automation scripts will observe and stumble on.
+
+  **The two response shapes**:
+
+    - **POST (ADD) on duplicate membership** → HTTP `400 Bad Request` with
+      the message `"Data entity is already in this DEG"`. Mechanism:
+      `ReactiveGroupEntityRelationRepositoryImpl.createRelationsReturning`
+      (lines 67-90) uses `onDuplicateKeyIgnore` so the conflict-affected
+      row is silently skipped at the DB layer, returning an empty Flux;
+      `DataEntityServiceImpl.java:402` consumes the emptiness with
+      `.switchIfEmpty(Mono.error(new BadUserRequestException))` → 400.
+
+    - **DELETE on non-existent membership** → HTTP `204 No Content` with
+      empty body. Mechanism: `deleteRelationsReturning` (lines 57-65)
+      returns an empty Flux when no row matches the
+      `(groupOddrn, entityOddrn)` predicate; the pipeline `collectList()`
+      → empty list → `Flux.fromIterable(emptyList)` → completes empty →
+      controller emits 204 (`DataEntityController.java:343-349`). There is
+      NO `switchIfEmpty` check; the caller cannot distinguish "successfully
+      removed" from "wasn't a member".
+
+  **Operator-facing manifestation**:
+
+    - A script that runs idempotent reconciliation ("ensure entity X is in
+      DEG Y") finds the ADD endpoint NON-idempotent: re-running the
+      script after a successful first run produces 400 on the second
+      iteration. The script must catch and ignore the 400, OR pre-check
+      existence via `getDataEntityGroupsItems`.
+
+    - A script that runs idempotent removal ("ensure entity X is NOT in
+      DEG Y") finds the DELETE endpoint IDEMPOTENT in HTTP surface but
+      ambiguous in observability: success (204) is indistinguishable
+      from no-op (also 204), AND no activity event is emitted (per the
+      sibling "DEG-membership writes are forensically silent" finding),
+      so the script cannot verify whether the removal actually happened.
+
+  **The asymmetry is intentional** (per addDataEntityDataEntityGroup
+  implicit_adrs.[3]):
+
+    - ADD uses `onDuplicateKeyIgnore` + service-layer `switchIfEmpty` →
+      400 with a friendly message — a deliberate choice over plain
+      INSERT raising USR003 (DB-level duplicate-key).
+
+    - DELETE accepts the no-op silently — matches the common REST
+      convention "DELETE is idempotent" and avoids a 404-on-empty
+      decision that the maintainer chose not to make.
+
+  **Cross-batch shape**: the **silent-200-on-missing-pair pattern** for
+  `upsertDataEntityMetadataFieldValue` (batch L NEW HIGH) and
+  `upsertDataEntityInternalDescription` (batch G) is a structural sibling
+  — both expose "this write looks successful but no row was touched"
+  semantics for the upsert family. The silent-204-on-DELETE is the
+  matching shape for the delete family. Together they form a pattern: at
+  ODD, the load-bearing assumption of HTTP semantics ("a 2xx means
+  something happened") is selectively false on no-op DELETE paths and on
+  no-op-target UPSERT paths.
+
+  **Pairs with**: the documentation drift finding on no audit trail for
+  DEG membership flips (the silent-204 + no-activity-event combination
+  produces a doubly-ambiguous operational signal).
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup
+  - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
+  - odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+  - odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+  - odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue.md
+contributors:
+  - |-
+    addDataEntityDataEntityGroup batch L (PRIMARY SOURCE):
+    concepts.invariants.[2] (DB-level duplicate prevention silently degraded
+    via onDuplicateKeyIgnore → 400 BadUserRequest) + implicit_adrs.[3]
+    (the deliberate empty-Flux-on-conflict pattern) +
+    bugs_limitations_corner_cases.[6] (idempotency mismatch with retries)
+  - |-
+    deleteDataEntityFromDataEntityGroup batch L (PRIMARY SOURCE):
+    concepts.invariants.[3] (asymmetric HTTP idempotence with ADD) +
+    bugs_limitations_corner_cases.[1] (silent-204 on no-op DELETE creates
+    audit ambiguity)
+  - |-
+    upsertDataEntityMetadataFieldValue batch L (CROSS-BATCH SHAPE):
+    bugs_limitations_corner_cases.[0] (silent 200-on-missing pair) +
+    bugs_limitations_corner_cases.[1] (silent 200-on-missing data entity)
+    — the upsert family's matching no-op-success pattern
+evidence:
+  - addDataEntityDataEntityGroup.md:concepts.invariants.[2]
+  - addDataEntityDataEntityGroup.md:implicit_adrs.[3]
+  - addDataEntityDataEntityGroup.md:bugs_limitations_corner_cases.[6]
+  - deleteDataEntityFromDataEntityGroup.md:concepts.invariants.[3]
+  - deleteDataEntityFromDataEntityGroup.md:bugs_limitations_corner_cases.[1]
+  - upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[0,1]
+triangulation_count: 3
+cross_batch: false
+severity: MEDIUM
+severity_dim: api-contract
+mitigations_unimplemented:
+  - |-
+    Document the contract asymmetry on
+    /developer-guides/api-reference for the DEG-membership pair — the
+    OpenAPI spec at openapi.yaml:1070-1105 declares the 200/204 responses
+    but does not name the idempotence asymmetry.
+  - |-
+    Add operator-facing guidance in
+    /features/data-discovery/groups-domains.md naming the idempotence
+    contract: ADD is non-idempotent (400 on duplicate); DELETE is
+    silently idempotent (204 on no-op).
+  - |-
+    Add regression tests that pin both halves of the asymmetry:
+      (a) POST already-in-DEG returns 400 with the specific message;
+      (b) DELETE non-member returns 204 silently;
+      (c) UPSERT non-existent pair returns 200 with empty body (matching
+          the upsert-family pattern).
+  - |-
+    Consider unifying the response shape — either ADD becomes silently
+    idempotent (return 200/204 with no-change semantics), OR DELETE
+    becomes 404-on-missing. The current asymmetry is intentional but
+    operator-surprising; a unified contract would simplify automation.
+notes: |-
+  NEW invariant captured in batch 2026-05-19L. The pattern is intentional
+  and consistent with the platform's broader "deliberate silent-success on
+  no-op" stance, but the asymmetry is operator-surprising and unobserved
+  in tests.
+
+  Cross-cutting connections:
+    - Pairs with "silent-200-on-missing-pair-or-entity-on-upsert-family"
+      (NEW batch L) — the upsert family's matching pattern; together
+      they form the "ODD silently succeeds on no-op writes" cluster
+    - Pairs with "Write-collaborative DEG — NO DEG-side authorization"
+      — the resource-scope axis of the same DEG-membership pair
+    - Cross-references "Reactive Mono<ResponseEntity<...>>.map(ResponseEntity::ok)
+      is the uniform success-response pattern" — that captures the
+      structural shape; this captures the idempotence asymmetry within it
+
+  Three DOC-NNN candidates:
+    (a) Document the asymmetry on /developer-guides/api-reference for the
+        DEG-membership endpoint pair
+    (b) Operator-facing note in groups-domains.md naming the idempotence
+        contract
+    (c) Consider a future unification PR (post-1.0) to remove the asymmetry

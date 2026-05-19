@@ -46,4 +46,25 @@ Add a `@WebFluxTest` regression in `DataEntityControllerTest` that asserts a use
 
 **Severity unchanged**: HIGH. Cross-link with REFACTOR-318 NEW (defence-in-depth absence at TermServiceImpl), REFACTOR-314 NEW (second SecurityConstants bug — `/api/alerts/{id}/status` PUT gated by DATASET_FIELD_ADD_TERM).
 
+## STRENGTHENS — `deleteTermFromDataEntity` controller-method (batch L, DELETE-half PRIMARY-SOURCE confirmed symmetrically)
+
+**The DELETE half of the path-mismatch is now PRIMARY-SOURCE confirmed from its own dedicated sidecar.** Batch I surfaced the DELETE-mismatch as a secondary finding in the `addDataEntityTerm` sidecar (`bugs_limitations_corner_cases.[1]`); batch L adds the `deleteTermFromDataEntity` controller-method sidecar with FOUR independent primary-source citations triangulating the mismatch — closing the loop with full per-endpoint sidecar evidence.
+
+**New batch-L evidence**:
+- `deleteTermFromDataEntity.md:understanding` (headline) — "the `DATA_ENTITY_DELETE_TERM` permission gate is silently dead due to a SecurityRule path-mismatch. `SecurityConstants.java:240-242` registers `new PathPatternParserServerWebExchangeMatcher(\"/api/dataentities/{data_entity_id}/term/{term_id}\", DELETE)` (SINGULAR `term`); the OpenAPI spec at `openapi.yaml:1042` declares the operation path as `/api/dataentities/{data_entity_id}/terms/{term_id}` (PLURAL); the controller `@Override` inherits the plural path from the generated `DataEntityApi`. `AuthorizationCustomizer.customize` (`AuthorizationCustomizer.java:24-30`) only fires the permission check when `rule.matcher()` matches the request — the singular matcher never matches — and the no-match fallback is `.pathMatchers(\"/**\").authenticated()` (line 29-30)"
+- `deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[0]` (HIGH) — "HEADLINE: SecurityRule path mismatch silently disables `DATA_ENTITY_DELETE_TERM` authorization (PRIMARY-SOURCE confirmed) — Net effect: ANY authenticated user under LOGIN_FORM/OAUTH2/LDAP can `DELETE /api/dataentities/{id}/terms/{termId}` and unlink any term from any data entity, regardless of whether their Policy set includes `DATA_ENTITY_DELETE_TERM`. SYMMETRIC counterpart of the addDataEntityTerm finding (batch G). REFACTOR-217 covers the fix for BOTH POST and DELETE"
+- `deleteTermFromDataEntity.md:security.authorization_assertions` (verbatim): "INTENDED: `SecurityRule(DATA_ENTITY, '/api/dataentities/{data_entity_id}/term/{term_id}' DELETE, DATA_ENTITY_DELETE_TERM)` — declared in `SecurityConstants.SECURITY_RULES[240-242]`. ACTUAL: not enforced (path mismatch). FALLBACK ACTUAL: `.pathMatchers(\"/**\").authenticated()` — `AuthorizationCustomizer.java:29-30`. Any authenticated caller passes; no permission is required for the actual endpoint"
+
+**Compounding finding STRENGTHENED with the HARD-DELETE finality** (`deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[4]`):
+> "HARD-DELETE finality — no audit-restore path — once a term-relation is removed, the only record of its prior existence is the `TermAssignmentActivityHandler` BEFORE/AFTER JSON state in `activity` rows. The row in `data_entity_to_term` is physically gone (migration `V0_0_76__term_relations_hard_delete.sql:5-6` dropped the `deleted_at` column). An operator wanting to RESTORE a removed term-link must inspect the activity log and re-issue an `addDataEntityTerm` call (which writes a NEW row, not a restoration — the relation has no continuity-id). For high-stakes deployments with extensive term taxonomies, accidental removals via the path-mismatch-bug-enabled unauthorized caller require manual restoration via API calls."
+
+This is a NEW compounding factor: REFACTOR-217 + HARD-DELETE finality = under `auth.type=DISABLED` on a network-reachable port, anyone can mass-delete all term-to-data-entity links and corrupt taxonomy data with no restore-from-row path. The activity-feed event provides the only forensic trail.
+
+**Cross-batch triangulation (3-batch substrate)**:
+- batch-I (addDataEntityTerm controller-method): POST-side framing
+- batch-K (TermServiceImpl PRIMARY SERVICE-LAYER): service-side framing + defence-in-depth absence
+- **batch-L (deleteTermFromDataEntity controller-method): DELETE-side PRIMARY-SOURCE confirmation + HARD-DELETE finality compounding**
+
+**Severity unchanged**: HIGH. The DELETE-half PRIMARY-SOURCE confirmation completes the substrate's evidence basis — both POST and DELETE are now fully triangulated against `SecurityConstants` + `openapi.yaml` + `AuthorizationCustomizer` + the respective controller methods.
+
 ---

@@ -1,0 +1,157 @@
+name: EXTERNAL-origin metadata field overwrite — silent, no origin check, no audit
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-10
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-19L** — primary-source
+  confirmed at `DataEntityServiceImpl.upsertMetadataFieldValue` (lines
+  287-305) + `MetadataFieldServiceImpl.ingestMetadataFields` (lines
+  62-71). The custom-metadata upsert path
+  (`PUT /api/dataentities/{data_entity_id}/metadata/{metadata_field_id}`)
+  does NOT check `MetadataFieldPojo.getOrigin()` before writing the new
+  value — both `INTERNAL` (operator-curated) and `EXTERNAL`
+  (collector-ingested) fields are writable through the SAME endpoint
+  with the SAME permission (`DATA_ENTITY_CUSTOM_METADATA_UPDATE`).
+
+  **The two origins**:
+    - `INTERNAL` — created via the catalog UI's Custom-metadata panel
+      (POST /api/dataentities/{id}/metadata). Field-name + type live in
+      the `metadata_field` table; per-entity value lives in
+      `metadata_field_value`.
+    - `EXTERNAL` — created via the ingestion pipeline by collectors
+      emitting `metadata_field` rows alongside data-entity payloads
+      (`MetadataFieldServiceImpl.ingestMetadataFields` lines 62-71). Same
+      tables, same shape — only the `origin` column distinguishes them.
+
+  **What the bug enables**:
+    - A user with `DATA_ENTITY_CUSTOM_METADATA_UPDATE` (typically granted
+      to entity owners via `is: dataEntity:owner` scope) discovers an
+      EXTERNAL field's id (e.g. via a previous `GET /api/dataentities/{id}/metadata`
+      response, or by enumerating IDs).
+    - They call `PUT /api/dataentities/{id}/metadata/{external_field_id}`
+      with their preferred value.
+    - The endpoint silently overwrites the collector-ingested value;
+      until the NEXT ingestion run replaces it, the catalog shows the
+      USER's value as authoritative.
+    - No activity-feed event is emitted (per the absence of
+      `@ActivityLog` on `upsertMetadataFieldValue`; the
+      `CUSTOM_METADATA_UPDATED` enum value exists in
+      `ActivityEventTypeDto.java:18` but is reserved-but-never-fired by
+      any code path).
+    - No log line, no UI banner, no per-field source-of-truth indicator
+      surfaces the override.
+
+  **Cross-pillar implications**:
+
+    - **P-01 Data Discovery — data-quality**: catalog metadata values
+      labelled "ingested from source-system" are silently overrideable.
+      A user-facing data-quality signal that "this `cost_centre` came
+      from the data-warehouse's metadata catalog" can be a fabrication
+      until the next ingestion cycle. Operators auditing
+      "is this catalog metadata trustworthy?" cannot tell.
+
+    - **P-10 Integrations & Ingestion**: the platform's ingest pipeline
+      creates EXTERNAL fields with the implicit promise "this value
+      tracks the source system"; the upsert path silently breaks that
+      promise. A future ingestion cycle restores the source-system
+      value, but in the interim there is no UI affordance to
+      distinguish the user's edit from the source value.
+
+  **Combined with the no-audit gap**: the no-`@ActivityLog` finding
+  (custom-metadata upsert path is forensically silent — same as DEG
+  membership flips) means an operator restoring the source-of-truth
+  ingested value cannot answer "who overwrote it?" or "when?".
+
+  **Combined with the silent-200 gap**: even the user trying to undo
+  their own overwrite via PUT cannot tell whether their UPDATE landed —
+  the silent-200-on-missing-pair invariant means the response is the
+  same shape for success, no-op-success, and missing-row.
+
+  **The fix is small**: the upsert path should either:
+    1. Reject writes to `EXTERNAL`-origin fields with a 400
+       (`BadUserRequestException("Cannot edit ingested metadata field —
+       this field's source-of-truth is the collector")`).
+    2. Accept the write but flip the field's `origin` to `INTERNAL` on
+       first user edit (marking the catalog state as "operator
+       override; next ingestion may overwrite").
+    3. Accept the write but emit a CUSTOM_METADATA_UPDATED activity
+       event with an explicit "operator override of EXTERNAL field"
+       sub-type.
+
+  Operator-side decision; the code currently makes choice (0) — silent
+  acceptance with no audit, no indicator, no provenance signal.
+axes_present:
+  - controllers
+  - services
+nodes:
+  - odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue.md
+contributors:
+  - |-
+    upsertDataEntityMetadataFieldValue batch L (PRIMARY SOURCE):
+    concepts.invariants.[4] (NO origin check — the upsert path does not
+    call `metadataFieldPojo.getOrigin()`) +
+    bugs_limitations_corner_cases.[3] (EXTERNAL-origin fields are
+    writable — the user-facing distinction between 'discovered' and
+    'curated' metadata is NOT enforced at write time) +
+    security.known_security_gaps.[2] (EXTERNAL metadata overwrite is
+    silent — combined with the no-audit gap, this creates a silent
+    data-quality risk)
+evidence:
+  - upsertDataEntityMetadataFieldValue.md:concepts.invariants.[4]
+  - upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[3]
+  - upsertDataEntityMetadataFieldValue.md:security.known_security_gaps.[2]
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: data-quality
+mitigations_unimplemented:
+  - |-
+    Add an origin-check at the service layer: reject
+    EXTERNAL-origin writes with HTTP 400 OR fold the override flag onto
+    the field/value row.
+  - |-
+    Add the missing `@ActivityLog(event = CUSTOM_METADATA_UPDATED)`
+    annotation to `upsertMetadataFieldValue` so overrides ARE auditable
+    even if accepted.
+  - |-
+    Document the EXTERNAL-vs-INTERNAL origin distinction on a
+    custom-metadata operator-facing doc page (currently absent — no
+    operator-facing documentation page exists for the custom-metadata
+    feature itself; the data-discovery directory has metadata-stale.md
+    for the staleness indicator but no page describing the custom-metadata
+    write surface, the type enum, the per-entity metadata panel, the
+    API endpoint, or the EXTERNAL/INTERNAL distinction).
+  - |-
+    Add a UI affordance — the Custom-metadata panel should display the
+    field's origin badge (Ingested / Curated) and gate the edit
+    affordance on origin (Curated → editable; Ingested → readonly with
+    an "Override" admin-only override).
+notes: |-
+  NEW invariant captured in batch 2026-05-19L. The pattern is a
+  data-quality-and-audit gap that compounds with two sibling findings:
+    (a) silent-200-on-missing-pair (the operator can't even verify
+        whether their override landed)
+    (b) no-`@ActivityLog`-on-custom-metadata (the override has no
+        audit trail)
+
+  Cross-cutting connections:
+    - Pairs with "silent-200-on-missing-pair-or-entity-on-upsert-family"
+      — together they make EXTERNAL-metadata overrides operationally
+      invisible to BOTH the operator (no response signal) and to any
+      auditor (no activity-feed event)
+    - Pairs with "Permission-bypass via Owner auto-create" — that
+      captures the directory-growth side-door; this captures the
+      value-overwrite side-door for source-of-truth columns
+    - Cross-references "EXCLUDE_FROM_SEARCH is broadly applied but NOT
+      to /popular" — both are data-quality-defence-in-depth gaps on
+      shipped features
+
+  Two DOC-NNN candidates:
+    (a) Reject EXTERNAL overwrite at the service layer OR emit an
+        audit event on accept
+    (b) Document the EXTERNAL-vs-INTERNAL metadata distinction on a
+        new custom-metadata operator-facing page

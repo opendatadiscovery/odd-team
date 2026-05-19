@@ -1,0 +1,35 @@
+gap_id: TEST-GAP-490
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup"
+  - "odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup"
+pillars_affected: [P-01, P-07]
+surfaced_by:
+  - "addDataEntityDataEntityGroup.md:bugs_limitations_corner_cases.[0] (Forensic silence on DEG membership changes)"
+  - "addDataEntityDataEntityGroup.md:bugs_limitations_corner_cases.[7] (DATA_ENTITY_RELATION_UPDATED enum value is dead code or reserved-but-unwired)"
+  - "addDataEntityDataEntityGroup.md:security.known_security_gaps.[1] (Forensic silence — no activity-feed entry on DEG membership writes)"
+  - "deleteDataEntityFromDataEntityGroup.md:tests_coverage_semantic.uncovered_behaviours.[8] (Activity-feed assertion NEGATIVE)"
+behaviour: |-
+  DEG add/delete @ActivityLog regression-pin (HIGH — forensic silence pattern). Both `addDataEntityToDEG` (DataEntityServiceImpl.java:387-408) and `deleteDataEntityFromDEG` (lines 411-438) carry NO `@ActivityLog` annotation, despite (a) the matching enum value `ActivityEventTypeDto.DATA_ENTITY_RELATION_UPDATED` existing at ActivityEventTypeDto.java:12, (b) every other write surface on this controller emitting activity (`upsertTags` line 358 TAG_ASSIGNMENT_UPDATED, `upsertBusinessName` line 239 BUSINESS_NAME_UPDATED, `updateStatus` line 198 DATA_ENTITY_STATUS_UPDATED, `addDataEntityTerm` line 153 via TermService TERM_ASSIGNMENT_UPDATED). An operator auditing 'who placed entity X into the Finance Domain on date Z' through `ActivityController.getActivity` sees NOTHING — the activity feed is the documented audit surface for entity changes, and DEG membership (a meaningful organizational change) is silently omitted. The unused enum value confirms the wiring was planned: grep DATA_ENTITY_RELATION_UPDATED against odd-platform-api/src/main/java returns ONLY the enum declaration line. Pair with batch-K's `OwnershipServiceImpl.propagateOwnership` cascade audit-absent finding and F-006 RBAC forensic-silence — three cross-batch surfaces (RBAC, ownership cascade, DEG membership) collectively form a 'metadata-mutation forensic-silence cluster'. Cross-pillar P-01 (DEG is a P-01 sub-feature) + P-07 (Activity Feed is the P-07 audit surface; the feature consumer is broken). Regression risk: BOTH directions — (1) a future maintainer adding @ActivityLog with the wrong event type would silently emit events that look like 'real changes' to historic data, breaking the audit timeline; (2) a refactor removing the enum value as 'dead code' would erase the intent signal.
+test_class: missing-integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/integration/DEGMembershipActivityFeedNegativeTest.java"
+  name: "addAndDeleteDataEntityToDEG_emitsZeroActivityEvents_pinsForensicSilenceContract"
+evidence:
+  - "addDataEntityDataEntityGroup.md:bugs_limitations_corner_cases.[0]: 'addDataEntityToDEG (DataEntityServiceImpl.java:387-408) carries NO @ActivityLog annotation despite the matching enum value ActivityEventTypeDto.DATA_ENTITY_RELATION_UPDATED existing at ActivityEventTypeDto.java:12, and every other write surface on this controller emitting activity.'"
+  - "DataEntityServiceImpl.java:387-408 (addDataEntityToDEG, no @ActivityLog)"
+  - "DataEntityServiceImpl.java:411-438 (deleteDataEntityFromDEG, no @ActivityLog)"
+  - "ActivityEventTypeDto.java:12 (DATA_ENTITY_RELATION_UPDATED enum declared)"
+  - "Grep `DATA_ENTITY_RELATION_UPDATED` against odd-platform-api/src/main/java returns ONLY the declaration line"
+  - "DataEntityServiceImpl.java:358 (upsertTags has @ActivityLog) vs :387-408 (addDataEntityToDEG does not) — sibling-method asymmetry"
+cross_references:
+  - "TEST-GAP-487 (related — OwnershipServiceImpl principal-independence audit-trail gap)"
+  - "concepts.yaml:entities[audit-log-presence-asymmetry-2-tier-audit-story]"
+  - "F-006 (RBAC forensic-silence cross-batch pattern)"
+  - "REFACTOR-NNN candidate: either remove DATA_ENTITY_RELATION_UPDATED enum value (cleanup) or wire it through addDataEntityToDEG + deleteDataEntityFromDEG"
+proposed_action: |-
+  Integration test. (a) Snapshot `activity` table row count N for entity X. (b) POST /api/dataentities/X/data_entity_group with body {data_entity_group_id: Y_id} (success). (c) Query `SELECT count(*) FROM activity WHERE data_entity_id = X_id`; assert STILL N (no row added). (d) DELETE /api/dataentities/X/data_entity_group/Y_id (success). (e) Re-query the activity count; assert STILL N. (f) Test comment 'LOCKS the forensic-silence contract on DEG membership writes as of 2026-05-19. When REFACTOR-NNN wires DATA_ENTITY_RELATION_UPDATED, this test FLIPS to assert N+2.' The test pins the intentional absence — the test FLIPS direction when the intent changes, surfacing the change loud during code review.
+batch: 2026-05-19-L
+feature_id: null

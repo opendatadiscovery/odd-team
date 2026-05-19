@@ -1,0 +1,181 @@
+name: Unbind Data Entity from DEG
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-09
+description: |-
+  **NEW OPERATION, batch 2026-05-19L** — primary-source confirmed at
+  `DataEntityServiceImpl.deleteDataEntityFromDEG` (lines 411-438) +
+  `DataEntityController.deleteDataEntityFromDataEntityGroup` (lines 343-349).
+  `DELETE /api/dataentities/{data_entity_id}/data_entity_group/{data_entity_group_id}`
+  — remove a per-(child-data-entity, DEG) membership; conditionally
+  flip `data_entity_filled.CUSTOM_GROUP` off if the entity has zero
+  remaining manual DEG memberships; return `204 No Content`.
+
+  **The five-DB-round-trip shape**:
+    1. `reactiveDataEntityRepository.get(dataEntityId)` (child existence
+       check; switchIfEmpty → 404)
+    2. `reactiveDataEntityRepository.get(dataEntityGroupId)` paired with
+       `.filter(isManuallyCreatedDEG).switchIfEmpty(BadUserRequest
+       "Entity with id %s is not manually created DEG")` (DEG validity)
+    3. `reactiveGroupEntityRelationRepository.deleteRelationsReturning(groupOddrn,
+       entityOddrn).collectList()` (HARD DELETE — physical row removal;
+       returns the deleted rows; NO switchIfEmpty — empty list flows
+       through to 204 silently)
+    4. `reactiveGroupEntityRelationRepository.getManuallyCreatedRelations(entityOddrn).collectList()`
+       (residual-DEG SELECT — filters by `IS_DELETED.isFalse()` AND
+       `MANUALLY_CREATED.isTrue()`)
+    5. Conditional: if `CollectionUtils.isEmpty(groups)` → `dataEntityFilledService.markEntityUnfilled(dataEntityId,
+       CUSTOM_GROUP)` (flips the filled bit; otherwise no-op)
+
+  All steps inside one `@ReactiveTransactional` boundary at the service;
+  the controller is a thin reactive proxy.
+
+  **Authorization**: `SecurityRule(DATA_ENTITY,
+  '/api/dataentities/{data_entity_id}/data_entity_group/{data_entity_group_id}',
+  DELETE, DATA_ENTITY_DELETE_FROM_GROUP)` at `SecurityConstants.java:232-236`.
+  Permission is independent from `DATA_ENTITY_ADD_TO_GROUP` — they are
+  separately-grantable Policy capabilities (per the
+  add-delete-permission-asymmetry invariant). Resource-scope is the
+  CHILD entity (same write-collaborative-DEG surface as the ADD op).
+
+  **HTTP contract — silent-204 on no-op**: if the
+  `(groupOddrn, entityOddrn)` pair has no row in `group_entity_relations`
+  (already removed, never existed, OR only soft-deleted), the
+  `deleteRelationsReturning` Flux completes empty;
+  `collectList()` produces an empty list; the pipeline continues to 204
+  SUCCESSFULLY. There is NO `switchIfEmpty` check. The caller cannot
+  distinguish "successfully unlinked" from "wasn't a member" from
+  the HTTP response — pairs with the
+  silent-204-on-no-op-delete-vs-400-duplicate-on-no-op-add invariant.
+
+  **HARD-DELETE semantics**: `deleteRelationsReturning` uses
+  `DSL.deleteFrom(GROUP_ENTITY_RELATIONS)` — physical row removal.
+  Distinct from `softDeleteRelationsForDeletedDataEntities` (lines
+  92-101) which is reserved for the entity-deletion cascade and IS
+  reversible via `restoreRelationsForDataEntities`. User-initiated
+  unlink is irreversible at the API layer — pairs with the
+  hard-delete-on-relationship-edges invariant.
+
+  **Side-effects on success**:
+    - DB write: DELETE FROM `group_entity_relations` (HARD)
+    - DB write: conditional UPDATE on `data_entity_filled` to clear
+      `CUSTOM_GROUP` flag IFF residual DEGs == 0
+    - NO activity-feed write (NO `@ActivityLog` — same forensic-silence
+      as the ADD op)
+    - NO search-index update
+    - NO outbound HTTP
+
+  **Error contract**:
+    - HTTP 400 with `"Entity with id %s is not manually created DEG"` —
+      conflated three-failure-mode message (same as ADD)
+    - HTTP 404 — child data_entity does not exist
+    - HTTP 204 — success OR no-op (ambiguous, silently)
+
+  **Audiences**:
+    - ODD Platform UI — Data Entity overview / Groups panel; the
+      "remove from group" / "unlink" affordance on DEG chips;
+      confirmation dialog renders client-side; server enforces
+      `DATA_ENTITY_DELETE_FROM_GROUP` via SecurityRule
+    - Direct REST clients holding `DATA_ENTITY_DELETE_FROM_GROUP`
+    - S2S programmatic consumers
+    - Anonymous callers under DISABLED
+
+  **Operator-facing significance**: DEG-membership management is the
+  per-entity-side of Domain stewardship — the cleanup leg. Combined
+  with the no-audit gap, operators cannot answer "who removed entities
+  from this Domain?" from any in-platform record; activity-feed
+  records nothing for either ADD or DELETE.
+nodes:
+  - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+contributors:
+  - |-
+    deleteDataEntityFromDataEntityGroup batch L (PRIMARY SOURCE):
+    concepts.operations[delete-data-entity-from-DEG] +
+    concepts.invariants.[0-6] (reactive transactional, NotFoundException
+    on missing child, BadUserRequest on invalid DEG, asymmetric HTTP
+    idempotence with ADD, conditional filled-flag transition,
+    HARD-DELETE on user removal, empty DEG is valid) +
+    implicit_adrs.[0-4] (the five load-bearing decisions)
+evidence:
+  - deleteDataEntityFromDataEntityGroup.md:concepts.operations
+  - deleteDataEntityFromDataEntityGroup.md:concepts.invariants.[0-6]
+  - deleteDataEntityFromDataEntityGroup.md:implicit_adrs.[0-4]
+  - deleteDataEntityFromDataEntityGroup.md:dependencies_semantic
+axes_present:
+  - controllers
+  - openapi_paths
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      Child-side gate IS wired correctly (SecurityRule path matches
+      OpenAPI surface; permission is DATA_ENTITY-scoped). DEG-side
+      gate is absent. Cross-DEG unlinks permitted by design.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      Owner-scope is the CHILD entity, not the parent DEG. Domain
+      owners cannot defend their DEG from drive-by membership removals
+      by any DATA_ENTITY_DELETE_FROM_GROUP-holder on the child.
+  weaknesses:
+    - HIGH — write-collaborative DEG (no DEG-side gate; symmetric with ADD)
+    - MEDIUM — forensic silence (no @ActivityLog despite enum exists)
+    - MEDIUM — silent-204 on no-op (cannot distinguish unlink from no-op)
+    - |-
+      MEDIUM — HARD-DELETE finality + audit-feed absence = compliance gap
+      for entities tracking organizational moves
+    - HIGH under DISABLED — anonymous Domain corruption
+  strengths:
+    - |-
+      Independent permission from ADD — separable Policy capabilities
+      (DATA_ENTITY_ADD_TO_GROUP + DATA_ENTITY_DELETE_FROM_GROUP)
+    - |-
+      Conditional filled-flag transition (only flips when residual
+      manual DEGs == 0) — preserves the aggregate-flag semantic
+    - |-
+      HARD-DELETE on user action / SOFT-DELETE on cascade split is
+      INTENTIONAL — pairs with the existing soft-delete invariant
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      4-5 DB round-trips per call (2× GET + 1× DELETE + 1× residual
+      SELECT + conditional UPDATE). Cost is constant per call; no
+      bulk endpoint.
+  weaknesses:
+    - |-
+      LOW — getManuallyCreatedRelations materialises ALL manual DEG
+      memberships for the entity to check emptiness (full collectList +
+      isEmpty); a countManuallyCreatedRelations or exists* would be
+      O(1) at the SQL level. Acceptable for typical entity-DEG count
+      (<10) but hidden O(N) on extreme cases.
+    - LOW — no method-level observability
+notes: |-
+  NEW operation captured in batch 2026-05-19L. Pairs with the symmetric
+  bind-data-entity-as-DEG-child-member operation; together they form
+  the per-entity DEG-membership CRUD surface. Independent permission
+  from the ADD op enables stewardship Policies that grant only one
+  direction.
+
+  Cross-cutting connections:
+    - Related entity: data-entity-group-membership-edge (NEW)
+    - Related invariants:
+      - write-collaborative-deg-no-deg-side-authorization (NEW HIGH)
+      - add-delete-permission-asymmetry-on-deg-membership (NEW)
+      - silent-204-on-no-op-delete-vs-400-duplicate-on-no-op-add (NEW)
+      - hard-delete-on-relationship-edges-confirmed-cross-batch (NEW)
+      - deg-is-manually-created-deg-defensive-check (NEW)
+    - Cross-references "Manage Ownership Lifecycle (create/update/delete
+      with DEG cascade)" operation — both touch DEG-related write
+      surfaces; ownership has DEG-propagation cascade, this has
+      DEG-membership direct write

@@ -1,7 +1,8 @@
 name: Three soft-delete mechanisms across the repository layer
 canonical_in_docs: false
 canonical_candidate: true
-description: '**NEW INVARIANT, batch 2026-05-19H** — load-bearing architectural inconsistency
+description: |-
+  **NEW INVARIANT, batch 2026-05-19H** — load-bearing architectural inconsistency
   surfaced across 4 sibling `Reactive*Repository` sidecars. ODD Platform implements
   THREE distinct soft-delete mechanisms across the persistence layer + ONE hard-delete-edge
   pattern: **(1) `deleted_at` timestamp** (the inherited default): used by `ReactivePolicyRepositoryImpl`
@@ -26,79 +27,152 @@ description: '**NEW INVARIANT, batch 2026-05-19H** — load-bearing architectura
   relevant path goes through the overrides. **(4) Hard-delete (no deleted_at column)**:
   used by `ReactiveOwnershipRepositoryImpl` on the `ownership` edge table; parallel
   pattern at V0_0_76__term_relations_hard_delete.sql:8-13 dropping deleted_at from
-  `term_ownership`. Edge tables between hard-deletable entities don''t need their
+  `term_ownership`. **STRENGTHENED batch 2026-05-19L** — TWO additional
+  relationship-edge sites confirmed at primary source:
+    - `data_entity_to_term` (per deleteTermFromDataEntity controller method
+      batch L) — HARD DELETE via DSL.deleteFrom at
+      TermRelationsRepositoryImpl.java:81-87; deleted_at column DROPPED
+      in V0_0_76__term_relations_hard_delete.sql:1-6 (forward-only data
+      migration also DELETES tombstoned rows). Once unlinked, no
+      row-level restore — only the
+      TermAssignmentActivityHandler BEFORE/AFTER JSON state persists.
+    - `group_entity_relations` (per deleteDataEntityFromDataEntityGroup
+      controller method batch L) — HARD DELETE on user action via
+      `deleteRelationsReturning` at ReactiveGroupEntityRelationRepositoryImpl.java:57-65;
+      SIBLING `softDeleteRelationsForDeletedDataEntities` at lines 92-101
+      is the entity-deletion cascade ONLY (paired with
+      `restoreRelationsForDataEntities` at lines 104-112). The
+      SOFT-DELETE-on-cascade path is REVERSIBLE; the HARD-DELETE-on-user
+      path is NOT — the asymmetry is intentional but undocumented at
+      the operator surface.
+  Edge tables between hard-deletable entities don't need their
   own soft-delete; the activity-feed audit stream is the source of truth for historical
-  state. **The architectural commitment**: every operator-facing entity is soft-delete-recoverable
-  (the platform''s consistent UX promise); only join tables and immutable audit-like
+  state (where activity logs exist — note that DEG-membership flips do NOT emit
+  `@ActivityLog`, so the HARD-DELETE-on-DEG-membership is doubly forensically silent).
+  **The architectural commitment**: every operator-facing entity is soft-delete-recoverable
+  (the platform's consistent UX promise); only join tables and immutable audit-like
   tables use hard delete. BUT: the implementation across the 4 mechanisms uses 3 different
   schemas (deleted_at timestamp vs is_deleted boolean vs STATUS state-machine), 3
   different predicates (IS NULL vs isFalse vs ne(DELETED.getId())), and 1 different
   delete mechanic (UPDATE vs physical DELETE). A maintainer reading ONE repository
-  to infer the platform''s convention will reach the WRONG conclusion for the other
+  to infer the platform's convention will reach the WRONG conclusion for the other
   three. A future migration adding `deleted_at` to `ownership` would silently break
-  `existsByOwner` (it would count soft-deleted rows as ''exists'', preventing legitimate
+  `existsByOwner` (it would count soft-deleted rows as 'exists', preventing legitimate
   owner cascade-deletes); a maintainer working in the parent class without recognising
   the DataEntity subclass override could either propagate deleted_at semantics that
-  DataEntity doesn''t honour, or break the STATUS override by removing a parent-class
+  DataEntity doesn't honour, or break the STATUS override by removing a parent-class
   hook. **Highest-leverage hygiene gap discovered at batch H** — surfaced by triangulating
-  the 4 repository sidecars side-by-side.'
+  the 4 repository sidecars side-by-side. **Batch L confirms the 4th mechanism
+  (HARD-DELETE) at TWO MORE SITES — the relationship-edge cluster pattern is now
+  multi-site primary-source confirmed, matching the dedicated
+  `hard-delete-on-relationship-edges-confirmed-cross-batch` invariant**.
 axes_present:
-- repositories_reactive
+  - repositories_reactive
+  - controllers
 nodes:
-- odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
-- odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
-- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
-- odd-platform java repository reactive repository:ReactiveOwnershipRepositoryImpl
+  - odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveOwnershipRepositoryImpl
+  - odd-platform java DataEntityController controller-method:deleteTermFromDataEntity
+  - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
 contributors:
-- 'ReactivePolicyRepositoryImpl (batch H): SOFT-DELETE via `deleted_at` timestamp
-  — extends ReactiveAbstractSoftDeleteCRUDRepository; partial unique index policy_name_unique
-  WHERE deleted_at IS NULL at V0_0_55:30; soft-delete + recreation invariant. The
-  canonical pattern used by the majority of platform entities. implicit_adrs.[0] +
-  implicit_adrs.[1].'
-- 'ReactiveDataEntityRepositoryImpl (batch H): SOFT-DELETE via STATUS state-machine
-  — subclass OVERRIDES the inherited deleted_at base; passes null for deletedAtField
-  in constructor (line 103); overrides getDeleteChangedFields + addSoftDeleteFilter
-  to use STATUS = DELETED.getId() + STATUS_UPDATED_AT + STATUS_SWITCH_TIME. The OVERRIDE
-  pattern is deliberate substitution. implicit_adrs.[0].'
-- 'ReactiveLineageRepositoryImpl (batch H): SOFT-DELETE via `is_deleted` boolean —
-  added in V0_0_79__data_deprecation.sql:11-12 (NOT NULL DEFAULT FALSE); every read
-  filters LINEAGE.IS_DELETED.isFalse() at 7 sites; paired softDelete + restore methods
-  for entity status-change cascade. implicit_adrs.[0].'
-- 'ReactiveOwnershipRepositoryImpl (batch H): HARD-DELETE — the ownership edge table
-  has NO deleted_at column; physical DELETE in delete + deleteByDataEntityAndOwner
-  (lines 86-89, 102-104); reconstruction relies on activity-feed audit trail. Parallel
-  pattern at V0_0_76__term_relations_hard_delete.sql:8-13. implicit_adrs.[0].'
+  - 'ReactivePolicyRepositoryImpl (batch H): SOFT-DELETE via `deleted_at` timestamp
+    — extends ReactiveAbstractSoftDeleteCRUDRepository; partial unique index policy_name_unique
+    WHERE deleted_at IS NULL at V0_0_55:30; soft-delete + recreation invariant. The
+    canonical pattern used by the majority of platform entities. implicit_adrs.[0] +
+    implicit_adrs.[1].'
+  - 'ReactiveDataEntityRepositoryImpl (batch H): SOFT-DELETE via STATUS state-machine
+    — subclass OVERRIDES the inherited deleted_at base; passes null for deletedAtField
+    in constructor (line 103); overrides getDeleteChangedFields + addSoftDeleteFilter
+    to use STATUS = DELETED.getId() + STATUS_UPDATED_AT + STATUS_SWITCH_TIME. The OVERRIDE
+    pattern is deliberate substitution. implicit_adrs.[0].'
+  - 'ReactiveLineageRepositoryImpl (batch H): SOFT-DELETE via `is_deleted` boolean —
+    added in V0_0_79__data_deprecation.sql:11-12 (NOT NULL DEFAULT FALSE); every read
+    filters LINEAGE.IS_DELETED.isFalse() at 7 sites; paired softDelete + restore methods
+    for entity status-change cascade. implicit_adrs.[0].'
+  - 'ReactiveOwnershipRepositoryImpl (batch H): HARD-DELETE — the ownership edge table
+    has NO deleted_at column; physical DELETE in delete + deleteByDataEntityAndOwner
+    (lines 86-89, 102-104); reconstruction relies on activity-feed audit trail. Parallel
+    pattern at V0_0_76__term_relations_hard_delete.sql:8-13. implicit_adrs.[0].'
+  - |-
+    deleteTermFromDataEntity batch L (NEW SITE FOR HARD-DELETE
+    cluster): concepts.invariants.[1] (HARD DELETE; deleted_at column
+    DROPPED in V0_0_76) + implicit_adrs.[1] (HARD-DELETE deliberate;
+    migration explicitly migrates existing data forward, not just
+    schema change) + bugs_limitations_corner_cases.[4] (HARD-DELETE
+    finality — no audit-restore path)
+  - |-
+    deleteDataEntityFromDataEntityGroup batch L (NEW SITE FOR HARD-DELETE
+    cluster): concepts.invariants.[5] (HARD DELETE on user removal;
+    SOFT-DELETE reserved for entity-deletion cascade) +
+    implicit_adrs.[3] (the split is deliberate — user-initiated path
+    commits to removal; cascade path is reversible) +
+    bugs_limitations_corner_cases.[5] (HARD vs soft-delete cascade
+    semantic gap — undocumented asymmetry)
 evidence:
-- ReactivePolicyRepositoryImpl.md:implicit_adrs.[0] + V0_0_55__add_policies_and_roles.sql:27,30
-- ReactiveDataEntityRepositoryImpl.md:concepts.invariants.[0] + implicit_adrs.[0]
-  (lines 109-123)
-- ReactiveLineageRepositoryImpl.md:concepts.invariants.[0] + implicit_adrs.[0] (V0_0_79:11-12
-  + 7 filter sites)
-- ReactiveOwnershipRepositoryImpl.md:implicit_adrs.[0] + V0_0_3__add_ownership.sql:10-22
-  + V0_0_76__term_relations_hard_delete.sql:8-13
-notes: "Cross-batch architectural-hygiene invariant surfaced ONLY by triangulating\n\
-  the 4 batch-H repository sidecars together. None of the individual sidecars\nname\
-  \ the platform-wide inconsistency — each sidecar describes its own mechanism\nas\
-  \ a deliberate ADR, but the catalog reveals the platform ships 3 DIFFERENT\nsoft-delete\
-  \ mechanisms + 1 hard-delete pattern across what reads as a uniform\nReactive*Repository\
-  \ naming convention.\n\nRecommended cleanup paths (in increasing scope):\n\n  - Document\
-  \ the asymmetry on a single page (e.g. an `adrs/`-style file in\n    the documentation\
-  \ repo or a new `internal/persistence-conventions.md` page)\n    naming all 4 mechanisms\
-  \ + the rationale for each. Cheap; preserves the\n    existing semantics; arms maintainers.\n\
-  \n  - Standardise on ONE mechanism (preferably `deleted_at` timestamp — the most\
-  \ widely\n    used) and migrate the DataEntity STATUS-state-machine + lineage is_deleted\n\
-  \    + ownership hard-delete to share the same shape. High scope (DataEntity STATUS\n\
-  \    state-machine carries lifecycle semantics that deleted_at does not, so the\n\
-  \    migration would either lose information or require dual-write). Likely infeasible.\n\
-  \n  - Document each subclass-override (DataEntity's STATUS override is the most\
-  \ surprising)\n    in the ParentClass's Javadoc so a maintainer reading the parent\
-  \ sees the override\n    contract before refactoring.\n\nFour DOC-NNN candidates\
-  \ flow from this invariant:\n  (a) Add a 'Persistence layer conventions' note to\
-  \ the internal Architecture docs\n      naming the 4 mechanisms.\n  (b) Document\
-  \ the soft-delete-aware-recreation invariant on the Policies + Roles\n      live\
-  \ pages (operators can recreate a policy with a previously-used name).\n  (c) Document\
-  \ the hard-delete semantics on the Owners + Term-relations live pages\n      (operators\
-  \ cannot undelete an ownership row — recovery via activity feed only).\n  (d) Document\
-  \ the STATUS-state-machine semantics on the DataEntity Status / Lifecycle\n    \
-  \  live page (operators can soft-delete + restore an entity; the entity is recoverable\n\
-  \      via status change, not via a separate undelete endpoint).\n"
+  - ReactivePolicyRepositoryImpl.md:implicit_adrs.[0] + V0_0_55__add_policies_and_roles.sql:27,30
+  - ReactiveDataEntityRepositoryImpl.md:concepts.invariants.[0] + implicit_adrs.[0]
+    (lines 109-123)
+  - ReactiveLineageRepositoryImpl.md:concepts.invariants.[0] + implicit_adrs.[0] (V0_0_79:11-12
+    + 7 filter sites)
+  - ReactiveOwnershipRepositoryImpl.md:implicit_adrs.[0] + V0_0_3__add_ownership.sql:10-22
+    + V0_0_76__term_relations_hard_delete.sql:8-13
+  - |-
+    deleteTermFromDataEntity.md (batch L):
+    concepts.invariants.[1] + implicit_adrs.[1] +
+    bugs_limitations_corner_cases.[4] (HARD-DELETE finality on
+    data_entity_to_term)
+  - |-
+    deleteDataEntityFromDataEntityGroup.md (batch L):
+    concepts.invariants.[5] + implicit_adrs.[3] +
+    bugs_limitations_corner_cases.[5] (HARD vs SOFT-DELETE asymmetry
+    on group_entity_relations)
+notes: |-
+  Cross-batch architectural-hygiene invariant surfaced ONLY by triangulating
+  the 4 batch-H repository sidecars together. None of the individual sidecars
+  name the platform-wide inconsistency — each sidecar describes its own mechanism
+  as a deliberate ADR, but the catalog reveals the platform ships 3 DIFFERENT
+  soft-delete mechanisms + 1 hard-delete pattern across what reads as a uniform
+  Reactive*Repository naming convention.
+
+  **STRENGTHENED batch 2026-05-19L** — the HARD-DELETE relationship-edge
+  cluster is now multi-site primary-source confirmed across 3 tables
+  (data_entity_to_term + group_entity_relations + ownership; plus the
+  term_ownership migration). The dedicated
+  hard-delete-on-relationship-edges-confirmed-cross-batch invariant
+  captures the relationship-edge cluster pattern; this invariant
+  remains the platform-wide-mechanism map.
+
+  Recommended cleanup paths (in increasing scope):
+
+    - Document the asymmetry on a single page (e.g. an `adrs/`-style file in
+      the documentation repo or a new `internal/persistence-conventions.md` page)
+      naming all 4 mechanisms + the rationale for each. Cheap; preserves the
+      existing semantics; arms maintainers.
+
+    - Standardise on ONE mechanism (preferably `deleted_at` timestamp — the most
+      widely used) and migrate the DataEntity STATUS-state-machine + lineage is_deleted
+      + ownership hard-delete to share the same shape. High scope (DataEntity STATUS
+      state-machine carries lifecycle semantics that deleted_at does not, so the
+      migration would either lose information or require dual-write). Likely infeasible.
+
+    - Document each subclass-override (DataEntity's STATUS override is the most
+      surprising) in the ParentClass's Javadoc so a maintainer reading the parent
+      sees the override contract before refactoring.
+
+  Five DOC-NNN candidates flow from this invariant:
+    (a) Add a 'Persistence layer conventions' note to the internal Architecture docs
+        naming the 4 mechanisms.
+    (b) Document the soft-delete-aware-recreation invariant on the Policies + Roles
+        live pages (operators can recreate a policy with a previously-used name).
+    (c) Document the hard-delete semantics on the Owners + Term-relations live pages
+        (operators cannot undelete an ownership row — recovery via activity feed only).
+    (d) Document the STATUS-state-machine semantics on the DataEntity Status / Lifecycle
+        live page (operators can soft-delete + restore an entity; the entity is recoverable
+        via status change, not via a separate undelete endpoint).
+    (e) **NEW from batch L** — Document the user-DELETE-is-HARD-DELETE
+        vs cascade-is-SOFT-DELETE asymmetry on the
+        groups-domains + business-glossary feature pages (operators
+        reasoning "will my memberships come back after entity
+        restore?" need this knowledge).

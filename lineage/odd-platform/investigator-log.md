@@ -1186,3 +1186,59 @@ Theme L next: DataEntityController continuation 1 (5 controller methods). Pillar
 
 P-02 Data Modelling + P-03 Master Data Management + P-11 Platform API & Developer Surface remain 0-sidecar — surface for prioritisation.
 
+
+## Batch 2026-05-19-L — DataEntityController continuation 1 (5 nodes; FOURTH autonomous batch)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: ede5d277 (70 prior + 5 new = **75 total**)
+- **Theme**: DataEntityController continuation — addDataEntityDataEntityGroup + deleteDataEntityFromDataEntityGroup + getDataEntityAlerts + upsertDataEntityMetadataFieldValue + deleteTermFromDataEntity
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `addDataEntityDataEntityGroup` | P-01 | **NEW HIGH: write-collaborative DEG (NO DEG-side authorization)** — any DATA_ENTITY_ADD_TO_GROUP holder writes into ANY manually-created DEG. DEG path DIVERGES from REFACTOR-199/206/223 family (explicit isManuallyCreatedDEG defensive check — NOT auto-create-on-miss). Forensic silence: DATA_ENTITY_RELATION_UPDATED enum dead-code. |
+| `deleteDataEntityFromDataEntityGroup` | P-01 | 3 documented-nowhere asymmetries: distinct ADD/DELETE permissions per Policy resolver; silent-204 no-op DELETE vs 400-duplicate no-op ADD; no @ActivityLog on membership flips. |
+| `getDataEntityAlerts` | P-07 + P-01 | REFACTOR-024 cross-owner posture EXTENDED to per-entity surface. Live alerting doc names this endpoint as "audit-export workaround" but silent on audience scoping. |
+| `upsertDataEntityMetadataFieldValue` | P-01 | NOT a REFACTOR-199 family member (permission IS enforced) but silent-200-on-missing-pair + silent-200-on-missing-entity (same as batch G upsertInternalDescription — pattern now 2-sidecar). EXTERNAL-origin-writable, active=NULL regression, no type validation. |
+| `deleteTermFromDataEntity` | P-06 | **REFACTOR-217 DELETE half SYMMETRIC PRIMARY-SOURCE CONFIRMED** at SecurityConstants.java:240-242 singular `/term/{term_id}` vs openapi.yaml:1042 plural `/terms/{term_id}`. HARD-DELETE amplifies under DISABLED-mode (anonymous reach + irreversible). |
+
+### Reducer diffs (rev-3 sharded)
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 212 → **228 concepts** | +16 net-new (3 entities + 5 operations + 8 invariants) + 7 strengthened. NEW HIGH invariants: write-collaborative-DEG; ADD/DELETE permission asymmetry; HARD-DELETE on relationship edges (3rd site confirmed). |
+| adr-archaeologist (ADRs) | 112 → **116** | +4 (113-116) + 6 strengthened (ADR-001/-002 now 23-sidecar tied for strongest; ADR-007 now 19-sidecar; ADR-067 11-sidecar; ADR-003 + ADR-069 strengthened). ADR-113 NEW HIGH: DEG no-auto-create (counter-example to REFACTOR-199 family — intent-anchored). |
+| adr-archaeologist (scopes) | 330 → **342** | +12 (331-342) + 2 strengthened. **REFACTOR-331 NEW HIGH: write-collaborative DEG**. **REFACTOR-340 NEW HIGH: cross-owner per-entity alert read** (extends REFACTOR-024 to per-entity surface). REFACTOR-217 substrate now EXHAUSTED (POST + service + DELETE all triangulated). |
+| doc-gap-finder | 137 → **146** | +9 (150-158) + 2 strengthened. **DOC-GAP-153 NEW HIGH**: DEG activity-feed page MISREPRESENTS coverage (CUSTOM_GROUP_UPDATED claims membership-flips recorded; code emits NOTHING — DOC-CLAIMS-CODE-PROVIDES-SILENCE drift, strongest drift class in catalog). DOC-GAP-150 DEG write-collaborative. DOC-GAP-156 silent-200 metadata upsert. DOC-GAP-157 cross-owner per-entity alert read. 4 live WebFetches at status 200. |
+| test-coverage-mapper | 486 → **502 gaps** | +16 (488-503) + 4 strengthened. 3 NEW CRITICAL: TEST-GAP-488 (DEG write-collaborative regression-pin), TEST-GAP-489 (REFACTOR-217 DELETE half primary-source pin), TEST-GAP-491 (@Profile("!integration-test") META trap). |
+| feature-flow-builder | 11 → **14 features** (+3 new) | **F-012 / P-01:F-003 Data Entity Group Membership** (NEW; primary drift: write_collaborative_no_deg_side_authorization). **F-013 / P-01:F-004 Custom Metadata Field Editing** (NEW; primary drift: silent_200_on_missing_pair — sibling of F-004 Description Editing). **F-014 / P-07:F-003 Per-Entity Alert View** (NEW; cross-pillar P-07+P-01; REFACTOR-024 family extension). F-002 extended with DELETE half REFACTOR-217 SYMMETRIC PRIMARY-SOURCE. 36 new drift facets across batch. |
+
+### Coverage state after batch L
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 75 | **19.0%** (was 17.7%) |
+| Effective coverage | 133 | **33.7%** (was 30.1%) |
+| Features discovered | 14 (was 11) | 3 NEW pillar-anchored features |
+| Features with ≥1 cell PROBED | 4 | unchanged |
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-217**: now full substrate-exhausted — POST (batch G) + service (batch K) + DELETE (batch L). One-PR-fixes-both-halves observation reinforced.
+- **write-collaborative DEG** (NEW HIGH): joins read-collaborative cross-owner enumeration as a sibling — write surface too is cross-tenant-permissive.
+- **silent-200-on-missing-pair**: now 2-sidecar (batch G upsertInternalDescription + batch L upsertMetadataFieldValue) — codebase-wide upsert-family pattern.
+- **HARD-DELETE on relationship edges**: now 3-site confirmed (term_relations + group_entity_relations + ownership) — strengthens batch-H three-soft-delete-mechanisms invariant.
+- **Reserved-but-never-fired activity enum**: now 4-slot pattern (DATA_ENTITY_RELATION_UPDATED + CUSTOM_METADATA_CREATED/UPDATED/DELETED) — cohesive cleanup sprint candidate.
+
+### Follow-ups (logged, not blocking)
+
+- 3 broken-yaml files persist (2 from batch K + 1 from batch J): manage-ownership-lifecycle-with-deg-cascade.yaml (leading `@`), run-housekeeping-cycle-five-jobs.yaml (leading backtick), lineage-graph-traversal.yaml (line 1 col 1).
+- doc-gaps detail-vs-index: 11 detail-without-index + 4 index-without-detail (batch-F orphan IDs 084-088). Reconcile next batch.
+- 105 detail-without-index in refactoring-scopes (batch-J *-strengthen orphans persist; batches K+L correctly used canonical-append).
+
+### Next-batch planning notes
+
+Theme M next: Anchor-set defence audit (cross-cutting; ~5 controllers — getDataEntityUpstreamLineage / getDataEntityGroupsLineage / getMyObjectsWithUpstream / getMyObjectsWithDownstream / SearchController.facets).
+

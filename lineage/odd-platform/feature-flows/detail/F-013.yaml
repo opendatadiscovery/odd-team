@@ -1,0 +1,515 @@
+feature_id: F-013
+pillar_id: P-01
+pillar_anchored_id: P-01:F-004
+pillar_anchored_feature_name: Custom Metadata Field Editing
+feature_name: Custom metadata field value upsert — silent UPDATE-not-UPSERT with no type validation
+primary_drift_class: silent_200_on_missing_pair
+drift_class_summary:
+- silent_200_on_missing_pair
+- silent_200_on_missing_data_entity
+- no_type_validation_against_metadata_field_type
+- external_origin_writable_overwrites_ingestion
+- forensic_silence_via_missing_activity_log
+- active_column_dropped_to_null_on_update
+- openapi_origin_field_silently_dropped
+- spec_says_upsert_impl_does_update
+- disabled_mode_bypass
+- unbounded_value_length_at_every_layer
+- metadata_field_globally_unscoped
+discovered_from_entry_point: rest:PUT /api/dataentities/{id}/metadata/{field_id}
+contributing_nodes:
+- odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue
+- odd-platform java service service:DataEntityServiceImpl
+- odd-platform java ReactiveMetadataFieldValueRepositoryImpl
+- odd-platform java MetadataFieldServiceImpl
+- odd-platform java ReactiveSearchEntrypointRepository
+- odd-platform java SecurityConstants
+- odd-platform java ActivityEventTypeDto
+description: |-
+  Operators edit a data entity's custom metadata field values via
+  `PUT /api/dataentities/{data_entity_id}/metadata/{metadata_field_id}` with
+  body `{value: <String>, origin?: MetadataFieldOrigin}`. The endpoint is
+  the per-row mutator on the custom-metadata write surface (paired with
+  `createDataEntityMetadataFieldValue` POST for bulk-add and
+  `deleteDataEntityMetadataFieldValue` DELETE for per-row removal).
+  Authorization IS enforced — `SecurityConstants.java:204-207` registers
+  a SecurityRule binding `DATA_ENTITY_CUSTOM_METADATA_UPDATE` to this
+  exact path under DATA_ENTITY-scoped Policy resolution. Live Permissions
+  doc WebFetched 2026-05-19 status 200 confirms the permission.
+
+  The user-observable promise (per OpenAPI operationId "upsert", per the
+  Permissions doc, per the UI's redux thunk hardcoding "Metadata
+  successfully updated." on any 200): the call REPLACES an existing value
+  or CREATES a new one for the named field on the named entity.
+
+  The user-observable reality, per batch-L primary-source code-walk of
+  the controller + service + repository + OpenAPI schema + DB migration:
+
+  (1) **The endpoint is an UPDATE, NOT an UPSERT** —
+  ReactiveMetadataFieldValueRepositoryImpl.update (lines 95-104) issues
+  `DSL.update(METADATA_FIELD_VALUE).set(VALUE, ...).set(ACTIVE,
+  pojo.getActive()).where(METADATA_FIELD_ID.eq(...).and(DATA_ENTITY_ID.eq(...))).returning()`.
+  If no row exists for the (dataEntityId, metadataFieldId) pair, the
+  UPDATE matches zero rows, the inner Mono collapses to empty, the rest
+  of the pipeline (search-vector refresh, mapper) is short-circuited via
+  empty-mono propagation, and the controller returns **200 OK with empty
+  body** rather than 404. SAME SHAPE as upsertDataEntityInternalDescription
+  (batch G; F-004). The UI's `metadata.thunks.ts:51-54` shows
+  "Metadata successfully updated." on this empty-body 200.
+
+  (2) **No data-entity existence check either** — unlike createMetadata
+  (DataEntityServiceImpl.java:257-258 does
+  `reactiveDataEntityRepository.get(dataEntityId).switchIfEmpty(NotFoundException)`),
+  the upsert path at lines 287-305 NEVER validates that the data entity
+  exists. A PUT against a non-existent entity returns 200-with-empty-body.
+
+  (3) **No type validation against metadata_field.type** —
+  formData.getValue() is a raw String written verbatim into the `text`
+  column regardless of the field's declared MetadataTypeEnum (INTEGER /
+  FLOAT / BOOLEAN / DATETIME / ARRAY / JSON / STRING / UNKNOWN per
+  MetadataTypeEnum.java:3-12). A user can write "not a number" to an
+  INTEGER-typed field or "true" to a JSON-typed field. Downstream readers
+  must defend against arbitrary string content regardless of declared type.
+
+  (4) **EXTERNAL-origin fields are writable** — the upsert path does NOT
+  check MetadataFieldPojo.getOrigin(). EXTERNAL fields are populated by
+  collectors during ingestion (MetadataFieldServiceImpl.java:62-71
+  ingestMetadataFields creates origin=EXTERNAL); a user with
+  `DATA_ENTITY_CUSTOM_METADATA_UPDATE` can overwrite the
+  collector-ingested value, and the override persists until the next
+  ingestion cycle replaces it.
+
+  (5) **No @ActivityLog annotation despite ActivityEventTypeDto.CUSTOM_METADATA_UPDATED
+  existing** — DataEntityServiceImpl.upsertMetadataFieldValue (lines
+  287-305) lacks `@ActivityLog(event = CUSTOM_METADATA_UPDATED)` even
+  though ActivityEventTypeDto.java:18 declares the enum value and sibling
+  write methods on this controller DO emit activity (upsertBusinessName
+  line 336 BUSINESS_NAME_UPDATED; upsertTags line 358 TAG_ASSIGNMENT_UPDATED).
+  The createMetadata (line 245) and deleteMetadata (line 307) siblings
+  are ALSO un-annotated — the entire CUSTOM_METADATA_* family is
+  reserved-but-never-fired.
+
+  (6) **`active` column dropped to NULL on every UPDATE** —
+  ReactiveMetadataFieldValueRepositoryImpl.java:98 writes
+  `.set(METADATA_FIELD_VALUE.ACTIVE, pojo.getActive())`, but the
+  upsert path's pojo construction at DataEntityServiceImpl.java:292-295
+  never calls `setActive(...)`. The jOOQ-generated
+  MetadataFieldValuePojo.getActive() returns boxed Boolean null when
+  unset. The DB column is `boolean DEFAULT TRUE` (V0_0_1__init.sql:180),
+  but DEFAULTs apply on INSERT only — an UPDATE that sets the column
+  writes the explicit NULL, dropping a previously-TRUE row to NULL. Every
+  edit silently drops the row's active flag.
+facets_summary: |-
+  11 substantive drifts: silent 200-on-missing-pair + silent 200-on-missing-entity
+  + no type validation against MetadataTypeEnum + EXTERNAL-origin writable
+  (silently overwrites collector-ingested values) + forensic-silence (no
+  @ActivityLog despite CUSTOM_METADATA_UPDATED existing) + active=NULL
+  regression on every UPDATE + OpenAPI `origin` field silently dropped +
+  spec-says-upsert / impl-does-update + DISABLED-mode bypass + unbounded
+  value length at every layer + metadata_field GLOBALLY unscoped (no
+  tenant/owner namespacing).
+chain:
+- hop: 1
+  node: odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue
+  sidecar: odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataEntityController.java:213-223 — four-line reactive pipeline reads
+    `@Valid Mono<MetadataFieldValueUpdateFormData>`, delegates to
+    `dataEntityService.upsertMetadataFieldValue(dataEntityId, metadataFieldId,
+    form)`, lifts to 200 OK. SecurityRule at SecurityConstants.java:204-207
+    binds `DATA_ENTITY_CUSTOM_METADATA_UPDATE` on this exact path under
+    DATA_ENTITY-scoped resolution. The OpenAPI operationId is "upsert"
+    (openapi.yaml:1219-1220) but the impl is pure UPDATE.
+  unresolved: false
+- hop: 2
+  node: odd-platform java service service:DataEntityServiceImpl
+  sidecar: '(referenced from batch-I primary-source; this batch confirms upsert variant)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataEntityServiceImpl.upsertMetadataFieldValue (lines 287-305) —
+    `@ReactiveTransactional` (line 288). NO `@ActivityLog`. Composition:
+    `metadataFieldService.get(metadataFieldId) → reactiveMetadataFieldValueRepository.update(pojo)
+    → reactiveSearchEntrypointRepository.updateMetadataVectors(dataEntityId) →
+    map to MetadataFieldValue`. The pojo construction at lines 292-295
+    populates only `dataEntityId`, `metadataFieldId`, and `value` — NEVER
+    calls `setActive(...)`. No `reactiveDataEntityRepository.get(dataEntityId)`
+    pre-check (unlike createMetadata at lines 257-258). No origin check.
+    No type validation. The map step is short-circuited by empty-mono
+    propagation if the UPDATE matches zero rows.
+  unresolved: false
+- hop: 3
+  node: odd-platform java MetadataFieldServiceImpl
+  sidecar: '(referenced from coupling; not directly enriched)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    MetadataFieldServiceImpl.get (lines 30-34) — issues a `SELECT *
+    FROM metadata_field WHERE id = ?` via the reactive repository and
+    `switchIfEmpty(NotFoundException("Metadata field with id %d not
+    found"))`. Returns the global MetadataFieldPojo (id, type, name,
+    origin, is_deleted). Note: does NOT enforce origin=INTERNAL — the
+    EXTERNAL/INTERNAL distinction is not consulted in the upsert path.
+    The `MetadataKey(name, type)` natural key at MetadataKey.java:6-15
+    is GLOBAL (no tenant/project/owner scoping); two teams creating
+    `cost_centre:STRING` collapse to one row via
+    MetadataFieldServiceImpl.getOrCreateMetadataFields (lines 43-58).
+  unresolved: false
+- hop: 4
+  node: odd-platform java ReactiveMetadataFieldValueRepositoryImpl
+  sidecar: '(referenced from coupling; not directly enriched)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveMetadataFieldValueRepositoryImpl.update (lines 95-104) —
+    `DSL.update(METADATA_FIELD_VALUE).set(VALUE, pojo.getValue()).set(ACTIVE,
+    pojo.getActive()).where(METADATA_FIELD_ID.eq(metadataFieldId).and(DATA_ENTITY_ID.eq(dataEntityId))).returning(...)`.
+    No `switchIfEmpty(NotFoundException)` on zero-row UPDATE — the empty
+    Mono propagates back through the service to the controller's 200
+    response. The DB schema at V0_0_1__init.sql:175-186 declares the
+    composite PK (data_entity_id, metadata_field_id) and `value text`
+    (unbounded) + `active boolean DEFAULT TRUE`.
+  unresolved: false
+- hop: 5
+  node: odd-platform java ReactiveSearchEntrypointRepository
+  sidecar: '(referenced from coupling; not directly enriched)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveSearchEntrypointRepository.updateMetadataVectors(dataEntityId)
+    — re-tokenises the entity's metadata into the FTS index after every
+    successful update (DataEntityServiceImpl.java:300-302). On the
+    silent-200-empty-body path, the refresh is short-circuited (empty-mono
+    propagation) and the FTS index retains stale tokens — but this is
+    moot for the missing-pair case (no value to index).
+  unresolved: false
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    UPDATE on metadata_field_value (single row at composite PK
+    (data_entity_id, metadata_field_id)) — sets value + active=NULL —
+    OR zero rows updated on missing pair (silent 200). Plus an UPDATE
+    to search_entrypoint.metadata_vector via FTS refresh, IFF the value
+    UPDATE matched a row.
+  evidence: |-
+    ReactiveMetadataFieldValueRepositoryImpl.java:95-104 (UPDATE query)
+    + DataEntityServiceImpl.java:300-302 (FTS refresh) + V0_0_1__init.sql:175-186
+    (the composite PK + active DEFAULT TRUE).
+  cardinality_per_call: 1
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+  - facet: silent 200 on missing (entity, field) pair — UPDATE-not-UPSERT
+    observed: |-
+      ReactiveMetadataFieldValueRepositoryImpl.update (lines 95-104) is
+      a pure UPDATE with `WHERE METADATA_FIELD_ID = ? AND DATA_ENTITY_ID = ?`.
+      If no row exists for the pair, the query matches zero rows, the
+      Mono collapses to empty, the FTS-vector refresh and the response
+      mapper are short-circuited, and the controller returns 200 OK with
+      an empty body. The UI's redux thunk
+      (`odd-platform-ui/src/redux/thunks/metadata.thunks.ts:51-54`)
+      hardcodes a "Metadata successfully updated." success toast on any
+      non-error response — the user is told the write succeeded when no
+      row was touched. SAME pattern as upsertDataEntityInternalDescription
+      (batch G; F-004).
+    expected: |-
+      Either a true UPSERT (`ON CONFLICT DO UPDATE`) so the missing pair
+      becomes a successful INSERT, OR `switchIfEmpty(NotFoundException)`
+      raising 404 to surface the missing pair to the caller.
+    drift_class: silent_200_on_missing_pair
+    provenance: |-
+      STATIC — primary-source in batch L
+      upsertDataEntityMetadataFieldValue sidecar bugs_limitations_corner_cases[0]
+      + ReactiveMetadataFieldValueRepositoryImpl.java:95-104 +
+      DataEntityServiceImpl.java:287-305 + metadata.thunks.ts:51-54.
+      Severity: MEDIUM.
+  - facet: silent 200 on missing data entity — no existence check
+    observed: |-
+      DataEntityServiceImpl.upsertMetadataFieldValue (lines 287-305) does
+      NOT call `reactiveDataEntityRepository.get(dataEntityId).switchIfEmpty(...)`.
+      Contrast createMetadata at lines 257-258 which DOES check entity
+      existence. A PUT against a non-existent dataEntityId proceeds to the
+      metadata-field lookup (which can succeed — fields are global, not
+      entity-scoped), then to the UPDATE which matches zero rows (no value
+      row for the non-existent entity since FK to data_entity(id) is intact
+      but the row never existed), then to the silent-200 empty-body path.
+    expected: |-
+      Pre-check `reactiveDataEntityRepository.get(dataEntityId).switchIfEmpty(NotFoundException)`
+      matching the createMetadata sibling.
+    drift_class: silent_200_on_missing_data_entity
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[1] + DataEntityServiceImpl.java:287-305
+      (no entity-existence check) vs :257-258 (createMetadata does
+      check). Severity: MEDIUM.
+  - facet: no type validation against MetadataTypeEnum
+    observed: |-
+      formData.getValue() is a raw String written verbatim into the
+      `text` column at ReactiveMetadataFieldValueRepositoryImpl.java:95-104
+      regardless of metadata_field.type. MetadataTypeEnum.java:3-12 declares
+      8 types (INTEGER / FLOAT / BOOLEAN / DATETIME / ARRAY / JSON / STRING /
+      UNKNOWN); none is enforced at write time. A user can write
+      "not a number" to an INTEGER-typed field, "true" to a JSON-typed
+      field, "hello" to a DATETIME-typed field. Downstream readers must
+      defend against arbitrary string content.
+    expected: |-
+      Type-coerce or validate formData.getValue() against
+      metadataFieldPojo.getType() inside upsertMetadataFieldValue —
+      reject with 400 on mismatch, OR coerce (parse INTEGER as Long,
+      DATETIME as Instant, etc.) and reject on parse failure.
+    drift_class: no_type_validation_against_metadata_field_type
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[2] + DataEntityServiceImpl.java:292-295
+      (only `value` extracted) + ReactiveMetadataFieldValueRepositoryImpl.java:95-104
+      (no type-inspect on SET) + V0_0_1__init.sql:179 (`value text`).
+      Severity: MEDIUM.
+  - facet: EXTERNAL-origin fields are writable — operator can overwrite collector-ingested values
+    observed: |-
+      The upsert path does not check `MetadataFieldPojo.getOrigin()`.
+      EXTERNAL fields are populated by collectors during ingestion
+      (MetadataFieldServiceImpl.java:62-71 ingestMetadataFields creates
+      fields with origin=EXTERNAL); a user with
+      `DATA_ENTITY_CUSTOM_METADATA_UPDATE` can overwrite the
+      collector-ingested value, and the override persists until the next
+      ingestion cycle replaces it. The user-facing distinction between
+      "discovered" (EXTERNAL) and "curated" (INTERNAL) metadata is
+      therefore not enforced at write time. The catalog can show
+      fabricated "source-system" values for fields with origin=EXTERNAL
+      and (combined with the forensic-silence facet) no record of the
+      fabrication.
+    expected: |-
+      Either reject EXTERNAL-origin writes with 400, OR require explicit
+      `?force=true` parameter to overwrite EXTERNAL fields, OR document
+      the overwrite-then-cycle-replace behaviour on the data-discovery
+      docs page.
+    drift_class: external_origin_writable_overwrites_ingestion
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[3] + DataEntityServiceImpl.java:287-305
+      (no origin check) + MetadataFieldServiceImpl.java:62-71 (EXTERNAL
+      field creation). Severity: MEDIUM.
+  - facet: forensic silence — no @ActivityLog despite CUSTOM_METADATA_UPDATED enum
+    observed: |-
+      upsertMetadataFieldValue (DataEntityServiceImpl.java:287-305) lacks
+      the @ActivityLog(event = CUSTOM_METADATA_UPDATED) annotation despite
+      the CUSTOM_METADATA_UPDATED enum value existing in
+      ActivityEventTypeDto.java:18. Contrast upsertBusinessName at line
+      336 with @ActivityLog(BUSINESS_NAME_UPDATED), upsertTags at line
+      358 with @ActivityLog(TAG_ASSIGNMENT_UPDATED). The createMetadata
+      (line 245) and deleteMetadata (line 307) siblings are ALSO
+      un-annotated — the entire CUSTOM_METADATA_CREATED /
+      CUSTOM_METADATA_UPDATED / CUSTOM_METADATA_DELETED family
+      (ActivityEventTypeDto.java:17-19) is reserved-but-never-fired.
+      Auditors querying GET /api/activity find no record of metadata
+      writes.
+    expected: |-
+      Add `@ActivityLog(event = CUSTOM_METADATA_UPDATED)` to upsertMetadataFieldValue
+      and similar annotations to createMetadata and deleteMetadata, with
+      a CustomMetadataActivityHandler capturing BEFORE/AFTER state.
+    drift_class: forensic_silence_via_missing_activity_log
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[5] + DataEntityServiceImpl.java:287-305
+      (no @ActivityLog) + ActivityEventTypeDto.java:17-19 (three reserved
+      enums) + sibling @ActivityLog annotations at :336, :358. Cross-pillar
+      pattern with F-012 (DEG membership forensic silence). Severity: MEDIUM.
+  - facet: active column dropped to NULL on every UPDATE
+    observed: |-
+      ReactiveMetadataFieldValueRepositoryImpl.java:97-98 writes
+      `.set(METADATA_FIELD_VALUE.ACTIVE, pojo.getActive())`, but
+      DataEntityServiceImpl.java:292-295 constructs the pojo without
+      calling `setActive(...)`. The jOOQ-generated
+      MetadataFieldValuePojo.getActive() returns boxed Boolean null when
+      unset. The DB column is `boolean DEFAULT TRUE` (V0_0_1__init.sql:180),
+      but DEFAULTs apply on INSERT only — an UPDATE that sets the column
+      writes the explicit NULL, dropping a previously-TRUE row to NULL.
+      Every edit silently drops the active flag. If any platform code
+      filters `WHERE metadata_field_value.active = TRUE` (rather than
+      `IS DISTINCT FROM FALSE`), edited rows silently disappear from
+      those queries.
+    expected: |-
+      Either: (a) construct the pojo at lines 292-295 with
+      `.setActive(true)` to preserve the post-edit state, OR (b) change
+      the UPDATE query to OMIT the `.set(ACTIVE, ...)` clause (so the
+      column is unchanged), OR (c) audit downstream `active` consumers
+      to confirm NULL-tolerance.
+    drift_class: active_column_dropped_to_null_on_update
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[4] +
+      ReactiveMetadataFieldValueRepositoryImpl.java:97-98 (SET clause) +
+      DataEntityServiceImpl.java:292-295 (no setActive call) +
+      V0_0_1__init.sql:180 (`active boolean DEFAULT TRUE`). Severity: MEDIUM.
+  - facet: OpenAPI `origin` field silently dropped
+    observed: |-
+      MetadataFieldValueUpdateFormData (components.yaml:2144-2152) declares
+      an optional `origin: MetadataFieldOrigin` field. The impl at
+      DataEntityServiceImpl.java:292-295 reads only `formData.getValue()`
+      — `origin` is silently dropped. A client posting
+      `{value: "...", origin: "INTERNAL"}` is told via the spec that
+      origin is meaningful here, but the platform discards it.
+    expected: |-
+      Either: (a) remove `origin` from the schema (it's never used at
+      this endpoint), OR (b) honour it by validating it matches the
+      field's declared origin and rejecting mismatches.
+    drift_class: openapi_origin_field_silently_dropped
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[6] + components.yaml:2144-2152 (spec
+      includes origin) vs DataEntityServiceImpl.java:292-295 (impl reads
+      only value). Severity: LOW.
+  - facet: OpenAPI operationId "upsert" while impl is pure UPDATE
+    observed: |-
+      openapi.yaml:1219-1220 declares the operationId / summary as "upsert"
+      ("Upsert DataEntity's metadata field value") but the implementation
+      is pure UPDATE with silent no-op on missing pair. A user reading the
+      OpenAPI summary would expect POST-or-PUT-semantics upsert; the
+      actual semantics are "replace if exists, silently succeed if missing".
+    expected: |-
+      Either: (a) implement true upsert semantics (`INSERT ... ON CONFLICT
+      DO UPDATE`), OR (b) rename the operationId / summary to "update" so
+      the spec matches the implementation.
+    drift_class: spec_says_upsert_impl_does_update
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      docs_link_semantic.doc_drift_findings[2] +
+      ReactiveMetadataFieldValueRepositoryImpl.java:95-104 (pure UPDATE)
+      + openapi.yaml:1219-1220 ("upsert" operationId). Severity: LOW.
+  - facet: DISABLED-mode anonymous metadata writes
+    observed: |-
+      Under auth.type=DISABLED, the DisabledAuthSecurityConfiguration
+      `.anyExchange().permitAll()` chain bypasses SECURITY_RULES; the
+      `DATA_ENTITY_CUSTOM_METADATA_UPDATE` permission gate at
+      SecurityConstants.java:204-207 is NEVER consulted. Anonymous traffic
+      can rewrite any metadata field value, including overwriting
+      EXTERNAL-origin (collector-ingested) values, with no audit trail
+      (per forensic-silence facet).
+    expected: |-
+      DISABLED documented as truly dev-only. The pattern repeats across
+      batches A/B/C/E/F/G/K.
+    drift_class: disabled_mode_bypass
+    provenance: |-
+      STATIC — cross-ref batches A/B/C/E/F/G/K DISABLED-bypass pattern +
+      SecurityConstants.java:204-207 (rules not consulted under DISABLED).
+      Severity: MEDIUM on network-reachable DISABLED; LOW if honestly dev-only.
+  - facet: unbounded value length at every layer
+    observed: |-
+      The `text` column is unbounded (V0_0_1__init.sql:179); the OpenAPI
+      spec has no `maxLength` constraint (components.yaml:2147-2148).
+      A 100 MiB value is technically accepted, then FTS-indexed (cost
+      grows with value size), then served back to every consumer of the
+      entity. The WebFlux request-size limit (`spring.codec.max-in-memory-size`,
+      default 256 KiB) provides an indirect cap, but operators tuning
+      that value up to accept large attachments would also accept large
+      metadata values.
+    expected: |-
+      Add `maxLength: 65536` (or similar) to components.yaml:2147-2148
+      and a CHECK constraint on the column for defence-in-depth.
+    drift_class: unbounded_value_length_at_every_layer
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[7] + V0_0_1__init.sql:179 +
+      components.yaml:2147-2148. Severity: LOW.
+  - facet: metadata_field is globally unscoped — no per-tenant / per-team / per-owner namespacing
+    observed: |-
+      V0_0_1__init.sql:166-173 declares the `metadata_field` table with
+      `(name, type)` as the natural key — no `tenant_id`, no `owner_id`,
+      no `namespace_id`. MetadataFieldServiceImpl.getOrCreateMetadataFields
+      (lines 43-58) matches existing fields by `MetadataKey(name, type)`
+      (MetadataKey.java:6-15) regardless of caller; two teams creating
+      `cost_centre:STRING` collapse to one row. The `metadata_field`
+      table is GLOBAL across the platform. There is no platform-side
+      mechanism to namespace metadata fields per team / project / owner.
+    expected: |-
+      Either: (a) namespace metadata_field by Namespace or Owner, OR (b)
+      document the global-namespace behaviour on the data-discovery
+      metadata docs page.
+    drift_class: metadata_field_globally_unscoped
+    provenance: |-
+      STATIC — primary-source in batch L sidecar implicit_adrs[0] +
+      V0_0_1__init.sql:166-173 (no scoping column) +
+      MetadataFieldServiceImpl.java:43-58 (matches by name+type globally).
+      Severity: LOW (architectural; not a defect, but operationally
+      worth documenting).
+test_matrix:
+  unit:
+    state: PARTIAL
+    covered:
+    - behaviour: happy-path service-layer composition (mock metadataFieldService + reactiveMetadataFieldValueRepository,
+        assert mapper output)
+      test_file: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataEntityServiceTest.java:164-191
+        — upsertMetadataFieldValueTest'
+      note: Mocked unit test verifies the pipeline composition only. No behavioural assertions about type validation,
+        origin restrictions, the missing-pair empty-mono case, the active=NULL regression, or the
+        forensic-silence absence.
+    uncovered:
+    - missing-pair behaviour (UPDATE matches zero rows → 200 OK empty body)
+    - missing-data-entity behaviour (no pre-check → 200 OK empty body)
+    - type-mismatch validation (no test asserts writing "not a number" to INTEGER field is accepted)
+    - EXTERNAL-origin overwrite (no test asserts the silent overwrite)
+    - active=NULL regression (no test asserts the post-edit active flag value)
+    - missing-metadata-field 404 propagation
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - HTTP-level smoke test through WebTestClient — full PUT / response shape
+    - DISABLED-mode reachability — anonymous traffic accepted
+    - Authorization regression — caller WITHOUT DATA_ENTITY_CUSTOM_METADATA_UPDATE receives 403
+    - dataEntity:owner Policy scope — only entity-owner can edit
+    - Activity-event negative assertion — no CUSTOM_METADATA_UPDATED row in activity
+    - FTS-vector refresh — updated value matchable by search
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Very large value (>1 MiB) — characterise WebFlux request-size limit interaction
+    - Concurrent PUTs against the same (entity, field) — lost-update vs last-writer-wins
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - EXTERNAL-origin overwrite (anonymous + authorised both untested)
+    - Audit-trail absence — no activity row even after authorised write
+    - DISABLED-mode anonymous metadata writes
+    - Permission-scoped Policy — `is: dataEntity:owner` only grants on owned entities
+control_summary: |-
+  1 of 4 cells PARTIAL (unit happy-path mocked test only) + 3 GAP.
+  Feature emerges from batch-L primary-source audit of the controller method
+  + the service composition + the repository UPDATE + the OpenAPI schema +
+  the DB migration. Eleven substantive drift facets cluster around three
+  load-bearing themes: (1) silent UPDATE-not-UPSERT semantics — the impl
+  is pure UPDATE with no `switchIfEmpty(NotFoundException)` and no
+  entity-existence pre-check; the missing-pair and missing-entity cases
+  both return 200-with-empty-body while the UI displays a success toast
+  (SAME shape as F-004 upsertDescription); (2) zero validation — no type
+  validation against MetadataTypeEnum, no origin restriction (EXTERNAL
+  fields are writable), no length cap, the `origin` body field is silently
+  dropped, the `active` column is silently dropped to NULL on every UPDATE;
+  (3) forensic silence — no @ActivityLog despite ActivityEventTypeDto
+  reserving CUSTOM_METADATA_CREATED/UPDATED/DELETED enum values. The
+  highest-leverage probe candidates are: (a) silent overwrite of
+  collector-ingested metadata — ingest entity X with metadata field
+  `cost_centre=ACME` via collector + as authorized user PUT
+  cost_centre=FOO + assert the UI shows FOO until the next ingestion +
+  assert NO activity event records the overwrite (pins both the
+  EXTERNAL-writable and forensic-silence facets); (b) active=NULL
+  regression — INSERT a metadata_field_value row with active=TRUE +
+  PUT a new value + read back the row + assert active is NOW NULL (pins
+  the active-drop bug); (c) silent-200 missing-entity — PUT against a
+  non-existent dataEntityId + assert 200 empty body (the headline
+  UPDATE-not-UPSERT bug). Local docker-compose probe stack: ODD platform
+  + Postgres + a seeded INTERNAL field + a seeded EXTERNAL field + a
+  collector-mock pushing metadata to keep the EXTERNAL field alive.
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+- Custom Metadata Field
+- Metadata Field Origin (INTERNAL vs EXTERNAL)
+- Activity Feed
+- Permission (Authorization)
+related_retrospectives:
+- LSN-017
+related_probes: null
+probe_verifications: []
+maintainer_curated: false
+merge_candidate_with: null

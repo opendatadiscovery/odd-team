@@ -1,0 +1,483 @@
+feature_id: F-014
+pillar_id: P-07
+pillar_anchored_id: P-07:F-003
+pillar_anchored_feature_name: Per-Entity Alert View
+feature_name: Per-entity alert read — cross-owner alert enumeration via /api/dataentities/{id}/alerts
+primary_drift_class: cross_owner_per_entity_alert_read
+drift_class_summary:
+- cross_owner_per_entity_alert_read
+- soft_delete_inclusive_existence_check
+- no_alert_status_filter_asymmetric_with_sibling_counts
+- unbounded_pagination_size_at_every_layer
+- read_write_security_rule_asymmetry
+- disabled_mode_bypass
+- workaround_doc_silent_on_pagination_and_scoping
+- cross_channel_leak_soft_deleted_entity_alerts
+- audit_export_use_case_uncovered_by_tests
+discovered_from_entry_point: rest:GET /api/dataentities/{id}/alerts
+contributing_nodes:
+- odd-platform java DataEntityController controller-method:getDataEntityAlerts
+- odd-platform java service service:AlertServiceImpl
+- odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
+- odd-platform java ReactiveDataEntityRepositoryImpl
+- odd-platform java SecurityConstants
+- odd-platform java AuthorizationCustomizer
+cross_pillar_relationships:
+- pillar: P-01
+  kind: shares_data_with
+  via: |-
+    The endpoint is mounted under the data-entity URL namespace
+    (/api/dataentities/{data_entity_id}/alerts) and backs the per-entity
+    Alerts tab on the Data Entity detail page (a P-01 surface). The
+    soft-delete-inclusive existence check at AlertServiceImpl.java:327-335
+    permits alert reads for entities hidden from the Data Discovery
+    catalog — a P-01 → P-07 cross-pillar leak surface.
+description: |-
+  The platform exposes a per-entity alert read endpoint at
+  `GET /api/dataentities/{data_entity_id}/alerts` — a one-line WebFlux
+  delegation (DataEntityController.java:315-321) that returns the full
+  alert history for the named entity (open + resolved + auto-resolved +
+  chunks + status history) as a paginated AlertList payload. The endpoint
+  backs the per-entity Alerts tab on the UI's data-entity detail page AND
+  is the doc-recommended **audit-export workaround** for the housekeeping
+  bug that hard-deletes manually-resolved alerts. The live alerting page
+  (WebFetched 2026-05-19 status 200, anchor #auto-cleanup-of-resolved-alerts)
+  names this endpoint verbatim: `GET /api/dataentities/{data_entity_id}/alerts
+  returns the open and recently-resolved set including chunks and status
+  history. Persist the response somewhere durable... if the audit trail
+  matters for compliance or postmortems.`
+
+  The user-observable promise (per the live page): operators with access
+  to the data-entity can export the alert audit data before manually
+  resolving alerts as a workaround for the auto-cleanup bug.
+
+  The user-observable reality, per batch-L primary-source code-walk of
+  the controller + service + repository + SecurityConstants:
+
+  (1) **Cross-owner per-entity alert read — REFACTOR-024 family
+  extension** — the endpoint has NO @PreAuthorize, NO entry in
+  `SecurityConstants.SECURITY_RULES` for the GET path
+  (`SecurityConstants.java:98-355` contains only mutations), and the
+  downstream SQL at `ReactiveAlertRepositoryImpl.java:182-199` is
+  `WHERE DATA_ENTITY.ID = :id` with NO `OWNERSHIP` join and NO
+  principal-derived predicate. Any authenticated caller can read every
+  alert ever raised on every catalogued entity by enumerating
+  data_entity_id. The contrast with the SIBLING listByOwner query at
+  `ReactiveAlertRepositoryImpl.java:160-178` (which DOES `.join(OWNERSHIP)`)
+  is structural — the asymmetry encodes an implicit ADR that
+  per-entity reads are unscoped because the caller has already chosen the
+  entity. This is the per-entity-surface extension of the REFACTOR-024
+  cross-owner enumeration pattern (which covers the batch endpoint
+  `getAllAlerts`).
+
+  (2) **Soft-delete-inclusive existence check** — `AlertServiceImpl.java:327-335`
+  gates the read on `dataEntityRepository.existsIncludingSoftDeleted(dataEntityId)`,
+  whose body at `ReactiveDataEntityRepositoryImpl.java:150-155` issues
+  `selectExists` over DATA_ENTITY with NO soft-delete filter. The sibling
+  `existsNonDeletedByDataSourceId` at lines 158-160 DOES apply
+  `addSoftDeleteFilter(...)` — the naming pair encodes the intent:
+  "soft-deleted entities remain readable for audit / housekeeping use
+  cases". Net effect: a caller passing a soft-deleted dataEntityId
+  receives 200 OK with the entity's pre-deletion alert history; a
+  fully-purged ID receives 404.
+
+  (3) **No alert-status filter — sibling counts endpoint accepts one** —
+  `getDataEntityAlertsCounts` (DataEntityController.java:324-330) accepts
+  an `AlertStatus status` query param and filters by status
+  (ReactiveAlertRepositoryImpl.java:202-215). `getDataEntityAlerts`
+  does NOT — it always returns ALL statuses (OPEN /
+  RESOLVED / RESOLVED_AUTOMATICALLY). A caller wanting only OPEN
+  alerts must paginate the full set and filter client-side. No
+  inline comment defends the asymmetry as intentional.
+
+  (4) **Unbounded pagination size at every layer** — the controller
+  does not validate `page` or `size`; the OpenAPI PageParam / SizeParam
+  at `components.yaml:4213-4229` carry no `minimum:` or `maximum:`;
+  the repository computes `OFFSET = (page - 1) * size`
+  (`ReactiveAlertRepositoryImpl.java:189`) with no clamping. A caller
+  passing `size=1_000_000` triggers a single jOOQ query bounded only
+  by Postgres / network buffers; `page=0` produces a negative OFFSET.
+
+  (5) **Read/write SecurityRule asymmetry** — the mutation endpoint on
+  the same entity-scoped namespace (`PUT /api/dataentities/{data_entity_id}/alert_config`)
+  IS registered in SecurityConstants.SECURITY_RULES (line 304-307) and
+  pairs the `DATA_ENTITY` resource type with the
+  `DATA_ENTITY_ALERT_CONFIG_UPDATE` permission. The read endpoint
+  `GET /api/dataentities/{data_entity_id}/alerts` is absent from the
+  rule list. No comment, annotation, or surrounding code defends the
+  read/write asymmetry as intentional — the absence of permission
+  gates on GET endpoints is a class-wide convention but the convention
+  itself has no inline justification.
+facets_summary: |-
+  9 substantive drifts: cross-owner per-entity alert read (REFACTOR-024
+  family extension to per-entity surface) + soft-delete-inclusive
+  existence check (cross-channel leak surface) + no alert-status filter
+  asymmetric with sibling counts endpoint + unbounded pagination size at
+  every layer + read/write SecurityRule asymmetry (DESCRIBE-but-don't-CONSTRAIN)
+  + DISABLED-mode bypass + workaround doc silent on pagination + audit-export
+  use case has zero test coverage.
+chain:
+- hop: 1
+  node: odd-platform java DataEntityController controller-method:getDataEntityAlerts
+  sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataEntityController.java:315-321 — one-line reactive proxy. GET
+    /api/dataentities/{data_entity_id}/alerts. NO @PreAuthorize. NO
+    entry in SecurityConstants.SECURITY_RULES for the GET path; falls
+    through to AuthorizationCustomizer's catch-all
+    `pathMatchers("/**").authenticated()` at lines 29-30.
+  unresolved: false
+- hop: 2
+  node: odd-platform java service service:AlertServiceImpl
+  sidecar: '(referenced from batch-I primary-source confirmation)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    AlertServiceImpl.getDataEntityAlerts (lines 138-143) — single
+    flatMap chain: `checkDataEntityExistence(dataEntityId).then(
+    alertRepository.getAlertsByDataEntityId(dataEntityId, page, size))`
+    + map via AlertMapper.mapAlerts. The existence check at lines 327-335
+    calls `existsIncludingSoftDeleted` (deliberate choice — see hop 4).
+    No principal pass-through. No owner-scoping at this layer.
+  unresolved: false
+- hop: 3
+  node: odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
+  sidecar: '(referenced from batch-H primary-source confirmation)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveAlertRepositoryImpl.getAlertsByDataEntityId (lines 182-199)
+    — `SELECT ALERT.* FROM ALERT JOIN DATA_ENTITY ON DATA_ENTITY.ODDRN =
+    ALERT.DATA_ENTITY_ODDRN WHERE DATA_ENTITY.ID = :id` paginated via
+    pageifyResult. NO OWNERSHIP join (contrast listByOwner at lines
+    160-178 which DOES join OWNERSHIP). NO DATA_ENTITY.STATUS != DELETED
+    filter (contrast listByOwner at line 167 which DOES). NO principal-derived
+    predicate. The two structural differences across the repository — no
+    OWNERSHIP join, no soft-delete filter — encode the per-entity-reads-are-unscoped
+    and soft-delete-inclusive postures.
+  unresolved: false
+- hop: 4
+  node: odd-platform java ReactiveDataEntityRepositoryImpl
+  sidecar: '(referenced from batch-H primary-source confirmation)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveDataEntityRepositoryImpl.existsIncludingSoftDeleted (lines
+    150-155) — `selectExists` over DATA_ENTITY with NO soft-delete
+    predicate. Sibling existsNonDeletedByDataSourceId at lines 158-160
+    DOES apply `addSoftDeleteFilter(...)` — the naming pair encodes the
+    intent: "soft-deleted entities remain readable for audit /
+    housekeeping use cases".
+  unresolved: false
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    200 OK with AlertList payload (alert id, status, lastReason,
+    severity, dataEntity ref, status_updated_by owner identity,
+    alert_chunk_list with descriptions including AlertManager-derived
+    raw generator-URL text) for a caller-chosen data_entity_id.
+  evidence: |-
+    DataEntityController.java:315-321 + AlertServiceImpl.java:138-143 +
+    ReactiveAlertRepositoryImpl.java:182-199.
+  cardinality_per_call: |-
+    1 to `size` rows per request, bounded only by caller-supplied size
+    (no minimum / maximum / clamping at any layer).
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+  - facet: cross-owner per-entity alert read — REFACTOR-024 family extension
+    observed: |-
+      The endpoint has NO permission gate at the controller, NO entry in
+      SecurityConstants.SECURITY_RULES for the GET path, and NO OWNERSHIP
+      join at the repository (ReactiveAlertRepositoryImpl.java:182-199).
+      Falls through to AuthorizationCustomizer's catch-all
+      `pathMatchers("/**").authenticated()` at lines 29-30 — any
+      authenticated caller passes. An attacker who enumerates
+      data_entity_id values via any other read endpoint (search,
+      getDataEntityDetails) can read every alert ever raised on every
+      catalogued entity, including alert chunks (raw description text
+      propagated from ingestion / AlertManager webhooks per F-007). The
+      live alerting doc (WebFetched 2026-05-19 status 200) names this
+      endpoint as the audit-export workaround but does NOT specify
+      owner-scoping; the page is silent on whether the cross-owner posture
+      is intentional. Pairs with REFACTOR-024 (catalog-wide cross-owner
+      enumeration on getAllAlerts).
+    expected: |-
+      Either: (a) add owner-scoping at the read path (OWNERSHIP join +
+      principal-derived predicate, matching listByOwner) and update the
+      page to recommend the My Objects tab for personal audit exports;
+      OR (b) document the cross-owner read posture explicitly on the
+      alerting page so operators understand the access model when wiring
+      the audit-export workaround.
+    drift_class: cross_owner_per_entity_alert_read
+    provenance: |-
+      STATIC — primary-source in batch L getDataEntityAlerts sidecar
+      bugs_limitations_corner_cases[0] + security.known_security_gaps[0]
+      + DataEntityController.java:315-321 + AlertServiceImpl.java:138-143
+      + ReactiveAlertRepositoryImpl.java:182-199 (no OWNERSHIP join) +
+      :160-178 (listByOwner DOES join) + SecurityConstants.java:98-355
+      (no rule for the path) + AuthorizationCustomizer.java:29-30
+      (catch-all `.authenticated()`) + WebFetch alerting page 2026-05-19.
+      Severity: HIGH.
+  - facet: soft-delete-inclusive existence check — cross-channel leak surface
+    observed: |-
+      AlertServiceImpl.getDataEntityAlerts (line 140) gates on
+      `existsIncludingSoftDeleted` (AlertServiceImpl.java:327-335 →
+      ReactiveDataEntityRepositoryImpl.java:150-155). The sibling
+      listByOwner query DOES filter `DATA_ENTITY.STATUS != DELETED`
+      (ReactiveAlertRepositoryImpl.java:166-167) but this per-entity path
+      does not. Behaviour is deliberate (the helper name encodes intent
+      — see implicit_adrs[1] in sidecar) and matches the audit-export
+      workaround use case. The side-effect: a caller passing a
+      soft-deleted dataEntityId receives 200 OK with the entity's
+      pre-deletion alert history; the entity itself is hidden from the
+      catalog UI's list endpoints. Cross-channel leak — visible via
+      alerts API + invisible in catalog list API. An attacker with prior
+      knowledge of a soft-deleted entity's ID (leaked audit log, prior
+      credentials, monotonically-increasing ID enumeration) can read
+      the alert history that the operators thought was hidden by the
+      soft-delete.
+    expected: |-
+      Either: (a) document the soft-delete-inclusive read posture
+      explicitly on the alerting page (operators expect "hidden in catalog
+      = hidden everywhere"), OR (b) filter the read by
+      `DATA_ENTITY.STATUS != DELETED` to make the soft-delete actually
+      hide the entity end-to-end.
+    drift_class: soft_delete_inclusive_existence_check
+    provenance: |-
+      STATIC — primary-source in batch L sidecar implicit_adrs[1] +
+      bugs_limitations_corner_cases[1] + AlertServiceImpl.java:327-335
+      + ReactiveDataEntityRepositoryImpl.java:150-155 +
+      ReactiveAlertRepositoryImpl.java:166-167 (the sibling that DOES
+      filter). Severity: LOW.
+  - facet: no alert-status filter — asymmetric with sibling counts endpoint
+    observed: |-
+      getDataEntityAlertsCounts (DataEntityController.java:324-330)
+      accepts an `AlertStatus status` query param and filters by status
+      at ReactiveAlertRepositoryImpl.java:202-215. getDataEntityAlerts
+      (lines 315-321) does NOT — it returns ALL statuses (OPEN /
+      RESOLVED / RESOLVED_AUTOMATICALLY). A caller wanting only OPEN
+      alerts must paginate the full set and filter client-side, or hit
+      the counts endpoint for an unfiltered total mismatch. No comment
+      or annotation defends the asymmetry.
+    expected: |-
+      Either: (a) add the `status` query param to the listing endpoint
+      to match the counts endpoint shape, OR (b) document the asymmetry
+      and recommend the workaround.
+    drift_class: no_alert_status_filter_asymmetric_with_sibling_counts
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[3] +
+      DataEntityController.java:315-321 vs :324-330 +
+      ReactiveAlertRepositoryImpl.java:182-199 (no status filter) vs
+      :202-215 (DOES filter). Severity: LOW.
+  - facet: unbounded pagination size at every layer
+    observed: |-
+      The controller does not validate `page` or `size`
+      (DataEntityController.java:317-318 — Integer page, Integer size
+      without validation annotations); the OpenAPI PageParam / SizeParam
+      at components.yaml:4213-4229 carry no `minimum:` or `maximum:`;
+      the repository computes `OFFSET = (page - 1) * size`
+      (ReactiveAlertRepositoryImpl.java:189) with no clamping. A caller
+      passing `size=1_000_000` triggers a single jOOQ query bounded only
+      by Postgres / network buffers; `page=0` produces a negative OFFSET
+      and downstream behaviour is implementation-defined. The
+      audit-export workaround amplifies the risk — operators following
+      the doc page may default to large pages to complete an export
+      with fewer round-trips.
+    expected: |-
+      Add `maximum: 1000` (or platform-appropriate bound) to SizeParam in
+      components.yaml; add `minimum: 1` to PageParam; clamp at the
+      controller boundary with explicit @Min/@Max annotations.
+    drift_class: unbounded_pagination_size_at_every_layer
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[2] +
+      DataEntityController.java:317-318 + openapi.yaml:1326-1329 +
+      components.yaml:4213-4229 + ReactiveAlertRepositoryImpl.java:189.
+      Severity: MEDIUM.
+  - facet: read/write SecurityRule asymmetry on entity-scoped namespace
+    observed: |-
+      The mutation endpoint on the same entity-scoped namespace —
+      PUT /api/dataentities/{data_entity_id}/alert_config — IS
+      registered in SecurityConstants.SECURITY_RULES at
+      SecurityConstants.java:304-307 and pairs the `DATA_ENTITY` resource
+      type with the `DATA_ENTITY_ALERT_CONFIG_UPDATE` permission. The
+      read endpoint GET /api/dataentities/{data_entity_id}/alerts is
+      ABSENT from the rule list. No comment, annotation, or surrounding
+      code defends the read/write asymmetry as intentional — the
+      absence of permission gates on GET endpoints is a class-wide
+      convention (per implicit_adrs[0] in sidecar) but the convention
+      itself has no inline justification.
+    expected: |-
+      Either: (a) add a read-side SecurityRule binding a new
+      DATA_ENTITY_ALERTS_READ permission to the path, OR (b) explicitly
+      document the convention "GETs are not Permission-gated; reads are
+      authenticated-only with intentional per-endpoint scoping at the
+      repository layer".
+    drift_class: read_write_security_rule_asymmetry
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      security.known_security_gaps[1] + implicit_adrs[0] +
+      SecurityConstants.java:98-355 (all entries are mutations) +
+      SecurityConstants.java:304-307 (alert_config PUT IS gated).
+      Severity: MEDIUM.
+  - facet: DISABLED-mode anonymous read of all alerts
+    observed: |-
+      Under auth.type=DISABLED, the missing SecurityRule entry combined
+      with `.anyExchange().permitAll()` means any unauthenticated client
+      on the network can read every alert ever raised on every
+      catalogued entity by enumerating data_entity_id. DISABLED is
+      documented as a dev-only mode, but operators who misuse it expose
+      the full alert audit trail across the platform — including
+      AlertManager-pushed alerts (per F-007 cross-tenant alert creation)
+      with raw generator-URL text.
+    expected: |-
+      DISABLED documented as truly dev-only; the pattern repeats across
+      batches A/B/C/E/F/G/K.
+    drift_class: disabled_mode_bypass
+    provenance: |-
+      STATIC — cross-ref batches A/B/C/E/F/G/K DISABLED-bypass pattern +
+      SecurityConstants.java:98-355 (no rule for the path) +
+      DataEntityController.java:315-321. Severity: MEDIUM on
+      network-reachable DISABLED; LOW if honestly dev-only.
+  - facet: workaround doc silent on pagination + cross-owner scoping
+    observed: |-
+      The live alerting page (WebFetched 2026-05-19 status 200) names
+      `GET /api/dataentities/{data_entity_id}/alerts` as the audit-export
+      workaround for the housekeeping-cleanup bug. The page does NOT
+      mention: (a) the pagination shape (page / size params required,
+      with no recommended page size — operators may default to small
+      pages and silently truncate exports, OR default to large pages and
+      degrade server response time), (b) the cross-owner read posture
+      (operators following the workaround for THEIR OWN entity's alerts
+      think the endpoint is owner-scoped — it is not), (c) the
+      soft-delete-inclusive behaviour (operators may not realise the
+      endpoint returns audit data for entities the catalog UI hides).
+    expected: |-
+      Augment the alerting page's #auto-cleanup-of-resolved-alerts
+      section with a "Workaround completeness notes" subsection covering
+      pagination, cross-owner posture, and soft-delete behaviour.
+    drift_class: workaround_doc_silent_on_pagination_and_scoping
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      docs_link_semantic.doc_drift_findings[0] +
+      docs_link_semantic.doc_drift_findings[1] + WebFetch alerting page
+      2026-05-19. Severity: MEDIUM (operationally — operators following
+      the doc literally may silently truncate exports).
+  - facet: cross-channel leak — soft-deleted entity alerts reachable while entity hidden
+    observed: |-
+      Soft-deleted data entities' alert history is reachable through
+      this endpoint while being hidden from the catalog list endpoints.
+      The cross-channel asymmetry (visible via alerts API + invisible in
+      catalog list API) is consistent with the platform's audit-export
+      use case but creates a discovery surface: an attacker who has prior
+      knowledge of a soft-deleted entity's ID (leaked audit log, prior
+      credentials, monotonically-increasing ID enumeration) can read the
+      alert history that the operators thought was hidden by the
+      soft-delete.
+    expected: |-
+      Either: (a) filter the read by status != DELETED to make the
+      soft-delete actually hide the entity end-to-end, OR (b) document
+      the cross-channel behaviour explicitly.
+    drift_class: cross_channel_leak_soft_deleted_entity_alerts
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      security.known_security_gaps[2] + AlertServiceImpl.java:327-335 +
+      ReactiveDataEntityRepositoryImpl.java:150-155 + WebFetch alerting
+      page 2026-05-19 (silent on soft-delete behaviour). Severity: LOW.
+  - facet: audit-export use case has zero test coverage
+    observed: |-
+      `find <odd-platform> -path '*test*' -name 'DataEntityController*'`
+      and `... -name 'AlertServiceImpl*'` both returned ZERO matches.
+      No `@WebFluxTest(DataEntityController.class)` or `WebTestClient`
+      test asserts `GET /api/dataentities/1/alerts?page=1&size=10` returns
+      200 OK with a deserialisable AlertList. The cross-owner posture, the
+      soft-delete-inclusive existence check, and the audit-export
+      use case are all uncovered. A regression in OpenAPI routing
+      generation, WebFlux configuration, Jackson serialisation, the
+      existence-check helper, or the jOOQ repository would silently
+      break this endpoint with the build still green.
+    expected: |-
+      Add a WebTestClient regression covering: (a) HTTP-level 200 with
+      AlertList shape, (b) 404 on non-existent dataEntityId, (c)
+      cross-owner read posture pin (regression test asserting current
+      cross-owner behaviour is intentional — so a future tightening
+      breaks the build), (d) soft-deleted entity read posture pin, (e)
+      pagination boundary tests (page=0, size=0, size=Integer.MAX_VALUE).
+    drift_class: audit_export_use_case_uncovered_by_tests
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      tests_coverage_semantic.uncovered_behaviours + file-system search
+      2026-05-19. Severity: MEDIUM.
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - getDataEntityAlerts pipeline composition in isolation
+    - existsIncludingSoftDeleted vs existsNonDeletedByDataSourceId asymmetry pin
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - HTTP-level smoke test through WebTestClient — full GET / response shape
+    - Cross-owner read regression — authenticated caller reads alerts on entity they don't own
+    - Soft-deleted data-entity read — endpoint returns alerts for entities hidden from catalog list
+    - Pagination boundary — page=0 (negative OFFSET) / size=0 / size=Integer.MAX_VALUE
+    - Not-found behaviour — non-existent dataEntityId returns 404 with NotFoundException shape
+    - DISABLED-mode anonymous read
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Large page size (size=1_000_000) — characterise jOOQ + Postgres + WebFlux response-body behaviour
+    - Deep pagination cost — OFFSET = (page - 1) * size growth with deep pages
+    - Per-tab-activation hot path — entity detail navigation fires this alongside getDataEntityAlertsCounts
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - Cross-owner enumeration via data_entity_id iteration (no OWNERSHIP join)
+    - Soft-deleted entity alert exposure (cross-channel leak)
+    - DISABLED-mode anonymous read of all alerts (including AlertManager-pushed payload chunks)
+    - Read/write SecurityRule asymmetry — alert_config PUT is gated, alerts GET is not
+control_summary: |-
+  0 of 4 cells COVERED. Feature emerges from batch-L primary-source audit
+  of the controller method + the service flatMap chain + the repository
+  query shape + the SecurityConstants rule list + the AuthorizationCustomizer
+  catch-all + the live alerting page workaround text. Nine substantive
+  drift facets cluster around three load-bearing themes: (1) cross-owner
+  per-entity alert read — the REFACTOR-024 catalog-wide enumeration
+  pattern extended to a per-entity surface, with the audit-export
+  workaround as the doc-named primary use case but no doc clarity on
+  the access model; (2) soft-delete-inclusive existence check creates
+  a cross-channel leak — alerts visible while the entity is hidden from
+  the catalog UI; (3) read/write SecurityRule asymmetry — alert_config
+  PUT is rule-gated while alerts GET is not, with no inline defence of
+  the convention. The highest-leverage probe candidates are: (a)
+  cross-owner enumeration — configure two unrelated Owners + create
+  alerts on entity X owned by user B + as user A (with no permission
+  on X) issue GET /api/dataentities/{X-id}/alerts + assert 200 with the
+  full alert history (pins the cross-owner posture); (b) soft-deleted
+  entity read — flip data_entity.status to DELETED for entity X with
+  prior alerts + GET /api/dataentities/{X-id}/alerts + assert 200 with
+  the alerts (pins the cross-channel leak); (c) unbounded pagination —
+  POST size=1_000_000 + assert server response size / latency under load
+  (pins the unbounded-size facet). Local docker-compose probe stack:
+  ODD platform + Postgres + two seeded Owners + alerts on entities each
+  owns + a soft-deleted entity with prior alerts.
+related_refactoring_scopes:
+- REFACTOR-024
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+- Alert
+- AlertList
+- Cross-Owner Enumeration
+- Soft-Delete (Data Entity STATUS)
+- Per-Entity Alert View
+related_retrospectives:
+- LSN-017
+related_probes: null
+probe_verifications: []
+maintainer_curated: false
+merge_candidate_with: null

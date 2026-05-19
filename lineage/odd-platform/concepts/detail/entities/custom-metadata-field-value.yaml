@@ -1,0 +1,203 @@
+name: Custom Metadata Field + Value
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-10
+description: |-
+  **NEW ENTITY, batch 2026-05-19L** — the per-(data-entity, metadata_field)
+  custom-metadata pair. Two tables form the entity:
+
+    - `metadata_field` (`V0_0_1__init.sql:166-173`): the GLOBAL
+      field-name + type registry (no tenant / project / owner scoping).
+      Columns: `id, name, type, origin, is_deleted`.
+      - `type` ∈ `MetadataTypeEnum` (INTEGER / FLOAT / BOOLEAN /
+        DATETIME / ARRAY / JSON / STRING / UNKNOWN per
+        `MetadataTypeEnum.java:3-12`)
+      - `origin` ∈ `MetadataFieldOrigin` (INTERNAL — operator-curated
+        via UI; EXTERNAL — collector-ingested during ingestion)
+      - `is_deleted` — soft-delete flag
+
+    - `metadata_field_value` (`V0_0_1__init.sql:175-186`): the per-entity
+      value. Columns: `data_entity_id, metadata_field_id, value (text),
+      active (boolean DEFAULT TRUE)`, composite PK
+      `(data_entity_id, metadata_field_id)`.
+
+  **Architectural-key intent**: the field-definition is GLOBAL — a
+  metadata field name `cost_centre` typed STRING is a SHARED definition
+  across every data entity. The `MetadataKey(name, type)` record at
+  `MetadataKey.java:6-15` acts as the natural key — two teams creating
+  the same `(name, type)` pair collapse to ONE field row. There is no
+  platform-side mechanism to namespace metadata fields per team /
+  project / owner.
+
+  **Write surfaces**:
+    - POST /api/dataentities/{data_entity_id}/metadata
+      (`createDataEntityMetadataFieldValue` — bulk-add; uses
+      `getOrCreateMetadataFields` to auto-create field rows)
+    - PUT /api/dataentities/{data_entity_id}/metadata/{metadata_field_id}
+      (`upsertDataEntityMetadataFieldValue` — the per-row updater that
+      is misleadingly named "upsert" — the underlying mechanism is
+      UPDATE-only with silent no-op on missing pair, per the NEW
+      silent-200-on-missing-pair invariant)
+    - DELETE /api/dataentities/{data_entity_id}/metadata/{metadata_field_id}
+      (`deleteDataEntityMetadataFieldValue`)
+    - Ingestion: collectors emit `metadata_field` rows + per-entity
+      values via `MetadataFieldServiceImpl.ingestMetadataFields` (lines
+      62-71) with `origin=EXTERNAL`.
+
+  **Side-effects on write**: FTS vector refresh
+  (`reactiveSearchEntrypointRepository.updateMetadataVectors` —
+  metadata values are tokenised into the entity's
+  `search_entrypoint.metadata_vector` per `V0_0_1__init.sql:193`); the
+  filled-flag toggle (`data_entity_filled.INTERNAL_METADATA`); for
+  the upsert path: NO `@ActivityLog` (the `CUSTOM_METADATA_UPDATED`
+  enum is reserved but never fired — same forensic-silence pattern as
+  DEG membership writes).
+
+  **Three substantive write-path defects** (batch L PRIMARY SOURCE on
+  upsertDataEntityMetadataFieldValue):
+    1. **Silent 200-on-missing-pair / missing-entity** — the upsert path
+       returns 200 OK with empty body for non-existent
+       (dataEntityId, metadataFieldId) pairs. UI thunks claim success
+       on writes that did not happen.
+    2. **NO type validation against `metadata_field.type`** — the
+       `value` is `text` regardless of declared type; a STRING-typed
+       field accepts `"42"` but an INTEGER-typed field accepts
+       `"not a number"`. Downstream readers must defend against
+       arbitrary text content regardless of the type column.
+    3. **EXTERNAL-origin overwrite is silent** — `upsertMetadataFieldValue`
+       does not check `MetadataFieldPojo.getOrigin()`; a user with
+       `DATA_ENTITY_CUSTOM_METADATA_UPDATE` (commonly granted via
+       `dataEntity:owner` scope) can overwrite collector-ingested
+       values until the next ingestion run replaces them. Pairs with
+       the no-audit gap.
+
+  **Plus a fourth — the active=NULL regression**: every upsert silently
+  flips the `metadata_field_value.active` column from TRUE (the
+  INSERT default) to NULL because the pojo construction at the
+  service layer omits `setActive(...)` and the repository's UPDATE
+  statement writes every column including the NULL-default.
+nodes:
+  - odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue.md
+contributors:
+  - |-
+    upsertDataEntityMetadataFieldValue batch L (PRIMARY SOURCE):
+    concepts.entities (MetadataFieldValue + MetadataFieldValueUpdateFormData
+    + MetadataFieldPojo + MetadataFieldValuePojo + MetadataDto;
+    `value` is text unbounded; `active` is boolean DEFAULT TRUE;
+    composite PK (data_entity_id, metadata_field_id)) +
+    concepts.invariants.[1-7] (UPDATE-not-UPSERT; missing-pair silent
+    200; type validation absent; origin check absent; active=NULL
+    regression; FTS vector refresh; @ReactiveTransactional) +
+    implicit_adrs.[0,1] (metadata-field metadata is GLOBAL across the
+    platform; custom-metadata write gated by THREE distinct permissions
+    — CREATE / UPDATE / DELETE; auto-create vs update vs delete are
+    independent capabilities)
+evidence:
+  - upsertDataEntityMetadataFieldValue.md:concepts.entities
+  - upsertDataEntityMetadataFieldValue.md:concepts.invariants.[1-7]
+  - upsertDataEntityMetadataFieldValue.md:implicit_adrs.[0,1]
+  - upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[0-5]
+axes_present:
+  - controllers
+  - openapi_paths
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      SecurityRule(DATA_ENTITY,
+      `/api/dataentities/{data_entity_id}/metadata/{metadata_field_id}`,
+      PUT, DATA_ENTITY_CUSTOM_METADATA_UPDATE) at
+      SecurityConstants.java:204-207. Path matches OpenAPI exactly;
+      permission is DATA_ENTITY-scoped against the entity.
+      `dataEntity:owner` scope supports owners-only edit.
+  owner_scoping:
+    verdict: RESPECTS
+    detail: |-
+      Permission resource-scoped on dataEntityId via
+      DataEntityPermissionExtractor. The
+      `is: dataEntity:owner` Policy scope grants owners edit.
+  weaknesses:
+    - |-
+      MEDIUM: silent 200-on-missing-pair AND missing-entity — UI
+      claims success on writes that didn't land
+    - |-
+      MEDIUM: no type validation against declared MetadataTypeEnum —
+      arbitrary text in any typed column
+    - |-
+      MEDIUM: EXTERNAL-origin fields silently overrideable — no origin
+      check, no audit; data-quality risk for source-system-ingested
+      catalog metadata
+    - |-
+      MEDIUM: `active` column dropped to NULL on every UPDATE — silent
+      state-corruption (the pojo's getActive() is NULL because never set)
+    - |-
+      MEDIUM: missing @ActivityLog — CUSTOM_METADATA_UPDATED enum is
+      reserved-but-never-fired; no audit trail for metadata edits
+    - |-
+      LOW: spec-vs-code drift — the optional `origin` field on the
+      request body is silently dropped
+    - |-
+      HIGH (under DISABLED): anonymous traffic can write/overwrite
+      metadata values including collector-ingested EXTERNAL fields
+  strengths:
+    - |-
+      Three distinct permissions (CUSTOM_METADATA_CREATE / UPDATE /
+      DELETE) per PolicyPermissionDto.java:15-17 + three SECURITY_RULES
+      entries — administrators can grant edit rights independently of
+      description and name permissions
+    - |-
+      @ReactiveTransactional on the upsert + FTS-vector refresh
+      pipeline (DataEntityServiceImpl.java:288) — atomicity is
+      preserved
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      Per-row metadata UPDATE — `ReactiveMetadataFieldValueRepositoryImpl.update`
+      runs one UPDATE per call. Composite PK
+      (data_entity_id, metadata_field_id) provides O(log N) index lookup
+    - |-
+      FTS vector refresh — `updateMetadataVectors(dataEntityId)` runs a
+      tsvector rebuild for the entity's metadata column on every
+      successful update; cost grows with the number of metadata rows
+      for the entity
+notes: |-
+  NEW entity captured in batch 2026-05-19L. The custom-metadata feature
+  surface is operationally significant but operator-facing documentation
+  is ABSENT — no doc page describes the field-name + type +
+  origin model, the per-entity value semantics, the silent-200 contract,
+  the type-validation absence, or the EXTERNAL-overwrite hazard.
+
+  Cross-cutting connections:
+    - Related operations: upsert-data-entity-metadata-field-value (NEW
+      batch L)
+    - Related invariants:
+      - silent-200-on-missing-pair-or-entity-on-upsert-family (NEW)
+      - external-metadata-overwrite-silent-no-origin-check (NEW)
+      - active-column-null-regression-on-metadata-update (NEW)
+    - Cross-references "FTS Search Vector Data Entity" (existing
+      entity) — metadata-value writes refresh the entity's
+      metadata_vector
+    - Cross-references "Permission-bypass via Owner auto-create
+      (side-door write path)" — custom-metadata-create does NOT
+      auto-create the field (createMetadataFields uses
+      getOrCreateMetadataFields which IS auto-create); upsert is
+      UPDATE-only with no auto-create
+
+  Four DOC-NNN candidates:
+    (a) Create a custom-metadata operator-facing page describing the
+        field-name + type + origin model
+    (b) Document the silent-200 contract on the developer API reference
+    (c) Document the EXTERNAL-vs-INTERNAL distinction + the override
+        semantics
+    (d) Fix or document the active=NULL regression on the upsert path

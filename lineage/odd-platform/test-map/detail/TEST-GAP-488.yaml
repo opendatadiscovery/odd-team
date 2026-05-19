@@ -1,0 +1,36 @@
+gap_id: TEST-GAP-488
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "addDataEntityDataEntityGroup.md:bugs_limitations_corner_cases.[1] (Cross-owner DEG-membership permitted by design — the gate is on the CHILD, not the DEG)"
+  - "addDataEntityDataEntityGroup.md:security.known_security_gaps.[0] (No DEG-side authorization check — the gate is on the CHILD entity)"
+  - "addDataEntityDataEntityGroup.md:tests_coverage_semantic.uncovered_behaviours.[7] (Cross-tenant / cross-owner DEG-membership untested)"
+  - "addDataEntityDataEntityGroup.md:implicit_adrs.[1] (Per-data-entity authorization on DEG membership writes)"
+behaviour: |-
+  DEG write-collaborative regression-pin (CRITICAL — DATA_ENTITY_ADD_TO_GROUP holder writes into stranger's DEG). The SecurityRule at SecurityConstants.java:228-231 registers the path matcher on `/api/dataentities/{data_entity_id}/data_entity_group` POST with AuthorizationManagerType.DATA_ENTITY. URLResourceExtractor pulls `data_entity_id` (the CHILD) from the path; DataEntityPermissionExtractor evaluates the caller's DATA_ENTITY_ADD_TO_GROUP Policies against THAT child's resolver context. The TARGET DEG id (`data_entity_group_id`) lives in the REQUEST BODY and has NO authorization check at any layer of controller -> service -> repository. PolicyPermissionDto.java:22 confirms `DATA_ENTITY_ADD_TO_GROUP(DATA_ENTITY)` — the scope is DATA_ENTITY (per-child-entity), NOT DATA_ENTITY_GROUP. Net effect: a caller with DATA_ENTITY_ADD_TO_GROUP on entity X (typically granted via `is: dataEntity:owner` to every owner) can place X into ANY manually-created DEG in the catalog — including the Administrators-only 'Critical Systems' domain, Finance Domain, or any DEG curated by another team. The DEG owner has no veto. The cross-pillar P-01 implication: the Catalog Overview's Domain tiles can be polluted from the outside. The cross-pillar P-09 implication: the read-collaborative posture combines with the no-DEG-side-gate to produce a write-collaborative DEG surface — every DATA_ENTITY_ADD_TO_GROUP holder writes into any DEG. Operators cannot defend the DEG without revoking the permission from every owner. The Permissions doc text (live 2026-05-19, status 200) 'Allows adding a data entity to a manually created group' is silent on which side is gated. CRITICAL because (a) security boundary mismatch between operator mental model and enforcement, (b) no tests pin the design intent (a future refactor adding DEG-side checks would be unable to validate), (c) cross-pillar — combines P-01 Discovery surface (Domain pollution) with P-09 Authorization model (resource-boundary asymmetry). Test would be a WebFluxTest WITH @WithMockUser holding ONLY child-side Policy for entity X but NO DEG-side Policy on Domain Y; assert HTTP 200 (current contract), with a comment noting the brittle contract that should fail-loud as 403 when DEG-side gating lands.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/integration/DataEntityDEGMembershipAuthorizationTest.java"
+  name: "addDataEntityToDEG_callerWithoutDEGSideAuthorizationCanStillAddIntoStrangerDEG"
+evidence:
+  - |-
+    addDataEntityDataEntityGroup.md:bugs_limitations_corner_cases.[1]: 'Cross-owner DEG-membership permitted by design — the gate is on the CHILD, not the DEG. SecurityConstants.java:228-231 registers DATA_ENTITY_ADD_TO_GROUP against the path data_entity_id (the CHILD). The target data_entity_group_id is in the BODY and has NO authorization check.'
+  - "SecurityConstants.java:228-231 (rule on path, child-side)"
+  - "PolicyPermissionDto.java:22 (DATA_ENTITY_ADD_TO_GROUP(DATA_ENTITY) — scope is DATA_ENTITY, child-side)"
+  - "DataEntityServiceImpl.java:387-408 (no DEG-side authorization check in service)"
+  - "WebFetch 2026-05-19 of permissions doc (live page silent on which side is gated)"
+  - "Grep `addDataEntityToDEG|addDataEntityDataEntityGroup|assignEntityToDeg` against odd-platform-api/src/test returned ZERO matches"
+cross_references:
+  - "concepts.yaml:entities[read-collaborative-posture-cross-pillar-pattern]"
+  - "TEST-GAP-381 (related — addDataEntityToDEG rejection paths)"
+  - "TEST-GAP-265 (related — REFACTOR-199 Owner self-grant decoupling, same cross-pillar P-08+P-09 pattern)"
+  - "TEST-GAP-487 (related — OwnershipServiceImpl principal-independence, same pattern)"
+  - "DOC-NNN candidate: document the child-side scope of DATA_ENTITY_ADD_TO_GROUP in groups-domains.md and permissions doc"
+proposed_action: |-
+  Integration test (Testcontainers + WebTestClient). (a) Set up two Policies: PA grants DATA_ENTITY_ADD_TO_GROUP on entity X to user U; PB grants nothing to user U on DEG Y. (b) Pre-create DEG Y with manuallyCreated=true via DataEntityGroupServiceImpl as a different owner. (c) As user U, POST /api/dataentities/X/data_entity_group with body {data_entity_group_id: Y_id}. (d) Assert HTTP 200 with the parent DEG ref returned (current contract — write-collaborative). (e) Assert membership row exists in group_entity_relations with (Y.oddrn, X.oddrn). (f) Test comment: 'LOCKS the write-collaborative DEG surface as of 2026-05-19. When REFACTOR-NNN adds DEG-side gating, this test FLIPS to expect 403 and the doc updates.' Cross-pillar critical because it pins the operator-vs-enforcement asymmetry that crosses P-01 + P-09.
+batch: 2026-05-19-L
+feature_id: null

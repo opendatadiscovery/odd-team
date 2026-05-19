@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-498
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup"
+pillars_affected: [P-01]
+surfaced_by:
+  - "addDataEntityDataEntityGroup.md:bugs_limitations_corner_cases.[2] (Soft-deleted membership + re-add produces misleading 'already in this DEG' error)"
+  - "addDataEntityDataEntityGroup.md:tests_coverage_semantic.uncovered_behaviours.[5] (Soft-delete + re-add interaction)"
+  - "addDataEntityDataEntityGroup.md:concepts.invariants.[2] (DB-level duplicate prevention silently degraded by onDuplicateKeyIgnore)"
+behaviour: |-
+  Soft-deleted DEG membership re-add regression-pin (MEDIUM — UX defect with audit asymmetry). The group_entity_relations PK is (group_oddrn, data_entity_oddrn) (V0_0_21__add_data_entity_group_relation.sql:6), NOT including is_deleted (added later by V0_0_79__data_deprecation.sql:14-15). The soft-delete machinery (`softDeleteRelationsForDeletedDataEntities` at ReactiveGroupEntityRelationRepositoryImpl.java:92-101) flips is_deleted=true when the underlying data entity is deleted (e.g. via STATUS=DELETED cascade). The matching `restoreRelationsForDataEntities` (lines 104-112) is the only path to flip the bit back. After an entity is soft-deleted and later restored (status flips to a non-DELETED state), the GROUP membership row REMAINS soft-deleted; getManuallyCreatedRelations (filtered by is_deleted=false at lines 127-137) shows ZERO memberships for the entity. The user re-invokes POST /api/dataentities/{id}/data_entity_group to re-add membership, the INSERT collides with the PK, `onDuplicateKeyIgnore` returns an empty Flux, the service raises `BadUserRequestException("Data entity is already in this DEG")` at DataEntityServiceImpl.java:402 — but from the user's perspective the entity is NOT visibly in the DEG. The error message is MISLEADING. The fix candidates: (a) re-issue the soft-delete restore from inside addDataEntityToDEG when an existing soft-deleted row is detected, (b) include is_deleted in the PK or in a partial unique index, or (c) document the workaround. Cross-pillar P-01 (Discovery / DEG membership UX defect; operators following the entity-restore flow encounter this without diagnostic signal).
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/integration/DEGMembershipSoftDeleteReAddTest.java"
+  name: "addDataEntityToDEG_afterSoftDeleteOfEntity_failsWithMisleadingAlreadyInThisDEG"
+evidence:
+  - "addDataEntityDataEntityGroup.md:bugs_limitations_corner_cases.[2]: 'After an entity is soft-deleted and later restored (status flips back to a non-DELETED state), the GROUP membership row remains soft-deleted; getManuallyCreatedRelations (filtered by is_deleted=false at :127-137) shows zero memberships for the entity. The user re-invokes POST /api/dataentities/{id}/data_entity_group to re-add membership, the INSERT collides with the PK, onDuplicateKeyIgnore returns an empty Flux, the service raises BadUserRequestException(Data entity is already in this DEG) at :402 — but from the user's perspective the entity is NOT visibly in the DEG.'"
+  - "V0_0_21__add_data_entity_group_relation.sql:6 (PK without is_deleted)"
+  - "V0_0_79__data_deprecation.sql:14-15 (is_deleted column add)"
+  - "ReactiveGroupEntityRelationRepositoryImpl.java:79-89 (onDuplicateKeyIgnore on plain PK collision)"
+  - "ReactiveGroupEntityRelationRepositoryImpl.java:92-101 (softDeleteRelationsForDeletedDataEntities)"
+  - "ReactiveGroupEntityRelationRepositoryImpl.java:104-112 (restoreRelationsForDataEntities, NOT called from addDataEntityToDEG)"
+  - "ReactiveGroupEntityRelationRepositoryImpl.java:127-137 (getManuallyCreatedRelations filter on is_deleted=false)"
+  - "DataEntityServiceImpl.java:402 (the misleading BadUserRequestException)"
+cross_references:
+  - "TEST-GAP-381 (addDataEntityToDEG rejection paths — adjacent)"
+  - "REFACTOR-NNN candidate: include is_deleted in PK OR call restoreRelationsForDataEntities when detecting soft-deleted row"
+proposed_action: |-
+  Testcontainers integration test. (a) Create data entity X and DEG Y, link them via addDataEntityToDEG (status 200). (b) Soft-delete X by setting STATUS=DELETED — triggers the soft-delete cascade into group_entity_relations, flipping is_deleted=true. (c) Restore X by setting STATUS=STABLE. (d) Confirm `getManuallyCreatedRelations(X.oddrn)` returns empty (filter excludes is_deleted=true). (e) POST /api/dataentities/X/data_entity_group with body {data_entity_group_id: Y.id}. (f) Assert HTTP 400 with body 'Data entity is already in this DEG' (current contract — the misleading error). (g) Test comment 'LOCKS the misleading-error regression. When REFACTOR-NNN adds restore-on-add logic, this test FLIPS to assert 200 with the membership row's is_deleted flipped back to false.'
+batch: 2026-05-19-L
+feature_id: null

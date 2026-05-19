@@ -1,0 +1,35 @@
+gap_id: TEST-GAP-499
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataEntityController controller-method:deleteTermFromDataEntity"
+pillars_affected: [P-06, P-07]
+surfaced_by:
+  - "deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[1] (Silent-204 on no-op delete)"
+  - "deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[2] (Activity-event fires even on no-op delete)"
+  - "deleteTermFromDataEntity.md:tests_coverage_semantic.uncovered_behaviours.[7] (Activity-emission on no-op)"
+  - "deleteTermFromDataEntity.md:concepts.invariants.[3] (Idempotent at DB level but signals silently)"
+  - "deleteTermFromDataEntity.md:concepts.invariants.[4] (Activity-feed event emitted REGARDLESS of whether a row was deleted)"
+behaviour: |-
+  Silent-204 + always-fire-activity-event regression-pin for deleteTermFromDataEntity (MEDIUM — audit-trail noise). Three semantically-different outcomes are indistinguishable to the caller: (a) a manual link existed and was removed, (b) only a description-link existed and was NOT removed (the WHERE clause filters IS_DESCRIPTION_LINK.isFalse() at TermRelationsRepositoryImpl.java:84), (c) no link existed at all. All three return 204 No Content. There is NO 404 surface (no switchIfEmpty). The matching activity event ALWAYS fires — @ActivityLog(event = TERM_ASSIGNMENT_UPDATED) annotates the service method unconditionally (TermServiceImpl.java:183); TermAssignmentActivityHandler re-queries the data-entity's terms-list BEFORE and AFTER (TermAssignmentActivityHandler.java:23-43); a no-op DELETE yields BEFORE = AFTER but the event row is still written. Auditors investigating 'who removed term T from entity E' see an activity event that LOOKS like a real removal but where nothing actually changed. The signal-to-noise ratio of GET /api/activity is degraded for term-management investigations. Combined with the REFACTOR-217 DELETE-half auth-bypass (TEST-GAP-489), unauthorized callers can BOTH succeed-on-no-op AND generate misleading audit-feed entries. Cross-pillar P-06 (Glossary integrity / audit trail) + P-07 (Activity Feed signal quality). Test would assert the documented behaviour pin: (a) DELETE on non-linked pair returns 204 silently AND (b) activity row is created with BEFORE=AFTER.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/integration/TermDeleteSilentNoOpActivityNoiseTest.java"
+  name: "deleteTermFromDataEntity_onNonExistentLink_returns204_andFiresActivityEventWithIdenticalBeforeAfter"
+evidence:
+  - "deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[1]: 'Calling DELETE /api/dataentities/{id}/terms/{termId} for a (data-entity, term) pair that is NOT linked (or is ONLY description-linked) returns 204 No Content with no row deleted. The DELETE WHERE clause matches zero rows; the inner flatMap short-circuits because Mono emits no element; the chain completes via .thenReturn(ResponseEntity.noContent().build()). Callers cannot distinguish three semantically-different outcomes.'"
+  - "deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[2]: '@ActivityLog(event = TERM_ASSIGNMENT_UPDATED) annotates the service method unconditionally (TermServiceImpl.java:183). The handler re-queries BEFORE/AFTER. A no-op DELETE yields BEFORE = AFTER but the event row is still written.'"
+  - "TermRelationsRepositoryImpl.java:80-88 (WHERE-clause with IS_DESCRIPTION_LINK.isFalse() filter; no switchIfEmpty)"
+  - "TermServiceImpl.java:181-196 (no early-exit for zero-row DELETE before @ActivityLog triggers)"
+  - "TermAssignmentActivityHandler.java:23-43 (state captured regardless of caller intent or outcome)"
+  - "DataEntityController.java:161-162 (thenReturn(noContent()))"
+cross_references:
+  - "TEST-GAP-489 (REFACTOR-217 DELETE-half — co-located authorization bypass)"
+  - "TEST-GAP-491 (META @Profile trap — note: this is the EXISTING annotation case, so the trap means the activity-row assertion only works outside integration-test profile)"
+  - "concepts.yaml:entities[audit-feed-noise-no-op-events]"
+  - "DOC-NNN candidate: document the silent-204 idempotence + always-fire activity-event semantics"
+proposed_action: |-
+  Service-tier Mockito test (avoids the META trap from TEST-GAP-491). (a) Mock termRelationsRepository.deleteRelationWithDataEntity to return Mono.empty() (no row deleted). (b) Mock TermAssignmentActivityHandler to capture BEFORE/AFTER state. (c) Invoke TermServiceImpl.removeTermFromDataEntity(termId, dataEntityId). (d) Assert no error emitted (silent success). (e) Verify the handler is invoked TWICE (BEFORE + AFTER) with identical states. (f) Test comment 'LOCKS the silent-204 idempotence + always-fire activity-event audit-noise contract.' Bridge test (integration-tier, outside integration-test profile): assert the activity table grows by 1 row even on no-op DELETE.
+batch: 2026-05-19-L
+feature_id: null

@@ -1,0 +1,36 @@
+gap_id: TEST-GAP-493
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataEntityController controller-method:getDataEntityAlerts"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "getDataEntityAlerts.md:bugs_limitations_corner_cases.[0] (GET /api/dataentities/{id}/alerts returns entity's complete alert history to any authenticated user)"
+  - "getDataEntityAlerts.md:security.known_security_gaps.[0] (Path-pattern absent from SECURITY_RULES — REFACTOR-024-shape applied to a per-entity surface)"
+  - "getDataEntityAlerts.md:tests_coverage_semantic.uncovered_behaviours.[1] (Cross-owner read posture regression)"
+  - "getDataEntityAlerts.md:implicit_adrs.[2] (Per-entity reads are unscoped because the caller has already chosen the entity)"
+behaviour: |-
+  Cross-owner per-entity alert read regression-pin (HIGH — REFACTOR-024 sibling on a per-entity surface). GET /api/dataentities/{id}/alerts has NO @PreAuthorize, NO SecurityConstants.SECURITY_RULES entry for the GET path (SecurityConstants.java:98-355 enumerated — only PUT /api/dataentities/{data_entity_id}/alert_config at line 306 with DATA_ENTITY_ALERT_CONFIG_UPDATE is gated), NO owner-scoping at any layer. The downstream `AlertService.getDataEntityAlerts → ReactiveAlertRepository.getAlertsByDataEntityId` is a single `SELECT ALERT.* FROM ALERT JOIN DATA_ENTITY ON DATA_ENTITY.ODDRN = ALERT.DATA_ENTITY_ODDRN WHERE DATA_ENTITY.ID = :id` jOOQ select with NO OWNERSHIP join and NO principal-derived predicate (AlertServiceImpl.java:138-143, ReactiveAlertRepositoryImpl.java:182-199). The structural asymmetry with the sibling `listByOwner` query (ReactiveAlertRepositoryImpl.java:160-178) — which DOES `.join(OWNERSHIP)` — confirms the per-entity-unscoped pattern is deliberate. An authenticated caller enumerating `data_entity_id` values via the search/list endpoints can read every alert ever raised on every catalogued entity, including alert chunks (raw AlertManager-derived generator-URL text propagated from ingestion). The live alerting doc (WebFetched 2026-05-19 status 200) names this endpoint VERBATIM as the audit-export workaround for the housekeeping bug but does NOT say whether cross-owner access is intentional. The doc's intended workaround use case (an owner exporting THEIR OWN entity's alerts) is harmless; the same endpoint is a discovery surface for an attacker with any authenticated session willing to enumerate IDs. Pair with REFACTOR-024 (catalog-wide cross-owner enumeration on `getAllAlerts`) — the per-entity surface is structurally the same. Cross-pillar P-07 (Alerts feature) + P-09 (Authorization model — read-collaborative posture).
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/DataEntityAlertsAuthorizationTest.java"
+  name: "getDataEntityAlerts_userWithoutDataEntityOwnership_returns200WithFullAlertList_pinsCrossOwnerReadPosture"
+evidence:
+  - "getDataEntityAlerts.md:bugs_limitations_corner_cases.[0]: 'GET /api/dataentities/{data_entity_id}/alerts returns an entity's complete alert history to any authenticated user, regardless of ownership — the same cross-owner read posture as REFACTOR-024's getAllAlerts, applied to a per-entity surface.'"
+  - "DataEntityController.java:315-321 (no @PreAuthorize, no permission check)"
+  - "SecurityConstants.java:98-355 (no rule entry for GET /api/dataentities/{id}/alerts; line 306 gates the sibling alert_config PUT)"
+  - "AlertServiceImpl.java:138-143 (no principal pass-through)"
+  - "ReactiveAlertRepositoryImpl.java:182-199 (no OWNERSHIP join, no principal-derived predicate)"
+  - "ReactiveAlertRepositoryImpl.java:160-178 (sibling listByOwner DOES .join(OWNERSHIP) — structural asymmetry confirms per-entity-unscoped pattern)"
+  - "WebFetch alerting page 2026-05-19 status 200 (audit-export workaround named verbatim; permission posture unspecified)"
+cross_references:
+  - "REFACTOR-024 (catalog-wide cross-owner enumeration on getAllAlerts)"
+  - "TEST-GAP-004 (getAllAlerts unscoped read — same pattern at the batch surface)"
+  - "TEST-GAP-018 (27+ read endpoints carry no role/owner gate — getDataEntityAlerts named verbatim)"
+  - "concepts.yaml:entities[read-collaborative-posture-cross-pillar-pattern]"
+  - "DOC-NNN candidate: document cross-owner read posture explicitly in the alerting page"
+proposed_action: |-
+  WebFluxTest. (a) Set up data entity X with owner Alice. (b) Pre-seed 3 alerts on X via direct repository write. (c) As user Bob (no ownership of X, no DATA_ENTITY_ALERT_CONFIG_UPDATE, no admin policies), GET /api/dataentities/X/alerts?page=1&size=10. (d) Assert HTTP 200. (e) Assert response body contains all 3 alerts with their `alert_chunk_list` payloads (the AlertManager-derived raw description text). (f) Test comment 'LOCKS the cross-owner read posture as of 2026-05-19. When REFACTOR-NNN adds owner-scoping at the read path, this test FLIPS to expect filtered or 403 results.' Pair-test the soft-delete-inclusive read posture (separate gap — TEST-GAP-502).
+batch: 2026-05-19-L
+feature_id: null

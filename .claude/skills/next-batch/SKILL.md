@@ -65,11 +65,17 @@ The assistant turn BLOCKS until all 5 reducers complete. Expect 15-45 min for th
 
 **Failure handling.** If 1-2 reducers fail → still commit + push the partial state with those reducers' artefacts marked `stale_after_batch_{theme_id}` in the manifest. If 3+ reducers fail → mark theme `blocked` and exit.
 
-## Phase 3 — Merge deltas + coverage + investigator-log + commit + push
+## Phase 3 — YAML autofix + rebuild indexes + coverage + investigator-log + commit + push
 
 Run these Bash commands in sequence:
 
-1. **Merge adr-archaeologist appends** (if `index-batch-{theme_id}-append.md` files exist):
+1. **YAML safety pass first** — catches broken scalars before they pollute the indexes:
+   ```bash
+   python3 lineage/_extractor/registry-shard/yaml_safe_fix.py 2>&1 | tail -20
+   ```
+   Reports `fixed: N`, `unfixable: M`. The unfixable files are quarantined to `.broken-yaml-pending-fix` (data preserved in `.broken-yaml-backup`). If M > 0 — surface in investigator-log under "Follow-ups" but do NOT block the batch; the data is recoverable next batch when the reducer prompt's YAML-safe rule fires.
+
+2. **Markdown-index appends** (if `index-batch-{theme_id}-append.md` files exist):
    ```bash
    for art in implicit-adrs refactoring-scopes; do
      append="lineage/odd-platform/${art}/index-batch-${THEME_ID}-append.md"
@@ -79,24 +85,28 @@ Run these Bash commands in sequence:
      fi
    done
    ```
-   Then update the frontmatter of each merged index.md per the append-file's HTML-comment instructions (counts + new batch summary key). Use Edit calls.
+   Then update the frontmatter of each merged index.md per the append-file's HTML-comment instructions (counts + new batch summary key). Use Edit calls. **If the append file produces a known prose-only narrative without `## ID — headline` lines for the new entries**, the index integrity audit in step 3 surfaces a "detail without index" gap — that's acceptable for one batch (reducers grep detail/ directly), but flag for follow-up.
 
-2. **Merge test-map delta** (if `test-map/index.delta.yaml` exists):
+3. **Rebuild YAML indexes from detail/** (idempotent; replaces the brittle `merge_deltas.py` workflow):
    ```bash
-   if [ -f lineage/odd-platform/test-map/index.delta.yaml ]; then
-     python3 lineage/_extractor/registry-shard/merge_deltas.py test-map
-     rm lineage/odd-platform/test-map/index.delta.yaml
-   fi
+   python3 lineage/_extractor/registry-shard/rebuild_indexes.py all 2>&1 | tail -25
+   ```
+   Detail files are the source of truth; this regenerates `concepts/index.yaml`, `test-map/index.yaml`, `feature-flows/index.yaml` from the parseable subset under `detail/`. Also runs `verify-md` for the three markdown artefacts and surfaces any detail-vs-index discrepancies (non-blocking).
+
+4. **Cleanup leftover delta files** (no longer needed after rebuild):
+   ```bash
+   find lineage/odd-platform -name 'index.delta.yaml' -delete
+   find lineage/odd-platform -name 'concepts.delta.batch-*.yaml' -delete
    ```
 
-3. **Refresh coverage:**
+5. **Refresh coverage:**
    ```bash
    python3 lineage/_extractor/registry-shard/coverage.py --write-manifest
    ```
 
-4. **Append investigator-log entry.** Construct a multi-section batch entry (sidecars added, reducer diffs, cumulative state, next-batch notes if any). Pattern: read batch H's investigator-log entry as template. Use `cat >> investigator-log.md << HEREDOC`.
+6. **Append investigator-log entry.** Construct a multi-section batch entry (sidecars added, reducer diffs, cumulative state, next-batch notes if any). Pattern: read batch H's + batch I's investigator-log entries as template. Use `cat >> investigator-log.md << HEREDOC`. **Always include** a "Follow-ups" section listing any `.broken-yaml-pending-fix` files this batch produced + any markdown-index detail-without-index discrepancies.
 
-5. **Stage + commit + push:**
+7. **Stage + commit + push:**
    ```bash
    git add lineage/odd-platform/understanding/{new-sidecars-glob} \
            lineage/odd-platform/{concepts,implicit-adrs,refactoring-scopes,doc-gaps,test-map,feature-flows}/ \
@@ -114,6 +124,16 @@ Run these Bash commands in sequence:
    git push origin feature/ontology-rev2-sprint-2026-05-19
    ```
    If push still fails → mark theme `blocked` with `blocked_reason: push-conflict-after-rebase` and exit.
+
+8. **Preserve `.broken-yaml-pending-fix` files** (if any) in a follow-up commit so they reach the remote:
+   ```bash
+   if ls lineage/odd-platform/**/*.broken-yaml-pending-fix 2>/dev/null | grep -q .; then
+     git add lineage/odd-platform/**/*.broken-yaml-pending-fix lineage/odd-platform/**/*.broken-yaml-backup 2>/dev/null
+     git commit -m "[next-batch] theme {THEME_ID} — preserve broken-yaml-pending-fix files for next-batch recovery"
+     git push origin feature/ontology-rev2-sprint-2026-05-19
+   fi
+   ```
+   No force-push needed — this is a fresh commit appended to the sprint branch.
 
 ## Phase 4 — Mark theme done (success path)
 

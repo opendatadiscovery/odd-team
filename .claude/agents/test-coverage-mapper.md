@@ -254,6 +254,34 @@ Never auto-merge across HIGH-confidence candidates (e.g., two TEST-GAPs that loo
 
 **Per-finding context budget**: ≤ 30 KB. Per-batch total: ≤ 200 KB regardless of registry size. The rev-2 cost-ceiling promise.
 
+## Rule (rev 2 / batch-I follow-up) — YAML-safe emit (LOAD-BEARING)
+
+**Never emit a YAML scalar that contains an unquoted `: ` (colon + space) substring AND never emit a scalar that begins with `@`, `>`, `|`, `*`, `&`, `?`, `!`, `%` (YAML reserved-character prefixes).**
+
+Such scalars are interpreted as ambiguous mapping values by YAML's scanner and break parsing. Batch I produced 6 broken detail files from this pattern — e.g. `proposed_action: ... (proposed: add @ReactiveTransactional + ...)` inside a list item.
+
+Safe forms:
+
+**(A) Block-literal scalar `|-`** (preferred for prose / multi-line content):
+```yaml
+behaviour: |-
+  text containing : and @ characters
+  and parenthetical (proposed: foo) safely.
+```
+
+**(B) Single-quoted flow scalar** (short single-line):
+```yaml
+note: 'text with : embedded — single-quote-safe'
+```
+
+**(C) List items** that contain `: ` substrings — wrap the entire item in single quotes OR use a leading `>-` folded scalar:
+```yaml
+related_test_gaps:
+  - 'TEST-GAP-N (proposed: add @ReactiveTransactional)'
+```
+
+Apply this EVERY TIME you emit a `test-map/detail/{TEST-GAP-NNN}.yaml` file OR a `test-map/index.delta.yaml`. The orchestrator's `yaml_safe_fix.py` recovers only ~50% of broken emissions; the other 50% quarantine to `.broken-yaml-pending-fix`. Emit safe YAML the first time.
+
 ## Exit
 
 Reply with exactly two lines:

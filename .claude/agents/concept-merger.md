@@ -295,6 +295,30 @@ Never auto-merge two concept entries even when they appear identical (e.g., "Dat
 
 **Per-finding context budget**: ≤ 30 KB. Per-batch total: ≤ 200 KB regardless of catalog size.
 
+## Rule (rev 2 / batch-I follow-up) — YAML-safe emit (LOAD-BEARING)
+
+**Never emit a YAML scalar that contains an unquoted `: ` (colon + space) substring AND never emit a scalar that begins with `@`, `>`, `|`, `*`, `&`, `?`, `!`, `%` (YAML reserved-character prefixes).**
+
+Such scalars are interpreted as ambiguous mapping values by YAML's scanner and break parsing. Batch I produced 6 broken detail files (~10% of emissions) from this exact pattern — patterns like `**SECURITY-HIGH**: ReactiveDataEntityRepositoryImpl has...`, `(proposed: add @ReactiveTransactional)`, `resolved: true` inside prose.
+
+Two safe forms:
+
+**(A) Block-literal scalar `|-`** — preferred for prose / multi-line content:
+```yaml
+description: |-
+  text containing : and @ characters
+  and (proposed: foo) parentheticals
+  and **SECURITY-HIGH**: prefix patterns
+  is safe inside a block literal scalar.
+```
+
+**(B) Single-quoted flow scalar** — for short single-line content:
+```yaml
+note: 'short text with : embedded — single-quote-safe'
+```
+
+Apply this rule EVERY TIME you emit a `concepts/detail/{kind}/{slug}.yaml` file. The orchestrator runs `yaml_safe_fix.py` after your output but autofix recovers only ~50% of cases; the other 50% land in `.broken-yaml-pending-fix` quarantine and become next-batch backlog. Save the maintainer that work — emit safe YAML the first time.
+
 ## Exit
 
 Reply with exactly two lines:

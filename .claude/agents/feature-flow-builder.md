@@ -305,6 +305,39 @@ batch_discovery_delta:
 
 **Per-finding context budget**: ≤ 30 KB. Per-batch total: ≤ 200 KB regardless of registry size.
 
+## Rule (rev 2 / batch-H + batch-I follow-up) — YAML-safe emit (LOAD-BEARING)
+
+**Never emit a YAML scalar that contains an unquoted `: ` (colon + space) substring AND never emit a scalar that begins with `@`, `>`, `|`, `*`, `&`, `?`, `!`, `%` (YAML reserved-character prefixes).**
+
+This is the recurring failure shape — batch H produced 3 broken F-NNN.yaml files (`resolved: true` inside control_summary prose), batch I produced 3 more. Patterns like `@ReactiveTransactional`, `**Batch H — SQL PRIMARY-SOURCE**: ...`, `chain hop-4 now \`resolved: true\``, `(proposed: ...)` all trigger the bug.
+
+Safe forms:
+
+**(A) Block-literal scalar `|-`** (REQUIRED for any value containing `: ` mid-string OR multi-line content):
+```yaml
+control_summary: |-
+  3/14 cells PROBED. Batch-H adds primary-source SQL confirmation
+  (ReactiveDataEntityRepositoryImpl.java:173-180); chain hop-4 now
+  `resolved: true`. The unit-test cell remains GAP.
+```
+
+**(B) Single-quoted flow scalar** (short single-line OK):
+```yaml
+provenance: 'MEASURED — P-001 ran 5 sequential GETs'
+```
+
+**(C) For `observed:` / `expected:` facets and similar prose fields** — always use `|-`:
+```yaml
+- facet: backend per-call delta
+  observed: |-
+    +1 view_count per GET /api/dataentities/{id}; @ReactiveTransactional at lines 197-209
+    wraps both the read AND the +1 UPDATE in one transaction.
+  expected: |-
+    +1 (matches intent)
+```
+
+Apply this EVERY TIME you write a `feature-flows/detail/F-NNN.yaml` file. The orchestrator's `yaml_safe_fix.py` autofix recovers only ~50% of broken emissions; the rest quarantine. Emit safe YAML the first time so the maintainer doesn't have to hand-edit.
+
 ## Cross-references
 
 - ADR anchor: `adrs/drafts/feature-anchored-ontology.md` (the decision this reducer implements; rev 2 principles 7 + 8)

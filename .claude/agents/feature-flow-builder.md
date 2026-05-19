@@ -273,19 +273,18 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2 principle 8: the feature re
 
 **Dedup protocol.** For every candidate feature you're about to commit, spawn the `registry-search` subagent following `playbooks/registry-search-spawn.md`:
 
-- Until `feature-flows.yaml` crosses ~250 KB, pass `INDEX_PATH=lineage/{repo}/feature-flows.yaml` (the single-file form is still the search target).
-- After it crosses 250 KB (slice 9), the artefact shards into `feature-flows/{index.yaml, detail/{F-NNN}.yaml}` and you pass `INDEX_PATH=lineage/{repo}/feature-flows/index.yaml`.
-- Either way, `ARTEFACT_KIND=feature-flows`.
+- `INDEX_PATH=lineage/{repo}/feature-flows/index.yaml` — sharded from day 1 (slice 9, 2026-05-19). Full content per feature lives in `lineage/{repo}/feature-flows/detail/{F-NNN}.yaml`. The "wait until 250 KB" threshold from the rev-2 ADR's first draft was dropped per maintainer review same day: methodology uniformity across artefacts beats size-gated migrations.
+- `ARTEFACT_KIND=feature-flows`.
 - `QUERY_TEXT` is the candidate feature's discriminating fields: feature_name + entry_point + contributing_nodes (ordered list) + terminal_side_effect + the highest-leverage facet of `observed_vs_expected`.
 
 **Act on the verdict** with the rev-2 emergent-registry semantics:
-- `0 matches — create new` → mint NEXT_AVAILABLE_FEATURE_ID + 1, append a new feature entry. Record the discovery in this batch's delta block: `new_features: [F-NNN]`.
-- `1 strong match — extend {F-NNN}` → read the existing entry, ADD the new entry_point + new contributing_nodes to the chain (do NOT remove existing nodes), refresh `amplification_factor` if the new path's multiplicity changes the product, append a new facet to `observed_vs_expected.facets` only if the new entry-point surfaces a distinct user-observable consequence. Record in batch delta: `extended_features: [F-NNN: <which entry-point added>]`.
-- `N candidates — maintainer-triage-ambiguous` → mint a new F-NNN with `maintainer_triage_pending: true` + a `merge_candidates: [F-NNN1, F-NNN2, ...]` block. Surface in investigator-log; the maintainer decides whether to merge (recorded next batch as `merged_features: [F-NNN absorbed-by F-MMM]`).
+- `0 matches — create new` → mint NEXT_AVAILABLE_FEATURE_ID + 1, write `feature-flows/detail/{F-NNN}.yaml` with the full feature entry, append a headline to `feature-flows/index.yaml` matching `lineage/_extractor/registry-shard/shard.py:shard_feature_flows` headline shape. Record the discovery in this batch's delta block: `new_features: [F-NNN]`.
+- `1 strong match — extend {F-NNN}` → read `feature-flows/detail/{F-NNN}.yaml`, ADD the new entry_point + new contributing_nodes to the chain (do NOT remove existing nodes), refresh `amplification_factor` if the new path's multiplicity changes the product, append a new facet to `observed_vs_expected.facets` only if the new entry-point surfaces a distinct user-observable consequence. Update the headline in `feature-flows/index.yaml` ONLY if `test_matrix_summary` cells changed state or `control_summary` changed. Record in batch delta: `extended_features: [F-NNN: <which entry-point added>]`.
+- `N candidates — maintainer-triage-ambiguous` → mint a new F-NNN detail with `maintainer_triage_pending: true` + a `merge_candidates: [F-NNN1, F-NNN2, ...]` block. Surface in investigator-log; the maintainer decides whether to merge (recorded next batch as `merged_features: [F-NNN absorbed-by F-MMM]`).
 
 **Never auto-merge.** The emergent-registry promise (rev 2 risk-mitigation row "Emergent-feature registry never converges") is that merges are maintainer-triggered when two features share >50% of `contributing_nodes` AND the maintainer confirms they describe the same user-observable contract.
 
-**Per-batch delta block** at the head of `feature-flows.yaml` (or `feature-flows/index.yaml` after sharding):
+**Per-batch delta block** at the head of `feature-flows/index.yaml`:
 ```yaml
 batch_discovery_delta:
   batch_id: <batch identifier>

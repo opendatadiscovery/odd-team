@@ -393,6 +393,108 @@ def shard_concepts() -> dict:
     }
 
 
+def shard_feature_flows() -> dict:
+    """Split feature-flows.yaml into feature-flows/{index.yaml, detail/{F-NNN}.yaml}.
+
+    Per ADR rev 2 principle 8 (emergent feature registry) — same shape from day 1
+    so the file stays consistent with the other 4 reducer artefacts. The earlier
+    'wait until 250 KB' threshold is dropped per maintainer review 2026-05-19:
+    the rule that emerged is uniformity across artefacts, not size-gated migrations.
+    """
+    monolith = LINEAGE / "feature-flows.yaml"
+    if not monolith.exists():
+        return {"status": "monolith_absent", "monolith": str(monolith)}
+    docs = _load_multi_doc_yaml(monolith)
+    frontmatter = docs[0] if len(docs) > 0 else {}
+    body = docs[1] if len(docs) > 1 else {}
+    if not isinstance(body, dict) or "features" not in body:
+        return {"status": "no_features_key", "monolith": str(monolith), "body_keys": list(body.keys()) if isinstance(body, dict) else []}
+
+    features = body["features"] or []
+    out_dir = LINEAGE / "feature-flows"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    detail_dir = out_dir / "detail"
+    if detail_dir.exists():
+        for f in detail_dir.glob("*.yaml"):
+            f.unlink()
+    detail_dir.mkdir(parents=True, exist_ok=True)
+
+    index_entries = []
+    for feat in features:
+        if not isinstance(feat, dict):
+            continue
+        fid = feat.get("feature_id") or f"F-UNKNOWN-{len(index_entries)}"
+        detail_path = detail_dir / f"{fid}.yaml"
+        detail_path.write_text(yaml.safe_dump(feat, sort_keys=False, allow_unicode=True))
+
+        # Index headline carries the high-fidelity discriminating fields per principle 6.
+        # The full feature lives in detail/{F-NNN}.yaml.
+        test_matrix = feat.get("test_matrix") or {}
+        matrix_summary = {
+            cell: (test_matrix.get(cell) or {}).get("state", "GAP")
+            for cell in ("unit", "integration", "performance", "security")
+        }
+        description = feat.get("description") or ""
+        if isinstance(description, str) and len(description) > 600:
+            description = description[:600].rsplit(" ", 1)[0] + "…"
+
+        # Pull a flat list of bare contributing-node IDs (strip parenthetical annotations).
+        contributing_nodes = []
+        for n in feat.get("contributing_nodes") or []:
+            if isinstance(n, str):
+                bare = n.split("(")[0].strip()
+                if bare:
+                    contributing_nodes.append(bare)
+
+        idx_entry = {
+            "feature_id": fid,
+            "feature_name": feat.get("feature_name"),
+            "discovered_from_entry_point": feat.get("discovered_from_entry_point"),
+            "description_excerpt": description,
+            "amplification_factor": feat.get("amplification_factor"),
+            "contributing_nodes": contributing_nodes,
+            "terminal_side_effect_class": (feat.get("terminal_side_effect") or {}).get("side_effect_class"),
+            "test_matrix_summary": matrix_summary,
+            "control_summary": feat.get("control_summary"),
+            "related_refactoring_scopes": feat.get("related_refactoring_scopes") or [],
+            "related_test_gaps": feat.get("related_test_gaps") or [],
+            "related_doc_gaps": feat.get("related_doc_gaps") or [],
+            "related_concepts": feat.get("related_concepts") or [],
+            "related_retrospectives": feat.get("related_retrospectives") or [],
+            "maintainer_curated": feat.get("maintainer_curated", False),
+            "detail_path": f"detail/{fid}.yaml",
+        }
+        index_entries.append(idx_entry)
+
+    # Carry-through batch delta blocks if present (per emergent-registry semantics).
+    extras = {k: v for k, v in body.items() if k not in ("features",)}
+
+    index_path = out_dir / "index.yaml"
+    index_body = {
+        "artefact": "feature-flows-index",
+        "shape_version": "rev-2-sharded",
+        "source_monolith_frontmatter": frontmatter,
+        "total_features": len(index_entries),
+        "notice": (
+            "Per adrs/drafts/feature-anchored-ontology.md rev 2 principles 6 + 8. "
+            "registry-search reads this file; full content per feature in detail/{F-NNN}.yaml. "
+            "Registry is append-only and emergent — each batch may add new_features OR "
+            "extend existing ones via new entry-points. Merges are maintainer-triggered."
+        ),
+        "features_index": index_entries,
+        "extras": extras,
+    }
+    with index_path.open("w") as f:
+        yaml.safe_dump(index_body, f, sort_keys=False, allow_unicode=True)
+    return {
+        "status": "ok",
+        "monolith": str(monolith),
+        "index": str(index_path),
+        "detail_count": len(index_entries),
+        "detail_dir": str(detail_dir),
+    }
+
+
 def shard_test_map() -> dict:
     monolith = LINEAGE / "test-map.yaml"
     docs = _load_multi_doc_yaml(monolith)
@@ -475,6 +577,7 @@ def main():
         "doc-gaps": shard_doc_gaps,
         "concepts": shard_concepts,
         "test-map": shard_test_map,
+        "feature-flows": shard_feature_flows,
     }
     if artefact == "all":
         results = {name: fn() for name, fn in runners.items()}

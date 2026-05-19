@@ -25,7 +25,8 @@ LINEAGE = Path(__file__).resolve().parents[2] / "odd-platform"
 MANIFEST = LINEAGE / "manifest.yaml"
 NODES = LINEAGE / "nodes.jsonl"
 UNDERSTANDING = LINEAGE / "understanding"
-FEATURE_FLOWS = LINEAGE / "feature-flows.yaml"
+FEATURE_FLOWS_LEGACY = LINEAGE / "feature-flows.yaml"  # pre-slice-9 monolith
+FEATURE_FLOWS_DETAIL = LINEAGE / "feature-flows" / "detail"  # post-slice-9 sharded
 
 
 def load_substrate_node_ids() -> set[str]:
@@ -62,26 +63,47 @@ def load_sidecar_node_ids() -> set[str]:
     return ids
 
 
+def _load_features() -> list:
+    """Prefer the sharded form (feature-flows/detail/*.yaml); fall back to the
+    legacy monolith (feature-flows.yaml) for pre-slice-9 repos.
+    """
+    if FEATURE_FLOWS_DETAIL.exists():
+        features = []
+        for path in sorted(FEATURE_FLOWS_DETAIL.glob("*.yaml")):
+            try:
+                with path.open() as f:
+                    feat = yaml.safe_load(f)
+                if isinstance(feat, dict):
+                    features.append(feat)
+            except (yaml.YAMLError, OSError):
+                continue
+        if features:
+            return features
+    # Fallback to monolith.
+    if not FEATURE_FLOWS_LEGACY.exists():
+        return []
+    try:
+        with FEATURE_FLOWS_LEGACY.open() as f:
+            docs = list(yaml.safe_load_all(f))
+        for doc in docs:
+            if isinstance(doc, dict) and "features" in doc:
+                return doc["features"] or []
+    except (yaml.YAMLError, OSError):
+        return []
+    return []
+
+
 def load_feature_flow_touched_node_ids() -> tuple[set[str], int, int]:
-    """Read feature-flows.yaml; return:
+    """Walk every feature (sharded or legacy); return:
     - the set of node_ids appearing in any feature's `contributing_nodes` AND `chain[*].node`
     - features_discovered (total feature count)
     - features_with_>=1_cell_PROBED (any test_matrix cell in PROBED-* state)
     """
     touched = set()
-    if not FEATURE_FLOWS.exists():
+    features = _load_features()
+    if not features:
         return touched, 0, 0
     try:
-        with FEATURE_FLOWS.open() as f:
-            docs = list(yaml.safe_load_all(f))
-        # feature-flows.yaml has one doc with `features:` list (some versions also have frontmatter as first doc).
-        features = []
-        for doc in docs:
-            if isinstance(doc, dict) and "features" in doc:
-                features = doc["features"]
-                break
-        if not features:
-            return touched, 0, 0
         features_with_probed = 0
         for feat in features:
             if not isinstance(feat, dict):

@@ -978,3 +978,77 @@ Two follow-ups BEFORE batch J:
 
 Then batch J can fire: UI-axis — DataEntityDetails.tsx + thunks + Description + PopularStrip + LineageGraph. Resolves F-001 hop 1+2 (the LSN-017 useEffect dep-array bug from primary source) + F-003/F-004/F-005 UI sides.
 
+
+## Rev-3 transition — Layer 0 system mission anchor + F-001..F-008 re-classification (2026-05-19, post batch I)
+
+- **Trigger**: maintainer review after batch I — "we have so many nodes but 8 features that are mostly about some particular caveats of features"; the diagnosis was that the methodology lacked the platform's gestalt (what "feature" means at operator-facing granularity).
+- **Methodology change**: new Layer 0 sits beneath the existing 5 layers. New `domain-extractor` subagent (`.claude/agents/domain-extractor.md`) reads canonical docs (live URLs or local source-of-truth markdown) + maintainer-curated concepts + (when needed) maintainer interview, and emits `lineage/{repo}/system-mission.md` — a doc-anchored 8-12-pillar shape.
+- **ADR**: `adrs/drafts/feature-anchored-ontology.md` rev 3 + APPROACH.md §13 (universal Layer 0 framing for any project bootstrapping the methodology).
+- **Reducer prompts updated**: feature-flow-builder (Rule 0 LOAD-BEARING: consult Layer 0 before classifying) + concept-merger / adr-archaeologist / doc-gap-finder / test-coverage-mapper (lighter "consult system-mission.md" rules for pillar-anchored naming, severity weighting, pillar-coverage gaps, integration-boundary test classification).
+
+### `system-mission.md` produced
+
+11 pillars + 4 canonicalisation candidates + 12 audiences + 6 architectural pillars. Doc source: local `documentation/docs/**/*.md` (WebFetch denied this session — same constraint as batches D-I; live verification logged as known follow-up per the Layer-0 doc-source contract). Confidence: MEDIUM (local-anchored; live verification pending).
+
+| Pillar | Capability |
+|---|---|
+| P-01 Data Discovery | Find existing data entities (Search, Directory, Catalog Overview) + annotate (tags, statuses, descriptions, attachments, groupings) |
+| P-02 Data Modelling | Capture dataset contract (Query Examples + Relationships / ERDs) |
+| P-03 Master Data Management | Operator-curated reference data (Lookup Tables — partial-MDM scope) |
+| P-04 Data Quality | Aggregate per-dataset quality signals (aggregator only — checks performed externally) |
+| P-05 Data Lineage | Upstream/downstream traceability across data + microservices |
+| P-06 Data Glossary | Business-term catalog + term-entity linkage |
+| P-07 Active Platform Features | Event-driven actor surfaces (alerts/notifications/activity/collab/genai) |
+| P-08 Management & Administration | 9-tab operator UI (config / policies / roles / owners / namespaces / collectors / tokens / settings / audit) |
+| P-09 Security & Access Control | 3 auth surfaces + RBAC |
+| P-10 Integrations & Ingestion | Producer ecosystem (collectors + push adapters + Ingestion API) |
+| P-11 Platform API & Developer Surface | API Reference + Swagger + custom-collector authoring |
+
+### F-001..F-008 → pillar-anchored re-classification
+
+Each rev-2 bug-anchored feature is now a `drift_class` facet inside a pillar-anchored feature. Detail files preserve all existing content; pillar_id + pillar_anchored_id + primary_drift_class + drift_class_summary + rev3_reclassification fields added at the top.
+
+| rev-2 F-NNN | rev-3 pillar_anchored_id | Pillar-anchored feature name | Primary drift class |
+|---|---|---|---|
+| F-001 (Detail-page view tracking) | **P-01:F-001** | Popular Entities Ranking | `ui_amplification` |
+| F-002 (Term linking) | **P-06:F-001** | Term-to-Entity Linkage | `auth_layer_hides_endpoint` |
+| F-003 (Popular ranking exclude-from-search) | **P-01:F-001** ← merge candidate with F-001 | Popular Entities Ranking | `filter_application_inconsistency` |
+| F-004 (Markdown description) | **P-01:F-002** | Entity Description Editing | `external_lib_assumes_sanitisation` |
+| F-005 (Downstream lineage) | **P-05:F-001** | Lineage Graph Traversal | `spec_says_X_impl_does_Y` |
+| F-006 (RBAC policy lifecycle) | **P-09:F-001** | Role-Based Access Control | `permission_persistence_after_soft_delete` |
+| F-007 (AlertManager webhook) | **P-07:F-001** | AlertManager Integration | `unauthenticated_payload_trust` |
+| F-008 (Ingestion-replace destruction) | **P-10:F-001** | Batch Ingestion (S2S API) | `silent_destruction_replace_not_merge` |
+
+**Merge candidate surfaced**: F-001 + F-003 are both `P-01:F-001` Popular Entities Ranking with different drift facets. Per rev-2 principle 8, merges are maintainer-triggered, not automatic. The two detail files stay separate; the rev3_reclassification block carries `merge_candidate_with: F-001` / `F-003` cross-references for the maintainer to decide.
+
+### Pillar coverage from existing 60 sidecars (informational)
+
+- P-01 Data Discovery: ~25 sidecars touching this pillar (controllers + services + repositories for data-entity surface)
+- P-09 Security & Access Control: ~12 sidecars (auth configs + RBAC controllers/services/repository)
+- P-10 Integrations & Ingestion: ~8 sidecars (IngestionService + IngestionDataEntitiesFilter + AlertManager + collector controllers)
+- P-07 Active Platform Features: ~7 sidecars (Activity / Alerting / Slack collab / GenAI / Notifications)
+- P-04 Data Quality: ~3 sidecars (sparse — most DQ code lives in collectors, outside odd-platform)
+- P-05 Data Lineage: ~3 sidecars (lineage controller + service + repository)
+- P-06 Data Glossary: ~2 sidecars (Term controller paths + concept entries)
+- P-08 Management & Admin: ~5 sidecars (Settings / Policies UI surfaces — partial)
+- P-02 Data Modelling: 0 sidecars yet (Query Examples + Relationships not enriched)
+- P-03 Master Data Management: 0 sidecars yet (Lookup Tables not enriched)
+- P-11 Platform API & Developer Surface: 0 sidecars yet (api-reference surface itself not enriched)
+
+Pillars P-02, P-03, P-11 are doc-mentioned-but-code-uncovered → batch theme candidates ranked by pillar-coverage gap.
+
+### Methodology state after rev 3
+
+- 60 direct sidecars (15.2%) + 72 effective coverage (18.2%) [unchanged from batch I]
+- 8 features now properly pillar-anchored (was bug-pin features)
+- 1 merge candidate surfaced for maintainer review (F-001 + F-003)
+- 11 pillars + 4 canon-candidates + 12 audiences + 6 architectural pillars in system-mission.md
+- Layer 0 confidence: MEDIUM (live-URL verification deferred to WebFetch-enabled session)
+
+### Follow-ups for /loop overnight
+
+- Subsequent batches (J / K / L / ...) use the new pillar-anchored shape for any new features they discover or extend. The rev-3 feature-flow-builder prompt is the gate.
+- Live-URL verification of all 14 pillar/mission/relationship URLs is a known follow-up — needs WebFetch-enabled session (same constraint as batches D-I).
+- F-001 + F-003 merge triage is maintainer-pending.
+- The 3 broken-yaml-pending-fix files from batch I (alert.yaml, data-entity.yaml, TEST-GAP-402.yaml) remain quarantined; the new YAML-safe-emit reducer rule prevents future occurrences but doesn't auto-fix the existing 3.
+

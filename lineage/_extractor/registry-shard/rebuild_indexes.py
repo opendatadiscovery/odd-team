@@ -190,7 +190,12 @@ def rebuild_feature_flows() -> dict:
                     contributing_nodes.append(bare)
         entries.append({
             "feature_id": fid,
+            "pillar_id": f.get("pillar_id"),
+            "pillar_anchored_id": f.get("pillar_anchored_id"),
+            "pillar_anchored_feature_name": f.get("pillar_anchored_feature_name"),
             "feature_name": f.get("feature_name"),
+            "primary_drift_class": f.get("primary_drift_class"),
+            "drift_class_summary": f.get("drift_class_summary") or [],
             "discovered_from_entry_point": f.get("discovered_from_entry_point"),
             "description_excerpt": description,
             "amplification_factor": f.get("amplification_factor"),
@@ -204,6 +209,7 @@ def rebuild_feature_flows() -> dict:
             "related_concepts": f.get("related_concepts") or [],
             "related_retrospectives": f.get("related_retrospectives") or [],
             "maintainer_curated": f.get("maintainer_curated", False),
+            "merge_candidate_with": (f.get("rev3_reclassification") or {}).get("merge_candidate_with"),
             "detail_path": f"detail/{path.name}",
         })
 

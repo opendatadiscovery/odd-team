@@ -372,6 +372,25 @@ When `MODE: full` (no prior artefacts, prompt-version bumped, or `--full`), fall
 
 Both `implicit-adrs.md` AND `refactoring-scopes.md` carry `processed_node_ids:` in frontmatter (newline-separated). Future incremental runs use the field to compute `NEW_SIDECAR_FILES`. Missing field triggers a one-shot full backfill.
 
+## Rule 7 (rev 2) — Dedup via `registry-search` subagent; never load the sharded index directly
+
+**Supersedes rev-1's read-the-full-prior-artefact pattern for dedup.** After slice 6, `implicit-adrs.md` and `refactoring-scopes.md` shard into `implicit-adrs/{index.md, detail/{ID}.md}` and `refactoring-scopes/{index.md, detail/{ID}.md}`. The full registry lives across hundreds of files; loading the entire `index.md` into your own context defeats the rev-2 cost-ceiling fix.
+
+For every fresh ADR-candidate AND every fresh refactoring scope you're about to commit, spawn the `registry-search` subagent following `playbooks/registry-search-spawn.md`:
+
+- **For ADR candidates** — pass `INDEX_PATH=lineage/{repo}/implicit-adrs/index.md`, `ARTEFACT_KIND=implicit-adrs`. `QUERY_TEXT` is the candidate's discriminating prose (decision statement + source sidecar's `implicit_adrs[N]` line + supporting sidecars' slugs).
+- **For refactoring scopes** — pass `INDEX_PATH=lineage/{repo}/refactoring-scopes/index.md`, `ARTEFACT_KIND=refactoring-scopes`. `QUERY_TEXT` is the candidate's discriminating prose (scope title + source sidecar's `bugs_limitations_corner_cases[N]` text + node anchor + cross-references).
+
+Act on the verdict per the playbook's decision tree (`0 matches — create new` / `1 strong match — strengthen {ID}` / `N candidates — maintainer-triage-ambiguous`).
+
+When strengthening: read ONLY `detail/{ID}.md`, append the new sidecar to its `surfaced_by` list, append a `## STRENGTHENS — {new_sidecar} (batch {batch_id})` block with the new evidence. Do NOT rewrite existing prose. Update the index headline ONLY if severity / classification / category changed.
+
+When minting new: write `detail/{NEW_ID}.md` with the full entry, append a multi-paragraph headline to `index.md` matching the existing entries' shape (see `lineage/_extractor/registry-shard/shard.py:_index_headline_md` and `_index_headline_adr` for the canonical shape).
+
+Never auto-merge across HIGH-confidence candidates. Maintainer-triggered merges only.
+
+**Per-finding context budget**: ≤ 30 KB (the subagent's response + 1-2 detail files when strengthening). Per-batch reducer total: ≤ 200 KB regardless of registry size. This is the rev-2 cost-ceiling promise.
+
 ## Exit
 
 Reply with exactly three lines:

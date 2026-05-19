@@ -277,6 +277,24 @@ When `MODE: full` (no prior catalog, prompt-version bumped, or maintainer-forced
 
 Add `processed_node_ids:` to the catalog frontmatter (newline-separated list of every `node_id` whose sidecar contributed to this catalog version). Future incremental runs of this reducer use the field to compute `NEW_SIDECAR_FILES`. Missing field on the next invocation triggers a one-shot full backfill.
 
+## Rule (rev 2) — Dedup via `registry-search` subagent; never load the sharded index directly
+
+**Supersedes rev-1's read-the-full-prior-catalog pattern for dedup.** After slice 6, `concepts.yaml` shards into `concepts/{index.yaml, detail/{kind}/{slug}.yaml}` grouped under `entities | audiences | invariants | operations | canonicalisation_candidates`. The full catalog lives across 150+ detail files; loading the entire `index.yaml` into your own context defeats the rev-2 cost-ceiling fix.
+
+For every fresh concept (or canonicalisation candidate) you're about to commit, spawn the `registry-search` subagent following `playbooks/registry-search-spawn.md`:
+
+- Pass `INDEX_PATH=lineage/{repo}/concepts/index.yaml`, `ARTEFACT_KIND=concepts`.
+- `QUERY_TEXT` is the candidate's discriminating fields: name + description + axes_present + contributing sidecar slugs + (if applicable) `canonical_in_docs` URL or `proposed_canonical` text.
+
+Act on the verdict:
+- `0 matches — create new` → write `detail/{kind}/{slug}.yaml` with the full concept content, append a headline entry under `by_kind.{kind}` in `index.yaml` matching the existing entries' shape (see `lineage/_extractor/registry-shard/shard.py:shard_concepts` for the canonical headline shape).
+- `1 strong match — strengthen {slug}` → read `detail/{kind}/{slug}.yaml`, append the new sidecar to `contributors`, merge new `nodes` entries (dedup by node_id), refresh aggregates (`security_aggregate.weaknesses`, `performance_aggregate.weaknesses`) by adding new weaknesses without removing existing ones, recompute `overall` based on the union. Do NOT rewrite existing `description` prose unless the candidate explicitly proposes a refined definition (in which case append `## REFINED — {batch_id}` block, do not replace).
+- `N candidates — maintainer-triage-ambiguous` → mint new slug with `maintainer_triage_pending: true` + ambiguity block; surface in investigator-log.
+
+Never auto-merge two concept entries even when they appear identical (e.g., "Data Entity" vs "DataEntity" or "Auth Mode" vs "Authentication Mode"). Naming-equivalence merges are maintainer-triggered.
+
+**Per-finding context budget**: ≤ 30 KB. Per-batch total: ≤ 200 KB regardless of catalog size.
+
 ## Exit
 
 Reply with exactly two lines:

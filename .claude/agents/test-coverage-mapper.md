@@ -236,6 +236,24 @@ When `MODE: full` (no prior artefact, prompt-version bumped, or `--full`), fall 
 
 `test-map.yaml` carries `processed_node_ids:` in frontmatter (newline-separated). Future incremental runs use the field to compute `NEW_SIDECAR_FILES`. Missing field triggers a one-shot full backfill.
 
+## Rule (rev 2) — Dedup via `registry-search` subagent; never load the sharded index directly
+
+**Supersedes rev-1's read-the-full-prior-artefact pattern for dedup.** After slice 6, `test-map.yaml` shards into `test-map/{index.yaml, detail/{TEST-GAP-NNN}.yaml}`. The full registry lives across 300+ detail files; loading the entire `index.yaml` into your own context defeats the rev-2 cost-ceiling fix.
+
+For every fresh TEST-GAP candidate you're about to commit, spawn the `registry-search` subagent following `playbooks/registry-search-spawn.md`:
+
+- Pass `INDEX_PATH=lineage/{repo}/test-map/index.yaml`, `ARTEFACT_KIND=test-map`.
+- `QUERY_TEXT` is the candidate's discriminating fields: uncovered_behaviour + node_id + test_class + criticality + related_refactor_ids + (if known) feature_id.
+
+Act on the verdict (see `playbooks/registry-search-spawn.md` for the full tree):
+- `0 matches — create new` → mint NEXT_AVAILABLE_ID + 1, write `detail/{NEW_ID}.yaml` with full entry (behaviour, test_class, criticality, node_id, proposed_test_files, related_refactor_ids, related_doc_gap_ids, feature_id if known), append headline to `index.yaml` under `test_gaps_index` matching `lineage/_extractor/registry-shard/shard.py:shard_test_map` headline shape.
+- `1 strong match — strengthen {TEST-GAP-NNN}` → read `detail/{TEST-GAP-NNN}.yaml`, append the new sidecar to `surfaced_by` (if absent), merge new `proposed_test_files` entries (dedup), add the new related_refactor_id / related_doc_gap_id (if absent). Do NOT rewrite the `behaviour` field unless the candidate explicitly refines the wording (in which case add a `refined_behaviour:` field, keeping the original `behaviour` intact). Update index headline ONLY if criticality / test_class changed.
+- `N candidates — maintainer-triage-ambiguous` → mint NEW_ID with `maintainer_triage_pending: true` + ambiguity block; surface in next investigator-log entry.
+
+Never auto-merge across HIGH-confidence candidates (e.g., two TEST-GAPs that look like the same uncovered behaviour on the same node — they may differ on test_class or on the specific assertion shape). Merges are maintainer-triggered.
+
+**Per-finding context budget**: ≤ 30 KB. Per-batch total: ≤ 200 KB regardless of registry size. The rev-2 cost-ceiling promise.
+
 ## Exit
 
 Reply with exactly two lines:

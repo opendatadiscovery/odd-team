@@ -267,11 +267,52 @@ Reply with exactly two lines:
 
 If the prior artefact existed and `STRENGTHENS` annotations were emitted, include the count in the second line: `<S_new> new features + <S_str> strengthened`.
 
+## Rule (rev 2) — Append-only emergent registry; dedup via `registry-search` subagent
+
+Per `adrs/drafts/feature-anchored-ontology.md` rev 2 principle 8: the feature registry is **append-only and emergent**. Each batch may discover new features OR extend existing features from a new entry-point angle. **No batch is gated on "the feature catalog is complete."** Progress is measured against the fixed substrate (`total_substrate_nodes`), never against feature count.
+
+**Dedup protocol.** For every candidate feature you're about to commit, spawn the `registry-search` subagent following `playbooks/registry-search-spawn.md`:
+
+- Until `feature-flows.yaml` crosses ~250 KB, pass `INDEX_PATH=lineage/{repo}/feature-flows.yaml` (the single-file form is still the search target).
+- After it crosses 250 KB (slice 9), the artefact shards into `feature-flows/{index.yaml, detail/{F-NNN}.yaml}` and you pass `INDEX_PATH=lineage/{repo}/feature-flows/index.yaml`.
+- Either way, `ARTEFACT_KIND=feature-flows`.
+- `QUERY_TEXT` is the candidate feature's discriminating fields: feature_name + entry_point + contributing_nodes (ordered list) + terminal_side_effect + the highest-leverage facet of `observed_vs_expected`.
+
+**Act on the verdict** with the rev-2 emergent-registry semantics:
+- `0 matches — create new` → mint NEXT_AVAILABLE_FEATURE_ID + 1, append a new feature entry. Record the discovery in this batch's delta block: `new_features: [F-NNN]`.
+- `1 strong match — extend {F-NNN}` → read the existing entry, ADD the new entry_point + new contributing_nodes to the chain (do NOT remove existing nodes), refresh `amplification_factor` if the new path's multiplicity changes the product, append a new facet to `observed_vs_expected.facets` only if the new entry-point surfaces a distinct user-observable consequence. Record in batch delta: `extended_features: [F-NNN: <which entry-point added>]`.
+- `N candidates — maintainer-triage-ambiguous` → mint a new F-NNN with `maintainer_triage_pending: true` + a `merge_candidates: [F-NNN1, F-NNN2, ...]` block. Surface in investigator-log; the maintainer decides whether to merge (recorded next batch as `merged_features: [F-NNN absorbed-by F-MMM]`).
+
+**Never auto-merge.** The emergent-registry promise (rev 2 risk-mitigation row "Emergent-feature registry never converges") is that merges are maintainer-triggered when two features share >50% of `contributing_nodes` AND the maintainer confirms they describe the same user-observable contract.
+
+**Per-batch delta block** at the head of `feature-flows.yaml` (or `feature-flows/index.yaml` after sharding):
+```yaml
+batch_discovery_delta:
+  batch_id: <batch identifier>
+  new_features: [F-NNN, ...]
+  extended_features:
+    - feature_id: F-NNN
+      entry_point_added: "<axis>:<descriptor>"
+      contributing_nodes_added: [<node_id>, ...]
+  merge_candidates:
+    - feature_id: F-NNN
+      candidates: [F-MMM, F-OOO]
+      maintainer_triage_pending: true
+  merged_features:    # next batch records the prior batch's maintainer-confirmed merges
+    - feature_id: F-NNN
+      absorbed_by: F-MMM
+      reason: "shared >70% contributing_nodes; both describe term-link-permission feature"
+```
+
+**Per-finding context budget**: ≤ 30 KB. Per-batch total: ≤ 200 KB regardless of registry size.
+
 ## Cross-references
 
-- ADR anchor: `adrs/drafts/feature-anchored-ontology.md` (the decision this reducer implements)
+- ADR anchor: `adrs/drafts/feature-anchored-ontology.md` (the decision this reducer implements; rev 2 principles 7 + 8)
 - Trigger case-law: `retrospectives/LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md`
 - Schema source: APPROACH.md section 4.4 (reducer table) + 4.3 (sidecar `upstream_callers` + `downstream_side_effects`)
+- Dedup protocol: `playbooks/registry-search-spawn.md`
+- Search subagent: `.claude/agents/registry-search.md`
 - Downstream consumers (post-refresh):
   - `doc-gap-finder` reads `feature-flows.yaml` to surface `feature-control-gap` DOC-NNN candidates (features with empty cells whose doc page doesn't warn)
   - `test-coverage-mapper` reads `feature-flows.yaml` to key TEST-GAP entries by `feature_id`

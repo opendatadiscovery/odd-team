@@ -1,0 +1,128 @@
+name: Authorization is path-pattern wired in SecurityConstants.SECURITY_RULES, not
+  controller annotations
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Repository-wide ADR: no controller carries `@PreAuthorize` / `@Secured`
+  / programmatic permission calls. Authorization is enforced externally via `SecurityConstants.SECURITY_RULES`
+  — a list of `(AuthorizationManagerType, PathPatternParserServerWebExchangeMatcher,
+  PolicyPermissionDto)` triples consumed by `AuthorizationCustomizer`. **CRITICAL
+  precondition** (verified batch 2026-05-12C): the AuthorizationCustomizer is wired
+  ONLY by `OAuthSecurityConfiguration.java:98` and `LDAPSecurityConfiguration.java:145`
+  — `LoginFormSecurityConfiguration.java:55-57` does NOT wire it (only `.pathMatchers("/**").authenticated()`),
+  and `DisabledAuthSecurityConfiguration.java:13-18` is permit-all. Under LOGIN_FORM
+  or DISABLED the entire SECURITY_RULES table is INERT — every per-rule manager(...)
+  call is silently absent. Trade-off: centralised matrix view vs path-string coupling
+  that breaks silently when paths drift (the `/term` vs `/terms` mismatch documented
+  under DataEntityController is the canonical failure mode) PLUS auth-mode coupling
+  that breaks silently when LOGIN_FORM is picked. Reinforced by method-level sidecars:
+  regenerateCollectorToken (gated via SECURITY_RULES at line 135-137), getAllAlerts
+  (NOT in SECURITY_RULES — fall-through to authenticated()), uploadFileChunk (gated
+  via path-glob matching but with cross-entity-hijack failure mode), postMessageInSlack
+  (NOT in SECURITY_RULES — fall-through ungated), getActivity (NOT in SECURITY_RULES
+  — fall-through ungated). The LDAP `containsIgnoreCase` admin-match (substring-collision
+  admin escalation) is a SECOND structural failure mode of path-pattern + name-based
+  authorization. **Batch E reinforcement on the RBAC primary surface**: RoleController.createRole
+  + PolicyController.createPolicy + OwnerController.createOwner are textbook examples
+  of the pattern WORKING — each gated NO_CONTEXT against a Permission (ROLE_CREATE
+  / POLICY_CREATE / OWNER_CREATE) wired in SECURITY_RULES with no controller-level
+  annotations. PermissionController.getResourcePermissions is the deliberate read-side
+  INTENTIONAL absence — the read endpoint reveals only the caller''s own resolved
+  permissions and is therefore intentionally left out of SECURITY_RULES. SearchController.search
+  is a third read-collaborative fall-through (no SECURITY_RULES entry) that also exhibits
+  the cross-owner-enumeration failure mode.'
+axes_present:
+- controllers
+nodes:
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DirectoryController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController
+- odd-platform java CollectorController controller-method:regenerateCollectorToken
+- odd-platform java AlertController controller-method:getAllAlerts
+- odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk
+- odd-platform java DataCollaborationController controller-method:postMessageInSlack
+- odd-platform java ActivityController controller-method:getActivity
+- odd-platform java DisabledAuthSecurityConfiguration config-key-consumer:auth.type@L10
+- odd-platform java LoginFormSecurityConfiguration config-key-consumer:auth.type@L31
+- odd-platform java OAuthSecurityConfiguration config-key-consumer:auth.type@L71
+- odd-platform java LDAPSecurityConfiguration config-key-consumer:auth.type@L51
+- odd-platform java RoleController controller-method:createRole
+- odd-platform java PolicyController controller-method:createPolicy
+- odd-platform java OwnerController controller-method:createOwner
+- odd-platform java PermissionController controller-method:getResourcePermissions
+- odd-platform java SearchController controller-method:search
+contributors:
+- 'DataEntityController + DataEntityAttachmentController sidecars: implicit_adrs naming
+  the path-pattern wiring + the term path-mismatch failure'
+- 'AlertController: implicit_adrs[1] — authorization-is-service-layer (the alerts
+  variant of the same pattern, where SECURITY_RULES is empty)'
+- 'DirectoryController: implicit_adrs[5] — GETs are uniformly authenticated-only across
+  the platform'
+- 'GenAIController: implicit_adrs[1] — authorization is wired via path-matcher fall-through
+  (no SECURITY_RULES entry)'
+- 'regenerateCollectorToken.implicit_adrs[0]: example of the pattern WORKING — endpoint
+  gated by COLLECTOR_TOKEN_REGENERATE'
+- 'getAllAlerts.implicit_adrs[0]: example of the FALL-THROUGH default (no rule = catch-all
+  .authenticated())'
+- 'uploadFileChunk.implicit_adrs[2]: gate evaluates against URL''s data_entity_id
+  with no service-side cross-validation — pattern''s structural failure mode'
+- 'postMessageInSlack.bugs_limitations_corner_cases[0]: no SECURITY_RULES entry →
+  fall-through to authenticated() catch-all'
+- 'getActivity.security.authorization_assertions: no SECURITY_RULES entry; falls through'
+- 'DisabledAuthSecurityConfiguration@L10: PRECONDITION-side — explicit `.anyExchange().permitAll()`
+  at line 16 means the entire SECURITY_RULES table is INERT under DISABLED; no per-rule
+  manager(...) call ever fires'
+- 'LoginFormSecurityConfiguration@L31: PRECONDITION-side — `.pathMatchers("/**").authenticated()`
+  at line 57 means SECURITY_RULES is INERT under LOGIN_FORM; the AuthorizationCustomizer
+  constructor is never called. REFACTOR-073 validated.'
+- 'OAuthSecurityConfiguration@L71: PRECONDITION-side — `.authorizeExchange(new AuthorizationCustomizer(permissionService,
+  extractors))` at line 98 is THE wiring point under OAUTH2'
+- 'LDAPSecurityConfiguration@L51: PRECONDITION-side — same AuthorizationCustomizer
+  wiring at line 145 under LDAP; SecurityWebFilterChain at `Ordered.HIGHEST_PRECEDENCE`'
+- 'LDAPSecurityConfiguration@L51.implicit_adrs[containsIgnoreCase admin match]: SECONDARY
+  structural failure mode of name-based authorization — substring match invites substring-collision
+  admin escalation'
+- 'RoleController.createRole.implicit_adrs[0]: example of the pattern WORKING — `POST
+  /api/roles → ROLE_CREATE` (SecurityConstants.java:169), NO_CONTEXT, uniform pattern
+  across NAMESPACE / POLICY / ROLE / TAG / OWNER mutation endpoints'
+- 'PolicyController.createPolicy.implicit_adrs[0]: example of the pattern WORKING
+  for MANAGEMENT-tier permissions — `POST /api/policies → POLICY_CREATE` (SecurityConstants.java:163-164)'
+- 'OwnerController.createOwner.implicit_adrs[0]: example of the pattern WORKING —
+  `POST /api/owners → OWNER_CREATE` (SecurityConstants.java:143)'
+- 'PermissionController.getResourcePermissions.implicit_adrs[3]: example of the pattern''s
+  read-side INTENTIONAL absence — `GET /api/resource/.../permissions` deliberately
+  falls through to catch-all `.authenticated()`; the convention is GETs typically
+  fall through and SECURITY_RULES enumerates MUTATIONS'
+- 'SearchController.search: example of the FALL-THROUGH default for a read surface
+  (no SECURITY_RULES entry; falls through to `.authenticated()`) AND of the pattern''s
+  structural failure mode (read-collaborative cross-owner enumeration with NO owner
+  predicate — same admin-path-without-admin-gate shape as getAllAlerts + getActivity)'
+evidence:
+- DataEntityController.md:implicit_adrs.[0] + bugs_limitations_corner_cases.[0] (term
+  path mismatch)
+- DataEntityAttachmentController.md:implicit_adrs.[1]
+- AlertController.md:implicit_adrs.[1]
+- DirectoryController.md:implicit_adrs.[5]
+- GenAIController.md:implicit_adrs.[1]
+- regenerateCollectorToken.md:implicit_adrs.[0]
+- getAllAlerts.md:implicit_adrs.[0]
+- uploadFileChunk.md:implicit_adrs.[2]
+- postMessageInSlack.md:bugs_limitations_corner_cases.[0]
+- getActivity.md:security.authorization_assertions
+- DisabledAuthSecurityConfiguration@L10.md:security.authorization_assertions (the
+  absence is the finding — `.anyExchange().permitAll()`)
+- LoginFormSecurityConfiguration@L31.md:bugs_limitations_corner_cases.[0] + security.known_security_gaps.[0]
+  (no AuthorizationCustomizer — REFACTOR-073 validated)
+- OAuthSecurityConfiguration@L71.md:implicit_adrs.[0] + security.authorization_assertions.[0]
+  (.authorizeExchange(new AuthorizationCustomizer(...)))
+- LDAPSecurityConfiguration@L51.md:implicit_adrs.[AuthorizationCustomizer mode-agnostic]
+  + security.authorization_assertions.[1]
+- LDAPSecurityConfiguration@L51.md:implicit_adrs.[containsIgnoreCase admin match]
+  + security.known_security_gaps.[substring admin match]
+- createRole.md:implicit_adrs.[0] (SECURITY_RULES uniform gating)
+- createPolicy.md:implicit_adrs.[0] (declarative-not-annotation-driven authorization)
+- createOwner.md:implicit_adrs.[0] (SECURITY_RULES centralisation)
+- getResourcePermissions.md:implicit_adrs.[3] (intentional fall-through for read endpoints)
+- search.md:implicit_adrs.[1] (fall-through to .authenticated() for the read-collaborative
+  search surface)

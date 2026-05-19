@@ -1,0 +1,13 @@
+- **ADR-CANDIDATE-013**: REMOTE attachment storage is MinIO-SDK-only (not AWS SDK v2); AWS-specific code paths are absent
+  - **Category**: promote
+  - **Support**: surfaced by 1 sidecar (attachment.yml) — substantive integration decision
+  - **Surfaced by**:
+    - `odd-platform__yaml__application_yml__config-prefix__attachment.md:implicit_adrs.[2]` ("REMOTE storage is S3-compatible-only, and specifically targets the MinIO SDK rather than AWS SDK v2 — the `MinioAsyncClient` builder is the only client constructed, and there is no AWS-specific code path.")
+  - **Decision statement**: REMOTE storage is implemented exclusively against the MinIO SDK (`MinioAsyncClient`); the codebase does not use AWS SDK v2 even when targeting AWS S3. Operators using AWS S3 are deploying through the MinIO SDK's S3-compatibility surface, not through Amazon's first-party SDK. The decision affects how operators configure region/endpoint (LSN-002 captures the missing `.region(...)` builder call that produced silent `us-east-1` lock-in).
+  - **Wisdom test**: PASS. Deliberate (only MinIO SDK constructed, no AWS SDK code paths); structural (integration substrate); LSN-002 retrospective is the canonical case-law for the consequences.
+  - **Evidence**:
+    - attachment.md says: "MinioConfig.java:3 + MinioConfig.java:20-25 + RemoteFileUploadServiceImpl.java:3-8"
+  - **Existing ADR**: none.
+  - **Co-surfaced gaps** (link from `refactoring-scopes.md`): REFACTOR-026 (LSN-002-canonical), REFACTOR-029 (HTTP-client timeouts not exposed via YAML — MinioConfig builds with no custom OkHttpClient), REFACTOR-030 (S3 credentials cannot be supplied via IAM instance profile — only Spring `@Value`-injected static keys).
+  - **Proposed action**: Promote to `adrs/drafts/remote-storage-minio-sdk.md` (new ADR). Cross-reference LSN-002 explicitly — the decision to use MinIO SDK over AWS SDK v2 is what makes the `.region(...)` configuration manual; an ADR documenting this avoids future "let's switch to AWS SDK v2" surprises.
+  - **Severity rationale**: MEDIUM — integration-substrate decision; affects operator's regional-configuration UX.

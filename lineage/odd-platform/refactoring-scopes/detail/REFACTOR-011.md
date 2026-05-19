@@ -1,0 +1,11 @@
+- **REFACTOR-011**: Concurrent chunks with the same `index` for the same `uploadId` race-overwrite each other silently — no idempotency token beyond `index`
+  - **Category**: race-condition
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityAttachmentController.md:bugs_limitations_corner_cases.[1]` (MEDIUM)
+    - **STRENGTHENED 2026-05-10A**: `odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk.md:bugs_limitations_corner_cases.[4]` (MEDIUM) ("Same-`index` race overwrites silently. `FilePart.transferTo(chunkDirectory.resolve(String.valueOf(index)))` is a last-writer-wins file write keyed by `index`. A client retrying chunk `index=3` while the prior attempt is still flushing has both writes target the same path. Reactor's `transferTo` does not provide write-isolation semantics; the prior write may be partially flushed when the second begins. The assembled file (`completeFileUpload`) reads chunks via `FileUtils.listFilesInOrder` and concatenates whatever bytes are present — corruption is silent.")
+  - **Statement**: `FilePart.transferTo(path.resolve(String.valueOf(index)))` is last-writer-wins file write keyed by `index`. If a client retries a failed chunk while the first attempt is still flushing, both writes target the same path; a retry-after-partial-write pattern can produce a corrupt assembled file with no error surfaced.
+  - **Evidence**: `DataEntityAttachmentController.java:54-62` + `FileServiceImpl.java:58-67`
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Use `Files.move(StandardCopyOption.ATOMIC_MOVE)` from a per-attempt temp file; or per-chunk `(index, attempt)` key; or strict version of `FileChannel.tryLock`. Add an integration test that fires concurrent chunks with the same index.
+  - **Severity rationale**: MEDIUM — silent data corruption under specific retry patterns.
+  - **Suggested backlog grouping**: `Attachment integrity sprint`

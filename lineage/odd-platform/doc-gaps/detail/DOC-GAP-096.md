@@ -1,0 +1,11 @@
+- **DOC-GAP-096**: Markdown rendering on data-entity descriptions is not sanitised at the backend AND the UI's `rehype-raw` configuration has no `rehype-sanitize` — stored-content-injection surface entirely undocumented
+  - **Category**: drift (security caveat absent on doc page covering the feature)
+  - **Surfaced by**: `upsertDataEntityInternalDescription.md:bugs_limitations_corner_cases[0]` + `upsertDataEntityInternalDescription.md:security.known_security_gaps[0]` + `upsertDataEntityInternalDescription.md:docs_link_semantic.doc_drift_findings[3]`
+  - **Evidence**:
+    - `ReactiveDataEntityRepositoryImpl.java:430-438` — UPDATE writes description body verbatim; no `Jsoup.clean`, no `Encode.html`, no allowlist.
+    - `pnpm-lock.yaml:5922` — `rehype-raw@6.1.1` transitive of `@uiw/react-markdown-preview@4.2.2`; parses raw HTML in Markdown into AST nodes that `react-markdown` then renders.
+    - Sidecar grep verification: `rehype-sanitize` returns 0 matches across the entire UI repo; `skipHtml` prop not passed on `MDEditor.Markdown` invocation (`Markdown.tsx:113-124`).
+    - WebFetch `/features/data-discovery/business-names` (2026-05-18, status 200): page covers business-names only; no description-editing / Markdown / sanitisation mention.
+    - WebFetch `/configuration-and-deployment/enable-security/authorization/permissions` (2026-05-18, status 200): defines `DATA_ENTITY_DESCRIPTION_UPDATE` without caveat about the Markdown rendering surface.
+  - **Proposed doc action**: Add "Description rendering & security" admonition on the entity-description doc page (likely `data-discovery/catalog-overview.md` or new `data-discovery/entity-description.md`) that (a) states descriptions stored verbatim with no backend sanitisation, (b) UI renders via react-markdown + rehype-raw without rehype-sanitize, (c) recommends operator review before exposing endpoint to untrusted writers, (d) cross-references `DATA_ENTITY_DESCRIPTION_UPDATE` gating.
+  - **Severity rationale**: HIGH — writer is permission-gated under authenticated modes but readers are every authenticated catalog visitor; one malicious / careless writer reaches every reader, and there is no published guidance for operators to evaluate the surface. LSN-001/LSN-002 class.

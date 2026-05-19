@@ -1,0 +1,9 @@
+- **REFACTOR-015**: `getDataEntityActivity` exposes who-changed-what audit trail to any authenticated user
+  - **Category**: missing-auth
+  - **Surfaced by**: `concepts.yaml:entities[Data Entity].security_aggregate.weaknesses.[2]`
+  - **Statement**: The activity stream (per-data-entity who-did-what audit log) is a GET endpoint outside SECURITY_RULES. Any authenticated user can read any entity's activity — including who has been editing descriptions, tags, terms, ownership, and so on.
+  - **Evidence**: `DataEntityController.java` (activity endpoint method) + `SecurityConstants.java:98-355` (no matcher)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-003 (read-collaborative, BORDERLINE) MAY defend this — but activity audit trails are a sensitive class typically gated more strictly than catalog reads. Surface for triage. (NEW 2026-05-10A: REFACTOR-053 generalises this finding to the global activity feed at `/api/activity` — both should be triaged together.)
+  - **Proposed remedy**: Either confirm under ADR-CANDIDATE-003 (and document on the live security page that "any authenticated user reads any entity's audit trail") or add a `DATA_ENTITY_ACTIVITY_READ` permission. Triage decision.
+  - **Severity rationale**: MEDIUM — audit-trail confidentiality.
+  - **Suggested backlog grouping**: `Authorization audit batch`

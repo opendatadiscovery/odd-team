@@ -1,0 +1,10 @@
+- **REFACTOR-077** (NEW 2026-05-10B): `IllegalArgumentException` on missing `counterValue.getTotal()` aborts the entire ingestion batch — no per-point isolation; one malformed counter rejects every co-batched metric for every DataEntity in the request
+  - **Category**: batch-isolation
+  - **Surfaced by**:
+    - `odd-platform__java__CounterTimeSeriesExtractor__config-key-consumer__metrics_storage@L20.md:bugs_limitations_corner_cases.[2]` (severity MEDIUM)
+  - **Statement**: `CounterTimeSeriesExtractor.java:38-40` throws `IllegalArgumentException("Counter value is null")` when `counterValue.getTotal() == null`. The exception escapes `ExternalIngestionMetricsServiceImpl.writeRequest()` (lines 222-251) which iterates over every MetricFamily / Metric / MetricPoint in the request body — one bad point in a batch aborts the entire batch's `saveMetricsToPrometheus` chain, rejecting metrics for every co-batched DataEntity. There is no per-point try/catch, no per-extractor isolation, no `Flux.concatMapDelayError` to continue past failure.
+  - **Evidence**: `CounterTimeSeriesExtractor.java:38-40` + `ExternalIngestionMetricsServiceImpl.java:222-251` (no per-extractor try/catch)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-026 (NEW) describes the per-MetricType dispatch but does NOT defend the absence of per-point isolation.
+  - **Proposed remedy**: Wrap the per-MetricPoint extraction in try/catch within `writeRequest`; collect failed points as a "rejected" list returned to the caller (with structured error details); proceed with the rest of the batch. Add a Micrometer counter for rejected points.
+  - **Severity rationale**: MEDIUM — operational hostility on a batch-ingestion path; a single misconfigured collector poisons the entire ingestion stream.
+  - **Suggested backlog grouping**: `Metric storage hardening`

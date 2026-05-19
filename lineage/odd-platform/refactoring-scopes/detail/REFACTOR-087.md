@@ -1,0 +1,10 @@
+- **REFACTOR-087** (NEW 2026-05-10B): No `@Min(1)` validation on `odd.activity.partition-period` — `0` produces no-partition-creation silently (no rows can INSERT); negative values produce invalid `endDate < beginDate` CREATE
+  - **Category**: missing-validation
+  - **Surfaced by**:
+    - `odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md:bugs_limitations_corner_cases.[1]` (severity MEDIUM)
+  - **Statement**: `ActivityTablePartitionManager.java:11` carries `@Value("${odd.activity.partition-period:30}")` with no `@Min(1)` / `@Positive` validation. A `partition-period=0` boot would: (a) compute `bufferDate = baseline.plusDays(0)` = baseline; (b) the `while (lastPartitionDate.isBefore(bufferDate))` predicate evaluates `baseline.isBefore(baseline)` = false; (c) NO partition is created. Rows arriving for `INSERT INTO activity` would be REJECTED by Postgres with `no partition of relation "activity" found for row` — a silent operator misconfiguration produces a hard-fail INSERT path with no boot-time validation error. A negative value would attempt to CREATE a partition with `endDate < beginDate`, rejected by Postgres at CREATE time and logged at ERROR (then swallowed per REFACTOR-086).
+  - **Evidence**: `ActivityTablePartitionManager.java:11` (no `@Min` / `@Positive`) + `AbstractPartitionManager.java:30,33-37` (the bufferDate + while-loop arithmetic)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-028 (NEW — range-partition lifecycle) does NOT defend the absence of validation.
+  - **Proposed remedy**: Either add `@Positive` to the consumer (`@Positive @Value("${odd.activity.partition-period:30}")`) — requires `@Validated` at class level; OR migrate to `@ConfigurationProperties` POJO with `@Validated` + `@Positive`. Same applies to `MessageTablePartitionManager` (`datacollaboration.message-partition-period`).
+  - **Severity rationale**: MEDIUM — operator-error gated; the default value saves the bundled deployment.
+  - **Suggested backlog grouping**: `Activity partition lifecycle hardening`

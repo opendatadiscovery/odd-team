@@ -1,0 +1,8 @@
+- **REFACTOR-022**: No controller-level test exists for any DataEntityAttachmentController endpoint
+  - **Category**: missing-test
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityAttachmentController.md:bugs_limitations_corner_cases.[3]` (MEDIUM); STRENGTHENED 2026-05-10A: `odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk.md:tests_coverage_semantic.gaps` (chunk-method sidecar confirms zero matches via `find` and adds the chunked-protocol-as-highest-value-target framing).
+  - **Statement**: 10 endpoints, including the stateful chunked-upload protocol, with no `@WebFluxTest` coverage. The chunked-upload protocol is the highest-value target for a wired integration test.
+  - **Evidence**: `find <odd-platform> -path '*test*' -name 'DataEntityAttachmentController*'` returned no matches
+  - **Proposed remedy**: Add `@WebFluxTest(DataEntityAttachmentController.class)`; add an integration test for the multi-call upload protocol (initiate → chunk × N → complete).
+  - **Severity rationale**: MEDIUM — catches REFACTOR-013-class bugs (server-side cap bypass).
+  - **Suggested backlog grouping**: `Controller test bootstrap`

@@ -1,0 +1,9 @@
+- **REFACTOR-170** (NEW 2026-05-12D): SmtpProperties.auth / starttls values are boxed `Boolean` objects but JavaMail's Properties bag expects `String` values per its documentation. The implicit `Object.toString()` invocation works but is implicit-contract-dependent — a JavaMail version bump could break it
+  - **Category**: refactor-risk
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__EmailSenderProperties.md:bugs_limitations_corner_cases.[7]` (LOW)
+  - **Statement**: `NotificationConfiguration.java:65-66` calls `props.put("mail.smtp.auth", Boolean.TRUE)` — Jakarta Mail's docs specify String values ("true" / "false"). The current implementation relies on `Object.toString()` being called downstream when the Properties bag is consumed. This is a working-by-accident implementation; a JavaMail version bump could change the consumer behaviour.
+  - **Evidence**: `NotificationConfiguration.java:65-66` (the put) + JavaMail documentation (String values expected)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Convert at the put: `props.put("mail.smtp.auth", String.valueOf(Boolean.TRUE.equals(emailProperties.getSmtp().getAuth())))`. The explicit String conversion is JavaMail-spec-correct.
+  - **Severity rationale**: LOW — preventive; no current symptom but a refactor-risk.
+  - **Suggested backlog grouping**: `Notifications hardening`

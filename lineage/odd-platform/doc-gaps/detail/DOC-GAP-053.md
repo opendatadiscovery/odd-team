@@ -1,0 +1,13 @@
+- **DOC-GAP-053**: **META-FINDING** — "docs frame default behaviour but omit blast radius" pattern (3-sidecar triangulated; cross-cutting class)
+  - **Category**: drift
+  - **Surfaced by**:
+    - DOC-GAP-036 + DOC-GAP-045 (DISABLED-default of `auth.type` — docs frame, blast radius omitted)
+    - DOC-GAP-038 (`auth.ingestion.filter.enabled=false` default — partial doc coverage on parent page, blast radius and sibling-endpoint coverage omitted)
+    - DOC-GAP-041 (activity-feed partition retention claim — page frames cadence, claims retention, code has no DROP)
+    - Pattern referenced in concepts.yaml's batch-C cross-cutting findings comment block
+  - **Evidence**: aggregated from above findings — common shape is **(a) page exists at the canonical home, (b) page documents the setting and its happy path, (c) page does NOT enumerate the operational consequence cluster** that materialises when an operator inherits the default. The cluster size varies (DISABLED: 6 consequences; ingestion-filter: 2 sibling-endpoint coverage gaps; activity-feed: 1 DROP-path absence) but the failure mode is the same.
+  - **Proposed doc action**: This finding is a **meta-recommendation, not a single-page doc action**. The maintainer-facing action is: when authoring any "default behaviour" claim on a doc page, run a Pre-authoring stance check item: "Does the default's blast radius live next to the claim, or several sections away?" Concretely, the maintainer could systematise this by adding to `pillars/documentation/gates.md` an explicit Gate 3 extension: "Caveats captured as admonition blocks must appear ADJACENT to the default behaviour claim, not three sections away. A page that says 'the default is X' without the consequence cluster of X is failing Gate 3 even if the consequence cluster appears on a sibling page." Add to `playbooks/pre-authoring-stance.md` an explicit blast-radius prompt.
+  - **Cross-references**:
+    - LSN-001 (attachment-ephemeral default) + LSN-002 (MinIO region unset) — both are this pattern's canonical case-law; the case-law cluster grows as the substrate surfaces more instances
+    - All three batches (2026-05-08 + 2026-05-10A + 2026-05-12C) have surfaced instances of this pattern; recommend the maintainer treat it as a documentation-pillar standing concern, not a per-page fix
+  - **Severity rationale**: HIGH (meta) — the pattern is responsible for at least 9 of the current HIGH-severity findings. Surfacing it as a standing pillar concern accelerates future scans by giving the reviewer a named pattern to spot.

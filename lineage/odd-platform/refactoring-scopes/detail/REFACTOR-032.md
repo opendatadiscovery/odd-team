@@ -1,0 +1,11 @@
+- **REFACTOR-032**: `ExternalAlert.startsAt` is timezone-naive `LocalDateTime`; AlertManager's RFC3339 timezone offset is silently stripped by Jackson
+  - **Category**: buggy-default
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md:bugs_limitations_corner_cases.[1]` (MEDIUM)
+    - `concepts.yaml:entities[AlertManager Webhook Receiver].security_aggregate.weaknesses.[4]`
+  - **Statement**: `ExternalAlert.java:14` declares `private LocalDateTime startsAt`; Prometheus AlertManager sends `startsAt` as RFC3339 with timezone (e.g. `2026-05-08T10:23:45.123Z`). Jackson's default `LocalDateTime` deserialiser strips the offset. If the platform JVM and AlertManager are in different zones, alert timestamps drift by the offset.
+  - **Evidence**: `ExternalAlert.java:14` + `AlertServiceImpl.java:67-68`
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Change `LocalDateTime` to `OffsetDateTime` or `Instant`. Update `AlertServiceImpl` formatter pattern to preserve the zone. Add a unit test with a zoned input.
+  - **Severity rationale**: MEDIUM — timestamp correctness on the alert-routing path.
+  - **Suggested backlog grouping**: `AlertManager hardening`

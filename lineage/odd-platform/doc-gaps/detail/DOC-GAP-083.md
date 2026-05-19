@@ -1,0 +1,27 @@
+- **DOC-GAP-083**: **META-FINDING** — No-audit-log on RBAC mutations pattern (3-sidecar triangulated: Role + Policy + Owner; doc-side action requires 3 page admonitions; code-side fix is a uniform `@ActivityLog`/audit-table addition across 3 services)
+  - **Category**: drift (meta)
+  - **Surfaced by**:
+    - `createRole.md:security.known_security_gaps.[1]` (HIGH — no audit logging on role mutations) **(NEW batch E)**
+    - `createPolicy.md:security.known_security_gaps.[1]` (HIGH — no audit logging on policy mutations) + `:bugs_limitations_corner_cases.[1]` **(NEW batch E)**
+    - `createOwner.md:security.known_security_gaps.[0]` (MEDIUM — no `@ActivityLog` on OwnerServiceImpl.create) + `:bugs_limitations_corner_cases.[4]` **(NEW batch E)**
+    - `concepts.yaml:invariants[No-audit-log on RBAC mutations]` (3-sidecar triangulated, version 6)
+  - **Evidence**:
+    - Pattern: every RBAC primary-surface service (`PolicyServiceImpl`, `RoleServiceImpl`, `OwnerServiceImpl`) is missing audit signals. Specific instances verified:
+      - `PolicyServiceImpl.create` (lines 62-69), `.update` (lines 71-81), `.delete` (lines 83-95) — no `@Slf4j` log calls; no audit-table insert; no event publication. V0_0_55__add_policies_and_roles.sql contains no `policy_audit` / `policy_history` companion table.
+      - `RoleServiceImpl.create` (lines 51-61), `.update` (lines 63-77), `.delete` (lines 79-92) — same absence pattern. No audit table.
+      - `OwnerServiceImpl.create` (lines 55-66) — no `@ActivityLog` annotation (grep verified: `@ActivityLog` appears in `AlertHaltConfigServiceImpl`, `AlertServiceImpl`, `DataEntityInternalStateServiceImpl`, `DataEntityServiceImpl`, `DataEntityGroupServiceImpl` ONLY — none of the three RBAC primary-surface services).
+    - Cross-axis verification: the platform's activity feed (`/api/activity` — Activity Feed concept from batch A) covers DataEntity / Alert / DataEntityInternalState activity but does NOT extend to Role / Policy / Permission / Owner-directory mutations.
+    - WebFetch of each `/authorization/{roles,policies,owners,permissions}` page 2026-05-12 confirms NONE of the four pages warns operators about the RBAC audit-trail gap; `/authorization` parent page is also silent.
+  - **Proposed doc action**: Three-part action.
+    1. **Doc-side**: add a "Audit trail" admonition to each of the three RBAC primary-surface pages (`enable-security/authorization/policies.md`, `roles.md`, `owners.md`): "**RBAC mutations are not audit-logged**. `POST` / `PUT` / `DELETE` operations on `/api/{policies,roles,owners}` emit no application-log line, publish no event, and INSERT into no audit-history table. The platform's activity feed (`GET /api/activity`) does NOT cover RBAC mutations — only DataEntity-side state changes. A security-incident reviewer asking 'who authored / modified this MANAGEMENT/ALL policy on date X?' cannot answer from the running platform; the operator must consult external DB-side audit (Postgres `pg_audit` or a similar mechanism). For audit-required deployments, configure DB-side query logging on the `policy`, `role`, `role_to_policy`, `owner`, and `owner_to_role` tables before promoting to production."
+    2. **Code-side upstream**: file `/log-issue odd-platform` with three options ordered by scope: (a) **Minimum**: add `@Slf4j` log.info to PolicyServiceImpl.create / RoleServiceImpl.create / OwnerServiceImpl.create — minimum-cost log-only audit. (b) **Medium**: add `@ActivityLog` annotations matching the existing pattern (AlertServiceImpl + DataEntityServiceImpl); requires extending `ActivityEventType` enum to cover RBAC mutations + extending `ActivityState` renderer for Role/Policy/Owner payloads. (c) **Full**: introduce a dedicated `rbac_audit` append-only table written via `BaseSoftDeleteCRUDRepository`'s mutation lifecycle hooks; full forensic trail; coordinates with the existing soft-delete pattern.
+    3. **Pillar-side meta-recommendation**: add to `pillars/documentation/gates.md` a reviewer checklist item: "For any doc page describing a mutating RBAC operation (Policy / Role / Owner / Permission), verify the page includes an Audit-trail caveat naming the absence of in-application audit logging (or — once fixed — naming the audit mechanism)."
+  - **Cross-references**:
+    - DOC-GAP-072, DOC-GAP-073, DOC-GAP-075 — the 3 affected RBAC primary-surface doc pages (audit-absence is a sub-finding of each)
+    - DOC-GAP-082 (META — DISABLED-bypasses-RBAC; the audit gap compounds the DISABLED gap: under DISABLED, escalation is silent and trail-free)
+    - DOC-GAP-053 (META — docs frame defaults without blast radius; adjacent class)
+    - LSN-001 / LSN-002 — operator-impact-by-omission class
+    - Drives `/log-issue odd-platform` upstream for audit-log mechanism across 3 services
+  - **Severity rationale**: HIGH (meta) — 3-sidecar triangulated; the highest-leverage gap in the RBAC surface because every other security weakness assumes attack visibility via logs (this one says logs don't exist). Compounds DOC-GAP-082 META: under DISABLED, escalation is silent (no auth check) AND trail-free (no audit). Operators committing to ODD as their authorization fabric need to understand that the platform's audit story for RBAC mutations is "configure DB-side audit yourself"; the docs currently leave this entirely implicit. Single class-level mitigation (audit pattern added to all 3 services + 3 doc admonitions) closes the gap structurally.
+
+#### Batch 2026-05-13-G new HIGH findings (DOC-GAP-096..099)

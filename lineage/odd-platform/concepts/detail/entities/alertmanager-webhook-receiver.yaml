@@ -1,0 +1,121 @@
+name: AlertManager Webhook Receiver
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Inbound HTTP webhook receiver at `POST /ingestion/alert/alertmanager`
+  that accepts Prometheus AlertManager-shaped payloads and materialises each as a
+  `DISTRIBUTION_ANOMALY` Alert keyed by the `entity_oddrn` label. Distinct from the
+  platform''s internal Alert lifecycle: external write-only ingress, no `*Api` interface,
+  hand-rolled DTO, unauthenticated by design (operator-delegated network controls)
+  (AlertManagerController sidecar `understanding`). Live `main-concepts.md` Terms
+  & Aliases lists ''Slack alert webhook'' as an outgoing variant; this is the INCOMING
+  AlertManager-shaped variant, not yet listed.'
+axes_present:
+- controllers
+nodes:
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
+contributors:
+- 'AlertManagerController: entities[ExternalAlert, AlertManagerRequest, DISTRIBUTION_ANOMALY
+  alert, entity_oddrn label]'
+evidence:
+- AlertManagerController.md:concepts.entities.[ExternalAlert, AlertManagerRequest]
+- AlertManagerController.md:concepts.operations.[receive AlertManager webhook]
+- AlertManagerController.md:implicit_adrs.[0] (no_openapi_contract)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - DISABLED
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: Path is in SecurityConstants.WHITELIST_PATHS (`/ingestion/**` at SecurityConstants.java:96),
+      so AuthorizationCustomizer.java:22 exempts it from the entire UI authentication
+      chain. Also NOT covered by IngestionDataEntitiesFilter (which only matches `/ingestion/entities`
+      POST). Authentication is operator-delegated to network-layer controls (reverse
+      proxy, mTLS, NetworkPolicy).
+  owner_scoping:
+    verdict: N/A
+    detail: Inbound write-only path. No current-user concept. Caller chooses entity_oddrn
+      freely → no authorization that caller may raise an alert on the chosen entity.
+  strengths:
+  - Live security doc explicitly warns operators ('Apply perimeter controls (network
+    segmentation, authenticating reverse proxy, mTLS) for any deployment where these
+    endpoints are reachable from outside the trusted network')
+  - '@ReactiveTransactional ensures per-batch atomicity on AlertServiceImpl.handleExternalAlerts
+    (AlertServiceImpl.java:152)'
+  weaknesses:
+  - No application-layer authentication, no shared-secret, no token mechanism on `/ingestion/alert/alertmanager`
+    — entirely operator-delegated to network layer (severity HIGH per sidecar)
+  - 'Alert spoofing: caller chooses arbitrary `entity_oddrn`, no check that caller
+    is authorised to raise DISTRIBUTION_ANOMALY against that entity — fabricated alerts
+    surface to all authenticated users on target entity''s page (severity HIGH)'
+  - No rate limit / payload size limit / dedup — unauthenticated caller can flood
+    ODD with `AlertPojo` + `AlertChunkPojo` rows (DoS vector + noise injection)
+  - 'Silent orphaning: payload missing `entity_oddrn` label is accepted, persisted
+    with null `data_entity_oddrn`, returns 204 No Content — caller has no signal of
+    misconfiguration (severity HIGH)'
+  - ExternalAlert.startsAt is timezone-naive `LocalDateTime`; AlertManager's RFC3339
+    timezone offset is silently stripped by Jackson
+  cross_file_inconsistencies: []
+  contributing_files:
+  - AlertManagerController.md
+  evidence:
+  - AlertManagerController.md:security.known_security_gaps.[0-3]
+  - AlertManagerController.md:bugs_limitations_corner_cases.[0] (silent_orphan)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - Webhook fired by Prometheus AlertManager on alert events — per-group POST every
+    5m minimum (AlertManager group_interval default) — AlertManagerController
+  - 'Per-request DB write fan-out: each ExternalAlert in payload produces one AlertPojo
+    + one AlertChunkPojo row inside @ReactiveTransactional handleExternalAlerts —
+    AlertManagerController + AlertServiceImpl'
+  throughput_shape:
+    verdict: BATCH_FRIENDLY
+    detail: AlertManagerRequest carries List<ExternalAlert> — per-group batching does
+      cluster alerts into one POST. But no cross-request batching; back-to-back POSTs
+      each open their own transaction.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless controller (only injected AlertService field). Multiple replicas
+      behind a load balancer can each accept POSTs concurrently. @ReactiveTransactional
+      ensures per-batch atomicity but offers no cross-replica ordering guarantee.
+  strengths:
+  - Reactive Mono signature — non-blocking up to the service boundary
+  - Stateless controller — instances scale horizontally without coordination
+  weaknesses:
+  - No rate limit on the endpoint — misconfigured/malicious AlertManager creates unbounded
+    AlertPojo + AlertChunkPojo rows
+  - No deduplication of repeated alerts within a short window — AlertManager `group_interval`
+    re-sends every 5m by default; each re-send creates a fresh AlertPojo even if `(entity_oddrn,
+    type=DISTRIBUTION_ANOMALY)` already has an OPEN alert
+  - No backpressure / queue between HTTP intake and DB write — bursty AlertManager
+    groups (post-incident storm) hit DB synchronously; slow Postgres causes 5xx, AlertManager
+    retries, amplifying load
+  - 'Hand-rolled DTO drops AlertManager fields (`status`, `endsAt`, `annotations`,
+    `fingerprint`, `groupKey`); cannot honour `status: resolved` to close alerts'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - AlertManagerController.md
+  evidence:
+  - AlertManagerController.md:performance.hot_paths.[0-1]
+  - AlertManagerController.md:performance.known_performance_gaps.[0-2]
+notes: 'Conceptually this is an inbound write surface for an operator''s external
+
+  alerting infrastructure (Prometheus AlertManager) into the ODD Alert
+
+  lifecycle. Distinct from the internal Alert concept — the spec, controller
+
+  shape, auth posture, and routing are all different. main-concepts.md
+
+  Terms & Aliases lists ''Slack alert webhook'' as an outgoing-only variant
+
+  (''Slack notifications'', ''Slack incoming webhook''); the inbound
+
+  AlertManager-shaped receiver is the conceptual sibling not yet listed
+
+  as a canonical alias.
+
+  '

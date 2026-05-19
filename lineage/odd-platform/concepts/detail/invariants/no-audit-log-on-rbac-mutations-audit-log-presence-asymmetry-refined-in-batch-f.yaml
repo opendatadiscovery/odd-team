@@ -1,0 +1,105 @@
+name: No-audit-log on RBAC mutations (audit-log presence asymmetry — REFINED in batch
+  F)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**REFINED INVARIANT, batch 2026-05-12F** (originally surfaced in batch
+  E as ''codebase-wide hygiene gap'' — REFINEMENT: the gap is NOT codebase-wide; the
+  platform has a 2-tier audit story). **Tier 2 (RBAC mutations) — UNAUDITED**: no
+  Role / Policy / Owner mutation emits an audit signal. 3-sidecar primary source from
+  batch E: (a) `RoleServiceImpl.create/.update/.delete` (lines 39-92) emit NO `@Slf4j`
+  log calls, publish NO events, and INSERT into NO audit table; (b) `PolicyServiceImpl.create/.update/.delete`
+  (lines 62-95) have the same absence; (c) `OwnerServiceImpl.create` is missing `@ActivityLog`
+  annotation. The platform''s activity feed (`/api/activity` per batch A getActivity)
+  covers DataEntity-side activity but does NOT extend to Role / Policy / Permission
+  / Owner-directory mutations. **Tier 1 (DataEntity mutations) — AUDITED (REFINED
+  in batch F)**: batch F''s primary-source updateStatus + createOwnership sidecars
+  CONFIRM that DataEntity mutations DO emit audit signals: (i) `DataEntityInternalStateServiceImpl.changeStatusForDataEntities`
+  (lines 73-98) PROGRAMMATICALLY constructs and emits `DATA_ENTITY_STATUS_UPDATED`
+  activity events with `oldState`/`newState` JSON payloads (not via AOP `@ActivityLog`
+  because the mutation is bulk and oldState must be captured per-pojo before the in-place
+  mutation — explicit per implicit_adrs.[4]); (ii) `OwnershipServiceImpl.create` is
+  annotated `@ActivityLog(event = OWNERSHIP_CREATED)` and `OwnershipCreatedActivityHandler`
+  captures BEFORE/AFTER ownership state for the data-entity. **The 2-tier audit asymmetry**:
+  DataEntity-scoped writes (status / ownership / description / business-name / tags
+  / terms / metadata / alert-config / DataEntityGroup membership) are TIER-1 AUDITED
+  — these are the data-content changes operators expect to see in the activity feed.
+  RBAC-scoped writes (Policy / Role / Owner-directory) are TIER-2 UNAUDITED — these
+  are the authorization-model changes that should be MORE audited, not less. The asymmetry
+  is the INVERSE of what a security-conscious operator would expect. **Consequence**:
+  a hijacked admin account or any S2S API-key holder (which gets ADMIN by default
+  per S2sAuthenticationFilter — REFACTOR-108) can rewrite the authorization model,
+  create new high-privilege Roles, attach them to existing Owners through other endpoints,
+  or replace Policy bindings — and leave no trail in the platform''s logs. Highest-leverage
+  audit gap in the RBAC surface.'
+axes_present:
+- controllers
+nodes:
+- odd-platform java RoleController controller-method:createRole
+- odd-platform java PolicyController controller-method:createPolicy
+- odd-platform java OwnerController controller-method:createOwner
+- odd-platform java DataEntityController controller-method:updateStatus
+- odd-platform java DataEntityController controller-method:createOwnership
+contributors:
+- 'createRole.md:security.known_security_gaps.[1]: TIER-2 UNAUDITED — `RoleServiceImpl.create/.update/.delete`
+  emit no Slf4j, publish no events, insert no audit table; cross-axis activity feed
+  does NOT cover Role / Policy / Permission. HIGH severity'
+- 'createPolicy.md:security.known_security_gaps.[1] + bugs_limitations_corner_cases.[1]:
+  TIER-2 UNAUDITED — `PolicyServiceImpl.create` has no `log.info/warn/audit` call.
+  The `policy` table is single-state, no audit history table. Security incident review
+  of ''who authored this MANAGEMENT/ALL policy?'' has no in-application answer. HIGH
+  severity'
+- 'createOwner.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[4]:
+  TIER-2 UNAUDITED — no `@ActivityLog` on OwnerServiceImpl.create (grep verified —
+  only 5 service files carry the annotation, none of them Owner). Owner directory
+  changes invisible to audit even when they cascade into ownership-row changes that
+  ARE recorded. MEDIUM severity'
+- 'updateStatus.md:implicit_adrs.[4] (batch F): TIER-1 AUDITED (REFINEMENT) — `DataEntityInternalStateServiceImpl.changeStatusForDataEntities`
+  (lines 155-182) emits DATA_ENTITY_STATUS_UPDATED events PROGRAMMATICALLY (oldState
+  captured pre-mutation, newState resolved post-mutation, both JSON-serialised). NOT
+  @ActivityLog AOP because the mutation is bulk; the asymmetric pattern is explicit.
+  CONFIRMS DataEntity mutations are audited.'
+- 'createOwnership.md:implicit_adrs.[1] (batch F): TIER-1 AUDITED (REFINEMENT) — `OwnershipServiceImpl.create`
+  is annotated `@ActivityLog(event = OWNERSHIP_CREATED)` and `OwnershipCreatedActivityHandler`
+  captures BEFORE/AFTER ownership state for the data-entity. EXPLICIT CONTRAST with
+  OwnerController.createOwner from batch E (no @ActivityLog) — the audit decision
+  is per-write, and ownership-binding IS audited while Owner-directory CRUD is NOT.'
+evidence:
+- createRole.md:security.known_security_gaps.[1] (HIGH — TIER-2 unaudited)
+- createPolicy.md:security.known_security_gaps.[1] (HIGH — TIER-2 unaudited)
+- createOwner.md:security.known_security_gaps.[0] (MEDIUM — TIER-2 unaudited)
+- updateStatus.md:implicit_adrs.[4] (TIER-1 audited — REFINEMENT confirming the asymmetry)
+- createOwnership.md:implicit_adrs.[1] (TIER-1 audited — REFINEMENT confirming the
+  asymmetry; explicit contrast vs createOwner)
+notes: "REFINED cross-cutting hygiene invariant in batch 2026-05-12F. Originally\n\
+  captured in batch E as a 3-sidecar 'codebase-wide' hygiene gap; batch F\nprimary-source\
+  \ corroboration on DataEntity-side updateStatus + createOwnership\nshows the gap\
+  \ is NOT codebase-wide — it is specifically the RBAC primary\nsurface. The platform\
+  \ has a 2-tier audit story:\n\n  Tier 1 (DataEntity-scoped writes — AUDITED):\n\
+  \    - status updates (programmatic logStatusChangeEvents)\n    - ownership-bindings\
+  \ (@ActivityLog OWNERSHIP_CREATED)\n    - description / business-name updates (per\
+  \ Activity Feed concept)\n    - tag / term additions and removals (per Activity\
+  \ Feed concept)\n    - custom-metadata updates (per Activity Feed concept)\n   \
+  \ - alert-config updates (per Activity Feed concept)\n    - DataEntityGroup membership\
+  \ changes (per Activity Feed concept)\n\n  Tier 2 (RBAC-scoped writes — UNAUDITED):\n\
+  \    - Policy create / update / delete\n    - Role create / update / delete\n  \
+  \  - Owner directory create (Owner-controller side, not ownership binding)\n\nThe\
+  \ asymmetry is the INVERSE of what a security-conscious operator\nwould expect:\
+  \ data-content changes (which are themselves audit-trail-shaped\nvia the activity\
+  \ feed) are TIER-1 AUDITED; authorization-model changes\n(which control WHO can\
+  \ do what) are TIER-2 UNAUDITED.\n\nHighest-leverage gap in the RBAC surface — every\
+  \ other security\nweakness assumes attack visibility via logs; this one says logs\n\
+  don't exist for the most-load-bearing mutations.\n\nRecommended cleanup options\
+  \ (in increasing scope):\n\n  - Add `@Slf4j` log.info(\"created policy {name} by\
+  \ {currentUser}\")\n    to PolicyServiceImpl.create, RoleServiceImpl.create,\n \
+  \   OwnerServiceImpl.create. Minimum-cost, log-only audit trail.\n\n  - Add `@ActivityLog`\
+  \ annotations matching the existing pattern in\n    AlertServiceImpl + DataEntityServiceImpl\
+  \ + OwnershipServiceImpl\n    (the batch F evidence shows the pattern is alive and\
+  \ proven on\n    the DataEntity side). Surfaces in the activity feed. Requires\n\
+  \    extending the ActivityEventType enum to cover RBAC mutations +\n    extending\
+  \ the ActivityState renderer to handle\n    Role/Policy/Owner-mutation payloads.\n\
+  \n  - Introduce a dedicated `rbac_audit` append-only table written via\n    `BaseSoftDeleteCRUDRepository`'s\
+  \ mutation lifecycle hooks. Full\n    forensic trail; coordinates with the existing\
+  \ soft-delete pattern.\n\nSurface as canonicalisation candidate AND a refactoring-scope\
+  \ item.\nThree DOC-NNN candidates flow from this invariant (audit-trail\nexpectation\
+  \ undocumented across `/authorization/policies`,\n`/authorization/roles`, `/authorization/owners`\
+  \ live pages).\n"

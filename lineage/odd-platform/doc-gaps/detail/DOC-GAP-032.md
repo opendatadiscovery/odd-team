@@ -1,0 +1,11 @@
+- **DOC-GAP-032**: Slack Data Collaboration cross-tenant message injection + missing authorization gate undocumented
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md:security.known_security_gaps.[0,2]` (both severity HIGH) + `:bugs_limitations_corner_cases.[0,3]` + `:docs_link_semantic.doc_drift_findings.[0,1]`
+    - `concepts.yaml:entities[Slack collaboration app].security_aggregate.weaknesses.[0,1]` + `:cross_file_inconsistencies.[0]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration` 2026-05-10 status 200 — endpoint description documents the queue + retry behaviour. The page documents NO authentication / authorization requirements, NO request validation, NO rate-limit behaviour.
+    - postMessageInSlack.md verifies: `SecurityConstants.java:96-355` has NO entry for `/api/datacollaboration/providers/slack/messages`; controller has no `@PreAuthorize`. The service accepts any user-supplied `data_entity_id` with only existence + hollow-check; no ownership check. `channel_id` is also fully user-supplied; no server-side mapping.
+  - **Proposed doc action**: Add a "Security caveats" sub-section to `developer-guides/api-reference/data-collaboration.md` for the POST endpoint covering: authorization model (auth-only, no ownership check on `data_entity_id`, no allowlist on `channel_id`, no rate-limit, no body-size cap), DISABLED-mode anonymous reachability. Mirror the caveat on `features/active-platform-features/data-collaboration.md`.
+  - **Cross-references**: DOC-GAP-002 / DOC-GAP-004 / DOC-GAP-008 / DOC-GAP-025 — auth-mode-only-on-reads family extended to a write surface.
+  - **Severity rationale**: HIGH — Slack workspaces frequently host channel-level confidentiality assumptions; cross-tenant message injection plus arbitrary `channel_id` selection means an attacker with any platform login can post into any channel the bot is in.

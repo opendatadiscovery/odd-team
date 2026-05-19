@@ -1,0 +1,10 @@
+- **REFACTOR-169** (NEW 2026-05-12D): `SmtpProperties.auth` and `SmtpProperties.starttls` are boxed `Boolean` — null is a legal value at binding time. `NotificationConfiguration.java:65-66` calls `props.put("mail.smtp.auth", emailProperties.getSmtp().getAuth())` — if the field is null, `Properties#put(null)` throws NPE per the Hashtable contract. The first SMTP send NPEs rather than failing at boot, leaking misconfiguration past the boot-time validation
+  - **Category**: npe-on-boxed-bool
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__EmailSenderProperties.md:bugs_limitations_corner_cases.[6]` (MEDIUM)
+  - **Statement**: `EmailSenderProperties.SmtpProperties.auth` + `starttls` are `Boolean` (boxed). When the operator omits these keys from YAML, Spring binds null. `NotificationConfiguration.java:65-66` (`props.put("mail.smtp.auth", emailProperties.getSmtp().getAuth())`) — `Properties` extends `Hashtable` which rejects null values with NPE. The throw happens at boot if the smtp branch is exercised in the bean factory; otherwise it surfaces on first SMTP send.
+  - **Evidence**: `EmailSenderProperties.java:18-20` (boxed Boolean) + `NotificationConfiguration.java:65-66` (the unguarded `Properties#put`)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Either (a) change boxed `Boolean` to primitive `boolean` (defaults to false; explicit safe default); or (b) add null-guards: `props.put("mail.smtp.auth", String.valueOf(Boolean.TRUE.equals(emailProperties.getSmtp().getAuth())))`. Option (a) is simpler and matches JavaMail's documented String-value expectation; option (b) keeps null-is-not-set semantic for future Boolean-tri-state-config evolution.
+  - **Severity rationale**: MEDIUM — boot-time NPE on a deployment with `smtp.auth` omitted; operator-confusing stack-trace.
+  - **Suggested backlog grouping**: `Notifications hardening`

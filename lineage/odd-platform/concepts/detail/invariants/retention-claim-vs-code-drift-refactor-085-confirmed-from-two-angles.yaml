@@ -1,0 +1,55 @@
+name: Retention claim vs code drift (REFACTOR-085 confirmed from two angles)
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Cross-cutting doc-vs-code-drift invariant for retention claims. The
+  live `/features/active-platform-features/activity-feed#configuration` page claims
+  `odd.activity.partition-period` controls ''retention and partitioning''. 2-sidecar
+  primary-source confirmed in batch 2026-05-12D that this is unsupported by the codebase:
+  (a) ActivityTablePartitionManager (batch B): the partition-period config controls
+  CADENCE only — there is no `dropPartition` / `getEmptyPastPartitions` invocation
+  for the activity table (`PartitionService.dropPartition` exists on the interface
+  but is never called from the activity-table side); the activity table grows monotonically.
+  (b) HousekeepingTTLProperties (batch D): the entire housekeeping TTL surface has
+  exactly three fields (`resolved_alerts_days`, `search_facets_days`, `data_entity_delete_days`)
+  — NO `activity*Days` field. The only activity-touching housekeeping path is `ActivityEmptyPartitionsHousekeepingJob`
+  which drops EMPTY past partitions only (`COUNT(*) = 0` check at PartitionServiceImpl.java:133-141)
+  — partitions with even one row are retained indefinitely. Time-based retention for
+  the ACTIVITY table does not exist anywhere in the platform codebase from BOTH the
+  partition-WIDTH angle AND the housekeeping-coverage angle. Same applies to the MESSAGE
+  table (no `messageDays` field on HousekeepingTTLProperties; only `MessageEmptyPartitionsHousekeepingJob`
+  drops empty past partitions). Recommended remediation: rewrite the activity-feed
+  docs Configuration section to say ''partitioning is controlled by `odd.activity.partition-period`;
+  ODD does NOT currently retention-delete activity rows — operators with high-volume
+  activity must manually drop old partitions or implement application-level archival.''
+  Refactoring-side: a new `housekeeping.ttl.activity_days` field + corresponding `ActivityHousekeepingJob`
+  would close the gap; the abstract base `EmptyPartitionsHousekeepingJob` already
+  supports the per-partition-drop primitive.'
+axes_present:
+- config_prefixes
+nodes:
+- odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
+- odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
+contributors:
+- 'ActivityTablePartitionManager (batch B): no DROP path; partition-period controls
+  width-not-retention'
+- 'HousekeepingTTLProperties (batch D): no `activity*Days` field; ActivityEmptyPartitionsHousekeepingJob
+  requires partitions to already be EMPTY before dropping'
+evidence:
+- ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0] (no DROP
+  path; monotonic growth)
+- HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[0] (no activity-retention
+  field; drift CONFIRMED from second angle)
+- HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[1] (same gap for MESSAGE
+  table)
+- HousekeepingTTLProperties.md:docs_link_semantic.doc_drift_findings.[0] (the activity-feed
+  page's 'retention' claim is unsupported from two angles)
+notes: "Promoted to a NEW cross-cutting invariant in batch 2026-05-12D after\nthe\
+  \ second-angle confirmation. The earlier batch-B narrative cited\nthis as a per-feature\
+  \ weakness on the Activity Feed concept; the\nbatch-D evidence makes it a doc-product-level\
+  \ invariant about how\nretention claims are documented vs implemented in ODD.\n\n\
+  Three DOC-NNN candidates flow from this invariant:\n  (a) Rewrite the activity-feed\
+  \ Configuration section per the\n      recommendation above.\n  (b) Add a parallel\
+  \ statement on the data-collaboration page for the\n      MESSAGE table.\n  (c)\
+  \ Add a code-side roadmap entry (or backlog item) for the\n      `housekeeping.ttl.activity_days`\
+  \ / `housekeeping.ttl.message_days`\n      fields, with the abstract `EmptyPartitionsHousekeepingJob`\n\
+  \      pattern reused.\n"

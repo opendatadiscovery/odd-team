@@ -1,0 +1,10 @@
+- **REFACTOR-166** (NEW 2026-05-12D): SMTP-AUTH XOAUTH2 / modern-auth mechanisms not configurable — `EmailSenderProperties.SmtpProperties` exposes only the binary `auth` Boolean; ODD does not expose `mail.smtp.auth.mechanisms`, `mail.smtp.auth.login.disable`, or any XOAUTH2 knob. SMTP-AUTH OAUTH2 is not configurable — operators on Microsoft 365 / Gmail with OAUTH2-only SMTP cannot use this channel
+  - **Category**: smtp-oauth2
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__EmailSenderProperties.md:bugs_limitations_corner_cases.[11]` (MEDIUM) + `security.known_security_gaps.[5]` (MEDIUM)
+  - **Statement**: Modern SMTP-AUTH XOAUTH2 (used by Microsoft 365 + Gmail when OAUTH2-only is required) needs OAUTH2 token plumbing on the Jakarta Mail Session. `EmailSenderProperties` exposes only `auth: Boolean`. `NotificationConfiguration.java:51-72` populates the Properties bag with no auth-mechanism keys. Tenants on Microsoft 365 with "OAUTH2-only SMTP" enforced cannot use the email notification channel.
+  - **Evidence**: `EmailSenderProperties.java:17-20` + `NotificationConfiguration.java:51-72` (no `mail.smtp.auth.mechanisms` etc.)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Substantial — XOAUTH2 SMTP plumbing requires token-refresh logic, not just a config knob. Stage 1: document the limitation on the live notifications page so operators know to use a different relay or PLAIN-AUTH. Stage 2: design a token-refresh path (likely via Spring's OAuth2 client infrastructure) and an `EmailSenderProperties.SmtpProperties.xoauth2: XoauthProperties` nested config.
+  - **Severity rationale**: MEDIUM — major-tenant-class operator-incompat; the workaround (PLAIN-AUTH against a relay account) defeats the modern-auth posture of the tenant's IT.
+  - **Suggested backlog grouping**: `Notifications hardening` (long-tail enhancement; lower-priority than REFACTOR-130/-164/-165 in the same sprint)

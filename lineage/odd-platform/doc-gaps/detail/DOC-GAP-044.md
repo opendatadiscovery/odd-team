@@ -1,0 +1,7 @@
+- **DOC-GAP-044**: Prometheus `tenant_id` label read/write asymmetry on empty-string `odd.tenant-id`
+  - **Category**: drift
+  - **Surfaced by**: `CounterTimeSeriesExtractor@L20.md:doc_drift_findings.[0]` + `:bugs_limitations_corner_cases.[0]`; concepts.yaml.
+  - **Evidence**: `AbstractTimeSeriesExtractor.java:60` uses `!= null` (empty string passes); `ExternalMetricReader.java:111` uses `isNotEmpty` (empty string fails).
+  - **Proposed doc action**: Extend `prometheus-tenant-label-odd-tenant-id` section on `configuration-and-deployment/odd-platform.md` with empty-string-vs-unset admonition.
+  - **Cross-references**: drives `/log-issue odd-platform` for read/write alignment.
+  - **Severity rationale**: LOW.

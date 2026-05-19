@@ -1,0 +1,12 @@
+- **DOC-GAP-056**: Legacy URL `/active-platform-features/notifications` returns 404 — canonical at `/features/active-platform-features/notifications`
+  - **Category**: broken-url
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:docs_link_semantic.inferred_docs.[2]` (status 404, HIGH confidence) + `:doc_drift_findings.[0]` **(new 2026-05-12C)**
+    - `concepts.yaml:entities[Notifications]` (new in batch C)
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/active-platform-features/notifications` 2026-05-12 status 404 — H1 "Page Not Found".
+    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/notifications` 2026-05-12 status 200 — canonical feature page renders normally, documents outbound channels + AlertManager inbound webhook + SMTP timeout caveat + "AlertManager webhook unauthentication" warning.
+    - The substrate's NotificationsProperties sidecar verifies the active-platform-features/notifications path 404 vs the features/active-platform-features/notifications path 200 — SAME shape as DOC-GAP-035 (data-collaboration).
+  - **Proposed doc action**: Cross-link audit across `documentation/` repo for any `/active-platform-features/notifications` references; update to `/features/active-platform-features/notifications`. See DOC-GAP-058 (class-level meta) — recommend doing a doc-side sweep of ALL legacy `/active-platform-features/*` and `/data-discovery/*` and `/main-concepts` paths.
+  - **Cross-references**: DOC-GAP-011, DOC-GAP-012, DOC-GAP-013, DOC-GAP-014, DOC-GAP-015, DOC-GAP-035, **DOC-GAP-058** (same URL-prefix-drift class — now 2 sidecars triangulated for the cross-cutting pattern).
+  - **Severity rationale**: MEDIUM — the broken-URL itself is the broken-URL rubric MEDIUM; per the sidecar's framing the underlying doc-drift is more concerning because the canonical page covers a feature operators need to configure with care (PG replication setup, SMTP/Slack/webhook credentials, AlertManager unauth caveat).

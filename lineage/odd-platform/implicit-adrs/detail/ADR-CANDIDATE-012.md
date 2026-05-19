@@ -1,0 +1,15 @@
+- **ADR-CANDIDATE-012**: Attachment storage backend is selected via `@ConditionalOnProperty` on `attachment.storage` (boot-time wiring); switching modes requires a Platform restart, with `LOCAL` as the implicit default via `matchIfMissing=true`
+  - **Category**: promote
+  - **Support**: surfaced by 1 sidecar (attachment.yml) — load-bearing config-prefix decision
+  - **Surfaced by**:
+    - `odd-platform__yaml__application_yml__config-prefix__attachment.md:implicit_adrs.[0]` ("Storage-mode selection is a Spring `@ConditionalOnProperty` switch on `attachment.storage`, not a runtime strategy lookup — beans are wired at boot per the active mode, and switching modes requires a restart.")
+    - `odd-platform__yaml__application_yml__config-prefix__attachment.md:implicit_adrs.[1]` ("LOCAL is the implicit default when `attachment.storage` is unset (`matchIfMissing = true` on the LOCAL `@ConditionalOnProperty` annotations). The shipped `application.yml:216` value `LOCAL` is redundant defence-in-depth; an operator who deletes the line still gets LOCAL beans.")
+  - **Decision statement**: Storage backend wiring uses Spring's `@ConditionalOnProperty` on `attachment.storage` with `matchIfMissing=true` on the LOCAL beans. The shipped `application.yml` value is redundant defence-in-depth; the absence of the property still produces LOCAL behaviour. Switching between LOCAL and REMOTE is a boot-time decision; runtime strategy lookup is not used.
+  - **Wisdom test**: PASS. Deliberate (Spring `@ConditionalOnProperty` choice over runtime strategy); structural (bean-wiring shape).
+  - **Evidence**:
+    - attachment.md says: "MinioConfig.java:10 + LocalFileUploadServiceImpl.java:26 + LocalFilePathConstructor.java:13 + RemoteFileUploadServiceImpl.java:36 + RemoteFilePathConstructor.java:10"
+    - attachment.md says: "application.yml:216" (shipped LOCAL value)
+  - **Existing ADR**: none. (LSN-001 captured the operational consequence of the LOCAL default — ephemeral storage on container restart — but the underlying wiring decision has no ADR.)
+  - **Co-surfaced gaps** (link from `refactoring-scopes.md`): REFACTOR-025 (LSN-001-canonical: LOCAL default writes to ephemeral `/tmp/odd/attachments`), REFACTOR-026 (LSN-002-canonical: REMOTE on AWS S3 silently restricted to `us-east-1`), REFACTOR-027 (REMOTE bucket pre-existence not validated), REFACTOR-028 (chunk-staging directory operator-invisible), REFACTOR-058 (chunk staging is `attachment.storage`-INDEPENDENT — applies to LOCAL **and** REMOTE — NEW from 2026-05-10A; extends REFACTOR-033).
+  - **Proposed action**: Promote to `adrs/drafts/attachment-storage-conditional-wiring.md` (new ADR). Cross-reference LSN-001 (the LOCAL-default-leads-to-data-loss case) as the canonical retrospective justifying the doc-side caveat that goes with the decision.
+  - **Severity rationale**: MEDIUM — operational decision class. The pattern propagates to other storage-shaped subsystems; codifying it prevents future "let's add a runtime switch" PRs that would silently break the boot-time-only invariant.

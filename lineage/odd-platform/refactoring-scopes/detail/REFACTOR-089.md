@@ -1,0 +1,10 @@
+- **REFACTOR-089** (NEW 2026-05-10B): No Micrometer / observability instrumentation on the partition lifecycle — manager emits `log.debug` on success and `log.error` on failure; no counter, no timer, no gauge for partition-creation success-rate / last-success-timestamp / partition-count
+  - **Category**: observability
+  - **Surfaced by**:
+    - `odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md:performance.known_performance_gaps.[1]` (severity MEDIUM)
+  - **Statement**: `AbstractPartitionManager.java:43-44` emits `log.debug` on success (debug level — not captured by default in production logging configuration). `PostgreSQLPartitionCreationJob.java:58-59` emits `log.error` on failure (captured but not actionable without alerting). Grep of the partition package for `MeterRegistry|Counter|Timer|Gauge` returns zero matches. An operator monitoring an ODD deployment has no metric to alert on "partition creation has been failing silently for 30 days." This is essentially the same gap as REFACTOR-086 but specifically about Micrometer observability instrumentation as opposed to the continue-on-failure orchestration; REFACTOR-086 is the orchestration-level gap; REFACTOR-089 is the metric-instrumentation gap.
+  - **Evidence**: `AbstractPartitionManager.java:43-44` (debug-only log) + `PostgreSQLPartitionCreationJob.java:58-59` (error log only) + grep zero matches for Micrometer types
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-028 (NEW) codifies the continue-on-failure orchestration but does NOT defend the absence of observability; the architectural choice prioritises maximum coverage and CAN coexist with full observability.
+  - **Proposed remedy**: Same as REFACTOR-086 — add Micrometer counters/timers/gauges. Adopt as a project-wide convention via a `@PartitionLifecycle` meta-annotation or a `MeterBinder` in the partition package.
+  - **Severity rationale**: MEDIUM — observability gap.
+  - **Suggested backlog grouping**: `Activity partition lifecycle hardening` (paired with REFACTOR-086)

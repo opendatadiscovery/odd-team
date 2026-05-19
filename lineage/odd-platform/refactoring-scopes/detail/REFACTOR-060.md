@@ -1,0 +1,11 @@
+- **REFACTOR-060** (NEW 2026-05-10A): `userIds` and `ownerIds` filter parameters on `getActivity` are not validated — submission of arbitrary id lists allows enumeration of which users/owners have generated platform activity in a window
+  - **Category**: enumeration-vector
+  - **Surfaced by**:
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:bugs_limitations_corner_cases.[2]` (MEDIUM)
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:security.known_security_gaps.[2]` (MEDIUM)
+  - **Statement**: `ActivityController.java:30-31` accepts `List<Long> ownerIds` and `List<Long> userIds` with no validation that the IDs reference existing users/owners. A caller can submit `userIds=[1,2,3,...,N]` to probe which users have generated platform activity in the window — a low-cost user-id enumeration vector. The response shape (empty vs. populated Flux) distinguishes valid-and-active from invalid-or-inactive users. No rate limit on `/api/activity` — an attacker can sweep id ranges quickly.
+  - **Evidence**: `ActivityController.java:30-31` + `ActivityServiceImpl.java:179-181` (parameters threaded through unchanged)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: At minimum, add `@Size(max = 100)` on the list parameters to bound batch enumeration. Add per-endpoint rate-limit. Optionally, add a server-side check that the caller has a relationship to each requested user/owner (e.g., admin-only, or scoped to the caller's owner set).
+  - **Severity rationale**: MEDIUM — enumeration vector; combines with REFACTOR-053 (cross-owner exposure) for full audit-trail discovery.
+  - **Suggested backlog grouping**: `Activity feed hardening`

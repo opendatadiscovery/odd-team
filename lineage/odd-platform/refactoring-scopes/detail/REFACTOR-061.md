@@ -1,0 +1,10 @@
+- **REFACTOR-061** (NEW 2026-05-10A): `getActivity` `lasEventId` parameter is a typo on the public API contract — the service-interface name is correct (`lastEventId`), but the controller method's local variable name leaks the typo to the OpenAPI-generated client signature
+  - **Category**: contract-typo
+  - **Surfaced by**:
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:bugs_limitations_corner_cases.[0]` (LOW)
+  - **Statement**: `ActivityController.java:34` declares `final Long lasEventId` (missing the `t` in `last`). The OpenAPI parameter name is `last_event_id` (correct) but the Java method signature exposes `lasEventId`. Generated client code derived from this signature carries the typo. Since the controller delegates straight to `activityService.getActivityList(... lasEventId, lastEventDateTime)`, the typo also affects the local variable name. The service interface (`ActivityService.java:42`) correctly names the parameter `lastEventId` — only the controller layer carries the typo. Fixing it is a one-character change but produces a breaking change to the generated client signature.
+  - **Evidence**: `ActivityController.java:34` (`final Long lasEventId`) + `ActivityService.java:42` (`final Long lastEventId` — correctly named at the service interface)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-021 (cursor pagination convention) describes the parameter shape; this scope is a contract-naming bug.
+  - **Proposed remedy**: Rename the controller parameter to `lastEventId`. Note this changes the OpenAPI-generated client signature in any consumer that bound to the typo'd name; an MAJOR version bump or a deprecation cycle may be required depending on the client surface.
+  - **Severity rationale**: LOW — naming bug; not security/correctness, but professionalism.
+  - **Suggested backlog grouping**: `Activity feed hardening`

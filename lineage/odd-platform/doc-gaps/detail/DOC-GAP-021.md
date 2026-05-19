@@ -1,0 +1,7 @@
+- **DOC-GAP-021**: Lineage feature page does not document `lineageDepth` / `expandedEntityIds` parameters or unbounded-depth caveat
+  - **Category**: drift
+  - **Surfaced by**: `DataEntityController.md:doc_drift_findings.[1]`; `concepts.yaml:entities[Data Entity].performance_aggregate.weaknesses`.
+  - **Evidence**: WebFetch `/features/data-lineage` 2026-05-08 — depth caveat absent. api-ref `/lineage` 200 covers contract.
+  - **Proposed doc action**: Add "Depth and bounds" admonition to `features/data-lineage.md`.
+  - **Cross-references**: DataEntity performance_aggregate.
+  - **Severity rationale**: MEDIUM.

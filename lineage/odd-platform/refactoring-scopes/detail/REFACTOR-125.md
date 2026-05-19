@@ -1,0 +1,9 @@
+- **REFACTOR-125** (NEW 2026-05-12C): No boot-time LDAP URL reachability test — `ODDLDAPProperties.validate()` only checks the URL string is non-empty. The first failure surfaces at end-user login attempt (a generic 401), not at startup. An operator who mistypes the URL or whose LDAP server is down boots successfully and 401s every login
+  - **Category**: missing-validation
+  - **Surfaced by**: `odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md:bugs_limitations_corner_cases.[3]` (severity MEDIUM)
+  - **Statement**: `ODDLDAPProperties.validate()` (lines 42-49) only checks the URL string is non-empty. `LDAPSecurityConfiguration.java:117-124` has no try/catch around the connection open. `management.health.ldap.enabled: false` is the bundled default — `/actuator/health` does NOT include LDAP-server reachability. Combined, an LDAP misconfiguration is invisible until first login.
+  - **Evidence**: `ODDLDAPProperties.java:42-49` + `LDAPSecurityConfiguration.java:117-124` + `application.yml:241-243`
+  - **Existing-ADR-or-implied-prescription**: None defends the deferred-failure pattern.
+  - **Proposed remedy**: Add a `@PostConstruct` health check in `LDAPSecurityConfiguration` that performs a `ldapTemplate.executeReadOnly(ctx -> null)` against the configured URL; fail boot on connection failure. Optional: enable `management.health.ldap.enabled: true` in the bundled application.yml.
+  - **Severity rationale**: MEDIUM — runtime-failure-at-first-use; LSN-shape deferred failure.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

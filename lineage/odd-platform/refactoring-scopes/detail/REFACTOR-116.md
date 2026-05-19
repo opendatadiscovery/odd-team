@@ -1,0 +1,9 @@
+- **REFACTOR-116** (NEW 2026-05-12C): customOidcUserService / customOauth2UserService wiring is fragile — `.oauth2Login(withDefaults())` does not explicitly register the custom user-services on the spec. Beans are auto-wired by type via `ReactiveOAuth2UserService<...>` bean lookup. A refactor renaming the beans or changing their generic type parameters could silently revert OAuth2 login to Spring's default user service
+  - **Category**: fragile-wiring
+  - **Surfaced by**: `odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md:bugs_limitations_corner_cases.[8]` (severity LOW)
+  - **Statement**: `OAuthSecurityConfiguration.java:99` calls `.oauth2Login(withDefaults())`; lines 115-139 declare `customOidcUserService` + `customOauth2UserService`. Spring auto-wires by type into the OAuth2 login machinery. A refactor that renames/changes the beans could silently revert behaviour with no test catching it.
+  - **Evidence**: `OAuthSecurityConfiguration.java:99` + `OAuthSecurityConfiguration.java:115-139`
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Explicitly register the user-services on the `oauth2Login` spec: `.oauth2Login(spec -> spec.authenticationManagerResolver(...)...)` with explicit user-service bean references. Add an integration test asserting that OAuth2 login uses the platform's custom user services (assertion on enriched user attributes).
+  - **Severity rationale**: LOW — fragility risk; correctness depends on Spring's autowiring resolution.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

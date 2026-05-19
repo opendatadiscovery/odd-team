@@ -1,0 +1,9 @@
+- **REFACTOR-163** (NEW 2026-05-12D): No `@Validated` annotation on `ODDLDAPProperties` — the platform deliberately chose imperative validation (`@PostConstruct validate()`). Means operators cannot rely on Spring Boot's validation infrastructure to surface multiple errors at once; the first `IllegalStateException` halts boot, operator retries, sees next error, retries again
+  - **Category**: no-validated
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDLDAPProperties.md:security.known_security_gaps.[5]` (LOW)
+  - **Statement**: `ODDLDAPProperties.java:9-11` declares `@ConfigurationProperties` only — no `@Validated`. The platform's imperative `@PostConstruct validate()` halts boot on the first throw. Operators with multiple errors (empty URL + missing search method) see only the URL error, retry, see the search-method error, retry again. Spring Boot's `@Validated` + jakarta.validation accumulates errors into a single `ConstraintViolationException`.
+  - **Evidence**: `ODDLDAPProperties.java:9-11,40-49`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-018 (fail-fast at boot) is consistent with imperative validation; ADR-CANDIDATE-048 (narrow-validator scope) describes the maintainer's choice. The DX trade-off is the cost of the design.
+  - **Proposed remedy**: Add `@Validated` at class level. Convert `validate()` to use `jakarta.validation.constraints.*` annotations on fields (`@NotBlank` on `url`, `@AssertTrue` on a custom method checking `dnPattern XOR userFilter`). Spring Boot accumulates violations and reports all-at-once.
+  - **Severity rationale**: LOW — DX defect, not exploit. Operator must retry-and-see-next-error iteratively.
+  - **Suggested backlog grouping**: `LDAP hardening sprint`

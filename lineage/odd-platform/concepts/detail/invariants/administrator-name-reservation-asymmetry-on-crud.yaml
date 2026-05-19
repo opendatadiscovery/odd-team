@@ -1,0 +1,62 @@
+name: Administrator-name reservation asymmetry on CRUD
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW INVARIANT, batch 2026-05-12E** — codebase-wide CRUD-defensive
+  asymmetry pattern on the RBAC primary surface. `RoleServiceImpl` + `PolicyServiceImpl`
+  both protect the seeded `Administrator` predefined name on **update** + **delete**
+  paths but NOT on **create**. Specifically: (a) `RoleServiceImpl.update` (line 67-69)
+  + `.delete` (lines 81-84) explicitly check `UserProviderRole.values()` (case-sensitive
+  `.equals` on update, case-insensitive `.equalsIgnoreCase` on delete — itself an
+  internal inconsistency) and reject with `BadUserRequestException` if the target
+  name matches the predefined enum; `RoleServiceImpl.create` (lines 51-61) has NO
+  such check. (b) `PolicyServiceImpl.update` (line 76) + `.delete` (line 87) explicitly
+  filter `policy -> !policy.getName().equals(ADMINISTRATOR_POLICY)` and raise `BadUserRequestException("Administrator
+  policy cannot be updated/deleted")`; `PolicyServiceImpl.create` (lines 62-69) has
+  NO such check. The only thing protecting the reserved name on creation is the partial-unique
+  DB index — `role_name_unique` on `role(name) WHERE deleted_at IS NULL` (V0_0_55__add_policies_and_roles.sql:42)
+  + `policy_name_unique` on `policy(name) WHERE deleted_at IS NULL` (V0_0_55__add_policies_and_roles.sql:30)
+  — both of which depend on the seeded row still being present. If an operator hard-deletes
+  the seeded Administrator row (e.g. direct SQL `DELETE FROM role WHERE name=''Administrator''`
+  bypassing the soft-delete API), this endpoint can recreate it with attacker-chosen
+  policy bindings. The recreated row binds to existing user-owner mappings that referenced
+  the original Administrator id (FK semantics depend on `owner_to_role` and `role_to_policy`
+  cascade behaviour, not verified in this pass). Asymmetry is silent: no comment,
+  no exception, no doc warning. **OwnerController also exhibits a related-but-different
+  shape**: there is no seeded ''Administrator'' Owner row to begin with, so the name-reservation
+  pattern doesn''t directly apply — but the same `OwnerServiceImpl.update`/`.delete`
+  paths perform existence/cascade guards while `.create` does not enforce uniqueness
+  beyond the DB constraint. The pattern across all three services (Role + Policy +
+  Owner) is ''destructive mutations validate; create paths don''t'', a codebase-wide
+  CRUD-defensive asymmetry. Recommended cleanup: extract a `RbacNameValidator` helper
+  that checks `UserProviderRole.values()` + `ADMINISTRATOR_POLICY` and invoke it from
+  all three `create` paths, OR move the protected-name check into the `BaseSoftDeleteCRUDRepository.create`
+  template method.'
+axes_present:
+- controllers
+nodes:
+- odd-platform java RoleController controller-method:createRole
+- odd-platform java PolicyController controller-method:createPolicy
+contributors:
+- 'createRole.md:bugs_limitations_corner_cases.[0]: predefined-name protection asymmetry
+  — `update` + `delete` check `UserProviderRole.values()`; `create` does NOT. The
+  only fence is `role_name_unique` partial index. HIGH severity per implicit_adrs.[1]
+  + security.known_security_gaps.[0]'
+- 'createPolicy.md:bugs_limitations_corner_cases.[3]: Administrator name reserved
+  on UPDATE/DELETE but NOT on CREATE. If the seeded Administrator policy is ever soft-deleted,
+  a custom Administrator could be re-created with arbitrary statements. Defence-in-depth
+  would be to symmetrise across all three endpoints (implicit_adrs.[3])'
+evidence:
+- createRole.md:bugs_limitations_corner_cases.[0] + implicit_adrs.[1] + security.known_security_gaps.[0]
+- createPolicy.md:bugs_limitations_corner_cases.[3] + implicit_adrs.[3] + security.known_security_gaps.[5]
+notes: "NEW cross-cutting invariant captured in batch 2026-05-12E. 2-sidecar\nprimary-source\
+  \ (Role + Policy). Both services define identical-shape\nprotections on update +\
+  \ delete and identical-shape absence on create.\nRecommended single-change cleanup:\n\
+  \n  - Extract `RbacNameValidator` helper:\n      void validateNonReservedName(String\
+  \ name, ...) throws BadUserRequestException\n\n  - Call from RoleServiceImpl.create\
+  \ + PolicyServiceImpl.create with\n    {UserProviderRole.ADMIN, UserProviderRole.USER,\
+  \ \"Administrator\"}\n    arguments.\n\n  - OR push the check into the soft-delete-aware\
+  \ base repository's\n    `create` template method, where the partial-unique index\
+  \ already\n    enforces uniqueness — convert the SQL state translation into a\n\
+  \    clean `BadUserRequestException`.\n\nSurface as canonicalisation candidate AND\
+  \ a refactoring-scope item\n(REFACTOR-NNN-shape — a small focused 2-file fix with\
+  \ high\ndefence-in-depth value).\n"

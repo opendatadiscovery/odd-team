@@ -1,0 +1,13 @@
+- **DOC-GAP-055**: Notifications subsystem: no audit trail of delivery (no DB record, no metric, only DEBUG-level log) — operators cannot answer "did the alert get delivered?" or "which alerts went to which channels?"
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[3]` (severity HIGH — no retry/DLQ/audit) + `:bugs_limitations_corner_cases.[11]` (severity MEDIUM — no audit trail) + `:security.known_security_gaps.[3]` (severity MEDIUM) **(new 2026-05-12C)**
+    - `concepts.yaml:entities[Notifications]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/notifications` 2026-05-12 status 200 — page documents the channels + lifecycle but does NOT mention audit-trail / metric / DB-visible signal for delivery success/failure.
+    - NotificationsProperties.md verifies: `AlertNotificationMessageProcessor.java:25-36` only emits `log.debug("Sending notification message via {}: {}", ...)` and catches `NotificationSenderException` with `log.error(...)`. No `notification_delivery` table, no Micrometer counter, no Prometheus gauge. There is no DB-visible signal that notifications stopped working — an operator monitoring application health from `/actuator/health` or from dashboard metrics has no way to detect that Slack/webhook/email delivery is failing.
+  - **Proposed doc action**: Add a Known-limitations admonition to `features/active-platform-features/notifications.md`: "**No delivery audit trail**: the platform logs notification dispatch at DEBUG level and per-sender failures at ERROR level, but does NOT record delivery success/failure in the database, does NOT emit Micrometer metrics, and does NOT surface degraded delivery state on `/actuator/health`. Operators cannot programmatically answer: 'were the alerts I expected delivered?', 'which channel last succeeded?', or 'how many alerts were dropped due to rate-limiting?'. For audit-required deployments, configure application-log aggregation that captures the DEBUG-level dispatch logs and the ERROR-level failure logs."
+  - **Cross-references**:
+    - DOC-GAP-054 (rate-limit absence — same gap shape, different consequence)
+    - Drives `/log-issue odd-platform` upstream for: `notification_delivery` audit table + Micrometer counters + health-check signal
+  - **Severity rationale**: HIGH — compliance/observability gap; operators have no first-class way to answer the basic question "is alerting working?". Combined with DOC-GAP-054 (rate-limit absence), the platform silently drops alerts under load AND provides no signal that it has done so.

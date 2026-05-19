@@ -1,0 +1,11 @@
+- **REFACTOR-056** (NEW 2026-05-10A): Slack channel_id is fully user-supplied — caller can target ANY Slack channel the platform's bot has been invited to, regardless of which channel the in-app autocomplete listed
+  - **Category**: missing-validation
+  - **Surfaced by**:
+    - `odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md:bugs_limitations_corner_cases.[2]` (MEDIUM)
+    - `odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md:security.known_security_gaps.[3]` (MEDIUM)
+  - **Statement**: The request body's `channel_id` is passed straight to `SlackAPIClient.exchangeForChannel(channelId)`. Any Slack channel the bot has been invited to (`Conversation::isMember` filter in `SlackAPIClientImpl.java:45`) is acceptable. There is no concept of "which channels are valid for which data entity / owner" server-side. A user with the autocomplete UI listing channels A and B can craft a request targeting channel C (if the bot is in C), even if the platform UI never offers C.
+  - **Evidence**: `DataCollaborationController.java:34-37` + `DataCollaborationServiceImpl.java:53-56` + `SlackAPIClientImpl.java:50-62`
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Add a server-side `(data_entity_id, allowed_channels[])` mapping (a new `data_entity_slack_channel` join table). The autocomplete API returns the per-entity allowed channels; the post API rejects channel_ids not in that set with HTTP 400.
+  - **Severity rationale**: MEDIUM — escape from autocomplete UI; cross-channel posting is a data-leak surface to channels the user wouldn't normally see.
+  - **Suggested backlog grouping**: `Data Collaboration hardening`

@@ -1,0 +1,10 @@
+- **DOC-GAP-097**: `PUT /api/dataentities/{id}/description` is a pure UPDATE with silent no-op on missing entity — operationId, OpenAPI summary, and consumer expectation all use "upsert" language that contradicts the implementation
+  - **Category**: drift (OpenAPI contract drift; spec asserts upsert; implementation is replace-or-silently-200)
+  - **Surfaced by**: `upsertDataEntityInternalDescription.md:bugs_limitations_corner_cases[1]` + `upsertDataEntityInternalDescription.md:docs_link_semantic.doc_drift_findings[2]`
+  - **Evidence**:
+    - `openapi.yaml:929-930` — operation summary: "Upsert DataEntity's internal description in markdown format"; operationId: `upsertDataEntityInternalDescription`.
+    - `ReactiveDataEntityRepositoryImpl.java:432-435` — query is `DSL.update(...).set(...).where(...).returning()` — pure UPDATE; no INSERT branch; no existence check.
+    - On missing `dataEntityId`: `Mono.empty`, pipeline short-circuits, controller returns 200 OK with empty body — NOT 404.
+    - Contrast: sibling `DataEntityServiceImpl.updateStatus` (line 467) DOES call `.switchIfEmpty(() -> Mono.error(new NotFoundException("DataEntity", id)))`.
+  - **Proposed doc action**: Two-front fix: (a) on OpenAPI side, rename op to `replaceDataEntityInternalDescription` + add 404 response OR add `.switchIfEmpty(NotFoundException)`; (b) on docs side, add caveat to description doc page about endpoint requiring entity exists.
+  - **Severity rationale**: HIGH — silent-success-on-wrong-id is a Class-A operator trap. LSN-001-shape.

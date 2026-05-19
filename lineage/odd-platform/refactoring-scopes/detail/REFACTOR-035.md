@@ -1,0 +1,8 @@
+- **REFACTOR-035**: No per-tenant / per-data-entity / total-upload quota — operator setting a per-file cap implicitly accepts that one user can fill storage by repeated max-size uploads
+  - **Category**: missing-quota
+  - **Surfaced by**: `odd-platform__java__AttachmentServiceImpl__config-key-consumer__attachment_max-file-size@L27.md:bugs_limitations_corner_cases.[3]` (MEDIUM)
+  - **Statement**: `attachment.max-file-size` is a single per-file cap. There is no `attachment.max-total-size`, no per-data-entity quota, no per-tenant quota. Combined with REFACTOR-026 (LOCAL ephemeral default), an operator who sets a 100 MB per-file cap accepts that a single user can fill `/tmp` ahead of an unrelated container restart.
+  - **Evidence**: `AttachmentServiceImpl.java:27-62` (no quota fields) + `retrospectives/LSN-001-attachment-ephemeral-default.md`
+  - **Proposed remedy**: Add `attachment.max-total-bytes-per-data-entity` (default unlimited). Track aggregate bytes via `FileRepository.sumByDataEntity(...)`; reject upload that would exceed.
+  - **Severity rationale**: MEDIUM — quota gap.
+  - **Suggested backlog grouping**: `Attachment integrity sprint`

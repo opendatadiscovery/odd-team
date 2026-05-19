@@ -1,0 +1,16 @@
+- **ADR-CANDIDATE-008**: OpenAPI tags follow URL-prefix scoping with single-tag-per-operation — a tag's operations all share a `/api/<plural-noun>` URL prefix, producing resource-shaped Java interfaces (`AlertApi`, `DataEntityApi`)
+  - **Category**: promote
+  - **Support**: surfaced by 2 sidecars (alert + dataEntity), with dataEntity surfacing the "mega-tag" tension as an acknowledged consequence
+  - **Surfaced by**:
+    - `odd-platform__openapi__tags__openapi-tag__alert.md:implicit_adrs.[0]` ("OpenAPI tags in this spec follow URL-prefix scoping — a tag's operations all share a `/api/<plural-noun>` URL prefix. The `alert` tag scopes only `/api/alerts*` operations; alert-shaped operations under `/api/dataentities/{data_entity_id}/alerts*` are tagged with the parent resource's tag (`dataEntity`), not the alert tag. This produces resource-shaped Java interfaces (`AlertApi`, `DataEntityApi`) rather than feature-shaped ones.")
+    - `odd-platform__openapi__tags__openapi-tag__alert.md:implicit_adrs.[2]` ("Each operation is tagged with EXACTLY ONE tag (single-element `tags: [<name>]` arrays in every alert operation).")
+    - `odd-platform__openapi__tags__openapi-tag__dataEntity.md:implicit_adrs.[5]` ("Single tag carries 40 heterogeneous operations spanning CRUD, relationships, lineage, alerts, activity, and messaging — operationally a 'mega-tag'.")
+  - **Decision statement**: Tag membership is determined by URL-prefix, not by feature shape. Operations under `/api/dataentities/{id}/alerts` are tagged `dataEntity`, not `alert` — even though they manipulate alert resources. Each operation carries exactly one tag (single-element `tags:` arrays). The convention produces resource-shaped Java interfaces (one `*Api` per top-level resource), and as a side-effect creates "mega-tags" when a resource is the parent of many feature surfaces (the `dataEntity` tag carries 40 operations across CRUD/relationships/lineage/alerts/activity/messaging). The OpenAPI generator's multi-tag-emit-duplicate-method behaviour is intentionally not exercised.
+  - **Wisdom test**: PASS. Deliberate (codegen-shape choice); structural (every generated `*Api` interface).
+  - **Evidence**:
+    - alert.md says: "openapi.yaml:30 (`name: alert`) + openapi.yaml:2627-2702 (5 operations all under `/api/alerts*`, all tagged `alert`) + openapi.yaml:1318-1361 (per-entity alert operations tagged `dataEntity`)"
+    - alert.md says: "openapi.yaml:2627-2628, 2645-2646, 2663-2664, 2678-2679, 2701-2702 (every `tags:` array is a single-element list)"
+    - dataEntity.md says: "openapi.yaml:13-48 (tag list shows separate `alert`, `activity` tags), openapi.yaml:805-2433 (dataEntity tag covers all of those for the Data Entity scope)"
+  - **Existing ADR**: none.
+  - **Proposed action**: Promote to `adrs/drafts/openapi-tag-by-url-prefix.md` (new ADR). Acknowledge the mega-tag tension explicitly; it is a known consequence of the convention, not a defect. A future "let's split DataEntityApi by feature" PR is the kind of refactor this ADR would gate.
+  - **Severity rationale**: MEDIUM — code-generation-shaping decision. Determines the structure of every generated `*Api` interface and how UI clients import operations.

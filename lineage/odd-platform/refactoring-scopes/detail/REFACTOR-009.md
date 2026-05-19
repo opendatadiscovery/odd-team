@@ -1,0 +1,10 @@
+- **REFACTOR-009**: No compile-time / test-time guard against SECURITY_RULES path-pattern drift; the term-mismatch case (REFACTOR-008) had no automated detection
+  - **Category**: missing-test
+  - **Surfaced by**:
+    - `concepts.yaml:entities[Data Entity].security_aggregate.weaknesses.[4]` ("Authorization layer is path-string-coupled with no compile-time/test-time guard against drift")
+  - **Statement**: SECURITY_RULES is a list of literal path strings; OpenAPI-generated `*Api` interfaces carry their own literal `@RequestMapping(value = ...)` strings. If the spec changes and SECURITY_RULES isn't updated (REFACTOR-008's case), the build is green and the security regression is silent.
+  - **Evidence**: `SecurityConstants.java:98-355` (string-literal paths) + `DataEntityApi.java:148, 542` (string-literal paths) — no shared source of truth, no integration test that walks both
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-002 (centralised SECURITY_RULES) calls out the path-string-coupling trade-off; this scope is the missing test infrastructure that mitigates the trade-off.
+  - **Proposed remedy**: Add a unit test that walks the generated `*Api` interfaces' `@RequestMapping(value = ...)` annotations and asserts every value with a security-significant prefix appears in SECURITY_RULES (or is explicitly excluded with a comment). Optionally: add a custom Gradle task that fails the build on SECURITY_RULES paths that have no matching mapping (the inverse direction — catches stale rules).
+  - **Severity rationale**: MEDIUM — process gap; reduces likelihood of REFACTOR-008-class bugs.
+  - **Suggested backlog grouping**: `Authorization audit batch`

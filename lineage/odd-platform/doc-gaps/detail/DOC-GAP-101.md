@@ -1,0 +1,11 @@
+- **DOC-GAP-101**: Popular ranking signal is undocumented externally — `catalog-overview` describes the surface, no page describes the `view_count DESC`-only mechanism, the inflation surface, or the `EXCLUDE_FROM_SEARCH` bypass
+  - **Category**: drift (live `catalog-overview` describes the surface but omits the mechanism + the abuse-resistance gap)
+  - **Surfaced by**: `getPopular.md:docs_link_semantic.doc_drift_findings[0,1]` + `getPopular.md:bugs_limitations_corner_cases[0,1]` + `getPopular.md:security.known_security_gaps[0,1]`
+  - **Evidence**:
+    - `openapi.yaml:877-893` — operation summary "Returns list of the most popular data entities throughout the catalog" — "popular" is undefined.
+    - `ReactiveDataEntityRepositoryImpl.java:633` — actual ranking: `.orderBy(DATA_ENTITY.VIEW_COUNT.sort(SortOrder.DESC))` SOLE ordering signal + `id DESC` tiebreaker.
+    - `ReactiveDataEntityRepositoryImpl.java:173-180` — `incrementViewCount` is the producer; called from `getDataEntityDetails` on every successful read; no rate-limit, no idempotency.
+    - `ReactiveDataEntityRepositoryImpl.java:909-939` — `cteDataEntitySelect` for popular applies `HOLLOW.isFalse()` + soft-delete but NOT `EXCLUDE_FROM_SEARCH` (9 other locations DO apply it).
+    - WebFetch `/features/data-discovery/catalog-overview` (2026-05-18, status 200): describes Popular as "the most-viewed or most-used data entities" — no description of how popularity is measured, no warning about manipulability.
+  - **Proposed doc action**: Update `data-discovery/catalog-overview` (or add `data-discovery/popular.md`) covering: ranking signal is cumulative-view-count; view counts incremented on every authenticated detail-page read; Popular NOT filtered by `EXCLUDE_FROM_SEARCH`; soft-delete and hollow filters respected; DISABLED-mode anonymous readability.
+  - **Severity rationale**: MEDIUM — operators deploying ODD as a multi-team or public-facing catalog need to know the recommendation surface is `view_count`-only and trivially manipulable; today this is invisible. Code-side fix is REFACTOR-201.

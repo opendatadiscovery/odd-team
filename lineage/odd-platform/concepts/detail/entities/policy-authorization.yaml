@@ -1,0 +1,132 @@
+name: Policy (Authorization)
+canonical_in_docs: true
+canonical_candidate: false
+description: 'A named JSON document of `statements` over resource types `DATA_ENTITY
+  | TERM | QUERY_EXAMPLE | MANAGEMENT` granting specific `permissions` or the `ALL`
+  wildcard. Policies are validated server-side against `schema/policy_schema.json`
+  (JSON Schema V201909) at every create + update; the persisted text column is always
+  schema-valid. A Policy is inert until bound to a Role via `role_to_policy`. The
+  seeded `Administrator` policy is reserved by name on UPDATE + DELETE (PolicyServiceImpl.java:76,
+  87) but NOT on CREATE (PolicyServiceImpl.java:62-69 — name-asymmetry invariant).
+  Authorization gate on CREATE is `POLICY_CREATE` (MANAGEMENT tier) wired in SECURITY_RULES
+  line 163-164, **bypassed under `auth.type=DISABLED`**. Canonical doc anchor: `configuration-and-deployment/enable-security/authorization/policies`
+  (200, 2026-05-12).'
+axes_present:
+- controllers
+nodes:
+- odd-platform java PolicyController controller-method:createPolicy
+- odd-platform java PermissionController controller-method:getResourcePermissions
+contributors:
+- 'PolicyController.createPolicy: entities[Policy, PolicyFormData (name + policy JSON
+  string), PolicyDetails, PolicyPojo, PolicyStatementDto, PolicyPermissionDto, PolicyTypeDto];
+  operations[create-policy, validate-policy-json-schema, persist-policy, return-policy-details]'
+- 'PermissionController.getResourcePermissions: PolicyDto (the materialised policy
+  graph evaluated at the read-side); the resolver flattens roles → policies → statements
+  identical to the mutation enforcer'
+evidence:
+- createPolicy.md:concepts.entities + concepts.invariants.[0-4]
+- createPolicy.md:implicit_adrs.[1] (JSON-Schema-at-write-time) + implicit_adrs.[2]
+  (MANAGEMENT non-contextual)
+- getResourcePermissions.md:concepts.entities (PolicyDto materialised graph) + implicit_adrs.[1]
+  (authoritative-not-UI-hint)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: SECURITY_RULES wires POLICY_CREATE / POLICY_UPDATE / POLICY_DELETE at
+      lines 163-168 (NO_CONTEXT MANAGEMENT-tier), but the gate is bypassed under `auth.type=DISABLED`
+      (DisabledAuthSecurityConfiguration.java:13-18 — `anyExchange().permitAll()`).
+      Sibling `GET /api/policies/schema` (PolicyController.java:60-63) has NO SECURITY_RULES
+      entry — falls through to `.authenticated()`. Under `auth.type=LOGIN_FORM` the
+      AuthorizationCustomizer is NOT wired (cross-ref Auth Mode aggregate) so SECURITY_RULES
+      is INERT — every form-authenticated user is ADMIN with effective POLICY_CREATE.
+  owner_scoping:
+    verdict: N/A
+    detail: Policies are global authorization documents; the `policy` table has no
+      `owner_id` column. MANAGEMENT-tier permission gates them globally.
+  strengths:
+  - JSON-Schema-at-write-time invariant — PolicyJSONValidator loads the schema once
+    at construction (V201909) and validates per request; persisted text column is
+    always schema-valid (createPolicy.md:implicit_adrs.[1])
+  - Administrator policy reserved by name on UPDATE + DELETE (createPolicy.md:implicit_adrs.[3])
+  - Soft-delete-aware partial UNIQUE INDEX `policy_name_unique` on `policy(name) WHERE
+    deleted_at IS NULL` (V0_0_55__add_policies_and_roles.sql:30) — deleted policy's
+    name reusable; live duplicates rejected at DB layer
+  weaknesses:
+  - '**Administrator-name reservation asymmetry (HIGH for defence-in-depth)** — `update`
+    + `delete` reject mutations against the seeded Administrator name; `create` does
+    NOT. If the seeded row is ever soft-deleted, a custom Administrator policy with
+    arbitrary statements becomes creatable. Cross-cutting NEW invariant — see ''Administrator-name
+    reservation asymmetry on CRUD''. (createPolicy.md:security.known_security_gaps.[5])'
+  - '**No anti-elevation guard (HIGH)** — `{resource: {type: MANAGEMENT}, permissions:
+    [ALL]}` is a legal policy shape identical to the seeded Administrator. POLICY_CREATE
+    is functionally root-on-the-platform; the docs do not flag this. (createPolicy.md:security.known_security_gaps.[2])'
+  - '**No audit log on policy mutations (HIGH)** — `PolicyServiceImpl.create` has
+    no `@Slf4j` log calls, no event publication, no audit-table insert (createPolicy.md:bugs_limitations_corner_cases.[1]).
+    A security incident reviewer cannot answer ''who authored this MANAGEMENT/ALL
+    policy on date X?'' Cross-cutting invariant — see ''No-audit-log on RBAC mutations''.'
+  - '**Under `auth.type=DISABLED`, POLICY_CREATE is bypassed entirely (HIGH on DISABLED
+    deployments)** — `anyExchange().permitAll()` short-circuits SECURITY_RULES. Any
+    network-reachable caller can create MANAGEMENT/ALL policies; full escalation requires
+    also creating + binding a role (POST /api/roles is similarly bypassed). DISABLED
+    + reachable network port + RBAC primary-surface = catastrophic exposure. (createPolicy.md:security.known_security_gaps.[0])'
+  - '**PolicyJSONValidator raises IllegalArgumentException, not BadUserRequestException
+    (MEDIUM)** — invalid schema may surface as 500 rather than 400. (createPolicy.md:security.known_security_gaps.[3])'
+  - '**Duplicate-name POST surfaces as DB UNIQUE-constraint violation (MEDIUM)** —
+    service has no pre-check; second POST with same name falls through to repository
+    INSERT and hits `unique_violation` SQLSTATE 23505 unhandled (createPolicy.md:security.known_security_gaps.[4])'
+  cross_file_inconsistencies:
+  - Policy schema endpoint `GET /api/policies/schema` is NOT gated by any Permission
+    — any authenticated user can fetch the live JSON Schema. Not a vulnerability per
+    se, but the docs do not document the endpoint at all. (createPolicy.md:bugs_limitations_corner_cases.[5])
+  - 'Pattern parallels Role + Owner: all three have the same Administrator-name-on-update-but-not-create
+    asymmetry, and none of three emit audit logs. The catalog records this cross-pattern
+    via the ''Administrator-name reservation asymmetry'' and ''No-audit-log on RBAC
+    mutations'' cross-cutting invariants.'
+  contributing_files:
+  - createPolicy.md
+  - getResourcePermissions.md
+  evidence:
+  - createPolicy.md:security.known_security_gaps.[0-6]
+  - getResourcePermissions.md:security.known_security_gaps.[0-2]
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+  - 'Single POST per policy-creation: JSON-Schema parse + 1 DB INSERT. Not on ingestion
+    / UI hot path; admin operation (createPolicy.md:performance.hot_paths.[0])'
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: No bulk-create endpoint; bootstrapping a complex RBAC scheme requires
+      N HTTP calls. Reactive Mono signature, non-blocking, single DB round-trip (createPolicy.md:performance.throughput_characteristics.[0])
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless controller; unique-name index serializes concurrent same-name
+      inserts (one wins, others throw) — DB-level concurrency safety (createPolicy.md:performance.scaling_characteristics.[0])
+  strengths:
+  - JsonSchema loaded ONCE at validator construction — no per-request schema reparse
+  weaknesses:
+  - No bulk-create endpoint (LOW) — bootstrapping a custom RBAC model is N HTTP calls
+  cross_file_inconsistencies: []
+  contributing_files:
+  - createPolicy.md
+  evidence:
+  - createPolicy.md:performance.known_performance_gaps.[0]
+notes: 'Anchored on `configuration-and-deployment/enable-security/authorization/policies`
+
+  live page (200, 2026-05-12). The page documents the policy JSON shape
+
+  but does NOT name the POLICY_CREATE Permission, does NOT mention the
+
+  seeded Administrator policy, does NOT warn about auth.type=DISABLED
+
+  bypassing the gate. Surface 5 DOC-GAP candidates from
+
+  createPolicy.md:docs_link_semantic.doc_drift_findings.[A-E].
+
+  '

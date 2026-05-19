@@ -1,0 +1,11 @@
+- **DOC-GAP-070**: `adminUserInfoFlag` field is the ODD_IAM admin-detection mechanism but is undocumented on the OAuth2/OIDC docs page (sub-finding of DOC-GAP-069)
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md:docs_link_semantic.doc_drift_findings.[4]` **(NEW batch D)**
+    - `concepts.yaml:entities[Auth Mode]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc` 2026-05-12 status 200 — verbatim: page's "Admin Access Control Semantics" section names only `admin-principals`, `admin-attribute`, `admin-groups`. **`admin-user-info-flag` / `adminUserInfoFlag` is NOT mentioned anywhere.**
+    - ODDOAuth2Properties.md verifies: `ODDOAuth2Properties.java:47` declares `private Boolean adminUserInfoFlag;`. `ODDIAMUserHandler.java:36-38` reads `provider.getAdminUserInfoFlag()` to drive ODD_IAM-specific admin role assignment. The field is provider-specific (ODD_IAM only) and operators of that provider have no doc surface for it.
+  - **Proposed doc action**: When authoring DOC-GAP-069's ODD_IAM section on `oauth2-oidc.md`, include `admin-user-info-flag` in the Common-vs-Provider-Specific field tables. Describe its semantics: "Boolean (default false). When true, the platform consults the OIDC UserInfo endpoint's response shape to determine ADMIN role assignment under the ODD_IAM provider. Not consulted by other providers."
+  - **Cross-references**: DOC-GAP-069 (parent finding — ODD_IAM provider absent from docs).
+  - **Severity rationale**: HIGH — bundled with DOC-GAP-069 as a structural docs-completeness gap. Sub-finding could be MEDIUM if treated in isolation, but together with the parent it forms a coherent gap requiring one authoring action.

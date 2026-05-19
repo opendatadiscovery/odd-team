@@ -1,0 +1,38 @@
+name: view_count UPDATE→READ loop closed; trivially inflatable; no anti-abuse signal
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Producer half: getDataEntityDetails increments data_entity.view_count
+  on every read (ReactiveDataEntityRepositoryImpl.java:173-180; no rate-limit, no
+  idempotency key, no client-id-based debouncing). Consumer half: listPopular ranks
+  exclusively by view_count DESC (ReactiveDataEntityRepositoryImpl.java:633, sole
+  orderBy; id DESC tiebreaker only). Neither endpoint carries an authorization gate
+  beyond .authenticated() (UNGATED under LOGIN_FORM/OAUTH2/LDAP; ANONYMOUS under DISABLED).
+  No anti-abuse signal exists anywhere in the chain: no IP throttling, no signed-request,
+  no sampling, no time-decay, no per-user view-count cap. A scripted loop of N calls
+  to GET /api/dataentities/{id} pushes entity {id} to the top of GET /api/dataentities/popular.
+  Under DISABLED the attacker need not authenticate. Additionally: no index on data_entity.view_count
+  (verified across all 91 migration files) — every Popular page render is a sequential
+  scan + in-memory sort. REFACTOR-201 confirmed from primary source (the closure of
+  the loop).'
+contributing_files:
+- getPopular.md
+- getDataEntityDetails.md (batch F producer half)
+triangulation_count: 2
+cross_batch: true
+severity: HIGH
+severity_dim: security
+evidence:
+- getPopular.md:bugs_limitations_corner_cases.[0] HEADLINE — REFACTOR-201 primary-source
+  confirmed
+- getPopular.md:implicit_adrs.[0] (ranking by view_count DESC)
+- getPopular.md:security.known_security_gaps.[0] HIGH
+- getDataEntityDetails.md:implicit_adrs.[2] (the producer half — batch F)
+mitigations_unimplemented:
+- Rate-limit getDataEntityDetails (per-caller, per-entity, per-window)
+- Sample the view_count increment (probability 1/N)
+- Per-user view-count cap per entity per day
+- 'Signal-mix: combine view_count with recency, owner-popularity, alert-state'
+- Human-curated popular list override
+- CREATE INDEX idx_data_entity_view_count_desc ON data_entity (view_count DESC) WHERE
+  hollow = false AND status != <DELETED_id> — partial descending B-tree index on popular-eligible
+  rows

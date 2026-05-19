@@ -1,0 +1,14 @@
+- **ADR-CANDIDATE-015**: Owner-scoped reads are exposed as separate first-class endpoints (`/my`, `/my/upstream`, `/my/downstream`); principal resolution flows through reactor `Context`, not through controller-method signatures
+  - **Category**: promote
+  - **Support**: surfaced by 2 sidecars (DataEntityController + dataEntity tag)
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityController.md:implicit_adrs.[2]` ("Owner-scoped reads (`/my`, `/my/downstream`, `/my/upstream`) take NO principal parameter — the controller delegates to `dataEntityService.listAssociated(page, size [, kind])` and trusts the service to resolve the current user via reactor `Context` propagation. The implicit ADR: principal resolution is a reactor-context concern, not a controller-method-signature concern.")
+    - `odd-platform__openapi__tags__openapi-tag__dataEntity.md:implicit_adrs.[3]` ("Data Entity controllers expose owner-scoped operations (`/my`, `/my/upstream`, `/my/downstream`) as separate endpoints rather than as a query-parameter overlay on the cross-tenant list.")
+  - **Decision statement**: Owner-scoped data-entity reads are dedicated routes (`/my*`) rather than overlay query parameters (`?owner=me`). Principal resolution happens via reactor `Context` propagation inside the service layer; controllers do not accept `Authentication`/`Principal`/owner-id parameters. The shape commits the platform to "my objects" as a navigation surface, not a filter.
+  - **Wisdom test**: PASS. Deliberate (URL design + reactor-Context Spring convention); structural (route shape + method signatures); affects every owner-scoped operation in the codebase.
+  - **Evidence**:
+    - DataEntityController.md says: "DataEntityController.java:284-305 (three `getMyObjects*` methods, none accept `Authentication`/`Principal`/owner-id)"
+  - **Existing ADR**: none.
+  - **Cross-link**: ADR-CANDIDATE-022 — the contrasting "view-modes-as-single-parameter" pattern at ActivityController. The maintainer's triage of the two patterns is overdue.
+  - **Proposed action**: Promote to `adrs/drafts/owner-scoped-routes.md` (new ADR). Codifies BOTH the URL-shape choice (`/my*` as endpoints) AND the principal-handling convention (reactor `Context`, not method signatures).
+  - **Severity rationale**: LOW — convention decision; affects URL-design and code-review uniformity, not security or data integrity.

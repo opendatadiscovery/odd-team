@@ -1,0 +1,7 @@
+- **DOC-GAP-016**: Directory page wording: level 3 mixes "classes" and "types" — operator confusion
+  - **Category**: drift
+  - **Surfaced by**: `DirectoryController.md:docs_link_semantic.doc_drift_findings.[0]`
+  - **Evidence**: WebFetch `/features/data-discovery/directory` 2026-05-08 status 200 — confirmed "classes" vs "types" mixing in level-3 prose.
+  - **Proposed doc action**: In `features/data-discovery/directory.md`, replace level-3 prose's "Data Entity classes" with "Data Entity types". Cross-link `main-concepts.md` for disambiguation.
+  - **Cross-references**: None.
+  - **Severity rationale**: MEDIUM — vocabulary slip.

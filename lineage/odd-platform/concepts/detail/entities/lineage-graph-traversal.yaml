@@ -1,0 +1,159 @@
+name: Lineage Graph Traversal
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW CONCEPT, batch 2026-05-12F** — the platform''s lineage-graph read
+  interface. `GET /api/dataentities/{id}/lineage/downstream` (sibling `/upstream`)
+  returns the FULL reachable lineage subgraph from a rooted data entity, walked via
+  a single Postgres `WITH RECURSIVE` CTE (`ReactiveLineageRepositoryImpl.java:122-176`).
+  Two client-driven inputs control the traversal: `lineage_depth` (recursion depth
+  bound) + `expandedEntityIds` (depth-1 fan-out around selected nodes for UI progressive
+  expansion). Edges are persisted as `LineagePojo` rows in the `lineage` table (parent_oddrn
+  ↔ child_oddrn). Response is a `DataEntityLineage` graph DTO (root + downstream +
+  upstream + nodes + edges + children-count/parents-count maps). main-concepts.md
+  names `Data Lineage` as a Data Governance pillar (`### Data Lineage`) but does NOT
+  name the API surface, the recursion-bound mechanism, the dual-input expansion model,
+  or the cross-owner enumeration semantics. The closest doc anchor is `/features/data-lineage`
+  (verified 200, 2026-05-12) which describes lineage as a discoverable graph and refers
+  readers to `/developer-guides/api-reference/lineage` (also 200) for API details.
+  **The API-reference page contains TWO doc-drift findings** (per getDataEntityDownstreamLineage.md:docs_link_semantic.doc_drift_findings):
+  (1) claims `lineage_depth` defaults to platform''s default when unset — UNIMPLEMENTED
+  (null-Integer NPE on the service boundary); (2) describes `expanded_entity_ids`
+  as ''IDs of Data Entity Group entities'' — code accepts ANY data-entity IDs (parameter
+  is `List<Long>` with no group-class filter). Sibling features replicate the lineage
+  pattern: DataEntityGroup lineage (`/api/dataentitygroups/{id}/lineage`) accepts
+  no depth parameter at all (openapi.yaml:2418-2433); microservices lineage via OpenTelemetry;
+  ML experiment/model lineage.'
+axes_present:
+- controllers
+nodes:
+- odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
+contributors:
+- getDataEntityDownstreamLineage.md:concepts.entities (DataEntity root, LineagePojo
+  edges, DataEntityLineage response DTO, LineageDepth wrapper, DataEntityLineageNode/Edge)
+- getDataEntityDownstreamLineage.md:concepts.operations (resolve root → recursive
+  walk → fan-out at expandedEntityIds → merge + distinct → fetch metadata → compute
+  counts → map to DataEntityLineage)
+- getDataEntityDownstreamLineage.md:implicit_adrs.[0] (single-query recursive-CTE)
+  + implicit_adrs.[1] (dual-input client-driven expansion model)
+evidence:
+- getDataEntityDownstreamLineage.md:concepts.entities + concepts.operations + concepts.invariants.[0-3]
+- getDataEntityDownstreamLineage.md:implicit_adrs.[0,1]
+- getDataEntityDownstreamLineage.md:dependencies_semantic.couples-to (LineageService.getLineage
+  + ReactiveLineageRepositoryImpl.lineageCte)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: NO SECURITY_RULES entry — falls through to `pathMatchers('/**').authenticated()`
+      catch-all (AuthorizationCustomizer.java:29-30). No `@PreAuthorize`, no programmatic
+      permission check. Read-collaborative-GET ADR-CANDIDATE-003 posture surfaced
+      on a graph-shaped vector. Under `auth.type=DISABLED`, anonymously reachable.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: Returned graph is NOT filtered by caller's owner relationships. The `lineage`
+      table itself carries NO owner column; `LineageServiceImpl.getLineage(...)` performs
+      no per-row owner check (lines 87-122); repository walk filters only by `LINEAGE.IS_DELETED.isFalse()`.
+      Authenticated caller sees every entity reachable from the root via lineage edges,
+      including entities owned by other teams.
+  strengths:
+  - Single-query recursive-CTE traversal — one DB round-trip, not BFS-per-node (efficient
+    at the query layer)
+  - Client-driven progressive-expansion model — UI can ask for shallow tree first
+    then expand on click, bounding initial response size
+  weaknesses:
+  - '**Graph-shaped cross-owner enumeration vector (HIGH)** — lineage edges encode
+    causal connections; leaking the existence of a downstream transformer / consumer
+    reveals another team''s internal pipeline structure even if their entities are
+    not separately enumerable via other endpoints. 5th surface in the read-collaborative
+    invariant (after getAllAlerts + getActivity + search + getDataEntityDetails).
+    (getDataEntityDownstreamLineage.md:security.known_security_gaps.[0])'
+  - '**No `lineage_depth` upper-bound cap + no rate-limit — DoS-amplification vector
+    (HIGH)** — `@Min(1)` enforces a lower bound but no `@Max(...)` exists; depth=10000
+    against a dense subgraph is permissible. The CTE row count grows multiplicatively
+    with depth; no cycle guard inside the recursion (only outer `selectDistinct`).
+    (getDataEntityDownstreamLineage.md:security.known_security_gaps.[1])'
+  - '**DISABLED-mode reachability (HIGH)** — 11th sidecar in the DISABLED-bypass cross-cutting
+    invariant; anonymous network probe can drive cross-owner enumeration AND DoS-amplification.
+    (getDataEntityDownstreamLineage.md:security.known_security_gaps.[2])'
+  - '**Null-`lineage_depth` NPE returns 500 to caller (MEDIUM)** — generic 500 leaks
+    server-side exception trace; docs claim ''Unset returns the platform''s default
+    depth'' which is UNIMPLEMENTED. Doc-drift + error-handling-hole compounded. (getDataEntityDownstreamLineage.md:security.known_security_gaps.[3])'
+  cross_file_inconsistencies:
+  - Concept name 'Lineage' is canonical in main-concepts.md (`Data Lineage` Data Governance
+    pillar) but the API surface, recursion-bound mechanism, dual-input expansion model,
+    and cross-owner-enumeration posture are all undocumented at the concept layer.
+    Sub-page `/developer-guides/api-reference/lineage` covers the parameters but with
+    two inaccuracies (the null-default claim + the group-only `expanded_entity_ids`
+    claim).
+  contributing_files:
+  - getDataEntityDownstreamLineage.md
+  evidence:
+  - getDataEntityDownstreamLineage.md:security.known_security_gaps.[0-3]
+  - getDataEntityDownstreamLineage.md:bugs_limitations_corner_cases.[0-7]
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - Every lineage-canvas open in the UI issues a `GET /api/dataentities/{id}/lineage/downstream`
+    AND `/upstream`; each subsequent click on a node to expand re-issues the same
+    endpoint with an updated `expanded_entity_ids` list — fully synchronous, fully
+    un-cached
+  - Recursive-CTE materialises one row per (depth, parent_oddrn, child_oddrn) tuple
+    inside the recursion — highest-DB-cost read on the entity-detail screen
+  - Per-oddrn metadata fetch loads every entity referenced anywhere in the edge set
+    + every group oddrn — a 10K-edge response triggers a 20K-oddrn metadata fetch
+    in the same Mono assembly
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single Mono pipeline per request — one request → one response holding
+      the full graph; no streaming variant; no batching of multiple lineage requests
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: Stateless controller scales horizontally; the bottleneck is unbounded
+      Postgres recursive-CTE cost on diamond-shaped DAGs + full-graph in-memory materialisation
+      in JVM heap before serialisation
+  strengths:
+  - Stateless controller — horizontal scaling unconstrained at this layer
+  - Reactive `Mono` signature — non-blocking on the request thread
+  weaknesses:
+  - '**No upper bound on `lineage_depth` parameter (HIGH)** — operators cannot defend
+    a small Postgres instance against a depth=10000 request without an external WAF/reverse-proxy
+    validation rule'
+  - '**No cap on `expanded_entity_ids` list length (MEDIUM)** — a multi-thousand-ID
+    list hits the Postgres 32K-parameter prepared-statement limit before producing
+    a useful error message'
+  - '**Full-graph in-memory materialisation (MEDIUM)** — no streaming response and
+    no pagination cursor; a 100K-node downstream subgraph holds its full edge list
+    + per-node metadata in heap before serialisation'
+  - '**No CTE-level cycle guard (MEDIUM)** — diamond DAGs and true cycles inflate
+    intermediate row counts inside the CTE before final pruning at outer `selectDistinct`'
+  - '**No caching (LOW)** — identical repeated calls re-walk the CTE and re-fetch
+    every entity''s metadata'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - getDataEntityDownstreamLineage.md
+  evidence:
+  - getDataEntityDownstreamLineage.md:performance.hot_paths.[0-2]
+  - getDataEntityDownstreamLineage.md:performance.known_performance_gaps.[0-4]
+notes: "NEW concept captured in batch 2026-05-12F. Single-sidecar\nprimary-source\
+  \ (getDataEntityDownstreamLineage). The sibling\n`/upstream` endpoint runs the same\
+  \ flow with `LineageStreamKind.UPSTREAM`\n— same code path, mirror semantics. DataEntityGroup-lineage\n\
+  (`/api/dataentitygroups/{id}/lineage`) extends the pattern to\ngroups (no depth\
+  \ parameter on that variant — DEG-lineage is\nalways one-hop).\n\nmain-concepts.md\
+  \ names `Data Lineage` as a Data Governance pillar\nbut does not name the API surface\
+  \ or the dual-input expansion\nmechanism. Recommended canonicalisation: extend main-concepts.md's\n\
+  Data Lineage section with a 'Lineage Graph Traversal' sub-concept\nnaming `GET /api/dataentities/{id}/lineage/{downstream|upstream}`,\n\
+  the `lineage_depth` recursion bound, and the `expanded_entity_ids`\nprogressive-expansion\
+  \ fan-out. Plus fix two doc-bugs on\n`/developer-guides/api-reference/lineage`:\n\
+  \  (a) Correct the `lineage_depth` 'Unset returns the platform's\n      default\
+  \ depth' claim — there IS no default; unset is a 500.\n  (b) Correct the `expanded_entity_ids`\
+  \ 'IDs of Data Entity Group\n      entities' claim — the parameter accepts any data-entity\
+  \ IDs,\n      not just groups.\n\nStrong member of the Read-collaborative cross-owner\
+  \ enumeration\ncross-cutting invariant (5-sidecar) — graph-shaped enumeration is\n\
+  a UNIQUE blast-radius shape: lineage edges leak causal connections\neven when individual\
+  \ entities are not separately enumerable.\n"

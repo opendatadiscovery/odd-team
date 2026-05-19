@@ -1,0 +1,9 @@
+- **REFACTOR-133** (NEW 2026-05-12C): Notifications advisory-lock-id collision risk — `notifications.wal.advisory-lock-id` defaults to 100 (distinct from partition=90, dc-receive=110, dc-send=120 in shipped defaults). Operators customising any of these to 100 cause silent subsystem collision
+  - **Category**: advisory-lock-collision
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[2]` (severity MEDIUM)
+  - **Statement**: The shipped advisory-lock-id namespace (90 partition / 100 notifications / 110 dc-receive / 120 dc-send) is collision-free, but the four ids are operator-configurable independently and silently collide if reused. The Notifications subscriber will never get leadership (or will collide with another subsystem). No boot-time check rejects collisions.
+  - **Evidence**: `NotificationsProperties.java:13` + `application.yml:177,198,201,202`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-043 (single-leader WAL) does not address collision; ADR-CANDIDATE-020 + ADR-CANDIDATE-028 + ADR-CANDIDATE-043 together establish the lock-id namespace.
+  - **Proposed remedy**: Add a `@PostConstruct` boot-time check that collects all four advisory-lock-id values + asserts uniqueness across them. Surface a fail-fast error message naming the colliding subsystems.
+  - **Severity rationale**: MEDIUM — operator-customisation hazard.
+  - **Suggested backlog grouping**: `Notifications hardening`

@@ -1,0 +1,9 @@
+- **REFACTOR-110** (NEW 2026-05-12C): OAuth2 login-redirect-URI validation is delegated entirely to Spring's default OAuth2 client behaviour; `redirectUri` config field accepts any string and flows verbatim into Spring's `ClientRegistration`. If an operator misconfigures `redirectUri` to a third-party URL, the OAuth2 provider would normally reject, but permissive IdPs allow it
+  - **Category**: open-redirect (mild)
+  - **Surfaced by**: `odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md:bugs_limitations_corner_cases.[1]` (severity LOW)
+  - **Statement**: `OAuthSecurityConfiguration.java:99` calls `.oauth2Login(withDefaults())`. The `redirectUri` config field on `ODDOAuth2Properties.OAuth2Provider` (line 36) accepts any string verbatim. ODD has no allowlist; the platform trusts the OAuth2 provider's redirect validation. This is industry-standard behaviour but worth surfacing for hardening reviews.
+  - **Evidence**: `OAuthSecurityConfiguration.java:99` + `ODDOAuth2PropertiesConverter.java:32-34` + `ODDOAuth2Properties.java:36`
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Document on the live OAuth2/OIDC page that operators are responsible for the redirect-URI's safety. Optional: add per-provider allowlist regex.
+  - **Severity rationale**: LOW — mitigated by IdP redirect validation in practice.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

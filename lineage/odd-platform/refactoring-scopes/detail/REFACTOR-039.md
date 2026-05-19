@@ -1,0 +1,10 @@
+- **REFACTOR-039**: i18n `localStorage` access is unguarded — privacy-mode browsers where `localStorage` throws cause UI to fail to render
+  - **Category**: missing-validation
+  - **Surfaced by**:
+    - `odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md:bugs_limitations_corner_cases.[3]` (LOW)
+    - `odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__SelectLanguage.md:bugs_limitations_corner_cases.[1]` (LOW)
+  - **Statement**: `odd-platform-ui/src/locales/i18n.ts:22` and `SelectLanguage.tsx:30` access `localStorage` with no try/catch. Safari private mode + sandboxed iframes raise on `localStorage` access; the bootstrap import-for-side-effects raises before `<App />` renders → entire UI unreachable.
+  - **Evidence**: `i18n.ts:22` + `SelectLanguage.tsx:28-33`
+  - **Proposed remedy**: Wrap both in try/catch with a safe fallback to default language.
+  - **Severity rationale**: LOW — affects a small operator subset.
+  - **Suggested backlog grouping**: `i18n cleanup`

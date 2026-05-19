@@ -1,0 +1,12 @@
+- **DOC-GAP-011**: Legacy URL `/active-platform-features/alerting` returns 404 — canonical at `/features/active-platform-features/alerting`
+  - **Category**: broken-url
+  - **Surfaced by**:
+    - `odd-platform__java__AlertController__controller-method__changeAlertStatus.md:docs_link_semantic.inferred_docs.[1]` (status: 404 at enrichment time)
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md:docs_link_semantic.doc_drift_findings.[0]`
+    - `odd-platform__ts__routes__route__alerts.md:docs_link_semantic.doc_drift_findings.[1]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/active-platform-features/alerting` 2026-05-08 status 404 — H1 "Page Not Found"; suggests canonical.
+    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/alerting` 2026-05-08 status 200.
+  - **Proposed doc action**: Cross-link audit; update to `/features/active-platform-features/alerting`. See DOC-GAP-058 (class-level meta).
+  - **Cross-references**: DOC-GAP-012, DOC-GAP-013, DOC-GAP-014, DOC-GAP-015, DOC-GAP-035, DOC-GAP-056, DOC-GAP-058 (same URL-prefix-drift class).
+  - **Severity rationale**: MEDIUM.

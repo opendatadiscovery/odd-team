@@ -1,0 +1,10 @@
+- **REFACTOR-080** (NEW 2026-05-10B): Hard-coded path matcher in `IngestionDataEntitiesFilter` — `/ingestion/entities` exact, no `/**` suffix; future addition of `POST /ingestion/entities/batch` or `/v2` would bypass the filter silently
+  - **Category**: hard-coded-path
+  - **Surfaced by**:
+    - `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md:bugs_limitations_corner_cases.[3]` (severity MEDIUM)
+  - **Statement**: `IngestionDataEntitiesFilter.java:28` passes the literal string `"/ingestion/entities"` (exact match, no wildcard, no `/**`) to the path-matcher constructor. There is no test, no comment, no `@docs` annotation pinning the path. A future addition of `POST /ingestion/entities/batch` (batch ingestion) or `POST /ingestion/entities/v2` (versioned API) would bypass the filter without any compile-time signal — the new endpoint would inherit the `/ingestion/**` whitelist and the catch-all permit-all behaviour.
+  - **Evidence**: `IngestionDataEntitiesFilter.java:28` (literal string `"/ingestion/entities"`)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-027 (NEW — ingestion-endpoint auth trust gradient) codifies hard-coded-per-subclass as the deliberate pattern (matcher-in-constructor); the ADR does NOT defend the absence of forward-compatibility guards.
+  - **Proposed remedy**: Add an integration test that asserts every `IngestionApi`-generated `@RequestMapping` matching `/ingestion/entities*` is covered by some filter; fail the build on uncovered paths. Alternative: change the matcher to `/ingestion/entities/**` (more inclusive) — but this introduces a breaking change if new sub-paths under `/ingestion/entities/` should have DIFFERENT auth postures.
+  - **Severity rationale**: MEDIUM — future-regression risk on a security-load-bearing path.
+  - **Suggested backlog grouping**: `Ingestion-endpoint auth hardening`

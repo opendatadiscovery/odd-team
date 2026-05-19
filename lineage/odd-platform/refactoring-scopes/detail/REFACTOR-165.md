@@ -1,0 +1,10 @@
+- **REFACTOR-165** (NEW 2026-05-12D): STARTTLS-only TLS exposure — the only TLS toggle is `notifications.receivers.email.smtp.starttls`; implicit-TLS keys (`mail.smtp.ssl.enable`, `mail.smtps.*`) are never set. Gmail port 465 and many corporate SMTP relays REQUIRE implicit TLS — those cannot be used with this config surface
+  - **Category**: smtp-implicit-tls
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__EmailSenderProperties.md:bugs_limitations_corner_cases.[1]` (MEDIUM) + `security.known_security_gaps.[4]` (MEDIUM)
+  - **Statement**: `EmailSenderProperties.SmtpProperties` exposes only `auth: Boolean` and `starttls: Boolean`. `NotificationConfiguration.java:63-69` (the `if (protocol.equals("smtp"))` branch) populates only `mail.smtp.auth` + `mail.smtp.starttls.enable` + the four hosts/ports. Implicit-TLS-required SMTP relays (Gmail port 465, many corporate relays, AWS SES SMTPS endpoint) need `mail.smtp.ssl.enable: true` or the `smtps` protocol — neither configurable from ODD YAML.
+  - **Evidence**: `EmailSenderProperties.java:17-20` (SmtpProperties only has `auth` + `starttls`) + `NotificationConfiguration.java:63-69` (only `starttls` key populated)
+  - **Existing-ADR-or-implied-prescription**: None. ADR-CANDIDATE-041 (per-channel URL-presence) defends the channel-activation pattern but not the per-channel TLS-mode coverage.
+  - **Proposed remedy**: Add `private Boolean ssl;` to `SmtpProperties`; in `NotificationConfiguration.java`, populate `mail.smtp.ssl.enable` from it. Alternatively, support `protocol: smtps` (Jakarta Mail's implicit-TLS protocol name) by populating `mail.smtps.*` keys in a parallel branch. Document the choice on the live notifications page with explicit Gmail-port-465 and AWS-SES examples.
+  - **Severity rationale**: MEDIUM — major SMTP relay families unsupported; operator-incompat shape with no workaround.
+  - **Suggested backlog grouping**: `Notifications hardening`

@@ -1,0 +1,10 @@
+- **REFACTOR-055** (NEW 2026-05-10A): Slack rate-limit handling is non-discriminating — every exception treated as the same 3-retry budget with fixed 1s sleep; 429 / `ratelimited` is not distinguished from `invalid_auth` / `channel_not_found`
+  - **Category**: error-mapping
+  - **Surfaced by**:
+    - `odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md:bugs_limitations_corner_cases.[5]` (MEDIUM)
+  - **Statement**: Every exception from `SlackAPIClientImpl.postMessage` is caught at `DataCollaborationMessageSenderJob.java:55` as a generic `Exception e` and either retried (`shouldRetry`) or persisted as `markMessageAsFailed`. Slack's `ratelimited` / `429` responses are not distinguished from auth (`invalid_auth`, `not_authed`) or channel (`channel_not_found`, `not_in_channel`) errors — the same 3-retry budget applies, with a fixed 1-second sleep. Under sustained 429s the budget is exhausted in <4s and the message is dropped.
+  - **Evidence**: `DataCollaborationMessageSenderJob.java:54-65` + `SlackAPIClientImpl.java:73-77`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-020 (decoupled-outbound-delivery) describes the retry-budget shape; this scope is the missing differentiation by error class — the ADR doesn't defend "treat all errors equally."
+  - **Proposed remedy**: Distinguish error classes: (a) `429 / ratelimited` → exponential-backoff, longer total budget (Slack's `Retry-After` header should drive the next-attempt delay); (b) `invalid_auth / token_revoked` → terminal failure, no retry, fail-loud (operator must rotate); (c) `channel_not_found / not_in_channel` → terminal failure, no retry; (d) network errors → existing retry budget. Add Micrometer counters per error class for operator observability.
+  - **Severity rationale**: MEDIUM — defective retry behaviour drops messages that retry-with-backoff would deliver.
+  - **Suggested backlog grouping**: `Data Collaboration hardening`

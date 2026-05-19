@@ -1,0 +1,876 @@
+name: Auth Mode
+canonical_in_docs: true
+canonical_candidate: false
+description: 'The `auth.type` configuration knob selecting the platform''s UI/API
+  authentication mode. Four supported values: `DISABLED | LOGIN_FORM | OAUTH2 | LDAP`
+  (verbatim per `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security`).
+  S2S coexists as an additional filter activated by `auth.s2s.enabled`, orthogonal
+  to the four `auth.type` modes — composable with LOGIN_FORM / OAUTH2 / LDAP, silently
+  ignored under DISABLED. Every controller sidecar names these as `auth_mode_relevance`.
+  Batch 2026-05-10B added three config-key-consumer sidecars (AppInfoController@L18,
+  AuthorizationManagerCondition@L11, IngestionDataEntitiesFilter@L20). Batch 2026-05-12C
+  adds the four canonical `*SecurityConfiguration` sidecars — one per mode — making
+  the per-mode behaviour fully cited: DisabledAuthSecurityConfiguration@L10 (permit-all
+  chain, no CSRF, no CORS, no S2S wiring, no boot WARN), LoginFormSecurityConfiguration@L31
+  (validates REFACTOR-073 — LOGIN_FORM runs WITHOUT AuthorizationCustomizer), OAuthSecurityConfiguration@L71
+  (WIRES AuthorizationCustomizer; S2S composes-not-mutex), LDAPSecurityConfiguration@L51
+  (WIRES AuthorizationCustomizer; containsIgnoreCase admin match).'
+axes_present:
+- controllers
+- openapi_tags
+- ui_routes
+- ui_shell
+- config_prefixes
+nodes:
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DirectoryController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController
+- odd-platform java ActivityController controller-method:getActivity
+- odd-platform java DataCollaborationController controller-method:postMessageInSlack
+- odd-platform java CollectorController controller-method:regenerateCollectorToken
+- odd-platform java AlertController controller-method:getAllAlerts
+- odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk
+- odd-platform java AppInfoController config-key-consumer:auth.type@L18
+- odd-platform java AuthorizationManagerCondition config-key-consumer:auth.type@L11
+- odd-platform java IngestionDataEntitiesFilter config-key-consumer:auth.ingestion.filter.enabled@L20
+- odd-platform java DisabledAuthSecurityConfiguration config-key-consumer:auth.type@L10
+- odd-platform java LoginFormSecurityConfiguration config-key-consumer:auth.type@L31
+- odd-platform java OAuthSecurityConfiguration config-key-consumer:auth.type@L71
+- odd-platform java LDAPSecurityConfiguration config-key-consumer:auth.type@L51
+- odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDOAuth2Properties
+- odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDLDAPProperties
+- odd-platform java RoleController controller-method:createRole
+- odd-platform java PolicyController controller-method:createPolicy
+- odd-platform java OwnerController controller-method:createOwner
+- odd-platform java PermissionController controller-method:getResourcePermissions
+- odd-platform java SearchController controller-method:search
+- odd-platform java DataEntityController controller-method:getDataEntityDetails
+- odd-platform java DataEntityController controller-method:createOwnership
+- odd-platform java DataEntityController controller-method:updateStatus
+- odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
+- odd-platform java IngestionController controller-method:postDataEntityList
+contributors:
+- 'All controller sidecars: security.auth_mode_relevance lists DISABLED/LOGIN_FORM/OAUTH2/LDAP
+  (with auth-mode names verbatim from the live enable-security doc)'
+- 'AlertManagerController: auth_mode_relevance is `NONE — operator-delegated network-layer
+  auth` (the singular exception — `/ingestion/**` whitelist exempts the path from
+  the UI authentication chain)'
+- 'CollectorController.regenerateCollectorToken: also implicates S2S — the rotated
+  token is the S2S credential the ingestion filter validates (collector-token surface
+  is producer-side of S2S)'
+- 'AppInfoController@L18: relevant to ALL FOUR modes — its job is to REPORT which
+  mode is active; `/api/appInfo` echoes `authType` verbatim. Under `auth.type=DISABLED`
+  (the application.yml default at L34) the endpoint is anonymously reachable and discloses
+  {projectVersion, authType}'
+- 'AuthorizationManagerCondition@L11: documents the AUTHORIZATION-side gating (NOT
+  authentication). The composite `AnyNestedCondition` is designed to gate the AuthorizationCustomizer
+  wiring for OAUTH2|LDAP — but is DEAD CODE (zero @Conditional consumers in repo per
+  grep on 2026-05-10). The Policies/Permissions/Roles/Owners framework is in practice
+  wired by direct `@ConditionalOnProperty` on OAuthSecurityConfiguration.java:71 +
+  LDAPSecurityConfiguration.java:51. LOGIN_FORM runs WITHOUT AuthorizationCustomizer
+  (LoginFormSecurityConfiguration.java:53-66 has no .authorizeExchange(new AuthorizationCustomizer(...)))
+  — authenticated-but-unauthorized.'
+- 'IngestionDataEntitiesFilter@L20: the ingestion-token verification path is ORTHOGONAL
+  to `auth.type` — every UI/API security config explicitly puts `/ingestion/entities`
+  in permittedPaths or in `WHITELIST_PATHS = /ingestion/**`, so authentication on
+  the ingestion endpoint depends EXCLUSIVELY on `auth.ingestion.filter.enabled` regardless
+  of `auth.type`. When that property is `false` (the application.yml:48 default),
+  `/ingestion/entities` is unauthenticated under ALL four UI auth modes.'
+- 'DisabledAuthSecurityConfiguration@L10: CANONICAL sidecar for the DISABLED branch
+  — the bean produces a `securityWebFilterChainDisabled` that calls `.csrf(...disable).authorizeExchange(...
+  .anyExchange().permitAll())`; NO `.cors(...)`, NO `AuthorizationCustomizer`, NO
+  `S2sAuthenticationFilter` wiring (S2S silently ignored even when `auth.s2s.enabled=true`),
+  NO `@Slf4j` boot WARN, NO `matchIfMissing`. The shortest of the four SecurityConfiguration
+  siblings (19 lines). Under DISABLED, `/actuator/{health,prometheus,env,info}` are
+  reachable on the same HTTP port.'
+- 'LoginFormSecurityConfiguration@L31: CANONICAL sidecar for the LOGIN_FORM branch
+  — VALIDATES REFACTOR-073: `LoginFormSecurityConfiguration.java:55-57` configures
+  only `.pathMatchers(permittedPaths).permitAll().pathMatchers("/**").authenticated()`
+  — NO `AuthorizationCustomizer`. Every form-authenticated user is granted ADMIN authorities
+  via `getAuthorities(true)` at line 81; CSRF disabled at line 54; S2S additively
+  composable at HTTP_BASIC order at line 61-63; `auth.login-form-redirect` is an open-redirect
+  surface (no scheme/host validation); plaintext credentials leak via `/actuator/env`.'
+- 'OAuthSecurityConfiguration@L71: CANONICAL sidecar for the OAUTH2 branch — WIRES
+  `AuthorizationCustomizer(permissionService, extractors)` at line 98 (the Policies/Permissions/Roles/Owners
+  framework). CSRF disabled at line 96. S2S COMPOSES (not mutex) at HTTP_BASIC at
+  line 108-110 — and when composed, the S2sAuthenticationFilter grants ADMIN role
+  across all `/**` paths (not just `/ingestion/entities`). Multi-client login chooser
+  at `GET /login` is public. Provider enum carries only Cognito/GitHub/Google/Azure/ODD_IAM
+  — Okta/Keycloak operators (per live docs) get no provider-specific user enrichment
+  or logout.'
+- 'LDAPSecurityConfiguration@L51: CANONICAL sidecar for the LDAP branch — WIRES `AuthorizationCustomizer(permissionService,
+  extractors)` at line 145; SecurityWebFilterChain runs at `Ordered.HIGHEST_PRECEDENCE`
+  at line 136. Admin-group match uses `containsIgnoreCase` (line 96) — a SUBSTRING
+  match enabling substring-collision admin escalation (`admin-groups: [''ops'']` matches
+  `devops`/`oopsgroup`). NO scheme enforcement on `auth.ldap.url` (plaintext `ldap://`
+  accepted; bind creds + end-user creds in cleartext). `auth.ldap.password` exposed
+  via `/actuator/env`. Active Directory branch silently ignores `dn-pattern` and `user-filter`
+  config. S2S additively composable at HTTP_BASIC at line 149-151.'
+- 'ODDOAuth2Properties (batch 2026-05-12D): CANONICAL config-POJO sidecar for the
+  OAUTH2 branch. `@ConfigurationProperties("auth.oauth2")` with single `Map<String,
+  OAuth2Provider> client` field — operators register N OAuth2/OIDC clients keyed by
+  registrationId. `@PostConstruct validate()` (lines 16-19) enforces ONLY `clientId`
+  + `provider` non-empty per client; every other field (Azure-required `logoutUri`,
+  GitHub-required `read:org` scope, URL formats) is unvalidated. Provider field is
+  a FREE STRING — `Provider` enum at Provider.java:3-5 lists 5 values (`COGNITO, GITHUB,
+  GOOGLE, ODD_IAM, AZURE`) but the field accepts any string; consumer-side dispatch
+  via `equalsIgnoreCase(Provider.X.name())` silently routes typos / Okta / Keycloak
+  through generic OIDC. Validates 3 batch-C OAuth claims from primary source: (a)
+  Provider enum 5 values vs docs 7 (Okta + Keycloak unmapped); (b) `azureTenantId`
+  ABSENT from POJO — `application.yml:128-156` Azure example uses `${auth.oauth2.client.azure.azure-tenant-id}`
+  placeholder only, not a POJO field; (c) Azure `logoutUri` is NPE-prone at `AzureLogoutSuccessHandler.java:39`
+  (`URI.create(provider.getLogoutUri())` with no null guard, vs `CognitoLogoutSuccessHandler.java:33-35`
+  which DOES guard). NEW doc-drift finding: live docs at `/oauth2-oidc` use field
+  key `username-attribute` (kebab single-word) but POJO field is `userNameAttribute`
+  (camelCase split User+Name) — Spring relaxed binding requires `user-name-attribute`
+  (kebab triple-word), NOT `username-attribute`. Operator copy-paste-from-docs verbatim
+  fails to bind silently.'
+- 'ODDLDAPProperties (batch 2026-05-12D): CANONICAL config-POJO sidecar for the LDAP
+  branch. `@ConfigurationProperties("auth.ldap")` with six top-level fields (`url`,
+  `username`, `password`, `base`, `dnPattern`, `userFilter.filter`) + nested `Group`
+  block (`searchBase`, `filter`, `adminGroups`) + nested `ActiveDirectory` block (`enabled`,
+  `domain`). `@PostConstruct validate()` (lines 40-49) enforces TWO and ONLY TWO invariants:
+  URL non-empty AND at least one of {dnPattern, userFilter.filter}; every other field
+  unvalidated (password, base, adminGroups, AD.domain). Validates batch-C LDAP claims
+  AND REFINES the actuator-env credential-leak finding: Spring Boot 3.4.10''s `management.endpoint.env.show-values:
+  NEVER` default DOES sanitise `/actuator/env` (the password appears as `******` in
+  actuator). The DURABLE leak surface is Lombok `@Data`-generated `toString()` — `EmailSenderProperties.java:6-10`
+  + `ODDLDAPProperties.java:10,14` both declare `@Data` with no `@ToString.Exclude`
+  on the password field. Any `log.info("props = {}", properties)` (or future code
+  adding such a line) emits the password in cleartext. The actuator-env scope from
+  batch C was overbroad; the Lombok-toString scope is precise. `adminGroups` confirmed
+  `Set<String>` (substring-collision risk at `LDAPSecurityConfiguration.java:96` `containsIgnoreCase`).
+  Also surfaces: AD.domain unvalidated; ldap:// vs ldaps:// scheme not enforced; absent
+  admin-groups silently produces zero-admin LDAP deployment.'
+- 'RoleController.createRole (batch 2026-05-12E): RBAC primary-surface sidecar. SECURITY_RULES
+  POLICY_CREATE-class gate (ROLE_CREATE NO_CONTEXT at SecurityConstants.java:169).
+  Under DISABLED: gate INERT (`auth.type=DISABLED` bypasses entire SECURITY_RULES
+  table — RBAC mutation endpoint reachable unauthenticated; LSN-001 shape). Under
+  LOGIN_FORM: AuthorizationCustomizer not wired AND every form-authenticated user
+  is ADMIN via `getAuthorities(true)` — effective ROLE_CREATE for everyone. Under
+  any non-DISABLED mode with `auth.s2s.enabled=true`: S2sAuthenticationFilter.java:31-39
+  injects ADMIN globally — REFACTOR-108 (S2S admin-everywhere reaches RBAC, not just
+  /ingestion).'
+- 'PolicyController.createPolicy (batch 2026-05-12E): RBAC primary-surface sidecar.
+  SECURITY_RULES POLICY_CREATE MANAGEMENT-tier gate at SecurityConstants.java:163-164.
+  Same DISABLED-bypass shape. Plus: live `/oauth2-oidc` / `/login-form` / `/ldap`
+  per-mode pages do NOT cross-link to `/permissions` page that DOES list POLICY_CREATE
+  — operators can''t tell which auth modes actually enforce it. The policy schema
+  endpoint `GET /api/policies/schema` is NOT in SECURITY_RULES (falls through to `.authenticated()`)
+  — undocumented but reachable for schema-introspection.'
+- 'OwnerController.createOwner (batch 2026-05-12E): RBAC directory sidecar. SECURITY_RULES
+  OWNER_CREATE NO_CONTEXT at SecurityConstants.java:143. Same DISABLED-bypass + LOGIN_FORM-ADMIN-everywhere
+  shapes. Plus identity-decoupled-CRUD invariant: no auth-mode flow auto-creates an
+  Owner on first login (LDAP/OAuth2/LOGIN_FORM all skip this); operators must MANUALLY
+  pre-create per-user Owner rows OR accept association requests.'
+- 'PermissionController.getResourcePermissions (batch 2026-05-12E): RBAC READ-side
+  sidecar. NO SECURITY_RULES entry (deliberate — read-collaborative posture). Endpoint
+  is the canonical reveal of two HIGH auth-mode-bypass findings: (a) under DISABLED,
+  response is EMPTY while mutation endpoints are simultaneously `.permitAll()` — UI
+  shows ''you can do nothing'' while API accepts everything (silent UI-vs-API contradiction);
+  (b) under LOGIN_FORM, response is ALWAYS the FULL admin permission set regardless
+  of UI-configured policies (LOGIN_FORM-ADMIN-everywhere bypass). Cross-corroborates
+  Auth Mode (LOGIN_FORM branch) — now 3-sidecar.'
+- 'SearchController.search (batch 2026-05-12E): NEW search-area sidecar. NO SECURITY_RULES
+  entry — falls through to `.authenticated()` catch-all. Under DISABLED, anonymously
+  reachable. Default `my_objects=false` returns aggregations over the entire catalog
+  (owner-bypass). Third read-collaborative cross-owner enumeration surface (after
+  getAllAlerts batch A + getActivity batch B) — wider blast radius than either since
+  search paginates the WHOLE catalog by name/ODDRN/descriptions/ownership/tags.'
+- 'DataEntityController.getDataEntityDetails (batch 2026-05-12F): DATAENTITY PRIMARY
+  SURFACE sidecar — the platform''s single hottest endpoint. NO SECURITY_RULES entry.
+  Under DISABLED, anonymous read of every entity''s full 34-field DataEntityDetails
+  payload (including soft-deleted entities — `includeDeleted(true)` is deliberate).
+  **RESOLVES ADR-CANDIDATE-003 borderline_flag**: the read-collaborative posture is
+  INTENTIONAL on the centerpiece read; consistent with 27+ other GETs on the same
+  controller. Also: under DISABLED any anonymous caller can inflate any entity''s
+  `view_count` (the GET is a write at the DB layer). Centerpiece embodiment of the
+  Auth Mode DISABLED weakness.'
+- 'DataEntityController.createOwnership (batch 2026-05-12F): DATAENTITY OWNERSHIP-BINDING
+  sidecar. SECURITY_RULES-gated under non-DISABLED (`DATA_ENTITY_OWNERSHIP_CREATE`
+  per-data-entity at SecurityConstants.java:215-217). Under DISABLED, anonymous callers
+  can bind any Owner (including auto-created via getOrCreate) to any data entity,
+  and emit OWNERSHIP_CREATED activity events with undefined caller identity (the `@ActivityLog`
+  fires, but `ActivityContextInfo` lacks principal). Under LOGIN_FORM with `getAuthorities(true)`
+  ADMIN-for-all, every form-authenticated user effectively holds DATA_ENTITY_OWNERSHIP_CREATE
+  everywhere.'
+- 'DataEntityController.updateStatus (batch 2026-05-12F): DATAENTITY STATUS-LIFECYCLE
+  sidecar. SECURITY_RULES-gated under non-DISABLED (`DATA_ENTITY_STATUS_UPDATE` per-data-entity
+  at SecurityConstants.java:277-281). Under DISABLED, anonymous callers can flip ANY
+  data entity to DELETED, triggering the soft-delete cascade (lineage / group-relations
+  / parent-group-relations / statistics / filled-flag) — effectively wholesale catalog
+  deletion to anonymous traffic. HIGH-severity blast radius under DISABLED specifically
+  because of the cascade fan-out.'
+- 'DataEntityController.getDataEntityDownstreamLineage (batch 2026-05-12F): DATAENTITY
+  LINEAGE-GRAPH sidecar. NO SECURITY_RULES entry — falls through to `.authenticated()`.
+  Under DISABLED, anonymous callers can drive arbitrarily-expensive recursive-CTE
+  queries (no `@Max` cap on `lineage_depth`; no CTE cycle guard) AND enumerate the
+  full reachable graph from any rooted entity, including entities owned by other teams.
+  Graph-shaped cross-owner-enumeration vector under DISABLED — combined with DoS-amplification
+  this is the highest-stakes lineage read under DISABLED.'
+- 'IngestionController.postDataEntityList (batch 2026-05-12F): S2S INGESTION CONTROLLER
+  sidecar — CLOSES THE LOOP opened by IngestionDataEntitiesFilter (batch B). Path
+  `/ingestion/**` is in `SecurityConstants.WHITELIST_PATHS` (line 95-96), exempted
+  from the UI authentication chain in every mode (DISABLED/LOGIN_FORM/OAUTH2/LDAP).
+  Authentication is EXCLUSIVELY the responsibility of IngestionDataEntitiesFilter
+  (`auth.ingestion.filter.enabled` defaults false). Under DEFAULT-OFF, ANY caller
+  able to reach the platform''s HTTP port can ingest arbitrary data entities into
+  any datasource by writing its ODDRN in the payload — DEFAULT-OFF unauth confirmed
+  at the CONTROLLER side. Two-sidecar with IngestionDataEntitiesFilter batch B.'
+evidence:
+- AlertController.md:security.auth_mode_relevance
+- AlertManagerController.md:security.auth_mode_relevance (NONE)
+- DataEntityController.md:security.auth_mode_relevance
+- DataEntityAttachmentController.md:security.auth_mode_relevance
+- DirectoryController.md:security.auth_mode_relevance
+- GenAIController.md:security.auth_mode_relevance
+- getActivity.md:security.auth_mode_relevance
+- postMessageInSlack.md:security.auth_mode_relevance
+- regenerateCollectorToken.md:security.auth_mode_relevance
+- getAllAlerts.md:security.auth_mode_relevance
+- uploadFileChunk.md:security.auth_mode_relevance
+- AppInfoController@L18.md:security.auth_mode_relevance + security.known_security_gaps.[0,1,2]
+- AuthorizationManagerCondition@L11.md:security.auth_mode_relevance + bugs_limitations_corner_cases.[0,1,2]
+  + security.known_security_gaps.[0,1,2]
+- IngestionDataEntitiesFilter@L20.md:security.auth_mode_relevance + security.known_security_gaps.[0,3]
+- DisabledAuthSecurityConfiguration@L10.md:security.auth_mode_relevance + security.known_security_gaps.[0-5]
+  + bugs_limitations_corner_cases.[0-7]
+- LoginFormSecurityConfiguration@L31.md:security.auth_mode_relevance + bugs_limitations_corner_cases.[0]
+  (no AuthorizationCustomizer) + security.known_security_gaps.[0-5]
+- OAuthSecurityConfiguration@L71.md:security.auth_mode_relevance + implicit_adrs.[0]
+  (AuthorizationCustomizer wired) + implicit_adrs.[1] (S2S composes-not-mutex) + security.known_security_gaps.[0]
+  (S2S admin-everywhere)
+- LDAPSecurityConfiguration@L51.md:security.auth_mode_relevance + implicit_adrs.[AuthorizationCustomizer
+  mode-agnostic] + implicit_adrs.[containsIgnoreCase admin match] + security.known_security_gaps.[actuator
+  env password] + security.known_security_gaps.[no LDAPS enforcement] + security.known_security_gaps.[substring
+  admin match]
+- ODDOAuth2Properties.md:security.auth_mode_relevance + docs_link_semantic.doc_drift_findings.[0,1,2,3,4]
+  + implicit_adrs.[0-3] + bugs_limitations_corner_cases.[0-6] + security.known_security_gaps.[0-4]
+- ODDLDAPProperties.md:security.auth_mode_relevance + docs_link_semantic.doc_drift_findings.[0-4]
+  + implicit_adrs.[0-3] + bugs_limitations_corner_cases.[0-6] + security.known_security_gaps.[0-5]
+- createRole.md:security.known_security_gaps.[2] (DISABLED bypass) + security.known_security_gaps.[3]
+  (S2S admin-everywhere) + bugs_limitations_corner_cases.[DISABLED mode bypass]
+- createPolicy.md:security.known_security_gaps.[0] (DISABLED bypass MANAGEMENT-tier
+  RBAC unreachable from policy gate) + bugs_limitations_corner_cases.[0]
+- createOwner.md:security.known_security_gaps.[3] (DISABLED anonymously reachable)
+  + bugs_limitations_corner_cases.[6]
+- getResourcePermissions.md:security.known_security_gaps.[0] (DISABLED UI-vs-API contradiction
+  HIGH) + security.known_security_gaps.[1] (LOGIN_FORM ALL permissions for every caller
+  HIGH)
+- search.md:security.known_security_gaps.[0] (catalog-wide cross-owner enumeration
+  HIGH) + security.known_security_gaps.[1] (DISABLED anonymously reachable MEDIUM)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - DISABLED
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - S2S
+  ingestion_filter_relevance: MIXED
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: 'The four `auth.type` modes have asymmetric authentication AND authorization
+      wiring. **OAUTH2 + LDAP wire AuthorizationCustomizer** (Policies/Permissions/Roles/Owners
+      framework) — `OAuthSecurityConfiguration.java:98` and `LDAPSecurityConfiguration.java:145`
+      both call `.authorizeExchange(new AuthorizationCustomizer(permissionService,
+      extractors))`. **LOGIN_FORM does NOT wire AuthorizationCustomizer** — `LoginFormSecurityConfiguration.java:55-57`
+      runs `.authorizeExchange(... .pathMatchers("/**").authenticated())` only; combined
+      with `getAuthorities(true)` at line 81 every form-authenticated user is ADMIN.
+      **DISABLED bypasses both** (`DisabledAuthSecurityConfiguration.java:13-18` is
+      `.anyExchange().permitAll()`). The composite AuthorizationManagerCondition correctly
+      maps the OAUTH2-or-LDAP disjunction but is dead code. (Per-mode wiring matrix
+      verified across the four canonical *SecurityConfiguration sidecars: AuthorizationManagerCondition@L11.md:bugs_limitations_corner_cases.[0,1]
+      + LoginFormSecurityConfiguration@L31.md:bugs_limitations_corner_cases.[0] +
+      OAuthSecurityConfiguration@L71.md:implicit_adrs.[0] + LDAPSecurityConfiguration@L51.md:implicit_adrs.[AuthorizationCustomizer
+      mode-agnostic])'
+  owner_scoping:
+    verdict: MIXED
+    detail: Auth Mode itself is not data-scoped; the modes determine WHETHER any owner-scoping
+      downstream applies. Under DISABLED, no owner-scoping (no authenticated principal).
+      Under LOGIN_FORM, owner-scoping requires authentication only — but every user
+      is ADMIN, so the Policies/Permissions/Roles/Owners framework is inert. Under
+      OAUTH2/LDAP, owner-scoping operates via the Policies/Permissions/Roles/Owners
+      framework gated by AuthorizationCustomizer.
+  strengths:
+  - Four explicit modes declared in `application.yml:33` as a YAML comment (`# DISABLED,
+    LOGIN_FORM, OAUTH2, LDAP`) — operators reading the file see the enumeration
+  - Default value `DISABLED` is in `application.yml:34` (not absent) — explicit choice,
+    not accidental
+  - Mutually-exclusive `@ConditionalOnProperty(value="auth.type", havingValue="...")`
+    on the four SecurityConfiguration classes — clean Spring idiom (DisabledAuthSecurityConfiguration.java:10
+    + LoginFormSecurityConfiguration.java:31 + OAuthSecurityConfiguration.java:71
+    + LDAPSecurityConfiguration.java:51 — parallel structure consistently authored
+    across the four files)
+  - DISABLED mode is INTENTIONALLY an explicit-chain construction (not a no-bean fall-through
+    to Spring autoconfig) — `DisabledAuthSecurityConfiguration.java:13-18` carries
+    the permit-all chain in code so the posture is statement-of-intent rather than
+    emergent. (DisabledAuthSecurityConfiguration@L10.md:implicit_adrs.[1])
+  - Live `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security`
+    enumerates the four values verbatim; per-mode sub-pages exist for DISABLED / LOGIN_FORM
+    / OAUTH2 / LDAP / S2S
+  - OAUTH2 + LDAP both apply `AuthorizationCustomizer` and run at `Ordered.HIGHEST_PRECEDENCE`
+    (LDAP) — production modes carry the strongest enforcement; the asymmetry is downward
+    (LOGIN_FORM ↓ DISABLED)
+  weaknesses:
+  - '**11-sidecar triangulated insecure-default failure mode (HIGH severity — most-corroborated
+    insecure-default in the whole catalog)** — ELEVEN independent sidecars converge
+    on the same operator trap (4 from batch B/C wiring side + 4 from batch E RBAC-primary-surface
+    side + 3 from batch F DataEntity primary-surface side): WIRING (batch B/C): (a)
+    `application.yml:34` ships `auth.type: DISABLED` as the default (DisabledAuthSecurityConfiguration@L10
+    + AppInfoController@L18 + AuthorizationManagerCondition@L11 all anchor on this;
+    DisabledAuthSecurityConfiguration is the CANONICAL evidence — the chain is literally
+    `.csrf(...disable).anyExchange().permitAll()` with no CORS, no AuthorizationCustomizer,
+    no S2S wiring); (b) `application.yml:48` ships `auth.ingestion.filter.enabled:
+    false` (IngestionDataEntitiesFilter@L20 not registered → `/ingestion/entities`
+    unauthenticated regardless of `auth.type`); (c) NO `matchIfMissing=true` on any
+    of the four `*SecurityConfiguration` classes'' `@ConditionalOnProperty`; (d) DISABLED
+    is ALSO silent — no `@Slf4j` boot WARN. **RBAC PRIMARY SURFACE (batch E corroboration)**:
+    (e) RoleController.createRole — `POST /api/roles` reachable unauthenticated under
+    DISABLED (createRole.md:security.known_security_gaps.[2]); (f) PolicyController.createPolicy
+    — `POST /api/policies` reachable unauthenticated under DISABLED, full MANAGEMENT/ALL
+    escalation chain open via Role + Policy CRUD both bypassed (createPolicy.md:security.known_security_gaps.[0]);
+    (g) OwnerController.createOwner — `POST /api/owners` reachable unauthenticated
+    under DISABLED, anonymous directory-population unrestrained (createOwner.md:security.known_security_gaps.[3]);
+    (h) PermissionController.getResourcePermissions — under DISABLED the response
+    is EMPTY (UI shows ''no permissions'') WHILE mutation endpoints are simultaneously
+    `.permitAll()`-reachable — UI-vs-API contradiction (getResourcePermissions.md:security.known_security_gaps.[0]).
+    **DATAENTITY PRIMARY SURFACE (batch F corroboration — widest blast radius)**:
+    (i) getDataEntityDetails — `GET /api/dataentities/{id}` anonymous read of EVERY
+    entity''s full 34-field details payload under DISABLED, including soft-deleted
+    entities (getDataEntityDetails.md:security.known_security_gaps.[1] HIGH); (j)
+    createOwnership — `POST /api/dataentities/{id}/ownership` anonymously reachable:
+    anonymous callers can mint Owner directory rows + bind owners to data entities
+    (createOwnership.md:security.known_security_gaps.[2] HIGH); (k) updateStatus —
+    `PUT /api/dataentities/{id}/statuses` anonymously reachable: anonymous callers
+    can soft-delete ANY data entity (with the soft-delete cascade affecting lineage
+    / group-relations / statistics — effectively wholesale catalog deletion to anonymous
+    traffic) (updateStatus.md:security.known_security_gaps.[0] HIGH). Combined: a
+    DISABLED-mode deployment exposes the FULL RBAC mutation surface AND the FULL DataEntity
+    primary-surface (centerpiece read, ownership-binding, status-mutation, lineage-graph)
+    to anonymous network callers AND silently misleads the UI about what''s enforced.
+    Live `disabled-authentication` page declares it ''the default configuration''
+    with a single ''DO NOT use in your production environment!'' admonition but does
+    NOT enumerate the 11-sidecar blast radius. Canonical LSN-001/002-shape failure.
+    (DisabledAuthSecurityConfiguration@L10.md:security.known_security_gaps.[0-5] +
+    AppInfoController@L18.md:security.known_security_gaps.[0,1,2] + AuthorizationManagerCondition@L11.md:security.known_security_gaps.[1,2]
+    + IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[0,3] + createRole
+    + createPolicy + createOwner + getResourcePermissions batch E sidecars + getDataEntityDetails
+    + createOwnership + updateStatus batch F sidecars)'
+  - '**LOGIN_FORM runs WITHOUT AUTHORIZATION + ADMIN-FOR-ALL — 3-sidecar triangulated
+    (HIGH severity — REFACTOR-073 validated, plus batch-E read-side corroboration)**
+    — `LoginFormSecurityConfiguration.java:55-57` configures `.authorizeExchange(...
+    .pathMatchers(permittedPaths).permitAll().pathMatchers("/**").authenticated())`
+    only; it does NOT wire `new AuthorizationCustomizer(permissionService, extractors)`
+    the way OAuth (line 98) and LDAP (line 145) do. Combined with `getAuthorities(true)`
+    at line 81 (every LOGIN_FORM user is ADMIN), the effective posture is ''any valid
+    credential pair = full platform access''. Batch-E READ-side corroboration: PermissionController.getResourcePermissions
+    returns the FULL admin permission set for every caller under LOGIN_FORM (the static
+    admin authority + the seeded Administrator policy carrying `''ALL''` on every
+    contextual resource type — getResourcePermissions.md:security.known_security_gaps.[1]).
+    The endpoint cannot distinguish a real admin from ''platform is in single-tenant
+    dev mode''. Batch-E MUTATION-side corroboration: RoleController.createRole reachable
+    in LOGIN_FORM mode for every form-authenticated user (createRole.md:bugs_limitations_corner_cases
+    under DISABLED + S2S sections, with LOGIN_FORM-ADMIN being the third bypass shape).
+    Operators using LOGIN_FORM for staging may believe per-resource gating is honoured
+    when it is not. Live `/enable-security/authorization` describes the framework
+    without naming the precondition (OAUTH2 or LDAP). 3-sidecar: LoginFormSecurityConfiguration@L31
+    + getResourcePermissions + createRole. (LoginFormSecurityConfiguration@L31.md:bugs_limitations_corner_cases.[0]
+    + security.known_security_gaps.[0] + getResourcePermissions.md:security.known_security_gaps.[1]
+    + createRole.md:security.known_security_gaps via S2S+DISABLED sections)'
+  - '**S2S composes-not-mutex — X-API-Key grants ADMIN across all /** paths under
+    LOGIN_FORM/OAUTH2/LDAP (HIGH severity)** — `S2sAuthenticationFilter.java:31-39`
+    hard-codes `User.withUsername("ADMIN")...roles("ADMIN")` (admin=true) on a valid
+    `X-API-Key` match. The filter is added at `SecurityWebFiltersOrder.HTTP_BASIC`
+    order in EACH of the three interactive modes (`LoginFormSecurityConfiguration.java:61-63`
+    + `OAuthSecurityConfiguration.java:108-110` + `LDAPSecurityConfiguration.java:149-151`),
+    and runs BEFORE the interactive-auth challenge. So when an operator enables `auth.s2s.enabled=true`
+    alongside any of LOGIN_FORM/OAUTH2/LDAP, a single shared `auth.s2s.token` string
+    grants ADMIN across the ENTIRE `/**` UI/API surface (not just `/ingestion/entities`
+    which has its own separate `IngestionDataEntitiesFilter`). Under DISABLED, S2S
+    is silently ignored (DisabledAuthSecurityConfiguration does not read `auth.s2s.enabled`).
+    Live `enable-security/authentication/s2s` page confirms ''they can call any endpoint
+    that admins can call'' but the per-mode `oauth2-oidc` / `login-form` / `ldap`
+    pages do NOT cross-link or warn. (OAuthSecurityConfiguration@L71.md:bugs_limitations_corner_cases.[5]
+    + security.known_security_gaps.[0] + LDAPSecurityConfiguration@L51.md:bugs_limitations_corner_cases.[S2S
+    admin everywhere] + LoginFormSecurityConfiguration@L31.md:implicit_adrs.[2] +
+    DisabledAuthSecurityConfiguration@L10.md:bugs_limitations_corner_cases.[2])'
+  - '**LDAP substring-collision admin escalation (HIGH severity)** — `LDAPSecurityConfiguration.java:96`
+    uses `containsIgnoreCase` (a SUBSTRING matcher imported from `OperationUtils`
+    at line 48) for admin-group matching, NOT `Set::contains` over equality. An admin-groups
+    config of `[''Admin'']` matches `cn=Administrators` AND `cn=NonAdminContractors`.
+    Configuring `admin-groups: [''ops'']` may inadvertently promote anyone in a group
+    named `devops`, `noops`, or `oopsgroup`. Live LDAP docs only say ''A list granting
+    admin permissions'' — no warning. (LDAPSecurityConfiguration@L51.md:bugs_limitations_corner_cases.[containsIgnoreCase
+    substring collision] + security.known_security_gaps.[substring admin match])'
+  - '**LDAP plaintext-on-wire + actuator credential leak (HIGH severity)** — `LDAPSecurityConfiguration.java:117-124`
+    accepts the `auth.ldap.url` verbatim with NO scheme enforcement: `ldap://` URLs
+    cause bind credentials + every end-user login credential to travel in cleartext.
+    `auth.ldap.password` is bound via `@ConfigurationProperties + @Data` on `ODDLDAPProperties`
+    and surfaces in `/actuator/env` (Spring''s default sanitisation masks `password`-suffixed
+    keys but the key NAMES leak; combined with WHITELIST_PATHS including `/actuator/**`,
+    the actuator port is on the same HTTP port as the app with no auth gate). Live
+    LDAP docs do not surface either the LDAPS-vs-LDAP distinction or the actuator
+    credential exposure. (LDAPSecurityConfiguration@L51.md:security.known_security_gaps.[no
+    LDAPS enforcement] + security.known_security_gaps.[actuator env password])'
+  - '**LOGIN_FORM open-redirect surface on `auth.login-form-redirect` (MEDIUM severity)**
+    — `LoginFormSecurityConfiguration.java:41` reads the raw string with `@Value("${auth.login-form-redirect:}")`,
+    line 89 invokes `URI.create(redirectUri)` without validating scheme/host/path,
+    and line 46 invokes `DefaultServerRedirectStrategy().sendRedirect(...)`. No allowlist.
+    Plus session cookie has no `Secure`/`HttpOnly`/`SameSite` configured at this layer,
+    and `spring.session.timeout: -1` makes sessions never expire. (LoginFormSecurityConfiguration@L31.md:security.known_security_gaps.[1,3])'
+  - '**LOGIN_FORM plaintext credentials leak via /actuator/env (MEDIUM severity)**
+    — `auth.login-form-credentials` is resolved at boot as a plain string; `management.endpoint.env.enabled:
+    true` is the shipped default; `/actuator/health` is permit-all''d by LOGIN_FORM
+    at line 50. If the operator inadvertently exposes the management port to the network,
+    credentials leak. (LoginFormSecurityConfiguration@L31.md:security.known_security_gaps.[2])'
+  - '**OAUTH2 Provider enum incomplete vs live docs (HIGH severity for affected operators)**
+    — `Provider.java:3-5` lists `COGNITO, GITHUB, GOOGLE, ODD_IAM, AZURE` (5 values),
+    but the live `/oauth2-oidc` docs document Okta + Keycloak + ''Custom OIDC providers''
+    as supported. Okta/Keycloak operators authenticate via generic OIDC but receive
+    (a) no provider-specific user enrichment (`auth/handler/impl/` contains only GoogleUserHandler
+    + GithubUserHandler) — admin-group claim mapping silently absent; (b) no provider-specific
+    logout (fallback to OIDC-initiated logout only). Drift between code and live docs.
+    (OAuthSecurityConfiguration@L71.md:bugs_limitations_corner_cases.[4] + security.known_security_gaps.[3])'
+  - '**OAUTH2 Azure logout-uri unchecked despite docs flagging required (MEDIUM)**
+    — `ODDOAuth2Properties.validate()` only checks `clientId` and `provider` for non-empty;
+    `logoutUri` and `azureTenantId` are unchecked. Live `/oauth2-oidc` docs flag Azure
+    `logout-uri` as required (''unset value causes NullPointerException''). Operator
+    following docs but omitting it boots successfully and fails at first logout. Also
+    `ODDOAuth2Properties.OAuth2Provider` lacks an `azureTenantId` field — the commented
+    Azure example in `application.yml:128-156` references `${auth.oauth2.client.azure.azure-tenant-id}`
+    interpolation but the field doesn''t exist; uncommenting AS-IS fails to bind.
+    (OAuthSecurityConfiguration@L71.md:bugs_limitations_corner_cases.[3,7] + security.known_security_gaps.[4])'
+  - '**OAUTH2 + LDAP multi-replica session breakage (MEDIUM)** — Spring default `WebSession`
+    is in-memory per JVM; no `@EnableSpringWebSession` / Redis session store in either
+    config. Multi-replica HA deployments require sticky sessions OR a shared session
+    store; without either, OAuth2 callback may hit a different pod than the initiating
+    redirect, causing ''authorization request not found'' errors. No doc-side prerequisite.
+    (OAuthSecurityConfiguration@L71.md:bugs_limitations_corner_cases.[6] + performance.known_performance_gaps.[0])'
+  - '**Deployment fingerprinting via `/api/appInfo` under DISABLED (MEDIUM)** — `GET
+    /api/appInfo` is reachable by ANY network caller and discloses `{projectVersion,
+    authType}`. Active auth mode + precise platform version is enough for an attacker
+    to scope CVE matching. Live `enable-security` documents neither the endpoint nor
+    the default-DISABLED fingerprinting surface. (AppInfoController@L18.md:security.known_security_gaps.[0])'
+  - '**AuthorizationManagerCondition is dead code (MEDIUM)** — composite Condition
+    class designed to gate the authorization-manager wiring for OAUTH2|LDAP, but has
+    zero `@Conditional` consumers in the repo. A future maintainer relying on it would
+    ship code that silently never activates. (AuthorizationManagerCondition@L11.md:bugs_limitations_corner_cases.[0]
+    + security.known_security_gaps.[0])'
+  - '**DISABLED has no CSRF (consistent with other modes but undocumented), no CORS
+    (UNIQUE among modes), actuator-on-same-port (no narrowing)** — Consistent: all
+    four modes call `.csrf(...disable)` (DisabledAuthSecurityConfiguration.java:15
+    + LoginFormSecurityConfiguration.java:54 + OAuthSecurityConfiguration.java:96
+    + LDAPSecurityConfiguration.java:143). Unique to DISABLED: OAuth + LDAP both call
+    `.cors(withDefaults())`; DISABLED has no `.cors(...)` AND no global `CorsConfigurationSource`
+    bean exists in the codebase. Cross-origin browser callers under DISABLED reach
+    the application via `.anyExchange().permitAll()` but receive no `Access-Control-*`
+    headers from a security layer. Plus `/actuator/{health,prometheus,env,info}` (`application.yml:226-240`)
+    are reachable under DISABLED on the same HTTP port. (DisabledAuthSecurityConfiguration@L10.md:bugs_limitations_corner_cases.[0,3,4]
+    + security.known_security_gaps.[3,5])'
+  - '**OAUTH2 `username-attribute` vs `userNameAttribute` docs-vs-code spelling drift
+    (HIGH severity — operator copy-paste-from-docs silently fails) — batch D primary-source
+    finding** — Live `/configuration-and-deployment/enable-security/authentication/oauth2-oidc`
+    documents field key `username-attribute` (kebab, single-word `username`) in the
+    Common-to-All-Providers section (WebFetched 2026-05-12, status 200). The POJO
+    field at `ODDOAuth2Properties.java:44` is `private String userNameAttribute;`
+    (camelCase split `userName`). Spring relaxed binding converts: `username-attribute`
+    (kebab single-word) → `usernameAttribute` (single word, NOT `userNameAttribute`);
+    `user-name-attribute` (kebab triple-word) → `userNameAttribute`. To bind to the
+    POJO field, operators MUST write `user-name-attribute` in YAML — but the docs
+    verbatim show `username-attribute`. Operator following docs copy-paste verbatim
+    gets a silently-unbound field; whichever username claim defaults the OAuth2/OIDC
+    client picks is used instead. No boot-time fail-fast. (ODDOAuth2Properties.md:docs_link_semantic.doc_drift_findings.[3])'
+  - '**OAUTH2 Lombok `@Data` toString() exposes clientSecret verbatim (MEDIUM)** —
+    `ODDOAuth2Properties.java:12,30` apply `@Data` to both the outer Properties class
+    AND the nested `OAuth2Provider` POJO. The nested POJO''s auto-generated `toString()`
+    includes `clientSecret=<plaintext>` — no `@ToString.Exclude` on the field. Spring
+    Boot 3.4.10''s `/actuator/configprops` default sanitiser DOES mask keys matching
+    `*secret*` (so the actuator surface is safe), but any future `log.debug("loaded
+    oauth2 providers: {}", properties.getClient())` would emit every client''s secret
+    in plaintext. (ODDOAuth2Properties.md:bugs_limitations_corner_cases.[3] + security.known_security_gaps.[0])'
+  - '**OAUTH2 free-string `provider` field admits silent typos (MEDIUM)** — `ODDOAuth2Properties.java:32`
+    declares `private String provider;` (NOT the `Provider` enum at `Provider.java:3-5`).
+    Validator at lines 16-19 checks non-empty only. A typo (`provder: google`, `provider:
+    Goggle`) binds cleanly; every consumer-side `equalsIgnoreCase(Provider.X.name())`
+    check (GoogleUserHandler.java:39, GithubUserHandler.java:45, AzureUserHandler.java:26,
+    CognitoUserHandler.java:26, ODDIAMUserHandler.java:28, OAuthSecurityConfiguration.java:168)
+    fails to match; deployment silently routes through generic OIDC with no provider-specific
+    user enrichment / admin-group mapping / logout. (ODDOAuth2Properties.md:bugs_limitations_corner_cases.[2]
+    + security.known_security_gaps.[2])'
+  - '**OAUTH2 empty-client-map passes validation, fails downstream with obscure error
+    (LOW)** — `ODDOAuth2Properties.validate()` iterates `getClient().values()` (line
+    18); empty map is a no-op. `auth.type=OAUTH2` with zero registered clients passes
+    Properties validation and fails downstream at `InMemoryReactiveClientRegistrationRepository`
+    constructor with a Spring framework error far from the actual root cause. (ODDOAuth2Properties.md:bugs_limitations_corner_cases.[4])'
+  - '**LDAP password leak via Lombok @Data toString() — REFINED from batch C actuator-env
+    claim (HIGH severity)** — batch C reported the LDAP password leaking via `/actuator/env`.
+    Batch D primary-source verification (`ODDLDAPProperties.md`) refines this: Spring
+    Boot 3.4.10''s `management.endpoint.env.show-values: NEVER` default DOES sanitise
+    `/actuator/env` (password appears as `******` in actuator). The DURABLE leak surface
+    is `ODDLDAPProperties.java:10,14` — `@Data` on the class + `private String password`
+    with no `@ToString.Exclude` and no `@JsonIgnore`. Any code path that logs the
+    bean (e.g. `log.info("props = {}", properties)`) emits the password verbatim.
+    Same pattern across `EmailSenderProperties` (notifications email password), `ODDOAuth2Properties.OAuth2Provider`
+    (clientSecret), `ODDLDAPProperties` (LDAP password). 4-sidecar triangulated cross-cutting
+    invariant. (ODDLDAPProperties.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[0])'
+  - '**LDAP empty admin-groups produces zero-admin deployment (MEDIUM)** — `ODDLDAPProperties.java:18,28-32`
+    declares `Group groups` as a nullable nested block with `Set<String> adminGroups`
+    field. `validate()` enforces URL + search-method only; admin-groups absence is
+    not validated. `LDAPSecurityConfiguration.java:91-93` consumes this — when `Group`
+    is null or `adminGroups` is empty, returns USER-only authority for every authenticated
+    LDAP user. Bundled `application.yml:50-65` ships the entire `ldap:` block commented
+    out — operator who uncomments without setting `groups.admin-groups` gets a deployment
+    where NO LDAP user can reach admin features. Live docs do not warn that admin-groups
+    is load-bearing. (ODDLDAPProperties.md:bugs_limitations_corner_cases.[3] + security.known_security_gaps.[3])'
+  - '**LDAP ActiveDirectory.domain unvalidated (MEDIUM)** — `ODDLDAPProperties.java:35-38`
+    declares nested `ActiveDirectory` block with `boolean enabled` + `String domain`.
+    `validate()` does NOT check `enabled=true` implies `domain` non-empty. Downstream
+    `LDAPSecurityConfiguration.java:78` constructs `new ActiveDirectoryLdapAuthenticationProvider(properties.getActiveDirectory().getDomain(),
+    properties.getUrl())` — `domain=null` is accepted by Spring Security (falls back
+    to non-domain UPN bind), almost certainly not the operator intent. Silent misconfiguration.
+    (ODDLDAPProperties.md:bugs_limitations_corner_cases.[4] + security.known_security_gaps.[4])'
+  - Under `auth.type=DISABLED`, every endpoint named anywhere in this catalog becomes
+    anonymously reachable — every controller sidecar's `weaknesses` block flags this
+    individually; aggregated here as a cross-cutting consequence of the application.yml
+    default. CANONICAL evidence is now DisabledAuthSecurityConfiguration@L10.
+  cross_file_inconsistencies:
+  - All controller sidecars treat `auth.type` as opaque (it gates `permittedPaths`
+    and the AuthorizationCustomizer chain upstream); AppInfoController@L18 is the
+    only sidecar where `auth.type` is itself the DATA being exposed; the four `*SecurityConfiguration`
+    sidecars (batch 2026-05-12C) are the canonical WIRING-side sidecars where `auth.type`
+    selects the actual SecurityWebFilterChain. The three layers (consumer-of-mode
+    in controllers + reporter-of-mode in AppInfo + wirer-of-mode in *SecurityConfiguration)
+    coexist in the codebase and the catalog has to surface all three.
+  - '**Per-mode AuthorizationCustomizer asymmetry**: OAUTH2 + LDAP wire it (OAuthSecurityConfiguration.java:98
+    + LDAPSecurityConfiguration.java:145); LOGIN_FORM + DISABLED do not. Live `/enable-security/authorization`
+    describes the Policies/Permissions/Roles/Owners framework without naming this
+    precondition. Operators reading the authorization page see a framework; operators
+    choosing LOGIN_FORM never get it.'
+  - '**Permit-all path lists drift across modes**: LOGIN_FORM hand-codes a 5-element
+    list at line 49-51 (`/actuator/health`, `/favicon.ico`, `/ingestion/entities`,
+    `/ingestion/datasources`, `/api/slack/events`); OAUTH2 + LDAP use `SecurityConstants.WHITELIST_PATHS`
+    via AuthorizationCustomizer; DISABLED''s `.anyExchange().permitAll()` doesn''t
+    path-discriminate. A maintainer adding a new always-public path to WHITELIST_PATHS
+    silently leaves LOGIN_FORM out of sync. (LoginFormSecurityConfiguration@L31.md:bugs_limitations_corner_cases.[7])'
+  - 'Live `enable-security` page documents the four modes; live `enable-security/authentication`
+    page documents S2S as a fifth mode ''complementing any of the above''; live `enable-security/authentication/s2s`
+    page documents `auth.s2s.enabled` + `auth.s2s.token` + `X-API-Key` header but
+    does NOT mention `auth.ingestion.filter.enabled` / `Authorization: Bearer` / `IngestionDataEntitiesFilter`.
+    Operators reasonably conflate the two ingestion-related filters. (IngestionDataEntitiesFilter@L20.md:docs_link_semantic.doc_drift_findings.[1])'
+  contributing_files:
+  - AlertController.md
+  - AlertManagerController.md
+  - DataEntityController.md
+  - DataEntityAttachmentController.md
+  - DirectoryController.md
+  - GenAIController.md
+  - getActivity.md
+  - postMessageInSlack.md
+  - regenerateCollectorToken.md
+  - getAllAlerts.md
+  - uploadFileChunk.md
+  - AppInfoController@L18.md
+  - AuthorizationManagerCondition@L11.md
+  - IngestionDataEntitiesFilter@L20.md
+  - DisabledAuthSecurityConfiguration@L10.md
+  - LoginFormSecurityConfiguration@L31.md
+  - OAuthSecurityConfiguration@L71.md
+  - LDAPSecurityConfiguration@L51.md
+  - ODDOAuth2Properties.md
+  - ODDLDAPProperties.md
+  - createRole.md
+  - createPolicy.md
+  - createOwner.md
+  - getResourcePermissions.md
+  - search.md
+  - getDataEntityDetails.md
+  - createOwnership.md
+  - updateStatus.md
+  - getDataEntityDownstreamLineage.md
+  - postDataEntityList.md
+  evidence:
+  - AppInfoController@L18.md:security.known_security_gaps.[0] (DISABLED-default fingerprinting
+    MEDIUM)
+  - AppInfoController@L18.md:bugs_limitations_corner_cases.[0,1] (no @Value default;
+    no enum validation)
+  - AuthorizationManagerCondition@L11.md:bugs_limitations_corner_cases.[0,1,2] (dead
+    code; LOGIN_FORM no authz; DISABLED is default)
+  - AuthorizationManagerCondition@L11.md:security.known_security_gaps.[0,1,2]
+  - IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[0,3] (default-off
+    + sibling-endpoint coverage gap)
+  - DisabledAuthSecurityConfiguration@L10.md:security.known_security_gaps.[0] (insecure-default
+    HIGH)
+  - DisabledAuthSecurityConfiguration@L10.md:security.known_security_gaps.[1] (no
+    boot WARN MEDIUM)
+  - DisabledAuthSecurityConfiguration@L10.md:security.known_security_gaps.[2] (S2S
+    silently ignored MEDIUM)
+  - DisabledAuthSecurityConfiguration@L10.md:security.known_security_gaps.[3] (actuator
+    on same port MEDIUM)
+  - DisabledAuthSecurityConfiguration@L10.md:security.known_security_gaps.[5] (no
+    CORS LOW)
+  - DisabledAuthSecurityConfiguration@L10.md:bugs_limitations_corner_cases.[6,7] (missing-key
+    fall-through; case-sensitive typo)
+  - LoginFormSecurityConfiguration@L31.md:bugs_limitations_corner_cases.[0] (no AuthorizationCustomizer
+    HIGH — REFACTOR-073 validated)
+  - LoginFormSecurityConfiguration@L31.md:security.known_security_gaps.[0] (no authz
+    framework HIGH)
+  - LoginFormSecurityConfiguration@L31.md:security.known_security_gaps.[1] (auth.login-form-redirect
+    open redirect MEDIUM)
+  - LoginFormSecurityConfiguration@L31.md:security.known_security_gaps.[2] (plaintext
+    credentials via /actuator/env MEDIUM)
+  - LoginFormSecurityConfiguration@L31.md:security.known_security_gaps.[3] (session
+    cookie + timeout=-1 MEDIUM)
+  - OAuthSecurityConfiguration@L71.md:implicit_adrs.[0] (AuthorizationCustomizer wired)
+  - OAuthSecurityConfiguration@L71.md:implicit_adrs.[1] (S2S composes-not-mutex)
+  - OAuthSecurityConfiguration@L71.md:security.known_security_gaps.[0] (S2S X-API-Key
+    grants ADMIN across /** HIGH)
+  - OAuthSecurityConfiguration@L71.md:security.known_security_gaps.[3] (Okta/Keycloak
+    no handlers HIGH)
+  - OAuthSecurityConfiguration@L71.md:security.known_security_gaps.[4] (Azure logout-uri
+    unchecked MEDIUM)
+  - LDAPSecurityConfiguration@L51.md:implicit_adrs.[AuthorizationCustomizer mode-agnostic]
+  - LDAPSecurityConfiguration@L51.md:implicit_adrs.[containsIgnoreCase admin match]
+  - LDAPSecurityConfiguration@L51.md:security.known_security_gaps.[actuator env password]
+    (HIGH)
+  - LDAPSecurityConfiguration@L51.md:security.known_security_gaps.[no LDAPS enforcement]
+    (HIGH)
+  - LDAPSecurityConfiguration@L51.md:security.known_security_gaps.[substring admin
+    match] (HIGH)
+  - LDAPSecurityConfiguration@L51.md:security.known_security_gaps.[no admins when
+    empty] (MEDIUM)
+  - LDAPSecurityConfiguration@L51.md:security.known_security_gaps.[size-limit silent
+    truncation] (MEDIUM)
+  - ODDOAuth2Properties.md:docs_link_semantic.doc_drift_findings.[3] (username-attribute
+    spelling drift HIGH operator-impact)
+  - ODDOAuth2Properties.md:bugs_limitations_corner_cases.[0] (Azure logoutUri unvalidated
+    HIGH — validates batch C primary source)
+  - ODDOAuth2Properties.md:bugs_limitations_corner_cases.[1] (azureTenantId field
+    missing HIGH — validates batch C primary source)
+  - ODDOAuth2Properties.md:bugs_limitations_corner_cases.[2] (provider typo silent
+    MEDIUM)
+  - ODDOAuth2Properties.md:bugs_limitations_corner_cases.[3] (clientSecret in toString
+    MEDIUM)
+  - ODDOAuth2Properties.md:bugs_limitations_corner_cases.[4] (empty client map passes
+    validation LOW)
+  - ODDOAuth2Properties.md:docs_link_semantic.doc_drift_findings.[2] (Provider enum
+    5 vs docs 7 — validates batch C from primary source)
+  - ODDLDAPProperties.md:bugs_limitations_corner_cases.[0] (Lombok toString password
+    HIGH)
+  - ODDLDAPProperties.md:bugs_limitations_corner_cases.[1] (no LDAPS enforcement HIGH
+    — validates batch C)
+  - ODDLDAPProperties.md:bugs_limitations_corner_cases.[2] (adminGroups substring
+    collision HIGH — validates batch C)
+  - ODDLDAPProperties.md:bugs_limitations_corner_cases.[3] (empty adminGroups → no
+    admins HIGH)
+  - ODDLDAPProperties.md:bugs_limitations_corner_cases.[4] (AD.domain unvalidated
+    MEDIUM)
+  - ODDLDAPProperties.md:bugs_limitations_corner_cases.[5] (Properties silently ignored
+    when auth.type ≠ LDAP LOW)
+  - getDataEntityDetails.md:security.known_security_gaps.[0,1] (centerpiece read cross-owner
+    exposure + DISABLED anonymous read of catalog detail metadata HIGH)
+  - createOwnership.md:security.known_security_gaps.[2] (DISABLED bypass of DATA_ENTITY_OWNERSHIP_CREATE
+    HIGH)
+  - updateStatus.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[7]
+    (DISABLED bypass of DATA_ENTITY_STATUS_UPDATE; soft-delete cascade reachable anonymously
+    HIGH)
+  - getDataEntityDownstreamLineage.md:security.known_security_gaps.[0,1,2] (graph
+    cross-owner enumeration + no depth cap DoS amplification + DISABLED reachability
+    HIGH)
+  - postDataEntityList.md:security.known_security_gaps.[0,2] (default-off ingestion
+    auth + cross-tenant under filter-OFF — confirms WIRING-side default-off from CONTROLLER
+    side; CLOSES THE S2S LOOP)
+notes: 'Cross-cutting infrastructural concept named in main-concepts.md''s
+
+  `Data Security (governance-level)` callout that points at
+
+  `configuration-and-deployment/enable-security/README.md`. Every
+
+  controller sidecar invokes this concept verbatim; the catalog
+
+  records it once with the union of nodes that depend on it.
+
+
+  Batch 2026-05-10B promoted this from a SIMPLE pointer concept
+
+  (auth_modes_relevant list union) to a FULL aggregate with
+
+  security_aggregate — because THREE independent sidecars converged
+
+  on the same triangulated insecure-default finding.
+
+
+  Batch 2026-05-12C completes the wiring-side picture: each of the
+
+  four `auth.type` modes now has its own canonical *SecurityConfiguration
+
+  sidecar (DisabledAuthSecurityConfiguration / LoginFormSecurityConfiguration /
+
+  OAuthSecurityConfiguration / LDAPSecurityConfiguration), making per-mode
+
+  claims directly citable rather than inferred. Three triangulated findings
+
+  now have 4+ contributing sidecars: (a) the default-DISABLED + no-fail-fast
+
+  trap; (b) the S2S composes-not-mutex pattern (X-API-Key grants ADMIN
+
+  across all /**); (c) the LOGIN_FORM-without-AuthorizationCustomizer
+
+  finding (REFACTOR-073 validated). The aggregate now carries 13 weaknesses
+
+  across all four modes plus three previously-implicit cross-mode
+
+  inconsistencies.
+
+
+  Batch 2026-05-12D adds the canonical config-POJO sidecars for OAUTH2
+
+  (`ODDOAuth2Properties`) and LDAP (`ODDLDAPProperties`). This validates
+
+  three batch-C claims from the primary source (Provider enum 5 values
+
+  vs docs 7; azureTenantId field ABSENT from POJO; Azure logoutUri
+
+  NPE-prone) and adds a NEW high-impact doc-drift finding: live OAuth2
+
+  docs use field key `username-attribute` (single-word kebab) but the
+
+  POJO field is `userNameAttribute` (camelCase split) — operator
+
+  copy-paste-from-docs silently fails to bind. Batch D also REFINES
+
+  the actuator-env credential-leak claim originally surfaced for LDAP
+
+  in batch C: Spring Boot 3.4.10''s `management.endpoint.env.show-values:
+
+  NEVER` default DOES sanitise actuator-env (password appears as `******`).
+
+  The DURABLE leak surface across all four sensitive config classes
+
+  (NotificationsProperties batch C + EmailSenderProperties D password +
+
+  ODDLDAPProperties D password + ODDOAuth2Properties D clientSecret) is
+
+  Lombok `@Data`-generated `toString()` if logged or custom-serialised.
+
+  Surfaced as a separate cross-cutting invariant (4-sidecar triangulated).
+
+
+  Batch 2026-05-12E adds 5 RBAC-and-search-area sidecars (RoleController.
+
+  createRole + PolicyController.createPolicy + OwnerController.createOwner
+
+  + PermissionController.getResourcePermissions + SearchController.search).
+
+  These corroborate the Auth Mode aggregate''s two dominant weaknesses
+
+  from the RBAC primary-surface and the read-side angles:
+
+
+  (1) DISABLED-mode-bypass weakness — now 8-SIDECAR triangulated
+
+  (was 4 from wiring side; +4 from batch E: every RBAC mutation
+
+  endpoint reachable unauthenticated AND the read-side
+
+  permission-discovery endpoint silently misleads UI consumers).
+
+  DISABLED is now the most-corroborated insecure-default in the
+
+  whole catalog.
+
+
+  (2) LOGIN_FORM-ADMIN-for-all weakness — now 3-SIDECAR triangulated
+
+  (LoginFormSecurityConfiguration@L31 wiring + getResourcePermissions
+
+  read-side + createRole RBAC-mutation side). The read-side endpoint
+
+  returns the FULL admin permission set for every caller under
+
+  LOGIN_FORM regardless of UI-configured policies — the most
+
+  diagnostic single test for whether per-resource gating is
+
+  effective.
+
+
+  Batch E also surfaces THREE NEW cross-cutting invariants captured
+
+  under `invariants:` further down — Administrator-name reservation
+
+  asymmetry on CRUD (Role + Policy 2-sidecar primary source) +
+
+  No-audit-log on RBAC mutations (Role + Policy + Owner 3-sidecar)
+
+  + Read-collaborative cross-owner enumeration (now 3-sidecar:
+
+  getAllAlerts + getActivity + search).
+
+
+  Batch 2026-05-12F adds 5 controller-method sidecars covering the
+
+  DataEntity primary surface + the canonical S2S ingestion controller.
+
+  Three of the five (getDataEntityDetails + createOwnership +
+
+  updateStatus) add DataEntity-side corroboration to the DISABLED-mode
+
+  weakness, raising it to 11-SIDECAR triangulated — the most-corroborated
+
+  insecure-default in the whole catalog. The fourth (lineage) adds the
+
+  graph-shaped cross-owner enumeration variant; the fifth (postDataEntityList)
+
+  CLOSES THE S2S LOOP opened by IngestionDataEntitiesFilter in batch B
+
+  (default-off unauth confirmed from BOTH the WIRING side and the
+
+  CONTROLLER side).
+
+
+  Batch F also surfaces THREE NEW/REFINED cross-cutting invariants:
+
+  (1) Permission-bypass via Owner auto-create — createOwnership
+
+  auto-creates Owner via getOrCreate without OWNER_CREATE permission
+
+  check; structural permission-escalation side-door.
+
+  (2) TTL retention broken by statusUpdatedAt nullification — batch D''s
+
+  HousekeepingTTLProperties + batch F''s updateStatus combine to surface
+
+  a cross-batch defect: the 30-day data-entity-delete TTL relies on a
+
+  field that''s never bumped on status transition (ordering bug in
+
+  DataEntityMapperImpl.applyStatus).
+
+  (3) Audit-log presence ASYMMETRY (REFINEMENT of batch-E theme) —
+
+  RBAC mutations (Role/Policy/Owner) have NO audit; DataEntity mutations
+
+  (updateStatus, createOwnership) DO emit audit signals. The codebase
+
+  has a 2-tier audit story: DataEntity-scoped writes are TIER-1
+
+  audited; RBAC-scoped writes are TIER-2 unaudited. Inverse of the
+
+  expected security-conscious posture.
+
+
+  Batch F also RESOLVES ADR-CANDIDATE-003 borderline_flag — the
+
+  read-collaborative posture on the CENTERPIECE READ (`GET /api/dataentities/{id}`)
+
+  is DELIBERATE and consistent with 27+ other GETs on the same
+
+  controller; the doc-gap is that live `/configuration-and-deployment/enable-security/authorization`
+
+  does NOT name this stance.
+
+  '

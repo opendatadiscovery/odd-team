@@ -1,0 +1,11 @@
+- **DOC-GAP-037**: `/api/appInfo` discloses active `auth.type` + `projectVersion` to unauthenticated network callers under DISABLED-default — passive fingerprinting surface, undocumented
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__AppInfoController__config-key-consumer__auth_type@L18.md:docs_link_semantic.doc_drift_findings.[0]` + `:security.data_exposure.[0,1]` + `:security.known_security_gaps.[0]`
+    - `concepts.yaml:entities[Auth Mode].security_aggregate.weaknesses` (deployment fingerprinting)
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication` 2026-05-11 status 200 — verbatim verdict: "`/api/appInfo` endpoint — not mentioned"; "default value of `auth.type` (DISABLED as default) — not mentioned".
+    - AppInfoController@L18.md verifies: `AppInfoController.java:24-28` returns `AppInfo.authType(authType).projectVersion(projectVersion)`; `SecurityConstants.WHITELIST_PATHS` does NOT include `/api/appInfo`. Under `auth.type=DISABLED`, the endpoint is anonymously reachable and discloses (a) the deployment's auth mode, (b) the precise platform version.
+  - **Proposed doc action**: Add to `configuration-and-deployment/enable-security/authentication.md` a "Deployment introspection surfaces" sub-section: "`/api/appInfo` returns `{ projectVersion, authType }`. Under `auth.type=DISABLED` (the application.yml default — see DOC-GAP-036) the endpoint is reachable by any caller with network access; the response discloses the deployment's active auth mode and platform version."
+  - **Cross-references**: DOC-GAP-036 (parent default-open posture); LSN-001/LSN-002 class.
+  - **Severity rationale**: HIGH — combined with DOC-GAP-036, reliable network-side fingerprinting probe.

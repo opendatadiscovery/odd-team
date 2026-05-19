@@ -1,0 +1,7 @@
+- **DOC-GAP-026**: AlertManager DTO drops `status`, `endsAt`, `annotations`, `fingerprint`, `groupKey`; cannot honour `status: resolved`
+  - **Category**: drift
+  - **Surfaced by**: `AlertManagerController.md:performance.known_performance_gaps.[3]`; concepts.yaml.
+  - **Evidence**: docs do not surface dropped fields.
+  - **Proposed doc action**: Add "Behaviour notes" to Prometheus AlertManager Integration section.
+  - **Cross-references**: DOC-GAP-003.
+  - **Severity rationale**: LOW.

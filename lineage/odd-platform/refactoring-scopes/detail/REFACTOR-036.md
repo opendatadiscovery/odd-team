@@ -1,0 +1,10 @@
+- **REFACTOR-036**: Boot-time crash if `attachment.max-file-size` is unset — `@Value("${attachment.max-file-size}")` has no `:default` fallback
+  - **Category**: buggy-default
+  - **Surfaced by**:
+    - `odd-platform__java__AttachmentServiceImpl__config-key-consumer__attachment_max-file-size@L27.md:bugs_limitations_corner_cases.[1]` (MEDIUM)
+    - `odd-platform__yaml__application_yml__config-prefix__attachment.md:bugs_limitations_corner_cases.[6]` (LOW)
+  - **Statement**: `AttachmentServiceImpl.java:27` declares `@Value("${attachment.max-file-size}")` with no `:default` fallback and a boxed `Integer` type. Operator overriding via env (`ATTACHMENT_MAX_FILE_SIZE=`) gets a Spring property-resolution failure at startup. The shipped `application.yml:217` value `20` is the only safety net.
+  - **Evidence**: `AttachmentServiceImpl.java:27` + `application.yml:217`
+  - **Proposed remedy**: Add a fallback: `@Value("${attachment.max-file-size:20}")`. Or — better — bind via `@ConfigurationProperties` with default initialiser.
+  - **Severity rationale**: MEDIUM — boot-time crash on env override.
+  - **Suggested backlog grouping**: `Attachment integrity sprint`

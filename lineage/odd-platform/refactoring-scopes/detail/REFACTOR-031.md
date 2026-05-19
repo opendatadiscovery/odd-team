@@ -1,0 +1,9 @@
+- **REFACTOR-031**: AlertManager hand-rolled DTO drops fields the platform may later want to honour (`status`, `endsAt`, `annotations`, `fingerprint`, `groupKey`)
+  - **Category**: missing-validation (DTO-completeness)
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md:bugs_limitations_corner_cases.[3]` (MEDIUM)
+  - **Statement**: `AlertManagerRequest` has only `alerts: List<ExternalAlert>`; `ExternalAlert` has only `labels`, `generatorURL`, `startsAt`. AlertManager's actual schema has `status`, `endsAt`, `annotations`, `fingerprint`, `groupKey`. If the platform later wants to act on `status: resolved` to close alerts, it must add deserialisation for that field — the current DTO would lose it.
+  - **Evidence**: `AlertManagerController.java:30-32` + `ExternalAlert.java:11-15`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-014 (AlertManagerController hand-coded as exception to OpenAPI rule) acknowledges the TODO. Adding fields is the natural follow-through to that ADR.
+  - **Proposed remedy**: Define an OpenAPI schema for the AlertManager webhook payload (matching Prometheus AlertManager's contract); regenerate; switch the controller to `implements AlertManagerApi`. Or — if the contract is wanted to remain hand-coded — add the missing fields manually. Either resolves the gap.
+  - **Severity rationale**: MEDIUM — deferred-feature gap.
+  - **Suggested backlog grouping**: `AlertManager hardening`

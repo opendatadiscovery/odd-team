@@ -1,0 +1,9 @@
+- **REFACTOR-007**: GenAI prompts and responses are not logged for audit / abuse-investigation
+  - **Category**: missing-audit
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__GenAIController.md:security.known_security_gaps.[6]` + `concepts.yaml:entities[GenAI Assistant].security_aggregate.weaknesses.[5]` (MEDIUM)
+  - **Statement**: The controller has no `@Slf4j`; `GenAIServiceImpl.java:19`'s `@Slf4j` annotation is unused (no `log.info` / `log.warn` / `log.error` calls). An operator investigating prompt-injection abuse or data-exfiltration through the LLM has no platform-side trail.
+  - **Evidence**: `GenAIController.java:1-24` + `GenAIServiceImpl.java:1-53`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-005 (thin-proxy stance) does NOT defend the absence of audit logging. Audit-logging is a security/operability concern, not "prompt engineering."
+  - **Proposed remedy**: Add `log.info("[genai] user={} prompt-length={} response-length={}")` (no full prompt/response content by default — that's a separate `genai.audit-log.full-content: true` opt-in for operators investigating). Track per-user invocation counts via Micrometer counter.
+  - **Severity rationale**: MEDIUM — investigation-readiness gap.
+  - **Suggested backlog grouping**: `GenAI hardening sprint`

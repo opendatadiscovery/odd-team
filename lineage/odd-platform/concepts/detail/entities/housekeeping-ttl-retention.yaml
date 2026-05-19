@@ -1,0 +1,226 @@
+name: Housekeeping TTL retention
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Time-based retention subsystem — a `@ConditionalOnProperty(housekeeping.enabled=true)`
+  `HousekeepingJobManager` fires every 15 minutes (Spring `@Scheduled(fixedRate =
+  15, timeUnit = MINUTES)`, ShedLock-coordinated as `housekeepingJob` with `lockAtLeastFor=14m
+  / lockAtMostFor=14m`) and iterates a discovered `List<HousekeepingJob>` of FIVE
+  jobs total: three TTL-driven purge jobs (`AlertHousekeepingJob`, `SearchFacetsHousekeepingJob`,
+  `DataEntityHousekeepingJob`) each consuming one of `HousekeepingTTLProperties`''
+  three int fields (`resolved_alerts_days`, `search_facets_days`, `data_entity_delete_days`
+  — all defaulted to 30 in `application.yml:167-170`), plus two `EmptyPartitionsHousekeepingJob`
+  subclasses (`ActivityEmptyPartitionsHousekeepingJob`, `MessageEmptyPartitionsHousekeepingJob`)
+  that drop EMPTY past partitions only (no TTL coupling). The TTL surface covers EXACTLY
+  three tables: ALERT (with ALERT_CHUNK cascade), SEARCH_FACETS, and DATA_ENTITY (with
+  ~25-table cascade via DataEntityHousekeepingJob). **NO time-based retention exists
+  for the ACTIVITY or MESSAGE tables anywhere in the codebase** — REFACTOR-085 confirmed
+  from primary source. vocabulary_status: codebase-anchored, doc-side-partially-covered
+  (live `/configuration-and-deployment/odd-platform#housekeeping` documents the three
+  TTL keys and the master gate, but enumerates only ''three cleanup tasks'' — the
+  two EmptyPartitions jobs are not listed). main-concepts.md does not name ''Housekeeping''
+  or ''Retention'' as canonical vocabulary.'
+vocabulary_status: codebase-anchored, doc-side-partially-covered
+axes_present:
+- config_prefixes
+nodes:
+- odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
+contributors:
+- 'HousekeepingTTLProperties: entities[HousekeepingTTLProperties, HousekeepingJobManager,
+  HousekeepingJob (interface), AlertHousekeepingJob, SearchFacetsHousekeepingJob,
+  DataEntityHousekeepingJob, EmptyPartitionsHousekeepingJob, ActivityEmptyPartitionsHousekeepingJob,
+  MessageEmptyPartitionsHousekeepingJob, ALERT table, ALERT_CHUNK table, SEARCH_FACETS
+  table, DATA_ENTITY table + ~25 cascaded child tables]; operations[bind housekeeping.ttl.*
+  keys; schedule fixedRate=15min cycle; fan out to all HousekeepingJob beans; hard-DELETE
+  resolved alerts + chunks past TTL; hard-DELETE search-facet rows past last-accessed
+  TTL; cascade-DELETE soft-deleted data-entity rows + ~25 child relations past TTL;
+  drop empty past partitions of activity/message]; invariants[three TTL fields all
+  defaulted to 30 in application.yml; defaults shipped at YAML level NOT Java level
+  (`private int X;` with no `= 30` initializer); subsystem master gate housekeeping.enabled=true
+  ships as default; TTL surface covers EXACTLY three tables (no activity/message coverage);
+  AlertHousekeepingJob jOOQ predicate has documented operator-precedence bug exempting
+  manual RESOLVED rows from TTL]'
+evidence:
+- HousekeepingTTLProperties.md:concepts.entities + concepts.operations + concepts.invariants
+- HousekeepingTTLProperties.md:implicit_adrs.[0-2] (housekeeping-vs-partition split
+  / uniform 30-day default / opt-out via shipped default)
+- HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[0-6]
+- HousekeepingTTLProperties.md:docs_link_semantic.doc_drift_findings.[0-3]
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+  - INTERNAL_ONLY
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: '`HousekeepingTTLProperties` is a config-binding POJO; the housekeeping
+      subsystem runs in the Spring scheduling context (not the HTTP surface). Auth
+      mode does not gate this code directly. The bean is instantiated unconditionally
+      regardless of `auth.type` (gated only by `housekeeping.enabled`).'
+  owner_scoping:
+    verdict: BYPASSES
+    detail: The three TTL-driven jobs delete rows ACROSS ALL OWNERS without regard
+      to the ODD ownership model. `AlertHousekeepingJob` deletes all RESOLVED_AUTOMATICALLY
+      alerts past TTL regardless of which owner the alert was raised against; `DataEntityHousekeepingJob`
+      cascades through OWNERSHIP (lines 268-273) to remove ALL ownership relations
+      for the soft-deleted entity. This is intentional — housekeeping is a system-level
+      admin operation — but means a future regression that narrowed the scope would
+      break the design intent.
+  strengths:
+  - Master gate `housekeeping.enabled=true` ships as default — bounded DB growth out-of-the-box
+    (HousekeepingJobManager.java:18 + application.yml:165-166)
+  - Uniform 30-day default across all three TTLs — operator-comfortable for 'oops
+    I clicked delete' recovery + 30 days of resolved alerts for incident retrospectives
+  - ShedLock-coordinated `housekeepingJob` lock (lockAtLeastFor=14m / lockAtMostFor=14m)
+    — exactly one platform instance runs housekeeping per 15-minute slot
+  - Per-job interface (`HousekeepingJob`) enables clean extensibility — adding a new
+    TTL'd table is add-a-`@Component` extending HousekeepingJob + injecting `HousekeepingTTLProperties`
+  weaknesses:
+  - '**No `activity*Days` retention field — REFACTOR-085 / activity-feed retention
+    drift CONFIRMED from second angle (HIGH severity — silent-data-growth shape)**
+    — `HousekeepingTTLProperties.java:8-12` has exactly three fields and there is
+    no fourth for the ACTIVITY table. `ActivityEmptyPartitionsHousekeepingJob` (the
+    only activity-touching housekeeping path) calls `partitionService.getEmptyPastPartitions(...)`
+    which checks `COUNT(*) = 0` BEFORE dropping (PartitionServiceImpl.java:133-141)
+    — partitions with one row are retained indefinitely. Time-based retention for
+    activity data does not exist anywhere in the platform codebase. The /features/active-platform-features/activity-feed
+    docs page''s ''retention and partitioning'' claim is unsupported. (HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[0])'
+  - '**No `messageDays` retention field for datacollaboration `MESSAGE` table (MEDIUM)**
+    — symmetric to the activity gap. `MessageEmptyPartitionsHousekeepingJob` only
+    drops EMPTY past partitions. Operators running DataCollaboration with high message-throughput
+    accumulate messages indefinitely. (HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[1])'
+  - '**Java-side default mismatch — safety floor lives ONLY in application.yml (HIGH
+    severity — LSN-001-shape silent-data-loss)** — `HousekeepingTTLProperties.java:9-11`
+    declares `private int X;` with no `= 30` initializer. A deployment that overrides
+    `application.yml` (e.g. mounts a different config file via `--spring.config.location=`
+    or Spring Cloud Config) WITHOUT re-supplying the `housekeeping.ttl.*` block binds
+    `0` for all three. The next housekeeping cycle (~15 minutes after boot) hard-deletes
+    ALL resolved alerts + ALL search-facets + ALL soft-deleted data-entities + ~25
+    cascaded child tables. Promoting defaults into Java declarations (`private int
+    resolvedAlertsDays = 30;`) would close this gap. (HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[2])'
+  - '**`AlertHousekeepingJob` jOOQ operator-precedence bug — manual RESOLVED alerts
+    deleted regardless of TTL (HIGH severity — known and documented but un-tested
+    and un-fixed)** — `AlertHousekeepingJob.java:28-34` reads: `.where(STATUS.eq(RESOLVED)).or(STATUS.eq(RESOLVED_AUTOMATICALLY)).and(STATUS_UPDATED_AT.lessOrEqual(cutoff))`.
+    jOOQ''s fluent-builder precedence: `.and(...)` binds to the most recent `.or(...)`,
+    producing `(STATUS=RESOLVED) OR (STATUS=RESOLVED_AUTOMATICALLY AND STATUS_UPDATED_AT
+    <= cutoff)`. TTL applies only to RESOLVED_AUTOMATICALLY; manual RESOLVED rows
+    hard-deleted on next 15-minute cycle. Docs page acknowledges (''a known platform
+    bug currently exempts manual resolutions from the retention check''). No GitHub-issue
+    link, no test, no `// TODO` in code. (HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[3])'
+  - '**No tamper-evident audit log of housekeeping deletions (MEDIUM)** — a malicious
+    operator with `housekeeping.ttl.resolved_alerts_days` write access (e.g. env-var
+    override at deploy time) could set the value to `0` and the next housekeeping
+    cycle would silently destroy all RESOLVED alert history. There is no audit trail
+    of the configuration change AND no audit trail of the deletion. Compliance frameworks
+    requiring ''changes to data retention policies must be logged and reviewable''
+    are not satisfied. (HousekeepingTTLProperties.md:security.known_security_gaps.[0])'
+  - '**No dry-run / no preview / no backup-before-delete mechanism (MEDIUM)** — the
+    three TTL jobs hard-DELETE without operator-overridable safeguard. There is no
+    `housekeeping.dry-run=true` mode, no `housekeeping.ttl.backup-table` archival,
+    no reload-gate. A misconfigured `housekeeping.ttl.data_entity_delete_days=1` immediately
+    cascades through ~25 tables on the next 15-minute cycle with no recovery path.
+    (HousekeepingTTLProperties.md:security.known_security_gaps.[1])'
+  - '**Operator-trap coupling with LSN-001 attachment-storage default (MEDIUM)** —
+    `DataEntityHousekeepingJob.deleteFiles` (lines 131-143) calls `fileUploadService.deleteFiles(filePojos).block()`
+    to remove stored attachment files when a data-entity is purged. If `attachment.storage`
+    is the LOCAL ephemeral default (LSN-001), the deletion is a no-op (storage already
+    wiped); if REMOTE S3, hard-deletes the S3 object. Operator misconfiguring storage
+    to LOCAL + setting `data_entity_delete_days=1` for testing silently loses all
+    attachments. (HousekeepingTTLProperties.md:dependencies_semantic.coupling)'
+  cross_file_inconsistencies:
+  - Live `/configuration-and-deployment/odd-platform` documents 'three cleanup tasks'
+    — the code reality is FIVE HousekeepingJob beans (the three TTL'd plus ActivityEmptyPartitionsHousekeepingJob
+    + MessageEmptyPartitionsHousekeepingJob). Doc-completeness gap rather than disagreement.
+    (HousekeepingTTLProperties.md:docs_link_semantic.doc_drift_findings.[1])
+  - Live docs state `housekeeping.ttl.*` defaults to `30` without warning that the
+    default lives ONLY in the shipped application.yml; a custom application.yml override
+    that omits the block silently rebinds to `0`. (HousekeepingTTLProperties.md:docs_link_semantic.doc_drift_findings.[2])
+  - The AlertHousekeepingJob jOOQ-precedence bug is docs-acknowledged but unattached
+    to any tracking issue / line citation / `// TODO` in source. (HousekeepingTTLProperties.md:docs_link_semantic.doc_drift_findings.[3])
+  contributing_files:
+  - HousekeepingTTLProperties.md
+  evidence:
+  - HousekeepingTTLProperties.md:security.known_security_gaps.[0,1]
+  - HousekeepingTTLProperties.md:security.owner_scoping
+  - HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[0-6]
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - Housekeeping cycle runs every 15 minutes (`@Scheduled(fixedRate = 15, timeUnit
+    = TimeUnit.MINUTES)`). On busy clusters, a slow `DataEntityHousekeepingJob` cascade
+    (minutes against a large soft-deleted backlog) holds the ShedLock for the full
+    14 minutes and may starve other instances from running their housekeeping. (HousekeepingTTLProperties.md:performance.hot_paths)
+  - Bulk DELETE in jOOQ transaction — `DataEntityHousekeepingJob.doHousekeeping` (lines
+    71-82) wraps ~25-table cascade in a single `DSL.using(connection).transaction(ctx
+    -> {...})`. For a backlog of N soft-deleted data entities, this is N × 25 DELETE
+    round-trips. Postgres holds row-level locks on all touched rows for the transaction
+    duration.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: 'Single connection, sequential job fan-out — `HousekeepingJobManager.runHousekeepingJobs`
+      (lines 27-39) acquires ONE `Connection` from `PGConnectionFactory` and iterates
+      `for (final HousekeepingJob housekeepingJob : housekeepingJobs)`. No parallelism
+      across the five jobs. Total cycle time = sum of all five jobs'' execution times.
+      A slow DataEntityHousekeepingJob blocks AlertHousekeepingJob from running until
+      completion.'
+  scaling_shape:
+    verdict: STATEFUL_LOCKED
+    detail: 'ShedLock-coordinated — only one platform instance runs housekeeping per
+      15-minute slot. The 14-minute `lockAtMostFor` upper bound is dangerously close
+      to the 15-minute schedule: a job running 14m 1s releases the lock prematurely
+      and a second instance can acquire it for the next cycle while the first is still
+      committing. `lockAtMostFor` should be ≥ 2 × fixedRate for safety; current values
+      are right at the edge.'
+  strengths:
+  - ShedLock-coordinated single-instance execution — multi-replica deployments safe
+    by default
+  - Spring `@Scheduled(fixedRate)` — no external scheduler dependency
+  - Each TTL job is single-table or single-cascade — small CPU and memory footprint
+    per cycle (except the DataEntityHousekeepingJob cascade which can grow with backlog)
+  weaknesses:
+  - '**No per-job parallelism — single Connection bottleneck (LOW)** — five HousekeepingJob
+    beans run sequentially on a shared connection. A slow cascade blocks fast jobs
+    for minutes. (HousekeepingTTLProperties.md:performance.known_performance_gaps.[0])'
+  - '**No backlog metric — invisible bloat (LOW)** — no Prometheus counter, no `housekeeping.backlog{table=...}`
+    gauge. Operator cannot answer ''is housekeeping keeping up?'' without manual SQL.
+    (HousekeepingTTLProperties.md:performance.known_performance_gaps.[1])'
+  - '**`lockAtMostFor=14m` is dangerously close to `fixedRate=15m` (LOW — theoretical)**
+    — under contention or a long DataEntityHousekeepingJob cascade, the lock can release
+    before the cycle commits, allowing a SECOND instance to acquire the lock at minute
+    15. Safer would be `lockAtMostFor` ≥ 2 × fixedRate (e.g. `30m`). (HousekeepingTTLProperties.md:performance.known_performance_gaps.[2])'
+  - '**DataEntityHousekeepingJob.deleteFiles `.block()`s inside the jOOQ transaction
+    (MEDIUM)** — if MinIO/S3 storage is unreachable, the `.block()` either hangs indefinitely
+    or throws — rolling back the entire ~25-table cleanup batch. Next 15-minute cycle
+    retries the entire batch. If failure is persistent (e.g. wrong S3 region — LSN-002
+    shape), soft-deleted data entities never fully purged. (HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[6])'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - HousekeepingTTLProperties.md
+  evidence:
+  - HousekeepingTTLProperties.md:performance.hot_paths + throughput_characteristics
+    + scaling_characteristics
+  - HousekeepingTTLProperties.md:performance.known_performance_gaps.[0-2]
+notes: "Housekeeping TTL retention is the operational counterpart to the\nActivity\
+  \ Table Partitioning concept and the Activity Feed concept's\ndurability surface\
+  \ — together they describe how ODD manages\ntable-growth lifecycle. main-concepts.md\
+  \ does not name \"Housekeeping\"\nor \"Retention\" as canonical vocabulary; the\
+  \ operator-facing reference\nat `/configuration-and-deployment/odd-platform#housekeeping`\n\
+  documents the three TTL knobs and the master gate but enumerates only\n'three cleanup\
+  \ tasks' (omitting the two EmptyPartitions jobs) and\nacknowledges the AlertHousekeepingJob\
+  \ jOOQ-precedence bug without a\ntracking link.\n\nThe most operationally consequential\
+  \ finding from this concept is\nthe 2-sidecar primary-source confirmation of REFACTOR-085:\
+  \ time-based\nretention for the ACTIVITY and MESSAGE tables does not exist anywhere\n\
+  in the codebase. The activity-feed docs page's \"retention and\npartitioning\" claim\
+  \ is unsupported from BOTH the partition-WIDTH\nangle (ActivityTablePartitionManager\
+  \ has no DROP path) AND the\nhousekeeping-coverage angle (HousekeepingTTLProperties\
+  \ has no\n`activity*Days` field). The Activity Feed and Activity Table\nPartitioning\
+  \ concepts' weaknesses cite this from both sides.\n\nThree high-priority DOC-NNN\
+  \ candidates flow from this concept:\n  (a) Rewrite the activity-feed Configuration\
+  \ section to say\n      \"partitioning is controlled by `odd.activity.partition-period`;\n\
+  \      ODD does NOT currently retention-delete activity rows — operators\n     \
+  \ with high-volume activity must manually drop old partitions or\n      implement\
+  \ application-level archival.\"\n  (b) Add a docs-page admonition that `housekeeping.ttl.*`\
+  \ defaults\n      live in the shipped application.yml, not the Java class —\n  \
+  \    overriding application.yml without re-supplying the block\n      silently rebinds\
+  \ to `0` (hard-delete all past data on next cycle).\n  (c) Link the AlertHousekeepingJob\
+  \ jOOQ-precedence bug acknowledgement\n      to a tracked upstream issue so operators\
+  \ can follow resolution.\n"

@@ -1,0 +1,7 @@
+- **DOC-GAP-019**: Concept "AlertManager Webhook Receiver" is a canonical_candidate but not a registered term in `main-concepts.md`
+  - **Category**: missing-page
+  - **Surfaced by**: `concepts.yaml:entities[AlertManager Webhook Receiver]` (canonical_candidate: true); `canonicalisation_candidates.[3]`.
+  - **Evidence**: SUMMARY.md confirms `main-concepts.md` exists; the receiver lacks a canonical-term entry.
+  - **Proposed doc action**: Add "AlertManager Webhook Receiver" (synonym "Prometheus AlertManager Integration") to `documentation/docs/introduction/main-concepts.md`; cross-link to the receiver section on `configuration-and-deployment/odd-platform.md`.
+  - **Cross-references**: DOC-GAP-003.
+  - **Severity rationale**: MEDIUM.

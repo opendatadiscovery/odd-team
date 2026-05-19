@@ -1,0 +1,7 @@
+- **DOC-GAP-034**: Token Rotation operational mechanics (grace period, audit logging, plaintext-in-response, in-flight 401) absent from enable-security pages
+  - **Category**: missing-page
+  - **Surfaced by**: `regenerateCollectorToken.md:doc_drift_findings.[0,1,2]`; `concepts.yaml:entities[Collector Token]`.
+  - **Evidence**: permissions/authentication pages name the gate without operational mechanics.
+  - **Proposed doc action**: Create `enable-security/token-rotation.md` (or extend authentication.md) per the existing DOC-GAP-034 plan.
+  - **Cross-references**: None.
+  - **Severity rationale**: MEDIUM.

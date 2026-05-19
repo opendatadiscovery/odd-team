@@ -1,0 +1,150 @@
+name: Role (Authorization)
+canonical_in_docs: true
+canonical_candidate: false
+description: 'A named bundle of Policy references that can be attached to an Owner
+  (and through the user→owner mapping, to authenticated users) to grant authorization
+  permissions. Two predefined roles seeded by V0_0_56: `Administrator` (all permissions
+  on every resource type) and `User` (regular user with no permissions by default).
+  Custom roles are created via `POST /api/roles` (gated by `ROLE_CREATE` NO_CONTEXT,
+  SecurityConstants.java:169) and bound to Policies via `role_to_policy`. The platform''s
+  authoritative mapping from policy graphs to authenticated subjects. Canonical doc
+  anchor: `configuration-and-deployment/enable-security/authorization/roles` (200,
+  2026-05-12).'
+axes_present:
+- controllers
+nodes:
+- odd-platform java RoleController controller-method:createRole
+- odd-platform java PermissionController controller-method:getResourcePermissions
+- odd-platform java OwnerController controller-method:createOwner
+contributors:
+- 'RoleController.createRole: entities[Role (id, name, policies), RoleFormData (request
+  body: name + policies[]), RolePojo, RoleDto, UserProviderRole.ADMIN/.USER (predefined
+  seeded roles), ROLE_CREATE permission (PolicyPermissionDto)]; operations[accept
+  POST /api/roles, map to RolePojo, INSERT role_to_policy rows]'
+- 'PermissionController.getResourcePermissions: RoleService.getCurrentUserRoles is
+  the policy-resolution path — `PolicyServiceImpl.java:103-107` flattens roles → policies
+  → statements identical to the mutation enforcer'
+- 'OwnerController.createOwner: RoleFormData carries an optional `roles[]`; service
+  `ownerToRoleRepository.createRelations(ownerId, roleIds)` writes one row per role
+  per new Owner'
+evidence:
+- createRole.md:concepts.entities + concepts.invariants.[0-4]
+- createRole.md:implicit_adrs.[0] (uniform SECURITY_RULES gating) + implicit_adrs.[1]
+  (predefined-name mutation-only protection) + implicit_adrs.[2] (rewrite-on-update
+  / insert-on-create) + implicit_adrs.[3] (ReactiveTransactional)
+- getResourcePermissions.md:dependencies_semantic.couples-to (RoleService.getCurrentUserRoles)
+- createOwner.md:concepts.entities (OwnerToRole link side effect) + dependencies_semantic.couples-to
+  (ownerToRoleRepository.createRelations)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  - S2S
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: SECURITY_RULES gates ROLE_CREATE / ROLE_UPDATE / ROLE_DELETE at lines
+      169-173 (NO_CONTEXT MANAGEMENT-tier). GET /api/roles is permitAll under SECURITY_RULES
+      — any authenticated user can list roles. Under `auth.type=DISABLED` the gate
+      is INERT (DisabledAuthSecurityConfiguration). Under `auth.type=LOGIN_FORM` the
+      AuthorizationCustomizer is NOT wired and every form-authenticated user is ADMIN
+      with effective ROLE_CREATE. Under any non-DISABLED mode with `auth.s2s.enabled=true`,
+      any X-API-Key caller is injected as ADMIN (S2sAuthenticationFilter.java:31-39)
+      and holds ROLE_CREATE globally — REFACTOR-108.
+  owner_scoping:
+    verdict: N/A
+    detail: Roles are platform-global; not owned by any Owner. They ARE the binding
+      between Permission bundles and Owners. GET /api/roles is permitAll under SECURITY_RULES
+      (no list-roles gate).
+  strengths:
+  - '`@ReactiveTransactional` wraps the create flow (RoleServiceImpl.java:50) — no
+    orphan role rows without their policy relations (createRole.md:implicit_adrs.[3])'
+  - Partial-unique partial-index `role_name_unique` on `role(name) WHERE deleted_at
+    IS NULL` (V0_0_55__add_policies_and_roles.sql:42) — DB-level name uniqueness enforcement
+  - Role-policy relation is rewritten ENTIRELY on every update (`deleteRoleRelationsExcept`
+    then `createRelations`); INSERT-only on create. Edges owned by Role, not Policy
+    (createRole.md:implicit_adrs.[2])
+  weaknesses:
+  - '**Administrator-name reservation asymmetry on create (HIGH)** — `update` (RoleServiceImpl.java:67-69)
+    + `delete` (lines 81-84) check `UserProviderRole.values()`; `create` (lines 51-61)
+    does NOT. If the seeded Administrator row is hard-deleted (e.g. direct SQL bypassing
+    soft-delete), this endpoint can recreate a row named `Administrator` with attacker-chosen
+    policies. The unique-index is the only fence and depends on the seeded row remaining
+    present. (createRole.md:security.known_security_gaps.[0])'
+  - '**No audit log on role mutations (HIGH)** — `RoleServiceImpl.create/.update/.delete`
+    emit no `@Slf4j` log lines, publish no events, and insert into no audit table.
+    A hijacked admin can rewrite the authorization model invisibly. Activity feed
+    does NOT cover Role / Policy / Permission mutations. (createRole.md:security.known_security_gaps.[1])'
+  - '**Under `auth.type=DISABLED`, ROLE_CREATE is bypassed entirely (HIGH on DISABLED
+    deployments)** — combined with anonymous ADMIN principal under DISABLED, an attacker
+    can issue `POST /api/roles` with a custom Administrator-equivalent policy attached.
+    (createRole.md:security.known_security_gaps.[2])'
+  - '**Under LOGIN_FORM/OAUTH2/LDAP with `auth.s2s.enabled=true`, any X-API-Key holder
+    can create roles (HIGH — REFACTOR-108)** — S2sAuthenticationFilter.java:31-39
+    grants ADMIN globally, not scoped to ingestion. (createRole.md:security.known_security_gaps.[3])'
+  - '**No validation that policy ids reference live, non-soft-deleted Policies (MEDIUM)**
+    — FK-error surfaces as 500; soft-deleted Policy ids may still satisfy the FK depending
+    on `role_to_policy` semantics (unverified). (createRole.md:security.known_security_gaps.[4])'
+  - '**Role rows vs. LDAP / OAuth2 group mapping confusion (MEDIUM — doc gap)** —
+    LDAP admin-groups + OAuth2 admin claims map DIRECTLY to `UserProviderRole.ADMIN/.USER`,
+    NOT to platform Role rows. Operators reasonably expect a role named `admins` to
+    be auto-granted to LDAP users in `admin-groups`; it is not. (createRole.md:security.known_security_gaps.[7])'
+  - '**Case-sensitivity mismatch (LOW)** — delete uses `equalsIgnoreCase`; update
+    uses case-sensitive `.equals`. Inconsistent guard. (createRole.md:bugs_limitations_corner_cases.[case-sensitivity
+    mismatch])'
+  cross_file_inconsistencies:
+  - Role + Policy + Owner CRUD all share the same Administrator-name-on-update-but-not-create
+    asymmetry pattern AND the no-audit-log pattern. Catalog records both as cross-cutting
+    invariants.
+  - Live `/authorization/roles` page describes Roles as 'useful for combining multiple
+    policies together' but does NOT document the `POST /api/roles` creation surface,
+    the ROLE_CREATE permission, the partial-unique-name index, the predefined-name
+    protection, the spec-vs-code 201-vs-200 drift, the audit-logging absence, or the
+    LDAP/OAuth2-group-mapping relationship.
+  contributing_files:
+  - createRole.md
+  - getResourcePermissions.md
+  - createOwner.md
+  evidence:
+  - createRole.md:security.known_security_gaps.[0-7]
+  - createOwner.md:dependencies_semantic.requires-runtime (owner_to_role table)
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+  - 'Single POST per role-creation: 3 DB calls (roleRepository.create → roleToPolicyRepository.createRelations(N
+    rows) → roleRepository.getDto). N = policies.length, typically 1-10 (createRole.md:performance.hot_paths.[0])'
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: No batch-create endpoint; admin migrating 100 Roles issues 100 POSTs (createRole.md:performance.throughput_characteristics.[0])
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless controller; concurrent creates of the same name race at the
+      DB unique-index (createRole.md:performance.scaling_characteristics.[0])
+  strengths:
+  - Reactive Mono signature — non-blocking I/O preserved
+  weaknesses:
+  - No bulk-create endpoint (LOW)
+  - No upper bound on `RoleFormData.policies[]` size (components.yaml:3368-3379) —
+    a 10000-policy request produces 10000 INSERTs into role_to_policy in one transaction
+    (createRole.md:performance.known_performance_gaps.[1])
+  cross_file_inconsistencies: []
+  contributing_files:
+  - createRole.md
+  evidence:
+  - createRole.md:performance.known_performance_gaps.[0,1]
+notes: 'Anchored on `configuration-and-deployment/enable-security/authorization/roles`
+
+  live page (200, 2026-05-12). Live page omits API-creation guidance,
+
+  ROLE_CREATE Permission name, predefined-name protection rules, spec-vs-code
+
+  drift, audit-logging absence, and Role-row-vs-LDAP/OAuth-group mapping.
+
+  Five distinct doc-drift findings flow from this concept (createRole.md:
+
+  docs_link_semantic.doc_drift_findings.[0-4]).
+
+  '

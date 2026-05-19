@@ -1,0 +1,9 @@
+- **REFACTOR-126** (NEW 2026-05-12C): `AuthIdentityProviderImpl.getCurrentUser()` returns `UserDto(username, null)` for LDAP-authenticated users; switching `auth.type` from OAUTH2 to LDAP (or vice versa) breaks owner-mapping rows that include provider tag. No migration tool, no doc warning
+  - **Category**: owner-mapping-drift
+  - **Surfaced by**: `odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md:bugs_limitations_corner_cases.[8]` (severity MEDIUM)
+  - **Statement**: `AuthIdentityProviderImpl.java:24-35` returns `UserDto(username, null)` for LDAP users — the OAuth2 branch on line 29 does not match. `userOwnerMappingRepository.getAssociatedOwner(user.username(), null)` (line 52) is then used. Any owner-mapping row created under OAuth2 (`provider='okta'`) will NOT match an LDAP login of the same username; conversely, LDAP-issued owner mappings (`provider=null`) won't match an OAuth2 login. No migration tool exists.
+  - **Evidence**: `AuthIdentityProviderImpl.java:24-35,49-53` + `LDAPSecurityConfiguration.java` (no provider tagging)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Tag the SecurityContext with the auth mode on login (e.g., add a custom `Authentication.getDetails()` carrying `{authMode: LDAP}`); update `AuthIdentityProviderImpl.getCurrentUser()` to use the auth-mode tag when looking up owner mapping; document on the live security pages that switching `auth.type` after initial setup requires owner-mapping migration.
+  - **Severity rationale**: MEDIUM — operator-trap on auth-mode migration.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

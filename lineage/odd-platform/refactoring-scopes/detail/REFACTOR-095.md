@@ -1,0 +1,9 @@
+- **REFACTOR-095** (NEW 2026-05-12C): CSRF disabled cross-mode is undocumented on the live security pages — operators transitioning from a CSRF-protecting framework would not learn from the docs that POST/PUT/DELETE requests succeed without CSRF tokens under any auth.type mode
+  - **Category**: missing-csrf (doc-gap variant)
+  - **Surfaced by**: `odd-platform__java__DisabledAuthSecurityConfiguration__config-key-consumer__auth_type@L10.md:bugs_limitations_corner_cases.[3]` (severity LOW)
+  - **Statement**: All four `*SecurityConfiguration` classes call `.csrf(disable)`. The shared posture is the project's stance (ADR-CANDIDATE-033). The live security pages do not document the cross-mode CSRF stance. Operators transitioning from a CSRF-protecting framework hit POST/PUT/DELETE acceptance with no CSRF tokens — surprising behaviour with no doc surface.
+  - **Evidence**: `DisabledAuthSecurityConfiguration.java:15` + `LoginFormSecurityConfiguration.java:54` + `OAuthSecurityConfiguration.java:96` + `LDAPSecurityConfiguration.java:143`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-033 (cross-mode CSRF disabled) accepts the convention as the project stance; this scope is the doc-gap consequence.
+  - **Proposed remedy**: Add a "CSRF posture" admonition to the live `/configuration-and-deployment/enable-security` page explaining the project-wide stance (stateless REST framing) and its consequence for state-changing requests. Cross-link with REFACTOR-105 (LOGIN_FORM session-cookie exception).
+  - **Severity rationale**: LOW — cross-mode convention; doc-gap.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening` (DOC-NNN)

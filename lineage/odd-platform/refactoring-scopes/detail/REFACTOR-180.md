@@ -1,0 +1,9 @@
+- **REFACTOR-180** (NEW 2026-05-12D): No `@Validated` annotation on `DataCollaborationProperties`, no `@Min(0)` / `@Max(...)` JSR-303 constraints on the int fields. The single `@PostConstruct` validator is hand-written; future fields added without an explicit `if (... < 0) throw` would silently bypass validation
+  - **Category**: no-validated
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md:bugs_limitations_corner_cases.[5]` (LOW)
+  - **Statement**: `DataCollaborationProperties.java:7-21` has no `@Validated`. The `@PostConstruct validate()` is hand-written and only checks `sendingMessagesRetryCount >= 0`. Future-fields added without explicit `if (... < 0) throw` lines would silently bypass validation. Pairs with REFACTOR-163 (same shape on ODDLDAPProperties).
+  - **Evidence**: `DataCollaborationProperties.java:7-21`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-018 (fail-fast at boot) + ADR-CANDIDATE-048 (narrow-validator scope) are the design — imperative-validator-over-declarative is intentional.
+  - **Proposed remedy**: Same as REFACTOR-163 — add `@Validated` + declarative constraints. The decision is project-wide: do we keep imperative validators (consistent with current code) or migrate to declarative (better DX, accumulates errors)?
+  - **Severity rationale**: LOW — DX defect; surfaces only when future fields are added without manual validator-extension discipline.
+  - **Suggested backlog grouping**: `@ConfigurationProperties consolidation refactor`

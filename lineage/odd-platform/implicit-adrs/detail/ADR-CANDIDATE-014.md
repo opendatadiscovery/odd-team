@@ -1,0 +1,13 @@
+- **ADR-CANDIDATE-014**: AlertManager Webhook Receiver is hand-coded (NOT OpenAPI-generated) — explicit `// TODO: define OpenAPI spec based on alert provider contract`; the request DTO is an inner static class
+  - **Category**: unique-load-bearing
+  - **Support**: surfaced by 1 sidecar (AlertManagerController) — explicit counter-example to ADR-CANDIDATE-001; the rule and its acknowledged exception
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md:implicit_adrs.[0]` ("External alert ingestion is not driven by `odd-platform-api-contract` (OpenAPI). The controller is hand-coded with an explicit `// TODO: define OpenAPI spec based on alert provider contract` (AlertManagerController.java:20), and the request DTO is an inner static class on the controller rather than a generated `*Api` model.")
+  - **Decision statement**: `AlertManagerController` is the canonical exception to the OpenAPI-generated-controller convention (ADR-CANDIDATE-001). The endpoint is hand-coded with an explicit TODO acknowledging the gap; the request DTO is an inner static class. The implicit decision: when the inbound contract is owned by an external provider (Prometheus AlertManager) whose schema we don't author, we accept the hand-coded controller until the provider's contract stabilises into a spec we can incorporate.
+  - **Wisdom test**: PASS. Deliberate (TODO comment captures the rationale); structural (boundary-defining for "when is hand-coded acceptable?"); single-sidecar but pairs with ADR-CANDIDATE-001 as rule + exception.
+  - **Evidence**:
+    - AlertManagerController.md says: "AlertManagerController.java:15-32 (no `implements *Api`, inner `AlertManagerRequest` class, explicit TODO comment)"
+  - **Existing ADR**: none. (Composes with ADR-CANDIDATE-001 — the rule and its acknowledged exception go together.)
+  - **Co-surfaced gaps** (link from `refactoring-scopes.md`): REFACTOR-031 (hand-rolled DTO drops AlertManager fields that the platform may later want to honour, e.g. `status`, `endsAt`, `annotations`, `fingerprint`, `groupKey`), REFACTOR-032 (`ExternalAlert.startsAt` is timezone-naive `LocalDateTime`).
+  - **Proposed action**: Promote (or fold into ADR-CANDIDATE-001 as the "Known exception" section). The decision shapes how future external-receiver endpoints are introduced — hand-coded is acceptable only when we don't own the contract.
+  - **Severity rationale**: MEDIUM — pattern-shaping; defines how the rule (#001) is applied at its boundary.

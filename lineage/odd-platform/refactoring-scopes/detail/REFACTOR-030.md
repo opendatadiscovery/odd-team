@@ -1,0 +1,9 @@
+- **REFACTOR-030**: `i18n` `fallbackLng` is the full six-element array `['en','es','ch','fr','ua','hy']` rather than conventional `'en'`
+  - **Category**: buggy-default
+  - **Surfaced by**: `odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md:bugs_limitations_corner_cases.[0]` (MEDIUM)
+  - **Statement**: Per i18next semantics, on missing key, i18next walks the fallbackLng array in order. A French user with a key present in Spanish/Chinese but missing in French would see Spanish or Chinese unexpectedly before reaching English. Almost certainly not intended.
+  - **Evidence**: `odd-platform-ui/src/locales/i18n.ts:30` + the natural-keys pattern in `translations/en.json`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-011 (natural-keys) prescribes English-as-fallback; this scope is the bug-shaped deviation.
+  - **Proposed remedy**: Set `fallbackLng: 'en'` (single string).
+  - **Severity rationale**: MEDIUM — UX inconsistency.
+  - **Suggested backlog grouping**: `i18n cleanup`

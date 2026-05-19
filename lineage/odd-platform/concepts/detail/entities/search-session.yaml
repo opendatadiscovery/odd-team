@@ -1,0 +1,167 @@
+name: Search Session
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Server-side persistent state representing one user''s current catalog-search
+  context. `POST /api/search` does NOT return entity rows directly — it creates a
+  `search_facets` row keyed by a server-generated UUID, returns aggregated facet counts
+  + the UUID, and requires the caller to call `GET /api/search/{search_id}/results`
+  for paginated rows. The same UUID is used by `getSearchFacetList`, `updateSearchFacets`,
+  `getFiltersForFacet`, and `highlightDataEntity` — every search interaction is bound
+  to a persistent session row. Trade-off: server retains query state across multi-step
+  UI interactions (facet drill-down, pagination, highlighting) at the cost of an unbounded
+  `search_facets` table requiring housekeeping (`SearchFacetsHousekeepingJob` + `housekeeping.ttl.search_facets_days`,
+  default 30 days). Sibling features (`/api/terms/search`, `/api/queryexample/search`,
+  `/api/referencedata/search`) replicate the same UUID pattern. NOT named in main-concepts.md.'
+axes_present:
+- controllers
+nodes:
+- odd-platform java SearchController controller-method:search
+- odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
+contributors:
+- 'SearchController.search: entities[SearchFacetsPojo (persisted search-session row
+  in search_facets table, keyed by UUID), SearchFormData (request body — query: string
+  + my_objects: boolean + filters: {...}), SearchFacetsData (response payload — search_id:
+  UUID + aggregated facet counts), FacetStateDto (in-memory representation)]; operations[create-search-session]'
+- 'SearchController.implicit_adrs.[0]: search-session-as-server-state pattern — every
+  search interaction is bound to a persistent session row'
+- 'HousekeepingTTLProperties.search_facets_days: time-based retention 30-day default
+  at YAML floor'
+evidence:
+- search.md:concepts.entities (SearchFormData, SearchFacetsPojo, SearchFacetsData,
+  FacetStateDto) + concepts.invariants.[2]
+- search.md:implicit_adrs.[0] (session-as-server-state)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: '`POST /api/search` has NO SECURITY_RULES entry — falls through to catch-all
+      `.authenticated()`. Same for `GET /api/search/{search_id}/results`, `PUT /api/search/{search_id}`,
+      `GET /api/search/{search_id}/facet/{facet_type}`, `GET /api/search/{search_id}/data_entities/{data_entity_id}/highlights`.
+      Any authenticated user can search the entire catalog. Under DISABLED, anonymously
+      reachable.'
+  owner_scoping:
+    verdict: BYPASSES
+    detail: Default `my_objects=false` path returns aggregations over the ENTIRE catalog
+      (SearchServiceImpl.java:122-130 `countByState(state)` runs without owner predicate).
+      Owner-filter applied ONLY when caller explicitly toggles `my_objects=true` on
+      `SearchFormData` (SearchServiceImpl.java:104-108). Catalog enumeration of NON-`EXCLUDE_FROM_SEARCH`
+      entities is the default behaviour.
+  strengths:
+  - Server-generated v4 UUID — unguessable in O(2^60) attempts; no per-user owner
+    column on `search_facets` is bounded by the UUID's unpredictability
+  - TTL-bounded retention via `housekeeping.ttl.search_facets_days` (default 30 days)
+    — `SearchFacetsHousekeepingJob` deletes rows older than the TTL
+  weaknesses:
+  - '**Catalog-wide cross-owner enumeration (HIGH) — same shape as REFACTOR-024 with
+    WIDER blast radius** — any authenticated user can paginate `POST /api/search`
+    + `GET /api/search/{search_id}/results` to enumerate every non-EXCLUDE_FROM_SEARCH
+    data entity in the platform — name, ODDRN, descriptions, ownership, tags, custom
+    metadata, term linkages. Live `features/data-discovery/search` doc says NOTHING
+    about WHO can search. Third surface corroborating ADR-CANDIDATE-003 (read-collaborative);
+    strengthens cross-cutting invariant `Read-collaborative cross-owner enumeration`.
+    (search.md:security.known_security_gaps.[0] HIGH)'
+  - '**`to_tsquery` syntax-error vector via raw user input (MEDIUM)** — `JooqFTSHelper.tsQuery`
+    splits on space + appends `:*` + joins with `&`; queries containing tsquery metacharacters
+    not space-separated (`foo!bar`, `foo|bar`, `(foo)`, `a<->b`) become malformed
+    `to_tsquery(?)` and Postgres raises `syntax error in tsquery` surfacing as 500.
+    No sanitisation, no escape, no error mapping. Conversely a balanced tsquery expression
+    silently re-interprets. (search.md:security.known_security_gaps via bugs_limitations_corner_cases.[1])'
+  - '**Unbounded query length + unbounded `search_facets` writes (MEDIUM)** — `SearchFormData.query`
+    has no maxLength; every POST persists a new row keyed by UUID. Combined with REFACTOR-141
+    (housekeeping default-leak: overriding application.yml without re-supplying the
+    housekeeping block silently binds 0 days and hard-deletes search-session rows
+    on the next 15-minute housekeeping cycle), pathological case is also a data-loss
+    vector. (search.md:bugs_limitations_corner_cases.[2,3])'
+  - '**Search-session UUID has no per-user owner-binding (LOW under read-collaborative
+    posture)** — `searchFacetRepository.get(searchId)` returns the session regardless
+    of who created it. Under any future owner-scoped search tightening this becomes
+    HIGH. (search.md:security.known_security_gaps.[2])'
+  - '**Persistent query text — PII concern (LOW depending on threat model)** — `search_facets.query`
+    stores raw query text verbatim with no redaction, no encryption. Users searching
+    for sensitive terms (employee names, customer IDs, GDPR identifiers) leave a 30-day
+    DB trail readable by any operator with DB access. (search.md:security.known_security_gaps.[3])'
+  - '**Under `auth.type=DISABLED`, anonymously reachable (MEDIUM)** — corollary of
+    REFACTOR-073; cross-references the Auth Mode DISABLED-default trap. (search.md:security.known_security_gaps.[1])'
+  cross_file_inconsistencies:
+  - Live `features/data-discovery/search` page (200, 2026-05-12) is silent on WHO
+    can search; the code enforces 'any authenticated user'. ADR-CANDIDATE-003 third
+    corroborating surface alongside `getDataEntityDetails`, `getAllAlerts`, and `getActivity`.
+  - Live page enumerates 7 facets (Datasource / Type / Namespace / Owner / Tag / Groups
+    / Statuses) but `FacetType` enum carries an additional `ENTITY_CLASSES` facet
+    AND a top-level `my_objects` boolean flag. (search.md:docs_link_semantic.doc_drift_findings.[2])
+  contributing_files:
+  - search.md
+  - HousekeepingTTLProperties.md (TTL retention surface)
+  evidence:
+  - search.md:security.known_security_gaps.[0-3]
+  - search.md:bugs_limitations_corner_cases.[0-8]
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - '`POST /api/search` runs THREE concurrent queries per call inside `getFacetsData`
+    via `Mono.zip` (SearchServiceImpl.java:122-155): (a) entity-class facet aggregation,
+    (b) catalog-wide `countByState(state)`, (c) owner-scoped `countByState(state,
+    owner)` — the third ALWAYS runs even when `my_objects=false`. Plus `searchFacetRepository.create(pojo)`
+    row insert. Hot path on every keystroke / facet click after UI debounce (search.md:performance.hot_paths.[0])'
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-request POST per search session; no batch endpoint, no streaming.
+      Triple-aggregation fan-out per call is fixed cost regardless of `my_objects`
+      toggle (search.md:performance.throughput_characteristics)
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: Stateless controller scales horizontally. `search_facets` grows monotonically
+      until housekeeping cycle (15-min cadence). NO pagination on `search` itself
+      (only sibling `getSearchResults` accepts `page` + `size` — both `@NotNull` but
+      NO `@Min`/`@Max`, unbounded `size` structurally accepted). NO caching at any
+      layer (search.md:performance.scaling_characteristics)
+  strengths:
+  - Reactive non-blocking signature — no thread held during DB await
+  weaknesses:
+  - '**Unconditional my_objects aggregation cost (MEDIUM)** — `getFacetsData` always
+    runs owner-scoped `countByState(state, owner)` even when `my_objects=false`. A
+    short-circuit on `state.isMyObjects()` would halve per-call DB work in the common
+    case (search.md:performance.known_performance_gaps.[0])'
+  - '**No max-size on SearchFormData.query / getSearchResults pagination (MEDIUM)**
+    — same shape as REFACTOR-024 pagination concern; `size=1_000_000` triggers a query
+    bounded only by Postgres / network buffers (search.md:performance.known_performance_gaps.[1])'
+  - '**`to_tsquery(?)` reconstruction per request (LOW)** — `JooqFTSHelper.tsQuery`
+    re-tokenises and re-builds the `to_tsquery` argument on every call; Postgres-side
+    parse cost per request'
+  - '**No HTTP-level caching (LOW)** — catalog is read-heavy and search returns slow-changing
+    aggregates; no `@Cacheable`, no ETag, no `Cache-Control` (search.md:performance.known_performance_gaps.[3])'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - search.md
+  evidence:
+  - search.md:performance.known_performance_gaps.[0-3]
+notes: 'The Search Session concept emerges from a SINGLE primary-source sidecar
+
+  (SearchController.search batch E). Marked canonical_candidate because
+
+  main-concepts.md does not name it — the closest existing canonical home
+
+  is `features/data-discovery/search`, which describes the user-facing
+
+  catalog search experience but does NOT name the server-side session
+
+  mechanism or the per-user `search_facets` row. Surface as canonicalisation
+
+  candidate for vocabulary extension.
+
+
+  Cross-references HousekeepingTTLProperties (batch D — TTL retention for
+
+  `search_facets_days`) and intersects REFACTOR-141 (housekeeping
+
+  default-leak — overriding application.yml without re-supplying
+
+  housekeeping block binds 0 days and hard-deletes on next cycle).
+
+  '

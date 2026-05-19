@@ -1,0 +1,7 @@
+- **DOC-GAP-012**: Legacy URL `/active-platform-features/genai` returns 404 — canonical at `/features/active-platform-features/genai`
+  - **Category**: broken-url
+  - **Surfaced by**: `GenAIController.md:docs_link_semantic.doc_drift_findings.[0]`
+  - **Evidence**: WebFetch `/active-platform-features/genai` 2026-05-08 status 404; canonical 200.
+  - **Proposed doc action**: Same as DOC-GAP-011. See DOC-GAP-058.
+  - **Cross-references**: DOC-GAP-011, DOC-GAP-035, DOC-GAP-056, DOC-GAP-058.
+  - **Severity rationale**: MEDIUM.

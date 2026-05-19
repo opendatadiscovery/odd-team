@@ -1,0 +1,10 @@
+- **REFACTOR-041**: Reflection-based ODDRN-property extraction in Directory unmemoised — per-request, per-data-source `@PathField` field set re-discovered and getter Method re-resolved
+  - **Category**: observability (performance)
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DirectoryController.md:bugs_limitations_corner_cases.[3]` (LOW)
+    - `concepts.yaml:entities[Directory].performance_aggregate.weaknesses.[2]`
+  - **Statement**: `DirectoryServiceImpl.getOddrnPathProperties` uses Java reflection on every data-source row in `/api/directory/datasources`; cost compounds with prefix-list size.
+  - **Evidence**: `DirectoryServiceImpl.java:153-171`
+  - **Proposed remedy**: Memoise per-class `@PathField` field set + getter Methods (compute once at startup or lazily on first encounter, cache by class). Or replace reflection with a generated mapper.
+  - **Severity rationale**: LOW — performance scaling issue.
+  - **Suggested backlog grouping**: `Directory performance`

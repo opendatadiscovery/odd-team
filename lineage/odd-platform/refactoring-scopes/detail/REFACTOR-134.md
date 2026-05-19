@@ -1,0 +1,9 @@
+- **REFACTOR-134** (NEW 2026-05-12C): No per-channel routing — Notifications fan-out delivers to ALL configured channels for ALL alerts. Operators wanting "only Critical alerts to Slack, all alerts to email" or "scope channel-X to namespace-Y" cannot express this in config
+  - **Category**: no-channel-filter
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[9]` (severity MEDIUM); `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:security.known_security_gaps.[2]` (severity MEDIUM)
+  - **Statement**: `AlertNotificationMessageProcessor.java:25-36` iterates `List<NotificationSender>` unconditionally for every `AlertNotificationMessage`. No filter / predicate / config key for routing exists. Cross-tenant / multi-team deployments cannot scope notifications to the owning team — every channel gets every alert.
+  - **Evidence**: `AlertNotificationMessageProcessor.java:25-36` + no routing config in `NotificationsProperties`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-041 (per-channel URL-presence activation) is the activation model — channels turn ON via URL presence, but there's no further filtering. The gap is per-alert routing.
+  - **Proposed remedy**: Add `notifications.receivers.{slack|webhook|email}.filter.{alertType|severity|owner|namespace}` config — when set, only matching alerts route to that channel. Implement via a `NotificationRouter` that applies per-channel predicates before invoking `.send(...)`.
+  - **Severity rationale**: MEDIUM — operator-flexibility gap; affects every multi-team Notifications deployment.
+  - **Suggested backlog grouping**: `Notifications hardening`

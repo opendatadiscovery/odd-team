@@ -1,0 +1,7 @@
+- **DOC-GAP-031**: `lasEventId` typo on Java controller signature persists into generated client SDKs
+  - **Category**: drift
+  - **Surfaced by**: `getActivity.md:bugs_limitations_corner_cases.[0]`.
+  - **Evidence**: `ActivityController.java:34` declares `final Long lasEventId` (missing `t`).
+  - **Proposed doc action**: Code fix (rename `lasEventId` → `lastEventId`). Conditional doc fix on DOC-GAP-029.
+  - **Cross-references**: DOC-GAP-029, DOC-GAP-030.
+  - **Severity rationale**: LOW.

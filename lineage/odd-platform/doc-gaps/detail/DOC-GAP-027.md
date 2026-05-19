@@ -1,0 +1,7 @@
+- **DOC-GAP-027**: Locale-bundle CSP / localStorage caveat absent on (eventual) i18n doc page
+  - **Category**: drift
+  - **Surfaced by**: `concepts.yaml:entities[Locale Bundle].security_aggregate.weaknesses.[1]`; i18n.ts + SelectLanguage sidecars.
+  - **Evidence**: bootstrap unguarded `localStorage.getItem('i18nextLng')` — in privacy mode raises before render.
+  - **Proposed doc action**: Include Known-limitations sub-section when F-047 authoring lands.
+  - **Cross-references**: F-047, DOC-GAP-020.
+  - **Severity rationale**: LOW.

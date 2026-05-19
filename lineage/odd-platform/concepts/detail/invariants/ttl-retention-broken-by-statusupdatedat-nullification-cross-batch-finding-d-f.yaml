@@ -1,0 +1,67 @@
+name: TTL retention broken by statusUpdatedAt nullification (cross-batch finding D
+  + F)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW CROSS-BATCH INVARIANT, batch 2026-05-12F** — load-bearing cross-batch
+  defect surfaced only when batch D''s HousekeepingTTLProperties + batch F''s updateStatus
+  sidecars are combined. The platform''s 30-day data-entity-delete retention TTL relies
+  on `DATA_ENTITY.STATUS_UPDATED_AT` (queried by `DataEntityHousekeepingJob.java:73-82`
+  as `STATUS_UPDATED_AT <= now - housekeeping.ttl.data_entity_delete_days`). But `DataEntityMapperImpl.applyStatus`
+  (lines 242-253) sets `pojo.setStatus(statusDto.getId())` on line 247 BEFORE the
+  `if (statusDto.getId() != pojo.getStatus())` check on line 249 — at the point of
+  the check, `pojo.getStatus()` already equals `statusDto.getId()`, so the condition
+  is always FALSE and `statusUpdatedAt` is NEVER set on ANY status transition. The
+  housekeeping query then evaluates `STATUS_UPDATED_AT <= cutoff` against a NULL column
+  — NULL `<= ` cutoff evaluates to NULL (≈ false in SQL three-valued logic) — and
+  the soft-deleted entities are NEVER hard-deleted. Two-fold defect: (a) the documented
+  30-day retention window is BROKEN — soft-deleted entities accumulate indefinitely
+  instead of being purged after 30 days; (b) the soft-delete cascade (lineage / group-relations
+  / parent-group-relations / statistics / filled-flag) is INVISIBLE to the housekeeping
+  TTL — the cascade fires on the status-flip but the cleanup-after-TTL never fires.
+  Two-sidecar pattern that emerges ONLY when both sides exist: batch D''s HousekeepingTTLProperties
+  surfaces ''retention claim 30 days''; batch F''s updateStatus surfaces ''ordering
+  bug nulls the column the retention claim depends on''. Neither sidecar alone reveals
+  the defect — the cross-batch view is load-bearing. Fix is trivial (capture the prior
+  status before mutating, or use a boolean local before `setStatus`); the bug is present
+  at the verified commit ede5d277. HIGH severity: combines doc-vs-code drift AND silent-data-bloat
+  AND the LSN-001-shape pattern of ''feature ships disabled-but-broken''.'
+axes_present:
+- controllers
+- config_prefixes
+nodes:
+- odd-platform java DataEntityController controller-method:updateStatus
+- odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
+contributors:
+- updateStatus.md:bugs_limitations_corner_cases.[0] (HIGH — DataEntityMapperImpl.applyStatus
+  ordering bug at lines 242-253; statusUpdatedAt NEVER bumped on any transition)
+- 'HousekeepingTTLProperties.md (batch D): `housekeeping.ttl.data_entity_delete_days`
+  (default 30) is consumed by `DataEntityHousekeepingJob` which queries `STATUS_UPDATED_AT
+  <= now - N days` — the predicate depends on the column being correctly updated on
+  every status transition'
+evidence:
+- updateStatus.md:bugs_limitations_corner_cases.[0] (HIGH)
+- updateStatus.md:dependencies_semantic.requires-config (housekeeping.ttl.data_entity_delete_days)
+- HousekeepingTTLProperties.md:concepts.invariants (TTL surface covers DATA_ENTITY
+  table; depends on STATUS_UPDATED_AT being maintained)
+notes: "CROSS-BATCH cross-cutting invariant captured in batch 2026-05-12F.\nThe pattern\
+  \ is: a load-bearing defect that emerges only when two\nindependently-authored sidecars\
+  \ are combined. Neither sidecar\nalone reveals it:\n  - HousekeepingTTLProperties\
+  \ surfaces 'retention is 30 days'.\n  - updateStatus surfaces 'statusUpdatedAt never\
+  \ bumped'.\n  - Combined: the 30-day retention is broken because the field the\n\
+  \    query depends on is never updated.\n\nThis is the second cross-batch invariant\
+  \ in the catalog (after\n\"Retention claim vs code drift\" which combined ActivityTablePartitionManager\n\
+  batch B + HousekeepingTTLProperties batch D). The pattern recurs:\noperational features\
+  \ that span configuration + mutation + job sides\ncan have defects that only the\
+  \ cross-axis view surfaces.\n\nRecommended cleanup (3-line fix in DataEntityMapperImpl.applyStatus):\n\
+  \n  public void applyStatus(DataEntityPojo pojo, DataEntityStatusDto status) {\n\
+  \      final boolean changed = status.getId() != pojo.getStatus();\n      pojo.setStatus(status.getId());\n\
+  \      if (changed) {\n          pojo.setStatusUpdatedAt(LocalDateTime.now());\n\
+  \      }\n  }\n\nPlus a regression test asserting `statusUpdatedAt` is bumped on\
+  \ real\ntransitions and unchanged on no-op writes.\n\nTwo DOC-NNN candidates flow\
+  \ from this invariant:\n  (a) `/features/data-discovery/statuses` page: warn that\
+  \ the 30-day\n      retention window is currently broken (or document the\n    \
+  \  workaround until fix lands).\n  (b) `/configuration-and-deployment/odd-platform#housekeeping`\n\
+  \      page: same caveat on the `housekeeping.ttl.data_entity_delete_days`\n   \
+  \   entry.\n\nSurface as canonicalisation candidate AND a refactoring-scope item\n\
+  (small focused 3-line fix with HIGH defence-in-depth value;\ncoordinates with the\
+  \ LSN-001 pattern of insecure/broken defaults).\n"

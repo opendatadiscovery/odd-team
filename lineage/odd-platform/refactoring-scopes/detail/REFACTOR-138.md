@@ -1,0 +1,9 @@
+- **REFACTOR-138** (NEW 2026-05-12C): PII surface in notification payloads — `AlertNotificationMessage` carries `dataEntity.{name, dataSourceName, namespaceName}`, `owners[].ownerName`, lineage entities. If data entity / owner names contain operator-supplied free-text (descriptions, table names encoding customer identifiers), it's rendered verbatim into Slack/webhook/email
+  - **Category**: pii-disclosure
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[12]` (severity MEDIUM)
+  - **Statement**: `AlertNotificationMessageTranslator.java:73-83` populates the full `AlertNotificationMessage` from DB columns; `email.ftlh` template renders into HTML body; Slack/webhook serialise into JSON. No redaction, no allowlist. For organisations whose dataset names encode customer identifiers, this is a privacy concern.
+  - **Evidence**: `AlertNotificationMessageTranslator.java:73-83` + `email.ftlh` template + `JSONSerDeUtils` serialisation
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Add `notifications.receivers.{channel}.payload-mode: {full|minimal|redacted}` — `minimal` includes only alert id + entity oddrn (no names); `redacted` masks PII patterns (configurable regex set). Document the privacy implications.
+  - **Severity rationale**: MEDIUM — privacy gap; affects every customer-name-encoding dataset deployment.
+  - **Suggested backlog grouping**: `Notifications hardening`

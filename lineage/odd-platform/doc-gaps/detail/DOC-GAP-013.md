@@ -1,0 +1,7 @@
+- **DOC-GAP-013**: Legacy URL `/data-discovery/attachments` returns 404 — canonical at `/features/data-discovery/attachments`
+  - **Category**: broken-url
+  - **Surfaced by**: `DataEntityAttachmentController.md:docs_link_semantic.inferred_docs.[1]`
+  - **Evidence**: WebFetch `/data-discovery/attachments` 2026-05-08 status 404; canonical 200.
+  - **Proposed doc action**: Same as DOC-GAP-011. See DOC-GAP-058.
+  - **Cross-references**: DOC-GAP-011, DOC-GAP-035, DOC-GAP-056, DOC-GAP-058.
+  - **Severity rationale**: MEDIUM.

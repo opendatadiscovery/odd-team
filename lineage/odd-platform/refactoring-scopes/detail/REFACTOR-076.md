@@ -1,0 +1,10 @@
+- **REFACTOR-076** (NEW 2026-05-10B): No retry / backoff / DLQ on Prometheus `/api/v1/write` failures — `onErrorMap` rethrows as `PrometheusException` and the entire ingestion request fails; transient Prometheus outage (rolling restart, network blip) loses the batch
+  - **Category**: missing-retry
+  - **Surfaced by**:
+    - `odd-platform__java__CounterTimeSeriesExtractor__config-key-consumer__metrics_storage@L20.md:performance.known_performance_gaps.[0]` (severity MEDIUM)
+  - **Statement**: `ExternalIngestionMetricsServiceImpl.java:206-219` has `.onErrorMap(e -> ... throw new PrometheusException(e))` with NO `.retry(...)` / `.retryWhen(...)`. A transient network blip on the way to `metrics.prometheus-host` produces an immediate 5xx to the calling collector; the collector must retry from outside. There is no in-memory queue, no Postgres fallback, no eventual-consistency mechanism. A Prometheus rolling restart drops every concurrent metric write.
+  - **Evidence**: `ExternalIngestionMetricsServiceImpl.java:206-219` (no retry operator)
+  - **Existing-ADR-or-implied-prescription**: None. ADR-CANDIDATE-026 (NEW — metric storage mirrored wiring) does NOT defend retry-absence; retry is request-routing reliability, not part of the wiring choice.
+  - **Proposed remedy**: Add `.retryWhen(Retry.backoff(maxAttempts, minBackoff).filter(this::isTransient))` on the WebClient call; expose `metrics.prometheus.retry.max-attempts` (default 3) and `metrics.prometheus.retry.min-backoff-millis` (default 200). Document on the live config-doc page.
+  - **Severity rationale**: MEDIUM — a single transient upstream blip surfaces as ingestion failure for every concurrent collector.
+  - **Suggested backlog grouping**: `Metric storage hardening`

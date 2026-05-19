@@ -1,0 +1,10 @@
+- **REFACTOR-091** (NEW 2026-05-10B): `@Scheduled(cron = "0 1 0 * * *")` is server-timezone-implicit — multi-region instances may create partitions at different wall-clock times
+  - **Category**: timezone-implicit
+  - **Surfaced by**:
+    - `odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md:bugs_limitations_corner_cases.[6]` (severity LOW)
+  - **Statement**: `PostgreSQLPartitionCreationJob.java:40` declares `@Scheduled(cron = "0 1 0 * * *")` with no `zone =` attribute. Spring's `@Scheduled` defaults to the server's local timezone unless `zone` is specified; the cron runs at `00:01` local server time. A multi-region deployment where instances run in different timezones would attempt to create partitions at different wall-clock times. In single-instance deployments, the date boundary at midnight server-local-time may not match the `baseline = DateTimeUtil.generateNow().toLocalDate()` returned for an INSERT firing at that moment. ShedLock's 10m hold prevents the same instance from re-firing; multi-instance races on `baseline` calculation at midnight UTC offset boundaries could theoretically produce off-by-one partition boundaries.
+  - **Evidence**: `PostgreSQLPartitionCreationJob.java:40` (no `zone =` attribute) + `AbstractPartitionManager.java:23` (`DateTimeUtil.generateNow().toLocalDate()` — local-date, not Instant)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-028 (NEW) does not address timezone.
+  - **Proposed remedy**: Add explicit `zone = "UTC"` to the `@Scheduled` annotation. Update `DateTimeUtil.generateNow()` consumers in the partition code path to use `Instant`/`ZonedDateTime` instead of `LocalDate` so partition boundaries are deterministic across timezones.
+  - **Severity rationale**: LOW — theoretical; ShedLock's 10m window covers the common cases.
+  - **Suggested backlog grouping**: `Activity partition lifecycle hardening`

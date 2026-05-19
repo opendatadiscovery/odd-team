@@ -1,0 +1,9 @@
+- **REFACTOR-179** (NEW 2026-05-12D): `slack-oauth-token` consumed via `@Value` in `DataCollaborationConfiguration` rather than as a `String` field on `DataCollaborationProperties` — bypasses the `@ConfigurationProperties` actuator sanitiser registry. Spring's default `Sanitizer` DOES mask keys ending in `token` so the present masking is correct, but a future rename (e.g. `slack-bot-credential`) would silently un-mask it
+  - **Category**: refactor-risk
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md:bugs_limitations_corner_cases.[4]` (LOW)
+  - **Statement**: `DataCollaborationConfiguration.java:20-21` reads the Slack OAuth token via `@Value` rather than as a typed `String` field on `DataCollaborationProperties`. The actuator-env sanitiser relies on the field-name pattern (`token`) — a future rename to `slack-bot-credential` would silently bypass the default mask. The risk is preventive (no current vulnerability) but architectural.
+  - **Evidence**: `DataCollaborationConfiguration.java:20-21` + Spring's `Sanitizer` default keys (`password`, `secret`, `key`, `token`)
+  - **Existing-ADR-or-implied-prescription**: Folded into REFACTOR-181 (Lombok-toString-leak cross-cutting — if the field is moved to a POJO with `@Data`, the `@ToString.Exclude` discipline must be applied).
+  - **Proposed remedy**: Move `slackOauthToken` onto `DataCollaborationProperties` as a typed field, ADD `@ToString.Exclude` (per REFACTOR-181), and consume via the typed Properties bean instead of `@Value`.
+  - **Severity rationale**: LOW (preventive).
+  - **Suggested backlog grouping**: `@ConfigurationProperties consolidation refactor` (paired with REFACTOR-182)

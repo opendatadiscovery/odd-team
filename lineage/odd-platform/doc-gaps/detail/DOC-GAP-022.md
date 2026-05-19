@@ -1,0 +1,7 @@
+- **DOC-GAP-022**: Pagination `size` parameter is unbounded at spec + controller layers — undocumented runtime cap
+  - **Category**: drift
+  - **Surfaced by**: `concepts.yaml:invariants[Pagination unconstrained]`; multiple sidecars (alert, dataEntity, AlertController.getAllAlerts, ActivityController.getActivity).
+  - **Evidence**: spec encodes `size` as int32 with no min/max; `size=2147483647` permissible.
+  - **Proposed doc action**: Add "Pagination" section to `developer-guides/api-reference.md` noting unbounded `size` + conservative values guidance.
+  - **Cross-references**: DOC-GAP-018.
+  - **Severity rationale**: MEDIUM.

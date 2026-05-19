@@ -1,0 +1,10 @@
+- **DOC-GAP-103**: LOGIN_FORM and LDAP both produce `provider=null` in `USER_OWNER_MAPPING` — undocumented cross-mode user-identity bleed during auth-mode migrations
+  - **Category**: drift (operational migration caveat absent on the Authorization / User-owner-association doc page)
+  - **Surfaced by**: `getMyObjects.md:bugs_limitations_corner_cases[6]` + `getMyObjects.md:concepts.invariants[2]` + `getMyObjects.md:docs_link_semantic.doc_drift_findings[1]`
+  - **Evidence**:
+    - `AuthIdentityProviderImpl.java:24-35` — only `OAuth2AuthenticationToken` produces a non-null `provider`; LOGIN_FORM and LDAP both emit `null`.
+    - `ReactiveUserOwnerMappingRepositoryImpl.java:116-127` — `getConditions` clause matches `PROVIDER IS NULL` AND null-provider path — LOGIN_FORM `alice` and LDAP `alice` both resolve against the same `USER_OWNER_MAPPING` row.
+    - Operator switching `auth.type` from LOGIN_FORM to LDAP with overlapping usernames inherits prior LOGIN_FORM users' owner-mappings.
+  - **Proposed doc action**: Add migration-caveat admonition on `enable-security/authorization` (or user-owner-association deep-dive) explaining: (a) `OWNER_MAPPING.provider` null under LOGIN_FORM and LDAP; (b) switching auth.type mid-deployment with overlapping usernames may inadvertently re-use mappings; (c) recommended migration procedure includes auditing `USER_OWNER_MAPPING` for cross-mode collisions.
+  - **Cross-references**: DOC-GAP-046 / DOC-GAP-049 (OAuth2-doc gaps) — same family.
+  - **Severity rationale**: LOW — narrow operational case (only matters during auth-mode migration); behaviour not unsafe by default but surprising.

@@ -1,0 +1,10 @@
+- **REFACTOR-176** (NEW 2026-05-12D): No upper-bound check on `sendingMessagesRetryCount` — a misconfiguration of `Integer.MAX_VALUE` would cause `DataCollaborationMessageSenderJob.shouldRetry()` to effectively never give up; combined with the fixed 1-second `Thread.sleep(1000)` between retries (DataCollaborationMessageSenderJob.java:60), a single poisoned message can block the single-leader sender thread indefinitely. The validator catches `< 0` only
+  - **Category**: no-upper-bound
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md:bugs_limitations_corner_cases.[1]` (MEDIUM)
+  - **Statement**: `DataCollaborationProperties.java:14-20` validates only `sendingMessagesRetryCount >= 0`. An operator setting `Integer.MAX_VALUE` produces a retry budget of ~2.1 billion attempts × 1-second sleep = 67-year retry on a poisoned message. The single-leader sender thread (ADR-CANDIDATE-020) is blocked the entire duration; ALL Slack outbound delivery for the deployment halts on one poisoned message.
+  - **Evidence**: `DataCollaborationProperties.java:14-20` (validator) + `DataCollaborationMessageSenderJob.java:60` (Thread.sleep(1000)) + `DataCollaborationMessageSenderJob.java:87-91` (shouldRetry)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-020 (decoupled outbound delivery — single-leader) AMPLIFIES the gap.
+  - **Proposed remedy**: Add `@Max(100)` (via `@Validated` on the class) or extend the validator: `if (sendingMessagesRetryCount > 100) { throw new IllegalStateException("datacollaboration.sending-messages-retry-count must not exceed 100"); }`. Document the implicit cap on the live DataCollaboration page.
+  - **Severity rationale**: MEDIUM — operator-config-foot-gun + interacts with the single-leader sender design to produce a wide blast radius.
+  - **Suggested backlog grouping**: `DataCollaboration hardening`

@@ -1,0 +1,11 @@
+- **DOC-GAP-100**: `[[namespace:term]]` description auto-linking syntax is platform-specific, undocumented in operator-facing pages, and triple-confirmed-missing this session
+  - **Category**: missing-page (no operator-facing dictionary / glossary / business-glossary feature page exists; the description-side auto-linking syntax has no canonical home)
+  - **Surfaced by**: `upsertDataEntityInternalDescription.md:docs_link_semantic.doc_drift_findings[1]` + `upsertDataEntityInternalDescription.md:implicit_adrs[1]` + `addDataEntityTerm.md:docs_link_semantic.inferred_docs[1]`
+  - **Evidence**:
+    - `TermServiceImpl.java:67` — `Pattern.compile("\\[\\[([^:]*?):([^\\]]*?)\\]\\]")` — the regex constant encoding the syntax as a platform contract with description authors.
+    - `TermServiceImpl.java:198-207` — `handleDataEntityDescriptionTerms` invoked unconditionally from `DataEntityServiceImpl.upsertDescription:328`.
+    - WebFetch `/features/active-platform-features/dictionary` (2026-05-18) → 404.
+    - WebFetch `/features/active-platform-features/glossary` (2026-05-18) → 404 (404 page hint redirects to `developer-guides/api-reference/glossary.md`).
+    - WebFetch `/developer-guides/api-reference/glossary` (2026-05-18) → 200; documents `POST /api/terms` + link/unlink endpoints but cross-references "/features/data-glossary/business-glossary.md" (existence unverified this session).
+  - **Proposed doc action**: Either (a) create the operator-facing `/features/data-glossary/business-glossary.md` and document the `[[namespace:term]]` description syntax + relationship to manual term-linking + soft-deleted term behaviour + `is_description_link` PK-coexistence model. OR (b) audit the api-reference glossary page for dangling cross-references.
+  - **Severity rationale**: MEDIUM — operators writing descriptions cannot discover the syntax from any operator-facing page.

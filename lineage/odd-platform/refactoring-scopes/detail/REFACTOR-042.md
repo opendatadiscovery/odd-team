@@ -1,0 +1,10 @@
+- **REFACTOR-042**: No `@Timed` / Micrometer / structured-logging at DataEntityController boundary — 40 endpoints invisible to controller-layer observability
+  - **Category**: observability
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityController.md:bugs_limitations_corner_cases.[5]` (LOW)
+    - `concepts.yaml:entities[Data Entity].performance_aggregate.weaknesses.[4]`
+  - **Statement**: 40 endpoints, none observed at the controller boundary; latency regressions visible only via downstream service / DB metrics.
+  - **Evidence**: `DataEntityController.java:1-454` (no `@Timed`, no `MeterRegistry`)
+  - **Proposed remedy**: Add `@Timed` (Spring Boot Actuator + Micrometer auto-config) at class level on every controller. Adopt as a project-wide convention via a `Controller`-marker meta-annotation.
+  - **Severity rationale**: LOW — observability gap.
+  - **Suggested backlog grouping**: `Observability cleanup`

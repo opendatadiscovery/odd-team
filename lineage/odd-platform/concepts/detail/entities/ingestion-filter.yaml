@@ -1,0 +1,262 @@
+name: Ingestion Filter
+canonical_in_docs: true
+canonical_candidate: false
+description: 'Token-based authentication filter for `/ingestion/**` endpoints — independent
+  of the UI auth surface. `IngestionDataEntitiesFilter` is `@ConditionalOnProperty("auth.ingestion.filter.enabled",
+  havingValue=true)` and matches `POST /ingestion/entities` only. Sibling `/ingestion/*`
+  paths (including `/ingestion/alert/alertmanager` and `/ingestion/datasources`) are
+  NOT covered by THIS filter — `/ingestion/datasources` is covered by the unconditional
+  sibling `IngestionDataSourceFilter`; `/ingestion/alert/alertmanager` is covered
+  by NO filter and has no `@PreAuthorize`. main-concepts.md `Terms & Aliases` lists
+  ''Ingestion authentication filter'' as canonical alias. Default-off per `application.yml:48`
+  (`auth.ingestion.filter.enabled: false`) — bundled deployment ships with `/ingestion/entities`
+  unauthenticated.'
+axes_present:
+- controllers
+- openapi_tags
+- config_prefixes
+nodes:
+- odd-platform java IngestionDataEntitiesFilter config-key-consumer:auth.ingestion.filter.enabled@L20
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DirectoryController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController
+- odd-platform openapi tags openapi-tag:dataEntity
+- odd-platform openapi tags openapi-tag:alert
+- odd-platform java CollectorController controller-method:regenerateCollectorToken
+contributors:
+- 'IngestionDataEntitiesFilter@L20: CANONICAL sidecar — `@ConditionalOnProperty("auth.ingestion.filter.enabled",
+  havingValue="true")` is the bean-registration gate; path matcher hard-coded to `POST
+  /ingestion/entities` only (IngestionDataEntitiesFilter.java:28); token comparison
+  is plaintext `String.equals(...)` against the matched datasource''s TOKEN row (or
+  fallback to parent collector''s TOKEN row)'
+- 'Every UI/API surface sidecar: ingestion_filter_relevance: NO — UI/API surface,
+  not ingestion'
+- 'AlertManagerController: ingestion_filter_relevance: NO — different path (`/ingestion/alert/alertmanager`
+  is in `/ingestion/**` whitelist namespace but NOT covered by IngestionDataEntitiesFilter)'
+- 'regenerateCollectorToken: PRODUCER-side of the filter — endpoint mints/rotates
+  the credential that IngestionDataEntitiesFilter validates via plaintext `.equals(...)`
+  (cross-link: regenerateCollectorToken.implicit_adrs[3] establishes the plaintext-stored-shared-secret
+  stance; IngestionDataEntitiesFilter.java:56 carries it across to the verify-side)'
+evidence:
+- IngestionDataEntitiesFilter@L20.md:concepts.invariants.[0-4] (conditional registration;
+  default-false in YAML; whitelist on /ingestion/**; AccessDeniedException flow; .equals
+  comparison)
+- IngestionDataEntitiesFilter@L20.md:implicit_adrs.[0-3] (opt-in toggle; per-subclass
+  hard-coded matcher; plaintext-equality; mixed conditional vs unconditional subclasses)
+- AlertController.md:security.ingestion_filter_relevance
+- AlertManagerController.md:security.ingestion_filter_relevance (the asymmetry finding)
+- DataEntityController.md:security.ingestion_filter_relevance
+- DataEntityAttachmentController.md:security.ingestion_filter_relevance
+- regenerateCollectorToken.md:concepts.invariants.[3] (plaintext-equality check; producer-side
+  coupling)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - S2S
+  - DISABLED
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: true
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: 'When `auth.ingestion.filter.enabled=true`, callers possessing a valid
+      bearer token for ANY datasource can submit DataEntityList payloads for THAT
+      datasource (per-datasource shared secret). When `auth.ingestion.filter.enabled=false`
+      (the application.yml:48 default), ANY caller able to reach `POST /ingestion/entities`
+      can submit a payload without credentials. The toggle covers ONLY `/ingestion/entities`
+      — sibling `/ingestion/datasources` is covered by the UNCONDITIONAL `IngestionDataSourceFilter`,
+      and `/ingestion/alert/alertmanager` is covered by NO filter and has no @PreAuthorize.
+      ALSO: the SECOND ingestion-related auth filter — `S2sAuthenticationFilter` (gated
+      by `auth.s2s.enabled`, default `false`) — is composed ADDITIVELY into the LOGIN_FORM/OAUTH2/LDAP
+      SecurityWebFilterChain at `SecurityWebFiltersOrder.HTTP_BASIC` and grants ADMIN
+      role across the ENTIRE `/**` surface (not just `/ingestion/entities`) — see
+      Auth Mode security_aggregate for the privilege-escalation pattern. The two filters
+      use different config keys, different headers (`Authorization: Bearer` vs `X-API-Key`),
+      different scope (path-matched vs global), different token sources (per-datasource
+      DB rows vs a single shared `auth.s2s.token`). Operators conflate them.'
+  owner_scoping:
+    verdict: N/A
+    detail: Ingestion path is not owner-scoped. The filter authenticates the CALLER
+      (a collector / datasource via shared-secret token) but does not associate the
+      request with an Owner. Token = identity-of-collector, not identity-of-user.
+  strengths:
+  - Plaintext-equality is O(1) — bounded cost per ingestion request (no hashing round-trip;
+    the trade-off is documented under 'Collector Token' concept)
+  - Path matcher per subclass (`new PathPatternParserServerWebExchangeMatcher(...)`)
+    — each filter class names its own path; coupling is discoverable by file name
+    (IngestionDataEntitiesFilter ↔ /ingestion/entities, IngestionDataSourceFilter
+    ↔ /ingestion/datasources)
+  - Conditional registration is consistent with how every other optional-feature toggle
+    is wired (metrics.export.enabled, housekeeping.enabled, notifications.enabled,
+    datacollaboration.enabled — all carry explicit boolean defaults in YAML)
+  weaknesses:
+  - '**Default-off ingestion auth (HIGH severity, LSN-001-class)** — `application.yml:48`
+    ships `auth.ingestion.filter.enabled: false`; IngestionDataEntitiesFilter.java:20
+    has no `matchIfMissing=true`. Bundled deployment that operator runs unmodified
+    has `POST /ingestion/entities` reachable without any credential check. Live docs
+    (WebFetched 2026-05-10) do not surface this property. Combined with `SecurityConstants.WHITELIST_PATHS`
+    including `/ingestion/**` and every UI security config''s `permittedPaths` including
+    `/ingestion/entities`, an attacker reaching the platform''s HTTP port can plant
+    arbitrary data entities visible to all users. Cross-references the Auth Mode concept''s
+    triangulated insecure-default finding (IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[0])'
+  - '**Sibling endpoint coverage gap (HIGH severity)** — the property NAME `auth.ingestion.filter.enabled`
+    reads as ''ingestion is locked down'' but the toggle covers ONLY `/ingestion/entities`.
+    `POST /ingestion/alert/alertmanager` (AlertManagerController.java:21) has NO filter
+    coverage and NO `@PreAuthorize`; it is on WHITELIST_PATHS and every auth mode''s
+    permitted-paths. An attacker reaching the platform can POST arbitrary external-alert
+    payloads. (IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[3])'
+  - '**Plaintext-equality `.equals()` not constant-time (MEDIUM severity)** — IngestionDataEntitiesFilter.java:56
+    uses `String.equals(...)`, not `MessageDigest.isEqual(...)`. Timing-based discovery
+    is theoretically feasible on a low-latency network; the 40-char alphanumeric search
+    space makes the practical attack surface small but the principle is violated.
+    Same issue in sibling `S2sAuthenticationFilter`. (IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[1])'
+  - '**Body-buffered-before-auth (MEDIUM security / MEDIUM perf)** — filter reads
+    the FULL request body into memory via `collectList()` to extract `dataSourceOddrn`
+    BEFORE validating the token. An attacker submitting maximum-size 20MB payloads
+    with invalid tokens forces the platform to buffer + parse them before rejecting
+    — low-effort heap-pressure DoS vector. Auth-first ordering would shed bad traffic
+    earlier but would require knowing the dataSourceOddrn before body parse. (IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[4]
+    + performance.known_performance_gaps.[1])'
+  - '**No failed-auth log / metric (MEDIUM severity)** — no @Slf4j log call on either
+    ''Token is missed'' or ''Token is not correct'' paths. No Micrometer counter.
+    A security incident review of ''attacker probed ingestion endpoint with N invalid
+    tokens'' cannot be answered from application logs. (IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[2])'
+  - '**Hard-coded path matcher (MEDIUM future-regression risk)** — `/ingestion/entities`
+    exact match, no wildcard. A future addition of `POST /ingestion/entities/batch`
+    or `/v2` would bypass the filter silently with no compile-time signal. (IngestionDataEntitiesFilter@L20.md:bugs_limitations_corner_cases.[3])'
+  - '**SIBLING `S2sAuthenticationFilter` is the OTHER ingestion-credential filter
+    and it grants ADMIN globally when valid (HIGH severity)** — verified across 4
+    sidecars in batch 2026-05-12C: `S2sAuthenticationFilter.java:31-39` hard-codes
+    `User.withUsername("ADMIN")...roles("ADMIN")` on `X-API-Key` match. The filter
+    is added at `SecurityWebFiltersOrder.HTTP_BASIC` order in EACH of `LoginFormSecurityConfiguration.java:61-63`
+    + `OAuthSecurityConfiguration.java:108-110` + `LDAPSecurityConfiguration.java:149-151`,
+    and runs BEFORE the interactive-auth challenge. So `auth.s2s.enabled=true` + `auth.s2s.token=<value>`
+    produces a single shared ingestion-flavoured credential that grants ADMIN across
+    the ENTIRE `/**` UI/API surface. Under DISABLED, S2S is silently ignored (DisabledAuthSecurityConfiguration
+    does not read the property). Distinct from this `IngestionDataEntitiesFilter`
+    which is path-scoped to `/ingestion/entities` and per-datasource-token. Operators
+    reading `enable-security/authentication/s2s` see ''they can call any endpoint
+    that admins can call'' but the per-mode pages do NOT cross-link or warn — and
+    the property names `auth.ingestion.filter.enabled` vs `auth.s2s.enabled` are easily
+    conflated. (OAuthSecurityConfiguration@L71.md:security.known_security_gaps.[0]
+    + LDAPSecurityConfiguration@L51.md:bugs_limitations_corner_cases.[S2S admin everywhere]
+    + LoginFormSecurityConfiguration@L31.md:implicit_adrs.[2] + DisabledAuthSecurityConfiguration@L10.md:bugs_limitations_corner_cases.[2])'
+  cross_file_inconsistencies:
+  - 'Live docs site (`enable-security/authentication/s2s`) describes `S2sAuthenticationFilter`
+    (auth.s2s.enabled + auth.s2s.token + X-API-Key header) — a SEPARATE filter from
+    IngestionDataEntitiesFilter (auth.ingestion.filter.enabled + Authorization: Bearer
+    header). The two filters use different header conventions, different scope (global
+    vs path-matched), different config keys, different token sources (single shared
+    `auth.s2s.token` string vs per-datasource/per-collector DB rows). Operators conflate
+    them. (IngestionDataEntitiesFilter@L20.md:docs_link_semantic.doc_drift_findings.[1])'
+  - 'S2S COMPOSES (not mutex) with each interactive auth mode — verified across the
+    4 *SecurityConfiguration sidecars in batch 2026-05-12C. `IngestionDataEntitiesFilter`
+    is independent of both (it has its own toggle). The Ingestion-credential concept
+    therefore has TWO orthogonal surfaces: per-datasource path-scoped (this filter)
+    AND global-ADMIN-shared-secret (S2S).'
+  - regenerateCollectorToken sidecar establishes the plaintext-stored-shared-secret
+    stance at the WRITE side (TOKEN.value is raw `RandomStringUtils.randomAlphanumeric(40)`);
+    IngestionDataEntitiesFilter@L20 line 56 establishes the same at the VERIFY side
+    (`String.equals` against the in-DB value). Triangulated evidence of the plaintext-token
+    model spanning rotate + verify (cross-link to Collector Token concept).
+  contributing_files:
+  - IngestionDataEntitiesFilter@L20.md
+  - regenerateCollectorToken.md
+  - AlertManagerController.md
+  - DisabledAuthSecurityConfiguration@L10.md
+  - LoginFormSecurityConfiguration@L31.md
+  - OAuthSecurityConfiguration@L71.md
+  - LDAPSecurityConfiguration@L51.md
+  evidence:
+  - IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[0-4]
+  - IngestionDataEntitiesFilter@L20.md:bugs_limitations_corner_cases.[0,2,3,5,6,7]
+  - regenerateCollectorToken.md:concepts.invariants.[3] (plaintext-equality at the
+    verify side)
+  - OAuthSecurityConfiguration@L71.md:security.known_security_gaps.[0] (S2S grants
+    ADMIN across all /** HIGH)
+  - LDAPSecurityConfiguration@L51.md:bugs_limitations_corner_cases.[S2S admin everywhere]
+  - LoginFormSecurityConfiguration@L31.md:implicit_adrs.[2] (S2S additive across modes)
+  - DisabledAuthSecurityConfiguration@L10.md:bugs_limitations_corner_cases.[2] (S2S
+    silently ignored under DISABLED)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - 'Every `POST /ingestion/entities` request (when filter registered) incurs: 1 buffer-collect
+    of full body, 1 Jackson deserialisation to `DataEntityList` (duplicates the controller''s
+    later parse), 1 DB SELECT for the datasource, +1 fallback DB SELECT for the collector
+    if datasource.token() is null — 2-3 DB round-trips per ingestion request on the
+    happy path'
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-request, single-batch — but the filter reads the entire body before
+      deciding auth. No streaming validation path.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Filter is stateless. Instances scale horizontally. ConditionalOnProperty
+      resolved at startup — a property change requires restart.
+  strengths:
+  - Reactive Flux<DataBuffer> signature — non-blocking on server I/O thread
+  - Stateless — instances scale horizontally without coordination
+  weaknesses:
+  - '**Duplicate body parse** — filter materialises DataEntityList from bytes purely
+    to extract `dataSourceOddrn`, then re-emits the original buffers for the controller
+    to deserialise the same payload AGAIN. Per-request O(payload-size) Jackson parse
+    on a high-throughput ingestion path. A JsonPath-style streaming extraction would
+    avoid the duplicate parse. Severity MEDIUM (IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[0])'
+  - '**No token cache** — every ingestion request re-fetches the datasource (and possibly
+    the collector) from DB. A short-TTL Caffeine cache keyed by `dataSourceOddrn`
+    would eliminate per-request DB hits on steady-state ingestion streams. Would require
+    invalidation hook on `regenerateCollectorToken`. Severity MEDIUM (IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[2])'
+  - '**Per-filter ObjectMapper** — `AbstractIngestionFilter.java:32` instantiates
+    `new ObjectMapper()` per filter instance (instance field, not static). Two ObjectMappers
+    exist (one per concrete filter). Minor — Jackson ObjectMapper is documented thread-safe-after-configuration;
+    a shared static instance would be cheaper (IngestionDataEntitiesFilter@L20.md:performance.resource_allocation)'
+  - '**20MB body buffered before auth** — concurrent invalid-token requests at maximum
+    size produce N × 20MB heap pressure during the parse+reject window'
+  cross_file_inconsistencies:
+  - 'Sibling `IngestionDataSourceFilter` is registered UNCONDITIONALLY (no @ConditionalOnProperty)
+    while `IngestionDataEntitiesFilter` is conditional — the `auth.ingestion.filter.enabled`
+    toggle only suppresses the per-datasource data-entity filter; the collector-token-required
+    filter on `POST /ingestion/datasources` is always on. The implicit decision: ''you
+    must always be a known collector to register a datasource, but you may or may
+    not be a token-bearing collector to ingest data entities.'' (IngestionDataEntitiesFilter@L20.md:implicit_adrs.[3])'
+  contributing_files:
+  - IngestionDataEntitiesFilter@L20.md
+  evidence:
+  - IngestionDataEntitiesFilter@L20.md:performance.hot_paths
+  - IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[0,1,2]
+notes: 'Batch 2026-05-10B promotes IngestionDataEntitiesFilter from a
+
+  sidecar-referenced concept (every controller said "this is not me")
+
+  to a CANONICAL sidecar with primary evidence. The concept now carries
+
+  its own security_aggregate + performance_aggregate. The plaintext-
+
+  equality token model is corroborated by batch A''s regenerateCollectorToken
+
+  sidecar — the catalog has cross-side evidence that the token model is
+
+  plaintext at WRITE (rotate) AND plaintext at VERIFY (ingestion-filter
+
+  equals-check).
+
+
+  Batch 2026-05-12C surfaces the SIBLING auth-credential filter
+
+  (`S2sAuthenticationFilter`) as a separate-but-easily-conflated
+
+  concern: when composed, X-API-Key grants ADMIN across the entire
+
+  `/**` surface, not just `/ingestion/**`. The 4-sidecar triangulation
+
+  (DisabledAuth + LoginForm + OAuth + LDAP) makes the per-mode
+
+  composition behaviour citable rather than inferred. Surfaced as a
+
+  HIGH-severity weakness in the security_aggregate above.
+
+  '

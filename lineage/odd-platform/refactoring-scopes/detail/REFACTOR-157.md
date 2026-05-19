@@ -1,0 +1,9 @@
+- **REFACTOR-157** (NEW 2026-05-12D): Provider-required-scope coupling not enforced — GitHub `read:org` and Google `openid` are required for admin-group lookup / OIDC flow but unvalidated at boot. GitHub operator omitting `read:org` from `scope` boots successfully and discovers the admin-group lookup fails only at first admin login
+  - **Category**: scope-required-unvalidated
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md:bugs_limitations_corner_cases.[6]` (LOW)
+  - **Statement**: `ODDOAuth2Properties.OAuth2Provider.scope: Set<String>` (line 37). OAuth2/OIDC docs and Spring's OAuth2 client both require specific scopes per provider. None enforced at boot. GitHub-admin operator omits `read:org` → admin-group lookup silently returns no groups → admin user assigned USER role only.
+  - **Evidence**: `ODDOAuth2Properties.java:37` + `GithubUserHandler.java:78-86` (requires `read:org`)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-048 (narrow-validator scope) defers this; ADR-CANDIDATE-035 (OAuth fail-closed) AMPLIFIES — silent USER assignment instead of failing.
+  - **Proposed remedy**: Extend the validator with provider-conditional scope checks: `if (Provider.GOOGLE.name().equalsIgnoreCase(provider.getProvider()) && !provider.getScope().contains("openid")) throw new IllegalStateException("Google OIDC requires scope to include 'openid'"); if (Provider.GITHUB.name().equalsIgnoreCase(provider.getProvider()) && provider.getAdminGroups() != null && !provider.getScope().contains("read:org")) throw new IllegalStateException("GitHub admin-group lookup requires scope to include 'read:org'")`.
+  - **Severity rationale**: LOW — provider-specific operator-trap; the failure is invisible at boot.
+  - **Suggested backlog grouping**: `OAuth2 hardening sprint`

@@ -1,0 +1,9 @@
+- **REFACTOR-005**: `GenAIProperties` has no `@Validated` / `@NotBlank` / `@URL` / `@Min(1)` — Spring Boot's `@ConfigurationProperties` validation is not engaged
+  - **Category**: missing-validation
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_config_properties__config-properties-class__GenAIProperties.md:bugs_limitations_corner_cases.[2]` (MEDIUM)
+  - **Statement**: `GenAIProperties.java:1-12` carries only `@ConfigurationProperties` and `@Data`; no `@Validated`, no `jakarta.validation.constraints.*` imports. The platform misses Spring's startup-time validation hook. The fail-fast happens at first request rather than at boot — even though boot-time fail-fast would be more operator-friendly.
+  - **Evidence**: `GenAIProperties.java:1-12`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-004 (disabled-by-default + fail-fast-on-misconfig) is the architectural intent; this gap means fail-fast happens later than it could.
+  - **Proposed remedy**: Add `@Validated` at class level; `@NotBlank @URL` on `url`; `@Min(1)` on `requestTimeout`. Add `spring-boot-starter-validation` dependency if not already present.
+  - **Severity rationale**: MEDIUM — defense-in-depth for ADR-CANDIDATE-004's fail-fast posture.
+  - **Suggested backlog grouping**: `GenAI hardening sprint`

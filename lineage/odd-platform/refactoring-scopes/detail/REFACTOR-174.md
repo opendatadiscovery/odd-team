@@ -1,0 +1,9 @@
+- **REFACTOR-174** (NEW 2026-05-12D): No `Reply-To`, `Cc`, `Bcc`, custom headers, or DKIM-signing surface. Operators wanting `Reply-To: alerts@team.example.com` so recipients can reply to the team rather than the bot sender cannot configure this. The freemarker template controls body only
+  - **Category**: no-reply-headers
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__EmailSenderProperties.md:bugs_limitations_corner_cases.[13]` (LOW)
+  - **Statement**: `EmailNotificationSender.java:51,55` calls only `setSubject()` and `setTo()` on `MimeMessageHelper`. There are no `setReplyTo` / `addCc` / `addBcc` calls and no API for custom headers / DKIM. Operators wanting basic email-routing features cannot configure them.
+  - **Evidence**: `EmailNotificationSender.java:51,55` (only `setSubject` + `setTo`)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Add `replyTo: String` + `cc: List<String>` + `bcc: List<String>` to `EmailSenderProperties` or a new `EmailHeaders` nested class. Wire through to `MimeMessageHelper`. DKIM signing is more substantial (likely defer).
+  - **Severity rationale**: LOW — feature gap; not a defect.
+  - **Suggested backlog grouping**: `Notifications hardening` (long-tail enhancement)

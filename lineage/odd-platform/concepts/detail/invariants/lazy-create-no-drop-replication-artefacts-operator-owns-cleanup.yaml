@@ -1,0 +1,53 @@
+name: Lazy-create-no-drop replication artefacts (operator owns cleanup)
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Cross-cutting invariant for Postgres-resident server-side artefacts
+  created on-demand at runtime: partitions, replication slots, publications. ODD Platform
+  creates them lazily on first use if absent (idempotent `CREATE IF NOT EXISTS` /
+  existence-check + conditional create), but NEVER drops them on shutdown / uninstall
+  / config-rename. Operator owns cleanup. Triangulated across 2 sidecars in 2026-05-12C:
+  (a) `ActivityTablePartitionManager` partitions (batch 2026-05-10B) — `PartitionService.dropPartition`
+  + `getEmptyPastPartitions` exist on the service interface but are NEVER invoked
+  for the activity table; activity table grows monotonically. (b) `NotificationsProperties`
+  replication slot + publication — `NotificationSubscriber.java:99-153` exists-check
+  + conditional CREATE; live doc explicitly tells operators ''ODD Platform doesn''t
+  clean up replication slot it has created.'' Sibling `MessageTablePartitionManager`
+  (DataCollaboration) extends the partition pattern. Failure mode: a rename or uninstall
+  without manual cleanup leaks Postgres-resident state (disk growth or orphaned WAL
+  retention) silently.'
+axes_present:
+- config_prefixes
+nodes:
+- odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+contributors:
+- 'ActivityTablePartitionManager@L11: `createPartitionsIfNotExists` only; PartitionService.dropPartition
+  / getEmptyPastPartitions never invoked for the activity table; sibling MessageTablePartitionManager
+  extends pattern to DataCollaboration messages'
+- 'NotificationsProperties: NotificationSubscriber.java:99-122 exists-check + lazy
+  CREATE on replication slot; NotificationSubscriber.java:128-153 same pattern for
+  publication; live doc quote ''ODD Platform doesn''t clean up replication slot it
+  has created.'''
+evidence:
+- ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0] (no retention/DROP
+  — monotonic growth)
+- ActivityTablePartitionManager@L11.md:concepts.invariants.[no DROP path]
+- NotificationsProperties.md:implicit_adrs.[4] (lazy-create-no-drop — operator owns
+  cleanup)
+- NotificationsProperties.md:bugs_limitations_corner_cases.[12] (replication-slot
+  orphan risk on rename)
+notes: 'Surface as a cross-cutting invariant for future enrichments — any new
+
+  Postgres-resident server-side artefact (a new publication, a new
+
+  logical-replication subscriber, a new range-partitioned table) is
+
+  likely to inherit this same shape. The maintainer may eventually want
+
+  to formalise this as a code-side stance: "lazy-create-no-drop is the
+
+  ODD convention; document it in enable-deployment + provide a manual
+
+  cleanup checklist for uninstall."
+
+  '

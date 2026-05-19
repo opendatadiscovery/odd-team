@@ -1,0 +1,9 @@
+- **REFACTOR-140** (NEW 2026-05-12C): Email `password` bound as a plain `String` field on `EmailSenderProperties` with no `@Sensitive` / `@Hidden` / masking annotation. Spring's `/actuator/env` default masks `password`-by-name (partial mitigation), but ODD does not assert the masking explicitly
+  - **Category**: credential-leak (mild)
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[5]` (severity LOW)
+  - **Statement**: `EmailSenderProperties.java:7` declares `private String password;`. Spring's default sanitisation list includes `password` so Spring masks the value in `/actuator/env`, but ODD does not assert this with an annotation.
+  - **Evidence**: `EmailSenderProperties.java:7`
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Add `@Sensitive` (custom annotation) or document the reliance on Spring's default sanitisation. Combine with REFACTOR-117 (LDAP password actuator gap).
+  - **Severity rationale**: LOW — partially mitigated by Spring default; same-class as the broader actuator-exposure issue.
+  - **Suggested backlog grouping**: `Notifications hardening`

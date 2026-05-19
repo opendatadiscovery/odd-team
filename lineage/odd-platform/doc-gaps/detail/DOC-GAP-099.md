@@ -1,0 +1,10 @@
+- **DOC-GAP-099**: `getMyObjectsWithUpstream` / `getMyObjectsWithDownstream` OpenAPI summary literally describes the wrong semantic — claims response is owned-with-lineage; actual response is NON-owned entities reachable from owned set
+  - **Category**: drift (OpenAPI contract drift; spec summary is the inverse of implementation)
+  - **Surfaced by**: `getMyObjects.md:docs_link_semantic.doc_drift_findings[2]` + `getMyObjects.md:implicit_adrs[3]` + `getMyObjects.md:bugs_limitations_corner_cases[5]`
+  - **Evidence**:
+    - `openapi.yaml:842-844` — summary for `getMyObjectsWithUpstream`: "Returns list of data entities owned by current user with upstream dependencies"
+    - `openapi.yaml:860-862` — parallel for `getMyObjectsWithDownstream`.
+    - `DataEntityRelationsServiceImpl.java:25-31` — actual flow: (a) fetch user's owned entities (anchor), (b) traverse lineage one hop, (c) filter to entities NOT in owned set (`Predicate.not(oddrns::contains)` line 37) — response is entities the user does NOT own but ARE reachable from entities they DO own.
+    - Lineage variants use different code path than `getMyObjects`: NO direct SQL owner-filter at response layer; owner-scoping implicit via anchor-set correctness.
+  - **Proposed doc action**: (a) Rewrite OpenAPI summary on both methods to: "Returns data entities reachable in one lineage hop from entities owned by the current user (excludes owned entities themselves)"; (b) document the security-relevant consequence: response is data-ecosystem context, NOT owned set; (c) add developer-guide note that owner-scoping for these two methods is anchor-set correctness (not a downstream SQL filter).
+  - **Severity rationale**: HIGH — security-impact gap. Operator believing they're returning owner-scoped results (per OpenAPI summary) might publish endpoints in multi-tenant deployment expecting tenant isolation; instead returning cross-tenant lineage neighbours. The summary is the INVERSE of behaviour.

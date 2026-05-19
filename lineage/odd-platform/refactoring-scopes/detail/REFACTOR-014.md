@@ -1,0 +1,9 @@
+- **REFACTOR-014**: OpenAPI spec for GenAI declares only `200 OK` — `400` and `500` failure modes are emitted by the controller advice but not in the contract
+  - **Category**: missing-validation (contract-completeness)
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__GenAIController.md:bugs_limitations_corner_cases.[0]` (MEDIUM)
+  - **Statement**: `openapi.yaml:4205-4211`'s `responses:` block has only `'200'`; the actual feature emits `BadUserRequestException` → HTTP 400 (when `genai.enabled=false`) and `GenAIException` → HTTP 500 (timeout / upstream error) via `ControllerAdvice.java:24-27, 55-59`. Consumers reading the generated client are blind to both failure modes.
+  - **Evidence**: `openapi.yaml:4205-4211` + `GenAIServiceImpl.java:38, 49-51` + `ControllerAdvice.java:24-27, 55-59`
+  - **Existing-ADR-or-implied-prescription**: None directly. ADR-CANDIDATE-001 (controllers as thin OpenAPI delegates) creates the expectation that the spec is the source of truth; this scope is a deviation from that expectation.
+  - **Proposed remedy**: Update `openapi.yaml`'s GenAI operation to declare `400` and `500` response shapes (using existing problem-shape definitions if present, or adding them).
+  - **Severity rationale**: MEDIUM — affects every API consumer.
+  - **Suggested backlog grouping**: `OpenAPI contract hardening`

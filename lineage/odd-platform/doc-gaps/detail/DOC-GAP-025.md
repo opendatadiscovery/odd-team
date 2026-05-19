@@ -1,0 +1,15 @@
+- **DOC-GAP-025**: Activity Feed exposes cross-owner audit trail (`old_state`/`new_state` diffs) to any authenticated user — undocumented
+  - **Category**: drift
+  - **Surfaced by**:
+    - `concepts.yaml:entities[Data Entity].security_aggregate.weaknesses.[2,4]`
+    - `concepts.yaml:entities[Activity Feed]`
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:security.known_security_gaps.[0]` + `:security.data_exposure.[0,1]` + `:docs_link_semantic.doc_drift_findings.[1]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed` 2026-05-10 status 200 — page lists seven filter facets and 20+ event types. Does NOT mention: visibility / authorization, who can see the feed, the `type` parameter (MY_OBJECTS / UPSTREAM / DOWNSTREAM / ALL), pagination via `lastEventId`, or any access-control statement.
+    - getActivity.md verifies: `/api/activity` and `/api/activity/counts` carry no `@PreAuthorize`, no SecurityRule, fall through to `pathMatchers('/**').authenticated()`. The default `type=null` and `type=ALL` paths both route to `fetchAllActivities` which has no owner predicate.
+    - Activity payload includes `created_by` (actor identity) and `old_state`/`new_state` ActivityState diffs covering description free-text, business_name edits, internal_name edits on dataset fields, custom-metadata key/value, term/tag assignments, ownership transitions, alert halt-config changes.
+  - **Proposed doc action**: Add a "Visibility scope" admonition to `features/active-platform-features/activity-feed.md`: "The global Activity feed (`GET /api/activity`) is gated by authentication only; any authenticated user can read **cross-owner** audit-trail events including actor identity, full old-state/new-state diffs. The `type=MY_OBJECTS` filter respects the caller's owner association; the default and `type=ALL` views do not. Under `auth.type=DISABLED` the feed is anonymously reachable."
+  - **Cross-references**:
+    - DOC-GAP-002, DOC-GAP-004, DOC-GAP-008 — the auth-mode-only-on-reads family
+    - DOC-GAP-029 (Activity api-reference page missing) + DOC-GAP-030 (Activity Feed page omits type/visibility/pagination)
+  - **Severity rationale**: HIGH — Activity Feed is the platform's audit-trail surface; cross-owner exposure of who-changed-what diffs is GDPR/SOX-relevant in regulated environments.

@@ -1,0 +1,9 @@
+- **REFACTOR-211** (NEW 2026-05-12F): `view_count` hot-key UPDATE under read load — write-contention on the platform's most-read entities scales as O(reads); the hot row becomes a write-throughput bottleneck on what is supposed to be a read-only path
+  - **Category**: lock-window-race (performance)
+  - **Surfaced by**: `odd-platform__java__DataEntityController__controller-method__getDataEntityDetails.md:bugs_limitations_corner_cases.[4]`
+  - **Statement**: Every page-view increments `data_entity.view_count` for the same row; for a high-traffic deployment with a popular entity (e.g. an ML model that hundreds of users view daily), the row sees row-level write-locks proportional to the read rate. Postgres handles this fine at small scale; at scale, the hot row becomes a write-throughput bottleneck on what is supposed to be a read-only path. There is no batching, no in-memory aggregation, no eventually-consistent counter.
+  - **Evidence**: `ReactiveDataEntityRepositoryImpl.java:173-180` (synchronous per-call UPDATE with `returningResult`) + `DataEntityServiceImpl.java:488-495` (one increment per request, no debounce)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-054 (read-as-write view-count) IS the architectural design; the gap is the perf cost the design does not defend.
+  - **Proposed remedy**: Move view-count to an eventually-consistent counter — a dedicated `data_entity_view_count_delta` table that accumulates deltas + a periodic flush job that aggregates into `data_entity.view_count`. Read paths return the snapshot value from `data_entity.view_count`; writes go to the delta table. This decouples the read transaction from the write contention while preserving the precise count semantic (eventual, not instantaneous).
+  - **Severity rationale**: MEDIUM — perf bottleneck on the platform's most-read endpoint.
+  - **Suggested backlog grouping**: `Data Entity centerpiece-read hardening`

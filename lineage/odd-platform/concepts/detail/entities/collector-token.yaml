@@ -1,0 +1,102 @@
+name: Collector Token
+canonical_in_docs: false
+canonical_candidate: true
+description: '40-character alphanumeric shared-secret bearer token used by an ODD
+  collector to authenticate `POST /ingestion/entities` requests against the S2S `IngestionDataEntitiesFilter`.
+  Stored in plaintext in the TOKEN table; compared via literal `.equals(...)` (no
+  hashing layer). Rotation is an in-place UPDATE; no overlap window between old and
+  new (regenerateCollectorToken sidecar `concepts.invariants.[1-3]`). vocabulary_status:
+  codebase-anchored, doc-side-partially-covered (main-concepts.md mentions S2S authentication
+  but not the token-rotation contract; live `/permissions` names COLLECTOR_TOKEN_REGENERATE
+  Permission).'
+vocabulary_status: codebase-anchored, doc-side-partially-covered
+axes_present:
+- controllers
+nodes:
+- odd-platform java CollectorController controller-method:regenerateCollectorToken
+contributors:
+- 'regenerateCollectorToken: entities[Token (40-char alphanumeric shared secret),
+  TokenPojo]; invariants[in-place UPDATE no overlap; plaintext in DB; plaintext in
+  response; .equals-based filter check]'
+evidence:
+- regenerateCollectorToken.md:concepts.entities.[Token]
+- regenerateCollectorToken.md:concepts.invariants.[1,2,3]
+- regenerateCollectorToken.md:implicit_adrs.[1,2,3]
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - S2S
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: true
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: S2S filter consumes the token via plaintext-equality at IngestionDataEntitiesFilter.java:55-58.
+      Token rotation gated by COLLECTOR_TOKEN_REGENERATE (MANAGEMENT). The token IS
+      the auth credential for ingestion — not authorized BY something, but authorizing
+      OF something.
+  owner_scoping:
+    verdict: N/A
+    detail: Token is a global infrastructure credential, not data-scoped.
+  strengths:
+  - Token is opaque random string used over TLS-protected transport (the only sanctioned
+    ingress)
+  - 40-char alphanumeric ≈ 238 bits of input space — long enough that brute-force
+    is infeasible (assuming RNG quality)
+  weaknesses:
+  - RandomStringUtils.randomAlphanumeric(40) uses ThreadLocalRandom (non-CSPRNG) —
+    actual entropy depends on RNG quality, not just length. Should use `.secure().nextAlphanumeric(40)`
+    (regenerateCollectorToken.md:security.known_security_gaps.[1] HIGH)
+  - Stored in plaintext in TOKEN table — DB compromise carries credentials in the
+    clear (regenerateCollectorToken.md:security.known_security_gaps.[3] HIGH)
+  - Plaintext returned in response body on rotation — any middleware on the response
+    path records the credential (regenerateCollectorToken.md:security.known_security_gaps.[0]
+    MEDIUM)
+  - No rotation grace period — in-place UPDATE invalidates the old token immediately
+    (regenerateCollectorToken.md:security.known_security_gaps.[5] HIGH operational)
+  - No audit log — historical 'who rotated when' unrecoverable; updated_by column
+    overwrites on each rotation (regenerateCollectorToken.md:security.known_security_gaps.[2]
+    HIGH)
+  cross_file_inconsistencies: []
+  contributing_files:
+  - regenerateCollectorToken.md
+  evidence:
+  - regenerateCollectorToken.md:security.known_security_gaps.[1,3,0,5,2]
+  - regenerateCollectorToken.md:concepts.invariants.[1-3]
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+  - Token validation on every /ingestion/entities POST — IngestionDataEntitiesFilter
+    does literal `.equals(...)` against in-DB token value (regenerateCollectorToken.md:concepts.invariants.[3])
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: One token per collector; no bulk-token API. The expensive throughput surface
+      is /ingestion/entities itself, not token operations.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Token validation is a single DB SELECT per ingestion request. No locking.
+      Stateless across replicas.
+  strengths:
+  - Plaintext-equality check is O(1) — bounded cost per ingestion request
+  weaknesses:
+  - 'Per-ingestion-request DB hit for token validation — no in-memory cache observed
+    (likely intentional given the rotation contract: in-place UPDATE invalidates immediately)'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - regenerateCollectorToken.md
+  evidence:
+  - regenerateCollectorToken.md:concepts.invariants.[3]
+notes: 'Surface as canonicalisation candidate. main-concepts.md names S2S auth
+
+  mode and the Ingestion authentication filter, but does not name "Collector
+
+  Token" or "shared-secret rotation" as a first-class concept. The
+
+  operational mechanics (in-place UPDATE, plaintext-in-response, no grace
+
+  window) live entirely in the code; a `Token Rotation` section under
+
+  enable-security would close the loop.
+
+  '

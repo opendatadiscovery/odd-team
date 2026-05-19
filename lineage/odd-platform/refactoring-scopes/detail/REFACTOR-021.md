@@ -1,0 +1,8 @@
+- **REFACTOR-021**: No controller-level smoke / `@WebFluxTest` exists for AlertController
+  - **Category**: missing-test
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertController.md:bugs_limitations_corner_cases.[0]` (MEDIUM); STRENGTHENED 2026-05-10A: `odd-platform__java__AlertController__controller-method__getAllAlerts.md:bugs_limitations_corner_cases.[3]` (MEDIUM — the method-level sidecar confirms zero matches via `find`).
+  - **Statement**: A breaking change to the OpenAPI generator template, the WebFlux configuration, or the Jackson serialiser config could silently break all five `/api/alerts*` endpoints with the build still passing.
+  - **Evidence**: `find odd-platform -path '*test*' -name 'AlertController*'` returned no matches
+  - **Proposed remedy**: Add `@WebFluxTest(AlertController.class)` smoke per endpoint asserting `200/204` against a stubbed service; add a `403` assertion for `SECURITY_RULES`-gated paths under an unauthorized caller.
+  - **Severity rationale**: MEDIUM — process leverage; catches REFACTOR-008-class bugs.
+  - **Suggested backlog grouping**: `Controller test bootstrap`

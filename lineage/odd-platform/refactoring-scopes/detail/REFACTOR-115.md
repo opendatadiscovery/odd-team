@@ -1,0 +1,9 @@
+- **REFACTOR-115** (NEW 2026-05-12C): `ODDOAuth2Properties.OAuth2Provider` lacks `azureTenantId` field — `application.yml:128-156` commented-out Azure example references `${auth.oauth2.client.azure.azure-tenant-id}` interpolation, which Spring would fail to bind if uncommented as-is. Docs YAML not deployable verbatim
+  - **Category**: doc-code-drift
+  - **Surfaced by**: `odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md:bugs_limitations_corner_cases.[7]` (severity MEDIUM)
+  - **Statement**: `ODDOAuth2Properties.OAuth2Provider` (lines 32-52) has no `azureTenantId` field. The commented Azure example in `application.yml:128-156` references `${auth.oauth2.client.azure.azure-tenant-id}` interpolation. An operator uncommenting the example AS-IS hits a Spring bind failure at startup. Workaround: inline tenant ID into `issuer-uri` directly.
+  - **Evidence**: `ODDOAuth2Properties.java:32-52` (no `azureTenantId`) + `application.yml:128-156` (commented Azure example) + WebFetch of `/oauth2-oidc` on 2026-05-12
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Either (a) add `azureTenantId` field to `OAuth2Provider`; or (b) update `application.yml:128-156` example to use `issuer-uri: https://login.microsoftonline.com/{tenantId}/v2.0` directly instead of `${...azure-tenant-id}` interpolation. Update the live docs YAML to match.
+  - **Severity rationale**: MEDIUM — operator-trap; docs example is not deployable verbatim.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening` (paired with DOC-NNN)

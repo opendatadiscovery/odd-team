@@ -1,0 +1,183 @@
+name: Alert
+canonical_in_docs: true
+canonical_candidate: false
+description: 'Platform-detected and externally-injected issues against catalog entities,
+  including failed jobs, data-quality test failures, schema incompatibilities, and
+  distribution anomalies. Three visibility scopes: All / My Objects (owner-linked)
+  / Dependents (downstream-by-lineage). Alert lifecycle: OPEN (Platform creates) →
+  RESOLVED (Operator) / RESOLVED_AUTOMATICALLY (Platform when condition clears) (AlertController
+  + alert openapi-tag sidecars).'
+axes_present:
+- controllers
+- openapi_tags
+- ui_routes
+nodes:
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertController
+- odd-platform openapi tags openapi-tag:alert
+- odd-platform ts routes route:alerts
+- odd-platform java AlertController controller-method:changeAlertStatus
+- odd-platform java AlertController controller-method:getAllAlerts
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController
+contributors:
+- 'AlertController: entities[Alert, AlertList, AlertStatusFormData, AlertTotals]'
+- 'openapi-tag:alert: entities[Alert, AlertList, AlertStatus, AlertStatusFormData,
+  AlertTotals]'
+- 'alerts route: entities[Alert, AlertTab (all/my/dependents)]'
+- 'AlertController.changeAlertStatus: entities[Alert, AlertStatus, AlertStatusFormData]'
+- 'AlertController.getAllAlerts: entities[AlertList, Page]; operations[list-open-alerts-platform-wide
+  (paged, no filter)]'
+- 'DataEntityController: getDataEntityAlerts / getDataEntityAlertsCounts / getAlertConfig
+  / updateAlertConfig (per-entity alert listings + halt config)'
+evidence:
+- AlertController.md:concepts.entities.[Alert]
+- openapi-tag-alert.md:concepts.entities.[Alert]
+- alerts-route.md:concepts.entities.[Alert]
+- changeAlertStatus.md:concepts.entities.[Alert]
+- getAllAlerts.md:concepts.entities.[AlertList, Page]
+- DataEntityController.md:concepts.operations.data-entity-alerts-config-listings
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: 'All 5 AlertController endpoints carry no @PreAuthorize and no SECURITY_RULES
+      entry — fall through to .authenticated() only. getAllAlerts method-level sidecar
+      verified absence: `SecurityConstants.java:98-295` contains `PUT /api/alerts/{alert_id}/status`
+      rule but NO entry for `GET /api/alerts`. Per-entity alert listings on DataEntityController
+      also lack permission gates. Only `updateAlertConfig` is gated (`DATA_ENTITY_ALERT_CONFIG_UPDATE`
+      per SecurityConstants.java:304-307). The registered `changeAlertStatus` rule
+      pairs `ALERT` resource type with `DATASET_FIELD_ADD_TERM` permission constant
+      (SecurityConstants.java:295-296) — a cross-domain enum mismatch is itself a
+      finding (getAllAlerts.md:security.known_security_gaps.[1] severity MEDIUM).'
+  owner_scoping:
+    verdict: MIXED
+    detail: '`getAllAlerts` returns all alerts platform-wide via flat `WHERE STATUS
+      = OPEN` jOOQ query with no owner join (ReactiveAlertRepositoryImpl.java:142-157)
+      — admin-path-without-admin-gate. `getAssociatedUserAlerts` (`/my`) and `getDependentEntitiesAlerts`
+      (`/dependents`) are owner-scoped at runtime via reactor Context principal resolution
+      — correctness delegated to AlertService.listByOwner / listDependentObjectsAlerts.
+      `changeAlertStatus` does NOT check the caller owns the alert or its referenced
+      data entity (BYPASSES at the mutation path). Live alerting doc recommends getAllAlerts
+      tab for ''stewards and admins watching the full alert surface'' — doc-code audience
+      mismatch (getAllAlerts.md:docs_link_semantic.doc_drift_findings.[0]).'
+  strengths:
+  - 'Service-layer reopen-guard: `AlertServiceImpl.updateStatus` rejects manual reopen
+    with 400 if open alert of same type already exists for the entity (AlertServiceImpl.java:124-131)'
+  - Closed enum AlertStatus (OPEN / RESOLVED / RESOLVED_AUTOMATICALLY) — clients cannot
+    introduce new states without OpenAPI change
+  - '@ActivityLog AOP records ALERT_STATUS_UPDATED on every service-mediated mutation
+    (AlertServiceImpl.java:112-113)'
+  weaknesses:
+  - '`getAllAlerts` returns the entire platform''s alert stream to ANY authenticated
+    user — no admin gate, no role check (severity HIGH per AlertController + getAllAlerts.md:security.known_security_gaps.[0];
+    rediscovered REFACTOR-024 per orchestrator note)'
+  - '`changeAlertStatus` accepts mutation with no permission gate — any authenticated
+    user can resolve/reopen any alert by id'
+  - Reopen-conflict guard is read-then-write without serialisable fence — two concurrent
+    OPEN requests for sibling alerts on same entity can both pass the guard (severity
+    MEDIUM)
+  - Owner-scoped `/my` / `/dependents` rely on reactor Context propagation — a misordered
+    WebFilter could silently degrade to empty or unscoped output
+  - 'Spec declares NO security: block on alert-tagged operations and NO error-response
+    contracts (only `200`); consumers reading the spec cannot derive auth requirements'
+  - Under auth.type=DISABLED, anonymous read of every alert AND anonymous mutation
+    of any alert
+  - Pagination unbounded at all three layers (controller, AlertApi interface, repository)
+    — `size=1_000_000` produces unbounded jOOQ query (getAllAlerts.md:bugs_limitations_corner_cases.[1]
+    severity MEDIUM)
+  - 'Asymmetry between sibling endpoints: `PUT /api/alerts/{alert_id}/status` IS in
+    SECURITY_RULES; `GET /api/alerts` is absent — no defending comment or annotation
+    (getAllAlerts.md:security.known_security_gaps.[1])'
+  cross_file_inconsistencies:
+  - AlertController per-class mutations are ungated; DataEntityController.updateAlertConfig
+    (the per-entity halt-config mutation) IS gated by DATA_ENTITY_ALERT_CONFIG_UPDATE
+    — same conceptual feature, two different gating models
+  - 'Spec-tag:alert reports `security: []` at spec; AlertController reports auth-mode-only
+    at runtime — same conclusion (no permission gate) but reached via different layers'
+  - Live alerting doc names the All-tab audience as 'stewards and admins'; code enforces
+    'any authenticated user' — doc-code audience divergence (getAllAlerts.md:docs_link_semantic.doc_drift_findings.[0])
+  contributing_files:
+  - AlertController.md
+  - openapi-tag-alert.md
+  - changeAlertStatus.md
+  - getAllAlerts.md
+  - alerts-route.md
+  - DataEntityController.md
+  evidence:
+  - AlertController.md:security.known_security_gaps.[1] (getAllAlerts severity HIGH)
+  - AlertController.md:security.known_security_gaps.[2] (changeAlertStatus ungated)
+  - getAllAlerts.md:security.known_security_gaps.[0] (no SecurityRule entry, no owner
+    predicate, doc-code audience drift)
+  - getAllAlerts.md:security.known_security_gaps.[1] (asymmetry with PUT status rule
+    + cross-domain enum mismatch)
+  - openapi-tag-alert.md:security.known_security_gaps.[0] (no spec-level security)
+  - changeAlertStatus.md:security.known_security_gaps.[0] (no @PreAuthorize, severity
+    HIGH)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - GET /api/alerts (`getAllAlerts`) — paged list across global alert population,
+    primary 'All' view, fired on every alerts UI tab activation alongside /api/alerts/totals;
+    downstream is paged SELECT FROM alert WHERE status=OPEN with no owner join via
+    createAlertJoinQuery (getAllAlerts.md:performance.hot_paths.[0])
+  - GET /api/alerts/totals (`getAlertTotals`) — three count queries on every alerts-page
+    render to populate tab badges — AlertController
+  - PUT /api/alerts/{alert_id}/status (`changeAlertStatus`) — single-item mutation,
+    plus @ActivityLog AOP fires synchronous activity-row INSERT every call — AlertController.changeAlertStatus
+  - POST /ingestion/alert/alertmanager — webhook from Prometheus AlertManager, can
+    fire multiple-times-per-minute on noisy systems (group_interval default 5m) —
+    AlertManagerController (separate concept; cross-references)
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: No batch resolve / batch reopen / batch list endpoint. A consumer needing
+      to resolve 100 alerts must issue 100 sequential PUT calls. Pagination is offset-based
+      only (no cursor) on the three list endpoints.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: Pagination params (page/size) declared but unconstrained at controller
+      (no @Max). Spec carries no `maximum` on `SizeParam`; spec-conformant `size=2147483647`
+      is permissible. No streaming, no SSE. OFFSET=(page-1)*size means deep-pagination
+      cost grows linearly with page; keyset pagination not implemented (getAllAlerts.md:performance.known_performance_gaps.[1]).
+  strengths:
+  - All 5 endpoints reactive `Mono<ResponseEntity<...>>` — non-blocking I/O (AlertController.java:21,
+    30, 36, 44, 52)
+  - Stateless controller — horizontal scaling unconstrained at the controller layer
+  - AlertController constructor-injected as singleton (no per-request bean creation
+    overhead)
+  weaknesses:
+  - No upper bound on `size` parameter — caller can request arbitrary response body
+    and DB load
+  - No caching on `getAlertTotals` — every alerts-page render re-runs the three count
+    queries; for high-traffic platforms this is per-page-load DB hit
+  - No request-throughput observability (no `@Timed`, no Micrometer counter, no structured
+    logging on entry/exit)
+  - Reopen-conflict guard is not transactionally fenced (read-then-write race window)
+  - Single-item-only `changeAlertStatus` — bulk operator workflows pay N round-trips
+  - Activity-row INSERT fires on every status change regardless of whether status
+    actually changed (no idempotency / no-op short-circuit)
+  - Deep-pagination on getAllAlerts uses OFFSET arithmetic — Postgres scans and discards
+    (page-1)*size rows on every deep-page request (getAllAlerts.md:performance.known_performance_gaps.[1])
+  - No HTTP-level test exists for `GET /api/alerts` — regressions in OpenAPI routing,
+    WebFlux config, Jackson, or jOOQ silently break the endpoint with the build green
+    (getAllAlerts.md:bugs_limitations_corner_cases.[3])
+  cross_file_inconsistencies:
+  - Cursor pagination on getDataEntityActivity (DataEntityController) but offset pagination
+    on every alert list endpoint — cross-controller inconsistency for what could be
+    the same alert-stream concept
+  contributing_files:
+  - AlertController.md
+  - openapi-tag-alert.md
+  - changeAlertStatus.md
+  - getAllAlerts.md
+  - alerts-route.md
+  evidence:
+  - AlertController.md:performance.hot_paths.[0-2]
+  - AlertController.md:performance.known_performance_gaps.[0-3]
+  - openapi-tag-alert.md:performance.known_performance_gaps.[0-4]
+  - changeAlertStatus.md:performance.known_performance_gaps.[0-2]
+  - getAllAlerts.md:performance.hot_paths.[0]
+  - getAllAlerts.md:performance.known_performance_gaps.[0-3]

@@ -1,0 +1,11 @@
+- **REFACTOR-028**: REMOTE attachment storage — bucket existence not validated at boot; first-upload-failure pattern
+  - **Category**: deferred-failure
+  - **Surfaced by**:
+    - `odd-platform__yaml__application_yml__config-prefix__attachment.md:bugs_limitations_corner_cases.[2]` (severity MEDIUM in sidecar)
+    - `concepts.yaml:entities[Attachment].performance_aggregate.weaknesses.[5]`
+  - **Statement**: `RemoteFileUploadServiceImpl.validate()` only checks the bucket *name* is non-empty (line 46-50). An operator who mistypes the bucket or points at a non-existent one boots cleanly and only sees the failure on the first upload, by which time the upload UI has accepted the file and consumed user time. This was originally classified as ADR-CANDIDATE-017 in run 0.1.0; per the wisdom test, the absence has no stated rationale (no comment defends "we don't validate at boot") and is refactoring within `MinioConfig` / `RemoteFileUploadServiceImpl`.
+  - **Evidence**: `MinioConfig.java:1-26` (no bucket-creation call) + `RemoteFileUploadServiceImpl.java:45-50` (only validates non-empty, not existence)
+  - **Existing-ADR-or-implied-prescription**: None defends the absence. ADR-CANDIDATE-012 (boot-time wiring) doesn't defend it; the wiring decision is about Spring `@ConditionalOnProperty` shape, not bucket-validation.
+  - **Proposed remedy**: Add `@PostConstruct` health check in `MinioConfig` (or a dedicated `RemoteStorageStartupValidator`) that calls `minioClient.bucketExists(BucketExistsArgs.builder().bucket(...).build())` and fails boot if the bucket is missing. Optional: under `attachment.remote.auto-create-bucket: true`, call `makeBucket` instead.
+  - **Severity rationale**: HIGH (concept-level severity from concepts.yaml) — operators see "platform is up" but uploads are broken until they hit a real upload.
+  - **Suggested backlog grouping**: `Attachment integrity sprint`

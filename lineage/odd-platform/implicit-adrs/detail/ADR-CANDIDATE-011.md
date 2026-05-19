@@ -1,0 +1,13 @@
+- **ADR-CANDIDATE-011**: Translation keys are the literal English source phrases (natural-keys i18next pattern); missing keys silently render the English phrase via fallback chain
+  - **Category**: promote
+  - **Support**: surfaced by 1 sidecar (i18n_ts)
+  - **Surfaced by**:
+    - `odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md:implicit_adrs.[2]` ("Translation keys are the literal English source phrases (the natural-keys i18next pattern), so a missing key in a non-English locale silently renders the English phrase rather than a placeholder or error.")
+  - **Decision statement**: The codebase uses i18next's natural-keys pattern: translation keys are the literal English source phrases (e.g., `"About": "About"`, `"Accept": "Accept"`). The fallback chain ends in `'en'`, so a missing key in a non-English locale silently renders the English phrase. The trade-off accepted: developer ergonomics (no synthetic key namespace) vs. silent QA gap (untranslated strings are user-invisible to non-English readers without a per-locale audit).
+  - **Wisdom test**: PASS. Deliberate (i18next pattern adoption); structural (every translation file).
+  - **Evidence**:
+    - i18n_ts.md says: "`odd-platform-ui/src/locales/translations/en.json` (first entries: `\"About\": \"About\"`, `\"Accept\": \"Accept\"`) + `odd-platform-ui/src/locales/i18n.ts:30` (`fallbackLng` chain ending in `'en'`)"
+  - **Existing ADR**: none.
+  - **Co-surfaced gaps** (link from `refactoring-scopes.md`): REFACTOR-024 (the `fallbackLng` is the full six-element array `['en','es','ch','fr','ua','hy']` rather than conventional `'en'` — bug, not a decision; a French user with a missing key may see Spanish or Chinese before English).
+  - **Proposed action**: Promote to `adrs/drafts/i18n-natural-keys.md` (new ADR or section in ADR-CANDIDATE-009). Document the QA implication: testing locale completeness requires an explicit key-coverage report, not a "do non-English locales render?" smoke check.
+  - **Severity rationale**: MEDIUM — pattern-shaping; affects translation-completeness validation.

@@ -1,0 +1,10 @@
+- **REFACTOR-051** (NEW 2026-05-10A): Slack-posting `MessageRequest.text` has no max-length, no sanitisation, no markdown allowlist — a 4 MB body is accepted and persisted; only fails at Slack's `chat.postMessage` boundary, AFTER the 202 has been returned to the caller
+  - **Category**: missing-validation
+  - **Surfaced by**:
+    - `odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md:bugs_limitations_corner_cases.[1]` (MEDIUM)
+  - **Statement**: `MessageRequest.text` is marked `required` only (`components.yaml:3410-3423`); no `@Size`, no `@Pattern`, no length cap. The controller accepts up to `spring.codec.max-in-memory-size` (~20 MB by default), persists the message row to the `messages` table, returns `202 Accepted`. The downstream sender thread then attempts `chat.postMessage` which fails with `msg_too_long` (Slack's per-message limit is ~40 KB). The user sees `202 Accepted` and the message ends up in `ERROR_SENDING` state after the retry budget exhausts. UX hostile (user has no per-request signal of failure).
+  - **Evidence**: `MessageRequest` schema `components.yaml:3410-3423` + `SlackAPIClientImpl.java:64-81` + `DataCollaborationMessageSenderJob.java:58-63`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-020 (decoupled-outbound-delivery) describes the 202+queue+retry shape; this scope is the gap that the queue-decoupled posture does NOT defend (the queue accepts bytes; the queue does not validate bytes against the downstream contract).
+  - **Proposed remedy**: Add `@Size(max = 40000)` on `MessageRequest.text` (matches Slack's actual per-message limit, conservatively). Reject oversized at the controller with HTTP 400 — never persist to `messages` if the message can't possibly succeed downstream. Update OpenAPI schema accordingly.
+  - **Severity rationale**: MEDIUM — DoS amplifier (queue pollution) + UX hostile failure mode.
+  - **Suggested backlog grouping**: `Data Collaboration hardening`

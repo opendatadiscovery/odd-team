@@ -1,0 +1,62 @@
+name: Permission-bypass via Owner auto-create (side-door write path)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW INVARIANT, batch 2026-05-12F** — codebase-wide structural permission-bypass
+  pattern. The documented `OWNER_CREATE` permission is supposed to gate Owner directory
+  growth via `POST /api/owners` (per batch E createOwner). But `DataEntityController.createOwnership`
+  (`POST /api/dataentities/{id}/ownership`) accepts a free-text `owner_name` and calls
+  `OwnerService.getOrCreate(name)` which silently INSERT-s a fresh `OwnerPojo` when
+  the name is novel (`OwnerServiceImpl.java:39-42`). Any caller with `DATA_ENTITY_OWNERSHIP_CREATE`
+  on any data entity can mint Owner directory entries WITHOUT holding `OWNER_CREATE`.
+  SAME pattern on Title — `TitleService.getOrCreate(title_name)` (`TitleServiceImpl.java:19-22`)
+  auto-creates Title rows; there is NO documented Title-create permission gate at
+  all (Title is fully free text — no enum, no allowlist, no length cap on the `title_name`
+  field, `components.yaml:450-451` declares only `type: string`). **The codebase has
+  a 2-tier directory-growth story**: explicit-path-grow via `POST /api/owners` (gated
+  by `OWNER_CREATE` per SECURITY_RULES) AND side-door-grow via `POST /api/dataentities/{id}/ownership`
+  (gated only by `DATA_ENTITY_OWNERSHIP_CREATE`). The asymmetry is silent: no doc
+  warns operators; no @Slf4j log call captures the side-effect; the `@ActivityLog(OWNERSHIP_CREATED)`
+  audit event fires for the ownership-binding but NOT for the Owner/Title-directory
+  growth. **Codebase-wide analog risk**: any future endpoint with auto-create-on-missing
+  semantics (`getOrCreate`, `findOrInsert`, `ensureExists`) inherits this side-door
+  pattern unless it explicitly checks the create-side permission. Recommended remediation:
+  extend `OwnerService.getOrCreate(...)` to take a `caller-must-hold(OWNER_CREATE)`
+  constraint OR factor the auto-create into an explicit `createIfAbsent` method that
+  checks the permission AND emits an audit signal. Same for `TitleService.getOrCreate`.'
+axes_present:
+- controllers
+nodes:
+- odd-platform java DataEntityController controller-method:createOwnership
+- odd-platform java OwnerController controller-method:createOwner
+contributors:
+- createOwnership.md:security.known_security_gaps.[0] + bugs_limitations_corner_cases.[0,1]
+  (Owner-auto-create via getOrCreate bypasses OWNER_CREATE; Title-auto-create has
+  no permission gate at all)
+- 'createOwner.md (batch E reference): OWNER_CREATE is the documented permission gating
+  Owner directory growth — but is incomplete because createOwnership side-doors past
+  it'
+evidence:
+- createOwnership.md:security.known_security_gaps.[0] (MEDIUM)
+- createOwnership.md:bugs_limitations_corner_cases.[0] (MEDIUM)
+- createOwnership.md:bugs_limitations_corner_cases.[1] (MEDIUM — Title-auto-create
+  with no permission)
+- createOwner.md:implicit_adrs.[0] (the OWNER_CREATE gate that the side-door bypasses)
+notes: "NEW cross-cutting invariant captured in batch 2026-05-12F. The\npattern is\
+  \ structurally similar to the \"Authorization is path-pattern\nwired in SecurityConstants.SECURITY_RULES\"\
+  \ failure mode (gates assume\npaths are the only entry points), but the specific\
+  \ shape is \"the\nservice-layer auto-create-on-missing pattern bypasses the\ncontroller-layer\
+  \ permission check that was supposed to gate that\nside effect.\"\n\nCodebase-wide\
+  \ audit candidate: grep for `getOrCreate(`, `findOrInsert(`,\n`ensureExists(` across\
+  \ all `*ServiceImpl.java` files; for each match,\ndetermine which controllers can\
+  \ call this path and whether they hold\nthe relevant create-side permission. Likely\
+  \ findings beyond the\ncurrent 2-sidecar evidence: Tag (TagService.getOrCreate from\
+  \ tag-add\nendpoints), Term (TermService.getOrCreate from term-add endpoints),\n\
+  Namespace.\n\nSurface as canonicalisation candidate AND a refactoring-scope item.\n\
+  Three DOC-NNN candidates flow from this invariant:\n  (a) `/authorization/permissions`\
+  \ page: name the side-door\n      (POST /api/dataentities/{id}/ownership as a 2nd\
+  \ write path\n      into Owner directory) explicitly.\n  (b) `/authorization/owners`\
+  \ page: clarify that Owner directory\n      entries can be created via TWO paths\
+  \ and which permissions\n      gate each.\n  (c) Add a new `/authorization/title-and-tag-vocabularies`\
+  \ page (or\n      a section on the existing permissions page) explaining that\n\
+  \      Title and Tag vocabularies grow via free-text mutation side-effects\n   \
+  \   with no allowlist.\n"

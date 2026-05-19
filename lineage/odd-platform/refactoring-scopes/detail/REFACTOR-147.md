@@ -1,0 +1,9 @@
+- **REFACTOR-147** (NEW 2026-05-12D): No per-job parallelism — single Connection bottleneck. The five HousekeepingJob beans run sequentially on a shared connection. A long DataEntityHousekeepingJob cascade blocks AlertHousekeepingJob and SearchFacetsHousekeepingJob (single-table DELETEs, fast) for minutes
+  - **Category**: sequential-connection
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md:performance.known_performance_gaps.[0]` (LOW)
+  - **Statement**: `HousekeepingJobManager.java:32-35` acquires a single `Connection` from `PGConnectionFactory` and iterates `for (final HousekeepingJob housekeepingJob : housekeepingJobs)` — each job runs synchronously on the same connection. There is no parallelism across the five jobs. Total cycle time is the sum of all jobs' execution times. A slow DataEntityHousekeepingJob blocks AlertHousekeepingJob from running until completion.
+  - **Evidence**: `HousekeepingJobManager.java:32` (single `pgConnectionFactory.getConnection()`)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Split jobs across separate connections OR move the cascaded DataEntityHousekeepingJob to a paginated background queue. Current production scale is tolerable; will matter at high data-entity-soft-delete throughput.
+  - **Severity rationale**: LOW — current production scale is tolerable; surfaces as a capacity-planning concern.
+  - **Suggested backlog grouping**: `Housekeeping performance sprint` (paired with REFACTOR-148 + REFACTOR-149 for the housekeeping-performance bundle)

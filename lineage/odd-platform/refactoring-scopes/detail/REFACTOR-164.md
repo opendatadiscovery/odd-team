@@ -1,0 +1,10 @@
+- **REFACTOR-164** (NEW 2026-05-12D): SMTP `mail.smtp.ssl.trust` not exposed for self-signed / internal-CA relays — operators using internal CA SMTP cannot configure trust from ODD YAML; they must add the cert to the JVM truststore or pass `-Djavax.net.ssl.trustStore=...` at boot. The live notifications doc surfaces this as a known limitation but the config surface offers no remediation
+  - **Category**: missing-tls-trust
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__EmailSenderProperties.md:bugs_limitations_corner_cases.[2]` (MEDIUM) + `security.known_security_gaps.[3]` (MEDIUM)
+  - **Statement**: `EmailSenderProperties.java` has no `ssl.trust` field and `NotificationConfiguration.java:51-71` never populates `mail.smtp.ssl.trust` in the JavaMail Properties bag. Operators with internal-CA SMTP relays cannot configure trust at the ODD-config layer; they must do it JVM-side (truststore manipulation, `-D` system property). The live notifications doc page acknowledges this as a known limitation but does not surface a workaround.
+  - **Evidence**: `EmailSenderProperties.java` (no `ssl.trust` field) + `NotificationConfiguration.java:51-71` (no `ssl.trust` key)
+  - **Existing-ADR-or-implied-prescription**: None defends the absence. The narrow-validator design (ADR-CANDIDATE-048) is about boot-time validation, not config-surface completeness.
+  - **Proposed remedy**: Add `private String sslTrust;` to `EmailSenderProperties.SmtpProperties` (sibling to `auth` + `starttls`); populate `mail.smtp.ssl.trust` from it in `NotificationConfiguration.smtpProperties()`. Document the field on the live notifications page with a "self-signed / internal-CA workaround" admonition.
+  - **Severity rationale**: MEDIUM — operator-deployment-friction for internal-CA SMTP relays; the workaround (JVM truststore) is non-trivial and operator-skill-gated.
+  - **Suggested backlog grouping**: `Notifications hardening`

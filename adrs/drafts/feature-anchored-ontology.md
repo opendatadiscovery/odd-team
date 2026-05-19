@@ -3,11 +3,12 @@ id: ADR-DRAFT-feature-anchored-ontology
 title: "Anchor the agentic ontology on entry-points and user-observable features, not on per-node code reading; compose cross-layer behaviour via a feature-flow reducer; control every feature along a 4-class test matrix"
 status: draft
 date: 2026-05-19
-scope: workspace-meta (EXTENDS `agentic-code-ontology.md` revision 3 — does not supersede)
-related_drafts: ADR-DRAFT-agentic-code-ontology, ADR-DRAFT-code-lineage-substrate
+scope: workspace-meta (EXTENDS `agentic-code-ontology.md` revision 3 — does not supersede). Revision 2 (2026-05-19) adds registry sharding + a `registry-search` subagent + an emergent-feature-registry with a substrate-fixed progress denominator after rev-1 deployed across 8 batches and surfaced reducer context growth as the cost ceiling.
+related_drafts: ADR-DRAFT-agentic-code-ontology, ADR-DRAFT-code-lineage-substrate, ADR-DRAFT-dynamic-verification-layer
 trigger_incident: 2026-05-19 view_count empirical probe — ontology had 50/395 sidecars + 7 reducer artefacts after batch G yet was silent on a user-observable doubling that emerges from cross-layer code composition
 case_law: retrospectives/LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md
 runtime_correction: 2026-05-19 — initial proposal naively suggested treating documented features as the input corpus; maintainer corrected: docs may be stale or silent, code is truth, docs are the audit target
+revision_2: 2026-05-19 — two cost-ceiling corrections by the maintainer after rev-1 deployment review. (a) rev-1's straw-man "1-line per-id index" for scaling reducer dedup was wrong — 1-line entries lose nuance and breed duplicates. Rev 2: index entries carry multi-paragraph discriminating context, a new `registry-search` subagent reads the index in its own context, reducers spawn the subagent per query and never load the full registry. Vector store remains deferred (LSN-016 anchor) and is named as the eventual mitigation in APPROACH.md §9. (b) rev-1 implied pre-enumerated features as the work unit, which would freeze LSN-017-shape blind-spots. Rev 2: feature registry is append-only and emerges per batch; progress is measured against the fixed substrate node count, never against the feature catalog's size.
 ---
 
 # ADR-DRAFT: Feature-anchored ontology — entry-points, code-as-truth, cross-layer composition, 4-class control
@@ -33,6 +34,26 @@ The closest neighbours in the ontology:
 - TEST-GAP-256 (batch F), TEST-GAP-309 (batch G): inflation regression candidates, both anchored on the *backend* per-call cost.
 
 The doubling fact lives in the **cross-layer composition** — `(UI dispatch-multiplicity = 2) × (backend per-call delta = +1)`. Neither a UI sidecar nor a backend sidecar alone produces it. No reducer composes it. The methodology has no layer where it would surface.
+
+### Revision 2 trigger (2026-05-19) — cost ceiling + emergent-feature corrections
+
+After 8 batches of rev-1 deployment (A-G enrichment + slices 2-6 of the dynamic-verification-layer ADR), two cost-ceiling concerns surfaced in the same maintainer review session that produced this revision.
+
+**Concern A — reducer context grows linearly per batch and is hitting wall-clock + budget ceilings.** Empirical per-artefact state after batch G:
+
+| Artefact | Size after batch G | Growth per batch | Reducer behaviour observed |
+|---|---|---|---|
+| `test-map.yaml` | 766 KB / 8678 lines | +26-48 gaps/batch | stream-idle timeout on batch F |
+| `concepts.yaml` | 632 KB / 5911 lines | +5-21 concepts/batch | rate-limit hit on batch B |
+| `refactoring-scopes.md` | 533 KB / 2845 lines | +12-49 scopes/batch | rate-limit hit on batch E |
+| `implicit-adrs.md` | 449 KB / 1512 lines | +4-16 candidates/batch | rate-limit hit on batch E |
+| `doc-gaps.md` | 285 KB / 1416 lines | +8-14 findings/batch | rate-limit hit on batch E |
+
+Five reducers each reading 200-800 KB of prior artefact every batch to dedup is the binding constraint. Rev-1's incremental-reducer mode cut OUTPUT tokens; it did not cut INPUT tokens. At current growth, reducers exhaust the per-batch budget within ~10-15 more batches.
+
+**Concern B — pre-enumerated feature catalog freezes blind-spots.** The rev-1 strawman "iterate features as the unit of work" risks the methodology pre-committing to an anticipated feature list. Features can emerge from angles no maintainer pre-imagined — LSN-017 itself is exactly that shape (the doubling fact emerges from the *combination* of UI + backend code, not from any doc page or sidecar declaring "view tracking is a feature"). Anchoring progress on a pre-enumerated feature list bakes the maintainer's anticipation into the methodology as a hard ceiling and undermines the LSN-017 principle.
+
+Rev 2 addresses both concerns. The mechanisms are introduced as principles 6, 7, and 8 below; the schema sections "Registry sharding (rev 2)", "A new subagent: `registry-search` (rev 2)", and "Progress denominator + emergent feature registry (rev 2)" specify the implementation surfaces. Every rev-1 win — entry-point traversal, code-is-truth, references-as-placeholders, the 4-class matrix, Type-7 probes, the layer-5 measured-truth feedback — carries forward unchanged.
 
 ### Why this is an architectural decision, not a tactical pivot
 
@@ -76,7 +97,7 @@ The cost ceiling consideration is similar to LSN-016's pivot: the right time to 
 
 **Anchor the agentic ontology on entry-points and user-observable features. Each enrichment traversal starts at an entry point (UI mount / button onClick / REST operation / scheduled job / webhook / WAL listener / SDK builder / boot-time configuration), walks downstream through services / repositories / external effects, and records user-observable consequences at every hop. Code is the source of truth; documentation is the audit target. A new reducer composes per-feature observable behaviour from the entry-point sidecar chains and emits per-feature observed-vs-expected facts plus a 4-class test-control matrix.**
 
-### Five principles — non-negotiable
+### Eight non-negotiable principles (5 from rev 1 + 3 from rev 2)
 
 1. **Code is truth; documentation is the audit target.** Features emerge from code-walk traversal, never from a docs-derived catalog. Doc-gap-finder compares code-anchored feature facts to published docs; drift surfaces as DOC-GAP-NNN. The ontology cannot start from a feature list extracted from docs because the feature list must itself be derivable from code (and docs may be stale, inconsistent, or silent about features the code has — including bugs that produce user-observable effects).
 
@@ -93,6 +114,20 @@ The cost ceiling consideration is similar to LSN-016's pivot: the right time to 
    - **Security** — the chain enforces the auth gate, owner-scoping, data-exposure boundary, side-effect blast radius. Tests across the auth-mode matrix. Failure means: happy actor is fine; adversarial actor breaks the feature.
 
 The four classes are orthogonal: a feature can be fully unit-tested and still fail integration (the canonical view_count case), or pass integration at unit-level traffic and still fail performance, or pass for the authenticated happy path and still fail security. The matrix forces explicit coverage along all four.
+
+6. **(rev 2) Registry artefacts shard into a high-fidelity index + per-id detail files; reducers never load the full registry.** The current monoliths (`concepts.yaml`, `implicit-adrs.md`, `refactoring-scopes.md`, `doc-gaps.md`, `test-map.yaml`) split into `{artefact}/index.{md|yaml}` and `{artefact}/detail/{id}.{md|yaml}`. The index entry per ID is **multi-paragraph, not 1-line** — it carries the node_id anchor (file:line OR axis:slug), the discriminating behaviour/evidence sentence, severity, classification, surfaced_by sidecar list, and the cross-reference IDs that make the finding distinct. The detail file carries everything else (full evidence chain, related artefacts, fix sketch, maintainer notes). A reader (or the registry-search subagent) decides "same finding strengthened" vs "new finding" from the index alone; the detail is fetched only when strengthening. Reducer input per batch drops from ~700 KB monolithic reads to ~30-50 KB index-reads + ~10-30 KB of fetched details. Growth is sub-linear in batch count.
+
+7. **(rev 2) A `registry-search` subagent owns index reads; reducers spawn it per query, not per batch.** Single-purpose, read-only (tools: `Read, Grep`). Input: the discriminating text from a fresh sidecar finding + an index path. Output: 0-5 candidate matches with their full index entries verbatim + a `verdict` line (`0 matches — create new` / `1 strong match — strengthen ID-X` / `N ambiguous — maintainer-triage`). The reducer reads the verdict + the verbatim excerpts and decides; it never holds the full index in its own context. **Vector store remains deferred** — the text-anchored registry-search subagent buys 1-2 orders of magnitude of additional growth headroom over the monolithic shape; the vector store is built when (a) any one index file crosses ~5 MB, OR (b) registry-search consistently returns >20 candidates per query, OR (c) cross-batch dedup quality drops measurably (surfaced by maintainer-triggered merge-fixups). LSN-016's "no vector store" line in APPROACH.md §9 is updated to reflect this two-stage deferral: structural blind-spots → registry-search subagent → vector store with full-text-search fallback. The deferral order is honoured strictly; the methodology never silently slips an embeddings dependency in before its scaling threshold is hit.
+
+8. **(rev 2) Features emerge from code-walks; progress is measured against the fixed substrate, never against feature count.** The feature registry is append-only and grows per batch — each batch may discover new features OR extend existing features from a new entry-point angle (principle 3, "the same code visited many times", produces this naturally). **No batch is gated on "the feature catalog is complete."** Progress is reported along two dimensions, both with a fixed denominator (total substrate node count at substrate scan time, currently 395 for odd-platform):
+   - `nodes_with_own_sidecar / total_substrate_nodes` — direct enrichment ratio
+   - `nodes_touched_by_any_feature_flow / total_substrate_nodes` — effective coverage; a node counts as touched when it appears as a `contributing_node` in any feature-flow whose chain is complete AND probe-verified along ≥1 test-matrix axis
+
+   Plus two informational metrics with NO denominator and NO completion target:
+   - `features_discovered` (monotonic; grows per batch)
+   - `features_with_≥1_cell_PROBED / features_discovered` (quality signal for what's been discovered)
+
+   A node that never appears in any feature-flow after the platform reaches high coverage is itself a finding — either dead code (REFACTOR-NNN candidate) or evidence that the substrate's entry-point class set is incomplete (substrate-axis-gap LSN candidate). Coverage closes from two directions (bottom-up sidecars + top-down feature-flow traversals); the fixed denominator means "100%" is a well-defined target whose semantics do not shift as the feature catalog evolves.
 
 ### Runtime architecture — non-negotiable
 
@@ -231,20 +266,81 @@ Examples:
 
 Type-7 probe failures that match a feature-flow drift entry = methodology working. Type-7 probe failures where ontology was silent = methodology miss → log as LSN.
 
+#### Registry sharding (rev 2)
+
+Each cross-file reducer artefact splits into an **index** + a **per-id detail set**:
+
+| Artefact | Index (after split) | Detail (after split) |
+|---|---|---|
+| `concepts.yaml` | `concepts/index.yaml` — concept_id + canonical_name + audiences + security_aggregate + performance_aggregate + 1-paragraph discriminating context + cross-reference IDs | `concepts/detail/{concept-slug}.yaml` — contributing_files, full aggregates, canonicalisation candidates, maintainer notes |
+| `implicit-adrs.md` | `implicit-adrs/index.md` — ADR-CANDIDATE-NNN + 1-paragraph headline + classification (promote / extend-existing / drift / unique-load-bearing) + severity + surfaced_by sidecar list | `implicit-adrs/detail/ADR-CANDIDATE-NNN.md` — Nygard wisdom-test outcomes, full evidence chain, severity rationale, related ADRs |
+| `refactoring-scopes.md` | `refactoring-scopes/index.md` — REFACTOR-NNN + 1-paragraph headline + severity + category + surfaced_by sidecar list + cross-reference IDs (TEST-GAP-NNN, DOC-GAP-NNN, related REFACTOR-NNN) | `refactoring-scopes/detail/REFACTOR-NNN.md` — full file:line evidence, fix sketch, related-artefact chain, maintainer notes |
+| `doc-gaps.md` | `doc-gaps/index.md` — DOC-GAP-NNN + 1-paragraph headline + category (broken-url / drift / missing-page / coverage-gap / stale-page / feature-control-gap / meta) + severity + live-URL verification status | `doc-gaps/detail/DOC-GAP-NNN.md` — before/after wording proposal, full live-page excerpt, related concepts, related refactors |
+| `test-map.yaml` | `test-map/index.yaml` — TEST-GAP-NNN + 1-paragraph behaviour + criticality + test_class + feature_id (if known) + node_id anchor | `test-map/detail/TEST-GAP-NNN.yaml` — proposed test files, related refactors, related doc gaps, criticality justification |
+
+`feature-flows.yaml` retains its current single-file shape for now (it already has strong per-feature locality and is only 35 KB at 5 features); it will shard via the same pattern once it crosses ~250 KB, which is the recurring trigger threshold for any artefact in the methodology.
+
+**The 1-paragraph headline in the index is the discriminating field.** Strict rule: every headline contains at least the node_id anchor (file:line OR axis:slug), the discriminating behaviour or evidence sentence, the cross-reference IDs that make the finding distinct, and the severity / classification label. Headlines are written by the reducer at finding-creation and are stable across re-reads. A 1-line headline is rejected by the reducer's self-check; the minimum is one paragraph (~3-5 sentences) with enough surface area that a dedup decision is robust against paraphrasing.
+
+#### A new subagent: `registry-search` (rev 2)
+
+System prompt at `.claude/agents/registry-search.md`. Single-purpose, read-only. Tools: `Read, Grep`.
+
+**Input contract** (passed by the spawning reducer):
+- `query_text`: the discriminating text from a fresh finding (the sidecar's `bugs_limitations_corner_cases[N]` entry, or `implicit_adrs[N]` line, or `tests_coverage_semantic.uncovered_behaviours[N]`, etc.)
+- `index_path`: the registry index file to search (e.g., `lineage/odd-platform/refactoring-scopes/index.md`)
+- `max_candidates`: integer, default 5
+
+**Output contract** (returned to the spawning reducer):
+- One YAML block per candidate (up to `max_candidates`):
+  - `candidate_id`: e.g., REFACTOR-073 / TEST-GAP-256 / DOC-GAP-085 / ADR-CANDIDATE-015
+  - `match_confidence`: HIGH | MEDIUM | LOW
+  - `match_basis`: one of `shares-node_id-anchor` / `shares-evidence-file:line` / `shares-discriminating-behaviour-wording` / `shares-cross-reference-IDs` / `shares-category-+-severity-+-axis`
+  - `index_entry_excerpt`: the full multi-paragraph index headline verbatim (no summarisation — the reducer reads verbatim and decides)
+  - `recommended_action`: `strengthen-existing` | `create-new` | `maintainer-triage-ambiguous`
+- Final `verdict` line: `0 matches — create new` OR `1 strong match — strengthen ID-X` OR `N ambiguous matches — flag for maintainer`.
+
+**Safety rules:**
+- Tool surface is read-only (`Read, Grep`); the subagent cannot write.
+- The subagent never reasons about whether a match is "valid" beyond textual evidence — it surfaces candidates with `match_basis`; the spawning reducer owns the strengthen-vs-new decision.
+- `match_confidence` is anchored on textual overlap (file:line citation reuse, exact phrase reuse, shared cross-reference IDs) — never on semantic similarity (no embeddings, no model-based scoring — that's the deferred vector-store work).
+- If the index file does not exist or is empty, return `0 matches — create new`.
+
+**Reducer-side change pattern.** Each of the five reducer subagents (`concept-merger`, `adr-archaeologist`, `doc-gap-finder`, `test-coverage-mapper`, `feature-flow-builder`) updates its system prompt to: (1) iterate the new sidecars' findings, (2) spawn `registry-search` per finding, (3) read the candidate excerpts + verdict, (4) decide strengthen vs new, (5) on strengthen → read `{artefact}/detail/{id}`, append, write back; on new → write a fresh detail file, append a headline to the index. Per-batch reducer context: ~50-150 KB regardless of registry size. Compare against rev-1's ~200-800 KB monolithic-input shape.
+
+#### Progress denominator + emergent feature registry (rev 2)
+
+Coverage reports surface at three artefact locations:
+
+- **`state/PROGRESS.md`** (workspace-level): two-dimension coverage table + two informational metrics + a "features discovered this batch" delta. No single-percentage summary; the two dimensions are reported side-by-side.
+- **`lineage/{repo}/manifest.yaml`**: gains a `coverage_metrics:` block with `nodes_with_own_sidecar`, `nodes_touched_by_any_feature_flow`, `features_discovered`, `features_with_>=1_cell_PROBED`, `features_with_full_4_cell_matrix_PROBED`, all integers; `total_substrate_nodes` sits in the same block as the fixed denominator.
+- **`lineage/{repo}/feature-flows/index.yaml`** (after slice-9 sharding): append-only — each batch commits a discovery delta: `new_features: [F-NNN, ...]`, `extended_features: [F-NNN: <which entry-point added>, ...]`, `merged_features: [F-NNN absorbed-by F-MMM]`. The merge case is maintainer-triggered, not automatic — feature-flow-builder surfaces merge *candidates* when two features share >50% of `contributing_nodes`, and the maintainer triages.
+
+The methodology never gates on "we know all the features." It gates on the substrate denominator. Reaching 100% of `nodes_touched_by_any_feature_flow / total_substrate_nodes` is the operational completion milestone; the feature registry's size at that point is a downstream measurement (the platform genuinely has N features), not a target the methodology aims for.
+
 ### Workflow — the new cycle
 
 The cycle from `agentic-code-ontology.md` revision 3 (substrate → enrich → reduce → probe → commit) extends with two new steps:
 
 ```
 substrate scan                   → nodes.jsonl + edges.jsonl + rollups
-enrich --batch <entry-points>    → 5 sidecars (1 session) — now entry-point-anchored
+enrich --batch <entry-points>    → 5 sidecars (1 session) — entry-point-anchored
                                    sidecars record upstream_callers + downstream_side_effects + test_class
-reduce concept-merger            → concepts.yaml refresh
-reduce adr-archaeologist         → implicit-adrs.md + refactoring-scopes.md refresh
-reduce doc-gap-finder            → doc-gaps.md refresh (now produces feature-control-gap class too)
-reduce test-coverage-mapper      → test-map.yaml refresh (now keyed by feature × test_class matrix)
-reduce feature-flow-builder      → feature-flows.yaml refresh        ← NEW
-probe Type-7 (user-observable)   → live-demo verification of feature invariants  ← NEW
+reduce concept-merger            → concepts/{index,detail}/ refresh
+                                   (rev 2 — sharded; reducer spawns registry-search per new finding)
+reduce adr-archaeologist         → implicit-adrs/{index,detail}/ + refactoring-scopes/{index,detail}/ refresh
+                                   (rev 2 — sharded; registry-search per query)
+reduce doc-gap-finder            → doc-gaps/{index,detail}/ refresh (feature-control-gap class included)
+                                   (rev 2 — sharded; registry-search per query)
+reduce test-coverage-mapper      → test-map/{index,detail}/ refresh (keyed by feature × test_class matrix)
+                                   (rev 2 — sharded; registry-search per query)
+reduce feature-flow-builder      → feature-flows.yaml (or feature-flows/{index,detail}/ after slice-9)
+                                   refresh + emit batch-discovery delta (new_features / extended_features / merge_candidates)
+                                   (rev 2 — emergent registry; never gated on prior catalog completeness)
+probe Type-7 (user-observable)   → live-demo verification of feature invariants
+                                   (dynamic-verification-layer.md slice-2+ feeds measured truth back into observed_vs_expected)
+update manifest coverage_metrics → 2-dimension progress against fixed total_substrate_nodes
+                                   (rev 2)
 commit + open PR
 ```
 
@@ -261,6 +357,18 @@ The methodology shift is forward-compatible. Existing artefacts stay valid:
 
 Batch H is the first batch under the new methodology. The smallest experiment: pick **one entry point** (the UI `/dataentities/{id}/overview` mount) and run the whole traversal end-to-end, leaving references at every unresolved hop. If the loop closes (references resolve, the multiplicity composes, the Type-7 probe matches the predicted delta), the methodology has signal. If not, iterate before scaling.
 
+**Registry sharding migration (rev 2).** A one-time conversion script splits each of the five monoliths into `{artefact}/index + {artefact}/detail/{id}`. The split is mechanical — the existing artefacts are already structured as numbered entries with stable IDs:
+
+1. Parse the monolith → list of `(id, headline, full_entry)` tuples.
+2. Write `{artefact}/index` with one headline per ID (the existing entry header + the existing 1-paragraph context; reducers tighten the headlines on subsequent refreshes if too short to dedup against).
+3. Write `{artefact}/detail/{id}` per entry (full content from the monolith).
+4. Update each reducer subagent's system prompt to: (a) spawn `registry-search` for dedup; (b) read at most 1-3 detail files when strengthening; (c) write to both the index (append new headline) and the detail (new file). Reducer prompts grow by ~30-50 lines each.
+5. Keep the legacy monolith file present for ONE batch as a regression check — the maintainer diff-checks sharded output against monolith output. After parity verified, delete the monolith.
+
+The script runs once per repo (currently odd-platform; future repos at their own pace). The migration is non-destructive — sharded outputs remain human-readable; the index file becomes the primary triage surface and per-id detail files open on demand. concepts.yaml is the highest-cost migration (largest file, most leverage); test-map.yaml is the second-largest. doc-gaps.md / implicit-adrs.md / refactoring-scopes.md follow in any order.
+
+**Emergent feature-registry migration (rev 2).** Less migration work — `feature-flows.yaml` is brand-new (slice-2 of `dynamic-verification-layer.md` created it); today it carries F-001 through F-005 manually curated by the maintainer. From batch H onward, `feature-flow-builder` grows it append-only. The five existing features stay; each gains an optional `discovered_in_batch: <batch_id>` marker (post-hoc filled with `2026-05-19-dyn-verif-slice-2`). The single-file shape is acceptable until ~250 KB; sharding to `feature-flows/{index,detail}/` happens at that threshold (slice 9).
+
 ## Consequences
 
 ### What this enables
@@ -275,6 +383,12 @@ Batch H is the first batch under the new methodology. The smallest experiment: p
 
 5. **Change requests can be scoped with second-order effects.** "If I fix the useEffect, what cells in the matrix flip?" The feature-flow entry lists contributing_nodes; the test_matrix lists what becomes pinned by each fix; the doc-gaps subsection lists what doc admonitions can be retired.
 
+6. **(rev 2)** Reducer cost is bounded by the per-batch input, not by the registry size. Per-batch reducer-context drops from ~200-800 KB monolithic-input shape to ~50-150 KB index-fingerprint + fetched-detail shape. The methodology can run 100+ batches before any new scaling pressure surfaces; the vector-store deferral becomes a comfortable future option, not an emergency.
+
+7. **(rev 2)** Coverage is provably reachable without enumerating every feature. The substrate-fixed denominator means "100% covered" is a well-defined target whose semantics do not shift as the feature catalog grows. A maintainer reports progress; the metric is monotonic AND has a hard ceiling (`total_substrate_nodes`, frozen at substrate scan).
+
+8. **(rev 2)** Dead code becomes a structural finding, not a maintainer hunch. After the platform reaches high coverage on `nodes_touched_by_any_feature_flow`, the residual untouched-by-any-feature-flow nodes are either (a) substrate entry-point-class gaps (substrate-axis-gap LSN candidate) or (b) genuine dead code (REFACTOR-NNN candidate). Both classes get an automatic structural home; neither requires the maintainer to remember to look.
+
 ### What this costs
 
 - **Schema migration.** Sidecars at v0.2.0 → v0.3.0. All existing 50 sidecars are valid under v0.2.0; re-enrichment to v0.3.0 happens incrementally on re-visits. No big-bang migration.
@@ -282,6 +396,9 @@ Batch H is the first batch under the new methodology. The smallest experiment: p
 - **One new substrate axis.** `test_axis` — classifies test files by content (`@WebFluxTest` / mocks / benchmark / auth-matrix). Implemented as a tree-sitter + content-grep classifier; ~100 lines of extractor code.
 - **A new probe class.** Type-7 user-observable invariants. Per-probe authoring cost is low (one sentence + one live curl); per-probe value is high (each probe fails today against batch-G findings, locking in regression prevention as fixes ship).
 - **A new playbook.** `playbooks/entry-point-traversal.md` — protocol for the outside-in walk. Roughly 100-200 lines of PROTOCOL-shape content.
+- **(rev 2)** One-time migration of the four big monoliths (concepts / implicit-adrs / refactoring-scopes / doc-gaps / test-map) to the sharded shape. Mechanical conversion script + 5 reducer prompt updates. Slice-by-slice rollout; concepts.yaml is the highest-cost migration (largest file); the others are smaller. Total migration effort: 2-3 batches' worth of slice work.
+- **(rev 2)** One new subagent (`registry-search`). Single-purpose, read-only, ~150-250 lines of system prompt. Spawned by every reducer per query; the subagent's context starts fresh per query and never accumulates state across batches.
+- **(rev 2)** Coverage-report shape changes from a single percentage to a two-dimension table + two informational metrics. `state/PROGRESS.md` and `/status` skill output update accordingly (~20-30 lines of skill-prompt change). One extra concept for maintainer-facing communication: the two-dimension framing replaces a single-percentage habit.
 
 ### What does NOT change
 
@@ -298,20 +415,26 @@ Batch H is the first batch under the new methodology. The smallest experiment: p
 | 4-class test matrix becomes a coverage-% drumbeat instead of a structural quality lens | The matrix is reported by feature, not aggregated to a single number. Cells are colour-coded by criticality (anchored on concepts.yaml security/performance aggregates), not by raw count. Acceptance is probe-driven (Type-7), not matrix-fill-driven. |
 | The methodology shift breaks existing tooling (skills / playbooks / external integrations) | Schema v0.3.0 is forward-compatible; v0.2.0 sidecars remain valid. New reducer is additive. New probe class is additive. No deletion, no rename, no breaking change to existing artefacts. |
 | Entry-point classes proliferate uncontrollably (every code path becomes an entry-point candidate) | The principle is unchanged from ADR-CANDIDATE-066-like discipline: add an entry-point class when a probe surfaces a class of code the substrate can't reach. Don't pre-design entry-point classes for cases the maintainer hasn't observed. Currently anchored: UI routes, UI components with handlers, REST operations, scheduled jobs, webhook receivers, WAL listeners, SDK builders, boot-time @Configuration eval, CLI entrypoints. Extension only after a probe demands. |
+| **(rev 2)** `registry-search` returns false negatives (a fresh finding that SHOULD strengthen an existing entry gets classified as new — duplicate created) | Multi-paragraph index headlines maximise textual-overlap detection (file:line anchors, exact phrase reuse, cross-reference IDs are all in the headline). `match_basis` is reported per candidate so the reducer can audit. The false-negative rate is empirically measured (count of merge-fixups triggered by maintainer triage); if it rises, expand the search subagent's grep heuristics first (concept_id reverse-lookup, severity-anchored neighbour search, axis-anchored filter), then reach for the vector store. |
+| **(rev 2)** `registry-search` hits its own context ceiling (an index file grows too large for the subagent to hold) | Index files carry headline-only content; at multi-paragraph-per-entry, ~30-50 KB at 100 entries scales to ~3-5 MB at 10,000 entries. The 5 MB-per-artefact threshold triggers vector-store work (slice deferred; documented in APPROACH.md §9). At current growth rates, this is 2+ years away for any single ODD artefact. |
+| **(rev 2)** Emergent-feature registry never converges (every batch adds new features without consolidating) | The `merge_features` operation (one feature absorbs another when a later traversal shows they're the same user-observable contract from different entry points) is a maintainer-triggered triage, not an automatic reducer action. Merge candidates are surfaced by `feature-flow-builder` when two features share >50% of `contributing_nodes`; the maintainer decides. The registry's growth is bounded by the substrate's real feature count (which is finite for any given substrate commit), not by mechanical reducer behaviour. |
+| **(rev 2)** Reducer prompts get bloated with the new spawn-search + read-detail logic | The new logic is encapsulated in a shared playbook (`playbooks/registry-search-spawn.md`) that all five reducer prompts reference rather than inlining. Per-reducer prompt grows by ~30-50 lines; the playbook absorbs the rest. |
+| **(rev 2)** Substrate-fixed denominator becomes misleading if the substrate is re-scanned (denominator changes) | Manifest records `substrate_scan_commit` alongside `total_substrate_nodes`. When substrate is re-scanned, the manifest captures the new denominator + a `previous_denominator` field for one-batch continuity, and the `coverage_metrics` block is recomputed from the new substrate. Re-scans are rare (substrate extractor version bumps) and explicit. The fixed-denominator promise holds within a substrate-version window. |
 
 ## Related
 
-- LSN-017 — the trigger incident retrospective (view_count doubling miss)
-- LSN-016 — heuristic-substrate-no-semantic-content (the prior pivot one layer below)
+- LSN-017 — the trigger incident retrospective (view_count doubling miss; rev-1 anchor)
+- LSN-016 — heuristic-substrate-no-semantic-content (the prior pivot one layer below). **Rev-2 note:** LSN-016 anchors the original "no vector store / no embeddings" rule; rev 2's `registry-search` subagent honours that line by remaining text-anchored only. The vector store stays explicitly deferred until index size or candidate-set-size thresholds force it. APPROACH.md §9 documents the deferral.
 - agentic-code-ontology.md revision 3 — the layer this ADR extends
-- code-lineage-substrate.md revision 3 — the structural seed
-- APPROACH.md rev 2 — portability surface (the methodology distillation gets updated alongside this ADR)
+- code-lineage-substrate.md revision 3 — the structural seed (provides the `total_substrate_nodes` denominator)
+- **dynamic-verification-layer.md** — the layer-5 measured-truth feedback loop that consumes `feature-flow.observed_vs_expected` and writes measured values back. Rev-2 progress metric `features_with_≥1_cell_PROBED` is populated from that ADR's slice-2+ output.
+- APPROACH.md rev 2 — portability surface; gains rev-2 paragraphs on registry sharding + emergent feature registry + the two-stage scalability path (registry-search now, vector store later) alongside the rev-1 entry-point + 4-class additions.
 
 ## Open questions deliberately not addressed in this ADR
 
-None. Every choice this ADR makes is anchored in the empirical trigger (LSN-017 + the live demo probe) and in the existing layered ADR pattern from agentic-code-ontology.md. Schema details, reducer prompt skeletons, and per-language extractor adjustments are implementation-slice deferrals — they implement this ADR, they do not require a separate decision.
+None. Rev 1's choices are anchored in LSN-017 + the live demo probe + the existing layered ADR pattern from `agentic-code-ontology.md`. Rev 2's choices are anchored in the 8-batch empirical evidence of reducer context growth + the maintainer's correction of the rev-1 1-line-index strawman + the maintainer's correction of the pre-enumerated-feature-catalog implication. Schema details, reducer prompt skeletons, the `registry-search` subagent system-prompt, per-artefact migration sequencing, the eventual vector-store trigger threshold, and per-language extractor adjustments are all implementation-slice deferrals — they implement this ADR's decisions, they do not require fresh decisions.
 
-If a slice during implementation surfaces a contradiction with this ADR, the slice triggers a revision-4 of this ADR (not a new ADR) per the established pattern.
+If a slice during implementation surfaces a contradiction with this ADR, the slice triggers a revision-3 of this ADR (not a new ADR) per the established pattern.
 
 ## Implementation slices
 
@@ -325,4 +448,12 @@ If a slice during implementation surfaces a contradiction with this ADR, the sli
 
 5. **Slice 5 — entry-point traversal playbook** + skill (`/feature-walk-build`) + multi-session resumption shape (manifest gains `last_entry_point_traversal_commit`).
 
-Slices 2 onward are deferred to subsequent batches. Slice 1 is this batch.
+6. **Slice 6 (rev 2) — Registry sharding migration**: Mechanical split of the five monoliths (concepts / implicit-adrs / refactoring-scopes / doc-gaps / test-map) into `{artefact}/index + {artefact}/detail/{id}`. Conversion script in `lineage/_extractor/registry-shard/`. Verify with a one-batch diff (sharded reducer output vs prior monolith) before retiring the legacy file. Order: `concepts.yaml` first (largest, most leverage); `test-map.yaml` second; doc-gaps / implicit-adrs / refactoring-scopes in any order.
+
+7. **Slice 7 (rev 2) — `registry-search` subagent + reducer prompt updates**: System prompt at `.claude/agents/registry-search.md`. Shared playbook at `playbooks/registry-search-spawn.md`. Update all five reducer prompts to spawn `registry-search` per query. Validate on one batch: per-reducer wall-clock + input-token measurement before vs after. Target: ≥50% input-token reduction per reducer relative to monolithic baseline.
+
+8. **Slice 8 (rev 2) — coverage-metrics on manifest + state/PROGRESS.md update**: Manifest gains `coverage_metrics:` block with the two dimensions and the two informational metrics. `/status` and `/coverage` skills updated to surface the two-dimension table. `state/PROGRESS.md` template updated. No single-percentage summary anywhere.
+
+9. **Slice 9 (rev 2) — emergent feature-registry shape**: `feature-flow-builder` reducer (slice 3 above) extended to feed the append-only registry with `new_features` / `extended_features` / `merge_candidates` deltas per batch. `feature-flows.yaml` retains its single-file shape until ~250 KB; shards to `feature-flows/{index,detail}/` at that threshold. Merge-candidate triage is maintainer-triggered; merge action is recorded as `merged_features` in the next batch's delta.
+
+Slices 2 onward are deferred to subsequent batches. Slices 6-9 (rev 2) can be parallelised across maintainer sessions where they don't share files: 6 + 7 must sequence (sharded artefacts before reducers consume the sharded shape); 8 + 9 can run in parallel with each other and after 6+7 land. Slice 1 is this batch.

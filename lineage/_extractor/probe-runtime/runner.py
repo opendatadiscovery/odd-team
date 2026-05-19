@@ -325,12 +325,10 @@ def execute_arrange(steps: list[dict], compose_file: Path, *, captures: dict[str
             elif kind == "rest":
                 method = step["method"].upper()
                 path = step["path"]
-                # Substitute ${var} from captures
+                # Substitute ${var} from captures (recursive over dict/list/str)
                 path = substitute_captures(path, captures)
                 url = step.get("base", DEFAULT_BACKEND_BASE) + path
-                body = step.get("body")
-                if isinstance(body, str):
-                    body = substitute_captures(body, captures)
+                body = substitute_captures(step.get("body"), captures) if step.get("body") is not None else None
                 headers = step.get("headers", {})
                 r = requests.request(method, url, json=body, headers=headers, timeout=step.get("timeout", 30))
                 dur_ms = int((time.monotonic() - started) * 1000)
@@ -381,6 +379,101 @@ def execute_arrange(steps: list[dict], compose_file: Path, *, captures: dict[str
     return outcomes
 
 
+# ============================================================================
+# Browser step — Playwright, local Chromium only
+# ============================================================================
+
+def _run_browser_step(step: dict, *, captures: dict[str, Any]) -> dict[str, Any]:
+    """Launch local headless Chromium via Playwright; navigate; observe network.
+
+    LOCAL-ONLY: uses the Chromium binary installed by `playwright install
+    chromium` in the maintainer's ~/.cache/ms-playwright/. No remote browser
+    farm; no Selenium grid.
+
+    Returns a dict with keys: success, navigated_to, xhr_count, xhr_urls_sample,
+    page_status, console_errors, error (None on success).
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        return {
+            "success": False,
+            "navigated_to": None,
+            "xhr_count": 0,
+            "xhr_urls_sample": [],
+            "page_status": None,
+            "console_errors": [],
+            "error": f"playwright not installed: {exc}. Install via: pip3 install --user playwright && playwright install chromium",
+        }
+
+    path = substitute_captures(step["path"], captures)
+    base = step.get("base", "http://localhost:18080")
+    full_url = base + path
+    # xhr_filter accepts substring OR regex. If `xhr_filter_regex` is set, use re.search;
+    # otherwise use substring (backward-compat with v0.1 probes).
+    xhr_filter_substr = step.get("xhr_filter", "/api/")
+    xhr_filter_regex_str = step.get("xhr_filter_regex")
+    xhr_filter_regex = re.compile(xhr_filter_regex_str) if xhr_filter_regex_str else None
+    wait_until = step.get("wait_until", "networkidle")   # one of: load, domcontentloaded, networkidle, commit
+    timeout_ms = step.get("timeout_ms", 30_000)
+
+    xhr_urls: list[str] = []
+    console_errors: list[str] = []
+    page_status = None
+
+    def match_xhr(url: str) -> bool:
+        if xhr_filter_regex is not None:
+            return bool(xhr_filter_regex.search(url))
+        return xhr_filter_substr in url
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            try:
+                context = browser.new_context(ignore_https_errors=True)
+                page = context.new_page()
+
+                page.on("request", lambda req: xhr_urls.append(req.url) if match_xhr(req.url) else None)
+                page.on("console", lambda msg: console_errors.append(msg.text) if msg.type == "error" else None)
+
+                response = page.goto(full_url, wait_until=wait_until, timeout=timeout_ms)
+                page_status = response.status if response else None
+
+                # Additional settle time after networkidle — some bug patterns
+                # involve a delayed re-fetch fired by a state update (the
+                # useEffect dep-array case). 1000ms post-settle is enough for
+                # such patterns to surface.
+                page.wait_for_timeout(step.get("post_settle_ms", 1000))
+
+                context.close()
+            finally:
+                browser.close()
+    except Exception as exc:
+        return {
+            "success": False,
+            "navigated_to": full_url,
+            "xhr_count": len(xhr_urls),
+            "xhr_urls_sample": xhr_urls[:10],
+            "page_status": page_status,
+            "console_errors": console_errors[:10],
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    captures["_last_xhr_urls"] = xhr_urls
+    captures["xhr_count"] = len(xhr_urls)
+    captures["_last_page_status"] = page_status
+
+    return {
+        "success": True,
+        "navigated_to": full_url,
+        "xhr_count": len(xhr_urls),
+        "xhr_urls_sample": xhr_urls[:10],
+        "page_status": page_status,
+        "console_errors": console_errors[:10],
+        "error": None,
+    }
+
+
 def execute_act(steps: list[dict], *, captures: dict[str, Any], verbose: bool) -> list[StepOutcome]:
     outcomes: list[StepOutcome] = []
     for step in steps:
@@ -396,23 +489,56 @@ def execute_act(steps: list[dict], *, captures: dict[str, Any], verbose: bool) -
                     method = step["method"].upper()
                     path = substitute_captures(step["path"], captures)
                     url = step.get("base", DEFAULT_BACKEND_BASE) + path
-                    body = step.get("body")
+                    body = substitute_captures(step.get("body"), captures) if step.get("body") is not None else None
                     headers = step.get("headers", {})
                     r = requests.request(method, url, json=body, headers=headers, timeout=step.get("timeout", 30))
                     dur_ms = (time.monotonic() - started) * 1000
                     latencies.append(dur_ms)
+                    captures["_last_response_status"] = r.status_code
+                    captures["last_response_status"] = r.status_code   # public alias for assert namespace
+                    try:
+                        response_body = r.json()
+                    except ValueError:
+                        response_body = r.text
+                    captures["_last_response_body"] = response_body
+                    if "capture_as" in step:
+                        captures[step["capture_as"]] = response_body
                     outcomes.append(StepOutcome(
                         kind="rest",
                         started_at=started_at,
                         duration_ms=int(dur_ms),
-                        success=(200 <= r.status_code < 300),
+                        success=(200 <= r.status_code < 300) if not step.get("expect_any_status") else True,
                         detail={
                             "iteration": i,
                             "request": {"method": method, "url": url},
                             "response_status": r.status_code,
                             "response_size_bytes": len(r.content),
+                            "response_body_excerpt": (r.text[:500] if not (200 <= r.status_code < 300) else None),
                         },
-                        error=None if 200 <= r.status_code < 300 else f"HTTP {r.status_code}: {r.text[:200]}",
+                        error=None if (200 <= r.status_code < 300 or step.get("expect_any_status")) else f"HTTP {r.status_code}: {r.text[:200]}",
+                    ))
+                elif kind == "browser":
+                    # Headless Chromium via Playwright. Loads `path` against the
+                    # local probe stack and measures network activity + page-ready.
+                    # Captures the count of XHR requests to the backend API so
+                    # probes can assert UI dispatch-multiplicity.
+                    bo = _run_browser_step(step, captures=captures)
+                    dur_ms = (time.monotonic() - started) * 1000
+                    latencies.append(dur_ms)
+                    outcomes.append(StepOutcome(
+                        kind="browser",
+                        started_at=started_at,
+                        duration_ms=int(dur_ms),
+                        success=bo["success"],
+                        detail={
+                            "iteration": i,
+                            "navigated_to": bo["navigated_to"],
+                            "xhr_count": bo["xhr_count"],
+                            "xhr_urls_sample": bo["xhr_urls_sample"],
+                            "page_status": bo["page_status"],
+                            "console_errors": bo["console_errors"],
+                        },
+                        error=bo.get("error"),
                     ))
                 else:
                     raise ValueError(f"act: unknown step kind {kind!r}")
@@ -471,6 +597,42 @@ def execute_observe(steps: list[dict], *, captures: dict[str, Any], verbose: boo
                 value = jsonpath_simple(source, path)
                 observed[step["capture_as"]] = value
                 captures[step["capture_as"]] = value
+            elif kind == "response_list_field":
+                # Source is a list (or has a list at json_path); extract one
+                # field from each item. Returns a list of field-values, suitable
+                # for `target in extracted` membership assertions in safe_eval.
+                source = captures.get(step.get("from"))
+                if source is None:
+                    observed[step.get("capture_as", "list_unnamed")] = {"_error": f"no captured response named {step.get('from')!r}"}
+                    continue
+                path = step.get("list_json_path", "$")
+                items = jsonpath_simple(source, path)
+                if not isinstance(items, list):
+                    observed[step.get("capture_as", "list_unnamed")] = {"_error": f"list_json_path {path!r} did not resolve to a list (got {type(items).__name__})"}
+                    continue
+                field = step["item_field"]
+                values = []
+                for item in items:
+                    if isinstance(item, dict) and field in item:
+                        values.append(item[field])
+                observed[step["capture_as"]] = values
+                captures[step["capture_as"]] = values
+            elif kind == "response_contains":
+                # Cleaner alternative: directly observe whether a value appears in
+                # a list-of-dicts response. Captures a boolean.
+                source = captures.get(step.get("from"))
+                if source is None:
+                    observed[step.get("capture_as", "contains_unnamed")] = {"_error": f"no captured response named {step.get('from')!r}"}
+                    continue
+                items = source if isinstance(source, list) else jsonpath_simple(source, step.get("list_json_path", "$"))
+                if not isinstance(items, list):
+                    observed[step.get("capture_as", "contains_unnamed")] = {"_error": "not a list"}
+                    continue
+                field = step["item_field"]
+                target = step["target_value"]
+                found = any(isinstance(it, dict) and it.get(field) == target for it in items)
+                observed[step["capture_as"]] = found
+                captures[step["capture_as"]] = found
             elif kind == "latency_distribution":
                 latencies = captures.get("_act_latencies_ms", [])
                 if not latencies:
@@ -585,10 +747,29 @@ def jsonpath_simple(source: Any, path: str) -> Any:
     return cur
 
 
-def substitute_captures(template: str, captures: dict[str, Any]) -> str:
-    """Replace ${var} with captures[var]. Missing → KeyError."""
+def substitute_captures(template: Any, captures: dict[str, Any]) -> Any:
+    """Replace ${var} with captures[var]. Missing → KeyError.
+
+    Recursive over dicts and lists. For string templates that are EXACTLY a
+    single ${var} (no surrounding text), returns the captured value with its
+    original type preserved (int / float / bool / None). Otherwise stringifies.
+    """
+    if isinstance(template, dict):
+        return {k: substitute_captures(v, captures) for k, v in template.items()}
+    if isinstance(template, list):
+        return [substitute_captures(v, captures) for v in template]
     if not isinstance(template, str):
         return template
+
+    # Whole-string substitution: preserve type.
+    m_whole = re.fullmatch(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)\}", template)
+    if m_whole:
+        name = m_whole.group(1)
+        if name not in captures:
+            raise KeyError(f"substitute_captures: missing {name!r}; available: {sorted(captures)}")
+        return captures[name]
+
+    # Partial substitution within a string: stringify each placeholder.
     def replacer(m: re.Match) -> str:
         name = m.group(1)
         if name not in captures:
@@ -636,8 +817,8 @@ def validate_probe(probe: dict) -> list[str]:
     if probe.get("stack_profile") and probe["stack_profile"] not in STACK_PROFILES:
         errors.append(f"unknown stack_profile {probe['stack_profile']!r}; allowed: {sorted(STACK_PROFILES)}")
     allowed_kinds_arrange = {"docker-compose-up", "sql", "rest", "config_override"}
-    allowed_kinds_act = {"rest"}
-    allowed_kinds_observe = {"sql", "response_field", "latency_distribution"}
+    allowed_kinds_act = {"rest", "browser"}
+    allowed_kinds_observe = {"sql", "response_field", "response_list_field", "response_contains", "latency_distribution"}
     for i, step in enumerate(probe.get("arrange", [])):
         if step.get("kind") not in allowed_kinds_arrange:
             errors.append(f"arrange[{i}]: kind {step.get('kind')!r} not allowed")
@@ -838,6 +1019,11 @@ def main(argv: list[str]) -> int:
     except Exception as exc:
         traceback.print_exc(file=sys.stderr)
         return 2
+
+    # Dry-run never writes the probe-run artefact — it must not overwrite a real run.
+    if args.dry_run:
+        print(f"DRY-RUN-OK: {probe_path.name} — would execute against {compose_path_for_profile(parse_probe_yaml(probe_path).get('stack_profile', 'odd-minimal'), stack_dir=workspace_root / 'lineage' / '_extractor' / 'probe-stacks')}")
+        return 0
 
     out_path = write_probe_run(run, workspace_root=workspace_root, repo=args.repo)
     print(f"Wrote: {out_path}")

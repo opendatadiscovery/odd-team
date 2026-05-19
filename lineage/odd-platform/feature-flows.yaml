@@ -1,24 +1,29 @@
 ---
 artefact: feature-flows
-generated_at: "2026-05-19T00:00:00Z"
+generated_at: "2026-05-19T01:30:00Z"
 generated_at_commit: ede5d277
 sidecar_count: 50
 prompt_version: feature-flow-builder/0.1.0
-total_features: 1
+total_features: 5
 features_by_amplification:
-  drift: 1     # F-001 — view_count doubling under UI traffic
+  drift: 5     # all 5 features carry observed-vs-expected drift annotations
   clean: 0
   partial: 0
 test_matrix_summary:
   features_fully_controlled: 0
-  features_partially_controlled: 1     # F-001 — 3 of 4 cells PROBED after slice-2 probe round
+  features_partially_controlled: 5     # all 5 features now have ≥1 PROBED cell after slice-3
   features_uncontrolled: 0
 processed_node_ids:
   - "odd-platform java DataEntityController controller-method:getDataEntityDetails"
   - "odd-platform java DataEntityController controller-method:getPopular"
-  # UI component sidecar not yet authored — placeholder reference below
+  - "odd-platform java DataEntityController controller-method:addDataEntityTerm"
+  - "odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription"
+  - "odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage"
+  # UI component sidecars (DataEntityDetails.tsx etc.) still un-enriched —
+  # references left in F-001's chain; will resolve on a future UI-axis enrichment batch.
 batch_history:
-  - "2026-05-19 (slice-2 manual seed): F-001 authored by hand for the first dynamic-verification experiment. Subsequent batches will refresh via the feature-flow-builder reducer once the UI component sidecar lands."
+  - "2026-05-19 (slice-2 manual seed): F-001 authored by hand for the first dynamic-verification experiment. P-001 / P-002 / P-003 executed; 3 of 4 cells PROBED."
+  - "2026-05-19 (slice-3): F-002 (Term linking) + F-003 (Popular ranking) + F-004 (Description editing) + F-005 (Lineage traversal) authored. P-004 / P-005 / P-006 / P-007 / P-008 executed; 5 new measured-truth facts added across the catalog."
 ---
 
 # feature-flows — odd-platform — first manual entry (slice-2 of dynamic-verification ADR)
@@ -88,7 +93,7 @@ features:
       cardinality_per_call: 1
 
     amplification_factor: 2  # 2 (UI useEffect) × 1 (thunk) × 1 (controller) × 1 (repository) = 2
-    amplification_factor_provenance: "PARTIALLY MEASURED — backend half (hops 3-4 = 1×1) measured by P-001 (run R-20260519T003701Z-P-001); UI half (hops 1-2 = 2×1) remains inferred from code-walk; full chain product confirmed in slice 3 via headless-browser probe"
+    amplification_factor_provenance: "FULLY MEASURED end-to-end — P-004 (run R-20260519T010758Z-P-004) observed xhr_count=2 AND view_count delta=2 in a single UI page-open via headless Chromium. The full chain product is empirically confirmed. LSN-017's headline (`opening a detail page registers as +2 views`) is no longer inferred — it is the measured truth."
 
     observed_vs_expected:
       # Multiple facets, each with its own measurement provenance.
@@ -100,10 +105,10 @@ features:
           provenance: "MEASURED — P-001 ran 5 sequential GETs; observed final_view_count - initial_view_count = 5 (run R-20260519T003701Z-P-001)"
 
         - facet: "UI page-open delta"
-          observed: "+2 view_count per page-open (inferred from code-walk)"
+          observed: "+2 view_count per page-open; UI fires 2 sequential GET /api/dataentities/{id} per mount"
           expected: "+1 per logical page-open (per the operator-facing UX intent)"
           drift_class: ui_amplification
-          provenance: "INFERRED — slice 3 headless-browser probe will confirm"
+          provenance: "MEASURED — P-004 (run R-20260519T010758Z-P-004) launched headless Chromium, navigated to /dataentities/1004, observed xhr_count=2 (regex-filtered to exact `/api/dataentities/1004` matches) AND view_count delta=2. LSN-017's headline empirically proven; fix would flip xhr_count to 1 + delta to 1."
 
         - facet: "anonymous reachability under DISABLED"
           observed: "anonymous caller successfully fetches detail AND increments view_count; 10 anon calls → +10 view_count"
@@ -133,16 +138,19 @@ features:
           - "DataEntityDetails.tsx — assert useEffect dispatches exactly once per mount (target for slice-3 Playwright probe)"
           - "fetchDataEntityDetails thunk — assert one network call per dispatch"
       integration:
-        state: PROBED-PASSING
+        state: PROBED-PINNING-BUG
         covered:
           - behaviour: "5 sequential GET /api/dataentities/{id} increments view_count by exactly 5"
             pinned_by_probe_run: "R-20260519T003701Z-P-001"
             cell_evidence: "lineage/odd-platform/probe-runs/2026-05-19-P-001.yaml — final_view_count=5, initial_view_count=0"
+          - behaviour: "Opening /dataentities/{id} in headless Chromium fires GET /api/dataentities/{id} TWICE per mount AND view_count grows by 2"
+            pinned_by_probe_run: "R-20260519T010758Z-P-004"
+            cell_evidence: "lineage/odd-platform/probe-runs/2026-05-19-P-004.yaml — xhr_count=2 (regex-filtered exact-path), delta=2"
+            note: "PINNING-BUG: LSN-017 empirically proven. UI useEffect dep-array at DataEntityDetails.tsx:56-64 fires the fetch twice per mount; backend +1 each = +2 user-visible. Fix → assertion flips to xhr_count == 1 AND delta == 1."
         uncovered:
-          - "Open detail page via UI → assert DB view_count += 2 per page-open (target for slice-3 Playwright probe)"
           - "Multiple sequential page-opens — assert linear accumulation (extension of P-001)"
           - "Concurrent page-opens — assert no lost-update"
-          - "Popular ranking — assert entity with inflated view_count rises (cross-feature probe)"
+          - "Popular ranking — assert entity with inflated view_count rises (see F-003 for the Popular surface)"
       performance:
         state: PROBED-PASSING
         covered:
@@ -191,19 +199,247 @@ features:
     related_probes:
       - probe_id: P-001
         test_class: integration
-        status: "EXECUTED PASS — run R-20260519T003701Z-P-001"
+        status: "EXECUTED PASS — run R-20260519T003701Z-P-001 (backend +1 per call)"
         last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-001.yaml"
       - probe_id: P-002
         test_class: security
-        status: "EXECUTED PASS — run R-20260519T003811Z-P-002 (PROBED-PINNING-BUG; assertion flips when fail-closed lands)"
+        status: "EXECUTED PASS — run R-20260519T003811Z-P-002 (DISABLED anonymous reachability; PROBED-PINNING-BUG)"
         last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-002.yaml"
       - probe_id: P-003
         test_class: performance
-        status: "EXECUTED PASS — run R-20260519T003916Z-P-003 (baseline; bounds tightened in slice 3 once multi-run calibration data lands)"
+        status: "EXECUTED PASS — run R-20260519T003916Z-P-003 (latency baseline)"
         last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-003.yaml"
+      - probe_id: P-004
+        test_class: integration
+        status: "EXECUTED PASS — run R-20260519T010758Z-P-004 (LSN-017 headline: UI page-open → +2 view_count; PROBED-PINNING-BUG)"
+        last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-004.yaml"
 
     maintainer_curated: true   # this entry is manually composed for slice 2;
                                # preserved across feature-flow-builder refreshes
+
+  # ============================================================
+  # Slice-3 additions: F-002..F-005 (one feature per probe-target finding)
+  # ============================================================
+
+  - feature_id: F-002
+    feature_name: "Term linking with permission gate"
+    discovered_from_entry_point: "rest:POST /api/dataentities/{id}/terms"
+    description: |
+      The platform exposes a term-linking endpoint at POST /api/dataentities/{id}/terms.
+      The maintainer-documented intent is for DATA_ENTITY_ADD_TERM permission to
+      gate this endpoint (per /authorization/permissions doc). The implementation
+      registers the permission at the SINGULAR path `/api/dataentities/{id}/term`
+      while OpenAPI exposes the PLURAL path `/api/dataentities/{id}/terms`. The
+      AuthorizationCustomizer's path-matcher never matches; the gate never fires.
+    contributing_nodes:
+      - "odd-platform java DataEntityController controller-method:addDataEntityTerm"
+      - "odd-platform java SecurityConstants (the SECURITY_RULES singular path declaration — line 237-242)"
+      - "odd-platform java AuthorizationCustomizer (the dispatch chain with .authenticated() fall-through)"
+    terminal_side_effect:
+      side_effect_class: db-write
+      description: "INSERT row into data_entity_to_term with is_description_link=false"
+      evidence: "TermServiceImpl.linkTermWithDataEntity; ReactiveTermRelationsRepository INSERT"
+      cardinality_per_call: 1
+    amplification_factor: 1
+    observed_vs_expected:
+      facets:
+        - facet: "permission-gate enforcement under DISABLED"
+          observed: "anonymous caller successfully creates term-link; data_entity_to_term row appears with no auth check"
+          expected: "either documented anonymous-OK posture OR 401/403"
+          drift_class: auth_layer_hides_endpoint
+          provenance: "MEASURED — P-005 (run R-20260519T011344Z-P-005) created a term + POSTed the link as anonymous; observed final_term_count - initial_term_count == 1"
+    test_matrix:
+      unit: { state: GAP, covered: [], uncovered: ["TermServiceImpl.linkTermWithDataEntity in isolation", "SecurityRule path-pattern match logic — assert singular path doesn't match plural URL"] }
+      integration:
+        state: PROBED-PINNING-BUG
+        covered:
+          - behaviour: "POST /api/dataentities/{id}/terms succeeds AND creates a term_relation row when caller has NO permission (DISABLED mode)"
+            pinned_by_probe_run: "R-20260519T011344Z-P-005"
+            cell_evidence: "lineage/odd-platform/probe-runs/2026-05-19-P-005.yaml"
+            note: "PINNING-BUG: the path-mismatch bug means DATA_ENTITY_ADD_TERM is uncheckable. Fix changes SecurityConstants.java:237 path `/term` → `/terms`; assertion flips."
+        uncovered:
+          - "Under LOGIN_FORM/OAUTH2/LDAP, a caller WITHOUT DATA_ENTITY_ADD_TERM should receive 403 (target — auth-mode-matrix probe stack)"
+          - "Same probe under LDAP / OAuth2 stacks (defence-in-depth)"
+      performance: { state: GAP, covered: [], uncovered: ["TermAssignmentActivityHandler's 2× full-list re-query on every link write (REFACTOR-228)"] }
+      security:
+        state: PROBED-PINNING-BUG
+        covered:
+          - behaviour: "Path-mismatch bug confirmed via anonymous successful link"
+            pinned_by_probe_run: "R-20260519T011344Z-P-005"
+        uncovered: ["Cross-namespace term assignment unconstrained even with path fix (TEST-GAP-289)"]
+    control_summary: "2 of 4 cells PROBED — integration (PROBED-PINNING-BUG) + security (PROBED-PINNING-BUG)."
+    related_refactoring_scopes: [REFACTOR-217, REFACTOR-073]
+    related_test_gaps: [TEST-GAP-017]
+    related_doc_gaps: [DOC-GAP-001]
+    related_concepts: ["Term Linkage", "Permission (Authorization)"]
+    related_retrospectives: [LSN-017]
+    related_probes:
+      - probe_id: P-005
+        test_class: security
+        status: "EXECUTED PASS — run R-20260519T011344Z-P-005"
+        last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-005.yaml"
+    maintainer_curated: true
+
+  - feature_id: F-003
+    feature_name: "Popular entities ranking — exclude-from-search filter consistency"
+    discovered_from_entry_point: "rest:GET /api/dataentities/popular"
+    description: |
+      The Popular ranking surface (Catalog Overview's "Popular" strip) ranks
+      entities by view_count DESC. 9 other list-shape sites in the codebase
+      apply the data_entity.exclude_from_search filter to hide internal/staging
+      entities; the Popular CTE does NOT. An entity marked hidden-from-search
+      with high view_count surfaces on the platform's home page.
+    contributing_nodes:
+      - "odd-platform java DataEntityController controller-method:getPopular"
+      - "odd-platform java ReactiveDataEntityRepositoryImpl.listPopular — the CTE that omits EXCLUDE_FROM_SEARCH"
+    terminal_side_effect:
+      side_effect_class: page-render
+      description: "Returns ranked DataEntityRef list to the home-page strip"
+      evidence: "DataEntityController.getPopular → DataEntityServiceImpl.listPopular → repository CTE"
+      cardinality_per_call: 1
+    amplification_factor: 1
+    observed_vs_expected:
+      facets:
+        - facet: "EXCLUDE_FROM_SEARCH consistency"
+          observed: "entity with exclude_from_search=true + view_count=999 appears in /api/dataentities/popular response"
+          expected: "hidden-from-search entities consistently excluded across all list-shape surfaces (9 sites apply the filter)"
+          drift_class: filter_application_inconsistency
+          provenance: "MEASURED — P-006 (run R-20260519T011813Z-P-006) seeded the entity, GET'd /api/dataentities/popular, asserted appears_in_popular == True"
+    test_matrix:
+      unit: { state: GAP, covered: [], uncovered: ["listPopular CTE — assert EXCLUDE_FROM_SEARCH applied"] }
+      integration:
+        state: PROBED-PINNING-BUG
+        covered:
+          - behaviour: "Hidden-from-search entity with high view_count appears in /api/dataentities/popular response"
+            pinned_by_probe_run: "R-20260519T011813Z-P-006"
+            cell_evidence: "lineage/odd-platform/probe-runs/2026-05-19-P-006.yaml"
+            note: "PINNING-BUG: REFACTOR-222 empirically confirmed. Fix adds EXCLUDE_FROM_SEARCH.isFalse() to cteDataEntitySelect; assertion flips to == False."
+        uncovered: ["Soft-deleted entities consistently excluded", "Hollow entities consistently excluded"]
+      performance: { state: GAP, covered: [], uncovered: ["No view_count index — Popular query plan at scale (REFACTOR-221)"] }
+      security:
+        state: PROBED-PINNING-BUG
+        covered:
+          - behaviour: "Hidden-from-search bypass demonstrated"
+            pinned_by_probe_run: "R-20260519T011813Z-P-006"
+        uncovered: ["DISABLED-mode anonymous Popular read (sub-case of REFACTOR-073)"]
+    control_summary: "2 of 4 cells PROBED — integration (PROBED-PINNING-BUG) + security (PROBED-PINNING-BUG)."
+    related_refactoring_scopes: [REFACTOR-222, REFACTOR-221, REFACTOR-220]
+    related_test_gaps: [TEST-GAP-310, TEST-GAP-309]
+    related_doc_gaps: [DOC-GAP-101]
+    related_concepts: ["Popular Entities Ranking"]
+    related_retrospectives: [LSN-017]
+    related_probes:
+      - probe_id: P-006
+        test_class: security
+        status: "EXECUTED PASS — run R-20260519T011813Z-P-006 (PROBED-PINNING-BUG)"
+        last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-006.yaml"
+    maintainer_curated: true
+
+  - feature_id: F-004
+    feature_name: "Data entity description — Markdown content storage"
+    discovered_from_entry_point: "rest:PUT /api/dataentities/{id}/description"
+    description: |
+      Operators edit a data entity's description via PUT /api/dataentities/{id}/description.
+      The body is Markdown (per the OpenAPI documentation) and is stored verbatim in
+      data_entity.internal_description. The UI renders the description via
+      react-markdown + rehype-raw WITHOUT rehype-sanitize. The combined
+      backend-no-sanitisation + UI-renders-raw-HTML produces a stored-XSS surface.
+    contributing_nodes:
+      - "odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription"
+      - "odd-platform java ReactiveDataEntityRepositoryImpl.upsertInternalDescription — the verbatim UPDATE"
+    terminal_side_effect:
+      side_effect_class: db-write
+      description: "UPDATE data_entity SET internal_description = ? — stored verbatim, no sanitisation"
+      evidence: "ReactiveDataEntityRepositoryImpl line ~340"
+      cardinality_per_call: 1
+    amplification_factor: 1
+    observed_vs_expected:
+      facets:
+        - facet: "Markdown body sanitisation"
+          observed: "<script>, <img onerror>, <iframe> tags stored verbatim in DB; round-trip preserves all dangerous tags"
+          expected: "Sanitised storage (Jsoup.clean / Encode.html / allowlist) OR sanitised render (UI rehype-sanitize); ideally defence-in-depth at both"
+          drift_class: external_lib_assumes_sanitisation
+          provenance: "MEASURED — P-007 (run R-20260519T012123Z-P-007) PUT the XSS payload, GET back, SELECT raw column; all 3 dangerous-tag substrings present verbatim"
+    test_matrix:
+      unit: { state: GAP, covered: [], uncovered: ["Description-write service — assert payload sanitised pre-DB"] }
+      integration:
+        state: PROBED-PINNING-BUG
+        covered:
+          - behaviour: "XSS payload (script + img onerror + iframe) round-trips verbatim through PUT description"
+            pinned_by_probe_run: "R-20260519T012123Z-P-007"
+            cell_evidence: "lineage/odd-platform/probe-runs/2026-05-19-P-007.yaml"
+            note: "PINNING-BUG: REFACTOR-218 backend-side empirically confirmed. Fix adds sanitisation; assertion flips."
+        uncovered: ["UI render-side XSS — Playwright probe that loads /dataentities/{id} after the PUT, captures DOM, asserts <script> not in rendered HTML (defence-in-depth)"]
+      performance: { state: GAP, covered: [], uncovered: ["Body-size limit enforcement"] }
+      security:
+        state: PROBED-PINNING-BUG
+        covered:
+          - behaviour: "Backend stores dangerous-HTML payload verbatim"
+            pinned_by_probe_run: "R-20260519T012123Z-P-007"
+        uncovered: ["UI-render XSS confirmation (slice-4 Playwright probe)", "Term-mention side-channel via description ([[ns:term]] auto-creates term_relations without DATA_ENTITY_ADD_TERM)"]
+    control_summary: "2 of 4 cells PROBED — integration + security both PROBED-PINNING-BUG."
+    related_refactoring_scopes: [REFACTOR-218]
+    related_test_gaps: [TEST-GAP-293, TEST-GAP-295]
+    related_doc_gaps: [DOC-GAP-096]
+    related_concepts: ["Internal Description (Markdown body)", "Markdown Rendering Pipeline"]
+    related_retrospectives: [LSN-017]
+    related_probes:
+      - probe_id: P-007
+        test_class: security
+        status: "EXECUTED PASS — run R-20260519T012123Z-P-007 (PROBED-PINNING-BUG)"
+        last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-007.yaml"
+    maintainer_curated: true
+
+  - feature_id: F-005
+    feature_name: "Downstream lineage traversal — default depth handling"
+    discovered_from_entry_point: "rest:GET /api/dataentities/{id}/lineage/downstream"
+    description: |
+      The lineage-downstream endpoint accepts an optional lineage_depth query
+      parameter. OpenAPI declares it `required: false` (so callers may omit it)
+      and the live API-reference doc claims "Unset returns the platform's
+      default depth". The implementation uses primitive `int` for the parameter;
+      null → autoboxing throws NullPointerException → 500. The documented
+      contract is unimplementable.
+    contributing_nodes:
+      - "odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage"
+      - "odd-platform java LineageService.getLineage(int depth, ...)"
+    terminal_side_effect:
+      side_effect_class: page-render
+      description: "Returns LineageGraph payload to the lineage canvas component"
+      evidence: "DataEntityController.getDataEntityDownstreamLineage → LineageService.getLineage"
+      cardinality_per_call: 1
+    amplification_factor: 1
+    observed_vs_expected:
+      facets:
+        - facet: "default-depth handling on omitted parameter"
+          observed: "GET /api/dataentities/{id}/lineage/downstream WITHOUT lineage_depth returns 5xx (NPE)"
+          expected: "Per live api-reference doc — 'Unset returns the platform's default depth' → 200 with default-depth result"
+          drift_class: spec_says_X_impl_does_Y
+          provenance: "MEASURED — P-008 (run R-20260519T012533Z-P-008) GETs without lineage_depth; observed last_response_status in [500, 599]"
+    test_matrix:
+      unit: { state: GAP, covered: [], uncovered: ["LineageService.getLineage signature — accept Integer + null-handling for default"] }
+      integration:
+        state: PROBED-PINNING-BUG
+        covered:
+          - behaviour: "GET without lineage_depth returns 5xx (NPE)"
+            pinned_by_probe_run: "R-20260519T012533Z-P-008"
+            cell_evidence: "lineage/odd-platform/probe-runs/2026-05-19-P-008.yaml"
+            note: "PINNING-BUG: TEST-GAP-279 / DOC-GAP-089 confirmed. Fix → 200 + sensible default OR spec change to required:true."
+        uncovered: ["Default-depth value, once defined, returns N nodes/edges"]
+      performance: { state: GAP, covered: [], uncovered: ["Recursive CTE depth bound — DoS surface (REFACTOR-202)"] }
+      security: { state: GAP, covered: [], uncovered: ["Cross-tenant lineage traversal (REFACTOR-203)"] }
+    control_summary: "1 of 4 cells PROBED — integration (PROBED-PINNING-BUG)."
+    related_refactoring_scopes: []
+    related_test_gaps: [TEST-GAP-279]
+    related_doc_gaps: [DOC-GAP-089]
+    related_concepts: ["Lineage Graph Traversal", "Data Entity"]
+    related_retrospectives: [LSN-017]
+    related_probes:
+      - probe_id: P-008
+        test_class: integration
+        status: "EXECUTED PASS — run R-20260519T012533Z-P-008 (PROBED-PINNING-BUG)"
+        last_run_artefact: "lineage/odd-platform/probe-runs/2026-05-19-P-008.yaml"
+    maintainer_curated: true
 
 partial_features: []
 

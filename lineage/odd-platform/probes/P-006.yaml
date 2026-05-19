@@ -1,0 +1,84 @@
+---
+probe_id: P-006
+feature_id: F-003
+test_class: security
+verified_against_commit: ede5d277
+prompt_version: probe-runner/0.1.0
+maintainer_curated: true
+stack_profile: odd-minimal
+expected_outcome: |
+  REFACTOR-222 (batch G) found that `ReactiveDataEntityRepositoryImpl.listPopular`
+  does NOT apply the EXCLUDE_FROM_SEARCH predicate, even though 9 other
+  list-shape sites in the codebase do. Consequence: an entity marked
+  hidden-from-search but with high view_count surfaces on the home-page
+  Popular strip.
+
+  Probe seeds an entity with exclude_from_search=true + view_count=999, GETs
+  /api/dataentities/popular, asserts the entity ID appears in the response.
+  When the fix lands (EXCLUDE_FROM_SEARCH filter added to listPopular's CTE),
+  this probe's assertion flips: entity must NOT appear → `appears_in_popular`
+  becomes False.
+---
+
+# P-006 — Popular EXCLUDE_FROM_SEARCH bypass (REFACTOR-222)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1006, '//probe-source/db', 'probe-source-P-006')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         exclude_from_search, source_created_at, source_updated_at)
+      VALUES (1006, '//probe-source/db/tables/p006_hidden_popular', 'p006_hidden_popular',
+              1006, 1, 999, true, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+act:
+  - kind: rest
+    method: GET
+    path: /api/dataentities/popular?page=1&size=20
+    capture_as: popular_response
+
+observe:
+  - kind: response_contains
+    from: popular_response
+    list_json_path: "$.items"
+    item_field: id
+    target_value: 1006
+    capture_as: appears_in_popular
+
+  - kind: sql
+    query: |
+      SELECT view_count, exclude_from_search FROM data_entity WHERE id = 1006
+    capture_as: seed_state_verified
+
+assert:
+  # The bug: a soft-hidden entity with high view_count appears on Popular.
+  # When the fix lands, this assertion flips to `== False`.
+  - "appears_in_popular == True"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-222]
+  test_gaps: [TEST-GAP-310]
+  doc_gaps: [DOC-GAP-101]
+  related_concepts: ["Popular Entities Ranking", "Data Entity"]
+  retrospectives: [LSN-017]
+
+realism_caveats: |
+  - Probe assumes /api/dataentities/popular returns an envelope with `items[]`
+    (the standard ODD list response shape). If the actual response shape
+    differs at the substrate's commit, adjust `list_json_path`.
+  - view_count=999 is a generous boost to ensure the entity ranks in the
+    top-20 against any seed traffic. On a heavily-trafficked instance, this
+    threshold would need to be larger.

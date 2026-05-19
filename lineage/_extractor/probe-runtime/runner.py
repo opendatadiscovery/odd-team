@@ -985,35 +985,367 @@ def step_outcome_to_dict(o: StepOutcome) -> dict:
 
 
 # ============================================================================
+# Batch mode — shared docker-compose lifecycle across multiple probes
+# Per dynamic-verification ADR slice 5 prep. Cuts ~50s of per-probe overhead.
+# ============================================================================
+
+def run_probe_batch(
+    probe_ids: list[str],
+    *,
+    workspace_root: Path,
+    repo: str,
+    verbose: bool = False,
+) -> list[ProbeRun]:
+    """Run multiple probes against a single shared stack lifecycle.
+
+    All probes must share the same stack_profile. The runner brings the stack
+    up once, runs each probe's arrange (skipping docker-compose-up steps),
+    act, observe, assert, then runs each probe's cleanup (skipping docker-
+    compose-down). Tears the stack down once at the end.
+
+    Seed IDs must be unique across probes (slice-2 probes use 100N where
+    N is the probe number; convention).
+    """
+    if not probe_ids:
+        return []
+
+    # Resolve + parse all probes; validate; group by stack_profile.
+    probes_data: list[tuple[str, Path, dict]] = []
+    profiles_seen: set[str] = set()
+    for pid in probe_ids:
+        probe_path = workspace_root / PROBES_DIR_TEMPLATE.format(repo=repo) / f"{pid}.yaml"
+        if not probe_path.is_file():
+            raise FileNotFoundError(f"probe file not found: {probe_path}")
+        probe = parse_probe_yaml(probe_path)
+        errors = validate_probe(probe)
+        if errors:
+            raise ValueError(f"probe {pid} validation errors: {errors}")
+        probes_data.append((pid, probe_path, probe))
+        profiles_seen.add(probe.get("stack_profile", "odd-minimal"))
+
+    if len(profiles_seen) != 1:
+        raise ValueError(f"all probes in a batch must share a stack_profile; got {profiles_seen!r}")
+
+    stack_profile = profiles_seen.pop()
+    compose_file = compose_path_for_profile(stack_profile, stack_dir=workspace_root / "lineage" / "_extractor" / "probe-stacks")
+
+    if verbose:
+        print(f"[batch] {len(probes_data)} probes, shared profile {stack_profile!r}", file=sys.stderr)
+
+    # Bring the stack up ONCE
+    if verbose:
+        print(f"[batch] bringing stack up: {compose_file}", file=sys.stderr)
+    shared_up = stack_up(compose_file, verbose=verbose)
+    if not shared_up.success:
+        # Each probe gets an ERROR run noting the shared-up failure.
+        runs: list[ProbeRun] = []
+        for pid, _, probe in probes_data:
+            run = ProbeRun(
+                probe_run_id=f"R-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{pid}",
+                probe_id=pid,
+                feature_id=probe.get("feature_id"),
+                test_class=probe.get("test_class", "<unknown>"),
+                ran_at=now_iso(),
+                ran_against_substrate_commit=probe.get("verified_against_commit"),
+                ran_against_docker_compose_tag=str(compose_file.name),
+                stack_profile=stack_profile,
+                outcome="ERROR",
+                verdict_reason="shared stack failed to come up (batch aborted)",
+                arrange_outcomes=[shared_up],
+            )
+            runs.append(run)
+        return runs
+
+    shared_ready = stack_wait_healthy(verbose=verbose)
+    if not shared_ready.success:
+        stack_down(compose_file, destroy_volumes=True, verbose=verbose)
+        runs = []
+        for pid, _, probe in probes_data:
+            run = ProbeRun(
+                probe_run_id=f"R-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{pid}",
+                probe_id=pid,
+                feature_id=probe.get("feature_id"),
+                test_class=probe.get("test_class", "<unknown>"),
+                ran_at=now_iso(),
+                ran_against_substrate_commit=probe.get("verified_against_commit"),
+                ran_against_docker_compose_tag=str(compose_file.name),
+                stack_profile=stack_profile,
+                outcome="ERROR",
+                verdict_reason="shared stack did not become healthy (batch aborted)",
+                arrange_outcomes=[shared_up, shared_ready],
+            )
+            runs.append(run)
+        return runs
+
+    # Run each probe (filter out their docker-compose-up/down steps).
+    runs: list[ProbeRun] = []
+    for pid, probe_path, probe in probes_data:
+        if verbose:
+            print(f"[batch] running {pid}", file=sys.stderr)
+        run_id = f"R-{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{pid}"
+        captures: dict[str, Any] = {}
+        run = ProbeRun(
+            probe_run_id=run_id,
+            probe_id=pid,
+            feature_id=probe.get("feature_id"),
+            test_class=probe["test_class"],
+            ran_at=now_iso(),
+            ran_against_substrate_commit=probe.get("verified_against_commit"),
+            ran_against_docker_compose_tag=str(compose_file.name),
+            stack_profile=stack_profile,
+        )
+        # Pre-pend the shared-up outcomes so each run records that it shared a stack.
+        run.arrange_outcomes = [shared_up, shared_ready]
+
+        # Filter out docker-compose-up steps from arrange (shared lifecycle handles it)
+        arrange_steps = [s for s in probe.get("arrange", []) if s.get("kind") != "docker-compose-up"]
+        run.arrange_outcomes += execute_arrange(arrange_steps, compose_file, captures=captures, verbose=verbose)
+        # Only mark batch-arrange as failed for steps that aren't the shared-up duplicates.
+        arrange_per_probe = run.arrange_outcomes[2:]
+        if any(not o.success for o in arrange_per_probe):
+            run.outcome = "ERROR"
+            run.verdict_reason = "arrange step failed in batch context"
+            runs.append(run)
+            continue
+
+        # act
+        run.act_outcomes = execute_act(probe.get("act", []), captures=captures, verbose=verbose)
+        if any(not o.success for o in run.act_outcomes):
+            run.outcome = "ERROR"
+            run.verdict_reason = "act step failed in batch context"
+            runs.append(run)
+            continue
+
+        # observe + assert
+        run.observe_outcomes = execute_observe(probe.get("observe", []), captures=captures, verbose=verbose)
+        run.assert_outcomes = execute_assert(probe.get("assert", []), captures=captures, observed=run.observe_outcomes)
+        failed = [a for a in run.assert_outcomes if not a.get("passed")]
+        if failed:
+            run.outcome = "FAIL"
+            run.verdict_reason = f"{len(failed)} assert(s) failed; first: {failed[0]['expr']!r}"
+        else:
+            run.outcome = "PASS"
+            run.verdict_reason = "all assertions passed"
+
+        # Skip docker-compose-down in cleanup (shared lifecycle handles it).
+        cleanup_steps_filtered = [s for s in probe.get("cleanup", []) if s.get("kind") != "docker-compose-down"]
+        # In slice-4 the only cleanup kind beyond docker-compose-down isn't yet defined;
+        # leave the door open for future cleanup actions.
+        run.cleanup_outcomes = []  # nothing to do per-probe in batch mode
+        runs.append(run)
+
+    # Tear down the shared stack
+    if verbose:
+        print(f"[batch] tearing down shared stack", file=sys.stderr)
+    shared_down = stack_down(compose_file, destroy_volumes=True, verbose=verbose)
+    for run in runs:
+        run.cleanup_outcomes.append(shared_down)
+
+    return runs
+
+
+# ============================================================================
+# Sidecar confidence merge — feeds measured truth back into per-node sidecars
+# Per dynamic-verification ADR Rule 4. Closes the layer-5 → layer-2 loop.
+# ============================================================================
+
+def _node_id_to_sidecar_slug(node_id: str) -> str:
+    """Convert a substrate node_id to its sidecar filename slug.
+
+    Format: spaces and colons → double underscores.
+    `odd-platform java DataEntityController controller-method:getDataEntityDetails`
+    → `odd-platform__java__DataEntityController__controller-method__getDataEntityDetails`
+    """
+    return node_id.replace(" ", "__").replace(":", "__")
+
+
+def merge_probe_into_sidecars(
+    run: ProbeRun,
+    *,
+    workspace_root: Path,
+    repo: str,
+    verbose: bool = False,
+) -> list[Path]:
+    """Append a `## probe_verifications` entry to each contributing sidecar.
+
+    Reads feature-flows.yaml; finds the feature matching run.feature_id; walks
+    contributing_nodes; for each resolved node (sidecar exists on disk),
+    appends a structured entry. Skips UNRESOLVED placeholders.
+
+    Returns the list of sidecar paths that were updated. Side-effect-free if
+    the run's outcome is not in {PASS, FAIL} or feature-flows.yaml is missing.
+    """
+    if run.outcome not in {"PASS", "FAIL"}:
+        return []
+    if not run.feature_id:
+        return []
+
+    feature_flows_path = workspace_root / "lineage" / repo / "feature-flows.yaml"
+    if not feature_flows_path.is_file():
+        return []
+
+    try:
+        ff_docs = list(yaml.safe_load_all(feature_flows_path.read_text(encoding="utf-8")))
+    except yaml.YAMLError as exc:
+        if verbose:
+            print(f"[runner] WARNING: feature-flows.yaml parse error: {exc}", file=sys.stderr)
+        return []
+
+    # feature-flows.yaml has 2 docs: frontmatter + body
+    body = ff_docs[1] if len(ff_docs) > 1 else {}
+    features = body.get("features", [])
+    feature = next((f for f in features if f.get("feature_id") == run.feature_id), None)
+    if feature is None:
+        if verbose:
+            print(f"[runner] feature {run.feature_id} not in feature-flows.yaml; skipping sidecar merge", file=sys.stderr)
+        return []
+
+    sidecar_dir = workspace_root / "lineage" / repo / "understanding"
+    updated_paths: list[Path] = []
+
+    # Parse contributing_nodes to extract the node_id portion (strip parenthetical notes).
+    # Format examples:
+    #   "odd-platform java DataEntityController controller-method:getDataEntityDetails"
+    #   "odd-platform java DataEntityController controller-method:getDataEntityDetails (note)"
+    #   "ts react-component:DataEntityDetails.tsx (UNRESOLVED — sidecar not yet enriched; ref only)"
+    for raw in feature.get("contributing_nodes", []):
+        if not isinstance(raw, str):
+            continue
+        node_id = re.sub(r"\s*\([^)]*\)\s*$", "", raw).strip()
+        # Skip references that are clearly UNRESOLVED in the raw notation
+        if "UNRESOLVED" in raw or "not yet enriched" in raw:
+            continue
+        slug = _node_id_to_sidecar_slug(node_id) + ".md"
+        sidecar_path = sidecar_dir / slug
+        if not sidecar_path.is_file():
+            if verbose:
+                print(f"[runner] sidecar not found, skipping: {slug}", file=sys.stderr)
+            continue
+
+        # Append the verification entry
+        verdict_escaped = yaml.safe_dump(run.verdict_reason, default_style='"').strip()
+        verification_entry = (
+            f"- probe_id: {run.probe_id}\n"
+            f"  probe_run_id: {run.probe_run_id}\n"
+            f"  outcome: {run.outcome}\n"
+            f"  test_class: {run.test_class}\n"
+            f"  feature_id: {run.feature_id}\n"
+            f"  ran_at: {run.ran_at}\n"
+            f"  verdict: {verdict_escaped}\n"
+        )
+
+        sidecar_text = sidecar_path.read_text(encoding="utf-8")
+        if "## probe_verifications" in sidecar_text:
+            # Idempotency: if this exact probe_run_id is already recorded, skip.
+            if run.probe_run_id in sidecar_text:
+                continue
+            # Append the entry inside the existing section. We append AFTER the
+            # section header + any existing entries — simplest: insert before the
+            # NEXT top-level `##` header OR at file end.
+            section_idx = sidecar_text.index("## probe_verifications")
+            # Find the next top-level `##` after this section, or EOF
+            next_section_match = re.search(r"\n## ", sidecar_text[section_idx + 1:])
+            if next_section_match:
+                insert_at = section_idx + 1 + next_section_match.start()
+                new_text = sidecar_text[:insert_at] + verification_entry + sidecar_text[insert_at:]
+            else:
+                # Append at file end
+                new_text = sidecar_text.rstrip() + "\n" + verification_entry
+        else:
+            # Section doesn't exist; create it at the end of the file
+            section_header = (
+                "\n## probe_verifications\n\n"
+                "<!-- Auto-managed by lineage/_extractor/probe-runtime/runner.py — "
+                "appended after each layer-5 probe-run that touches this node's "
+                "contributing-features. Each entry cites a probe-run artefact "
+                "under lineage/{repo}/probe-runs/. Per dynamic-verification ADR Rule 4. -->\n\n"
+            )
+            new_text = sidecar_text.rstrip() + "\n" + section_header + verification_entry
+
+        sidecar_path.write_text(new_text, encoding="utf-8")
+        updated_paths.append(sidecar_path)
+        if verbose:
+            print(f"[runner] merged probe-verification into {slug}", file=sys.stderr)
+
+    return updated_paths
+
+
+# ============================================================================
 # CLI
 # ============================================================================
 
 def main(argv: list[str]) -> int:
     p = argparse.ArgumentParser(description="Run a local probe against an ephemeral docker-compose mirror.")
-    p.add_argument("probe_id", help="Probe ID (e.g. P-001) — corresponds to lineage/{repo}/probes/{probe_id}.yaml")
+    p.add_argument("probe_id", nargs="+", help="One or more probe IDs (P-001 P-002 ...). With --batch, all probes must share a stack_profile and are run against a single shared docker-compose lifecycle.")
     p.add_argument("--repo", default="odd-platform", help="Substrate repo (default: odd-platform)")
     p.add_argument("--workspace-root", default=str(WORKSPACE_ROOT_DEFAULT), help="Workspace root (default: this script's grandparent)")
     p.add_argument("--verbose", "-v", action="store_true")
     p.add_argument("--dry-run", action="store_true", help="Validate probe + show what would execute, but do not bring up the stack")
     p.add_argument("--validate", action="store_true", help="Parse + scope-check; exit 0 if valid")
+    p.add_argument("--no-merge", action="store_true", help="Skip the sidecar confidence merge after the probe completes")
+    p.add_argument("--batch", action="store_true", help="Run multiple probes against a single shared docker-compose lifecycle (~50s overhead saved per probe after the first).")
     args = p.parse_args(argv)
 
     workspace_root = Path(args.workspace_root).resolve()
-    probe_path = workspace_root / PROBES_DIR_TEMPLATE.format(repo=args.repo) / f"{args.probe_id}.yaml"
-    if not probe_path.is_file():
-        print(f"FATAL: probe file not found: {probe_path}", file=sys.stderr)
-        return 2
+    probes_dir = workspace_root / PROBES_DIR_TEMPLATE.format(repo=args.repo)
+
+    # Validate all named probe files exist
+    for pid in args.probe_id:
+        probe_path = probes_dir / f"{pid}.yaml"
+        if not probe_path.is_file():
+            print(f"FATAL: probe file not found: {probe_path}", file=sys.stderr)
+            return 2
 
     if args.validate:
-        probe = parse_probe_yaml(probe_path)
-        errors = validate_probe(probe)
-        if errors:
-            for e in errors:
-                print(f"VALIDATION ERROR: {e}", file=sys.stderr)
-            return 4
-        print(f"OK: {probe_path.name} validates")
-        return 0
+        had_error = False
+        for pid in args.probe_id:
+            probe_path = probes_dir / f"{pid}.yaml"
+            probe = parse_probe_yaml(probe_path)
+            errors = validate_probe(probe)
+            if errors:
+                had_error = True
+                for e in errors:
+                    print(f"VALIDATION ERROR ({pid}): {e}", file=sys.stderr)
+            else:
+                print(f"OK: {probe_path.name} validates")
+        return 4 if had_error else 0
 
+    # --- BATCH MODE (shared docker-compose lifecycle) ---
+    if args.batch or len(args.probe_id) > 1:
+        if args.dry_run:
+            print(f"DRY-RUN-OK: {len(args.probe_id)} probes would run in batch mode against shared stack")
+            return 0
+        try:
+            runs = run_probe_batch(args.probe_id, workspace_root=workspace_root, repo=args.repo, verbose=args.verbose)
+        except Exception as exc:
+            traceback.print_exc(file=sys.stderr)
+            return 2
+
+        exit_code = 0
+        merge_count = 0
+        for run in runs:
+            out_path = write_probe_run(run, workspace_root=workspace_root, repo=args.repo)
+            print(f"  {run.probe_id} → {run.outcome} ({out_path.name}) — {run.verdict_reason}")
+            if not args.no_merge and run.outcome in {"PASS", "FAIL"}:
+                try:
+                    updated = merge_probe_into_sidecars(run, workspace_root=workspace_root, repo=args.repo, verbose=args.verbose)
+                    merge_count += len(updated)
+                except Exception as exc:
+                    print(f"    WARNING: sidecar merge failed for {run.probe_id}: {exc}", file=sys.stderr)
+            if run.outcome == "FAIL":
+                exit_code = max(exit_code, 1)
+            elif run.outcome in {"ERROR", "TIMEOUT", "SCOPE_VIOLATION"}:
+                exit_code = max(exit_code, 2)
+
+        pass_count = sum(1 for r in runs if r.outcome == "PASS")
+        fail_count = sum(1 for r in runs if r.outcome == "FAIL")
+        err_count = len(runs) - pass_count - fail_count
+        print(f"\nBatch summary: {pass_count} PASS / {fail_count} FAIL / {err_count} ERROR. {merge_count} sidecar verification entries appended.")
+        return exit_code
+
+    # --- SINGLE MODE ---
+    pid = args.probe_id[0]
+    probe_path = probes_dir / f"{pid}.yaml"
     try:
         run = run_probe(probe_path, workspace_root=workspace_root, verbose=args.verbose, dry_run=args.dry_run)
     except Exception as exc:
@@ -1028,6 +1360,20 @@ def main(argv: list[str]) -> int:
     out_path = write_probe_run(run, workspace_root=workspace_root, repo=args.repo)
     print(f"Wrote: {out_path}")
     print(f"Outcome: {run.outcome} — {run.verdict_reason}")
+
+    # Sidecar confidence merge — per dynamic-verification ADR Rule 4.
+    if not args.no_merge and run.outcome in {"PASS", "FAIL"}:
+        try:
+            updated = merge_probe_into_sidecars(run, workspace_root=workspace_root, repo=args.repo, verbose=args.verbose)
+            if updated:
+                print(f"Merged probe-verification into {len(updated)} sidecar(s):")
+                for sp in updated:
+                    print(f"  - {sp.relative_to(workspace_root)}")
+            elif args.verbose:
+                print("[runner] no sidecars updated (feature missing OR all contributing nodes are UNRESOLVED)")
+        except Exception as exc:
+            print(f"WARNING: sidecar merge failed: {exc}", file=sys.stderr)
+
     return {
         "PASS": 0,
         "FAIL": 1,

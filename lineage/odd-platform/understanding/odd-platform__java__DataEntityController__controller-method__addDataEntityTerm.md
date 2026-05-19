@@ -236,3 +236,14 @@ session_id: session-2026-05-13-G
 
 ## Maintainer notes
 
+## probe_verifications
+
+<!-- Auto-managed by lineage/_extractor/probe-runtime/runner.py — appended after each layer-5 probe-run that touches this node's contributing-features. Each entry cites a probe-run artefact under lineage/{repo}/probe-runs/. Per dynamic-verification ADR Rule 4. -->
+
+- probe_id: P-005
+  probe_run_id: R-20260519T015115Z-P-005
+  outcome: PASS
+  test_class: security
+  feature_id: F-002
+  ran_at: 2026-05-19T01:51:15+00:00
+  verdict: "all assertions passed"

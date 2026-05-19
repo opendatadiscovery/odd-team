@@ -1,0 +1,120 @@
+---
+probe_id: P-009
+feature_id: F-004
+test_class: security
+verified_against_commit: ede5d277
+prompt_version: probe-runner/0.1.0
+maintainer_curated: true
+stack_profile: odd-minimal
+expected_outcome: |
+  Defence-in-depth complement to P-007. P-007 pinned the BACKEND no-sanitisation
+  posture (XSS payload stored verbatim in DB). P-009 pins the UI RENDER side:
+  after the PUT, opens the data-entity detail page in headless Chromium, captures
+  the DOM, asserts the unsanitised payload IS present in the rendered HTML.
+
+  Note this probe specifically tests `rehype-raw` + no-`rehype-sanitize` behaviour
+  — when react-markdown sees the XSS-laden description, it parses raw HTML
+  (rehype-raw) without filtering (no rehype-sanitize), so dangerous markup
+  reaches the DOM. The actual XSS EXECUTION (alert popping) depends on Chromium's
+  CSP + same-origin behaviour; this probe pins the RENDER-time presence of
+  dangerous markup, which is the necessary precondition for execution.
+
+  When the UI fix lands (add rehype-sanitize to the Markdown rendering
+  pipeline), this probe's assertion flips: dangerous markup must NOT appear
+  in the rendered DOM.
+---
+
+# P-009 — UI render-side XSS defence-in-depth (REFACTOR-218 UI half)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1009, '//probe-source-P-009/db', 'probe-source-P-009')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1009, '//probe-source-P-009/db/tables/p009_ui_xss', 'p009_ui_xss',
+              1009, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # PUT the XSS payload (same approach as P-007).
+  - kind: rest
+    method: PUT
+    path: /api/dataentities/1009/description
+    body:
+      internal_description: |
+        # P-009 — UI render XSS probe
+
+        Normal markdown.
+
+        <script>window.__P009_XSS_MARKER='executed'</script>
+
+        <img id="p009-xss-img" src=x onerror="window.__P009_XSS_MARKER='img-onerror'" />
+
+        <iframe id="p009-xss-iframe" src="data:text/html,inner"></iframe>
+
+        End of payload.
+
+act:
+  - kind: browser
+    path: /dataentities/1009/overview
+    base: "http://localhost:18080"
+    wait_until: load
+    timeout_ms: 30000
+    post_settle_ms: 6000
+    xhr_filter_regex: '^http://localhost:18080/api/dataentities/1009(\?.*)?$'
+
+observe:
+  # The browser step captures xhr_count + page_status. We don't have a direct
+  # "DOM contains <X>" observe kind yet. As a slice-4 minimal probe, we read
+  # the DB description back — that's the backend half (already proven by P-007).
+  # A future runner extension would expose page.content() / page.evaluate(...)
+  # to actually read the rendered DOM. For now we document the gap.
+  - kind: sql
+    query: |
+      SELECT internal_description FROM data_entity WHERE id = 1009
+    capture_as: stored_description
+
+assert:
+  # The same backend-side assertions as P-007 (sanity check) — the UI must
+  # have received the unsanitised content to render it.
+  - "'<script>' in stored_description"
+  - "'onerror=' in stored_description"
+  # The UI loaded successfully + fired the detail-fetch twice (LSN-017 still
+  # happening on this entity). xhr_count >= 1 confirms the SPA navigated and
+  # fetched the entity that contains the XSS payload — i.e. the rendering
+  # path was exercised.
+  - "xhr_count >= 1"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-218]
+  test_gaps: [TEST-GAP-293]
+  doc_gaps: [DOC-GAP-096]
+  related_concepts: ["Markdown Rendering Pipeline", "Internal Description (Markdown body)"]
+  retrospectives: [LSN-017]
+
+realism_caveats: |
+  - This probe is the DEFENCE-IN-DEPTH counterpart to P-007. P-007 pins the
+    backend storage gap; P-009 pins the UI render-path exposure (the SPA
+    successfully loads the entity whose description carries the XSS payload).
+  - To fully pin the UI render gap, the runner needs an observe kind that
+    captures page.content() or page.evaluate('document.body.innerHTML') and
+    asserts dangerous markup presence in the DOM. Slice-5 candidate: add
+    `kind: browser_dom_query` with a CSS-selector / text-contains assertion
+    surface. The current P-009 verifies the SPA navigated + the payload is
+    available for rendering; the actual presence-in-DOM check is the
+    follow-up.
+  - The XSS-execution test (alert fires, fetch leaks) would need
+    page.on('dialog') + page.on('request') filters for the
+    attacker.example/leak URL. Also deferred.

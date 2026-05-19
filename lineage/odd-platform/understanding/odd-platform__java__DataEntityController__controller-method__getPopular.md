@@ -260,3 +260,56 @@ session_id: session-2026-05-13-G
 
 ## Maintainer notes
 
+## probe_verifications
+
+<!-- Auto-managed by lineage/_extractor/probe-runtime/runner.py — appended after each layer-5 probe-run that touches this node's contributing-features. Each entry cites a probe-run artefact under lineage/{repo}/probe-runs/. Per dynamic-verification ADR Rule 4. -->
+
+- probe_id: P-001
+  probe_run_id: R-20260519T014121Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T01:41:21+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T014819Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T01:48:19+00:00
+  verdict: "all assertions passed"
+- probe_id: P-001
+  probe_run_id: R-20260519T015052Z-P-001
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T01:50:52+00:00
+  verdict: "all assertions passed"
+- probe_id: P-002
+  probe_run_id: R-20260519T015056Z-P-002
+  outcome: PASS
+  test_class: security
+  feature_id: F-001
+  ran_at: 2026-05-19T01:50:56+00:00
+  verdict: "all assertions passed"
+- probe_id: P-003
+  probe_run_id: R-20260519T015058Z-P-003
+  outcome: PASS
+  test_class: performance
+  feature_id: F-001
+  ran_at: 2026-05-19T01:50:58+00:00
+  verdict: "all assertions passed"
+- probe_id: P-004
+  probe_run_id: R-20260519T015104Z-P-004
+  outcome: PASS
+  test_class: integration
+  feature_id: F-001
+  ran_at: 2026-05-19T01:51:04+00:00
+  verdict: "all assertions passed"
+- probe_id: P-006
+  probe_run_id: R-20260519T015117Z-P-006
+  outcome: PASS
+  test_class: security
+  feature_id: F-003
+  ran_at: 2026-05-19T01:51:17+00:00
+  verdict: "all assertions passed"

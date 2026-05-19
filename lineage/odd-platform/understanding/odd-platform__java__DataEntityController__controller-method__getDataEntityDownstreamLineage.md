@@ -220,3 +220,15 @@ Reactive `GET /api/dataentities/{data_entity_id}/lineage/downstream` controller 
 - performance: HIGH
 
 ## Maintainer notes
+
+## probe_verifications
+
+<!-- Auto-managed by lineage/_extractor/probe-runtime/runner.py — appended after each layer-5 probe-run that touches this node's contributing-features. Each entry cites a probe-run artefact under lineage/{repo}/probe-runs/. Per dynamic-verification ADR Rule 4. -->
+
+- probe_id: P-008
+  probe_run_id: R-20260519T015119Z-P-008
+  outcome: PASS
+  test_class: integration
+  feature_id: F-005
+  ran_at: 2026-05-19T01:51:19+00:00
+  verdict: "all assertions passed"

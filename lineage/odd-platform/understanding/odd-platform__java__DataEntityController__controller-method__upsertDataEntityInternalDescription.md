@@ -288,3 +288,22 @@ session_id: session-2026-05-13-G
 - performance: MEDIUM (FTS-rebuild scope confidence depends on re-reading `ReactiveSearchEntrypointRepositoryImpl.updateDataEntityVectors` which was only sampled; activity-table growth severity is a per-deployment factor, not statically resolvable)
 
 ## Maintainer notes
+
+## probe_verifications
+
+<!-- Auto-managed by lineage/_extractor/probe-runtime/runner.py — appended after each layer-5 probe-run that touches this node's contributing-features. Each entry cites a probe-run artefact under lineage/{repo}/probe-runs/. Per dynamic-verification ADR Rule 4. -->
+
+- probe_id: P-007
+  probe_run_id: R-20260519T015118Z-P-007
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T01:51:18+00:00
+  verdict: "all assertions passed"
+- probe_id: P-009
+  probe_run_id: R-20260519T015119Z-P-009
+  outcome: PASS
+  test_class: security
+  feature_id: F-004
+  ran_at: 2026-05-19T01:51:19+00:00
+  verdict: "all assertions passed"

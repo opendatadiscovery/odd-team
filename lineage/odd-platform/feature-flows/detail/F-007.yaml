@@ -69,15 +69,26 @@ chain:
   unresolved: false
 - hop: 2
   node: odd-platform java AlertServiceImpl
-  sidecar: '(not yet enriched — referenced as call-context only)'
+  sidecar: odd-platform__java__service__service__AlertServiceImpl.md
   multiplicity_per_trigger: 1
-  evidence: 'AlertServiceImpl.handleExternalAlerts (line 152 — @ReactiveTransactional;
-    lines 153-191). Maps the webhook payload to AlertPojo via setDataEntityOddrn(externalAlert.getLabels().get("entity_oddrn"))
-    at line 178 — no validation of the oddrn against the calling principal, no
-    check that the oddrn refers to a real DataEntity. Constructs chunk description
-    `String.format("Distribution Anomaly. URL: %s", queryUrl)` at line 185 — the
-    queryUrl is the Prometheus GeneratorURL from the webhook (untrusted).'
-  unresolved: true
+  evidence: |-
+    AlertServiceImpl.handleExternalAlerts (line 152 — @ReactiveTransactional;
+    lines 153-191) confirmed PRIMARY-SOURCE in batch-I. Maps the webhook payload
+    to AlertPojo via setDataEntityOddrn(externalAlert.getLabels().get("entity_oddrn"))
+    at line 178 — NO validation of the oddrn against the calling principal, NO
+    check that the oddrn refers to a real DataEntity, NO sanitisation. Constructs
+    chunk description `String.format("Distribution Anomaly. URL: %s", queryUrl)`
+    at line 185 — the queryUrl is the Prometheus GeneratorURL from the webhook
+    (untrusted). The path also hardcodes type=DISTRIBUTION_ANOMALY at line 177
+    (AlertManager-side `alertname` / `severity` labels are ignored). Crucially,
+    handleExternalAlerts SKIPS AlertActionResolver (which IS used by the in-platform
+    ingestion path at line 222-227) — the de-duplication boundary is asymmetric:
+    Prometheus retries produce duplicate ALERT rows. The ExternalAlert.startsAt
+    is LocalDateTime (timezone-naive) — the URL-encoded generator URL points to a
+    Prometheus query window keyed by the SERVER's local time, not the alert's actual
+    timestamp.
+  unresolved: false
+  resolved_in_batch: I
 - hop: 3
   node: odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
   sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
@@ -185,6 +196,67 @@ observed_vs_expected:
     drift_class: missing_idempotency
     provenance: STATIC — primary-source verification in batch-H ReactiveAlertRepositoryImpl
       sidecar bugs_limitations_corner_cases[2]
+  - facet: AlertActionResolver asymmetry confirmed PRIMARY-SOURCE at service tier
+      (batch I)
+    observed: |-
+      AlertServiceImpl.applyAlertActions (lines 200-231, used by the in-platform ingestion
+      path AlertIngestionRequestProcessor) consumes AlertAction objects pre-grouped
+      by AlertUniqueConstraint from AlertActionResolver — full de-duplication is
+      applied. AlertServiceImpl.handleExternalAlerts (lines 151-191, the AlertManager
+      webhook path) constructs AlertPojo DIRECTLY from the webhook payload and skips
+      the resolver entirely. The shared `createAlerts` private helper (lines 261-300)
+      does NOT de-duplicate at the SQL level. The asymmetry is deliberate (per batch-I
+      implicit_adrs[3] — the in-platform ingestion has rich state context, the webhook
+      is a thin adapter with no snapshot); the consequence is the Prometheus-retry
+      idempotency gap.
+    expected: |-
+      Either route the AlertManager path through AlertActionResolver too (build a
+      synthetic snapshot inside the txn) OR add ON CONFLICT idempotency at the SQL
+      level OR document the retry-produces-duplicates contract for operators
+    drift_class: missing_idempotency
+    provenance: STATIC — primary-source verification in batch-I AlertServiceImpl
+      sidecar implicit_adrs[3] + bugs_limitations_corner_cases[1] + downstream_side_effects
+      table.
+  - facet: generator URL embedded in chunk description — UI-render-side surface (batch
+      I)
+    observed: |-
+      AlertServiceImpl.handleExternalAlerts line 168 builds the URL via UriComponentsBuilder.fromUri(externalAlert.getGeneratorURL());
+      line 185 embeds it in the description as `String.format("Distribution Anomaly.
+      URL: %s", queryUrl)`. The URI type does some shape validation but does not
+      block javascript: scheme or arbitrary host URLs. The chunk description is then
+      rendered back in the UI on the alerts feed; if the UI renders descriptions
+      as innerHTML (or as a clickable link), this is a stored-XSS / open-redirect
+      surface. Combined with the unauthenticated webhook endpoint, any caller with
+      network reach can plant the payload — and combined with the cross-owner read
+      on /api/alerts (REFACTOR-024), every authenticated user sees it.
+    expected: |-
+      Validate the generator URL against an allow-list of schemes (http/https only)
+      AND sanitise rendering on the UI side
+    drift_class: untrusted_input_to_rendered_text
+    provenance: STATIC — primary-source verification in batch-I AlertServiceImpl
+      sidecar bugs_limitations_corner_cases[3] + security.known_security_gaps[3].
+      Proposed local probe — POST AlertManager payload with generatorURL=`javascript:alert(1)`
+      + GET /api/alerts via UI + assert no script execution + verify URL is sanitised
+      or escaped.
+  - facet: ExternalAlert.startsAt timezone-naive — embedded Prometheus query window
+      misaligned (batch I)
+    observed: |-
+      AlertServiceImpl line 67-68 declares ALERT_MANAGER_TIME_FORMATTER as `yyyy-MM-dd
+      HH:mm:ss` (no timezone). The webhook payload's ExternalAlert.startsAt field
+      is `LocalDateTime` (ExternalAlert.java:14) — timezone-naive — and Jackson's
+      default deserialisation strips any offset present in the AlertManager-side
+      RFC3339 string. The URL embedded in the chunk description (line 162-172) uses
+      this naive timestamp for `g0.moment_input` / `g0.end_input` query params —
+      operators clicking the link land in a Prometheus query window keyed by the
+      ODD server's local time, not the alert's actual timestamp. If the ODD server
+      and the Prometheus deployment are in different timezones, the linked window
+      misses the data.
+    expected: ZonedDateTime for ExternalAlert.startsAt + UTC formatter for the query
+      param + documentation of the timestamp convention
+    drift_class: misaligned_timestamp_contract
+    provenance: STATIC — primary-source verification in batch-I AlertServiceImpl
+      sidecar bugs_limitations_corner_cases[7] + ExternalAlert.java:14 (the LocalDateTime
+      type).
 test_matrix:
   unit:
     state: GAP
@@ -222,13 +294,19 @@ test_matrix:
       anonymous user → forged alert visible
     - S2S-token absence — assert webhook accepts any payload without authentication
       header
-control_summary: 0 of 4 cells PROBED — feature emerged from batch-H primary-source
+control_summary: |-
+  0 of 4 cells PROBED — feature emerged from batch-H primary-source
   audit; no probe authored yet. The headline behaviour (anonymous AlertManager
   POST creating cross-tenant alerts visible on the platform-wide All tab) is the
   highest-leverage candidate for the next probe round. Proposed P-NNN — POST
   AlertManager-shaped payload to the docker-compose stack with AUTH_TYPE=DISABLED
   + verify alert row appears in GET /api/alerts AND assert attacker-chosen entity_oddrn
-  was accepted verbatim.
+  was accepted verbatim. Batch-I closes hop-2 with AlertServiceImpl primary-source
+  confirmation — entity_oddrn-trusted path PROVEN at line 178, AlertActionResolver
+  asymmetry PROVEN (handleExternalAlerts skips the resolver, applyAlertActions uses
+  it). Three NEW facets surface — (1) AlertActionResolver asymmetry; (2) generator-URL-embedded-in-chunk
+  UI render surface; (3) ExternalAlert.startsAt timezone-naive (embedded Prometheus
+  query window misaligned).
 related_refactoring_scopes:
 - REFACTOR-024
 - REFACTOR-073

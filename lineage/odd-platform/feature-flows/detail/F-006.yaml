@@ -68,16 +68,25 @@ chain:
   unresolved: false
 - hop: 2
   node: odd-platform java PolicyServiceImpl
-  sidecar: '(not yet enriched — referenced as call context only)'
+  sidecar: odd-platform__java__service__service__PolicyServiceImpl.md
   multiplicity_per_trigger: 1
-  evidence: 'PolicyServiceImpl.create (line 67) → policyRepository::create. For DELETE
-    path: PolicyServiceImpl.delete (line 85-93) → get(id) (existence) → cascade defence
+  evidence: |-
+    PolicyServiceImpl.create (lines 62-69) → policyRepository::create. For DELETE
+    path: PolicyServiceImpl.delete (lines 83-95) → get(id) (existence) → name guard
+    rejecting `Administrator` (line 87-88, BadUserRequestException) → cascade defence
     via isPolicyAttachedToRole (line 89-92, CascadeDeleteException) → policyRepository.delete(id)
     (line 93) which inherits soft-delete from ReactiveAbstractSoftDeleteCRUDRepository.
-    No @ReactiveTransactional on create/update/delete (read-then-write race surface
-    on update). For getCurrentUserPolicies hot path: PolicyServiceImpl line 106 →
-    policyRepository::getRolesPolicies.'
-  unresolved: true
+    For UPDATE path: lines 71-81 issue policyRepository.get(id) (line 74) THEN
+    policyRepository::update (line 79) OUTSIDE any transaction — the read-then-write
+    LOST-UPDATE RACE confirmed PRIMARY-SOURCE in batch-I (no @ReactiveTransactional
+    on create/update/delete; sibling RoleServiceImpl.java:50/64/77 IS annotated on
+    all three). For getCurrentUserPolicies AUTHORIZATION HOT PATH: PolicyServiceImpl
+    line 106 → policyRepository::getRolesPolicies (invoked from ManagementPermissionExtractor.java:33
+    + AbstractContextualPermissionExtractor.java:27 on EVERY authorized request).
+    Cascade-delete defence at lines 89-92 is the SOLE service-layer protection against
+    the batch-H orphan-binding gap.
+  unresolved: false
+  resolved_in_batch: I
 - hop: 3
   node: odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
   sidecar: odd-platform__java__repository_reactive__repository__ReactivePolicyRepositoryImpl.md
@@ -181,6 +190,66 @@ observed_vs_expected:
     drift_class: lost_update_race
     provenance: STATIC — primary-source verification in batch-H ReactivePolicyRepositoryImpl
       sidecar bugs_limitations_corner_cases[1].
+  - facet: lost-update race PRIMARY-SOURCE confirmed + sibling asymmetry (batch I)
+    observed: |-
+      PolicyServiceImpl.update (lines 71-81) confirmed PRIMARY-SOURCE: NO @ReactiveTransactional
+      at line 71; the body is `policyJSONValidator.validate(formData.getPolicy())`
+      (synchronous validate) then `policyRepository.get(id).switchIfEmpty(...).map(applyToPojo).flatMap(policyRepository::update)`
+      — the get-then-update pair runs without txn scoping. The sibling RoleServiceImpl
+      IS @ReactiveTransactional on create (line 50), update (line 64), delete (line
+      77) — the asymmetry is intentional or oversight, with no defending comment
+      either way. The PolicyServiceImpl invariants[3] explicitly names the inconsistency
+      as part of the platform's pattern. The race window is the canonical scaling
+      regression for high-concurrency multi-admin deployments.
+    expected: |-
+      @ReactiveTransactional on PolicyServiceImpl.update + .delete + .create OR an
+      optimistic-concurrency token (version column on PolicyPojo). The sibling
+      RoleServiceImpl is the existing pattern.
+    drift_class: lost_update_race
+    provenance: STATIC — primary-source verification in batch-I PolicyServiceImpl
+      sidecar bugs_limitations_corner_cases[0] + invariants[3] + implicit_adrs[4]
+      (LOW-confidence ADR for the asymmetry) + RoleServiceImpl.java:50/64/77 (the
+      sibling). Proposed concurrency probe — two parallel PUT requests with different
+      bodies for the same policy id + assert one update overwrites the other.
+  - facet: cascade-delete check non-atomic with delete (batch I — STATIC)
+    observed: |-
+      PolicyServiceImpl.delete (lines 83-95) issues policyRepository.get(id) → name
+      check → roleToPolicyRepository.isPolicyAttachedToRole(id) (line 89) → conditional
+      CascadeDeleteException → policyRepository.delete(id) (line 93). The check and
+      the delete are SEPARATE R2DBC calls outside any transaction. Race window:
+      client A reads isAttached = false (line 89), client B `POST /api/roles` or
+      `PUT /api/roles/{id}` adds a role_to_policy row referencing the policy, client
+      A continues to soft-delete the now-bound policy. Result: a SURVIVING role
+      binding to a SOFT-DELETED policy — the exact orphan-binding state batch H
+      identified at the repository layer (ReactivePolicyRepositoryImpl.java:32-35
+      JOIN with no deleted_at filter).
+    expected: |-
+      @ReactiveTransactional on delete OR per-row SELECT ... FOR UPDATE on
+      isPolicyAttachedToRole + atomic soft-delete commit
+    drift_class: cascade_check_non_atomic
+    provenance: STATIC — primary-source verification in batch-I PolicyServiceImpl
+      sidecar bugs_limitations_corner_cases[5] + cross-ref to batch-H ReactivePolicyRepositoryImpl
+      sidecar known_security_gaps[0]. Proposed concurrency probe — two parallel
+      requests (one DELETE /api/policies/{id} + one PUT /api/roles/{role-id} adding
+      the binding) + assert the orphan-binding state surfaces in /api/policies (deleted)
+      + still grants permissions (getRolesPolicies returns it).
+  - facet: schema-validation failure surfaces as 500 not 400 (batch I — STATIC)
+    observed: |-
+      PolicyJSONValidator.validate (PolicyJSONValidator.java:28-32) throws IllegalArgumentException
+      on schema-validation failure. ControllerAdvice (ControllerAdvice.java:23-66) has
+      handlers for BadUserRequestException → 400, NotFoundException → 404, UniqueConstraintException
+      → 400, CascadeDeleteException → 400, WebExchangeBindException → 400, and a catch-all
+      Exception.class → 500. IllegalArgumentException has NO dedicated handler — it
+      falls through to the catch-all and surfaces as HTTP 500 with body "Internal
+      Server Error" (NOT the validator's actual error message). Operators POSTing a
+      malformed policy body cannot tell from the response whether the error is server
+      bug or malformed request.
+    expected: |-
+      PolicyJSONValidator throws BadUserRequestException OR ControllerAdvice adds
+      an IllegalArgumentException → 400 handler
+    drift_class: error_class_misrepresented
+    provenance: STATIC — primary-source verification in batch-I PolicyServiceImpl
+      sidecar bugs_limitations_corner_cases[2] + invariants[0] + cross-ref to ControllerAdvice.java:23-66.
 test_matrix:
   unit:
     state: GAP
@@ -222,12 +291,20 @@ test_matrix:
       with attacker statements be created?
     - Forensic-trail completeness — assert every mutation emits SOME log line OR
       audit row
-control_summary: 0 of 4 cells PROBED — feature emerged from batch-H primary-source
+control_summary: |-
+  0 of 4 cells PROBED — feature emerged from batch-H primary-source
   audit; no probe authored yet. The headline behaviour (soft-deleted policy continues
   to grant permissions when role_to_policy edges survive) is the highest-leverage
   candidate for the next probe round. Proposed P-NNN — local docker-compose stack
   + seed policy + bind to role + DIRECT DB UPDATE setting deleted_at + assert getRolesPolicies
   still returns the policy AND a subsequent /authorization-gated request succeeds.
+  Batch-I closes hop-2 with PolicyServiceImpl primary-source confirmation — lost-update
+  race PRIMARY-SOURCE PROVEN at lines 71-81 (no @ReactiveTransactional; sibling RoleServiceImpl
+  IS annotated — the asymmetry is the canonical platform regression risk). Three NEW
+  facets surface — (1) the race PRIMARY-SOURCE-PROVEN + sibling asymmetry; (2) cascade-delete
+  check non-atomic with the delete itself (race-window for concurrent role-binding
+  mutations); (3) schema-validation failure surfaces as 500 not 400 (IllegalArgumentException
+  missing ControllerAdvice handler).
 related_refactoring_scopes:
 - REFACTOR-073
 related_test_gaps: []

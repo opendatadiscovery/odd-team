@@ -21,16 +21,35 @@ description: 'A named JSON document of `statements` over resource types `DATA_EN
   surviving role_to_policy bindings continues to confer permissions; PolicyServiceImpl
   defends only at the cascade-delete check (lines 89-92); any DB-direct UPDATE setting
   deleted_at, schema migration mistake, or future refactor weakening the cascade re-opens
-  the gap. The fix is one line: AND policy.deleted_at IS NULL in the JOIN. Canonical
-  doc anchor: `configuration-and-deployment/enable-security/authorization/policies`
-  (200, 2026-05-12).'
+  the gap. The fix is one line: AND policy.deleted_at IS NULL in the JOIN. **Batch
+  I adds the SERVICE-layer primary source** via PolicyServiceImpl — the 117-line
+  service owns three invariants the repository does NOT: (1) Administrator-name
+  reservation on UPDATE+DELETE-only (asymmetry confirmed); (2) JSON-schema validation
+  via PolicyJSONValidator (Draft 2019-09) at CREATE+UPDATE; (3) cascade-binding
+  check via isPolicyAttachedToRole on DELETE — the SOLE service-layer defence
+  against the orphan-binding permission leak that batch H established. **Batch
+  I NEW HIGH/MEDIUM service-layer findings**: (a) **PolicyServiceImpl.update LOST-UPDATE
+  race** — no @ReactiveTransactional; two concurrent PUTs on same policy id can
+  lost-update silently; sibling RoleServiceImpl IS transactional (MEDIUM); (b) **PolicyServiceImpl.delete
+  orphan-binding race** — cascade-check + soft-delete are non-atomic; a concurrent
+  role-binding mutation between the check and the delete leaves a soft-deleted
+  policy with surviving role bindings (MEDIUM); (c) **getCurrentUserPolicies authorization
+  hot path** — invoked on EVERY authorized HTTP request through ManagementPermissionExtractor
+  + AbstractContextualPermissionExtractor; no caching at any layer; two JOIN roundtrips
+  per request; (d) **Schema-validation failure surfaces as HTTP 500** (not 400) —
+  IllegalArgumentException has NO dedicated @ExceptionHandler in ControllerAdvice;
+  falls through to the catch-all (MEDIUM); (e) **Forensic silence** — PolicyServiceImpl
+  has zero @Slf4j / log calls on RBAC mutation paths (HIGH). Canonical doc anchor:
+  `configuration-and-deployment/enable-security/authorization/policies` (200, 2026-05-12).'
 axes_present:
 - controllers
 - repositories_reactive
+- services
 nodes:
 - odd-platform java PolicyController controller-method:createPolicy
 - odd-platform java PermissionController controller-method:getResourcePermissions
 - odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+- odd-platform java service service:PolicyServiceImpl
 contributors:
 - 'PolicyController.createPolicy: entities[Policy, PolicyFormData (name + policy JSON
   string), PolicyDetails, PolicyPojo, PolicyStatementDto, PolicyPermissionDto, PolicyTypeDto];
@@ -55,6 +74,23 @@ contributors:
   is on the AUTHORIZATION HOT PATH — invoked by ManagementPermissionExtractor.getNonContextualPermissions
   AND AbstractContextualPermissionExtractor.getContextualResourcePermissions on EVERY
   authorized HTTP request that traverses the permission framework.'
+- 'PolicyServiceImpl (batch I): entities[PolicyPojo, PolicyFormData, PolicyDetails,
+  Policy, PolicyList, RoleDto, POLICY_SCHEMA (loaded once at class loading)]; operations[getPolicyDetails,
+  list (admin-vs-non-admin branching IN MEMORY), create (validate + INSERT), update
+  (validate + READ + Administrator-name guard + write — LOST-UPDATE RACE), delete
+  (READ + Administrator-name guard + cascade-binding check + soft-delete — orphan-binding
+  RACE), getPolicySchema (returns bundled schema to any authenticated caller), getCurrentUserPolicies
+  (AUTHORIZATION HOT PATH — invoked on every authorized request)]; 5 ADRs (Service-layer
+  business invariants enforced HERE not repository; JSON Schema validation synchronous
+  at the WebFlux event-loop thread; Administrator-name reservation on UPDATE+DELETE
+  not CREATE; Cascade-delete HARD-BLOCKED at the service layer not cascading cleanup;
+  Service composition methods are NON-TRANSACTIONAL in deliberate inconsistency
+  with the sibling RoleServiceImpl). 9 bugs (LOST-UPDATE race on update — MEDIUM;
+  Administrator CREATE-side asymmetry — MEDIUM; HTTP 500 on schema validation —
+  MEDIUM; non-admin pagination ignored — LOW; empty-roles routes to admin path
+  vacuously — LOW; cascade-check non-atomic with soft-delete → orphan-binding race
+  — MEDIUM; JSON schema validation on WebFlux event loop thread — LOW; no caching
+  on authorization hot path — LOW; forensic silence on RBAC mutations — HIGH).'
 evidence:
 - createPolicy.md:concepts.entities + concepts.invariants.[0-4]
 - createPolicy.md:implicit_adrs.[1] (JSON-Schema-at-write-time) + implicit_adrs.[2]
@@ -66,6 +102,13 @@ evidence:
 - ReactivePolicyRepositoryImpl.md:bugs_limitations_corner_cases.[0] (getRolesPolicies
   no deleted_at filter HIGH)
 - ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[0,1,2,3]
+- PolicyServiceImpl.md (batch I):concepts.invariants.[0,1,2,3,4,5] (all six service-tier
+  invariants)
+- PolicyServiceImpl.md:bugs_limitations_corner_cases.[0,1,2,3,4,5,6,7,8] (nine
+  service-layer bugs)
+- PolicyServiceImpl.md:security.known_security_gaps.[0,1,2,3,4,5] (six service-layer
+  security gaps)
+- PolicyServiceImpl.md:implicit_adrs.[0,1,2,3,4] (five service-layer ADRs)
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -86,13 +129,23 @@ security_aggregate:
       **Batch H confirms at SQL primary source**: ReactivePolicyRepositoryImpl has
       NO authorization annotations whatsoever; defence-in-depth is null; a direct
       service-bypass invocation reaches the SQL with no caller-ID check. Authorization
-      is the upstream controller / service layer''s responsibility.'
+      is the upstream controller / service layer''s responsibility. **Batch I service-layer
+      confirms**: PolicyServiceImpl has NO @PreAuthorize, NO @Secured, NO programmatic
+      `permissionService.hasPermission(...)` call on any method (verified PolicyServiceImpl.java:1-117).
+      The Administrator-name reservation at lines 76, 87 IS a runtime authorization-shaped
+      check (it blocks an authenticated, POLICY_UPDATE/POLICY_DELETE-bearing user
+      from mutating a specific protected row) but it is not framework-level —
+      it is service-coded logic, bypassable by any direct service caller.'
   owner_scoping:
     verdict: N/A
     detail: 'Policies are global authorization documents; the `policy` table has no
       `owner_id` column. MANAGEMENT-tier permission gates them globally. **Batch H
       SQL primary source confirms**: V0_0_55__add_policies_and_roles.sql:19-28 — no
-      tenant column, no owner column; ReactiveAbstractCRUDRepository global selects.'
+      tenant column, no owner column; ReactiveAbstractCRUDRepository global selects.
+      **Batch I service layer confirms**: list path branches by user role IN MEMORY
+      (PolicyServiceImpl.java:52-60) — for admin users, takes repository.list path;
+      for non-admin, takes the in-memory branch IGNORING page/size. NOT owner-scoping
+      — role-based filtering.'
   strengths:
   - JSON-Schema-at-write-time invariant — PolicyJSONValidator loads the schema once
     at construction (V201909) and validates per request; persisted text column is
@@ -111,15 +164,24 @@ security_aggregate:
     term, data_entity NB — DataEntity overrides to STATUS-state-machine via subclass).
     The architectural commitment: every operator-facing entity is soft-delete-recoverable;
     only join tables and immutable audit-like tables use hard delete. (ReactivePolicyRepositoryImpl.md:implicit_adrs.[0])'
+  - '**Batch I — service-layer cascade-binding defence on DELETE** — PolicyServiceImpl.delete
+    (lines 89-92) issues `roleToPolicyRepository.isPolicyAttachedToRole(id)` and
+    raises `CascadeDeleteException("Policy is attached to a role")` if any role_to_policy
+    row references the policy. The SOLE service-layer defence against the orphan-binding
+    permission leak that batch H established at the SQL layer. Surfaces as HTTP 400
+    via ControllerAdvice with the friendly message.'
   weaknesses:
   - '**Administrator-name reservation asymmetry (HIGH for defence-in-depth)** — `update`
     + `delete` reject mutations against the seeded Administrator name; `create` does
     NOT. If the seeded row is ever soft-deleted, a custom Administrator policy with
     arbitrary statements becomes creatable. Cross-cutting NEW invariant — see ''Administrator-name
-    reservation asymmetry on CRUD''. (createPolicy.md:security.known_security_gaps.[5])'
+    reservation asymmetry''. (createPolicy.md:security.known_security_gaps.[5] +
+    batch I PolicyServiceImpl.md:security.known_security_gaps.[1] PRIMARY-SOURCE
+    confirmation at SERVICE LAYER)'
   - '**No anti-elevation guard (HIGH)** — `{resource: {type: MANAGEMENT}, permissions:
     [ALL]}` is a legal policy shape identical to the seeded Administrator. POLICY_CREATE
-    is functionally root-on-the-platform; the docs do not flag this. (createPolicy.md:security.known_security_gaps.[2])'
+    is functionally root-on-the-platform; the docs do not flag this. (createPolicy.md:security.known_security_gaps.[2]
+    + batch I PolicyServiceImpl.md:security.known_security_gaps.[5])'
   - '**No audit log on policy mutations (HIGH)** — `PolicyServiceImpl.create` has
     no `@Slf4j` log calls, no event publication, no audit-table insert (createPolicy.md:bugs_limitations_corner_cases.[1]).
     A security incident reviewer cannot answer ''who authored this MANAGEMENT/ALL
@@ -128,14 +190,26 @@ security_aggregate:
     soft-delete + abstract-CRUD parents emit ZERO security-relevant log lines on
     {create, update, delete} — ExceptionUtils.translateDatabaseException emits one
     log.error ONLY on non-uniqueness DB errors (ExceptionUtils.java:34). Persistence-layer
-    code is forensically silent on the RBAC mutation path.'
+    code is forensically silent on the RBAC mutation path. **Batch I confirms at
+    SERVICE primary source**: PolicyServiceImpl has NO @Slf4j annotation, NO Logger
+    field, NO `log.info / .warn / .error` call (verified PolicyServiceImpl.java:1-117
+    end-to-end). Create, update, delete of policies produce ZERO application-level
+    log lines. The entire policy-mutation stack (controller + service + repository)
+    is forensically dark — incident review must consult external DB audit.'
   - '**Under `auth.type=DISABLED`, POLICY_CREATE is bypassed entirely (HIGH on DISABLED
     deployments)** — `anyExchange().permitAll()` short-circuits SECURITY_RULES. Any
     network-reachable caller can create MANAGEMENT/ALL policies; full escalation requires
     also creating + binding a role (POST /api/roles is similarly bypassed). DISABLED
     + reachable network port + RBAC primary-surface = catastrophic exposure. (createPolicy.md:security.known_security_gaps.[0])'
   - '**PolicyJSONValidator raises IllegalArgumentException, not BadUserRequestException
-    (MEDIUM)** — invalid schema may surface as 500 rather than 400. (createPolicy.md:security.known_security_gaps.[3])'
+    (MEDIUM)** — invalid schema may surface as 500 rather than 400. (createPolicy.md:security.known_security_gaps.[3])
+    **Batch I PRIMARY-SOURCE confirmation**: PolicyServiceImpl.java:64, 73 invoke
+    `policyJSONValidator.validate(...)` which throws `IllegalArgumentException("Policy
+    is not valid: " + errors)` (PolicyJSONValidator.java:28-32). ControllerAdvice.java:23-66
+    has NO `@ExceptionHandler(IllegalArgumentException.class)` — falls through to
+    catch-all at lines 61-66; surfaces as HTTP 500 with body "Internal Server Error"
+    (NOT 400 with detail). One-line fix: either PolicyJSONValidator throws BadUserRequestException
+    or ControllerAdvice adds IllegalArgumentException handler.'
   - '**Duplicate-name POST surfaces as DB UNIQUE-constraint violation (MEDIUM)** —
     service has no pre-check; second POST with same name falls through to repository
     INSERT and hits `unique_violation` SQLSTATE 23505 unhandled (createPolicy.md:security.known_security_gaps.[4]).
@@ -173,13 +247,32 @@ security_aggregate:
     correct; the gap is in the service layer''s create-path missing-symmetry, but
     the repository''s soft-delete-aware uniqueness rule MAKES the gap exploitable.
     (ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[2])'
-  - '**NEW BATCH H — No service-layer transaction boundary across read-then-write
+  - '**NEW BATCH I — No service-layer transaction boundary across read-then-write
     update path (MEDIUM)**: PolicyServiceImpl.update (lines 71-81) issues `policyRepository.get(id)`
     then `policyRepository.update(...)` — two separate R2DBC calls outside any @ReactiveTransactional.
     A concurrent UPDATE of the same policy by a different caller can interleave: client
     A reads policy v1, client B reads v1, A writes v2, B writes v3 BASED ON v1 (success,
     but A''s v2 was clobbered). The `update_at` column moves monotonically so no exception
-    is raised. Lost-update race. (ReactivePolicyRepositoryImpl.md:bugs_limitations_corner_cases.[1])'
+    is raised. Lost-update race. Sibling RoleServiceImpl IS transactional — the
+    asymmetry is captured in companion invariant `service-tier-transactional-asymmetry-between-sibling-services`.
+    One-line fix: add @ReactiveTransactional to PolicyServiceImpl.update. (PolicyServiceImpl.md:bugs_limitations_corner_cases.[0])'
+  - '**NEW BATCH I — Cascade-delete check non-atomic with soft-delete (MEDIUM)**:
+    PolicyServiceImpl.delete (lines 83-95) issues get + isPolicyAttachedToRole + conditional
+    CascadeDeleteException + delete — four separate R2DBC calls outside any transaction.
+    A concurrent role-binding mutation between the check (line 89) and the soft-delete
+    (line 93) leaves a soft-deleted policy with surviving role bindings — the exact
+    state batch H identified at the repository layer. The defence at lines 89-92
+    closes the gap in the SEQUENTIAL operator case but NOT in the concurrent-mutation
+    case. (PolicyServiceImpl.md:bugs_limitations_corner_cases.[5])'
+  - '**NEW BATCH I — Read-side endpoints not gated (MEDIUM)**: `GET /api/policies`,
+    `GET /api/policies/{id}`, `GET /api/policies/schema` are NOT in SECURITY_RULES.
+    Any authenticated user can enumerate every policy by id and read every statement.
+    The list-path branches by role (line 52-60) is a partial defence — non-admin
+    users see only their role-attached policies in the LIST — but `getPolicyDetails(id)`
+    (line 45-50) does NOT apply role-based scoping; any authenticated user with a
+    valid id can fetch any policy''s full details. Confidentiality issue: a non-admin
+    user can iterate ids and read MANAGEMENT/ALL policy statements, learning which
+    permissions are bundled into which role. (PolicyServiceImpl.md:security.known_security_gaps.[4])'
   cross_file_inconsistencies:
   - Policy schema endpoint `GET /api/policies/schema` is NOT gated by any Permission
     — any authenticated user can fetch the live JSON Schema. Not a vulnerability per
@@ -193,10 +286,22 @@ security_aggregate:
     repository (ReactiveAbstractSoftDeleteCRUDRepository.java:106-110) only writes
     `deleted_at`. A schema reader expecting is_deleted to track delete state will
     reach a wrong conclusion. Either remove the column or trigger-mirror it. (ReactivePolicyRepositoryImpl.md:bugs_limitations_corner_cases.[3])'
+  - '**Batch I — service-tier transactional asymmetry between Role + Policy**:
+    PolicyServiceImpl.{create,update,delete} ALL UNANNOTATED; sibling RoleServiceImpl.{create,update,delete}
+    ALL @ReactiveTransactional. The platform IDIOM (per `repository-transactional-boundary-at-service-layer-not-repository`
+    invariant) is service-tier @ReactiveTransactional. PolicyServiceImpl is the
+    OUTLIER. (PolicyServiceImpl.md:concepts.invariants.[3] + implicit_adrs.[4])'
+  - '**Batch I — non-admin list path silently ignores pagination** (LOW): PolicyServiceImpl.list
+    for non-admin users takes the in-memory branch which builds a Page<PolicyPojo>
+    with `total = filteredPolicies.size()` and `hasNext = false` regardless of page/size
+    request parameters. A non-admin with 1000 effective policies receives a 1000-element
+    response on GET /api/policies?page=1&size=20. Pagination contract differs by
+    role. (PolicyServiceImpl.md:bugs_limitations_corner_cases.[3])'
   contributing_files:
   - createPolicy.md
   - getResourcePermissions.md
   - ReactivePolicyRepositoryImpl.md
+  - PolicyServiceImpl.md
   evidence:
   - createPolicy.md:security.known_security_gaps.[0-6]
   - getResourcePermissions.md:security.known_security_gaps.[0-2]
@@ -208,6 +313,10 @@ security_aggregate:
     + Administrator-asymmetry compound MEDIUM)
   - ReactivePolicyRepositoryImpl.md:bugs_limitations_corner_cases.[0,1,2] (HIGH-severity
     orphan-binding leak; lost-update race; UniqueConstraintException 400 confirmation)
+  - PolicyServiceImpl.md:bugs_limitations_corner_cases.[0,1,2,3,4,5,6,7,8] (9 service-layer
+    bugs — see weaknesses entries above)
+  - PolicyServiceImpl.md:security.known_security_gaps.[0,1,2,3,4,5] (6 service-layer
+    security gaps)
 performance_aggregate:
   overall: HIGH
   hot_paths:
@@ -221,7 +330,8 @@ performance_aggregate:
     role_to_policy) with `WHERE role_id IN (...)` — sub-millisecond on typical row
     counts (single-digit policies per user). Result list collected to memory; consumed
     in-memory by the extractor. NO caching at repository, service, or extractor level
-    — every authorized request hits Postgres. (ReactivePolicyRepositoryImpl.md:performance.hot_paths.[0])'
+    — every authorized request hits Postgres. (ReactivePolicyRepositoryImpl.md:performance.hot_paths.[0]
+    + PolicyServiceImpl.md:performance.hot_paths.[0])'
   throughput_shape:
     verdict: SINGLE_ITEM_ONLY
     detail: 'No bulk-create endpoint; bootstrapping a complex RBAC scheme requires
@@ -234,12 +344,16 @@ performance_aggregate:
     detail: Stateless controller; unique-name index serializes concurrent same-name
       inserts (one wins, others throw) — DB-level concurrency safety (createPolicy.md:performance.scaling_characteristics.[0]).
       **Batch H — concurrent UPDATEs of same policy id can lost-update** (no @ReactiveTransactional
-      on read-then-write update path, no optimistic-concurrency token).
+      on read-then-write update path, no optimistic-concurrency token). **Batch I
+      PRIMARY-SOURCE confirms at the service layer**.
   strengths:
   - JsonSchema loaded ONCE at validator construction — no per-request schema reparse
   - '**Batch H — single-statement JOIN per getRolesPolicies call**, no streaming —
     `.collectList()` materialises the result. Acceptable for typical role-cardinality
     (~1-10 policies per user).'
+  - '**Batch I — POLICY_SCHEMA cached at class-loading** (PolicyServiceImpl.java:28,
+    37-43 — `loadPolicySchema()` reads `schema/policy_schema.json` ONCE at class
+    loading; idempotent, no per-request I/O).'
   weaknesses:
   - No bulk-create endpoint (LOW) — bootstrapping a custom RBAC model is N HTTP calls
   - '**NEW BATCH H — No caching of getRolesPolicies (LOW)**: the result for a stable
@@ -253,15 +367,26 @@ performance_aggregate:
     be MB-sized. No projection to omit the policy text when only id/name needed —
     but every consumer DOES need the policy text to compute permissions, so this is
     an observation, not a gap. (ReactivePolicyRepositoryImpl.md:performance.known_performance_gaps.[1])'
+  - '**NEW BATCH I — Synchronous JSON-schema validation on the WebFlux event-loop thread**
+    (LOW). PolicyJSONValidator.validate (lines 24-33) does objectMapper.readTree
+    + jsonSchema.validate synchronously. Invoked at PolicyServiceImpl.java:64, 73
+    OUTSIDE any .publishOn(Schedulers.boundedElastic()) — runs on the calling thread.
+    Sub-millisecond for typical policies; non-trivial for pathological body sizes.
+    Reactor convention is `Mono.fromCallable(...).subscribeOn(boundedElastic)` for
+    blocking work; this code does not follow it. (PolicyServiceImpl.md:bugs_limitations_corner_cases.[6])'
   cross_file_inconsistencies: []
   contributing_files:
   - createPolicy.md
   - ReactivePolicyRepositoryImpl.md
+  - PolicyServiceImpl.md
   evidence:
   - createPolicy.md:performance.known_performance_gaps.[0]
   - ReactivePolicyRepositoryImpl.md:performance.hot_paths.[0] (per-request authorization
     hot path)
   - ReactivePolicyRepositoryImpl.md:performance.known_performance_gaps.[0,1]
+  - PolicyServiceImpl.md:performance.hot_paths.[0] (getCurrentUserPolicies AUTHORIZATION
+    HOT PATH at the service layer — confirms batch H finding)
+  - PolicyServiceImpl.md:performance.known_performance_gaps.[0,1,2]
 notes: 'Anchored on `configuration-and-deployment/enable-security/authorization/policies`
 
   live page (200, 2026-05-12). The page documents the policy JSON shape
@@ -289,5 +414,25 @@ notes: 'Anchored on `configuration-and-deployment/enable-security/authorization/
       role_to_policy.policy_id is undocumented — the orphan-binding gap
 
       that getRolesPolicies leaks is invisible to operators.
+
+  Batch I adds four NEW doc gaps (SERVICE-DOC-GAP-A through -D from
+
+  PolicyServiceImpl.md:docs_link_semantic.doc_drift_findings):
+
+  (A) PUT /api/policies/{id} is NOT transactional — two concurrent updates
+
+      can lost-update silently with no error.
+
+  (B) Delete cascade contract (CascadeDeleteException on attached policy)
+
+      is undocumented.
+
+  (C) Administrator-name CREATE-side asymmetry undocumented (carry-over from
+
+      batch-E DOC-GAP-D — re-surfaced at the service layer).
+
+  (D) Schema-validation failure surfaces as HTTP 500 (Internal Server Error)
+
+      rather than HTTP 400.
 
   '

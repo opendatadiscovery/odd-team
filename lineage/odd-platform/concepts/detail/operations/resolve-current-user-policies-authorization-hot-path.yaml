@@ -1,0 +1,77 @@
+name: Resolve current user policies (authorization hot path)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW OPERATION, batch 2026-05-19I (PolicyServiceImpl sidecar)** —
+  `PolicyServiceImpl.getCurrentUserPolicies()` at lines 102-107. The AUTHORIZATION
+  HOT PATH for every authorized HTTP request that traverses the permission framework.
+  Invoked from `ManagementPermissionExtractor.getNonContextualPermissions` (`ManagementPermissionExtractor.java:33`)
+  AND from `AbstractContextualPermissionExtractor.getContextualResourcePermissions`
+  (`AbstractContextualPermissionExtractor.java:27`). The chain: (1) `roleService.getCurrentUserRoles()`
+  → 5-table JOIN `role ⋈ role_to_policy ⋈ policy ⋈ owner_to_role ⋈ user_owner_mapping`
+  at `ReactiveUserOwnerMappingRepositoryImpl.java:99-114`; (2) extract role IDs;
+  (3) `policyRepository.getRolesPolicies(roleIds)` → 2-table JOIN `policy ⋈ role_to_policy`
+  at `ReactivePolicyRepositoryImpl.java:32-35`. Two DB roundtrips per authorized
+  request. **NO caching at any layer**: no request-scoped memo, no user-scoped
+  TTL cache, no Caffeine, no Redis. Today''s behaviour is correct (always fresh)
+  but the cost scales with request rate: 100 req/s = 200 JOIN roundtrips/s on
+  top of business work. The result list is materialised via `.collectList()` —
+  bounded by the user''s effective policy count (typical 1-10 policies; pathological
+  cardinality 1000+ would hit memory). **Two batch-H gaps inherited at this operation**:
+  (a) **orphan-binding permission leak** — `ReactivePolicyRepositoryImpl.getRolesPolicies`
+  at lines 32-35 does NOT filter `policy.deleted_at IS NULL`; a soft-deleted policy
+  with surviving `role_to_policy` bindings continues to confer permissions; PolicyServiceImpl
+  defends only at the cascade-delete check (lines 89-92); any DB-direct UPDATE
+  setting deleted_at, schema migration mistake, or future refactor weakening
+  the cascade re-opens the gap; (b) **no caching of getCurrentUserPolicies** —
+  potentially-cacheable for the lifetime of the (user, roles, role_to_policy
+  edges) tuple, invalidation must trigger on PolicyServiceImpl.{update,delete}
+  AND RoleServiceImpl.{update,delete}. **Forensically silent**: no `@Slf4j`, no
+  log call on the resolution path; combined with batch-E/H controller + repository
+  log-silence, an incident reviewer cannot reconstruct "who had which permissions
+  at the moment of the incident".'
+axes_present:
+- services
+nodes:
+- odd-platform java service service:PolicyServiceImpl
+contributors:
+- 'PolicyServiceImpl.md (batch I): concepts.operations.getCurrentUserPolicies (lines
+  102-107). concepts.invariants.[5] — the authorization hot path. dependencies_semantic.requires-feature.RoleService.
+  performance.hot_paths.[0] — invoked on EVERY authorized request through the
+  permission framework. performance.known_performance_gaps.[0] — No caching;
+  potentially-cacheable for the lifetime of stable (user, roles, role_to_policy
+  edges).'
+- '(cross-batch) ReactivePolicyRepositoryImpl.md (batch H): bugs_limitations_corner_cases.[0]
+  — getRolesPolicies missing deleted_at filter HIGH; the orphan-binding permission
+  leak surfaces at this operation.'
+evidence:
+- PolicyServiceImpl.md:concepts.operations.getCurrentUserPolicies + concepts.invariants.[5]
+- PolicyServiceImpl.md:performance.hot_paths.[0] (the authorization hot path)
+- PolicyServiceImpl.md:performance.known_performance_gaps.[0] (no caching)
+- PolicyServiceImpl.md:upstream_callers (ManagementPermissionExtractor + AbstractContextualPermissionExtractor)
+- PolicyServiceImpl.md:downstream_side_effects (the 5-table + 2-table JOINs)
+- (cross-batch) ReactivePolicyRepositoryImpl.md:bugs_limitations_corner_cases.[0]
+  (HIGH severity orphan-binding leak surfacing at this operation)
+notes: |
+  Operation vocabulary captured for the platform's authorization hot path. The
+  operation is the per-request permission-resolution primitive — every authorized
+  HTTP request that traverses the permission framework hits this method.
+
+  Recommended cleanup paths:
+
+    (a) Code: add a one-line fix at `ReactivePolicyRepositoryImpl.getRolesPolicies`:
+        AND policy.deleted_at IS NULL in the JOIN's WHERE clause. Closes the
+        orphan-binding permission leak.
+
+    (b) Code: add a request-scoped or user-scoped cache (TTL ~30s) to absorb
+        per-request authorization cost. Invalidation hooks: PolicyServiceImpl
+        update/delete, RoleServiceImpl update/delete.
+
+    (c) Code: add `log.info` at the resolution boundary so an incident reviewer
+        can reconstruct permissions at the moment of an event.
+
+  Cross-references:
+    - Companion entity: `policy-authorization` (the broader Policy concept).
+    - Companion entity: `permission-authorization` (the Permission concept on
+      which getCurrentUserPolicies operates).
+    - Companion entity: `role-authorization` (the Role concept that getCurrentUserRoles
+      resolves).

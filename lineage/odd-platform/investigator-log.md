@@ -900,3 +900,81 @@ Plus follow-ups from this batch:
 - **`LSN-018-repository-axis-gap`** — write the retrospective; propose a `repository` axis for the substrate (slice 10 candidate).
 - **`shard.py` improvement** — the feature-flow-builder occasionally writes YAML scalars containing unquoted `: ` or leading `@` which break parsing. 3 of 7 F-NNN detail files needed post-write quoting fixes this batch. Add a yaml-safe-dump validator in either the sharder or the feature-flow-builder prompt's emit rules.
 
+
+## Batch 2026-05-19-I — Service layer A (5 nodes; FIRST autonomous-driver batch via /next-batch)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate commit**: `ede5d277` (55 prior sidecars + 5 new = **60 total**)
+- **Theme**: Service layer A — AlertServiceImpl + DataEntityServiceImpl + IngestionServiceImpl + PolicyServiceImpl + LineageServiceImpl
+- **FIRST batch via the `/next-batch` autonomous skill** — pre-flight checks, theme-pick from sprint-themes.yaml, theme-lock, 5 file-analysers in parallel, 5 reducers in parallel, delta merge, coverage refresh, log + commit + push. Validates the skill's orchestration end-to-end before /loop kicks off overnight.
+- **Substrate-axis gap (service)**: same shape as batch H repository-axis gap. 5 new synthetic `service:...` node_ids. Coverage integrity audit shows 10 outside-substrate nodes now (5 repository + 5 service). LSN-018 candidate broadens to: substrate needs both `repository` AND `service` axes.
+
+### Sidecars added (5)
+
+| Sidecar | Headline finding |
+|---|---|
+| `AlertServiceImpl` | Service-tier cross-owner bypass on 3 methods (REFACTOR-024 family confirmed at service layer); AlertManager webhook `entity_oddrn` spoofing surface; `@ActivityLog` AOP `@Profile("!integration-test")` test-coverage trap. |
+| `DataEntityServiceImpl` | 22 methods, 8 `@ReactiveTransactional` boundaries quantified; F-001/F-003/F-004 service-tier hops triangulated. Silent-UPDATE-on-missing for description/business-name (existence-check asymmetry vs metadata/DEG paths). |
+| `IngestionServiceImpl` | **NEW HIGH (CRITICAL-class data-loss surface): silent metadata-delete-on-absence + lineage-replace-on-each-call destruction.** Operators expect "merge" semantics; service does "replace" → silent data loss on every ingestion batch. F-008 new feature minted. |
+| `PolicyServiceImpl` | **PRIMARY-SOURCE confirmation of batch-H lost-update race at lines 71-81.** Sibling RoleServiceImpl IS `@ReactiveTransactional` on the same shape — sibling-asymmetry is the canonical invariant. Cascade-delete check at lines 89-92 is sole service-layer defence against orphan-binding permission leak. |
+| `LineageServiceImpl` | **Anchor-set defence-in-depth NEGATIVE-CASE primary-source confirmed** (no AuthIdentityProvider field; getLineage doesn't call fetchAssociatedOwner). REFACTOR-203 cross-owner enumeration is unmitigated end-to-end. LineageDepth.empty()/of(0) folklore (misleading API naming). |
+
+### Reducer diffs (rev-2 sharded; ALL 5 ran without timeout/rate-limit)
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 160 → **179 concepts** (rebuilt index has 176 — 3 entity files have YAML emit bug; see follow-ups) | +19 net-new (9 invariants + 7 operations + 3 canon-cands); 4 strengthened. Key new invariants: service-tier transactional asymmetry between siblings; anchor-set defence-in-depth positive vs negative; silent data-loss replace-not-merge ingestion. |
+| adr-archaeologist (ADRs) | 75 → **83** | +8 new (076-083); 6 strengthened. ADR-067 (`@ReactiveTransactional` boundary at service-not-repository) now **14-sidecar** — strongest after ADR-001 at 18. ADR-079/080/081/082 are HIGH. |
+| adr-archaeologist (scopes) | 227 → **259** | +32 new (245-276) + REFACTOR-189 re-sharded. New HIGHs: REFACTOR-258 (ingestion silent metadata delete), 259 (silent lineage-replace), 266 (Policy lost-update race), 267 (Policy orphan-binding race). |
+| doc-gap-finder | 112 → **127 findings** | +15 new (113-127); 5 strengthened. New HIGHs: DOC-GAP-113/114 (ingestion silent destruction LSN-001 family), 115 (anchor-set asymmetry), 116 META (txn-at-service boundary undocumented platform-wide), 117 (AlertManager webhook generatorURL XSS chain). |
+| test-coverage-mapper | 312 → **416 gaps** (rebuilt index has 413 — 3 detail files have YAML emit bug; see follow-ups) | +52 new (365-416); 14 strengthened. 4 new CRITICAL: TEST-GAP-388 (silent metadata-delete), 389 (silent lineage-replace), 392 (cross-tenant ingestion under filter-OFF), 403 (Policy cascade-delete race). |
+| feature-flow-builder | 7 → **8 features** | +1 new (F-008 Ingestion-replace destruction surface — `webhook:POST /ingestion/entities`; HIGH user-observable feature). 6 extended (F-001 hop-3.5 + F-003 service pass-through + F-004 silent-200-on-missing + F-005 anchor-set negative-case + F-006 lost-update race primary source + F-007 entity_oddrn primary source). |
+
+### Coverage state after batch I
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment (nodes with own sidecar) | 60 | **15.2%** |
+| Effective coverage (touched by any feature-flow OR own sidecar) | 72 | **18.2%** |
+| Features discovered | 8 | (informational; no denominator) |
+| Features with ≥1 cell PROBED | 4 | (informational) |
+
+### Critical follow-up — YAML emit bug in 6 detail files
+
+Same shape as the batch-H feature-flows YAML emit bug — reducers emit YAML scalars containing unquoted `: ` substrings (e.g. embedded `@ReactiveTransactional on update` or `(proposed: ...)` parentheticals inside list items). YAML parses these as ambiguous mapping values and rejects the file.
+
+Affected files this batch:
+- `test-map/detail/TEST-GAP-402.yaml` (line 32)
+- `test-map/detail/TEST-GAP-403.yaml` (line 37)
+- `test-map/detail/TEST-GAP-410.yaml` (line 32)
+- `concepts/detail/entities/alert.yaml` (line 144)
+- `concepts/detail/entities/data-entity.yaml` (line 144)
+- `concepts/detail/entities/lineage-graph-traversal.yaml` (line 96)
+
+**Structural fix needed BEFORE /loop overnight** — without it, every batch produces ~5-10% broken YAML files that need manual triage. Two options: (a) add an explicit rule to every reducer's prompt: "any string scalar containing `: ` or starting with `@` MUST use `|-` block-scalar form OR be single-quoted"; (b) add a post-reducer `yaml-validator` pass in `/next-batch` Phase 3 that catches + auto-quotes broken scalars.
+
+Detail files preserve the DATA (the 6 files are present on disk; only the YAML parse is broken). Indexes rebuilt from detail/ via `/tmp/rebuild_indexes.py` — captures 413 test-gaps + 176 concepts; 6 entries deferred until detail files are fixed.
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-024 family** — now **full-stack 4-layer**: controller (batch A) + repository (batch H) + service (batch I) + concept invariant. Read-collaborative cross-owner enumeration end-to-end confirmed.
+- **ADR-067 txn-at-service-not-repository** — 14-sidecar (was 9-sidecar at batch H). The PolicyServiceImpl OUTLIER is the canonical break-the-rule example.
+- **REFACTOR-203 (cross-owner lineage enumeration)** — now unmitigated end-to-end at THREE layers (controller, service, repository).
+- **Forensic silence (no audit on mutations)** — 3-batch confirmed (E + H + I) for RBAC mutations.
+
+### Rev-2 mechanics validation (SECOND batch under sharded artefacts)
+
+- **Reducer context budget**: All 5 ran without timeout/rate-limit. Repeating the batch-H validation finding.
+- **Grep-then-narrow-Read pattern**: adr-archaeologist + concept-merger + test-coverage-mapper all fell back to `index-batch-I-append.md` / `index.delta.yaml` / `concepts.delta.batch-I.yaml` files when their full Read on indexes exceeded the 25K cap. The orchestrator (this skill) merged them.
+- **Append-merge robustness**: The implicit-adrs + refactoring-scopes awk-merge worked cleanly. The test-map delta merger hit a key-name mismatch (`test_gaps_index_append` expected, got something else) — fix landed in next batch by rebuilding index from detail/. The concepts delta hit the YAML emit bug as above.
+- **Emergent-feature registry**: F-008 minted organically (NOT pre-enumerated); 6 features extended without merge. Zero auto-merges.
+
+### Next-batch planning notes
+
+Two follow-ups BEFORE batch J:
+1. **Fix the YAML emit bug** — update reducer prompts to enforce `|-` block scalars / single quotes on any value containing `: ` or starting with `@`. Without this, batch J will produce another ~6 broken files.
+2. **Fix merge_deltas.py key-name mismatch** — test-coverage-mapper's delta uses a key the merger doesn't recognize. Quick fix to the merger.
+
+Then batch J can fire: UI-axis — DataEntityDetails.tsx + thunks + Description + PopularStrip + LineageGraph. Resolves F-001 hop 1+2 (the LSN-017 useEffect dep-array bug from primary source) + F-003/F-004/F-005 UI sides.
+

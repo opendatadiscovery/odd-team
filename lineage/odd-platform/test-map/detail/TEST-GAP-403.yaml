@@ -1,0 +1,42 @@
+gap_id: TEST-GAP-403
+category: missing-security
+criticality: CRITICAL
+node_ids:
+- odd-platform java service service:PolicyServiceImpl
+surfaced_by:
+- PolicyServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[10]
+- PolicyServiceImpl.md:bugs_limitations_corner_cases.[5]
+- PolicyServiceImpl.md:security.known_security_gaps[0]
+behaviour: 'Cascade-delete check race window on `delete()` (lines 83-95). The check
+  (line 89 `isPolicyAttachedToRole`) and the soft-delete (line 93 `policyRepository.delete(id)`)
+  are SEPARATE R2DBC calls outside any transaction. Race window: client A reads `isAttached=false`,
+  client B `POST /api/roles` adds a `role_to_policy` row referencing the policy, client
+  A continues to delete the now-bound policy. Result: SURVIVING role binding to a
+  SOFT-DELETED policy — the EXACT orphan-binding permission-leak state batch H identified
+  at the repository layer (TEST-GAP-345). The defence at lines 89-92 closes the gap
+  in SEQUENTIAL operator flow but NOT in concurrent-mutation. This is the SOLE service-layer
+  protection against the security gap; once raced past, the permission-leak persists.'
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/PolicyServiceImplConcurrencyTest.java
+  name: delete_concurrentBindingAddition_createsOrphanBindingPermissionLeak
+evidence:
+- 'PolicyServiceImpl.md says: ''Concurrent-mutation defeats it... the exact orphan-binding
+  permission-leak state batch H identified at the repository layer'''
+- 'PolicyServiceImpl.java:83-95 (multi-call delete flow under no transaction)'
+- 'ReactiveRoleToPolicyRepositoryImpl.java:43-49 (isPolicyAttachedToRole — read-only
+  EXISTS)'
+cross_references:
+- TEST-GAP-345 (repository-tier orphan-binding — this is the SERVICE-TIER race window
+  that creates the orphan)
+- REFACTOR-230 (orphan-binding cascade-check race — to be authored)
+- concepts.yaml:entities[Policy].security_aggregate.weaknesses (orphan-binding leak)
+proposed_action: Add `delete_concurrentBindingAddition_createsOrphanBindingPermissionLeak`
+  in `PolicyServiceImplConcurrencyTest`. Two concurrent flows — (A) `policyService.delete(id)`
+  reaches line 89 (isAttached=false), pauses; (B) `roleService.create({policies: [id]})`
+  completes; (A) resumes to line 93, soft-deletes the now-bound policy. Assert the
+  bound role STILL grants the (soft-deleted) policy's permissions via `getCurrentUserPolicies`.
+  Pin the gap until REFACTOR-230 ships @ReactiveTransactional + SELECT FOR UPDATE.
+batch: 2026-05-19-I
+feature_id: null

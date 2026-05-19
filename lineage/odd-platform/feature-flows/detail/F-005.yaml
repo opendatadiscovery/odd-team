@@ -27,6 +27,7 @@ description: 'The lineage-downstream endpoint accepts an optional lineage_depth 
 contributing_nodes:
 - odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
 - odd-platform java LineageService.getLineage(int depth, ...)
+- odd-platform java service service:LineageServiceImpl
 - odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
 terminal_side_effect:
   side_effect_class: page-render
@@ -107,6 +108,58 @@ observed_vs_expected:
       is the NEGATIVE case (no owner-set anchor); DataEntityRelationsServiceImpl.getDependentOddrns
       is the POSITIVE case. Proposed Type-7 probe — exercise BOTH call sites with
       the same backend stack and assert per-call observable scope.
+  - facet: 'NEGATIVE-case anchor-set confirmed PRIMARY-SOURCE at service tier (batch I)'
+    observed: |-
+      LineageServiceImpl.getLineage (lines 87-122) has NO AuthIdentityProvider field
+      (verified at lines 54-57), NO fetchAssociatedOwner call (verified anywhere in
+      the method body), NO owner argument on the public interface signature (LineageService.java:11-19).
+      The root is resolved by raw dataEntityId at line 92 (reactiveDataEntityRepository.getDataEntityWithDataSourceAndNamespace),
+      then the recursive-CTE walk fires at line 95 with `Set.of(root.getDataEntity().getOddrn())`
+      — a single-element root set with NO caller-identity scoping. The negative-case
+      half of the anchor-set pattern is CONFIRMED primary-source at the service layer
+      this batch enriches. Contrast: DataEntityRelationsServiceImpl.java:25-30 imports
+      AuthIdentityProvider, has the field, and calls fetchAssociatedOwner() at line
+      26 BEFORE invoking the same repository method.
+    expected: anchor-set discipline applied to getLineage — call fetchAssociatedOwner
+      before resolving the root OR apply JOIN-side owner filter at the repository
+    drift_class: anchor_set_defence_in_depth_partial_application
+    provenance: STATIC — primary-source verification in batch-I LineageServiceImpl
+      sidecar bugs_limitations_corner_cases[0] + security.owner_scoping (the negative
+      case named) vs DataEntityRelationsServiceImpl.java:20, 26 (the positive case).
+  - facet: 'no upper-bound check on lineageDepth at service tier (batch I — STATIC)'
+    observed: |-
+      LineageServiceImpl.getLineage builds `LineageDepth.of(lineageDepth)` (line 96)
+      and hands the primitive int directly to the repository. There is NO `Math.min(lineageDepth,
+      MAX_DEPTH)` defensive clamp, NO `if (lineageDepth > MAX) throw new ...`, NO
+      warning log. The controller→service boundary autoboxes Integer → int (which
+      itself NPEs on null per F-005 facet 1) and the service-tier code path between
+      the boundary and the repository call adds nothing. A caller passing `lineageDepth=Integer.MAX_VALUE`
+      drives the recursive CTE to Postgres limits. REFACTOR-202 amplification is confirmed
+      end-to-end through this service.
+    expected: defensive clamp at service tier OR depth ceiling at repository tier
+    drift_class: structural_amplification_surface
+    provenance: STATIC — primary-source verification in batch-I LineageServiceImpl
+      sidecar bugs_limitations_corner_cases[2] + ReactiveLineageRepositoryImpl.java:174
+      (the recursive-step termination consumes the raw int). No probe yet — proposed
+      local k6 + lineage_depth=2147483647 probe to surface the DB CPU response.
+  - facet: 'inner-DEG suppression in getDataEntityGroupLineage (batch I — STATIC, DEG sub-flow)'
+    observed: |-
+      LineageServiceImpl.getDataEntityGroupLineage (lines 59-85) filters out edges
+      whose endpoint is itself a DEG (line 73) AND removes DEG-typed entries from
+      the metadata dictionary (line 75). The comment at line 71 — `// Remove this
+      when we will support inner DEGs for DEG lineage` — is an explicit deferred-feature
+      marker. The current API contract for DEG-lineage is therefore "flat graph of
+      non-DEG members, not a recursive graph of nested DEGs". A third-party caller
+      building tooling on getDataEntityGroupsLineage for a DEG that contains nested
+      DEGs silently observes missing edges with no contract description of why.
+    expected: documented behaviour OR backlog-citation linking the comment to a triaged
+      item OR @Disabled regression test pinning the current contract
+    drift_class: undocumented_carve_out
+    provenance: STATIC — primary-source verification in batch-I LineageServiceImpl
+      sidecar bugs_limitations_corner_cases[7] + implicit_adrs[3] (the deliberate
+      filter as deferred-feature). Proposed local probe — seed a nested DEG (DEG-A
+      containing DEG-B containing entity E + lineage edges) + GET /api/dataentitygroups/{A}/lineage
+      + assert DEG-B does not surface in the response.
   - facet: 'LineageDepth.empty() semantics (batch H — STATIC corner case)'
     observed: '`LineageDepth.empty()` returns `new LineageDepth(-1, true)`. The `tDepth.lessThan(-1)`
       recursive-step termination is FALSE on the first iteration (depth starts at
@@ -174,7 +227,11 @@ control_summary: '2 of 4 cells PROBED+EXISTING — integration (PROBED-PINNING-B
   by batch-H primary-source SQL audit (cycle/diamond/soft-delete/empty()/owner-anchor-pattern).
   Batch-H adds the resolved chain hop for the recursive CTE + folds in REFACTOR-202
   + REFACTOR-203 primary-source confirmation + surfaces the anchor-set-defence-in-depth
-  pattern as a NEW drift_class.'
+  pattern as a NEW drift_class. Batch-I closes the negative-case half of the anchor-set
+  pattern PRIMARY-SOURCE at the service tier (LineageServiceImpl.java:54-57 no AuthIdentityProvider
+  field, 87-122 no fetchAssociatedOwner call) AND adds the no-upper-bound-check service-tier
+  facet (line 96 hands raw int to repo) AND surfaces the DEG-lineage inner-DEG suppression
+  carve-out (line 71 comment).'
 related_refactoring_scopes:
 - REFACTOR-202
 - REFACTOR-203

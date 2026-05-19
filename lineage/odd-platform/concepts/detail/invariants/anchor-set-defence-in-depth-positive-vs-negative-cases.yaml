@@ -1,0 +1,106 @@
+name: Anchor-set defence-in-depth — positive vs negative cases at the service tier
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW INVARIANT, batch 2026-05-19I (LineageServiceImpl + DataEntityServiceImpl
+  sidecars)** — the platform''s read-collaborative posture (REFACTOR-024/203 family,
+  ADR-CANDIDATE-003) is mitigated AT SOME service-layer surfaces by an "anchor-set"
+  pattern: the service calls `authIdentityProvider.fetchAssociatedOwner()` upfront,
+  resolves the caller''s owner-anchored ODDRN set, and feeds that set as the boundary
+  parameter into the same downstream repository method that would otherwise enumerate
+  cross-owner. **The pattern is applied INCONSISTENTLY** across the service surface
+  — sibling methods on adjacent paths show diametric postures: (a) **POSITIVE CASE**:
+  `DataEntityRelationsServiceImpl.getDependentDataEntityOddrns` (DataEntityRelationsServiceImpl.java:25-39)
+  DOES call `fetchAssociatedOwner()` (line 26) before passing the resolved owner''s
+  entity-oddrn set to `ReactiveLineageRepository.getLineageRelations`. This is how
+  `DataEntityController.getMyObjectsWithUpstream/Downstream` (batch G/H) achieves
+  owner-scoping even though the SQL layer has no owner column. The anchor IS the
+  defence; (b) **NEGATIVE CASE**: `LineageServiceImpl.getLineage` (LineageServiceImpl.java:87-122)
+  accepts `dataEntityId` from the controller WITHOUT calling `fetchAssociatedOwner()`
+  — confirmed by direct read of LineageServiceImpl.java:19 (no AuthIdentityProvider
+  import) + lines 54-57 (no authIdentityProvider field) + the entire method body
+  (no fetchAssociatedOwner call). The recursive-CTE walk operates on the caller-supplied
+  oddrn with NO owner filter at any layer (the repository itself confirms this —
+  ReactiveLineageRepositoryImpl.java:122-176, batch H). This is the **NEGATIVE-CASE
+  SIBLING** of the batch-G/batch-H anchor-set pattern: cross-owner enumeration is
+  UNMITIGATED for the lineage-canvas read path; (c) **NEGATIVE CASE**: `LineageServiceImpl.getDataEntityGroupLineage`
+  (LineageServiceImpl.java:59-85) same shape — DEG ID is the anchor; any DEG visible
+  to the caller exposes its full member-graph + reachable edges; no owner check;
+  (d) **MOSTLY-NEGATIVE CASE**: `DataEntityServiceImpl` — 10 list-shape / single-entity
+  read methods (`getDetails`, `getDimensions` overloads, `getDataEntitiesByDatasourceAndType`,
+  `listByTerm`, `listPopular`, `getDataEntityGroupsChildren`, `getDomainsInfo`,
+  `getDataEntityUsageInfo`) apply NO anchor-set. ONE counter-example: `listAssociated`
+  (line 212-225) DOES fetch the caller''s associated owner. `findByState` (line 181-194)
+  takes an OPTIONAL `OwnerPojo` parameter (SearchServiceImpl can pass it). The presence
+  of `listAssociated` proves the project knows how to apply the anchor-set defence;
+  the omission elsewhere is the structural shape. **The pattern is the PLATFORM''s
+  primary defence-in-depth mechanism for the read-collaborative posture, but its
+  application is sparse and uneven**. A consistent application across LineageServiceImpl.getLineage
+  + DataEntityServiceImpl.getDetails would meaningfully tighten the read posture
+  without rewriting the SQL layer. The architectural shape is clear (the positive
+  examples exist); the gap is implementation completeness, not design ambiguity.'
+axes_present:
+- services
+nodes:
+- odd-platform java service service:LineageServiceImpl
+- odd-platform java service service:DataEntityServiceImpl
+- odd-platform java service service:AlertServiceImpl
+contributors:
+- 'LineageServiceImpl.md (batch I): bugs_limitations_corner_cases.[0] — Anchor-set
+  defence-in-depth is NOT applied to getLineage. The service has no AuthIdentityProvider
+  field, no fetchAssociatedOwner call. NEGATIVE-case sibling of DataEntityRelationsServiceImpl
+  (the positive case). security.known_security_gaps.[0,1] — confirmed for getLineage
+  AND getDataEntityGroupLineage. Severity: HIGH.'
+- 'DataEntityServiceImpl.md (batch I): concepts.invariants.[2] + bugs_limitations_corner_cases.[0]
+  — Cross-owner read posture: BYPASSES for almost every list-shape read. 10 of 22
+  public methods are owner-unaware. The exception listAssociated (line 212-225) DOES
+  apply the anchor-set pattern. findByState (line 181-194) PARTIALLY applies it via
+  optional OwnerPojo parameter. Severity: MEDIUM (file-local) / HIGH (deployment-dependent).'
+- 'AlertServiceImpl.md (batch I): security.owner_scoping — RESPECTS for listByOwner
+  (line 83-87 calls fetchAssociatedOwner), listDependentObjectsAlerts (line 234-238),
+  partially in getTotals. BYPASSES for listAll, getDataEntityAlerts/Counts, updateStatus.
+  Confirms the same pattern applied unevenly at the alerts service surface.'
+evidence:
+- LineageServiceImpl.md:bugs_limitations_corner_cases.[0] (no AuthIdentityProvider
+  field — the negative-case sibling identification)
+- LineageServiceImpl.md:security.known_security_gaps.[0] + [1] (HIGH severity for
+  both lineage methods)
+- DataEntityServiceImpl.md:concepts.invariants.[2] (10 owner-unaware reads + listAssociated
+  exemplar)
+- DataEntityServiceImpl.md:security.owner_scoping (BYPASSES verdict on 10 methods;
+  RESPECTS on listAssociated)
+- AlertServiceImpl.md:security.owner_scoping (MIXED verdict with explicit per-method
+  breakdown)
+- (Cross-batch) DataEntityRelationsServiceImpl.java:25-39 (the POSITIVE case sibling
+  — fetchAssociatedOwner at line 26)
+notes: |
+  Cross-batch architectural-hygiene observation. The anchor-set defence-in-depth
+  pattern is a real platform primitive (visible in DataEntityRelationsServiceImpl
+  + DataEntityServiceImpl.listAssociated + AlertServiceImpl.listByOwner) but is
+  applied SPARSELY relative to the read-collaborative posture's blast radius.
+
+  The pattern is the highest-leverage SERVICE-LAYER mitigation for the cross-owner
+  enumeration findings in batch G/H (REFACTOR-024, REFACTOR-203). The SQL layer
+  has no owner column (lineage table) or no owner predicate (data_entity reads);
+  the service tier is the only place where the owner-scoping can be re-introduced
+  without rewriting the schema. The architecture supports it; the application is
+  incomplete.
+
+  Cross-references:
+    - Companion invariant: `read-collaborative-cross-owner-enumeration` (REFACTOR-024/203
+      controller + repository confirmations).
+    - Companion invariant: `owner-link-is-the-gate-for-owner-scoped-views` (owner-link
+      table is the underlying primitive that fetchAssociatedOwner consumes).
+
+  Recommended cleanup paths:
+
+    - Audit every list-shape read method on every service for the anchor-set pattern.
+      Surface a `mustScope(reason)` annotation on methods that BYPASS the anchor —
+      the maintainer must explicitly justify the bypass.
+
+    - For the highest-traffic surfaces (DataEntityServiceImpl.getDetails, LineageServiceImpl.getLineage),
+      add the anchor-set as a service-layer guard. This closes the cross-owner
+      surface for those endpoints without any SQL changes.
+
+    - Doc-side: extend `/configuration-and-deployment/enable-security/authorization`
+      with a 'Read-side defence' section explaining the anchor-set pattern, listing
+      which surfaces APPLY it and which DO NOT.

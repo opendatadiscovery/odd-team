@@ -1,0 +1,108 @@
+name: Silent data-loss via replace-not-merge ingestion semantics
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW INVARIANT, batch 2026-05-19I (IngestionService sidecar)** —
+  the ingestion pipeline''s per-call contract is REPLACE-NOT-MERGE for lineage
+  edges and metadata fields. A collector that re-emits its payload with a PARTIAL
+  state (network flake, OOM, code bug, malicious tampering with a valid token)
+  silently DELETES the omitted bindings from the platform with no warning log,
+  no operator visibility, no activity-feed audit row. Two concrete surfaces: (a)
+  **Metadata delete-on-absence**: `MetadataIngestionRequestProcessor.java:72-80`
+  computes `bindingsToDelete = existingMetadataBindings.difference(currentBindings).toSet()`
+  and issues `metadataFieldValueRepository.delete(bindingsToDelete)` inside the
+  same transaction. No `log.warn` records the delete branch (verified — `@Slf4j`
+  present at line 30 but zero log calls on the delete path). A re-ingest of entity
+  E with metadata `{a:1}` after a prior ingest of `{a:1, b:2, c:3}` silently removes
+  `b` and `c`; (b) **Lineage replace-not-merge**: `LineageIngestionRequestProcessor.java:17`
+  calls `lineageService.replaceLineagePaths(request.getLineageRelations())`. The
+  verb is `replace`, not `merge`: every ingestion call replaces lineage paths
+  originating from this datasource''s entities by establisher-grouped DELETE then
+  INSERT (`LineageServiceImpl.java:124-133` is `@ReactiveTransactional`, the only
+  transactional method on LineageServiceImpl). A collector that forgets to re-emit
+  a lineage edge silently removes it; if an establisher in the input pojo set has
+  no current edges to delete the delete clause is a no-op; if an existing establisher
+  is NOT in the input pojo set, its edges are LEFT UNTOUCHED (the establisher-keyed
+  provenance property). The intent is **deliberate**: the maintainer chose `replace`
+  semantics for both surfaces — the contract with collectors is "the payload represents
+  the complete state of this entity''s relations from this datasource". The trade-off:
+  a buggy/compromised collector accepts the loss; an operator querying "why did
+  this lineage edge disappear?" has no audit-log answer because the ingestion
+  pipeline''s `ActivityIngestionRequestProcessor` (FINALIZING phase) only emits
+  `DATA_ENTITY_CREATED` rows for NEW entities, never `DATA_ENTITY_UPDATED` for
+  existing entities. No DOC-NNN candidate explains this on the operator-facing
+  ingestion docs (`/integrations/ingestion-filters` was verified status 200 on
+  2026-05-12 by batch F — silent on this contract; OpenAPI accepts a list and
+  the reader reasonably infers per-entity success/failure isolation, which is
+  WRONG on two counts: replace-not-merge AND single-transaction-per-batch — the
+  latter is captured separately as `single-transaction-per-batch-ingestion-no-per-entity-isolation`).
+  Combined surface: an attacker with a valid collector token (or any caller under
+  `auth.ingestion.filter.enabled=false`, the default) can ERASE existing metadata
+  and lineage by re-emitting incomplete state — destructive WRITE indistinguishable
+  in the application logs from legitimate omission.'
+axes_present:
+- services
+nodes:
+- odd-platform java service service:IngestionService
+- odd-platform java service service:LineageServiceImpl
+contributors:
+- 'IngestionService.md (batch I): concepts.invariants — replace-not-merge for lineage
+  edges and metadata fields is the per-ingestion contract. bugs_limitations_corner_cases.[0,1]
+  — Silent metadata-delete-on-absence + lineage-edge-deletion-on-absence (both HIGH
+  severity). security.data_exposure.WRITE — destructive surface beyond pure data
+  injection; an attacker can ERASE existing metadata/lineage by re-emitting incomplete
+  state under a valid token. security.known_security_gaps.[1] — Silent destructive
+  operations via replace-not-merge HIGH severity.'
+- 'LineageServiceImpl.md (batch I): implicit_adrs.[1] — Establisher-keyed atomic-rewrite
+  contract for ingestion. replaceLineagePaths takes List<LineagePojo>, extracts establishers,
+  deletes ALL edges by those establishers, then inserts the supplied pojos, ALL
+  inside one @ReactiveTransactional. "When an entity re-publishes its lineage,
+  the rewrite is atomic and per-establisher: edges declared by OTHER entities are
+  untouched." The cornerstone of non-destructive multi-producer ingestion BUT the
+  destructive trapdoor for any single producer who emits incomplete state.'
+evidence:
+- IngestionService.md:concepts.invariants (replace-not-merge contract)
+- IngestionService.md:bugs_limitations_corner_cases.[0] (Silent metadata-delete-on-absence
+  HIGH) + [1] (Silent lineage-edge-deletion-on-absence HIGH)
+- IngestionService.md:security.known_security_gaps.[1] (Silent destructive operations
+  HIGH severity)
+- IngestionService.md:implicit_adrs (Replace-not-merge for lineage/metadata is the
+  per-ingestion contract — collectors must re-emit their full state every call)
+- LineageServiceImpl.md:implicit_adrs.[1] (establisher-keyed atomic-rewrite at LineageServiceImpl.java:124-133)
+- LineageServiceImpl.md:concepts.invariants.[7,8] (the verb is REPLACE; if an
+  establisher is NOT in the input, its edges are LEFT UNTOUCHED — per-establisher
+  scope is the safety net for multi-producer)
+notes: |
+  Cross-batch architectural-hygiene + security finding. The replace-not-merge
+  pattern is INTENTIONAL design with a real contract (multi-producer ingestion
+  is safe because each producer owns its own establisher-keyed edges) BUT the
+  destructive surface for any SINGLE producer is uncovered in the operator-facing
+  docs and uncaught by any test.
+
+  Headline gap: no test pins the replace-not-merge semantics. A maintainer
+  changing the verb from `replace` to `merge` (or vice versa) would silently
+  flip the contract with no test feedback.
+
+  Recommended doc + test follow-ups:
+
+    (a) Test: integration test pinning the replace-not-merge semantics for
+        BOTH lineage and metadata. Re-ingest the entity with a partial set;
+        assert the omitted edges/fields are REMOVED.
+
+    (b) Doc: extend `/integrations/ingestion-filters` (or a new
+        `/integrations/ingestion-semantics` page) with a 'Per-call contract'
+        section naming the replace-not-merge invariant; warn that collectors
+        MUST re-emit the full state every call.
+
+    (c) Log: add `log.warn` on the metadata-delete branch (when bindingsToDelete
+        is non-empty) so operators have an audit trail of silent deletes.
+
+    (d) Activity emission: extend `ActivityIngestionRequestProcessor` to
+        emit `DATA_ENTITY_UPDATED` events for existing entities that had
+        their metadata or lineage modified — closes the audit gap that's
+        currently invisible.
+
+  Cross-references:
+    - Companion invariant: `single-transaction-per-batch-ingestion-no-per-entity-isolation`
+      (the other side of the ingestion-contract gap operators don't expect).
+    - LSN-001 (attachment ephemeral default) — class of finding: bundled defaults
+      ship with destructive trade-offs that are not signposted.

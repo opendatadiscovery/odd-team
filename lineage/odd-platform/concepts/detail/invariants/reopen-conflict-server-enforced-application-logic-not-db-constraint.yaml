@@ -1,0 +1,108 @@
+name: Reopen-conflict guard — server-enforced application logic, not a DB constraint
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW INVARIANT, batch 2026-05-19I (AlertServiceImpl sidecar)** —
+  the alert reopen-conflict invariant ("one OPEN alert of the same type per data
+  entity") is enforced as SERVER-SIDE APPLICATION LOGIC at `AlertServiceImpl.updateStatus`
+  (AlertServiceImpl.java:124-131), NOT as a database constraint. The check: when
+  the requested status is OPEN, the service calls `alertRepository.openAlertWithTheSameTypeExistsForDataEntity(alertId)`
+  (read), and if true throws `BadUserRequestException("Cannot reopen alert since
+  the system already has an open alert of the same type")` (write-aborts). The
+  exception''s literal English message is the user-facing contract surface (visible
+  on the live API-reference docs per batch-F neighbour sidecar 2026-05-08 status
+  200). There is no DB-level partial-unique-index `UNIQUE (data_entity_oddrn, type)
+  WHERE status = OPEN` backing the invariant; the read and the write are unfenced
+  at every layer (no `FOR UPDATE` on the read at `ReactiveAlertRepositoryImpl.java:397-420`,
+  no `FOR UPDATE` on the UPDATE statement at `ReactiveAlertRepositoryImpl.java:297-306`,
+  no row-level lock anywhere). The application invariant is briefly violated under
+  high-concurrency reopen patterns: two concurrent reopen requests for SIBLING alerts
+  of the same type on the same data entity can BOTH pass the existence check (each
+  sees the OTHER in RESOLVED state at read time) and BOTH proceed to UPDATE — neither
+  takes a row lock. The decision: tolerate a brief invariant violation under concurrency
+  to keep the DB schema simple and the error UX human-readable. **Confirmed by file:line
+  evidence**: AlertServiceImpl.java:124-131 (the conditional + exception throw with
+  hand-written English error message) + ReactiveAlertRepositoryImpl.java:297-306
+  (the UPDATE without FOR UPDATE) + the absence of any `UNIQUE` constraint involving
+  `(data_entity_oddrn, type)` in the V0_0_*ALERT*.sql migrations. The companion
+  pattern: `AlertServiceImpl.updateStatus` (lines 111-113) is DELIBERATELY not annotated
+  `@ReactiveTransactional` (per the `service-tier-transactional-asymmetry-between-sibling-services`
+  invariant); the AOP-injected `@ReactiveTransactional` from `ActivityAspect.monoActivityAspect`
+  (ActivityAspect.java:42) provides the wrapping transaction, but no row-level lock
+  is taken on the read or the write. The pattern is "server-side application invariant
+  + activity-aspect-provided transaction + no DB-level partial index" — a 3-layer
+  composition where the OUTERMOST layer is the deliberately-non-transactional service
+  method, the MIDDLE is the AOP-injected transaction, and the INNERMOST (DB) is
+  silent on the invariant. The single-line DB-side fix would be `CREATE UNIQUE INDEX
+  alert_open_unique_per_data_entity_and_type ON alert (data_entity_oddrn, type)
+  WHERE status = ''OPEN'' AND deleted_at IS NULL;` — closes the race window
+  permanently, costs one INDEX entry per active alert.'
+axes_present:
+- services
+nodes:
+- odd-platform java service service:AlertServiceImpl
+contributors:
+- 'AlertServiceImpl.md (batch I): concepts.invariants.[2] + implicit_adrs.[2] —
+  Reopen-conflict guard is server-enforced application logic, not a DB constraint.
+  The if-condition + exception throw + the literal English error message are the
+  maintainer''s surfaced intent. bugs_limitations_corner_cases.[0] — The reopen-conflict
+  guard at lines 124-131 is unfenced; two concurrent reopen requests for sibling
+  alerts of the same type on the same data entity can BOTH pass. tests_coverage_semantic.uncovered_behaviours
+  — No test asserts the reopen-conflict race window.'
+evidence:
+- AlertServiceImpl.md:concepts.invariants.[2] (the conditional + exception throw
+  at lines 124-131)
+- AlertServiceImpl.md:implicit_adrs.[2] (server-enforced application logic; not
+  a DB constraint; the literal English message confirms the contract)
+- AlertServiceImpl.md:bugs_limitations_corner_cases.[0] (concurrency unfenced;
+  MEDIUM severity — the application invariant is server-enforced and briefly
+  violated under high-concurrency reopen patterns)
+- AlertServiceImpl.md:tests_coverage_semantic.uncovered_behaviours (no test pins
+  the race window)
+- (cross-batch) ReactiveAlertRepositoryImpl.md (batch H — UPDATE without FOR UPDATE,
+  no DB-level partial unique index)
+notes: |
+  Cross-batch architectural-hygiene observation. The pattern is INTENTIONAL
+  (the literal English error message is the contract; the architecture chose
+  application-layer invariant over DB-layer constraint) but operationally
+  vulnerable under high-concurrency multi-operator deployments.
+
+  The 3-layer composition is structurally:
+
+    OUTERMOST: AlertServiceImpl.updateStatus — deliberately non-transactional
+               at the SERVICE annotation layer (the AOP-injected @ReactiveTransactional
+               provides the wrapping transaction but no row lock).
+
+    MIDDLE:    ActivityAspect.monoActivityAspect — the AOP that adds the
+               synthetic @ReactiveTransactional wrapping the intercepted Mono.
+
+    INNERMOST: ReactiveAlertRepositoryImpl — no FOR UPDATE on read or UPDATE;
+               no DB-level partial unique index on (data_entity_oddrn, type)
+               WHERE status = 'OPEN'.
+
+  The deliberately-server-enforced shape is also visible in the AdministratorPolicy
+  reservation, the cascade-binding defence on PolicyServiceImpl.delete, and the
+  microservice-specific-attributes exclusion at IngestionServiceImpl — a pattern
+  the codebase prefers application-layer invariants over DB-layer constraints.
+  In each case the trade-off is: simpler schema, more flexible application logic,
+  more concurrency races to manage.
+
+  Recommended cleanup paths:
+
+    (a) Add a partial unique index at the DB layer:
+        CREATE UNIQUE INDEX alert_open_unique_per_data_entity_and_type
+        ON alert (data_entity_oddrn, type)
+        WHERE status = 'OPEN' AND deleted_at IS NULL;
+
+    (b) Add @ReactiveTransactional + SELECT ... FOR UPDATE to AlertServiceImpl.updateStatus
+        — closes the race window at the application layer without schema change.
+
+    (c) Add an integration test using Testcontainers + ReactivePostgres to fire
+        two concurrent reopen requests; assert one succeeds and one fails with
+        the 400 BadUserRequestException.
+
+  Cross-references:
+    - Companion invariant: `service-tier-transactional-asymmetry-between-sibling-services`
+      (AlertServiceImpl.updateStatus is the DELIBERATE exception; PolicyServiceImpl
+      is the OVERSIGHT shape).
+    - Companion invariant: `administrator-name-reservation-asymmetry-on-crud`
+      (same pattern of server-enforced invariant over DB constraint).

@@ -14,6 +14,7 @@ description: 'Operators edit a data entity''s description via PUT /api/dataentit
   '
 contributing_nodes:
 - odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
+- odd-platform java service service:DataEntityServiceImpl
 - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 terminal_side_effect:
   side_effect_class: db-write
@@ -125,6 +126,46 @@ observed_vs_expected:
     provenance: STATIC — primary-source verification in batch-H ReactiveDataEntityRepositoryImpl
       sidecar invariants/concepts (line 431). No probe yet — proposed local probe
       could PUT empty body and assert SELECT returns NULL.
+  - facet: silent-UPDATE-on-missing-entity at service tier (batch I — STATIC)
+    observed: |-
+      DataEntityServiceImpl.upsertDescription (lines 323-333) is @ReactiveTransactional
+      and delegates to DataEntityInternalStateServiceImpl.updateDescription + termService.handleDataEntityDescriptionTerms.
+      The service tier has NO pre-existence check (contrast: createMetadata at lines
+      257-258 DOES check via reactiveDataEntityRepository.get(dataEntityId).switchIfEmpty(NotFoundException);
+      addDataEntityToDEG at lines 391-392 ditto). The repository's bare UPDATE returns
+      Mono.empty on missing id, the reactive chain short-circuits at the empty-Mono
+      step, and the response binding at lines 329-332 (`new InternalDescription(formData.getInternalDescription(),
+      linkedTerms)`) never fires — controller emits 200 OK with empty body. The asymmetry
+      is curated (per batch-I implicit_adrs[4]): metadata operations create FK-dependent
+      rows so they pre-check; description ops only update an existing column so they
+      accept the silent-no-op. Combined with potential id-enumeration via the activity
+      feed, a caller can probe ids via PUT and observe 200 vs 403 — the 200 reveals
+      the permission-decision shape EVEN IF the entity doesn't exist.
+    expected: Either symmetric existence-check OR documented silent-200 contract; a
+      future maintainer aligning the patterns by adding switchIfEmpty(NotFoundException)
+      would silently break every client depending on the silent-200 behaviour.
+    drift_class: silent_write_on_missing_anchor
+    provenance: STATIC — primary-source verification in batch-I DataEntityServiceImpl
+      sidecar bugs_limitations_corner_cases[1] (silent-UPDATE) + invariants[3] (response
+      binding from request payload, not post-write pojo) + invariants[5] (createMetadata
+      vs upsertDescription existence-check asymmetry). Proposed local probe — PUT
+      /api/dataentities/9999999/description (missing id) + assert response status
+      == 200 AND response body is empty.
+  - facet: response payload echoes request, not DB-truth (batch I — STATIC)
+    observed: |-
+      DataEntityServiceImpl.upsertDescription line 329-332 constructs response from
+      `formData.getInternalDescription()` (the REQUEST payload), NOT from a post-write
+      DB re-read. The empty-string-to-NULL normalisation at the repository tier (line
+      431) is invisible to the caller — a PUT with `{"internal_description": ""}` gets
+      `{"internal_description": ""}` in the response while the DB column stores NULL.
+      A client comparing response-to-stored-value would see a mismatch on the empty-string
+      case.
+    expected: response from post-write DB SELECT to confirm server-side normalisation
+    drift_class: response_decoupled_from_storage
+    provenance: STATIC — primary-source verification in batch-I DataEntityServiceImpl
+      sidecar bugs_limitations_corner_cases[5] + implicit_adrs[6]. Local probe — PUT
+      empty body + GET back + SELECT raw column + assert PUT echo == "" AND GET shows
+      no description AND SELECT returns NULL.
 test_matrix:
   unit:
     state: GAP
@@ -187,7 +228,11 @@ control_summary: '2 of 4 cells PROBED — integration + security both PROBED-PIN
   inferred-full-XSS to measured-partial-XSS (tags pass, attributes stripped). Batch-H
   adds primary-source SQL confirmation (ReactiveDataEntityRepositoryImpl.java:430-438)
   and surfaces a downstream SQL-injection surface in getHighlightedResult (lines 799-806)
-  that consumes the same internal_description column.'
+  that consumes the same internal_description column. Batch-I adds service-tier confirmation
+  at DataEntityServiceImpl.upsertDescription (lines 323-333) — silent-UPDATE-on-missing-entity
+  (NO pre-existence check, contrast createMetadata at lines 257-258) + response-from-request-payload
+  (NOT post-write DB read, lines 329-332). Two new STATIC facets surface the silent-200-on-missing
+  contract and the response-decoupled-from-storage edge case.'
 related_refactoring_scopes:
 - REFACTOR-218
 related_test_gaps:

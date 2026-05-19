@@ -372,6 +372,16 @@ When `MODE: full` (no prior artefacts, prompt-version bumped, or `--full`), fall
 
 Both `implicit-adrs.md` AND `refactoring-scopes.md` carry `processed_node_ids:` in frontmatter (newline-separated). Future incremental runs use the field to compute `NEW_SIDECAR_FILES`. Missing field triggers a one-shot full backfill.
 
+## Rule 6.5 (rev 3) — Consult Layer 0 (`system-mission.md`) for severity weighting + cross-pillar clustering
+
+`lineage/{repo}/system-mission.md` (produced once per substrate scan by `domain-extractor`) carries the 8-12-pillar shape + cross-pillar relationships graph. Use it when:
+
+- **Severity weighting** — ADR candidates / refactoring scopes that span multiple pillars get a severity bump relative to within-one-pillar findings. A bug at a cross-pillar integration boundary (e.g. AlertManager ingestion feeding Alerting → Notifications) has higher operator-blast-radius than the same shape within one pillar.
+- **Cross-pillar clustering** — when 3+ sidecars surface an invariant that spans pillars (e.g. "the same auth-bypass pattern affects Data Discovery + Governance + Alerting"), the candidate ADR / scope gains a `pillars_affected: [P-NN, ...]` field. Cross-pillar invariants are higher-impact and warrant their own ADR draft sooner.
+- **Pillar-anchored severity rationale** — when writing severity_rationale, name the affected pillar(s) from `system-mission.md` (operators recognise pillar names from the docs; "affects Governance + Data Discovery" is more meaningful than "affects 4 sidecars").
+
+If `system-mission.md` does not exist, fall back to rev-2 behaviour and flag the situation.
+
 ## Rule 7 (rev 2) — Dedup via `registry-search` subagent; never load the sharded index directly
 
 **Supersedes rev-1's read-the-full-prior-artefact pattern for dedup.** After slice 6, `implicit-adrs.md` and `refactoring-scopes.md` shard into `implicit-adrs/{index.md, detail/{ID}.md}` and `refactoring-scopes/{index.md, detail/{ID}.md}`. The full registry lives across hundreds of files; loading the entire `index.md` into your own context defeats the rev-2 cost-ceiling fix.

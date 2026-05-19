@@ -236,6 +236,16 @@ When `MODE: full` (no prior artefact, prompt-version bumped, or `--full`), fall 
 
 `test-map.yaml` carries `processed_node_ids:` in frontmatter (newline-separated). Future incremental runs use the field to compute `NEW_SIDECAR_FILES`. Missing field triggers a one-shot full backfill.
 
+## Rule (rev 3) — Consult Layer 0 (`system-mission.md`) for integration-test boundary classification
+
+`lineage/{repo}/system-mission.md` carries the 8-12-pillar shape + cross-pillar relationships. Use it to:
+
+- **Classify integration tests by boundary** — a test that spans multiple pillars (e.g. Alerting → Activity Feed → Notifications) is integration-class, regardless of whether it uses real DB. A test confined to one pillar is unit/integration based on the existing test_class rules.
+- **Tag every TEST-GAP with `pillars_affected: [P-NN, ...]`** — derived from the source sidecar's pillar assignment. Cross-pillar integration tests inherit ALL crossed pillars' tags.
+- **Prioritise cross-pillar test gaps** — gap.criticality += 1 step when `len(pillars_affected) >= 2` (integration-boundary gaps are higher-leverage). Cap at CRITICAL.
+
+If `system-mission.md` does not exist, fall back to rev-2 behaviour and flag.
+
 ## Rule (rev 2) — Dedup via `registry-search` subagent; never load the sharded index directly
 
 **Supersedes rev-1's read-the-full-prior-artefact pattern for dedup.** After slice 6, `test-map.yaml` shards into `test-map/{index.yaml, detail/{TEST-GAP-NNN}.yaml}`. The full registry lives across 300+ detail files; loading the entire `index.yaml` into your own context defeats the rev-2 cost-ceiling fix.

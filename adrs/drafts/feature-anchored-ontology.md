@@ -3,12 +3,13 @@ id: ADR-DRAFT-feature-anchored-ontology
 title: "Anchor the agentic ontology on entry-points and user-observable features, not on per-node code reading; compose cross-layer behaviour via a feature-flow reducer; control every feature along a 4-class test matrix"
 status: draft
 date: 2026-05-19
-scope: workspace-meta (EXTENDS `agentic-code-ontology.md` revision 3 — does not supersede). Revision 2 (2026-05-19) adds registry sharding + a `registry-search` subagent + an emergent-feature-registry with a substrate-fixed progress denominator after rev-1 deployed across 8 batches and surfaced reducer context growth as the cost ceiling.
+scope: workspace-meta (EXTENDS `agentic-code-ontology.md` revision 3 — does not supersede). Revision 2 (2026-05-19) adds registry sharding + a `registry-search` subagent + an emergent-feature-registry with a substrate-fixed progress denominator after rev-1 deployed across 8 batches and surfaced reducer context growth as the cost ceiling. Revision 3 (2026-05-19) adds **Layer 0 — system mission anchor** beneath all existing layers after batch I surfaced the bottom-up-only failure mode: 60 sidecars produced only 8 features, all bug-anchored rather than pillar-anchored. The maintainer's critique: the agent lacked the platform's gestalt — what features MEAN in this domain — and therefore couldn't generalise code chains to user-observable pillars. Rev 3 introduces a new subagent (`domain-extractor`) that reads live documentation + maintainer-curated vocabulary BEFORE any code-walk and emits `system-mission.md` — a doc-anchored 8-12-pillar shape that downstream reducers (especially `feature-flow-builder`) consume to anchor their classification.
 related_drafts: ADR-DRAFT-agentic-code-ontology, ADR-DRAFT-code-lineage-substrate, ADR-DRAFT-dynamic-verification-layer
 trigger_incident: 2026-05-19 view_count empirical probe — ontology had 50/395 sidecars + 7 reducer artefacts after batch G yet was silent on a user-observable doubling that emerges from cross-layer code composition
 case_law: retrospectives/LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md
 runtime_correction: 2026-05-19 — initial proposal naively suggested treating documented features as the input corpus; maintainer corrected: docs may be stale or silent, code is truth, docs are the audit target
 revision_2: 2026-05-19 — two cost-ceiling corrections by the maintainer after rev-1 deployment review. (a) rev-1's straw-man "1-line per-id index" for scaling reducer dedup was wrong — 1-line entries lose nuance and breed duplicates. Rev 2: index entries carry multi-paragraph discriminating context, a new `registry-search` subagent reads the index in its own context, reducers spawn the subagent per query and never load the full registry. Vector store remains deferred (LSN-016 anchor) and is named as the eventual mitigation in APPROACH.md §9. (b) rev-1 implied pre-enumerated features as the work unit, which would freeze LSN-017-shape blind-spots. Rev 2: feature registry is append-only and emerges per batch; progress is measured against the fixed substrate node count, never against the feature catalog's size.
+revision_3: 2026-05-19 — feature-generalisation correction after batches H + I deployment review. Rev-2 produced 8 features against 60 sidecars; ALL 8 are bug-anchored caveats (view_count doubling, AlertManager webhook spoofing, Policy lifecycle leak, Ingestion-replace destruction, etc.) not user-observable platform pillars (Data Discovery, Data Quality, Lineage, Governance, etc.). Maintainer correction — "currently we could not really formulate the scope of feature, the intent of features, their interconnections, considerations": the methodology needs the PLATFORM'S GESTALT before it can name features at the right granularity. Rev 3 introduces **Layer 0 — system mission anchor**: a new subagent (`domain-extractor`) reads the project's live documentation + maintainer-curated concepts catalog + (when needed) maintainer-supplied framing, and emits `lineage/{repo}/system-mission.md` — a doc-anchored 8-12-pillar description with mission statement, per-pillar capability descriptions + doc-URL anchors + cross-pillar relationships, audiences, architectural pillars. Layer 0 runs ONCE per substrate scan (not per batch); downstream layers (especially `feature-flow-builder`) consult it to classify code chains as pillar-anchored features or as drift facets WITHIN a pillar (the rev-2 bug-pin features get re-classified as drift facets, not standalone features). The methodology remains bottom-up emergent (principle 8) but with top-down anchoring. Features still emerge from code-walks; they now emerge AT THE RIGHT GRANULARITY because the agent knows what "feature" means in this domain.
 ---
 
 # ADR-DRAFT: Feature-anchored ontology — entry-points, code-as-truth, cross-layer composition, 4-class control
@@ -55,6 +56,33 @@ Five reducers each reading 200-800 KB of prior artefact every batch to dedup is 
 
 Rev 2 addresses both concerns. The mechanisms are introduced as principles 6, 7, and 8 below; the schema sections "Registry sharding (rev 2)", "A new subagent: `registry-search` (rev 2)", and "Progress denominator + emergent feature registry (rev 2)" specify the implementation surfaces. Every rev-1 win — entry-point traversal, code-is-truth, references-as-placeholders, the 4-class matrix, Type-7 probes, the layer-5 measured-truth feedback — carries forward unchanged.
 
+### Revision 3 trigger (2026-05-19) — feature-generalisation gap
+
+After batch I shipped (the second batch under rev-2 sharded mechanics; 60 sidecars total + 5 reducers run via autonomous `/next-batch`), the maintainer reviewed the feature registry shape and surfaced a structural concern:
+
+> "It's very suspicious that we have very small amount of features in the registry so far, we have so many nodes but 8 features that are mostly about some particular caveats of features according to the description. Seems it's very tough for you to generalize 'feature' level from the implementation. [...] we need to generate characteristics of the system, and use these characteristics to then generate features at the scanner time. From my point of view currently we could not really formulate the scope of feature, the intent of features, their interconnections, considerations, etc."
+
+The diagnosis is sharp. The rev-2 features:
+
+| Feature | Actual user-observable capability | What the registry says today |
+|---|---|---|
+| F-001 Detail-page view tracking | Popular Entities Ranking (a sub-feature of Data Discovery) | Caveat: useEffect doubling bug |
+| F-002 Term linking with permission gate | Data Glossary (sub: term-to-entity linkage) | Caveat: path-mismatch silently disables auth |
+| F-003 Popular ranking exclude-from-search | Popular Entities Ranking | Caveat: filter inconsistency across 9 list paths |
+| F-004 Markdown description storage | Data Discovery (sub: entity metadata) | Caveat: stored XSS surface |
+| F-005 Downstream lineage traversal | Data Lineage | Caveat: NPE + no cycle guard |
+| F-006 RBAC policy lifecycle | Governance / Authorization | Caveat: soft-delete orphan permissions |
+| F-007 AlertManager webhook ingestion | Alerting (sub: AlertManager integration) | Caveat: ungated cross-tenant alert creation |
+| F-008 Ingestion-replace destruction | S2S Ingestion | Caveat: silent metadata delete-on-absence |
+
+Each "feature" is a SPECIFIC BUG/CAVEAT anchored to a code chain, not the user-observable platform pillar that USES that chain. The agent didn't have the gestalt — what does ODD exist to do, what are its primary capabilities at the operator-facing granularity — and therefore couldn't classify code chains correctly.
+
+This is the **bottom-up-only failure mode**: without top-down anchoring, code-walks produce drift findings at the granularity of the drift, not the granularity of the user. Rev-2 principle 8 said features emerge from code-walks; rev 3 refines: features emerge from code-walks AND are anchored on a doc-derived pillar shape. The shape is upstream; the emergence is downstream.
+
+Rev 3 adds **Layer 0 — system mission anchor** beneath the existing layers. A new subagent (`domain-extractor`) reads the live documentation + maintainer-curated vocabulary + (when doc coverage is insufficient) a maintainer-interview escape hatch, and emits `lineage/{repo}/system-mission.md` — a 8-12-pillar shape with mission statement, per-pillar capabilities + doc URLs + cross-pillar relationships, audiences, architectural pillars. Downstream layers consult Layer 0 to classify their findings at the right granularity.
+
+The mechanism is introduced as **principle 9** below. The schema section "Layer 0 — system mission anchor (rev 3)" specifies the implementation surface. Every rev-2 win carries forward — Layer 0 is additive, not substitutive.
+
 ### Why this is an architectural decision, not a tactical pivot
 
 A tactical pivot would be "enrich the React component, add a comment to the relevant sidecar, log a REFACTOR-NNN." That misses the structural problem.
@@ -97,7 +125,7 @@ The cost ceiling consideration is similar to LSN-016's pivot: the right time to 
 
 **Anchor the agentic ontology on entry-points and user-observable features. Each enrichment traversal starts at an entry point (UI mount / button onClick / REST operation / scheduled job / webhook / WAL listener / SDK builder / boot-time configuration), walks downstream through services / repositories / external effects, and records user-observable consequences at every hop. Code is the source of truth; documentation is the audit target. A new reducer composes per-feature observable behaviour from the entry-point sidecar chains and emits per-feature observed-vs-expected facts plus a 4-class test-control matrix.**
 
-### Eight non-negotiable principles (5 from rev 1 + 3 from rev 2)
+### Nine non-negotiable principles (5 from rev 1 + 3 from rev 2 + 1 from rev 3)
 
 1. **Code is truth; documentation is the audit target.** Features emerge from code-walk traversal, never from a docs-derived catalog. Doc-gap-finder compares code-anchored feature facts to published docs; drift surfaces as DOC-GAP-NNN. The ontology cannot start from a feature list extracted from docs because the feature list must itself be derivable from code (and docs may be stale, inconsistent, or silent about features the code has — including bugs that produce user-observable effects).
 
@@ -119,7 +147,7 @@ The four classes are orthogonal: a feature can be fully unit-tested and still fa
 
 7. **(rev 2) A `registry-search` subagent owns index reads; reducers spawn it per query, not per batch.** Single-purpose, read-only (tools: `Read, Grep`). Input: the discriminating text from a fresh sidecar finding + an index path. Output: 0-5 candidate matches with their full index entries verbatim + a `verdict` line (`0 matches — create new` / `1 strong match — strengthen ID-X` / `N ambiguous — maintainer-triage`). The reducer reads the verdict + the verbatim excerpts and decides; it never holds the full index in its own context. **Vector store remains deferred** — the text-anchored registry-search subagent buys 1-2 orders of magnitude of additional growth headroom over the monolithic shape; the vector store is built when (a) any one index file crosses ~5 MB, OR (b) registry-search consistently returns >20 candidates per query, OR (c) cross-batch dedup quality drops measurably (surfaced by maintainer-triggered merge-fixups). LSN-016's "no vector store" line in APPROACH.md §9 is updated to reflect this two-stage deferral: structural blind-spots → registry-search subagent → vector store with full-text-search fallback. The deferral order is honoured strictly; the methodology never silently slips an embeddings dependency in before its scaling threshold is hit.
 
-8. **(rev 2) Features emerge from code-walks; progress is measured against the fixed substrate, never against feature count.** The feature registry is append-only and grows per batch — each batch may discover new features OR extend existing features from a new entry-point angle (principle 3, "the same code visited many times", produces this naturally). **No batch is gated on "the feature catalog is complete."** Progress is reported along two dimensions, both with a fixed denominator (total substrate node count at substrate scan time, currently 395 for odd-platform):
+8. **(rev 2) Features emerge from code-walks; progress is measured against the fixed substrate, never against feature count.** *(Refined in rev 3 — principle 9 adds the top-down anchoring without changing the bottom-up emergence rule.)* The feature registry is append-only and grows per batch — each batch may discover new features OR extend existing features from a new entry-point angle (principle 3, "the same code visited many times", produces this naturally). **No batch is gated on "the feature catalog is complete."** Progress is reported along two dimensions, both with a fixed denominator (total substrate node count at substrate scan time, currently 395 for odd-platform):
    - `nodes_with_own_sidecar / total_substrate_nodes` — direct enrichment ratio
    - `nodes_touched_by_any_feature_flow / total_substrate_nodes` — effective coverage; a node counts as touched when it appears as a `contributing_node` in any feature-flow whose chain is complete AND probe-verified along ≥1 test-matrix axis
 
@@ -128,6 +156,17 @@ The four classes are orthogonal: a feature can be fully unit-tested and still fa
    - `features_with_≥1_cell_PROBED / features_discovered` (quality signal for what's been discovered)
 
    A node that never appears in any feature-flow after the platform reaches high coverage is itself a finding — either dead code (REFACTOR-NNN candidate) or evidence that the substrate's entry-point class set is incomplete (substrate-axis-gap LSN candidate). Coverage closes from two directions (bottom-up sidecars + top-down feature-flow traversals); the fixed denominator means "100%" is a well-defined target whose semantics do not shift as the feature catalog evolves.
+
+9. **(rev 3) Features emerge bottom-up FROM CODE but are classified top-down BY PILLAR.** A new Layer 0 — system mission anchor — runs ONCE per substrate scan (not per batch). The `domain-extractor` subagent reads the project's canonical documentation source (`../documentation/docs/**` for ODD; the equivalent for any other project) + the maintainer-curated concepts catalog + (when needed) maintainer-supplied framing, and emits `lineage/{repo}/system-mission.md` — a doc-anchored 8-12-pillar description of the platform's mission and primary user-observable capabilities at the operator-facing granularity.
+
+   Downstream layers (especially `feature-flow-builder`) **consult `system-mission.md` BEFORE classifying any code chain as a feature**. The rev-2 emergent registry stays — features still emerge from code-walks per principle 8 — but with three classification rules layered on top:
+   - **Pillar-anchored emergence** — every new feature_id MUST belong to a pillar from `system-mission.md`. The feature_id namespace is two-tiered: `P-01:F-001` (Data Discovery → Detail-page view tracking) rather than the flat `F-001`. Cross-pillar relationships from `system-mission.md` define which feature interactions are normal vs which are integration boundaries worth probing.
+   - **Bug-shaped findings become drift facets, NOT features** — the rev-2 bug-anchored shape (F-001 = "Detail-page view tracking with +2 doubling bug") is wrong. The correct shape: the user-observable capability is "Popular Entities Ranking" (a sub-feature of Data Discovery); the doubling bug is a `drift_class: ui_amplification` facet inside `observed_vs_expected.facets`. The feature itself is anchored on the doc-side language; the drift is the code-vs-doc gap.
+   - **Pillar-without-implementation OR implementation-without-pillar are both findings** — bidirectional drift. The doc surfaces 11 pillars; if code-walks reach exhaustion and only 9 are populated, the missing 2 are a doc-side overpromise (DOC-GAP class). Conversely, if code-walks surface a coherent user-observable cluster that has no doc-side home, it's `canonical_candidate: true` in `system-mission.md` for maintainer review.
+
+   **What this preserves** — every rev-2 win (entry-point traversal, code-is-truth, emergent registry, sharded artefacts, registry-search dedup, substrate-fixed denominator). Layer 0 is additive. The agent's gestalt about the platform is upstream of the code-walk; the code-walk remains the truth source for HOW the platform behaves.
+
+   **What this corrects** — the bottom-up-only failure mode that produced bug-pin features at batch I. With Layer 0, F-001..F-008 get re-classified: each becomes a `drift_class` facet inside a pillar-anchored feature (F-001 → Data Discovery's Popular Entities Ranking feature's `ui_amplification` facet; F-006 → Governance's Role-Based Access Control feature's `permission_persistence_after_soft_delete` facet; etc.).
 
 ### Runtime architecture — non-negotiable
 
@@ -266,6 +305,62 @@ Examples:
 
 Type-7 probe failures that match a feature-flow drift entry = methodology working. Type-7 probe failures where ontology was silent = methodology miss → log as LSN.
 
+#### Layer 0 — system mission anchor (rev 3)
+
+A new artefact at `lineage/{repo}/system-mission.md` produced by a new subagent (`domain-extractor`). One artefact per project, refreshed when (a) substrate is re-scanned, (b) the project's documentation IA changes substantively, or (c) the maintainer hand-edits the `## Maintainer notes` block.
+
+**Structure** (full schema in `.claude/agents/domain-extractor.md`):
+- Mission statement (1-2 paragraphs)
+- 8-12 primary feature pillars; per pillar: one-line capability, primary user actions, data entities operated on, doc-side narrative (verbatim from live page or local source-of-truth markdown), doc URL + verification status, cross-pillar relationships, sub-feature seed list, audiences served, confidence
+- Audiences (6-10 tags)
+- Architectural pillars (orthogonal to feature pillars; UI, REST API, S2S, scheduled jobs, etc.)
+- Canonicalisation candidates (pillars where docs are thin OR code signal contradicts docs)
+- Cross-pillar relationships graph
+- Sources block with per-URL verification status
+- Confidence per pillar
+- Maintainer notes (preserved across refreshes)
+
+**Pillar discipline** — 8-12 total. A pillar qualifies when (a) marketing/landing narrative names it as primary, (b) docs have a top-level section for it, (c) operator can describe in one sentence, (d) multiple sub-features compose under it. Architecture concerns, single-mutation surfaces, substrate axes don't qualify.
+
+**Doc-source contract** — live URLs are gold; local `../documentation/docs/**` markdown is acceptable substitute when WebFetch is denied (with explicit `confidence: MEDIUM (local-anchored; live verification pending)`); pretraining is NEVER acceptable. Same discipline as Rule 1 (live URLs only for documentation).
+
+**Maintainer-interview escape hatch** — if a pillar shows clear code-side signal but no doc-side narrative, `domain-extractor` surfaces it as `canonical_candidate: true` with a maintainer-question; never invents pillars from code alone.
+
+#### A new subagent: `domain-extractor` (rev 3)
+
+System prompt at `.claude/agents/domain-extractor.md`. Tools: `Read, Grep, Glob, WebFetch, Write`. Single-purpose; runs once per substrate scan.
+
+Input contract (passed by the maintainer / orchestrator):
+
+```
+PROJECT_REPO: <e.g. odd-platform>
+DOCS_SITE_BASE_URL: <e.g. https://docs.opendatadiscovery.org/>
+PRIMARY_DOC_SOURCE: <live URL OR local source-of-truth markdown directory>
+CANONICAL_CONCEPTS_PAGE: <URL or local path>
+MAINTAINER_CONCEPTS_FILE: <optional — workspace-relative path to concepts catalog>
+EXISTING_SIDECARS_DIR: <optional — used for code-side cross-check>
+OUTPUT_PATH: <e.g. lineage/{repo}/system-mission.md>
+```
+
+**Safety rules:**
+- Tool surface includes `Write` BUT writes ONLY to OUTPUT_PATH (single path; never modifies source repos or other workspace files).
+- Single-pass write per Rule 8 — composes full content in own context, validates against schema, Writes once.
+- If WebFetch is denied AND no local doc source is provided → STOP with explicit error. Layer 0 cannot run without canonical doc access (whether live or local-canonical-markdown).
+- Pillar count must land in [8, 12] OR STOP and surface to maintainer.
+
+#### Reducer-side changes for Layer 0 (rev 3)
+
+Every downstream reducer's prompt gains a "consult `system-mission.md` for classification" rule. The largest changes are in `feature-flow-builder`:
+
+- Reads `system-mission.md` BEFORE producing/updating any feature.
+- For each emerging code chain:
+  - **Map to a pillar**: classify into one of the 8-12 pillars (or surface as canonical_candidate if none fits).
+  - **Mint feature_id within the pillar's namespace**: `P-NN:F-NNN` two-tier IDs.
+  - **Bug-shaped findings become drift facets**, not standalone features. Each existing `F-NNN` from rev-2 gets re-classified as `P-NN:F-MMM` where the bug becomes a `drift_class` facet inside `observed_vs_expected.facets`.
+  - **Cross-pillar interactions** surface as relationship-edges on `system-mission.md`, NOT as separate features.
+
+Other reducers (concept-merger, doc-gap-finder, test-coverage-mapper, adr-archaeologist) get lighter touches — they consult `system-mission.md` to anchor naming, severity weighting, and integration-test gap classification (cross-pillar = integration; within-pillar = unit). Full prompt updates land in the slice-10 implementation.
+
 #### Registry sharding (rev 2)
 
 Each cross-file reducer artefact splits into an **index** + a **per-id detail set**:
@@ -324,6 +419,8 @@ The cycle from `agentic-code-ontology.md` revision 3 (substrate → enrich → r
 
 ```
 substrate scan                   → nodes.jsonl + edges.jsonl + rollups
+domain-extractor (Layer 0)       → lineage/{repo}/system-mission.md
+                                   (rev 3 — once per substrate scan; doc-anchored pillar shape)
 enrich --batch <entry-points>    → 5 sidecars (1 session) — entry-point-anchored
                                    sidecars record upstream_callers + downstream_side_effects + test_class
 reduce concept-merger            → concepts/{index,detail}/ refresh
@@ -428,11 +525,12 @@ The script runs once per repo (currently odd-platform; future repos at their own
 - agentic-code-ontology.md revision 3 — the layer this ADR extends
 - code-lineage-substrate.md revision 3 — the structural seed (provides the `total_substrate_nodes` denominator)
 - **dynamic-verification-layer.md** — the layer-5 measured-truth feedback loop that consumes `feature-flow.observed_vs_expected` and writes measured values back. Rev-2 progress metric `features_with_≥1_cell_PROBED` is populated from that ADR's slice-2+ output.
-- APPROACH.md rev 2 — portability surface; gains rev-2 paragraphs on registry sharding + emergent feature registry + the two-stage scalability path (registry-search now, vector store later) alongside the rev-1 entry-point + 4-class additions.
+- APPROACH.md rev 2 — portability surface; gains rev-2 paragraphs on registry sharding + emergent feature registry + the two-stage scalability path (registry-search now, vector store later) alongside the rev-1 entry-point + 4-class additions. **Rev 3 adds §13 — System mission anchor** as a universal section describing Layer 0's role and the `domain-extractor` agent.
+- **`.claude/agents/domain-extractor.md`** (rev 3 — NEW) — the Layer 0 subagent's system prompt; doc-anchored pillar extraction with the full output schema for `system-mission.md`.
 
 ## Open questions deliberately not addressed in this ADR
 
-None. Rev 1's choices are anchored in LSN-017 + the live demo probe + the existing layered ADR pattern from `agentic-code-ontology.md`. Rev 2's choices are anchored in the 8-batch empirical evidence of reducer context growth + the maintainer's correction of the rev-1 1-line-index strawman + the maintainer's correction of the pre-enumerated-feature-catalog implication. Schema details, reducer prompt skeletons, the `registry-search` subagent system-prompt, per-artefact migration sequencing, the eventual vector-store trigger threshold, and per-language extractor adjustments are all implementation-slice deferrals — they implement this ADR's decisions, they do not require fresh decisions.
+None. Rev 1's choices are anchored in LSN-017 + the live demo probe + the existing layered ADR pattern from `agentic-code-ontology.md`. Rev 2's choices are anchored in the 8-batch empirical evidence of reducer context growth + the maintainer's correction of the rev-1 1-line-index strawman + the maintainer's correction of the pre-enumerated-feature-catalog implication. Rev 3's choices are anchored in the batch-I post-deployment observation that 8 features against 60 sidecars were ALL bug-anchored caveats rather than pillar-anchored capabilities + the maintainer's diagnosis that the agent lacked the platform's gestalt + the doc-source contract honoured by the file-analyser (live URLs only, no pretraining) extended to the upstream pillar shape. Schema details, the `domain-extractor` system prompt, the F-001..F-008 re-classification, the pillar-namespace `P-NN:F-NNN` scheme, the local-docs fallback contract, and per-project extractor adjustments are all implementation-slice deferrals — they implement this ADR's decisions, they do not require fresh decisions.
 
 If a slice during implementation surfaces a contradiction with this ADR, the slice triggers a revision-3 of this ADR (not a new ADR) per the established pattern.
 
@@ -455,5 +553,7 @@ If a slice during implementation surfaces a contradiction with this ADR, the sli
 8. **Slice 8 (rev 2) — coverage-metrics on manifest + state/PROGRESS.md update**: Manifest gains `coverage_metrics:` block with the two dimensions and the two informational metrics. `/status` and `/coverage` skills updated to surface the two-dimension table. `state/PROGRESS.md` template updated. No single-percentage summary anywhere.
 
 9. **Slice 9 (rev 2) — emergent feature-registry shape**: `feature-flow-builder` reducer (slice 3 above) extended to feed the append-only registry with `new_features` / `extended_features` / `merge_candidates` deltas per batch. `feature-flows.yaml` shards into `feature-flows/{index,detail}/` from day 1 — same shape as the other four reducer artefacts; the original draft's "wait until 250 KB" threshold was dropped at maintainer review 2026-05-19 (uniformity > size-gated migration). Merge-candidate triage is maintainer-triggered; merge action is recorded as `merged_features` in the next batch's delta.
+
+10. **Slice 10 (rev 3) — Layer 0 system mission anchor**: New subagent `.claude/agents/domain-extractor.md` (Layer 0; doc-anchored pillar shape). New artefact `lineage/{repo}/system-mission.md`. `feature-flow-builder` updated to consult Layer 0 BEFORE classifying any code chain; bug-shaped findings re-classified as `drift_class` facets inside pillar-anchored features (the F-001..F-008 from rev-2 deployment get re-classified in this slice). Other reducer prompts (concept-merger, doc-gap-finder, test-coverage-mapper, adr-archaeologist) gain lightweight "consult system-mission.md" rules. APPROACH.md §13 documents Layer 0 as universal — every project bootstrapping the methodology runs `domain-extractor` first; the pillar shape is the gestalt every downstream layer assumes.
 
 Slices 2 onward are deferred to subsequent batches. Slices 6-9 (rev 2) can be parallelised across maintainer sessions where they don't share files: 6 + 7 must sequence (sharded artefacts before reducers consume the sharded shape); 8 + 9 can run in parallel with each other and after 6+7 land. Slice 1 is this batch.

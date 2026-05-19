@@ -295,6 +295,16 @@ Never auto-merge two concept entries even when they appear identical (e.g., "Dat
 
 **Per-finding context budget**: ≤ 30 KB. Per-batch total: ≤ 200 KB regardless of catalog size.
 
+## Rule (rev 3) — Consult Layer 0 (`system-mission.md`) for pillar-anchored naming
+
+`lineage/{repo}/system-mission.md` (produced once per substrate scan by `domain-extractor`) is the doc-anchored 8-12-pillar shape for the project. When clustering concept candidates:
+
+- Anchor concept naming on the pillar vocabulary FIRST, then on `documentation/docs/main-concepts.md`, then on the maintainer-curated catalog. If a concept aligns with a pillar's `primary user actions` or `data entities operated on`, use the pillar's term verbatim.
+- For each cluster of sidecar-surfaced concepts that doesn't map cleanly to an existing pillar's vocabulary, surface a `canonical_candidate` entry in `concepts/index.yaml` and cross-reference `system-mission.md`'s canonicalisation_candidates block.
+- Per-concept `pillar_affinity:` field (NEW): every concept entry gains a `pillar_affinity: [P-NN, P-NN]` field naming which pillars it serves. Concepts spanning >2 pillars are integration-boundary concepts (worth probing).
+
+If `system-mission.md` does not exist, log a quality warning at the head of the catalog refresh and continue with rev-2 behaviour for this batch — but flag the situation in the maintainer-facing reply so Layer 0 is initialised before the next batch.
+
 ## Rule (rev 2 / batch-I follow-up) — YAML-safe emit (LOAD-BEARING)
 
 **Never emit a YAML scalar that contains an unquoted `: ` (colon + space) substring AND never emit a scalar that begins with `@`, `>`, `|`, `*`, `&`, `?`, `!`, `%` (YAML reserved-character prefixes).**

@@ -245,6 +245,16 @@ When `MODE: full` (no prior artefact, prompt-version bumped, or `--full`), fall 
 
 `doc-gaps.md` carries `processed_node_ids:` in frontmatter (newline-separated). Future incremental runs use the field to compute `NEW_SIDECAR_FILES`. Missing field triggers a one-shot full backfill.
 
+## Rule (rev 3) — Consult Layer 0 (`system-mission.md`) for pillar-coverage gaps
+
+`lineage/{repo}/system-mission.md` carries the 8-12-pillar shape with per-pillar doc URL + verification status. Use it as a CHECKLIST:
+
+- **Pillar-without-implementation findings** — if `system-mission.md` names pillar X with a doc URL but code-walks (sidecar coverage) for that pillar are sparse-to-zero, the docs may be overpromising. Surface as a new doc-gap class `pillar-overpromise`: "docs name pillar X but code coverage is < N sidecars or < M%" — maintainer-triages whether to flesh out implementation or trim the doc claim.
+- **Implementation-without-pillar findings** — when sidecars surface a coherent code-side capability that lacks any pillar home in `system-mission.md`, surface as `pillar-undocumented` (cross-reference `system-mission.md`'s canonicalisation_candidates entry).
+- **Thin-doc pillars** — pillars whose `confidence: LOW` or whose `live_url_verifications.status: pending-WebFetch-session` get an automatic doc-gap candidate to schedule a verification pass.
+
+If `system-mission.md` does not exist, fall back to rev-2 behaviour and flag the situation.
+
 ## Rule (rev 2) — Dedup via `registry-search` subagent; never load the sharded index directly
 
 **Supersedes rev-1's read-the-full-prior-artefact pattern for dedup.** After slice 6, `doc-gaps.md` shards into `doc-gaps/{index.md, detail/{DOC-GAP-NNN}.md}`. The full registry lives across ~100 detail files; loading the entire `index.md` into your own context defeats the rev-2 cost-ceiling fix.

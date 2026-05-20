@@ -1,0 +1,77 @@
+gap_id: TEST-GAP-807
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java notification.sender class:WebhookNotificationSender"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "WebhookNotificationSender.md:bugs_limitations_corner_cases.[1] MEDIUM (NO URL allowlist / scheme guard / SSRF defence — operator-supplied URL is trusted verbatim)"
+  - "WebhookNotificationSender.md:security.known_security_gaps.[1] MEDIUM (No URL allowlist / SSRF defence)"
+behaviour: |-
+  **MEDIUM — Webhook URL accepts ANY syntactically-valid `java.net.URI`; no scheme allowlist, no host allowlist, no SSRF defence.** `NotificationConfiguration.java:94` rejects only empty strings (`webhookUrl.toString().isEmpty()`); the URI parser at line 91 accepts any syntactically-valid URI (`file://`, `gopher://`, RFC1918, link-local, `http://localhost`, `http://169.254.169.254/...` for AWS metadata-IMDS).
+
+  **The boot-time validation gap**:
+  - The JDK `HttpClient` at runtime will reject non-`http(s)` schemes at send-time (failing with `IllegalArgumentException`), but **no boot-time guard** prevents a misconfigured URL from being instantiated as a Spring bean.
+  - The JDK `HttpClient` does NOT reject RFC1918 / link-local / loopback URLs — it happily sends to `http://169.254.169.254/latest/meta-data/iam/security-credentials/...` (AWS IMDS), `http://10.0.0.0/24/internal-service/`, `http://localhost:8500/v1/kv/secrets/` (Consul KV).
+
+  **The SSRF surface**:
+  1. An operator (or an attacker who learns the config-write path) sets `notifications.receivers.webhook.url=http://169.254.169.254/latest/meta-data/iam/security-credentials/odd-platform-role`.
+  2. The platform's NotificationConfiguration boots cleanly — no validation error.
+  3. The first alert fires, the webhook sender POSTs the alert payload to the AWS IMDS endpoint.
+  4. AWS IMDS responds with the IAM role credentials.
+  5. The dispatcher logs the failure (the IMDS endpoint returns non-200 for the unexpected POST shape) — but the credential response body is now in the platform's network buffer briefly + the request itself revealed the platform's presence to the local metadata service.
+  6. More dangerously, if the URL is `http://internal-service.cluster.local/admin/api/users`, the POST body (full AlertNotificationMessage with dataEntity.owners, downstream lineage) is delivered to the internal service.
+
+  **The threat model**:
+  - For platforms where the webhook URL is **platform-config-only** (today's case — operator owns the YAML), the SSRF surface is bounded by config-write capability.
+  - For platforms where the webhook URL is **user-controllable** (a future feature: per-Owner webhook URL stored in DB; a future Slack-OAuth-style admin surface) — the SSRF surface is direct.
+  - In multi-team K8s deployments with ConfigMap edit RBAC distributed broadly, the gap is closer to "user-controllable" than "platform-config-only".
+
+  **Compares to TEST-GAP-808** (Slack SSRF — same gap on the Slack URL): TEST-GAP-808 covers the parallel finding at SlackNotificationSender. Both share the root cause "operator-configured URI accepted verbatim, no allowlist".
+
+  **Test gap shape**: regression-pin asserting boot-time acceptance of RFC1918 / loopback / `file://` URIs. PINS the current vulnerability; pairs with REFACTOR-NNN adding boot-time scheme + host allowlist.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/sender/WebhookNotificationSenderNoSSRFGuardRegressionPinTest.java"
+  name: "configBootsWithRFC1918URL_beanInstantiatedSuccessfully_pinsSSRFSurface"
+evidence:
+  - "WebhookNotificationSender.md says (bugs_limitations_corner_cases.[1]): 'NO URL allowlist / scheme guard / SSRF defence — operator-supplied URL is trusted verbatim. NotificationConfiguration.java:94 rejects only empty strings; the URI parser at line 91 accepts any syntactically-valid URI (file://, gopher://, RFC1918, link-local, http://localhost). The JDK HttpClient at runtime will reject non-http(s) schemes at send-time, but no boot-time guard prevents a misconfigured URL from being instantiated. For a platform with /actuator/env exposed, the webhook URL is part of the environment surface — combined with the absent allowlist, the SSRF surface is operator-supplied.' — severity MEDIUM"
+  - "Verified at primary source: WebhookNotificationSender.java:11,13-16 (URI accepted verbatim from constructor) + NotificationConfiguration.java:91,94-96 (validation is `webhookUrl.toString().isEmpty()` only)"
+cross_references:
+  - "TEST-GAP-808 (sister — Slack URI no scheme allowlist; SAME root cause at SlackNotificationSender)"
+  - "TEST-GAP-799 (sister — no HMAC; same Webhook channel)"
+  - "REFACTOR-NNN (proposed): add `notifications.receivers.{slack|webhook}.url-allowlist-schemes` (default `https`) + `.url-allowlist-hosts` (regex, optional) config keys; validate at boot with `IllegalStateException` on mismatch"
+  - "REFACTOR-NNN (proposed): add boot-time blocklist for RFC1918 / loopback / link-local hosts unless `notifications.receivers.{slack|webhook}.allow-internal-hosts=true` is explicitly set"
+  - "DOC-GAP-NNN (proposed): live `/features/active-platform-features/notifications` should document SSRF posture + recommend operator-side network isolation"
+  - "concepts.yaml: `outbound-webhook-no-uri-validation` invariant"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery", "P-09:F-001 Security"]
+proposed_action: |-
+  Add `WebhookNotificationSenderNoSSRFGuardRegressionPinTest`. Boot-test parametrised cases:
+
+  1. `configBootsWithRFC1918URL_beanInstantiatedSuccessfully_pinsSSRFSurface` —
+     - `@SpringBootTest` with property `notifications.receivers.webhook.url=http://10.0.0.5/internal`.
+     - Assert the context loads without error.
+     - Assert the `WebhookNotificationSender` bean is present.
+     - PINS the current acceptance of RFC1918 URLs.
+
+  2. `configBootsWithAWSIMDSURL_beanInstantiated_pinsAWSCredentialExfiltrationSurface` —
+     - Property `notifications.receivers.webhook.url=http://169.254.169.254/latest/meta-data/iam/security-credentials/odd-platform-role`.
+     - Assert context loads, bean exists.
+
+  3. `configBootsWithFileScheme_beanInstantiated_pinsLocalFileScheme` —
+     - Property `notifications.receivers.webhook.url=file:///etc/passwd`.
+     - Assert context loads, bean exists (the JDK HttpClient will reject at send-time, but boot accepts).
+
+  4. `configBootsWithLocalhostURL_beanInstantiated_pinsLoopbackAcceptance` —
+     - Property `notifications.receivers.webhook.url=http://localhost:8500/v1/kv/`.
+     - Assert context loads, bean exists.
+
+  5. `configBootsWithRFC1918URL_failsValidation_confirmsFixDirection` — (UPDATE once REFACTOR-NNN lands)
+     - After REFACTOR-NNN: assert context fails to load with `IllegalStateException` mentioning "RFC1918".
+
+  Pair with REFACTOR-NNN (boot-time validation) and DOC-GAP-NNN (SSRF posture docs).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. No prior TEST-GAP names the boot-time SSRF acceptance. Sister gap TEST-GAP-808 covers the SlackNotificationSender side. No contradiction.
+batch: 2026-05-20-Y
+feature_id: F-009

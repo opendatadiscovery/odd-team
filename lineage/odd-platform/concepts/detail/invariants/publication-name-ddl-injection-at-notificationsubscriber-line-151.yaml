@@ -1,0 +1,204 @@
+name: |-
+  Publication-name DDL injection at NotificationSubscriber.java:151 (CREATE PUBLICATION with String.formatted operator config — batch Y)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-09
+description: |-
+  NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20Y — surfaced by primary-source
+  examination of NotificationSubscriber.java at the registerPublication helper
+  (lines 144-152). The CREATE PUBLICATION DDL is constructed via
+  String.formatted (Java 15+ instance method) directly interpolating the
+  operator-configured publication name and the jOOQ-derived table name; no
+  identifier escaping is applied.
+
+  THE PRIMARY-SOURCE EVIDENCE — NotificationSubscriber batch Y:
+
+    NotificationSubscriber.java:144-152 (the registerPublication helper):
+      final String tableName = targetTable.getSchema().getName() + "." +
+                               targetTable.getName();
+      // ... existence probe via PreparedStatement (parameterised, L133-135)
+      // ... and then:
+      final String sql = "CREATE PUBLICATION %s FOR TABLE %s"
+          .formatted(walProperties.getPublicationName(), tableName);
+      try (final Statement stmt = connection.createStatement()) {
+          stmt.execute(sql);
+      }
+
+  THE ASYMMETRY — probe vs create:
+
+    The publication-EXISTS probe at L133-135 uses a PreparedStatement with
+    a parameter binding:
+      SELECT EXISTS (SELECT oid FROM pg_publication WHERE pubname = ?)
+    The probe IS parameterised — SQL injection on the probe is impossible.
+
+    The CREATE PUBLICATION DDL at L151 is NOT parameterised — PG bans
+    parameterised DDL identifiers (this is a structural Postgres limitation,
+    not a code bug). The String.formatted interpolation is therefore
+    structurally REQUIRED, but the code applies NO additional escaping or
+    validation between operator config and the interpolated value.
+
+  THE ATTACK SURFACE:
+
+    The publication-name value comes from operator config
+    (notifications.wal.publication-name, default
+    odd_platform_publication_alert, read by Spring @Value into
+    NotificationsProperties$WalProperties). A pathological config value
+    such as
+      'odd_alert; DROP TABLE alert; --'
+    would, when interpolated, produce:
+      CREATE PUBLICATION odd_alert; DROP TABLE alert; -- FOR TABLE public.alert
+    Postgres executes the DDL multi-statement (separator ';'). The DROP
+    TABLE alert runs on the platform's own ALERT table.
+
+    The likelihood is LOW because:
+      - the attack vector requires operator-config-modification capability
+      - operators with this capability already have a much broader threat
+        model (they can read database credentials from the same config
+        file)
+      - no UI surface exposes the publication name as user-controllable
+
+    The severity is MEDIUM because:
+      - the code is structurally vulnerable to identifier-injection (no
+        validation, no escaping)
+      - the asymmetry between probe (parameterised) and create (formatted)
+        is a maintainer-trap: a future maintainer reading the probe might
+        assume the create is similarly safe
+      - a build-time scanner cannot detect this without dataflow analysis
+        (the @Value flow from config to formatted-string interpolation is
+        not a syntactic pattern)
+
+  THE BROADER CLASS — DDL identifier injection:
+
+    PG identifiers ARE quotable via double-quotes if they contain special
+    characters. The fix is to wrap the publication name in double-quotes
+    AND escape any embedded double-quotes by doubling them:
+      "CREATE PUBLICATION \"%s\" FOR TABLE %s"
+          .formatted(walProperties.getPublicationName().replace("\"", "\"\""),
+                     tableName)
+    OR to validate the publication name against a strict allowlist regex
+    (e.g. [a-z_][a-z0-9_]*) at boot via @ConfigurationProperties validator
+    and fail fast on a pathological value.
+
+    Neither mitigation is present in the current code.
+
+  THE SLOT-NAME ANALOGUE — sibling LOW-severity gap:
+
+    The replication-slot lazy-create at L113-120 uses
+    pgConnection.createReplicationSlot() (org.postgresql driver method)
+    not raw DDL. The driver-side method applies its own slot-name
+    validation. The slot-name does not flow through String.formatted
+    on the create path. SLOT name injection is therefore NOT present —
+    only PUBLICATION name injection is.
+
+  CROSS-FEATURE NOTE — similar patterns elsewhere in odd-platform:
+
+    The Lookup Tables subsystem already has a "custom connection pool
+    exists solely for lookup-tables schema injection" invariant (batch P)
+    capturing a similar DDL identifier-interpolation surface — but with
+    explicit operator-trust framing (the operator is trusted to set the
+    schema name). The publication-name surface is similar in that it is
+    operator-controlled, but DIFFERENT in that the live doc treats
+    publication-name as a "tunable knob" rather than as a privileged
+    identifier; operators reading the live doc would not realise the
+    knob carries DDL-injection responsibility.
+
+  SEVERITY MEDIUM — bounded by operator-config-modification threat model,
+  but structurally present at the code level and undocumented.
+nodes:
+  - odd-platform java notification class:NotificationSubscriber
+  - odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+contributors:
+  - |-
+    NotificationSubscriber batch Y (PRIMARY SOURCE — publication-name DDL
+    injection):
+    bugs_limitations_corner_cases.[2] (registerPublication String.formatted
+    DDL injection surface — severity MEDIUM) +
+    bugs_limitations_corner_cases.[3] (probe-vs-create parameterisation
+    asymmetry — severity LOW) +
+    security.known_security_gaps.[0] (publication-name SQL-injection surface
+    at L151 — severity LOW per the sidecar's calibration; promoted to
+    MEDIUM at the concept level because of the maintainer-trap quality of
+    the probe-vs-create asymmetry)
+  - |-
+    NotificationsProperties batch C (existing reference — the WalProperties
+    POJO holds the publicationName field at NotificationsProperties.java
+    line 13-18; @Value-bound from notifications.wal.publication-name; no
+    validator, no @Pattern, no @ConfigurationProperties validation)
+evidence:
+  - |-
+    NotificationSubscriber.md:bugs_limitations_corner_cases.[2]
+    (registerPublication interpolates publication-name + table-name via
+    String.formatted into CREATE PUBLICATION DDL) — evidence:
+    NotificationSubscriber.java:144-152
+  - |-
+    NotificationSubscriber.md:bugs_limitations_corner_cases.[3]
+    (publication-name probe uses parameterised PreparedStatement at
+    L133-135; create uses String.formatted at L151 — the asymmetry)
+  - |-
+    NotificationSubscriber.md:security.known_security_gaps.[0]
+    (publication-name SQL-injection surface) — evidence:
+    NotificationSubscriber.java:151
+  - |-
+    NotificationsProperties.md (batch C — WalProperties carries
+    publicationName field; no validator)
+  - |-
+    Cross-references existing invariant
+    custom-connection-pool-exists-solely-for-lookup-tables-schema-injection
+    (batch P — similar DDL-identifier-injection surface in the Lookup
+    Tables subsystem, with explicit operator-trust framing; this
+    invariant adds notification-side coverage of the same class)
+axes_present:
+  - services
+  - config_prefixes
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-C (NotificationsProperties WalProperties POJO — config side)
+  - batch-Y (NotificationSubscriber registerPublication — code side, THIS INVARIANT)
+  - batch-P (custom-connection-pool-lookup-tables-schema-injection — sibling DDL identifier injection class)
+severity: MEDIUM
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Validate publication-name at boot via @ConfigurationProperties
+    validator with a strict identifier regex (e.g. ^[a-z_][a-z0-9_]*$);
+    fail fast on a pathological value.
+  - |-
+    Quote the publication name with double-quotes AND escape embedded
+    double-quotes by doubling them in the registerPublication DDL
+    construction at L151.
+  - |-
+    Add a build-time invariant scanner that flags String.formatted /
+    String.format calls whose first argument contains the literal "CREATE
+    " or "DROP " or "ALTER " (rough heuristic for DDL construction
+    sites) — current count of such sites in odd-platform is small enough
+    to enumerate.
+  - |-
+    Document the publication-name as a privileged identifier on the live
+    /configuration-and-deployment/odd-platform page — operators choosing
+    custom names should be told to use lowercase alphanumerics + underscore
+    only.
+notes: |-
+  NEW MEDIUM-severity invariant captured in batch 2026-05-20Y from the
+  NotificationSubscriber sidecar's primary-source examination of the
+  registerPublication helper. The probe-vs-create asymmetry is the most
+  load-bearing finding (a maintainer reading just the parameterised probe
+  could reasonably assume the create is also safe — it is not).
+
+  Cross-cutting connections:
+    - Pairs with the sibling Lookup Tables DDL-identifier-injection
+      invariant (batch P) — both surface the same class of vulnerability
+      at different feature surfaces; the broader case-law is "operator-
+      controlled DDL identifiers must be either allowlist-validated or
+      double-quote-escaped"
+    - Companion to the WAL-retention disk-exhaustion invariant (batch Y) —
+      both findings are PRIMARY-SOURCE pinned at the
+      NotificationSubscriber file; the file's role as the F-009 hop-1
+      anchor surfaces both findings simultaneously
+
+  One DOC-NNN candidate flows from this invariant:
+    (a) Document the publication-name (and slot-name) as privileged
+        identifiers on the live configuration page — operators choosing
+        custom names benefit from the allowlist guidance

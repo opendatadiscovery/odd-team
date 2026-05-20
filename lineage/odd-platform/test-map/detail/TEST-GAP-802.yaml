@@ -1,0 +1,82 @@
+gap_id: TEST-GAP-802
+category: missing-performance
+criticality: HIGH
+node_ids:
+  - "odd-platform java notification.sender class:WebhookNotificationSender"
+  - "odd-platform java notification.sender class:SlackNotificationSender"
+pillars_affected: [P-07]
+surfaced_by:
+  - "WebhookNotificationSender.md:bugs_limitations_corner_cases.[8] HIGH (No request / connect timeout — unreachable URL hangs the WAL consumer thread indefinitely)"
+  - "WebhookNotificationSender.md:tests_coverage_semantic.uncovered_behaviours.[5] (HttpClient blocks indefinitely on unreachable URL)"
+  - "SlackNotificationSender.md:bugs_limitations_corner_cases.[4] HIGH (No connect / request timeout on the shared HttpClient bean)"
+behaviour: |-
+  **HIGH — Unreachable Slack/Webhook URL hangs the WAL consumer thread indefinitely.** `HttpClient.newHttpClient()` at `NotificationConfiguration.java:32` does NOT set a `connectTimeout`. `HttpRequest.newBuilder()` at `WebhookNotificationSender.java:20` AND `SlackNotificationSender.java:43` do NOT set a `.timeout(Duration)`. The underlying JDK socket-level timeout (system-dependent, typically 75-120s on Linux for SYN retries; potentially unbounded for half-open connections) is the effective ceiling.
+
+  **The cascade failure**:
+  1. Operator configures `notifications.receivers.webhook.url=https://webhook.unreachable.example/`.
+  2. The DNS resolves but TCP connect hangs (deeply-broken endpoint, transparent proxy that drops without RST, firewall DROP rule).
+  3. ODD fires an alert.
+  4. The dispatcher invokes `webhookSender.send(message)` on the WAL consumer thread.
+  5. `HttpClient.send(...)` blocks at the socket layer.
+  6. **The WAL consumer thread is the SINGLE consumer for the entire cluster** (leader-elected single-thread per `NotificationSubscriberStarter.java:21-23`).
+  7. Subsequent alerts queue in the WAL replication slot.
+  8. After 75-120s (Linux default SYN retry timeout), the IOException finally surfaces.
+  9. The dispatcher catches NotificationSenderException, moves to next sender, the WAL LSN advances.
+  10. The next alert's webhook delivery repeats the cycle: 75-120s hang per alert.
+
+  **Cluster-wide alert latency** under an unreachable webhook URL: **>75 seconds per alert**, with the WAL replication slot accumulating WAL bytes throughout. For a busy DQ-pipeline producing alerts at 1/minute, the platform falls behind by 75/60 = 1.25× real-time — the slot grows unboundedly until the operator notices.
+
+  **The same pathology affects Slack** (`SlackNotificationSender` uses the same shared `HttpClient` bean — `NotificationConfiguration.java:31-34`). The two channels are NOT independently timeout-tunable; both depend on JDK socket defaults.
+
+  **Compound with TEST-GAP-462** (sequential synchronous fan-out): even when only ONE channel is unreachable, all OTHER channels for that alert are blocked until the unreachable channel's timeout. A platform with all three channels enabled and one unreachable URL is effectively delivering alerts at 1/75s on the working channels.
+
+  **No operator-tunable knob**: there is no `notifications.receivers.{slack|webhook}.connect-timeout-ms`, no `.request-timeout-ms`, no `.read-timeout-ms`. The only way to tune is to swap the `HttpClient` bean wholesale, which requires code modification.
+
+  **Test gap shape**: regression-pin asserting that an unreachable URL causes the dispatcher thread to block for at least 30 seconds before surfacing the IOException. PINS the current vulnerability; pairs with REFACTOR-NNN adding per-channel timeouts.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/sender/WebhookSenderUnreachableURLBlocksSubscriberThreadRegressionPinTest.java"
+  name: "send_unreachableURL_blocksDispatcherThreadFor75Seconds_pinsTimeoutUnsetVulnerability"
+evidence:
+  - "WebhookNotificationSender.md says (bugs_limitations_corner_cases.[8]): 'No request / connect timeout — unreachable URL hangs the WAL consumer thread indefinitely. HttpClient.newHttpClient() at NotificationConfiguration.java:32 does NOT set a connectTimeout; HttpRequest.newBuilder() at WebhookNotificationSender.java:20 does NOT set a .timeout(Duration). The underlying JDK socket-level timeout (system-dependent, typically 75-120s on Linux for SYN retries; potentially unbounded for half-open connections) is the effective ceiling. For a deeply-broken webhook endpoint (TCP-accept-then-never-respond, or a transparent proxy that drops without RST), the dispatcher thread stalls — blocking ALL subsequent alerts on ALL channels for this one alert delivery.' — severity HIGH"
+  - "SlackNotificationSender.md says (bugs_limitations_corner_cases.[4]): 'No connect / request timeout on the shared HttpClient bean. The HttpClient is constructed via HttpClient.newHttpClient() at NotificationConfiguration.java:32-34 — the JDK default factory method that does NOT set a connectTimeout. For an unreachable Slack endpoint (Slack regional outage, DNS hijack, network partition), httpClient.send(...) at AbstractNotificationSender.java:21 will block on the underlying socket layer until the OS-level timeout (Linux default ~75-120s for SYN_SENT). The notification-subscriber thread is single-threaded (F-009 hop-2 invariant); a slow Slack endpoint blocks ALL subsequent alert delivery (Slack + Webhook + Email) across the WHOLE platform deployment.' — severity HIGH"
+  - "Verified at primary source: WebhookNotificationSender.java:20-23 + SlackNotificationSender.java:43-46 + NotificationConfiguration.java:31-34 (no `.connectTimeout(...)` builder call)"
+cross_references:
+  - "TEST-GAP-462 (sister — sequential synchronous fan-out; this gap compounds the dispatcher-stall consequence)"
+  - "TEST-GAP-799 / TEST-GAP-800 / TEST-GAP-801 (sister Webhook gaps at the same node — collectively cover the HttpRequest builder shortcomings)"
+  - "REFACTOR-498 (existing — SMTP timeouts unset; same family-class on the email channel via JavaMailSender)"
+  - "REFACTOR-NNN (proposed): add `notifications.receivers.{slack|webhook}.connect-timeout-ms` (default 5000) + `.request-timeout-ms` (default 30000) config keys; build per-channel `HttpClient` instances with `.connectTimeout(Duration.ofMillis(...))`; build per-request `HttpRequest` with `.timeout(Duration.ofMillis(...))`"
+  - "DOC-GAP-NNN (proposed): live `/features/active-platform-features/notifications` should warn about timeout-unset behaviour + provide tuning guidance"
+  - "concepts.yaml: `outbound-http-no-timeout` invariant — F-009's HttpClient is JDK-defaults-only across Slack + Webhook channels"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery"]
+proposed_action: |-
+  Add `WebhookSenderUnreachableURLBlocksSubscriberThreadRegressionPinTest`. Integration test using a Wiremock TCP listener that accepts connections but never responds:
+
+  1. `send_unreachableURL_blocksDispatcherThreadFor75Seconds_pinsTimeoutUnsetVulnerability` —
+     - Start a Wiremock TCP listener bound to 127.0.0.1:NNNN that accepts SYN but never responds to the HTTP request.
+     - Configure `webhookSender` with the Wiremock URL.
+     - Invoke `webhookSender.send(message)` on a separate thread.
+     - Sleep 30 seconds.
+     - Assert the thread is STILL alive AND has NOT thrown an exception.
+     - PINS the current blocking behaviour.
+
+  2. `send_unreachableURL_blocksFor75SecondsThenIOException_pinsEventualTimeout` —
+     - Same setup; wait 90 seconds.
+     - Assert the thread eventually throws NotificationSenderException with IOException cause.
+     - PINS the OS-default-timeout ceiling.
+
+  3. `send_unreachableSlackURL_sameBehaviourAsWebhook_pinsSharedHttpClientPathology` —
+     - Same setup but using `SlackNotificationSender` + the same Wiremock URL.
+     - Assert identical blocking behaviour (proves the issue is at the shared HttpClient layer).
+
+  4. `send_connectTimeoutConfigured_failsImmediately_confirmsFixDirection` — (UPDATE once REFACTOR-NNN lands)
+     - After REFACTOR-NNN: configure `notifications.receivers.webhook.connect-timeout-ms=2000`.
+     - Assert `webhookSender.send(message)` throws NotificationSenderException within 2.5 seconds.
+     - CONFIRMS the fix's effectiveness.
+
+  Pair with REFACTOR-NNN (per-channel timeout config) and DOC-GAP-NNN (tuning guidance on live doc).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. No prior TEST-GAP names the JDK-HttpClient-defaults-only behaviour for the HTTP-sender channels. The SMTP timeout finding (REFACTOR-498) is the email-channel sibling at the JavaMailSender level — same family-class, different transport. NO contradiction.
+batch: 2026-05-20-Y
+feature_id: F-009

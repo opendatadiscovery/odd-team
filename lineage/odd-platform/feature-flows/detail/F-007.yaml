@@ -15,6 +15,7 @@ drift_class_summary:
 - audit_emission_asymmetry_ingress_gap_vs_state_transition_audited_via_batch_save
 - update_status_no_reactive_transactional_aop_provided_synthetic_transaction
 - generator_url_ui_render_surface_service_tier_primary_source_line_168_185
+- downstream_notification_delivery_chain_amplifies_forged_alertmanager_to_every_configured_channel_with_mrkdwn_injection_compound
 batch_extensions:
 - batch: P
   entry_point_added: |-
@@ -318,6 +319,111 @@ batch_extensions:
     9-sidecar audit-silence extension). Cross-link to F-022 as the
     operator-visible DQ surface and to F-006 as the audit-silence
     pattern family.
+- batch: Y
+  entry_point_added: |-
+    DOWNSTREAM CHAIN CLOSURE — F-007 (AlertManager Integration,
+    P-07:F-001) → F-009 (WAL-driven Notification Delivery,
+    P-07:F-002). The 5 batch-Y notification-package sidecars
+    (NotificationSubscriber + PostgresWALMessageProcessor +
+    SlackNotificationSender + WebhookNotificationSender +
+    EmailNotificationSender) close the F-009 chain end-to-end at
+    primary source — which means F-007's INGEST surface now has a
+    COMPLETE downstream-effect picture. The OPEN alerts written via
+    `/ingestion/alert/alertmanager` (F-007 hop-1) trigger the
+    Postgres logical-replication stream feeding the F-009 dispatcher
+    chain (`NotificationSubscriber.run()` reads the INSERT-on-ALERT
+    WAL event, the dispatcher fans out, the three senders deliver).
+    THIS is the P-07-INTERNAL cross-feature pipeline named in the
+    system-mission.md cross-pillar relationships.
+  contributing_nodes_added: []  # no chain extension on the F-007 side — the new content lives downstream as F-009 batch Y
+  notes: |-
+    Three cross-feature observations:
+
+    (1) F-007 → F-009 DOWNSTREAM-CHAIN PRIMARY-SOURCE COMPLETE
+    (HIGH severity, structural compound) — Before batch Y, F-007's
+    OPEN-ALERT side effect (db-write to the `alert` table) was the
+    documented chain terminus; the downstream outbound notification
+    delivery was conceptually known but not primary-source anchored.
+    Batch Y closes this gap. The full F-007 → F-009 pipeline is now:
+      F-007 hop-1 (AlertManagerController.postAlerts) — POST handler
+        accepts the AlertManager payload (UNAUTHENTICATED under
+        `auth.type=DISABLED`, AUTHENTICATED any-role otherwise).
+      F-007 hop-2 (AlertServiceImpl.handleExternalAlerts →
+        createAlerts) — batched INSERT into ALERT table.
+      F-007 → F-009 BRIDGE — Postgres logical replication slot
+        captures the INSERT on ALERT (NotificationSubscriber batch Y
+        sidecar L51 `registerPublication(connection, Tables.ALERT)`).
+      F-009 hop-1 (NotificationSubscriber.run) — single-thread
+        leader-elected reads the WAL event.
+      F-009 hop-3 (AlertNotificationMessageProcessor.process via
+        PostgresWALMessageProcessor SPI) — translate + fan-out.
+      F-009 hop-4a/b/c (Slack/Webhook/Email senders) — outbound
+        delivery to operator-configured channels.
+
+    The HIGH-severity compound: a forged AlertManager webhook under
+    DISABLED mode (F-007 headline finding —
+    `unauthenticated_payload_trust` drift) creates an alert that
+    REACHES every Slack channel, webhook URL, and email recipient
+    cluster-wide — with NO operator-side authentication signal at
+    any hop AND with the F-009 mrkdwn-injection surface (F-004
+    6th XSS surface, F-009 batch Y facet 11) allowing an attacker-
+    controlled `description` to inject `@channel` broadcasts in
+    the Slack workspace. The compound spans 4 surfaces now:
+      F-007 (CREATES via forged ingest) →
+      F-009 + F-004 (DELIVERS the forged content with mrkdwn
+        injection on Slack channel) →
+      F-014 (DISPLAYS at per-entity alerts) →
+      F-022 (DISPLAYS at per-dataset Test reports tab).
+
+    NEW drift facet for F-007:
+    `downstream_notification_delivery_chain_amplifies_forged_alertmanager_to_every_configured_channel_with_mrkdwn_injection_compound`.
+
+    (2) PROBE INTERSECTION COMPOUND — F-007 + F-009 + F-004
+    (single probe, three feature assertions) — POST a forged
+    AlertManager payload (F-007 anonymous-under-DISABLED entry
+    point) with the `description` field containing a Slack
+    mrkdwn-injection vector (e.g. `@channel <https://attacker.example|click
+    here>`). Observe: (a) F-007 — the OPEN alert row is created
+    in the ALERT table with `entity_oddrn` pointing at any chosen
+    data entity; (b) F-009 — the WAL stream picks up the INSERT
+    + the dispatcher fans out + Slack delivers the message; (c)
+    F-004 — the Slack channel renders the `@channel` broadcast +
+    the fake-link as the 6th XSS surface in the F-004 family.
+    SINGLE PROBE pins THREE feature contracts simultaneously.
+    Cross-link to F-009 batch Y probe P-W-3.
+
+    (3) F-007 INGEST AUDIT-EMISSION GAP CHAINS WITH F-009 DELIVERY
+    AUDIT-SILENCE — F-007's batch-S audit-emission asymmetry
+    (WEBHOOK INGRESS gap) extends through the F-009 batch Y
+    findings to the OUTBOUND DELIVERY surface. The combined
+    silence: an operator has NO audit trail for (a) who/what
+    pushed the AlertManager payload (F-007 INGEST audit-silence),
+    (b) which channels were attempted (F-009 SPI-seam void-return
+    enum-rooted silence), (c) which channels succeeded (no
+    Prometheus counter, no audit table), or (d) which channels
+    received attacker-controlled content (no mrkdwn-injection
+    detection, no log of the description field's content beyond
+    DEBUG-level full-payload log). The full forensic chain is
+    silent at every hop. STRENGTHENS the F-007 audit-emission-
+    asymmetry framing with F-009's structural downstream gap
+    captured at PostgresWALMessageProcessor batch Y sidecar
+    bugs_limitations_corner_cases.[4] (the ENUM-ROOT) +
+    NotificationSubscriber batch Y sidecar
+    security.known_security_gaps.[3] (no audit trail of WAL
+    messages consumed). 11-sidecar audit-silence cluster now
+    (F-006 batch V framework — 9-sidecar negative half + F-007
+    INGEST + F-009 DELIVERY = 11 distinct surfaces in the
+    NEGATIVE half of the bifurcation).
+
+    Coherence: STRENGTHENS=3 (F-007 unauthenticated payload trust
+    × F-009 downstream chain → compound forgery + delivery picture;
+    F-007 audit-emission asymmetry × F-009 delivery audit-silence
+    → full-chain-silent framing; F-007 forge-and-display compound
+    EXTENDED from F-014/F-022 to F-009 Slack channel). NO
+    conflicts; NO supersedes. F-007 contributing_nodes UNCHANGED
+    (no new sidecar enriches the F-007 entry-point side); the
+    cross-feature picture is captured in this batch-Y note and
+    the cross-references on F-009's batch Y notes.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: AlertManager webhook ingestion — ungated cross-tenant alert creation
@@ -707,6 +813,8 @@ related_features:
 - F-022  # Per-Dataset DQ Test Reports & SLA — operator-visible DQ surface where FAILED_DQ_TEST alerts originate; forge-and-display compound 3rd surface
 - F-014  # Per-Entity Alert View — per-entity display half of forge-and-display compound
 - F-006  # RBAC / audit-silence — the audit-silence family that F-007 webhook-ingress shares with DQ severity mutation (F-022)
+- F-009  # batch Y — downstream notification delivery chain (P-07:F-001 → P-07:F-002): forged AlertManager payload amplifies to every Slack/Webhook/Email channel with mrkdwn injection
+- F-004  # batch Y — Slack mrkdwn-injection compound (forge-and-display extension: F-007 forges → F-009 delivers → F-004 renders 6th XSS surface)
 related_concepts:
 - Alert
 - Ingestion (External Webhook)

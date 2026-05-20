@@ -1933,3 +1933,59 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - RelationshipController still pending (P-02 first sidecar; now somewhat redundant since P-02 anchored via F-025)
 - Coherence-sweep candidates linear growth continues
 
+
+## Batch 2026-05-20-Y — F-009 Notification delivery 5-LAYER CLOSURE: Subscriber + 3 Senders + WAL Processor (5/5; 4 path corrections per LSN-018)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 129 prior + 5 new = **134 total**; 0 deferred
+- **Theme**: F-009 P-07:F-002 WAL-driven Notification Delivery — was uncovered until batch X config-tier; this batch closes 5-LAYER full picture
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `NotificationSubscriber` | P-07 | F-009 PRIMARY SURFACE — leader-elected single-thread WAL consumer. 8 ADRs (pgoutput hardcoded / lazy-create-no-drop / leader-elected / LSN-advance-after-process at-least-once / single-table publication / polling not event-driven / 10s retry cadence). **HIGH: poison-message WAL replay loop**; **HIGH: WAL-retention disk-exhaustion under poison-replay**; **MEDIUM: publication-name DDL-injection at line 151**. NotificationSubscriberStarter no-thread-death-detection. |
+| `EmailNotificationSender` | P-07 | F-009 Email channel. 6 ADRs (Freemarker template / per-recipient fail-stop / HTML-only / MimeMessage reuse / manual subject string-replace / ALERT_PATH hard-coded). **HIGH: RuntimeException bypass at L58-60 aborts cross-channel fan-out**. Live-doc bullets 2-3 promise owners+downstream BUT template OMITS them. No setFrom allowlist (spoofing). |
+| `SlackNotificationSender` | P-07 | F-009 Slack channel. 4 ADRs + 10 corner cases. **HIGH: 429-Retry-After IGNORED**; **HIGH: mrkdwn-injection via AlertChunkPojo.description** (F-004 6th surface). No connect-timeout blocks subscriber. Unconditional cross-team broadcast. |
+| `WebhookNotificationSender` | P-07 | F-009 generic webhook channel. **HIGH: NO HMAC / NO signature / NO retry / NO timeout (dispatcher stall)**; **HIGH: cross-tenant exposure** (one URL per deployment → every alert across every Owner). 200-only HTTP accept. Latent JsonProcessingException → RuntimeException extension. |
+| `PostgresWALMessageProcessor` | P-07 | F-009 BRIDGE SPI interface (7 lines). **LOAD-BEARING structural root** of F-009's no-retry/no-DLQ/no-audit class (void return + unconditional LSN advance). **F-006 ENUM-ROOTED corroboration**: ActivityEventTypeDto has ZERO NOTIFICATION_* constants. Cross-channel RuntimeException abort undocumented. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 375 → **386 concepts** | +7 new + 4 strengthened. NEW HIGH: WAL-retention disk exhaustion / mrkdwn-injection / webhook no-HMAC / webhook cross-tenant exposure / cross-channel RuntimeException abort. STRENGTHENED: F-006 ENUM-ROOTED (12 categories with notification-delivery) / lazy-create-no-drop primary source / poison-message WAL replay loop 4-layer architecture / exception-type-asymmetry-notification-senders 4-part picture. |
+| adr-archaeologist (ADRs) | 177 → **188** | +11 (178-188) + 1 strengthened (ADR-146 F-006 ENUM-ROOTED gains 3rd structural barrier via SPI seam). 6 HIGH + 4 MEDIUM + 1 LOW. |
+| adr-archaeologist (scopes) | 507 → **538** | +31 (508-538) + 2 strengthened (REFACTOR-085 now 5-sidecar / REFACTOR-183 4-sidecar). 18 wisdom-test reclassifications. |
+| doc-gap-finder | 232 → **237** | +5 (233-237) + 5 META strengthened (DOC-143/147/057/054/083). 3 HIGH + 2 MEDIUM. **WROTE FILES** (recovered from batch W's miss). |
+| test-coverage-mapper | 790 → **811 indexed** | +21 (794-814) + 6 strengthened. **3 NEW CRITICAL → 138 CRITICAL**: poison-message WAL replay loop / WAL-retention disk-exhaustion / publication-name DDL-injection / Email RuntimeException cross-channel. |
+| feature-flow-builder | 28 → **28 features** (+0 new, +4 extended) | F-009 5-LAYER CLOSURE (18 new drift facets). F-004 6-SURFACE (Slack mrkdwn cross-channel render). F-006 10-SIDECAR pattern. F-007 → F-009 downstream chain primary-source complete (forged AlertManager amplifies through F-009 with mrkdwn). |
+
+### Coverage state after batch Y
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 134 | **33.9%** (was 32.7%) |
+| Effective coverage | 278 | **70.4%** (was 69.1%) |
+| Features discovered | 28 (unchanged) | F-009 EXTEND completes 5-LAYER closure |
+| Total test-gaps | 811 indexed | 138 CRITICAL (was 135) |
+
+### Cross-batch triangulation deltas
+
+- **F-009 P-07:F-002 WAL-driven Notification Delivery CLOSED at 5-LAYER** (subscriber + processor + 3 senders + config-tier from batch X)
+- **F-004 stored-XSS surface count: 5 → 6** (added Slack mrkdwn-injection via AlertChunkPojo.description — DIFFERENT rendering pipeline from web rehype-raw, requires SECOND fix-point)
+- **F-006 audit-silence ENUM-ROOTED**: now 12 categories with notification-delivery (was 11); Layer 6 (SPI tier) added — 10-SIDECAR pattern
+- **lazy-create-no-drop replication artefacts**: now 3-sidecar with primary source at NotificationSubscriber
+- **F-007 → F-009 downstream chain PRIMARY-SOURCE COMPLETE**: forged AlertManager (batch P unauthenticated payload) amplifies through F-009 outbound to every channel with mrkdwn injection → 4-surface compound (F-007 → F-009 + F-004 → F-014 → F-022)
+- **NotificationSubscriber thread-death-detection** absent — NotificationSubscriberStarter inert if thread dies
+- **Cross-channel RuntimeException abort** — Email RuntimeException stops Slack + Webhook for the SAME alert (void-return root cause at SPI seam)
+- **Coherence-sweep candidates**: 53.1k (X) → 55.1k (Y)
+
+### Follow-ups (logged, not blocking)
+
+- doc-gap-finder file-writing protocol RECOVERED (was in-memory in batch W; restored in X + Y)
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 247 detail-without-index in refactoring-scopes; 102 in implicit-adrs; 57+4 in doc-gaps
+- 5 probe candidates logged (P-W-1..P-W-5) — local docker-compose feasible (PG + WireMock + MailHog + injected ALERT row)
+

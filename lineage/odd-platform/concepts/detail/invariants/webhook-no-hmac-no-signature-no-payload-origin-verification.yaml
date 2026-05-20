@@ -1,0 +1,223 @@
+name: |-
+  Webhook channel ships NO HMAC, NO signature, NO shared secret — operator receiver cannot verify ODD as payload origin (batch Y)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20Y — surfaced by primary-source
+  examination of WebhookNotificationSender.java + the live notifications doc.
+  The generic-webhook channel POSTs the full AlertNotificationMessage JSON
+  to the operator-configured URL with NO HMAC signature, NO shared-secret
+  header, NO Authorization header, NO X-ODD-Signature, NO Content-Digest.
+  The operator's webhook receiver has NO platform-supplied mechanism to
+  verify that the payload originated from ODD Platform versus an attacker
+  who learned the webhook URL.
+
+  THE PRIMARY-SOURCE EVIDENCE — WebhookNotificationSender batch Y:
+
+    WebhookNotificationSender.java:18-23 (the entire send chain):
+      final HttpRequest request = HttpRequest.newBuilder()
+          .uri(webhookUrl)
+          .POST(BodyPublishers.ofString(serializeJson(message)))
+          .build();
+      sendAndValidate(request);
+    The HttpRequest builder is invoked with exactly two calls beyond the
+    constructor: .uri(...) and .POST(...). NO .header(...) call appears
+    in the entire class body (verified by reading WebhookNotificationSender.java:1-30
+    end-to-end). The only headers on the outbound request are the JDK
+    HttpClient defaults (User-Agent: Java-http-client/<version>, Content-Length).
+
+  CONTRAST WITH ESTABLISHED WEBHOOK PROTOCOLS:
+
+    Industry-standard webhook senders ship signed payloads:
+      - Slack incoming webhooks: ship X-Slack-Signature (HMAC-SHA256 of
+        the body using the workspace's signing secret)
+      - GitHub webhooks: ship X-Hub-Signature-256 (HMAC-SHA256 of the body
+        using the configured webhook secret)
+      - Stripe webhooks: ship Stripe-Signature (HMAC-SHA256 of timestamp
+        + body using the endpoint signing secret)
+      - AlertManager webhooks (the INBOUND counterpart for ODD): support
+        webhook_config with HTTP Basic auth, bearer token, or custom
+        Authorization header
+    The ODD platform's outbound webhook ships NONE of these. The receiver
+    has no platform-side mechanism to distinguish "legitimate ODD alert"
+    from "attacker who learned the URL".
+
+  THE ATTACK SURFACE:
+
+    The URL itself is a bearer credential (anyone who can POST to it can
+    deliver a payload). The URL leaks in multiple paths:
+      - /actuator/env if exposed (Spring Boot's default mask list does
+        NOT include the substring "url"; the webhook URL appears in the
+        env response verbatim — verified at WebhookNotificationSender batch
+        Y security.known_security_gaps.[4])
+      - deployment artefacts (Helm values.yaml, Kubernetes ConfigMaps,
+        Docker container env files) — all leaked the moment the cluster
+        is mis-configured
+      - container images that bake in the env (a non-trivial pattern for
+        platform-team-managed ODD deployments)
+    Once leaked, the URL is a key to:
+      - replay attack: an attacker POSTs forged alerts to the operator's
+        receiver, claiming whatever AlertNotificationMessage payload they
+        choose
+      - denial-of-service: an attacker floods the receiver with junk
+        alerts (no rate limit at the operator side either, typically)
+      - phishing surface: an attacker POSTs alerts with attacker-controlled
+        dataEntity.name / dataSourceName / namespaceName containing
+        social-engineering content; recipients of the alert see what
+        appears to be a real ODD-platform alert
+
+  THE OPERATOR REMEDIATION BURDEN — what the platform DOES NOT provide:
+
+    Pending a platform-side fix, operators must implement the webhook
+    receiver's authentication out-of-band:
+      - mTLS at the HTTP gateway: requires CA management, certificate
+        rotation, client cert handling
+      - IP allowlisting: requires static-IP egress from ODD (NAT gateway
+        or similar) + receiver-side allowlist; couples deployment topology
+        to security
+      - VPN / private network: requires ODD and receiver in the same
+        network; precludes SaaS-deployment models
+      - HTTP gateway with HMAC: requires the operator to deploy a
+        sidecar/relay that signs requests AND configure ODD's webhook
+        URL to point at the relay rather than the real receiver
+    Each option DOUBLES the failure surface. The live doc does not
+    surface any of these options (verified WebFetch 2026-05-20 status
+    200, batch Y docs_link_semantic).
+
+  THE LIVE DOC CONTRAST — silence vs the absence:
+
+    Live `/features/active-platform-features/notifications` describes the
+    generic-webhook channel as "POSTs the full alert payload (JSON) to an
+    operator-supplied URL" — the doc framing creates the operator
+    expectation of a STANDARD webhook contract, which on every major
+    platform INCLUDES signing. The platform's silent omission is therefore
+    a CONTRACT DRIFT against operator expectations, not merely a
+    missing-feature gap.
+
+    Live `/configuration-and-deployment/odd-platform` is similarly silent
+    on signing (verified batch Y WebhookNotificationSender
+    docs_link_semantic.inferred_docs[1].fetched_excerpts: 'Page does NOT
+    specify authentication or signing mechanism for outbound webhooks').
+
+  CROSS-LINK TO REFACTOR-498 (batch X):
+
+    The existing "no URI scheme allowlist on notifications.receivers.*.url"
+    finding (REFACTOR-498) covers the boot-time configuration validation
+    gap (any URL accepted). THIS invariant covers the RUNTIME PAYLOAD
+    AUTHENTICATION gap (no signature on the wire). They are siblings:
+    REFACTOR-498 is about the OPERATOR's ability to mis-set the URL;
+    this invariant is about the RECEIVER's inability to verify the
+    payload AFTER the URL is correctly set.
+
+  THE EXTENSION POINT — would a single fix close this?
+
+    Yes — a single change at AbstractNotificationSender.send (or at
+    WebhookNotificationSender.send) that:
+      (a) reads a new config key notifications.receivers.webhook.signing-secret
+      (b) computes HMAC-SHA256 of the body using the secret
+      (c) sets X-ODD-Signature: sha256=<hex> header on the outbound
+          HttpRequest
+    The fix is small (~15 lines). The operator-visible change is a new
+    config key. The doc-side cost is a documentation update naming the
+    signing convention and giving a receiver-side verification example.
+
+  SEVERITY HIGH — the platform's outbound-webhook surface has the same
+  trust-model gap that every other webhook protocol explicitly closes.
+nodes:
+  - odd-platform java notification.sender class:WebhookNotificationSender
+contributors:
+  - |-
+    WebhookNotificationSender batch Y (PRIMARY SOURCE — no HMAC, no
+    signature, no shared secret):
+    bugs_limitations_corner_cases.[0] (NO HMAC / signature / shared-secret
+    / authentication header — severity HIGH) +
+    security.known_security_gaps.[0] (no HMAC / signature / shared-secret
+    — primary security finding) +
+    docs_link_semantic.doc_drift_findings.[0] (live doc silent on HMAC /
+    signature support) +
+    bugs_limitations_corner_cases.[2] (NO custom HTTP header support —
+    sibling gap that compounds the inability to add auth headers via
+    config)
+evidence:
+  - |-
+    WebhookNotificationSender.md:bugs_limitations_corner_cases.[0]
+    (NO HMAC / signature / shared-secret / authentication header — severity HIGH)
+    — evidence: WebhookNotificationSender.java:20-22 (no header methods
+    invoked on the HttpRequest builder)
+  - |-
+    WebhookNotificationSender.md:security.known_security_gaps.[0]
+    (no HMAC / signature / shared-secret — severity HIGH)
+  - |-
+    WebhookNotificationSender.md:docs_link_semantic.doc_drift_findings.[0]
+    (live doc silent on HMAC / signature support; WebFetched live page
+    2026-05-20 status 200 — verified silence)
+  - |-
+    WebhookNotificationSender.md:bugs_limitations_corner_cases.[2]
+    (NO custom HTTP header support — sibling gap)
+  - |-
+    Cross-references existing finding NotificationsProperties.md:bugs_limitations_corner_cases.[6]
+    (URL scheme allowlist absence — REFACTOR-498 boot-time configuration gap)
+axes_present:
+  - services
+  - config_prefixes
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-Y (WebhookNotificationSender — PRIMARY SOURCE)
+  - batch-X (REFACTOR-498 — URL scheme allowlist gap, sibling)
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Add a new config key notifications.receivers.webhook.signing-secret
+    (optional, empty = no signing for backwards compat). Compute HMAC-SHA256
+    of the JSON body in WebhookNotificationSender.send and set the
+    X-ODD-Signature: sha256=<hex> header. Document the signing convention
+    on the live notifications page with a Node.js / Python receiver-side
+    verification example.
+  - |-
+    OR: add support for a custom-headers config map at
+    notifications.receivers.webhook.headers (Map String String) — operators
+    can configure Authorization, X-API-Key, etc. headers without code
+    change. Less secure than HMAC (the auth header is static, not
+    payload-bound), but closer to industry parlance.
+  - |-
+    OR (defence-in-depth): add request timestamp + nonce headers
+    (X-ODD-Timestamp, X-ODD-Nonce) and include them in the HMAC body —
+    closes replay attacks where an adversary captures + re-sends a real
+    payload.
+  - |-
+    Document the absence on the live notifications page with operator-
+    facing mitigation: use mTLS, private network, or HTTP gateway with
+    HMAC sidecar. Pending the platform fix, this is the only path to a
+    trustworthy receiver.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20Y from the
+  WebhookNotificationSender sidecar's primary-source evidence at the
+  send chain construction site. The finding is the single most consequential
+  security gap of the F-009 5-LAYER closure.
+
+  Cross-cutting connections:
+    - Pairs with the webhook cross-tenant-exposure-one-url-per-deployment
+      invariant (also batch Y) — the URL is a credential AND a routing
+      key; leaking it reveals BOTH the receiver identity AND the ability
+      to forge payloads
+    - Pairs with REFACTOR-498 (URL scheme allowlist absence) — the
+      operator-misconfiguration angle of the same broader story (operator
+      can mis-set the URL OR the URL gets correctly set and then leaks)
+    - Cross-link to the Slack channel: Slack's incoming webhook URL is
+      similarly an unsigned bearer credential, but the Slack-side
+      mitigation is "the URL is unguessable + the workspace admin
+      controls the channel"; for the generic webhook the operator is
+      the workspace admin AND there is no Slack-side mitigation; the
+      generic-webhook channel is structurally less defendable than the
+      Slack channel even though they share the same architectural shape
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Document the absence on the live notifications page + ship a
+        receiver-side verification example (pending code fix)
+    (b) Document the new signing-secret config key once the code fix
+        ships

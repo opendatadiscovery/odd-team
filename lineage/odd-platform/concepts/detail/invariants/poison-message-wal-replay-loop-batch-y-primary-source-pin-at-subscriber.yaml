@@ -1,0 +1,322 @@
+name: |-
+  Poison-message WAL replay loop — STRENGTHENED batch Y with primary source at NotificationSubscriber inner-outer loop (lines 77-100) + bridge-seam (PostgresWALMessageProcessor void return)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+description: |-
+  STRENGTHENS the existing poison-message-wal-replay-loop invariant (batch K)
+  by PRIMARY-SOURCE pinning the failure mode at TWO new layers identified
+  in batch Y:
+    Layer A — NotificationSubscriber side (batch Y NotificationSubscriber
+      sidecar): the inner-outer loop architecture at lines 77-100 that
+      converts an uncaught exception in process() into a 10s back-off
+      + re-acquire cycle with LSN un-advanced.
+    Layer B — PostgresWALMessageProcessor side (batch Y
+      PostgresWALMessageProcessor sidecar): the void-return + narrow-
+      throws SPI seam shape that DENIES the dispatcher a typed channel
+      to signal "this LSN is poison, please skip" to the subscriber.
+
+  The batch-K invariant identified the SYMPTOM (a persistently-bad
+  ALERT row blocks all subsequent WAL messages indefinitely) at the
+  dispatcher-implementor level. Batch Y root-causes at TWO layers
+  bracketing the symptom:
+    BELOW the symptom (subscriber/inner-loop side) — the architecturally
+    fixed 10s retry cadence + LSN-advance-after-process pattern;
+    ABOVE the symptom (seam/contract side) — the void return that
+    denies expressivity.
+
+  THE NEW PRIMARY-SOURCE EVIDENCE — NotificationSubscriber batch Y:
+
+    NotificationSubscriber.java:77-91 (inner loop):
+      final ByteBuffer buffer = stream.readPending();
+      if (buffer == null) { ...sleep 10ms... continue; }
+      final Optional<DecodedWALMessage> decodedMessage = messageDecoder.decode(buffer);
+      if (decodedMessage.isPresent()) {
+          messageProcessor.process(decodedMessage.get());
+      }
+      stream.setAppliedLSN(stream.getLastReceiveLSN());
+      stream.setFlushedLSN(stream.getLastReceiveLSN());
+    The LSN advance at lines 83-84 is POSITIONED AFTER process(). A throwing
+    process() bypasses the LSN advance entirely. No try/catch is wrapped
+    around the process() call in this inner block.
+
+    NotificationSubscriber.java:90-100 (outer catch + 10s retry):
+      } catch (final Exception e) {
+          log.error("Error occurred while subscribing", e);
+      }
+      log.debug("Released a lock, waiting 10 seconds for next iteration");
+      try {
+          TimeUnit.SECONDS.sleep(10L);
+      } catch (final InterruptedException ex) {
+          Thread.currentThread().interrupt();
+          throw new NotificationSubscriberException(ex);
+      }
+    The catch is generic — ALL Exception subtypes converge to the same
+    log line + same 10s sleep + same lock re-acquire. SQLException
+    (connection drop), RuntimeException (translator poison), Postgres-
+    side replication-protocol violation, decoder out-of-bounds read —
+    all converge.
+
+    NotificationSubscriber.java:46-92 (outer while loop):
+      while (!Thread.interrupted()) {
+          try (final Connection connection = leaderElectionManager
+                  .acquire(walProperties.getAdvisoryLockId(), true)) {
+              ...
+              // inner while-true at line 60-85
+              ...
+          } catch (final Exception e) { ... }
+          ... 10s sleep + retry ...
+      }
+    On retry: the lock is re-acquired (or block-waits if another instance
+    grabbed it), the slot existence check fires, the publication
+    existence check fires, the stream is rebuilt — and then the SAME WAL
+    LSN is re-delivered (because confirmed_flush_lsn was never advanced
+    past the bad row).
+
+  THE NEW PRIMARY-SOURCE EVIDENCE — PostgresWALMessageProcessor batch Y:
+
+    PostgresWALMessageProcessor.java (the entire 7-line file):
+      void process(final DecodedWALMessage message) throws InterruptedException;
+    The seam declares:
+      - return: void (no per-call status)
+      - throws: only InterruptedException (cooperative shutdown only)
+    The wider exception surface that the implementor actually throws
+    (IllegalArgumentException, IllegalStateException, RuntimeException
+    from a JSON-serialise error path) is UNDECLARED at the seam.
+
+  THE COMPOUND FAILURE MODE — primary-sourced across the seam:
+
+    Step 1 — A persistently-bad ALERT row triggers
+             AlertNotificationMessageTranslator.translate(...) to throw
+             IllegalArgumentException (unknown alert-type code) or
+             IllegalStateException (missing FK, NULL type_id).
+    Step 2 — The translate is invoked from
+             AlertNotificationMessageProcessor.process(...) BEFORE the
+             per-sender catch (the dispatcher's intentional bifurcation
+             between fail-loud-on-data-integrity-errors and fail-soft-
+             on-delivery-errors per batch-K implicit_adrs.[3]).
+    Step 3 — The unchecked exception bubbles out of process() —
+             undeclared at the seam (only InterruptedException is
+             declared per PostgresWALMessageProcessor.java:6).
+    Step 4 — NotificationSubscriber.run()'s inner loop sees the throw;
+             the LSN advance at lines 83-84 is bypassed; the outer
+             catch at line 90 fires; the lock is released via the
+             try-with-resources Connection close at line 92; the
+             outer-loop 10s sleep + re-acquire fires.
+    Step 5 — The next outer iteration: leader-elect-acquire, slot/pub
+             probes, new stream open, polling resumes — and the SAME WAL
+             LSN is re-delivered because confirmed_flush_lsn never
+             advanced.
+    Step 6 — Loop forever until operator intervenes.
+
+  THE NEW INSIGHTS BEYOND BATCH K:
+
+    Insight 1 — The 10s retry cadence is HARDCODED (no operator knob):
+      NotificationSubscriber.java:96 — TimeUnit.SECONDS.sleep(10L). No
+      config key surfaces this value. Operators cannot stretch the
+      cadence to reduce log spam (6 retries/minute under sustained
+      poison) or shorten it for faster failover-after-fix.
+      Batch-K implicit framing was "10s back-off"; batch-Y primary-
+      sources the hardcoded constant.
+
+    Insight 2 — The seam's void return is the architectural reason
+      no "skip poison" path exists:
+      Even a maintainer wanting to add poison-skip logic at the
+      dispatcher cannot signal "I have decided this LSN is unparseable;
+      please advance past it" to the subscriber via the current seam.
+      The seam's void return forces poison-skip into a side-channel
+      (e.g. a dedicated alert_notification_poison table that the
+      dispatcher writes to and the subscriber consults before
+      processing) rather than an in-seam contract. The architectural
+      change required is non-trivial.
+
+    Insight 3 — Generic catch (Exception e) at line 90 absorbs ALL
+      Exception subtypes uniformly:
+      Operators cannot distinguish 'transient PG connectivity blip'
+      (sleep 10s, retry, fixed in next cycle) from 'persistent poison
+      message' (sleep 10s, retry, fails again, forever). Both produce
+      the same log line. No error-class taxonomy, no Prometheus counter,
+      no structured field. Batch-Y NotificationSubscriber
+      bugs_limitations_corner_cases.[6] explicitly captures this as
+      MEDIUM severity.
+
+    Insight 4 — The poison-replay loop pins setAppliedLSN, which means
+      Postgres retains WAL on the primary until the operator
+      intervenes:
+      The slot-side WAL retention is unbounded under sustained
+      poison-replay. Pair this with the rename-orphan failure mode
+      (lazy-create-no-drop replication artefacts) and the platform has
+      TWO distinct unbounded-WAL-retention paths that both lead to
+      Postgres-primary disk exhaustion. Batch-Y wal-retention-disk-
+      exhaustion-under-poison-replay-no-bound invariant primary-sources
+      this consequence in full.
+
+  THE 4-LAYER PICTURE (was 1-layer at batch K, now 4-layer):
+
+    Layer 1 (dispatcher batch K — symptom):
+      translate() runs uncaught BEFORE per-sender fan-out; data-integrity
+      errors propagate up.
+    Layer 2 (subscriber batch Y inner+outer loop — mechanism):
+      LSN-advance-after-process unconditionally; generic catch
+      (Exception); 10s retry cadence hardcoded; lock re-acquired AFTER
+      sleep.
+    Layer 3 (seam batch Y — architectural root cause):
+      void return + only InterruptedException declared = no expressivity
+      for poison-skip / partial-success signalling.
+    Layer 4 (consequence batch Y — disk exhaustion):
+      Sustained poison-replay = unbounded WAL retention on primary =
+      eventual platform-wide write outage.
+
+  SEVERITY remains HIGH (inherited from batch-K); this strengthening
+  does not change severity but provides the full 4-layer architectural
+  picture.
+nodes:
+  - odd-platform java notification class:NotificationSubscriber
+  - odd-platform java notification.processor class:PostgresWALMessageProcessor
+  - odd-platform java service service:NotificationsDispatcher
+  - odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+contributors:
+  - |-
+    NotificationSubscriber batch Y (STRENGTHENING — primary source at the
+    subscriber side):
+    bugs_limitations_corner_cases.[0] (poison-message WAL replay loop —
+    severity HIGH; primary source for Layer 2 mechanism) +
+    invariants[LSN advance happens AFTER process(...) returns successfully;
+    Outer-loop retry cadence is hardcoded 10 seconds] +
+    bugs_limitations_corner_cases.[6] (Outer catch absorbs ALL Exception
+    subtypes uniformly — Insight 3) +
+    implicit_adrs.[3] (At-least-once delivery via LSN-advance-AFTER-process —
+    deliberate at-least-once posture)
+  - |-
+    PostgresWALMessageProcessor batch Y (STRENGTHENING — primary source at
+    the seam):
+    bugs_limitations_corner_cases.[0] (The interface declares void
+    process(...) — no return-value channel; structural root of F-009
+    no_retry_no_dlq_no_audit drift facet — severity HIGH; primary source
+    for Layer 3 architectural root cause) +
+    bugs_limitations_corner_cases.[1] (interface does NOT declare wider
+    exception type than InterruptedException — undeclared RuntimeException
+    surface)
+  - |-
+    NotificationsDispatcher batch K (existing reference — Layer 1 symptom;
+    bugs_limitations_corner_cases.[6] translate-failure WAL replay loop)
+  - |-
+    NotificationsProperties batch C (existing reference — WAL coordinates)
+evidence:
+  - |-
+    NotificationSubscriber.md:bugs_limitations_corner_cases.[0]
+    (poison-message WAL replay loop — severity HIGH) — evidence:
+    NotificationSubscriber.java:77-91 (no try/catch around process;
+    setAppliedLSN only after successful return) + AlertNotificationMessageProcessor.java:23-24
+    (translate is uncaught)
+  - |-
+    NotificationSubscriber.md:invariants[LSN advance after process; Outer-loop
+    retry cadence hardcoded 10 seconds]
+  - |-
+    NotificationSubscriber.md:bugs_limitations_corner_cases.[6]
+    (Outer catch absorbs ALL Exception subtypes uniformly)
+  - |-
+    NotificationSubscriber.md:implicit_adrs.[3]
+    (At-least-once delivery via LSN-advance-AFTER-process)
+  - |-
+    PostgresWALMessageProcessor.md:bugs_limitations_corner_cases.[0]
+    (The interface declares void process — severity HIGH) — evidence:
+    PostgresWALMessageProcessor.java:6 + NotificationSubscriber.java:80-84
+  - |-
+    PostgresWALMessageProcessor.md:bugs_limitations_corner_cases.[1]
+    (narrow throws clause — undeclared RuntimeException surface)
+  - |-
+    NotificationsDispatcher.md:bugs_limitations_corner_cases.[6]
+    (existing batch-K Layer 1 symptom — translate-failure WAL replay loop)
+  - |-
+    Cross-references existing invariant
+    cross-channel-runtimeexception-abort-void-return-root-cause-at-postgreswalmessageprocessor
+    (batch Y — sibling Layer 3 architectural root)
+  - |-
+    Cross-references existing invariant
+    wal-retention-disk-exhaustion-under-poison-replay-no-bound (batch Y —
+    Layer 4 consequence)
+axes_present:
+  - services
+  - config_prefixes
+  - notification.processor
+triangulation_count: 4
+cross_batch: true
+cross_batch_refs:
+  - batch-C (NotificationsProperties — WAL coordinates)
+  - batch-K (NotificationsDispatcher — Layer 1 symptom + original invariant)
+  - batch-Y (NotificationSubscriber + PostgresWALMessageProcessor — Layers 2 + 3 root cause, THIS STRENGTHENING)
+severity: HIGH
+severity_dim: durability
+mitigations_unimplemented:
+  - |-
+    Architectural change: widen PostgresWALMessageProcessor's return type
+    from void to a typed ProcessResult (ALL_DELIVERED /
+    PARTIAL_DELIVERED_RETRYABLE / POISON_SKIP / TRANSIENT_RETRYABLE) —
+    enables in-seam expressivity for poison-skip without a side-channel
+    table. Closes Layer 3 root cause.
+  - |-
+    Add a poison-skip table approach: dispatcher writes the bad-LSN to
+    alert_notification_poison; subscriber consults the table on next
+    iteration before re-processing. Closes Layer 1 + 2 with no seam
+    change (Layer 3 remains, but its consequences are bypassed).
+  - |-
+    Emit a Prometheus counter notification_poison_total{alert_id, error_class}
+    on each WAL replay-loop cycle so operators detect when the loop is
+    active. Closes the observability half of Insight 3.
+  - |-
+    Make the 10s retry cadence operator-tunable via
+    notifications.wal.retry-delay (with a sensible default). Closes the
+    hardcoded-cadence half of Insight 1.
+  - |-
+    Add a docs section on /features/active-platform-features/notifications
+    explicitly naming this failure mode and the operator-side
+    remediation: clean up the bad row OR drop the replication slot (and
+    accept lost in-flight alerts). Pending the code fix this is the only
+    operator-visible signal.
+  - |-
+    Cross-cutting case-law: extend the poison-message-replay observation
+    to ANY future WAL-driven sub-feature that consumes via
+    PostgresWALMessageProcessor — without a poison-skip strategy at the
+    seam level, every future consumer inherits the same fragility.
+notes: |-
+  STRENGTHENS the batch-K poison-message-wal-replay-loop invariant with
+  primary-source code-side confirmation at TWO new layers (Layer 2 — the
+  subscriber's inner+outer loop architecture; Layer 3 — the seam shape).
+  The strengthening converts the batch-K 1-layer symptom finding into a
+  4-layer architectural picture.
+
+  The 4-layer picture explains why partial remediations are insufficient:
+    - Fixing only Layer 1 (catch the translator exception at the
+      dispatcher) closes the symptom but the seam still cannot express
+      poison-skip; the dispatcher must write to a side-channel
+    - Fixing only Layer 2 (catch the exception in the subscriber's
+      inner loop and advance LSN anyway) loses the bad alert without
+      audit, and the seam still cannot express the loss
+    - Fixing only Layer 3 (widen the seam) requires re-shaping all
+      callers (currently only one — NotificationSubscriber) and all
+      implementors (currently only one — AlertNotificationMessageProcessor),
+      but enables expressive poison-skip with audit
+    - Fixing all three layers + adding Prometheus telemetry = end-to-end
+      remediation
+
+  Cross-cutting connections:
+    - Pairs with the cross-channel-runtimeexception-abort-void-return-root-cause
+      invariant (batch Y Layer 3 sibling — both findings cite the seam
+      shape as the architectural root cause)
+    - Pairs with the wal-retention-disk-exhaustion-under-poison-replay-no-bound
+      invariant (batch Y Layer 4 consequence — describes the same root
+      cause's storage-side consequence)
+    - Pairs with the lazy-create-no-drop-replication-artefacts (batch C
+      + batch Y strengthen) — the operator-owns-cleanup posture makes
+      the consequence (Layer 4 disk exhaustion) operationally severe
+
+  Three DOC-NNN candidates flow from this strengthening:
+    (a) Document the 4-layer architectural picture on the live
+        notifications page; explain to operators why poison-replay
+        cannot be silently absorbed
+    (b) Document the operator-side remediation paths (clean up bad row;
+        drop slot + lose in-flight) with explicit trade-offs
+    (c) Document the future-evolution ADR for widening the seam shape;
+        cross-link to the cross-channel-runtimeexception-abort invariant

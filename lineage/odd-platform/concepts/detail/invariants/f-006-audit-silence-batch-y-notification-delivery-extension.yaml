@@ -1,0 +1,255 @@
+name: |-
+  F-006 audit-silence ENUM-ROOTED extends to notification delivery — ActivityEventTypeDto has ZERO NOTIFICATION_* constants (batch Y notification-bridge primary source)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-08
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20Y — STRENGTHENS the existing
+  f-006-audit-silence-enum-rooted-deeper-than-schema-rooted invariant
+  (batch U) by surfacing a 12th category of mutations covered by the
+  enum-rooted barrier: NOTIFICATION DELIVERY events.
+
+  THE NEW PRIMARY-SOURCE EVIDENCE — PostgresWALMessageProcessor batch Y:
+
+    PostgresWALMessageProcessor.md:bugs_limitations_corner_cases.[4]:
+      "NO notification-delivery audit-event is emitted from the seam OR
+      the implementor — ActivityEventTypeDto.java:3-31 enumerates 26
+      activity event types (OWNERSHIP_CREATED, ALERT_STATUS_UPDATED,
+      OPEN_ALERT_RECEIVED, RESOLVED_ALERT_RECEIVED, etc.) but ZERO of
+      them name notification delivery. F-006's audit_silence_enum_rooted
+      drift class names this exact enum gap as a root cause. From the
+      seam's perspective: a dispatcher implementor cannot emit a
+      notification-delivery activity event because the enum has no
+      constant to name; the enum gap is a STRUCTURAL silence on this
+      entire subsystem's observability."
+
+  THE 12-CATEGORY ENUM-ROOTED COVERAGE — strengthened from batch U's 11:
+
+    The batch-U invariant catalogued the enum-rooted silence at these
+    categories:
+      (1) TERM_CREATED, TERM_UPDATED, TERM_DELETED — Term lifecycle
+      (2) TERM_DESCRIPTION_UPDATED, TERM_TAGS_UPDATED — Term content
+      (3) NAMESPACE_CREATED, NAMESPACE_DELETED — Namespace lifecycle
+      (4) TAG_CREATED, TAG_DELETED — Tag lifecycle (the bare entity)
+      (5) POLICY_CREATED, POLICY_UPDATED, POLICY_DELETED — RBAC
+      (6) ROLE_CREATED, ROLE_UPDATED, ROLE_DELETED — RBAC
+      (7) OWNER_CREATED, OWNER_UPDATED, OWNER_DELETED — Directory
+      (8) COLLECTOR_TOKEN_REGENERATED — Operational
+      (9) DATASOURCE_REGISTERED — Ingestion
+      (10) USER_OWNER_ASSOCIATION_* — Owner association workflow
+      (11) any custom-metadata events — Metadata operations
+
+    Batch Y adds the 12th category:
+      (12) NOTIFICATION_DELIVERY_* events — outbound notification dispatch
+        (NOTIFICATION_SENT, NOTIFICATION_FAILED, NOTIFICATION_DELIVERED_PER_CHANNEL,
+         NOTIFICATION_DROPPED, NOTIFICATION_RETRY_ATTEMPTED, etc.)
+
+    The 12th category is STRUCTURALLY DIFFERENT from categories 1-11 in
+    that it does NOT correspond to ANY persistent entity lifecycle. The
+    notification-delivery event is a TRANSIENT EVENT about an outbound
+    action by the platform itself — there is no notification entity, no
+    notification table, no foreign key to attach to. The data_entity_id
+    NOT NULL FK at activity.data_entity_id (the batch-R schema-rooted
+    invariant) IS satisfiable in principle (the alerted-data-entity ID
+    is in the AlertNotificationMessage payload), but the SEMANTIC FIT
+    is poor — an audit record "platform sent alert X to channel Y at
+    time T" doesn't naturally attach to the alerted-entity (the
+    delivery is the event, not a mutation on the entity).
+
+  THE NEW LAYER STRUCTURE — F-006 6-LAYER closure (refined from 5-layer):
+
+    Layer 1 (UI tier — 5 batch-Q sidecars):
+      no console.log, no analytics, no audit affordance.
+    Layer 2 (Service tier — 5 batch-S + 6 batch-U + 1 batch-Y sidecars):
+      no @ActivityLog annotations on RBAC + Term/Tag/Namespace + outbound-
+      notification-delivery mutators.
+    Layer 3 (SQL tier — 3 batch-H/N/R sidecars):
+      no audit writes from RBAC repository implementations.
+    Layer 4 (Schema tier — batch-R primary source):
+      activity.data_entity_id NOT NULL FK structurally blocks any
+      event without a data-entity binding.
+    Layer 5 (Type tier — batch-U primary source — STRENGTHENED batch Y):
+      ActivityEventTypeDto enum does not define event values for any of
+      the affected surfaces, INCLUDING notification delivery.
+    Layer 6 (SPI tier — batch-Y primary source — THIS INVARIANT's
+             SPECIFIC CONTRIBUTION):
+      PostgresWALMessageProcessor's void return + lack of correlation-id
+      means even a dispatcher implementor with intent to emit audit
+      events has no per-message identifier to anchor the audit record
+      to. The LSN is only known to the caller (NotificationSubscriber);
+      the implementor has no LSN, no event-id, no message-uuid in the
+      seam signature. Layer 6 is the BRIDGE-TIER root cause.
+
+  HOW LAYER 6 COMPOUNDS WITH LAYERS 4-5:
+
+    A maintainer wanting to add notification-delivery audit must clear
+    all three structural barriers:
+      Layer 4 — activity.data_entity_id NOT NULL FK: the alerted-entity
+        ID is in the AlertNotificationMessage; the FK COULD be satisfied,
+        but the semantic fit is poor (the entity is not mutated by the
+        delivery event).
+      Layer 5 — ActivityEventTypeDto enum: must extend with
+        NOTIFICATION_SENT / NOTIFICATION_FAILED / etc. constants.
+      Layer 6 — PostgresWALMessageProcessor seam: must widen the
+        signature to carry a correlation-id (LSN, event-id, message-uuid)
+        OR establish a side-channel from subscriber to implementor for
+        per-message metadata. WITHOUT layer-6 work, the implementor
+        cannot emit a meaningful audit record (no per-message identity
+        to attach the audit to).
+    All three layers compound; fixing layer 5 alone (just adding enum
+    values) produces audit records with no per-message identity. Fixing
+    layer 5 + layer 6 (enum + seam-shape) produces meaningful records
+    but still has the layer-4 semantic-fit problem (the FK is satisfied
+    but the audit-as-entity-mutation framing is wrong).
+
+  THE BEST-FIT ARCHITECTURAL CHOICE — separate audit surface:
+
+    The batch-U invariant proposed three options for resolving Term/Tag/
+    Namespace audit:
+      (b.i) Provide a data_entity_id — NOT a viable path
+      (b.ii) Make data_entity_id NULLABLE + add discriminator — breaks
+             read paths
+      (b.iii) Create a separate audit surface — TWO audit surfaces, UI
+             merge required
+    For NOTIFICATION_DELIVERY events specifically, option (b.iii) is the
+    most natural fit: a dedicated notification_delivery_audit table with
+    columns (id, alert_id, channel, status, attempt, body_hash, ts) would
+    cleanly capture the delivery semantics WITHOUT trying to overload
+    the data-entity-centric activity table. This option also closes the
+    no-retry-no-dlq-no-audit gap by providing the audit surface that the
+    F-009 drift facet has flagged as absent.
+
+  THE COMPLETENESS — the F-006 audit-silence master pattern now spans
+  the FULL platform operation surface (with the 12 enum-rooted
+  categories above PLUS the data-entity-scoped events that DO have
+  coverage) — the only audited surface is data-entity mutations + Owner
+  association requests (the bifurcation invariant). All other platform
+  actions are structurally invisible to operators.
+
+  SEVERITY HIGH — same severity as the parent enum-rooted invariant;
+  this STRENGTHENING ADDS the 12th category without changing the
+  underlying severity assessment, but expands the scope to include the
+  outbound-action subsystem (notification delivery) on top of the
+  inbound-mutation subsystems (RBAC, Term, Tag, Namespace, etc.).
+nodes:
+  - odd-platform java notification.processor class:PostgresWALMessageProcessor
+  - odd-platform java service service:TermServiceImpl
+  - odd-platform java TermController controller-class:TermController
+contributors:
+  - |-
+    PostgresWALMessageProcessor batch Y (PRIMARY SOURCE — notification-delivery
+    enum-rooted closure):
+    bugs_limitations_corner_cases.[4] (NO notification-delivery audit-event
+    is emitted; ActivityEventTypeDto has ZERO NOTIFICATION_* constants —
+    severity HIGH; cross-feature corroborates F-006 audit-silence
+    ENUM-ROOTED) +
+    security.known_security_gaps.[0] (seam carries no authentication /
+    authorization context for the dispatcher to consume — no principal,
+    no scope, no audit-correlation id) +
+    back_links.features.F-006 (explicit cross-feature back-link in the
+    sidecar frontmatter)
+  - |-
+    TermServiceImpl batch U (PRIMARY REFERENCE — Term-lifecycle enum-rooted
+    closure; the existing 11-category invariant)
+  - |-
+    TermController batch U (CORROBORATING)
+evidence:
+  - |-
+    PostgresWALMessageProcessor.md:bugs_limitations_corner_cases.[4]
+    (notification-delivery enum-rooted silence — primary source) —
+    evidence: PostgresWALMessageProcessor.java (seam interface) +
+    ActivityEventTypeDto.java:3-31 (no NOTIFICATION_SENT /
+    NOTIFICATION_FAILED / NOTIFICATION_DELIVERY_* constants)
+  - |-
+    PostgresWALMessageProcessor.md:security.known_security_gaps.[0]
+    (no correlation-id in seam signature — Layer 6 root cause)
+  - |-
+    PostgresWALMessageProcessor.md:back_links.features.F-006 (explicit
+    cross-feature back-link)
+  - |-
+    Cross-references existing invariant
+    f-006-audit-silence-enum-rooted-deeper-than-schema-rooted (batch U —
+    THIS INVARIANT extends to 12 categories)
+  - |-
+    Cross-references existing invariant
+    f-006-audit-silence-schema-rooted-data-entity-id-not-null-fk (batch R)
+  - |-
+    Cross-references existing invariant
+    activity-event-enum-20-named-plus-7-categorical-equals-27 (batch T)
+axes_present:
+  - services
+  - schema_migrations
+  - enum_type_layer
+  - notification.processor
+  - controllers
+triangulation_count: 3
+cross_batch: true
+cross_batch_refs:
+  - batch-R (schema-rooted root cause)
+  - batch-T (enum cardinality 27 = 20 named + 7 categorical)
+  - batch-U (enum-rooted root cause — 11 categories)
+  - batch-Y (notification-delivery 12th category — THIS INVARIANT)
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Add a separate notification_delivery_audit table with columns
+    (id BIGSERIAL PK, alert_id BIGINT FK alert(id), channel VARCHAR(32),
+    status VARCHAR(16) {SENT|FAILED|DROPPED|RETRIED}, attempt INT,
+    body_hash VARCHAR(64), error_class VARCHAR(255), error_message TEXT,
+    ts TIMESTAMP). Best-fit audit-table-bifurcation approach for the
+    notification-delivery surface that AVOIDS the data-entity FK
+    semantic-fit problem.
+  - |-
+    Widen PostgresWALMessageProcessor's signature to carry a correlation-id
+    (a per-message UUID or the LSN itself) — closes Layer 6 root cause.
+    Pairs with the new audit table to provide meaningful audit records.
+  - |-
+    Add enum values NOTIFICATION_DELIVERY_* to ActivityEventTypeDto for
+    consistency with the existing categorical event types — closes Layer
+    5 even though the actual storage is the new dedicated table.
+  - |-
+    Document the audit silence on the live notifications page — operators
+    auditing "when did notifications last work" should know they have
+    no platform-side answer.
+  - |-
+    Cross-cutting case-law: extend the F-006 audit-silence master invariant
+    to include the OUTBOUND-ACTION subsystem (not just INBOUND-MUTATION
+    subsystems); the 6-layer model is now the canonical structural
+    explanation of audit-silence at ODD.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20Y from the
+  PostgresWALMessageProcessor sidecar's primary-source evidence. EXTENDS
+  the F-006 audit-silence ENUM-ROOTED master invariant from 11 categories
+  (all INBOUND-MUTATION) to 12 categories with notification delivery as
+  the first OUTBOUND-ACTION category included.
+
+  The extension also surfaces a NEW STRUCTURAL LAYER (Layer 6 — SPI tier)
+  — the PostgresWALMessageProcessor seam's narrow signature is the
+  bridge-tier root cause for notification-delivery audit absence. Layer
+  6 compounds with Layers 4 and 5 to produce a 6-layer structural
+  picture of why audit silence on this subsystem is unfixable by partial
+  remediation.
+
+  Cross-cutting connections:
+    - STRENGTHENS the batch-U enum-rooted invariant by adding the 12th
+      category and the new Layer 6
+    - Pairs with the cross-channel-runtimeexception-abort-void-return-root-cause
+      invariant (also batch Y) — both findings root-cause to the
+      PostgresWALMessageProcessor seam's narrow shape; the audit gap is
+      one of several gaps the void+narrow-throws shape produces
+    - Cross-link to F-009 drift facet no_retry_no_dlq_no_audit — the
+      audit half of that facet is now PRIMARY-SOURCE pinned to this
+      invariant
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Document the audit silence on the live notifications page
+    (b) Extend the F-006 master doc-side framing from "audit covers
+        data-entity events" to "audit covers data-entity events AND
+        the Owner-association workflow; all other subsystems are
+        unaudited"
+    (c) Document the proposed notification_delivery_audit table shape
+        as a future-evolution ADR (the audit-table-bifurcation pattern
+        established in batch V is the precedent)

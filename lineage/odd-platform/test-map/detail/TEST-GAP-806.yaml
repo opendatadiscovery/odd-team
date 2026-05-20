@@ -1,0 +1,69 @@
+gap_id: TEST-GAP-806
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java notification.sender class:EmailNotificationSender"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "EmailNotificationSender.md:bugs_limitations_corner_cases.[3] MEDIUM (No setFrom call — From header derived implicitly from JavaMailSender.setUsername)"
+  - "EmailNotificationSender.md:security.known_security_gaps.[1] LOW (No From-header allowlist or domain check)"
+behaviour: |-
+  **MEDIUM — Email From header derived IMPLICITLY from `notifications.receivers.email.sender`; no allowlist, no domain check.** `EmailNotificationSender.java:46-53` uses `MimeMessageHelper` but never calls `helper.setFrom(...)`. JavaMail's default behaviour: if From is unset, the message takes the session's `mail.from` property OR the JavaMailSender's username (`emailProperties.getSender()` at `NotificationConfiguration.java:55`) as the envelope From.
+
+  **Operator-visible result**: the From header on outgoing alerts equals the `notifications.receivers.email.sender` value verbatim — but this isn't documented in this class or in the live doc.
+
+  **Spoofing risk surface** (bounded but real):
+  - An operator with **config-modification capability** (via `/actuator/refresh`, environment-variable injection, K8s ConfigMap patch, AWS SSM write) can set `sender` to ANY address.
+  - No allowlist, no domain-match, no SPF/DKIM consideration at the ODD level (those are SMTP-relay-side concerns).
+  - For a **multi-team deployment** where the same SMTP relay is shared across multiple ODD instances (or with other applications), an operator can set `sender=ceo@company.com` and outgoing alerts impersonate the CEO — phishing-amplification scenario.
+
+  **The risk is bounded by**:
+  - The SMTP relay's own SPF / DKIM / DMARC posture (if strict, the spoofed message is rejected at the relay).
+  - The threat model where operator-config-modification is itself a higher-privilege state (e.g. a CI/CD pipeline modifying production secrets).
+
+  But for many deployments — particularly Helm-managed K8s with broad ConfigMap edit permissions, or shared SMTP relays without strict SPF/DKIM — the gap is real.
+
+  **The fix is two lines** (`helper.setFrom("alerts@odd.example.com")` with an operator-configurable + validated From key). The cost of NOT fixing is the spoofing vector + the implicit-from-derivation behavioural surprise.
+
+  **Test gap shape**: regression-pin asserting that the outgoing email's From header equals `notifications.receivers.email.sender` verbatim, with NO allowlist check. PINS the current behavioural surface.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/sender/EmailNotificationSenderNoSetFromRegressionPinTest.java"
+  name: "send_fromHeaderEqualsSenderConfigVerbatim_noAllowlistCheck_pinsImplicitDerivation"
+evidence:
+  - "EmailNotificationSender.md says (bugs_limitations_corner_cases.[3]): 'No helper.setFrom(...) call — From header derived implicitly from JavaMailSender.setUsername. line 47-53 uses MimeMessageHelper but never sets From. JavaMail default behaviour: if From is unset, the message takes the session mail.from property OR the JavaMailSender username (emailProperties.getSender() at NotificationConfiguration.java:55) as the envelope From. Operator-visible result: the From header on outgoing alerts equals the notifications.receivers.email.sender value — but this isnt documented in this class nor in the live doc. Spoofing prevention: an attacker with config-write capability could set sender to any address; no allowlist, no domain-match, no SPF/DKIM consideration (those are SMTP-relay-side concerns). The code-side risk surface is bounded by config-write capability — but for a multi-team deployment where the same SMTP relay is shared with other ODD instances, this is a misconfiguration trap.' — severity MEDIUM"
+  - "EmailNotificationSender.md says (security.known_security_gaps.[1]): 'No From-header allowlist or domain check — JavaMailSender username (=notifications.receivers.email.sender) becomes the From; an operator with config-modification capability can set From to any address — including spoofed addresses claiming to be from other services. The SMTP relay (and downstream SPF/DKIM/DMARC) provides the only protection. ODD does not validate the sender field against any allowlist.' — severity LOW"
+  - "Verified at primary source: EmailNotificationSender.java:46-53 (no `helper.setFrom(...)` call) + NotificationConfiguration.java:55 (setUsername is the only sender flow)"
+cross_references:
+  - "TEST-GAP-805 (sister — Email MimeMessageHelper no-charset; same code-file family)"
+  - "TEST-GAP-174 (sister — Email per-recipient silent partial delivery)"
+  - "REFACTOR-NNN (proposed): add `notifications.receivers.email.from` config key (separate from sender/username); validate against an allowlist regex if set; default to sender if unset; add explicit `helper.setFrom(...)` call"
+  - "DOC-GAP-NNN (proposed): live `/features/active-platform-features/notifications#email-channel` should document the implicit-from-derivation + recommend SMTP-relay SPF/DKIM/DMARC posture for production deployments"
+  - "concepts.yaml: `email-from-derived-from-setUsername-no-allowlist` invariant — F-009 email-channel quirks"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery", "P-09:F-001 Security"]
+proposed_action: |-
+  Add `EmailNotificationSenderNoSetFromRegressionPinTest`. Unit test stubbing `JavaMailSender.send(...)`:
+
+  1. `send_fromHeaderEqualsSenderConfigVerbatim_noAllowlistCheck_pinsImplicitDerivation` —
+     - Configure `notifications.receivers.email.sender="alerts@odd.example.com"`.
+     - Stub `JavaMailSender.send(...)` capturing the MimeMessage.
+     - Invoke `emailSender.send(message)`.
+     - Assert `mimeMessage.getFrom()[0].toString()` equals `"alerts@odd.example.com"`.
+     - PINS the implicit-from-derivation.
+
+  2. `send_senderConfigChangedToSpoofedValue_outgoingFromMatchesSpoofedValue_pinsAbsenceOfAllowlist` —
+     - Configure `notifications.receivers.email.sender="ceo@company.com"` (no allowlist).
+     - Same capture.
+     - Assert outgoing From is `"ceo@company.com"`.
+     - PINS the spoofing surface.
+
+  3. `send_explicitFromKeyConfigured_outgoingFromMatchesExplicit_confirmsFixDirection` — (UPDATE once REFACTOR-NNN lands)
+     - After REFACTOR-NNN: configure `notifications.receivers.email.from="alerts@odd.example.com"` separately from sender.
+     - Assert outgoing From matches the explicit From key.
+
+  Pair with REFACTOR-NNN (add explicit From key + allowlist) and DOC-GAP-NNN (document the SMTP-relay dependency).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. No prior TEST-GAP pins the From-header derivation. No contradiction.
+batch: 2026-05-20-Y
+feature_id: F-009

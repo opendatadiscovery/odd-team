@@ -1,0 +1,218 @@
+name: |-
+  Slack 429 Retry-After header silently ignored — no rate-limit honour, no exponential back-off, no DLQ (batch Y)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+description: |-
+  NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20Y — surfaced by primary-source
+  examination of SlackNotificationSender.java + AbstractNotificationSender.java.
+  Slack's incoming-webhook API rate-limits at ~1 message per second per
+  webhook and returns HTTP 429 with a Retry-After header on burst overflow;
+  the platform discards the response body and headers and treats every
+  non-200 as a uniform NotificationSenderException.
+
+  THE PRIMARY-SOURCE EVIDENCE — SlackNotificationSender batch Y:
+
+    SlackNotificationSender.java:43-48 (the send chain):
+      sends an HttpRequest.POST built without rate-aware headers; delegates
+      to AbstractNotificationSender.sendAndValidate(request).
+
+    AbstractNotificationSender.java:24-29 (the validation check):
+      if (response.statusCode() != HttpStatus.OK.value()) {
+          throw new NotificationSenderException(...);
+      }
+    The check is binary (200 vs non-200); response.headers() is NEVER
+    consulted, response.body() is NEVER logged. The Retry-After header (a
+    standard HTTP cache-control mechanism for rate-limited responses,
+    RFC 6585 §4) is structurally invisible to the platform.
+
+  THE FAILURE MODE — bursty alert flows:
+
+    Slack documents the webhook rate limit as ~1 message per second per
+    webhook (short bursts allowed; sustained excess returns 429). For an
+    ODD deployment with bursty alert sources — a single failed dbt run
+    can produce 50+ FAILED_DQ_TEST alerts, a backwards-incompatible
+    schema deploy can produce 1 alert per table — the platform will hit
+    Slack's rate limit within seconds.
+
+    Each rate-limited message:
+      1. POSTs from this sender's send() at SlackNotificationSender.java:48
+      2. Slack returns HTTP 429 + Retry-After: 1 (or higher)
+      3. AbstractNotificationSender.sendAndValidate at line 26 sees
+         statusCode != 200, raises NotificationSenderException
+      4. AlertNotificationMessageProcessor.java:31 catches the exception,
+         logs at ERROR, moves to the next sender (Webhook then Email)
+      5. NotificationSubscriber.java:83-84 advances setAppliedLSN unconditionally
+         AFTER process() returns
+      6. The next WAL alert event arrives ~immediately (the WAL stream
+         does not throttle); the cycle repeats
+      7. Slack continues to 429 until the burst clears (typically seconds
+         to minutes)
+
+    Net effect: every rate-limited alert is DROPPED from the Slack channel
+    permanently. The operator-visible signal is a sequence of identical
+    log.error lines with no rate-limit classification, no Retry-After
+    value, no body text.
+
+  THE STRUCTURAL EXTENSIONS BEYOND SLACK:
+
+    AbstractNotificationSender is the SHARED parent for both
+    SlackNotificationSender AND WebhookNotificationSender. The 200-only
+    binary check applies to BOTH. The Webhook channel inherits the same
+    rate-limit-blind behaviour for any receiver that returns 429 (most
+    webhook receivers under burst load do return 429 — Discord, Microsoft
+    Teams, PagerDuty, custom-incident-managers).
+
+    The email channel uses JavaMailSender (SMTP), which has its own
+    rate-limit semantics (SMTP RCPT-level rejection codes 421 / 450 /
+    452); EmailNotificationSender does not handle them either, but the
+    failure mode is shaped differently and is covered by the existing
+    per-recipient fail-stop invariant.
+
+  THE CONTRAST WITH SLACK'S OWN AdvICE:
+
+    Slack's developer documentation (slack.com/docs — referenced
+    indirectly in the live doc page silence) explicitly tells webhook
+    consumers to honour Retry-After. The platform's silence is therefore
+    a CONTRACT VIOLATION with the documented expectation of the
+    receiver, not merely a missing-feature gap.
+
+  CROSS-LINK TO REFACTOR-129 (batch C):
+
+    The existing "No rate-limiting at any layer" finding (catalogued at
+    NotificationsProperties.md:bugs_limitations_corner_cases.[10]) named
+    the absence of CLIENT-side rate limiting (no token bucket on the
+    sender). This invariant identifies the RECEIVER-side rate-limit-
+    signalling-ignored gap — these are sibling findings: even if the
+    platform never throttles outbound, honouring Retry-After would
+    convert "burst loss" into "burst delay". Both fixes are valuable;
+    neither is present.
+
+  CROSS-LINK TO THE NO-RETRY-NO-DLQ FINDING:
+
+    The Slack sender batch Y (and the Webhook sender batch Y)
+    explicitly named NO retry / NO DLQ / NO audit on failed delivery.
+    The Retry-After-ignored invariant is a SPECIFIC manifestation of
+    that broader gap — even Slack's explicit "retry after N seconds"
+    hint is not honoured because the code path lacks the architecture
+    to retry at all.
+
+  SEVERITY MEDIUM — bounded by alert-burst rate at the deployment; for
+  low-cadence deployments this is a tolerable gap, for high-cadence
+  deployments it is a delivery-correctness issue with no operator
+  visibility.
+nodes:
+  - odd-platform java notification.sender class:SlackNotificationSender
+  - odd-platform java notification.sender class:WebhookNotificationSender
+  - odd-platform java service service:NotificationsDispatcher
+  - odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+contributors:
+  - |-
+    SlackNotificationSender batch Y (PRIMARY SOURCE — Slack 429 Retry-After
+    ignored):
+    bugs_limitations_corner_cases.[0] (Slack 429 rate-limit returns
+    NotificationSenderException undifferentiated from 4xx / 5xx —
+    Retry-After header silently ignored — severity HIGH at the sidecar;
+    severity MEDIUM at the concept level because the absence-of-honour
+    has a documented mitigation path that operators could implement
+    receiver-side or via a queueing relay) +
+    tests_coverage_semantic.uncovered_behaviours[Slack returns 429] +
+    performance.known_performance_gaps.[1] (no client-side rate-limiting
+    — sibling finding from REFACTOR-129)
+  - |-
+    WebhookNotificationSender batch Y (SECONDARY SOURCE — the 200-only
+    accept inherited from the shared parent AbstractNotificationSender):
+    bugs_limitations_corner_cases.[7] (200-only HTTP accept — common 2xx
+    success codes treated as failure) — extends the 200-only finding
+    beyond Slack to ANY HTTP-channel receiver
+  - |-
+    NotificationsDispatcher batch K (existing reference — the dispatcher
+    catches NotificationSenderException and continues; no awareness of
+    rate-limit class vs other failure class)
+  - |-
+    NotificationsProperties batch C (existing reference — REFACTOR-129
+    sibling)
+evidence:
+  - |-
+    SlackNotificationSender.md:bugs_limitations_corner_cases.[0] (Slack 429
+    rate-limit undifferentiated; Retry-After ignored) — evidence:
+    SlackNotificationSender.java:43-48 + AbstractNotificationSender.java:24-29
+    (no header read, no status-class branch)
+  - |-
+    SlackNotificationSender.md:tests_coverage_semantic.uncovered_behaviours
+    (Slack returns 429 rate-limited — observed behaviour: Retry-After silently
+    ignored)
+  - |-
+    SlackNotificationSender.md:docs_link_semantic.doc_drift_findings
+    (live doc silent on Slack 429 rate-limit handling)
+  - |-
+    WebhookNotificationSender.md:bugs_limitations_corner_cases.[7]
+    (200-only HTTP accept — extends the binary check beyond Slack to any
+    HTTP-channel receiver)
+  - |-
+    Cross-references existing finding NotificationsProperties.md:bugs_limitations_corner_cases.[10]
+    (No rate-limiting at any layer — REFACTOR-129)
+axes_present:
+  - services
+  - config_prefixes
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+  - batch-Y (Slack + Webhook senders — PRIMARY SOURCE)
+  - batch-K (NotificationsDispatcher — caller side)
+  - batch-C (NotificationsProperties — REFACTOR-129 sibling client-side rate-limit gap)
+severity: MEDIUM
+severity_dim: durability
+mitigations_unimplemented:
+  - |-
+    Modify AbstractNotificationSender.sendAndValidate to read the
+    Retry-After header on 429 responses and either (a) sleep + retry once
+    in the sender thread (simple, blocks dispatcher tail latency) or
+    (b) enqueue a deferred-delivery row in a notifications_retry table
+    and have a scheduled job drain it after the indicated delay (complex,
+    requires schema change but preserves dispatcher throughput).
+  - |-
+    Emit a Prometheus counter notification_send_failed_total{channel,
+    status_code} so operators can distinguish "Slack rate-limited 429"
+    from "Slack auth-revoked 404" from "Slack-outage 5xx" without
+    log-grep.
+  - |-
+    Add a client-side token-bucket rate limiter at the sender layer
+    (~1 token/sec per sender, configurable cap) — closes both the
+    receiver-side Retry-After-ignored gap AND the client-side burst-
+    overflow gap (REFACTOR-129).
+  - |-
+    Document the rate-limit handling absence on the live
+    /features/active-platform-features/notifications page; cross-link
+    to operator-side queueing-relay guidance (e.g. nginx with
+    limit_req, or a dedicated SQS+Lambda relay between the platform
+    and Slack).
+notes: |-
+  NEW MEDIUM-severity invariant captured in batch 2026-05-20Y from the
+  SlackNotificationSender sidecar's primary-source evidence. The finding
+  generalises across all HTTP-channel senders (Slack + Webhook) because
+  the shared parent AbstractNotificationSender owns the 200-only binary
+  check.
+
+  Cross-cutting connections:
+    - Pairs with REFACTOR-129 / NotificationsProperties.md:bugs_limitations_corner_cases.[10]
+      (No rate-limiting at any layer) — sibling: receiver-side signal
+      ignored AND client-side throttle absent; both gaps must close for
+      end-to-end rate-limit correctness
+    - Pairs with the no-retry-no-dlq-no-audit gap on the F-009 feature
+      flow (all 3 senders + dispatcher) — the architectural reason
+      Retry-After cannot be honoured today is the no-retry posture; a
+      retry implementation would unblock all three (rate-limit, transient
+      5xx, transient IOException) classes simultaneously
+    - Cross-link to the cross-channel-runtimeexception-abort invariant
+      (also batch Y) — both findings are about the dispatcher's per-sender
+      handling being too binary: 200-vs-non-200, NotificationSenderException-
+      vs-RuntimeException
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Document the Slack 429 / Retry-After silence on the live
+        notifications page with operator-facing mitigation (queueing
+        relay)
+    (b) Document the 200-only accept (Slack + Webhook) as an explicit
+        contract — receivers returning 2xx-non-200 are unsupported

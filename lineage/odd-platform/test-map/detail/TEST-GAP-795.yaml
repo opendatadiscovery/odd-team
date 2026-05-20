@@ -1,0 +1,79 @@
+gap_id: TEST-GAP-795
+category: missing-performance
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java notification class:NotificationSubscriber"
+pillars_affected: [P-07]
+surfaced_by:
+  - "NotificationSubscriber.md:performance.known_performance_gaps.[3] HIGH (Poison-message replay loop pins WAL position — primary disk exhaustion under sustained poison-replay)"
+  - "NotificationSubscriber.md:performance.resource_allocation.[5] (WAL retention on the slot — PG retains all WAL since confirmed_flush_lsn for the slot)"
+  - "NotificationSubscriber.md:performance.known_performance_gaps.[4] MEDIUM (Slot growth is not surfaced as ODD telemetry)"
+behaviour: |-
+  **CRITICAL — Sustained poison-replay pins WAL position → primary disk exhaustion.** Distinct from TEST-GAP-455 (which pins the *replay loop semantics*) and TEST-GAP-173 (which pins the *slot rename orphan*), this gap pins the *operational consequence*: when `process(...)` consistently throws on the same WAL LSN, Postgres retains ALL WAL since `confirmed_flush_lsn` for the slot indefinitely. The primary's disk fills cluster-wide. There is NO operator-tunable knob, NO Prometheus gauge, NO actuator endpoint to observe the slot's lag. Operators discover the failure when the primary is OOM-on-disk and applications cluster-wide cannot write.
+
+  **The compound failure mode** (the load-bearing F-009 fragility per concepts.yaml:4580 `poison-message-wal-replay-loop`):
+  1. A single ALERT row with type-code outside `AlertTypeEnum` range (or pointing at hard-deleted data_entity_oddrn) is INSERTED via the alerting subsystem.
+  2. WAL decodes the row to a `DecodedWALMessage`.
+  3. `AlertNotificationMessageProcessor.process(...)` calls `AlertNotificationMessageTranslator.translate(...)` which throws `IllegalArgumentException` (unknown type code) or `IllegalStateException` (missing FK target).
+  4. The throw bypasses the dispatcher's per-sender catch (which catches `NotificationSenderException` only) and reaches `NotificationSubscriber.java:90 catch (Exception e)`.
+  5. The outer catch logs at ERROR, releases the advisory lock via try-with-resources, sleeps 10 s, re-acquires the lock, rebuilds the stream.
+  6. The un-advanced LSN is re-delivered → repeat from step 3.
+  7. PG WAL grows indefinitely for the slot. The primary's `pg_wal/` directory fills.
+  8. No operator-visible signal beyond `log.error("Error occurred while subscribing", e)` at one severity, no Prometheus counter, no slot-lag gauge.
+
+  **Why CRITICAL (operational, not security)**: WAL exhaustion takes down the PRIMARY (not just notifications). All writes cluster-wide stop. Operator recovery requires `pg_drop_replication_slot(...)` which loses ALL in-flight undelivered alerts. The platform's only documented remediation (per WebFetched live doc) is the slot-drop — which is destructive to the F-009 chain itself.
+
+  **Distinguishes from prior coverage**:
+  - **TEST-GAP-455** pins the replay-loop semantics (does the loop run? does LSN advance? does the 10s back-off fire?). It does NOT pin the WAL retention consequence.
+  - **TEST-GAP-173** pins the slot-rename orphan (operator changes slot-name between deploys → old slot retains WAL). The cause is operator-action; THIS gap's cause is application-internal (no operator action needed; one poison row suffices).
+  - **TEST-GAP-457** pins burst-rate exhaustion (10k alerts/sec exceeds Slack rate-limit). Different failure mode entirely.
+
+  **Test gap shape**: end-to-end Testcontainers integration test demonstrating the WAL retention consequence. The test ASSERT is the `pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)` value GROWING over time while the subscriber is stuck on a poison message. PINS the operational failure mode that documentation cannot otherwise express.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/NotificationSubscriberPoisonReplayWALRetentionRegressionPinTest.java"
+  name: "poisonAlert_subscriberStuckInReplayLoop_walLagGrowsUnbounded_pinsDiskExhaustionRisk"
+evidence:
+  - "NotificationSubscriber.md says (performance.known_performance_gaps.[3]): 'Poison-message replay loop pins WAL position — the un-advanced LSN on a persistently-failing process() call means PG WAL grows indefinitely. Under sustained poison-replay conditions, primary disk exhaustion is real. This is the F-009 pillar's load-bearing performance pathology and the single most consequential operator-facing risk in the subsystem.' — severity HIGH"
+  - "NotificationSubscriber.md says (performance.resource_allocation.[5]): 'WAL retention on the slot — PG retains all WAL since confirmed_flush_lsn for the slot. If the subscriber is stuck (poison-replay) or down (thread-death pathology), WAL accumulates on the PG primary. The live doc warns about this as the cluster-wide disk-exhaustion risk.'"
+  - "Verified at primary source: NotificationSubscriber.java:77-91 (no try/catch around process; setAppliedLSN only after successful return) + NotificationSubscriber.java:83-84 (LSN advance gated by try-block exit)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-05-20 status 200 — live-doc cleanup SQL is `SELECT pg_drop_replication_slot('<replication_slot_name>')` which loses in-flight alerts"
+  - "concepts.yaml:4580 — poison-message-wal-replay-loop invariant (canonical concept catalogue entry)"
+cross_references:
+  - "TEST-GAP-455 (STRENGTHENS — TEST-GAP-455 pins the replay-loop semantics; THIS gap pins the WAL-retention operational consequence. Both must exist; they pin different failure surfaces of the same code path.)"
+  - "TEST-GAP-173 (sister — slot-rename orphan; this gap is the application-internal-cause sibling)"
+  - "TEST-GAP-457 (sibling — burst rate; different failure mode)"
+  - "REFACTOR-NNN (proposed): emit Prometheus gauge `odd_notification_wal_lag_bytes` populated from `SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)` on a scheduled query"
+  - "REFACTOR-NNN (proposed): add a DLQ table `alert_notification_dlq` capturing poison messages + an operator API to drain. The current code path forces operators to choose between (a) leave the slot stuck → disk exhaustion, or (b) drop the slot → lose all in-flight alerts. A DLQ closes the trilemma."
+  - "DOC-GAP-NNN (proposed): live `/configuration-and-deployment/odd-platform` should add an explicit warning that the documented `pg_drop_replication_slot(...)` recovery is DESTRUCTIVE of in-flight alerts. Live doc currently presents it as the simple cleanup."
+  - "LSN-001 (analogous failure mode — a default behaviour that silently leads to data loss / outage; same case-law)"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery"]
+proposed_action: |-
+  Add `NotificationSubscriberPoisonReplayWALRetentionRegressionPinTest`. Testcontainers-Postgres setup:
+
+  1. `poisonAlert_subscriberStuckInReplayLoop_walLagGrowsUnbounded_pinsDiskExhaustionRisk` —
+     - Boot platform with `notifications.enabled=true` and a stub `NotificationSender` that no-ops.
+     - INSERT a poison ALERT row: type_id NOT in AlertTypeEnum range OR alerted_entity_oddrn pointing at hard-deleted entity.
+     - Start `NotificationSubscriber`.
+     - Wait 40 s (4× the 10s retry cadence).
+     - Execute `SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS wal_lag FROM pg_replication_slots WHERE slot_name = 'odd_platform_replication_slot'`.
+     - Assert `wal_lag > 0` (the lag exists) AND grows between successive observations (a second sample 10 s later is `>=` the first).
+     - PINS the WAL-retention operational consequence.
+
+  2. `poisonAlert_operatorDropsSlot_alertsLost_pinsDestructiveRecovery` —
+     - Same setup.
+     - Execute `SELECT pg_drop_replication_slot('odd_platform_replication_slot')`.
+     - Restart the subscriber.
+     - Assert the poison alert is GONE (and NO log entry indicates it was dispatched).
+     - PINS the destructive nature of the documented remediation.
+
+  3. `poisonAlert_dlqRouteEnabled_walAdvances_pinsFixDirection` — (UPDATE this test once REFACTOR-NNN adds the DLQ)
+     - After REFACTOR-NNN: assert that the same poison alert is routed to `alert_notification_dlq` and the WAL LSN advances normally.
+     - CONFIRMS the fix's effectiveness.
+
+  Pair with REFACTOR-NNN (DLQ + WAL-lag gauge) and DOC-GAP-NNN (documenting the trilemma in the live doc).
+
+  Coherence note (LSN-018 Rule 6): This finding STRENGTHENS TEST-GAP-455 (same root cause, different observable consequence). NO contradiction with TEST-GAP-455 — that gap pins LSN-non-advance + 10s back-off; this gap pins WAL retention consequence. NET-NEW finding distinct from TEST-GAP-173 (rename orphan, operator-action root cause) and TEST-GAP-457 (burst rate, different failure mode).
+batch: 2026-05-20-Y
+feature_id: F-009

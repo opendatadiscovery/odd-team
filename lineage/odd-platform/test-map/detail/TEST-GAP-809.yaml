@@ -1,0 +1,72 @@
+gap_id: TEST-GAP-809
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java notification class:NotificationSubscriber"
+pillars_affected: [P-07]
+surfaced_by:
+  - "NotificationSubscriber.md:bugs_limitations_corner_cases.[5] LOW (setAppliedLSN advances even for non-INSERT/UPDATE messages)"
+  - "NotificationSubscriber.md:concepts.invariants (TRUNCATE / DELETE / BEGIN / COMMIT / TYPE / ORIGIN / LOGICAL_DECODING_MESSAGE are silently dropped)"
+behaviour: |-
+  **MEDIUM — `setAppliedLSN` advances for NON-INSERT/UPDATE WAL messages — TRUNCATE on the alert table is silently dropped.** `NotificationSubscriber.java:79` short-circuits the processor call on `Optional.empty()` (the decoder returns empty for RELATION / TRUNCATE / DELETE / BEGIN / COMMIT / TYPE / ORIGIN / LOGICAL_DECODING_MESSAGE per `PostgresWALMessageDecoder.java:46-54`), but **lines 83-84 STILL advance setAppliedLSN + setFlushedLSN unconditionally**. This is correct behaviour for irrelevant message types (we don't want WAL accumulation just because we're skipping BEGIN / COMMIT / TYPE).
+
+  **The subtle implication**: a **TRUNCATE on the alert table** would advance the WAL pointer past the truncation **without firing a notification**. Operators relying on alerts during a TRUNCATE-induced outage have NO signal — the alert table is empty, the WAL position has advanced past the truncation, and the subscriber has no way to detect that alerts were lost.
+
+  **Operator-impact scenarios**:
+  1. **Operational TRUNCATE**: an operator running `TRUNCATE TABLE alert` (perhaps as part of a database maintenance script, perhaps as part of a misguided cleanup operation) loses ALL pending alerts AND the subscriber silently advances past the truncation.
+  2. **Cascading TRUNCATE**: if a future Flyway migration adds `TRUNCATE alert` to a maintenance migration (e.g. as part of a reorg or partition drop), the same silent loss applies.
+  3. **Adversarial TRUNCATE**: an attacker with DB-DELETE privilege on the alert table (a higher-privilege threat than ODD-app-level auth, but reachable in shared-DB deployments) can mask their tracks by truncating after misuse — the subscriber's WAL pointer advances past the malicious activity.
+
+  **Distinguishes from prior coverage**:
+  - **TEST-GAP-455** pins the poison-message replay loop (LSN does NOT advance on uncaught throws). THIS gap pins the OPPOSITE — LSN DOES advance for messages that produce no notification. The two gaps cover the LSN-advance contract from both directions: advance when no error AND when no INSERT/UPDATE (this gap) vs do NOT advance when there's an uncaught throw (TEST-GAP-455).
+  - **TEST-GAP-172** pins WAL decoder cache-invalidation on RELATION-id recycling. Different decoder concern.
+
+  **Severity is MEDIUM because** operators don't normally TRUNCATE the alert table in production — but the silent-failure consequence is severe (no notification, no recovery signal). The fix is documentation (warn operators) rather than code change (the LSN-advance behaviour is correct for BEGIN/COMMIT/TYPE; only TRUNCATE-on-alert is the operationally-surprising case).
+
+  **Test gap shape**: regression-pin asserting that TRUNCATE on alert table advances LSN without firing a notification. PINS the current behavioural surface.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/NotificationSubscriberTruncateAdvancesLSNRegressionPinTest.java"
+  name: "truncateAlertTable_lsnAdvances_noNotificationFires_pinsSilentLossOnTruncate"
+evidence:
+  - "NotificationSubscriber.md says (bugs_limitations_corner_cases.[5]): 'setAppliedLSN advances even for non-INSERT/UPDATE messages — line 79 short-circuits the processor call on Optional.empty() (the decoder returns empty for RELATION / TRUNCATE / DELETE / BEGIN / COMMIT / TYPE / ORIGIN / LOGICAL_DECODING_MESSAGE), but lines 83-84 STILL advance setAppliedLSN + setFlushedLSN unconditionally. This is correct behaviour (we dont want WAL accumulation just because we are skipping an irrelevant message type), but it has a subtle implication: a TRUNCATE on the alert table would advance the WAL pointer past the truncation without firing a notification. Operators relying on alerts during a TRUNCATE-induced outage have NO signal. Severity is LOW because operators dont normally TRUNCATE the alert table.' — severity LOW"
+  - "Verified at primary source: NotificationSubscriber.java:77-84 (LSN advance is outside the if (decodedMessage.isPresent()) block) + PostgresWALMessageDecoder.java:46-54 (TRUNCATE / DELETE / etc. return empty)"
+cross_references:
+  - "TEST-GAP-455 (sister — covers the LSN-advance contract from the opposite direction; together they pin the full LSN-advance semantic)"
+  - "TEST-GAP-172 (sister — WAL decoder cache invalidation; different decoder concern)"
+  - "TEST-GAP-795 (sister — WAL-retention disk exhaustion; this gap's TRUNCATE bypass is NOT a path to WAL retention because LSN does advance)"
+  - "DOC-GAP-NNN (proposed): live `/configuration-and-deployment/odd-platform#enable-alert-notifications` should warn operators not to TRUNCATE the alert table, or document the silent-loss consequence"
+  - "REFACTOR-NNN (proposed, defensive): emit a WARN log at `NotificationSubscriber.java:79` when the decoded message's operation is TRUNCATE on the alert table specifically (distinguish from BEGIN/COMMIT/TYPE which are routine)"
+  - "concepts.yaml: `wal-truncate-silent-alert-loss` invariant"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery"]
+proposed_action: |-
+  Add `NotificationSubscriberTruncateAdvancesLSNRegressionPinTest`. Testcontainers-Postgres setup:
+
+  1. `truncateAlertTable_lsnAdvances_noNotificationFires_pinsSilentLossOnTruncate` —
+     - Boot platform with `notifications.enabled=true` and a stub `NotificationSender`.
+     - INSERT a pending ALERT row (uncommitted).
+     - Capture the slot's `confirmed_flush_lsn` (`pos_before`).
+     - Execute `TRUNCATE TABLE alert`.
+     - Wait 5 s.
+     - Capture `confirmed_flush_lsn` (`pos_after`).
+     - Assert `pos_after > pos_before` (the LSN advanced past the truncation).
+     - Assert the stub `NotificationSender` was NOT invoked.
+     - PINS the silent-loss-on-TRUNCATE.
+
+  2. `truncateAlertTable_followedByInsert_newAlertDelivers_pinsNormalRecovery` —
+     - Continue from test 1.
+     - INSERT a new ALERT row.
+     - Wait 5 s.
+     - Assert the stub sender received this NEW alert (the truncation does not break subsequent delivery).
+     - PINS that the silent-loss is per-message, not subsystem-breaking.
+
+  3. `truncateAlertTable_warningEmitted_confirmsFixDirection` — (UPDATE once REFACTOR-NNN adds the defensive WARN log)
+     - After REFACTOR-NNN: assert a WARN log line was emitted for the TRUNCATE.
+     - CONFIRMS the fix's effectiveness.
+
+  Pair with DOC-GAP-NNN (operator warning) and REFACTOR-NNN (defensive WARN log).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. TEST-GAP-455 covers the LSN-advance contract from the uncaught-throw direction; this gap covers it from the empty-decoded-message direction. Together they pin the full contract. No contradiction.
+batch: 2026-05-20-Y
+feature_id: F-009

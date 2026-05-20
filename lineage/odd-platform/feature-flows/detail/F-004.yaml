@@ -20,6 +20,7 @@ drift_class_summary:
 - dataset_field_put_endpoints_spec_201_impl_200_class_wide_drift
 - dataset_field_description_edit_dual_activity_event_emission_when_term_references_present
 - dataset_field_internal_description_verbatim_read_side_via_get_dataset_structure_endpoints_column_level_xss_class_chain_closed_write_to_render
+- slack_mrkdwn_injection_via_alert_chunk_description_6th_xss_surface_cross_channel_at_slack_workspace_renderer
 superseded_drift_classes:
 - old: dataset_field_description_edit_no_activity_log_asymmetric_with_internal_name
   superseded_by_drift_class: dataset_field_description_edit_activity_log_at_inner_service_layer_structural_only_no_operator_impact
@@ -434,6 +435,106 @@ batch_extensions:
     NO new XSS surface (the column-level surface was catalogued at
     batch-R); this batch closes the WRITE → READ → RENDER chain
     rather than adding a new surface. NO conflicts; NO supersedes.
+- batch: Y
+  entry_point_added: |-
+    cross-feature surface:SlackNotificationSender (the Slack channel
+    of the F-009 outbound notification fan-out) — the 6TH XSS-class
+    SURFACE in the F-004 family. The Slack channel renders
+    AlertChunkPojo.description strings as Slack mrkdwn via
+    `markdownText(...)` at SlackMessageGenerator.java:77; Slack
+    interprets `*bold*`, `_italic_`, `<url|text>`, `@channel`,
+    `@here`, `<!channel>`, `<!here>` as markup. AlertChunkPojo.description
+    flows from ingestion-side AlertActionResolverImpl.java:162 — upstream
+    collector-supplied content (dbt test description, Great Expectations
+    expectation result string, schema-diff narrative). NO escaping
+    at the boundary between ingestion-content and Slack mrkdwn
+    rendering (MrkdwnUtils.java:1-14 has only `bold(...)` +
+    `buildLink(...)` for platform-controlled strings; no escape
+    helper for operator-supplied / ingestion-supplied content). The
+    surface is NOT under the Markdown / rehype-raw pipeline (the SPA's
+    Markdown.tsx surface) — it is the Slack workspace itself, a
+    DIFFERENT renderer with DIFFERENT injection semantics. F-009
+    batch Y catalogues this as the load-bearing security finding
+    `slack_mrkdwn_injection_via_alert_chunk_description_at_channel_at_here_broadcast`.
+  contributing_nodes_added:
+  - odd-platform java notification.sender class:SlackNotificationSender
+  notes: |-
+    ONE NEW XSS-class facet — the 6TH surface in the F-004 description-XSS
+    family. Severity HIGH.
+
+    (1) SLACK MRKDWN-INJECTION via AlertChunkPojo.description — 6TH
+    XSS SURFACE in F-004 family (HIGH) — Per SlackNotificationSender
+    batch-Y sidecar bugs_limitations_corner_cases.[2] +
+    SlackMessageGenerator.java:77,95-101 + MrkdwnUtils.java:1-14
+    + AlertActionResolverImpl.java:162. The Slack rendering of
+    AlertChunkPojo.description strings preserves operator-controlled
+    mrkdwn metacharacters verbatim. An upstream-side actor with
+    control over the description string (any collector pushing
+    AlertManager-shaped payloads — cross-link F-007 batch-T) can:
+      (a) inject `@channel` to broadcast-notify the entire Slack
+          channel membership (privilege escalation against the Slack
+          workspace's notification posture);
+      (b) inject `<https://attacker.example/|click here>` to render a
+          fake-link with attacker-controlled destination + arbitrary
+          link text (clickbait + phishing surface);
+      (c) inject `<!here>` to alert online users specifically;
+      (d) inject `*bold* _italic_` to alter message rendering for
+          social-engineering pretext shaping.
+
+    Where this surface SITS in the F-004 family:
+      1st (batch-H): Markdown body verbatim storage at
+         ReactiveDataEntityRepositoryImpl + downstream Markdown.tsx
+         rehype-raw NO rehype-sanitize (the canonical surface).
+      2nd (batch-R): DatasetField.internal_description verbatim
+         storage at ReactiveDatasetFieldRepositoryImpl
+         (column-level WRITE).
+      3rd (batch-U): Term.definition verbatim storage at
+         TermDetails.tsx / TermServiceImpl (Term DEFINITION surface).
+      4th (batch-V): DatasetFieldController — the API surface for
+         the column-level write.
+      5th (batch-W): DatasetController.getDataSetStructure*
+         endpoints — the column-level READ surface that closes
+         WRITE → READ → RENDER.
+      6th (batch-Y, THIS): SlackNotificationSender — the Slack
+         workspace render surface. CROSS-CHANNEL — not the SPA's
+         Markdown renderer but the Slack mrkdwn engine. THIS surface
+         lives OUTSIDE the platform (in Slack), making the
+         remediation BOUNDARY at SlackMessageGenerator.java:77 — a
+         small MrkdwnUtils.escape helper applied before
+         markdownText() would close the injection class.
+
+    Distinguishing facets vs F-009 batch Y facet 11:
+      - F-009 owns the structural origin (no MrkdwnUtils.escape
+        helper exists; the SPI seam delivers raw strings to the
+        sender; the sender's wire-format choice exposes mrkdwn
+        semantics to operator-supplied content).
+      - F-004 owns the XSS-CLASS taxonomy — this is the 6TH surface
+        in a recurring pattern across description-class fields. The
+        F-004 lens treats it as "another verbatim-storage-and-render
+        chain" alongside the other 5. The two features cross-link;
+        the fix is on the F-009 side at the sender layer.
+
+    Coherence: STRENGTHENS=1 (F-004 batch-V `term_definition_xss_surface_extension_3rd_surface_markdown_rehype_raw`
+    + the entire description-XSS family — Slack is the 6th surface
+    and the FIRST one that crosses the platform/external-renderer
+    boundary). NO conflicts; NO supersedes.
+
+    NEW drift facet for F-004:
+    `slack_mrkdwn_injection_via_alert_chunk_description_6th_xss_surface_cross_channel_at_slack_workspace_renderer`.
+
+    Probe candidate (cross-link F-009 P-W-3): POST a forged
+    AlertManager webhook payload (cross-link F-007 ingest surface)
+    with `description` containing `@channel <https://attacker.example|click
+    here>`; observe Slack channel sees `@channel` broadcast
+    notification + fake-link rendered as clickable. Pins the
+    F-004 6th-surface + the F-009 Slack-channel mrkdwn-injection
+    simultaneously — single probe, two feature assertions.
+
+    The 6-surface XSS-class family is now COMPLETE for known
+    description-class fields; future regressions extending to new
+    description-class fields (term-aliases, dataset-column-comments,
+    custom-metadata long-text values) should be triaged against this
+    family as candidates for the 7th + Nth surfaces.
 contributing_nodes:
 - ts react-component:DataEntityDescription (Overview > Description cluster — InternalDescription + Markdown + useTermWiki)
 - odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
@@ -443,6 +544,7 @@ contributing_nodes:
 - odd-platform ts react-component:TermDetails
 - odd-platform java service service:TermServiceImpl
 - odd-platform java DatasetController controller-class:DatasetController  # batch W — column-level XSS read-side surface
+- odd-platform java notification.sender class:SlackNotificationSender  # batch Y — 6th XSS surface, cross-channel Slack mrkdwn render
 terminal_side_effect:
   side_effect_class: db-write
   description: UPDATE data_entity SET internal_description = ? — stored verbatim, no sanitisation
@@ -897,6 +999,7 @@ related_features:
 - F-025  # batch V 4th XSS surface (Query Examples)
 - F-026  # batch V 5th XSS surface (Lookup Table reference data)
 - F-027  # batch V family-adjacent (link URL javascript: scheme + filename CRLF injection)
+- F-009  # batch Y 6th XSS surface — Slack mrkdwn-injection via AlertChunkPojo.description at SlackNotificationSender
 related_probes: null
 probe_verifications:
 - probe_id: P-007

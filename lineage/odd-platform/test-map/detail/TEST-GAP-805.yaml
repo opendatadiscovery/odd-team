@@ -1,0 +1,72 @@
+gap_id: TEST-GAP-805
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java notification.sender class:EmailNotificationSender"
+pillars_affected: [P-07]
+surfaced_by:
+  - "EmailNotificationSender.md:bugs_limitations_corner_cases.[5] MEDIUM (MimeMessageHelper construction does NOT specify charset)"
+  - "EmailNotificationSender.md:doc_drift_findings (live-doc charset caveat naming `JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8` workaround)"
+behaviour: |-
+  **HIGH — MimeMessageHelper constructed WITHOUT charset; non-ASCII alert content mangled on containerised deployments.** `EmailNotificationSender.java:47` constructs `new MimeMessageHelper(mimeMessage)` (1-arg constructor) — defaulting to the JVM's default charset. Spring's `MimeMessageHelper` offers 2-arg `(mimeMessage, encoding)` and 3-arg constructors that take an encoding string; **neither is used**.
+
+  **Containerised-deployment impact**:
+  - Minimal Linux containers (alpine, distroless, slim variants) ship with `LANG=C` / `LC_ALL=C` by default — the JVM picks up US-ASCII as the default charset.
+  - On such a deployment, an alert payload containing non-ASCII characters (e.g. a data entity name `bestellungen_2024` is fine, but `customers_de_2024_§3_§4` or a Russian / Japanese / Korean / Chinese / Arabic dataset name) is **mangled in the email body**: non-ASCII bytes become `?` or U+FFFD replacement characters.
+  - The live doc documents the workaround: set `JAVA_TOOL_OPTIONS=-Dfile.encoding=UTF-8` — but this is a JVM-level workaround that affects **every** charset-sensitive code path in the platform, not just notifications. Operators have no per-notification-charset knob.
+
+  **The fix is one line** (`new MimeMessageHelper(mimeMessage, StandardCharsets.UTF_8.name())`) — but the absence of this is silent: a developer testing on a Mac (UTF-8 default) sees the bug only when deploying to alpine. The bug surfaces in operator-facing emails, in the recipient's inbox, at a time when the alert content matters most.
+
+  **Why HIGH** (sidecar rates MEDIUM):
+  - The bug is **silent on developer machines** (most have UTF-8 defaults).
+  - The bug is **active in containerised deployments** (the most common production deployment shape).
+  - The bug affects **operator-facing communications** — emails read at incident time.
+  - Fix is one line; cost of not fixing is operator-readability of every alert containing non-ASCII data entity attributes.
+
+  **Compares to TEST-GAP-456** (RuntimeException bypass): TEST-GAP-456 covers the exception-handling asymmetry; this gap covers the charset-handling asymmetry. Both are silent-on-developer-machine code-side defects in `EmailNotificationSender`.
+
+  **Test gap shape**: regression-pin asserting that the rendered email body preserves non-ASCII characters when the JVM default charset is non-UTF-8. PINS the current vulnerability; pairs with REFACTOR-NNN setting UTF-8 explicitly.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/sender/EmailNotificationSenderCharsetUnsetRegressionPinTest.java"
+  name: "send_nonASCIIEntityName_renderedBodyManglesCharacters_pinsCharsetUnsetVulnerability"
+evidence:
+  - "EmailNotificationSender.md says (bugs_limitations_corner_cases.[5]): 'MimeMessageHelper construction does NOT specify charset — line 47 new MimeMessageHelper(mimeMessage) (1-arg constructor) defaults to the JVM default charset. Spring MimeMessageHelper offers a 2-arg (mimeMessage, encoding) and 3-arg constructors that take an encoding string; neither is used. Result: a JVM started without -Dfile.encoding=UTF-8 (e.g. a containerised deployment that did not set JAVA_TOOL_OPTIONS) renders non-ASCII alert content (e.g. data entity names with international characters) in whatever the platform default charset is — usually US-ASCII on minimal Linux containers, mangling the body. Live doc captures the JAVA_TOOL_OPTIONS workaround but does not point at this code line as the origin.' — severity MEDIUM"
+  - "Verified at primary source: EmailNotificationSender.java:47 (the 1-arg MimeMessageHelper construction)"
+  - "WebFetch https://docs.opendatadiscovery.org/features/active-platform-features/notifications 2026-05-20 status 200 — live-doc charset caveat (JAVA_TOOL_OPTIONS workaround)"
+cross_references:
+  - "TEST-GAP-456 (sister — EmailNotificationSender RuntimeException bypass; same code-file silent-on-developer-machine class)"
+  - "TEST-GAP-174 (sister — Email per-recipient silent partial delivery; same code-file family)"
+  - "REFACTOR-NNN (proposed, one-line fix): change `new MimeMessageHelper(mimeMessage)` to `new MimeMessageHelper(mimeMessage, StandardCharsets.UTF_8.name())` at EmailNotificationSender.java:47"
+  - "DOC-GAP-NNN (proposed): live `/features/active-platform-features/notifications#email-channel` should explicitly cite the code line as the origin of the charset workaround"
+  - "concepts.yaml: `email-mime-message-helper-no-charset` invariant — F-009 email-channel quirks"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery"]
+proposed_action: |-
+  Add `EmailNotificationSenderCharsetUnsetRegressionPinTest`. Unit test with custom JVM-charset simulation:
+
+  1. `send_nonASCIIEntityName_renderedBodyManglesCharacters_pinsCharsetUnsetVulnerability` —
+     - Simulate a JVM with US-ASCII default (run the test with `-Dfile.encoding=US-ASCII` via `@SystemProperty` or fork a child process).
+     - Build an `AlertNotificationMessage` with `dataEntity.name="customers_de_2024_§3_§4"` and a Cyrillic data source name `"клиенты_снежинка"`.
+     - Stub `JavaMailSender.send(...)` capturing the MimeMessage.
+     - Invoke `emailSender.send(message)`.
+     - Extract the body bytes (NOT the rendered String).
+     - Assert the body bytes do NOT include the UTF-8 encoded sequence for `§` (0xC2 0xA7) or the Cyrillic characters.
+     - Assert the body bytes contain `?` or `0x3F` substitution markers.
+     - PINS the current mangling behaviour on non-UTF-8 JVM defaults.
+
+  2. `send_nonASCIIEntityName_withJVMUTF8Default_renderedBodyPreservesCharacters_pinsWorkaroundEfficacy` —
+     - Same setup but with `-Dfile.encoding=UTF-8`.
+     - Assert the body bytes include the correct UTF-8 sequences for the non-ASCII characters.
+     - PINS the JAVA_TOOL_OPTIONS workaround.
+
+  3. `send_nonASCIIEntityName_withExplicitUTF8Charset_renderedBodyPreservesCharacters_confirmsFixDirection` — (UPDATE once REFACTOR-NNN lands)
+     - After REFACTOR-NNN: simulate US-ASCII JVM default, but the MimeMessageHelper is constructed with explicit UTF-8.
+     - Assert the body bytes include the correct UTF-8 sequences.
+     - CONFIRMS the fix's effectiveness — the charset workaround is no longer JVM-wide-required.
+
+  Pair with REFACTOR-NNN (one-line fix) and DOC-GAP-NNN (live doc clarification).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. No prior TEST-GAP pins the charset-unset code line. The sidecar's doc_drift_findings reference the live-doc JAVA_TOOL_OPTIONS workaround but no prior coverage anchors it to EmailNotificationSender.java:47. No contradiction.
+batch: 2026-05-20-Y
+feature_id: F-009

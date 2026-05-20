@@ -1,0 +1,326 @@
+name: |-
+  Exception-type asymmetry between notification senders — STRENGTHENED batch Y with primary source at EmailNotificationSender lines 58-60 + sibling silence at Slack/Webhook + seam root cause at PostgresWALMessageProcessor
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+description: |-
+  STRENGTHENS the existing exception-type-asymmetry-notification-senders
+  invariant (batch K) by PRIMARY-SOURCE pinning the contract-violation site
+  at EmailNotificationSender.java:58-60 (the RuntimeException wrap) via
+  the batch-Y EmailNotificationSender file-analyser sidecar AND
+  cross-confirming the symmetric well-behaved behaviour at the two HTTP
+  channel siblings (SlackNotificationSender, WebhookNotificationSender)
+  via their batch-Y sidecars AND root-causing the architectural pattern
+  at the seam (PostgresWALMessageProcessor batch Y).
+
+  The batch-K invariant identified the SYMPTOM (email RuntimeException
+  bypasses dispatcher's per-sender catch). Batch Y provides:
+    - PRIMARY SOURCE at EmailNotificationSender (THE contract violator)
+    - SYMMETRIC CONFIRMATION at SlackNotificationSender + WebhookNotificationSender
+      (THE well-behaved siblings)
+    - SEAM ROOT CAUSE at PostgresWALMessageProcessor (the architectural
+      pattern that makes the bypass possible)
+    - LATENT EXTENSION findings (the JSON-serialise path in Slack +
+      Webhook is also a latent RuntimeException leak)
+
+  THE PRIMARY-SOURCE EVIDENCE — EmailNotificationSender batch Y:
+
+    EmailNotificationSender.java:58-60 (the contract-violation site):
+      } catch (MessagingException | TemplateException | IOException e) {
+          throw new RuntimeException(e);
+      }
+    The wrap is RuntimeException — NOT NotificationSenderException. The
+    raw RuntimeException is unchecked; the catch site at
+    AlertNotificationMessageProcessor.java:31 catches ONLY
+    NotificationSenderException (checked); the RuntimeException bypasses
+    and propagates upward, aborting the per-sender loop mid-fan-out.
+
+    Verified by reading EmailNotificationSender.java:1-87 end-to-end at
+    batch Y. The RuntimeException is the ONLY non-NotificationSenderException
+    path out of send(). No other sender in the codebase performs this
+    wrap.
+
+  THE SYMMETRIC CONFIRMATION — SlackNotificationSender batch Y:
+
+    SlackNotificationSender.java:48 — delegates entirely to
+    AbstractNotificationSender.sendAndValidate (the parent at
+    AbstractNotificationSender.java:16-30). The parent at lines 22-29:
+      } catch (IOException e) {
+          throw new NotificationSenderException(...);
+      }
+      if (response.statusCode() != HttpStatus.OK.value()) {
+          throw new NotificationSenderException(...);
+      }
+    Both failure paths wrap as NotificationSenderException. CONTRACT-
+    COMPLIANT.
+
+    LATENT extension (SlackNotificationSender.java:62-66 — the
+    serializePayload helper):
+      try {
+          return objectMapper.writeValueAsString(payload);
+      } catch (JsonProcessingException e) {
+          throw new IllegalArgumentException(e);
+      }
+    IllegalArgumentException is a RuntimeException. If Jackson
+    serialisation ever throws (currently unreachable because
+    AlertNotificationMessage is Jackson-clean), the IllegalArgumentException
+    bypasses the dispatcher's catch identically to the email path. The
+    Slack sender has the same latent hazard. Severity LOW because
+    currently unreachable.
+
+  THE SYMMETRIC CONFIRMATION — WebhookNotificationSender batch Y:
+
+    WebhookNotificationSender.java:18-23 — also delegates to
+    AbstractNotificationSender.sendAndValidate. CONTRACT-COMPLIANT for
+    the IOException + non-200 paths.
+
+    LATENT extension (WebhookNotificationSender.java:22 +
+    JSONSerDeUtils.java:62-64):
+      WebhookNotificationSender.java:22 calls JSONSerDeUtils.serializeJson(message).
+      JSONSerDeUtils.java:62-64:
+        } catch (JsonProcessingException e) {
+            throw new RuntimeException(e);
+        }
+      The wrap is raw RuntimeException — IDENTICAL to the email path.
+      Currently unreachable (AlertNotificationMessage is Jackson-clean)
+      but STRUCTURALLY VIOLATES the contract.
+
+    Severity LOW because currently unreachable, but the latent hazard is
+    structurally identical to the email path's runtime bypass.
+
+  THE SEAM ROOT CAUSE — PostgresWALMessageProcessor batch Y:
+
+    PostgresWALMessageProcessor.java:6 (the seam contract):
+      void process(final DecodedWALMessage message) throws InterruptedException;
+    The seam declares ONLY InterruptedException. Any wider exception
+    type from the implementor is UNDECLARED. The implementor
+    (AlertNotificationMessageProcessor) handles per-sender failures via
+    catch (NotificationSenderException e) — but cannot declare that on
+    the seam because the seam's narrow throws clause forbids it. The
+    seam's narrow shape PRECLUDES expressing "the implementor may throw
+    sender-class exceptions; please handle them" — every wider exception
+    leaks out of process() into the subscriber's generic catch
+    (Exception e) at NotificationSubscriber.java:90 and triggers the
+    poison-replay loop.
+
+    The architectural root cause: a seam shape designed for one
+    caller-impl pair (NotificationSubscriber + AlertNotificationMessageProcessor)
+    with narrow throws clause means the implementor's wider runtime
+    exception surface is invisible at the interface level; a maintainer
+    reading PostgresWALMessageProcessor.java alone cannot know that
+    RuntimeException is a real path through the seam.
+
+  THE 4-PART PICTURE — refined from batch-K's 1-part:
+
+    Part 1 (batch K — original capture):
+      EmailNotificationSender wraps as RuntimeException; dispatcher's
+      catch only handles NotificationSenderException; email RuntimeException
+      bypasses and aborts fan-out for OTHER channels still in the iteration.
+
+    Part 2 (batch Y EmailNotificationSender — PRIMARY SOURCE pin):
+      The wrap site at EmailNotificationSender.java:58-60 is the SOLE
+      runtime-contract-violator in the sender hierarchy. No other sender
+      does this at runtime.
+
+    Part 3 (batch Y SlackNotificationSender + WebhookNotificationSender —
+      LATENT EXTENSIONS):
+      Both HTTP senders have a LATENT runtime-contract-violation via
+      Jackson-serialise paths (IllegalArgumentException for Slack +
+      RuntimeException for Webhook). Currently unreachable, but the
+      structural pattern is present. A future change that breaks
+      Jackson-clean status of AlertNotificationMessage activates these
+      latent extensions.
+
+    Part 4 (batch Y PostgresWALMessageProcessor — SEAM ROOT CAUSE):
+      The seam's narrow throws clause (only InterruptedException) is the
+      structural reason the implementor cannot declare a wider runtime
+      exception surface at the interface level. A maintainer adding a
+      new sender or extending an existing sender cannot consult the
+      seam to learn the exception contract — they must read each
+      sender impl AND the parent AbstractNotificationSender AND the
+      dispatcher's catch to know what's expected.
+
+  CROSS-LINK TO BATCH-Y CROSS-CHANNEL-RUNTIMEEXCEPTION-ABORT INVARIANT:
+
+    The new batch-Y invariant
+    cross-channel-runtimeexception-abort-void-return-root-cause-at-postgreswalmessageprocessor
+    captures the same seam-shape root cause from a different angle (void
+    return + narrow throws = no failure-signal channel). The two
+    invariants are siblings:
+      - THIS invariant (exception-type-asymmetry — STRENGTHENED batch Y):
+        focuses on the IMPL-SIDE contract violation + symmetric behaviour
+        across senders + the LATENT extensions
+      - cross-channel-runtimeexception-abort: focuses on the BLAST-RADIUS
+        consequence (one sender's RuntimeException aborts other channels
+        for the same message)
+    Both invariants should be cited when the F-009 exception-class
+    architecture is discussed.
+
+  THE MITIGATION COMPARISON — three options, all primary-sourced:
+
+    Option A (closes the symptom; ignores latent extensions and root
+              cause): broaden AlertNotificationMessageProcessor.java:31
+      from catch (NotificationSenderException e) to catch (Exception e).
+      ONE-line fix. Closes the email-bypass leak (Part 1 + 2) AND the
+      latent Jackson-serialise leaks (Part 3) simultaneously. Does NOT
+      change the seam (Part 4). Best near-term fix; recommended.
+
+    Option B (closes the root cause; requires architectural change):
+      widen PostgresWALMessageProcessor's throws clause to declare a
+      wider runtime exception type (or wrap all implementors' runtime
+      exceptions at the seam-boundary into a typed result). Requires
+      coordinated change at the implementor + caller. Closes Part 4 but
+      leaves Parts 1-3 unaddressed unless paired with Option A.
+
+    Option C (fixes the contract violator at source; ignores siblings
+              and root cause):
+      change EmailNotificationSender.java:58-60 to wrap as
+      NotificationSenderException instead of RuntimeException. Closes
+      Part 1 + 2 only. Leaves Part 3 (latent extensions) live and Part
+      4 (root cause) live.
+
+  SEVERITY remains HIGH (inherited from batch-K); this strengthening
+  does not change severity but provides the 4-part architectural
+  picture and primary-sources the latent extensions and seam root cause.
+nodes:
+  - odd-platform java notification.sender class:EmailNotificationSender
+  - odd-platform java notification.sender class:SlackNotificationSender
+  - odd-platform java notification.sender class:WebhookNotificationSender
+  - odd-platform java notification.processor class:PostgresWALMessageProcessor
+  - odd-platform java service service:NotificationsDispatcher
+contributors:
+  - |-
+    EmailNotificationSender batch Y (STRENGTHENING — PRIMARY SOURCE for
+    Part 2 contract violator pin):
+    bugs_limitations_corner_cases.[0] (RuntimeException wraps
+    MessagingException | TemplateException | IOException — bypasses
+    dispatcher's per-sender catch — severity HIGH; primary source) +
+    invariants[RuntimeException wraps MessagingException | TemplateException
+    | IOException — NOT NotificationSenderException]
+  - |-
+    SlackNotificationSender batch Y (STRENGTHENING — Part 3 latent
+    extension at JSON-serialise):
+    tests_coverage_semantic.uncovered_behaviours[JsonProcessingException
+    inside serializePayload thrown as IllegalArgumentException at line 64;
+    this is a RuntimeException, also bypasses the dispatcher's per-sender
+    catch (same severity class as the email-RuntimeException-bypass)]
+  - |-
+    WebhookNotificationSender batch Y (STRENGTHENING — Part 3 latent
+    extension at JSONSerDeUtils):
+    bugs_limitations_corner_cases.[9] (JsonProcessingException → raw
+    RuntimeException — latent contract violation; severity LOW because
+    currently unreachable but structurally present)
+  - |-
+    PostgresWALMessageProcessor batch Y (STRENGTHENING — Part 4 seam root
+    cause):
+    bugs_limitations_corner_cases.[1] (the interface does NOT declare any
+    wider exception type than InterruptedException — severity HIGH; root
+    cause of the symptom)
+  - |-
+    NotificationsDispatcher batch K (existing reference — Part 1 original
+    capture)
+evidence:
+  - |-
+    EmailNotificationSender.md:bugs_limitations_corner_cases.[0]
+    (RuntimeException wraps ... bypasses dispatcher's per-sender catch —
+    severity HIGH) — evidence: EmailNotificationSender.java:58-60 +
+    AlertNotificationMessageProcessor.java:31 + AbstractNotificationSender.java:23,27
+  - |-
+    EmailNotificationSender.md:invariants[RuntimeException wrap — NOT
+    NotificationSenderException; asymmetric to Slack + Webhook senders]
+  - |-
+    SlackNotificationSender.md:tests_coverage_semantic.uncovered_behaviours[JsonProcessingException
+    inside serializePayload thrown as IllegalArgumentException]
+  - |-
+    WebhookNotificationSender.md:bugs_limitations_corner_cases.[9]
+    (JsonProcessingException → raw RuntimeException — latent contract
+    violation)
+  - |-
+    PostgresWALMessageProcessor.md:bugs_limitations_corner_cases.[1]
+    (narrow throws clause — undeclared RuntimeException surface; root cause)
+  - |-
+    NotificationsDispatcher.md:bugs_limitations_corner_cases.[0]
+    (existing batch-K Part 1 capture)
+  - |-
+    Cross-references existing invariant
+    cross-channel-runtimeexception-abort-void-return-root-cause-at-postgreswalmessageprocessor
+    (batch Y — sibling Part 4 root cause from a different angle)
+axes_present:
+  - services
+  - notification.sender
+  - notification.processor
+triangulation_count: 4
+cross_batch: true
+cross_batch_refs:
+  - batch-K (NotificationsDispatcher — Part 1 original capture)
+  - batch-Y (EmailNotificationSender + SlackNotificationSender + WebhookNotificationSender + PostgresWALMessageProcessor — Parts 2 + 3 + 4, THIS STRENGTHENING)
+severity: HIGH
+severity_dim: durability
+mitigations_unimplemented:
+  - |-
+    OPTION A (recommended near-term): broaden AlertNotificationMessageProcessor.java:31
+    from catch (NotificationSenderException e) to catch (Exception e).
+    One-line fix; closes the email-bypass leak AND the latent
+    Jackson-serialise leaks in Slack + Webhook simultaneously. Does NOT
+    change the seam contract.
+  - |-
+    OPTION B (architectural fix at the seam): widen
+    PostgresWALMessageProcessor's throws clause OR change the return
+    type to a typed ProcessResult that wraps per-sender outcomes (see
+    sibling invariant cross-channel-runtimeexception-abort-void-return-root-cause-at-postgreswalmessageprocessor
+    for full discussion).
+  - |-
+    OPTION C (fix the contract violator at source): change
+    EmailNotificationSender.java:58-60 to throw NotificationSenderException
+    instead of RuntimeException. Closes the email-side symptom but leaves
+    the latent extensions and the seam root cause unaddressed.
+  - |-
+    Add a unit test that injects a throwing sender (RuntimeException +
+    NotificationSenderException + IllegalArgumentException variants) and
+    asserts the next sender in the list still receives the message —
+    pins the contract independent of the chosen mitigation option.
+  - |-
+    Document the per-sender failure isolation contract on the live
+    /features/active-platform-features/notifications page — operators
+    choosing channel order should know the current asymmetry and the
+    planned mitigation.
+notes: |-
+  STRENGTHENS the batch-K exception-type-asymmetry-notification-senders
+  invariant from a 1-part finding to a 4-part architectural picture:
+    Part 1 — original symptom (batch K dispatcher capture)
+    Part 2 — primary source (batch Y EmailNotificationSender pin)
+    Part 3 — latent extensions (batch Y Slack + Webhook Jackson paths)
+    Part 4 — seam root cause (batch Y PostgresWALMessageProcessor)
+
+  The 4-part picture explains why Option A (one-line dispatcher broaden)
+  is the recommended near-term fix even though Option B (widening the
+  seam) is architecturally cleaner: Option A simultaneously closes the
+  CURRENT symptom (email bypass) AND the LATENT extensions (Slack +
+  Webhook Jackson paths) AND avoids the cost of changing the seam.
+  Option B should be considered as part of a broader F-009 architectural
+  refactor that also addresses poison-skip expressivity.
+
+  Cross-cutting connections:
+    - Pairs with the sibling batch-Y invariant
+      cross-channel-runtimeexception-abort-void-return-root-cause-at-postgreswalmessageprocessor
+      — both findings root-cause to the same seam shape from different
+      angles (this invariant: impl-side contract; sibling: blast-radius
+      consequence)
+    - Pairs with the batch-Y poison-message-wal-replay-loop strengthening
+      — the same seam shape's narrow-throws problem produces BOTH the
+      symptoms (email-bypass for the per-sender catch + translator-bypass
+      for the dispatcher-level catch)
+    - Cross-cutting case-law: "narrow SPI seam designed for one
+      caller-impl pair plus silent-narrowing of impl's actual exception
+      surface plus widening latent through dependencies (Jackson here,
+      Freemarker for email)" — a class of architectural drift that
+      compounds over time as new dependencies are added
+
+  Three DOC-NNN candidates flow from this strengthening:
+    (a) Document the per-sender failure isolation contract on the live
+        notifications page; operators choosing channel order should know
+    (b) Document the recommended fix path (Option A near-term, Option B
+        long-term) as a future-evolution ADR
+    (c) Cross-link from the F-009 feature-flow's exception-type-asymmetry
+        drift facet to this strengthened invariant

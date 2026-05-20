@@ -1,0 +1,257 @@
+name: |-
+  Slack mrkdwn-injection via AlertChunkPojo.description — ingestion-supplied strings rendered as Slack markdownText without escaping (batch Y, F-004 6-SURFACE STRENGTHEN)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20Y — surfaced by primary-source
+  examination of SlackNotificationSender + SlackMessageGenerator + MrkdwnUtils.
+  AlertChunkPojo.description strings (ingestion-side populated by upstream
+  collectors) flow into Slack as markdownText without any escaping; Slack's
+  mrkdwn dialect interprets @channel / @here / <!channel> / <!here> /
+  <url|text> / *bold* / _italic_ as markup, enabling an upstream actor to
+  broadcast-notify the Slack workspace's entire channel membership.
+
+  THIS INVARIANT STRENGTHENS THE F-004 STORED-XSS FAMILY FROM 4-SURFACE
+  TO 5-SURFACE (web Markdown rendering) AND SURFACES A 6TH SURFACE TYPE
+  (Slack mrkdwn rendering) — F-004 now spans:
+
+    Surface 1 — data-entity internal_description (batch F primary source)
+                 → rendered via rehype-raw without rehype-sanitize → web XSS
+    Surface 2 — dataset-field internal_description (batch R primary source)
+                 → rendered via rehype-raw without rehype-sanitize → web XSS
+    Surface 3 — term definition (batch U primary source)
+                 → rendered via rehype-raw without rehype-sanitize → web XSS
+    Surface 4 — query-example definition + query (batch V primary source)
+                 → rendered via rehype-raw without rehype-sanitize → web XSS
+    Surface 5 — AlertChunkPojo.description (batch Y — THIS INVARIANT)
+                 → rendered via Slack markdownText without escaping →
+                   Slack mrkdwn injection (different dialect, different
+                   exploit primitives — @channel broadcast, fake-link,
+                   hidden mention)
+
+  The 5th surface is DIFFERENT from surfaces 1-4 in:
+    - rendering destination (Slack channel, not a web browser)
+    - markup dialect (Slack mrkdwn — flavour of Markdown-but-not — vs
+      web HTML via rehype-raw)
+    - exploit primitives (workspace-broadcast / fake-link / hidden
+      mention vs arbitrary HTML+JS execution)
+    - audience (Slack workspace members vs platform UI viewers)
+  But IDENTICAL in:
+    - the no-platform-side-escaping root cause
+    - the operator-supplied-content trust-passthrough posture
+    - the broad blast radius (operator-curated content reaches every
+      configured recipient with no scoping)
+
+  THE PRIMARY-SOURCE EVIDENCE — SlackNotificationSender batch Y:
+
+    SlackNotificationSender.java:41:
+      messageBuilder.generateAlertMessage(message)
+    delegates to SlackMessageGenerator.generateAlertMessage(...).
+
+    SlackMessageGenerator.java:77, 95-101 (the description block):
+      buildDescriptionsFromChunks(alertChunks) is the last 3 chunks
+      (sorted by created_at descending, .limit(3)). Each chunk's
+      .description string is rendered as Slack markdownText(description)
+      with NO sanitisation. The MrkdwnUtils class at MrkdwnUtils.java:1-14
+      defines helpers bold(...) and buildLink(...) for PLATFORM-controlled
+      strings; there is NO MrkdwnUtils.escape(...) for ingestion-supplied
+      strings.
+
+    AlertChunkPojo.description provenance:
+      Populated by AlertActionResolverImpl.java:162 from upstream
+      collector-supplied content — dbt test description strings, Great
+      Expectations expectation result strings, schema-diff narratives.
+      The trust posture toward upstream collectors is unbounded
+      (ingestion accepts arbitrary descriptions; the platform does not
+      cap length, does not validate, does not allowlist).
+
+  THE EXPLOIT PRIMITIVES — Slack-specific:
+
+    1. @channel broadcast (line 77 rendering):
+       An attacker-controlled description like
+         "Test failed: @channel <!channel> URGENT please respond"
+       renders in Slack as a NOTIFICATION-INVOKING broadcast that buzzes
+       every member's desktop + phone client. Effective denial-of-attention
+       for an operator team monitoring the channel.
+
+    2. @here broadcast:
+       Same as above but notifies online members only. Less invasive
+       but still effective for medium-cardinality channels.
+
+    3. Fake-link injection:
+       A description like
+         "Test failed: <https://attacker.example.com|click here for details>"
+       renders in Slack as a clickable hyperlink with attacker-controlled
+       text and attacker-controlled URL. The Slack-side UI does not show
+       the underlying URL on hover (depending on workspace settings); a
+       user clicking through could land on a phishing page styled as the
+       ODD Platform.
+
+    4. Hidden mention:
+       A description with
+         "<@USLACK_BOT_USER_ID>"
+       renders as a mention of a specific Slack user (resolving the ID
+       to a username) — useful for personalised phishing or
+       spear-targeting an operator.
+
+  THE READ-COLLABORATIVE COMPOUNDING (same shape as F-004 surfaces 1-4):
+
+    The Slack channel is a SHARED workspace surface — every operator on
+    the channel sees every message. There is no per-recipient routing
+    (the broader cross-channel exposure invariant covers this). One
+    poisoned description text reaches every channel member; the blast
+    radius equals the channel membership.
+
+  CROSS-LINK TO THE READ-COLLABORATIVE POSTURE:
+
+    The platform's read-collaborative architecture (REFACTOR-024 + 203 +
+    201) means every authenticated user can enumerate the catalog. An
+    attacker with INGESTION-side capability (operator-token, S2S API key,
+    or compromised collector) can author arbitrary AlertChunkPojo
+    descriptions without further privilege escalation. The fan-out to
+    Slack is then automatic.
+
+  CROSS-LINK TO THE F-009 DRIFT FACETS:
+
+    F-009 already catalogues drift facets:
+      - mrkdwn_injection_via_alert_description (this invariant is the
+        primary-source pin for it)
+      - pii_passthrough_to_every_channel (sibling — same root cause
+        but at the entity-name / data-source-name field level)
+      - unconditional_broadcast_no_routing (sibling — the structural
+        reason a Slack-side mitigation cannot scope by owner)
+
+  THE MITIGATION COMPARED TO F-004 SURFACES 1-4:
+
+    For surfaces 1-4 (web Markdown), the fix is to add rehype-sanitize
+    to the shared Markdown.tsx wrapper — a single fix point covers all
+    four surfaces.
+
+    For surface 5 (Slack mrkdwn), the fix is structurally similar but at
+    a different layer: add MrkdwnUtils.escape(...) that escapes mrkdwn
+    metacharacters (e.g. backslash-escape the *, _, <, @, the !, etc.)
+    AND apply it at SlackMessageGenerator.java:77 (the single description
+    rendering site) BEFORE markdownText(...).
+
+    The fix is SMALL but the absence is HIGH-impact: @channel injection
+    is an immediate operational risk for any deployment with operator-
+    facing Slack alerts AND non-trusted upstream collectors (which is
+    the common case).
+
+  SEVERITY HIGH — same as the F-004 web-Markdown surfaces; the dialect
+  differs but the structural shape (operator-supplied content rendered
+  unsanitised in a shared surface) is identical.
+nodes:
+  - odd-platform java notification.sender class:SlackNotificationSender
+  - odd-platform java service service:NotificationsDispatcher
+contributors:
+  - |-
+    SlackNotificationSender batch Y (PRIMARY SOURCE — Slack mrkdwn injection):
+    bugs_limitations_corner_cases.[2] (Mrkdwn injection via
+    AlertChunkPojo.description — severity HIGH) +
+    security.known_security_gaps.[0] (Mrkdwn injection — primary security
+    finding) +
+    tests_coverage_semantic.uncovered_behaviours[alertChunks.description
+    containing mrkdwn metacharacters] +
+    docs_link_semantic.doc_drift_findings (live doc is SILENT on mrkdwn
+    injection)
+  - |-
+    NotificationsDispatcher batch K (existing reference — the dispatcher
+    is the caller; the SlackMessageGenerator instance is constructed
+    upstream; the dispatcher's responsibility ends at process() invocation)
+evidence:
+  - |-
+    SlackNotificationSender.md:bugs_limitations_corner_cases.[2]
+    (Mrkdwn injection via AlertChunkPojo.description — severity HIGH) —
+    evidence: SlackNotificationSender.java:41 +
+    SlackMessageGenerator.java:77, 95-101 + MrkdwnUtils.java:1-14
+    (no escape function) + AlertActionResolverImpl.java:162
+    (ingestion-side population)
+  - |-
+    SlackNotificationSender.md:security.known_security_gaps.[0]
+    (Mrkdwn injection via AlertChunkPojo.description — severity HIGH)
+  - |-
+    SlackNotificationSender.md:docs_link_semantic.doc_drift_findings
+    (live doc silent on mrkdwn injection)
+  - |-
+    Cross-references existing master invariant
+    markdown-rendering-via-rehype-raw-without-rehype-sanitize-stored-xss-surface-on-internal-description
+    (F-004 master — web Markdown surfaces 1-4)
+  - |-
+    Cross-references existing invariant
+    f-004-stored-xss-extends-to-query-example-fourth-markdown-surface
+    (batch V — most-recent F-004 strengthen)
+axes_present:
+  - services
+  - config_prefixes
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-F (F-004 surface 1 primary source — data-entity internal_description)
+  - batch-R (F-004 surface 2 primary source — dataset-field internal_description)
+  - batch-U (F-004 surface 3 primary source — term definition)
+  - batch-V (F-004 surface 4 primary source — query-example definition + query)
+  - batch-Y (F-004 surface 5 primary source — Slack mrkdwn via AlertChunkPojo, THIS INVARIANT)
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Add MrkdwnUtils.escape(String input) that backslash-escapes Slack
+    mrkdwn metacharacters: * _ ~ < > @ ! and the special <!channel> /
+    <!here> / <@USER_ID> token forms. Apply at
+    SlackMessageGenerator.java:77 immediately before
+    markdownText(escapedDescription).
+  - |-
+    Document the Slack mrkdwn injection risk on the live
+    /features/active-platform-features/notifications page with operator-
+    facing mitigation guidance — pending the code fix, operators can
+    deploy a Slack-side workspace policy that strips @channel from bot
+    posts (most Slack workspace admins have this control via Apps &
+    integrations).
+  - |-
+    Add a unit test at SlackMessageGenerator level that asserts a
+    description containing @channel / @here / <url|text> tokens is
+    delivered verbatim NOT (after the fix) escaped — pins the contract.
+  - |-
+    Cross-cutting case-law extension: extend the F-004 master mitigation
+    "add rehype-sanitize to Markdown.tsx" to also include "add
+    MrkdwnUtils.escape to SlackMessageGenerator" — the two fixes close
+    the operator-supplied-content surface end-to-end across web AND
+    Slack rendering.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20Y from the
+  SlackNotificationSender sidecar's primary-source evidence at the
+  SlackMessageGenerator rendering site. STRENGTHENS the F-004 stored-XSS
+  family from 4-surface (web Markdown) to 5-surface coverage with the
+  Slack mrkdwn destination added as a new dialect.
+
+  THE 5-SURFACE F-004 PICTURE — refined:
+    Surface 1-4 share rehype-raw-without-rehype-sanitize at Markdown.tsx
+    (single fix-point; the closure invariant
+    no-rehype-sanitize-anywhere-in-odd-platform-ui-systemic covers them).
+    Surface 5 uses a DIFFERENT rendering pipeline (Slack mrkdwn via
+    SlackMessageGenerator.markdownText) — the closure invariant does NOT
+    extend to it; a SECOND fix-point (MrkdwnUtils.escape) is required
+    to close surface 5.
+
+  Cross-cutting connections:
+    - Extends the F-004 master invariant
+      markdown-rendering-via-rehype-raw-without-rehype-sanitize-stored-xss-surface-on-internal-description
+      to a 5th surface with a different rendering dialect
+    - Pairs with the cross-tenant-exposure-one-url-per-deployment
+      invariant (also batch Y) — the broadcast blast radius is set by
+      the channel membership, which is determined by the operator's
+      single Slack URL choice
+    - Pairs with the unconditional broadcast / pii passthrough drift
+      class — operator-supplied content reaches every recipient with no
+      scoping
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Document the Slack mrkdwn injection risk on the live
+        notifications page (or fix the code at SlackMessageGenerator.java:77)
+    (b) Extend the F-004 master documentation to name surface 5 — the
+        operator-trust posture document needs a non-web rendering
+        destination example

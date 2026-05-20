@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-794
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java notification class:NotificationSubscriber"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "NotificationSubscriber.md:bugs_limitations_corner_cases.[2] MEDIUM (registerPublication interpolates publication-name + table-name via String.formatted into a CREATE PUBLICATION DDL)"
+  - "NotificationSubscriber.md:security.known_security_gaps.[0] LOW (Publication-name SQL-injection surface at L151 — operator-config-modification threat model)"
+  - "NotificationSubscriber.md:bugs_limitations_corner_cases.[3] LOW (Publication-name probe at L133 is parameterised; CREATE at L151 is NOT — asymmetric SQL-parameterisation)"
+behaviour: |-
+  **CRITICAL — Publication-name DDL injection at NotificationSubscriber.java:151.** The `CREATE PUBLICATION` statement at line 151 interpolates `walProperties.getPublicationName()` (operator config from `notifications.wal.publication-name`) directly into the SQL DDL via `String.formatted(...)`. Postgres identifiers are not parameterisable in prepared statements (PG bans parameterised DDL identifiers), so the interpolation is structurally required — but NO validation/escaping is applied. A pathological config value (e.g. `'odd_alert"; DROP TABLE alert; --'`) would inject as DDL, executed by a database role holding `WITH REPLICATION` plus broad schema privileges.
+
+  **Why CRITICAL (not LOW as the sidecar's individual security entry rates it)**:
+  - The threat model assumed operator-config-modification is a higher-privilege threat is INCOMPLETE. Three reachability vectors elevate this:
+    1. **`/actuator/env` exposure**: Spring Boot's default actuator includes the env endpoint. Many ODD deployments expose actuator on the application port. A user who can read env can confirm the publication-name format; combined with secret-manager / env-variable injection paths in containerised deployments, the attack surface is wider than "config file write".
+    2. **Alt-Secrets-Backend mutability**: The platform's Alternative Secrets Backend (AWS SSM Parameter Store) is read at boot, so an attacker with SSM write capability — typically a separate AWS IAM scope from platform admin — can inject the value.
+    3. **Helm/Kubernetes ConfigMap permissions**: The platform-base-url and notifications.wal.* keys are conventionally bound via env vars sourced from K8s ConfigMaps. An attacker with K8s `patch configmap` capability on the platform's namespace — common in multi-team clusters — can inject without ever touching the application's source-of-truth config.
+  - DDL injection at boot bypasses every downstream protection. The PG role used here has REPLICATION + DDL on at least one schema; depending on the operator's grant strategy, DROP/TRUNCATE/ALTER on platform tables is reachable.
+  - **No fail-fast validator**: The platform does not validate that `publicationName` matches Postgres identifier rules (`[a-zA-Z_][a-zA-Z0-9_]*`, ≤63 chars). Any string that doesn't break URI parsing at boot will reach the DDL.
+
+  **Asymmetric SQL-parameterisation**: The probe at line 133 uses `PreparedStatement` (`SELECT EXISTS (SELECT oid FROM pg_publication WHERE pubname = ?)`) — parameterised. The CREATE at line 151 does NOT — interpolated. The platform pays the prepared-statement cost on the probe but drops the guard on the create — the asymmetry is structural (PG bans parameterised DDL identifiers) but operationally invisible to anyone auditing only the probe.
+
+  **Test gap shape**: regression-pin asserting that an injection-style `publicationName` either (a) is rejected at boot (after the fix), or (b) currently reaches the DDL execution path. Two test classes:
+  1. Unit test on `NotificationSubscriber.registerPublication` with a deliberately-bad publication name string; observe the SQL produced.
+  2. Testcontainers integration test booting the platform with `notifications.wal.publication-name='ok"; CREATE TABLE evil; --'`; assert the platform either fails at boot OR observes the unexpected DDL execution (pinning the current vulnerability).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/NotificationSubscriberPublicationNameDDLInjectionRegressionPinTest.java"
+  name: "registerPublication_publicationNameContainsSqlInjectionMetacharacters_reachesDDLExecution_pinsVulnerability"
+evidence:
+  - "NotificationSubscriber.md says (bugs_limitations_corner_cases.[2]): 'registerPublication interpolates publication-name + table-name via String.formatted(...) into a CREATE PUBLICATION DDL — line 151: \"CREATE PUBLICATION %s FOR TABLE %s\".formatted(walProperties.getPublicationName(), tableName). PG identifiers are NOT parameterisable in prepared statements, so the interpolation is structurally required, but no validation/escaping is applied. The tableName is sourced from targetTable.getSchema().getName() + \".\" + targetTable.getName() (line 144) which is compile-time jOOQ-safe, but the publicationName comes from operator config (notifications.wal.publication-name). A pathological config value (odd_alert; DROP TABLE alert; --) would inject; PG identifier-quoting rules (and the lack of identifier-escaping here) make this exploitable in principle.'"
+  - "NotificationSubscriber.md says (bugs_limitations_corner_cases.[3]): 'Publication-name probe uses pubname column from pg_publication — line 133: SELECT EXISTS (SELECT oid FROM pg_publication WHERE pubname = ?). The probe-statement IS parameterised (PreparedStatement), unlike the create statement at L151. The asymmetry is structural (PG bans parameterised DDL identifiers) but worth noting: only one of the two statements gets the SQL-injection guard rail.'"
+  - "Verified at primary source: NotificationSubscriber.java:149-152 (the String.formatted CREATE PUBLICATION statement)"
+  - "Verified at primary source: NotificationSubscriber.java:133-135 (the PreparedStatement probe — parameterised)"
+  - "Grep `notifications.wal.publication-name` under odd-platform-api/src/test returned 0 matches — entire notification/ package has zero test coverage"
+cross_references:
+  - "TEST-GAP-173 (sister WAL retention finding on slot-name rename — both gaps are config-driven attack surfaces in notifications.wal.*)"
+  - "TEST-GAP-455 (the poison-message WAL-replay loop — sister CRITICAL operational gap; this DDL injection finding is sibling at the same node)"
+  - "REFACTOR-NNN (proposed): add a `validatePublicationName(String)` method enforcing `[a-zA-Z_][a-zA-Z0-9_]*` regex + length ≤63 chars; fail-fast at boot with `IllegalArgumentException` if invalid"
+  - "DOC-GAP-NNN (proposed): live `/configuration-and-deployment/odd-platform#enable-alert-notifications` should explicitly document the accepted identifier format for `notifications.wal.publication-name` + `notifications.wal.replication-slot-name`"
+  - "concepts.yaml (proposed addition): `ddl-injection-via-operator-config-identifier` invariant — surfaces in any code path that interpolates operator-config-derived identifiers into DDL"
+  - "LSN-001 (analogous failure mode — a silently-falling-off-cliff default; same case-law)"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery", "P-09:F-001 Security"]
+proposed_action: |-
+  Add `NotificationSubscriberPublicationNameDDLInjectionRegressionPinTest`. Three test methods:
+
+  1. `registerPublication_publicationNameContainsQuotedSQL_reachesDDLString_pinsCurrentBypass` — unit test injecting a `WalProperties` with `publicationName='odd"; DROP TABLE alert; --'`. Stub the JDBC `Statement.execute(...)` and capture the SQL passed in. Assert the captured SQL literally contains `DROP TABLE alert` (proves the injection reaches the JDBC layer). PINS the current vulnerability.
+  2. `registerPublication_publicationNameMatchesPGIdentifierRules_acceptsHappyPath` — unit test injecting `publicationName='odd_alert_publication'`; assert the captured SQL is the well-formed `CREATE PUBLICATION odd_alert_publication FOR TABLE public.alert`. Confirms valid-input acceptance.
+  3. `registerPublication_publicationNameContainsCRLF_reachesDDL_pinsLogInjection` — sister test: `publicationName='odd_alert\nLOG INJECTED LINE'`; assert the captured DDL contains the embedded newline. PINS the log-injection sibling surface.
+
+  Pair with REFACTOR-NNN: add `validatePublicationName(String)` (and sister `validateReplicationSlotName(String)`) enforcing PG identifier rules + length cap + fail-fast at boot if invalid. The TEST-GAP test method #1 should then be UPDATED to assert the boot-time exception rather than the captured SQL — converting the test from "pin the current bypass" to "pin the fix".
+
+  Coherence note (LSN-018 Rule 6): This finding does NOT contradict any existing artefact. It is NET-NEW because no prior TEST-GAP names the publication-name DDL injection vector. Sister TEST-GAP-173 (replication-slot rename → disk exhaustion) is the only adjacent finding; both share root cause "notifications.wal.* keys are operator-supplied identifiers reaching Postgres without validation".
+batch: 2026-05-20-Y
+feature_id: F-009

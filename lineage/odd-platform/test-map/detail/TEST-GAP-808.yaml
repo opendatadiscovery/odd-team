@@ -1,0 +1,64 @@
+gap_id: TEST-GAP-808
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java notification.sender class:SlackNotificationSender"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "SlackNotificationSender.md:bugs_limitations_corner_cases.[1] MEDIUM (No URI scheme allowlist / no SSRF guard at sender layer)"
+  - "SlackNotificationSender.md:security.known_security_gaps.[1] MEDIUM (No URI scheme allowlist on the webhook URI)"
+behaviour: |-
+  **MEDIUM — Slack webhook URI accepts ANY syntactically-valid URI; no SSRF defence at sender layer.** The `slackWebhookUrl` is bound at `NotificationConfiguration.java:77` as raw `java.net.URI` via `@Value`, with only an empty-string check at L81-83. `SlackNotificationSender` accepts the URI verbatim and invokes `HttpRequest.newBuilder().uri(slackWebhookUrl)` at line 44 — no scheme allowlist (operator can configure `file:` or `gopher:` and only the JDK HttpClient rejection at send-time prevents the request), no host allowlist (operator can configure `http://169.254.169.254/...` for AWS instance-metadata, `http://localhost:NNNN/...` for loopback services, or any RFC1918 address), no certificate-pinning to `hooks.slack.com`.
+
+  **Sister to TEST-GAP-807** at the same root cause (`NotificationConfiguration` validates only `.isEmpty()`). The two together cover the F-009 outbound-URL surface.
+
+  **Distinct Slack-specific risk**: an attacker with config-modification capability who knows the platform's network neighbourhood can use the Slack notification path as an SSRF vector targeting AWS IMDS or internal services. Unlike the Webhook channel where the operator is "trusted to set a URL pointing at their own receiver", the Slack channel is conventionally pointed at `hooks.slack.com` — an attacker substituting an internal URL is silently unmasked at boot (the Slack channel's behavioural contract assumes "URL = Slack workspace webhook", the URL substitution attack subverts this assumption).
+
+  **No certificate-pinning to `hooks.slack.com`**: combined with the no-allowlist gap, a man-in-the-middle attacker with TLS-intercept capability could intercept the alert payload + the webhook URL (which is itself a bearer credential).
+
+  **Test gap shape**: regression-pin asserting boot-time acceptance of RFC1918 / loopback / `file://` URIs at `notifications.receivers.slack.url`. PINS the current vulnerability; pairs with REFACTOR-NNN applying the same allowlist as TEST-GAP-807's fix.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/sender/SlackNotificationSenderNoSchemeAllowlistRegressionPinTest.java"
+  name: "configBootsWithRFC1918SlackURL_beanInstantiatedSuccessfully_pinsSSRFSurface"
+evidence:
+  - "SlackNotificationSender.md says (bugs_limitations_corner_cases.[1]): 'No URI scheme allowlist / no SSRF guard at sender layer (inherited from boot-side gap). The slackWebhookUrl is bound at NotificationConfiguration.java:77 as raw java.net.URI via @Value, with only an empty-string check at L81-83. THIS class accepts the URI verbatim and invokes HttpRequest.newBuilder().uri(slackWebhookUrl) at line 44 — no scheme allowlist (operator can configure file: or gopher: and only the JDK HttpClient rejection at send-time prevents the request), no host allowlist (operator can configure http://169.254.169.254/... for AWS instance-metadata, http://localhost:NNNN/... for loopback services, or any RFC1918 address), no certificate-pinning to hooks.slack.com.' — severity MEDIUM"
+  - "SlackNotificationSender.md says (security.known_security_gaps.[1]): 'No URI scheme allowlist on the webhook URI — file: / gopher: / RFC1918 / loopback / IMDS URIs accepted at boot; SSRF surface via operator-controlled config.' — severity MEDIUM"
+  - "Verified at primary source: SlackNotificationSender.java:27,30-37,44 (no validation of slackWebhookUrl beyond accepting it as-is) + NotificationConfiguration.java:75-86,77,81-83"
+cross_references:
+  - "TEST-GAP-807 (sister — Webhook URL no allowlist; SAME root cause at WebhookNotificationSender; both must be fixed together)"
+  - "TEST-GAP-799 (sister — Webhook no HMAC)"
+  - "REFACTOR-NNN (proposed): add `notifications.receivers.{slack|webhook}.url-allowlist-schemes` (default `https`) at boot; for Slack specifically, recommend default to `hooks.slack.com` host allowlist with operator opt-out"
+  - "REFACTOR-NNN (proposed): add TLS certificate-pinning option for `hooks.slack.com` (defence-in-depth against MITM attacks)"
+  - "DOC-GAP-NNN (proposed): live doc should recommend network isolation + URL validation"
+  - "concepts.yaml: `outbound-webhook-no-uri-validation` invariant — F-009 covers both Slack + Webhook channels"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery", "P-09:F-001 Security"]
+proposed_action: |-
+  Add `SlackNotificationSenderNoSchemeAllowlistRegressionPinTest`. Boot-test parametrised cases analogous to TEST-GAP-807:
+
+  1. `configBootsWithRFC1918SlackURL_beanInstantiatedSuccessfully_pinsSSRFSurface` —
+     - `@SpringBootTest` with property `notifications.receivers.slack.url=http://10.0.0.5/internal`.
+     - Assert context loads, `SlackNotificationSender` bean exists.
+     - PINS RFC1918 acceptance.
+
+  2. `configBootsWithFileSchemeSlackURL_beanInstantiated_pinsLocalFileScheme` —
+     - Property `notifications.receivers.slack.url=file:///etc/passwd`.
+     - Assert context loads.
+
+  3. `configBootsWithIMDSSlackURL_beanInstantiated_pinsAWSCredentialExfiltrationSurface` —
+     - Property `notifications.receivers.slack.url=http://169.254.169.254/latest/meta-data/`.
+     - Assert context loads.
+
+  4. `configBootsWithHooksSlackComURL_beanInstantiated_pinsHappyPath` —
+     - Property `notifications.receivers.slack.url=https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXX`.
+     - Assert context loads, bean exists, no warning.
+
+  5. `configBootsWithRFC1918SlackURL_failsValidation_confirmsFixDirection` — (UPDATE once REFACTOR-NNN lands)
+     - After REFACTOR-NNN: assert context fails to load.
+
+  Pair with REFACTOR-NNN (boot-time validation; applies to both Slack + Webhook URL keys) and DOC-GAP-NNN.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW; sister of TEST-GAP-807. No contradiction.
+batch: 2026-05-20-Y
+feature_id: F-009

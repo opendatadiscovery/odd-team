@@ -1647,3 +1647,60 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - Coherence-sweep candidates: 40k (R) → 41k (S; linear growth).
 - F-001 + F-003 merge candidate still maintainer-pending.
 
+
+## Batch 2026-05-20-T — Discovery cross-cuts: Activity + AppInfo + DataQuality + Directory + Relationship (4/5; new branch feature/ontology-finalize-2026-05-20)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20` (NEW working branch off merged main; PR #144 closed rev-2 sprint)
+- **Substrate**: 106 prior + 4 new = **110 total**; 1 deferred (RelationshipController socket-errored; P-02 first sidecar still pending).
+- **Theme**: Discovery cross-cuts — first batch of the finalization sprint (themes T-ZA queued)
+
+### Sidecars added (4)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `ActivityController` | P-07+P-09 | F-021 read surface is this 2-method class with **ZERO authorization wiring**. F-006 audit-silence reaches **10-SIDECAR** at this layer. The 27-vs-20 enum mismatch (batch R) RECONCILED via WebFetch 200: "20 named + 7 categorical = 27" is the actual taxonomy split. |
+| `AppInfoController` | P-09 | **REFACTOR-185 NOW 19-SIDECAR at controller-class layer** (symmetric with batch-O IngestionDataEntitiesFilter two-axis pattern). expose-mode-hide-provider contract paired with IdentityController. NEW finding: Overview.tsx silently mis-gates OwnerAssociation card on auth.type typo. /api/appInfo is a DISABLED-mode fingerprint surface NOT documented or warned. |
+| `DataQualityController` | P-04 | **P-04's FIRST direct sidecar**. CRITICAL NEW: /api/datasets/{id}/sla returns **image/png** but live doc claims DataSetSLAReport JSON — operator/BI-engineer falls-off-the-cliff drift. Sibling endpoint /sla_report is the actual JSON one. 5 implicit ADRs. REFACTOR-024 cross-owner family +4 invocation sites. |
+| `DirectoryController` | P-01 | **NEW page-vs-count predicate divergence at level 4** — listByDatasourceAndType (HOLLOW+soft-delete only) vs countByDatasourceAndType (full getDataEntityDefaultConditions including EXCLUDE_FROM_SEARCH). STRUCTURALLY analogous to REFACTOR-425 but at a DISTINCT repository site (ReactiveDataEntityRepositoryImpl). Reflection property leak (infrastructure-revealing ODDRN extractor). |
+| `RelationshipController` | DEFERRED | Socket-errored ~5min in (agent abdc2d561a8d84ac2; 0 tokens). DEFERRED to next-batch retry. **P-02 Data Modelling first-sidecar still pending** — needs retry. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 296 → **314 concepts** | +18 new (4 entities + 9 invariants + 3 operations + 2 canon-candidates) + 3 strengthened + 1 SUPERSEDED (DirectoryController v0.1.0 STALE). F-006 audit-silence now 10-SIDECAR; REFACTOR-185 19-SIDECAR; REFACTOR-024 28-sidecar. |
+| adr-archaeologist (ADRs) | 156 → **160** | +4 (157-160) + 3 strengthened. Activity-event-enum-as-2-tier-taxonomy ADR; Expose-mode-hide-provider ADR; SLA-as-PNG-for-BI ADR; Existence-check-includes-soft-deleted ADR. |
+| adr-archaeologist (scopes) | 466 → **470** | +4 (467-470) + 2 strengthened. REFACTOR-185 now **23-SIDECAR** triangulated; REFACTOR-024 cross-owner family now ~30 read endpoints. NEW HIGH: SLA-PNG-vs-JSON live-doc drift. NEW MEDIUM: page-vs-count predicate at ReactiveDataEntityRepositoryImpl (REFACTOR-425 sibling). |
+| doc-gap-finder | 197 → **202** | +5 (198-202) + 2 META strengthened (DOC-082 now 33-sidecar; DOC-083 now 9-sidecar bifurcated into PRESENCE-axis + VISIBILITY-axis). DOC-198 HIGH (SLA PNG/JSON drift); DOC-199 HIGH (AppInfo fingerprint); DOC-200 HIGH (Activity no-authz cross-owner); DOC-201 MEDIUM; DOC-202 MEDIUM. |
+| test-coverage-mapper | 701 → **714 indexed** | +13 (705-717) + 3 strengthened. **3 NEW CRITICAL** (TEST-705 SLA PNG-vs-JSON drift; TEST-706 ActivityController cross-owner audit no-authz; TEST-717 cross-cutting 4-controller HTTP-tier integration absence). 117 CRITICAL total. |
+| feature-flow-builder | 21 → **23 features** (+2 new, +4 extended) | **F-022 / P-04:F-001 Per-Dataset DQ Tests & SLA** (NEW — P-04's FIRST anchored feature). **F-023 / P-01:F-007 Directory Browsing** (NEW — distinct from F-001 search + F-003 popular ranking). F-021 + F-011 + F-008 + F-007 extended. 43 new drift facets — second-largest batch extension after batch R. |
+
+### Coverage state after batch T
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 110 | **27.8%** (was 26.8%) |
+| Effective coverage | 209 | **52.9%** (was 50.1%) |
+| Features discovered | 23 (was 21) | +2 NEW (F-022 P-04 DQ + F-023 P-01 Directory) |
+| Total test-gaps | 714 indexed | 117 CRITICAL (was 114) |
+
+### Cross-batch triangulation deltas
+
+- **P-04 Data Quality pillar now anchored** (was entirely empty) — F-022 first feature minted
+- **F-006 audit-silence pattern**: 9-SIDECAR → **10-SIDECAR** (ActivityController controller-class layer added)
+- **REFACTOR-185 DISABLED-mode bypass**: 19 → **23-SIDECAR** triangulated (AppInfoController + ActivityController + DirectoryController + DataQualityController all reachable in DISABLED)
+- **REFACTOR-024 cross-owner enumeration family**: 24 → **28 invocation sites / 9 feature surfaces**
+- **REFACTOR-425 page-vs-count divergence**: now confirmed at TWO repository sites (was DataSource-only; now also ReactiveDataEntityRepositoryImpl)
+- **LSN-001 pattern (insecure default)**: AppInfo `/api/appInfo` adds a 4th surface (the DISABLED fingerprint)
+- **DOC-082 META (DISABLED bypass operator-trap)**: 29 → **33-sidecar**; 8th tier (cross-cutting endpoints) added
+- **DOC-083 META (no-audit-log)**: 8 → **9-sidecar**, BIFURCATED into PRESENCE-axis + VISIBILITY-axis (Activity feed itself is cross-owner unscoped)
+
+### Follow-ups (logged, not blocking)
+
+- **RelationshipController DEFERRED** — socket-errored. P-02 Data Modelling first-sidecar still pending; next-batch retry candidate (priority HIGH for closing P-02).
+- 2 broken-yaml from batches Q+P+S persist; 3 from earlier. Quarantined.
+- 207 detail-without-index in refactoring-scopes; 82 in implicit-adrs; 22+4 in doc-gaps.
+- Coherence-sweep candidates: 41k (S) → 43k (T; linear growth).
+- F-001 + F-003 merge candidate still maintainer-pending.
+

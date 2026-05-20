@@ -1,0 +1,47 @@
+gap_id: TEST-GAP-709
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataQualityController controller-class:DataQualityController"
+pillars_affected: [P-04, P-09]
+surfaced_by:
+  - "DataQualityController.md:implicit_adrs.[0] (Owner-scoping is asymmetrical — 4 GETs unscoped, lone PUT owner-scoped via DATA_ENTITY)"
+  - "DataQualityController.md:bugs_limitations_corner_cases.[0] (4 read endpoints return per-dataset DQ data to any authenticated user — severity MEDIUM)"
+  - "DataQualityController.md:security.known_security_gaps.[0] (NEW invocation sites of REFACTOR-024 cross-owner-read family — severity MEDIUM)"
+  - "DataQualityController.md:tests_coverage_semantic.uncovered_behaviours.[5] (setDataQATestSeverity authorization regression untested)"
+  - "DataQualityController.md:tests_coverage_semantic.uncovered_behaviours.[6] (Owner-scoping regression for the four read endpoints — no test)"
+behaviour: |-
+  **DataQualityController EXEMPLIFIES THE READ-COLLABORATIVE-ASYMMETRIC OWNER-SCOPING PATTERN: 4 GETs unscoped, lone PUT owner-scoped via `DATA_ENTITY` AuthorizationManagerType.** The four read endpoints (`getDataEntityDataQATests` GET `/api/datasets/{id}/dataqatests`, `getDatasetTestReport` GET `/api/datasets/{id}/test_report`, `getSLA` GET `/api/datasets/{id}/sla`, `getDatasetSLAReport` GET `/api/datasets/{id}/sla_report`) have NO `@PreAuthorize` and NO entry in `SecurityConstants.SECURITY_RULES`; they fall through to `.pathMatchers('/**').authenticated()` (`AuthorizationCustomizer.java:29-30`). The downstream `ReactiveDataQualityRepositoryImpl` queries apply only `dataset.HOLLOW.isFalse()` + `dataQualityTest.STATUS.ne(DELETED)` filters (`ReactiveDataQualityRepositoryImpl.java:46-58, 62-84, 105-126`) — no owner join, no principal-derived predicate. The PUT `setDataQATestSeverity` IS registered with `DATA_ENTITY` resource type + `DATASET_TEST_RUN_SET_SEVERITY` permission (`SecurityConstants.java:243-246`) — owner-scoped through the AuthorizationManagerType.DATA_ENTITY wiring. **The asymmetry is intentional** (per DataQualityController.md implicit_adrs[0] — "a maintainer made the deliberate decision to add ONE rule and not five"), consistent with ADR-CANDIDATE-003 (read-collaborative posture), and corroborates the platform-wide REFACTOR-024 family. **It is also undocumented**: the live `data-quality.md` + `sla-statuses.md` + `test-results-import.md` pages (all WebFetched 2026-05-20 status 200) make NO statement about who can view per-dataset DQ tests, test reports, or SLA colour, NOR about why setting severity requires ownership. **No test pins this**: the only DQ tests are calculator-tier (`SLAColourTest`, `SLAReportTest`) and repository-tier (`DataQualityRepositoryImplTest`, `ReactiveDataQualityRunsRepositoryTest`); no test invokes the WebFlux controller boundary, asserts the four-reads-unscoped behaviour, the one-PUT-owner-scoped behaviour, or the 403 path on the PUT for a non-owner caller. A future regression that adds `@PreAuthorize` to the four reads OR removes the PUT gate would slip through.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/sla/SLAColourTest.java (calculator-tier — does NOT exercise authorization)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/sla/SLAReportTest.java (calculator-tier — does NOT exercise authorization)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataQualityControllerOwnerScopingAsymmetryTest.java"
+  name: "fourReadEndpointsAreUnscopedAcrossOwners_AND_setSeverityRequiresOwnerAssociation_pinsReadCollaborativeAsymmetricPosture"
+evidence:
+  - "DataQualityController.md says (implicit_adrs.[0]): 'Owner-scoping is asymmetrical: read endpoints are unscoped (cross-owner), the lone mutation is owner-scoped via DATA_ENTITY AuthorizationManagerType. The four GETs have NO SecurityRule entry. The PUT setDataQATestSeverity IS registered with the DATA_ENTITY resource type plus the DATASET_TEST_RUN_SET_SEVERITY permission. This is the read-collaborative posture (ADR-CANDIDATE-003) applied symmetrically — reads cross-owner, mutations owner-scoped. The intent_anchor is the SecurityRule registration itself: a maintainer made the deliberate decision to add ONE rule (the PUT) and not five.'"
+  - "DataQualityController.md says (bugs_limitations_corner_cases.[0]): 'getDataEntityDataQATests, getDatasetTestReport, getSLA, getDatasetSLAReport return per-dataset DQ data to any authenticated user — no Permission gate, no owner check, no admin restriction. The four read endpoints have NO entry in SecurityConstants.SECURITY_RULES; the path falls through to .pathMatchers(/**).authenticated(). The downstream ReactiveDataQualityRepositoryImpl queries apply only dataset.HOLLOW.isFalse() and dataQualityTest.STATUS.ne(DELETED) filters — no owner join, no principal-derived predicate.' severity: MEDIUM"
+  - "DataQualityController.md says (security.authorization_assertions.[0]): 'new SecurityRule(DATA_ENTITY, new PathPatternParserServerWebExchangeMatcher(/api/datasets/{data_entity_id}/dataqatests/{dataqa_test_id}/severity, PUT), DATASET_TEST_RUN_SET_SEVERITY) — the lone gate, owner-scoped via the DATA_ENTITY AuthorizationManagerType.'"
+  - "Source: DataQualityController.java:25-48, 63-68 + SecurityConstants.java:98-355 + SecurityConstants.java:243-246 (the lone gate) + AuthorizationCustomizer.java:24-30 + ReactiveDataQualityRepositoryImpl.java:46-58, 62-84, 105-126 + WebFetch data-quality + sla-statuses + test-results-import pages 2026-05-20 status 200 (silent on access control)"
+  - "Grep verification: find odd-platform-api/src/test -name 'DataQualityController*' returned no matches 2026-05-20"
+cross_references:
+  - "REFACTOR-024 (cross-owner read posture family — DQ controller adds 4 fresh invocation vectors)"
+  - "ADR-CANDIDATE-003 (read-collaborative catalog posture)"
+  - "ADR-CANDIDATE-114 (read-cardinality split — per-entity reads unscoped, mutations owner-scoped)"
+  - "F-007 (P-04:F-001 Test Results Import) — reads expose the imported data"
+  - "F-012 (P-04:F-002 Quality Dashboard) — sibling read surface"
+  - "F-013 (P-04:F-003 Dataset Quality Statuses / SLA)"
+  - "TEST-GAP-705 (SLA PNG-vs-JSON drift sister gap; both target the same controller boundary)"
+  - "DOC-GAP-NNN (data-quality.md silent on access control; logged separately by doc-gap-finder)"
+related_features: [F-007, F-012, F-013]
+related_pillar_features: ["P-04:F-001", "P-04:F-002", "P-04:F-003"]
+proposed_action: |-
+  Add `DataQualityControllerOwnerScopingAsymmetryTest` with FIVE regression-pin methods covering the asymmetric posture exhaustively:
+  (a) `getDataEntityDataQATests_callerHasNoOwnerOfDataset_returns200WithFullList_pinsReadCrossOwner`: seed Owner A owning dataset D, with N DQ tests; authenticate as Owner B (no association with D); WebTestClient GET `/api/datasets/{D}/dataqatests`; assert 200 + N entities. Pins read-cross-owner.
+  (b) `getDatasetTestReport_callerHasNoOwner_returns200WithCountsAggregate`: same fixture; GET `/api/datasets/{D}/test_report`; assert 200 + valid DataSetTestReport. Pins read-cross-owner.
+  (c) `getSLA_callerHasNoOwner_returns200WithPng`: same fixture; GET `/api/datasets/{D}/sla`; assert 200 + Content-Type starts with image/png. Pins read-cross-owner.
+  (d) `getDatasetSLAReport_callerHasNoOwner_returns200WithJson`: same fixture; GET `/api/datasets/{D}/sla_report`; assert 200 + JSON DataSetSLAReport. Pins read-cross-owner.
+  (e) `setDataQATestSeverity_callerHasNoOwner_returns403_pinsLoneOwnerScopedGate`: same fixture; WebTestClient (authenticated as Owner B) PUT `/api/datasets/{D}/dataqatests/{T}/severity` with `{"severity": "CRITICAL"}`; assert response is 403 Forbidden. Then re-authenticate as Owner A; PUT same payload; assert 200. Pins the owner-scoped PUT.
+  Add `// REGRESSION-PIN — DataQualityController encodes the read-collaborative-asymmetric posture: 4 reads unscoped, 1 PUT owner-scoped. The asymmetry is intentional per implicit_adrs[0] (a maintainer made the deliberate decision to add ONE rule and not five). If the maintainer ever tightens reads to require ownership, methods (a)–(d) flip and the test should be updated. If the maintainer ever removes the PUT gate, method (e)'s 403 assertion catches it. Pair with DOC-GAP-NNN that adds the access-control statement at data-quality.md.` comment block.
+batch: 2026-05-20-T
+feature_id: F-013

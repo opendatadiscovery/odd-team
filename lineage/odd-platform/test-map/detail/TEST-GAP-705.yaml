@@ -1,0 +1,39 @@
+gap_id: TEST-GAP-705
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataQualityController controller-class:DataQualityController"
+pillars_affected: [P-04, P-11]
+surfaced_by:
+  - "DataQualityController.md:docs_link_semantic.doc_drift_findings.[0] (DOC DRIFT — response shape mismatch on GET /api/datasets/{id}/sla — severity HIGH)"
+  - "DataQualityController.md:bugs_limitations_corner_cases.[1] (`getSLA` response Content-Type is `image/png`, NOT JSON as the live doc implies — severity HIGH)"
+  - "DataQualityController.md:tests_coverage_semantic.uncovered_behaviours.[1] (`getSLA` content-negotiation and PNG-byte integrity)"
+  - "DataQualityController.md:tests_coverage_semantic.uncovered_behaviours.[8] (SLA endpoint Content-Type semantics under `Accept` header negotiation)"
+behaviour: |-
+  **SLA PNG-vs-JSON ENDPOINT CONFUSION — operator follows our guide off a cliff.** The live `documentation/docs/data-quality/sla-statuses.md` page (WebFetched 2026-05-20 status 200) tells operators: "Each dataset exposes its current aggregate SLA at: `GET https://{platform_url}/api/datasets/{data_entity_id}/sla` … The endpoint returns a `DataSetSLAReport` that includes: The dataset's current SLA colour — GREEN, YELLOW, or RED. A breakdown of severity weights — counts of tests at each severity. A slaRef self-link." A BI engineer following the docs verbatim writes a JSON-parsing client pointed at `/api/datasets/{id}/sla`. **The code returns `image/png`** (`DataQualityController.java:42-48` + `openapi.yaml:1880-1894` + `CachingByteArraySLAResourceResolver.java:44-49` mapping `GREEN → sla/sla_green.png`, etc.). The client receives a 1-2KB PNG byte stream and fails to deserialise. The JSON endpoint they want is `/api/datasets/{id}/sla_report` (sibling, operationId `getDatasetSLAReport`, `openapi.yaml:1898-1913`). The docs conflate the two endpoints. **No test catches this**: `find <odd-platform> -path '*test*' -name 'DataQualityController*'` returned no matches (verified 2026-05-20); the only SLA tests are calculator-tier (`SLAColourTest`, `SLAReportTest`) which exercise the algorithm in isolation, not the HTTP boundary. A regression that flips the content-type to JSON (or accidentally aligns the code with the docs) would silently break every BI dashboard that embeds the PNG; a regression that breaks the PNG-byte path would silently leave the docs lying. The test pins BOTH paths simultaneously: assert `/sla` returns `image/png` with non-zero byte body matching the expected `sla_{red,yellow,green}.png` classpath bytes; assert `/sla_report` returns `application/json` matching the `DataSetSLAReport` schema. Future maintainers fixing the doc-vs-code drift will need to decide which side moves; the test forces the decision rather than letting one side silently drift.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataQualityControllerSLAEndpointContractTest.java"
+  name: "getSLA_returnsImagePngBody_AND_getSLAReport_returnsApplicationJson_pinsCurrentTwoEndpointContract"
+evidence:
+  - "DataQualityController.md says (docs_link_semantic.doc_drift_findings.[0]): 'The live sla-statuses.md page (WebFetched 2026-05-20 status 200) describes the response as a `DataSetSLAReport` that includes: SLA colour (GREEN/YELLOW/RED), severity weights breakdown, and a slaRef self-link — implying a JSON object. The OpenAPI spec (openapi.yaml:1880-1894) and the controller code (DataQualityController.java:42-48, CachingByteArraySLAResourceResolver.java:30-54) return image/png — a hardcoded sla_{red,yellow,green}.png byte-array. … a BI engineer following the docs verbatim will receive a PNG body and fail to deserialise it as JSON.' severity: HIGH"
+  - "DataQualityController.md says (bugs_limitations_corner_cases.[1]): 'Per the live doc-vs-code analysis, this is the canonical operator follows our guide off a cliff scenario for the BI-tool audience the page explicitly targets.' severity: HIGH"
+  - "DataQualityController.md says (tests_coverage_semantic.uncovered_behaviours.[1]): 'getSLA content-negotiation and PNG-byte integrity — no test asserts the response Content-Type is image/png, that the body bytes match the expected sla_{red,yellow,green}.png classpath bytes for a given SLA outcome, or that the byte length is non-zero'"
+  - "Source: DataQualityController.java:42-48 (PNG return path) + DataQualityController.java:63-68 (JSON return path) + CachingByteArraySLAResourceResolver.java:44-49 (the GREEN/YELLOW/RED → PNG mapping) + openapi.yaml:1880-1913 (two endpoints, two content-types) + WebFetch sla-statuses.md 2026-05-20 status 200 (claims DataSetSLAReport JSON shape for the PNG endpoint)"
+  - "Grep verification: `find <odd-platform>/odd-platform-api/src/test -name 'DataQualityController*'` returned no matches 2026-05-20; no WebFluxTest, no slice test, no integration test exists for any DataQualityController endpoint"
+cross_references:
+  - "concepts.yaml — sla-calculator, sla-colour, dataset-test-report"
+  - "LSN-001 (attachment-ephemeral-default — same class of 'operator follows our guide off a cliff' failure mode)"
+  - "LSN-002 (minio-region-unset — same class)"
+  - "DOC-GAP-NNN (doc-side rewrite required; logged separately by doc-gap-finder)"
+  - "F-013 (P-04:F-003 Dataset Quality Statuses / SLA)"
+related_features: [F-013]
+related_pillar_features: ["P-04:F-003"]
+proposed_action: |-
+  Add `DataQualityControllerSLAEndpointContractTest` extending `@WebFluxTest(DataQualityController.class)` (or full `@SpringBootTest` for end-to-end content-negotiation). Three pinning methods:
+  (a) `getSLA_returnsImagePng_withYellowBody_whenDatasetHasZeroTests`: seed a dataset with 0 DQ tests; WebTestClient GET `/api/datasets/{id}/sla`; assert Content-Type starts with `image/png`; assert response body bytes equal the bytes of classpath resource `sla/sla_yellow.png` (the zero-tests default per SLACalculator.java:81-83); assert content-length > 0.
+  (b) `getSLAReport_returnsApplicationJson_withDataSetSLAReportSchema`: WebTestClient GET `/api/datasets/{id}/sla_report`; assert Content-Type is `application/json`; assert body deserialises into `DataSetSLAReport` carrying `slaColour`, `severityWeights`, `slaRef`.
+  (c) `getSLA_withAcceptApplicationJson_returnsNotAcceptable_or406`: WebTestClient GET `/api/datasets/{id}/sla` with header `Accept: application/json`; assert the response is 406 (per OpenAPI declaring image/png only) — pins the content-negotiation behaviour so a regression that adds JSON support without retiring the PNG path is caught.
+  Add a `// REGRESSION-PIN — Documentation drift LSN: the live sla-statuses.md page conflates /sla (PNG) and /sla_report (JSON); the code returns PNG at /sla. This test pins the current contract. If the maintainer decides to MOVE the JSON to /sla (deprecating the PNG), this test breaks and the maintainer must coordinate the doc fix.` comment block. Pair with DOC-GAP-NNN that fixes the doc-side conflation.
+batch: 2026-05-20-T
+feature_id: F-013

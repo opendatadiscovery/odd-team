@@ -1,0 +1,79 @@
+name: Default-MAJOR severity fallback silently inflates SLA colour
+canonical_in_docs: false
+canonical_candidate: true
+proposed_canonical: 'Default-MAJOR severity fallback (silent SLA inflation)'
+rationale: |-
+  **NEW canonicalisation candidate, batch 2026-05-20T (DataQualityController class
+  sidecar)** — surfaces a correctness-affecting silent default in the SLA-colour
+  computation. ReactiveDataQualityRepositoryImpl.java:142-148's mapLastRunDto
+  returns DataQualityTestSeverity.MAJOR for tests with no row in the
+  DATA_QUALITY_TEST_SEVERITY table — a SILENT FALLBACK that affects the SLA
+  colour calculation without any operator-facing surface signal.
+
+  **The operator-visible consequence**: a dataset with 100 unset tests and 1
+  critical-failing test is computed AS IF every unset test were Major — the SLA
+  colour reflects 100 Major contributions + 1 Critical, NOT 1 Critical + 100
+  unset-default. The colour-mapping algorithm (SLACalculator.java:80-100) is
+  sensitive to severity distribution: 100 majors-passed + 1 critical-failed →
+  RED (at-least-one-critical-failed branch); but the operator's mental model
+  may be 'most tests are unset / low-importance; one critical failed; expect
+  Yellow'.
+
+  **The fix has two options**:
+    (a) Surface 'unset' as a distinct UI state so operators can distinguish
+        default-MAJOR contributions from operator-set MAJOR. UI sketch: in the
+        per-test row's severity badge, render MAJOR for operator-set with a
+        contrasting render for default-MAJOR (e.g. italic + tooltip 'No
+        severity set — defaulting to Major in SLA calculation'). Requires DTO
+        field addition (origin: SET | DEFAULT).
+    (b) Change the fallback to MINOR (cautious) — Yellow / Red outcomes would
+        DECREASE because unset tests would contribute Minor weight instead of
+        Major weight. The change is operator-visible immediately (SLA colours
+        flip across the catalog the day the change ships). Requires SLA-test
+        re-baseline AND a CHANGELOG note. The cautious-default choice would
+        align with the YELLOW-cautious-default-for-zero-tests behaviour
+        already in SLACalculator.java:81-83.
+
+  **Why this needs canonicalisation**: the default-MAJOR behaviour is correctness-affecting
+  AND undocumented. Live sla-statuses.md describes severities as 'operator-set —
+  the platform does not infer them' — TECHNICALLY TRUE (no inference logic; just
+  a SQL-tier fallback) but operationally misleading. An operator reading the
+  doc believes the SLA reflects only operator-set severities; in reality every
+  unset test contributes MAJOR weight silently.
+
+  Severity: MEDIUM (correctness depends on operator awareness; deployments with
+  many unset tests are most affected).
+contributing_concepts:
+- 'Data Quality Test Severity'
+- 'Dataset SLA (Green/Yellow/Red aggregate + PNG badge)'
+- 'data-quality-test'
+suggested_add_to_docs: true
+maintainer_question: |-
+  Surface 'unset' as a distinct UI state (option a — UI change), OR change the
+  default to MINOR (option b — algorithm change with operator-visible flip across
+  the catalog)? The two options have different operator-impact profiles —
+  (a) is gradual and adds operator literacy; (b) is sudden and changes SLA outcomes
+  for every deployment with unset tests. Cross-link to documentation/docs/data-quality/sla-statuses.md
+  for the doc-side fix in either case.
+status: pending-maintainer-decision
+nodes:
+- odd-platform java DataQualityController controller-class:DataQualityController
+evidence:
+- |-
+  DataQualityController.md:bugs_limitations_corner_cases.[6] — default-MAJOR fallback
+  is silent; ReactiveDataQualityRepositoryImpl.java:142-148 (the mapLastRunDto
+  fallback) + SLACalculator.java:144-149 (the algorithm treats non-MINOR / non-MAJOR
+  as CRITICAL; for the default-MAJOR case the algorithm treats the test as Major)
+- |-
+  DataQualityController.md:concepts.invariants.[4] (Severity defaults to MAJOR when
+  no explicit severity exists for a (test, dataset) pair — invariant explicit)
+- |-
+  WebFetch sla-statuses.md 2026-05-20 status 200 — verbatim 'Severities are
+  operator-set — the platform does not infer them' (technically true but
+  operationally misleading)
+notes: |-
+  This is a Type 1 canonicalisation candidate (codebase-anchored, doc-side-absent)
+  — the behaviour is real but the doc page does not describe it. Pair with the
+  data-quality-test-severity entity entry and the set-data-quality-test-severity-owner-scoped-mutation
+  operation entry; together they describe the full severity-setting flow including
+  the silent default.

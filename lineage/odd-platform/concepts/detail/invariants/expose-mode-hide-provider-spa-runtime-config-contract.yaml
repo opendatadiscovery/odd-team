@@ -1,0 +1,134 @@
+name: Expose-mode-hide-provider — SPA runtime-config contract across AppInfo + Identity
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  **NEW INVARIANT, batch 2026-05-20T (AppInfoController class sidecar)** — the
+  React SPA's runtime configuration-discovery surface consists of TWO endpoints
+  that the SPA hits early in the load sequence: GET /api/appInfo and GET /api/identity
+  (the whoami surface). Together they encode a DELIBERATE contract:
+
+    - **Expose the auth MODE**: AppInfoController returns `{projectVersion, authType}`
+      (AppInfoController.java:24-28 + components.yaml:2493-2499); the SPA needs the
+      mode value to gate UI rendering (`Overview.tsx:25-27`: `appInfo?.authType &&
+      appInfo.authType !== 'DISABLED'` gates the OwnerAssociation card).
+    - **Hide the PROVIDER**: AppInfo exposes NO OAuth provider name, NO LDAP server
+      URI, NO issuer URL, NO build SHA, NO hostname. IdentityController.whoami
+      (IdentityController.java:24-33) returns `AssociatedOwner.identity`, where the
+      Identity model has `username + permissions` — NO `provider` field. The two
+      endpoints together encode a 'expose mode, hide provider' contract.
+
+  **Why this is a real invariant**: the SPA needs ENOUGH info to render the right
+  login flow but NOT ENOUGH info for an unauthenticated network attacker to
+  fingerprint the deployment's identity-provider topology. The mode tells the SPA
+  WHICH login button to show; the provider name/URL would tell an attacker WHICH
+  OAuth or LDAP topology to attack.
+
+  **Cross-batch confirmation**: F-011's drift-class enumeration includes
+  `ui_identity_render_has_no_provider_field_positive_negative_no_leak` confirming
+  the IdentityController side is INTENTIONAL — the absence of a `provider` field
+  on the Identity DTO is a deliberate non-disclosure (NOT a missing-feature gap).
+  Combined with the AppInfo contract verified by this batch, the two-endpoint
+  pattern is a load-bearing security design.
+
+  **The contract's failure modes** (NEW catalogued by this invariant):
+    (a) Adding `provider` to the Identity DTO would BREAK the contract by leaking
+        the OAuth/LDAP topology to authenticated callers (even if not unauthenticated
+        ones — the attack surface widens to compromised authenticated principals).
+    (b) Adding host/SHA/deployment-id to AppInfo would BREAK the contract by widening
+        the fingerprinting surface beyond the (mode + version) signal it currently
+        carries.
+    (c) The contract is FRAGILE — no test asserts the absence of these fields; a
+        future contributor could add them without realising the security implication.
+        The fingerprinting surface widens silently.
+
+  **What is still leaked**: even with the contract intact, AppInfo discloses
+  `projectVersion` — enabling CVE scoping for attackers (the version tells them
+  which CVEs in the Spring Boot / WebFlux / Reactor / R2DBC / OAuth-client chains
+  apply to THIS deployment). The contract limits the leakage to (mode + version);
+  the version alone is still a fingerprinting signal under DISABLED.
+
+  Severity: MEDIUM (the contract is intentional but fragile; absence of test-side
+  enforcement means a future refactor could widen the disclosure surface silently;
+  the fingerprinting capability under DISABLED is a real attack surface).
+axes_present:
+- controllers
+nodes:
+- odd-platform java AppInfoController controller-class:AppInfoController
+- odd-platform java AppInfoController config-key-consumer:auth.type@L18
+contributors:
+- |-
+  AppInfoController.md (batch T, controller-class):
+    implicit_adrs.[2] (deliberate 'expose mode, hide provider' contract — primary
+    source for the invariant) +
+    implicit_adrs.[0] (AppInfo response intentionally exposes the active auth mode)
+    +
+    implicit_adrs.[1] (reporter-not-reactor pattern: @Value, not @ConditionalOnProperty)
+    +
+    security.data_exposure.[3] (notable NON-disclosure — AppInfo does NOT expose
+    provider name / LDAP URI / issuer URL / build SHA / hostname; Identity also has
+    no provider field; the two surfaces are deliberately aligned)
+evidence:
+- |-
+  AppInfoController.md (controller-class):implicit_adrs.[2] —
+    AppInfoController.java:24-28 (only projectVersion + authType) +
+    components.yaml:2493-2499 (AppInfo schema declares only the two fields) +
+    IdentityController.java:24-33 (whoami returns AssociatedOwner.identity →
+    Identity has username + permissions, no provider field) +
+    F-011.yaml:29 (ui_identity_render_has_no_provider_field_positive_negative_no_leak —
+    cross-batch confirmation the IdentityController side is intentional)
+- |-
+  AppInfoController.md:security.data_exposure.[3] (explicit non-disclosure
+  enumeration)
+- |-
+  Existing entity `deployment-introspection-api-appinfo` (the AppInfo endpoint
+  characterisation — this invariant captures the cross-endpoint pattern)
+- |-
+  Existing invariant `identity-wire-has-no-provider-field-not-a-provider-null-cross-mode-bleed-surface`
+  (the IdentityController side — confirms 'no provider field' is intentional)
+triangulation_count: 2
+cross_batch: true
+severity: MEDIUM
+severity_dim: security-contract-design
+mitigations_unimplemented:
+- |-
+  Document the contract — add a section to documentation/docs/configuration-and-deployment/enable-security/
+  titled 'SPA Runtime Configuration Discovery' explaining (a) AppInfo exposes auth
+  mode + project version, (b) Identity exposes username + permissions, (c) neither
+  exposes the OAuth provider name, LDAP server URI, issuer URL, build SHA, or
+  hostname, (d) operators should NOT add these fields without realising the
+  fingerprinting implication.
+- |-
+  Add an integration test asserting the AppInfo and Identity response shapes
+  contain only their currently-documented fields. The test fails CI if a future
+  PR adds a `provider` field to Identity or a `host`/`sha` field to AppInfo —
+  preventing silent disclosure-surface widening. Test scope: serialise an Identity
+  + AppInfo to JSON, assert the JSON keys are exactly the expected sets.
+- |-
+  Optional: add HTTP-level fingerprinting reduction by NOT echoing projectVersion
+  under DISABLED (the assumption being that DISABLED is dev-only; if an operator
+  ran DISABLED in production we want to minimise the fingerprinting surface a
+  network attacker can reach unauthenticated). This is a code change at
+  AppInfoController.java:25-28 — return projectVersion only if a session is
+  authenticated, or move the version field behind a separate
+  authenticated-only endpoint.
+notes: |-
+  The expose-mode-hide-provider contract is one of the clearest examples of a
+  security invariant that is NOT named in any documentation, NOT enforced by any
+  test, and NOT formalised in any ADR — but IS the design decision encoded across
+  two controllers and surfaced in the F-011 drift-class enumeration. The contract
+  is LOAD-BEARING (the SPA depends on the mode; an attacker would benefit from
+  the provider info), and FRAGILE (a future refactor could break it silently).
+
+  Recommended canonicalisation: promote to a formal ADR (ADR-145 'SPA Runtime
+  Configuration Discovery — Expose Mode, Hide Provider') AND back the ADR with
+  an integration test (per the second mitigation above). The ADR is the long-term
+  artefact; the test is the runtime guardrail.
+
+  Cross-references:
+    - Companion entity: `deployment-introspection-api-appinfo`
+    - Sibling invariant: `identity-wire-has-no-provider-field-not-a-provider-null-cross-mode-bleed-surface`
+    - Cross-batch confirmation in F-011 drift-class enumeration
+    - REFACTOR-185 (DISABLED-mode bypass — interacts with the projectVersion
+      disclosure under DISABLED)

@@ -1,0 +1,35 @@
+gap_id: TEST-GAP-713
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataQualityController controller-class:DataQualityController"
+  - "odd-platform java service service:DataQualityServiceImpl"
+pillars_affected: [P-04, P-11]
+surfaced_by:
+  - "DataQualityController.md:bugs_limitations_corner_cases.[2] (`getDataEntityDataQATests` returns 404 NotFound for a dataset that exists but has zero tests — severity MEDIUM)"
+  - "DataQualityController.md:tests_coverage_semantic.uncovered_behaviours.[4] (`getDataEntityDataQATests` empty-result path returns 404, not 200 with empty list)"
+behaviour: |-
+  **`GET /api/datasets/{id}/dataqatests` RETURNS 404 NOT FOUND FOR A DATASET THAT EXISTS BUT HAS ZERO DATA-QUALITY TESTS — instead of `200 OK` with an empty list.** `DataQualityServiceImpl.java:38-42` throws `NotFoundException` when the `getDataQualityTestOddrnsForDataset` flux is empty (the dataset has no DQ tests associated). This is an unusual REST-API shape — empty collections typically return 200 with `[]`. A UI rendering the "Test reports" tab for a dataset with no defined tests will receive 404 on the test-list call, which it must distinguish from the dataset-not-found 404 returned by sibling endpoints (`DataQualityServiceImpl.java:55-58` for `getDatasetTestReport`). The error messages differ ("Data quality tests for dataset with id %d not found" vs "Dataset {id}"), but a client doing only status-code-based handling treats them identically. The OpenAPI spec at `openapi.yaml:1932-1947` does NOT document the 404-on-empty behaviour. **No test catches this**: `find <odd-platform> -path '*test*' -name 'DataQualityController*'` returned no matches 2026-05-20; the only DQ tests (`SLAColourTest`, `SLAReportTest`, `DataQualityRepositoryImplTest`, `ReactiveDataQualityRunsRepositoryTest`) exercise the calculator/repository tier, not the HTTP boundary's empty-list shape. **Why this matters**: a regression that changes the behaviour from 404 to 200-with-empty (the more conventional REST shape) would silently break any client doing `if (response.status === 404)` to drive empty-state UI; conversely, a regression that adds 404 to OTHER read endpoints (currently 200 with empty payload for the same dataset-with-no-tests case at `getDatasetTestReport` and `getSLA`) would silently shift the API surface. The test pins the asymmetry across the four read endpoints so the maintainer must choose which side the harmonisation moves.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataQualityController404OnEmptyTestListTest.java"
+  name: "getDataEntityDataQATests_datasetExistsWithZeroTests_returns404_pinsAsymmetricEmptyResponse"
+evidence:
+  - "DataQualityController.md says (bugs_limitations_corner_cases.[2]): '`getDataEntityDataQATests` returns 404 NotFound for a dataset that exists but has zero data-quality tests, instead of `200 OK` with an empty list. The service throws NotFoundException when the getDataQualityTestOddrnsForDataset flux is empty (DataQualityServiceImpl.java:39-42). This is an unusual REST-API shape — empty collections typically return 200 with `[]`. A UI rendering the Test reports tab for a dataset with no defined tests will receive 404 on the test-list call, which it must distinguish from the dataset-not-found 404 returned by sibling endpoints. The error message (Data quality tests for dataset with id %d not found) differs from the dataset-not-found message (Dataset {id}), but a client doing only status-code-based handling will treat them identically.' severity: MEDIUM"
+  - "DataQualityController.md says (tests_coverage_semantic.uncovered_behaviours.[4]): '`getDataEntityDataQATests` empty-result path — DataQualityServiceImpl.java:40-42 throws NotFoundException when getDataQualityTestOddrnsForDataset is empty; no test asserts that a dataset with zero tests returns 404, not 200 with an empty list — this is a subtle API-shape decision (404-on-empty is unusual)'"
+  - "Source: DataQualityServiceImpl.java:38-42 (the empty-stream NotFoundException) + DataQualityServiceImpl.java:54-60 (getDatasetTestReport 404s only on dataset-existence failure, not on empty-tests) + openapi.yaml:1932-1947 (does not document 404-on-empty)"
+cross_references:
+  - "TEST-GAP-705 (SLA PNG-vs-JSON drift sister gap)"
+  - "TEST-GAP-709 (DQ owner-scoping asymmetry sister gap)"
+  - "F-007 (P-04:F-001 Test Results Import)"
+  - "DOC-GAP-NNN (openapi.yaml + data-quality.md should document the 404-on-empty shape)"
+related_features: [F-007]
+related_pillar_features: ["P-04:F-001"]
+proposed_action: |-
+  Add `DataQualityController404OnEmptyTestListTest` with three regression-pin methods covering the asymmetry across the four read endpoints:
+  (a) `getDataEntityDataQATests_datasetExistsWithZeroTests_returns404_pinsCurrentApiShape`: seed a dataset D with zero DQ tests; WebTestClient GET `/api/datasets/{D}/dataqatests`; assert response status 404 (NOT 200 with empty list). Pins the asymmetric 404-on-empty.
+  (b) `getDatasetTestReport_datasetExistsWithZeroTests_returns200WithZeroCounts_pinsConsistentSiblingShape`: same fixture; GET `/api/datasets/{D}/test_report`; assert response status 200 + body has all counters at 0. Pins the sibling-endpoint behavior so the inconsistency is visible.
+  (c) `getDataEntityDataQATests_datasetDoesNotExist_returns404WithDistinctMessage_pinsTheOtherKindOf404`: GET `/api/datasets/999999/dataqatests` (no such dataset); assert response 404 + error body contains the substring "Dataset" (the dataset-not-found message), distinguishing it from the test-list-empty 404 ("Data quality tests"). Pin the dual-404 surface so a client doing string-based message parsing can tell them apart.
+  Add `// REGRESSION-PIN — DataQualityController has an asymmetric API shape on empty-tests: getDataEntityDataQATests 404s, getDatasetTestReport returns 200-with-zero, getSLA returns 200-with-YELLOW. The 404-on-empty is unusual; the maintainer may want to harmonise across the four read endpoints (recommended: 200-with-empty for all four). This test pins the CURRENT asymmetry; when the maintainer ships the harmonisation, methods (a) and (b)/(c) will need updating in lockstep with the chosen direction.` comment block.
+batch: 2026-05-20-T
+feature_id: F-007

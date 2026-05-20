@@ -1,0 +1,121 @@
+name: existsIncludingSoftDeleted preserves DQ visibility post-soft-delete (ADR-shaped invariant)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-04
+- P-01
+description: |-
+  **NEW ADR-SHAPED INVARIANT, batch 2026-05-20T (DataQualityController class
+  sidecar)** — four of the five DataQualityService methods (getDatasetTestReport,
+  getSLA, getSLAReport, setDataQualityTestSeverity) start with
+  `reactiveDataEntityRepository.existsIncludingSoftDeleted(datasetId)
+   .filter(e -> e).switchIfEmpty(... NotFoundException ...)`
+  (DataQualityServiceImpl.java:55-57, 67-77, 96-98). This is a DELIBERATE choice
+  to use the existsIncludingSoftDeleted variant rather than the unrelated `exists`
+  variant.
+
+  **The intent**: a dataset marked deleted (soft-delete via `deleted_at` timestamp
+  / `is_deleted` boolean / `STATUS = DELETED` per the three-soft-delete-mechanisms
+  architectural observation from batch I) but NOT YET hard-purged by housekeeping
+  STILL surfaces its historical DQ signal. This matters for audit / forensic /
+  'what happened before deletion' workflows.
+
+  **The naming convention asserts intent**: `existsIncludingSoftDeleted` is a
+  publicly-named method on ReactiveDataEntityRepository — the repository surface
+  EXPLICITLY exposes the soft-delete-permissive existence check as a first-class
+  primitive. Service callers consciously choose between the two variants;
+  DataQualityServiceImpl picks the permissive one for DQ reads.
+
+  **Asymmetric across the codebase**: NOT every read path uses
+  existsIncludingSoftDeleted. The lone exception within DataQualityService is
+  getDatasetTests, which checks `getDataQualityTestOddrnsForDataset` for emptiness
+  instead (DataQualityServiceImpl.java:38-42) — an inconsistent asymmetry that
+  this invariant flags for review. Within DataQualityController, the four-out-of-five
+  uniformity is a strong signal of intent for the DQ surface, but a sweep across
+  other services would reveal which features prefer 'forget post-soft-delete' vs
+  'preserve post-soft-delete' as their visibility default.
+
+  **The cross-cutting concern**: ODD's three-soft-delete-mechanisms architecture
+  (deleted_at timestamp / is_deleted boolean / STATUS = DELETED) creates a vocabulary
+  problem at the service layer — what does 'exists' MEAN for a soft-deleted entity?
+  The DQ surface answers: 'preserve historical signal; an entity exists as long as
+  its row exists in the table, regardless of its soft-delete flag'. Other surfaces
+  may answer differently.
+
+  Severity: LOW (the invariant is intentional and well-named; the concern is
+  consistency across other features — see mitigation_unimplemented).
+axes_present:
+- controllers
+- services
+- repositories_reactive
+nodes:
+- odd-platform java DataQualityController controller-class:DataQualityController
+contributors:
+- |-
+  DataQualityController.md (batch T):
+    implicit_adrs.[1] (`existsIncludingSoftDeleted` as the existence-check primitive
+    on data-quality reads, not `exists`) +
+    concepts.invariants.[2] (`existsIncludingSoftDeleted` precedes every read path
+    on the service tier — getDatasetTestReport, getSLA, getSLAReport,
+    setDataQualityTestSeverity each first call existsIncludingSoftDeleted; the lone
+    exception is getDatasetTests which checks getDataQualityTestOddrnsForDataset
+    for emptiness instead)
+evidence:
+- |-
+  DataQualityController.md:implicit_adrs.[1] — DataQualityServiceImpl.java:55, 67, 96
+  (three call sites; existsIncludingSoftDeleted chosen over the unrelated exists
+  variant) + the method name existsIncludingSoftDeleted itself (the naming convention
+  asserts intent)
+- |-
+  DataQualityController.md:concepts.invariants.[2] — explicit description of the
+  asymmetry (4/5 service methods use existsIncludingSoftDeleted; getDatasetTests is
+  the exception)
+- |-
+  Existing architectural observation: the three-soft-delete-mechanisms concept (batch
+  I observation about deleted_at timestamp / is_deleted boolean / STATUS = DELETED)
+triangulation_count: 1
+cross_batch: false
+severity: LOW
+severity_dim: architectural-consistency
+mitigations_unimplemented:
+- |-
+  Codebase-wide consistency audit — sweep all service-tier reads in
+  odd-platform-api/.../service for which choose existsIncludingSoftDeleted vs
+  the regular `exists` variant. Classify each as
+    (a) preserve-post-soft-delete (DQ-like — historical signal matters),
+    (b) hide-post-soft-delete (search/list-like — soft-delete means 'gone'),
+    (c) inconsistent (one of a pair of sibling methods uses one variant, the
+        other uses the other — pick a primary intent and align).
+  Deliverable: a documented per-feature 'soft-delete visibility policy' that
+  future contributors can reference.
+- |-
+  Within DataQualityService, decide whether getDatasetTests should also use
+  existsIncludingSoftDeleted (consistent with the other four methods) or whether
+  its empty-list-NotFoundException behaviour is the deliberate intent (and the
+  other four are over-cautious). The current asymmetry is a regression risk —
+  a maintainer refactoring getDatasetTests to match its siblings could change
+  the 404-on-empty-list behaviour without realising the implication.
+- |-
+  Documentation — surface a 'Soft-delete and feature visibility' section in
+  documentation/docs/configuration-and-deployment/ explaining the three soft-delete
+  mechanisms AND which features preserve vs hide soft-deleted entities. This is a
+  defensible DOC-NNN candidate paired with the existing three-soft-delete
+  architectural observation.
+notes: |-
+  This invariant codifies a positive architectural design — the DQ surface
+  DELIBERATELY chose to preserve historical signal post-soft-delete, and the
+  naming convention asserts the intent. It is NOT a bug; it IS a load-bearing
+  decision that future contributors must understand before they touch the DQ
+  service tier.
+
+  Recommended ADR promotion: ADR-146 'Soft-delete Visibility per Feature' formalising
+  the per-feature policy. Companion to the three-soft-delete-mechanisms observation
+  from batch I (which described the WHAT — three mechanisms across the persistence
+  layer — but not the WHO uses which under what condition).
+
+  Cross-references:
+    - Companion architectural observation: three-soft-delete-mechanisms (batch I)
+    - Companion entity: `data-quality-test`
+    - Cross-link to ReactiveDataEntityRepositoryImpl.java for the
+      existsIncludingSoftDeleted method definition (the repository-tier
+      definition of the primitive)

@@ -1,0 +1,37 @@
+gap_id: TEST-GAP-714
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataQualityController controller-class:DataQualityController"
+  - "odd-platform java service service:DataQualityServiceImpl"
+  - "odd-platform java repository_reactive repository:ReactiveDataQualityRepositoryImpl"
+pillars_affected: [P-04, P-07, P-09]
+surfaced_by:
+  - "DataQualityController.md:bugs_limitations_corner_cases.[4] (`setDataQATestSeverity` uses onDuplicateKeyUpdate — repeated PUTs converge but produce no audit trail — severity MEDIUM)"
+  - "DataQualityController.md:tests_coverage_semantic.uncovered_behaviours.[7] (Idempotency on setDataQATestSeverity — no test asserts repeated PUTs converge vs creating duplicates)"
+behaviour: |-
+  **`setDataQATestSeverity` MUTATES OWNED ENTITY STATE WITH NO AUDIT TRAIL — extension of the audit-log presence asymmetry pattern (concepts.yaml — `audit-log-presence-asymmetry-2-tier-audit-story`) to the DQ surface.** The repository upsert at `ReactiveDataQualityRepositoryImpl.java:90-101` writes to `DATA_QUALITY_TEST_SEVERITY` with `onDuplicateKeyUpdate` on `(DATA_QUALITY_TEST_ID, DATASET_ID)` — idempotent in outcome but there is NO `ActivityEvent` emission, NO `@ActivityLog` annotation on `DataQualityServiceImpl.setDataQualityTestSeverity` (lines 62-81), NO audit log entry, NO `last_modified_by`, NO version increment. **A maintainer auditing "who set this severity to Critical?" has no answer from the platform.** The Activity Feed (P-07:F-003) captures alert status changes, ownership creations, description edits, tag/term assignments — but severity changes on DQ tests are SILENT. This is the audit-log presence asymmetry instantiated on the DQ surface: state changes on OWNED entities are NOT audited here, whereas other state changes on the same owned entities (ownership transitions, description edits) ARE audited. **Why this matters more than the general audit asymmetry**: severity affects the SLA-colour rendering directly (per SLACalculator's hierarchical-multiplicative weight algorithm — changing a single test's severity from Major to Critical flips the dataset SLA from Yellow to Red WITHOUT any test pass/fail status changing). A compliance auditor seeing a dataset go from Green to Red overnight has no way to determine "who reclassified test X to Critical at time Y" — the platform's forensic trail is silent on this surface. **No test catches this**: there is no test asserting that calling `PUT /api/datasets/{id}/dataqatests/{tid}/severity` produces an activity row, a log line, or any persisted audit record. STRENGTHENS TEST-GAP-232 (RBAC audit-silence pattern) by adding a NEW invocation site — the audit-trail gap is broader than just RBAC; it also covers data-quality mutations.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataQualitySeverityChangeAuditAbsenceTest.java"
+  name: "setDataQATestSeverity_currentlyEmitsNoActivityEventNoLogNoAuditRow_pinsAuditAsymmetryOnDQSurface"
+evidence:
+  - "DataQualityController.md says (bugs_limitations_corner_cases.[4]): '`setDataQATestSeverity` uses onDuplicateKeyUpdate — repeated PUTs converge but produce no audit trail. The repository upsert writes to DATA_QUALITY_TEST_SEVERITY with onDuplicateKeyUpdate on (DATA_QUALITY_TEST_ID, DATASET_ID) — idempotent in outcome, but there is no ActivityEvent emission, no audit log, no last_modified_by, no version increment. A maintainer auditing who set this severity to Critical? has no answer from the platform. This is the audit-log presence asymmetry instantiated on the DQ surface: state changes on owned entities are NOT audited here, whereas other state changes (alert status, ownership creation) ARE.' severity: MEDIUM"
+  - "DataQualityController.md says (tests_coverage_semantic.uncovered_behaviours.[7]): 'Idempotency on setDataQATestSeverity — the repository uses onDuplicateKeyUpdate (ReactiveDataQualityRepositoryImpl.java:95-96); no test asserts that repeated PUTs converge on the same row vs creating duplicates'"
+  - "Source: DataQualityServiceImpl.java:62-81 (no @ActivityLog, no Logger) + ReactiveDataQualityRepositoryImpl.java:87-102 (the upsert, no audit emission) + Grep `@ActivityLog` against odd-platform-api/.../DataQualityServiceImpl.java returns 0 matches"
+cross_references:
+  - "TEST-GAP-232 (RBAC audit-silence parent pattern — DQ severity-change is a sister invocation site)"
+  - "concepts.yaml — audit-log-presence-asymmetry-2-tier-audit-story"
+  - "REFACTOR-426 (Owner audit absence — adjacent audit-asymmetry family)"
+  - "F-021 (P-07:F-003 Activity Feed) — the scope of the audit feed; this gap shows the boundary"
+  - "F-013 (P-04:F-003 Dataset Quality Statuses / SLA) — the surface that suffers from the audit gap"
+related_features: [F-021, F-013]
+related_pillar_features: ["P-07:F-003", "P-04:F-003"]
+proposed_action: |-
+  Add `DataQualitySeverityChangeAuditAbsenceTest` with three regression-pin methods:
+  (a) `setDataQATestSeverity_returns200_emitsNoActivityRow_pinsAuditSilence`: seed Owner A owning dataset D + DQ test T; authenticate as Owner A; pre-snapshot `SELECT COUNT(*) FROM activity` = N; WebTestClient PUT `/api/datasets/{D}/dataqatests/{T}/severity` with `{"severity": "CRITICAL"}`; assert response 200; post-snapshot `SELECT COUNT(*) FROM activity` = N (no new row). Then assert the severity DID persist via `GET /api/datasets/{D}/sla_report` reflecting the new weight. Pins the WRITE-succeeded-with-no-audit asymmetry.
+  (b) `setDataQATestSeverity_idempotency_repeatedPutsConvergeOnSameRow`: same fixture; PUT `{severity: MINOR}` then PUT `{severity: MAJOR}` then PUT `{severity: CRITICAL}`; assert SQL `SELECT COUNT(*) FROM data_quality_test_severity WHERE data_quality_test_id = ? AND dataset_id = ?` equals 1 (upsert converged); assert the current severity is CRITICAL. Pins idempotency.
+  (c) `setDataQATestSeverity_flipsCriticalToFromMajor_changesSLAColour_butLeavesNoForensicTrail`: seed dataset with one passing-status DQ test; PUT severity=CRITICAL; assert SLA colour flipped from GREEN to RED (per SLACalculator algorithm); assert `SELECT COUNT(*) FROM activity WHERE data_entity_id = ?` is unchanged. Pins the compliance-blindspot: the operator-visible SLA changed but the forensic trail is silent.
+  Add `// REGRESSION-PIN — DataQualityController.setDataQATestSeverity is an OWNER-SCOPED mutation that changes the operator-visible SLA colour but emits ZERO audit signal. This pins the current audit-silence; the fix is to add @ActivityLog to DataQualityServiceImpl.setDataQualityTestSeverity (after the schema-root-cause from batch R is resolved — activity.data_entity_id NOT NULL is satisfied here since DQ test belongs to a dataset). When the maintainer ships the fix, methods (a) and (c) flip from asserting silence to asserting an activity row appears. Pair with TEST-GAP-232 (RBAC audit silence) as the parent pattern.` comment block.
+batch: 2026-05-20-T
+feature_id: F-021

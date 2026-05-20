@@ -1,0 +1,36 @@
+gap_id: TEST-GAP-711
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DirectoryController controller-class:DirectoryController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "DirectoryController.md:coherence_check.strengthens.[3] (target_drift_facet: directory_reflection_oddrn_property_leak)"
+  - "DirectoryController.md (v0.1.0 prior sidecar):security.known_security_gaps.[2] (ODDRN-derived properties exposed via getOddrnProperties include host/database — severity LOW)"
+  - "DirectoryController.md:tests_coverage_semantic.uncovered_behaviours.[1] (the DataEntityTypeDto.findById NotFoundException path is unverified end-to-end)"
+behaviour: |-
+  **DirectoryServiceImpl REFLECTS OVER ODDRN PathField TO EMIT EVERY DATASOURCE-SIDE PROPERTY — no redaction step, no allow-list, no per-property visibility gate.** `DirectoryServiceImpl.java:138-171` uses Java reflection (`getDeclaredFields` + `getMethod 'get'+CapitalisedName` + `invoke`) over the `OddrnPath` subclass annotated with `@PathField` to extract every per-datasource property: for a PostgreSQL datasource that is `host`, `database`, `port` (when set); for Snowflake that adds `account`, `warehouse`; for Kafka adds `cluster`, `topic`. The properties surface in the `/api/directory/datasources?prefix={...}` (level 2) response without any redaction step. **Combined with the cross-owner reachability** (DirectoryController has no `@PreAuthorize`, no SECURITY_RULES entry — verified in the sidecar): any authenticated user (or any caller under `auth.type=DISABLED`) gets the FULL ODDRN-derived infrastructure map of the catalog — every Postgres source's hostname + database name, every Snowflake account, every Kafka cluster + topic list. **For deployments where the data-source registration intentionally avoids exposing internal hostnames in the UI, the Directory leaks them.** The reflection-based extractor walks every `@PathField` annotation; a future OddrnPath subclass that adds a sensitive field (e.g. password-bearing connection URI, internal service token) WILL surface in the Directory response without any review gate. The existing `DirectoryTest.java:141-149` actually ASSERTS that `host` and `database` appear in the response — it pins the leak as intentional behaviour. **No test catches the reflection-walk attack surface**: there is no test that adds a synthetic `@PathField` to a test-only OddrnPath subclass and asserts whether NEW fields leak too. STRENGTHENS REFACTOR-024 family (cross-owner reads) by adding the infrastructure-revealing dimension — the leaked payload is infrastructure-revealing, not just metadata-revealing.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DirectoryTest.java (existing — lines 141-149 assert host/database appear in the response, locking the leak as intentional)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DirectoryOddrnReflectionLeakTest.java"
+  name: "getDirectoryDatasourceList_reflectsAllPathFieldAnnotatedProperties_pinsHostDatabaseLeakAndCatchesNewlyAddedFields"
+evidence:
+  - "DirectoryController.md says (coherence_check.strengthens.[3] target_drift_facet: directory_reflection_oddrn_property_leak): 'DirectoryServiceImpl.java:138-171 uses Java reflection over the ODDRN PathField annotation set to emit EVERY datasource-side ODDRN property: for a PostgreSQL datasource that is host, database, port (when set); for Snowflake that adds account, warehouse; for Kafka adds cluster, topic. NO redaction step, NO allow-list, NO per-property visibility gate. An attacker with no Owner binding gets the FULL ODDRN-derived infrastructure map of the catalog.'"
+  - "DirectoryController.md (v0.1.0 prior sidecar) says (security.known_security_gaps.[2]): 'ODDRN-derived properties exposed via getOddrnProperties include the host and database of every data source (a Postgres source''s hostname and database name are emitted as host: pg-prod.internal, database: orders). For deployments where the data-source registration intentionally avoids exposing internal hostnames in the UI, the Directory leaks them. The reflection-based extractor walks every @PathField annotation on the OddrnPath subclass — there is no allow-list or redaction step.' severity: LOW"
+  - "Source: DirectoryServiceImpl.java:138-171 (reflection walk) + DirectoryTest.java:141-149 (existing test pins host+database in the response) + the @PathField annotation on PostgreSqlPath/SnowflakePath/KafkaPath OddrnPath subclasses (in the upstream `odd-models` / `oddrn-generator` library)"
+cross_references:
+  - "REFACTOR-024 (cross-owner read posture — Directory adds the infrastructure-revealing dimension)"
+  - "F-001 (P-01:F-Directory)"
+  - "TEST-GAP-707 (sister Directory test gap — page-vs-count predicate divergence)"
+  - "DOC-GAP-NNN (data-discovery/directory.md silent on the reflection-property exposure)"
+related_features: [F-001]
+related_pillar_features: ["P-01:F-Directory"]
+proposed_action: |-
+  Add `DirectoryOddrnReflectionLeakTest` extending `BaseIngestionTest` with three regression-pin methods:
+  (a) `getDirectoryDatasourceList_postgres_emitsHostAndDatabase_pinsCurrentLeakSurface`: ingest a PostgreSQL datasource with `host=internal-pg.acme.corp` + `database=secret_db`; WebTestClient GET `/api/directory/datasources?prefix=postgresql`; assert the response's `properties` map contains `host: internal-pg.acme.corp` AND `database: secret_db`. Pins the current intentional leak.
+  (b) `getDirectoryDatasourceList_snowflake_emitsAccountAndWarehouse_pinsBroaderLeakSurface`: ingest a Snowflake datasource; assert `properties` contains `account` AND `warehouse`. Pins the broader-than-Postgres surface.
+  (c) `getDirectoryDatasourceList_anyAuthenticatedUserSeesFullInventory_pinsCrossOwnerReachability`: ingest datasources owned by Owner A and Owner B; authenticate as Owner B (no association with A's datasources); GET `/api/directory/datasources?prefix=postgresql`; assert response contains BOTH owners' datasources with full host/database properties. Pins the cross-owner reachability dimension.
+  Add `// REGRESSION-PIN — DirectoryController exposes every datasource's ODDRN-derived properties (host, database, account, warehouse, cluster, topic) to any authenticated user — and any anonymous caller under auth.type=DISABLED. The reflection-based extractor walks @PathField annotations on the OddrnPath subclass with NO allow-list or redaction. If a future OddrnPath subclass adds a sensitive field (e.g. connection URI carrying credentials, internal service token), the field will silently surface in this response. A maintainer adding such a field should either (a) add an allow-list redaction step in DirectoryServiceImpl.getOddrnProperties OR (b) extend this test to assert the new field DOES appear (locking it as a deliberate publication). The existing DirectoryTest.java:141-149 pins host+database as intentional; this test extends to the rest of the @PathField surface.` comment block.
+batch: 2026-05-20-T
+feature_id: F-001

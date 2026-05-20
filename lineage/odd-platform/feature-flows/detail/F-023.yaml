@@ -1,0 +1,654 @@
+feature_id: F-023
+pillar_id: P-01
+pillar_anchored_id: P-01:F-007
+pillar_anchored_feature_name: Directory Browsing — 4-level catalog drill-down
+feature_name: Directory — hierarchy-driven catalog browse via ODDRN-prefix grouping + 4-level drill-down with paged level-4 entities
+primary_drift_class: cross_owner_datasource_inventory_enumeration
+drift_class_summary:
+- cross_owner_datasource_inventory_enumeration
+- oddrn_reflection_infrastructure_property_leak
+- page_vs_count_predicate_divergence_directory_level_4
+- no_pagination_levels_1_2_3_unbounded_response_size
+- disabled_mode_anonymous_reach_directory
+- unknown_oddrn_silent_bucket_to_other
+- doc_silence_on_directory_authorization_owner_scoping
+- doc_silence_on_other_bucket_for_unknown_oddrns
+- empty_prefix_group_500_error
+- unmemoised_reflection_per_request_per_datasource
+- type_vs_class_dimension_doc_drift
+- no_http_caching_no_etag_directory
+cross_pillar_relationships:
+- pillar: P-10
+  kind: feeds_from
+  via: |-
+    The Directory surfaces what F-008 (Batch Ingestion) producers
+    populate — every registered Datasource, every ingested DataEntity,
+    every ODDRN-derived property. This is the READ counterpart of the
+    P-10 producer-side ingestion surface; the relationship is
+    feeds_from at the catalog-content level. Directory is NOT a
+    contributing_node of F-008 (no chain extension); it is the read
+    consumer.
+- pillar: P-01
+  kind: siblings
+  via: |-
+    Sibling sub-feature within Data Discovery alongside F-001/F-003
+    (Popular Ranking), F-004 (Description Editing), F-012 (DEG
+    Membership), F-013 (Custom Metadata Field), F-017 (Search Filter
+    Facets), F-018 (Manual Object Tagging). Directory is the
+    HIERARCHY-driven browse surface — distinct from F-017 (Search)
+    which is QUERY-driven and from F-001/F-003 (Popular) which is
+    RANKING-driven. The doc-product framing is explicit at
+    `documentation/docs/data-discovery.md:7` and at the live page
+    'Where Search is query-driven … the Directory is hierarchy-driven'.
+- pillar: P-09
+  kind: shares_data_with
+  via: |-
+    All 4 endpoints fall to the global `.authenticated()` rule
+    (DirectoryController has no `@PreAuthorize`; no
+    `SecurityConstants.SECURITY_RULES` entry for `/api/directory*`).
+    The read-collaborative posture (REFACTOR-024 family, ADR-CANDIDATE-003)
+    applies; under `auth.type=DISABLED` (REFACTOR-185 family) all 4
+    endpoints become anonymously reachable. Directory adds a 5TH+
+    enumeration vector to the cross-owner read posture family —
+    DISTINCT in dimension from alerts (F-007 / F-014), search
+    (F-017), per-entity reads (F-001 family), lineage (F-005 / F-016)
+    by being the DATASOURCE-INVENTORY enumeration vector (every
+    registered Datasource's ODDRN + ODDRN-derived host / database /
+    port / cluster / account / warehouse / topic).
+- pillar: P-05
+  kind: complements
+  via: |-
+    REFACTOR-203 is the GRAPH-shaped enumeration vector (lineage
+    edges leak pipeline topology); Directory is the FLAT-LIST
+    enumeration sibling — no edges, but a fully-walkable inventory
+    of every Datasource + ODDRN + host + database + prefix + per-type
+    entity counts. The two together exhaust the catalog-shape
+    enumeration surface: graph-via-lineage (REFACTOR-203) +
+    flat-via-directory (this feature). An authenticated attacker
+    enumerates BOTH the topology AND the inventory roster.
+batch_origin: T
+created_in_batch: T
+discovered_from_entry_point: rest:GET /api/directory + GET /api/directory/datasources?prefix={...} + GET /api/directory/datasources/{id}/types + GET /api/directory/datasources/{id}?type_id=&page=&size=
+contributing_nodes:
+- odd-platform java DirectoryController controller-class:DirectoryController
+- odd-platform java service service:DirectoryServiceImpl (referenced from sidecar)
+- odd-platform java service service:DataEntityServiceImpl (level-4 delegate, referenced from sidecar)
+- odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl (referenced from sidecar)
+- odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl (level-4 page+count, referenced from sidecar)
+- odd-platform java OddrnUtils (referenced from sidecar)
+- odd-platform java org_opendatadiscovery_oddplatform_controller controller:DirectoryController (prior v0.1.0 sidecar — superseded)
+description: |-
+  The Directory is the catalog's hierarchy-driven browse surface
+  complementing Search's query-driven flat results. It is a thin
+  reactive WebFlux entry point (`DirectoryController.java` — 52 lines,
+  four endpoints) implementing the OpenAPI-generated `DirectoryApi`
+  and forwarding each call to either `DirectoryService` (levels 1, 2,
+  3) or `DataEntityService` (level 4). The Directory's load-bearing
+  design choice is grouping by ODDRN prefix: level 1 returns one entry
+  per distinct ODDRN-prefix observed across registered datasources
+  (with sources whose ODDRN cannot be parsed bucketed under the
+  `Other`/UNKNOWN_DATASOURCE_TYPE sentinel), and each subsequent level
+  narrows the scope.
+
+  The user-observable promise (per the live
+  `features/data-discovery/directory` page, WebFetched 2026-05-20
+  status 200): "Level 1 — Data source types: One card per ODDRN
+  prefix … Level 2 — Data sources: lists registered instances with
+  name, ODDRN-derived properties (host, port, database, …) and
+  per-source entity count … Level 3 — Entity types: Shows distinct
+  Data Entity classes present in the chosen data source … Level 4
+  — Entities: The final tier displays the paged list of data
+  entities matching both filters."
+
+  The user-observable reality, per the batch-T primary-source
+  controller-class sidecar + cross-references to
+  `DirectoryServiceImpl`, `OddrnUtils`,
+  `ReactiveDataSourceRepositoryImpl`, and the level-4 delegate chain
+  through `DataEntityServiceImpl` → `ReactiveDataEntityRepositoryImpl`:
+  the Directory is a **non-owner-scoped view of the whole catalog
+  inventory** — any authenticated user enumerates every registered
+  datasource's name, ODDRN, host, database, port, cluster, account,
+  warehouse, topic, plus per-prefix and per-source entity counts.
+  Under `auth.type=DISABLED` the surface is anonymously reachable.
+  The reflection-based property extractor
+  (`DirectoryServiceImpl.java:138-171` — Java reflection over
+  `@PathField`-annotated fields on each ODDRN subclass) emits every
+  datasource-side ODDRN property unredacted; an attacker with no
+  Owner binding gets the FULL ODDRN-derived infrastructure map.
+
+  Additionally: level 4 has a page-vs-count PREDICATE DIVERGENCE
+  (REFACTOR-NEW, structurally analogous to REFACTOR-425) — the page
+  query (`listByDatasourceAndType`) applies HOLLOW + soft-delete only,
+  while the count query (`countByDatasourceAndType`) ALSO applies
+  `EXCLUDE_FROM_SEARCH IS NULL or = FALSE`; in deployments using
+  `EXCLUDE_FROM_SEARCH` to hide intermediate entities, the UI sees
+  'X of Y' with X > Y and pagination math breaks. Levels 1-3 have NO
+  pagination at all (level-1 returns one row per prefix bucket, but
+  level 2 returns ALL datasources matching the prefix without
+  chunking — a deployment with 5K Postgres instances returns 5K rows
+  in one response). The reflection extractor is unmemoised — per
+  request, per data source, the @PathField field set is re-discovered
+  and the getter Method is re-resolved.
+chain:
+- hop: 1
+  node: odd-platform java DirectoryController controller-class:DirectoryController
+  sidecar: odd-platform__java__DirectoryController__controller-class__DirectoryController.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DirectoryController.java:17-52 — 4-method @RestController
+    implementing `DirectoryApi`. All 4 methods GET-only, reactive
+    `Mono<ResponseEntity<...>>`. NO @PreAuthorize anywhere on the
+    class. SecurityConstants.java grep for `/api/directory` returns
+    ZERO matches. Falls through to AuthorizationCustomizer's catch-all
+    `.authenticated()` rule under LOGIN_FORM/OAUTH2/LDAP; anonymous
+    reachable under DISABLED. Two-service composition unique to this
+    controller — DirectoryService for levels 1/2/3 (line 20) +
+    DataEntityService for level 4 (line 21,42).
+  unresolved: false
+- hop: 2a-levels-1-2-3
+  node: odd-platform java service service:DirectoryServiceImpl
+  sidecar: '(referenced from DirectoryController sidecar)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DirectoryServiceImpl.java:48-50 — `getDataSourceTypes` loads ALL
+    data sources via unpaginated `dataSourceRepository.list()`,
+    groups in memory by ODDRN prefix. Lines 91-99 — `findByPrefix`
+    fetch (level 2); 84-89 — `getDataSourceEntityTypeIds(dataSourceId)`
+    (level 3). NO OWNERSHIP join, NO principal-derived predicate at
+    any level. Lines 101-110 — `getDataSourcePrefix` catches all
+    Exception and returns `UNKNOWN_DATASOURCE_TYPE='other'` (silent
+    bucket-to-other). Lines 138-171 — `getOddrnPathProperties` uses
+    Java reflection (`getDeclaredFields` + `getMethod 'get' + invoke`)
+    on every data-source row in level 2 — UNMEMOISED per request.
+    Lines 124-127 — `DataEntityTypeDto.findById` throws
+    `NotFoundException('Data entity type')` for unknown type-ids — a
+    server-side data-integrity error masquerading as a client-facing
+    404.
+  unresolved: true
+  unresolved_reason: |-
+    DirectoryServiceImpl referenced from the DirectoryController
+    sidecar but not yet enriched as a standalone service-tier
+    sidecar. Line numbers cited from the controller-class sidecar's
+    bugs/implicit_adrs blocks.
+- hop: 2b-level-4
+  node: odd-platform java service service:DataEntityServiceImpl
+  sidecar: '(referenced from DirectoryController sidecar — also a contributing_node of F-001/F-003/F-004)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataEntityServiceImpl.java:164-179 — `getDataEntitiesByDatasourceAndType`
+    composes the page query via
+    `reactiveDataEntityRepository.listByDatasourceAndType(datasourceId,
+    typeId, page, size)` (line 170) with the count query via
+    `reactiveDataEntityRepository.countByDatasourceAndType(datasourceId,
+    typeId)` (line 173). The TWO queries use DIFFERENT predicate sets
+    — the page-vs-count divergence root cause.
+  unresolved: false
+- hop: 3a-page-path
+  node: odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
+  sidecar: '(referenced from F-001 / F-003 / F-004 chains — also relevant here)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveDataEntityRepositoryImpl.java:595-613 — `listByDatasourceAndType`.
+    cteConditions includes only DATA_SOURCE_ID = ? (+ optional TYPE_ID
+    = ?). Lines 909-939 — baseDimensionsSelect → cteDataEntitySelect
+    adds `addSoftDeleteFilter(...)` + `DATA_ENTITY.HOLLOW.isFalse()`.
+    MISSING: `DATA_ENTITY.EXCLUDE_FROM_SEARCH.isNull() OR .isFalse()`
+    (the third filter from `getDataEntityDefaultConditions` at lines
+    970-976).
+  unresolved: false
+- hop: 3b-count-path
+  node: odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
+  sidecar: '(same)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveDataEntityRepositoryImpl.java:616-627 — `countByDatasourceAndType`.
+    `getDataEntityDefaultConditions()` returns THREE conditions:
+    `HOLLOW.isFalse()` + `STATUS != DELETED.getId()` + `EXCLUDE_FROM_SEARCH
+    IS NULL or = FALSE`. The page path applies the first two but NOT
+    the third — the predicate divergence is the bug surface for any
+    deployment using `EXCLUDE_FROM_SEARCH` to hide intermediate
+    entities.
+  unresolved: false
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    200 OK with: DataSourceTypeList (level 1, list of {prefix,
+    display_name, entitiesCount}) | DataSourceDirectoryList (level 2,
+    list of {data_source_id, name, ODDRN, properties: {host, port,
+    database, account, warehouse, cluster, topic, ...}, entitiesCount})
+    | Flux<DataEntityType> (level 3, list of TABLE/FILE/STREAM/JOB/...)
+    | paged DataEntityList (level 4, ID + ODDRN + name + type + class
+    + status + ownership refs).
+  evidence: |-
+    DirectoryController.java:23-51 + DirectoryServiceImpl.java:46-89 +
+    openapi.yaml:3745-3820 (the 4 GET routes and their response
+    schemas).
+  cardinality_per_call: |-
+    Level 1: 1 row per distinct ODDRN prefix bucket (typically
+    5-20 buckets including 'other'). Level 2: ALL datasources
+    matching the prefix (NO pagination at the OpenAPI level — for a
+    platform with 5K Postgres sources, the level-2 response carries
+    5K rows + reflection-extracted properties per row). Level 3: 1
+    row per distinct DataEntityType value present in the chosen
+    data source (typically 3-8 types). Level 4: bounded by
+    caller-supplied page + size (mandatory @NotNull per
+    openapi.yaml:3810-3811 PageParam/SizeParam).
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+  - facet: cross-owner datasource-inventory enumeration — REFACTOR-024 family vector
+    observed: |-
+      All 4 Directory endpoints return platform-wide aggregates with
+      NO filtering by the current user's Owner identity.
+      `getDataSourceTypes` lists every registered data source via
+      unfiltered `dataSourceRepository.list()`; `getDirectoryDatasourceList(prefix)`
+      returns every data source matching the prefix;
+      `getDatasourceEntities` pages every entity regardless of
+      ownership; `getDatasourceEntityTypes` returns every type-id
+      present in the datasource. The Directory is a non-owner-scoped
+      view of the whole catalog inventory. The shape is DISTINCT and
+      BROADER in ONE dimension from prior cross-owner family
+      surfaces: it enumerates the DATASOURCE INVENTORY itself (every
+      registered DataSource's ODDRN, host, database, prefix) plus
+      the per-type/per-source entity counts. An attacker who can
+      authenticate but has NO owner binding learns 'platform XYZ
+      runs N Postgres clusters at hosts pg-prod-01.internal /
+      pg-prod-02.internal, M Snowflake accounts, K Kafka clusters'
+      — internal-infrastructure cardinality plus hostnames. NO other
+      read surface in the cross-owner family exposes this
+      datasource-cardinality dimension.
+    expected: |-
+      Either (a) the live `data-discovery/directory` doc page
+      discloses that the Directory is an unscoped reconnaissance
+      surface (today the page says NOTHING about authorization,
+      ownership, or visibility), OR (b) the four endpoints gain
+      OWNERSHIP-derived predicates limiting datasource enumeration
+      to ownership-associated entries.
+    drift_class: cross_owner_datasource_inventory_enumeration
+    provenance: |-
+      PRIMARY-SOURCE — DirectoryController batch T
+      bugs_limitations_corner_cases[*] + coherence_check.strengthens[REFACTOR-024]
+      + DirectoryServiceImpl.java:48 (unfiltered list) + 91-99
+      (unfiltered findByPrefix) + DirectoryController.java:42
+      (unscoped delegate). Severity: MEDIUM (under
+      read-collaborative posture this is intentional;
+      doc-side silence is the actionable finding). Cross-link to
+      F-014, F-017, F-005 / F-016 for the family.
+  - facet: ODDRN reflection — infrastructure-property leak
+    observed: |-
+      `DirectoryServiceImpl.java:138-171` uses Java reflection over
+      the ODDRN PathField annotation set to emit EVERY datasource-side
+      ODDRN property: for a PostgreSQL datasource that is `host`,
+      `database`, `port` (when set); for Snowflake that adds `account`,
+      `warehouse`; for Kafka adds `cluster`, `topic`. NO redaction
+      step, NO allow-list, NO per-property visibility gate. An
+      attacker with no Owner binding gets the FULL ODDRN-derived
+      infrastructure map of the catalog. Compounded under DISABLED
+      mode — the leaked payload is infrastructure-revealing, not
+      just metadata-revealing.
+    expected: |-
+      Either (a) the response shape restricts to a known-safe
+      subset (display name + ODDRN + entitiesCount; no reflected
+      properties), OR (b) an explicit allow-list per OddrnPath
+      subclass declares which properties are operator-facing
+      vs internal.
+    drift_class: oddrn_reflection_infrastructure_property_leak
+    provenance: |-
+      PRIMARY-SOURCE — DirectoryController batch T
+      coherence_check.strengthens[REFACTOR-024 directory_reflection_oddrn_property_leak]
+      + DirectoryServiceImpl.java:138-171. Severity: MEDIUM-HIGH
+      (the leak payload is infrastructure-revealing — hostnames,
+      database names, cluster ids).
+  - facet: page-vs-count predicate divergence — REFACTOR-NEW (Directory level 4)
+    observed: |-
+      `DataEntityServiceImpl.getDataEntitiesByDatasourceAndType`
+      (line 164-179) composes a page query via
+      `listByDatasourceAndType` and a count query via
+      `countByDatasourceAndType`. The TWO use DIFFERENT predicate
+      sets — page query (via `cteDataEntitySelect` at
+      ReactiveDataEntityRepositoryImpl.java:909-939) applies
+      HOLLOW + soft-delete only; count query (line 616-627) ALSO
+      applies `getDataEntityDefaultConditions()` which adds
+      `EXCLUDE_FROM_SEARCH IS NULL or = FALSE`. Result: in a
+      datasource containing entities with `EXCLUDE_FROM_SEARCH =
+      TRUE`, the page returns rows the count does NOT include —
+      UI sees `pageData.size > count.total`, pagination math
+      breaks (page 2 returns rows that 'shouldn't exist'). The
+      bug is INVISIBLE for catalogs whose per-datasource entities
+      are all `EXCLUDE_FROM_SEARCH = FALSE` (the common case);
+      manifests in deployments using EXCLUDE_FROM_SEARCH to hide
+      intermediate entities (runs, transient inputs, hollow
+      placeholders).
+
+      Cross-cutting bug class:
+      PREDICATE-DIVERGENCE-IN-PAGINATION-WRAPPERS, same root
+      pattern as REFACTOR-425 (which targets
+      `ReactiveDataSourceRepositoryImpl.listDto`'s page-vs-count).
+      The bug class is now confirmed at TWO sites; an audit sweep
+      across all repository `list*/count*` pairs in the codebase
+      is the defensible follow-up.
+    expected: |-
+      Align the predicate sets — update `cteDataEntitySelect` (or
+      `listByDatasourceAndType` specifically) to apply
+      `EXCLUDE_FROM_SEARCH` filter, matching
+      `getDataEntityDefaultConditions`. Alternative: drop
+      `EXCLUDE_FROM_SEARCH` from the count predicate (matches
+      existing page behaviour but changes the count semantics —
+      riskier).
+    drift_class: page_vs_count_predicate_divergence_directory_level_4
+    provenance: |-
+      PRIMARY-SOURCE — DirectoryController batch T
+      coherence_check.conflicts_surfaced[0] +
+      DataEntityServiceImpl.java:164-179 +
+      ReactiveDataEntityRepositoryImpl.java:595-613, 616-627,
+      909-939, 970-976. Severity: MEDIUM. Filed as REFACTOR-NEW
+      (Directory level-4 page-vs-count divergence; recommend
+      grouping with REFACTOR-425 in a pagination-predicate-audit
+      sprint).
+  - facet: no pagination at levels 1, 2, 3 — unbounded response size
+    observed: |-
+      `openapi.yaml:3745-3779` declares no `page`/`size` parameters
+      on the level-1 (`/api/directory`) or level-2
+      (`/api/directory/datasources?prefix=...`) routes; level-3
+      (`/api/directory/datasources/{id}/types`) similarly. For a
+      platform with thousands of data sources of the same type
+      (5K Postgres sources), the level-2 response carries 5K rows
+      plus reflection-extracted properties per row. The frontend
+      has no chunking mechanism. Level 1 is bounded by the small
+      number of distinct ODDRN prefixes (typically <20), but
+      `getDataSourceTypes` ALSO loads ALL data sources via
+      unfiltered `dataSourceRepository.list()` then groups in
+      memory — the in-memory aggregation cost is per-request.
+    expected: |-
+      Add `page` / `size` parameters to levels 2 and 3, with
+      reasonable defaults (e.g. size=50 default, size=200 max).
+    drift_class: no_pagination_levels_1_2_3_unbounded_response_size
+    provenance: |-
+      PRIMARY-SOURCE — DirectoryController batch T
+      bugs_limitations_corner_cases[6] +
+      openapi.yaml:3745-3779 + DirectoryServiceImpl.java:65-82.
+      Severity: MEDIUM.
+  - facet: DISABLED-mode anonymous reach — directory inherits REFACTOR-185
+    observed: |-
+      Under `auth.type=DISABLED` all 4 Directory endpoints become
+      anonymously reachable — no `@ConditionalOnProperty`, no
+      method-level conditional, no fail-closed second-line gate.
+      The DISABLED-mode blast radius widens because the leaked
+      payload is INFRASTRUCTURE-revealing (ODDRN reflection
+      properties: hosts, databases, ports, clusters), not just
+      metadata-revealing. REFACTOR-185 19th-sidecar pattern
+      (batch Q AppToolbar+CollectorsList UI-tier) extends to P-01
+      via Directory.
+    expected: |-
+      Documentation discloses the DISABLED-mode caveat on the
+      Directory page; or the four endpoints gain explicit
+      DISABLED-mode fail-fast under the broader REFACTOR-185
+      remediation surface.
+    drift_class: disabled_mode_anonymous_reach_directory
+    provenance: |-
+      PRIMARY-SOURCE — DirectoryController batch T security
+      auth_mode_relevance + coherence_check.strengthens[REFACTOR-185].
+      Severity: LOW-MEDIUM.
+  - facet: unknown ODDRN silently buckets to `other`
+    observed: |-
+      `DirectoryServiceImpl.java:101-110` — `getDataSourcePrefix`
+      catches ALL `Exception` and returns
+      `UNKNOWN_DATASOURCE_TYPE = "other"`. Lines 112-122 same for
+      `getDataSourceName`. A transient ODDRN parser bug or a
+      malformed-but-recoverable ODDRN would silently land in the
+      `Other` bucket rather than surfacing. Operators investigating
+      'why is my Postgres source under Other?' have only the error
+      log to go on (line 107 logs the exception, but no metric, no
+      alert, no UI signal). The live doc page (WebFetched
+      2026-05-20) does NOT mention the `Other` bucket at all.
+    expected: |-
+      Either (a) document the `Other` bucket on the live Directory
+      page, OR (b) surface a UI signal (an admin warning, a
+      Prometheus metric) when sources are bucketed under `Other`.
+    drift_class: unknown_oddrn_silent_bucket_to_other
+    provenance: |-
+      PRIMARY-SOURCE — DirectoryController batch T
+      bugs_limitations_corner_cases[2] + implicit_adrs[2] +
+      DirectoryServiceImpl.java:101-110, 112-122 +
+      OddrnUtils.java:7. Severity: MEDIUM.
+  - facet: doc silence on authorization / owner-scoping / pagination at level 4
+    observed: |-
+      The live `/features/data-discovery/directory` page (WebFetched
+      2026-05-20 status 200) contains NO mention of authorization,
+      owner-scoping, pagination semantics at level 4, the `Other`
+      bucket for unknown ODDRNs, or scaling behaviour. Yet the
+      endpoint exposes the full registered-data-source inventory
+      and is unscoped by ownership at the controller layer. The
+      API-reference page (`/developer-guides/api-reference/directory`
+      status 200) similarly does not mention authorization,
+      pagination semantics beyond `page`/`size` names, an `Other`
+      bucket, or a level-by-level walkthrough table.
+    expected: |-
+      Doc-product editorial pass on the Directory page adds the
+      access-control framing + the `Other` bucket explainer + the
+      level-4 page-vs-count caveat.
+    drift_class: doc_silence_on_directory_authorization_owner_scoping
+    provenance: |-
+      PRIMARY-SOURCE — DirectoryController batch T
+      docs_link_semantic.doc_drift_findings[0] +
+      WebFetch /features/data-discovery/directory 2026-05-20 +
+      WebFetch /developer-guides/api-reference/directory 2026-05-20.
+      Severity: MEDIUM.
+  - facet: empty prefix-group 500 error — fragile invariant
+    observed: |-
+      `DirectoryServiceImpl.java:51-62` calls `getFirstDataSource`
+      on every prefix-group; line 173-178 throws
+      `IllegalArgumentException` on empty. True today because the
+      multimap only contains keys with values, but a future refactor
+      introducing empty groups surfaces as a 500 from
+      `/api/directory` rather than an empty type entry.
+    expected: |-
+      Defensive: replace `IllegalArgumentException` with an
+      empty-handling branch that omits empty prefix groups OR
+      surfaces them with a `Skipped: 0 sources` label.
+    drift_class: empty_prefix_group_500_error
+    provenance: |-
+      PRIMARY-SOURCE — DirectoryController batch T
+      bugs_limitations_corner_cases[3] +
+      DirectoryServiceImpl.java:51-62, 173-178. Severity: LOW.
+  - facet: unmemoised reflection per request per datasource
+    observed: |-
+      `DirectoryServiceImpl.java:138-171` — `getOddrnPathProperties`
+      uses Java reflection over `@PathField`-annotated fields on
+      every data-source row in `/api/directory/datasources`. The
+      reflection is unmemoised: per request, per data source, the
+      annotated field set is re-discovered and the getter Method
+      is re-resolved.
+    expected: |-
+      Cache the per-OddrnPath-subclass field+getter map once at
+      bean init (the field set is static per ODDRN class).
+    drift_class: unmemoised_reflection_per_request_per_datasource
+    provenance: |-
+      PRIMARY-SOURCE — DirectoryController batch T
+      bugs_limitations_corner_cases[4] +
+      DirectoryServiceImpl.java:138-171. Severity: LOW (perf class).
+  - facet: type vs class dimension doc drift (carried from v0.1.0 sidecar)
+    observed: |-
+      The level-3 doc copy uses 'Distinct Data Entity CLASSES' but
+      the code returns `DataEntityType` (TABLE/FILE/STREAM/...).
+      In ODD's vocabulary `DataEntityClass` is a SEPARATE dimension
+      (Set/Transformer/Quality Test/...). Operators familiar with
+      the distinction may mis-interpret the level-3 surface.
+    expected: |-
+      Replace 'classes' with 'types' on the live doc page (small
+      copy edit); cross-link the main-concepts.md disambiguation.
+    drift_class: type_vs_class_dimension_doc_drift
+    provenance: |-
+      Carried from v0.1.0 sidecar; still applicable at HEAD per
+      this batch's stale_probe_check. Severity: LOW.
+  - facet: no HTTP caching, no ETag — read-mostly data hit per UI navigation
+    observed: |-
+      No HTTP caching, no ETag, no `@Cacheable` on any Directory
+      endpoint, despite the data being read-mostly (data-source
+      registrations change rarely; entity counts change at
+      ingestion cadence). Every UI navigation re-runs the full DB
+      + grouping pipeline.
+    expected: |-
+      Add `Cache-Control` headers + ETag on level-1 / level-2
+      responses (the typically-stable surfaces); leave level-4
+      uncached because the entity list is ingestion-rate-dependent.
+    drift_class: no_http_caching_no_etag_directory
+    provenance: |-
+      PRIMARY-SOURCE — DirectoryController batch T
+      bugs_limitations_corner_cases[7] +
+      DirectoryController.java:23-51. Severity: LOW (perf class).
+test_matrix:
+  unit:
+    state: PARTIAL
+    covered:
+    - 'Levels 1 and 2 happy path — DirectoryTest.java:30-159 (integration test extending BaseIngestionTest)'
+    - 'Level-2 ODDRN parsing + property extraction — DirectoryTest.java:70-77, 141-149'
+    - '`Other` bucket for unparseable ODDRNs — DirectoryTest.java:79-85, 151-158'
+    uncovered:
+    - 'Level 4 (`getDatasourceEntities`) — pagination semantics (page/size mandatory, type_id optional) untested at Directory layer'
+    - 'Level 3 (`getDatasourceEntityTypes`) — `DataEntityTypeDto.findById` NotFoundException path unverified end-to-end'
+    - Page-vs-count predicate divergence on level 4 — no test injects entities with EXCLUDE_FROM_SEARCH=TRUE
+    - Authorization behaviour — anonymous (DISABLED) or low-privilege user can/cannot browse the Directory
+    - Error-path malformed-ODDRN-that-crashes (vs falls back to UNKNOWN_DATASOURCE_TYPE)
+    - Concurrency race during active ingestion batch (count and page see different soft-delete states)
+    - Empty-bucket — a prefix-group with zero data sources triggers `IllegalArgumentException`
+  integration:
+    state: PARTIAL
+    covered:
+    - Two levels of the four (levels 1 and 2) via DirectoryTest
+    uncovered:
+    - Full four-level walk in one test
+    - Level-4 page-vs-count divergence regression pin
+    - REFACTOR-185 DISABLED-mode regression pin
+    - REFACTOR-024 cross-owner enumeration regression pin
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Level-1 in-memory grouping over 10K+ data sources (the cost is per-request)
+    - Reflection cost on level 2 with 5K Postgres sources
+    - Lack of HTTP caching driving per-navigation full DB + grouping pipeline cost
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - Cross-owner datasource-inventory enumeration regression pin (REFACTOR-024 family)
+    - ODDRN reflection infrastructure-property leak (the load-bearing finding)
+    - DISABLED-mode anonymous reach (REFACTOR-185 family)
+    - Authorization regression — future @PreAuthorize added or removed; SecurityConstants entry added or removed; auth.type wiring changed
+control_summary: |-
+  0 of 4 cells PROBED. Feature emerges from the batch-T primary-source
+  audit of `DirectoryController` (controller-class) plus references to
+  `DirectoryServiceImpl`, `OddrnUtils`,
+  `ReactiveDataSourceRepositoryImpl`, and the level-4 delegate chain
+  through `DataEntityServiceImpl` → `ReactiveDataEntityRepositoryImpl`.
+  Directory is the FIRST P-01 anchored pillar-feature minted via this
+  reducer specifically for the hierarchy-driven browse surface;
+  prior P-01 features (F-001 + F-003 popular, F-004 description, F-012
+  DEG, F-013 metadata, F-017 search facets, F-018 tags) cover
+  ranking / editing / search but NOT the hierarchy-driven inventory
+  enumeration that Directory IS. The pillar-anchored slot P-01:F-007
+  is the next available within P-01 after F-006 (Manual Object
+  Tagging = P-01:F-006 in batch N).
+
+  Twelve substantive drift facets cluster around four load-bearing
+  themes: (1) cross-owner DATASOURCE INVENTORY enumeration (the
+  REFACTOR-024 family extension to a NEW dimension — datasource
+  cardinality + hostnames); (2) ODDRN reflection infrastructure-property
+  leak (the load-bearing security finding); (3) level-4 page-vs-count
+  PREDICATE DIVERGENCE (REFACTOR-NEW, structurally analogous to
+  REFACTOR-425); (4) no pagination at levels 1/2/3 + doc silence at
+  the Directory page + the API-reference page.
+
+  The highest-leverage probe candidates are: (a) cross-owner inventory
+  enumeration pin — auth as a user with no Owner association, GET
+  /api/directory + /api/directory/datasources?prefix=postgresql,
+  assert 200 + every datasource visible; (b) ODDRN reflection leak
+  pin — register a Snowflake datasource with `account` + `warehouse`
+  ODDRN properties, GET level 2, assert the properties appear in
+  the response unredacted; (c) REFACTOR-NEW level-4 page-vs-count
+  divergence — seed dataset+datasource with 3 entities, mark 1
+  EXCLUDE_FROM_SEARCH=TRUE, GET /api/directory/datasources/{id}?type_id=
+  &page=1&size=10, assert page.size=3 vs count=2 mismatch; (d)
+  DISABLED-mode reach — flip `auth.type=DISABLED`, assert anonymous
+  reach of all 4 endpoints; (e) `Other` bucket regression pin —
+  register a Postgres datasource then break its ODDRN, GET
+  /api/directory, assert the source moves to the `Other` bucket
+  silently. Local docker-compose probe stack: ODD platform + Postgres
+  + 2 seeded Datasources (Postgres + Snowflake) + a soft-deleted
+  test entity with EXCLUDE_FROM_SEARCH=TRUE.
+related_refactoring_scopes:
+- REFACTOR-024  # read-collaborative cross-owner enumeration — Directory is a 5TH+ vector
+- REFACTOR-203  # graph-shaped enumeration sibling — Directory is the flat-list complement
+- REFACTOR-185  # auth.type=DISABLED bypass — Directory inherits the unauthenticated reach
+- REFACTOR-425  # page-vs-count divergence — Directory level-4 is a SECOND site of the bug class
+- REFACTOR-NEW  # Directory level-4 page-vs-count divergence (filed in batch T; grouping candidate with REFACTOR-425)
+related_test_gaps:
+- TEST-GAP-NNN (no test for getDatasourceEntities at any layer — deferred to test-coverage-mapper)
+- TEST-GAP-NNN (no test for getDatasourceEntityTypes — deferred)
+- TEST-GAP-NNN (level-4 page-vs-count predicate divergence regression pin — deferred)
+- TEST-GAP-NNN (DISABLED-mode anonymous reach regression pin — deferred)
+- TEST-GAP-NNN (REFACTOR-024 cross-owner enumeration regression pin — deferred)
+- TEST-GAP-NNN (ODDRN reflection infrastructure-property leak — deferred)
+related_doc_gaps:
+- DOC-GAP-NNN (Directory authorization / owner-scoping framing absent on /features/data-discovery/directory — deferred)
+- DOC-GAP-NNN (`Other` bucket explainer absent — deferred)
+- DOC-GAP-NNN (level-4 pagination semantics + page-vs-count caveat — deferred)
+- DOC-GAP-NNN (type vs class dimension copy edit — deferred)
+- DOC-GAP-NNN (API-reference page absent the level-by-level walkthrough table — deferred)
+related_concepts:
+- directory
+- oddrn
+- read-collaborative-catalog-posture
+- exclude-from-search
+related_features:
+- F-008  # Batch Ingestion — producer side; Directory enumerates what F-008 ingests
+- F-017  # Search Filter Facets — sibling Data Discovery surface (query-driven complement of Directory)
+- F-005  # Lineage — graph-shaped enumeration sibling (REFACTOR-203 cross-link)
+- F-016  # DEG-Anchored Lineage — sibling graph-shaped vector
+- F-014  # Per-Entity Alert View — sibling cross-owner read surface
+- F-007  # AlertManager Integration — REFACTOR-024 family cross-link
+- F-001  # Popular Ranking — sibling P-01 surface
+- F-003  # Popular EXCLUDE_FROM_SEARCH inconsistency — RELATED: EXCLUDE_FROM_SEARCH appears in BOTH F-003 (popular omits filter) AND F-023 (directory level-4 page omits filter); same column, different bug surface
+related_retrospectives:
+- LSN-001  # permissive default — DISABLED-mode anonymous reach
+- LSN-017  # cross-layer cross-half effects — the page-vs-count divergence requires reading service + 2 repo methods together
+- LSN-018  # coherence pre-emit check — Rule 6 surfaced the level-4 divergence as a NEW finding via cross-registry sweep
+related_probes: null
+probe_verifications: []
+maintainer_curated: false
+merge_candidate_with: null
+batch_origin_note: |-
+  Net-new feature minted in batch T from the DirectoryController
+  controller-class primary-source sidecar. Directory is a
+  user-observable Data Discovery sub-feature distinct from F-001/F-003
+  (Popular ranking — RANKING-driven), F-017 (Search Filter Facets —
+  QUERY-driven), and the other per-entity P-01 surfaces (F-004
+  description editing, F-012 DEG membership, F-013 custom metadata,
+  F-018 tagging). Directory is HIERARCHY-driven catalog browse — the
+  doc-product editorial framing at `documentation/docs/data-discovery.md:7`
+  and `documentation/docs/features/data-discovery/directory.md` is
+  explicit about the complementary role.
+
+  Per Rule 0 evaluation: the mint is justified because (a) Directory
+  is a coherent user-observable capability with its own UI route, its
+  own controller (DirectoryController), its own dedicated doc page,
+  and its own canonical OpenAPI tag (`openapi.yaml:43`); (b) the
+  shape is DISTINCT from prior P-01 features — none of them surface
+  the datasource-inventory dimension that Directory exposes; (c) the
+  pillar-anchored slot P-01:F-007 is the next available within P-01.
+  The prior v0.1.0 sidecar at
+  `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DirectoryController.md`
+  is SUPERSEDED by this batch's v0.3.0 controller-class sidecar — the
+  controller-class sidecar adds the page-vs-count divergence finding
+  that the v0.1.0 controller-axis sidecar missed (the analysis did
+  not walk into the underlying repository methods).
+
+  The 12 load-bearing drift facets enumerated here close the
+  hierarchy-driven browse surface at the controller tier; future
+  batches refine via service-tier (DirectoryServiceImpl
+  comprehensively enriched), reflection-extractor
+  (OddrnUtils + per-OddrnPath introspection), and the level-4 chain
+  (DataEntityServiceImpl.getDataEntitiesByDatasourceAndType primary
+  source). Cross-pillar back-links to P-10 (ingestion), P-09
+  (security), P-05 (lineage), and across P-01 itself.

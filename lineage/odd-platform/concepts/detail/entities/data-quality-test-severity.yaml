@@ -1,0 +1,137 @@
+name: Data Quality Test Severity (MINOR / MAJOR / CRITICAL)
+canonical_in_docs: true
+canonical_candidate: false
+description: |-
+  Operator-set per-test importance — three values: MINOR | MAJOR | CRITICAL.
+  Used in SLA-colour weight aggregation (SLACalculator.java:14-16, 35-60).
+  Set via PUT /api/datasets/{data_entity_id}/dataqatests/{dataqa_test_id}/severity
+  carrying a DataQualityTestSeverityForm payload. NEW entity, batch 2026-05-20T
+  (DataQualityController class sidecar).
+
+  Two critical defaults govern the runtime behaviour:
+    (a) MAJOR is the implicit fallback at the SQL-tier left-join mapper
+        (ReactiveDataQualityRepositoryImpl.java:142-148) when no
+        DATA_QUALITY_TEST_SEVERITY row exists for a (test, dataset) pair.
+        A dataset with 100 unset tests + 1 critical-failing test is computed
+        AS IF every unset test were Major — possibly inflating Red/Yellow
+        outcomes compared to the operator's mental model.
+    (b) No operator-facing surface signals 'this is a default-MAJOR contribution,
+        not an operator-set MAJOR'. The UI cannot distinguish the two
+        provenances; severity is treated as a single derived field.
+
+  Operator-facing severity-set flow (per live sla-statuses.md):
+  'Open the dataset's main page → Test reports tab → click on a test result row →
+  in the right-side panel, choose a severity (Minor, Major, or Critical)'.
+  The audience setting severities is named verbatim as 'operator' in the docs —
+  no permission name (DATASET_TEST_RUN_SET_SEVERITY) and no owner-scoping
+  language appears.
+
+  vocabulary_status: codebase-anchored + doc-side-partially-covered (live
+  https://docs.opendatadiscovery.org/features/data-quality/sla-statuses 2026-05-20
+  status 200 names the three severity values verbatim; the default-MAJOR fallback
+  is NOT documented — see canonicalisation_candidates/default-major-severity-fallback-silently-inflates-sla).
+vocabulary_status: codebase-anchored, doc-side-partially-covered
+axes_present:
+- controllers
+nodes:
+- odd-platform java DataQualityController controller-class:DataQualityController
+contributors:
+- |-
+  DataQualityController (class) batch T:
+    entities[DataQualityTestSeverity enum, DataQualityTestSeverityForm];
+    operations[set-test-severity];
+    invariants[default-MAJOR-when-unset, lone-owner-scoped-mutation-via-DATASET_TEST_RUN_SET_SEVERITY,
+    onDuplicateKeyUpdate-without-audit-trail]
+evidence:
+- |-
+  DataQualityController.md:concepts.entities.[DataQualityTestSeverity] + .[DataQualityTestSeverityForm]
+- |-
+  DataQualityController.md:concepts.invariants.[4] (severity defaults to MAJOR when
+  no explicit severity exists for a (test, dataset) pair)
+- |-
+  DataQualityController.md:bugs_limitations_corner_cases.[6] (default-MAJOR fallback
+  silently inflates SLA Red/Yellow outcomes)
+- |-
+  DataQualityController.md:bugs_limitations_corner_cases.[4] (audit-trail absence
+  on severity changes — onDuplicateKeyUpdate idempotent but no ActivityEvent emission)
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      The lone gate at SecurityConstants.java:243-246 — `new SecurityRule(DATA_ENTITY,
+      PathPattern '/api/datasets/{data_entity_id}/dataqatests/{dataqa_test_id}/severity'
+      PUT, DATASET_TEST_RUN_SET_SEVERITY)`. Owner-scoped via DATA_ENTITY
+      AuthorizationManagerType (caller must be associated with one of the dataset's
+      owners). The registration is the intent_anchor — a maintainer made the
+      deliberate decision to add ONE rule (the PUT) and not five.
+  owner_scoping:
+    verdict: RESPECTS
+    detail: |-
+      DATA_ENTITY AuthorizationManagerType resolves the caller's ownership chain
+      against the dataset; only owners (or admin) can set severity. This is the
+      MUTATING half of the asymmetrical owner-scoping pattern (reads cross-owner,
+      mutations owner-scoped).
+  strengths:
+  - |-
+    The PUT is gated via the centralised SecurityRule table — explicit, reviewable,
+    not method-level annotation. Owner-scoping is enforced.
+  - |-
+    setDataQATestSeverity is @ReactiveTransactional — existence check (existsIncludingSoftDeleted)
+    and upsert run in a single reactive transaction (DataQualityServiceImpl.java:63-81)
+  weaknesses:
+  - |-
+    onDuplicateKeyUpdate at ReactiveDataQualityRepositoryImpl.java:90-101 — repeated
+    PUTs converge on the same row but NO ActivityEvent emission, NO audit log, NO
+    last_modified_by, NO version increment. A maintainer auditing 'who set this
+    severity to Critical?' has no answer (audit-log presence asymmetry instantiated
+    on the DQ surface) — severity MEDIUM
+  - |-
+    Default-MAJOR fallback is silent — the SLA an operator sees is computed AS IF
+    every unset test were Major. Correctness depends on operator awareness of the
+    default; UI signals nothing about provenance (operator-set vs default).
+  - |-
+    Under auth.type=DISABLED the rule is bypassed; anonymous PUT is accepted.
+  cross_file_inconsistencies: []
+  contributing_files:
+  - DataQualityController.md
+  evidence:
+  - DataQualityController.md:bugs_limitations_corner_cases.[4]
+  - DataQualityController.md:bugs_limitations_corner_cases.[6]
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      Single (test, dataset, severity) tuple per PUT. No bulk variant — an operator
+      setting severities for 50 tests issues 50 PUTs.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless. Upsert via onDuplicateKeyUpdate — single SQL statement, no advisory
+      lock, no row-level lock beyond Postgres's implicit unique-constraint check.
+      Concurrent PUTs to the same (test, dataset) converge on whichever wins the
+      upsert.
+  strengths:
+  - |-
+    Single SQL statement per mutation; deterministic latency
+  weaknesses:
+  - |-
+    No batch endpoint — bulk severity updates are N round-trips
+  cross_file_inconsistencies: []
+  contributing_files:
+  - DataQualityController.md
+  evidence: []
+notes: |-
+  Default-MAJOR fallback is a silent correctness concern. Recommended remediation
+  has TWO options: (a) surface 'unset' as a distinct UI state so operators distinguish
+  default-MAJOR contributions from operator-set MAJOR, OR (b) change the fallback to
+  MINOR (cautious) instead of MAJOR (the current load-bearing assumption inflates
+  Yellow/Red outcomes). Either change requires SLA-test re-baseline and a doc update
+  on sla-statuses.md.

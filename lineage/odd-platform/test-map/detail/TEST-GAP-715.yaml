@@ -1,0 +1,40 @@
+gap_id: TEST-GAP-715
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java AppInfoController controller-class:AppInfoController"
+pillars_affected: [P-09, P-01]
+surfaced_by:
+  - "AppInfoController.md:bugs_limitations_corner_cases.[0] (empty-string auth.type silently produces a deployment with NO SecurityWebFilterChain — severity MEDIUM)"
+  - "AppInfoController.md:bugs_limitations_corner_cases.[1] (no validation that authType matches the documented enum DISABLED | LOGIN_FORM | OAUTH2 | LDAP — severity MEDIUM)"
+  - "AppInfoController.md:tests_coverage_semantic.uncovered_behaviours.[1] (authType field is round-tripped verbatim, no normalisation, no validation)"
+  - "AppInfoController.md:concepts.invariants.[1] (authType is whatever Spring resolved for ${auth.type} — NO normalisation, NO enum constraint, NO @Value default)"
+behaviour: |-
+  **AppInfoController DOES NOT VALIDATE `authType` AGAINST THE DOCUMENTED ENUM — empty-string + typo branches silently break the UI's auth-mode gate.** `AppInfoController.java:18` declares `@Value("${auth.type}") final String authType` — NO default, NO `@NotBlank`, NO normalisation to the four-value enum (`DISABLED | LOGIN_FORM | OAUTH2 | LDAP`). The controller round-trips whatever Spring resolved — empty string from `AUTH_TYPE=` env-var override, typo `OUATH2` or `LOGINFORM`, even arbitrary strings like `disabled` (case-sensitive lowercase doesn't match `DISABLED`). The downstream consequences cascade:
+  - **All four `*SecurityConfiguration` classes use `@ConditionalOnProperty(value="auth.type", havingValue="...")`** (`DisabledAuthSecurityConfiguration.java:10`, `LoginFormSecurityConfiguration.java:31`, `AuthorizationManagerCondition.java:11,15`). A typo/empty value fails ALL FOUR matches — producing a deployment with NO `SecurityWebFilterChain` bean wired. Behaviour of the no-chain deployment is not statically determinable (depends on Spring Boot's autoconfiguration fall-through).
+  - **The SPA's `Overview.tsx:26`** uses `appInfo?.authType && appInfo.authType !== 'DISABLED'` to gate the OwnerAssociation card. Empty string makes the first conjunct falsy → card hidden. Typo `OUATH2` makes the second conjunct truthy → card SHOWN in a deployment with no working auth.
+  - **`application.yml:34`** sets `auth.type: DISABLED` as the default; this is the ONLY thing preventing the empty-string failure mode in a stock deployment. An operator unsetting the key hits an undocumented silent failure mode.
+  **No test catches any of these branches**: no `AppInfoControllerTest` exists; the SPA's Overview.tsx gating logic has no integration test pairing the backend AppInfo contract with the UI consumption.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AppInfoControllerAuthTypeRoundTripTest.java"
+  name: "getAppInfo_authTypeRoundTripsVerbatim_noNormalisation_emptyAndTypoPersist_pinsValidationGap"
+evidence:
+  - "AppInfoController.md says (bugs_limitations_corner_cases.[0]): '`@Value(${auth.type})` declares NO default at AppInfoController.java:18. If an operator overrides auth.type to an empty string (e.g. AUTH_TYPE= env var override or removing the key from application.yml), Spring injects empty string. The controller still constructs and echoes empty string in the AppInfo response, AND every downstream @ConditionalOnProperty(value=auth.type, havingValue=...) fails to match — producing a deployment with NO SecurityWebFilterChain bean wired. … Compounded by Overview.tsx:26 — appInfo?.authType && appInfo.authType !== DISABLED evaluates to false for empty string, silently hiding the OwnerAssociation card.' severity: MEDIUM"
+  - "AppInfoController.md says (bugs_limitations_corner_cases.[1]): 'No validation that authType matches the documented enum DISABLED | LOGIN_FORM | OAUTH2 | LDAP. A typo (OUATH2, LOGINFORM) silently disables ALL @ConditionalOnProperty(havingValue=...) matches and produces the same no-SecurityWebFilterChain deployment as the empty-string case. Meanwhile /api/appInfo continues to echo the typo back to clients. Combined with Overview.tsx:26''s !== DISABLED check, a typo passes the gate and renders OwnerAssociation in a deployment that has no working authentication.' severity: MEDIUM"
+  - "AppInfoController.md says (concepts.invariants.[1]): 'authType is whatever Spring resolved for ${auth.type} — NO normalisation, NO enum constraint, NO @Value default at the injection site'"
+  - "Source: AppInfoController.java:18 (no default) + application.yml:32-34 (the default that masks the empty-string case) + DisabledAuthSecurityConfiguration.java:10 + LoginFormSecurityConfiguration.java:31 + AuthorizationManagerCondition.java:11,15 + Overview.tsx:25-27 (SPA gating)"
+cross_references:
+  - "TEST-GAP-708 (AppInfo DISABLED-mode fingerprinting — sister gap; both surface the same configuration surface)"
+  - "F-009/F-NN-application-security (4 auth modes — the documented enum)"
+  - "DOC-GAP-NNN (enable-security/authentication.md missing validation behaviour disclosure)"
+related_features: []
+related_pillar_features: ["P-09:F-001"]
+proposed_action: |-
+  Add `AppInfoControllerAuthTypeRoundTripTest` with three regression-pin methods:
+  (a) `getAppInfo_authTypeOAUTH2_roundTripsVerbatim_pinsNoNormalisation`: `@TestPropertySource(properties = {"auth.type=OAUTH2"})`; GET `/api/appInfo`; assert body's `authType` equals "OAUTH2" exactly. Pin the no-normalisation contract.
+  (b) `getAppInfo_authTypeEmptyString_roundTripsEmpty_pinsAbsentDefault`: configure `auth.type=` (literally empty value); GET `/api/appInfo`; assert response body's `authType` equals "" (empty string). Note: this test may need to bypass Spring's `application.yml` default — set via `@TestPropertySource` after a fresh context. Pin the empty-string round-trip; documents that operators removing the key produce this state.
+  (c) `getAppInfo_authTypeTypo_roundTripsTypo_pinsNoEnumValidation`: configure `auth.type=OUATH2` (deliberate typo); GET `/api/appInfo`; assert response body's `authType` equals "OUATH2" exactly (typo round-trips). Pin the absent enum validation; documents that operator typos pass through silently.
+  Add `// REGRESSION-PIN — AppInfoController.authType is round-tripped verbatim — empty-string and typos pass through. This pairs with the SPA's Overview.tsx:26 gating logic (appInfo?.authType && appInfo.authType !== DISABLED) where a typo like OUATH2 returns truthy and renders OwnerAssociation in a deployment with no working SecurityWebFilterChain. A future maintainer adding @Pattern or enum validation will flip methods (b) and (c) to assert 4xx; update the assertions accordingly. The current asserts pin the absent-validation reality so a future regression that adds validation is caught.` comment block.
+batch: 2026-05-20-T
+feature_id: null

@@ -1,0 +1,34 @@
+gap_id: TEST-GAP-716
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform java DirectoryController controller-class:DirectoryController"
+  - "odd-platform java service service:DirectoryServiceImpl"
+pillars_affected: [P-01]
+surfaced_by:
+  - "DirectoryController.md:bugs_limitations_corner_cases.[1] (getDataSourcePrefix and getDataSourceName swallow ALL exceptions — severity MEDIUM)"
+  - "DirectoryController.md:tests_coverage_semantic.uncovered_behaviours.[4] (Error-path: malformed ODDRN crashing the response rather than falling back to UNKNOWN_DATASOURCE_TYPE — no test injects a crashing ODDRN)"
+behaviour: |-
+  **DirectoryServiceImpl.getDataSourcePrefix SWALLOWS ALL EXCEPTIONS (catch Exception) AND BUCKETS UNDER `UNKNOWN_DATASOURCE_TYPE` — a transient ODDRN parser bug or malformed ODDRN silently lands sources in the "Other" bucket rather than surfacing.** `DirectoryServiceImpl.java:101-110` catches `Exception` and returns `UNKNOWN_DATASOURCE_TYPE`; `DirectoryServiceImpl.java:112-122` (`getDataSourceName`) does the same. The intent (per implicit_adrs[2]) is failure-tolerant fallback — show the source under "Other" rather than erroring the entire Directory landing page. **But the swallow is unconditional**: a transient ODDRN parser bug (e.g., a runtime exception thrown by the upstream `oddrn-generator` library on a previously-parseable ODDRN due to a library version upgrade) would silently re-bucket sources from their correct prefix to "Other" with no log warning, no exception surfacing, no operator alarm. **The existing `DirectoryTest.java:79-85` covers the FORMAT case** (two ODDRNs whose syntax is unknown to the parser correctly bucket under "Other") but does NOT cover the EXCEPTION case (a known-format ODDRN where the parser throws on something else). Operators investigating "why is my postgres source under Other?" have only the error log to go on — and there is no INFO/WARN log emitted on the catch-block. **No test injects an exception-raising ODDRN path** to assert the fallback works under exception (not just format-mismatch). **Why this matters**: a refactor that replaces the `try/catch(Exception)` with `try/catch(SpecificException)` to surface parser-bug failures explicitly would silently change behaviour on Directory landing pages; the test should pin the current swallow as intentional.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DirectoryTest.java (existing — lines 79-85 cover format-mismatch but not exception path)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DirectoryOddrnExceptionSwallowTest.java"
+  name: "getDataSourceTypes_oddrnParserThrowsRuntimeException_bucketsUnderOther_pinsExceptionSwallowFallback"
+evidence:
+  - "DirectoryController.md says (bugs_limitations_corner_cases.[1] from prior v0.1.0 sidecar): 'getDataSourcePrefix and getDataSourceName swallow ALL exceptions (catch Exception) and return UNKNOWN_DATASOURCE_TYPE; a transient ODDRN parser bug or a malformed ODDRN would silently land in the Other bucket rather than surfacing as a parse error. Operators investigating why is my postgres source under Other? have only the error log to go on.' severity: MEDIUM"
+  - "DirectoryController.md says (tests_coverage_semantic.uncovered_behaviours.[4]): 'Error-path: malformed ODDRN crashing the response (rather than falling back to UNKNOWN_DATASOURCE_TYPE) — `getDataSourcePrefix` swallows all exceptions but no test injects a crashing ODDRN'"
+  - "Source: DirectoryServiceImpl.java:101-122 (try/catch(Exception) — TWO swallow sites) + DirectoryTest.java:79-85 (existing format-mismatch case, not exception case)"
+cross_references:
+  - "TEST-GAP-707 (sister Directory test gap — page-vs-count predicate divergence)"
+  - "TEST-GAP-711 (sister Directory test gap — reflection-property leak)"
+  - "F-001 (P-01:F-Directory)"
+related_features: [F-001]
+related_pillar_features: ["P-01:F-Directory"]
+proposed_action: |-
+  Add `DirectoryOddrnExceptionSwallowTest` extending `BaseIngestionTest` with two regression-pin methods:
+  (a) `getDataSourceTypes_oddrnParserThrowsRuntimeException_sourceBucketsUnderOther_pinsSwallow`: register a datasource with an ODDRN crafted to trigger a RuntimeException from `Generator.parse()` (e.g., a deliberately malformed but PARSE-LIKE-VALID ODDRN such as `//postgresql/host/<null>` if such inputs throw RuntimeException; or use a mocking wrapper around `Generator` to throw `IllegalStateException` on a specific input). WebTestClient GET `/api/directory`; assert the response status is 200 (NOT 500); assert the source appears under the `Other` (UNKNOWN_DATASOURCE_TYPE) bucket. Pin the swallow-and-bucket fallback under exception path.
+  (b) `getDirectoryDatasourceList_otherPrefix_returnsExceptionSwallowedSources`: same fixture; GET `/api/directory/datasources?prefix=other`; assert the response contains the exception-bucketed source, with `properties.oddrn` equal to the raw input string. Pin the "Other" surface as the catch-all for both format-mismatch AND exception path.
+  Add `// REGRESSION-PIN — DirectoryServiceImpl.getDataSourcePrefix uses try/catch(Exception) — a deliberate failure-tolerant swallow per implicit_adrs[2]. A refactor that narrows the catch (e.g., to catch (OddrnParseException) only) would silently change behaviour on transient parser bugs. This test injects a runtime exception path to pin the current swallow. If the maintainer decides to surface parser bugs explicitly (e.g., add a log.warn + a "PARSE-ERROR" sentinel distinct from UNKNOWN_DATASOURCE_TYPE), update the assertions accordingly.` comment block.
+batch: 2026-05-20-T
+feature_id: F-001

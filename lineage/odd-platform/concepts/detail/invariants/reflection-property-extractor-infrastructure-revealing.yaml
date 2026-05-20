@@ -1,0 +1,146 @@
+name: Reflection-based ODDRN property extractor — infrastructure-revealing
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+- P-09
+description: |-
+  **NEW LOW-severity INVARIANT, batch 2026-05-20T (DirectoryController class
+  sidecar)** — DirectoryServiceImpl.getOddrnPathProperties (lines 138-171) uses
+  Java reflection over the `@PathField`-annotated field set of the OddrnPath
+  subclass to emit EVERY datasource-side ODDRN property. The extractor has NO
+  allow-list, NO redaction step, NO per-property visibility gate.
+
+  **What gets emitted per data-source type**:
+    - PostgreSQL datasource: `host`, `database`, `port` (when set)
+    - Snowflake datasource: `account`, `warehouse`, `database`, `schema`
+    - Kafka datasource: `cluster`, `topic`
+    - Airflow datasource: `host`, `dag` (when scoped)
+    - MySQL datasource: `host`, `database`
+    - All other ODDRN-shaped sources: every annotated path field
+
+  **Operator surface manifestation**: an authenticated user calling
+  GET /api/directory/datasources?prefix={...} receives, for every registered
+  data source of that type, a `properties: {host: '...', database: '...', port: '...'}`
+  map serialised verbatim from the ODDRN. Combined with the absence of owner-scoping
+  at the Directory layer (see invariant
+  `read-collaborative-cross-owner-enumeration`), the result is a complete
+  infrastructure roster: hostnames, database names, port numbers, Snowflake accounts,
+  Kafka clusters — all readable by any authenticated user with NO owner binding.
+
+  **The cross-cutting concern**: ODD's catalog is read-collaborative by design
+  (ADR-CANDIDATE-003), but this invariant amplifies the read-collaborative posture
+  with infrastructure-revealing payload semantics. The standard read-collaborative
+  vector (REFACTOR-024 family) exposes catalog metadata; the Directory's reflection
+  extractor specifically exposes the operational INFRASTRUCTURE map — internal
+  hostnames operators may have assumed were private to the deployment.
+
+  **Compounding factor: REFACTOR-185 (DISABLED-mode bypass)**. Under
+  auth.type=DISABLED, the reflection extractor's payload becomes anonymously
+  readable. A network-reachable DISABLED deployment leaks its complete
+  infrastructure roster to anyone able to hit /api/directory/datasources.
+
+  **The fix has THREE design options**:
+    (a) Per-property allow-list (annotation-driven): add `@VisibleInDirectory`
+        to each `@PathField` and have the reflection extractor honour it. This
+        is the SAFEST default but requires touching every OddrnPath subclass in
+        oddrn-generator AND aligning the documentation that today asserts these
+        properties are catalog-public.
+    (b) Per-deployment configuration: `odd.directory.expose-oddrn-properties=
+        full | redacted | none`. Operators with hostname-sensitivity policies
+        opt out; the default preserves current behaviour. LEAST DISRUPTIVE for
+        existing deployments.
+    (c) Per-user authorization: gate the reflection extractor on a new permission
+        (DATASOURCE_INFRASTRUCTURE_READ). REQUIRES the read-collaborative posture
+        to be re-evaluated for the Directory surface specifically; cross-link
+        ADR-CANDIDATE-003.
+
+  Severity: LOW in deployments where hostnames are catalogued explicitly; rises
+  to MEDIUM in deployments with explicit hostname-sensitivity policies; rises to
+  HIGH under DISABLED in a production-reachable network (per REFACTOR-185's
+  19-sidecar enumeration).
+axes_present:
+- controllers
+- services
+nodes:
+- odd-platform java DirectoryController controller-class:DirectoryController
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DirectoryController
+contributors:
+- |-
+  DirectoryController.md (batch T, controller-class):
+    coherence_check.strengthens.[REFACTOR-024 directory_reflection_oddrn_property_leak]
+    (NEW finding — reflection-based extractor over @PathField annotation set;
+    no redaction; no allow-list; no per-property visibility gate; full ODDRN-derived
+    infrastructure map readable by any authenticated user) +
+    bugs_limitations_corner_cases.[4] (`getOddrnPathProperties` reflection
+    unmemoised — secondary performance gap, but the security/audit observation
+    is the primary signal) +
+    security.known_security_gaps.[2] (ODDRN-property reflection leak — primary
+    security framing)
+evidence:
+- |-
+  DirectoryController.md:coherence_check.strengthens.[REFACTOR-024
+  directory_reflection_oddrn_property_leak] — PRIMARY SOURCE — evidence:
+    DirectoryServiceImpl.java:138-171 (the reflection extractor over @PathField
+    annotations; emits host / database / port / account / warehouse / cluster / topic
+    per OddrnPath subclass) +
+    DirectoryTest.java:141-149 (the test confirms `host` and `database` in the
+    response — the leak is the intended payload shape; the bug is the absence
+    of a visibility gate, not an accidental disclosure)
+- |-
+  DirectoryController.md:security.known_security_gaps.[2] — ODDRN-property
+  reflection leak severity LOW (per-deployment policy dependent — rises to MEDIUM
+  for hostname-sensitive deployments)
+- |-
+  Existing invariant `read-collaborative-cross-owner-enumeration` — the broader
+  posture this invariant amplifies with infrastructure-specific payload semantics
+- |-
+  Existing invariant `ui-vs-api-asymmetry-under-disabled-ui-hides-mutation-buttons-backend-accepts-anonymous`
+  — REFACTOR-185 — the DISABLED-mode amplifier for this leak
+triangulation_count: 1
+cross_batch: false
+severity: LOW
+severity_dim: security-posture-infrastructure-disclosure
+mitigations_unimplemented:
+- |-
+  Per-property allow-list (SAFEST). Add `@VisibleInDirectory` annotation alongside
+  `@PathField` in oddrn-generator's OddrnPath subclasses; reflection extractor
+  walks only @VisibleInDirectory-annotated fields. Requires aligned oddrn-generator
+  release. Doc-side note: surface 'which fields are visible in the Directory'
+  per data-source type on the documentation/docs/data-discovery/directory.md page.
+- |-
+  Per-deployment configuration knob (LEAST DISRUPTIVE). Add
+  `odd.directory.expose-oddrn-properties=full|redacted|none` to application.yml
+  with default `full` (preserves current behaviour). Operators with hostname-
+  sensitivity policies set `redacted` to strip host/database/port/account from
+  the response; the alternative `none` returns ODDRN-property maps but with all
+  values masked. No oddrn-generator change needed. Doc-side: document the knob
+  under documentation/docs/configuration-and-deployment/.
+- |-
+  Per-user authorization gate (REQUIRES POLICY DECISION). Add a new permission
+  DATASOURCE_INFRASTRUCTURE_READ; gate the reflection extractor on it. Requires
+  re-evaluating the read-collaborative posture for the Directory specifically —
+  cross-link ADR-CANDIDATE-003. Most disruptive option; appropriate ONLY if the
+  maintainer decides infrastructure metadata should be owner-scoped or admin-only.
+- |-
+  At minimum, doc-side disclosure — the live data-discovery/directory.md doc
+  page does NOT mention that Directory exposes per-source ODDRN properties.
+  Operators reading the page assume Directory is metadata-only; they are NOT
+  warned about the infrastructure leak. Add a 'Visibility and Disclosure' section
+  to the directory.md page disclosing the ODDRN-property emission.
+notes: |-
+  This invariant is the FIRST in the catalog to surface the reflection-based
+  property extractor as a distinct security observation. The extractor is
+  PRE-EXISTING in DirectoryServiceImpl (since at least batch B per the v0.1.0
+  controller-axis sidecar), but no concept-catalog entry framed it as an
+  infrastructure-revealing surface. Batch T's controller-class sidecar provides
+  the framing.
+
+  Cross-references:
+    - Companion entity: `directory`
+    - Cross-cutting posture: `read-collaborative-cross-owner-enumeration`
+    - DISABLED-mode amplifier: `ui-vs-api-asymmetry-under-disabled-...` (REFACTOR-185)
+    - DOC-NNN candidate: surface the ODDRN-property emission on
+      documentation/docs/data-discovery/directory.md
+    - Pairs naturally with the page-vs-count predicate divergence invariant from
+      the same batch (both surface as Directory-feature concerns)

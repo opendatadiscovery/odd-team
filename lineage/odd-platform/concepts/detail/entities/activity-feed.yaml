@@ -1,211 +1,317 @@
 name: Activity Feed
 canonical_in_docs: false
 canonical_candidate: true
-description: 'Platform-wide audit-trail surface exposing append-only events tracking
-  who changed what (descriptions, business names, ownership, tags, terms, custom metadata,
-  dataset fields, alerts, halt-config). Reached via `GET /api/activity` (windowed
-  by beginDate/endDate + 9 filter facets) and `GET /api/activity/counts` (aggregate
-  totals). Four visibility modes via `type` query parameter (ALL / MY_OBJECTS / DOWNSTREAM
-  / UPSTREAM). Cursor pagination via `(lastEventId, lastEventDateTime)` — the typo
-  `lasEventId` exists on the public controller signature (ActivityController.getActivity.md
-  `bugs_limitations_corner_cases[0]`). Persisted in the range-partitioned `public.activity`
-  table managed by `ActivityTablePartitionManager` (partition WIDTH controlled by
-  `odd.activity.partition-period`, default 30 days; no retention/DROP path — table
-  grows monotonically). vocabulary_status: codebase-anchored, doc-side-partially-covered
-  (live `features/active-platform-features/activity-feed` describes the UI surface
-  but main-concepts.md does not name ''Activity Feed'' as a canonical term).'
+description: |-
+  Platform-wide audit-trail surface exposing append-only events tracking who
+  changed what (descriptions, business names, ownership, tags, terms, custom
+  metadata, dataset fields, alerts, halt-config). Reached via GET /api/activity
+  (windowed by beginDate/endDate + 9 filter facets) and GET /api/activity/counts
+  (aggregate totals). Four visibility modes via `type` query parameter (ALL /
+  MY_OBJECTS / DOWNSTREAM / UPSTREAM). Cursor pagination via `(lastEventId,
+  lastEventDateTime)` — the typo `lasEventId` exists on the public controller
+  signature (ActivityController.getActivity.md
+  bugs_limitations_corner_cases[0]). Persisted in the range-partitioned
+  `public.activity` table managed by ActivityTablePartitionManager (partition
+  WIDTH controlled by `odd.activity.partition-period`, default 30 days; no
+  retention/DROP path — table grows monotonically).
+
+  **STRENGTHENED batch 2026-05-20T (ActivityController class sidecar)** — adds
+  controller-class layer evidence anchoring the 2-method controller surface
+  shape (getActivity + getActivityCounts) as the COMPLETE read surface for the
+  global Activity Feed: there is no admin variant, no bulk export, no streaming
+  alternative, and no programmatic API-reference page (WebFetch 2026-05-20:
+  /developer-guides/api-reference/activity → 404). 4 of the 27 ActivityEventType
+  enum values (OPEN_ALERT_RECEIVED, RESOLVED_ALERT_RECEIVED, ALERT_STATUS_UPDATED,
+  ALERT_HALT_CONFIG_UPDATED) originate from AlertServiceImpl flows — cross-link
+  to F-007. The 27-vs-20 enum-cardinality puzzle from batch R is RECONCILED in
+  this batch (20 named global types + 7 categorical internal types = 27); see
+  invariant activity-event-enum-20-named-plus-7-categorical-equals-27.
+
+  vocabulary_status: codebase-anchored, doc-side-partially-covered (live
+  `features/active-platform-features/activity-feed` describes the UI surface but
+  main-concepts.md does not name 'Activity Feed' as a canonical term).
 vocabulary_status: codebase-anchored, doc-side-partially-covered
 axes_present:
 - controllers
 - config_prefixes
 nodes:
 - odd-platform java ActivityController controller-method:getActivity
+- odd-platform java ActivityController controller-class:ActivityController
 - odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
 contributors:
-- 'ActivityController.getActivity: entities[Activity, ActivityType, ActivityEventType,
+- |-
+  ActivityController.getActivity: entities[Activity, ActivityType, ActivityEventType,
   ActivityState, AssociatedOwner, DataEntityRef]; operations[list-activity, audit-trail-read,
-  filter-by-window, filter-by-owner-scope, filter-by-event-type, cursor-paginate-activity]'
-- 'ActivityTablePartitionManager@L11: entities[Tables.ACTIVITY (public.activity),
+  filter-by-window, filter-by-owner-scope, filter-by-event-type, cursor-paginate-activity]
+- |-
+  ActivityController (class) batch T: entities[Activity, ActivityCountInfo,
+  ActivityType, ActivityEventType, ActivityService, ActivityApi];
+  operations[list-activity-window, count-activity-aggregates, filter-by-7-facets,
+  filter-by-view-mode-type, cursor-paginate, delegate-to-service];
+  invariants[2-method-controller-shape with no admin/bulk variant; both endpoints
+  return Mono<ResponseEntity<...>>; ServerWebExchange parameter unread (identity
+  via authIdentityProvider not via exchange); class has no @PreAuthorize and no
+  SecurityConstants.SECURITY_RULES entry]
+- |-
+  ActivityTablePartitionManager@L11: entities[Tables.ACTIVITY (public.activity),
   partition WIDTH cadence, range partitioning]; operations[boot-time-partition-init,
-  nightly-cron-partition-refresh]; invariants[no retention/DROP — monotonic growth]'
+  nightly-cron-partition-refresh]; invariants[no retention/DROP — monotonic growth]
 evidence:
 - getActivity.md:concepts.entities.[Activity, ActivityType, ActivityEventType, ActivityState]
 - getActivity.md:concepts.operations.[list-activity, audit-trail-read]
 - getActivity.md:concepts.invariants.[2] (four-way type dispatch)
 - ActivityTablePartitionManager@L11.md:concepts.entities.[Tables.ACTIVITY (public.activity)]
 - ActivityTablePartitionManager@L11.md:concepts.invariants.[4] (no retention/DROP)
+- |-
+  ActivityController (class).md:concepts.entities (the 5 DTO + interface types) +
+  concepts.operations (the 6 operations including the four-way type dispatch +
+  the 4-parallel-count aggregate)
+- |-
+  ActivityController (class).md:implicit_adrs.[0] (2-method shape — global feed
+  + aggregate counts as SEPARATE API calls; merging would couple count-aggregation
+  latency with paginated list-fetch latency)
+- |-
+  ActivityController (class).md:implicit_adrs.[2] (controller is intentionally
+  thin to make the OpenAPI-generated interface the canonical source of HTTP-binding
+  truth)
+- |-
+  ActivityController (class).md:coherence_notes.strengthens.[F-006] (audit-silence
+  pattern reaches 9-sidecar at controller-class layer — no @PreAuthorize, no
+  SecurityConstants entry, no admin variant)
+- |-
+  ActivityController (class).md:docs_link_semantic.doc_drift_findings.[4]
+  (no first-party API-reference page for the activity tag — 404 on
+  /developer-guides/api-reference/activity)
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
   - LOGIN_FORM
   - OAUTH2
   - LDAP
+  - DISABLED
   ingestion_filter_relevance: false
   authorization_consistency:
     verdict: UNGATED
-    detail: ActivityController.getActivity carries no @PreAuthorize, no programmatic
-      permissionService check. Generated ActivityApi interface has no auth annotations
-      (grep verified). `/api/activity` is not in SecurityConstants.SECURITY_RULES
-      (SecurityConstants.java:98-356) and not in WHITELIST_PATHS — falls through to
-      pathMatchers('/**').authenticated(). Live `/configuration-and-deployment/enable-security/authorization`
-      (verified 200, 2026-05-10) documents the Policies/Permissions/Roles framework
-      but per-endpoint wiring for /api/activity is absent.
+    detail: |-
+      Both ActivityController endpoints (getActivity + getActivityCounts) carry no
+      @PreAuthorize, no programmatic permissionService check. Generated ActivityApi
+      interface has no auth annotations (grep verified across the generated sources).
+      `/api/activity` and `/api/activity/counts` are NOT in SecurityConstants.SECURITY_RULES
+      (full file read; zero matches for activity/Activity/ACTIVITY) and NOT in
+      WHITELIST_PATHS — falls through to pathMatchers('/**').authenticated().
+      Live `/configuration-and-deployment/enable-security/authorization` documents
+      the Policies/Permissions/Roles framework but per-endpoint wiring for /api/activity
+      is absent on the live page. **Batch T controller-class evidence is the 9th-sidecar
+      anchor for F-006 audit-silence at the read surface that surfaces what the
+      schema-rooted scope can record.**
   owner_scoping:
     verdict: MIXED
-    detail: type=null (default) and type=ALL → fetchAllActivities returns cross-owner
-      audit trail (no owner filter). type=MY_OBJECTS → fetchMyActivities filters via
-      authIdentityProvider.fetchAssociatedOwner() (the only path that respects caller
-      ownership). type=UPSTREAM/DOWNSTREAM → fetchDependentActivities walks lineage
-      graph WITHOUT caller-ownership filter — anyone can ask 'what changed upstream
-      of X' regardless of whether they own X. Two distinct dispatch paths (`if (type
-      == null)` + `case ALL`) both lead to fetchAllActivities — a future refactor
-      updating only one branch silently bypasses any new gate (getActivity.md:security.known_security_gaps.[1]).
+    detail: |-
+      type=null (default) and type=ALL → fetchAllActivities returns cross-owner
+      audit trail (no owner filter). type=MY_OBJECTS → fetchMyActivities filters
+      via authIdentityProvider.fetchAssociatedOwner() (the only path that respects
+      caller ownership). type=UPSTREAM/DOWNSTREAM → fetchDependentActivities walks
+      lineage graph WITHOUT caller-ownership filter — anyone can ask 'what changed
+      upstream of X' regardless of whether they own X. Two distinct dispatch paths
+      (`if (type == null)` + `case ALL`) both lead to fetchAllActivities — a
+      future refactor updating only one branch silently bypasses any new gate.
   strengths:
-  - Cursor pagination on `(lastEventId, lastEventDateTime)` — append-only audit data
-    shape; avoids deep-offset cliffs (ActivityController.java:34-35)
-  - Service-layer null-date validation throws BadUserRequestException — belt-and-braces
+  - |-
+    Cursor pagination on `(lastEventId, lastEventDateTime)` — append-only audit
+    data shape; avoids deep-offset cliffs (ActivityController.java:34-35)
+  - |-
+    Service-layer null-date validation throws BadUserRequestException — belt-and-braces
     defence beyond OpenAPI required:true (ActivityServiceImpl.java:98-100)
+  - |-
+    Reactive Mono/Flux signature end-to-end — non-blocking on request thread
   weaknesses:
-  - '`/api/activity` (and `/api/activity/counts`) globally readable by any authenticated
-    user — exposes who-changed-what audit trail across every owner including ActivityState
-    old/new diffs of descriptions, business names, ownership changes, custom metadata
-    (getActivity.md:security.known_security_gaps.[0] severity HIGH)'
-  - userIds/ownerIds filter parameters not validated — submitting candidate id lists
-    allows enumeration of which users/owners have generated platform activity (severity
-    MEDIUM)
-  - DescriptionActivityStateDto carries free-text user-supplied descriptions — if
-    sensitive content ever lands there (incident notes, customer ids, internal tickets),
-    the activity feed surfaces it cross-owner with no redaction (severity MEDIUM)
-  - Under auth.type=DISABLED, anonymous read of the entire cross-owner audit trail
-  - Public-API parameter typo `lasEventId` (missing `t`) on the controller signature
+  - |-
+    `/api/activity` (and `/api/activity/counts`) globally readable by any
+    authenticated user — exposes who-changed-what audit trail across every owner
+    including ActivityState old/new diffs of descriptions, business names,
+    ownership changes, custom metadata (severity HIGH)
+  - |-
+    userIds/ownerIds filter parameters not validated — submitting candidate id
+    lists allows enumeration of which users/owners have generated platform
+    activity (severity MEDIUM)
+  - |-
+    DescriptionActivityStateDto carries free-text user-supplied descriptions —
+    if sensitive content ever lands there (incident notes, customer ids, internal
+    tickets), the activity feed surfaces it cross-owner with no redaction
+    (severity MEDIUM)
+  - |-
+    Under auth.type=DISABLED, anonymous read of the entire cross-owner audit trail
+  - |-
+    Public-API parameter typo `lasEventId` (missing `t`) on the controller signature
     — generated client SDKs carry the typo permanently (severity LOW; ActivityService
     interface fixes it at line 42)
+  - |-
+    **Audit-trail SILENCE on RBAC/Owner CRUD/Datasource/Collector mutations**
+    (the F-006 9-sidecar pattern, schema-rooted at activity.data_entity_id NOT NULL
+    FK per batch R + ReactiveActivityRepositoryImpl): operationally a Role creation,
+    Policy edit, Owner deletion, or Collector token rotation produces NO row in
+    this feed. The doc page does not state the scope boundary (severity HIGH —
+    confirmed at controller-class layer in batch T)
   cross_file_inconsistencies:
-  - Per-entity getDataEntityActivity (DataEntityController) uses the same cursor pattern
-    but is reached from a different route and has different scoping — both endpoints
-    expose the same payload, the global one is the larger blast radius
+  - |-
+    Per-entity getDataEntityActivity (DataEntityController) uses the same cursor
+    pattern but is reached from a different route and has different scoping —
+    both endpoints expose the same payload, the global one is the larger blast
+    radius
+  - |-
+    The 27-vs-20 enum cardinality mismatch from batch R is RECONCILED at the
+    controller layer in batch T (20 named + 7 categorical = 27); see invariant
+    activity-event-enum-20-named-plus-7-categorical-equals-27 — LOW-severity
+    doc-completeness gap rather than a wire drift
   contributing_files:
   - getActivity.md
+  - ActivityController controller-class.md
+  - ActivityTablePartitionManager@L11.md
   evidence:
-  - getActivity.md:security.known_security_gaps.[0] (cross-owner audit-trail exposure
-    HIGH)
-  - getActivity.md:security.known_security_gaps.[1] (two-branch dispatch refactor
-    risk MEDIUM)
-  - getActivity.md:security.known_security_gaps.[2] (userIds/ownerIds enumeration
-    MEDIUM)
-  - getActivity.md:security.known_security_gaps.[3] (DISABLED-mode anonymous read
-    LOW)
+  - getActivity.md:security.known_security_gaps.[0] (cross-owner audit-trail exposure HIGH)
+  - getActivity.md:security.known_security_gaps.[1] (two-branch dispatch refactor risk MEDIUM)
+  - getActivity.md:security.known_security_gaps.[2] (userIds/ownerIds enumeration MEDIUM)
+  - getActivity.md:security.known_security_gaps.[3] (DISABLED-mode anonymous read LOW)
+  - |-
+    ActivityController (class).md:security.known_security_gaps.[0] (cross-owner
+    read of activity payload HIGH)
+  - |-
+    ActivityController (class).md:security.known_security_gaps.[1] (DISABLED-mode
+    anonymous reach MEDIUM)
+  - |-
+    ActivityController (class).md:security.known_security_gaps.[5]
+    (RBAC-audit-silence HIGH — schema-rooted scope confirmed at controller layer)
 performance_aggregate:
   overall: MEDIUM
   hot_paths:
-  - GET /api/activity (fetchAllActivities) — single PostgreSQL query against `activity`
-    table filtered by 8 facets + cursor; with no `size` upper bound, wide-window queries
-    trigger full-window scans — getActivity.md:performance.hot_paths.[0]
-  - GET /api/activity/counts — 4 parallel aggregation queries per call via Mono.zip
-    (totalCount, myObjectsCount, downstreamCount, upstreamCount) — getActivity.md:performance.hot_paths.[2]
-  - fetchDependentActivities — lineage-graph resolution BEFORE the activity query;
-    for deep lineage graphs the resolution step dominates latency — getActivity.md:performance.hot_paths.[1]
+  - |-
+    GET /api/activity (fetchAllActivities) — single PostgreSQL query against
+    `activity` table filtered by 8 facets + cursor; with no `size` upper bound,
+    wide-window queries trigger full-window scans — getActivity.md:performance.hot_paths.[0]
+    + ActivityController (class).md:performance.hot_paths.[0]
+  - |-
+    GET /api/activity/counts — 4 parallel aggregation queries per call via Mono.zip
+    (totalCount, myObjectsCount, downstreamCount, upstreamCount) —
+    getActivity.md:performance.hot_paths.[2] + ActivityController (class).md:performance.hot_paths.[2]
+  - |-
+    fetchDependentActivities — lineage-graph resolution BEFORE the activity query;
+    for deep lineage graphs the resolution step dominates latency —
+    getActivity.md:performance.hot_paths.[1] + ActivityController (class).md:performance.hot_paths.[1]
+  - |-
+    fetchMyActivities — 1 user-owner-mapping lookup + 1 activity-table SELECT
+    filtered by OWNERSHIP.OWNER_ID = currentOwnerId; lower cost than the default
+    path — ActivityController (class).md:performance.hot_paths.[3]
   throughput_shape:
     verdict: SINGLE_ITEM_ONLY
-    detail: Single-window per call. No batch / multi-window endpoint. UI rendering
-      a multi-window dashboard issues N separate calls.
+    detail: |-
+      Single-window per call. No batch / multi-window endpoint. UI rendering a
+      multi-window dashboard issues N separate calls.
   scaling_shape:
     verdict: HORIZONTALLY_SCALABLE
-    detail: Stateless controller — instances scale horizontally. Read-only path, no
-      locks. Cursor pagination scales linearly with page count. Bounded only by DB
-      connection pool and Postgres planner.
+    detail: |-
+      Stateless controller — instances scale horizontally. Read-only path, no
+      locks. Cursor pagination scales linearly with page count. Bounded only by
+      DB connection pool and Postgres planner. F-010 interaction: the activity
+      table grows monotonically while non-empty partitions are never dropped;
+      read scans over the full historical window scale with deployment age.
   strengths:
-  - Reactive Mono/Flux end-to-end — non-blocking on the request thread
-  - Cursor pagination over an append-only `activity` table — appropriate index shape,
-    avoids offset cliffs
+  - |-
+    Reactive Mono/Flux end-to-end — non-blocking on the request thread
+  - |-
+    Cursor pagination over an append-only `activity` table — appropriate index
+    shape, avoids offset cliffs
   weaknesses:
-  - '`size` parameter has no @Max constraint and no programmatic upper bound — `size=Integer.MAX_VALUE`
-    only safeguarded by the DB query plan (getActivity.md:performance.known_performance_gaps.[0]
-    severity MEDIUM)'
-  - Counts endpoint fans out to 4 aggregation queries per call — for a UI polling
-    counts on a refresh interval, DB load is 4x apparent endpoint count; no caching,
-    no debouncing, no aggregate table (severity LOW)
-  - Cursor predicate must be backed by `(created_at DESC, id DESC)` composite index
-    on `activity` — if absent, deep-window scans degrade (out-of-scope at the controller
-    layer; surface for repository review)
-  - fetchDependentActivities walks the lineage graph on the hot path — no precomputed
-    dependency-set on the activity row (severity LOW; deployment-dependent)
-  - '**Unbounded monotonic growth of `public.activity` table** — `ActivityTablePartitionManager`
-    calls only `createPartitionsIfNotExists`; `PartitionService.dropPartition` + `getEmptyPastPartitions`
-    exist on the service interface but are NEVER invoked for the activity table (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0]
-    severity HIGH — silent-data-growth class analogous to LSN-001). Live `features/active-platform-features/activity-feed#configuration`
-    claims `odd.activity.partition-period` controls ''retention and partitioning''
-    — INCORRECT: the setting controls partition WIDTH only, no retention path exists.
-    **CONFIRMED FROM SECOND ANGLE in batch 2026-05-12D via HousekeepingTTLProperties**
-    — the entire housekeeping TTL surface contains exactly three fields (resolved_alerts_days,
-    search_facets_days, data_entity_delete_days) and NONE targets the ACTIVITY table.
-    The only activity-touching housekeeping path is `ActivityEmptyPartitionsHousekeepingJob`,
-    which requires partitions to already be EMPTY (`COUNT(*) = 0` at PartitionServiceImpl.java:133-141)
-    before dropping — there is NO code path that deletes activity rows by age. Two-angle
-    confirmation: REFACTOR-085 is real, not inferred. (HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[0]
-    — drift CONFIRMED from second angle)'
-  - '**Silent-fail on partition CREATE failure** — `PostgreSQLPartitionCreationJob.createPartitionIfNotExists`
-    (lines 53-60) catches the wrapping RuntimeException, logs at ERROR, and the outer
-    loop continues. No health-check, no metric, no alert. An ODD instance with a DB
-    role lacking CREATE TABLE privilege would log ERROR at boot once and silently
-    degrade until `activity` INSERTs began failing as rows arrived for an uncovered
-    window (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[2]
-    severity HIGH — silent-fail of a durability-critical subsystem).'
-  - No `@Min(1)` validation on `odd.activity.partition-period` — `partition-period=0`
-    produces zero partitions (the `while (lastPartitionDate.isBefore(bufferDate))`
-    predicate evaluates baseline.isBefore(baseline) = false); rows are then REJECTED
-    by Postgres with `no partition of relation "activity" found for row`. Silent operator
-    misconfiguration → hard-fail INSERT path (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[1]
-    severity MEDIUM).
-  - No Micrometer / health-check observability on partition lifecycle — operators
-    have no metric to alert on 'partition creation has been failing silently for 30
-    days' (ActivityTablePartitionManager@L11.md:performance.known_performance_gaps.[1]
-    severity MEDIUM).
+  - |-
+    `size` parameter has no @Max constraint and no programmatic upper bound —
+    `size=Integer.MAX_VALUE` only safeguarded by the DB query plan
+    (severity MEDIUM)
+  - |-
+    Counts endpoint fans out to 4 aggregation queries per call — for a UI polling
+    counts on a refresh interval, DB load is 4x apparent endpoint count; no
+    caching, no debouncing, no aggregate table (severity LOW)
+  - |-
+    Cursor predicate must be backed by `(created_at DESC, id DESC)` composite
+    index on `activity` — if absent, deep-window scans degrade
+    (severity LOW; out-of-scope at the controller layer)
+  - |-
+    fetchDependentActivities walks the lineage graph on the hot path — no
+    precomputed dependency-set on the activity row (severity LOW; deployment-dependent)
+  - |-
+    **Unbounded monotonic growth of `public.activity` table** —
+    ActivityTablePartitionManager calls only `createPartitionsIfNotExists`;
+    PartitionService.dropPartition + getEmptyPastPartitions exist on the service
+    interface but are NEVER invoked for the activity table (severity HIGH —
+    silent-data-growth class analogous to LSN-001). Live
+    `features/active-platform-features/activity-feed#configuration` claims
+    `odd.activity.partition-period` controls 'retention and partitioning' —
+    INCORRECT: the setting controls partition WIDTH only, no retention path
+    exists. CONFIRMED FROM SECOND ANGLE in batch 2026-05-12D via
+    HousekeepingTTLProperties.
+  - |-
+    Silent-fail on partition CREATE failure — PostgreSQLPartitionCreationJob
+    catches the wrapping RuntimeException, logs at ERROR, and the outer loop
+    continues. No health-check, no metric, no alert (severity HIGH)
+  - |-
+    No `@Min(1)` validation on `odd.activity.partition-period` — `partition-period=0`
+    produces zero partitions; rows are then REJECTED by Postgres
+    (severity MEDIUM)
+  - |-
+    No Micrometer / health-check observability on partition lifecycle — operators
+    have no metric to alert on 'partition creation has been failing silently for
+    30 days' (severity MEDIUM)
+  - |-
+    No rate limiting at the controller layer — a hostile or mis-tuned client can
+    drive arbitrarily many getActivity calls (severity MEDIUM — confirmed batch T)
   cross_file_inconsistencies:
-  - 'Activity Feed concept now spans two sidecars at different concept layers: controller-method
-    getActivity (read surface) + config-key-consumer ActivityTablePartitionManager
-    (durability surface). The two reach different LSN-class findings (cross-owner
-    audit exposure vs unbounded table growth) for the same Activity Feed feature —
-    no cross-file disagreement, but the pair is the first example in the catalog where
-    reading the feature requires BOTH the surface-axis and the operational-axis sidecar.'
+  - |-
+    Activity Feed concept now spans THREE sidecars at different concept layers:
+    controller-method getActivity (read-method surface) + controller-class
+    ActivityController (class-level shape + cross-cutting evidence) +
+    config-key-consumer ActivityTablePartitionManager (durability surface).
+    The three reach related LSN-class findings (cross-owner audit exposure,
+    unbounded table growth, F-006 audit-silence) for the same Activity Feed
+    feature — no cross-file disagreement; the trio is the most thoroughly-enriched
+    feature in the catalog.
   contributing_files:
   - getActivity.md
+  - ActivityController controller-class.md
   - ActivityTablePartitionManager@L11.md
   evidence:
   - getActivity.md:performance.hot_paths.[0-2]
   - getActivity.md:performance.known_performance_gaps.[0-3]
-  - ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0,1,2] (no
-    retention; no @Min validation; silent-fail)
-  - ActivityTablePartitionManager@L11.md:performance.known_performance_gaps.[1,2]
+  - |-
+    ActivityController (class).md:performance.hot_paths.[0-3] + performance.known_performance_gaps.[0-4]
+  - |-
+    ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0,1,2]
+    (no retention; no @Min validation; silent-fail)
+  - |-
+    ActivityTablePartitionManager@L11.md:performance.known_performance_gaps.[1,2]
     (no observability; planner cost growth)
-notes: 'Activity Feed surfaces in main-concepts.md only implicitly via the
+notes: |-
+  Activity Feed surfaces in main-concepts.md only implicitly via the Data Discovery
+  and Data Security pillars — neither name 'Activity Feed' or 'audit trail' as a
+  canonical term. Live `features/active-platform-features/activity-feed` page
+  (verified 200, 2026-05-20) describes the UI feature but omits the `type` parameter
+  (MY_OBJECTS/UPSTREAM/DOWNSTREAM/ALL), the visibility model (who can see what),
+  and the cursor pagination mechanics. The `/developer-guides/api-reference/activity`
+  page returns 404 — there is NO first-party API-reference home for this surface.
+  Batch 2026-05-10B added operational-axis findings: the `public.activity` table
+  grows monotonically (no retention path), the docs page mis-describes
+  `odd.activity.partition-period` as a retention control, and partition creation
+  fails silently with no observability.
 
-  `Data Discovery` and `Data Security` pillars — neither name "Activity
+  **Batch T (2026-05-20) adds**:
+    - Controller-class layer evidence anchoring the 2-method shape
+    - F-006 audit-silence pattern strengthening to 9-sidecar+1 (THIS controller
+      is the read surface that surfaces what the schema-rooted scope can record)
+    - Reconciliation of the 27-vs-20 enum cardinality mismatch from batch R
+      (20 named + 7 categorical = 27) — see new invariant
+      activity-event-enum-20-named-plus-7-categorical-equals-27
+    - Confirmation of the read-collaborative posture's 25th surface (this
+      controller is unscoped at the controller layer; the service layer's
+      ActivityType=MY_OBJECTS branch is the lone owner-respecting dispatch)
 
-  Feed" or "audit trail" as a canonical term. Live `features/active-platform-features/activity-feed`
-
-  page (verified 200, 2026-05-10) describes the UI feature but omits the
-
-  `type` parameter (MY_OBJECTS/UPSTREAM/DOWNSTREAM/ALL), the visibility
-
-  model (who can see what), and the cursor pagination mechanics. The
-
-  `/developer-guides/api-reference/activity` page returns 404 — there is
-
-  NO first-party API-reference home for this surface. Batch 2026-05-10B
-
-  adds operational-axis findings: the `public.activity` table grows
-
-  monotonically (no retention path), the docs page mis-describes
-
-  `odd.activity.partition-period` as a retention control, and partition
-
-  creation fails silently with no observability. Recommended as a
-
-  canonicalisation candidate: add "Activity Feed" to main-concepts.md
-
-  Terms & Aliases AND create the missing api-reference page AND correct
-
-  the partition-period documentation to clearly state WIDTH-only-not-retention.
-
-  '
+  Recommended as a canonicalisation candidate: add 'Activity Feed' to
+  main-concepts.md Terms & Aliases AND create the missing api-reference page
+  AND correct the partition-period documentation to clearly state
+  WIDTH-only-not-retention.

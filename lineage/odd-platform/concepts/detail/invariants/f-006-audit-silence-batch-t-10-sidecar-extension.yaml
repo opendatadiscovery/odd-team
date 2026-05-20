@@ -1,0 +1,222 @@
+name: F-006 audit-silence 10-sidecar pattern extension (batch T — ActivityController-class layer + DataQuality severity-set extension)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+- P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20T — STRENGTHENS the existing F-006 audit-silence
+  pattern from 9-sidecar to 10-sidecar by adding TWO new evidence points in
+  batch T:
+
+    1. **ActivityController (class) — 10th audit-silence corroborating sidecar**.
+       The read surface that surfaces what the schema-rooted scope can record.
+       NO @PreAuthorize, NO SecurityConstants.SECURITY_RULES entry for
+       /api/activity or /api/activity/counts. The generated ActivityApi interface
+       carries no authorization annotations. Combined with batch R's schema-rooted
+       scope (activity.data_entity_id NOT NULL FK), the picture is COMPLETE
+       end-to-end: every authenticated user sees every recorded change on every
+       data entity across all owners — AND those recorded changes structurally
+       CANNOT include RBAC mutations, Datasource registrations, Owner CRUD, or
+       Collector token rotations. The READ surface is the layer at which the
+       pattern's user-visible manifestation crystallises.
+
+    2. **DataQualityController setDataQATestSeverity — 10b: NEW shape of
+       audit-silence at a DATA-ENTITY-SCOPED mutation**. Prior batches catalogued
+       audit-silence at RBAC / Owner / Datasource / Collector / AlertManager-ingress
+       mutations — every prior sidecar was a mutation that was EITHER
+       not-data-entity-scoped (RBAC/Owner — would require schema change to audit)
+       OR data-entity-scoped but ingress-only (AlertManager — state transitions
+       ARE audited per batch S refinement). DataQuality severity-set is the FIRST
+       audit-silence sidecar that is BOTH:
+         (a) IS authorization-gated (DATA_ENTITY-scoped via DATASET_TEST_RUN_SET_SEVERITY)
+         (b) IS data-entity-scoped (so the schema-rooted activity table FK
+             constraint does NOT block emission — the dataset has a data_entity_id)
+         (c) STILL emits no audit event (no @ActivityLog on
+             DataQualityServiceImpl.setDataQualityTestSeverity; no
+             ActivityEventEmitter call; ReactiveDataQualityRepositoryImpl.java:90-101
+             onDuplicateKeyUpdate is silent)
+       This is the SIMPLEST F-006 remediation target — no schema migration
+       needed, just add the activity event emission to the service method. The
+       audit-silence is purely an annotation gap, not a schema-rooted constraint.
+
+  THE 10-SIDECAR PATTERN END-TO-END (now batch-T-anchored):
+
+    Prior 9-sidecar inventory (per batch S extension):
+      UI tier (batch Q — 5 sidecars):
+        AppToolbar / PolicyList / RolesList / OwnersList / CollectorsList
+      HTTP / controller tier (batch E + P — 5 sidecars):
+        createRole / createPolicy / createOwner / updateOwner / deleteOwner
+      Service tier (batch S — 5 sidecars):
+        OwnerServiceImpl / PolicyServiceImpl / RoleServiceImpl /
+        AlertServiceImpl (partial — webhook INGRESS only) /
+        DataSourceIngestionServiceImpl
+      SQL tier (batch H + N + R — 3 sidecars):
+        ReactivePolicyRepositoryImpl / ReactiveRoleRepositoryImpl /
+        ReactiveActivityRepositoryImpl
+      Schema tier (batch R):
+        V0_0_48__add_activity.sql:4,12 (data_entity_id NOT NULL FK)
+
+    NEW batch T (+2 evidence points):
+      Read-surface tier (batch T):
+        **ActivityController (class)** — 10th audit-silence sidecar; the read
+        surface where the schema-rooted limit becomes user-visible. The four-way
+        ActivityType dispatch (ALL / MY_OBJECTS / UPSTREAM / DOWNSTREAM) is the
+        operator-facing visibility model; under default (type=null or type=ALL)
+        the read returns cross-owner audit but cannot include RBAC mutations.
+      Mutation-surface tier (batch T — NEW SHAPE):
+        **DataQualityController setDataQATestSeverity** — the FIRST audit-silence
+        sidecar on an authorization-gated, data-entity-scoped mutation. Schema
+        permits emission (data_entity_id is the dataset id); the gap is purely
+        annotation-level.
+
+  REMEDIATION SCOPE (refined by batch T):
+    - The Activity read surface itself does NOT need remediation; it correctly
+      surfaces what the schema-rooted scope permits. The fix is at the WRITE
+      side: extend the activity table to permit non-data-entity events, OR
+      pair each RBAC/Owner/Datasource mutation with a sibling event table.
+    - DataQualityController setDataQATestSeverity IS easy to remediate — add
+      @ActivityLog (or an ActivityEventEmitter call) to
+      DataQualityServiceImpl.setDataQualityTestSeverity. The data_entity_id is
+      the dataset's id; the constraint is satisfied. A new ActivityEventType
+      enum value (DATASET_QA_TEST_SEVERITY_UPDATED) would be the cleanest, but
+      reusing DATA_ENTITY_OVERVIEW_UPDATED is a one-line stop-gap.
+
+  Severity: HIGH (the 10-sidecar pattern means the platform's RBAC + Owner +
+  Datasource + Alert-ingress audit story is uniformly absent across every layer
+  — PLUS the DataQuality severity-set mutation is silent despite being trivially
+  remediable; a privileged caller / hijacked admin / S2S API-key holder per
+  REFACTOR-108 who mutates the authorization model OR a data steward who changes
+  a critical-test severity leaves no trail anywhere).
+axes_present:
+- controllers
+- services
+- repositories_reactive
+- ui_shell
+- ui_components
+- schema_migrations
+nodes:
+- odd-platform java ActivityController controller-class:ActivityController
+- odd-platform java DataQualityController controller-class:DataQualityController
+- odd-platform java service service:OwnerServiceImpl
+- odd-platform java service service:PolicyServiceImpl
+- odd-platform java service service:RoleServiceImpl
+- odd-platform java service service:AlertServiceImpl
+- odd-platform java service service:DataSourceIngestionServiceImpl
+- odd-platform java RoleController controller-method:createRole
+- odd-platform java PolicyController controller-method:createPolicy
+- odd-platform java OwnerController controller-method:createOwner
+- odd-platform java OwnerController controller-method:updateOwner
+- odd-platform java OwnerController controller-method:deleteOwner
+- odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+- odd-platform ts react-component component:PolicyList
+- odd-platform ts react-component component:RolesList
+- odd-platform ts react-component component:OwnersList
+- odd-platform ts react-component component:CollectorsList
+- odd-platform ts react-component component:AppToolbar
+contributors:
+- |-
+  ActivityController (class).md (batch T, 10th audit-silence sidecar):
+    security.authorization_assertions[] (no @PreAuthorize, no SecurityConstants
+    entry — the read surface confirms the schema-rooted scope at the user-visible
+    layer) +
+    security.known_security_gaps.[5] (HIGH — RBAC-audit-silence schema-rooted
+    confirmation at the read surface; activity-feed.md does not state the scope
+    boundary) +
+    coherence_notes.strengthens.[F-006] (audit-silence pattern reaches 9-sidecar
+    at the controller-class layer — this controller is the READ-surface anchor)
+- |-
+  DataQualityController (class).md (batch T, 10b audit-silence sidecar — NEW
+  SHAPE on a data-entity-scoped mutation):
+    bugs_limitations_corner_cases.[4] (HIGH — setDataQATestSeverity uses
+    onDuplicateKeyUpdate; idempotent in outcome but NO ActivityEvent emission,
+    NO audit log, NO last_modified_by, NO version increment) +
+    audit-silence is purely an annotation gap on an authorization-gated mutation;
+    schema permits emission (data_entity_id = dataset id)
+evidence:
+- |-
+  ActivityController (class).md:security.known_security_gaps.[5] (HIGH severity —
+  audit-trail SILENCE on RBAC/Owner CRUD/Datasource/Collector mutations confirmed
+  at the controller-class layer)
+- |-
+  ActivityController (class).md:coherence_notes.strengthens.[F-006] — the
+  pattern reaches 9-sidecar count via this batch + schema-rooted scope
+  confirmation at the user-visible layer
+- |-
+  DataQualityController (class).md:bugs_limitations_corner_cases.[4] — file:line
+  evidence at ReactiveDataQualityRepositoryImpl.java:87-102 (upsert; no audit
+  emission visible) + DataQualityServiceImpl.java:62-81 (service method; no
+  activityRepository / ActivityEvent reference)
+- |-
+  Existing invariant: no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f
+  (the master multi-batch entry)
+- |-
+  Existing invariant: f-006-audit-silence-batch-s-9-sidecar-pattern-extension
+  (the 9-sidecar baseline this batch extends to 10)
+- |-
+  Existing invariant: f-006-audit-silence-schema-rooted-data-entity-id-not-null-fk
+  (the schema-tier root cause from batch R)
+- |-
+  Existing invariant: audit-silence-applies-at-webhook-ingress-not-state-transitions
+  (the cross-batch refinement distinguishing the AlertManager webhook ingress
+  vs state-transitions audit gap shapes — batch S)
+- |-
+  NEW companion canonicalisation candidate (batch T):
+  data-quality-set-severity-no-audit-trail-onduplicatekeyupdate
+triangulation_count: 2
+cross_batch: true
+severity: HIGH
+severity_dim: security-audit-completeness
+mitigations_unimplemented:
+- |-
+  Trivial remediation for DataQuality severity-set:
+    File: odd-platform-api/src/main/java/.../service/DataQualityServiceImpl.java
+    Method: setDataQualityTestSeverity (lines 62-81)
+    Change: Add @ActivityLog(event = ActivityEventType.{DATASET_QA_TEST_SEVERITY_UPDATED |
+            DATA_ENTITY_OVERVIEW_UPDATED}) annotation OR emit an ActivityEvent
+            with the dataset_id, the test_id, the old severity, the new severity.
+    Test: assert that a PUT followed by a GET /api/activity?event_type={chosen} returns
+          the severity-change event with the correct old/new state.
+- |-
+  Schema-side remediation for RBAC + Owner + Datasource + Collector mutations
+  (PER MASTER INVARIANT — NOT new in batch T):
+    Pattern A: extend activity table to permit non-data-entity events
+              (NULLable data_entity_id + discriminator column).
+    Pattern B: separate platform_event table for non-data-entity audits.
+    Either pattern PAIRED with service-tier annotations + activity-event-type
+    enum extensions.
+- |-
+  Read-surface remediation (NOT NEEDED — confirmed by ActivityController batch T):
+    The activity feed correctly surfaces what the schema-rooted scope permits.
+    No change to ActivityController; the fix is at the write side. Confirms
+    that the controller is intentionally thin (per its implicit_adrs.[2] —
+    'controller is intentionally thin to make the OpenAPI-generated interface
+    the canonical source of HTTP-binding truth').
+notes: |-
+  This invariant is the BATCH T strengthening artefact for the master F-006
+  audit-silence pattern. Rather than re-write the master multi-batch narrative
+  files (which carry cumulative cross-batch history and would risk YAML
+  fragility), this batch T extension records the 10-sidecar pattern at a separate
+  detail file. The rebuild_indexes.py rolls both into the index together.
+
+  The master entry (no-audit-log-on-rbac-mutations-...-batch-f) remains the
+  canonical home for the multi-batch narrative; the batch S extension is the
+  service-tier closure marker; THIS batch T extension is the read-surface
+  + data-entity-scoped-mutation extension.
+
+  The DataQualityController severity-set finding is the most actionable
+  next-step: a one-method annotation change with no schema migration. Pair
+  with the DOC-NNN candidate to disclose the audit-silence on the live
+  activity-feed.md page (the schema-rooted scope boundary must be operator-visible
+  for compliance reviewers).
+
+  Cross-references:
+    - Master invariant: no-audit-log-on-rbac-mutations-...-batch-f.yaml
+    - Schema root cause: f-006-audit-silence-schema-rooted-data-entity-id-not-null-fk.yaml
+    - Audit-shape refinement: audit-silence-applies-at-webhook-ingress-not-state-transitions.yaml
+    - Batch S extension: f-006-audit-silence-batch-s-9-sidecar-pattern-extension.yaml
+    - NEW companion canonicalisation candidate (batch T):
+      data-quality-set-severity-no-audit-trail-onduplicatekeyupdate.yaml
+    - Cross-batch refactoring scope: REFACTOR-426 (audit-feed extension)

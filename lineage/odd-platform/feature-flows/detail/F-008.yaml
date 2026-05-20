@@ -36,6 +36,9 @@ drift_class_summary:
 - data_source_create_path_implicit_namespace_create_permission_escalation_by_side_effect
 - data_source_controller_no_single_get_by_id_documented_path_missing
 - regenerate_datasource_token_not_reactive_transactional_inconsistent_with_siblings
+- session_provider_in_memory_default_is_collector_id_cluster_fragility_root_cause_refactor_419_config_tier_vertex
+- session_provider_invalid_value_boots_silently_no_repository_bean_no_warn
+- session_timeout_minus_one_default_makes_sessions_never_expire_unsafe_for_production
 batch_extensions:
 - batch: O
   entry_point_added: |-
@@ -753,6 +756,114 @@ batch_extensions:
     vertices primary-source confirmed and warrant promotion to
     explicit ADRs (collector-tenant vs operator-admin asymmetry,
     UI-vs-S2S merge-semantic divergence).
+- batch: X
+  entry_point_added: |-
+    config-class:SessionConfiguration — the boot-time
+    `ReactiveSessionRepository<MapSession>` bean factory that
+    determines which of three session-store backends (IN_MEMORY /
+    INTERNAL_POSTGRESQL / REDIS) backs every `exchange.getSession()`
+    across the platform. THIS IS THE THIRD VERTEX of the REFACTOR-419
+    triangulation — pairing with the batch-P
+    `IngestionController.createDataSourceEntity` controller-tier
+    sidecar (the session-read) + the batch-P
+    `IngestionDataSourceFilter.java:36-38` upstream filter
+    (the session-write). Together the three sidecars close the
+    cluster-fragility picture at every layer: config (THIS batch —
+    where the IN_MEMORY default is established) + filter (where the
+    collector-id session-write happens) + controller (where the
+    session-read fails on the cross-instance hop).
+  contributing_nodes_added:
+  - odd-platform java SessionConfiguration config-class:SessionConfiguration
+  notes: |-
+    Three new drift facets surface, all primary-source at
+    SessionConfiguration.java:1-66 + application.yml:28-30:
+
+    (1) **REFACTOR-419 3-SIDECAR TRIANGULATION COMPLETE — IN_MEMORY
+    DEFAULT IS THE CLUSTER-FRAGILITY ROOT CAUSE (HIGH severity —
+    PRIMARY SOURCE for the F-008 batch-P
+    `collector_id_websession_attribute_stringly_typed` drift class
+    cluster-side mechanism)** — `application.yml:28-30` ships
+    `session: provider: IN_MEMORY` as the platform default, and
+    `SessionConfiguration.java:46-49` instantiates a
+    `ReactiveMapSessionRepository(new ConcurrentHashMap<>())` — a
+    per-process map with NO cluster-replication.
+    `IngestionDataSourceFilter.java:36-38` writes
+    `SessionConstants.COLLECTOR_ID_SESSION_KEY` into the WebSession
+    backed by THIS bean; `IngestionController.createDataSource`
+    reads it back (batch P). Under cluster deployment with a
+    non-sticky load balancer, the collector's second request lands
+    on a DIFFERENT instance with NO session entry — `IllegalStateException
+    ("Collector id is null")` propagates as HTTP 500. THIS BATCH
+    closes the architectural triangle at the config-default
+    vertex; the cluster-fragility is now fully primary-sourced at:
+    (a) config (THIS batch — IN_MEMORY default + the
+    `ReactiveMapSessionRepository` bean wiring), (b) write-side
+    (batch P — IngestionDataSourceFilter), (c) read-side (batch P
+    — IngestionController). The fix path is documented at the
+    operator level (`docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#select-session-provider`
+    — WebFetched 2026-05-20 status 200, three providers + cluster
+    caveat) but the platform's shipped default remains
+    cluster-fragile. NEW drift facet for F-008:
+    `session_provider_in_memory_default_is_collector_id_cluster_fragility_root_cause_refactor_419_config_tier_vertex`.
+
+    (2) **INVALID `session.provider` BOOTS SILENTLY WITH NO
+    REPOSITORY BEAN (MEDIUM severity — operator-debug surface)** —
+    `SessionConfiguration.SpringWebSessionCondition.matches` (lines
+    51-57) does literal `.equals(...)` checks against
+    `INTERNAL_POSTGRESQL` / `IN_MEMORY`; the REDIS branch's
+    `@ConditionalOnProperty` is similarly strict. A misspelled or
+    case-mismatched value (`internal_postgresql` lowercase,
+    `In_Memory`, typo `IN_MEMOROY`) matches NEITHER branch — NO
+    `ReactiveSessionRepository<MapSession>` bean is registered, NO
+    boot-time WARN log. Spring's autoconfiguration may fail later
+    to satisfy session-aware filters, but the failure surface is
+    misleading — the operator's misconfiguration manifests
+    indirectly. Operators promoting LOGIN_FORM or testing
+    INTERNAL_POSTGRESQL in non-default environments hit this trap
+    without diagnostic signal. NEW drift facet for F-008:
+    `session_provider_invalid_value_boots_silently_no_repository_bean_no_warn`.
+
+    (3) **`spring.session.timeout: -1` MAKES SESSIONS NEVER EXPIRE
+    (HIGH severity — security + operational)** —
+    `application.yml:2-3` ships `spring.session.timeout: -1`
+    universally. For INTERNAL_POSTGRESQL, the
+    `JooqSessionRepository.recordFromSession` sets
+    `expiry_time = lastAccessedTime + maxInactiveInterval` which
+    under `-1` evaluates to a never-reached value — the
+    `PostgreSQLSessionHousekeepingJob` (`expiry_time < now()`
+    predicate at line 30) becomes a no-op + the
+    `SPRING_SESSION` table grows monotonically with the
+    high-water-mark of authenticated users. For IN_MEMORY, the
+    heap grows monotonically until restart. For REDIS, keys never
+    expire. A stolen cookie remains valid until manual
+    platform-side invalidation. The live doc warns operators
+    (WebFetched 2026-05-20 quote: '`spring.session.timeout: -1`
+    means sessions never expire') but the SHIPPED DEFAULT is
+    unsafe for any internet-facing deployment. Cross-link to
+    F-010 (Housekeeping TTL Enforcement — session housekeeping
+    is the SOLE `@Scheduled` job without leader-election guard;
+    F-010 batch-X also extends with this finding from the
+    job-orchestration angle). NEW drift facet for F-008
+    (cross-pillar via session-bridge cluster correctness):
+    `session_timeout_minus_one_default_makes_sessions_never_expire_unsafe_for_production`.
+
+    Coherence sweep STRENGTHENS=3 (F-008 batch-P
+    `collector_id_websession_attribute_stringly_typed_cluster_without_sticky_sessions_breaks`
+    — completed the 3-sidecar triangulation; F-008 batch-P
+    `session_state_loss_5xx_not_401` — confirmed the underlying
+    root cause is config-tier default; F-008 batch-P
+    `asymmetric_auth_between_ingestion_filters` — extended with
+    the cluster-fragility lens). SUPERSEDES=0. CONFLICTS=0.
+    Cross-references: REFACTOR-419 is now PRIMARY-SOURCE COMPLETE
+    across 3 layers (controller + filter + config); ADR-CANDIDATE-141
+    (Collector identity via WebSession attribute) gains its third
+    architectural facet — the shipped-default-IN_MEMORY choice
+    that creates the cluster fragility; LSN-018 cross-mode-bleed
+    pattern continues to surface NEW config-tier anchors
+    (session-bridge cluster-fragility is ANOTHER `default ships
+    operator-invisible failure mode` pattern, joining the
+    LOGIN_FORM-ADMIN-for-all + DISABLED-anyExchange.permitAll +
+    MinIO-region-default-us-east-1 family).
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Ingestion-replace destruction surface
@@ -790,6 +901,7 @@ description: "The platform's primary S2S ingestion endpoint `POST /ingestion/ent
   \ warns about."
 contributing_nodes:
 - odd-platform java auth filter:IngestionDataEntitiesFilter
+- odd-platform java SessionConfiguration config-class:SessionConfiguration
 - odd-platform java IngestionController controller-method:postDataEntityList (UNRESOLVED — sibling controller sidecar not
   in this batch; ref via service-tier upstream_callers)
 - odd-platform java IngestionController controller-method:createDataSourceEntity
@@ -1555,6 +1667,7 @@ related_concepts:
 related_retrospectives:
 - LSN-017
 - LSN-001
+- LSN-018  # batch-X REFACTOR-419 3-sidecar triangulation closed at config-tier vertex (SessionConfiguration) — strengthens existing batch-P controller+filter primary source; coherence-strengthens not supersedes
 related_features:
 - F-007
 - F-019  # batch-P Owner Lifecycle Management — uses the same partial-merge / no-audit / no-per-Owner-scope patterns surfaced by createDataSourceEntity

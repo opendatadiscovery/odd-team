@@ -1,0 +1,53 @@
+gap_id: TEST-GAP-785
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java R2DBCConfiguration config-class:R2DBCConfiguration"
+pillars_affected: [P-03, P-08]
+surfaced_by:
+  - "R2DBCConfiguration.md:concepts.invariants.[lookup_tables_schema is a HARD-CODED constant (line 25)]"
+  - "R2DBCConfiguration.md:bugs_limitations_corner_cases.[5] LOW (Schema name lookup_tables_schema is duplicated as a string literal across three locations)"
+  - "R2DBCConfiguration.md:docs_link_semantic.doc_drift_findings.[2] (Live docs do not mention the ?schema=lookup_tables_schema URL query-param injection)"
+behaviour: |-
+  **MEDIUM — R2DBCConfiguration injects `?schema=lookup_tables_schema` into the custom-pool R2DBC URL via `UriComponentsBuilder` at lines 112-119, with NO validation of the schema constant. The schema name `lookup_tables_schema` is a HARD-CODED `public static final String` at line 25 — duplicated in two other locations (ReferenceDataRepositoryImpl.java:57 + V0_0_86__create_schema_and_tables_for_custom_tables.sql:53). Drift in any one breaks Lookup Tables silently.**
+
+  Additionally, the URL query-param injection at line 116-119 has NO validation that the operator-provided `spring.custom-datasource.url` does not already contain a `?schema=` parameter — the `UriComponentsBuilder.queryParam(SCHEMA, VALUE)` call APPENDS, potentially producing `?other=...&schema=lookup_tables_schema&schema=lookup_tables_schema` which is parser-dependent (Postgres takes the LAST value, but the platform should not depend on this).
+
+  **Two composing risks**:
+
+  1. **Schema constant drift across 3 locations**: a refactor renaming the schema (well-intentioned: `lookup_tables_schema` → `custom_tables_schema` for clarity) requires updating all three locations atomically. Any one missed → schema-not-found runtime error at every Lookup-Table operation (compile + boot OK; first-call failure).
+
+  2. **URL parameter injection / collision**: an operator who points `spring.custom-datasource.url` at a deliberately-separate Postgres deployment AND wants control over the schema is silently overridden — the platform appends `?schema=lookup_tables_schema` regardless. The doc-drift finding (live `/configuration-and-deployment/odd-platform` 2026-05-20 status 200) confirms operators have NO warning that the URL is rewritten.
+
+  **Test gap shape**: parametrised test asserting:
+  1. Default config (custom keys blank) — `customConnectionPool` opens against `spring.datasource.url + "?schema=lookup_tables_schema"`; verify the URL via reflection on the pool's options.
+  2. Custom URL with NO `?schema=` — the platform appends `?schema=lookup_tables_schema`; verify single query-param.
+  3. Custom URL WITH `?schema=other_schema` — the platform STILL appends `?schema=lookup_tables_schema`; verify TWO `schema=` query-params present (current behaviour). PINS the silent-override surface; drives a fix to either RESPECT operator-provided schema or REJECT at boot with a clear error.
+  4. Schema-constant drift detection — assert `R2DBCConfiguration.VALUE_PART_FOR_CUSTOM_DB_URL` equals `ReferenceDataRepositoryImpl.SCHEMA_NAME` equals the literal in V0_0_86. Tests THREE source-of-truth alignment.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/datasource/R2DBCCustomPoolSchemaInjectionContractTest.java"
+  name: "customConnectionPool_schemaQueryParamInjected_andOperatorProvidedSchemaSilentlyOverridden_pinsCurrentBehaviour"
+evidence:
+  - "R2DBCConfiguration.md says (concepts.invariants): 'lookup_tables_schema is a HARD-CODED constant (line 25). The schema name is NOT operator-configurable. Live docs verbatim: you can specify any {database_host}, {database_port} or {database_name} but schema, where Lookup Tables are stored always is lookup_tables_schema. This constant must match the migration script V0_0_86 (CREATE SCHEMA IF NOT EXISTS lookup_tables_schema;) and the literal SCHEMA_NAME in ReferenceDataRepositoryImpl.java:57. Three locations carry the same literal — refactoring requires updating all three.'"
+  - "R2DBCConfiguration.md says (bugs_limitations_corner_cases.[5]): 'Schema name lookup_tables_schema is duplicated as a string literal across three locations (R2DBCConfiguration.java:25, ReferenceDataRepositoryImpl.java:57, V0_0_86__create_schema_and_tables_for_custom_tables.sql:53). Drift in any one would cause schema-not-found errors at runtime for every Lookup-Table operation. No central constant module — refactor candidate.'"
+  - "R2DBCConfiguration.md says (docs_link_semantic.doc_drift_findings.[2]): 'Live docs do not mention the ?schema=lookup_tables_schema URL query-param injection (R2DBCConfiguration.java:117). Operators pointing spring.custom-datasource.url at a separate database MAY not understand that the connection's search_path is being silently rewritten.'"
+  - "Verified at primary source: R2DBCConfiguration.java:24-25 (SCHEMA_PART_FOR_CUSTOM_DB_URL + VALUE_PART_FOR_CUSTOM_DB_URL constants) + line 116-119 (UriComponentsBuilder injection)"
+  - "Verified at primary source: ReferenceDataRepositoryImpl.java:57 + V0_0_86:53 (the two other locations)"
+cross_references:
+  - "REFACTOR-NNN (proposed — extract schema name to a single shared constant module; reject operator-provided ?schema= query params at boot)"
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/odd-platform` MUST document the URL rewrite for the custom datasource)"
+  - "concepts: lookup-tables-schema-hardcoded-constant-3-locations-drift-risk (existing concept)"
+related_features: [F-MDM-LookupTables]
+related_pillar_features: ["P-03:F-001 Lookup Tables"]
+proposed_action: |-
+  Add `R2DBCCustomPoolSchemaInjectionContractTest`. Four test methods:
+
+  1. `customPool_defaultConfigAppendsSchemaQueryParam_pinsContract` — `@SpringBootTest` default; reflect on `customConnectionPool`'s options; assert URL ends with `?schema=lookup_tables_schema`.
+  2. `customPool_operatorProvidedUrlWithoutSchema_appendsSchemaQueryParam` — `spring.custom-datasource.url=jdbc:postgresql://host:5432/db` (no schema); assert URL ends with `?schema=lookup_tables_schema`.
+  3. `customPool_operatorProvidedSchemaSilentlyOverridden_pinsSilentRewrite` — `spring.custom-datasource.url=jdbc:postgresql://host:5432/db?schema=other`; assert URL contains BOTH `schema=other` AND `schema=lookup_tables_schema`; PINS the silent-override surface.
+  4. `schemaConstants_threeLocationsAlign_pinsDriftDetection` — assert `R2DBCConfiguration.VALUE_PART_FOR_CUSTOM_DB_URL` (Java reflection) == `ReferenceDataRepositoryImpl.SCHEMA_NAME` == the literal in V0_0_86 SQL (resource-file read). Catches drift in any single location.
+
+  Pair with: (a) REFACTOR-NNN — extract to `SchemaConstants.java` with a single source of truth; (b) DOC-GAP-NNN — live docs MUST mention the rewrite.
+batch: 2026-05-20-X
+feature_id: null

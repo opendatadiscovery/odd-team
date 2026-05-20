@@ -1,0 +1,60 @@
+gap_id: TEST-GAP-780
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java SessionConfiguration config-class:SessionConfiguration"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "SessionConfiguration.md:performance.scaling_characteristics.[the housekeeping @Scheduled annotation has NO @SchedulerLock / leader-election guard]"
+  - "SessionConfiguration.md:performance.known_performance_gaps.[0] MEDIUM (no per-instance leader-election on hourly housekeeping job)"
+  - "SessionConfiguration.md:implicit_adrs.[2] (housekeeping cadence hardcoded 1 hour, no @SchedulerLock)"
+behaviour: |-
+  **HIGH — PostgreSQLSessionHousekeepingJob is the SOLE `@Scheduled` job in the entire codebase that does NOT use `@SchedulerLock` / advisory-lock-based leader election. On a multi-instance INTERNAL_POSTGRESQL deployment, EVERY instance runs the housekeeping job hourly, multiplying DB load by N replicas.** Sidecar primary-source confirms the asymmetry:
+
+  - **PostgreSQLSessionHousekeepingJobHandler.java:13** declares `@Scheduled(fixedRate = 1, timeUnit = TimeUnit.HOURS)` — NO `@SchedulerLock` annotation.
+  - **Contrast** (cross-batch evidence already in concepts.yaml):
+    - `notifications.wal.advisory-lock-id` (application.yml:177) — leader-election on notification subscriber.
+    - `odd.activity.partition-advisory-lock-id` (application.yml:198) — leader-election on partition manager.
+    - `datacollaboration.sender.advisory-lock-id` + `datacollaboration.receive-event.advisory-lock-id` (application.yml:201-202) — leader-election on data-collaboration jobs.
+    - `HousekeepingJobManager.java:18` uses Postgres advisory-lock leader-election for the platform-wide housekeeping cycle (SearchFacetsHousekeepingJob et al — per F-010).
+  - **Session housekeeping is the SOLE outlier** — verified via grep `@SchedulerLock` over odd-platform-api/src/main/java; the annotation is present on 4 jobs; absent on PostgreSQLSessionHousekeepingJobHandler.
+
+  **Operator-impact scenario**:
+  - Single-instance deployment: housekeeping runs once per hour, DELETE WHERE `expiry_time < now()` executes once. Idempotent SQL — first run deletes the matching rows, no harm.
+  - 5-instance deployment: housekeeping runs 5 times per hour across the 5 replicas. The DELETE SQL is idempotent (the second run sees no rows matching that the first hasn't already deleted), so CORRECTNESS is preserved. But the DB load is 5× the intended rate. For a busy `SPRING_SESSION` table, the DELETE + index maintenance + WAL writes amplify.
+  - 10-instance deployment: 10× load. Combined with `spring.session.timeout=-1` (TEST-GAP-779 — predicate never matches, so the DELETE has no rows to scan but still incurs the planning + lock-acquisition cost), the DB receives 240 useless DELETE statements per day per 10 replicas.
+
+  **Correctness is OK, performance is NOT.** Idempotency is a CONSEQUENCE, not an INVARIANT — a future change adding side-effects to the housekeeping job (e.g., emitting an activity event for each deletion, incrementing a metric counter, persisting an audit row) immediately becomes load-bearing. Without leader-election, N replicas duplicate the side-effects N times.
+
+  **Architectural-consistency gap**: the platform's other `@Scheduled` jobs ALL use either `@SchedulerLock` (ShedLock library) or Postgres advisory locks. The session-housekeeping outlier is an UNDOCUMENTED architectural inconsistency that future maintainers will notice and either fix (good) or replicate (bad — establishing a precedent for unguarded `@Scheduled` jobs).
+
+  **Test gap shape**: parametrised test running a `@SpringBootTest` under N=2 instances (or equivalent — two separate ApplicationContexts in the same JVM sharing a Testcontainers PG) and asserting that ONLY ONE instance's housekeeping job acquires the advisory lock per scheduled tick. The test is CURRENTLY FAILING (no lock exists) — it pins the gap. The fix is one annotation: `@SchedulerLock(name = "sessionHousekeepingJob", lockAtLeastFor = "PT55M", lockAtMostFor = "PT55M")` on the handler.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/session/PostgreSQLSessionHousekeepingLeaderElectionRegressionPinTest.java"
+  name: "housekeepingJob_multiInstance_doesNotUseSchedulerLock_pinsArchitecturalInconsistency"
+evidence:
+  - "SessionConfiguration.md says (performance.scaling_characteristics): 'the housekeeping @Scheduled annotation has NO @SchedulerLock / leader-election guard — on a multi-instance INTERNAL_POSTGRESQL deployment, EVERY instance runs the housekeeping job hourly (so the delete predicate fires N times per hour instead of once). The deletes are idempotent (the second delete sees no rows matching expiry_time < now() that the first didn't already delete in this same minute), so the correctness is OK — but the DB load is N× the intended rate, and the lack of leader-election is inconsistent with other ODD @Scheduled jobs that DO use @SchedulerLock (e.g., DataCollaborationConfiguration receive-event/sender jobs use the datacollaboration.*advisory-lock-id pattern; the alerting subsystem uses notifications.wal.advisory-lock-id). The session housekeeping is the SOLE @Scheduled job without leader-election visible in the codebase.'"
+  - "SessionConfiguration.md says (performance.known_performance_gaps.[0]): 'no per-instance leader-election on the hourly housekeeping job — N instances → N× DB load per hour; inconsistent with the rest of the platform's @Scheduled jobs (which use Postgres advisory locks)'"
+  - "Verified at primary source: PostgreSQLSessionHousekeepingJobHandler.java:13 (the @Scheduled annotation with NO @SchedulerLock)"
+  - "Cross-evidence: application.yml:177 (notifications.wal.advisory-lock-id) + application.yml:198 (partition advisory-lock) + application.yml:201-202 (data-collaboration advisory-locks) + HousekeepingJobManager.java:18 (platform housekeeping leader-election)"
+  - "Grep `@SchedulerLock` over odd-platform-api/src/main/java: 4 matches (none on PostgreSQLSessionHousekeepingJobHandler)"
+cross_references:
+  - "TEST-GAP-779 (compound — spring.session.timeout=-1 makes housekeeping a no-op anyway under shipped defaults; multi-instance amplifies the empty-DELETE load)"
+  - "concepts: scheduled-jobs-leader-election-advisory-lock-pattern (existing concept) — session housekeeping is the documented outlier"
+  - "REFACTOR-NNN (proposed — add @SchedulerLock annotation to PostgreSQLSessionHousekeepingJobHandler; align with the platform's standard pattern)"
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/odd-platform#select-session-provider` should warn that INTERNAL_POSTGRESQL housekeeping currently lacks leader-election in multi-instance deployments)"
+related_features: [F-NN-housekeeping]
+related_pillar_features: ["P-08:F-002 Housekeeping TTL Enforcement"]
+proposed_action: |-
+  Add `PostgreSQLSessionHousekeepingLeaderElectionRegressionPinTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/session/`. One test method asserting the absence:
+
+  1. `housekeepingJob_runsOnEveryInstance_pinsAbsenceOfSchedulerLock` — instantiate `PostgreSQLSessionHousekeepingJobHandler` reflectively; verify the class's `runHousekeeping` method has NO `@SchedulerLock` annotation in its annotation set. The test passes against the current code AND will fail after the fix is applied, prompting an explicit update.
+
+  2. `housekeepingJob_underMultiInstance_runsNTimesNotOnce_pinsLoadAmplification` — `@SpringBootTest` two ApplicationContexts in the same JVM sharing a Testcontainers PG; trigger `runHousekeeping()` on both; assert the DELETE SQL was executed TWICE (e.g., via P6Spy-style query interceptor counting). Confirms the load-amplification path.
+
+  Add a `// ARCHITECTURAL-INCONSISTENCY-PIN — PostgreSQLSessionHousekeepingJobHandler is the sole @Scheduled job in the codebase without @SchedulerLock. Multi-instance deployments multiply DB load. This test pins the current absence until REFACTOR-NNN adds the annotation aligning with the platform pattern.` comment block.
+
+  Pair with: (a) REFACTOR-NNN — add `@SchedulerLock(name = "sessionHousekeepingJob", lockAtLeastFor = "PT55M", lockAtMostFor = "PT55M")` to PostgreSQLSessionHousekeepingJobHandler.java; (b) live-doc update if the inconsistency persists for any reason (it should not — this is the cheapest fix in the codebase).
+batch: 2026-05-20-X
+feature_id: null

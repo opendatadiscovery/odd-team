@@ -1,0 +1,62 @@
+gap_id: TEST-GAP-775
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java NotificationConfiguration config-class:NotificationConfiguration"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "NotificationConfiguration.md:bugs_limitations_corner_cases.[0] HIGH (Protocol case-sensitivity trap)"
+  - "NotificationConfiguration.md:docs_link_semantic.doc_drift_findings.[0] (Live-doc Gmail example uses uppercase SMTP; code compares case-sensitive lowercase 'smtp')"
+  - "NotificationConfiguration.md:tests_coverage_semantic.uncovered_behaviours.[6] (Protocol-branch behaviour ambiguity around 'SMTP' uppercase)"
+  - "NotificationConfiguration.md:tests_coverage_semantic.gaps.(2) Protocol case sensitivity — operator who configures protocol: SMTP (uppercase) gets the ELSE branch — mail.smtp.auth and mail.smtp.starttls.enable are never set"
+behaviour: |-
+  **CRITICAL — Notification SMTP case-sensitivity trap: an operator copy-pasting the live-doc Gmail YAML example (which uses `protocol: SMTP` uppercase) silently bypasses STARTTLS and SMTP AUTH. Credentials may travel in plaintext on every alert email.** Triangulated across code + live docs at the exact line:
+
+  - **Code site**: `NotificationConfiguration.java:63` evaluates `if (emailProperties.getProtocol().equals("smtp"))` — case-sensitive lowercase comparison.
+  - **TRUE branch (L63-66)**: populates `mail.smtp.auth = emailProperties.getSmtp().getAuth()` AND `mail.smtp.starttls.enable = emailProperties.getSmtp().getStarttls()`.
+  - **ELSE branch (L67-69)**: populates ONLY `mail.transport.protocol = emailProperties.getProtocol()` raw; `mail.smtp.auth` and `mail.smtp.starttls.enable` are NEVER SET regardless of operator config.
+  - **Live doc evidence** (WebFetch 2026-05-20 status 200 from `/configuration-and-deployment/odd-platform` Gmail example): `protocol: SMTP` (uppercase) — exactly the value that takes the ELSE branch and silently disables both AUTH and STARTTLS.
+
+  **Operator-impact scenario** (LSN-001 / LSN-002 family — silent insecure default + cryptic doc coverage):
+  1. Operator follows the docs verbatim: `protocol: SMTP`, `smtp.auth: true`, `smtp.starttls: true`, `port: 587`.
+  2. Spring binds `EmailSenderProperties.protocol = "SMTP"`.
+  3. `mailSender(...)` runs the ELSE branch — Properties bag has only `mail.transport.protocol=SMTP`.
+  4. JavaMail's per-property defaults (when keys are unset): `mail.smtp.auth=false`, `mail.smtp.starttls.enable=false`.
+  5. First alert email triggers `transport.connect(...)` — depending on the relay's policy, the connection either fails plaintext (no AUTH), or sends credentials in plaintext (no STARTTLS), or both.
+  6. NO boot warning, NO log line names the case-sensitivity issue. Operator discovers the misconfiguration via either failed delivery OR a security review (worst case: AFTER the credentials have been observed by an MITM).
+
+  **Doc-drift confirmation**: the live doc page at `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` documents the operator-facing YAML AND uses the uppercase `protocol: SMTP` form in the Gmail worked example. The code's lowercase-only comparison is invisible to the operator reading the docs. This is the SAME class as LSN-001 (LOCAL ephemeral default with caveat-only doc) and LSN-002 (us-east-1 pin with caveat-only doc) — a silent insecure default where the doc carries the surface but the code carries the trap.
+
+  **No existing test gap covers this** — verified by grep of test-map/index.yaml: existing TEST-GAP-197..202 cover blank-field validation, null SMTP fields, non-'smtp' protocols (the protocol pass-through to JavaMail), boot-time IllegalArgumentExceptions. NONE address case-sensitivity specifically.
+
+  **Test gap shape**: parametrised unit test asserting `mailSender(...)` constructs the Properties bag correctly for BOTH `protocol: "smtp"` (lowercase, expected TRUE branch — auth + starttls populated) AND `protocol: "SMTP"` (uppercase — currently the ELSE branch — a REGRESSION-PIN that documents the silent failure mode AND triggers a fix-recommendation for case-insensitive comparison). The test is the place to author the fix simultaneously: change line 63 to `emailProperties.getProtocol().equalsIgnoreCase("smtp")` and verify both cases produce the same Properties bag.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/config/NotificationConfigurationProtocolCaseSensitivityTest.java"
+  name: "mailSender_lowercaseSmtpAndUppercaseSmtpProduceSamePropertiesBag_pinsCaseSensitivityFix"
+evidence:
+  - "NotificationConfiguration.md says (bugs_limitations_corner_cases.[0]): 'Protocol case-sensitivity trap: emailProperties.getProtocol().equals(\"smtp\") at L63 is case-sensitive lowercase, while the live doc Gmail example writes protocol: SMTP (uppercase). An operator copying the live-doc YAML verbatim hits the ELSE branch — mail.smtp.auth and mail.smtp.starttls.enable are NEVER set in the Properties bag, regardless of what smtp.starttls: true and smtp.auth: true are configured to. Result: STARTTLS does not engage, SMTP AUTH does not negotiate; depending on the relay, the connection either fails plaintext or sends credentials in the clear.'"
+  - "NotificationConfiguration.md says (docs_link_semantic.doc_drift_findings.[0]): 'Live-doc Gmail example uses protocol: SMTP (uppercase) while THIS file's branch at line 63 compares case-sensitive to lowercase smtp. An operator copying the live-doc YAML verbatim will hit the ELSE branch.'"
+  - "Verified at primary source: NotificationConfiguration.java:63 (`if (emailProperties.getProtocol().equals(\"smtp\"))`) + L65-66 (`mail.smtp.auth` + `mail.smtp.starttls.enable` populated ONLY inside the TRUE branch) + L67-69 (ELSE branch populates only `mail.transport.protocol`)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-05-20 status 200 — confirms Gmail example uses `protocol: SMTP` (uppercase)"
+  - "Grep against odd-platform-api/src/test for 'protocol.*SMTP|SMTP.*case|case-sensitive': 0 matches"
+cross_references:
+  - "TEST-GAP-200 (RELATED — non-'smtp' protocol pass-through; this is the dual-case where 'SMTP' is also non-'smtp' from the code's view)"
+  - "TEST-GAP-197 (RELATED — blank-field validation; case-sensitivity is the NEXT silent-failure facet)"
+  - "LSN-001 / LSN-002 family — silent insecure default + caveat-only doc coverage"
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/odd-platform` Gmail example should use lowercase `smtp` to match the code, OR the code should be made case-insensitive)"
+  - "concepts: smtp-protocol-case-sensitivity-trap-uppercase-from-docs-fails-silently (NEW canonicalisation candidate)"
+  - "REFACTOR-NNN (proposed — change NotificationConfiguration.java:63 to .equalsIgnoreCase(\"smtp\") + add @PostConstruct validation that rejects empty protocol)"
+related_features: [F-NN-notifications-smtp]
+related_pillar_features: ["P-07:F-002-notifications-smtp"]
+proposed_action: |-
+  Add `NotificationConfigurationProtocolCaseSensitivityTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/config/`. Two test methods asserting the Properties bag shape for both cases:
+
+  1. `mailSender_protocolLowercaseSmtp_propertiesBagContainsAuthAndStarttls` — construct `EmailSenderProperties` with `protocol="smtp"`, `smtp.auth=true`, `smtp.starttls=true`; invoke `new NotificationConfiguration(...).mailSender(emailProperties)`; reflect into the JavaMailSenderImpl to read the Properties bag; assert `mail.smtp.auth=true` AND `mail.smtp.starttls.enable=true` are both present.
+  2. `mailSender_protocolUppercaseSMTP_propertiesBagAlsoContainsAuthAndStarttls_pinsCaseSensitivityFix` — same fixture except `protocol="SMTP"`. **This test FAILS against the current code** (Properties bag has neither `mail.smtp.auth` nor `mail.smtp.starttls.enable`), DOCUMENTING the silent failure mode. The fix is one line at NotificationConfiguration.java:63: `if (emailProperties.getProtocol().equalsIgnoreCase("smtp"))`. Land both fix and test in the same PR.
+
+  Pair with: (a) live-doc update — `/configuration-and-deployment/odd-platform` Gmail example must use lowercase OR call out the case-sensitivity; (b) `@PostConstruct` validator on `EmailSenderProperties` that normalises `protocol` to lowercase at boot, removing the trap entirely.
+
+  Add a `// SILENT-INSECURE-DEFAULT — Per the live docs (Gmail example uses uppercase SMTP), but the code does case-sensitive lowercase comparison. STARTTLS + AUTH silently skipped. This test pins both cases producing the same Properties bag after the .equalsIgnoreCase(\"smtp\") fix.` comment block.
+batch: 2026-05-20-X
+feature_id: null

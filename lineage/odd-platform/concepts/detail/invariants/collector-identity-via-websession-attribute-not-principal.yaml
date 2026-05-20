@@ -5,8 +5,27 @@ pillar_affinity:
   - P-10
   - P-09
 description: |-
-  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20-P** — cluster-fragility
-  surface. The `IngestionDataSourceFilter` and the `IngestionController.createDataSource`
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20-P — STRENGTHENED batch 2026-05-20X
+  with the SessionConfiguration config-class sidecar as the THIRD VERTEX**. The
+  cluster-fragility surface now has primary-source evidence at three layers:
+  (i) the IngestionController + IngestionDataSourceFilter at the HTTP / controller
+  layer (batch P); (ii) the WebSession contract via `SessionConstants.COLLECTOR_ID_SESSION_KEY`
+  (batch P); (iii) the SessionConfiguration config-class wiring the WebSession backing
+  store the bridge depends on (batch X — NEW).
+
+  **REFACTOR-419 IS NOW 3-SIDECAR TRIANGULATED**:
+    - Controller + filter layer (batch P, the original): IngestionController.java:50-58
+      + IngestionDataSourceFilter.java:36-38 — the read + write of
+      `SessionConstants.COLLECTOR_ID_SESSION_KEY`
+    - Repository / persistence layer (batch P implicit + batch X explicit):
+      `SessionConstants.COLLECTOR_ID_SESSION_KEY` is the bridge contract
+    - **Config-class layer (batch X — NEW)**: SessionConfiguration.java:22-65 wires
+      the `ReactiveSessionRepository<MapSession>` bean that backs the WebSession
+      every `exchange.getSession()` call materialises. The IN_MEMORY default at
+      application.yml:30 is the BACKING STORE that makes the cluster-fragility
+      surface real.
+
+  The `IngestionDataSourceFilter` and the `IngestionController.createDataSource`
   share state through a stringly-typed WebSession attribute
   (`SessionConstants.COLLECTOR_ID_SESSION_KEY = "collectorId"`,
   `SessionConstants.java:4`), NOT through Spring Security's
@@ -25,6 +44,11 @@ description: |-
     - `SessionConstants.COLLECTOR_ID_SESSION_KEY` is `public static
       String` (NOT `final`, NOT `@Nonnull`) — a stringly-typed key
       shared by import name across the two files.
+    - **The backing store** (batch X NEW vertex): `SessionConfiguration.java:46-49`
+      wires `new ReactiveMapSessionRepository(new ConcurrentHashMap<>())` under
+      the IN_MEMORY default. The session attribute lives in JVM-local heap
+      under default config; cluster deployments inherit the fragility unless
+      they switch to `session.provider=INTERNAL_POSTGRESQL` or `REDIS`.
 
   **The trade-offs**:
 
@@ -35,13 +59,17 @@ description: |-
        not at compile-time.
 
     2. **Cluster deployments without sticky sessions are NOT supported**
-       — `session.provider: IN_MEMORY` (`application.yml:30`, default)
-       means each platform instance has its own session store. A
-       collector's `POST /ingestion/datasources` (request 1, lands on
-       instance A — session created) followed by a follow-up request
-       on instance B sees NO session attribute. The codebase ships
+       — `session.provider: IN_MEMORY` (`application.yml:30`, default,
+       confirmed by SessionConfiguration sidecar batch X) means each
+       platform instance has its own session store. A collector's
+       `POST /ingestion/datasources` (request 1, lands on instance A —
+       session created) followed by a follow-up request on instance B
+       sees NO session attribute. The codebase ships
        `session.provider: REDIS` and `session.provider: INTERNAL_POSTGRESQL`
-       as alternatives but the default is IN_MEMORY.
+       as alternatives — confirmed wired by SessionConfiguration batch X
+       at lines 30-45 (INTERNAL_POSTGRESQL with JooqSessionRepository) and
+       lines 61-65 (REDIS via @EnableRedisWebSession) — but the default is
+       IN_MEMORY.
 
     3. **Session-state-loss surfaces as HTTP 500, not 401** — if the
        WebSession's COLLECTOR_ID_SESSION_KEY is missing for ANY reason
@@ -59,7 +87,13 @@ description: |-
        (`application.yml:2-3`) means the session map grows
        monotonically on a long-running platform with many collector
        connections. 1000 lifetime collector connections holds 1000
-       session entries until process restart.
+       session entries until process restart. **BATCH X compound finding**:
+       the SessionConfiguration sidecar surfaces the
+       spring-session-timeout-minus-one-housekeeping-noop invariant — the
+       hourly PostgreSQLSessionHousekeepingJob is a NO-OP under -1 timeout
+       (predicate `expiry_time < now()` never matches), so even
+       INTERNAL_POSTGRESQL deployments grow monotonically until operator
+       intervention.
 
   **Why this exists** (implicit ADR confirmed at `createDataSourceEntity.md`
   implicit_adrs.[0]): the design choice is deliberate. The filter could
@@ -80,8 +114,10 @@ description: |-
 axes_present:
   - controllers
   - filters
+  - config_classes
 nodes:
   - odd-platform java IngestionController controller-method:createDataSourceEntity
+  - odd-platform java SessionConfiguration config-class:SessionConfiguration
 contributors:
   - 'createDataSourceEntity.md:implicit_adrs.[0] (Collector identity propagates via WebSession attribute, not Spring Security Principal — deliberate intent_anchor)'
   - 'createDataSourceEntity.md:concepts.invariants.[1-2] (WebSession-bridge contract + 500-on-missing-attribute fail-loud)'
@@ -89,6 +125,21 @@ contributors:
   - 'createDataSourceEntity.md:dependencies_semantic.coupling.[2] (session-based state coupling between filter and controller)'
   - 'createDataSourceEntity.md:performance.resource_allocation (session-bound state grows monotonically with collector connections)'
   - 'createDataSourceEntity.md:performance.scaling_characteristics (cluster-without-sticky-sessions BREAKS the session-bridge)'
+  - |-
+    SessionConfiguration batch X (NEW THIRD-VERTEX PRIMARY SOURCE — config-class layer):
+      concepts.entities — the ReactiveSessionRepository<MapSession> bean topology
+      + dependencies_semantic.requires-feature.[/ingestion/datasources collector-identity
+      bridge] — explicit cross-citation of REFACTOR-419 + ADR-CANDIDATE-141
+      + bugs_limitations_corner_cases.[1] (HIGH — cluster-deployment fragility on
+      IN_MEMORY default; collector-id session attribute does NOT replicate)
+      + docs_link_semantic.doc_drift_findings.[0] — live doc covers session storage
+      but does NOT cross-link to the IngestionDataSourceFilter → IngestionController
+      WebSession bridge
+      + related_features.[F-008 P-10:Batch-Ingestion-S2S-API]
+      + related_refactoring_scopes.[REFACTOR-419 HIGH severity; this sidecar adds
+      the 3rd vertex to the triangulation]
+      + related_implicit_adrs.[ADR-CANDIDATE-141 Collector identity via WebSession
+      attribute; SessionConfiguration is the WIRING SUBSTRATE]
 evidence:
   - createDataSourceEntity.md:implicit_adrs.[0] (intent_anchor — deliberate WebSession choice; SecurityContext alternative explicitly rejected)
   - createDataSourceEntity.md:concepts.invariants.[1] (WebSession-bridge contract)
@@ -97,7 +148,29 @@ evidence:
   - createDataSourceEntity.md:bugs_limitations_corner_cases.[1] (cluster without sticky sessions; severity MEDIUM)
   - createDataSourceEntity.md:dependencies_semantic.coupling.[2] (filter/controller session-state coupling)
   - createDataSourceEntity.md:security.known_security_gaps.[1] (5xx vs 401 info-leak; severity LOW)
+  - |-
+    SessionConfiguration.md (batch X — NEW PRIMARY SOURCE):
+      dependencies_semantic.requires-feature.[/ingestion/datasources collector-identity bridge]
+      + bugs_limitations_corner_cases.[1] (HIGH — cluster-deployment fragility on
+      IN_MEMORY default)
+      + docs_link_semantic.doc_drift_findings.[0] (live doc gap on IngestionDataSourceFilter
+      bridge cross-link)
+      + related_refactoring_scopes.[REFACTOR-419 — third-vertex confirmation]
+      + related_implicit_adrs.[ADR-CANDIDATE-141 — wiring substrate]
+triangulation_count: 3
+cross_batch: true
 notes: |-
+  STRENGTHENED batch 2026-05-20X — REFACTOR-419 (cluster-fragility) now has
+  3-sidecar triangulation: (1) IngestionController + IngestionDataSourceFilter
+  (batch P) — the bridge contract sites; (2) implicit at the
+  WebSession-attribute layer (SessionConstants.COLLECTOR_ID_SESSION_KEY);
+  (3) SessionConfiguration config-class (batch X NEW) — the WIRING SUBSTRATE
+  for the WebSession backing store. The cluster-fragility surface is now
+  PRIMARY-SOURCE PINNED at the config-class layer where the IN_MEMORY default
+  lives. ADR-CANDIDATE-141 gains a third facet — (a) WebSession over
+  SecurityContext, (b) stringly-typed key, (c) **in-memory default rooted at
+  application.yml:30 and wired at SessionConfiguration.java:46-49**.
+
   Cross-references:
 
     - `two-ingestion-filters-asymmetric-auth` invariant — explains the
@@ -105,6 +178,22 @@ notes: |-
 
     - `upsert-by-oddrn-partial-merge-collector-driven-only-name-description`
       invariant — the operation enabled by this session bridge.
+
+    - **NEW batch X**:
+      `spring-session-timeout-minus-one-housekeeping-noop` — sibling finding
+      on the same session-store wiring; under spring.session.timeout=-1
+      default the housekeeping job is a no-op, so monotonic growth is
+      not bounded by the hourly cleanup.
+
+    - **NEW batch X**:
+      `housekeeping-job-no-scheduler-lock-multi-instance-amplification` —
+      operational-inconsistency finding on the same housekeeping job;
+      N replicas × 1 cleanup/hr = N× DB load.
+
+    - **NEW batch X**:
+      `session-cookie-security-attributes-unset` — sibling security finding
+      on the same WebSession layer; cookie defaults are framework-level only,
+      no platform override.
 
   Doc-side recommended action: extend the custom-collectors developer
   guide with a "Cluster deployment" subsection naming the

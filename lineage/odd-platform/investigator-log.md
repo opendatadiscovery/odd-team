@@ -1876,3 +1876,60 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - 214 detail-without-index in refactoring-scopes; 90 in implicit-adrs; 37+4 in doc-gaps
 - Coherence-sweep candidates: 47.7k (V) → 49.9k (W)
 
+
+## Batch 2026-05-20-X — Config-properties sweep: LoginForm + Notification + Minio + Session + R2DBC (5/5; **LSN-002 PRIMARY SOURCE LOCKED**)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 124 prior + 5 new = **129 total**; 0 deferred
+- **Theme**: Operator-config surface — auth-mode + notification + storage + session + DB config
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `LoginFormSecurityConfiguration` | P-09 | **LOAD-BEARING SECURITY**: AuthorizationCustomizer NOT wired (lines 55-57). **Every form-authenticated user is hard-coded ADMIN at line 81.** Policies/Permissions/Roles framework INERT. SECURITY_RULES bypassed. CSRF disabled. **REFACTOR-185 now 24-SIDECAR** (LOGIN_FORM facet). |
+| `NotificationConfiguration` | P-07 | F-009 config-tier closure. **SMTP case-sensitivity trap at L63** ('smtp' lowercase code vs 'SMTP' uppercase docs — silent STARTTLS bypass). No URI scheme allowlist (SSRF class). |
+| `MinioConfig` | P-08 | **LSN-002 PRIMARY SOURCE LOCKED at MinioConfig.java:21-24** (.endpoint + .credentials + .build; no .region(...)). @ConditionalOnProperty REMOTE opt-in. Gate-5 unset-parameter audit: 3 of 5 builder params caveat-defaulted. |
+| `SessionConfiguration` | P-08 | **REFACTOR-419 cluster-fragility now 3-SIDECAR TRIANGULATION CLOSED** (controller + filter + config). IN_MEMORY default. spring.session.timeout=-1 makes housekeeping NO-OP. **Zero cookie-security-attribute config** (HttpOnly/Secure/SameSite). PostgreSQLSessionHousekeepingJob NO @SchedulerLock. |
+| `R2DBCConfiguration` | P-08+P-03 | 6 beans (primary + custom). customConnectionPool SOLELY for Lookup Tables (P-03) with ?schema=lookup_tables_schema query-param injection. ALL 10 R2dbcProperties.Pool settings framework defaults (zero overrides). Plaintext creds + /actuator/env default exposure. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 367 → **375 concepts** | +8 new + 6 strengthened + 2 superseded (canonicalisation candidates promoted to invariants). NEW HIGH: login-form-admin-for-every-user; session-cookie-security-attributes-unset; spring-session-timeout-minus-one-housekeeping-noop; smtp-protocol-case-sensitivity-trap. STRENGTHENED: LSN-002 primary-source confirmed; REFACTOR-419 3-sidecar; REFACTOR-185 24-sidecar; provider-null bleed 5-vertex pentagon. |
+| adr-archaeologist (ADRs) | 171 → **177** | +6 (172-177) + 2 strengthened. ADR-172 LOGIN_FORM-dev-demo HIGH; ADR-173..176 channel-presence/REMOTE-opt-in/3-provider-session/custom-R2DBC-pool MEDIUM; ADR-177 IN_MEMORY-default borderline. |
+| adr-archaeologist (scopes) | 495 → **507** | +12 (496-507) + 5 strengthened. 4 HIGH: LOGIN_FORM ADMIN-for-all; cookie-security-attributes; spring.session.timeout=-1 housekeeping no-op; SMTP case-sensitivity. 5 MEDIUM. 3 LOW. |
+| doc-gap-finder | 217 → **232** | +15 (218-232) + 5 META strengthened (DOC-082/006/038/053/197). 6 HIGH + 9 MEDIUM. **WROTE FILES** (recovered from batch W's in-memory miss). |
+| test-coverage-mapper | 770 → **790 indexed** | +20 (774-793) + 10 strengthened. **5 NEW CRITICAL → 135 CRITICAL**: LOGIN_FORM admin-hardcode; SMTP case-sensitivity; LSN-002 region unset; cookie-security unset; auth-mode quartet RBAC contract. |
+| feature-flow-builder | 28 → **28 features** (+0 new, +7 extended) | F-011 + F-009 + F-027 + F-008 + F-020 + F-010 + F-026 all extended. 26 new drift facets. Auth-mode quartet closed. REFACTOR-419 3-SIDECAR triangulation. |
+
+### Coverage state after batch X
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 129 | **32.7%** (was 31.4%) |
+| Effective coverage | 273 | **69.1%** (was 67.6%) |
+| Features discovered | 28 (unchanged) | config-tier extends existing pillar features |
+| Total test-gaps | 790 indexed | 135 CRITICAL (was 130) |
+
+### Cross-batch triangulation deltas
+
+- **LSN-002 PRIMARY SOURCE LOCKED** at MinioConfig.java:21-24 (Gate-5 unset-parameter audit canonical test case closed)
+- **REFACTOR-419 cluster-fragility 3-SIDECAR TRIANGULATION** (controller + filter + config)
+- **REFACTOR-185 DISABLED-mode bypass** now 24-SIDECAR (LOGIN_FORM facet — ADMIN-for-all is a second-mode bypass)
+- **Provider-null cross-mode bleed**: 4-vertex → 5-vertex PENTAGON (auth-config layer root cause anchor added)
+- **Auth-mode quartet picture CLOSED**: DISABLED + LOGIN_FORM + OAUTH2 + LDAP all have config sidecars
+- **5 canonical "default ships operator-invisible failure" instances** (LOGIN_FORM-ADMIN / DISABLED-permitAll / MinIO-region-default / IN_MEMORY-session / spring.session.timeout=-1)
+- **Coherence-sweep candidates**: 49.9k (W) → 53.1k (X)
+- **Doc-gap recovery**: batch W's in-memory findings written to disk this batch
+
+### Follow-ups (logged, not blocking)
+
+- doc-gap-finder writing-files protocol RECOVERED (was in-memory only in batch W)
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 214 detail-without-index in refactoring-scopes; 90 in implicit-adrs; 52+4 in doc-gaps (grew due to batch X writing append files but not index lines)
+- RelationshipController still pending (P-02 first sidecar; now somewhat redundant since P-02 anchored via F-025)
+- Coherence-sweep candidates linear growth continues
+

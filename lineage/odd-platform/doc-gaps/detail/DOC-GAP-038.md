@@ -45,3 +45,42 @@
   - DOC-GAP-179 (NEW batch P) — the WebSession-attribute identity propagation (cluster fragility)
   - DOC-GAP-180 (NEW batch P) — the UPSERT-by-ODDRN partial-merge semantics + namespace inheritance
 - Severity stays HIGH at the META level — the cross-endpoint cluster is the platform's largest single-feature security posture (three distinct ingestion endpoints, three distinct auth models, all under-documented). Doc-side action remains a single coverage-table + admonition on the S2S sub-page + cross-references on each individual finding's affected pages.
+
+## Batch X append
+
+#### Batch 2026-05-20-X STRENGTHENS — `permittedPaths` hand-coded whitelist under LOGIN_FORM mode leaves `/ingestion/entities` + `/ingestion/datasources` anonymously reachable regardless of `auth.ingestion.filter.enabled`
+
+The original DOC-GAP-038 was anchored on `IngestionDataEntitiesFilter` (the filter-config-key-consumer sidecar from batch B). The batch-X LoginFormSecurityConfiguration sidecar adds the LOGIN_FORM-mode-specific evidence:
+
+- **`LoginFormSecurityConfiguration.java:49-51`** (per sidecar primary source): verbatim `permittedPaths` array includes `/ingestion/entities` + `/ingestion/datasources` + `/api/slack/events` — these paths are PERMIT-ALL under LOGIN_FORM regardless of `auth.ingestion.filter.enabled` setting.
+
+The auth-mode-tier consequence is structurally identical to the DISABLED-mode pattern that DOC-GAP-082 META captures: under LOGIN_FORM, the SecurityWebFilterChain's `.authorizeExchange(...)` lambda explicitly permit-alls the ingestion paths at the chain-construction tier — BEFORE the `auth.ingestion.filter.enabled` toggle has a chance to apply (since the filter is wired conditionally on `auth.ingestion.filter.enabled=true`, not unconditionally).
+
+**The LOGIN_FORM permittedPaths array vs `SecurityConstants.WHITELIST_PATHS` divergence** (per LoginFormSecurityConfiguration sidecar `implicit_adrs.[hand-rolled-whitelist-divergence]`):
+- LOGIN_FORM hand-coded list: `["/actuator/health", "/favicon.ico", "/ingestion/entities", "/ingestion/datasources", "/api/slack/events"]`
+- `SecurityConstants.WHITELIST_PATHS` (used by AuthorizationCustomizer under OAUTH2/LDAP): `["/actuator/**", "/favicon.ico", "/ingestion/**", "/img/**", "/api/slack/events"]`
+
+The two lists diverge:
+- LOGIN_FORM is NARROWER on `/actuator/**` (only `/actuator/health` is whitelisted, not the prometheus/env/info endpoints)
+- LOGIN_FORM is NARROWER on `/ingestion/**` (only `/ingestion/entities` + `/ingestion/datasources` are explicitly whitelisted, not other `/ingestion/*` subpaths)
+- LOGIN_FORM is MISSING `/img/**`
+
+For the `/ingestion/*` family specifically: under LOGIN_FORM, ONLY `/ingestion/entities` and `/ingestion/datasources` are permit-all. Other `/ingestion/*` paths (e.g., `/ingestion/alert/alertmanager` per AlertManagerController.java) fall through to `.pathMatchers("/**").authenticated()` — they require authentication under LOGIN_FORM but are then WIDE-OPEN to any form-authenticated ADMIN user (per DOC-GAP-218).
+
+**The auth-mode coverage of the `/ingestion/*` family**:
+| Path | DISABLED | LOGIN_FORM | OAUTH2 / LDAP |
+|---|---|---|---|
+| `/ingestion/entities` | permit-all | **permit-all (NEW batch X)** | whitelisted via SecurityConstants |
+| `/ingestion/datasources` | permit-all | **permit-all (NEW batch X)** | whitelisted via SecurityConstants |
+| `/ingestion/alert/alertmanager` | permit-all | authenticated-but-any-user-ADMIN | whitelisted via SecurityConstants (no filter) |
+| `/ingestion/...` (other paths) | permit-all | authenticated-but-any-user-ADMIN | whitelisted via SecurityConstants |
+
+The structural insight: under THREE of four auth modes, every `/ingestion/*` path is effectively anonymously-reachable OR ADMIN-equivalent. The `auth.ingestion.filter.enabled` toggle only applies to `/ingestion/entities` POST and only when the filter is wired (per IngestionDataEntitiesFilter sidecar) — even when enabled, the toggle doesn't cover the other ingestion paths AND doesn't cover the permit-all paths under LOGIN_FORM (the filter would have to compete with the permittedPaths at the chain-construction tier).
+
+**The compound with DOC-GAP-082 META**: the META's DISABLED-bypass-RBAC pattern is mirrored by LOGIN_FORM in the auth-mode-tier — the ingestion paths inherit the same anonymous-reachability under both DISABLED and LOGIN_FORM. The doc-side fix on DOC-GAP-038 needs to enumerate the auth-mode-tier coverage:
+
+- "**`/ingestion/entities` is permit-all under DISABLED AND LOGIN_FORM**, regardless of `auth.ingestion.filter.enabled`. Under DISABLED, the chain's `.anyExchange().permitAll()` makes ALL paths anonymous. Under LOGIN_FORM, the hand-coded `permittedPaths` array at `LoginFormSecurityConfiguration.java:49-51` explicitly permit-alls `/ingestion/entities`. **Only under OAUTH2 and LDAP** does the ingestion filter actually gate the POST — and only when `auth.ingestion.filter.enabled=true` (the shipped default is `false`)."
+
+**Severity stays HIGH** — the operator-trap shape ("set auth.ingestion.filter.enabled=true to protect /ingestion/entities") only protects the path under OAUTH2/LDAP. Operators on DISABLED or LOGIN_FORM are bypassed regardless. The doc-side fix is bounded (extend the existing coverage table in DOC-GAP-038 with the auth-mode-tier dimension).
+
+**Coherence**: strengthens=1 (DOC-GAP-038 with LOGIN_FORM evidence), supersedes=0, conflicts_surfaced=0.

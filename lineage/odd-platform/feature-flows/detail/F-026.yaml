@@ -18,6 +18,11 @@ drift_class_summary:
 - zero_controller_tier_test_coverage
 - search_session_ownership_via_unguessable_uuid
 - fts_synchronous_in_write_path_every_row_write
+- lookup_tables_schema_hardcoded_at_four_locations_url_query_param_injection_uri_components_builder_public_api_contract
+- lookup_tables_three_key_fallback_default_same_database_two_pools_one_schema_isolation
+- lookup_tables_custom_pool_default_max_size_undocumented_no_operator_guidance_spring_boot_framework_default_governs
+- lookup_tables_custom_connection_pool_no_conditional_on_property_unconditionally_instantiated_resource_overhead
+- lookup_tables_no_r2dbc_micrometer_binder_pool_utilisation_borrow_latency_queue_depth_invisible_at_actuator_prometheus
 cross_pillar_relationships:
 - pillar_id: P-01
   kind: feeds
@@ -58,7 +63,133 @@ cross_pillar_relationships:
     (off-by-one) but the four-group structure is doc-accurate.
 batch_origin: V
 created_in_batch: V
-batch_extensions: []
+batch_extensions:
+- batch: X
+  entry_point_added: |-
+    config-class:R2DBCConfiguration — the boot-time bean factory
+    that wires `customConnectionPool` + `customDataClient` +
+    `customTransactionManager` (the dedicated R2DBC pool +
+    DatabaseClient + TM that EXCLUSIVELY serves Lookup Tables
+    CRUD). The class rebuilds the JDBC URL via
+    `UriComponentsBuilder.queryParam("schema",
+    "lookup_tables_schema")` (lines 112-119) — every connection
+    from this pool lands inside the dedicated schema created by
+    migration V0_0_86. THIS BATCH closes the F-026 chain at the
+    persistence-substrate vertex: F-026 batch-V identified the
+    14 controller endpoints + service-tier behaviours; THIS
+    batch identifies the DEDICATED-CONNECTION-FACTORY +
+    SCHEMA-ISOLATION mechanism that makes the lookup_tables_schema
+    direct-PG-access contract REAL.
+  contributing_nodes_added:
+  - odd-platform java R2DBCConfiguration config-class:R2DBCConfiguration
+  notes: |-
+    Five new drift facets surface, all primary-source at
+    R2DBCConfiguration.java:1-121 + V0_0_86__create_schema_and_tables_for_custom_tables.sql:53:
+
+    (1) **CUSTOM CONNECTION POOL WITH `?schema=lookup_tables_schema`
+    URL QUERY-PARAM INJECTION (HIGH structural confidence —
+    POSITIVE invariant, doc-anchored)** — R2DBCConfiguration.java:24-25
+    declares `public static final String SCHEMA_PART_FOR_CUSTOM_DB_URL = "schema"`
+    + `public static final String VALUE_PART_FOR_CUSTOM_DB_URL = "lookup_tables_schema"`.
+    Lines 112-119 (`getCustomSchemaDBUrl`) rebuild the JDBC URL via
+    `UriComponentsBuilder` to append `?schema=lookup_tables_schema`.
+    Every connection from the `customConnectionPool` lands inside
+    `lookup_tables_schema`. The live docs confirm this is intentional
+    (WebFetched 2026-05-20): "you can specify any {database_host},
+    {database_port} or {database_name} but schema, where Lookup
+    Tables are stored always is lookup_tables_schema." The constant
+    is HARD-CODED (not operator-configurable); the schema name is a
+    PUBLIC-API CONTRACT for downstream consumers (BI tools, ETL
+    jobs) that anchor their queries to this exact string. Live
+    docs / R2DBCConfiguration.java:25 / V0_0_86:53 /
+    ReferenceDataRepositoryImpl.java:57 (sibling sidecar — the
+    operator-facing schema-name constant) — FOUR locations must
+    agree. NEW drift facet for F-026 (positive invariant):
+    `lookup_tables_schema_hardcoded_at_four_locations_url_query_param_injection_uri_components_builder_public_api_contract`.
+
+    (2) **THREE-KEY FALLBACK ON `spring.custom-datasource.*` —
+    DEFAULT SAME-DATABASE-SAME-CREDENTIAL DEPLOYMENT (MEDIUM —
+    operational invariant)** — R2DBCConfiguration.java:56-58
+    declare `@Value("${spring.custom-datasource.{url|username|password}:}")`
+    with empty-string defaults; lines 61-62 + 113 fall back to
+    `dataSourceProperties.{getUsername|getPassword|getUrl}` when
+    blank. When ALL THREE custom keys are blank (the SHIPPED
+    DEFAULT — they are commented out at application.yml:8-11),
+    the `customConnectionPool` opens a SECOND R2DBC pool against
+    the SAME PostgreSQL database + SAME credentials as the
+    primary, only differing by the appended `?schema=lookup_tables_schema`
+    URL query-param. Operators wanting an isolated lookup-tables
+    database can set the three keys; the SHIPPED default ships
+    one PG database with two schemas (`public` + `lookup_tables_schema`)
+    served by two distinct R2DBC pools. NEW drift facet for
+    F-026:
+    `lookup_tables_three_key_fallback_default_same_database_two_pools_one_schema_isolation`.
+
+    (3) **TWO POOLS × DEFAULT MAX-SIZE=10 CEILING PER REPLICA —
+    SPRING BOOT FRAMEWORK DEFAULT IS UNDOCUMENTED PLATFORM
+    GUARANTEE (MEDIUM — performance gap)** — Lines 41-50 +
+    75-84 are BYTE-IDENTICAL `PropertyMapper.alwaysApplyingWhenNonNull()`
+    blocks applying ALL ten `R2dbcProperties.Pool` defaults to
+    both pools. `application.yml:1-15` ships ZERO
+    `spring.r2dbc.pool.*` keys; the pool ceiling is whatever
+    Spring Boot 3.x's framework default for `R2dbcProperties.Pool.maxSize`
+    happens to be (10 connections per pool at the current
+    spring-boot:3.x + r2dbc-pool:1.0.0.RELEASE version per
+    gradle/libs.versions.toml). Two pools × 10 = 20 connections
+    per platform replica is the practical concurrency ceiling
+    unless operators tune `spring.r2dbc.pool.max-size` (NO
+    LIVE-DOC PAGE surfaces this knob — verified WebFetch
+    2026-05-20). NEW drift facet for F-026:
+    `lookup_tables_custom_pool_default_max_size_undocumented_no_operator_guidance_spring_boot_framework_default_governs`.
+
+    (4) **CUSTOM POOL INSTANTIATED UNCONDITIONALLY — RESOURCE
+    OVERHEAD EVEN WITHOUT LOOKUP TABLES (LOW severity —
+    operational overhead)** — R2DBCConfiguration.java:54
+    `@Bean(name = "customConnectionPool", destroyMethod = "dispose")`
+    has NO `@ConditionalOnProperty` gating on `spring.custom-datasource.*`
+    presence. Every deployment runs TWO R2DBC pools regardless of
+    whether Lookup Tables are used; a deployment that never creates
+    a Lookup Table still pays `initialSize` connections worth of
+    DB-side connection slots held against `lookup_tables_schema`
+    perpetually. NEW drift facet for F-026:
+    `lookup_tables_custom_connection_pool_no_conditional_on_property_unconditionally_instantiated_resource_overhead`.
+
+    (5) **R2DBC-ONLY MICROMETER BINDER NOT WIRED — POOL UTILISATION
+    INVISIBLE (MEDIUM — observability gap)** — `application.yml:226-257`
+    does NOT configure the R2DBC Micrometer binder. The
+    `r2dbc-pool` library ships pool metrics via Micrometer (borrow
+    latency, queue depth, max-size-reached counter, etc.) but ODD
+    Platform does NOT enable the binder. Operators sizing the pool
+    for Lookup Table CRUD have NO `/actuator/prometheus` telemetry
+    beyond the coarse `io.r2dbc.postgresql.QUERY` /
+    `io.r2dbc.postgresql.PARAM` log levels. NEW drift facet for
+    F-026:
+    `lookup_tables_no_r2dbc_micrometer_binder_pool_utilisation_borrow_latency_queue_depth_invisible_at_actuator_prometheus`.
+
+    Coherence sweep STRENGTHENS=3 (F-026 batch-V
+    `two_transactions_no_compensation_catalog_vs_lookup_schema_drift`
+    — extended with the architectural mechanism (TWO POOLS +
+    TWO TMs) that makes the two-transaction split possible AND
+    NECESSARY; F-026 batch-V `rename_breaks_downstream_pipelines_silently`
+    — extended with the schema-name-as-contract finding (the
+    hardcoded `lookup_tables_schema` constant is itself the
+    public API contract); F-026 batch-V `zero_controller_tier_test_coverage`
+    — extended with the substrate-tier test coverage gap
+    (R2DBCConfiguration has no direct unit tests either)).
+    SUPERSEDES=0. CONFLICTS=0. Cross-references: the
+    `@ReactiveCustomTransactional` annotation (referenced by 9
+    methods in ReferenceDataRepositoryImpl per batch V) hard-codes
+    the bean name `customTransactionManager` defined at
+    R2DBCConfiguration.java:106 — refactoring requires updating
+    the annotation. The CONNECTION-POOL family of REFACTOR
+    candidates surfaces a hardening sprint:
+    `spring.r2dbc.pool.max-size` doc + override; R2DBC Micrometer
+    binder enable; conditional `customConnectionPool` instantiation
+    when `spring.custom-datasource.url` is set. All three are
+    P-03-pillar-specific (Lookup Tables is the only customConnectionPool
+    consumer) but ALSO affect F-008 / F-005 / F-007 / F-011
+    (all platform features run on the PRIMARY R2DBC pool — saturation
+    risk is platform-wide).
 discovered_from_entry_point: rest:POST/GET/PUT/PATCH/DELETE /api/referencedata/** (14-path controller-class surface)
 description: |-
   Lookup Tables are the Master Data Management pillar's operator-curated
@@ -123,6 +254,7 @@ contributing_nodes:
 - odd-platform java PolicyPermissionDto
 - odd-platform java DataEntityClassDto
 - odd-platform java ReactiveLookupTableSearchEntrypointRepositoryImpl
+- odd-platform java R2DBCConfiguration config-class:R2DBCConfiguration
 chain:
 - hop: 1
   node: odd-platform java ReferenceDataController controller-class:ReferenceDataController

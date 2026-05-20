@@ -1,0 +1,55 @@
+gap_id: TEST-GAP-784
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java R2DBCConfiguration config-class:R2DBCConfiguration"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "R2DBCConfiguration.md:security.data_exposure (Plaintext database credentials enter the JVM via spring.datasource.password)"
+  - "R2DBCConfiguration.md:security.known_security_gaps.[1] MEDIUM (/actuator/env exposure default-on)"
+  - "R2DBCConfiguration.md:bugs_limitations_corner_cases.[6] MEDIUM (Credentials enter the JVM as plaintext config values)"
+behaviour: |-
+  **MEDIUM — R2DBC database credentials enter the JVM as plaintext `@Value`-injected fields and are reachable via `/actuator/env`, which is exposed by default per application.yml:230-231. Spring's default masking covers `password|secret|key|token` substring matches in the property KEY name — but the masking is a convention, not a structural guarantee, and is not asserted by any test in the ODD codebase.**
+
+  **Confirmed at primary source**:
+  - R2DBCConfiguration.java:35 — `DataSourceProperties.getPassword()` reads `spring.datasource.password` (default `odd-platform-password` per application.yml:7).
+  - R2DBCConfiguration.java:58 — `@Value("${spring.custom-datasource.password:}")` reads `spring.custom-datasource.password` (empty default with fallback to primary).
+  - application.yml:230-231 — `management.endpoints.web.exposure.include: health, prometheus, env, info` exposes the env endpoint by default.
+  - application.yml:237 — `management.endpoint.env.enabled: true` (implicit default).
+  - Spring Boot 3.4+ default `management.endpoint.env.show-values=NEVER` — but the KEY name `password` is the only thing matched; rename to `spring.datasource.dbpass` and the masking BREAKS (as a hypothetical refactor).
+
+  **Test gap shape**: integration test booting the platform with default actuator config + a custom non-default datasource password, then `WebTestClient.get("/actuator/env")`, then:
+  1. Assert the response is HTTP 200 (env is exposed).
+  2. Search for the literal password value in the response body — assert NOT FOUND (Spring's default masking IS working).
+  3. Confirm the masking-by-substring rule: rename to a key NOT matching `password|secret|key|token` and confirm THAT renamed key would expose the value (documenting the convention boundary).
+
+  PINS the current actuator-default-on + Spring-masking behaviour. A future change to either default trips the test and forces explicit policy decision.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/R2DBCActuatorEnvPasswordMaskingRegressionPinTest.java"
+  name: "actuatorEnv_exposesUrlButMasksPassword_pinsSpringSubstringMaskingConvention"
+evidence:
+  - "R2DBCConfiguration.md says (security.data_exposure.[0]): 'Plaintext database credentials enter the JVM via spring.datasource.password (line 35; application.yml:7 ships odd-platform-password) and spring.custom-datasource.password (line 58). Both are readable in heap dumps. The /actuator/env endpoint is exposed by default per application.yml:230-231 — Spring Boot's default EnvironmentEndpoint masks fields matching password, secret, key, token substrings, so values appear as ****** rather than the literal credential.'"
+  - "R2DBCConfiguration.md says (security.known_security_gaps.[1]): '/actuator/env exposure default-on per application.yml:230-231 — attacker who reaches the actuator port can enumerate the resolved property values including the (masked-by-key-name) credentials AND the unmasked JDBC URL.'"
+  - "Verified at primary source: R2DBCConfiguration.java:35, 58 (the @Value injections)"
+  - "Verified at primary source: application.yml:7 (default password), 230-231 (actuator exposure), 237 (env enabled)"
+cross_references:
+  - "TEST-GAP-2398 (LSN-002-class shape — silent insecure default)"
+  - "TEST-GAP-144 (LoginForm-tier actuator/env credential leak — sibling at the auth credentials side)"
+  - "REFACTOR-029 (refactoring scope — actuator-env credential exposure)"
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/odd-platform` should warn that the env endpoint is exposed by default and the masking is substring-based)"
+  - "concepts: actuator-env-default-on-substring-masking-convention (existing concept)"
+related_features: []
+related_pillar_features: ["P-08:F-NN-actuator-defaults", "P-09:F-NN-credentials-storage"]
+proposed_action: |-
+  Add `R2DBCActuatorEnvPasswordMaskingRegressionPinTest`. Three test methods:
+
+  1. `actuatorEnv_exposesUrlButMasksPassword_pinsDefaultBehaviour` — `@SpringBootTest` with `spring.datasource.password=unique-test-pw-12345`; GET `/actuator/env`; assert response status 200; assert response body contains `spring.datasource.url` AND `spring.datasource.password` keys but the password value is `******` (or whatever Spring masks to).
+
+  2. `actuatorEnv_jdbcUrlIsExposed_pinsHostAndPortLeak` — same fixture; assert the JDBC URL is fully readable (not masked). Documents the database-location-disclosure surface.
+
+  3. `actuatorEnv_renamedKeyWithoutPasswordSubstring_wouldExposeValue_pinsMaskingConvention` — hypothetical fixture with `spring.datasource.dbpass=unique-test-pw-12345`; assert the value IS in the response body (the substring-mask boundary). Documents what an OPERATOR refactor would break.
+
+  Add a `// CONVENTION-PIN — Spring Boot's actuator env masking is substring-based on the key name. /actuator/env is exposed by default. This test pins the current state until REFACTOR-029 lands either (a) restricting actuator exposure to safer set OR (b) structural masking via @JsonIgnore-style annotation on credentials.` comment block.
+batch: 2026-05-20-X
+feature_id: null

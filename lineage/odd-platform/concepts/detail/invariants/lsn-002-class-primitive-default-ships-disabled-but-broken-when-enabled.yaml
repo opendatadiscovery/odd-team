@@ -1,7 +1,8 @@
 name: LSN-002-class — primitive default ships disabled-but-broken-when-enabled
 canonical_in_docs: false
 canonical_candidate: true
-description: 'Recurring failure mode across the catalog: a primitive Java type (`int`,
+description: |-
+  Recurring failure mode across the catalog: a primitive Java type (`int`,
   `String`) with no field initializer ships a value (`0`, `null`) that is legal at
   boot but broken at first use when an operator enables the feature. GenAIProperties.requestTimeout
   is the canonical example: `int` default 0 → `Duration.ofMinutes(0)` → immediate
@@ -16,9 +17,52 @@ description: 'Recurring failure mode across the catalog: a primitive Java type (
   with no `:default` — operator unsetting the key fails bean wiring at boot, partition-period
   itself has `:30` but no @Min(1)). Note: DataCollaborationConfiguration takes the
   OPPOSITE choice — explicit fail-fast empty-check on slack-oauth-token throws IllegalArgumentException
-  at boot.'
-axes_present:
-- config_prefixes
+  at boot.
+
+  **BATCH X STRENGTHENING (2026-05-20X)** — four NEW instances surface in batch X
+  config-class sidecars, each at the file the LSN-002 retrospective named OR at a
+  semantic sibling:
+
+    1. **MinioConfig.java:19-25** — DIRECT primary source of LSN-002 itself. The
+       MinioAsyncClient.builder() chain is exactly `.endpoint().credentials().build()`
+       — `.region(...)` ABSENT. Three other silent defaults at the same call site:
+       `.httpClient(...)` (no operator timeout knobs — REFACTOR-034) and
+       `.credentialsProvider(...)` (no IAM-role / IRSA support). The Gate-5 unset-
+       parameter audit per the MinioConfig sidecar classifies all three as
+       'caveat-defaulted'. See the strengthened
+       `minio-region-unset-lsn-002-primary-source-confirmation-at-minioconfig`
+       invariant for the file-level details.
+
+    2. **LoginFormSecurityConfiguration.java:70 — `auth.login-form-credentials`**
+       — `@Value("${auth.login-form-credentials}")` with NO `:default` fallback.
+       Operator switching `auth.type` DISABLED → LOGIN_FORM in override config
+       WITHOUT supplying the credentials key triggers BeanCreationException with
+       'Could not resolve placeholder' at boot. Fail-loud is correct, but the live
+       doc surface does NOT name the required-pair nature of these two keys
+       (auth.type + auth.login-form-credentials).
+
+    3. **NotificationConfiguration.java:123 — `notifications.message.downstream-entities-depth`**
+       — `@Value("${notifications.message.downstream-entities-depth}")` with NO
+       default value in the @Value expression. Inconsistent with the platform-base-url
+       at L105 which DOES have a `:http://localhost:8080` fallback. An operator who
+       enables `notifications.enabled=true` and forgets to set the depth knob fails
+       at boot with Spring's generic placeholder-resolution error. application.yml
+       ships `notifications.message.downstream-entities-depth: 1` (line 175) which
+       masks the trap during default runs, but any override that removes the key
+       triggers it.
+
+    4. **R2DBCConfiguration.java:41-50, 75-84 — `spring.r2dbc.pool.*` (10 keys)**
+       — PropertyMapper wires 10 pool-tuning parameters but `application.yml` ships
+       ZERO `spring.r2dbc.pool.*` keys. Pool ceiling is Spring Boot's framework
+       default (`maxSize=10`); a Spring Boot upgrade altering the default would
+       silently change the platform's deployed pool ceiling. The platform commits
+       to no specific ceiling.
+
+  **THE BATCH X COUNTER-EXAMPLE** — NotificationConfiguration.java:39-49 (mailSender bean
+  body) DOES validate the trio of email-channel fields (sender / host / protocol) with
+  explicit IllegalArgumentException paths. The discipline is local to this one bean
+  method; the asymmetry within the same file (mailSender validates, downstream-depth
+  doesn't) is itself the LSN-002-class pattern made explicit.
 nodes:
 - odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:GenAIProperties
 - odd-platform java AttachmentServiceImpl config-key-consumer:attachment.max-file-size@L27
@@ -26,9 +70,12 @@ nodes:
 - odd-platform java CounterTimeSeriesExtractor config-key-consumer:metrics.storage@L20
 - odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
 - odd-platform java IngestionDataEntitiesFilter config-key-consumer:auth.ingestion.filter.enabled@L20
+- odd-platform java MinioConfig config-class:MinioConfig
+- odd-platform java LoginFormSecurityConfiguration config-class:LoginFormSecurityConfiguration
+- odd-platform java NotificationConfiguration config-class:NotificationConfiguration
+- odd-platform java R2DBCConfiguration config-class:R2DBCConfiguration
 contributors:
-- 'GenAIProperties.bugs_limitations_corner_cases[0]: silent misconfiguration HIGH
-  severity'
+- 'GenAIProperties.bugs_limitations_corner_cases[0]: silent misconfiguration HIGH severity'
 - 'GenAIProperties.implicit_adrs[1]: defaults are deliberately unsafe-when-enabled'
 - 'AttachmentServiceImpl@L27.bugs_limitations_corner_cases[1]: boot-time crash if
   attachment.max-file-size is unset'
@@ -50,6 +97,27 @@ contributors:
 - 'IngestionDataEntitiesFilter@L20.bugs_limitations_corner_cases[0]: `auth.ingestion.filter.enabled=false`
   default + no docs surface = bundled deployment ships `/ingestion/entities` unauthenticated
   (LSN-001-class shape on the security side — analogous to attachment-ephemeral-default)'
+- |-
+  MinioConfig (batch X — NEW DIRECT primary source for LSN-002): bugs_limitations_corner_cases.[region-unset
+  HIGH; httpclient-unset MEDIUM; no-iam-provider MEDIUM] + unset_parameter_audit
+  (Gate-5 table classifying all 5 builder parameters); pre_emit_coherence_check
+  explicit confirmation: 'LSN-002 — primary source; primary file the retrospective
+  named matches lines 19-25 verbatim'
+- |-
+  LoginFormSecurityConfiguration (batch X — NEW): bugs_limitations_corner_cases.[no-default-bean-creation-exception
+  LOW] + implicit_adrs.[no-default-fail-loud-credentials HIGH] — the asymmetric
+  `@Value` default-vs-no-default pattern across three reads in the same method
+  is the encoded LSN-002 discipline (one absent-default key fail-fasts, two present-default
+  keys fall back silently)
+- |-
+  NotificationConfiguration (batch X — NEW): bugs_limitations_corner_cases.[1]
+  (missing default on notifications.message.downstream-entities-depth MEDIUM)
+  + the in-file asymmetry with platform-base-url at L105 which DOES have a default
+- |-
+  R2DBCConfiguration (batch X — NEW): bugs_limitations_corner_cases.[3] (Spring
+  Boot framework default `maxSize=10` per pool not published as platform
+  guarantee MEDIUM) + bugs_limitations_corner_cases.[4] (spring.r2dbc.pool.*
+  knobs wired but un-documented MEDIUM)
 evidence:
 - GenAIProperties.md:bugs_limitations_corner_cases.[0,1]
 - GenAIProperties.md:performance.known_performance_gaps.[0]
@@ -59,3 +127,51 @@ evidence:
 - CounterTimeSeriesExtractor@L20.md:bugs_limitations_corner_cases.[0]
 - ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[1,5]
 - IngestionDataEntitiesFilter@L20.md:bugs_limitations_corner_cases.[0]
+- |-
+  MinioConfig.md (batch X NEW):concepts.invariants.[builder-shape] +
+  bugs_limitations_corner_cases.[region-unset, httpclient-unset, no-iam-provider]
+  + unset_parameter_audit (Gate-5 table)
+- |-
+  LoginFormSecurityConfiguration (config-class).md (batch X NEW):
+  bugs_limitations_corner_cases.[no-default-bean-creation-exception] +
+  implicit_adrs.[no-default-fail-loud-credentials]
+- |-
+  NotificationConfiguration.md (batch X NEW):bugs_limitations_corner_cases.[1]
+  + the in-file asymmetry observation (line 105 has default; line 123 does not)
+- |-
+  R2DBCConfiguration.md (batch X NEW):bugs_limitations_corner_cases.[3,4]
+  + the unconditional-PropertyMapper observation (10 keys wired, zero shipped)
+axes_present:
+- config_classes
+- config_prefixes
+triangulation_count: 10
+cross_batch: true
+notes: |-
+  STRENGTHENED batch 2026-05-20X — added 4 NEW config-class layer instances of the
+  same LSN-002 pattern: MinioConfig (the DIRECT primary source for LSN-002 itself),
+  LoginFormSecurityConfiguration (the auth.login-form-credentials no-default fail-loud
+  example), NotificationConfiguration (the downstream-entities-depth missing default),
+  and R2DBCConfiguration (the spring.r2dbc.pool.* un-published framework defaults).
+
+  The pattern now spans 10 distinct sidecars across config-prefix-consumers (5
+  existing) + config-classes (4 batch X new) + config-properties-classes (1
+  existing GenAIProperties). The catalog has the broadest LSN-002-class enumeration
+  of any failure pattern in the workspace, surpassing REFACTOR-185's 24-sidecar
+  pattern in cross-cutting reach (but REFACTOR-185 has higher per-sidecar density).
+
+  Cross-cutting connections:
+    - minio-region-unset-lsn-002-primary-source-confirmation-at-minioconfig
+      (batch V + X) — the DIRECT primary source for LSN-002 itself
+    - lsn-002-class-config-default-failure-pattern (canonicalisation_candidate) —
+      this invariant is the canonical promotion thereof
+    - postMessageInSlack.implicit_adrs[0] — the disciplined counter-example
+    - mailSender bean method (NotificationConfiguration.java:39-49) — a NEW
+      counter-example surfaced in batch X: the same file's mailSender method DOES
+      validate sender/host/protocol while line 123 does not. Asymmetric discipline
+      within one file.
+
+  One DOC-NNN candidate:
+    Publish a 'configuration discipline' admonition on /configuration-and-deployment/odd-platform
+    naming the LSN-002 pattern and listing the config keys that lack defaults
+    (the operator-facing surface that explains 'why some keys fail at boot when
+    unset and others silently default').

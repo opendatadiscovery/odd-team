@@ -1,0 +1,66 @@
+gap_id: TEST-GAP-782
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java NotificationConfiguration config-class:NotificationConfiguration"
+pillars_affected: [P-07, P-08]
+surfaced_by:
+  - "NotificationConfiguration.md:bugs_limitations_corner_cases.[1] MEDIUM (Missing default on notifications.message.downstream-entities-depth)"
+  - "NotificationConfiguration.md:tests_coverage_semantic.uncovered_behaviours.[10] (no test asserts Bean wiring with @Value resolution failure)"
+  - "NotificationConfiguration.md:tests_coverage_semantic.gaps.(3) — distinct from other validated paths"
+behaviour: |-
+  **HIGH — `@Value("${notifications.message.downstream-entities-depth}")` at NotificationConfiguration.java:123 has NO `:default` fallback. Operators who turn on `notifications.enabled=true` but forget to set the depth knob crash boot with Spring's generic `Could not resolve placeholder` BeanCreationException — a confusing failure mode distinct from the file's other validated paths.**
+
+  **Asymmetric `@Value` defaults across the same file** (sidecar primary-source confirms):
+  - `notifications.message.downstream-entities-depth` at L123 → `@Value("${notifications.message.downstream-entities-depth}")` — NO default → BeanCreationException if unset.
+  - `odd.platform-base-url` at L105 → `@Value("${odd.platform-base-url:http://localhost:8080}")` — HAS default → silent fallback.
+  - All four channel triggers (`notifications.receivers.{email.sender, slack.url, webhook.url}`) use `@ConditionalOnProperty` — NO BeanCreationException, just bean-not-registered.
+
+  The asymmetry is unintentional inconsistency. `application.yml:174-175` SHIPS the default `notifications.message.downstream-entities-depth: 1` so an UNMODIFIED-config deployment works. But an operator overriding `application.yml` (e.g., via Helm values, ConfigMap merge, env-var substitution) and turning on `notifications.enabled=true` without supplying the depth value crashes Spring boot.
+
+  **Operator-impact scenario**:
+  1. Operator builds a custom Helm values file based on the docs.
+  2. Operator sets `notifications.enabled=true` per the live `/configuration-and-deployment/odd-platform` page.
+  3. Operator forgets to set `notifications.message.downstream-entities-depth` (the docs DO list it but the operator misses it).
+  4. Platform fails to boot with: `BeanCreationException: Error creating bean with name 'alertNotificationMessageTranslator' ... IllegalArgumentException: Could not resolve placeholder 'notifications.message.downstream-entities-depth' in value "${notifications.message.downstream-entities-depth}"`.
+  5. The error message names the placeholder but not the SOURCE (which bean's @Value caused the failure) — operator has to grep the codebase to find NotificationConfiguration.java:123.
+
+  **Contrast with the CORRECT pattern at L105**: `@Value("${odd.platform-base-url:http://localhost:8080}")` ships a sensible default. The same file demonstrates the right way to handle the asymmetry.
+
+  **Test gap shape**: parametrised boot-time test asserting:
+  1. Boot SUCCEEDS with `notifications.enabled=true` + `notifications.receivers.email.sender=test@x` + all required keys + `notifications.message.downstream-entities-depth=2`.
+  2. Boot SUCCEEDS with the same config but OMITTING `notifications.message.downstream-entities-depth` — and asserts the depth DEFAULTS TO 1 (matches application.yml:174-175). Note: under the current code this test FAILS — there is no @Value default; the YAML default supplies it. The test is meant to FAIL until a `:1` default is added at L123.
+  3. Boot FAILS with the same config but OMITTING `notifications.message.downstream-entities-depth` AND overriding application.yml to remove the YAML default — expect `BeanCreationException` (CURRENT BEHAVIOUR — regression-pin).
+
+  The compound test pins the asymmetry AND drives the fix (add `:1` default to L123 inline so the @Value carries its own default independent of YAML).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/config/NotificationConfigurationDownstreamDepthMissingDefaultTest.java"
+  name: "alertNotificationMessageTranslator_downstreamDepthMissing_failsBoot_pinsAsymmetry_drivesFixToValueDefault"
+evidence:
+  - "NotificationConfiguration.md says (bugs_limitations_corner_cases.[1]): 'Missing default on notifications.message.downstream-entities-depth: @Value(\\\"${notifications.message.downstream-entities-depth}\\\") at L123 has NO default value in the @Value expression. If an operator enables notifications.enabled=true but forgets to set the depth knob, the platform fails to start with Spring's generic IllegalArgumentException: Could not resolve placeholder ... — distinct from the file's other validation paths and inconsistent with the platform-base-url default at L105. Application.yml ships with notifications.message.downstream-entities-depth: 1 (line 175) which masks the trap during default runs, but any override that removes the key triggers it.'"
+  - "NotificationConfiguration.md says (concepts.invariants): 'downstream-entities-depth is read via raw @Value (no @ConfigurationProperties typing) — bound directly into the translator bean; rejected at boot if negative'"
+  - "Verified at primary source: NotificationConfiguration.java:123 (`@Value(\"${notifications.message.downstream-entities-depth}\")` — no default)"
+  - "Verified at primary source: NotificationConfiguration.java:105 (`@Value(\"${odd.platform-base-url:http://localhost:8080}\")` — HAS default — demonstrates the right pattern in the same file)"
+  - "Verified at primary source: application.yml:174-175 (`notifications.message.downstream-entities-depth: 1` — the YAML masking the trap)"
+cross_references:
+  - "TEST-GAP-197 (RELATED — blank-field validation; this is the next silent-failure facet)"
+  - "concepts: missing-default-asymmetry-value-vs-yaml-default-pattern (NEW canonicalisation candidate)"
+  - "REFACTOR-NNN (proposed — add `:1` default to NotificationConfiguration.java:123 so the @Value carries its own default; align with line 105 pattern)"
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/odd-platform` should highlight which `notifications.*` keys are REQUIRED vs OPTIONAL when `notifications.enabled=true`)"
+related_features: [F-NN-notifications-translator]
+related_pillar_features: ["P-07:F-002 Notifications"]
+proposed_action: |-
+  Add `NotificationConfigurationDownstreamDepthMissingDefaultTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/config/`. Three test methods:
+
+  1. `alertNotificationMessageTranslator_withDepthExplicitlySet_succeeds` — `@SpringBootTest(properties = { "notifications.enabled=true", "notifications.message.downstream-entities-depth=3", ... })`; assert bean is created with depth=3.
+
+  2. `alertNotificationMessageTranslator_withYamlDefaultAvailable_succeedsWithDepthOne_pinsYamlMasking` — `@SpringBootTest` with only `notifications.enabled=true` + receiver config; rely on application.yml:174-175 default; assert bean is created with depth=1.
+
+  3. `alertNotificationMessageTranslator_withoutYamlAndWithoutValueDefault_failsBoot_pinsAsymmetry` — `@SpringBootTest` with custom @TestPropertySource overriding application.yml to REMOVE the depth key + setting `notifications.enabled=true`; assert `BeanCreationException` with `Could not resolve placeholder` in cause chain. PINS the current asymmetric behaviour until L123 is fixed.
+
+  Add a `// ASYMMETRY-PIN — NotificationConfiguration.java:123 has no @Value default while L105 (platform-base-url) does. Operators overriding application.yml without supplying the depth key crash boot with cryptic placeholder error. This test pins the asymmetry until REFACTOR-NNN adds the inline default :1.` comment block.
+
+  Pair with: (a) REFACTOR-NNN — one-line fix at L123: `@Value("${notifications.message.downstream-entities-depth:1}")`; (b) DOC-GAP-NNN — live `/configuration-and-deployment/odd-platform` should explicitly mark each `notifications.*` key as REQUIRED or OPTIONAL with the default if optional.
+batch: 2026-05-20-X
+feature_id: null

@@ -25,6 +25,8 @@ drift_class_summary:
 - update_full_form_replace_silently_nulls_unsubmitted_fields
 - status_code_drift_controller_200_vs_spec_201_register_and_update
 - no_rate_limit_on_any_collector_endpoint_bulk_rotate_harvest_attacks
+- collector_lifecycle_cluster_correctness_depends_on_session_provider_in_memory_default_breaks_sticky_sessions_required
+- session_housekeeping_no_scheduler_lock_multi_instance_race_n_times_db_load_inconsistent_with_platform_pattern
 cross_pillar_relationships:
 - pillar_id: P-10
   kind: feeds
@@ -399,6 +401,84 @@ batch_extensions:
     end-to-end and warrants explicit defending or remediation (a
     one-shot revocable token model OR a hash-at-rest schema migration
     OR a per-call masking responsibility shift).
+- batch: X
+  entry_point_added: |-
+    config-class:SessionConfiguration — the boot-time
+    `ReactiveSessionRepository<MapSession>` bean factory. THIS BATCH
+    closes the cluster-fragility picture for F-020 at the
+    config-default vertex: the F-020 batch-Q drift facet
+    `collector_id_websession_attribute_stringly_typed_cluster_without_sticky_sessions_breaks`
+    is now PRIMARY-SOURCE COMPLETE at every layer (filter at
+    IngestionDataSourceFilter batch P, controller at
+    IngestionController.createDataSource batch P, AND config-default
+    at SessionConfiguration THIS batch). The collector lifecycle
+    feature's cluster-correctness depends on the session-provider
+    choice; THIS BATCH adds the config-tier anchor.
+  contributing_nodes_added:
+  - odd-platform java SessionConfiguration config-class:SessionConfiguration
+  notes: |-
+    Two new drift facets surface, both primary-source at
+    SessionConfiguration.java:1-66 + application.yml:28-30:
+
+    (1) **COLLECTOR-ID VIA WEBSESSION REQUIRES STICKY SESSIONS —
+    CONFIG-TIER PRIMARY SOURCE (HIGH severity — collector-side
+    operational requirement)** — Per the F-020 batch-Q drift facet
+    `collector_id_websession_attribute_stringly_typed_cluster_without_sticky_sessions_breaks`,
+    the collector registration flow uses `SessionConstants.COLLECTOR_ID_SESSION_KEY`
+    as the credential bridge between `IngestionDataSourceFilter` (filter
+    layer) and `IngestionController.createDataSource` (controller
+    layer). The session-state's cluster-replication is determined ENTIRELY
+    by the `session.provider` config value — under the SHIPPED DEFAULT
+    `IN_MEMORY` (application.yml:30), the session lives in JVM heap +
+    a `ConcurrentHashMap` per process; the collector's second hop
+    fails on a cross-instance route. Operators promoting Collectors
+    onto a multi-replica deployment MUST configure either (a)
+    `session.provider=INTERNAL_POSTGRESQL` (the JOOQ-reactive
+    repository, persists to `SPRING_SESSION` table — multi-instance
+    safe), (b) `session.provider=REDIS` (Spring Session Data Redis —
+    multi-instance safe), OR (c) sticky-session load-balancer pinning
+    (the LB-layer workaround). Live docs (WebFetched 2026-05-20)
+    document the cluster caveat at the session-provider level but
+    do NOT cross-link from the Collectors page; the operator running
+    Collectors in a clustered deployment will not learn the dependency
+    without reading the session-provider docs. NEW drift facet for
+    F-020:
+    `collector_lifecycle_cluster_correctness_depends_on_session_provider_in_memory_default_breaks_sticky_sessions_required`.
+
+    (2) **SESSION-HOUSEKEEPING NO LEADER-ELECTION — CROSS-INSTANCE
+    BURDEN ON `INTERNAL_POSTGRESQL` SESSIONS (MEDIUM — cross-pillar
+    operational consistency)** — `PostgreSQLSessionHousekeepingJobHandler.java:13`
+    declares `@Scheduled(fixedRate = 1, timeUnit = HOURS)` with NO
+    `@SchedulerLock` / advisory-lock guard. On a multi-instance
+    `INTERNAL_POSTGRESQL` deployment, EVERY instance runs the
+    housekeeping job hourly. The deletes are idempotent (second
+    delete sees no rows) so correctness is preserved, but the DB
+    load is N× the intended rate. INCONSISTENT with other ODD
+    `@Scheduled` jobs that DO use advisory-lock leader-election
+    (DataCollaborationConfiguration receive-event/sender jobs,
+    NotificationSubscriber `notifications.wal.advisory-lock-id`,
+    ActivityTablePartitionManager). The session housekeeping is the
+    SOLE `@Scheduled` job WITHOUT leader-election visible in the
+    codebase. Cross-link to F-010 (Housekeeping TTL Enforcement —
+    F-010 batch-X also extends with this from the
+    job-orchestration angle). NEW drift facet for F-020:
+    `session_housekeeping_no_scheduler_lock_multi_instance_race_n_times_db_load_inconsistent_with_platform_pattern`.
+
+    Coherence sweep STRENGTHENS=2 (F-020 batch-Q
+    `collector_id_websession_attribute_stringly_typed_cluster_without_sticky_sessions_breaks`
+    — PRIMARY SOURCE NOW LOCKED at SessionConfiguration.java:46-49 +
+    application.yml:30; F-020 batch-Q
+    `collectors_tab_audit_silence_no_analytics_no_persistent_audit_panel`
+    — extended with the session-housekeeping audit gap as another
+    operational silence). SUPERSEDES=0. CONFLICTS=0.
+    Cross-references: REFACTOR-419 cluster-fragility is now PRIMARY-SOURCE
+    COMPLETE at every layer (config + filter + controller — all three
+    sidecars); F-008 batch-X also extends with the same SessionConfiguration
+    sidecar from the ingestion-side angle (the credential CONSUMER side);
+    together F-008 + F-020 + the new SessionConfiguration sidecar form
+    the cluster-correctness triangulation. The `session.provider`
+    choice is the SINGLE operational lever that determines whether
+    Collector registration in a clustered deployment works at all.
 batch_origin: Q
 created_in_batch: Q
 discovered_from_entry_point: ui_route:/management/collectors
@@ -495,6 +575,7 @@ contributing_nodes:
 - odd-platform java repository reactive repository:ReactiveTokenRepositoryImpl
 - odd-platform java SecurityConstants
 - odd-platform java DisabledAuthSecurityConfiguration
+- odd-platform java SessionConfiguration config-class:SessionConfiguration
 chain:
 - hop: 1a
   node: odd-platform ts react-component:CollectorsList

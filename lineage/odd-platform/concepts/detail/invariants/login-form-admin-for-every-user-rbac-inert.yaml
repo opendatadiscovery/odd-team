@@ -1,0 +1,180 @@
+name: LOGIN_FORM hard-codes ADMIN for every user — RBAC framework INERT
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20X — surfaces the LOGIN_FORM-mode
+  authorization-framework absence at the CONFIG-CLASS layer (the bean-factory side,
+  not just the config-key-consumer side). LoginFormSecurityConfiguration is the entire
+  LOGIN_FORM-mode authentication wiring (104 lines) and TWO load-bearing decisions
+  encoded in it make the Policies/Permissions/Roles/Owners framework INERT for every
+  form-authenticated user.
+
+  **DECISION 1 — ADMIN hard-coded for every user**:
+    Line 81 invokes `.authorities(grantedAuthorityExtractor.getAuthorities(true))`.
+    The literal `true` is the `isAdmin` flag; `GrantedAuthorityExtractor.java:12-17`
+    interprets it as `UserProviderRole.ADMIN`. EVERY form-authenticated user — every
+    entry in the shipped default `admin:admin,root:root` (application.yml:37) plus
+    every operator-defined entry — receives ADMIN authority. There is NO per-user
+    role distinction in this mode.
+
+  **DECISION 2 — AuthorizationCustomizer is NOT wired**:
+    Lines 55-57 configure the chain as:
+      `.authorizeExchange(spec -> spec.pathMatchers(permittedPaths).permitAll()
+       .pathMatchers("/**").authenticated())`
+    There is NO `.authorizeExchange(new AuthorizationCustomizer(permissionService,
+    extractors))` call — contrast with `OAuthSecurityConfiguration.java:98` AND
+    `LDAPSecurityConfiguration.java:145` where the AuthorizationCustomizer is
+    explicitly wired. The Customizer is the class that walks
+    `SecurityConstants.SECURITY_RULES:98-355` and applies per-Policy/Permission/Role/
+    Owner access managers via `ReactiveAuthorizationManagerFactory.manager(...)`. By
+    skipping it in LOGIN_FORM mode, SECURITY_RULES is INERT — every authenticated
+    request bypasses every per-feature permission gate.
+
+  **COMPOUND EFFECT**: every LOGIN_FORM-authenticated user is (a) ADMIN AND (b)
+  bypasses the RBAC table. Operators who author Policies + Roles + Owners via the
+  platform UI under LOGIN_FORM mode get a fully-built RBAC configuration that the
+  live auth chain SILENTLY IGNORES. Combined with the shipped credentials
+  `admin:admin,root:root` (application.yml:37) and the doc warning "Change these
+  defaults before any non-local deployment" being warning-only with no programmatic
+  guardrail, the platform's LOGIN_FORM posture is "every form-authenticated user
+  can call every endpoint, with shipped credentials that ship known to the world."
+
+  **DOC DRIFT**: the live `/configuration-and-deployment/enable-security/authorization`
+  page (WebFetched 2026-05-20 status 200) names "fine-grained access control" and
+  enumerates Policies/Permissions/Roles/Owners but is SILENT on which `auth.type`
+  modes actually wire the framework. An operator following the docs to author a
+  least-privilege RBAC configuration under LOGIN_FORM gets the ADMIN-for-all silent
+  bypass with no warning.
+
+  **STRENGTHENS REFACTOR-185** to a 24-sidecar pattern (was 23 — DISABLED-mode
+  bypass). The LOGIN_FORM facet has its own shape — under DISABLED the SECURITY_RULES
+  bypass is via `.anyExchange().permitAll()`; under LOGIN_FORM the bypass is via
+  hard-coded ADMIN + absent AuthorizationCustomizer. Same effective end-state:
+  every endpoint reachable by every authenticated caller regardless of any
+  operator-authored RBAC configuration.
+
+  **STRENGTHENS REFACTOR-073** (login-form-without-authorizationcustomizer
+  validated) — promotes the existing canonicalisation_candidate single-sidecar
+  evidence to a full invariant with the CONFIG-CLASS layer primary source
+  (LoginFormSecurityConfiguration.java config-class sidecar in addition to the
+  pre-existing config-key-consumer @L31 sidecar).
+nodes:
+- odd-platform java LoginFormSecurityConfiguration config-class:LoginFormSecurityConfiguration
+- odd-platform java LoginFormSecurityConfiguration config-key-consumer:auth.type@L31
+- odd-platform java AuthorizationManagerCondition config-key-consumer:auth.type@L11
+- odd-platform java OAuthSecurityConfiguration config-key-consumer:auth.type@L71
+- odd-platform java LDAPSecurityConfiguration config-key-consumer:auth.type@L51
+contributors:
+- |-
+  LoginFormSecurityConfiguration config-class batch X (PRIMARY SOURCE for the
+  CONFIG-CLASS layer):
+    bugs_limitations_corner_cases.[0] (no AuthorizationCustomizer — HIGH severity
+    confirming F-008 read-collaborative-posture wide-open variant)
+    + security.authorization_assertions (empty list — THE ABSENCE IS THE FINDING)
+    + security.known_security_gaps.[0] (LOGIN_FORM has NO authorization framework
+    wiring — every form-authenticated user can call every endpoint)
+    + concepts.invariants.[ADMIN-for-every-user] + concepts.invariants.
+    [no-AuthorizationCustomizer]
+    + implicit_adrs.[ADMIN-for-every-user] (deliberate `true` literal at line 81
+    is the encoded intent)
+    + docs_link_semantic.doc_drift_findings.[authorization-framework-absent-
+    undocumented] (the largest LOGIN_FORM-specific doc drift)
+- |-
+  LoginFormSecurityConfiguration@L31 (config-key-consumer, batch C):
+    the original config-key-consumer evidence that surfaced REFACTOR-073 — strengthened
+    here by the config-class layer sidecar that pins the bean topology end-to-end
+- |-
+  OAuthSecurityConfiguration@L71 + LDAPSecurityConfiguration@L51: CONTRAST POINTS —
+  both DO wire `new AuthorizationCustomizer(permissionService, extractors)` (lines
+  98 and 145 respectively). The asymmetry across the four-mode quartet is now fully
+  cited at both the config-class layer and the config-key-consumer layer.
+- |-
+  AuthorizationManagerCondition@L11: the DEAD CONDITION that was supposed to gate
+  this — zero `@Conditional` consumers across the repo. The Customizer is wired
+  by direct `@ConditionalOnProperty` on OAuth + LDAP siblings, NOT via this
+  condition. Cross-link to the dead-code-in-load-bearing-positions canonicalisation
+  candidate.
+evidence:
+- |-
+  LoginFormSecurityConfiguration (config-class).md:bugs_limitations_corner_cases.[0]
+  — primary-source citation of the no-AuthorizationCustomizer absence at lines
+  55-57 + the OAuth/LDAP contrast at lines 98 and 145 of those files
+- |-
+  LoginFormSecurityConfiguration (config-class).md:security.authorization_assertions
+  — empty list with explicit explanation 'THE ABSENCE IS THE FINDING'
+- |-
+  LoginFormSecurityConfiguration (config-class).md:concepts.invariants.[ADMIN-for-
+  every-user] + concepts.invariants.[no-AuthorizationCustomizer] — the two compound
+  decisions cross-cited with sibling SecurityConfiguration files
+- |-
+  LoginFormSecurityConfiguration (config-class).md:implicit_adrs.[ADMIN-for-every-
+  user] — the deliberate `true` literal at line 81 is the encoded intent (also
+  doc-confirmed via WebFetch 2026-05-20 'All users authenticated through this
+  method receive ADMIN privileges')
+- |-
+  LoginFormSecurityConfiguration (config-class).md:docs_link_semantic.doc_drift_
+  findings.[authorization-framework-absent-undocumented] — the live
+  /enable-security/authorization page does not name which auth.type modes wire
+  the framework (WebFetched 2026-05-20 status 200)
+- |-
+  application.yml:37 (shipped default credentials admin:admin,root:root)
+- |-
+  retrospectives/LSN-001-attachment-ephemeral-default.md (LSN-001-class shape:
+  insecure default + warning-only doc; same pattern recurs here for LOGIN_FORM
+  credentials)
+axes_present:
+- config_classes
+- config_prefixes
+triangulation_count: 3
+cross_batch: true
+severity: HIGH
+severity_dim: security-posture-login-form-rbac-bypass
+mitigations_unimplemented:
+- |-
+  Code-side: wire AuthorizationCustomizer into LoginFormSecurityConfiguration.java
+  similar to OAuth/LDAP siblings (`.authorizeExchange(new AuthorizationCustomizer(
+  permissionService, extractors))`). The change makes SECURITY_RULES active under
+  LOGIN_FORM and the ADMIN-for-all hard-code at line 81 becomes the lone bypass
+  surface (still LOGIN_FORM-specific but contained to authority not authorization
+  wiring).
+- |-
+  Code-side: replace the hard-coded `true` at line 81 with per-user role logic.
+  Today every LOGIN_FORM user is ADMIN; a future iteration could parse `user:pass:role`
+  triples from the credential string OR look up the user in the Owner directory.
+- |-
+  Doc-side: add to /enable-security/authorization a clear precondition: 'The
+  Policies/Permissions/Roles/Owners framework is wired only in OAUTH2 and LDAP
+  modes. Under LOGIN_FORM and DISABLED, RBAC is INERT and every authenticated user
+  can call every endpoint.'
+- |-
+  Code-side: boot-time fail-fast guard — if `auth.type=LOGIN_FORM` AND default
+  credentials (`admin:admin,root:root`) AND non-loopback bind, throw a clear
+  `IllegalStateException` rather than silently accepting the shipped insecure
+  defaults.
+notes: |-
+  STRENGTHENING + NEW INVARIANT captured in batch 2026-05-20X via the
+  LoginFormSecurityConfiguration config-class sidecar. The pre-existing
+  canonicalisation_candidate (login-form-without-authorizationcustomizer-refactor-073-validated)
+  was single-sidecar evidence at the config-key-consumer layer; this invariant
+  promotes that evidence to multi-sidecar triangulation at the config-class
+  layer + the sibling SecurityConfiguration contrast points.
+
+  Cross-cutting connections:
+    - REFACTOR-185 (DISABLED-mode anonymous-bypass batch T 19-sidecar) — same
+      effective end-state via different mechanism (DISABLED uses .anyExchange().permitAll();
+      LOGIN_FORM uses hard-coded ADMIN + absent AuthorizationCustomizer)
+    - REFACTOR-073 (login-form-without-authorizationcustomizer) — this invariant
+      IS the consolidated REFACTOR-073 with config-class layer primary source
+    - provider-null-cross-mode-bleed — under LOGIN_FORM the provider=null bleed
+      compounds with the ADMIN-for-all; a LOGIN_FORM 'alice' AND an LDAP 'alice'
+      both produce provider=null AND both are ADMIN under LOGIN_FORM, so the
+      bleed pairs with no per-user RBAC distinction
+    - LSN-001 + LSN-002 case-law precedents — operator-discipline-as-mitigation
+      is the only line of defence
+
+  Three DOC-NNN candidates flow:
+    (a) /enable-security/authorization needs the precondition statement
+    (b) /enable-security/authentication/login-form needs the RBAC-inert warning
+    (c) Code-side fail-fast on shipped-default-credentials + non-loopback bind

@@ -7,7 +7,8 @@ description: |-
   **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19K — STRENGTHENED TO
   SQL-LAYER GROUND TRUTH IN BATCH N (2026-05-19N); FURTHER STRENGTHENED
   IN BATCH R (2026-05-20R) WITH A READ-SIDE MIRROR AT THE ACTIVITY-FEED
-  REPOSITORY** — a security boundary failure during auth-mode migration
+  REPOSITORY; STRENGTHENED BATCH X (2026-05-20X) WITH THE LOGIN_FORM CONFIG-CLASS
+  LAYER ANCHOR** — a security boundary failure during auth-mode migration
   scenarios, originally surfaced by primary-source examination of
   `AuthIdentityProviderImpl.java:29-33`. The line `if (authentication
   instanceof OAuth2AuthenticationToken oauthToken) { return new
@@ -19,6 +20,26 @@ description: |-
   LDAPSecurityConfiguration.java:82 with provider=null), and S2S
   (S2sAuthenticationFilter.java:38 with provider=null) — all three produce
   `UserDto(username, null)`.
+
+  **BATCH X NEW VERTEX — LoginFormSecurityConfiguration config-class layer**:
+  the cross-mode bleed mechanism is now PRIMARY-SOURCE PINNED at the
+  AUTH-CONFIGURATION layer of the LOGIN_FORM corner of the quartet. The
+  LoginFormSecurityConfiguration config-class sidecar (batch X) cites:
+    - LoginFormSecurityConfiguration.java:1-104 — no provider tag set on the
+      SecurityContext anywhere in the file. The LOGIN_FORM authentication
+      flow produces `UsernamePasswordAuthenticationToken` which has no
+      `getAuthorizedClientRegistrationId()` method (that exists only on
+      `OAuth2AuthenticationToken`); AuthIdentityProviderImpl's else branch
+      at line 32 fires, returning provider=null.
+    - The MapReactiveUserDetailsService user store at line 85 contains
+      `User` instances with username + password + authorities, but no
+      provider field. The user identity that propagates downstream carries
+      no provider distinction.
+    - The bleed is INVISIBLE at the LOGIN_FORM layer (the config-class
+      sidecar surfaces this as the load-bearing batch X finding) — only
+      the repository node (ReactiveUserOwnerMappingRepositoryImpl) and the
+      activity-feed read path (ReactiveActivityRepositoryImpl) make the
+      bleed observable.
 
   **BATCH N PRIMARY-SOURCE UPGRADE — SQL-LAYER CONFIRMATION**: the
   downstream USER_OWNER_MAPPING lookup is now SQL-LAYER GROUND TRUTH at
@@ -78,7 +99,7 @@ description: |-
   collides with a LOGIN_FORM user named 'ADMIN' (the companion S2S literal
   collision invariant).
 
-  **Batch R — the architectural triangle now extends to FOUR vertices**:
+  **Batch X — the architectural triangle now extends to FIVE vertices**:
     Vertex 1 — Principal layer (AuthIdentityProviderImpl.java:29-33,
                 batch K) — the else-branch that produces provider=null
     Vertex 2 — Persistence-WRITE layer
@@ -90,16 +111,24 @@ description: |-
                 permission for provider to be nullable
     Vertex 4 — Persistence-READ-CONSUMER layer
                 (ReactiveActivityRepositoryImpl.java:157/178/199/221,
-                batch R NEW) — the read-side mirror that joins activity
+                batch R) — the read-side mirror that joins activity
                 rows to OwnerPojo by OIDC_USERNAME only. EVERY downstream
-                read of the audit feed inherits the bleed. The cross-mode
-                bleed now PROPAGATES from the user-binding layer into the
-                audit-trail layer via the JOIN omission — a separate
-                primary source for the SAME architectural decision.
+                read of the audit feed inherits the bleed.
+    Vertex 5 — Auth-configuration layer (LoginFormSecurityConfiguration
+                config-class, batch X NEW) — the LOGIN_FORM-corner
+                anchor that confirms NO provider tag is set on the
+                SecurityContext anywhere in the LOGIN_FORM auth flow.
+                Closes the picture: the bleed is rooted at LOGIN_FORM's
+                own design (UsernamePasswordAuthenticationToken carries
+                no provider) and is observable only downstream at vertices
+                2 + 4. The PRINCIPAL layer (vertex 1) is the
+                BRIDGE BETWEEN VERTEX 5 (auth config) AND VERTEX 2 (SQL
+                write) AND VERTEX 4 (SQL read).
 nodes:
 - odd-platform java service service:AuthIdentityProviderImpl
 - odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
 - odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+- odd-platform java LoginFormSecurityConfiguration config-class:LoginFormSecurityConfiguration
 contributors:
 - |-
   AuthIdentityProviderImpl batch K: bugs_limitations_corner_cases.[0]
@@ -124,7 +153,7 @@ contributors:
   docs_link_semantic.doc_drift_findings.[1] (HIGH doc-drift; provider-null
   collapse for LOGIN_FORM, LDAP, S2S is undocumented)
 - |-
-  ReactiveActivityRepositoryImpl batch R (NEW PRIMARY SOURCE — SQL
+  ReactiveActivityRepositoryImpl batch R (PRIMARY SOURCE — SQL
   READ-CONSUMER layer, 4 sites): concepts.invariants.[1] (LEFT JOIN
   USER_OWNER_MAPPING by OIDC_USERNAME only, provider omitted; 4
   occurrences at lines 157-158, 178-179, 199-200, 221-222) +
@@ -138,6 +167,21 @@ contributors:
   audit-trail actor resolution is ambiguous when username space overlaps
   across auth modes) — the read-side propagation site that EVERY
   consumer of the activity feed inherits
+- |-
+  LoginFormSecurityConfiguration (config-class) batch X (NEW VERTEX 5 —
+  AUTH-CONFIGURATION layer):
+    bugs_limitations_corner_cases.[provider-null-bleed] (HIGH severity —
+    LOGIN_FORM produces UserDto(username, null) which collides with LDAP
+    users of the same name in the user_owner_mapping IS NULL bucket; the
+    bleed is INVISIBLE at this layer but rooted here)
+    + security.known_security_gaps.[provider-null-bleed] (HIGH severity —
+    explicit cross-reference to AuthIdentityProviderImpl + the SQL
+    repository finding)
+    + downstream_side_effects.[provider-null-bleed] (cross-cited evidence
+    chain ending at ReactiveUserOwnerMappingRepositoryImpl)
+    + the implicit_adrs do NOT name provider distinction — the absence is
+    itself the encoded decision (no `WebFilter` adds a provider tag; no
+    `SecurityContextRepository` override sets one)
 evidence:
 - |-
   AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[0] (PRIMARY
@@ -179,10 +223,23 @@ evidence:
     ActivityServiceImpl.java:47-49 (the username-only INSERT path) +
     V0_0_48__add_activity.sql:10 (created_by varchar(512); no
       created_by_provider column on the audit schema) — HIGH severity
+- |-
+  **LoginFormSecurityConfiguration (config-class).md:bugs_limitations_corner_cases.
+  [provider-null-bleed] + security.known_security_gaps.[provider-null-bleed]
+  + downstream_side_effects.[provider-null-bleed]** (BATCH X NEW PRIMARY
+  SOURCE — AUTH-CONFIGURATION LAYER) — evidence:
+    LoginFormSecurityConfiguration.java:1-104 (no provider tag set on
+      SecurityContext anywhere) +
+    AuthIdentityProviderImpl.java:29-33 (LOGIN_FORM → else branch →
+      provider=null) +
+    ReactiveUserOwnerMappingRepositoryImpl.java:121-125 (the SQL IS NULL
+      predicate at the persistence layer) +
+    cross-citation to the bleed mechanism at the repository layer
 axes_present:
 - services
 - repositories_reactive
-triangulation_count: 3
+- config_classes
+triangulation_count: 4
 cross_batch: true
 severity: HIGH
 severity_dim: security
@@ -195,6 +252,15 @@ mitigations_unimplemented:
   downstream user_owner_mapping schema requires a non-null provider for
   this to be persistable; today provider IS persistable as null per the
   schema, so a migration would need to backfill provider for existing rows.
+- |-
+  **NEW batch X**: add the provider distinction AT THE AUTH-CONFIGURATION
+  layer — in LoginFormSecurityConfiguration's user-details building (lines
+  76-85), the `User.withUsername(...).password(...).authorities(...)` chain
+  could carry a custom Authority encoding the provider (e.g.
+  `LOGIN_FORM_PROVIDER` granted authority). The AuthIdentityProvider would
+  then read this authority instead of using its `else`-branch fallthrough.
+  Symmetrically at LDAPSecurityConfiguration, the bind result could set
+  `LDAP_PROVIDER` authority.
 - |-
   Add a startup-time validator that fails fast if multiple non-OAUTH2 auth
   modes are active simultaneously AND ANY user_owner_mapping row has
@@ -231,28 +297,25 @@ mitigations_unimplemented:
   that an activity row created by LOGIN_FORM 'alice' resolves to the
   SAME OwnerPojo as an activity row created by LDAP 'alice' on read.
 notes: |-
-  STRENGTHENED batch 2026-05-20R — READ-SIDE MIRROR PRIMARY SOURCE NOW
-  PINNED. The architectural triangle is now SQL-anchored end-to-end
-  AT FOUR VERTICES:
+  STRENGTHENED batch 2026-05-20X — VERTEX 5 (AUTH-CONFIGURATION LAYER) ANCHOR.
+  The architectural pentagon is now SQL-anchored end-to-end at FIVE vertices:
     Vertex 1 — Principal layer (AuthIdentityProviderImpl batch K)
     Vertex 2 — Persistence-WRITE layer (ReactiveUserOwnerMappingRepositoryImpl
                 batch N)
     Vertex 3 — Schema layer (V0_0_55 + V0_0_89 migrations)
     Vertex 4 — Persistence-READ-CONSUMER layer (ReactiveActivityRepositoryImpl
-                batch R — NEW) — 4 distinct JOIN sites; the audit-feed
-                layer inherits the bleed automatically
+                batch R) — 4 distinct JOIN sites
+    Vertex 5 — Auth-configuration layer (LoginFormSecurityConfiguration
+                config-class batch X — NEW) — the LOGIN_FORM corner's
+                root cause anchor; the bleed is INVISIBLE here but ROOTED here
 
-  **The READ-side mirror is novel** — batch K + N together pinned the
-  bleed at the user-binding write layer; batch R demonstrates that the
-  bleed propagates into the audit-trail READ layer because the audit
-  schema has no `created_by_provider` column and the four read paths
-  JOIN by username only. The forensic implication is sharper than at
-  batches K/N: the activity feed is the platform's primary
-  incident-response surface; ambiguous actor resolution there means
-  "who did X to Y at time T" returns a misleading answer when LOGIN_FORM
-  and LDAP usernames overlap.
+  **The 5-vertex picture is the platform's most thoroughly-pinned cross-layer
+  security finding.** Each vertex is a different code surface, and each surface
+  is a primary-source citation, not an inferred claim. A maintainer auditing
+  the bleed can now cite the exact file:line at any layer of the platform's
+  authentication / authorization stack.
 
-  Original batch K/N notes (preserved):
+  Original batch K/N/R notes (preserved):
   NEW HIGH-severity invariant captured in batch 2026-05-19K. The first of
   three security-related findings on AuthIdentityProviderImpl (the other
   two: S2S username='ADMIN' literal collision; no auto-create on first
@@ -283,14 +346,19 @@ notes: |-
       radius among the four external joins because it's the
       incident-response surface and every authenticated user can read
       it cross-owner (per read-collaborative-cross-owner-enumeration)
+    - **NEW batch X** — the LOGIN_FORM-ADMIN-for-every-user-rbac-inert
+      invariant compounds: every LOGIN_FORM-authenticated user is ADMIN
+      AND every LOGIN_FORM-authenticated user collides with an LDAP user
+      of the same name on the provider=null bucket — the worst-case
+      LOGIN_FORM ↔ LDAP migration scenario produces ADMIN-promotion-by-
+      identity-bleed for the second-mode user.
 
-  Three DOC-NNN candidates flow from this invariant:
+  DOC-NNN candidates flow:
     (a) Document the compound key shape on the user-owner-association doc
     (b) Add an auth-mode migration playbook to the authentication doc
     (c) Either fix the code (distinguish modes at the principal layer) OR
         publish the trade-off as an explicit ADR
-
-  **NEW batch R fourth DOC-NNN candidate**: document the cross-mode
-  ambiguity on the activity-feed live page — operators reading the
-  feed during incident response need to know actor identity is
-  username-only when LOGIN_FORM and LDAP users share usernames.
+    (d) **batch R fourth**: document the cross-mode ambiguity on the
+        activity-feed live page — operators reading the feed during incident
+        response need to know actor identity is username-only when LOGIN_FORM
+        and LDAP users share usernames.

@@ -12,8 +12,122 @@ drift_class_summary:
 - empty_senders_silent_db_cost
 - sender_iteration_order_undefined
 - debug_log_full_payload_leak
+- smtp_protocol_case_sensitive_lowercase_trap_doc_vs_code_drift_gmail_example
+- subsystem_off_by_default_conditional_on_notifications_class_level_gate_environment_read_uniform
+- platform_base_url_consumption_asymmetric_email_only_slack_webhook_blind_to_setting
+- smtp_timeouts_unset_javamail_infinite_defaults_config_tier_primary_source
 batch_origin: K
 created_in_batch: K
+batch_extensions:
+- batch: X
+  entry_point_added: |-
+    config-class:NotificationConfiguration — the bean factory wiring side
+    of the entire outbound notification subsystem. This is the BOOT-TIME
+    CONFIGURATION ANCHOR pairing with the batch-K runtime
+    AlertNotificationMessageProcessor sidecar; together the two close
+    the F-009 chain at hop-0 (config) + hop-3 (dispatcher). The class is
+    gated by `@ConditionalOnNotifications` (file-level), reading
+    `notifications.enabled` directly from the Environment (default false),
+    and produces five conditionally-instantiated beans — the shared
+    HttpClient, the JavaMailSender, the three NotificationSender beans
+    (Slack / Webhook / Email), plus the AlertNotificationMessageTranslator
+    consumer that hop-3 invokes per WAL event.
+  contributing_nodes_added:
+  - odd-platform java config-class:NotificationConfiguration
+  notes: |-
+    Five new drift facets surface, all primary-source at
+    NotificationConfiguration.java:1-133, anchored on the bean-factory
+    layer:
+
+    (1) **SMTP CASE-SENSITIVITY TRAP (HIGH severity, doc-drift)** —
+    `NotificationConfiguration.java:63` performs a case-sensitive
+    `emailProperties.getProtocol().equals("smtp")` lowercase check. The
+    live ODD docs page (WebFetched 2026-05-20) Gmail example writes
+    `protocol: SMTP` (uppercase, JavaMail's documented convention). An
+    operator copying the live-doc YAML verbatim hits the ELSE branch —
+    `mail.smtp.auth` and `mail.smtp.starttls.enable` are NEVER added to
+    the Properties bag, regardless of how `smtp.starttls: true` and
+    `smtp.auth: true` are configured. Result: STARTTLS does not engage,
+    SMTP AUTH does not negotiate; depending on the relay, the connection
+    either fails plaintext or sends credentials in the clear. No boot
+    warning, no log line — operator discovers the misconfiguration only
+    after the first failed delivery. NEW drift facet for F-009:
+    `smtp_protocol_case_sensitive_lowercase_trap_doc_vs_code_drift_gmail_example`.
+
+    (2) **CHANNEL-KEY-PRESENCE ACTIVATION PRIMARY-SOURCE CONFIRMATION
+    (POSITIVE invariant — refines the empty-senders facet from batch K)** —
+    NotificationConfiguration.java:37 (email mailSender) + L75 (slack
+    sender) + L89 (webhook sender) + L102 (email sender) each carry
+    independent `@ConditionalOnProperty(name = "notifications.receivers.{X}")`.
+    Absence of a key = no bean = silent no-op for that channel. The
+    batch-K `empty_senders_silent_db_cost` drift facet identified the
+    BOOT-AND-RUNTIME consequence of zero channels configured + subsystem
+    on; this batch identifies the structural mechanism that produces it
+    (the per-channel conditional gates + the UN-conditional translator
+    bean at line 121-132 within the subsystem). Together the two close
+    the silent-empty-channels picture. STRENGTHENS batch-K facet
+    `empty_senders_silent_db_cost`.
+
+    (3) **SUBSYSTEM-LEVEL OFF-BY-DEFAULT GATE PRIMARY-SOURCE
+    (POSITIVE invariant)** — NotificationConfiguration.java:27
+    (`@ConditionalOnNotifications` on the @Configuration class itself) +
+    ConditionalOnNotifications.java:8-13 + NotificationsFeatureCondition.java:8-13
+    reading `Boolean.class, false`. The entire subsystem is fully
+    off-by-default — none of the bean methods (including HttpClient,
+    the translator, ALL senders) materialise when `notifications.enabled`
+    is unset. The single-source-of-truth gating uses the Environment
+    directly (NOT the typed NotificationsProperties.enabled field) so
+    the gate is uniform across NotificationConfiguration,
+    NotificationSubscriberStarter, and AlertNotificationMessageProcessor
+    (all three annotated `@ConditionalOnNotifications`). Documents
+    the BOOT-TIME invariant that the F-009 runtime chain depends on.
+    NEW drift facet for F-009 (positive):
+    `subsystem_off_by_default_conditional_on_notifications_class_level_gate_environment_read_uniform`.
+
+    (4) **PLATFORM-BASE-URL ASYMMETRIC CONSUMPTION (LOW severity,
+    operator-trap)** — `NotificationConfiguration.java:105` reads
+    `@Value("${odd.platform-base-url:http://localhost:8080}")` ONLY in
+    the email sender bean (`emailNotificationSender(...)`) — the Slack
+    and Webhook senders do NOT receive this parameter (lines 76-86,
+    88-99). An operator who forgets to set `odd.platform-base-url`
+    will see correctly-rendered Slack messages (no link to ODD UI)
+    + email notifications with broken `http://localhost:8080/...`
+    links pointing at the platform's localhost-of-container. The
+    asymmetry is undocumented. NEW drift facet for F-009:
+    `platform_base_url_consumption_asymmetric_email_only_slack_webhook_blind_to_setting`.
+
+    (5) **SMTP TIMEOUTS UNSET CONFIRMED AT CONFIG TIER (HIGH severity —
+    STRENGTHENS live-doc warning with code-level primary source)** —
+    The live docs page (WebFetched 2026-05-20) warns "SMTP timeouts
+    are unset — an unreachable SMTP server will hang notification
+    delivery"; this batch confirms PRIMARY SOURCE at
+    NotificationConfiguration.java:61-69. The Properties bag is
+    populated with `mail.transport.protocol` + `mail.smtp.auth` +
+    `mail.smtp.starttls.enable` ONLY — none of
+    `mail.smtp.connectiontimeout`, `mail.smtp.timeout`,
+    `mail.smtp.writetimeout` is set; JavaMail defaults (infinite)
+    apply. A hung SMTP relay blocks the notification-subscriber
+    thread indefinitely, stalling delivery on ALL channels (not just
+    email — the subscriber is single-threaded per
+    NotificationSubscriber.java). The live doc warning is HEALTHY;
+    the code-side remediation gap exists. NEW drift facet for F-009:
+    `smtp_timeouts_unset_javamail_infinite_defaults_config_tier_primary_source`.
+
+    Coherence sweep STRENGTHENS=3 (F-009 batch-K
+    `empty_senders_silent_db_cost` extended with config-tier mechanism;
+    F-009 batch-K `pii_passthrough_to_every_channel` extended with the
+    config-tier confirmation that there is NO per-owner / per-namespace
+    scoping bean factory — the wiring choice is COMMITTED at boot here;
+    the SMTP-side caveats in the live doc page each pair with a
+    config-tier file:line citation). SUPERSEDES=0. CONFLICTS=0.
+    Cross-link to F-009 batch-K `no_retry_no_dlq_no_audit` facet — the
+    config-tier choice to register the AlertNotificationMessageTranslator
+    bean unconditionally within the subsystem (line 121-132, no
+    @ConditionalOnProperty on the translator) means even a zero-channel
+    deployment pays the wiring cost of the translator + the DSLContext
+    + the JooqRecordHelper, and the WAL subscriber thread runs without
+    delivering anything; this is the COMPOUND finding of facet 2 + batch-K
+    `empty_senders_silent_db_cost`.
 feature_name: WAL-driven outbound alert notification fan-out (Slack / Webhook / Email)
 discovered_from_entry_point: wal-event:postgres-logical-replication:ALERT-table-INSERT/UPDATE
 description: |-
@@ -58,6 +172,7 @@ contributing_nodes:
 - odd-platform java sender:EmailNotificationSender
 - odd-platform java PostgreSQLLeaderElectionManager
 - odd-platform java config-properties:NotificationsProperties
+- odd-platform java config-class:NotificationConfiguration
 chain:
 - hop: 1
   node: odd-platform java NotificationSubscriberStarter
@@ -358,6 +473,7 @@ related_concepts:
 - WAL-driven Outbound Subsystem
 related_retrospectives:
 - LSN-001
+- LSN-018  # batch-X coherence-check protocol — SMTP case-sensitivity trap STRENGTHENS the operator-copy-paste-from-docs-silently-fails pattern; doc-drift between live docs Gmail example (uppercase SMTP) and code lowercase check at L63 surfaced without contradicting any existing claim
 related_probes: null
 probe_verifications: []
 maintainer_curated: false

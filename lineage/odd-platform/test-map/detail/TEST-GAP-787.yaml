@@ -1,0 +1,51 @@
+gap_id: TEST-GAP-787
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java R2DBCConfiguration config-class:R2DBCConfiguration"
+pillars_affected: [P-08]
+surfaced_by:
+  - "R2DBCConfiguration.md:bugs_limitations_corner_cases.[3] MEDIUM (Spring Boot framework default maxSize=10 per pool is not published as a platform guarantee)"
+  - "R2DBCConfiguration.md:bugs_limitations_corner_cases.[4] MEDIUM (spring.r2dbc.pool.* operator knobs are wired but un-documented)"
+  - "R2DBCConfiguration.md:docs_link_semantic.doc_drift_findings.[0] MEDIUM (Live docs do NOT publish any of the ten R2dbcProperties.Pool settings as operator knobs)"
+behaviour: |-
+  **MEDIUM — R2DBCConfiguration wires `PropertyMapper.alwaysApplyingWhenNonNull()` for ALL TEN `R2dbcProperties.Pool` settings (maxIdleTime / maxLifeTime / maxAcquireTime / maxCreateConnectionTime / initialSize / maxSize / validationQuery / validationDepth / minIdle / maxValidationTime) at lines 41-50 + 75-84 — yet `application.yml` declares ZERO `spring.r2dbc.pool.*` overrides, and the live docs publish NONE of these as operator knobs. The platform's pool ceiling is whatever Spring Boot's framework default ships — typically `maxSize=10`, but not committed to.**
+
+  **Three composing risks**:
+  1. **Framework drift**: a future Spring Boot upgrade that changes the default `maxSize` silently changes ODD's deployed pool ceiling. No `application.yml` override pins the value.
+  2. **Operator silence**: WebFetched 2026-05-20 status 200 from `/configuration-and-deployment/odd-platform` confirms NONE of the ten pool keys are documented. Operators sizing high-RPS deployments have no published guidance.
+  3. **Authorization hot path saturation**: per existing concept catalog (`authorization-hot-path-getcurrentuserroles-per-request-no-cache.yaml:44-45`), R2DBC pool size is the upper bound; the authorization checks saturate the pool under load.
+
+  **Two pools × max-size 10 × N replicas = practical concurrency budget for the ENTIRE platform's DB access.** A 5-replica deployment with default Spring Boot pool sizes can sustain max 100 concurrent DB queries. PG `max_connections` default is 100 — operators are at the edge with NO platform-side telemetry.
+
+  **Test gap shape**:
+  1. Boot-time assertion — verify `spring.r2dbc.pool.max-size` is unset in the application context (PINS the framework-default reliance).
+  2. Spring Boot version pin — assert the resolved Spring Boot version (via Manifest or BuildInfo) — a future upgrade trips the test and forces re-verification of the framework default.
+  3. Optional: bind a deliberate override `spring.r2dbc.pool.max-size=50` via `@TestPropertySource`; verify the pool actually accepts the override via PropertyMapper.
+
+  PINS the current framework-default reliance; documents the gap; drives the operator-facing knob to docs + a tested default at the platform level.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/datasource/R2DBCPoolMaxSizeDocumentationGapRegressionPinTest.java"
+  name: "r2dbcPool_maxSizeAtFrameworkDefault_noPlatformOverride_pinsFrameworkDriftRisk"
+evidence:
+  - "R2DBCConfiguration.md says (bugs_limitations_corner_cases.[3]): 'Spring Boot framework default maxSize=10 per pool is not published as a platform guarantee. A future Spring Boot version that altered the default would silently change ODD's deployed pool ceiling. The platform commits to no specific ceiling and ships no spring.r2dbc.pool.max-size override in application.yml.'"
+  - "R2DBCConfiguration.md says (bugs_limitations_corner_cases.[4]): 'spring.r2dbc.pool.* operator knobs are wired (PropertyMapper applies them at lines 41-50) but UN-documented at docs.opendatadiscovery.org/configuration-and-deployment/odd-platform (verified WebFetch 2026-05-20). Operators with large alerts / activity-feed / lineage-graph workloads have no docs guidance on tuning the pool.'"
+  - "R2DBCConfiguration.md says (docs_link_semantic.doc_drift_findings.[0]): 'Live docs at /configuration-and-deployment/odd-platform do NOT publish any of the ten R2dbcProperties.Pool settings (spring.r2dbc.pool.max-size, min-idle, max-idle-time, max-life-time, max-acquire-time, max-create-connection-time, validation-query, validation-depth, initial-size, max-validation-time) as operator knobs.'"
+  - "Verified at primary source: R2DBCConfiguration.java:41-50 + 75-84 (PropertyMapper for ten pool params) + application.yml:1-15 (no spring.r2dbc.pool.* keys)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-05-20 status 200 — confirms pool keys are not documented"
+cross_references:
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/odd-platform` MUST document `spring.r2dbc.pool.max-size` and recommend a value based on PG max_connections + replicas)"
+  - "REFACTOR-NNN (proposed — set a platform-default `spring.r2dbc.pool.max-size: 20` in application.yml; document the framework-default ceiling)"
+  - "concepts: authorization-hot-path-getcurrentuserroles-per-request-no-cache (existing concept) — saturation source"
+related_features: [F-NN-database-tuning]
+related_pillar_features: ["P-08:F-NN-platform-tuning"]
+proposed_action: |-
+  Add `R2DBCPoolMaxSizeDocumentationGapRegressionPinTest`. Two test methods:
+
+  1. `r2dbcPool_maxSizeUnset_inheritsFrameworkDefault_pinsCurrentState` — `@SpringBootTest` default; reflect on the `connectionPool` bean's configuration; assert `maxSize=10` (Spring Boot 3.x framework default). PINS current state until a platform-default is set.
+  2. `r2dbcPool_acceptsOverride_propertyMapperWorking` — `@TestPropertySource(properties = "spring.r2dbc.pool.max-size=50")`; assert the bean's maxSize=50. CONFIRMS PropertyMapper wiring is actually live.
+
+  Pair with: (a) REFACTOR-NNN — set `spring.r2dbc.pool.max-size: 20` (×2 pools = 40 per replica baseline) + document in application.yml comments; (b) DOC-GAP-NNN — live docs MUST publish at least `spring.r2dbc.pool.max-size` as an operator-facing knob with a sizing-guidance section.
+batch: 2026-05-20-X
+feature_id: null

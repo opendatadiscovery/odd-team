@@ -1,7 +1,8 @@
 name: Advisory-lock-ID collision risk across subsystems
 canonical_in_docs: false
 canonical_candidate: true
-description: 'Cross-cutting concurrency-correctness invariant: ODD uses Postgres advisory
+description: |-
+  Cross-cutting concurrency-correctness invariant: ODD uses Postgres advisory
   locks as the single-leader-election primitive across 4 distinct subsystems, each
   with its own operator-tunable advisory-lock-ID. Shipped defaults are non-overlapping
   (90 / 100 / 110 / 120) but there is NO startup assertion that they STAY disjoint
@@ -20,13 +21,36 @@ description: 'Cross-cutting concurrency-correctness invariant: ODD uses Postgres
   firing). Recommended cross-cutting remediation: (i) add a startup-time `AdvisoryLockIdRegistryValidator`
   `@PostConstruct` that asserts the four IDs are distinct; (ii) maintain a central
   advisory-lock-id registry in code OR docs naming all four IDs and the convention;
-  (iii) docs-page admonitions on the four affected pages.'
+  (iii) docs-page admonitions on the four affected pages.
+
+  **BATCH X STRENGTHENING (2026-05-20X)** — surfaces the FIFTH `@Scheduled` subsystem
+  asymmetry observation: PostgreSQLSessionHousekeepingJobHandler.java:13 is `@Scheduled(fixedRate=1,
+  timeUnit=TimeUnit.HOURS)` with NO `@SchedulerLock` and NO advisory-lock-id config
+  key. The session housekeeping is the SOLE `@Scheduled` job in the codebase WITHOUT
+  leader-election — captured separately as the
+  `housekeeping-job-no-scheduler-lock-multi-instance-amplification` invariant.
+
+  Combined with this invariant, the recommended remediation grows:
+    (i') Define a fifth advisory-lock-id slot (e.g. `spring.session.housekeeping.advisory-lock-id`
+         default 130) and apply it via `@SchedulerLock` OR Postgres advisory-lock
+         wrapping on the housekeeping job.
+    (ii') The proposed `AdvisoryLockIdRegistryValidator` MUST cover all FIVE slots
+          (90 / 100 / 110 / 120 / 130) plus assert distinctness.
+    (iii') Update the operator docs to publish the registry of FIVE advisory-lock
+           IDs in one canonical table.
+
+  The session-housekeeping gap is not technically a COLLISION (no lock used at all),
+  but it is the same family of operational-leader-election finding. Surfacing it
+  here ensures the eventual @PostConstruct validator covers ALL scheduled jobs not
+  just the ones currently using locks.
 axes_present:
 - config_prefixes
+- config_classes
 nodes:
 - odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
 - odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
 - odd-platform java org.opendatadiscovery.oddplatform.datacollaboration.config config-properties-class:DataCollaborationProperties
+- odd-platform java SessionConfiguration config-class:SessionConfiguration
 contributors:
 - 'ActivityTablePartitionManager (batch B): partition.advisory-lock-id (default 90)
   — boot-time partition creation lock'
@@ -35,6 +59,11 @@ contributors:
 - 'DataCollaborationProperties (batch D): datacollaboration.receive-event-advisory-lock-id
   (default 110) + datacollaboration.sender-message-advisory-lock-id (default 120)
   — TWO single-leader threads'
+- |-
+  SessionConfiguration (batch X — NEW; ASYMMETRY at PostgreSQLSessionHousekeepingJobHandler.java:13):
+  NO advisory-lock-id and NO @SchedulerLock — the housekeeping job runs N× per hour
+  on N replicas. Sibling finding to advisory-lock-id collision; combined remediation
+  is the canonical AdvisoryLockIdRegistryValidator + a fifth advisory-lock-id slot
 evidence:
 - ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[5] (partition.advisory-lock-id
   has no `:default`)
@@ -44,36 +73,41 @@ evidence:
   lock-id collisions undetected)
 - DataCollaborationProperties.md:security.known_security_gaps.[1] (no validation against
   lock-id collisions)
-notes: 'Promoted to a NEW cross-cutting invariant in batch 2026-05-12D after
-
+- |-
+  SessionConfiguration.md (batch X NEW):performance.scaling_characteristics +
+  performance.known_performance_gaps.[0] — explicit observation that PostgreSQLSessionHousekeepingJobHandler
+  is the SOLE `@Scheduled` job without leader-election (4-of-5 use advisory locks;
+  this 1-of-5 does not)
+notes: |-
+  Promoted to a NEW cross-cutting invariant in batch 2026-05-12D after
   the third primary-source sidecar (DataCollaborationProperties)
+  surfaced this as a per-feature weakness. STRENGTHENED batch 2026-05-20X
+  with the fourth-sibling-with-NO-lock observation from SessionConfiguration.
 
-  surfaced this as a per-feature weakness. Now 3-sidecar triangulated
-
-  across all known advisory-lock subsystems.
-
+  Now 4-sidecar triangulated across all known advisory-lock-using subsystems
+  PLUS the one asymmetric non-using subsystem.
 
   The same observation appears in the "202+queue+Postgres-advisory-lock
-
-  single-sender pattern" invariant''s notes (which named the lock-ID
-
+  single-sender pattern" invariant's notes (which named the lock-ID
   candidates 90/100/110/120 by convention). That invariant is the
-
   ARCHITECTURAL PATTERN (when to use this lock-shape); this invariant
-
   is the COLLISION-AVOIDANCE concern (how to keep the IDs disjoint
-
-  across the four subsystems that already use the pattern).
-
+  across the subsystems that already use the pattern, and how to fold
+  in the one subsystem that DOESN'T use it).
 
   Recommended cleanup: introduce an `AdvisoryLockId` enum with the four
+  named values + a fifth `SESSION_HOUSEKEEPING` value, replace the per-
+  Properties-class `int` fields with the enum, add a `@PostConstruct`
+  validator to a top-level configuration-validator bean. This makes the
+  invariant code-enforced rather than convention-enforced. The validator
+  should also assert every `@Scheduled` job has either `@SchedulerLock`
+  OR a Postgres-advisory-lock wrapper — failing on the housekeeping
+  outlier.
 
-  named values, replace the per-Properties-class `int` fields with the
-
-  enum, and add a `@PostConstruct` validator to a top-level
-
-  configuration-validator bean. This makes the invariant code-enforced
-
-  rather than convention-enforced.
-
-  '
+  Cross-cutting connections:
+    - housekeeping-job-no-scheduler-lock-multi-instance-amplification (batch X
+      NEW) — the SessionConfiguration asymmetry finding
+    - spring-session-timeout-minus-one-housekeeping-noop (batch X NEW) —
+      compound finding on the same housekeeping job
+    - The 202+queue+Postgres-advisory-lock single-sender pattern — the
+      architectural pattern this invariant catalogues collision-risk for

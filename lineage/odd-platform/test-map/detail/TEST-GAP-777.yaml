@@ -1,0 +1,69 @@
+gap_id: TEST-GAP-777
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java SessionConfiguration config-class:SessionConfiguration"
+pillars_affected: [P-09, P-08]
+surfaced_by:
+  - "SessionConfiguration.md:bugs_limitations_corner_cases.[3] MEDIUM (no cookie-security attributes configured anywhere)"
+  - "SessionConfiguration.md:docs_link_semantic.doc_drift_findings.[1] (No cookie-security-attribute documentation)"
+  - "SessionConfiguration.md:security.known_security_gaps.[0] MEDIUM (cookie attributes inherit Spring framework defaults)"
+  - "SessionConfiguration.md:tests_coverage_semantic.uncovered_behaviours.[no test verifies session cookie attributes]"
+behaviour: |-
+  **CRITICAL (HIGH-by-criticality, escalated by compound risk) — SessionConfiguration wires ZERO cookie-security attributes. No `CookieWebSessionIdResolver` bean, no `SameSite` directive, no `HttpOnly` override, no `Secure` flag setter. Combined with `spring.session.timeout: -1` (sessions never expire) AND LOGIN_FORM's hardcoded-ADMIN posture (TEST-GAP-774), a stolen session cookie grants permanent ADMIN access to the catalog.**
+
+  **Verified by grep at the entire repo level**: `grep CookieWebSession|SameSite|HttpOnly|Secure.*cookie|sessionIdResolver|WebSessionIdResolver` over odd-platform returned ZERO matches. The platform does NOT override Spring WebFlux's framework defaults at any layer. Spring's defaults for the session cookie are:
+  - `HttpOnly`: true (Spring's default — mitigates JavaScript-side cookie theft via XSS)
+  - `Secure`: NOT SET — the cookie travels in plaintext on HTTP deployments
+  - `SameSite`: lax (permits cross-site GET / top-level navigation cookie leakage — sufficient against trivial CSRF but inadequate against state-changing endpoints accepting cookie-auth GET)
+  - `Domain` / `Path`: not configured (cookie scoped to the issuing host's full path)
+
+  **Compound risk** (the CRITICAL escalation):
+  - Cookie has no `Secure` flag → on HTTP deployments, observable in transit (operator MUST front the platform with TLS + a reverse proxy that adds `Secure` externally).
+  - `spring.session.timeout=-1` (application.yml:2-3) → session NEVER expires.
+  - LOGIN_FORM mode hardcodes ADMIN authority for every user (TEST-GAP-774).
+  - CSRF unconditionally disabled across all four auth modes (TEST-GAP-146).
+  - No in-platform session revocation mechanism (live-doc verbatim 2026-05-20: "does not support rotation, session revocation, or MFA").
+
+  Result: a session cookie compromised via HTTP transit OR via XSS (CSP not asserted) is valid until JVM restart, grants ADMIN authority across every endpoint, with no platform-side revocation mechanism. The compound posture is the LSN-001/LSN-002-class shape: silent insecure default + caveat-only / silent doc coverage + no fail-fast.
+
+  **STRENGTHENS existing TEST-GAP-143** (session-cookie security from LoginForm-tier view). This sidecar is the SessionConfiguration config-class primary source — confirms the absence at the *session backing store* layer (where any cookie override would naturally live, regardless of auth mode), broader than just LOGIN_FORM. The cookie defaults apply to OAUTH2 and LDAP modes too.
+
+  **Live doc drift**: WebFetched 2026-05-20 status 200 from `/configuration-and-deployment/odd-platform#select-session-provider` covers session storage and timeout but does NOT name the cookie attributes. Operators relying on framework defaults have no guidance.
+
+  **Test gap shape**: integration test asserting the `Set-Cookie` header on a successful form-login response carries `HttpOnly` AND `Secure=false` (the framework default with no override) AND `SameSite=Lax`. PINS the current state so a future fix (adding a `CookieWebSessionIdResolver` bean with `HttpOnly + Secure + SameSite=Strict + Domain + Path`) is a deliberate test update. Pair with a second test asserting that a non-TLS deployment exposes the cookie in plaintext (set up HTTP-only TestContainer; observe Set-Cookie in HTTP response; confirm no `Secure` attribute).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/SessionCookieSecurityAttributesRegressionPinTest.java"
+  name: "sessionCookie_hasHttpOnlyAndNoSecureAndSameSiteLax_pinsFrameworkDefaultsAbsenceOfPlatformOverride"
+evidence:
+  - "SessionConfiguration.md says (bugs_limitations_corner_cases.[3]): 'no cookie-security attributes are configured anywhere in the codebase — no CookieWebSessionIdResolver bean, no SameSite directive, no HttpOnly override, no Secure flag setter. The session cookie inherits Spring's framework defaults (HttpOnly=true, Secure=NOT set, SameSite=lax). On a plaintext-HTTP deployment the cookie is transmitted in clear; on a TLS-fronted deployment the operator must rely on the reverse proxy / Ingress to set Secure externally — there is no in-platform guarantee'"
+  - "SessionConfiguration.md says (security.known_security_gaps.[0]): 'cookie attributes inherit Spring framework defaults — no in-platform WebSessionIdResolver override sets Secure (cookie can be transmitted over plaintext HTTP if TLS is not enforced upstream), and no override sets SameSite=Strict (lax permits cross-site GET / top-level navigation cookie leakage). The platform offloads cookie security to the deployment topology — no doc warns operators.'"
+  - "SessionConfiguration.md says (security.known_security_gaps.[2]): 'session never expires under shipped defaults (spring.session.timeout: -1) — a stolen cookie remains valid until manual platform-side invalidation (log-out triggered, cache eviction, or — for IN_MEMORY only — restart). The live doc warns operators but the SHIPPED DEFAULT is unsafe for any internet-facing deployment'"
+  - "Verified at primary source: grep `CookieWebSession|SameSite|HttpOnly|Secure.*cookie|sessionIdResolver|WebSessionIdResolver` over odd-platform — 0 matches"
+  - "Verified at primary source: SessionConfiguration.java:22-65 (no override beans declared)"
+  - "Verified at primary source: application.yml:2-3 (`spring.session.timeout: -1`)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-05-20 status 200 — confirms doc covers session provider but NOT cookie attributes"
+cross_references:
+  - "TEST-GAP-143 (STRENGTHENED — was LoginForm-tier; this is SessionConfiguration-tier broader to all auth modes)"
+  - "TEST-GAP-146 (CSRF disabled — compound with no Secure flag for cookie-auth state-changing requests)"
+  - "TEST-GAP-774 (LOGIN_FORM hardcoded ADMIN — compounds with no-expiry cookie)"
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/odd-platform#select-session-provider` MUST name the cookie attributes shipped by default + the production-deployment posture for `Secure` / `SameSite`)"
+  - "REFACTOR-NNN (proposed — register a `CookieWebSessionIdResolver` bean with `HttpOnly + Secure + SameSite=Strict + 24h-default-timeout`)"
+  - "concepts: session-cookie-security-attributes-platform-side-absent (NEW canonicalisation candidate)"
+related_features: [F-008, F-011]
+related_pillar_features: ["P-09:F-001 UI authentication", "P-09:F-002 Principal-to-Owner Resolution"]
+proposed_action: |-
+  Add `SessionCookieSecurityAttributesRegressionPinTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+
+  1. `sessionCookie_loginFormSuccess_setCookieHeaderHasHttpOnlyAndLaxButNoSecure_pinsFrameworkDefault` — `@SpringBootTest` with `auth.type=LOGIN_FORM`; submit form-login; capture the response's `Set-Cookie` header; assert it contains `HttpOnly` AND does NOT contain `Secure` AND contains `SameSite=Lax`. PIN current framework-default state.
+
+  2. `sessionCookie_oauth2Success_setCookieHeaderHasSameAttributesAsLoginForm_pinsCrossAuthModeUniformAbsence` — same fixture under `auth.type=OAUTH2`; confirm the cookie attributes are identical (the issue lives at the session backing store, not at the auth mode).
+
+  3. `sessionTimeout_minusOneMeansNeverExpire_pinsCompoundRisk` — assert `spring.session.timeout: -1` in the bound `WebSessionProperties` (or whatever Spring binds it as); pin the relationship to TEST-GAP-779 (housekeeping no-op compound).
+
+  Add a `// COMPOUND-RISK-PIN — SessionConfiguration wires zero cookie-security attributes. Combined with spring.session.timeout=-1 (never expire) + LOGIN_FORM ADMIN-for-every-user + CSRF disabled + no in-platform revocation, a stolen cookie grants permanent ADMIN access. This test pins the framework-default state until REFACTOR-NNN registers a CookieWebSessionIdResolver bean.` comment block.
+
+  Pair with: (a) live-doc update for `/configuration-and-deployment/odd-platform#select-session-provider` covering cookie attributes AND production-deployment posture (Secure flag, TLS termination, SameSite=Strict for state-changing endpoints); (b) REFACTOR-NNN implementation registering a `CookieWebSessionIdResolver` bean with HttpOnly + Secure (configurable, default to env-detected) + SameSite=Strict + a sensible default timeout.
+batch: 2026-05-20-X
+feature_id: null

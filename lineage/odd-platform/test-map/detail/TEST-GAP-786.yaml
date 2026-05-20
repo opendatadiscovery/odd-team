@@ -1,0 +1,53 @@
+gap_id: TEST-GAP-786
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java R2DBCConfiguration config-class:R2DBCConfiguration"
+pillars_affected: [P-08, P-03]
+surfaced_by:
+  - "R2DBCConfiguration.md:bugs_limitations_corner_cases.[2] LOW (customConnectionPool is instantiated unconditionally — no @ConditionalOnProperty gating)"
+  - "R2DBCConfiguration.md:performance.known_performance_gaps.[2] LOW (customConnectionPool is created unconditionally)"
+  - "R2DBCConfiguration.md:docs_link_semantic.doc_drift_findings.[1] (Live docs do not surface the secondary R2DBC ConnectionPool's existence as an operational fact)"
+behaviour: |-
+  **MEDIUM — `customConnectionPool` is instantiated UNCONDITIONALLY at R2DBCConfiguration.java:54 — no `@ConditionalOnProperty` gate on `spring.custom-datasource.url`. Every ODD Platform deployment, including those that never use Lookup Tables, opens TWO R2DBC connection pools (each with `initialSize` connections from Spring Boot's default of ~10) — 20+ PG connection slots minimum per replica, regardless of feature usage.**
+
+  Sidecar primary source:
+  - R2DBCConfiguration.java:54 — `@Bean(name = "customConnectionPool", destroyMethod = "dispose")` with NO `@ConditionalOnProperty`.
+  - Compared to other opt-in beans: `HousekeepingJobManager.java:18` (gated), `NotificationConfiguration.java:27` (gated by @ConditionalOnNotifications), `OAuthSecurityConfiguration.java:71` (gated by auth.type=OAUTH2).
+  - When all three `spring.custom-datasource.*` keys are blank (the shipped default), the bean falls back to primary `DataSourceProperties` and opens a SECOND pool against the SAME database, only differing by the `?schema=lookup_tables_schema` URL query-param.
+
+  **Operator-impact scenarios**:
+  - Small dev deployment (1 replica, no Lookup Tables): 20 PG connection slots consumed (10 primary pool + 10 custom pool) for zero benefit.
+  - Production deployment (5 replicas, Lookup Tables in active use): 100 PG connection slots consumed at default sizing — PG `max_connections` default is 100, so a 5-replica deployment with NO collectors / no operator tools at the edge.
+  - K8s Resource sizing: operators sizing their PG backend based on the primary pool alone (the "one R2DBC pool per replica" mental model) under-provision; first symptom is PG `too many connections` errors during scale-out.
+
+  **Test gap shape**:
+  1. Default-config bean assertion — verify both `connectionPool` (primary, @Primary) AND `customConnectionPool` exist in the context.
+  2. Connection-count assertion — verify the platform opens 2N connections to PG at startup (where N is the default pool initialSize).
+  3. Conditional-creation pin (the FIX direction) — under a hypothetical future `@ConditionalOnProperty(name="custom-datasource.enabled", havingValue="true")` gate, verify the bean is ABSENT when the property is unset; this test would FAIL against the current code (the bean IS present); PINS the absence of the gate.
+
+  After the fix lands (REFACTOR-NNN adding a feature-flag for custom-datasource), the test naturally inverts to verify gated creation.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/datasource/R2DBCCustomPoolUnconditionalCreationRegressionPinTest.java"
+  name: "customConnectionPool_alwaysCreatedRegardlessOfCustomDatasourceConfig_pinsWastefulDefault"
+evidence:
+  - "R2DBCConfiguration.md says (bugs_limitations_corner_cases.[2]): 'customConnectionPool is instantiated unconditionally — no @ConditionalOnProperty gating on the custom-datasource keys (contrast with HousekeepingJobManager.java:18). Every deployment runs two R2DBC pools whether or not Lookup Tables are used. Resource overhead: two pool instances × default maxSize=10 × M idle connections held; for small deployments with no Lookup-Tables traffic this is wasted DB-side connection slots.'"
+  - "R2DBCConfiguration.md says (performance.known_performance_gaps.[2]): 'customConnectionPool is created unconditionally (no @ConditionalOnProperty at line 54) — every deployment runs a second pool whether or not Lookup Tables are used.'"
+  - "Verified at primary source: R2DBCConfiguration.java:54 (`@Bean(name = \"customConnectionPool\", destroyMethod = \"dispose\")` — no @ConditionalOnProperty)"
+  - "Contrast with: HousekeepingJobManager.java:18 + NotificationConfiguration.java:27 + OAuthSecurityConfiguration.java:71 (all gated)"
+cross_references:
+  - "REFACTOR-NNN (proposed — add @ConditionalOnProperty(name=\"spring.custom-datasource.enabled\", havingValue=\"true\") gate; default false; opt-in)"
+  - "TEST-GAP-785 (sibling — schema-injection contract for the same bean)"
+  - "concepts: r2dbc-second-pool-unconditional-double-pg-connections (NEW canonicalisation candidate)"
+related_features: [F-MDM-LookupTables]
+related_pillar_features: ["P-03:F-001 Lookup Tables", "P-08:F-NN-database-tuning"]
+proposed_action: |-
+  Add `R2DBCCustomPoolUnconditionalCreationRegressionPinTest`. Two test methods:
+
+  1. `customConnectionPool_existsInDefaultContext_pinsUnconditionalCreation` — `@SpringBootTest` default; assert `applicationContext.getBean("customConnectionPool")` returns non-null. PINS current behaviour.
+  2. `pgConnections_atStartup_twoPoolsConsumeDoubleSlots` — `@SpringBootTest` with Testcontainers PG; capture `pg_stat_activity` row count; assert at least 2×initialSize connections (default ~20) are open.
+
+  Pair with: (a) REFACTOR-NNN — add @ConditionalOnProperty on the custom pool + custom databaseClient + custom TM; default opt-in only when Lookup Tables are explicitly used; (b) DOC-GAP-NNN — live docs should explain that the platform opens 2 pools by default and explain how to disable for non-Lookup-Tables deployments.
+batch: 2026-05-20-X
+feature_id: null

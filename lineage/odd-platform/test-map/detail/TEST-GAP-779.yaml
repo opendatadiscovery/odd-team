@@ -1,0 +1,59 @@
+gap_id: TEST-GAP-779
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java SessionConfiguration config-class:SessionConfiguration"
+pillars_affected: [P-09, P-08]
+surfaced_by:
+  - "SessionConfiguration.md:bugs_limitations_corner_cases.[2] HIGH (spring.session.timeout=-1 shipped default + housekeeping no-op compound)"
+  - "SessionConfiguration.md:security.known_security_gaps.[2] HIGH (default is unsafe for production)"
+  - "SessionConfiguration.md:dependencies_semantic.requires-config.[spring.session.timeout default -1 means sessions NEVER expire applies to all three providers]"
+behaviour: |-
+  **HIGH — `spring.session.timeout=-1` (shipped default at application.yml:2-3) makes sessions never expire across ALL three session providers, which compounds with the hourly housekeeping job into a silent no-op.** Sidecar primary-source confirms three composing facts:
+
+  (1) **`spring.session.timeout=-1` is the shipped default** (application.yml:2-3): the value applies to all three session providers (IN_MEMORY / INTERNAL_POSTGRESQL / REDIS). Spring's `MaxInactiveInterval` for the session is set to whatever the SessionStore computes from this value — and `JooqSessionRepository.java:138-148` confirms the per-record `expiry_time` column is computed as `lastAccessedTime + maxInactiveInterval.toSeconds()`. When `maxInactiveInterval` is unset or negative, the expiry is effectively never reached.
+
+  (2) **Housekeeping job uses `expiry_time < now()` predicate** at PostgreSQLSessionHousekeepingJob.java:30. Combined with (1), the predicate NEVER matches — the housekeeping job is a NO-OP under the shipped defaults. The `SPRING_SESSION` + `SPRING_SESSION_ATTRIBUTES` tables grow monotonically.
+
+  (3) **No log warning, no operator-visible signal**: SessionConfiguration carries no `@Slf4j`, no boot-time `log.warn("spring.session.timeout=-1 — sessions never expire")` (verified via the sidecar's `dependencies_semantic.requires-config` block + grep for `log.warn|log.info` in SessionConfiguration.java — 0 matches). An operator inspecting `/actuator/env` sees the value but no compound warning.
+
+  **Operator-impact scenario** (LSN-001 family — silent monotonic growth):
+  - **IN_MEMORY**: the `ConcurrentHashMap` grows monotonically until JVM restart. For a high-RPS deployment (1000 unique users/day × 365 days × baseline 5 KB per session), heap pressure surfaces as GC pauses, then OOM after weeks/months.
+  - **INTERNAL_POSTGRESQL**: the `SPRING_SESSION` table grows monotonically. The shipped Flyway migration V0_0_41 creates no `EXPIRY_TIME` index that would help; full-table scan on session lookup degrades latency.
+  - **REDIS**: the Redis key-space grows monotonically. Operators relying on Redis `maxmemory-policy` default `noeviction` see OOM-on-write failures.
+
+  All three are SILENT — no log line, no metric, no actuator-health alert. The operator discovers the issue when something breaks.
+
+  **Compound risk with TEST-GAP-777** (no cookie security): a never-expiring session that grants permanent ADMIN access (LOGIN_FORM hardcoded admin per TEST-GAP-774) means cookie theft has no time bound. The compound posture is the LSN-001 / LSN-002 / cross-batch-Q (REFACTOR-417 session-cookie permanence) all in one place.
+
+  **Test gap shape**: integration test asserting (a) the shipped default `spring.session.timeout` is `-1`, (b) the housekeeping job's `expiry_time < now()` predicate matches NO rows when sessions are written under default config, (c) the JOOQ SQL produces a never-matching SELECT plan (verifiable via `EXPLAIN ANALYZE` or via test-side row count after housekeeping run). PINS the compound risk so a future change to `spring.session.timeout=86400` (24h, the recommended-production-default) AS a deliberate update triggers test failure and forces explicit human review.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/SessionTimeoutMinusOneHousekeepingNoOpRegressionPinTest.java"
+  name: "sessionTimeout_minusOneCausesHousekeepingNoOp_pinsCompoundRisk"
+evidence:
+  - "SessionConfiguration.md says (bugs_limitations_corner_cases.[2]): 'spring.session.timeout: -1 (shipped default at application.yml:2-3) means sessions NEVER expire — on IN_MEMORY the heap grows monotonically until restart; on INTERNAL_POSTGRESQL the SPRING_SESSION table grows monotonically (the housekeeping job uses the per-session EXPIRY_TIME column, which under -1 is set to lastAccessedTime + Integer.MAX_VALUE-equivalent — so the expiry_time < now() predicate never matches and the housekeeping job is a NO-OP for unexpiring sessions); on REDIS the keys never expire either'"
+  - "SessionConfiguration.md says (security.known_security_gaps.[2]): 'session never expires under shipped defaults (spring.session.timeout: -1) — a stolen cookie remains valid until manual platform-side invalidation (log-out triggered, cache eviction, or — for IN_MEMORY only — restart). The live doc warns operators (verified 2026-05-20 quote: \\\"spring.session.timeout: -1\\\" means sessions never expire.) but the SHIPPED DEFAULT is unsafe for any internet-facing deployment'"
+  - "Verified at primary source: application.yml:2-3 (`spring.session.timeout: -1`)"
+  - "Verified at primary source: JooqSessionRepository.java:138-148 + PostgreSQLSessionHousekeepingJob.java:30 (the expiry_time < now() predicate)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-05-20 status 200 — confirms the doc warns operators (\"spring.session.timeout: -1 means sessions never expire.\")"
+cross_references:
+  - "TEST-GAP-777 (compound — no cookie security + never-expiring sessions = permanent compromise)"
+  - "TEST-GAP-774 (compound — LOGIN_FORM ADMIN-for-every-user + never-expiring sessions = permanent ADMIN access)"
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/odd-platform#select-session-provider` should recommend production-deployment timeout)"
+  - "REFACTOR-NNN (proposed — change shipped default to `spring.session.timeout: 86400` (24h) + warn on `-1` at boot)"
+  - "concepts: spring-session-timeout-minus-one-shipped-default-never-expire (NEW canonicalisation candidate)"
+related_features: [F-008]
+related_pillar_features: ["P-09:F-001 UI authentication"]
+proposed_action: |-
+  Add `SessionTimeoutMinusOneHousekeepingNoOpRegressionPinTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Two test methods asserting the compound state:
+
+  1. `sessionTimeout_shippedDefaultIsMinusOne_pinsConfigState` — read `spring.session.timeout` from `application.yml`; assert value is `-1` (the shipped default). PINS the configuration state.
+
+  2. `housekeepingJob_underDefaultTimeout_deletesZeroRows_pinsCompoundNoOp` — `@SpringBootTest(properties = { "session.provider=INTERNAL_POSTGRESQL" })` + Testcontainers Postgres; create N sessions via `JooqSessionRepository.save(...)`; trigger `PostgreSQLSessionHousekeepingJobHandler.runHousekeeping()` directly; assert `SPRING_SESSION` table row count is still N (zero deletions). Confirms the housekeeping NO-OP.
+
+  Add a `// COMPOUND-RISK-PIN — spring.session.timeout=-1 (shipped default) makes housekeeping a no-op AND combines with no cookie security + LOGIN_FORM ADMIN-for-every-user into a permanent-ADMIN-on-cookie-theft posture. This test pins the current state until REFACTOR-NNN ships a safer default (24h) + a boot-time warning when -1 is detected on non-IN_MEMORY providers.` comment block.
+
+  Pair with: (a) REFACTOR-NNN — change application.yml:2-3 default from `-1` to a reasonable production value (24-48h); (b) DOC-GAP-NNN — live `/configuration-and-deployment/odd-platform` should recommend a production timeout (24h is industry standard) and explicitly warn against `-1` for non-IN_MEMORY providers.
+batch: 2026-05-20-X
+feature_id: null

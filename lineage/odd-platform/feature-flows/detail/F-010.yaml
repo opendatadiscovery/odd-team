@@ -21,6 +21,9 @@ drift_class_summary:
 - activity_table_monotonic_growth_confirmed_repo_tier_no_delete_path
 - activity_empty_partitions_housekeeping_job_is_sole_reaper
 - orphan_token_row_no_housekeeping_after_collector_soft_delete
+- postgresql_session_housekeeping_job_is_sixth_housekeeping_shaped_job_not_enumerated_distinct_cadence_provider_gated
+- postgresql_session_housekeeping_job_no_scheduler_lock_multi_instance_race_load_n_times_inconsistent_with_5_jobs_pattern
+- postgresql_session_housekeeping_job_no_op_under_default_spring_session_timeout_minus_one_monotonic_growth_silent
 cross_pillar_relationships:
 - pillar_id: P-04
   kind: cross_pillar_secondary
@@ -107,6 +110,112 @@ batch_extensions:
     feature_name (5-jobs) is still accurate; this batch adds (a)
     SQL primary source for the activity asymmetry, (b) one new
     enumerated gap (token-orphan).
+- batch: X
+  entry_point_added: |-
+    config-class:SessionConfiguration — surfaces a SIXTH housekeeping
+    job that the F-010 feature_name + 5-jobs enumeration does NOT
+    include: the `PostgreSQLSessionHousekeepingJob` triggered by
+    `PostgreSQLSessionHousekeepingJobHandler.java:13`
+    `@Scheduled(fixedRate = 1, timeUnit = HOURS)`. The job is
+    activated under `session.provider=INTERNAL_POSTGRESQL` (see
+    SessionConfiguration.java:37-44). This batch extends F-010's
+    job-enumeration with the session-table reaper as a CROSS-PILLAR
+    cleanup task — operationally housekeeping in shape, but lives
+    in `notification`/`session` package not the housekeeping
+    package, has its own scheduled cadence (hourly, not 15-min),
+    and has NO leader-election guard.
+  contributing_nodes_added:
+  - odd-platform java SessionConfiguration config-class:SessionConfiguration
+  notes: |-
+    Three new drift facets surface, all primary-source at
+    SessionConfiguration.java:1-66 + PostgreSQLSessionHousekeepingJobHandler.java:13:
+
+    (1) **POSTGRESQL SESSION HOUSEKEEPING JOB IS THE 6TH JOB —
+    F-010 FEATURE NAME UNDERCOUNTS BY ONE (MEDIUM severity —
+    cross-pillar discoverability)** — The F-010 feature_name
+    declares "5 jobs, every 15 minutes, ShedLock-coordinated" and
+    the 5-job enumeration in `contributing_nodes` lists
+    AlertHousekeepingJob + SearchFacetsHousekeepingJob +
+    DataEntityHousekeepingJob + ActivityEmptyPartitionsHousekeepingJob +
+    MessageEmptyPartitionsHousekeepingJob. THIS BATCH adds the
+    SIXTH housekeeping-shaped job — `PostgreSQLSessionHousekeepingJob`
+    triggered by `PostgreSQLSessionHousekeepingJobHandler.java:13`
+    `@Scheduled(fixedRate = 1, timeUnit = HOURS)`. The job deletes
+    expired rows from `SPRING_SESSION` + `SPRING_SESSION_ATTRIBUTES`.
+    It is activated ONLY under `session.provider=INTERNAL_POSTGRESQL`,
+    so a default-config (`IN_MEMORY`) deployment does not run it.
+    The job does NOT share the 15-min cadence + 14m/14m ShedLock
+    window of the HousekeepingJobManager-orchestrated 5 — it has
+    its own hourly cadence + (load-bearing finding 2 below) NO
+    leader-election guard at all. NEW drift facet for F-010:
+    `postgresql_session_housekeeping_job_is_sixth_housekeeping_shaped_job_not_enumerated_distinct_cadence_provider_gated`.
+
+    (2) **POSTGRESQLSESSIONHOUSEKEEPINGJOB HAS NO @SchedulerLock —
+    MULTI-INSTANCE RACE PRIMARY-SOURCE (HIGH severity — operational
+    inconsistency)** — `PostgreSQLSessionHousekeepingJobHandler.java:13`
+    declares `@Scheduled(fixedRate = 1, timeUnit = TimeUnit.HOURS)`
+    with NO `@SchedulerLock` annotation, NO advisory-lock pattern,
+    NO `@ConditionalOnProperty` leader-election guard. INCONSISTENT
+    with EVERY OTHER `@Scheduled` job in the codebase: (a) the 5
+    housekeeping jobs orchestrated by HousekeepingJobManager use
+    the named `housekeepingJob` ShedLock (line 26); (b)
+    NotificationSubscriber uses `notifications.wal.advisory-lock-id`
+    (default 100); (c) DataCollaborationConfiguration receive-event
+    + sender jobs use `datacollaboration.*` advisory-lock-ids
+    (application.yml:201-202); (d) ActivityTablePartitionManager
+    uses the `odd.activity.partitioning-advisory-lock-id`. The
+    session housekeeping job is the SOLE `@Scheduled` job without
+    leader-election visible in the codebase. On a multi-instance
+    `INTERNAL_POSTGRESQL` deployment, EVERY instance runs the job
+    hourly: N instances × hourly = N× DB load per hour. The
+    deletes are idempotent (the WHERE clause `expiry_time < now()`
+    sees no new matches on subsequent runs in the same minute) so
+    correctness is preserved, but the load is wasteful and
+    inconsistent with the platform pattern. NEW drift facet for
+    F-010:
+    `postgresql_session_housekeeping_job_no_scheduler_lock_multi_instance_race_load_n_times_inconsistent_with_5_jobs_pattern`.
+
+    (3) **SESSION HOUSEKEEPING IS A NO-OP UNDER `spring.session.timeout: -1`
+    (HIGH severity — operational data-growth surface)** —
+    `application.yml:2-3` ships `spring.session.timeout: -1` (the
+    NEVER-EXPIRE default). The session housekeeping job's WHERE
+    clause is `expiry_time < now()` (per PostgreSQLSessionHousekeepingJob.java:30);
+    under `-1`, `JooqSessionRepository.recordFromSession` sets the
+    `expiry_time` field to `lastAccessedTime + maxInactiveInterval`
+    where `maxInactiveInterval` is unset/negative — the predicate
+    never matches, the housekeeping job is a NO-OP, and the
+    `SPRING_SESSION` table grows monotonically with the high-water-mark
+    of authenticated users. F-010's existing
+    `activity_table_monotonic_growth_confirmed_repo_tier_no_delete_path`
+    drift facet finds its session-table sibling here: ANOTHER
+    monotonic-growth surface under default config. The live docs
+    correctly warn operators (WebFetched 2026-05-20 quote:
+    `'spring.session.timeout: -1' means sessions never expire`)
+    but the SHIPPED DEFAULT remains operationally
+    silent-monotonic-growth. NEW drift facet for F-010:
+    `postgresql_session_housekeeping_job_no_op_under_default_spring_session_timeout_minus_one_monotonic_growth_silent`.
+
+    Coherence sweep STRENGTHENS=3 (F-010 batch-R
+    `activity_table_monotonic_growth_confirmed_repo_tier_no_delete_path`
+    — extended with the session-table monotonic-growth sibling;
+    F-010 batch-R `orphan_token_row_no_housekeeping_after_collector_soft_delete`
+    — extended with the structural absence-pattern (a job exists
+    only if a maintainer wrote one; SPRING_SESSION is reaped only
+    because someone wrote PostgreSQLSessionHousekeepingJob;
+    TOKEN rows are NOT reaped because no one has); F-010 batch-K
+    `cross_pillar_activity_retention_to_p_07` — extended with the
+    cross-pillar SESSION-table retention coverage gap). SUPERSEDES=0.
+    CONFLICTS=0. Cross-references: F-020 batch-X also extends with
+    the same SessionConfiguration sidecar from the Collector
+    lifecycle angle; F-008 batch-X also extends with the same
+    sidecar from the ingestion-cluster-correctness angle; together
+    F-008 + F-010 + F-020 + the new SessionConfiguration sidecar
+    form the cluster-correctness + housekeeping-orchestration
+    triangulation. The 6-jobs picture closes housekeeping
+    enumeration coverage (F-010 + cross-link to the session-side
+    housekeeping in this batch); the no-leader-election
+    inconsistency is the canonical follow-up for an advisory-lock
+    audit sprint.
 batch_origin: K
 created_in_batch: K
 feature_name: Scheduled housekeeping cycle — TTL purge + empty-partition drop (5
@@ -165,6 +274,7 @@ contributing_nodes:
 - odd-platform java SchedulingConfiguration
 - odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
 - odd-platform java repository reactive repository:ReactiveCollectorRepositoryImpl
+- odd-platform java SessionConfiguration config-class:SessionConfiguration
 chain:
 - hop: 1
   node: odd-platform java SchedulingConfiguration

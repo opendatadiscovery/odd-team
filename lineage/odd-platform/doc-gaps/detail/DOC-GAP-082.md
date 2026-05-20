@@ -117,3 +117,50 @@
 - The META is now **30-sidecar triangulated**. Composition: 5 batch-E controller-method + 1 batch-C wiring-site + 1 batch-B config-key + 5 batch-F controller-method + 5 batch-H repository + 1 batch-O filter-class + 3 batch-P controller-method + 5 batch-Q UI-tier + 5 batch-S service-tier + 5 batch-U mixed (TermController + TermServiceImpl + TermSearch + TermDetails + ReactiveTermSearchEntrypointRepositoryImpl) = 36 raw sidecar surfaces; conservatively counted as 30 distinct sidecar surfaces (some sidecars contribute multiple sub-surfaces within one file).
 - The full-stack triangulation now spans 8 tiers (wiring → config → filter → controller → service → repository → UI → AND-NOW the storage-rendering compound via DOC-GAP-204 cross-link). The DISABLED-mode operator-trap is fully characterised across the platform's load-bearing layers.
 - Severity stays HIGH (meta) — batch U adds the FIRST cross-feature COMPOUND with a separate XSS storage surface. The operator-trap framing escalates from "the backend is silently anonymous" + "the UI ACTIVELY MISLEADS" to "**anonymous callers can author payloads that propagate cross-environment**". The single-section authoring effort vs the largest defended-against operator-impact in the catalog remains the right call.
+
+## Batch X append
+
+#### Batch 2026-05-20-X STRENGTHENS — now 25-sidecar; PATTERN-CLASS EXPANSION from "DISABLED-only bypass" to "TWO AUTH MODES WITH NO AuthorizationCustomizer" (LOGIN_FORM joins DISABLED as the second auth mode where the entire RBAC framework is INERT)
+
+Batch X adds 1 net-new sidecar (LoginFormSecurityConfiguration config-class) that produces a STRUCTURAL EXPANSION of the META — the DISABLED-only-bypass pattern was always framed as "one auth mode is the problem"; the LoginFormSecurityConfiguration sidecar reveals that LOGIN_FORM is the SECOND auth mode where the AuthorizationCustomizer is never wired, making the META's pattern class **two-mode** rather than **one-mode**:
+
+- **`LoginFormSecurityConfiguration.java:53-66`** (the LOGIN_FORM SecurityWebFilterChain) — per LoginFormSecurityConfiguration sidecar `bugs_limitations_corner_cases.[no-AuthorizationCustomizer]` (HIGH): "**LOGIN_FORM mode runs WITHOUT the Policies/Permissions/Roles/Owners authorization framework.** `LoginFormSecurityConfiguration.java:55-57` configures only `.pathMatchers('/**').authenticated()` — it does NOT call `new AuthorizationCustomizer(permissionService, extractors)` the way `OAuthSecurityConfiguration.java:98` and `LDAPSecurityConfiguration.java:145` do. By skipping it in LOGIN_FORM mode, every form-authenticated user can call every endpoint — including admin-only endpoints — regardless of any Policy/Permission/Role configured via the platform UI." **25th sidecar surface AND structural pattern-class expansion.**
+
+The structural expansion is significant: the META is NO LONGER a "DISABLED-only" finding. It now spans TWO auth modes via TWO DIFFERENT mechanisms:
+
+| Auth mode | Bypass mechanism | Wiring evidence |
+|---|---|---|
+| DISABLED | `.anyExchange().permitAll()` — the ENTIRE chain is permit-all | `DisabledAuthSecurityConfiguration.java:13-18` |
+| **LOGIN_FORM** | Authenticated BUT AuthorizationCustomizer ABSENT — the chain authenticates BUT does not enforce per-Policy access | **`LoginFormSecurityConfiguration.java:55-57` — NEW batch X** |
+| OAUTH2 | AuthorizationCustomizer WIRED via `new AuthorizationCustomizer(permissionService, extractors)` | `OAuthSecurityConfiguration.java:98` |
+| LDAP | AuthorizationCustomizer WIRED — identical to OAuth | `LDAPSecurityConfiguration.java:145` |
+
+**Two of four auth modes (50%) have the RBAC framework INERT.** This is structurally significant — the doc-product silence on the AuthorizationCustomizer wiring precondition (per DOC-GAP-218's `/configuration-and-deployment/enable-security/authorization` page audit) means operators authoring Policies + Roles via the Management UI under EITHER DISABLED OR LOGIN_FORM are silently ignored at the auth chain.
+
+**The compound with the ADMIN-for-all coupling (LoginFormSecurityConfiguration.java:81 — `getAuthorities(true)`)**: even if a future maintainer added `AuthorizationCustomizer` to LOGIN_FORM mode, every form-authenticated user has the ADMIN authority — so role-based portions of any Policy would not differentiate users. The LOGIN_FORM bypass is structurally MORE complete than the DISABLED bypass (DISABLED skips authentication entirely; LOGIN_FORM authenticates AND assigns ADMIN AND skips authorization).
+
+**The compound with DOC-GAP-187 (UI-vs-API asymmetry)**: the META's UI-tier finding under DISABLED (Management UI looks locked-down while backend accepts anonymous mutations) has a SYMMETRIC manifestation under LOGIN_FORM: the Management UI renders the role-creation and policy-creation forms normally, the database persists the rows, but the auth chain ignores them. The operator-trap shape is the same — UI ACTIVELY MISLEADS operators about the gate's existence.
+
+**The 7-tier triangulation is preserved AND the AUTH-MODE-TIER expands from 1 to 2**:
+- wiring tier: DisabledAuthSecurityConfiguration (DISABLED) + **LoginFormSecurityConfiguration (LOGIN_FORM — NEW batch X)** → 2 sidecars at this tier
+- config tier: AppInfoController (DISABLED-default of auth.type)
+- filter tier: IngestionDataEntitiesFilter
+- service tier: 5 sidecars (batch S)
+- repository tier: 5 sidecars (batch H + N)
+- controller tier: 5 method-level sidecars (batch E + F + P)
+- UI tier: 5 UI-axis sidecars (batch Q)
+
+The META is **25-sidecar triangulated** (was 24 at batch S; +1 for LoginFormSecurityConfiguration). Conservatively counted as 25 distinct sidecar surfaces; the structural escalation is the pattern-class expansion from "DISABLED-only" to "DISABLED + LOGIN_FORM both inert".
+
+**The doc-product action MIRRORS across two pages**: the proposed admonition on `disabled-authentication.md` (per the original META doc-action) is now MIRRORED on `login-form.md` (per DOC-GAP-218's doc-action). The two pages carry parallel "Blast radius — Policies/Permissions/Roles/Owners framework INERT" sub-sections with identical structure (a / b / c / d / e):
+- (a) the absence of AuthorizationCustomizer
+- (b) the consequence on RBAC primary surface (POST /api/policies / /api/roles / /api/owners under DISABLED; auth-but-unenforced under LOGIN_FORM)
+- (c) the keys-to-the-kingdom escalation chain
+- (d) the cross-link to DOC-GAP-082 / DOC-GAP-083 (audit silence)
+- (e) the cross-link to the `authorization.md` precondition statement
+
+The precondition statement on `/authorization` (per DOC-GAP-218's doc-action) closes the META structurally — operators reading the Authorization framework page see immediately that the framework applies only under OAUTH2/LDAP.
+
+**Severity stays HIGH (meta)** — the pattern-class expansion from "DISABLED-only bypass" to "DISABLED + LOGIN_FORM both bypass" doubles the META's blast radius across deployment populations: DISABLED is the shipped default (so most dev/demo deployments inherit it); LOGIN_FORM is the platform's recommended-against-but-frequently-tried mode (operators try LOGIN_FORM before adopting OAUTH2/LDAP). Combined, the two modes likely cover the majority of non-production ODD deployments — exactly the population most likely to assume "platform is secure under any auth.type" without reading the source.
+
+**Coherence**: strengthens=1 (this META), supersedes=0, conflicts_surfaced=0. The structural insight (50% of auth modes have RBAC INERT) is the largest pattern-class amplifier in the batch-X coherence sweep.

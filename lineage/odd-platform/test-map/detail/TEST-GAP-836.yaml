@@ -1,0 +1,86 @@
+gap_id: TEST-GAP-836
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform ts react-component component:DataEntityDetails"
+  - "odd-platform java DataEntityController controller-method:getDataEntityDetails"
+  - "odd-platform java service service:DataEntityServiceImpl"
+  - "odd-platform java repository_reactive repository:ReactiveDataEntityRepositoryImpl"
+pillars_affected: [P-01]
+surfaced_by:
+  - "DataEntityDetails.md:tests_coverage_semantic.uncovered_behaviours.[0] — 'useEffect dispatches fetchDataEntityDetails exactly once per mount (regression-pin for LSN-017 fix) — this is the SINGLE HIGHEST-LEVERAGE test in the entire UI codebase'"
+  - "DataEntityDetails.md:bugs_limitations_corner_cases.[0] — LSN-017 PRIMARY-SOURCE anchor (line 56-64 — the response-derived dep-array)"
+  - "DataEntityDetails.md:security.known_security_gaps.[0] — F-001 inflation-loop's PRODUCER amplification surface"
+  - "DataEntityDetails.md:performance.known_performance_gaps.[0] — LSN-017 doubles network round-trip cost per page-open"
+  - "DataEntityDetails.md:tests_coverage_semantic.uncovered_behaviours.[9] — Playwright end-to-end probe regression-pin promoting P-004 from one-shot to CI-permanent"
+behaviour: |-
+  **CRITICAL — LSN-017 view_count doubling regression-pin at the UI PRIMARY-SOURCE anchor.** `DataEntityDetails.tsx:56-64` is the platform-wide canonical source-code anchor of LSN-017 (retrospective `retrospectives/LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md` cites this exact file:line as the bug locus). The useEffect's 5-element dependency array contains 4 externally-driven values plus 1 response-derived value (`details.status?.status`, line 63). On mount: dep-array = `[id, false, false, false, undefined]`; first dispatch fires `fetchDataEntityDetails`. When the response lands and Redux populates `details.status`, the dep-array flips to `[id, false, false, false, 'STABLE']`, triggering a SECOND identical fetch. The cycle quiesces at exactly +2 backend `view_count` UPDATE per page-open.
+
+  **Empirically pinned by probe P-004** (run R-20260519T010758Z-P-004 — xhr_count=2 + DB delta=2 with regex-filtered exact `/api/dataentities/{id}` path match). **Fix is 1 line** (remove `details.status?.status` from dep-array line 63). The single most valuable test in the entire UI codebase is a Vitest + react-testing-library + mockStore suite that asserts "exactly 1 `fetchDataEntityDetails` dispatch per mount". That assertion flips from 2 → 1 the moment line 63 is removed; once flipped, it pins the fix against future drift.
+
+  **Blast radius the test ALSO regression-pins:**
+  - F-001 P-01:F-001 Popular Entities Ranking — the doubling AMPLIFIES this component's contribution to the home-page Popular strip ranking by exactly 2× (the producer-side amplification of the inflation loop confirmed at REFACTOR-220).
+  - REFACTOR-220-confirmed inflation attacks are 2× cheaper from the UI than from a direct API call.
+  - REFACTOR-221 (no index on `data_entity.view_count`) seq-scan cost is compounded by 2× row participation.
+  - REFACTOR-201 (read-as-write @ReactiveTransactional) hot-row write contention is compounded by 2×.
+  - Cross-pillar bug — UI-side cause, backend-side observable; no per-layer scan catches it.
+
+  **Negative-cluster context (LSN-018 Rule 6 coherence)**: the second useEffect in this same file (lines 66-76) uses `[dataEntityId]` ONLY (line 76), demonstrating the author KNEW the correct pattern. Batch-Q's UI sibling cluster (PolicyList, RolesList, OwnersList, CollectorsList) plus batch-U TermDetails ALL verified to use externally-driven-only dep arrays. **This component is the SOLE platform-wide canonical instance of the response-derived-dep-array shape** — verified across 5 batch-Q + 1 batch-U sibling sidecars + the structural confirmation in this batch ZA sidecar.
+
+  **Test gap shape**: TWO test surfaces, both required:
+  1. **Vitest unit/integration test** asserting exactly 1 `fetchDataEntityDetails` dispatch per mount + per legitimate dep-array trigger (`dataEntityId`, `isDataEntityGroupUpdated`, `isDataEntityAddedToGroup`, `isDataEntityDeletedFromGroup`). Pins the dispatch-count invariant.
+  2. **Playwright end-to-end probe** asserting `xhr_count=1` regex-filtered to the exact `/api/dataentities/{id}` path AND backend `view_count` delta = 1 across a single page-open. Promotes the one-shot probe P-004 to a CI-permanent regression-pin.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/DataEntityDetails/__tests__/DataEntityDetails.test.tsx"
+    name: "renderDataEntityDetails_dispatchesFetchDetailsExactlyOncePerMount_pinsLSN017Fix"
+  - path: "odd-platform-ui/src/components/DataEntityDetails/__tests__/DataEntityDetails.test.tsx"
+    name: "renderDataEntityDetails_doesNotRedispatchWhenStatusFlipsFromUndefinedToConcrete_pinsLineRemovalContract"
+  - path: "odd-platform-ui/src/components/DataEntityDetails/__tests__/DataEntityDetails.test.tsx"
+    name: "renderDataEntityDetails_redispatchesWhenIsDataEntityGroupUpdatedFlips_pinsLegitimateRefetchTrigger"
+  - path: "odd-platform-ui/src/components/DataEntityDetails/__tests__/DataEntityDetails.secondEffect.test.tsx"
+    name: "renderDataEntityDetails_secondUseEffectFiresExactlyFourAncillaryFetchesOncePerMount_pinsCorrectDepArrayShape"
+  - path: "odd-platform-ui/tests/regression-pins/data-entity-detail-page-open-LSN-017.spec.ts"
+    name: "openDataEntityDetailPage_observesExactlyOneApiCallAndOneViewCountDelta_pinsLSN017Fix_playwrightCIPermanent"
+evidence:
+  - "DataEntityDetails.md says (tests_coverage_semantic.uncovered_behaviours.[0]): 'useEffect dispatches fetchDataEntityDetails exactly once per mount (regression-pin for LSN-017 fix) — this is the SINGLE HIGHEST-LEVERAGE test in the entire UI codebase; the assertion that flips from 2→1 the moment line 63 is removed'"
+  - "DataEntityDetails.md says (bugs_limitations_corner_cases.[0]): 'LSN-017 — details.status?.status in the useEffect dep-array causes 2 fetches per page-open, doubling backend view_count delta to +2. [THIS COMPONENT IS THE PLATFORM-WIDE CANONICAL SOURCE-CODE ANCHOR OF LSN-017.]'"
+  - "Verified at primary source: DataEntityDetails.tsx:56-64 (the dep-array — line 63 is the response-derived bug)"
+  - "Verified at primary source: DataEntityDetails.tsx:66-76 (second useEffect uses [dataEntityId] only — the correct counter-example demonstrating author knowledge)"
+  - "Reducer-side Glob verification: `/home/raman/work/odd/odd-platform/odd-platform-ui/**/DataEntityDetails*.test.*` returned 0 matches — zero direct test coverage confirmed"
+  - "Empirical proof: lineage/odd-platform/probe-runs/2026-05-19-P-004.yaml — xhr_count=2 + DB delta=2 (LSN-017 headline proven, run R-20260519T010758Z-P-004)"
+  - "Empirical proof: lineage/odd-platform/probe-runs/2026-05-19-P-001.yaml — backend per-call delta +1 view_count confirmed"
+  - "Negative-cluster: 5 sibling UI sidecars (PolicyList, RolesList, OwnersList, CollectorsList batch-Q + TermDetails batch-U) ALL verified to use externally-driven-only dep arrays. THIS COMPONENT IS THE SOLE CANONICAL INSTANCE"
+cross_references:
+  - "TEST-GAP-256 (view-count side-effect at backend — STRENGTHENS — now anchored to the UI-tier primary source)"
+  - "TEST-GAP-259 (incrementViewCount unit coverage — composes with this UI regression-pin)"
+  - "TEST-GAP-309 (Popular inflation regression scripted detail-reads — STRENGTHENS — now compounded by 2x amplification from this UI bug)"
+  - "TEST-GAP-310 (LSN-017 UI regression-pin earlier ID — STRENGTHENS — this entry is the PRIMARY-SOURCE deep-dive)"
+  - "retrospectives/LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md (the canonical retrospective; this entry is the test-side closure)"
+  - "REFACTOR-201 (read-as-write @ReactiveTransactional — compounded by 2x by this bug)"
+  - "REFACTOR-220 (PRIMARY-SOURCE confirmation of view_count inflation loop — UI half is 2x cheaper to exploit)"
+  - "REFACTOR-221 (no index on view_count — compounded by 2x row participation)"
+  - "F-001 (Data Entity Details view-count side-effect — this is the producer hop-1)"
+  - "F-003 (Popular Entities Ranking — consumer side of the inflation loop)"
+  - "DOC-GAP-085 (view-count side-effect undocumented end-to-end)"
+  - "DOC-GAP-101 (LSN-017 doubling not surfaced to operators)"
+  - "P-004 probe (canonical empirical proof — to be promoted to CI-permanent Playwright spec)"
+related_features: [F-001]
+related_pillar_features: ["P-01:F-001 Popular Entities Ranking"]
+proposed_action: |-
+  Two-phase implementation:
+
+  **Phase 1 — Vitest unit/integration tests** (4 test methods):
+  1. `renderDataEntityDetails_dispatchesFetchDetailsExactlyOncePerMount_pinsLSN017Fix` — mount `<DataEntityDetails />` inside `<MemoryRouter>` + mock Redux store. After mount + after `fetchDataEntityDetails.fulfilled` lands updating `details.status`, observe EXACTLY 1 dispatch of `fetchDataEntityDetails`. **Current bug behaviour: observes 2 dispatches** (the test FAILS today — the assertion pins the bug currently AND becomes a pin-the-fix after line 63 is removed).
+  2. `renderDataEntityDetails_doesNotRedispatchWhenStatusFlipsFromUndefinedToConcrete_pinsLineRemovalContract` — mount with `details.status === undefined`, manually dispatch a `setStatus('STABLE')` action, assert NO additional `fetchDataEntityDetails` dispatch. Pins the specific dep-array entry that line 63 removes.
+  3. `renderDataEntityDetails_redispatchesWhenIsDataEntityGroupUpdatedFlips_pinsLegitimateRefetchTrigger` — mount, then dispatch `updateDataEntityGroup.fulfilled`, observe 1 additional `fetchDataEntityDetails` dispatch (the LEGITIMATE re-fetch trigger). Pins the dep-array still catches DEG mutations after the fix.
+  4. `renderDataEntityDetails_secondUseEffectFiresExactlyFourAncillaryFetchesOncePerMount_pinsCorrectDepArrayShape` — assert alerts-counts / DQ-test-report / SLA-report / resource-permissions each dispatched exactly 1×. The second useEffect uses `[dataEntityId]` only and SHOULD NOT have the LSN-017 issue. Pins the negative-cluster claim at the file level.
+
+  **Phase 2 — Playwright end-to-end CI-permanent regression-pin** (promotes the one-shot probe P-004):
+  - `openDataEntityDetailPage_observesExactlyOneApiCallAndOneViewCountDelta_pinsLSN017Fix_playwrightCIPermanent` — Playwright spec equivalent to probe P-004. Boot test-platform via Testcontainers, seed one Data Entity, navigate to `/dataentities/{id}/overview`, network-intercept regex-filtered to `/api/dataentities/{id}`, assert `xhr_count=1`. Backend assertion: query `data_entity.view_count` before + after, assert delta == 1.
+
+  **Coherence note (LSN-018 Rule 6)**: This entry is the UI PRIMARY-SOURCE anchor for LSN-017. TEST-GAP-310 was the earlier ID created in batch H from the backend repository sidecar; that entry remains valid but is now STRENGTHENED by this entry which anchors to the UI-tier primary source (DataEntityDetails.tsx:56-64). The two entries compose: TEST-GAP-310 pins the regression at the backend consumer half (popular ranking); THIS entry pins the regression at the UI producer half (the doubling itself). Both should ship together when the tests pillar activates.
+
+  After this batch (ZA), F-001 has the CANONICAL UI-side regression-pin test fully scoped. The producer→consumer→amplifier loop is now anchored to 4 TEST-GAPs: TEST-GAP-836 (UI producer doubling, this entry), TEST-GAP-256 (backend producer increment), TEST-GAP-309 (popular inflation), TEST-GAP-310 (EXCLUDE_FROM_SEARCH miss + LSN-017 amplification). Fixing them together is the single highest-leverage test-pillar work in the codebase.
+batch: 2026-05-20-ZA
+feature_id: F-001

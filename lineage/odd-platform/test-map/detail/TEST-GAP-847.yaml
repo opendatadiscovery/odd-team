@@ -1,0 +1,59 @@
+gap_id: TEST-GAP-847
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform ts react-component component:Overview"
+pillars_affected: [P-01]
+surfaced_by:
+  - "Overview.md:bugs_limitations_corner_cases.[3] — 'Asymmetric skeleton trigger masks slow appInfo flicker.'"
+  - "Overview.md:tests_coverage_semantic.uncovered_behaviours.[1] — 'skeleton-trigger correctness — assert that OverviewSkeleton renders when isIdentityFetching || isTagsFetching, AND assert that NEITHER useAppInfo loading state NOR domains / directory / entities-usage fetch states affect skeleton visibility (the asymmetry is intentional but undocumented)'"
+behaviour: |-
+  **LOW — Asymmetric skeleton trigger produces visible flicker under slow `appInfo` load.** Overview.tsx:29-32: `const isLoading = useMemo(() => isIdentityFetching || isTagsFetching, [isIdentityFetching, isTagsFetching])`. The skeleton trigger watches ONLY identity + tags loading — NOT `useAppInfo`, NOT domains, NOT directory, NOT entities-usage.
+
+  **Failure mode**: Under a slow `useAppInfo` response (cold backend boot, network congestion, stalled SecurityWebFilterChain init), Overview can RENDER (skeleton gone) BEFORE `appInfo` arrives. At first paint, `appInfo` is `undefined` so `appInfo?.authType` is `undefined` → `Boolean(undefined && ...) === false` → OwnerAssociation HIDDEN. When `appInfo` arrives (e.g. 800ms later), React re-renders, the gate flips to `true` (under non-DISABLED modes), and OwnerAssociation appears mid-page. **The user observes a layout shift / late-card-flicker.**
+
+  There is no `<Suspense>` boundary, no shimmer, no "still loading" overlay. On a DISABLED-mode deployment the second render is identical to the first (gate stays false), so the flicker is invisible — but on the 99% of production deployments (LOGIN_FORM/OAUTH2/LDAP), the flicker is observable.
+
+  **Why LOW**:
+  - UX-only issue (no security / data integrity impact)
+  - Bounded: the flicker lasts ~one render cycle (sub-second on typical deployments)
+  - The asymmetric trigger is INTENTIONAL per implicit_adrs[2] — the design choice is documented as time-to-first-paint optimisation
+  - Easy to mitigate (add `useAppInfo`'s loading state to the trigger composition)
+
+  **Test gap shape**: A `Overview.test.tsx` rendering test asserting the skeleton-trigger composition matches the documented behaviour. Pins the contract; surfaces if a future maintainer adds new loading dependencies.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Overview/__tests__/Overview.skeleton.test.tsx"
+    name: "renderOverview_isIdentityFetchingTrue_rendersSkeleton_pinsLoadingTriggerComposition"
+  - path: "odd-platform-ui/src/components/Overview/__tests__/Overview.skeleton.test.tsx"
+    name: "renderOverview_isTagsFetchingTrue_rendersSkeleton_pinsLoadingTriggerComposition"
+  - path: "odd-platform-ui/src/components/Overview/__tests__/Overview.skeleton.test.tsx"
+    name: "renderOverview_appInfoStillLoading_rendersContentNotSkeleton_pinsAsymmetricTriggerExclusion"
+  - path: "odd-platform-ui/src/components/Overview/__tests__/Overview.skeleton.test.tsx"
+    name: "renderOverview_appInfoLoadsAfterFirstPaint_observesOwnerAssociationFlicker_pinsLayoutShift"
+evidence:
+  - "Overview.md says (bugs_limitations_corner_cases.[3]): 'Asymmetric skeleton trigger masks slow appInfo flicker. The user observes a layout shift / late-card-flicker. There is no Suspense boundary, no shimmer, no still loading overlay.'"
+  - "Verified at primary source: Overview.tsx:29-32 (the useMemo with only [isIdentityFetching, isTagsFetching])"
+  - "Verified at primary source: Overview.tsx:24-27 (appInfo NOT in the loading composition); Overview.tsx:53-59 (gate consumes appInfo)"
+cross_references:
+  - "Overview.md:implicit_adrs[2] (asymmetric skeleton trigger as intentional time-to-first-paint optimisation)"
+  - "TEST-GAP-837 (OwnerAssociation mis-gating — composes with this flicker: user sees flicker AND mis-gated card on bug-shaped auth.type)"
+related_features: []
+related_pillar_features: ["P-01:F-003 Catalog Overview Home Page"]
+proposed_action: |-
+  **Vitest skeleton-trigger tests** (4 tests):
+
+  1-2: assert skeleton renders under each of the two trigger states.
+  3: assert content renders even when `appInfo` is still loading — the asymmetric exclusion.
+  4: assert the OwnerAssociation card flickers when `appInfo` lands after first paint — PINS the documented UX gap.
+
+  **Architectural fix (optional, per maintainer policy)**:
+  - Add `appInfo === undefined` to the loading composition (eliminates flicker)
+  - OR add `<Suspense>` boundary around OwnerAssociation (smoothes the transition)
+  - OR add explicit "loading..." placeholder where OwnerAssociation will mount
+
+  The test pins the contract today; the fix is optional UX improvement.
+
+  Coherence note (LSN-018 Rule 6): NO contradiction with existing artefacts. STRENGTHENS Overview.md:implicit_adrs[2] by establishing the asymmetric trigger as a tested contract.
+batch: 2026-05-20-ZA
+feature_id: null

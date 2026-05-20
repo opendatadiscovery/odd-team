@@ -38,6 +38,7 @@ contributing_nodes:
 - ts react-component:DataEntityDetails
 - ts redux-thunk:fetchDataEntityDetails
 - ts react-component:PopularStrip (OwnerEntitiesList "Popular" column — F-001/F-003 loop-closure surface)
+- ts react-component:Overview (HOME-PAGE MOUNT — the surface that conditionally mounts OwnerAssociation → OwnerEntitiesList → PopularStrip; closes the inflation loop from the UI ROOT side)
 - odd-platform java DataEntityController controller-method:getDataEntityDetails
 - odd-platform java service service:DataEntityServiceImpl
 - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
@@ -346,6 +347,84 @@ observed_vs_expected:
       + dataEntitiesRoutes.ts:66-73 + PopularStrip sidecar
       doc_drift_findings[0] (live WebFetch + local doc both show
       contradiction). NEW DOC-GAP candidate.
+  - facet: F-001 chain composition formula complete — full +2/page-open formula confirmed end-to-end (batch ZA — STATIC, PRIMARY-SOURCE)
+    observed: |-
+      Batch ZA DataEntityDetails sidecar re-verifies LSN-017 PRIMARY-SOURCE
+      intact at the exact line anchor (DataEntityDetails.tsx:56-64). The
+      full chain composition formula now reads (per sidecar invariants[1]):
+      hop-1 (useEffect dep-array bug) multiplicity=2 ×
+      hop-2 (fetchDataEntityDetails thunk) multiplicity=1 ×
+      hop-3 (DataEntityController.getDataEntityDetails) multiplicity=1 ×
+      hop-3.5 (DataEntityServiceImpl.getDetails @ReactiveTransactional) multiplicity=1 ×
+      hop-4 (ReactiveDataEntityRepositoryImpl.incrementViewCount) per-call delta=+1
+      → cumulative per page-open: +2 view_count. The doubling lives
+      ENTIRELY at hop-1 (this useEffect); every other hop in the chain
+      has multiplicity=1. Steady-state per-mount dispatch profile: 6
+      backend HTTP calls (2 × fetchDataEntityDetails — LSN-017 doubling
+      — plus 1 × alerts-counts + 1 × DQ-test-report + 1 × SLA-report +
+      1 × resource-permissions). The second useEffect (lines 66-76) is
+      CORRECTLY keyed on [dataEntityId] only — demonstrating the author
+      KNEW the correct pattern. The bug is one component's discrete
+      defect, NOT a project-wide systematic pattern. Batch-Q UI LSN-017
+      negative-findings cluster (PolicyList / RolesList / OwnersList /
+      CollectorsList) + batch-U TermDetails confirm DataEntityDetails as
+      the SOLE platform-wide canonical instance of the response-derived-
+      dep-array bug.
+    expected: |-
+      Fix is 1 line (remove `details.status?.status` from the dep array
+      at line 63); assertion would flip from xhr_count=2 to xhr_count=1
+      and DB delta from +2 to +1.
+    drift_class: ui_amplification
+    provenance: |-
+      STATIC + MEASURED — re-verified primary source at
+      DataEntityDetails.tsx:56-64 (batch ZA DataEntityDetails sidecar
+      understanding + invariants[1] + bugs_limitations_corner_cases[0]
+      severity HIGH; canonical_status: LSN-017 PRIMARY-SOURCE) + P-004
+      empirical pin (run R-20260519T010758Z-P-004, xhr_count=2 + DB
+      delta=2 regex-filtered exact-path). Probe P-004 already pins the
+      headline; no additional probe needed. The fix is the regression
+      pin TEST-GAP-310 cited in related_test_gaps.
+  - facet: Overview is the HOME-PAGE MOUNT closing the F-001 inflation loop (batch ZA)
+    observed: |-
+      `Overview.tsx:25-27, 53-59` — the home-page chrome conditionally
+      mounts `<OwnerAssociation>` (which mounts `<OwnerEntitiesList>`
+      which renders the four-column Recommended panel INCLUDING the
+      Popular column). The gate is
+      `isShowOwnerAssociation = Boolean(appInfo?.authType && appInfo.authType !== 'DISABLED')`.
+      Under LOGIN_FORM/OAUTH2/LDAP (the 99% case), the gate evaluates
+      TRUE and the Popular column renders with the FULL CATALOG-WIDE
+      popular list — NO owner-scoping at the home-page chrome layer,
+      NO per-tenant partition (the backend's `listPopular` CTE has no
+      `WHERE owner_id = current_user_owner_id` clause per F-003 facet
+      `service tier is a 1-line pass-through`). Overview itself fires
+      NO data fetch for the Popular column directly — it just controls
+      VISIBILITY of the wrapper. EVERY signed-in user with an owner
+      association sees the SAME Popular column ranked by global
+      view_count DESC — including users whose Owner has zero data
+      entities. Overview is therefore the UPSTREAM-MOST home-page
+      surface from which the F-001 inflation loop is reachable.
+      Overview.tsx itself contains NO useEffect (sidecar
+      bugs_limitations_corner_cases[2] severity LOW — clean today;
+      surfaced as a regression risk and a cross-reference).
+    expected: |-
+      The UI-tier inflation-loop closure is the realisation point of
+      REFACTOR-220 producer↔consumer closure. The home-page wrapper
+      chain (Overview → OwnerAssociation → OwnerEntitiesList →
+      PopularStrip) is structurally the cheapest place to add a
+      client-side defence (no-refetch-on-back-navigation, per-session
+      debounce, analytics-only mode that does NOT trigger
+      incrementViewCount), but none exists today.
+    drift_class: ui_amplification
+    provenance: |-
+      STATIC — primary-source verification at Overview.tsx:25-27, 53-59
+      + Overview sidecar downstream_side_effects (the Popular click is
+      two layers downstream — Overview mounts the chain; the bug locus
+      is DataEntityDetails) + Overview sidecar bugs_limitations_corner_cases[1]
+      severity HIGH (cross-owner enumeration via the Popular tile
+      rendered downstream — REFACTOR-024 family at the home-page level)
+      + Overview sidecar bugs_limitations_corner_cases[2] severity LOW
+      (no LSN-017 dep-array exposure at THIS layer — Overview has NO
+      useEffect, only one useMemo with correct deps).
   - facet: hot-row contention at service tier (batch I — STATIC, perf consequence)
     observed: 'The @ReactiveTransactional on getDetails (line 197) means concurrent reads of
 
@@ -372,6 +451,10 @@ observed_vs_expected:
     (UI hop-2 PRIMARY-SOURCE — batch J — thunk one-call-per-dispatch invariant)
   - lineage/odd-platform/understanding/odd-platform__ts__react-component__component__PopularStrip.md
     (F-001 inflation-loop UI closure point — batch J — Popular click → Overview-tab read-as-write)
+  - lineage/odd-platform/understanding/odd-platform__ts__react-component__component__DataEntityDetails.md
+    (UI hop-1 LSN-017 PRIMARY-SOURCE re-verified intact — batch ZA — chain composition formula complete)
+  - lineage/odd-platform/understanding/odd-platform__ts__react-component__component__Overview.md
+    (HOME-PAGE MOUNT — closes the F-001 inflation loop from the UI ROOT — batch ZA)
   - live probe-runs/2026-05-19-P-001.yaml — backend +1 per call empirically confirmed
   - live probe-runs/2026-05-19-P-002.yaml — DISABLED-mode anonymous reachability empirically confirmed
   - live probe-runs/2026-05-19-P-003.yaml — latency baseline at small N

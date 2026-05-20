@@ -1,0 +1,71 @@
+gap_id: TEST-GAP-839
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:Search"
+  - "odd-platform ts react-component component:TermSearch"
+pillars_affected: [P-01, P-06]
+surfaced_by:
+  - "Search.md:bugs_limitations_corner_cases.[3] — 'Debouncer is RECREATED on every facet-state change — losing the rate-limit semantics. IDENTICAL bug to TermSearch batch-U bugs[2]'"
+  - "Search.md:tests_coverage_semantic.uncovered_behaviours.[4] — 'Facet change with synced=false → debouncer fires once per 1500ms window (currently FAILS per bugs section [3] — debouncer recreated on every render)'"
+  - "Search.md:performance.known_performance_gaps.[0] — 'Broken debouncer — 1500ms intent not realised; every facet click dispatches'"
+behaviour: |-
+  **HIGH — Broken debouncer on Catalog page facet PUT calls. IDENTICAL bug shape to TermSearch batch-U bugs[2] — propagated via clone.** Search.tsx:50-65 wraps `useDebouncedCallback(..., 1500, {leading: true})` in a `useCallback` whose deps include `searchFacetParams`. Every facet click constructs a NEW `useDebouncedCallback(...)` instance — the prior debouncer's pending trailing-edge timer is unreachable. With `{leading: true}`, the new debouncer fires on its FIRST call (immediately) AND would defer a trailing call until 1500ms — but the trailing call NEVER fires because the next click constructs yet another debouncer.
+
+  **Effective behaviour**: every facet click dispatches `updateDataEntitiesSearch` immediately; the 1500ms "debounce" is not actually rate-limiting anything. A user rapidly clicking 5 facets in 2 seconds dispatches 5 PUT `/api/search/{searchId}/facets` calls instead of the intended 1.
+
+  **Server-side cost** (per batch-M SearchController.facets sidecar + SearchServiceImpl):
+  - Each PUT = one `search_facets` row UPDATE + one full facet-state recompute
+  - Per-PUT cost scales O(# facet options × # facets × catalog size)
+  - For a 100K-entity deployment, 5 PUTs in 2 seconds adds up to a substantial backend cost burst the platform's rate-limit-free posture (REFACTOR-220 family) does not mitigate.
+
+  **Why HIGH**:
+  - **Functional**: the debounce intent is documented (1500ms throttle) but unrealised — a future maintainer reading the code sees the throttle and assumes it works.
+  - **Performance**: backend N× cost amplification per N facet clicks.
+  - **Concurrency**: the slice's `assignFacetStateWithNewFacets` reducer at slice.ts:73-86 RACES with itself when N in-flight PUTs settle out of order. The slice handles the race correctly (idempotent state merge), but the wasted server-side cost is real.
+  - **Architectural blast radius**: the same bug ships in TermSearch.tsx (batch-U bugs[2] — confirmed identical pattern). The clone-propagation hazard is the meta-finding.
+
+  **Test gap shape**: A `Search.test.tsx` + `TermSearch.test.tsx` parallel pair asserting that rapid facet clicks coalesce into a single PUT call after the 1500ms window. The assertion FAILS today (observes N PUT calls); after the fix (`useMemo` the debouncer instead of `useCallback`-recreating it, OR remove `searchFacetParams` from the deps), the assertion PASSES.
+
+  **Cross-component fix**: This is a SINGLE-PR architectural refactor (one debouncer pattern, two consumer files). The test pins both Search and TermSearch — fixing the pattern in one without the other would break the other test, surfacing the cross-component scope.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.debouncer.test.tsx"
+    name: "clickFacetFiveTimesInRapidSuccession_currentlyDispatchesFivePUTCalls_pinsBrokenDebouncer"
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.debouncer.test.tsx"
+    name: "clickFacetFiveTimesInRapidSuccession_afterFixCoalescesIntoOnePUT_postsFixContract"
+  - path: "odd-platform-ui/src/components/Terms/TermSearch/__tests__/TermSearch.debouncer.test.tsx"
+    name: "clickFacetFiveTimesInRapidSuccession_currentlyDispatchesFivePUTCalls_pinsTermSearchBrokenDebouncer"
+  - path: "odd-platform-ui/tests/regression-pins/search-debouncer-cross-component.spec.ts"
+    name: "rapidlyToggleFiveFacetsAcrossSearchAndTermSearchPages_observesN_PUT_calls_pinsClonePropagationFamily_playwrightCIPermanent"
+evidence:
+  - "Search.md says (bugs_limitations_corner_cases.[3]): 'Debouncer is RECREATED on every facet-state change — losing the rate-limit semantics. IDENTICAL bug to TermSearch batch-U bugs[2]. The useCallback deps include searchFacetParams — which changes on every facet click. Each click constructs a NEW useDebouncedCallback(...) instance — the prior debouncer's pending timer is unreachable.'"
+  - "Search.md says (performance.known_performance_gaps.[0]): 'Architectural fix point: this is the SAME bug shape as TermSearch batch-U — fix BOTH files in one refactor.'"
+  - "Verified at primary source: Search.tsx:50-65 + line 64 (the useCallback deps including searchFacetParams)"
+  - "Cross-batch evidence: TermSearch.md batch-U bugs[2] (the canonical/older twin — Search.tsx and TermSearch.tsx share author-period; bug propagated via clone)"
+  - "Reducer-side Glob verification: `/home/raman/work/odd/odd-platform/odd-platform-ui/**/Search*.test.*` returned 0 matches + `/odd-platform-ui/**/TermSearch*.test.*` returned 0 matches"
+cross_references:
+  - "TermSearch.md batch-U bugs[2] (the clone source — identical bug, must fix together)"
+  - "TEST-GAP-NNN batch-U (TermSearch broken-debouncer — sister entry to this one; both should be fixed in a single architectural refactor)"
+  - "concepts.yaml:invariants[debouncer-recreated-per-dep-change-defeats-rate-limit-clone-propagated]"
+  - "REFACTOR-220 (rate-limit posture family — the broken debouncer compounds the backend's no-rate-limit on PUT facets)"
+  - "F-002 (Search and Filtering feature flow)"
+related_features: [F-002]
+related_pillar_features: ["P-01:F-002 Search and Filtering", "P-06 Data Glossary search"]
+proposed_action: |-
+  **Phase 1 — Cross-component test pair** (Vitest + react-testing-library + fake timers):
+
+  1. `clickFacetFiveTimesInRapidSuccession_currentlyDispatchesFivePUTCalls_pinsBrokenDebouncer` — render `<Search />` with mocked Redux. Click 5 facet checkboxes within `jest.advanceTimersByTime(1500)`. Assert `mockStore.getActions().filter(a => a.type === 'updateDataEntitiesSearch.pending')` count === 5. PINS the bug.
+
+  2. `clickFacetFiveTimesInRapidSuccession_afterFixCoalescesIntoOnePUT_postsFixContract` — same setup. Assert count === 1 (or 2 with leading-edge). FAILS today; PASSES after fix. Becomes the regression-pin for the fix.
+
+  3. `clickFacetFiveTimesInRapidSuccession_currentlyDispatchesFivePUTCalls_pinsTermSearchBrokenDebouncer` — sister test in `TermSearch.test.tsx`. PINS the clone-propagation.
+
+  **Phase 2 — Cross-component Playwright spec**:
+  - `rapidlyToggleFiveFacetsAcrossSearchAndTermSearchPages_observesN_PUT_calls_pinsClonePropagationFamily_playwrightCIPermanent` — navigate to `/search`, rapidly toggle 5 facets, network-intercept PUT calls, assert count. Then navigate to `/terms`, repeat. PINS both sites in one CI run.
+
+  **Fix architectural recommendation**: `useMemo` the debouncer outside `useCallback`, OR remove `searchFacetParams` from the deps. The fix is a single-PR refactor across `Search.tsx` + `TermSearch.tsx` + any sister consumer that follows the same pattern. The test pins both sites — fixing one without the other surfaces in test failures.
+
+  Coherence note (LSN-018 Rule 6): STRENGTHENS the TermSearch batch-U bugs[2] finding by establishing the clone-propagation explicitly across both UI surfaces. NO contradiction with existing artefacts. The cross-component test pair is the architectural pattern for clone-propagated bugs going forward.
+batch: 2026-05-20-ZA
+feature_id: F-002

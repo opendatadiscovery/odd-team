@@ -1,0 +1,66 @@
+gap_id: TEST-GAP-845
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:Search"
+pillars_affected: [P-01]
+surfaced_by:
+  - "Search.md:bugs_limitations_corner_cases.[0] — 'LSN-017-adjacent dep-array smell #1 — incomplete deps on createSearch effect.'"
+  - "Search.md:bugs_limitations_corner_cases.[2] — 'LSN-017-adjacent dep-array smell #3 — searchFacetsSynced read in condition but MISSING from deps (ACTIVE re-fire vector).'"
+behaviour: |-
+  **MEDIUM — Two LSN-017-class dep-array smells in Search.tsx. Class-match to LSN-017 (deps and conditions out of sync), distinct from the exact-pattern view_count case at DataEntityDetails.tsx.** Search.tsx has THREE useEffects with three different dep-array shapes:
+
+  **Smell #1 (LATENT — masked by React batch ordering)** — Lines 37-42: `useEffect(() => { if (!routerSearchId && !isSearchCreating && !searchId) createSearch(...); }, [routerSearchId, isSearchCreating]);`. The guard reads THREE state values (`routerSearchId`, `isSearchCreating`, `searchId`) but the deps array contains only TWO — `searchId` is MISSING. The composition is correct BY ACCIDENT: on session-create-success, the thunk fulfilment writes `searchId` to Redux AND the same render-batch calls `navigate(searchPath(searchId))` which updates `routerSearchId` — both transitions happen in the same render-batch, so the re-fire's guard correctly evaluates as `false` and skips. **But the dep-array does not document this invariant** — a refactor changing the navigate-vs-redux ordering would surface a real double-create.
+
+  **Smell #3 (POTENTIALLY ACTIVE — recommended live probe)** — Lines 67-71: `useEffect(() => { if (!searchFacetsSynced) updateSearchFacets(); }, [searchFacetParams]);`. The guard reads `searchFacetsSynced` but the deps array contains ONLY `searchFacetParams`. The slice's `updateSearchState` reducer (slice.ts:97) sets `isFacetsStateSynced: true` on EVERY successful create/update/get fulfilment — but THIS effect does NOT re-fire when `searchFacetsSynced` transitions back to `true`. The selector `getSearchFacetsData` may also produce fresh object references on every selector run, driving the effect to re-fire on every render during the in-flight PUT window. **Possible doubling shape per LSN-017 — class-match.**
+
+  **Counter-example (Smell #2)** — Lines 44-48: `useEffect(() => { if (!searchId && routerSearchId) dispatch(getDataEntitiesSearch({...})); }, [searchId, routerSearchId]);`. The deps array DOES include both values the guard reads. This effect is CORRECT. The contrast with #1 and #3 is INSTRUCTIVE: when a hand-written effect's deps array matches its read-set, the LSN-017 class disappears.
+
+  **Why MEDIUM (not HIGH)**:
+  - Smell #1 is LATENT (masked by React batch ordering — currently not actively reproducing)
+  - Smell #3 is POTENTIALLY ACTIVE (no live probe run for Catalog page in this batch)
+  - Both warrant tests + a P-N probe per LSN-017's measurement-truth principle
+  - The exact LSN-017 view_count doubling pattern is DataEntityDetails-specific; these are class-matches, not exact-pattern matches
+  - The presence of the counter-example (#2) reduces severity — the bug class is locally-fixable per-effect, not a project-wide systematic ignorance
+
+  **Test gap shape**: Two regression-pin tests, one per smell. PINS the latent class today; flips assertion direction after each smell is fixed (deps array updated to match read-set).
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.dep-array-smells.test.tsx"
+    name: "renderSearch_createSearchEffectDepArrayIncomplete_currentlyMaskedByBatchOrdering_pinsLatentSmell1"
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.dep-array-smells.test.tsx"
+    name: "renderSearch_facetSyncEffectDepArrayIncomplete_observesRefireDuringInflightPUTWindow_pinsActiveSmell3"
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.dep-array-smells.test.tsx"
+    name: "renderSearch_restoreFromURLEffectDepArrayCorrect_observesSingleDispatch_pinsCounterExampleSmell2"
+  - path: "odd-platform-ui/tests/regression-pins/search-facet-sync-effect-cardinality.spec.ts"
+    name: "clickFacetAndObservePUTDispatchCardinality_currentlyExceedsOnePerClick_pinsLSN017ClassMatch_playwrightProbe"
+evidence:
+  - "Search.md says (bugs_limitations_corner_cases.[0]): 'LSN-017-adjacent dep-array smell #1 — incomplete deps on createSearch effect. The guard reads THREE state values but the deps array contains only TWO — searchId is MISSING. The composition is correct BY ACCIDENT.'"
+  - "Search.md says (bugs_limitations_corner_cases.[2]): 'LSN-017-adjacent dep-array smell #3 — searchFacetsSynced read in condition but MISSING from deps (ACTIVE re-fire vector — IDENTICAL to TermSearch batch-U bugs[1]).'"
+  - "Verified at primary source: Search.tsx:37-42 (smell #1); Search.tsx:67-71 (smell #3); Search.tsx:44-48 (counter-example #2)"
+  - "Cross-reference: retrospectives/LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md (the canonical retrospective; this entry pins class-matches in Search.tsx)"
+  - "Cross-reference: TermSearch batch-U bugs[1] (sister LSN-017-class smell at the Term facet-sync effect)"
+cross_references:
+  - "TEST-GAP-836 (the EXACT-PATTERN LSN-017 case at DataEntityDetails.tsx)"
+  - "TEST-GAP-839 (sister Search broken-debouncer)"
+  - "TermSearch batch-U bugs[1] (sister Term facet-sync effect)"
+  - "retrospectives/LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md (the canonical retrospective)"
+  - "concepts.yaml:invariants[lsn-017-class-deps-conditions-out-of-sync]"
+related_features: [F-002]
+related_pillar_features: ["P-01:F-002 Search and Filtering"]
+proposed_action: |-
+  **Phase 1 — Vitest dep-array smell tests**:
+
+  1. `renderSearch_createSearchEffectDepArrayIncomplete_currentlyMaskedByBatchOrdering_pinsLatentSmell1` — render Search with `routerSearchId=undefined`, `isSearchCreating=false`, `searchId=undefined`. Observe ONE `createSearch` dispatch. Then mock the navigate-vs-redux ordering to be NON-batched (e.g. delay one of the transitions). Observe whether a SECOND `createSearch` dispatch fires. PINS the latent vulnerability.
+
+  2. `renderSearch_facetSyncEffectDepArrayIncomplete_observesRefireDuringInflightPUTWindow_pinsActiveSmell3` — render Search, toggle a facet, observe `updateSearchFacets` dispatch cardinality DURING the in-flight PUT window (between the dispatch start and `.fulfilled` action landing). PINS the active re-fire.
+
+  3. `renderSearch_restoreFromURLEffectDepArrayCorrect_observesSingleDispatch_pinsCounterExampleSmell2` — render Search with URL UUID but no cached session, observe EXACTLY ONE `getDataEntitiesSearch` dispatch. PINS the counter-example (the correctly-written effect).
+
+  **Phase 2 — Playwright probe** (LSN-017 measurement-truth principle):
+
+  4. `clickFacetAndObservePUTDispatchCardinality_currentlyExceedsOnePerClick_pinsLSN017ClassMatch_playwrightProbe` — boot platform, navigate to `/search`, click a facet ONCE, network-intercept PUT requests, assert count. If count > 1, smell #3 is ACTIVE.
+
+  Coherence note (LSN-018 Rule 6): STRENGTHENS retrospectives/LSN-017 by establishing the CLASS distinction (exact-pattern vs class-match). The LSN-017 case is DataEntityDetails-specific (response-derived dep closes the loop); the Search.tsx smells are sibling class-matches (deps and conditions out of sync). The retrospective's measurement-truth principle applies to both: a live probe is the only way to know if the smell is actively re-firing.
+batch: 2026-05-20-ZA
+feature_id: F-002

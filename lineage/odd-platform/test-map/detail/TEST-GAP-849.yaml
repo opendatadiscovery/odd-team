@@ -1,0 +1,64 @@
+gap_id: TEST-GAP-849
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform ts react-component component:Lineage"
+  - "odd-platform ts react-component component:DataEntityDetails"
+pillars_affected: [P-01, P-05]
+surfaced_by:
+  - "Lineage.md:bugs_limitations_corner_cases.[1] — 'dataEntityId: NaN does not short-circuit.'"
+  - "DataEntityDetails.md:bugs_limitations_corner_cases.[1] — 'Invalid route param :dataEntityId yields NaN with no client-side guard.'"
+  - "Lineage.md:concepts.invariants.[4] — 'The dataEntityId is parseInt(...,10) of a URL segment. A malformed URL like /dataentities/foo/lineage yields NaN.'"
+behaviour: |-
+  **LOW — Malformed URL `:dataEntityId` yields `NaN` with no client-side guard at TWO components. Project-wide pattern.** `routes/dataEntitiesRoutes.ts:47-58` calls `parseInt(dataEntityId, 10)` with no `Number.isNaN` check. If the route param is `'abc'` (manually-typed bad URL, mis-encoded query string, etc.):
+
+  **DataEntityDetails.tsx** (line 32 + 57): dispatches `fetchDataEntityDetails({ dataEntityId: NaN })` — travels through the API client to backend as literal string `'NaN'` → likely 404 → no UI-side error at source.
+
+  **Lineage.tsx** (line 13 → HierarchyLineage.tsx:44-67): dispatches `fetchDataEntityDownstreamLineage({dataEntityId: NaN})` → backend `GET /api/dataentities/NaN/lineage/downstream` → likely 400 Bad Request → AppErrorPage at HierarchyLineage tier.
+
+  **The shell could short-circuit with a `Number.isFinite(dataEntityId)` guard; it does not.** The dispatcher Lineage.tsx makes the routing decision based on Redux's `entityClasses` lookup, which returns `isDEG: false` on undefined classes → silently routes to `<HierarchyLineage />` with NaN — masking the route-param error one layer deep.
+
+  **TermDetails has the same gap** (routes/termsRoutes.ts:60) per DataEntityDetails.md note — project-wide pattern.
+
+  **Why LOW**:
+  - **UX-only impact** — the failure surfaces (backend 400/404), just at the wrong layer
+  - **No data integrity / security implications**
+  - **Bounded** — manually-typed bad URLs are rare in practice
+  - **Easy fix** — single-line `Number.isFinite` guard at each component or at `useDataEntityRouteParams()`
+
+  **Test gap shape**: Cross-component test asserting NaN-route-param handling at the THREE consumer sites (DataEntityDetails, Lineage, TermDetails).
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/DataEntityDetails/__tests__/DataEntityDetails.routeparam.test.tsx"
+    name: "renderDataEntityDetails_routeParamIsNaN_currentlyDispatchesWithNaN_pinsNoShortCircuit"
+  - path: "odd-platform-ui/src/components/DataEntityDetails/Lineage/__tests__/Lineage.routeparam.test.tsx"
+    name: "renderLineage_routeParamIsNaN_currentlyRoutesToHierarchyLineageWithNaN_pinsDispatcherSilentRoute"
+  - path: "odd-platform-ui/src/routes/__tests__/useDataEntityRouteParams.test.ts"
+    name: "useDataEntityRouteParams_paramIsMalformed_returnsNaN_pinsNoIsFiniteGuard"
+evidence:
+  - "DataEntityDetails.md says (bugs_limitations_corner_cases.[1]): 'Invalid route param :dataEntityId yields NaN with no client-side guard. Same gap exists in TermDetails (routes/termsRoutes.ts:60) — project-wide pattern, not isolated to this component.'"
+  - "Lineage.md says (bugs_limitations_corner_cases.[1]): 'dataEntityId: NaN does not short-circuit. The shell does NOT guard with Number.isFinite(dataEntityId).'"
+  - "Verified at primary source: routes/dataEntitiesRoutes.ts:53 (parseInt no NaN guard); DataEntityDetails.tsx:32, 57 (consumes raw); Lineage.tsx:13 (consumes raw)"
+cross_references:
+  - "TermDetails batch-U bugs (sister NaN gap at routes/termsRoutes.ts:60)"
+  - "TEST-GAP-836 (LSN-017 — same component, different gap; the NaN test composes with the dispatch-count test)"
+  - "concepts.yaml:invariants[parseInt-route-param-no-isFinite-guard-project-wide]"
+related_features: []
+related_pillar_features: ["P-01:F-001 Data Entity Detail", "P-05:F-001 Lineage Graph Traversal"]
+proposed_action: |-
+  **Vitest cross-component tests** (3 tests):
+
+  1. `renderDataEntityDetails_routeParamIsNaN_currentlyDispatchesWithNaN_pinsNoShortCircuit` — mount `<DataEntityDetails />` under `<MemoryRouter initialEntries={['/dataentities/abc/overview']}>`. Observe `fetchDataEntityDetails({dataEntityId: NaN})` dispatch. PINS the bypass.
+
+  2. `renderLineage_routeParamIsNaN_currentlyRoutesToHierarchyLineageWithNaN_pinsDispatcherSilentRoute` — mount Lineage with NaN route param, assert HierarchyLineage mounts (because `isDEG=false` on undefined classes). PINS the silent-route-to-wrong-subtree.
+
+  3. `useDataEntityRouteParams_paramIsMalformed_returnsNaN_pinsNoIsFiniteGuard` — unit test on the route helper itself; assert it returns NaN for `'abc'`. PINS the no-guard at the source.
+
+  **Architectural fix recommendation**:
+  - Add `if (!Number.isFinite(dataEntityId)) return <NotFoundPage />` at top of DataEntityDetails.tsx + Lineage.tsx + sibling consumers
+  - OR add the guard to `useDataEntityRouteParams()` itself (single-source-of-truth fix)
+  - Tests then flip assertion direction (assert NotFoundPage renders, dispatch is NOT fired)
+
+  Coherence note (LSN-018 Rule 6): STRENGTHENS the cross-component pattern by establishing it as a project-wide gap, not an isolated component bug. NO contradiction with existing artefacts.
+batch: 2026-05-20-ZA
+feature_id: null

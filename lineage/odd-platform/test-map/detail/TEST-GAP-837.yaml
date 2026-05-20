@@ -1,0 +1,84 @@
+gap_id: TEST-GAP-837
+category: missing-unit
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:Overview"
+  - "odd-platform java AppInfoController controller-class:AppInfoController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "Overview.md:tests_coverage_semantic.uncovered_behaviours.[0] — 'OwnerAssociation rendering gate — assert that under each of the four authType values ... and that under the bug-shaped values (empty string, undefined, null, typo'd OUATH2, whitespace, lowercase) the gate behaves predictably (or rejects with a diagnostic)'"
+  - "Overview.md:bugs_limitations_corner_cases.[0] — OwnerAssociation card mis-gating on empty / typo'd / whitespace auth.type"
+  - "Overview.md:security.known_security_gaps.[0] — UI-side closure of batch-T AppInfoController finding"
+behaviour: |-
+  **HIGH — OwnerAssociation mis-gating across 4 operator-misconfiguration scenarios. The UI-side closure of the batch-T AppInfoController finding (compounded gap at `@Value("${auth.type}")` no default + Overview.tsx string-equality predicate).** Overview.tsx:25-27 evaluates `isShowOwnerAssociation = Boolean(appInfo?.authType && appInfo.authType !== 'DISABLED')`. The predicate is fragile string-equality on a value that has zero validation upstream. Four operator-misconfiguration scenarios produce SURPRISING outcomes WITH NO DIAGNOSTIC:
+
+  **Scenario 1 — Empty auth.type (`AUTH_TYPE=`)**: Backend `@Value("${auth.type}")` at AppInfoController.java:18 has no `:default` → injects `''` → AppInfo response carries `authType: ''` → `Boolean('' && ...) === false` → OwnerAssociation card HIDDEN. **Compound risk**: EVERY backend `@ConditionalOnProperty(havingValue=...)` fails to match → NO SecurityWebFilterChain bean → silently degraded security (REFACTOR-073 + REFACTOR-185 family). The UI hides the card AS IF auth were intentionally disabled, MASKING the deployment misconfiguration from the operator looking at the home page.
+
+  **Scenario 2 — Typo (`AUTH_TYPE=OUATH2`, transposed A and U)**: Backend injects `'OUATH2'` → AppInfo response carries `authType: 'OUATH2'` → `Boolean('OUATH2' && 'OUATH2' !== 'DISABLED') === true` → OwnerAssociation card SHOWS. But the backend has NO matching `@ConditionalOnProperty(havingValue='OUATH2')` → NO SecurityWebFilterChain wired → operator sees an apparently-functional OwnerAssociation card on a deployment with NO authentication (the OPPOSITE risk of Scenario 1).
+
+  **Scenario 3 — Lowercase (`AUTH_TYPE=disabled`)**: Backend injects `'disabled'` → AppInfo response carries `authType: 'disabled'` → `Boolean('disabled' && 'disabled' !== 'DISABLED') === true` (string-equality is case-sensitive) → OwnerAssociation card SHOWS even though the operator's clear INTENT was to disable auth.
+
+  **Scenario 4 — Whitespace (`AUTH_TYPE=' DISABLED'`, leading space)**: Same case-sensitive outcome as Scenario 3 — card SHOWS under what the operator believes is a DISABLED deployment.
+
+  **In all four cases the UI fails-open or fails-closed without any error boundary or warning.** No `console.warn`, no toast, no fallback render that announces "auth.type is not a recognised value". The two failure layers (no `@Value` default at AppInfoController.java:18 + no enum validation in Overview.tsx:26) COMPOUND — neither layer catches the other's gap.
+
+  **Test gap shape**: A `Overview.test.tsx` with a parameterised test that sweeps the 10-value matrix:
+  - 4 valid values (DISABLED / LOGIN_FORM / OAUTH2 / LDAP)
+  - 4 bug-shaped values (empty / OUATH2 / disabled / ' DISABLED')
+  - 2 absent-shape values (undefined / null)
+  For each value, mount Overview with `appInfo: { authType: <value> }` mocked in React-Query cache and assert the EXPECTED visibility of OwnerAssociation. The test should DOCUMENT the surprising behaviours (Scenarios 2-4 produce TRUE; Scenario 1 produces FALSE). This pins the contract today. Pairing with REFACTOR-073 (boot-time security-posture validator) is the architectural fix; the test becomes the regression-pin for both layers.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Overview/__tests__/Overview.test.tsx"
+    name: "renderOverview_authTypeIsDISABLED_hidesOwnerAssociation_pinsValidValueContract"
+  - path: "odd-platform-ui/src/components/Overview/__tests__/Overview.test.tsx"
+    name: "renderOverview_authTypeIsLOGIN_FORM_showsOwnerAssociation_pinsValidValueContract"
+  - path: "odd-platform-ui/src/components/Overview/__tests__/Overview.test.tsx"
+    name: "renderOverview_authTypeIsEmptyString_hidesOwnerAssociation_pinsFailsCloseScenario1"
+  - path: "odd-platform-ui/src/components/Overview/__tests__/Overview.test.tsx"
+    name: "renderOverview_authTypeIsTypoOUATH2_showsOwnerAssociation_pinsFailsOpenScenario2"
+  - path: "odd-platform-ui/src/components/Overview/__tests__/Overview.test.tsx"
+    name: "renderOverview_authTypeIsLowercaseDisabled_showsOwnerAssociation_pinsCaseSensitiveScenario3"
+  - path: "odd-platform-ui/src/components/Overview/__tests__/Overview.test.tsx"
+    name: "renderOverview_authTypeHasLeadingWhitespace_showsOwnerAssociation_pinsWhitespaceScenario4"
+  - path: "odd-platform-ui/src/components/Overview/__tests__/Overview.test.tsx"
+    name: "renderOverview_authTypeUndefined_hidesOwnerAssociation_pinsAbsentValueShape"
+evidence:
+  - "Overview.md says (bugs_limitations_corner_cases.[0]): 'OwnerAssociation card mis-gating on empty / typo'd / whitespace auth.type (the batch-T AppInfoController finding's UI-side closure). Operator misconfiguration produces silent UI behaviour disagreement with intent — see four scenarios.'"
+  - "Overview.md says (security.known_security_gaps.[0]): 'The compound is the worst case: empty auth.type AND auth.ingestion.filter.enabled=false (the default per application.yml:48) AND a network-reachable deployment = REFACTOR-185 / REFACTOR-073 compound.'"
+  - "Verified at primary source: Overview.tsx:25-27 (the fragile string-equality predicate)"
+  - "Verified at primary source: AppInfoController.java:18 (the @Value with no default — the upstream failure layer per batch-T AppInfoController sidecar bugs[0])"
+  - "Reducer-side Glob verification: `/home/raman/work/odd/odd-platform/odd-platform-ui/**/Overview.test.*` returned 0 matches — zero direct test coverage confirmed (only DataEntitiesUsageInfo sub-feature has tests)"
+  - "Cross-reference: 4 @ConditionalOnProperty(value='auth.type', havingValue=...) SecurityConfigurations (no matchIfMissing per REFACTOR-073 evidence)"
+cross_references:
+  - "AppInfoController.controller-class sidecar bugs[0,1,3] (the backend half — batch T)"
+  - "REFACTOR-073 (boot-time security-posture validator — the architectural fix point)"
+  - "REFACTOR-185 (DISABLED auth bypass family)"
+  - "TEST-GAP-470 (AppInfoController unauthenticated reach matrix — composes with this UI gate test)"
+  - "DOC-GAP-NNN (proposed): live `/configuration-and-deployment/odd-platform` should explicitly enumerate the 4 accepted auth.type values + reject all other values"
+  - "concepts.yaml:invariants[auth-type-no-validation-compound-with-conditional-on-property]"
+related_features: [F-019]
+related_pillar_features: ["P-09:Security & Access Control", "P-01:F-003 Catalog Overview Home Page"]
+proposed_action: |-
+  Vitest + react-testing-library + mocked React-Query. Single parameterised test file `Overview.test.tsx` with 10 cases:
+
+  | authType value | Expected OwnerAssociation visibility | Scenario class |
+  |---|---|---|
+  | 'DISABLED' | hidden | valid (intentional disable) |
+  | 'LOGIN_FORM' | shown | valid |
+  | 'OAUTH2' | shown | valid |
+  | 'LDAP' | shown | valid |
+  | '' (empty) | hidden | bug-shape #1 (fails-close, masks security degradation) |
+  | 'OUATH2' (typo) | shown | bug-shape #2 (fails-open, no auth wired) |
+  | 'disabled' (lowercase) | shown | bug-shape #3 (case-sensitive intent miss) |
+  | ' DISABLED' (whitespace) | shown | bug-shape #4 (whitespace intent miss) |
+  | undefined | hidden | absent shape |
+  | null | hidden | absent shape |
+
+  Each test asserts `screen.queryByTestId('owner-association')` matches the expected visibility AND captures the failure mode in a snapshot comment (Scenarios 1-4 are the surprising cases).
+
+  After the test ships, the REFACTOR-073 fix (boot-time validator rejecting non-enum auth.type values) should be implemented; the test then ALSO becomes the pin for "the validator caught the misconfiguration at boot, so the UI never receives a bug-shaped value". The test class becomes the canonical regression-pin for the dual-layer gap.
+
+  Coherence note (LSN-018 Rule 6): NO contradiction with existing artefacts. STRENGTHENS the batch-T AppInfoController finding by establishing the UI-tier consequence. The test gap is the natural UI-side closure of the compound gap REFACTOR-073 + Overview.tsx:25-27.
+batch: 2026-05-20-ZA
+feature_id: F-019

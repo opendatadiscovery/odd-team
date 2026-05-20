@@ -1485,6 +1485,89 @@ observed_vs_expected:
       CustomOIDCUserHandler.java:19 (extends abstract base) +
       ADR-CANDIDATE-034. Severity: LOW (architecturally
       intentional; named for cross-batch coherence).
+  - facet: Overview OwnerAssociation mis-gating — 4 failure scenarios on `auth.type` (batch ZA — PRIMARY-SOURCE)
+    observed: |-
+      `Overview.tsx:25-27` is the UI-tier consumer of the `auth.type`
+      round-tripped value via `appInfo.authType`:
+      `const isShowOwnerAssociation = Boolean(appInfo?.authType && appInfo.authType !== 'DISABLED')`.
+      The gate decides whether `<OwnerAssociation>` (the wrapper around
+      OwnerEntitiesList / OwnerAssociationForm / PendingMessage /
+      DeclinedMessage — the principal-to-Owner association UI surface)
+      MOUNTS at all. F-011's chokepoint AuthIdentityProviderImpl is the
+      SERVER half of the principal-to-Owner association feature; this
+      gate is the CLIENT half. Per Overview sidecar
+      bugs_limitations_corner_cases[0] (severity HIGH), FOUR
+      operator-misconfiguration scenarios on `auth.type` cause the
+      gate to produce SURPRISING outcomes — each silently breaks the
+      principal-to-Owner association UI surface:
+      (1) **`AUTH_TYPE=` (empty)**: backend `@Value("${auth.type}")`
+          injects `''` → AppInfo `authType: ''` →
+          `Boolean('' && ...) = false` → OwnerAssociation **HIDDEN**.
+          Operator believes auth is enabled; user-owner association
+          UI is invisible. Compounds with backend
+          `@ConditionalOnProperty(havingValue=...)` failing to match
+          on any of the four SecurityConfigurations → NO
+          SecurityWebFilterChain bean → silently degraded security
+          with operator unable to associate themselves to an Owner
+          (the F-011 chokepoint is unreachable).
+      (2) **`AUTH_TYPE=OUATH2` (typo)**: backend injects `'OUATH2'` →
+          `Boolean('OUATH2' && 'OUATH2' !== 'DISABLED') = true` →
+          OwnerAssociation **SHOWS** but the backend
+          `@ConditionalOnProperty(havingValue='OUATH2')` fails on every
+          configuration → NO SecurityWebFilterChain wired → operator
+          sees apparently-functional OwnerAssociation UI on a deployment
+          with NO authentication. Worst-case: a user submits an
+          association request from an unauthenticated session;
+          `AuthIdentityProviderImpl.getCurrentUser` produces undefined
+          behaviour (the empty SecurityContext propagation case;
+          F-011's existing `empty_security_context_silent_propagation`
+          facet).
+      (3) **`AUTH_TYPE=disabled` (lowercase)**: backend injects
+          `'disabled'` (case-sensitive string-equality) →
+          `Boolean('disabled' && 'disabled' !== 'DISABLED') = true` →
+          OwnerAssociation **SHOWS** even though operator INTENT was
+          to disable. Auth IS disabled (the lowercase value matches
+          NO `@ConditionalOnProperty` value either); the UI lies to
+          the operator about the security posture.
+      (4) **`AUTH_TYPE=' DISABLED'` (leading whitespace)**: same
+          case-sensitive mismatch → OwnerAssociation **SHOWS** under
+          what operator believes is DISABLED.
+      All four cases: NO `console.warn`, NO toast, NO fallback render
+      announcing 'auth.type is not a recognised value'. The two
+      failure layers (no `@Value` default at AppInfoController.java:18
+      + no enum validation at Overview.tsx:26) COMPOUND — neither
+      layer catches the other's gap. F-011's chokepoint design
+      (AuthIdentityProviderImpl as the SOLE principal-resolution point)
+      is structurally robust; the UI-tier gate is the BRITTLE
+      complement that mis-renders the user-owner association surface
+      under operator misconfiguration.
+    expected: |-
+      Either (a) add enum validation at the SPA layer with a fallback
+      + warning toast naming the recognised values; OR (b) add
+      `@Value(value="${auth.type:DISABLED}")` default + enum validation
+      at AppInfoController.java:18 (the upstream batch-T finding); OR
+      (c) document the four misconfiguration failure modes on the
+      live `configuration-and-deployment/enable-security` page under
+      "Known limitations." Best is (a) + (b) combined.
+    drift_class: empty_security_context_silent_propagation
+    provenance: |-
+      STATIC — primary-source verification at Overview.tsx:25-27 +
+      Overview sidecar bugs_limitations_corner_cases[0] severity HIGH
+      + Overview sidecar implicit_adrs[0] (the nested-gates-per-layer
+      cascade — Overview's outer gate is the deployment-shape gate;
+      OwnerAssociation.tsx's inner gate is the identity+ownership
+      gate; both must succeed for the principal-to-Owner association
+      UI to mount) + AppInfoController.java:18 (no `@Value` default;
+      cross-link to batch-T AppInfoController finding) + the four
+      `@ConditionalOnProperty(value="auth.type", havingValue=...)`
+      SecurityConfigurations (no `matchIfMissing` on any per
+      REFACTOR-073). Cross-link: F-001/F-003 batch-ZA facets pin the
+      same gating predicate at the Popular-column surface; this F-011
+      facet pins the SAME gate at the OwnerAssociation surface (the
+      principal-to-Owner association UI). The Overview gate is the
+      common ancestor of BOTH downstream features. Severity: HIGH.
+      No probe required — the four failure modes are structurally
+      anchored at file:line.
 test_matrix:
   unit:
     state: GAP

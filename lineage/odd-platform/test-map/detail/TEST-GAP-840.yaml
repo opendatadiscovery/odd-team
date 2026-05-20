@@ -1,0 +1,68 @@
+gap_id: TEST-GAP-840
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:Search"
+  - "odd-platform java SearchController controller-method:search"
+pillars_affected: [P-01]
+surfaced_by:
+  - "Search.md:bugs_limitations_corner_cases.[8] — 'Pagination total-vs-list divergence inherited from REFACTOR-425 family'"
+  - "Search.md:tests_coverage_semantic.uncovered_behaviours.[10] — 'Pagination total-vs-list divergence (REFACTOR-425 family): assert pagination terminates correctly when count predicate diverges from list predicate'"
+behaviour: |-
+  **HIGH — Page-vs-count blind trust inherited from REFACTOR-425 family. UI consumer-side surface of the data_entity-page-vs-count-predicate-divergence-exclude-from-search invariant.** Search.tsx delegates pagination to `Results.tsx:71-74` which calls `fetchDataEntitySearchResults({searchId, page+1, size:30})`. The thunk at `thunks.ts:62-63` computes `hasNext: page * size < pageInfo.total`. The `total` field comes from `SearchFacetsData.total` (the COUNT aggregator on backend).
+
+  **If the count predicate diverges from the list predicate** (per the canonical REFACTOR-425 family — exclude_from_search flag is a known divergence vector per `concepts/detail/invariants/data-entity-page-vs-count-predicate-divergence-exclude-from-search.yaml`):
+  - **count < actual rows** → pagination terminates early, user never reaches the missing pages (data loss to the user; the entity is searchable but the UI never paginates to it).
+  - **count > actual rows** → `hasNext` stays true even though the server returns empty results; the infinite-scroll loop fires forever (UX hang).
+
+  **The UI does NOT defensive-check** — it trusts the server `total` blindly. There is no client-side reconciliation between "I just got 0 results back" and "hasNext is still true". The UI has no fallback to terminate the loop in the count-divergent case.
+
+  **Cross-batch evidence**: This is the same architectural bug class as the EXCLUDE_FROM_SEARCH inconsistency that TEST-GAP-310 pins at the backend Popular ranking surface. The pattern is broader: ANY case where the same underlying predicate differs between the COUNT(*) query and the SELECT query produces page-vs-count divergence. Search.tsx is one consumer; Popular is another; Directory level 4 is a third (per F-023 batch-T facet 13).
+
+  **Why HIGH**:
+  - **Data integrity (silent data loss)**: count < rows → user cannot find the entity they searched for, with no UI signal anything went wrong.
+  - **Availability**: count > rows → infinite-scroll loop fires forever, exhausts network budget.
+  - **Pattern propagation**: REFACTOR-425 family has multiple UI consumers. Without test pins at each consumer, a future predicate-divergence fix at one site can silently break another.
+
+  **Test gap shape**: Integration test that seeds entities with EXCLUDE_FROM_SEARCH=true AND ensures the COUNT predicate disagrees with the LIST predicate, then exercises the UI's pagination. The test ASSERTS the UI reconciles the divergence (or PINS the current bypass).
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.pagination.test.tsx"
+    name: "paginate_serverReportsCountGreaterThanRows_uiInfiniteLoopsForever_pinsREFACTOR425Bypass"
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.pagination.test.tsx"
+    name: "paginate_serverReportsCountLessThanRows_uiTerminatesEarly_pinsSilentDataLoss"
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.pagination.test.tsx"
+    name: "paginate_serverReportsConsistentCountAndRows_uiCorrectlyPaginates_pinsHappyPath"
+  - path: "odd-platform-ui/tests/regression-pins/search-pagination-exclude-from-search.spec.ts"
+    name: "seedEntityWithExcludeFromSearchAndPaginateCatalog_uiBehavesPredictably_pinsCrossTierDivergence_playwrightCIPermanent"
+evidence:
+  - "Search.md says (bugs_limitations_corner_cases.[8]): 'Pagination total-vs-list divergence inherited from REFACTOR-425 family. The UI does NOT defensive-check; it trusts server total.'"
+  - "Verified at primary source: Search.tsx:79-86 (delegation to Results.tsx) + Results.tsx:71-74 (fetchDataEntitySearchResults dispatch) + thunks.ts:52-67 (hasNext = page * size < pageInfo.total)"
+  - "Cross-reference: concepts/detail/invariants/data-entity-page-vs-count-predicate-divergence-exclude-from-search.yaml (the canonical invariant)"
+  - "Cross-reference: REFACTOR-425.md (the canonical page-vs-count family)"
+  - "Reducer-side Glob verification: `/home/raman/work/odd/odd-platform/odd-platform-ui/**/Search*.test.*` returned 0 matches"
+cross_references:
+  - "REFACTOR-425 (page-vs-count divergence family — this UI is a downstream consumer)"
+  - "TEST-GAP-310 (EXCLUDE_FROM_SEARCH inclusion in Popular — sister consumer surface; both compose into the REFACTOR-425 family)"
+  - "TEST-GAP-318 (EXCLUDE_FROM_SEARCH consistency across 10 list sites — the matrix test)"
+  - "concepts.yaml:invariants[data-entity-page-vs-count-predicate-divergence-exclude-from-search]"
+  - "F-023 batch-T facet 13 (Directory level 4 — sister consumer surface)"
+related_features: [F-002]
+related_pillar_features: ["P-01:F-002 Search and Filtering"]
+proposed_action: |-
+  **Phase 1 — Vitest UI tests** (3 tests using mocked backend responses):
+
+  1. `paginate_serverReportsCountGreaterThanRows_uiInfiniteLoopsForever_pinsREFACTOR425Bypass` — mock the API to return `{total: 1000, items: []}` on page 1, then `{total: 1000, items: []}` on page 2, etc. Render Search, trigger infinite scroll, assert UI keeps requesting more pages indefinitely (with a test-time cap of 20 requests to avoid hanging the test). PINS the current bypass.
+
+  2. `paginate_serverReportsCountLessThanRows_uiTerminatesEarly_pinsSilentDataLoss` — mock the API to return `{total: 30, items: [Entity1..Entity30]}` on page 1, then `{total: 30, items: [Entity31..Entity60]}` on page 2 (the server has 60 entities matching but counted 30). Render Search, trigger pagination, assert the UI stops at page 1 (since `1 * 30 < 30 === false`). PINS the silent data loss.
+
+  3. `paginate_serverReportsConsistentCountAndRows_uiCorrectlyPaginates_pinsHappyPath` — sanity check: `{total: 60, items: [...30]}` × 2 pages, UI fetches both, then stops. PINS the happy path.
+
+  **Phase 2 — Cross-tier Playwright regression-pin**:
+  - `seedEntityWithExcludeFromSearchAndPaginateCatalog_uiBehavesPredictably_pinsCrossTierDivergence_playwrightCIPermanent` — boot test-platform, seed 100 entities with EXCLUDE_FROM_SEARCH=true on half of them, navigate to Catalog, paginate through all results. Assert UI either (a) renders consistent results matching server-reported count OR (b) surfaces a "results incomplete" warning. PINS the cross-tier divergence as a UX behaviour contract.
+
+  **Architectural fix dependency**: The REFACTOR-425 fix needs to be applied at the BACKEND query layer (predicate consistency between COUNT and SELECT). The UI test pins the CONSUMER behaviour — when the divergence is fixed at the backend, this UI test still verifies the UI never had a defensive check for the case (the architectural posture is "the UI trusts the server" which is a per-design choice, but should be documented).
+
+  Coherence note (LSN-018 Rule 6): STRENGTHENS the REFACTOR-425 family by establishing the UI-tier consumer surface explicitly. NO contradiction with existing artefacts. The pagination-blind-trust posture is consistent across Search.tsx and Results.tsx; the test pins both consumer surfaces in one file.
+batch: 2026-05-20-ZA
+feature_id: F-002

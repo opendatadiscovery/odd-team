@@ -1,0 +1,87 @@
+gap_id: TEST-GAP-842
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:Overview"
+  - "odd-platform java DataEntityController controller-method:getPopular"
+  - "odd-platform java service service:DataEntityServiceImpl"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "Overview.md:bugs_limitations_corner_cases.[1] — 'Cross-owner enumeration via the Popular tile rendered downstream — REFACTOR-024 family at the home-page level.'"
+  - "Overview.md:security.known_security_gaps.[1] — 'Cross-owner enumeration via Popular column rendered downstream (REFACTOR-024 family at the home page).'"
+  - "Overview.md:security.data_exposure.[1] — 'Cross-owner data-entity references via Popular column'"
+behaviour: |-
+  **HIGH — Catalog-wide Popular column rendered to every authenticated user on the home page, regardless of Owner namespace. The home-page chrome surface of the read-collaborative posture (REFACTOR-024 + ADR-CANDIDATE-003).** Overview.tsx:53-59 wraps OwnerAssociation in the auth-mode gate; OwnerAssociation mounts OwnerEntitiesList; OwnerEntitiesList.tsx:99-105 renders the Popular column as the 4th column of the Recommended panel.
+
+  **The Popular column has NEVER been per-user**:
+  - Backend `listPopular` (DataEntityServiceImpl.java:227-231) is a 1-line pass-through with NO owner filter (per F-003 facet `service tier is a 1-line pass-through`)
+  - Repository `ReactiveDataEntityRepositoryImpl.listPopular` (line 633) sole orderBy is `view_count DESC` — no per-owner / per-namespace / per-tenant predicate
+  - Only the My Objects / Upstream / Downstream columns are owner-scoped; Popular is catalog-wide by design (ADR-CANDIDATE-003)
+
+  **The 9-field DataEntityRef projection exposes**:
+  - `externalName` (the system-of-record name — often discloses table-name conventions, PII categorisation)
+  - `internalName` (the operator-curated business name)
+  - `entityClasses[]` (DEG / Dataset / Transformer / QualityTest / etc. — reveals catalog composition)
+  - `oddrn` (the canonical identifier — discloses datasource type + structure)
+  - `manuallyCreated`, `status`, `isStale`, `hasAlerts` (operational metadata)
+  - **`view_count` is NOT in the projection** — so the ranking ORDER leaks but the magnitude is opaque
+
+  **The doc says** (catalog-overview.md, WebFetched 2026-05-20 status 200): "on auth-disabled deployments the panel is visible but the per-user filtering does not apply" — IMPLYING that on auth-enabled deployments per-user filtering DOES apply. **This is FALSE for the Popular column specifically.**
+
+  **Compounded with F-001 inflation surface**:
+  - Anonymous DISABLED-mode `/api/dataentities/{id}` can pump any entity's view_count (per probe P-002 + REFACTOR-220)
+  - An attacker can promote any chosen entity to the home-page Popular column
+  - Every authenticated user then sees the attacker-chosen entity's `externalName` + `internalName` on their home page
+  - This is **directed cross-owner data-name exfiltration** via Popular ranking manipulation
+
+  **Why HIGH**:
+  - **Security**: Cross-owner data exposure to every authenticated user; ranking manipulation is operator-reachable
+  - **Doc-drift compound**: The live doc gives operators a false expectation of per-user filtering on Popular
+  - **Cross-pillar impact**: F-001 inflation + F-003 ranking + REFACTOR-024 read-posture compose into this surface
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/tests/regression-pins/overview-popular-cross-owner.spec.ts"
+    name: "userAuthenticatedAsOwnerANavigatesToHome_seesEntitiesOwnedByOwnerBInPopularColumn_pinsCatalogWidePopular"
+  - path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/PopularCrossOwnerTest.java"
+    name: "getPopular_authenticateAsUserAWithOwnerA_returnsEntitiesOwnedByOwnerB_pinsNoOwnerScoping"
+  - path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/PopularInflationToHomePageTest.java"
+    name: "anonymousUnderDISABLED_pumpsEntityViewCount_authenticatedUserSeesPromotedEntityOnHomePage_pinsCrossPillarComposition"
+evidence:
+  - "Overview.md says (bugs_limitations_corner_cases.[1]): 'Cross-owner enumeration via the Popular tile rendered downstream — REFACTOR-024 family at the home-page level. EVERY signed-in user (even those whose Owner has zero data entities) sees the SAME Popular column ranked by global view_count DESC.'"
+  - "Overview.md says (security.known_security_gaps.[1]): 'Combined with F-001's inflation surface, an attacker can promote any chosen entity to the home-page Popular column where every authenticated user sees its externalName and internalName — exfiltrating naming conventions, table-name patterns, and entity-class distributions across the whole catalog.'"
+  - "Verified at primary source: Overview.tsx:53-59 (the OwnerAssociation gate); OwnerEntitiesList.tsx:99-105 (Popular column unconditional render)"
+  - "Verified at primary source: DataEntityServiceImpl.java:227-231 (listPopular 1-line pass-through, no owner filter) per F-003 facet"
+  - "Verified at primary source: ReactiveDataEntityRepositoryImpl.java:633 (sole orderBy view_count DESC, no per-owner predicate)"
+  - "Cross-batch: probe P-002 (anonymous DISABLED-mode view_count inflation confirmed); probe P-004 (UI doubling confirmed)"
+  - "Reducer-side Glob verification: `/home/raman/work/odd/odd-platform/odd-platform-ui/**/Overview.test.*` returned 0 matches"
+cross_references:
+  - "REFACTOR-024 (read-collaborative posture family — the architectural stance per system-mission.md line 267)"
+  - "ADR-CANDIDATE-003 (read-collaborative catalog posture — the implicit ADR)"
+  - "ADR-CANDIDATE-122 (catalog-wide aggregate counts as deliberate design)"
+  - "F-001 (Data Entity Details view-count inflation — producer side)"
+  - "F-003 (Popular Entities Ranking — consumer side; this entry is the home-page surface)"
+  - "TEST-GAP-309 (Popular inflation regression — STRENGTHENS — now anchored to the UI home-page surface)"
+  - "TEST-GAP-310 (EXCLUDE_FROM_SEARCH gap on Popular — sister surface)"
+  - "TEST-GAP-836 (LSN-017 UI doubling — composes into the cross-pillar amplification)"
+  - "DOC-GAP-NNN (proposed): catalog-overview.md must explicitly state that Popular column is CATALOG-WIDE, not per-user (fix the false implication in the doc)"
+related_features: [F-003]
+related_pillar_features: ["P-01:F-001 Popular Entities Ranking", "P-09:Security & Access Control"]
+proposed_action: |-
+  **Phase 1 — UI Playwright regression-pin**:
+
+  1. `userAuthenticatedAsOwnerANavigatesToHome_seesEntitiesOwnedByOwnerBInPopularColumn_pinsCatalogWidePopular` — boot test-platform with two users + two Owners. Seed entities under OwnerB (and zero under OwnerA). Log in as UserA (associated with OwnerA), navigate to `/`, wait for Recommended panel to load. Assert that the Popular column renders OwnerB-owned entities. PINS the cross-owner visibility.
+
+  **Phase 2 — Backend integration tests**:
+
+  2. `getPopular_authenticateAsUserAWithOwnerA_returnsEntitiesOwnedByOwnerB_pinsNoOwnerScoping` — WebTestClient calling `GET /api/dataentities/popular` as UserA, assert response contains entities not owned by UserA's Owner. Sister-test to the Popular inflation regression.
+
+  3. `anonymousUnderDISABLED_pumpsEntityViewCount_authenticatedUserSeesPromotedEntityOnHomePage_pinsCrossPillarComposition` — boot DISABLED-mode platform, anonymous caller hits `/api/dataentities/{id}` 1000 times (the inflation pattern from probe P-002). Then authenticate as UserB, navigate to home, assert the inflated entity appears at position 0 in Popular. PINS the cross-pillar attack chain.
+
+  **Architectural fix dependency**:
+  - Backend fix: add per-Owner filter to `listPopular` (the load-bearing fix per F-003 facet `service tier is a 1-line pass-through`)
+  - Doc fix: catalog-overview.md must explicitly disambiguate Popular (catalog-wide) from My Objects / Upstream / Downstream (per-user)
+  - Test pins both the current bypass AND the future fix (after fix, the test asserts the absence of cross-owner entities in the response)
+
+  Coherence note (LSN-018 Rule 6): STRENGTHENS REFACTOR-024 + F-003 by establishing the home-page UI-tier consumer surface explicitly. NO contradiction with existing artefacts. The catalog-wide Popular column is a DELIBERATE design choice (ADR-CANDIDATE-003 + ADR-CANDIDATE-122) — the test does not necessarily PIN-AS-BUG; it PINS-THE-CONTRACT. The fix decision is a maintainer policy call: keep the read-collaborative posture explicit (test stays as documentation of the contract) OR add per-Owner Popular filter (test flips assertion direction).
+batch: 2026-05-20-ZA
+feature_id: F-003

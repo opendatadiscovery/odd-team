@@ -2047,3 +2047,84 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - 256 detail-without-index in refactoring-scopes; 110 in implicit-adrs; 65+4 in doc-gaps
 - ZA still pending — UI canonical surface (LSN-017 region)
 
+
+## Batch 2026-05-20-ZA — UI canonical surface: DataEntityDetails + Lineage + Search + Directory + Overview (5/5; **FINAL batch of finalization sprint**)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 139 prior + 5 new = **143 total**; 0 deferred
+- **Theme**: UI canonical surface — closes LSN-017 PRIMARY-SOURCE LOCK + 9-shell negative cluster + F-001 inflation loop traced end-to-end
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `DataEntityDetails` | P-01 | **LSN-017 PRIMARY-SOURCE LOCKED** at lines 56-64 (re-verified — bug intact). F-001 chain formulation: hop-1 multiplicity=2 × hops 2-4=1 × +1 UPDATE = +2 per page-open. **SOLE platform-wide canonical instance** of response-derived-dep-array bug. |
+| `Lineage` (substituted from phantom LineageInteractive) | P-05 | 5-line pure dispatcher (DEGLineage vs HierarchyLineage by isDEG). LSN-017 NOT applicable. F-005 + F-016 UI realization chokepoint. UI-layer defense-in-depth absent (chokepoint identified). |
+| `Search` | P-01 | Catalog page root. 12 bugs. 3 LSN-017-class dep-array smells. **IDENTICAL broken-debouncer to TermSearch (clone propagation)**. **REFACTOR-229 now 3-invocation-site** (UI zero mitigation). REFACTOR-425 page-vs-count blind trust. Bearer-token UUID propagation. |
+| `Directory` (corrected from Directory/Directory.tsx) | P-01 | F-023 P-01:F-007 Level-1 root. **LSN-017 NOT APPLICABLE** (TanStack useQuery NOT useEffect — explicit negative). **REFACTOR-024 now 4-tier UI confirmation**. F-023 facets 1+5 confirmed at UI tier. No authType gate (anonymous DISABLED reach). |
+| `Overview` | P-01 | **OwnerAssociation mis-gating ROOT-CAUSE LOCKED at lines 25-27** (string-equality predicate; 4 failure scenarios documented). **LSN-017 ABSENT here** (no useEffect; only useMemo). **HOME-PAGE MOUNT for F-001 inflation loop**. Cross-owner enumeration via Popular column for authenticated users. 5 doc-drift findings. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 399 → **399 (UNCHANGED)** | **FAILED** (socket error) — concepts/ index not updated this batch. Backfill candidate for next batch. |
+| adr-archaeologist (ADRs) | 192 → **197** | +5 (193-197) + 4 strengthened (ADR-003 / 114 / 122 / 185). |
+| adr-archaeologist (scopes) | 545 → **551** | +6 (546-551) + 4 strengthened (REFACTOR-024 / 073 / 185 / 229). |
+| doc-gap-finder | 245 → **254 (unique)** | +9 (246-254) + 5 META strengthened (DOC-082 / 083 / 099 / 130 / 137). |
+| test-coverage-mapper | 832 → **851 indexed** | +19 (836-854) + 3 strengthened. **1 NEW CRITICAL → 144 CRITICAL**: LSN-017 view_count doubling regression-pin (TEST-836). |
+| feature-flow-builder | 30 → **30 features** (+0 new, +8 extended) | F-001 + F-003 + F-005 + F-011 + F-016 + F-017 + F-018 + F-023 ALL extended. LSN-017 chain composition complete. 8-feature extension breadth. |
+
+### Coverage state after batch ZA (FINAL SPRINT STATE)
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 143 | **36.2%** (was 35.2%) |
+| Effective coverage | 295 | **74.7%** (was 72.4%) |
+| Features discovered | 30 (unchanged) | UI extends existing pillar features |
+| Total test-gaps | 851 indexed | 144 CRITICAL (was 143) |
+
+### Sprint final summary (T-ZA, 8 batches on finalization branch)
+
+| Metric | At sprint start (post-S) | Final (after ZA) | Delta |
+|---|---|---|---|
+| Direct sidecars | 106 / 395 (26.8%) | **143 / 395 (36.2%)** | +37 sidecars |
+| Effective coverage | 198 / 395 (50.1%) | **295 / 395 (74.7%)** | +97 nodes / **+24.6pp** |
+| Features | 21 | **30** | +9 features |
+| Test-gaps | 631 | **851** | +220 test-gaps |
+| CRITICAL test-gaps | 107 | **144** | +37 CRITICAL |
+| Pillars anchored | 9/11 | **11/11** | P-06 + P-11 closed |
+
+### Cross-batch triangulation deltas (cumulative)
+
+- **🎯 ALL 11 PILLARS HAVE MINTED FEATURES** (P-06 closed batch U, P-11 closed batch Z)
+- **LSN-017 PRIMARY-SOURCE LOCKED** at DataEntityDetails.tsx:56-64 with 9-shell negative cluster
+- **REFACTOR-185 DISABLED-mode bypass**: 19-SIDECAR → 24-SIDECAR (LOGIN_FORM facet) → 17+18-SIDECAR AUTH-MODE-ORTHOGONAL (3 unauth /ingestion/** endpoints in EVERY mode)
+- **REFACTOR-024 cross-owner enumeration family**: 4-tier UI confirmation
+- **REFACTOR-229 FTS injection**: 3-invocation-site
+- **REFACTOR-217 path-mismatch DIRECTION-OF-FIX PINNED** (spec correct, SecurityConstants wrong)
+- **F-006 audit-silence pattern**: 6-SIDECAR → 7 → 8 → 9 → 10 → ENUM-ROOTED (notification-delivery extension)
+- **F-004 stored-XSS surfaces**: 3 → 4 → 5 → 6 surfaces (data-entity / dataset-field / term / query-example / lookup-table / Slack-mrkdwn)
+- **F-008 5-VERTEX closure** (filter + controller + service + repo + SQL)
+- **F-009 5-LAYER closure** (subscriber + processor + 3 senders + config)
+- **End-to-end plaintext collector token chain 6-tier**
+- **LSN-001 + LSN-002 PRIMARY-SOURCED** (CHUNK_BASE_PATH residue + MinioConfig.java:21-24)
+- **OwnerAssociation mis-gating ROOT-CAUSE LOCKED** at Overview.tsx:25-27
+- **SecurityConstants wiring failures**: 5 total (3 path-mismatch + 2 mis-permission)
+
+### Sprint methodology lessons reinforced
+
+- **LSN-018 phantom-node prevention** fired across **6 batches** (Q + S + V + W + X + Y + ZA) — 18+ path corrections caught before file-analysers wasted cycles
+- **LSN-018 Rule 6 supersedes**: 10+ across batch O / Q / V / Y / Z (canonical wrong-claim corrections)
+- **API resilience**: 2 transient failures (rate-limit batch S; 529 overload batch Z) — both recovered via retry
+- **Doc-gap reducer file-writing protocol**: lost in batch W (in-memory only) → recovered in batches X+Y+Z+ZA
+- **concept-merger** socket-errored in batch ZA (final) — backfill candidate
+
+### Follow-ups (logged, not blocking)
+
+- concept-merger socket-failure backfill needed (batch ZA additions not in concepts/ index)
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 256 detail-without-index in refactoring-scopes; 110 in implicit-adrs; 74+4 in doc-gaps
+- F-001 + F-003 merge candidate still maintainer-pending
+

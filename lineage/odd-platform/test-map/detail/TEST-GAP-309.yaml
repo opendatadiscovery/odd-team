@@ -5,6 +5,8 @@ node_ids:
 - odd-platform java DataEntityController controller-method:getPopular
 - odd-platform java repository_reactive repository:ReactiveDataEntityRepositoryImpl
 - odd-platform java service service:DataEntityServiceImpl
+- odd-platform ts react-component component:DataEntityDetails
+- odd-platform ts react-component component:Overview
 surfaced_by:
 - getPopular.md:tests_coverage_semantic.uncovered_behaviours.[9]
 - getPopular.md:bugs_limitations_corner_cases.[0]
@@ -14,6 +16,8 @@ surfaced_by:
   DESC)
 - DataEntityServiceImpl.md:downstream_side_effects (listPopular 1-line pass-through
   confirming F-003 closure at service tier)
+- DataEntityDetails.md:bugs_limitations_corner_cases.[0] (batch ZA — UI doubling produces 2x cheaper inflation)
+- Overview.md:security.known_security_gaps.[1] (batch ZA — home-page Popular cross-owner enumeration surface)
 behaviour: 'Inflation-attack regression: scripted GET /api/dataentities/{id} loop
   pushes any chosen entity to position 0 in GET /api/dataentities/popular. Closes
   REFACTOR-201 from primary source (consumer half of the view-count loop). STRENGTHENED
@@ -25,7 +29,16 @@ behaviour: 'Inflation-attack regression: scripted GET /api/dataentities/{id} loo
   pass-through with no enrichment, no owner filter, no anti-abuse signal. The producer-side
   write (view_count increment in getDetails) plus this consumer-side ranking read
   complete the inflation loop. The trivial-to-game finding is now anchored at THREE
-  tiers (controller G + repository H + service I).'
+  tiers (controller G + repository H + service I). STRENGTHENED batch ZA — DataEntityDetails
+  sidecar confirms the UI-tier amplification: the LSN-017 bug means every UI page-open
+  drives +2 view_count (vs +1 for a direct API call). The inflation attack is therefore
+  2x MORE EFFICIENT from the UI than from the API. Plus Overview sidecar confirms
+  the home-page surface where the inflated entity becomes visible to every authenticated
+  user via the Popular column (Overview.tsx:53-59 mounts the chain, OwnerEntitiesList
+  renders Popular without owner-scoping). The full F-001 -> F-003 attack chain is
+  now anchored at FIVE tiers: UI producer (DataEntityDetails) + Redux thunk (fetchDataEntityDetails)
+  + controller (getDataEntityDetails) + service (DataEntityServiceImpl) + repository
+  (incrementViewCount + listPopular) + UI consumer (Overview Popular column rendering).'
 test_files_existing: []
 test_files_proposed:
   path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/PopularInflationRegressionTest.java
@@ -33,19 +46,28 @@ test_files_proposed:
 evidence:
 - 'Source: ReactiveDataEntityRepositoryImpl.java:633 (sole orderBy view_count DESC)
   + ReactiveDataEntityRepositoryImpl.java:173-180 (unconditional increment) + DataEntityServiceImpl.java:227-231
-  (1-line pass-through, no anti-abuse) + no rate-limit anywhere in chain'
+  (1-line pass-through, no anti-abuse) + DataEntityDetails.tsx:56-64 (the UI doubling)
+  + Overview.tsx:53-59 (the home-page consumer surface) + no rate-limit anywhere in chain'
 - 'ReactiveDataEntityRepositoryImpl.md says: ''F-003 ranking signal unverified'''
 - 'DataEntityServiceImpl.md says: ''The F-003 ranking-loop closure is confirmed at
   the service tier: no enrichment, no owner filter, no anti-abuse signal. The producer-side
   write (view_count increment in getDetails) plus this consumer-side ranking read
   complete the inflation loop'''
+- 'DataEntityDetails.md (batch ZA) says: ''The UI literally closes the F-001 inflation loop: clicking the most-popular tile makes it more popular.'' (the +2 amplification per page-open)'
+- 'Overview.md (batch ZA) says: ''An attacker can promote any chosen entity to the home-page Popular column where every authenticated user sees its externalName and internalName — exfiltrating naming conventions, table-name patterns, and entity-class distributions across the whole catalog.'''
 cross_references:
 - concepts.yaml:entities[Popular Entities Ranking].security_aggregate (HIGH)
-- TEST-GAP-256 (view-count side-effect at producer — STRENGTHENS)
+- TEST-GAP-256 (view-count side-effect at producer — STRENGTHENS — now anchored to UI primary source via TEST-GAP-836)
+- TEST-GAP-836 (batch-ZA PRIMARY-SOURCE UI anchor for the LSN-017 doubling that 2x amplifies this attack)
+- TEST-GAP-842 (batch-ZA Popular cross-owner enumeration — the home-page surface where the inflated entity becomes visible)
 - REFACTOR-201 (primary-source closure)
-- F-003 (Popular Entities Ranking)
+- F-001 (Data Entity Details view-count side-effect)
+- F-003 (Popular Entities Ranking — the consumer side of this loop)
 proposed_action: 'WebTestClient: pick entity X; call GET /api/dataentities/{X} 1000
   times; call GET /api/dataentities/popular?page=1&size=10; assert response[0].id
-  == X.'
-batch: 2026-05-19-I-STRENGTHENED
+  == X. **After batch ZA**: pair with a Playwright spec opening 1000 detail-page views
+  (UI route) and assert that the entity reaches position 0 in HALF the wall-clock time
+  (because LSN-017 doubles the per-render view_count delta). Composite regression-pin:
+  the test passes only if BOTH the API path AND the UI doubling are addressed.'
+batch: 2026-05-19-I-STRENGTHENED-2026-05-20-ZA
 feature_id: F-003

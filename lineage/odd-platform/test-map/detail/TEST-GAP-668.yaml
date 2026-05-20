@@ -1,0 +1,31 @@
+gap_id: TEST-GAP-668
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveActivityRepositoryImpl"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "ReactiveActivityRepositoryImpl.md:security.known_security_gaps.[1] (Anonymous-mutation attribution gap under DISABLED auth.type)"
+  - "ReactiveActivityRepositoryImpl.md:bugs_limitations_corner_cases.[2] (created_by varchar(512) NULLABLE — anonymous mutations + ingestion-path system events write null)"
+behaviour: |-
+  **Under `auth.type=DISABLED`, anonymous traffic CAN mutate the catalog (description edits, tag assignments, ownership changes) and the resulting activity rows write `created_by = null`.** `ActivityServiceImpl.createActivityEvent` (line 47-49) emits `null` when `authIdentityProvider.getCurrentUser()` returns empty (the `switchIfEmpty(Mono.defer(() -> Mono.just(activityMapper.mapToPojo(event, activityCreateTime, null))))` line — explicit null fallback). These rows are VISUALLY INDISTINGUISHABLE from system events at the UI layer — the only discriminator is `is_system_event` which CAN be `false` (anonymous-mutation case) OR `true` (genuine ingestion / scheduler) for null-created_by rows. A reviewer cannot determine whether a null-created_by `is_system_event=false` row is an unattributed user action or a missed-username on a real user. The docs frame DISABLED as 'dev-only' but the runtime cost is real and the audit trail loses forensic value precisely when an operator most needs to investigate. No test pins this attribution gap.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryDisabledModeAttributionTest.java"
+  name: "activityWrite_underDisabledAuthType_recordsNullCreatedBy_indistinguishableFromSystemEvent"
+evidence:
+  - "ReactiveActivityRepositoryImpl.md says (security.known_security_gaps.[1]): 'Anonymous-mutation attribution gap under DISABLED auth.type. Under auth.type=DISABLED, anonymous traffic CAN mutate the catalog and the resulting activity rows write created_by = null.' severity: MEDIUM"
+  - "ActivityServiceImpl.java:47-49 (the null-username fallback via switchIfEmpty)"
+  - "V0_0_48__add_activity.sql:10 (`created_by varchar(512)` — NULLABLE)"
+  - "DisabledAuthSecurityConfiguration.java:16 (anonymous permitted under DISABLED)"
+cross_references:
+  - "TEST-GAP-104 family (DISABLED-mode bypass tests at the backend tier)"
+  - "TEST-GAP-659 (Activity audit schema invariant — sibling)"
+  - "F-006 (P-09:F-001 RBAC) — DISABLED-mode anonymous mutation"
+  - "REFACTOR-NNN candidate: under DISABLED mode, write a SENTINEL `created_by='__anonymous__'` instead of NULL — distinguishable from system events"
+proposed_action: |-
+  Testcontainers integration test (DISABLED-mode profile). (a) Boot the application with `auth.type=DISABLED`. (b) Issue an anonymous PUT to a description-editing endpoint that triggers @ActivityLog (e.g. PUT `/api/dataentities/{id}/description`). (c) Query the activity table: `SELECT created_by, is_system_event FROM activity WHERE event_type = 'DESCRIPTION_UPDATED' AND data_entity_id = ? ORDER BY created_at DESC LIMIT 1`. (d) Assert `created_by IS NULL` and `is_system_event = false`. (e) Insert a separate row via `activityServiceImpl.createActivityEvent(...).systemEvent(true)` programmatically — assert `created_by IS NULL` and `is_system_event = true`. (f) Pin the indistinguishability gap: the only field distinguishing anonymous-mutation from system-event is `is_system_event`. A reviewer reading the UI activity feed (which surfaces `is_system_event=false → unattributed user; is_system_event=true → system`) cannot distinguish the two. Add a `// REGRESSION-PIN — DISABLED-mode anonymous mutations write null-created_by. REFACTOR-NNN proposes a sentinel '__anonymous__' value for distinguishability; this test flips to assert the sentinel.` comment block.
+related_features: [F-006, F-007]
+related_pillar_features: ["P-09:F-001", "P-07:F-003"]
+batch: 2026-05-20-R
+feature_id: F-007

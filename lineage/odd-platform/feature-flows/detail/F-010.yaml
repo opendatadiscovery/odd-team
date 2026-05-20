@@ -18,6 +18,9 @@ drift_class_summary:
 - no_tamper_evident_audit_on_ttl_config_changes
 - cross_pillar_alert_retention_to_p_04
 - cross_pillar_activity_retention_to_p_07
+- activity_table_monotonic_growth_confirmed_repo_tier_no_delete_path
+- activity_empty_partitions_housekeeping_job_is_sole_reaper
+- orphan_token_row_no_housekeeping_after_collector_soft_delete
 cross_pillar_relationships:
 - pillar_id: P-04
   kind: cross_pillar_secondary
@@ -31,6 +34,79 @@ cross_pillar_relationships:
     Activity table (which the Active Platform Features pillar's Activity Feed
     sub-feature owns). Cross-orchestrator coordination with ActivityTablePartitionManager
     (creates partitions nightly) — housekeeping (this feature, every 15 min) drops empties.
+batch_extensions:
+- batch: R
+  entry_point_added: |-
+    repository-tier (2 sidecars): ReactiveActivityRepositoryImpl +
+    ReactiveCollectorRepositoryImpl — the SQL-tier substrates of two
+    housekeeping-relevant tables (activity + token). The Activity
+    repository sidecar provides the END-TO-END absence-evidence for
+    the activity-table delete path (grep verified — NO `deleteFrom(ACTIVITY)`
+    anywhere in the repository file); combined with
+    ActivityEmptyPartitionsHousekeepingJob (the FOURTH job in F-010's
+    enumerated set), this CONFIRMS the activity-table monotonic growth
+    finding at SQL primary source. The Collector repository sidecar
+    surfaces the orphan-token-row finding — a NEW housekeeping gap
+    candidate (no current job purges TOKEN rows orphaned by collector
+    soft-delete).
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveCollectorRepositoryImpl
+  notes: |-
+    Three new drift facets surface, all confirming or extending F-010's
+    existing scope:
+    (1) ACTIVITY TABLE MONOTONIC GROWTH CONFIRMED AT REPO TIER (HIGH,
+    structural) — `ReactiveActivityRepositoryImpl` line 1-310 contains
+    ZERO `deleteFrom(ACTIVITY)` calls (grep verified). The only
+    activity-table reaper is `ActivityEmptyPartitionsHousekeepingJob`
+    (extends `EmptyPartitionsHousekeepingJob`, targets
+    `Tables.ACTIVITY.getName()` per `ActivityEmptyPartitionsHousekeepingJob.java:14-17`)
+    which drops EMPTY past partitions only — non-empty partitions
+    NEVER drop, no row-level DELETE path exists. A high-volume
+    deployment (1M events/day) accumulates ~365GB+/year of audit
+    data with no recovery path short of manual
+    `DROP TABLE activity_YYYYMMDD_YYYYMMDD`. The Activity Feed live
+    doc (WebFetched 2026-05-20 by ReactiveActivityRepositoryImpl
+    sidecar) frames `odd.activity.partition-period` as controlling
+    "retention and partitioning" — operators reasonably assume rows
+    age out, but the table grows monotonically. PRIMARY-SOURCE
+    confirmation of F-010 `cross_pillar_activity_retention_to_p_07`
+    drift facet — the cross-pillar relationship is now closed
+    SCHEMA-PLUS-REPO.
+    (2) ACTIVITY EMPTY-PARTITIONS HOUSEKEEPING JOB IS THE SOLE REAPER
+    (LOW, positive case-law) — names the SINGLE pruning mechanism
+    explicitly, closing the absence-evidence shape. Operators looking
+    at the 5-job list (the F-010 feature_name) cannot infer this
+    asymmetry; ActivityEmptyPartitionsHousekeepingJob and
+    MessageEmptyPartitionsHousekeepingJob are BOTH 'empty-partition
+    drop' jobs (the fourth and fifth entries) — both rely on row-level
+    DELETE NEVER firing because the partition rotation maintains
+    rolling windows. Activity rows themselves never age out; the
+    partition rotation is what enables empty-partition drops to
+    reclaim space when the partition's range falls outside the
+    retention window.
+    (3) ORPHAN TOKEN ROW NO HOUSEKEEPING (MEDIUM, NEW GAP) —
+    TOKEN table has no soft-delete column (V0_0_28:1-9). When a
+    Collector is soft-deleted, `collector.token_id` points at an
+    orphaned TOKEN row that persists indefinitely. NO housekeeping
+    job removing orphaned TOKEN rows; F-010's enumerated job list
+    (AlertHousekeepingJob, SearchFacetsHousekeepingJob,
+    DataEntityHousekeepingJob, ActivityEmptyPartitionsHousekeepingJob,
+    MessageEmptyPartitionsHousekeepingJob) does NOT include a
+    `TokenOrphanHousekeepingJob`. The TOKEN row's value remains
+    plaintext-at-rest indefinitely; cross-link to F-008 batch-R
+    `collector_token_plaintext_at_rest_sql_primary_source` and F-020
+    token-rotation facets. Recommended remediation: add a
+    `TokenOrphanHousekeepingJob` to the enumerated list. Cross-link
+    to the audit-log-presence-asymmetry canonicalisation candidate
+    in system-mission.md (the orphan retention is the audit-log-shape
+    equivalent for credentials).
+    Coherence: STRENGTHENS F-010's existing
+    `cross_pillar_activity_retention_to_p_07` drift_class. NO
+    contradictions surfaced. NO supersedes — the prior F-010 batch-K
+    feature_name (5-jobs) is still accurate; this batch adds (a)
+    SQL primary source for the activity asymmetry, (b) one new
+    enumerated gap (token-orphan).
 batch_origin: K
 created_in_batch: K
 feature_name: Scheduled housekeeping cycle — TTL purge + empty-partition drop (5
@@ -87,6 +163,8 @@ contributing_nodes:
 - odd-platform java config-properties:HousekeepingTTLProperties
 - odd-platform java PGConnectionFactory
 - odd-platform java SchedulingConfiguration
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveCollectorRepositoryImpl
 chain:
 - hop: 1
   node: odd-platform java SchedulingConfiguration

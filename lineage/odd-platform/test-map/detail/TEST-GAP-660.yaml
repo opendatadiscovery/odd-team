@@ -1,0 +1,37 @@
+gap_id: TEST-GAP-660
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveCollectorRepositoryImpl"
+pillars_affected: [P-08, P-09, P-10]
+surfaced_by:
+  - "ReactiveCollectorRepositoryImpl.md:bugs_limitations_corner_cases.[0] (TOKEN.value plaintext-at-rest with no UNIQUE, no hashing, no timing-attack-safe equality — severity HIGH)"
+  - "ReactiveCollectorRepositoryImpl.md:security.known_security_gaps.[0] (TOKEN.value plaintext-at-rest — severity HIGH)"
+  - "ReactiveCollectorRepositoryImpl.md:implicit_adrs.[0] (TOKEN.value is the plaintext credential at rest — consistency across layers)"
+behaviour: |-
+  **SQL-TIER PRIMARY-SOURCE: collector tokens are stored as 40-char alphanumeric plaintext in `token.value varchar(40) NOT NULL`** (V0_0_28__add_token.sql:1-9) with NO hashing (TokenGeneratorImpl.java:34-42 writes `RandomStringUtils.randomAlphanumeric(40)` verbatim) and NO UNIQUE constraint at the SQL layer. `ReactiveCollectorRepositoryImpl.getByToken(token)` (line 89-97) issues `SELECT collector.* FROM collector JOIN token ON token.id = collector.token_id WHERE token.value = $1 AND collector.deleted_at IS NULL` — a parameterised plaintext-equality match. This is the SQL-tier substrate consumed by the ALWAYS-ON `IngestionDataSourceFilter` (IngestionDataSourceFilter.java:33, no `@ConditionalOnProperty`) and the opt-in `IngestionDataEntitiesFilter` (IngestionDataEntitiesFilter.java:55-58 with `tokenPojo.getValue().equals(token)`). A DB-side reader (replica, backup, pg_dump operator, jOOQ log leak, application log leak via DEBUG-level R2DBC bind logging) recovers every live collector credential in clear text. STRENGTHENS TEST-GAP-613 (filter-class plaintext-equality pin) with the REPOSITORY-LAYER SQL anchor + the always-on filter coupling + the storage-at-rest implication. The full plaintext-everywhere chain spans (1) TokenGeneratorImpl write → (2) ReactiveTokenRepositoryImpl persistence → (3) THIS repository's SQL-layer equality match → (4) IngestionDataSourceFilter always-on consumption + IngestionDataEntitiesFilter opt-in consumption. No test pins the full stack; the gap is the cross-layer integration regression-pin that would catch a partial fix (e.g. someone hashing at the write layer but leaving the read layer to plaintext-compare, OR vice versa).
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/CollectorRepositoryImplTest.java (covers getByToken happy path only — does NOT pin storage shape or constraint absence)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveCollectorRepositoryTokenStorageContractTest.java"
+  name: "collectorToken_storedAsPlaintextVarchar40_noUniqueConstraint_noHashing_pinsAtRestThreatModel"
+evidence:
+  - "ReactiveCollectorRepositoryImpl.md says (bugs_limitations_corner_cases.[0]): 'TOKEN.value plaintext-at-rest with no UNIQUE constraint, no hashing, no timing-attack-safe equality. The SQL-tier substrate of the bearer-token authentication shipped to the always-on IngestionDataSourceFilter and the opt-in IngestionDataEntitiesFilter. A DB-side reader (replica, backup, pg_dump, jOOQ log leak, application log leak) recovers every live credential.' severity: HIGH"
+  - "ReactiveCollectorRepositoryImpl.md says (implicit_adrs.[0]): 'TOKEN.value is the plaintext credential at rest — the SQL-tier implementation of bearer-token authentication for the always-on IngestionDataSourceFilter and the opt-in IngestionDataEntitiesFilter. The decision is consistent across the write path (TokenGeneratorImpl.java:34-42 — RandomStringUtils.randomAlphanumeric(40) written verbatim with no hashing), the storage layer (V0_0_28:4 — value varchar(40) NOT NULL, no UNIQUE), the read path (ReactiveCollectorRepositoryImpl.java:94 — TOKEN.VALUE.eq(token) plaintext equality), and the filter cross-check (IngestionDataEntitiesFilter.java:56 — tokenPojo.getValue().equals(token)).'"
+  - "V0_0_28__add_token.sql:1-9 (TOKEN table — `value varchar(40) NOT NULL`; no UNIQUE)"
+  - "ReactiveCollectorRepositoryImpl.java:89-97 (getByToken — plaintext equality at SQL)"
+  - "TokenGeneratorImpl.java:34-42 (RandomStringUtils.randomAlphanumeric(40) verbatim — no encoding pass)"
+  - "IngestionDataSourceFilter.java:15-22 (no @ConditionalOnProperty — always-on consumer of getByToken)"
+cross_references:
+  - "TEST-GAP-613 (filter-class plaintext-equality pin — STRENGTHENED with SQL-tier anchor + always-on coupling)"
+  - "TEST-GAP-121 (config-key-consumer plaintext-equality)"
+  - "F-008 (P-10:F-001 Batch Ingestion)"
+  - "F-020 (P-08:F-004 Collector Lifecycle Management)"
+  - "REFACTOR-NNN candidate: switch to BCrypt hash at-rest + MessageDigest.isEqual at compare site (5-layer coordinated change)"
+  - "concepts/index.yaml — `plaintext-token-rendered-into-dom-fragile-substring-prefix-sniff-masking` (UI-tier mirror)"
+proposed_action: |-
+  Repository-layer regression-pin test (multi-faceted). (a) Schema inspection — query `information_schema.columns` for `token` table; assert `value` column is `character varying(40)` and IS NULLABLE per V0_0_28 (the NOT NULL is application-layer-only). (b) Constraint inspection — query `information_schema.table_constraints` for table `token`; assert NO UNIQUE constraint on `value`. (c) Round-trip — call `tokenRepository.create(newPojo)` with `value = "alice-token-1"`; query the raw row; assert `value = "alice-token-1"` byte-equal (no hashing applied). (d) Cross-collector — create TWO TOKEN rows with the SAME `value` ("collision-token"); both succeed (no UNIQUE blocks). Assert `getByToken("collision-token")` returns a CollectorPojo non-deterministically (no ORDER BY guarantees stability). (e) Add a comment block at test top: `// THREAT MODEL PIN: This test asserts the CURRENT plaintext-at-rest invariant. If a future migration adds BCrypt hashing at-rest, this test will fail and must be flipped to assert hash-storage + MessageDigest.isEqual at the compare site. The cross-layer coordination required is documented at REFACTOR-NNN.`
+related_features: [F-008, F-020]
+related_pillar_features: ["P-10:F-001", "P-08:F-004", "P-09:F-001"]
+batch: 2026-05-20-R
+feature_id: F-008

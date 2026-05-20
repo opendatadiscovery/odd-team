@@ -1,0 +1,242 @@
+name: metadata_field asymmetric uniqueness by origin (INTERNAL name-only; EXTERNAL (type,name))
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20R** — surfaced by the
+  ReactiveMetadataFieldRepositoryImpl batch-R sidecar. The
+  `metadata_field` table has TWO partial unique indexes that encode
+  a DELIBERATE ASYMMETRIC uniqueness model by origin (per
+  V0_0_1__init.sql:238-244):
+
+    - `IX_UNIQUE_INTERNAL_NAME ON metadata_field(name) WHERE origin =
+      'INTERNAL'` — INTERNAL fields are unique by NAME alone. The
+      pair `(cost_centre:STRING:INTERNAL)` and
+      `(cost_centre:INTEGER:INTERNAL)` would CONFLICT on insert.
+    - `IX_UNIQUE_EXTERNAL_NAME_TYPE ON metadata_field(type, name)
+      WHERE origin <> 'INTERNAL'` — EXTERNAL fields are unique by
+      (TYPE, NAME). The pair `(cost_centre:STRING:EXTERNAL)` and
+      `(cost_centre:INTEGER:EXTERNAL)` COEXIST as distinct rows.
+
+  **The design intent**: operator-curated fields cannot have name
+  reuse across types (one canonical `cost_centre` per platform);
+  collector-ingested fields can (a collector may legitimately emit
+  `cost_centre:STRING` and `cost_centre:INTEGER` from different
+  sources without conflict). The asymmetry is encoded in the schema
+  via mutually-exclusive `WHERE` clauses on the two partial indexes;
+  the `ExceptionUtils.formatMessage` cascade (ExceptionUtils.java:63-65)
+  has a SPECIFIC message `"Internal metadata with this name already
+  exists"` for the INTERNAL collision — confirming that hitting the
+  error is an EXPECTED and operator-facing case.
+
+  **The conflict-arbitrator coupling** (ingestData at
+  ReactiveMetadataFieldRepositoryImpl.java:73-109): the bulk-upsert
+  path pins ONLY to `IX_UNIQUE_EXTERNAL_NAME_TYPE` and restates the
+  predicate at line 101 via
+  `.where(ORIGIN.ne(MetadataOrigin.INTERNAL.toString()))`. The
+  conflict-arbitrator predicate in Postgres must match the partial
+  unique index predicate EXACTLY. The hardcoded `.where(ORIGIN.ne(
+  INTERNAL))` clause is brittle to a migration that changes the
+  partial-index predicate (e.g. adding `AND deleted_at IS NULL` —
+  per the sibling
+  `metadata-field-soft-delete-partial-unique-index-mismatch`
+  invariant). The `conflictFields` are read DYNAMICALLY from
+  `Indexes.IX_UNIQUE_EXTERNAL_NAME_TYPE.getFields()` at line 93-96
+  (column changes are auto-tracked); but the predicate is NOT.
+
+  **The asymmetry across CONFLICT-RESOLUTION paths**: `ingestData`
+  has race-tolerant semantics (`ON CONFLICT … DO UPDATE SET name =
+  EXCLUDED.name`); the UI-tier `bulkCreate` (inherited from
+  ReactiveAbstractCRUDRepository.java:113-126) has NO `ON CONFLICT`
+  clause. An INTERNAL-field collision throws
+  `DataAccessException → UniqueConstraintException("Internal metadata
+  with this name already exists")` (ExceptionUtils.java:63-65). An
+  EXTERNAL-field collision is swallowed silently by the upsert. The
+  ergonomics gap is intentional per
+  ReactiveMetadataFieldRepositoryImpl batch R implicit_adrs.[2]:
+  TagController.createTag (operator-explicit creation gated by
+  permission) MUST fail on duplicate; ingestion-side calls MUST not
+  fail because a tag with the same name was added moments earlier.
+
+  **The UX manifestation**:
+    (a) An operator who creates a metadata field with name
+        `cost_centre` and type `STRING` (INTERNAL) cannot LATER
+        create a field with name `cost_centre` and type `INTEGER`
+        — even though the user-facing dropdown would let them
+        type a new field with that name. The error is opaque.
+    (b) A collector emitting `cost_centre:STRING` for source A and
+        `cost_centre:INTEGER` for source B silently succeeds.
+        Two distinct rows coexist. Both surface on data-entity
+        detail pages of their respective entities.
+
+  **The IX_UNIQUE_EXTERNAL_NAME_TYPE index is NOT in
+  `ExceptionUtils.formatMessage`** (ExceptionUtils.java:81-82): an
+  EXTERNAL collision that ever surfaces as an exception (e.g.
+  through a different write path bypassing ingestData) would fall
+  through to the generic "Database constraint violation" fallback.
+  This is a small but real ergonomics gap relative to the Tag
+  pattern, which HAS `TAG_NAME_UNIQUE` in the translation table
+  (ExceptionUtils.java:54-56).
+
+  **The asymmetry is INVISIBLE to UI users**: `listInternalMetadata`
+  (the only UI-facing list method) returns ONLY INTERNAL rows. The
+  UI dropdown population shows the operator-curated set only. The
+  collector-ingested EXTERNAL fields surface only on the per-entity
+  detail page via `getDtosByDataEntityId`. An operator browsing the
+  metadata dropdown to plan name choices CANNOT see the EXTERNAL
+  side of the catalog.
+nodes:
+- odd-platform java repository reactive repository:ReactiveMetadataFieldRepositoryImpl
+contributors:
+- |-
+  ReactiveMetadataFieldRepositoryImpl batch R (PRIMARY SOURCE):
+  concepts.invariants.[1] (TWO partial unique indexes by origin —
+  deliberate asymmetric uniqueness; INTERNAL by name alone; EXTERNAL
+  by (TYPE, NAME); the asymmetry is intentional but undocumented at
+  the doc-site or in code comments) +
+  concepts.invariants.[3] (conflict-target asymmetry between
+  ingestData and the UI bulk-create path; race-window protection
+  differs by origin — EXTERNAL gets silent-upsert; INTERNAL gets
+  UniqueConstraintException) +
+  concepts.invariants.[7] (no-op upsert maintains the RETURNING
+  contract — `set(NAME, EXCLUDED.NAME)` is functionally a no-op
+  but required for Postgres's RETURNING clause to include the
+  conflicting row) +
+  concepts.invariants.[8] (the hardcoded `.where(ORIGIN.ne(INTERNAL))`
+  clause is brittle to a migration changing the partial-index
+  predicate) +
+  implicit_adrs.[1] (asymmetric uniqueness encoded via mutually-
+  exclusive WHERE clauses on TWO partial indexes; ExceptionUtils
+  formatMessage has specific INTERNAL error message confirming the
+  expected case) +
+  implicit_adrs.[2] (ingestData collector-only race-tolerant
+  semantics; UI tier uses plain bulkCreate with race-exception-driven
+  resolution; the dual-method design rationale) +
+  docs_link_semantic.doc_drift_findings.[1] (the asymmetric uniqueness
+  model is encoded in the partial indexes but not documented at the
+  doc-site or in code comments)
+evidence:
+- |-
+  ReactiveMetadataFieldRepositoryImpl.md:concepts.invariants.[1,3,7,8]
+  + implicit_adrs.[1,2] (PRIMARY SOURCE — MEDIUM severity) —
+  evidence:
+    V0_0_1__init.sql:238-240 (IX_UNIQUE_EXTERNAL_NAME_TYPE on
+      (type, name) WHERE origin <> 'INTERNAL') +
+    V0_0_1__init.sql:242-244 (IX_UNIQUE_INTERNAL_NAME on (name)
+      WHERE origin = 'INTERNAL') +
+    ReactiveMetadataFieldRepositoryImpl.java:73-109 (ingestData
+      pins to EXTERNAL index; restates predicate at line 101) +
+    ReactiveMetadataFieldRepositoryImpl.java:93-96 (conflictFields
+      read dynamically from Indexes.IX_UNIQUE_EXTERNAL_NAME_TYPE) +
+    ReactiveAbstractCRUDRepository.java:113-126 (inherited
+      bulkCreate without ON CONFLICT) +
+    ExceptionUtils.java:63-65 (specific INTERNAL collision message) +
+    ExceptionUtils.java:54-56 (the Tag-side translation contrast —
+      TAG_NAME_UNIQUE IS in the translation table) +
+    ExceptionUtils.java:81-82 (the generic fallback message that
+      EXTERNAL collisions fall through to)
+- |-
+  ReactiveMetadataFieldRepositoryImpl.md:docs_link_semantic.doc_drift_findings.[1,2]
+  (the asymmetry is undocumented at the doc-site — a user creating
+  a metadata field via the UI cannot know that cost_centre:STRING
+  blocks cost_centre:INTEGER; a collector emitting both is silently
+  accepted)
+axes_present:
+- repositories_reactive
+- schema_migrations
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: correctness-and-UX
+mitigations_unimplemented:
+- |-
+  Add the IX_UNIQUE_EXTERNAL_NAME_TYPE constraint name to
+  ExceptionUtils.formatMessage's translation cascade so EXTERNAL
+  collisions surfacing as exceptions (any future write path
+  bypassing ingestData) get a clear message
+  ("External metadata with this (type, name) pair already exists").
+  Single-line addition; closes the ergonomics gap relative to
+  Tag's `TAG_NAME_UNIQUE` handling.
+- |-
+  Document the asymmetric uniqueness model on the operator-facing
+  custom-metadata feature page. Operators creating fields via the
+  UI deserve to know that INTERNAL fields are name-unique
+  regardless of type. Collector authors deserve to know that
+  EXTERNAL fields are (type, name)-unique and can coexist across
+  types.
+- |-
+  Add a UI-tier validation hint: when an operator types a new
+  INTERNAL metadata field name in the create form, query
+  `listInternalMetadata(query)` and disable submission if a row
+  exists with the same name (regardless of the type the operator
+  intends). Reduces the opaque-error surface.
+- |-
+  Add the regression test from the test-coverage proposal:
+    INTERNAL-name-uniqueness-vs-type test: `bulkCreate({name='foo',
+    type='STRING', origin='INTERNAL'})` followed by
+    `bulkCreate({name='foo', type='INTEGER', origin='INTERNAL'})`
+    expects UniqueConstraintException.
+    EXTERNAL-name-allows-multi-type test: `ingestData({name='foo',
+    type='STRING', origin='EXTERNAL'})` AND `ingestData({name='foo',
+    type='INTEGER', origin='EXTERNAL'})` expects two distinct rows
+    to coexist.
+- |-
+  Consider whether the asymmetry should be DOCUMENTED-AS-INTENDED or
+  REVISITED. Two possible directions:
+    Option A (preserve current behaviour): document the asymmetry as
+    a deliberate design — operator vocabulary curation enforces
+    single-type per name; collector vocabulary allows multi-type for
+    real-world flexibility.
+    Option B (unify): switch the INTERNAL side to ALSO key by
+    (type, name) — symmetric uniqueness, simpler mental model.
+    Risk: existing deployments with INTERNAL `foo:STRING` rows would
+    not block re-creating `foo:INTEGER` after the migration; the
+    operator vocabulary may FRAGMENT.
+notes: |-
+  This invariant is a NARROW MEDIUM-severity finding — it affects
+  operators creating metadata fields via the UI and developers
+  trying to understand the type semantics. The bug class is
+  ASYMMETRIC-SCHEMA-ENFORCEMENT-WITH-OPAQUE-CONSEQUENCES: the
+  schema encodes a deliberate distinction but the operator surface
+  does not expose it.
+
+  **Why the asymmetry exists (likely)**: the platform's GENESIS
+  schema (V0_0_1) was authored with two distinct stakeholder
+  audiences in mind — operators curating metadata for stewardship
+  (one canonical `cost_centre` per platform), and collectors
+  ingesting metadata from external systems (any metadata-key
+  vocabulary their source defines, with possibly-conflicting
+  types). The two-index design lets BOTH audiences coexist without
+  rule-conflict.
+
+  Cross-cutting connections:
+    - Pairs with the metadata-field-soft-delete-partial-unique-index-mismatch
+      invariant — both concern the partial indexes; this one
+      captures the BUSINESS-DOMAIN intent; the other captures the
+      SOFT-DELETE-CONVERGENCE miss
+    - Pairs with the tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race
+      invariant — both Tag and metadata_field have TOCTOU race
+      surfaces in their respective `getOrCreate` patterns; the
+      asymmetric-uniqueness model adds extra race surfaces for the
+      INTERNAL-vs-EXTERNAL boundary
+    - Pairs with the ingestdata-upsert-with-returning-conflict-trigger
+      operation — the no-op upsert pattern (`set(NAME, EXCLUDED.NAME)`)
+      is shared with Tag's ingestData; both maintain the RETURNING
+      contract for the caller
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Document the asymmetric uniqueness model on the operator-
+        facing custom-metadata page — operators creating fields
+        deserve to know the rule
+    (b) Document the absence of operator-facing custom-metadata
+        documentation entirely — the live Data Discovery page does
+        not mention custom metadata at all per the
+        ReactiveMetadataFieldRepositoryImpl batch R
+        docs_link_semantic.doc_drift_findings.[0] (LIVE 2026-05-20
+        WebFetch); operators evaluating the feature can only find
+        it via the permissions reference
+    (c) Cross-link the asymmetric-uniqueness rule to the collector
+        author docs (developer-guides/build-and-run/custom-collectors)
+        — collectors emitting custom metadata need to know that
+        (type, name) uniqueness applies to their side, NOT name-only

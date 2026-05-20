@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-673
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveMetadataFieldRepositoryImpl"
+pillars_affected: [P-01]
+surfaced_by:
+  - "ReactiveMetadataFieldRepositoryImpl.md:bugs_limitations_corner_cases.[1] (TOCTOU race window in UI-tier auto-create-on-miss path)"
+  - "ReactiveMetadataFieldRepositoryImpl.md:concepts.invariants.[4] (TOCTOU race in MetadataFieldServiceImpl.getOrCreateMetadataFields)"
+behaviour: |-
+  **TOCTOU race window in UI-tier custom-metadata auto-create.** `MetadataFieldServiceImpl.getOrCreateMetadataFields` (line 42-59) calls `listByKey` (READ) then `bulkCreate` (WRITE). Two concurrent calls from two parallel `createMetadata` requests with the same novel `(name, type, INTERNAL)` key will both see "doesn't exist" and both attempt INSERT; the second hits `IX_UNIQUE_INTERNAL_NAME` and raises `UniqueConstraintException("Internal metadata with this name already exists")`. Same race-shape as the Tag TOCTOU (`tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race` concept — TEST-GAP-NNN family at the Tag tier). Resolution is exception-driven; the calling `DataEntityServiceImpl.createMetadata` does NOT catch and retry — the user sees a 500 (or 422 if the GlobalExceptionHandler maps it). The race window is small (sub-millisecond between SELECT and INSERT in the same TX) but reliably reproducible under bench load. The ingestion path (`MetadataFieldServiceImpl.ingestMetadataFields` → `ingestData`) is race-TOLERANT via the partial-unique-index `ON CONFLICT DO UPDATE`; the UI path is race-EXCEPTION. Inconsistent UX behaviour by code path.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/MetadataFieldServiceTOCTOUTest.java"
+  name: "getOrCreateMetadataFields_concurrentSameNovelKey_secondCallThrowsUniqueConstraint_pinsRace"
+evidence:
+  - "ReactiveMetadataFieldRepositoryImpl.md says (bugs_limitations_corner_cases.[1]): 'TOCTOU race window in the UI-tier auto-create-on-miss path. MetadataFieldServiceImpl.getOrCreateMetadataFields calls listByKey (READ) then bulkCreate (WRITE). Two concurrent calls from two parallel createMetadata requests with the same novel (name, type, INTERNAL) key will both see doesnt exist and both attempt INSERT; the second hits IX_UNIQUE_INTERNAL_NAME and raises UniqueConstraintException.' severity: LOW (manifests as user-visible error, not silent corruption)"
+  - "MetadataFieldServiceImpl.java:42-59 (listByKey → filter → bulkCreate)"
+  - "ReactiveMetadataFieldRepositoryImpl.java:58-71 (listByKey, no ON CONFLICT)"
+  - "ReactiveAbstractCRUDRepository.java:113-126 (inherited bulkCreate, no ON CONFLICT)"
+cross_references:
+  - "concept catalog — `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`"
+  - "TEST-GAP-543 (Tag soft-delete recreation — sibling)"
+  - "REFACTOR-NNN candidate: align UI tier with ingestion tier — replace bulkCreate with INSERT … ON CONFLICT … RETURNING for the INTERNAL path"
+proposed_action: |-
+  Concurrency integration test. (a) Construct two parallel CompletableFutures each invoking `metadataFieldService.getOrCreateMetadataFields(Map.of(new MetadataKey("foo", STRING), null))`. (b) `CompletableFuture.allOf(f1, f2).join()`. (c) Assert exactly ONE future succeeds with a created field; the other throws `UniqueConstraintException` with message "Internal metadata with this name already exists". (d) Assert exactly ONE row exists in metadata_field with name='foo' + origin='INTERNAL'. (e) Add a `// REGRESSION-PIN — The UI tier resolves the race via exception; the ingestion tier resolves it silently via ON CONFLICT. The inconsistency is by-design today. REFACTOR-NNN may align both paths; this test flips to assert silent merge on both.` comment block. (f) Compare with the ingestion-path variant — two parallel `ingestData` calls succeed silently with the same row's id.
+related_features: [F-002]
+related_pillar_features: ["P-01:F-002"]
+batch: 2026-05-20-R
+feature_id: F-002

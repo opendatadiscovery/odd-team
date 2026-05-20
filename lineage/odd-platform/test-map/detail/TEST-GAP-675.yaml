@@ -1,0 +1,31 @@
+gap_id: TEST-GAP-675
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveCollectorRepositoryImpl"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "ReactiveCollectorRepositoryImpl.md:bugs_limitations_corner_cases.[1] (Soft-deleted collector's TOKEN row is NOT cleaned up)"
+  - "ReactiveCollectorRepositoryImpl.md:security.known_security_gaps.[3]"
+behaviour: |-
+  **Soft-deleted collector leaves an orphaned TOKEN row with plaintext value persisting indefinitely.** The TOKEN table has no soft-delete column (`V0_0_28__add_token.sql:1-9` — only `id, value, created_at, created_by, updated_at, updated_by`). When a Collector is soft-deleted via the inherited `delete(id)` (`ReactiveAbstractSoftDeleteCRUDRepository:50-58` — `UPDATE collector SET deleted_at = NOW()`), the FK reference `collector.token_id` remains pointing at a TOKEN row that is now orphaned. The partial unique index `collector_token_unique ON collector(token_id) WHERE deleted_at IS NULL` (`V0_0_33__add_token_constraints.sql:1`) ALLOWS this — it only enforces uniqueness on LIVE collectors. **The TOKEN row's value is still in the table, still plaintext, still discoverable via `SELECT * FROM token`.** There is NO housekeeping job removing TOKEN rows orphaned by collector soft-delete; the row persists forever. A DB-side reader recovers historical credentials of decommissioned collectors as well as live ones. An operator-side cleanup script would need `DELETE FROM token WHERE id NOT IN (SELECT token_id FROM collector WHERE deleted_at IS NULL)`. No housekeeping job, no test, no doc-side caveat.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveCollectorRepositoryOrphanedTokenAfterSoftDeleteTest.java"
+  name: "collectorSoftDelete_leavesOrphanedTokenRow_pinsRetentionGap"
+evidence:
+  - "ReactiveCollectorRepositoryImpl.md says (bugs_limitations_corner_cases.[1]): 'Soft-deleted collector's TOKEN row is NOT cleaned up — the TOKEN table has no soft-delete column. When a Collector is soft-deleted, the FK reference collector.token_id remains pointing at a TOKEN row that is now orphaned. The TOKEN row's value is still in the table, still plaintext, still discoverable.' severity: MEDIUM"
+  - "ReactiveAbstractSoftDeleteCRUDRepository.java:50-58 (the soft-delete UPDATE)"
+  - "V0_0_28__add_token.sql:1-9 (no soft-delete column on TOKEN)"
+  - "V0_0_33__add_token_constraints.sql:1 (partial unique index scoped to deleted_at IS NULL — allows soft-deleted to share token_id)"
+cross_references:
+  - "TEST-GAP-660 (Collector plaintext token at-rest — the broader threat-model pin)"
+  - "F-010 (P-08:F-002 Housekeeping TTL Enforcement) — coverage gap: no TOKEN cleanup job"
+  - "F-020 (P-08:F-004 Collector Lifecycle Management)"
+  - "REFACTOR-NNN candidate: introduce OrphanedTokenHousekeepingJob — DELETE FROM token WHERE id NOT IN (SELECT token_id FROM collector WHERE deleted_at IS NULL)"
+proposed_action: |-
+  Testcontainers integration test. (a) Create a Collector via the service. Note the assigned token_id. (b) Soft-delete via `CollectorServiceImpl.delete(collectorId)`. (c) Query: `SELECT * FROM token WHERE id = ?token_id`. Assert: the row still exists with `value` populated (plaintext). (d) Query: `SELECT * FROM collector WHERE id = ?collectorId`. Assert: `deleted_at IS NOT NULL`. (e) Query: `SELECT EXISTS(SELECT 1 FROM token t LEFT JOIN collector c ON c.token_id = t.id AND c.deleted_at IS NULL WHERE t.id = ?token_id AND c.id IS NULL)`. Assert: TRUE (the orphan exists). (f) Pin the retention gap: `// REGRESSION-PIN — Soft-deleting a Collector leaves the TOKEN row indefinitely. REFACTOR-NNN will introduce OrphanedTokenHousekeepingJob; this test flips to assert the orphan is DELETEd within one housekeeping cycle.`
+related_features: [F-010, F-020]
+related_pillar_features: ["P-08:F-002", "P-08:F-004"]
+batch: 2026-05-20-R
+feature_id: F-020

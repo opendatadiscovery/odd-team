@@ -8,6 +8,9 @@ drift_class_summary:
 - cross_tenant_alert_creation
 - no_idempotency_no_audit
 - alerting_doc_supersede_2026_05_20_was_404_now_200
+- activity_event_doc_drift_27_enum_values_in_code_vs_20_in_live_docs
+- alert_received_activity_events_persist_via_batch_save_path
+- alert_activity_partial_commit_under_partition_rotation
 batch_extensions:
 - batch: P
   entry_point_added: |-
@@ -92,6 +95,80 @@ batch_extensions:
     secondary facets are non-headline but represent the architectural
     DTO-shape coupling between AlertManagerController and the wire
     format.
+- batch: R
+  entry_point_added: |-
+    repository-tier:ReactiveActivityRepositoryImpl — the SQL bridge
+    between AlertServiceImpl's alert-receive emissions and the audit
+    surface. The repository sidecar surfaces three load-bearing
+    AlertManager-cross-pillar facets at the SQL layer:
+    (a) AlertServiceImpl.java:252,258,318,324 issue
+    `activityService.createActivityEvents(...).systemEvent(true)` for
+    OPEN_ALERT_RECEIVED, RESOLVED_ALERT_RECEIVED, and ALERT_STATUS_UPDATED
+    — those flows reach this repository via the `save(List<ActivityPojo>)`
+    batch path (line 57-71). The write side for F-007's audit-trail
+    contribution is HERE, not in AlertServiceImpl — the alert-received
+    events DO write to the activity table via the `is_system_event=true`
+    discriminator (V0_0_48__add_activity.sql:8).
+    (b) The activity-feed live doc lists 20 event types in 6 groups;
+    code's ActivityEventTypeDto.java:3-31 declares 27 values. Seven
+    are undocumented — including the three ALERT-* types
+    (OPEN_ALERT_RECEIVED / RESOLVED_ALERT_RECEIVED / ALERT_STATUS_UPDATED).
+    The webhook-driven alert flow surfaces in operator UIs as
+    `is_system_event=true` activity rows; the doc says nothing about
+    the system-event subset. Cross-link: doc page lists 'Auto-resolved
+    alert events' verbatim per ReactiveActivityRepositoryImpl
+    docs_link_semantic[0] fetched_excerpts but does NOT enumerate the
+    27-vs-20 enum drift.
+    (c) Partial-commit on batch `save(List<ActivityPojo>)` leaves
+    audit gaps — repository line 62-70 dispatches to
+    `executeInPartition` which chunks at 1000 rows + reduces via
+    `.zipWith(Integer::sum)` with NO transaction wrap; a large alert
+    batch arriving at midnight (partition rotation boundary) could
+    produce a partial commit with N/2 alerts missing from the audit.
+    No compensating delete. AlertServiceImpl's batch alert flows
+    (line 252-258, 318-324) are the most exposed.
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+  notes: |-
+    Three new drift facets surface from the activity-repository
+    primary source, all elaborating the audit-trail contribution of
+    F-007's alert-received flows:
+    (1) ACTIVITY EVENT DOC DRIFT 27-VS-20 (MEDIUM, doc-class) —
+    ActivityEventTypeDto.java:3-31 has 27 values; the activity-feed
+    live doc (WebFetched 2026-05-20 status 200) lists 20 in 6 groups.
+    Seven undocumented: DATA_ENTITY_OVERVIEW_UPDATED,
+    DATA_ENTITY_METADATA_UPDATED, DATA_ENTITY_SCHEMA_UPDATED,
+    DATA_ENTITY_RELATION_UPDATED, CUSTOM_METADATA_CREATED,
+    CUSTOM_METADATA_UPDATED, CUSTOM_METADATA_DELETED. F-007's three
+    ALERT-* event types ARE documented at the activity feed page
+    (under 'Alerts' grouping); the GAP is at the data-entity
+    lifecycle + custom-metadata side. Filed as DOC-GAP-NNN candidate
+    (deferred to doc-gap-finder).
+    (2) ALERT-RECEIVED PERSISTENCE PRIMARY-SOURCE (LOW, positive
+    case-law) — AlertServiceImpl.java:252,258,318,324 → save batch
+    path → ReactiveActivityRepositoryImpl line 57-71 → INSERT with
+    `is_system_event=true` (the schema column at V0_0_48:8). Despite
+    F-007's `no_idempotency_no_audit` headline for the AlertManager
+    PAYLOAD itself, the DOWNSTREAM activity-event audit DOES happen
+    via this batch path. The audit gap is at the WEBHOOK INGRESS
+    (no log line of WHO POSTed the payload), not at the alert-state
+    transition (OPEN/RESOLVED/STATUS_UPDATED are audited).
+    (3) ALERT ACTIVITY PARTIAL-COMMIT UNDER PARTITION ROTATION (MEDIUM)
+    — repository line 62-70 has no transaction wrap on the
+    `executeInPartition` batch INSERT. A large alert batch arriving
+    at midnight rotation boundary could produce a partial commit
+    with N/2 alerts missing from the audit. AlertServiceImpl's batch
+    flows (line 252-258 OPEN_ALERT_RECEIVED + 318-324 RESOLVED) are
+    the most exposed. Practical impact: an attacker triggering a
+    high-volume AlertManager payload exactly at partition rotation
+    could hide a subset of alert-events from the audit. Cross-link
+    to F-010 partition-management coupling (the partition-rotation
+    cron's failure mode is the trigger).
+    Coherence: STRENGTHENS F-007's existing `no_idempotency_no_audit`
+    drift_class with a refinement (the WEBHOOK INGRESS is unaudited;
+    the resulting alert-state-transitions ARE audited via the
+    activity-feed batch save path). NO contradictions surfaced.
+    NO supersedes.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: AlertManager webhook ingestion — ungated cross-tenant alert creation
@@ -158,6 +235,7 @@ contributing_nodes:
 - odd-platform java AlertManagerController controller-method:postAlerts
 - odd-platform java AlertServiceImpl
 - odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
 chain:
 - hop: 1
   node: odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController

@@ -1,0 +1,254 @@
+name: dataset_field versioning-by-reference + no-soft-delete + orphan accumulation
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+- P-08
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20R** — surfaced by the
+  ReactiveDatasetFieldRepositoryImpl batch-R sidecar. The `dataset_field`
+  table follows a UNIQUE-IN-THE-PLATFORM persistence pattern:
+  versioning is by REFERENCE not by mutation, AND the table has NO
+  native soft-delete column AND no cascade-delete trigger. The result
+  is a forensically-valuable but operationally-unbounded growth pattern.
+
+  **The schema design** (V0_0_9__normalize_dataset_structure.sql:1-43):
+  V0_0_9 introduced the M:N join table `dataset_structure
+  (dataset_version_id, dataset_field_id)` AND DROPPED the
+  `dataset_field.dataset_version_id` FK + column. After V0_0_9, a
+  dataset_field row is SHARED by every dataset_version that contains
+  it; a column's evolution is recorded by CREATING NEW dataset_field
+  rows when the structure-hash diverges, NOT by mutating one
+  dataset_field row across versions. The decision is encoded in the
+  service layer's hash-diff partition at
+  `DatasetFieldServiceImpl.java:375-396` — when `newVersionHash.equals(
+  existingVersionHash)`, the field goes into `fieldsToUpdate` (the
+  existing row's id is reused); when not equal, the field goes into
+  `fieldsToCreate` as a NEW row.
+
+  **The no-soft-delete posture** (verified across V0_0_1__init.sql:148-164
+  plus all subsequent ALTER TABLE dataset_field migrations): no
+  `deleted_at`, no `is_deleted`, no `STATUS`. The repository's
+  inherited `delete(id)` / `delete(ids)` from
+  ReactiveAbstractCRUDRepository.java:144-155 issue HARD DELETE.
+  But NO CALLER IN THE PLATFORM INVOKES THEM. There is also no
+  scheduled orphan-cleanup job (verified: no `*housekeeping*` bean
+  referencing `DATASET_FIELD`).
+
+  **Orphan accumulation**: schema-change forks leave the OLD
+  dataset_field row in place, still referenced by the OLD
+  dataset_structure row + the OLD dataset_version row. Over many
+  ingestion cycles on a churning dataset, the `dataset_field` table
+  grows monotonically. PG row count for a heavily-evolving dataset can
+  be substantially larger than the current column count ×
+  ingestion-versions kept. NO RETENTION POLICY, NO TTL, NO ADMIN
+  ENDPOINT TO PURGE.
+
+  **Operator-curated metadata is preserved across version forks**
+  (DatasetFieldServiceImpl.java:308-322 + 324-335 + 352-373) — when
+  a hash-diff causes a NEW dataset_field row, the previous row's
+  `internalName` + `internalDescription` + INTERNAL-origin tags +
+  INTERNAL enum values are COPIED forward to the new row. The
+  forward-copy preserves the operator's stewardship investment
+  across schema evolution; the trade-off is the orphan row remains
+  referenced by the prior dataset_version.
+
+  **The hash factors** (per DatasetVersionHashCalculator): `name`,
+  `type`, `is_key`, `is_value`, `is_primary_key`, `is_sort_key`,
+  `external_description`. A rename (`name` change), type change, or
+  PK/sort-key flag flip CREATES a new dataset_field row; a
+  stats-only update REUSES the existing row.
+
+  **The orphan growth rate is data-dependent**: a stable schema
+  produces minimal orphans (only ingestion-tier `external_description`
+  drift causes refreshes). A volatile schema (e.g. a dataset with
+  weekly column renames or PK changes) accumulates one new
+  dataset_field row PER COLUMN PER CHANGE. A 100-column dataset with
+  monthly type changes across 5 years yields 6,000+ dataset_field
+  rows for what is logically 100 columns.
+
+  **Authorization is parent-scoped, not field-scoped**: the
+  `DatasetFieldResourceExtractor.java:21-27` resolver runs
+  `getDataEntityIdByDatasetFieldId` (this repository's lines 115-125)
+  on EVERY request to `/api/datasetfields/{id}/...` (5 routes). The
+  3-table join chain (dataset_field → dataset_structure → dataset_version
+  → data_entity) executes BEFORE the controller method runs. With
+  orphan dataset_field rows accumulating, the join chain remains
+  correct (it resolves to the parent data_entity via the OLD
+  dataset_version), but it ADDS one extra DB round-trip per request
+  for every dataset_field-targeted endpoint.
+
+  **Term-back-link enumeration is read-collaborative** (listByTerm
+  at lines 141-204): given a term id, returns every dataset_field
+  linked to the term across all data entities — with NO owner-scoping,
+  NO `EXCLUDE_FROM_SEARCH` filter, NO `STATUS != DELETED` filter on
+  the parent DataEntity. A field on a soft-deleted DataEntity
+  (STATUS=DELETED) still appears in `listByTerm` results. The orphan
+  dataset_field rows referenced only by historical dataset_versions
+  ALSO appear if linked to a term (the M:N join `DATASET_FIELD_TO_TERM`
+  has no version-scoping).
+
+  **Pair with the three-soft-delete-mechanisms invariant**: this
+  invariant captures the FIFTH distinct deletion pattern in the
+  platform's persistence layer — neither (deleted_at) nor (is_deleted)
+  nor (STATUS) nor (HARD-DELETE-on-relationship-edges) applies.
+  `dataset_field` has NO own deletion semantic; its lifecycle is
+  WHOLLY DRIVEN by the dataset_structure M:N edges, which are also
+  not cleaned up. The platform's persistence-layer deletion shape
+  is now 5-mechanism × ≥9-site primary-source confirmed.
+nodes:
+- odd-platform java repository reactive repository:ReactiveDatasetFieldRepositoryImpl
+contributors:
+- |-
+  ReactiveDatasetFieldRepositoryImpl batch R (PRIMARY SOURCE):
+  concepts.invariants.[0] (dataset_field has NO native soft-delete
+  column — verified by V0_0_1 + every subsequent ALTER TABLE; the
+  inherited delete(id) issues HARD DELETE but no caller invokes them) +
+  concepts.invariants.[1] (version-aware identity — a dataset_field
+  row is SHARED across every dataset_version that contains it;
+  V0_0_9 dropped the dataset_version_id FK) +
+  concepts.invariants.[2] (hash-diff partition: identical hash →
+  UPDATE in place; differing hash → INSERT new row) +
+  concepts.invariants.[3] (internal-name + internal-description are
+  CALLER-curated; preserved across version forks via the forward-copy
+  at DatasetFieldServiceImpl.java:308-322) +
+  bugs_limitations_corner_cases.[0] (HARD DELETE inherited but no
+  caller; NO scheduled orphan-cleanup job; schema-change forks leave
+  OLD rows in place; the table grows monotonically; NO RETENTION
+  POLICY, NO TTL, NO ADMIN ENDPOINT TO PURGE; MEDIUM severity) +
+  implicit_adrs.[0] (Dataset_field rows are versioned by reference,
+  not by mutation — a column's evolution is captured by NEW rows
+  and NEW dataset_structure links, not by UPDATEs to the existing
+  row) +
+  implicit_adrs.[1] (Operator-curated metadata is preserved across
+  dataset-version forks — the forward-copy behaviour is non-obvious
+  and undocumented at the doc-site) +
+  implicit_adrs.[3] (`listByTerm` is read-collaborative — no
+  owner-scoping at JOIN time)
+evidence:
+- |-
+  ReactiveDatasetFieldRepositoryImpl.md:concepts.invariants.[0-3] +
+  bugs_limitations_corner_cases.[0] + implicit_adrs.[0-1,3] (PRIMARY
+  SOURCE — MEDIUM severity at the orphan accumulation surface; HIGH
+  severity at the forensic / operational reasoning gap) — evidence:
+    V0_0_1__init.sql:148-164 (the original dataset_field schema —
+      no deleted_at, no is_deleted, no STATUS) +
+    V0_0_9__normalize_dataset_structure.sql:1-43 (the load-bearing
+      migration: introduces dataset_structure M:N; drops
+      dataset_field.dataset_version_id FK + column) +
+    ReactiveAbstractCRUDRepository.java:144-155 (the inherited
+      HARD-DELETE — no caller invokes for dataset_field) +
+    DatasetFieldServiceImpl.java:375-396 (the hash-diff partition
+      between fieldsToUpdate and fieldsToCreate) +
+    DatasetFieldServiceImpl.java:308-322 (the forward-copy of
+      operator-curated metadata to new rows) +
+    DatasetFieldServiceImpl.java:324-335 (copyRelationsForNewDatasetFields
+      — copies INTERNAL tags + INTERNAL enum values forward)
+- |-
+  ReactiveDatasetFieldRepositoryImpl.md:concepts.invariants.[5]
+  (listByTerm cross-owner read; the orphan rows are also enumerable
+  via term back-links — the read-collaborative posture compounds
+  with the orphan accumulation surface)
+axes_present:
+- repositories_reactive
+- schema_migrations
+- services
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: operational-and-correctness
+mitigations_unimplemented:
+- |-
+  Add a housekeeping job removing orphan dataset_field rows.
+  The query: identify dataset_field rows whose `id NOT IN (SELECT
+  dataset_field_id FROM dataset_structure)` (rows no longer
+  referenced by ANY dataset_version) — these are SAFELY DELETABLE.
+  Run on the existing 15-minute housekeeping cycle behind a
+  configurable TTL (e.g. `housekeeping.ttl.dataset_field_orphan_days`).
+- |-
+  Add a TTL-based housekeeping job removing dataset_field rows that
+  are referenced ONLY by old dataset_version rows (where
+  dataset_version.created_at older than TTL). Requires schema
+  decisions: what TTL? Retain N most recent versions? Retain by
+  data_entity creation date? The decision shape is the same as
+  the F-010 housekeeping cascade-delete.
+- |-
+  Add an admin endpoint `POST /api/admin/housekeeping/dataset_field_orphans`
+  (gated by ADMIN role) that runs the orphan-cleanup query on demand.
+  Useful for operators with high-churn datasets who want to bound
+  the growth without waiting for scheduled housekeeping.
+- |-
+  Document the version-aware identity model on the dataset schema-diff
+  live page — operators reading the schema-diff feature should
+  understand that a column rename produces an orphan dataset_field
+  row referenced only by historical dataset_versions; the operator-
+  curated internal name + description are preserved forward but the
+  data row remains in PG.
+- |-
+  Document the forward-copy invariant for operator-curated metadata.
+  Today this is INVISIBLE to operators — they edit
+  `internalDescription` on a column; the column is later renamed (a
+  schema change creates a new dataset_field row); the operator's
+  stewardship investment is silently preserved. The platform DOES
+  the right thing; the operator-facing docs should say so.
+- |-
+  Add the regression test from the test-coverage proposal:
+    Three dataset_versions, each with the same column oddrn but
+    different hashes (rename + type change + flag-flip);
+    assert `getLastVersionDatasetFieldsByOddrns` returns the
+    CURRENT row (max version), and that the orphan rows persist
+    in PG.
+notes: |-
+  This is a UNIQUE deletion-pattern in the platform — the FIFTH
+  distinct mechanism after V0_0_64's convergence on
+  (deleted_at + partial-unique-index). The other four mechanisms are
+  documented at the `three-soft-delete-mechanisms-across-the-repository-layer`
+  invariant; this concept adds the FIFTH: no-deletion-at-all-with-
+  M:N-edge-based-lifecycle.
+
+  **Why the design is correct despite the growth concern**: the
+  versioning-by-reference pattern preserves the dataset's schema
+  history. If a future analyst needs to reproduce a query that ran
+  against the dataset 18 months ago when column 'foo' was an INTEGER
+  but is now a STRING, the historical dataset_field row + the
+  historical dataset_version row + the historical dataset_structure
+  link are ALL preserved. The schema-history feature surfaces the
+  Δ via Dataset schema-diff (P-01 sub-feature).
+
+  **Why the growth concern is real**: deployments with high schema
+  churn accumulate dataset_field rows at a rate proportional to
+  (number of columns) × (number of ingestion cycles where a column
+  changed). Postgres planner overhead grows with table size; the
+  3-table authorization join chain runs on every dataset_field-targeted
+  request; the term back-link enumeration includes orphan rows.
+
+  Cross-cutting connections:
+    - Pairs with the three-soft-delete-mechanisms invariant — this
+      concept is the FIFTH mechanism not previously catalogued
+    - Pairs with the activity-table-partitioning invariant — both
+      surface unbounded growth concerns; the activity table has
+      partition-creation but no DROP; the dataset_field table has
+      neither (no partitioning either)
+    - Pairs with the read-collaborative-cross-owner-enumeration
+      invariant — the listByTerm enumeration includes orphan
+      dataset_field rows AND soft-deleted-parent data entities,
+      compounding the cross-owner exposure surface
+    - Pairs with the retention-claim-vs-code-drift invariant — the
+      pattern of "schema author chose an architecture with no
+      cleanup path" repeats at multiple sites; this is another
+      instance the docs do not flag
+    - Pairs with the F-006 audit-silence schema-rooted invariant
+      — both are schema-layer architectural decisions that constrain
+      future remediation options
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Document the version-aware identity model + the orphan row
+        consequence on the dataset schema-diff live page (P-01
+        sub-feature)
+    (b) Document the operator-curated metadata forward-copy invariant
+        on the per-column UI surface (operators editing
+        internalDescription deserve to know their work is
+        preserved across schema evolution)
+    (c) Document the absence of dataset_field retention / cleanup on
+        an operations runbook page — multi-year deployments need to
+        plan PG storage growth or commit to the housekeeping job

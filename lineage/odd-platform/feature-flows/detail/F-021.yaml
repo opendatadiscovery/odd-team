@@ -1,0 +1,631 @@
+feature_id: F-021
+pillar_id: P-07
+pillar_anchored_id: P-07:F-004
+pillar_anchored_feature_name: Activity Feed (Audit-Trail Surface)
+feature_name: Activity Feed — global page + per-entity tab — cross-owner audit-trail read with provider-agnostic actor resolution
+primary_drift_class: audit_data_entity_scoped_schema_root_cause
+drift_class_summary:
+- audit_data_entity_scoped_schema_root_cause
+- activity_table_monotonic_growth_no_delete_path
+- read_default_cross_owner_my_objects_axis_mismatch
+- provider_agnostic_actor_resolution_cross_mode_bleed
+- anonymous_mutation_attribution_gap_disabled_mode_null_created_by
+- cursor_pagination_truncate_to_second_skip_under_high_write_rate
+- batch_save_partial_commit_under_partition_rotation
+- inner_join_to_data_entity_hardelete_history_erasure
+- no_distinct_multi_facet_filter_duplicates
+- doc_drift_27_enum_values_in_code_vs_20_in_live_docs
+- doc_silence_on_cross_owner_default_read
+- doc_silence_on_schema_rooted_audit_scope
+- jsonb_old_new_state_leaks_user_supplied_content_to_any_authenticated_reader
+cross_pillar_relationships:
+- pillar: P-01
+  kind: feeds
+  via: |-
+    The Activity Feed surfaces lifecycle events on Data Entities to the
+    Data Discovery pillar — every DATA_ENTITY_CREATED / DESCRIPTION_UPDATED
+    / BUSINESS_NAME_UPDATED / etc activity row is visible on the entity
+    detail page's Activity tab AND on the global Activity Feed page.
+    The READ DEFAULT is cross-owner (every authenticated user sees every
+    data entity's activity); only MY_OBJECTS is owner-scoped, and that
+    along OWNERSHIP not USER_OWNER_MAPPING.
+- pillar: P-07
+  kind: siblings
+  via: |-
+    Sibling sub-feature within the Active Platform Features pillar —
+    distinct from F-007 (AlertManager Integration) which is the ingress
+    surface for alert payloads, F-009 (WAL-driven Notification Delivery)
+    which is the outbound communication surface, and F-014 (Per-Entity
+    Alert View) which is the alert-history read surface. Activity Feed
+    is the change-history read surface; alert-events surface here via
+    AlertServiceImpl batch write path with `is_system_event=true`.
+- pillar: P-08
+  kind: feeds
+  via: |-
+    Operationally coupled to Housekeeping (F-010) — the
+    ActivityEmptyPartitionsHousekeepingJob (the FOURTH job in F-010's
+    enumerated set) drops EMPTY past partitions of the activity table.
+    Non-empty partitions never drop; the activity table grows
+    monotonically. F-010 batch-R confirms this at SQL primary source.
+- pillar: P-09
+  kind: shares_data_with
+  via: |-
+    Activity Feed is the audit-trail consumer of Principal-to-Owner
+    Resolution (F-011) — every read path LEFT JOINs USER_OWNER_MAPPING
+    by OIDC_USERNAME without provider qualifier. F-011 batch-R adds the
+    activity-side primary source for the cross-mode bleed pattern.
+    Audit-silence on RBAC mutations (F-006 family) is rooted in this
+    feature's schema (activity.data_entity_id NOT NULL FK).
+batch_origin: R
+created_in_batch: R
+discovered_from_entry_point: rest:GET /api/activity (+ per-entity tab GET /api/activity?data_entity_id={id})
+contributing_nodes:
+- odd-platform java ActivityController controller-method:getActivity (referenced from batch A primary-source)
+- odd-platform java service service:ActivityServiceImpl (referenced from batch A primary-source)
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+- odd-platform java ActivityTablePartitionManager (referenced from batch K primary-source)
+- odd-platform java ActivityEmptyPartitionsHousekeepingJob (referenced from F-010 batch K)
+- odd-platform java ActivityIngestionRequestProcessor (referenced via repository upstream_callers)
+- odd-platform java service service:AlertServiceImpl (the system-event write-path caller)
+description: |-
+  The Activity Feed is the audit-trail consumer surface of the platform
+  — the user-observable history of data-entity-scoped lifecycle and
+  metadata-edit events. The feed manifests as TWO UI surfaces: the
+  global Activity Feed page (`/activity` route, 7 filter facets per
+  the live doc — Calendar / datasource / namespace / event type /
+  tags / owners / users) AND the per-entity Activity tab on every
+  Data Entity detail page. Cursor-paginated by
+  `(created_at SECOND-truncated, id)` tuples newest-first;
+  size-bounded only by caller-supplied size with no clamping at any
+  layer.
+
+  The user-observable promise (per the live `features/active-platform-features/activity-feed`
+  page, WebFetched 2026-05-20 status 200): "Activity Feed records
+  changes to data entities — description edits, ownership changes,
+  tag and term assignments, custom-metadata edits, and alert lifecycle
+  events. Filter by event type, owner, user, tag, or date range."
+  The page enumerates 20 event types in 6 groups (data-entity
+  lifecycle / ownership / tags-and-terms / dataset-fields / DEGs /
+  alerts).
+
+  The user-observable reality, per batch-R primary-source code-walk
+  of `ReactiveActivityRepositoryImpl` + cross-references to
+  ActivityServiceImpl batch A + AlertServiceImpl batch I + the V0_0_48
+  migration: the feed is STRUCTURALLY SCOPED to data-entity events
+  ONLY. The `activity.data_entity_id` column is NOT NULL with FK to
+  `data_entity(id)` (V0_0_48__add_activity.sql:4,12) — RBAC mutations
+  (Role / Policy / Owner CRUD), Datasource registration, Collector
+  token rotation, integration-wizard config changes CANNOT physically
+  emit to this table even if a future @ActivityLog annotation were
+  added. The doc's framing ("records changes") implicitly suggests
+  platform-wide audit; the reality is data-entity-scoped audit. The
+  audit-silence-on-RBAC pattern observed across batches F/H/N/P/Q/R
+  on F-006 is rooted in THIS feature's schema.
+
+  Additionally: the read default is CROSS-OWNER (every authenticated
+  caller sees every data entity's activity); only the `MY_OBJECTS`
+  type parameter is owner-scoped, and that scoping is along the
+  OBJECT-OWNERSHIP axis (entities the caller owns) NOT the ACTOR
+  axis (activity the caller performed). Code's 27 ActivityEventTypeDto
+  enum values vs the live doc's 20 — seven event types undocumented.
+  Anonymous mutations under `auth.type=DISABLED` write
+  `created_by=null` and surface visually indistinguishable from
+  system events. The provider-agnostic LEFT JOIN to
+  `USER_OWNER_MAPPING ON OIDC_USERNAME` (four read paths) is the
+  read-side mirror of F-011's cross-mode-bleed pattern.
+chain:
+- hop: 1
+  node: odd-platform java ActivityController controller-method:getActivity
+  sidecar: '(referenced from batch A primary-source — controller falls through to .authenticated())'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ActivityController.getActivity — REST entry-point at
+    `GET /api/activity`. NO @PreAuthorize. NO entry in
+    SecurityConstants.SECURITY_RULES; falls through to
+    AuthorizationCustomizer's catch-all
+    `pathMatchers("/**").authenticated()`. Under `auth.type=DISABLED`
+    the gate is `.permitAll()` — anonymous reads of the global feed.
+  unresolved: false
+- hop: 2
+  node: odd-platform java service service:ActivityServiceImpl
+  sidecar: '(referenced from batch A primary-source)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ActivityServiceImpl.fetchAllActivities / .fetchMyActivities /
+    .fetchDependentActivities / .getDataEntityActivityList delegate
+    to repository methods. For MY_OBJECTS path, lines 184-199 resolve
+    the caller's Owner id via `fetchAssociatedOwner()` (the F-011
+    chokepoint) and pass `currentOwnerId` to `findMyActivities`.
+    For ALL / UPSTREAM / DOWNSTREAM / per-entity paths, NO
+    principal-derived predicate.
+  unresolved: false
+- hop: 3
+  node: odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+  sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveActivityRepositoryImpl lines 73-89 (findAllActivities),
+    91-107 (findMyActivities), 109-126 (findDependentActivities),
+    128-145 (findDataEntityActivities). Every read path INNER JOIN
+    to DATA_ENTITY at line 219 + LEFT JOIN to USER_OWNER_MAPPING by
+    OIDC_USERNAME only (lines 157-158, 178-179, 199-200, 221-222 —
+    NO provider qualifier). Cursor pagination via
+    `row(trunc(ACTIVITY.CREATED_AT, DatePart.SECOND), ACTIVITY.ID).lessThan(...)`
+    at line 287-288 with full-precision ORDER BY at line 290-291.
+    For findMyActivities, the `currentOwnerId` filter is
+    `OWNERSHIP.OWNER_ID.in(ownerIds)` (line 270) — the OBJECT side,
+    NOT `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` (line 273 — the
+    ACTOR side, only added when caller passes `userIds` explicitly).
+    INNER JOIN to DATA_ENTITY at line 219 means a HARD-deleted
+    data_entity removes the audit row from reads.
+  unresolved: false
+- hop: 4-write-side
+  node: odd-platform java ActivityServiceImpl write-funnel
+  sidecar: '(referenced from repository.coupling — single write funnel for all @ActivityLog and system-event paths)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    `ActivityServiceImpl.createActivityEvent` (saveReturning, line 50)
+    and `createActivityEvents` (save, line 62) are the WRITE FUNNEL
+    for all 18 `@ActivityLog`-annotated service methods (across
+    DataEntityServiceImpl, OwnershipServiceImpl, TermServiceImpl,
+    DatasetFieldServiceImpl, etc) PLUS the ingestion-FINALIZING-phase
+    ActivityIngestionRequestProcessor (line 51-53,
+    `DATA_ENTITY_CREATED` system events) PLUS
+    AlertServiceImpl.changeAlertStatus + .resolveAutomatically
+    (OPEN/RESOLVED_ALERT_RECEIVED + ALERT_STATUS_UPDATED, lines
+    252,258,318,324). Anonymous mutations and ingestion-system-events
+    write `created_by=null` (ActivityServiceImpl.java:47-49 — the
+    `switchIfEmpty(Mono.defer(...))` fallback).
+  unresolved: false
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    200 OK with paginated ActivityList payload (id, event_type, JSONB
+    old_state, JSONB new_state, is_system_event, created_at,
+    OwnerPojo (nullable — actor resolution), data_entity ref) for
+    a caller-chosen filter combination. Cross-owner default for ALL
+    / UPSTREAM / DOWNSTREAM / per-entity types; owner-scoped along
+    OBJECT axis for MY_OBJECTS type.
+  evidence: |-
+    ReactiveActivityRepositoryImpl lines 290-292 (where + orderBy +
+    limit, no DISTINCT) + ActivityServiceImpl mapping at lines
+    181/197/215 + ActivityController response binding (per batch A
+    sidecar).
+  cardinality_per_call: |-
+    1 to `size` rows per request bounded only by caller-supplied
+    size (no minimum / maximum / clamping at any layer; same
+    unbounded-pagination shape as F-014).
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+  - facet: audit data-entity-scoped — schema root cause
+    observed: |-
+      `activity.data_entity_id` is NOT NULL with FK to `data_entity(id)`
+      (V0_0_48__add_activity.sql:4,12). The audit table CANNOT
+      physically store an event that lacks a data-entity reference.
+      RBAC mutations (Role/Policy/Owner CRUD), Datasource registration,
+      Collector token rotation, integration-wizard changes — NONE
+      can emit to this table even if a future @ActivityLog were
+      added. Implicit ADR: the activity table is the 'data-entity
+      audit log', not the 'platform audit log'.
+    expected: |-
+      A maintainer reading the live activity-feed doc ('records
+      changes to data entities') would reasonably interpret this as
+      the audit-of-record for the platform. Operators auditing
+      'who created admin role X' / 'who deleted owner Y' / 'who
+      registered datasource Z' find no audit surface in the activity
+      feed; raw application logs (which may not exist in production,
+      may not be retained) are the only fallback.
+    drift_class: audit_data_entity_scoped_schema_root_cause
+    provenance: |-
+      PRIMARY-SOURCE — ReactiveActivityRepositoryImpl batch R
+      implicit_adrs[0] + V0_0_48__add_activity.sql:4,12 + repository
+      line 219 (INNER JOIN to DATA_ENTITY in every read path).
+      Severity: HIGH (forensic-coverage class). Cross-link to F-006
+      `audit_silence_schema_rooted_activity_data_entity_fk_not_null`
+      drift facet (batch R extension on F-006).
+  - facet: activity table monotonic growth — no DELETE path, no non-empty-partition DROP
+    observed: |-
+      The activity table grows monotonically. Grep verified zero
+      `deleteFrom(ACTIVITY)` matches across the repository.
+      ActivityEmptyPartitionsHousekeepingJob drops EMPTY past
+      partitions only — once a partition has any activity row it
+      persists forever. A high-volume deployment (1M events/day)
+      accumulates ~365GB+/year of audit data with no recovery path
+      short of manual `DROP TABLE activity_YYYYMMDD_YYYYMMDD`. The
+      live doc's framing 'Activity-feed retention and partitioning
+      are controlled by the platform-level setting
+      `odd.activity.partition-period`' is misleading — operators
+      reasonably assume rows age out.
+    expected: |-
+      Either (a) row-level DELETE pathway driven by a
+      `housekeeping.ttl.activity_days` TTL config (parallel to
+      `resolved_alerts_days` and `search_facets_days`), OR (b)
+      explicit doc text stating 'activity table grows monotonically;
+      no DELETE path; operators must manually drop non-empty
+      partitions to reclaim space'.
+    drift_class: activity_table_monotonic_growth_no_delete_path
+    provenance: |-
+      PRIMARY-SOURCE — repository file 1-310 + grep verified zero
+      `deleteFrom(ACTIVITY)` matches + ActivityEmptyPartitionsHousekeepingJob.java:9-17.
+      Severity: HIGH (silent-data-growth class). Cross-link to
+      F-010 batch-R extension.
+  - facet: read default cross-owner; MY_OBJECTS axis-mismatch
+    observed: |-
+      `findAllActivities`, `findDependentActivities`,
+      `findDataEntityActivities` carry NO current-user predicate
+      at the SQL layer. The default Activity Feed view is cross-owner
+      — every authenticated user sees every data entity's activity.
+      `findMyActivities` is owner-scoped along the OBJECT axis
+      (`OWNERSHIP.OWNER_ID.in(currentOwnerIds)` line 270) — meaning
+      'changes to entities I own', NOT 'changes I performed'. A
+      user with no ownership attachments who has made platform
+      changes sees their own changes ONLY by passing themselves
+      explicitly via `userIds`, not via the `MY_OBJECTS` type
+      parameter.
+    expected: |-
+      Either documented as 'My view shows changes to entities you
+      own, not changes you performed; use the User filter to find
+      your own actions' — OR `MY_OBJECTS` redesigned to query along
+      the actor axis via USER_OWNER_MAPPING.OWNER_ID.
+    drift_class: read_default_cross_owner_my_objects_axis_mismatch
+    provenance: |-
+      PRIMARY-SOURCE — repository lines 73-89 + 91-107 + 264-275
+      + ActivityServiceImpl.java:184-199. Severity: MEDIUM
+      (semantics gap — confused operators under-detect their own
+      past changes). Cross-link to read-collaborative posture
+      concept (`read-collaborative-posture-every-authenticated-user-enumerates-the-catalog`).
+  - facet: provider-agnostic actor resolution — cross-mode bleed read surface
+    observed: |-
+      All four read paths LEFT JOIN USER_OWNER_MAPPING by OIDC_USERNAME
+      only — provider-AGNOSTIC. Lines 157-158, 178-179, 199-200,
+      221-222 — the JOIN ON predicate explicitly names OIDC_USERNAME
+      and DELETED_AT; PROVIDER is NEVER referenced. A LOGIN_FORM
+      'alice' activity row and an LDAP 'alice' activity row resolve
+      to the SAME OwnerPojo in the UI — even if they are different
+      people. Forensic incident response over an audit feed is
+      misled.
+    expected: |-
+      Either (a) the LEFT JOIN adds `AND USER_OWNER_MAPPING.PROVIDER =
+      :activityProvider` predicate (which would require ALSO recording
+      the provider on activity row writes — a schema migration), OR
+      (b) doc-side warning naming the cross-mode bleed for multi-mode
+      deployments.
+    drift_class: provider_agnostic_actor_resolution_cross_mode_bleed
+    provenance: |-
+      PRIMARY-SOURCE — repository lines 157-158/178-179/199-200/221-222
+      (four PROVIDER-omitted joins) + ActivityServiceImpl.java:47-49
+      (the username-only write path) + V0_0_48__add_activity.sql:10
+      (no provider column on schema). Severity: HIGH
+      (forensic-integrity class). Cross-link to F-011 batch-R extension
+      and the cross-batch concept `provider-null-cross-mode-bleed`.
+  - facet: anonymous-mutation attribution gap — DISABLED mode null created_by
+    observed: |-
+      `activity.created_by` is varchar(512) NULLABLE
+      (V0_0_48__add_activity.sql:10). Anonymous mutations under
+      `auth.type=DISABLED` write `created_by=null`
+      (ActivityServiceImpl.java:47-49). The null-created_by rows
+      orphan on the USER_OWNER_MAPPING LEFT JOIN and surface in
+      the UI with OwnerPojo=null — visually INDISTINGUISHABLE from
+      'system' events. A reviewer cannot determine whether a
+      null-created_by row is an unattributed user action or a
+      missed-username on a real user. Under DISABLED-mode, the
+      anonymous mutations LOOK like system events.
+    expected: |-
+      Either (a) DISABLED-mode anonymous mutations write a
+      `'<anonymous>'` literal into `created_by` (so the
+      `created_by=null` slot is reserved for genuine system events),
+      OR (b) the UI surfaces a separate '<anonymous>' visual
+      distinguisher.
+    drift_class: anonymous_mutation_attribution_gap_disabled_mode_null_created_by
+    provenance: |-
+      PRIMARY-SOURCE — ActivityServiceImpl.java:47-49 (null-username
+      fallback) + V0_0_48__add_activity.sql:8 (is_system_event NOT
+      NULL) + DisabledAuthSecurityConfiguration.java:16 (anonymous
+      permitted). Severity: MEDIUM (auth-mode-cost class).
+      Cross-link to F-011 batch-R extension and DisabledAuth
+      caveat concept.
+  - facet: cursor pagination truncate-to-second tolerance may skip rows
+    observed: |-
+      Cursor predicate `row(trunc(ACTIVITY.CREATED_AT, DatePart.SECOND),
+      ACTIVITY.ID).lessThan(truncated, lastEventId)` (line 287-288)
+      uses a truncated-to-SECOND comparator on the LEFT side and
+      full-precision on the RIGHT side; ORDER BY uses full-precision
+      `created_at DESC, id DESC` (line 291). Under sustained
+      high-write rate (1k+ events/sec), multiple rows share the
+      same SECOND-truncation bucket — the cursor-less-than predicate
+      may skip rows that arrived in the same second as the cursor
+      anchor due to mismatched comparator/sort precision.
+    expected: |-
+      Either (a) ORDER BY also truncates to SECOND, OR (b) cursor
+      predicate uses full-precision, OR (c) explicit doc text on
+      audit-stream pagination semantics under load.
+    drift_class: cursor_pagination_truncate_to_second_skip_under_high_write_rate
+    provenance: |-
+      PRIMARY-SOURCE — repository line 285-288 + 290-291. Severity:
+      MEDIUM (forensic-integrity-under-load class). Implicit ADR
+      (per the sidecar's implicit_adrs[1]): the asymmetry is
+      intentional — accommodates client clock-skew on cursor pass-back
+      — but the audit-stream semantic implication is undocumented.
+  - facet: batch save partial-commit under partition rotation
+    observed: |-
+      `save(List<ActivityPojo>)` dispatches to executeInPartition
+      (line 62-70) which chunks at BATCH_SIZE=1000 and reduces via
+      `.zipWith(Integer::sum)`. NO transaction wrap. A failed
+      mid-batch chunk leaves prior chunks committed and surfaces
+      the error to the caller — the audit trail has 'holes' an
+      attacker triggering ingestion-side errors could exploit to
+      hide individual events. AlertServiceImpl's batch flows (line
+      252-258, 318-324) are the most exposed at midnight rotation
+      boundaries.
+    expected: |-
+      Either (a) `@ReactiveTransactional` wrap around the
+      executeInPartition reduce, OR (b) compensating-delete-on-error
+      mechanism, OR (c) explicit operator-facing log line on
+      partial-commit.
+    drift_class: batch_save_partial_commit_under_partition_rotation
+    provenance: |-
+      PRIMARY-SOURCE — repository line 62-70 + JooqReactiveOperations.java:51-67
+      + AlertServiceImpl.java:252-258, 318-324. Severity: MEDIUM
+      (forensic-completeness class). Cross-link to F-007 batch-R
+      extension.
+  - facet: INNER JOIN to DATA_ENTITY — hard-delete history erasure
+    observed: |-
+      Every read path INNER JOINs DATA_ENTITY at line 219. A
+      data_entity HARD-delete (via F-010 DataEntityHousekeepingJob
+      cascade) cascades through the FK and removes the activity
+      rows — the historical record of WHO created / edited those
+      entities disappears. Soft-delete preserves the rows (the
+      INNER JOIN still matches); hard-delete erases them. Operators
+      cleaning up old data entities also clean up the audit trail
+      explaining who created them.
+    expected: |-
+      Either (a) LEFT JOIN with NULL-handling for the data_entity
+      side (rows survive hard-delete of parent), OR (b)
+      audit-history-pre-erase warning in the housekeeping job docs,
+      OR (c) hard-delete-blocked-while-activity-exists semantic.
+    drift_class: inner_join_to_data_entity_hardelete_history_erasure
+    provenance: |-
+      PRIMARY-SOURCE — repository line 219 + F-010 sidecar
+      DataEntityHousekeepingJob. Severity: MEDIUM
+      (forensic-history-erasure class).
+  - facet: no DISTINCT — multi-facet filter produces duplicate rows
+    observed: |-
+      `buildBaseQuery` (line 208-225) issues plain
+      `DSL.select(selectFields).from(ACTIVITY).join(DATA_ENTITY)...`
+      with conditional LEFT JOINs to TAG_TO_DATA_ENTITY and OWNERSHIP
+      when those filter facets are present (line 237-242). A data
+      entity with 3 tags + 2 owners produces 6 rows from join
+      cardinality alone; SELECT returns all 6 (activity columns
+      identical, join columns differing). NO DISTINCT applied at
+      finalize (line 290-292). A `size=100` request with multi-tag
+      filter may return only 30-40 distinct activity events with
+      60-70 duplicates.
+    expected: |-
+      Either DISTINCT on (activity.*) projection, OR
+      pre-aggregated subquery for the joined facet predicates.
+    drift_class: no_distinct_multi_facet_filter_duplicates
+    provenance: |-
+      PRIMARY-SOURCE — repository line 208-225 + 237-242 + 290-292.
+      Severity: MEDIUM (results-correctness class).
+  - facet: doc drift — 27 enum values in code, 20 documented
+    observed: |-
+      `ActivityEventTypeDto.java:3-31` declares 27 values; the live
+      activity-feed page enumerates 20 in 6 groups. Seven undocumented:
+      DATA_ENTITY_OVERVIEW_UPDATED, DATA_ENTITY_METADATA_UPDATED,
+      DATA_ENTITY_SCHEMA_UPDATED, DATA_ENTITY_RELATION_UPDATED,
+      CUSTOM_METADATA_CREATED, CUSTOM_METADATA_UPDATED,
+      CUSTOM_METADATA_DELETED. Each can be emitted by ingestion or
+      metadata-handler code; operators see event_type values the
+      docs don't enumerate.
+    expected: |-
+      Live doc enumerates ALL 27 event types in the relevant groups
+      OR explicit doc text 'this list is non-exhaustive; see the
+      `ActivityEventTypeDto` enum in code for the full set'.
+    drift_class: doc_drift_27_enum_values_in_code_vs_20_in_live_docs
+    provenance: |-
+      PRIMARY-SOURCE — ActivityEventTypeDto.java:3-31 + WebFetch
+      activity-feed Event Types section (20 values enumerated).
+      Severity: MEDIUM (doc-class). Filed as DOC-GAP-NNN candidate
+      (deferred to doc-gap-finder). Cross-link to F-007 batch-R
+      same finding.
+  - facet: doc silence — cross-owner default read
+    observed: |-
+      Live doc enumerates 7 filter facets but does NOT state that
+      the default view is cross-owner (every authenticated user
+      sees activity for every data entity, regardless of ownership
+      association). The User filter is framed for 'auditing a
+      specific person's platform activity' — implicitly acknowledging
+      cross-owner reads but not stating it.
+    expected: |-
+      Doc text 'the Activity Feed default view is cross-owner —
+      every authenticated user sees the platform-wide audit. Use
+      the My-objects view to scope to entities you own.'
+    drift_class: doc_silence_on_cross_owner_default_read
+    provenance: |-
+      PRIMARY-SOURCE — repository lines 73-89 (no current-user
+      predicate) + WebFetch activity-feed Filters section. Severity:
+      MEDIUM (doc-class).
+  - facet: doc silence — schema-rooted audit scope
+    observed: |-
+      Live doc makes NO mention of the structural audit-silence: the
+      activity table's `data_entity_id` NOT NULL FK constraint
+      physically excludes RBAC / Owner CRUD / Datasource / Collector
+      mutations from the audit log. Operators reading the page will
+      reasonably assume 'every platform change is audited'. Cross-link
+      to F-006 drift_class `forensic_silence_on_rbac_mutations` and
+      the system-mission.md `Audit-log Presence Asymmetry`
+      canonicalisation candidate.
+    expected: |-
+      Doc text 'the Activity Feed is the audit log for DATA ENTITY
+      changes. Platform-administration changes (RBAC, Owner CRUD,
+      Datasource registration, Collector token rotation) are NOT
+      captured here.'
+    drift_class: doc_silence_on_schema_rooted_audit_scope
+    provenance: |-
+      PRIMARY-SOURCE — V0_0_48__add_activity.sql:4,12 + repository
+      line 219 + WebFetch activity-feed (no audit-coverage statement).
+      Severity: HIGH (doc-class; combined with the F-006 audit-silence
+      finding the operator-impact is misleading framing).
+  - facet: JSONB old_state / new_state leak user-supplied content cross-owner
+    observed: |-
+      `old_state` / `new_state` JSONB columns
+      (V0_0_48__add_activity.sql:6-7) carry user-supplied free-text
+      content for DESCRIPTION_UPDATED, BUSINESS_NAME_UPDATED,
+      internal-name edits, custom-metadata key/value pairs. The
+      repository surfaces the columns verbatim (line 305-308 maps
+      raw JSONB). NO field-level redaction at the SQL layer. PII /
+      credentials / incident-notes accidentally entered into a
+      description field BY a user with permission become readable
+      BY any authenticated user via `findAllActivities`.
+    expected: |-
+      Either (a) field-level redaction policy at the SQL or service
+      layer for designated sensitive fields, OR (b) explicit
+      operator-facing doc 'do NOT enter sensitive content into
+      description / business-name / metadata fields — those fields
+      are visible to every authenticated user via the Activity Feed'.
+    drift_class: jsonb_old_new_state_leaks_user_supplied_content_to_any_authenticated_reader
+    provenance: |-
+      PRIMARY-SOURCE — V0_0_48__add_activity.sql:6-7 + repository
+      line 290-291 + DescriptionActivityStateDto.java:3. Severity:
+      MEDIUM (data-exposure class).
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - findAllActivities cursor pagination correctness at second boundaries
+    - findMyActivities object-axis vs actor-axis distinction
+    - LEFT JOIN USER_OWNER_MAPPING by OIDC_USERNAME only (cross-mode bleed regression-pin)
+    - INNER JOIN to DATA_ENTITY excludes orphan activity rows after data_entity hard-delete
+    - 'created_by=null rendering visually indistinguishable from system events'
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'GET /api/activity smoke test — full response shape under WebTestClient'
+    - Cross-mode bleed end-to-end — LOGIN_FORM alice + LDAP alice authenticate-and-read sequence
+    - DISABLED-mode anonymous read of full feed
+    - Per-entity Activity tab smoke test under multiple ownership configurations
+    - Cursor pagination across partition rotation boundary
+    - Multi-facet filter duplicate-row regression (3 tags + 2 owners)
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'Deep-window pagination cost when partition pruning fails (function-on-column comparator bypasses index)'
+    - Activity table at 100GB+ — query latency degradation
+    - Batch save(List<ActivityPojo>) of 999/1000/1001 rows — partition boundary
+    - Activity Feed render hot path on a heavily-active dataset
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - Cross-owner enumeration via the default ALL view
+    - Cross-mode bleed forensic-integrity regression
+    - JSONB old/new_state leak via /findAllActivities for a sensitive description
+    - DISABLED-mode anonymous mutation attribution gap
+    - 27-vs-20 event-type doc drift surfaced to operators
+control_summary: |-
+  0 of 4 cells COVERED. Feature emerges from the batch-R primary-source
+  audit of `ReactiveActivityRepositoryImpl` paired with prior batch-A
+  sidecars (ActivityController.getActivity + ActivityServiceImpl) +
+  batch-K (ActivityTablePartitionManager) + F-010 (housekeeping
+  coupling) + F-006 (audit-silence schema-rooted) + F-011
+  (provider-agnostic resolution). The Activity Feed is the
+  user-observable audit-trail surface under P-07 Active Platform
+  Features — distinct from F-007 AlertManager Integration (alert
+  ingress), F-009 WAL-driven Notification Delivery (outbound
+  communication), F-014 Per-Entity Alert View (alert-history read).
+  Thirteen substantive drift facets cluster around four load-bearing
+  themes: (1) the audit scope is schema-rooted to data-entity events
+  (the F-006 audit-silence finding's structural root cause); (2)
+  the read default is cross-owner with an axis-mismatched
+  MY_OBJECTS view; (3) provider-agnostic actor resolution produces
+  cross-mode bleed (the F-011 batch-N pattern manifest end-to-end);
+  (4) operational characteristics — monotonic growth, partial-commit
+  under partition rotation, hard-delete history erasure, no DISTINCT
+  on multi-facet filters — produce subtle correctness gaps under
+  load + over time. The highest-leverage probe candidates are: (a)
+  cross-mode bleed end-to-end — configure LOGIN_FORM 'alice' +
+  LDAP 'alice' + assert activity rows from both modes resolve to
+  the same OwnerPojo on read; (b) anonymous-mutation attribution
+  gap under DISABLED — flip `auth.type=DISABLED`, mutate an entity
+  anonymously, read the Activity Feed, assert the row appears with
+  no actor distinguished from system events; (c) JSONB old_state /
+  new_state leak — submit a description containing a sensitive
+  string via PUT /api/dataentities/{id}/description, GET
+  /api/activity, assert the sensitive string appears verbatim to
+  any authenticated user; (d) 27-vs-20 doc drift — for each of the
+  7 undocumented event types, trigger the event and assert it
+  appears in the live Activity Feed without doc explanation. Local
+  docker-compose probe stack: ODD platform + Postgres + two seeded
+  Owners + multi-mode auth config + DISABLED-mode toggle.
+related_refactoring_scopes:
+- REFACTOR-024  # read-collaborative posture
+related_test_gaps:
+- TEST-GAP-NNN (ReactiveActivityRepositoryImpl cursor pagination + cross-mode-bleed + partial-commit + DISABLED-mode attribution — deferred to test-coverage-mapper)
+related_doc_gaps:
+- DOC-GAP-NNN (27-vs-20 event-type enum coverage on activity-feed page — deferred to doc-gap-finder)
+- DOC-GAP-NNN (cross-owner default read framing — deferred to doc-gap-finder)
+- DOC-GAP-NNN (schema-rooted audit scope — deferred to doc-gap-finder)
+- DOC-GAP-NNN (activity table monotonic growth — deferred to doc-gap-finder)
+related_concepts:
+- Activity Feed
+- Activity Event
+- Audit-log Presence Asymmetry (2-tier audit story)
+- Provider-Null Cross-Mode Bleed
+- Read-Collaborative Posture
+- Activity Table Partitioning
+- Housekeeping (TTL Retention)
+related_features:
+- F-006  # audit-silence schema-rooted — the activity-data-entity-fk root cause
+- F-007  # AlertManager — system-event write-path consumer
+- F-010  # Housekeeping — empty-partition drop is the sole reaper
+- F-011  # Principal-to-Owner Resolution — provider-agnostic JOIN cross-mode bleed read-side mirror
+- F-014  # Per-Entity Alert View — sibling P-07 surface
+- F-004  # Entity Description Editing — JSONB leak via old/new_state
+related_retrospectives:
+- LSN-017
+- LSN-018  # cross-mode-bleed coherence-check pattern is the relevant case-law
+related_probes: null
+probe_verifications: []
+maintainer_curated: false
+merge_candidate_with: null
+batch_origin_note: |-
+  Net-new feature minted in batch R from the
+  ReactiveActivityRepositoryImpl primary-source sidecar. Activity
+  Feed is a distinct user-observable Active Platform Features
+  sub-feature per system-mission.md P-07 ("Activity Feed (global
+  page + per-entity tab; 7 filter facets; partition-period via
+  `odd.activity.partition-period`)"). F-007 / F-009 / F-014
+  occupy P-07:F-001/F-002/F-003 — Activity Feed is the next
+  available slot at P-07:F-004. The repository sidecar
+  related_pillar_features lookahead-cited "P-07:F-003 # Activity
+  Feed sub-feature" which collides with the existing F-014
+  Per-Entity Alert View; that lookahead is reconciled by minting
+  F-021 at P-07:F-004 and updating cross-references.
+
+  Per Rule 0 evaluation: the substitution from EXTEND-F-007 to
+  MINT-F-021 is justified because (a) the Activity Feed is a
+  USER-OBSERVABLE Active Platform surface in its own right — the
+  live doc page is dedicated to it (`/features/active-platform-features/activity-feed`
+  status 200), it has its own UI route, its own controller
+  (ActivityController), its own service (ActivityServiceImpl), and
+  its own repository (this batch); (b) F-007 carries the AlertManager
+  webhook ingress contract — operators ingesting external alerts
+  is a distinct user-observable contract from operators auditing
+  data-entity changes; (c) the two share data (alert-received events
+  write to the activity table) but encode different operator
+  workflows. The cross-pillar `siblings` relationship is recorded
+  in cross_pillar_relationships.
+
+  The 13 load-bearing drift facets enumerated here close the
+  audit-trail surface comprehensively at the repository tier; future
+  batches refine via UI-tier (the Activity Feed page component, if
+  enriched) or via probe verification of the highest-leverage probe
+  candidates in `control_summary`. The batch-R related-feature
+  back-links to F-006 / F-007 / F-010 / F-011 / F-014 / F-004 are
+  recorded above; the corresponding batch-R extensions on
+  F-006/F-007/F-010/F-011/F-004 record the back-link to F-021 in
+  this batch's notes blocks.

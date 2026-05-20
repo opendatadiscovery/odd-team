@@ -7,17 +7,17 @@ source_monolith_frontmatter:
   sidecar_count: 55
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 656
+  total_test_gaps: 677
   gaps_by_criticality:
-    CRITICAL: 110
-    HIGH: 201
-    MEDIUM: 248
-    LOW: 97
+    CRITICAL: 112
+    HIGH: 207
+    MEDIUM: 258
+    LOW: 100
   gaps_by_category:
-    missing-integration: 116
-    missing-security: 177
-    missing-edge-case: 250
-    missing-unit: 75
+    missing-integration: 124
+    missing-security: 184
+    missing-edge-case: 255
+    missing-unit: 76
     sidecar-stale: 2
     missing-performance: 26
     missing-binding: 10
@@ -110,7 +110,7 @@ source_monolith_frontmatter:
   - odd-platform java repository_reactive repository:ReactiveLineageRepositoryImpl
   - odd-platform java repository_reactive repository:ReactiveOwnershipRepositoryImpl
   - odd-platform java repository_reactive repository:ReactivePolicyRepositoryImpl
-total_entries: 656
+total_entries: 677
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -11369,3 +11369,521 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-658.yaml
+- gap_id: TEST-GAP-659
+  behaviour: '**SCHEMA-ROOTED REGRESSION-PIN: the activity audit log STRUCTURALLY
+    CANNOT record RBAC / Owner / Datasource / Collector-token mutations.** This is
+    NOT a missing-annotation gap — `V0_0_48__add_activity.sql:4` declares `data_entity_id
+    bigint NOT NULL` and `V0_0_48__add_activity.sql:12` declares the FK constraint
+    `activity_data_entity_id_fk FOREIGN KEY (data_entity_id) REFERENCES data_entity
+    (id)`. Activity rows physically cannot exist without a `data_entity_id`. RBAC
+    mutations (Role.create / Role.update / Policy.create / Owner.create / Owner.delete
+    / role-to-owner attach / policy-to-role attach), Collector token rotation, Datasource
+    registration — none of these have a `data_entity` context, so they cannot emit
+    to this table even if a future `@ActivityLog` annotation were added. STRENGTHENS
+    the 4-sidecar audit-silence pattern at the REPOSITORY-SCHEMA tier with the structural
+    impossibility anchor: TEST-GAP-573 (Role-side audit-silence) + TEST-GAP-238 family
+    (Owner audit-silence) + TEST-GAP-549 (Tag ingestion audit asymmetry) all share
+    the same root cause but only this one is the SCHEMA-rooted PRIMARY-SOURCE pin.
+    The remediation requires either: (a) a separate platform-event audit surface (e.g.
+    `audit_event` table), (b) a NULLable `data_entity_id` with a discriminator, OR
+    (c) acceptance that the activity table is the "data-entity audit log" not the
+    "platform audit log" — with doc-side acknowledgement. No test currently pins this
+    invariant; a future maintainer "fixing" the audit gap by adding `@ActivityLog`
+    to RoleServiceImpl.create would discover the FK violation at runtime via an unhandled
+    DataAccessException.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-006
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-659.yaml
+- gap_id: TEST-GAP-660
+  behaviour: '**SQL-TIER PRIMARY-SOURCE: collector tokens are stored as 40-char alphanumeric
+    plaintext in `token.value varchar(40) NOT NULL`** (V0_0_28__add_token.sql:1-9)
+    with NO hashing (TokenGeneratorImpl.java:34-42 writes `RandomStringUtils.randomAlphanumeric(40)`
+    verbatim) and NO UNIQUE constraint at the SQL layer. `ReactiveCollectorRepositoryImpl.getByToken(token)`
+    (line 89-97) issues `SELECT collector.* FROM collector JOIN token ON token.id
+    = collector.token_id WHERE token.value = $1 AND collector.deleted_at IS NULL`
+    — a parameterised plaintext-equality match. This is the SQL-tier substrate consumed
+    by the ALWAYS-ON `IngestionDataSourceFilter` (IngestionDataSourceFilter.java:33,
+    no `@ConditionalOnProperty`) and the opt-in `IngestionDataEntitiesFilter` (IngestionDataEntitiesFilter.java:55-58
+    with `tokenPojo.getValue().equals(token)`). A DB-side reader (replica, backup,
+    pg_dump operator, jOOQ log leak, application log leak via DEBUG-level R2DBC bind
+    logging) recovers every live collector credential in clear text. STRENGTHENS TEST-GAP-613
+    (filter-class plaintext-equality pin) with the REPOSITORY-LAYER SQL anchor + the
+    always-on filter coupling + the storage-at-rest implication. The full plaintext-everywhere
+    chain spans (1) TokenGeneratorImpl write → (2) ReactiveTokenRepositoryImpl persistence
+    → (3) THIS repository''s SQL-layer equality match → (4) IngestionDataSourceFilter
+    always-on consumption + IngestionDataEntitiesFilter opt-in consumption. No test
+    pins the full stack; the gap is the cross-layer integration regression-pin that
+    would catch a partial fix (e.g. someone hashing at the write layer but leaving
+    the read layer to plaintext-compare, OR vice versa).'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-660.yaml
+- gap_id: TEST-GAP-661
+  behaviour: '**HIGH-impact silent failure mode on COLLECTOR-DRIVEN UPSERT: a `bulkUpdate`
+    rename to a name already held by ANOTHER live datasource rolls back the ENTIRE
+    transaction** including the paired `bulkCreate` of new datasources. The partial
+    unique index `data_source_name_unique ON data_source(name) WHERE deleted_at IS
+    NULL` (V0_0_31__add_deleted_at_field.sql:27) was DROPPED by V0_0_18__pull_push_data_sources.sql:1-3
+    then RE-CREATED in V0_0_31:27 — so `name` IS unique-on-live-rows, but operators
+    reading the schema history may miss this. The collector-driven UPSERT pathway
+    is shielded for the OPERATOR-EDITED name case because `prepareForUpdate` overwrites
+    name from payload (DataSourceIngestionServiceImpl.java:86-88) — so if collector
+    A originally registered ODDRN X with name "snowflake-prod", and the same collector
+    A re-emits a payload renaming X to "redshift-prod" (a name already held by ANOTHER
+    live datasource), the `bulkUpdate` SQL hits SQLSTATE 23505 mid-transaction, rolling
+    back BOTH the rename AND any paired `bulkCreate` of new datasources from the same
+    ingestion call (the bulk methods are `@ReactiveTransactional` per ReactiveAbstractCRUDRepository.java:128).
+    The operator sees a 500 with the underlying message; there is NO `name collision
+    with another datasource` distinction at the controller / mapper / service layer.
+    Severity: HIGH because (a) a single failing datasource silently corrupts the success
+    of all OTHER datasources in the same `createDataSources` batch; (b) collector
+    retry logic typically re-emits the same payload, producing a stable 500 with no
+    operator-actionable signal.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-661.yaml
+- gap_id: TEST-GAP-662
+  behaviour: '**HIGH-impact UI pagination correctness bug: `listDto` page query and
+    count query use DIFFERENT predicates on `nameQuery`.** `ReactiveDataSourceRepositoryImpl.java:58-82`
+    paginates with the private `queryCondition(nameQuery)` at line 156 which uses
+    `DATA_SOURCE.NAME.startsWithIgnoreCase(nameQuery)`; the count branch `fetchCount(nameQuery)`
+    at line 80 reaches the parent''s `listCondition` (ReactiveAbstractCRUDRepository.java:236-249
+    line 243) which uses `nameField.containsIgnoreCase(nameQuery)` (overridden by
+    `ReactiveAbstractSoftDeleteCRUDRepository.java:87-89` to add the soft-delete predicate).
+    **The page returns rows whose name STARTS WITH the query; the count reports rows
+    whose name CONTAINS the query.** For a catalog with datasources named `[''snowflake-prod'',
+    ''my-snowflake-dev'', ''redshift-prod'']`, the query `nameQuery=''snow''` returns
+    ONLY `snowflake-prod` on the page (size=1) but the count reports `2` (both contain
+    ''snow''). Pagination math is broken when `nameQuery` is non-null: `hasNext=false`
+    because the page is the only one — but the page only shows 1 of 2 reported matches.
+    The operator''s "1 of 2" UI display contradicts the actual page content. Filed
+    as **REFACTOR-425** at the sidecar layer. The fix requires aligning either the
+    page predicate to `containsIgnoreCase` (broadens results) OR the count predicate
+    to `startsWithIgnoreCase` (narrows results) — both are valid; the maintainer must
+    pick. No test exists for ANY listDto + nameQuery combination at the repository
+    layer.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-020
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-662.yaml
+- gap_id: TEST-GAP-663
+  behaviour: '**HIGH-impact latent UX bug: soft-deleted INTERNAL custom-metadata fields
+    are PERMANENT name-blockers.** The partial unique indexes `IX_UNIQUE_INTERNAL_NAME
+    ON metadata_field (name) WHERE origin = ''INTERNAL''` (V0_0_1__init.sql:242-244)
+    and `IX_UNIQUE_EXTERNAL_NAME_TYPE ON metadata_field (type, name) WHERE origin
+    <> ''INTERNAL''` (V0_0_1:238-240) filter ONLY by origin — NOT by `deleted_at`.
+    The sibling `tag_name_unique` WAS migrated by `V0_0_64__remove_is_deleted_field.sql:103-105`
+    to `WHERE tag.deleted_at IS NULL`; the metadata_field partial indexes were NOT
+    touched by the same migration despite V0_0_64:41-50 retrofitting `deleted_at`
+    to the metadata_field TABLE. **Consequence**: an operator who soft-deletes a custom
+    INTERNAL metadata field `cost_centre` through the UI then tries to re-create it
+    receives `UniqueConstraintException("Internal metadata with this name already
+    exists")` (ExceptionUtils.java:63-65). But `listInternalMetadata` (line 43-56)
+    FILTERS soft-deleted out via `addSoftDeleteFilter` (line 46), so the dropdown
+    reports `cost_centre doesn''t exist`. The user sees a contradictory state: "doesn''t
+    exist" in the dropdown but cannot create. No hard-delete path exists in the codebase;
+    soft-deleted fields are permanent name-blockers until a manual DBA UPDATE removes
+    the soft-deleted row. The asymmetry with Tag''s V0_0_64 fix is undocumented and
+    untested.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-663.yaml
+- gap_id: TEST-GAP-664
+  behaviour: '**F-004 stored-XSS class fingerprint at the dataset_field surface.**
+    `ReactiveDatasetFieldRepositoryImpl.updateDescription` (line 72-80) stores user-supplied
+    input VERBATIM with only empty-to-null normalisation (line 75): `bare DSL.update(DATASET_FIELD).set(INTERNAL_DESCRIPTION,
+    StringUtils.isEmpty(description) ? null : description).where(ID.eq(id)).returning()`.
+    NO `Jsoup.clean()`, NO `Encode.html()`, NO length cap, NO HTML tag stripping.
+    A Markdown / HTML / JavaScript payload submitted via `PUT /api/datasetfields/{id}/description`
+    (`DATASET_FIELD_DESCRIPTION_UPDATE` permission per SecurityConstants.java:282-303)
+    persists through reads of `getDatasetFieldWithTags` (line 127-139) and `listByTerm`
+    (line 141-204). Same fingerprint pattern as `ReactiveDataEntityRepositoryImpl.setInternalDescription`
+    (verified TEST-GAP-NNN family at the DataEntity layer, batch H + I sidecars).
+    The defence-in-depth is the UI render layer (DefiniteDOMSanitiserPipeline + DOMPurify
+    per P-009 / F-004 sidecars + dynamic-verification probe P-009 from 2026-05-19).
+    But: the UI defence is documented to be Markdown-only at the render layer; a backend-leaked
+    field rendered via a third-party tool (CLI, custom dashboard, OpenAPI-generated
+    SDK consumer) would surface the raw payload. F-004 fingerprint at the dataset_field
+    surface is UNVERIFIED at backend tier — no test asserts "the storage MUST be verbatim
+    because the defence is at render time; this is the documented architectural choice".'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-004
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-664.yaml
+- gap_id: TEST-GAP-665
+  behaviour: '**Unbounded monotonic growth of the dataset_field table for any churning
+    dataset.** `dataset_field` has NO native soft-delete column (`V0_0_1__init.sql:148-164`
+    plus every subsequent `ALTER TABLE dataset_field` migration verified — none adds
+    `deleted_at` / `is_deleted` / `status`). `delete(id)` / `delete(ids)` inherited
+    from `ReactiveAbstractCRUDRepository.java:144-155` would issue HARD DELETE — BUT
+    no caller in the platform invokes them. The version-aware identity model (V0_0_9__normalize_dataset_structure.sql:1-43
+    introduced the M:N `dataset_structure` table AND DROPPED the `dataset_field.dataset_version_id`
+    FK) means that every column-schema change in a dataset creates a NEW dataset_field
+    row; the OLD row is preserved (still referenced by historical dataset_versions
+    via dataset_structure). There is NO scheduled housekeeping job referencing the
+    DATASET_FIELD table (Grep against `<odd-platform>/odd-platform-api/src/main/java/.../housekeeping/job/*.java`
+    returns zero matches). Over many ingestion cycles on a churning dataset (say a
+    Snowflake table where columns are added/renamed monthly), `dataset_field` accumulates
+    row-count well above the current column count × retained-versions. No retention
+    policy, no TTL, no admin endpoint to purge. For a deployment ingesting 1000 datasets
+    × 100 columns × 12 schema-changes/year, this is 1.2M new rows/year with no cleanup
+    — over 5 years, ~6M rows in dataset_field alone (separate from the dataset_structure
+    M:N which grows similarly).'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-010
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-665.yaml
+- gap_id: TEST-GAP-666
+  behaviour: '**Activity-feed coverage asymmetry on dataset_field edits.** `DatasetFieldServiceImpl.updateInternalName`
+    (line 99) carries `@ActivityLog(event = ActivityEventTypeDto.DATASET_FIELD_INTERNAL_NAME_UPDATED)`.
+    `DatasetFieldServiceImpl.updateDatasetFieldTags` (line 119) carries `@ActivityLog(event
+    = ActivityEventTypeDto.DATASET_FIELD_TAGS_UPDATED)`. But `DatasetFieldServiceImpl.updateDescription`
+    (line 87-95) has NO `@ActivityLog` annotation — description edits on a dataset_field
+    are NOT recorded in the activity feed. The asymmetry is intentional in the surface
+    code (a maintainer authored it that way) but operationally indefensible: an operator
+    auditing "who changed the description on this critical column over time?" will
+    find no activity-feed evidence. The activity-feed live doc (WebFetched 2026-05-20)
+    enumerates `DATASET_FIELD_DESCRIPTION_UPDATED` as an event type for dataset_field
+    (one of the 20 enumerated event types on the page), but the corresponding `@ActivityLog`
+    annotation does not exist in the service layer. The doc surface promises an event
+    type that the code never emits — a doc-vs-code-drift class finding. Compare with
+    `DATA_ENTITY` whose `DESCRIPTION_UPDATED` (the entity-level description edit)
+    DOES carry `@ActivityLog` via DataEntityServiceImpl. The dataset_field surface
+    is the asymmetric outlier.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-007
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-666.yaml
+- gap_id: TEST-GAP-667
+  behaviour: '**HIGH forensic-integrity bug: every Activity-Feed read path joins `USER_OWNER_MAPPING
+    ON OIDC_USERNAME = ACTIVITY.CREATED_BY AND DELETED_AT IS NULL` (lines 157-158,
+    178-179, 199-200, 221-222) WITHOUT a provider qualifier.** Activity rows written
+    by a LOGIN_FORM ''alice'' resolve to the SAME OwnerPojo as activity rows written
+    by an LDAP ''alice'' on every cross-mode deployment — even though they may be
+    different people in the operator''s identity directory. This is the READ-SIDE
+    mirror of the `provider-null-cross-mode-bleed` mechanism the batch-N `ReactiveUserOwnerMappingRepositoryImpl`
+    sidecar surfaced; the resolution-side primary is THAT sidecar; this one is the
+    NEW primary for the READ-side. The activity-side write (`ActivityServiceImpl.createActivityEvent`
+    line 47-49) records the username string only (`UserDto::username`), with no provider
+    qualifier — so the data is structurally permissive of the bleed. Forensic incident
+    response over an audit feed is misled: a reviewer reading ''who deleted this dataset
+    on 2026-04-15 at 09:33'' may see "alice (Owner #42)" without being able to distinguish
+    whether it was LOGIN_FORM alice or LDAP alice. The bleed is symmetric: write-side
+    records only username; read-side joins by username only. STRENGTHENS the existing
+    read-side pin (no exact prior TEST-GAP exists for this REPOSITORY layer — TEST-GAP-7116
+    from index covers the resolution side at user-owner-mapping).'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-007
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-667.yaml
+- gap_id: TEST-GAP-668
+  behaviour: '**Under `auth.type=DISABLED`, anonymous traffic CAN mutate the catalog
+    (description edits, tag assignments, ownership changes) and the resulting activity
+    rows write `created_by = null`.** `ActivityServiceImpl.createActivityEvent` (line
+    47-49) emits `null` when `authIdentityProvider.getCurrentUser()` returns empty
+    (the `switchIfEmpty(Mono.defer(() -> Mono.just(activityMapper.mapToPojo(event,
+    activityCreateTime, null))))` line — explicit null fallback). These rows are VISUALLY
+    INDISTINGUISHABLE from system events at the UI layer — the only discriminator
+    is `is_system_event` which CAN be `false` (anonymous-mutation case) OR `true`
+    (genuine ingestion / scheduler) for null-created_by rows. A reviewer cannot determine
+    whether a null-created_by `is_system_event=false` row is an unattributed user
+    action or a missed-username on a real user. The docs frame DISABLED as ''dev-only''
+    but the runtime cost is real and the audit trail loses forensic value precisely
+    when an operator most needs to investigate. No test pins this attribution gap.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-007
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-668.yaml
+- gap_id: TEST-GAP-669
+  behaviour: '**`save(List<ActivityPojo>)` partial-commit semantics under reactive-Mono.zip
+    error** — line 62-70 dispatches to `executeInPartition` which chunks at 1000 rows
+    and reduces via `.zipWith(Integer::sum)` (`JooqReactiveOperations.java:62-66`).
+    If chunk 3 of 5 fails (e.g. partition coverage gap on chunk-3''s rows because
+    they straddle a midnight rotation boundary), `.zipWith` propagates the chunk-3
+    error — but chunks 1, 2, and any chunk that completed before chunk-3''s error
+    already INSERTed to PG (no transaction wraps the chunked save at this level).
+    The result: a `save(List<ActivityPojo>)` call that surfaces an error to the caller
+    has nonetheless committed PARTIAL audit data. `AlertServiceImpl` which calls this
+    method twice (lines 258, 324) with multiple alert events could see N/2 alert-receive
+    activity rows committed and N/2 lost, with no compensating delete. **An attacker
+    triggering ingestion-side errors at midnight rotation could exploit this to hide
+    individual events behind a partial-commit failure.** The forensic-completeness
+    gap is HIGHER than the read-side bleed because the bleed is a query problem; this
+    is a write-side data integrity problem.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-007
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-669.yaml
+- gap_id: TEST-GAP-670
+  behaviour: '**The most operationally load-bearing behaviour of this repository —
+    the `SELECT … FOR UPDATE` row lock acquisition in `getIdByOddrnForUpdate` (lines
+    94-101) — has zero test coverage.** The lock is held until the surrounding `@ReactiveTransactional`
+    commits or rolls back, serialising ingestion against concurrent UI deletes of
+    the same datasource AND against concurrent collector re-registrations of the same
+    datasource. Without this lock, the `IngestionService`''s downstream `persistDataEntities`
+    flow (`IngestionServiceImpl.java:65-74`) could be racing the operator''s delete
+    or the collector''s UPSERT for the same data_source_id. The current `DataSourceRepositoryImplTest`
+    (260+ lines) covers happy-path read/write/delete round-trips but does NOT pin
+    the row-lock semantic. A regression that accidentally removed `.forUpdate()` from
+    line 98 would compile, pass every existing test, AND silently introduce a race
+    window in the ingestion pipeline that only manifests under concurrent load against
+    the same datasource — exactly the kind of bug that ships and surfaces months later
+    in production when a customer ingestion volume scales up.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-670.yaml
+- gap_id: TEST-GAP-671
+  behaviour: '**Service-bypass attack surface: the repository''s inherited `bulkUpdate`
+    faithfully writes ANY non-non-updatable column the caller supplies — the "only
+    name + description" narrowing is a SERVICE-TIER convention enforced by `DataSourceIngestionServiceImpl.prepareForUpdate`**
+    (lines 86-88: `new DataSourcePojo(a).setName(i.getName()).setDescription(i.getDescription())`).
+    The repository''s `bulkUpdate` (inherited at `ReactiveAbstractCRUDRepository.java:128-142`
+    → `updateMany` at lines 203-223) builds the SET clause from `recordTable.fields()`
+    MINUS `getNonUpdatableFields()` (id, created_at, deleted_at per `ReactiveAbstractSoftDeleteCRUDRepository.java:113-117`).
+    Every other column (name, oddrn, description, namespace_id, collector_id, token_id,
+    updated_at) is in the SET clause. **A service-bypassing caller invoking `dataSourceRepository.bulkUpdate(pojoListWithChangedCollectorId)`
+    DIRECTLY could write ANY column on `data_source`.** This is the load-bearing refinement
+    to ADR-CANDIDATE-142: the partial-merge contract lives ONE LAYER above the persistence.
+    A future maintainer "improving" the API to expose a bulk-update endpoint without
+    going through `prepareForUpdate` would silently break the cross-collector preservation
+    invariant (a collector B''s payload could rebind ODDRN X from collector A to collector
+    B). No test exists at any layer pinning this contract.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-671.yaml
+- gap_id: TEST-GAP-672
+  behaviour: '**Ghost metadata fields surface on the per-entity detail page.** `getDtosByDataEntityId(long
+    dataEntityId)` (lines 111-121) joins `metadata_field_value mfv JOIN metadata_field
+    mf ON mf.id = mfv.metadata_field_id WHERE mfv.data_entity_id = ?` with NO `.where(METADATA_FIELD.DELETED_AT.isNull())`
+    filter. A `metadata_field` that was soft-deleted but has surviving `metadata_field_value`
+    rows still surfaces on the entity detail page Metadata panel. The user sees a
+    ''ghost field'' that was supposed to be removed; nothing in the UI signals that
+    the field is soft-deleted. The FTS path (`updateMetadataVectors`) also re-indexes
+    the field''s NAME tokens for the entity, making the soft-deleted field''s name
+    searchable again. This is a particularly insidious bug because the operator-side
+    UX assumption (`I deleted that field → it''s gone`) is violated silently — only
+    entities WITHOUT values for the field stop showing it; entities WITH values continue
+    to render it.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-672.yaml
+- gap_id: TEST-GAP-673
+  behaviour: '**TOCTOU race window in UI-tier custom-metadata auto-create.** `MetadataFieldServiceImpl.getOrCreateMetadataFields`
+    (line 42-59) calls `listByKey` (READ) then `bulkCreate` (WRITE). Two concurrent
+    calls from two parallel `createMetadata` requests with the same novel `(name,
+    type, INTERNAL)` key will both see "doesn''t exist" and both attempt INSERT; the
+    second hits `IX_UNIQUE_INTERNAL_NAME` and raises `UniqueConstraintException("Internal
+    metadata with this name already exists")`. Same race-shape as the Tag TOCTOU (`tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`
+    concept — TEST-GAP-NNN family at the Tag tier). Resolution is exception-driven;
+    the calling `DataEntityServiceImpl.createMetadata` does NOT catch and retry —
+    the user sees a 500 (or 422 if the GlobalExceptionHandler maps it). The race window
+    is small (sub-millisecond between SELECT and INSERT in the same TX) but reliably
+    reproducible under bench load. The ingestion path (`MetadataFieldServiceImpl.ingestMetadataFields`
+    → `ingestData`) is race-TOLERANT via the partial-unique-index `ON CONFLICT DO
+    UPDATE`; the UI path is race-EXCEPTION. Inconsistent UX behaviour by code path.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-673.yaml
+- gap_id: TEST-GAP-674
+  behaviour: '**Case-sensitivity asymmetry — `listInternalMetadata` uses case-INSENSITIVE
+    substring; `listByKey` uses case-SENSITIVE exact equality.** Line 48: `nameField.containsIgnoreCase(query)`
+    (substring, case-insensitive ILIKE). Line 65: `METADATA_FIELD.NAME.eq(t.fieldName())`
+    (exact equality, case-sensitive — Postgres default text comparison). **Consequence**:
+    a UI search for ''cost'' returns both `cost_centre` and `COST_CENTRE`, but the
+    auto-create-on-miss diff in `MetadataFieldServiceImpl.getOrCreateMetadataFields`
+    treats them as distinct names. A user typing the metadata name with different
+    casing across two entities creates two distinct INTERNAL field rows. The two coexist
+    with different IDs; the dropdown shows both; the platform has no canonicalisation.
+    Same shape as the Tag asymmetry already tracked in the concept catalog. Untested.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-674.yaml
+- gap_id: TEST-GAP-675
+  behaviour: '**Soft-deleted collector leaves an orphaned TOKEN row with plaintext
+    value persisting indefinitely.** The TOKEN table has no soft-delete column (`V0_0_28__add_token.sql:1-9`
+    — only `id, value, created_at, created_by, updated_at, updated_by`). When a Collector
+    is soft-deleted via the inherited `delete(id)` (`ReactiveAbstractSoftDeleteCRUDRepository:50-58`
+    — `UPDATE collector SET deleted_at = NOW()`), the FK reference `collector.token_id`
+    remains pointing at a TOKEN row that is now orphaned. The partial unique index
+    `collector_token_unique ON collector(token_id) WHERE deleted_at IS NULL` (`V0_0_33__add_token_constraints.sql:1`)
+    ALLOWS this — it only enforces uniqueness on LIVE collectors. **The TOKEN row''s
+    value is still in the table, still plaintext, still discoverable via `SELECT *
+    FROM token`.** There is NO housekeeping job removing TOKEN rows orphaned by collector
+    soft-delete; the row persists forever. A DB-side reader recovers historical credentials
+    of decommissioned collectors as well as live ones. An operator-side cleanup script
+    would need `DELETE FROM token WHERE id NOT IN (SELECT token_id FROM collector
+    WHERE deleted_at IS NULL)`. No housekeeping job, no test, no doc-side caveat.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-020
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-675.yaml
+- gap_id: TEST-GAP-676
+  behaviour: '**`collector.name UNIQUE` is a FULL unique constraint, NOT partial (asymmetric
+    with role/policy/owner/tag patterns).** `V0_0_29__add_collector.sql:4` — `name
+    varchar(255) UNIQUE`. The constraint applies to ALL rows including soft-deleted
+    ones. A soft-deleted collector''s name CANNOT be reused without first hard-deleting
+    the row. This is INCONSISTENT with the recreate-after-delete pattern used for
+    `role.name` (where the partial unique index `role_name_unique ON role(name) WHERE
+    deleted_at IS NULL` per V0_0_55:42 + V0_0_64:88-90 allows re-creation), `policy.name`
+    (same pattern, batch H), `owner.name` (TEST-GAP-239 — V0_0_64:68-70 reissues the
+    partial), `tag.name` (V0_0_64:103-105). An operator deleting a collector named
+    ''snowflake-prod'' and trying to re-create with the same name hits a `UniqueConstraintException`
+    with no doc explanation. **The schema-layer asymmetry is undocumented; the user-facing
+    error wrapping does NOT distinguish "name held by a soft-deleted collector you
+    can''t see" from "name held by a live collector you can see".**'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-020
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-676.yaml
+- gap_id: TEST-GAP-677
+  behaviour: '**The most load-bearing read shape — `getLastVersionDatasetFieldsByOddrns`
+    — has ZERO test coverage.** Lines 92-113 use a window-function CTE: `MAX(DATASET_VERSION.VERSION).OVER(PARTITION
+    BY DATASET_FIELD.ODDRN).AS(maxVersion)` to pick "the dataset_field row that belongs
+    to the most recent dataset_version for each oddrn". The result drives the UPDATE-vs-INSERT
+    decision in `DatasetFieldServiceImpl.buildDatasetFieldIngestionDto` (lines 375-396)
+    for EVERY ingestion request containing dataset entities — called from BOTH `DatasetStructureIngestionRequestProcessor`
+    (via `DatasetFieldServiceImpl.createOrUpdateDatasetFields` line 141) AND `DatasetFieldMetadataIngestionServiceImpl.ingestMetadata`
+    (line 47). If the window function or the `version = max_version` filter returns
+    a non-maximal row (due to a future jOOQ planner change, a Postgres version upgrade,
+    or a maintainer''s refactor), every subsequent UPDATE-vs-INSERT decision is skewed,
+    leading to silent orphan-row creation OR in-place edits of the WRONG historical
+    version. **Severity: HIGH because the failure mode is silent data corruption in
+    the dataset_structure / dataset_field relationship — no exception, no log, no
+    alert.** Partition-batching at 1000 oddrns adds further untested complexity: the
+    same oddrn appearing twice across batches would receive TWO separate CTE evaluations.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-677.yaml
+- gap_id: TEST-GAP-678
+  behaviour: '**`listByTerm` enumerates EVERY dataset_field linked to a term across
+    all owners, all data sources, all parent statuses — with NO filter on the parent
+    DataEntity''s `status` / `hollow` / `exclude_from_search`.** Lines 169-189 chain
+    joins DATASET_FIELD → DATA_ENTITY → NAMESPACE / DATA_SOURCE / OWNERSHIP / OWNER
+    / TITLE but apply NO filter on the parent. A field on a soft-deleted DataEntity
+    (`STATUS = DELETED`) still appears in `listByTerm` results — terms remain backlinked
+    to columns of deleted datasets via the API. This is consistent with `ReactiveDataEntityRepositoryImpl`
+    invariant 3 (`EXCLUDE_FROM_SEARCH` is INCONSISTENTLY APPLIED) — another endpoint
+    where the predicate is missing. The aggregation `jsonArrayAgg(field(OWNER.asterisk()))`
+    lines 165-167 SURFACES every owner of every entity to every caller — visible-to-all
+    is the explicit design, matching the read-collaborative posture pillar P-09 documents
+    ("every authenticated user can enumerate the entire catalog"). The documentation
+    surface does NOT warn operators that term lookups reveal cross-tenant column metadata.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-678.yaml
+- gap_id: TEST-GAP-679
+  behaviour: '**`updateInternalName` has ZERO test coverage at all — including the
+    load-bearing empty-to-null normalisation and the silent-no-op-vs-404 contract.**
+    Line 85: `bare DSL.update(DATASET_FIELD).set(INTERNAL_NAME, StringUtils.isEmpty(internalName)
+    ? null : internalName).where(ID.eq(id)).returning()`. Same shape as `updateDescription`
+    (line 75) but with NO test (the existing test covers only `updateDescription`).
+    The empty-to-null normalisation is significant because (a) downstream consumers
+    including the activity-feed mapper, the FTS index, and the UI''s filled-flag tracking
+    treat NULL and empty-string differently; (b) a maintainer "improving" the API
+    to accept whitespace-trimmed empty strings might re-introduce the empty-string-as-empty-string
+    path; (c) the operator''s intent of "clear this name" must round-trip as NULL,
+    not "". Also untested: BOTH methods return `Mono.empty()` for unknown ids — NO
+    `NotFoundException` at this repository layer. The service layer''s `DatasetFieldServiceImpl.updateInternalName`
+    line 104 does `.switchIfEmpty(Mono.error(new NotFoundException(...)))` — good.
+    But `DatasetFieldServiceImpl.updateDescription` lines 87-95 does NOT switchIfEmpty
+    before delegating — verify the downstream service''s contract. If the chain completes
+    empty for an unknown id, the API returns 200 OK with an empty body. UX gap.'
+  test_class: missing-unit
+  criticality: LOW
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-679.yaml

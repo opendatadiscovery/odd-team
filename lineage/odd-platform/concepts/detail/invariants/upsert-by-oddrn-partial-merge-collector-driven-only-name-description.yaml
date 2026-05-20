@@ -1,4 +1,5 @@
 name: UPSERT-by-ODDRN partial-merge — only name + description propagate on re-registration
+  (STRENGTHENED batch R — SQL-tier primary source via DataSource repo)
 canonical_in_docs: false
 canonical_candidate: true
 pillar_affinity:
@@ -39,6 +40,40 @@ description: |-
   CREATE on FIRST registration is the full path. The asymmetry is
   silent in the docs.
 
+  **STRENGTHENED batch 2026-05-20-R — SQL-TIER PRIMARY SOURCE
+  (REFINEMENT)**: ReactiveDataSourceRepositoryImpl batch-R sidecar
+  REFINES the architectural understanding of the partial-merge
+  contract. The narrowing to ONLY name + description is enforced at
+  the **SERVICE tier**, NOT at the REPOSITORY tier. The inherited
+  `bulkUpdate` (ReactiveAbstractCRUDRepository.java:128-142 →
+  updateMany at 203-223) builds the SET clause from
+  `recordTable.fields()` MINUS `getNonUpdatableFields()` (id,
+  created_at, deleted_at per
+  ReactiveAbstractSoftDeleteCRUDRepository.java:113-117). Every
+  other column (name, oddrn, description, namespace_id, collector_id,
+  token_id, updated_at) IS in the SET clause. A service-bypassing
+  caller invoking `dataSourceRepository.bulkUpdate(pojoList)`
+  DIRECTLY could write ANY of those columns.
+
+  **The cross-collector preservation is also a SERVICE-tier
+  convention**: `prepareForUpdate` does NOT touch `collector_id`
+  (the new pojo is a copy of the EXISTING pojo, which retains the
+  original `collector_id`). So if collector A originally registered
+  ODDRN X, and collector B's payload contains ODDRN X, the existing
+  `collector_id` is preserved (from the copy-construct), and
+  `bulkUpdate` does NOT overwrite it (because the service supplied
+  the existing value). HOWEVER: if a service-bypassing caller
+  DIRECTLY invoked `dataSourceRepository.bulkUpdate(List.of(
+  pojoWithCollectorB))`, the `collector_id` WOULD be overwritten.
+
+  **The partial-merge contract is therefore a SERVICE-TIER
+  CONVENTION, NOT a PERSISTENCE-TIER ENFORCEMENT**. Adding a new
+  field to the payload-driven set requires an explicit
+  `prepareForUpdate` change, not a schema change. Removing the
+  `prepareForUpdate` mapper or bypassing the service would break
+  the contract WITHOUT touching the database — a fragility worth
+  surfacing.
+
   **The operator-impacting consequences**:
 
     1. **A renamed datasource (UI-side rename) is OVERWRITTEN on the
@@ -59,26 +94,71 @@ description: |-
        reclassify a datasource (e.g. POSTGRES → MYSQL after an
        infrastructure migration) via re-registration.
 
+    5. **NEW batch R — silent rollback on name collision** — a
+       collector renaming a datasource (via the payload's `name`
+       field) to a `name` already held by ANOTHER LIVE row fails
+       the ENTIRE `createDataSources` transaction with SQLSTATE
+       23505 via the `data_source_name_unique` partial unique
+       index (V0_0_31:27). All paired bulkCreate/bulkUpdate inserts
+       roll back. Operator-facing as opaque 500. Captured at the
+       dedicated `datasource-name-partial-unique-silent-rollback`
+       invariant.
+
   **Severity**: MEDIUM — the partial-merge is INTENTIONAL but
   silent. The custom-collectors doc page (WebFetched 2026-05-20
   status 200) tells custom-collector authors to call
   `POST /ingestion/datasources once at startup` but does not name
   which fields are propagated, which are preserved, or what fallback
-  the operator has for non-propagated fields.
+  the operator has for non-propagated fields. **NEW batch R note**:
+  the doc page ALSO does not name the SERVICE-TIER vs REPOSITORY-TIER
+  enforcement distinction — a maintainer reading the repository
+  could reasonably assume the contract is schema-enforced when in
+  fact it is a one-method service-tier convention.
 axes_present:
   - controllers
+  - repositories_reactive
 nodes:
   - odd-platform java IngestionController controller-method:createDataSourceEntity
+  - odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl
 contributors:
   - 'createDataSourceEntity.md:concepts.invariants.[5] (Merge semantics on UPDATE: only name + description propagated — intent_anchor)'
   - 'createDataSourceEntity.md:implicit_adrs.[2] (Re-registration is UPSERT by ODDRN with PARTIAL-MERGE semantics — consistent application across create + update paths)'
   - 'createDataSourceEntity.md:bugs_limitations_corner_cases.[6] (Re-registration only propagates name + description; operator-facing asymmetry)'
   - 'createDataSourceEntity.md:docs_link_semantic.doc_drift_findings.[0] (custom-collectors page silent on UPSERT semantics)'
+  - |-
+    **ReactiveDataSourceRepositoryImpl batch R (NEW — SQL-TIER REFINEMENT)**:
+    coherence_check.strengthens.[F-008 upsert_partial_merge_name_and_description_only]
+    (SQL-tier PRIMARY-SOURCE confirmation — the FIELD-list narrowing
+    happens at the SERVICE-tier mapper prepareForUpdate, NOT at the
+    repository; a service-bypassing caller invoking
+    dataSourceRepository.bulkUpdate(pojoList) DIRECTLY could write ANY
+    non-non-updatable column; the narrowing is a SERVICE-layer
+    convention, NOT a REPOSITORY-layer enforcement; this is a
+    STRENGTHENING refinement to ADR-CANDIDATE-142 — the partial-merge
+    contract is one layer above the persistence) +
+    concepts.invariants.[3] (the partial-merge contract is NOT
+    enforced at this repository; bulkUpdate writes ALL non-non-updatable
+    columns) +
+    concepts.invariants.[4] (cross-collector preservation is ALSO a
+    service-tier convention; the prepareForUpdate copy-construct
+    shape is the enforcement)
 evidence:
   - createDataSourceEntity.md:concepts.invariants.[5] (PRIMARY SOURCE — DataSourceIngestionServiceImpl.java:74-92 prepareForUpdate)
   - createDataSourceEntity.md:implicit_adrs.[2] (intent_anchor — the consistent pattern across create + update; no comment defends the SPECIFIC field choices)
   - createDataSourceEntity.md:bugs_limitations_corner_cases.[6] (severity MEDIUM)
   - createDataSourceEntity.md:docs_link_semantic.doc_drift_findings.[0] (the custom-collectors developer guide silent on UPSERT mechanics)
+  - |-
+    **ReactiveDataSourceRepositoryImpl.md (batch R — SQL-TIER REFINEMENT)**:
+    coherence_check.strengthens.[F-008] + concepts.invariants.[3,4] —
+    evidence:
+      ReactiveDataSourceRepositoryImpl.java (no field-narrowing
+        enforcement at the repository) +
+      ReactiveAbstractCRUDRepository.java:128-142, 203-223 (the
+        inherited bulkUpdate writes ALL non-non-updatable columns) +
+      ReactiveAbstractSoftDeleteCRUDRepository.java:113-117 (the
+        non-updatable set — id, created_at, deleted_at) +
+      DataSourceIngestionServiceImpl.java:74-92 (prepareForUpdate —
+        the SERVICE-tier convention that narrows the field set)
 notes: |-
   Pairs with:
 
@@ -86,12 +166,34 @@ notes: |-
       always-on auth layer that gates this endpoint.
 
     - `namespace-inherited-from-collector-not-payload-collector-scoped-tenancy`
-      invariant (new in this batch) — the namespace-handling rule that
-      compounds the partial-merge story (namespace is ALSO not propagated
-      from the payload — but for a different reason: it's inherited
-      from the Collector, not preserved from existing row).
+      invariant — the namespace-handling rule that compounds the
+      partial-merge story (namespace is ALSO not propagated from the
+      payload — but for a different reason: it's inherited from the
+      Collector, not preserved from existing row).
+
+    - **NEW batch R** —
+      `datasource-name-partial-unique-silent-rollback-on-collector-rename`
+      invariant — the name-collision rollback that compounds the
+      partial-merge story (the name field IS one of the two
+      payload-driven fields; if the new name collides with another
+      live row, the entire transaction rolls back).
+
+  **STRENGTHENED batch R — the SERVICE-tier vs REPOSITORY-tier
+  enforcement distinction is now PRIMARY-SOURCE pinned**. This
+  refines the original (controller-side) understanding of the
+  contract: the partial-merge IS service-tier-only, and a
+  service-bypassing caller (test code today; hypothetical future
+  direct-injection) would break it without any persistence-layer
+  protection. The refactoring scope to "make this schema-enforced"
+  is captured at ADR-CANDIDATE-142 — would require a database
+  trigger or a hash-based prevention column on the data_source row
+  that the repository explicitly clears.
 
   Doc-side recommended action: extend the custom-collectors developer
   guide with a "Re-registration semantics" subsection: enumerate the
   fields that propagate (`name`, `description`) vs preserved (everything
-  else) vs inherited from Collector (`namespace_id`).
+  else) vs inherited from Collector (`namespace_id`). **NEW batch R**:
+  also document the SERVICE-tier vs REPOSITORY-tier enforcement
+  distinction in an internal architecture note — maintainers
+  reading the repository code in isolation could reasonably assume
+  the contract is schema-enforced.

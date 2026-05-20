@@ -16,6 +16,11 @@ drift_class_summary:
 - search_clear_silently_rewinds_pagination_to_page_1_no_undo
 - delete_of_collector_on_page_n_silently_rewinds_to_page_1_view
 - backend_endpoints_accept_anonymous_mutations_regardless_under_disabled
+- collector_token_plaintext_at_rest_sql_primary_source_end_to_end
+- token_value_no_unique_constraint_no_index_no_hash
+- soft_deleted_collector_orphaned_token_row_never_purged
+- collector_name_full_unique_no_partial_silently_blocks_recreate
+- regenerate_token_no_audit_trail_no_history_no_activity_event
 cross_pillar_relationships:
 - pillar_id: P-10
   kind: feeds
@@ -47,6 +52,119 @@ cross_pillar_relationships:
     Management section's daily-ops sequence (per `management.md` lines
     42-53) lists Collectors as the second-most-frequently-used
     operator surface after Datasources.
+batch_extensions:
+- batch: R
+  entry_point_added: |-
+    repository-tier:ReactiveCollectorRepositoryImpl — the SQL-tier
+    primary source for the plaintext-everywhere claim that batch Q
+    surfaced at the CollectorsList DOM-render layer. The repository
+    is the SQL bridge between Collector identity (name, namespace,
+    oddrn, token_id) and the inbound bearer token resolved by the
+    always-on `IngestionDataSourceFilter` AND the opt-in
+    `IngestionDataEntitiesFilter`. The sidecar surfaces five
+    architectural facets closing F-020's existing plaintext-DOM-render
+    finding end-to-end across the schema-codegen-storage-equality-emit
+    chain.
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveCollectorRepositoryImpl
+  notes: |-
+    FIVE new drift facets surface from the SQL-tier primary source.
+    Listed in descending severity:
+    (1) TOKEN PLAINTEXT-AT-REST END-TO-END SQL PRIMARY SOURCE (HIGH)
+    — V0_0_28__add_token.sql:4 declares `value varchar(40) NOT NULL`
+    with NO UNIQUE constraint, NO hashing column, NO encoding column.
+    TokenGeneratorImpl.java:34-42 writes
+    `RandomStringUtils.randomAlphanumeric(40)` verbatim;
+    ReactiveCollectorRepositoryImpl line 94 reads via
+    `TOKEN.VALUE.eq(token)` — plaintext SQL equality.
+    IngestionDataEntitiesFilter.java:55-58 compares via
+    `tokenPojo.getValue().equals(token)` — application-side mirror
+    (non-constant-time). F-020's batch-Q
+    `token_plaintext_rendered_into_dom_text_node_no_obfuscation`
+    drift facet is NOW CLOSED END-TO-END across the
+    schema-codegen-storage-write-equality-read-rendered chain.
+    Every layer of the bearer-token authentication assumes plaintext.
+    The implicit ADR (per the sidecar's implicit_adrs[0]) is
+    'collector tokens are deployment-internal shared secrets between
+    operator-controlled collectors and the operator-controlled
+    platform; storage-at-rest threats are addressed at the
+    disk/backup layer, not the application layer' — but this is
+    NOT defended in any comment, doc, or ADR file. Surface for
+    PROMOTING the implicit ADR to explicit per the sidecar's
+    confidence note (MEDIUM confidence: consistency-across-layers
+    evidence is HIGH; explicit defending comment is absent).
+    Cross-link to F-008 batch-R
+    `collector_token_plaintext_at_rest_sql_primary_source` (the
+    credential-CONSUMER side; F-020 is the credential-MINTING side).
+    (2) TOKEN.VALUE NO UNIQUE CONSTRAINT, NO INDEX (MEDIUM) — the
+    only uniqueness anywhere in the token-collector relationship is
+    the partial unique index `collector_token_unique ON
+    collector(token_id) WHERE deleted_at IS NULL` (V0_0_33:1)
+    enforcing ONE TOKEN row per LIVE collector. Two TOKEN rows MAY
+    share the same `value` (cosmically improbable from random-40-char,
+    but no schema-level defence). If `getByToken(t)` ever sees two
+    rows matching, the jOOQ query returns the FIRST match
+    non-deterministically (no ORDER BY). The COLLECTOR_ID_SESSION_KEY
+    becomes ambiguous; cross-collector data-source registration is
+    silently possible. Cross-reference: batch-P
+    IngestionController.createDataSourceEntity:240 same finding (now
+    SQL primary source).
+    (3) SOFT-DELETED COLLECTOR ORPHANED TOKEN ROW (MEDIUM) — TOKEN
+    table has no soft-delete column (V0_0_28:1-9). When a Collector
+    is soft-deleted via inherited `delete(id)`
+    (ReactiveAbstractSoftDeleteCRUDRepository.java:50-58 —
+    `UPDATE collector SET deleted_at = NOW()`), the FK
+    `collector.token_id` remains pointing at a TOKEN row that is
+    now orphaned. The partial unique index ALLOWS this — it only
+    enforces uniqueness on LIVE collectors. The TOKEN row's value
+    is still in the table, still plaintext, still discoverable via
+    `SELECT * FROM token`. NO housekeeping job purges orphaned TOKEN
+    rows. The row persists forever. Surface for housekeeping-NNN
+    candidate (the sidecar notes: 'an operator-side cleanup script
+    would need to delete TOKEN rows where id NOT IN (SELECT
+    token_id FROM collector WHERE deleted_at IS NULL)'). Cross-link
+    to F-010 batch-R orphan-token gap.
+    (4) COLLECTOR.NAME FULL UNIQUE, NO PARTIAL (LOW, NEW) —
+    V0_0_29__add_collector.sql:4 declares `name varchar(255) UNIQUE`
+    as a FULL unique constraint, NOT partial. A soft-deleted
+    collector's name CANNOT be reused without first hard-deleting
+    the row (the soft-deleted row still occupies the unique-name
+    slot — the unique index is NOT partial-scoped to
+    `WHERE deleted_at IS NULL`). This is INCONSISTENT with the
+    recreate-after-delete pattern used for `role.name`, `policy.name`,
+    `owner.name`, `tag.name`, `title.name` (all PARTIAL after
+    V0_0_64). An operator deleting a collector named 'snowflake-prod'
+    and trying to re-create with the same name hits
+    `UniqueConstraintException` with no doc explanation. Refines
+    F-020 UX hazard story; surface for REFACTOR-NNN: align
+    collector.name to the partial-unique pattern.
+    (5) REGENERATE_TOKEN NO AUDIT TRAIL (MEDIUM, refines batch-Q) —
+    `CollectorServiceImpl.regenerateToken` (CollectorServiceImpl.java:83-90)
+    reads the existing TokenPojo, mutates via
+    TokenGeneratorImpl.regenerate (sets value to a fresh
+    randomAlphanumeric(40) and updated_at), persists via
+    `tokenRepository.updateToken` (an `UPDATE token SET value = ?,
+    updated_at = ?` — `ReactiveTokenRepositoryImpl.java:33-36`).
+    The PRIOR token value is LOST — no history table, no audit-log
+    row, no ActivityEvent. The COLLECTOR row's `updated_at` is NOT
+    touched — investigators looking at the collector won't see the
+    rotation timestamp (it lives only on TOKEN.updated_at +
+    TOKEN.updated_by which CAN be null under auth.type=DISABLED).
+    Activity Feed (P-07) has no `COLLECTOR_TOKEN_REGENERATED` event
+    class. This is the SQL-tier substrate of F-020's batch-Q
+    `collectors_tab_audit_silence_no_analytics_no_persistent_audit_panel`
+    finding — the audit silence is rooted at the WRITE PATH, not
+    at the UI tier. Cross-link to F-006 batch-R audit-silence
+    schema-rooted (the structural impossibility of audit for
+    non-data-entity events; collector rotation is one such event).
+    Coherence: STRENGTHENS F-020's existing
+    `token_plaintext_rendered_into_dom_text_node_no_obfuscation`,
+    `anonymous_list_enumeration_under_disabled_leaks_last_six_chars_of_every_token`,
+    `collectors_tab_audit_silence_no_analytics_no_persistent_audit_panel`,
+    and `token_rotation_no_security_effect_on_default_deployment_auth_ingestion_filter_disabled`
+    drift_classes. NO contradictions surfaced. NO supersedes — the
+    prior batch-Q findings remain accurate; this batch adds the
+    SQL-tier substrate beneath them.
 batch_origin: Q
 created_in_batch: Q
 discovered_from_entry_point: ui_route:/management/collectors

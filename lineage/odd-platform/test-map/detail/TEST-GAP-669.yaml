@@ -1,0 +1,31 @@
+gap_id: TEST-GAP-669
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveActivityRepositoryImpl"
+pillars_affected: [P-07]
+surfaced_by:
+  - "ReactiveActivityRepositoryImpl.md:bugs_limitations_corner_cases.[5] (save(List<ActivityPojo>) partial-commit semantics under reactive-Mono.zip error — forensic-completeness)"
+  - "ReactiveActivityRepositoryImpl.md:security.known_security_gaps.[4]"
+  - "ReactiveActivityRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[1] (Happy-path batch INSERT of 999/1000/1001 rows — BATCH_SIZE=1000 partition boundary)"
+behaviour: |-
+  **`save(List<ActivityPojo>)` partial-commit semantics under reactive-Mono.zip error** — line 62-70 dispatches to `executeInPartition` which chunks at 1000 rows and reduces via `.zipWith(Integer::sum)` (`JooqReactiveOperations.java:62-66`). If chunk 3 of 5 fails (e.g. partition coverage gap on chunk-3's rows because they straddle a midnight rotation boundary), `.zipWith` propagates the chunk-3 error — but chunks 1, 2, and any chunk that completed before chunk-3's error already INSERTed to PG (no transaction wraps the chunked save at this level). The result: a `save(List<ActivityPojo>)` call that surfaces an error to the caller has nonetheless committed PARTIAL audit data. `AlertServiceImpl` which calls this method twice (lines 258, 324) with multiple alert events could see N/2 alert-receive activity rows committed and N/2 lost, with no compensating delete. **An attacker triggering ingestion-side errors at midnight rotation could exploit this to hide individual events behind a partial-commit failure.** The forensic-completeness gap is HIGHER than the read-side bleed because the bleed is a query problem; this is a write-side data integrity problem.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryBatchSavePartialCommitTest.java"
+  name: "saveBatch_chunkFailureMidStream_priorChunksCommitted_pinsAuditForensicCompletenessGap"
+evidence:
+  - "ReactiveActivityRepositoryImpl.md says (bugs_limitations_corner_cases.[5]): 'save(List<ActivityPojo>) partial-commit semantics under reactive-Mono.zip error: line 62-70 dispatches to executeInPartition which chunks at 1000 rows and reduces via .zipWith(Integer::sum). If chunk 3 of 5 fails, .zipWith propagates the chunk-3 error — but chunks 1, 2, and any chunk that completed before chunk-3 error already INSERTed to PG (no transaction wraps the chunked save).' severity: MEDIUM"
+  - "ReactiveActivityRepositoryImpl.md says (security.known_security_gaps.[4]): 'Partial-commit on batch save(List<ActivityPojo>) leaves audit gaps... AlertServiceImpl batch alert flows (line 252-258, 318-324) are the most exposed... no compensating delete.'"
+  - "ReactiveActivityRepositoryImpl.java:62-70 (no @Transactional / Mono.usingWhen)"
+  - "JooqReactiveOperations.java:51-67 (executeInPartition with reduce-with-zipWith)"
+cross_references:
+  - "F-007 (P-07:F-001 Alerting — batch emission path)"
+  - "TEST-GAP-659 (Activity audit schema invariant — sibling SCHEMA-rooted pin)"
+  - "REFACTOR-NNN candidate: wrap save(List) in @ReactiveTransactional OR add compensating-delete on partial failure"
+proposed_action: |-
+  Repository-layer integration test. (a) Create 2001 ActivityPojos. (b) Inject a fault at the 1001st row (e.g. set `data_entity_id = 99999999` — FK violation). (c) Call `activityRepository.save(pojos)`. (d) Assert the returned Mono emits an error. (e) Query the activity table directly: `SELECT COUNT(*) FROM activity WHERE ...`. Assert count = 1000 (the first chunk committed; the second chunk's first row hit FK violation; the entire second chunk rolled back via PG, BUT the first chunk is committed). (f) Add a `// REGRESSION-PIN — Chunked batch save commits per-chunk with no overall transaction. A partial failure mid-batch leaves partial audit data. REFACTOR-NNN will wrap save(List) in @ReactiveTransactional; this test flips to expect count=0 (entire batch rolled back).` comment block. (g) Pair with a successful-batch variant asserting full count.
+related_features: [F-007]
+related_pillar_features: ["P-07:F-003", "P-07:F-001"]
+batch: 2026-05-20-R
+feature_id: F-007

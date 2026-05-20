@@ -30,6 +30,9 @@ drift_class_summary:
 - ui_has_no_local_login_form_invariant_framework_defaults_only
 - management_tab_rendered_to_all_authenticated_users_ux_visibility
 - logout_full_page_navigation_defer_session_termination_to_backend
+- activity_repo_read_side_provider_null_cross_mode_bleed_mirror_four_sites
+- cross_provider_username_row_duplication_external_joins_activity_audit_read_side
+- activity_anonymous_mutation_attribution_gap_disabled_mode_null_created_by
 cross_pillar_relationships:
 - pillar_id: P-01
   kind: feeds
@@ -418,6 +421,85 @@ batch_extensions:
     (LoginForm → AppToolbar) yields a new invariant ('UI has no local
     login form') that completes the picture of where the four auth modes
     are rendered.
+- batch: R
+  entry_point_added: |-
+    repository-tier:ReactiveActivityRepositoryImpl — the SQL-tier
+    READ-SIDE MIRROR of the provider-null cross-mode bleed. Batch N
+    closed the WRITE-SIDE mirror at ReactiveUserOwnerMappingRepositoryImpl
+    line 121-125 (the principal-to-owner resolution stamps username
+    only, without provider qualifier); this batch closes the READ-SIDE
+    mirror at FOUR ACTIVITY-READ JOIN SITES — every read path in the
+    Activity Feed surface joins `USER_OWNER_MAPPING ON OIDC_USERNAME =
+    ACTIVITY.CREATED_BY AND DELETED_AT IS NULL` (lines 157-158,
+    178-179, 199-200, 221-222) — provider-AGNOSTIC. The cross-mode
+    bleed described in batch N at the RESOLUTION layer is now
+    DEMONSTRATED end-to-end: a LOGIN_FORM 'alice' activity row and an
+    LDAP 'alice' activity row resolve to the SAME OwnerPojo in the
+    Activity Feed UI, EVEN IF THEY ARE DIFFERENT PEOPLE. Forensic
+    incident response over an audit feed is misled.
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+  notes: |-
+    Three new drift facets surface from the activity-repository
+    read-side primary source — completing the cross-mode-bleed
+    architectural picture:
+    (1) ACTIVITY REPO READ-SIDE PROVIDER-NULL CROSS-MODE BLEED MIRROR
+    (HIGH) — 4-SITE LEFT JOIN to USER_OWNER_MAPPING.OIDC_USERNAME
+    only, NO PROVIDER predicate. Lines 157-158 (findAllActivities),
+    178-179 (findMyActivities), 199-200 (findDependentActivities),
+    221-222 (findDataEntityActivities). The PROVIDER's absence is
+    deliberate (the JOIN ON predicate explicitly names OIDC_USERNAME
+    and DELETED_AT — TWO columns out of four available on
+    USER_OWNER_MAPPING; the omitted PROVIDER is NEVER referenced from
+    this file). The bleed is symmetric: write-side records only the
+    username (no provider qualifier — ActivityServiceImpl.java:47-49);
+    read-side joins by username only. PRIMARY-SOURCE READ-SIDE
+    confirmation of the F-011 batch-N
+    `provider_null_cross_mode_bleed_sql_primary_source` drift facet —
+    the architectural triangle is now closed: principal-layer
+    (AuthIdentityProviderImpl batch K) + SQL layer
+    (ReactiveUserOwnerMappingRepositoryImpl batch N) + READ-SIDE
+    consumer (ReactiveActivityRepositoryImpl batch R). LSN-018
+    cross-mode-bleed pattern manifests at TWO repository surfaces;
+    surface for ADR-CANDIDATE: should ALL read-side LEFT JOINs to
+    USER_OWNER_MAPPING add `AND PROVIDER = ?` to the join condition?
+    (4 other repositories were noted in batch N — alerts / activity
+    feed / Owner display non-deterministic; this batch confirms
+    activity-feed.)
+    (2) CROSS-PROVIDER USERNAME ROW-DUPLICATION (MEDIUM, refines
+    batch-N) — the activity-feed read paths LEFT JOIN by
+    OIDC_USERNAME only; when two USER_OWNER_MAPPING rows share the
+    same username string (multi-mode deployment with overlapping
+    namespaces — e.g. LOGIN_FORM creates 'alice' + LDAP later imports
+    'alice'), the LEFT JOIN produces MULTIPLE matched rows per
+    activity row, inflating the count + producing duplicate rows in
+    the SELECT result. The repository sidecar bugs_limitations_corner_cases[1]
+    explicitly names this as 'forensic-integrity class' severity HIGH.
+    Cross-link to F-011 batch-N drift_class
+    `cross_provider_username_row_duplication_external_joins`.
+    (3) ACTIVITY ANONYMOUS-MUTATION ATTRIBUTION GAP (MEDIUM, NEW)
+    — `activity.created_by` is varchar(512) NULLABLE
+    (V0_0_48__add_activity.sql:10). Anonymous mutations under
+    `auth.type=DISABLED` write `created_by=null`
+    (ActivityServiceImpl.java:47-49 — explicit
+    `switchIfEmpty(Mono.defer(...))` fallback). The null-`created_by`
+    rows orphan on the USER_OWNER_MAPPING LEFT JOIN and surface in
+    the UI with OwnerPojo=null — visually INDISTINGUISHABLE from
+    'system' events (the discriminator is `is_system_event`, which
+    CAN be `false` for null-created_by rows under DISABLED-mode
+    anonymous mutations). A reviewer cannot determine whether a
+    null-created_by `false`-system_event row is an unattributed user
+    action or a missed-username on a real user. Refines F-011
+    batch-K `s2s_admin_username_collision_security_boundary` family
+    pattern — the auth-mode-cost class extends to the audit-trail
+    too: DISABLED-mode is not just 'no access control', it is also
+    'no audit attribution'.
+    Coherence: STRENGTHENS F-011's batch-N
+    `provider_null_cross_mode_bleed_sql_primary_source` and
+    `cross_provider_username_row_duplication_external_joins`. NO
+    contradictions surfaced. NO supersedes — the prior batch findings
+    remain accurate; this batch closes the read-side primary source
+    for the cross-mode-bleed family.
 feature_name: Principal-to-Owner resolution — the per-request chokepoint that
   resolves Spring Authentication → UserDto(username, provider) → OwnerPojo via
   USER_OWNER_MAPPING JOIN
@@ -488,6 +570,7 @@ contributing_nodes:
 - odd-platform java OwnerController controller-method:updateOwner
 - odd-platform java OwnerServiceImpl
 - odd-platform ts react-component:AppToolbar
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
 chain:
 - hop: 0
   node: 'odd-platform java auth handler/logout:* (4 sidecars in batch O)'

@@ -1,0 +1,37 @@
+gap_id: TEST-GAP-659
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveActivityRepositoryImpl"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "ReactiveActivityRepositoryImpl.md:implicit_adrs.[0] (audit structurally scoped to data-entity events — SCHEMA-rooted impossibility)"
+  - "ReactiveActivityRepositoryImpl.md:security.known_security_gaps.[2] (audit-silence on RBAC / Owner / Datasource / Collector-token mutations is STRUCTURALLY ENFORCED at schema)"
+  - "ReactiveActivityRepositoryImpl.md:concepts.invariants.[0] (data_entity_id NOT NULL FK)"
+behaviour: |-
+  **SCHEMA-ROOTED REGRESSION-PIN: the activity audit log STRUCTURALLY CANNOT record RBAC / Owner / Datasource / Collector-token mutations.** This is NOT a missing-annotation gap — `V0_0_48__add_activity.sql:4` declares `data_entity_id bigint NOT NULL` and `V0_0_48__add_activity.sql:12` declares the FK constraint `activity_data_entity_id_fk FOREIGN KEY (data_entity_id) REFERENCES data_entity (id)`. Activity rows physically cannot exist without a `data_entity_id`. RBAC mutations (Role.create / Role.update / Policy.create / Owner.create / Owner.delete / role-to-owner attach / policy-to-role attach), Collector token rotation, Datasource registration — none of these have a `data_entity` context, so they cannot emit to this table even if a future `@ActivityLog` annotation were added. STRENGTHENS the 4-sidecar audit-silence pattern at the REPOSITORY-SCHEMA tier with the structural impossibility anchor: TEST-GAP-573 (Role-side audit-silence) + TEST-GAP-238 family (Owner audit-silence) + TEST-GAP-549 (Tag ingestion audit asymmetry) all share the same root cause but only this one is the SCHEMA-rooted PRIMARY-SOURCE pin. The remediation requires either: (a) a separate platform-event audit surface (e.g. `audit_event` table), (b) a NULLable `data_entity_id` with a discriminator, OR (c) acceptance that the activity table is the "data-entity audit log" not the "platform audit log" — with doc-side acknowledgement. No test currently pins this invariant; a future maintainer "fixing" the audit gap by adding `@ActivityLog` to RoleServiceImpl.create would discover the FK violation at runtime via an unhandled DataAccessException.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryAuditSchemaInvariantTest.java"
+  name: "saveActivity_withNullDataEntityId_failsWithFKViolation_pinsAuditSchemaInvariant"
+evidence:
+  - "ReactiveActivityRepositoryImpl.md says (implicit_adrs.[0]): 'Audit is structurally scoped to data-entity events: activity.data_entity_id is NOT NULL with FK constraint to data_entity(id) (V0_0_48__add_activity.sql:4,12). The decision encodes that this table is the data-entity audit log, not a platform audit log.'"
+  - "ReactiveActivityRepositoryImpl.md says (security.known_security_gaps.[2]): 'Audit-silence on RBAC / Owner / Datasource / Collector-token mutations is STRUCTURALLY ENFORCED at the schema (NOT a missing-annotation bug). The activity table CANNOT store an RBAC mutation event because data_entity_id is NOT NULL with FK to data_entity.' severity: HIGH"
+  - "V0_0_48__add_activity.sql:4 (`data_entity_id bigint NOT NULL`)"
+  - "V0_0_48__add_activity.sql:12 (`CONSTRAINT activity_data_entity_id_fk FOREIGN KEY (data_entity_id) REFERENCES data_entity (id)`)"
+  - "ReactiveActivityRepositoryImpl.java:219 (INNER JOIN to DATA_ENTITY in every read path — the FK is assumed unbreakable)"
+cross_references:
+  - "TEST-GAP-573 (Role-side audit-silence — STRENGTHENED by this SCHEMA-rooted pin)"
+  - "TEST-GAP-238 family (Owner audit-silence)"
+  - "TEST-GAP-549 (Tag ingestion audit asymmetry)"
+  - "F-006 (P-09:F-001 RBAC) — `forensic_silence_on_rbac_mutations` drift facet"
+  - "concepts/index.yaml — `audit-log-presence-asymmetry-2-tier-audit-story`"
+  - "concepts/index.yaml — `no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f`"
+  - "system-mission.md §Canonicalisation candidates — Audit-log Presence Asymmetry (2-tier audit story)"
+  - "REFACTOR-NNN candidate: introduce platform_audit_event table OR NULLable data_entity_id + discriminator"
+proposed_action: |-
+  Testcontainers integration test (schema-invariant pin). (a) Insert an Activity row via `dataSource.r2dbc().sql("INSERT INTO activity (id, event_type, old_state, new_state, is_system_event, created_at, created_by, data_entity_id) VALUES (?, 'ROLE_CREATED', '{}', '{}', false, NOW(), 'admin', NULL)").bind(...)`. Assert: SQLSTATE 23502 (not-null-violation) raised. (b) Variant — set `data_entity_id = 99999999` (non-existent FK). Assert: SQLSTATE 23503 (foreign-key-violation). (c) Pin that the table's design REQUIRES a real data_entity_id. (d) Add a `// SCHEMA INVARIANT: this test confirms the activity table cannot record non-data-entity events. To extend audit coverage to RBAC / Owner / Datasource mutations, a separate audit table is required. See concepts/index.yaml entry audit-log-presence-asymmetry-2-tier-audit-story.` comment block at the test top.
+related_features: [F-006, F-007, F-010]
+related_pillar_features: ["P-09:F-001", "P-07:F-003", "P-08:F-002"]
+batch: 2026-05-20-R
+feature_id: F-006

@@ -1,0 +1,36 @@
+gap_id: TEST-GAP-663
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveMetadataFieldRepositoryImpl"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "ReactiveMetadataFieldRepositoryImpl.md:bugs_limitations_corner_cases.[0] (Soft-delete + partial-unique-index mismatch — soft-deleted INTERNAL fields cannot be re-created)"
+  - "ReactiveMetadataFieldRepositoryImpl.md:concepts.invariants.[2] (Partial unique indexes do NOT include deleted_at IS NULL — tag_name_unique WAS updated; metadata_field was NOT)"
+  - "ReactiveMetadataFieldRepositoryImpl.md:coherence_with_prior.new_findings.[0]"
+behaviour: |-
+  **HIGH-impact latent UX bug: soft-deleted INTERNAL custom-metadata fields are PERMANENT name-blockers.** The partial unique indexes `IX_UNIQUE_INTERNAL_NAME ON metadata_field (name) WHERE origin = 'INTERNAL'` (V0_0_1__init.sql:242-244) and `IX_UNIQUE_EXTERNAL_NAME_TYPE ON metadata_field (type, name) WHERE origin <> 'INTERNAL'` (V0_0_1:238-240) filter ONLY by origin — NOT by `deleted_at`. The sibling `tag_name_unique` WAS migrated by `V0_0_64__remove_is_deleted_field.sql:103-105` to `WHERE tag.deleted_at IS NULL`; the metadata_field partial indexes were NOT touched by the same migration despite V0_0_64:41-50 retrofitting `deleted_at` to the metadata_field TABLE. **Consequence**: an operator who soft-deletes a custom INTERNAL metadata field `cost_centre` through the UI then tries to re-create it receives `UniqueConstraintException("Internal metadata with this name already exists")` (ExceptionUtils.java:63-65). But `listInternalMetadata` (line 43-56) FILTERS soft-deleted out via `addSoftDeleteFilter` (line 46), so the dropdown reports `cost_centre doesn't exist`. The user sees a contradictory state: "doesn't exist" in the dropdown but cannot create. No hard-delete path exists in the codebase; soft-deleted fields are permanent name-blockers until a manual DBA UPDATE removes the soft-deleted row. The asymmetry with Tag's V0_0_64 fix is undocumented and untested.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveMetadataFieldRepositoryImplTest.java (covers testListInternalMetadata + testListByKey — does NOT pin soft-delete recreation behaviour)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveMetadataFieldRepositorySoftDeleteResurrectionTest.java"
+  name: "metadataField_softDeleted_cannotBeRecreated_asymmetricWithTagPattern_pinsLatentUxBug"
+evidence:
+  - "ReactiveMetadataFieldRepositoryImpl.md says (bugs_limitations_corner_cases.[0]): 'Soft-delete + partial-unique-index mismatch — soft-deleted INTERNAL fields cannot be re-created by name. The partial unique indexes (V0_0_1__init.sql:238-244) filter only by origin, NOT by deleted_at. The sibling tag_name_unique WAS migrated in V0_0_64__remove_is_deleted_field.sql:103-105 to WHERE tag.deleted_at IS NULL; the metadata_field partial indexes were NOT updated by the same migration.' severity: MEDIUM (upgraded to HIGH for the user-facing UX impact)"
+  - "V0_0_1__init.sql:238-244 (partial indexes without deleted_at IS NULL)"
+  - "V0_0_64__remove_is_deleted_field.sql:41-50 (added deleted_at to metadata_field but did NOT update partial indexes)"
+  - "V0_0_64__remove_is_deleted_field.sql:103-105 (Tag's matching migration that DID update the partial index)"
+  - "ExceptionUtils.java:63-65 (the user-facing error: `Internal metadata with this name already exists`)"
+  - "ReactiveMetadataFieldRepositoryImpl.java:43-56 (listInternalMetadata filters soft-deleted out)"
+cross_references:
+  - "TEST-GAP-543 (Tag soft-delete recreation — the WORKING sibling pattern)"
+  - "TEST-GAP-239 (Owner partial-unique-name re-creation pattern)"
+  - "concepts/index.yaml candidate — `metadata-field-soft-delete-partial-index-mismatch`"
+  - "F-002 (P-01:F-002 Entity Description Editing)"
+  - "REFACTOR-NNN candidate: V0_NN migration to add WHERE deleted_at IS NULL to IX_UNIQUE_INTERNAL_NAME + IX_UNIQUE_EXTERNAL_NAME_TYPE (mirroring tag_name_unique)"
+proposed_action: |-
+  Testcontainers integration test (pinning the bug). (a) Create an INTERNAL metadata field via `metadataFieldRepository.bulkCreate(List.of(new MetadataFieldPojo().setName("cost_centre").setType("STRING").setOrigin("INTERNAL")))`. (b) Soft-delete via `metadataFieldRepository.delete(id)`. (c) Verify `listInternalMetadata("cost")` returns EMPTY (the field is hidden from the UI dropdown). (d) Attempt to re-create with the SAME name + same origin via `bulkCreate`. (e) Assert: `UniqueConstraintException` raised with message `Internal metadata with this name already exists`. (f) Add a `// REGRESSION-PIN — this test asserts the CURRENT LATENT BUG behaviour. The companion REFACTOR-NNN will add WHERE deleted_at IS NULL to the partial indexes (mirroring Tag's V0_0_64 fix); this test will then flip to assert that re-creation succeeds with a fresh id.` comment block. (g) Pair with a passing variant for EXTERNAL origin showing that `(name='cost_centre', type='STRING', origin='EXTERNAL')` and `(name='cost_centre', type='INTEGER', origin='EXTERNAL')` coexist (the asymmetric uniqueness model invariant).
+related_features: [F-002]
+related_pillar_features: ["P-01:F-002", "P-08:F-NN-management"]
+batch: 2026-05-20-R
+feature_id: F-002

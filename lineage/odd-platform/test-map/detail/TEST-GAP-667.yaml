@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-667
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveActivityRepositoryImpl"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "ReactiveActivityRepositoryImpl.md:bugs_limitations_corner_cases.[1] (Cross-mode actor bleed: LOGIN_FORM 'alice' and LDAP 'alice' resolve to the SAME OwnerPojo on the read path — severity HIGH forensic-integrity)"
+  - "ReactiveActivityRepositoryImpl.md:security.known_security_gaps.[0] (Provider-agnostic actor resolution = cross-mode bleed read surface)"
+  - "ReactiveActivityRepositoryImpl.md:implicit_adrs.[3]"
+behaviour: |-
+  **HIGH forensic-integrity bug: every Activity-Feed read path joins `USER_OWNER_MAPPING ON OIDC_USERNAME = ACTIVITY.CREATED_BY AND DELETED_AT IS NULL` (lines 157-158, 178-179, 199-200, 221-222) WITHOUT a provider qualifier.** Activity rows written by a LOGIN_FORM 'alice' resolve to the SAME OwnerPojo as activity rows written by an LDAP 'alice' on every cross-mode deployment — even though they may be different people in the operator's identity directory. This is the READ-SIDE mirror of the `provider-null-cross-mode-bleed` mechanism the batch-N `ReactiveUserOwnerMappingRepositoryImpl` sidecar surfaced; the resolution-side primary is THAT sidecar; this one is the NEW primary for the READ-side. The activity-side write (`ActivityServiceImpl.createActivityEvent` line 47-49) records the username string only (`UserDto::username`), with no provider qualifier — so the data is structurally permissive of the bleed. Forensic incident response over an audit feed is misled: a reviewer reading 'who deleted this dataset on 2026-04-15 at 09:33' may see "alice (Owner #42)" without being able to distinguish whether it was LOGIN_FORM alice or LDAP alice. The bleed is symmetric: write-side records only username; read-side joins by username only. STRENGTHENS the existing read-side pin (no exact prior TEST-GAP exists for this REPOSITORY layer — TEST-GAP-7116 from index covers the resolution side at user-owner-mapping).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryCrossModeActorBleedTest.java"
+  name: "findAllActivities_loginFormAndLdapSameUsername_resolveToSameOwnerPojo_pinsCrossModeBleed"
+evidence:
+  - "ReactiveActivityRepositoryImpl.md says (bugs_limitations_corner_cases.[1]): 'Cross-mode actor bleed: LOGIN_FORM alice and LDAP alice resolve to the SAME OwnerPojo on the read path. Every read query LEFT JOINs USER_OWNER_MAPPING ON OIDC_USERNAME = ACTIVITY.CREATED_BY AND DELETED_AT IS NULL (lines 157-158, 178-179, 199-200, 221-222) — provider-agnostic.' severity: HIGH (forensic-integrity class — auditing who did X returns ambiguous answers when the username space overlaps across auth modes)"
+  - "ReactiveActivityRepositoryImpl.java:157-158, 178-179, 199-200, 221-222 (four occurrences of the provider-agnostic LEFT JOIN)"
+  - "V0_0_48__add_activity.sql:10 (`created_by varchar(512)` — no provider column)"
+  - "ActivityServiceImpl.java:47-49 (write-side: UserDto::username only — no provider qualifier)"
+cross_references:
+  - "concept catalog — `provider-null-cross-mode-bleed` (the resolution-side primary)"
+  - "TEST-GAP-NNN (existing user-owner-mapping bleed test in batch N — pins resolution side)"
+  - "F-006 (P-09:F-001 RBAC) — cross-mode forensic gap"
+  - "F-007 (P-07:F-003 Activity Feed)"
+  - "REFACTOR-NNN candidate: add `provider` column to `created_by_provider` discriminator OR enforce uniqueness on (username, provider) at user-owner-mapping creation"
+proposed_action: |-
+  Testcontainers integration test. (a) Provision two user_owner_mapping rows: `(oidc_username='alice', provider='LOGIN_FORM', owner_id=42, deleted_at=NULL)` and `(oidc_username='alice', provider='LDAP', owner_id=43, deleted_at=NULL)`. (b) Insert ONE activity row with `created_by='alice'` referencing data_entity_id=1. (c) Call `activityRepository.findAllActivities(...)` and read the resolved OwnerPojo. (d) Assert: the returned OwnerPojo is DETERMINISTIC across runs (it always resolves to ONE of the two, not both — the LEFT JOIN multiplicity produces 2 rows; the activity row appears DUPLICATED in the result set). (e) Pin the duplication-or-arbitrary-pick failure mode: the read path has NO DISTINCT and NO ORDER BY on the USER_OWNER_MAPPING join, so the duplication is observable. (f) Add a `// REGRESSION-PIN — Cross-mode bleed CURRENT behaviour: the username-only JOIN produces ambiguous owner resolution. REFACTOR-NNN will add a provider-aware predicate; this test will then flip to assert deterministic resolution by (username, provider).` comment block.
+related_features: [F-006, F-007]
+related_pillar_features: ["P-09:F-001", "P-07:F-003"]
+batch: 2026-05-20-R
+feature_id: F-007

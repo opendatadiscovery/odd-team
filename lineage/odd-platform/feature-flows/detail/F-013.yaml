@@ -16,6 +16,101 @@ drift_class_summary:
 - disabled_mode_bypass
 - unbounded_value_length_at_every_layer
 - metadata_field_globally_unscoped
+- metadata_field_soft_delete_partial_unique_index_resurrection_block
+- metadata_field_asymmetric_uniqueness_internal_name_vs_external_name_type
+- metadata_field_case_sensitivity_asymmetry_exact_vs_substring
+- metadata_field_get_dtos_by_data_entity_id_no_soft_delete_filter
+- metadata_field_doc_gap_feature_absent_from_data_discovery_page
+batch_extensions:
+- batch: R
+  entry_point_added: |-
+    repository-tier:ReactiveMetadataFieldRepositoryImpl — the SQL-tier
+    primary source for the metadata_field DEFINITION registry (paired
+    with the existing ReactiveMetadataFieldValueRepositoryImpl batch L
+    surface, which handles VALUES). The repository is the registry of
+    custom-metadata FIELD DEFINITIONS keyed by `(name, type, origin)`
+    — global, no tenant/owner column. Four public methods plus
+    inherited CRUD: listInternalMetadata (UI dropdown), listByKey
+    (auto-create-on-miss diff), ingestData (collector-ingestion upsert),
+    getDtosByDataEntityId (per-entity panel render). The sidecar
+    surfaces FIVE load-bearing facets at the SCHEMA-PLUS-WRITE-PATH
+    tier closing F-013's existing UPDATE-not-UPSERT family at the
+    registry tier.
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveMetadataFieldRepositoryImpl
+  notes: |-
+    FIVE new drift facets surface from the metadata-field-registry
+    SQL-tier primary source. Listed in descending severity:
+    (1) METADATA_FIELD SOFT-DELETE + PARTIAL-UNIQUE-INDEX MISMATCH —
+    RESURRECTION BLOCK (MEDIUM, latent UX bug) — the partial unique
+    indexes IX_UNIQUE_INTERNAL_NAME (V0_0_1__init.sql:242-244, on
+    `name` WHERE origin='INTERNAL') and IX_UNIQUE_EXTERNAL_NAME_TYPE
+    (V0_0_1:238-240, on `(type, name)` WHERE origin <> 'INTERNAL')
+    filter only by origin; NEITHER was updated by
+    V0_0_64__remove_is_deleted_field.sql to also exclude soft-deleted
+    rows. The sibling tag_name_unique WAS updated to
+    `WHERE tag.deleted_at IS NULL` in the same migration
+    (V0_0_64:103-105). Consequence: a soft-deleted INTERNAL metadata
+    field with name 'cost_centre' STILL BLOCKS creation of a fresh
+    'cost_centre:INTERNAL' row (UniqueConstraintException), but
+    `listInternalMetadata` filters soft-deleted out via
+    addSoftDeleteFilter so the read side reports 'doesn't exist'.
+    Re-creation is impossible until the soft-deleted row is
+    hard-deleted (no path in the codebase performs this).
+    The user-facing error message at ExceptionUtils.java:63-65 is
+    'Internal metadata with this name already exists' — confusing
+    for an operator who just soft-deleted the field via UI.
+    (2) METADATA_FIELD ASYMMETRIC UNIQUENESS BY ORIGIN (MEDIUM,
+    schema-design) — INTERNAL fields are unique by NAME alone;
+    EXTERNAL fields are unique by (TYPE, NAME). Operator-curated
+    `cost_centre:STRING` (INTERNAL) blocks `cost_centre:INTEGER`
+    (INTERNAL); collector-ingested `cost_centre:STRING` (EXTERNAL)
+    coexists with `cost_centre:INTEGER` (EXTERNAL). The asymmetry
+    is intentional (the partial indexes encode it deliberately) but
+    UNDOCUMENTED at the doc-site or in code comments. A user
+    creating a metadata field via the UI cannot know that
+    `cost_centre:STRING` blocks `cost_centre:INTEGER`. A collector
+    emitting both is silently accepted as two distinct rows.
+    Implicit ADR per the sidecar's implicit_adrs[1].
+    (3) METADATA_FIELD CASE-SENSITIVITY ASYMMETRY (MEDIUM, refines
+    F-013 `no_type_validation_against_metadata_field_type`) —
+    `listByKey` uses `METADATA_FIELD.NAME.eq(t.fieldName())` —
+    case-SENSITIVE Postgres text equality. `listInternalMetadata`
+    uses `nameField.containsIgnoreCase(query)` — case-INSENSITIVE
+    ILIKE substring. UI search for 'cost' returns both `cost_centre`
+    and `COST_CENTRE`, but the auto-create-on-miss diff in
+    `MetadataFieldServiceImpl.getOrCreateMetadataFields` treats them
+    as distinct names. A user typing with different casing across
+    two entities creates two distinct field rows; both visible in
+    the dropdown; both confusing on read. Same shape as the Tag
+    asymmetry (concept catalog `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`).
+    (4) METADATA_FIELD GETDTOSBYDATAENTITYID NO SOFT-DELETE FILTER
+    (MEDIUM) — line 116 of the repository joins `metadata_field` →
+    `metadata_field_value` WHERE data_entity_id = ? but carries NO
+    `.where(METADATA_FIELD.DELETED_AT.isNull())` filter. Soft-deleted
+    fields with values still attached to a data entity surface on
+    the detail page — orphan-like values stay visible. Combined
+    with the no-CASCADE FK design (V0_0_1:184-185), soft-deleting
+    a `metadata_field` hides it from the UI dropdown
+    (`listInternalMetadata`) but NOT from per-entity rendering.
+    Cross-link to F-013's `metadata_field_globally_unscoped` family.
+    (5) METADATA_FIELD DOC-GAP — FEATURE ABSENT FROM DATA DISCOVERY
+    PAGE (MEDIUM, doc-class) — WebFetched 2026-05-20 against
+    `https://docs.opendatadiscovery.org/features/data-discovery`
+    confirmed (the repository sidecar's docs_link_semantic[1]) that
+    NO operator-facing doc page describes the custom-metadata
+    feature itself. Data Discovery page (the natural home per P-01)
+    lists every other annotation surface (tags, descriptions,
+    attachments, statuses, business names) but not custom metadata.
+    Operators evaluating the feature can only find it via the
+    permissions reference at `authorization/permissions`. This
+    corroborates the F-013 batch-L doc-gap finding at the FEATURE
+    level. Filed as DOC-GAP-NNN candidate (deferred to doc-gap-finder).
+    Coherence: STRENGTHENS F-013's existing
+    `metadata_field_globally_unscoped`,
+    `no_type_validation_against_metadata_field_type`, and the
+    audit/feature-doc gap on Custom Metadata. NO contradictions
+    surfaced. NO supersedes.
 discovered_from_entry_point: rest:PUT /api/dataentities/{id}/metadata/{field_id}
 contributing_nodes:
 - odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue
@@ -25,6 +120,7 @@ contributing_nodes:
 - odd-platform java ReactiveSearchEntrypointRepository
 - odd-platform java SecurityConstants
 - odd-platform java ActivityEventTypeDto
+- odd-platform java repository reactive repository:ReactiveMetadataFieldRepositoryImpl
 description: |-
   Operators edit a data entity's custom metadata field values via
   `PUT /api/dataentities/{data_entity_id}/metadata/{metadata_field_id}` with

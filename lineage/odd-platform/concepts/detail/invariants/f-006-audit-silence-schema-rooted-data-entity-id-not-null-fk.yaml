@@ -1,0 +1,203 @@
+name: F-006 audit-silence is SCHEMA-ROOTED — activity.data_entity_id NOT NULL FK
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+- P-09
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20R — SCHEMA-LAYER ROOT
+  CAUSE for the F-006 audit-silence pattern** — surfaced by the
+  ReactiveActivityRepositoryImpl batch-R sidecar's primary-source
+  inspection of the V0_0_48__add_activity.sql migration. The platform's
+  audit silence on RBAC mutations (Role / Policy / Owner CRUD,
+  Datasource registrations, Collector token rotations) is NOT a
+  missing-annotation gap — it is a SCHEMA-LEVEL IMPOSSIBILITY. The
+  `activity.data_entity_id` column is declared `bigint NOT NULL` at
+  `V0_0_48__add_activity.sql:4` with an explicit FK constraint
+  `activity_data_entity_id_fk FOREIGN KEY (data_entity_id) REFERENCES
+  data_entity(id)` at `V0_0_48__add_activity.sql:12`. Combined with
+  the INNER JOIN to DATA_ENTITY at ReactiveActivityRepositoryImpl.java:219
+  (every read path requires the FK target to exist), the audit table
+  STRUCTURALLY CANNOT store an event that does not reference a data
+  entity.
+
+  **The 7-sidecar audit-silence pattern (F-006) is now SCHEMA-CONFIRMED**:
+  RBAC mutations (Role.create / Role.update / Role.delete /
+  Policy.create / Policy.update / Policy.delete / Owner.create /
+  Owner.update / Owner.delete / role-to-owner attach / policy-to-role
+  attach / user_owner_mapping changes), Datasource registrations
+  (`POST /ingestion/datasources` → DataSourceIngestionServiceImpl),
+  and Collector token rotations (CollectorServiceImpl.regenerateToken)
+  HAVE NO `data_entity_id` to bind. They CANNOT emit to the activity
+  table even if a future `@ActivityLog` annotation were retrofitted
+  onto OwnerServiceImpl.create / RoleServiceImpl.create /
+  PolicyServiceImpl.create / etc. The activity table is structurally
+  a "data-entity audit log", not a "platform audit log".
+
+  **The schema author's intent is explicit**: the FK constraint name
+  `activity_data_entity_id_fk` (verbose, schema-evolution-aware
+  naming) and the deliberate choice of NOT NULL over the alternative
+  `data_entity_id bigint NULL` together encode the commitment to
+  data-entity-scoped audit. The schema author chose NOT to leave the
+  door open for non-data-entity events.
+
+  **Cross-pillar consequence — refinement to F-006 INTERPRETATION**:
+  the F-006 "no-audit-log on RBAC mutations" finding (7-sidecar pattern
+  across UI + controllers + services + repositories) was previously
+  framed as a hygiene gap closable by adding `@ActivityLog` annotations
+  + extending ActivityEventType enum. The batch-R schema confirmation
+  refines this: adding `@ActivityLog` annotations is INSUFFICIENT —
+  any audit-table extension to RBAC must EITHER (a) make
+  `activity.data_entity_id` NULLABLE + add a discriminator column
+  (`activity.event_scope: DATA_ENTITY|RBAC|DATASOURCE|COLLECTOR`); OR
+  (b) create a separate audit surface (e.g. `rbac_audit` table) with
+  its own FK shape. Option (a) breaks every existing read path's INNER
+  JOIN assumption; Option (b) means TWO audit surfaces and the
+  operator-facing Activity Feed UI needs to merge them.
+
+  **The structural enforcement is also a SAFETY mechanism** — it
+  prevents the audit table from accidentally storing orphaned events
+  (events referencing deleted or never-created data entities). The
+  trade-off chosen at V0_0_48 was strong-typing the FK at the cost of
+  RBAC audit coverage. The decision is undocumented at the operator-
+  facing docs layer — operators reading the Activity Feed page see
+  "every platform change is audited" implicit framing, while the
+  schema enforces the opposite.
+
+  **Companion finding (cascade-delete dependence)**: the FK has no
+  `ON DELETE` clause specified in V0_0_48, so Postgres defaults to
+  `NO ACTION`. If a DataEntityHousekeepingJob ever cascade-deletes
+  data_entity rows past TTL (per F-010 housekeeping), the activity
+  rows referencing those data entities would either (i) block the
+  delete (NO ACTION default; housekeeping fails silently) OR
+  (ii) cascade-delete if a future migration adds `ON DELETE CASCADE`
+  (the audit trail explaining WHO created the deleted entity is
+  destroyed alongside the entity). Forensic implication: cleaning up
+  old data entities ALSO cleans up the audit trail explaining their
+  origin. **The structural audit-silence on RBAC is paired with a
+  structural audit-erasure on TTL-deleted data entities** — the audit
+  surface has TWO classes of forensic blind spot, both schema-rooted.
+nodes:
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+contributors:
+- |-
+  ReactiveActivityRepositoryImpl batch R (PRIMARY SOURCE — SCHEMA-LAYER):
+  concepts.invariants.[0] (data_entity_id NOT NULL FK; RBAC / Owner /
+  Datasource / Collector mutations CANNOT emit to this table) +
+  implicit_adrs.[0] (audit structurally scoped to data-entity events;
+  the FK constraint name + NOT NULL together encode the deliberate choice)
+  + bugs_limitations_corner_cases.[6] (INNER JOIN to DATA_ENTITY means
+  orphan audit rows after data_entity hard-delete disappear from reads —
+  the companion structural audit-erasure) +
+  security.known_security_gaps.[2] (HIGH severity — audit-silence on RBAC
+  / Owner / Datasource / Collector mutations is STRUCTURALLY ENFORCED;
+  not a missing-annotation bug) +
+  coherence_notes.kind:strengthens target:F-006 (the audit-silence pattern
+  is STRUCTURALLY REINFORCED — the activity table cannot physically store
+  an event without a data_entity context; PRIMARY-SOURCE anchor for the
+  data-entity-scoping invariant)
+evidence:
+- |-
+  ReactiveActivityRepositoryImpl.md:concepts.invariants.[0] +
+  implicit_adrs.[0] + security.known_security_gaps.[2] —
+  evidence:
+    V0_0_48__add_activity.sql:4 (`data_entity_id bigint NOT NULL`) +
+    V0_0_48__add_activity.sql:12 (`CONSTRAINT activity_data_entity_id_fk
+      FOREIGN KEY (data_entity_id) REFERENCES data_entity (id)`) +
+    ReactiveActivityRepositoryImpl.java:155, 176, 197, 219 (INNER JOIN
+      to DATA_ENTITY in every read path; assumes the FK is unbreakable)
+- |-
+  ReactiveActivityRepositoryImpl.md:bugs_limitations_corner_cases.[6]
+  (forensic-history-erasure on cascade-delete) — evidence:
+    V0_0_48__add_activity.sql:12 (no ON DELETE clause) +
+    F-010 DataEntityHousekeepingJob sidecar (TTL cascade-delete path)
+- |-
+  ReactiveActivityRepositoryImpl.md:coherence_notes.strengthens.F-006
+  (PRIMARY-SOURCE anchor for the data-entity-scoping invariant; the
+  audit-silence is not a missing-annotation gap but a schema-level
+  impossibility)
+axes_present:
+- repositories_reactive
+- schema_migrations
+triangulation_count: 1
+cross_batch: true
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+- |-
+  Option A (in-place audit-table extension): V0_NN migration making
+  `activity.data_entity_id` NULLABLE + adding a `event_scope` discriminator
+  column (`DATA_ENTITY | RBAC | DATASOURCE | COLLECTOR | USER_OWNER_BINDING`).
+  Update ReactiveActivityRepositoryImpl read paths to use LEFT JOIN
+  to DATA_ENTITY (with `event_scope = 'DATA_ENTITY'` predicate where
+  appropriate) and update the UI to render non-data-entity rows.
+  HIGH-scope migration; touches every read path.
+- |-
+  Option B (separate audit surface): create a sibling `rbac_audit`
+  / `platform_audit` table with its own schema (FK to actor +
+  action + resource + timestamp; no data_entity FK). Add a
+  PlatformAuditService bean writing to it. Update the Activity Feed
+  UI to merge both tables on read. MEDIUM-scope; new surface; UI work.
+- |-
+  Option C (operator-facing documentation): rewrite the Activity Feed
+  live page to explicitly state "the activity feed covers data-entity
+  events only; RBAC / Owner directory / Datasource / Collector changes
+  are NOT recorded — investigate via application logs (not retained by
+  default)". Cheapest; preserves the existing schema; arms operators
+  with accurate expectations.
+- |-
+  Companion fix for the cascade-delete forensic-erasure: add `ON DELETE
+  RESTRICT` to the FK constraint to make the housekeeping cascade FAIL
+  LOUDLY when activity rows still reference a TTL-deleted entity, OR
+  add a pre-cleanup hook in DataEntityHousekeepingJob that snapshots
+  the activity rows to a separate `archived_activity` table before
+  cascading. Either preserves the audit trail across TTL cleanup.
+notes: |-
+  This invariant is the SCHEMA-LAYER ROOT CAUSE underlying the F-006
+  audit-silence pattern. The 7-sidecar F-006 evidence chain (UI tier
+  via batch Q, controller tier via batches E + P, service tier
+  inferred, repository tier via batches H + N) all surface the
+  audit-silence as observable behaviour; the batch-R schema-layer
+  primary source explains WHY it is the way it is. **Future
+  remediation conversations should start at this schema-layer
+  invariant, not at the higher-tier surfaces.** Adding `@ActivityLog`
+  to OwnerServiceImpl.create without resolving the schema constraint
+  is a dead-end fix; the annotation would fire and the activity-event
+  emission would fail at the FK constraint at INSERT time.
+
+  **The fix scope is therefore larger than F-006's per-sidecar
+  recommendations suggested** — the F-006 concept entry recommends
+  "wire @ActivityLog(OWNER_CREATED) / OWNER_UPDATED / OWNER_DELETED";
+  this is INSUFFICIENT without a schema migration. The right scope
+  is a Schema Migration + Audit Service Refactor jointly, not an
+  annotation sprinkle.
+
+  **Cross-cutting connections**:
+    - Anchors the F-006 7-sidecar audit-silence pattern
+      (no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f)
+      at the SCHEMA layer
+    - Pairs with the activity-table-partitioning invariant — both are
+      durability characteristics of the activity table; this one
+      captures the COVERAGE characteristic (what events fit), the
+      partition invariant captures the RETENTION characteristic
+      (whether old rows are dropped)
+    - Pairs with the read-collaborative-cross-owner-enumeration
+      invariant — the audit feed has BOTH a coverage gap (RBAC events
+      missing) AND a reading-blast-radius (every authenticated user
+      can read everything); BOTH are independent forensic
+      vulnerabilities
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Document on the Activity Feed live page that the audit
+        coverage is data-entity-scoped only — operators reading the
+        page should not assume RBAC / Owner / Datasource / Collector
+        changes are captured
+    (b) Document the cascade-delete forensic-erasure (when entities
+        are TTL-cleaned, their audit history goes with them) on the
+        Data Entity Status / Lifecycle live page — operators
+        reasoning "I can always reconstruct what happened to a
+        deleted entity" need this knowledge
+    (c) Document the proposed two-table audit pattern (DATA_ENTITY
+        + PLATFORM) in an internal architecture note, anchored on
+        this concept entry, so future maintainers approaching the
+        F-006 remediation see the schema constraint up-front

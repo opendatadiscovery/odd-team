@@ -1,0 +1,32 @@
+gap_id: TEST-GAP-662
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveDataSourceRepositoryImpl"
+pillars_affected: [P-08]
+surfaced_by:
+  - "ReactiveDataSourceRepositoryImpl.md:coherence_check.conflicts_surfaced.[0] (NEW finding: listDto page-vs-count predicate divergence — REFACTOR-425)"
+  - "ReactiveDataSourceRepositoryImpl.md:concepts.invariants.[7] (listDto page uses startsWithIgnoreCase; count uses containsIgnoreCase — pagination math broken)"
+  - "ReactiveDataSourceRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[4] (listDto nameQuery non-null — pin the divergence)"
+behaviour: |-
+  **HIGH-impact UI pagination correctness bug: `listDto` page query and count query use DIFFERENT predicates on `nameQuery`.** `ReactiveDataSourceRepositoryImpl.java:58-82` paginates with the private `queryCondition(nameQuery)` at line 156 which uses `DATA_SOURCE.NAME.startsWithIgnoreCase(nameQuery)`; the count branch `fetchCount(nameQuery)` at line 80 reaches the parent's `listCondition` (ReactiveAbstractCRUDRepository.java:236-249 line 243) which uses `nameField.containsIgnoreCase(nameQuery)` (overridden by `ReactiveAbstractSoftDeleteCRUDRepository.java:87-89` to add the soft-delete predicate). **The page returns rows whose name STARTS WITH the query; the count reports rows whose name CONTAINS the query.** For a catalog with datasources named `['snowflake-prod', 'my-snowflake-dev', 'redshift-prod']`, the query `nameQuery='snow'` returns ONLY `snowflake-prod` on the page (size=1) but the count reports `2` (both contain 'snow'). Pagination math is broken when `nameQuery` is non-null: `hasNext=false` because the page is the only one — but the page only shows 1 of 2 reported matches. The operator's "1 of 2" UI display contradicts the actual page content. Filed as **REFACTOR-425** at the sidecar layer. The fix requires aligning either the page predicate to `containsIgnoreCase` (broadens results) OR the count predicate to `startsWithIgnoreCase` (narrows results) — both are valid; the maintainer must pick. No test exists for ANY listDto + nameQuery combination at the repository layer.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/DataSourceRepositoryImplTest.java (covers listDto pagination — does NOT exercise nameQuery non-null path)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataSourceRepositoryListDtoPredicateDivergenceTest.java"
+  name: "listDto_withNameQuery_pageStartsWith_countContainsIgnoreCase_pinsPredicateDivergenceREFACTOR425"
+evidence:
+  - "ReactiveDataSourceRepositoryImpl.md says (coherence_check.conflicts_surfaced.[0]): 'listDto(page, size, nameQuery) (lines 58-82) uses DATA_SOURCE.NAME.startsWithIgnoreCase(nameQuery) (private queryCondition at line 156) for the query, but the count branch (fetchCount(nameQuery) at line 80) calls the parent listCondition (ReactiveAbstractCRUDRepository.java:236-249) which uses nameField.containsIgnoreCase(nameQuery) (line 243). The page returns rows whose name STARTS WITH the query; the count reports rows whose name CONTAINS the query.' severity: MEDIUM (upgraded to HIGH for the integration-test surface — pagination math is silently wrong on every UI Datasources tab query)"
+  - "ReactiveDataSourceRepositoryImpl.java:156 (private queryCondition — startsWithIgnoreCase)"
+  - "ReactiveAbstractCRUDRepository.java:243 (parent listCondition — containsIgnoreCase)"
+  - "ReactiveAbstractSoftDeleteCRUDRepository.java:87-89 (soft-delete override on listCondition — preserves the parent's containsIgnoreCase)"
+cross_references:
+  - "REFACTOR-425 (the sibling REFACTOR-scopes entry allocated by this sidecar)"
+  - "F-020 (P-08:F-NN-Datasources-tab — unresolved pillar feature; this drives Datasources tab pagination correctness)"
+  - "TEST-GAP-661 (sibling — partial-unique rollback)"
+proposed_action: |-
+  Testcontainers integration test (pinning the bug, not the fix). (a) Seed three live datasources: `['snowflake-prod', 'my-snowflake-dev', 'redshift-prod']`. (b) Call `dataSourceRepository.listDto(page=1, size=10, nameQuery='snow')`. (c) Assert `page.data.size() == 1` (only 'snowflake-prod' STARTS WITH 'snow'). (d) Assert `page.total == 2` (both 'snowflake-prod' and 'my-snowflake-dev' CONTAIN 'snow'). (e) Assert `page.hasNext == false` (1 page is enough for total=2, size=10). (f) Add a `// REGRESSION-PIN — this test asserts the CURRENT BUGGY behaviour. REFACTOR-425 will align the predicates; flip this test to assert the chosen direction (page == total — either both 'contains' or both 'starts-with').` comment block. (g) Also pin the regression-direction for the equivalent query mode where startsWithIgnoreCase is used in BOTH branches (the desired fix shape).
+related_features: [F-020]
+related_pillar_features: ["P-08:F-NN-Datasources-tab"]
+batch: 2026-05-20-R
+feature_id: F-020

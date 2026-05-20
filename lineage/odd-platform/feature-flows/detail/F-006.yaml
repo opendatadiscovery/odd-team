@@ -8,6 +8,8 @@ drift_class_summary:
 - lost_update_race
 - service_tier_transactional_asymmetry
 - forensic_silence_on_rbac_mutations
+- audit_silence_schema_rooted_activity_data_entity_fk_not_null
+- seven_sidecar_audit_silence_pattern_repo_tier_schema_root_cause
 - administrator_name_create_path_asymmetry
 - owner_create_bypass_via_ownership_endpoint
 - title_directory_no_allowlist_no_create_permission
@@ -348,6 +350,70 @@ batch_extensions:
     query-clear, NOT on every keystroke. Recorded as a NEGATIVE
     finding (LSN-017-safe by structure) so a future scan need not
     re-investigate.
+- batch: R
+  entry_point_added: |-
+    repository-tier:ReactiveActivityRepositoryImpl — the SQL-tier
+    primary source for the audit-silence finding. The Activity Feed's
+    write surface (saveReturning / save) is the funnel every
+    `@ActivityLog`-annotated service method flows through (18 enumerated
+    methods across DataEntityServiceImpl + OwnershipServiceImpl +
+    TermServiceImpl + DatasetFieldServiceImpl + etc). RBAC mutation
+    services (RoleServiceImpl + PolicyServiceImpl + OwnerServiceImpl)
+    carry NO @ActivityLog annotations — the 6-sidecar audit-silence
+    pattern (batch Q's UI tier corroboration) refines to 7-SIDECAR
+    with the SCHEMA-LAYER ROOT CAUSE: `activity.data_entity_id` is
+    NOT NULL with FK constraint to `data_entity(id)`
+    (V0_0_48__add_activity.sql:4,12). The audit table CANNOT physically
+    store an event that lacks a data_entity reference. RBAC mutations
+    have no data-entity context — they CANNOT emit to this table even
+    if a future @ActivityLog were added to the service methods. The
+    audit-silence is not a missing-annotation gap; it is a SCHEMA-LEVEL
+    IMPOSSIBILITY requiring a separate audit surface (or a NULLable
+    data_entity_id with a discriminator column).
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+  notes: |-
+    Two new drift facets surface from the repository-tier primary source,
+    both elevating the existing audit-silence finding from
+    "missing-annotation gap" to "schema-rooted impossibility":
+    (1) AUDIT-SILENCE SCHEMA-ROOTED — ACTIVITY.DATA_ENTITY_ID NOT NULL
+    FK (HIGH, structural) — V0_0_48__add_activity.sql:4 declares
+    `data_entity_id bigint NOT NULL`; line 12 declares the FK constraint
+    `activity_data_entity_id_fk FOREIGN KEY (data_entity_id) REFERENCES
+    data_entity (id)`. The schema author committed to data-entity-scoped
+    audit; the FK constraint name (`activity_data_entity_id_fk`) is
+    verbose and schema-evolution-aware — both line 4 (NOT NULL) and
+    line 12 (the named FK) are EXPLICIT choices over the alternative
+    `data_entity_id bigint NULL`. ReactiveActivityRepositoryImpl line
+    219 uses INNER JOIN to DATA_ENTITY in every read path
+    (`.join(DATA_ENTITY).on(DATA_ENTITY.ID.eq(ACTIVITY.DATA_ENTITY_ID))`),
+    enforcing the invariant at read time too. Implicit ADR (per the
+    sidecar's implicit_adrs[0]): the activity table is the 'data-entity
+    audit log', NOT the 'platform audit log'. A schema migration is
+    REQUIRED to capture RBAC / Owner CRUD / Datasource registration /
+    Collector token mutation events.
+    (2) SEVEN-SIDECAR AUDIT-SILENCE PATTERN — REPO-TIER SCHEMA ROOT
+    CAUSE (HIGH) — refines the cross-batch concept catalog
+    (`no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f`)
+    from 6-SIDECAR (RoleController batch E + PolicyController batch E +
+    ReactivePolicyRepositoryImpl batch H + ReactiveRoleRepositoryImpl
+    batch N + OwnerServiceImpl batch P + PolicyList/RolesList batch Q
+    UI tier) to 7-SIDECAR with the audit-target repository itself.
+    The recommendation: ELEVATE the audit-log gap to FIRST-PRIORITY +
+    propose a CONCRETE remediation path (either a separate `platform_event`
+    table with no data_entity FK, OR a schema-migration making
+    `activity.data_entity_id` NULLable + adding a discriminator
+    column). The repository-tier evidence makes "add @ActivityLog
+    annotations to RBAC services" insufficient as a fix — the WRITE
+    PATH would fail at the SQL layer with FK-violation.
+    Cross-batch coherence: STRENGTHENS F-006's existing
+    `forensic_silence_on_rbac_mutations`,
+    `six_sidecar_audit_silence_pattern_ui_tier_confirmation`, and the
+    canonicalisation candidate `Audit-log Presence Asymmetry (2-tier
+    audit story)` from system-mission.md. NO contradictions surfaced
+    by the pre-emit Rule-6 coherence check. NO supersedes — the prior
+    batch findings remain accurate; this batch adds the SCHEMA-LAYER
+    root cause beneath them.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: RBAC policy lifecycle — soft-delete with permission-grant persistence
@@ -423,6 +489,7 @@ contributing_nodes:
 - odd-platform java OwnerController controller-method:deleteOwner
 - odd-platform ts react-component:PolicyList
 - odd-platform ts react-component:RolesList
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
 chain:
 - hop: 1
   node: odd-platform java PolicyController controller-method:createPolicy

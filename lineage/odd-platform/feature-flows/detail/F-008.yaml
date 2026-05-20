@@ -17,6 +17,13 @@ drift_class_summary:
 - upsert_partial_merge_name_and_description_only
 - namespace_inherited_from_collector_payload_silently_dropped
 - session_state_loss_5xx_not_401
+- upsert_partial_merge_service_tier_convention_not_repo_tier_enforcement
+- datasource_listdto_page_vs_count_predicate_divergence_startswith_vs_contains
+- data_source_name_partial_unique_index_silent_collision_mid_upsert
+- collector_token_plaintext_at_rest_sql_primary_source
+- token_value_no_unique_constraint_cross_collector_share_race
+- soft_deleted_collector_orphaned_token_persists_indefinitely
+- always_on_ingestion_datasource_filter_vs_opt_in_ingestion_entities_filter
 - ui_vs_api_asymmetry_under_disabled_collector_permission_family
 - token_rotation_no_ui_warning_no_security_effect_on_default
 - token_visibility_substring_prefix_sniff_fragile
@@ -273,6 +280,157 @@ batch_extensions:
     booleans + a string in deps, NOT a fetch-result derivation — the
     LSN-017 amplification shape is structurally ABSENT from this
     component.
+- batch: R
+  entry_point_added: |-
+    repository-tier (2 sidecars): ReactiveDataSourceRepositoryImpl +
+    ReactiveCollectorRepositoryImpl — the SQL-tier substrates of the
+    Batch Ingestion auth path AND the UPSERT semantics that batch P
+    surfaced at the controller layer.
+    ReactiveDataSourceRepositoryImpl: provides the UPSERT-pair primitives
+    (`getDtosByOddrns` → matched / `bulkCreate` for new — invoked by
+    DataSourceIngestionServiceImpl.java:35-72 inside
+    `@ReactiveTransactional`), the `getIdByOddrnForUpdate` row-lock
+    primitive (IngestionServiceImpl.java:68 — the SELECT FOR UPDATE
+    that serialises ingestion against concurrent UI deletes /
+    collector re-registrations), and the cascade-delete guards
+    `existsByCollector` / `existsByNamespace`.
+    ReactiveCollectorRepositoryImpl: provides the
+    `getByToken(token)` SQL bridge query that
+    `IngestionDataSourceFilter` (ALWAYS-ON, no `@ConditionalOnProperty`
+    per IngestionDataSourceFilter.java:15-22) calls on every
+    `POST /ingestion/datasources` to resolve an inbound
+    `Authorization: Bearer <plaintext>` to a Collector id, AND the
+    `getDto(id)` query that `IngestionDataEntitiesFilter` (OPT-IN
+    via `auth.ingestion.filter.enabled`) calls on every
+    `POST /ingestion/entities` to fetch the token for plaintext
+    `.equals` comparison.
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveCollectorRepositoryImpl
+  notes: |-
+    SEVEN new drift facets surface from the SQL-tier primary source,
+    refining four prior batch-P controller-tier findings AND adding
+    three NEW load-bearing security-architectural findings (the
+    plaintext-everywhere claim is now CLOSED end-to-end across the
+    schema-codegen-storage-equality-emit chain). Listed in descending
+    severity:
+    (1) COLLECTOR TOKEN PLAINTEXT-AT-REST SQL PRIMARY SOURCE (HIGH) —
+    V0_0_28__add_token.sql:4 declares `value varchar(40) NOT NULL`
+    with NO UNIQUE constraint, NO hashing column, NO encoding-at-rest
+    column. TokenGeneratorImpl.java:34-42 writes
+    `RandomStringUtils.randomAlphanumeric(40)` verbatim; ReactiveCollectorRepositoryImpl
+    line 94 reads via `TOKEN.VALUE.eq(token)` — plaintext SQL equality.
+    The PLAINTEXT-EVERYWHERE claim that batch Q surfaced at the
+    CollectorsList DOM-render layer (token plaintext rendered into
+    DOM text node, no `<input type=password>` obfuscation) NOW CLOSES
+    END-TO-END: schema-codegen-storage-write-equality-read-rendered.
+    Every layer of the bearer-token authentication assumes plaintext;
+    every layer SHIPS plaintext. A DB-side reader (replica, backup,
+    pg_dump operator, jOOQ-log leak) recovers every live credential.
+    The live doc at `configuration-and-deployment/enable-security`
+    (WebFetched 2026-05-20 status 200 by ReactiveCollectorRepositoryImpl
+    sidecar) is SILENT on the storage shape — operators reading the
+    doc cannot infer the threat model from the doc alone.
+    Cross-link to F-020 token-plaintext-DOM-render facet (which IS
+    on F-020 directly per batch-Q); this batch adds the SQL primary
+    source.
+    (2) ALWAYS-ON INGESTION_DATASOURCE_FILTER VS OPT-IN
+    INGESTION_ENTITIES_FILTER (HIGH, refines batch-P
+    `asymmetric_auth_between_ingestion_filters`) — SQL-tier
+    confirmation. `IngestionDataSourceFilter.java:15-22` carries NO
+    `@ConditionalOnProperty` — it is ALWAYS-ON regardless of
+    `auth.type` or `auth.ingestion.filter.enabled`.
+    `IngestionDataEntitiesFilter.java:19-20` carries
+    `@ConditionalOnProperty(value="auth.ingestion.filter.enabled",
+    havingValue="true")`. An operator with
+    `auth.ingestion.filter.enabled=false` (the default per
+    `application.yml:48`) believes they have NO ingestion auth, but
+    actually has auth on `/ingestion/datasources` (always-on) and
+    none on `/ingestion/entities`. Operators reading the live doc
+    ("Enable the ingestion filter for any deployment where the
+    platform is reachable from an untrusted network") do NOT learn
+    about the always-on filter. This SQL-tier sidecar STRENGTHENS
+    batch-O's `cross_mode_login_form_vs_wildcard_alertmanager_divergence`
+    and batch-P's `asymmetric_auth_between_ingestion_filters` —
+    every code path that authenticates a collector calls this
+    repository's `getByToken` from the always-on filter.
+    (3) UPSERT PARTIAL-MERGE IS SERVICE-TIER CONVENTION, NOT
+    REPO-TIER ENFORCEMENT (HIGH, refines batch-P
+    `upsert_partial_merge_name_and_description_only`) — the inherited
+    `bulkUpdate` (ReactiveAbstractCRUDRepository.java:128-142,
+    203-223) writes ALL non-non-updatable columns from the supplied
+    records. The narrowing to ONLY name + description lives at
+    `DataSourceIngestionServiceImpl.prepareForUpdate` (lines 74-92)
+    which `new DataSourcePojo(a).setName(...).setDescription(...)`
+    — copying the existing pojo then overriding ONLY two fields.
+    A service-bypassing caller invoking
+    `dataSourceRepository.bulkUpdate(...)` DIRECTLY would have FULL
+    column-overwrite power including `collector_id`. The partial-merge
+    is a SERVICE-tier guard, not a SCHEMA / REPOSITORY guard. Surface
+    for ADR-CANDIDATE-142 strengthening; the maintainer should
+    consider whether to encode the partial-merge contract at the
+    repository tier (e.g. an `UpdateBuilder` constraining the writable
+    column set) or accept the convention-only model.
+    (4) DATASOURCE LISTDTO PAGE-VS-COUNT PREDICATE DIVERGENCE (MEDIUM,
+    NEW REFACTOR-425) — `listDto(page, size, nameQuery)` (lines 58-82)
+    uses `DATA_SOURCE.NAME.startsWithIgnoreCase(nameQuery)` (private
+    `queryCondition` line 156), but the count branch
+    (`fetchCount(nameQuery)` line 80) calls the parent's `listCondition`
+    which uses `nameField.containsIgnoreCase(nameQuery)`. For a
+    catalog with `['snowflake-prod', 'my-snowflake-dev']` and
+    `nameQuery='snow'`, the page returns ONLY 'snowflake-prod' but
+    the count reports BOTH. Pagination math is broken when nameQuery
+    is non-null. Filed as REFACTOR-425 by the repository sidecar.
+    Severity MEDIUM — operators may not notice the discrepancy in
+    a small catalog, but at >50 datasources the pagination is
+    misleading. Cross-link to the Datasources tab sub-feature of
+    P-08 (which surfaces this list).
+    (5) DATA_SOURCE.NAME PARTIAL UNIQUE INDEX — SILENT COLLISION
+    MID-UPSERT (MEDIUM, NEW) — the partial unique index
+    `data_source_name_unique ON data_source(name) WHERE deleted_at
+    IS NULL` (V0_0_31:27) is silent at the controller surface. A
+    collector UPSERTing a datasource that renames an existing row
+    to a name held by another LIVE row fails with SQLSTATE 23505
+    mid-transaction — this rolls back the entire `bulkUpdate` AND
+    the paired `bulkCreate`. NO partial commit. The operator sees
+    a 500 with the underlying message; no 'name collision with
+    another datasource' distinction at the UI. Cross-link to the
+    upsert-partial-merge family above.
+    (6) TOKEN.VALUE NO UNIQUE CONSTRAINT — CROSS-COLLECTOR SHARE
+    RACE (MEDIUM, NEW) — V0_0_28__add_token.sql:1-9 confirms no
+    UNIQUE on TOKEN.value. Two TOKEN rows COULD share the same
+    `value` (cosmically improbable from
+    `RandomStringUtils.randomAlphanumeric(40)`, but no schema-level
+    defence prevents it). If `getByToken(t)` ever sees two rows
+    matching, the jOOQ `mono(query)` returns the FIRST row's matched
+    COLLECTOR with no determinism guarantee (no ORDER BY at lines
+    90-94). The COLLECTOR_ID_SESSION_KEY becomes ambiguous;
+    cross-collector data-source registration is silently possible.
+    Cross-reference: batch-P IngestionController.createDataSourceEntity:240
+    same finding (this batch is the SQL-tier substrate).
+    (7) SOFT-DELETED COLLECTOR ORPHANED TOKEN PERSISTS INDEFINITELY
+    (MEDIUM, NEW) — TOKEN table has no soft-delete column (V0_0_28:1-9
+    — only id, value, created_at, created_by, updated_at, updated_by).
+    When a Collector is soft-deleted, the FK `collector.token_id`
+    points at a TOKEN row that is now ORPHANED. The partial unique
+    index `collector_token_unique ON collector(token_id) WHERE
+    deleted_at IS NULL` (V0_0_33:1) ALLOWS this — it only enforces
+    uniqueness on LIVE collectors. The TOKEN row's value is still
+    in the table, still plaintext, still discoverable via
+    `SELECT * FROM token`. NO housekeeping job removing orphaned
+    TOKEN rows; the row persists forever. An operator-side cleanup
+    script would need to delete TOKEN rows where `id NOT IN
+    (SELECT token_id FROM collector WHERE deleted_at IS NULL)`.
+    Cross-link to F-010 housekeeping gap inventory; this is a
+    candidate add to the HousekeepingJob list.
+    Coherence: STRENGTHENS batch-P's
+    `upsert_partial_merge_name_and_description_only`,
+    `namespace_inherited_from_collector_payload_silently_dropped`,
+    `asymmetric_auth_between_ingestion_filters`, and the batch-Q
+    `token_plaintext_in_dom_text_node_no_obfuscation` finding on
+    F-020. NO contradictions surfaced. NO supersedes — all prior
+    batch findings remain accurate; this batch adds the SQL-tier
+    substrate beneath them.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Ingestion-replace destruction surface
@@ -319,6 +477,8 @@ contributing_nodes:
 - odd-platform java LineageIngestionRequestProcessor (UNRESOLVED — processor sidecar not yet enriched; ref only)
 - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 - odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveCollectorRepositoryImpl
 - odd-platform ts react-component:CollectorsList
 chain:
 - hop: 0

@@ -1530,3 +1530,61 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - Coherence-sweep candidates: 33k (P) → 36k (Q; linear growth, fanout-dominated).
 - F-001 + F-003 merge candidate still maintainer-pending.
 
+
+## Batch 2026-05-20-R — Repository continuation: Activity + DataSource + MetadataField + Collector + DatasetField (5/5; LSN-018 phantom-prevention pre-fired)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: 98 prior + 5 new = **103 total**; 0 deferred. LSN-018 path-verification: 5/5 paths verified pre-Phase-1.
+- **Theme**: Repository-tier — Activity (audit-trail backbone) + DataSource (UPSERT-by-ODDRN SQL primary) + MetadataField (TOCTOU + soft-delete partial-unique-mismatch) + Collector (token storage) + DatasetField (versioning-by-reference)
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `ReactiveActivityRepositoryImpl` | P-07+P-09 | **F-006 audit-silence rooted in SCHEMA** (data_entity_id NOT NULL FK at V0_0_48:4,12 — Activity is data-entity-scoped, structurally cannot audit RBAC/Owner/Datasource mutations); Provider-agnostic LEFT JOIN to USER_OWNER_MAPPING.OIDC_USERNAME at 4 sites = LSN-018 cross-mode-bleed READ-side mirror; monotonic growth (no DELETE path); 27 enum values vs 20 documented. |
+| `ReactiveDataSourceRepositoryImpl` | P-10+P-08 | SQL-tier PRIMARY SOURCE for ADR-142 (UPSERT-by-ODDRN partial-merge is SERVICE-tier convention, NOT repo or schema enforced). **2 NEW CONFLICTS**: (1) listDto page-vs-count predicate divergence (startsWithIgnoreCase vs containsIgnoreCase) breaks pagination math; (2) data_source.name partial-unique-index silent-failure rolls back transaction with no diagnostic. |
+| `ReactiveMetadataFieldRepositoryImpl` | P-01 | Soft-delete + partial-unique-index MISMATCH (Tag fixed V0_0_64; metadata_field NOT migrated → INTERNAL fields un-recreatable after soft-delete). TOCTOU sibling. Case-sensitivity asymmetry. IX_UNIQUE_EXTERNAL_NAME_TYPE missing from ExceptionUtils.formatMessage. getDtosByDataEntityId surfaces soft-deleted values. |
+| `ReactiveCollectorRepositoryImpl` | P-08+P-10 | **Plaintext token at-rest SEV-HIGH** → end-to-end plaintext-everywhere chain with batch-Q CollectorsList DOM-render finding. Orphaned token rows. No-rotation-audit. |
+| `ReactiveDatasetFieldRepositoryImpl` | P-01+P-05 | Versioning-by-reference (rows SHARED across dataset_versions via M:N); NO native soft-delete; NO orphan cleanup → unbounded accumulation; Missing @ActivityLog on description edits (asymmetric vs updateInternalName); Verbatim XSS-class storage. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 274 → **281 indexed (281 written; 0 new quarantines)** | +7 new (all invariants) + 7 strengthened. provider-null-cross-mode-bleed now 4-vertex (principal + persistence-write + schema + persistence-READ at Activity 4 JOIN sites). three-soft-delete-mechanisms now 6-mechanism. plaintext-equality-shared-secret-token-model now 4-axis. No new YAML quarantines (rule fired cleanly). |
+| adr-archaeologist (ADRs) | 150 → **153** | +3 (146-148) + 3 strengthened. ADR-146 audit-log schema-rooted (RESOLVES F-006 family question: STRUCTURAL not annotation gap). ADR-147 dataset_field versioning-by-reference. ADR-148 operator-metadata forward-copy. ADR-142 UPSERT-by-ODDRN now 3-LAYER triangulation (service+repo+SQL). |
+| adr-archaeologist (scopes) | 455 → **461** | +6 (436-441) + 3 strengthened. REFACTOR-085 (activity-table monotonic growth) now 3-sidecar triangulated. REFACTOR-185 + REFACTOR-419 SQL-tier confirmation. 2 borderline-ADR candidates surfaced for maintainer triage (TOKEN.value plaintext, activity retention). |
+| doc-gap-finder | 190 → **195** | +5 (191-195) + 2 strengthened. DOC-191 Activity 27-vs-20 enum HIGH; DOC-192 Activity scope constraint HIGH; DOC-193 Custom Metadata absent HIGH; DOC-194 Collector token threat model HIGH; DOC-195 DatasetField audit-invisible MEDIUM. 4 live WebFetches at 200. |
+| test-coverage-mapper | 656 → **677 indexed** | +21 (659-679) + 4 strengthened. **2 NEW CRITICAL** (Activity audit-silence schema-rooted; Collector plaintext-at-rest SQL primary). 112 CRITICAL total. |
+| feature-flow-builder | 20 → **21 features** (+1 new, +8 extended) | **F-021 / P-07:F-004 Activity Feed Audit-Trail Surface** (NEW — distinct user-observable Active Platform sub-feature per system-mission.md P-07). F-004/F-006/F-007/F-008/F-010/F-011/F-013/F-020 ALL extended (44 new drift facets across batch — largest reducer extension of the sprint). Coherence: 8 strengthens / 0 supersedes / 0 conflicts. |
+
+### Coverage state after batch R
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 103 | **26.1%** (was 24.8%) |
+| Effective coverage | 196 | **49.6%** (was 47.6%) — approaching 50% milestone |
+| Features discovered | 21 (was 20) | +1 NEW (F-021 Activity Feed P-07:F-004) |
+| Total test-gaps | 677 indexed (677 written) | 112 CRITICAL (was 110) |
+
+### Cross-batch triangulation deltas
+
+- **F-006 audit-silence pattern**: now **8-SIDECAR with SCHEMA-LAYER ROOT CAUSE identified** (data_entity_id NOT NULL FK structurally limits Activity to data-entity events). The pattern was 6-SIDECAR (controller/service/repo at API + UI); now adds Activity-repo + DatasetField-repo asymmetric, with SCHEMA ROOT confirmed.
+- **provider-null cross-mode-bleed**: now **4-VERTEX** (principal + persistence-write + schema + persistence-READ via Activity 4 JOIN sites)
+- **three-soft-delete-mechanisms**: now **6-mechanism × 10+ sites** (NEW: NO-DELETION-AT-ALL with M:N edge lifecycle on dataset_field; V0_0_64 CONVERGENCE OUTLIERS at collector.name + metadata_field partial indexes)
+- **plaintext-equality-shared-secret-token-model**: now **4-axis** (rotate + verify-annotation + verify-filter + SQL primary)
+- **ADR-142 UPSERT-by-ODDRN partial-merge**: now **3-LAYER triangulation** (service + repo + SQL primary)
+- **End-to-end plaintext token chain CLOSED**: SQL at-rest (batch R) + DOM render (batch Q) + plaintext-equality verify (batch P) — single class spanning 3 batches
+- **F-010 user-initiated extension**: 3 new drift facets folded into F-010 during this batch (activity monotonic growth + empty-partition-sole-reaper + orphan-token-no-housekeeping)
+- **LSN-018 Rule 6 sustained**: 5+3 conflicts surfaced this batch (all resolved via SUPERSEDE or CONFLICT-FOLD); zero contradictions reached the registry
+
+### Follow-ups (logged, not blocking)
+
+- 2 broken-yaml from batch Q persist (destructive-empty-roles + plaintext-token concepts — backtick scalars); 1 from batch P (TEST-GAP-363); 3 from earlier batches. All quarantined.
+- 207 detail-without-index in refactoring-scopes; 82 in implicit-adrs (legacy + ongoing canonical-append).
+- 22 detail-without-index + 4 index-without-detail in doc-gaps.
+- Coherence-sweep candidates: 36k (Q) → 40k (R; linear growth, fanout-dominated).
+- F-001 + F-003 merge candidate still maintainer-pending.
+- Concept-merger deferred 1 strengthen for next batch (read-collaborative-cross-owner-enumeration; DatasetField.listByTerm as 25th surface — file size risk).
+

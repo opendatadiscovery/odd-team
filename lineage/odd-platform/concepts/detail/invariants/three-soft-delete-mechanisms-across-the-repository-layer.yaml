@@ -1,4 +1,5 @@
-name: Three soft-delete mechanisms across the repository layer
+name: Three soft-delete mechanisms across the repository layer (STRENGTHENED batch
+  R — sixth mechanism + collector FULL-UNIQUE asymmetry)
 canonical_in_docs: false
 canonical_candidate: true
 description: |-
@@ -93,18 +94,70 @@ description: |-
   `term-to-term-deleted-at-schema-drift-v0_0_76-vs-v0_0_91` invariant
   (batch N).
 
+  **STRENGTHENED batch 2026-05-20R — TWO NEW DELETION SHAPES**:
+
+  **(6) NO-DELETION-AT-ALL with M:N-edge-based lifecycle** (NEW —
+  dataset_field-specific): used by `ReactiveDatasetFieldRepositoryImpl`
+  on the `dataset_field` table. NO `deleted_at`, NO `is_deleted`, NO
+  `STATUS` column (verified across V0_0_1__init.sql:148-164 + every
+  subsequent ALTER TABLE dataset_field migration). The inherited
+  `delete(id)` / `delete(ids)` from `ReactiveAbstractCRUDRepository.java:144-155`
+  issue HARD DELETE, but NO CALLER IN THE PLATFORM INVOKES THEM.
+  V0_0_9__normalize_dataset_structure.sql:1-43 DROPPED
+  `dataset_field.dataset_version_id` FK + column and introduced the M:N
+  `dataset_structure (dataset_version_id, dataset_field_id)` join
+  table. A dataset_field row is SHARED across every dataset_version
+  that contains it; schema evolution creates NEW dataset_field rows
+  via DatasetFieldServiceImpl's hash-diff partition at
+  DatasetFieldServiceImpl.java:375-396. THERE IS NO SCHEDULED
+  ORPHAN-CLEANUP JOB. Operator-curated metadata (internal-name,
+  internal-description, INTERNAL-origin tags, INTERNAL enum values)
+  is COPIED FORWARD from the OLD row to the NEW row when the hash
+  diverges (DatasetFieldServiceImpl.java:308-322 + 324-335 + 352-373).
+  The OLD row persists in the table referenced only by historical
+  dataset_versions. This is DISTINCT from all 5 prior mechanisms —
+  not soft-delete (no marker), not hard-delete (rows are never
+  removed), not state-machine (no STATUS), not the
+  hard-delete-on-relationship-edges pattern (this IS the parent
+  table, not an edge). It is the **versioning-by-reference** pattern
+  captured at the dedicated
+  `dataset-field-versioning-by-reference-no-soft-delete-orphan-accumulation`
+  invariant. The growth is unbounded with no retention.
+
+  **(7) FULL-UNIQUE (not partial) on names — collector + metadata_field
+  outliers from the V0_0_64 convergence** (NEW): batch R surfaces
+  TWO instances where the V0_0_64 convergence on
+  `deleted_at + partial-unique-index` was NOT applied to a name-unique
+  schema. `ReactiveCollectorRepositoryImpl` batch R
+  bugs_limitations_corner_cases.[4]: `collector.name UNIQUE` is a
+  FULL unique constraint (V0_0_29__add_collector.sql:4), NOT scoped
+  to `WHERE deleted_at IS NULL`. A soft-deleted collector's name
+  CANNOT be reused without first hard-deleting the row.
+  `ReactiveMetadataFieldRepositoryImpl` batch R
+  bugs_limitations_corner_cases.[0]: the `metadata_field` partial
+  unique indexes filter only by origin (`WHERE origin = 'INTERNAL'`
+  AND `WHERE origin <> 'INTERNAL'`), NOT by deleted_at — the same
+  bug class. Both are captured at the dedicated
+  `metadata-field-soft-delete-partial-unique-index-mismatch`
+  invariant. These instances reveal that V0_0_64 was an INCOMPLETE
+  convergence — Tag, Role, Policy, Namespace, Owner got the full
+  treatment; metadata_field and collector did NOT. The platform's
+  persistence-layer deletion shape is now **6-mechanism × 10+-site
+  primary-source confirmed**.
+
   Edge tables between hard-deletable entities don't need their
   own soft-delete; the activity-feed audit stream is the source of truth for historical
   state (where activity logs exist — note that DEG-membership flips do NOT emit
   `@ActivityLog`, so the HARD-DELETE-on-DEG-membership is doubly forensically silent).
   **The architectural commitment**: every operator-facing entity is soft-delete-recoverable
   (the platform's consistent UX promise); only join tables and immutable audit-like
-  tables use hard delete. BUT: the implementation across the 4 mechanisms uses 3 different
-  schemas (deleted_at timestamp vs is_deleted boolean vs STATUS state-machine), 3
-  different predicates (IS NULL vs isFalse vs ne(DELETED.getId())), and 1 different
-  delete mechanic (UPDATE vs physical DELETE). A maintainer reading ONE repository
-  to infer the platform's convention will reach the WRONG conclusion for the other
-  three. A future migration adding `deleted_at` to `ownership` would silently break
+  tables use hard delete. BUT: the implementation across the 6 mechanisms uses 5 different
+  schemas (deleted_at timestamp vs is_deleted boolean vs STATUS state-machine vs
+  no-mechanism-with-M:N-edge-lifecycle vs hard-delete), MULTIPLE different predicates
+  (IS NULL vs isFalse vs ne(DELETED.getId()) vs nothing-needed), and 2 different
+  delete mechanics (UPDATE vs physical DELETE). A maintainer reading ONE repository
+  to infer the platform's convention will reach the WRONG conclusion for the others.
+  A future migration adding `deleted_at` to `ownership` would silently break
   `existsByOwner` (it would count soft-deleted rows as 'exists', preventing legitimate
   owner cascade-deletes); a maintainer working in the parent class without recognising
   the DataEntity subclass override could either propagate deleted_at semantics that
@@ -117,9 +170,15 @@ description: |-
   FIFTH-MECHANISM ASYMMETRY (term_to_term retains deleted_at despite
   V0_0_76's hard-delete commitment) — the platform's persistence-layer
   deletion shape is now 4-mechanism × 8-site primary-source confirmed**.
+  **Batch R confirms the SIXTH-mechanism (NO-DELETION-AT-ALL with
+  M:N-edge lifecycle on dataset_field) AND the V0_0_64 INCOMPLETE
+  convergence (collector + metadata_field outliers); the
+  platform's persistence-layer deletion shape is now
+  6-mechanism × 10+-site primary-source confirmed**.
 axes_present:
   - repositories_reactive
   - controllers
+  - schema_migrations
 nodes:
   - odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
   - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
@@ -129,6 +188,10 @@ nodes:
   - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
   - odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
   - odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveDatasetFieldRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveCollectorRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveMetadataFieldRepositoryImpl
   - odd-platform java DataEntityController controller-method:deleteTermFromDataEntity
   - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
 contributors:
@@ -202,6 +265,56 @@ contributors:
     unique indexes on TWO dimensions, NOT a single name-unique index.
     + implicit_adrs.[0] (soft-delete only) + implicit_adrs.[1]
     (clear-active-then-insert pattern)
+  - |-
+    **ReactiveDatasetFieldRepositoryImpl batch R (NEW — SIXTH MECHANISM
+    — NO-DELETION-AT-ALL with M:N-edge lifecycle)**:
+    concepts.invariants.[0] (dataset_field has NO native soft-delete
+    column; verified by V0_0_1 + every subsequent ALTER TABLE; the
+    inherited delete(id) issues HARD DELETE but no caller invokes
+    them) + concepts.invariants.[1] (version-aware identity — a
+    dataset_field row is SHARED across every dataset_version that
+    contains it; V0_0_9 dropped the dataset_version_id FK + introduced
+    dataset_structure M:N) + bugs_limitations_corner_cases.[0]
+    (HARD DELETE inherited but no caller; NO scheduled orphan-cleanup
+    job; schema-change forks leave OLD rows in place; the table grows
+    monotonically; MEDIUM severity at the orphan accumulation surface;
+    HIGH severity at the architectural-shape distinctness) +
+    implicit_adrs.[0] (dataset_field rows are versioned by reference,
+    not by mutation — captured at the dedicated
+    dataset-field-versioning-by-reference invariant)
+  - |-
+    **ReactiveDataSourceRepositoryImpl batch R (NEW — refines the
+    `deleted_at` cluster site count)**: concepts.invariants.[7]
+    (data_source uses the deleted_at + partial-unique-index pattern
+    on BOTH oddrn AND name; the soft-delete-aware-recreation works
+    for ODDRN but the name index is the silent collision surface per
+    the dedicated `datasource-name-partial-unique-silent-rollback`
+    invariant); the data_source soft-delete shape is canonical
+    (V0_0_31:27, V0_0_31:29 partial unique indexes with deleted_at
+    IS NULL); the V0_0_71 column drops do not affect the soft-delete
+    mechanism
+  - |-
+    **ReactiveCollectorRepositoryImpl batch R (NEW — outlier from
+    V0_0_64 convergence; FULL-UNIQUE on collector.name)**:
+    bugs_limitations_corner_cases.[4] (collector.name UNIQUE is a
+    FULL unique constraint per V0_0_29:4 — NOT partial-scoped to
+    WHERE deleted_at IS NULL; soft-deleted collector's name CANNOT
+    be reused without hard-delete; inconsistent with the V0_0_64
+    convergence on Role / Policy / Tag / Term / Owner; LOW severity
+    at this instance because collector creation is operator-rare;
+    captured at the dedicated
+    metadata-field-soft-delete-partial-unique-index-mismatch
+    invariant)
+  - |-
+    **ReactiveMetadataFieldRepositoryImpl batch R (NEW — outlier from
+    V0_0_64 convergence; partial-unique-WITHOUT-deleted_at)**:
+    bugs_limitations_corner_cases.[0] (the metadata_field partial
+    unique indexes do NOT include WHERE deleted_at IS NULL even
+    though the sibling tag_name_unique WAS migrated in V0_0_64;
+    soft-deleted INTERNAL fields are permanent name-blockers;
+    MEDIUM severity; captured at the dedicated
+    metadata-field-soft-delete-partial-unique-index-mismatch
+    invariant)
 evidence:
   - ReactivePolicyRepositoryImpl.md:implicit_adrs.[0] + V0_0_55__add_policies_and_roles.sql:27,30
   - ReactiveDataEntityRepositoryImpl.md:concepts.invariants.[0] + implicit_adrs.[0]
@@ -247,6 +360,32 @@ evidence:
     + concepts.invariants.[2] (clear-active-then-insert) +
     implicit_adrs.[0,1] (soft-delete via deleted_at + the migration
     sequence V0_0_4 → V0_0_55 → V0_0_89 IS the design narrative)
+  - |-
+    **ReactiveDatasetFieldRepositoryImpl.md (batch R)**:
+    concepts.invariants.[0,1] + implicit_adrs.[0] (the SIXTH
+    mechanism — NO-DELETION-AT-ALL with M:N-edge lifecycle;
+    V0_0_9__normalize_dataset_structure.sql:1-43 introduces the
+    dataset_structure M:N table AND drops dataset_field.dataset_version_id;
+    no caller invokes delete; no scheduled orphan cleanup)
+  - |-
+    **ReactiveDataSourceRepositoryImpl.md (batch R)**:
+    concepts.invariants.[7] (data_source uses the canonical
+    deleted_at + partial-unique-index pattern on BOTH oddrn AND
+    name) + V0_0_31__add_deleted_at_field.sql:27,29 (the partial
+    unique indexes)
+  - |-
+    **ReactiveCollectorRepositoryImpl.md (batch R)**:
+    bugs_limitations_corner_cases.[4] (V0_0_64 CONVERGENCE OUTLIER —
+    collector.name FULL unique constraint; soft-deleted collector
+    name CANNOT be reused) + V0_0_29__add_collector.sql:4
+  - |-
+    **ReactiveMetadataFieldRepositoryImpl.md (batch R)**:
+    bugs_limitations_corner_cases.[0] (V0_0_64 CONVERGENCE OUTLIER —
+    metadata_field partial unique indexes do not include
+    deleted_at IS NULL) + V0_0_1__init.sql:238-244 (the two partial
+    unique indexes from before V0_0_64) + V0_0_64:41-50 (the
+    incomplete migration that added deleted_at but did not touch
+    the partial indexes)
 notes: |-
   Cross-batch architectural-hygiene invariant surfaced ONLY by triangulating
   the 4 batch-H repository sidecars together. None of the individual sidecars
@@ -268,10 +407,7 @@ notes: |-
   platform's persistence-layer deletion shape is now 4-mechanism ×
   8-repository-site primary-source confirmed:
     Mechanism 1 (deleted_at timestamp): 6 sites — Policy, Role, Tag,
-      Term, UserOwnerMapping, and historically Owner (the user_owner_mapping
-      sub-pattern adds TWO partial unique indexes instead of one
-      name-unique index — the at-most-one-active-row contract is
-      enforced at two dimensions)
+      Term, UserOwnerMapping, and historically Owner
     Mechanism 2 (is_deleted boolean): 1 site — Lineage
     Mechanism 3 (STATUS state-machine): 1 site — DataEntity (subclass
       override)
@@ -280,18 +416,53 @@ notes: |-
 
   **The FIFTH-MECHANISM ASYMMETRY**: term_to_term (V0_0_91) retains
   deleted_at despite V0_0_76's hard-delete commitment for the sibling
-  link tables. The application code never filters term_to_term.deleted_at
-  at 7 read sites. Either V0_0_91 should have followed V0_0_76's
-  cleanup pattern (drop the column) OR the application should filter
-  the column. Captured at the dedicated
+  link tables. Captured at the dedicated
   `term-to-term-deleted-at-schema-drift-v0_0_76-vs-v0_0_91` invariant
   (batch N).
+
+  **STRENGTHENED batch 2026-05-20R** — TWO NEW DELETION SHAPES:
+
+  **Mechanism 6 (NO-DELETION-AT-ALL with M:N-edge lifecycle)**: 1 site
+  — dataset_field. The lifecycle is driven by hash-diff partitioning
+  at the service tier; old rows persist forever in the table referenced
+  by historical dataset_versions. Captured at the dedicated
+  `dataset-field-versioning-by-reference-no-soft-delete-orphan-accumulation`
+  invariant.
+
+  **V0_0_64 CONVERGENCE OUTLIERS** (2 sites — INCOMPLETE-convergence):
+  collector.name + metadata_field.{name+type|name} are FULL unique
+  constraints, not partial-on-live-rows. The bug class is captured
+  at the dedicated
+  `metadata-field-soft-delete-partial-unique-index-mismatch`
+  invariant.
+
+  **The platform's persistence-layer deletion shape is now
+  6-mechanism × 10+-repository-site primary-source confirmed**:
+    Mechanism 1 (deleted_at timestamp + partial unique index): 6+ sites
+      — Policy, Role, Tag, Term, UserOwnerMapping, Owner, data_source,
+      namespace, ...
+    Mechanism 2 (is_deleted boolean): 1 site — Lineage
+    Mechanism 3 (STATUS state-machine): 1 site — DataEntity (subclass
+      override)
+    Mechanism 4 (HARD-DELETE on relationship-edge tables): 3-4 sites —
+      Ownership, data_entity_to_term, group_entity_relations,
+      term_ownership
+    Mechanism 5 (deleted_at WITHOUT application-tier filter — ASYMMETRIC
+      EXCEPTION): 1 site — term_to_term
+    **Mechanism 6 (NO-DELETION-AT-ALL with M:N-edge lifecycle — NEW
+      batch R): 1 site — dataset_field**
+
+  **V0_0_64 CONVERGENCE OUTLIERS** (separate sub-finding): 2 sites
+  where the partial-unique-index pattern was not aligned with the
+  deleted_at addition — collector.name (FULL unique) and
+  metadata_field.{name,type} partial indexes that filter only by
+  origin, not by deleted_at.
 
   Recommended cleanup paths (in increasing scope):
 
     - Document the asymmetry on a single page (e.g. an `adrs/`-style file in
       the documentation repo or a new `internal/persistence-conventions.md` page)
-      naming all 4 mechanisms + the rationale for each. Cheap; preserves the
+      naming all 6 mechanisms + the rationale for each. Cheap; preserves the
       existing semantics; arms maintainers.
 
     - Standardise on ONE mechanism (preferably `deleted_at` timestamp — the most
@@ -307,26 +478,46 @@ notes: |-
     - **NEW batch N** — clean up the term_to_term ASYMMETRIC EXCEPTION:
       add a V0_0_NNN migration mirroring V0_0_76 (DROP COLUMN deleted_at
       FROM term_to_term) OR add the filter at all 7 application read
-      sites in ReactiveTermRepositoryImpl. Either fix brings term_to_term
-      into line with the platform's intent.
+      sites in ReactiveTermRepositoryImpl.
 
-  Six DOC-NNN candidates flow from this invariant:
+    - **NEW batch R** — close the V0_0_64 CONVERGENCE OUTLIERS:
+      (a) migrate collector.name to a partial unique index
+      `collector_name_unique ON collector(name) WHERE deleted_at IS
+      NULL` (mirroring role / policy / owner pattern);
+      (b) migrate metadata_field partial indexes to include
+      `AND deleted_at IS NULL` (mirroring tag's V0_0_64 fix);
+      (c) update ReactiveMetadataFieldRepositoryImpl.ingestData's
+      `.where(ORIGIN.ne(INTERNAL))` to ALSO include
+      `.and(DELETED_AT.isNull())` so Postgres's ON CONFLICT
+      arbitrator predicate matches the new partial-index predicate.
+
+    - **NEW batch R** — for dataset_field's NO-DELETION-AT-ALL
+      mechanism, add a housekeeping job removing orphan rows
+      (`dataset_field` rows where `id NOT IN (SELECT
+      dataset_field_id FROM dataset_structure)`). Cheap; bounds the
+      growth; preserves the version-aware identity model.
+
+  Eight DOC-NNN candidates flow from this invariant:
     (a) Add a 'Persistence layer conventions' note to the internal Architecture docs
-        naming the 4 mechanisms.
+        naming the 6 mechanisms.
     (b) Document the soft-delete-aware-recreation invariant on the Policies + Roles
         live pages (operators can recreate a policy with a previously-used name).
     (c) Document the hard-delete semantics on the Owners + Term-relations live pages
         (operators cannot undelete an ownership row — recovery via activity feed only).
     (d) Document the STATUS-state-machine semantics on the DataEntity Status / Lifecycle
-        live page (operators can soft-delete + restore an entity; the entity is recoverable
-        via status change, not via a separate undelete endpoint).
+        live page (operators can soft-delete + restore an entity).
     (e) **NEW from batch L** — Document the user-DELETE-is-HARD-DELETE
         vs cascade-is-SOFT-DELETE asymmetry on the
-        groups-domains + business-glossary feature pages (operators
-        reasoning "will my memberships come back after entity
-        restore?" need this knowledge).
+        groups-domains + business-glossary feature pages.
     (f) **NEW from batch N** — Document the user_owner_mapping
-        soft-delete-only schema (no row-level restore; monotonic
-        growth; operator-driven pruning is safe via DELETE FROM
-        WHERE deleted_at IS NOT NULL) on the user-owner-association
+        soft-delete-only schema on the user-owner-association
         operator page.
+    (g) **NEW from batch R** — Document the dataset_field
+        versioning-by-reference + orphan-accumulation model on the
+        dataset schema-diff feature page (P-01 sub-feature);
+        operators need to know that column-rename + type-change
+        produce orphan rows.
+    (h) **NEW from batch R** — Document the V0_0_64 CONVERGENCE
+        OUTLIERS (collector.name + metadata_field partial indexes
+        cannot reuse names after soft-delete) on the respective
+        operator-facing pages.

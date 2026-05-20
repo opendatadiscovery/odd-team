@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-678
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveDatasetFieldRepositoryImpl"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "ReactiveDatasetFieldRepositoryImpl.md:concepts.invariants.[5] (No owner / tenant / namespace scoping on listByTerm — read-collaborative posture)"
+  - "ReactiveDatasetFieldRepositoryImpl.md:security.known_security_gaps.[0] (listByTerm cross-owner field-by-term enumeration with no per-owner scoping)"
+  - "ReactiveDatasetFieldRepositoryImpl.md:security.known_security_gaps.[3] (listByTerm does NOT apply EXCLUDE_FROM_SEARCH or STATUS != DELETED on parent DataEntity)"
+behaviour: |-
+  **`listByTerm` enumerates EVERY dataset_field linked to a term across all owners, all data sources, all parent statuses — with NO filter on the parent DataEntity's `status` / `hollow` / `exclude_from_search`.** Lines 169-189 chain joins DATASET_FIELD → DATA_ENTITY → NAMESPACE / DATA_SOURCE / OWNERSHIP / OWNER / TITLE but apply NO filter on the parent. A field on a soft-deleted DataEntity (`STATUS = DELETED`) still appears in `listByTerm` results — terms remain backlinked to columns of deleted datasets via the API. This is consistent with `ReactiveDataEntityRepositoryImpl` invariant 3 (`EXCLUDE_FROM_SEARCH` is INCONSISTENTLY APPLIED) — another endpoint where the predicate is missing. The aggregation `jsonArrayAgg(field(OWNER.asterisk()))` lines 165-167 SURFACES every owner of every entity to every caller — visible-to-all is the explicit design, matching the read-collaborative posture pillar P-09 documents ("every authenticated user can enumerate the entire catalog"). The documentation surface does NOT warn operators that term lookups reveal cross-tenant column metadata.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDatasetFieldRepositoryListByTermCrossOwnerTest.java"
+  name: "listByTerm_returnsFieldsAcrossAllOwners_includingSoftDeletedParentEntities_pinsReadCollaborativePosture"
+evidence:
+  - "ReactiveDatasetFieldRepositoryImpl.md says (concepts.invariants.[5]): 'No owner / tenant / namespace scoping on listByTerm. Lines 169-189 join DATASET_FIELD → DATA_ENTITY → NAMESPACE / DATA_SOURCE / OWNERSHIP / OWNER / TITLE but apply NO filter on the parent DataEntity's status / hollow / exclude_from_search / data_source_id.'"
+  - "ReactiveDatasetFieldRepositoryImpl.md says (security.known_security_gaps.[3]): 'listByTerm does NOT apply EXCLUDE_FROM_SEARCH or STATUS != DELETED predicates on the parent DataEntity. Fields of a soft-deleted DataEntity remain enumerable via term lookup.' severity: LOW (upgraded to MEDIUM for the integration-test surface — the inconsistency with other endpoints is a regression risk)"
+  - "ReactiveDatasetFieldRepositoryImpl.java:141-204 (the listByTerm body)"
+  - "system-mission.md line 267 (read-collaborative posture documented at the pillar level but not at this endpoint)"
+cross_references:
+  - "REFACTOR-024 (lineage-CTE cross-owner enumeration — sibling pattern)"
+  - "REFACTOR-203 (cross-owner read on /api/alerts — sibling pattern)"
+  - "REFACTOR-222 (EXCLUDE_FROM_SEARCH inconsistency)"
+  - "F-002 (P-01:F-002 Entity Description Editing) — Term-Linked Columns sub-surface"
+  - "F-006 (P-09:F-001 RBAC) — read-collaborative posture"
+proposed_action: |-
+  Testcontainers integration test. (a) Create three data_entities: E1 (STATUS=STABLE, owner=ALICE), E2 (STATUS=STABLE, owner=BOB), E3 (STATUS=DELETED, owner=CAROL). (b) Add dataset_field column `temperature` to each, linked to the SAME term 'Climate Reading'. (c) Authenticate as ALICE. (d) Call `listByTerm(termId, page=1, size=100)`. (e) Assert: ALL three rows returned, including the field on E3 (DELETED). (f) Assert: the OWNER array for each row contains every owner across the three entities (CAROL's name visible to ALICE). (g) Pin the read-collaborative posture: `// REGRESSION-PIN — listByTerm is cross-owner AND cross-deleted-parent. A REFACTOR adding owner-scoping or status-filter would flip this test. The read-collaborative posture is the documented choice at the platform level.` (h) Also pin the EXCLUDE_FROM_SEARCH inconsistency: compare with `dataEntityRepository.list(...)` which DOES filter EXCLUDE_FROM_SEARCH; this method does NOT.
+related_features: [F-002, F-006]
+related_pillar_features: ["P-01:F-002", "P-09:F-001"]
+batch: 2026-05-20-R
+feature_id: F-002

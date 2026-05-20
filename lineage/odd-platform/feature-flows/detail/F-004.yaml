@@ -10,6 +10,9 @@ drift_class_summary:
 - ui_hides_control_backend_doesnt_enforce
 - silent_write_on_missing_anchor
 - response_decoupled_from_storage
+- dataset_field_description_edit_verbatim_storage_xss_class_extension
+- dataset_field_description_edit_no_activity_log_asymmetric_with_internal_name
+- dataset_field_update_description_silent_no_op_on_missing_id
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Data entity description — Markdown content storage
@@ -32,11 +35,87 @@ description: 'Operators edit a data entity''s description via PUT /api/dataentit
   backend-no-sanitisation + UI-renders-raw-HTML produces a stored-XSS surface.
 
   '
+batch_extensions:
+- batch: R
+  entry_point_added: |-
+    repository-tier:ReactiveDatasetFieldRepositoryImpl (the per-COLUMN
+    metadata persistence layer). The `updateDescription` method
+    (lines 72-80) is a sibling-pattern of
+    `ReactiveDataEntityRepositoryImpl.setInternalDescription` — same
+    bare `DSL.update().where(ID.eq(?)).returning()` with empty→null
+    normalisation, NO Jsoup.clean, NO Encode.html, NO length cap, NO
+    allowlist. The F-004 XSS-class verbatim-storage fingerprint now
+    extends from the DataEntity surface to the column-level
+    DatasetField surface. The endpoint is
+    `PUT /api/datasetfields/{id}/description` — gated by
+    `DATASET_FIELD_DESCRIPTION_UPDATE` permission per
+    `SecurityConstants.java:282-303`, resolved to parent DataEntity
+    via `DatasetFieldResourceExtractor` → `getDataEntityIdByDatasetFieldId`.
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveDatasetFieldRepositoryImpl
+  notes: |-
+    Three new drift facets surface from the DatasetField repository
+    sidecar, extending F-004's existing surface to the per-COLUMN
+    description-edit path:
+    (1) DATASET_FIELD DESCRIPTION-EDIT VERBATIM STORAGE — XSS-CLASS
+    EXTENSION (HIGH) — `ReactiveDatasetFieldRepositoryImpl.updateDescription`
+    (lines 72-80) is a bare jOOQ UPDATE with NO backend sanitisation;
+    empty/null normalises to NULL (line 75 — same idiom as data-entity
+    side). Markdown / HTML / script tags submitted via
+    `PUT /api/datasetfields/{id}/description` persist verbatim through
+    reads. SAME F-004 fingerprint as the DataEntity-side
+    `ReactiveDataEntityRepositoryImpl.setInternalDescription` (lines
+    430-438). The UI render-layer defence-in-depth (probe P-009
+    PASS — Markdown.tsx rendering pipeline rejects dangerous tags at
+    DOM-render time) is the operative safeguard at BOTH surfaces.
+    But: the column-level description has its own `DatasetField`
+    render path (Tab on the data-entity detail page); maintainers
+    must verify P-009 covers that render path too (currently
+    P-009 was authored against entity-description; cross-tab coverage
+    unverified). Cross-link to F-004's
+    `external_lib_assumes_sanitisation` primary drift_class.
+    (2) DATASET_FIELD DESCRIPTION-EDIT NO ACTIVITY LOG — ASYMMETRIC
+    WITH INTERNAL_NAME (MEDIUM, doc-class) —
+    `DatasetFieldServiceImpl.updateDescription` (lines 87-95) has
+    NO `@ActivityLog` annotation. The sibling
+    `DatasetFieldServiceImpl.updateInternalName` (line 99) carries
+    `@ActivityLog(event = ActivityEventTypeDto.DATASET_FIELD_INTERNAL_NAME_UPDATED)`;
+    `DatasetFieldServiceImpl.updateDatasetFieldTags` (line 119)
+    carries `DATASET_FIELD_TAGS_UPDATED`. The
+    `DATASET_FIELD_DESCRIPTION_UPDATED` event class EXISTS in
+    `ActivityEventTypeDto` but is NEVER emitted. Operators auditing
+    a description change on a column find NO activity-feed evidence
+    — but find evidence for tag-change and internal-name-change on
+    the same column. The asymmetry is silent. Cross-link to the
+    audit-log-presence-asymmetry canonicalisation candidate.
+    (3) DATASET_FIELD UPDATE DESCRIPTION — SILENT NO-OP ON MISSING ID
+    (LOW, refines `silent_write_on_missing_anchor` family) —
+    `ReactiveDatasetFieldRepositoryImpl.updateDescription` returns
+    `Mono.empty` when the id doesn't exist (the underlying
+    `DSL.update(...).where(ID.eq(?)).returning()` matches zero rows).
+    `DatasetFieldServiceImpl.updateDescription` does NOT
+    `.switchIfEmpty(Mono.error(NotFoundException))` before
+    delegating to the downstream service (unlike sibling
+    `updateInternalName` which DOES switchIfEmpty at line 104).
+    If the chain completes empty, the API returns 200 OK with an
+    empty body for a non-existent field id. Same SHAPE as F-004's
+    `silent_write_on_missing_anchor` family on the data-entity
+    description-edit path (per batch I primary-source confirmation).
+    Refines F-004's silent-no-op family to TWO endpoints — data-entity
+    + dataset-field. Cross-link to F-013 silent-UPDATE-not-UPSERT
+    pattern (same shape on Custom Metadata).
+    Coherence: STRENGTHENS F-004's
+    `external_lib_assumes_sanitisation`,
+    `silent_write_on_missing_anchor`,
+    `response_decoupled_from_storage`, and the system-mission.md
+    Audit-log Presence Asymmetry canonicalisation candidate. NO
+    contradictions surfaced. NO supersedes.
 contributing_nodes:
 - ts react-component:DataEntityDescription (Overview > Description cluster — InternalDescription + Markdown + useTermWiki)
 - odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
 - odd-platform java service service:DataEntityServiceImpl
 - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveDatasetFieldRepositoryImpl
 terminal_side_effect:
   side_effect_class: db-write
   description: UPDATE data_entity SET internal_description = ? — stored verbatim, no sanitisation

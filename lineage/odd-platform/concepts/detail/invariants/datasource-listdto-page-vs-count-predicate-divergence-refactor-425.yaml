@@ -1,0 +1,153 @@
+name: DataSource listDto page-vs-count predicate divergence (REFACTOR-425)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-08
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20R** — surfaced by the
+  ReactiveDataSourceRepositoryImpl batch-R sidecar's coherence sweep
+  (conflicts_surfaced.[0]). The `listDto(page, size, nameQuery)` method
+  has DIFFERENT predicates on the page-fetching branch and the
+  count-fetching branch when `nameQuery` is non-null. The page query
+  uses `DATA_SOURCE.NAME.startsWithIgnoreCase(nameQuery)` (private
+  `queryCondition` at ReactiveDataSourceRepositoryImpl.java:156); the
+  count query uses the INHERITED base `nameField.containsIgnoreCase(
+  nameQuery)` (ReactiveAbstractCRUDRepository.java:243), reached via
+  `fetchCount(nameQuery)` at line 80 + the soft-delete base override
+  at ReactiveAbstractSoftDeleteCRUDRepository.java:87-89.
+
+  **The pagination math breaks** for any non-null nameQuery. For a
+  catalog with datasources named `['snowflake-prod', 'my-snowflake-dev',
+  'redshift-prod']` and `nameQuery='snow'`:
+    - Page query returns 1 row (only 'snowflake-prod' STARTS WITH
+      'snow')
+    - Count query reports 2 (both 'snowflake-prod' AND
+      'my-snowflake-dev' CONTAIN 'snow')
+    - UI renders page.data.size == 1 with page.total == 2 — operator
+      sees "1 of 2 results" but cannot reach page 2 (the next-page
+      cursor produces empty results because the page query has
+      already exhausted the startsWith matches)
+
+  **Operator surface manifestation**: the Management → Datasources tab
+  filter input populates `nameQuery`. Operators searching by substring
+  see misleading "X of Y" counts; pagination jumps appear broken. The
+  bug is invisible on small catalogs (where startsWith and contains
+  return similar results) but compounds with catalog size — at 50+
+  datasources the discrepancy becomes operationally significant.
+
+  **The fix is a one-line change** at either site — choose one
+  predicate and align the other. The natural choice is
+  `containsIgnoreCase` (matches the inherited base, matches operator
+  intuition about substring search). The alternative (force
+  `startsWithIgnoreCase` everywhere) breaks compatibility with the
+  inherited count path and would require an override of the parent's
+  `nameField` shape.
+
+  **Why the divergence exists**: the private `queryCondition` was
+  introduced (likely intentionally) to make the dedicated CTE-pagination
+  path narrower than the generic listCondition the count path uses.
+  The private helper became out of sync with the inherited base once
+  the latter was changed to `containsIgnoreCase`; no test exercises
+  the page-vs-count parity. The bug is invisible to the existing test
+  suite (`DataSourceRepositoryImplTest`) because no test calls listDto
+  with `nameQuery != null` against a catalog populated with names
+  containing the query as substring but NOT starting with it.
+nodes:
+- odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl
+contributors:
+- |-
+  ReactiveDataSourceRepositoryImpl batch R (PRIMARY SOURCE):
+  coherence_check.conflicts_surfaced.[0] (NEW finding — page-vs-count
+  predicate divergence; not in batch P controller sidecar; filed as
+  REFACTOR-425; MEDIUM severity at the UI surface) +
+  concepts.invariants.[6] (listDto page query and count query use
+  DIFFERENT predicates on nameQuery — page uses startsWithIgnoreCase,
+  count uses containsIgnoreCase; pagination math broken for non-null
+  nameQuery) +
+  concepts.operations.listDto (CTE-paginated; calls fetchCount(nameQuery)
+  at line 80 which goes through the INHERITED count path — divergent
+  from the page query) +
+  tests_coverage_semantic.uncovered_behaviours (test case proposal:
+  three datasources [snowflake-prod, my-snowflake-dev, redshift-prod]
+  with nameQuery='snow'; assert page.data.size == 1 AND page.total == 2
+  — pins the bug; the test should FAIL with REFACTOR-425 fixed)
+evidence:
+- |-
+  ReactiveDataSourceRepositoryImpl.md:coherence_check.conflicts_surfaced.[0]
+  (PRIMARY SOURCE — MEDIUM severity) — evidence:
+    ReactiveDataSourceRepositoryImpl.java:58-82 (listDto with CTE
+      pagination) +
+    ReactiveDataSourceRepositoryImpl.java:156 (private queryCondition
+      using DATA_SOURCE.NAME.startsWithIgnoreCase) +
+    ReactiveDataSourceRepositoryImpl.java:80 (fetchCount(nameQuery)
+      delegates to inherited base) +
+    ReactiveAbstractCRUDRepository.java:236-249 (the inherited
+      listCondition using nameField.containsIgnoreCase) +
+    ReactiveAbstractSoftDeleteCRUDRepository.java:87-89 (the
+      soft-delete base override applying deleted_at IS NULL on
+      top of the inherited condition)
+- |-
+  ReactiveDataSourceRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours
+  (the divergence is not exercised by the existing test suite —
+  `DataSourceRepositoryImplTest` covers happy-path round-trips but
+  does NOT exercise listDto with nameQuery != null against a catalog
+  whose names contain-but-not-start-with the query)
+axes_present:
+- repositories_reactive
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: correctness-and-UX
+mitigations_unimplemented:
+- |-
+  Choose ONE predicate (recommended: `containsIgnoreCase` to match the
+  inherited base and operator intuition) and align the other site.
+  Concrete fix:
+    REPLACE `DATA_SOURCE.NAME.startsWithIgnoreCase(nameQuery)` at
+    ReactiveDataSourceRepositoryImpl.java:156 with
+    `DATA_SOURCE.NAME.containsIgnoreCase(nameQuery)`
+  Single-line change; no schema impact; no migration needed.
+- |-
+  Add the regression test from the test-coverage proposal:
+    Create three datasources `['snowflake-prod', 'my-snowflake-dev',
+    'redshift-prod']`; call listDto with `nameQuery='snow'`; assert
+    `page.data.size == 2` (both snowflake entries) AND `page.total
+    == 2` (parity); under the proposed fix the test passes;
+    under the current bug the test fails with page.data.size == 1.
+- |-
+  Audit the other custom-listDto methods in the repository layer for
+  similar private queryCondition vs inherited listCondition drift.
+  Candidates to check: ReactiveCollectorRepositoryImpl (no private
+  queryCondition observed in batch R sidecar — inherits cleanly),
+  ReactiveTermRepositoryImpl, ReactiveTagRepositoryImpl,
+  ReactiveOwnerRepositoryImpl, ReactiveRoleRepositoryImpl,
+  ReactivePolicyRepositoryImpl, ReactiveNamespaceRepositoryImpl.
+notes: |-
+  This is a NARROW MEDIUM-severity bug — it affects the Management →
+  Datasources tab filter and only manifests when name substring search
+  reaches across the startsWith vs contains boundary. The bug class is
+  PREDICATE-DIVERGENCE-IN-PAGINATION-WRAPPERS: any repository that
+  shadows the inherited listCondition with a private queryCondition
+  for the page query but reaches the count via the inherited base
+  risks this defect.
+
+  Cross-cutting connections:
+    - Pairs with the inherited `ReactiveAbstractCRUDRepository`
+      pattern — the parent's listCondition is the implicit
+      contract; private shadow conditions break the parent's
+      assumption that page query and count query are symmetric
+    - Companion to the search-facets-bearer-token-shaped-no-user-binding
+      invariant — both reflect pagination-correctness concerns in
+      list endpoints, though the two have DIFFERENT root causes
+    - Does NOT pair with the read-collaborative posture (this is a
+      correctness bug, not an authorization bug; the catalog is read
+      cross-owner regardless of nameQuery)
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) After the fix lands, update the docs to clarify the
+        Management → Datasources tab's substring-search semantics
+        (operators currently see broken pagination silently)
+    (b) Add a one-line repository-layer convention note (e.g. to an
+        internal architecture page) — "private queryCondition methods
+        for paginated listDto MUST match the inherited listCondition
+        the count branch uses"

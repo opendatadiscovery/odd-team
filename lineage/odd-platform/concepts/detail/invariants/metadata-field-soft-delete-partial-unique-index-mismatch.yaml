@@ -1,0 +1,241 @@
+name: metadata_field soft-delete + partial-unique-index mismatch (REFACTOR-223-class)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20R** — surfaced by the
+  ReactiveMetadataFieldRepositoryImpl batch-R sidecar. The
+  `metadata_field` table has TWO partial unique indexes that filter
+  ONLY by `origin`, NOT by `deleted_at`. The sibling `tag_name_unique`
+  WAS migrated in `V0_0_64__remove_is_deleted_field.sql:103-105` to
+  include `WHERE tag.deleted_at IS NULL`; the metadata_field partial
+  indexes were NOT updated in the same migration:
+
+    - `ix_unique_internal_name ON metadata_field(name) WHERE origin =
+      'INTERNAL'` (V0_0_1__init.sql:242-244)
+    - `ix_unique_external_name_type ON metadata_field(type, name) WHERE
+      origin <> 'INTERNAL'` (V0_0_1__init.sql:238-240)
+
+  V0_0_64 retrofitted `metadata_field` with a `deleted_at TIMESTAMP`
+  column (lines 41-42) but did NOT update either partial index. The
+  base class `ReactiveAbstractSoftDeleteCRUDRepository.java:25`
+  hardcodes `deleted_at` as the canonical soft-delete column;
+  `listInternalMetadata` and `listByKey` apply `addSoftDeleteFilter`
+  filtering soft-deleted rows out of the read side.
+
+  **The UX manifestation**: an operator who soft-deletes a custom
+  metadata field with name `cost_centre` (origin=INTERNAL) then tries
+  to re-create it via the UI receives
+  `UniqueConstraintException("Internal metadata with this name already
+  exists")` (ExceptionUtils.java:63-65). But `listInternalMetadata`
+  (called by `GET /api/metadata`) had reported no existing field —
+  the UI dropdown shows the field as absent. The user sees
+  "doesn't exist" in the dropdown but cannot create — a latent UX
+  bug whose cause is invisible from the operator-facing surface.
+
+  **No hard-delete path exists in code** (verified by Grep on the
+  MetadataFieldServiceImpl + repository inspection) — soft-deleted
+  metadata_field rows are PERMANENT name-blockers until a manual
+  DBA UPDATE removes the `deleted_at` row or hard-DELETEs the row.
+
+  **The mismatch is asymmetric across the codebase's soft-delete
+  convergence story** — the platform's V0_0_64 migration is the
+  CANONICAL convergence point where `is_deleted` boolean was
+  collapsed onto `deleted_at` timestamp AND the corresponding
+  partial unique indexes were updated to include the soft-delete
+  predicate. For the Tag table the migration is COMPLETE (column
+  drop + partial-index update). For the metadata_field table the
+  migration is PARTIAL (column add but partial indexes not touched).
+
+  **Cross-cutting bug class — REFACTOR-223**: the platform has at
+  least ONE OTHER instance of the same mismatch class. The
+  `collector.name UNIQUE` constraint is a FULL unique constraint
+  (V0_0_29:4 — `name varchar(255) UNIQUE`), NOT partial-scoped to
+  `WHERE deleted_at IS NULL`. A soft-deleted collector's name
+  CANNOT be reused without first hard-deleting the row (per the
+  ReactiveCollectorRepositoryImpl batch-R sidecar
+  bugs_limitations_corner_cases.[4]). The pattern is:
+  SCHEMA-LEVEL FULL UNIQUE on names + soft-delete-via-deleted_at +
+  no-partial-index-update = name lockout after soft-delete.
+
+  **The intent at V0_0_64**: the migration's deliberate scope was to
+  unify soft-delete schemes around `deleted_at` AND enable
+  recreate-after-soft-delete for OPERATOR-FACING entities (Role,
+  Policy, Tag, Owner). The metadata_field and collector tables were
+  EXCLUDED from the partial-index update. The exclusion is not
+  documented anywhere in the codebase or in the doc-site — operators
+  encounter the lockout empirically.
+
+  **Triggering scenarios in real deployments**:
+    (a) Operator creates a custom INTERNAL metadata field `cost_centre`,
+        then deletes it via the UI ("I made a mistake; I'll create
+        it again as a different type"). The next create attempt with
+        the same name fails opaquely.
+    (b) A collector ingests an EXTERNAL metadata field `cost_centre`
+        of type STRING; an operator soft-deletes it; the same
+        collector re-ingests the same field on its next run — the
+        ingestData path's ON CONFLICT clause swallows the conflict
+        successfully (ingestData IS race-tolerant; the partial index
+        + ON CONFLICT serialise the upsert). The OPERATOR-SIDE
+        re-creation via the UI fails; the COLLECTOR-SIDE upsert
+        succeeds.
+    (c) Operator-deletes a field then EXPECTS the dropdown to allow
+        the same name. The dropdown DOES (listInternalMetadata
+        filters soft-deleted out); the next create attempt fails.
+
+  **Pair with the tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race
+  invariant** — the metadata_field TOCTOU race surface (per the
+  ReactiveMetadataFieldRepositoryImpl batch-R sidecar
+  concepts.invariants.[4]) is structurally identical to the Tag race;
+  the partial-index mismatch ADDS a second class of correctness gap
+  on top.
+nodes:
+- odd-platform java repository reactive repository:ReactiveMetadataFieldRepositoryImpl
+contributors:
+- |-
+  ReactiveMetadataFieldRepositoryImpl batch R (PRIMARY SOURCE):
+  concepts.invariants.[2] (partial unique indexes do NOT include
+  deleted_at IS NULL; the sibling tag_name_unique WAS updated in
+  V0_0_64; the metadata_field partial indexes were NOT updated in
+  the same migration; soft-deleted metadata_field rows are permanent
+  name-blockers) +
+  bugs_limitations_corner_cases.[0] (MEDIUM severity — soft-delete +
+  partial-unique-index mismatch; user-facing UX bug where the dropdown
+  shows the field as absent but the create attempt fails) +
+  implicit_adrs.[1] (the asymmetric uniqueness model — INTERNAL keyed
+  by NAME alone; EXTERNAL keyed by (TYPE, NAME); the design intent
+  is encoded in TWO partial indexes with mutually-exclusive WHERE
+  clauses) +
+  implicit_adrs.[3] (soft-delete via deleted_at TIMESTAMP; consistency
+  with the cross-table soft-delete pattern; V0_0_64 was the convergence
+  migration) +
+  docs_link_semantic.doc_drift_findings.[2] (the case-sensitivity
+  asymmetry is undocumented; SAME shape as Tag asymmetry) +
+  tests_coverage_semantic.uncovered_behaviours (soft-delete +
+  unique-index resurrection test — soft-delete a (foo, STRING,
+  INTERNAL) row → attempt bulkCreate again → expect
+  UniqueConstraintException; the asymmetry with Tag's V0_0_64 fix
+  is unverified)
+- |-
+  ReactiveCollectorRepositoryImpl batch R (CROSS-INSTANCE — collector.name
+  FULL UNIQUE not partial; companion finding in the same bug class):
+  bugs_limitations_corner_cases.[4] (LOW severity at this instance
+  because collector creation is operator-rare; the bug class is the
+  same — soft-delete + non-partial-unique-name = lockout after delete)
+evidence:
+- |-
+  ReactiveMetadataFieldRepositoryImpl.md:concepts.invariants.[2] +
+  bugs_limitations_corner_cases.[0] (PRIMARY SOURCE — MEDIUM severity,
+  HIGH UX-class severity) — evidence:
+    V0_0_1__init.sql:238-244 (the TWO partial unique indexes — no
+      deleted_at IS NULL predicate) +
+    V0_0_64__remove_is_deleted_field.sql:103-105 (the Tag-side
+      matching migration THAT WAS APPLIED — sibling evidence of
+      what the metadata_field side OUGHT to look like) +
+    V0_0_64__remove_is_deleted_field.sql:41-50 (the metadata_field
+      side migration that added deleted_at but did NOT touch the
+      partial indexes — the asymmetric migration) +
+    ReactiveMetadataFieldRepositoryImpl.java:43-56 (listInternalMetadata
+      filters soft-deleted out via addSoftDeleteFilter) +
+    ExceptionUtils.java:63-65 (the user-facing
+      UniqueConstraintException message)
+- |-
+  ReactiveCollectorRepositoryImpl.md:bugs_limitations_corner_cases.[4]
+  (the collector.name FULL UNIQUE companion finding — LOW severity
+  but same bug class) — evidence:
+    V0_0_29__add_collector.sql:4 (collector.name varchar(255) UNIQUE
+      — a FULL unique constraint, NOT partial; soft-deleted collector
+      name CANNOT be reused) +
+    cross-reference to V0_0_55__add_policies_and_roles.sql:42
+      (role.name partial unique index — SHOWS the consistent pattern
+      that collector.name does NOT follow)
+axes_present:
+- repositories_reactive
+- schema_migrations
+triangulation_count: 2
+cross_batch: false
+severity: HIGH
+severity_dim: correctness-and-UX
+mitigations_unimplemented:
+- |-
+  V0_0_NNN migration mirroring V0_0_64's Tag fix for the metadata_field
+  partial unique indexes:
+    DROP INDEX ix_unique_internal_name;
+    CREATE UNIQUE INDEX ix_unique_internal_name ON metadata_field(name)
+      WHERE origin = 'INTERNAL' AND deleted_at IS NULL;
+    DROP INDEX ix_unique_external_name_type;
+    CREATE UNIQUE INDEX ix_unique_external_name_type ON metadata_field(type,
+      name) WHERE origin <> 'INTERNAL' AND deleted_at IS NULL;
+  CAUTION: this requires updating the `.where(ORIGIN.ne(INTERNAL))`
+  clause in `ReactiveMetadataFieldRepositoryImpl.ingestData` at
+  line 101 to ALSO include `.and(DELETED_AT.isNull())` — Postgres's
+  ON CONFLICT arbitrator predicate must match the partial index
+  predicate EXACTLY.
+- |-
+  V0_0_NNN migration scoping the collector.name uniqueness as partial:
+    ALTER TABLE collector DROP CONSTRAINT collector_name_key;
+    CREATE UNIQUE INDEX collector_name_unique ON collector(name)
+      WHERE deleted_at IS NULL;
+  Aligns collector with role/policy/owner partial-unique pattern.
+- |-
+  Document the partial-unique-index-includes-deleted-at convention in
+  an internal architecture note. Any future repository / table that
+  follows the platform's soft-delete pattern (`deleted_at TIMESTAMP`)
+  MUST include `WHERE deleted_at IS NULL` on EVERY unique index on
+  human-meaningful columns (name, oddrn, etc).
+- |-
+  Add the regression test from the test-coverage proposal:
+    Soft-delete a metadata field with `(name='foo', type='STRING',
+    origin='INTERNAL')`; attempt `bulkCreate({name='foo', type='STRING',
+    origin='INTERNAL'})`; under the CURRENT (buggy) behaviour expect
+    UniqueConstraintException; under the proposed fix expect the new
+    row to be created successfully.
+notes: |-
+  This invariant captures a CROSS-TABLE bug class where V0_0_64's
+  convergence on the `deleted_at` + partial-unique-index pattern was
+  applied INCONSISTENTLY across the codebase. Tag, Role, Policy,
+  Owner, Namespace got the full treatment; metadata_field and
+  collector did NOT. The fix per-table is straightforward; the
+  systematic-cleanup is a one-migration sweep over the schema.
+
+  **Why the migration is HIGH PRIORITY despite individual MEDIUM
+  severity**: the bug class is INVISIBLE to operators and to the
+  developer test suite, and the surface manifestation
+  (UniqueConstraintException with no clear cause) erodes platform
+  trust in subtle ways. An operator who soft-deletes a metadata
+  field and tries to recreate it via the UI sees an opaque error;
+  their natural response is to assume the platform is broken or
+  to file a misleading bug report.
+
+  Cross-cutting connections:
+    - Pairs with the tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race
+      invariant — the TOCTOU race surface is structurally identical
+      across Tag and metadata_field; the partial-index-update miss
+      compounds with the TOCTOU race in the metadata_field case
+      (a TOCTOU loser hits the partial-index collision AND the
+      stale-soft-deleted-row collision)
+    - Pairs with the three-soft-delete-mechanisms-across-the-repository-layer
+      invariant — V0_0_64 was the convergence migration; this concept
+      captures the INCOMPLETE-convergence cases (metadata_field +
+      collector did not get the full treatment)
+    - Pairs with the V0_0_64 convergence on `deleted_at` invariant
+      (the schema-history narrative — V0_0_1 introduced
+      is_deleted bool; V0_0_31 added deleted_at TIMESTAMP parallel;
+      V0_0_64 dropped is_deleted and converged on deleted_at IS NULL;
+      this concept captures what V0_0_64 LEFT OUT)
+    - Cross-references the REFACTOR-223 work item (Tag side-door
+      class) — the auto-create surface is wide-open per the
+      spec-documented design intent; the partial-index-update miss
+      adds another corner case
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Document the soft-delete-aware-recreation invariant per-feature
+        (the Tag, Role, Policy, Owner live pages all should say
+        "you can recreate an entity with a previously-used name after
+        soft-delete")
+    (b) **Cross-cutting**: document the EXCEPTIONS (metadata_field +
+        collector) on the feature pages where the lockout matters
+    (c) Add the partial-unique-index-includes-deleted-at convention
+        to the internal architecture page documenting persistence
+        conventions

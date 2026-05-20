@@ -1,0 +1,205 @@
+name: |-
+  Lookup-table rename via ALTER TABLE RENAME silently breaks downstream SQL consumers (no deprecation alias, no view)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-03
+  - P-08
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20V — surfaced by primary-source
+  examination of the lookup-table update flow in ReferenceDataController batch V.
+  Renaming a Lookup Table via PUT /api/referencedata/table/{lookup_table_id}
+  rebuilds the physical PostgreSQL table name via 'n_{namespaceId}__{lowercased_underscored_name}'
+  and issues ALTER TABLE ... RENAME TO. Downstream SQL consumers (BI tools,
+  reconciliation scripts, dashboards, JOIN-side queries) that hardcoded the
+  old table name break silently at the moment the rename is committed. There
+  is no deprecation alias, no SQL view, no operator warning at rename time,
+  no doc admission.
+
+  THE EVIDENCE — file:line citations from the batch V sidecar:
+
+    ReferenceDataServiceImpl.java:107-124 — updateLookupTable rebuilds
+    tableName by calling buildTableName(formData.getName(), table.namespacePojo()).
+    The buildTableName helper (lines 191-194) does:
+      tableName = 'n_' + namespaceId + '__' + name.toLowerCase().replace(' ', '_')
+    No collision pre-check, no operator alert, no historical-alias preservation.
+
+    ReferenceDataRepositoryImpl.java:181-202 — the rename chain in jOOQ:
+      jooq.alterTable(oldName).renameTo(newName)
+    Issued as a DDL statement under @ReactiveCustomTransactional (line 181).
+    PostgreSQL atomic rename — old name disappears, new name appears, no
+    deprecation period, no shadow alias.
+
+    Live docs at https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables
+    (WebFetched 2026-05-20 status 200): NO mention of the rename consequence
+    for downstream SQL consumers. The P-03 pillar doc explicitly mentions
+    'direct PostgreSQL access via lookup_tables_schema' as a primary use
+    case (BI joins, reconciliation pipelines, downstream analytics) — but
+    silently omits that a UI rename invalidates those joins.
+
+  THE OPERATIONAL FAILURE MODE:
+
+    1. Operator creates Lookup Table 'Customer Lookups' in namespace
+       'finance' (namespaceId=5). The physical PG table is
+       lookup_tables_schema.n_5__customer_lookups.
+    2. Downstream pipeline / BI dashboard / reconciliation script JOINs
+       against lookup_tables_schema.n_5__customer_lookups (operators
+       commonly hardcode the name because it's stable across deployments).
+    3. Operator renames the Lookup Table to 'Customer Reference Data' via
+       the Management UI. The PUT request rebuilds the tableName to
+       n_5__customer_reference_data and issues ALTER TABLE.
+    4. The DDL commits. Live queries against the OLD name return
+       'relation "lookup_tables_schema.n_5__customer_lookups" does not exist'.
+    5. Operator sees the UI confirm the rename succeeded; downstream
+       dashboards go red; reconciliation scripts fail; BI tools throw
+       'table not found'.
+    6. There is NO operator-side surface to discover this is happening
+       (no rename audit row in the activity table; no SQL view aliasing the
+       old name; no operator warning at rename time).
+
+  THE COLLISION RISK — sibling finding from the same sidecar:
+
+    buildTableName uses name.toLowerCase().replace(' ', '_') — a lossy
+    normalisation. Two tables in the same namespace named 'Customer Lookups'
+    and 'customer_lookups' both resolve to n_5__customer_lookups. The
+    create-side has no pre-check (per ReferenceDataServiceImpl.java:73-86 +
+    191-194). The downstream DSL.createTable(tableName) raises a Postgres
+    'relation already exists' error surfaced as a generic 500 — no friendly
+    409 / BadUserRequestException path. The same lossy normalisation
+    applies to renames: an operator renaming to a name that collides
+    after normalisation gets a 500 with no actionable error.
+
+  THE OWNERSHIP / LIFECYCLE CONFLATION:
+
+    The Lookup Table is a Data Entity of type LOOKUP_TABLE (per
+    DataEntityClassDto.java:43). Renaming a Lookup Table renames BOTH the
+    data-entity row (the catalog metadata) AND the physical table (the
+    storage substrate). The bifurcation is invisible at the API level —
+    a single PUT renames both, but downstream SQL consumers care ONLY
+    about the physical table name and have no signal that the catalog
+    decision rippled to their JOIN.
+
+  THE MITIGATION SCOPE:
+
+    Three layers of mitigation (any one of which closes the operational
+    surface):
+      Layer 1 — refuse renames at the service layer if a downstream
+      dependency exists. The platform has no dependency-tracking for
+      direct-SQL-JOIN consumers (collectors / lineage edges record
+      programmatic consumers but not raw SQL); this is the weakest
+      mitigation. Defer.
+      Layer 2 — preserve the old name as a SQL VIEW pointing at the new
+      name. CREATE VIEW lookup_tables_schema.n_5__customer_lookups AS
+      SELECT * FROM lookup_tables_schema.n_5__customer_reference_data.
+      The old name continues to work; the rename is non-breaking. Operators
+      can later drop the view via a separate operation. The view is a
+      first-class catalog citizen (would appear as a separate Data Entity
+      if collected) but is the safest forward-compatible rename.
+      Layer 3 — operator warning at rename time: 'Renaming this table will
+      change the physical PG table name from X to Y. Downstream SQL
+      consumers that hardcoded X will break. Confirm?' Pair with a doc
+      admonition on the live page.
+
+    Layer 2 is the strongest mitigation; it costs ONE DDL statement per
+    rename + operator-owned cleanup; it preserves downstream consumers'
+    investment.
+
+  SEVERITY: HIGH — the rename is a documented operator action (Management
+  UI button); the consequence breaks downstream SQL pipelines silently;
+  the failure mode is invisible at the API level and at the catalog UI
+  level; operators have no signal until the downstream pipelines fail.
+nodes:
+  - odd-platform java ReferenceDataController controller-class:ReferenceDataController
+contributors:
+  - |-
+    ReferenceDataController batch V (PRIMARY SOURCE — the rename chain +
+    the collision risk):
+    bugs_limitations_corner_cases.[7] (rename-breaks-downstream — MEDIUM
+    in isolation, HIGH when combined with the silent operator surface) +
+    bugs_limitations_corner_cases.[2] (tableName-collision — MEDIUM lossy
+    normalisation) +
+    implicit_adrs.[3] (physical-postgres-storage — the design intent that
+    BI tools JOIN directly against lookup_tables_schema)
+evidence:
+  - |-
+    ReferenceDataController.md:bugs_limitations_corner_cases.[7] —
+    evidence: ReferenceDataServiceImpl.java:107-124 + ReferenceDataRepositoryImpl.java:181-202
+  - |-
+    ReferenceDataController.md:bugs_limitations_corner_cases.[2] —
+    evidence: ReferenceDataServiceImpl.java:191-194 (lossy normalisation) +
+    ReferenceDataServiceImpl.java:73-86 (no pre-check)
+  - |-
+    ReferenceDataController.md:implicit_adrs.[3] —
+    evidence: ReferenceDataRepositoryImpl.java:57 + live-doc P-03 narrative
+    (the documented BI-JOIN use case)
+  - |-
+    Live doc WebFetch
+    https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables
+    status 200 2026-05-20 (silent on rename consequences)
+axes_present:
+  - controllers
+  - services
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: operational-data-loss
+mitigations_unimplemented:
+  - |-
+    Layer 2 — preserve the old name as a SQL VIEW pointing at the new name.
+    The rename DDL chain becomes:
+      ALTER TABLE old_name RENAME TO new_name
+      CREATE OR REPLACE VIEW old_name AS SELECT * FROM new_name
+    Operator-owned cleanup via a separate DROP VIEW endpoint OR via direct
+    SQL.
+  - |-
+    Layer 3 — operator warning at rename time. The UI rename dialog should
+    surface: 'Renaming this table will change the physical PG table name
+    from X to Y. Downstream SQL consumers that hardcoded X will break.
+    Confirm?' Pair with a doc admonition on the P-03 live page.
+  - |-
+    Doc admission — disclose the rename behaviour on the
+    /features/master-data-management/lookup-tables live page. Three doc-NNN
+    candidates flow from this finding alone (rename behaviour, collision risk,
+    cascade behaviour on delete).
+  - |-
+    Audit-trail enhancement — emit a new ActivityEvent type LOOKUP_TABLE_RENAMED
+    capturing the old + new names. The Lookup Table IS a Data Entity, so
+    the activity table CAN hold the event (per F-006 schema-rooted
+    constraint).
+  - |-
+    Regression test — assert the rename behaviour: PUT a lookup table's
+    name, fetch the new name, query the old name via direct SQL, assert
+    'relation does not exist'. Pin the current behaviour as a regression
+    boundary until the Layer-2 view-preservation lands.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20V from the
+  ReferenceDataController class-level sidecar. The finding identifies a
+  silent operational data-loss vector at the Lookup Tables rename surface —
+  combined with the doc-side silence (the P-03 page positions direct
+  PostgreSQL JOINs as the primary use case but does not warn about rename
+  consequences), the failure mode is invisible to operators until downstream
+  pipelines fail.
+
+  Cross-cutting connections:
+    - Companion finding: lookup-table-cascade-orphan-on-data-entity-delete
+      (the parent DataEntity soft-delete leaves orphan physical tables —
+      mirror-image issue at the delete surface)
+    - Sibling finding: tableName-collision-no-pre-check (the lossy
+      normalisation creates ambiguous physical names)
+    - Doc-drift: the P-03 master-data-management.md page positions Lookup
+      Tables as the canonical operator-curated reference-data surface for
+      BI tools; the rename behaviour breaks the load-bearing use case
+    - F-006 audit-silence: rename has NO @ActivityLog at the service tier;
+      operators cannot reconstruct 'who renamed which Lookup Table when'
+      from the activity feed (the LOOKUP_TABLE_RENAMED event type does not
+      exist in ActivityEventType)
+    - Cross-tier consistency: the rename couples catalog-metadata + physical
+      table; a partial failure (catalog renames, DDL fails) is theoretically
+      possible per the no-transactional-consistency finding (separate
+      bugs_limitations_corner_cases.[4] in the sidecar)
+
+  Four DOC-NNN candidates flow:
+    (a) Code fix Layer 2 — view-preservation on rename
+    (b) UI rename-confirmation dialog
+    (c) Doc admission on the P-03 live page
+    (d) Audit event LOOKUP_TABLE_RENAMED

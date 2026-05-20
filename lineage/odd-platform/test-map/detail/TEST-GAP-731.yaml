@@ -1,0 +1,72 @@
+gap_id: TEST-GAP-731
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataEntityAttachmentController controller-class:DataEntityAttachmentController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "DataEntityAttachmentController.md:bugs_limitations_corner_cases.[4] (Mutation endpoints discard `dataEntityId` from the URL — DELETE /api/dataentities/{A}/files/{file_id} will delete file_id even if it belongs to data entity B — severity HIGH: cross-entity privilege escalation via URL spoofing)"
+  - "DataEntityAttachmentController.md:security.owner_scoping (BYPASSES — the management permission grants on a (subject=DATA_ENTITY, dataEntityId) tuple but the controller's mutation methods discard the path's dataEntityId and operate on fileId/linkId directly)"
+  - "DataEntityAttachmentController.md:security.known_security_gaps.[1] (mutation endpoints discard the URL's dataEntityId and act on fileId/linkId alone — cross-entity privilege escalation possible for any user holding DATA_ENTITY_ATTACHMENT_MANAGE on one entity — severity HIGH)"
+  - "DataEntityAttachmentController.md:implicit_adrs.[6] (The controller hierarchical URL (/api/dataentities/{id}/files/{file_id}) is layout-only; mutation operations on a specific file or link do NOT verify that the file/link actually belongs to the data entity in the path)"
+behaviour: |-
+  **CRITICAL — Cross-entity privilege escalation: a user with `DATA_ENTITY_ATTACHMENT_MANAGE` on entity A can mutate (delete file, update link, delete link, download file) ANY file or link in the catalog by spoofing entity A's id in the URL while supplying a fileId/linkId belonging to entity B.** Primary-source confirmed in the batch-V DataEntityAttachmentController sidecar:
+
+  - `deleteFile(dataEntityId, fileId)` (`DataEntityAttachmentController.java:83-88`) accepts `dataEntityId` in the URL path but ONLY passes `fileId` to `attachmentService.deleteFile(fileId)` — `dataEntityId` is discarded silently.
+  - `updateLink(dataEntityId, linkId, formData)` (`DataEntityAttachmentController.java:100-107`) — same pattern, `dataEntityId` discarded.
+  - `deleteLink(dataEntityId, linkId)` (`DataEntityAttachmentController.java:110-114`) — same.
+  - `downloadFile(dataEntityId, fileId)` (`DataEntityAttachmentController.java:73-80`) — same.
+  - `completeFileUpload(dataEntityId, uploadId)` (`DataEntityAttachmentController.java:65-70`) — same.
+
+  The `DATA_ENTITY_ATTACHMENT_MANAGE` permission is wired on `(subject=DATA_ENTITY, dataEntityId)` per `SecurityConstants.java:247-276` — the authorization manager resolves the permission by checking the caller's grant on the URL's `dataEntityId`. The check PASSES if the caller has the permission on entity A. The service then operates on `fileId` (which belongs to entity B). Authorization passes for the wrong entity.
+
+  **Attack scenario**:
+  ```
+  # Attacker has DATA_ENTITY_ATTACHMENT_MANAGE on entity 100 only.
+  # File 999 belongs to entity 200 (attacker has NO permission on entity 200).
+
+  curl -X DELETE https://platform/api/dataentities/100/files/999 \
+       -H "Authorization: Bearer $TOKEN"
+
+  # Result: file 999 is deleted. Authorization manager checked permission on entity 100 (granted).
+  #         Service deleted file 999 (which belongs to entity 200, not 100). Cross-entity write.
+  ```
+
+  **Compound with the existing TEST-GAP-022 (uploadId hijack — sister surface at the chunked-upload state machine)**: TEST-GAP-022 covers the chunk-upload variant where the uploadId belongs to a different entity than the path's dataEntityId. THIS gap covers the FILE/LINK mutation variants: an entirely different class of methods (delete, update-link, delete-link, downloadFile, completeFileUpload) all share the same architectural bug — URL-path-only-as-layout, fileId/linkId-is-the-real-key. The two gaps together demonstrate the pattern is SYSTEMIC across the controller, not isolated to one method.
+
+  **Why CRITICAL not HIGH**: this is the WRITE-side privilege escalation across all four mutation surfaces of an attachment subsystem. Combined with TEST-GAP-022 (uploadId hijack on chunk upload), TEST-GAP-027 (Content-Disposition CRLF/path-traversal — see TEST-GAP-735 for the new path-traversal extension), and TEST-GAP-028 (read endpoints have no SecurityRule — every authenticated user reads attachments cross-entity), the WRITE-side cross-entity escalation completes the picture: an attacker with one DATA_ENTITY_ATTACHMENT_MANAGE grant has effective full-platform attachment-CRUD on every entity. The blast radius is the entire catalog's attachment surface. Five surfaces × one bug class = CRITICAL.
+
+  **Test gap shape**: regression-pin asserting that each of the four mutation methods + downloadFile succeeds when the URL's dataEntityId is one the caller has permission on but the fileId/linkId belongs to a DIFFERENT entity the caller has NO permission on. Pin five surfaces in lockstep.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AttachmentCrossEntityUrlSpoofingTest.java"
+  name: "deleteFileUpdateLinkDeleteLinkDownloadFileCompleteFileUpload_acceptUrlEntityIdMismatchBetweenPathAndFileId_pinsCurrentBypass"
+evidence:
+  - "DataEntityAttachmentController.md says (bugs_limitations_corner_cases.[4]): 'Mutation endpoints discard `dataEntityId` from the URL: DELETE /api/dataentities/{A}/files/{file_id} will delete `file_id` even if it belongs to data entity B. Authorization on the management permission is granted per-data-entity (DATA_ENTITY AuthorizationManagerType, SecurityConstants.java:248), so a user with MANAGE on entity A but NOT entity B can delete entity B files by issuing the request through entity A URL. Same for `updateLink`, `deleteLink`, `downloadFile`, `completeFileUpload`.' — severity HIGH (cross-entity privilege escalation via URL spoofing — directly related to REFACTOR-024 cross-owner enumeration class)"
+  - "DataEntityAttachmentController.md says (security.owner_scoping): 'BYPASSES — the management permission grants on a (subject=DATA_ENTITY, dataEntityId) tuple but the controller mutation methods discard the path dataEntityId and operate on fileId/linkId directly. A user with MANAGE on entity A can mutate entity B files/links by spoofing the URL prefix.'"
+  - "DataEntityAttachmentController.md says (implicit_adrs.[6]): 'The controller hierarchical URL (/api/dataentities/{data_entity_id}/files/{file_id}) is layout-only; mutation operations on a specific file or link do NOT verify that the file/link actually belongs to the data entity in the path.' — confidence MEDIUM (the pattern is applied consistently — that is the convention — but no comment defends the choice)"
+  - "Verified at primary source: DataEntityAttachmentController.java:65-114 (5 method signatures consistently accept `final Long dataEntityId` then never reference it in the body — repeated across 5 methods) + AttachmentServiceImpl.java:71-88 (service method signatures take only fileId/linkId)"
+cross_references:
+  - "TEST-GAP-022 (uploadId hijack on chunk upload — sister cross-entity bypass at the chunked-upload state machine; this gap extends to file/link mutations)"
+  - "TEST-GAP-027 (Content-Disposition CRLF injection — sister attachment-surface security gap)"
+  - "TEST-GAP-028 (Read endpoints have no SecurityRule — sister read-side cross-entity exposure on the attachment surface)"
+  - "TEST-GAP-735 (NEW batch V — filename path-traversal — sister write-path security gap)"
+  - "TEST-GAP-740 (NEW batch V — STRENGTHEN TEST-GAP-028 read endpoints with controller-class evidence)"
+  - "concepts: attachment-cross-entity-url-spoofing-aggregate (NEW concept candidate — five-surface compound bypass on the attachment subsystem)"
+  - "REFACTOR-NNN candidate: enforce fileId/linkId-to-dataEntityId binding check at the service layer for each mutation method; OR change the service method signatures to accept BOTH dataEntityId and fileId/linkId and assert the binding in-line"
+  - "concepts.yaml:entities[Attachment].security_aggregate.weaknesses (this gap is the 4-surface compound that the existing entity-level aggregate captures partially via TEST-GAP-022)"
+related_features: [F-008]
+related_pillar_features: ["P-01:F-007", "P-09:F-001"]
+proposed_action: |-
+  Add `AttachmentCrossEntityUrlSpoofingTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods (one per mutation surface, plus one consolidation):
+  1. `deleteFile_urlDataEntityIdMismatchesFileIdsParent_succeeds_pinsCurrentBypass` — seed entity A (caller has DATA_ENTITY_ATTACHMENT_MANAGE) + entity B (caller has NO permission); upload a file to B; DELETE /api/dataentities/{A}/files/{file_from_B_id}; assert HTTP 204 (the file is deleted DESPITE the path's dataEntityId mismatching the file's parent). PIN the current bypass.
+  2. `updateLink_urlDataEntityIdMismatchesLinkIdsParent_succeeds_pinsCurrentBypass` — sister test on the update-link surface.
+  3. `deleteLink_urlDataEntityIdMismatchesLinkIdsParent_succeeds_pinsCurrentBypass` — sister test on the delete-link surface.
+  4. `downloadFile_urlDataEntityIdMismatchesFileIdsParent_succeeds_pinsCurrentBypass` — sister test on the download surface (cross-entity READ via WRITE-permission-only path).
+  5. `completeFileUpload_urlDataEntityIdMismatchesUploadIdsTargetEntity_succeeds_pinsCurrentBypass` — sister test on the complete-upload surface (compounds with TEST-GAP-022).
+
+  Pair with a follow-up backlog item proposing the fix: at the service layer, for each mutation method, fetch the file/link's parent dataEntityId BEFORE the operation; if it does NOT match the URL's dataEntityId, raise `AccessDeniedException`. This adds one DB round-trip per mutation but closes the bypass. When the fix lands, all five tests #1-#5 invert to assert HTTP 403.
+
+  Cross-pair with DOC-NNN: surface the cross-entity-URL-spoofing class in the attachments doc + the permissions doc — operators authoring RBAC policies need to know that DATA_ENTITY_ATTACHMENT_MANAGE on entity A is effectively a platform-wide attachment-mutate today, NOT entity-scoped. Until the code fix lands, the docs are the only surface that can warn operators.
+batch: 2026-05-20-V
+feature_id: F-008

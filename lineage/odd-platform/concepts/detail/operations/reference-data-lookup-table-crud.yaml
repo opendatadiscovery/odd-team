@@ -1,0 +1,184 @@
+name: |-
+  Reference Data / Lookup Table CRUD + Faceted Search (the 14-endpoint surface owned by ReferenceDataController — P-03 anchor)
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+  - P-03
+description: |-
+  Operation cluster for the P-03 Master Data Management pillar's single
+  user-observable surface — Lookup Tables CRUD + Faceted Search. 14
+  endpoints across 4 groups under /api/referencedata/*:
+
+    Table CRUD (4):
+      POST /api/referencedata/table (createLookupTable)
+      GET /api/referencedata/table/{lookup_table_id} (getLookupTableById)
+      PUT /api/referencedata/table/{lookup_table_id} (updateLookupTable)
+      DELETE /api/referencedata/table/{lookup_table_id} (deleteLookupTable)
+
+    Column CRUD (3):
+      POST /api/referencedata/table/{lookup_table_id}/columns (addLookupTableField)
+      PATCH /api/referencedata/table/{lookup_table_id}/column/{column_id}
+        (updateLookupTableField — SIGNATURE BUG: discards lookupTableId)
+      DELETE /api/referencedata/table/{lookup_table_id}/column/{column_id}
+        (deleteLookupTableField)
+
+    Row CRUD (4):
+      GET /api/referencedata/table/{lookup_table_id}/data (getLookupTableRowList)
+      POST /api/referencedata/table/{lookup_table_id}/data (addDataToLookupTable)
+      PUT /api/referencedata/table/{lookup_table_id}/data/{row_id}
+        (updateLookupTableRow)
+      DELETE /api/referencedata/table/{lookup_table_id}/data/{row_id}
+        (deleteLookupTableRow)
+
+    Search (4 — overloaded GET produces 5 operations):
+      POST /api/referencedata/search (referenceDataSearch — create-session)
+      GET /api/referencedata/search/{search_id} (getReferenceDataSearchFacetList)
+      PUT /api/referencedata/search/{search_id} (updateReferenceDataSearchFacetList)
+      GET /api/referencedata/search/{search_id}/results (getReferenceDataSearchResults)
+
+  KEY SEMANTICS:
+
+    Physical storage — every Lookup Table backs a PG table:
+      Backing table name: lookup_tables_schema.n_{namespaceId}__{lowercased_underscored_name}
+      DDL via createLookupTable: CREATE SEQUENCE + CREATE TABLE issued under
+        @ReactiveCustomTransactional.
+      buildTableName uses lossy lowercase + space-to-underscore — collision
+        risk for similarly-named tables (sibling finding: tableName collision).
+
+    Rename — ALTER TABLE silently breaks downstream consumers:
+      updateLookupTable rebuilds tableName and issues ALTER TABLE...RENAME TO.
+      No deprecation alias, no view, no operator warning. Captured in
+      lookup-table-rename-via-alter-table-breaks-downstream-sql-consumers.yaml
+      as a HIGH-severity invariant.
+
+    Delete — service-orchestrated cascade:
+      4-step transactional cascade: search-entrypoint rows → table-definitions →
+      tableRepository row → DataEntity. PLUS the physical Postgres table DROP.
+      The cascade is NOT enforced by FK constraints (FK on
+      lookup_tables.data_entity_id is absent).
+      Two transactions (service-tier @ReactiveTransactional + repository-tier
+      @ReactiveCustomTransactional) — no rollback semantics across the boundary
+      means a failure between catalog DELETE (commit A) and physical DROP
+      TABLE (commit B) leaves the catalog inconsistent.
+
+    Authorization — 9 mutating endpoints gated; 6 read endpoints UNGATED:
+      9 LOOKUP_TABLE_* permissions split across THREE surfaces:
+        Table: LOOKUP_TABLE_CREATE / _UPDATE / _DELETE
+        Definition: LOOKUP_TABLE_DEFINITION_CREATE / _UPDATE / _DELETE
+        Data: LOOKUP_TABLE_DATA_CREATE / _UPDATE / _DELETE
+      All 9 use NO_CONTEXT resolver — a holder of LOOKUP_TABLE_UPDATE can
+      modify ANY lookup table, NOT just the ones owned by their Owner.
+      The 6 read endpoints have NO _READ permission — gated only by
+      .authenticated() — sibling finding to attachment-read-endpoints-no-securityrule
+      class.
+
+    Bug — updateLookupTableField discards path-param lookupTableId at the
+    service signature; cross-table column-PATCH attack reachable by any
+    LOOKUP_TABLE_DEFINITION_UPDATE holder.
+
+    Verbatim row storage — LookupCharValidator.getValue returns input
+    unchanged. Same F-004 family on a NON-Markdown surface (HTML / JS
+    payloads round-trip intact).
+
+    Search-session pattern — mirrored from SearchController + TermController +
+    QueryExampleController. UUID-only session ownership; same shape as
+    sibling search-session endpoints.
+
+  SIDE EFFECTS:
+
+    createLookupTable: INSERT lookup_tables row + DDL CREATE SEQUENCE +
+      DDL CREATE TABLE + create DataEntity parent
+    updateLookupTable (with rename): UPDATE lookup_tables + DDL ALTER TABLE
+      RENAME (BREAKS DOWNSTREAM SQL)
+    addDataToLookupTable: INSERT into the physical PG table via DSL.val(...)
+      parameterised insert (SQL-injection safe) + FTS-vector synchronous
+      update
+    deleteLookupTable: 4-step service-orchestrated cascade + physical DROP TABLE
+
+    NO Activity Feed emission for any Lookup Table operation — sibling to
+    the F-006 audit-silence pattern (the Lookup Table IS a Data Entity so
+    the schema would PERMIT activity emission, but no @ActivityLog is
+    applied at the service tier).
+nodes:
+  - odd-platform java ReferenceDataController controller-class:ReferenceDataController
+contributors:
+  - |-
+    ReferenceDataController batch V (PRIMARY SOURCE):
+    concepts.operations (17 listed operations) +
+    concepts.invariants (physical PG table; cascade orchestration; lookup_tables_schema) +
+    bugs_limitations_corner_cases.[0-7] (7 distinct findings on the surface) +
+    implicit_adrs.[0-4] (Data-Entity-subtype; route-matcher RBAC; three-surface
+    permission split; physical-PG storage; faceted-search-session pattern)
+evidence:
+  - |-
+    ReferenceDataController.md:concepts.operations — 17 operations enumerated
+  - |-
+    ReferenceDataController.md:concepts.invariants — physical PG, cascade,
+    column-belongs-to-table check
+  - |-
+    ReferenceDataController.md:bugs_limitations_corner_cases.[0] (read endpoints
+    no RBAC), [1] (XSS surface on row values), [2] (tableName collision),
+    [3] (cascade orphan), [4] (two-transactions), [5] (PATCH column
+    discards tableId), [6] (hardcoded 50-row response), [7] (rename
+    breaks downstream)
+  - |-
+    Live doc WebFetch
+    https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables
+    status 200 2026-05-20
+axes_present:
+  - controllers
+  - services
+  - schema_migrations
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant: [LOGIN_FORM, OAUTH2, LDAP, DISABLED]
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      9 mutating endpoints HAVE SecurityRule; 5-6 read endpoints have NO
+      rule. All 9 mutating rules use NO_CONTEXT — no per-owner scoping.
+      No _READ permission exists.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      NO_CONTEXT resolver applies uniformly to all 9 LOOKUP_TABLE_*
+      permissions. Reads bypass owner-scoping by absent SecurityRule.
+  strengths:
+    - 9 mutating endpoints fully gated
+    - Three-surface permission split (table / definition / data)
+  weaknesses:
+    - Read endpoints have NO RBAC (HIGH for sensitive reference data)
+    - F-004 stored-XSS family extends to row values + column names + table
+      names + descriptions
+    - Permission scope is global (NO_CONTEXT) — operator-scoped Policies
+      not possible
+    - updateLookupTableField discards lookupTableId — cross-table PATCH attack
+  contributing_files:
+    - ReferenceDataController.md
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - 'getLookupTableRowList: full-table COUNT(*) per page request —
+      ReferenceDataController.md'
+    - 'Search results via tsvector @@ tsquery on the search-entrypoint —
+      ReferenceDataController.md'
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: |-
+      Hardcoded 50-row response cap on insert/update. fetchCount(*) per
+      page read. DDL serialization risk on rename / delete (ACCESS EXCLUSIVE
+      LOCK).
+  contributing_files:
+    - ReferenceDataController.md
+notes: |-
+  This operation entry captures the 14-endpoint Lookup Table CRUD surface
+  for P-03. The entity entry (master-data-management-lookup-table-pillar-p-03-anchored.yaml)
+  carries the cross-pillar semantics; this operation entry carries the
+  per-endpoint behaviour.
+
+  Cross-cutting connections:
+    - Entity: master-data-management-lookup-table-pillar-p-03-anchored.yaml
+    - Companion HIGH invariant: lookup-table-rename-via-alter-table-breaks-downstream-sql-consumers
+    - F-004 stored-XSS family: row values on a non-Markdown surface
+    - F-006 audit-silence: no @ActivityLog on LookupTable mutations
+    - Cross-pillar: P-03 feeds P-01 (Lookup Tables = Data Entities)

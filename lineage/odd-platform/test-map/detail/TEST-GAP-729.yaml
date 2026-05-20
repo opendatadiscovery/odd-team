@@ -1,0 +1,75 @@
+gap_id: TEST-GAP-729
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java OwnerAssociationRequestController controller-class:OwnerAssociationRequestController"
+  - "odd-platform java service service:OwnerAssociationRequestServiceImpl"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "OwnerAssociationRequestController.md:security.known_security_gaps.[3] (DIRECT_OWNER_SYNC permission applies SYNCHRONOUSLY at request-creation time — combined with the side-door at OwnerService.getOrCreate a DIRECT_OWNER_SYNC holder can MINT a new Owner and immediately self-bind to it — a complete privilege-escalation chain — severity HIGH)"
+  - "OwnerAssociationRequestController.md:bugs_limitations_corner_cases.[0] (createOwnerAssociationRequest routes through OwnerService.getOrCreate — request flow can SILENTLY MINT new Owner directory rows on behalf of any authenticated user without OWNER_CREATE — severity MEDIUM)"
+  - "OwnerAssociationRequestController.md:implicit_adrs.[2] (DIRECT_OWNER_SYNC permission as an escalation mechanism — collapses the two-step workflow into one for designated principals)"
+  - "OwnerAssociationRequestController.md:tests_coverage_semantic.uncovered_behaviours.[1] (DIRECT_OWNER_SYNC auto-approve path — no service-layer test of the branch at OwnerAssociationRequestServiceImpl.java:64-67)"
+  - "OwnerAssociationRequestController.md:coherence_notes.[3] (DOC-vs-CODE drift — live docs make NO mention of DIRECT_OWNER_SYNC nor MANUAL-mapping flow)"
+behaviour: |-
+  **CRITICAL — `DIRECT_OWNER_SYNC` + `OwnerService.getOrCreate` chain is a one-shot privilege-escalation: MINT a fresh Owner directory row + immediately self-bind to it, with no `OWNER_CREATE` permission required and no admin-approval gate.** Primary-source confirmed in the batch-V OwnerAssociationRequestController + OwnerAssociationRequestServiceImpl sidecar primary source verified at the file (DIRECT_OWNER_SYNC at `OwnerAssociationRequestServiceImpl.java:64`):
+
+  **The chain — three composable steps in one HTTP request**:
+  1. `POST /api/owner_association_request` has NO `SecurityRule` entry — any authenticated user can submit (`OwnerAssociationRequestController.md:security.authorization_assertions.ABSENT — POST /api/owner_association_request has NO SecurityRule entry`).
+  2. The service calls `ownerService.getOrCreate(ownerName)` (`OwnerAssociationRequestServiceImpl.java:57`) — if no Owner with that name exists, mint a new one. No `OWNER_CREATE` permission is checked.
+  3. The service then checks `permissionService.getNonContextualPermissionsForCurrentUser(MANAGEMENT)` (`OwnerAssociationRequestServiceImpl.java:60-67`) — if the caller holds `DIRECT_OWNER_SYNC`, the request is AUTO-APPROVED synchronously. The `USER_OWNER_MAPPING` row is created in-line; no admin click is required; no audit-trail awaiting-approval row is left in `owner_association_request` for an operator to vet.
+
+  **What an attacker holding only `DIRECT_OWNER_SYNC` can do in a single curl**:
+  ```
+  curl -X POST https://platform/api/owner_association_request \
+       -H "Authorization: Bearer $TOKEN" \
+       -d '{"name": "platform-admin-owner-impersonator"}'
+  ```
+  - Step (a): the endpoint has no SecurityRule → the request bypasses the SecurityConstants permission check entirely (any authenticated user reaches the service).
+  - Step (b): no Owner with that name exists → `getOrCreate` mints `platform-admin-owner-impersonator` as a new Owner row. The attacker did NOT have `OWNER_CREATE`.
+  - Step (c): the caller holds `DIRECT_OWNER_SYNC` → the request is auto-approved synchronously; a `USER_OWNER_MAPPING` row is created binding the attacker's `(oidcUsername, provider)` to the newly-minted Owner.
+  - Result: the attacker is now bound to an Owner whose name they chose, in a system where `Owner` is the principal for `My Objects`, `Dependents`, and owner-scoped read filters. The newly-minted Owner has zero roles by default, BUT the attacker's user identity is now permanently bound to an arbitrary Owner string.
+
+  **Why CRITICAL not HIGH**: while a single-step `DIRECT_OWNER_SYNC` auto-approve to an EXISTING Owner is the documented (silent) escalation path, the COMPOUND with `OwnerService.getOrCreate` means the attacker also chooses the Owner's NAME. The chain is THREE bypass surfaces stacked: (1) no SecurityRule on POST, (2) no OWNER_CREATE check inside getOrCreate, (3) DIRECT_OWNER_SYNC auto-approve. Combined with the live doc page describing ONLY the two-step `SELF-request → Admin-approve` flow (`OwnerAssociationRequestController.md:coherence_notes.[3] — DIRECT_OWNER_SYNC absent from live docs as of 2026-05-20`), operators reading the docs CANNOT discover this chain, CANNOT audit it (the `getOrCreate` side has no doc explanation), and CANNOT distinguish "real workflow" from "escalation chain" in the activity feed (the `REQUEST_APPROVED` activity-type row looks identical in both cases). The compound disclosure invisibility + bypass stacking + lack of any feature flag to disable DIRECT_OWNER_SYNC makes this CRITICAL. Cross-pillar P-08 + P-09. Sister case-law class to LSN-001 / LSN-002 operator-cliff family.
+
+  **Operational consequences**:
+  - In an OIDC deployment where `DIRECT_OWNER_SYNC` is bound via group-claim (intended for "trust the IdP" deployments), a misconfigured group membership grants this chain to anyone in the group — silently. There is no admin-on-approval review.
+  - An operator-investigation discovering an unexpected Owner row asks "who created this?" — the activity-feed `REQUEST_APPROVED` row has `status_updated_by = the requester` (because the auto-approve path makes the requester their own approver). The forensic record is intact at the request-tier but obscured: nothing distinguishes self-approve from admin-approve in the activity-list page UI.
+
+  **Test gap shape**: regression-pin asserting the full chain in one test method. Authenticate as a user with ONLY `DIRECT_OWNER_SYNC` (no `OWNER_CREATE`, no `OWNER_ASSOCIATION_MANAGE`); POST `/api/owner_association_request` with `name: "fresh-owner-" + UUID.randomUUID()`; assert (a) HTTP 200/201; (b) a new Owner row exists; (c) a `USER_OWNER_MAPPING` row binds the caller's identity to the new Owner; (d) the activity-feed contains exactly ONE `REQUEST_APPROVED` row with `status_updated_by = the caller` (the self-approve fingerprint). Pin the entire chain. When the fix lands (either split getOrCreate, OR require OWNER_CREATE inside the auto-approve path, OR audit-flag the self-approve case), the test inverts in the relevant cell.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/OwnerAssociationDirectOwnerSyncEscalationTest.java"
+  name: "createOwnerAssociationRequest_withDIRECT_OWNER_SYNCOnly_andFreshOwnerName_mintsOwnerAndSelfApprovesInOneCall"
+evidence:
+  - "OwnerAssociationRequestController.md says (security.known_security_gaps.[3]): 'DIRECT_OWNER_SYNC permission applies SYNCHRONOUSLY at request-creation time (OwnerAssociationRequestServiceImpl.java:60-67) but the permission CHECK is `permissionService.getNonContextualPermissionsForCurrentUser(MANAGEMENT)` — which returns ALL MANAGEMENT permissions held by the user. A user holding DIRECT_OWNER_SYNC can self-bind to ANY existing Owner directory entry (including the deployment most-privileged Owner). Combined with the side-door at OwnerService.getOrCreate (no OWNER_CREATE required), a DIRECT_OWNER_SYNC holder can MINT a new Owner and immediately self-bind to it — a complete privilege-escalation chain.' — severity HIGH"
+  - "OwnerAssociationRequestController.md says (bugs_limitations_corner_cases.[0]): 'createOwnerAssociationRequest (POST /api/owner_association_request) accepts an arbitrary ownerName from the requesting user and routes through OwnerService.getOrCreate. Per F-019 line 267-281 (getOrCreate permission-bypass side-door), the request flow can SILENTLY MINT new Owner directory rows on behalf of any authenticated user without that user holding OWNER_CREATE.' — severity MEDIUM"
+  - "OwnerAssociationRequestController.md says (implicit_adrs.[2]): 'AUTO-APPROVE permission as an escalation mechanism — the DIRECT_OWNER_SYNC permission collapses the two-step workflow into one for designated principals.'"
+  - "Verified at primary source: /home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/OwnerAssociationRequestServiceImpl.java:64 — `if (permissions.contains(Permission.DIRECT_OWNER_SYNC)) {` — auto-approve branch (2026-05-20)"
+  - "OwnerAssociationRequestController.md says (coherence_notes.[3]): 'DOC-vs-CODE drift: the live user-owner-association doc (WebFetched 2026-05-20, status 200) describes EXACTLY TWO flows (SELF-request + Admin-approve). The doc makes NO mention of (a) the MANUAL flow, (b) the DIRECT_OWNER_SYNC permission, (c) the /api/owners/providers enumeration endpoint, (d) the request-activity audit view, (e) the deleteActiveUserOwnerMapping revocation surface.'"
+cross_references:
+  - "F-019 (Owner Lifecycle Management — REFACTOR-427 cascade-incompleteness + getOrCreate side-door enumeration)"
+  - "F-011 (Principal-to-Owner Resolution — this gap is at the WRITE-tier of the resolution mechanism)"
+  - "TEST-GAP-626 (Owner-delete + owner_association_request orphan rows — sister cascade-incompleteness on the DELETE side)"
+  - "TEST-GAP-628 (Owner soft-delete visibility asymmetry — sister gap on the same Owner directory)"
+  - "TEST-GAP-718 (TermController term-to-term linkage no-authz — sister no-gate-on-write pattern)"
+  - "TEST-GAP-726 (TermController getOrCreate side-door NAMESPACE_CREATE + TAG_CREATE — sister getOrCreate bypass pattern)"
+  - "concepts: getorcreate-permission-bypass-aggregate (RECOMMEND concept-merger surface the cumulative cross-pillar pattern — Owner-side now joins Term-side + Tag-side enumeration)"
+  - "REFACTOR-NNN candidate: either (a) require OWNER_CREATE inside OwnerService.getOrCreate when called from the OwnerAssociationRequest auto-approve path; (b) split getOrCreate into get+create with separate auth surfaces; (c) feature-flag the DIRECT_OWNER_SYNC auto-approve to require an additional admin-on-approval review for fresh Owners (the most conservative fix)"
+  - "DOC-NNN candidate: surface the DIRECT_OWNER_SYNC auto-approve flow + the getOrCreate side-door on `documentation/docs/configuration-and-deployment/enable-security/authorization/user-owner-association.md` — operators authoring RBAC policies need to see the side-door"
+  - "LSN-001 / LSN-002 (operator-cliff failure-mode — operators trusting the documented two-step approval workflow miss the one-step escalation chain)"
+related_features: [F-019, F-011, F-006]
+related_pillar_features: ["P-08:F-003", "P-09:F-NN"]
+proposed_action: |-
+  Add `OwnerAssociationDirectOwnerSyncEscalationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `createOwnerAssociationRequest_withDIRECT_OWNER_SYNCOnly_andFreshOwnerName_mintsOwnerAndSelfApprovesInOneCall` — authenticate as a user with ONLY `DIRECT_OWNER_SYNC` (no OWNER_CREATE, no OWNER_ASSOCIATION_MANAGE); POST `/api/owner_association_request` with `name: "fresh-owner-" + UUID.randomUUID()`; assert (a) HTTP 200/201; (b) `SELECT COUNT(*) FROM owner WHERE name = ? AND deleted_at IS NULL` returns 1 (the side-door minted the Owner); (c) `SELECT COUNT(*) FROM user_owner_mapping WHERE owner_id = ? AND ...` returns 1 (the auto-approve bound the caller); (d) `SELECT COUNT(*) FROM owner_association_request_activity WHERE event_type = 'REQUEST_APPROVED' AND owner_id = ?` returns 1 (the self-approve fingerprint). PIN the entire chain.
+  2. `createOwnerAssociationRequest_withDIRECT_OWNER_SYNCOnly_andExistingOwnerName_selfApprovesWithoutMintingDuplicate` — pin the get half of getOrCreate: pre-seed an Owner with the target name; POST `/api/owner_association_request` with the same name; assert no duplicate Owner is created BUT the USER_OWNER_MAPPING is still created (the self-approve grants access to the existing Owner).
+  3. `createOwnerAssociationRequest_withoutDIRECT_OWNER_SYNC_andFreshOwnerName_mintsOwnerButLeavesPendingRequest` — pin the half-chain: without DIRECT_OWNER_SYNC the getOrCreate STILL mints (no OWNER_CREATE check inside the service); the request goes PENDING awaiting admin approval. Assert the Owner exists AND the request is PENDING (NOT yet auto-approved).
+  4. `createOwnerAssociationRequest_underAuthDisabled_anonymousUserMintsAndBinds` — pin the DISABLED-mode behaviour. Under auth.type=DISABLED, no SecurityRule fires; the service throws on `authIdentityProvider.getCurrentUser()` at line 55 (per the sidecar's positive finding — fail-fast). Assert the throw; pin the contract.
+  5. `createOwnerAssociationRequest_activityFeedRecordsRequestApprovedNotRequestManuallyApproved` — pin the audit-trail distinction. The MANUAL-mapping flow (POST /api/owners/mapping) writes `REQUEST_MANUALLY_APPROVED`; the DIRECT_OWNER_SYNC self-approve writes `REQUEST_APPROVED` (the auto-approve uses the same code path as the admin-approve). Pin this so a forensic investigator can distinguish operator-admin-approve from self-approve in the activity-list.
+
+  Pair with a follow-up backlog item proposing the fix: either (a) require OWNER_CREATE inside OwnerService.getOrCreate when called from the OwnerAssociationRequest auto-approve path; (b) split getOrCreate into get+create with separate auth surfaces; (c) feature-flag the DIRECT_OWNER_SYNC auto-approve to require an additional admin-on-approval review for fresh Owners. The most conservative is (c); the architecturally cleanest is (b). When (b) lands, tests #1 and #3 invert (the fresh-Owner case requires the dedicated OWNER_CREATE permission); test #2 remains stable.
+
+  Cross-pair with a DOC-NNN candidate: surface the DIRECT_OWNER_SYNC auto-approve flow + the getOrCreate side-door on the live user-owner-association doc page.
+batch: 2026-05-20-V
+feature_id: F-019

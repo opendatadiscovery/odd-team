@@ -1,0 +1,207 @@
+name: |-
+  Attachment filename — path traversal write/read + CRLF header injection on download (DataEntityAttachmentController HIGH-severity)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20V — surfaced by primary-source
+  examination of the attachment upload + download pipeline in DataEntityAttachmentController
+  batch V. The user-supplied filename in DataEntityUploadFormData.fileName flows
+  RAW (no sanitisation, no rejection, no encoding) into two security-relevant
+  consumers: (a) the storage path used by both LOCAL and REMOTE backends and
+  (b) the Content-Disposition response header on download.
+
+  THE EVIDENCE — file:line citations from the batch V sidecar:
+
+    Consumer (a) — storage path construction:
+      FileMapper.java:30-31 sets filePojo.setName(fileMetadata.getFileName())
+      and filePojo.setPath(pathConstructor.getFilePath(fileMetadata.getFileName(),
+      dataEntityId)) — the raw filename is BOTH the persisted name AND the
+      basis for the storage-side path.
+      LocalFilePathConstructor.java:31-33 — getFilePath returns
+      getFileDirectory(dataEntityId).resolve(fileName).toString(). The
+      .resolve() call resolves to a path; if fileName contains ../ traversal
+      sequences or absolute-path prefixes (/etc/odd-secret.txt), the resolved
+      path escapes the basePath directory.
+
+    Consumer (b) — Content-Disposition header on download:
+      DataEntityAttachmentController.java:76-79 sets the response header:
+      .header(HttpHeaders.CONTENT_DISPOSITION, 'attachment;filename=' + dto.fileName())
+      — string concatenation with no quoting, no RFC 6266 encoding, no CRLF
+      filter, no length cap. A filename containing CRLF sequences (carriage
+      return + line feed) injects arbitrary additional response headers.
+
+  THE ATTACK SHAPES — three distinct exploit paths:
+
+    Exploit 1 — LOCAL-mode path traversal write:
+      A user with DATA_ENTITY_ATTACHMENT_MANAGE on any data entity uploads
+      a file with fileName = '../../../etc/cron.d/odd-attack'. The
+      LocalFilePathConstructor resolves the path outside attachment.local.path
+      (default /tmp/odd/attachments). The file is written wherever the
+      container's filesystem permits — potentially overwriting cron jobs,
+      systemd units, configuration files, application binaries (if the
+      container runs as a privileged user OR if the path escapes to a
+      world-writable directory).
+
+    Exploit 2 — LOCAL-mode path traversal read:
+      The downloadFile endpoint (GET /api/dataentities/{id}/files/{file_id})
+      streams the file from the path stored in the database. The stored
+      path is the user-supplied filename's resolution; if the file was
+      uploaded with a traversal payload, the download reads from the
+      escaped path. Combined with Exploit 1, an attacker can write a
+      file containing platform secrets (e.g. a placeholder uploaded BEFORE
+      the secret is written to the same path) and read it back via the
+      attachment download endpoint.
+
+    Exploit 3 — CRLF header injection on download:
+      A user uploads a file with fileName containing CRLF (technically
+      carriage-return + line-feed; the platform's WebFlux response writer
+      may filter raw CRLF in headers, but the user can also use
+      LF-only or single-CR depending on the underlying HTTP server's
+      tolerance). A filename like 'file.txt[CRLF]X-Frame-Options: ALLOWALL'
+      injects an X-Frame-Options header that re-enables clickjacking on
+      the download response. More serious: a filename containing
+      [CRLF][CRLF] terminates the header section and starts a fresh
+      HTTP body, enabling response-splitting attacks (smuggling content
+      to a proxy or browser cache).
+
+    Exploit 4 — Content-Disposition encoding bypass:
+      RFC 6266 specifies the correct encoding for filenames in
+      Content-Disposition: filename* with RFC 5987 percent-encoding for
+      non-ASCII OR filename with double-quoted-string and backslash-escape
+      for special chars. The current code uses NEITHER. A filename
+      containing a semicolon, double quote, or backslash breaks header
+      parsing in downstream proxies; a filename containing UTF-8 bytes is
+      transmitted as raw bytes rather than RFC 5987 percent-encoded — some
+      browsers interpret correctly, others substitute or strip.
+
+  WHY THE PIPELINE IS UNSAFE — structural observation:
+
+    The platform's file metadata pipeline has NO sanitisation layer between
+    user input and the two consumers. Every other text input to the platform
+    (data-entity description, term definition, tags) flows through MapStruct
+    mappers that copy field-to-field; the same MapStruct pattern is applied
+    here. MapStruct is correct for prose fields (no encoding required at
+    persistence); it is wrong for filenames (encoding + sanitisation are
+    required at both persistence AND header construction).
+
+  THE MITIGATION SCOPE:
+
+    Three layers of defence-in-depth (any one of which closes the surface):
+      Layer 1 — input validation at AttachmentService or the OpenAPI
+      schema: reject filenames containing path-separator chars (forward
+      slash + backslash + NUL + CR + LF), reject filenames starting with
+      '.', cap length to a sensible bound (255 chars for POSIX filename
+      portability), reject filenames matching reserved Windows names
+      (CON, PRN, AUX, NUL, COM1-9, LPT1-9). Per the OWASP file upload
+      cheat-sheet.
+      Layer 2 — storage path construction: use a server-generated UUID
+      filename for the stored path; preserve the user-supplied filename
+      only as metadata in the database. The path construction becomes
+      basePath.resolve(uuidString) with NO user-controlled string in the
+      filesystem traversal.
+      Layer 3 — Content-Disposition: use the WebFlux ContentDisposition
+      builder (ContentDisposition.builder('attachment').filename(name,
+      StandardCharsets.UTF_8).build()) which applies RFC 6266 + RFC 5987
+      encoding. The current string concatenation is wrong.
+
+    Layer 2 is the LOWEST-COST highest-leverage fix — it eliminates the
+    path-traversal vector regardless of input validation correctness.
+
+  SEVERITY: HIGH — three independent exploit shapes, all reachable by any
+  user with DATA_ENTITY_ATTACHMENT_MANAGE on any one data entity (a permission
+  commonly granted in real Policies). The owner-scoping bypass invariant
+  (separate batch V finding) compounds: the user only needs MANAGE on ONE
+  data entity to upload a malicious file targeting any storage path.
+nodes:
+  - odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController
+contributors:
+  - |-
+    DataEntityAttachmentController batch V (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.filename-unsanitized HIGH (the explicit
+    finding: 'File-name is propagated raw from the user-supplied
+    DataEntityUploadFormData.fileName into (a) the storage path and (b)
+    the Content-Disposition header on download. There is no sanitization,
+    no rejection of path-traversal characters, no NUL-byte filter, no
+    length cap, no quoting/encoding of the header value') +
+    security.known_security_gaps.filename-path-traversal-CRLF HIGH +
+    security.data_exposure.filename-content-disposition-unsanitised (the
+    raw header construction)
+evidence:
+  - |-
+    DataEntityAttachmentController.md:bugs_limitations_corner_cases.filename-unsanitized HIGH —
+    evidence FileMapper.java:30-31 + LocalFilePathConstructor.java:31-33 +
+    DataEntityAttachmentController.java:76-79
+  - |-
+    DataEntityAttachmentController.md:security.known_security_gaps.filename-raw-into-storage-and-content-disposition HIGH
+  - |-
+    DataEntityAttachmentController.md:security.data_exposure (the raw header
+    construction at line 77)
+axes_present:
+  - controllers
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Layer 1 — input validation at AttachmentService.initiateFileUpload OR
+    the OpenAPI schema: reject filenames containing path-separator chars
+    (/ \\ NUL CR LF), reject filenames starting with '.', cap length at
+    255, reject Windows-reserved names (CON, PRN, AUX, NUL, COM1-9, LPT1-9).
+  - |-
+    Layer 2 — server-generated UUID as the storage path: persist the
+    user-supplied filename in the file.name DB column for the display side,
+    but use UUID.randomUUID().toString() as the on-disk + S3-object-key
+    filename. The basePath.resolve(uuid).toString() construction is
+    traversal-immune by construction.
+  - |-
+    Layer 3 — Content-Disposition using WebFlux's ContentDisposition
+    builder. Replace the string concatenation at DataEntityAttachmentController.java:76-79
+    with:
+      ContentDisposition cd = ContentDisposition.attachment()
+        .filename(dto.fileName(), StandardCharsets.UTF_8)
+        .build();
+      .header(HttpHeaders.CONTENT_DISPOSITION, cd.toString())
+    The builder applies RFC 6266 + RFC 5987 encoding and rejects CRLF.
+  - |-
+    Regression tests — three tests:
+      (a) Upload a filename containing ../../../etc/passwd — assert the
+          upload is rejected OR the stored path remains inside basePath.
+      (b) Upload a filename containing CRLF + X-Frame-Options header
+          — assert the downloaded response does NOT contain the injected
+          header.
+      (c) Upload a filename containing UTF-8 multi-byte characters —
+          assert the download Content-Disposition correctly encodes via
+          RFC 5987.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20V from the
+  DataEntityAttachmentController class-level sidecar. The finding identifies
+  three independent exploit paths (path traversal write, path traversal
+  read, CRLF header injection) all reachable from a single weak point: the
+  raw filename pipeline.
+
+  Cross-cutting connections:
+    - Companion attachment finding: attachment-read-endpoints-no-securityrule-cross-owner-file-download
+      (any authenticated user can download files; combined with this
+      finding, the path-traversal read is reachable cross-owner)
+    - Companion attachment finding: cross-entity-privilege-escalation-via-discarded-data-entity-id-in-attachment-urls
+      (the URL-discard means a user with MANAGE on one entity can upload
+      malicious filenames targeting any storage path)
+    - F-004 stored-XSS family: the link-URL field has a sibling sanitisation
+      gap (link URL accepts javascript: scheme without filter) — same
+      class of input-validation gap, different surface
+    - LSN-001 retrospective: this finding compounds the LSN-001 attack
+      surface — a path-traversal write that escapes /tmp/odd/attachments
+      may NOT be wiped on container restart if the escaped path lands on
+      a mounted volume
+
+  Four DOC-NNN candidates flow:
+    (a) Code fix — Layer 2 (UUID storage path) — single highest-leverage
+        fix; closes path traversal at the construction layer
+    (b) Code fix — Layer 3 (ContentDisposition builder) — closes CRLF +
+        RFC encoding issues
+    (c) Code fix — Layer 1 (input validation) — defence-in-depth
+    (d) Regression tests pinning all three exploit paths

@@ -1761,3 +1761,61 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - Coherence-sweep candidates: 43k (T) → 44.6k (U)
 - F-001 + F-003 merge candidate still maintainer-pending
 
+
+## Batch 2026-05-20-V — P-02/P-03/P-04 surfaces: **P-02 + P-03 ANCHORED; F-027 LSN-001 canonical surface; F-004 5-SURFACE**
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 114 prior + 5 new = **119 total**; 0 deferred
+- **Theme**: P-02 + P-03 + P-04 controller surfaces + F-019 association-request + F-004 attachment surface
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `QueryExampleController` | P-02 | 13 endpoints; **F-004 4th XSS surface CONFIRMED** (definition + query rendered via MDEditor.Markdown in 2 UI sites, no rehype-sanitize). 3-of-13 RBAC gating asymmetry. Permission grid splits across 3 controllers. Live docs reference Name field that doesn't exist. |
+| `ReferenceDataController` | P-03 | **P-03 Master Data Management FIRST direct sidecar**. LookupCharValidator returns verbatim row values (F-004 sibling). buildTableName collision risk. **Cascade NOT enforced via FK** — parent DataEntity delete orphans lookup_tables_schema.n_*. Two-transaction split catalog DELETE + DDL DROP. updateLookupTableField discards lookupTableId (auth-scope bypass). Rename via ALTER TABLE breaks downstream SQL. |
+| `OwnerAssociationRequestController` | P-09+P-08 | **REFACTOR-427 orphans CONFIRMED at controller layer**. DIRECT_OWNER_SYNC + getOrCreate compose privilege-escalation chain (HIGH). 3 endpoints NO SecurityRule. **POSITIVE-half of F-006 audit asymmetry** — this controller HAS a dedicated audit table (owner_association_request_activity). BIFURCATES F-006. |
+| `DataEntityAttachmentController` | P-08 | **LSN-001 STRENGTHENS** with NEW in-code residue: CHUNK_BASE_PATH `/tmp/odd/chunks` hardcoded **regardless of attachment.storage mode** — REMOTE deployments still lose in-flight chunked uploads on container restart. **LSN-002 minio-region-unset CONFIRMED at MinioConfig.java:19-25**. Cross-entity escalation via discarded URL dataEntityId. Filename path-traversal + CRLF injection. |
+| `DatasetFieldController` | P-01+P-05 | **3 SUPERSEDES (LSN-018 Rule 6 production fire)**: (1) batch-R DATASET_FIELD_DESCRIPTION_UPDATED never emitted = WRONG (@ActivityLog at DatasetFieldInternalInformationServiceImpl.java:28); (2) batch-R 200-on-missing-id = WRONG (.switchIfEmpty → 404); (3) F-006 audit-silence should NOT include dataset-field. **NEW: 2 SecurityConstants wiring bugs at lines 295-299** (alerts-status copy-paste + DATA_ENTITY_ADD_TERM mis-used for /terms POST) — strengthens SecurityConstants invariant scanner case to 5 failures. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 328 → **348 concepts** | +20 new (3 entities + 4 operations + 13 invariants) + 5 strengthened + 3 SUPERSEDED. New: CHUNK_BASE_PATH ephemeral residue, F-006 BIFURCATION, SecurityConstants 5-failure family, F-004 4th+5th surfaces, lookup-table rename breaks downstream SQL, filename-path-traversal+CRLF, DIRECT_OWNER_SYNC privilege escalation. |
+| adr-archaeologist (ADRs) | 163 → **168** | +5 (164-168) + 3 strengthened (ADR-001 24-sidecar, ADR-002 23-sidecar, ADR-146). New: storage @ConditionalOnProperty, 3-step chunked upload, LookupTable physical Postgres, OwnerAssociationRequest dedicated audit, three-tier RBAC for LookupTable. |
+| adr-archaeologist (scopes) | 480 → **486** | +6 (481-486) + 2 strengthened. NEW HIGH: chunk-staging /tmp residue; SecurityConstants wiring 295-299; DIRECT_OWNER_SYNC escalation chain; filename path-traversal CRLF. 3 SUPERSEDES applied. |
+| doc-gap-finder | 210 → **217** | +7 (211-217) + 1 SUPERSEDED (DOC-195 positive corroboration on DATASET_FIELD_DESCRIPTION_UPDATED). 4 HIGH + 3 MEDIUM. DOC-211 QueryExample Name field doesn't exist (DOC-099 6th failure shape). DOC-217 F-004 5th surface. |
+| test-coverage-mapper | 724 → **745 indexed** | +21 (728-748) + 1 strengthened + 2 SUPERSEDED (TEST-666 + TEST-679 batch-R DatasetField claims). **+4 CRITICAL → 125 CRITICAL**. Sites: TEST-728 SecurityConstants wiring; TEST for DIRECT_OWNER_SYNC escalation; TEST for chunk-staging residue; TEST for cross-entity escalation via discarded URL dataEntityId. |
+| feature-flow-builder | 24 → **27 features** (+3 new, +4 extended) | **F-025 / P-02:F-001 Query Examples** (NEW — P-02 ANCHORED). **F-026 / P-03:F-001 Lookup Tables** (NEW — P-03 ANCHORED). **F-027 / P-08:F-005 Attachment Lifecycle** (NEW — LSN-001 canonical surface). F-019 + F-004 + F-006 + F-005 extended. F-004 stored-XSS now 5-SURFACE. F-006 BIFURCATED into POSITIVE/NEGATIVE halves. |
+
+### Coverage state after batch V
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 119 | **30.1%** (was 28.9%) |
+| Effective coverage | 257 | **65.1%** (was 54.4%) — **+10.7pp jump from 3 new features extending feature-flow reach** |
+| Features discovered | 27 (was 24) | **+3 NEW** (F-025 P-02 + F-026 P-03 + F-027 P-08:F-005) |
+| Total test-gaps | 745 indexed | 125 CRITICAL (was 121) |
+
+### Cross-batch triangulation deltas
+
+- **P-02 Data Modelling ANCHORED** with F-025 Query Examples (was empty)
+- **P-03 Master Data Management ANCHORED** with F-026 Lookup Tables (was empty)
+- **All 11 pillars now have at least one anchored feature** (after batch T added P-04)
+- **F-004 stored-XSS surface count: 4 → 5** (entity desc + dataset-field desc + term-def + query-example + lookup-table)
+- **F-006 audit-silence BIFURCATED** into POSITIVE-half (OwnerAssociationRequest dedicated audit table) vs NEGATIVE-half (RBAC mutations) — corrects scope; DatasetField is NOT in negative half (3 SUPERSEDES applied)
+- **SecurityConstants wiring failures: 3 → 5** (alerts-status copy-paste + DATA_ENTITY_ADD_TERM mis-used + term-to-term no-rule + REFACTOR-217 path-mismatch + initial alert-status mis-permission = 5)
+- **LSN-001 IN-CODE RESIDUE**: CHUNK_BASE_PATH `/tmp/odd/chunks` hardcoded — REMOTE deployments still lose chunked-upload state on container restart (doc-side healthy; code-side residue)
+- **LSN-002 minio-region-unset PRIMARY-SOURCE CONFIRMED** at MinioConfig.java:19-25
+- **getOrCreate side-door family**: now Owner + Term + Tag + Namespace + Datasource = 5 surfaces
+- **3 SUPERSEDES applied** (LSN-018 Rule 6 production fire — strongest correction batch since batch O)
+
+### Follow-ups (logged, not blocking)
+
+- RelationshipController DEFERRED from batch T still pending (P-02 first sidecar — partially closed via F-025 minting from this batch's QueryExample anchoring; P-02 architecturally anchored even if RelationshipController not enriched)
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 214 detail-without-index in refactoring-scopes; 90 in implicit-adrs; 37+4 in doc-gaps
+- Coherence-sweep candidates: 44.6k (U) → 47.7k (V)
+

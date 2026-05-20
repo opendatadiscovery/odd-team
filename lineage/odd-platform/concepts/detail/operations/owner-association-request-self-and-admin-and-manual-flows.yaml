@@ -1,0 +1,197 @@
+name: |-
+  Owner Association Request flows (SELF-request + ADMIN-approve + MANUAL-mapping + auto-approve via DIRECT_OWNER_SYNC)
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  Operation cluster for the user-to-Owner binding workflow — the seven
+  user-observable operations exposed by OwnerAssociationRequestController.
+  Two parallel control planes plus a discovery endpoint plus an audit endpoint:
+
+    PLANE 1 — SELF-service flow (the doc-canonical narrative):
+      create-self-association-request: POST /api/owner_association_request —
+        any authenticated user (NO SecurityRule) submits an association
+        request. Service-side: validates authenticated user; calls
+        ownerService.getOrCreate(ownerName) — the SIDE-DOOR (Owner is
+        silently minted if novel; no OWNER_CREATE check).
+        Branch A: if user holds DIRECT_OWNER_SYNC — request is
+        AUTO-APPROVED synchronously; USER_OWNER_MAPPING is created
+        in-line; audit event REQUEST_MANUALLY_APPROVED is emitted.
+        Branch B: otherwise — request enters PENDING state awaiting
+        Admin updateOwnerAssociationRequest.
+
+      list-pending-requests: GET /api/owner_association_request —
+        Admin-only via OWNER_ASSOCIATION_MANAGE; paginated; no per-Owner
+        filter.
+
+      approve-or-decline-request: PUT /api/owner_association_request/{id} —
+        Admin-only via OWNER_ASSOCIATION_MANAGE; transitions status to
+        APPROVED or DECLINED. On APPROVED: createUserOwnerMapping inline;
+        cancelCollisionAssociationById marks all colliding open requests
+        DECLINED (N+1 activity-row writes per cancelled colliding row).
+        On DECLINED: simple status transition; audit event emitted.
+
+    PLANE 2 — MANUAL flow (the doc-INVISIBLE bypass):
+      create-manual-user-owner-mapping: POST /api/owners/mapping — Admin-only
+        via OWNER_RELATION_MANAGE; bypasses the SELF-request workflow entirely.
+        Admin assigns ANY oidc-username + provider to ANY ownerId WITHOUT
+        target user's consent + WITHOUT existence check (no LDAP /
+        OIDC lookup). Activity event REQUEST_MANUALLY_APPROVED emitted.
+        The target user only sees the binding take effect on their NEXT
+        login.
+
+      delete-active-user-owner-mapping: DELETE /api/owners/mapping/{owner_id} —
+        Admin-only via OWNER_RELATION_MANAGE; SILENTLY-IDEMPOTENT (no
+        404 on missing mapping; always 204 No Content).
+
+    DISCOVERY:
+      discover-auth-providers: GET /api/owners/providers — any authenticated
+        user (NO SecurityRule); returns Provider.values() + the operator's
+        registered providers (LOGIN_FORM / OAUTH2_GOOGLE / OAUTH2_GITHUB /
+        LDAP).
+
+    AUDIT-READ:
+      list-request-activity: GET /api/owner_association_request/activity —
+        any authenticated user (NO SecurityRule — sibling HIGH-severity
+        finding); returns the FULL audit-trail across all users + all
+        Owners. Asymmetric vs the LIST endpoint (which IS gated).
+
+  KEY SEMANTICS:
+
+    Audit emission — DEDICATED table owner_association_request_activity:
+      5 typed event values via OwnerAssociationRequestActivityType.java:3-8.
+      Audit writes are performed by OwnerAssociationRequestServiceImpl via
+      ActivityService (per implicit_adrs[0] separation of concerns).
+
+    Authorization — path-pattern-based at SecurityConstants.java:148-162:
+      5 of 7 endpoints have rules; 2 (Endpoint A POST self-request +
+      Endpoint discovery) plus Endpoint audit-read have NO rules — gated
+      only by .authenticated() catch-all.
+
+    Auto-approve branch — DIRECT_OWNER_SYNC composition:
+      OwnerAssociationRequestServiceImpl.java:60-67 — if
+      permissionService.getNonContextualPermissionsForCurrentUser(MANAGEMENT)
+      contains DIRECT_OWNER_SYNC, the request is auto-approved synchronously;
+      otherwise it enters PENDING. The composition with getOrCreate (above)
+      is the privilege-escalation chain (separate batch V invariant).
+
+    Fail-closed under DISABLED:
+      4 explicit current-user assertions throw 'There is no current
+      authorization' at the service layer; the SELF / APPROVE / MANUAL /
+      REVOKE paths are fail-closed under auth.type=DISABLED. CONTRAST with
+      OwnerController Owner-CRUD verbs which are fail-OPEN under DISABLED
+      (REFACTOR-185).
+
+    Cascade-cancel on approve:
+      OwnerAssociationRequestServiceImpl.java:192-203 — when one request
+      is APPROVED, all colliding open requests are marked DECLINED in the
+      same transaction. N+1 activity-row writes per cancelled colliding
+      request. Concurrent approvals on the same Owner can deadlock on
+      lock-acquisition order.
+
+  AUDIT EVENTS (the 5-value enum):
+    REQUEST_CREATED — emitted when user submits self-request (PLANE 1)
+    REQUEST_APPROVED — emitted when Admin approves a pending self-request
+    REQUEST_DECLINED — emitted when Admin declines a pending self-request
+    REQUEST_MANUALLY_APPROVED — emitted on MANUAL-mapping (PLANE 2) AND on
+      auto-approve via DIRECT_OWNER_SYNC (PLANE 1 Branch A)
+    REQUEST_MANUALLY_DECLINED — emitted when Admin manually revokes a
+      mapping via delete-active-user-owner-mapping
+
+  THE KEY DOC-DRIFT — live docs at
+  /configuration-and-deployment/enable-security/authorization/user-owner-association
+  (WebFetched 2026-05-20 status 200) describe EXACTLY TWO flows: SELF-request
+  + ADMIN-approve. The doc is SILENT on FOUR of the seven operations:
+    DIRECT_OWNER_SYNC auto-approve branch
+    MANUAL-mapping flow (Admin direct-bind)
+    Audit-read endpoint
+    delete-active-user-owner-mapping (manual revoke)
+    Auth-providers discovery endpoint
+nodes:
+  - odd-platform java OwnerAssociationRequestController controller-class:OwnerAssociationRequestController
+contributors:
+  - |-
+    OwnerAssociationRequestController batch V (PRIMARY SOURCE):
+    concepts.operations (7 listed operations with file:line citations) +
+    concepts.invariants (path-pattern RBAC; DIRECT_OWNER_SYNC auto-approve;
+    MANUAL bypass; fail-closed under DISABLED) +
+    implicit_adrs.[0] dedicated audit table separation; [1] dual-plane
+    approval; [2] DIRECT_OWNER_SYNC escalation; [3,4] self-request +
+    providers intentional no-gate +
+    coherence_notes.surfaces_new.[F-011] — DOC-vs-CODE drift on five
+    operations
+evidence:
+  - |-
+    OwnerAssociationRequestController.md:concepts.operations — 7 listed
+  - |-
+    OwnerAssociationRequestController.md:concepts.invariants — dual-plane
+    approval and DIRECT_OWNER_SYNC branch
+  - |-
+    OwnerAssociationRequestController.md:implicit_adrs.[0-5]
+  - |-
+    Live doc WebFetch
+    https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association
+    status 200 2026-05-20 — SILENT on 4 of 7 operations
+axes_present:
+  - controllers
+  - services
+  - schema_migrations
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant: [LOGIN_FORM, OAUTH2, LDAP, DISABLED]
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      5 of 7 endpoints have SecurityRules. 2 are intentionally ungated
+      (SELF-request + providers); 1 is unintentionally ungated (audit-read —
+      HIGH-severity finding).
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      LIST returns all pending/approved/declined requests across all users.
+      AUDIT-LIST returns full forensic trail across all users.
+  strengths:
+    - Dedicated audit table covering all 5 event types
+    - Fail-closed under DISABLED (contrast with OwnerController)
+    - Authorization wired at path-pattern matcher (consistent with platform-wide
+      pattern)
+  weaknesses:
+    - DIRECT_OWNER_SYNC + getOrCreate composition (HIGH privilege-escalation)
+    - Audit-read endpoint UNGATED (HIGH)
+    - createUserOwnerMapping has no existence check (MEDIUM)
+    - delete-active-user-owner-mapping silently idempotent (LOW)
+    - REFACTOR-427 orphan request rows on Owner delete (MEDIUM)
+  contributing_files:
+    - OwnerAssociationRequestController.md
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - 'list-pending-requests: paginated join — OwnerAssociationRequestController.md'
+    - 'list-request-activity: twin-join per row + cascade-cancel fan-out —
+      OwnerAssociationRequestController.md'
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      All endpoints single-item. Approve fans out to N+1 activity writes
+      (cascade-cancel) in the same transaction.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: No page-size upper bound on either list endpoint.
+  contributing_files:
+    - OwnerAssociationRequestController.md
+notes: |-
+  This operation entry captures all 7 user-observable operations of the
+  Owner Association Request workflow. The DEDICATED audit table is the
+  POSITIVE half of the 2-tier audit story (per the bifurcation invariant).
+
+  Cross-cutting connections:
+    - Entity: owner-association-request.yaml
+    - Companion invariant: two-tier-audit-asymmetry-bifurcation
+    - Companion invariant: direct-owner-sync-plus-getorcreate-composition-privilege-escalation-chain
+    - Companion invariant: owner-association-request-three-ungated-endpoints
+    - F-011 Principal-to-Owner Resolution (this operation cluster is the
+      producer half)
+    - F-019 Owner Lifecycle Management (REFACTOR-427 orphan rows)
+    - F-006 audit-silence master (this controller is the POSITIVE counter-example)

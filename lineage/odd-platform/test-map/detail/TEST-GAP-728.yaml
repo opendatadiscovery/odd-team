@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-728
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DatasetFieldController controller-class:DatasetFieldController"
+pillars_affected: [P-01, P-06, P-09]
+surfaced_by:
+  - "DatasetFieldController.md:concepts.invariants.[5] (`/terms` POST endpoint is wired to the WRONG permission — SecurityConstants.java:297-299 gates `POST /api/datasetfields/{dataset_field_id}/terms` on `DATA_ENTITY_ADD_TERM` instead of `DATASET_FIELD_ADD_TERM`)"
+  - "DatasetFieldController.md:security.known_security_gaps.[0] (severity HIGH — the live docs document DATASET_FIELD_ADD_TERM as the correct gate; the code wires DATA_ENTITY_ADD_TERM)"
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[0] (SecurityConstants.java:299 permission-wiring bug — `/terms POST` gated by DATA_ENTITY_ADD_TERM instead of DATASET_FIELD_ADD_TERM)"
+  - "DatasetFieldController.md:docs_link_semantic.doc_drift_findings.[1] (Live docs declare DATASET_FIELD_ADD_TERM as the gate verbatim — code disagrees)"
+behaviour: |-
+  **CRITICAL — `POST /api/datasetfields/{dataset_field_id}/terms` is gated by the WRONG permission, sister-class to the alerts-status copy-paste bug at TEST-GAP-477.** Primary-source verified at `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/util/SecurityConstants.java:297-299`:
+
+  ```
+  new SecurityRule(DATASET_FIELD,
+      new PathPatternParserServerWebExchangeMatcher("/api/datasetfields/{dataset_field_id}/terms", POST),
+      DATA_ENTITY_ADD_TERM),
+  ```
+
+  The live `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions` page (WebFetched 2026-05-20, status 200 per DatasetFieldController sidecar) documents `DATASET_FIELD_ADD_TERM` as the gate for this endpoint verbatim: "Allows linking a business glossary term to a specific field within a dataset." The code wires `DATA_ENTITY_ADD_TERM` (the entity-scope permission). The permission catalog and the operative gate disagree.
+
+  **Operator-observable consequences**:
+  - An operator authoring a Role "Glossary Curator" with ONLY `DATASET_FIELD_ADD_TERM` (intended grant per docs) cannot link terms to dataset fields — the wrong permission gates the endpoint. The operation 403's, the operator is mystified.
+  - An operator authoring a Role "Data Entity Manager" with `DATA_ENTITY_ADD_TERM` (intended for entity-level term-linking) ACCIDENTALLY also grants per-field term-linking on every column of every entity they can touch. The blast radius is wider than the policy author intended.
+
+  **Why CRITICAL not HIGH**: this is a SECOND SecurityConstants wiring bug discovered in the same batch as TEST-GAP-477 (`/api/alerts/{id}/status PUT` mis-wired to `DATASET_FIELD_ADD_TERM` at SecurityConstants.java:295-296). The TWO bugs are adjacent in the file (consecutive `SecurityRule` entries — 295-296 and 297-299) — the maintainer clearly copy-pasted block 297-299 from 282-294, missed updating the permission constant on the next-to-last line, and then made the copy-paste-into-line-295 error producing the alerts bug. This is the **architectural** failure case: SecurityConstants is a static table of 13+ permissions wired to 60+ paths, the wiring is the SOLE defence on most endpoints (no service-tier @PreAuthorize per system-mission.md:267), and there is ZERO test that asserts the wiring is internally consistent. Two adjacent wiring bugs surfacing in the same batch — under the same scrutiny — strongly indicates more are latent. Compound effect: docs are the operator-visible contract, code is the actual gate; the two diverge silently.
+
+  **Test gap shape**: regression-pin asserting (a) `POST /api/datasetfields/{id}/terms` returns 200 when the caller holds `DATA_ENTITY_ADD_TERM` but NOT `DATASET_FIELD_ADD_TERM` (PINS THE CURRENT BUG); (b) `POST /api/datasetfields/{id}/terms` returns 403 when the caller holds `DATASET_FIELD_ADD_TERM` but NOT `DATA_ENTITY_ADD_TERM` (PINS THE CURRENT INVERSION). Both inversions of the documented contract. When the fix lands (swap `DATA_ENTITY_ADD_TERM` → `DATASET_FIELD_ADD_TERM` at line 299), both tests INVERT in lockstep — that lockstep IS the verification that the wiring matches the docs.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetFieldAddTermWrongPermissionTest.java"
+  name: "addDatasetFieldTerm_callerWithDATA_ENTITY_ADD_TERM_succeeds_callerWithDATASET_FIELD_ADD_TERM_fails"
+evidence:
+  - "DatasetFieldController.md says (concepts.invariants.[5]): '`/terms` POST endpoint is wired to the WRONG permission — `SecurityConstants.java:297-299` wires `/api/datasetfields/{dataset_field_id}/terms POST` to `DATA_ENTITY_ADD_TERM` (the DataEntity-scope permission) instead of `DATASET_FIELD_ADD_TERM` (the field-scope permission declared at `PolicyPermissionDto.java:34`). A user holding `DATA_ENTITY_ADD_TERM` but NOT `DATASET_FIELD_ADD_TERM` can therefore add terms to dataset fields — and a user holding `DATASET_FIELD_ADD_TERM` but NOT `DATA_ENTITY_ADD_TERM` CANNOT.'"
+  - "DatasetFieldController.md says (security.known_security_gaps.[0]): 'SecurityConstants.java:299 wires POST /api/datasetfields/{id}/terms to DATA_ENTITY_ADD_TERM instead of DATASET_FIELD_ADD_TERM. Live docs at https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions document DATASET_FIELD_ADD_TERM as the correct gate. The drift gives DATA_ENTITY_ADD_TERM holders unintended field-level term-link capability and denies it to DATASET_FIELD_ADD_TERM holders.' — severity HIGH"
+  - "Verified at primary source: /home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/util/SecurityConstants.java:297-299 — `new SecurityRule(DATASET_FIELD, new PathPatternParserServerWebExchangeMatcher(\"/api/datasetfields/{dataset_field_id}/terms\", POST), DATA_ENTITY_ADD_TERM)` (2026-05-20)"
+  - "Verified live docs (per DatasetFieldController sidecar WebFetch 2026-05-20): 'DATASET_FIELD_ADD_TERM: Allows linking a business glossary term to a specific field within a dataset.'"
+cross_references:
+  - "TEST-GAP-477 (Alerts-status DATASET_FIELD_ADD_TERM mis-wiring — sister SecurityConstants bug; compounded discovery in same scrutiny)"
+  - "TEST-GAP-017 (REFACTOR-217 ADD-half — DATA_ENTITY_ADD_TERM singular-vs-plural — sister at DataEntityController surface)"
+  - "TEST-GAP-489 (REFACTOR-217 DELETE-half — DATA_ENTITY_DELETE_TERM singular-vs-plural — sister)"
+  - "TEST-GAP-718 (TermController term-to-term linkage no-authz — sister no-gate class)"
+  - "concepts: securityconstants-wiring-bug-family (NEW concept candidate — surface this as a family of bugs once 2+ identified)"
+  - "REFACTOR-NNN candidate: SecurityConstants.java:299 correction — swap DATA_ENTITY_ADD_TERM to DATASET_FIELD_ADD_TERM; PAIR with SecurityConstants.java:295-296 correction for the alerts-status bug"
+  - "LSN-001 / LSN-002 (operator-cliff failure-mode case-law — operators reading docs that declare gates, code gates differently)"
+related_features: [F-002, F-006]
+related_pillar_features: ["P-01:F-002", "P-06:F-001", "P-09:F-001"]
+proposed_action: |-
+  Add `DatasetFieldAddTermWrongPermissionTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `addDatasetFieldTerm_callerWithOnlyDATA_ENTITY_ADD_TERM_succeeds_pinsCurrentBug` — authenticate as a user with `DATA_ENTITY_ADD_TERM` on the parent DataEntity BUT NO `DATASET_FIELD_ADD_TERM`; POST `/api/datasetfields/{id}/terms` with `termId: 100`; assert HTTP 200 (the current bug; PINS the wrong-permission grant).
+  2. `addDatasetFieldTerm_callerWithOnlyDATASET_FIELD_ADD_TERM_returns403_pinsCurrentInversion` — authenticate as a user with `DATASET_FIELD_ADD_TERM` on the parent DataEntity BUT NO `DATA_ENTITY_ADD_TERM`; POST `/api/datasetfields/{id}/terms` with `termId: 100`; assert HTTP 403 (the current inversion of the documented contract; PINS the documented-permission denial).
+  3. `addDatasetFieldTerm_underAuthDisabled_anonymousUserCanLinkTermToField` — pin the DISABLED-mode behaviour. Under auth.type=DISABLED, all UI auth gates fall away; the SecurityConstants permission check is moot; any caller can link.
+
+  When the fix lands (swap `DATA_ENTITY_ADD_TERM` → `DATASET_FIELD_ADD_TERM` at SecurityConstants.java:299), both tests #1 and #2 invert — that lockstep IS the verification that the wiring matches the docs. Pair with TEST-GAP-477 fix; submit BOTH bug fixes in one PR; bind a new `SecurityRule`-table-consistency unit test asserting every endpoint's wired permission matches the docs' published permission catalog (an enumerated test against the docs' Permission catalog page).
+batch: 2026-05-20-V
+feature_id: F-006

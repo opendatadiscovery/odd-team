@@ -1,0 +1,65 @@
+gap_id: TEST-GAP-737
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java OwnerAssociationRequestController controller-class:OwnerAssociationRequestController"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "OwnerAssociationRequestController.md:security.known_security_gaps.[4] (createUserOwnerMapping allows an Admin to bind ANY oidc-username + provider to ANY ownerId without that user's consent — Admin can give themselves an extra Owner binding, gaining the owner-scoped privileges of any team, with the only trace being a REQUEST_MANUALLY_APPROVED row that they themselves authored — severity MEDIUM)"
+  - "OwnerAssociationRequestController.md:coherence_notes.[3] (DOC-vs-CODE drift — live docs make NO mention of (a) the MANUAL flow POST /api/owners/mapping creates an AUTO-APPROVED mapping bypassing the request workflow)"
+  - "OwnerAssociationRequestController.md:bugs_limitations_corner_cases.[2] (createUserOwnerMapping — an Admin holding OWNER_RELATION_MANAGE can assign ANY oidc-username + provider combination to ANY ownerId WITHOUT verifying that a user with that identity exists in the platform's authentication source — severity MEDIUM)"
+  - "OwnerAssociationRequestController.md:implicit_adrs.[1] (Dual-plane approval — both SELF-request-then-approve and MANUAL-mapping flows reach the same end-state)"
+behaviour: |-
+  **HIGH — `POST /api/owners/mapping` (the MANUAL-mapping flow) allows an Admin holding `OWNER_RELATION_MANAGE` to bind ANY `(oidcUsername, provider)` tuple to ANY `ownerId` without (a) the target user's consent, (b) verification that the user identity actually exists in the auth source, (c) any disclosure on the live docs.** Primary-source confirmed in the batch-V OwnerAssociationRequestController sidecar:
+
+  - **Endpoint** (`OwnerAssociationRequestController.java:65-72`): `createUserOwnerMapping(formData)` — accepts a `UserOwnerMappingFormData` carrying `{ oidcUsername, provider, ownerId }`. The Admin chooses ALL three fields.
+  - **Service** (`OwnerAssociationRequestServiceImpl.java:109-114, 131-148`): the service creates a USER_OWNER_MAPPING row directly + writes a `REQUEST_MANUALLY_APPROVED` activity row.
+  - **No existence verification**: there is NO check that a user with `(oidcUsername, provider)` actually exists in the platform's auth source (LDAP, OIDC provider, LOGIN_FORM password table). The Admin can bind a NON-EXISTENT user identity. A typo creates a dangling mapping; a deliberate non-existent identity creates a permanent dangling row.
+  - **No consent**: the target user is NOT notified, NOT asked. The mapping takes effect on the target user's NEXT login.
+  - **Side-effect — silent cancellation of colliding requests**: `OwnerAssociationRequestServiceImpl.java:144-145` calls `cancelAssociationByOwnerId + cancelAssociationByUsername` — every PENDING request from the target user OR for the target owner is silently DECLINED with `REQUEST_MANUALLY_APPROVED` audit-type framing. The cancellation activity-log entries are written, but the cancelled-request authors are NOT notified.
+
+  **Self-bind escalation**: an Admin holding `OWNER_RELATION_MANAGE` can give THEMSELVES an extra Owner binding:
+  ```
+  POST /api/owners/mapping
+  { "oidcUsername": "admin-username",   # Admin's own identity
+    "provider": "OAUTH2_GOOGLE",         # Admin's own provider
+    "ownerId": 42 }                      # ANY Owner id (e.g. the most-privileged Owner)
+  ```
+  The result: the Admin is now bound to Owner 42. Owner 42's attached Roles + Policies now grant the Admin those permissions in the per-request resolution chain. The only audit trace is a `REQUEST_MANUALLY_APPROVED` row that THE ADMIN THEMSELVES authored. There is no second-Admin-approval required, no detection mechanism for self-bind, no rate-limit. **An Admin can escalate to ANY Owner's privileges in one HTTP call** — and the audit-trail does not flag this as suspicious (the row looks like any operator-curation event).
+
+  **Doc-drift**: the live `documentation/docs/configuration-and-deployment/enable-security/authorization/user-owner-association.md` page (WebFetched 2026-05-20 status 200 per sidecar) describes ONLY the SELF-request → Admin-approve flow. The MANUAL-mapping flow is **doc-invisible**. An operator reading the doc to understand "how my user gets associated with an Owner" cannot discover that Admins can bind users unilaterally. The compound (no consent + no existence check + no disclosure + self-bind possible) makes this a MEDIUM-severity-individual-finding aggregated to HIGH at gap-priority due to the cross-pillar reach + audit-disclosure asymmetry.
+
+  **Why HIGH not CRITICAL**: the precondition is `OWNER_RELATION_MANAGE` — a MANAGEMENT permission typically granted to Admin/superuser Roles. An attacker compromising an Admin account has many escalation paths already; this is one. The CRITICAL escalation chain is TEST-GAP-729 (DIRECT_OWNER_SYNC, requires only the permission, not OWNER_RELATION_MANAGE). HIGH because: (a) audit-trail does not flag self-bind; (b) docs do not disclose the flow; (c) operators cannot author RBAC policies that prevent self-bind (the only way is to NOT grant OWNER_RELATION_MANAGE to anyone — impractical for operator workflows).
+
+  **Test gap shape**: regression-pin asserting (a) MANUAL-mapping accepts non-existent oidcUsername + provider tuples; (b) Admin can self-bind to any Owner; (c) the audit-trail `REQUEST_MANUALLY_APPROVED` row is the only forensic record. Pin the contract; future Admin-on-Admin-approval or self-bind-prevention REFACTORs break the test.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/OwnerAssociationManualMappingSelfBindTest.java"
+  name: "createUserOwnerMapping_adminSelfBindsToAnyOwner_succeeds_auditTrailHasNoSuspicionFlag"
+evidence:
+  - "OwnerAssociationRequestController.md says (security.known_security_gaps.[4]): 'createUserOwnerMapping (POST /api/owners/mapping) allows an Admin to bind ANY oidc-username + provider to ANY ownerId without that user consent. This is intentional (operator workflow for onboarding) but the doc omission (per docs_link_semantic doc_drift_findings) leaves the impersonation/escalation class undocumented — an Admin can give themselves an extra Owner binding, gaining the owner-scoped privileges of any team, with the only trace being a REQUEST_MANUALLY_APPROVED row that they themselves authored.' — severity MEDIUM"
+  - "OwnerAssociationRequestController.md says (bugs_limitations_corner_cases.[2]): 'createUserOwnerMapping (POST /api/owners/mapping) — an Admin holding OWNER_RELATION_MANAGE can assign ANY oidc-username + provider combination to ANY ownerId WITHOUT verifying that a user with that identity exists in the platform authentication source (LDAP, OIDC, LOGIN_FORM password table). The mapping is created speculatively; the user only sees the binding take effect on their NEXT login. There is no end-of-step verification (e.g. an LDAP existence lookup) — a typo in oidcUsername creates a permanent dangling mapping.'"
+  - "OwnerAssociationRequestController.md says (coherence_notes.[3]): 'Live doc has NO mention of POST /api/owners/mapping (the MANUAL-mapping flow at OwnerAssociationRequestController.java:65-72 — an Admin assigns ANY oidc-username + provider to ANY ownerId without the target user submitting a request). The doc narrative (the user clicks Send Request → Admin approves) excludes this case-class entirely.'"
+  - "Source: OwnerAssociationRequestController.java:65-72 + OwnerAssociationRequestServiceImpl.java:109-114 (no AuthIdentityProvider.lookupUser or equivalent existence check) + lines 131-148 (createManualAssociationRequest preserves the request shape but stamps status=APPROVED with REQUEST_MANUALLY_APPROVED activity-type) + lines 144-145 (cancelAssociationByOwnerId + cancelAssociationByUsername silently DECLINE colliding requests)"
+cross_references:
+  - "TEST-GAP-729 (NEW batch V — DIRECT_OWNER_SYNC + getOrCreate escalation — sister chain on same controller; THIS gap is the OPERATOR-DIRECT half; TEST-GAP-729 is the SELF-ESCALATION half)"
+  - "TEST-GAP-736 (NEW batch V — activity-list unauthorized read — sister audit-disclosure gap)"
+  - "TEST-GAP-626 (Owner-delete + owner_association_request orphan rows — sister cascade-incompleteness)"
+  - "TEST-GAP-718 (TermController term-to-term linkage no-authz — sister no-second-approval pattern)"
+  - "concepts: admin-self-bind-no-second-approval-pattern (NEW concept candidate — admin-curated audit-trail does not distinguish self-bind from other-bind)"
+  - "REFACTOR-NNN candidate: at OwnerAssociationRequestServiceImpl.createManualAssociationRequest, reject the call if formData.oidcUsername == currentUser.username AND formData.provider == currentUser.provider (self-bind prevention); OR require a second-Admin approval for self-bind cases"
+  - "DOC-NNN candidate: surface the MANUAL-mapping flow on the user-owner-association doc page; document the absence of existence-check; document the audit-trail-records-but-does-not-flag-self-bind contract"
+related_features: [F-019, F-006]
+related_pillar_features: ["P-08:F-003", "P-09:F-NN"]
+proposed_action: |-
+  Add `OwnerAssociationManualMappingSelfBindTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `createUserOwnerMapping_adminSelfBindsToOwner_succeeds_auditTrailHasNoSuspicionFlag` — authenticate as Admin user with OWNER_RELATION_MANAGE; POST `/api/owners/mapping` with `{ oidcUsername: <admin's-own-username>, provider: <admin's-own-provider>, ownerId: 42 }`; assert HTTP 200; verify USER_OWNER_MAPPING row exists; verify the `REQUEST_MANUALLY_APPROVED` activity row is authored by the Admin themselves (self-approve). PIN the self-bind chain.
+  2. `createUserOwnerMapping_adminBindsNonExistentUserIdentity_succeeds_danglingMappingPersists` — POST with `oidcUsername: "non-existent-user-" + UUID.randomUUID()`; assert success; assert NO existence check fired; assert the mapping persists indefinitely until manually deleted.
+  3. `createUserOwnerMapping_silentlyCancelsCollidingPendingRequests` — pre-seed a PENDING owner_association_request from user X to owner Y; Admin POSTs /api/owners/mapping with `(X, provider, Y)`; assert the manual mapping succeeds AND the pre-existing PENDING request is silently DECLINED (per `cancelAssociationByOwnerId/Username` chain); assert the cancelled-request author is NOT notified.
+  4. `createUserOwnerMapping_callerWithoutOwnerRelationManage_returns403` — pin the positive contract: WITHOUT OWNER_RELATION_MANAGE, the endpoint returns 403.
+
+  Add a `// REGRESSION-PIN — MANUAL-mapping flow allows self-bind by Admin without second-Admin approval. Audit-trail records the event but does not flag self-bind. A REFACTOR that rejects self-bind (formData.username == currentUser.username) will break test #1; a REFACTOR adding identity-existence check at the auth source will break test #2.` comment block.
+
+  Pair with REFACTOR-NNN: at OwnerAssociationRequestServiceImpl.createManualAssociationRequest, add (a) self-bind rejection; (b) existence-check via AuthIdentityProvider.lookupUser; (c) flag REQUEST_MANUALLY_APPROVED rows where authoring user == bound user with a SUSPICIOUS_SELF_BIND audit-type variant. Pair with DOC-NNN: surface the MANUAL-mapping flow on the live doc page.
+batch: 2026-05-20-V
+feature_id: F-019

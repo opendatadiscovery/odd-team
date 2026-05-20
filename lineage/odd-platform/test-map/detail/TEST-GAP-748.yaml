@@ -1,0 +1,61 @@
+gap_id: TEST-GAP-748
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java ReferenceDataController controller-class:ReferenceDataController"
+pillars_affected: [P-03]
+surfaced_by:
+  - "ReferenceDataController.md:bugs_limitations_corner_cases.[7] (updateLookupTable rebuilds tableName by re-running buildTableName — if the operator renames the lookup table, the physical Postgres table gets renamed too (via ALTER TABLE ... RENAME TO). Downstream pipelines that hardcoded lookup_tables_schema.n_5__customer_lookups break silently on rename. No deprecation alias / view — severity MEDIUM)"
+  - "ReferenceDataController.md:performance.resource_allocation (DDL operations acquire Postgres ACCESS EXCLUSIVE LOCK on the lookup-table — blocks all concurrent reads/writes on that table for the lock duration. Significant for delete + rename paths under load)"
+  - "ReferenceDataController.md:performance.known_performance_gaps.[0] (DDL serialization risk: rename / delete take ACCESS EXCLUSIVE LOCK; concurrent read-heavy traffic on a popular reference table blocks during operator edits)"
+behaviour: |-
+  **MEDIUM — `updateLookupTable` rebuilds the physical Postgres table name on rename via `ALTER TABLE ... RENAME TO`, silently breaking downstream pipelines that hardcoded the old `lookup_tables_schema.n_X__name` reference. No deprecation alias / view is left behind.** Primary-source confirmed in the batch-V ReferenceDataController sidecar:
+
+  - `ReferenceDataServiceImpl.java:107-124` (`updateLookupTable`): the service rebuilds `tableName` by re-running `buildTableName(formData.getName(), table.namespacePojo())` — the lossy lowercased + underscore-replaced name. If the operator renamed the lookup table, the resulting `tableName` differs from the old one.
+  - `ReferenceDataRepositoryImpl.java:181-202`: the repository issues `ALTER TABLE lookup_tables_schema.{old_name} RENAME TO {new_name}` DDL. The physical Postgres table is renamed.
+  - **No deprecation alias / view**: nothing is left at the old name. Downstream pipelines, BI dashboards, or external tools that hardcoded `lookup_tables_schema.n_5__customer_lookups` in their SQL break silently on the rename.
+
+  **Compound failure with DDL ACCESS EXCLUSIVE LOCK**:
+  - The `ALTER TABLE RENAME TO` DDL takes Postgres ACCESS EXCLUSIVE LOCK on the lookup table. Concurrent read-heavy traffic on a popular reference table blocks during the rename.
+  - The lock is held for the duration of the transaction. Under load, this can stall every consumer of the lookup table for the lock window.
+
+  **Operator-observable consequences**:
+  - An operator renames "Customer Lookups" → "Customer Reference Codes" in the Master Data tab. The catalog reflects the new name. Downstream pipelines querying `SELECT * FROM lookup_tables_schema.n_5__customer_lookups` fail with `relation does not exist`. The operator has no doc warning that rename is BREAKING for downstream consumers.
+  - Under load, a rename can stall reads for multiple seconds (or longer if the table is in a hot path).
+  - The doc page (per sidecar `doc_drift_findings`) does NOT discuss rename semantics.
+
+  **Why MEDIUM not HIGH**: rename is an operator-curation action; the downstream-breakage requires a downstream consumer hardcoding the schema name. The DDL lock is bounded by table size + transaction duration. MEDIUM at the per-instance severity. Cross-pillar P-03.
+
+  **Test gap shape**: regression-pin asserting (a) rename produces a new physical table name; (b) the old name is NOT preserved as an alias / view; (c) under load, the DDL lock blocks concurrent reads.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/LookupDataServiceTest.java (service-tier; does NOT exercise rename DDL or DDL lock semantics)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ReferenceDataRenameBreaksDownstreamTest.java"
+  name: "updateLookupTable_renameProducesNewPhysicalTableName_oldNameDoesNotPersistAsAlias_pinsBreakingChange"
+evidence:
+  - "ReferenceDataController.md says (bugs_limitations_corner_cases.[7]): 'updateLookupTable rebuilds tableName by re-running buildTableName(formData.getName(), table.namespacePojo()) — if the operator renames the lookup table, the physical Postgres table gets renamed too (via ALTER TABLE ... RENAME TO in ReferenceDataRepositoryImpl.java:191-201). Downstream pipelines that hardcoded lookup_tables_schema.n_5__customer_lookups break silently on rename. No deprecation alias / view.' — severity MEDIUM"
+  - "ReferenceDataController.md says (performance.known_performance_gaps.[0]): 'DDL serialization risk: rename / delete take ACCESS EXCLUSIVE LOCK; concurrent read-heavy traffic on a popular reference table blocks during operator edits. No advisory-lock-driven queue, no offline-rebuild pattern.' — severity MEDIUM"
+  - "Verified at primary source: ReferenceDataServiceImpl.java:107-124 (updateLookupTable rebuilds tableName) + ReferenceDataRepositoryImpl.java:181-202 (the rename DDL chain)"
+cross_references:
+  - "TEST-GAP-733 (NEW batch V — ReferenceData verbatim-storage XSS — sister gap on same controller)"
+  - "TEST-GAP-734 (NEW batch V — buildTableName collision — sister gap on same controller; compounds with rename)"
+  - "TEST-GAP-739 (NEW batch V — NO_CONTEXT permission scope — sister gap)"
+  - "TEST-GAP-740 (NEW batch V — updateLookupTableField path-id discard — sister controller-vs-service signature drift)"
+  - "TEST-GAP-741 (NEW batch V — ReferenceData cascade-incompleteness — sister gap)"
+  - "concepts: master-data-rename-breaks-downstream (NEW concept candidate)"
+  - "REFACTOR-NNN candidate: at ReferenceDataRepositoryImpl.updateLookupTable, leave a deprecation VIEW at the old name (`CREATE VIEW lookup_tables_schema.{old_name} AS SELECT * FROM lookup_tables_schema.{new_name}`) for a grace period; OR document the rename contract; OR add a confirmation step in the rename flow"
+  - "DOC-NNN candidate: surface the rename-breaks-downstream contract on the Lookup Tables doc page; surface the DDL lock semantics"
+related_features: [F-NN-master-data-management]
+related_pillar_features: ["P-03:F-001"]
+proposed_action: |-
+  Add `ReferenceDataRenameBreaksDownstreamTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `updateLookupTable_renameProducesNewPhysicalTableName_pinsBreakingChange` — create a lookup table named "Customer Lookups"; PUT `/api/referencedata/table/{id}` with `{ name: "Customer Reference Codes" }`; assert the physical Postgres table has been renamed; assert the OLD physical name no longer exists. PIN the breaking change.
+  2. `updateLookupTable_renameDoesNotLeaveDeprecationView_breakingForDownstreamConsumers` — same shape; assert NO view or alias is left at the old name (a downstream `SELECT * FROM lookup_tables_schema.{old_name}` fails).
+  3. `updateLookupTable_renameUnderConcurrentRead_blocksOnAccessExclusiveLock` — simulate concurrent read traffic; trigger the rename; assert the read blocks for the duration of the rename transaction.
+  4. `updateLookupTable_renameSameCaseAndWhitespaceCollision_failsWithCollision_compoundsWithTEST_GAP_734` — if the operator renames to a name that lossy-normalises to a different existing table, the rename fails. Pin the compound with TEST-GAP-734.
+
+  Add a `// REGRESSION-PIN — Lookup table rename is BREAKING for downstream consumers that hardcoded the physical Postgres table name. No deprecation alias is left. A REFACTOR adding a deprecation VIEW or warning operators about the rename-is-breaking contract will break tests #1 and #2; the maintainer must re-author them.` comment block.
+
+  Pair with REFACTOR-NNN (deprecation view) + DOC-NNN (rename-is-breaking warning).
+batch: 2026-05-20-V
+feature_id: null

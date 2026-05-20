@@ -1,0 +1,242 @@
+name: |-
+  F-004 stored-XSS extends to QueryExample (4th Markdown rendering surface — data-entity description + dataset-field description + term definition + query-example definition+query)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-02
+  - P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20V — STRENGTHENS the master F-004 stored-XSS
+  invariant from 3-surface (data-entity description + dataset-field description +
+  term definition, batch U closure) to 4-surface coverage by adding QueryExample
+  as the FOURTH user-curated Markdown surface that flows through the shared
+  rehype-raw-without-rehype-sanitize pipeline.
+
+  THE F-004 FINGERPRINT REMAINS IDENTICAL on the fourth surface:
+
+    Backend tier — QueryExampleController + QueryExampleServiceImpl write
+    BOTH 'definition' (the human prose field) AND 'query' (the executable SQL/KQL
+    body) verbatim:
+      - QueryExampleController.java:26-32 (createQueryExamples) +
+        QueryExampleController.java:35-42 (updateQueryExample) accept
+        QueryExampleFormData with no Jsoup.clean, no Encode.html, no allowlist,
+        no length cap.
+      - QueryExampleServiceImpl.java:42 (mapToPojo) is a MapStruct field-to-field
+        copy with no transformation.
+      - V0_0_84__create_query_example.sql:4-5 stores both fields as PostgreSQL
+        'text NOT NULL' (up to 1GB; no maxLength enforced).
+      - components.yaml:2799-2808 (QueryExampleFormData OpenAPI schema) declares
+        required: [definition, query] but has no maxLength, no pattern, no format
+        constraint.
+
+    UI tier — QueryExampleDetailsOverview.tsx + QueryExamplesListItem.tsx
+    render BOTH fields through the platform's shared Markdown.tsx which wraps
+    MDEditor.Markdown from @uiw/react-md-editor with rehype-raw enabled and NO
+    rehype-sanitize:
+      - QueryExampleDetailsOverview.tsx:19, 25 — definition AND query rendered
+        via Markdown component (the catalog-detail page).
+      - QueryExamplesListItem.tsx:45, 52 — definition AND query rendered via
+        Markdown component (the catalog table row AND the per-entity tab AND
+        the per-term tab).
+      - Markdown.tsx:1-127 — uses default MDEditor.Markdown config; no sanitiser
+        plugin configured (verified by reading the file end-to-end in the
+        batch-V sidecar).
+      - The catalog has the same shared Markdown.tsx single-fix-point as the
+        prior three surfaces — the closure invariant
+        'no-rehype-sanitize-anywhere-in-odd-platform-ui-systemic' (batch U)
+        covers this surface automatically.
+
+  THE NET ATTACK CHAIN — operationally equivalent to F-004 on prior 3 surfaces:
+
+    1. Adversary holds QUERY_EXAMPLE_CREATE or QUERY_EXAMPLE_UPDATE on any
+       example they can reach. The 3 SecurityRules at SecurityConstants.java:112-113,
+       312-317 gate these operations but apply NO owner-scoping (a holder
+       can update any example owned by anyone — see the cross-owner-edit
+       gap in the QueryExampleController bugs_limitations_corner_cases).
+    2. Adversary submits a payload like script tag alert one in EITHER the
+       definition or the query field. (Backticks avoided in this YAML scalar
+       per LSN-018 emit safety.)
+    3. The mapper writes the payload to query_example.definition and
+       query_example.query verbatim.
+    4. Any subsequent viewer:
+       - Visiting the catalog Query Examples tab triggers QueryExamplesListItem.tsx
+         mount → Markdown.tsx → MDEditor.Markdown with rehype-raw → arbitrary
+         HTML+JS execution for EVERY authenticated user on the platform.
+       - Visiting a specific query example's detail page triggers
+         QueryExampleDetailsOverview.tsx mount → same chain.
+       - Visiting a dataset's Query Examples tab triggers
+         DataEntityDetailsQueryExamples.tsx → same chain.
+       - Visiting a term's Query Examples tab triggers TermQueryExamples.tsx →
+         same chain.
+    5. Four distinct UI surfaces all render the same vulnerable payload.
+
+  THE 4-SURFACE CLOSURE means F-004 now spans the FULL operator-authored
+  Markdown inventory:
+    Surface 1 — data-entity internal_description (batch F primary source)
+    Surface 2 — dataset-field internal_description (batch R primary source)
+    Surface 3 — term definition (batch U primary source)
+    Surface 4 — query-example definition + query (batch V — THIS INVARIANT)
+
+  THE READ-COLLABORATIVE COMPOUNDING (same shape as surfaces 1-3):
+
+    Per system-mission.md line 267 read-collaborative posture, every
+    authenticated user sees every Query Example across every namespace.
+    The QueryExampleController has NO read-side RBAC gates — 10 of 13
+    endpoints (all reads + all search-session endpoints) fall through to
+    'authenticated()' (per the QueryExampleController batch V invariant
+    'Read endpoints inherit the read-collaborative posture').
+    Effect: an XSS payload planted by a single operator with QUERY_EXAMPLE_CREATE
+    fires for EVERY authenticated viewer who reaches any of the four UI
+    surfaces above, regardless of namespace, owner, or RBAC.
+
+  THE SENSITIVITY DELTA vs prior 3 surfaces:
+
+    The query body is SQL/KQL/Spark — it often contains internal table names,
+    internal column names, sometimes (in poor practice) embedded credentials.
+    The information-disclosure surface from cross-owner read of query
+    examples is HIGHER than the prior 3 Markdown surfaces (which carry
+    user-authored prose, term definitions, column descriptions). The XSS
+    surface and the information-disclosure surface compound on this 4th
+    member.
+
+  THE BROWSER MITIGATION CAVEAT (inherited from F-004 master):
+
+    P-009 slice-5/-6 probe (run R-20260519T020610Z-P-009) confirmed for the
+    data-entity surface that dangerous tags REACH THE DOM but execution is
+    blocked by Chromium HTML-parser policy and React attribute filtering.
+    The 4th surface has NOT been probed independently in batch V — the
+    inference is structural (same shared Markdown.tsx element) and the
+    probe inference should hold. A targeted probe pinning the QueryExample
+    detail surface specifically is recommended.
+
+  THE SINGLE-FIX-POINT REMAINS Markdown.tsx — adding rehype-sanitize there
+  closes ALL FOUR surfaces simultaneously plus any future Markdown affordance
+  the platform adds (alert descriptions, owner descriptions, attachment
+  link descriptions, etc.).
+
+  SEVERITY: HIGH — extends the existing F-004 HIGH severity to a fourth
+  surface; combined with the read-collaborative posture and the sensitivity
+  delta of SQL content, the impact set of a single QUERY_EXAMPLE_CREATE-holder
+  is the entire authenticated user population, reading SQL bodies that
+  may contain internal schema vocabulary.
+nodes:
+  - odd-platform java QueryExampleController controller-class:QueryExampleController
+contributors:
+  - |-
+    QueryExampleController batch V (PRIMARY SOURCE — the 4th Markdown surface):
+    security.known_security_gaps.[0] HIGH (Stored-XSS via Markdown rendering of
+    'definition' and/or 'query' — 4th member of F-004 family — file:line at
+    QueryExampleDetailsOverview.tsx:19, 25 + QueryExamplesListItem.tsx:45, 52 +
+    Markdown.tsx:1-127 + V0_0_84__create_query_example.sql:5) +
+    bugs_limitations_corner_cases.[6] (same 4th-surface evidence, expanded
+    with the verbatim-storage fingerprint) +
+    docs_link_semantic.doc_drift_findings.[1] (Doc says nothing about Markdown
+    rendering of the query body; doc screenshots show code-block-style render,
+    UI actually renders full Markdown)
+evidence:
+  - |-
+    QueryExampleController.md:security.known_security_gaps.[0] HIGH severity —
+    evidence: QueryExampleDetailsOverview.tsx:19, 25 + QueryExamplesListItem.tsx:45, 52 +
+    Markdown.tsx:1-127 (no sanitiser configured) + V0_0_84__create_query_example.sql:5
+    (verbatim text storage)
+  - |-
+    QueryExampleController.md:bugs_limitations_corner_cases.[6] (the F-004 4th
+    surface narrative with the verbatim-storage fingerprint)
+  - |-
+    QueryExampleController.md:docs_link_semantic.doc_drift_findings.[1] (live
+    doc page WebFetched 2026-05-20 — silent about Markdown rendering of the
+    query body)
+  - |-
+    QueryExampleController.md:downstream_side_effects (createQueryExamples
+    INSERT INTO query_example.definition/.query verbatim + the search-vector
+    materialisation pipeline)
+  - |-
+    Cross-references master F-004 invariant
+    markdown-rendering-via-rehype-raw-without-rehype-sanitize-stored-xss-surface-on-internal-description
+    (the canonical F-004 record — this invariant STRENGTHENS that to four
+    surfaces).
+  - |-
+    Cross-references companion 3-surface invariant
+    f-004-stored-xss-extends-to-term-definition-third-markdown-surface
+    (batch U — the previous strengthening anchor)
+  - |-
+    Cross-references systemic-absence companion
+    no-rehype-sanitize-anywhere-in-odd-platform-ui-systemic (batch U — the
+    single-fix-point anchor at Markdown.tsx)
+axes_present:
+  - controllers
+  - services
+  - ui_components
+  - schema_migrations
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-F (data-entity description — first surface)
+  - batch-J (DataEntityDescription cluster — UI half + P-009 empirical pin)
+  - batch-R (dataset-field description — second surface)
+  - batch-U (term definition — third surface)
+  - batch-V (query-example definition + query — fourth surface, THIS INVARIANT)
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Add rehype-sanitize to the shared Markdown.tsx wrapper with an allowlist
+    excluding script / iframe / style / onerror — ONE line in ONE file fixes
+    ALL FOUR user-curated Markdown surfaces (data-entity description, dataset-
+    field description, term definition, query-example definition + query) PLUS
+    any future Markdown affordance the platform adds. The shared-element
+    architecture is the asset; sanitisation at the leaf prop level is platform-wide.
+  - |-
+    Backend HTML sanitisation at write time — Jsoup or org.owasp.encoder at
+    QueryExampleServiceImpl.createQueryExample + .updateQueryExample (and the
+    parallel three other surface entry-points). Defence-in-depth that holds
+    even if a future UI refactor accidentally bypasses the shared Markdown.tsx
+    wrapper.
+  - |-
+    Add @Size(max=...) on QueryExampleFormData.definition + .query — cap at e.g.
+    64 KiB. The current openapi spec is unbounded; PostgreSQL 'text' accepts
+    up to 1GB. Bounds the blast radius of the persistent payload + the FTS
+    index size.
+  - |-
+    Add a regression test that stores a script tag and an img onerror tag in
+    BOTH the definition AND the query field, fetches via the four UI surfaces,
+    and asserts the round-trip is neutralised. Pin the fix as a regression
+    invariant.
+  - |-
+    Probe pin — promote P-009 to cover the QueryExample detail surface
+    specifically; the inference from the shared Markdown.tsx element holds
+    structurally but is not empirically verified for the
+    /data-modelling/query-examples/{id} route.
+  - |-
+    Document on the data-modelling live doc page that query example bodies
+    are stored as raw Markdown without HTML sanitisation; only trusted
+    operators should be granted QUERY_EXAMPLE_CREATE. The doc-page admission
+    alone is the operator-facing transparency in lieu of (or alongside) the
+    code fix.
+notes: |-
+  NEW invariant captured in batch 2026-05-20V from the QueryExampleController
+  sidecar's F-004 cross-batch coherence finding. The 4-surface closure means
+  F-004 is now fully end-to-end on every user-curated Markdown affordance the
+  platform exposes; the shared Markdown.tsx renderer is the SINGLE FIX POINT
+  for all four surfaces simultaneously.
+
+  The query-example surface is the FOURTH AND LAST primary user-curated
+  Markdown surface in the platform's data-modelling and discovery pillars.
+  Additional Markdown affordances (alert descriptions, owner descriptions,
+  custom-metadata field values) are SECONDARY surfaces — they use the same
+  Markdown.tsx wrapper and would be closed by the same single fix.
+
+  Cross-cutting connections:
+    - Master invariant: markdown-rendering-via-rehype-raw-without-rehype-sanitize-stored-xss-surface-on-internal-description
+    - Companion 3-surface batch-U invariant: f-004-stored-xss-extends-to-term-definition-third-markdown-surface
+    - Companion systemic invariant: no-rehype-sanitize-anywhere-in-odd-platform-ui-systemic
+    - Companion read-collaborative invariant: read-collaborative-cross-owner-enumeration
+    - Companion sensitivity-delta finding: SQL body in query field carries
+      higher info-disclosure surface than prose-only Markdown surfaces
+
+  Three DOC-NNN candidates flow:
+    (a) Code fix — rehype-sanitize in Markdown.tsx (single point of remediation
+        for all four user-curated surfaces)
+    (b) Backend sanitisation — Jsoup at the four primary-write methods
+    (c) Docs admission — disclose the stored-XSS surface on the data-modelling
+        live doc page until the code fix lands

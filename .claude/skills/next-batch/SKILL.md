@@ -183,7 +183,8 @@ Reply with EXACTLY ONE of these formats (the loop driver's status surface):
 - NEVER run `git push --force`, `git reset --hard`, `git checkout main`, `rm -rf`, `git branch -D` autonomously.
 - NEVER write to source repos at `<REPO_ROOT>`, `<DOCS_REPO>`, etc. — these are READ-ONLY from this skill's perspective. Only the workspace at `<WORKSPACE_ROOT>` is writeable.
 - NEVER edit `adrs/drafts/*` — those are maintainer-authored design docs.
-- NEVER edit `CLAUDE.md` or `APPROACH.md` — those are governance surfaces; the maintainer hand-authors changes.
+- NEVER edit `CLAUDE.md` — it is the governance surface; the maintainer hand-authors changes.
+- `APPROACH.md` is the deliverable — update it when methodology insights land (new failure modes, new rules, new layers, new probe classes, new bootstrapping signals). Do NOT rewrite the methodology unilaterally; do NOT delete sections; preserve revision history. Substantive additions land alongside an LSN entry that triggered them.
 - If a tool call hits a permission prompt → that's a settings.local.json gap; halt the loop (don't try to bypass).
 
 ## Resumption after a halt

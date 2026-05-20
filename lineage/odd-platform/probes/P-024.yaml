@@ -1,0 +1,170 @@
+---
+id: P-024
+status: pending-reflection-verification
+emitted_by: feature-reflector
+emitted_at: 2026-05-21
+emitted_in_batch: REFLECT-F-021-rev5-canary
+emitted_from_sidecar: lineage/odd-platform/feature-reflections/detail/F-021.yaml
+hypothesis_id: H-008
+expected_outcome: |
+  Hypothesis H-008 (verbatim from the reflection):
+
+  "When the caller paginates the Activity Feed by passing
+  `(last_event_id, last_event_date_time)` from page N's last row,
+  page N+1 returns the strictly-older rows (in `created_at DESC,
+  id DESC` order) without (a) skipping any row whose insertion
+  is observable to a concurrent reader, (b) duplicating any row,
+  or (c) surfacing rows in commit-inverted order under sustained
+  write rate >= 100 events/sec."
+
+  The static trace (ReactiveActivityRepositoryImpl batch-R sidecar
+  S-C-2 + ActivityServiceImpl batch-R sidecar S-C-2) establishes:
+  (i) cursor predicate is asymmetric — LEFT side
+      `row(trunc(ACTIVITY.CREATED_AT, DatePart.SECOND), ACTIVITY.ID)`
+      (SECOND precision); RIGHT side `(truncated_last_event_dt,
+      lastEventId)` also SECOND-truncated; ORDER BY is full microsecond
+      precision (ReactiveActivityRepositoryImpl.java:287-291);
+  (ii) `DateTimeUtil.generateNow()` is called at Mono-assembly time,
+       not at INSERT commit time (ActivityServiceImpl.java:45, :56) —
+       two near-simultaneous mutations can have `created_at` columns
+       inverted vs commit order;
+  (iii) within a single second-bucket, page N's cursor cut at id=L
+        excludes rows with id < L; but those rows may have microseconds
+        > μ_L, and would appear AFTER page N's last row in pure
+        microsecond ordering — yet page N+1's filter sees them.
+
+  Static analysis concludes: no row SKIP under forward correctness;
+  no DUPLICATE from the cursor mechanism itself; but a possible
+  visual OUT-OF-ORDER within a single second-bucket when the bucket
+  splits across pages. The visual claim is PROBE-NEEDED to PIN under
+  realistic write rate.
+
+stress_category: C (orderings/pagination/aggregation)
+stress_question_ids: [Q-C-2]
+
+triggers:
+  - ReactiveActivityRepositoryImpl.java:285-291 (cursor predicate +
+    ORDER BY precision asymmetry)
+  - ActivityServiceImpl.java:45,56 (generateNow at assembly time, not
+    commit time)
+  - V0_0_48__add_activity.sql:3 (created_at is timestamp without
+    time zone — microsecond precision in PG)
+  - F-021 chain hop-3 (ReactiveActivityRepositoryImpl) +
+    ActivityServiceImpl S-C-2 finding
+  - Cross-reference: P-021 (the file-analyser-emitted probe for the
+    same surface area — narrower scope, no in-flight write injection)
+
+arrange:
+  - Build odd-platform from main against docker-compose Postgres
+    (auth.type=DISABLED — the cursor behaviour is auth-mode-agnostic;
+    DISABLED reduces setup cost).
+  - Insert exactly one data_entity_id=3024 row to satisfy the FK.
+  - Open one write loop: insert 500 activity rows for data_entity_id=3024,
+    event_type='DESCRIPTION_UPDATED', is_system_event=false,
+    created_by='probe-p024-actor', created_at=NOW() AT TIME ZONE 'UTC',
+    at a rate of >= 100 rows/second so that multiple rows share the
+    same SECOND-truncation bucket. Use parallel INSERT statements
+    (8 concurrent connections) to ensure microsecond-precision spread
+    within each second-bucket.
+  - Wait for the write loop to complete; record the full ordered list
+    of inserted (id, created_at) tuples directly from the table.
+
+act:
+  - CALL 1 (first page): GET /api/activity?begin_date=<TARGET_DAY_START>&
+    end_date=<TARGET_DAY_END>&size=50 (no cursor params; first page
+    of 50 rows for the test day). Capture the response body and the
+    LAST row's (id, created_at) as the cursor anchor.
+  - CALL 2 (second page): GET /api/activity?begin_date=...&end_date=...&
+    size=50&last_event_id=<from CALL 1>&last_event_date_time=<from CALL 1>.
+    Capture the response body.
+  - CALL 3 (third page): GET /api/activity?...&size=50&last_event_id=
+    <from CALL 2>&last_event_date_time=<from CALL 2>. Capture.
+
+observe:
+  - kind: rest_response
+    target: CALL 1
+    capture:
+      - status_code (expected: 200)
+      - body[*].id (50 ids, in API-returned order)
+      - body[*].created_at (50 timestamps at microsecond precision)
+  - kind: rest_response
+    target: CALL 2
+    capture:
+      - status_code (expected: 200)
+      - body[*].id (50 ids, in API-returned order)
+      - body[*].created_at (50 timestamps)
+  - kind: rest_response
+    target: CALL 3
+    capture:
+      - status_code (expected: 200)
+      - body[*].id (50 ids)
+      - body[*].created_at (50 timestamps)
+  - kind: sql_table_state
+    target: |
+      SELECT id, created_at FROM activity
+       WHERE data_entity_id=3024 AND created_by='probe-p024-actor'
+       ORDER BY created_at DESC, id DESC
+       LIMIT 150
+    capture:
+      - rows (the GROUND TRUTH order all three pages should reconstruct)
+
+oracle:
+  pass_if:
+    - union(CALL 1.ids, CALL 2.ids, CALL 3.ids) is a contiguous
+      150-row prefix of the GROUND TRUTH order;
+    - no id appears in more than one CALL response (no duplicates);
+    - within each CALL's body, the order matches the GROUND TRUTH
+      slice exactly (created_at DESC, id DESC at microsecond
+      precision);
+    - across CALLs, the concatenation CALL 1 + CALL 2 + CALL 3 is
+      monotone-decreasing in (created_at, id) at MICROSECOND precision.
+  fail_if_visual_out_of_order:
+    - within a single second-bucket that splits across CALL N and
+      CALL N+1: CALL N+1 contains rows with microseconds GREATER THAN
+      CALL N's last row's microsecond.
+    - This fails the operator-facing promise that pagination returns
+      strictly-older rows on each successive page.
+  fail_if_duplicate:
+    - any id appears in two CALLs.
+  fail_if_skip:
+    - the union of three CALLs has gaps in the ground-truth order
+      (a row with id X is present in ground truth between page boundaries
+      but absent from all three CALLs).
+
+routes_to_finding_on_fail:
+  - fail_if_visual_out_of_order: caveat-candidate (document the
+    intra-second visual ordering quirk in
+    `documentation/docs/features/active-platform-features/activity-feed.md`;
+    DOC-GAP candidate)
+  - fail_if_duplicate: bug-candidate (cursor predicate logic bug;
+    HIGH severity — repeated rows in the audit feed are operator-confusing)
+  - fail_if_skip: bug-candidate (cursor predicate logic bug;
+    HIGH severity — missed rows in the audit feed defeat the purpose
+    of an audit log)
+
+local_execution_only:
+  enforced: true
+  mechanism: docker-compose Postgres + local odd-platform build;
+             no remote infrastructure used for any phase.
+  approach_md_anchor: APPROACH.md section 9 rule 12 (local-only
+                      verification)
+
+cleanup:
+  - DROP the 500 inserted activity rows (DELETE FROM activity
+    WHERE data_entity_id=3024 AND created_by='probe-p024-actor').
+  - DROP the test data_entity row (DELETE FROM data_entity WHERE id=3024).
+  - Stop the docker-compose stack.
+
+confidence_required: HIGH (the verdict here flips H-008 from
+  probe-needed to either confirmed OR contradicted; the operator-visible
+  consequence is either documentation or a cursor-logic fix).
+
+cross_references:
+  - probe: P-021 (file-analyser-emitted; same surface area, narrower
+    scope — no concurrent write injection); P-024 supersedes for the
+    visual-ordering claim under sustained write rate.
+  - sidecar: ReactiveActivityRepositoryImpl.md stress_findings.C2
+  - sidecar: ActivityServiceImpl.md stress_findings.S-C-2
+  - reflection: lineage/odd-platform/feature-reflections/detail/F-021.yaml H-008
+  - feature_flow: F-021 drift_class
+    `cursor_pagination_truncate_to_second_skip_under_high_write_rate`

@@ -149,9 +149,14 @@ local-only equivalents OR flag it as out-of-scope under the cost constraint.
 
 ### Rule 9 — Stress Protocol (NON-NEGOTIABLE) — interrogate the code; do not transcribe it
 
-**The methodology's primary failure mode is descriptive transcription.** Reading code and emitting a structured description of what it *says* is the floor of the job; the substantive job is interrogating what the code *does* at each boundary, name-behavior pair, ordering, auth mode, and resource limit. The case-law is LSN-019: `tagService.listMostPopular` was transcribed as *"returns tags ordered by descending count"* — the surface reading of the method name and the count-CTE in the SQL. The actual JOOQ chain has no `ORDER BY count` clause; the SQL returns rows in natural (creation) order; the operator sees the OLDEST 30 tags labelled "Top Tags". The methodology shipped the wrong claim with `confidence: HIGH` for weeks because the analyser never generated the question *"the SQL has a count column — does the OUTER select actually `ORDER BY count DESC`?"*. A senior engineer reading the same code generates that question instantly. You must generate the same class of question, mechanically, on every node you enrich.
+**The methodology's primary failure mode is descriptive transcription.** Reading code and emitting a structured description of what it *says* is the floor of the job; the substantive job is interrogating what the code *does* at each boundary, name-behavior pair, ordering, auth mode, resource limit — **and at each named request input whose name promises something about what it filters / selects / operates on**. The case-law is twofold:
 
-Before emitting the sidecar (workflow step 6.5), you run the **Stress Protocol** — five categories of structural interrogation, each fired by triggers detected in the code you Read. For each trigger, you answer the listed questions; each answer takes ONE of three forms (trace / probe / reference; see "How to answer each question" below). You may NOT skip a triggered question. The output of the Stress Protocol is the new `stress_findings` block in the sidecar (schema below), plus zero-or-more analyser-emitted probe skeletons at `lineage/{repo}/probes/P-{NNN}.yaml` for questions whose answer requires runtime.
+- **LSN-019** (`tagService.listMostPopular`): transcribed as *"returns tags ordered by descending count"* — the surface reading of the method name and the count-CTE in the SQL. The actual JOOQ chain has no `ORDER BY count` clause; the SQL returns rows in natural (creation) order; the operator sees the OLDEST 30 tags labelled "Top Tags". The methodology shipped the wrong claim with `confidence: HIGH` for weeks because the analyser never generated the question *"the SQL has a count column — does the OUTER select actually `ORDER BY count DESC`?"*. **Surfaced by Category B.**
+- **LSN-020** (Activity Feed `userIds` filter): query parameter named `userIds` binds to `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` at the SQL layer (`ReactiveActivityRepositoryImpl.java:272-273`). The parameter promises filtering by user-who-performed-the-action; the implementation filters by owner-of-entity via the user-owner-mapping. Operator-visible failures: (a) users without owner mapping cannot be filtered (their userId returns empty); (b) owner-user association changes retroactively rewrite who looks responsible for past actions; (c) the actual actor column (`activity.created_by`) is JOINED LEFT but never FILTERED. The methodology shipped a sidecar that flagged "user-id enumeration" as the concern while completely missing that the filter does not do what the parameter name promises. **Surfaced by Category F (new in rev 5).**
+
+A senior engineer reading the same code generates these questions instantly. You must generate the same class of question, mechanically, on every node you enrich.
+
+Before emitting the sidecar (workflow step 6.5), you run the **Stress Protocol** — six categories of structural interrogation, each fired by triggers detected in the code you Read. For each trigger, you answer the listed questions; each answer takes ONE of three forms (trace / probe / reference; see "How to answer each question" below). You may NOT skip a triggered question. The output of the Stress Protocol is the `stress_findings` block in the sidecar (schema below), plus zero-or-more analyser-emitted probe skeletons at `lineage/{repo}/probes/P-{NNN}.yaml` for questions whose answer requires runtime.
 
 #### Category A — Tunables
 
@@ -229,6 +234,61 @@ Before emitting the sidecar (workflow step 6.5), you run the **Stress Protocol**
 - Q2: Is the call replay-safe? Same payload + same caller → same result, or duplicate side-effects?
 - Q3: If a cache fronts this, what is the TTL? Eviction key? Stale-data window? What does the operator see at stale-cache + write race?
 
+#### Category F — Request-input naming alignment (NEW in rev 5)
+
+**The discriminator: every NAMED input the caller supplies carries a promise about WHAT it operates on. The implementation may translate that name into a different column / entity / scope. The translation may be deliberate (legacy schema, schema-evolution shim) — in which case it is a documentable caveat. The translation may be accidental — in which case it is a bug a senior engineer reading the code spots in 30 seconds by asking *"the parameter says X — does the SQL touch the X table / X column?"*. Category B catches METHOD-name drift; Category F catches PARAMETER / DTO-field / HEADER-name drift.**
+
+The case-law is LSN-020: Activity Feed's `userIds` parameter binds to `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` in the SQL. The parameter name promises "filter by users"; the SQL filters by owners-via-the-mapping. The audit column `activity.created_by` (the actual actor — a strong candidate for what the user expected to filter by) is JOINED LEFT but NEVER FILTERED. Three smells co-occurred, all detectable from code:
+
+1. **Parameter name vs SQL column drift** — `userIds` → `OWNER_ID`.
+2. **Available-but-unused column** — `activity.created_by` is read in the JOIN/SELECT but ignored in WHERE.
+3. **Cross-layer naming consistency** — every layer (controller `userIds`, service `userIds`, repository `userIds`) preserves the parameter name UNTIL the SQL layer translates it into a different concept.
+
+Each smell is a Category F trigger.
+
+**Triggers (enumerate in every node that handles a request — controller / handler / route / endpoint):**
+
+- Every path parameter (`@PathVariable`, `{id}`, route-pattern captures).
+- Every query parameter (`@RequestParam`, query-string fields, `@RequestPart` for multipart).
+- Every field of every request body DTO (POST/PUT/PATCH bodies — read the DTO class, enumerate its fields).
+- Every header the handler reads (`@RequestHeader`, programmatic header access).
+- Every form / multipart field that maps to a named input.
+
+**Plus the inverse-direction triggers in the implementation chain (for any node, not just controllers):**
+
+- Every named local variable / method parameter whose name implies a domain entity AND is used to filter / select / route to a specific column or table.
+- Every SQL/JOOQ `WHERE` predicate that binds a named variable to a named column where the variable name and column name diverge semantically.
+- Every column read in a JOIN or SELECT but absent from the WHERE clause where the column name strongly suggests it should be filterable by the user-visible input.
+
+**Questions to answer for each trigger:**
+
+- Q1: What does the input NAME promise the caller, in plain user-facing English? ("filter activity rows by which users performed each action"). If the name is too generic to imply anything specific (`id`, `value`, `data`), record `promise: <generic — no specific entity promised>` and move on; the trigger still produces a record so the audit trail is explicit.
+- Q2: When the request supplies this input, what does the implementation actually USE it for? Trace through the chain end-to-end — service method, repository method, SQL predicate. Cite the file:line where the bind happens. If you cannot trace the full path within this sidecar's 1-hop neighbour budget, mark the missing hop as `unresolved` and emit the partial trace.
+- Q3: Does the implementation's actual scope MATCH the name's promise? Four shapes:
+  - **`MATCHES`** — name and implementation operate on the same entity / column / scope.
+  - **`TRANSLATES_LEGITIMATELY`** — name maps to a differently-named column/entity, but the mapping is documented (in a comment, in an ADR, in the doc page); the translation has a reason. Record the reason citation.
+  - **`TRANSLATES_SILENTLY`** — name maps to a different scope without explanation; the operator hitting the endpoint has no way to know about the translation from the API surface alone. **This is the caveat-or-bug class.** Record `drift: DRIFT_INPUT_NAME_VS_IMPLEMENTATION` + the operator-visible consequence.
+  - **`UNRESOLVED`** — the trace cannot complete within the sidecar's scope; emit reference to the downstream sidecar that owns the SQL.
+- Q4: For TRANSLATES_SILENTLY drift, enumerate the operator-visible failures:
+  - What does a caller see when their assumption (input X → entity X) is wrong? Empty results? Subtly skewed results? Permission-leak (caller can probe an attribute they shouldn't be able to)?
+  - Does the drift survive cross-data scenarios — e.g. when the entity X exists but is not bound to entity Y (the actual filter target)?
+  - Does the drift change under data-shape transitions — e.g. when the bind (user-owner association) is reassigned, does past data look like it was authored by the new owner?
+- Q5: Is there a column / field / variable in the touched table / DTO / object that DOES match the input's name and is NOT being used? The "available-but-unused" smell. If yes, that's a candidate for what the user actually expected and a fix anchor.
+
+**Worked example (LSN-020 — the Activity user-filter):**
+
+- Trigger: query parameter `userIds: List<Long>` on `getActivity` (`ActivityController.java:30-31`).
+- Q1 promise: "filter activity rows by which users performed each action" (parameter name says `users`, plural).
+- Q2 trace: controller → `activityService.getActivityList(...userIds...)` (ActivityController.java:39) → `ActivityServiceImpl.fetchAllActivities(...userIds...)` (line 80-95) → `getCommonConditions(...userIds...)` (line 252-272) → SQL bind: `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` (ReactiveActivityRepositoryImpl.java:272-273).
+- Q3 drift: `TRANSLATES_SILENTLY`. Name says "users"; SQL filters by `OWNER_ID` of the user-owner mapping. The translation is not documented in any comment, ADR, or live doc page.
+- Q4 operator-visible consequences:
+  - A user with no owner mapping cannot be filtered (their userId returns empty even if they generated events).
+  - When a user-owner association is reassigned, past activity rows look like the new association's actions — the audit trail's actor attribution is rewritten retroactively without any visible event.
+  - Multiple users mapped to the same owner all return the same set when filtered by any of their user_ids.
+- Q5 available-but-unused: `activity.created_by` (text column carrying the actual actor username) is READ in the LEFT JOIN on USER_OWNER_MAPPING (`ReactiveActivityRepositoryImpl.java:220-222`) and SELECTED in the result mapping, but ABSENT from WHERE. This is the column a user-filter that honored the parameter name would filter on.
+
+The Category F record routes a HIGH-severity entry into `bugs_limitations_corner_cases` AND a doc-drift entry into `docs_link_semantic.doc_drift_findings` (the live activity-feed.md page documents the filter without warning about the owner-translation).
+
 #### How to answer each question
 
 For each question, choose EXACTLY ONE of:
@@ -280,7 +340,7 @@ A probe-skeleton that says *"verify the ordering somehow"* is rejected. Write it
 
 #### What if a node has no triggers?
 
-A trivial config consumer or a pure mapper may legitimately have zero triggers in some categories. The `stress_findings` block is still emitted, with explicit `[]` for the empty categories — to make "I checked; no triggers" distinct from "I forgot to check". A sidecar where EVERY category is `[]` is rare; if you find yourself emitting that, double-check that you have not missed a numeric literal, a method-name promise, or an endpoint annotation. Most controllers / services / repositories have at least 2-3 stress findings.
+A trivial config consumer or a pure mapper may legitimately have zero triggers in some categories. The `stress_findings` block is still emitted, with explicit `[]` for the empty categories — to make "I checked; no triggers" distinct from "I forgot to check". A sidecar where EVERY category is `[]` is rare; if you find yourself emitting that, double-check that you have not missed a numeric literal, a method-name promise, an endpoint annotation, **or a named request input whose name promises something specific (Category F)**. Most controllers / services / repositories have at least 2-3 stress findings; controllers and handlers almost always trigger Category F (any named query parameter / DTO field / path variable fires Category F regardless of whether it triggers Categories A-E).
 
 #### Honest confidence after the Stress Protocol
 
@@ -466,7 +526,7 @@ axis: <verbatim>
 extracted_at_commit: <git rev-parse HEAD of the target repo at enrichment time — read it via Bash if needed; if Bash isn't available, use the substrate manifest's last_scan_commit>
 enriched_at_commit: <same — the commit you read FROM>
 extractor_version: 0.1.0
-prompt_version: file-analyser/0.4.0
+prompt_version: file-analyser/0.5.0
 enrichment_status: complete | partial | stale | failed
 confidence_overall: HIGH | MEDIUM | LOW
 session_id: <Claude Code session id if available; otherwise "session-2026-05-08-NN" where NN is sequence within the session>
@@ -690,6 +750,33 @@ stress_findings:
           a: "<...>"
           confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
           evidence: "<...>"
+  request_inputs:                # rev 5 / Category F — input-name vs implementation alignment
+    - location: "<file:line — the controller method / handler / route declaration>"
+      input_kind: path-param | query-param | body-field | header | form-field | local-variable
+      input_name: "<the parameter / field / variable name as declared>"
+      questions:
+        - q: "What does the input NAME promise the caller, in plain user-facing English?"
+          a: "<one sentence — what entity / attribute the name implies; or '<generic — no specific entity promised>' for opaque names like 'id' / 'value'>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<file:line>"
+        - q: "When supplied, what does the implementation USE the input for?"
+          a: "<traced chain — controller → service → repository → SQL bind / mutation site; cite each hop>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<file:line OR probe_id OR node_id>"
+        - q: "Does the implementation's actual scope MATCH the name's promise?"
+          a: "<MATCHES | TRANSLATES_LEGITIMATELY (cite reason) | TRANSLATES_SILENTLY (cite operator-visible consequence) | UNRESOLVED (cite downstream sidecar that owns the trace)>"
+          drift: NONE | MINOR | DRIFT_INPUT_NAME_VS_IMPLEMENTATION
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<file:line>"
+        - q: "For TRANSLATES_SILENTLY: what does a caller see when their assumption is wrong?"
+          a: "<enumerate operator-visible failure modes — empty results / wrong results / cross-data inconsistencies / retroactive rewrites>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<file:line>"
+        - q: "Is there a column / field / variable that DOES match the input's name and is NOT being used? (available-but-unused smell)"
+          a: "<the matching column/field + file:line where it's read but unfiltered; OR 'NONE' if no closer-aligned data exists>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<file:line>"
+      routes_to_finding: "<bugs_limitations_corner_cases.[id] AND/OR docs_link_semantic.doc_drift_findings.[id] AND/OR implicit_adrs.[id] if TRANSLATES_LEGITIMATELY>"
   probes_emitted:
     - probe_id: P-NNN
       question: "<the stress question this probe is meant to answer>"
@@ -987,7 +1074,9 @@ into your output. Otherwise leave the heading present with empty body.)
 6. **Verbose `understanding`** — 2-4 sentences. If you need more, the node is too coarse-grained and you should defer detail to `concepts`.
 7. **Padding** — slop counts as a quality failure. A 100-line sidecar that says nothing useful is rejected over a 60-line sidecar that's substantive.
 8. **Routing gap-shaped observations to `implicit_adrs`** — if you observe an absence (no auth, no validation, no retry, no rate-limit, no pagination, missing audit logging) and there is NO comment / exception / naming-convention / annotation defending the absence, the observation is gap-shaped — route to `bugs_limitations_corner_cases`. The adr-archaeologist's 3-question wisdom test will reclassify misroutes, but routing correctly here reduces noise in the ADR catalog. The discriminator is *evidence of intent* visible in the file you Read, not your judgement of whether the absence is justifiable.
-9. **Transcribing without interrogating** (LSN-019) — the methodology's primary failure mode. You read `size: 30` and write *"shows top 30"*; you read `listMostPopular` and write *"orders by popularity"*; you read `@PreAuthorize("hasRole('ADMIN')")` and write *"admin-only"* — without firing the boundary / drift / mode / race questions Rule 9 mandates. A sidecar with no `stress_findings` block, OR with a `stress_findings` block whose `stress_summary.triggers_total` is 0 on a node that visibly contains tunables / orderings / endpoints, is rejected. Run the Stress Protocol. Emit the probes. Lower the confidence honestly. Do NOT ship a descriptive sidecar with HIGH confidence on operator-observable claims that have never been interrogated.
+9. **Transcribing without interrogating** (LSN-019 + LSN-020) — the methodology's primary failure mode. You read `size: 30` and write *"shows top 30"*; you read `listMostPopular` and write *"orders by popularity"*; you read `@PreAuthorize("hasRole('ADMIN')")` and write *"admin-only"*; you read `userIds: List<Long>` and write *"filters by user"* without tracing whether the SQL actually filters by user — without firing the boundary / drift / mode / race / input-name questions Rule 9 mandates. A sidecar with no `stress_findings` block, OR with a `stress_findings` block whose `stress_summary.triggers_total` is 0 on a node that visibly contains tunables / orderings / endpoints / **named request inputs**, is rejected. Run the Stress Protocol. Emit the probes. Lower the confidence honestly. Do NOT ship a descriptive sidecar with HIGH confidence on operator-observable claims that have never been interrogated.
+
+10. **Transcribing PARAMETER NAMES as if they were behaviour contracts** (LSN-020) — the rev-5 failure-mode addition. A parameter called `userIds` is NOT a behaviour contract that says "filters by user"; it is a NAME that promises something. Category F's job is to interrogate whether the implementation HONORS that promise. The default LLM behaviour — to paraphrase a parameter as its name and move on — is what allowed the Activity Feed user-filter bug to ship in a sidecar with HIGH confidence for the duration of the rev-4 era. Every named request input fires Category F; no exceptions.
 
 ## Exit
 

@@ -1,0 +1,988 @@
+---
+feature_id: F-021
+pillar_anchored_id: P-07:F-004
+pillar: "P-07 Active Platform Features"
+feature_name: "Activity Feed — global page + per-entity tab — cross-owner audit-trail read with provider-agnostic actor resolution"
+reflected_at: 2026-05-21T00:00:00Z
+reflected_at_commit: fe910da3a6f823cf9f77db897c7bc0f57d91df52
+prompt_version: feature-reflector/0.1.0
+contributing_sidecars_read:
+  - odd-platform__java__ActivityController__controller-class__ActivityController.md
+  - odd-platform__java__ActivityController__controller-method__getActivity.md
+  - odd-platform__java__service__ActivityServiceImpl.md
+  - odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+  - odd-platform__java__service__activity__handler__ActivityHandler.md
+  - odd-platform__java__housekeeping__job__ActivityEmptyPartitionsHousekeepingJob.md
+  - odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+    last_verified_at: "2026-05-21T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 14
+  confirmed: 2
+  contradicted: 9
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: "GET /api/activity?userIds=[N] does NOT filter by who-performed-the-action; it filters by USER_OWNER_MAPPING.OWNER_ID.in([N]), so users without an owner mapping are unfilterable, owner reassignment retroactively rewrites past attribution, and multiple users mapped to one owner collapse to identical result sets."
+related_feature_flows:
+  - F-006   # P-09:F-001 RBAC — audit-silence pattern rooted in F-021's schema
+  - F-007   # P-07:F-001 Alerting — 4 of 27 event types originate from AlertServiceImpl write path
+  - F-010   # P-08:F-002 Housekeeping — partition-rotation cycle for activity table
+  - F-011   # P-09:F-003 Principal-to-Owner Resolution — actor join shares the cross-mode-bleed mechanism
+  - F-014   # P-07:F-005 Per-Entity Alert View — sibling unbounded-pagination shape
+related_concepts:
+  - "Activity Feed"
+  - "Activity Table Partitioning"
+  - "User-Owner Mapping"
+  - "Owner (Authorization directory entry)"
+  - "Auth Mode"
+  - "Housekeeping TTL retention"
+related_drift_classes:
+  - audit_data_entity_scoped_schema_root_cause
+  - read_default_cross_owner_my_objects_axis_mismatch
+  - provider_agnostic_actor_resolution_cross_mode_bleed
+  - anonymous_mutation_attribution_gap_disabled_mode_null_created_by
+  - cursor_pagination_truncate_to_second_skip_under_high_write_rate
+  - inner_join_to_data_entity_hardelete_history_erasure
+  - no_distinct_multi_facet_filter_duplicates
+  - doc_drift_27_enum_values_in_code_vs_20_in_live_docs
+  - doc_silence_on_cross_owner_default_read
+  - doc_silence_on_schema_rooted_audit_scope
+new_drift_classes_proposed:
+  - userids_parameter_name_vs_owner_id_column_filter_drift   # NEW from H-001 — the LSN-020 canonical case-law-shaped drift, named explicitly so feature-flow-builder can pick it up as a first-class axis
+  - ownerids_silently_dropped_for_my_objects_upstream_downstream_view_modes   # NEW from H-004 — the silent-filter-parameter-disappearance drift on view-mode dispatch
+  - size_parameter_no_clamp_unbounded_scan_under_size_null   # NEW from H-012 — service-and-controller-layer absence of any LIMIT clamp
+---
+
+# Activity Feed (Audit-Trail Surface) — product-owner reflection
+
+## product_owner_narrative
+
+The Activity Feed is ODD Platform's **audit-trail read surface** — the user-observable history of what changed on the catalog's data entities, exposed to every authenticated user under three personas: an end-user browsing the global Activity page to see recent platform-wide change activity; a data steward opening a specific Data Entity's Activity tab to see the per-entity history; and a security or compliance reviewer auditing "who did what when" against a particular owner, user, or date window (per `system-mission.md:200-220` P-07 pillar block + `documentation/docs/features/active-platform-features/activity-feed` WebFetched 2026-05-21 status 200). The feed records 27 event types across entity lifecycle, ownership, tags & terms, dataset-field edits, custom-metadata edits, custom groups, and alerts (per `ActivityEventTypeDto.java:3-31` enumerated in `odd-platform__java__service__ActivityServiceImpl.md` concepts.entities); the live doc page enumerates 20 by name plus a categorical mention of "7 internal types" (per WebFetch 2026-05-21 — "Tag and Owner filters support multi-select capability; User filter specifically: show events performed by one or more selected users").
+
+A user reaches the Activity Feed via two HTTP entry points (per `odd-platform__java__ActivityController__controller-class__ActivityController.md` understanding): `GET /api/activity` returns a cursor-paginated Flux of activity rows with 12 query parameters (`beginDate`, `endDate`, `size`, `datasourceId`, `namespaceId`, `tagIds`, `ownerIds`, `userIds`, `type`, `eventType`, `lasEventId` [sic — typo on the Java surface], `lastEventDateTime`); `GET /api/activity/counts` returns the four-way aggregate (`totalCount`, `myObjectsCount`, `downstreamCount`, `upstreamCount`) with 8 query parameters (no `size`, no `type`). Both endpoints have NO `@PreAuthorize`, NO entry in `SecurityConstants.SECURITY_RULES`, and fall through to Spring's catch-all `.authenticated()` rule — meaning **every authenticated identity reads the full cross-owner audit trail** by default (per `ActivityController.md` coherence_notes.F-006). The per-entity tab uses a sibling endpoint (`GET /api/dataentities/{id}/activity` on `DataEntityController.getDataEntityActivity` — out-of-scope of this reflection's chain).
+
+The working parts a product owner would describe in a demo are seven filter facets (per the live doc): Calendar / Datasource / Namespace / Event Type / Tag / Owner / User (per WebFetch 2026-05-21 + `ActivityController.md` understanding line 138). Three undocumented public-API parameters extend that surface: `type` (a four-way view-mode dispatch — `ALL` / `MY_OBJECTS` / `UPSTREAM` / `DOWNSTREAM`); cursor pagination via `(lastEventId, lastEventDateTime)`; and a `size` parameter with no upper bound at any layer. The `MY_OBJECTS` view scopes to entities the caller owns (via `OWNERSHIP.OWNER_ID = currentUser.ownerId`, resolved through `AuthIdentityProvider.fetchAssociatedOwner()`); the other three view modes apply NO principal-derived predicate (per `ActivityServiceImpl.md` line 184-217 + `ReactiveActivityRepositoryImpl.md` invariants). Ordering is `ACTIVITY.CREATED_AT DESC, ACTIVITY.ID DESC` (per repository line 291); pagination is cursor-based with a SECOND-truncation on the cursor predicate and microsecond precision on ORDER BY (per repository line 287-291 + `ActivityServiceImpl.md` S-C-2).
+
+The integration story has three cross-pillar legs (per `system-mission.md:200-220` + F-021 frontmatter `cross_pillar_relationships`): the feed **feeds P-01 Data Discovery** as the change-driven discovery surface — every `DESCRIPTION_UPDATED` or `BUSINESS_NAME_UPDATED` event is visible alongside the data entity on its detail page; it **shares schema with P-09 Security** — the actor-resolution LEFT JOIN to `USER_OWNER_MAPPING` ON `OIDC_USERNAME = ACTIVITY.CREATED_BY` (with NO provider qualifier) is the read-side mirror of the `provider-null-cross-mode-bleed` mechanism documented in F-011's batch-R extension; and it **is operationally coupled to P-08 Housekeeping** — `ActivityEmptyPartitionsHousekeepingJob` drops EMPTY past partitions of the activity table, but **non-empty partitions never drop** (per F-021 frontmatter notes + `ActivityEmptyPartitionsHousekeepingJob.md` per-sidecar). The audit-silence-on-RBAC pattern observed across batches F/H/N/P/Q/R on F-006 (RBAC mutations have NO audit log) is rooted in THIS feature's schema decision: `activity.data_entity_id` is `NOT NULL` with FK to `data_entity(id)` (per `V0_0_48__add_activity.sql:4,12` cited across multiple sidecars).
+
+A product owner introducing this feature should highlight three edge cases in a demo: (a) the **"My objects" view shows changes TO entities I own, not changes I performed** — a confusing axis-mismatch for users coming from action-centric audit-log mental models (per `ActivityServiceImpl.md` invariant 4); (b) the **anonymous mutations under `auth.type=DISABLED` write `created_by=null` and surface visually indistinguishable from system events** in the UI — the only on-row discriminator is `is_system_event`, which is `false` for anonymous mutations and `true` for genuine system events, but the front-end exposes only the actor field which is null in both cases (per `ActivityServiceImpl.md` line 49 + V0_0_48 schema + DisabledAuth security config); and (c) the **activity table grows monotonically** — empty partitions drop, non-empty partitions persist forever; an operator running 1M events/day accumulates ~365GB/year of audit data with no row-level TTL or DELETE path (per F-021 frontmatter facet `activity_table_monotonic_growth_no_delete_path`).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |
+    When the caller passes `GET /api/activity?user_ids=42` (a user id),
+    the response contains only activity rows whose ACTOR (the user who
+    performed the change — i.e. the value in `activity.created_by`)
+    corresponds to the user id 42.
+  derivation: |
+    The query parameter is named `userIds` (plural USERS) — strongly
+    suggests filtering by user-as-actor; the response includes a
+    `created_by` field surfacing the actor's identity (per
+    `ActivityController.md` line 138); the pillar mission frames the
+    feature as "audit-trail surface" (`system-mission.md:200-220`) which
+    implies action-attribution filtering; the live doc says of the
+    User filter: "show events performed by one or more selected users
+    ... useful for auditing a specific person's platform activity"
+    (per WebFetch 2026-05-21 — verbatim).
+  seed_source: endpoint-shape + doc-claim + pillar-mission
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The chain takes the caller-supplied `userIds: List<Long>` and
+      binds it to `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` at the SQL
+      layer — i.e. it filters by OWNER ID, not by the user's auth
+      principal id and not by the actor column `activity.created_by`.
+      The actor column IS joined into every read query via
+      `leftJoin(USER_OWNER_MAPPING).on(USER_OWNER_MAPPING.OIDC_USERNAME
+      .eq(ACTIVITY.CREATED_BY).and(USER_OWNER_MAPPING.DELETED_AT
+      .isNull()))` — but it is NEVER filtered. The translation chain
+      is: controller `userIds: List<Long>` → service `userIds` (passed
+      through unchanged at ActivityServiceImpl.java:107-117 view-mode
+      dispatch) → repository `getCommonConditions` line 272-275
+      `if (CollectionUtils.isNotEmpty(userIds)) { conditions.add(
+      USER_OWNER_MAPPING.OWNER_ID.in(userIds));
+      conditions.add(USER_OWNER_MAPPING.DELETED_AT.isNull()); }`.
+      Three layers of name fidelity (`userIds` in the controller, the
+      service, the repository signature, the OpenAPI spec, AND the doc
+      page's User filter label) — and the predicate at the SQL layer
+      filters `OWNER_ID`.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: stress_findings.A5 + invariants.[3] + bugs_limitations_corner_cases.[3]
+        cite: "ReactiveActivityRepositoryImpl.java:272-275"
+        note: "The literal `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` SQL bind"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: invariants.[3]
+        cite: "ReactiveActivityRepositoryImpl.java:220-222"
+        note: "LEFT JOIN ON `USER_OWNER_MAPPING.OIDC_USERNAME = ACTIVITY.CREATED_BY` — joins actor but never filters on actor column"
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: operations + invariants.[3]
+        cite: "ActivityServiceImpl.java:107-117"
+        note: "Service passes `userIds` through every view-mode arm unchanged; no remapping, no clamp, no validation"
+      - sidecar: odd-platform__java__ActivityController__controller-class__ActivityController.md
+        section: understanding + invariants.[3]
+        cite: "ActivityController.java:24-41"
+        note: "Controller declares parameter `userIds: List<Long>` per OpenAPI spec; no validation, no transformation"
+      - sidecar: '(WebFetch live doc)'
+        section: User filter section
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed (verified 2026-05-21 status 200)"
+        note: 'Doc page User filter labelled "show events performed by one or more selected users ... useful for auditing a specific person''s platform activity" — promises actor-axis filtering'
+      - sidecar: '(source read for validation)'
+        section: getCommonConditions
+        cite: "ReactiveActivityRepositoryImpl.java:272-275"
+        note: "Source read for canary validation — single line confirms the bind to OWNER_ID. source_read_for_validation: true (per agent system-prompt Rule 8 exception)"
+    operator_visible_failure: |
+      Three operator-visible failure modes — the canary triplet:
+
+      (a) A platform USER with NO entry in `user_owner_mapping` (a
+          newly-onboarded auth principal who has not been linked to a
+          catalog Owner) CANNOT be filtered by their userId. Passing
+          `user_ids=<their_user_id>` returns ZERO rows even when they
+          have made many platform changes — because their activity rows
+          have `created_by=<their_username>` but their userId is not
+          present as any `USER_OWNER_MAPPING.OWNER_ID` value, so the
+          IN-predicate excludes every row. The auditor concludes "user
+          X did nothing"; user X did many things.
+
+      (b) An admin reassigning the user-owner association — moving
+          user `alice@corp` from owner-12 to owner-99 — RETROACTIVELY
+          REWRITES the apparent attribution of every past activity row
+          alice ever generated. Filtering `user_ids=12` after the
+          reassignment surfaces ZERO of alice's past actions; filtering
+          `user_ids=99` surfaces ALL of them including pre-reassignment
+          history. The audit log is current-state-projected, not
+          historical — defeats the forensic-of-record purpose for any
+          deployment where user-owner mappings change over time
+          (organizational reorgs, role rotations, account closures).
+
+      (c) When MULTIPLE users (auth principals) map to the SAME owner
+          (e.g. a team-account pattern where `alice`, `bob`, `carol`
+          all map to owner-12 for shared-ownership semantics), filtering
+          by `user_ids=<alice's user_id>` versus `user_ids=<bob's
+          user_id>` versus `user_ids=<carol's user_id>` returns
+          IDENTICAL result sets — every row created by any of the
+          three. An auditor asking "what did alice do?" cannot
+          distinguish her actions from bob's or carol's via the User
+          filter. They get the union, not the slice.
+
+      The actor column `activity.created_by` (which DOES carry the
+      auth-principal username at write time per ActivityServiceImpl.java:47)
+      is JOINED into every read query but never FILTERED. The filter
+      mechanism that the parameter name promises (actor-axis) is not
+      implemented anywhere in the chain.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    case_law_anchor: "retrospectives/LSN-020 (rev 5 — the case-law that motivated this Layer 4b subagent; this hypothesis IS the canonical demonstration that the methodology change catches what the Stress Protocol could not)"
+
+- id: H-002
+  hypothesis: |
+    When the caller passes `GET /api/activity?type=MY_OBJECTS`, the
+    response contains activity events the caller PERFORMED (i.e. the
+    auth principal's own actions across the catalog).
+  derivation: |
+    The view-mode label `MY_OBJECTS` and the UI tab framing
+    ("My objects") — a user reading the tab name expects to see their
+    OWN platform activity (the natural mental model: "my activity =
+    things I did"). The pillar mission's "audit metadata changes"
+    primary action (`system-mission.md:203`) reinforces this
+    actor-centric reading.
+  seed_source: view-mode + ui-label + pillar-mission
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `type=MY_OBJECTS` resolves the caller's Owner id via
+      `authIdentityProvider.fetchAssociatedOwner().getId()` (per
+      ActivityServiceImpl.java:194 invariant.[4]) and threads it as
+      `currentOwnerId` into `findMyActivities` which translates to
+      `OWNERSHIP.OWNER_ID.in([currentOwnerId])` at line 270 of the
+      repository. The filter is along the OBJECT-OWNERSHIP axis
+      (entities the caller owns) — NOT the ACTOR axis (activity the
+      caller performed). A user who edits a description on an entity
+      they do NOT own makes a change that is INVISIBLE in their own
+      MY_OBJECTS view. A user with NO ownership attachments who has
+      made platform changes sees an EMPTY MY_OBJECTS feed even when
+      they have many activity rows under `created_by=<their_username>`.
+      Additionally, `fetchAssociatedOwner()` returns Mono.empty() for
+      users without a USER_OWNER_MAPPING row → `.switchIfEmpty(
+      Flux.empty())` at ActivityServiceImpl.java:198 → silently empty
+      feed with no error and no UI hint.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: stress_findings.B2 + bugs_limitations_corner_cases.[3]
+        cite: "ReactiveActivityRepositoryImpl.java:91-107 + line 270"
+        note: "findMyActivities threads currentOwnerId into OWNERSHIP.OWNER_ID predicate (object axis), not USER_OWNER_MAPPING.OWNER_ID (actor axis)"
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: invariants.[4] + stress_findings.D2
+        cite: "ActivityServiceImpl.java:184-199"
+        note: "fetchMyActivities → fetchAssociatedOwner → currentOwnerId; .switchIfEmpty(Flux.empty()) silently empty-returns for users without owner mapping"
+    operator_visible_failure: |
+      Two failure modes:
+      (i) A fresh user without an owner-mapping who has been editing
+          descriptions / tags / business names sees a COMPLETELY EMPTY
+          "My objects" feed — they cannot find their own past actions.
+          No error message, no "no owner association" hint. Visually
+          identical to "no activity in window".
+      (ii) A user WITH an owner-mapping but who edits entities they do
+           not own (the common shared-platform pattern) sees only
+           activity ON the entities they own — most of which they did
+           NOT personally cause; their own actions on other-owned
+           entities are absent. The "My" tab is therefore not a
+           reliable "my recent work" surface.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-003
+  hypothesis: |
+    When the caller passes `GET /api/activity?type=ALL` (or omits
+    `type`), the response contains activity events across ALL owners
+    in the catalog, subject only to the date / event-type / cursor
+    filters.
+  derivation: |
+    The view-mode label `ALL` promises "all" semantics; the absence
+    of an authorization annotation on the controller (per
+    ActivityController.md invariants.[1] and security block) suggests
+    no per-call permission gate; the controller's lack of any
+    principal-derived predicate (per coherence_notes.F-006) confirms
+    no upstream owner-scoping.
+  seed_source: view-mode + endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      `type=null` and `type=ALL` both route to
+      `ActivityServiceImpl.fetchAllActivities` (per ActivityServiceImpl.java:107-116
+      invariants.[1]); `fetchAllActivities` → repository
+      `findAllActivities` (line 73-89) which applies NO current-user
+      predicate at the SQL layer — only the caller-supplied filters
+      (datasourceId, namespaceId, tagIds, ownerIds, userIds, eventType,
+      cursor, date window). The default response is cross-owner —
+      every authenticated identity reads every data entity's activity.
+      The controller falls through to Spring's catch-all
+      `.authenticated()` rule (per ActivityController.md security
+      block); under `auth.type=DISABLED` the gate is `.permitAll()`
+      and anonymous traffic reads the global feed.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: security + owner_scoping
+        cite: "ReactiveActivityRepositoryImpl.java:73-89"
+        note: "findAllActivities — no current-user predicate at SQL"
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: operations + invariants.[1]
+        cite: "ActivityServiceImpl.java:107-116"
+        note: "type=null and type=ALL both route to fetchAllActivities (silent equivalence)"
+      - sidecar: odd-platform__java__ActivityController__controller-class__ActivityController.md
+        section: security + coherence_notes.F-006
+        cite: "ActivityController.java (whole class)"
+        note: "No @PreAuthorize, no SecurityConstants entry, no programmatic permission gate"
+    severity: N/A
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    caveat_note: |
+      Cross-owner default is a deliberate (read-collaborative) posture
+      — but the live doc says NOTHING about who can see the global
+      feed (per ActivityController.md coherence_notes.[3]). The
+      authorization page (/configuration-and-deployment/enable-security/
+      authorization, status 200) also does not mention per-endpoint
+      wiring for /api/activity. The CONFIRMED behaviour is itself a
+      caveat-worth-documenting because operators reading the docs
+      cannot tell that activity is cross-owner by default.
+
+- id: H-004
+  hypothesis: |
+    When the caller passes `GET /api/activity?type=UPSTREAM&
+    owner_ids=42,99`, the response contains activity events on data
+    entities upstream in the lineage graph AND filtered to those whose
+    owner is in [42, 99].
+  derivation: |
+    The HTTP API exposes `ownerIds` as a query parameter on
+    `/api/activity` regardless of `type`. A user combining `type` with
+    `ownerIds` reasonably expects both filters to compose — there is
+    no doc-side warning that any parameter is silently ignored.
+  seed_source: endpoint-shape + view-mode
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The view-mode dispatch at ActivityServiceImpl.java:107-117 routes
+      `UPSTREAM`/`DOWNSTREAM` to `fetchDependentActivities(beginDate,
+      endDate, size, datasourceId, namespaceId, tagIds, userIds,
+      eventType, lastEventId, lastEventDateTime, LineageStreamKind)`
+      — the signature accepts NO `ownerIds` parameter; the caller's
+      `ownerIds` is SILENTLY DROPPED. Same drop for `type=MY_OBJECTS`
+      → `fetchMyActivities(...)`, which also has no `ownerIds`
+      parameter. Only the `type=ALL` / `type=null` arm passes
+      `ownerIds` through to the repository's `getCommonConditions`
+      (line 269-271 `OWNERSHIP.OWNER_ID.in(ownerIds)`). The OpenAPI
+      spec exposes `owner_ids` on the endpoint unconditionally; the
+      Java service silently ignores it for three of four view modes.
+    evidence:
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: stress_findings.S-B-2 + operations
+        cite: "ActivityServiceImpl.java:107-116"
+        note: "View-mode arms — fetchMyActivities/fetchDependentActivities signatures lack ownerIds parameter"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: stress_findings.A5
+        cite: "ReactiveActivityRepositoryImpl.java:266-275"
+        note: "ownerIds predicate is in getCommonConditions; only fired when caller actually passes it to the find method"
+    operator_visible_failure: |
+      An operator asking "show me changes to entities upstream of X
+      that Alice's team owns" by setting `type=UPSTREAM&owner_ids=
+      [alice_team_owner_id]` gets the WHOLE upstream-lineage activity,
+      unfiltered by owner — Alice's team's changes are mixed with
+      every other team's changes on every upstream entity. No error,
+      no warning, no doc-side caveat. The filter the operator chose
+      did NOT take effect. Similar drop for `MY_OBJECTS` + `ownerIds`
+      combo (one of the natural intuitions: "show me MY OBJECTS that
+      also belong to owners X" — the second filter silently disappears).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-005
+  hypothesis: |
+    The response `created_by` field on each activity row identifies
+    the AUTH PRINCIPAL (the user account, identified by username +
+    auth provider) who performed the change — so an auditor can
+    distinguish LOGIN_FORM 'alice' from LDAP 'alice' if both exist
+    in a multi-auth-mode deployment.
+  derivation: |
+    The field name `created_by` and the catalog Owner resolution
+    surface this as the actor's identity; the doc page promises
+    "auditing a specific person's platform activity" — a "person" is
+    a single identifiable user, not a username-only string that
+    multiple identities share.
+  seed_source: response-shape + doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The write side records `activity.created_by` as the
+      auth-principal's USERNAME ONLY (`UserDto::username` mapping at
+      ActivityServiceImpl.java:47, 58 — the `provider` field is
+      DROPPED before persistence). The read side resolves the actor
+      via `LEFT JOIN USER_OWNER_MAPPING ON USER_OWNER_MAPPING.
+      OIDC_USERNAME = ACTIVITY.CREATED_BY AND DELETED_AT IS NULL` —
+      provider-agnostic (per ReactiveActivityRepositoryImpl.java:
+      220-222 + lines 157-158/178-179/199-200/221-222 across four read
+      paths). For SINGLE-mode deployments (one of LOGIN_FORM /
+      OAUTH2 / LDAP / DISABLED), the field correctly identifies the
+      actor. For MULTI-mode deployments (e.g. operator running both
+      LDAP and LOGIN_FORM during a migration window), a
+      LOGIN_FORM-authenticated 'alice' and an LDAP-authenticated
+      'alice' write the SAME `created_by='alice'` value and BOTH
+      resolve to the SAME OwnerPojo via the username-only join —
+      EVEN IF THEY ARE DIFFERENT PEOPLE. Forensic incident response
+      misled. The field is half-true.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: implicit_adrs + bugs_limitations_corner_cases.[1] + security
+        cite: "ReactiveActivityRepositoryImpl.java:157-158/178-179/199-200/221-222"
+        note: "Four PROVIDER-omitted LEFT JOINs — read-side mirror of the cross-mode-bleed mechanism"
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: invariants.[3]
+        cite: "ActivityServiceImpl.java:47, 58"
+        note: "Write side drops UserDto.provider — only username persisted"
+      - sidecar: '(WebFetch live doc)'
+        section: User filter section
+        cite: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+        note: 'Doc promises "auditing a specific person''s platform activity" — implicit single-identity-per-user contract'
+    operator_visible_failure: |
+      Multi-auth-mode deployments (rare but real during migration windows
+      or hybrid setups): a forensic reviewer asking "did LDAP-alice or
+      LOGIN_FORM-alice approve this change?" cannot tell from the
+      activity feed; both surface as the same OwnerPojo. A bad-faith
+      actor who registers as LOGIN_FORM-alice can plausibly-deny
+      attribution of past actions actually performed by LDAP-alice
+      (or vice versa). Severity is bounded by deployment posture —
+      single-mode deployments are unaffected; multi-mode deployments
+      have a forensic-integrity gap with no mitigation surfaced in
+      the docs.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-006
+  hypothesis: |
+    When the caller passes any of the 27 `ActivityEventType` enum
+    values to `eventType`, the request is accepted and the response
+    filters to that type.
+  derivation: |
+    The OpenAPI spec lists 27 enum values (components.yaml:3167-3196)
+    + the DTO (ActivityEventTypeDto.java:3-31) — any spec-acceptable
+    value should be server-acceptable. The live doc names only 20
+    explicitly + a categorical mention of "7 internal types" — a
+    user reading the doc could reasonably believe the 7 internal
+    types are not server-accepted on the global endpoint.
+  seed_source: endpoint-shape + doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The controller accepts any `ActivityEventTypeDto` enum value
+      without server-side filtering — there is no
+      "exclude-7-internal-types" gate at the controller, service, or
+      repository layer. The 7 "internal" types
+      (DATA_ENTITY_OVERVIEW_UPDATED, METADATA_UPDATED, SCHEMA_UPDATED,
+      RELATION_UPDATED, CUSTOM_METADATA_CREATED/UPDATED/DELETED) are
+      FULLY server-accepted on `/api/activity` and return rows where
+      they exist. The "hidden from global feed" framing in the live
+      doc is UI-tier-only (the React component does not surface them
+      in the dropdown), not a server-side restriction. Verified per
+      F-021 frontmatter `batch_extensions.T.notes.(3)`.
+    evidence:
+      - sidecar: odd-platform__java__ActivityController__controller-class__ActivityController.md
+        section: coherence_notes.conflicts_surfaced (enum count)
+        cite: "ActivityEventTypeDto.java:3-31 + components.yaml:3167-3196"
+        note: "All 27 server-accepted on the global endpoint; no per-type gate"
+    severity: N/A
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    caveat_note: |
+      The doc's omission of the 7 internal types from the enumerated
+      list is itself a documented drift (F-021 facet
+      `doc_drift_27_enum_values_in_code_vs_20_in_live_docs`) — already
+      cataloged. The CONFIRMED behaviour here strengthens the existing
+      doc-gap.
+
+- id: H-007
+  hypothesis: |
+    When a Catalog Owner is deleted (or their `user_owner_mapping`
+    row is soft-deleted), the historical activity rows that user
+    created continue to display their username in the UI — so an
+    auditor reviewing past actions can still reconstruct WHO
+    performed each change.
+  derivation: |
+    The pillar mission's "audit-trail surface" frames the feature as
+    HISTORICAL RECORD — an audit log that loses actor identity on
+    owner-deletion is operationally useless. The actor column
+    `activity.created_by` is varchar(512) and stores the username at
+    INSERT time (per ActivityServiceImpl.java:47) — the data is
+    preserved; the display SHOULD continue to surface it.
+  seed_source: negative-space + pillar-mission
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The actor display in the UI is resolved via the LEFT JOIN
+      `USER_OWNER_MAPPING ON OIDC_USERNAME = ACTIVITY.CREATED_BY AND
+      DELETED_AT IS NULL` (per ReactiveActivityRepositoryImpl.java:
+      220-222). The join filters `USER_OWNER_MAPPING.DELETED_AT IS
+      NULL` — meaning when the user-owner mapping is SOFT-DELETED
+      (e.g. user-owner association removed by admin, user leaves the
+      organization), the join misses; the resolved OwnerPojo is NULL;
+      the UI surfaces the activity row with no actor (visually
+      indistinguishable from a system event). The raw
+      `activity.created_by` username is still in the row — but it is
+      not exposed to the UI through the resolved OwnerPojo. Worse,
+      if the SAME username is re-associated with a DIFFERENT owner
+      (organizational reorg, account reassignment), the join
+      RESOLVES THE PAST ROW TO THE NEW OWNER — retroactively
+      rewriting the apparent attribution. This is the same
+      attribution-rewriting failure mode as H-001 case (b), via a
+      different mechanism (this one via the JOIN, H-001 via the
+      filter; same root cause: current-state-projected user-owner
+      mapping over historical actor records).
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: tests_coverage_semantic + bugs_limitations_corner_cases.[1]
+        cite: "ReactiveActivityRepositoryImpl.java:220-222 + lines 157-158/178-179/199-200/221-222"
+        note: "USER_OWNER_MAPPING.DELETED_AT IS NULL filter on the actor-resolution JOIN"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: tests_coverage_semantic.uncovered_behaviours
+        cite: "tests_coverage_semantic.gaps line 138"
+        note: 'Sidecar explicitly notes "no test confirms this is intentional" — gap surfaced'
+    operator_visible_failure: |
+      Two failure modes — both undermine the audit-trail-of-record purpose:
+      (i) When a user leaves the organization and the admin
+          soft-deletes their user-owner mapping, every activity row
+          that user ever created appears in the UI as a system event
+          (OwnerPojo=null). A forensic review three months later
+          cannot tell who edited the dataset description on Q2
+          earnings — the username is in the database but invisible
+          to the read path.
+      (ii) When a user-owner mapping is reassigned (the username is
+           bound to a DIFFERENT owner), the JOIN resolves all of the
+           original person's past activity rows to the NEW owner.
+           The auditor sees the new owner's name attached to actions
+           the new owner did not perform. Attribution is rewritten
+           silently.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-008
+  hypothesis: |
+    When the caller paginates the Activity Feed by passing
+    `(last_event_id, last_event_date_time)` from page N's last row,
+    page N+1 returns the strictly-older rows (in `created_at DESC,
+    id DESC` order) without (a) skipping any row whose insertion is
+    observable to a concurrent reader, (b) duplicating any row, or
+    (c) surfacing rows in commit-inverted order under sustained
+    write rate >= 100 events/sec.
+  derivation: |
+    The product-owner promise is "scroll through the audit history
+    newest-first, see every event once, in order"; the cursor
+    pagination shape `(lastEventId, lastEventDateTime)` (controller
+    parameter pair) carries that contract. The repository's
+    asymmetric precision (SECOND on cursor predicate, MICROSECOND on
+    ORDER BY) — and the assembly-time `created_at` generation — are
+    the structural surfaces this hypothesis interrogates.
+  seed_source: endpoint-shape + pillar-mission
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Static analysis (per ReactiveActivityRepositoryImpl.md
+      stress_findings.C2 + ActivityServiceImpl.md S-C-2): NO row skip
+      under forward correctness; NO duplicate from the cursor
+      mechanism itself; POSSIBLE visual out-of-order within a single
+      second-bucket that splits across page N and page N+1, because
+      the cursor cuts at id=L while microseconds within the bucket
+      may interleave. The visual-order claim requires a measured
+      run under sustained high write rate to PIN — emitted as P-024.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: stress_findings.C2
+        cite: "ReactiveActivityRepositoryImpl.java:285-291"
+        note: "Asymmetric cursor predicate vs ORDER BY precision; static analysis concludes possible visual out-of-order within split second-bucket"
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: stress_findings.S-C-2
+        cite: "ActivityServiceImpl.java:45, :56"
+        note: "DateTimeUtil.generateNow() at assembly time, not commit time — compounds intra-second ordering uncertainty"
+    probe_id: P-024
+    routes_to_finding: validation-gap
+
+- id: H-009
+  hypothesis: |
+    When auth.type=DISABLED is configured and an anonymous user
+    mutates the catalog (description edit, tag assignment, etc), the
+    resulting activity row in the UI is visually distinguishable from
+    a system event (e.g. an ingestion-emitted DATA_ENTITY_CREATED or
+    a scheduler-emitted ALERT_STATUS_UPDATED) — so a reviewer can
+    tell "an anonymous user did this" from "the platform did this".
+  derivation: |
+    The doc page's framing of activity events (per WebFetch 2026-05-21)
+    distinguishes "events performed by ... users" from "system events
+    ... no operator identity attached" — a user reading the doc
+    expects this distinction to be visible.
+  seed_source: doc-claim + negative-space + pillar-mission
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Under DISABLED auth mode (per DisabledAuthSecurityConfiguration.java:16
+      anonymous permitted), the SecurityContext is empty,
+      `authIdentityProvider.getCurrentUser()` returns Mono.empty(),
+      the `switchIfEmpty` fallback at ActivityServiceImpl.java:49 fires,
+      and the row is persisted with `created_by=null` (per
+      ActivityServiceImpl.md invariant.[2] + bugs_limitations_corner_cases.[2]).
+      The `is_system_event` flag is `false` for anonymous mutations
+      (the user-action code path does not set systemEvent=true) but
+      the UI's actor display reads from the OwnerPojo (resolved via
+      the LEFT JOIN, which is NULL for null-created_by rows) — the
+      same display state as genuine system events
+      (`is_system_event=true`+`created_by=null`). The only on-row
+      discriminator is the `is_system_event` boolean — but that field
+      is NOT surfaced as a UI distinguisher in the actor column. The
+      anonymous mutation rows are VISUALLY INDISTINGUISHABLE from
+      system events in the UI.
+    evidence:
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: invariants.[2] + stress_findings (D-2)
+        cite: "ActivityServiceImpl.java:47-49 + V0_0_48__add_activity.sql:8,10"
+        note: "switchIfEmpty fallback persists created_by=null; is_system_event NOT NULL, but the actor display does not differentiate"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: bugs_limitations_corner_cases.[2] + security
+        cite: "ReactiveActivityRepositoryImpl.java:220-222 (the actor-resolution JOIN)"
+        note: "LEFT JOIN nullability is the discriminator the UI uses for 'system' vs 'attributed' — null-created_by rows orphan the join the same way regardless of is_system_event"
+    operator_visible_failure: |
+      Under DISABLED auth mode (the documented "dev-only" deployment
+      mode that some operators ship to production in spite of the
+      framing), anonymous traffic mutating the catalog leaves audit
+      rows that look like the platform itself made the change. A
+      reviewer auditing "who deleted the production data entity's
+      description" sees "system event" — but the actual cause was
+      an anonymous human user. Plausible deniability for the human;
+      misattribution to the platform.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-010
+  hypothesis: |
+    Every user-visible RBAC mutation (Role create, Policy edit, Owner
+    role-attach, Owner CRUD) is recorded in the Activity Feed — so a
+    security reviewer auditing "who created admin role X" finds an
+    answer in the audit-trail surface.
+  derivation: |
+    The pillar P-07 mission frames the Activity Feed as the platform's
+    audit-trail surface (`system-mission.md:200-220`); the live doc
+    enumerates 6 categories of events recorded. A security-pillar
+    integration is implied — RBAC mutations are the highest-leverage
+    audit target. The maintainer's own system-mission notes the
+    "Audit-log Presence Asymmetry" question
+    (`system-mission.md:385-395`) as pending-decision — signaling
+    this is a known structural concern.
+  seed_source: pillar-mission + cross-pillar + doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The activity table schema is STRUCTURALLY scoped to
+      data-entity-anchored events. `activity.data_entity_id` is `NOT
+      NULL` with FK to `data_entity(id)` (per V0_0_48__add_activity.sql:
+      4,12 cited across multiple sidecars). RBAC mutations (Role /
+      Policy / Owner CRUD), Datasource registration, Collector token
+      rotation, integration-wizard config changes CANNOT physically
+      emit to this table even if a future @ActivityLog annotation
+      were added — there is no data_entity_id to populate. Every
+      read path INNER JOINs to DATA_ENTITY at ReactiveActivityRepositoryImpl.java:
+      219 — reinforcing the scope at the read tier. The audit-silence
+      on RBAC mutations observed across batches F/H/N/P/Q/R on F-006
+      is rooted in THIS feature's schema decision. A security
+      reviewer asking "who created admin role X" finds no answer in
+      the activity feed; the application logs (which may not exist
+      in production, may not be retained) are the only fallback.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: understanding + implicit_adrs
+        cite: "V0_0_48__add_activity.sql:4,12"
+        note: "data_entity_id NOT NULL + FK to data_entity(id) — structural ceiling"
+      - sidecar: odd-platform__java__ActivityController__controller-class__ActivityController.md
+        section: coherence_notes.strengthens (F-006)
+        cite: "ActivityController.java + V0_0_48__add_activity.sql:4,12"
+        note: "Cross-link to F-006 audit-silence pattern; this is F-006's structural cause"
+      - sidecar: '(system-mission anchor)'
+        section: pending-maintainer-decision.Audit-log Presence Asymmetry
+        cite: "system-mission.md:385-395"
+        note: "Maintainer explicitly flags this as a 2-tier audit story; the structural reality is data-entity-only"
+    operator_visible_failure: |
+      A security or compliance reviewer cannot use the Activity Feed
+      to answer the most common audit questions: "who created this
+      admin role", "who edited this access policy", "who attached
+      role X to user Y", "who registered datasource Z", "who rotated
+      the collector token". None of these mutations appear in the
+      feed; none CAN appear in the feed given the current schema.
+      The feature ships as "the audit-trail surface" but is in fact
+      "the data-entity audit log". The doc framing ("records changes")
+      does not name this scope ceiling — operators discover it by
+      auditing for missing events, after the fact.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-011
+  hypothesis: |
+    When a data entity is hard-deleted from the catalog, the
+    historical activity rows recorded against it remain visible in
+    the Activity Feed — so an auditor reconstructing past actions on
+    a now-deleted entity can still find them.
+  derivation: |
+    The pillar mission frames the feature as audit-trail (historical
+    record). Activity rows exist as their own table rows with their
+    own primary key; the connection to `data_entity` is a foreign
+    key, not an ownership-relationship. A user expects the audit
+    history to survive the deletion of the subject — that is the
+    forensic purpose of an audit log.
+  seed_source: negative-space + pillar-mission
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Every read path issues `INNER JOIN DATA_ENTITY ON DATA_ENTITY.ID
+      = ACTIVITY.DATA_ENTITY_ID` (per ReactiveActivityRepositoryImpl.java:
+      219 + invariants). An INNER JOIN to a soft-deleted entity that
+      is later HARD-deleted erases the activity rows from the read
+      path — the activity row physically remains in the
+      `activity` table (no CASCADE DELETE on the FK per V0_0_48
+      schema), but the read query joins it to nothing and the row
+      drops from the result set. Per F-021 frontmatter facet
+      `inner_join_to_data_entity_hardelete_history_erasure` — a
+      documented drift class. The audit history of a hard-deleted
+      entity is therefore present-in-the-table but absent-from-the-read.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: understanding + invariants
+        cite: "ReactiveActivityRepositoryImpl.java:219"
+        note: "INNER JOIN to DATA_ENTITY in every read path"
+      - feature_flow_drift_class: inner_join_to_data_entity_hardelete_history_erasure
+        cite: "F-021 drift_class_summary"
+        note: "Already enumerated as a drift class; this hypothesis confirms the operator-visible failure"
+    operator_visible_failure: |
+      A platform operator who cleans up old data entities (e.g.
+      removing deprecated tables from a decommissioned datasource via
+      a hard-delete admin path) silently erases the audit history of
+      every action ever taken on those entities. A subsequent
+      forensic review asks "who changed the description on
+      <deprecated_table> three months before deprecation?" — the
+      feed shows nothing, even though the activity row physically
+      still exists in the database. The audit trail of any hard-deleted
+      entity is invisible to the read surface.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-012
+  hypothesis: |
+    The `size` query parameter on `GET /api/activity` has a reasonable
+    upper bound (e.g. 1000 or 10000) that protects the platform from
+    a pathological caller requesting all-of-history in a single
+    response.
+  derivation: |
+    Standard listing endpoints on operated platforms clamp `size` to
+    a sane maximum. A user reading the API knows the parameter
+    exists; the framework convention is to silently clamp or to
+    reject above-max requests.
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The repository applies `LIMIT size` directly at line 292; jOOQ
+      passes `null` through as no LIMIT (returns ALL matching rows);
+      the service layer applies no clamp (per ActivityServiceImpl.md
+      stress_findings.S-A-1 — verified line-by-line, no
+      Math.min(size,MAX) clamp, no @Value injection); the controller
+      method declares `final Integer size` (boxed, nullable) with NO
+      `@Min`/`@Max`/`@NotNull` validation (per ActivityController.md
+      stress + understanding). A pathological caller can request
+      `size=Integer.MAX_VALUE` or `size=null` and the SQL query is
+      `LIMIT 2147483647` or `(no LIMIT clause)` respectively —
+      Postgres clamps to actual row count; on a long-running deployment
+      with tens-of-millions of audit rows, this is a wide scan with
+      no clamp at any layer.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: stress_findings.A1
+        cite: "ReactiveActivityRepositoryImpl.java:292"
+        note: "limit(size) with no clamp; null → no LIMIT clause"
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: stress_findings.S-A-1
+        cite: "ActivityServiceImpl.java:85-117"
+        note: "Service passes size through unchanged"
+      - sidecar: odd-platform__java__ActivityController__controller-class__ActivityController.md
+        section: stress_findings.A1 (referenced) + understanding
+        cite: "ActivityController.java:24-41"
+        note: "No @Min/@Max/@NotNull on size; OpenAPI spec marks SizeParam required:true but the boxed Integer is accepted as null at runtime"
+    operator_visible_failure: |
+      A caller (browser tab left open with the API request rebuilt,
+      or a malicious authenticated user, or an integration script
+      with bad pagination logic) can issue `GET /api/activity?
+      size=10000000` or `GET /api/activity` (no size) and force a
+      full-history scan with the resulting Flux streaming millions
+      of rows. The single request can saturate the R2DBC connection
+      pool, hold a Postgres query plan for seconds-to-minutes, and
+      transfer hundreds of MB of audit data over the network. No
+      defensive guard at the read surface. This is operator-visible
+      as a latency cliff or, in the worst case, a DoS surface.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-013
+  hypothesis: |
+    The `GET /api/activity/counts` response satisfies the invariant
+    `totalCount == myObjectsCount + upstreamCount + downstreamCount`
+    (or has a documented overlap rationale) — so an operator using
+    the four counts to build a dashboard sees consistent numbers.
+  derivation: |
+    The four-count payload shape suggests partitioned aggregation;
+    the natural reader's interpretation is "the four numbers add up
+    to the total" or "each is a subset of total with documented
+    overlap rules". An undocumented arithmetic relationship between
+    the four is an operator-visible inconsistency.
+  seed_source: response-shape + negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The service issues four parallel `SELECT COUNT(*)` queries via
+      `Mono.zip` (ActivityServiceImpl.java:138-166); the four
+      queries execute against four separate R2DBC connections at
+      READ COMMITTED isolation (no `@ReactiveTransactional` on the
+      controller, the service method, OR the underlying call chain
+      per ActivityServiceImpl.md S-C-1 + S-E-1). A row INSERTed
+      between the four query executions appears in some counts but
+      not others — so the four sub-counts are NOT GUARANTEED to sum
+      to or align with `totalCount`. Additionally, the count queries
+      have the same JOIN-cardinality inflation problem as the find
+      queries (per repository.md C3) — multi-tag/multi-owner filters
+      inflate counts non-DISTINCT-ly. And: the count semantic model
+      does not naturally partition — `myObjects` is owner-scoped
+      (entities I own), `upstream`/`downstream` is lineage-scoped
+      from caller-named entities; the three sets can OVERLAP (a
+      data entity I own that is also upstream of another entity I'm
+      viewing). The promised arithmetic relationship is not
+      well-defined; operators using the four counts as if they sum
+      will see mismatches.
+    evidence:
+      - sidecar: odd-platform__java__service__ActivityServiceImpl.md
+        section: stress_findings.S-C-1 + S-E-1
+        cite: "ActivityServiceImpl.java:138-166"
+        note: "Mono.zip 4-way concurrent count without TX; READ COMMITTED isolation"
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: stress_findings.C3 + bugs_limitations_corner_cases.[7]
+        cite: "ReactiveActivityRepositoryImpl.java:297-302"
+        note: "COUNT(*) over multi-LEFT-JOIN inflates per-tag/per-owner multiplicity"
+    operator_visible_failure: |
+      A UI showing four count badges (total / my / upstream /
+      downstream) displays numbers that do not satisfy the arithmetic
+      expectation. Operators building dashboards on top of /api/activity/
+      counts see "totals don't reconcile" tickets filed against the
+      platform; the answer is "the four counts are independently
+      computed; no consistency guarantee" — which is true but
+      undocumented and surprising.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-014
+  hypothesis: |
+    When the caller passes `GET /api/activity?type=ALL&tag_ids=
+    [a,b,c]&owner_ids=[1,2]`, the response contains DISTINCT activity
+    events — each event appears once even when its data entity
+    matches multiple of the requested tags or owners.
+  derivation: |
+    The product-owner mental model of an event-list is "one row per
+    event". A user setting multiple filter facets expects to narrow
+    the result, not to multiply it. The response DTO `Activity` is
+    a single-event payload; the caller's mental model is event-set,
+    not row-set.
+  seed_source: response-shape + endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The repository's find queries use no `DISTINCT` clause (per
+      ReactiveActivityRepositoryImpl.md
+      bugs_limitations_corner_cases.[7] + the F-021 drift_class
+      `no_distinct_multi_facet_filter_duplicates`). The conditional
+      LEFT JOINs to `TAG_TO_DATA_ENTITY` (when tagIds is set) and
+      `OWNERSHIP` (when ownerIds is set) multiply the per-row result
+      by the number of matching tags and owners. A single activity
+      row whose data entity has 3 matching tags + 2 matching owners
+      surfaces as 6 rows in the response. The count endpoint
+      (per H-013) has the same inflation, so the badge and the list
+      remain internally consistent — but each is wrong relative to
+      the "unique event" mental model.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+        section: bugs_limitations_corner_cases.[7] + stress_findings.C3
+        cite: "ReactiveActivityRepositoryImpl.java:290-292"
+        note: "No DISTINCT; LEFT JOIN multiplicity inflates row count"
+      - feature_flow_drift_class: no_distinct_multi_facet_filter_duplicates
+        cite: "F-021 drift_class_summary"
+        note: "Already enumerated as a drift class; this hypothesis confirms it as user-visible"
+    operator_visible_failure: |
+      A user filtering "show me activity on entities tagged 'pii' or
+      'finance' OR owned by team-alpha or team-bravo" sees a feed
+      with duplicate-looking entries — the same DESCRIPTION_UPDATED
+      event appears 4-6 times in the list with identical timestamps,
+      identical payloads, identical actor. The user assumes "multiple
+      changes happened" or "the event was re-emitted" — neither is
+      true; the LEFT JOIN multiplied a single row. The cursor
+      pagination is unaffected (the cursor advances by id), but the
+      page contents are visibly inflated.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: "userIds query parameter binds to USER_OWNER_MAPPING.OWNER_ID, not the actor column activity.created_by — actor-axis filter promised by name is unimplemented across all layers."
+  recommended_log_as: upstream-issue (opendatadiscovery/odd-platform — must surface as a CRITICAL bug; the canonical case-law LSN-020 sits behind it; remediation options range from renaming the parameter to `ownerIdsAsUsersMapping` + doc-caveat all the way to filter-rewrite to bind to `ACTIVITY.CREATED_BY.in(<usernames>)` and accept usernames not IDs — the choice is a maintainer call but the bug surface is unambiguous)
+  proposed_fix_anchor: "ReactiveActivityRepositoryImpl.java:272-275 — rebind the predicate to `ACTIVITY.CREATED_BY.in(<usernames-resolved-from-userIds>)`, OR rename the parameter to reflect its true filter (USER_OWNER_MAPPING.OWNER_ID semantics) and document the actual filter shape. Either fix requires the maintainer's design call; the bug is unambiguous."
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: "ownerIds query parameter is silently dropped for type=MY_OBJECTS/UPSTREAM/DOWNSTREAM — the filter the operator chose has no effect for three of four view modes."
+  recommended_log_as: upstream-issue (opendatadiscovery/odd-platform)
+  proposed_fix_anchor: "ActivityServiceImpl.java:108-116 — thread `ownerIds` through `fetchMyActivities`/`fetchDependentActivities` signatures so it composes with the view-mode filter."
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: "Historical activity rows lose actor display when the user-owner mapping is soft-deleted; actor attribution is retroactively rewritten when the mapping is reassigned — defeats the audit-of-record purpose."
+  recommended_log_as: upstream-issue (opendatadiscovery/odd-platform)
+  proposed_fix_anchor: "ReactiveActivityRepositoryImpl.java:220-222 — remove the `USER_OWNER_MAPPING.DELETED_AT IS NULL` from the actor-resolution JOIN OR add a fallback that surfaces the raw `activity.created_by` username when the JOIN misses. The maintainer's design call: preserve historical attribution OR document that the feed is current-state-projected."
+- hypothesis_id: H-011
+  severity: HIGH
+  one_line: "Hard-deleting a data entity erases its audit history from reads — the activity rows survive in the table but the INNER JOIN drops them."
+  recommended_log_as: upstream-issue (opendatadiscovery/odd-platform)
+  proposed_fix_anchor: "ReactiveActivityRepositoryImpl.java:219 — change the INNER JOIN to a LEFT JOIN + accept null data-entity reference in the response DTO, OR document the hard-delete-erases-audit behaviour and require operators to use soft-delete only."
+- hypothesis_id: H-012
+  severity: MEDIUM
+  one_line: "size parameter has no upper bound at any layer; size=null returns the entire activity table, size=Integer.MAX_VALUE issues a wide scan — DoS surface."
+  recommended_log_as: upstream-issue (opendatadiscovery/odd-platform)
+  proposed_fix_anchor: "ActivityServiceImpl.java:85 (preferred — service-layer clamp; survives controller-method removal/refactor) OR ActivityController.java:24-41 (add @Min(1) @Max(MAX_PAGE_SIZE) validation). Pick a reasonable MAX_PAGE_SIZE (e.g. 1000) and reject above-max."
+- hypothesis_id: H-014
+  severity: MEDIUM
+  one_line: "Multi-facet filters (tagIds + ownerIds) inflate the result via LEFT JOIN multiplicity — same event surfaces N×M times with no DISTINCT clause."
+  recommended_log_as: upstream-issue (opendatadiscovery/odd-platform)
+  proposed_fix_anchor: "ReactiveActivityRepositoryImpl.java:290-292 — add DISTINCT to the find* queries; reconsider count semantics to match (or document the inflated-count behaviour)."
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: "MY_OBJECTS view shows changes TO entities you own, not changes you performed — and is silently empty for users without an owner mapping."
+  recommended_log_as: doc-gap-NNN (caveat block in documentation/docs/features/active-platform-features/activity-feed.md — naming the axis-mismatch and the silent-empty failure mode)
+- hypothesis_id: H-003
+  one_line: "Default Activity Feed view is cross-owner — every authenticated user sees every data entity's activity, regardless of permission grants on those entities."
+  recommended_log_as: doc-gap-NNN (visibility section in activity-feed.md + cross-link from authorization page; addresses ActivityController.md coherence_notes.[3] which already flags the doc-side absence)
+- hypothesis_id: H-005
+  one_line: "Multi-auth-mode deployments suffer cross-mode bleed in actor attribution — LOGIN_FORM 'alice' and LDAP 'alice' resolve to the same OwnerPojo."
+  recommended_log_as: doc-gap-NNN (multi-mode caveat in activity-feed.md + cross-link from auth-mode page; cross-reference to provider-null-cross-mode-bleed concept)
+- hypothesis_id: H-006
+  one_line: "All 27 ActivityEventType values are server-accepted on /api/activity, even the 7 internal types the live doc describes as 'hidden from global feed'."
+  recommended_log_as: doc-gap-NNN (clarify in activity-feed.md that the 7 internal types are UI-tier-hidden but server-accepted; enumerate their names; addresses existing drift class doc_drift_27_enum_values_in_code_vs_20_in_live_docs)
+- hypothesis_id: H-009
+  one_line: "Under auth.type=DISABLED, anonymous mutations are visually indistinguishable from system events in the UI — operator review cannot distinguish 'an anonymous human did this' from 'the platform did this'."
+  recommended_log_as: doc-gap-NNN (caveat in activity-feed.md naming DISABLED-mode auth indistinguishability; cross-link to auth-mode page)
+- hypothesis_id: H-010
+  one_line: "Activity Feed is the DATA-ENTITY audit log, not the platform audit log — RBAC mutations, Datasource registration, Collector token rotation, Owner CRUD are structurally invisible."
+  recommended_log_as: doc-gap-NNN (scope statement in activity-feed.md naming the schema-rooted scope; cross-link from authorization page + main-concepts.md; addresses system-mission.md:385-395 pending-decision)
+- hypothesis_id: H-013
+  one_line: "/api/activity/counts returns four independently-computed counts at READ COMMITTED — total != my + upstream + downstream is expected, undocumented."
+  recommended_log_as: doc-gap-NNN (counts-endpoint caveat in activity-feed.md + OpenAPI spec description)
+
+### probes_emitted
+- probe_id: P-024
+  hypothesis_id: H-008
+  probe_path: "lineage/odd-platform/probes/P-024.yaml"
+  one_line: "Cursor pagination visual-order under sustained write rate — pins the within-second-bucket out-of-order claim from static analysis (RepositoryImpl C2 + ServiceImpl S-C-2). Complements existing P-021 (narrower scope, no concurrent write injection)."
+
+### validation_gaps
+- sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+  field_insufficient: "tests_coverage_semantic.covered_behaviours is empty — sidecar correctly notes zero direct test coverage, but does not surface which behaviours have INDIRECT coverage via the @ActivityLog-annotated business method tests. A future refresh should walk the 18 @ActivityLog usages and note which test classes exercise the write side."
+  proposed_refresh: "Next file-analyser run on ReactiveActivityRepositoryImpl: enumerate the @ActivityLog-annotated methods' test classes and surface any read-path side-effects exercised through them."
+- sidecar: odd-platform__java__service__ActivityServiceImpl.md
+  field_insufficient: "S-C-2 (time generation vs commit time) is STATIC-INFERRED but never closed with a probe — the operator-visible commit-inverted ordering claim is asserted at HIGH confidence without measurement."
+  proposed_refresh: "Either emit a probe (P-NNN) covering the commit-inverted ordering claim under concurrent writes, OR weaken the confidence to MEDIUM and surface as caveat-candidate."
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+  doc_says: 'User filter "show events performed by one or more selected users ... useful for auditing a specific person''s platform activity"'
+  code_does: "userIds binds to USER_OWNER_MAPPING.OWNER_ID — filters by owner not by actor; the doc claim is contradicted at the implementation level"
+  recommended_log_as: doc-gap-NNN (revise the User filter description to match actual behaviour OR file as a bug to fix the implementation to match the doc claim; the bug-fix is the correct direction per H-001 routing)
+- hypothesis_id: H-003
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+  doc_says: "(silent on visibility / authorization / who-can-see)"
+  code_does: "Cross-owner default read; every authenticated user reads the full audit trail"
+  recommended_log_as: doc-gap-NNN (Visibility section needed in activity-feed.md)
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+  doc_says: "20 named event types + 'internal events ... hidden from global view'"
+  code_does: "All 27 server-accepted on global endpoint; UI-tier-only hiding"
+  recommended_log_as: doc-gap-NNN (enumerate the 7 internal types by name; clarify the hide is UI-tier-only)
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+  doc_says: "(silent on pagination / cursor / page size / default size / ordering)"
+  code_does: "Cursor-paginated, ORDER BY created_at DESC + id DESC at microsecond precision, asymmetric cursor SECOND-truncation, no size upper bound"
+  recommended_log_as: doc-gap-NNN (Pagination & Ordering section needed in activity-feed.md)
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed"
+  doc_says: '"Every metadata edit the platform observes ... emits a typed event"'
+  code_does: "Only data-entity-anchored metadata edits; RBAC mutations / Owner CRUD / Datasource registration are structurally outside the schema"
+  recommended_log_as: doc-gap-NNN (Scope statement needed in activity-feed.md; the framing implies platform-wide which is contradicted by the schema-rooted scope)
+
+## maintainer_notes
+
+(intentionally left empty for the auto-generated reflection — the
+maintainer hand-edits this section across refreshes; first refresh
+will preserve any maintainer additions verbatim per Rule 5)

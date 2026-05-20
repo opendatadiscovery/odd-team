@@ -1,0 +1,88 @@
+gap_id: TEST-GAP-877
+category: missing-performance
+criticality: LOW
+node_ids:
+  - "odd-platform java housekeeping job:ActivityEmptyPartitionsHousekeepingJob"
+pillars_affected: [P-08]
+surfaced_by:
+  - "ActivityEmptyPartitionsHousekeepingJob.md:stress_findings.A.[Q-A.4] (PROBE-NEEDED — populated multi-partition activity table count cost)"
+  - "ActivityEmptyPartitionsHousekeepingJob.md:performance.known_performance_gaps.[SELECT count(*) = 0 is an unindexed sequential scan]"
+  - "ActivityEmptyPartitionsHousekeepingJob.md:probe_skeletons_emitted (P-013)"
+  - "ActivityEmptyPartitionsHousekeepingJob.md:performance.hot_paths.[Per 15-minute cycle SELECT count(*) sequential scan per past partition]"
+behaviour: |-
+  **LOW — `ActivityEmptyPartitionsHousekeepingJob`'s 15-minute cycle runs `SELECT count(*) = 0 FROM <partition>` per past partition — a SEQUENTIAL SCAN on every populated partition that isn't past-and-empty.** `PartitionServiceImpl.java:133-142` builds `SELECT count(*) = 0 FROM <partition>` (NOT `SELECT EXISTS (SELECT 1 FROM <partition> LIMIT 1)`). Postgres has no fast `count(*)` shortcut for partitioned tables; the planner uses sequential scan unless an index-only scan applies (rare for `count(*)` without WHERE). For a NON-empty partition, this counts EVERY visible tuple — even though the count is then compared to 0 and the partition is NOT dropped. **The job runs this expensive check on every past partition every 15 minutes (96 times/day, 35K times/year)** — on a multi-year deployment with 60+ partitions (default `partition_period=30`) or 365+ partitions (operators tuning down per the docs' "narrower partitions for performance" guidance), this is significant hidden DB load.
+
+  **Primary-source chain**:
+  - `PartitionServiceImpl.java:134` — `SELECT count(*) = 0 FROM %s.formatted(partitionName)` — the SEQUENTIAL SCAN
+  - `PartitionServiceImpl.java:89-105` — the partition list query (`information_schema.tables LIKE 'activity_%'`) returns N past partitions
+  - `EmptyPartitionsHousekeepingJob.java:21-22, 24-27` — iterates the past-partition list, calls `isPartitionEmpty` per partition
+  - `HousekeepingJobManager.java:25-26` — 15-minute fixedRate (96 cycles/day)
+  - Default `partition_period=30` (application.yml:213) → 60-day-wide partitions; deployment age (years) determines N
+  - The empty-check is the ONLY filter — non-empty partitions are scanned anyway
+
+  **The performance cost**:
+  - Per past partition: full sequential scan to count visible tuples
+  - Per 15-min cycle: N scans (where N = past partition count)
+  - At default `partition_period=30`, a 5-year deployment has ~61 partitions; assuming half are past + 10M rows each: 30 partitions × 10M rows = 300M-tuple scan per cycle
+  - 96 cycles/day × 300M tuples = 28.8 BILLION tuples scanned per day, ALL to determine count = 0 vs > 0
+  - The fix is trivial: `WHERE NOT EXISTS (SELECT 1 FROM <partition>)` (or `LIMIT 1` + check result) short-circuits on first row — O(1) for non-empty partitions vs O(N) for the current implementation
+
+  **Operator-visible consequences**:
+  - **Hidden DB load**: the housekeeping subsystem's "I/O footprint" is not surfaced in the docs — operators sizing their Postgres expecting "small periodic maintenance work" get sustained sequential-scan I/O
+  - **Partition-tuning paradox**: an operator following the docs' "narrower partitions for performance" advice tunes `partition_period=1` (daily) → 365 partitions/year → 365 sequential scans every 15 min × 96 cycles/day = 35K scans/day — the opposite of what they sought
+  - **Steady-state IOPS**: the empty-check accounts for a measurable fraction of DB IOPS on active deployments; no metric exposes this
+
+  **Why LOW not MEDIUM**:
+  - The performance cost IS hidden but the symptoms are NOT catastrophic (no user-visible latency spike unless the DB is saturated)
+  - The fix is trivial and isolated (one query rewrite)
+  - We rate LOW because: (a) the impact is hidden DB load, not user-visible latency; (b) the fix is well-understood; (c) the regression risk is low (a one-line query rewrite is unlikely to introduce correctness issues).
+
+  **Connection to probe P-013**:
+  - The sidecar emits P-013 to MEASURE the actual I/O cost on a populated activity table
+  - This TEST-GAP is the regression-pin AFTER P-013 confirms the empirical cost
+
+  **Connection to TEST-GAP-870 + TEST-GAP-875**:
+  - TEST-GAP-870 (the data-loss race), TEST-GAP-875 (the lock-collision latency), and TEST-GAP-877 (this — the sequential-scan cost) all stem from the SAME code path (`PartitionServiceImpl.getEmptyPastPartitions` → `isPartitionEmpty` → `dropPartition`)
+  - The three probes (P-012, P-022, P-013) characterise three different facets of the same DDL lifecycle: data integrity, lock latency, and steady-state I/O
+test_class: performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/job/ActivityEmptyPartitionsCountScanCostTest.java"
+  name: "isPartitionEmpty_populatedPartition_pinsSequentialScanCost"
+evidence:
+  - "ActivityEmptyPartitionsHousekeepingJob.md says (performance.known_performance_gaps): 'SELECT count(*) = 0 is an unindexed sequential scan on every past partition — measure this on a populated activity partition with 10M+ rows; if the cost is multi-second per partition × 60+ partitions × 96 cycles/day, this is a significant hidden DB load on multi-year deployments. The fix would be WHERE NOT EXISTS (SELECT 1 FROM <partition> LIMIT 1) which short-circuits on first row. evidence: PartitionServiceImpl.java:134 (SELECT count(*) = 0 FROM %s) + no LIMIT + no EXISTS rewrite. See P-013. severity: MEDIUM (only material on populated activity partitions, but those are exactly the deployments where this matters)'"
+  - "ActivityEmptyPartitionsHousekeepingJob.md says (stress_findings.A.[Q-A.4]): 'What does this job DO when the activity table has 1000 past partitions accumulated? Answer: PROBE-NEEDED. The empty-check loop runs SELECT count(*) = 0 per past partition — 1000 sequential scans per 15-min cycle. The per-partition cost depends on partition size; even small partitions (~10K rows) at 1000-partition fan-out is 10M-row scan per cycle. emitting P-013 to measure actual I/O cost on a populated multi-partition activity table.'"
+  - "ActivityEmptyPartitionsHousekeepingJob.md says (performance.hot_paths): 'Per 15-minute cycle: SELECT table_name FROM information_schema.tables WHERE table_schema=public AND table_name LIKE activity_% — returns N rows where N = active partition count. For a deployment running 5 years with default partition-period=30, N ≈ 61 partitions (one new every 30 days). Each row triggers the per-partition empty-check SELECT count(*) = 0 FROM <partition> — that count is a SEQUENTIAL SCAN of the partition (no count-table-rows-via-pg_class shortcut; the SELECT touches data).'"
+  - "Verified at primary source: PartitionServiceImpl.java:133-142 (the count(*) = 0 query) + EmptyPartitionsHousekeepingJob.java:16-33 (the iteration) + HousekeepingJobManager.java:25 (15-min cycle)"
+  - "Verified no existing test: Glob src/test/**/*EmptyPartitions*.java + src/test/**/*Housekeeping*.java returns 0 matches"
+cross_references:
+  - "TEST-GAP-870 (sister VAL-LSN-019-B — silent data loss in the check-vs-drop race; same code path)"
+  - "TEST-GAP-875 (sister VAL-LSN-019-B — DROP lock collision; same code path)"
+  - "TEST-GAP-882 (META anchor — zero housekeeping-tier coverage)"
+  - "REFACTOR-NNN candidate: rewrite `isPartitionEmpty` to use `WHERE NOT EXISTS (SELECT 1 FROM <partition>)` OR `SELECT 1 FROM <partition> LIMIT 1` semantic — short-circuit on first row for O(1) cost on populated partitions"
+  - "DOC-NNN candidate: surface the housekeeping cycle's I/O profile on the operator docs (the page is silent on housekeeping mechanics per ActivityEmptyPartitionsHousekeepingJob.md:docs_link_semantic.[0])"
+  - "probe-skeletons: P-013"
+related_features: [F-010]
+related_pillar_features: ["P-08:F-002"]
+proposed_action: |-
+  Add `ActivityEmptyPartitionsCountScanCostTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/job/` using Testcontainers + Postgres + `EXPLAIN ANALYZE` introspection. Three test methods:
+
+  1. **`isPartitionEmpty_populatedPartition_pinsSequentialScanCost`** (HEADLINE):
+     - Arrange: seed `activity_20240101_20240301` partition with 100K rows.
+     - Act: invoke `partitionService.isPartitionEmpty(connection, "activity_20240101_20240301")` AND simultaneously capture `EXPLAIN ANALYZE` of the underlying SQL via `pg_stat_statements` or by intercepting the JDBC.
+     - Assert (1): the return value is `false` (correct)
+     - Assert (2): the EXPLAIN ANALYZE output contains `Seq Scan on activity_20240101_20240301` AND rows_scanned ≈ 100000 — PIN the sequential-scan cost on populated partitions
+     - Comment: a future REFACTOR-NNN that rewrites the query to use EXISTS / LIMIT 1 produces an `Index Only Scan` or `Seq Scan with rows=1` — this test then becomes the regression-pin demonstrating the optimization
+
+  2. **`isPartitionEmpty_actuallyEmptyPartition_returnsTrue_pinHappyPath`** (CONTROL):
+     - Arrange: empty partition (0 rows).
+     - Assert: returns `true`; `rows_scanned = 0`; cost is bounded.
+
+  3. **`fullHousekeepingCycle_withTenPopulatedPartitions_pinsCumulativeIOCost`** (INTEGRATION):
+     - Arrange: 10 past populated partitions + 1 past empty partition + 1 future partition.
+     - Act: invoke `housekeepingJobManager.runHousekeepingJob` (or directly `getEmptyPastPartitions`).
+     - Assert: the empty partition IS dropped; total rows_scanned across all 10 populated checks = sum of partition sizes; PIN the operational cost.
+
+  After P-013 measures the empirical I/O cost on a production-sized partition, refine the test's assertions. Cross-pair with REFACTOR-NNN to rewrite the query; this test proves the optimization. Cross-pair with DOC-NNN to surface housekeeping cycle I/O profile.
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-010

@@ -1,0 +1,185 @@
+---
+probe_id: P-017
+feature_id: F-021
+test_class: integration
+verified_against_commit: 9ac6436e
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-2
+emitted_from_sidecar: odd-platform__java__ActivityController__controller-class__ActivityController.md
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+stress_category: E (resource boundaries)
+stress_question_ids: [STRESS_E1]
+expected_outcome: |
+  STRESS_E1 PROBE: pin the runtime interaction between a long-running getActivity
+  read and the partition-creation DDL.
+
+  CREATE TABLE ... PARTITION OF activity takes ACCESS EXCLUSIVE on the parent activity
+  table for the duration of the statement (PartitionServiceImpl.java:60-66). A
+  concurrent reader either:
+  (a) blocks on the lock until DDL completes (typical PG behaviour), then proceeds
+      with the new partition visible
+  (b) the DDL waits for the reader's transaction to complete (if reader started first)
+  (c) PG cancels one of them under a lock_timeout / deadlock_timeout setting
+
+  This probe verifies the actual behaviour by:
+  1. Starting a long-running getActivity call (size=Integer.MAX_VALUE, wide window)
+  2. From a sibling connection, invoking a manual CREATE TABLE PARTITION DDL
+     (simulating what PostgreSQLPartitionCreationJob does at boot/nightly)
+  3. Observing the wall-clock latency of each, and whether one blocks the other,
+     and whether either fails
+
+  The probe is INFORMATIONAL — it characterises the system's actual concurrent-DDL
+  behaviour for documentation purposes. The result feeds into the F-010 + F-021
+  feature-flow narrative on partition lifecycle.
+
+triggers:
+  - PartitionServiceImpl.java:60-66 — CREATE TABLE ... PARTITION OF (ACCESS EXCLUSIVE)
+  - ReactiveActivityRepositoryImpl.java:290-292 — read query with no lock hint
+  - PostgreSQLPartitionCreationJob.java:30-43 — boot + nightly cron triggers
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (3017, '//probe-source-P-017/db', 'probe-source-P-017')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id,
+                               view_count, source_created_at, source_updated_at)
+      VALUES (3017, '//probe-source-P-017/db/tables/p017_entity', 'p017_entity',
+              3017, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # ~10k activity rows so the scan takes measurable wall-clock time.
+  - kind: sql
+    query: |
+      INSERT INTO activity (data_entity_id, event_type, created_at, created_by,
+                            old_state, new_state)
+      SELECT 3017, 'BUSINESS_NAME_UPDATED',
+             NOW() - (interval '1 second' * gs),
+             'p017_user',
+             '{"oldName": "before"}'::jsonb,
+             '{"newName": "after"}'::jsonb
+      FROM generate_series(1, 10000) AS gs
+
+act:
+  # Task A: long-running getActivity. ~hundreds of ms under typical conditions.
+  - kind: parallel
+    tasks:
+      - kind: rest
+        method: GET
+        path: /api/activity?begin_date=2024-01-01T00:00:00Z&end_date=2030-12-31T23:59:59Z&size=10000
+        capture_as: response_long_read
+        timing: true
+
+      # Task B: parallel CREATE TABLE PARTITION DDL, simulating a partition-creation
+      # job firing during a UI-driven scan. Give A a 100ms head start.
+      - kind: sql
+        delay_ms: 100
+        query: |
+          CREATE TABLE IF NOT EXISTS activity_p017_test PARTITION OF activity
+            FOR VALUES FROM ('2099-01-01') TO ('2099-12-31')
+        capture_as: ddl_outcome
+        timing: true
+
+observe:
+  - kind: jsonpath
+    from: response_long_read_status
+    path: "$"
+    capture_as: status_read
+  - kind: jsonpath
+    from: response_long_read_timing
+    path: "$.elapsed_ms"
+    capture_as: elapsed_read
+
+  - kind: jsonpath
+    from: ddl_outcome_status
+    path: "$"
+    capture_as: ddl_status
+  - kind: jsonpath
+    from: ddl_outcome_timing
+    path: "$.elapsed_ms"
+    capture_as: elapsed_ddl
+
+oracle:
+  # Both complete successfully.
+  - "status_read == 200"
+  - "ddl_status == 'OK'"
+
+  # CHARACTERISATION — record the interaction shape, do not assert a specific
+  # serialisation outcome. If elapsed_read + elapsed_ddl ≈ wall_clock, they
+  # blocked each other; if max(elapsed_read, elapsed_ddl) ≈ wall_clock, parallel.
+  - "elapsed_read > 0"
+  - "elapsed_ddl > 0"
+
+cleanup:
+  - kind: sql
+    query: |
+      DROP TABLE IF EXISTS activity_p017_test
+  - kind: sql
+    query: |
+      DELETE FROM activity WHERE data_entity_id = 3017
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id = 3017
+  - kind: sql
+    query: |
+      DELETE FROM data_source WHERE id = 3017
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+resolves_to:
+  - sidecar_field: stress_findings.STRESS_E1 (PROBE-VERIFIED interaction shape)
+  - on observation of >100ms stall: emit DOC-GAP for the live activity-feed.md page
+    (warn operators of brief stall during partition-DDL windows)
+
+severity_if_confirmed: LOW under PG 12+ metadata-only DDL; potentially MEDIUM on slower
+  infrastructure or under heavy lock-queue contention
+
+probe_owner: probe-runner (next batch)
+estimated_runtime: 30 minutes (docker-compose + synthetic data + parallel-task orchestration)
+
+cross_references:
+  refactoring_scopes: []
+  test_gaps: []
+  doc_gaps:
+    - DOC-GAP-LSN-019-activity-feed-partition-ddl-interaction
+  related_concepts:
+    - "Activity Feed"
+    - "Range partitioning"
+    - "ACCESS EXCLUSIVE lock"
+  retrospectives: [LSN-019]
+  enrichment_sources:
+    - "lineage/odd-platform/understanding/odd-platform__java__ActivityController__controller-class__ActivityController.md"
+    - "lineage/odd-platform/understanding/odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md"
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/partition/service/PartitionServiceImpl.java"
+    lines: "60-66"
+    role: "CREATE TABLE ... PARTITION OF DDL — takes ACCESS EXCLUSIVE on parent"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryImpl.java"
+    lines: "290-292"
+    role: "Read query with no lock hint — competes for the parent-table lock"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/partition/job/PostgreSQLPartitionCreationJob.java"
+    lines: "30-43"
+    role: "Boot-time @PostConstruct + nightly @Scheduled triggers for the DDL"
+
+realism_caveats: |
+  - PostgreSQL 12+ makes CREATE TABLE PARTITION OF a metadata-only operation that
+    typically completes in <50ms. The lock interaction is minimal in steady state.
+  - The `parallel` task primitive may not exist in the current probe-runner framework
+    — this probe may need to be split into two sequential probes that share docker
+    state, or executed via an external script. Flag for maintainer triage.
+  - The probe is CHARACTERISATION, not strict assertion. The observed elapsed
+    times feed the F-021 narrative on operator-visible latency during partition
+    DDL windows.
+  - Probe runs under DISABLED auth. Lock contention is auth-mode-agnostic.
+---

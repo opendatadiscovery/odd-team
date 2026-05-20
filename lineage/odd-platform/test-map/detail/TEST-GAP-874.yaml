@@ -1,0 +1,104 @@
+gap_id: TEST-GAP-874
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl"
+  - "odd-platform java ActivityController controller-class:ActivityController"
+pillars_affected: [P-07]
+surfaced_by:
+  - "ReactiveActivityRepositoryImpl.md:stress_findings.C2 (Symmetric truncate-to-second cursor with full-precision ORDER BY — order-stability under high write rate)"
+  - "ReactiveActivityRepositoryImpl.md:bugs_limitations_corner_cases.[cursor-pagination visual-order shuffle within a second]"
+  - "ReactiveActivityRepositoryImpl.md:emitted_probes.P-021"
+  - "ReactiveActivityRepositoryImpl.md:concepts.invariants.[2] (symmetric truncate-to-second cursor)"
+  - "ReactiveActivityRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[Cursor-pagination order-stability at second boundaries]"
+behaviour: |-
+  **MEDIUM — Cursor pagination at `(trunc(created_at, SECOND), id)` truncates BOTH sides of the comparator to second-precision but the ORDER BY sorts at microsecond-precision — producing a visual-order shuffle within a single second under sustained write rate.** `ReactiveActivityRepositoryImpl.java:287-288` constructs the cursor predicate `row(trunc(ACTIVITY.CREATED_AT, DatePart.SECOND), ACTIVITY.ID).lessThan(truncated, lastEventId)` where `truncated = lastEventDateTime.truncatedTo(ChronoUnit.SECONDS)`. The ORDER BY at line 291 is full-precision `ACTIVITY.CREATED_AT.desc(), ACTIVITY.ID.desc()`. **The asymmetry between comparator-precision (second) and sort-precision (microsecond)** means that within a single second-bucket containing multiple rows, pages may visit them in a different visual order — i.e. page 2's cursor predicate cannot disambiguate same-second rows, but the ORDER BY on the new page sorts them at microsecond precision. **This is NOT a row-skip bug** (the symmetric truncation guarantees no row is missed) — it is a visual-order anomaly under sustained write rate. The v0.2 sidecar previously claimed "skip rows"; the LSN-019 Stress Protocol correction (per coherence_notes.rule9_supersedes) re-classifies it as "stable result but shuffled visual order within a second bucket".
+
+  **Primary-source chain**:
+  - `ReactiveActivityRepositoryImpl.java:285-288` — composite cursor predicate
+    ```
+    row(trunc(ACTIVITY.CREATED_AT, DatePart.SECOND), ACTIVITY.ID)
+      .lessThan(truncated, lastEventId)
+    ```
+    where `truncated = lastEventDateTime.truncatedTo(ChronoUnit.SECONDS)` (symmetric second-precision)
+  - `ReactiveActivityRepositoryImpl.java:290-291` — `orderBy(ACTIVITY.CREATED_AT.desc(), ACTIVITY.ID.desc())` (full microsecond-precision)
+  - `ReactiveActivityRepositoryImpl.java:292` — `.limit(size)` with no upper bound (per Controller's STRESS_A1)
+  - V0_0_48__add_activity.sql:9 — `created_at timestamp without time zone` (microsecond precision)
+  - V0_0_48__add_activity.sql:15 — `activity_created_at_idx` index on column (NOT a functional index on `trunc(...)`)
+
+  **The mechanism** (per ReactiveActivityRepositoryImpl.md:stress_findings.C2, expanded):
+  - Page 1 ORDER BY: rows sorted by (microsecond DESC, id DESC) → returns N rows
+  - Page 1's last row has timestamp μ_L and id L
+  - Cursor passed back: `(truncated_to_second(μ_L), L)`
+  - Page 2 cursor predicate: `(trunc_second(col), id) < (truncated_to_second(μ_L), L)`
+  - This includes rows in the same second-bucket as μ_L with `id < L`
+  - BUT it ALSO includes rows in the same second-bucket whose microsecond > μ_L IF their id < L
+  - Page 2's ORDER BY re-sorts those by microsecond DESC
+  - Result: page 2 may surface rows whose timestamp is microseconds BEFORE page 1's cursor-anchor (which the operator considers "older than" the cursor) but whose id is older
+
+  **The CLIENT-visible effect**:
+  - For a static activity table (no concurrent writes): cursor is deterministic; correct end-to-end
+  - For a steadily-written table at >1 event/sec: pages may show rows in an order operators don't expect; the row-set is COMPLETE (no skips) but the visual ordering within a second-bucket varies across page boundaries
+
+  **Operator-visible consequences**:
+  - **UI confusion**: a user paging through "newest activity" at high write rate sees pages where adjacent timestamps within the same second appear in inconsistent order across page boundaries
+  - **Forensic inconsistency**: an investigator paginating to find "the third event of the second" cannot rely on the cursor producing the same ordering across pages
+  - **Test/observability**: integration tests that assert "event X appears on page N" become flaky under load
+
+  **Why MEDIUM not HIGH (and CORRECTED from v0.2 severity)**:
+  - The v0.2 sidecar rated this MEDIUM as a "skip rows" bug; the Stress Protocol corrects to "no skips, shuffled visual order"
+  - Sidecar elevates to current LOW severity in `bugs_limitations_corner_cases.[4]`
+  - **We rate MEDIUM (between LOW and HIGH)** because: (a) the cursor's truthful behaviour matters for UI predictability and forensic accuracy; (b) the asymmetry (comparator vs ORDER BY precision) is a deliberate design choice per `implicit_adrs.[1]` — but undocumented; (c) a future refactor that switches the comparator to microsecond-precision (eliminating the truncation) would change visible behaviour silently.
+
+  **Connection to probe P-021**:
+  - The sidecar emits P-021 to PIN the empirical behaviour under high write rate
+  - This TEST-GAP is the regression-pin AFTER P-021 confirms the timing semantics
+
+  **Connection to TEST-GAP-084**:
+  - TEST-GAP-084 (existing) pins cursor boundary handling at result-set boundaries (the typo `lasEventId` + general correctness)
+  - This gap (874) pins the SECOND-PRECISION asymmetry specifically — the deeper structural mechanism
+  - Together they fully characterise the cursor surface
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryImplCursorSubSecondTest.java"
+  name: "cursorPagination_sustainedWriteRateOneEventPer100ms_pinsVisualOrderShuffleWithinSecondBucket"
+evidence:
+  - "ReactiveActivityRepositoryImpl.md says (stress_findings.C2): 'Symmetric truncate-to-second cursor with full-precision ORDER BY. ORDER BY at line 291 sorts at MICROSECOND precision (the created_at column is timestamp without time zone — PG's microsecond default). Cursor predicate at line 287-288 compares at SECOND precision on BOTH sides: row(trunc(created_at, SECOND), id) < (truncated_last_event_dt, last_event_id). No row skip (forward correctness): all rows with trunc(created_at, SECOND) < truncated_last_event_dt are unambiguously returned... Possible out-of-order within a second: ORDER BY treats created_at at microsecond precision; the cursor predicate cannot disambiguate two rows within the same second-bucket EXCEPT by id... Probe P-021 emitted to PIN the empirical behaviour under high write rate.' confidence: STATIC-INFERRED → PROBE-NEEDED for the visual-order claim. The 'no row skip' half is STATIC-VERIFIED."
+  - "ReactiveActivityRepositoryImpl.md says (coherence_notes.rule9_supersedes): 'LSN-019 Stress Protocol (Rule 9, Category C — orderings) trace-answers that claim in stress_findings.C2: the truncation occurs ONLY ON THE LEFT side of the row-comparator (line 287-288 -- truncate column to second-precision AND truncate cursor to second-precision -- producing equal precision on the comparator); the ORDER BY at line 291 uses full-precision created_at DESC tied with id DESC. The combination is CORRECT for forward cursoring (every row that should be returned is returned) but produces a re-ordering anomaly at second boundaries... This is NOT skip rows but stable-result-but-shuffled-order-within-a-second-bucket. Stress Protocol corrects the severity classification and emits probe P-021.'"
+  - "ReactiveActivityRepositoryImpl.md says (implicit_adrs.[1]): 'Cursor pagination uses SYMMETRIC truncate-to-second comparator + full-precision ORDER BY: the asymmetry between comparator-precision and sort-precision is intentional — the client passes lastEventDateTime as an OffsetDateTime whose microsecond precision may have been altered by JSON serialisation (the ISO-8601 wire format only carries 3 decimal digits in some clients); truncating both sides of the comparator to second accommodates that loss while the ORDER BY preserves full-precision newest-first sort.' confidence: MEDIUM"
+  - "Verified at primary source: ReactiveActivityRepositoryImpl.java:285-288 + line 290-291 + V0_0_48__add_activity.sql:9 (timestamp microsecond precision) + V0_0_48__add_activity.sql:15 (created_at index — plain column, not functional)"
+  - "Verified no existing test: Grep ReactiveActivityRepositoryImpl / ReactiveActivityRepository in src/test returns 0 matches"
+cross_references:
+  - "TEST-GAP-084 (existing — cursor-pagination correctness; this gap drills down to the second-precision asymmetry)"
+  - "TEST-GAP-882 (META anchor — zero repository/handler-tier coverage)"
+  - "REFACTOR-NNN candidate: document the symmetric-truncate-asymmetric-sort design intent at the JOOQ query construction site OR switch both to microsecond precision (and accept the client-clock-skew risk)"
+  - "DOC-NNN candidate: surface the cursor mechanics on activity-feed.md (currently silent on cursor mechanics per ReactiveActivityRepositoryImpl.md:docs_link_semantic)"
+  - "probe-skeletons: P-021"
+related_features: [F-021]
+related_pillar_features: ["P-07:F-003"]
+proposed_action: |-
+  Add `ReactiveActivityRepositoryImplCursorSubSecondTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/` using Testcontainers + Postgres. Three test methods:
+
+  1. **`cursorPagination_sustainedWriteRateOneEventPer100ms_pinsVisualOrderShuffleWithinSecondBucket`** (HEADLINE):
+     - Arrange: seed 50 activity rows within a single second-bucket (e.g. 2026-01-01T12:00:00.000 through 2026-01-01T12:00:00.999 at 100ms intervals). Each row has a distinct microsecond stamp and a distinct sequential id.
+     - Act:
+       - Fetch page 1 with `size=10` (no cursor) → record the 10 rows returned, in order
+       - Use page 1's last row to construct the cursor `(lastEventId, lastEventDateTime)`
+       - Fetch page 2 with the cursor → record the 10 rows returned, in order
+       - Compare: are the 20 returned rows globally sorted by full-precision (microsecond DESC, id DESC)? Or are there inversions at the page boundary?
+     - Assert: PIN the CURRENT behaviour — likely page-boundary inversions when same-second rows exist. The test asserts the CURRENT truth so future refactors are caught.
+
+  2. **`cursorPagination_acrossSecondBoundary_noSkipNoLoss`** (CONTROL):
+     - Arrange: seed rows in 3 distinct seconds: 12:00:00, 12:00:01, 12:00:02 (10 rows per second).
+     - Act: paginate across all 30 rows with size=10.
+     - Assert: 30 distinct rows returned across 3 pages; no duplicates, no missing rows. Pins the row-completeness (the "no skip" half of the C2 finding).
+
+  3. **`cursorPagination_clientPassesMillisPrecisionDateTime_pinsTruncationCompensation`**:
+     - Arrange: seed 1 row at `2026-01-01T12:00:00.123456` (microsecond detail).
+     - Act: call cursor with `lastEventDateTime = 2026-01-01T12:00:00.123` (millis precision — typical JSON wire format).
+     - Assert: the cursor predicate still correctly filters; PIN the design intent (per implicit_adrs.[1]) that the client may pass a less-precise timestamp.
+
+  After P-021 measures the empirical timing on a production-sized DB, refine the test. Cross-pair with REFACTOR-NNN (document or change the asymmetry) and DOC-NNN (surface cursor mechanics on activity-feed.md).
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-021

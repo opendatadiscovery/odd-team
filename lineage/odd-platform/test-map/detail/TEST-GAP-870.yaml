@@ -1,0 +1,93 @@
+gap_id: TEST-GAP-870
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java housekeeping job:ActivityEmptyPartitionsHousekeepingJob"
+  - "odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl"
+pillars_affected: [P-07, P-08]
+surfaced_by:
+  - "ActivityEmptyPartitionsHousekeepingJob.md:stress_findings.S-E-3 (Cascading WRITES during DROP — concurrent INSERT INTO activity targeting a partition that is MID-DROP)"
+  - "ActivityEmptyPartitionsHousekeepingJob.md:bugs_limitations_corner_cases.[Race window between empty-check and DROP TABLE] (severity HIGH — silent data loss)"
+  - "ActivityEmptyPartitionsHousekeepingJob.md:probe_skeletons_emitted (P-012 — concurrent insert/drop race window)"
+  - "ActivityEmptyPartitionsHousekeepingJob.md:tests_coverage_semantic.uncovered_behaviours.[empty-check + DROP race window]"
+behaviour: |-
+  **HIGH — Race window between `SELECT count(*) = 0 FROM <partition>` empty-check and `DROP TABLE <partition>` allows concurrent INSERTs to land in a partition that gets dropped milliseconds later — silently destroying the just-inserted activity rows.** `PartitionServiceImpl.getEmptyPastPartitions` (`:108-117`) runs two SEPARATE PreparedStatements on the same Connection — `SELECT count(*) = 0` (line 134) THEN, in the caller's for-loop (`EmptyPartitionsHousekeepingJob.java:24-27`), `DROP TABLE` (line 122) — with NO transaction wrapper (unlike `AlertHousekeepingJob.java:25` and `DataEntityHousekeepingJob.java:71` which BOTH wrap in `DSL.using(connection).transaction(...)`). Between the count-zero check returning TRUE and the DROP firing, a concurrent `INSERT INTO activity` from any `@ActivityLog`-annotated business method, ingestion path, or AlertServiceImpl flow can land in the soon-to-be-dropped partition. PostgreSQL routes the INSERT via partition rules (the partition still exists in `pg_class`); the INSERT commits (autocommit on the writing connection); then the housekeeping DROP TABLE arrives, acquires ACCESS EXCLUSIVE, and destroys the partition — **the just-inserted row is GONE with no compensating undo, no error to the original INSERT caller (who saw committed-success).**
+
+  **The class name promise**: "Activity**Empty**Partitions**Housekeeping**Job" implies "only EMPTY partitions are dropped". The promise IS honoured at the centre (the `SELECT count(*) = 0` check IS a real DB query, not a date-only heuristic per `S-E-2.[B-1]`). **The promise drifts at the boundary**: the partition was empty when checked, NOT empty when dropped. The class-name's invariant is violated by the race.
+
+  **Primary-source chain**:
+  - `ActivityEmptyPartitionsHousekeepingJob.java:14-17` (overrides `getTargetTable()` returning `Tables.ACTIVITY.getName()`; NO `exclusions()` override; runs every 15 min via parent's `doHousekeeping`)
+  - `EmptyPartitionsHousekeepingJob.java:16-33` (`doHousekeeping` — calls `partitionService.getEmptyPastPartitions(connection, target, exclusions)` then for-loop calls `partitionService.dropPartition(connection, name)`)
+  - `PartitionServiceImpl.java:108-117` (`getEmptyPastPartitions` — Java-level `isPartitionInPast && isPartitionEmpty` AND, NOT atomic at SQL layer)
+  - `PartitionServiceImpl.java:133-142` (`isPartitionEmpty` — runs `SELECT count(*) = 0 FROM <partition>` SQL)
+  - `PartitionServiceImpl.java:121-127` (`dropPartition` — runs `DROP TABLE <partition>` SQL, NO `IF EXISTS`)
+  - `EmptyPartitionsHousekeepingJob.java:16-33` — **NO `transaction(...)` wrapper** (contrast `AlertHousekeepingJob.java:25` and `DataEntityHousekeepingJob.java:71`)
+  - `ReactiveActivityRepositoryImpl.java:50-54` (`saveReturning` — single-row INSERT, no partition-routing fallback)
+  - `ReactiveActivityRepositoryImpl.java:57-71` (`save` batch — same INSERT path)
+
+  **The race window structure** (per ActivityEmptyPartitionsHousekeepingJob.md:stress_findings.S-E-3):
+  1. Housekeeping cycle T=0: `SELECT count(*) = 0 FROM activity_20240101_20240301` returns TRUE
+  2. App code T=1ms: an `@ActivityLog`-annotated mutation fires; `createActivityEvent` reaches `saveReturning(pojo)` with `created_at` in the [20240101, 20240301) range
+  3. Postgres routes the INSERT to `activity_20240101_20240301` (the partition still exists in `pg_class`)
+  4. INSERT commits at T=2ms (autocommit on the R2DBC connection)
+  5. Housekeeping T=3ms: `DROP TABLE activity_20240101_20240301` arrives; acquires ACCESS EXCLUSIVE; succeeds (no recheck of emptiness)
+  6. The activity row inserted at T=2ms is **gone with the partition**. The original caller saw HTTP 200. No error log, no compensating signal.
+
+  **Operator-visible consequences**:
+  - **Silent activity-trail data loss**: a forensic investigation looking for "did user X do action Y at time T" finds NO activity row — but the user's mutation DID succeed (the business state changed; only the audit trail was lost).
+  - **Disproportionate impact at partition boundaries**: the race window aligns with the housekeeping 15-minute cycle. A platform with N empty past partitions per cycle has N race windows per 15 minutes. Aged platforms with old empty partitions (low-activity periods that DID empty out) are repeatedly probed every cycle.
+  - **LSN-001 family**: silent default + destructive action; the EmptyPartitions job's failure mode is shaped exactly like the attachment-storage default — operator's "background housekeeping" deletes data the operator did not intend to delete.
+
+  **Why HIGH not CRITICAL**:
+  - The race window is narrow (milliseconds); empirical hit rate depends on activity volume × partition-empty-cycle alignment.
+  - The data loss is bounded to activity-trail rows (not user data); the business mutation itself is unaffected.
+  - We rate HIGH (not CRITICAL) because the surface is the audit log only, AND empirical observability requires P-012 to measure.
+  - This is the AUDIT-side companion to the LSN-001-class (which lost user data via misconfigured storage); the audit-side loss is operationally similar but business-data-safer.
+
+  **Connection to probe P-012**:
+  - The sidecar emits P-012 to MEASURE the race window experimentally with a tight concurrent insert
+  - This TEST-GAP is the regression-pin AFTER P-012 confirms the timing
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/job/ActivityEmptyPartitionsRaceWindowTest.java"
+  name: "concurrentActivityInsertDuringEmptyPartitionDrop_pinsSilentDataLossWindow"
+evidence:
+  - "ActivityEmptyPartitionsHousekeepingJob.md says (stress_findings.S-E-3): 'PROBE-NEEDED — THIS IS THE CRITICAL FINDING FOR THE EMPTY PARTITIONS NAME PROMISE. The empty-check (SELECT count(*) = 0) and the DROP TABLE are on the same Connection but NOT in a transaction (the parent class doesn't wrap in transaction(...) unlike Alert/DataEntity jobs). Between the check returning true and the DROP firing: 1. Application code logs an activity event → routes to the per-partition INSERT via Postgres's partition routing (auto-routes by date range). 2. The PRE-DROP partition still exists in pg_class; INSERT succeeds (commits immediately on the autocommit Connection of the writing path). 3. The housekeeping Connection's DROP TABLE arrives; Postgres waits on the ACCESS EXCLUSIVE lock OR proceeds depending on the lock release order. 4. When DROP proceeds, the just-inserted row's partition table is destroyed — the row is gone with no compensating undo, no error to the original INSERT caller (who saw committed-success). emitting P-012 to verify experimentally with a tight concurrent insert. Severity if confirmed: HIGH (silent data loss on the audit trail; LSN-001-shape — silent default + destructive action).'"
+  - "ActivityEmptyPartitionsHousekeepingJob.md says (bugs_limitations_corner_cases.[1]): 'Race window between empty-check and DROP TABLE — getEmptyPastPartitions runs two SQL statements: the SELECT count(*) = 0 (PartitionServiceImpl.java:134) followed by the DROP TABLE (PartitionServiceImpl.java:122). They are NOT in a transaction (the parent class EmptyPartitionsHousekeepingJob.doHousekeeping does not wrap in JOOQ's DSL.using(connection).transaction(...) unlike AlertHousekeepingJob and DataEntityHousekeepingJob). A concurrent INSERT INTO activity that lands AFTER the count-zero check but BEFORE the DROP TABLE acquires ACCESS EXCLUSIVE — Postgres will queue one behind the other on the partition's lock, but ONE will win: if INSERT wins, it succeeds, then DROP TABLE proceeds to drop a now-non-empty table SILENTLY (no recheck), deleting the just-inserted row. The row's caller never sees an error (INSERT returned success), but the row is gone.' — severity: HIGH"
+  - "ActivityEmptyPartitionsHousekeepingJob.md says (stress_findings.S-E-5): 'Empty-check + drop atomicity — is the AND atomic? STATIC-INFERRED — NO, the AND is not atomic. PartitionServiceImpl.java:110 evaluates isPartitionInPast && isPartitionEmpty in Java (short-circuit AND on the result of TWO database round-trips: getLastPartitionDate parses the name only [no DB hit]; isPartitionEmpty runs a SELECT). After isPartitionEmpty returns true, the partition is added to the result list; the for-loop in EmptyPartitionsHousekeepingJob.java:24-27 THEN issues DROP TABLE in a separate prepared-statement call. There is NO row-lock, partition-lock, or transaction holding from the empty-check through the drop.'"
+  - "Verified at primary source: ActivityEmptyPartitionsHousekeepingJob.java:14-17 (no @ConditionalOn*, no exclusions override) + PartitionServiceImpl.java:121-127 (DROP TABLE — no IF EXISTS) + PartitionServiceImpl.java:133-142 (count(*) = 0 query) + EmptyPartitionsHousekeepingJob.java:16-33 (no transaction wrapper — contrast with AlertHousekeepingJob.java:25)"
+  - "Verified no existing test: Glob src/test/**/*Partition*.java returns 0 matches; Glob src/test/**/*Housekeeping*.java returns 0 matches"
+cross_references:
+  - "TEST-GAP-875 (sister VAL-LSN-019-B — DROP-vs-SELECT lock collision; same DDL surface, different victim — readers vs writers)"
+  - "TEST-GAP-877 (sister VAL-LSN-019-B — count(*) seq-scan performance under populated partitions; same code path's read cost)"
+  - "TEST-GAP-882 (META anchor — zero handler-tier coverage extends to housekeeping)"
+  - "LSN-001 (attachment-ephemeral-default — same LSN-001-shape failure: silent default + destructive action; activity-trail loss vs user-data loss)"
+  - "REFACTOR-NNN candidate: wrap the empty-check + DROP in a transaction with ACCESS EXCLUSIVE LOCK TABLE BEFORE the count check; OR migrate to a 2-phase approach (mark-for-drop + verify-still-empty + drop)"
+related_features: [F-010, F-021]
+related_pillar_features: ["P-07:F-003", "P-08:F-002"]
+proposed_action: |-
+  Add `ActivityEmptyPartitionsRaceWindowTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/job/` using Testcontainers + `@SpringBootTest` + a controlled concurrency harness. The HEADLINE test method:
+
+  1. **`concurrentActivityInsertDuringEmptyPartitionDrop_pinsSilentDataLossWindow`** (HEADLINE):
+     - Arrange: seed an empty past partition (e.g. `activity_20240101_20240301`); the partition's row count = 0; the partition's end date is BEFORE today. Configure a barrier between `isPartitionEmpty` returning and `dropPartition` firing (via reflection / spied PartitionService).
+     - Act:
+       - Thread A (the housekeeping flow): call `partitionService.getEmptyPastPartitions(conn, "activity", emptyList())` → after `isPartitionEmpty` returns TRUE, BLOCK at the barrier (do not yet call dropPartition).
+       - Thread B (the app write): call `activityServiceImpl.createActivityEvent(ActivityCreateEvent.builder().dataEntityId(seedId).eventType(DESCRIPTION_UPDATED).oldState("...").newState("...").systemEvent(false).build())` with `created_at` set so it routes to the partition Thread A is targeting. INSERT commits at autocommit boundary.
+       - Thread A (resume): cross the barrier; call `partitionService.dropPartition(conn, partitionName)`.
+     - Assert: query the `activity` table directly via JDBC `SELECT count(*) FROM activity WHERE id = <Thread B's row id>`; **PIN that ZERO rows match** (the Thread-B INSERT was destroyed silently by the DROP).
+     - Assert: Thread B's `createActivityEvent` returned SUCCESS (no exception surfaced); the writing user has no indication their audit row was lost.
+
+  2. **`emptyPartitionDropWithNoConcurrentInsert_succeedsDeterministically`** (CONTROL):
+     - Arrange: same empty past partition; NO concurrent insert.
+     - Act: run the housekeeping cycle.
+     - Assert: the partition is dropped; the `activity` table has no rows in that date range (consistent with the pre-state); no rows lost (because none existed).
+
+  3. **`emptyPartitionDropWithRowInsertedBeforeCheck_correctlyDoesNotDrop`** (CONTROL — opposite race direction):
+     - Arrange: partition that becomes NON-empty BEFORE the housekeeping cycle's empty-check.
+     - Act: run the cycle.
+     - Assert: the partition is NOT dropped (the check correctly returned FALSE); no data loss. Pins that the centre of the contract works correctly.
+
+  After P-012 measures the empirical race window timing on real R2DBC + Postgres, refine the test's timing assumptions. Cross-pair with REFACTOR-NNN to introduce a transaction-wrapped or LOCK-TABLE-based fix; this test then becomes the regression-pin proving the fix eliminated the window.
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-010

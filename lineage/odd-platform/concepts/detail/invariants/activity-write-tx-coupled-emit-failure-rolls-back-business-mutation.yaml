@@ -1,0 +1,210 @@
+name: Activity write is in same @ReactiveTransactional as the originating business
+  mutation — emit failure rolls back the user's change
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+- P-08
+description: |-
+  **NEW INVARIANT, batch VAL-LSN-019-B (2026-05-20)** — surfaced by
+  primary-source examination of ActivityServiceImpl + ActivityHandler at
+  the service tier; cross-referenced against AlertServiceImpl and
+  ActivityIngestionRequestProcessor as the three caller paths.
+
+  **THE INVARIANT**: every successful business mutation under @ActivityLog
+  AND every successful Alert-state mutation AND every successful S2S
+  ingestion DATA_ENTITY_CREATED event runs in ONE @ReactiveTransactional
+  that ALSO wraps the activity-row INSERT. There is no decoupling. If the
+  activity-row INSERT fails (transient DB error, partition-coverage gap,
+  unique-constraint violation), the WHOLE TX rolls back — including the
+  user's business mutation.
+
+  **PRIMARY SOURCES** (3 caller paths, all verified line-by-line in batch
+  VAL-LSN-019-B):
+
+    Path (a) — @ActivityLog AOP path (the most common):
+      `ActivityAspect.java:42` — `@ReactiveTransactional` on
+      `monoActivityAspect`
+      `ActivityAspect.java:62` — `@ReactiveTransactional` on
+      `fluxActivityAspect`
+      The aspect wraps the WHOLE business method PLUS the postActivity
+      emit (lines 41-94) in ONE TX. 18+ @ActivityLog-annotated methods
+      across 10 service files all share this semantic.
+
+    Path (b) — AlertServiceImpl.applyAlertActions:
+      `AlertServiceImpl.java:201` — `@ReactiveTransactional` on
+      `applyAlertActions`
+      The outer method wraps the alert mutation + the `registerNewAlertsActivityEvents`
+      (line 309-325) and `registerAutomaticallyResolvedAlertsActivityEvents`
+      (line 247-258) calls in ONE TX. Activity emit failure rolls back
+      the alert state transition.
+
+    Path (c) — ActivityIngestionRequestProcessor.process:
+      `IngestionServiceImpl.ingest:66` — `@ReactiveTransactional` on
+      the outer ingestion entry point.
+      The TX wraps the WHOLE ingestion pipeline including
+      ActivityIngestionRequestProcessor.process's
+      `createActivityEvents(...)` call. Activity emit failure rolls
+      back the WHOLE ingestion batch (including any other entities
+      being ingested in the same request — large blast radius).
+
+  **OPERATOR-SURPRISING SEMANTIC** — this is the OPPOSITE of the
+  intuitive expectation. Most operators expect:
+    - "audit is best-effort; if the audit row fails, we still keep the
+      user's change"
+    - "audit fail-open is the default"
+
+  The actual ODD semantic is "audit-or-fail":
+    - Transient ActivityRepository write error → user's mutation
+      reverted, user sees 500 with no indication the mutation was
+      actually applied-then-rolled-back
+    - Partition-coverage failure (`no partition of relation "activity"
+      found for row` — ReactiveActivityRepositoryImpl batch R coupling
+      finding) → same: every mutation in flight when partition rotation
+      gaps OUT fails with 500
+    - ON CONFLICT collision (would not happen on the unconditional
+      INSERT but a future ON CONFLICT addition could) → same
+
+  **CASCADING BLAST RADIUS** on the ingestion path: a single activity
+  emit failure during ingestion rolls back the WHOLE S2S ingestion batch
+  (possibly hundreds of entities). The data the collector sent is lost;
+  the collector sees a 5xx and retries; the retry hits the same emit
+  failure; loop until the activity table catches up. No partial-success
+  mechanism exists.
+
+  **THE GAP IN DOCUMENTATION** — the live activity-feed.md page
+  (verified WebFetch 2026-05-20, status 200) does NOT mention the
+  audit-or-fail semantic. The live
+  /configuration-and-deployment/enable-security/authorization page
+  does not mention it either. An operator reading the docs would
+  reasonably conclude audit is best-effort; reality is the opposite.
+
+  **REFACTOR-NNN CANDIDATE** — either:
+    (a) Document the audit-or-fail semantic explicitly on the
+        activity-feed feature page and on a new operator-facing
+        "Activity Feed reliability guarantees" section
+    OR
+    (b) Decouple via @Async post-commit hook (Spring TransactionSynchronization
+        / TransactionalEventListener) — let the business mutation commit
+        first, then emit the activity event in a separate TX. Trade-off:
+        partial-state (mutation succeeded, audit didn't) becomes possible;
+        operators have to accept best-effort audit
+    OR
+    (c) Add a circuit-breaker / fallback path on the activity emit —
+        if the activity DB write fails, write to a local file / queue /
+        DLQ for later replay; the business mutation commits
+nodes:
+- odd-platform java service:ActivityServiceImpl
+- odd-platform java service activity handler:ActivityHandler
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+contributors:
+- |-
+  ActivityServiceImpl (batch VAL-LSN-019-B): stress_findings.S-E-1 (TX
+  boundary depends entirely on caller — the THREE caller paths
+  enumerated; emit failure rolls back the wrapped business mutation in
+  ALL three cases) + concepts.invariants.[4] (emit ordering is the
+  caller's TX responsibility, not the service's)
+- |-
+  ActivityHandler (batch VAL-LSN-019-B): concepts.invariants.[5]
+  (wrapping @ReactiveTransactional makes audit emission TX-coupled;
+  intended audit-or-fail semantic but is not stated anywhere)
+- |-
+  ReactiveActivityRepositoryImpl (batch VAL-LSN-019-B): write paths
+  (saveReturning / save) are issued from within the caller's TX; no
+  local TX wrapper on the repository layer
+evidence:
+- |-
+  ActivityServiceImpl.md:stress_findings.S-E-1 — "The answer depends on
+  the caller path" with three caller paths enumerated; all three are
+  TX-coupled. "Roll back the business mutation → roll back the activity
+  row. Activity emit fails → roll back the mutation. CONSISTENT but
+  potentially surprising."
+- |-
+  ActivityServiceImpl.md:concepts.invariants.[4] — "Activity emit
+  ordering across multi-statement writes is the responsibility of the
+  caller's TX, not this service. ... When the caller is
+  ActivityAspect.monoActivityAspect (line 42), the aspect's
+  @ReactiveTransactional wraps the WHOLE business method + the
+  postActivity emit — so the activity row is in the SAME TX as the
+  mutation."
+- |-
+  ActivityHandler.md:concepts.invariants.[5] — "Wrapping @ReactiveTransactional
+  makes audit emission TX-coupled. The aspect (ActivityAspect:42, 62)
+  annotates the around-advice methods with @ReactiveTransactional;
+  thus getContextInfo + the underlying mutation + getUpdatedState +
+  createActivityEvent all share ONE R2DBC transaction. Emit failure
+  rolls back the actual mutation. This is the intended audit-or-fail
+  semantic, but is not stated anywhere — a future caller that expects
+  best-effort audit would be surprised."
+- |-
+  ActivityHandler.md:tests_coverage_semantic.uncovered_behaviours —
+  "TX-coupled emit failure rolls back the wrapping mutation — no test
+  asserts that an ActivityRepository.saveReturning failure inside the
+  aspect's @ReactiveTransactional rolls back the wrapped business
+  mutation. A future regression that splits the TX (e.g. moves the
+  activity emit to an @Async post-commit hook) would silently change
+  the audit-or-fail semantic." Severity MEDIUM
+axes_present:
+- services
+- repositories_reactive
+triangulation_count: 3
+cross_batch: false
+severity: MEDIUM
+severity_dim: correctness-and-operability
+mitigations_unimplemented:
+- |-
+  Document the audit-or-fail semantic on the activity-feed feature page
+  + add a dedicated "Activity Feed reliability guarantees" section on
+  the operator reference. Until documented, operators assuming
+  best-effort audit will be surprised when a mutation surfaces 500 on
+  a transient activity DB error.
+- |-
+  Add an integration test ActivityAspectIntegrationTest.testEmitFailureRollsBackWrappedMutation
+  that injects failure on activityRepository.saveReturning inside the
+  aspect's @ReactiveTransactional and asserts (a) the business
+  mutation is rolled back, (b) the caller sees 500, (c) no activity
+  row is persisted.
+- |-
+  Add an observability metric `activity_emit_failure_total{phase=
+  context_capture|business_mutation|state_capture|persist}` so
+  operators can detect emit-failure-driven rollbacks separately from
+  business-mutation failures. Currently both surface as 500 with no
+  way to distinguish.
+- |-
+  Consider refactor: decouple via @Async @TransactionalEventListener.
+  Trade-off documented:
+    - Pro: business mutations commit independently of audit; transient
+      audit errors don't lose user changes
+    - Pro: ingestion blast radius reduced (audit emit failure during
+      ingestion no longer rolls back the whole batch)
+    - Con: partial-state (mutation succeeded, audit didn't) becomes
+      possible; forensic completeness suffers
+    - Con: requires durable queueing / DLQ for failed emits
+notes: |-
+  NEW invariant captured in batch VAL-LSN-019-B. Surfaced by primary-source
+  examination of ActivityServiceImpl + ActivityHandler combined with
+  cross-file verification of AlertServiceImpl and
+  ActivityIngestionRequestProcessor as the three caller paths.
+
+  This is the OPERATOR-SURPRISING shape of the audit-trail feature.
+  Most maintainers of audit-trail systems pick best-effort audit; ODD
+  picks audit-or-fail. The choice has real operational implications
+  (ingestion batch failures on activity-DB transients; user-facing
+  500s on what should be successful business mutations) that the docs
+  do not surface.
+
+  Three cross-cutting connections:
+    - Pairs with `activity-handler-concurrent-oldstate-capture-race`
+      — the same TX boundary makes the race concrete (both racers
+      committed pre-snapshot in their own TX before the conflict
+      resolved)
+    - Pairs with new operation
+      `write-activity-event-snapshot-diff-emit` — describes the
+      four-step pipeline this TX wraps
+    - Pairs with `retention-claim-vs-code-drift-refactor-085-confirmed-from-two-angles`
+      — both findings highlight discrepancies between operator
+      mental-model of audit-trail behaviour and the code reality
+
+  PRIMARY-SOURCE confidence: HIGH (line-by-line verification at three
+  caller paths; no contradictions; the @ReactiveTransactional
+  annotations are explicit at all three call sites).

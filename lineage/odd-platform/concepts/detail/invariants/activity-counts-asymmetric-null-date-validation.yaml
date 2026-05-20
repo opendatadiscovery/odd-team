@@ -1,0 +1,206 @@
+name: getActivityCounts accepts null dates while getActivityList rejects them — asymmetric
+  validation causes unbounded full-history scans
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+- P-08
+description: |-
+  **NEW INVARIANT, batch VAL-LSN-019-B (2026-05-20)** — surfaced by
+  primary-source examination of ActivityServiceImpl. Two of the three
+  Activity read methods validate `beginDate==null || endDate==null` →
+  `BadUserRequestException`; the third does NOT.
+
+  **THE THREE READ PATHS — VALIDATION ASYMMETRY**:
+    `getActivityList` (ActivityServiceImpl.java:98-100):
+      `if (beginDate == null || endDate == null) {
+          return Flux.error(new BadUserRequestException("Begin date and
+              end date are required"));
+       }`
+      ↑ Validates; rejects null with HTTP 400 via ControllerAdvice
+
+    `getDataEntityActivityList` (ActivityServiceImpl.java:128-130):
+      Same null-date validation; rejects with HTTP 400.
+
+    `getActivityCounts` (ActivityServiceImpl.java:138-166):
+      NO null-date check. The 4-way Mono.zip dispatches to
+      `getTotalCount` / `getMyObjectActivitiesCount` /
+      `getDependentActivitiesCount`(upstream) /
+      `getDependentActivitiesCount`(downstream). Each helper threads
+      `beginDate`, `endDate` straight to the repository's
+      `getCommonConditions` (per ReactiveActivityRepositoryImpl sidecar
+      lines 246-277).
+
+  **THE REPOSITORY BEHAVIOR ON NULL DATES**:
+    ReactiveActivityRepositoryImpl.getCommonConditions (lines 246-277,
+    per the batch-R sidecar's invariants) conditionally adds
+    `ACTIVITY.CREATED_AT.greaterOrEqual(...)` only when `beginDate` is
+    not null, and `ACTIVITY.CREATED_AT.lessOrEqual(...)` only when
+    `endDate` is not null. If both are null, the WHERE clause has NO
+    date predicate.
+
+  **THE OPERATOR-VISIBLE OUTCOME**:
+    A UI bug, an operator's hand-crafted curl, or a polling client
+    that drops the date parameters would call `/api/activity/counts`
+    with no `begin_date` / `end_date`. The resulting query is `SELECT
+    COUNT(*) FROM activity ...` over the ENTIRE retained history of
+    the activity table — which, per F-010's monotonic-growth finding,
+    means EVERY partition since the deployment started.
+
+    For a 2-year-old deployment with 10M events/day, this is
+    ~7B-row count(*). Postgres planner can use partition pruning to
+    parallelize, but the count aggregation reaches into every partition
+    sequentially in the worst case.
+
+    Compounding: the 4-way Mono.zip issues FOUR such counts in parallel
+    (totalCount + myObjectsCount + downstreamCount + upstreamCount).
+    Even with each query taking 30s individually, 4 of them
+    concurrently consume 4 DB connections + 4 Postgres planner slots.
+
+  **WHY THIS WAS NOT CAUGHT IN UX TESTING**:
+    The ODD frontend's Activity Feed page sets `begin_date` /
+    `end_date` to default window values (typically last-30-days)
+    before issuing `/api/activity` AND `/api/activity/counts`. A
+    typical operator never hits the null-date case via the UI. The
+    case manifests only through:
+    (a) Programmatic clients (curl, Postman, hand-written scripts)
+    (b) A future UI refactor that drops the default date constructor
+    (c) A polling automation that omits the parameters
+    (d) An OpenAPI-generated client that respects the spec's
+        `required: false` on the date parameters (the spec does
+        NOT mark them required)
+
+  **THE SPEC-VS-CODE ASYMMETRY**:
+    OpenAPI declares `begin_date` / `end_date` as optional query
+    parameters on BOTH `/api/activity` AND `/api/activity/counts`
+    (per openapi.yaml — neither is marked `required: true` on the
+    query). But the SERVICE layer rejects null on `/api/activity`
+    while accepting null on `/api/activity/counts`. The OpenAPI
+    contract is HONORED for counts (accepts the optional null) and
+    VIOLATED for list (rejects the optional null with 400).
+
+  **PROBE-EMITTED**: P-023 (cited at ActivityServiceImpl sidecar
+  stress_findings.S-B-3) measures the empirical behaviour against a
+  populated demo deployment — HTTP status code, response body shape,
+  query latency.
+
+  **THE FIX SHAPE — TWO OPTIONS**:
+    (a) Apply the same null-date validation to `getActivityCounts` —
+        consistent with `getActivityList`, the OpenAPI spec gets
+        updated to mark begin/end_date `required: true` on both
+        endpoints. The cost: any client currently calling
+        `/api/activity/counts` without dates breaks (likely empty
+        set; this is a behavior change but a desirable one).
+    (b) Add a hard ceiling on the date window: if begin/end_date are
+        null, default to last-30-days. Cost: an operator wanting
+        "total platform activity since deployment" can no longer
+        get it via the API; but that operator can issue an SQL
+        query directly.
+
+  Option (a) is the consistent fix; option (b) is the user-friendly
+  fix. The maintainer can pick.
+nodes:
+- odd-platform java service:ActivityServiceImpl
+contributors:
+- |-
+  ActivityServiceImpl (batch VAL-LSN-019-B): stress_findings.S-B-3
+  (getActivityCounts accepts null dates; getActivityList rejects them)
+  + concepts.invariants.[7] (getActivityList validation is asymmetric
+  to getActivityCounts; the repository's getCommonConditions would
+  build a WHERE with no created_at predicate at all if both dates
+  are null — yielding a count over the ENTIRE activity table)
+- |-
+  ActivityServiceImpl (batch VAL-LSN-019-B): concepts.operations.[7]
+  (getActivityCounts — 4-way Mono.zip over total/myObject/downstream/
+  upstream counts; NO beginDate/endDate validation here)
+evidence:
+- |-
+  ActivityServiceImpl.md:concepts.invariants.[7] — verbatim:
+  "getActivityList validation is asymmetric to getActivityCounts.
+  getActivityList validates beginDate==null||endDate==null ->
+  BadUserRequestException (line 98-100, 128-130); getActivityCounts
+  does NOT (lines 138-166 contain no null-check). The repository's
+  getCommonConditions per existing sidecar would build a WHERE ...
+  with no created_at predicate at all if both dates are null —
+  yielding a count over the ENTIRE activity table (full audit history,
+  all retained partitions). Discoverable performance cliff: a UI bug
+  or operator querying /api/activity/counts without dates issues an
+  unbounded count query."
+- |-
+  ActivityServiceImpl.md:stress_findings.S-B-3 — verbatim:
+  "getActivityCounts accepts null dates; getActivityList rejects them.
+  Trigger: :138-166 getActivityCounts has no null-check on beginDate/
+  endDate; :98-100, :128-130 getActivityList/getDataEntityActivityList
+  reject null with BadUserRequestException. Question: What does
+  /api/activity/counts return when called without begin_date or
+  end_date? Is the query bounded? Resolution: PROBE-NEEDED (P-023)."
+- |-
+  ReactiveActivityRepositoryImpl.md:concepts.invariants — getCommonConditions
+  builds conditional WHERE predicates; null dates produce no
+  date-range predicate. The activity table per F-010 grows monotonically;
+  a count(*) with no date filter aggregates over every partition.
+axes_present:
+- services
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: performance-cliff
+mitigations_unimplemented:
+- |-
+  Apply the same null-date validation to getActivityCounts —
+  add `if (beginDate == null || endDate == null) { return Mono.error(...); }`
+  at ActivityServiceImpl.java:138-141. Consistent with getActivityList
+  and getDataEntityActivityList. Run P-023 first to confirm the actual
+  failure mode under load (and observe HTTP code emitted).
+- |-
+  Update OpenAPI spec: mark begin_date + end_date `required: true`
+  on both `/api/activity` AND `/api/activity/counts`. Generated
+  TypeScript / Java client SDKs will enforce the requirement at
+  call sites; bring all callers into compliance.
+- |-
+  Add a regression test
+  `ActivityServiceImplTest.testGetActivityCounts_NullDates_RejectedWith400`
+  that mirrors the existing test for getActivityList (if any).
+- |-
+  Add a metric `activity_counts_unbounded_query_total` that increments
+  whenever getActivityCounts is called with null begin_date OR null
+  end_date — operators can detect existing bad callers in production
+  before applying the validation fix.
+- |-
+  Document the asymmetry on the activity-feed feature page (until
+  fixed):
+    "The /api/activity/counts endpoint accepts queries without a
+    date range, but doing so triggers a full-history aggregation
+    against the activity table — an O(n) query in the table size.
+    Operators should always supply begin_date AND end_date when
+    calling the counts endpoint."
+notes: |-
+  NEW invariant captured in batch VAL-LSN-019-B. Surfaced by primary-source
+  examination of ActivityServiceImpl line-by-line; cross-referenced
+  against the existing ReactiveActivityRepositoryImpl
+  getCommonConditions findings.
+
+  This is a SIMPLE-TO-FIX invariant — the asymmetry is a 3-line code
+  change at ActivityServiceImpl.java:138-141 + a spec change. The
+  cost of the validation is zero (the validation passes by default
+  for all current UI callers). The benefit is removing a performance
+  cliff that materialises only for operators stepping outside the
+  UI's default-date constructor.
+
+  Cross-cutting connections:
+    - Pairs with `retention-claim-vs-code-drift-refactor-085-confirmed-from-two-angles`
+      — both findings concern the unbounded-growth shape of the
+      activity table; this finding adds "the counts endpoint
+      doesn't bound the query" as a SECOND surface where the growth
+      becomes operationally painful
+    - Pairs with `pagination-parameters-declared-but-unconstrained-at-spec-and-controller-layers`
+      — both are "OpenAPI spec doesn't bound; code doesn't bound;
+      operator pays at scale"
+    - Cross-references the existing AlertController pattern (where
+      `getAllAlerts` accepts unbounded date ranges with no validation)
+      — the SHAPE is platform-wide; this finding is a specific
+      instance
+
+  PRIMARY-SOURCE confidence: HIGH (line citations to
+  ActivityServiceImpl.java:98-100, 128-130, 138-166; cross-referenced
+  with repository's getCommonConditions sidecar finding).

@@ -1,0 +1,177 @@
+---
+probe_id: P-014
+feature_id: F-021
+test_class: integration
+verified_against_commit: 9ac6436e
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+expected_outcome: |
+  STRESS_E3 PROBE: pin the actual behaviour when a getActivity client disconnects
+  mid-stream during a long-running scan.
+
+  The repository query at ReactiveActivityRepositoryImpl.java:290-292 has no
+  JOOQ .queryTimeout(...) and no statement_timeout set at the connection level.
+  Reactor's onCancel signal SHOULD propagate to the connection cancelling the
+  in-flight DB query, but the actual behaviour depends on the JOOQ + R2DBC
+  driver stack.
+
+  This probe:
+  1. Initiates a long-running getActivity call (size=Integer.MAX_VALUE, wide window,
+     against a ~50k row activity table to make the scan take 5-10s)
+  2. Aborts the HTTP client mid-stream (after receiving some events but before EOF)
+  3. From a sibling connection, queries pg_stat_activity to verify whether the
+     backend query was actually cancelled or is still running
+  4. Returns the connection-pool state to verify the connection returned
+
+  Expected outcomes:
+  (a) IDEAL: backend query terminated within a few seconds of client disconnect;
+      connection returned to pool; no leaked DB-side resources
+  (b) LEAK: backend query continues to completion despite client disconnect;
+      connection held for the full scan duration
+  (c) PARTIAL: backend query terminates but connection not promptly returned
+
+  This characterises the resource-leak surface for getActivity under operationally
+  realistic conditions (UI tab close, network glitch, mobile-client backgrounding).
+---
+
+# P-014 — getActivity client-disconnect cancellation propagation (STRESS_E3)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (3014, '//probe-source-P-014/db', 'probe-source-P-014')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id,
+                               view_count, source_created_at, source_updated_at)
+      VALUES (3014, '//probe-source-P-014/db/tables/p014_entity', 'p014_entity',
+              3014, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # 50k activity rows — large enough that the scan takes 5-10s and the disconnect
+  # window is observable.
+  - kind: sql
+    query: |
+      INSERT INTO activity (data_entity_id, event_type, created_at, created_by,
+                            old_state, new_state)
+      SELECT 3014, 'BUSINESS_NAME_UPDATED',
+             NOW() - (interval '1 second' * gs),
+             'p014_user_' || (gs % 100),
+             '{"oldName": "before"}'::jsonb,
+             '{"newName": "after"}'::jsonb
+      FROM generate_series(1, 50000) AS gs
+
+act:
+  # Start the long-running getActivity with size=MAX_VALUE; abort the client
+  # after receiving the first 100 events.
+  - kind: rest_streaming_abort
+    method: GET
+    path: /api/activity?begin_date=2024-01-01T00:00:00Z&end_date=2030-12-31T23:59:59Z&size=2147483647
+    abort_after_events: 100
+    capture_as: aborted_read
+
+  # Wait 2 seconds for the backend to (hopefully) cancel.
+  - kind: sleep
+    seconds: 2
+
+  # Query pg_stat_activity from a sibling connection to check whether any active
+  # query is still scanning the activity table.
+  - kind: sql
+    query: |
+      SELECT pid, state, query, query_start, NOW() - query_start AS duration
+      FROM pg_stat_activity
+      WHERE query ILIKE '%FROM activity%'
+        AND state = 'active'
+        AND pid != pg_backend_pid()
+    capture_as: lingering_queries
+
+observe:
+  - kind: jsonpath
+    from: aborted_read_status
+    path: "$"
+    capture_as: status_aborted
+  - kind: jsonpath
+    from: aborted_read_received_events
+    path: "$"
+    capture_as: received_events
+
+  - kind: jsonpath
+    from: lingering_queries_result
+    path: "$"
+    capture_as: lingering_query_count
+
+assert:
+  # The client received at least the 100 events before aborting.
+  - "received_events >= 100"
+
+  # IDEAL outcome: no lingering active query on the activity table 2s after
+  # client disconnect. If this fails, the backend is leaking work.
+  - "lingering_query_count == 0"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM activity WHERE data_entity_id = 3014
+
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id = 3014
+
+  - kind: sql
+    query: |
+      DELETE FROM data_source WHERE id = 3014
+
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: []
+  test_gaps:
+    - TEST-GAP-LSN-019-ActivityController-disconnect-cancellation
+  doc_gaps: []
+  related_concepts:
+    - "Activity Feed"
+    - "Reactor onCancel propagation"
+  retrospectives: [LSN-019]
+  enrichment_sources:
+    - "lineage/odd-platform/understanding/odd-platform__java__ActivityController__controller-class__ActivityController.md"
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryImpl.java"
+    lines: "290-292"
+    role: "Read query with no JOOQ .queryTimeout / no statement_timeout — relies entirely on Reactor onCancel propagation"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ActivityController.java"
+    lines: "37-40"
+    role: "Mono<ResponseEntity<Flux<Activity>>> body — Reactor subscribe/cancel semantics flow through here"
+
+realism_caveats: |
+  - The `rest_streaming_abort` primitive (abort after N events received) may
+    not exist in the current probe-runner framework. This probe may need to
+    be executed via curl --max-time or a custom Python harness. Flag for
+    maintainer triage.
+
+  - The 2-second sleep before checking pg_stat_activity is a heuristic — under
+    a heavily-loaded system the cancellation may take longer to propagate.
+    Tune via observation.
+
+  - If lingering_query_count > 0, the operational impact depends on how
+    common client-disconnect-mid-stream is in practice. For a UI rendering
+    the Activity Feed page, a fast tab-close (Ctrl+W within 200ms of opening)
+    is one realistic case; a mobile client backgrounding mid-scroll is another.
+
+  - The probe DOES NOT distinguish between "JOOQ-level cancellation worked"
+    and "PG terminated the connection by timeout". Either is a positive
+    outcome from the operator's perspective (no resource leak). A more
+    targeted probe would inspect the JOOQ query trace or the R2DBC driver
+    logs to confirm the exact mechanism.
+
+  - Probe runs under DISABLED auth for simplicity. Cancellation propagation
+    is auth-mode-agnostic at the connection layer.

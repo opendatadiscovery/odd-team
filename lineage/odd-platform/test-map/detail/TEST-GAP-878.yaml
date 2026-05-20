@@ -1,0 +1,86 @@
+gap_id: TEST-GAP-878
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java ActivityController controller-class:ActivityController"
+pillars_affected: [P-07]
+surfaced_by:
+  - "ActivityController.md:stress_findings.STRESS_B2 (Validation error path uses Flux.error wrapped by Mono.just — response-shape ambiguity)"
+  - "ActivityController.md:bugs_limitations_corner_cases.[validation-error-shape-ambiguity] (severity HIGH)"
+  - "ActivityController.md:probe_skeletons_emitted (P-015)"
+  - "ActivityController.md:tests_coverage_semantic.uncovered_behaviours.[STRESS_B2: untested whether @RestControllerAdvice catches Flux-internal error]"
+behaviour: |-
+  **MEDIUM — `ActivityController.getActivity`'s validation path uses `Flux.error(BadUserRequestException)` from the service (`ActivityServiceImpl.java:99`), wrapped by the controller as `Mono.just(<error-flux>).map(ResponseEntity::ok)` (`ActivityController.java:37-40`). The OUTER Mono successfully constructs a `ResponseEntity.ok(<error-flux>)` — `.ok()` produces a 200 status. The Flux body errors only when WebFlux subscribes to write the response body. Whether `@RestControllerAdvice.handleBadRequest(BadUserRequestException)` ACTUALLY catches this error and returns HTTP 400, or whether Spring commits HTTP 200 headers BEFORE subscribing to the body Flux (in which case the caller receives HTTP 200 with the error in the streaming body), is currently UNTESTED.** The body-subscription seam is a WebFlux internals concern that is not statically determinable.
+
+  **Primary-source chain**:
+  - `ActivityController.java:37-40` — `Mono.just(<flux from service>).map(ResponseEntity::ok)` — the OUTER Mono wraps the body Flux
+  - `ActivityServiceImpl.java:98-100` — `if (beginDate == null || endDate == null) return Flux.error(new BadUserRequestException("Begin date and end date can't be null"))`
+  - `controller/exception/ControllerAdvice.java:24-28` — `@ExceptionHandler(BadUserRequestException.class)` maps to HTTP 400 with ErrorResponse JSON
+  - Spring WebFlux's `ResponseEntityResultHandler` subscribes to the body Flux to write it; the seam is between header commit and body subscription
+
+  **The three possible outcomes** (per ActivityController.md:STRESS_B2):
+  - **(a) Spring rescues**: HTTP 400 with ErrorResponse JSON body (per ControllerAdvice). The 200 headers were never committed because the Flux subscription failed pre-write. This is the INTENT behaviour.
+  - **(b) Headers commit first**: HTTP 200 with the error materialising in the streaming body as a Reactor onError signal — client receives a 200 with a malformed JSON array or a connection-closed-mid-stream
+  - **(c) Spring commits 500 with generic Internal Server Error**: the generic Exception handler catches what the BadUserRequestException handler missed due to the WebFlux body-subscription seam
+
+  The current empirical behaviour is unknown. **Probe P-015 is emitted to measure**.
+
+  **Operator-visible consequences**:
+  - **If (a) — happy intent**: API client receives HTTP 400 with structured error; the response shape matches OpenAPI's documented error type
+  - **If (b) — body-error leak**: API client gets HTTP 200 but cannot parse the response body — the OpenAPI-generated client SDK breaks because the expected `List<Activity>` shape isn't there. The SDK consumer's `getActivity(...)` call returns "" or throws a JSON parse error. Hard to diagnose because HTTP 200 implies success.
+  - **If (c) — generic 500**: API client gets HTTP 500; the OpenAPI-documented 400 contract is silently broken; the error message ("Internal Server Error") leaks no information about the actual cause (null dates)
+
+  **Why MEDIUM not HIGH (sidecar says HIGH)**:
+  - The sidecar rates this HIGH because the validation-error response-shape is operator-visible
+  - **We rate MEDIUM because**: (a) the actual behaviour is currently unknown (without P-015 we cannot rule out outcome (a) which would be the happy intent); (b) the test pins the CURRENT behaviour regardless of which of (a)/(b)/(c) wins — a future refactor that changes Spring version would flip the outcome without the test catching it; (c) the impact is shape-mismatch, not data-correctness
+
+  **Connection to probe P-015**:
+  - The sidecar emits P-015 to empirically determine which of (a)/(b)/(c) actually fires
+  - This TEST-GAP is the regression-pin AFTER P-015 confirms the empirical outcome — the test PINS the current outcome so future Spring version upgrades are caught
+
+  **Connection to TEST-GAP-079**:
+  - TEST-GAP-079 pins the null-date validation behaviour at the SERVICE layer (BadUserRequestException raised)
+  - This gap (878) pins the CONTROLLER-layer rendering of that exception across the WebFlux body-subscription seam
+  - Together they fully characterise the validation-error contract end-to-end
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ActivityControllerValidationErrorResponseShapeTest.java"
+  name: "getActivity_nullBeginDate_pinsBodyErrorShape_HTTP400orHTTP200streamingError"
+evidence:
+  - "ActivityController.md says (stress_findings.STRESS_B2): 'getActivity validation path uses Flux.error(BadUserRequestException) from the service (ActivityServiceImpl.java:99), wrapped by the controller as Mono.just(<flux>).map(ResponseEntity::ok) (ActivityController.java:37-40). The Mono successfully produces a ResponseEntity.ok(<error-flux>). Question: Does the @RestControllerAdvice handler ACTUALLY catch this error and return HTTP 400, or does Spring commit HTTP 200 headers before subscribing to the body Flux? Resolution: PROBE-NEEDED. The OUTER Mono returns Mono<ResponseEntity<Flux<Activity>>> successfully — .ok(<flux>) constructs a 200 response with the flux as the body. Spring WebFlux's ResponseEntityResultHandler would then subscribe to the body Flux to write it; at that point the Flux.error materialises. Spring default error-handling chain DOES include AbstractErrorWebExceptionHandler which can rescue errors before headers commit — but that path is fragile. The current empirical behaviour is unknown. PROBE-NEEDED: P-015 emitted.'"
+  - "ActivityController.md says (bugs_limitations_corner_cases): 'Validation-error response shape ambiguity (NEW finding, STRESS_B2): getActivity's validation path uses Flux.error(BadUserRequestException) from the service layer (ActivityServiceImpl.java:99), wrapped by the controller as Mono.just(<error-flux>).map(ResponseEntity::ok) (lines 37-40). The OUTER Mono of ResponseEntity<Flux<Activity>> succeeds — .ok(<flux>) produces a 200 status. The Flux body errors only when WebFlux subscribes to write the response body. Whether @RestControllerAdvice's BadUserRequestException handler maps this to HTTP 400 depends on whether the body-subscription error is raised BEFORE the 200 headers are committed.' — severity: HIGH (operator-visible error-response shape; pinned to probe)"
+  - "Verified at primary source: ActivityController.java:37-40 (the Mono.just(Flux.error()).map wrapper) + ActivityServiceImpl.java:98-100 (the BadUserRequestException) + controller/exception/ControllerAdvice.java:24-28 (the @ExceptionHandler mapping)"
+  - "Verified no existing test: Glob src/test/**/*Activity*.java returns ONLY ActivityMapperTest.java"
+cross_references:
+  - "TEST-GAP-079 (existing — null-date validation at service layer; this gap (878) pins controller-layer rendering through the WebFlux body-subscription seam)"
+  - "TEST-GAP-879 (sister VAL-LSN-019-B — size param REQUIRED-in-spec vs NULLABLE-in-Java; the OTHER STRESS_A1 finding on the same controller)"
+  - "TEST-GAP-882 (META anchor — zero controller-tier coverage)"
+  - "REFACTOR-NNN candidate: pre-validate dates at the controller layer (move the null-check from service to controller); OR adopt a different pattern (Mono.error directly instead of Flux.error wrapped by Mono.just); OR add a static helper that ensures the validation surfaces BEFORE the body-subscription seam"
+  - "probe-skeletons: P-015"
+related_features: [F-021]
+related_pillar_features: ["P-07:F-003"]
+proposed_action: |-
+  Add `ActivityControllerValidationErrorResponseShapeTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/` using `@WebFluxTest(ActivityController.class)` + `WebTestClient` + a controlled Spring Boot test slice. The HEADLINE test method:
+
+  1. **`getActivity_nullBeginDate_pinsBodyErrorShape_HTTP400orHTTP200streamingError`** (HEADLINE):
+     - Act: `webTestClient.get().uri("/api/activity").exchange()` (no query params; both dates null)
+     - Assert (PIN current behaviour — whichever of a/b/c wins):
+       - Option A (intent): `.expectStatus().isBadRequest().expectBody().jsonPath("$.code").isEqualTo("BAD_USER_REQUEST")`
+       - Option B (body-error leak): `.expectStatus().isOk()` then inspect body for malformed JSON OR connection-reset
+       - Option C (generic 500): `.expectStatus().is5xxServerError()`
+     - After P-015 measures which is actual, ONE assertion is locked in (the others removed). The test PINS that outcome as the contract.
+
+  2. **`getActivity_nullEndDate_pinsBodyErrorShape`** (variant):
+     - Same shape with only end_date null; verify the validation path fires for either-side-null.
+
+  3. **`getActivityCounts_nullDates_pinsResponseShape_noAsymmetricValidation`** (CONTROL — pin TEST-GAP-876 outcome):
+     - Act: `webTestClient.get().uri("/api/activity/counts").exchange()`
+     - Assert: PIN that getActivityCounts returns 200 OK (the asymmetric path that lacks validation; TEST-GAP-876's contract)
+
+  4. **`getDataEntityActivity_nullDates_pinsBodyErrorShape`** (variant on a sister endpoint):
+     - Same shape with `/api/dataentities/{id}/activity`; validates that the body-subscription seam behavior is consistent across the per-entity tab too
+
+  After P-015 confirms the empirical outcome (a, b, or c), refine the test assertions to lock that outcome in. Cross-pair with REFACTOR-NNN if the outcome is undesirable (e.g. if it's option b — body-error leak — the fix is to move the validation to the controller layer where Mono.error propagates cleanly).
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-021

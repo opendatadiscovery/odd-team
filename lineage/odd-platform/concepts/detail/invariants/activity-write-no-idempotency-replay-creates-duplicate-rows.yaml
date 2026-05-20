@@ -1,0 +1,233 @@
+name: Activity write has no idempotency / replay-safety — caller retries create duplicate
+  audit rows
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+description: |-
+  **NEW INVARIANT, batch VAL-LSN-019-B (2026-05-20)** — surfaced by
+  primary-source examination of ActivityServiceImpl + ActivityHandler +
+  ReactiveActivityRepositoryImpl. The activity write path has no
+  idempotency mechanism — caller-side retries produce duplicate rows.
+
+  **THE WRITE PATH** (ActivityServiceImpl.java:43-63):
+    `createActivityEvent(event)` / `createActivityEvents(events)` —
+    both delegate to `activityRepository.saveReturning(pojo)` /
+    `activityRepository.save(list)`. Per the
+    ReactiveActivityRepositoryImpl batch-R sidecar, these issue:
+      saveReturning: `DSL.insertInto(ACTIVITY).set(record).returning()`
+        — unconditional INSERT, no `ON CONFLICT` clause
+      save: batched INSERT (1000-row chunks), no `ON CONFLICT` clause
+
+  **THE LACK OF IDEMPOTENCY KEY**:
+    The ActivityCreateEvent shape:
+      `{long dataEntityId, ActivityEventTypeDto eventType, String oldState,
+       String newState, boolean systemEvent}`
+    NO idempotency key, NO request-id, NO content hash, NO event-id at
+    the create-side. The persisted ActivityPojo carries a DB-assigned
+    `id` (bigserial sequence) — different `id` on every retry, even for
+    semantically-identical retries.
+
+  **THE PARTIAL PROTECTION VIA ASPECT-FILTER**:
+    The `ActivityAspect:86` filter `!info.getOldState().equals(newState)`
+    provides partial protection in the SERIAL retry case: a retry that
+    fires AFTER the first attempt succeeded finds the state already
+    changed (oldState now equals newState because the previous emit
+    already moved the underlying entity). The filter blocks the emit;
+    no duplicate row is written. This works ONLY for the @ActivityLog
+    AOP path, NOT for the AlertService or Ingestion paths.
+
+  **THE TRUE-CONCURRENT-RETRY CASE**:
+    Two requests arriving before either has committed:
+      Request 1: user clicks "Update description" → starts
+        @ReactiveTransactional + getContextInfo captures S0 + business
+        mutation runs (state → S1) + getUpdatedState reads S1 + filter
+        passes (S0 != S1) + INSERT activity row → COMMIT
+      Request 2: user clicks "Update description" AGAIN (double-click
+        within the latency window of Request 1):
+        starts own @ReactiveTransactional + getContextInfo captures
+        S0 (because Request 1 has not yet committed under READ
+        COMMITTED) + business mutation runs (idempotent: state already
+        S1 or S2-with-same-content) + getUpdatedState reads S1 or S2
+        + filter MAY pass (S0 != S2) + INSERT another activity row
+        → COMMIT
+    Two activity rows with sequential ids and indistinguishable
+    payloads (or near-indistinguishable, depending on the underlying
+    entity's idempotency).
+
+  **OPERATOR-VISIBLE MANIFESTATION**:
+    A compliance reviewer reading the activity feed for data entity X
+    sees TWO description-update events with the same actor + same
+    diff at nearly the same timestamp. The reviewer assumes a server
+    issue (mistakenly recorded twice) or a UX bug (user double-clicked,
+    both recorded). Both interpretations are correct — the audit
+    feed cannot distinguish them.
+
+  **AT-SCALE MANIFESTATIONS**:
+    Source 1 — Spring Retry / @Retryable: a future maintainer adding
+    `@Retryable` to an @ActivityLog method (legitimate use case for
+    transient DB failures) would amplify the duplicate-row rate
+    proportionally to the retry count.
+    Source 2 — RestTemplate / WebClient retry: a UI or programmatic
+    client retrying on 5xx (any 5xx, including a transient activity
+    DB error) would amplify the duplicate-row rate.
+    Source 3 — Scheduler re-fire: a future scheduled job that emits
+    activity rows (e.g. "weekly digest of ownership changes") and
+    fires twice due to ShedLock race or operator manual re-trigger
+    would emit duplicates.
+    Source 4 — User double-click: the most common in UX.
+
+  **THE FIX SHAPES** (mutually exclusive options):
+    (a) Add an idempotency key to ActivityCreateEvent + a unique
+        constraint on `(idempotency_key)` in the activity table.
+        Caller-side: hash the (entity_id, event_type, oldState,
+        newState, actor, timestamp_truncated_to_minute) and pass as
+        idempotency_key. Server-side: ON CONFLICT (idempotency_key)
+        DO NOTHING. Cost: schema migration; producer code change;
+        carry-key-through-AspectJ.
+    (b) Add a content-hash-based deduplication INSIDE the aspect:
+        before emitting, query `SELECT 1 FROM activity WHERE
+        data_entity_id = ? AND event_type = ? AND old_state = ? AND
+        new_state = ? AND created_at > NOW() - INTERVAL '5 minutes'`;
+        skip if exists. Cost: extra DB read per emit; semantic
+        ambiguity (what if a legitimate second mutation produced an
+        identical diff?).
+    (c) Document the lack of idempotency on the activity-feed feature
+        page; advise operators to deduplicate at read time.
+
+  **PROBE-EMITTED**: per ActivityServiceImpl sidecar
+  stress_findings.S-B-4, this is STATIC-INFERRED with HIGH confidence
+  (saveReturning is unconditional INSERT; no `ON CONFLICT`; the aspect
+  filter only catches the serial-retry case, not the true-concurrent
+  case).
+nodes:
+- odd-platform java service:ActivityServiceImpl
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+contributors:
+- |-
+  ActivityServiceImpl (batch VAL-LSN-019-B): stress_findings.S-B-4
+  (createActivityEvent name vs createActivityEvents name promise — no
+  retry, no idempotency, no replay-safety) + stress_findings.S-E-2 (no
+  idempotency / replay-safety; the aspect path provides PARTIAL
+  protection only via oldState != newState filter)
+- |-
+  ActivityServiceImpl (batch VAL-LSN-019-B): concepts.invariants.[5]
+  (no replay-safety / idempotency mechanism on the write path —
+  unconditional INSERT; retry produces duplicate rows; the aspect
+  filter catches the serial retry but not the true-concurrent case)
+- |-
+  ReactiveActivityRepositoryImpl (batch R): saveReturning is
+  `DSL.insertInto(ACTIVITY).set(record).returning()` — unconditional
+  INSERT, no ON CONFLICT clause (per repository sidecar lines 50-71)
+evidence:
+- |-
+  ActivityServiceImpl.md:concepts.invariants.[5] — verbatim: "There
+  is NO replay-safety / idempotency mechanism on the write path.
+  activityRepository.saveReturning(pojo) performs an unconditional
+  INSERT ... there is no ON CONFLICT clause, no idempotency key, no
+  dedup. If a caller retries the SAME mutation (e.g. user double-clicks
+  the description-update button, or a retry-policy fires), TWO
+  activity rows are created with sequential id values and
+  indistinguishable payloads. The aspect's .filter(newState ->
+  !info.getOldState().equals(newState)) at ActivityAspect.java:86
+  catches the no-op case (the second click finds the state already
+  updated → no emit), but a TRUE concurrent double-mutation (two
+  different oldStates resolving to the same newState in opposite
+  orders) emits one row per resolution path."
+- |-
+  ActivityServiceImpl.md:stress_findings.S-B-4 — verbatim:
+  "createActivityEvent name vs createActivityEvents name promise —
+  neither method has retry, idempotency, or replay-safety. saveReturning
+  is an unconditional INSERT (per repository sidecar line 52-53);
+  save is an unconditional batched INSERT. A caller-side retry
+  produces TWO rows. Operator-visible drift: any caller that retries
+  (Spring Retry, RestTemplate retry, user double-click) creates
+  duplicate audit entries. Severity: MEDIUM. Confidence: STATIC-
+  INFERRED HIGH."
+- |-
+  ActivityServiceImpl.md:stress_findings.S-E-2 — verbatim: "If the
+  same ActivityCreateEvent is submitted twice (caller retry, user
+  double-click, scheduler re-fire), how many rows are written?
+  Resolution: TRACE-answer (STATIC-INFERRED) — TWO rows, with
+  sequential id values and indistinguishable payloads. The aspect
+  path provides PARTIAL protection ... For TRUE concurrent retries
+  (two requests arriving before either has committed) BOTH succeed
+  at the activity-write level (no ON CONFLICT, no advisory lock).
+  Severity: MEDIUM."
+- |-
+  ReactiveActivityRepositoryImpl.md:concepts.invariants.[5]
+  (Saved ActivityRecord carries `(data_entity_id, event_type, old_state
+  JSONB, new_state JSONB, is_system_event, created_at, created_by)`
+  — no idempotency_key column in the schema)
+axes_present:
+- services
+- repositories_reactive
+triangulation_count: 2
+cross_batch: false
+severity: MEDIUM
+severity_dim: audit-integrity
+mitigations_unimplemented:
+- |-
+  Add an idempotency_key column to the activity table + a UNIQUE
+  index on the column. Add idempotency_key to ActivityCreateEvent;
+  caller-side compute it (e.g. SHA-256 of canonical-serialized
+  (entity_id, event_type, oldState, newState, actor, request_id)).
+  Server-side `saveReturning` uses `ON CONFLICT (idempotency_key)
+  DO NOTHING`. Schema migration + producer code change.
+- |-
+  Add a UNIQUE partial index on `(data_entity_id, event_type,
+  created_by, md5(new_state), date_trunc('minute', created_at))`
+  WHERE deleted_at IS NULL. Approximate dedup based on content +
+  actor + minute-truncated time. Lighter-weight than the
+  idempotency-key approach; catches the user-double-click case;
+  misses the legitimate-second-same-diff case.
+- |-
+  Add an integration test
+  `ActivityServiceImplConcurrencyTest.testConcurrentSameDoubleClick_Deduplicates`
+  that exercises the user-double-click race directly. Pin the
+  current behaviour (TWO rows) until the fix lands.
+- |-
+  Add a metric `activity_emit_duplicate_pairs_total` — count pairs
+  of activity rows in the last hour with the same `(data_entity_id,
+  event_type, created_by, md5(new_state))` and `created_at` within
+  500ms of each other. Operators can detect duplicate-emit rate.
+- |-
+  Document the lack of idempotency on the activity-feed feature
+  page: "ODD's activity-trail does not currently deduplicate
+  near-simultaneous identical mutations. Operators reading the feed
+  may see duplicate entries for user double-clicks or programmatic
+  retries; the underlying state is correct."
+notes: |-
+  NEW invariant captured in batch VAL-LSN-019-B. Surfaced by
+  primary-source examination of ActivityServiceImpl + cross-referenced
+  with ReactiveActivityRepositoryImpl.
+
+  This is an audit-integrity invariant — the audit feed's
+  "trustworthiness" depends on the ratio of duplicate rows to real
+  rows. Single-user-UX deployments rarely hit it; high-throughput
+  + retry-prone deployments hit it routinely.
+
+  The aspect filter provides partial protection (the serial-retry
+  case is correctly suppressed), making the invariant less severe
+  than it would be without the filter. The remaining attack surface
+  is the true-concurrent case, which is rare in normal UX but
+  amplifies with ingestion-heavy deployments.
+
+  Cross-cutting connections:
+    - Pairs with `activity-handler-concurrent-oldstate-capture-race`
+      — the concurrent case is the SAME shape; this finding is
+      "the underlying writes are not deduplicated" and that finding
+      is "the snapshot pair is wrong" — both manifest in the audit
+      log as multiple wrong rows for a single user action
+    - Pairs with `service-tier-multi-step-writes-without-reactivetransactional-toctou-surface`
+      — TOCTOU surfaces in service-tier writes; this finding is
+      the audit-tier equivalent
+    - Cross-references LSN-019 Stress Protocol Category E (resource
+      boundaries — idempotency / replay-safety) as the
+      diagnostic-class anchor
+
+  PRIMARY-SOURCE confidence: HIGH (saveReturning is unconditional
+  INSERT per the repository sidecar; aspect filter shape verified
+  line-by-line at ActivityAspect.java:86; the partial-protection
+  vs full-protection distinction is rigorously stated in the
+  service sidecar's stress findings).

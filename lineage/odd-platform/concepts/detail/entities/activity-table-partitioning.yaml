@@ -8,18 +8,28 @@ description: 'Operational concept covering the range-partitioning lifecycle of t
   orchestrated by `PostgreSQLPartitionCreationJob` at boot (under Postgres advisory
   lock id `partition.advisory-lock-id` default 90) AND nightly via Spring `@Scheduled(cron="0
   1 0 * * *")` (under ShedLock `partitionCreationJob` with lockAtLeastFor=10m / lockAtMostFor=10m).
-  **No retention/DROP path** — the activity table grows monotonically; `PartitionService.dropPartition`
-  + `getEmptyPastPartitions` exist on the service interface but are never invoked
-  for this table. Sibling `MessageTablePartitionManager` (under `@ConditionalOnDataCollaboration`)
-  uses the same pattern for the messages table. vocabulary_status: codebase-anchored,
-  doc-side-partially-covered (the partition-period config key is documented at `/configuration-and-deployment/odd-platform#metric-storage-backend`
+  **No retention/DROP path for non-empty partitions** — the activity table grows
+  monotonically on any deployment that generates activity events. `PartitionService.dropPartition`
+  + `getEmptyPastPartitions` exist on the service interface; the EMPTY-ONLY
+  drop is invoked by `ActivityEmptyPartitionsHousekeepingJob`, but only fires
+  for partitions whose count(*)=0 AND whose end-date is in the past. On a
+  steadily-used deployment with 60-day-wide partitions, partitions rarely
+  empty out — the housekeeping job is functionally a near-no-op (verified
+  PRIMARY SOURCE batch VAL-LSN-019-B). Sibling `MessageTablePartitionManager`
+  (under `@ConditionalOnDataCollaboration`) uses the same pattern for the
+  messages table. vocabulary_status: codebase-anchored, doc-side-partially-covered
+  (the partition-period config key is documented at `/configuration-and-deployment/odd-platform#metric-storage-backend`
   adjacent — verified WebFetch 2026-05-10 — but the doc claim ''retention and partitioning
   are controlled by'' is INCORRECT: setting controls WIDTH only).'
 vocabulary_status: codebase-anchored, doc-side-partially-covered
 axes_present:
 - config_prefixes
+- housekeeping
+- repositories_reactive
 nodes:
 - odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
+- odd-platform java housekeeping job:ActivityEmptyPartitionsHousekeepingJob
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
 contributors:
 - 'ActivityTablePartitionManager@L11: entities[ActivityTablePartitionManager, AbstractPartitionManager,
   PartitionManager, PartitionService, PostgreSQLPartitionCreationJob, TablePartition,
@@ -28,22 +38,67 @@ contributors:
   acquire-advisory-lock, acquire-shedlock]; invariants[2x WIDTH-to-CADENCE ratio;
   advisory-lock-90 boot-time + ShedLock nightly; silent-fail catch + continue; no
   DROP path; partition naming `{tableName}_{yyyyMMdd}_{yyyyMMdd}` parser-coupled]'
+- |-
+  **ActivityEmptyPartitionsHousekeepingJob (batch VAL-LSN-019-B — FRESH PRIMARY
+  SOURCE)**: entities[ActivityEmptyPartitionsHousekeepingJob,
+  EmptyPartitionsHousekeepingJob base, PartitionServiceImpl,
+  HousekeepingJobManager]; operations[drop-empty-past-partition,
+  list-partitions-by-prefix, check-partition-in-past, check-partition-empty,
+  log-debug-on-drop, swallow-cycle-failure]; invariants[binds Tables.ACTIVITY;
+  no exclusions; real count(*)=0 check; past-check via name parser; DROP TABLE
+  no IF EXISTS; no @Transactional]; bugs[functionally near-no-op on steadily-used
+  platforms; race window between empty-check and DROP — silent data loss;
+  DROP TABLE no IF EXISTS multi-instance race; LIKE pattern matches more
+  than partitions; no observability]
+- |-
+  **ReactiveActivityRepositoryImpl (batch VAL-LSN-019-B — REWRITE)**: SQL-tier
+  primary source confirming no `deleteFrom(ACTIVITY)` anywhere in the
+  repository file; the activity table grows monotonically (bugs_limitations_corner_cases[0]
+  HIGH severity); performance.known_performance_gaps[0] HIGH — unbounded
+  growth; cross-references retention-claim-vs-code-drift invariant
 evidence:
 - ActivityTablePartitionManager@L11.md:concepts.entities + concepts.operations + concepts.invariants
 - ActivityTablePartitionManager@L11.md:implicit_adrs.[0-3] (2x WIDTH; dual-lock boot+cron;
   List<PartitionManager> discovery; silent catch+continue)
 - ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0-6]
+- |-
+  ActivityEmptyPartitionsHousekeepingJob.md:concepts.invariants.[0-5]
+  (Tables.ACTIVITY target; no exclusions; real count(*)=0; past-check;
+  DROP TABLE no IF EXISTS; no @Transactional)
+- |-
+  ActivityEmptyPartitionsHousekeepingJob.md:bugs_limitations_corner_cases.[0]
+  (near-no-op on steadily-used platforms — HIGH severity; the empty-partition
+  drop is structurally rare on busy deployments)
+- |-
+  ActivityEmptyPartitionsHousekeepingJob.md:bugs_limitations_corner_cases.[1]
+  (race window between empty-check and DROP — HIGH severity; promoted
+  to dedicated invariant
+  `activity-empty-partitions-race-window-between-count-check-and-drop`)
+- |-
+  ActivityEmptyPartitionsHousekeepingJob.md:implicit_adrs.[0-1] (symmetric
+  naming pattern across EmptyPartitionsHousekeepingJob subclasses; empty-only
+  contract preserved by template method)
+- |-
+  ReactiveActivityRepositoryImpl.md:bugs_limitations_corner_cases.[0]
+  + performance.known_performance_gaps.[0] (HIGH — unbounded growth;
+  no DELETE path; no non-empty-partition DROP path)
 security_aggregate:
   overall: MEDIUM
-  auth_modes_relevant: []
+  auth_modes_relevant:
+  - INTERNAL_ONLY
   ingestion_filter_relevance: N/A
   authorization_consistency:
     verdict: N/A
     detail: Partition-lifecycle code, not HTTP-surface. `@Component` bean wired unconditionally;
-      runs in Spring scheduling context.
+      runs in Spring scheduling context. Same applies to
+      ActivityEmptyPartitionsHousekeepingJob (the reaper companion) —
+      neither bean is gated by auth.type.
   owner_scoping:
     verdict: N/A
-    detail: DDL-surface, not data-row-surface. No caller-user context inside `createPartitionsIfNotExists`.
+    detail: DDL-surface, not data-row-surface. No caller-user context inside
+      `createPartitionsIfNotExists` (creator side) OR `dropPartition`
+      (reaper side). The system-wide activity table has no per-Owner
+      partitioning.
   strengths:
   - 'Dual-mechanism concurrency safety: Postgres advisory lock id `90` at boot, ShedLock
     `partitionCreationJob` with 10m hold at nightly cron — defence-in-depth against
@@ -53,12 +108,38 @@ security_aggregate:
     extending AbstractPartitionManager
   - Default partition WIDTH (`:30`) is in the `@Value` annotation itself — operator
     who unsets the key still gets sensible behaviour
+  - |-
+    **Batch VAL-LSN-019-B addition**: `ActivityEmptyPartitionsHousekeepingJob`
+    honors its name at the centre — real `SELECT count(*) = 0` check
+    + `isPartitionInPast` parser. The empty-only contract is structurally
+    enforced by the abstract base's template method (subclasses cannot
+    bypass; verified at EmptyPartitionsHousekeepingJob.java:21-22 + the
+    PartitionServiceImpl.java:110 AND-guard)
   weaknesses:
   - '**Partition creation requires CREATE TABLE privilege on `public` schema** — deployment
     doc does not surface this requirement. Operator running ODD against a managed
     Postgres with least-privileged DB role (INSERT/SELECT but no DDL) fails partition
     creation at boot, logs ERROR, silently degrades. Deployment-pre-req documentation
     gap with security-policy implications. Severity MEDIUM (ActivityTablePartitionManager@L11.md:security.known_security_gaps.[0])'
+  - |-
+    **Batch VAL-LSN-019-B addition**: `ActivityEmptyPartitionsHousekeepingJob`
+    requires `DROP TABLE` privilege on `public.activity_*` partition tables —
+    equivalently ownership of the parent activity table OR superuser
+    (Postgres invariant). Combined with the CREATE TABLE requirement on
+    the creator side, the application's DB role must hold BOTH CREATE
+    TABLE on `public` AND DROP TABLE on every partition it creates.
+    Canonical config docs page does not enumerate this privilege requirement
+    — operators running ODD against managed Postgres with least-privileged
+    role discover the gap only when partition lifecycle silently fails.
+    Severity MEDIUM (ActivityEmptyPartitionsHousekeepingJob.md:security.known_security_gaps.[0])
+  - |-
+    **Batch VAL-LSN-019-B addition**: No audit log of partition DROP —
+    unlike data-mutation paths covered by `@ActivityLog`, this housekeeping
+    job's DROP TABLE against the audit-trail table itself emits ONLY
+    `log.debug` at default-suppressed level. A compliance-aware deployment
+    (SOX, GDPR records-of-processing) has no audit trail of WHICH partition
+    was dropped WHEN — the very audit trail being managed has its own
+    management actions invisible to audit. Severity MEDIUM (ActivityEmptyPartitionsHousekeepingJob.md:security.known_security_gaps.[1])
   - No audit log on partition CREATE / DROP operations — unlike data-mutation paths
     covered by `@ActivityLog`, schema-level DDL is silent. Debug-level log line only.
     Severity LOW (ActivityTablePartitionManager@L11.md:security.known_security_gaps.[1])
@@ -69,9 +150,14 @@ security_aggregate:
   cross_file_inconsistencies: []
   contributing_files:
   - ActivityTablePartitionManager@L11.md
+  - ActivityEmptyPartitionsHousekeepingJob.md
+  - ReactiveActivityRepositoryImpl.md
   evidence:
   - ActivityTablePartitionManager@L11.md:security.known_security_gaps.[0,1]
   - ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[5]
+  - |-
+    ActivityEmptyPartitionsHousekeepingJob.md:security.known_security_gaps.[0,1]
+    (DDL privilege requirement undocumented; no audit log of DROP)
 performance_aggregate:
   overall: MEDIUM
   hot_paths:
@@ -81,17 +167,29 @@ performance_aggregate:
     probe until lock release — startup latency unbounded under contention
   - Nightly cron at `00:01` local-server-time, once per 24h per ShedLock-electable
     instance. 10m lock window prevents intra-instance re-fire and inter-instance double-fire
+  - |-
+    **Batch VAL-LSN-019-B addition**: Every 15-min housekeeping cycle,
+    `ActivityEmptyPartitionsHousekeepingJob` issues `SELECT count(*) = 0
+    FROM <partition>` over EVERY past activity partition. For a deployment
+    with N≈61 partitions (5-year, default 30-day cadence) and millions of
+    rows per partition, each cycle's count scan is HIDDEN DB load — even
+    though every partition is non-empty (so no DROP fires). Probe P-013
+    emitted for empirical I/O cost measurement (ActivityEmptyPartitionsHousekeepingJob.md:performance.hot_paths[0])
   throughput_shape:
     verdict: SINGLE_ITEM_ONLY
     detail: Single-shot per cycle. Each manager's createPartitionsIfNotExists issues
       a small fixed number of CREATE TABLE statements (typically 0-1 per cycle, since
       the previous cycle covered the next-period window). Synchronous JDBC, not reactive.
+      The housekeeping reaper is also single-shot per cycle (sequential per-partition
+      empty-check + drop; no parallelism).
   scaling_shape:
     verdict: STATEFUL_LOCKED
     detail: Postgres advisory lock id 90 is a global serialisation point at boot.
       ShedLock `partitionCreationJob` is a global serialisation point at nightly cron.
       Adding a third partition manager would serialise behind activity + message managers.
-      Advisory-lock-id values managed by convention, not central registry.
+      Advisory-lock-id values managed by convention, not central registry. The
+      housekeeping side uses ShedLock `housekeepingJob` (14m / 14m window, 15-min
+      schedule — razor-thin per F-010 finding).
   strengths:
   - Postgres-advisory-lock and ShedLock both use Postgres as the coordination point
     — preserves Postgres-as-only-dependency posture
@@ -100,18 +198,24 @@ performance_aggregate:
   - DDL `CREATE TABLE IF NOT EXISTS` is idempotent — re-running the same partition
     window is safe
   weaknesses:
-  - '**Unbounded monotonic growth of `public.activity`** — no DROP, no retention,
-    no cleanup (cross-references Activity Feed concept''s weakness). Severity HIGH
-    at scale (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0]).
-    **Now 2-sidecar primary-source confirmed in batch 2026-05-12D**: HousekeepingTTLProperties
-    has exactly three TTL fields (`resolved_alerts_days`, `search_facets_days`, `data_entity_delete_days`)
-    and NO `activity*Days` field. The only activity-touching housekeeping bean is
-    `ActivityEmptyPartitionsHousekeepingJob` which drops EMPTY past partitions only
-    (`isPartitionEmpty` at PartitionServiceImpl.java:133-141) — partitions with even
-    one row are retained indefinitely. Drift confirmed from two angles: partition-WIDTH
-    side AND housekeeping-coverage side. Live docs page''s ''retention and partitioning''
-    claim is unsupported by the code. (HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[0]
-    — drift CONFIRMED from second angle)'
+  - '**Unbounded monotonic growth of `public.activity`** — no DROP for non-empty
+    partitions, no row-level retention, no cleanup (cross-references Activity Feed
+    concept''s weakness). Severity HIGH at scale (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0]).
+    **NOW 5-evidence-point primary-source pinned**: ReactiveActivityRepositoryImpl
+    (batch R) confirms NO `deleteFrom(ACTIVITY)` exists in the repository file;
+    HousekeepingTTLProperties has no `activity*Days` field; ActivityTablePartitionManager
+    creates partitions but never drops non-empty ones; ActivityEmptyPartitionsHousekeepingJob
+    (batch VAL-LSN-019-B PRIMARY SOURCE) only drops EMPTY past partitions — which
+    is structurally rare on steadily-used platforms. Live `features/active-platform-features/activity-feed#configuration`
+    page''s ''retention and partitioning'' claim is unsupported from FOUR angles
+    + the SQL-tier confirmation = FIVE primary-source evidence points.'
+  - |-
+    **Batch VAL-LSN-019-B addition**: `SELECT count(*) = 0` housekeeping
+    check is an unindexed sequential scan on every past partition per 15-min
+    cycle — for populated deployments, multi-GB scans per partition per
+    cycle (P-013 probe emitted). Fix: rewrite to `WHERE NOT EXISTS (SELECT
+    1 FROM <partition> LIMIT 1)` which short-circuits on first row.
+    Severity MEDIUM on populated deployments (ActivityEmptyPartitionsHousekeepingJob.md:performance.known_performance_gaps[0])
   - '**Silent-fail on CREATE failure** — log ERROR + continue. Severity HIGH (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[2])'
   - '**No `@Min(1)` validation on `partition-period`** — `0` silently skips creation;
     negative values fail Postgres at CREATE time. Severity MEDIUM (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[1])'
@@ -125,56 +229,70 @@ performance_aggregate:
     LOW (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[3])'
   - '**Partition naming parser-coupled** — split-on-underscore expects exactly 3 parts;
     manually-created partitions with other names crash the parser. Severity LOW (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[4])'
+  - |-
+    **Batch VAL-LSN-019-B addition — `LIKE 'activity_%'` matches more than
+    partition tables**: PartitionServiceImpl.getEmptyPastPartitions runs
+    `WHERE table_schema = 'public' AND table_name LIKE 'activity_%'` — the
+    pattern matches ANY table name starting with `activity_`, including
+    hypothetical manually-created tables. No `exclusions()` set on this
+    job. Severity LOW (requires manual operator action to trigger; but
+    fragile by design — ActivityEmptyPartitionsHousekeepingJob.md:bugs_limitations_corner_cases.[3])
   cross_file_inconsistencies: []
   contributing_files:
   - ActivityTablePartitionManager@L11.md
+  - ActivityEmptyPartitionsHousekeepingJob.md
+  - ReactiveActivityRepositoryImpl.md
   evidence:
   - ActivityTablePartitionManager@L11.md:performance.hot_paths
   - ActivityTablePartitionManager@L11.md:performance.known_performance_gaps.[0-2]
   - ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0-4]
-notes: 'Activity Table Partitioning is the OPERATIONAL counterpart to the
-
+  - |-
+    ActivityEmptyPartitionsHousekeepingJob.md:performance.hot_paths +
+    performance.known_performance_gaps.[0] (count(*)=0 unindexed scan)
+  - |-
+    ReactiveActivityRepositoryImpl.md:bugs_limitations_corner_cases.[0]
+    + performance.known_performance_gaps.[0] (no deleteFrom path; SQL-tier
+    primary source for monotonic growth)
+notes: |-
+  Activity Table Partitioning is the OPERATIONAL counterpart to the
   Activity Feed concept — Activity Feed is the read surface, this is
-
   the durability surface. The concept also covers the sibling
-
   MessageTablePartitionManager (DataCollaboration messages table) by
-
   pattern. main-concepts.md does not name "Partition" or "Partitioning"
-
   as a canonical term; the operator-facing reference at
-
   `/configuration-and-deployment/odd-platform#activity-feed-partitioning-odd-activity-partition-period`
-
   documents the partition-period config but mis-describes its effect
-
   (claims retention; actually width-only) and omits coupled keys
-
   (partition.advisory-lock-id). Three high-priority DOC-NNN candidates
-
   flow from this concept: (a) correct the retention claim on the
-
   activity-feed feature page, (b) add `partition.advisory-lock-id` +
-
   DB-role-privilege requirements to the operator reference, (c) add
-
   operational observability guidance (the partition-creation failure
-
   mode is currently invisible).
 
-
   Batch 2026-05-12D adds 2-sidecar primary-source triangulation for the
-
   activity-retention-drift weakness — HousekeepingTTLProperties confirms
-
   that no `activity*Days` field exists ANYWHERE in the codebase; the only
-
   activity-touching housekeeping path requires partitions to already be
-
   empty before dropping. REFACTOR-085 is now confirmed from two angles
-
   and surfaced as a separate cross-cutting invariant ("Retention claim
-
   vs code drift").
 
-  '
+  **Batch VAL-LSN-019-B (2026-05-20) adds — Stress Protocol canary 2 (Activity)**:
+    - PRIMARY-SOURCE pin of ActivityEmptyPartitionsHousekeepingJob — the
+      reaper companion to ActivityTablePartitionManager. The empty-only
+      contract is honored AT THE CENTRE (real count(*)=0 check) but the
+      contract has a temporal-boundary weakness:
+        (a) Functionally a near-no-op on steadily-used platforms
+            (60-day-wide windows rarely empty out)
+        (b) Race window between count-check and DROP — silent row loss
+            (promoted to dedicated invariant
+            activity-empty-partitions-race-window-between-count-check-and-drop)
+    - PRIMARY-SOURCE pin of ReactiveActivityRepositoryImpl confirming the
+      SQL-tier angle: NO `deleteFrom(ACTIVITY)` anywhere in the repository;
+      the activity table grows monotonically from a third angle (fourth
+      with housekeeping; fifth with this batch's housekeeping pin)
+    - FIVE-evidence-point primary-source: retention-claim-vs-code-drift
+      is now ULTRA-CONFIRMED — partition-WIDTH side + housekeeping-TTL
+      side + SQL-repository tier + housekeeping-coverage side +
+      housekeeping-job-primary-source-pin

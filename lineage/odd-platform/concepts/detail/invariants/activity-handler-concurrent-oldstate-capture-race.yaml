@@ -1,0 +1,224 @@
+name: ActivityHandler — concurrent @ActivityLog mutations on the same data entity
+  capture the SAME pre-mutation oldState; the second handler's diff is wrong
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+- P-08
+description: |-
+  **NEW INVARIANT, batch VAL-LSN-019-B (2026-05-20)** — surfaced by
+  primary-source examination of ActivityHandler interface combined with
+  ActivityAspect's snapshot-diff-emit pipeline. The handler-tier
+  snapshot capture is OK in isolation; the race emerges when TWO
+  concurrent @ActivityLog mutations target the same data entity.
+
+  **THE RACE SHAPE**:
+    Time T0 — data entity X has state S0 (e.g. ownership = [Alice])
+    Time T1 — Thread A starts @ActivityLog method to add Bob:
+      A.preActivity@48 → A.getContextInfo captures oldState = S0 (= [Alice])
+    Time T2 — Thread B starts @ActivityLog method to add Charlie
+      (CONCURRENTLY):
+      B.preActivity@48 → B.getContextInfo captures oldState = S0 (= [Alice])
+      ↑ both racers see S0 because B's @ReactiveTransactional started
+        before A's committed; READ COMMITTED isolation does not block
+        the second snapshot read
+    Time T3 — A.joinPoint.proceed() runs → state becomes S1 = [Alice, Bob]
+    Time T4 — A.postActivity@85 → A.getUpdatedState reads newState = S1
+    Time T5 — A.postActivity@86 filter: S0 != S1, emit activity event
+      eA = (S0 → S1) = "[Alice] → [Alice, Bob]" — CORRECT
+    Time T6 — A's TX commits
+    Time T7 — B.joinPoint.proceed() runs → state becomes S2 = [Alice, Bob, Charlie]
+    Time T8 — B.postActivity@85 → B.getUpdatedState reads newState = S2
+    Time T9 — B.postActivity@86 filter: S0 != S2, emit activity event
+      eB = (S0 → S2) = "[Alice] → [Alice, Bob, Charlie]" — **WRONG**
+      ↑ B's oldState should be S1 = [Alice, Bob] (the state AT THE TIME
+        B's actual mutation started), not S0 (the state at T2 when
+        B.getContextInfo ran). The audit-trail entry implies Charlie
+        was added at the same time as Bob — false attribution.
+    Time T10 — B's TX commits
+
+  **THE DIFF IS WRONG BUT THE FILTER PASSES**:
+    The `ActivityAspect:86` filter is `!info.getOldState().equals(newState)`
+    — JSON-string equality. S0 != S2 is true (different ownership
+    lists), so the emit fires. The filter does NOT catch the wrong
+    oldState; the filter is a no-op-emit-suppressor, not an integrity
+    check.
+
+  **THE OPERATOR-VISIBLE MANIFESTATION**:
+    A compliance reviewer paging through the Activity feed for data
+    entity X sees TWO ownership events:
+      Event eA at time TA: "[Alice] → [Alice, Bob]" by Thread A's actor
+      Event eB at time TB > TA: "[Alice] → [Alice, Bob, Charlie]" by Thread B's actor
+    The reviewer sees that BOTH events show Bob ADDED (because eB's
+    oldState shows Bob absent and newState shows Bob present). The
+    reviewer concludes Bob was added TWICE; or, if the reviewer is
+    sharp, they conclude eB's actor "rewrote history" by reintroducing
+    Bob alongside Charlie. Both interpretations are wrong: Thread B
+    only added Charlie; Bob was never re-added.
+
+  **THE READ-COMMITTED CONTRIBUTION**:
+    The race exists because @ReactiveTransactional under R2DBC inherits
+    Postgres's default READ COMMITTED isolation. Under SERIALIZABLE
+    isolation, Thread B's `getContextInfo` snapshot would still see S0
+    initially (snapshot at TX start), BUT either A or B would fail to
+    commit with serialization_failure (40001) and Spring's
+    transactional retry (if configured) would re-run B's @ActivityLog
+    method against the new committed state. The race shape is
+    unique-to-READ-COMMITTED.
+
+  **PROOF OF CONCURRENT EXPOSURE**:
+    Verified across 18+ @ActivityLog methods (10 service files —
+    DataEntityServiceImpl.upsertTags, OwnershipServiceImpl.create/update/
+    delete, DatasetFieldServiceImpl.updateDatasetFieldTags,
+    TermServiceImpl.linkTermWithDataEntity, etc.). NONE carry
+    application-tier pessimistic locks (`SELECT ... FOR UPDATE`); NONE
+    carry advisory locks. The race window is open on every concurrent
+    pair.
+
+  **CONCURRENCY-REALISM**:
+    For most UX-driven mutations, the race is rare: an operator
+    typically serializes through a single tab (one form submit per
+    second at most). The race emerges in:
+    (a) Bulk operations — `DataEntityServiceImpl.upsertTags` accepts a
+        list of (entity_id, tag_id) pairs; bulk runs of this method by
+        two users at once on overlapping entities
+    (b) Ingestion-tier writes — the S2S pipeline runs many mutations
+        concurrently; if two collectors target overlapping entities,
+        the race fires
+    (c) Automated workflows — Slack-driven approvals, CI/CD pipelines
+        applying tags, scheduled jobs adjusting ownership
+
+  **NEW INVARIANT NEEDS A REGRESSION TEST**:
+    Per ActivityHandler sidecar
+    `tests_coverage_semantic.uncovered_behaviours.[OLD-vs-NEW state
+    race]` — no test currently asserts the snapshot pair is consistent
+    for concurrent same-entity mutations. The test shape would be:
+      StepVerifier with two concurrent OwnershipServiceImpl.update
+      calls on the same data entity, assert resulting ActivityPojo
+      old/new states are pairwise consistent (B's oldState should
+      equal A's newState if A committed first).
+    Severity HIGH per the sidecar.
+
+  **MITIGATION OPTIONS**:
+    (a) Move `getContextInfo` to AFTER `joinPoint.proceed()` — but that
+        eliminates the semantic of "this is what the state WAS before
+        the mutation"; instead it becomes "this is what the state IS"
+        which makes the diff "previous-current" rather than
+        "pre-mutation post-mutation"
+    (b) Use SERIALIZABLE isolation on the aspect's @ReactiveTransactional
+        — closes the race but adds serialization-failure retries on
+        every @ActivityLog method (significant throughput cost)
+    (c) Use SELECT ... FOR UPDATE in each handler's getContextInfo —
+        17 handlers to update; pessimistic lock on every audit-emitting
+        mutation (throughput cost; risk of deadlock)
+    (d) Use the data entity's UPDATED_AT or VERSION column with optimistic
+        concurrency control — handler's getContextInfo captures version
+        N; handler's getUpdatedState fetches and asserts version > N;
+        if version was bumped by a concurrent commit, re-fetch and
+        re-emit with the corrected oldState. Most surgical fix.
+    (e) Live with the race; document it on the activity-feed feature
+        page. Operators are advised to interpret wrong-diff cases by
+        cross-referencing the underlying entity's current state.
+nodes:
+- odd-platform java service activity handler:ActivityHandler
+- odd-platform java service:ActivityServiceImpl
+contributors:
+- |-
+  ActivityHandler interface (batch VAL-LSN-019-B): tests_coverage_semantic.uncovered_behaviours
+  (concurrent oldState-capture race; severity HIGH per the sidecar's
+  test-gap inventory)
+- |-
+  ActivityServiceImpl (batch VAL-LSN-019-B): stress_findings.S-E-1 (TX
+  boundary depends on caller; under READ COMMITTED both racers see the
+  same snapshot in their own TX)
+evidence:
+- |-
+  ActivityHandler.md:tests_coverage_semantic.uncovered_behaviours —
+  Verbatim: "OLD-vs-NEW state race under concurrent mutations of the
+  SAME data entity — getContextInfo captures pre-mutation state; the
+  wrapped mutation runs; getUpdatedState captures post-mutation state.
+  If a SECOND concurrent @ActivityLog-annotated method also captures
+  pre-mutation state BEFORE its mutation runs, both transactions see
+  the pre-A state as their oldState, but one sees post-A+post-B state
+  and the other sees only post-A state — the diff records collide."
+  Severity HIGH.
+- |-
+  ActivityServiceImpl.md:stress_findings.S-E-1 — confirms the TX
+  boundary depends on the wrapping caller. Under @ActivityLog's
+  @ReactiveTransactional + Postgres R2DBC default READ COMMITTED, two
+  concurrent @ActivityLog flows on the same entity each see the
+  pre-mutation snapshot independently
+- |-
+  ActivityAspect.java:86 — `filter(newState ->
+  !info.getOldState().equals(newState))` is JSON-string equality, NOT
+  an integrity check; the filter passes the wrong-oldState case
+- |-
+  ActivityHandler.java:9-22 — the interface contract: getContextInfo
+  + getUpdatedState are the two snapshot methods; no protection
+  primitive built into the interface for concurrent same-entity
+  scenarios
+axes_present:
+- services
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: audit-correctness
+mitigations_unimplemented:
+- |-
+  Add a regression test
+  `ActivityServiceImplTest.testConcurrentOwnershipUpdates_DiffIntegrity`
+  per the ActivityHandler sidecar's recommended test name. StepVerifier
+  with two concurrent OwnershipServiceImpl.update calls on the same data
+  entity; assert ActivityPojo old/new states are pairwise consistent
+  (B's oldState should equal A's newState if A committed first).
+- |-
+  Add optimistic concurrency control to handlers — handler's
+  getContextInfo captures the data entity's version_id (or UPDATED_AT);
+  handler's getUpdatedState asserts the post-mutation version is
+  monotonically > pre-mutation version; if a concurrent commit happened
+  between getContextInfo and joinPoint.proceed, the handler re-fetches
+  the now-correct oldState before emitting.
+- |-
+  Document the concurrent-mutation semantic on the activity-feed
+  feature page — operators reading the feed should know that
+  concurrent same-entity mutations may produce overlapping wrong-diff
+  rows; the underlying entity's current state is authoritative.
+- |-
+  Add a metric `activity_handler_oldstate_drift_total{event_type}`
+  that compares each handler's emitted oldState against the
+  immediately-prior committed activity row for the same data entity
+  + event type; emit a counter increment when the new emit's oldState
+  doesn't match the previous emit's newState. Race incidents become
+  observable.
+- |-
+  Consider serializing concurrent @ActivityLog method invocations per
+  (data_entity_id, event_type) tuple via a Redis-backed mutex or a
+  Postgres advisory lock keyed on the hash of (entity_id, event_type).
+  Throughput cost; correctness gain.
+notes: |-
+  NEW invariant captured in batch VAL-LSN-019-B. Surfaced by primary-source
+  examination of ActivityHandler + ActivityAspect line-by-line.
+
+  This is an audit-correctness finding with operator-visible
+  manifestation under load. Single-user-UX deployments rarely hit the
+  race; ingestion-heavy + automated-workflow deployments hit it
+  routinely. The SHAPE of the bug — wrong oldState in an audit row
+  emitted under concurrent same-entity load — is the kind of finding
+  that becomes "ODD's audit log is unreliable for compliance" once an
+  operator notices the discrepancy.
+
+  Cross-cutting connections:
+    - Pairs with `activity-write-tx-coupled-emit-failure-rolls-back-business-mutation`
+      — the same @ReactiveTransactional that protects audit atomicity
+      ALSO sets up this race (each racer commits its own TX
+      independently of the other)
+    - Pairs with `activity-handler-state-differ` (new entity) — names
+      the dispatch core that participates in the race
+    - Pairs with `service-tier-multi-step-writes-without-reactivetransactional-toctou-surface`
+      — both are TOCTOU surfaces; this one is "TOCTOU within an
+      already-@ReactiveTransactional method"
+
+  PRIMARY-SOURCE confidence: HIGH (ActivityHandler sidecar surfaces
+  the race in tests_coverage_semantic with severity HIGH;
+  ActivityServiceImpl + ActivityAspect line citations confirm the
+  R2DBC + READ COMMITTED + snapshot-pair shape).

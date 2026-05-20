@@ -1,0 +1,253 @@
+---
+probe_id: P-022
+feature_id: F-006
+test_class: integration
+verified_against_commit: 80637ed
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-2
+emitted_from_sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+stress_category: E (resource boundaries)
+stress_question_ids: [STRESS_E1]
+expected_outcome: |
+  STRESS PROTOCOL E1: Pin the partition-DROP-vs-concurrent-read lock-
+  collision behaviour for the activity table housekeeping cycle.
+
+  Static analysis (stress_findings.E1 in the emitting sidecar):
+  - `ActivityEmptyPartitionsHousekeepingJob` (extends EmptyPartitionsHousekeepingJob)
+    drops EMPTY past partitions of the activity table via
+    PartitionServiceImpl.java:120-127 (`DROP TABLE <partition>`).
+  - DROP TABLE takes ACCESS EXCLUSIVE on the child partition (PG lock-modes).
+  - Concurrent SELECT on the parent activity table needs ACCESS SHARE on
+    every routed child partition.
+  - Concurrent INSERT needs ROW EXCLUSIVE.
+  - ACCESS EXCLUSIVE conflicts with both → reads/writes touching the
+    targeted partition BLOCK while the DROP holds the lock.
+  - In STEADY STATE the housekeeping only drops EMPTY partitions, so
+    there should be no traffic to BLOCK (the partition is by definition
+    not being touched). BUT the SAFETY INVARIANT must hold: NON-EMPTY
+    partitions must NEVER be dropped. This probe verifies the
+    isPartitionEmpty check is honoured.
+
+  HYPOTHESIS: ActivityEmptyPartitionsHousekeepingJob drops the EMPTY
+  past partition but preserves the NON-EMPTY past partition (the
+  only-empty contract). The row in the non-empty partition survives
+  the housekeeping cycle.
+
+  When the contract is ever broken (e.g. by a refactor introducing
+  hard-retention DROPs), this probe surfaces the regression: the row
+  is silently lost.
+---
+
+# P-022 — Activity housekeeping: empty-only DROP contract verification (Stress Protocol E1)
+
+stress_category: E (resource boundaries)
+
+triggers:
+  - PartitionServiceImpl.java:120-127 (DROP TABLE DDL — plain JDBC, no IF EXISTS)
+  - HousekeepingJobManager.java:25-39 (@Scheduled 15-min, @SchedulerLock cluster mutex)
+  - ActivityEmptyPartitionsHousekeepingJob.java:9-17 (targets activity table)
+  - EmptyPartitionsHousekeepingJob.java:17-33 (iterates empty past partitions, drops each)
+  - PartitionServiceImpl.java:133-142 (isPartitionEmpty: SELECT count(*) = 0)
+  - LSN-019 Stress Protocol Category E (resource boundaries)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      SELECT child.relname AS partition_name
+      FROM pg_inherits
+      JOIN pg_class parent ON pg_inherits.inhparent = parent.oid
+      JOIN pg_class child ON pg_inherits.inhrelid = child.oid
+      WHERE parent.relname = 'activity'
+      ORDER BY child.relname
+    capture_as: existing_activity_partitions
+
+  # Create an EMPTY past partition. This will be dropped by housekeeping.
+  - kind: sql
+    query: |
+      CREATE TABLE IF NOT EXISTS activity_20200101_20200131
+      PARTITION OF activity
+      FOR VALUES FROM ('2020-01-01') TO ('2020-01-31')
+
+  # Setup: create a data_entity for the non-empty-partition row.
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1022, '//probe-source-P-022/db', 'probe-source-P-022')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1022, '//probe-source-P-022/db/tables/p022_activity_target',
+              'p022_activity_target', 1022, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # Create a SECOND past partition (different date range) and INSERT a row.
+  - kind: sql
+    query: |
+      CREATE TABLE IF NOT EXISTS activity_20200201_20200229
+      PARTITION OF activity
+      FOR VALUES FROM ('2020-02-01') TO ('2020-02-29')
+
+  - kind: sql
+    query: |
+      INSERT INTO activity
+        (data_entity_id, event_type, is_system_event, created_at, created_by)
+      VALUES (1022, 'DESCRIPTION_UPDATED', false,
+              '2020-02-15T12:00:00'::timestamp, 'p022_user')
+
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS empty_count FROM activity_20200101_20200131
+    capture_as: empty_partition_row_count
+
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS nonempty_count FROM activity_20200201_20200229
+    capture_as: nonempty_partition_row_count
+
+act:
+  # Trigger the housekeeping cycle. See realism_caveats for the endpoint
+  # requirement.
+  - kind: rest
+    method: POST
+    path: "/api/internal/housekeeping/run-now"
+    body: {}
+    capture_as: housekeeping_response
+
+  - kind: sleep
+    seconds: 5
+
+observe:
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS exists_count
+      FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = 'activity_20200101_20200131'
+    capture_as: empty_partition_exists_after
+
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS exists_count
+      FROM information_schema.tables
+      WHERE table_schema = 'public' AND table_name = 'activity_20200201_20200229'
+    capture_as: nonempty_partition_exists_after
+
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS row_count
+      FROM activity
+      WHERE data_entity_id = 1022 AND created_by = 'p022_user'
+    capture_as: surviving_row_count
+
+assert:
+  - "empty_partition_row_count == 0"
+  - "nonempty_partition_row_count == 1"
+
+  # PRIMARY: housekeeping dropped the empty past partition.
+  - "empty_partition_exists_after == 0"
+
+  # CRITICAL SAFETY: housekeeping did NOT drop the non-empty past partition.
+  # If this assertion ever fails, the empty-only-drop contract is broken
+  # and the housekeeping has silently destroyed audit data.
+  - "nonempty_partition_exists_after == 1"
+
+  - "surviving_row_count == 1"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM activity WHERE data_entity_id = 1022 AND created_by = 'p022_user'
+
+  - kind: sql
+    query: |
+      DROP TABLE IF EXISTS activity_20200201_20200229
+
+  - kind: sql
+    query: |
+      DROP TABLE IF EXISTS activity_20200101_20200131
+
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id = 1022
+
+  - kind: sql
+    query: |
+      DELETE FROM data_source WHERE id = 1022
+
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: []
+  test_gaps:
+    - TEST-GAP-ACTIVITY-HOUSEKEEPING-EMPTY-ONLY-CONTRACT
+  doc_gaps:
+    - DOC-GAP-HOUSEKEEPING-DROP-LOCK-MODE
+  related_concepts:
+    - "Activity Feed"
+    - "Activity Table Partitioning"
+    - "Housekeeping TTL Enforcement"
+  retrospectives:
+    - LSN-019
+  enrichment_sources:
+    - "lineage/odd-platform/understanding/odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md"
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/partition/service/PartitionServiceImpl.java"
+    lines: "120-127"
+    role: "dropPartition — DROP TABLE via plain JDBC, ACCESS EXCLUSIVE lock"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/housekeeping/HousekeepingJobManager.java"
+    lines: "25-39"
+    role: "@Scheduled 15-min, ShedLock, single connection iteration"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/housekeeping/job/ActivityEmptyPartitionsHousekeepingJob.java"
+    lines: "9-17"
+    role: "activity-specific housekeeping wiring"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/housekeeping/job/EmptyPartitionsHousekeepingJob.java"
+    lines: "17-33"
+    role: "drop-loop body"
+  - file: "retrospectives/LSN-019-file-analyser-describes-not-interrogates.md"
+    lines: "55-71"
+    role: "Stress Protocol Category E"
+
+realism_caveats: |
+  - The probe assumes a `/api/internal/housekeeping/run-now` admin endpoint
+    that force-triggers the housekeeping cycle. **THIS ENDPOINT DOES NOT
+    EXIST** in the codebase (grep verified). To make the probe runnable,
+    EITHER:
+    (a) Author a test-profile admin endpoint, OR
+    (b) Convert to a docker-compose override that sets fixedRate to 5s,
+        sleep 10s, and check the partitions.
+
+  - The probe specifically verifies the EMPTY-ONLY DROP contract — a
+    CRITICAL safety invariant. Any code change that introduces
+    hard-retention DROP of non-empty partitions would silently destroy
+    audit data; this probe surfaces such a regression by asserting
+    `nonempty_partition_exists_after == 1`.
+
+  - The probe does NOT directly measure the lock-collision under load.
+    A follow-up probe P-022-B would race a concurrent INSERT-storm
+    against a housekeeping trigger and capture latency distribution
+    under contention. That probe needs millisecond-precision timing
+    coordination — out-of-scope of this initial pin.
+
+  - The partition naming convention is `activity_YYYYMMDD_YYYYMMDD` per
+    PartitionServiceImpl.java:144-147; the isPartitionInPast parser at
+    PartitionServiceImpl.java:72-80 expects this format.
+
+  - The probe runs under DISABLED auth. Housekeeping is auth-mode-
+    agnostic; the admin endpoint (if authored per (a)) must be gated
+    by profile, not by auth-mode.
+
+  - If the hypothesis FAILS (i.e. nonempty_partition_exists_after == 0
+    or surviving_row_count == 0), the housekeeping has destroyed audit
+    data — file an URGENT regression backlog item (PRIORITY: critical).

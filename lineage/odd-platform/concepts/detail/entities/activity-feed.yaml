@@ -27,17 +27,59 @@ description: |-
   this batch (20 named global types + 7 categorical internal types = 27); see
   invariant activity-event-enum-20-named-plus-7-categorical-equals-27.
 
+  **STRENGTHENED batch 2026-05-20 VAL-LSN-019-B (5-sidecar Activity stress canary)**:
+  the Activity Feed concept is now anchored at SEVEN sidecars covering the full
+  read-side AND write-side of the feature (HTTP → service → repository →
+  handler-differ → housekeeping). Headline cross-tier additions:
+    (a) The WRITE-PATH funnel is `ActivityServiceImpl.createActivityEvent` /
+        `createActivityEvents` (single + batched). The activity row is in
+        the SAME @ReactiveTransactional as the originating business mutation
+        — emit failure rolls back the user's change (S-E-1, captured as a new
+        invariant `activity-write-tx-coupled-emit-failure-rolls-back-business-mutation`).
+    (b) The SNAPSHOT-DIFF mechanism (the wrongly-named ActivityHandler interface;
+        canonicalisation candidate `activity-event-state-differ-vs-activityhandler-name-drift`):
+        17 concrete implementations each capture pre+post snapshots of the
+        affected data entity; the diff is JSON-string equality at
+        ActivityAspect.java:86; emit fires only when oldState != newState.
+    (c) The CONCURRENT-OLDSTATE-CAPTURE race (handler-tier; new invariant
+        `activity-handler-concurrent-oldstate-capture-race`): two concurrent
+        @ActivityLog mutations on the same data entity capture the SAME
+        pre-mutation oldState; the second handler's diff records the WRONG
+        attribution.
+    (d) The HOUSEKEEPING side: `ActivityEmptyPartitionsHousekeepingJob` is
+        the SOLE reaper but a near-no-op on steadily-used platforms (60-day
+        windows rarely empty out); the count-check-then-DROP is
+        non-transactional (race window — new invariant
+        `activity-empty-partitions-race-window-between-count-check-and-drop`).
+    (e) The cross-mode bleed via provider-agnostic LEFT JOIN to
+        USER_OWNER_MAPPING (existing invariants
+        `provider-null-cross-mode-bleed` +
+        `cross-provider-username-row-duplication-in-external-joins`) is
+        confirmed at the service layer: `UserDto::username` mapping
+        at ActivityServiceImpl.java:47,58 DROPS the provider tag before
+        persistence.
+    (f) `getActivityCounts` accepts null dates while `getActivityList`
+        rejects them — asymmetric validation (new invariant
+        `activity-counts-asymmetric-null-date-validation`).
+
   vocabulary_status: codebase-anchored, doc-side-partially-covered (live
   `features/active-platform-features/activity-feed` describes the UI surface but
   main-concepts.md does not name 'Activity Feed' as a canonical term).
 vocabulary_status: codebase-anchored, doc-side-partially-covered
 axes_present:
 - controllers
+- services
+- repositories_reactive
+- housekeeping
 - config_prefixes
 nodes:
 - odd-platform java ActivityController controller-method:getActivity
 - odd-platform java ActivityController controller-class:ActivityController
 - odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
+- odd-platform java service:ActivityServiceImpl
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+- odd-platform java service activity handler:ActivityHandler
+- odd-platform java housekeeping job:ActivityEmptyPartitionsHousekeepingJob
 contributors:
 - |-
   ActivityController.getActivity: entities[Activity, ActivityType, ActivityEventType,
@@ -56,6 +98,62 @@ contributors:
   ActivityTablePartitionManager@L11: entities[Tables.ACTIVITY (public.activity),
   partition WIDTH cadence, range partitioning]; operations[boot-time-partition-init,
   nightly-cron-partition-refresh]; invariants[no retention/DROP — monotonic growth]
+- |-
+  **ActivityServiceImpl (batch VAL-LSN-019-B — FRESH)**: entities[ActivityCreateEvent,
+  ActivityContextInfo, ActivityPojo, ActivityEventTypeDto (27), UserDto, OwnerPojo,
+  Activity (OpenAPI), ActivityCountInfo (OpenAPI), ActivityType (OpenAPI),
+  LineageStreamKind, 17 ActivityHandler impls]; operations[createActivityEvent,
+  createActivityEvents (batched), getContextInfo, getUpdatedInfo (single +
+  multi-id), getActivityList (12-param), getDataEntityActivityList (8-param),
+  getActivityCounts, fetchAllActivities/fetchMyActivities/fetchDependentActivities,
+  getActivityHandler (linear dispatch)]; invariants[zero @PreAuthorize / zero
+  programmatic authz / zero @ReactiveTransactional at this layer; createdBy=NULL
+  is the system-event signal via switchIfEmpty fallback; provider tag DROPPED
+  before persistence — UserDto::username (not username+provider) is the keyed
+  field; MY_OBJECTS silently empty-returns for users without associated Owner;
+  emit ordering is the caller's TX responsibility; no replay-safety /
+  idempotency; non-atomic time generation; asymmetric null-date validation
+  between getActivityList (rejects) and getActivityCounts (accepts)]
+- |-
+  **ReactiveActivityRepositoryImpl (batch VAL-LSN-019-B — REWRITE under 0.4.0)**:
+  entities[ActivityPojo, ActivityDto, ActivityRecord, Tables.ACTIVITY,
+  USER_OWNER_MAPPING (LEFT JOIN), OWNER, DATA_ENTITY (INNER), conditional joins
+  for DATA_SOURCE / NAMESPACE / TAG_TO_DATA_ENTITY / OWNERSHIP];
+  operations[save-activity-pojo, save-activity-batch (1000-row chunks),
+  find-activities-cross-owner / my-owner-scoped / dependent-lineage-scoped /
+  by-data-entity, count-activities-* (3 variants), cursor-paginate-by-
+  created-at-id-tuple]; invariants[data_entity_id NOT NULL FK is the
+  schema-rooted scope; USER_OWNER_MAPPING LEFT JOIN by OIDC_USERNAME only —
+  cross-mode bleed; cursor (trunc(created_at, SECOND), id) symmetric
+  tuple-less-than at lines 285-288; ORDER BY full-precision created_at DESC,
+  id DESC at line 291; findMyActivities OWNERSHIP.OWNER_ID = currentOwnerId
+  filter — 'my activities' means 'activity ON entities I own' not 'activity
+  I performed'; created_by varchar(512) NULLABLE for system events]
+- |-
+  **ActivityHandler interface (batch VAL-LSN-019-B — FRESH)**:
+  entities[ActivityHandler (4-method interface), 18 concrete impls + 2
+  abstract bases, ActivityEventTypeDto (27 values), ActivityContextInfo,
+  ActivityCreateEvent, ActivityParameter annotation, ActivityParameterNames];
+  operations[isHandle (boolean dispatch predicate), getContextInfo (pre-mutation
+  snapshot), getUpdatedState (post-mutation snapshot single + multi-id default
+  throws)]; invariants[snapshot-differ contract NOT write-handler contract
+  (despite the name); JSON-string diff equality at ActivityAspect:86;
+  linear dispatch first-match-wins; multi-id default throws at runtime not
+  compile time; concurrent oldState-capture race across @ActivityLog
+  mutations — silently produces wrong diff attribution; system-event
+  auth-context auto-degradation to NULL username; wrapping @ReactiveTransactional
+  makes emit failure roll back the wrapped mutation]
+- |-
+  **ActivityEmptyPartitionsHousekeepingJob (batch VAL-LSN-019-B — FRESH)**:
+  entities[ActivityEmptyPartitionsHousekeepingJob, EmptyPartitionsHousekeepingJob
+  base, HousekeepingJobManager (orchestrator), PartitionServiceImpl,
+  Tables.ACTIVITY]; operations[drop-empty-past-partition, list-partitions-by-
+  prefix, check-partition-in-past, check-partition-empty]; invariants[name
+  honored at the centre (real count(*)=0 + isPartitionInPast); functionally
+  a near-no-op on steadily-used platforms (60-day windows rarely empty);
+  count-check-then-DROP race window (non-transactional); DROP TABLE no
+  IF EXISTS; LIKE 'activity_%' matches more than partition tables; no
+  metric / observability]
 evidence:
 - getActivity.md:concepts.entities.[Activity, ActivityType, ActivityEventType, ActivityState]
 - getActivity.md:concepts.operations.[list-activity, audit-trail-read]
@@ -82,6 +180,58 @@ evidence:
   ActivityController (class).md:docs_link_semantic.doc_drift_findings.[4]
   (no first-party API-reference page for the activity tag — 404 on
   /developer-guides/api-reference/activity)
+- |-
+  ActivityServiceImpl.md:concepts.entities (11 entities) + concepts.operations
+  (12 operations: createActivityEvent, createActivityEvents, getContextInfo,
+  getUpdatedInfo single+multi, getActivityList, getDataEntityActivityList,
+  getActivityCounts, fetch*Activities helpers, get*Count helpers, getActivityHandler,
+  mapEventsToPojos) + concepts.invariants[0-7] (8 invariants — zero @PreAuthorize /
+  null-username system-event signal / provider tag dropped / MY_OBJECTS silent
+  empty / TX boundary depends on caller / no idempotency / non-atomic time /
+  asymmetric null-date validation)
+- |-
+  ActivityServiceImpl.md:stress_findings.S-B-1 (switchIfEmpty conflates two
+  signals) + S-B-2 (ownerIds silently dropped for non-ALL view modes) +
+  S-B-3 (counts endpoint accepts null dates) + S-B-4 (no replay safety) +
+  S-C-1 (Mono.zip cross-query consistency) + S-C-2 (time generation vs commit
+  time) + S-D-1 (zero authorization) + S-D-2 (MY_OBJECTS silent empty) +
+  S-D-3 (per-data-entity activity has no authorization) + S-E-1 (TX boundary
+  depends on caller) + S-E-2 (no idempotency)
+- |-
+  ReactiveActivityRepositoryImpl.md:concepts.entities + concepts.operations +
+  concepts.invariants[0-5] (data_entity_id NOT NULL FK / USER_OWNER_MAPPING
+  LEFT JOIN by OIDC_USERNAME only / cursor (trunc(created_at, SECOND), id) /
+  ORDER BY at line 291 / findMyActivities axis-mismatch / created_by NULLABLE)
+- |-
+  ReactiveActivityRepositoryImpl.md:coherence_notes.strengthens.[F-006]
+  (schema-rooted scope via NOT NULL FK is the PRIMARY-SOURCE anchor for
+  audit-silence) + strengthens.[F-007] (AlertServiceImpl writes systemEvent=true
+  via this repository) + strengthens.[F-010] (the ONLY reaper of this table's
+  storage is ActivityEmptyPartitionsHousekeepingJob)
+- |-
+  ActivityHandler.md:concepts.entities (interface + 18 concrete impls + 2
+  abstract bases + dispatch DTOs) + concepts.operations[0-3] (isHandle,
+  getContextInfo, getUpdatedState single + multi-id default-throws) +
+  concepts.invariants[0-6] (snapshot-differ NOT write-handler / JSON-string
+  diff equality / linear dispatch / multi-id default-throws-at-runtime /
+  TX-coupled emit / system-event auto-degradation)
+- |-
+  ActivityHandler.md:tests_coverage_semantic.uncovered_behaviours
+  (handler-tier coverage is ZERO; concurrent oldState-capture race is
+  HIGH-severity gap)
+- |-
+  ActivityEmptyPartitionsHousekeepingJob.md:concepts.invariants[0-5]
+  (binds to Tables.ACTIVITY; no exclusions; real count(*)=0 check;
+  past-check via name parser; DROP TABLE no IF EXISTS; no @Transactional)
+- |-
+  ActivityEmptyPartitionsHousekeepingJob.md:bugs_limitations_corner_cases[0-4]
+  (near-no-op on steadily-used platforms; race window between empty-check
+  and DROP; DROP TABLE no IF EXISTS multi-instance race; LIKE pattern matches
+  more than partitions; no observability)
+- |-
+  ActivityEmptyPartitionsHousekeepingJob.md:performance.known_performance_gaps[0]
+  (SELECT count(*) = 0 is unindexed sequential scan on every past partition
+  per 15-min cycle — hidden DB load on multi-year deployments)
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -89,6 +239,7 @@ security_aggregate:
   - OAUTH2
   - LDAP
   - DISABLED
+  - INTERNAL_ONLY
   ingestion_filter_relevance: false
   authorization_consistency:
     verdict: UNGATED
@@ -99,6 +250,19 @@ security_aggregate:
       `/api/activity` and `/api/activity/counts` are NOT in SecurityConstants.SECURITY_RULES
       (full file read; zero matches for activity/Activity/ACTIVITY) and NOT in
       WHITELIST_PATHS — falls through to pathMatchers('/**').authenticated().
+      ActivityServiceImpl (batch VAL-LSN-019-B) confirms the gap reaches the
+      SERVICE LAYER: lines 33-273 verified line-by-line — ZERO @PreAuthorize,
+      ZERO programmatic permissionService calls, ZERO permission predicates.
+      Even getDataEntityActivityList (the per-entity read path) accepts a
+      dataEntityId parameter without any per-entity authorization check
+      (S-D-3 — any authenticated user reads activity for ANY data entity
+      including entities they have no permission to view). ReactiveActivityRepositoryImpl
+      (batch VAL-LSN-019-B) confirms the read paths are cross-owner SQL —
+      no SQL-tier ownership filter, no row-level security. The Activity
+      feature is the SAME read-collaborative-cross-owner-enumeration posture
+      as the Tag / Alert / Search / Owner-directory surfaces — confirmed at
+      THREE TIERS (HTTP, service, repository). The MY_OBJECTS branch is the
+      sole owner-respecting dispatch (1 of 4 view modes).
       Live `/configuration-and-deployment/enable-security/authorization` documents
       the Policies/Permissions/Roles framework but per-endpoint wiring for /api/activity
       is absent on the live page. **Batch T controller-class evidence is the 9th-sidecar
@@ -115,6 +279,13 @@ security_aggregate:
       upstream of X' regardless of whether they own X. Two distinct dispatch paths
       (`if (type == null)` + `case ALL`) both lead to fetchAllActivities — a
       future refactor updating only one branch silently bypasses any new gate.
+
+      **Batch VAL-LSN-019-B service-layer addition (S-B-2)**: `ownerIds`
+      filter parameter is silently DROPPED for non-ALL view modes — the
+      ActivityType switch at ActivityServiceImpl.java:107-116 threads
+      `ownerIds` ONLY for ALL/null. A caller submitting
+      `type=MY_OBJECTS&owner_ids=[5]` gets their own owner's activity,
+      not owner-5's. Discoverable drift.
   strengths:
   - |-
     Cursor pagination on `(lastEventId, lastEventDateTime)` — append-only audit
@@ -124,12 +295,24 @@ security_aggregate:
     defence beyond OpenAPI required:true (ActivityServiceImpl.java:98-100)
   - |-
     Reactive Mono/Flux signature end-to-end — non-blocking on request thread
+  - |-
+    **Activity write IS in same @ReactiveTransactional as originating mutation**
+    via ActivityAspect.monoActivityAspect — accidental partial-state
+    (mutation succeeded but audit row didn't) is structurally impossible.
+    The aspect captures pre-snapshot, runs joinPoint.proceed(), captures
+    post-snapshot, persists ActivityPojo — all under ONE TX. Same for
+    AlertServiceImpl.applyAlertActions (line 201 outer TX) and
+    ActivityIngestionRequestProcessor (IngestionServiceImpl.ingest:66
+    outer TX) (batch VAL-LSN-019-B — S-E-1 verified across three caller
+    paths).
   weaknesses:
   - |-
     `/api/activity` (and `/api/activity/counts`) globally readable by any
     authenticated user — exposes who-changed-what audit trail across every owner
     including ActivityState old/new diffs of descriptions, business names,
-    ownership changes, custom metadata (severity HIGH)
+    ownership changes, custom metadata (severity HIGH — F-018 + REFACTOR-547
+    cross-reference: SAME posture as Tag service-tier zero-auth +
+    read-collaborative-cross-owner-enumeration 24-sidecar invariant)
   - |-
     userIds/ownerIds filter parameters not validated — submitting candidate id
     lists allows enumeration of which users/owners have generated platform
@@ -152,6 +335,41 @@ security_aggregate:
     Policy edit, Owner deletion, or Collector token rotation produces NO row in
     this feed. The doc page does not state the scope boundary (severity HIGH —
     confirmed at controller-class layer in batch T)
+  - |-
+    **NEW batch VAL-LSN-019-B — S-D-3 per-entity Activity has no authorization
+    check**: `getDataEntityActivityList(dataEntityId)` accepts any
+    dataEntityId without permission check. Every authenticated user reads
+    activity for every data entity in the system, including entities they
+    have no other permission to see; the diff payloads expose description /
+    tag / ownership content. Severity MEDIUM
+  - |-
+    **NEW batch VAL-LSN-019-B — Activity emit failure rolls back the
+    originating business mutation**: this is the OPPOSITE of the
+    "audit-or-fail" intuition. ActivityAspect's @ReactiveTransactional
+    wraps EVERY @ActivityLog-annotated business method PLUS the activity
+    emit; a transient ActivityRepository.saveReturning failure rolls back
+    the user's successful mutation and surfaces 500 with no indication the
+    mutation was reverted. Operator-surprising; either intentional and needs
+    documentation OR a refactor candidate (decouple via @Async post-commit
+    hook). Severity MEDIUM (correctness vs operability tradeoff)
+  - |-
+    **NEW batch VAL-LSN-019-B — handler-tier concurrent oldState capture race**:
+    two parallel @ActivityLog mutations on the same data entity both capture
+    the SAME pre-mutation oldState in their ActivityContextInfo, then proceed
+    in their own TX. The second handler's diff records (oldState_pre_both ->
+    newState_post_both) — its oldState is wrong (it should be newState of the
+    first mutation, since at the time the second handler started its
+    business mutation, the first one was committed). Discoverable as
+    "the audit log says alice changed X from null to 'A,B' but the activity
+    actually shows X going from null to 'B' twice." Severity HIGH at scale
+    (under concurrent load); LOW in typical single-user UX
+  - |-
+    **NEW batch VAL-LSN-019-B — `getActivityCounts` accepts null dates;
+    `getActivityList` rejects them**: asymmetric validation — a UI bug or
+    operator curl-ing `/api/activity/counts` without `begin_date` /
+    `end_date` issues an unbounded COUNT(*) over the entire retained
+    activity history (all partitions per F-010). Performance cliff at
+    scale. Severity MEDIUM (probe P-023 emitted)
   cross_file_inconsistencies:
   - |-
     Per-entity getDataEntityActivity (DataEntityController) uses the same cursor
@@ -163,10 +381,23 @@ security_aggregate:
     controller layer in batch T (20 named + 7 categorical = 27); see invariant
     activity-event-enum-20-named-plus-7-categorical-equals-27 — LOW-severity
     doc-completeness gap rather than a wire drift
+  - |-
+    Activity feature spans SEVEN sidecars after batch VAL-LSN-019-B —
+    getActivity (controller method) + ActivityController (class) +
+    ActivityTablePartitionManager (partition lifecycle) + ActivityServiceImpl
+    (orchestration) + ReactiveActivityRepositoryImpl (SQL) + ActivityHandler
+    (snapshot-differ interface) + ActivityEmptyPartitionsHousekeepingJob
+    (reaper). No cross-tier contradictions — the read-collaborative posture,
+    schema-rooted audit-silence, cross-mode bleed, and monotonic-growth
+    findings are uniform across every tier
   contributing_files:
   - getActivity.md
   - ActivityController controller-class.md
   - ActivityTablePartitionManager@L11.md
+  - ActivityServiceImpl.md
+  - ReactiveActivityRepositoryImpl.md
+  - ActivityHandler.md
+  - ActivityEmptyPartitionsHousekeepingJob.md
   evidence:
   - getActivity.md:security.known_security_gaps.[0] (cross-owner audit-trail exposure HIGH)
   - getActivity.md:security.known_security_gaps.[1] (two-branch dispatch refactor risk MEDIUM)
@@ -181,6 +412,22 @@ security_aggregate:
   - |-
     ActivityController (class).md:security.known_security_gaps.[5]
     (RBAC-audit-silence HIGH — schema-rooted scope confirmed at controller layer)
+  - |-
+    ActivityServiceImpl.md:invariants.[0] (zero @PreAuthorize / zero programmatic
+    authz at service tier — confirms HTTP-to-service uniformity of the gap) +
+    stress_findings.S-D-1 (zero authorization at service layer) + S-D-2
+    (MY_OBJECTS silent empty for users without Owner association) + S-D-3
+    (per-data-entity Activity has no authorization)
+  - |-
+    ReactiveActivityRepositoryImpl.md:concepts.invariants.[0] (data_entity_id
+    NOT NULL FK — F-006 schema-rooted PRIMARY SOURCE) + invariants.[1]
+    (USER_OWNER_MAPPING LEFT JOIN by OIDC_USERNAME only — cross-mode bleed
+    PRIMARY SOURCE)
+  - |-
+    ActivityHandler.md:invariants.[6] (system-event auth-context
+    auto-degradation — null created_by row for ingestion / scheduler /
+    DISABLED-mode flows; combined with cross-mode bleed mechanism makes
+    audit-trail user attribution unreliable)
 performance_aggregate:
   overall: MEDIUM
   hot_paths:
@@ -201,25 +448,63 @@ performance_aggregate:
     fetchMyActivities — 1 user-owner-mapping lookup + 1 activity-table SELECT
     filtered by OWNERSHIP.OWNER_ID = currentOwnerId; lower cost than the default
     path — ActivityController (class).md:performance.hot_paths.[3]
+  - |-
+    **NEW batch VAL-LSN-019-B (service tier)**: getActivityHandler linear scan
+    over 17 ActivityHandler implementations per @ActivityLog method invocation
+    — O(N) where N=17; runs twice per @ActivityLog mutation (once for
+    getContextInfo, once for getUpdatedInfo). Low absolute cost but
+    contributes a constant overhead to every audit-emitting mutation
+    (ActivityServiceImpl.java:260-264)
+  - |-
+    **NEW batch VAL-LSN-019-B (write tier)**: ActivityServiceImpl.
+    createActivityEvents batch path partitions in 1000-row chunks via
+    JooqReactiveOperations.executeInPartition; chunk-N failure leaves chunks
+    1..N-1 committed (partial-commit on chunk-error — repository sidecar
+    Stress Protocol E2/E3)
+  - |-
+    **NEW batch VAL-LSN-019-B (housekeeping tier)**:
+    ActivityEmptyPartitionsHousekeepingJob runs every 15 minutes; each cycle
+    issues `SELECT count(*) = 0 FROM <partition>` over EVERY past activity
+    partition. For multi-year deployments with N≈61 partitions and 600M
+    rows/partition, this is a sequential count scan per partition per cycle —
+    HIDDEN DB load on busy deployments (P-013 probe emitted)
   throughput_shape:
-    verdict: SINGLE_ITEM_ONLY
+    verdict: MIXED
     detail: |-
-      Single-window per call. No batch / multi-window endpoint. UI rendering a
-      multi-window dashboard issues N separate calls.
+      Read path: SINGLE_ITEM_ONLY — single-window per call, no batch /
+      multi-window endpoint. Write path: BATCH_FRIENDLY — `createActivityEvents`
+      accepts a List<ActivityCreateEvent> and batches in 1000-row chunks per
+      `JooqReactiveOperations.executeInPartition`. Counts: SINGLE_ITEM_ONLY
+      (one 4-way Mono.zip per call; no caching, no debouncing).
   scaling_shape:
     verdict: HORIZONTALLY_SCALABLE
     detail: |-
-      Stateless controller — instances scale horizontally. Read-only path, no
-      locks. Cursor pagination scales linearly with page count. Bounded only by
-      DB connection pool and Postgres planner. F-010 interaction: the activity
-      table grows monotonically while non-empty partitions are never dropped;
-      read scans over the full historical window scale with deployment age.
+      Stateless controllers + services + repository — instances scale
+      horizontally. Read-only HTTP path, no locks. Cursor pagination scales
+      linearly with page count. Bounded only by DB connection pool and
+      Postgres planner. F-010 interaction: the activity table grows
+      monotonically while non-empty partitions are never dropped; read scans
+      over the full historical window scale with deployment age. Write path
+      is reactive and non-blocking; the only serialisation points are
+      ShedLock-coordinated housekeeping and the boot-time partition-create
+      advisory lock — neither on the hot path.
   strengths:
   - |-
     Reactive Mono/Flux end-to-end — non-blocking on the request thread
+    AND non-blocking on the write path (batch VAL-LSN-019-B verified at
+    every layer: controller, service, repository)
   - |-
     Cursor pagination over an append-only `activity` table — appropriate index
     shape, avoids offset cliffs
+  - |-
+    Repository uses `(trunc(created_at, SECOND), id)` SYMMETRIC tuple-less-than
+    cursor comparison — corrected from prior v0.2 "skip rows" claim to
+    "stable result, shuffled visual order within a second" (batch VAL-LSN-019-B
+    REWRITE rule9_supersedes; P-021 emitted for empirical pin)
+  - |-
+    Repository does NOT use `JooqQueryHelper.paginate(...)` — the LSN-019
+    paginate-inside-CTE drift class does NOT apply here (batch VAL-LSN-019-B
+    REWRITE explicit non-applicability finding via grep)
   weaknesses:
   - |-
     `size` parameter has no @Max constraint and no programmatic upper bound —
@@ -247,6 +532,10 @@ performance_aggregate:
     INCORRECT: the setting controls partition WIDTH only, no retention path
     exists. CONFIRMED FROM SECOND ANGLE in batch 2026-05-12D via
     HousekeepingTTLProperties.
+    **Batch VAL-LSN-019-B FOURTH-ANGLE confirmation**:
+    ActivityEmptyPartitionsHousekeepingJob honors the empty-only contract
+    but is functionally a near-no-op on steadily-used platforms (60-day
+    windows rarely empty out). Confirmed five-evidence-point primary source.
   - |-
     Silent-fail on partition CREATE failure — PostgreSQLPartitionCreationJob
     catches the wrapping RuntimeException, logs at ERROR, and the outer loop
@@ -262,20 +551,43 @@ performance_aggregate:
   - |-
     No rate limiting at the controller layer — a hostile or mis-tuned client can
     drive arbitrarily many getActivity calls (severity MEDIUM — confirmed batch T)
+  - |-
+    **NEW batch VAL-LSN-019-B — count(*)=0 housekeeping check is unindexed
+    sequential scan on every past partition**: for a deployment with 60+
+    past partitions and millions of rows per partition, the housekeeping
+    cycle pays for a sequential count scan per partition per 15-minute
+    cycle — even though every partition is non-empty (so no DROP fires).
+    Fix: `WHERE NOT EXISTS (SELECT 1 FROM <partition> LIMIT 1)`. Severity
+    MEDIUM on populated deployments (probe P-013 emitted)
+  - |-
+    **NEW batch VAL-LSN-019-B — getActivityCounts unbounded null-date scan**:
+    if begin_date/end_date are null, the count query aggregates over the
+    ENTIRE retained activity history (all partitions per F-010 — never
+    dropped while non-empty). Asymmetric to getActivityList (which rejects
+    null dates with BadUserRequestException). Severity MEDIUM (P-023
+    probe emitted)
   cross_file_inconsistencies:
   - |-
-    Activity Feed concept now spans THREE sidecars at different concept layers:
+    Activity Feed concept now spans SEVEN sidecars at different concept layers:
     controller-method getActivity (read-method surface) + controller-class
     ActivityController (class-level shape + cross-cutting evidence) +
-    config-key-consumer ActivityTablePartitionManager (durability surface).
-    The three reach related LSN-class findings (cross-owner audit exposure,
-    unbounded table growth, F-006 audit-silence) for the same Activity Feed
-    feature — no cross-file disagreement; the trio is the most thoroughly-enriched
-    feature in the catalog.
+    config-key-consumer ActivityTablePartitionManager (durability surface) +
+    service ActivityServiceImpl (orchestration) + repository
+    ReactiveActivityRepositoryImpl (SQL) + service-interface ActivityHandler
+    (snapshot-differ) + housekeeping ActivityEmptyPartitionsHousekeepingJob
+    (reaper). The seven reach related LSN-class findings (cross-owner audit
+    exposure, unbounded table growth, F-006 audit-silence, cross-mode bleed,
+    concurrent oldState race, TX-coupled emit) for the same Activity Feed
+    feature — no cross-file disagreement; the septet is the most
+    thoroughly-enriched feature in the catalog.
   contributing_files:
   - getActivity.md
   - ActivityController controller-class.md
   - ActivityTablePartitionManager@L11.md
+  - ActivityServiceImpl.md
+  - ReactiveActivityRepositoryImpl.md
+  - ActivityHandler.md
+  - ActivityEmptyPartitionsHousekeepingJob.md
   evidence:
   - getActivity.md:performance.hot_paths.[0-2]
   - getActivity.md:performance.known_performance_gaps.[0-3]
@@ -287,6 +599,25 @@ performance_aggregate:
   - |-
     ActivityTablePartitionManager@L11.md:performance.known_performance_gaps.[1,2]
     (no observability; planner cost growth)
+  - |-
+    ActivityServiceImpl.md:downstream_side_effects + stress_findings.S-C-1
+    (Mono.zip cross-query consistency under READ COMMITTED — totalCount +
+    sub-counts can diverge across concurrent writes)
+  - |-
+    ReactiveActivityRepositoryImpl.md:concepts.invariants.[2-4] (cursor at
+    line 285-291 — symmetric truncation + ORDER BY full-precision)
+  - |-
+    ReactiveActivityRepositoryImpl.md:tests_coverage_semantic.gaps.[1-2]
+    (partition DROP empty-only contract; cursor order-stability at second
+    boundaries — probes P-021 + P-022 emitted)
+  - |-
+    ActivityHandler.md:tests_coverage_semantic.uncovered_behaviours
+    (handler-tier dispatch cost — O(17 isHandle calls) per dispatch; runs
+    twice per @ActivityLog method invocation)
+  - |-
+    ActivityEmptyPartitionsHousekeepingJob.md:performance.hot_paths +
+    performance.known_performance_gaps.[0] (count(*)=0 unindexed scan per
+    cycle — primary performance gap of this housekeeping job)
 notes: |-
   Activity Feed surfaces in main-concepts.md only implicitly via the Data Discovery
   and Data Security pillars — neither name 'Activity Feed' or 'audit trail' as a
@@ -311,7 +642,62 @@ notes: |-
       controller is unscoped at the controller layer; the service layer's
       ActivityType=MY_OBJECTS branch is the lone owner-respecting dispatch)
 
+  **Batch VAL-LSN-019-B (2026-05-20) adds — Stress Protocol canary 2 (Activity)**:
+    - Extends from 3-sidecar to 7-sidecar end-to-end coverage (HTTP → service →
+      repository → handler → housekeeping)
+    - Headline NEW invariants captured separately:
+        (i) activity-write-tx-coupled-emit-failure-rolls-back-business-mutation
+            — emit failure rolls back the user's mutation (operator-surprising)
+        (ii) activity-handler-concurrent-oldstate-capture-race — silent
+             wrong-diff under concurrent same-entity mutations
+        (iii) activity-empty-partitions-race-window-between-count-check-and-drop
+              — silent row loss in the count→DROP window
+        (iv) activity-counts-asymmetric-null-date-validation — counts endpoint
+             accepts null dates while list rejects them
+        (v) activity-handler-multi-id-default-throws-runtime-not-compile
+            — latent NPE-class regression on future multi-id event types
+        (vi) activity-write-no-idempotency-replay-creates-duplicate-rows
+             — caller retries create duplicate audit rows
+    - Headline NEW canonicalisation candidate:
+        activity-event-state-differ-vs-activityhandler-name-drift — the
+        interface is a snapshot-differ NOT a write-handler; the name is
+        misleading at the type system level
+    - Headline NEW entity:
+        activity-handler-state-differ — promote ActivityHandler from
+        "an interface mentioned somewhere" to a first-class concept in
+        the catalog
+    - Headline NEW operation:
+        write-activity-event-snapshot-diff-emit — name the actual write
+        pipeline (capture-pre + proceed + capture-post + diff + persist
+        under @ReactiveTransactional)
+    - Read-collaborative-cross-owner-enumeration invariant strengthened to
+      25-sidecar+ with ActivityController-class + ActivityServiceImpl +
+      ReactiveActivityRepositoryImpl confirming HTTP→service→SQL uniformity
+      for the Activity feature (same shape as the existing 24-sidecar
+      pattern for Tag / Alert / Search / Owner-directory)
+    - Cross-provider-username-row-duplication invariant strengthened with
+      ReactiveActivityRepositoryImpl primary-source pin (USER_OWNER_MAPPING
+      LEFT JOIN by OIDC_USERNAME only — provider tag dropped at write-side
+      AND join-side)
+
   Recommended as a canonicalisation candidate: add 'Activity Feed' to
   main-concepts.md Terms & Aliases AND create the missing api-reference page
   AND correct the partition-period documentation to clearly state
   WIDTH-only-not-retention.
+
+  Six DOC-NNN / REFACTOR-NNN candidates from batch VAL-LSN-019-B:
+    (a) Document the audit-or-fail semantic — activity emit failures DO
+        roll back business mutations (or decouple per @Async post-commit hook)
+    (b) Add `@JsonPropertyOrder` to every *ActivityStateDto to byte-stabilise
+        JSON diff equality across Lombok / IDE / formatter changes
+    (c) Add CI-time enforcement that every ActivityEventTypeDto value has
+        an isHandle-claiming ActivityHandler bean — catches missing-handler
+        regressions at build time not at runtime
+    (d) Add `WHERE NOT EXISTS` rewrite to PartitionServiceImpl.isPartitionEmpty
+        (replace `SELECT count(*) = 0` with `SELECT NOT EXISTS(SELECT 1 LIMIT 1)`)
+    (e) Add `housekeeping.ttl.activity_days` field + corresponding row-level
+        deletion query path to ReactiveActivityRepositoryImpl — close the
+        retention-claim-vs-code-drift invariant
+    (f) Rename the interface to `ActivityStateSnapshotter` or
+        `ActivityStateDiffer` to match what it actually does (or accept
+        the name and document the contract clearly)

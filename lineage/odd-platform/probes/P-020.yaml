@@ -1,0 +1,266 @@
+---
+probe_id: P-020
+feature_id: F-activity-feed
+test_class: integration
+verified_against_commit: ede5d277
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-2
+emitted_from_sidecar: odd-platform__java__service__activity__handler__ActivityHandler.md
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+stress_category: E (resource boundaries), D (auth gates)
+stress_question_ids: [S-E-5]
+expected_outcome: |
+  LSN-019 STRESS-FINDING S-E-5: Pin the system-event-username silent-NULL
+  behaviour for ingestion-driven activity events. Verify the operator-visible
+  consequence: the Activity Feed shows ingestion-driven changes as having
+  NO user (NULL `created_by_user_id`), with NO `is_system_event` indicator
+  on the persisted ActivityPojo to distinguish "system did it" from
+  "user did it but auth context lost due to bug".
+
+  Mechanism: `ActivityServiceImpl.createActivityEvent` (`:46-49`):
+    `authIdentityProvider.getCurrentUser()
+      .map(UserDto::username)
+      .map(username -> activityMapper.mapToPojo(event, activityCreateTime, username))
+      .switchIfEmpty(Mono.defer(() -> Mono.just(activityMapper.mapToPojo(event, activityCreateTime, null))))`
+  When no security context exists (ingestion thread, scheduler), `getCurrentUser`
+  returns `Mono.empty()`, switchIfEmpty kicks in, username = null. No
+  `log.warn`, no metric.
+
+  Additionally: `ActivityCreateEvent.systemEvent` (`:13`) is a boolean set
+  to `true` by the ingestion processor (`ActivityIngestionRequestProcessor:53`)
+  and false by default for @ActivityLog-driven events. Verify whether this
+  boolean is persisted on the ActivityPojo row (column on `activity` table)
+  so the UI/operator can distinguish "system event" from "user event with
+  NULL user".
+
+  Arrange: clean baseline; verify schema.
+
+  Act: submit an ingestion request creating ONE new data entity via the
+  Collector path (`POST /ingestion/entities`).
+
+  Observe:
+  - The ActivityPojo row for the new data entity.
+  - `created_by_user_id` (expected NULL).
+  - Schema of `activity` table — does an `is_system_event` (or
+    analogously-named) column exist?
+  - Activity Feed API response — what user-shape does the UI see for this row?
+
+  Assertion (current bug state):
+  - `created_by_user_id IS NULL` (silent null verified).
+  - Possibly: no `is_system_event` column on the activity table — surface
+    as separate finding (the systemEvent flag exists on the event DTO but
+    cannot be queried/displayed downstream).
+
+  When the fix lands (add `log.warn` for unexpected-NULL auth context;
+  persist the systemEvent flag in the row; surface it in the Activity API
+  response so the UI can render "system" vs "unknown user"), this probe's
+  assertions update:
+    - NULL user with systemEvent=true → expected (clean).
+    - NULL user with systemEvent=false → assertion failure (bug persists
+      for non-ingestion paths).
+    - WARN-log presence in application logs when NULL-user persists with
+      systemEvent=false.
+
+triggers:
+  - service/activity/handler/ActivityHandler.java:9-22 (interface contract — auth-agnostic)
+  - service/activity/ActivityServiceImpl.java:46-49 (silent null fallback)
+  - service/activity/ActivityServiceImpl.java:55-63 (createActivityEvents — ingestion path)
+  - service/ingestion/processor/ActivityIngestionRequestProcessor.java:44-56 (systemEvent=true on every ingestion event)
+  - dto/activity/ActivityCreateEvent.java:13 (systemEvent boolean field on the event DTO)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1020, '//probe-source-P-020/db', 'probe-source-P-020')
+      ON CONFLICT (id) DO NOTHING
+
+  # Baseline count of DATA_ENTITY_CREATED events with NULL user — to
+  # delta from after the act.
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS baseline_count
+      FROM activity
+      WHERE event_type = 'DATA_ENTITY_CREATED'
+        AND created_by_user_id IS NULL
+    capture_as: baseline_system_event_count
+
+  # SCHEMA CHECK: enumerate activity table columns. The probe-runner
+  # parses this to verify whether an `is_system_event` column exists.
+  - kind: sql
+    query: |
+      SELECT column_name, data_type
+      FROM information_schema.columns
+      WHERE table_name = 'activity'
+      ORDER BY ordinal_position
+    capture_as: activity_schema
+
+act:
+  # Ingestion path. Body shape per the spec's DataEntityList contract;
+  # the probe assumes auth.ingestion.filter.enabled=false (DISABLED auth)
+  # in the integration environment so the request goes through without
+  # S2S tokens.
+  - kind: rest
+    method: POST
+    path: /ingestion/entities
+    body:
+      data_source_oddrn: "//probe-source-P-020/db"
+      items:
+        - oddrn: "//probe-source-P-020/db/tables/p020_system_event"
+          name: "p020_system_event"
+          owner: "//probe-source-P-020/db"
+          type: "TABLE"
+          metadata: []
+          tags: []
+    capture_as: ingest_response
+
+observe:
+  - kind: sql
+    query: |
+      SELECT id, oddrn, external_name
+      FROM data_entity
+      WHERE oddrn = '//probe-source-P-020/db/tables/p020_system_event'
+    capture_as: created_data_entity
+
+  # The activity row for this new entity.
+  - kind: sql
+    query: |
+      SELECT id, data_entity_id, event_type, created_by_user_id,
+             old_state, new_state, created_at
+      FROM activity
+      WHERE event_type = 'DATA_ENTITY_CREATED'
+        AND data_entity_id = (SELECT id FROM data_entity WHERE oddrn = '//probe-source-P-020/db/tables/p020_system_event')
+      ORDER BY created_at DESC
+      LIMIT 1
+    capture_as: ingestion_activity_row
+
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS now_count
+      FROM activity
+      WHERE event_type = 'DATA_ENTITY_CREATED'
+        AND created_by_user_id IS NULL
+    capture_as: now_system_event_count
+
+  # UI-API check: hit the Activity Feed for the period containing the
+  # ingestion-driven event. Capture the response shape.
+  - kind: rest
+    method: GET
+    path: /api/activity?beginDate=2026-05-19T00:00:00Z&endDate=2026-05-21T00:00:00Z&size=50
+    capture_as: activity_api_response
+
+oracle:
+  # Sanity.
+  - "ingest_response.status in (200, 201)"
+  - "len(created_data_entity) == 1"
+  - "ingestion_activity_row.event_type == 'DATA_ENTITY_CREATED'"
+  - "now_system_event_count - baseline_system_event_count == 1"
+
+  # PRIMARY ASSERTION (current bug state): silent NULL on created_by_user_id.
+  - "ingestion_activity_row.created_by_user_id is None"
+
+  # SECONDARY ASSERTION (schema gap surface): does an `is_system_event`
+  # column exist?
+  # If FALSE, this surfaces a separate finding: the systemEvent flag
+  # exists on the event DTO (`ActivityCreateEvent:13`) but does not
+  # persist into the row, so the UI cannot distinguish "system event"
+  # from "user event with NULL user."
+  - "'is_system_event' in [col.column_name for col in activity_schema] or 'system_event' in [col.column_name for col in activity_schema] or any(col.column_name.endswith('system_event') for col in activity_schema)"
+
+  # UI-API assertion (loose — captures the response shape for human
+  # inspection rather than asserting specific behaviour).
+  - "activity_api_response.status == 200"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM activity
+      WHERE data_entity_id IN (SELECT id FROM data_entity WHERE oddrn = '//probe-source-P-020/db/tables/p020_system_event')
+  - kind: sql
+    query: DELETE FROM data_entity WHERE oddrn = '//probe-source-P-020/db/tables/p020_system_event'
+  - kind: sql
+    query: DELETE FROM data_source WHERE id = 1020
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: []
+  test_gaps:
+    - TEST-GAP-LSN-019-system-event-username-silent-null
+  doc_gaps:
+    - DOC-GAP-LSN-019-activity-feed-system-event-distinguishability
+  related_concepts:
+    - "Activity Feed"
+    - "Ingestion (S2S Collector path)"
+    - "Activity Snapshot Differ"
+    - "System Events vs User Events"
+  retrospectives: [LSN-019]
+  enrichment_sources:
+    - "lineage/odd-platform/understanding/odd-platform__java__service__activity__handler__ActivityHandler.md"
+
+resolves_to:
+  - sidecar_field: stress_findings.S-E-5 (PROBE-VERIFIED on runner verdict)
+  - on confirmation (NULL user verified): bugs_limitations_corner_cases.[system-event NULL] severity stays MEDIUM with measured evidence + adds the "missing is_system_event column" sub-finding if schema check fails
+  - on confirmation: implicit_adrs candidate — "Operators see NULL user on ingestion events with no in-row indicator. The systemEvent flag is captured but not persisted." — to be promoted to a backlog refactor item
+
+severity_if_confirmed: MEDIUM (audit accountability degraded; the Activity
+  Feed cannot answer "who changed X?" for ingestion events even though
+  the system KNOWS this was an ingestion event)
+
+probe_owner: probe-runner (next batch)
+estimated_runtime: 10 minutes (docker-compose + 2 SQL setups + 1 ingestion REST + 3 SQL observes + 1 Activity API call)
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/ActivityServiceImpl.java"
+    lines: "46-49"
+    role: "authIdentityProvider.getCurrentUser().switchIfEmpty(...null...) — the silent null fallback"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/ActivityServiceImpl.java"
+    lines: "55-63"
+    role: "createActivityEvents (plural) — the ingestion-path persistence call"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/processor/ActivityIngestionRequestProcessor.java"
+    lines: "44-56"
+    role: "createActivityEvents — sets systemEvent=true on every ingestion event"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/dto/activity/ActivityCreateEvent.java"
+    lines: "8-14"
+    role: "ActivityCreateEvent shape — systemEvent boolean field that needs to persist"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/handler/ActivityHandler.java"
+    lines: "9-22"
+    role: "the interface contract being interrogated"
+  - file: "retrospectives/LSN-019-file-analyser-describes-not-interrogates.md"
+    lines: "57-75"
+    role: "Stress Protocol Categories D (Auth gates) + E (Resource boundaries) — the rules that fire this probe"
+
+realism_caveats: |
+  - Ingestion endpoint shape (`POST /ingestion/entities`) needs
+    verification against actual OpenAPI ingestion spec. The Collector
+    body has its own DataEntityList shape; field names may differ.
+
+  - Probe assumes `auth.ingestion.filter.enabled=false` in the test
+    environment (S2S filter disabled). Under enabled, the probe needs
+    a valid S2S token.
+
+  - The schema-introspection assertion (`is_system_event` column) is
+    the SECONDARY finding: even if the primary NULL-username behaviour
+    is verified, absence of a persisted systemEvent indicator is its
+    own gap. Probe-runner should report both findings.
+
+  - Activity Feed API call requires DISABLED auth OR a valid session
+    token. The probe runs under DISABLED.
+
+  - When the fix lands (warn-on-unexpected-NULL + persist systemEvent),
+    assertions update to reflect new behaviour as documented in
+    `expected_outcome`.
+
+  - Complementary probe (future P-020-B): trigger an @ActivityLog-annotated
+    mutation from an unauthenticated UI request under DISABLED auth to
+    verify whether NULL-user manifests ALSO on the UI path or only the
+    ingestion path. The two paths use DIFFERENT entry points
+    (ActivityAspect vs ActivityIngestionRequestProcessor) and may have
+    different auth-context-empty behaviour.
+---

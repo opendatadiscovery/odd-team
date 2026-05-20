@@ -1,0 +1,94 @@
+gap_id: TEST-GAP-880
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java ActivityController controller-class:ActivityController"
+  - "odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl"
+pillars_affected: [P-07]
+surfaced_by:
+  - "ActivityController.md:stress_findings.STRESS_E3 (ORDER BY + LIMIT with no statement_timeout — disconnect cancellation behaviour)"
+  - "ActivityController.md:bugs_limitations_corner_cases.[counts-4x-load + no-timeout] (severity LOW per sidecar; elevated to MEDIUM here for the integration with DDL)"
+  - "ActivityController.md:probe_skeletons_emitted (P-014)"
+  - "ActivityController.md:tests_coverage_semantic.uncovered_behaviours.[STRESS_E1: read-while-partition-create concurrency]"
+  - "ReactiveActivityRepositoryImpl.md:stress_findings.E1 (concurrent reads during DDL)"
+behaviour: |-
+  **MEDIUM — `ActivityController.getActivity`'s underlying SQL has NO `queryTimeout`, NO Postgres `statement_timeout` hint, NO client-side bound. A long-running query (size=Integer.MAX_VALUE wide-window scan) holds an R2DBC connection from the pool with no cap. The client-disconnect-cancellation behaviour is currently untested — does Reactor's `onCancel` actually propagate to the PostgreSQL driver's `cancelQuery()`? Does the in-flight query actually stop on the DB side? Does the connection return to the pool, or does it linger until DB-side timeout?** Additionally, the partition-creation cron at PartitionServiceImpl.java:60-66 (`CREATE TABLE ... PARTITION OF activity`) takes `ACCESS EXCLUSIVE` on the parent during DDL (boot-time + nightly cron). A read query arriving during the brief DDL window blocks waiting for the lock; the combined cancellation behaviour during DDL stall is the test surface.
+
+  **Primary-source chain**:
+  - `ReactiveActivityRepositoryImpl.java:290-292` — ORDER BY + LIMIT with no `queryTimeout` (no JOOQ `.queryTimeout(...)` call; verified by sidecar grep)
+  - `ActivityController.java:23-41` — `getActivity` returns `Mono<ResponseEntity<Flux<Activity>>>` — streaming Flux body
+  - `PartitionServiceImpl.java:60-66` — `CREATE TABLE ... PARTITION OF activity` — takes ACCESS EXCLUSIVE on parent
+  - `PostgreSQLPartitionCreationJob.java:30-43` — boot + nightly cron at 00:01
+  - PostgreSQL `statement_timeout=0` (default — unlimited) — no DB-side timeout cap
+  - R2DBC connection pool — connection released on Mono/Flux completion OR explicit disconnect
+
+  **The three test surfaces**:
+  - **Surface 1 — Client disconnect mid-stream**: a UI client closes the TCP connection while the controller is streaming Flux<Activity>. Reactor's `onCancel` propagates back; the question is whether the in-flight DB query actually gets cancelled (via `PgConnection.cancelQuery`) AND whether the connection returns to the pool promptly
+  - **Surface 2 — Read-during-CREATE-PARTITION DDL**: at 00:01 cron, the partition-creation job runs `CREATE TABLE` taking ACCESS EXCLUSIVE; a concurrent read arrives. The read blocks waiting for the lock. If the client disconnects DURING the lock wait, does the lock-wait abort? Does the connection return?
+  - **Surface 3 — Pool exhaustion under sustained no-timeout queries**: 10 concurrent slow queries hold 10 connections; new queries wait. No metric exposes "queries in flight" or "longest-running query".
+
+  **Operator-visible consequences**:
+  - **UI flakiness during DDL windows**: a UI user clicking the Activity tab at 00:01 cron may see "request hangs then succeeds 200ms later" — the DDL stall is invisible
+  - **R2DBC pool exhaustion**: a hostile or mis-tuned client driving size=MAX wide-window queries can exhaust the pool, with no per-connection or per-user limit
+  - **Cancellation correctness**: a client disconnecting (browser tab close) SHOULD release the connection; if it doesn't, the connection lingers, eventually exhausting the pool
+
+  **Why MEDIUM not HIGH (sidecar says LOW)**:
+  - The sidecar rates this LOW because the symptoms are recoverable (queries eventually complete; pool eventually frees)
+  - **We elevate to MEDIUM because**: (a) the cancellation semantic is structurally important for production stability; (b) the DDL-stall interaction with cancellation is unmeasured (per probe P-014); (c) under load, the absence of a timeout + the absence of cancellation correctness = pool exhaustion vector
+
+  **Connection to probe P-014**:
+  - The sidecar emits P-014 to MEASURE the empirical disconnect-cancellation behaviour
+  - This TEST-GAP is the regression-pin AFTER P-014 confirms whether cancellation actually fires
+
+  **Connection to TEST-GAP-875**:
+  - TEST-GAP-875 pins the DROP-vs-SELECT lock collision (housekeeping DDL vs read)
+  - This gap (880) pins the CREATE-vs-SELECT lock collision (partition creation DDL vs read) AND the disconnect-cancellation behaviour
+  - Both surfaces are part of the read-during-DDL contract on the activity table
+
+  **Connection to probe P-017** (from sidecar reference):
+  - P-017 is the partition-creation-during-read probe (similar shape; specifically for boot-time DDL); P-014 is the no-timeout disconnect-cancellation probe
+  - This test covers BOTH probe surfaces because they share the same code path
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ActivityControllerDdlCancellationTest.java"
+  name: "getActivityWideWindowSizeMax_clientDisconnectDuringStream_pinsConnectionReleaseAndQueryCancel"
+evidence:
+  - "ActivityController.md says (stress_findings.STRESS_E3): 'ReactiveActivityRepositoryImpl.java:290-292: ORDER BY + LIMIT with NO timeout, NO statement_timeout hint. What happens if a single getActivity call's underlying SQL takes 60s? 5min? Does the Flux subscription survive a connection-reset? STATIC-INFERRED + PROBE-NEEDED. No timeout at JOOQ level (no .queryTimeout(...)), no Postgres statement_timeout set at the connection level by this code path. The DB query runs until completion or DB-side timeout (default Postgres statement_timeout=0 — unlimited). For a wide-window scan with size=Integer.MAX_VALUE, the query can run for minutes. Reactor backpressure: the WebFlux pipeline subscribes to the Flux; the client controls receive rate. If the client disconnects mid-stream, Reactor's onCancel propagates back to the connection — the in-flight DB query is cancelled by JOOQ's PostgreSQL driver (PgConnection.cancelQuery). In practice this works for most cases. Connection-pool impact: a long-running query holds a connection from the pool — pool exhaustion is possible under sustained heavy load with no timeout cap. PROBE-NEEDED for the actual end-to-end behaviour under client-disconnect. Emitted P-014.'"
+  - "ActivityController.md says (stress_findings.STRESS_E1): 'Activity table is range-partitioned by created_at (F-010); CREATE TABLE PARTITION DDL at PartitionServiceImpl.java:60-66 takes ACCESS EXCLUSIVE on the parent during DDL. Can a long-running read query block the partition-creation DDL? Can the DDL stall a read query? CREATE TABLE ... PARTITION OF activity takes ACCESS EXCLUSIVE on the parent activity table — this blocks ALL concurrent reads and writes for the duration of the statement. In PostgreSQL 12+ this is a metadata-only operation completing in milliseconds; on heavily loaded systems with long-running transactions on activity, the DDL can stall behind the in-flight query. The reverse is also true: a /api/activity read arriving during the brief DDL window blocks waiting for the lock. PROBE-NEEDED for the read-during-DDL stall behaviour — emitted P-017.'"
+  - "ActivityController.md says (bugs_limitations_corner_cases.[counts-4x-load]): 'getActivityCounts issues 4 parallel aggregation queries per call. A UI that polls the counts endpoint on a refresh interval drives 4× the apparent endpoint count of DB load. No caching, no debouncing, no precomputed aggregate.' severity: LOW"
+  - "Verified at primary source: ReactiveActivityRepositoryImpl.java:290-292 (no .queryTimeout(...) — grep 0 matches) + ActivityController.java:23-41 (Flux body) + PartitionServiceImpl.java:60-66 (CREATE TABLE DDL) + PostgreSQLPartitionCreationJob.java:30-43 (cron lifecycle)"
+  - "Verified no existing test: Glob src/test/**/*Activity*.java + src/test/**/*Cancellation*.java returns 0 matches"
+cross_references:
+  - "TEST-GAP-875 (sister VAL-LSN-019-B — DROP-vs-SELECT lock collision; this gap (880) pins the CREATE-vs-SELECT analog AND the disconnect-cancellation)"
+  - "TEST-GAP-882 (META anchor — zero controller-tier coverage)"
+  - "REFACTOR-NNN candidate: add R2DBC query-timeout configuration (e.g. `spring.r2dbc.properties.options.statement_timeout=30000` for 30s default); OR add `.queryTimeout(Duration.ofSeconds(30))` at the JOOQ layer for the activity-feed queries"
+  - "DOC-NNN candidate: surface the cancellation + no-timeout semantics in the operator docs (the page is silent on these per ActivityController.md:docs_link_semantic.doc_drift_findings)"
+  - "probe-skeletons: P-014, P-017"
+related_features: [F-021, F-010]
+related_pillar_features: ["P-07:F-003"]
+proposed_action: |-
+  Add `ActivityControllerDdlCancellationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/` using Testcontainers + Postgres + manual TCP-level disconnect harness. Three test methods:
+
+  1. **`getActivityWideWindowSizeMax_clientDisconnectDuringStream_pinsConnectionReleaseAndQueryCancel`** (HEADLINE):
+     - Arrange: seed 1M activity rows in a single date partition. Start the controller. Configure R2DBC pool size = 5.
+     - Act:
+       - Start an HTTP/2 streaming request to `/api/activity?size=2147483647` with a sustained connection
+       - After the first 100 rows have streamed (~50ms), forcibly close the TCP connection from the client side
+     - Assert (1): query the Postgres `pg_stat_activity` view to verify the original SELECT's backend process is no longer running (within 1s of disconnect)
+     - Assert (2): the R2DBC connection is returned to the pool within 5s (verify via pool metrics OR pool.usedConnections counter)
+     - PIN the cancellation correctness contract
+
+  2. **`getActivityDuringPartitionCreationDdl_pinsLockWaitAndProgress`**:
+     - Arrange: trigger a `CREATE TABLE ... PARTITION OF activity` via the partition-creation job (or directly via JDBC) — this takes ACCESS EXCLUSIVE on parent.
+     - Act: simultaneously call `/api/activity?begin_date=now&end_date=now+1d&size=10`
+     - Assert: the read either (a) completes quickly because the DDL is metadata-only (milliseconds in PG 12+) OR (b) blocks for the DDL duration but eventually returns 200 OK. PIN the actual observed behaviour.
+
+  3. **`getActivityClientDisconnectDuringDdlLockWait_pinsAbortion`**:
+     - Arrange: hold the ACCESS EXCLUSIVE lock manually via a parallel JDBC connection running a long-running `LOCK TABLE activity IN ACCESS EXCLUSIVE MODE`.
+     - Act: start a `/api/activity` request that will need the lock; the read blocks waiting. After 1s, disconnect the client.
+     - Assert: query `pg_stat_activity`; verify the lock-wait entry is removed within 2s. PIN that client disconnect during lock-wait properly aborts.
+
+  After P-014 + P-017 measure the empirical behaviour, refine the test thresholds. Cross-pair with REFACTOR-NNN to introduce R2DBC statement_timeout. Cross-pair with DOC-NNN to document the cancellation contract.
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-021

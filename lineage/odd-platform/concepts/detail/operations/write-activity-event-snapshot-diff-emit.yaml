@@ -1,0 +1,165 @@
+name: Write Activity Event — snapshot-diff-emit pipeline (under @ReactiveTransactional)
+canonical_in_docs: false
+canonical_candidate: true
+description: |-
+  **NEW OPERATION, batch VAL-LSN-019-B (2026-05-20)** — captures the actual
+  write-path semantics that produce ActivityPojo rows. The operation
+  pipeline has FOUR ordered steps, all under ONE @ReactiveTransactional
+  boundary (the wrapping `ActivityAspect.monoActivityAspect` or
+  `fluxActivityAspect`, both annotated at `ActivityAspect.java:42, 62`):
+
+    Step 1 (pre-snapshot) — `getContextInfo(parameters)`:
+      ActivityAspect.preActivity@48 (Mono) / @68 (Flux) — looks up the
+      matching ActivityHandler via `activityService.getContextInfo(parameters,
+      eventType)` which dispatches to `getActivityHandler(eventType).getContextInfo(parameters)`.
+      The handler reads the affected data_entity / ownership / tag / term
+      state BEFORE the business mutation runs. Output: `ActivityContextInfo
+      {dataEntityId, oldState}` where `oldState` is a JSON-serialized
+      snapshot of the pre-mutation state.
+
+    Step 2 (mutation) — `joinPoint.proceed()`:
+      The wrapped @ActivityLog-annotated method's actual body executes.
+      Examples: DataEntityServiceImpl.upsertBusinessName (business_name
+      update), OwnershipServiceImpl.create/update/delete (ownership CRUD),
+      TermServiceImpl.linkTermWithDataEntity (term assignment), etc. — 10
+      service files / 18+ @ActivityLog methods total.
+
+    Step 3 (post-snapshot) — `getUpdatedState(parameters, dataEntityId)`:
+      ActivityAspect.postActivity@85 — calls
+      `activityService.getUpdatedInfo(activityParameters, info.getDataEntityId(),
+      eventType)` which dispatches to the same handler's
+      `getUpdatedState(parameters, dataEntityId)`. The handler re-reads the
+      same DB shape, now reflecting POST-mutation state. Output: JSON string
+      `newState`.
+
+    Step 4 (diff + emit) — `oldState != newState` filter + persist:
+      ActivityAspect.postActivity@86 — `filter(newState -> !info.getOldState().equals(newState))`.
+      JSON-STRING equality (not semantic equality). If equal, emit is
+      SKIPPED — idempotent no-op writes do NOT emit redundant activity
+      rows. If different, construct ActivityCreateEvent and call
+      `activityService.createActivityEvent(event)` which:
+        (4a) Resolves the actor identity via
+             `authIdentityProvider.getCurrentUser().map(UserDto::username)`
+             — **DROPS the provider tag** before persistence (line 47, 58)
+        (4b) `switchIfEmpty` fallback for empty SecurityContext —
+             persists `created_by = NULL` as "system event"
+        (4c) `activityMapper.mapToPojo(event, createdAt, username)` builds
+             the ActivityPojo
+        (4d) `activityRepository.saveReturning(pojo)` issues
+             `DSL.insertInto(ACTIVITY).set(record).returning()` — unconditional
+             INSERT, no ON CONFLICT clause
+
+  **The whole pipeline runs inside the aspect's @ReactiveTransactional** —
+  any failure at steps 1/2/3/4 rolls back the whole TX. The intentional
+  consequence: emit failure (transient ActivityRepository write error)
+  rolls back the user's successful business mutation. Operator-surprising;
+  captured separately as invariant
+  `activity-write-tx-coupled-emit-failure-rolls-back-business-mutation`.
+
+  **Three caller paths** invoke this pipeline:
+    (a) @ActivityLog-annotated business methods — the PRIMARY path; 10
+        service files; 18+ methods. AspectJ around-advice wraps via
+        ActivityAspect.monoActivityAspect (Mono return) or
+        fluxActivityAspect (Flux return).
+    (b) AlertServiceImpl.applyAlertActions (line 201) — carries its OWN
+        @ReactiveTransactional + service-level @PreAuthorize(MANAGE_ALERTS);
+        calls `createActivityEvents(...)` (BATCH variant) for OPEN/RESOLVED_
+        ALERT_RECEIVED + ALERT_STATUS_UPDATED with `systemEvent=true` flag.
+    (c) ActivityIngestionRequestProcessor.process (line 26-32) — runs in
+        the FINALIZING phase of IngestionServiceImpl.ingest's
+        @ReactiveTransactional; emits DATA_ENTITY_CREATED via the BATCH
+        variant `createActivityEvents`. SKIPS the aspect (no @ActivityLog
+        on the processor); calls getContextInfo + getUpdatedInfo(multi-id)
+        directly.
+
+  **Batched variant for paths (b) and (c)**: `createActivityEvents(List<
+  ActivityCreateEvent>)` (ActivityServiceImpl.java:54-63) partitions in
+  1000-row chunks via `JooqReactiveOperations.executeInPartition`;
+  chunk-N failure leaves chunks 1..N-1 committed in the outer TX
+  (partial-commit on chunk-error — repository sidecar Stress Protocol E2/E3).
+
+  vocabulary_status: codebase-anchored, doc-side-absent (main-concepts.md
+  does not name the write pipeline; the live activity-feed.md page
+  describes the read surface only).
+vocabulary_status: codebase-anchored, doc-side-absent
+axes_present:
+- services
+- repositories_reactive
+nodes:
+- odd-platform java service:ActivityServiceImpl
+- odd-platform java service activity handler:ActivityHandler
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+contributors:
+- |-
+  ActivityServiceImpl (batch VAL-LSN-019-B): operations[createActivityEvent
+  / createActivityEvents (batched 1000-row chunks) / getContextInfo /
+  getUpdatedInfo single + multi-id / getActivityHandler linear-scan dispatch]
+- |-
+  ActivityHandler interface (batch VAL-LSN-019-B): operations[isHandle /
+  getContextInfo (pre-snapshot) / getUpdatedState (post-snapshot single +
+  multi-id default-throws)]
+- |-
+  ReactiveActivityRepositoryImpl (batch VAL-LSN-019-B): operations[
+  save-activity-pojo (saveReturning single-row) / save-activity-batch
+  (1000-row chunks via executeInPartition)]
+evidence:
+- |-
+  ActivityServiceImpl.md:concepts.operations.[0] (createActivityEvent —
+  single-row write path) + [1] (createActivityEvents — batch path with
+  chunked partitioning) + [2-4] (getContextInfo + getUpdatedInfo dispatch
+  helpers) + [10] (getActivityHandler linear-scan dispatch)
+- |-
+  ActivityServiceImpl.md:concepts.invariants.[1] (created_by = NULL is the
+  system-event signal — switchIfEmpty fallback when SecurityContext is
+  empty) + [2] (user-provider tag DROPPED before persistence — UserDto::username
+  picks only username, discards provider)
+- |-
+  ActivityServiceImpl.md:concepts.invariants.[5] (no replay-safety /
+  idempotency — saveReturning is unconditional INSERT; caller retry
+  creates duplicates)
+- |-
+  ActivityServiceImpl.md:concepts.invariants.[6] (non-atomic time generation
+  — DateTimeUtil.generateNow() called at Mono build time, not at INSERT
+  execution time; commit-inverted ordering possible)
+- |-
+  ActivityHandler.md:concepts.operations.[1] (getContextInfo pre-snapshot)
+  + [2] (getUpdatedState post-snapshot single-id) + [3] (multi-id
+  default-throws-at-runtime)
+- |-
+  ReactiveActivityRepositoryImpl.md:concepts.operations.[save-activity-pojo /
+  save-activity-batch] + invariants.[5] (created_by NULLABLE — system
+  events orphan on USER_OWNER_MAPPING LEFT JOIN)
+- |-
+  ReactiveActivityRepositoryImpl.md:coupling section (the WRITE-PATH callers:
+  ActivityAspect.postActivity + AlertServiceImpl.applyAlertActions +
+  ActivityIngestionRequestProcessor.process — three caller paths
+  enumerated)
+notes: |-
+  Promoted to a first-class operation in batch VAL-LSN-019-B to name the
+  actual write pipeline. The earlier sidecars listed "create-activity-event"
+  in passing but didn't capture the four-step pipeline OR the fact that
+  emit-failure rollback is a deliberate semantic (audit-or-fail).
+
+  Cross-cutting connections:
+    - Pairs with `read-activity-feed-windowed-filtered-type-dispatched`
+      (the existing read-side operation) — together they describe the
+      full HTTP surface of the Activity feature
+    - Pairs with `activity-handler-state-differ` (new entity) — names
+      the dispatch core of step 1 and step 3
+    - Pairs with new invariant
+      `activity-write-tx-coupled-emit-failure-rolls-back-business-mutation`
+      — the operator-surprising TX semantic
+    - Pairs with new invariant
+      `activity-handler-concurrent-oldstate-capture-race` — the
+      handler-tier race that produces wrong diff attribution under
+      concurrent mutations
+
+  Two DOC-NNN candidates flow from this operation:
+    (a) Document the write-pipeline shape on the activity-feed feature
+        page — operators understanding "what gets recorded when I
+        change X" need to know the snapshot-diff timing AND the
+        @ReactiveTransactional emit-or-fail semantic
+    (b) Document the system-event mechanism (null created_by, scheduler
+        + ingestion + DISABLED-mode paths) — operators querying the
+        feed and seeing rows with NULL actor need to know what that
+        means

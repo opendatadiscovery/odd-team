@@ -1,0 +1,107 @@
+---
+id: P-011
+status: pending-stress-protocol
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-2
+emitted_from_sidecar: odd-platform__java__housekeeping__job__ActivityEmptyPartitionsHousekeepingJob.md
+question: |
+  What is the autocommit / transactional posture of the `Connection` returned by
+  `PGConnectionFactory.getConnection()` (used at `HousekeepingJobManager.java:32`),
+  and what is the resulting transactional posture of each `DROP TABLE <partition>`
+  call issued from `EmptyPartitionsHousekeepingJob` for the activity table?
+
+  Specifically: if a cycle drops 5 partitions then errors on the 6th, do the
+  first 5 stay dropped (autocommit) or roll back (in-transaction)?
+
+  Additionally: under a multi-instance race where the ShedLock window (14m/14m
+  against 15m schedule) releases early on a long cycle, two instances racing to
+  `DROP TABLE` the same partition — does Postgres serialise correctly, what
+  error does the loser see, and does the loser's RuntimeException abort the
+  remaining drops in its cycle?
+
+stress_category: E (resource boundaries)
+stress_question_ids: [Q-E.1, Q-E.4]
+
+triggers:
+  - HousekeepingJobManager.java:32 (`pgConnectionFactory.getConnection()`)
+  - EmptyPartitionsHousekeepingJob.java:16-33 (no explicit transaction wrapper)
+  - PartitionServiceImpl.java:121-127 (DROP TABLE — no IF EXISTS)
+  - F-010 drift_class `shedlock_window_dangerously_close_to_schedule`
+
+arrange:
+  - Build odd-platform from main against a docker-compose Postgres (version
+    matching the migrations' baseline — 13+).
+  - Configure: `housekeeping.enabled=true`; `odd.activity.partition-period=1`
+    (small width so the test can populate then empty 60-day-equivalent
+    partitions quickly via manual SQL).
+  - Seed 10 past `activity_YYYYMMDD_YYYYMMDD` partitions via direct
+    `CREATE TABLE ... PARTITION OF` against the test DB — all empty.
+  - Read the resolved `Connection.getAutoCommit()` via a debugger probe OR
+    by adding a temporary `log.info("autocommit={}", connection.getAutoCommit())`
+    line at HousekeepingJobManager.java:33.
+  - For the multi-instance race scenario: spin up TWO odd-platform instances
+    against the SAME Postgres + SAME ShedLock provider; ensure ShedLock is
+    Postgres-backed (the default per SchedulingConfiguration).
+
+act:
+  - Scenario A (autocommit verification):
+    - Place a partition with an unparseable name (`activity_corrupt_old`)
+      in the seeded set so the 6th iteration throws DateTimeParseException.
+    - Trigger one cycle (call `HousekeepingJobManager.runHousekeepingJobs()`
+      directly via Spring test harness OR wait 15 minutes).
+    - Observe: did the first 5 partitions get DROPPED? Did the 6th
+      partition cause exception logged at ERROR?
+  - Scenario B (multi-instance race):
+    - On instance 1, run a debugger breakpoint at PartitionServiceImpl:122
+      (the DROP TABLE) — pause for 30 seconds while ShedLock's 14m hold is
+      already expired (simulate by manually deleting the shedlock row).
+    - Trigger instance 2's housekeeping cycle.
+    - Observe: instance 2's DROP TABLE for the SAME partition arrives.
+      Postgres serialises via AccessExclusiveLock — what does the LOSER
+      see? What does instance 2's cycle continuation look like?
+
+observe:
+  - kind: jdbc_connection_property
+    target: HousekeepingJobManager.java:32 → connection
+    field: autoCommit
+    expected_static: TRUE (PGConnectionFactory not yet inspected; assumption is
+      raw JDBC default)
+  - kind: postgres_log
+    target: odd-platform Postgres log
+    grep_for:
+      - "DROP TABLE activity_"
+      - "ERROR:  relation \"activity_"
+      - "AccessExclusiveLock"
+  - kind: db_state
+    target: information_schema.tables
+    after_cycle: |
+      Compare partition count before vs after Scenario A — confirm partitions
+      1-5 dropped, partition 6 (corrupt name) remains.
+
+oracle:
+  - For Scenario A — `autocommit=true` AND first 5 partitions dropped AND
+    6th partition NOT dropped (corrupt parse error during the LIST phase
+    means none would be attempted) OR `autocommit=true` AND first 5
+    dropped AND remaining {7..10} skipped (corrupt parse error during the
+    DROP loop short-circuits the rest of the cycle).
+  - For Scenario B — Postgres returns "relation does not exist" to the
+    LOSER; the LOSER's cycle continues to next iteration (because
+    EmptyPartitionsHousekeepingJob.java:30-32 wraps RuntimeException at the
+    DOHOUSEKEEPING level — meaning the loser's ENTIRE cycle aborts, the
+    other 4 housekeeping jobs in that instance's cycle DO NOT RUN).
+
+resolves_to:
+  - sidecar_field: stress_findings.Q-E.1 (PROBE-VERIFIED race behaviour)
+  - sidecar_field: stress_findings.Q-E.4 (PROBE-VERIFIED autocommit posture)
+  - on confirmation: convert bugs_limitations_corner_cases.[2] severity
+    framing to PROBE-VERIFIED with measured race-window timing
+  - cross-references: F-010 drift_class shedlock_window_dangerously_close_to_schedule
+    gets PROBE-VERIFIED evidence
+
+severity_if_confirmed: MEDIUM (corruption is contained by Postgres serialisation;
+  the operational pain is log noise + cycle abort on the loser instance)
+
+probe_owner: probe-runner (next batch)
+estimated_runtime: 30 minutes (docker-compose + ShedLock provider + 2 instances + manual race orchestration)
+---

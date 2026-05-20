@@ -1,0 +1,219 @@
+name: ActivityHandler.getUpdatedState(parameters, List<Long>) default throws at RUNTIME
+  not compile time — 16 of 18 concrete impls inherit the throwing default
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+description: |-
+  **NEW INVARIANT, batch VAL-LSN-019-B (2026-05-20)** — surfaced by
+  primary-source examination of ActivityHandler interface combined with
+  Glob enumeration of the 18 concrete handler implementations.
+
+  **THE INTERFACE CONTRACT** (`ActivityHandler.java:17-21`):
+    ```java
+    default Mono<Map<Long, String>> getUpdatedState(
+        Map<String, Object> parameters, List<Long> dataEntityIds) {
+      return Mono.error(new UnsupportedOperationException(
+          "getUpdatedState for multiple ids is not implemented yet for this handler"));
+    }
+    ```
+
+  **THE COVERAGE HOLE**: only 2 of 18 concrete impls OVERRIDE this default:
+    - `DataEntityCreatedActivityHandler.getUpdatedState(parameters,
+       List<Long>)` (`:46-49`)
+    - `DataEntityStatusUpdatedActivityHandler.getUpdatedState(parameters,
+       List<Long>)` (`:51-55`)
+
+  The other 16 inherit the throwing default:
+    BusinessNameUpdatedActivityHandler, AlertHaltConfigUpdatedActivityHandler,
+    CustomGroupCreatedActivityHandler, DatasetFieldTermAssignmentActivityHandler,
+    OwnershipCreatedActivityHandler, TagActivityHandlerImpl,
+    AlertStatusUpdatedHandler, OwnershipUpdatedActivityHandler,
+    DatasetFieldInformationUpdatedActivityHandler,
+    DescriptionUpdatedActivityHandler, OwnershipDeletedActivityHandler,
+    DatasetFieldValuesUpdatedActivityHandler, CustomGroupUpdatedActivityHandler,
+    TermAssignmentActivityHandler — plus 2 abstract bases
+    (AbstractOwnershipActivityHandler, AbstractCustomGroupActivityHandler)
+    which also inherit.
+
+  **THE SINGLE CALLER OF THE MULTI-ID PATH**:
+    `ActivityIngestionRequestProcessor.process` (`:25-32`) — the S2S
+    ingestion pipeline's DATA_ENTITY_CREATED emit. The processor calls
+    `activityService.getUpdatedInfo(emptyMap(), request.getNewIds(),
+    ActivityEventTypeDto.DATA_ENTITY_CREATED)` — dispatches to
+    `DataEntityCreatedActivityHandler.getUpdatedState(...)` which is
+    one of the two override impls. **Current runtime is safe.**
+
+  **THE LATENT REGRESSION**: a future @ActivityLog method that
+  passes a multi-id parameters bag for ANY OTHER event type (e.g.
+  bulk-OWNERSHIP_UPDATED, bulk-TAG_ASSIGNMENT_UPDATED) would
+  dispatch to a handler that inherits the throwing default —
+  throwing `UnsupportedOperationException` at FIRST SUBSCRIPTION
+  with the misleading message "getUpdatedState for multiple ids is
+  not implemented yet for this handler".
+
+  **WHY THE COMPILE-TIME CONTRACT IS WRONG**:
+    The default method shape advertises a polymorphic batch path that
+    the compiler accepts AT EVERY CALL SITE — `handler.getUpdatedState(
+    params, dataEntityIds)` compiles regardless of the runtime handler
+    type. There is no `@MustOverride`-style annotation in Java; the
+    default-implementation pattern is widely used for "optional"
+    methods, but here the default is fundamentally broken (throws
+    immediately).
+
+    The interface contract should EITHER:
+    (a) Not declare the multi-id method at all — make it a separate
+        BatchedActivityHandler subinterface that only specific impls
+        implement, with a `instanceof BatchedActivityHandler` check
+        at the call site
+    (b) Implement the multi-id method correctly at the interface
+        level by composing the single-id method: `Mono<Map<Long,
+        String>> getUpdatedState(parameters, ids) {
+          return Flux.fromIterable(ids)
+              .flatMap(id -> getUpdatedState(parameters, id).map(s ->
+                  Map.entry(id, s))).collectMap(Entry::getKey,
+                  Entry::getValue); }`
+        Cost: N DB reads instead of 1 batch read; correctness gain.
+    (c) Throw at construction (not at first subscription) — the
+        default-implementation could be `@Bean`-validated at startup
+        if any reachable @ActivityLog event type has not overridden
+        the multi-id path
+
+  **THE OPERATOR-VISIBLE MANIFESTATION**:
+    A maintainer adds a bulk operation (e.g. `bulkUpsertTags(List<
+    Entity>)`) and decorates it with `@ActivityLog(event =
+    TAG_ASSIGNMENT_UPDATED)`. The bulk operation calls
+    `activityService.getUpdatedInfo(parameters, allTouchedIds,
+    TAG_ASSIGNMENT_UPDATED)` — at runtime, this resolves to
+    `TagActivityHandlerImpl.getUpdatedState(parameters, List<Long>)`
+    which inherits the throwing default. The bulk operation 500s on
+    its first invocation; the caller (e.g. the ingestion pipeline)
+    rolls back the whole batch (per
+    `activity-write-tx-coupled-emit-failure-rolls-back-business-mutation`
+    invariant). The maintainer has to override the multi-id method
+    on TagActivityHandlerImpl + every other handler that bulk
+    operations will touch.
+
+  **NO CI-TIME CHECK**:
+    No test asserts that every ActivityEventTypeDto value's matching
+    handler overrides the multi-id path. The bug surfaces at first
+    invocation in production. Per the ActivityHandler sidecar's
+    uncovered_behaviours, severity HIGH (would-be-test:
+    `ActivityHandlerContractTest.testMultiIdGetUpdatedState_UnsupportedHandlers_ThrowsUnsupportedOperation`).
+nodes:
+- odd-platform java service activity handler:ActivityHandler
+contributors:
+- |-
+  ActivityHandler (batch VAL-LSN-019-B): concepts.operations.[3]
+  (multi-id getUpdatedState default-throws-at-runtime; 16 of 18 impls
+  inherit the throw) + concepts.invariants.[4] (the default multi-id
+  getUpdatedState throws at runtime, not at compile time) +
+  tests_coverage_semantic.uncovered_behaviours.[multi-id default-throws]
+  (severity HIGH)
+evidence:
+- |-
+  ActivityHandler.md:concepts.operations.[3] — verbatim: "getUpdatedState(Map<String,
+  Object> parameters, List<Long> dataEntityIds) (:17-21, DEFAULT method)
+  — throws UnsupportedOperationException ... UNLESS overridden. Verified
+  overrides: ONLY DataEntityCreatedActivityHandler.getUpdatedState(parameters,
+  List<Long>) (:46-49) and DataEntityStatusUpdatedActivityHandler.
+  getUpdatedState(parameters, List<Long>) (:51-55). All 16 other concrete
+  impls inherit the throwing default."
+- |-
+  ActivityHandler.md:concepts.invariants.[4] — verbatim: "The default
+  multi-id getUpdatedState throws at runtime, not at compile time.
+  Concrete impls that do not need batch behaviour silently inherit the
+  throw. A caller (specifically ActivityServiceImpl.getUpdatedInfo(parameters,
+  List<Long>, eventType) at :72-76) that dispatches to an event type
+  whose handler doesn't override the multi-id path would receive
+  UnsupportedOperationException at the first subscription. The current
+  code dispatches only DATA_ENTITY_CREATED to this path (verified via
+  Grep — ActivityIngestionRequestProcessor is the only caller, line
+  27-28); adding a second multi-id event type without overriding
+  would be a latent NPE-class regression."
+- |-
+  ActivityHandler.md:tests_coverage_semantic.uncovered_behaviours
+  — "Multi-id getUpdatedState default-throws — no test asserts that
+  the 16 concrete impls inheriting the default getUpdatedState(parameters,
+  List<Long>) throw UnsupportedOperationException with the documented
+  message when called. A future code path that mistakenly calls the
+  multi-id variant for, say, OWNERSHIP_UPDATED would NPE/throw with
+  a poor message; no test guards the contract." Severity HIGH.
+- |-
+  ActivityIngestionRequestProcessor.process (`:25-31`) is the SOLE
+  caller of the multi-id path; it dispatches DATA_ENTITY_CREATED
+  only (confirmed via Grep across the codebase).
+axes_present:
+- services
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: latent-regression
+mitigations_unimplemented:
+- |-
+  Add a startup-time check (Spring @PostConstruct on ActivityServiceImpl):
+  iterate every ActivityEventTypeDto value, dispatch to the matching
+  handler, check whether the handler overrides
+  `getUpdatedState(parameters, List<Long>)` via reflection
+  (`handler.getClass().getMethod("getUpdatedState", Map.class,
+  List.class).getDeclaringClass() != ActivityHandler.class`). For each
+  event type that has a non-overriding handler AND is reachable from
+  a multi-id @ActivityLog method, fail-fast at bean initialization.
+- |-
+  OR: refactor the interface contract — promote multi-id support to a
+  separate sub-interface (BatchedActivityHandler), with a
+  `instanceof BatchedActivityHandler` check at the multi-id call site
+  in ActivityServiceImpl.getUpdatedInfo. Throws a cleaner error
+  ("handler X does not support multi-id batch") at the call site
+  with a typed dispatch instead of a runtime exception.
+- |-
+  OR: implement the multi-id default at the interface level as a
+  N×single-id composition:
+    ```java
+    default Mono<Map<Long, String>> getUpdatedState(
+        Map<String, Object> parameters, List<Long> dataEntityIds) {
+      return Flux.fromIterable(dataEntityIds)
+          .flatMap(id -> getUpdatedState(parameters, id)
+              .map(s -> Tuples.of(id, s)))
+          .collectMap(Tuple2::getT1, Tuple2::getT2);
+    }
+    ```
+  Cost: N DB reads instead of 1 batch read; correctness gain.
+  Trade-off: silently slow when called from a non-batch-aware caller.
+- |-
+  Add a test
+  `ActivityHandlerContractTest.testMultiIdGetUpdatedState_UnsupportedHandlers_ThrowsUnsupportedOperation`
+  per the ActivityHandler sidecar's recommended test name. Pin the
+  current contract until the fix lands.
+- |-
+  Document the contract on the activity-feed feature page (or an
+  internal architecture note): "ActivityHandler.getUpdatedState
+  multi-id default throws at runtime. Maintainers adding new
+  @ActivityLog methods that pass a List<Long> dataEntityIds must
+  explicitly override the multi-id method on the corresponding
+  handler."
+notes: |-
+  NEW invariant captured in batch VAL-LSN-019-B. Surfaced by primary-source
+  examination of ActivityHandler.java line-by-line + Glob enumeration
+  of the 18 concrete handler implementations.
+
+  This is a LATENT REGRESSION invariant — the bug is dormant in the
+  current codebase (only DATA_ENTITY_CREATED uses the multi-id path)
+  but the interface contract advertises a polymorphic batch path
+  that is silently unsupported by 14 of 16 impls. Future maintainers
+  adding bulk operations are likely to hit it.
+
+  Cross-cutting connections:
+    - Pairs with `activity-handler-state-differ` (new entity) — the
+      multi-id contract is part of the dispatch core's interface;
+      this finding is "the interface advertises more than the impls
+      deliver"
+    - Pairs with `activity-write-tx-coupled-emit-failure-rolls-back-business-mutation`
+      — the @ReactiveTransactional emit-or-fail semantic means a
+      multi-id call hitting the throwing default would also roll
+      back the whole bulk business mutation (large blast radius)
+
+  PRIMARY-SOURCE confidence: HIGH (Glob enumeration of 18 concrete
+  impls in service/activity/handler/; line citations to the two
+  override impls; ActivityIngestionRequestProcessor.process as the
+  sole multi-id caller verified via Grep across the codebase).

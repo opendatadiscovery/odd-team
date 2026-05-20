@@ -1,0 +1,279 @@
+---
+probe_id: P-019
+feature_id: F-activity-feed
+test_class: integration
+verified_against_commit: ede5d277
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-2
+emitted_from_sidecar: odd-platform__java__service__activity__handler__ActivityHandler.md
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+stress_category: E (resource boundaries)
+stress_question_ids: [S-E-2]
+expected_outcome: |
+  LSN-019 STRESS-FINDING S-E-2: Pin whether two concurrent
+  @ActivityLog-annotated mutations on the SAME data entity produce
+  ActivityPojo rows with INCORRECTLY-ATTRIBUTED diffs.
+
+  Mechanism: `ActivityAspect.monoActivityAspect` (`:41-59`) calls
+  `getContextInfo(parameters, eventType)` BEFORE `joinPoint.proceed()`.
+  The `@ReactiveTransactional` annotation (`:42`) wraps the around-advice
+  in ONE TX, but two concurrent calls hold DIFFERENT TXs. Under
+  READ_COMMITTED (Postgres default), if both TXs start before either
+  commits, both capture `oldState = pre-mutation`. Then Tx A commits, Tx B's
+  `getUpdatedState` reads post-A+post-B state. Tx A's ActivityPojo records
+  `pre-mutation → post-A` (CORRECT). Tx B's ActivityPojo records
+  `pre-mutation → post-A+post-B` (WRONG: attributes B's diff as
+  `pre-mutation → post-A+post-B` instead of `post-A → post-A+post-B`).
+
+  The Activity Feed shows B's row as if B reverted A's change AND added
+  B's change, instead of just adding B's change.
+
+  Arrange: 1 data entity (id 1019) + 2 pre-existing ownerships.
+
+  Act: PARALLEL invocation — Tx A PUT (update ownership 1019's title);
+  Tx B POST (add a new ownership). Synchronize via barrier so the calls
+  overlap.
+
+  Observe: read the two ActivityPojo rows that landed. Sort by
+  insertion order (id ASC); the later-committed row's `old_state` should
+  reflect pre-this-mutation state, NOT include the earlier-committed
+  row's outcome.
+
+  Assertion (current bug state, if the race manifests):
+  - later_row.old_state == earlier_row.new_state  (the later TX saw
+    the earlier's commit as its OLD — the wrong-attribution bug)
+
+  Assertion (clean state, if isolation is correctly handled):
+  - later_row.old_state != earlier_row.new_state  (each TX captured
+    its genuine pre-this-mutation state via row lock or
+    SELECT FOR UPDATE)
+
+  When the fix lands (e.g. `getContextInfo` uses `SELECT ... FOR UPDATE`
+  to lock the row, or the implementation moves to SERIALIZABLE isolation),
+  this probe's wrong-attribution assertion flips — surfacing the fix in CI.
+
+triggers:
+  - service/activity/handler/ActivityHandler.java:9-22 (interface contract)
+  - service/activity/ActivityAspect.java:41-59 (getContextInfo BEFORE proceed; race window opens)
+  - service/activity/ActivityServiceImpl.java:65-83 (dispatch to handler.getContextInfo / handler.getUpdatedState)
+  - service/activity/handler/AbstractOwnershipActivityHandler.java:18-22 (the DB read whose result is the snapshot)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1019, '//probe-source-P-019/db', 'probe-source-P-019')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1019, '//probe-source-P-019/db/tables/p019_concurrent_race', 'p019_concurrent_race',
+              1019, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO owner (id, name, is_deleted)
+      VALUES (1020, 'p019_owner_alpha', false),
+             (1021, 'p019_owner_beta', false),
+             (1022, 'p019_owner_gamma', false)
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO title (id, name, is_deleted)
+      VALUES (1020, 'p019_title_lead', false),
+             (1021, 'p019_title_steward', false),
+             (1022, 'p019_title_engineer', false),
+             (1023, 'p019_title_analyst', false)
+      ON CONFLICT (id) DO NOTHING
+
+  # Pre-existing ownerships:
+  # - ownership 1020: owner_alpha (1020) at title_lead (1020)
+  # - ownership 1021: owner_beta (1021) at title_steward (1021)
+  - kind: sql
+    query: |
+      INSERT INTO ownership (id, data_entity_id, owner_id, title_id)
+      VALUES (1020, 1019, 1020, 1020),
+             (1021, 1019, 1021, 1021)
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS baseline_count
+      FROM activity
+      WHERE data_entity_id = 1019
+    capture_as: baseline_activity_count
+
+act:
+  # PARALLEL invocation. The probe-runner must support a `parallel:`
+  # block executing the two REST calls with overlap. If not yet
+  # supported, this probe is CAPABILITY-PENDING and the runner task
+  # includes "add parallel block support."
+  - kind: parallel
+    blocks:
+      # Tx A: update existing ownership 1020 — change alpha's title from
+      # lead to engineer.
+      - kind: rest
+        method: PUT
+        path: /api/dataentities/1019/ownerships/1020
+        body:
+          title_name: "p019_title_engineer"
+        capture_as: tx_a_response
+      # Tx B: add a new ownership — add owner_gamma at title_analyst.
+      - kind: rest
+        method: POST
+        path: /api/dataentities/1019/ownerships
+        body:
+          owner_name: "p019_owner_gamma"
+          title_name: "p019_title_analyst"
+        capture_as: tx_b_response
+
+observe:
+  # Pull both activity rows in id-ASC order. The first row is the
+  # earlier-committed TX; the second row is the later-committed TX.
+  - kind: sql
+    query: |
+      SELECT id, event_type, old_state, new_state, created_at
+      FROM activity
+      WHERE data_entity_id = 1019
+      ORDER BY id ASC
+    capture_as: race_activity_rows
+
+  # Final ownership set — should reflect both mutations:
+  # - owner_alpha at title_engineer (Tx A's change)
+  # - owner_beta at title_steward (unchanged)
+  # - owner_gamma at title_analyst (Tx B's addition)
+  - kind: sql
+    query: |
+      SELECT owner_id, title_id
+      FROM ownership
+      WHERE data_entity_id = 1019
+      ORDER BY owner_id, title_id
+    capture_as: final_ownership_set
+
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS now_count
+      FROM activity
+      WHERE data_entity_id = 1019
+    capture_as: now_activity_count
+
+oracle:
+  # Sanity: both mutations succeeded.
+  - "tx_a_response.status == 200"
+  - "tx_b_response.status in (200, 201)"
+  - "len(final_ownership_set) == 3"
+  - "now_activity_count - baseline_activity_count == 2"
+  - "len(race_activity_rows) == 2"
+
+  # PRIMARY ASSERTION (bug surface).
+  # The LATER-committed TX's `old_state` should NOT equal the
+  # EARLIER-committed TX's `new_state` (because each TX should capture
+  # its OWN pre-this-mutation state, independent of other TXs).
+  #
+  # IF the bug exists:
+  #   race_activity_rows[1].old_state == race_activity_rows[0].new_state
+  #
+  # IF the bug does NOT exist:
+  #   race_activity_rows[1].old_state != race_activity_rows[0].new_state
+  #
+  # The probe encodes the bug surface — assertion expects equality
+  # (current bug state). When fixed, assertion fails and surfaces the
+  # fix.
+  - "race_activity_rows[1].old_state == race_activity_rows[0].new_state"
+
+cleanup:
+  - kind: sql
+    query: DELETE FROM activity WHERE data_entity_id = 1019
+  - kind: sql
+    query: DELETE FROM ownership WHERE data_entity_id = 1019
+  - kind: sql
+    query: DELETE FROM title WHERE id IN (1020, 1021, 1022, 1023)
+  - kind: sql
+    query: DELETE FROM owner WHERE id IN (1020, 1021, 1022)
+  - kind: sql
+    query: DELETE FROM data_entity WHERE id = 1019
+  - kind: sql
+    query: DELETE FROM data_source WHERE id = 1019
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: []
+  test_gaps:
+    - TEST-GAP-LSN-019-concurrent-ownership-wrong-attribution
+  doc_gaps: []
+  related_concepts:
+    - "Activity Feed"
+    - "Activity Snapshot Differ"
+    - "Ownership Management"
+    - "Reactive Transactional Boundary"
+  retrospectives: [LSN-019]
+  enrichment_sources:
+    - "lineage/odd-platform/understanding/odd-platform__java__service__activity__handler__ActivityHandler.md"
+
+resolves_to:
+  - sidecar_field: stress_findings.S-E-2 (PROBE-VERIFIED on runner verdict)
+  - on confirmation: bugs_limitations_corner_cases.[OLD-vs-NEW race] severity stays HIGH with measured wrong-attribution evidence
+  - on inconclusive: re-emit P-019-B with explicit `pg_sleep` injection inside one of the TXs to widen the race window
+
+severity_if_confirmed: HIGH (Activity Feed records mis-attributed diffs
+  under genuine concurrent load; the user-visible "this is what changed"
+  story is wrong under any non-toy traffic)
+
+probe_owner: probe-runner (next batch)
+estimated_runtime: 15 minutes (docker-compose + 5 SQL setups + 2 parallel REST calls + 3 SQL observes; parallel block support required)
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/ActivityAspect.java"
+    lines: "41-59"
+    role: "getContextInfo called BEFORE joinPoint.proceed — the race window"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/ActivityServiceImpl.java"
+    lines: "65-83"
+    role: "dispatch to handler.getContextInfo / handler.getUpdatedState — the snapshot pair"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/handler/AbstractOwnershipActivityHandler.java"
+    lines: "18-22"
+    role: "getDataEntityOwnerships — the DB read whose result is the snapshot"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/handler/ActivityHandler.java"
+    lines: "9-22"
+    role: "the interface contract being interrogated"
+  - file: "retrospectives/LSN-019-file-analyser-describes-not-interrogates.md"
+    lines: "57-69"
+    role: "Stress Protocol Category E (Resource boundaries) — the rule that fires this probe"
+
+realism_caveats: |
+  - Race window is narrow. Probe-runner must execute both REST calls
+    in genuine parallel; OS/JVM scheduling must let them interleave.
+    Best-effort; if probe consistently passes (no race), report
+    `probe-inconclusive` and re-run with `pg_sleep` injection inside
+    one TX to widen the window.
+
+  - `parallel:` runner directive may not be supported yet. If not,
+    this probe is queued as CAPABILITY-PENDING; runner task includes
+    "add parallel block support."
+
+  - DISABLED auth — race is auth-mode-agnostic.
+
+  - OpenAPI endpoint paths (PUT `/api/dataentities/{id}/ownerships/{ownershipId}`,
+    POST `/api/dataentities/{id}/ownerships`) need spec verification.
+
+  - The bug assertion encodes the EXACT bug shape (later.old_state ==
+    earlier.new_state). If the bug manifests in a different shape
+    (e.g. both TXs see the SAME pre-mutation oldState, neither sees
+    the other's commit), the assertion fails informatively for human
+    inspection.
+
+  - OWNERSHIP_CREATED handler (Tx B's POST path) uses the same
+    `getDataEntityOwnerships` mechanism as OWNERSHIP_UPDATED, so the
+    race is symmetric across CREATE and UPDATE event types.
+---

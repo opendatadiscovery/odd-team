@@ -1,0 +1,87 @@
+gap_id: TEST-GAP-876
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service:ActivityServiceImpl"
+pillars_affected: [P-07]
+surfaced_by:
+  - "ActivityServiceImpl.md:stress_findings.S-B-3 (getActivityCounts accepts null dates; getActivityList rejects them — asymmetric validation)"
+  - "ActivityServiceImpl.md:bugs_limitations_corner_cases.[getActivityCounts accepts null begin/end dates]"
+  - "ActivityServiceImpl.md:probe_skeletons_emitted.P-023"
+  - "ActivityServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[getActivityCounts null-date acceptance]"
+behaviour: |-
+  **MEDIUM — `getActivityCounts(beginDate, endDate, ...)` does NOT validate null dates, asymmetric to `getActivityList` / `getDataEntityActivityList` (which both throw `BadUserRequestException` on null dates).** A `GET /api/activity/counts` request without `begin_date` or `end_date` query parameters propagates null through the service → repository → SQL builder. The repository's `getCommonConditions` (per existing repo sidecar lines 264-275) only adds `ACTIVITY.CREATED_AT.greaterOrEqual(...)` if the date is non-null — so null dates produce a count query over the ENTIRE retained activity table (all partitions per F-010, which grows monotonically per the housekeeping job's empty-only-drop semantics). On a multi-year deployment with millions of activity rows, an unbounded COUNT(*) over the full history runs as 4 parallel sequential scans (via Mono.zip — totalCount + myObjectsCount + downstreamCount + upstreamCount), saturating R2DBC connections and stressing the Postgres planner.
+
+  **Primary-source chain**:
+  - `ActivityServiceImpl.java:98-100` (`getActivityList`) — null-date guard: `Flux.error(BadUserRequestException("Begin date and end date can't be null"))`
+  - `ActivityServiceImpl.java:128-130` (`getDataEntityActivityList`) — SAME null-date guard
+  - `ActivityServiceImpl.java:138-166` (`getActivityCounts`) — **NO null-date guard** (verified line-by-line in sidecar)
+  - `ActivityServiceImpl.java:158-165` — `Mono.zip(totalCount, myObjectActivitiesCount, downstreamActivitiesCount, upstreamActivitiesCount)` — 4 parallel count queries
+  - `ReactiveActivityRepositoryImpl` count methods (`getTotalActivitiesCount`, `getMyObjectsActivitiesCount`, `getDependentActivitiesCount`) — all use `getCommonConditions` which skips date predicates when null
+  - `ActivityEmptyPartitionsHousekeepingJob.md:bugs_limitations_corner_cases.[0]` — "The activity table grows monotonically — no DELETE path, no non-empty-partition DROP path" — confirms unbounded historical scan is the operational reality
+
+  **The asymmetry** (per ActivityServiceImpl.md:stress_findings.S-B-3):
+  - `getActivityList` requires both dates; rejects null with HTTP 400
+  - `getActivityCounts` accepts null both dates; runs over the entire history
+  - The asymmetry is NOT documented in the OpenAPI spec (openapi.yaml:3286-3347 doesn't mark dates as required)
+  - The asymmetry is NOT documented on the activity-feed.md docs page (silent per `ActivityServiceImpl.md:docs_link_semantic.doc_drift_findings`)
+
+  **Operator-visible consequences**:
+  - **UI performance cliff**: a UI bug that fails to pass begin_date/end_date to `/api/activity/counts` (e.g. on first-load before the date picker initializes) triggers 4 parallel full-table COUNT(*) scans
+  - **curl/scripted access**: an operator running `curl /api/activity/counts` without dates produces the same effect — the call may take minutes on multi-year deployments
+  - **R2DBC pool exhaustion**: 4 parallel long-running counts consume 4 connections; concurrent calls saturate the pool quickly
+  - **Postgres planner overhead**: scanning 60+ partitions with no date predicate produces 60+ partition-prune evaluations × 4 queries = 240+ planner invocations per call
+  - **DoS-amp**: a hostile or mis-tuned client driving the counts endpoint at 1 request/sec consumes the entire R2DBC pool
+
+  **Why MEDIUM not HIGH**:
+  - The empirical performance impact is workload-dependent (small deployments aren't affected; multi-year deployments with daily-cadence partitions accumulate to ~365+ partitions per year)
+  - The data correctness is preserved (the count IS the true count — just expensive)
+  - We rate MEDIUM because: (a) the asymmetry surface is a clear bug-class shape (validation rules not symmetric); (b) the operational impact under realistic deployment ages is significant; (c) the fix is trivial — add the same null-date guard to `getActivityCounts`.
+
+  **Connection to probe P-023**:
+  - The sidecar emits P-023 to measure the actual latency / response shape of `/api/activity/counts` without dates against a populated demo platform
+  - This TEST-GAP is the regression-pin AFTER P-023 confirms the empirical behaviour
+
+  **Connection to TEST-GAP-079**:
+  - TEST-GAP-079 (existing) pins the null-date validation on `getActivity`
+  - This gap (876) pins the ABSENCE of the same validation on `getActivityCounts` — surfacing the asymmetry as the test contract
+test_class: performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ActivityCountsNullDateValidationAsymmetryTest.java"
+  name: "getActivityCounts_nullBeginDate_pinUnboundedScanBehaviourVsGetActivityList400"
+evidence:
+  - "ActivityServiceImpl.md says (stress_findings.S-B-3): 'getActivityCounts accepts null dates; getActivityList rejects them. Trigger: :138-166 getActivityCounts has no null-check on beginDate/endDate; :98-100, :128-130 getActivityList/getDataEntityActivityList reject null with BadUserRequestException. Question: What does /api/activity/counts return when called without begin_date or end_date? Is the query bounded? Resolution: PROBE-NEEDED (P-023) — based on STATIC-INFERRED reading of the repository sidecar's getCommonConditions, the count query would build no created_at predicate and aggregate over the ENTIRE retained activity history (all partitions per F-010 housekeeping). This could be an unbounded count over millions of rows. Confidence: PROBE-NEEDED MEDIUM.'"
+  - "ActivityServiceImpl.md says (bugs_limitations_corner_cases): 'getActivityCounts accepts null begin/end dates, asymmetric with getActivityList (which validates them). Per S-B-3 stress finding, a /api/activity/counts call without dates yields an unbounded scan over the entire retained activity table. Severity: MEDIUM. Evidence: lines 138-166 (no null-check) vs lines 98-100, 128-130 (BadUserRequestException). Probe P-023 emitted.'"
+  - "ActivityServiceImpl.md says (known_performance_gaps): 'getActivityCounts accepts null dates and would issue an unbounded count over the entire activity table — see S-B-3 stress finding; probe P-023 emitted; severity: MEDIUM'"
+  - "Verified at primary source: ActivityServiceImpl.java:98-100 vs 138-166 (the asymmetric validation) + ActivityServiceImpl.java:158-165 (Mono.zip of 4 counts) + ActivityEmptyPartitionsHousekeepingJob.md:bugs_limitations_corner_cases.[0] (monotonic growth confirms unbounded scan reality)"
+  - "Verified no existing test: Grep ActivityCounts / getActivityCounts in src/test returns 0 matches"
+cross_references:
+  - "TEST-GAP-079 (existing — null-date validation on getActivity; this gap (876) pins the SISTER absence on getActivityCounts)"
+  - "TEST-GAP-882 (META anchor — zero ActivityServiceImpl coverage)"
+  - "REFACTOR-NNN candidate: add the SAME null-date guard to getActivityCounts at ActivityServiceImpl.java:138-166 (one-line change: `if (beginDate == null || endDate == null) return Mono.error(new BadUserRequestException(\"Begin date and end date can't be null\"))`)"
+  - "DOC-NNN candidate: surface the date-range requirement on activity-feed.md AND on the OpenAPI spec at openapi.yaml:3286-3347 (mark begin_date and end_date as `required: true` for /api/activity/counts)"
+  - "probe-skeletons: P-023"
+related_features: [F-021]
+related_pillar_features: ["P-07:F-003"]
+proposed_action: |-
+  Add `ActivityCountsNullDateValidationAsymmetryTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/` using `@WebFluxTest(ActivityController.class)` + `WebTestClient`. Three test methods:
+
+  1. **`getActivityCounts_nullBeginDate_pinUnboundedScanBehaviourVsGetActivityList400`** (HEADLINE):
+     - Act: `webTestClient.get().uri("/api/activity/counts").exchange()` (no query params)
+     - Assert (PIN current behaviour): `expectStatus().isOk()`; response body shape is `{ "total_count": <N>, "my_objects_count": <M>, "downstream_count": ..., "upstream_count": ... }`
+     - Assert (DOCUMENT asymmetry): query the same caller on `/api/activity` (no dates) and verify HTTP 400 with BadUserRequestException error body
+     - Comment: this test PINS the asymmetric validation. A future REFACTOR-NNN that adds the symmetric guard will need to UPDATE this test to expect 400 — a coordinated change.
+
+  2. **`getActivityCounts_validBeginAndEndDate_returnsScopedCounts_pinHappyPath`** (CONTROL):
+     - Act: `webTestClient.get().uri("/api/activity/counts?begin_date={begin}&end_date={end}", begin, end).exchange()`
+     - Assert: 200 OK with all four counts populated; the counts are scoped to the date window.
+
+  3. **`getActivityCounts_nullDatesUnderLoad_consumesR2dbcPool_pinPerformanceCliff`** (PERFORMANCE):
+     - Arrange: seed 100K activity rows across 10 historical partitions. Configure R2DBC pool size = 4.
+     - Act: dispatch 10 concurrent calls to `/api/activity/counts` (no dates) within 100ms window.
+     - Assert: at least one call surfaces a connection-pool exhaustion error OR a long latency (> 5s); PIN the operational risk under load.
+
+  After P-023 measures the empirical latency on a populated platform, refine the test's thresholds. Cross-pair with REFACTOR-NNN to add the symmetric guard (the test then becomes the no-regression pin for the fix). Cross-pair with DOC-NNN to update the OpenAPI spec + activity-feed.md.
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-021

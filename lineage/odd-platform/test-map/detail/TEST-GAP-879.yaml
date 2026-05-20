@@ -1,0 +1,93 @@
+gap_id: TEST-GAP-879
+category: missing-unit
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java ActivityController controller-class:ActivityController"
+  - "odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl"
+pillars_affected: [P-07]
+surfaced_by:
+  - "ActivityController.md:stress_findings.STRESS_A1 (size parameter at ActivityController.java:26 — final Integer size; OpenAPI SizeParam is required: true)"
+  - "ActivityController.md:bugs_limitations_corner_cases.[size-unbounded] (severity MEDIUM)"
+  - "ActivityController.md:docs_link_semantic.doc_drift_findings.[size-required-vs-nullable]"
+  - "ActivityController.md:probe_skeletons_emitted (P-016)"
+  - "ReactiveActivityRepositoryImpl.md:stress_findings.A1 (size: null treated as no LIMIT; size: -1 likely 'unlimited' per PG LIMIT semantics)"
+behaviour: |-
+  **MEDIUM — The `size` parameter on `GET /api/activity` is declared `required: true` in the OpenAPI spec (`components.yaml:4226` — `SizeParam`) but the Java method signature accepts `final Integer size` (boxed, NULLABLE, no `@Max`, no `@NotNull`). Spring's parameter binding uses the boxed type from the generated `ActivityApi` interface — null binding is silently allowed. A caller submitting `size=null` produces `JOOQ .limit(null)` which translates to NO LIMIT clause — an unbounded scan of the activity table for the date window. The OpenAPI spec's `required: true` is NOT enforced at the controller boundary.** This is a DOC-vs-SPEC-vs-CODE inconsistency where the spec contract is one shape and the code accepts another.
+
+  **Primary-source chain**:
+  - `ActivityController.java:26` — `final Integer size` (boxed, NULLABLE)
+  - `components.yaml:4226` — `SizeParam` declared `required: true`
+  - `openapi.yaml:3273` — `$ref './components.yaml/#/components/parameters/SizeParam'`
+  - `ActivityServiceImpl.java:179-181` — passes `size` through unchanged to repository
+  - `ReactiveActivityRepositoryImpl.java:292` — `.limit(size)` with NO null guard
+  - jOOQ documentation: `.limit(null)` translates to "no LIMIT clause"
+  - PostgreSQL: with no LIMIT clause, returns ALL matching rows
+
+  **The four boundary cases** (per ActivityController.md:STRESS_A1 + A2 + ReactiveActivityRepositoryImpl.md:A1):
+  - `size=null` → `.limit(null)` → no LIMIT clause → full result set scan (potentially millions of rows on a long-running deployment)
+  - `size=0` → `LIMIT 0` → empty Flux; controller returns 200 OK with empty array. Harmless degenerate.
+  - `size=-1` → `LIMIT -1`; PostgreSQL behavior per docs: rejects negative LIMIT with `LIMIT must not be negative` error → propagates to controller as Reactor onError → ControllerAdvice's generic Exception handler returns HTTP 500. Operator-visible: -1 yields 500, not 400. (Probe P-016 confirms empirically.)
+  - `size=Integer.MAX_VALUE` (2.1B) → `LIMIT 2147483647` → Postgres clamps to actual row count; same effect as `size=null`
+
+  **Operator-visible consequences**:
+  - **Spec vs code drift**: an OpenAPI-generated SDK that requires `size` (per the spec's `required: true`) may not even compile without the parameter; but a hand-crafted HTTP request omits it without error
+  - **Unbounded scan accidentally**: a UI bug that fails to pass size yields a full-table scan rather than a 400 error
+  - **Unsupported negative values**: a caller submitting `size=-1` (e.g. as a "no limit" convention) gets HTTP 500 with no useful error message
+  - **DoS-amp**: a hostile caller submitting `size=null` or `size=Integer.MAX_VALUE` triggers wide DB scans
+
+  **Why MEDIUM not HIGH**:
+  - The behaviour is bounded by Postgres LIMIT semantics and is well-understood
+  - The fix is straightforward: add `@NotNull @Min(1) @Max(N)` annotations to the controller parameter OR add programmatic guards in the service
+  - We rate MEDIUM because: (a) the spec/code drift is operator-visible and confusing; (b) the unbounded-scan amplification is real; (c) the inconsistency is at a primary API surface
+
+  **Connection to probe P-016**:
+  - The sidecar emits P-016 to verify the empirical behavior at each boundary value (null, 0, -1, MAX_VALUE)
+  - This TEST-GAP is the regression-pin AFTER P-016 confirms the per-boundary outcomes
+
+  **Connection to existing TEST-GAPs**:
+  - There is no prior gap that specifically pins the size REQUIRED-vs-NULLABLE drift
+  - TEST-GAP-879 establishes the contract test for the boundary parameter behaviour
+test_class: unit
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ActivityControllerSizeParamBoundaryTest.java"
+  name: "getActivity_sizeNull_pinsUnboundedLimitDespiteOpenApiRequiredTrue"
+evidence:
+  - "ActivityController.md says (stress_findings.STRESS_A1): 'size parameter at ActivityController.java:26 — final Integer size (boxed, nullable, no @Max, no @NotNull); OpenAPI SizeParam is required: true (components.yaml:4226). Question: What does the controller do when size=null is passed? What does the DB do when JOOQ .limit(null) is invoked? Operator-visible outcome at each boundary. Resolution: STATIC-INFERRED. size=null propagates from controller through service (ActivityServiceImpl.java:179-180) into repository (ReactiveActivityRepositoryImpl.java:292: .limit(size) with a nullable Integer). JOOQs .limit(Integer) accepts null and treats it as no LIMIT clause — the generated SQL omits LIMIT entirely. The full result set is streamed back: an unbounded scan of the activity table for the date window. The OpenAPI spec's required: true is NOT enforced because Spring's parameter binding uses the boxed type from the generated interface (Integer) — null binding is silently allowed. Operator-visible drift: the spec says size is required, the code accepts null and returns the full table. This is a DOC-vs-SPEC-vs-CODE inconsistency.' confidence: STATIC-INFERRED HIGH. routes_to_probe: P-016"
+  - "ActivityController.md says (STRESS_A2): 'size=0: JOOQ emits LIMIT 0 → DB returns empty result set; controller returns 200 OK with empty Flux. STATIC-INFERRED HIGH. size=-1: JOOQ emits LIMIT -1; PostgreSQL rejects negative LIMIT. The error propagates as a Reactor onError to the controller; ControllerAdvice.handleServerException catches the generic exception and returns HTTP 500. Operator-visible: a -1 size yields a 500, not a 400. STATIC-INFERRED MEDIUM. size=Integer.MAX_VALUE: JOOQ emits LIMIT 2147483647; PostgreSQL accepts and plans a full-table scan against the activity table. STATIC-INFERRED HIGH.'"
+  - "ActivityController.md says (docs_link_semantic.doc_drift_findings.[size-required-vs-nullable]): 'SizeParam REQUIRED-IN-SPEC vs NULLABLE-IN-JAVA: openapi.yaml:3273 uses $ref ./components.yaml/#/components/parameters/SizeParam and SizeParam carries required: true (components.yaml:4226). But the Java method declares final Integer size — boxed, nullable, no validation. Spec says size is required; code accepts size=null. NEW finding from STRESS_A1.'"
+  - "Verified at primary source: ActivityController.java:26 (no @Max, no @NotNull) + components.yaml:4226 (SizeParam required: true) + ActivityServiceImpl.java:179-181 (passes size through) + ReactiveActivityRepositoryImpl.java:292 (.limit(size) with no null guard)"
+  - "Verified no existing test: Glob src/test/**/*Activity*.java returns ONLY ActivityMapperTest.java"
+cross_references:
+  - "TEST-GAP-878 (sister VAL-LSN-019-B — validation-error response shape; both surface STRESS findings on the same controller method)"
+  - "TEST-GAP-882 (META anchor — zero controller-tier coverage)"
+  - "REFACTOR-NNN candidate: add `@NotNull @Min(1) @Max(1000)` to the size parameter at the controller; OR add a service-tier guard `if (size == null || size < 1 || size > 1000) throw new BadUserRequestException(...)`; OR update the OpenAPI spec to mark size as `nullable: true` (changing the contract direction)"
+  - "DOC-NNN candidate: surface the size-param semantics on activity-feed.md and the OpenAPI documentation; the page is silent on pagination per ActivityController.md:docs_link_semantic.doc_drift_findings"
+  - "probe-skeletons: P-016"
+related_features: [F-021]
+related_pillar_features: ["P-07:F-003"]
+proposed_action: |-
+  Add `ActivityControllerSizeParamBoundaryTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/` using `@WebFluxTest(ActivityController.class)` + `WebTestClient`. Four test methods (one per boundary value):
+
+  1. **`getActivity_sizeNull_pinsUnboundedLimitDespiteOpenApiRequiredTrue`** (HEADLINE):
+     - Arrange: seed 1000 activity rows
+     - Act: `webTestClient.get().uri("/api/activity?begin_date={b}&end_date={e}", b, e).exchange()` (NO size param)
+     - Assert (PIN current behaviour): `.expectStatus().isOk()`; response body length = 1000 (full table scan, no LIMIT)
+     - Comment: this is the DOC-vs-CODE drift PIN. A future refactor that adds `@NotNull` to the size parameter changes this to HTTP 400; the test then becomes the regression-pin demonstrating the fix.
+
+  2. **`getActivity_sizeZero_returnsEmptyFlux_pinDegenerate`** (CONTROL):
+     - Act: `size=0`
+     - Assert: 200 OK; response body length = 0
+
+  3. **`getActivity_sizeNegativeOne_returns500NotBadRequest_pinUnhandledError`**:
+     - Act: `size=-1`
+     - Assert: PIN the HTTP 500 outcome (the OpenAPI spec implies 400 for invalid input; the actual behaviour is 500). After P-016 confirms, lock the test to the empirical outcome.
+
+  4. **`getActivity_sizeIntegerMaxValue_returns200WithFullDataset_pinDoSAmp`**:
+     - Arrange: seed 100K rows
+     - Act: `size=2147483647`
+     - Assert: 200 OK; response body length = 100K. PIN the unbounded-scan amplification surface.
+
+  After P-016 measures each boundary empirically, refine the test assertions. Cross-pair with REFACTOR-NNN to introduce `@NotNull @Min @Max` constraints. Cross-pair with DOC-NNN to surface the size-param semantics on activity-feed.md AND the OpenAPI spec.
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-021

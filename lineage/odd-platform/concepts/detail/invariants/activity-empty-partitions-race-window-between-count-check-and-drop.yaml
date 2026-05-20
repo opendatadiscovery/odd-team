@@ -1,0 +1,214 @@
+name: ActivityEmptyPartitionsHousekeepingJob — race window between count(*)=0 check
+  and DROP TABLE produces silent row loss
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-08
+- P-07
+description: |-
+  **NEW INVARIANT, batch VAL-LSN-019-B (2026-05-20)** — surfaced by
+  primary-source examination of ActivityEmptyPartitionsHousekeepingJob
+  combined with PartitionServiceImpl. The job's name promises "drop only
+  EMPTY past partitions" — and the check at the centre (real
+  `SELECT count(*) = 0 FROM <partition>` at PartitionServiceImpl.java:133-142
+  combined with `isPartitionInPast` at line 86,129-131) honors the
+  promise SEMANTICALLY. But the check-then-drop sequence is
+  non-transactional, opening a race window during which a concurrent
+  INSERT can land between the check and the DROP, producing silent
+  audit data loss.
+
+  **THE TWO-STATEMENT NON-TRANSACTIONAL PATTERN**:
+    `PartitionServiceImpl.getEmptyPastPartitions` runs `SELECT count(*) = 0`
+    (line 134) followed by `DROP TABLE <partition>` (line 122) — TWO
+    SEPARATE SQL STATEMENTS on the same shared Connection. They are NOT
+    wrapped in `DSL.using(connection).transaction(ctx -> {...})` — unlike
+    `AlertHousekeepingJob` and `DataEntityHousekeepingJob` which DO use
+    the transaction wrapper. The omission appears unintentional (no
+    comment defends it).
+
+  **THE RACE SHAPE**:
+    1. ActivityEmptyPartitionsHousekeepingJob.doHousekeeping fires (15-min
+       cycle, ShedLock-coordinated leader instance)
+    2. Iterates past activity partitions; runs `SELECT count(*) = 0 FROM
+       activity_20250101_20250301` — Postgres returns true (no rows
+       currently exist in this partition)
+    3. **RACE WINDOW** — between step 2 and step 4, a concurrent reactive
+       transaction issues `INSERT INTO activity (data_entity_id, event_type,
+       ..., created_at) VALUES (..., '2025-02-15')` — Postgres routes the
+       row to `activity_20250101_20250301` partition (the partition
+       still exists; INSERT succeeds and returns to the caller; caller's
+       @ReactiveTransactional commits)
+    4. Housekeeping issues `DROP TABLE activity_20250101_20250301` —
+       Postgres acquires ACCESS EXCLUSIVE on the partition and drops it
+       (no re-check; the count-check from step 2 is stale by then)
+    5. **SILENT DATA LOSS**: the just-inserted activity row is gone.
+       The caller's @ReactiveTransactional committed successfully; the
+       activity emit was confirmed by the DB; the row is now lost with
+       no compensating transaction.
+
+  **WHY THIS HAPPENS IN PRACTICE**:
+    The race is most likely on partitions at the boundary between "past"
+    and "current" — e.g. an `activity_20250101_20250301` partition where
+    `2025-03-01` was yesterday. Today's housekeeping cycle sees
+    `isPartitionInPast` returning true (end date is March 1, today is
+    March 2). The partition has 0 rows because (a) all data entities
+    were quiet during that window, OR (b) the platform was newly
+    deployed during that window. A late-arriving @ActivityLog mutation
+    that happens to fall in the gap (e.g. an Owner who was offline
+    during the original window comes back online and updates a
+    description with a timestamp the partition manager would route to
+    the boundary partition).
+
+  More commonly, the race is on partitions that "just emptied out" —
+  e.g. an `activity_20240901_20241101` partition holding 5 rows that
+  were ALL purged via direct SQL (operator manual cleanup) two minutes
+  before the housekeeping cycle fired. The cycle sees count=0,
+  legitimately, and the operator who manually deleted is unaware that
+  the next 5 minutes of @ActivityLog mutations would route to that
+  partition before the DROP fires.
+
+  **THE NAME-BOUNDARY DRIFT** (per LSN-019 Stress Protocol Category B):
+    The name `EmptyPartitionsHousekeepingJob` promises "drop only empty
+    partitions." The check at the centre honors the name (real
+    `count(*) = 0`). But the SCOPE OF THE GUARANTEE has a temporal
+    boundary: the partition was empty AT THE TIME of the check; it may
+    not be empty AT THE TIME of the DROP. The job's name does NOT
+    advertise this temporal boundary.
+
+  **OBSERVABILITY GAP**:
+    The lost row has no error path — INSERT succeeded, caller's TX
+    committed, DROP succeeded (Postgres considers the table-and-its-rows
+    a unit; dropping the partition is "successful" even if rows were
+    just inserted). No metric, no log, no audit. The operator querying
+    the activity feed for the missing window sees zero rows and assumes
+    "no activity happened" — visually indistinguishable from the
+    truth.
+
+  **PROBE-EMITTED**: P-022 (cited at ActivityEmptyPartitionsHousekeepingJob
+  sidecar emitted_probes section) measures the empirical race window
+  + the actual outcome (DROP wait vs INSERT wait depending on lock
+  arrival order).
+
+  **THE FIX SHAPE**: wrap the empty-check + drop in a single TX with
+  SERIALIZABLE isolation, OR rewrite as `BEGIN; SELECT count(*) = 0
+  FROM <partition>; ... LOCK TABLE <partition> IN EXCLUSIVE MODE;
+  SELECT count(*) = 0 FROM <partition>; DROP TABLE <partition>;
+  COMMIT;` — re-check with the exclusive lock held to close the race.
+nodes:
+- odd-platform java housekeeping job:ActivityEmptyPartitionsHousekeepingJob
+contributors:
+- |-
+  ActivityEmptyPartitionsHousekeepingJob (batch VAL-LSN-019-B): bugs_limitations_corner_cases.[1]
+  (race window between empty-check and DROP TABLE — silent data loss
+  shape) + invariants.[5] (the two-statement non-transactional pattern
+  contrasting with AlertHousekeepingJob + DataEntityHousekeepingJob)
+- |-
+  ActivityEmptyPartitionsHousekeepingJob (batch VAL-LSN-019-B):
+  tests_coverage_semantic.uncovered_behaviours — "On a partition that
+  was empty at the isPartitionEmpty check but a concurrent INSERT
+  lands BEFORE the DROP TABLE (the race), Postgres behaviour: DROP
+  TABLE acquires ACCESS EXCLUSIVE lock; if a concurrent INSERT is in
+  flight, the DROP waits behind it OR vice-versa depending on
+  lock-arrival order — when DROP wins the race, the in-flight INSERT
+  (which holds RowExclusiveLock on a partition that's about to vanish)
+  errors with 'relation activity_YYYYMMDD_YYYYMMDD does not exist'. NO
+  TEST EXISTS for this race."
+evidence:
+- |-
+  ActivityEmptyPartitionsHousekeepingJob.md:bugs_limitations_corner_cases.[1]
+  (Race window between empty-check and DROP TABLE — silent data loss).
+  Verbatim: "A concurrent INSERT INTO activity that lands AFTER the
+  count-zero check but BEFORE the DROP TABLE acquires ACCESS EXCLUSIVE
+  — Postgres will queue one behind the other on the partition's lock,
+  but ONE will win: if INSERT wins, it succeeds, then DROP TABLE
+  proceeds to drop a now-non-empty table SILENTLY (no recheck),
+  deleting the just-inserted row. The row's caller never sees an
+  error (INSERT returned success), but the row is gone."
+- |-
+  ActivityEmptyPartitionsHousekeepingJob.md:concepts.invariants.[5]
+  (No @Transactional and no JOOQ transaction(...) wrapper — runs
+  against raw java.sql.Connection from PGConnectionFactory shared
+  across all 5 housekeeping jobs)
+- |-
+  PartitionServiceImpl.java:108-117 (two-statement non-transactional
+  pattern — verbatim in the sidecar's evidence section) +
+  EmptyPartitionsHousekeepingJob.java:16-33 (no transaction wrapper,
+  contrast with AlertHousekeepingJob.java:25 transaction(...))
+- |-
+  ActivityEmptyPartitionsHousekeepingJob.md:emitted_probes — "P-022:
+  partition DROP empty-only contract verification — concurrent
+  INSERT/SELECT lock interaction (Stress Protocol E1)"
+axes_present:
+- housekeeping
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: silent-data-loss
+mitigations_unimplemented:
+- |-
+  Wrap empty-check + DROP TABLE in a single TX with `BEGIN; LOCK TABLE
+  <partition> IN EXCLUSIVE MODE; SELECT count(*) = 0 FROM <partition>;
+  -- if true, DROP TABLE <partition>; COMMIT;` — the EXCLUSIVE lock
+  blocks concurrent INSERTs to the partition for the duration of the
+  re-check, closing the race window. ConcurrentINSERTers queue behind
+  the lock until COMMIT releases it; they see "partition vanished"
+  error AFTER the DROP commits, which is recoverable (the routing
+  would naturally pick the next partition, OR fail visibly to the
+  caller).
+- |-
+  Add an `IF EXISTS` clause to `DROP TABLE` — PartitionServiceImpl.java:122
+  (`DROP TABLE %s`). Multi-instance race (two instances past ShedLock,
+  e.g. lockAtLeastFor=14m releases before the 15m schedule fires) sees
+  the second to issue DROP TABLE raise SQLException. `IF EXISTS`
+  silences the secondary failure; primary failure is unaffected.
+- |-
+  Add a metric `housekeeping_activity_partition_dropped_rows_total` —
+  count rows IN the partition just before dropping (the existing
+  count(*)=0 check produces this value; record it as 0). If the metric
+  is ever >0 on a successful drop, the race window fired. Without this
+  metric, the race is invisible.
+- |-
+  Add a test
+  `ActivityEmptyPartitionsHousekeepingJobConcurrencyTest.testInsertBetweenEmptyCheckAndDrop`
+  that exercises the race directly: launch two threads, one issuing
+  INSERT INTO activity, one issuing the housekeeping job, time them
+  to overlap; assert the inserted row is preserved (after the fix) OR
+  pin the lost-row behaviour as the current contract (before the fix).
+- |-
+  Document the temporal-boundary semantic on the activity-feed feature
+  page + the operator reference:
+    "ODD's activity-table housekeeping drops empty past partitions on a
+    15-minute cycle. The empty-check and the drop are NOT atomic —
+    a race window exists for late-arriving writes. Operators
+    expecting strict audit-trail durability should not rely on the
+    boundary-partition timing."
+notes: |-
+  NEW invariant captured in batch VAL-LSN-019-B. Surfaced by primary-source
+  examination of ActivityEmptyPartitionsHousekeepingJob combined with
+  PartitionServiceImpl line-by-line.
+
+  This is a Linus Torvalds-class engineering finding: the name promises
+  "empty partitions only" and the check at the centre honors the name,
+  but the SCOPE OF THE GUARANTEE has a temporal boundary that the
+  check-then-drop pattern does NOT close. The race window is small
+  (microseconds typically) but the SHAPE of the bug is silent data
+  loss, with no error path, no log, no metric.
+
+  Cross-cutting connections:
+    - Pairs with `retention-claim-vs-code-drift-refactor-085-confirmed-from-two-angles`
+      — both findings concern the activity-table durability surface;
+      this finding is the OPPOSITE drift (the housekeeping is more
+      destructive than it appears) vs the retention drift (housekeeping
+      is less destructive than the docs claim)
+    - Pairs with `housekeeping-job-no-scheduler-lock-multi-instance-amplification`
+      — the multi-instance ShedLock race surface (14m vs 15m razor-
+      thin window) amplifies the in-instance race window into a
+      cross-instance race
+    - Cross-references LSN-001 (attachment-storage default) as a
+      SHAPE — both findings are "operator's mental model says X; code
+      reality silently does Y with no visible error path"
+
+  PRIMARY-SOURCE confidence: HIGH (line citations to
+  PartitionServiceImpl.java:108-117 + 121-127; EmptyPartitionsHousekeepingJob.java:16-33
+  with explicit contrast to AlertHousekeepingJob.java:25's transaction(...)
+  pattern).

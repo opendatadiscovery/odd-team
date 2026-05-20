@@ -1,0 +1,192 @@
+---
+id: P-023
+status: pending-stress-protocol
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-activity
+emitted_from_sidecar: odd-platform__java__service__ActivityServiceImpl.md
+question: |
+  Does `getActivityCounts` (ActivityServiceImpl.java:138-166) accept NULL
+  begin_date / end_date and issue an unbounded count over the entire
+  retained activity history?
+
+  STATIC-INFERRED OBSERVATION (S-B-3 stress finding):
+  - `getActivityList` (ActivityServiceImpl.java:98-100) and
+    `getDataEntityActivityList` (ActivityServiceImpl.java:128-130) BOTH
+    validate `beginDate==null || endDate==null` and reject with
+    `BadUserRequestException("Begin date and end date can't be null")`.
+  - `getActivityCounts` (ActivityServiceImpl.java:138-166) does NOT
+    validate. The reactive Mono.zip 4-way count chain forwards null
+    dates to the repository's `getCommonConditions`, which (per the
+    existing ReactiveActivityRepositoryImpl sidecar) only adds a
+    `created_at` predicate when the date parameter is non-null.
+  - Combined with F-010 (activity table has no row-level TTL; only
+    EMPTY partitions are dropped), a null-dates call could scan the
+    entire retained history — a performance cliff at scale.
+
+  Two possible runtime outcomes:
+    (a) OpenAPI spec marks begin_date/end_date as REQUIRED → request
+        rejected at controller layer with 400 → service-layer validation
+        gap is moot.
+    (b) Spec accepts the request → service issues unbounded count.
+
+  Pin whichever outcome holds; the maintainer's response differs by
+  outcome:
+    - (a) → mark S-B-3 as "mooted-by-OpenAPI-validation" in the sidecar;
+    - (b) → either add service-level null-check OR ship a docs caveat
+            (DOC-GAP-LSN-019-activity-feed-counts-unbounded-scan-caveat).
+
+stress_category: B (name-behavior) + E (resource boundaries)
+stress_question_ids: [Q-B-3, Q-E-3]
+
+triggers:
+  - ActivityServiceImpl.java:98-100 (getActivityList rejects null dates)
+  - ActivityServiceImpl.java:128-130 (getDataEntityActivityList rejects null dates)
+  - ActivityServiceImpl.java:138-166 (getActivityCounts: NO null-date validation)
+  - F-021 doc page silent on this corner-case
+  - F-010 cross-pillar concern: activity table grows monotonically
+
+arrange:
+  - Build odd-platform from main against docker-compose Postgres.
+  - Auth-mode: DISABLED (the behaviour is auth-mode-agnostic; DISABLED
+    reduces setup cost).
+  - Insert exactly 5 known activity rows for a known data_entity_id
+    (3023) with `created_by='probe-p023-actor'`,
+    `event_type='DESCRIPTION_UPDATED'`, `created_at` distributed within
+    the last 5 minutes. Use direct SQL INSERT (not the API path) to
+    avoid any uncontrolled emits.
+  - Verify setup: `SELECT count(*) FROM activity WHERE created_by='probe-p023-actor'`
+    returns 5.
+
+act:
+  - CALL 1 (baseline): `GET /api/activity/counts?begin_date={NOW-1h}&end_date={NOW+1h}`
+    Capture: response status, body.totalCount.
+  - CALL 2 (the stress question): `GET /api/activity/counts`
+    (no begin_date, no end_date query params). Capture: response
+    status, body.totalCount (if response is JSON-decodable).
+
+observe:
+  - kind: rest_response
+    target: CALL 1
+    capture:
+      - status_code (expected: 200)
+      - body.totalCount (expected: >= 5; the dated window includes our 5 rows)
+  - kind: rest_response
+    target: CALL 2
+    capture:
+      - status_code (TWO POSSIBLE outcomes — see oracle)
+      - body.totalCount (only present if status=200)
+
+oracle:
+  - OUTCOME (a) — OpenAPI rejects: CALL 2 status_code == 400.
+    The OpenAPI spec marked begin_date and end_date as REQUIRED. The
+    sidecar S-B-3 finding should be marked as
+    "mooted-by-OpenAPI-validation"; the service-layer validation gap
+    is moot. No further maintainer action required beyond updating
+    the sidecar.
+
+  - OUTCOME (b) — service accepts NULL: CALL 2 status_code == 200 AND
+    CALL 2 body.totalCount >= CALL 1 body.totalCount.
+    Mathematically guaranteed by SQL semantics (adding a WHERE
+    predicate can only reduce or equal the count). This confirms the
+    static-inferred behaviour: the null-date branch issues an
+    unbounded count over the entire retained history. The sidecar
+    S-B-3 finding stands; the maintainer should either:
+      - add a service-level null-check (symmetric with getActivityList),
+        OR
+      - tighten the OpenAPI spec to require dates,
+      - OR add a docs caveat to activity-feed.md acknowledging the
+        unbounded-scan behaviour for operators at scale.
+
+  - The two outcomes are mutually exclusive; the probe MUST observe
+    exactly one. Any other observation (CALL 2 status_code == 500,
+    or status_code == 200 with totalCount < CALL 1's totalCount)
+    surfaces a bug beyond S-B-3 and should be filed as a new finding.
+
+resolves_to:
+  - sidecar_field: stress_findings.S-B-3 (PROBE-VERIFIED — either confirms
+    the static-inferred bug OR marks it mooted-by-OpenAPI)
+  - cross-reference: activity-feed.md (DOC-GAP-LSN-019-activity-feed-counts-unbounded-scan-caveat)
+    if outcome (b)
+  - cross-reference: openapi.yaml ActivityApi spec (DOC-GAP-LSN-019-openapi-activity-counts-required-params)
+    if outcome (a)
+
+severity_if_confirmed: MEDIUM
+  - outcome (a): mootness of the static-inferred bug. severity LOW
+    (the gap exists in the service code but is unreachable via the API).
+  - outcome (b): unbounded scan exposed via HTTP API. severity MEDIUM
+    (at scale, a single curl can saturate the DB connection pool's
+    activity-table read; not a security issue per se but an availability
+    concern).
+
+probe_owner: probe-runner (next batch)
+estimated_runtime: 5 minutes (docker-compose-up + INSERTs + two REST calls + cleanup)
+
+cross_references:
+  refactoring_scopes: []
+  test_gaps:
+    - TEST-GAP-LSN-019-getActivityCounts-null-date-validation
+  doc_gaps:
+    - DOC-GAP-LSN-019-activity-feed-counts-unbounded-scan-caveat (outcome b only)
+    - DOC-GAP-LSN-019-openapi-activity-counts-required-params-not-enforced (outcome a)
+  related_concepts:
+    - "Activity Feed"
+    - "Audit Trail"
+    - "Activity Counts"
+    - "Asymmetric Validation Pattern"
+    - "Unbounded Scan"
+  retrospectives: [LSN-019]
+  enrichment_sources:
+    - "lineage/odd-platform/understanding/odd-platform__java__service__ActivityServiceImpl.md"
+    - "lineage/odd-platform/understanding/odd-platform__java__ActivityController__controller-class__ActivityController.md"
+    - "lineage/odd-platform/understanding/odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md"
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/ActivityServiceImpl.java"
+    lines: "98-100"
+    role: "getActivityList null-date validation: throws BadUserRequestException"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/ActivityServiceImpl.java"
+    lines: "128-130"
+    role: "getDataEntityActivityList null-date validation: same BadUserRequestException"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/ActivityServiceImpl.java"
+    lines: "138-166"
+    role: "getActivityCounts: NO null-date validation; Mono.zip 4-way count queries"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryImpl.java"
+    lines: "145-170"
+    role: "repository count helpers; getCommonConditions builds predicate only when date is non-null (per existing repo sidecar invariant)"
+  - file: "retrospectives/LSN-019-file-analyser-describes-not-interrogates.md"
+    lines: "57-72"
+    role: "Stress Protocol Rule 9 — Category B (name-behavior) and Category E (resource boundaries)"
+
+realism_caveats: |
+  - The probe runs under DISABLED auth. The date-validation behaviour
+    is auth-mode-agnostic at the service layer; DISABLED is sufficient
+    and reduces setup cost.
+
+  - The probe is structured around TWO valid outcomes (400 or
+    200-with-unbounded-count); it does not assume the buggy behaviour.
+    It documents whichever behaviour the runtime exhibits. This is the
+    intended LSN-019 probe lifecycle: pin observed behaviour, surface
+    the contract, let the maintainer triage.
+
+  - The CALL 2 body.totalCount >= CALL 1 body.totalCount assertion is
+    mathematically sound regardless of test-DB state: adding a
+    `WHERE created_at BETWEEN ...` predicate to a query that otherwise
+    has no date predicate can only reduce or equal the count. The
+    probe therefore does NOT require clean docker-compose state to
+    produce a deterministic assertion.
+
+  - The probe does NOT measure latency directly. If outcome (b) holds
+    AND the test DB has substantial pre-existing activity rows
+    (millions), a follow-up probe (P-023-LATENCY, future) should
+    quantify the performance impact via timed REST calls. P-023 pins
+    the semantic; the latency probe would pin the performance cost.
+---
+
+# P-023 — getActivityCounts accepts null dates → unbounded scan (LSN-019 S-B-3)
+
+This is a Stress-Protocol-rule-9-emitted probe skeleton. The probe-runner
+subagent should pick this up on its next batch, run the scenario against
+a docker-compose odd-platform instance, and flip the sidecar's
+stress_findings.S-B-3 confidence from PROBE-NEEDED to PROBE-VERIFIED with
+the observed outcome (a or b).

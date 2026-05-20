@@ -1,5 +1,5 @@
 name: |-
-  Cross-provider username row-duplication in external JOINs (Alert / Activity / Owner / OwnerAssociationRequest)
+  Cross-provider username row-duplication in external JOINs (Alert / Activity / Owner / OwnerAssociationRequest) — STRENGTHENED batch VAL-LSN-019-B with Activity repository-tier PRIMARY SOURCE pin
 canonical_in_docs: false
 canonical_candidate: true
 pillar_affinity:
@@ -10,7 +10,13 @@ description: |-
   **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19N — surfaced by
   primary-source examination of ReactiveUserOwnerMappingRepositoryImpl
   combined with cross-file grep across FOUR sibling repositories that
-  consume USER_OWNER_MAPPING for display-name resolution.**
+  consume USER_OWNER_MAPPING for display-name resolution. STRENGTHENED
+  batch VAL-LSN-019-B (2026-05-20) — ReactiveActivityRepositoryImpl
+  REWRITE under file-analyser/0.4.0 confirms Site 2 as PRIMARY SOURCE
+  (lines 157-158, 178-179, 199-200, 221-222) and adds the SERVICE-TIER
+  cross-mode-bleed propagator at ActivityServiceImpl.java:47, 58 (the
+  UserDto::username mapping that DROPS the provider tag before
+  persistence).**
 
   ReactiveUserOwnerMappingRepositoryImpl is the AUTHORITATIVE site for the
   (oidc_username, provider) compound key — `getConditions` at lines 116-127
@@ -27,15 +33,42 @@ description: |-
        USER_OWNER_MAPPING.DELETED_AT.isNull()`. NO provider equality
        predicate.
 
-    Site 2 — ReactiveActivityRepositoryImpl.java:156-158 — joins on
-      `USER_OWNER_MAPPING.OIDC_USERNAME = ACTIVITY.CREATED_BY AND
-       USER_OWNER_MAPPING.DELETED_AT.isNull()`. Same shape.
+    Site 2 — ReactiveActivityRepositoryImpl.java:157-158, 178-179,
+      199-200, 221-222 — FOUR LEFT JOINs (one in each of findAllActivities
+      / findMyActivities / findDependentActivities / findDataEntityActivities,
+      via the centralised `addJoins` helper at lines 227-244). Each
+      joins `USER_OWNER_MAPPING ON OIDC_USERNAME = ACTIVITY.CREATED_BY
+      AND DELETED_AT IS NULL`. **NO provider equality predicate at
+      any of the four sites.**
+      **PRIMARY-SOURCE PIN batch VAL-LSN-019-B**: confirmed via
+      file-analyser/0.4.0 REWRITE — the four JOIN locations are
+      enumerated in the sidecar's `concepts.invariants.[1]` block
+      verbatim. The cross-mode bleed mechanism mirrors batch N's
+      authoritative compound-key contract one-to-one at the Activity
+      read surface.
 
     Site 3 — ReactiveOwnerAssociationRequestRepositoryImpl.java:80-84 —
       same LEFT JOIN shape, OIDC_USERNAME-only.
 
     Site 4 — ReactiveOwnerRepositoryImpl.java:77-78 — same LEFT JOIN
       shape, OIDC_USERNAME-only.
+
+  **PRIMARY-SOURCE PIN batch VAL-LSN-019-B — WRITE-SIDE MECHANISM AT
+  THE SERVICE TIER**: the cross-mode bleed at the read-time JOIN side
+  is ENABLED by the write-time mechanism at ActivityServiceImpl.java:47,
+  58 — `authIdentityProvider.getCurrentUser().map(UserDto::username)`
+  picks ONLY the `.username()` field, DROPPING the `.provider()` tag
+  before the row is persisted (`activityMapper.mapToPojo(event, time,
+  username)` writes `activity.created_by = '<username>'` with no
+  provider column). This means:
+    (a) The write side never carries provider distinction (the
+        activity table schema has no provider column on `created_by`)
+    (b) The read side cannot reconstruct provider from the JOIN
+        (USER_OWNER_MAPPING has the compound key but ACTIVITY only
+        carries the username half)
+    (c) Even if the read side ADDED a provider predicate, the WRITE
+        side would need to also CARRY the provider — a schema migration
+        + service-tier code change
 
   **Consequence — row duplication**: if two ACTIVE user_owner_mapping rows
   exist for the SAME `oidc_username` under DIFFERENT providers (e.g.
@@ -96,6 +129,12 @@ description: |-
   central audit-trail surface (per system-mission.md line 207). A
   duplicated activity-feed render makes the GLOBAL audit feed
   forensically unreliable for cross-provider-named users.
+  **PRIMARY-SOURCE PIN batch VAL-LSN-019-B**: ReactiveActivityRepositoryImpl
+  is now the SECOND repository (after Alert) with file-analyser/0.4.0-grade
+  primary-source line-level evidence of the bug. The pattern is uniform
+  across Alert + Activity; the same shape almost certainly exists at
+  Owner + OwnerAssociationRequest pending their own file-analyser/0.4.0
+  rewrites.
 
   **The bug is DORMANT in the common case** (a deployment running a
   single auth mode with no migration history has at most one active row
@@ -104,6 +143,8 @@ description: |-
 nodes:
 - odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
 - odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+- odd-platform java service:ActivityServiceImpl
 contributors:
 - |-
   ReactiveUserOwnerMappingRepositoryImpl batch N (AUTHORITATIVE source for
@@ -119,6 +160,29 @@ contributors:
   repository was the canonical site for the read-collaborative cross-owner
   enumeration finding; this new finding identifies a SECOND class of bug
   on the same repository — display-name JOIN row duplication.
+- |-
+  **ReactiveActivityRepositoryImpl batch VAL-LSN-019-B (REWRITE under
+  file-analyser/0.4.0 — PRIMARY-SOURCE PIN at Site 2)**:
+  concepts.invariants.[1] (every read path LEFT JOINs
+  USER_OWNER_MAPPING ON OIDC_USERNAME only — verbatim "The join filters
+  by OIDC_USERNAME only — NOT by provider — so a LOGIN_FORM-authenticated
+  'alice' and an LDAP-authenticated 'alice' resolve to the SAME row")
+  + coherence_notes (provider-null-cross-mode-bleed mirror finding;
+  ReactiveUserOwnerMappingRepositoryImpl batch N upstream contract is
+  enforced authoritatively, this Activity-side join violates it at
+  four specific line ranges 157-158/178-179/199-200/221-222)
+- |-
+  **ActivityServiceImpl batch VAL-LSN-019-B (FRESH — WRITE-SIDE
+  PRIMARY-SOURCE PIN)**: concepts.invariants.[2] (verbatim "The
+  user-provider tag is DROPPED before persistence — UserDto::username
+  mapping at line 47, 58 picks only .username() and discards
+  .provider(). This is the cross-mode-bleed mechanism — a LOGIN_FORM-
+  authenticated 'alice' and an LDAP-authenticated 'alice' write the
+  same created_by value. The repository's USER_OWNER_MAPPING LEFT
+  JOIN per the existing repository sidecar invariant lines 157-158,
+  178-179, 199-200, 221-222 then joins by OIDC_USERNAME = ACTIVITY.
+  CREATED_BY AND DELETED_AT IS NULL — username-only, no provider
+  filter — propagating the bleed at read time.")
 evidence:
 - |-
   ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[1]
@@ -129,8 +193,9 @@ evidence:
   Cross-batch evidence for the FOUR external JOIN sites:
     Site 1 — ReactiveAlertRepositoryImpl.java:83-86 — LEFT JOIN on
       OIDC_USERNAME only
-    Site 2 — ReactiveActivityRepositoryImpl.java:156-158 — LEFT JOIN
-      on OIDC_USERNAME only
+    Site 2 — ReactiveActivityRepositoryImpl.java:157-158, 178-179,
+      199-200, 221-222 — LEFT JOIN on OIDC_USERNAME only (PRIMARY-SOURCE
+      PIN batch VAL-LSN-019-B)
     Site 3 — ReactiveOwnerAssociationRequestRepositoryImpl.java:80-84 —
       LEFT JOIN on OIDC_USERNAME only
     Site 4 — ReactiveOwnerRepositoryImpl.java:77-78 — LEFT JOIN on
@@ -144,9 +209,20 @@ evidence:
   unique constraint indexes; the partial index does NOT collapse
   (alice, '') and (alice, null) into a single tuple — both rows can
   exist simultaneously
+- |-
+  **NEW batch VAL-LSN-019-B**: ReactiveActivityRepositoryImpl.md:
+  concepts.invariants.[1] (Site 2 PRIMARY SOURCE — 4 JOIN locations
+  in this single repository); coherence_notes (provider-null-cross-mode-bleed
+  mirror)
+- |-
+  **NEW batch VAL-LSN-019-B**: ActivityServiceImpl.md:
+  concepts.invariants.[2] (UserDto::username mapping at lines 47, 58
+  DROPS provider tag before persistence — the WRITE-SIDE mechanism
+  that ENABLES the read-side JOIN bleed)
 axes_present:
 - repositories_reactive
-triangulation_count: 1
+- services
+triangulation_count: 2
 cross_batch: true
 severity: MEDIUM
 severity_dim: correctness-and-audit
@@ -164,6 +240,15 @@ mitigations_unimplemented:
       owner_id (the better fix — resolve the principal to an OwnerPojo
       at write time and store owner_id on the alert/activity/etc., then
       LEFT JOIN on OWNER.id without the user_owner_mapping intermediate)
+- |-
+  **NEW batch VAL-LSN-019-B**: For Site 2 specifically, the write-side
+  fix is at ActivityServiceImpl.java:47, 58 — instead of `UserDto::username`,
+  capture BOTH `.username()` AND `.provider()` and pass to
+  `activityMapper.mapToPojo` which would set BOTH `activity.created_by`
+  (username) AND a new `activity.created_by_provider` column. Schema
+  migration required (the column doesn't exist today). Once the
+  WRITE-side carries provider, the READ-side JOIN can be updated to
+  include the provider equality predicate.
 - |-
   Add a build-time invariant scanner that flags any new repository LEFT
   JOIN against USER_OWNER_MAPPING that lacks a PROVIDER predicate — the
@@ -191,11 +276,39 @@ mitigations_unimplemented:
     (d) Read `/api/alerts` — assert exactly ONE row is returned
         (the fix) OR assert TWO rows (the current — buggy — behaviour)
         as a pin until the fix lands.
+- |-
+  **NEW batch VAL-LSN-019-B**: Add a test
+  `ReactiveActivityRepositoryImplDuplicationTest.testCrossProviderUsernameDuplication`
+  exercising the two-row scenario at the Activity surface specifically:
+    (a) Insert two user_owner_mapping rows (alice, null, owner=X) +
+        (alice, GITHUB, owner=Y)
+    (b) Insert an activity row with CREATED_BY='alice'
+    (c) Read /api/activity — assert exactly ONE row is returned (the
+        fix) OR pin TWO rows as the current contract (before the fix)
 notes: |-
   NEW invariant captured in batch 2026-05-19N. Surfaced by triangulating
   the ReactiveUserOwnerMappingRepositoryImpl PRIMARY SOURCE (the
   authoritative compound key contract) against the four external sibling
   repositories that violate the compound-key contract on JOIN.
+
+  **STRENGTHENED batch VAL-LSN-019-B (2026-05-20)** with the Activity
+  feature's THREE-TIER cross-mode-bleed evidence:
+    - REPOSITORY TIER (ReactiveActivityRepositoryImpl REWRITE under
+      file-analyser/0.4.0) — Site 2's four JOIN locations enumerated
+      verbatim at concepts.invariants.[1]; coherence_notes confirms
+      the mirror to ReactiveUserOwnerMappingRepositoryImpl batch N
+      authoritative contract
+    - SERVICE TIER (ActivityServiceImpl FRESH) — concepts.invariants.[2]
+      pins the WRITE-SIDE mechanism: UserDto::username mapping at lines
+      47, 58 drops the provider tag before the row hits
+      activityMapper.mapToPojo. The write-side gap explains why the
+      read-side JOIN cannot be patched in isolation: the activity table
+      schema has no provider column on `created_by`, so even if the
+      JOIN predicate added a provider check, there would be no provider
+      to check against
+    - HANDLER TIER (ActivityHandler FRESH) — concepts.invariants.[7]
+      cross-references the same null-username-on-empty-context shape
+      for the system-event auth-context auto-degradation case
 
   The bug is DORMANT in single-auth-mode deployments — every operator
   running just LOGIN_FORM or just LDAP or just OAUTH2 has at most one
@@ -223,3 +336,8 @@ notes: |-
         operations playbook
     (c) Update the FOUR offending repository JOINs to carry the provider
         predicate (CODE FIX preferred over DOC-only mitigation)
+    (d) **NEW batch VAL-LSN-019-B** — document the WRITE-SIDE gap in
+        the activity-feed feature page or the auth-providers reference:
+        ODD's activity table does not carry the provider tag on
+        `created_by`; cross-mode-bleed at the read tier is structurally
+        possible until both schema + service-tier are updated together

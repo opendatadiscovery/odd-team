@@ -1,0 +1,220 @@
+name: ActivityHandler is misnamed — it's a state-differ, not an event-handler
+canonical_in_docs: false
+canonical_candidate: true
+proposed_canonical: Activity Event State Differ (or ActivityStateSnapshotter)
+proposed_rename_target: ActivityHandler → ActivityStateDiffer or
+  ActivityStateSnapshotter
+rationale: |-
+  **NEW CANONICALISATION CANDIDATE, batch VAL-LSN-019-B (2026-05-20)** —
+  the name `ActivityHandler` on the Java interface (`service/activity/handler/
+  ActivityHandler.java:9-22`) does NOT match what the type does. This is a
+  classic NAME-VS-BEHAVIOR drift (per LSN-019 Stress Protocol Category B).
+
+  **WHAT THE NAME PROMISES**:
+    `ActivityHandler` suggests a write-handler or event-handler — a type
+    that HANDLES an Activity event by responding to it (persisting it,
+    forwarding it, dispatching to a downstream consumer). The pattern is
+    standard in event-driven systems: "Handler" types receive events and
+    mutate state.
+
+  **WHAT THE INTERFACE ACTUALLY DOES**:
+    The interface defines four methods, ALL READ-ONLY at the handler tier:
+    - `boolean isHandle(ActivityEventTypeDto)` — dispatch predicate
+    - `Mono<ActivityContextInfo> getContextInfo(parameters)` — captures
+      the OLD state of the affected data_entity BEFORE the wrapped business
+      mutation runs
+    - `Mono<String> getUpdatedState(parameters, dataEntityId)` — captures
+      the NEW state of the affected data_entity AFTER the wrapped business
+      mutation runs
+    - `Mono<Map<Long, String>> getUpdatedState(parameters, List<Long>
+       dataEntityIds)` — multi-id variant (default throws)
+
+    NONE of these methods PERSIST anything. NONE of these methods MUTATE
+    state. The handler is a STATE SNAPSHOTTER that produces a (pre, post)
+    pair, and the wrapping `ActivityAspect` does the actual diff + persist
+    + dispatch (`ActivityAspect.java:48-94`).
+
+  **THE OPERATOR-VISIBLE COST OF THE DRIFT**:
+    A maintainer reading the codebase encounters `ActivityHandler` and
+    forms a mental model of "this is the type that handles activity
+    events." They then look for a `handle()` method and don't find one.
+    They look for a `persist()` method and don't find one. They look at
+    the implementations and see them reading state from repositories.
+    They have to reverse-engineer the snapshot-differ pattern by tracing
+    ActivityAspect's 100-line around-advice.
+
+    A maintainer adding new audit coverage for a new entity (e.g.
+    a new data-quality-check assertion) opens
+    `service/activity/handler/` and creates `DataQualityCheckActivityHandler
+    implements ActivityHandler` — they think they're writing a handler.
+    They put `persist()` logic in `getContextInfo`. The bug emerges at
+    runtime when the handler double-persists (its own write + the
+    aspect's write).
+
+  **THE RENAME PROPOSAL**:
+    Two candidate names; either is more honest than `ActivityHandler`:
+      (a) `ActivityStateDiffer` — emphasizes the diff role
+      (b) `ActivityStateSnapshotter` — emphasizes the snapshot role
+      (c) `ActivityEventStateDiffer` — most precise but longest
+
+    The rename touches:
+      - `service/activity/handler/ActivityHandler.java` → new file at
+        `service/activity/differ/ActivityStateDiffer.java` (or rename
+        in-place with full Git history)
+      - 18 concrete implementation classes' `implements ActivityHandler`
+        → `implements ActivityStateDiffer`
+      - 2 abstract bases' class names + `extends` declarations
+      - `ActivityServiceImpl.handlers` field rename to `differs`
+      - `ActivityServiceImpl.getActivityHandler(eventType)` rename to
+        `getActivityStateDiffer(eventType)` or
+        `getDiffer(eventType)`
+      - All Javadoc references
+      - The activity-feed feature page documentation
+
+    The 18-handler set is a manageable rename scope. CI tests would
+    catch all reference updates. Backwards compatibility is not a
+    concern (the interface is internal — no @Public annotation, no
+    extension point exposed beyond the platform module).
+
+  **ALTERNATIVE TO THE RENAME — DOCUMENT THE CONTRACT**:
+    If the rename is too disruptive, the lighter-weight fix is to
+    document the contract at the interface level:
+      ```java
+      /**
+       * Snapshot-differ contract for activity-feed audit events.
+       *
+       * IMPORTANT: This is NOT a write-handler interface despite the
+       * "Handler" suffix in the name. Implementations capture
+       * (pre, post) state snapshots; the wrapping {@link ActivityAspect}
+       * computes the diff (JSON-string equality at line 86) and
+       * persists the ActivityPojo. Implementations MUST NOT persist
+       * activity rows; doing so causes double-persist (handler + aspect)
+       * and stale-read race conditions.
+       */
+      public interface ActivityHandler {
+        // ...
+      }
+      ```
+    Cost: one Javadoc block. Benefit: future maintainers see the
+    contract on hover.
+
+  **WHY THIS IS A CANONICALISATION CANDIDATE, NOT JUST A BACKLOG
+  ITEM**:
+    main-concepts.md does not name the snapshot-differ pattern.
+    The Activity Feed concept entry currently mentions "ActivityHandler"
+    in passing (via the new entity entry
+    `activity-handler-state-differ`); but the term itself is not in
+    the canonical vocabulary. Two paths:
+      (a) Add "Activity Event State Differ" or "Activity State
+          Snapshotter" to main-concepts.md as the canonical concept
+          name, then rename the Java interface to match
+      (b) Add "ActivityHandler (state-differ pattern)" with a
+          clarifying gloss in main-concepts.md, accepting the name
+          and documenting the contract trap
+
+    The maintainer's choice. The recommendation here: pursue path
+    (a) — the name is misleading enough that renaming the Java code
+    pays back the migration cost in reduced ongoing confusion.
+
+  vocabulary_status: codebase-anchored, doc-side-absent (main-concepts.md
+  does not name the snapshot-differ pattern OR the activity-handler
+  abstraction; the live activity-feed.md page does not name either).
+contributing_concepts:
+- activity-handler-state-differ (new entity entry, batch VAL-LSN-019-B)
+- activity-feed (existing entity; the snapshot-differ is its write-tier
+  mechanism)
+- write-activity-event-snapshot-diff-emit (new operation entry, batch
+  VAL-LSN-019-B; describes the four-step pipeline the handler is the
+  dispatch core of)
+- activity-handler-concurrent-oldstate-capture-race (new invariant,
+  batch VAL-LSN-019-B; the race that emerges from the snapshot-differ
+  pattern under concurrent same-entity load)
+- activity-handler-multi-id-default-throws-runtime-not-compile (new
+  invariant; the interface's default-method shape that promises a
+  batch path 16 of 18 impls don't deliver)
+nodes:
+- odd-platform java service activity handler:ActivityHandler
+contributors:
+- |-
+  ActivityHandler interface (batch VAL-LSN-019-B): the entire understanding
+  + concepts sections of the sidecar emphasize the snapshot-differ
+  contract; the file-analyser explicitly framed the finding as
+  "DRIFT_NAME_VS_BEHAVIOR" per Stress Protocol Category B
+evidence:
+- |-
+  ActivityHandler.md:understanding — verbatim: "ActivityHandler is a
+  4-method interface (3 abstract + 1 default that throws) in 22 lines
+  (ActivityHandler.java:9-22) that defines the dispatch contract for
+  ODD's Activity-feed audit-event recording. It is NOT a write-side
+  'handle(event)' interface as the dispatch pattern name might suggest —
+  it is a state-snapshot differ: getContextInfo(parameters) captures
+  the OLD state of the affected data_entity BEFORE the mutation runs;
+  getUpdatedState(parameters, dataEntityId) captures the NEW state
+  AFTER the mutation runs. The handler never writes the ActivityPojo
+  — the actual diff (oldState != newState string-equality at
+  ActivityAspect.java:86) and the persist (activityRepository.saveReturning
+  at ActivityServiceImpl.java:50) happen in ActivityAspect/
+  ActivityServiceImpl AFTER both snapshots are in hand."
+- |-
+  ActivityHandler.md:concepts.invariants.[0] — verbatim: "Snapshot-differ
+  contract, NOT write-handler contract. The interface defines only
+  state-reading methods. Diff computation (postActivity's filter at
+  ActivityAspect:86) is OUTSIDE the handler scope; ActivityPojo
+  persistence (activityRepository::saveReturning) is OUTSIDE the
+  handler scope. A handler that misimplements getContextInfo or
+  getUpdatedState produces a wrong-but-still-emitted activity record
+  OR a silently-no-emit (oldState == newState, filter blocks)"
+- |-
+  ActivityHandler.java:9-22 — line-by-line: the 4-method interface
+  has no `handle()` method, no `persist()` method, no `dispatch()`
+  method; the methods are `isHandle` (predicate), `getContextInfo`
+  (snapshot pre), `getUpdatedState` × 2 (snapshot post)
+- |-
+  The 18 concrete impls under service/activity/handler/ — verified
+  read-only via Glob; each impl's body issues DB reads, not DB
+  writes; verified pattern uniformity (DescriptionUpdatedActivityHandler,
+  BusinessNameUpdatedActivityHandler, TagActivityHandlerImpl, etc.)
+notes: |-
+  This canonicalisation candidate is the load-bearing finding of batch
+  VAL-LSN-019-B. The name `ActivityHandler` is a textbook NAME-VS-
+  BEHAVIOR drift — the type does NOT do what its name implies — and
+  the cost is paid by every maintainer who has to reverse-engineer
+  the snapshot-differ pattern from the surrounding ActivityAspect
+  code.
+
+  The candidate proposes a rename (Java interface + 18 concrete impls
+  + 2 abstract bases + Javadoc + feature-page docs). Estimated effort:
+  1-2 days of refactoring + review. Alternative: document the
+  contract at the interface level (~30 minutes of Javadoc work).
+
+  The maintainer should consider this candidate alongside the new
+  invariants `activity-handler-concurrent-oldstate-capture-race` and
+  `activity-handler-multi-id-default-throws-runtime-not-compile` —
+  ALL THREE findings point at the handler tier as an underdeveloped
+  abstraction. A pillar-level refactor that (a) renames the
+  interface, (b) closes the multi-id default-throw via N×single-id
+  composition, (c) adds optimistic concurrency control to close the
+  oldstate-capture race would address all three at once.
+
+  Cross-cutting connections:
+    - Pairs with new entity `activity-handler-state-differ` — the
+      first-class entry that explicitly states the snapshot-differ
+      contract
+    - Pairs with new operation `write-activity-event-snapshot-diff-emit`
+      — names the actual write pipeline the differ is the dispatch
+      core of
+    - Pairs with the LSN-019 Stress Protocol Category B (name-behavior
+      pairs) — this finding is a CANONICAL EXAMPLE of the pattern
+      that triggered the Stress Protocol's creation
+
+  Three DOC-NNN / REFACTOR-NNN candidates:
+    (a) Rename `ActivityHandler` → `ActivityStateDiffer` (or
+        `ActivityStateSnapshotter`) in odd-platform; update 18+ impls,
+        2 abstract bases, 1 service-tier field name, 1 dispatcher
+        method name, all Javadoc references, and the activity-feed
+        feature-page docs
+    (b) (Alternative if rename rejected) Add interface-level Javadoc
+        explicitly stating the snapshot-differ contract; warn that
+        handlers MUST NOT persist
+    (c) Add `Activity Event State Differ` (or chosen rename target)
+        as a canonical concept in main-concepts.md

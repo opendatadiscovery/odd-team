@@ -1,0 +1,74 @@
+gap_id: TEST-GAP-825
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java IngestionController controller-method:ingestMetrics"
+pillars_affected: [P-07, P-09, P-10]
+surfaced_by:
+  - "ingestMetrics.md:bugs_limitations_corner_cases.[1] MEDIUM (ODDRN-by-payload attack)"
+  - "ingestMetrics.md:security.known_security_gaps.[1] MEDIUM (cardinality DoS)"
+  - "ingestMetrics.md:performance.known_performance_gaps (no rate-limit)"
+behaviour: |-
+  **HIGH — ODDRN-by-payload write creates metric_entity rows with NO referential integrity check, enabling Postgres-side AND Prometheus-side cardinality DoS at attacker-controlled rate.**
+
+  `InternalIngestionMetricsServiceImpl.java:86-88` calls `metricEntityRepository.registerMetricEntityOddrns(request.metricRelatedOddrns())` — creates `metric_entity` rows BY ODDRN with NO check that a corresponding `data_entity.oddrn` row exists. The PROMETHEUS path writes the same ODDRN string as a Prometheus label value.
+
+  **Attack chain**:
+  1. Attacker submits unauthenticated `POST /ingestion/metrics` (per TEST-GAP-823) with `MetricSetList { items: [{oddrn: "literal:fake-1", metric_families: [...]}, {oddrn: "literal:fake-2"}, ...] }` — N items per request.
+  2. INTERNAL_POSTGRES path: N rows inserted into `metric_entity` table. With no rate-limit, attacker submits thousands of requests per second.
+  3. PROMETHEUS path: N TimeSeries with fake ODDRN labels written to operator's external Prometheus. Prometheus cardinality explodes proportional to attacker traffic.
+  4. **Result on PROMETHEUS deployments**: operator's Prometheus storage costs balloon. Cardinality limits trigger (Prometheus's `--query.max-samples`, `--storage.tsdb.max-block-duration`); legitimate queries start failing. Same Prometheus may serve multiple ODD tenants (per the multi-tenant docs) — one attacker DoSes all tenants.
+  5. **Result on INTERNAL_POSTGRES deployments**: `metric_entity` table grows unbounded. Index size + JOIN cost on `GET /api/dataentities/{id}/metrics` degrades.
+
+  **No counter-measures**:
+  - **No FK from `metric_entity.entity_oddrn` to `data_entity.oddrn`** (verified at JOOQ POJO level — `MetricEntityPojo` is independent of `DataEntityPojo`).
+  - **No rate-limit at the controller** (`@RateLimiter` not present anywhere in `<odd-platform-repo>/odd-platform-api/src/main/java`).
+  - **No per-tenant quota** — per metrics-ingestion concept `weaknesses` list.
+  - **No PII filtering on labels** — TEST-GAP-826 sister covers the PII propagation chain.
+
+  **Why HIGH** (the sidecar rates MEDIUM): the operator-borne cost (their Prometheus storage; their Postgres pressure) compounds without bound; the cross-tenant amplification (per TEST-GAP-824) makes one bad actor capable of degrading every co-tenant.
+
+  **Test gap shape**: integration test that:
+  1. Burst-POSTs metrics for 10K novel ODDRNs.
+  2. Asserts `metric_entity` table grew by 10K rows.
+  3. Asserts no rate-limit kicked in.
+  4. Asserts no audit log entry.
+  5. (PROMETHEUS variant) asserts external Prometheus testcontainer received 10K series.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestMetricsODDRNByPayloadCardinalityDoSPostgresPrometheusTest.java"
+  name: "post_10kNovelOddrns_pgRowCountGrew_promCardinalityExploded_noRateLimit_noAudit_pinsDoS"
+evidence:
+  - "ingestMetrics.md says (bugs_limitations_corner_cases.[1]): 'No payload-side validation that the oddrn in each MetricSet belongs to a registered data entity. The controller passes the payload verbatim to IngestionMetricsService.ingestMetrics(...); the INTERNAL_POSTGRES implementation calls metricEntityRepository.registerMetricEntityOddrns(request.metricRelatedOddrns()) which creates metric_entity rows BY ODDRN regardless of whether a data_entity row with that ODDRN exists. The PROMETHEUS implementation writes labels with whatever ODDRN string the caller supplied. Net effect: a caller can mint arbitrary metric_entity rows / arbitrary Prometheus series for non-existent ODDRNs.' (severity MEDIUM)"
+  - "ingestMetrics.md says (security.known_security_gaps.[1]): 'ODDRN-by-payload attack: a caller writes MetricSet.oddrn = '//literal:any-string' in the payload; the implementation creates a metric_entity row for that ODDRN with zero validation against data_entity.oddrn referential integrity. On the PROMETHEUS path the same ODDRN string becomes a Prometheus label value. An attacker can mint thousands of fake-ODDRN metric_entity rows (Postgres-side cardinality DoS) or thousands of fake-ODDRN Prometheus series (Prometheus-side cardinality DoS) before any rate-limit catches them.' (severity MEDIUM)"
+  - "ingestMetrics.md says (bugs_limitations_corner_cases.[5]): 'No rate-limit at the controller layer. A misbehaving collector POSTing 100,000 metric series per second forces the platform to: (a) buffer each 20 MB body in heap before deserialising, (b) run each through @ReactiveTransactional against Postgres ...' (severity MEDIUM)"
+  - "Verified at primary source: IngestionController.java:89-95 (no rate-limit) + InternalIngestionMetricsServiceImpl.java:86-88 (registerMetricEntityOddrns — no existence check) + ExternalIngestionMetricsServiceImpl.java:202-220 (PROMETHEUS verbatim-label-write)"
+cross_references:
+  - "TEST-GAP-823 (sister — unauthenticated reach; the precondition for this attack)"
+  - "TEST-GAP-824 (sister — tenant_id absent on INTERNAL_POSTGRES; cross-tenant amplification)"
+  - "TEST-GAP-826 (sister — PII label propagation; complementary attack vector)"
+  - "concepts/detail/entities/metrics-ingestion.yaml weaknesses (the concept entry already lists 'No rate-limit / per-tenant quota on metric ingestion'; this entry STRENGTHENS by providing the cardinality DoS variant)"
+  - "REFACTOR-NNN (proposed): FK or app-layer existence check on metric_entity.entity_oddrn; rate-limit at controller; per-tenant quota"
+related_features: [F-008]
+related_pillar_features: ["P-07:metrics-ingestion", "P-09:Security & Access Control", "P-10:ingestion-pipeline"]
+proposed_action: |-
+  Add `IngestMetricsODDRNByPayloadCardinalityDoSPostgresPrometheusTest`. Two variants:
+
+  **Variant A (INTERNAL_POSTGRES)**:
+  1. Setup: empty platform, Testcontainers Postgres.
+  2. Pre-baseline: `SELECT count(*) FROM metric_entity` = N (typically 0).
+  3. Burst-POST 10 separate requests, each containing 1000 `MetricSet` items with novel `literal:fake-{i}-{j}` ODDRNs.
+  4. Assert: all 10 return 201; `SELECT count(*) FROM metric_entity` = N + 10000.
+  5. Assert no rate-limit (no 429 responses); no `activity_event` row; no domain-specific Prometheus counter.
+
+  **Variant B (PROMETHEUS)**:
+  1. Setup: ODD configured `metrics.storage=PROMETHEUS`, against a `prom/prometheus:v2.42.0` testcontainer with `--web.enable-remote-write-receiver`.
+  2. Burst-POST 10000 novel-ODDRN MetricSets.
+  3. Assert: Prometheus has 10000 new series via the testcontainer's `/api/v1/series` endpoint.
+  4. Assert no rate-limit / quota enforcement; assert no per-tenant cost-attribution metric.
+
+  Pair with REFACTOR-NNN (existence-check + rate-limit) and the metrics-ingestion concept-merger pass to add `cardinality_dos_vector` weakness.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Sister to TEST-GAP-823 (precondition: unauthenticated reach) and TEST-GAP-824 (cross-tenant amplification). STRENGTHENS the `metrics-ingestion` concept entry's existing weakness `No rate-limit / per-tenant quota on metric ingestion` by providing the cardinality-DoS exploit chain anchored at primary source.
+batch: 2026-05-20-Z
+feature_id: F-008

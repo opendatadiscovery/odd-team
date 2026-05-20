@@ -1,82 +1,94 @@
-name: Two ingestion filters with asymmetric auth — datasource always-on, entity opt-in
+name: Two ingestion filters with asymmetric auth — datasource always-on, entity opt-in; FOUR sibling endpoints uncovered
 canonical_in_docs: false
 canonical_candidate: true
 pillar_affinity:
   - P-09
   - P-10
 description: |-
-  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20-P** —
-  PRIMARY-SOURCE CONFIRMED at the createDataSource controller-method tier.
-  The platform's `/ingestion/**` namespace is covered by TWO subclasses of
-  `AbstractIngestionFilter`, each binding to ONE path with DIFFERENT
-  registration semantics. The asymmetry is INTENTIONAL (structurally
-  encoded in two distinct `@Component` classes) and load-bearing for the
-  ingestion security model.
+  **STRENGTHENED INVARIANT, batch 2026-05-20-Z** — promoted from
+  3-endpoint observation (batch P) to 7-endpoint observation. The
+  `/ingestion/**` namespace contains AT LEAST seven distinct endpoints
+  with FOUR DIFFERENT auth postures, all silently asymmetric:
 
-  **The two filters**:
+  **Filter-1 ALWAYS-ON** (IngestionDataSourceFilter @Component line 15
+  — NOT gated by @ConditionalOnProperty):
+    - `POST /ingestion/datasources` (entry point — controller throws
+      `IllegalStateException("Collector id is null")` without a valid
+      token at IngestionController.java:54, so the filter MUST run)
 
-    1. **IngestionDataSourceFilter** (sibling, `@Component` at line 15,
-       NOT gated by `@ConditionalOnProperty`) — ALWAYS REGISTERED.
-       Path matcher binds to `/ingestion/datasources` POST (and similar).
-       Validates `Authorization: Bearer <collector_token>` against the
-       COLLECTOR table; on success writes `COLLECTOR_ID_SESSION_KEY`
-       into the WebSession. On token mismatch:
-       `AccessDeniedException("Collector with such token doesn't exist")`
-       → HTTP 401. **The datasource-registration path is ALWAYS auth-
-       required.**
+  **Filter-2 OPT-IN OFF-BY-DEFAULT** (IngestionDataEntitiesFilter
+  @Component line 19 — gated by
+  @ConditionalOnProperty(value="auth.ingestion.filter.enabled",
+  havingValue="true"), default false per application.yml:48):
+    - `POST /ingestion/entities` (exact-literal path matcher at
+      IngestionDataEntitiesFilter.java:28, HttpMethod.POST only)
 
-    2. **IngestionDataEntitiesFilter** (`@Component` at line 19, GATED
-       by `@ConditionalOnProperty(value = "auth.ingestion.filter.enabled",
-       havingValue = "true")` per `IngestionDataEntitiesFilter.java:20`,
-       default `false` per `application.yml:48`) — OFF BY DEFAULT.
-       Path matcher binds to `/ingestion/entities` POST only.
-       **The data-entity ingestion path is OPT-IN auth-required.**
+  **NO FILTER — UNAUTHENTICATED IN EVERY DEPLOYMENT POSTURE** (covered
+  by NEITHER filter; in `SecurityConstants.WHITELIST_PATHS` /ingestion/**
+  line 96 so UI auth doesn't fall through):
+    - `POST /ingestion/alert/alertmanager` (third-party-shaped webhook —
+      no collector token to validate; existing
+      `entity-oddrn-trust-from-alertmanager-webhook` invariant)
+    - `POST /ingestion/entities/datasets/stats` (DQ statistics — batch Z
+      new: sub-path of /ingestion/entities NOT matched by exact-literal
+      filter matcher)
+    - `POST /ingestion/metrics` (metrics ingestion — batch Z new: not
+      matched by either filter, no IngestionMetricsFilter exists)
+    - `GET /ingestion/entities/{deg_oddrn}` (DEG membership READ — batch Z
+      new: GET method + sub-path NOT matched by POST-only filter)
 
-  **The rationale visible in the code**:
-    - `/ingestion/datasources` REQUIRES a valid collector to bind to
-      (the controller throws `IllegalStateException("Collector id is
-      null")` without it — `IngestionController.java:54`), so the
-      filter MUST run for the endpoint to function.
-    - `/ingestion/entities` accepts the datasource identity in the
-      payload (`data_source_oddrn` field in `DataEntityList`), so the
-      filter is OPTIONAL — operators can disable it in dev/demo
-      without breaking the endpoint.
+  **The HIGH-severity operator-trap STRENGTHENED batch Z**: the S2S doc
+  page recommends `auth.s2s.enabled` + `auth.ingestion.filter.enabled: true`.
+  An operator enabling both reasonably believes "ingestion is locked
+  down." In reality:
+    - `/ingestion/datasources` is ALREADY always-on regardless of either
+      flag (sibling filter is unconditional);
+    - `/ingestion/entities` becomes opt-in protected when the property
+      is true — but ONLY this ONE PATH out of 7+ /ingestion/* endpoints;
+    - FIVE sibling /ingestion/* endpoints remain unauthenticated under
+      EVERY flag combination (the four NO-FILTER endpoints above).
 
-  **The HIGH-severity operator-trap**: the S2S doc page recommends
-  `auth.s2s.enabled` + `auth.ingestion.filter.enabled: true`. An operator
-  enabling both reasonably believes "ingestion is locked down." In
-  reality:
-    - `/ingestion/datasources` is ALREADY always-on regardless of
-      either flag (sibling filter is unconditional);
-    - `/ingestion/entities` becomes opt-in protected via the second
-      filter when the property is true;
-    - `/ingestion/alert/alertmanager` is COVERED BY NEITHER filter and
-      remains unauthenticated under all flag combinations (the F-007
-      `unauthenticated_payload_trust` facet — see
-      `entity-oddrn-trust-from-alertmanager-webhook` invariant).
+  **Seven distinct ingestion endpoints, FOUR distinct auth postures**:
+  always-on (filter unconditional, 1 endpoint) / opt-in (filter
+  conditional / off-by-default, 1 endpoint) / always-off-with-third-party-
+  shape (1 endpoint — AlertManager webhook) / always-off-S2S-stats-or-
+  metrics-or-read (3+ endpoints — sub-paths not matched by exact-literal
+  matcher OR HTTP method not matched). The asymmetry is invisible to
+  operators reading the docs; the property name `auth.ingestion.filter.enabled`
+  reads as "lock down ingestion globally" but its scope is exactly ONE
+  endpoint.
 
-  Three distinct ingestion endpoints, three distinct auth shapes:
-  always-on (filter unconditional) / opt-in (filter conditional /
-  off-by-default) / always-off (no filter at all). The asymmetry is
-  invisible to operators reading the docs; the property name
-  `auth.ingestion.filter.enabled` reads as "lock down ingestion
-  globally" but its scope is exactly one endpoint.
+  **Live docs surface this — but at the wrong page**: the Security page
+  (WebFetched 2026-05-20, status 200) EXPLICITLY enumerates the
+  uncovered paths — quote: 'IngestionDataEntitiesFilter uses an exact path
+  matcher (/ingestion/entities, POST) ... sibling endpoints remain
+  unprotected by this filter ... Other ingestion paths like
+  /ingestion/alert/alertmanager, /ingestion/entities/degs/children, and
+  /ingestion/entities/datasets/stats fall back to UI authentication
+  behavior determined by auth.type.' The Security page is correct on
+  the enumeration BUT incorrect on the fallback — `/ingestion/**` is in
+  WHITELIST_PATHS so UI auth does NOT fall through. The doc surface
+  has both (a) the asymmetry surfaced (at the right place — security
+  page) and (b) a subtle inaccuracy about the fallback (the UI auth
+  doesn't apply — the namespace is whitelisted).
 
-  **Composes with REFACTOR-185 (DISABLED-mode bypass)**: under
+  **Composes with REFACTOR-185 (DISABLED-mode bypass + LOGIN_FORM-ADMIN +
+  AUTH-MODE-ORTHOGONAL facet — 27-sidecar batch Z extension)**: under
   `auth.type=DISABLED` the UI auth chain is bypassed entirely. The
   `IngestionDataSourceFilter` STILL runs and STILL requires a valid
   token — but an attacker who can reach the platform can create a
   Collector via the OPEN UI (`POST /api/collectors`), copy the
   generated token, and then call `POST /ingestion/datasources` with
   the freshly-issued token. The DISABLED-mode bypass extends to
-  datasource creation by composition: DISABLED → UI is open →
-  create-collector → token-leak → ingestion datasource creation.
-  A NEW facet not previously surfaced in REFACTOR-185's enumeration.
+  datasource creation by composition. Under any other auth mode the
+  AUTH-MODE-ORTHOGONAL facet of REFACTOR-185 enables direct
+  unauthenticated reach to the 4 NO-FILTER endpoints.
 
   **Severity**: HIGH — operator-facing documentation drift on a
   security knob whose name claims more scope than it has; combined
-  with the F-007 unauthenticated webhook path the three-way asymmetry
-  is silent in the docs.
+  with the F-007 unauthenticated webhook path + the batch-Z three
+  new S2S-uncovered endpoints, the seven-way asymmetry is invisible
+  in operator-facing docs at the point of endpoint discovery.
 axes_present:
   - controllers
   - filters
@@ -84,6 +96,9 @@ axes_present:
 nodes:
   - odd-platform java IngestionController controller-method:createDataSourceEntity
   - odd-platform java IngestionController controller-method:postDataEntityList
+  - odd-platform java IngestionController controller-method:postDataSetStatsList
+  - odd-platform java IngestionController controller-method:ingestMetrics
+  - odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn
   - odd-platform java IngestionDataEntitiesFilter config-key-consumer:auth.ingestion.filter.enabled@L20
   - odd-platform java AlertManagerController controller-method:postAlerts
 contributors:
@@ -93,6 +108,44 @@ contributors:
   - 'createDataSourceEntity.md:docs_link_semantic.doc_drift_findings.[1] (S2S doc conflates auth.s2s with auth.ingestion.filter)'
   - 'postDataEntityList.md (batch B): IngestionDataEntitiesFilter conditional + off-by-default semantics'
   - 'AlertManagerController#postAlerts.md (batch P): the third ingestion endpoint NEITHER filter covers — fully unauthenticated under all flag combinations'
+  - |-
+    **BATCH Z NEW** postDataSetStatsList.md (DQ stats endpoint):
+    concepts.invariants.[0] (Controller has no authorization at the
+    method level — neither @PreAuthorize on postDataSetStatsList nor on
+    the IngestionApi interface; path is ALSO not covered by any
+    AbstractIngestionFilter subclass: IngestionDataEntitiesFilter binds
+    exactly to /ingestion/entities POST exact-literal — does NOT match
+    the sub-path /ingestion/entities/datasets/stats; path is permitAll()
+    under all UI auth modes via /ingestion/** in
+    SecurityConstants.WHITELIST_PATHS; Result: POST /ingestion/entities/datasets/stats
+    is unauthenticated under EVERY combination of auth.type ∈ {DISABLED,
+    OAUTH2, LDAP} AND auth.ingestion.filter.enabled ∈ {true, false}) +
+    dependencies_semantic.coupling.[2] (NO auth.ingestion.filter.enabled
+    coverage in contrast to sibling postDataEntityList; the matcher is
+    exact-literal /ingestion/entities NOT the wildcard /ingestion/entities/**)
+  - |-
+    **BATCH Z NEW** ingestMetrics.md (metrics endpoint):
+    concepts.invariants.[0] (Controller has no authorization at the
+    method level; path /ingestion/metrics is in
+    SecurityConstants.WHITELIST_PATHS (/ingestion/**); No
+    IngestionDataEntitiesFilter-style path-scoped filter exists for
+    /ingestion/metrics — TWO ingestion filters
+    (IngestionDataEntitiesFilter matching /ingestion/entities POST,
+    IngestionDataSourceFilter matching /ingestion/datasources POST),
+    neither of which extends to the metrics path; endpoint is
+    unauthenticated in EVERY supported deployment posture) +
+    security.ingestion_filter_relevance NO — /ingestion/metrics is
+    NOT covered by any ingestion filter
+  - |-
+    **BATCH Z NEW** getDataEntitiesByDEGOddrn.md (S2S READ endpoint):
+    concepts.invariants.[0] (No authorization at any layer; controller
+    has no @PreAuthorize; IngestionApi interface OpenAPI-generated
+    carries no security annotations; SecurityConstants.WHITELIST_PATHS
+    line 96 contains /ingestion/**; IngestionDataEntitiesFilter
+    line 28 matches POST /ingestion/entities ONLY — not GET, not the
+    templated child path) +
+    security.ingestion_filter_relevance NO — IngestionDataEntitiesFilter
+    does NOT match this GET path even when auth.ingestion.filter.enabled=true
 evidence:
   - createDataSourceEntity.md:implicit_adrs.[1] (intent_anchor = the TWO filter classes' different registration patterns)
   - createDataSourceEntity.md:concepts.invariants.[0] (filter unconditional)
@@ -100,25 +153,49 @@ evidence:
   - createDataSourceEntity.md:security.auth_mode_relevance + .ingestion_filter_relevance
   - postDataEntityList.md (batch B):security.ingestion_filter_relevance (conditional + off-by-default)
   - postAlerts.md (batch P):security.ingestion_filter_relevance (NO — neither filter covers)
+  - |-
+    **BATCH Z**: postDataSetStatsList.md:concepts.invariants.[0] HIGH +
+    security.ingestion_filter_relevance NO +
+    security.known_security_gaps.[0] HIGH
+  - |-
+    **BATCH Z**: ingestMetrics.md:concepts.invariants.[0] HIGH +
+    security.ingestion_filter_relevance NO +
+    security.known_security_gaps.[0] HIGH
+  - |-
+    **BATCH Z**: getDataEntitiesByDEGOddrn.md:concepts.invariants.[0] +
+    security.ingestion_filter_relevance NO +
+    security.known_security_gaps.[0] HIGH
 notes: |-
+  STRENGTHENED batch 2026-05-20-Z — the 4-endpoint observation is now
+  a 7-endpoint observation. The four NO-FILTER endpoints (AlertManager
+  webhook + DQ stats + metrics + DEG-by-OddrnRead) form the
+  AUTH-MODE-ORTHOGONAL facet of REFACTOR-185 — each requires a
+  separate code-side or network-side mitigation; none can be closed
+  by operator configuration alone.
+
   Pairs with:
-
     - `entity-oddrn-trust-from-alertmanager-webhook` invariant — the
-      third ingestion endpoint (`/ingestion/alert/alertmanager`) is
-      covered by NEITHER filter; the three-way asymmetry is
-      always-on / opt-in / always-off.
-
+      third NO-FILTER endpoint
     - `collector-identity-via-websession-attribute-not-principal`
-      invariant (new in this batch) — explains WHY the
-      IngestionDataSourceFilter must be unconditional (it
-      sets the WebSession state the controller depends on).
-
+      invariant — explains WHY the IngestionDataSourceFilter must be
+      unconditional (it sets the WebSession state the controller depends
+      on)
     - `upsert-by-oddrn-partial-merge-collector-driven-only-name-description`
-      invariant (new in this batch) — the merge semantics that the
-      always-on filter enables.
+      invariant — the merge semantics that the always-on filter enables
+    - **BATCH Z NEW**: `s2s-read-side-unauthenticated-deg-membership-enumeration`
+      (the fourth NO-FILTER endpoint — S2S READ)
+    - **BATCH Z NEW**: `cross-dataset-stats-write-no-parent-child-consistency-check`
+      (the fifth NO-FILTER endpoint exploit — DQ stats write)
+    - **BATCH Z NEW**: `tenant-isolation-nonexistent-on-default-backend-internal-postgres`
+      (the sixth NO-FILTER endpoint exploit — metrics write)
+    - **BATCH Z NEW**: `tag-creation-as-side-effect-bypasses-tag-create-permission`
+      (composition partner; same DQ stats endpoint surfaces both gaps)
+    - **BATCH Z NEW**: REFACTOR-185 27-sidecar extension (the
+      AUTH-MODE-ORTHOGONAL facet anchor)
 
   Doc-side recommended action: extend
   `/configuration-and-deployment/enable-security/authentication/s2s`
   with an explicit "scope of ingestion-filter properties" subsection:
-  enumerate the THREE ingestion endpoints and the THREE different
-  auth postures.
+  enumerate the SEVEN ingestion endpoints and the FOUR different
+  auth postures. CORRECT the existing wording about UI-auth fallback
+  (the namespace is whitelisted; UI auth does NOT apply).

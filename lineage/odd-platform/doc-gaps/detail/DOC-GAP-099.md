@@ -75,3 +75,44 @@ The 5-angle status-code anchor + 5-failure-shape framing turns DOC-GAP-099 META 
 - **DOC-side cross-link** — `developer-guides/api-reference/glossary.md` (per DOC-GAP-209 NEW batch U sibling): surface the actual response status codes ("Returns HTTP 200 with the created Term object on success") for the Term CRUD endpoints. Symmetric coverage for the sibling api-reference subpages.
 
 The META is now anchored across 5 failure shapes + ~10 specific instances (DOC-GAP-009 / 068 / 098 / 099 / 167 / 198 / 209 + this expansion). The OpenAPI authoring-quality story is the largest authoring-defect family in the catalog. Severity stays HIGH on the META framing because the failures' downstream consequences range from silent typed-client failure (DOC-GAP-209) to security-impact inverse-semantic (DOC-GAP-099 lineage) to operator-trap response-shape (DOC-GAP-198 SLA-PNG); the single CI gate plus the per-instance fixes close the whole class.
+
+## Batch Z append
+
+## Batch Z append
+
+#### Batch 2026-05-20-Z STRENGTHENS — openapi-spec PRIMARY SOURCE confirms WHICH SIDE IS RIGHT + DOC-GAP-099 META cluster now anchors 6 failure shapes
+
+Batch Z's `odd-platform__openapi__spec__odd-platform-public-api.md` sidecar provides the FIFTH layer of triangulation for DOC-GAP-099. The 4-layer triangulation established in batch M (spec layer + service layer + repository SQL + controller methods) is now extended with the OpenAPI spec as a separately-enriched primary source axis. Critically, the spec-side sidecar names the inverse-semantic finding VERBATIM under its own bugs_limitations_corner_cases AND attributes the SEVERITY at HIGH (a security-relevant load-bearing source of the misframe) AND names it as a member of the broader OpenAPI authoring-quality META cluster.
+
+**The 5-layer triangulation** (each layer independently primary-source confirmed):
+- **(i) Spec layer** (DOC-GAP-099 original + NEW batch-Z openapi-spec sidecar): `openapi.yaml:842-844` summary text "Returns list of data entities owned by current user with upstream dependencies" + `openapi.yaml:861-862` Downstream sibling — confirmed at primary source.
+- **(ii) Service layer** (batch I via DOC-GAP-115): `DataEntityRelationsServiceImpl.java:25-31` anchor + expand + exclude pipeline.
+- **(iii) Repository layer** (batch H via DOC-GAP-105): `ReactiveLineageRepositoryImpl.java:122-176` recursive-CTE with no owner JOIN.
+- **(iv) Controller methods** (batch M): both `getMyObjectsWithUpstream.md` and `getMyObjectsWithDownstream.md` controller-method sidecars + the UI consumer `OwnerEntitiesList.tsx:87` rendering "Upstream dependents" (UI is correct, spec is wrong).
+- **(v) OpenAPI spec axis (NEW batch Z)**: the openapi-spec sidecar names the inverse-semantic finding under its OWN bugs_limitations_corner_cases at SEVERITY HIGH, anchoring to `openapi.yaml:841-878` and cross-linking to the existing 4 layers. The spec sidecar is the FIRST sidecar that frames the finding as a SECURITY-RELEVANT load-bearing source in third-party API-consumer integrations.
+
+**The directional confirmation (per sidecar `security.known_security_gaps.[2]`)** — the spec sidecar explicitly names WHICH SIDE IS RIGHT (the spec is wrong; the implementation + UI + service + repository are right):
+> "**Inverse-semantic on `getMyObjects*` family** — the spec summary states 'owned by current user with [upstream|downstream] dependencies' but the implementation returns non-owned reachable entities. SDK clients consuming the spec for multi-tenant deployments would assume tenant isolation that does not exist."
+
+The spec sidecar's framing — "SDK clients consuming the spec for multi-tenant deployments would assume tenant isolation that does not exist" — names the OPERATIONAL CONSEQUENCE in the third-party-SDK-consumer dimension. The directional fix is unambiguous: **rewrite the OpenAPI summary**. The implementation is the canonical behaviour; the spec summary is the misframe.
+
+**The DOC-GAP-099 META cluster promotion to 6 failure shapes (per DOC-GAP-242 NEW)**:
+- Inverse-semantic (DOC-GAP-099 — THIS finding)
+- OperationId-misnamed (DOC-GAP-098)
+- Coverage-gap (DOC-GAP-009 + DOC-GAP-244 NEW)
+- Response-shape-contradiction (DOC-GAP-198)
+- Status-code-drift (DOC-GAP-074 + DOC-GAP-074 batch-Z strengthen to 9+ endpoints)
+- **No-security-model (DOC-GAP-242 NEW batch Z)**
+
+The OpenAPI authoring-quality cluster is now the LARGEST authoring-defect family in the catalog (6 failure shapes × multiple instances each). The proposed fix at the META level (per DOC-GAP-099's batch-U promotion candidate framing) — add an OpenAPI contract conformance test suite to the build pipeline — closes the META's whole class.
+
+**Doc-side action expansion** (in addition to the original "rewrite the OpenAPI summary on both operations"):
+- Add a "Contract conformance" note to `developer-guides/api-reference.md` hub (per DOC-GAP-244 NEW) that names the OpenAPI as authoritative wire contract AND directs SDK consumers to file spec defects upstream.
+- The CI contract conformance gate (per DOC-GAP-074's batch-Z directional-fix framing) is the structural fix for the META's whole class — same gate prevents both status-code drift AND summary inversion AND coverage gaps from re-accumulating.
+
+**The spec-side sidecar's primary-source observation** (per its `docs_link_semantic.doc_drift_findings[1]`) — verbatim:
+> "DOC-GAP-099 inverse-semantic class — `getMyObjectsWithUpstream`/`Downstream` summary text at `openapi.yaml:842-844` + `860-862` is the INVERSE of the implementation (4-angle triangulation confirms — spec layer + service layer + repository SQL + controller-method sidecars all show non-owned entities are returned, not 'owned with dependencies'). The spec summary is the load-bearing single source of the misframe"
+
+The spec-side sidecar adds the FIFTH angle (the spec is independently primary-source confirmed by a sidecar dedicated to the spec axis) and explicitly identifies "the spec summary is the load-bearing single source of the misframe" — the directional fix is at the spec layer, not the implementation.
+
+**Severity stays HIGH** — security-relevance in multi-tenant deployments + the broader META cluster framing intensifies the operational impact. The 5-layer triangulation + the explicit META cluster membership means this is the most thoroughly-anchored finding in the catalog. Coherence: strengthens DOC-GAP-099 with the openapi-spec axis primary source + the META cluster's 6-failure-shape framing (per DOC-GAP-242 + DOC-GAP-244 batch-Z extensions). No conflicts with existing batch-F/H/I/M/U framing.

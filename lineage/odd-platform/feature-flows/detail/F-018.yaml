@@ -75,6 +75,7 @@ contributing_nodes:
 - odd-platform java TagActivityHandlerImpl
 - odd-platform java TermServiceImpl
 - odd-platform java SecurityConstants
+- odd-platform java IngestionController controller-method:postDataSetStatsList
 chain:
 - hop: 1
   node: odd-platform java DataEntityController controller-method:setDataEntityTags
@@ -645,6 +646,143 @@ batch_extensions:
     BEFORE the fix is a high-leverage probe candidate (configure tag
     attached to a dataset field via DATASET_FIELD_TAGS_UPDATE, DELETE
     via TagController, raw-SQL query the join table for the orphan).
+- batch: Z
+  entry_point_added: |-
+    controller-method:postDataSetStatsList (POST
+    /ingestion/entities/datasets/stats) — the FOURTH side-channel
+    mint path into the global Tag directory. F-018 batch-N catalogued
+    THREE side-channel mint paths (DATA_ENTITY_TAGS_UPDATE via
+    setDataEntityTags + TERM_UPDATE via TermServiceImpl.upsertTags +
+    auth.ingestion.filter.enabled via ExternalTagIngestionRequestProcessor).
+    This batch adds the FOURTH side-channel via DatasetFieldServiceImpl.
+    updateStatistics → tagService.getOrCreateTagsByName, reached via
+    the postDataSetStatsList ingestion endpoint — which is
+    UNAUTHENTICATED in every supported deployment posture (the path
+    is uncovered by IngestionDataEntitiesFilter AND in
+    SecurityConstants.WHITELIST_PATHS). The TAG_CREATE bypass is
+    therefore reachable WITHOUT authentication AND WITHOUT any
+    permission at all.
+  contributing_nodes_added:
+  - odd-platform java IngestionController controller-method:postDataSetStatsList
+  notes: |-
+    TWO new drift facets surface from the postDataSetStatsList sidecar
+    + one MAJOR STRENGTHENS on the existing REFACTOR-223 headline.
+    Listed in order of architectural leverage:
+
+    (1) **TAG_CREATE bypass via UNAUTHENTICATED stats ingestion —
+    REFACTOR-223 side-door family extension to ZERO-AUTH path**
+    (HIGH severity, NEW FINDING, MAJOR STRENGTHENS) — DatasetFieldServiceImpl
+    .updateStatistics (line 191-231 — `updateFieldsTags`) calls
+    `tagService.getOrCreateTagsByName(...)` at line 202 to ensure
+    tag rows exist for any `tags: List<Tag>` declared in a
+    `DataSetFieldStat` payload. `tagService.getOrCreateTagsByName`
+    is the auto-create-on-miss primitive (catalogued at F-018 batch-N)
+    that uses `bulkCreate` (no TAG_CREATE consultation). The
+    upstream entry-point is `POST /ingestion/entities/datasets/stats`
+    (IngestionController.postDataSetStatsList, lines 82-87) — a
+    four-line thin proxy with NO `@PreAuthorize`. The path is NOT
+    covered by `IngestionDataEntitiesFilter` (exact-literal matcher
+    `/ingestion/entities`, IngestionDataEntitiesFilter.java:28 — does
+    NOT match the sub-path) AND is in
+    `SecurityConstants.WHITELIST_PATHS` (`/ingestion/**`,
+    SecurityConstants.java:95-96 — exempted from UI auth). Result:
+    ANY caller able to reach the platform's HTTP port can POST a
+    `DatasetStatisticsList` payload with arbitrary
+    `tags: [{name: 'attacker-tag'}]` entries and silently populate
+    the catalog's global tag namespace WITHOUT authentication AND
+    WITHOUT any permission. The newly-minted tags are discoverable
+    by every other user via `GET /api/tags/popular` (which has no
+    GET RBAC gate per F-018 batch-W). The live security docs
+    (WebFetched 2026-05-20) EXPLICITLY enumerate
+    `/ingestion/entities/datasets/stats` as a sibling endpoint that
+    "remains outside the ingestion filter's coverage" — but do NOT
+    describe the tag-as-side-effect contract. REFACTOR-223 promoted
+    from "3-path side-channel via authenticated routes" to
+    "4-path side-channel including ZERO-AUTH route". NEW drift
+    facet:
+    `tag_create_bypass_via_unauthenticated_post_data_set_stats_list_refactor_223_side_door_fourth_path`.
+
+    (2) **EXTERNAL_STATISTICS tag origin reconciliation removes
+    tags absent from re-POST — replace-not-merge applied to tag
+    relations** (MEDIUM severity, NEW FINDING) —
+    DatasetFieldServiceImpl.updateStatistics (lines 191-231):
+    `relationsToDelete = existingRelations.filter(r ->
+    !relationsToCreate.contains(r))` (line 221-223) deletes existing
+    EXTERNAL_STATISTICS-origin tag relations NOT present in the new
+    payload; `relationsToCreate` re-creates the desired set. A
+    re-POST with a smaller tag set SILENTLY REMOVES the absent
+    EXTERNAL_STATISTICS-origin tags from the affected fields. Same
+    shape as F-008 `silent_destruction_replace_not_merge` applied
+    to the dataset-field-tag-relation surface — the destructive
+    verb lives in the stats ingestion path. A collector that briefly
+    stops emitting a tag (sampling bug, transient OOM, partial
+    scrape) silently loses that tag at the dataset_field level.
+    Cross-channel audit asymmetry compounds: NO `@ActivityLog` on
+    the postDataSetStatsList path; UI-side tag changes appear in
+    `/api/activity`, ingestion-side stats-path tag changes do not.
+    NEW drift facet:
+    `external_statistics_tag_reconciliation_replace_not_merge_silent_tag_removal_on_partial_reingest`.
+
+    (3) **The ALREADY-DOCUMENTED `data_entity_tags_update_side_channel_into_global_tag_directory`
+    headline gains a 4TH ENTRY POINT — `tagService.getOrCreateTagsByName`
+    now confirmed reachable from FOUR independent upstreams** (the
+    F-018 headline drift class, STRENGTHENS) — prior batches
+    enumerated three side-channels into `tagService.getOrCreateTagsByName`:
+    (a) DataEntityController.setDataEntityTags (DATA_ENTITY_TAGS_UPDATE
+    gate); (b) TermServiceImpl.upsertTags (TermServiceImpl.java:257,
+    TERM_UPDATE gate); (c) ExternalTagIngestionRequestProcessor
+    (auth.ingestion.filter.enabled gate). This batch adds the
+    FOURTH: (d) DatasetFieldServiceImpl.updateStatistics
+    (DatasetFieldServiceImpl.java:202, NO gate). The fourth entry
+    point is the most permissive — no authentication, no permission.
+    REFACTOR-223 remediation options now span FOUR upstreams; the
+    "consult TAG_CREATE inside tagService.getOrCreateTagsByName"
+    direction CLOSES all four in one place (the leverage argument
+    for fix-direction A from the F-018 batch-N expected block).
+    STRENGTHENS the headline via PRIMARY-SOURCE LINE-ANCHOR:
+    `tag_service_get_or_create_tags_by_name_fourth_upstream_unauthenticated_dataset_field_stats_path`.
+
+    Coherence (LSN-018 Rule 6 sweep):
+    STRENGTHENS=3 across F-018 existing facets:
+    `data_entity_tags_update_side_channel_into_global_tag_directory`
+    (the F-018 headline gains a 4th upstream),
+    `repository_no_audit_log_on_ingestion_tag_mutations` (the
+    stats-path tag mutations also emit no @ActivityLog — the
+    audit-asymmetry pattern extends to a fourth ingestion-side
+    write surface),
+    `case_sensitive_listbynames_silent_duplicate_rows` (the stats
+    path inherits the same case-sensitive listByNames mechanism;
+    attacker-controlled tag names from the stats path silently
+    duplicate case variants of existing operator-curated tags).
+    SUPERSEDES=0.
+    CONFLICTS=0.
+
+    HIGHEST-LEVERAGE remediation: move the TAG_CREATE permission
+    check from the controller perimeter to the
+    `tagService.getOrCreateTagsByName` upsert primitive (REFACTOR-223
+    fix-direction A from F-018 batch-N). The fix closes all FOUR
+    upstreams in one place; the zero-auth stats path becomes
+    structurally incapable of minting new tag rows. Probe:
+    unauthenticated POST /ingestion/entities/datasets/stats with
+    `tags: [{name: 'attacker-tag-2026-05-20'}]` against a known
+    dataset_field ODDRN; query the `tag` table for the
+    'attacker-tag-2026-05-20' row; assert the row was created
+    BEFORE the fix and assert the row is NOT created AFTER. Local
+    docker-compose probe stack: ODD platform + Postgres + curl
+    with no Authorization header.
+
+    Cross-references: F-008 (Batch Ingestion) — same controller
+    class (IngestionController) + same WHITELIST_PATHS coverage +
+    same audit-silence pattern + same payload-driven scoping;
+    F-030 (Metrics Ingestion, batch-Z minted) — the SAME
+    unauthenticated-by-default + audit-silence + filter-coverage
+    gap pattern applied to a third sibling endpoint; F-029 (Platform
+    Public API Contract) — the sibling ingestion-api spec carries
+    the same no-securitySchemes gap as the platform-api spec.
+drift_class_summary_batch_z_extensions:
+- tag_create_bypass_via_unauthenticated_post_data_set_stats_list_refactor_223_side_door_fourth_path
+- external_statistics_tag_reconciliation_replace_not_merge_silent_tag_removal_on_partial_reingest
+- tag_service_get_or_create_tags_by_name_fourth_upstream_unauthenticated_dataset_field_stats_path
 related_refactoring_scopes:
 - REFACTOR-223
 related_test_gaps:
@@ -667,4 +805,6 @@ related_features:
 - F-008   # Batch Ingestion — ExternalTagIngestionRequestProcessor is the THIRD side-door; produces external = true rows
 - F-020   # Collector Lifecycle Management — collectors produce the external = true tags; F-018 batch-W !external positive invariant guards them
 - F-028   # batch-W Namespace Lifecycle — structurally identical side-door bypass pattern (NAMESPACE_CREATE via 4 sister services); cross-pillar pattern match
+- F-029   # batch-Z Platform Public API Contract — the platform-api spec is silent on the tag-as-side-effect contract for /api/dataentities/{id}/tags AND the sibling ingestion-api spec is silent on the same for /ingestion/entities/datasets/stats
+- F-030   # batch-Z Metrics Ingestion — the THIRD unauthenticated /ingestion/ sibling endpoint (alongside metrics + the stats path catalogued here); shared unauthenticated-by-default + audit-silence + filter-coverage gap pattern
 maintainer_curated: false

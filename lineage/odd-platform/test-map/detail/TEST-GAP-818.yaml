@@ -1,0 +1,55 @@
+gap_id: TEST-GAP-818
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn"
+pillars_affected: [P-10, P-09]
+surfaced_by:
+  - "getDataEntitiesByDEGOddrn.md:bugs_limitations_corner_cases.[4] MEDIUM (soft-deleted members surface)"
+  - "getDataEntitiesByDEGOddrn.md:security.data_exposure.[3] (READ — soft-deleted leak)"
+behaviour: |-
+  **MEDIUM — Soft-deleted DATA_ENTITY rows surface in the GET /ingestion/entities/{degOddrn} response.**
+
+  The SELECT at `ReactiveDataEntityRepositoryImpl.java:319-322` filters `GROUP_ENTITY_RELATIONS.IS_DELETED.isFalse()` — the EDGE soft-delete — but does NOT filter the joined `DATA_ENTITY` rows by `STATUS != DELETED` or `HOLLOW = false`. A DEG that contains a soft-deleted entity returns that entity in the response.
+
+  **Deviates from the platform's default-filters pattern**: `getDataEntityDefaultConditions` is applied across every UI-side search/listing endpoint (per existing search-facet + DataEntity sidecars) to hide soft-deleted entities from UI users. The S2S read surface here applies NEITHER `STATUS != DELETED` NOR `HOLLOW = false` — operators integrating against the S2S read see a different view of "what counts as a member" than UI users see.
+
+  **Security dimension**: a soft-deleted entity is operationally hidden from UI users (its presence in the catalog is intentionally suppressed). An attacker with anonymous reach to this endpoint (TEST-GAP-815) can observe the existence + ODDRN + DataEntityType of every soft-deleted entity in any DEG. The data is "intentionally hidden" but mechanically accessible.
+
+  **Promoted from LOW (the sidecar rates this MEDIUM) to MEDIUM** because: the leak compounds with the unauthenticated reach (TEST-GAP-815) AND the cross-owner enumeration (TEST-GAP-816). The composition is: attacker enumerates ANY DEG → sees EVERY ITS member including soft-deleted ones → builds a fuller catalog map than UI users see. The deviation from the default-filters pattern is silent — there is no comment in the repository code defending the choice.
+
+  **Test gap shape**: regression-pin test that:
+  1. Creates a DEG with 3 active members + 2 soft-deleted members.
+  2. Asserts the GET response includes all 5 members.
+  3. Asserts the equivalent `/api/dataentities/...` UI-side query returns 3 members only.
+
+  PINS the asymmetry; pairs with REFACTOR-NNN (add `STATUS != DELETED` + `HOLLOW = false` to the SQL — or document the deviation explicitly as intended).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/GetDataEntitiesByDEGOddrnSoftDeletedMemberLeakRegressionPinTest.java"
+  name: "get_DEG_with_softDeletedMembers_returnsAllIncludingSoftDeleted_pinsDeviationFromDefaultFilters"
+evidence:
+  - "getDataEntitiesByDEGOddrn.md says (bugs_limitations_corner_cases.[4]): 'Soft-deleted members and hollow members surface in the response — the SQL filters only on GROUP_ENTITY_RELATIONS.IS_DELETED.isFalse() (the EDGE soft-delete), not on DATA_ENTITY.STATUS != DELETED or DATA_ENTITY.HOLLOW = false. A DEG that contains a soft-deleted entity returns that entity in the response. This deviates from the platform's getDataEntityDefaultConditions pattern applied across every UI-side search/listing endpoint.' (severity MEDIUM)"
+  - "getDataEntitiesByDEGOddrn.md says (security.data_exposure.[3]): 'READ (soft-deleted leak): the response includes soft-deleted DATA_ENTITY rows. An attacker enumerating a DEG can observe entities that have been intentionally hidden from UI users.'"
+  - "Verified at primary source: ReactiveDataEntityRepositoryImpl.java:319-322 (only EDGE.IS_DELETED filter; no DATA_ENTITY.STATUS or HOLLOW filter)"
+cross_references:
+  - "TEST-GAP-815 (sister — unauthenticated reach; together with this entry, attacker sees hidden entities)"
+  - "TEST-GAP-816 (sister — sequential id enumeration; composes the catalog-soft-delete-leak surface)"
+  - "TEST-GAP-817 (sister — 404-vs-empty contract; another contract-asymmetry on the same endpoint)"
+  - "concepts/detail/invariants/three-soft-delete-mechanisms.yaml (deleted_at / is_deleted / STATUS — the deviation here is that one mechanism is applied but not the others)"
+  - "REFACTOR-NNN (proposed): unify soft-delete filtering across S2S read paths and UI read paths"
+related_features: [F-008, F-016]
+related_pillar_features: ["P-10:F-001 Batch Ingestion (S2S API)", "P-09:Security & Access Control"]
+proposed_action: |-
+  Add `GetDataEntitiesByDEGOddrnSoftDeletedMemberLeakRegressionPinTest`. Testcontainers integration test:
+
+  1. **Seed**: DEG D-1 with 5 member entities: 3 STATUS=STABLE, 1 STATUS=DELETED, 1 HOLLOW=true.
+  2. **GET /ingestion/entities/{D-1.oddrn}** → assert response items.length == 5 (pins the leak).
+  3. **GET /api/dataentities/?... filtered by DEG D-1** → assert response items.length == 3 (pins the UI default-filter contract).
+  4. **Sibling**: `GET /api/dataentitygroups/{D-1.id}/lineage?depth=1` → assert lineage edges exclude the soft-deleted member (or pin whatever F-016 currently does).
+
+  PINS the asymmetry; the future REFACTOR that adds the missing filters MUST update this test to assert items.length == 3 on the GET — a deliberate contract change.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Sister entries TEST-GAP-815/816/817 pin the unauthenticated reach / sequential-id / 404-vs-empty surfaces. This entry pins the SOFT-DELETE asymmetry — a 4th surface on the same endpoint. Together the four entries cover the full uncovered_behaviours surface from the sidecar's tests_coverage_semantic block. STRENGTHENS the `three-soft-delete-mechanisms` concept by establishing it has a 4th surface (the asymmetric application of one mechanism but not the others on this endpoint).
+batch: 2026-05-20-Z
+feature_id: F-008

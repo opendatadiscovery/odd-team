@@ -1,0 +1,60 @@
+gap_id: TEST-GAP-833
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:IngestionServiceImpl"
+pillars_affected: [P-10]
+surfaced_by:
+  - "IngestionServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[2] (calculateTotalDeltaCount edge cases — null entityClassIds NPE)"
+behaviour: |-
+  **HIGH — `calculateTotalDeltaCount` (IngestionServiceImpl.java:276-301) NPE on null `entityClassIds` field. The new-pojo path at line 281-286 lacks a null guard before passing the field to `calculateDeltaValues` (line 307) which calls `Arrays.stream(entityClassIds)`.**
+
+  Per the sidecar's `tests_coverage_semantic.uncovered_behaviours.[2]`:
+  > "`calculateTotalDeltaCount` edge cases: (a) entity with null `entityClassIds` reaching `classesAndTypeFilled` check (line 313-315) — confirmed filter returns false, skips decrement, but new-pojo path at line 281-286 has no null guard before `pojo.getEntityClassIds()` is passed to `calculateDeltaValues`; a new pojo with null entityClassIds would NPE at `Arrays.stream(entityClassIds)` (line 307). No test for null-entityClassIds path."
+
+  **Failure chain**:
+  1. Collector emits a `DataEntity` whose `entity_class_ids` is null (possible via the OpenAPI ingestion contract — the field is `nullable: true` per components.yaml).
+  2. Service-tier converts to `DataEntityPojo` with null `entityClassIds`.
+  3. `bulkCreate(pojosToCreate)` returns the new pojo with null `entityClassIds`.
+  4. `calculateTotalDeltaCount` iterates new pojos at line 281-286 and calls `calculateDeltaValues(pojo.getEntityClassIds(), ...)`.
+  5. `calculateDeltaValues` (line 307) calls `Arrays.stream(entityClassIds)` on the null array.
+  6. NPE escapes the `@ReactiveTransactional` boundary; Postgres rolls back the entire batch (per TEST-GAP-831).
+  7. Operator sees HTTP 500 with NPE stack trace.
+
+  **Why HIGH**: same severity class as TEST-GAP-832 (duplicate-ODDRN crash) — deterministic untested crash that propagates as opaque 500.
+
+  **Test gap shape**: regression-pin test that
+  1. Constructs a payload with one entity having null `entity_class_ids`.
+  2. POSTs.
+  3. Asserts HTTP 5xx + NPE stack frame contains `calculateDeltaValues`.
+
+  PINS the current crash behaviour; pairs with REFACTOR-NNN (null guard at line 281-286 OR explicit 400 if null is forbidden).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionNullEntityClassIdsCalculateDeltaCountNPERegressionPinTest.java"
+  name: "post_entityWithNullEntityClassIds_crashesWithNPEInCalculateDeltaValues_pinsCurrentNPE"
+evidence:
+  - "IngestionServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[2]): 'calculateTotalDeltaCount edge cases: (a) entity with null entityClassIds reaching classesAndTypeFilled check (line 313-315) — confirmed filter returns false, skips decrement, but new-pojo path at line 281-286 has no null guard before pojo.getEntityClassIds() is passed to calculateDeltaValues; a new pojo with null entityClassIds would NPE at Arrays.stream(entityClassIds) (line 307). No test for null-entityClassIds path. test_class: IngestionDeltaCalculationNullClassesTest (does not exist).'"
+  - "Verified at primary source: IngestionServiceImpl.java:276-301 (calculateTotalDeltaCount) + IngestionServiceImpl.java:307 (Arrays.stream(entityClassIds))"
+cross_references:
+  - "TEST-GAP-831 (sister — atomic rollback; this NPE exercises it)"
+  - "TEST-GAP-832 (sister — duplicate-ODDRN crash; sibling untested-crash class)"
+  - "F-008 detail YAML — same chain, hop-2"
+  - "REFACTOR-NNN (proposed): null guard at line 281-286 OR explicit 400 if null is forbidden by contract"
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001 Batch Ingestion (S2S API)"]
+proposed_action: |-
+  Add `IngestionNullEntityClassIdsCalculateDeltaCountNPERegressionPinTest`. Testcontainers integration test:
+
+  1. **Setup**: Postgres testcontainer, ODD with default config, datasource D-A registered.
+  2. **POST /ingestion/entities** with payload `{data_source_oddrn: D-A.oddrn, items: [{oddrn: "urn:nullclasses1", type: DATASET, entity_class_ids: null, ...}]}`.
+  3. **Assert**:
+     - HTTP 5xx.
+     - Server log / response body contains NPE stack frame with `calculateDeltaValues` or `Arrays.stream`.
+     - `SELECT count(*) FROM data_entity WHERE oddrn='urn:nullclasses1'` returns 0 (atomic rollback).
+  4. **Sister extract-lineage variant**: payload with `dataTransformer.sourceList: null` → same NPE class at line 249.
+  5. **Maintainer-choice gate**: when REFACTOR-NNN lands the fix, update this test to assert 200 + entity persisted (with the null-as-empty-list contract) OR 400 (with the null-forbidden contract).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Sister to TEST-GAP-832 (duplicate ODDRN). Both pin specific deterministic untested crashes inside `IngestionServiceImpl`. NO contradiction with F-008.
+batch: 2026-05-20-Z
+feature_id: F-008

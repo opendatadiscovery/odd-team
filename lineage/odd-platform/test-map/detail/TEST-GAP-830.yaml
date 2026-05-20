@@ -1,0 +1,66 @@
+gap_id: TEST-GAP-830
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform openapi spec:odd-platform-public-api"
+  - "odd-platform java service service:TermServiceImpl"
+  - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController"
+pillars_affected: [P-06, P-09, P-11]
+surfaced_by:
+  - "openapi-spec.md:bugs_limitations_corner_cases.[6] HIGH (SecurityConstants path-mismatch class — REFACTOR-217)"
+  - "openapi-spec.md:security.known_security_gaps.[3] HIGH (SecurityConstants path-mismatch confirmation point)"
+  - "openapi-spec.md:tests_coverage_semantic.uncovered_behaviours (spec-vs-controller path parity)"
+behaviour: |-
+  **HIGH — Spec-side contract test for REFACTOR-217 / F-002 path-mismatch: `openapi.yaml:973` declares `/api/dataentities/{data_entity_id}/terms` (PLURAL) AND `openapi.yaml:1042` declares `/api/dataentities/{data_entity_id}/terms/{term_id}` (PLURAL) — but `SecurityConstants.java:237-239` registers SINGULAR `/term`. The spec IS correct; the SecurityConstants registration is wrong. ANY authenticated user could link/unlink terms with no DATA_ENTITY_ADD_TERM permission for an unknown number of releases until the sidecar audit caught it.**
+
+  This entry pins the SPEC-SIDE contract test that, if it had existed at REFACTOR-217's introduction time, would have prevented the silent authorization bypass. The TEST-GAP-017 entry pins the CONTROLLER-SIDE behavioural test for the same finding; this entry is the spec-side complement.
+
+  **The contract test that should have existed**:
+  - Parse `openapi.yaml` + `components.yaml`.
+  - Extract every `/api/*` path declared in the spec.
+  - Reflectively load `SecurityConstants.SECURITY_RULES`.
+  - For every path-pattern in SECURITY_RULES, assert it MATCHES at least one spec'd path (Spring's path-pattern semantics).
+  - For every spec'd path that requires authorization (per the `x-permission` extension proposed in TEST-GAP-828), assert SECURITY_RULES has a matching matcher.
+  - The MISMATCH between `/term` (singular, in SECURITY_RULES) and `/terms` (plural, in spec) is the canonical case the test fails on.
+
+  **Why HIGH** (severity matches the sidecar's rating): REFACTOR-217 already establishes the HIGH severity for the underlying authorization bypass; this entry adds the SPEC-SIDE contract test that institutionalises the lesson. STRENGTHENS TEST-GAP-017 (the controller-side regression-pin) by adding the structural class of contract test that PREVENTS the class.
+
+  **Cross-pillar P-06 + P-09 + P-11**: P-06 (Data Glossary) is the affected feature, P-09 (Security & Access Control) is the broken permission model, P-11 (Platform API & Developer Surface) is the artefact (the spec) that should have caught it.
+
+  **Test gap shape**: build-time test that
+  1. Parses `SecurityConstants.SECURITY_RULES` via reflection.
+  2. Parses the OpenAPI spec.
+  3. Asserts every path-pattern in SECURITY_RULES MATCHES at least one spec'd path.
+  4. Asserts the test FAILS today on the `/term` vs `/terms` path-pattern, plus any other similar drifts (the test should enumerate ALL such drifts at first run; the maintainer triages each).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/openapi/SecurityConstantsVsOpenAPIPathPatternConformanceTest.java"
+  name: "everySecurityRulesPathPattern_matchesAtLeastOneSpecPath_failsOnTermVsTermsAndAnySimilarDrifts"
+evidence:
+  - "openapi-spec.md says (bugs_limitations_corner_cases.[6]): 'SecurityConstants path-mismatch class — openapi.yaml:973 PLURAL /terms vs SecurityConstants /term SINGULAR silently disables DATA_ENTITY_ADD_TERM authorization. The spec declares the PLURAL form (the URL clients actually hit); SecurityConstants registers the SINGULAR form (a typo). Result: the SecurityRule never matches, the permission check is skipped, the SecurityWebFilterChain falls through to .authenticated(). ANY authenticated user under LOGIN_FORM/OAUTH2/LDAP can link any term to any entity.' (severity HIGH)"
+  - "openapi-spec.md says (security.known_security_gaps.[3]): 'SecurityConstants path-mismatch confirmation point — the spec's /terms PLURAL path is the source of truth; the SecurityConstants registration of /term SINGULAR is the silent bug. The spec IS correct; the security registration is wrong. This direction matters: the remedy per REFACTOR-217 is to change SecurityConstants to match the spec, not the spec to match SecurityConstants. The gap is structurally caught at the spec layer — a build-time validator that compares SECURITY_RULES paths against OpenAPI paths would catch every such drift.' (severity HIGH)"
+  - "Verified at primary source: openapi.yaml:973 (PLURAL `/api/dataentities/{data_entity_id}/terms`) + openapi.yaml:1042 (PLURAL `/api/dataentities/{data_entity_id}/terms/{term_id}`) + REFACTOR-217 + TEST-GAP-017 + TEST-GAP-489"
+cross_references:
+  - "TEST-GAP-017 (existing — controller-side regression-pin for REFACTOR-217; this entry is the SPEC-SIDE complement)"
+  - "TEST-GAP-489 (existing — DELETE-half controller-method-scoped regression-pin)"
+  - "TEST-GAP-478 (existing — service-tier auto-link side-channel bypass)"
+  - "TEST-GAP-828 (sister — securitySchemes contract test; same class)"
+  - "TEST-GAP-829 (sister — 4xx/5xx contract test; same class)"
+  - "REFACTOR-217 (the case-law REFACTOR; this entry is its spec-side structural-fix test)"
+  - "DOC-GAP-099 (spec-drift META cluster; this entry extends to the PATH axis)"
+related_features: [F-008]
+related_pillar_features: ["P-06:Data Glossary", "P-09:Security & Access Control", "P-11:Platform API & Developer Surface"]
+proposed_action: |-
+  Add `SecurityConstantsVsOpenAPIPathPatternConformanceTest`. Build-time test:
+
+  1. Load `SecurityConstants.SECURITY_RULES` via reflection → Map<HttpMethod+PathPattern, RequiredPermission>.
+  2. Parse OpenAPI spec → List<HttpMethod+Path>.
+  3. For each SECURITY_RULES entry, run Spring's `PathPattern.matches(specPath)` against every spec path; assert AT LEAST ONE match.
+  4. Today the test FAILS on `(POST, /term)` (singular — matches ZERO spec paths) AND `(DELETE, /term/{term_id})` (singular). Each failure is REFACTOR-217's primary-source confirmation.
+  5. The test ALSO surfaces any OTHER similar drift the audit hasn't caught yet — the maintainer triages each at first run.
+
+  **Pair-test with TEST-GAP-017**: that entry pins the BEHAVIORAL test (anonymous-caller-can-link-term-returns-200 instead of 403); this entry pins the STRUCTURAL test (the path-pattern would never match in the first place).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW (spec-side complement). DOES NOT contradict TEST-GAP-017 — they pin different test types for the SAME root cause. STRENGTHENS REFACTOR-217 by adding the structural-fix layer alongside the existing behavioural layer. STRENGTHENS DOC-GAP-099 (spec-drift META) by adding the PATH-MISMATCH axis to the 5-shape drift family.
+batch: 2026-05-20-Z
+feature_id: F-008

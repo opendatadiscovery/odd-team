@@ -1,0 +1,76 @@
+gap_id: TEST-GAP-822
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java IngestionController controller-method:postDataSetStatsList"
+pillars_affected: [P-04, P-08]
+surfaced_by:
+  - "postDataSetStatsList.md:concepts.invariants.[3] (idempotency = OVERWRITE not ACCUMULATE; replay removes absent tags)"
+  - "postDataSetStatsList.md:bugs_limitations_corner_cases.[6] MEDIUM (replay-removes-tags)"
+  - "postDataSetStatsList.md:tests_coverage_semantic.uncovered_behaviours.[2] (idempotency / replay path)"
+behaviour: |-
+  **MEDIUM — `postDataSetStatsList` replay with FEWER tags silently REMOVES the absent EXTERNAL_STATISTICS-origin tag relations.**
+
+  The tag reconciliation at `DatasetFieldServiceImpl.java:221-223` computes `relationsToDelete = existingRelations.filter(r -> !relationsToCreate.contains(r))` — the diff is delete-on-absence. A re-POST with a smaller tag set DELETES the absent EXTERNAL_STATISTICS-origin tag relations from the affected fields.
+
+  **Concrete operator-pain chain**:
+  1. Collector A posts stats with `tags: ["PRODUCTION", "PII", "CRITICAL"]`. ODD creates the three EXTERNAL_STATISTICS-origin relations.
+  2. Operator-in-UI views the field; sees the three tags.
+  3. Next day, Collector A's profiler has a sampling bug — it only detects `PRODUCTION` for the field.
+  4. Collector A re-POSTs with `tags: ["PRODUCTION"]`.
+  5. ODD computes `relationsToDelete = {PII-relation, CRITICAL-relation}` — DELETES both.
+  6. Operator-in-UI views the field next day; sees only `PRODUCTION`. The `PII` + `CRITICAL` classification — possibly load-bearing for compliance — is gone, **with no warning, no audit log, no user notification**.
+
+  **Reconciliation is asymmetric**:
+  - `INTERNAL`-origin tags (UI-curated) are UNTOUCHED — the `listTagsRelations(datasetFieldIds, TagOrigin.EXTERNAL_STATISTICS)` filter (line 218) operates ONLY on EXTERNAL_STATISTICS-origin relations. This is intentional (see implicit_adrs.[2] in the sidecar) — UI users' manual tags survive collector re-ingestions.
+  - But the asymmetry MEANS the UI/Collector mental model differs: a Collector author may not realise that emitting a tag once and dropping it later REMOVES the tag.
+
+  **Same shape as F-008's `silent_destruction_replace_not_merge` drift facet** — applied to the stats path. F-008 documents the class on the entity-list path; this entry surfaces the stats-path variant.
+
+  **No live doc describes this contract**: the WebFetch (postDataSetStatsList.md docs_link_semantic.doc_drift_findings.[3]) of `/features/data-quality` and `/configuration-and-deployment/enable-security` returned 200 but neither page mentions the replace-on-replay contract.
+
+  **Why MEDIUM**: classification data is load-bearing for downstream compliance + DQ workflows; silent removal is operationally dangerous; but the data loss is REVERSIBLE if the collector re-emits the tag in a subsequent run. Compare LSN-001's IRREVERSIBLE attachment-storage data loss — this is a soft-loss class.
+
+  **Test gap shape**: regression-pin asserting:
+  1. POST tag-set A → tag relations exist.
+  2. POST tag-set B (subset of A) → tag relations now match B only; A-only tags are gone.
+  3. No `activity_event` row emitted; no log line.
+  4. UI-curated INTERNAL tags persist across (1) and (2).
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/DatasetFieldIngestionTest.java (happy-path tag side-effects; does NOT cover the smaller-set replay)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/PostDataSetStatsListReplayRemovesAbsentTagsSilentDestructionRegressionPinTest.java"
+  name: "post_replayWithSmallerTagSet_silentlyRemovesAbsentTags_pinsSilentDestructionAsymmetry"
+evidence:
+  - "postDataSetStatsList.md says (concepts.invariants.[3]): 'Idempotency: re-POST OVERWRITES (does NOT accumulate). Tags are reconciled additively-then-removing: relationsToDelete (line 221-223) deletes existing EXTERNAL_STATISTICS-origin tag relations not present in the new payload; relationsToCreate re-creates the desired set. A re-POST with a smaller tag set SILENTLY REMOVES the absent tags.'"
+  - "postDataSetStatsList.md says (bugs_limitations_corner_cases.[6]): 'Replay-removes-tags: a re-POST with FEWER tags than the previous POST silently REMOVES the absent EXTERNAL_STATISTICS-origin tags from the affected fields. A collector that briefly stops emitting a tag (e.g. due to a sampling bug) silently loses that tag.' (severity MEDIUM)"
+  - "Verified at primary source: DatasetFieldServiceImpl.java:201-228 (the delete-then-create reconcile) + DatasetFieldServiceImpl.java:218 (listTagsRelations(..., TagOrigin.EXTERNAL_STATISTICS) — only EXTERNAL_STATISTICS-origin relations are touched)"
+  - "WebFetch https://docs.opendatadiscovery.org/features/data-quality 2026-05-20 status 200 — page mentions endpoint but is silent on the replace-on-replay contract"
+cross_references:
+  - "TEST-GAP-819 (sister — unauthenticated reach amplifies this surface)"
+  - "TEST-GAP-820 (sister — tag-creation side-channel; pair: creation + silent destruction on the same surface)"
+  - "TEST-GAP-455 (existing — F-009 poison-message replay; sister silent-destruction class)"
+  - "F-008 `silent_destruction_replace_not_merge` drift facet (this entry extends the class to the stats path)"
+  - "REFACTOR-NNN (proposed): warn-or-event-on-tag-removal during stats replay"
+  - "DOC-GAP-NNN (proposed): document the replace-on-replay contract for stats explicitly on the DQ page"
+related_features: [F-008]
+related_pillar_features: ["P-04:F-001 Test Results Import", "P-08:F-Tags Tab Management"]
+proposed_action: |-
+  Add `PostDataSetStatsListReplayRemovesAbsentTagsSilentDestructionRegressionPinTest`. Testcontainers integration test:
+
+  1. **Setup**: dataset D-A with field F-1. Empty tag namespace at start.
+  2. **Step 1**: POST stats with `tags: [{name: "PRODUCTION"}, {name: "PII"}, {name: "CRITICAL"}]` → assert 201; assert `SELECT count(*) FROM tag_to_dataset_field WHERE dataset_field_id = F-1.id AND origin = 'EXTERNAL_STATISTICS'` returns 3.
+  3. **Step 2** (UI side): manually attach `tags: [{name: "MANUAL-INTERNAL"}]` (via the Tags UI API) → assert that relation has `origin = 'INTERNAL'`. Total tag relations on F-1: 4.
+  4. **Step 3**: re-POST stats with `tags: [{name: "PRODUCTION"}]` only → assert 201.
+  5. **Assert silent destruction**:
+     - `SELECT count(*) FROM tag_to_dataset_field WHERE ... AND origin = 'EXTERNAL_STATISTICS'` returns 1 (only PRODUCTION).
+     - The PII and CRITICAL relations are GONE.
+     - The MANUAL-INTERNAL relation (origin INTERNAL) is INTACT — pins the origin-filter asymmetry.
+     - `SELECT count(*) FROM activity_event WHERE ...` returns 0 — no audit row.
+     - No application log line from `DatasetFieldServiceImpl` mentions the removal.
+
+  Pair with REFACTOR-NNN (warn-or-event-on-removal during replay) and DOC-GAP-NNN.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. No prior TEST-GAP names the stats-replay silent-destruction class. STRENGTHENS F-008's `silent_destruction_replace_not_merge` drift facet by adding the stats-path variant. STRENGTHENS TEST-GAP-820 (tag creation side-channel) — together the two pin the full create + silent-destroy lifecycle.
+batch: 2026-05-20-Z
+feature_id: F-008

@@ -1,109 +1,117 @@
-name: REFACTOR-185 DISABLED-mode + LOGIN_FORM-ADMIN-for-all bypass — batch X 24-sidecar at config-class layer
+name: REFACTOR-185 DISABLED-mode + LOGIN_FORM-ADMIN-for-all bypass + read-side AUTH-MODE-ORTHOGONAL (S2S /ingestion/** whitelist) — batch Z 27-sidecar
 canonical_in_docs: false
 canonical_candidate: true
 pillar_affinity:
 - P-09
 description: |-
-  STRENGTHENED INVARIANT — batch 2026-05-20X promotes the pattern from 19-sidecar
-  (batch T) to 24-sidecar with the LOGIN_FORM facet anchored at the config-class
-  layer. The pattern now covers TWO of the four auth modes (DISABLED + LOGIN_FORM)
-  with effectively-bypassed authorization, each via a different mechanism.
+  STRENGTHENED INVARIANT — batch 2026-05-20-Z promotes the pattern from 24-sidecar
+  (batch X) to 27-sidecar with a NEW THIRD FACET: the AUTH-MODE-ORTHOGONAL read-side
+  variant. The pattern now covers a structurally distinct THIRD mechanism by which
+  authorization is effectively absent — not via DISABLED (anonymous reach via
+  permitAll), not via LOGIN_FORM (every authenticated user is ADMIN regardless of
+  Policy), but via the SecurityConstants WHITELIST_PATHS exemption: the entire
+  /ingestion/** namespace is removed from BOTH the UI auth chain AND the S2S
+  IngestionDataEntitiesFilter (which only path-matches POST /ingestion/entities
+  exactly) — leaving 4 sibling /ingestion/* endpoints unauthenticated in EVERY
+  shipped deployment posture, including the fully-hardened (auth.type=OAUTH2 +
+  auth.s2s.enabled=true + auth.ingestion.filter.enabled=true) configuration.
 
-  **BATCH X EXPANSION — the LOGIN_FORM-ADMIN-for-everyone facet** (5 new sidecars):
-    The LoginFormSecurityConfiguration config-class sidecar (batch X) reveals that
-    LOGIN_FORM mode also bypasses the RBAC framework — via a DIFFERENT mechanism
-    than DISABLED:
-      - DISABLED mode: `.anyExchange().permitAll()` at DisabledAuthSecurityConfiguration.java:13-18
-        — no authentication required AT ALL; SecurityWebFilterChain bypasses
-        everything
-      - LOGIN_FORM mode: `.pathMatchers("/**").authenticated()` requires auth +
-        `getAuthorities(true)` at LoginFormSecurityConfiguration.java:81 grants ADMIN
-        to every form-authenticated user + NO AuthorizationCustomizer wired (lines
-        55-57). The compound effect: every authenticated LOGIN_FORM user is ADMIN
-        AND bypasses the SECURITY_RULES table → every endpoint reachable by every
-        authenticated caller regardless of operator-authored RBAC.
+  **BATCH Z EXPANSION — the AUTH-MODE-ORTHOGONAL S2S facet** (3 new sidecars):
+    The IngestionController.getDataEntitiesByDEGOddrn (GET S2S READ) +
+    IngestionController.postDataSetStatsList (POST stats) +
+    IngestionController.ingestMetrics (POST metrics) sidecars from batch Z
+    reveal that THREE sibling /ingestion/* endpoints are unauthenticated under
+    EVERY auth-mode combination — not because the path is bypassed by a
+    SecurityConfiguration permitAll() (DISABLED) and not because every
+    authenticated user is ADMIN (LOGIN_FORM), but because:
+      (a) `/ingestion/**` is in SecurityConstants.WHITELIST_PATHS line 95-96 —
+          removed from EVERY UI auth chain by AuthorizationCustomizer line 22
+      (b) `IngestionDataEntitiesFilter` path matcher is exact-literal
+          `/ingestion/entities` POST (IngestionDataEntitiesFilter.java:28) —
+          does not match the sibling sub-paths
+      (c) `IngestionDataSourceFilter` path matcher is exact-literal
+          `/ingestion/datasources` POST (IngestionDataSourceFilter.java:20) —
+          does not match the metrics, stats, or get-by-deg paths
+      (d) AlertManagerController is the FOURTH sibling — fully unauthenticated
+          per the existing `entity-oddrn-trust-from-alertmanager-webhook`
+          invariant
 
-    The 5 new sidecars in the LOGIN_FORM facet:
-      - LoginFormSecurityConfiguration config-class (batch X) — NEW PRIMARY SOURCE
-        at the config-class layer
-      - LoginFormSecurityConfiguration@L31 config-key-consumer (batch C) — existing,
-        the gate-level view
-      - GrantedAuthorityExtractor (referenced by line 81 of the config-class) —
-        the helper that returns UserProviderRole.ADMIN when `isAdmin=true`
-      - getResourcePermissions controller-method sidecar (batch E) — UI-side
-        reveal: under LOGIN_FORM the endpoint returns the FULL admin permission
-        set regardless of UI-configured policies (the second of the two HIGH
-        auth-mode-bypass findings on this endpoint)
-      - login-form-admin-for-every-user-rbac-inert invariant (batch X NEW) —
-        the canonical promoted invariant
+    The 3 new sidecars in the AUTH-MODE-ORTHOGONAL facet:
+      - getDataEntitiesByDEGOddrn (batch Z) — S2S READ unauthenticated; the
+        endpoint cannot be locked down by any shipped configuration toggle;
+        sequential ODDRN id enumeration leaks the full DEG-to-members graph
+      - postDataSetStatsList (batch Z) — S2S WRITE unauthenticated; can populate
+        catalog tag taxonomy with arbitrary tag names via the EXTERNAL_STATISTICS
+        side-channel (bypassing the TAG_CREATE permission); cross-dataset write
+        is the default behaviour (no parent-child consistency check)
+      - ingestMetrics (batch Z) — S2S WRITE unauthenticated; metric labels
+        propagated verbatim to Postgres/Prometheus with no PII filtering; tenant
+        isolation NONEXISTENT on the INTERNAL_POSTGRES default backend (no
+        tenant_id column on metric_series/metric_point tables)
 
-    Net result: 19 (batch T) + 5 (batch X LOGIN_FORM facet) = 24-sidecar pattern.
+    Net result: 24 (batch X) + 3 (batch Z AUTH-MODE-ORTHOGONAL facet) =
+    27-sidecar pattern.
 
-  **THE LOGIN_FORM VARIANT IS OPERATIONALLY DIFFERENT FROM DISABLED**:
-    Under DISABLED: an anonymous network caller hits the platform's HTTP port
-      AND reads (mode + version) via /api/appInfo, (datasource inventory +
-      ODDRN-derived infrastructure map) via /api/directory, the full cross-owner
-      activity feed via /api/activity, ALL search results, ALL data-entity
-      details, ALL DQ data. **NO credential needed**.
-    Under LOGIN_FORM: a form-authenticated caller (with default `admin:admin`
-      OR `root:root` credentials per application.yml:37, OR any operator-defined
-      entry) hits the platform AND reads / writes everything regardless of any
-      operator-configured Policy. **Authentication is required, but the shipped
-      credentials are publicly known and the operator-authored RBAC is silently
-      ignored**.
+  **THE AUTH-MODE-ORTHOGONAL FACET IS OPERATIONALLY DIFFERENT FROM DISABLED AND LOGIN_FORM**:
+    Under DISABLED: anonymous network caller hits the platform's HTTP port and
+      reads /api/* freely. The DISABLED facet covers the API surface.
+    Under LOGIN_FORM: every authenticated caller is ADMIN. The LOGIN_FORM facet
+      covers the API surface under one specific auth mode.
+    Under AUTH-MODE-ORTHOGONAL: ANY caller able to reach the platform's HTTP
+      port hits `/ingestion/**` endpoints (entities-stats / metrics /
+      get-by-deg-oddrn / alertmanager) unauthenticated, regardless of which UI
+      auth mode is configured AND regardless of whether
+      auth.ingestion.filter.enabled is true. The shipped property name
+      auth.ingestion.filter.enabled READS as 'lock down ingestion' but only
+      protects ONE endpoint (POST /ingestion/entities); 4 sibling endpoints
+      remain anonymously reachable.
 
-    The DISABLED variant is the worst — no credential needed; the LOGIN_FORM
-    variant is the second-worst — credential needed but the credential is
-    operator-discipline-dependent (the docs warn 'Change these defaults before
-    any non-local deployment') and the discipline is the only line of defence.
+    The DISABLED variant is the worst (anyone can read everything via /api/*);
+    the LOGIN_FORM variant is second-worst (default-credential dependency);
+    the AUTH-MODE-ORTHOGONAL variant is third — narrower in scope (4
+    /ingestion/* endpoints rather than the entire /api/* surface) but
+    UNFIXABLE BY OPERATOR CONFIGURATION (no toggle closes it). To restrict
+    these endpoints, an operator must deploy network-level controls (firewall,
+    reverse proxy auth) OR patch the codebase. The live docs (Security page,
+    WebFetched 2026-05-20) EXPLICITLY surface this — quote: '/ingestion/entities/datasets/stats
+    ... remain outside the ingestion filter's coverage' and 'Unauthenticated
+    under auth.type = DISABLED, OAUTH2, or LDAP — even when the ingestion
+    filter is enabled' — but at the SECURITY page, not at the DATA QUALITY page
+    where an operator first encounters POST /ingestion/entities/datasets/stats.
 
-  **THE 19-sidecar baseline (batch T)** — preserved from the original entry:
+  **THE 24-sidecar baseline (batches T + X)** — preserved from the prior entry:
+    - DISABLED facet (19 sidecars): AppInfoController class + DirectoryController
+      + ActivityController + DataQualityController + 14 prior SecurityConfiguration
+      siblings + 4 UI-tier safety-asymmetry sidecars (CollectorsList / OwnersList
+      / RolesList / PolicyList).
+    - LOGIN_FORM facet (+5 sidecars): LoginFormSecurityConfiguration config-class
+      + @L31 config-key-consumer + getResourcePermissions + login-form-admin
+      invariant + auth-mode-quartet meta-invariant.
 
-    Prior 18 sidecars (per the master ui-vs-api-asymmetry-under-disabled-...
-    invariant):
-      Backend (controllers + services + ingestion paths): 14 sidecars across
-        Batch B-O — the auth-mode SecurityConfiguration siblings + various
-        controllers that fall through to authenticated() under non-DISABLED
-        modes and become anonymous under DISABLED. Detailed enumeration in
-        the master invariant entry.
-      UI tier (batch Q): 4 sidecars — CollectorsList / OwnersList / RolesList /
-        PolicyList — the UI-vs-API SAFETY asymmetry (UI hides buttons, backend
-        accepts anonymous mutations).
+  **WHY THIS REACHES 27 SIDECARS MATTERS**: REFACTOR-185 is now the platform's
+  most thoroughly-enumerated security pattern. Three structurally-distinct
+  facets, each with its own mechanism: DISABLED (permitAll), LOGIN_FORM
+  (ADMIN-for-all), AUTH-MODE-ORTHOGONAL (whitelist exempts /ingestion/**).
+  The 27-sidecar pattern documents three different code-side paths to the
+  same effective end-state (authorization is absent for the affected
+  endpoint set), each requiring a distinct remediation: DISABLED → docs +
+  UI banner + operator-discipline; LOGIN_FORM → wire AuthorizationCustomizer
+  + replace hard-coded true at line 81; AUTH-MODE-ORTHOGONAL → either add
+  filters for the 4 sibling endpoints OR remove `/ingestion/**` from
+  WHITELIST_PATHS and wire UI auth through the /ingestion/* surface.
 
-    Batch T (+1 evidence point at AppInfoController controller-class):
-      **(19th sidecar) AppInfoController (controller-class) — the SIMPLEST
-      instance of REFACTOR-185 at the axis layer**:
-        AppInfoController has NO @PreAuthorize and no SecurityConstants.SECURITY_RULES
-        entry for /api/appInfo. Under DISABLED, the endpoint is anonymously
-        reachable AND returns `{authType, projectVersion}` to any network
-        caller (DisabledAuthSecurityConfiguration.java:13-18 applies
-        .anyExchange().permitAll()).
-
-    Batch T also added 3 amplifier sidecars (Directory / Activity / DataQuality
-    controllers) confirming the DISABLED-mode blast radius widens to
-    infrastructure + audit-trail + DQ data + every read-collaborative surface.
-
-  **WHY THIS REACHES 24 SIDECARS MATTERS**: REFACTOR-185 is now the platform's
-  most thoroughly-enumerated security pattern. Prior batches catalogued the
-  DISABLED-mode bypass at the SecurityConfiguration tier (the WHY of the
-  bypass) and at the UI tier (the UX hazard of UI-vs-API asymmetry); batch T
-  added the controller-class layer view (the WHAT a network attacker actually
-  reads); batch X now adds the LOGIN_FORM-mode auth-bypass-shaped-differently
-  view — same effective end-state via a different mechanism.
-
-  Severity: HIGH (the 24-sidecar enumeration confirms the platform's most
-  thoroughly-catalogued security failure mode; under DISABLED or LOGIN_FORM,
-  the SECURITY_RULES table is effectively INERT; the recommendation in the
-  docs that DISABLED is 'dev-only' and LOGIN_FORM-default-credentials must
-  be rotated is the only mitigation, and it relies on operator discipline
-  that the workspace's case-law (LSN-001, LSN-002) has repeatedly shown to
-  be insufficient).
+  Severity: HIGH (the 27-sidecar enumeration is the platform's most
+  thoroughly-catalogued security failure mode; the AUTH-MODE-ORTHOGONAL facet
+  is qualitatively different from the prior two — operator-discipline is NOT
+  a viable mitigation because no toggle exposes the gap; network-layer
+  controls or codebase patches are the only paths).
 axes_present:
 - config_classes
 - controllers
 - services
 - ui_components
 - config_keys
+- openapi_specs
 nodes:
 - odd-platform java AppInfoController controller-class:AppInfoController
 - odd-platform java AppInfoController config-key-consumer:auth.type@L18
@@ -121,165 +129,198 @@ nodes:
 - odd-platform ts react-component component:OwnersList
 - odd-platform ts react-component component:RolesList
 - odd-platform ts react-component component:PolicyList
+- odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn
+- odd-platform java IngestionController controller-method:postDataSetStatsList
+- odd-platform java IngestionController controller-method:ingestMetrics
+- odd-platform openapi spec:odd-platform-public-api
 contributors:
 - |-
   AppInfoController (class).md (batch T, 19th sidecar at the controller-class axis):
-    security.known_security_gaps.[0] (MEDIUM — DISABLED-mode anonymous reachability
-    confirmed at the controller-class layer) +
-    security.known_security_gaps.[1] (MEDIUM — highest-signal-density fingerprint
-    endpoint) +
-    security.data_exposure.[0,1,2] (the three disclosure dimensions: deployment
-    metadata, auth mode, project version) +
-    security.data_exposure.[3] (the deliberate NON-disclosure — provider name,
-    LDAP URI, issuer URL, build SHA, hostname — captured as the
-    expose-mode-hide-provider contract)
+    security.known_security_gaps.[0,1] + security.data_exposure.[0,1,2,3]
 - |-
   DirectoryController (class).md (batch T, AMPLIFIER under DISABLED):
     coherence_check.strengthens.[REFACTOR-185 disabled_mode_reachability]
-    (Directory is a FRESH manifestation: with DISABLED on, ALL FOUR Directory
-    endpoints become unauthenticated reconnaissance; the reflection-based
-    getOddrnProperties means an unauthenticated caller can pull EVERY
-    datasource's host / database / port / cluster property — the DISABLED-mode
-    blast radius widens because the leaked payload is INFRASTRUCTURE-REVEALING,
-    not just metadata-revealing)
 - |-
   ActivityController (class).md (batch T, AMPLIFIER under DISABLED):
-    security.known_security_gaps.[1] (MEDIUM — DISABLED-mode reach to global
-    cross-owner audit trail; operationally a network-reachable DISABLED
-    deployment leaks the full activity payload including ActivityState
-    old/new diffs of descriptions, business names, ownership changes, custom
-    metadata to any anonymous caller)
+    security.known_security_gaps.[1]
 - |-
   DataQualityController (class).md (batch T, AMPLIFIER under DISABLED):
-    security.known_security_gaps.[2] (LOW — under DISABLED, all five DQ endpoints
-    become anonymously reachable; cross-owner DQ data + SLA badges + test reports
-    + the lone PUT mutation all bypass the DATASET_TEST_RUN_SET_SEVERITY permission)
+    security.known_security_gaps.[2]
 - |-
-  LoginFormSecurityConfiguration (config-class).md (batch X, NEW 20th sidecar +
-  the LOGIN_FORM-FACET ANCHOR):
-    bugs_limitations_corner_cases.[0] — LOGIN_FORM mode runs WITHOUT
-    AuthorizationCustomizer; THE LOAD-BEARING LOGIN_FORM-SPECIFIC FINDING that
-    confirms REFACTOR-073 + the F-008 read-collaborative-posture wide-open
-    LOGIN_FORM variant; HIGH severity +
-    security.authorization_assertions — THE ABSENCE IS THE FINDING; the chain
-    has only `.pathMatchers("/**").authenticated()` — no AuthorizationCustomizer +
-    security.known_security_gaps.[0] — LOGIN_FORM has NO authorization framework
-    wiring; HIGH severity +
-    implicit_adrs.[ADMIN-for-every-user] — the deliberate `true` literal at line
-    81 is the encoded intent
+  LoginFormSecurityConfiguration (config-class).md (batch X, the LOGIN_FORM-FACET ANCHOR):
+    bugs_limitations_corner_cases.[0] + security.authorization_assertions +
+    security.known_security_gaps.[0] + implicit_adrs.[ADMIN-for-every-user]
 - |-
-  getResourcePermissions controller-method (batch E, the UI-vs-API reveal for
-  LOGIN_FORM facet — 21st-24th sidecars batch X bring in):
-    security.known_security_gaps.[1] — under LOGIN_FORM the endpoint returns
-    the FULL admin permission set regardless of UI-configured policies; HIGH
-    severity. This is the operator-facing observable confirmation of the
-    LOGIN_FORM-ADMIN-for-all bypass — the UI shows 'everyone is ADMIN' regardless
-    of operator-authored Policy.
+  getResourcePermissions controller-method (batch E, UI-vs-API reveal):
+    security.known_security_gaps.[1]
 - |-
-  login-form-admin-for-every-user-rbac-inert invariant (batch X NEW):
-    the canonical promoted-from-canonicalisation-candidate invariant for the
-    LOGIN_FORM-facet bypass. Cross-cites the LoginFormSecurityConfiguration
-    config-class sidecar + the LoginFormSecurityConfiguration@L31 config-key-consumer
-    + the AuthorizationManagerCondition dead-code finding + the
-    GrantedAuthorityExtractor helper
+  **BATCH Z NEW — the AUTH-MODE-ORTHOGONAL FACET ANCHOR**:
+  getDataEntitiesByDEGOddrn.md (S2S READ, the 25th sidecar):
+    invariants.[0] (no authorization at any layer; /ingestion/** WHITELIST_PATHS
+    line 96; IngestionDataEntitiesFilter exact-POST-only path matcher line 28)
+    + security.auth_mode_relevance (UNAUTHENTICATED IN ALL FOUR UI MODES)
+    + security.known_security_gaps.[0] (unauthenticated in every shipped auth mode) +
+    bugs_limitations_corner_cases.[0] (sequential ODDRN id enumeration leaks
+    full DEG→members graph). Read-side complement to F-008's destructive-write
+    surface.
 - |-
-  auth-mode-quartet-meta-invariant-all-four-sidecars-pinned (batch X NEW):
-    the META-invariant capturing the quartet-completion picture. The LOGIN_FORM
-    facet of REFACTOR-185 is one of the asymmetries this meta-invariant catalogues
+  **BATCH Z NEW — the WRITE COMPLEMENT (26th sidecar)**:
+  postDataSetStatsList.md (S2S WRITE — DQ statistics):
+    invariants.[0] (no auth under EVERY combination of auth.type +
+    auth.ingestion.filter.enabled; sub-path `/ingestion/entities/datasets/stats`
+    NOT matched by IngestionDataEntitiesFilter's exact-literal matcher) +
+    security.known_security_gaps.[0] HIGH (unauthenticated in every shipped
+    auth mode — explicitly surfaced in Security docs, but at the Security
+    page, NOT at the Data Quality page where an operator first encounters
+    the endpoint) + .known_security_gaps.[1] HIGH (cross-owner stats-write
+    is DEFAULT behaviour) + .known_security_gaps.[2] MEDIUM (tag-creation-
+    as-side-effect bypasses TAG_CREATE)
+- |-
+  **BATCH Z NEW — the WRITE COMPLEMENT (27th sidecar)**:
+  ingestMetrics.md (S2S WRITE — metrics):
+    invariants.[0] (no auth under EVERY supported deployment posture; covered by
+    NEITHER IngestionDataEntitiesFilter NOR IngestionDataSourceFilter; UI auth
+    DOES NOT fall through because /ingestion/** is in WHITELIST_PATHS line 96) +
+    security.known_security_gaps.[0] HIGH (no toggle to fail-close — worse than
+    the AlertManagerController parallel because that one has at least a network-
+    control story; this one has no live doc warning) +
+    security.known_security_gaps.[3] MEDIUM (tenant isolation NONEXISTENT on
+    INTERNAL_POSTGRES default backend) + bugs_limitations_corner_cases.[0] HIGH
+- |-
+  **BATCH Z STRENGTHENS — at the OPENAPI SPEC primary-source layer**:
+  odd-platform-public-api spec.md (openapi.yaml + components.yaml):
+    bugs_limitations_corner_cases.[0] (no securitySchemes block declared —
+    auth is wholly out-of-band of the contract; SDK generators silently omit
+    auth code) + bugs_limitations_corner_cases.[6] (REFACTOR-217 spec-side
+    confirmation: openapi.yaml:973 + 1042 declare /terms PLURAL — the spec
+    is AUTHORITATIVE; the SecurityConstants /term SINGULAR is the silent
+    bug) + security.known_security_gaps.[3] (the directional remedy is
+    SecurityConstants→spec, NOT spec→SecurityConstants — a build-time
+    validator comparing SECURITY_RULES paths to OpenAPI paths would catch
+    every drift of this class)
 evidence:
 - |-
-  AppInfoController (class).md:security.known_security_gaps.[0,1,2] —
-  REFACTOR-185 19th sidecar evidence anchored at controller-class layer
+  AppInfoController (class).md:security.known_security_gaps.[0,1,2]
 - |-
-  AppInfoController (class).md:implicit_adrs.[2] — expose-mode-hide-provider
-  contract bounds the unauthenticated fingerprinting surface to (mode + version)
+  AppInfoController (class).md:implicit_adrs.[2]
 - |-
-  DirectoryController (class).md:coherence_check.strengthens.[REFACTOR-185
-  disabled_mode_reachability] — Directory DISABLED-mode amplifier evidence
+  DirectoryController (class).md:coherence_check.strengthens.[REFACTOR-185 disabled_mode_reachability]
 - |-
-  ActivityController (class).md:security.known_security_gaps.[1] — Activity
-  cross-owner read under DISABLED
+  ActivityController (class).md:security.known_security_gaps.[1]
 - |-
-  DataQualityController (class).md:security.known_security_gaps.[2] — DQ DISABLED
-  reach
+  DataQualityController (class).md:security.known_security_gaps.[2]
 - |-
   Existing master invariant: ui-vs-api-asymmetry-under-disabled-ui-hides-mutation-buttons-backend-accepts-anonymous
-  (the 18-sidecar baseline this batch extends to 19 via the AppInfo controller-class
-  anchor + the 3 amplifier sidecars + 5 more from batch X for the LOGIN_FORM facet
-  → 24-sidecar pattern)
 - |-
-  Existing invariant: two-ingestion-filters-asymmetric-auth (companion
-  REFACTOR-185 evidence at the ingestion path)
+  Existing invariant: two-ingestion-filters-asymmetric-auth (companion REFACTOR-185 evidence at the ingestion path)
 - |-
-  **BATCH X NEW**: LoginFormSecurityConfiguration (config-class).md:bugs_limitations_corner_cases.[0]
-  + security.authorization_assertions + security.known_security_gaps.[0] +
-  implicit_adrs.[ADMIN-for-every-user]
+  **BATCH X**: LoginFormSecurityConfiguration (config-class).md:bugs_limitations_corner_cases.[0]
 - |-
-  **BATCH X NEW**: getResourcePermissions.md:security.known_security_gaps.[1]
-  — LOGIN_FORM ADMIN-for-all UI-side reveal
+  **BATCH X**: getResourcePermissions.md:security.known_security_gaps.[1]
 - |-
-  **BATCH X NEW**: login-form-admin-for-every-user-rbac-inert invariant (the
-  canonical promoted invariant for the LOGIN_FORM facet)
+  **BATCH X**: login-form-admin-for-every-user-rbac-inert invariant
 - |-
-  **BATCH X NEW**: auth-mode-quartet-meta-invariant-all-four-sidecars-pinned
-  invariant (the quartet-completion meta-invariant; the LOGIN_FORM facet is
-  one of its catalogued asymmetries)
-triangulation_count: 5
+  **BATCH X**: auth-mode-quartet-meta-invariant-all-four-sidecars-pinned
+- |-
+  **BATCH Z NEW**: getDataEntitiesByDEGOddrn.md:concepts.invariants.[0] (no auth at any layer; WHITELIST_PATHS exempts /ingestion/**; exact-POST-only filter matcher)
+- |-
+  **BATCH Z NEW**: getDataEntitiesByDEGOddrn.md:security.auth_mode_relevance (UNAUTHENTICATED IN ALL FOUR UI MODES)
+- |-
+  **BATCH Z NEW**: getDataEntitiesByDEGOddrn.md:security.known_security_gaps.[0,1,2] (the AUTH-MODE-ORTHOGONAL READ class with sequential-id enumeration)
+- |-
+  **BATCH Z NEW**: postDataSetStatsList.md:concepts.invariants.[0] (UNAUTHENTICATED under EVERY combination of auth.type AND auth.ingestion.filter.enabled)
+- |-
+  **BATCH Z NEW**: postDataSetStatsList.md:security.known_security_gaps.[0,1,2,3] (4 distinct security gaps; the 'no toggle closes it' property is the differentiator from the DISABLED facet)
+- |-
+  **BATCH Z NEW**: ingestMetrics.md:concepts.invariants.[0] (uncovered by BOTH ingestion filters AND UI auth via WHITELIST_PATHS)
+- |-
+  **BATCH Z NEW**: ingestMetrics.md:security.known_security_gaps.[0,3] (no toggle to fail-close; tenant isolation nonexistent on INTERNAL_POSTGRES)
+- |-
+  **BATCH Z NEW**: openapi-spec.md:bugs_limitations_corner_cases.[0,6] (no securitySchemes + REFACTOR-217 spec-side authoritative)
+- |-
+  **BATCH Z NEW**: openapi-spec.md:security.known_security_gaps.[3] (the directional remedy is SecurityConstants→spec, the spec is the source of truth for the path)
+triangulation_count: 6
 cross_batch: true
 severity: HIGH
-severity_dim: security-posture-disabled-and-login-form-mode-authorization-bypass
+severity_dim: security-posture-three-facet-authorization-bypass-disabled-login-form-and-auth-mode-orthogonal-s2s-whitelist
 mitigations_unimplemented:
 - |-
   Per the master invariant — DISABLED mode is dev-only per docs; the existing
   mitigation surface is operator discipline ("don't run DISABLED in production").
-  Batch X does NOT add new mitigations for DISABLED; it ADDS the LOGIN_FORM
-  facet's mitigations.
 - |-
-  **NEW batch X — LOGIN_FORM facet mitigations**:
-  (a) Code-side: wire AuthorizationCustomizer into LoginFormSecurityConfiguration.java
-      similar to OAuth/LDAP siblings — makes SECURITY_RULES active under LOGIN_FORM
-  (b) Code-side: replace the hard-coded `true` at line 81 with per-user role logic
-  (c) Code-side: boot-time fail-fast guard — if `auth.type=LOGIN_FORM` AND default
-      credentials AND non-loopback bind, throw IllegalStateException
-  (d) Doc-side: add to /enable-security/authorization the precondition statement
-      'The Policies/Permissions/Roles/Owners framework is wired only in OAUTH2
-      and LDAP modes. Under LOGIN_FORM and DISABLED, RBAC is INERT.'
+  **batch X — LOGIN_FORM facet mitigations**: wire AuthorizationCustomizer into
+  LoginFormSecurityConfiguration; replace hard-coded `true` at line 81;
+  boot-time fail-fast guard on default-credential + non-loopback bind;
+  doc-side: precondition statement that RBAC is wired only in OAUTH2 and LDAP.
 - |-
-  Optional code-side mitigation for the AppInfo fingerprinting surface
-  specifically: NOT echo projectVersion under DISABLED (assume DISABLED is
-  dev-only; minimise the fingerprinting surface). One-method change at
-  AppInfoController.java:25-28 — return projectVersion only if the session
-  is authenticated, OR move version field behind a separate authenticated-only
-  endpoint. Cross-link to the expose-mode-hide-provider invariant's mitigation_unimplemented.
+  **BATCH Z NEW — AUTH-MODE-ORTHOGONAL facet mitigations**:
+  (a) Code-side: REMOVE `/ingestion/**` from SecurityConstants.WHITELIST_PATHS
+      line 95-96; the legacy reason for the whitelist (skip UI auth for
+      collector-driven calls) is structurally obsolete because the
+      IngestionDataEntitiesFilter / IngestionDataSourceFilter chain provides
+      the S2S auth surface. After removal, the four sibling /ingestion/*
+      endpoints inherit UI auth fall-through behaviour from the wider
+      SecurityWebFilterChain.
+  (b) Code-side: BROADEN IngestionDataEntitiesFilter's path matcher from
+      exact-literal `/ingestion/entities` POST to the
+      pattern `/ingestion/**` ANY-METHOD — but this requires per-endpoint
+      auth carve-outs (AlertManagerController is a third-party-shaped
+      webhook with no collector token to validate).
+  (c) Code-side: introduce per-endpoint IngestionFilter subclasses
+      (`IngestionMetricsFilter`, `IngestionStatsFilter`,
+      `IngestionDEGReadFilter`) each gated by its own property — quadruples
+      the operator-facing configuration surface but produces a per-endpoint
+      opt-in story that mirrors the existing two-filter pattern.
+  (d) Doc-side: CROSS-LINK from the Data Quality page + the
+      configuration-and-deployment/odd-platform page (metrics storage section)
+      to the Security page's filter-coverage caveat — at the point of
+      endpoint discovery, not in a separate location.
+  (e) Network-side: operator-documented runbook for fronting the
+      `/ingestion/**` namespace with reverse-proxy auth (mTLS / API key
+      validation at the LB layer) — already the only mitigation operators
+      can apply today without code changes; surface it explicitly.
 - |-
-  Per the master invariant — UI BANNER under DISABLED would warn operators of
-  the asymmetry. Batch T adds the controller-class layer evidence that the
-  UI banner is the right place for the warning (the SPA reads /api/appInfo
-  on boot and could trivially render a fixed banner when
-  appInfo.authType === 'DISABLED' OR appInfo.authType === 'LOGIN_FORM'
-  — the LOGIN_FORM facet adds a second condition).
+  **BATCH Z NEW — at the OPENAPI SPEC layer**:
+  (f) Declare a `securitySchemes` block in openapi.yaml AND per-operation
+      security: declarations — would make SDK generators produce typed auth
+      clients AND would surface the auth-mode posture machine-readably to
+      third-party consumers; structurally addresses
+      `spec-carries-no-security-block-authorization-is-wholly-out-of-band-of-the-openapi-contract`
+  (g) Build-time validator: compare SECURITY_RULES path patterns to OpenAPI
+      paths; fail-fast on mismatch. Would have caught REFACTOR-217
+      (term/terms) and the second SecurityConstants bug (alert-status
+      DATASET_FIELD_ADD_TERM mis-permission) at build time.
 notes: |-
-  STRENGTHENED batch 2026-05-20X — REFACTOR-185 is now a 24-sidecar pattern
-  covering TWO of the four auth modes (DISABLED + LOGIN_FORM). The LOGIN_FORM
-  facet adds the config-class layer primary source for the
-  ADMIN-for-everyone-with-no-AuthorizationCustomizer mechanism — same effective
-  end-state as DISABLED's `.anyExchange().permitAll()` but via a different
-  code path.
-
-  The 24-sidecar pattern is the platform's most thoroughly-enumerated security
-  pattern. The actionable surface remains the same as in the master invariant —
-  doc-side disclosure + UI banner + optional code-side fingerprinting reduction
-  on AppInfo + LOGIN_FORM-facet code-side fix to wire AuthorizationCustomizer.
+  STRENGTHENED batch 2026-05-20Z — REFACTOR-185 is now a 27-sidecar pattern
+  covering THREE structurally distinct facets:
+    (1) DISABLED facet — `.anyExchange().permitAll()`; UI surface;
+        operator-discipline mitigation; 19 sidecars baseline
+    (2) LOGIN_FORM facet — `.authenticated() + getAuthorities(true)`;
+        UI surface; default-credential dependency + wire-the-customizer
+        mitigation; +5 sidecars
+    (3) AUTH-MODE-ORTHOGONAL facet — `/ingestion/**` in WHITELIST_PATHS
+        + exact-POST-only IngestionDataEntitiesFilter matcher; S2S
+        surface; NO TOGGLE CLOSES IT — network-layer or code-side
+        mitigations only; +3 sidecars (this batch)
+  The third facet is qualitatively different from the prior two — it cannot
+  be mitigated by operator discipline because the property name
+  auth.ingestion.filter.enabled suggests broader scope than it has, AND
+  the live docs surface the gap only at the Security page (not where
+  operators encounter the endpoints). The directional remedy
+  candidates (a)-(e) all require code-side changes.
 
   Cross-references:
     - Master invariant: ui-vs-api-asymmetry-under-disabled-ui-hides-mutation-buttons-backend-accepts-anonymous
-    - Companion invariant (batch T): expose-mode-hide-provider-spa-runtime-config-contract
-    - Companion invariant (batch T): reflection-property-extractor-infrastructure-revealing
+    - Companion (batch T): expose-mode-hide-provider-spa-runtime-config-contract
+    - Companion (batch T): reflection-property-extractor-infrastructure-revealing
     - Companion batch T extension: read-collaborative-cross-owner-enumeration-batch-t-extension
-    - **NEW batch X**: login-form-admin-for-every-user-rbac-inert invariant —
-      the LOGIN_FORM-facet canonical invariant
-    - **NEW batch X**: auth-mode-quartet-meta-invariant-all-four-sidecars-pinned —
-      the quartet-completion meta-invariant
-    - LSN-001 (LOCAL storage default silent data loss) + LSN-002 (S3 region unset
-      silent failure) — case-law precedents showing operator-discipline-as-mitigation
-      is consistently insufficient on this codebase
+    - Companion (batch X): login-form-admin-for-every-user-rbac-inert
+    - Companion (batch X): auth-mode-quartet-meta-invariant-all-four-sidecars-pinned
+    - **batch Z NEW** companion: two-ingestion-filters-asymmetric-auth
+      (the three-way always-on / opt-in / always-off filter asymmetry —
+      now strengthened with the 4-endpoint reality)
+    - **batch Z NEW** companion: tenant-isolation-nonexistent-on-default-backend-internal-postgres
+    - **batch Z NEW** companion: openapi-spec-no-security-schemes-machine-readable-auth-absent
+    - LSN-001 + LSN-002 — case-law precedents showing operator-discipline-as-
+      mitigation is consistently insufficient; the AUTH-MODE-ORTHOGONAL facet
+      removes even the operator-discipline option.

@@ -7,16 +7,16 @@ source_monolith_frontmatter:
   sidecar_count: 65
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 811
+  total_test_gaps: 832
   gaps_by_criticality:
-    CRITICAL: 138
-    HIGH: 253
-    MEDIUM: 303
+    CRITICAL: 143
+    HIGH: 261
+    MEDIUM: 311
     LOW: 117
   gaps_by_category:
-    missing-integration: 158
-    missing-security: 239
-    missing-edge-case: 284
+    missing-integration: 160
+    missing-security: 251
+    missing-edge-case: 291
     missing-unit: 83
     sidecar-stale: 3
     missing-performance: 34
@@ -210,7 +210,7 @@ source_monolith_frontmatter:
   - odd-platform java notification.sender class:SlackNotificationSender
   - odd-platform java notification.sender class:WebhookNotificationSender
   - odd-platform java notification.processor class:PostgresWALMessageProcessor
-total_entries: 811
+total_entries: 832
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -19677,3 +19677,1506 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-814.yaml
+- gap_id: TEST-GAP-815
+  behaviour: '**CRITICAL — `GET /ingestion/entities/{degOddrn}` is unauthenticated
+    in EVERY shipped deployment mode**, including when the operator has enabled `auth.ingestion.filter.enabled=true`
+    believing they have locked down the ingestion surface. The endpoint enumerates
+    the entire member list of any Data Entity Group by ODDRN. Three independent failures
+    compound:
+
+
+    1. **`@PreAuthorize` absent**: `IngestionController.java:75-79` carries no auth
+    annotation; the OpenAPI-generated `IngestionApi` interface declares no security;
+    `DataEntityGroupServiceImpl.listEntitiesWithinDEG` (lines 92-108) carries no `fetchAssociatedOwner`
+    call, no AuthIdentityProvider field.
+
+    2. **WHITELIST_PATHS exempts `/ingestion/**`**: `SecurityConstants.java:96` puts
+    the entire `/ingestion/**` namespace into the auth-bypass whitelist. Under OAUTH2/LDAP/LOGIN_FORM
+    the SecurityWebFilterChain skips it.
+
+    3. **`IngestionDataEntitiesFilter` path matcher is hard-coded to `POST /ingestion/entities`
+    ONLY**: `IngestionDataEntitiesFilter.java:28` declares `PathPatternParserServerWebExchangeMatcher("/ingestion/entities",
+    HttpMethod.POST)` — exact-literal, method-scoped to POST. The templated `GET /ingestion/entities/{degOddrn}`
+    path does NOT match this matcher even when `auth.ingestion.filter.enabled=true`.
+
+
+    **Result chain**:
+
+    - Under shipped default (`auth.type=DISABLED`, `auth.ingestion.filter.enabled=false`):
+    any HTTP caller reaching the platform''s port enumerates any DEG by ODDRN.
+
+    - Under operator''s belief of "I enabled the filter": still anonymously reachable;
+    the filter''s matcher silently passes the GET.
+
+    - Under `auth.type=OAUTH2`/`LDAP`/`LOGIN_FORM` with a session cookie or a `Bearer`
+    token: STILL anonymously reachable; `/ingestion/**` whitelist bypasses UI auth.
+
+    - Under `auth.s2s.enabled=true`: STILL anonymously reachable; S2S applies only
+    to `/api/*` paths, not `/ingestion/*`.
+
+
+    **Blast radius**: a network probe can enumerate the full DEG-to-members mapping.
+    Combined with TEST-GAP-816 (sequential DEG ODDRN enumeration), the attacker collects
+    the entire DEG membership graph in O(N) requests with no audit trail (TEST-GAP-834).
+
+
+    **Why CRITICAL**: this is the read-side complement to F-008 (the destructive-write
+    surface). F-008''s `destruction_under_default_off_auth` drift facet is mirrored
+    here on the READ side — but worse: F-008''s filter at least *exists* on POST /ingestion/entities
+    (toggleable via the config flag); this GET has NO toggle that can fail-close it.
+    No live ODD doc warns operators (per sidecar docs_link_semantic — both inferred
+    URLs returned 404 or are silent on this endpoint). LSN-001 attachment-storage-default-data-loss
+    class extended to the DEG-member-enumeration vector.
+
+
+    **Test gap shape**: WebTestClient integration test for each of the 5 auth-mode
+    permutations × 2 filter-state permutations × 2 token-presence permutations. PINS
+    the current reachability matrix; pairs with REFACTOR-NNN candidate (add a `GET`
+    matcher to `IngestionDataEntitiesFilter` or extend `SecurityConstants.WHITELIST_PATHS`
+    scope correction) and DOC-GAP-NNN (live S2S page must list this endpoint and its
+    unauthenticated reach explicitly).'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-815.yaml
+- gap_id: TEST-GAP-816
+  behaviour: '**CRITICAL — Sequential ODDRN id enumeration + cross-owner read = full
+    DEG-membership graph harvestable in O(N) requests with no rate-limit, no audit-log,
+    no metric counter.**
+
+
+    The DEG ODDRN generator at `DataEntityGroupServiceImpl.java:191-200` produces
+    `ODDPlatformDataEntityGroupPath.builder().id(pojo.getId()).build()` — the `{id}`
+    segment is the row''s monotonically-increasing primary key. An attacker iterating
+    `id ∈ [1..N]` and submitting `GET /ingestion/entities/<odd_oddrn>/?id=$id` for
+    each value receives:
+
+    - **200 with members** for live DEGs (the member-list contract — TEST-GAP-815
+    establishes anonymous reach).
+
+    - **200 with empty items** for unused / soft-deleted DEG ids (TEST-GAP-817 establishes
+    the 404-vs-empty silent conflation that prevents an attacker from telling which
+    case applies but does NOT prevent the harvest).
+
+
+    **Cross-owner dimension**: the controller / service / repository chain applies
+    NO owner-scoping filter (verified: `DataEntityGroupServiceImpl.java:47-59` constructor
+    has no AuthIdentityProvider; `ReactiveDataEntityRepositoryImpl.java:318-326` does
+    no `OWNERSHIP` join). Any caller reads ANY DEG owned by ANY owner — extending
+    the REFACTOR-024 / REFACTOR-203 / REFACTOR-340 read-collaborative posture to the
+    S2S surface as a 6th surface in the family.
+
+
+    **Defence absences**:
+
+    - **No rate-limit at the controller** (verified: no `@RateLimiter` annotation,
+    no per-IP throttle in the WebFlux pipeline).
+
+    - **No audit-log entry on access** (verified: no `activityService.create(...)`
+    call in controller or service; no `log.info/warn` line; no `meterRegistry.counter(...)`).
+
+    - **No anomaly detection on burst-rate enumeration**.
+
+    - **No marker on the response that the caller hit a "no such DEG" vs "DEG exists
+    with no members"** — so probing is undetectable from response content alone.
+
+
+    **Result chain**:
+
+    1. Attacker (unauthenticated under default, authenticated-as-anyone otherwise)
+    enumerates `id ∈ [1..N]` with a small script.
+
+    2. For each live DEG, collects the member ODDRNs + DataEntityType.
+
+    3. Combines with downstream `GET /api/dataentities/{id}` (only reachable when
+    UI auth is permissive) for full metadata — but even without it, the ODDRN string
+    contains the parent datasource path + entity name + namespace, leaking the catalog''s
+    data-product taxonomy.
+
+    4. A post-incident question "which DEGs did the attacker enumerate?" has NO operational
+    answer from application logs.
+
+
+    **Why CRITICAL** (over the HIGH severity the sidecar rates): the enumeration is
+    **trivially scriptable** + **defence-absent across all five mechanisms** (auth,
+    rate, audit, anomaly, content-marker). Combined with TEST-GAP-815 (unauthenticated
+    reach) this is the same shape as a public-API catalog dump but advertised as "ingestion"
+    so operators do not include it in their attack-surface model.
+
+
+    **Test gap shape**: probe-test that submits N=100 sequential-id GETs in <1s and
+    asserts (a) zero 429 Too Many Requests responses; (b) zero entries in `activity_event`
+    table after the burst; (c) zero `meterRegistry` counter increments. PINS the current
+    open-by-default + audit-silent behaviour.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-816.yaml
+- gap_id: TEST-GAP-817
+  behaviour: '**MEDIUM — Four distinct conditions collapse to indistinguishable `200
+    OK + items: []` responses, contradicting the sibling lineage endpoint.**
+
+
+    The endpoint silently conflates:
+
+    1. **Unknown DEG** (the ODDRN does not exist in the catalog).
+
+    2. **Empty DEG** (the ODDRN exists but has no GROUP_ENTITY_RELATIONS).
+
+    3. **Malformed ODDRN** (`""`, `"x"`, `"//garbage"`, URL-encoded edge cases like
+    `%20`).
+
+    4. **Soft-deleted DEG** (`group_entity_relations.is_deleted=true` for all members
+    — though TEST-GAP-818 establishes that the soft-deleted DATA_ENTITY *members*
+    surface here, the soft-deleted EDGE filter handles this case differently).
+
+
+    All four return `200 OK` with `items: []`. Caller has no contract distinguishing
+    them.
+
+
+    **Contradicts the sibling endpoint**: `LineageServiceImpl.getDataEntityGroupLineage`
+    (`LineageServiceImpl.java:62`) DOES raise `NotFoundException("Data entity group",
+    id)` for the same empty-membership condition. The same platform produces two different
+    contracts for the same semantic situation depending on which endpoint the caller
+    hits — F-016 (DEG-Anchored Lineage) returns 404, F-008''s read-side sibling returns
+    200-empty. The asymmetry is silent in code (no comment defends either choice)
+    and silent in docs (no live ODD page describes either).
+
+
+    **No ODDRN format validation**: `IngestionController.java:76` declares `final
+    String degOddrn` — a raw String passed verbatim into a parameterised SQL predicate.
+    There is no `OddrnFormatValidator` class (Grep across odd-platform-api/src/main/java
+    returns no match). Garbage input produces empty-200 silently.
+
+
+    **Why MEDIUM** (not HIGH): the absence of a 404 contract is a usability/integration-quality
+    gap, not a security failure (the unauthenticated-reach is in TEST-GAP-815/816).
+    But a refactor that adds `switchIfEmpty(Mono.error(new NotFoundException(...)))`
+    between releases would silently break every third-party reader that depends on
+    the empty-200 shape — and the test today does NOT pin either contract.
+
+
+    **Test gap shape**: regression-pin test that asserts the current empty-200 contract
+    for each of the four conditions AND asserts the sibling F-016 endpoint raises
+    404 — pinning BOTH sides of the asymmetry so future fixes are deliberate.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-817.yaml
+- gap_id: TEST-GAP-818
+  behaviour: '**MEDIUM — Soft-deleted DATA_ENTITY rows surface in the GET /ingestion/entities/{degOddrn}
+    response.**
+
+
+    The SELECT at `ReactiveDataEntityRepositoryImpl.java:319-322` filters `GROUP_ENTITY_RELATIONS.IS_DELETED.isFalse()`
+    — the EDGE soft-delete — but does NOT filter the joined `DATA_ENTITY` rows by
+    `STATUS != DELETED` or `HOLLOW = false`. A DEG that contains a soft-deleted entity
+    returns that entity in the response.
+
+
+    **Deviates from the platform''s default-filters pattern**: `getDataEntityDefaultConditions`
+    is applied across every UI-side search/listing endpoint (per existing search-facet
+    + DataEntity sidecars) to hide soft-deleted entities from UI users. The S2S read
+    surface here applies NEITHER `STATUS != DELETED` NOR `HOLLOW = false` — operators
+    integrating against the S2S read see a different view of "what counts as a member"
+    than UI users see.
+
+
+    **Security dimension**: a soft-deleted entity is operationally hidden from UI
+    users (its presence in the catalog is intentionally suppressed). An attacker with
+    anonymous reach to this endpoint (TEST-GAP-815) can observe the existence + ODDRN
+    + DataEntityType of every soft-deleted entity in any DEG. The data is "intentionally
+    hidden" but mechanically accessible.
+
+
+    **Promoted from LOW (the sidecar rates this MEDIUM) to MEDIUM** because: the leak
+    compounds with the unauthenticated reach (TEST-GAP-815) AND the cross-owner enumeration
+    (TEST-GAP-816). The composition is: attacker enumerates ANY DEG → sees EVERY ITS
+    member including soft-deleted ones → builds a fuller catalog map than UI users
+    see. The deviation from the default-filters pattern is silent — there is no comment
+    in the repository code defending the choice.
+
+
+    **Test gap shape**: regression-pin test that:
+
+    1. Creates a DEG with 3 active members + 2 soft-deleted members.
+
+    2. Asserts the GET response includes all 5 members.
+
+    3. Asserts the equivalent `/api/dataentities/...` UI-side query returns 3 members
+    only.
+
+
+    PINS the asymmetry; pairs with REFACTOR-NNN (add `STATUS != DELETED` + `HOLLOW
+    = false` to the SQL — or document the deviation explicitly as intended).'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-818.yaml
+- gap_id: TEST-GAP-819
+  behaviour: '**CRITICAL — `POST /ingestion/entities/datasets/stats` is unauthenticated
+    AND allows cross-dataset / cross-owner stats overwrites in EVERY deployment posture.**
+
+
+    Three compounding failures:
+
+
+    1. **Endpoint unauthenticated**: same root cause as TEST-GAP-815 (GET) — `IngestionDataEntitiesFilter.java:28`
+    is hard-coded to `POST /ingestion/entities` (exact-literal); the sub-path `/ingestion/entities/datasets/stats`
+    does NOT match. `/ingestion/**` is in `SecurityConstants.WHITELIST_PATHS` so UI
+    auth (LOGIN_FORM/OAUTH2/LDAP) bypasses it. The controller has no `@PreAuthorize`.
+    Live security docs (WebFetched 2026-05-20, status 200) EXPLICITLY list this endpoint:
+    "/ingestion/entities/datasets/stats ... remain outside the ingestion filter''s
+    coverage".
+
+
+    2. **Cross-dataset stats-write**: the payload''s `dataset_oddrn` field is used
+    ONLY to compute the FTS-recalc set (`DatasetFieldServiceImpl.java:168-170, 179`);
+    the actual writes target `dataset_field` rows resolved BY FIELD ODDRN from the
+    payload''s `fields` map (`line 172-174`). An attacker who knows a target field''s
+    ODDRN can write arbitrary statistics to that field''s `stats` JSONB column AND
+    create EXTERNAL_STATISTICS tag relations on it — REGARDLESS of which dataset''s
+    ODDRN they declare in the parent `DataSetStatistics.datasetOddrn`. There is no
+    parent-child consistency check.
+
+
+    3. **Cross-owner stats-write**: combined with (1), collector A can post stats
+    payloads targeting fields owned by team B (or no team / unowned). The `Owner`
+    entity model exists but is NOT consulted on this ingestion path — no `currentUser`
+    / `currentOwner` / `dataset.owner` cross-check. The whole `DatasetFieldServiceImpl.updateStatistics`
+    body (lines 158-181) operates on payload-supplied ODDRNs.
+
+
+    **Blast radius**:
+
+    - Attacker scrapes the catalog''s public-doc page or follows known ODDRN-generator
+    conventions (`{datasource_oddrn}/datasets/{dataset_name}/fields/{field_name}`)
+    to discover target field ODDRNs.
+
+    - Issues `POST /ingestion/entities/datasets/stats` with `tags: [{name: "attacker-controlled"}]`
+    and overwritten `stats: {nulls_count: 999999, mean: NaN}`.
+
+    - Result: any authenticated viewer of the catalog''s Dataset Structure tab sees
+    corrupted statistics; downstream BI tools reading `dataset_field.stats` render
+    nonsense.
+
+    - The Quality Dashboard''s rings + anomaly classes consume these stats (per P-04
+    Data Quality) — corruption propagates to the DQ surface.
+
+
+    **Why CRITICAL**: this is the WRITE-side analog of TEST-GAP-815. The unauthenticated
+    write to a load-bearing data column (used by P-04 Data Quality + UI Dataset Structure
+    + downstream BI) compounds with cross-dataset blast radius. **Confirmed by live
+    docs** (the security docs page surfaces the filter-coverage gap explicitly) —
+    but **the live docs don''t surface it on the DQ page where operators first encounter
+    the endpoint** (DOC-GAP-NNN).
+
+
+    **Test gap shape**: WebTestClient matrix test pinning unauthenticated reach ×
+    cross-dataset write × cross-owner write. Plus a sister `tags-as-side-effect` test
+    (TEST-GAP-820) covering the tag-creation bypass.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-819.yaml
+- gap_id: TEST-GAP-820
+  behaviour: '**HIGH — Statistics ingestion is an unauthenticated side-channel for
+    catalog tag taxonomy population.**
+
+
+    `DatasetFieldServiceImpl.updateStatistics` (line 202) calls `tagService.getOrCreateTagsByName(tagNames)`
+    for every tag name in the payload''s `DataSetFieldStat.tags` array. This CREATES
+    catalog `tag` rows for tag names that don''t exist — bypassing the `TAG_CREATE`
+    permission that gates the UI''s Tags-management surface (the Management tab''s
+    Tags is RBAC-gated; the stats path is the bypass).
+
+
+    **Bypass chain**:
+
+    1. Attacker submits unauthenticated `POST /ingestion/entities/datasets/stats`
+    (per TEST-GAP-819''s unauthenticated reach).
+
+    2. Payload includes `tags: [{name: "any-string"}]` on any `DataSetFieldStat`.
+
+    3. `tagService.getOrCreateTagsByName` inserts new tag rows for unseen names.
+
+    4. New tags are stamped `TagOrigin.EXTERNAL_STATISTICS` (`TagOrigin.java:6`) —
+    distinguishing them from `INTERNAL` (UI-curated) tags.
+
+    5. Tags become discoverable by all authenticated users via tag search and tag-filter
+    facets.
+
+    6. Tags persist in the catalog tag namespace until manually deleted by a UI admin.
+
+
+    **Why HIGH** (the sidecar rates MEDIUM):
+
+    - The bypass is **silent** — no audit log entry on tag creation via this path.
+
+    - The bypass **persists** — tags remain in the namespace after the attack.
+
+    - The bypass **propagates** — every tag is discoverable across all UI surfaces
+    (autocomplete, filter facet, tag-popularity ranking via the `listMostPopular`
+    CTE — TEST-GAP-545 sister).
+
+    - The bypass **mocks the RBAC model** — `TAG_CREATE` is gated for a reason (preventing
+    namespace pollution); the side-channel renders it ineffective for any deployment
+    where the ingestion endpoint is reachable (i.e. every shipped deployment per TEST-GAP-819).
+
+
+    **Concrete operator impact**:
+
+    - Attacker populates catalog with `tags: [{name: "PROD-CRITICAL"}, {name: "DEPRECATED"},
+    {name: "SENSITIVE-PII"}]` — confusing UI users about data classification.
+
+    - Attacker pollutes the tag-popularity ranking by injecting thousands of unique
+    tag names.
+
+    - Combined with the no-rate-limit posture (TEST-GAP-816 family), the attacker
+    can scale to thousands of tag-creations per second.
+
+
+    **Test gap shape**: regression-pin test that:
+
+    1. Asserts unauthenticated POST with novel tag names CREATES rows in the `tag`
+    table.
+
+    2. Asserts the created rows carry `origin = ''EXTERNAL_STATISTICS''`.
+
+    3. Asserts no `activity_event` row is emitted for the tag creation.
+
+    4. Asserts the tags appear in `GET /api/tags?...` listing.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-820.yaml
+- gap_id: TEST-GAP-821
+  behaviour: '**MEDIUM — `postDataSetStatsList` lacks the empty-payload guard its
+    sibling has, producing NPE on null and silent no-op on empty.**
+
+
+    The controller method (`IngestionController.java:82-87`) calls `.flatMap(ingestionService::ingestStats)`
+    without any guard. Compare the sibling `postDataEntityList` (`IngestionController.java:40-42`):
+
+    - `postDataEntityList` short-circuits empty/null via `CollectionUtils.isNotEmpty(items)`
+    → throws `BadUserRequestException("Ingestion payload is empty")` → HTTP 400 with
+    structured error.
+
+    - `postDataSetStatsList` has NO such guard.
+
+
+    Behavior with `items: null`:
+
+    1. Controller delegates to `IngestionServiceImpl.ingestStats(...)` (one-line passthrough
+    to `DatasetFieldService.updateStatistics`).
+
+    2. `DatasetFieldServiceImpl.updateStatistics` (line 161) executes `datasetStatisticsList.getItems().stream()`
+    — NullPointerException on null `getItems()`.
+
+    3. Reactor default error handler propagates → HTTP 500 with stack trace in response
+    body (verified by no `@ExceptionHandler` for NPE in `<odd-platform-repo>/odd-platform-api/src/main/java`).
+
+    4. Caller receives 500 — indistinguishable from a Postgres outage or any other
+    server-side fault.
+
+
+    Behavior with `items: []`:
+
+    1. Empty `Stream.empty()` flows through line 161-181.
+
+    2. `getLastVersionDatasetFieldsByOddrns(emptySet)` returns empty `existingFields`.
+
+    3. `updateFieldsStatistics(emptyList)` and `updateFieldsTags(emptyList)` are no-ops.
+
+    4. **`reactiveSearchEntrypointRepository.updateStructureVectorForDataEntitiesByOddrns(emptySet)`
+    still fires** (line 179) — possibly DOSing cost on the FTS recalc surface.
+
+    5. Transaction commits empty.
+
+    6. Caller receives 201 Created — indistinguishable from a successful real write.
+
+
+    **Three asymmetries surface here**:
+
+    - **Empty-vs-null asymmetry** at the same endpoint (one 500, one 201).
+
+    - **Sibling-method asymmetry** (postDataEntityList → 400, postDataSetStatsList
+    → 500/201).
+
+    - **Sibling-method-201 asymmetry** (ingestMetrics ALSO returns 201 on empty per
+    its sidecar; postDataSetStatsList silent — three different empty-payload contracts
+    across three controller methods).
+
+
+    **Why MEDIUM**: the 500 on null leaks a stack trace (information disclosure —
+    see TEST-GAP-824 mirror for ingestMetrics); the 201 on empty produces a no-op
+    DoS amplifier (each request fires the FTS recalc); the inconsistency is undocumented.
+
+
+    **Test gap shape**: regression-pin asserting (a) `{}` → 500 NPE; (b) `{items:
+    []}` → 201 + DB no-op; (c) `{items: [{...valid}]}` → 201 + DB write. PINS the
+    three behaviours; pairs with REFACTOR-NNN (add empty-payload guard symmetric with
+    sibling).'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-821.yaml
+- gap_id: TEST-GAP-822
+  behaviour: '**MEDIUM — `postDataSetStatsList` replay with FEWER tags silently REMOVES
+    the absent EXTERNAL_STATISTICS-origin tag relations.**
+
+
+    The tag reconciliation at `DatasetFieldServiceImpl.java:221-223` computes `relationsToDelete
+    = existingRelations.filter(r -> !relationsToCreate.contains(r))` — the diff is
+    delete-on-absence. A re-POST with a smaller tag set DELETES the absent EXTERNAL_STATISTICS-origin
+    tag relations from the affected fields.
+
+
+    **Concrete operator-pain chain**:
+
+    1. Collector A posts stats with `tags: ["PRODUCTION", "PII", "CRITICAL"]`. ODD
+    creates the three EXTERNAL_STATISTICS-origin relations.
+
+    2. Operator-in-UI views the field; sees the three tags.
+
+    3. Next day, Collector A''s profiler has a sampling bug — it only detects `PRODUCTION`
+    for the field.
+
+    4. Collector A re-POSTs with `tags: ["PRODUCTION"]`.
+
+    5. ODD computes `relationsToDelete = {PII-relation, CRITICAL-relation}` — DELETES
+    both.
+
+    6. Operator-in-UI views the field next day; sees only `PRODUCTION`. The `PII`
+    + `CRITICAL` classification — possibly load-bearing for compliance — is gone,
+    **with no warning, no audit log, no user notification**.
+
+
+    **Reconciliation is asymmetric**:
+
+    - `INTERNAL`-origin tags (UI-curated) are UNTOUCHED — the `listTagsRelations(datasetFieldIds,
+    TagOrigin.EXTERNAL_STATISTICS)` filter (line 218) operates ONLY on EXTERNAL_STATISTICS-origin
+    relations. This is intentional (see implicit_adrs.[2] in the sidecar) — UI users''
+    manual tags survive collector re-ingestions.
+
+    - But the asymmetry MEANS the UI/Collector mental model differs: a Collector author
+    may not realise that emitting a tag once and dropping it later REMOVES the tag.
+
+
+    **Same shape as F-008''s `silent_destruction_replace_not_merge` drift facet**
+    — applied to the stats path. F-008 documents the class on the entity-list path;
+    this entry surfaces the stats-path variant.
+
+
+    **No live doc describes this contract**: the WebFetch (postDataSetStatsList.md
+    docs_link_semantic.doc_drift_findings.[3]) of `/features/data-quality` and `/configuration-and-deployment/enable-security`
+    returned 200 but neither page mentions the replace-on-replay contract.
+
+
+    **Why MEDIUM**: classification data is load-bearing for downstream compliance
+    + DQ workflows; silent removal is operationally dangerous; but the data loss is
+    REVERSIBLE if the collector re-emits the tag in a subsequent run. Compare LSN-001''s
+    IRREVERSIBLE attachment-storage data loss — this is a soft-loss class.
+
+
+    **Test gap shape**: regression-pin asserting:
+
+    1. POST tag-set A → tag relations exist.
+
+    2. POST tag-set B (subset of A) → tag relations now match B only; A-only tags
+    are gone.
+
+    3. No `activity_event` row emitted; no log line.
+
+    4. UI-curated INTERNAL tags persist across (1) and (2).'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-822.yaml
+- gap_id: TEST-GAP-823
+  behaviour: '**CRITICAL — `POST /ingestion/metrics` is unauthenticated in EVERY supported
+    deployment posture, AND there is NO configuration toggle that can fail-close it.**
+
+
+    The endpoint is reachable by ANY HTTP caller under EVERY combination of:
+
+    - `auth.type ∈ {DISABLED, LOGIN_FORM, OAUTH2, LDAP}` — `/ingestion/**` is in `SecurityConstants.WHITELIST_PATHS`
+    (line 96); enforced for OAUTH2/LDAP via `AuthorizationCustomizer.java:22` and
+    for LOGIN_FORM via `permittedPaths` configuration.
+
+    - `auth.s2s.enabled ∈ {true, false}` — the `S2sAuthenticationFilter` documented
+    to gate "any endpoint that admins can call" does NOT cover `/ingestion/**` paths
+    because of the WHITELIST short-circuit.
+
+    - `auth.ingestion.filter.enabled ∈ {true, false}` — `IngestionDataEntitiesFilter`
+    exact-matches `/ingestion/entities` ONLY (not metrics); `IngestionDataSourceFilter`
+    exact-matches `/ingestion/datasources` ONLY. Neither matches `/ingestion/metrics`.
+    There is NO `IngestionMetricsFilter` class in the codebase.
+
+
+    **WORSE THAN F-008**: F-008''s destructive-write surface (POST /ingestion/entities)
+    at least HAS a toggle (`auth.ingestion.filter.enabled`); ingestMetrics has NO
+    such toggle. To restrict the endpoint, an operator MUST:
+
+    - Deploy network-level controls (firewall rule, reverse-proxy auth), OR
+
+    - Patch the codebase to add a sister `IngestionMetricsFilter`.
+
+
+    Neither option is documented anywhere in the ODD configuration surface.
+
+
+    **Blast radius**:
+
+    - Attacker submits arbitrary `MetricSetList` with any ODDRN + any labels.
+
+    - INTERNAL_POSTGRES mode (default): metric_entity / metric_family / metric_label_value
+    / metric_series / metric_point rows are created (per `InternalIngestionMetricsServiceImpl.java:78-98`).
+
+    - PROMETHEUS mode: TimeSeries are remote-written to the operator''s external Prometheus
+    instance (per `ExternalIngestionMetricsServiceImpl.java:202-220`). The operator''s
+    Prometheus storage costs balloon proportional to attacker traffic.
+
+    - Combined with TEST-GAP-825 (ODDRN-by-payload cardinality DoS), the attacker
+    mints arbitrary metric series at unlimited rate.
+
+
+    **Live docs surface the gap PARTIALLY**:
+
+    - `/configuration-and-deployment/enable-security` (WebFetched 2026-05-20 status
+    200) explicitly states `IngestionDataEntitiesFilter` covers `/ingestion/entities`
+    only and "sibling endpoints remain unprotected by this filter" — but does NOT
+    enumerate `/ingestion/metrics` in its list of uncovered sibling paths (the page
+    names `/ingestion/alert/alertmanager`, `/ingestion/entities/degs/children`, `/ingestion/entities/datasets/stats`
+    but NOT `/ingestion/metrics`).
+
+    - `/features/active-platform-features` (WebFetched 2026-05-20) does NOT list metrics
+    ingestion as a sub-feature at all.
+
+    - `/configuration-and-deployment/odd-platform` covers `metrics.storage` + `metrics.prometheus-host`
+    but does NOT describe the endpoint''s auth posture.
+
+
+    **Why CRITICAL**: matches the F-008 + TEST-GAP-815/819 class but with the additional
+    structural worsening (no toggle). Same severity-class as the AlertManagerController
+    unauthenticated-by-default finding in F-008 — that endpoint is uncovered by ANY
+    filter too.
+
+
+    **Test gap shape**: WebTestClient matrix test covering every deployment posture
+    × the lack-of-toggle assertion.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-823.yaml
+- gap_id: TEST-GAP-824
+  behaviour: '**CRITICAL — Multi-tenant isolation NONEXISTENT on `metrics.storage=INTERNAL_POSTGRES`
+    (the default-on backend). The `odd.tenant-id` config property is a Prometheus-mode-only
+    label; on the default backend, all tenants share one untyped Postgres namespace.**
+
+
+    **Mechanism**:
+
+    - `odd.tenant-id` (`application.yml:208-210`, default empty) is consumed at **extractor
+    bean construction** via `@Value("${odd.tenant-id}")` — `CounterTimeSeriesExtractor.java:22-25`
+    etc.
+
+    - The PROMETHEUS-side extractors APPEND `tenant_id={value}` as a label on every
+    TimeSeries written to the external Prometheus.
+
+    - The INTERNAL_POSTGRES-side extractors / repository chain DO NOT REFERENCE `tenant_id`
+    at all — `metric_series`, `metric_point`, `metric_family`, `metric_label`, `metric_label_value`,
+    `metric_entity` tables have NO `tenant_id` column (verified at JOOQ POJO level
+    — `MetricEntityPojo`, `MetricFamilyPojo`, `MetricLabelPojo`, `MetricLabelValuePojo`,
+    `MetricPointPojo`, `MetricSeriesPojo` do not declare tenant fields per `InternalIngestionMetricsServiceImpl.java:39-44`).
+
+
+    **Operator-pain chain**:
+
+    1. Operator configures `odd.tenant-id=tenantA` AND `metrics.storage=INTERNAL_POSTGRES`
+    (the default) — believing they have enabled multi-tenant isolation.
+
+    2. Operator deploys 3 instances of ODD (one per tenant) against the same Postgres
+    cluster.
+
+    3. All 3 instances write metrics to the same `metric_series` / `metric_point`
+    tables with no `tenant_id` column.
+
+    4. Tenant A''s data scientists see Tenant B''s metrics in their per-DataEntity
+    Metrics tab — no isolation.
+
+    5. The live `/configuration-and-deployment/odd-platform` page (WebFetched 2026-05-20
+    per ingestMetrics.md docs_link_semantic.inferred_docs.[0]) describes `odd.tenant-id`
+    as "tenant identifier appended as a Prometheus query label" — implicitly Prometheus-only
+    — but does NOT explicitly state that INTERNAL_POSTGRES ignores it. Operators consulting
+    the docs may believe `odd.tenant-id` is universal.
+
+
+    **Why CRITICAL** (the sidecar rates MEDIUM):
+
+    - Tenant isolation is a load-bearing security property in any multi-tenant deployment.
+
+    - The asymmetry between PROMETHEUS (isolation applied) and INTERNAL_POSTGRES (isolation
+    absent) **inverts** the operator''s mental model — the DEFAULT mode is the LESS
+    SECURE one. LSN-001 class: a sensible-looking default produces silent data leak.
+
+    - The leak is **multi-tenant cross-organisation** — far worse than the single-org
+    cross-owner leak class (REFACTOR-024) because tenants are usually different customer
+    organisations.
+
+    - Combined with TEST-GAP-823 (unauthenticated metrics write), an attacker on tenant
+    A can deliberately POLLUTE tenant B''s metrics namespace.
+
+
+    **Test gap shape**: integration test that:
+
+    1. Configures `odd.tenant-id=tenantA` + `metrics.storage=INTERNAL_POSTGRES`.
+
+    2. Posts metrics for ODDRN `urn:..:tenantB:some-entity` (i.e. another tenant''s
+    ODDRN).
+
+    3. Asserts the metric_series / metric_point rows are written with NO tenant scoping.
+
+    4. Asserts a tenant-B-configured ODD instance reading the same Postgres sees the
+    polluted data.
+
+
+    PINS the absence of isolation; pairs with REFACTOR-NNN (add `tenant_id` column
+    + scope) and DOC-GAP-NNN (live docs explicitly state INTERNAL_POSTGRES has no
+    tenant isolation).'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-824.yaml
+- gap_id: TEST-GAP-825
+  behaviour: '**HIGH — ODDRN-by-payload write creates metric_entity rows with NO referential
+    integrity check, enabling Postgres-side AND Prometheus-side cardinality DoS at
+    attacker-controlled rate.**
+
+
+    `InternalIngestionMetricsServiceImpl.java:86-88` calls `metricEntityRepository.registerMetricEntityOddrns(request.metricRelatedOddrns())`
+    — creates `metric_entity` rows BY ODDRN with NO check that a corresponding `data_entity.oddrn`
+    row exists. The PROMETHEUS path writes the same ODDRN string as a Prometheus label
+    value.
+
+
+    **Attack chain**:
+
+    1. Attacker submits unauthenticated `POST /ingestion/metrics` (per TEST-GAP-823)
+    with `MetricSetList { items: [{oddrn: "literal:fake-1", metric_families: [...]},
+    {oddrn: "literal:fake-2"}, ...] }` — N items per request.
+
+    2. INTERNAL_POSTGRES path: N rows inserted into `metric_entity` table. With no
+    rate-limit, attacker submits thousands of requests per second.
+
+    3. PROMETHEUS path: N TimeSeries with fake ODDRN labels written to operator''s
+    external Prometheus. Prometheus cardinality explodes proportional to attacker
+    traffic.
+
+    4. **Result on PROMETHEUS deployments**: operator''s Prometheus storage costs
+    balloon. Cardinality limits trigger (Prometheus''s `--query.max-samples`, `--storage.tsdb.max-block-duration`);
+    legitimate queries start failing. Same Prometheus may serve multiple ODD tenants
+    (per the multi-tenant docs) — one attacker DoSes all tenants.
+
+    5. **Result on INTERNAL_POSTGRES deployments**: `metric_entity` table grows unbounded.
+    Index size + JOIN cost on `GET /api/dataentities/{id}/metrics` degrades.
+
+
+    **No counter-measures**:
+
+    - **No FK from `metric_entity.entity_oddrn` to `data_entity.oddrn`** (verified
+    at JOOQ POJO level — `MetricEntityPojo` is independent of `DataEntityPojo`).
+
+    - **No rate-limit at the controller** (`@RateLimiter` not present anywhere in
+    `<odd-platform-repo>/odd-platform-api/src/main/java`).
+
+    - **No per-tenant quota** — per metrics-ingestion concept `weaknesses` list.
+
+    - **No PII filtering on labels** — TEST-GAP-826 sister covers the PII propagation
+    chain.
+
+
+    **Why HIGH** (the sidecar rates MEDIUM): the operator-borne cost (their Prometheus
+    storage; their Postgres pressure) compounds without bound; the cross-tenant amplification
+    (per TEST-GAP-824) makes one bad actor capable of degrading every co-tenant.
+
+
+    **Test gap shape**: integration test that:
+
+    1. Burst-POSTs metrics for 10K novel ODDRNs.
+
+    2. Asserts `metric_entity` table grew by 10K rows.
+
+    3. Asserts no rate-limit kicked in.
+
+    4. Asserts no audit log entry.
+
+    5. (PROMETHEUS variant) asserts external Prometheus testcontainer received 10K
+    series.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-825.yaml
+- gap_id: TEST-GAP-826
+  behaviour: '**MEDIUM — Metric labels are propagated verbatim from the ingestion
+    payload through to the storage backend with NO allowlist, NO sanitisation, NO
+    opt-out.**
+
+
+    `AbstractTimeSeriesExtractor.java:30-31` calls `mapper.mapToProtoLabels(labels)`
+    as a straight pass-through. `CounterTimeSeriesExtractor.java:32-46` (and the three
+    other extractors) apply no filtering. The labels flow:
+
+
+    **PROMETHEUS path**: labels are written verbatim as Prometheus label key-value
+    pairs via the Snappy-compressed `WriteRequest` protobuf. PII labels (`user_email=joe@example.com`,
+    `dataset_owner_email=`, internal-employee identifiers) are stored in the operator''s
+    external Prometheus AND become queryable by every operator/team with read access
+    to that Prometheus instance.
+
+
+    **INTERNAL_POSTGRES path**: labels are written to `metric_label_value` table via
+    `metricLabelValueRepository.getOrCreateMetricLabelValues(...)` (`InternalIngestionMetricsServiceImpl.java:159-160`).
+    Stored in plaintext. Readable via the per-DataEntity Metrics tab to every authenticated
+    platform user.
+
+
+    **PII surface examples**:
+
+    - A `DataConsumer`-typed entity ingests labels `{user_email: "...", session_id:
+    "..."}` — PII enters the catalog.
+
+    - A `Job`-typed entity ingests labels `{run_user: "ml-team@corp.com", api_key_fragment:
+    "..."}` — credentials leak.
+
+    - A `Dataset`-typed entity ingests labels `{sensitive_partition: "ssn_2024"}`
+    — schema metadata that should be redacted leaks.
+
+
+    **No counter-measures**:
+
+    - No allowlist on label keys (verified: no `LabelSanitiser` / `MetricLabelFilter`
+    / `PIIScrubber` class in the codebase).
+
+    - No regex filter on label values.
+
+    - No opt-out (operator cannot configure "drop these label keys").
+
+    - No PII tagging on stored labels (no `is_pii` column on `metric_label`).
+
+
+    **Compound failure**:
+
+    - **With TEST-GAP-823**: unauthenticated callers (i.e. anyone reaching the HTTP
+    port) can inject PII into the catalog. A malicious actor floods the catalog with
+    falsified PII to trigger downstream GDPR/CCPA compliance events.
+
+    - **With TEST-GAP-824**: multi-tenant deployments leak PII across tenant boundaries
+    (INTERNAL_POSTGRES has no tenant isolation; PII from tenant A is visible to tenant
+    B''s users).
+
+
+    **Why MEDIUM** (the sidecar rates MEDIUM): the gap is real but PII injection requires
+    intentional misuse or an upstream collector bug; legitimate metric labels are
+    usually non-PII. But the absence of ANY guard is the structural finding — a single
+    misconfigured collector emitting `user_email=` as a label silently leaks PII into
+    the catalog forever.
+
+
+    **Test gap shape**: regression-pin asserting:
+
+    1. PII-shaped labels (`user_email=...`, `password=...`, `ssn=...`) ingest without
+    filtering.
+
+    2. The labels become readable via `GET /api/dataentities/{id}/metrics`.
+
+    3. (PROMETHEUS variant) the labels are present in the external Prometheus `/api/v1/query`
+    response.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-826.yaml
+- gap_id: TEST-GAP-827
+  behaviour: '**MEDIUM — Switching `metrics.storage` between INTERNAL_POSTGRES and
+    PROMETHEUS is a ONE-WAY operation that makes pre-switch historical data UNREADABLE.
+    No live doc warns operators.**
+
+
+    Mechanism:
+
+    - INTERNAL_POSTGRES writes to `metric_series` / `metric_point` Postgres tables.
+
+    - PROMETHEUS writes to the operator''s external Prometheus via remote-write.
+
+    - Read-side routing (`metrics.storage` consumed by readers): `InternalMetricReader`
+    reads Postgres, `ExternalMetricReader` reads Prometheus.
+
+
+    **Failure modes**:
+
+    1. **INTERNAL_POSTGRES → PROMETHEUS**: post-switch reads route through `ExternalMetricReader`,
+    which queries Prometheus. Pre-switch metric_series rows in Postgres become INVISIBLE
+    to the UI''s per-DataEntity Metrics tab. No migration tooling exists to copy Postgres
+    data to Prometheus.
+
+    2. **PROMETHEUS → INTERNAL_POSTGRES**: post-switch reads route through `InternalMetricReader`,
+    which queries Postgres. Pre-switch Prometheus series become orphaned (still in
+    Prometheus, but ODD can''t read them).
+
+
+    **Live docs SILENT**: `/configuration-and-deployment/odd-platform` (WebFetched
+    2026-05-20 status 200) documents BOTH modes'' configuration but does NOT mention
+    the one-way migration semantics. An operator considering "let me try PROMETHEUS
+    for performance, can roll back if it doesn''t work" has NO warning that the rollback
+    loses data.
+
+
+    **Same shape as LSN-001 attachment-storage-migration drift**: a sensible-looking
+    config change silently invalidates historical data.
+
+
+    **Why MEDIUM**: rare event (operators don''t switch storage backends often) BUT
+    silent + irreversible when it happens; one operator burned per quarter is one
+    too many.
+
+
+    **Test gap shape**: integration test that:
+
+    1. Configures INTERNAL_POSTGRES, ingests 100 metric series, asserts visible.
+
+    2. Switches to PROMETHEUS (via property reload OR a new Spring context), ingests
+    50 NEW metric series.
+
+    3. Asserts: the per-DataEntity Metrics tab shows only the 50 new PROMETHEUS series
+    — the 100 INTERNAL_POSTGRES series are invisible (PINS the data-invisibility).
+
+    4. Asserts: no migration tooling exists (no `MetricStorageMigrationService` class
+    via reflection).
+
+
+    Pair with REFACTOR-NNN (migration tooling or fail-fast guard) and DOC-GAP-NNN
+    (live docs warn explicitly).'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-827.yaml
+- gap_id: TEST-GAP-828
+  behaviour: '**HIGH — The 4212-line `openapi.yaml` + 2937-line `components.yaml`
+    together declare 194 operations across 35 tags but contain ZERO `securitySchemes`
+    blocks AND ZERO operation-level `security:` declarations.**
+
+
+    **Verified by Grep**:
+
+    - `openapi.yaml` Grep `securitySchemes` → 0 matches.
+
+    - `openapi.yaml` Grep `security:` → 0 matches.
+
+    - `components.yaml` Grep `securitySchemes` → 0 matches.
+
+
+    **What this MEANS for SDK consumers**:
+
+    - SDK generators producing typed clients from this spec emit NO authentication
+    code — no `Bearer` token wiring, no session cookie handling, no `X-API-Key` injection.
+
+    - Third-party integrators MUST hand-author auth glue per their target language.
+    The hand-authoring is the easiest place for misconfiguration.
+
+    - Operators evaluating ODD against incumbent alternatives (which usually DO declare
+    auth in OpenAPI) see ODD''s spec as "auth-less" — possibly believing the API IS
+    auth-less.
+
+
+    **Confirmed by the spec''s contrast with live docs**: the security configuration
+    page at `/configuration-and-deployment/enable-security` (WebFetched 2026-05-20
+    per openapi-spec.md docs_link_semantic.inferred_docs.[0] + cross-batch evidence)
+    enumerates 4 UI auth modes (DISABLED / LOGIN_FORM / OAUTH2 / LDAP) + S2S API-key
+    + Ingestion filter. NONE of these are machine-readable from the spec.
+
+
+    **The contract-test gap on the SECURITY axis is HIGH-severity** because:
+
+    - The auth model IS enforced server-side (via `SecurityConstants.SECURITY_RULES`,
+    `SecurityWebFilterChain`, `AuthorizationCustomizer`).
+
+    - But the model is NOT declared in the API contract.
+
+    - The DRIFT class (server-side enforces X, spec declares NOTHING) is exactly the
+    class that produces REFACTOR-217 (path-mismatch silently disabled authorization)
+    — see TEST-GAP-830 sister.
+
+
+    **Why HIGH** (the sidecar rates MEDIUM): the **absence of a contract-conformance
+    test** is the structural finding. A contract test that compared `SecurityConstants.SECURITY_RULES`
+    paths × permission requirements against the spec''s declared operation-id → permission
+    mapping would have caught REFACTOR-217 at spec-authoring time (instead of at sidecar-audit
+    time, where it lived for an unknown number of releases as a silent authorization
+    bypass). The same class of drift is loaded into every operation that the spec
+    declares without a `security:` block — the spec cannot REFUTE a future drift.
+
+
+    **Test gap shape**: a build-time contract test that:
+
+    1. Parses `openapi.yaml` + `components.yaml`.
+
+    2. Asserts at LEAST ONE `securitySchemes` block exists.
+
+    3. Asserts every operation under `/api/*` declares a `security:` block OR is listed
+    in an explicit "public unauthenticated allowlist" config.
+
+    4. Asserts every operation has a documented `permissionRequired` extension (`x-permission`)
+    matching the runtime `SECURITY_RULES`.
+
+
+    PINS the current zero-declaration state; pairs with REFACTOR-NNN (declare auth
+    in spec) and DOC-GAP-NNN (the openapi-spec sidecar''s doc-drift findings).'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-828.yaml
+- gap_id: TEST-GAP-829
+  behaviour: '**MEDIUM — Only 3 of 194 operations declare a non-2xx error response
+    in the spec. Third-party SDK clients have NO typed error shapes for 191 operations.**
+
+
+    Verified by Grep on `openapi.yaml`:
+
+    - `''4..'':` → 2 occurrences (line 172 = `POST /api/owners` 403; line 3433 = `POST
+    /api/owners/mapping/{owner_id}` 403).
+
+    - `''5..'':` → 1 occurrence (line 152 = `GET /api/owners` 500).
+
+
+    **Result**: 191 operations declare ONLY their happy-path 2xx response shape. The
+    platform DOES return 4xx and 5xx in production (per every controller-method sidecar),
+    but the spec is silent on what those responses look like.
+
+
+    **Impact**:
+
+    - Third-party SDKs cannot type their error catch blocks. Java''s `throws IOException`
+    is the only signal; TypeScript''s `Promise<T>` swallows errors.
+
+    - Operators debugging from spec-consuming clients have no schema for the error
+    body — `{"message": "...", "code": "..."}` vs `{"error": {...}}` vs the bare string
+    body — all undocumented.
+
+    - The spec''s contract surface is "shape if it succeeds; you''re on your own if
+    it fails" — a quarter-of-a-contract.
+
+
+    **Concrete impact pattern**:
+
+    - Operator calls `POST /api/dataentities/{id}/terms` (per REFACTOR-217 — the spec''d
+    path).
+
+    - With auth bypassed (REFACTOR-217 not yet fixed), SUCCESS. Once REFACTOR-217
+    is fixed, the same call returns 403.
+
+    - The SDK''s typed contract doesn''t know about the 403 — operator''s integration
+    silently swallows it.
+
+
+    **Why MEDIUM**: this is a quality-of-API contract gap, not a security boundary
+    failure. But the absence of typed error shapes is a load-bearing reason operators
+    report ODD''s API as "harder to integrate than alternatives" — same operator-pain
+    class as DOC-GAP-099 inverse-semantic on `getMyObjects*`.
+
+
+    **Test gap shape**: build-time contract test that asserts:
+
+    1. Every operation declares at least one 4xx OR 5xx response (or is explicitly
+    marked as never-failing in an `x-error-free` allowlist).
+
+    2. The 4xx response references a canonical `ErrorResponse` schema in `components.yaml`.
+
+    3. The schema matches what the controllers actually return (via cross-reference
+    with the Spring `@ExceptionHandler` chain).'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-829.yaml
+- gap_id: TEST-GAP-830
+  behaviour: '**HIGH — Spec-side contract test for REFACTOR-217 / F-002 path-mismatch:
+    `openapi.yaml:973` declares `/api/dataentities/{data_entity_id}/terms` (PLURAL)
+    AND `openapi.yaml:1042` declares `/api/dataentities/{data_entity_id}/terms/{term_id}`
+    (PLURAL) — but `SecurityConstants.java:237-239` registers SINGULAR `/term`. The
+    spec IS correct; the SecurityConstants registration is wrong. ANY authenticated
+    user could link/unlink terms with no DATA_ENTITY_ADD_TERM permission for an unknown
+    number of releases until the sidecar audit caught it.**
+
+
+    This entry pins the SPEC-SIDE contract test that, if it had existed at REFACTOR-217''s
+    introduction time, would have prevented the silent authorization bypass. The TEST-GAP-017
+    entry pins the CONTROLLER-SIDE behavioural test for the same finding; this entry
+    is the spec-side complement.
+
+
+    **The contract test that should have existed**:
+
+    - Parse `openapi.yaml` + `components.yaml`.
+
+    - Extract every `/api/*` path declared in the spec.
+
+    - Reflectively load `SecurityConstants.SECURITY_RULES`.
+
+    - For every path-pattern in SECURITY_RULES, assert it MATCHES at least one spec''d
+    path (Spring''s path-pattern semantics).
+
+    - For every spec''d path that requires authorization (per the `x-permission` extension
+    proposed in TEST-GAP-828), assert SECURITY_RULES has a matching matcher.
+
+    - The MISMATCH between `/term` (singular, in SECURITY_RULES) and `/terms` (plural,
+    in spec) is the canonical case the test fails on.
+
+
+    **Why HIGH** (severity matches the sidecar''s rating): REFACTOR-217 already establishes
+    the HIGH severity for the underlying authorization bypass; this entry adds the
+    SPEC-SIDE contract test that institutionalises the lesson. STRENGTHENS TEST-GAP-017
+    (the controller-side regression-pin) by adding the structural class of contract
+    test that PREVENTS the class.
+
+
+    **Cross-pillar P-06 + P-09 + P-11**: P-06 (Data Glossary) is the affected feature,
+    P-09 (Security & Access Control) is the broken permission model, P-11 (Platform
+    API & Developer Surface) is the artefact (the spec) that should have caught it.
+
+
+    **Test gap shape**: build-time test that
+
+    1. Parses `SecurityConstants.SECURITY_RULES` via reflection.
+
+    2. Parses the OpenAPI spec.
+
+    3. Asserts every path-pattern in SECURITY_RULES MATCHES at least one spec''d path.
+
+    4. Asserts the test FAILS today on the `/term` vs `/terms` path-pattern, plus
+    any other similar drifts (the test should enumerate ALL such drifts at first run;
+    the maintainer triages each).'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-830.yaml
+- gap_id: TEST-GAP-831
+  behaviour: '**HIGH — `IngestionServiceImpl.ingest(...)` carries `@ReactiveTransactional`
+    on the OUTER transaction binding the WHOLE 14-processor chain + the OTLP metric
+    export. One failure anywhere in the 14-processor sequence rolls back the entire
+    batch. NO test asserts this batch-atomicity-without-signal contract.**
+
+
+    Per the sidecar''s `concepts.invariants.[0]`: "The `@ReactiveTransactional` here
+    is the **outer** transaction binding the WHOLE 14-processor chain (per F-008 chain
+    hop-3) + the OTLP export — one failure anywhere rolls back the entire batch (the
+    `batch_atomicity_without_signal` F-008 drift facet enforced at THIS line)."
+
+
+    **What atomic-rollback means in practice**:
+
+    - Inbound payload contains 1000 DataEntities + 50 lineage edges + 10 quality test
+    results.
+
+    - Mid-batch (e.g. processor #9 — `LineageIngestionRequestProcessor`) throws an
+    exception.
+
+    - Postgres rolls back the ENTIRE transaction: zero of the 1000 entities persist,
+    zero of the 50 lineage edges, zero of the 10 quality test results.
+
+    - The HTTP response is 5xx with a stack trace. The collector sees a generic error.
+
+    - **No signal to the operator** about which processor failed, which entity caused
+    it, or how to recover.
+
+
+    **Compound issue**: combined with F-008''s `silent_destruction_replace_not_merge`
+    drift facet, a partial failure can leave the catalog in a confusing state for
+    the OPERATOR (because the rollback works) but a confusing state for the COLLECTOR
+    (because the next retry may have different inputs based on transient state).
+
+
+    **Test gap shape**: Testcontainers integration test that:
+
+    1. Constructs a payload with N entities where the Mth entity will provoke a known-failure
+    (e.g. a malformed lineage edge referencing a non-existent parent ODDRN in a way
+    that breaks `LineageIngestionRequestProcessor`).
+
+    2. POSTs the payload.
+
+    3. Asserts: 5xx response.
+
+    4. Asserts: ZERO new entities in `data_entity` table (atomic rollback verified).
+
+    5. Asserts: ZERO new lineage rows in `lineage` table.
+
+    6. Asserts: ZERO new metadata bindings.
+
+    7. Asserts: OTLP export did NOT fire (the OTLP step is downstream of the failing
+    processor in the same transaction).
+
+
+    PINS the all-or-nothing contract.
+
+
+    **Why HIGH**: the contract is load-bearing for every collector''s retry semantics
+    + downstream consumer expectations + the F-008 5-vertex picture''s correctness.
+    A regression that, e.g., refactored `IngestionProcessorChain.processIngestionRequest`
+    to commit per-phase (instead of per-batch) would break this contract with no test
+    signal.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-831.yaml
+- gap_id: TEST-GAP-832
+  behaviour: "**HIGH — Duplicate ODDRNs within a single `DataEntityList` payload CRASH\
+    \ the entire ingestion with `IllegalStateException: Duplicate key`. Caller receives\
+    \ 5xx with no structured 400 error message.**\n\nMechanism (`IngestionServiceImpl.java:86`):\n\
+    ```java\ningestionDtoMap = items.stream()\n    .map(d -> mapper.createIngestionDto(d,\
+    \ dataSourceId))\n    .collect(Collectors.toMap(DataEntityIngestionDto::getOddrn,\
+    \ identity()));  // ← two-arg → throwing merger\n```\n\nThe `Collectors.toMap(keyMapper,\
+    \ valueMapper)` overload uses Java's default throwing merge function (per `Collectors.uniqKeysMapMerger`).\
+    \ If the same ODDRN appears twice in the inbound `items` list, the merger throws\
+    \ `IllegalStateException(\"Duplicate key \" + key)`.\n\n**Failure chain**:\n1.\
+    \ Collector emits two `DataEntity` records with the same ODDRN in one `DataEntityList`\
+    \ (e.g. a Postgres collector enumerating the same table via two different schemas\
+    \ due to a search_path bug).\n2. `IngestionServiceImpl.persistDataEntities` throws\
+    \ `IllegalStateException: Duplicate key urn:...` mid-stream.\n3. The exception\
+    \ escapes the `@ReactiveTransactional` boundary; Postgres rolls back the entire\
+    \ batch (per TEST-GAP-831).\n4. WebFlux default error handler returns HTTP 500\
+    \ with the stack trace in the response body.\n5. Operator sees a 500 with `IllegalStateException`\
+    \ — confusing, because they expected either a 400 \"Duplicate ODDRN\" structured\
+    \ error OR silent dedup.\n\n**Why HIGH** (the sidecar rates this as untested behaviour\
+    \ without a severity):\n- The crash is DETERMINISTIC for the duplicate-ODDRN input\
+    \ — every retry with the same input fails the same way.\n- The error message is\
+    \ OPAQUE — collectors must reverse-engineer \"Duplicate key in toMap\" → \"your\
+    \ payload has duplicate ODDRNs\".\n- The decision (crash vs silently dedup vs\
+    \ return 400) is undocumented + untested + load-bearing for every collector's\
+    \ idempotency story.\n\n**Test gap shape**: regression-pin test that\n1. POSTs\
+    \ a `DataEntityList` with 5 entities where two share the same ODDRN.\n2. Asserts\
+    \ 5xx (the current crash behaviour).\n3. Asserts the response body / log line\
+    \ contains `Duplicate key` (the implementation detail leak).\n4. Pairs with REFACTOR-NNN\
+    \ (either structured 400 OR silent dedup; the choice is the maintainer's).\n\n\
+    PINS the current behaviour so future refactors (silent dedup) are deliberate."
+  test_class: missing-edge-case
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-832.yaml
+- gap_id: TEST-GAP-833
+  behaviour: '**HIGH — `calculateTotalDeltaCount` (IngestionServiceImpl.java:276-301)
+    NPE on null `entityClassIds` field. The new-pojo path at line 281-286 lacks a
+    null guard before passing the field to `calculateDeltaValues` (line 307) which
+    calls `Arrays.stream(entityClassIds)`.**
+
+
+    Per the sidecar''s `tests_coverage_semantic.uncovered_behaviours.[2]`:
+
+    > "`calculateTotalDeltaCount` edge cases: (a) entity with null `entityClassIds`
+    reaching `classesAndTypeFilled` check (line 313-315) — confirmed filter returns
+    false, skips decrement, but new-pojo path at line 281-286 has no null guard before
+    `pojo.getEntityClassIds()` is passed to `calculateDeltaValues`; a new pojo with
+    null entityClassIds would NPE at `Arrays.stream(entityClassIds)` (line 307). No
+    test for null-entityClassIds path."
+
+
+    **Failure chain**:
+
+    1. Collector emits a `DataEntity` whose `entity_class_ids` is null (possible via
+    the OpenAPI ingestion contract — the field is `nullable: true` per components.yaml).
+
+    2. Service-tier converts to `DataEntityPojo` with null `entityClassIds`.
+
+    3. `bulkCreate(pojosToCreate)` returns the new pojo with null `entityClassIds`.
+
+    4. `calculateTotalDeltaCount` iterates new pojos at line 281-286 and calls `calculateDeltaValues(pojo.getEntityClassIds(),
+    ...)`.
+
+    5. `calculateDeltaValues` (line 307) calls `Arrays.stream(entityClassIds)` on
+    the null array.
+
+    6. NPE escapes the `@ReactiveTransactional` boundary; Postgres rolls back the
+    entire batch (per TEST-GAP-831).
+
+    7. Operator sees HTTP 500 with NPE stack trace.
+
+
+    **Why HIGH**: same severity class as TEST-GAP-832 (duplicate-ODDRN crash) — deterministic
+    untested crash that propagates as opaque 500.
+
+
+    **Test gap shape**: regression-pin test that
+
+    1. Constructs a payload with one entity having null `entity_class_ids`.
+
+    2. POSTs.
+
+    3. Asserts HTTP 5xx + NPE stack frame contains `calculateDeltaValues`.
+
+
+    PINS the current crash behaviour; pairs with REFACTOR-NNN (null guard at line
+    281-286 OR explicit 400 if null is forbidden).'
+  test_class: missing-edge-case
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-833.yaml
+- gap_id: TEST-GAP-834
+  behaviour: '**MEDIUM — `IngestionServiceImpl` carries the Lombok `@Slf4j` annotation
+    (line 53) but contains ZERO `log.*` calls. Every behavioural decision (JOB_RUN
+    split, DELETED-status restore, MICROSERVICE exclusion, hollow-vs-real partition,
+    duplicate-ODDRN crash, null-entityClassIds NPE) executes SILENTLY.**
+
+
+    Per the sidecar''s `dependencies_semantic.requires-runtime`:
+
+    > "Lombok `@Slf4j` (line 53) — log instance present. **Verified: zero `log.*`
+    calls in the file** (Grep for `log\.` in IngestionServiceImpl.java returned no
+    matches). The `@Slf4j` annotation is dead code at this layer — every behavioural
+    decision in the file (the JOB_RUN split, the DELETED-status restore, the MICROSERVICE
+    exclusion, the hollow-vs-real partition, the duplicate-ODDRN crash) executes silently."
+
+
+    **Operator-impact chain**:
+
+    1. F-008 5-vertex picture establishes that this service tier is reached by ANY
+    HTTP caller under `auth.ingestion.filter.enabled=false` (the shipped default).
+
+    2. The service performs DESTRUCTIVE writes: replace-not-merge on lineage, delete-on-absence
+    on metadata bindings, EXTERNAL_STATISTICS tag reconciliation, etc.
+
+    3. An attacker exercising the destructive surface produces NO log line in the
+    service tier — no audit trail.
+
+    4. A post-incident question "which payloads were ingested at 2am Tuesday?" has
+    no operational answer from application logs alone.
+
+
+    **Composes with**:
+
+    - TEST-GAP-815/819/823 (unauthenticated reach): the attack surface exists.
+
+    - TEST-GAP-832/833 (untested crashes): even the CRASHES are silent (the NPE /
+    IllegalStateException is logged at the WebFlux error handler, not the service
+    tier).
+
+    - F-008 `destruction_under_default_off_auth` drift facet: the destruction happens
+    here; the audit gap is here.
+
+
+    **Why MEDIUM** (operationally important, not security-load-bearing alone):
+
+    - The audit gap is one of MANY contributors to the platform-wide audit-log presence
+    asymmetry (per concept `audit-log-presence-asymmetry-2-tier-audit-story`).
+
+    - Some logging IS performed downstream — `OTLPMetricService.exportMetrics` (terminal
+    step) likely emits metrics; processor chain may log per-processor.
+
+    - But the service-tier orchestration decisions (which entities updated, which
+    restored, which crash-rollback''d) are invisible.
+
+
+    **Test gap shape**: regression-pin test that
+
+    1. Configures a test `LogCaptor` for `IngestionServiceImpl`.
+
+    2. POSTs a happy-path payload.
+
+    3. Asserts the `IngestionServiceImpl` logger emitted ZERO entries — pinning the
+    current silent behaviour.
+
+    4. Pair with REFACTOR-NNN that adds key log lines at decision points (JOB_RUN
+    split count, restore count, hollow-promotion count, processor success/failure).'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-834.yaml
+- gap_id: TEST-GAP-835
+  behaviour: '**HIGH — CROSS-CUTTING META: all 5 batch-Z nodes carry ZERO direct tests
+    (3 nodes) or HAPPY-PATH-ONLY coverage (2 nodes). Combined with the F-008 5-vertex
+    picture, this is the largest single-batch test gap in the codebase: a security-critical
+    ingestion controller + spec + service tier with comprehensive failure-mode absence.**
+
+
+    **Per-node coverage status (verified by Glob + Grep on `<odd-platform-repo>/odd-platform-api/src/test`)**:
+
+
+    | Node | Existing test files | Coverage shape |
+
+    |---|---|---|
+
+    | `getDataEntitiesByDEGOddrn` | NONE | Grep `getDataEntitiesByDEGOddrn|listEntitiesWithinDEG|getDEGEntities`
+    returns 0 matches. ZERO direct tests at any layer (controller / service / repository)
+    |
+
+    | `postDataSetStatsList` | `BaseIngestionTest.java:82-88` (scaffold) + `DatasetFieldIngestionTest.java`
+    (1 happy-path test) | Happy-path ONLY. ZERO negative paths: no auth, no empty/null,
+    no idempotency, no tag-side-effect, no cross-dataset write |
+
+    | `ingestMetrics` | `BaseIngestionTest.java:90-96` (scaffold) + `MetricsIngestionTest.java`
+    (INTERNAL_POSTGRES happy paths) + `PrometheusMetricsIngestionTest.java` (PROMETHEUS
+    happy paths) | Happy-path-only (gauge/counter/histogram/summary). ZERO security/tenant/PII/cardinality/cross-storage-migration
+    tests |
+
+    | `openapi-spec` | NONE | No contract test exists. Per Grep `securitySchemes\|openapi.*security\|ContractTest\|SpecConformance`:
+    0 matches. The spec is structurally untestable today |
+
+    | `IngestionServiceImpl` | Inherited via `BaseIngestionTest` integration tests
+    | ZERO unit tests. Every line-anchored invariant (duplicate-ODDRN crash, null-classes
+    NPE, MICROSERVICE exclusion, hollow-promotion delta) is observed only via side-effect
+    on full integration path |
+
+
+    **The 21 batch-Z TEST-GAPs (TEST-GAP-815..834) above pin specific surfaces of
+    this gap. THIS entry pins the META-level finding**: the absence of ANY test coverage
+    on the entire batch-Z surface is the cross-cutting structural finding.
+
+
+    **Cluster mapping to TEST-GAP IDs by node**:
+
+
+    - **getDataEntitiesByDEGOddrn** (4 entries): TEST-GAP-815 (unauthenticated reach),
+    TEST-GAP-816 (sequential ID enumeration), TEST-GAP-817 (404-vs-empty contract),
+    TEST-GAP-818 (soft-delete leak).
+
+    - **postDataSetStatsList** (4 entries): TEST-GAP-819 (unauthenticated cross-dataset
+    write), TEST-GAP-820 (tag-creation bypass), TEST-GAP-821 (empty/null payload asymmetry),
+    TEST-GAP-822 (replay-removes-tags).
+
+    - **ingestMetrics** (5 entries): TEST-GAP-823 (unauthenticated reach, no toggle),
+    TEST-GAP-824 (tenant_id absent on INTERNAL_POSTGRES), TEST-GAP-825 (ODDRN cardinality
+    DoS), TEST-GAP-826 (PII label propagation), TEST-GAP-827 (cross-storage migration
+    one-way).
+
+    - **openapi-spec** (3 entries): TEST-GAP-828 (no securitySchemes), TEST-GAP-829
+    (no 4xx/5xx error responses), TEST-GAP-830 (REFACTOR-217 spec-vs-SecurityConstants).
+
+    - **IngestionServiceImpl** (4 entries): TEST-GAP-831 (atomic rollback 14-processor
+    chain), TEST-GAP-832 (duplicate-ODDRN crash), TEST-GAP-833 (null entity_class_ids
+    NPE), TEST-GAP-834 (@Slf4j unused / silent audit trail).
+
+
+    **Authoring sketch — the test-pillar backlog should treat batch-Z as a SINGLE
+    pillar-feature closure target** with the F-008 5-vertex picture as the cohesion
+    principle:
+
+
+    1. **F-008 closure phase 1 — Spec contract tests** (TEST-GAP-828/829/830). Build-time,
+    no Spring context needed. Establishes the contract-conformance harness for the
+    entire `/api/*` + `/ingestion/*` surface.
+
+    2. **F-008 closure phase 2 — IngestionController security matrix** (TEST-GAP-815/819/823
+    + sister entries). WebTestClient-based reach matrix across the 4-mode auth × filter-state
+    × token-presence permutations. Establishes the unauthenticated-reach pin for every
+    IngestionController sub-path.
+
+    3. **F-008 closure phase 3 — IngestionServiceImpl unit/integration tests** (TEST-GAP-831/832/833/834).
+    Testcontainers-Postgres integration + JUnit unit. Covers the line-anchored invariants
+    the impl-axis sidecar enumerated.
+
+    4. **F-008 closure phase 4 — Multi-tenant + PII + DoS** (TEST-GAP-824/825/826).
+    Two-context Spring test for tenant isolation; cardinality DoS test against Postgres
+    + Prometheus testcontainers; PII propagation regression-pin.
+
+
+    Total effort: ~4 sprint-weeks of dedicated test-pillar work. The maintainer''s
+    `pillars/tests/` backlog (when activated) should treat this as ONE backlog item
+    (the F-008 chain + spec + service-tier) with 21 sub-tasks corresponding to the
+    individual TEST-GAP IDs.
+
+
+    **Why HIGH (the cross-cutting note vs CRITICAL)**: no test means EVERY individual
+    gap is unconfirmed at runtime. The CRITICAL-rated entries (TEST-GAP-815/816/819/823/824)
+    compose with this cross-cutting absence into "the F-008 chain is operationally
+    uncertain". HIGH because the absence itself is the structural finding; individual
+    CRITICAL gaps are pinned in their own entries.
+
+
+    **Test gap shape**: this entry is the META-anchor. The 21 individual entries pin
+    specific surfaces. Implementing all 21 closes the F-008 5-vertex test coverage
+    from zero-comprehensive (currently happy-path-only) to security-comprehensive.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-835.yaml

@@ -39,3 +39,34 @@
   - NEGATIVE-CASE (`getDataEntityDownstreamLineage`, `getDataEntityUpstreamLineage`, `getDataEntityGroupsLineage`): NO anchor-set; the caller supplies an entity-id / DEG-id; the response is the full reachable subgraph; cross-owner readable to any authenticated caller
 - The visibility-model axis likely extends BEYOND the lineage cluster — operator-facing surfaces like ownership reads, term reads, attachment reads, alert reads (DOC-GAP-002 + DOC-GAP-157) all need a clear visibility-model column. The pillar-level META at DOC-GAP-167 captures the methodological recommendation.
 - The 4th batch-M sidecar (`SearchController.facets`) is on a different controller but informs the broader api-reference page coverage gap; the 4 search-area findings (DOC-GAP-080 existing; DOC-GAP-160 + 161 + 166 new) form a coverage-gap cluster on the search-page (cross-link DOC-GAP-167 META's methodology meta-recommendation).
+
+## Batch Z append
+
+## Batch Z append
+
+#### Batch 2026-05-20-Z STRENGTHENS — 9-vs-35-tag coverage gap; DOC-GAP-244 spinoff captures the platform-wide enumeration
+
+Batch Z's `odd-platform__openapi__spec__odd-platform-public-api.md` sidecar provides the FIRST spec-axis primary source for DOC-GAP-009. The original framing was 40-operation `dataEntity` sub-tag coverage gap; this batch promotes the framing to PLATFORM-WIDE with the openapi-spec primary source enumerating all 35 tags and explicitly naming the 26 uncovered tags.
+
+**The 9-vs-35-tag enumeration** (per the openapi-spec sidecar `bugs_limitations_corner_cases.[7]`):
+- **Covered (9)**: Alerts, Data Collaboration, Directory, Glossary, Integrations, Lineage, Query Examples, Reference Data, Relationships
+- **Uncovered (26)**: `dataEntity` (45+ ops; the largest single gap), `dataSet`, `dataSource`, `owner`, `tag`, `namespace`, `policy`, `role`, `permission`, `collector`, `activity`, `appInfo`, `search`, `datasetField`, `dataQuality`, `dataQualityRuns`, `ownerAssociationRequest`, `metadata`, `dataEntityAttachment`, `feature`, `identity`, `title`, `dataEntityRun`, `dataInput`, `dataConsumer`, `links`, `genai`
+
+The 26 uncovered tags represent ~80% of the platform's 194 operations.
+
+**DOC-GAP-244 NEW (batch Z)** captures the platform-wide framing as a separate finding so the 9-vs-40-dataEntity-operation framing of DOC-GAP-009 (the original) remains the canonical per-tag-deep-dive anchor; DOC-GAP-244 is the platform-wide breadth anchor. The two findings together establish:
+- DOC-GAP-009 — DEPTH (40 dataEntity operations need detailed coverage — the largest tag)
+- DOC-GAP-244 — BREADTH (26 tags have no sub-page — the platform-wide gap)
+
+**The compound with DOC-GAP-242 (no securitySchemes in spec)**: the 26 missing sub-pages + no auth model in the spec = third-party API consumers integrating against the platform's API have neither doc-side guidance for 80% of operations nor spec-level auth model. The integration story is structurally under-documented at every layer.
+
+**The DOC-GAP-099 META cluster framing**: the coverage-gap failure shape is one of 6 (per DOC-GAP-242 NEW batch Z) failure shapes in the OpenAPI authoring-quality cluster. DOC-GAP-009 + DOC-GAP-244 collectively anchor the coverage-gap shape.
+
+**Doc-side action expansion** (per DOC-GAP-244's framing):
+- Add an explicit "API surface coverage" section to `developer-guides/api-reference.md` enumerating the 9 covered tags and the 26 uncovered tags (the high-leverage near-term fix).
+- Author per-uncovered-tag sub-pages in priority order (longest cumulative effort but the canonical resolution).
+- Add a CI gate that compares the hub sub-page count to the spec tag count (structural mitigation to prevent further drift).
+
+**The doc-vs-spec naming ambiguity surfaced this batch**: the hub's "Glossary" sub-page maps to the spec's `term` tag — name MISMATCH. Other sub-pages match: "Alerts" → `alert`, "Data Collaboration" → `dataCollaboration`. The hub's sub-page naming inconsistency is one factor that obscures the gap (operators searching the spec for "Glossary" find nothing). DOC-GAP-244 surfaces this naming inconsistency as part of the platform-wide framing.
+
+**Severity stays HIGH** for DOC-GAP-009 (the dataEntity-deep-dive framing); DOC-GAP-244 is MEDIUM (the platform-wide breadth framing) because the dataEntity gap dominates the operational impact. Coherence: strengthens DOC-GAP-009 with platform-wide enumeration. No conflicts with existing batch-L/M framing.

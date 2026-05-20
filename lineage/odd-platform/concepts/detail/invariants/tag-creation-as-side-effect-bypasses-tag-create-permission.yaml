@@ -1,0 +1,142 @@
+name: Tag-creation-as-side-effect bypasses TAG_CREATE permission via EXTERNAL_STATISTICS-origin stats ingest
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+- P-04
+- P-01
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20-Z (postDataSetStatsList sidecar)** —
+  the `POST /ingestion/entities/datasets/stats` endpoint accepts a
+  `DatasetStatisticsList` payload of per-dataset records, each carrying
+  per-field `DataSetFieldStat` entries with an optional
+  `tags: List<Tag>` array. The implementation
+  (`DatasetFieldServiceImpl.updateFieldsTags` line 191-231) calls
+  `tagService.getOrCreateTagsByName(...)` (line 202) which CREATES catalog
+  tag rows for any tag name in the payload that doesn't already exist.
+  The created tags are stamped `TagOrigin.EXTERNAL_STATISTICS` (TagOrigin.java:6;
+  `createExternalStatisticsRelation` at DatasetFieldServiceImpl.java:273-278).
+
+  **The bypass**: the normal Tags-management flow is the Tags tab in
+  Management UI (P-08 sub-feature), RBAC-gated by `TAG_CREATE` permission.
+  The stats-ingestion path is the SIDE-CHANNEL — tags are created as a
+  side-effect of stats writing, NO TAG_CREATE permission is checked. The
+  tags created via this path are functionally identical to UI-created tags
+  EXCEPT for the `origin` discriminator: they are discoverable in the
+  catalog's tag search and filter facets, they participate in tag-based
+  data-entity classification, they appear in the per-data-entity Tags
+  panel — but they were created without authorization.
+
+  **Composition with REFACTOR-185 AUTH-MODE-ORTHOGONAL facet**: the
+  endpoint is unauthenticated in every shipped deployment posture
+  (per the batch-Z REFACTOR-185 27-sidecar extension). Combined with
+  this side-channel: ANY HTTP caller able to reach the platform's port
+  can populate the catalog's tag taxonomy with arbitrary tag names by
+  submitting `DatasetStatisticsList` payloads. The tags persist; they
+  are discoverable by all authenticated users; they cannot be
+  distinguished from legitimate tags at the catalog-search layer
+  (only at the per-relation `origin` discriminator).
+
+  **Why the EXTERNAL_STATISTICS origin matters (but doesn't help here)**:
+  the origin discriminator is load-bearing for the reconciliation
+  semantics — `relationsToDelete = existingRelations.filter(r ->
+  !relationsToCreate.contains(r))` (DatasetFieldServiceImpl line 221-223)
+  operates ONLY on EXTERNAL_STATISTICS-origin relations, leaving INTERNAL
+  (UI-curated) tags intact (per the
+  `external-metadata-overwrite-silent-no-origin-check` companion invariant
+  family). The origin discriminator is the safety net for re-ingest
+  reconciliation; it does NOT protect tag-creation: getOrCreateTagsByName
+  creates the tag if it doesn't exist regardless of intended origin.
+
+  **Severity MEDIUM**: the consequence is tag-namespace pollution rather
+  than direct data loss. But the pollution is operationally visible
+  (tags appear in search facets) and operationally costly to clean up
+  (the Tags UI doesn't surface origin to operators by default; rows
+  must be cleaned via SQL or via repeated stats payloads with smaller
+  tag sets).
+axes_present:
+- controllers
+- services
+nodes:
+- odd-platform java IngestionController controller-method:postDataSetStatsList
+contributors:
+- |-
+  postDataSetStatsList.md (batch Z PRIMARY SOURCE):
+    concepts.invariants.[3] (Idempotency: re-POST OVERWRITES; tag
+    reconciliation is delete-then-recreate on the EXTERNAL_STATISTICS
+    origin subset) +
+    dependencies_semantic.coupling.[5] (EXTERNAL_STATISTICS tag flow:
+    statistics ingestion has a SIDE EFFECT on catalog's tag taxonomy;
+    `tagService.getOrCreateTagsByName(...)` at
+    DatasetFieldServiceImpl.java:202 CREATES tag rows if they don't
+    exist; this is privileged in the Tags-management UI
+    (TAG_CREATE permission) but reachable via unauthenticated POST) +
+    bugs_limitations_corner_cases.[5] MEDIUM (Tag-creation-as-side-effect
+    is reachable WITHOUT authentication AND WITHOUT TAG_CREATE permission;
+    attacker can populate catalog tag taxonomy with arbitrary tag names
+    by submitting DatasetStatisticsList payloads) +
+    security.known_security_gaps.[2] MEDIUM (Tag-creation-as-side-effect
+    bypasses TAG_CREATE permission; tags persist in the global tag
+    namespace and are discoverable via tag search and tag-filter facets) +
+    implicit_adrs.[2] (TagOrigin.EXTERNAL_STATISTICS is deliberately
+    load-bearing for the reconciliation; the origin tag distinguishes
+    statistics-delivered tags from INTERNAL/UI tags AND from other
+    external origins)
+evidence:
+- |-
+  postDataSetStatsList.md:dependencies_semantic.coupling.[5] (the
+  side-effect mechanism — getOrCreateTagsByName at line 202 reachable
+  via unauthenticated POST)
+- |-
+  postDataSetStatsList.md:bugs_limitations_corner_cases.[5] MEDIUM
+  (Tag-creation-as-side-effect; TAG_CREATE bypass)
+- |-
+  postDataSetStatsList.md:security.known_security_gaps.[2] MEDIUM
+  (the documented gap — tag namespace pollution via unauthenticated POST)
+- |-
+  postDataSetStatsList.md:implicit_adrs.[2] (TagOrigin.EXTERNAL_STATISTICS
+  load-bearing for reconciliation; safety net for re-ingest, NOT for
+  tag-creation)
+mitigations_unimplemented:
+- |-
+  Code-side (immediate): change `tagService.getOrCreateTagsByName(...)`
+  call to `tagService.getTagsByName(...)` (lookup-only, no auto-create)
+  on the stats-ingestion path. Tags absent from the catalog are silently
+  dropped from the per-field stat's tag list. Surface affected count in
+  the response body. Closes the side-channel; requires UI flow to create
+  the tag explicitly via the Tags tab first.
+- |-
+  Code-side (composition): scope this fix to the AUTH-MODE-ORTHOGONAL
+  facet — once the endpoint is brought under auth (via filter broadening,
+  whitelist removal, or per-endpoint filter), the side-channel concern
+  reduces to 'authenticated user creates tag without TAG_CREATE
+  permission via stats path' which is fixable via a programmatic
+  `permissionService.hasPermission(TAG_CREATE)` check at the create
+  branch.
+- |-
+  Doc-side: extend the Data Quality page's reference to
+  POST /ingestion/entities/datasets/stats with explicit naming of the
+  tag-as-side-effect contract: 'Tags submitted in DataSetFieldStat.tags
+  populate the catalog's tag taxonomy with EXTERNAL_STATISTICS origin —
+  no TAG_CREATE permission is checked'. Operators relying on TAG_CREATE
+  for tag-creation control must be aware of this side channel.
+severity: MEDIUM
+severity_dim: security-side-channel-tag-namespace-pollution
+cross_batch: true
+notes: |-
+  Surfaced batch 2026-05-20Z by the postDataSetStatsList sidecar.
+  Composition partners: REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (this
+  batch) and the existing `external-metadata-overwrite-silent-no-origin-check`
+  family (origin-discriminator-as-safety-net pattern, here demonstrating
+  its limit: the origin discriminator protects reconciliation but does
+  NOT protect creation).
+
+  Cross-references:
+    - REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (this batch)
+    - cross-dataset-stats-write-no-parent-child-consistency-check (this
+      batch) — composition partner; same endpoint surfaces both gaps
+    - external-metadata-overwrite-silent-no-origin-check (origin-as-
+      safety-net pattern; here the safety net does not extend to the
+      create path)
+    - tag-with-internal-vs-external-distinction (canonicalisation
+      candidate)

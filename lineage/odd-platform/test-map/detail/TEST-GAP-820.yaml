@@ -1,0 +1,74 @@
+gap_id: TEST-GAP-820
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java IngestionController controller-method:postDataSetStatsList"
+pillars_affected: [P-04, P-08, P-09]
+surfaced_by:
+  - "postDataSetStatsList.md:bugs_limitations_corner_cases.[5] MEDIUM (tag-creation-as-side-effect)"
+  - "postDataSetStatsList.md:security.known_security_gaps.[2] MEDIUM"
+  - "postDataSetStatsList.md:tests_coverage_semantic.uncovered_behaviours.[5]"
+behaviour: |-
+  **HIGH — Statistics ingestion is an unauthenticated side-channel for catalog tag taxonomy population.**
+
+  `DatasetFieldServiceImpl.updateStatistics` (line 202) calls `tagService.getOrCreateTagsByName(tagNames)` for every tag name in the payload's `DataSetFieldStat.tags` array. This CREATES catalog `tag` rows for tag names that don't exist — bypassing the `TAG_CREATE` permission that gates the UI's Tags-management surface (the Management tab's Tags is RBAC-gated; the stats path is the bypass).
+
+  **Bypass chain**:
+  1. Attacker submits unauthenticated `POST /ingestion/entities/datasets/stats` (per TEST-GAP-819's unauthenticated reach).
+  2. Payload includes `tags: [{name: "any-string"}]` on any `DataSetFieldStat`.
+  3. `tagService.getOrCreateTagsByName` inserts new tag rows for unseen names.
+  4. New tags are stamped `TagOrigin.EXTERNAL_STATISTICS` (`TagOrigin.java:6`) — distinguishing them from `INTERNAL` (UI-curated) tags.
+  5. Tags become discoverable by all authenticated users via tag search and tag-filter facets.
+  6. Tags persist in the catalog tag namespace until manually deleted by a UI admin.
+
+  **Why HIGH** (the sidecar rates MEDIUM):
+  - The bypass is **silent** — no audit log entry on tag creation via this path.
+  - The bypass **persists** — tags remain in the namespace after the attack.
+  - The bypass **propagates** — every tag is discoverable across all UI surfaces (autocomplete, filter facet, tag-popularity ranking via the `listMostPopular` CTE — TEST-GAP-545 sister).
+  - The bypass **mocks the RBAC model** — `TAG_CREATE` is gated for a reason (preventing namespace pollution); the side-channel renders it ineffective for any deployment where the ingestion endpoint is reachable (i.e. every shipped deployment per TEST-GAP-819).
+
+  **Concrete operator impact**:
+  - Attacker populates catalog with `tags: [{name: "PROD-CRITICAL"}, {name: "DEPRECATED"}, {name: "SENSITIVE-PII"}]` — confusing UI users about data classification.
+  - Attacker pollutes the tag-popularity ranking by injecting thousands of unique tag names.
+  - Combined with the no-rate-limit posture (TEST-GAP-816 family), the attacker can scale to thousands of tag-creations per second.
+
+  **Test gap shape**: regression-pin test that:
+  1. Asserts unauthenticated POST with novel tag names CREATES rows in the `tag` table.
+  2. Asserts the created rows carry `origin = 'EXTERNAL_STATISTICS'`.
+  3. Asserts no `activity_event` row is emitted for the tag creation.
+  4. Asserts the tags appear in `GET /api/tags?...` listing.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/DatasetFieldIngestionTest.java (covers happy-path tag side-effects; does NOT pin the unauthenticated bypass aspect)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/PostDataSetStatsListTagCreationSideChannelTAG_CREATEBypassTest.java"
+  name: "post_unauthenticated_tagsWithNovelName_createsTagRowsWithoutTAG_CREATE_pinsBypass"
+evidence:
+  - "postDataSetStatsList.md says (bugs_limitations_corner_cases.[5]): 'Tag-creation-as-side-effect is reachable WITHOUT authentication AND WITHOUT TAG_CREATE permission. tagService.getOrCreateTagsByName(...) (DatasetFieldServiceImpl.java:202) is called inside updateStatistics and creates any tag name in the payload. The normal Tags-management UI surface is RBAC-gated; the stats path is the side-channel.' (severity MEDIUM — promoted to HIGH per the chain analysis above)"
+  - "postDataSetStatsList.md says (security.known_security_gaps.[2]): 'Tag-creation-as-side-effect bypasses TAG_CREATE permission. Statistics payloads with DataSetFieldStat.tags = [{name: 'attacker-controlled'}] create new catalog tags unauthenticatedly. Tags persist in the global tag namespace and are discoverable by all authenticated users via tag search and tag-filter facets.' (severity MEDIUM)"
+  - "Verified at primary source: DatasetFieldServiceImpl.java:191-231 (updateFieldsTags → tagService.getOrCreateTagsByName(tagNames)) + TagOrigin.java:6 (EXTERNAL_STATISTICS origin enum value) + IngestionController.java:82-87 (no auth)"
+cross_references:
+  - "TEST-GAP-819 (sister — unauthenticated reach + cross-dataset write on the same endpoint; this entry is the TAG sub-surface)"
+  - "TEST-GAP-822 (sister — replay-removes-tags silent destruction)"
+  - "TEST-GAP-545 (existing — tag-popularity CTE coverage gap; combined with this entry, the pollution propagates undetected)"
+  - "TEST-GAP-546 (existing — tag-origin filter coverage gap)"
+  - "REFACTOR-NNN (proposed, defence-in-depth): require authenticated principal at controller; require TAG_CREATE check at tag-creation side"
+  - "DOC-GAP-NNN (proposed): document the EXTERNAL_STATISTICS tag-side-channel explicitly OR close it"
+related_features: [F-008]
+related_pillar_features: ["P-04:F-001 Test Results Import", "P-08:F-Tags Tab Management", "P-09:Security & Access Control"]
+proposed_action: |-
+  Add `PostDataSetStatsListTagCreationSideChannelTAG_CREATEBypassTest`. Testcontainers integration test:
+
+  1. **Setup**: dataset D-A with field F-1. Pre-existing tag namespace: count rows in `tag` table = N. No granted permission for any user.
+  2. **Anonymous unauthenticated POST** with payload `{items: [{datasetOddrn: D-A.oddrn, fields: {F-1.oddrn: {boolean_stats: {true_count: 100}, tags: [{name: "attacker-controlled-1"}, {name: "PROD-CRITICAL"}]}}}]}` → assert 201.
+  3. **Assert tag table**:
+     - `SELECT count(*) FROM tag WHERE name IN ('attacker-controlled-1', 'PROD-CRITICAL')` returns 2.
+     - `SELECT origin FROM tag_to_dataset_field WHERE tag_id IN (...) AND dataset_field_id = F-1.id` returns 2 rows, all with `origin = 'EXTERNAL_STATISTICS'`.
+  4. **Assert audit absence**: `SELECT count(*) FROM activity_event WHERE event_type IN ('TAG_*', 'DATASET_FIELD_VALUES_UPDATED', ...)` returns 0 — the tag creation is invisible to the Activity Feed.
+  5. **Assert downstream propagation**: `GET /api/tags?name=PROD-CRITICAL` (UI listing) — assert returns the attacker-created tag.
+  6. **Sister assertion of survival**: re-POST without those tags → assert the tag ROWS persist in `tag` table (only the RELATION is removed via reconcile-on-replay — see TEST-GAP-822).
+
+  Pair with REFACTOR-NNN and DOC-GAP-NNN.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. No prior TEST-GAP names the EXTERNAL_STATISTICS-origin tag-creation bypass. Cross-references TEST-GAP-545/546 (tag-CTE coverage) — those entries pin the listMostPopular SQL surface; this entry pins the WRITE-side bypass that pollutes that surface. STRENGTHENS the F-008 picture by extending the unauthenticated-write blast radius beyond `dataset_field.stats` to `tag` + `tag_to_dataset_field` + downstream UI. No contradiction with F-008's existing scope.
+batch: 2026-05-20-Z
+feature_id: F-008

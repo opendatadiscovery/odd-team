@@ -1989,3 +1989,61 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - 247 detail-without-index in refactoring-scopes; 102 in implicit-adrs; 57+4 in doc-gaps
 - 5 probe candidates logged (P-W-1..P-W-5) — local docker-compose feasible (PG + WireMock + MailHog + injected ALERT row)
 
+
+## Batch 2026-05-20-Z — P-11 Platform API closure: IngestionController methods + openapi.yaml + IngestionServiceImpl (5/5; retry after API 529 overload)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 134 prior + 5 new = **139 total**; 0 deferred; **retry #1 after API 529 overload on first attempt**
+- **Theme**: P-11 Platform API & Developer Surface — THE LAST UNCOVERED PILLAR
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `IngestionController.getDataEntitiesByDEGOddrn` | P-10+P-11 | **GET /ingestion/entities/{degOddrn} is UNAUTHENTICATED in EVERY shipped deployment mode** — SecurityConstants.WHITELIST_PATHS exempts /ingestion/**, IngestionDataEntitiesFilter binds only POST /ingestion/entities, no @PreAuthorize anywhere. Sequential-ID enumeration. Cross-owner DEG-member enumeration. F-016 sibling empty-200-vs-404 contract asymmetry. **REFACTOR-185 17th sidecar**. |
+| `IngestionController.postDataSetStatsList` | P-10 | Existing sidecar already enriched (verified intact). UNAUTHENTICATED stats write. Cross-dataset stats write (no parent-child consistency). TAG_CREATE-permission bypass via tagService.getOrCreateTagsByName side-effect. F-008 silent_destruction_replace_not_merge family. |
+| `IngestionController.ingestMetrics` | P-07+P-10 | 4-line proxy → mirrored beans. **UNAUTHENTICATED in every deployment posture**. **INTERNAL_POSTGRES path has NO tenant_id column — tenant isolation NONEXISTENT on default backend**. Path correction: /ingestion/metric_sets → /ingestion/metrics. |
+| `odd-platform-specification/openapi.yaml` | P-11 | **P-11 CLOSED at canonical contract layer**. 4212 + 2937 lines (spec + components). 194 operations across 35 tags. **ZERO securitySchemes / ZERO security: declarations** — spec doesn't model auth. **REFACTOR-217 path-mismatch confirmed**: spec at openapi.yaml:973,1042 is CORRECT, SecurityConstants is WRONG. 9+ status-code-drift instances enumerated. |
+| `IngestionServiceImpl` | P-10 | **F-008 5-VERTEX closure** (filter + controller + service + repo + SQL). @ReactiveTransactional outer-txn binding 14-processor chain. Establisher-keyed lineage replacement. 3 NEW F-008 drift facet candidates. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 386 → **399 concepts** | +13 new (11 invariants + 1 entity + 1 canonicalisation candidate) + 3 strengthened + 1 SUPERSEDED (metrics-ingestion path /metric_sets→/metrics). NEW: 3-unauth-ingestion-endpoints; tenant_id absent INTERNAL_POSTGRES; openapi ZERO securitySchemes; platform-api-architectural-shape META; F-016 contract asymmetry; 3 IngestionServiceImpl drift facets. |
+| adr-archaeologist (ADRs) | 188 → **192** | +4 (189-192) + 4 strengthened (ADR-001/003/026/027). ADR-189 OpenAPI-as-SoT / ADR-190 @ReactiveTransactional outer-txn / ADR-191 establisher-keyed lineage / ADR-192 S2S read AUTH-MODE-ORTHOGONAL (borderline_flag). |
+| adr-archaeologist (scopes) | 538 → **545** | +7 (539-545) + 2 strengthened. 5 HIGH: 3 unauth endpoints / tenant_id absent / cross-dataset stats / TAG_CREATE bypass / spec ZERO securitySchemes. 2 MEDIUM. REFACTOR-185 → 17+18-SIDECAR with AUTH-MODE-ORTHOGONAL property. REFACTOR-217 direction-of-fix PINNED. |
+| doc-gap-finder | 237 → **245** | +8 (238-245) + 7 META strengthened (DOC-001/009/018/038/074/099/107). 5 HIGH + 2 MEDIUM + 1 LOW. |
+| test-coverage-mapper | 811 → **832 indexed** | +21 (815-835) + 7 strengthened. **5 NEW CRITICAL → 143 CRITICAL**: unauth-everywhere ingestion endpoints (3); tenant_id absent; cross-dataset stats write. |
+| feature-flow-builder | 28 → **30 features** (+2 new, +3 extended) | **F-029 / P-11:F-001 Platform Public API Contract** (NEW — **CLOSES THE LAST UNCOVERED PILLAR**). **F-030 / P-07:F-005 Metrics Ingestion** (NEW). F-008 + F-016 + F-018 extended. 41 new drift facets. **ALL 11 PILLARS NOW HAVE MINTED FEATURES.** |
+
+### Coverage state after batch Z
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 139 | **35.2%** (was 33.9%) |
+| Effective coverage | 286 | **72.4%** (was 70.4%) |
+| Features discovered | 30 (was 28) | **+2 NEW** (F-029 P-11:F-001 + F-030 P-07:F-005) |
+| Total test-gaps | 832 indexed | 143 CRITICAL (was 138) |
+
+### Cross-batch triangulation deltas
+
+- **🎯 ALL 11 PILLARS NOW HAVE MINTED FEATURES** — P-11 closed by F-029
+- **REFACTOR-185 DISABLED-mode bypass now 17+18-SIDECAR** with NEW AUTH-MODE-ORTHOGONAL read-side property
+- **REFACTOR-217 path-mismatch direction-of-fix PINNED**: spec is correct, SecurityConstants is wrong
+- **F-008 5-VERTEX closure** with IngestionServiceImpl service-tier vertex
+- **3 unauthenticated /ingestion/** endpoints exposed in EVERY deployment mode (not just DISABLED — REFACTOR-185 extends to AUTH-MODE-ORTHOGONAL class)
+- **Tenant isolation NONEXISTENT** on INTERNAL_POSTGRES metrics backend
+- **OpenAPI spec ZERO securitySchemes** — platform's auth posture is illegible to its own contract
+- **F-016 DEG-Anchored Lineage** sibling-endpoint contract asymmetry (empty-200 vs 404)
+- **Concept-catalog SUPERSEDE** applied: metrics-ingestion path corrected /metric_sets → /metrics (LSN-018 Rule 6)
+- **Coherence-sweep candidates**: 55.1k (Y) → 60.5k (Z)
+
+### Follow-ups (logged, not blocking)
+
+- 1 transient failure mode learned: API 529 overload mid-batch — retry-after-30s + retry-after-loop-tick both viable recovery paths
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 256 detail-without-index in refactoring-scopes; 110 in implicit-adrs; 65+4 in doc-gaps
+- ZA still pending — UI canonical surface (LSN-017 region)
+

@@ -1,0 +1,65 @@
+gap_id: TEST-GAP-834
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:IngestionServiceImpl"
+pillars_affected: [P-09, P-10]
+surfaced_by:
+  - "IngestionServiceImpl.md:dependencies_semantic.requires-runtime (Lombok @Slf4j — zero log.* calls in the file)"
+behaviour: |-
+  **MEDIUM — `IngestionServiceImpl` carries the Lombok `@Slf4j` annotation (line 53) but contains ZERO `log.*` calls. Every behavioural decision (JOB_RUN split, DELETED-status restore, MICROSERVICE exclusion, hollow-vs-real partition, duplicate-ODDRN crash, null-entityClassIds NPE) executes SILENTLY.**
+
+  Per the sidecar's `dependencies_semantic.requires-runtime`:
+  > "Lombok `@Slf4j` (line 53) — log instance present. **Verified: zero `log.*` calls in the file** (Grep for `log\.` in IngestionServiceImpl.java returned no matches). The `@Slf4j` annotation is dead code at this layer — every behavioural decision in the file (the JOB_RUN split, the DELETED-status restore, the MICROSERVICE exclusion, the hollow-vs-real partition, the duplicate-ODDRN crash) executes silently."
+
+  **Operator-impact chain**:
+  1. F-008 5-vertex picture establishes that this service tier is reached by ANY HTTP caller under `auth.ingestion.filter.enabled=false` (the shipped default).
+  2. The service performs DESTRUCTIVE writes: replace-not-merge on lineage, delete-on-absence on metadata bindings, EXTERNAL_STATISTICS tag reconciliation, etc.
+  3. An attacker exercising the destructive surface produces NO log line in the service tier — no audit trail.
+  4. A post-incident question "which payloads were ingested at 2am Tuesday?" has no operational answer from application logs alone.
+
+  **Composes with**:
+  - TEST-GAP-815/819/823 (unauthenticated reach): the attack surface exists.
+  - TEST-GAP-832/833 (untested crashes): even the CRASHES are silent (the NPE / IllegalStateException is logged at the WebFlux error handler, not the service tier).
+  - F-008 `destruction_under_default_off_auth` drift facet: the destruction happens here; the audit gap is here.
+
+  **Why MEDIUM** (operationally important, not security-load-bearing alone):
+  - The audit gap is one of MANY contributors to the platform-wide audit-log presence asymmetry (per concept `audit-log-presence-asymmetry-2-tier-audit-story`).
+  - Some logging IS performed downstream — `OTLPMetricService.exportMetrics` (terminal step) likely emits metrics; processor chain may log per-processor.
+  - But the service-tier orchestration decisions (which entities updated, which restored, which crash-rollback'd) are invisible.
+
+  **Test gap shape**: regression-pin test that
+  1. Configures a test `LogCaptor` for `IngestionServiceImpl`.
+  2. POSTs a happy-path payload.
+  3. Asserts the `IngestionServiceImpl` logger emitted ZERO entries — pinning the current silent behaviour.
+  4. Pair with REFACTOR-NNN that adds key log lines at decision points (JOB_RUN split count, restore count, hollow-promotion count, processor success/failure).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionServiceImplSilentAuditTrailLog0EntriesRegressionPinTest.java"
+  name: "ingest_happyPath_IngestionServiceImplLoggerEmitsZeroEntries_pinsSilentAuditTrail"
+evidence:
+  - "IngestionServiceImpl.md says (dependencies_semantic.requires-runtime): 'Lombok @Slf4j (line 53) — log instance present. Verified: zero log.* calls in the file (Grep for log\\. in IngestionServiceImpl.java returned no matches). The @Slf4j annotation is dead code at this layer — every behavioural decision in the file (the JOB_RUN split, the DELETED-status restore, the MICROSERVICE exclusion, the hollow-vs-real partition, the duplicate-ODDRN crash) executes silently.'"
+  - "Verified at primary source: IngestionServiceImpl.java:53 (@Slf4j annotation present) + IngestionServiceImpl.java:55-315 (zero log.* call sites)"
+cross_references:
+  - "TEST-GAP-815/819/823 (sister — unauthenticated reach; this audit gap means even successful attacks are silent)"
+  - "TEST-GAP-832/833 (sister — untested crashes; the crashes are silent at this layer)"
+  - "TEST-GAP-816 (sister — sequential ID enumeration with audit absent; mirrored audit gap on the read-side)"
+  - "concept `audit-log-presence-asymmetry-2-tier-audit-story` (this entry is the 7th surface in the family)"
+  - "REFACTOR-NNN (proposed): add structured log lines at decision points; consider Activity-Feed integration for ingestion-side events"
+related_features: [F-008]
+related_pillar_features: ["P-09:Security & Access Control", "P-10:F-001 Batch Ingestion (S2S API)"]
+proposed_action: |-
+  Add `IngestionServiceImplSilentAuditTrailLog0EntriesRegressionPinTest`. JUnit + LogCaptor test:
+
+  1. **Setup**: `LogCaptor` configured for the `IngestionServiceImpl` logger (e.g. `LogCaptor.forClass(IngestionServiceImpl.class)`).
+  2. **POST /ingestion/entities** with a valid happy-path payload of 5 entities.
+  3. **Assert**: `LogCaptor.getLogEvents().size() == 0` — pins the current silent behaviour.
+  4. **Sister assertions**:
+     - Same setup but happy-path 100 entities → still 0 log entries.
+     - Crash-path payload (duplicate ODDRN per TEST-GAP-832) → still 0 log entries from `IngestionServiceImpl` (the WebFlux error handler logs elsewhere).
+     - Soft-delete-restore payload (re-ingest a previously-DELETED entity) → still 0 log entries.
+  5. **Maintainer-choice gate**: when REFACTOR-NNN lands, update test to assert ≥ 1 INFO-level log line per ingest, with structured fields like `entities_count`, `entities_restored`, `entities_hollow_promoted`, etc.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. STRENGTHENS the `audit-log-presence-asymmetry-2-tier-audit-story` concept by adding the 7th surface (IngestionServiceImpl). No prior TEST-GAP names the IngestionServiceImpl silent-audit-trail.
+batch: 2026-05-20-Z
+feature_id: F-008

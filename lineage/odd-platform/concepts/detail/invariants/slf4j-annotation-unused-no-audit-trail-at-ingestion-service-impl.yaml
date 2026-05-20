@@ -1,0 +1,120 @@
+name: '@Slf4j present but unused — no audit trail at IngestionServiceImpl + DatasetFieldServiceImpl.updateStatistics'
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+- P-10
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20-Z** —
+  `IngestionServiceImpl.java` declares the Lombok `@Slf4j` annotation
+  at the class level (per the IngestionServiceImpl sidecar) BUT no
+  method body invokes any `log.info / log.warn / log.error / log.debug`
+  call across the entire `ingest(...)` flow (the ENTIRE per-batch
+  reactive chain — datasource resolution / entity partition /
+  bulkUpdate / bulkCreate / processor chain dispatch / OTLP metric
+  export / response). The same shape repeats at
+  `DatasetFieldServiceImpl.updateStatistics` (line 158-181) — `@Slf4j`
+  imported at the class level, ZERO log calls on the stats-ingestion
+  path (the sole log.error at line 240-241 fires only in an inverse
+  branch that cannot actually execute by construction).
+
+  **The audit-trail consequence**: a security or operational incident
+  asking 'who ingested what data when, against which datasource, with
+  which token' has NO operational answer from application logs.
+  Activity Feed (the platform's user-facing audit surface) covers
+  data-entity-side mutations (per the AUDIT-LOG-PRESENCE-ASYMMETRY-2-TIER
+  pattern) BUT NOT ingestion writes; the ingestion path has no
+  `@ActivityLog` annotation on either service method. The platform's
+  combined log+activity audit surface for ingestion is ZERO.
+
+  **Composition with REFACTOR-185 AUTH-MODE-ORTHOGONAL facet**: under
+  default deployment the three S2S sub-path endpoints (metrics + stats +
+  get-by-deg) are unauthenticated. Combined with the audit-trail gap,
+  a post-incident investigation of 'who wrote what stats / who triggered
+  which ingestion' has NO data-side log AND no authentication context
+  to correlate with. Compounds the LSN-001 / LSN-002 risk pattern
+  (silent failure mode under default configuration).
+
+  **The contrast with sibling methods**:
+    - `DatasetFieldServiceImpl.updateInternalName` (line 99) IS
+      `@ActivityLog(event = DATASET_FIELD_INTERNAL_NAME_UPDATED)`
+    - `DatasetFieldServiceImpl.updateDatasetFieldTags` (line 119) IS
+      `@ActivityLog(event = DATASET_FIELD_TAGS_UPDATED)`
+    - `DatasetFieldServiceImpl.updateStatistics` (line 158-181) has
+      NEITHER `@ActivityLog` NOR any `log.*` invocation
+  The omission is an asymmetry WITHIN the same service class.
+
+  **Severity MEDIUM**: the operational consequence is real (post-incident
+  investigation is impossible) but the absence is fail-silent (no
+  visible failure to operators in normal ops). Composes with
+  REFACTOR-185 to amplify the impact.
+axes_present:
+- services
+nodes:
+- odd-platform java service service:IngestionServiceImpl
+- odd-platform java IngestionController controller-method:postDataSetStatsList
+contributors:
+- |-
+  IngestionServiceImpl.md (batch Z PRIMARY SOURCE):
+    coherence_check.[slf4j-annotation-unused-no-audit-trail] — @Slf4j
+    annotation present at class level + zero log invocations across
+    the ingest(...) chain; surfaces as F-008 drift class
+    `slf4j_annotation_unused_no_audit_trail_at_ingestion_service_impl`
+- |-
+  postDataSetStatsList.md (batch Z STRENGTHENS):
+    security.known_security_gaps.[5] MEDIUM (No diagnostic logging on
+    the controller path; no @ActivityLog on
+    DatasetFieldServiceImpl.updateStatistics — unlike sibling
+    updateInternalName and updateDatasetFieldTags methods which ARE
+    audited)
+evidence:
+- |-
+  IngestionServiceImpl.md:concepts.invariants (the @Slf4j-unused
+  observation) + coherence_check pre-emit pin
+- |-
+  postDataSetStatsList.md:security.known_security_gaps.[5] MEDIUM
+  (the sibling-method asymmetry + no diagnostic logging)
+- |-
+  F-008 detail YAML line 48 (drift class
+  slf4j_annotation_unused_no_audit_trail_at_ingestion_service_impl) —
+  recorded as a batch-Z drift facet at the F-008 closure
+mitigations_unimplemented:
+- |-
+  Code-side: add `@ActivityLog(event = DATASET_FIELD_STATS_UPDATED)` to
+  `DatasetFieldServiceImpl.updateStatistics` (line 158). Mirror the
+  sibling `updateDatasetFieldTags` line 119 pattern. Closes the audit
+  gap on the stats path.
+- |-
+  Code-side: add `log.info` invocations at the IngestionServiceImpl
+  per-batch entry point + exit point — e.g.
+  `log.info("ingestion batch starting: dataSourceId={}, entityCount={}",
+  dataSourceId, items.size())` + `log.info("ingestion batch complete:
+  delta={}, durationMs={}", totalDelta, durationMs)`. Provides
+  operational log lines for post-incident investigation.
+- |-
+  Code-side: add a `@ActivityLog(event = INGESTION_BATCH_RECEIVED)`
+  to `IngestionServiceImpl.ingest(...)`. Creates the per-batch
+  Activity Feed row. Composes with adding `collector_id` provenance
+  to the ActivityEvent payload.
+- |-
+  Doc-side: extend the integrations documentation with explicit naming
+  of the ingestion-side audit gap: "Ingestion batches are NOT recorded
+  in the Activity Feed; collector-side logs are the primary audit
+  surface." Operators expecting platform-side auditability of S2S
+  writes need this signpost.
+severity: MEDIUM
+severity_dim: audit-trail-ingestion-service-tier-no-domain-log-no-activity-log
+cross_batch: true
+notes: |-
+  Surfaced batch 2026-05-20Z by the IngestionServiceImpl sidecar
+  (F-008 service-tier vertex) + STRENGTHENED by the postDataSetStatsList
+  sidecar (DatasetFieldServiceImpl-tier sibling asymmetry).
+
+  Cross-references:
+    - REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (this batch) — composition
+      partner; under default deployment the S2S writes are unauthenticated
+      AND unaudited
+    - no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f
+      (the 2-tier audit pattern — this invariant adds the ingestion-tier
+      to Tier 2 UNAUDITED)
+    - LSN-001 + LSN-002 (silent-failure-pattern case-law)

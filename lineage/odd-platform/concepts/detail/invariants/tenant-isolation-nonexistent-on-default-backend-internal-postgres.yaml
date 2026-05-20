@@ -1,0 +1,119 @@
+name: Tenant isolation NONEXISTENT on the default metrics backend (INTERNAL_POSTGRES) — odd.tenant-id is PROMETHEUS-only
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+- P-07
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20-Z (ingestMetrics sidecar)** —
+  the `odd.tenant-id` configuration property is consumed ONLY by the PROMETHEUS-
+  path metric extractors (CounterTimeSeriesExtractor / GaugeTimeSeriesExtractor /
+  HistogramTimeSeriesExtractor / SummaryTimeSeriesExtractor) where it is
+  appended as a `tenant_id={value}` Prometheus label at bean construction
+  (@Value("${odd.tenant-id}")). The INTERNAL_POSTGRES backend — the
+  `matchIfMissing = true` DEFAULT — has NO `tenant_id` column on the
+  `metric_series` or `metric_point` tables (verified via
+  InternalIngestionMetricsServiceImpl.java:1-295 JOOQ POJO imports —
+  MetricSeriesPojo, MetricPointPojo do not declare tenant_id fields).
+
+  **The operator-trap**: a deployment that configures `odd.tenant-id=tenantA`
+  AND runs the SHIPPED DEFAULT `metrics.storage=INTERNAL_POSTGRES` (or omits
+  the key entirely — `matchIfMissing=true` makes INTERNAL_POSTGRES the
+  default) writes ALL metrics into ONE untyped Postgres namespace. There
+  is NO multi-tenant isolation. A multi-tenant deployment that relies on
+  `odd.tenant-id` for isolation under the default backend has NO isolation.
+
+  **The doc-side gap**: the live `configuration-and-deployment/odd-platform`
+  page (WebFetched 2026-05-20, status 200) names `odd.tenant-id` semantically
+  as a 'tenant identifier appended as a Prometheus query label' —
+  implicitly PROMETHEUS-only — but does NOT explicitly state that
+  INTERNAL_POSTGRES IGNORES it. Operators consulting the docs may
+  reasonably believe `odd.tenant-id` is universal across both backends.
+  The asymmetry is invisible at the property level — the property is
+  documented; its scope is not.
+
+  **Composition with REFACTOR-185 AUTH-MODE-ORTHOGONAL facet**: the
+  ingestMetrics endpoint is unauthenticated in every supported deployment
+  posture (per the batch-Z REFACTOR-185 27-sidecar extension). Combined with
+  this tenant-isolation gap, the INTERNAL_POSTGRES default backend in
+  a multi-tenant deployment exposes metric data cross-tenant AND
+  accepts cross-tenant writes — both via unauthenticated POST /ingestion/metrics.
+
+  **Severity HIGH**: the property's purpose (tenant isolation) is silently
+  void on the default storage backend; operators believing they have
+  isolation by setting the property have none.
+axes_present:
+- controllers
+- services
+- config_keys
+nodes:
+- odd-platform java IngestionController controller-method:ingestMetrics
+- odd-platform java CounterTimeSeriesExtractor config-key-consumer:metrics.storage@L20
+contributors:
+- |-
+  ingestMetrics.md (batch Z PRIMARY SOURCE):
+    concepts.invariants.[3] (per-tenant scoping BY-LABEL-CONVENTION at EXTRACTOR
+    layer, NOT enforced at controller; INTERNAL_POSTGRES path has NO tenant_id
+    column on metric_series/metric_point tables) +
+    bugs_limitations_corner_cases.[2] HIGH (No per-tenant scoping at the
+    controller layer; INTERNAL_POSTGRES path stores no tenant_id column;
+    multi-tenant isolation on the default storage backend is NONEXISTENT) +
+    security.known_security_gaps.[3] MEDIUM (Tenant isolation BYPASSED on
+    INTERNAL_POSTGRES storage — the odd.tenant-id mechanism applies ONLY to
+    PROMETHEUS path; the live doc lists odd.tenant-id semantically as
+    'tenant identifier appended as a Prometheus query label' — implicitly
+    Prometheus-only — but does not explicitly state INTERNAL_POSTGRES ignores it)
+- |-
+  CounterTimeSeriesExtractor@L20.md (batch E CROSS-REFERENCE):
+    concepts.invariants — tenant_id label appended only when tenantId != null;
+    PROMETHEUS-only path; injected via @Value("${odd.tenant-id}") at bean
+    construction (line 22-25)
+evidence:
+- |-
+  ingestMetrics.md:bugs_limitations_corner_cases.[2] HIGH severity (No per-tenant
+  scoping at the controller; INTERNAL_POSTGRES path has no tenant_id column)
+- |-
+  ingestMetrics.md:security.known_security_gaps.[3] MEDIUM severity
+  (Tenant isolation BYPASSED on INTERNAL_POSTGRES storage; live doc gap)
+- |-
+  ingestMetrics.md:concepts.invariants.[3] (the per-tenant-by-label
+  PROMETHEUS-only contract)
+- |-
+  CounterTimeSeriesExtractor@L20.md (batch E):concepts.invariants
+  (tenant_id label append at extractor only — confirms the
+  PROMETHEUS-only scope)
+mitigations_unimplemented:
+- |-
+  Code-side: add a `tenant_id` column to `metric_series` + `metric_point`
+  tables; populate from `odd.tenant-id` at the InternalIngestionMetricsServiceImpl
+  insert path; add a `tenant_id` predicate to InternalMetricReader queries.
+  This is a schema migration + 2-3 file change.
+- |-
+  Code-side (alternative): fail-fast at boot if `odd.tenant-id` is set
+  AND `metrics.storage=INTERNAL_POSTGRES` (the property has no effect under
+  this combination — surfacing it as a misconfiguration would prevent
+  operator-believing-isolation-exists scenarios).
+- |-
+  Doc-side: extend `configuration-and-deployment/odd-platform#metric-storage-backend`
+  with an explicit Tenant Isolation Scope sub-section enumerating which
+  storage backends honour `odd.tenant-id` (PROMETHEUS only) and which
+  silently ignore it (INTERNAL_POSTGRES default). The current page
+  presents `odd.tenant-id` as a global property; the scope is silently
+  Prometheus-only.
+severity: HIGH
+severity_dim: security-tenant-isolation-default-backend-nonexistent
+cross_batch: true
+notes: |-
+  Surfaced batch 2026-05-20Z by the ingestMetrics sidecar. Composes with
+  REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (the endpoint is unauthenticated
+  in every deployment posture) and with the metrics-ingestion entity concept
+  (which lists 'Tenant-isolation is by-label-convention, not enforcement' as
+  a weakness at the extractor layer — this invariant promotes that weakness
+  to the controller layer AND quantifies it on the default backend).
+
+  Cross-references:
+    - metrics-ingestion (entity concept)
+    - REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (this invariant's composition partner)
+    - multi-tenant-configuration-odd-tenant-id (canonicalisation candidate)
+    - LSN-001 (silent default-data-loss pattern — same shape applied to
+      tenant isolation under a different property)

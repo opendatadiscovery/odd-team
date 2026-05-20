@@ -1,0 +1,67 @@
+gap_id: TEST-GAP-821
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java IngestionController controller-method:postDataSetStatsList"
+pillars_affected: [P-04, P-10]
+surfaced_by:
+  - "postDataSetStatsList.md:concepts.invariants.[1] (empty payload not short-circuited)"
+  - "postDataSetStatsList.md:bugs_limitations_corner_cases.[3] MEDIUM (empty/null payload mishandling)"
+  - "postDataSetStatsList.md:tests_coverage_semantic.uncovered_behaviours.[1]"
+behaviour: |-
+  **MEDIUM — `postDataSetStatsList` lacks the empty-payload guard its sibling has, producing NPE on null and silent no-op on empty.**
+
+  The controller method (`IngestionController.java:82-87`) calls `.flatMap(ingestionService::ingestStats)` without any guard. Compare the sibling `postDataEntityList` (`IngestionController.java:40-42`):
+  - `postDataEntityList` short-circuits empty/null via `CollectionUtils.isNotEmpty(items)` → throws `BadUserRequestException("Ingestion payload is empty")` → HTTP 400 with structured error.
+  - `postDataSetStatsList` has NO such guard.
+
+  Behavior with `items: null`:
+  1. Controller delegates to `IngestionServiceImpl.ingestStats(...)` (one-line passthrough to `DatasetFieldService.updateStatistics`).
+  2. `DatasetFieldServiceImpl.updateStatistics` (line 161) executes `datasetStatisticsList.getItems().stream()` — NullPointerException on null `getItems()`.
+  3. Reactor default error handler propagates → HTTP 500 with stack trace in response body (verified by no `@ExceptionHandler` for NPE in `<odd-platform-repo>/odd-platform-api/src/main/java`).
+  4. Caller receives 500 — indistinguishable from a Postgres outage or any other server-side fault.
+
+  Behavior with `items: []`:
+  1. Empty `Stream.empty()` flows through line 161-181.
+  2. `getLastVersionDatasetFieldsByOddrns(emptySet)` returns empty `existingFields`.
+  3. `updateFieldsStatistics(emptyList)` and `updateFieldsTags(emptyList)` are no-ops.
+  4. **`reactiveSearchEntrypointRepository.updateStructureVectorForDataEntitiesByOddrns(emptySet)` still fires** (line 179) — possibly DOSing cost on the FTS recalc surface.
+  5. Transaction commits empty.
+  6. Caller receives 201 Created — indistinguishable from a successful real write.
+
+  **Three asymmetries surface here**:
+  - **Empty-vs-null asymmetry** at the same endpoint (one 500, one 201).
+  - **Sibling-method asymmetry** (postDataEntityList → 400, postDataSetStatsList → 500/201).
+  - **Sibling-method-201 asymmetry** (ingestMetrics ALSO returns 201 on empty per its sidecar; postDataSetStatsList silent — three different empty-payload contracts across three controller methods).
+
+  **Why MEDIUM**: the 500 on null leaks a stack trace (information disclosure — see TEST-GAP-824 mirror for ingestMetrics); the 201 on empty produces a no-op DoS amplifier (each request fires the FTS recalc); the inconsistency is undocumented.
+
+  **Test gap shape**: regression-pin asserting (a) `{}` → 500 NPE; (b) `{items: []}` → 201 + DB no-op; (c) `{items: [{...valid}]}` → 201 + DB write. PINS the three behaviours; pairs with REFACTOR-NNN (add empty-payload guard symmetric with sibling).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/PostDataSetStatsListEmptyNullPayloadAsymmetryRegressionPinTest.java"
+  name: "post_emptyItems_returns201NoOp_AND_nullItems_returns500NPE_pinsAsymmetryVsPostDataEntityList"
+evidence:
+  - "postDataSetStatsList.md says (concepts.invariants.[1]): 'Empty payload is NOT short-circuited at the controller (unlike sibling postDataEntityList line 41-42 which short-circuits on CollectionUtils.isNotEmpty(items)). A DatasetStatisticsList with items: [] or items: null flows into DatasetFieldServiceImpl.updateStatistics, where datasetStatisticsList.getItems().stream() on null throws NullPointerException (line 161, 168); on empty-list the reduce returns an empty map, the lookup returns no fields, the transaction commits a no-op.'"
+  - "postDataSetStatsList.md says (bugs_limitations_corner_cases.[3]): 'Empty/null payload mishandling. The controller does NOT guard against items: [] (no-op transaction commits) or items: null (NPE at DatasetFieldServiceImpl.java:161). The asymmetry with sibling postDataEntityList (which DOES guard via CollectionUtils.isNotEmpty(items) line 41) is silent.' (severity MEDIUM)"
+  - "Verified at primary source: IngestionController.java:82-87 (no guard) vs IngestionController.java:40-42 (sibling guard) + DatasetFieldServiceImpl.java:161, 168 (null-unsafe .getItems().stream())"
+cross_references:
+  - "TEST-GAP-819 (sister — unauthenticated reach; this entry pins the empty-payload behaviour on the same endpoint)"
+  - "TEST-GAP-820 (sister — tag-creation bypass; sibling on the same endpoint)"
+  - "TEST-GAP-825 (sister — ingestMetrics empty-payload 201 contract; this entry pins the postDataSetStatsList variant of the same class)"
+  - "TEST-GAP-285 (existing — postDataEntityList 200-vs-201 status code drift; sibling-class drift on the same controller)"
+  - "DOC-GAP-093 (existing — 201-vs-200 4-instance class-wide; related)"
+  - "REFACTOR-NNN (proposed): add empty-payload guard symmetric with postDataEntityList; OR document the deliberate asymmetry"
+related_features: [F-008]
+related_pillar_features: ["P-04:F-001 Test Results Import", "P-10:F-001 Batch Ingestion (S2S API)"]
+proposed_action: |-
+  Add `PostDataSetStatsListEmptyNullPayloadAsymmetryRegressionPinTest`. Three test methods, no Testcontainers needed (mock the service tier):
+
+  1. `post_nullItems_returnsHTTP500_NPE_pinsCurrentBehavior` — POST `{items: null}` (or `{}` so Jackson default-nulls `items`) → assert 500 + assert NPE stack-frame contains `DatasetFieldServiceImpl.updateStatistics`. PINS the leak.
+  2. `post_emptyItems_returns201_pinsSilentNoOp` — POST `{items: []}` → assert 201 + assert NO write to `dataset_field.stats` (DB count comparison before/after).
+  3. `post_validItems_returns201_pinsHappyPath` — POST `{items: [valid]}` → assert 201 + assert DB write.
+  4. **Asymmetry pin**: `post_postDataEntityList_emptyItems_returns400_pinsTheSiblingDoesGuard` — for contrast, hit POST `/ingestion/entities` with `{items: []}` → assert 400 + body contains "Ingestion payload is empty". The pair-test makes the asymmetry concrete; a future REFACTOR adding a guard here MUST flip the (1) and (2) assertions to 400.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Pairs with TEST-GAP-825 for the ingestMetrics empty-payload variant. TEST-GAP-398 covers DataEntityStatisticsTest boundary conditions at MEDIUM but does NOT name the null-NPE or the empty-201 specifically — this entry SUPERSEDES TEST-GAP-398's first bullet ("what happens when the dataset doesn't exist") with the more general empty/null contract; TEST-GAP-398's second bullet (activity events) remains valid as a sibling concern. Add `superseded_by_aspect: TEST-GAP-821` to TEST-GAP-398's coherence_note. Or treat the two as parallel — they pin different aspects of the same boundary. Default position: parallel (this is not a contradiction).
+batch: 2026-05-20-Z
+feature_id: F-008

@@ -39,6 +39,14 @@ drift_class_summary:
 - session_provider_in_memory_default_is_collector_id_cluster_fragility_root_cause_refactor_419_config_tier_vertex
 - session_provider_invalid_value_boots_silently_no_repository_bean_no_warn
 - session_timeout_minus_one_default_makes_sessions_never_expire_unsafe_for_production
+- s2s_read_side_unauthenticated_get_data_entities_by_deg_oddrn
+- s2s_read_side_404_vs_empty_200_silent_conflation_sibling_lineage_endpoint_differs
+- s2s_read_side_soft_delete_leak_single_sided_is_deleted_filter
+- auth_ingestion_filter_enabled_false_sense_of_security_extends_to_get_deg_oddrn
+- service_tier_5_vertex_closure_ingestion_service_impl_sole_reactive_transactional_boundary
+- duplicate_oddrn_within_payload_crashes_ingestion_with_illegal_state_exception_5xx
+- slf4j_annotation_unused_no_audit_trail_at_ingestion_service_impl
+- microservice_existing_entities_excluded_from_specific_attributes_deltas_no_bis_alerts_undocumented_carve_out
 batch_extensions:
 - batch: O
   entry_point_added: |-
@@ -864,6 +872,212 @@ batch_extensions:
     operator-invisible failure mode` pattern, joining the
     LOGIN_FORM-ADMIN-for-all + DISABLED-anyExchange.permitAll +
     MinIO-region-default-us-east-1 family).
+- batch: Z
+  entry_point_added: |-
+    service-tier:IngestionServiceImpl + read-side companion
+    controller-method:getDataEntitiesByDEGOddrn. The IngestionServiceImpl
+    sidecar is the SERVICE-TIER VERTEX of F-008's 5-vertex picture
+    (filter / controller / service / processor-chain / repository).
+    Together with the prior batches (O filter + P controller-tier
+    createDataSourceEntity + Q UI CollectorsList + R repository-tier
+    + S/T/W controller-class sidecars + X SessionConfiguration), the
+    F-008 chain is now anchored at every tier of the platform. The
+    sibling read-side endpoint getDataEntitiesByDEGOddrn closes the
+    S2S read-vs-write asymmetry: the destructive write surface
+    (postDataEntityList) has at least nominal IngestionDataEntitiesFilter
+    coverage; the read sibling has NONE.
+  contributing_nodes_added:
+  - odd-platform java service service:IngestionServiceImpl
+  - odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn
+  notes: |-
+    SIX new drift facets surface from the two batch-Z sidecars, plus
+    two STRENGTHENS on existing facets. Listed in order of architectural
+    leverage:
+
+    (1) **S2S READ-SIDE UNAUTHENTICATED — getDataEntitiesByDEGOddrn
+    extends the destructive-write unauthenticated posture to the READ
+    half** (HIGH severity, NEW FINDING) — IngestionController.java:76-79
+    is a three-line proxy with no @PreAuthorize. The path
+    `/ingestion/entities/{deg_oddrn}` falls outside the
+    `IngestionDataEntitiesFilter` matcher (exact-literal POST
+    `/ingestion/entities` only, IngestionDataEntitiesFilter.java:28).
+    Under `auth.type=DISABLED` (shipped default), anonymously reachable.
+    Under OAUTH2/LDAP/LOGIN_FORM, `/ingestion/**` is in
+    `SecurityConstants.WHITELIST_PATHS` (SecurityConstants.java:96)
+    so the path is exempt from UI auth. ANY caller able to reach the
+    platform's HTTP port can enumerate the member list of ANY DEG by
+    knowing or guessing its ODDRN. Combined with sequential DEG ids in
+    the ODDRN generation pattern (ODDPlatformDataEntityGroupPath at
+    DataEntityGroupServiceImpl.java:193-195), an attacker iterates the
+    DEG id space in O(N) requests. No rate-limit, no audit-log on the
+    GET path. Cross-link to F-016 (DEG-Anchored Lineage) — the
+    /api/dataentitygroups/{id}/lineage sibling requires at least
+    authentication; this S2S sibling does not. NEW drift facet:
+    `s2s_read_side_unauthenticated_get_data_entities_by_deg_oddrn`.
+
+    (2) **404 vs empty-200 silent conflation on getDataEntitiesByDEGOddrn**
+    (MEDIUM, NEW FINDING) — DataEntityGroupServiceImpl.listEntitiesWithinDEG
+    (lines 92-108) returns empty list for ALL of: unknown DEG, empty
+    DEG, malformed ODDRN, NULL-equivalent ODDRN. No
+    `switchIfEmpty(Mono.error(NotFoundException))` — the controller
+    wraps the empty list as `CompactDataEntityList(items=[])` 200 OK.
+    Operators have no contract distinguishing "DEG exists with no
+    members" from "DEG does not exist" from "wrong ODDRN format". The
+    closely-related `getDataEntityGroupLineage` (F-016 sibling at
+    LineageServiceImpl.java:62) DOES raise 404 on the same
+    empty-membership condition — TWO endpoints on the same platform
+    produce TWO different contracts for the SAME semantic situation.
+    NEW drift facet:
+    `s2s_read_side_404_vs_empty_200_silent_conflation_sibling_lineage_endpoint_differs`.
+
+    (3) **Soft-deleted members leak via the S2S read surface — single-
+    sided IS_DELETED filter** (MEDIUM, NEW FINDING) —
+    ReactiveDataEntityRepositoryImpl.getDEGEntities(String) at lines
+    318-326 filters `GROUP_ENTITY_RELATIONS.IS_DELETED.isFalse()` (the
+    EDGE soft-delete) but does NOT filter the joined `DATA_ENTITY` rows
+    by `STATUS != DELETED` or `HOLLOW = false`. A DEG that contains a
+    soft-deleted (or hollow) data-entity surfaces that entity in the
+    response. This deviates from the platform's `getDataEntityDefaultConditions`
+    pattern used by every UI-side search/listing endpoint. Operators
+    integrating against the S2S read surface receive a different view
+    of "what counts as a member" than UI users see. Cross-link to
+    F-014 batch-L (soft-delete-inclusive existence check on the
+    per-entity alert path) — both are read-side soft-delete leaks via
+    sibling endpoints; the pattern is platform-wide. NEW drift facet:
+    `s2s_read_side_soft_delete_leak_single_sided_is_deleted_filter`.
+
+    (4) **`auth.ingestion.filter.enabled=true` false-sense-of-security
+    extends to the GET path** (HIGH severity, STRENGTHENS batch-O
+    `ingestion_filter_path_coverage_incomplete_alertmanager_uncovered`
+    + batch-P `asymmetric_auth_between_ingestion_filters`) — an
+    operator enabling `auth.ingestion.filter.enabled=true` per the
+    S2S doc's recommendation believes the ingestion endpoint is
+    protected. The filter's path matcher is `POST /ingestion/entities`
+    EXACTLY (IngestionDataEntitiesFilter.java:28) and HTTP-method-
+    scoped to POST. The templated GET `/ingestion/entities/{deg_oddrn}`
+    does NOT match even when the property is `true`. The endpoint
+    name (`auth.INGESTION.filter.enabled`) and the property
+    description (per existing sibling sidecars: "authenticate the
+    ingestion pipeline") do not communicate that the filter matches
+    EXACTLY ONE PATH (POST /ingestion/entities) and that the
+    GET-by-degOddrn read sibling on the SAME controller is uncovered.
+    The same property already failed to cover the AlertManager
+    webhook (batch O) and the metrics ingestion endpoint
+    (F-030 batch Z) — this is the FOURTH sibling-endpoint uncovered
+    by the same operator-trusted property. STRENGTHENS existing
+    facet; NEW evidence anchor:
+    `auth_ingestion_filter_enabled_false_sense_of_security_extends_to_get_deg_oddrn`.
+
+    (5) **Service-tier 5-VERTEX closure — IngestionServiceImpl.ingest
+    is the SOLE @ReactiveTransactional boundary for the entire
+    14-processor chain** (PRIMARY SOURCE, STRENGTHENS batch-I
+    `single_transaction_per_batch_no_per_entity_isolation`) —
+    IngestionServiceImpl.java:65-74. The five-step reactive chain
+    (resolve datasource → persistDataEntities → processor chain →
+    OTLP export → Mono<Void>) is wrapped in ONE
+    `@ReactiveTransactional` (line 66, expanded via
+    ReactiveTransactional.java:11 to
+    `@Transactional("reactiveTransactionManager")`). All 14
+    `IngestionRequestProcessor` beans (per batch-I sibling
+    `IngestionService.md`) execute inside THIS transaction. A single
+    constraint violation anywhere in the pipeline rolls back the
+    entire batch — the F-008 `single_transaction_per_batch_no_per_entity_isolation`
+    drift facet is enforced at THIS line. Companion finding: OTLP
+    export (line 72) is INSIDE the same transaction — a network
+    failure on OTLP rolls back the ingestion (the F-008
+    `otlp_export_inside_transaction` drift facet enforced at the
+    same line). The IngestionServiceImpl sidecar IS the service-
+    tier vertex; together with hop-0 filter (batch O) + hop-1
+    controller (batch P unresolved — postDataEntityList sibling
+    still pending) + hop-3 processor chain (batch I interface
+    sidecar — 14 processors inventoried) + hop-4 repository
+    (batch H/R), the F-008 chain is now anchored at every tier
+    the platform exposes. STRENGTHENS via PRIMARY-SOURCE LINE-ANCHOR:
+    `service_tier_5_vertex_closure_ingestion_service_impl_sole_reactive_transactional_boundary`.
+
+    (6) **Duplicate-ODDRN within single payload crashes the entire
+    ingestion with IllegalStateException — no graceful error**
+    (MEDIUM severity, NEW FINDING from IngestionServiceImpl sidecar) —
+    `persistDataEntities` (IngestionServiceImpl.java:81-152) entity
+    dedup is by ODDRN at the application layer:
+    `Collectors.toMap(DataEntityIngestionDto::getOddrn, identity())`
+    (line 86) uses the default throwing merger. Two-arg
+    `Collectors.toMap` refuses duplicates; same-ODDRN duplicates within
+    one request crash the entire ingestion with
+    `IllegalStateException: Duplicate key`. The HTTP boundary surfaces
+    this as 5xx — no structured 400 "duplicate oddrn" response. A
+    buggy collector emitting the same ODDRN twice in one payload
+    loses the entire batch with no clear error message. No test
+    asserts this behaviour (verified — no `IngestionDuplicateOddrnTest`
+    in the test suite). NEW drift facet:
+    `duplicate_oddrn_within_payload_crashes_ingestion_with_illegal_state_exception_5xx`.
+
+    (7) **`@Slf4j` on IngestionServiceImpl is dead code — zero log
+    calls across the entire orchestration** (LOW severity, NEW
+    FINDING) — Lombok `@Slf4j` annotation present at
+    IngestionServiceImpl.java:53 but Grep for `log\.` in
+    IngestionServiceImpl.java returned NO matches. Every behavioural
+    decision in the file (the JOB_RUN split, the DELETED-status
+    restore, the MICROSERVICE exclusion, the hollow-vs-real
+    partition, the duplicate-ODDRN crash) executes silently. A
+    security investigation "what happened during this 1000-entity
+    ingestion batch?" has NO answer at the service-tier log level —
+    every decision is invisible. Joins the cross-batch audit-silence
+    pattern (now 11+ sidecar instances). NEW drift facet:
+    `slf4j_annotation_unused_no_audit_trail_at_ingestion_service_impl`.
+
+    (8) **MICROSERVICE existing entities EXCLUDED from
+    specificAttributesDeltas — undocumented carve-out**
+    (LOW severity, NEW FINDING) — IngestionServiceImpl.java:100-113:
+    `filter(e -> DataEntityTypeDto.MICROSERVICE != e.getValue().getType())`
+    excludes MICROSERVICE existing entities from
+    `specificAttributesDeltas`. The list feeds backwards-incompatible-
+    schema alert detection downstream (per AlertIngestionRequestProcessor.java:60
+    — `alertLocator.getAlertBISCandidates(request.getSpecificAttributesDeltas(),
+    request.getChangedDatasetIds())`). MICROSERVICES CANNOT raise
+    BIS alerts via the specific-attributes path. The exclusion is
+    undocumented; no comment defends it (line 103 carries only the
+    filter expression). Operators integrating microservice tracing
+    (P-05 microservices-lineage sub-feature) cannot expect schema-
+    diff alerts on microservice entity payloads. NEW drift facet:
+    `microservice_existing_entities_excluded_from_specific_attributes_deltas_no_bis_alerts_undocumented_carve_out`.
+
+    Coherence (LSN-018 Rule 6 sweep):
+    STRENGTHENS=4 across F-008 existing drift facets:
+    `single_transaction_per_batch_no_per_entity_isolation` (service-
+    tier PRIMARY SOURCE at lines 65-74),
+    `silent_destruction_replace_not_merge` (assembly-layer enactment
+    at extractLineageRelations lines 233-274 — the establisher-keyed
+    payload that DRIVES the downstream destruction is BUILT here),
+    `default_off_unauthenticated_ingestion_at_filter_layer` (read-
+    side sibling extends the posture — the WRITE half is filter-
+    gated when opted-in; the READ half has NO opt-in toggle), and
+    `ingestion_filter_path_coverage_incomplete_alertmanager_uncovered`
+    (the GET-by-degOddrn path is the FOURTH uncovered sibling —
+    alertmanager + metrics + stats + this).
+    SUPERSEDES=0.
+    CONFLICTS=0.
+
+    The HIGHEST-LEVERAGE new finding is the S2S READ-SIDE
+    UNAUTHENTICATED posture (HIGH severity, NEW). The fix path
+    options: (a) add the GET path to a new IngestionDataEntitiesFilter-
+    style filter, OR (b) move the read endpoint to `/api/**` where
+    UI auth applies, OR (c) document the always-anonymous read
+    posture explicitly on the S2S doc page + the
+    `auth.ingestion.filter.enabled` description. The structurally
+    correct fix is (b) — the endpoint is a read query, not part of
+    the ingestion write path; it belongs on the `/api/**` surface
+    alongside the rest of the catalog read API. Local docker-compose
+    probe: ODD platform + Postgres + a script enumerating DEG ids
+    1..100 against GET /ingestion/entities/<oddrn> with NO
+    Authorization header — assert 200 in all cases.
+
+    Cross-references: REFACTOR-185 — the read-side unauthenticated
+    posture is the 20TH SURFACE (after batches O / P / Q / W
+    cumulative enumeration); the cross-pillar Audit-log Presence
+    Asymmetry canonicalisation candidate gains 2 new corroborating
+    sidecars (IngestionServiceImpl @Slf4j-unused + getDataEntitiesByDEGOddrn
+    no-audit-on-read); F-016 + F-030 (this batch) both cross-link.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Ingestion-replace destruction surface
@@ -905,7 +1119,9 @@ contributing_nodes:
 - odd-platform java IngestionController controller-method:postDataEntityList (UNRESOLVED — sibling controller sidecar not
   in this batch; ref via service-tier upstream_callers)
 - odd-platform java IngestionController controller-method:createDataSourceEntity
+- odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn
 - odd-platform java service service:IngestionService
+- odd-platform java service service:IngestionServiceImpl
 - odd-platform java service service:LineageServiceImpl
 - odd-platform java service service:DataSourceIngestionServiceImpl
 - odd-platform java MetadataIngestionRequestProcessor (UNRESOLVED — processor sidecar not yet enriched; ref only)

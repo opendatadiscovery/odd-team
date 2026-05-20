@@ -40,6 +40,7 @@ drift_class_summary:
 - policy_service_cascade_check_non_atomic_with_soft_delete_mirror
 - error_class_misrepresented_validator_throws_illegalargument
 - authorization_hot_path_no_cache_2_joins_per_authorized_request
+- audit_silence_enum_rooted_activity_event_type_dto_term_namespace_owner_lifecycle
 batch_extensions:
 - batch: K
   entry_point_added: 'service:OwnershipServiceImpl (the ownership-lifecycle service backing the 3 /api/dataentities/{id}/ownership controller methods — adds the OWNER_CREATE-bypass and the USR003 cross-batch correction)'
@@ -538,6 +539,86 @@ batch_extensions:
     Role S — all 8 layers shipping plaintext audit-silence on RBAC
     mutations. Schema root cause (batch R) remains the load-bearing
     fix anchor.
+- batch: U
+  entry_point_added: |-
+    service-tier:TermServiceImpl (the Business Glossary service-tier
+    orchestrator — primary source for the audit-silence ENUM-ROOTED
+    refinement). The TermServiceImpl sidecar `concepts.entities` block
+    enumerates the CRITICAL ABSENCE: `ActivityEventTypeDto.java:3-31`
+    has NO `TERM_CREATED`, `TERM_UPDATED`, `TERM_DELETED`,
+    `TERM_DESCRIPTION_UPDATED`, `TERM_TAGS_UPDATED`, or
+    `NAMESPACE_CREATED` enum values defined. Adding the missing
+    annotations + repository delete is NOT sufficient — the @ActivityLog
+    machinery routes via ActivityEventTypeDto values, and there are NO
+    values for the LIFECYCLE events. The audit-silence has a SECOND
+    root cause beneath the schema-FK NOT NULL constraint identified in
+    batch R: the ENUM SHAPE encodes what events the activity feed CAN
+    represent, and term/namespace/owner LIFECYCLE events are not
+    encodable.
+  contributing_nodes_added:
+  - odd-platform java service service:TermServiceImpl
+  notes: |-
+    ONE new drift facet surfaces this batch — REFINES the cross-batch
+    audit-silence pattern by adding the SECOND ROOT CAUSE beneath the
+    schema-FK NOT-NULL finding from batch R. Severity HIGH (structural,
+    matches the batch-R severity):
+    (1) AUDIT-SILENCE ENUM-ROOTED (HIGH, structural) —
+    `ActivityEventTypeDto.java:3-31` (the enum that @ActivityLog
+    annotations consume to identify the event type) has values for
+    DATA_ENTITY_* + TERM_ASSIGNMENT_UPDATED +
+    DATASET_FIELD_TERM_ASSIGNMENT_UPDATED + a handful of other
+    data-entity-scoped event types. The enum has NO values for:
+    `TERM_CREATED`, `TERM_UPDATED`, `TERM_DELETED`,
+    `TERM_DESCRIPTION_UPDATED`, `TERM_TAGS_UPDATED`, `NAMESPACE_CREATED`,
+    `NAMESPACE_UPDATED`, `NAMESPACE_DELETED`, `OWNER_CREATED`,
+    `OWNER_UPDATED`, `OWNER_DELETED`, `POLICY_CREATED`, `POLICY_UPDATED`,
+    `POLICY_DELETED`, `ROLE_CREATED`, `ROLE_UPDATED`, `ROLE_DELETED`,
+    `DATASOURCE_REGISTERED`, `DATASOURCE_DELETED`, `COLLECTOR_TOKEN_ROTATED`,
+    `COLLECTOR_DELETED`. Verified by reading TermServiceImpl sidecar
+    `concepts.entities` (the "Critical absence (F-006 intersection)"
+    explicit enumeration). Adding `@ActivityLog(TERM_CREATED)` to
+    TermServiceImpl.createTerm WOULD NOT COMPILE because
+    `TERM_CREATED` is not declared. The 8-SIDECAR AUDIT-SILENCE PATTERN
+    (batches E + H + N + Q + R + P + S) now REFINES to the 9-SIDECAR
+    pattern with this batch's TermServiceImpl evidence — but more
+    importantly, the BATCH R schema-FK finding (`activity.data_entity_id`
+    NOT NULL) is the FIRST root cause; this batch surfaces the SECOND
+    root cause (ActivityEventTypeDto enum scope). The complete fix
+    requires BOTH:
+      (a) schema migration making `activity.data_entity_id` nullable
+          AND adding a `subject_kind` + `subject_id` discriminator pair
+          (per batch R proposal); OR a separate `platform_event` table
+          for non-data-entity audit events.
+      (b) extending `ActivityEventTypeDto` with the ~21 missing enum
+          values listed above.
+      (c) implementing ActivityHandler subclasses for each new enum
+          value (the handler resolves BEFORE+AFTER state — for RBAC
+          mutations the state is the policy/role JSON; for Term
+          lifecycle it's the term DTO; for Owner lifecycle the owner
+          row + role bindings).
+      (d) adding @ActivityLog annotations to the ~25 mutating service
+          methods across Term + Namespace + Owner + Policy + Role +
+          Datasource + Collector service classes.
+    The fix is non-trivial — 4 work items spanning schema + enum + handler
+    + annotation tiers; cross-team coordination because Activity Feed
+    consumers (per-entity Activity tab, global Activity page, activity
+    JSON shape) depend on the existing enum surface. Recommend ADR
+    drafting BEFORE implementation to enumerate the cross-batch
+    coordination + the doc-side framing ("the Activity Feed covers all
+    catalog mutations" vs "the Activity Feed covers data-entity mutations
+    only" — the docs are currently silent on which is true).
+    Cross-batch coherence (LSN-018 Rule 6):
+    - STRENGTHENS F-006's `audit_silence_schema_rooted_activity_data_entity_fk_not_null`
+      (batch R) with the SECOND root cause beneath the schema layer.
+    - STRENGTHENS F-006's `eight_sidecar_audit_silence_pattern_role_policy_service_tier_closure`
+      (batch S) — now 9-SIDECAR with TermServiceImpl as the 9th sidecar.
+    - STRENGTHENS F-002 batch U `term_lifecycle_audit_silence_enum_rooted_activity_event_type_dto`
+      (the same observation surfaced on F-002 because Term lifecycle
+      is THAT feature's domain).
+    - STRENGTHENS system-mission.md canonicalisation candidate
+      "Audit-log Presence Asymmetry (2-tier audit story)" with the
+      ENUM-LAYER evidence.
+    Coherence verdict: STRENGTHENS=4, SUPERSEDES=0, CONFLICTS=0.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: RBAC policy lifecycle — soft-delete with permission-grant persistence
@@ -614,6 +695,7 @@ contributing_nodes:
 - odd-platform ts react-component:PolicyList
 - odd-platform ts react-component:RolesList
 - odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+- odd-platform java service service:TermServiceImpl
 chain:
 - hop: 1
   node: odd-platform java PolicyController controller-method:createPolicy
@@ -1061,6 +1143,65 @@ observed_vs_expected:
       Severity: HIGH. Cross-ref `system-mission.md` line 267 + the
       `no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f`
       concept catalog entry — this batch refines it to "4-sidecar".
+  - facet: audit-silence ENUM-ROOTED — SECOND ROOT CAUSE beneath schema-FK (batch U — PRIMARY-SOURCE)
+    observed: |-
+      `ActivityEventTypeDto.java:3-31` (the enum consumed by every
+      @ActivityLog annotation) has values for data-entity-scoped event
+      types (DATA_ENTITY_CREATED, TERM_ASSIGNMENT_UPDATED,
+      DATASET_FIELD_TERM_ASSIGNMENT_UPDATED, etc.) but ZERO values for:
+      TERM_CREATED, TERM_UPDATED, TERM_DELETED, TERM_DESCRIPTION_UPDATED,
+      TERM_TAGS_UPDATED, NAMESPACE_CREATED, NAMESPACE_UPDATED,
+      NAMESPACE_DELETED, OWNER_CREATED, OWNER_UPDATED, OWNER_DELETED,
+      POLICY_CREATED, POLICY_UPDATED, POLICY_DELETED, ROLE_CREATED,
+      ROLE_UPDATED, ROLE_DELETED, DATASOURCE_REGISTERED,
+      DATASOURCE_DELETED, COLLECTOR_TOKEN_ROTATED, COLLECTOR_DELETED.
+      Verified by reading TermServiceImpl sidecar `concepts.entities`
+      (the "Critical absence (F-006 intersection)" explicit
+      enumeration). Adding `@ActivityLog(TERM_CREATED)` to
+      TermServiceImpl.createTerm WOULD NOT COMPILE because the enum
+      value is not declared. The BATCH R finding
+      (`activity.data_entity_id NOT NULL` FK) is the FIRST root cause
+      (the audit table cannot physically store an event lacking a
+      data_entity reference); THIS batch surfaces the SECOND root
+      cause beneath it (even if the schema were fixed, the @ActivityLog
+      machinery routes via this enum and has no event types to emit
+      for non-data-entity lifecycle).
+      9-SIDECAR AUDIT-SILENCE PATTERN — extends the batch-S 8-SIDECAR
+      pattern with this batch's TermServiceImpl sidecar as the 9th
+      corroborating point. The pattern enumeration: batch E
+      (RoleController + PolicyController controllers) + batch H
+      (ReactivePolicyRepositoryImpl repo) + batch N
+      (ReactiveRoleRepositoryImpl repo) + batch P (OwnerServiceImpl
+      service) + batch Q (PolicyList + RolesList UI) + batch R
+      (ReactiveActivityRepositoryImpl schema root cause) + batch S
+      (PolicyServiceImpl + RoleServiceImpl service-tier closure) +
+      batch U (TermServiceImpl enum-rooted SECOND root cause).
+    expected: |-
+      Multi-tier fix coordinating:
+      (a) schema migration — make `activity.data_entity_id` nullable
+          OR introduce separate `platform_event` table per batch R;
+      (b) extend ActivityEventTypeDto with ~21 missing enum values
+          spanning Term + Namespace + Owner + Policy + Role + Datasource
+          + Collector lifecycle;
+      (c) implement ActivityHandler subclasses per new enum value;
+      (d) add @ActivityLog annotations to ~25 mutating service methods
+          across the 7 affected service classes.
+      Recommend ADR before implementation to document the doc-side
+      framing — currently the Activity Feed docs are silent on whether
+      the feed covers ALL catalog mutations or DATA-ENTITY mutations
+      only.
+    drift_class: audit_silence_enum_rooted_activity_event_type_dto_term_namespace_owner_lifecycle
+    provenance: |-
+      STATIC — primary-source in batch U TermServiceImpl sidecar
+      concepts.entities (the "Critical absence (F-006 intersection)"
+      enumeration of missing enum values) + ActivityEventTypeDto.java:3-31
+      (verified enum scope) + TermServiceImpl.java:99-165 (no @ActivityLog
+      on lifecycle methods) + cross-link F-002 batch U same finding
+      + batch R `audit_silence_schema_rooted_activity_data_entity_fk_not_null`
+      (the FIRST root cause beneath which THIS sits). Severity: HIGH
+      (structural). The fix has broader leverage than originally scoped
+      — it solves audit-silence across F-006 + F-002 + F-019 + F-020 in
+      ONE coordinated remediation.
 test_matrix:
   unit:
     state: GAP
@@ -1095,6 +1236,12 @@ test_matrix:
     - Soft-deleted policy + surviving role_to_policy edge → permission still granted (the headline regression-pin)
     - Administrator-name asymmetry — under direct DB hot-fix, can a new Administrator with attacker statements be created?
     - Forensic-trail completeness — assert every mutation emits SOME log line OR audit row
+    - audit-silence ENUM-ROOTED — assert ActivityEventTypeDto enum HAS values for TERM_CREATED + TERM_UPDATED + TERM_DELETED
+      + NAMESPACE_CREATED + ROLE_CREATED + POLICY_CREATED + OWNER_CREATED + DATASOURCE_REGISTERED + COLLECTOR_TOKEN_ROTATED
+      (currently absent — pin the present state until enum is extended) (batch U)
+    - schema-FK + enum coordinated fix lands — assert that adding @ActivityLog(TERM_CREATED) to TermServiceImpl.createTerm
+      COMPILES (today fails) AND that the resulting activity row writes (today fails on activity.data_entity_id NOT NULL FK)
+      (batch U)
 control_summary: |-
   0 of 4 cells PROBED — feature emerged from batch-H primary-source audit; no
   probe authored yet. The headline behaviour (soft-deleted policy continues to
@@ -1181,6 +1328,23 @@ control_summary: |-
   triage may split F-006 into per-resource sub-features (POLICY /
   ROLE / OWNERSHIP / OWNER lifecycle); the current shape preserves
   the pillar anchor.
+
+  Batch U adds the SECOND ROOT CAUSE for the audit-silence finding.
+  The batch-R schema-FK NOT NULL constraint on `activity.data_entity_id`
+  was the FIRST root cause; this batch adds the ENUM-LAYER root cause
+  beneath it. `ActivityEventTypeDto.java:3-31` has NO enum values for
+  TERM/NAMESPACE/OWNER/POLICY/ROLE/DATASOURCE/COLLECTOR lifecycle —
+  even with a schema fix making `activity.data_entity_id` nullable,
+  the @ActivityLog machinery routes via this enum and cannot emit the
+  missing event types. The complete fix is 4-tier coordinated: schema
+  migration + enum extension + ActivityHandler implementations +
+  @ActivityLog annotations across ~25 mutating service methods. 9-SIDECAR
+  AUDIT-SILENCE PATTERN now spans controller (E) + repo Policy (H) +
+  repo Role (N) + UI Q + repo Activity R + service Owner P→S + service
+  Policy S + service Role S + service Term U — 9 layers of plaintext
+  audit-silence across RBAC + Term + Owner + Namespace + Datasource
+  + Collector mutations. Recommend ADR-drafting BEFORE implementation
+  to enumerate cross-team Activity Feed consumer impacts.
 related_refactoring_scopes:
 - REFACTOR-073
 related_test_gaps: []
@@ -1208,6 +1372,9 @@ related_concepts:
 related_retrospectives:
 - LSN-017
 - LSN-018  # the createOwner supersede is the load-bearing coherence-correction case in this batch
+related_features:
+- F-002
+- F-019
 related_probes: null
 probe_verifications: []
 maintainer_curated: false

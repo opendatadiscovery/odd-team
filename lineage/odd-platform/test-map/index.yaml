@@ -7,19 +7,19 @@ source_monolith_frontmatter:
   sidecar_count: 55
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 714
+  total_test_gaps: 724
   gaps_by_criticality:
-    CRITICAL: 117
-    HIGH: 217
+    CRITICAL: 121
+    HIGH: 223
     MEDIUM: 274
     LOW: 106
   gaps_by_category:
-    missing-integration: 131
-    missing-security: 196
+    missing-integration: 135
+    missing-security: 200
     missing-edge-case: 265
     missing-unit: 82
     sidecar-stale: 2
-    missing-performance: 28
+    missing-performance: 30
     missing-binding: 10
   batch_history:
   - '2026-05-08: TEST-GAP-001..069 — initial 15-sidecar reduction'
@@ -110,7 +110,7 @@ source_monolith_frontmatter:
   - odd-platform java repository_reactive repository:ReactiveLineageRepositoryImpl
   - odd-platform java repository_reactive repository:ReactiveOwnershipRepositoryImpl
   - odd-platform java repository_reactive repository:ReactivePolicyRepositoryImpl
-total_entries: 714
+total_entries: 724
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -12992,3 +12992,686 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-717.yaml
+- gap_id: TEST-GAP-718
+  behaviour: '**CRITICAL — TermController term-to-term linkage endpoints (POST /api/terms/{term_id}/term
+    + DELETE /api/terms/{term_id}/term/{linked_term_id}) have ZERO RBAC enforcement
+    at any tier.** Verified by exhaustive Grep against `SecurityConstants.java` for
+    the two paths: ZERO matches for `/api/terms/{term_id}/term` (the add-half) AND
+    for `/api/terms/{term_id}/term/{linked_term_id}` (the delete-half). The catch-all
+    `pathMatchers("/**").authenticated()` at `AuthorizationCustomizer.java:29-30`
+    is the ONLY gate. The 9 OTHER write endpoints on this controller carry proper
+    `TERM_*` SecurityRules (`SecurityConstants.java:111, 174-193` — verified line
+    by line) — the term-to-term linkage pair is the asymmetric outlier.
+
+
+    **What the Business Glossary docs claim vs what the code enforces:** the live-fetched
+    2026-05-20 docs page declares `TERM_UPDATE — Edit the term''s name, description,
+    namespace, or directly-linked terms.` Operators reading the docs and authoring
+    an RBAC Policy that withholds `TERM_UPDATE` on a set of terms expecting term-to-term
+    linking to be blocked WILL SILENTLY FAIL-OPEN — `TERM_UPDATE` is NEVER consulted
+    on these two endpoints. Per the system-mission.md read-collaborative posture (line
+    267), any authenticated user can ALSO enumerate every term across every namespace;
+    combined with the unguarded linkage write, ANY authenticated user (under LOGIN_FORM
+    / OAUTH2 / LDAP — under DISABLED, anonymous users) can link any term in the catalog
+    to any other term, including cross-namespace linkages that operators would expect
+    to be team-isolated.
+
+
+    **Compound failure with TermServiceImpl service-tier zero-permission-checks (batch-K
+    invariant) + the term-mention auto-link side-channel:** the service tier carries
+    NO `@PreAuthorize` or programmatic permission check (per batch-K — `term-service-tier-zero-permission-checks`
+    invariant, verified by Grep returning zero matches). So bypass is two-layer: (a)
+    the controller has no SecurityRule; (b) even if it did, the service trusts the
+    caller blindly. There is also NO `@ActivityLog` annotation on `linkTermWithTerm`
+    / `removeTermToLinkedTermRelation` (`TermServiceImpl.java:288-301` — separate
+    from the gated linkage operations at lines 169, 183, 211, 225 which DO carry the
+    annotation) — the term-to-term family is INVISIBLE to the Activity Feed (F-006
+    audit-silence pattern), so an attacker who exploits this has no forensic trail.
+
+
+    **Pattern, not isolated gap:** the unguarded term-to-term linkage is a NEW invocation
+    site for the path-mismatch / no-gate family that already includes REFACTOR-217
+    (data-entity-side `/term` singular vs `/terms` plural) and TEST-GAP-489 (REFACTOR-217
+    DELETE-half). REFACTOR-217 has a misregistered matcher; this gap has NO matcher
+    at all — strictly worse. Both produce the same operator-observable surface: docs
+    claim `TERM_UPDATE` / `DATA_ENTITY_ADD_TERM` gates work, code lets any authenticated
+    user link unconditionally.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-718.yaml
+- gap_id: TEST-GAP-719
+  behaviour: '**CRITICAL — NEW F-004 stored-XSS surface in the Term Definition field.**
+    The F-004 family until now spanned Data Entity Description + Dataset Field Description
+    (per F-004.yaml batch-J primary-source + P-009 dynamic-verification slice). This
+    sidecar discovers a THIRD surface with the IDENTICAL fingerprint: **Term Definition**
+    (the rich-text body of every Term entity). The render path is verified end-to-end:
+
+
+    - **Author endpoint**: `POST /api/terms` (createTerm — `TermController.java:70-75`)
+    + `PUT /api/terms/{term_id}` (updateTerm — `TermController.java:78-83`) accept
+    `TermFormData.definition` (a String) with NO server-side sanitisation. `TermServiceImpl.createTerm`
+    (lines 99-117) + `TermServiceImpl.updateTerm` (lines 121-145) persist the definition
+    verbatim into `term.definition` (verified by reading the service end-to-end +
+    Grep `''sanitize|escape|jsoup|policyFactory''` against `TermServiceImpl.java`
+    returns zero matches).
+
+    - **Read endpoint**: `GET /api/terms/{term_id}` (getTermDetails — `TermController.java:92-97`)
+    returns the verbatim `definition` field as part of `TermDetails`.
+
+    - **Render path**: `TermDetails.tsx` → `Overview.tsx:39-44` reads `termDetails.definition`
+    → `TermDefinition.tsx:16-47` → `<Markdown value={transformDescriptionToMarkdown(definition)}>`
+    → `Markdown.tsx:113-124` instantiates `<MDEditor.Markdown source={value} ...>`
+    which is `@uiw/react-md-editor`''s preview component which bundles `rehype-raw@6.1.1`
+    (verified at `odd-platform-ui/pnpm-lock.yaml:3900,5922,8843`) and applies NO `rehype-sanitize`
+    (verified by Grep over `odd-platform-ui/src` for `rehype-sanitize` returning ZERO
+    matches).
+
+
+    **Trust model break**: An operator with `TERM_UPDATE` permission on any term (which
+    the docs claim gates rename/description/namespace/directly-linked terms) can plant
+    `<script>alert(1)</script>` in a term''s `definition`. The script fires for ANY
+    authenticated user who later opens the Term detail page (read-collaborative posture
+    — `system-mission.md:267`). The read-collaborative posture means EVERY authenticated
+    user sees EVERY term in EVERY namespace — so a single compromised TERM_UPDATE-holder
+    can plant payloads that fire for every reader of any term across the catalog.
+
+
+    **Why CRITICAL not HIGH**: this is the third surface in the F-004 family; the
+    first two (data-entity description + dataset-field description) are already gated
+    only by browser defence-in-depth (CSP, Trusted Types) per P-009 dynamic-verification.
+    The browser defences MAY or MAY NOT extend to this third surface — out of scope
+    for this test gap; the storage-layer + render-layer pair IS the surface. The combination
+    of (a) NEW surface not in F-004''s existing batch-J primary-source enumeration,
+    (b) operator-edit-time entry point with TERM_UPDATE permission (broadly granted
+    by default per docs), (c) read-collaborative read-time surface for every authenticated
+    user — meets the CRITICAL threshold.
+
+
+    **Test gap shape**: regression-pin asserting `term.definition` containing `<script>`
+    (or `onerror=`, `<iframe>`, etc.) is rendered as RAW HTML by the @uiw/react-md-editor''s
+    preview, NOT escaped. The bug must be PINNED (i.e., the test asserts the current
+    — unsafe — behaviour), so that any future addition of `rehype-sanitize` to the
+    MDEditor instantiation will be caught at CI time by the test failing. Paired with
+    a backlog item proposing the sanitisation fix.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-004
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-719.yaml
+- gap_id: TEST-GAP-720
+  behaviour: '**CRITICAL — F-004 SECOND surface inside the auto-link side-channel.**
+    While F-004''s batch-J primary-source captures the description-render XSS surface
+    (`<script>` in the description body), this sidecar discovers a SECOND persistence
+    vector via the term-mention staging mechanism: a payload SHAPED LIKE A TERM MENTION
+    — `[[<script>alert(1)</script>:foo]]` — is parsed by the regex `\[\[([^:]*?):([^\]]*?)\]\]`
+    at `TermServiceImpl.java:67`, partitioned into `(namespace=<script>alert(1)</script>,
+    name=foo)`, and the unhandled-mention staging code (`buildDataEntityUnknownTerms`
+    at `TermServiceImpl.java:501-522`) INSERTs a row into `data_entity_description_unhandled_term`
+    with `term_namespace_name = <script>alert(1)</script>` (lowercased) and `term_name
+    = foo`. The staging row persists indefinitely (until a matching term is later
+    created, triggering `resolveUnhandledDescriptionMentions`).
+
+
+    **Persistence shape**: the staging table columns are `varchar(255)` (term_name)
+    and `varchar(64)` (term_namespace_name) per `V0_0_91__add_term_to_term.sql:18-19`
+    (verified by reading the migration). The lowercased payload survives until either:
+    (a) the matching term is later created (then the staging row is migrated to a
+    real `data_entity_to_term` link row with `is_description_link=TRUE`); (b) the
+    description is edited to remove the mention; (c) the parent data entity is hard-deleted.
+    None of these reliably fires for a maintainer who has not noticed the payload.
+
+
+    **Exfiltration shape**: any subsequent `getDataEntityTerms` / `getDatasetFieldTerms`
+    call that surfaces unhandled mentions can return the raw payload verbatim — the
+    XSS payload re-emerges through the API. The read endpoints DO surface unhandled
+    mentions per the sidecar''s `bugs_limitations_corner_cases.[3]` analysis. If a
+    UI consumer renders the staging-row''s `term_namespace_name` field (Glossary search
+    results, autocomplete dropdowns, term-relationship visualisations), the payload
+    could execute in a NEW DOM context distinct from the F-004 description-render
+    context.
+
+
+    **Trust model break**: an attacker with `DATA_ENTITY_DESCRIPTION_UPDATE` permission
+    alone (no `DATA_ENTITY_ADD_TERM` needed — see TEST-GAP-478 for the auto-link side-channel)
+    can plant a payload that persists IN A LONG-LIVED STAGING ROW visible to any authenticated
+    user across the catalog (read-collaborative posture). Even if F-004''s defence-in-depth
+    (CSP, Trusted Types, future rehype-sanitize) eventually closes the description-render
+    path, this staging-row resurfacing channel is a SEPARATE surface not currently
+    in scope of the F-004 mitigation discussion.
+
+
+    **Sanitisation responsibility split — currently NEITHER layer sanitises**: TermServiceImpl''s
+    `findTermsInDescription` (`TermServiceImpl.java:337-360`) treats the regex match
+    groups as opaque strings; `buildDataEntityUnknownTerms` (`TermServiceImpl.java:501-522`)
+    inserts the lowercased groups verbatim. The description-write path at `DataEntityServiceImpl.upsertDescription`
+    (`DataEntityServiceImpl.java:325-328`) also does not sanitise before invoking
+    `handleDataEntityDescriptionTerms`. Sanitisation MUST happen at description-write
+    time (F-004''s recommendation) OR at term-mention staging time (this gap''s recommendation)
+    — currently neither layer sanitises.
+
+
+    **Why CRITICAL not HIGH**: this is a CONCEPTUALLY NEW surface within an already-CRITICAL
+    F-004 family. The persistence shape (long-lived staging row) is fundamentally
+    different from the inline description render — fixing F-004''s description-render
+    does NOT close this channel. The cross-component nature (description-write → auto-link
+    parser → staging-table → future read API) means it spans P-01 (Discovery''s description
+    editing) + P-06 (Glossary''s term-mention semantics) + P-09 (the side-channel
+    bypass of DATA_ENTITY_ADD_TERM). Three-pillar surface elevates severity.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-004
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-720.yaml
+- gap_id: TEST-GAP-721
+  behaviour: '**CROSS-CUTTING SYSTEMIC GAP — THE ENTIRE P-06 DATA GLOSSARY PILLAR
+    HAS ZERO DIRECT TEST COVERAGE AT ANY TIER.** Verified across all five batch-U
+    sidecars + cross-validated against the platform''s test tree 2026-05-20:
+
+
+    - **HTTP tier — TermController**: ZERO direct tests. Grep `TermController` against
+    `odd-platform-api/src/test` returns zero files. 23 endpoints reachable in production
+    with no contract-level test asserting OpenAPI-binding, content-negotiation, security
+    wiring, or DTO serialisation parity.
+
+    - **Service tier — TermServiceImpl**: ZERO direct tests. The 552-line service
+    with 17 methods has no `TermServiceImpl*Test*` (Grep verified). The only reference
+    is `DataEntityServiceTest.java:80` (`@Mock private TermService termService`) —
+    a mock that is never invoked. 17 methods carrying multiple `@ReactiveTransactional`
+    perimeters, three link-table mutators with `is_description_link` flag semantics,
+    the `[[ns:term]]` regex parser, the three-stage unhandled-mention staging system,
+    and the description-mention guards are entirely uncovered.
+
+    - **Repository tier — ReactiveTermSearchEntrypointRepositoryImpl**: ZERO direct
+    tests. Seven SQL-heavy methods (CTEs, aggregates, `INSERT ... ON CONFLICT`, `tsvector_agg`
+    remapping) with no test corpus. The only reference is `NamespaceServiceImplTest.java:175,
+    186, 205` — mock-only interactions that verify the method is called but NOT what
+    SQL produces.
+
+    - **Repository tier — ReactiveTermRepositoryImpl** (batch-N): ZERO direct tests
+    per the batch-N sidecar''s tests_coverage_semantic block. 15 public methods +
+    the 7 term_to_term.deleted_at-unfiltered read sites are entirely uncovered.
+
+    - **UI tier — TermSearch + TermDetails + TermDefinition + TermSearchHeader + TermSearchResults
+    + TermDetailsTabs + TermDetailsRoutes + Overview**: ZERO direct tests. Glob over
+    `odd-platform-ui/src/components/Terms/**/*.test.*` returns ZERO matches (verified
+    2026-05-20).
+
+
+    **What''s lost by the absence**: the Business Glossary pillar P-06 hosts 23 endpoints,
+    the term-mention auto-link side-channel, the V0_0_91 schema-drift, the description-mention
+    guard, the FTS materialisation chain, the term-to-term linkage (un-RBAC''d per
+    TEST-GAP-718), and the cross-pillar Term→Entity / Term→Term graph rendering. ALL
+    of these regressions would land undetected. A future maintainer''s "small refactor"
+    to any one of: (a) the `findTermsInDescription` regex (TermServiceImpl.java:67),
+    (b) the `nameOrNamespaceHasChanged` boolean direction (TermServiceImpl.java:125,
+    331-335 — semantically inverted name), (c) the FTS vector refresh fan-out (ReactiveTermSearchEntrypointRepositoryImpl.java:63-250),
+    (d) the TermDetails double-fetch consolidation (TermDetails.tsx:37-45 + Overview.tsx:19-21),
+    or (e) any SecurityConstants entry shuffle — would ship green CI and surface as
+    operator-visible regressions in production.
+
+
+    **Why CRITICAL not HIGH**: P-06 is one of the platform''s load-bearing pillars
+    (the Business Glossary is the catalog''s vocabulary — every data-entity description,
+    every dataset-field description, every search facet references terms). A regression
+    in P-06 surfaces as: "term I just edited doesn''t show up in search", "deleted
+    term still in autocomplete", "term-link I just authored isn''t there after refresh",
+    "Dictionary tab now shows different counts than the term-details page", "auto-link
+    to my new term didn''t fire", "rename of a referenced term silently succeeded
+    and broke 100 descriptions". The operator-recoverable cost of these regressions
+    exceeds the test investment by orders of magnitude. The cross-cutting nature —
+    ALL FIVE TIERS (HTTP / Service / Repository × 2 / UI) are uncovered — elevates
+    this above any single-tier gap. **Pattern, not isolated gap**: this is the P-06-pillar
+    instance of the systemic cross-controller-floor pattern in TEST-GAP-001 + TEST-GAP-717;
+    the entire pillar repeats the bottom-tier-absence at every tier.'
+  test_class: missing-integration
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-721.yaml
+- gap_id: TEST-GAP-722
+  behaviour: '**HIGH — TermDetails cross-component fetch duplication: shell + Overview
+    both fire the 12-JOIN getTermDetailsDto per page-open.** Verified by tracing the
+    render path end-to-end in this sidecar:
+
+    - `TermDetails.tsx:37-45` (shell) dispatches `fetchTermDetails({termId})` via
+    Redux thunk on mount with `[termId]` deps.
+
+    - `Overview.tsx:19-21` (default tab) calls `useGetTermByID({termId})` — an INDEPENDENT
+    React-Query / RTK Query hybrid hook reading the SAME endpoint.
+
+
+    When the user lands on `/terms/:termId/overview` (the default route per `TermDetailsRoutes.tsx:46`),
+    TWO `GET /api/terms/{termId}` requests fire. Each backend GET runs the 12-LEFT-JOIN
+    + 4-countDistinct + 7-jsonArrayAgg hot path in `ReactiveTermRepositoryImpl.getTermDetailsDto`
+    (lines 194-238 — primary-source confirmed in F-002 batch-N sidecar). For typical
+    Term catalogues with <100 linked entities this is sub-200ms per fetch; for a heavily-linked
+    Term (e.g. a "Customer" term linked to 500 datasets across multiple namespaces
+    with 200 tags + 50 owners) the JOIN fan-out before the DISTINCT can materialise
+    N×M×P×Q intermediate rows — the doubled fetch doubles the database load on every
+    page-open.
+
+
+    **This is NOT the LSN-017 shape** (the trigger isn''t a useEffect dep array; it''s
+    two independent components both reading the same data) **but it IS a SIBLING class:
+    cross-component fetch duplication on a hot backend path.** Differences from LSN-017:
+
+    - LSN-017 doubles via useEffect dep-array shape WITHIN one component; this doubles
+    via TWO components fetching the same data.
+
+    - LSN-017 amplifies a Postgres UPDATE (causing `view_count` to inflate at +2 per
+    page-open); this amplifies a Postgres SELECT (causing 2× JOIN fan-out work per
+    page-open, no side-effect on persisted state).
+
+
+    Both are user-observable composition failures across cross-component boundaries
+    that no single per-node enrichment would catch — this is exactly the kind of finding
+    that LSN-018''s pre-emit coherence check is designed to surface (per Rule 6 /
+    LSN-018: this sidecar''s coherence_check section explicitly notes "this is a NEW
+    sibling pattern to F-002 batch-N drift_class `get_term_details_dto_12_join_hot_path_amplification`").
+
+
+    **Why HIGH not MEDIUM**: while individual page-open cost is bounded by typical
+    catalogue size, the load-bearing concern is the COMPOSITIONAL nature of the bug.
+    A future refactor that adds a third fetcher (e.g., a "Term ownership panel" component
+    using its own `useGetTermOwnership` hook that internally fetches the term-details
+    endpoint) would silently TRIPLE the load. There is no current test gate detecting
+    the cross-component fetch duplication; the only signal is operator-visible page-load
+    latency on heavily-linked terms. The fix is unambiguous (consolidate to ONE fetcher
+    — drop the shell''s `fetchTermDetails` and rely on Overview, OR drop Overview''s
+    `useGetTermByID` and selector-read from Redux), but without a regression-pin every
+    refactor risks regressing the consolidated state back to a divergent one.
+
+
+    **Test gap shape**: an integration test that mounts `<TermDetails/>` with a mocked
+    or test-tier backend, navigates to `/terms/100/overview`, and asserts the count
+    of `GET /api/terms/100` invocations is EXACTLY ONE (not two, not zero). The LSN-017
+    measurement-truth principle applies — only by counting backend invocations during
+    render can the bug be surfaced.'
+  test_class: missing-performance
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-722.yaml
+- gap_id: TEST-GAP-723
+  behaviour: '**HIGH — TermSearch''s `useDebouncedCallback(...)` is recreated every
+    render, so the 1500ms debouncer never coalesces multiple facet-change events.**
+    Sidecar reasoning (verified from static reading per LSN-017 measurement-truth
+    principle, with live probe recommended for confirmation):
+
+
+    The component at `TermSearch.tsx:50-64` declares a `useDebouncedCallback` to debounce
+    dispatching `updateTermSearch` to the server. The `useCallback` wrapping the debouncer
+    reads `termSearchFacetParams` and `termSearchQuery` from Redux — closures over
+    per-render values. When the user clicks a facet, the slice updates `termSearchFacetParams`
+    → the component re-renders → `useDebouncedCallback` returns a NEW debounced function
+    with the new closure → the previous debouncer''s pending invocation is discarded
+    → the new debouncer fires the dispatch immediately on the next render.
+
+
+    **Net behaviour**: instead of "1500ms after last facet-change, fire ONE coalesced
+    PUT", the actual behaviour is "every facet-change fires a fresh PUT immediately".
+    For a user clicking 5 facets in rapid succession (typical UX pattern when narrowing
+    a search), the server sees 5 separate PUTs instead of 1.
+
+
+    **Compound cost**: each PUT runs through `TermController.updateTermSearchFacets`
+    → `TermSearchService.updateFacets` which hits Postgres to rewrite the session
+    row''s facet state. 5× the DB writes for the same logical user intent. On a heavily-used
+    Dictionary tab during operator curation, this multiplies into hundreds of unnecessary
+    PUTs per session.
+
+
+    **Test gap shape**: a unit test that mounts `<TermSearch/>`, simulates 5 rapid
+    facet-changes within a 2-second window, and asserts the count of `PUT /api/termsearch/{searchId}`
+    calls. If the debouncer were working, count == 1 (or 2 with leading-edge — depending
+    on `useDebouncedCallback`''s configuration); if the bug stands, count == 5 (one
+    per facet-change).
+
+
+    **Why HIGH not MEDIUM**: this is one of TWO LSN-017-class dep-array smells in
+    this single sidecar (the other being `termSearchFacetsSynced` read in condition
+    but missing from useEffect deps at lines 66-68 — a latent regression-vector).
+    The bug is currently MASKED in normal operator usage (a single facet-click works
+    fine because the 1500ms window doesn''t matter for one event), and surfaces only
+    at burst-click frequency. Without a regression-pin, a future maintainer "optimising"
+    the dep array of the facet-sync useEffect or the `useCallback` wrapping could
+    either: (a) accidentally fix the bug (silent behavioural change — operators report
+    "search facets feel different now"); or (b) make it worse by introducing additional
+    re-renders that fire PUTs even outside the debouncer''s intended window. Either
+    case lands undetected without a test gate.
+
+
+    **Sister LSN-017 class but NOT identical**: LSN-017 canonical is a useEffect dep
+    array doubling the firing of a side-effect. This is a `useCallback` dep array
+    that re-creates a debounced function on every render — same root class (dep-array
+    semantics) but different symptom (debouncer ineffective rather than effect double-fire).
+    Per the sidecar''s coherence_check section, this is a NEW sibling under the LSN-017
+    umbrella that LSN-017''s canonical doc-page would benefit from cross-referencing.'
+  test_class: missing-performance
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-723.yaml
+- gap_id: TEST-GAP-724
+  behaviour: '**HIGH — V0_0_91''s `term_to_term.deleted_at` column is a DEAD schema
+    artefact: declared in migration, never written to by code, never filtered on read
+    — confirming a missed migration NOT an intentional soft-delete.** Triangulated
+    across all three batch-U Term-side sidecars + verified against the platform''s
+    primary source 2026-05-20:
+
+
+    **Schema declaration**: `odd-platform-api/src/main/resources/db/migration/V0_0_91__add_term_to_term.sql:6`
+    declares `deleted_at TIMESTAMP WITHOUT TIME ZONE` on the `term_to_term` table
+    (verified by reading the migration file end-to-end). This pattern would suggest
+    soft-delete intent.
+
+
+    **Schema asymmetry — primary-source evidence the column is DEAD**: migration `V0_0_76__term_relations_hard_delete.sql:5-22`
+    had already established the OPPOSITE pattern: it DROPPED `deleted_at` from `data_entity_to_term`,
+    `tag_to_term`, and `term_ownership` and converted those tables to hard-delete-only
+    semantics. V0_0_91 reverted that pattern WITHOUT JUSTIFICATION (no Javadoc / comment
+    / commit-message context in the migration file).
+
+
+    **Live-code evidence the column is DEAD**:
+
+    - `TermRelationsRepositoryImpl.deleteTermToTermRelations` (line 204-219) calls
+    `DSL.delete(TERM_TO_TERM)` — a hard DELETE
+
+    - `deleteTermToLinkedTermRelation` (line 222-230) calls `DSL.deleteFrom(TERM_TO_TERM)`
+    — also a hard DELETE
+
+    - **No code path sets `TERM_TO_TERM.DELETED_AT`** (`grep -rn ''TERM_TO_TERM\.DELETED_AT''
+    /home/raman/work/odd/odd-platform/odd-platform-api/src/main/java` returns ZERO
+    matches, per the sidecar''s primary-source claim)
+
+    - **No read path filters on it** (per the F-002 batch-N sidecar''s 7-site enumeration
+    of unfiltered reads — that batch surfaced the OPPOSITE interpretation: "the 7
+    read sites skip the filter, that''s the bug"; this sidecar''s primary-source clarification
+    flips the interpretation to "the column is dead, the migration was incomplete")
+
+
+    **Why HIGH not MEDIUM**: this is a PRIMARY-SOURCE SUPERSEDE on the batch-N interpretation.
+    TEST-GAP-538 (existing, LOW criticality) frames the issue as "read sites should
+    filter `deleted_at IS NULL` — pin the buggy current behaviour". This sidecar''s
+    clarification — confirmed via the V0_0_76-vs-V0_0_91 migration history — reveals
+    the truth: the COLUMN ITSELF should be dropped. Pinning the current "bug" via
+    TEST-GAP-538 would lock in a misinterpretation. The maintainer fix is: (a) a cleanup
+    migration `ALTER TABLE term_to_term DROP COLUMN IF EXISTS deleted_at`, (b) a defensive
+    schema-shape regression test that fails if a future maintainer reintroduces a
+    `deleted_at` column on `term_to_term` without ALSO wiring code that USES it.
+
+
+    **Compound gap with the term-itself-delete cascade**: `TermServiceImpl.delete`
+    (`TermServiceImpl.java:154-165`) cascades to `data_entity_to_term` (line 162)
+    and `dataset_field_to_term` (line 163), then soft-deletes the term — but does
+    NOT call any `termRelationsRepository.deleteRelationsWithTerm(termId)` for `term_to_term`.
+    So even with the dead `deleted_at` column dropped, dangling `term_to_term` rows
+    pointing at soft-deleted terms persist indefinitely. The read paths `JOIN term`
+    and filter on `term.deleted_at IS NULL` so the orphans are EFFECTIVELY HIDDEN
+    from API responses — but the rows accumulate in the DB. A future maintainer adding
+    direct `term_to_term` queries that bypass the JOIN would surface the orphans.
+
+
+    **Test gap shape**: regression-pin asserting (a) `term_to_term` schema does NOT
+    carry a `deleted_at` column (post-fix); (b) `TermServiceImpl.delete(termId)` results
+    in zero `term_to_term` rows referencing the deleted term (cascading cleanup);
+    (c) the 7 read sites from batch-N do NOT filter `term_to_term.deleted_at IS NULL`
+    because there is no such column to filter on (post-fix). Pre-fix, this gap pins
+    the CURRENT state via a schema-shape assertion + a cascade-cleanup-missing assertion
+    as the canary for any maintainer reading this evidence.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-724.yaml
+- gap_id: TEST-GAP-725
+  behaviour: '**HIGH — F-006 audit-silence pattern extends to the ENUM SCHEMA on the
+    entire Term-lifecycle surface.** Primary-source-confirmed via the batch-U TermServiceImpl
+    sidecar:
+
+
+    - `TermServiceImpl.createTerm` (`TermServiceImpl.java:99-117`) carries NO `@ActivityLog`.
+
+    - `TermServiceImpl.updateTerm` (`TermServiceImpl.java:121-145`) carries NO `@ActivityLog`.
+
+    - `TermServiceImpl.delete` (`TermServiceImpl.java:154-165`) carries NO `@ActivityLog`.
+
+    - `TermServiceImpl.upsertTags` (`TermServiceImpl.java:253-264`) carries NO `@ActivityLog`.
+
+    - `TermServiceImpl.linkTermWithTerm` (`TermServiceImpl.java:289-294`) carries
+    NO `@ActivityLog`.
+
+    - `TermServiceImpl.removeTermToLinkedTermRelation` (`TermServiceImpl.java:297-302`)
+    carries NO `@ActivityLog`.
+
+
+    Beyond service-tier omission, **the `ActivityEventTypeDto` enum at `ActivityEventTypeDto.java:3-31`
+    does NOT define `TERM_CREATED`, `TERM_UPDATED`, `TERM_DELETED`, `TERM_DESCRIPTION_UPDATED`,
+    `TERM_TAGS_UPDATED`, `NAMESPACE_CREATED`, `NAMESPACE_DELETED`, `TAG_CREATED`,
+    or `TAG_DELETED`** (verified by the sidecar''s primary-source `grep -n ''TERM_CREATED\|TERM_UPDATED\|TERM_DELETED\|TAG_CREATED\|NAMESPACE_CREATED''
+    returns zero matches`). The audit-silence on catalog-vocabulary lifecycle is SCHEMA-ROOTED,
+    not just service-side: a maintainer adding `@ActivityLog(TERM_CREATED)` would
+    FAIL TO COMPILE.
+
+
+    **Why HIGH not MEDIUM**: this is a STRUCTURAL gap, not a service-tier omission.
+    The F-006 audit-silence pattern was previously enumerated across 8+ sidecars at
+    the service tier (operator-investigation surface — "I deleted a Role, no audit
+    trail"). This sidecar surfaces a deeper variant: even if a maintainer wanted to
+    instrument these mutations, the schema doesn''t HAVE the right enum values. The
+    intent is encoded by absence — catalog-vocabulary-curation is silent BY DESIGN
+    at the enum level. Whether this is durable design or oversight is decision-shaped;
+    the schema-level absence ELEVATES the gap from "service didn''t choose to log"
+    to "platform-design decided catalog-vocabulary is silent". This is the SAME enum-root
+    pattern as the F-006 batch-G primary-source discovery (`seven_sidecar_audit_silence_pattern_repo_tier_schema_root_cause`)
+    but applied to a NEW surface (Term lifecycle vs the previously-enumerated RBAC
+    + ownership surfaces).
+
+
+    **Operational consequences**:
+
+    - Operator who deletes a term has no forensic trace in the activity feed; restoring
+    deleted catalog-vocabulary requires DB introspection.
+
+    - Auditor investigating "who renamed the `Customer` term in `finance` namespace
+    last quarter" has no answer from the activity feed.
+
+    - Auditor investigating "who linked term A to term B" has no answer (compound
+    with TEST-GAP-718 unauthenticated term-to-term linkage — any authenticated user
+    can link/unlink with no audit trail).
+
+    - Compliance frameworks (SOX, GDPR-derived data-cataloguing requirements) cannot
+    demonstrate auditability for the Business Glossary.
+
+
+    **Test gap shape**: a regression-pin asserting that (a) the enum at `ActivityEventTypeDto.java`
+    does NOT contain `TERM_CREATED` / `TERM_UPDATED` / `TERM_DELETED` / etc.; (b)
+    `TermServiceImpl.createTerm/updateTerm/delete/upsertTags/linkTermWithTerm/removeTermToLinkedTermRelation`
+    produce ZERO activity-feed entries on any path. The current state is PINNED to
+    make the design intent visible — any future maintainer adding enum values + `@ActivityLog`
+    instrumentation will see the test fail and must explicitly update both layers
+    in the same PR.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-006
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-725.yaml
+- gap_id: TEST-GAP-726
+  behaviour: '**HIGH — TermController write endpoints systematically bypass NAMESPACE_CREATE
+    + TAG_CREATE permissions via the platform''s getOrCreate side-door pattern.**
+    Primary-source confirmed across both batch-U Term-side sidecars + cross-link to
+    the platform''s existing batch-K invariant on the same architectural class:
+
+
+    **NAMESPACE_CREATE side-door** — two entry points:
+
+    - `TermController.createTerm` → `TermServiceImpl.createTerm` → `namespaceService.getOrCreate(formData.getNamespaceName())`
+    (`TermServiceImpl.java:103`). A caller holding `TERM_CREATE` (the documented gate
+    per Business Glossary docs) can submit a TermFormData with a NEVER-SEEN `namespaceName`
+    and SILENTLY CREATE the namespace.
+
+    - `TermController.updateTerm` → `TermServiceImpl.updateTerm` → `namespaceService.getOrCreate(formData.getNamespaceName())`
+    (`TermServiceImpl.java:138`). Same side-door on update — re-naming a term to a
+    fresh namespace creates that namespace.
+
+
+    **TAG_CREATE side-door** — one entry point:
+
+    - `TermController.createTermTagsRelations` → `TermServiceImpl.upsertTags` → `tagService.getOrCreateTagsByName(names)`
+    (`TermServiceImpl.java:257`). A caller holding `TERM_TAGS_UPDATE` (the documented
+    gate per Business Glossary docs) can submit a TagsFormData with NEVER-SEEN tag
+    names and SILENTLY CREATE the tags.
+
+
+    **What the docs claim vs what the code enforces**: the Business Glossary docs
+    (live-fetched 2026-05-20 per the sidecars) declare `TERM_CREATE` gates "Create
+    a new term in the Dictionary" and `TERM_TAGS_UPDATE` gates "Apply or remove tags
+    on a term". Neither line discloses the side-door creation of namespaces or tags.
+    Operators authoring RBAC policies that withhold `NAMESPACE_CREATE` (the dedicated
+    permission for creating namespaces — gated at `POST /api/namespaces` per the Management
+    surface) or `TAG_CREATE` (gated at `POST /api/tags` per the Management surface)
+    and granting only `TERM_CREATE` + `TERM_TAGS_UPDATE` to a "glossary curator" Role
+    expect the curator to be unable to expand the namespace or tag taxonomies. The
+    code, however, allows arbitrary expansion via Term write endpoints.
+
+
+    **Architectural pattern — cross-pillar reach**: this is a SISTER pattern to the
+    previously-enumerated `getOrCreate` side-doors:
+
+    - REFACTOR-199 (Owner auto-create via `ownerService.getOrCreate` — gateway for
+    `OWNER_CREATE` bypass via OwnerController#createOwner)
+
+    - REFACTOR-222 (TAG_CREATE bypass via `upsertTags` in OwnerController#createOwner
+    — same `getOrCreateTagsByName` call site)
+
+    - REFACTOR-223 (NAMESPACE_CREATE bypass via `getOrCreate` in TermServiceImpl#createTerm
+    — sister site, identified earlier)
+
+    - REFACTOR-486 (TITLE auto-create via `titleService.getOrCreate` — `TitleServiceImpl.getOrCreate`
+    has NO allowlist, no enum, no @Pattern)
+
+
+    The aggregate finding: **the platform''s `getOrCreate*` pattern systematically
+    allows tag/namespace/owner/title creation through ANY endpoint that touches those
+    entities, bypassing the dedicated `*_CREATE` permissions.** This sidecar adds
+    the NAMESPACE_CREATE side-door on createTerm + updateTerm and the TAG_CREATE side-door
+    on createTermTagsRelations to the family, bringing the cumulative cross-pillar
+    count to FOUR getOrCreate bypass sites.
+
+
+    **Why HIGH not MEDIUM**: while each individual side-door is rated MEDIUM in the
+    sidecars, the CUMULATIVE cross-pillar pattern is elevated to HIGH because: (a)
+    the side-doors are NOT documented anywhere in the operator-facing site (sidecar''s
+    doc_drift_findings confirm); (b) operators reasoning about access control via
+    the documented `*_CREATE` permissions are SYSTEMATICALLY DECEIVED about what permissions
+    a Role actually allows; (c) the read-collaborative posture means EVERY authenticated
+    user with any `TERM_*` write permission can pollute the namespace + tag taxonomies
+    indefinitely. The Management UI''s Namespace + Tag tabs (intended as the controlled-vocabulary
+    surfaces per P-08) are EFFECTIVELY UNGATED because every other pillar''s write
+    endpoints can bypass them.
+
+
+    **Test gap shape**: regression-pin asserting: (a) `createTerm` with a never-seen
+    `namespaceName` succeeds for a caller holding TERM_CREATE but NOT NAMESPACE_CREATE;
+    (b) `createTermTagsRelations` with never-seen tag names succeeds for a caller
+    holding TERM_TAGS_UPDATE but NOT TAG_CREATE; (c) `updateTerm` with a never-seen
+    `namespaceName` succeeds for a caller holding TERM_UPDATE but NOT NAMESPACE_CREATE.
+    Each test PINS the current (bypass) behaviour — failures land if a future maintainer
+    adds explicit `NAMESPACE_CREATE` / `TAG_CREATE` checks at the service layer.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-726.yaml
+- gap_id: TEST-GAP-727
+  behaviour: '**HIGH — TermServiceImpl.delete leaves stale tsvector rows in `term_search_entrypoint`,
+    and the entire repository has effectively ZERO direct test coverage.** Primary-source
+    confirmed in the batch-U ReactiveTermSearchEntrypointRepositoryImpl sidecar:
+
+
+    **Stale-FTS-on-delete bug**: `TermServiceImpl.delete(long id)` (`TermServiceImpl.java:153-165`)
+    deletes `term_to_term`, `data_entity_to_term`, `dataset_field_to_term` relations
+    and the `term` row itself (soft-delete via `deleted_at`), but **NEVER calls any
+    method on `ReactiveTermSearchEntrypointRepository`** to drop the term''s row from
+    `term_search_entrypoint` or clear its vector contents. Verified by reading the
+    delete method end-to-end + verifying the interface at `ReactiveTermSearchEntrypointRepository.java:5-20`
+    has only 7 UPDATE methods, NO delete / clear-vectors method.
+
+
+    **Operational consequences**:
+
+    - Soft-deleted terms (where `term.deleted_at IS NOT NULL`) keep their last-known
+    tsvector contents in the FTS table indefinitely.
+
+    - Readers that JOIN `term` (filtering by `TERM.DELETED_AT.isNull()`) will not
+    surface them — masking the bug in normal operation.
+
+    - BUT any reader that queries `term_search_entrypoint` directly without joining
+    `term` would surface deleted terms.
+
+    - The bug is exactly the shape called out by the sidecar''s `tests_coverage_semantic.gaps`
+    as "deleted term still in autocomplete" — visible to operators as inconsistent
+    search/autocomplete state, invisible in CI.
+
+
+    **Compound gap — REPOSITORY-WIDE zero direct coverage**: this is one of SEVEN
+    methods on the repository, none of which have a direct test. The only test reference
+    is `NamespaceServiceImplTest.java:175, 186, 205` — MOCK-ONLY interactions that
+    verify `updateChangedNamespaceVector` was CALLED but NOT what SQL produces. So
+    the seven SQL-heavy methods (CTEs, aggregates, `INSERT ... ON CONFLICT`, `tsvector_agg`
+    remapping) are entirely unverified end-to-end. A future maintainer''s well-intentioned
+    change to JooqFTSHelper for the REFACTOR-229 family (FTS injection mitigation)
+    could silently break the WRITE-side aggregation for every multi-tag term, with
+    no test catching it before deploy.
+
+
+    **Why HIGH not MEDIUM**: cross-pillar surface — P-01 (Discovery''s search) consumes
+    the FTS index this repository maintains. Stale vectors on the WRITE side surface
+    as wrong-ranking / phantom-result behaviour on the READ side that P-01 owns. The
+    bug is silent in CI but operator-visible in production. Plus the cumulative absence
+    of direct test coverage on seven SQL-heavy methods amplifies regression risk.
+    Cross-batch-link to F-002 (P-06 Glossary feature) + P-01 (Discovery search-ranking).
+
+
+    **Test gap shape**: regression-pin asserting that AFTER `TermServiceImpl.delete(termId)`,
+    querying `term_search_entrypoint` directly (without joining `term`) does NOT return
+    the deleted term''s row. Plus separate regression-pins on the seven repository
+    methods exercising real SQL execution against a Postgres test container.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-002
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-727.yaml

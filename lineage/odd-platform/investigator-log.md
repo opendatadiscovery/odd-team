@@ -1704,3 +1704,60 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - Coherence-sweep candidates: 41k (S) → 43k (T; linear growth).
 - F-001 + F-003 merge candidate still maintainer-pending.
 
+
+## Batch 2026-05-20-U — Term + Glossary: **P-06 Data Glossary 5-LAYER closure** (5/5)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 110 prior + 4 new + 1 UI subst = **114 total**; 0 deferred
+- **Theme**: P-06 Data Glossary closure (Term controller + service + UI list + UI details + FTS write repo)
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `TermController` | P-06+P-09 | 23 endpoints; **term-to-term linkage POST/DELETE have NO SecurityRule entry** (2nd SecurityConstants wiring failure — different bug class from REFACTOR-217). Status-code drift. NAMESPACE_CREATE + TAG_CREATE side-doors. Term link/unlink invisible to Activity Feed. |
+| `TermServiceImpl` | P-06+P-09 | **F-004 stored-XSS intersection at handleDataEntityDescriptionTerms**: `[[<script>:foo]]` payloads persist verbatim in unhandled-staging rows. **V0_0_91 term_to_term.deleted_at confirmed DEAD-schema MISSED migration** (not intentional — Grep zero matches for TERM_TO_TERM.DELETED_AT writes). **F-006 audit-silence ENUM-ROOTED**: ActivityEventTypeDto has NO TERM/TAG/NAMESPACE values — structurally invisible. |
+| `TermSearch` (UI, substitute for phantom TermsList) | P-06 | TWO LSN-017-class dep-array smells (latent + potentially active). **Broken 1500ms debouncer recreated every render**. Stale-session-UUID broken-page (cross-link F-010 30-day TTL). 5 ADRs (URL-backed server session model; WithPermissions UI-hide pattern; 1500ms leading-edge debouncer; read-collaborative posture; pageSize=30 twice). |
+| `TermDetails` (UI) | P-06 | **REFUTES LSN-017 doubling for TermDetails** BUT surfaces sibling-class: **cross-component fetch duplication** (shell + Overview tab both fire `getTermDetailsDto` 12-JOIN hot path per page-open). **F-004 stored-XSS EXTENDS to TermDefinition** (rehype-raw bundled via @uiw/react-md-editor 6.1.1, **no rehype-sanitize anywhere in odd-platform-ui** — Grep verified). 5th UI shell confirming LSN-017-negative cluster — DataEntityDetails increasingly SOLE platform-wide canonical instance. |
+| `ReactiveTermSearchEntrypointRepositoryImpl` | P-06+P-01 | Term-side FTS WRITE surface. **REFACTOR-229 ROLE-DISAMBIGUATED** (not strengthened): WRITE path stores tokenized (safe); READ path detonates user-controlled query text. Sidecar is UPSTREAM-of-vulnerability node. Patch scope tightened to READ side only. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 314 → **328 concepts** | +8 new + 6 strengthened. NEW: third-SecurityConstants-wiring-failure; F-004-extends-to-TermDefinition; no-rehype-sanitize-anywhere-in-odd-platform-ui systemic; V0_0_91-dead-schema-classification (severity HIGH→MEDIUM after disambiguation); F-006-audit-silence-ENUM-ROOTED (deeper than schema-rooted); REFACTOR-229-WRITE-vs-READ-disambiguation; cross-component-fetch-duplication (sibling-class to LSN-017); broken-debouncer-recreation-every-render; cross_namespace_term_pollution UI surface confirmed; NAMESPACE_CREATE+TAG_CREATE side-doors. LSN-017-5-UI-shell-negative-cluster: TermDetails confirms DataEntityDetails as SOLE platform-wide canonical. |
+| adr-archaeologist (ADRs) | 160 → **163** | +3 (161-163: URL-backed search-session / per-source-column tsvector / recompute-don't-delta FTS) + 2 strengthened (ADR-089 UI-only-hide WithPermissions 6-sidecar; ADR-152 @ReactiveTransactional uniformity — TermService POSITIVE-COMMITMENT exemplar). 5 wisdom-test reclassifications → scopes. |
+| adr-archaeologist (scopes) | 470 → **480** | +10 (471-480) + 2 strengthened (REFACTOR-229 WRITE-vs-READ disambiguation patch-scope tightened; REFACTOR-188 audit-silence ENUM-ROOTED at ActivityEventTypeDto.java:3-31 — 9-SIDECAR). 2 HIGH + 8 MEDIUM new. |
+| doc-gap-finder | 202 → **210** | +8 (203-210) + 3 META strengthened (DOC-082 + DOC-083 + DOC-099). 2 HIGH (term-to-term unguarded; TermDefinition stored-XSS) + 6 MEDIUM. |
+| test-coverage-mapper | 714 → **724 indexed** | +10 (718-727) + 7 strengthened + 1 SUPERSEDED (TEST-538). **4 NEW CRITICAL** (TermController term-to-term no-authz; TermServiceImpl stored-XSS in unhandled-staging; TermDefinition rehype-raw XSS; F-006 audit-silence ENUM-ROOTED on TermController.deleteTerm). 121 CRITICAL total. |
+| feature-flow-builder | 23 → **24 features** (+1 new, +3 extended) | **F-024 / P-06:F-002 Term Search & Browse — Dictionary tab** (NEW — distinct from F-002 Term-to-Entity Linkage; sibling capability per system-mission.md P-06 sub-features). F-002 + F-004 + F-006 extended. F-002 achieves **FULL 5-LAYER pillar chain closure**. 18 new drift facets. |
+
+### Coverage state after batch U
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 114 | **28.9%** (was 27.8%) |
+| Effective coverage | 215 | **54.4%** (was 52.9%) |
+| Features discovered | 24 (was 23) | +1 NEW (F-024 P-06:F-002 Term Search & Browse) |
+| Total test-gaps | 724 indexed | 121 CRITICAL (was 117) |
+
+### Cross-batch triangulation deltas
+
+- **P-06 Data Glossary CLOSED at 5-LAYER** (controller + service + UI list + UI detail + FTS write repo)
+- **F-002 FULL pillar chain** (was repository-only at batch N; now 5-layer with this batch)
+- **F-004 stored-XSS surface count**: 2 → **3** (data-entity description + dataset-field description + term-definition — all unsanitized markdown via rehype-raw)
+- **F-006 audit-silence pattern**: 10-SIDECAR → **ENUM-ROOTED at ActivityEventTypeDto** (deeper than schema-rooted; 4-tier remediation required: schema migration + enum extension + ActivityHandler implementations + ~25 service-method annotations)
+- **SecurityConstants wiring failures**: 3 distinct cases (REFACTOR-217 path-mismatch + batch-K alert-status mis-permission + term-to-term no-rule) — startup-time invariant scanner case strengthened
+- **LSN-017 negative cluster**: 5 UI shells confirmed (PolicyList + RolesList + OwnersList + CollectorsList + TermDetails) — **DataEntityDetails is the SOLE platform-wide canonical instance** of within-component doubling
+- **Cross-component fetch duplication**: NEW sibling-class to LSN-017 (within-component → cross-component multiplication)
+- **REFACTOR-229 patch scope tightened**: write-side stores safely tokenized; read-side detonates — fix at JooqFTSHelper.tsQuery covers all current + future consumers
+
+### Follow-ups (logged, not blocking)
+
+- RelationshipController DEFERRED from batch T still pending (P-02 first sidecar)
+- 2 broken-yaml from batches P+S persist; 3 from earlier; quarantined
+- 207 detail-without-index in refactoring-scopes; 82 in implicit-adrs; 30+4 in doc-gaps
+- Coherence-sweep candidates: 43k (T) → 44.6k (U)
+- F-001 + F-003 merge candidate still maintainer-pending
+

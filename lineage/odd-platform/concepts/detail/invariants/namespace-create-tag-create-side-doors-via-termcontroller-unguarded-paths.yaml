@@ -1,0 +1,265 @@
+name: |-
+  NAMESPACE_CREATE + TAG_CREATE side-doors via TermController unguarded paths (TERM_CREATE / TERM_UPDATE / TERM_TAGS_UPDATE bypass the dedicated CREATE permissions)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-06
+  - P-08
+  - P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20U — STRENGTHENS the existing
+  spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
+  invariant by surfacing the TERM-side surface of the same pattern.
+  Two side-doors operate through TermController endpoints, each
+  bypassing a different dedicated CREATE permission:
+
+  SIDE-DOOR 1 — NAMESPACE_CREATE bypass via TermController.createTerm + updateTerm:
+
+    TermServiceImpl.createTerm (TermServiceImpl.java:101-117) and
+    TermServiceImpl.updateTerm (TermServiceImpl.java:119-145) both
+    invoke namespaceService.getOrCreate(formData.getNamespaceName())
+    at lines 103 and 138 respectively. The getOrCreate method:
+      (a) Looks up the namespace by name.
+      (b) If found, returns the existing namespace.
+      (c) If not found, INSERTs a new namespace row and returns it.
+
+    A caller holding TERM_CREATE (gated at SecurityConstants.java:111,
+    NO_CONTEXT) or TERM_UPDATE (gated at SecurityConstants.java:174-176
+    via TERM resource extractor) can therefore CREATE a brand-new
+    namespace by submitting a TermFormData with a never-seen
+    namespaceName. The dedicated NAMESPACE_CREATE permission (gating
+    POST /api/namespaces per NamespaceController) is NEVER consulted
+    on this path.
+
+    Endpoints exposing this side-door:
+      POST /api/terms (createTerm) — gated by TERM_CREATE.
+      PUT /api/terms/term_id (updateTerm) — gated by TERM_UPDATE.
+
+    Operator-facing manifestation: an organisation that gives the
+    data-engineering team TERM_CREATE on namespace=data-engineering
+    EXPECTS the team can author terms inside that namespace only.
+    The current implementation lets them create ANY new namespace name
+    (e.g., 'finance', 'compliance') without holding NAMESPACE_CREATE.
+    The new namespace is platform-wide visible.
+
+  SIDE-DOOR 2 — TAG_CREATE bypass via TermController.createTermTagsRelations:
+
+    TermServiceImpl.upsertTags (TermServiceImpl.java:253-264) invokes
+    tagService.getOrCreateTagsByName(names) at line 257. The
+    getOrCreateTagsByName method returns existing tags by name OR
+    creates new ones — the same getOrCreate-pattern as namespaceService.
+
+    A caller holding TERM_TAGS_UPDATE (gated at SecurityConstants.java:185-186
+    via TERM resource extractor on term_id) can therefore CREATE a
+    brand-new tag by submitting a TagsFormData with a never-seen tag
+    name. The dedicated TAG_CREATE permission (gating POST /api/tags
+    per TagController) is NEVER consulted.
+
+    Endpoint exposing this side-door:
+      PUT /api/terms/term_id/tags (createTermTagsRelations) — gated
+      by TERM_TAGS_UPDATE.
+
+  THE COMPOUND PATTERN — every getOrCreate is a side-door:
+
+    The platform's getOrCreate convention at the service-tier
+    consistently maps to '*_CREATE permission bypass' at the
+    architectural level. Cross-batch evidence enumerates the pattern:
+      - OwnerController.createOwner side-door (REFACTOR-222 family,
+        batch H) — Owner auto-create via owner-binding endpoints.
+      - TermServiceImpl.upsertTags TAG_CREATE bypass (THIS invariant +
+        the existing
+        spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
+        master invariant).
+      - TermServiceImpl.createTerm/updateTerm NAMESPACE_CREATE bypass
+        (THIS invariant — NEW).
+
+    The architectural class: any service-tier getOrCreate call to an
+    entity whose creation is gated by a dedicated *_CREATE permission
+    is a side-door. The DEDICATED *_CREATE permission is bypassed
+    whenever the parent endpoint's permission grants the right to
+    invoke the path that touches the getOrCreate.
+
+  WHY THIS MATTERS FOR THE OPERATOR'S RBAC POLICY DESIGN:
+
+    Operators authoring Policies typically reason about permissions
+    additively: 'data-engineering team gets TERM_CREATE on namespace=X;
+    they cannot create namespaces or tags on the catalog'. The
+    side-door pattern silently inverts this — TERM_CREATE on namespace=X
+    DOES let the team create new namespaces AND new tags. The Policy
+    is more permissive than its authoring suggests.
+
+    The doc-side silence on the side-door pattern (per the
+    business-glossary.md WebFetched 2026-05-20 in the TermServiceImpl
+    batch K sidecar's docs_link_semantic findings) means operators
+    learn about the bypass by trial-and-error or by reading the
+    service-tier code.
+
+  THE ENUM-ROOTED AUDIT-SILENCE COMPOUND:
+
+    Per the f-006-audit-silence-enum-rooted-deeper-than-schema-rooted
+    invariant (batch U companion), the ActivityEventTypeDto enum has
+    NO TAG_CREATED or NAMESPACE_CREATED values defined. So neither
+    side-door produces an audit-trail event. An operator investigating
+    'who created the finance namespace' has no Activity Feed entry to
+    consult. The side-door is silent on creation AND silent on audit.
+
+  CROSS-SECURITY-PILLAR PATTERN:
+
+    The pattern is uniform across the platform's *_CREATE permissions:
+      - DATA_ENTITY_CREATE is RESPECTED at POST /api/dataentities
+        (the ingestion pipeline path; not a UI-side mutation).
+      - OWNER_CREATE is BYPASSED via the OwnerController.createOwner
+        side-door (REFACTOR-222 — batch H primary source).
+      - TAG_CREATE is BYPASSED via TermServiceImpl.upsertTags side-door
+        (THIS invariant + the existing master).
+      - NAMESPACE_CREATE is BYPASSED via TermServiceImpl.createTerm
+        and updateTerm side-doors (THIS invariant — NEW).
+      - QUERY_EXAMPLE_CREATE — needs verification at a future batch
+        whether a getOrCreate-shaped side-door exists.
+      - COLLECTOR_CREATE — needs verification.
+      - POLICY_CREATE, ROLE_CREATE — needs verification.
+
+    A full audit batch enumerating every service-tier getOrCreate call
+    + the dedicated *_CREATE permission it bypasses would close the
+    cross-pillar pattern.
+
+  SEVERITY MEDIUM — same severity as the existing TAG_CREATE-via-upsertTags
+  master invariant (which this strengthens). The NAMESPACE_CREATE
+  side-door adds a NEW SURFACE within the same architectural class;
+  the maintenance-trail (audit-silence + doc-silence) compounds the
+  operator-facing opacity.
+nodes:
+  - odd-platform java TermController controller-class:TermController
+  - odd-platform java service service:TermServiceImpl
+contributors:
+  - |-
+    TermController batch U (PRIMARY SOURCE — controller-level exposure):
+    bugs_limitations_corner_cases.[6] MEDIUM (createTerm and updateTerm
+    side-door NAMESPACE_CREATE via namespaceService.getOrCreate) +
+    bugs_limitations_corner_cases.[7] MEDIUM (createTermTagsRelations
+    side-doors TAG_CREATE) + security.known_security_gaps.[2,3]
+    MEDIUM (NAMESPACE_CREATE bypass evidence; TAG_CREATE bypass
+    evidence) + concepts.operations[createTerm, updateTerm,
+    createTermTagsRelations — each cites the side-door path]
+  - |-
+    TermServiceImpl batch K + batch U (CORROBORATING — service-tier
+    side-door primary source):
+    bugs_limitations_corner_cases.[12] TAG_CREATE-via-upsertTags
+    MEDIUM severity (existing) + the namespace-side-door reference at
+    dependencies_semantic.requires-feature (TermServiceImpl.java:103,
+    138 — namespaceService.getOrCreate side-channel) +
+    bugs_limitations_corner_cases.[5] (the master cross-namespace-pollution
+    invariant; side-door + cross-namespace amplify each other)
+evidence:
+  - |-
+    TermController.md:bugs_limitations_corner_cases.[6] MEDIUM severity —
+    evidence: TermServiceImpl.java:103, 138 (the namespaceService.getOrCreate
+    call sites in createTerm and updateTerm)
+  - |-
+    TermController.md:bugs_limitations_corner_cases.[7] MEDIUM severity —
+    evidence: TermServiceImpl.java:254-264 (the upsertTags side-door
+    + tagService.getOrCreateTagsByName)
+  - |-
+    TermController.md:security.known_security_gaps.[2,3] — the dedicated
+    bypass enumeration with evidence chain
+  - |-
+    TermServiceImpl.md:bugs_limitations_corner_cases.[12]
+    TAG_CREATE-via-upsertTags MEDIUM severity (existing master)
+  - |-
+    Cross-references master invariant
+    spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
+    (the existing TAG_CREATE half — THIS invariant adds the
+    NAMESPACE_CREATE half + the architectural-pattern framing)
+  - |-
+    Cross-references permission-bypass-via-owner-auto-create-side-door-write-path
+    (the OwnerController half of the same architectural class — batch H)
+axes_present:
+  - controllers
+  - services
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-H (Owner-side door — REFACTOR-222 family)
+  - batch-K (TermServiceImpl batch K — TAG_CREATE-via-upsertTags master)
+  - batch-U (TermController + TermServiceImpl — NAMESPACE_CREATE half + architectural-pattern framing, THIS INVARIANT)
+severity: MEDIUM
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Add service-tier permission checks at the namespaceService.getOrCreate
+    + tagService.getOrCreateTagsByName call sites. The check should
+    differentiate 'looking up an existing namespace/tag' (no permission
+    needed; pure read) from 'creating a new namespace/tag' (requires
+    NAMESPACE_CREATE / TAG_CREATE). The getOrCreate signature can be
+    refactored to take a 'requireCreatePermission: boolean' flag OR
+    split into two methods (getByName + create) so the side-door is
+    explicit at call sites.
+  - |-
+    Add the namespace + tag CREATE-permission checks at the
+    TermServiceImpl mutator methods before invoking the getOrCreate
+    helpers. Defence-in-depth at the service tier.
+  - |-
+    Document the side-door pattern on the
+    /features/data-glossary/business-glossary live doc page — operators
+    authoring Policies should know that TERM_CREATE / TERM_UPDATE
+    grants implicit NAMESPACE_CREATE; TERM_TAGS_UPDATE grants implicit
+    TAG_CREATE. Surface as an admonition block.
+  - |-
+    Add a regression test asserting the side-door behavior:
+      (a) Authenticate as a user with TERM_CREATE but NOT NAMESPACE_CREATE.
+      (b) POST /api/terms with TermFormData containing a never-seen
+          namespaceName.
+      (c) Assert the namespace IS created and the term IS attached to
+          it (pins the buggy/intentional state).
+      (d) Re-author after a future fix: assert the request 403s (or
+          409s) for missing NAMESPACE_CREATE.
+  - |-
+    Build-time scanner — enumerate every service-tier getOrCreate
+    method invocation and flag any that touches an entity gated by a
+    dedicated *_CREATE permission. The scanner would surface the full
+    cross-pillar pattern (Owner / Tag / Namespace / and any other
+    side-doors) so the maintainer has the complete inventory.
+  - |-
+    Audit batch follow-up — enumerate the remaining *_CREATE
+    permissions (QUERY_EXAMPLE_CREATE, COLLECTOR_CREATE, POLICY_CREATE,
+    ROLE_CREATE, etc.) and verify whether each is bypassed by a
+    service-tier getOrCreate elsewhere. Close the cross-pillar
+    inventory.
+notes: |-
+  NEW invariant captured in batch 2026-05-20U from the TermController
+  class-level sidecar. The class-level read aggregates the
+  NAMESPACE_CREATE + TAG_CREATE side-doors that the controller's
+  three CRUD-ish endpoints (createTerm, updateTerm, createTermTagsRelations)
+  expose; the TermServiceImpl batch K primary source had already
+  documented the service-tier mechanism for TAG_CREATE, but the
+  NAMESPACE_CREATE pairing was implicit and is now explicit.
+
+  The architectural pattern (getOrCreate = side-door for the
+  dedicated *_CREATE permission) is the load-bearing observation. It
+  generalises beyond Term + Owner + Tag to ANY entity whose service-tier
+  exposes a getOrCreate AND whose creation is gated by a dedicated
+  *_CREATE permission. The follow-up audit batch should enumerate
+  the full set.
+
+  Cross-cutting connections:
+    - STRENGTHENS the existing master
+      spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
+      with the NAMESPACE_CREATE half + the architectural-pattern
+      framing
+    - Pairs with permission-bypass-via-owner-auto-create-side-door-write-path
+      (batch H Owner-side door) — same architectural class
+    - Pairs with f-006-audit-silence-enum-rooted-deeper-than-schema-rooted
+      (batch U) — the side-doors are also silent in the Activity Feed
+      because ActivityEventTypeDto has no TAG_CREATED or
+      NAMESPACE_CREATED values
+    - Pairs with the cross-namespace-term-pollution drift class
+      (F-002) — the namespace side-door amplifies the cross-namespace
+      pollution surface
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Code fix — service-tier permission checks + getOrCreate
+        signature refactor
+    (b) Docs admission — admonition on business-glossary describing
+        the implicit *_CREATE grants
+    (c) Cross-pillar audit follow-up — enumerate every getOrCreate
+        side-door across the platform

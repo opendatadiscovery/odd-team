@@ -1,0 +1,270 @@
+name: |-
+  Broken debouncer pattern — useDebouncedCallback recreated on every render loses rate-limit semantics (TermSearch primary source)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-06
+  - P-01
+description: |-
+  NEW INVARIANT, batch 2026-05-20U — surfaced by primary-source
+  examination of TermSearch.tsx in batch U. The Dictionary tab's
+  filter-sidebar facet-state debouncer is structurally broken: the
+  intended 1500ms leading-edge debounce does NOT actually rate-limit
+  facet-state PUT requests because the useDebouncedCallback instance
+  is RECREATED on every facet-state change. Every click constructs
+  a NEW debouncer; the prior debouncer's pending timer is garbage-collected;
+  with leading-edge, every NEW instance fires immediately on first
+  call.
+
+  THE BATCH-U PRIMARY-SOURCE EVIDENCE (TermSearch.tsx sidecar):
+
+    TermSearch.tsx:50-64 — the debouncer wiring:
+      const updateSearchFacets = useCallback(
+        useDebouncedCallback(
+          () => dispatch(updateTermSearch({
+            searchId: termSearchId,
+            termSearchFormData: {
+              query: termSearchQuery,
+              filters: mapValues(termSearchFacetParams, values),
+            },
+          })),
+          1500,
+          { leading: true },
+        ),
+        [termSearchId, termSearchFacetParams],
+      );
+
+    The useCallback deps array includes termSearchFacetParams — which
+    CHANGES on every facet click (a user toggling a facet flips the
+    syncedState of one facetOption, which mutates the
+    state.termSearch.facetState selected reference). Each click
+    constructs a NEW useDebouncedCallback(...) instance; the prior
+    debouncer's pending timer is GARBAGE COLLECTED because the new
+    function reference is what the next render uses.
+
+    With { leading: true }, the new debouncer fires on its FIRST call
+    (immediately, before the 1500ms wait). The intended 1500ms
+    trailing-coalesce never fires because the next click constructs
+    yet another debouncer.
+
+  THE NET BEHAVIOUR:
+
+    Intended: a user rapidly clicking 5 facets in 2 seconds dispatches
+    1 PUT to /api/termsearch (the leading-edge fires on the first
+    click; subsequent clicks coalesce into the same dispatch).
+
+    Actual: each click constructs a new debouncer + each new debouncer
+    fires immediately on its first call. 5 clicks in 2 seconds
+    produce 5 PUT requests. The 1500ms is not rate-limiting anything.
+
+  WHY THIS IS A REAL BUG (not academic):
+
+    Server-side cost: each PUT /api/termsearch/searchId hits
+    TermSearchService.updateFacets which recomputes the facet state
+    server-side per the search-session model. Per the
+    search-catalog-faceted-session-as-server-state operation, the
+    server cost scales O(# facet options x # facets). For a moderate
+    catalog (e.g., 1000 terms x 7 facet types), each PUT may take
+    50-200ms server-side. 5 unintended PUTs per 2-second window add
+    250-1000ms of unnecessary server work.
+
+    User-visible latency: the optimistic UI applies the local facet
+    change immediately, but the SERVER-side state lags by 5 PUTs.
+    During the 2-second window, the search results show stale state
+    relative to the facet sidebar — each PUT response overwrites the
+    Redux state with the server's view, which may not include the
+    latest facet click yet in flight.
+
+    Race shape: per the TermSearch batch U sidecar's
+    downstream_side_effects table — 'Concurrent facet changes during
+    in-flight PUT: the slice's updateTermsSearchState merger preserves
+    local selected !== syncedState divergences, so the in-flight
+    server response does NOT overwrite the user's newest selection.
+    Eventually consistent.' The merger absorbs the racing PUTs; the
+    visible failure is wasted server work, not corrupted UI state.
+
+  THE PATTERN GENERALISATION:
+
+    The useDebouncedCallback-recreated-on-every-render pattern is a
+    KNOWN React anti-pattern across the ecosystem (the use-debounce
+    library's documentation explicitly warns against including the
+    debounced-handler-state in useCallback deps). In odd-platform-ui,
+    THIS is the FIRST primary-source instance the substrate has
+    surfaced — batch U is the disclosure point. Other debouncer
+    use-sites across the codebase (e.g., the data-entity search input
+    at /search/*, the Management list search inputs at /policies,
+    /roles, /owners, /collectors) should be audited for the same
+    shape.
+
+    Cross-batch coherence check: the batch-Q invariant
+    manage-management-catalogue-list-with-debounced-search-and-infinite-scroll-permission-gated-mutations
+    documents the Management list search debouncer pattern but does
+    NOT explicitly verify the deps array's correctness — a follow-up
+    audit per this invariant is warranted.
+
+  THE REMEDIATION OPTIONS:
+
+    (a) Move termSearchFacetParams OUT of the useCallback deps and
+        capture it via a ref:
+          const facetParamsRef = useRef(termSearchFacetParams);
+          useEffect(() => { facetParamsRef.current = termSearchFacetParams; });
+          const updateSearchFacets = useCallback(
+            useDebouncedCallback(
+              () => dispatch(updateTermSearch({
+                ...,
+                filters: mapValues(facetParamsRef.current, values),
+              })),
+              1500, { leading: true },
+            ),
+            [termSearchId], // ← STABLE deps; debouncer survives across renders
+          );
+        Cost: ref-mechanic adds complexity; the leading-edge fires
+        based on the FIRST instance's first call which is correct.
+
+    (b) Use useMemo for the debouncer instance with stable deps:
+          const updateSearchFacets = useMemo(
+            () => debounce(
+              () => dispatch(updateTermSearch({...})),
+              1500, { leading: true },
+            ),
+            [termSearchId], // STABLE deps
+          );
+        Inside the debouncer body, read termSearchFacetParams via
+        useAppSelector at dispatch time (NOT via closure). Cost: the
+        dispatch logic shifts to a thunk that reads state directly.
+
+    (c) Switch to a useEffect-driven debounce — coalesce facet
+        clicks into a setTimeout, clearTimeout on each new click:
+          useEffect(() => {
+            if (termSearchFacetsSynced) return;
+            const handle = setTimeout(() => dispatch(updateTermSearch({...})), 1500);
+            return () => clearTimeout(handle);
+          }, [termSearchFacetParams]);
+        Cost: trailing-only (no leading); the FIRST click waits 1500ms
+        before the first dispatch — different UX from the current
+        intent.
+
+    (d) Live measurement first (per the LSN-017 measurement-truth
+        principle): promote the LSN-017 P-N probe shape to count
+        dispatch cardinality per N facet clicks in M seconds. Pin
+        the buggy count, then re-run after the fix to confirm.
+
+  SEVERITY MEDIUM — functional bug (the rate-limit intent is not
+  realised); server-side cost is real but bounded; the slice's
+  merger logic absorbs the racing PUTs so the visible failure is
+  wasted server work, not corrupted UI state.
+
+  CROSS-COMPONENT EXTENSION CANDIDATE:
+
+    Per the batch U sidecar's coherence_check, additional debouncer
+    sites likely exist at:
+      - Search.tsx (Discovery pillar's data-entity search at /search/*).
+      - Management list search inputs (PolicyList, RolesList, OwnersList,
+        CollectorsList — batch Q).
+      - DataQuality dashboard filters (P-04 — batch T DataQualityController
+        does not surface UI evidence; UI sidecars not yet enriched).
+
+    Each is a candidate for the same broken-debouncer pattern. A
+    follow-up audit batch should enumerate every useDebouncedCallback
+    + every debounce call across odd-platform-ui/src and verify the
+    deps array discipline. The bug class is bigger than this one
+    component.
+nodes:
+  - odd-platform ts react-component component:TermSearch
+contributors:
+  - |-
+    TermSearch batch U (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[2] MEDIUM (Debouncer is RECREATED
+    on every facet-state change — losing the rate-limit semantics;
+    useCallback deps include termSearchFacetParams which changes on
+    every facet click; each click constructs a NEW
+    useDebouncedCallback; with leading-edge the new debouncer fires
+    on its FIRST call; 5 clicks in 2 seconds produce 5 PUTs instead
+    of 1) + performance.known_performance_gaps.[0] MEDIUM (Broken
+    debouncer: 1500ms intent not realised; every facet click dispatches;
+    server-side P99 latency degrades; recommended fix: useMemo the
+    debouncer outside useCallback OR remove termSearchFacetParams
+    from the useCallback deps) + concepts.invariants.[the 1500ms
+    leading-edge for facet-state mutations; text-query EXCLUDED]
+evidence:
+  - |-
+    TermSearch.md:bugs_limitations_corner_cases.[2] MEDIUM severity —
+    evidence: TermSearch.tsx:50-64 (the useCallback + useDebouncedCallback
+    wiring) + the useCallback deps at line 63
+  - |-
+    TermSearch.md:performance.known_performance_gaps.[0] MEDIUM —
+    the explicit server-side cost analysis
+  - |-
+    TermSearch.md:concepts.invariants — 1500ms leading-edge debouncer
+    for facet-state mutations (text-query EXCLUDED)
+  - |-
+    Cross-references batch-Q invariant
+    manage-management-catalogue-list-with-debounced-search-and-infinite-scroll-permission-gated-mutations
+    — the Management list debouncer pattern; follow-up audit needed
+    for the same shape
+axes_present:
+  - ui_components
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: performance
+mitigations_unimplemented:
+  - |-
+    Fix the TermSearch instance — apply remediation option (a), (b),
+    or (c) from the description. Recommended: option (b) useMemo with
+    stable deps + read facet state at dispatch time. Closes the bug
+    AND preserves the leading-edge UX intent.
+  - |-
+    Pin the fix with a Vitest + react-testing-library test asserting
+    'rapidly clicking 5 facets in 2 seconds dispatches updateTermSearch
+    EXACTLY ONCE (or twice with leading-edge intent)'. Fails today
+    (5 dispatches); pins the fix as regression.
+  - |-
+    Promote the live LSN-017 probe shape (per the LSN-017 measurement-truth
+    principle) to count PUT /api/termsearch/searchId requests per N
+    facet clicks in M seconds. Empirically pin the buggy count, then
+    re-run after the fix to confirm the flip. Stronger evidence than
+    the static-reading-only inference.
+  - |-
+    Audit batch follow-up — enumerate every useDebouncedCallback +
+    debounce call across odd-platform-ui/src. Verify the deps array
+    discipline at each site. Candidates: Search.tsx, PolicyList,
+    RolesList, OwnersList, CollectorsList, DataQuality dashboard,
+    etc. Each likely-buggy site warrants its own invariant entry if
+    the pattern is reproduced.
+  - |-
+    Add a custom ESLint rule (extension of react-hooks/exhaustive-deps)
+    that flags useCallback wrapping useDebouncedCallback when the
+    useCallback deps include any value that flips on the debounced
+    handler's downstream state. Prevents recurrence.
+  - |-
+    Document the safe useDebouncedCallback pattern in
+    /odd-platform-ui/src/lib/README.md or sibling. Define the
+    convention: use useDebouncedCallback ONLY with stable deps
+    (refs OR memoised constants); read non-stable state inside the
+    handler body via getState or ref.
+notes: |-
+  NEW invariant captured in batch 2026-05-20U from the TermSearch
+  sidecar's primary-source examination of the debouncer wiring.
+  The pattern is a known React anti-pattern but THIS is the first
+  primary-source instance the substrate has surfaced — making it a
+  good seed for a platform-wide audit follow-up.
+
+  Cross-cutting connections:
+    - Pairs with the LSN-018 retrospective on per-node-scan limitations
+      — the debouncer bug is visible within ONE component but its
+      cumulative cost depends on dispatch frequency that NO per-node
+      scan would measure
+    - Pairs with cross-component-fetch-duplication-shell-plus-tab-double-fire-hot-path
+      (batch U sibling invariant) — both invariants capture per-action
+      backend-cost multipliers, different shapes
+    - Pairs with the LSN-017 measurement-truth principle — a live
+      probe is the right tool to pin the buggy count and verify the
+      fix
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Code fix — TermSearch.tsx debouncer (one component, one PR)
+    (b) Platform audit follow-up — enumerate other debouncer sites;
+        each likely buggy site warrants verification
+    (c) Convention doc + lint rule — prevent recurrence of the
+        useCallback-wrapping-useDebouncedCallback pattern

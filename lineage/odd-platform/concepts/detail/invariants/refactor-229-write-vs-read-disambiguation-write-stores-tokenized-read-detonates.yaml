@@ -1,0 +1,290 @@
+name: |-
+  REFACTOR-229 WRITE-vs-READ disambiguation — Write path stores tokenized (safe); Read path detonates user-controlled tsquery (vulnerable)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-06
+  - P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20U — REFINES the existing
+  tsquery-operator-injection-via-persisted-state invariant (batch M)
+  by disambiguating the WRITE path from the READ path within
+  JooqFTSHelper.java. Surfaced by primary-source examination of
+  ReactiveTermSearchEntrypointRepositoryImpl in batch U where the
+  WRITE-side surface initially appeared to be a second invocation
+  site for the REFACTOR-229 family — closer inspection shows it is
+  UPSTREAM of the vulnerability, not a duplicate of it.
+
+  THE DISAMBIGUATION (ReactiveTermSearchEntrypointRepositoryImpl batch U sidecar — primary source):
+
+    The seven public methods of ReactiveTermSearchEntrypointRepositoryImpl
+    all route through JooqFTSHelper.buildVectorUpsert at JooqFTSHelper.java:43-98
+    — the WRITE-side builder. buildVectorUpsert calls concatVectorFields
+    which calls Postgres to_tsvector. The function family is:
+
+      to_tsvector(text) → tsvector — Postgres tokenises the input
+      string into a tsvector representation. The function ALWAYS
+      tokenises — it does NOT evaluate the input as SQL. Even a
+      payload containing SQL-shaped metacharacters like
+      apostrophe-DROP-TABLE-apostrophe is reduced to a sequence of
+      tokens.
+
+    The READ side at JooqFTSHelper.ftsCondition (lines 100-105) and
+    JooqFTSHelper.ftsRankField (lines 154-162) uses to_tsquery instead:
+
+      to_tsquery(text) → tsquery — Postgres PARSES the input string
+      as a tsquery expression. The function evaluates tsquery
+      metacharacters as SYNTAX. Operator characters such as exclamation,
+      open-paren, close-paren, colon, ampersand, pipe, the FTS-distance
+      operator, single-quote, and backslash are TREATED AS OPERATORS
+      and either re-interpret the match semantics or raise a 42601
+      syntax error on parse failure.
+
+    The asymmetry between to_tsvector and to_tsquery is the architectural
+    seam where REFACTOR-229 lives.
+
+  WHY THE WRITE SURFACE IS UPSTREAM (not a vulnerability):
+
+    Trace the data flow for a Term whose definition contains a payload
+    like apostrophe-close-paren-open-paren-bar:
+
+      Write path:
+        TermFormData.definition reaches TermServiceImpl.createTerm
+        verbatim. TermServiceImpl persists the string into the
+        term.definition column verbatim. updateSearchVectors invokes
+        termSearchEntrypointRepository.updateTermVectors(termId) which
+        is wired through JooqFTSHelper.buildVectorUpsert → concatVectorFields
+        → to_tsvector. The to_tsvector call TOKENISES the payload —
+        the resulting tsvector is a sequence of stems with positional
+        information, NOT an executable expression. The payload is
+        stored as inert text inside the tsvector column. **No detonation
+        on write.**
+
+      Read path:
+        A subsequent search request hitting GET /api/termsearch creates
+        a search session whose query string is the user-supplied text
+        (potentially containing the SAME or DIFFERENT metacharacters).
+        The search routes through JooqFTSHelper.ftsCondition which
+        calls to_tsquery on the user-supplied query. to_tsquery PARSES
+        the metacharacters and either:
+          (a) Raises 42601 — the session is permanently broken (the
+              persistent search_facets row carries the malformed query;
+              every facet aggregator read fails until the row is
+              purged).
+          (b) Re-interprets the match semantics — the response is
+              wrong but not failing.
+
+    Critical: the payload PERSISTED via the write path is in the tsvector
+    column AT REST in a TOKENISED form. The query parsing happens at
+    READ TIME against the USER-SUPPLIED QUERY STRING, not against the
+    stored tsvector. The two strings are different surfaces:
+      - Stored payload (term.definition column, term_vector tsvector column) — tokenised, inert.
+      - Query string (search_facets.query_string column, user-supplied via search request) — parsed, executable.
+
+  THE INVARIANT (refined classification):
+
+    REFACTOR-229 invocation sites — the FIVE batch-M invocation sites in
+    the facet aggregator suite (ReactiveSearchFacetRepositoryImpl.java:182,
+    267, 339-407, 469, 582) PLUS the term-side read paths (TermSearchService
+    methods that call JooqFTSHelper.ftsCondition over
+    term_search_entrypoint.search_vector with a user-controlled query).
+    All of these are READ-side invocations that pass user-supplied query
+    text through to_tsquery.
+
+    REFACTOR-229 non-invocation sites — the seven public methods of
+    ReactiveTermSearchEntrypointRepositoryImpl + their DataEntity-side
+    analog at ReactiveSearchEntrypointRepository. These are WRITE-side
+    invocations that pass field values through to_tsvector. NOT a
+    REFACTOR-229 invocation site.
+
+  WHY THE DISAMBIGUATION MATTERS:
+
+    Without the disambiguation, a maintainer scanning the codebase for
+    REFACTOR-229's blast radius might:
+      (a) Conclude the write paths are also vulnerable and over-scope the
+          remediation (e.g. add escaping at every term/tag/owner/namespace
+          write path), creating maintenance burden that does NOT close
+          the vulnerability.
+      (b) Conclude the write paths fix the read-side vulnerability (e.g.
+          add escaping at write time), missing that the vulnerability
+          lives at the READ-side query input, not the stored payload.
+
+    Both errors are common in security audits where 'tsquery injection'
+    is read literally as 'any path involving tsquery is suspect'. The
+    correct framing per primary-source examination of JooqFTSHelper is:
+      - to_tsvector calls are SAFE — tokenisation prevents SQL injection
+        AND tsquery operator injection at the stored payload layer.
+      - to_tsquery calls are UNSAFE iff their input is user-controlled
+        and unescaped — this is the REFACTOR-229 surface.
+
+  CONFIRMED RAMIFICATION FOR THE TERM-SIDE SURFACE:
+
+    The Term search route GET /api/termsearch/searchId/results uses
+    JooqFTSHelper.ftsCondition over the term_search_entrypoint.search_vector
+    column with the user-supplied query — this IS a REFACTOR-229 invocation
+    site (the SIXTH or SEVENTH after the five batch-M sites in the data-
+    entity-side aggregator suite). The term-side read is symmetric to
+    the data-entity-side read; the persistent query_string in search_facets
+    feeds both. The fix scope is uniform — escape the query in JooqFTSHelper.tsQuery
+    at line 164-168 — and closes both the data-entity-side and the
+    term-side surface in one change.
+
+    The Term-side WRITE surface (the seven methods examined in batch U)
+    is NOT in scope; the write path's role is to UPSTREAM-FEED the
+    vulnerable READ path, not to be a vulnerability itself.
+
+  THE REFACTOR-229 PATCH SCOPE (refined by batch U):
+
+    Per the batch-M master invariant, the fix is at JooqFTSHelper.tsQuery
+    (lines 164-168) — escape Postgres tsquery operator characters in the
+    user-supplied query string before passing the result to to_tsquery.
+    Either a whitelist (only word characters + space) or a sanitiser
+    (escape !, (, ), :, ampersand, pipe, single-quote, backslash, the
+    distance-operator) closes the surface.
+
+    This invariant CONFIRMS the patch scope is one function:
+      - Patch JooqFTSHelper.tsQuery (the read-side query builder).
+      - Do NOT patch JooqFTSHelper.buildVectorUpsert (the write-side
+        vector builder) — the write side is correct.
+      - Do NOT patch term-side write paths (the seven
+        ReactiveTermSearchEntrypointRepositoryImpl methods) — they
+        feed the vulnerable read path but are not the surface.
+
+  THE setweight FORMAT-STRING CO-FINDING (low severity):
+
+    Batch U sidecar also surfaces a LATENT but currently-non-exploitable
+    String.format pattern at JooqFTSHelper.java:188 used to build
+    setweight(to_tsvector(...), 'X') SQL. The format string is:
+
+      setweight(to_tsvector(?, ?), '?')
+
+    (per the sidecar's narrative; verified to be safe today). The two
+    placeholders are jOOQ Fields (rendered to SQL identifiers, safe —
+    sourced from the static Tables.* model) and the weight letter (a
+    static one-character constant from FTSConstants weights — not
+    user-writable). NOT a CVE today, but FLAGGED because any future
+    feature making the weight operator-configurable would open the
+    placeholder to injection. Tracked here as a watchpoint, not as a
+    SEPARATE invariant.
+
+  SEVERITY MEDIUM — the disambiguation REFINES the existing batch-M
+  invariant's scope and severity assessment. The READ-side vulnerability
+  remains HIGH (per batch-M); the WRITE-side examined in batch U is
+  confirmed UPSTREAM-FEEDING-but-not-vulnerable, severity LOW; the
+  setweight format-string is a watchpoint, severity LOW. The aggregate
+  MEDIUM on this disambiguation captures the documentation value of
+  the refined patch scope.
+nodes:
+  - odd-platform java repository reactive repository:ReactiveTermSearchEntrypointRepositoryImpl
+contributors:
+  - |-
+    ReactiveTermSearchEntrypointRepositoryImpl batch U (PRIMARY SOURCE — disambiguation):
+    security.known_security_gaps.[0] LOW (REFACTOR-229 family — the
+    term-side WRITE path uses the SAME JooqFTSHelper that has the
+    unescaped tsquery operator-injection surface; however this file's
+    invocation goes through buildVectorUpsert which does NOT call
+    tsQuery or to_tsquery; the injection surface is on the READ path
+    JooqFTSHelper.ftsCondition + ftsRankField; this WRITE path is
+    UPSTREAM of the vulnerability, not part of it) +
+    security.known_security_gaps.[1] LOW (setweight format string —
+    latent format string watchpoint; not currently exploitable) +
+    back_links.refactoring_scopes.[REFACTOR-229] (the formal back-link)
+evidence:
+  - |-
+    ReactiveTermSearchEntrypointRepositoryImpl.md:security.known_security_gaps.[0]
+    LOW severity REFACTOR-229 ROLE DISAMBIGUATED — evidence:
+    ReactiveTermSearchEntrypointRepositoryImpl.java per-line cites for
+    every method's use of buildVectorUpsert (lines 51-57, 75-81, 99-105,
+    124-130, 157-163, 197-205, 239-247) confirming NONE call ftsCondition
+    + JooqFTSHelper.java:43-98 (buildVectorUpsert) confirming it routes
+    to to_tsvector, not to_tsquery
+  - |-
+    ReactiveTermSearchEntrypointRepositoryImpl.md:security.known_security_gaps.[1]
+    setweight format-string LOW severity — evidence:
+    JooqFTSHelper.java:188 (the format) + FTSConstants weights (NOT
+    user-writable)
+  - |-
+    Cross-references master invariant
+    tsquery-operator-injection-via-persisted-state (batch M — the READ
+    side primary source) — this invariant REFINES the patch scope and
+    excludes the write path
+  - |-
+    Cross-references refactoring scope REFACTOR-229 (the formal back-link
+    chain — the term-side WRITE surface ROLE-DISAMBIGUATED here is the
+    UPSTREAM FEED of the existing 5-invocation-site cluster at the
+    data-entity-side facet aggregator suite)
+axes_present:
+  - repositories_reactive
+  - shared_helpers
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-M (master tsquery-operator-injection invariant — READ-side primary source)
+  - batch-U (ReactiveTermSearchEntrypointRepositoryImpl — WRITE-side ROLE DISAMBIGUATION, THIS INVARIANT)
+severity: MEDIUM
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    The REFACTOR-229 fix scope is unchanged from the master invariant —
+    patch JooqFTSHelper.tsQuery (lines 164-168) with either:
+      (a) Whitelist — accept only word characters + whitespace; reject
+          any input containing tsquery metacharacters.
+      (b) Escape — prefix each metacharacter with backslash before
+          passing the joined query to to_tsquery.
+    Both approaches close the READ-side surface AND THIS INVARIANT
+    CONFIRMS THE SCOPE IS BOUNDED TO THIS ONE FUNCTION. Do NOT extend
+    the patch to write paths.
+  - |-
+    Add a regression test that:
+      (a) Authors a term with definition containing a tsquery-metacharacter
+          payload via POST /api/terms.
+      (b) Asserts the write succeeds (because the write path is correct
+          — tokenisation handles it).
+      (c) Searches for the term via GET /api/termsearch with a query
+          containing tsquery metacharacters.
+      (d) Asserts the search returns a structured result rather than
+          42601 (post-fix) — or asserts 42601 to pin the buggy state
+          (pre-fix regression baseline).
+    The test pins BOTH the WRITE-path correctness AND the READ-path
+    fix.
+  - |-
+    Watchpoint — track the setweight format-string finding. Add a
+    code comment at JooqFTSHelper.java:188 noting that the weight
+    letter is currently static and non-user-controlled; if a future
+    feature makes the weight operator-configurable, the format string
+    becomes an injection surface and must be parameter-bound or
+    sanitised.
+  - |-
+    Documentation: surface the WRITE-vs-READ disambiguation in any
+    REFACTOR-229 remediation PR description — maintainers reviewing
+    the fix should see the scope justification (one function patch,
+    not a whole-codebase audit).
+notes: |-
+  NEW invariant captured in batch 2026-05-20U from the
+  ReactiveTermSearchEntrypointRepositoryImpl primary-source
+  examination. The role disambiguation is load-bearing for the
+  REFACTOR-229 patch scope decision — without it, a maintainer
+  scoping the fix might either over-scope (patching write paths that
+  do not need patching) or under-scope (missing that the term-side
+  read path is symmetric to the data-entity-side and needs the same
+  fix).
+
+  Cross-cutting connections:
+    - REFINES the master tsquery-operator-injection-via-persisted-state
+      invariant (batch M) by ROLE-DISAMBIGUATING the term-side WRITE
+      surface as UPSTREAM but not in-scope
+    - Pairs with REFACTOR-229 (the formal refactoring scope)
+    - Pairs with the FTS shared-helper pattern — JooqFTSHelper is one
+      file with TWO distinct architectural roles (writer + reader);
+      conflating them in security scope assessment is the common
+      pitfall this invariant guards against
+
+  Three implications for the maintainer's DOC-NNN queue:
+    (a) The REFACTOR-229 patch PR scope is now defined precisely —
+        one function (JooqFTSHelper.tsQuery), one file.
+    (b) The term-side read path inherits the fix without additional
+        code change — the fix at one site closes both surfaces.
+    (c) The watchpoint at setweight (line 188) is tracked but not
+        actionable today; flag it in REFACTOR-229's discussion notes
+        for future-feature reviewers.

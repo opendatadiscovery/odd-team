@@ -1,0 +1,54 @@
+gap_id: TEST-GAP-719
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform ts react-component component:TermDetails"
+  - "odd-platform java service service:TermServiceImpl"
+pillars_affected: [P-06, P-09]
+surfaced_by:
+  - "TermDetails.md:security.known_security_gaps.[0] (F-004 stored-XSS surface extends to TermDefinition — Markdown-renderer used at Markdown.tsx:113-124 is @uiw/react-md-editor's preview component which bundles rehype-raw@6.1.1 and applies NO rehype-sanitize — severity HIGH)"
+  - "TermDetails.md:docs_link_semantic.doc_drift_findings.[0] (UI-DOC-GAP-A — the live data-glossary doc page does not warn that term DEFINITIONS are rendered via rehype-raw without sanitisation)"
+  - "TermDetails.md:bugs_limitations_corner_cases (the V0_0_91 linked-terms schema-drift facet — Overview.tsx:27-31 renders linked terms inheriting batch-N drift facet visibly)"
+  - "TermServiceImpl.md:operations.handleDataEntityDescriptionTerms (F-004 INTERSECTION — the description String argument is the SAME unsanitised Markdown body that produces the stored-XSS surface in F-004)"
+behaviour: |-
+  **CRITICAL — NEW F-004 stored-XSS surface in the Term Definition field.** The F-004 family until now spanned Data Entity Description + Dataset Field Description (per F-004.yaml batch-J primary-source + P-009 dynamic-verification slice). This sidecar discovers a THIRD surface with the IDENTICAL fingerprint: **Term Definition** (the rich-text body of every Term entity). The render path is verified end-to-end:
+
+  - **Author endpoint**: `POST /api/terms` (createTerm — `TermController.java:70-75`) + `PUT /api/terms/{term_id}` (updateTerm — `TermController.java:78-83`) accept `TermFormData.definition` (a String) with NO server-side sanitisation. `TermServiceImpl.createTerm` (lines 99-117) + `TermServiceImpl.updateTerm` (lines 121-145) persist the definition verbatim into `term.definition` (verified by reading the service end-to-end + Grep `'sanitize|escape|jsoup|policyFactory'` against `TermServiceImpl.java` returns zero matches).
+  - **Read endpoint**: `GET /api/terms/{term_id}` (getTermDetails — `TermController.java:92-97`) returns the verbatim `definition` field as part of `TermDetails`.
+  - **Render path**: `TermDetails.tsx` → `Overview.tsx:39-44` reads `termDetails.definition` → `TermDefinition.tsx:16-47` → `<Markdown value={transformDescriptionToMarkdown(definition)}>` → `Markdown.tsx:113-124` instantiates `<MDEditor.Markdown source={value} ...>` which is `@uiw/react-md-editor`'s preview component which bundles `rehype-raw@6.1.1` (verified at `odd-platform-ui/pnpm-lock.yaml:3900,5922,8843`) and applies NO `rehype-sanitize` (verified by Grep over `odd-platform-ui/src` for `rehype-sanitize` returning ZERO matches).
+
+  **Trust model break**: An operator with `TERM_UPDATE` permission on any term (which the docs claim gates rename/description/namespace/directly-linked terms) can plant `<script>alert(1)</script>` in a term's `definition`. The script fires for ANY authenticated user who later opens the Term detail page (read-collaborative posture — `system-mission.md:267`). The read-collaborative posture means EVERY authenticated user sees EVERY term in EVERY namespace — so a single compromised TERM_UPDATE-holder can plant payloads that fire for every reader of any term across the catalog.
+
+  **Why CRITICAL not HIGH**: this is the third surface in the F-004 family; the first two (data-entity description + dataset-field description) are already gated only by browser defence-in-depth (CSP, Trusted Types) per P-009 dynamic-verification. The browser defences MAY or MAY NOT extend to this third surface — out of scope for this test gap; the storage-layer + render-layer pair IS the surface. The combination of (a) NEW surface not in F-004's existing batch-J primary-source enumeration, (b) operator-edit-time entry point with TERM_UPDATE permission (broadly granted by default per docs), (c) read-collaborative read-time surface for every authenticated user — meets the CRITICAL threshold.
+
+  **Test gap shape**: regression-pin asserting `term.definition` containing `<script>` (or `onerror=`, `<iframe>`, etc.) is rendered as RAW HTML by the @uiw/react-md-editor's preview, NOT escaped. The bug must be PINNED (i.e., the test asserts the current — unsafe — behaviour), so that any future addition of `rehype-sanitize` to the MDEditor instantiation will be caught at CI time by the test failing. Paired with a backlog item proposing the sanitisation fix.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/Terms/TermDetails/Overview/TermDefinition/TermDefinition.test.tsx"
+  name: "termDefinition_withScriptPayload_rendersAsRawHtmlNotEscaped_F004ThirdSurfaceRegressionPin"
+evidence:
+  - "TermDetails.md says (security.known_security_gaps.[0]): 'F-004 stored-XSS surface extends to TermDefinition. The Markdown-renderer used at Markdown.tsx:113-124 (<MDEditor.Markdown source={value} ...>) is @uiw/react-md-editor's preview component which bundles rehype-raw@6.1.1 (verified at pnpm-lock.yaml:3900,5922,8843) and applies NO rehype-sanitize (Grep'd entire odd-platform-ui/src returns zero matches).'"
+  - "TermServiceImpl.md says (operations.handleDataEntityDescriptionTerms): 'F-004 INTERSECTION: the description String argument here is the SAME unsanitised Markdown body that produces the stored-XSS surface in F-004 (description: Operators edit a data entity description ... stored verbatim in data_entity.internal_description).'"
+  - "TermDetails.md says (docs_link_semantic.doc_drift_findings.[0]): 'UI-DOC-GAP-A (F-004 extension): The live data-glossary doc page does not warn that term DEFINITIONS are rendered via rehype-raw without sanitisation. A term author entering <script>alert('XSS')</script> in the definition field will see the script execute on every subsequent render of the Term detail page.'"
+  - "Verified absent rehype-sanitize: Grep over /home/raman/work/odd/odd-platform/odd-platform-ui/src for 'rehype-sanitize' returns ZERO matches (verified 2026-05-20)"
+  - "Verified MDEditor render path: /home/raman/work/odd/odd-platform/odd-platform-ui/src/components/shared/elements/Markdown/Markdown.tsx + DataEntityDetailsPreview both reference rehype-raw / MDEditor (verified by Grep returning these as the only two files)"
+  - "Verified TermDefinition.tsx file existence: /home/raman/work/odd/odd-platform/odd-platform-ui/src/components/Terms/TermDetails/Overview/TermDefinition/TermDefinition.tsx (verified by Glob 2026-05-20)"
+cross_references:
+  - "F-004 (Entity Description Editing — XSS family; this gap is a NEW surface that F-004's batch-J primary-source enumeration did not capture)"
+  - "P-009 (UI XSS defence-in-depth probe — dynamic verification slice; the browser-side mitigations measured against data-entity descriptions may or may not extend to Term definitions)"
+  - "REFACTOR-218 (MDEditor.Markdown rehype-raw inference — the static-layer inference now extends across all 3 surfaces)"
+  - "TEST-GAP-720 (TermServiceImpl handleDataEntityDescriptionTerms unhandled-staging XSS — sibling vector in same F-004 family at the SERVICE layer)"
+  - "TEST-GAP-453-ish family (F-004 stored-XSS batch-J test-gaps if any) — recommend the maintainer cross-link by replaying the F-004 detail set"
+  - "LSN-001 / LSN-002 (operator-cliff failure-mode case-law — operators following docs that omit a security caveat)"
+  - "concepts: f004-stored-xss-data-entity-description (batch-J primary-source) — this gap extends the concept's surface from 2 to 3 entry points"
+related_features: [F-004]
+related_pillar_features: ["P-01:F-002", "P-06:F-001"]
+proposed_action: |-
+  Add `TermDefinition.test.tsx` at `odd-platform-ui/src/components/Terms/TermDetails/Overview/TermDefinition/`. Three test methods:
+  1. `termDefinition_withScriptPayload_rendersAsRawHtmlNotEscaped` — render `<TermDefinition definition='<script id="xss-test">window.__xss=true</script>Hello' editMode={false}/>` and assert via `container.querySelector('#xss-test')` is NOT null (the script tag REACHED THE DOM). This pins the bug.
+  2. `termDefinition_withImageOnError_rendersHtmlAttribute` — render `<TermDefinition definition='<img src=x onerror="window.__xss=2"/>' editMode={false}/>` and inspect the resulting DOM `<img>` to assert how the attribute was handled (per P-009 batch-G probe: `onerror=` is filtered by React's setProperty path but the `<img>` tag itself reaches the DOM).
+  3. `termDefinition_withIframePayload_rendersAsRawIframe` — render `<TermDefinition definition='<iframe src="javascript:alert(1)"/>' editMode={false}/>` and assert via `container.querySelector('iframe')` is NOT null.
+
+  Cross-pair with a documentation fix: add an admonition on `documentation/docs/features/data-glossary/business-glossary.md` stating `Term definitions are stored as raw Markdown without HTML sanitisation; only trusted operators should be granted TERM_UPDATE.` and reference the relevant LSN. Pair with a backlog item proposing the sanitisation fix at `Markdown.tsx:113-124` (add `rehypePlugins={[[rehypeSanitize, schema]]}` to MDEditor.Markdown). When the fix lands, this regression-pin updates to assert the SAFE behaviour.
+batch: 2026-05-20-U
+feature_id: F-004

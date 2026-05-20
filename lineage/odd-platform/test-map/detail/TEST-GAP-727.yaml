@@ -1,0 +1,61 @@
+gap_id: TEST-GAP-727
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveTermSearchEntrypointRepositoryImpl"
+  - "odd-platform java service service:TermServiceImpl"
+pillars_affected: [P-01, P-06]
+surfaced_by:
+  - "ReactiveTermSearchEntrypointRepositoryImpl.md:bugs_limitations_corner_cases.[0] (Term DELETE leaves stale vectors in term_search_entrypoint — TermServiceImpl.delete deletes term row but never calls any method on this repository to drop the term's row from term_search_entrypoint — severity MEDIUM, escalated to HIGH at gap-priority due to cross-pillar consequence)"
+  - "ReactiveTermSearchEntrypointRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[6] (NO test for the delete-term path — TermServiceImpl.delete (TermServiceImpl.java:153-165) does NOT call any vector-clear method, and there is no test asserting whether soft-deleted terms remain in the FTS index until they cascade-disappear via TERM.DELETED_AT.isNull() filters elsewhere)"
+  - "ReactiveTermSearchEntrypointRepositoryImpl.md:tests_coverage_semantic.gaps (regression most likely lands as a JooqFTSHelper change silently breaking tag/owner aggregation, with no integration test catching it before deploy)"
+behaviour: |-
+  **HIGH — TermServiceImpl.delete leaves stale tsvector rows in `term_search_entrypoint`, and the entire repository has effectively ZERO direct test coverage.** Primary-source confirmed in the batch-U ReactiveTermSearchEntrypointRepositoryImpl sidecar:
+
+  **Stale-FTS-on-delete bug**: `TermServiceImpl.delete(long id)` (`TermServiceImpl.java:153-165`) deletes `term_to_term`, `data_entity_to_term`, `dataset_field_to_term` relations and the `term` row itself (soft-delete via `deleted_at`), but **NEVER calls any method on `ReactiveTermSearchEntrypointRepository`** to drop the term's row from `term_search_entrypoint` or clear its vector contents. Verified by reading the delete method end-to-end + verifying the interface at `ReactiveTermSearchEntrypointRepository.java:5-20` has only 7 UPDATE methods, NO delete / clear-vectors method.
+
+  **Operational consequences**:
+  - Soft-deleted terms (where `term.deleted_at IS NOT NULL`) keep their last-known tsvector contents in the FTS table indefinitely.
+  - Readers that JOIN `term` (filtering by `TERM.DELETED_AT.isNull()`) will not surface them — masking the bug in normal operation.
+  - BUT any reader that queries `term_search_entrypoint` directly without joining `term` would surface deleted terms.
+  - The bug is exactly the shape called out by the sidecar's `tests_coverage_semantic.gaps` as "deleted term still in autocomplete" — visible to operators as inconsistent search/autocomplete state, invisible in CI.
+
+  **Compound gap — REPOSITORY-WIDE zero direct coverage**: this is one of SEVEN methods on the repository, none of which have a direct test. The only test reference is `NamespaceServiceImplTest.java:175, 186, 205` — MOCK-ONLY interactions that verify `updateChangedNamespaceVector` was CALLED but NOT what SQL produces. So the seven SQL-heavy methods (CTEs, aggregates, `INSERT ... ON CONFLICT`, `tsvector_agg` remapping) are entirely unverified end-to-end. A future maintainer's well-intentioned change to JooqFTSHelper for the REFACTOR-229 family (FTS injection mitigation) could silently break the WRITE-side aggregation for every multi-tag term, with no test catching it before deploy.
+
+  **Why HIGH not MEDIUM**: cross-pillar surface — P-01 (Discovery's search) consumes the FTS index this repository maintains. Stale vectors on the WRITE side surface as wrong-ranking / phantom-result behaviour on the READ side that P-01 owns. The bug is silent in CI but operator-visible in production. Plus the cumulative absence of direct test coverage on seven SQL-heavy methods amplifies regression risk. Cross-batch-link to F-002 (P-06 Glossary feature) + P-01 (Discovery search-ranking).
+
+  **Test gap shape**: regression-pin asserting that AFTER `TermServiceImpl.delete(termId)`, querying `term_search_entrypoint` directly (without joining `term`) does NOT return the deleted term's row. Plus separate regression-pins on the seven repository methods exercising real SQL execution against a Postgres test container.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/NamespaceServiceImplTest.java (only test referencing the interface; mock-only — verifies the method is CALLED but not what SQL produces)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/term/ReactiveTermSearchEntrypointRepositoryImplTest.java"
+  name: "termServiceImplDelete_leavesStaleVectorRowInTermSearchEntrypointTable_assertsCurrentBugState_plusRepositoryWideCoverage"
+evidence:
+  - "ReactiveTermSearchEntrypointRepositoryImpl.md says (bugs_limitations_corner_cases.[0]): 'Term DELETE leaves stale vectors in term_search_entrypoint. TermServiceImpl.delete(long id) (TermServiceImpl.java:153-165) deletes term_to_term, term_to_data_entity, term_to_dataset_field relations and the term row itself, but never calls any method on this repository to drop the term's row from term_search_entrypoint. Soft-deleted terms (where term.deleted_at IS NOT NULL) keep their last-known tsvector contents in the FTS table indefinitely; readers that join term (filtering by TERM.DELETED_AT.isNull()) will not see them, but any reader that queries term_search_entrypoint directly without joining term would surface deleted terms.'"
+  - "ReactiveTermSearchEntrypointRepositoryImpl.md says (tests_coverage_semantic.uncovered_behaviours.[6]): 'NO test for the delete-term path — TermServiceImpl.delete (TermServiceImpl.java:153-165) does NOT call any vector-clear method, and there is no test asserting whether soft-deleted terms remain in the FTS index until they cascade-disappear via TERM.DELETED_AT.isNull() filters elsewhere'"
+  - "ReactiveTermSearchEntrypointRepositoryImpl.md says (tests_coverage_semantic.gaps): 'The repository has effectively ZERO direct coverage. NamespaceServiceImplTest is the only test referencing the interface, and it only verifies that the method is called — not that the SQL produces the right tsvector. The seven methods are SQL-heavy (CTEs, aggregates, INSERT ... ON CONFLICT, remapping config) and any silent corruption (wrong column written, wrong term refreshed, agg flag flipped, soft-delete filter missed) would only surface as search-result drift — visible to operators as term I just edited doesn't show up in search or deleted term still in autocomplete, but invisible in CI.'"
+  - "Verified: /home/raman/work/odd/odd-platform/odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/NamespaceServiceImplTest.java contains 'termSearchEntrypointRepository' at lines 58, 69, 175, 186, 205 — mock-only interactions confirmed (verified 2026-05-20)"
+cross_references:
+  - "F-002 (P-06 Data Glossary — this gap is the FTS-tier consequence of Term delete; cross-pillar to P-01 Discovery search)"
+  - "TEST-GAP-721 (P-06 pillar-floor — this gap is one of the SPECIFIC instances)"
+  - "TEST-GAP-483 (REFACTOR-205 — OwnershipServiceImpl.delete missing FTS refresh — sister pattern at different repository)"
+  - "REFACTOR-229 family (FTS injection mitigation — sidecar warns a well-intentioned change here could break the WRITE path)"
+  - "concepts: delete-search-vector-not-refreshed (cross-batch concept; this gap adds the term-tier surface to the family)"
+related_features: [F-002]
+related_pillar_features: ["P-06:F-001"]
+proposed_action: |-
+  Add `ReactiveTermSearchEntrypointRepositoryImplTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/term/`. Eight test methods (one per repository method + one for the delete-cascade):
+  1. `termServiceImplDelete_leavesStaleVectorRowInTermSearchEntrypointTable_pinsCurrentBug` — call `TermServiceImpl.delete(termId)`; assert `SELECT COUNT(*) FROM term_search_entrypoint WHERE term_id = ?` returns 1 (the dangling row). PIN the bug. Pair with the maintainer note that this should return 0 post-fix.
+  2. `updateTermVectors_writesTermVectorColumnOnly_assertsAggFlagFalse` — exercise the agg=false path; assert only the `term_vector` column is non-empty.
+  3. `updateChangedNamespaceVector_fansOutToAllTermsInNamespace_assertsRowCount` — pin the fan-out behaviour.
+  4. `updateTagVectorsForTerm_aggregatesAcrossNTags_assertsTsvectorAggCorrectness` — exercise the agg=true path against the custom `tsvector_agg` aggregate.
+  5. `updateChangedOwnershipVectors_walksOwnerNameAndTitleName_assertsCombinedVector` — pin ownership-vector materialisation.
+  6. `updateChangedTagVectors_softDeletedTagStillContributes_assertsCurrentBug` — pin the absent `tag.deleted_at` filter (sidecar bug #3, MEDIUM).
+  7. `updateChangedOwnershipVectors_softDeletedOwnershipStillContributes_assertsCurrentBug` — pin the absent `term_ownership.deleted_at` filter (sidecar bug #2, MEDIUM).
+  8. `updateNamespaceVectorsForTerm_writesNamespaceVectorColumnOnly_assertsAggFalseAndScope` — exercise the per-term namespace-vector update path.
+
+  Pair with a follow-up backlog item proposing the fix: add a `clearVectorsForTerm(termId)` method on the interface + impl, called from `TermServiceImpl.delete` BEFORE the soft-delete. When the fix lands, test #1 inverts to assert 0 rows.
+
+  Use the Testcontainers / R2DBC test-container pattern already established in `LineageRepositoryTest`, `OwnershipRepositoryImplTest`, etc. (per batch-H repository-layer test patterns).
+batch: 2026-05-20-U
+feature_id: F-002

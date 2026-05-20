@@ -1,0 +1,52 @@
+gap_id: TEST-GAP-720
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java service service:TermServiceImpl"
+pillars_affected: [P-01, P-06, P-09]
+surfaced_by:
+  - "TermServiceImpl.md:bugs_limitations_corner_cases.[3] (F-004 stored-XSS intersection on the auto-link side-channel — handleDataEntityDescriptionTerms and handleDatasetFieldDescriptionTerms consume the SAME unsanitised Markdown body that F-004 captures as the stored-XSS surface — severity HIGH)"
+  - "TermServiceImpl.md:security.known_security_gaps.[3] (F-004 stored-XSS intersection on term-mention staging — [[<script>:foo]] payloads persist verbatim in *_unhandled_term staging rows and resurface through getDataEntityTerms — severity HIGH)"
+  - "TermServiceImpl.md:operations.handleDataEntityDescriptionTerms (TermServiceImpl.java:201-207 — the AUTO-LINK side-channel entry point invoked from DataEntityServiceImpl.upsertDescription)"
+  - "TermServiceImpl.md:security.data_exposure (Stored XSS-payload-in-unhandled-mention — a [[<script>:foo]] payload in any data-entity description persists verbatim in data_entity_description_unhandled_term.term_namespace_name (varchar 64) for as long as the description references it)"
+behaviour: |-
+  **CRITICAL — F-004 SECOND surface inside the auto-link side-channel.** While F-004's batch-J primary-source captures the description-render XSS surface (`<script>` in the description body), this sidecar discovers a SECOND persistence vector via the term-mention staging mechanism: a payload SHAPED LIKE A TERM MENTION — `[[<script>alert(1)</script>:foo]]` — is parsed by the regex `\[\[([^:]*?):([^\]]*?)\]\]` at `TermServiceImpl.java:67`, partitioned into `(namespace=<script>alert(1)</script>, name=foo)`, and the unhandled-mention staging code (`buildDataEntityUnknownTerms` at `TermServiceImpl.java:501-522`) INSERTs a row into `data_entity_description_unhandled_term` with `term_namespace_name = <script>alert(1)</script>` (lowercased) and `term_name = foo`. The staging row persists indefinitely (until a matching term is later created, triggering `resolveUnhandledDescriptionMentions`).
+
+  **Persistence shape**: the staging table columns are `varchar(255)` (term_name) and `varchar(64)` (term_namespace_name) per `V0_0_91__add_term_to_term.sql:18-19` (verified by reading the migration). The lowercased payload survives until either: (a) the matching term is later created (then the staging row is migrated to a real `data_entity_to_term` link row with `is_description_link=TRUE`); (b) the description is edited to remove the mention; (c) the parent data entity is hard-deleted. None of these reliably fires for a maintainer who has not noticed the payload.
+
+  **Exfiltration shape**: any subsequent `getDataEntityTerms` / `getDatasetFieldTerms` call that surfaces unhandled mentions can return the raw payload verbatim — the XSS payload re-emerges through the API. The read endpoints DO surface unhandled mentions per the sidecar's `bugs_limitations_corner_cases.[3]` analysis. If a UI consumer renders the staging-row's `term_namespace_name` field (Glossary search results, autocomplete dropdowns, term-relationship visualisations), the payload could execute in a NEW DOM context distinct from the F-004 description-render context.
+
+  **Trust model break**: an attacker with `DATA_ENTITY_DESCRIPTION_UPDATE` permission alone (no `DATA_ENTITY_ADD_TERM` needed — see TEST-GAP-478 for the auto-link side-channel) can plant a payload that persists IN A LONG-LIVED STAGING ROW visible to any authenticated user across the catalog (read-collaborative posture). Even if F-004's defence-in-depth (CSP, Trusted Types, future rehype-sanitize) eventually closes the description-render path, this staging-row resurfacing channel is a SEPARATE surface not currently in scope of the F-004 mitigation discussion.
+
+  **Sanitisation responsibility split — currently NEITHER layer sanitises**: TermServiceImpl's `findTermsInDescription` (`TermServiceImpl.java:337-360`) treats the regex match groups as opaque strings; `buildDataEntityUnknownTerms` (`TermServiceImpl.java:501-522`) inserts the lowercased groups verbatim. The description-write path at `DataEntityServiceImpl.upsertDescription` (`DataEntityServiceImpl.java:325-328`) also does not sanitise before invoking `handleDataEntityDescriptionTerms`. Sanitisation MUST happen at description-write time (F-004's recommendation) OR at term-mention staging time (this gap's recommendation) — currently neither layer sanitises.
+
+  **Why CRITICAL not HIGH**: this is a CONCEPTUALLY NEW surface within an already-CRITICAL F-004 family. The persistence shape (long-lived staging row) is fundamentally different from the inline description render — fixing F-004's description-render does NOT close this channel. The cross-component nature (description-write → auto-link parser → staging-table → future read API) means it spans P-01 (Discovery's description editing) + P-06 (Glossary's term-mention semantics) + P-09 (the side-channel bypass of DATA_ENTITY_ADD_TERM). Three-pillar surface elevates severity.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/term/TermServiceImplStoredXssTest.java"
+  name: "handleDataEntityDescriptionTerms_withScriptPayloadInTermMentionBrackets_persistsVerbatimInUnhandledTermStagingRow"
+evidence:
+  - "TermServiceImpl.md says (bugs_limitations_corner_cases.[3]): 'F-004 stored-XSS intersection on the auto-link side-channel. handleDataEntityDescriptionTerms and handleDatasetFieldDescriptionTerms (TermServiceImpl.java:201-207, 244-250) consume the SAME unsanitised Markdown body that F-004 captures as the stored-XSS surface (data_entity.internal_description, persisted verbatim by DataEntityServiceImpl.upsertDescription line 325-328 BEFORE handleDataEntityDescriptionTerms is invoked). The regex \\[\\[([^:]*?):([^\\]]*?)\\]\\] (line 67) accepts ANY character in the namespace and name capture groups except : and ] — meaning [[<script>alert(1)</script>:foo]] parses cleanly, the captured namespace+name pair (<script>alert(1)</script>, foo) flows into getByNameAndNamespace (returns unknown — no matching term), and the staging row data_entity_description_unhandled_term (buildDataEntityUnknownTerms lines 513-522) stores the raw payload verbatim, lowercased, in term_name (varchar 255) and term_namespace_name (varchar 64). The staging row is then RETURNED by any subsequent getDataEntityTerms call that surfaces unhandled mentions — the XSS payload re-emerges through the API.'"
+  - "TermServiceImpl.md says (security.known_security_gaps.[3]): 'F-004 stored-XSS intersection on term-mention staging — [[<script>:foo]] payloads persist verbatim in *_unhandled_term staging rows and resurface through getDataEntityTerms — severity HIGH'"
+  - "TermServiceImpl.md says (security.data_exposure.[4]): 'Stored XSS-payload-in-unhandled-mention — a [[<script>:foo]] payload in any data-entity description persists verbatim in data_entity_description_unhandled_term.term_namespace_name (varchar 64) for as long as the description references it. The payload is RETURNED to any authenticated user who later fetches the data-entity's term list (the unhandled-mentions are surfaced through the API).'"
+  - "Verified V0_0_91 schema: /home/raman/work/odd/odd-platform/odd-platform-api/src/main/resources/db/migration/V0_0_91__add_term_to_term.sql:14-23 — `term_definition_unhandled_term` table with varchar(255)/varchar(64) staging columns (verified 2026-05-20)"
+cross_references:
+  - "F-004 (Entity Description Editing — XSS family; this is the SECOND persistence vector that F-004's batch-J primary-source enumeration does not capture; recommend F-004 feature-flow strengthening with this surface)"
+  - "TEST-GAP-719 (TermDefinition rehype-raw XSS — sister vector in same F-004 family at the UI render layer)"
+  - "TEST-GAP-478 (auto-link side-channel — same DATA_ENTITY_DESCRIPTION_UPDATE bypass surface; this gap adds the XSS-amplification vector)"
+  - "TEST-GAP-481 (cross-namespace term pollution — same auto-link write path; this gap demonstrates the write path's XSS surface)"
+  - "REFACTOR-218 (MDEditor.Markdown rehype-raw inference — primary surface; this gap adds the staging-table surface to the family)"
+  - "concepts: term-mention-auto-link-side-channel-primary-source (batch-K) — adds the XSS amplification vector to the concept"
+  - "P-009 dynamic-verification (browser defence-in-depth probe — this surface is OUT OF SCOPE for that probe and needs independent verification)"
+related_features: [F-004, F-002]
+related_pillar_features: ["P-01:F-002", "P-06:F-001"]
+proposed_action: |-
+  Add `TermServiceImplStoredXssTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/term/`. Four test methods:
+  1. `handleDataEntityDescriptionTerms_withScriptPayloadInTermMentionBrackets_persistsVerbatimInUnhandledTermStagingRow` — call `handleDataEntityDescriptionTerms(dataEntityId, '[[<script>alert(1)</script>:foo]]')`; assert the resulting `data_entity_description_unhandled_term` row exists with `term_namespace_name = '<script>alert(1)</script>'` (lowercased) and `term_name = 'foo'`. Pin the unsanitised persistence.
+  2. `handleDataEntityDescriptionTerms_withHtmlTagsInNamespace_acceptedByRegexCharClass` — pin the regex's `[^:]*?` character class accepting `<`, `>`, `"`, `'`, `&` — the operator-visible attack surface boundary.
+  3. `getDataEntityTerms_afterStoredScriptPayload_returnsRawPayloadInStagingRowResponse` — confirm the read-side exfiltration: insert the staging row directly, call `getDataEntityTerms(dataEntityId)`, assert the response includes the unsanitised staging-row content.
+  4. `handleDataEntityDescriptionTerms_underAuthDisabled_anonymousUserCanPlantPayload` — pin the DISABLED-mode anonymous-write surface for the auto-link side-channel (compounds with TEST-GAP-478).
+
+  Pair with a SERVICE-LAYER fix at `TermServiceImpl.java:67-360`: either (a) sanitise the regex match groups before INSERTing into staging tables (using Jsoup or similar Java HTML sanitiser); OR (b) require the namespace and name capture groups to match a strict identifier regex (`[a-zA-Z0-9_-]+`) and reject mentions that don't conform (would close the side-channel by failing the staging write). Either fix should be paired with this test asserting the SAFE behaviour after the fix lands. Until then, this test PINS the unsafe behaviour as a regression-prevention measure.
+batch: 2026-05-20-U
+feature_id: F-004

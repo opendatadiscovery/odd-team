@@ -1,0 +1,54 @@
+gap_id: TEST-GAP-723
+category: missing-performance
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:TermSearch"
+pillars_affected: [P-06]
+surfaced_by:
+  - "TermSearch.md:bugs_limitations_corner_cases.[2] (broken debouncer — recreated on every render — TermSearch.tsx:50-64)"
+  - "TermSearch.md:performance.known_performance_gaps.[0] (broken debouncer — TermSearch.tsx:50-64)"
+  - "TermSearch.md:tests_coverage_semantic.uncovered_behaviours.[4] (Facet change with synced=false → debouncer fires once per 1500ms window — currently FAILS per bugs section)"
+behaviour: |-
+  **HIGH — TermSearch's `useDebouncedCallback(...)` is recreated every render, so the 1500ms debouncer never coalesces multiple facet-change events.** Sidecar reasoning (verified from static reading per LSN-017 measurement-truth principle, with live probe recommended for confirmation):
+
+  The component at `TermSearch.tsx:50-64` declares a `useDebouncedCallback` to debounce dispatching `updateTermSearch` to the server. The `useCallback` wrapping the debouncer reads `termSearchFacetParams` and `termSearchQuery` from Redux — closures over per-render values. When the user clicks a facet, the slice updates `termSearchFacetParams` → the component re-renders → `useDebouncedCallback` returns a NEW debounced function with the new closure → the previous debouncer's pending invocation is discarded → the new debouncer fires the dispatch immediately on the next render.
+
+  **Net behaviour**: instead of "1500ms after last facet-change, fire ONE coalesced PUT", the actual behaviour is "every facet-change fires a fresh PUT immediately". For a user clicking 5 facets in rapid succession (typical UX pattern when narrowing a search), the server sees 5 separate PUTs instead of 1.
+
+  **Compound cost**: each PUT runs through `TermController.updateTermSearchFacets` → `TermSearchService.updateFacets` which hits Postgres to rewrite the session row's facet state. 5× the DB writes for the same logical user intent. On a heavily-used Dictionary tab during operator curation, this multiplies into hundreds of unnecessary PUTs per session.
+
+  **Test gap shape**: a unit test that mounts `<TermSearch/>`, simulates 5 rapid facet-changes within a 2-second window, and asserts the count of `PUT /api/termsearch/{searchId}` calls. If the debouncer were working, count == 1 (or 2 with leading-edge — depending on `useDebouncedCallback`'s configuration); if the bug stands, count == 5 (one per facet-change).
+
+  **Why HIGH not MEDIUM**: this is one of TWO LSN-017-class dep-array smells in this single sidecar (the other being `termSearchFacetsSynced` read in condition but missing from useEffect deps at lines 66-68 — a latent regression-vector). The bug is currently MASKED in normal operator usage (a single facet-click works fine because the 1500ms window doesn't matter for one event), and surfaces only at burst-click frequency. Without a regression-pin, a future maintainer "optimising" the dep array of the facet-sync useEffect or the `useCallback` wrapping could either: (a) accidentally fix the bug (silent behavioural change — operators report "search facets feel different now"); or (b) make it worse by introducing additional re-renders that fire PUTs even outside the debouncer's intended window. Either case lands undetected without a test gate.
+
+  **Sister LSN-017 class but NOT identical**: LSN-017 canonical is a useEffect dep array doubling the firing of a side-effect. This is a `useCallback` dep array that re-creates a debounced function on every render — same root class (dep-array semantics) but different symptom (debouncer ineffective rather than effect double-fire). Per the sidecar's coherence_check section, this is a NEW sibling under the LSN-017 umbrella that LSN-017's canonical doc-page would benefit from cross-referencing.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/Terms/TermSearch/TermSearch.test.tsx"
+  name: "termSearch_rapidFacetClicks_assertsDebouncedPutFiresOncePer1500msWindow_currentlyFails"
+evidence:
+  - "TermSearch.md says (bugs_limitations_corner_cases.[2]): 'broken debouncer — recreated on every render — TermSearch.tsx:50-64'"
+  - "TermSearch.md says (performance.known_performance_gaps.[0]): 'broken debouncer — TermSearch.tsx:50-64'"
+  - "TermSearch.md says (tests_coverage_semantic.uncovered_behaviours.[4]): 'Facet change with synced=false → debouncer fires once per 1500ms window (currently FAILS per bugs section — debouncer recreated on every render)'"
+  - "TermSearch.md says (tests_coverage_semantic.gaps): 'The highest-leverage UI-anchored regression-pin for F-002 here is **a live probe that opens /termsearch, clicks a facet 5 times in 2 seconds, and asserts the number of PUT /api/termsearch/{searchId} calls** — if the debouncer is working, count == 1 (or 2 with leading-edge); if the bug stands, count == 5. This is the LSN-017 measurement-truth principle applied to a UI-side dep-array bug.'"
+  - "TermSearch.md says (throughput_characteristics): 'Single-item mutation per facet change — no bulk-facet API. Each click is one PUT. With the broken debouncer (above) the server takes N PUTs per N clicks instead of 1 coalesced PUT.'"
+  - "TermSearch.md coherence_check section: 'two LSN-017-class dep-array smells are present: (1) termSearchId read in condition but missing from useEffect deps at lines 34-43 (latent regression vector — currently masked by React batch ordering); (2) termSearchFacetsSynced read in condition but missing from useEffect deps at lines 66-68 (potentially active re-fire storm — recommended live probe). These are CLASS-MATCHES to LSN-017, not exact-pattern matches.'"
+  - "Verified: Glob over /home/raman/work/odd/odd-platform/odd-platform-ui/src/components/Terms/TermSearch/**/*.test.* returns ZERO matches (verified 2026-05-20)"
+cross_references:
+  - "LSN-017 (canonical cross-layer composition failure — this gap is a CLASS-MATCH sibling, useCallback dep-array variant)"
+  - "TEST-GAP-722 (TermDetails double-fetch — sister UI-tier per-render multiplier bug)"
+  - "TEST-GAP-721 (P-06 pillar-floor — this gap is one of the SPECIFIC instances that the UI harness would address)"
+  - "playbooks/dynamic-verification.md — the live-probe protocol that should pair with this static regression-pin"
+related_features: [F-002]
+related_pillar_features: ["P-06:F-001"]
+proposed_action: |-
+  Add `TermSearch.test.tsx` at `odd-platform-ui/src/components/Terms/TermSearch/`. Three test methods + 1 live probe:
+  1. `termSearch_rapidFacetClicks_assertsDebouncedPutFiresOncePer1500msWindow_currentlyFails` — render `<TermSearch/>` wrapped in `<MemoryRouter initialEntries={['/termsearch/uuid-1']}>`; mock the backend; dispatch 5 facet-change Redux actions within a 200ms window; advance fake timers by 1500ms; assert `PUT /api/termsearch/uuid-1` was called EXACTLY ONCE. **This test will FAIL today (count=5)** and pins the bug.
+  2. `termSearch_rapidFacetClicks_documentsCurrentBuggy5PutBehaviour` — companion test that PINS the current buggy 5-invocation count. When the dep-array fix lands, this test becomes the "remove me" marker.
+  3. `termSearch_singleFacetChange_assertsExactlyOnePutAfter1500ms` — pin the happy-path debouncer behaviour (still works for single events).
+
+  PROBE (per LSN-017 measurement-truth principle): live-load `/termsearch` in a sandboxed browser instance, click 5 facets within a 2-second window, capture the backend log via browser DevTools, count `PUT /api/termsearch/{searchId}` invocations. Probe verifies the static-reasoning conclusion AND surfaces any compounding effects (e.g. React 18 Concurrent Mode batching) that static reading missed.
+
+  Pair with a follow-up backlog item proposing the dep-array fix: wrap the `useDebouncedCallback` in a `useMemo` with the actual depended-on values, OR refactor the facet-sync effect to read latest values from a `useRef` instead of closing over per-render state. When the fix lands, test #1 succeeds, test #2 deletes.
+batch: 2026-05-20-U
+feature_id: F-002

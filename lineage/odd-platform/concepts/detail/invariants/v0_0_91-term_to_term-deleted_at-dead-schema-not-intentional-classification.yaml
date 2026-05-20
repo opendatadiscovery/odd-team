@@ -1,0 +1,252 @@
+name: |-
+  V0_0_91 term_to_term.deleted_at classification — DEAD SCHEMA from MISSED MIGRATION (not intentional soft-delete forward-compat)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-06
+  - P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20U — STRENGTHENS the existing
+  term-to-term-deleted-at-schema-drift-v0_0_76-vs-v0_0_91 invariant
+  (batch N) by resolving the previously-open interpretation ambiguity.
+  The master invariant enumerated TWO possible interpretations:
+    (a) The column is dead schema — V0_0_91 was authored before V0_0_76's
+        hard-delete commitment had crystallised; the column should have
+        been omitted; cleanup migration is the correct fix.
+    (b) The application code is missing the filter — V0_0_91 deliberately
+        retained the column as forward-compat for a future term-to-term
+        soft-delete feature; the application code SHOULD filter and was
+        just under-implemented.
+
+  Batch U primary-source evidence from TermServiceImpl + TermController
+  RESOLVES this in favour of interpretation (a) — DEAD SCHEMA from
+  MISSED MIGRATION.
+
+  THE NEW EVIDENCE (TermServiceImpl batch U sidecar — primary source):
+
+    Verification at TermRelationsRepositoryImpl.java:204-219 +
+    222-230 — the two methods that mutate term_to_term:
+
+      deleteTermToTermRelations (lines 204-219) — invokes
+      DSL.delete(TERM_TO_TERM) — a HARD DELETE, not a soft-delete.
+
+      deleteTermToLinkedTermRelation (lines 222-230) — invokes
+      DSL.deleteFrom(TERM_TO_TERM) — also a HARD DELETE.
+
+    Verification by Grep: grep -rn 'TERM_TO_TERM\.DELETED_AT' across
+    odd-platform-api/src/main/java returns ZERO matches. No code path
+    in the entire backend WRITES to TERM_TO_TERM.DELETED_AT. The
+    deleted_at column is structurally orphaned — neither the platform's
+    own soft-delete pathway nor any service-tier write touches it.
+
+  THE INTENT DISAMBIGUATION:
+
+    Interpretation (a) — DEAD SCHEMA from MISSED MIGRATION:
+      The maintainer authoring V0_0_91 most-likely copy-pasted from
+      V0_0_35's data_entity_to_term template (which DID have deleted_at
+      at line 50 of V0_0_35__add_terms.sql) and OMITTED to apply
+      V0_0_76's post-cleanup pattern. The intent visible at V0_0_76
+      was 'link tables are hard-delete only — soft-delete is reserved
+      for first-class entities'; V0_0_91 reverted this without explicit
+      justification.
+
+    Interpretation (b) — UNDER-IMPLEMENTED SOFT-DELETE:
+      Would require a code path somewhere WRITING to TERM_TO_TERM.DELETED_AT.
+      Grep verifies NO such path exists. Would require a service-tier
+      design decision documenting the soft-delete intent. NO such
+      design document is referenced in the code or schema.
+
+  The Grep + the hard-delete evidence FALSIFY interpretation (b) AS A
+  LIVE INTENT — no soft-delete feature is partially implemented; no
+  staging code is being held aside for completion; the column is
+  structurally unused.
+
+  THIS DOES NOT RULE OUT (b) AS A FUTURE INTENT — a maintainer COULD
+  add a soft-delete feature in the future and would re-introduce the
+  question of filtering at the 7 read sites. But the CURRENT-STATE
+  classification is: DEAD SCHEMA. The fix is interpretation (a)'s
+  cleanup migration:
+
+    DELETE FROM term_to_term WHERE deleted_at IS NOT NULL;
+    ALTER TABLE term_to_term DROP COLUMN IF EXISTS deleted_at;
+
+  THIS REFINES THE SEVERITY:
+
+    The master invariant rated severity HIGH because the gap was
+    AUTHORIZATION-EQUIVALENT — a soft-delete signal the application
+    silently ignores creates the same shape of bug as
+    policy-getRolesPolicies-missing-deleted_at-filter (orphan-binding
+    permission leak via missing filter). Under interpretation (a) the
+    gap is REDUCED — the column is dead, the failure mode is
+    THEORETICAL (no current code writes deleted_at; no current bug
+    surfaces). Severity MEDIUM is more accurate under the disambiguation:
+      - Architectural-hygiene concern (correct).
+      - Forward-compat trap if a future maintainer reads the schema
+        and infers soft-delete intent (correct).
+      - Active runtime bug (NO — no code writes deleted_at).
+
+    The remediation is one ALTER TABLE migration that closes the
+    interpretation ambiguity permanently and prevents a future
+    maintainer from accidentally building soft-delete on top of the
+    dead column.
+
+  WHY THIS CLASSIFICATION MATTERS FOR THE MAINTAINER'S DOC-NNN QUEUE:
+
+    Under interpretation (b), the doc-side admission would be 'document
+    the term-to-term schema asymmetry so operators inspecting the DB
+    directly understand the read-path does not honour deleted_at'.
+    Under interpretation (a), the doc-side admission is NOT NEEDED —
+    the cleanup migration removes the asymmetry entirely. The DOC-NNN
+    item flips from 'document the gap' to 'no documentation gap once
+    the cleanup ships'.
+
+  CROSS-CHECK WITH THE PLATFORM'S OTHER SCHEMA-DRIFT FAILURES:
+
+    Schema-drift family across batches H + N + R + U:
+      - policy.getRolesPolicies missing deleted_at filter (batch H —
+        orphan-binding permission leak) — INTERPRETATION: filter bug,
+        column is live and used elsewhere.
+      - role.getDto / listDto / getByName missing deleted_at on POLICY
+        join (batch N) — INTERPRETATION: filter bug, column is live
+        on POLICY side.
+      - V0_0_91 term_to_term.deleted_at (batch N original — batch U
+        disambiguation) — INTERPRETATION: dead schema, column was
+        added in error and is structurally unused.
+      - activity.data_entity_id NOT NULL FK (batch R — F-006 audit
+        silence schema-rooted) — INTERPRETATION: deliberate schema
+        choice; the FK is the load-bearing structural commitment.
+
+    The four schema-related findings span the spectrum: live-but-not-filtered
+    (the master pattern) → live-but-deliberate (activity FK) →
+    dead-and-orphaned (term_to_term deleted_at). Each requires a
+    different remediation. This invariant classifies V0_0_91 deleted_at
+    explicitly as dead-and-orphaned.
+
+  SEVERITY MEDIUM — downgraded from HIGH on the master invariant. The
+  master invariant's HIGH severity covered the worst-case interpretation;
+  the disambiguation evidence shows the worst case is not the actual
+  case. The architectural-hygiene concern remains; the runtime gap
+  does not.
+nodes:
+  - odd-platform java service service:TermServiceImpl
+  - odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+contributors:
+  - |-
+    TermServiceImpl batch U (PRIMARY-SOURCE DISAMBIGUATION):
+    bugs_limitations_corner_cases.[6] V0_0_91-deleted_at-dead-schema —
+    evidence chain V0_0_91__add_term_to_term.sql:6 (the column declaration)
+    + V0_0_76__term_relations_hard_delete.sql:5-22 (deleted_at hard-dropped
+    from peer link tables) + V0_0_35__add_terms.sql:46-56 (the template
+    that was likely copy-pasted) + TermRelationsRepositoryImpl.java:204-219,
+    222-230 (hard DELETE evidence) + Grep verification of zero matches
+    for TERM_TO_TERM.DELETED_AT writes
+  - |-
+    TermServiceImpl batch U existing reference:
+    bugs_limitations_corner_cases.[7] term-delete-no-term_to_term-cascade —
+    evidence: TermServiceImpl.java:154-165 (delete cascade is data-entity
+    + dataset-field only); cross-reference shows the cascade absence is
+    PAIRED with the dead-schema column, not corrected by it
+  - |-
+    ReactiveTermRepositoryImpl batch N (existing — master invariant
+    primary source): 7 read sites missing the deleted_at filter; the
+    master invariant captured the bug shape but left the intent
+    ambiguous
+evidence:
+  - |-
+    TermServiceImpl.md:bugs_limitations_corner_cases.[6]
+    V0_0_91-deleted_at-dead-schema — the FULL evidence chain
+  - |-
+    Grep verification: grep -rn 'TERM_TO_TERM\.DELETED_AT'
+    odd-platform-api/src/main/java returns ZERO matches
+  - |-
+    Migration evidence:
+      V0_0_91__add_term_to_term.sql:6 (deleted_at column declared)
+      V0_0_76__term_relations_hard_delete.sql:5-22 (deleted_at hard-dropped from 3 peer tables)
+      V0_0_35__add_terms.sql:46-56 (the data_entity_to_term template with deleted_at — the most likely paste source)
+  - |-
+    Code evidence: TermRelationsRepositoryImpl.java:204-219, 222-230
+    (hard DELETE only — no soft-delete write)
+  - |-
+    Cross-references master invariant
+    term-to-term-deleted-at-schema-drift-v0_0_76-vs-v0_0_91 (batch N)
+    — this invariant STRENGTHENS that with the disambiguation evidence
+axes_present:
+  - schema_migrations
+  - services
+  - repositories_reactive
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+  - batch-N (ReactiveTermRepositoryImpl — master invariant)
+  - batch-U (TermServiceImpl + TermController — disambiguation primary source, THIS INVARIANT)
+severity: MEDIUM
+severity_dim: architectural-hygiene
+mitigations_unimplemented:
+  - |-
+    Option A (the now-confirmed-correct remediation) — Add a cleanup
+    migration mirroring V0_0_76's structure:
+      DELETE FROM term_to_term WHERE deleted_at IS NOT NULL;
+      ALTER TABLE term_to_term DROP COLUMN IF EXISTS deleted_at;
+    This brings term_to_term in line with the 3 sibling link tables
+    AND closes the dead-schema interpretation. Lowest-cost; preserves
+    the existing read-path semantics; the existing 7 read sites
+    silently become correct (no filter needed because no column exists).
+  - |-
+    Drop the read-path filter follow-up (Option B from the master
+    invariant) — under interpretation (a) the 7 read sites do NOT need
+    to be patched; the column will be removed instead.
+  - |-
+    Drop the soft-delete feature follow-up (Option C from the master
+    invariant) — under interpretation (a) there is no current intent
+    to add a term-to-term soft-delete feature; the cleanup eliminates
+    the partial-implementation surface area.
+  - |-
+    Add the regression test pinning the cleanup migration ran cleanly:
+      (a) Assert ALTER TABLE term_to_term DROP COLUMN IF EXISTS deleted_at
+          has been applied (the column is gone).
+      (b) Assert grep over the backend Java source for
+          TERM_TO_TERM.DELETED_AT continues to return zero matches.
+      (c) Assert the term-to-term link/unlink endpoints continue to
+          produce the same wire-shape responses (no behavioural drift).
+  - |-
+    Add a build-time invariant scanner that flags any new repository
+    read against a table with a deleted_at column that lacks the
+    matching deleted_at.isNull() predicate — the bug class is bigger
+    than just term_to_term and the scanner closes the failure class.
+notes: |-
+  NEW invariant captured in batch 2026-05-20U from the TermServiceImpl
+  sidecar's primary-source Grep verification. The master invariant
+  (batch N) enumerated two possible interpretations; the batch-U
+  evidence resolves the ambiguity in favour of interpretation (a)
+  DEAD SCHEMA from MISSED MIGRATION.
+
+  The disambiguation is load-bearing for the maintainer's DOC-NNN
+  remediation choice:
+    - Under (b) [under-implemented soft-delete] the remediation was
+      'add filter at 7 sites' AND 'document the asymmetry'.
+    - Under (a) [dead schema] the remediation is 'one DROP COLUMN
+      migration' AND no documentation is needed.
+
+  The cleanup migration is the smaller, safer, and more
+  architecturally-correct remediation. The master invariant's HIGH
+  severity is downgraded to MEDIUM under the disambiguation; the
+  active runtime bug class is gone, the architectural-hygiene concern
+  remains.
+
+  Cross-cutting connections:
+    - STRENGTHENS the master invariant
+      term-to-term-deleted-at-schema-drift-v0_0_76-vs-v0_0_91
+    - Pairs with hard-delete-on-relationship-edges-confirmed-cross-batch
+      (batch L) — term_to_term JOINs the 3 sibling tables as a fully
+      hard-delete link table once the cleanup ships
+    - Pairs with three-soft-delete-mechanisms-across-the-repository-layer
+      (batch H) — closes one of the schema asymmetries that invariant
+      surfaces
+    - Distinguishes from policy-getRolesPolicies-missing-deleted_at-filter
+      (batch H) — that's a LIVE filter bug; this is DEAD schema; both
+      were schema-drift failures but require DIFFERENT remediations
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Code fix — V0_0_NNN cleanup migration (DROP COLUMN)
+    (b) The master invariant's remediation list is REVISED to favour
+        Option A and drop Options B and C

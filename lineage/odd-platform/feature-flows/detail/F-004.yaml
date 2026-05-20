@@ -13,6 +13,7 @@ drift_class_summary:
 - dataset_field_description_edit_verbatim_storage_xss_class_extension
 - dataset_field_description_edit_no_activity_log_asymmetric_with_internal_name
 - dataset_field_update_description_silent_no_op_on_missing_id
+- term_definition_xss_surface_extension_3rd_surface_markdown_rehype_raw
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Data entity description — Markdown content storage
@@ -110,12 +111,79 @@ batch_extensions:
     `response_decoupled_from_storage`, and the system-mission.md
     Audit-log Presence Asymmetry canonicalisation candidate. NO
     contradictions surfaced. NO supersedes.
+- batch: U
+  entry_point_added: |-
+    UI-tier (Term Detail Page shell): TermDetails.tsx — the Term detail
+    page root component at `/terms/:termId/{overview|linked-entities|...}`.
+    The term DEFINITION field (`termDetails.definition` — an OpenAPI-generated
+    DTO field, rendered on Overview tab via TermDefinition.tsx) flows through
+    the SAME Markdown render pipeline as data-entity descriptions
+    (Markdown.tsx → MDEditor.Markdown with rehype-raw, NO rehype-sanitize).
+    The F-004 stored-XSS verbatim-storage fingerprint EXTENDS from the
+    DataEntity surface (primary) + DatasetField surface (batch R) to a
+    THIRD surface: TERM DEFINITION. The endpoint is `POST /api/terms` +
+    `PUT /api/terms/{id}` gated by TERM_CREATE / TERM_UPDATE per
+    SecurityConstants.java:111, 174 — but persistence is verbatim
+    (TermServiceImpl creates/updates with no Jsoup.clean / Encode.html /
+    length cap / allowlist; ReactiveTermRepositoryImpl inherits CRUD).
+  contributing_nodes_added:
+  - odd-platform ts react-component:TermDetails
+  - odd-platform java service service:TermServiceImpl
+  notes: |-
+    ONE new drift facet surfaces this batch — the THIRD MARKDOWN SURFACE
+    in the F-004 family. Severity HIGH:
+    (1) TERM DEFINITION VERBATIM STORAGE — XSS-CLASS 3RD SURFACE (HIGH)
+    — Term definitions flow through TermDefinition.tsx → Markdown.tsx →
+    `MDEditor.Markdown` from `@uiw/react-md-editor` which bundles
+    rehype-raw@6.1.1 (verified at pnpm-lock.yaml:3900, 5922, 8843) with
+    NO rehype-sanitize (Grep over `odd-platform-ui/src` returns ZERO
+    matches for `rehype-sanitize`). TermServiceImpl.createTerm (lines
+    101-117) and updateTerm (lines 119-145) accept TermFormData.definition
+    as a plain String with NO Jsoup.clean, NO Encode.html, NO length cap,
+    NO allowlist; ReactiveTermRepositoryImpl persists the raw string
+    verbatim via inherited CRUD (`UPDATE term SET definition = ?`). The
+    F-004 stored-XSS surface (PROBED-PINNING-BUG via P-007 backend
+    storage + P-009 UI rendering) now extends to TERM DEFINITION. An
+    operator with TERM_UPDATE permission can plant arbitrary HTML+JS in
+    any term's definition; the read-collaborative posture means any
+    authenticated viewer renders the XSS payload on every visit to the
+    Term detail page.
+    Same MITIGATIONS apply as F-004 batch-J/R/slice-5/slice-6: (a) React's
+    attribute filtering on rehype-raw's setProperty path strips event-handler
+    attributes (onerror, onload — closes attribute-vector XSS); (b)
+    Chromium's HTML-parser policy of not executing <script> tags inserted
+    via innerHTML / dangerouslySetInnerHTML (closes script-tag-vector XSS
+    against modern browsers). NEITHER mitigation closes (c) SVG-payload
+    with onload (foreignObject + script), (d) CSS expression vectors,
+    (e) href javascript: URLs without iframe, (f) HTML entities decoded
+    by setProperty into dangerous JS strings. P-009 covers only the
+    common-attack-vector subset; the SAME envelope applies to the
+    TermDefinition surface — coverage is partial mitigation, not
+    defence-by-design.
+    THE FIX (rehype-sanitize) is still warranted as defence-in-depth
+    across ALL THREE surfaces (data-entity description + dataset-field
+    description + term definition) — applying it at the SHARED
+    Markdown.tsx component (lines 84-127) closes ALL THREE in ONE commit.
+    The three surfaces share the SAME `<Markdown>` component, so the
+    fix is single-call-site.
+    Cross-batch coherence (LSN-018 Rule 6): STRENGTHENS F-004's primary
+    drift_class `external_lib_assumes_sanitisation` with a third
+    primary-source code-walk citation (TermDetails sidecar known_security_gaps[0]
+    HIGH severity + TermDefinition.tsx:39-47 + Markdown.tsx:113-124).
+    STRENGTHENS F-002 batch-U term_definition_xss_surface_extension facet
+    (the same observation surfaced on the F-002 side because Term lifecycle
+    is THAT feature's domain; cross-ref). NO contradictions; NO supersedes.
+    The fix has now broader leverage than the F-004-primary case suggested
+    in slice-7 — instead of patching one component, patch the shared
+    Markdown.tsx and close THREE surfaces.
 contributing_nodes:
 - ts react-component:DataEntityDescription (Overview > Description cluster — InternalDescription + Markdown + useTermWiki)
 - odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
 - odd-platform java service service:DataEntityServiceImpl
 - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 - odd-platform java repository reactive repository:ReactiveDatasetFieldRepositoryImpl
+- odd-platform ts react-component:TermDetails
+- odd-platform java service service:TermServiceImpl
 terminal_side_effect:
   side_effect_class: db-write
   description: UPDATE data_entity SET internal_description = ? — stored verbatim, no sanitisation
@@ -408,6 +476,55 @@ observed_vs_expected:
     provenance: STATIC — primary-source verification in batch-I DataEntityServiceImpl sidecar bugs_limitations_corner_cases[5]
       + implicit_adrs[6]. Local probe — PUT empty body + GET back + SELECT raw column + assert PUT echo == "" AND GET shows
       no description AND SELECT returns NULL.
+  - facet: TERM DEFINITION verbatim storage — F-004 XSS-class 3RD surface (batch U)
+    observed: |-
+      Term definitions flow through TermDefinition.tsx:39-47 → Markdown.tsx:113-124
+      → `MDEditor.Markdown` from `@uiw/react-md-editor` which bundles
+      rehype-raw@6.1.1 (verified at pnpm-lock.yaml:3900, 5922, 8843) with
+      NO rehype-sanitize (Grep over `odd-platform-ui/src` returns ZERO
+      matches for `rehype-sanitize`). TermServiceImpl.createTerm (lines
+      101-117) + updateTerm (lines 119-145) accept TermFormData.definition
+      as a plain String with NO Jsoup.clean, NO Encode.html, NO length
+      cap, NO allowlist; ReactiveTermRepositoryImpl persists the raw
+      string verbatim via inherited CRUD (the bare `UPDATE term SET
+      definition = ?` shape). The F-004 stored-XSS surface previously
+      established for DATA_ENTITY.internal_description (P-007 + P-009
+      MEASURED) and DATASET_FIELD description (batch R STATIC) now
+      extends to TERM DEFINITION — a THIRD surface in the family. An
+      operator with TERM_UPDATE permission can plant arbitrary HTML+JS
+      in any term's definition; the read-collaborative posture means
+      any authenticated viewer renders the XSS payload on every visit
+      to the Term detail page.
+      Same MITIGATIONS apply across all three surfaces (per batch-J +
+      slice-5 + slice-6): React's attribute filtering closes
+      attribute-vector XSS (onerror, onload); Chromium's HTML-parser
+      policy closes script-tag-vector XSS against modern browsers.
+      NEITHER mitigation closes SVG-payload-with-onload, CSS-expression,
+      href-javascript: URL, or HTML-entity-decoded vectors. P-009's
+      coverage envelope applies to the SAME attack-vector subset
+      across all three surfaces; the SVG-onload + CSS-expression class
+      remains an unmeasured gap.
+      THE FIX (rehype-sanitize) has broader leverage than originally
+      scoped — applying it at the SHARED Markdown.tsx component (lines
+      84-127) closes ALL THREE surfaces in ONE commit. Markdown.tsx is
+      the SOLE Markdown renderer across odd-platform-ui (verified by
+      grep on `MDEditor.Markdown` returning matches only via
+      Markdown.tsx imports).
+    expected: |-
+      Sanitised storage via Jsoup.clean / Encode.html / allowlist at
+      TermServiceImpl tier; OR sanitised render via rehype-sanitize at
+      Markdown.tsx (shared component) closing all 3 surfaces in 1 commit;
+      OR explicit doc admonition on Business Glossary docs page
+      ("TERM_UPDATE is high-trust; only grant to vetted operators").
+    drift_class: term_definition_xss_surface_extension_3rd_surface_markdown_rehype_raw
+    provenance: |-
+      STATIC + cross-link to MEASURED via F-002 / F-004 P-009 — primary-source
+      verification in batch U TermDetails sidecar known_security_gaps[0]
+      (HIGH severity) + TermDefinition.tsx:39-47 + Markdown.tsx:113-124 +
+      pnpm-lock.yaml:3900, 5922, 8843 (rehype-raw bundled, no rehype-sanitize)
+      + TermServiceImpl sidecar batch K + batch U operations (no
+      sanitisation in mutation paths) + ReactiveTermRepositoryImpl sidecar
+      batch N (verbatim persistence). Severity: HIGH.
 test_matrix:
   unit:
     state: GAP
@@ -454,6 +571,11 @@ test_matrix:
     - SQL-injection vector in getHighlightedResult (batch-H known_security_gaps[0]) — raw `.formatted()` SQL with user-controllable
       internal_description as one of two interpolated parameters. Separate downstream feature (FTS highlight) but the description
       IS the upstream source.
+    - 'TERM DEFINITION XSS round-trip — POST/PUT TermFormData with XSS payload via /api/terms; GET term detail; assert
+      the payload reaches the rendered DOM via Markdown.tsx (batch U candidate — sibling probe to P-007 + P-009 on the term
+      surface)'
+    - 'shared Markdown component fix — assert rehype-sanitize landing at Markdown.tsx:84-127 closes all 3 surfaces (entity
+      description + dataset-field description + term definition) in one assertion sweep (batch U)'
 control_summary: |-
   2 of 4 cells PROBED — integration + security both PROBED-PINNING-BUG.
   Slice-5 adds UI-render-side empirical measurement: P-009 refined REFACTOR-218
@@ -475,6 +597,27 @@ control_summary: |-
   silently discards in-flight edits; async term-resolution race exists.
   THREE new doc-gap candidates surface this batch (term-mention syntax /
   Markdown rendering pipeline / partial-gating semantics).
+
+  Batch U extends F-004 with the THIRD MARKDOWN-XSS SURFACE: TERM
+  DEFINITION. TermDefinition.tsx → Markdown.tsx → MDEditor.Markdown with
+  rehype-raw (NO rehype-sanitize); TermServiceImpl.createTerm + updateTerm
+  persist verbatim with no sanitisation pass; ReactiveTermRepositoryImpl
+  inherits CRUD with no allowlist. ONE new HIGH-severity drift facet
+  (`term_definition_xss_surface_extension_3rd_surface_markdown_rehype_raw`).
+  The fix has BROADER leverage than originally scoped — applying
+  rehype-sanitize at the SHARED Markdown.tsx component (lines 84-127,
+  verified SOLE Markdown renderer across odd-platform-ui) closes all
+  THREE surfaces (entity description + dataset-field description + term
+  definition) in ONE commit. The mitigations measured at slice-5/slice-6
+  (React attribute filtering + Chromium HTML-parser policy) apply
+  identically to the term-definition surface; partial-mitigation
+  envelope unchanged — SVG-onload + CSS-expression + href-javascript
+  vectors remain unmeasured across all three. Cross-link to F-002
+  batch-U term_definition_xss_surface_extension_f_004_class_3rd_surface
+  (the same observation surfaced on the F-002 side because Term
+  lifecycle is THAT feature's domain; this facet on F-004 because XSS
+  is THIS feature's domain). Coherence: STRENGTHENS=2, SUPERSEDES=0,
+  CONFLICTS=0.
 related_refactoring_scopes:
 - REFACTOR-218
 related_test_gaps:
@@ -485,8 +628,12 @@ related_doc_gaps:
 related_concepts:
 - Internal Description (Markdown body)
 - Markdown Rendering Pipeline
+- Term Definition (Markdown body)
 related_retrospectives:
 - LSN-017
+- LSN-018
+related_features:
+- F-002
 related_probes: null
 probe_verifications:
 - probe_id: P-007

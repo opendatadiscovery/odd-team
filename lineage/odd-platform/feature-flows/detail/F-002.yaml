@@ -25,6 +25,15 @@ drift_class_summary:
 - get_term_details_dto_12_join_hot_path_amplification
 - count_by_state_unconditional_fts_join_asymmetry
 - list_term_ref_dtos_count_vs_list_filter_mismatch
+- term_to_term_no_security_rule_unguarded_linkage
+- term_to_term_no_activity_log_invisible_to_audit_feed
+- term_delete_cascade_omits_term_to_term_rows
+- term_create_update_status_code_drift_controller_returns_200_spec_201
+- term_search_session_no_per_caller_ownership_check
+- term_lifecycle_audit_silence_enum_rooted_activity_event_type_dto
+- term_definition_xss_surface_extension_f_004_class_3rd_surface
+- fts_write_path_term_delete_leaves_stale_vector
+- fts_write_path_term_ownership_soft_delete_not_filtered
 batch_extensions:
 - batch: K
   entry_point_added: 'service:TermServiceImpl (all 17 methods including the auto-link side-channel)'
@@ -86,6 +95,122 @@ batch_extensions:
     posture is now SQL-anchored: every read returns Terms across every
     namespace to every authenticated user, paginated, with no per-namespace
     or per-owner scoping at this layer.
+- batch: U
+  entry_point_added: |-
+    Controller-class:TermController (the HTTP entry point for the entire
+    P-06 Business Glossary surface — 23 endpoints, 251 lines, implementing
+    the OpenAPI-generated TermApi). Closes the 5-LAYER chain for P-06:F-001
+    Term-to-Entity Linkage: controller-class + service + repository + UI
+    list (TermSearch — see F-024) + UI detail (TermDetails) + FTS write
+    repo (ReactiveTermSearchEntrypointRepositoryImpl — the term-side
+    counterpart of the DataEntity FTS write surface). Plus
+    ReactiveTermSearchEntrypointRepositoryImpl as the FTS-write companion
+    maintaining 4 tsvector columns of `term_search_entrypoint` via 7
+    INSERT ON CONFLICT DO UPDATE methods, one per refresh trigger
+    (term-create/update, namespace rename, tag rename, tag-to-term link,
+    ownership create/update/delete, owner edit).
+  contributing_nodes_added:
+  - odd-platform java TermController controller-class:TermController
+  - odd-platform java repository reactive repository:ReactiveTermSearchEntrypointRepositoryImpl
+  - odd-platform ts react-component:TermDetails
+  notes: |-
+    NINE new drift facets surface this batch, closing the 5-layer pillar
+    coverage AND extending the cross-batch audit-silence finding to the
+    SCHEMA-LAYER ENUM root cause. Listed in descending severity:
+    (1) TERM-TO-TERM LINKAGE NO SECURITY RULE (HIGH) — TermController.java:237-249
+    declares POST `/api/terms/{term_id}/term` and DELETE
+    `/api/terms/{term_id}/term/{linked_term_id}` with NO SecurityRule entry
+    in SecurityConstants.java (verified by grep — lines 174-193 cover TERM_*
+    permissions for OTHER endpoints; the term-to-term paths are absent).
+    Falls through to AuthorizationCustomizer's catch-all
+    `pathMatchers("/**").authenticated()` (lines 29-30). Net effect: ANY
+    authenticated user (LOGIN_FORM / OAUTH2 / LDAP) can create or delete
+    term-to-term links regardless of the seven TERM_* permissions held.
+    The Business Glossary docs (live-fetched 2026-05-20 status 200) declare
+    TERM_UPDATE gates "directly-linked terms" — operators authoring RBAC
+    policies based on the docs will silently fail-open on term-to-term
+    linkage. DISTINCT from REFACTOR-217 (singular-vs-plural path mismatch
+    on /api/dataentities/.../term[s]) — this is a COMPLETELY MISSING rule,
+    not a misregistered one.
+    (2) TERM-TO-TERM LINKAGE NO ActivityLog — INVISIBLE TO AUDIT FEED
+    (MEDIUM) — TermServiceImpl.linkTermWithTerm (line 290) and
+    removeTermToLinkedTermRelation (line 299) carry NO @ActivityLog
+    annotation. Sibling linkage methods (linkTermWithDataEntity line 169,
+    linkTermWithDatasetField line 211, removeTermFromDataEntity line 183,
+    removeTermFromDatasetField line 225) ALL carry
+    @ActivityLog(TERM_ASSIGNMENT_UPDATED). Term-to-term family is the SOLE
+    linkage type missing the audit emission. Auditors investigating "who
+    linked term A to term B" have no audit trail.
+    (3) TERM DELETE CASCADE OMITS term_to_term ROWS (MEDIUM) —
+    TermServiceImpl.delete (lines 155-164) cleans up data_entity_to_term +
+    dataset_field_to_term but NOT term_to_term. Combined with the batch-N
+    schema-drift invariant (7 read sites never filter
+    term_to_term.deleted_at IS NULL), orphan term_to_term rows remain
+    visible on getTermLinkedTerms indefinitely. Operators deleting a term
+    that had term-to-term linkages will see the deleted term still appear
+    in OTHER terms' linked-terms lists.
+    (4) TERM CREATE/UPDATE STATUS-CODE DRIFT (MEDIUM) — TermController
+    returns 200 on createTerm (line 74) and updateTerm (line 82); OpenAPI
+    declares 201 for both (openapi.yaml:2760-2761, 2798-2799). Existing
+    OpenAPI-generated clients expecting 201 may treat 200 as
+    "not the expected success" — typed-client edge case.
+    (5) TERM SEARCH SESSION NO PER-CALLER OWNERSHIP CHECK (MEDIUM) — the
+    6 search-state endpoints (TermController.java:166-216) authenticate
+    via `pathMatchers("/**").authenticated()` and rely on the unguessable
+    `searchId` UUID as session ownership. No rate-limit on session
+    creation, no per-caller session count, no confirmation the caller is
+    the session creator on updateTermSearchFacets. Pattern lives in the
+    new F-024 Term Search & Browse feature minted this batch.
+    (6) TERM LIFECYCLE AUDIT-SILENCE — ENUM-ROOTED (HIGH, schema-layer)
+    — `ActivityEventTypeDto.java:3-31` enum has NO `TERM_CREATED`,
+    `TERM_UPDATED`, `TERM_DELETED`, `TERM_DESCRIPTION_UPDATED`,
+    `TERM_TAGS_UPDATED`, or `NAMESPACE_CREATED` values defined.
+    TermServiceImpl createTerm / updateTerm / delete (lines 99-165) emit
+    NO @ActivityLog annotations. The activity feed shows term-to-data-entity
+    LINK changes (TERM_ASSIGNMENT_UPDATED) but never term LIFECYCLE changes.
+    REFINES F-006 batch-R `audit_silence_schema_rooted_activity_data_entity_fk_not_null`:
+    the audit-silence is not JUST a NOT-NULL FK problem on
+    `activity.data_entity_id`, it is ALSO an enum-roots problem — even if
+    a schema migration made data_entity_id nullable, the @ActivityLog
+    mechanism routes via ActivityEventTypeDto values and there are NO
+    values defined for term lifecycle events. The fix requires BOTH a
+    schema-layer change AND new enum values + new ActivityHandler
+    implementations. Cross-link to F-006 batch-U extension.
+    (7) TERM DEFINITION XSS SURFACE — F-004 CLASS 3RD SURFACE (HIGH) —
+    cross-link to F-004 batch-U extension for the primary documentation.
+    Term definitions flow through TermDefinition.tsx → Markdown.tsx →
+    MDEditor.Markdown with rehype-raw (no rehype-sanitize anywhere in
+    odd-platform-ui). The XSS surface previously documented for entity
+    descriptions (F-004) + dataset-field descriptions (F-004 batch R) now
+    extends to TERM DEFINITIONS. An operator with TERM_UPDATE can plant
+    XSS that fires for any authenticated viewer (read-collaborative).
+    Cross-link: F-004 primary documentation; the F-002 facet exists
+    because Term lifecycle is THIS feature's domain.
+    (8) FTS WRITE PATH — TERM DELETE LEAVES STALE VECTOR (MEDIUM) —
+    `TermServiceImpl.delete` (lines 153-165) calls NO method on
+    ReactiveTermSearchEntrypointRepositoryImpl to drop the term's row
+    from `term_search_entrypoint`. Soft-deleted terms keep their last-known
+    tsvector contents in the FTS table indefinitely. Readers that join
+    `term` with `DELETED_AT.isNull()` won't see them, but any reader
+    querying `term_search_entrypoint` directly (without the join) would
+    surface deleted terms. Pattern mirrors the DataEntity-side
+    `delete_search_vector_not_refreshed` family from earlier batches.
+    (9) FTS WRITE PATH — TERM_OWNERSHIP soft-delete NOT FILTERED (LOW)
+    — `updateChangedOwnershipVectors` + `updateChangedOwnerVectors`
+    (ReactiveTermSearchEntrypointRepositoryImpl.java:180-195, 222-237)
+    use `leftJoin(TERM_OWNERSHIP)` with NO
+    `TERM_OWNERSHIP.DELETED_AT.isNull()` filter. The
+    `term_ownership.deleted_at` column exists
+    (V0_0_35__add_terms.sql:36); in practice TermOwnershipServiceImpl.delete
+    hard-deletes the ownership row so this is masked, but the absent
+    filter is a latent bug if any code path soft-deletes a
+    term_ownership row.
+    Cross-batch coherence (LSN-018 Rule 6):
+    STRENGTHENS=5 (F-006 audit-silence enum-rooted refinement;
+    F-004 XSS 3rd surface; F-002 cross_namespace_term_pollution via
+    TermSearch UI; F-002 get_term_details_dto_12_join_hot_path via
+    TermDetails+Overview double-fetch; F-017 search-session pattern
+    parallel via F-024). SUPERSEDES=0. CONFLICTS=0.
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Term linking with permission gate
@@ -119,6 +244,9 @@ contributing_nodes:
 - odd-platform java DataEntityDescriptionUnhandledTermRepository
 - odd-platform java TermAssignmentActivityHandler
 - odd-platform java service permission extractor:TermPermissionExtractor
+- odd-platform java TermController controller-class:TermController
+- odd-platform java repository reactive repository:ReactiveTermSearchEntrypointRepositoryImpl
+- odd-platform ts react-component:TermDetails
 chain:
 - hop: 1
   node: odd-platform java DataEntityController controller-method:addDataEntityTerm
@@ -232,6 +360,64 @@ chain:
     1 DELETE. REFACTOR-228 primary-source.
   unresolved: false
   resolved_in_batch: K
+- hop: 1c
+  node: odd-platform java TermController controller-class:TermController
+  sidecar: odd-platform__java__TermController__controller-class__TermController.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    TermController.java:1-251 — 23 endpoints implementing the OpenAPI-generated
+    TermApi interface, each method 1-2 lines of reactive delegation. Lines
+    237-249 declare addLinkedTermToTerm + deleteLinkedTermFromTerm with NO
+    SecurityRule entry in SecurityConstants.java (verified by grep — lines
+    174-193 cover OTHER term endpoints; term-to-term paths are absent). Falls
+    through to AuthorizationCustomizer.customize catch-all
+    `pathMatchers("/**").authenticated()` (AuthorizationCustomizer.java:29-30)
+    — any authenticated user can link/unlink terms regardless of TERM_*
+    permissions. Pure-delegation controller — no business logic, no service-tier
+    permission checks downstream. Status-code drift on createTerm/updateTerm
+    (controller returns 200; OpenAPI declares 201 — openapi.yaml:2760, 2798).
+  unresolved: false
+  resolved_in_batch: U
+- hop: 5
+  node: odd-platform java repository reactive repository:ReactiveTermSearchEntrypointRepositoryImpl
+  sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermSearchEntrypointRepositoryImpl.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveTermSearchEntrypointRepositoryImpl.java:37-249 — 7 methods, one
+    per FTS-refresh trigger (term-create/update at lines 37-60; namespace
+    rename at 63-84; term-to-namespace link at 87-107; tag-to-term link at
+    110-133; tag rename at 135-166; ownership create/update/delete at
+    169-208; owner edit at 210-250). Each method emits a single
+    `INSERT term_search_entrypoint ... ON CONFLICT (term_id) DO UPDATE`
+    via JooqFTSHelper.buildVectorUpsert. TermServiceImpl.updateSearchVectors
+    (TermServiceImpl.java:324-329) invokes updateTermVectors +
+    updateNamespaceVectorsForTerm on every term mutation; upsertTags
+    (lines 261-262) invokes updateTagVectorsForTerm; ownership mutations
+    flow through TermOwnershipServiceImpl. The DELETE path
+    (TermServiceImpl.delete lines 153-165) does NOT clear vectors — stale
+    FTS rows persist for soft-deleted terms (drift facet 8).
+  unresolved: false
+  resolved_in_batch: U
+- hop: ui-detail
+  node: odd-platform ts react-component:TermDetails
+  sidecar: odd-platform__ts__react-component__component__TermDetails.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    TermDetails.tsx:1-88 — the Term detail page UI shell (`/terms/:termId/*`)
+    that gates TermDetailsHeader (Edit + Delete CTAs) behind
+    `WithPermissionsProvider allowedPermissions=[TERM_UPDATE, TERM_DELETE]`
+    (lines 59-70). Mount fires `fetchTermDetails({termId})` +
+    `fetchResourcePermissions({resourceId: termId, type: TERM})` (lines 37-45)
+    — a SINGLE-fetch pattern (deps=[termId] only — explicitly NOT the
+    LSN-017 shape, verified). The Overview sub-tab fires its OWN
+    `useGetTermByID` (Overview.tsx:19-21) — DOUBLE-FETCH amplification on
+    the 12-JOIN hot path per page-open (sibling pattern to LSN-017,
+    different mechanism). Term DEFINITION renders through
+    TermDefinition.tsx → Markdown.tsx → MDEditor.Markdown with rehype-raw
+    (no rehype-sanitize) — the F-004 stored-XSS 3rd surface (cross-link
+    F-004 batch-U).
+  unresolved: false
+  resolved_in_batch: U
 terminal_side_effect:
   side_effect_class: db-write
   description: |-
@@ -668,6 +854,226 @@ observed_vs_expected:
       bugs_limitations_corner_cases[10] + performance.known_performance_gaps[3] +
       ReactiveTermRepositoryImpl.java:113-114, 133 + inherited fetchCount in
       ReactiveAbstractCRUDRepository. Severity: MEDIUM.
+  - facet: term-to-term linkage NO SecurityRule — completely unguarded (batch U — PRIMARY-SOURCE)
+    observed: |-
+      TermController.java:237-249 declares `POST /api/terms/{term_id}/term`
+      (addLinkedTermToTerm) and `DELETE /api/terms/{term_id}/term/{linked_term_id}`
+      (deleteLinkedTermFromTerm) with NO SecurityRule entry in
+      SecurityConstants.java. Verified by exhaustive grep:
+      `grep -nE '/api/terms/.*term\b' SecurityConstants.java` returns ZERO
+      matches for the term-to-term paths; lines 174-193 cover OTHER TERM_*
+      endpoints. Falls through to AuthorizationCustomizer's catch-all
+      `pathMatchers("/**").authenticated()` at AuthorizationCustomizer.java:29-30
+      — the ONLY gate is "is the caller authenticated?". Net effect: any
+      authenticated user (LOGIN_FORM / OAUTH2 / LDAP) can create or delete
+      term-to-term links on ANY term they can reach. The Business Glossary
+      docs (WebFetch 2026-05-20 status 200) declare TERM_UPDATE gates
+      "directly-linked terms" — operators authoring RBAC policies based
+      on the docs will silently fail-open on term-to-term linkage. DISTINCT
+      from REFACTOR-217 (singular-vs-plural path mismatch on
+      /api/dataentities/.../term[s] — a misregistered rule) — this is a
+      COMPLETELY MISSING rule, not a misregistered one.
+    expected: |-
+      Add SecurityRule entries to SecurityConstants.java for both endpoints
+      gating on TERM_UPDATE (the doc-declared permission); add WebFluxTest
+      regression that asserts a no-TERM_UPDATE caller receives 403.
+    drift_class: term_to_term_no_security_rule_unguarded_linkage
+    provenance: |-
+      STATIC — primary-source in batch U TermController sidecar
+      bugs_limitations_corner_cases[0] (HEADLINE HIGH severity) +
+      security.known_security_gaps[0] + TermController.java:237-249 +
+      SecurityConstants.java:111, 174-193 (verified absent) +
+      AuthorizationCustomizer.java:29-30 + live doc fetch 2026-05-20.
+      Severity: HIGH.
+  - facet: term-to-term linkage NO @ActivityLog — invisible to audit feed (batch U)
+    observed: |-
+      TermServiceImpl.linkTermWithTerm (line 290) and
+      removeTermToLinkedTermRelation (line 299) are NOT annotated with
+      @ActivityLog. Sibling linkage methods ALL carry
+      @ActivityLog(TERM_ASSIGNMENT_UPDATED): linkTermWithDataEntity line
+      169, linkTermWithDatasetField line 211, removeTermFromDataEntity
+      line 183, removeTermFromDatasetField line 225. The term-to-term
+      family is the SOLE linkage type missing the audit emission.
+      Auditors investigating "who linked term A to term B" have no audit
+      trail.
+    expected: |-
+      Add @ActivityLog(TERM_TO_TERM_LINK_UPDATED) to both methods — but
+      this requires a NEW ActivityEventTypeDto enum value (see facet 6,
+      enum-roots) and an Activity-handler implementation.
+    drift_class: term_to_term_no_activity_log_invisible_to_audit_feed
+    provenance: |-
+      STATIC — primary-source in batch U TermController sidecar
+      bugs_limitations_corner_cases[4] + TermServiceImpl.java:289-301 +
+      ActivityEventTypeDto.java:3-31 (enum lacks term-lifecycle values).
+      Severity: MEDIUM.
+  - facet: TermDelete cascade omits term_to_term rows (batch U)
+    observed: |-
+      TermServiceImpl.delete (lines 155-164) cleans up data_entity_to_term
+      (via termRelationsRepository.deleteRelationsWithDataEntities line 162)
+      and dataset_field_to_term (line 163), then soft-deletes the term
+      itself. The term_to_term table is NOT cleaned up — there is no
+      `termRelationsRepository.deleteRelationsWithTerm(termId)` cascade.
+      Combined with the batch-N schema-drift invariant (7 read sites
+      never filter term_to_term.deleted_at IS NULL), orphan term_to_term
+      rows pointing at the soft-deleted term remain visible on
+      getTermLinkedTerms indefinitely. Operators deleting a term that
+      had term-to-term linkages will see the deleted term still appear
+      in OTHER terms' linked-terms lists.
+    expected: |-
+      Add explicit cascade to term_to_term in TermServiceImpl.delete OR
+      add a cascade trigger at the DB layer (term.deleted_at = NOW()
+      → cascade DELETE term_to_term rows). Either approach must align
+      with the V0_0_91-vs-V0_0_76 soft-delete intent decision.
+    drift_class: term_delete_cascade_omits_term_to_term_rows
+    provenance: |-
+      STATIC — primary-source in batch U TermController sidecar
+      bugs_limitations_corner_cases[3] + implicit_adrs[4] +
+      TermServiceImpl.java:155-164 + ReactiveTermRepositoryImpl.java:198-199,
+      227-231, 324-325, 345, 429-430, 448-454, 472-491, 510-523 (the 7
+      unfiltered read sites from batch N). Severity: MEDIUM.
+  - facet: createTerm + updateTerm status-code drift — controller 200 vs spec 201 (batch U)
+    observed: |-
+      TermController.createTerm (line 74 `.map(ResponseEntity::ok)`) and
+      updateTerm (line 82 same idiom) return HTTP 200 OK. OpenAPI declares
+      201 Created for both: openapi.yaml:2760 (`'201': description: The
+      resource has been successfully created`) for createTerm and
+      openapi.yaml:2798-2799 for updateTerm. Either the spec or the
+      controller is wrong; the API-reference page (developer-guides/api-reference/glossary)
+      omits status codes so docs cannot disambiguate. OpenAPI-generated
+      clients expecting 201 may treat 200 as "not the expected success" —
+      typed-client edge case.
+    expected: |-
+      Either fix the controller to return 201 on create (resource creation
+      convention) + 200 on update (update convention; OpenAPI is wrong on
+      update), OR fix the OpenAPI spec to declare 200 for both (and bump
+      the spec version). Add an OpenAPI-spec contract test asserting the
+      actual response code matches the spec.
+    drift_class: term_create_update_status_code_drift_controller_returns_200_spec_201
+    provenance: |-
+      STATIC — primary-source in batch U TermController sidecar
+      bugs_limitations_corner_cases[2] + TermController.java:70-83 +
+      openapi.yaml:2749-2803. Severity: MEDIUM.
+  - facet: term lifecycle audit-silence — ENUM-ROOTED (batch U — schema-layer)
+    observed: |-
+      ActivityEventTypeDto.java:3-31 declares the enum values used by the
+      @ActivityLog annotation processor. The enum has values for
+      TERM_ASSIGNMENT_UPDATED + DATASET_FIELD_TERM_ASSIGNMENT_UPDATED
+      (linkage events) but NO `TERM_CREATED`, `TERM_UPDATED`,
+      `TERM_DELETED`, `TERM_DESCRIPTION_UPDATED`, `TERM_TAGS_UPDATED`,
+      or `NAMESPACE_CREATED` values. TermServiceImpl.createTerm /
+      updateTerm / delete (lines 99-165) emit NO @ActivityLog annotations.
+      The activity feed shows term-to-data-entity LINK changes but never
+      term LIFECYCLE changes (create / update / delete the term itself).
+      Same enum-absence applies to Namespace lifecycle (no enum value
+      for NamespaceServiceImpl.create or .delete events). REFINES F-006
+      batch-R `audit_silence_schema_rooted_activity_data_entity_fk_not_null`:
+      the audit-silence is not JUST a NOT-NULL FK problem on
+      `activity.data_entity_id`, it is ALSO an enum-roots problem. Even
+      if a schema migration made `data_entity_id` nullable, the
+      @ActivityLog mechanism routes via ActivityEventTypeDto values and
+      there are NO values defined for term/namespace lifecycle events.
+      The fix requires BOTH a schema-layer change AND new enum values
+      + new ActivityHandler implementations + new audit-table
+      discriminator semantics. Cross-link to F-006 batch-U extension.
+    expected: |-
+      Coordinate with F-006 audit-silence remediation: either (a) extend
+      ActivityEventTypeDto with TERM_*_LIFECYCLE values + new
+      ActivityHandlers + schema-layer change making activity.data_entity_id
+      nullable with discriminator column, OR (b) introduce a separate
+      `platform_event` table covering non-data-entity lifecycle events
+      (RBAC + Owner + Term + Namespace + Collector + Datasource).
+    drift_class: term_lifecycle_audit_silence_enum_rooted_activity_event_type_dto
+    provenance: |-
+      STATIC — primary-source in batch U TermServiceImpl sidecar
+      concepts.entities (the "Critical absence" note enumerating the
+      missing enum values) + ActivityEventTypeDto.java:3-31 (verified
+      enum scope) + TermServiceImpl.java:99-165 (no @ActivityLog on
+      lifecycle methods) + cross-link F-006 batch-R schema-FK root cause.
+      Severity: HIGH.
+  - facet: term definition XSS surface extends F-004 to 3rd surface (batch U)
+    observed: |-
+      Term definitions flow through TermDefinition.tsx:39-47 → Markdown.tsx:113-124
+      → `MDEditor.Markdown` from `@uiw/react-md-editor` which bundles
+      rehype-raw@6.1.1 (verified at pnpm-lock.yaml:3900, 5922, 8843) with
+      NO rehype-sanitize (Grep over odd-platform-ui/src returns ZERO matches
+      for `rehype-sanitize`). TermServiceImpl.createTerm (lines 101-117)
+      and updateTerm (lines 119-145) accept TermFormData.definition as a
+      plain String with NO Jsoup.clean, NO Encode.html, NO length cap, NO
+      allowlist; ReactiveTermRepositoryImpl persists the raw string verbatim
+      via inherited CRUD. The F-004 stored-XSS surface (PROBED-PINNING-BUG
+      via P-007 + P-009) extends from data-entity description (primary) +
+      dataset-field description (F-004 batch R) to TERM DEFINITION (THIS
+      batch). An operator with TERM_UPDATE permission can plant arbitrary
+      HTML+JS in any term's definition; the read-collaborative posture
+      means any authenticated viewer renders the XSS payload. Cross-link:
+      F-004 batch-U extension carries the primary documentation; this
+      facet exists on F-002 because Term lifecycle is THIS feature's domain.
+    expected: |-
+      Same as F-004 — add rehype-sanitize to the Markdown component
+      configuration; OR apply Jsoup.clean / Encode.html at TermServiceImpl
+      tier; OR document an explicit "TERM_UPDATE is high-trust; reviewers
+      only" admonition on the Business Glossary docs page.
+    drift_class: term_definition_xss_surface_extension_f_004_class_3rd_surface
+    provenance: |-
+      STATIC + MEASURED via cross-link to F-004 P-009 — primary-source in
+      batch U TermDetails sidecar known_security_gaps[0] (HIGH) +
+      TermDefinition.tsx:39-47 + Markdown.tsx:113-124 + pnpm-lock.yaml:3900,
+      5922, 8843 (rehype-raw bundled) + TermServiceImpl.java:99-145 (no
+      sanitisation) + cross-link F-004 batch-U extension. Severity: HIGH.
+  - facet: FTS write path — term DELETE leaves stale vector (batch U)
+    observed: |-
+      TermServiceImpl.delete (lines 153-165) cleans up the link tables and
+      soft-deletes the term row itself but calls NO method on
+      ReactiveTermSearchEntrypointRepositoryImpl to drop the term's row
+      from `term_search_entrypoint`. Soft-deleted terms keep their
+      last-known tsvector contents in the FTS table indefinitely.
+      ReactiveTermSearchEntrypointRepository interface (verified) carries
+      ONLY 7 update methods, no delete method. Readers that join `term`
+      with `DELETED_AT.isNull()` won't see them, but any reader that
+      queries `term_search_entrypoint` directly (without the join) would
+      surface deleted terms. Pattern mirrors the DataEntity-side
+      `delete_search_vector_not_refreshed` family from earlier batches
+      (F-019 batch K OwnershipServiceImpl + F-019 batch P OwnerServiceImpl).
+    expected: |-
+      Add `clearVectorsForTerm(termId)` method to
+      ReactiveTermSearchEntrypointRepository + invoke from
+      TermServiceImpl.delete; OR rely on a periodic housekeeping job
+      to clean up FTS rows for soft-deleted terms.
+    drift_class: fts_write_path_term_delete_leaves_stale_vector
+    provenance: |-
+      STATIC — primary-source in batch U
+      ReactiveTermSearchEntrypointRepositoryImpl sidecar
+      bugs_limitations_corner_cases[0] + TermServiceImpl.java:153-165 +
+      ReactiveTermSearchEntrypointRepository.java:5-20 (interface verified
+      lacking delete). Severity: MEDIUM.
+  - facet: FTS write path — TERM_OWNERSHIP soft-delete not filtered (batch U)
+    observed: |-
+      ReactiveTermSearchEntrypointRepositoryImpl.updateChangedOwnershipVectors
+      (lines 180-195) and updateChangedOwnerVectors (lines 222-237) use
+      `leftJoin(TERM_OWNERSHIP).on(TERM_OWNERSHIP.TERM_ID.eq(TERM.ID))`
+      with NO `TERM_OWNERSHIP.DELETED_AT.isNull()` filter. The
+      `term_ownership.deleted_at` column exists (V0_0_35__add_terms.sql:36),
+      so the platform CAN soft-delete an ownership link. In practice
+      TermOwnershipServiceImpl.delete hard-deletes the ownership row
+      (verified at TermOwnershipServiceImpl.java:52-55) so the absent
+      filter is masked today; but if any code path soft-deletes a
+      `term_ownership` row (a future migration, a hot-fix script), the
+      refresh would still walk the soft-deleted row and re-emit the
+      deleted owner's name into the term's owner_vector. Latent
+      regression vector.
+    expected: |-
+      Add `TERM_OWNERSHIP.DELETED_AT.isNull()` filter to both CTE
+      branches OR document the invariant "term_ownership is always
+      hard-deleted; if soft-delete is ever activated, update this
+      repository".
+    drift_class: fts_write_path_term_ownership_soft_delete_not_filtered
+    provenance: |-
+      STATIC — primary-source in batch U
+      ReactiveTermSearchEntrypointRepositoryImpl sidecar
+      bugs_limitations_corner_cases[1] +
+      ReactiveTermSearchEntrypointRepositoryImpl.java:180-195, 222-237
+      (no DELETED_AT filter on TERM_OWNERSHIP join) +
+      V0_0_35__add_terms.sql:36 (column present). Severity: LOW.
 test_matrix:
   unit:
     state: GAP
@@ -711,6 +1117,13 @@ test_matrix:
     - DELETE-half — anonymous DELETE succeeds via path-mismatch bug (REFACTOR-217 symmetric coverage)
     - HARD-delete + mass-deletion attack — anonymous caller deletes ALL term-relations and corrupts taxonomy with no restore-from-row
       path
+    - Term-to-term linkage unguarded (NO SecurityRule) — assert any authenticated user can POST /api/terms/{id}/term and DELETE
+      /api/terms/{id}/term/{linked_id} regardless of TERM_* permissions (batch U)
+    - Term-to-term linkage absence from activity feed — assert no row in `activity` after add/remove term-to-term (batch U)
+    - Term DELETE leaves orphan term_to_term rows — assert getTermLinkedTerms still returns the soft-deleted term to OTHER
+      terms (batch U)
+    - Term DEFINITION XSS — assert XSS payload in TermFormData.definition round-trips through term detail render (batch U;
+      mirrors P-007 + P-009 for the data-entity description surface)
 control_summary: |-
   2 of 4 cells PROBED — integration (PROBED-PINNING-BUG) + security
   (PROBED-PINNING-BUG). Batch K extends the chain with full TermServiceImpl
@@ -779,6 +1192,39 @@ control_summary: |-
   GAP — neither addDataEntityTerm nor deleteTermFromDataEntity has
   HTTP-level test coverage (`find ... -name 'DataEntityController*'`
   + grep for `removeTermFromDataEntity` both returned zero matches).
+
+  Batch U CLOSES the 5-LAYER chain for P-06:F-001 with controller-class
+  (TermController) + FTS-write companion repository
+  (ReactiveTermSearchEntrypointRepositoryImpl) + UI detail-page shell
+  (TermDetails) primary-source confirmation. NINE new drift facets
+  surface: (1) term-to-term linkage NO SecurityRule (HIGH — completely
+  missing rule, not a misregistered one like REFACTOR-217); (2) term-to-term
+  linkage NO @ActivityLog (MEDIUM — sole linkage type missing audit
+  emission); (3) TermDelete cascade omits term_to_term (MEDIUM —
+  compounds the batch-N schema-drift); (4) createTerm/updateTerm
+  status-code drift (MEDIUM — controller 200 vs spec 201); (5) term
+  search session no per-caller ownership check (MEDIUM — UUID-only
+  authority on `/api/terms/search/**`); (6) term lifecycle audit-silence
+  ENUM-ROOTED (HIGH — ActivityEventTypeDto has NO TERM_CREATED /
+  TERM_UPDATED / TERM_DELETED / NAMESPACE_CREATED values; refines F-006
+  batch-R schema-FK finding with a SECOND root cause); (7) term
+  DEFINITION XSS surface extension (HIGH — F-004 class 3rd surface;
+  Term definition through Markdown+rehype-raw without sanitisation);
+  (8) FTS-write-path term DELETE leaves stale vector (MEDIUM —
+  ReactiveTermSearchEntrypointRepository has no delete method); (9)
+  FTS-write-path TERM_OWNERSHIP soft-delete not filtered (LOW — latent).
+  Unit/performance cells remain GAP — ZERO direct test coverage at
+  the controller, service, repository, OR FTS-write tier (verified by
+  grep for TermController, TermServiceImpl, ReactiveTermRepositoryImpl,
+  ReactiveTermSearchEntrypointRepositoryImpl in src/test).
+  P-06:F-001 Term-to-Entity Linkage is now FULLY ANCHORED at every
+  layer: UI list (F-024 TermSearch — minted this batch) + UI detail
+  (TermDetails) + controller-class (TermController) + service
+  (TermServiceImpl batch K) + main repository (ReactiveTermRepositoryImpl
+  batch N) + FTS write repository
+  (ReactiveTermSearchEntrypointRepositoryImpl batch U) + DataEntityController
+  controller-methods (batches G + L). 5-LAYER PILLAR CLOSURE for
+  Data Glossary.
 related_refactoring_scopes:
 - REFACTOR-217
 - REFACTOR-073
@@ -791,6 +1237,11 @@ related_concepts:
 - Permission (Authorization)
 related_retrospectives:
 - LSN-017
+- LSN-018
+related_features:
+- F-004
+- F-006
+- F-024
 related_probes: null
 probe_verifications:
 - probe_id: P-005

@@ -1,0 +1,73 @@
+gap_id: TEST-GAP-726
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java TermController controller-class:TermController"
+  - "odd-platform java service service:TermServiceImpl"
+pillars_affected: [P-06, P-08, P-09]
+surfaced_by:
+  - "TermController.md:bugs_limitations_corner_cases.[6] (createTerm and updateTerm side-door NAMESPACE_CREATE — severity MEDIUM)"
+  - "TermController.md:bugs_limitations_corner_cases.[7] (createTermTagsRelations side-doors TAG_CREATE — severity MEDIUM)"
+  - "TermController.md:security.known_security_gaps.[2] (createTerm + updateTerm side-door NAMESPACE_CREATE via namespaceService.getOrCreate(name) — severity MEDIUM)"
+  - "TermController.md:security.known_security_gaps.[3] (createTermTagsRelations side-doors TAG_CREATE via tagService.getOrCreateTagsByName — severity MEDIUM)"
+  - "TermServiceImpl.md:security.known_security_gaps.[4] (TAG_CREATE bypass via upsertTags — severity MEDIUM)"
+  - "TermServiceImpl.md:security.known_security_gaps.[5] (NAMESPACE_CREATE bypass via createTerm / updateTerm — severity MEDIUM)"
+  - "TermController.md:downstream_side_effects.createTerm ((2) namespaceService.getOrCreate(namespaceName) side-doors NAMESPACE_CREATE — TERM_CREATE can create namespaces)"
+behaviour: |-
+  **HIGH — TermController write endpoints systematically bypass NAMESPACE_CREATE + TAG_CREATE permissions via the platform's getOrCreate side-door pattern.** Primary-source confirmed across both batch-U Term-side sidecars + cross-link to the platform's existing batch-K invariant on the same architectural class:
+
+  **NAMESPACE_CREATE side-door** — two entry points:
+  - `TermController.createTerm` → `TermServiceImpl.createTerm` → `namespaceService.getOrCreate(formData.getNamespaceName())` (`TermServiceImpl.java:103`). A caller holding `TERM_CREATE` (the documented gate per Business Glossary docs) can submit a TermFormData with a NEVER-SEEN `namespaceName` and SILENTLY CREATE the namespace.
+  - `TermController.updateTerm` → `TermServiceImpl.updateTerm` → `namespaceService.getOrCreate(formData.getNamespaceName())` (`TermServiceImpl.java:138`). Same side-door on update — re-naming a term to a fresh namespace creates that namespace.
+
+  **TAG_CREATE side-door** — one entry point:
+  - `TermController.createTermTagsRelations` → `TermServiceImpl.upsertTags` → `tagService.getOrCreateTagsByName(names)` (`TermServiceImpl.java:257`). A caller holding `TERM_TAGS_UPDATE` (the documented gate per Business Glossary docs) can submit a TagsFormData with NEVER-SEEN tag names and SILENTLY CREATE the tags.
+
+  **What the docs claim vs what the code enforces**: the Business Glossary docs (live-fetched 2026-05-20 per the sidecars) declare `TERM_CREATE` gates "Create a new term in the Dictionary" and `TERM_TAGS_UPDATE` gates "Apply or remove tags on a term". Neither line discloses the side-door creation of namespaces or tags. Operators authoring RBAC policies that withhold `NAMESPACE_CREATE` (the dedicated permission for creating namespaces — gated at `POST /api/namespaces` per the Management surface) or `TAG_CREATE` (gated at `POST /api/tags` per the Management surface) and granting only `TERM_CREATE` + `TERM_TAGS_UPDATE` to a "glossary curator" Role expect the curator to be unable to expand the namespace or tag taxonomies. The code, however, allows arbitrary expansion via Term write endpoints.
+
+  **Architectural pattern — cross-pillar reach**: this is a SISTER pattern to the previously-enumerated `getOrCreate` side-doors:
+  - REFACTOR-199 (Owner auto-create via `ownerService.getOrCreate` — gateway for `OWNER_CREATE` bypass via OwnerController#createOwner)
+  - REFACTOR-222 (TAG_CREATE bypass via `upsertTags` in OwnerController#createOwner — same `getOrCreateTagsByName` call site)
+  - REFACTOR-223 (NAMESPACE_CREATE bypass via `getOrCreate` in TermServiceImpl#createTerm — sister site, identified earlier)
+  - REFACTOR-486 (TITLE auto-create via `titleService.getOrCreate` — `TitleServiceImpl.getOrCreate` has NO allowlist, no enum, no @Pattern)
+
+  The aggregate finding: **the platform's `getOrCreate*` pattern systematically allows tag/namespace/owner/title creation through ANY endpoint that touches those entities, bypassing the dedicated `*_CREATE` permissions.** This sidecar adds the NAMESPACE_CREATE side-door on createTerm + updateTerm and the TAG_CREATE side-door on createTermTagsRelations to the family, bringing the cumulative cross-pillar count to FOUR getOrCreate bypass sites.
+
+  **Why HIGH not MEDIUM**: while each individual side-door is rated MEDIUM in the sidecars, the CUMULATIVE cross-pillar pattern is elevated to HIGH because: (a) the side-doors are NOT documented anywhere in the operator-facing site (sidecar's doc_drift_findings confirm); (b) operators reasoning about access control via the documented `*_CREATE` permissions are SYSTEMATICALLY DECEIVED about what permissions a Role actually allows; (c) the read-collaborative posture means EVERY authenticated user with any `TERM_*` write permission can pollute the namespace + tag taxonomies indefinitely. The Management UI's Namespace + Tag tabs (intended as the controlled-vocabulary surfaces per P-08) are EFFECTIVELY UNGATED because every other pillar's write endpoints can bypass them.
+
+  **Test gap shape**: regression-pin asserting: (a) `createTerm` with a never-seen `namespaceName` succeeds for a caller holding TERM_CREATE but NOT NAMESPACE_CREATE; (b) `createTermTagsRelations` with never-seen tag names succeeds for a caller holding TERM_TAGS_UPDATE but NOT TAG_CREATE; (c) `updateTerm` with a never-seen `namespaceName` succeeds for a caller holding TERM_UPDATE but NOT NAMESPACE_CREATE. Each test PINS the current (bypass) behaviour — failures land if a future maintainer adds explicit `NAMESPACE_CREATE` / `TAG_CREATE` checks at the service layer.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TermControllerSideDoorPermissionTest.java"
+  name: "termCreateAndUpdateAndTagsRelations_sideDoorNamespaceCreateAndTagCreate_currentBypassPosture"
+evidence:
+  - "TermController.md says (bugs_limitations_corner_cases.[6]): 'createTerm and updateTerm side-door NAMESPACE_CREATE. TermServiceImpl.java:101-117, 138-145 invoke namespaceService.getOrCreate(formData.getNamespaceName()) — a user holding TERM_CREATE / TERM_UPDATE can create an arbitrary new namespace by submitting a never-seen namespaceName in the form. This bypasses NAMESPACE_CREATE permission. Same architectural class as the batch-K TAG_CREATE side-door (via TermService.upsertTags).'"
+  - "TermController.md says (bugs_limitations_corner_cases.[7]): 'createTermTagsRelations (line 130) side-doors TAG_CREATE. TermServiceImpl.java:255-258 invokes tagService.getOrCreateTagsByName(names) — a user with TERM_TAGS_UPDATE on a term can create new tags by submitting never-seen tag names. Bypasses TAG_CREATE permission. (Batch-K invariant.)'"
+  - "TermServiceImpl.md says (security.known_security_gaps.[5]): 'NAMESPACE_CREATE bypass via createTerm / updateTerm — TERM_CREATE / TERM_UPDATE allows creating namespaces through namespaceService.getOrCreate(name)'"
+  - "TermServiceImpl.md says (bugs_limitations_corner_cases.[12]): 'upsertTags is a TAG_CREATE side-channel. Through tagService.getOrCreateTagsByName(names) (TermServiceImpl.java:257), an operator with TERM_TAGS_UPDATE can create new tags without holding TAG_CREATE. Cross-ref: same pattern in OwnerController#createOwner (REFACTOR-222 family) and TermServiceImpl.createTerm (getOrCreate namespace, REFACTOR-223). Aggregate finding: the platform's getOrCreate* pattern systematically allows tag/namespace creation through any endpoint that touches those entities, bypassing the dedicated *_CREATE permissions.'"
+cross_references:
+  - "REFACTOR-199 (Owner auto-create via ownerService.getOrCreate — sister getOrCreate side-door at OwnerController#createOwner)"
+  - "REFACTOR-222 (TAG_CREATE bypass via upsertTags — sister getOrCreate side-door at OwnerController#createOwner)"
+  - "REFACTOR-223 (NAMESPACE_CREATE bypass via getOrCreate in TermServiceImpl#createTerm — same site as this gap; this test gap pins the regression)"
+  - "TEST-GAP-486 (REFACTOR-206 — TitleService getOrCreate auto-create — sister pattern in OwnershipServiceImpl)"
+  - "TEST-GAP-021 (DataEntity Tag-create side-door — sister pattern)"
+  - "TEST-GAP-718 (Term-to-term linkage no-authz — compound with this gap on TermController surface)"
+  - "TEST-GAP-721 (P-06 pillar-floor — this gap is one of the SPECIFIC instances)"
+  - "TEST-GAP-481 (cross-namespace term pollution — extends the namespace side-door consequence)"
+  - "concepts: getorcreate-permission-bypass-aggregate (recommend concept-merger surface the cumulative cross-pillar pattern)"
+  - "LSN-001 / LSN-002 (operator-cliff failure-mode case-law — operators authoring RBAC policies based on docs that don't disclose side-doors)"
+related_features: [F-002]
+related_pillar_features: ["P-06:F-001", "P-08:F-001", "P-09:F-001"]
+proposed_action: |-
+  Add `TermControllerSideDoorPermissionTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `createTerm_withNeverSeenNamespaceName_succeedsForUserHoldingTermCreateButNotNamespaceCreate` — authenticate as a user with TERM_CREATE on the target namespace BUT NO NAMESPACE_CREATE; POST `/api/terms` with `namespaceName: 'fresh-namespace-' + UUID.randomUUID()`; assert 200/201 AND assert `SELECT COUNT(*) FROM namespace WHERE name = ?` returns 1 (the side-door wrote the namespace). PIN the bypass.
+  2. `updateTerm_withNeverSeenNamespaceName_succeedsForUserHoldingTermUpdateButNotNamespaceCreate` — sister test on the update path.
+  3. `createTermTagsRelations_withNeverSeenTagNames_succeedsForUserHoldingTermTagsUpdateButNotTagCreate` — authenticate as a user with TERM_TAGS_UPDATE on the target term BUT NO TAG_CREATE; PUT `/api/terms/{term_id}/tags` with `names: ['fresh-tag-' + UUID.randomUUID()]`; assert 200 AND assert `SELECT COUNT(*) FROM tag WHERE name = ?` returns 1.
+  4. `createTerm_withNeverSeenNamespaceNameWithSpecialCharacters_assertsAcceptedVerbatimNoValidation` — pin the absence of namespace-name validation (compounds with the broader observation that namespace names accept arbitrary strings).
+  5. `createTermTagsRelations_withFiftyNeverSeenTagNames_allCreatedInSingleCall_assertsBulkSideDoor` — pin the BULK bypass capability (a single call can create N tags).
+
+  Pair with a follow-up backlog item proposing a SERVICE-LAYER fix: split `getOrCreate` into `get + create`, require the caller to hold the dedicated `*_CREATE` permission for the create branch. When the fix lands, tests #1-#5 invert to assert 403 unless the dedicated permissions are granted.
+
+  Cross-pair with a documentation fix: surface the side-door in `documentation/docs/features/data-glossary/business-glossary.md` and `documentation/docs/features/management.md` so operators authoring RBAC policies see the current ground truth. Without the doc note, RBAC architects authoring policies cannot avoid the cliff.
+batch: 2026-05-20-U
+feature_id: F-002

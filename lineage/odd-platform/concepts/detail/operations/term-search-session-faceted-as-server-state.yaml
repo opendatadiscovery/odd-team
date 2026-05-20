@@ -1,0 +1,178 @@
+name: |-
+  Term-search session faceted (server-side state via URL-backed UUID) — Dictionary tab sibling of the data-entity search-catalog-faceted-session-as-server-state operation
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-06
+  - P-01
+description: |-
+  NEW OPERATION, batch 2026-05-20U — the Term-side counterpart of the
+  existing search-catalog-faceted-session-as-server-state operation
+  (data-entity-side). The Dictionary tab at /termsearch/searchId
+  drives a server-side search session identified by an unguessable
+  UUID; the UUID is surfaced in the URL and persisted in the
+  search_facets table for the term-search session subset.
+
+  THE OPERATION ANATOMY:
+
+    Step 1 — Session create on first mount:
+      Trigger: TermSearch.tsx mount with NO termSearchId URL parameter
+               AND no Redux-cached session.
+      Code: TermSearch.tsx:34-42 fires
+            dispatch(createTermSearch({termSearchFormData: {query:'',
+            pageSize:30, filters:{}}})).unwrap().then(termSearch =>
+            navigate(termSearch.searchId)).
+      Backend chain: POST /api/termsearch → TermController.termSearch
+                     (TermController.java:201-206) → TermSearchService.search
+                     → INSERT into search_facets row + FTS query
+                     execution + TermSearchFacetsData response.
+      URL effect: navigate(termSearch.searchId) writes the new UUID
+                  into the URL path segment.
+
+    Step 2 — Session restore on URL-bound mount:
+      Trigger: TermSearch.tsx mount with termSearchId URL parameter
+               AND no Redux-cached session (e.g., reload, deep-link
+               from Slack message).
+      Code: TermSearch.tsx:45-48 fires
+            dispatch(getTermsSearch({searchId: routerTermSearchId})).
+      Backend chain: GET /api/termsearch/searchId → TermController.getTermSearchFacetList
+                     (TermController.java:178-182) → TermSearchService.getFacets
+                     → SELECT from search_facets + materialise TermSearchFacetsData.
+
+    Step 3 — Facet mutation (debounced):
+      Trigger: TermSearchFilters child component flips a facet option's
+               syncedState. State.termSearch.facetState mutates.
+               TermSearch.tsx:66-68 detects !termSearchFacetsSynced
+               and calls updateSearchFacets() (1500ms leading-edge
+               debounced via useDebouncedCallback).
+      Code: TermSearch.tsx:50-64 — note: the debouncer is BROKEN per
+            the broken-debouncer-pattern-recreated-on-every-render
+            invariant; effective behaviour is one dispatch per click,
+            not coalesced.
+      Backend chain: PUT /api/termsearch/searchId → TermController.updateTermSearchFacets
+                     (TermController.java:209-216) → TermSearchService.updateFacets
+                     → UPDATE search_facets + recompute FTS results +
+                     return new TermSearchFacetsData.
+
+    Step 4 — Free-text search input (synchronous, debouncer bypassed):
+      Trigger: TermSearchInput child fires Enter or search-click.
+      Code: TermSearchInput.tsx:25-46 dispatches updateTermSearch
+            synchronously. NOTE: text-query update RESETS filters to
+            empty {} per the dispatch payload.
+      Backend chain: same PUT /api/termsearch/searchId as Step 3.
+
+    Step 5 — Result pagination (infinite-scroll):
+      Trigger: TermSearchResults child detects scroll-to-bottom.
+      Code: TermSearchResults.tsx:40-61 dispatches
+            fetchTermsSearchResults({searchId, page: page+1, size:30}).
+      Backend chain: GET /api/termsearch/searchId/results?page=2&size=30 →
+                     TermController.getTermSearchResults
+                     (TermController.java:185-191) → TermSearchService
+                     → paginated SELECT against the session's stored
+                     facet state.
+
+    Step 6 — Session eviction (housekeeping):
+      Trigger: SearchFacetsHousekeepingJob runs nightly (F-010
+               housekeeping pillar) — default 30-day TTL on
+               search_facets rows past last-touched timestamp.
+      Code: not in TermSearch shell; lives in the housekeeping
+            module (P-08:F-002 Housekeeping TTL feature flow).
+      Effect: a 30-day-old bookmark / deep-link returns 404 on
+              GET /api/termsearch/searchId. The TermSearch shell
+              has NO recovery path — the slice's missing .rejected
+              reducer leaves the UI in a frozen empty state with
+              the stale UUID still in the URL (per the batch U sidecar's
+              bugs_limitations_corner_cases.[5]).
+
+  AUTHORISATION POSTURE:
+    All six TermController endpoints carrying the term-search-session
+    operations have NO SecurityRule entry — the catch-all
+    pathMatchers /** authenticated() in AuthorizationCustomizer.java:29-30
+    is the only gate. Any authenticated user with a valid (or
+    guessable — but the UUID is unguessable) searchId can read or
+    mutate the session. The unguessable UUID is the de-facto authority;
+    no explicit per-caller-owns-session check exists.
+
+    Net: the search-session operations are read-collaborative + write-
+    collaborative within the bounds of the unguessable UUID. Same shape
+    as the data-entity-side search-session pattern.
+
+  THE BROKEN-DEBOUNCER COMPOUND:
+
+    Per the broken-debouncer-pattern invariant from batch U, the
+    1500ms intent at Step 3 is not realised — every facet click
+    dispatches one PUT immediately. The slice's merger logic at
+    state.termSearch.facetState absorbs the racing PUTs; the
+    observable failure is wasted server work, not corrupted UI state.
+
+  THE F-010 EVICTION COMPOUND:
+
+    The 30-day TTL at Step 6 creates the operator-visible failure
+    mode: deep-links shared via Slack / email / bookmark go stale
+    silently. The UI surface has no recovery affordance.
+
+  CROSS-OPERATION RELATIONSHIPS:
+
+    - Sibling of search-catalog-faceted-session-as-server-state
+      (existing operation, data-entity side). Same architectural
+      shape, different feature surface; both use the search_facets
+      table for session persistence.
+    - Sibling of search-session entity (existing entity, server-side
+      session UUID model).
+
+contributing_files:
+  - TermSearch.md
+  - TermController.md
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+  - batch-U (TermSearch + TermController — primary source, THIS OPERATION)
+severity: N/A
+severity_dim: documentation
+nodes:
+  - odd-platform ts react-component component:TermSearch
+  - odd-platform java TermController controller-class:TermController
+axes_present:
+  - ui_components
+  - controllers
+  - services
+evidence:
+  - |-
+    TermSearch.md:concepts.operations (the five operations enumerated +
+    cleanup behaviour)
+  - |-
+    TermSearch.md:implicit_adrs.[0] Server-side search session model
+    with URL-backed UUID
+  - |-
+    TermController.md:concepts.operations[termSearch,
+    updateTermSearchFacets, getTermSearchFacetList, getTermSearchResults,
+    getTermSearchSuggestions, getTermFiltersForFacet]
+  - |-
+    Cross-references search-catalog-faceted-session-as-server-state
+    operation (the data-entity-side sibling)
+  - |-
+    Cross-references search-session entity (the UUID model)
+  - |-
+    Cross-references batch-U sibling invariant
+    broken-debouncer-pattern-recreated-on-every-render-loses-rate-limit-semantics
+    (Step 3 is functionally broken at runtime)
+  - |-
+    Cross-references search-facets-bearer-token-shaped-no-user-binding
+    invariant (the UUID-as-de-facto-authority observation)
+notes: |-
+  NEW operation catalogued in batch 2026-05-20U. The term-search
+  session operation closes the symmetry with the data-entity-side
+  catalog search session; both routes share the search_facets table
+  AND the housekeeping TTL evictor AND the broken-debouncer pattern
+  (if a parallel audit confirms it at /search).
+
+  Cross-cutting connections:
+    - Pairs with search-catalog-faceted-session-as-server-state
+      (data-entity sibling)
+    - Pairs with broken-debouncer-pattern-recreated-on-every-render-loses-rate-limit-semantics
+      (the batch U companion invariant — Step 3 is functionally
+      broken)
+    - Pairs with the Dictionary tab entity (batch U companion)
+    - Pairs with F-010 housekeeping (Step 6 eviction)
+    - Pairs with search-facets-bearer-token-shaped-no-user-binding
+      (UUID-as-authority)

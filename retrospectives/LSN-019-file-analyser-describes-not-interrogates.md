@@ -114,14 +114,15 @@ The deeper generalization: **every prior LSN exposed a class of question the met
 ## Process change checklist (to be applied in this session)
 
 - [x] Write LSN-019 (this file)
-- [ ] Add **Rule 9 — Stress Protocol (NON-NEGOTIABLE)** to `.claude/agents/file-analyser.md`
-- [ ] Add the `stress_findings` block to the sidecar schema in `.claude/agents/file-analyser.md`
-- [ ] Add a workflow step (between "Synthesise the sidecar" and "Self-check") that runs the Stress Protocol
-- [ ] Add `stress_findings` confidence to `confidence_per_field`
-- [ ] Add the probe-skeleton format spec (analyser-emitted probes) — either to `.claude/agents/file-analyser.md` Rule 9 inline, or as a sibling file at `lineage/odd-platform/probes/README.md`
-- [ ] Extend `lineage/_extractor/registry-shard/coverage.py` with a `stress_verified_pct` axis (with explicit denominator = total stress questions across all sidecars)
-- [ ] Update `feedback_linus_torvalds_engineering_bar.md` memory: remove the obsolete reference to a "maintainer-knowledge input channel" — the methodology generates its own questions; do not propose asking the maintainer as a fix shape
-- [ ] (Maintainer) Update `adrs/drafts/feature-anchored-ontology.md` to rev-4 with the Stress Protocol section
-- [ ] (Follow-up batch) Re-pass the existing 143 sidecars under the Stress Protocol — mark each one's `enrichment_status` as `stress-complete` or `stress-incomplete`
-- [ ] (Follow-up) Update `APPROACH.md` with the interrogation principle — "code is truth (LSN-016) AND code must be interrogated, not transcribed (LSN-019)"
-- [ ] Promote LSN-019 status to `closed` only after the Stress Protocol has run on at least one full batch and produced a non-empty `stress_findings` block per sidecar
+- [x] Add **Rule 9 — Stress Protocol (NON-NEGOTIABLE)** to `.claude/agents/file-analyser.md`
+- [x] Add the `stress_findings` block to the sidecar schema in `.claude/agents/file-analyser.md`
+- [x] Add a workflow step (between "Synthesise the sidecar" and "Self-check") that runs the Stress Protocol
+- [x] Add `stress_findings` confidence to `confidence_per_field`
+- [x] Add the probe-skeleton format spec (inline in `.claude/agents/file-analyser.md` Rule 9, with the worked `listMostPopular` example)
+- [x] Extend `lineage/_extractor/registry-shard/coverage.py` with a `stress_verified_pct` axis (with explicit denominator = total stress questions across all sidecars)
+- [x] Update `feedback_linus_torvalds_engineering_bar.md` memory: remove the obsolete reference to a "maintainer-knowledge input channel" — the methodology generates its own questions
+- [x] Update `APPROACH.md` to rev 4 — Failure C added to section 2; sidecar schema extended with `stress_findings` in section 4.3; rules 13 + 14 added to section 5; Type-8 probe class added to section 7; honest coverage metric framing in section 5; bootstrapping signals added to section 11; LSN-018 + LSN-019 references added to section 12; **new section 14 "Stress Protocol — Layer 2 interrogation (rev 4)"** authored as the canonical portable methodology surface for this layer
+- [x] Queue `VAL-LSN-019` validation theme in `state/sprint-themes.yaml` — TagController rewrite + ReactiveTagRepositoryImpl rewrite + TagServiceImpl fresh enrichment, under file-analyser/0.4.0
+- [ ] (Maintainer hand) Update `adrs/drafts/feature-anchored-ontology.md` to rev 4 — the ADR's formal methodology design picks up rule 13 and section 14 (CLAUDE.md guard: ADR drafts are maintainer-authored design proposals)
+- [ ] (Follow-up batches) Re-pass the existing 143 sidecars under the Stress Protocol — mark each one's `enrichment_status` as `stress-complete` or `stress-incomplete`. Queue as one batch theme per ~5-sidecar group via `state/sprint-themes.yaml`
+- [ ] Promote LSN-019 status to `closed` only after the Stress Protocol has run on at least one full batch (VAL-LSN-019 minimum) and produced a non-empty `stress_findings` block per sidecar with at least one PROBE-VERIFIED resolution

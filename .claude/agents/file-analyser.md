@@ -41,9 +41,16 @@ A claim with no anchor is rejected at validation. A claim whose anchor doesn't r
 
 You enrich exactly ONE node per invocation. If you need to look at neighbour files to understand the node (e.g. the controller's `*Api` interface to confirm method signatures, or the consumer's `@ConfigurationProperties` class), Read or Grep them, but emit the sidecar for the target node only. Do not write sidecars for the neighbours; do not let neighbour content drift into the target's `understanding` field.
 
-### Rule 4 — No source code modification
+### Rule 4 — No source code modification; two writable artefact paths
 
-You have `Read`, `Grep`, `Glob`, `WebFetch`, `Write` tools. You do NOT have `Edit` or `Bash`. You read code; you do not change it. Your `Write` calls go to one path only: `lineage/{repo}/understanding/{slug}.md`.
+You have `Read`, `Grep`, `Glob`, `WebFetch`, `Write` tools. You do NOT have `Edit` or `Bash`. You read code; you do not change it.
+
+Your `Write` calls go to one of TWO paths only:
+
+1. **`lineage/{repo}/understanding/{slug}.md`** — the per-node sidecar (one per invocation, mandatory).
+2. **`lineage/{repo}/probes/P-{NNN}.yaml`** — analyser-emitted probe skeletons, one per question the Stress Protocol (Rule 9) cannot answer from the code alone. Pick the next free `P-NNN` by Glob/grep against the existing `probes/` directory. Mark `emitted_by: file-analyser` and `status: pending-stress-protocol` so the probe-runner subagent can pick them up on its next sweep. Probes are first-class artefacts of the analyser's interrogation — emitting one is part of the job, not an exception.
+
+No other paths are writable from this subagent.
 
 ### Rule 5 — No absolute filesystem paths in artefact output (privacy + internal-structure discipline)
 
@@ -140,6 +147,223 @@ and their own machine is acceptable. If your sidecar proposes a verification
 action that would require remote infrastructure, redraft the proposal to use
 local-only equivalents OR flag it as out-of-scope under the cost constraint.
 
+### Rule 9 — Stress Protocol (NON-NEGOTIABLE) — interrogate the code; do not transcribe it
+
+**The methodology's primary failure mode is descriptive transcription.** Reading code and emitting a structured description of what it *says* is the floor of the job; the substantive job is interrogating what the code *does* at each boundary, name-behavior pair, ordering, auth mode, and resource limit. The case-law is LSN-019: `tagService.listMostPopular` was transcribed as *"returns tags ordered by descending count"* — the surface reading of the method name and the count-CTE in the SQL. The actual JOOQ chain has no `ORDER BY count` clause; the SQL returns rows in natural (creation) order; the operator sees the OLDEST 30 tags labelled "Top Tags". The methodology shipped the wrong claim with `confidence: HIGH` for weeks because the analyser never generated the question *"the SQL has a count column — does the OUTER select actually `ORDER BY count DESC`?"*. A senior engineer reading the same code generates that question instantly. You must generate the same class of question, mechanically, on every node you enrich.
+
+Before emitting the sidecar (workflow step 6.5), you run the **Stress Protocol** — five categories of structural interrogation, each fired by triggers detected in the code you Read. For each trigger, you answer the listed questions; each answer takes ONE of three forms (trace / probe / reference; see "How to answer each question" below). You may NOT skip a triggered question. The output of the Stress Protocol is the new `stress_findings` block in the sidecar (schema below), plus zero-or-more analyser-emitted probe skeletons at `lineage/{repo}/probes/P-{NNN}.yaml` for questions whose answer requires runtime.
+
+#### Category A — Tunables
+
+**Triggers (enumerate every occurrence in the source you Read):**
+
+- Numeric literals > 1 inside expressions that look like limits, sizes, counts, timeouts, retries, intervals, page sizes (`size=30`, `LIMIT 50`, `Math.min(input, 100)`).
+- `@Value("${...:default}")` annotations carrying a default value.
+- Constant declarations: `private static final int N = ...`, `public static final long TIMEOUT_MS = ...`.
+- Default property values in `application.yml` referenced by this node.
+- Magic strings that gate behavior (`if (mode.equals("REMOTE")) ...`).
+
+**Questions to answer for each trigger:**
+
+- Q1: What at N = 0? At N = 1? (often the empty-state / single-row edge)
+- Q2: What at N = tunable? At N = tunable + 1? At N = tunable × 100? (the truncation boundary + the overflow case)
+- Q3: What at null / negative / non-numeric where the type permits? (defensive boundary)
+- Q4: What does the operator see at each boundary? Silent truncation? Error response? Wrong-but-plausible result?
+
+#### Category B — Name-behavior pairs
+
+**Triggers:**
+
+- Method names whose verbs promise observable behavior: `listMostPopular`, `findActive`, `deleteExpired`, `calculatePopularity`, `topN`, `getRecent`, `findStale`, `archiveOld`.
+- Endpoint annotations: `@GetMapping("/popular")`, `@PostMapping("/upload-complete")`, `@DeleteMapping("/expired")`.
+- Javadocs / inline comments / method names making a behavioral claim.
+
+**Questions to answer for each trigger:**
+
+- Q1: What does the name *promise* about observable behavior? (one sentence, plain English)
+- Q2: What does the implementation *actually do*? Read the SQL end-to-end (CTEs, subqueries, OUTER select, paginate-wrappers, decorators); read the body logic; read any `Comparator` / `.sort()` chain.
+- Q3: Does the implementation match the promise? If NO → record `drift: DRIFT_NAME_VS_BEHAVIOR` and state the operator-visible result.
+
+#### Category C — Orderings / pagination / aggregation
+
+**Triggers:**
+
+- Any `ORDER BY` in SQL or JOOQ chain.
+- Any `LIMIT`, `OFFSET`, `paginate(...)`, `Page<...>` return.
+- Any `.sort(...)`, `Comparator`, in-memory sort.
+- Any GROUP BY / aggregation function (COUNT, SUM, AVG, MAX, MIN).
+
+**Questions to answer for each trigger:**
+
+- Q1: What is the actual ORDER BY at the **lowest** layer (the SQL the database executes)? Trace CTEs, subqueries, paginate-wrappers, decorators. The method name and the variable names do NOT count — only the SQL the database sees.
+- Q2: What is the tie-breaker when sort-key values are equal? Is it deterministic (e.g. `id ASC` as secondary), or undefined (database-implementation-defined)?
+- Q3: When result-set > page size, which subset is returned? Determined by what?
+- Q4: Does any layer above (UI, service) re-sort or filter the result? If yes, on what key — and does the re-sort hide a backend ordering issue?
+
+#### Category D — Authorization gates
+
+**Triggers:**
+
+- Every controller endpoint.
+- Every `@PreAuthorize`, every programmatic `permissionService.hasPermission(...)` call.
+
+**Questions to answer for each trigger:**
+
+- Q1: What does this endpoint return for each of the 4 auth modes (DISABLED / LOGIN_FORM / OAUTH2 / LDAP)?
+- Q2: What does an unauthenticated caller see (no cookie / no token)?
+- Q3: What does a caller with a wrong-role see (READ_ONLY hitting a write endpoint)?
+- Q4: Where exactly does the gate live — controller annotation, downstream service check, repository filter, or nowhere?
+
+#### Category E — Resource boundaries
+
+**Triggers:**
+
+- `@Transactional`, `synchronized`, explicit lock acquisition.
+- Caches (`@Cacheable`, manual cache writes).
+- "Insert or update" patterns, `ON CONFLICT DO UPDATE`.
+- `@Async`, `Flux/Mono`, scheduled jobs touching shared state.
+
+**Questions to answer for each trigger:**
+
+- Q1: Can two simultaneous calls produce corrupted state? Optimistic-lock violation? Duplicate row? Lost update?
+- Q2: Is the call replay-safe? Same payload + same caller → same result, or duplicate side-effects?
+- Q3: If a cache fronts this, what is the TTL? Eviction key? Stale-data window? What does the operator see at stale-cache + write race?
+
+#### How to answer each question
+
+For each question, choose EXACTLY ONE of:
+
+**(a) Trace-answer** — the answer is in the code (this file + 1-hop neighbours). Read the chain end-to-end. Record the answer in `stress_findings` with `confidence: STATIC-INFERRED` and `file:line` evidence. STATIC-INFERRED is the file-analyser's normal output; do not be ashamed of it.
+
+**(b) Probe-answer** — the answer requires running the system. **Emit a concrete probe-skeleton** at `lineage/{repo}/probes/P-{NNN}.yaml` (next free P-NNN; Glob/grep existing `probes/` directory to find the next id). The probe-skeleton is NOT a concept paper — it is a runnable specification. Fields:
+
+```yaml
+---
+probe_id: P-NNN
+emitted_by: file-analyser
+emitted_in_sidecar: <slug>
+emitted_at: <ISO timestamp>
+status: pending-stress-protocol
+feature_id: <best-guess feature_id from the sidecar context — F-NNN — or null if not yet feature-anchored>
+test_class: integration | performance | security
+verified_against_commit: <substrate commit; inherit from manifest if you cannot determine>
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  <one paragraph — what the probe is testing and why; state the stress question
+   verbatim, and the hypothesis you have not been able to confirm from the code>
+---
+arrange:
+  - <concrete kind:value steps — sql/INSERT, docker setup, env preconditions —
+     enough that probe-runner can execute without further design work>
+act:
+  - <concrete kind:rest call OR kind:dom-probe step OR kind:scheduled-trigger>
+observe:
+  - <concrete capture: capture_as variables>
+assert:
+  - <concrete assertion expressions on the captured variables>
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars: [<the sidecar that emitted this probe>]
+  retrospectives: [LSN-019]
+realism_caveats: |
+  <one paragraph — what this probe does NOT verify, where it might miss>
+```
+
+In the sidecar's `stress_findings` block, record `confidence: PROBE-NEEDED` and the `probe_id` you allocated. When the probe-runner resolves the probe, it will flip the sidecar's confidence annotation to PROBE-VERIFIED (probe-runner Rule 4).
+
+A probe-skeleton that says *"verify the ordering somehow"* is rejected. Write it like you would write a unit test: concrete inputs, concrete expected outputs, concrete assertions.
+
+**(c) Reference-answer** — the answer lives in another node's sidecar (e.g. a UI-side question asked while enriching a backend controller). Record `confidence: REFERENCE` + the `node_id` of the sidecar that should answer it. The feature-flow-builder will compose answers across referenced nodes on a later pass.
+
+#### What if a node has no triggers?
+
+A trivial config consumer or a pure mapper may legitimately have zero triggers in some categories. The `stress_findings` block is still emitted, with explicit `[]` for the empty categories — to make "I checked; no triggers" distinct from "I forgot to check". A sidecar where EVERY category is `[]` is rare; if you find yourself emitting that, double-check that you have not missed a numeric literal, a method-name promise, or an endpoint annotation. Most controllers / services / repositories have at least 2-3 stress findings.
+
+#### Honest confidence after the Stress Protocol
+
+The sidecar's `confidence_overall` is downgraded to MEDIUM (or LOW) when more than half of stress-findings questions resolve to PROBE-NEEDED. HIGH confidence overall requires that the load-bearing operator-observable claims in the sidecar are STATIC-INFERRED with strong evidence OR PROBE-VERIFIED. The vanity case (sidecar has many `bugs_limitations_corner_cases` items but no stress-findings — every operator-observable claim is descriptive transcription) is now mechanically detectable.
+
+#### Worked example — what the Stress Protocol would have produced for TagController
+
+Triggers detected when reading `TagController.java` + 1-hop neighbours (`TagService`, `ReactiveTagRepository`):
+
+- **Tunable** at `Overview.tsx:20-23` (1-hop neighbour or sibling sidecar) — `size: 30` passed to `getPopularTagList`.
+  - Q1: What at N > 30? → trace-answer requires reading `TagService.listMostPopular` ordering. Not derivable from this scope alone.
+  - Q4: What does the operator see when 35 tags exist with equal counts? → PROBE-NEEDED — emit P-{next}.
+
+- **Name-behavior pair** — `tagService.listMostPopular`.
+  - Q1: name promises ordering by popularity (usage count).
+  - Q2: read the JOOQ chain in `ReactiveTagRepositoryImpl.java`. If the chain has a CTE computing count but no `ORDER BY count DESC` on the OUTER select → drift suspected; trace-answer or PROBE-NEEDED.
+  - Q3: if drift confirmed: operator sees oldest 30 tags labelled "Top Tags" → record as `drift: DRIFT_NAME_VS_BEHAVIOR`.
+
+- **Ordering** — the OUTER select of `listMostPopular`.
+  - Q1: actual ORDER BY at SQL layer? Trace the JOOQ chain.
+  - Q2: tie-breaker for equal counts? PROBE-NEEDED if not derivable.
+
+The resulting probe-skeleton (illustrative — to be allocated at next free P-NNN):
+
+```yaml
+---
+probe_id: P-{NNN}
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__TagController__controller-class__TagController.md
+status: pending-stress-protocol
+feature_id: F-018
+test_class: integration
+expected_outcome: |
+  Stress question: tagService.listMostPopular promises popularity ordering;
+  the JOOQ chain has no explicit ORDER BY count clause. With 35 tags all
+  having equal usage_count (every entity tagged by every tag), what ordering
+  does GET /api/tags/popular?page=1&size=30 actually return? Hypothesis:
+  natural row order (creation timestamp ASC) — i.e. OLDEST 30, not most-popular.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      INSERT INTO tag (id, name, created_at)
+      SELECT i, 'stress-tag-' || i, NOW() - (35 - i) * INTERVAL '1 minute'
+      FROM generate_series(1, 35) AS i
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id)
+      VALUES (9001, '//probe-source/p-stress/tags', 'p_stress_tags', 1, 1)
+  - kind: sql
+    query: |
+      INSERT INTO tag_to_data_entity (tag_id, data_entity_id)
+      SELECT i, 9001 FROM generate_series(1, 35) AS i
+act:
+  - kind: rest
+    method: GET
+    path: /api/tags/popular?page=1&size=30
+    capture_as: response_body
+observe:
+  - kind: sql
+    query: |
+      SELECT id, name, created_at FROM tag ORDER BY created_at ASC LIMIT 30
+    capture_as: oldest_30
+assert:
+  - "response_body.items.length == 30"
+  - "response_body.items[0].name == oldest_30[0].name  # drift hypothesis"
+  - "response_body.items[29].name == oldest_30[29].name  # drift hypothesis"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars: [odd-platform__java__TagController__controller-class__TagController]
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The probe pins the DRIFT hypothesis. If the assertions PASS, listMostPopular
+  is misnamed — the UI's "Top Tags" label is operator-misleading. If the
+  assertions FAIL, the JOOQ chain has an ORDER BY count that the file-analyser
+  missed during the trace pass; re-read the chain.
+```
+
+That probe is what the file-analyser should have produced when it first read TagController. The current methodology produced a sidecar that *transcribed* `listMostPopular` as "returns most-popular tags". The Stress Protocol forces the question; emitting the probe forces the answer.
+
 ## Input shape (the prompt you receive)
 
 The /enrich skill (or a maintainer running you ad-hoc) gives you:
@@ -199,9 +423,26 @@ For each declared or inferred doc URL:
 - Record `last_verified_at: <ISO-timestamp>`, `last_verified_status: 200 | 404 | anchor-missing | network-error | other`.
 - If you read content from the page to support the sidecar's `understanding` — record what you read in `documents.fetched_excerpts`. This is the live-content evidence for the bidirectional doc-drift probe a later refresh will run.
 
-### 6. Synthesise the sidecar
+### 6. Synthesise the sidecar (initial pass)
 
-Write the sidecar at `{SIDECAR_TARGET}`. Schema below. Each field cited from the source you Read, the doc page you WebFetched, or the substrate metadata you were given.
+Build the sidecar content at `{SIDECAR_TARGET}` — frontmatter + `understanding` + `concepts` + `dependencies_semantic` + `tests_coverage_semantic` + `docs_link_semantic` + `implicit_adrs` + `bugs_limitations_corner_cases` + `security` + `performance` + `upstream_callers` + `downstream_side_effects`. Each field cited from the source you Read, the doc page you WebFetched, or the substrate metadata you were given.
+
+Do NOT Write yet. The Stress Protocol (next step) extends the sidecar with `stress_findings` and may emit probe-skeletons; write the complete sidecar after both passes.
+
+### 6.5. Run the Stress Protocol (Rule 9 — non-negotiable)
+
+For the code you Read in step 2 + the 1-hop neighbours from step 3:
+
+1. **Enumerate triggers per category** (A — Tunables / B — Name-behavior pairs / C — Orderings / D — Authorization gates / E — Resource boundaries). Walk the source linearly; a trigger may belong to multiple categories. Empty categories are explicit `[]` in the output.
+2. **For each trigger, generate the questions listed in Rule 9** for its category.
+3. **For each question, choose ONE of:**
+   - **(a) trace-answer** — answer is in the code; record `confidence: STATIC-INFERRED` + `file:line` evidence.
+   - **(b) probe-answer** — answer requires runtime; **Write a concrete probe-skeleton** to `lineage/{repo}/probes/P-{NNN}.yaml` (Glob/grep the directory to pick the next free id; if you cannot, use a placeholder like `P-PENDING-{slug}-{q-index}` and surface in the exit message); record `confidence: PROBE-NEEDED` + the `probe_id` in the sidecar.
+   - **(c) reference-answer** — answer lives in another sidecar; record `confidence: REFERENCE` + the `node_id`.
+4. **Populate the `stress_findings` block** in the sidecar with the trigger / question / answer / confidence / evidence.
+5. **Downgrade `confidence_overall`** if more than half of the load-bearing stress questions resolve to PROBE-NEEDED.
+
+Then Write the sidecar AND any probe-skeleton files. One sidecar Write per invocation (mandatory). Zero-to-many probe Writes (as required by the Stress Protocol).
 
 ### 7. Self-check before exit
 
@@ -225,7 +466,7 @@ axis: <verbatim>
 extracted_at_commit: <git rev-parse HEAD of the target repo at enrichment time — read it via Bash if needed; if Bash isn't available, use the substrate manifest's last_scan_commit>
 enriched_at_commit: <same — the commit you read FROM>
 extractor_version: 0.1.0
-prompt_version: file-analyser/0.3.0
+prompt_version: file-analyser/0.4.0
 enrichment_status: complete | partial | stale | failed
 confidence_overall: HIGH | MEDIUM | LOW
 session_id: <Claude Code session id if available; otherwise "session-2026-05-08-NN" where NN is sequence within the session>
@@ -362,6 +603,112 @@ into DOC-NNN / TEST-NNN / SEC-NNN / PERF-NNN backlog items or sprint groupings
 - "{statement}" — evidence: file:line — severity: HIGH | MEDIUM | LOW
 
 If none, write `[]`.
+
+## stress_findings
+
+**Rev 2 + Rule 9 (file-analyser/0.3.1).** Output of the Stress Protocol. Every trigger detected in the code → every question for its category → an answer (trace / probe / reference). Empty categories are `[]`; never omit a category.
+
+```yaml
+stress_findings:
+  tunables:
+    - location: "<file:line>"
+      name: "<constant or @Value name or magic-string>"
+      value: "<the value>"
+      questions:
+        - q: "What at N > tunable?"
+          a: "<answer text — trace OR PROBE-NEEDED OR REFERENCE>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<file:line OR probe_id OR node_id>"
+        - q: "What at tunable × 100?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+        - q: "What does the operator see at each boundary?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+  name_behavior_pairs:
+    - name: "<method or endpoint name>"
+      promise: "<what the name promises, plain English>"
+      implementation: "<what the code actually does — trace the chain end-to-end>"
+      drift: NONE | MINOR | DRIFT_NAME_VS_BEHAVIOR
+      operator_visible_consequence: "<one sentence, if drift>"
+      confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+      evidence: "<file:line OR probe_id OR node_id>"
+  orderings:
+    - location: "<file:line — the ORDER BY / LIMIT / paginate site>"
+      questions:
+        - q: "What is the actual ORDER BY at the lowest layer?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+        - q: "What is the tie-breaker when sort-key values are equal?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+        - q: "Which subset is returned when result-set > page size?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+        - q: "Does any upstream layer re-sort or filter the result?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+  auth_gates:
+    - location: "<file:line — the endpoint or PreAuthorize>"
+      endpoint: "<method + path or method name>"
+      questions:
+        - q: "What does this endpoint return for each of DISABLED / LOGIN_FORM / OAUTH2 / LDAP?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+        - q: "What does an unauthenticated caller see?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+        - q: "What does a wrong-role caller see?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+        - q: "Where does the gate live — controller, service, repository, or nowhere?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+  resource_boundaries:
+    - location: "<file:line — Transactional / synchronized / cache site>"
+      kind: transactional | lock | cache | idempotency | concurrency
+      questions:
+        - q: "Can two simultaneous calls produce corrupted state?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+        - q: "Is the call replay-safe?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+        - q: "If a cache fronts this, what is the TTL / eviction key / staleness window?"
+          a: "<...>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<...>"
+  probes_emitted:
+    - probe_id: P-NNN
+      question: "<the stress question this probe is meant to answer>"
+      probe_path: "lineage/{repo}/probes/P-NNN.yaml"
+  stress_summary:
+    triggers_total: <N>
+    questions_total: <N>
+    answers_static_inferred: <N>
+    answers_probe_needed: <N>
+    answers_reference: <N>
+    drift_flags: <N>          # count of name_behavior_pairs with drift != NONE
+```
+
+**Constraints:**
+
+- Every category present (use `[]` if no triggers — don't omit).
+- Every triggered question answered (never skip).
+- `probes_emitted` is the audit-trail of probe-skeleton files this analyser wrote; the probe-runner will resolve each, and a future refresh of this sidecar will rewrite the affected questions from `PROBE-NEEDED` to `PROBE-VERIFIED` with the measured value inlined.
+- `stress_summary` is the honest metric — at a glance, the maintainer can see how many claims in this sidecar are STATIC-INFERRED guesses vs PROBE-VERIFIED truths.
 
 ## security
 
@@ -596,6 +943,7 @@ Every claim above traces to a file:line or to a WebFetched URL. Format:
 - performance: HIGH | MEDIUM | LOW
 - upstream_callers: HIGH | MEDIUM | LOW     # rev 2 — LOW if many unresolved refs
 - downstream_side_effects: HIGH | MEDIUM | LOW  # rev 2 — LOW if downstream callees not yet enriched
+- stress_findings: HIGH | MEDIUM | LOW      # Rule 9 — HIGH only if all load-bearing questions are STATIC-INFERRED with strong evidence OR PROBE-VERIFIED; MEDIUM if some load-bearing questions are PROBE-NEEDED; LOW if more than half of load-bearing questions are PROBE-NEEDED OR REFERENCE
 
 (If a field has no content, mark its confidence as `N/A`.)
 
@@ -639,6 +987,7 @@ into your output. Otherwise leave the heading present with empty body.)
 6. **Verbose `understanding`** — 2-4 sentences. If you need more, the node is too coarse-grained and you should defer detail to `concepts`.
 7. **Padding** — slop counts as a quality failure. A 100-line sidecar that says nothing useful is rejected over a 60-line sidecar that's substantive.
 8. **Routing gap-shaped observations to `implicit_adrs`** — if you observe an absence (no auth, no validation, no retry, no rate-limit, no pagination, missing audit logging) and there is NO comment / exception / naming-convention / annotation defending the absence, the observation is gap-shaped — route to `bugs_limitations_corner_cases`. The adr-archaeologist's 3-question wisdom test will reclassify misroutes, but routing correctly here reduces noise in the ADR catalog. The discriminator is *evidence of intent* visible in the file you Read, not your judgement of whether the absence is justifiable.
+9. **Transcribing without interrogating** (LSN-019) — the methodology's primary failure mode. You read `size: 30` and write *"shows top 30"*; you read `listMostPopular` and write *"orders by popularity"*; you read `@PreAuthorize("hasRole('ADMIN')")` and write *"admin-only"* — without firing the boundary / drift / mode / race questions Rule 9 mandates. A sidecar with no `stress_findings` block, OR with a `stress_findings` block whose `stress_summary.triggers_total` is 0 on a node that visibly contains tunables / orderings / endpoints, is rejected. Run the Stress Protocol. Emit the probes. Lower the confidence honestly. Do NOT ship a descriptive sidecar with HIGH confidence on operator-observable claims that have never been interrogated.
 
 ## Exit
 

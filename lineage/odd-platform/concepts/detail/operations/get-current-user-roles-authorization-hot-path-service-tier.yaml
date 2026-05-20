@@ -1,0 +1,122 @@
+name: getCurrentUserRoles authorization hot path (RoleServiceImpl service-tier vertex)
+canonical_in_docs: false
+canonical_candidate: true
+description: |-
+  NEW OPERATION, batch 2026-05-20S (RoleServiceImpl primary source).
+  `RoleServiceImpl.getCurrentUserRoles()` (RoleServiceImpl.java:94-101)
+  — the per-request resolver of the calling user's RoleDto list, invoked
+  transitively from PolicyServiceImpl on every authorized HTTP request.
+
+  THE 3-STEP COMPOSITION:
+    1. Line 96 — `authIdentityProvider.getCurrentUser()` — the auth-mode-
+       agnostic identity facade (auth.type-specific implementation).
+    2. Line 97 — `.flatMap(u -> userOwnerMappingRepository.getUserRolesByOwner(u.username(), u.provider()))`
+       — the 5-TABLE JOIN at ReactiveUserOwnerMappingRepositoryImpl.java:99-114
+       over `role ⋈ role_to_policy ⋈ policy ⋈ owner_to_role ⋈
+       user_owner_mapping`. The central authorization-hot-path query.
+    3. Line 98-101 — two `switchIfEmpty` fallback steps:
+        (a) `.filter(CollectionUtils::isNotEmpty)` then
+            `.switchIfEmpty(getUserProviderRole().map(List::of))` — if the
+            user has no owner-attached roles, fall back to the
+            auth-mode-provided role.
+        (b) `.switchIfEmpty(Mono.just(List.of()))` — if STILL empty,
+            return List.of() (user with no authorization context).
+
+  THE FALLBACK CHAIN AT `getUserProviderRole` (lines 123-126):
+    `authIdentityProvider.getCurrentUserProviderRole()` → `roleRepository.getByName(role.getValue())`
+    The getByName call issues a 3-TABLE JOIN at ReactiveRoleRepositoryImpl.java:82-93
+    over `role ⋈ role_to_policy ⋈ policy`.
+
+  THE UPSTREAM CALLERS:
+    - PolicyServiceImpl.java:54 — the `list` method's admin-detection branch
+      (on every GET /api/policies call).
+    - PolicyServiceImpl.java:104 — `getCurrentUserPolicies` (the AUTHORIZATION
+      HOT PATH ENTRY from the permission-extractor framework). Per the
+      companion operation `get-current-user-policies-authorization-hot-path-service-tier`,
+      ManagementPermissionExtractor + AbstractContextualPermissionExtractor
+      transitively flow through this on EVERY authorized HTTP request.
+
+  COST PER AUTHORIZED REQUEST: 1 invocation of `userOwnerMappingRepository.getUserRolesByOwner`
+  (5-table JOIN) + on the fallback path, 1 invocation of `getUserProviderRole`
+  (3-table JOIN). On the populated case (the typical case), 1 JOIN per request;
+  on the empty-owner-roles fallback, 2 JOINs. No caching at the service,
+  repository, or extractor level.
+
+  THE DISABLED-MODE BEHAVIOUR (the cross-mode bleed surface): under
+  `auth.type=DISABLED`, AuthIdentityProvider returns the synthesised
+  anonymous-admin user (per batch E sidecar) which maps to UserProviderRole.ADMIN
+  → `roleRepository.getByName("Administrator")` → returns the seeded
+  RoleDto with MANAGEMENT/ALL policies. Every authorized callsite under
+  DISABLED gets full admin permissions.
+
+  THE BATCH N + S COMPOUND GAP STILL ACTIVE: the 5-table JOIN at
+  ReactiveUserOwnerMappingRepositoryImpl.java:99-114 has NO
+  `role.deleted_at IS NULL` filter on the role side (batch N — symmetric
+  to the batch H Policy-side gap). A soft-deleted role with surviving
+  owner_to_role bindings continues to confer the role's policies on
+  every authorized request. The service-layer cascade-block at
+  RoleServiceImpl.java:85-88 defends sequentially but not concurrently
+  (per the batch S invariant `predefined-role-name-three-policy-case-sensitivity-mismatch`
+  and the batch N drift-facet). Combined with the case-sensitivity
+  mismatch — an attacker creating a lowercase 'administrator' role +
+  binding it via owner_to_role + then soft-deleting via DB-direct UPDATE
+  — the orphan-binding state is reachable and the per-request authorization
+  resolver propagates it.
+
+  Severity: HIGH for high-RPS deployments (uncached per-request DB cost);
+  MEDIUM for typical small / medium ODD; THE INPUT to the broader compound
+  with the case-sensitivity exploitation vector — HIGH severity composition.
+axes_present:
+- services
+- repositories_reactive
+nodes:
+- odd-platform java service service:RoleServiceImpl
+- odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
+contributors:
+- 'RoleServiceImpl.md (batch S): concepts.invariants.[6] (the AUTHORIZATION
+  HOT PATH); concepts.operations.[4] (getCurrentUserRoles — the read-side
+  AUTHORIZATION HOT PATH entry point); bugs_limitations_corner_cases.[I]
+  (DRIFT-FACET-I no caching on hot path); performance.hot_paths.[0]
+  (cost per call); dependencies_semantic.coupling.[3] (the inter-service
+  contract with PolicyServiceImpl).'
+evidence:
+- 'RoleServiceImpl.md:concepts.invariants.[6] + .operations.[4] +
+  bugs_limitations_corner_cases.[I] + performance.hot_paths.[0]'
+- 'RoleServiceImpl.java:94-101 (getCurrentUserRoles body)'
+- 'RoleServiceImpl.java:123-126 (getUserProviderRole fallback)'
+- 'PolicyServiceImpl.java:54, 104 (the two call sites)'
+- 'ReactiveUserOwnerMappingRepositoryImpl.java:99-114 (the 5-table JOIN —
+  batch N primary source; no role.deleted_at filter)'
+- 'ReactiveRoleRepositoryImpl.java:82-93 (the 3-table JOIN — batch N
+  primary source)'
+- batch N ReactiveUserOwnerMappingRepositoryImpl + ReactiveRoleRepositoryImpl
+  sidecars
+- 'REFACTOR-389 + REFACTOR-384 (caching recommendations)'
+- 'New invariant authorization-hot-path-getcurrentuserroles-per-request-no-cache
+  (the broader caching gap; this is one of two service-tier vertices)'
+notes: |
+  Operation vocabulary captured for the authorization-hot-path story.
+  This is the Role-side service-tier vertex; the Policy-side counterpart
+  is `get-current-user-policies-authorization-hot-path-service-tier`.
+  Both vertices flow per-request from the permission extractors.
+
+  Recommended cleanup (covered in detail at the companion invariant
+  `authorization-hot-path-getcurrentuserroles-per-request-no-cache`):
+    (1) Request-scoped caching via @RequestScope.
+    (2) Process-wide short-TTL Caffeine cache keyed by (username, provider).
+    (3) Close the batch N missing role.deleted_at filter on the 5-table
+        JOIN (one-line fix at ReactiveUserOwnerMappingRepositoryImpl.java:
+        99-114).
+    (4) Close the batch S case-sensitivity mismatch on create (one-line
+        fix at RoleServiceImpl.java:50-51 per the companion invariant
+        `predefined-role-name-three-policy-case-sensitivity-mismatch`).
+
+  Cross-references:
+    - New invariant `authorization-hot-path-getcurrentuserroles-per-request-no-cache`
+      (the broader caching gap).
+    - Existing entity `Role (Authorization)` (the broader concept).
+    - New operation `get-current-user-policies-authorization-hot-path-service-tier`
+      (the Policy-side counterpart on the same hot path).
+    - Existing operation `query-resource-permissions` (the read-side
+      surface that ALSO consumes the per-request authorization resolution).

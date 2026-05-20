@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-692
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:AlertServiceImpl"
+pillars_affected: [P-07]
+surfaced_by:
+  - "AlertServiceImpl.md:bugs_limitations_corner_cases.[4] (F-007 facet `unauthenticated_payload_trust` — audit-attribution leak at service tier; updateStatus with auth.type=DISABLED completes with status_updated_by=null)"
+  - "AlertServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[2] (No test asserts the switchIfEmpty username=null fallback at line 119)"
+behaviour: |-
+  **`AlertServiceImpl.updateStatus` UNDER `auth.type=DISABLED` STILL COMPLETES THE UPDATE WITH `status_updated_by=NULL` — audit-attribution leak.** Line 117 calls `authIdentityProvider.getCurrentUser()` which returns `Mono.empty()` under DISABLED; line 119's `switchIfEmpty(alertRepository.updateAlertStatus(alertId, status, null))` fallback proceeds with `username=null`. The audit trail loses the actor; the activity-feed row (emitted via the `@ActivityLog` AOP at line 112) records the `dataEntityId` and the new status but cannot attribute the change. The behaviour is intentional for SYSTEM-CONTEXT callers (system events ARE allowed to have null updated_by) but combined with the absence of any controller-layer access check on `PUT /api/alerts/{id}/status` (per `AlertController.changeAlertStatus` neighbour sidecar, severity HIGH) it means under DISABLED an anonymous caller can mutate ANY alert and leave NO actor attribution. This is the SERVICE-TIER mirror of the F-007 `unauthenticated_payload_trust` facet — distinct from the AlertManager webhook's unauthenticated-by-design model: `updateStatus` is on the UI surface where authentication IS expected under non-DISABLED modes.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/AlertServiceImplUpdateStatusAuthTest.java"
+  name: "updateStatus_anonymousCallerUnderDisabledAuth_completesWithNullUpdatedBy_pinsAuditAttributionLeak"
+evidence:
+  - "AlertServiceImpl.md says (bugs_limitations_corner_cases.[4]): 'F-007 facet `unauthenticated_payload_trust` (audit-attribution leak at service tier): updateStatus with auth.type=DISABLED (or any anonymous caller) still completes the update with status_updated_by=null. Line 117 calls authIdentityProvider.getCurrentUser() which returns Mono.empty() under DISABLED; line 119''s switchIfEmpty(alertRepository.updateAlertStatus(alertId, status, null)) fallback proceeds with username=null. The audit trail loses the actor; the activity-feed row records the dataEntityId and the new status but cannot attribute the change.' severity: MEDIUM"
+  - "AlertServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[2]): 'No test asserts the switchIfEmpty username=null fallback at line 119. A caller with no SecurityContext (anonymous under auth.type=DISABLED) still completes the update with status_updated_by=NULL.'"
+  - "Source: AlertServiceImpl.java:117-119 (the switchIfEmpty fallback) + AlertController.java:1-58 (no security annotations, per neighbour sidecar bugs_limitations_corner_cases[2]) + AuthIdentityProvider implementations (per batch-C sidecar, DISABLED mode returns Mono.empty)"
+cross_references:
+  - "TEST-GAP-006 (changeAlertStatus controller-tier — sister surface, batch H)"
+  - "TEST-GAP-015 (AlertManager unauthenticated cross-tenant — distinct path but SAME audit-attribution-leak class)"
+  - "F-007 (P-07:F-001 facet `unauthenticated_payload_trust`)"
+  - "REFACTOR-185 (the 17+18-sidecar DISABLED-mode enumeration)"
+related_features: [F-007]
+related_pillar_features: ["P-07:F-001"]
+proposed_action: |-
+  Add `AlertServiceImplUpdateStatusAuthTest.updateStatus_anonymousCallerUnderDisabledAuth_completesWithNullUpdatedBy_pinsAuditAttributionLeak` as a SpringBootTest with `auth.type=DISABLED` profile. (a) Seed an OPEN alert id=A on a known data entity. (b) Make a `PUT /api/alerts/A/status` request with body `{"status": "RESOLVED"}` from a WebTestClient with NO authentication. (c) Assert HTTP 200. (d) Query `SELECT status_updated_by FROM alert WHERE id = A`. Expect NULL. (e) Query the activity_event table for the alert's most recent entry. Assert `created_by IS NULL`. (f) Add a `// REGRESSION-PIN — updateStatus's switchIfEmpty fallback (line 119) silently accepts null usernames. Under DISABLED, anyone can mutate any alert with no actor attribution. A REFACTOR adding a required-principal guard will break this test; a REFACTOR strengthening AuthIdentityProvider to throw rather than empty will also break this test. The audit-attribution-leak is the F-007 unauthenticated_payload_trust facet at the updateStatus tier (distinct from the AlertManager webhook path).` comment block.
+batch: 2026-05-20-S
+feature_id: F-007

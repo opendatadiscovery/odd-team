@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-688
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:PolicyServiceImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "PolicyServiceImpl.md:bugs_limitations_corner_cases.[2] (Schema-validation failure maps to HTTP 500, not 400)"
+  - "PolicyServiceImpl.md:security.known_security_gaps.[3] (Schema-validation failure surfaces as HTTP 500 rather than HTTP 400)"
+  - "PolicyServiceImpl.md:doc_drift_findings.SERVICE-DOC-GAP-D"
+behaviour: |-
+  **POLICY SCHEMA-VALIDATION FAILURE SURFACES AS HTTP 500 — operator sees `Internal Server Error` for a CLIENT mistake.** `PolicyJSONValidator.validate` throws `IllegalArgumentException("Policy is not valid: " + errors)` at PolicyJSONValidator.java:28-32. `ControllerAdvice` has handlers for `BadUserRequestException` → 400, `UniqueConstraintException` → 400, `CascadeDeleteException` → 400, `WebExchangeBindException` → 400, and a CATCH-ALL `Exception.class` → 500 with body `"Internal Server Error"`. `IllegalArgumentException` has NO dedicated handler — it falls through to the catch-all at ControllerAdvice.java:61-66 and surfaces as HTTP 500 with body `"Internal Server Error"` (NOT the validator's actual error message). An operator POSTing a malformed policy body gets a generic server error and must read server logs to see the schema violation. The fix is one-line: either `PolicyJSONValidator` throws `BadUserRequestException`, or `ControllerAdvice` adds an `IllegalArgumentException` handler. The test pins the CURRENT mis-mapping behaviour so the fix breaks the test deliberately.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/PolicyValidationErrorMappingTest.java"
+  name: "createPolicy_malformedJsonBody_currentlyReturns500_pinsBugBeforeFix"
+evidence:
+  - "PolicyServiceImpl.md says (bugs_limitations_corner_cases.[2]): 'Schema-validation failure maps to HTTP 500, not 400. PolicyJSONValidator.validate throws IllegalArgumentException(\"Policy is not valid: \" + errors). ControllerAdvice has handlers for BadUserRequestException → 400 etc., and a catch-all Exception.class → 500. IllegalArgumentException has NO dedicated handler — falls through to the catch-all at lines 61-66 and surfaces as HTTP 500. An operator POSTing a malformed policy gets a generic server error.' severity: MEDIUM"
+  - "PolicyServiceImpl.md says (security.known_security_gaps.[3]): 'Schema-validation failure surfaces as HTTP 500 (Internal Server Error) rather than HTTP 400. Operators POSTing a malformed policy body cannot tell from the response whether the error is a server bug or a malformed request. The validator runs (correctly) but the exception type choice + ControllerAdvice routing combine to misrepresent the error class. Carry-over from batch-E known_security_gaps[3].' severity: MEDIUM"
+  - "Source: PolicyJSONValidator.java:28-32 (the exception type) + ControllerAdvice.java:23-66 (no IllegalArgumentException handler) + PolicyServiceImpl.java:64, 73 (the synchronous invocation sites)"
+cross_references:
+  - "SERVICE-DOC-GAP-D (PolicyServiceImpl doc_drift_findings)"
+  - "REFACTOR-NNN-validation-error-mapping candidate"
+  - "F-006 (RBAC family — error UX)"
+related_features: [F-006]
+related_pillar_features: ["P-09:F-001"]
+proposed_action: |-
+  Add `PolicyValidationErrorMappingTest.createPolicy_malformedJsonBody_currentlyReturns500_pinsBugBeforeFix` as a WebFluxTest. (a) Authenticate as a user with `POLICY_CREATE` permission. (b) POST `/api/policies` with body `{"name": "P", "policy": {"foo": "bar", "id": 42}}` (extra `id` field violates `additionalProperties: false` per policy_schema.json:15). (c) Assert HTTP 500. (d) Assert response body is the generic `Internal Server Error` text, NOT the validator's detailed error message. (e) Add a `// REGRESSION-PIN — Malformed policy bodies currently return HTTP 500 with generic body. The fix is one-line: change PolicyJSONValidator to throw BadUserRequestException (or add ControllerAdvice handler for IllegalArgumentException). Once fixed, this test must be REPLACED with: assert HTTP 400 + body contains the validator error message.` comment block. Pair with a test for the SAME malformed body on `PUT /api/policies/{id}` — both paths invoke the same validator at PolicyServiceImpl.java:73.
+batch: 2026-05-20-S
+feature_id: F-006

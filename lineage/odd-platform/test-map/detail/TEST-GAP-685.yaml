@@ -1,0 +1,32 @@
+gap_id: TEST-GAP-685
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:PolicyServiceImpl"
+  - "odd-platform java service service:RoleServiceImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "PolicyServiceImpl.md:implicit_adrs.[4] (Service composition methods are NON-TRANSACTIONAL at this layer, in deliberate inconsistency with the sibling RoleServiceImpl which IS transactional)"
+  - "PolicyServiceImpl.md:bugs_limitations_corner_cases.[0] (Lost-update race on PUT /api/policies/{id})"
+  - "RoleServiceImpl.md:implicit_adrs.[1] (All THREE mutating service methods are @ReactiveTransactional — explicit POSITIVE case-law contrast)"
+behaviour: |-
+  **TRANSACTIONAL-ASYMMETRY REGRESSION PIN — RoleServiceImpl is @ReactiveTransactional on all three mutating methods; PolicyServiceImpl is NOT.** RoleServiceImpl.java:50 (create), 64 (update), 77 (delete) — all annotated. PolicyServiceImpl.java:62 (create), 71 (update), 83 (delete) — NONE annotated. The asymmetry is observable in TWO operator-facing ways: (a) a concurrent `PUT /api/policies/{id}` lost-update race (lines 71-81 read v1, then write — two concurrent updates can silently lose); (b) the policy `delete`'s non-atomic cascade-check + soft-delete (lines 83-95) can leave orphan role_to_policy bindings under concurrent role-binding mutation. The Role side has @ReactiveTransactional at least scoping read+write to a single R2DBC connection. The asymmetry is the deliberate inconsistency identified by batch I's confidence-LOW implicit_adrs[4] entry and confirmed batch-S as an OVERSIGHT (no defending comment; uniform Role-side presence; cross-batch pattern). A TEST that exercises BOTH services' transactional boundaries side-by-side would: (a) pin the current Role-side @ReactiveTransactional contract (a refactor dropping it would break the test); (b) pin the current Policy-side ABSENCE (a refactor adding it would also break the test, making the SYMMETRY-FIX deliberate). The asymmetry is the highest-leverage RBAC pattern divergence in the codebase.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/RbacTransactionalAsymmetryTest.java"
+  name: "policyUpdate_lostUpdateRace_currentBehaviour_vs_roleUpdate_transactionScoping_pinsRBACAsymmetry"
+evidence:
+  - "PolicyServiceImpl.md says (bugs_limitations_corner_cases.[0]): 'Lost-update race on PUT /api/policies/{id}. PolicyServiceImpl.update at lines 71-81 issues two separate R2DBC calls — `policyRepository.get(id)` (line 74) reads the current row, then `policyRepository::update` (line 79) writes the new row — OUTSIDE any @ReactiveTransactional. The race window: client A reads v1 (line 74), client B reads v1 concurrently, client A writes v2, client B writes v3 (derived from v1, not v2). Client A''s change is silently overwritten. The sibling RoleServiceImpl.update is @ReactiveTransactional (RoleServiceImpl.java:64).' severity: MEDIUM"
+  - "RoleServiceImpl.md says (implicit_adrs.[1]): 'All THREE mutating service methods are @ReactiveTransactional — the decision was to wrap the read-then-write multi-call composition into a single connection-scoped R2DBC transaction. This is the explicit POSITIVE case-law contrast to PolicyServiceImpl (batch I implicit_adrs[4]) where NONE of the three policy mutations are annotated — a deliberate inconsistency that batch I marked confidence:LOW for absence-of-defending-comment. The Role-side presence is uniform across all three mutations AND matches the platform''s other transactional services — strong evidence the Policy-side absence is the oversight, not the Role-side presence.' confidence: HIGH"
+  - "PolicyServiceImpl.md says (implicit_adrs.[4]): 'Service composition methods (create, update, delete) are NON-TRANSACTIONAL at this layer, in deliberate inconsistency with the sibling RoleServiceImpl which IS transactional. The maintainer''s intent is ambiguous: either (a) policy lifecycle is rare enough that races are acceptable, or (b) the missing annotation is an oversight. The asymmetry vs RoleServiceImpl argues oversight.' confidence: LOW"
+  - "Source: PolicyServiceImpl.java:62, 71, 83 (no annotation) + RoleServiceImpl.java:50, 64, 77 (all annotated)"
+cross_references:
+  - "REFACTOR-NNN-rbac-transactional-asymmetry candidate (Policy-side should match Role-side)"
+  - "F-006 (RBAC family transactional consistency)"
+  - "TEST-GAP-355 (bulkCreate/bulkUpdate transactional rollback — adjacent transactional-rollback test gap)"
+related_features: [F-006]
+related_pillar_features: ["P-09:F-001"]
+proposed_action: |-
+  Add `RbacTransactionalAsymmetryTest.policyUpdate_lostUpdateRace_currentBehaviour_vs_roleUpdate_transactionScoping_pinsRBACAsymmetry` as a Testcontainers integration test. (a) Seed a policy P with name="P" + a role R with name="R". (b) FIRE TWO CONCURRENT `policyService.update(P, body1).subscribe(...)` + `policyService.update(P, body2).subscribe(...)`. Sleep / await both. Read the row. Expect either body1 OR body2 to have won (the test cannot deterministically pick) BUT the lost-update window IS observable; pin it by INJECTING a delay between read and write at the repository mock layer (intercept `policyRepository.get` to delay 50ms, allowing the second update's read to slip in before the first write). (c) Symmetric: FIRE TWO CONCURRENT `roleService.update(R, body1).subscribe(...)` + `roleService.update(R, body2).subscribe(...)`. Verify that the @ReactiveTransactional scopes the second update's read+write into a separate connection-scope — one read-write sequence sees the OTHER's write, not v1. The Role-side test will FAIL if @ReactiveTransactional is dropped from RoleServiceImpl. (d) Add a `// REGRESSION-PIN — RoleServiceImpl.update is @ReactiveTransactional; PolicyServiceImpl.update is NOT. A REFACTOR that adds @ReactiveTransactional to Policy-side (symmetry fix) will break the Policy half of this test; a REFACTOR that drops it from Role-side will break the Role half. The asymmetry is the deliberate inconsistency from batch I implicit_adrs[4] — re-running this test surfaces every change to the pattern.` comment block.
+batch: 2026-05-20-S
+feature_id: F-006

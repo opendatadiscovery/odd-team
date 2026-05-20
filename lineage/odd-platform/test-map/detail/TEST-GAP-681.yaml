@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-681
+category: missing-unit
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:OwnerServiceImpl"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "OwnerServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[13] (cascade-block leg independence — separate tests per leg)"
+  - "OwnerServiceImpl.md:implicit_adrs.[3] (Cascade-block is FAIL-FAST via Mono.zip + 3-leg OR predicate)"
+behaviour: |-
+  **CASCADE-BLOCK LEG INDEPENDENCE — three separate tests per leg, NOT one composite test.** OwnerServiceImpl.java:90-96 implements the cascade-block as `Mono.zip(termOwnershipRepository.existsByOwner(id), ownershipRepository.existsByOwner(id), userOwnerMappingRepository.isOwnerAssociated(id))` + an OR'd predicate `BooleanUtils.toBoolean(t.getT1()) || BooleanUtils.toBoolean(t.getT2()) || BooleanUtils.toBoolean(t.getT3())`. The current implementation is correct, but the failure mode of a regression is asymmetric: if a maintainer accidentally flips ANY of the OR conjuncts to AND (`||` → `&&`) OR drops one of the three legs, the cascade-block would silently allow deletion of Owners with active bindings on the dropped/AND-incorrectly-combined leg. Each leg corresponds to a distinct table — termOwnership, ownership, userOwnerMapping — with different observable consequences (term-side dangling references vs entity-side dangling references vs auth-side dangling principal-bound rows). The single-composite test "delete an owner with cascade" would not catch leg-independence regressions; THREE distinct tests are needed. The cascade-block leg-independence pin is the SECOND-HIGHEST priority OwnerServiceImpl test per the sidecar's `gaps` framing.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/OwnerServiceImplTest.java"
+  name: "delete_eachCascadeLegSeparately_termOwnership_ownership_userOwnerMapping_pinsORSemantics"
+evidence:
+  - "OwnerServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[13]): '`delete` cascade-block leg independence — separate tests per leg; a regression that flips an OR to an AND in the predicate at lines 92-93 would silently allow deletion when only one cascade was present. Pin the OR semantics.'"
+  - "OwnerServiceImpl.md says (implicit_adrs.[3]): 'Cascade-block is FAIL-FAST via Mono.zip + 3-leg OR predicate — encoded at lines 90-93. The three existence checks fire in PARALLEL (Mono.zip evaluates legs concurrently against the reactive connection pool), the results are OR''d via BooleanUtils.toBoolean(t.getT1()) || BooleanUtils.toBoolean(t.getT2()) || BooleanUtils.toBoolean(t.getT3()), and ANY true result short-circuits to CascadeDeleteException.'"
+  - "OwnerServiceImpl.md says (gaps): 'The cascade-block leg independence test is the second-highest priority: a maintainer refactor that accidentally flipped one of the three OR conjuncts to AND would silently allow deletion of Owners with active bindings, producing the orphan-row scenarios that REFACTOR-430 + REFACTOR-427 enumerate.'"
+  - "Source: OwnerServiceImpl.java:90-96 (the Mono.zip + 3-leg OR predicate)"
+cross_references:
+  - "TEST-GAP-627 (cascade-check non-atomic race-window — sister surface; THIS gap pins the OR semantics, that gap pins the atomicity)"
+  - "REFACTOR-430 (the named scope — race-window between cascade-check and delete)"
+  - "F-006 (RBAC family cascade-incompleteness pattern)"
+related_features: [F-006]
+related_pillar_features: ["P-08:F-NN-owner-directory", "P-09:F-001"]
+proposed_action: |-
+  Add three Mockito test methods in `OwnerServiceImplTest`: (a) `delete_onlyTermOwnershipBinding_raisesCascadeDeleteException` — stub `termOwnershipRepository.existsByOwner(id) → Mono.just(true)`, the other two as `Mono.just(false)`; invoke `service.delete(id)`; assert `CascadeDeleteException` and no call to `ownerRepository.delete`. (b) `delete_onlyOwnershipBinding_raisesCascadeDeleteException` — symmetric with the ownership leg true. (c) `delete_onlyUserOwnerMappingBinding_raisesCascadeDeleteException` — symmetric with the userOwnerMapping leg true. (d) `delete_noCascadeBindings_succeeds` — all three legs return `Mono.just(false)`; assert `ownerRepository.delete(id)` is invoked. Add a `// REGRESSION-PIN — Each cascade leg independently triggers the CascadeDeleteException. A REFACTOR that flips || to && or drops one leg will break exactly ONE of these tests, surfacing the regression.` comment block. Each test is small (~10 lines) but TOGETHER they pin the OR semantics that no single composite test can.
+batch: 2026-05-20-S
+feature_id: F-006

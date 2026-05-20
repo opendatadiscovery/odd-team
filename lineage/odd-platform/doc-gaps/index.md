@@ -2,135 +2,139 @@
 artefact: doc-gaps
 generated_at: "2026-05-20T00:00:00Z"
 generated_at_commit: 80637ed
-sidecar_count: 97
+sidecar_count: 102
 concepts_yaml_version: 9
 prompt_version: "doc-gap-finder/0.1.0"
-total_findings: 190
-findings_by_severity: { HIGH: 83, MEDIUM: 89, LOW: 18 }
-findings_by_category: { broken-url: 9, missing-anchor: 0, drift: 167, missing-page: 8, stale-page: 0, coverage-gap: 4, meta: 9 }
+total_findings: 197
+findings_by_severity: { HIGH: 87, MEDIUM: 92, LOW: 18 }
+findings_by_category: { broken-url: 9, missing-anchor: 0, drift: 173, missing-page: 9, stale-page: 0, coverage-gap: 4, meta: 9 }
 reconciliation_note: |
-  Batch Q adds 6 NEW findings (2 HIGH + 4 MEDIUM + 0 LOW) — DOC-GAP-185..190 — and
-  STRENGTHENS 5 existing entries (DOC-GAP-082 META + DOC-GAP-083 META + DOC-GAP-106 +
-  DOC-GAP-137 META + DOC-GAP-181). Batch Q covers the 5 UI-axis sidecars across the
-  Management mutation surface (AppToolbar UI shell + RolesList + PolicyList +
-  OwnersList + CollectorsList) — the OPERATOR-FACING UX manifestation of the
-  catalog's load-bearing security + audit findings.
+  Batch S adds 2 NEW findings (0 HIGH + 2 MEDIUM + 0 LOW) — DOC-GAP-196 + 197 —
+  and STRENGTHENS 5 existing entries (DOC-GAP-107 + DOC-GAP-180 + DOC-GAP-181 +
+  DOC-GAP-122 + DOC-GAP-082 META). Batch R (PRIOR — was uncounted in index until
+  this refresh) added 5 NEW findings: DOC-GAP-191..195 (4 HIGH + 1 MEDIUM).
+  Combined batch R + S contribution: 7 NEW findings (4 HIGH + 3 MEDIUM + 0 LOW)
+  + 5 STRENGTHENED (batch S).
 
-  NEW HIGH:
-  - DOC-GAP-187 (UI-vs-API asymmetry under `auth.type=DISABLED` — the Management UI
-    looks LOCKED-DOWN while the backend ACCEPTS anonymous mutations: under DISABLED,
-    `/api/identity` returns `permissions: []`, the SPA's `<WithPermissions>` HOC
-    hides every Create/Edit/Delete button across Roles/Policies/Owners/Collectors
-    tabs, operators infer "locked down — read-only"; in reality
-    `DisabledAuthSecurityConfiguration` permits all exchanges and direct curl
-    succeeds anonymously; operator-trap class. STRENGTHENS DOC-GAP-082 META by
-    adding the 20th-24th sidecar surfaces — 4 UI Management lists + the AppToolbar
-    shell — covering the OPERATOR-FACING UX manifestation tier. The CollectorsList
-    sidecar explicitly names itself the 19th sidecar facet of REFACTOR-185);
-  - DOC-GAP-188 (Empty-roles destructive UPDATE on Owner — REACHABLE FROM UI in 3
-    clicks with NO confirmation modal: OwnerForm.tsx:77 validates ONLY name; roles
-    field uses useFieldArray with no validation; formState.isValid stays true after
-    removing all chips; Save dispatches updateOwner with `roles:[]` triggering the
-    F-019 batch-P destructive-default path; Edit-vs-Delete UX asymmetry is
-    structurally inverted — Delete prompts confirmation; Edit-with-empty-roles
-    does not, even though Edit-with-empty-roles is the IRREVERSIBLE operation
-    (role bindings hard-deleted, no audit log). STRENGTHENS DOC-GAP-181 from
-    "API-consumer hazard" to "UI-operator-reachable in 3 clicks").
+  Batch S covers the 5 SERVICE-TIER ENCLOSING-CLASS sidecars: AlertServiceImpl +
+  OwnerServiceImpl + PolicyServiceImpl + RoleServiceImpl +
+  DataSourceIngestionServiceImpl — the SERVICE-TIER PRIMARY SOURCE layer for the
+  pillar's load-bearing security + audit + transaction patterns. The batch
+  closes the 4-LAYER-of-RBAC triangulation (controller batch E + service-tier
+  batch I/S + repository batch H/N + UI batch Q) and supplies the explicit
+  service-tier enactment for ADR-CANDIDATE-142 (partial-merge UPSERT) +
+  ADR-CANDIDATE-143 (namespace-from-Collector) + REFACTOR-425 (empty-roles
+  destructive UPDATE).
 
-  NEW MEDIUM:
-  - DOC-GAP-185 (SPA UI auth model — no-local-login-form + OIDC-redirect-only +
-    logout-is-full-page-navigation + user-identifier-fallback-to-raw-username
-    — undocumented on `enable-security/authentication` tree; operator-PII
-    exposure when `username` is email and no Owner mapping exists; live WebFetch
-    2026-05-20 confirms all 4 axes silent);
-  - DOC-GAP-186 (Management top-nav tab visibility CONTRADICTS live `/features/management` doc
-    — live doc says "Tab visibility is permission-aware" but `ToolbarTabs.tsx:34-82`
-    enumerates ALL 9 tabs unconditionally with NO permission predicate; the
-    Management top-nav tab is visible to every authenticated user regardless of
-    permissions; doc-vs-code contradiction; structural cause of DOC-GAP-187's
-    UX manifestation);
-  - DOC-GAP-189 (Collector token UX undocumented — 4 distinct UX caveats: one-shot
-    plaintext visibility (lost on next page reload), substring-prefix sniff
-    fragility (visibility detection via `value.substring(0,6) === '******'`),
-    no-grace-period rotation (in-flight ingestion fails immediately), rotation-no-
-    effect under default `auth.ingestion.filter.enabled=false`. STRENGTHENS
-    DOC-GAP-038 + DOC-GAP-034 with UI-tier complement);
-  - DOC-GAP-190 (Soft-deleted Policies STILL render as named chips on the Roles tab
-    AND DO NOT render in the Policies list — asymmetric UI manifestation of the
-    F-006 catalogue-vs-grant pattern; soft-deleted Policy invisible on
-    Policies tab + visible-as-stale-chip on Roles tab + STILL conferring
-    permissions through the GRANT path. STRENGTHENS DOC-GAP-106 with UI-tier
-    ASYMMETRIC manifestation; operator-confusion class).
+  NEW MEDIUM (batch S):
+  - DOC-GAP-196 (Activity-feed emission asymmetry between in-platform alert
+    ingestion and AlertManager webhook ingestion — WEBHOOK INGRESS is
+    forensically silent at the ingress layer while alert-state-transitions ARE
+    audited via the batch save path with `is_system_event=true`; operators
+    expecting uniform audit coverage cannot reconstruct AlertManager-batch
+    provenance from the platform's audit alone; per AlertServiceImpl batch-S
+    sidecar coherence_sweep.strengthens[`alert_received_activity_events_persist_via_batch_save_path`]);
+  - DOC-GAP-197 (Authorization HOT PATH — RoleServiceImpl.getCurrentUserRoles +
+    PolicyServiceImpl.getCurrentUserPolicies together issue 2 separate
+    multi-table JOINs on EVERY authorized HTTP request with NO request-scoped
+    cache, NO user-scoped cache; for a busy platform with N req/s under
+    LOGIN_FORM/OAUTH2/LDAP, the platform issues ~2N permission-resolution JOIN
+    round-trips/s on top of business DB calls; live
+    `/configuration-and-deployment/enable-security/authorization` does NOT
+    describe per-request DB cost, cache absence, or capacity-planning
+    guidance for high-RPS deployments; REFACTOR-389 + REFACTOR-384 cross-link).
 
-  STRENGTHENED:
-  - DOC-GAP-082 META (DISABLED-bypasses-RBAC primary surface — now 24-sidecar; was
-    20 in batch P; NEW 4 UI Management list sidecars + 1 UI shell sidecar add the
-    OPERATOR-FACING UX manifestation tier — the UI HIDES action buttons under
-    DISABLED while the API accepts anonymous mutations; UI is QUIETER than API; the
-    CollectorsList sidecar explicitly identifies itself as 19th sidecar facet of
-    REFACTOR-185; doc-side action remains a single "Blast radius" sub-section on
-    `disabled-authentication.md` with the new "UI-vs-API asymmetry" addendum from
-    DOC-GAP-187);
-  - DOC-GAP-083 META (No-audit-log on RBAC mutations — extended to the UI tier:
-    Management UI surfaces emit no console.log, no audit-mode toast, no persistent
-    audit panel; the 5-sidecar pattern at batch N + 8-sidecar at batch P is now a
-    9+ sidecar pattern with the UI tier as the forensically-silent layer below the
-    service+repository+controller tiers; doc-side action expands to a UI-tier
-    "audit-trail absence on the Management UI" note on each Management page);
-  - DOC-GAP-106 (Authorization HOT PATH soft-delete leak — UI-tier ASYMMETRIC
-    manifestation confirmed: PolicyList correctly filters soft-deleted policies
-    (auto `WHERE deleted_at IS NULL`); RolesList's per-row chip array (RoleItem
-    `policies.map`) renders soft-deleted policy NAMES because the LEFT JOIN at
-    ReactiveRoleRepositoryImpl.java:45-48,67-70,87-90 has no `policy.deleted_at`
-    filter; the cross-tab asymmetric rendering is operator-observable; doc-side
-    addendum: cross-link THIS finding to DOC-GAP-190);
-  - DOC-GAP-137 META (ZERO UI test coverage — extended to 9-sidecar with 5 NEW
-    batch-Q UI sidecars: AppToolbar + RolesList + PolicyList + OwnersList +
-    CollectorsList. Each carries a `tests_coverage_semantic.gaps` block enumerating
-    10-15 uncovered behaviours — adds ~50+ new uncovered-behaviour candidates to
-    the META's enumeration; the test harness is fully configured; doc-side
-    follow-up unchanged — extend `developer-guides/contributing/testing-the-ui.md`
-    to include AppToolbar / Roles / Policies / Owners / Collectors test-class
-    seeds; THE HIGHEST-LEVERAGE regression-pin candidates: (a) the
-    soft-deleted-policy-still-rendered integration test per RolesList sidecar; (b)
-    the empty-roles-Save-enabled regression-pin test per OwnersList sidecar);
-  - DOC-GAP-181 (PUT /api/owners/{owner_id} empty-roles destructive default — UI
-    reachability dimension added: DOC-GAP-188 confirms the hazard is reachable in 3
-    UI clicks (Edit owner → remove all role chips → Save) with NO confirmation
-    modal; the operator-impact escalates from "API-consumer hazard" to
-    "UI-operator-reachable in 3 clicks"; the Edit-vs-Delete confirmation asymmetry
-    is structurally inverted — Delete prompts but Edit-empty-roles does not, even
-    though Edit-empty-roles is the IRREVERSIBLE operation).
+  NEW HIGH (batch R — uncounted-in-index until this refresh):
+  - DOC-GAP-191 (Activity Feed event-type 27-vs-20 — 7 undocumented enum values
+    in code that operators see in the UI dropdown but cannot understand from
+    the live doc page);
+  - DOC-GAP-192 (Activity Feed scope STRUCTURALLY CONSTRAINED to data-entity
+    events — `activity.data_entity_id NOT NULL` schema constraint means RBAC /
+    Owner / Datasource / Collector mutations CANNOT physically emit even if
+    `@ActivityLog` annotated; canonical SQL-tier primary source for DOC-GAP-083
+    META audit-silence);
+  - DOC-GAP-193 (Custom-Metadata feature COMPLETELY ABSENT from operator-facing
+    docs — substantial feature with permissions, REST endpoints, 7
+    MetadataTypeEnum values, but ZERO mention in the doc site);
+  - DOC-GAP-194 (Collector token PLAINTEXT-AT-REST + AT-DOM-RENDER — TOKEN.value
+    `varchar(40) NOT NULL` with no hashing, no encryption, no uniqueness
+    constraint; pg_dump / replica / backup leak surface; STRENGTHENS DOC-GAP-189
+    + DOC-GAP-038 + DOC-GAP-034).
+
+  NEW MEDIUM (batch R — uncounted-in-index until this refresh):
+  - DOC-GAP-195 (DatasetField description audit-invisible while internal-name +
+    tags ARE audit-logged — within-feature asymmetric @ActivityLog pattern;
+    documented event DATASET_FIELD_DESCRIPTION_UPDATED is NEVER fired;
+    operators investigating description edits find NO Activity Feed evidence;
+    one-line code fix + one doc-page edit; sibling to within-feature
+    audit-asymmetry pattern that DOC-GAP-149 META captures).
+
+  STRENGTHENED (batch S):
+  - DOC-GAP-107 (AlertManager-webhook compound — now 6-VECTOR with new
+    audit-provenance asymmetry dimension from DOC-GAP-196; batch S service-tier
+    PRIMARY-SOURCE re-confirmed at schema v0.3.0 framing with explicit F-007
+    facet correspondence; `coherence_sweep.strengthens` block names this entry
+    + the forge+display compound with REFACTOR-024);
+  - DOC-GAP-180 (ADR-CANDIDATE-142 partial-merge UPSERT — promoted to
+    5-SIDECAR triangulated coverage; batch S DataSourceIngestionServiceImpl
+    sidecar supplies the THIRD VERTEX (ENACTMENT POINT) of the ADR-142 + ADR-143
+    triangulation; NEW corner cases: cross-collector ownership-preservation
+    invariant, NO-FTS-vector-refresh on ingestion path, single-transaction
+    rollback shape, concurrent-ingestion race window);
+  - DOC-GAP-181 (Empty-roles destructive UPDATE — SERVICE-TIER ENCLOSING-CLASS
+    PRIMARY-SOURCE; the destructive composition is anchored across THREE
+    specific service-tier lines (71, 76-81, 117-122) in one class; new
+    STRUCTURAL INSIGHT: the same destructive primitive is REUSED INTENTIONALLY
+    by `delete` so the fix MUST live at the service-tier `getRoleIdsList`
+    helper, NOT at the persistence primitive);
+  - DOC-GAP-122 (PolicyService lost-update race — SYMMETRIC service-tier
+    PRIMARY-SOURCE confirmation from the Role side + Owner side + Alert side;
+    the platform-wide 4-RBAC-service @ReactiveTransactional comparison is now
+    anchored: PolicyServiceImpl is the UNIQUE outlier (0/3) while RoleServiceImpl
+    + OwnerServiceImpl + DataSourceIngestionServiceImpl are uniformly
+    transactional);
+  - DOC-GAP-082 META (DISABLED-bypasses-RBAC primary surface — now 29-sidecar
+    (was 24 in batch Q); batch S adds 5 service-tier sidecars including the
+    EXPLICIT keys-to-the-kingdom escalation chain narrative at the
+    RoleServiceImpl service-tier; NEW STRUCTURAL DIMENSION: cross-collector
+    namespace-tenancy boundary is PRESERVED even under DISABLED-compositional
+    bypass via DataSourceIngestionServiceImpl).
 
   Coherence: strengthens=5 supersedes=0 conflicts_surfaced=0.
 
-  Severity buckets: HIGH = 81 + 2 = 83; MEDIUM = 66 + 4 + 19 (batch-P MEDIUM
-  inflight from P) = 89; LOW = 18 + 0 = 18.
-  Total 83 + 89 + 18 = 190 — matches batch P's 184 reported + 6 new = 190.
+  Severity buckets: HIGH = 83 + 4 (batch R DOC-GAP-191/192/193/194) + 0 (batch S) = 87;
+  MEDIUM = 89 + 1 (batch R DOC-GAP-195) + 2 (batch S DOC-GAP-196/197) = 92;
+  LOW = 18 + 0 + 0 = 18.
+  Total 87 + 92 + 18 = 197 — matches batch Q's 190 + 5 batch R + 2 batch S = 197.
 
-  2 live URLs WebFetched at status 200 this session (direct fetches):
-  `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication`
-  (4-axis silence audit — all 4 SPA UI auth UX axes confirmed undocumented) +
-  `https://docs.opendatadiscovery.org/features/management` (4-axis silence audit —
-  Management tab visibility incorrectly framed; destructive-empty-roles silent;
-  Edit-vs-Delete confirmation asymmetry silent; soft-deleted-Policy chip
-  rendering silent — all 4 axes confirmed). Sibling-sidecar live-WebFetch evidence
-  inherited from RolesList sidecar (3 WebFetches at status 200 against
-  `/authorization/roles`, `/features/management`, `/authorization`) and CollectorsList
-  sidecar (2 WebFetches at status 200 against `/features/management` and
-  `/authorization/permissions`) and OwnersList sidecar (2 WebFetches at status 200
-  against `/features/management` and `/authorization/permissions`).
+  0 direct live WebFetches at status 200 this session (per LSN-018 stale-probe
+  cadence — all relevant doc URLs were WebFetched within the 11-day window in
+  batch P + Q + R: `/features/active-platform-features/alerting` (batch P,
+  2026-05-20 status 200), `/configuration-and-deployment/odd-platform`
+  (#prometheus-alertmanager-integration; batch P, 2026-05-20 status 200),
+  `/developer-guides/api-reference/alerts` (batch H/I inherited 2026-05-08
+  status 200), `/configuration-and-deployment/enable-security/authentication`
+  (batch Q, 2026-05-20 status 200), `/configuration-and-deployment/enable-security/authorization`
+  (batch E inherited 2026-05-12 status 200), `/features/management` (batch Q,
+  2026-05-20 status 200), `/features/active-platform-features/activity-feed`
+  (batch R inherited 2026-05-20 status 200), `/configuration-and-deployment/enable-security/authorization/owners`
+  (batch P, 2026-05-20 status 200), `/configuration-and-deployment/enable-security/authorization/policies`
+  (batch E inherited 2026-05-12 status 200), `/configuration-and-deployment/enable-security/authorization/roles`
+  (batch E inherited 2026-05-12 status 200), `/configuration-and-deployment/enable-security/authorization/permissions`
+  (batch P inherited 2026-05-20 status 200). All inherited within
+  stale-probe cadence per the LSN-018 protocol.
 
-  Batch Q is the FIRST batch covering the MANAGEMENT UI MUTATION SURFACE (RBAC +
-  Owner directory + Collector token authoring tabs) — 5 sidecars across the 4
-  Management list components + the AppToolbar UI shell, all 5 cross-referenced
-  against the batch-E + batch-H + batch-N + batch-P backend RBAC sidecars; the
-  6 new findings span: SPA-auth-UX completeness (DOC-GAP-185),
-  Management-tab-visibility doc-contradiction (DOC-GAP-186), UI-vs-API asymmetry
-  under DISABLED (DOC-GAP-187), Empty-roles destructive UI reachability
-  (DOC-GAP-188), Collector token UX (DOC-GAP-189), Soft-deleted policies in role
-  chip list (DOC-GAP-190). YAML-safe emit. Each new shard is 8-30 lines of header
-  per the canonical-append shape; full content lives in `detail/{id}.md`.
+  Batch S is the FIRST batch covering the 5 SERVICE-TIER ENCLOSING-CLASS
+  sidecars for the load-bearing security + audit + transaction patterns —
+  AlertServiceImpl (the AlertManager-webhook + the user-driven mutation +
+  the in-platform ingestion in one class), OwnerServiceImpl (Owner directory
+  CRUD trinity + cascade-delete-defence), PolicyServiceImpl (RBAC policy CRUD
+  + the AUTHORIZATION HOT PATH consumer), RoleServiceImpl (RBAC role CRUD +
+  the AUTHORIZATION HOT PATH entry), DataSourceIngestionServiceImpl (collector
+  datasource registration with partial-merge UPSERT semantics). The 2 new
+  findings span the activity-feed emission asymmetry on the AlertManager
+  webhook ingress (DOC-GAP-196) + the authorization HOT PATH performance
+  characteristics (DOC-GAP-197). YAML-safe emit.
 batch_history:
   - "2026-05-08: DOC-GAP-001..027 — initial 15-sidecar reduction"
   - "2026-05-10: DOC-GAP-028..035 — refresh after batch 2026-05-10A (5 method-level sidecars: AlertController.getAllAlerts, DataEntityAttachmentController.uploadFileChunk, ActivityController.getActivity, DataCollaborationController.postMessageInSlack, CollectorController.regenerateCollectorToken). DOC-GAP-002, DOC-GAP-010, DOC-GAP-025 extended with method-level evidence; severity on DOC-GAP-025 upgraded HIGH."
@@ -150,27 +154,29 @@ batch_history:
   - "2026-05-19 (batch O): DOC-GAP-173..177 — refresh after batch 2026-05-19-O (5 sidecars: GoogleUserHandler + GithubUserHandler + AzureLogoutSuccessHandler + CognitoLogoutSuccessHandler + IngestionDataEntitiesFilter). 5 NEW (2 HIGH + 3 MEDIUM + 0 LOW); 3 STRENGTHENED (DOC-GAP-038 with NEW filter-class-layer evidence; DOC-GAP-048 with 2-LAYER TRIANGULATION at consumer-site `URI.create()` NPE; DOC-GAP-082 META to 14-sidecar via path-matching-is-the-gating-mechanism primary-source statement). NEW HIGH: DOC-GAP-173 (Google admin-groups silent no-op) + DOC-GAP-177 (GitHub username-rename orphans USER_OWNER_MAPPING). NEW MEDIUM: DOC-GAP-174 (GHES silent incompatibility) + DOC-GAP-175 (logout-flow provider-asymmetry: Google/GitHub revoke vs Azure/Cognito local-only) + DOC-GAP-176 (GitHub admin-principals BYPASSES organization-name gate). 4 live URLs WebFetched at status 200 via sidecars + 1 direct WebFetch this session for the 8-question audit of the OAuth2/OIDC docs page (all 8 axes confirmed undocumented). Batch O is the FIRST batch covering the AUTH PROVIDER USER-ENRICHMENT + LOGOUT surface; coherence: strengthens=3, supersedes=0, conflicts_surfaced=0. YAML-safe emit."
   - "2026-05-20 (batch P): DOC-GAP-178..184 — refresh after batch 2026-05-20-P (Owner directory mutation surface + Datasource registration controller-method tier: OwnerController.updateOwner + OwnerController.deleteOwner + IngestionController.createDataSource). 7 NEW (3 HIGH + 4 MEDIUM); STRENGTHENED DOC-GAP-082 META to 17-sidecar + DOC-GAP-083 META to 8-sidecar (cross-pillar — P-08 Management Owner directory + P-10 Ingestion-side datasource registration); the Owner mutation surface adds the 17th-19th surfaces; the IngestionController.createDataSource finding is the 19th surface via composition (DISABLED → UI is open → create-collector → token-leak → datasource registration). Batch P registers as 12 unsharded inline entries + 7 detail/ shards; 172 detail / 184 reported."
   - "2026-05-20 (batch Q): DOC-GAP-185..190 — refresh after batch 2026-05-20-Q (5 UI-axis sidecars: AppToolbar UI shell + PolicyList + RolesList + OwnersList + CollectorsList — the Management mutation surface UI tier). 6 NEW (2 HIGH + 4 MEDIUM + 0 LOW); 5 STRENGTHENED (DOC-GAP-082 META to 24-sidecar via UI-tier operator-facing UX manifestation; DOC-GAP-083 META extended to 9+-sidecar via UI tier forensic silence; DOC-GAP-106 with UI-tier ASYMMETRIC manifestation; DOC-GAP-137 META to 9-sidecar UI test coverage with 50+ new uncovered behaviours; DOC-GAP-181 with UI-reachability dimension — 3-click destructive hazard). NEW HIGH: DOC-GAP-187 (UI-vs-API asymmetry under DISABLED — operator-trap class) + DOC-GAP-188 (Empty-roles destructive UPDATE UI-reachable in 3 clicks). NEW MEDIUM: DOC-GAP-185 (SPA UI auth model undocumented) + DOC-GAP-186 (Management tab visibility doc-contradiction) + DOC-GAP-189 (Collector token UX 4-caveat) + DOC-GAP-190 (Soft-deleted Policies in role chip list — UI asymmetry). 2 direct live WebFetches at status 200 this session (`/configuration-and-deployment/enable-security/authentication` + `/features/management`); 7 sibling-sidecar inherited WebFetches at status 200. Coherence: strengthens=5, supersedes=0, conflicts_surfaced=0. Batch Q is the FIRST batch covering the MANAGEMENT UI MUTATION SURFACE — the operator-facing UX manifestation of the entire RBAC + Owner directory + Collector token authoring catalog of findings. YAML-safe emit."
+  - "2026-05-20 (batch R): DOC-GAP-191..195 — refresh after batch 2026-05-20-R (5 repository-tier sidecars: ReactiveActivityRepositoryImpl + ReactiveDataSourceRepositoryImpl + ReactiveMetadataFieldRepositoryImpl + ReactiveCollectorRepositoryImpl + ReactiveDatasetFieldRepositoryImpl — the Activity feed + Datasource + Metadata + Collector + DatasetField repository tiers). 5 NEW (4 HIGH + 1 MEDIUM + 0 LOW); STRENGTHENED DOC-GAP-180 (SQL-tier primary source confirms partial-merge is service-tier convention not repo-tier enforcement; NEW listDto predicate divergence finding) + DOC-GAP-189 (token-storage shape) + DOC-GAP-149 META (to 8-sub-mechanism). NEW HIGH: DOC-GAP-191 (Activity Feed event-type 27-vs-20) + DOC-GAP-192 (Activity Feed scope structurally constrained — schema-tier root cause of audit-silence pattern) + DOC-GAP-193 (Custom-Metadata feature absent from docs) + DOC-GAP-194 (Collector token plaintext-at-rest). NEW MEDIUM: DOC-GAP-195 (DatasetField description audit-invisible). Live WebFetches at status 200 confirmed via sidecars. Batch R is the FIRST batch covering the SCHEMA + repository tier of the Activity + Datasource + Metadata + Collector + DatasetField surfaces. YAML-safe emit. Note: batch R was authored as detail/ shards only; this index reconciliation in batch S brings the index/headline list in sync with the existing shards."
+  - "2026-05-20 (batch S): DOC-GAP-196..197 — refresh after batch 2026-05-20-S (5 service-tier ENCLOSING-CLASS sidecars: AlertServiceImpl + OwnerServiceImpl + PolicyServiceImpl + RoleServiceImpl + DataSourceIngestionServiceImpl — the service-tier PRIMARY SOURCE layer). 2 NEW (0 HIGH + 2 MEDIUM + 0 LOW); 5 STRENGTHENED (DOC-GAP-107 with 6th vector via audit-provenance asymmetry; DOC-GAP-180 promoted to 5-sidecar via ADR-142+143 service-tier ENACTMENT primary source; DOC-GAP-181 with service-tier enclosing-class anchor — destructive composition across 3 lines; DOC-GAP-122 with symmetric service-tier confirmation of the platform-wide 4-RBAC-service @ReactiveTransactional comparison; DOC-GAP-082 META to 29-sidecar via 5 NEW service-tier sidecars + the explicit keys-to-the-kingdom escalation chain at RoleServiceImpl service-tier). NEW MEDIUM: DOC-GAP-196 (Activity-feed emission asymmetry in-platform vs webhook ingress) + DOC-GAP-197 (Authorization HOT PATH no caching — REFACTOR-389/384 cross-link). 0 direct WebFetches this session (all relevant URLs inherited within stale-probe cadence). Coherence: strengthens=5, supersedes=0, conflicts_surfaced=0. Batch S is the FIRST batch covering the 5 SERVICE-TIER ENCLOSING-CLASS sidecars for the platform's load-bearing security + audit + transaction patterns. Batch S also reconciles the index with the 5 batch-R shards (DOC-GAP-191..195) that were authored as detail/ shards in batch R but not previously added to the index headline list. YAML-safe emit."
 maintainer_curated: false
 confidence_overall: HIGH
 ---
 
-# Doc gaps — odd-platform — 2026-05-20 (batch Q refresh)
+# Doc gaps — odd-platform — 2026-05-20 (batch S refresh + batch R reconciliation)
 
 ## Summary
 
-- **Findings**: 190 total (83 HIGH, 89 MEDIUM, 18 LOW)
-- **By category**: broken-url 9, drift 167, missing-page 8, coverage-gap 4, meta 9
-- **Cross-references to prior findings**: 4 findings overlap with DOC-163 F-047..F-060 (cross-referenced, not re-filed). Batch Q adds 6 NEW findings (2 HIGH + 4 MEDIUM + 0 LOW) AND strengthens 5 existing findings. The cluster has three structural themes: (a) FIRST coverage of the MANAGEMENT UI MUTATION SURFACE — 5 sidecars across the 4 Management list components (RolesList + PolicyList + OwnersList + CollectorsList) + the AppToolbar UI shell, the operator-facing UX manifestation tier of the backend RBAC + Owner directory + Collector token findings; (b) UI-vs-API ASYMMETRY UNDER DISABLED operator-trap (DOC-GAP-187) — the UI hides action buttons because empty permissions → API accepts anonymous mutations because DisabledAuthSecurityConfiguration permits all exchanges → operator infers "locked down" from the read-only UI and is misled; (c) UI-REACHABILITY ESCALATION of backend hazards — DOC-GAP-188 escalates DOC-GAP-181 (empty-roles destructive UPDATE) from API-consumer hazard to 3-click UI-reachable hazard with no confirmation modal; DOC-GAP-190 escalates DOC-GAP-106 (Authorization HOT PATH soft-delete leak) from SQL-layer drift to operator-observable cross-tab asymmetric UI rendering.
+- **Findings**: 197 total (87 HIGH, 92 MEDIUM, 18 LOW)
+- **By category**: broken-url 9, drift 173, missing-page 9, coverage-gap 4, meta 9
+- **Cross-references to prior findings**: 4 findings overlap with DOC-163 F-047..F-060 (cross-referenced, not re-filed). Batch S adds 2 NEW findings (0 HIGH + 2 MEDIUM + 0 LOW) AND strengthens 5 existing findings; the batch also reconciles the index with the 5 batch-R shards (DOC-GAP-191..195) that were authored in batch R but not previously included in the index headline list. The combined batch R + S contribution to this refresh is 7 NEW findings (4 HIGH + 3 MEDIUM + 0 LOW) + 5 STRENGTHENED.
 - **Notable patterns**:
-  - **NEW 2026-05-20 batch Q: FIRST coverage of the MANAGEMENT UI MUTATION SURFACE** — 5 sidecars covering the 4 Management list components (PolicyList + RolesList + OwnersList + CollectorsList) + the AppToolbar UI shell; 6 NEW DOC-GAPs span the SPA UI auth model + Management tab visibility doc-contradiction + UI-vs-API asymmetry under DISABLED + UI-reachable destructive UPDATE + Collector token UX + Soft-deleted Policy chip rendering; coherence: strengthens=5 supersedes=0 conflicts_surfaced=0.
-  - **NEW 2026-05-20 batch Q: UI-vs-API ASYMMETRY UNDER DISABLED is the operator-trap structural insight** — DOC-GAP-187 captures the operator-facing UX manifestation of the 20+ sidecar DOC-GAP-082 META. Under DISABLED, the SPA's `<WithPermissions>` HOC universally hides Create/Edit/Delete buttons because `/api/identity` returns empty permissions; the operator sees a read-only-looking Management UI and infers "locked down"; in reality the backend accepts anonymous mutations on every Management endpoint. This is the LSN-001-class operator-trap on the platform's default deployment posture (DISABLED-default per DOC-GAP-036 + ingestion-filter-off per DOC-GAP-038).
-  - **NEW 2026-05-20 batch Q: UI-REACHABILITY DIMENSION on backend hazards** — DOC-GAP-188 (Empty-roles destructive UPDATE is reachable in 3 UI clicks with no confirmation modal — strengthens DOC-GAP-181 from API-consumer hazard to UI-operator-reachable). DOC-GAP-190 (Soft-deleted Policies still render as named chips on the Roles tab while being invisible on the Policies tab — strengthens DOC-GAP-106 with the cross-tab asymmetric UI manifestation; operator-confusion class).
-  - **NEW 2026-05-20 batch Q: EDIT-vs-DELETE UX ASYMMETRY structurally inverted** — on the Owners tab (OwnersList sidecar), Delete prompts ConfirmationDialog while Edit-with-empty-roles does NOT; yet Edit-with-empty-roles is the IRREVERSIBLE operation (role bindings hard-deleted, no audit log per DOC-GAP-083 META) while Delete is recoverable (soft-delete + name reusable per F-019). Operators relying on "Edit safe, Delete destructive" mental model are misled by the platform's inverted UX.
-  - **NEW 2026-05-20 batch Q: COLLECTOR TOKEN UX 4-caveat (DOC-GAP-189)** — (a) one-shot plaintext visibility (no recovery without rotate); (b) substring-prefix sniff fragility (`value.substring(0,6) === '******'` is the visibility detection); (c) no-grace-period rotation (in-flight ingestion fails immediately); (d) **rotation has NO security effect under default `auth.ingestion.filter.enabled=false`** — the LSN-001-class operator-trap on the default deployment posture; operator rotates "leaked token" believing security restored; default deployment renders rotation security-inert.
-  - **NEW 2026-05-20 batch Q: DISABLED-bypass META now 24-sidecar via UI-tier addition** — DOC-GAP-082 META was 17-sidecar at batch P; batch Q adds the 5 UI-axis sidecars (4 Management lists + AppToolbar shell) extending the META through the UI tier; the operator-facing UX manifestation is the LAST layer in the cross-tier cluster (auth-config wiring → filter-class → service tier → repository tier → controller tier → UI tier). The CollectorsList sidecar explicitly identifies itself as 19th sidecar facet of REFACTOR-185 (the COLLECTOR_* permission family was not in the prior 18-sidecar enumeration).
-  - **NEW 2026-05-20 batch Q: TEST-COVERAGE META extended** — DOC-GAP-137 was 5-sidecar at batch J; batch Q adds 5 NEW UI sidecars carrying ~50+ new uncovered-behaviour candidates including the soft-deleted-policy regression-pin (the F-006 drift_class manifestation), the empty-roles-Save-enabled regression-pin, the WithPermissions hide-button test, the substring-prefix sniff future-proof regression test. Test harness fully configured; doc-side follow-up unchanged — extend `developer-guides/contributing/testing-the-ui.md` with the new test-class seeds.
-  - **NEW 2026-05-20 batch Q: 2 direct live WebFetches at status 200 confirm 8 silence axes** — `/configuration-and-deployment/enable-security/authentication` (4 axes silent: SPA login form, OAUTH2 IdP-redirect, Logout mechanics, user-identifier fallback) + `/features/management` (4 axes silent: Management tab visibility model — page actually CONTRADICTS the code; destructive empty-roles UPDATE; Edit-vs-Delete confirmation asymmetry; soft-deleted Policy chip rendering). All 8 axes confirmed silent or contradicting this session.
-  - (Earlier batches' notable-pattern bullets preserved in detail/ shards; the structural insight is the FIRST MANAGEMENT UI MUTATION SURFACE coverage + the UI-vs-API asymmetry operator-trap at batch Q.)
+  - **NEW 2026-05-20 batch S: FIRST coverage of the 5 SERVICE-TIER ENCLOSING-CLASS sidecars** — AlertServiceImpl + OwnerServiceImpl + PolicyServiceImpl + RoleServiceImpl + DataSourceIngestionServiceImpl. The batch closes the 4-LAYER triangulation across all major load-bearing surfaces: controller (batch E/F/P) + service (batch I/S) + repository (batch H/N/R) + UI (batch J/Q). The service-tier primary sources supply the EXPLICIT enactment anchors for ADR-CANDIDATE-142 (partial-merge UPSERT) + ADR-CANDIDATE-143 (namespace-from-Collector) + REFACTOR-425 (empty-roles destructive UPDATE). Coherence: strengthens=5 supersedes=0 conflicts_surfaced=0.
+  - **NEW 2026-05-20 batch S: PLATFORM-WIDE @ReactiveTransactional PATTERN COMPARISON is now anchored** — DOC-GAP-122 strengthen produces the 4-RBAC-service comparison: PolicyServiceImpl (0/3 mutating methods annotated — the UNIQUE outlier) + RoleServiceImpl (3/3) + OwnerServiceImpl (3/3) + AlertServiceImpl (partial-by-design: handleExternalAlerts + applyAlertActions YES; updateStatus NO, delegated to ActivityAspect AOP) + DataSourceIngestionServiceImpl (1/1). The case-law cross-batch triangulation confirms PolicyServiceImpl's complete absence is the oversight, not the intentional design.
+  - **NEW 2026-05-20 batch S: DOC-GAP-180 promoted to FIFTH-SIDECAR triangulated coverage** — the ADR-CANDIDATE-142 (partial-merge UPSERT) + ADR-CANDIDATE-143 (namespace-from-Collector) cross-layer triangulation now has the EXPLICIT service-tier ENACTMENT primary source via DataSourceIngestionServiceImpl. The 3-line copy-construct-then-setter pattern at `prepareForUpdate` is the structural signal that the maintainer chose two-fields-only deliberately; the cross-collector ownership-preservation invariant is enforced by the same service-tier convention.
+  - **NEW 2026-05-20 batch S: DISABLED-bypass META now 29-sidecar via SERVICE-TIER addition** — DOC-GAP-082 META was 24-sidecar at batch Q; batch S adds 5 service-tier sidecars including the EXPLICIT keys-to-the-kingdom escalation chain narrative at RoleServiceImpl + OwnerServiceImpl service-tier. NEW STRUCTURAL DIMENSION: the cross-collector namespace-tenancy boundary is PRESERVED even under DISABLED-compositional bypass (via DataSourceIngestionServiceImpl's `MappingUtils.extractFieldFromNullableObject(c.namespace(), NamespacePojo::getId)` line 106). The 7-tier triangulation (wiring → config → filter → controller → service → repository → UI) is now COMPLETE.
+  - **NEW 2026-05-20 batch S: DOC-GAP-181 destructive composition anchored at THREE service-tier lines** — the empty-roles destructive UPDATE is composed across `OwnerServiceImpl.java:71` (call) + `OwnerServiceImpl.java:117-122` (collapse helper) + `OwnerServiceImpl.java:76-81` (cascade). NEW STRUCTURAL INSIGHT: the same destructive primitive is REUSED INTENTIONALLY by `delete` (line 97) — the fix MUST live at the service-tier helper, NOT at the persistence primitive (fixing it lower would break the legitimate `delete` semantic).
+  - **NEW 2026-05-20 batch S: AlertManager-webhook compound finding extends to 6 VECTORS** — DOC-GAP-107 now has the audit-provenance asymmetry dimension (DOC-GAP-196 NEW) added to the existing 5 vectors (coverage-gap + entity_oddrn-spoof + no-dedup + undocumented OpenAPI + generatorURL XSS). The WEBHOOK INGRESS is forensically silent at the ingress layer while alert-state-transitions ARE audited via the batch save path — operators expecting uniform audit cannot reconstruct AlertManager-batch provenance from the platform's audit alone.
+  - **NEW 2026-05-20 batch S: AUTHORIZATION HOT PATH performance dimension (DOC-GAP-197)** — RoleServiceImpl.getCurrentUserRoles + PolicyServiceImpl.getCurrentUserPolicies together issue 2 multi-table JOINs on EVERY authorized HTTP request with NO cache; for high-RPS deployments (sustained 50+ req/s) the cost is unbounded; live doc has ZERO mention of per-request authorization DB cost or capacity-planning guidance. Cross-link to REFACTOR-389 + REFACTOR-384.
+  - **NEW 2026-05-20 batch R reconciliation: 5 SCHEMA+REPOSITORY-tier findings now visible in the index** — batch R authored DOC-GAP-191..195 as detail/ shards but did not update the index headline list; this batch-S refresh reconciles. The 4 HIGH new entries: DOC-GAP-191 (Activity Feed enum 27-vs-20), DOC-GAP-192 (Activity Feed schema-tier root cause of audit-silence), DOC-GAP-193 (Custom-Metadata absent from docs), DOC-GAP-194 (Collector token plaintext-at-rest). The 1 MEDIUM new entry: DOC-GAP-195 (DatasetField description audit-invisible).
+  - (Earlier batches' notable-pattern bullets preserved in detail/ shards; the structural insight is the COMPLETE 4-LAYER-of-RBAC + cross-layer enactment-points at batch S.)
 
 ## Findings
 
@@ -180,7 +186,7 @@ confidence_overall: HIGH
 
 Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-fidelity discriminating context per entry; full content lives in `detail/{id}.md`. The `registry-search` subagent reads THIS file; reducers read the subagent's surfaced candidates verbatim and decide strengthen-vs-new. Do not hand-edit headline blocks below the index summary unless the entry's discriminating field changes — re-run `shard.py` or rely on the reducer to refresh.
 
-**Total entries**: 190
+**Total entries**: 197
 
 ---
 
@@ -319,7 +325,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-038 — `auth.ingestion.filter.enabled=false` default leaves `POST /ingestion/entities` unauthenticated AND `POST /ingestion/alert/alertmanager` covered by NO filter regardless of toggle — undocumented sibling-endpoint coverage gap **(batch O: NEW filter-class-layer primary source adds 5 dimensions — path-matcher-exact-literal, body-buffered-before-auth DoS, plaintext-equality non-constant-time, NotFoundException → 5xx misleading, REFACTOR-185 cross-link; batch Q: NEW UI-tier amplification via DOC-GAP-189 — Collectors tab promises rotation security the filter-off default does not enforce)**
+## DOC-GAP-038 — `auth.ingestion.filter.enabled=false` default leaves `POST /ingestion/entities` unauthenticated AND `POST /ingestion/alert/alertmanager` covered by NO filter regardless of toggle — undocumented sibling-endpoint coverage gap **(batch O: NEW filter-class-layer primary source adds 5 dimensions — path-matcher-exact-literal, body-buffered-before-auth DoS, plaintext-equality non-constant-time, NotFoundException → 5xx misleading, REFACTOR-185 cross-link; batch Q: NEW UI-tier amplification via DOC-GAP-189 — Collectors tab promises rotation security the filter-off default does not enforce; batch R: NEW SQL-tier primary source via DOC-GAP-194 — TOKEN.value plaintext-at-rest)**
 
 **Severity**: HIGH
 **Category**: drift
@@ -454,7 +460,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-082 — META-FINDING — `auth.type=DISABLED` BYPASSES the entire Authorization framework; ALL admin operations are anonymously reachable on a network-exposed deployment; **24-sidecar** triangulated cluster **(batch Q: NEW 4 Management UI list sidecars + 1 UI shell sidecar add the OPERATOR-FACING UX manifestation tier; CollectorsList sidecar identifies itself as 19th sidecar facet of REFACTOR-185; doc-side action: NEW "UI-vs-API asymmetry" sub-section addendum from DOC-GAP-187)**
+## DOC-GAP-082 — META-FINDING — `auth.type=DISABLED` BYPASSES the entire Authorization framework; ALL admin operations are anonymously reachable on a network-exposed deployment; **29-sidecar** triangulated cluster **(batch S: NEW 5 service-tier enclosing-class sidecars + EXPLICIT keys-to-the-kingdom escalation chain narrative anchored at RoleServiceImpl + cross-collector namespace-tenancy preserved-under-bypass observation via DataSourceIngestionServiceImpl; 7-tier triangulation COMPLETE)**
 
 **Severity**: HIGH
 **Category**: meta
@@ -463,7 +469,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-083 — META-FINDING — No-audit-log on RBAC mutations + ownership-binding-vs-directory-CRUD audit asymmetry **(batch Q: now 9+-sidecar via UI tier forensic silence — Management UI surfaces emit no console.log, no audit-mode toast, no persistent audit panel)**
+## DOC-GAP-083 — META-FINDING — No-audit-log on RBAC mutations + ownership-binding-vs-directory-CRUD audit asymmetry **(batch Q: now 9+-sidecar via UI tier forensic silence — Management UI surfaces emit no console.log, no audit-mode toast, no persistent audit panel; batch R: schema-tier root cause confirmed at DOC-GAP-192 — `activity.data_entity_id NOT NULL` makes audit-silence STRUCTURAL not BUG-LEVEL)**
 
 **Severity**: HIGH
 **Category**: meta
@@ -535,7 +541,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-107 — `IngestionService` is the platform's largest single point of failure — all 14 IngestionRequestProcessors run inside ONE `@ReactiveTransactional` boundary
+## DOC-GAP-107 — AlertManager-webhook compound finding — `AlertManagerController.alertManagerWebhook` at `POST /ingestion/alert/alertmanager` bypasses `IngestionDataEntitiesFilter` AND `ReactiveAlertRepositoryImpl.createAlerts` has NO `ON CONFLICT` **(batch S: 6th vector — audit-provenance asymmetry via DOC-GAP-196; service-tier PRIMARY-SOURCE re-confirmed at schema v0.3.0 framing with explicit F-007 facet correspondence)**
 
 **Severity**: HIGH
 **Category**: drift
@@ -760,7 +766,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-181 — `PUT /api/owners/{owner_id}` — empty `roles` field SILENTLY DESTROYS all role bindings on the Owner; combined with audit-silence (DOC-GAP-083), role-stripping is silent AND irreversible from logs **(NEW batch P — OwnerController.updateOwner controller-method primary source; batch Q: UI-reachability dimension added — DOC-GAP-188 confirms hazard reachable in 3 UI clicks)**
+## DOC-GAP-181 — `PUT /api/owners/{owner_id}` — empty `roles` field SILENTLY DESTROYS all role bindings on the Owner; combined with audit-silence (DOC-GAP-083), role-stripping is silent AND irreversible from logs **(NEW batch P — OwnerController.updateOwner controller-method primary source; batch Q: UI-reachability dimension added — DOC-GAP-188 confirms hazard reachable in 3 UI clicks; batch S: SERVICE-TIER ENCLOSING-CLASS PRIMARY-SOURCE — destructive composition anchored across 3 service-tier lines (71, 76-81, 117-122); same primitive REUSED by `delete` line 97 — fix MUST live at the service-tier helper not the persistence primitive)**
 
 **Severity**: HIGH
 **Category**: drift
@@ -784,6 +790,42 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 **Category**: drift
 
 **Full detail**: `detail/DOC-GAP-188.md`
+
+---
+
+## DOC-GAP-191 — **Activity Feed event-type enumeration is INCOMPLETE — 27 event types in code vs 20 documented (7-event gap)** — the live `/features/active-platform-features/activity-feed` page enumerates only 20 of the 27 values in `ActivityEventTypeDto.java:3-31`; the seven undocumented types are `DATA_ENTITY_OVERVIEW_UPDATED`, `DATA_ENTITY_METADATA_UPDATED`, `DATA_ENTITY_SCHEMA_UPDATED`, `DATA_ENTITY_RELATION_UPDATED`, `CUSTOM_METADATA_CREATED`, `CUSTOM_METADATA_UPDATED`, `CUSTOM_METADATA_DELETED`; operators reading the Activity Feed see rows with `event_type` values the docs do not enumerate AND filter UI populates from the same enum (operators using the dropdown SEE the 7 additional values but the live doc page does not explain what they MEAN); the doc-side framing presents a closed enumeration of 20 (no "etc.") which is an active mis-statement **(NEW batch R — ReactiveActivityRepositoryImpl sidecar PRIMARY SOURCE; live WebFetch 2026-05-20 status 200 confirms exactly 20 enumerated values)**
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-191.md`
+
+---
+
+## DOC-GAP-192 — **Activity Feed scope is STRUCTURALLY CONSTRAINED to data-entity events** — `activity.data_entity_id` is `NOT NULL` with FK to `data_entity(id)` (V0_0_48__add_activity.sql:4,12); RBAC mutations (Role / Policy / Owner CRUD), Datasource registration, Collector token rotations, Namespace mutations CANNOT physically emit an activity row even if a future `@ActivityLog` annotation were added; the live page is silent on this scoping constraint; this is the canonical SQL-tier primary source for the DOC-GAP-083 META audit-silence pattern — the platform's choice of `data_entity_id NOT NULL` commits the activity table to data-entity-scoped audit; a separate `platform_event` table would be required to capture non-data-entity mutations **(NEW batch R — ReactiveActivityRepositoryImpl sidecar PRIMARY SOURCE for the SCHEMA-TIER CONSTRAINT; STRENGTHENS DOC-GAP-083 META + DOC-GAP-149 META)**
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-192.md`
+
+---
+
+## DOC-GAP-193 — **Custom-Metadata feature is COMPLETELY ABSENT from operator-facing documentation** — neither `/features/data-discovery` (the natural P-01 home per system-mission.md) nor any other page in the docs site mentions `custom metadata`, `metadata field`, `metadata key`, or custom key-value annotation of data entities; the platform ships a substantial Custom Metadata feature (DATA_ENTITY_CUSTOM_METADATA_* permissions; `metadata_field` + `metadata_field_value` tables; `MetadataFieldController.listInternalMetadata`; `DataEntityController.upsertDataEntityMetadataFieldValue`; `MetadataIngestionRequestProcessor`; `INTERNAL` + `EXTERNAL` origin distinction; 7 MetadataTypeEnum values) — yet the live docs contain ZERO mention of the feature; operators evaluating ODD for a metadata-annotation use case CANNOT discover the feature from documentation alone **(NEW batch R — ReactiveMetadataFieldRepositoryImpl sidecar PRIMARY SOURCE; live WebFetch 2026-05-20 status 200 confirms absence; STRENGTHENS the batch-L DOC-GAP-156)**
+
+**Severity**: HIGH
+**Category**: missing-page
+
+**Full detail**: `detail/DOC-GAP-193.md`
+
+---
+
+## DOC-GAP-194 — **Collector token PLAINTEXT-AT-REST + AT-DOM-RENDER undocumented as operator-side threat model** — TOKEN.value is `varchar(40) NOT NULL` with NO hashing, NO encryption, NO uniqueness constraint (V0_0_28__add_token.sql:1-9); SQL match is plaintext equality (`TOKEN.VALUE.eq(token)`); every DB-side reader (replica, backup, pg_dump, jOOQ log leak, application log leak) recovers every live credential; soft-deleted collectors leave their TOKEN row orphaned; two collectors could share the same token value (no UNIQUE); at the UI tier the token renders as DOM text node on creation (one-shot plaintext visibility per DOC-GAP-189); operator's threat model is bearer-token-storage, not "the platform looks up tokens"; the doc-side fix is an explicit Token storage section + cross-link the UI-tier UX caveats from DOC-GAP-189 **(NEW batch R — ReactiveCollectorRepositoryImpl sidecar PRIMARY SOURCE; STRENGTHENS DOC-GAP-189 + DOC-GAP-038 + DOC-GAP-034)**
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-194.md`
 
 ---
 
@@ -924,7 +966,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-034 — Token Rotation operational mechanics absent from enable-security pages **(batch Q: NEW UI-tier complement via DOC-GAP-189 — Collectors tab UX 4-caveat: one-shot visibility, substring-prefix sniff, no-grace-period, rotation-no-effect-under-default)**
+## DOC-GAP-034 — Token Rotation operational mechanics absent from enable-security pages **(batch Q: NEW UI-tier complement via DOC-GAP-189 — Collectors tab UX 4-caveat: one-shot visibility, substring-prefix sniff, no-grace-period, rotation-no-effect-under-default; batch R: NEW SQL-tier primary source via DOC-GAP-194 — TOKEN.value plaintext-at-rest)**
 
 **Severity**: MEDIUM
 **Category**: drift
@@ -1239,7 +1281,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-122 — PolicyService lost-update race on `PUT /api/policies/{id}` — `PolicyServiceImpl.update` is NOT `@ReactiveTransactional`
+## DOC-GAP-122 — PolicyService lost-update race on `PUT /api/policies/{id}` — `PolicyServiceImpl.update` is NOT `@ReactiveTransactional` **(batch S: SYMMETRIC service-tier confirmation from Role + Owner + Alert + DataSourceIngestion services; the platform-wide 4-RBAC-service @ReactiveTransactional comparison is now anchored: PolicyServiceImpl is the UNIQUE outlier 0/3 while RoleServiceImpl + OwnerServiceImpl + DataSourceIngestionServiceImpl uniformly transactional)**
 
 **Severity**: MEDIUM
 **Category**: drift
@@ -1365,7 +1407,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-149 — META-FINDING — REV-3 LAYER-0 pillar-overpromise: `system-mission.md` P-09 (Security & Access Control) sub-feature "User-owner association" Confidence: HIGH; live page contains one one-sentence runtime-semantic claim **(batch N: 7-sub-mechanism + 3-layer confirmation; batch O cross-link via DOC-GAP-177 GitHub-rename adds 8th sub-mechanism)**
+## DOC-GAP-149 — META-FINDING — REV-3 LAYER-0 pillar-overpromise: `system-mission.md` P-09 (Security & Access Control) sub-feature "User-owner association" Confidence: HIGH; live page contains one one-sentence runtime-semantic claim **(batch N: 7-sub-mechanism + 3-layer confirmation; batch O cross-link via DOC-GAP-177 GitHub-rename adds 8th sub-mechanism; batch R: DOC-GAP-192 + DOC-GAP-195 add the 9th + 10th sub-mechanisms — schema-tier constraint + within-feature asymmetric @ActivityLog)**
 
 **Severity**: MEDIUM
 **Category**: meta
@@ -1536,7 +1578,7 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 
 ---
 
-## DOC-GAP-189 — Collector token UX 4-caveat undocumented — (a) one-shot plaintext visibility; (b) masking detection via fragile substring-prefix sniff (`value.substring(0,6) === '******'`); (c) no UI warning that rotation has no grace period; (d) no UI warning that rotation has NO security effect under default `auth.ingestion.filter.enabled=false` — live `/features/management` doc describes "rotate or revoke" without surfacing any of the four UX caveats **(NEW batch Q — CollectorsList UI sidecar PRIMARY SOURCE; STRENGTHENS DOC-GAP-038 + DOC-GAP-034)**
+## DOC-GAP-189 — Collector token UX 4-caveat undocumented — (a) one-shot plaintext visibility; (b) masking detection via fragile substring-prefix sniff (`value.substring(0,6) === '******'`); (c) no UI warning that rotation has no grace period; (d) no UI warning that rotation has NO security effect under default `auth.ingestion.filter.enabled=false` — live `/features/management` doc describes "rotate or revoke" without surfacing any of the four UX caveats **(NEW batch Q — CollectorsList UI sidecar PRIMARY SOURCE; STRENGTHENS DOC-GAP-038 + DOC-GAP-034; batch R: NEW SQL-tier primary source via DOC-GAP-194 — TOKEN.value plaintext-at-rest)**
 
 **Severity**: MEDIUM
 **Category**: drift
@@ -1551,6 +1593,33 @@ Per `adrs/drafts/feature-anchored-ontology.md` rev 2: this index holds the high-
 **Category**: drift
 
 **Full detail**: `detail/DOC-GAP-190.md`
+
+---
+
+## DOC-GAP-195 — **DatasetField description edits are AUDIT-INVISIBLE while internal-name edits ARE audit-logged** — `DatasetFieldServiceImpl.updateInternalName` (line 99) and `updateDatasetFieldTags` (line 119) carry `@ActivityLog` annotations; `DatasetFieldServiceImpl.updateDescription` (line 87) has NONE; the documented Activity Feed event-type enumeration lists `DATASET_FIELD_DESCRIPTION_UPDATED` under "Dataset fields (columns)" yet the implementation does NOT emit it — a doc-vs-code contradiction; operators investigating a column's description history find NO entry in the Activity Feed and incorrectly conclude "no one edited it" when in fact the description WAS edited (the platform persisted it verbatim per F-004) but the audit-emit step was skipped; one-line code fix + one-doc-page edit **(NEW batch R — ReactiveDatasetFieldRepositoryImpl sidecar PRIMARY SOURCE; cross-references DOC-GAP-191 + DOC-GAP-149 META + DOC-GAP-083 META; sibling within-feature asymmetric pattern)**
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-195.md`
+
+---
+
+## DOC-GAP-196 — **Activity-feed emission ASYMMETRY between in-platform alert ingestion and AlertManager webhook ingestion** — the WEBHOOK INGRESS is forensically silent at the ingress layer (no `log.info` of who POSTed, no `@Timed` metric, no correlation-id, no source IP/User-Agent capture) while the resulting alert-state-transitions ARE audited via the batch save path with `is_system_event=true`; operators expecting uniform audit coverage cannot reconstruct AlertManager-batch provenance from the platform's audit alone (the operator-investigative scenario "which AlertManager instance sent these 200 alerts at 03:47?" has NO platform-side answer); the live `/features/active-platform-features/activity-feed` page lists OPEN_ALERT_RECEIVED under "Alerts" but does not describe the ASYMMETRIC PROVENANCE; SQL-tier substrate per AlertServiceImpl batch-S sidecar `coherence_sweep.strengthens.[alert_received_activity_events_persist_via_batch_save_path]` and per batch R `ReactiveActivityRepositoryImpl` save path **(NEW batch S — AlertServiceImpl service-tier sidecar PRIMARY SOURCE; STRENGTHENS DOC-GAP-107 with 6th VECTOR; cross-references DOC-GAP-149 META + DOC-GAP-191 + DOC-GAP-192)**
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-196.md`
+
+---
+
+## DOC-GAP-197 — **Authorization HOT PATH issues 2 multi-table JOINs per authorized request with NO caching** — `RoleServiceImpl.getCurrentUserRoles` (5-table JOIN over user_owner_mapping ⋈ owner_to_role ⋈ role ⋈ role_to_policy ⋈ policy) + `PolicyServiceImpl.getCurrentUserPolicies` (2-table JOIN over policy ⋈ role_to_policy) together fire on EVERY authorized HTTP request via ManagementPermissionExtractor + AbstractContextualPermissionExtractor; for a busy platform with N req/s under LOGIN_FORM/OAUTH2/LDAP, the platform issues ~2N permission-resolution JOIN round-trips/s on top of business DB calls; cost is correctness-preserving (always-fresh permissions) but unbounded; live `/configuration-and-deployment/enable-security/authorization` does NOT mention per-request DB cost, cache absence, or capacity-planning guidance for high-RPS deployments; cross-link REFACTOR-389 + REFACTOR-384 (the authorization-hot-path caching recommendations) **(NEW batch S — RoleServiceImpl + PolicyServiceImpl 2-sidecar PRIMARY SOURCE; cross-references DOC-GAP-106 + DOC-GAP-122 + DOC-GAP-082 META + DOC-GAP-116 META)**
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-197.md`
 
 ---
 

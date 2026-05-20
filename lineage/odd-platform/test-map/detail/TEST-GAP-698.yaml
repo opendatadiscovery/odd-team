@@ -1,0 +1,35 @@
+gap_id: TEST-GAP-698
+category: missing-unit
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:DataSourceIngestionServiceImpl"
+pillars_affected: [P-10, P-08, P-09]
+surfaced_by:
+  - "DataSourceIngestionServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[0] (partial-merge narrowing on UPDATE)"
+  - "DataSourceIngestionServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[4] (Cross-collector preservation invariant)"
+  - "DataSourceIngestionServiceImpl.md:implicit_adrs.[0] (Partial-merge UPSERT — ONLY name + description from payload propagate)"
+  - "DataSourceIngestionServiceImpl.md:security.authorization_assertions.[3] (Implicit cross-collector ownership preservation via lines 86-88)"
+behaviour: |-
+  **`DataSourceIngestionServiceImpl.prepareForUpdate` PRESERVES collector_id / namespace_id / token_id from the EXISTING row — the partial-merge invariant is THE SECURITY-CRITICAL CROSS-COLLECTOR OWNERSHIP-PRESERVATION CONTRACT.** Lines 74-92 `new DataSourcePojo(a).setName(i.getName()).setDescription(i.getDescription())` — explicit COPY-CONSTRUCT from existing then explicit setter on ONLY two fields. THE STOLEN-TOKEN ATTACK SCENARIO: Collector A originally registered ODDRN X (existing pojo has `collector_id = A`); attacker steals Collector B's token + re-POSTs `/ingestion/datasources` containing ODDRN X. The expected (protective) outcome: the bulkUpdate input's pojo MUST still have `collector_id = A` (the existing collector_id is preserved through the copy-construct at line 86; the mapper's output at line 107 sets `collector_id = B` but is DISCARDED on the update path). The existing test (`DataSourceIngestionServiceTest`) echoes the bulkUpdate input via `Flux.fromIterable(i.getArgument(0))` (line 85), so the SHAPE of items passed to bulkUpdate is verified only via the `expectNextSequence` assertion — the test does NOT explicitly assert that the `DataSourcePojo` passed to bulkUpdate has the SAME `collector_id` / `namespace_id` / `token_id` as the EXISTING pojo. A regression that changed `prepareForUpdate` to `new DataSourcePojo().setName(...).setDescription(...)` (WITHOUT the copy-construct from `a`) would NOT be caught — the bulkUpdate input would have null collector_id, but the mock would echo it back and the test's `expectNextSequence` would still pass. The TEST PINS THE CROSS-COLLECTOR OWNERSHIP-PRESERVATION CONTRACT explicitly: a stolen Collector B token CANNOT take over a datasource originally registered by Collector A.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceImplCrossCollectorOwnershipPreservationTest.java"
+  name: "prepareForUpdate_existingRowFromCollectorA_currentRequestFromCollectorB_preservesCollectorIdA_pinsStolenTokenDefence"
+evidence:
+  - "DataSourceIngestionServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[0]): 'The partial-merge narrowing on UPDATE — the test echoes the bulkUpdate input via Flux.fromIterable(i.getArgument(0)). The test does NOT explicitly assert that the DataSourcePojo passed to bulkUpdate has the SAME collector_id / namespace_id / token_id as the EXISTING pojo. A regression that changed prepareForUpdate to new DataSourcePojo().setName(...).setDescription(...) WITHOUT the copy-construct would NOT be caught.'"
+  - "DataSourceIngestionServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[4]): 'Cross-collector preservation invariant — collector A originally registered ODDRN X (existing pojo has collector_id = A); collector B''s payload contains ODDRN X. After createDataSources, the bulkUpdate input''s pojo MUST still have collector_id = A. This invariant is the cross-collector OWNERSHIP-preservation contract.'"
+  - "DataSourceIngestionServiceImpl.md says (implicit_adrs.[0]): 'Partial-merge UPSERT — ONLY name + description from payload propagate; everything else is preserved from existing row. The deliberate signal is the SYMMETRY between the create-path mapper (sets 5 fields) AND the update-path narrower (SAME 2 fields). The maintainer chose name+description twice.' confidence: HIGH"
+  - "DataSourceIngestionServiceImpl.md says (security.authorization_assertions.[3]): 'Implicit cross-collector ownership preservation via lines 86-88. The COPY-CONSTRUCT preserves the EXISTING collector_id; only name + description are overwritten. A stolen Collector A token CANNOT take over a datasource originally registered by Collector B by re-POSTing with the same ODDRN — collector_id is preserved through the copy. THIS IS A PROTECTIVE INVARIANT.'"
+  - "Source: DataSourceIngestionServiceImpl.java:74-92 (prepareForUpdate)"
+cross_references:
+  - "REFACTOR-422 (silent no-propagation of connection_url / type / active — sister surface)"
+  - "REFACTOR-423 (silent UI overwrite on next collector startup — sister surface)"
+  - "ADR-CANDIDATE-142 (partial-merge UPSERT — the named ADR)"
+  - "F-008 (P-10:F-001 Batch Ingestion)"
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001"]
+proposed_action: |-
+  Add `DataSourceIngestionServiceImplCrossCollectorOwnershipPreservationTest.prepareForUpdate_existingRowFromCollectorA_currentRequestFromCollectorB_preservesCollectorIdA_pinsStolenTokenDefence`. (a) Mockito-style test. (b) Mock `reactiveCollectorRepository.getDto(collectorB_id)` to return Collector B's CollectorDto. (c) Mock `reactiveDataSourceRepository.getDtosByOddrns([oddrnX])` to return an EXISTING DataSourceDto whose pojo has `collector_id = collectorA_id` + `namespace_id = nsA` + populated `token_id`. (d) POST payload with `{ oddrn: oddrnX, name: "newName", description: "newDesc" }`. (e) Capture the `DataSourcePojo` passed to `bulkUpdate(...)` via ArgumentCaptor. (f) Assert the captured pojo has `collectorId == collectorA_id` (NOT collectorB_id), `namespaceId == nsA` (NOT Collector B's namespace), `tokenId == original tokenId` (NOT null and NOT Collector B's). Assert `name == "newName"`, `description == "newDesc"`. (g) Add a `// REGRESSION-PIN — Cross-collector ownership preservation is a SECURITY-CRITICAL INVARIANT. A stolen Collector B token CANNOT take over a datasource originally registered by Collector A by re-POSTing with the same ODDRN. The defence lives in the copy-construct at lines 86-88 (new DataSourcePojo(a)). A REFACTOR that changes prepareForUpdate to use new DataSourcePojo() (without the copy-construct) would silently allow the attack. This test pins the invariant against that REFACTOR.` comment block.
+batch: 2026-05-20-S
+feature_id: F-008

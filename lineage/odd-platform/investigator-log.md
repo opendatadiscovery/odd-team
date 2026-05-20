@@ -1588,3 +1588,62 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - F-001 + F-003 merge candidate still maintainer-pending.
 - Concept-merger deferred 1 strengthen for next batch (read-collaborative-cross-owner-enumeration; DatasetField.listByTerm as 25th surface — file size risk).
 
+
+## Batch 2026-05-20-S — Services tier: Owner + Policy + Role + DataSourceIngestion + Alert (auto-extended; **50% effective-coverage milestone CROSSED**)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: 103 prior + 5 new = **106 total**; 0 deferred. **Auto-extended** after queue exhaustion at R (4 consecutive `/next-batch` invocations into empty queue triggered auto-extension).
+- **Theme**: Services tier — F-006 audit-silence primary-source closure (the canonical missing layer — referenced 5+ times across batches H-R but never directly enriched)
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `OwnerServiceImpl` | P-08+P-09 | **REFACTOR-425 destructive-empty-roles cascade COMPOSED across 3 lines** (71+76-81+117-122 — getRoleIdsList null+empty collapse silently reaches the explicit wipe-all primitive that delete uses INTENTIONALLY at line 97). Full-set REPLACEMENT role-rebind. Cascade-block not atomic with soft-delete. Service-tier closure of F-019 + 6-sidecar audit-silence intersection. |
+| `PolicyServiceImpl` | P-09 | 4 F-006 drift facets PRIMARY-SOURCE at service tier. **NO @ReactiveTransactional** (asymmetric vs RoleServiceImpl) — likely accidental, lost-update race exposed. NO @ActivityLog (7th audit-silence sidecar). **Schema-rooted fix requirement**: V0_0_48 NOT NULL FK means annotation fix would FAIL → schema migration required. **10 STRENGTHENS**. |
+| `RoleServiceImpl` | P-09 | 10 drift facets (A-J). Create-path Administrator/User name asymmetry PRIMARY-SOURCE (lines 49-61 no check vs 68/81-82/104 four guards). **Three-policy case-sensitivity mismatch** (create no-check / update case-sensitive .equals / delete case-insensitive .equalsIgnoreCase). @ReactiveTransactional uniformity = deliberate POSITIVE contrast. **AUTHORIZATION HOT PATH**: getCurrentUserRoles invoked from PolicyServiceImpl on every authorized request. |
+| `DataSourceIngestionServiceImpl` | P-10+P-08 | **SERVICE-TIER VERTEX of ADR-142+143 triangulation** — primary file:line at 74-92 (copy-construct + 2-field setter) and line 106 (namespace inheritance via MappingUtils). ADR-142 now **4-LAYER triangulated** (controller P + service S + repo R + schema). 3 NEW conflicts: dead-code branch lines 82-84; asymmetric defense-in-depth (ODDRN checked but not name); operator-name-precedence convention extension. |
+| `AlertServiceImpl` | P-07 | **All 3 F-007 drift facets PRIMARY-SOURCE at service tier** (cross_tenant_alert_creation verbatim at line 178; no_idempotency_no_audit via handleExternalAlerts SKIP-AlertActionResolver lines 151-191 vs applyAlertActions 222-227; unauthenticated_payload_trust via deliberate AuthIdentityProvider OMISSION). Activity emission is via BATCH SAVE path NOT @ActivityLog AOP — **audit gap is at INGRESS only**. **11 STRENGTHENS — strongest single-sidecar coherence signal of the sprint**. 2 SUPERSEDES (doc URL refreshes). |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 281 → **296 concepts** | +11 new (9 invariants + 2 operations) + 11 strengthened + 4 superseded-tombstones (Rule 6 caught 4 duplicates pre-emit; folded into existing). NEW: @ReactiveTransactional asymmetry; three-policy case-sensitivity mismatch; authorization hot path no-cache; ALERTSERVICE handle-external-alerts skip-resolver; audit-silence at INGRESS only (not state-transitions); destructive-empty-roles COMPOSED; ADR-142+143 service-tier vertex; PolicyService lost-update race; F-006 9-sidecar extension. |
+| adr-archaeologist (ADRs) | 153 → **156** | +3 (154-156) + 4 strengthened (ADR-142 → 4-LAYER triangulation; ADR-015 owner-scoping → 21+ sidecar; ADR-146 schema-rooted audit; ADR-144). New: audit-context-at-service-not-controller; reopen-conflict-guard-intent; ingestion-path-divergence. |
+| adr-archaeologist (scopes) | 461 → **466** | +5 (462-466) + 2 strengthened (REFACTOR-425 service-tier composition; REFACTOR-085 activity retention). New HIGH: PolicyService @ReactiveTransactional gap; AlertManager service-tier compound XSS/cross-tenant/no-idempotency; authorization hot-path no-cache; reopen-conflict race; IllegalArgumentException → HTTP 500. 5 wisdom-test reclassifications from implicit-ADRs → scopes. |
+| doc-gap-finder | 195 → **197** | +2 (196-197) + 5 strengthened (DOC-107 + DOC-180 + DOC-181 + DOC-122 + DOC-082 META). |
+| test-coverage-mapper | 677 → **701 indexed (702 written; 1 new broken-yaml quarantine — TEST-GAP-687)** | +25 (680-704) + 7 strengthened. +2 CRITICAL → 114 CRITICAL (TEST-GAP-680 OwnerService REFACTOR-425 composition; TEST-GAP for AlertService cross_tenant_alert_creation). |
+| feature-flow-builder | 21 → **21 features** (+0 new, +5 extended) | F-019 + F-006 + F-007 + F-008 + F-020 ALL extended. F-006 audit-silence now **8-SIDECAR** at feature-flow level (UI tier + 6 mutation tier including services); concept tier sees 9-SIDECAR refinement. Coherence: 33 strengthens / 0 supersedes / 0 conflicts. |
+
+### Coverage state after batch S
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 106 | **26.8%** (was 26.1%) |
+| Effective coverage | 198 | **50.1%** (was 49.6%) — **50% milestone CROSSED** |
+| Features discovered | 21 (unchanged) | service tier extends API features |
+| Total test-gaps | 701 indexed (702 written) | 114 CRITICAL (was 112) |
+
+### Cross-batch triangulation deltas
+
+- **50% effective-coverage milestone CROSSED** (50.1%)
+- **F-006 audit-silence pattern**: now **9-SIDECAR with SCHEMA-LAYER ROOT identified + 8-tier closure** (Controller-E + Policy-repo-H + Role-repo-N + UI-Q + Activity-repo-R schema root + Owner-service-P→S + Policy-service-S + Role-service-S). Schema migration is the load-bearing fix anchor.
+- **ADR-142 UPSERT-by-ODDRN partial-merge**: now **4-LAYER triangulated** (controller + service + repo + SQL) with full file:line evidence at every layer
+- **ADR-015 owner-scoping mechanism**: now **21+-SIDECAR** (was 19; OwnerService + PolicyService + RoleService all touch)
+- **AlertServiceImpl 11-strengthens**: strongest single-sidecar coherence signal of the entire sprint
+- **Authorization HOT PATH discovered**: `getCurrentUserRoles` invoked from PolicyServiceImpl on every authorized request (no cache; 2-JOIN cost per request)
+- **Audit-emission asymmetry refined**: INGRESS silence vs state-transition audit — F-007 webhook ingress is unauthenticated AND silently received, but the RESULTING `OPEN_ALERT_RECEIVED` events ARE persisted via batch save path
+- **REFACTOR-185 DISABLED-mode bypass**: now 19-SIDECAR (unchanged from R; service tier inherits but adds no new invocation site)
+- **LSN-018 Rule 6**: 4 supersede-tombstones caught pre-emit by concept-merger; 5 wisdom-test reclassifications by adr-archaeologist; all conflicts resolved before commit
+
+### Follow-ups (logged, not blocking)
+
+- TEST-GAP-687 broken-yaml (test-coverage-mapper emit-bug — block-collection issue); quarantined.
+- 2 broken-yaml from batch Q + 1 from batch P + 3 earlier persist.
+- 207 detail-without-index in refactoring-scopes; 82 in implicit-adrs.
+- 17 detail-without-index + 4 index-without-detail in doc-gaps.
+- Coherence-sweep candidates: 40k (R) → 41k (S; linear growth).
+- F-001 + F-003 merge candidate still maintainer-pending.
+

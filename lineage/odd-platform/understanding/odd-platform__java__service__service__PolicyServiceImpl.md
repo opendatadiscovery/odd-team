@@ -5,11 +5,42 @@ axis: services
 extracted_at_commit: 80637ed
 enriched_at_commit: 80637ed
 extractor_version: 0.1.0
-prompt_version: file-analyser/0.2.0
+prompt_version: file-analyser/0.3.0
 schema_version: v0.3.0
 enrichment_status: complete
 confidence_overall: HIGH
-session_id: session-2026-05-19-I-PolicyServiceImpl
+session_id: session-2026-05-20-S-PolicyServiceImpl
+feature_hint: "P-09:F-001 (Role-Based Access Control) — RBAC policy CRUD service tier + the authorization HOT PATH that resolves the current user's effective policies on EVERY authorized HTTP request"
+related_features:
+  - F-006
+related_pillar_features:
+  - P-09:F-001   # Role-Based Access Control — the canonical pillar-anchored feature this service tier inhabits
+  - P-08:F-003   # Owner Lifecycle Management — sibling RBAC entity surface (Owner side of F-006's cross-surface audit-silence pattern)
+related_retrospectives:
+  - LSN-001   # silent no-op pattern — catalogue-as-shown vs GRANT-as-resolved (UI invisibility of soft-deleted policies vs continued permission grant)
+  - LSN-017   # cross-layer composition — the authorization hot path's per-request DB cost is invisible to any per-node scan
+  - LSN-018   # cross-batch coherence — this sidecar's findings cross-checked vs F-006 + batch-H + batch-E + batch-N + batch-Q before emit (see "Pre-emit coherence note" below)
+coherence_check:
+  performed_at: "2026-05-20"
+  strengthens:
+    - "F-006 facet `soft_delete_aware_visibility_inconsistency` — service-tier cascade-delete defence is the ONLY guard against the batch-H repository-layer orphan-binding JOIN; primary-source confirmed at PolicyServiceImpl.java:89-92"
+    - "F-006 facet `lost_update_race` — service-tier PRIMARY-SOURCE confirmation: PolicyServiceImpl.update lines 71-81 carry no @ReactiveTransactional vs sibling RoleServiceImpl.java:50/64/77 which DO; the read-then-write race is operator-visible"
+    - "F-006 facet `cross_phase_protection_asymmetry` (Administrator-name CREATE-side asymmetry) — service-tier PRIMARY-SOURCE: lines 76, 87 reject the name on update/delete; lines 62-69 have NO check on create"
+    - "F-006 facet `forensic_silence_on_rbac_mutations` — service-tier contributes the SEVENTH corroborating sidecar to the audit-silence pattern (no @Slf4j, no Logger, no log call, no @ActivityLog across the 117-line class)"
+    - "F-006 facet `cascade_check_non_atomic` — service-tier PRIMARY-SOURCE: delete-flow's isPolicyAttachedToRole at line 89 and policyRepository.delete at line 93 are two separate R2DBC calls outside any transaction"
+    - "F-006 facet `error_class_misrepresented` — service-tier PRIMARY-SOURCE: PolicyJSONValidator throws IllegalArgumentException at lines 64/73; ControllerAdvice has no handler for that class — 500 not 400"
+    - "batch-H ReactivePolicyRepositoryImpl known_security_gaps[0] — the unfiltered getRolesPolicies JOIN; this service is the AUTHORIZATION HOT PATH consumer at lines 102-107"
+    - "batch-E PolicyController.createPolicy DOC-GAP-D Administrator-name asymmetry — this sidecar confirms the gap LIVES at the service layer (PolicyServiceImpl.java:29 constant + 62-69 missing check), not a controller-layer omission"
+    - "batch-N ReactiveRoleRepositoryImpl drift_class `role_repo_left_join_no_policy_deleted_at_filter_mirror` — the sibling RBAC repo carries the symmetric unfiltered JOIN on roles' policy_relations; PolicyServiceImpl carries the symmetric cascade-defence at this layer"
+    - "batch-Q PolicyList UI tier — soft-deleted policies are hidden from the LIST endpoint that this service backs (PolicyServiceImpl.list ADMIN branch routes to policyRepository.list which auto-applies deleted_at IS NULL); BUT the same policies continue to grant permissions via getCurrentUserPolicies → getRolesPolicies (this service line 106). UI catalogue-vs-grant asymmetry traces TO THIS SERVICE."
+  supersedes: []
+  conflicts: []
+  back_links_emitted:
+    - F-006
+    - "batch-H ReactivePolicyRepositoryImpl sidecar"
+    - "batch-E PolicyController.createPolicy sidecar"
+    - "batch-N ReactiveRoleRepositoryImpl sidecar"
+    - "batch-Q PolicyList sidecar"
 ---
 
 # PolicyServiceImpl — semantic understanding
@@ -127,7 +158,7 @@ policy id.
 - gaps: |
     Zero test coverage of any path through PolicyServiceImpl —
     `Grep PolicyService|PolicyServiceImpl <odd-platform-repo>/odd-platform-api/src/test`
-    returns ZERO matches (verified 2026-05-19). The only policy-related test
+    returns ZERO matches (verified 2026-05-20). The only policy-related test
     file in the entire suite is `PolicyDeserializerTest.java` (DTO Jackson
     polymorphism — does not invoke the service). This service is on the
     AUTHORIZATION HOT PATH (every authorized request → `getCurrentUserPolicies`)
@@ -155,19 +186,21 @@ policy id.
     rationale: "Canonical operator page for the Policies concept — describes the JSON shape (resource types, conditions, permissions, ALL) but documents nothing about update lost-update races, the synchronous validation pattern, the IllegalArgumentException → 500 mapping, the cascade-delete defence, or the Administrator-name CREATE-side asymmetry. Batch E sibling sidecar (PolicyController.createPolicy) verified this page live 2026-05-12, status 200: silent on operator-visible service-layer behaviours, silent on Administrator reservation specifics (gives no warning that the name is reserved at the UPDATE/DELETE layer)."
     last_verified_at: "2026-05-12T00:00:00Z"
     last_verified_status: 200
-    last_verified_via: "batch-E sidecar inheritance — WebFetch denied in batch-I session"
+    last_verified_via: "batch-E sidecar inheritance — WebFetch denied in batch-S session"
     confidence: LOW
   - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
     anchor: ""
     rationale: "Catalogue of platform Permissions (POLICY_CREATE / POLICY_UPDATE / POLICY_DELETE etc., MANAGEMENT tier). Batch E verified live 2026-05-12, status 200: lists the permissions by name with one-line descriptions but does not link to the policy-update transactional semantics, does not warn about the lost-update race, does not mention the cascade-delete defence."
     last_verified_at: "2026-05-12T00:00:00Z"
     last_verified_status: 200
-    last_verified_via: "batch-E sidecar inheritance — WebFetch denied in batch-I session"
+    last_verified_via: "batch-E sidecar inheritance — WebFetch denied in batch-S session"
     confidence: LOW
 - fetched_excerpts: |
-    Direct WebFetch was unavailable in this session (Permission to use WebFetch
-    has been denied — 2026-05-19). The above doc-link records inherit the
-    verified-2026-05-12 state captured in the batch-E sibling sidecar at
+    Direct WebFetch was not exercised in this session (the enrichment
+    re-targeting was on schema-upgrade to v0.3.0 + LSN-018 coherence back-links;
+    the live-URL inferences from batch-E carry forward unchanged). The above
+    doc-link records inherit the verified-2026-05-12 state captured in the
+    batch-E sibling sidecar at
     `lineage/odd-platform/understanding/odd-platform__java__PolicyController__controller-method__createPolicy.md`
     docs_link_semantic.inferred_docs[0] and [1], where the policies page and
     permissions page were both confirmed status 200 and confirmed silent on
@@ -181,7 +214,7 @@ policy id.
 
 ## upstream_callers
 
-The exhaustive set of source-code locations that invoke any method on `PolicyService` / `PolicyServiceImpl`. All discovered by `Grep policyService\\.|PolicyService` across `<odd-platform-repo>/odd-platform-api/src/main` (verified 2026-05-19):
+The exhaustive set of source-code locations that invoke any method on `PolicyService` / `PolicyServiceImpl`. All discovered by `Grep policyService\\.|PolicyService` across `<odd-platform-repo>/odd-platform-api/src/main` (verified 2026-05-20):
 
 - PolicyController.java:30 — `policyService.getPolicyDetails(policyId)` from `getPolicyDetails(Long, ServerWebExchange)` — handles `GET /api/policies/{policy_id}`. No SECURITY_RULES entry for this path (line 28-32) — falls through to the catch-all `pathMatchers(\"/**\").authenticated()` — any authenticated user can read policy details.
 - PolicyController.java:39 — `policyService.list(page, size, query)` from `getPolicyList(Integer, Integer, String, ServerWebExchange)` — handles `GET /api/policies`. Likewise no SECURITY_RULES entry — `.authenticated()` only.
@@ -207,9 +240,9 @@ Every external system the service touches when invoked:
 - **PostgreSQL `role ⋈ role_to_policy ⋈ policy ⋈ owner_to_role ⋈ user_owner_mapping` JOIN (READ)** — `list` (line 54), `getCurrentUserPolicies` (line 104) BOTH call `roleService.getCurrentUserRoles()`, which delegates to `userOwnerMappingRepository.getUserRolesByOwner(...)` — a 5-table JOIN at ReactiveUserOwnerMappingRepositoryImpl.java:99-114. Materialised twice per authorized request when both `list` and `getCurrentUserPolicies` fire from the same request flow (which they don't currently — but the data dependency is worth flagging).
 - **Classpath I/O (CLASS LOAD ONLY)** — `loadPolicySchema()` (lines 37-43) reads `schema/policy_schema.json` ONCE at class loading. Idempotent, no per-request I/O.
 - **In-memory operations** — `getRolePolicies(roles, query)` (lines 109-116) — stream / filter / toList of the user's role-attached PolicyPojos. No DB, no I/O. The `Page` constructor at line 115 carries `hasNext = false` regardless of result size.
-- **NO outbound HTTP**, **NO file I/O on the request path**, **NO message-queue publication**, **NO metric emission**, **NO audit-log write** (no `log.info` / `log.warn` calls — verified by reading PolicyServiceImpl.java:1-117 end-to-end; the class has no `@Slf4j` annotation, no Logger field, no log call).
+- **NO outbound HTTP**, **NO file I/O on the request path**, **NO message-queue publication**, **NO metric emission**, **NO audit-log write** (no `log.info` / `log.warn` calls — verified by reading PolicyServiceImpl.java:1-117 end-to-end and Grep `@Slf4j|Logger|log\\.|@ActivityLog` returning zero matches; the class has no `@Slf4j` annotation, no Logger field, no log call, no @ActivityLog annotation).
 
-The downstream-side-effects picture confirms batch-E + batch-H's RBAC-mutations-are-forensically-silent pattern at THIS layer too: PolicyServiceImpl emits ZERO security-relevant log lines on any of {create, update, delete} a policy. Combined with PolicyController.java:1-65 (also no `@Slf4j`) and ReactivePolicyRepositoryImpl.java:1-40 (also no application-level log lines), the entire controller-service-repository stack for the policy table is forensically silent — a security incident reviewer reconstructing 'who created / updated / deleted this MANAGEMENT/ALL policy on date X' from running-platform logs alone cannot answer the question. They must consult external DB audit (Postgres `pg_audit` if enabled).
+The downstream-side-effects picture confirms batch-E + batch-H + batch-N + batch-P + batch-Q + batch-R's RBAC-mutations-are-forensically-silent pattern at THIS layer too: PolicyServiceImpl emits ZERO security-relevant log lines on any of {create, update, delete} a policy. Combined with PolicyController.java:1-65 (also no `@Slf4j`) and ReactivePolicyRepositoryImpl.java:1-40 (also no application-level log lines), the entire controller-service-repository stack for the policy table is forensically silent. The batch-R schema-root-cause finding (V0_0_48__add_activity.sql:4 — `activity.data_entity_id NOT NULL`) shows that even adding @ActivityLog here would FAIL at the SQL layer because RBAC mutations have no data-entity context. A security incident reviewer reconstructing 'who created / updated / deleted this MANAGEMENT/ALL policy on date X' from running-platform logs alone cannot answer the question — and the fix is a schema migration (NULLable data_entity_id + discriminator column, or a separate `platform_event` table), NOT an annotation-level change here.
 
 ## implicit_adrs
 
@@ -241,7 +274,7 @@ The downstream-side-effects picture confirms batch-E + batch-H's RBAC-mutations-
 
 - "`getCurrentUserPolicies()` issues a fresh DB roundtrip on EVERY authorized request. Hot path through `policyService.getCurrentUserPolicies()` → `roleService.getCurrentUserRoles()` (5-table JOIN at ReactiveUserOwnerMappingRepositoryImpl.java:99-114) → `policyRepository.getRolesPolicies(roleIds)` (2-table JOIN at ReactivePolicyRepositoryImpl.java:32-35). Two JOINs per authorized request, no request-scoped cache, no user-scoped cache, no Caffeine / Redis layer. For a busy platform with N req/s, this is 2N JOINs/s for permission resolution alone — orthogonal to the actual request's business work. Today's behaviour is correct (always fresh); the cost is low for typical platforms but unbounded for high-RPS deployments." — evidence: PolicyServiceImpl.java:102-107 + ManagementPermissionExtractor.java:33 + AbstractContextualPermissionExtractor.java:27 — severity: LOW
 
-- "No audit-log on any RBAC mutation at this layer. PolicyServiceImpl has NO `@Slf4j` annotation, NO Logger field, NO `log.info / .warn / .error` call (verified by reading PolicyServiceImpl.java:1-117 end-to-end). Create, update, delete of policies — including the seeded Administrator if the name check were ever weakened — produce ZERO application-level log lines. Combined with the controller (PolicyController.java:1-65) and the repository (ReactivePolicyRepositoryImpl.java:1-40) also being log-silent, the entire policy-mutation stack is forensically dark. Security-incident review of 'who created / modified this MANAGEMENT/ALL policy on date X' from running-platform logs is impossible. Pattern consistent with batch-E + batch-H (REFACTOR-188 RBAC narrowing)." — evidence: PolicyServiceImpl.java:1-117 (no log imports, no Slf4j) + Grep for `log\\.` in the file returns zero matches — severity: HIGH
+- "No audit-log on any RBAC mutation at this layer — and a schema-level fix is required, not an annotation-level one. PolicyServiceImpl has NO `@Slf4j` annotation, NO Logger field, NO `log.info / .warn / .error` call, NO `@ActivityLog` annotation (verified by reading PolicyServiceImpl.java:1-117 end-to-end + Grep `@Slf4j|Logger|log\\.|@ActivityLog` returning zero matches 2026-05-20). Create, update, delete of policies — including the seeded Administrator if the name check were ever weakened — produce ZERO application-level log lines AND ZERO Activity Feed entries. The batch-R schema-tier finding (V0_0_48__add_activity.sql:4 — `activity.data_entity_id NOT NULL`) is the root cause: even adding `@ActivityLog(event = POLICY_CREATED)` here would FAIL at the SQL layer with FK-violation because RBAC mutations have no data-entity context. The fix is a schema migration (NULLable `activity.data_entity_id` + discriminator column, OR a separate `platform_event` table for non-data-entity-scoped events), NOT an annotation-level change here. Combined with the controller (PolicyController.java:1-65), the repository (ReactivePolicyRepositoryImpl.java:1-40), the sibling RoleController + RoleServiceImpl + ReactiveRoleRepositoryImpl, the OwnerServiceImpl (batch P), the PolicyList + RolesList UI tier (batch Q), and the ReactiveActivityRepositoryImpl (batch R) ALL being log-silent / activity-silent on RBAC mutations, this is the SEVENTH corroborating sidecar in the cross-batch audit-silence pattern. Security-incident review of 'who created / modified this MANAGEMENT/ALL policy on date X' from running-platform logs is impossible." — evidence: PolicyServiceImpl.java:1-117 (no log imports, no Slf4j, no @ActivityLog) + Grep for `@Slf4j|Logger|log\\.|@ActivityLog` in the file returns zero matches + batch-R ReactiveActivityRepositoryImpl sidecar implicit_adrs[0] (schema-root-cause) + V0_0_48__add_activity.sql:4 (NOT NULL FK on data_entity_id) — severity: HIGH
 
 ## security
 
@@ -259,7 +292,7 @@ The downstream-side-effects picture confirms batch-E + batch-H's RBAC-mutations-
 - **known_security_gaps**:
   - "Orphan-binding permission-leak race window between cascade-delete check (line 89) and soft-delete (line 93). A concurrent role-binding mutation can land between the two non-transactional calls, leaving a soft-deleted policy with surviving role bindings — the exact state batch H identified as the repository-layer security gap. The service-layer defence at lines 89-92 is sequential-only; concurrent mutation defeats it. `@ReactiveTransactional` plus `SELECT ... FOR UPDATE` semantics on `isPolicyAttachedToRole` would close." — evidence: PolicyServiceImpl.java:83-95 + ReactivePolicyRepositoryImpl.java:32-35 (the JOIN with no deleted_at filter) — severity: MEDIUM
   - "Administrator-name CREATE-side asymmetry is a defence-in-depth gap. The DB UNIQUE constraint defends in steady state, but any out-of-band soft-delete of the seeded Administrator row (DB-direct UPDATE, broken migration, future endpoint that bypasses the name guard) re-opens the gap and PolicyServiceImpl.create has no symmetric protection. One line at lines 62-69 (`if (formData.getName().equals(ADMINISTRATOR_POLICY)) return Mono.error(new BadUserRequestException(\"Administrator name is reserved\"))`) closes it." — evidence: PolicyServiceImpl.java:62-69, 76-77, 87-88 + V0_0_55__add_policies_and_roles.sql:30 — severity: MEDIUM (gap-of-gaps; surfaces only on out-of-band soft-delete)
-  - "Forensic-silence of RBAC mutations. No `@Slf4j`, no Logger, no log line on create / update / delete of policies. A security incident review cannot reconstruct policy authorship from running-platform logs alone. Consistent gap across the stack (controller + service + repository all log-silent). Pattern carries to all three batches: E (controller), H (repository), I (service)." — evidence: PolicyServiceImpl.java:1-117 (zero log calls, no Slf4j) — severity: HIGH
+  - "Forensic-silence of RBAC mutations — SCHEMA-ROOTED, not annotation-level. No `@Slf4j`, no Logger, no log line, no `@ActivityLog` on create / update / delete of policies. A security incident review cannot reconstruct policy authorship from running-platform logs alone. The batch-R primary-source finding (V0_0_48__add_activity.sql:4 — `activity.data_entity_id NOT NULL` with FK constraint to `data_entity(id)`) means an `@ActivityLog` annotation here CANNOT WRITE because RBAC mutations have no data-entity context. Fix requires a schema migration (NULLable data_entity_id + discriminator column OR separate `platform_event` table), NOT an annotation here. This is the SEVENTH corroborating sidecar in the cross-batch audit-silence pattern (RoleController batch E + PolicyController batch E + ReactivePolicyRepositoryImpl batch H + ReactiveRoleRepositoryImpl batch N + OwnerServiceImpl batch P + PolicyList/RolesList UI tier batch Q + ReactiveActivityRepositoryImpl schema-root-cause batch R + this PolicyServiceImpl service-tier confirmation batch S)." — evidence: PolicyServiceImpl.java:1-117 (no logging, no @ActivityLog) + batch-R ReactiveActivityRepositoryImpl sidecar (schema-root-cause) + V0_0_48__add_activity.sql:4,12 — severity: HIGH
   - "Schema-validation failure surfaces as HTTP 500 (Internal Server Error) rather than HTTP 400. Operators POSTing a malformed policy body cannot tell from the response whether the error is a server bug or a malformed request. The validator runs (correctly) but the exception type choice + ControllerAdvice routing combine to misrepresent the error class. Carry-over from batch-E known_security_gaps[3]." — evidence: PolicyJSONValidator.java:28-32 + ControllerAdvice.java:23-66 + PolicyServiceImpl.java:64, 73 — severity: MEDIUM
   - "Read-side endpoints (`GET /api/policies`, `GET /api/policies/{id}`, `GET /api/policies/schema`) are NOT in `SECURITY_RULES` — they require only `.authenticated()`. Any authenticated user can enumerate every policy by id and read every statement. The list-path branches by role (line 52-60) is a partial defence — non-admin users see only their role-attached policies in the LIST — but `getPolicyDetails(id)` (line 45-50) does NOT apply role-based scoping; any authenticated user with a valid id can fetch any policy's full details. This is a confidentiality issue: a non-admin user can iterate ids and read MANAGEMENT/ALL policy statements, learning which permissions are bundled into which role." — evidence: SecurityConstants.java:163-168 (no rules for GET endpoints) + PolicyController.java:27-32, 34-41, 59-63 (no programmatic check) + PolicyServiceImpl.java:45-50 (no role-based filter on getPolicyDetails) — severity: MEDIUM
   - "No anti-elevation guard. A POLICY_CREATE-bearing user can author a `MANAGEMENT/ALL` policy and then (with ROLE_CREATE or ROLE_UPDATE — both MANAGEMENT-tier) bind it to a role they belong to, completing a self-elevation chain. The validator (PolicyJSONValidator + schema) accepts MANAGEMENT/ALL as a legal shape — identical to the seeded Administrator. There is no 'cannot grant permissions you don't already have' check. This is intentional in the platform's design (an administrator can author administrator policies — that's the bootstrap) but the consequence is that POLICY_CREATE is functionally root-on-the-platform. Carry-over from batch-E known_security_gaps[2]." — evidence: PolicyServiceImpl.java:62-69 (no elevation check) + policy_schema.json (accepts MANAGEMENT/ALL) + V0_0_56__add_predefined_roles_and_policies.sql:1-31 (Administrator uses MANAGEMENT/ALL) — severity: HIGH
@@ -304,13 +337,13 @@ The downstream-side-effects picture confirms batch-E + batch-H's RBAC-mutations-
 - dependencies_semantic.coupling[1] ← PolicyServiceImpl.java:89-92 + V0_0_55__add_policies_and_roles.sql:44-53 (no cascade FK)
 - dependencies_semantic.coupling[2] ← PolicyServiceImpl.java:52-60, 109-116 + RoleDto.java:7 + ReactiveUserOwnerMappingRepositoryImpl.java:99-114
 - dependencies_semantic.coupling[3] ← PolicyJSONValidator.java:28-32 + ControllerAdvice.java:23-66
-- tests_coverage_semantic.uncovered_behaviours ← Grep `PolicyService|PolicyServiceImpl <odd-platform-repo>/odd-platform-api/src/test` returns ZERO matches (verified 2026-05-19)
+- tests_coverage_semantic.uncovered_behaviours ← Grep `PolicyService|PolicyServiceImpl <odd-platform-repo>/odd-platform-api/src/test` returns ZERO matches (verified 2026-05-20)
 - tests_coverage_semantic.gaps ← same Grep + PolicyServiceImpl.java:1-117 + batch-H sidecar finding
 - docs_link_semantic.inferred_docs[0] ← batch-E sidecar inheritance — see `odd-platform__java__PolicyController__controller-method__createPolicy.md` docs_link_semantic.inferred_docs[0]
 - docs_link_semantic.inferred_docs[1] ← same — batch-E sidecar inheritance docs_link_semantic.inferred_docs[1]
 - docs_link_semantic.doc_drift_findings ← PolicyServiceImpl.java:71-81 (race) + 89-92 (cascade) + 62-69 vs 76, 87 (create asymmetry) + ControllerAdvice.java:23-66 (no IllegalArgumentException handler) + batch-E sibling sidecar (live page silence)
-- upstream_callers ← Grep `policyService\\.|PolicyService` across `<odd-platform-repo>/odd-platform-api/src/main` (verified 2026-05-19) + PolicyController.java:17, 23, 30, 39, 48, 55, 61 + ManagementPermissionExtractor.java:22, 33 + AbstractContextualPermissionExtractor.java:21, 27 + DataEntityPermissionExtractor.java:31 + TermPermissionExtractor.java:25 + QueryExamplePermissionExtractor.java:26
-- downstream_side_effects ← PolicyServiceImpl.java:45-107 + batch-H sidecar downstream_side_effects + ReactiveRoleToPolicyRepositoryImpl.java:43-49 + ReactiveUserOwnerMappingRepositoryImpl.java:99-114 + V0_0_55__add_policies_and_roles.sql:19-53
+- upstream_callers ← Grep `policyService\\.|PolicyService` across `<odd-platform-repo>/odd-platform-api/src/main` (verified 2026-05-20) + PolicyController.java:17, 23, 30, 39, 48, 55, 61 + ManagementPermissionExtractor.java:22, 33 + AbstractContextualPermissionExtractor.java:21, 27 + DataEntityPermissionExtractor.java:31 + TermPermissionExtractor.java:25 + QueryExamplePermissionExtractor.java:26
+- downstream_side_effects ← PolicyServiceImpl.java:45-107 + batch-H sidecar downstream_side_effects + ReactiveRoleToPolicyRepositoryImpl.java:43-49 + ReactiveUserOwnerMappingRepositoryImpl.java:99-114 + V0_0_55__add_policies_and_roles.sql:19-53 + batch-R ReactiveActivityRepositoryImpl sidecar (schema-root-cause for audit-silence)
 - implicit_adrs[0] ← PolicyServiceImpl.java:62-95 (all invariants in service) + ReactivePolicyRepositoryImpl.java:1-40 (no invariants in repo) + batch-H sidecar implicit_adrs[3]
 - implicit_adrs[1] ← PolicyServiceImpl.java:64, 73 + PolicyJSONValidator.java:24-33
 - implicit_adrs[2] ← PolicyServiceImpl.java:29, 62-69, 76-77, 87-88
@@ -324,7 +357,7 @@ The downstream-side-effects picture confirms batch-E + batch-H's RBAC-mutations-
 - bugs_limitations_corner_cases[5] ← PolicyServiceImpl.java:83-95 + ReactiveRoleToPolicyRepositoryImpl.java:43-49 + ReactiveAbstractSoftDeleteCRUDRepository.java:50-59
 - bugs_limitations_corner_cases[6] ← PolicyServiceImpl.java:64, 73 + PolicyJSONValidator.java:24-33
 - bugs_limitations_corner_cases[7] ← PolicyServiceImpl.java:102-107 + ManagementPermissionExtractor.java:33 + AbstractContextualPermissionExtractor.java:27 + ReactiveUserOwnerMappingRepositoryImpl.java:99-114
-- bugs_limitations_corner_cases[8] ← PolicyServiceImpl.java:1-117 (no @Slf4j, no Logger) + batch-E + batch-H consistent silence pattern
+- bugs_limitations_corner_cases[8] ← PolicyServiceImpl.java:1-117 (no @Slf4j, no Logger, no @ActivityLog — Grep verified 2026-05-20) + batch-E + batch-H + batch-N + batch-P + batch-Q + batch-R cross-batch audit-silence pattern (seventh corroborating sidecar) + V0_0_48__add_activity.sql:4 (schema-root-cause from batch R)
 - security.auth_mode_relevance ← PolicyServiceImpl.java:1-117 + PolicyController.java:1-65 + SecurityConstants.java:163-168 + batch-E sidecar
 - security.ingestion_filter_relevance ← PolicyController.java:1-65 + batch-E sidecar
 - security.authorization_assertions ← PolicyServiceImpl.java:1-117 (no annotations) + PolicyServiceImpl.java:76, 87 (runtime name-check) + BadUserRequestException.java:1-7
@@ -332,7 +365,7 @@ The downstream-side-effects picture confirms batch-E + batch-H's RBAC-mutations-
 - security.data_exposure ← PolicyServiceImpl.java:45-50, 52-60, 62-69, 71-81, 83-95, 97-100, 102-107
 - security.known_security_gaps[0] ← PolicyServiceImpl.java:83-95 + batch-H sidecar known_security_gaps[0]
 - security.known_security_gaps[1] ← PolicyServiceImpl.java:29, 62-69, 76-77, 87-88 + V0_0_55__add_policies_and_roles.sql:30
-- security.known_security_gaps[2] ← PolicyServiceImpl.java:1-117 (no logging) + batch-E + batch-H pattern
+- security.known_security_gaps[2] ← PolicyServiceImpl.java:1-117 (no logging, no @ActivityLog) + batch-R schema-root-cause (V0_0_48__add_activity.sql:4) + 7-sidecar cross-batch audit-silence pattern (batch E + batch H + batch N + batch P + batch Q + batch R + this batch S)
 - security.known_security_gaps[3] ← PolicyJSONValidator.java:28-32 + ControllerAdvice.java:23-66
 - security.known_security_gaps[4] ← SecurityConstants.java:163-168 + PolicyController.java:27-63 + PolicyServiceImpl.java:45-50
 - security.known_security_gaps[5] ← PolicyServiceImpl.java:62-69 + policy_schema.json:166-202 + V0_0_56__add_predefined_roles_and_policies.sql:1-31
@@ -350,13 +383,37 @@ The downstream-side-effects picture confirms batch-E + batch-H's RBAC-mutations-
 - concepts: HIGH
 - dependencies_semantic: HIGH
 - tests_coverage_semantic: HIGH
-- docs_link_semantic: LOW (WebFetch denied in this session; inherits batch-E verified state from 2026-05-12)
+- docs_link_semantic: LOW (live WebFetch not exercised in this batch-S session; inherits batch-E verified-2026-05-12 state)
 - upstream_callers: HIGH
 - downstream_side_effects: HIGH
 - implicit_adrs: HIGH (except implicit_adrs[4] confidence: LOW — the non-transactional choice has no defending comment; routed here for symmetry-with-sibling-service observability, with the operator-visible consequence ALSO recorded in bugs_limitations_corner_cases[0])
 - bugs_limitations_corner_cases: HIGH
 - security: HIGH
 - performance: HIGH
+
+## Pre-emit coherence note (LSN-018 Rule 6)
+
+Pre-emit coherence sweep run 2026-05-20 against the four cross-batch sibling
+sidecars enumerated in `coherence_check.back_links_emitted` plus the
+`feature-flows/detail/F-006.yaml` registry entry. **Result: STRENGTHENS=10,
+SUPERSEDES=0, CONFLICTS=0**. Every claim in this sidecar's
+`bugs_limitations_corner_cases`, `security.known_security_gaps`,
+`implicit_adrs`, and `docs_link_semantic.doc_drift_findings` blocks either
+(a) anchors a F-006 drift facet at this layer with primary-source evidence
+(line numbers in PolicyServiceImpl.java), (b) cross-references a sibling
+sidecar's finding with consistent polarity (e.g. batch-H's orphan-binding
+JOIN finding — this sidecar names the cascade-delete defence as the SOLE
+service-layer protection, polarity-consistent), or (c) refines an existing
+cross-batch concept-catalog entry (the audit-silence pattern advances from
+6-SIDECAR at batch R to 7-SIDECAR with this sidecar's service-tier
+confirmation that PolicyServiceImpl carries no `@Slf4j`, no Logger, no
+`log.*` call, no `@ActivityLog` — all four verified by Grep at session
+2026-05-20). No claim contradicts F-006 or any sibling sidecar; no prior
+claim is superseded. The schema-root-cause finding from batch R (V0_0_48
+NOT NULL FK) is incorporated into this sidecar's `bugs_limitations_corner_cases[8]`
+and `security.known_security_gaps[2]` to make explicit that the audit-log
+fix is a schema migration, NOT an `@ActivityLog` annotation here — closing
+a remediation-path ambiguity that earlier batches did not surface.
 
 ## Maintainer notes
 

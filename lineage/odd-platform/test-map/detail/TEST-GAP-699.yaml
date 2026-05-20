@@ -1,0 +1,32 @@
+gap_id: TEST-GAP-699
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:DataSourceIngestionServiceImpl"
+pillars_affected: [P-10]
+surfaced_by:
+  - "DataSourceIngestionServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[3] (@ReactiveTransactional rollback semantic)"
+  - "DataSourceIngestionServiceImpl.md:implicit_adrs.[2] (Single-transaction-per-batch with @ReactiveTransactional — partial failure rolls back entire batch)"
+  - "DataSourceIngestionServiceImpl.md:bugs_limitations_corner_cases.[3] (1 bad ODDRN in a 100-datasource payload rolls back ALL 100)"
+behaviour: |-
+  **`DataSourceIngestionServiceImpl.createDataSources` USES `@ReactiveTransactional` AT THE METHOD LEVEL (line 40) — partial failure rolls back ENTIRE batch.** A collector POSTing 100 datasources where 1 violates the name-uniqueness constraint (`data_source_name_unique` partial index per batch R sidecar) sees ALL 100 fail with HTTP 5xx. The existing 6-case parameterized test (`createDataSourcesTest` lines 72-93) mocks all DB calls to SUCCEED; no failure-injection test exercises rollback. A regression that drops `@ReactiveTransactional` would silently change the operational shape: partial successes would persist; the batch would no longer be all-or-nothing. The contract is the SERVICE-TIER ENACTMENT of F-008's `single_transaction_per_batch_no_per_entity_isolation` drift facet (operationally: "the batch is the unit of consistency"). The maintainer's deliberate choice — annotation applied to the HIGHEST-LEVEL method rather than the individual repository calls — is the structural signal. The test pins the choice so a future per-entity-isolation refactor (if pursued) breaks the test deliberately.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceImplTransactionalRollbackTest.java"
+  name: "createDataSources_secondItemBulkCreateFails_rollsBackFirstItemBulkUpdate_pinsBatchAtomicity"
+evidence:
+  - "DataSourceIngestionServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[3]): '@ReactiveTransactional rollback semantic — if any of the chained DB calls fails (e.g. bulkUpdate raises an exception), the whole transaction rolls back. The existing tests mock all DB calls to succeed; no failure-injection test exercises rollback.'"
+  - "DataSourceIngestionServiceImpl.md says (implicit_adrs.[2]): 'Single-transaction-per-batch with @ReactiveTransactional — partial failure rolls back entire batch; no per-item error report. The annotation is APPLIED to the highest-level method (createDataSources) rather than the individual repository calls — the maintainer''s deliberate choice is `the batch is the unit of consistency`.' confidence: HIGH"
+  - "DataSourceIngestionServiceImpl.md says (bugs_limitations_corner_cases.[3]): 'Single-transaction-per-batch rollback on per-item failure: 1 bad ODDRN in a 100-datasource payload rolls back ALL 100. The operator-facing surface is HTTP 5xx with no per-item indication of which datasource caused the collision.' severity: MEDIUM"
+  - "Source: DataSourceIngestionServiceImpl.java:40 (@ReactiveTransactional annotation wrapping createDataSources) + ReactiveTransactional.java:11 (the platform's reactive transaction manager binding)"
+cross_references:
+  - "F-008 (P-10:F-001 — single_transaction_per_batch_no_per_entity_isolation drift facet)"
+  - "TEST-GAP-355 (sibling — bulkCreate/bulkUpdate transactional rollback on policy table)"
+  - "REFACTOR-NNN-per-entity-isolation-on-ingestion candidate"
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001"]
+proposed_action: |-
+  Add `DataSourceIngestionServiceImplTransactionalRollbackTest.createDataSources_secondItemBulkCreateFails_rollsBackFirstItemBulkUpdate_pinsBatchAtomicity` as a Testcontainers integration test (requires real R2DBC + real Postgres for the transaction binding). (a) Seed Collector C with namespace NS. (b) Seed an existing DataSource D with `oddrn=//x`, `collector_id=C`, `name="old-x"`. (c) POST `/ingestion/datasources` with `{ items: [ { oddrn: //x, name: "new-x" }, { oddrn: //y, name: "duplicate-of-x" } ] }` where "duplicate-of-x" matches an UNRELATED active datasource's name (triggers UNIQUE constraint violation on the bulkCreate path). (d) Assert HTTP 5xx. (e) Query `SELECT name FROM data_source WHERE oddrn = //x`. (f) Assert the name is STILL "old-x" (the bulkUpdate was rolled back). (g) Query `SELECT COUNT(*) FROM data_source WHERE oddrn = //y`. Expect 0 (the bulkCreate was rolled back). (h) Add a `// REGRESSION-PIN — @ReactiveTransactional makes the batch all-or-nothing. A REFACTOR removing the annotation OR pursuing per-entity isolation would break this test — both half of the items would persist. The current contract is documented batch-atomic; the failure surface is HTTP 5xx with no per-item indication.` comment block.
+batch: 2026-05-20-S
+feature_id: F-008

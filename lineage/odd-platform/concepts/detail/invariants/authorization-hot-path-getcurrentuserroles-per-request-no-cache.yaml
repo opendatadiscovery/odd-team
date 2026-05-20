@@ -1,0 +1,132 @@
+name: Authorization hot path — getCurrentUserRoles + getCurrentUserPolicies per-request 2-JOIN cost; no caching
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  NEW HIGH-severity PERFORMANCE INVARIANT, batch 2026-05-20S (RoleServiceImpl
+  + PolicyServiceImpl primary source — both files end-to-end read in this
+  batch). Every authorized HTTP request to the platform (the entire SecurityRules
+  surface except WHITELIST_PATHS) traverses TWO chained service-method
+  invocations that each issue a fresh DB JOIN — uncached at every layer.
+
+  The full hot-path chain on every authorized HTTP request:
+    1. AuthorizationCustomizer / SecurityWebFilterChain calls into the
+       relevant PermissionExtractor
+       (ManagementPermissionExtractor.java:33 for NO_CONTEXT rules;
+       AbstractContextualPermissionExtractor.java:27 for resource-context
+       rules — extended by DataEntityPermissionExtractor +
+       TermPermissionExtractor + QueryExamplePermissionExtractor)
+    2. PermissionExtractor calls `policyService.getCurrentUserPolicies()`
+       (PolicyServiceImpl.java:102-107).
+    3. policyService.getCurrentUserPolicies calls
+       `roleService.getCurrentUserRoles()` (PolicyServiceImpl.java:104 +
+       RoleServiceImpl.java:94-101).
+    4. roleService.getCurrentUserRoles calls
+       `authIdentityProvider.getCurrentUser` (auth-mode-specific) THEN
+       `userOwnerMappingRepository.getUserRolesByOwner(username, provider)`
+       (RoleServiceImpl.java:96-97) — **JOIN #1**: a 5-TABLE JOIN over
+       `role ⋈ role_to_policy ⋈ policy ⋈ owner_to_role ⋈ user_owner_mapping`
+       at ReactiveUserOwnerMappingRepositoryImpl.java:99-114.
+    5. If owner-attached roles are empty, getCurrentUserRoles falls back
+       to `roleRepository.getByName(role.getValue())` (RoleServiceImpl.java:
+       124-126) — sub-JOIN over `role ⋈ role_to_policy ⋈ policy` at
+       ReactiveRoleRepositoryImpl.java:82-93.
+    6. Back in getCurrentUserPolicies, the resolved role-id list is passed
+       to `policyRepository.getRolesPolicies(roleIds)`
+       (PolicyServiceImpl.java:106) — **JOIN #2**: a 2-TABLE JOIN over
+       `policy ⋈ role_to_policy` at ReactivePolicyRepositoryImpl.java:32-35.
+
+  COST PER AUTHORIZED REQUEST: 1 invocation of JOIN #1 (5-table) + 1
+  invocation of JOIN #2 (2-table) = 2 DB roundtrips for authorization
+  resolution ALONE, on TOP of the request s actual business work. For
+  a platform doing 100 req/s with full RBAC, that s 200 authorization-
+  resolution JOINs per second, before the business DB calls run. R2DBC
+  pool size (`spring.r2dbc.pool.max-size`) is the upper bound; under
+  saturation, request latency degrades on authorization-resolution
+  alone.
+
+  NO CACHING AT ANY LAYER:
+    - No `@Cacheable` annotation on either service method.
+    - No request-scoped cache (`@RequestScope`).
+    - No process-wide TTL cache (Caffeine / Redis / Guava).
+    - No memoization across the request s reactor chain (each call site
+      issues a fresh subscription to the cold Mono).
+    - The result for a stable (user, owner_to_role, role_to_policy) tuple
+      is stable for the lifetime of those bindings (changes only on
+      RoleServiceImpl.update / delete AND OwnerToRoleRepository
+      createRelations / deleteOwnerRelationsExcept mutations).
+
+  KNOWN INVARIANCE: the cache invariant is non-trivial — invalidation must
+  trigger on (a) RoleServiceImpl.update + delete (RBAC role/policy
+  bindings change), (b) PolicyServiceImpl.update + delete (statement-set
+  changes for a bound policy), (c) OwnerServiceImpl.delete + OwnerToRoleRepository
+  mutations (user-role bindings change). Cross-service invalidation
+  requires a publish/subscribe primitive or an explicit invalidation
+  service.
+
+  Cross-link refactoring scopes: REFACTOR-389 + REFACTOR-384 in
+  `<odd-team>/lineage/odd-platform/refactoring-scopes/detail/` already
+  surface caching recommendations for the user-role-resolution path.
+  This invariant aggregates the service-layer evidence end-to-end.
+
+  Severity: HIGH for high-RPS deployments (the unbounded per-request DB
+  cost saturates the R2DBC pool); MEDIUM for typical small / medium
+  ODD deployments (the JOIN cost is bounded and acceptable). The
+  classification depends on platform scale.
+axes_present:
+- services
+- repositories_reactive
+nodes:
+- odd-platform java service service:PolicyServiceImpl
+- odd-platform java service service:RoleServiceImpl
+- odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
+contributors:
+- 'PolicyServiceImpl.md (batch S): concepts.invariants.[5] (the AUTHORIZATION HOT PATH);
+  bugs_limitations_corner_cases.[7] (getCurrentUserPolicies fresh DB roundtrip on
+  EVERY authorized request); performance.hot_paths.[0] (per-call cost: 1 invocation
+  of getCurrentUserRoles + 1 invocation of getRolesPolicies; no caching).'
+- 'RoleServiceImpl.md (batch S): concepts.invariants.[6] (getCurrentUserRoles is
+  the AUTHORIZATION HOT PATH); bugs_limitations_corner_cases.[I] (DRIFT-FACET-I
+  no caching on hot path); performance.hot_paths.[0] (per-call cost: 1 invocation
+  of getUserRolesByOwner 5-table JOIN + sub-JOIN on fallback path; no caching).'
+evidence:
+- PolicyServiceImpl.md:concepts.invariants.[5] + bugs_limitations_corner_cases.[7]
+  + performance.hot_paths.[0]
+- RoleServiceImpl.md:concepts.invariants.[6] + bugs_limitations_corner_cases.[I]
+  + performance.hot_paths.[0]
+- PolicyServiceImpl.md:upstream_callers (ManagementPermissionExtractor.java:33 +
+  AbstractContextualPermissionExtractor.java:27 — the per-request callers)
+- ReactiveUserOwnerMappingRepositoryImpl batch N sidecar (the 5-table JOIN
+  at lines 99-114)
+- ReactivePolicyRepositoryImpl batch H sidecar (the 2-table JOIN at lines 32-35)
+- REFACTOR-389 + REFACTOR-384 in `<odd-team>/lineage/odd-platform/refactoring-scopes/detail/`
+notes: |
+  This is the cross-batch synthesis batch S confirms — the authorization
+  hot path was previously inferred from individual sidecars (batch H ReactivePolicyRepositoryImpl
+  surfaced the per-request JOIN; batch N ReactiveUserOwnerMappingRepositoryImpl
+  surfaced the 5-table JOIN). Batch S anchors the chain at the SERVICE tier:
+  the two services (Policy + Role) are the upstream consumers of both
+  repositories; the chain enacts the per-request authorization model.
+
+  Recommended cleanup (highest leverage first):
+    (1) Add request-scoped caching to getCurrentUserPolicies via Spring s
+        @RequestScope on a delegating cache bean (1-call-per-request);
+        immediate win for any request that traverses multiple SecurityRules
+        (which is rare today but possible).
+    (2) Add short-TTL process-wide cache (Caffeine, 30-60s TTL) on
+        getCurrentUserPolicies AND getCurrentUserRoles keyed by (username,
+        provider). Cache invariant: invalidate on RoleServiceImpl.update /
+        delete + PolicyServiceImpl.update / delete + OwnerServiceImpl.delete
+        + ReactiveOwnerToRoleRepository writes. The publish/subscribe
+        primitive can be the existing notifications-WAL channel (already
+        in-process for the Slack notifier).
+    (3) Add @Timed observability on both service methods to surface the
+        actual per-request cost in Micrometer metrics — the current
+        invariant is reasoned-about but not measured.
+
+  Cross-link to F-009 (Doc Drift): both the live `/authorization/policies`
+  and `/authorization/roles` pages are SILENT on the per-request DB cost
+  of the authorization model; operators tuning their R2DBC pool size
+  cannot derive the auth-resolution cost from documentation.

@@ -22,6 +22,11 @@ drift_class_summary:
 - empty_roles_destructive_update_reachable_from_ui_in_three_clicks
 - owner_lifecycle_audit_silence_six_sidecar_ui_tier_corroboration
 - soft_deleted_owner_correctly_hidden_from_ui_list_positive_finding
+- service_tier_three_line_cascade_primary_source_for_refactor_425
+- service_tier_at_reactive_transactional_per_method_not_class_level
+- service_tier_create_path_no_update_search_vectors_create_delete_vs_update_asymmetry
+- service_tier_cascade_check_non_atomic_with_soft_delete_owner_side
+- service_tier_get_or_create_permission_bypass_owner_create_side_door
 cross_pillar_relationships:
 - pillar_id: P-09
   kind: feeds
@@ -159,6 +164,126 @@ batch_extensions:
     PolicyList + RolesList + CollectorsList finding on F-006 + F-008):
     HIDE not DISABLE; client-side gates are UX-only and not security
     boundaries.
+- batch: S
+  entry_point_added: |-
+    service-tier:OwnerServiceImpl (the enclosing service class for the
+    Owner directory CRUD trinity at `OwnerServiceImpl.java:38-122`). The
+    sidecar is the SERVICE-TIER CLOSURE of every F-019 drift facet
+    surfaced by the three controller-method sidecars (createOwner batch E
+    + updateOwner batch P + deleteOwner batch P) + the OwnersList UI
+    sidecar (batch Q). The 123-line class contains 6 public methods + 2
+    private helpers + 7 injected reactive repositories + 1 MapStruct
+    mapper. All three mutating methods carry @ReactiveTransactional
+    (lines 55, 69, 88) — the per-method placement is itself an implicit
+    ADR (the read methods deliberately stay transaction-free). The
+    sidecar is the PRIMARY SOURCE for REFACTOR-425 (3-line cascade —
+    `OwnerServiceImpl.java:71, 76-81, 117-122`), REFACTOR-426 (NO
+    @ActivityLog on any of create/update/delete + Grep across
+    <odd-platform-api>/service/*.java returning 10 hits, none of them
+    OwnerServiceImpl), REFACTOR-427 (3-leg cascade-block missing the
+    owner_association_request 4th leg at lines 90-91), REFACTOR-428
+    (delete does NOT call updateSearchVectors — only update does, line
+    82 vs lines 87-100), REFACTOR-429 (silent-204 on delete via no
+    .switchIfEmpty NotFoundException; line 98 vs line 73 on update),
+    REFACTOR-430 (NEW — cascade-check non-atomic with the soft-delete
+    that follows; the 3 EXISTS reads at lines 90-91 do NOT acquire
+    row-level locks), REFACTOR-431 (OpenAPI 201-vs-impl 200 class-wide
+    drift on create + update), REFACTOR-432 (name field case-sensitive
+    + no @NotBlank + no normalisation), REFACTOR-185 (17th + 18th + 19th
+    DISABLED-mode-bypass surfaces — all three Owner verbs reachable
+    anonymously under auth.type=DISABLED).
+  contributing_nodes_added:
+  - odd-platform java service service:OwnerServiceImpl
+  notes: |-
+    FIVE new findings surface from the service-tier primary source — all
+    of which STRENGTHEN existing F-019 facets with PRIMARY-SOURCE
+    confirmation at the enclosing-class layer. Listed in descending
+    severity:
+    (1) REFACTOR-425 SERVICE-TIER PRIMARY SOURCE — 3-LINE CASCADE (HIGH)
+    — the destructive empty-roles UPDATE hazard lives at THREE source
+    lines in OwnerServiceImpl: (a) line 71 `final List<Long> newRoles
+    = getRoleIdsList(updateEntityForm);` — the call to the helper; (b)
+    lines 117-122 (`getRoleIdsList`) — the null+empty collapse to
+    `List.of()`; (c) lines 76-81 — the `deleteOwnerRelationsExcept(ownerId,
+    List.of()).then(createRelations(ownerId, List.of()))` cascade which
+    the empty list reaches at the persistence layer. The destructive
+    primitive is shared verbatim between update (line 77) and delete
+    (line 97 with `List.of()` explicit) — the SAME
+    ReactiveOwnerToRoleRepositoryImpl.deleteOwnerRelationsExcept site,
+    which translates to `DELETE FROM OWNER_TO_ROLE WHERE OWNER_ID = ?
+    AND ROLE_ID NOT IN (...)`. The jOOQ-generated `notIn(emptyCollection)`
+    folds to a tautology, so an empty NOT IN list on the update path
+    issues `DELETE FROM OWNER_TO_ROLE WHERE OWNER_ID = ?` — wiping ALL
+    role bindings. The maintainer's intent is visible: deletion of the
+    owner explicitly calls `deleteOwnerRelationsExcept(id, List.of())`
+    (line 97) — the same destructive primitive is reachable from update
+    via the helper's null+empty collapse. STRENGTHENS the F-019
+    `empty_roles_field_silently_destroys_bindings` drift facet with the
+    SERVICE-TIER PRIMARY-SOURCE evidence.
+    (2) REFACTOR-426 SERVICE-TIER AUDIT-SILENCE PRIMARY SOURCE +
+    7-SIDECAR PATTERN CLOSURE (HIGH) — `OwnerServiceImpl.java:38-122`
+    contains NO @ActivityLog annotation on ANY method. Verified via
+    Grep `@ActivityLog` across <odd-platform-api>/service/*.java
+    2026-05-20 returning 10 service files (AlertServiceImpl,
+    AlertHaltConfigServiceImpl, DataEntityServiceImpl,
+    DataEntityGroupServiceImpl, DataEntityInternalStateServiceImpl,
+    DatasetFieldServiceImpl, DatasetFieldInternalInformationServiceImpl,
+    EnumValueServiceImpl, OwnershipServiceImpl, TermServiceImpl) — NONE
+    of them OwnerServiceImpl. The sibling Ownership service IS audited
+    (OwnershipServiceImpl.java:48, 77, 100) — the asymmetry is
+    operator-visible. The 6-sidecar audit-silence pattern is REFINED
+    to the 7-SIDECAR pattern with the enclosing-class service-tier
+    sidecar as the persistence-layer origin. Cross-link: F-006 batch
+    R established the SCHEMA ROOT CAUSE (`activity.data_entity_id` NOT
+    NULL FK to DATA_ENTITY); adding @ActivityLog to OwnerServiceImpl
+    would FAIL at the SQL layer because Owner CRUD has no data-entity
+    context.
+    (3) NEW DRIFT FACET — CREATE PATH DOES NOT CALL updateSearchVectors
+    (LOW, structural-asymmetry) — `OwnerServiceImpl.create` (lines
+    54-66) deliberately omits `updateSearchVectors`. FTS seeding for a
+    new Owner is LAZY (the `search_entrypoint` row is populated when a
+    downstream data entity references the owner via OwnershipServiceImpl).
+    The asymmetry across create (no refresh) / update (refreshes both
+    data-entity + term-side vectors, line 82) / delete (no refresh,
+    line 87-100) was IMPLICIT in batch P sidecars; this enclosing-class
+    sidecar makes it EXPLICIT. Refines
+    `delete_search_vector_not_refreshed_owner_side` with a symmetric
+    create-side finding.
+    (4) REFACTOR-430 SERVICE-TIER PRIMARY SOURCE — CASCADE-CHECK
+    NON-ATOMIC WITH SOFT-DELETE (MEDIUM, race-window) — the 3
+    `existsBy*` reads at OwnerServiceImpl.java:90-91 do NOT acquire
+    row-level locks (no `SELECT FOR UPDATE`, no Postgres advisory
+    lock on `owner_id`). The downstream writes —
+    `deleteOwnerRelationsExcept(id, List.of())` line 97 and
+    `ownerRepository.delete(id)` line 98 — run inside the
+    @ReactiveTransactional boundary (line 88) but under `READ COMMITTED`
+    isolation. A concurrent `POST /api/dataentities/{id}/ownership`
+    racing with `DELETE /api/owners/{owner_id}` can slip a fresh
+    OWNERSHIP row past the cascade-check between the existence read
+    (line 90) and the soft-delete UPDATE (line 98). Result: an
+    OWNERSHIP row pointing at a soft-deleted OWNER. MIRRORS F-006
+    batch-I `PolicyServiceImpl.delete` cascade-check non-atomicity at
+    the RBAC half.
+    (5) NEW DRIFT FACET — `getOrCreate` PERMISSION-BYPASS SERVICE-TIER
+    PRIMARY SOURCE (MEDIUM) — `OwnerServiceImpl.getOrCreate` (lines
+    38-42) is reached from THREE callers
+    (OwnerAssociationRequestServiceImpl.java:57,
+    OwnershipServiceImpl.java:52, TermOwnershipServiceImpl.create). The
+    Owner row is auto-created WITHOUT the caller holding `OWNER_CREATE`
+    — the SecurityRule at SecurityConstants.SECURITY_RULES[143] gates
+    `POST /api/owners` only. The bypass is intentional but is
+    documented in the concept catalog as
+    `permission-bypass-via-owner-auto-create-side-door-write-path`.
+    Combined with the audit-silence (no @ActivityLog), an authenticated
+    user can silently mint arbitrary Owner rows. STRENGTHENS the
+    existing F-006 facet `owner_create_bypass_via_ownership_endpoint`
+    (batch K OwnershipServiceImpl primary source) — the same side-door
+    site is now PRIMARY-SOURCE on the receiving end of the call.
+    No conflicts; no supersedes. Cross-batch coherence: STRENGTHENS
+    7-sidecar audit-silence pattern, REFACTOR-425/426/427/428/429/430/431/432
+    PRIMARY SOURCE confirmed, REFACTOR-185 17th-19th surface,
+    ADR-CANDIDATE-144 + ADR-CANDIDATE-145 anchored at the
+    enclosing-class tier.
 discovered_from_entry_point: rest:POST /api/owners + PUT /api/owners/{owner_id} + DELETE /api/owners/{owner_id}
 description: |-
   The Owner Lifecycle Management feature is the operator-facing CRUD
@@ -235,7 +360,7 @@ contributing_nodes:
 - odd-platform java OwnerController controller-method:createOwner
 - odd-platform java OwnerController controller-method:updateOwner
 - odd-platform java OwnerController controller-method:deleteOwner
-- odd-platform java OwnerServiceImpl
+- odd-platform java service service:OwnerServiceImpl
 - odd-platform java OwnerMapper
 - odd-platform java repository reactive repository:ReactiveOwnerRepositoryImpl
 - odd-platform java repository reactive repository:ReactiveOwnerToRoleRepositoryImpl
@@ -298,21 +423,37 @@ chain:
   unresolved: false
   resolved_in_batch: P
 - hop: 2
-  node: odd-platform java OwnerServiceImpl
-  sidecar: '(class-tier sidecar — not yet enriched as a standalone node; cross-referenced via the three controller-method sidecars'' downstream chains)'
+  node: odd-platform java service service:OwnerServiceImpl
+  sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
   multiplicity_per_trigger: 1
   evidence: |-
-    OwnerServiceImpl encapsulates the transactional shape for all
-    three lifecycle verbs. Common patterns: @ReactiveTransactional
-    boundary at the service (not the controller); no @ActivityLog
-    on any method (the 3-sidecar audit-silence finding); MapStruct
-    OwnerMapper.applyToPojo for in-place pojo mutation; search-vector
-    refresh INSIDE the transaction on create/update but NOT on delete
-    (the asymmetry that powers the search-vector-not-refreshed delete
-    drift facet); set-replacement role-rebind via
-    deleteOwnerRelationsExcept then createRelations (interprets empty
-    `roles` as DELETE-ALL — the destructive-empty UX hazard on update).
-  unresolved: true
+    OwnerServiceImpl.java:38-122 — service-tier closure of the trinity.
+    All three mutating methods carry @ReactiveTransactional independently
+    (lines 55, 69, 88) — per-method placement, not class-level
+    (deliberate; read methods stay transaction-free). NO @ActivityLog
+    on any method (verified via Grep across <odd-platform-api>/service/*.java
+    2026-05-20 — 10 service files carry the annotation; none of them
+    OwnerServiceImpl). The destructive empty-roles update lives at
+    THREE source-file sites: line 71 (the `getRoleIdsList` call), lines
+    117-122 (the null+empty collapse to `List.of()`), lines 76-81 (the
+    `deleteOwnerRelationsExcept(ownerId, List.of()).then(createRelations(ownerId,
+    List.of()))` cascade). The role-rebind primitive is shared verbatim
+    with delete (line 97 with `List.of()` explicit) — the same
+    ReactiveOwnerToRoleRepositoryImpl site. updateSearchVectors (lines
+    109-114) is called from update only (line 82); create + delete
+    deliberately omit it. Cascade-block at lines 90-91 is 3-leg + Mono.zip
+    parallel; 4th leg (owner_association_request) missing — orphan rows
+    persist (REFACTOR-427). delete has no .switchIfEmpty(NotFoundException)
+    — silent 204 idempotency (REFACTOR-429); update has it at line 73.
+    `getOrCreate` (lines 38-42) is the permission-bypass-via-side-door
+    write path consumed by OwnerAssociationRequestServiceImpl.java:57 +
+    OwnershipServiceImpl.java:52 + TermOwnershipServiceImpl.create —
+    the SecurityRule at SecurityConstants.SECURITY_RULES[143] only
+    gates `POST /api/owners`; the side-door bypasses OWNER_CREATE.
+    Resolves all batch-P inferences about service-tier behaviour at
+    primary source.
+  unresolved: false
+  resolved_in_batch: S
 - hop: 3
   node: odd-platform java repository reactive repository:ReactiveOwnerRepositoryImpl
   sidecar: '(soft-delete CRUD repository — extends ReactiveAbstractSoftDeleteCRUDRepository; not yet enriched as a standalone node)'
@@ -803,8 +944,16 @@ control_summary: |-
   (Principal-to-Owner Resolution — the OWNER.NAME rename safety is
   the LOAD-BEARING contrast to the OIDC_USERNAME rename hazard).
 related_refactoring_scopes:
-- REFACTOR-185  # 17th invocation site at the destructive Owner verbs under DISABLED mode (createOwner + updateOwner + deleteOwner each contribute)
+- REFACTOR-185  # 17th-19th invocation site at the destructive Owner verbs under DISABLED mode (createOwner + updateOwner + deleteOwner each contribute)
 - REFACTOR-391  # OIDC_USERNAME rename orphan — the DANGEROUS half of the rename hazard surface; this feature carries the SAFE half
+- REFACTOR-425  # batch-S PRIMARY SOURCE — 3-line cascade for the empty-roles destructive UPDATE
+- REFACTOR-426  # batch-S PRIMARY SOURCE — NO @ActivityLog on any of create/update/delete (Owner lifecycle audit-silence)
+- REFACTOR-427  # batch-S PRIMARY SOURCE — owner_association_request 4th cascade leg missing
+- REFACTOR-428  # batch-S PRIMARY SOURCE — delete does NOT refresh FTS search vectors (asymmetric with update)
+- REFACTOR-429  # batch-S PRIMARY SOURCE — silent-204 on delete (no .switchIfEmpty NotFoundException)
+- REFACTOR-430  # batch-S NEW + PRIMARY SOURCE — cascade-check non-atomic with soft-delete (race-window)
+- REFACTOR-431  # batch-S PRIMARY SOURCE — OpenAPI 201-vs-impl 200 class-wide drift on create + update
+- REFACTOR-432  # batch-S PRIMARY SOURCE — name field case-sensitive + no @NotBlank + no normalisation
 related_test_gaps_batch_p_candidates:
 - TEST-GAP-NNN (Owner lifecycle audit-silence regression-pin)
 - TEST-GAP-NNN (updateOwner empty-roles destructive UX hazard)

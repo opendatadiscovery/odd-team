@@ -1,0 +1,169 @@
+name: Audit-silence applies at webhook INGRESS only — alert state-transitions ARE audited (refinement to F-007 + F-006)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+- P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20S (AlertServiceImpl primary source + cross-batch
+  refinement). The "audit-silence" pattern that surfaces across F-006 (RBAC
+  mutations) and F-007 (AlertManager webhook) is NOT uniform. This invariant
+  refines the prior catch-all "RBAC mutations are unaudited" framing by
+  distinguishing TWO sub-shapes:
+    (a) FORENSIC SILENCE AT THE INGRESS — no `log.info` / `@Timed` /
+        correlation-id capture of WHO POSTed WHAT WHEN to a write endpoint.
+        Applies to: AlertManager webhook (POST /ingestion/alert/alertmanager
+        per batch P controller-tier + batch S service-tier);
+        S2S /ingestion/entities (per batch H IngestionDataEntitiesFilter +
+        batch S DataSourceIngestionServiceImpl — only DEBUG log at
+        DataSourceIngestionServiceImpl.java:53,62 — most operators do not
+        see DEBUG logs).
+    (b) STATE-TRANSITION SILENCE AT THE PERSISTENCE — no activity-feed row,
+        no @ActivityLog AOP, no programmatic activityService.createActivityEvents
+        call when state changes. Applies to: RBAC mutations (Policy, Role,
+        Owner directory create / update / delete per the 9-sidecar pattern
+        spanning batches E + H + I + N + P + Q + R + S).
+
+  BATCH R + BATCH S REFINEMENT — the AlertManager webhook surface has
+  TYPE (a) silence BUT NOT TYPE (b) silence:
+    - The webhook INGRESS is unaudited (no log of WHO POSTed; no correlation
+      id captured) — F-007 facet `no_idempotency_no_audit` aspect (a).
+    - But the resulting alert-state-transitions ARE audited via the activity-
+      feed batch save path. AlertServiceImpl.java:309-325 constructs
+      ActivityCreateEvent with `systemEvent=true`; activityService.createActivityEvents
+      is called at lines 258, 324; these reach the activity table via
+      ReactiveActivityRepositoryImpl.save(List<ActivityPojo>) line 57-71
+      with `is_system_event=true` discriminator.
+
+  CONSEQUENCE OF THE REFINEMENT: an operator post-incident reconstruction
+  of "an attacker forged a Distribution Anomaly alert on entity X" can:
+    - SEE the alert row (via /api/alerts) — visible.
+    - SEE the `OPEN_ALERT_RECEIVED` activity event with system=true and
+      timestamp — visible.
+    - CANNOT identify the source of the POST (no log of network origin,
+      no log of correlation id, no user identity since the endpoint is
+      unauthenticated by design).
+
+  Cross-reference batch R schema-level finding: `activity.data_entity_id`
+  is `bigint NOT NULL` with FK to `data_entity(id)` per V0_0_48__add_activity.sql:4,12.
+  The activity table STRUCTURALLY ENFORCES "data-entity-scoped events
+  only" — non-data-entity events (RBAC, datasource registration, collector
+  token rotation) CANNOT physically be stored. AlertManager-derived
+  alerts ARE data-entity-scoped (each maps to one entity via the
+  `entity_oddrn` label) → they emit through the existing schema. RBAC
+  mutations are NOT data-entity-scoped → they are schema-blocked.
+
+  IMPLICATIONS FOR F-006 AND F-007 REMEDIATION:
+    - F-006 remediation requires SCHEMA migration FIRST (NULLable
+      data_entity_id OR a separate platform_event table) — annotation
+      sprinkle would fail at the FK constraint.
+    - F-007 remediation can proceed at the INGRESS layer alone — adding
+      @Timed observability + log.info at the AlertManagerController +
+      DataSourceIngestionController controller method tier closes the
+      ingress audit gap. The state-transition audit is ALREADY in place.
+
+  This invariant is the bridge artefact between F-006 and F-007 — it
+  resolves the apparent contradiction where the audit-silence pattern
+  seemed to apply uniformly across two unrelated features. The unifying
+  invariant is "audit applies at the state-transition layer if and only
+  if the event has data-entity context"; F-006 mutations lack context
+  AND have no ingress log; F-007 webhook payloads HAVE context (per-
+  alert entity_oddrn) but lack ingress log.
+
+  Severity: MEDIUM (per-feature remediation paths differ; this invariant
+  unblocks the maintainer s mental model for the remediation scope).
+axes_present:
+- services
+- repositories_reactive
+- schema_migrations
+nodes:
+- odd-platform java service service:AlertServiceImpl
+- odd-platform java service service:DataSourceIngestionServiceImpl
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
+- odd-platform java AlertManagerController controller-method:postAlerts
+contributors:
+- 'AlertServiceImpl.md (batch S): downstream_side_effects (registerNewAlertsActivityEvents
+  emits OPEN_ALERT_RECEIVED / RESOLVED_ALERT_RECEIVED per created alert via batch
+  save path; the audit gap is at the WEBHOOK INGRESS only); concepts.invariants.[9]
+  (Activity emission is in TWO stages for applyAlertActions); coherence_sweep
+  (the F-007 + batch R activity-batch refinement is the unifying invariant).'
+- 'DataSourceIngestionServiceImpl.md (batch S): downstream_side_effects (only
+  DEBUG log at lines 53, 62; NO INFO/WARN/ERROR on normal path; NO audit event,
+  NO Activity Feed entry — the audit gap is the datasource-side mirror of
+  the RBAC-mutation audit gap, AND the audit is BLOCKED at the schema layer
+  per ReactiveActivityRepositoryImpl batch R).'
+- 'ReactiveActivityRepositoryImpl batch R sidecar: the SCHEMA-LAYER ROOT CAUSE
+  (V0_0_48__add_activity.sql:4,12 — data_entity_id NOT NULL FK to data_entity);
+  the activity table only stores data-entity-scoped events.'
+evidence:
+- 'AlertServiceImpl.md:concepts.invariants.[9] (TWO-stage activity emission for
+  applyAlertActions — both stages persist via batch save path with systemEvent=true)'
+- 'AlertServiceImpl.md:downstream_side_effects (the table per method confirming
+  webhook ingress emits no log; state transitions emit activity events)'
+- AlertServiceImpl.md:coherence_sweep (the F-007 batch-R activity-batch refinement)
+- 'AlertServiceImpl.java:309-325 (registerNewAlertsActivityEvents — the OPEN/RESOLVED
+  events constructed and emitted)'
+- 'AlertServiceImpl.java:258, 324 (activityService.createActivityEvents call sites)'
+- 'AlertManagerController.java:21-26 (the four-line handler — no log, no @Timed,
+  no correlation-id capture)'
+- 'DataSourceIngestionServiceImpl.java:53, 62 (DEBUG-only log; no INFO/WARN)'
+- 'V0_0_48__add_activity.sql:4,12 (data_entity_id NOT NULL FK — schema-tier
+  root cause of "no audit for non-entity events")'
+- batch P AlertManagerController.postAlerts sidecar (the controller-tier
+  PRIMARY-SOURCE on the no-log webhook ingress)
+- batch R ReactiveActivityRepositoryImpl sidecar (the SQL+SCHEMA primary source
+  on the data-entity-scoped audit table)
+notes: |
+  This invariant is the cross-batch synthesis that bridges F-006 and F-007.
+  Without it, the prior audit-silence narrative seemed to apply uniformly
+  ("everything is unaudited") which contradicted the concrete evidence that
+  alert state transitions DO produce activity rows (per the AlertIngestionTest
+  end-to-end tests asserting alert status persisted across multiple steps).
+  The refinement disambiguates two distinct audit gaps that share a name:
+
+    - F-006 audit-silence (RBAC mutations) — STATE-TRANSITION SILENCE.
+      Caused by the schema-level NOT NULL data_entity_id FK; remediation
+      requires schema migration + service-layer annotation.
+
+    - F-007 audit-silence (AlertManager webhook) — INGRESS SILENCE.
+      Caused by the unauthenticated whitelist-path + no-log controller
+      method; remediation is a controller-layer @Slf4j log.info + @Timed
+      with correlation-id capture (one-day fix).
+
+  The DataSourceIngestionServiceImpl audit gap is mixed:
+    - Ingress silence at the controller (IngestionController.createDataSource
+      per batch P — no log on entry; only the upstream filter logs).
+    - State-transition silence at the service (DataSourceIngestionServiceImpl.java
+      only emits DEBUG; no audit event because datasources are NOT
+      data_entity-scoped and the schema blocks them).
+    - Per batch R: the right scope for cleanup is a schema migration to
+      separate platform_event table OR NULLable data_entity_id with a
+      discriminator column.
+
+  Recommended cleanup paths (in increasing scope):
+    (1) F-007 ingress remediation — controller-layer log.info / @Timed /
+        correlation-id capture at AlertManagerController.postAlerts +
+        DataSourceIngestionController. Closes the ingress gap.
+    (2) F-006 + datasource state-transition remediation — schema migration
+        (V0_x_y__separate_platform_event.sql) creating a sibling table
+        for non-data-entity events; new ActivityRepositoryImpl methods
+        for `platformEvent.save(...)`; new @ActivityLog event-types for
+        RBAC + datasource + collector mutations.
+    (3) F-007 ingress + state-transition cross-check — extend the
+        per-incident reconstruction doc on
+        `/configuration-and-deployment/odd-platform#prometheus-alertmanager-integration`
+        to call out that "state transitions are audited via the activity
+        feed; webhook ingress is not — for forensic reconstruction of a
+        forge incident, consult network-tier logs in addition to the
+        activity feed".
+
+  Cross-references:
+    - Existing invariant `no-audit-log-on-rbac-mutations-...-batch-f` (the
+      catch-all audit-silence pattern; this invariant REFINES it).
+    - Existing invariant `f-006-audit-silence-schema-rooted-data-entity-id-not-null-fk`
+      (the schema-tier root cause).
+    - Existing invariant `alertmanager-webhook-bypasses-alert-action-resolver-no-idempotency`
+      (the F-007 ingress aspect on the alert side).
+    - New invariant `alertservice-handle-external-alerts-skip-resolver-asymmetry`
+      (batch S — the service-tier ENACTMENT of the F-007 ingress audit gap).

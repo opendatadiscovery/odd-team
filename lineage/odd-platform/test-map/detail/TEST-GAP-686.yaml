@@ -1,0 +1,32 @@
+gap_id: TEST-GAP-686
+category: missing-performance
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:PolicyServiceImpl"
+  - "odd-platform java service service:RoleServiceImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "PolicyServiceImpl.md:performance.hot_paths.[0] (getCurrentUserPolicies is the AUTHORIZATION HOT PATH)"
+  - "PolicyServiceImpl.md:bugs_limitations_corner_cases.[7] (getCurrentUserPolicies() issues a fresh DB roundtrip on EVERY authorized request)"
+  - "RoleServiceImpl.md:performance.hot_paths.[0] (getCurrentUserRoles is the authorization hot path)"
+behaviour: |-
+  **AUTHORIZATION HOT PATH HAS NO CACHING — every authorized HTTP request triggers TWO 5-table JOINs via `roleService.getCurrentUserRoles` → `getUserRolesByOwner` (ReactiveUserOwnerMappingRepositoryImpl.java:99-114) AND `policyRepository.getRolesPolicies` (ReactivePolicyRepositoryImpl.java:32-35). PolicyServiceImpl.java:102-107 + RoleServiceImpl.java:94-101.** The platform's permission resolution: ManagementPermissionExtractor.java:33 + AbstractContextualPermissionExtractor.java:27 invoke `policyService.getCurrentUserPolicies()` on EVERY authorized request that traverses the permission framework. `getCurrentUserPolicies` in turn invokes `roleService.getCurrentUserRoles()`. NO request-scoped cache. NO user-scoped cache. NO Caffeine / Redis layer. The cost is 2N DB roundtrips per N authorized requests — orthogonal to the actual request's business work. For a busy platform at 100 RPS, this is 200 permission-resolution JOINs per second. For a peak-load platform at 1000 RPS, it is 2000. The current behaviour is CORRECT (always fresh) but observable cost is LOAD-BEARING. No test pins the cost shape; a maintainer optimising via cache (e.g., adding a 5-second `Caffeine` cache on `getCurrentUserPolicies` to reduce permission JOINs to ~1 per 5 seconds per user) would silently change the freshness contract (a permission revoke takes up to 5 seconds to propagate to the user's next request). Both ADD and REMOVE of a cache must be DELIBERATE — the test pins the CURRENT no-cache contract.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/AuthorizationHotPathCacheTest.java"
+  name: "getCurrentUserPolicies_perRequestNoCache_alwaysFreshFromDb_pinsImmediateRevocationContract"
+evidence:
+  - "PolicyServiceImpl.md says (performance.hot_paths.[0]): '`getCurrentUserPolicies` (lines 102-107) is the AUTHORIZATION HOT PATH. Invoked from ManagementPermissionExtractor.getNonContextualPermissions (ManagementPermissionExtractor.java:33) AND from AbstractContextualPermissionExtractor.getContextualResourcePermissions (AbstractContextualPermissionExtractor.java:27) on EVERY authorized HTTP request that traverses the permission framework. Cost per call: 1 invocation of roleService.getCurrentUserRoles() (5-table JOIN) + 1 invocation of policyRepository.getRolesPolicies(roleIds) (2-table JOIN). Two DB roundtrips per authorized request, no caching.'"
+  - "PolicyServiceImpl.md says (bugs_limitations_corner_cases.[7]): '`getCurrentUserPolicies()` issues a fresh DB roundtrip on EVERY authorized request. Hot path through policyService.getCurrentUserPolicies() → roleService.getCurrentUserRoles() (5-table JOIN at ReactiveUserOwnerMappingRepositoryImpl.java:99-114) → policyRepository.getRolesPolicies(roleIds) (2-table JOIN at ReactivePolicyRepositoryImpl.java:32-35). Two JOINs per authorized request, no request-scoped cache, no user-scoped cache, no Caffeine / Redis layer. For a busy platform with N req/s, this is 2N JOINs/s for permission resolution alone.' severity: LOW (CRITICAL upgraded to HIGH for the hot-path nature) "
+  - "RoleServiceImpl.md says (performance.hot_paths.[0]): 'getCurrentUserRoles() is the authorization hot path. Invoked from PolicyServiceImpl.getCurrentUserPolicies on every authorized request. 5-table JOIN at ReactiveUserOwnerMappingRepositoryImpl.java:99-114.'"
+  - "Source: PolicyServiceImpl.java:102-107 + RoleServiceImpl.java:94-101 + ManagementPermissionExtractor.java:33 + AbstractContextualPermissionExtractor.java:27 + ReactiveUserOwnerMappingRepositoryImpl.java:99-114 + ReactivePolicyRepositoryImpl.java:32-35"
+cross_references:
+  - "concepts.yaml:invariants[authorization-hot-path-no-cache]"
+  - "REFACTOR-NNN-permission-resolution-caching candidate"
+  - "F-006 (RBAC family — authorization perf characteristics)"
+related_features: [F-006]
+related_pillar_features: ["P-09:F-001"]
+proposed_action: |-
+  Add `AuthorizationHotPathCacheTest.getCurrentUserPolicies_perRequestNoCache_alwaysFreshFromDb_pinsImmediateRevocationContract` as a Mockito-style unit test. (a) Spy on `roleService.getCurrentUserRoles()` and `policyRepository.getRolesPolicies(any())`. (b) Invoke `policyService.getCurrentUserPolicies()` THREE TIMES sequentially. (c) `verify(roleService, times(3)).getCurrentUserRoles()`. `verify(policyRepository, times(3)).getRolesPolicies(any())`. (d) Pair with an integration-level rev-test: revoke a permission via `PUT /api/roles/{id}` with body removing the permission; immediately call `GET /api/dataentities/{id}` (a permission-gated read); assert 403. The integration half pins the immediate-revocation contract. (e) Add a `// REGRESSION-PIN — Authorization is RESOLVED FRESH PER REQUEST. No cache; permission revocation takes effect on the NEXT request. A REFACTOR introducing a Caffeine/Redis cache will break (c)'s call count assertion, and will also change the revocation latency from "next request" to "next cache eviction" — making the trade-off DELIBERATE.` comment block. Also surface as a candidate REFACTOR for permission-resolution caching once the freshness vs cost trade-off is explicitly debated.
+batch: 2026-05-20-S
+feature_id: F-006

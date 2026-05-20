@@ -1,0 +1,119 @@
+name: Update alert status with reopen-conflict guard
+canonical_in_docs: true
+canonical_candidate: false
+description: |-
+  NEW OPERATION, batch 2026-05-20S (AlertServiceImpl primary source).
+  PUT /api/alerts/{alert_id}/status — user-driven mutation through
+  AlertController.changeAlertStatus → AlertServiceImpl.updateStatus
+  (AlertServiceImpl.java:111-136). The only @ActivityLog-annotated
+  method on AlertServiceImpl (line 112 — `@ActivityLog(event = ALERT_STATUS_UPDATED)`).
+
+  THE REOPEN-CONFLICT GUARD (lines 124-131): when the target status is
+  OPEN, the service calls `alertRepository.openAlertWithTheSameTypeExistsForDataEntity(alertId)`
+  and raises `BadUserRequestException("Cannot reopen alert since the
+  system already has an open alert of the same type")` if true. The guard
+  is server-enforced APPLICATION LOGIC, not a DB constraint — no
+  `UNIQUE (data_entity_oddrn, type) WHERE status = OPEN` partial-index
+  exists at the schema layer.
+
+  THE RACE WINDOW: both the read (line 124 — openAlertWithTheSameTypeExistsForDataEntity)
+  and the write (line 134 — updateAlertStatus) are unfenced at every
+  layer — no FOR UPDATE on the read (ReactiveAlertRepositoryImpl.java:397-420),
+  no FOR UPDATE on the UPDATE (ReactiveAlertRepositoryImpl.java:297-306),
+  no DB-level unique constraint backing the invariant. Two concurrent
+  reopen requests for sibling alerts of the same type on the same data
+  entity can BOTH pass the check and BOTH proceed to UPDATE — the
+  application invariant "one OPEN alert of the same type per data entity"
+  is briefly violated.
+
+  TRANSACTIONAL BOUNDARY: `updateStatus` does NOT carry @ReactiveTransactional
+  itself (deliberate asymmetry with `handleExternalAlerts` at line 152
+  and `applyAlertActions` at line 201). The transaction wraps via the
+  `ActivityAspect.monoActivityAspect` AOP at `ActivityAspect.java:42`
+  which synthetically applies `@ReactiveTransactional` to the intercepted
+  Mono. The read-then-write composition therefore runs inside the AOP s
+  synthetic transaction; a refactor removing the AOP would leave the
+  composition unfenced AND would stop activity emission.
+
+  AUDIT EMISSION: the @ActivityLog(ALERT_STATUS_UPDATED) AOP captures
+  oldState BEFORE the update via AlertStatusUpdatedHandler.getContextInfo
+  and newState AFTER via AlertStatusUpdatedHandler.getUpdatedInfo. The
+  AOP filters newState==oldState emissions (ActivityAspect.java:86
+  `.filter(newState -> !info.getOldState().equals(newState))`) — no
+  activity row on no-op updates. Per call: 5 DB round-trips total (1
+  conditional reopen-conflict read for OPEN-target only, 1 UPDATE, 1
+  refresh read, 2 activity-related SELECTs via the AOP, 1 activity-row
+  INSERT IF state changed).
+
+  AUTHORIZATION: gated by SECURITY_RULES at SecurityConstants.java:295-296
+  on AuthorizationManagerType.ALERT, resolved via AlertResourceExtractor
+  → alertRepository.getDataEntityIdByAlertId → permission check on that
+  data entity. A direct service call (CLI tool, admin endpoint, future
+  ingestion adapter) bypasses this rule because the service carries
+  NO programmatic @PreAuthorize / permissionService check.
+
+  ANONYMOUS FALLBACK: under `auth.type=DISABLED`, `authIdentityProvider.getCurrentUser()`
+  returns Mono.empty(); the switchIfEmpty fallback (line 119) calls
+  `alertRepository.updateAlertStatus(alertId, status, null)` proceeding
+  with `status_updated_by=null`. Audit-attribution loss on anonymous
+  callers.
+axes_present:
+- services
+- controllers
+nodes:
+- odd-platform java service service:AlertServiceImpl
+- odd-platform java AlertController controller-method:changeAlertStatus
+contributors:
+- 'AlertServiceImpl.md (batch S): concepts.operations.[3] (update-status —
+  the only @ActivityLog-annotated method); concepts.invariants.[2] (reopen-
+  conflict guard is server-enforced application logic, not DB constraint);
+  concepts.invariants.[0] (@ReactiveTransactional placement asymmetric —
+  updateStatus relies on ActivityAspect AOP); bugs_limitations_corner_cases.[0]
+  (the reopen-conflict guard is unfenced — two concurrent reopen requests
+  can both pass); performance.hot_paths.[2] (per-call: 5 DB round-trips).'
+- 'AlertController.changeAlertStatus.md (batch E inheritance): controller-tier
+  observer; the SECURITY_RULES gating evidence.'
+evidence:
+- 'AlertServiceImpl.md:concepts.operations + concepts.invariants.[2] + concepts.invariants.[0]
+  + implicit_adrs.[0] + bugs_limitations_corner_cases.[0] + performance.hot_paths.[2]'
+- 'AlertServiceImpl.java:111-136 (the updateStatus method body, end-to-end)'
+- 'AlertServiceImpl.java:112 (@ActivityLog annotation — the only one on this
+  service)'
+- 'AlertServiceImpl.java:124-131 (the reopen-conflict guard composition)'
+- 'AlertServiceImpl.java:119 (switchIfEmpty fallback for anonymous callers
+  under DISABLED)'
+- 'ActivityAspect.java:42 (the AOP-applied @ReactiveTransactional)'
+- 'ReactiveAlertRepositoryImpl.java:297-306 (the UPDATE without FOR UPDATE)
+  + :397-420 (the existence-check without FOR UPDATE)'
+- 'SecurityConstants.java:295-296 (the SECURITY_RULES gating the controller)'
+- batch E AlertController.changeAlertStatus sidecar (controller-tier evidence)
+notes: |
+  Operation vocabulary captured for future DOC-NNN follow-ups on the
+  live alerting feature page (refreshed 2026-05-20 batch P, status 200).
+  The reopen-conflict guard is acknowledged in the live API-reference
+  doc (cited as "see AlertServiceImpl.updateStatus(...)" per the
+  AlertController.changeAlertStatus sidecar inferred_docs[0].fetched_excerpts)
+  but the race-window caveat is not documented — operators reading
+  the doc cannot learn that two concurrent reopen requests for sibling
+  alerts can both pass.
+
+  Recommended cleanup:
+    (a) DB-level partial unique index `UNIQUE (data_entity_oddrn, type)
+        WHERE status = OPEN AND deleted_at IS NULL` — closes the race
+        at the persistence layer; one-migration fix.
+    (b) Service-level row-version field on AlertPojo + optimistic-
+        concurrency check at update time — orthogonal to the partial
+        index; provides stronger semantics for any future multi-field
+        update.
+    (c) Doc: extend the API-reference alerts page with a note on the
+        race-window caveat AND on the anonymous-fallback audit-attribution
+        loss under DISABLED.
+
+  Cross-references:
+    - Existing entity `Alert` (the broader concept — Platform-detected and
+      externally-injected issues).
+    - Existing operation `change-alert-status` (the controller-tier
+      operation; this is the SERVICE-tier enactment).
+    - New invariant `alertservice-handle-external-alerts-skip-resolver-asymmetry`
+      (batch S — the de-dup divergence between updateStatus path's
+      @ActivityLog AOP and handleExternalAlerts' manual emission).

@@ -1,0 +1,28 @@
+gap_id: TEST-GAP-515
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream"
+  - "odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream"
+pillars_affected: [P-05]
+surfaced_by:
+  - "getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[5] (Pagination is applied to the derived set, NOT to the lineage neighbourhood)"
+  - "getMyObjectsWithUpstream.md:performance.known_performance_gaps.[3] (No ORDER BY on listByOddrns produces unstable pagination)"
+behaviour: |-
+  Unstable-pagination `listByOddrns` no-ORDER-BY regression-pin (MEDIUM — P-05). `ReactiveDataEntityRepositoryImpl.java:247-250` builds `DSL.selectFrom(DATA_ENTITY).where(conditions).limit(size).offset(page)` with NO `.orderBy(...)` call. Postgres does NOT guarantee row order without an explicit ORDER BY — the order is implementation-defined. Pagination across pages may produce: (a) duplicate entries between consecutive requests, (b) missing entries between consecutive requests, (c) seemingly random reordering when underlying table is updated. The base `/my` endpoint shares this issue (per batch G TEST-GAP-077) but the symptom is more acute for `/my/upstream` and `/my/downstream` because the derived oddrn set is itself in-memory-materialised (no stable ordering) and then SQL-paginated. The combined effect: an operator paginating through their upstream lineage neighbours sees an effectively random subset on each page. NO test pins the unstable contract. The cure is either (a) `.orderBy(DATA_ENTITY.ID)` for stable keyset ordering, or (b) `.orderBy(DATA_ENTITY.UPDATED_AT.desc())` for recency ordering. The fix is one line; the regression-pin documents the current contract and would FLIP when the fix lands.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/MyObjectsLineagePaginationStabilityTest.java"
+  name: "getMyObjectsWithUpstream_consecutivePageQueries_orderingIsUnstable_pinsTheNoOrderByContract"
+evidence:
+  - "getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[5]: 'Pagination is applied to the derived set, NOT to the lineage neighbourhood. The DB-side LIMIT/OFFSET on listByOddrns orders rows by jOOQ default ordering (no ORDER BY clause), which Postgres documents as undefined. Pagination across pages may produce duplicates and/or missing entries between consecutive requests.' severity: MEDIUM"
+  - "ReactiveDataEntityRepositoryImpl.java:247-250 (DSL.selectFrom(DATA_ENTITY).where(conditions).limit(size).offset(page) — no orderBy call)"
+cross_references:
+  - "TEST-GAP-077 (unstable-pagination at /my — same SQL primitive at the base endpoint)"
+  - "TEST-GAP-512 (REFACTOR-225 PRIMARY-SOURCE — co-located)"
+  - "F-005 (Data Lineage)"
+proposed_action: |-
+  Testcontainers integration test. (a) Pre-seed 10 entities (e1..e10) all reachable upstream of user uA's owned set. (b) GET /api/dataentities/my/upstream?page=1&size=5 → record response IDs. (c) Update e3.updated_at to NOW (the underlying table has changed). (d) GET /api/dataentities/my/upstream?page=2&size=5 → record response IDs. (e) Assert (the unstable contract): either (i) the second page contains entities NOT seen in the first page AND missing entities NOT in the second page, OR (ii) entries appear duplicated across pages. (f) Test comment 'LOCKS the no-ORDER-BY pagination instability contract as of 2026-05-19. When an .orderBy clause is added to listByOddrns, this test FLIPS to assert page 1 ∪ page 2 = {e1..e10} with no duplicates and no missing entries.' Pair with a /my/downstream symmetric test.
+batch: 2026-05-19-M
+feature_id: F-005

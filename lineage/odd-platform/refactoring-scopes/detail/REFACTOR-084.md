@@ -1,0 +1,10 @@
+- **REFACTOR-084** (NEW 2026-05-10B): Duplicate body parse — filter materialises `DataEntityList` from bytes to extract `dataSourceOddrn`, then the controller's `Mono<DataEntityList>` binding re-deserialises the same payload
+  - **Category**: duplicate-parse
+  - **Surfaced by**:
+    - `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md:performance.known_performance_gaps.[0]` (severity MEDIUM)
+  - **Statement**: `IngestionDataEntitiesFilter.java:40` deserialises the entire body to `DataEntityList` purely to extract `dataSourceOddrn`; the controller (`IngestionController.java:38`) then re-parses the same bytes into `Mono<DataEntityList>`. A per-request `O(payload-size)` Jackson parse is performed twice — non-trivial on a high-throughput ingestion path. A streaming JSON extraction of just the `dataSourceOddrn` field (e.g. via `JsonParser` walking to that key only) would avoid the duplicate parse.
+  - **Evidence**: `IngestionDataEntitiesFilter.java:40` (full deserialise) + `IngestionController.java:38-44` (controller re-parses)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Replace `readBody(dataBuffer, DataEntityList.class)` in the filter with a streaming-JSON extraction of just `dataSourceOddrn`. Optionally: cache the parsed `DataEntityList` in the `ServerWebExchange.attributes` so the controller reuses it instead of re-parsing.
+  - **Severity rationale**: MEDIUM — performance gap on a high-throughput ingestion path.
+  - **Suggested backlog grouping**: `Ingestion-endpoint auth hardening`

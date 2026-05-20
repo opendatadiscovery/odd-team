@@ -1,0 +1,81 @@
+name: LSN-017 — self-feeding double-fetch via response-derived useEffect dep-array
+  (cross-layer bug)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+description: |-
+  **NEW INVARIANT, batch 2026-05-19J — empirically pinned by probe P-004 at run
+  R-20260519T010758Z-P-004**. The DataEntityDetails React component's data-fetch
+  useEffect at `DataEntityDetails.tsx:56-64` lists `details.status?.status` (a
+  value derived from the fetch response) in its 5-element dependency array. **The
+  bug fingerprint**: `details.status` is part of the very payload the fetch
+  populates into Redux; first render sees the dep-array as
+  `[id, false, false, false, undefined]` → fetch fires (status undefined → real
+  value); fulfilled action populates `state.dataentities.byId[id].status` →
+  React re-renders → useEffect dep-array re-evaluates → `details.status?.status`
+  has changed from `undefined` to a concrete enum value (`'STABLE'` etc.) →
+  effect fires AGAIN → SECOND identical fetch. The second fetch returns the same
+  status, the cycle quiesces at exactly +2 — but **2 backend `GET
+  /api/dataentities/{id}` calls per page-open, 2 `view_count + 1` UPDATEs per
+  page-open**. Empirically confirmed by P-004 (xhr_count=2 + DB delta=2;
+  regex-filtered exact path match). **Cross-layer bug**: UI-side cause (dep-array
+  contains response-derived value), backend-side observable (+2 view_count UPDATE
+  per page-open). NO per-layer scan would have caught it — a backend-only scan
+  sees "one extra read per call" (noise); a UI-only scan sees a dep-array (legal
+  React pattern). The retrospective `LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md`
+  names this class of bug. **The dep-array CORRECTLY catches DEG-membership
+  changes via 3 group-status flags (lines 60-62)** — the bug is specifically
+  that ONE of the 5 deps is response-derived rather than externally-driven.
+  **Fix is 1 line**: remove `details.status?.status` from the dep-array (line
+  63). Operationally consequential: (a) Popular ranking signal is doubled vs
+  intent; (b) inflation attacks are 2x cheaper from the UI than from a direct
+  API call; (c) cross-pillar bug — UI-side cause, backend-side observable. A
+  Vitest + react-testing-library suite asserting "exactly 1 fetchDataEntityDetails
+  dispatch per mount + per dataEntityId/group-flag change, NEVER on details.status
+  change" would lock down the invariant; promoting P-004 to a CI-permanent
+  Playwright spec turns it into a regression-pin.
+contributing_files:
+- DataEntityDetails.md
+- fetchDataEntityDetails.md
+triangulation_count: 2
+cross_batch: true
+severity: HIGH
+severity_dim: security
+evidence:
+- 'DataEntityDetails.md:bugs_limitations_corner_cases.[0] HIGH — LSN-017 empirically
+  pinned by probe P-004 run R-20260519T010758Z-P-004 (xhr_count=2 + DB delta=2
+  regex-filtered exact path match)'
+- 'DataEntityDetails.md:concepts.invariants[the 5-element dep-array (line 58-64)
+  contains 4 stable values (dataEntityId + 3 group-status flags) AND 1 derived
+  value (details.status?.status) — only the last is response-derived]'
+- 'fetchDataEntityDetails.md:bugs_limitations_corner_cases.[self-feeding double-fetch
+  loop on every detail-page open HIGH — useEffect at DataEntityDetails.tsx:56-64
+  depends on details.status?.status, but details.status is part of the very
+  payload the thunk writes into the store]'
+- 'fetchDataEntityDetails.md:performance.known_performance_gaps.[0] HIGH — 2-dispatch-per-mount
+  baseline minimum doubles the load on GET /api/dataentities/{id}'
+- retrospectives/LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md
+- lineage/odd-platform/probe-runs/2026-05-19-P-004.yaml
+mitigations_unimplemented:
+- '1-line fix at DataEntityDetails.tsx:63 — remove `details.status?.status` from
+  the dep-array'
+- 'Add a Vitest + react-testing-library suite asserting "exactly 1 dispatch per
+  mount + per legitimate dep change, NEVER on details.status change" — lock
+  down the invariant at the unit level'
+- 'Promote probe P-004 to a CI-permanent Playwright spec — the assertion flips
+  from observed=2 to observed=1 on fix; permanent regression-pin'
+- 'Add an eslint rule (custom or react-hooks/exhaustive-deps with strict
+  enforcement) that flags response-derived values in useEffect dep-arrays'
+notes: |-
+  New invariant captured in batch 2026-05-19J. LSN-017 is the canonical example
+  of "cross-layer user-effects invisible to per-node scans" — the retro title.
+  The bug exists for 1 reason: the dep-array contains a value populated by the
+  effect's own fetched response, creating a self-feeding loop. No per-layer scan
+  (UI-only or backend-only) catches the doubling; the empirical signal (probe
+  P-004) is the only reliable surface.
+
+  This invariant is the FIRST empirically-pinned cross-layer bug in the catalog;
+  before batch J, the F-001 view_count inflation was understood as "API-level
+  pumpable" without quantifying the UI-side amplification. LSN-017 quantifies
+  it: +2 per page-open, not +1.

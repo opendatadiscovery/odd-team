@@ -1,0 +1,120 @@
+name: Multi-Tenant Configuration (odd.tenant-id)
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Single-string config key `odd.tenant-id` (default empty per application.yml:208-210)
+  that, when `metrics.storage=PROMETHEUS`, is appended as a `tenant_id` label on every
+  Prometheus TimeSeries write — enabling a single shared Prometheus to serve metric
+  data for multiple ODD Platform deployments without their series colliding. ONLY
+  meaningful in PROMETHEUS metrics-storage mode (ignored under INTERNAL_POSTGRES).
+  vocabulary_status: codebase-anchored, doc-side-partially-covered (live `/configuration-and-deployment/odd-platform#prometheus-tenant-label-odd-tenant-id`
+  documents the read-side semantics — ''empty means no label is applied, and the Prometheus
+  query returns series across all tenants'' — but does NOT document the read/write
+  asymmetry on empty-string).'
+vocabulary_status: codebase-anchored, doc-side-partially-covered
+axes_present:
+- config_prefixes
+nodes:
+- odd-platform java CounterTimeSeriesExtractor config-key-consumer:metrics.storage@L20
+contributors:
+- 'CounterTimeSeriesExtractor@L20 (via AbstractTimeSeriesExtractor.java:21-22, 60-62):
+  tenant_id label append at write side when `tenantId != null`; ExternalMetricReader.java:111
+  uses `StringUtils.isNotEmpty(tenantId)` at read side — divergent treatment of empty-string
+  vs null'
+evidence:
+- CounterTimeSeriesExtractor@L20.md:bugs_limitations_corner_cases.[0,1] (read/write
+  tenant-id label asymmetry; by-label-convention isolation, not enforcement)
+- CounterTimeSeriesExtractor@L20.md:security.known_security_gaps.[0] (shared-Prometheus
+  tenant-isolation HIGH)
+- CounterTimeSeriesExtractor@L20.md:docs_link_semantic.doc_drift_findings.[0]
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant: []
+  ingestion_filter_relevance: N/A
+  authorization_consistency:
+    verdict: N/A
+    detail: Config-key isolation surface. No HTTP gating; tenant isolation is by-label-convention
+      at the metrics-storage layer.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: Tenant identity is operator-config-supplied at startup, NOT user-scoped
+      at request time. No server-side validation, no allowlist, no uniqueness check
+      across ODD Platform instances sharing the same Prometheus.
+  strengths:
+  - Live doc at `/configuration-and-deployment/odd-platform#prometheus-tenant-label-odd-tenant-id`
+    documents the intent (shared-Prometheus multi-tenancy enabler)
+  - Default empty (no label applied) is a sane default for single-tenant deployments
+  weaknesses:
+  - '**Read/write tenant-id label asymmetry on empty-string (HIGH severity)** — Write
+    side `AbstractTimeSeriesExtractor.java:60` uses `if (tenantId != null)`: an empty
+    string PASSES the guard and writes a `tenant_id=""` label. Read side `ExternalMetricReader.java:111`
+    uses `StringUtils.isNotEmpty(tenantId)`: an empty string FAILS the guard and the
+    read filter omits the tenant_id clause. Net: if an operator supplies `ODD_TENANT_ID=`
+    (env var set to empty, NOT unset), every write goes to a series tagged `tenant_id=""`
+    but reads query across all tenants. In a shared-Prometheus multi-tenant deployment
+    this either (a) buries this tenant''s series under an unfilterable label that
+    other tenants don''t have, or (b) causes this tenant''s reads to return series
+    from co-tenants whose tenantId was null. (CounterTimeSeriesExtractor@L20.md:bugs_limitations_corner_cases.[0])'
+  - '**Tenant isolation is by-label-convention, not enforcement (MEDIUM severity)**
+    — no server-side validation that two ODD Platform deployments don''t accidentally
+    share the same `odd.tenant-id` against the same `metrics.prometheus-host`. Their
+    series merge silently. Mid-life rebrand / typo correction makes historical series
+    at the old label unreachable from `ExternalMetricReader` reads. (CounterTimeSeriesExtractor@L20.md:bugs_limitations_corner_cases.[1])'
+  - '**No hot-reload** — `tenantId` is `@Value` constructor-injected once; Spring
+    Cloud Config refresh would NOT propagate to live extractor instances. Platform
+    restart required to change tenant. Severity LOW (CounterTimeSeriesExtractor@L20.md:bugs_limitations_corner_cases.[4])'
+  - '**Shared-Prometheus tenant-isolation depends on operator-supplied tenant_id discipline
+    (HIGH severity)** — combined with the empty-string asymmetry, the multi-tenant
+    guarantee is brittle. Severity HIGH (CounterTimeSeriesExtractor@L20.md:security.known_security_gaps.[0])'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - CounterTimeSeriesExtractor@L20.md
+  evidence:
+  - CounterTimeSeriesExtractor@L20.md:security.known_security_gaps.[0]
+  - CounterTimeSeriesExtractor@L20.md:bugs_limitations_corner_cases.[0,1,4]
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: Config-key concept, not a throughput surface. The label-append cost is
+      part of the parent Metrics Ingestion concept's hot path.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: tenantId is captured at bean construction; horizontally scalable extractor
+      instances each carry their own immutable copy of the configured value. No coordination,
+      no contention.
+  strengths:
+  - Per-instance immutable tenantId — no per-request lookup cost, no shared mutable
+    state
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+  - CounterTimeSeriesExtractor@L20.md
+  evidence: []
+notes: 'Multi-Tenant Configuration is a sub-concept of Metrics Ingestion but
+
+  operationally distinct enough to merit its own catalog entry: it
+
+  carries its own retrospective-class finding (the empty-string
+
+  read/write asymmetry is the LSN-002-class concern flagged in the
+
+  input prompt — same shape as MinIO''s silent us-east-1 pin: a primitive
+
+  default silently breaks the feature when an operator thinks they
+
+  configured it). main-concepts.md does not name "Tenant" or
+
+  "Multi-Tenant" as canonical vocabulary. Recommended canonicalisation:
+
+  add a "Multi-Tenant Metrics" section to the operator reference
+
+  explicitly stating the asymmetry — "leave odd.tenant-id UNSET (not
+
+  empty-string) in single-tenant deployments" — and consider tightening
+
+  the write-side guard to `StringUtils.isNotEmpty(tenantId)` for
+
+  consistency.
+
+  '

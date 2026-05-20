@@ -1,0 +1,83 @@
+gap_id: TEST-GAP-308
+category: missing-security
+criticality: CRITICAL
+node_ids:
+- odd-platform java DataEntityController controller-method:getMyObjects
+- odd-platform java service service:LineageServiceImpl
+- odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream
+- odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream
+pillars_affected: [P-05, P-09, P-01]
+surfaced_by:
+- getMyObjects.md:tests_coverage_semantic.uncovered_behaviours.[6]
+- getMyObjects.md:bugs_limitations_corner_cases.[5]
+- getMyObjects.md:security.known_security_gaps.[2]
+- LineageServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[15]
+- LineageServiceImpl.md:bugs_limitations_corner_cases.[0]
+- LineageServiceImpl.md:security.known_security_gaps.[0, 1]
+- getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[0] (STRENGTHENED batch M — controller-method PRIMARY SOURCE for UPSTREAM)
+- getMyObjectsWithUpstream.md:security.known_security_gaps.[0] (REFACTOR-225 primary source)
+- getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[0] (STRENGTHENED batch M — controller-method PRIMARY SOURCE for DOWNSTREAM)
+- getMyObjectsWithDownstream.md:security.known_security_gaps.[0] (SYMMETRIC REFACTOR-225)
+behaviour: 'Lineage-variant single-point-of-failure — getMyObjectsWithUpstream/Downstream
+  rely on anchor-set correctness; NO JOIN-side owner filter on the response set. A
+  regression in fetchAssociatedOwner() leaks lineage neighbours. STRENGTHENED batch
+  I — the LineageServiceImpl sidecar is the NEGATIVE-CASE PRIMARY SOURCE: `LineageServiceImpl`
+  has no `AuthIdentityProvider` field, no `fetchAssociatedOwner` call, no owner check
+  anywhere in getLineage or getDataEntityGroupLineage. `DataEntityRelationsServiceImpl.getDependentDataEntityOddrns`
+  IS the positive-case sibling — it calls `fetchAssociatedOwner()` BEFORE the same
+  repository. The negative case is the entire LineageServiceImpl class. The lineage
+  canvas read path (getLineage) and the DEG-lineage read path (getDataEntityGroupLineage)
+  both lack the anchor-set defence — REFACTOR-203 confirmed at the service tier.
+  STRENGTHENED batch M — controller-method PRIMARY SOURCE for BOTH /my/upstream AND
+  /my/downstream variants now in place (getMyObjectsWithUpstream.md + getMyObjectsWithDownstream.md):
+  the architecture INCONSISTENCY between base /my (JOIN-defended via listByOwner at
+  ReactiveDataEntityRepositoryImpl.java:515-534) AND the lineage variants (NOT JOIN-defended
+  via listByOddrns at lines 228-253) is the LOAD-BEARING finding. The owner-scoping
+  invariant for the lineage variants is single-point-of-failure at DataEntityRelationsServiceImpl.java:26;
+  the downstream listByOddrns scan has NO defence-in-depth WHERE clause. Criticality
+  BUMPED from HIGH to CRITICAL given cross-pillar P-05+P-09+P-01 bump per REV-3 LAYER-0
+  rule — the primary-source confirmation at controller-method tier makes the regression
+  vector falsifiable + the architectural inconsistency between /my and /my/upstream-downstream
+  is now documented at 4 angles (controller G + repository H + service I + controller-method
+  M). See TEST-GAP-512 for the dedicated regression-pin proposal.'
+test_files_existing: []
+test_files_proposed:
+  path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataEntityMyObjectsLineageTest.java
+  name: getMyObjectsWithUpstream_ownerScopeFailsAtAnchor_doesNotLeakLineageNeighbours_andGetLineageCrossOwnerEnumerationPinned
+evidence:
+- 'Source: DataEntityRelationsServiceImpl.java:25-31 (positive case) + DataEntityServiceImpl.java:219-225
+  (listByOddrns has no owner-filter)'
+- 'LineageServiceImpl.md says: ''Anchor-set defence-in-depth is NOT applied — getLineage
+  accepts dataEntityId from the controller and resolves the root via reactiveDataEntityRepository.getDataEntityWithDataSourceAndNamespace(dataEntityId)
+  WITHOUT calling authIdentityProvider.fetchAssociatedOwner(). The recursive-CTE walk
+  that follows operates on the resolved oddrn with NO owner filter at any layer'''
+- 'LineageServiceImpl.java:54-57 (no AuthIdentityProvider field) + 87-122 (no fetchAssociatedOwner
+  call) + 59-85 (same for DEG-lineage)'
+- 'DataEntityRelationsServiceImpl.java:25-30 (the positive case)'
+- 'STRENGTHENED batch M: getMyObjectsWithUpstream.md says ''The owner-scoping invariant
+  for /my/upstream is enforced at exactly one site: DataEntityRelationsServiceImpl.java:26
+  (authIdentityProvider.fetchAssociatedOwner()). The downstream listByOddrns scan
+  at ReactiveDataEntityRepositoryImpl.java:228-253 has NO owner filter. Contrast:
+  the base /my endpoint''s repository method listByOwner JOINs against OWNERSHIP with
+  WHERE OWNERSHIP.OWNER_ID = ?.'''
+- 'STRENGTHENED batch M: getMyObjectsWithDownstream.md confirms the SYMMETRIC REFACTOR-225
+  for the DOWNSTREAM variant — identical posture at the controller-method primary
+  source.'
+cross_references:
+- concepts.yaml:entities[User-Owner Mapping].security_aggregate (MEDIUM)
+- ADR-CANDIDATE-015
+- REFACTOR-203 (lineage cross-owner enumeration — closed at service tier)
+- REFACTOR-225 (anchor-set single-point-of-failure — primary source at controller-method M)
+- F-005 (Data Lineage)
+- TEST-GAP-512 (REFACTOR-225 PRIMARY-SOURCE — dedicated regression-pin from batch M)
+proposed_action: 'Three-test pin: (a) happy path getMyObjectsWithUpstream; (b) mock
+  fetchAssociatedOwner wrong-owner; assert lineage variant returns empty OR errors;
+  (c) ADDITIONAL service-tier test — call `lineageService.getLineage(victimEntityId,
+  depth, [], DOWNSTREAM)` as a user who does NOT own `victimEntityId`; assert the
+  call succeeds (current cross-owner posture) and returns the lineage subgraph. Pin
+  the negative case so a future anchor-set fix is detected. SUPERSEDED for /my/upstream
+  and /my/downstream specifically by TEST-GAP-512 — see that gap for the dedicated
+  regression-pin proposal at the controller-method tier with full /my/downstream
+  symmetry coverage.'
+batch: 2026-05-19-M-STRENGTHENED
+feature_id: F-005

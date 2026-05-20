@@ -1,0 +1,494 @@
+feature_id: F-005
+pillar_id: P-05
+pillar_anchored_id: P-05:F-001
+pillar_anchored_feature_name: Lineage Graph Traversal
+primary_drift_class: spec_says_X_impl_does_Y
+drift_class_summary:
+- spec_says_X_impl_does_Y
+- cross_owner_enumeration
+- diamond_DAG_amplification
+- anchor_set_defence_in_depth_partial_application
+- ui_amplification
+- structural_amplification_surface
+- ui_default_masks_backend_caveat
+- co_membership_leakage
+rev3_reclassification:
+  migrated_at: '2026-05-19T15:17:32.753499+00:00'
+  from_rev2_feature_name: Downstream lineage traversal — default depth handling
+  notes: Lineage Graph Traversal is the Data Lineage pillar's primary feature; F-005 was bug-anchored on the lineage_depth
+    NPE caveat. The bug becomes a drift facet inside the pillar-anchored feature; multiple other drift classes (cycle/owner/anchor-set)
+    attach to the same pillar feature.
+  merge_candidate_with: null
+  method: manual mapping per maintainer dialogue 2026-05-19 + system-mission.md pillar list
+feature_name: Downstream lineage traversal — default depth handling
+discovered_from_entry_point: rest:GET /api/dataentities/{id}/lineage/downstream
+description: 'The lineage-downstream endpoint accepts an optional lineage_depth query
+
+  parameter. OpenAPI declares it `required: false` (so callers may omit it)
+
+  and the live API-reference doc claims "Unset returns the platform''s
+
+  default depth". The implementation uses primitive `int` for the parameter;
+
+  null → autoboxing throws NullPointerException → 500. The documented
+
+  contract is unimplementable. Batch-H adds primary-source SQL confirmation
+
+  at the repository layer (ReactiveLineageRepositoryImpl.lineageCte lines
+
+  150-176): the recursive CTE has NO depth cap, NO cycle guard, and NO
+
+  JOIN-side owner filter — confirming REFACTOR-202 (cycle/diamond
+
+  amplification) and REFACTOR-203 (cross-owner enumeration) from primary
+
+  source.
+
+  '
+contributing_nodes:
+- ts react-component:LineageGraph (Lineage tab on data-entity-detail page — shell + d3-hierarchy canvas)
+- odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
+- odd-platform java DataEntityController controller-method:getDataEntityGroupsLineage (batch M — DEG-anchored variant cross-ref to F-016)
+- odd-platform java LineageService.getLineage(int depth, ...)
+- odd-platform java service service:LineageServiceImpl
+- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+- odd-platform java ReactiveGroupEntityRelationRepositoryImpl (batch M — DEG-anchored member resolution)
+terminal_side_effect:
+  side_effect_class: page-render
+  description: Returns LineageGraph payload to the lineage canvas component
+  evidence: 'DataEntityController.getDataEntityDownstreamLineage → LineageServiceImpl.getLineage → ReactiveLineageRepositoryImpl.getLineageRelations(Set,
+    LineageDepth, LineageStreamKind) at lines 122-131 — issues `DSL.withRecursive(lineageCte(...)).selectDistinct(parent,
+    child).from(cte)`. The CTE body at lines 150-176 is the canonical recursive walk: seed selects edges touching the root
+    oddrn set at depth=1; recursive step joins the CTE to lineage on the direction-appropriate field, increments depth, terminates
+    when `tDepth.lessThan(lineageDepth.getDepth())` is FALSE (line 174). NO `LIMIT`, NO Postgres `WITH ... CYCLE` clause,
+    NO visited-set guard, NO owner JOIN.'
+  cardinality_per_call: 1
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+  - facet: default-depth handling on omitted parameter
+    observed: GET /api/dataentities/{id}/lineage/downstream WITHOUT lineage_depth returns 5xx (NPE)
+    expected: Per live api-reference doc — 'Unset returns the platform's default depth' → 200 with default-depth result
+    drift_class: spec_says_X_impl_does_Y
+    provenance: MEASURED — P-008 (run R-20260519T012533Z-P-008) GETs without lineage_depth; observed last_response_status
+      in [500, 599]. Batch-H primary-source SQL confirmation — the recursive CTE consumes the primitive depth via `lineageDepth.getDepth()`
+      at line 174; the controller-layer NPE on null happens BEFORE the repo is reached.
+  - facet: recursive-CTE cycle/diamond amplification (REFACTOR-202 — STATIC primary-source)
+    observed: CTE body is `UNION ALL` (line 168) without visited-set guard or Postgres `WITH ... CYCLE` clause. Outer `selectDistinct`
+      (line 127) deduplicates the FINAL result but does NOT prune intermediate CTE rows. For a depth-N diamond pattern with
+      branching factor B, intermediate row count grows as O(B^N) before the outer projection prunes duplicates. For a true
+      cycle (A→B→A), row growth is bounded ONLY by the depth ceiling — which itself has no repository-layer upper bound (line
+      174 consumes the raw int).
+    expected: Bounded cost — either visited-set guard, Postgres WITH CYCLE, or a defensive depth cap (e.g. Math.min(depth,
+      MAX_LINEAGE_DEPTH))
+    drift_class: structural_amplification_surface
+    provenance: STATIC — primary-source verification in batch-H ReactiveLineageRepositoryImpl sidecar bugs_limitations_corner_cases[0]+[1]+[3].
+      Proposed Type-7 probe — seed A→B→C→A cycle, GET lineage with depth=5, assert response time < 5s + no DB CPU spike (proposed
+      local probe with docker-compose + postgres + curl).
+  - facet: cross-owner enumeration without JOIN-side filter (REFACTOR-203 — STATIC primary-source)
+    observed: The `lineage` table has NO owner column (schema migrations V0_0_2 + V0_0_17 + V0_0_79 confirm). The recursive
+      CTE seed + recursive step filter ONLY on `is_deleted` (lines 167, 174). When invoked from `LineageServiceImpl.getLineage`
+      (the lineage-canvas read path), NO owner-scoping is applied at any layer — any caller (authenticated under LOGIN_FORM/OAUTH2/LDAP;
+      anonymous under DISABLED) can read the full reachable subgraph from any root oddrn, including edges into entities owned
+      by other teams.
+    expected: Either documented cross-owner posture OR per-owner filtering at SOME layer
+    drift_class: cross_owner_enumeration_default
+    provenance: STATIC — primary-source verification in batch-H ReactiveLineageRepositoryImpl sidecar bugs_limitations_corner_cases[2]
+      + security.owner_scoping. Proposed Type-7 probe — seed two entities with disjoint owners + a lineage edge, GET downstream
+      from owner-A's entity as owner-B's identity, assert response shape.
+  - facet: anchor-set defence-in-depth (the BATCH-H NEW PATTERN)
+    observed: 'TWO call sites of getLineageRelations(Set, LineageDepth, StreamKind): (A) LineageServiceImpl.getLineage (lineage-canvas
+      read path) passes a single root oddrn with NO owner filter at any layer — the cross-owner enumeration surface. (B) DataEntityRelationsServiceImpl.getDependentOddrns
+      (used by getMyObjectsWith{Upstream,Downstream}) resolves owner FIRST via authIdentityProvider.fetchAssociatedOwner()
+      (line 26), then passes the owner''s entity-oddrn set AS THE ANCHOR with LineageDepth.empty() (depth=-1) — the seed-only
+      one-hop expansion. The owner-scoping defence lives AT THE ANCHOR SET, not at JOIN time. The recursive expansion that
+      follows is NOT owner-scoped: any edges reachable from the anchor set are returned, including edges into entities owned
+      by other teams. The pattern works for the my-objects use case (owner''s entities are the seed, expansion reaches lineage
+      neighbours they''re causally connected to) but DOES NOT generalise to the lineage-canvas use case (any-root-by-id) which
+      currently has no defence.'
+    expected: A consistent defence model — either (a) JOIN-side owner-aware filter, or (b) anchor-set discipline AT EVERY
+      CALL SITE, not just one
+    drift_class: anchor_set_defence_in_depth_partial_application
+    provenance: STATIC — primary-source verification in batch-H ReactiveLineageRepositoryImpl sidecar upstream_callers + bugs_limitations_corner_cases[7]
+      + LineageDepth.java:16-18 (.empty() semantics — value=-1 terminates after seed). LineageServiceImpl.getLineage is the
+      NEGATIVE case (no owner-set anchor); DataEntityRelationsServiceImpl.getDependentOddrns is the POSITIVE case. Proposed
+      Type-7 probe — exercise BOTH call sites with the same backend stack and assert per-call observable scope.
+  - facet: NEGATIVE-case anchor-set confirmed PRIMARY-SOURCE at service tier (batch I)
+    observed: 'LineageServiceImpl.getLineage (lines 87-122) has NO AuthIdentityProvider field
+
+      (verified at lines 54-57), NO fetchAssociatedOwner call (verified anywhere in
+
+      the method body), NO owner argument on the public interface signature (LineageService.java:11-19).
+
+      The root is resolved by raw dataEntityId at line 92 (reactiveDataEntityRepository.getDataEntityWithDataSourceAndNamespace),
+
+      then the recursive-CTE walk fires at line 95 with `Set.of(root.getDataEntity().getOddrn())`
+
+      — a single-element root set with NO caller-identity scoping. The negative-case
+
+      half of the anchor-set pattern is CONFIRMED primary-source at the service layer
+
+      this batch enriches. Contrast: DataEntityRelationsServiceImpl.java:25-30 imports
+
+      AuthIdentityProvider, has the field, and calls fetchAssociatedOwner() at line
+
+      26 BEFORE invoking the same repository method.'
+    expected: anchor-set discipline applied to getLineage — call fetchAssociatedOwner before resolving the root OR apply JOIN-side
+      owner filter at the repository
+    drift_class: anchor_set_defence_in_depth_partial_application
+    provenance: STATIC — primary-source verification in batch-I LineageServiceImpl sidecar bugs_limitations_corner_cases[0]
+      + security.owner_scoping (the negative case named) vs DataEntityRelationsServiceImpl.java:20, 26 (the positive case).
+  - facet: no upper-bound check on lineageDepth at service tier (batch I — STATIC)
+    observed: 'LineageServiceImpl.getLineage builds `LineageDepth.of(lineageDepth)` (line 96)
+
+      and hands the primitive int directly to the repository. There is NO `Math.min(lineageDepth,
+
+      MAX_DEPTH)` defensive clamp, NO `if (lineageDepth > MAX) throw new ...`, NO
+
+      warning log. The controller→service boundary autoboxes Integer → int (which
+
+      itself NPEs on null per F-005 facet 1) and the service-tier code path between
+
+      the boundary and the repository call adds nothing. A caller passing `lineageDepth=Integer.MAX_VALUE`
+
+      drives the recursive CTE to Postgres limits. REFACTOR-202 amplification is confirmed
+
+      end-to-end through this service.'
+    expected: defensive clamp at service tier OR depth ceiling at repository tier
+    drift_class: structural_amplification_surface
+    provenance: STATIC — primary-source verification in batch-I LineageServiceImpl sidecar bugs_limitations_corner_cases[2]
+      + ReactiveLineageRepositoryImpl.java:174 (the recursive-step termination consumes the raw int). No probe yet — proposed
+      local k6 + lineage_depth=2147483647 probe to surface the DB CPU response.
+  - facet: inner-DEG suppression in getDataEntityGroupLineage (batch I — STATIC, DEG sub-flow)
+    observed: 'LineageServiceImpl.getDataEntityGroupLineage (lines 59-85) filters out edges
+
+      whose endpoint is itself a DEG (line 73) AND removes DEG-typed entries from
+
+      the metadata dictionary (line 75). The comment at line 71 — `// Remove this
+
+      when we will support inner DEGs for DEG lineage` — is an explicit deferred-feature
+
+      marker. The current API contract for DEG-lineage is therefore "flat graph of
+
+      non-DEG members, not a recursive graph of nested DEGs". A third-party caller
+
+      building tooling on getDataEntityGroupsLineage for a DEG that contains nested
+
+      DEGs silently observes missing edges with no contract description of why.'
+    expected: documented behaviour OR backlog-citation linking the comment to a triaged item OR @Disabled regression test
+      pinning the current contract
+    drift_class: undocumented_carve_out
+    provenance: STATIC — primary-source verification in batch-I LineageServiceImpl sidecar bugs_limitations_corner_cases[7]
+      + implicit_adrs[3] (the deliberate filter as deferred-feature). Proposed local probe — seed a nested DEG (DEG-A containing
+      DEG-B containing entity E + lineage edges) + GET /api/dataentitygroups/{A}/lineage + assert DEG-B does not surface in
+      the response.
+  - facet: DEG-anchored variant — co-membership leakage wider than per-entity REFACTOR-203 (batch M — STATIC, PRIMARY-SOURCE)
+    observed: |-
+      The DEG-anchored lineage variant (GET /api/dataentitygroups/{id}/lineage —
+      see F-016) exposes a STRICTLY WIDER read-collaborative blast radius than
+      per-entity REFACTOR-203. Per batch-M getDataEntityGroupsLineage sidecar
+      primary source: NO @PreAuthorize, NO SecurityConstants.SECURITY_RULES entry
+      for the path (verified by Grep `dataentitygroups.*lineage` against
+      SecurityConstants.java — zero matches), NO fetchAssociatedOwner call at any
+      layer (LineageServiceImpl.java:54-57 has no AuthIdentityProvider field).
+      Any authenticated user enumerating DEG IDs reads the full inter-member
+      lineage graph for every DEG; under DISABLED the endpoint is anonymously
+      reachable. Per-entity REFACTOR-203 exposes the lineage neighbourhood of a
+      SINGLE root entity; the DEG-anchored variant exposes the inter-member edge
+      graph across ALL members of the named DEG — and DEGs commonly span owner
+      boundaries (a "Finance" DEG may contain datasets owned by Finance AND ETL
+      jobs owned by Data Engineering); the inter-member edges ARE the cross-owner
+      lineage. The DEG-anchored variant uses a distinct repository overload
+      (`getLineageRelations(List<String>)` at ReactiveLineageRepositoryImpl.java:112-119
+      — a bidirectional IN filter with no recursive CTE) rather than the
+      per-entity recursive walk — but the absence of owner-scoping is identical.
+    expected: |-
+      Same defence-or-document pattern as per-entity REFACTOR-203 — either (a)
+      apply owner-scoping at the DEG read path (verify caller has at least one
+      ownership relation to the DEG or one of its members) or (b) document the
+      cross-owner posture explicitly on the Data Lineage feature page. The
+      DEG-anchored variant is captured as F-016 (P-05:F-002 DEG-Anchored
+      Lineage) — distinct feature_id because the chain, the SQL overload, the
+      404-conflation surface, the inner-DEG carve-out, and the
+      per-connected-component partitioning are all DEG-specific.
+    drift_class: co_membership_leakage
+    provenance: |-
+      STATIC — primary-source in batch-M getDataEntityGroupsLineage sidecar
+      bugs_limitations_corner_cases + invariants + audiences[2,3] +
+      couples-to.AuthorizationCustomizer (no SECURITY_RULES entry verified by
+      Grep). Cross-reference: F-016 is the DEG-anchored feature's full
+      treatment; this facet extends F-005's existing REFACTOR-203 cross-owner
+      coverage to surface the DEG-anchored blast-radius difference here as
+      well, so a reader of F-005 finds the DEG variant via this cross-link.
+      Severity: HIGH (wider blast than per-entity REFACTOR-203).
+  - facet: UI uses anchor-set-undefended endpoints (batch J — PRIMARY-SOURCE)
+    observed: |-
+      The UI ALWAYS fetches via `dataEntityApi.getDataEntityDownstreamLineage`
+      / `getDataEntityUpstreamLineage` (`HierarchyLineage.tsx` thunks.ts:19, 36)
+      — i.e. the NEGATIVE-case endpoints (`/api/dataentities/{id}/lineage/downstream`
+      + `/upstream`) confirmed at batch-I as having NO anchor-set defence
+      (LineageServiceImpl.java:54-57 no AuthIdentityProvider field, line 92
+      resolves root by raw dataEntityId with no owner-anchoring). The UI does
+      NOT use the POSITIVE-case endpoints (`/my/upstream` + `/my/downstream`
+      via DataEntityRelationsServiceImpl.getDependentOddrns which DOES call
+      `authIdentityProvider.fetchAssociatedOwner()` before invoking the
+      repository). CONSEQUENCE: every authenticated user (LOGIN_FORM /
+      OAUTH2 / LDAP) enumerates the cross-owner lineage subgraph from the
+      Lineage tab on ANY entity, regardless of owner association. Anonymous
+      callers do the same under DISABLED auth. The UI is the user-observable
+      realisation point for REFACTOR-203. PRIMARY-SOURCE CONFIRMED batch J
+      via LineageGraph sidecar bugs_limitations_corner_cases[8] (severity
+      HIGH — "the user-observable consequence of the security gap; not a UI
+      bug per se, but the UI is the realisation point") + security.owner_scoping.
+    expected: UI uses anchor-set-defended endpoints OR backend adds JOIN-side
+      owner filter to the lineage endpoints used by the canvas
+    drift_class: cross_owner_enumeration
+    provenance: STATIC — primary-source verification at thunks.ts:19, 36
+      (the only fetch surface in the lineage UI tree) + LineageGraph sidecar
+      bugs_limitations_corner_cases[8] + security.owner_scoping. Closes
+      the user-visible half of the REFACTOR-203 cross-owner pattern.
+  - facet: d3-hierarchy renders diamond-DAG duplicates at the UI (batch J)
+    observed: |-
+      `LineageGraph.tsx:40-44` invokes `generateTree(parseData(data), ...)`
+      which builds a `d3-hierarchy` TREE (not a DAG). The `hierarchy(root,
+      childAccessor)` at `generateGraph.ts:68-76, 108-116` walks edges
+      recursively from each node with NO visited-set check; if entity D is
+      reachable from root R via two paths (R→B→D + R→C→D), D appears
+      TWICE in the rendered tree — each instance is a distinct
+      `HierarchyPointNode` with its own `d3attrs.id` UUID. React keys at
+      `LineageGraph.tsx:91` use `node.x${node.y}` (DIFFERENT positions ARE
+      distinct keys), so React mounts two SVG nodes. Cumulative effect:
+      AMPLIFIES the REFACTOR-202 backend recursive-CTE diamond
+      amplification into the UI render layer. Backend produces N rows for
+      a depth-D diamond with branching B; the UI renders all N visually.
+      No client-side dedupe BEFORE the tree builder runs. PRIMARY-SOURCE
+      CONFIRMED batch J via LineageGraph sidecar
+      bugs_limitations_corner_cases[0] + invariants[0].
+    expected: deduplication at the UI (visited-set in generateTree) OR a
+      DAG-aware layout (e.g. dagre, react-flow) OR backend-side
+      canonicalisation that flattens diamonds before serialisation
+    drift_class: diamond_DAG_amplification
+    provenance: STATIC — primary-source verification at generateGraph.ts:68-76,
+      108-116 + LineageGraph.tsx:84-110 (node-per-instance rendering) +
+      LineageGraph sidecar bugs_limitations_corner_cases[0]. Proposed
+      local probe — seed A→B→D and A→C→D + GET lineage + assert
+      duplicate-D in render tree count == 2.
+  - facet: UI silently masks F-005 default-depth NPE — d=1 hardcoded (batch J)
+    observed: |-
+      `constants.ts:74-84` — `defaultLineageQuery: { d: 1, ... }`. The UI
+      ALWAYS sends `lineage_depth=1` even when the URL omits `?d=` —
+      `useQueryParams` at `useQueryParams.ts:38-44` returns `d: 1` for a
+      URL with no query string, and `HierarchyLineage.tsx:47` reads `d`
+      from that. The F-005 NPE-on-null-lineage_depth bug (facet 1 above)
+      surfaces ONLY for direct API callers; FROM THE UI THE FAILURE MODE
+      IS SILENT — the UI silently picks 1, which is BELOW any reasonable
+      "platform default depth" value and may give an artificially shallow
+      first impression of the lineage graph. The "Unset returns the
+      platform's default depth" branch advertised by the live API-reference
+      doc is UNREACHABLE from the UI. PRIMARY-SOURCE CONFIRMED batch J via
+      LineageGraph sidecar invariants[2] + implicit_adrs[0].
+    expected: |-
+      Backend provides a canonical default depth value (via
+      `@RequestParam(defaultValue=)`); UI removes the hardcoded `d=1`
+      override and lets the backend control the default.
+    drift_class: ui_default_masks_backend_caveat
+    provenance: STATIC — primary-source verification at constants.ts:74-84
+      + HierarchyLineage.tsx:40-47 + useQueryParams.ts:38-44 +
+      LineageGraph sidecar invariants[2] + implicit_adrs[0]. The d=1
+      default is applied across 7 components — a coordinated decision
+      not an accident.
+  - facet: No upper-bound on `?d=` URL param (batch J)
+    observed: |-
+      `useQueryParams.ts:36` uses `parseNumbers: true` which converts
+      `?d=999999999` to `d: 999999999`; `HierarchyLineage.tsx:47` passes
+      the value straight to the API. The UI's depth `<AppSelect>` at
+      `LineageControls.tsx:113-117` only EXPOSES [1..20] (per
+      `constants.ts:97-99`) but the URL accepts ANY positive integer. A
+      user hand-editing `?d=10000` triggers a backend recursive-CTE walk
+      to depth 10000 — REFACTOR-202 amplification UNGATED at the UI.
+      Combined with the absence of upper-bound at service+repo tiers
+      (per F-005 batch-I + batch-H facets) and the absence of owner-scope
+      filtering (cross-owner enumeration above), the URL is the maximal
+      attack surface against the lineage subsystem. PRIMARY-SOURCE
+      CONFIRMED batch J.
+    expected: UI clamps `d` to a hard maximum (e.g. Math.min(parseInt(d, 10),
+      20)) OR validates and rejects out-of-range values
+    drift_class: structural_amplification_surface
+    provenance: STATIC — primary-source verification at useQueryParams.ts:33-36
+      + constants.ts:97-99 + LineageGraph sidecar
+      bugs_limitations_corner_cases[1] (severity HIGH —
+      "combined with backend REFACTOR-202 absence of upper bound") +
+      security.known_security_gaps[2] (severity HIGH).
+  - facet: LoadMore monotonic accumulation has no collapse affordance (batch J)
+    observed: |-
+      `dataEntityLineage.slice.ts:206-220` MERGES new nodes into
+      `localDownstreamState.allNodes` via `if (!localDownstreamState.nodeIds.has(node.id))
+      localDownstreamState.allNodes.push(node)`. No remove-this-expansion
+      action, no LRU eviction, no max-size cap. A user clicking LoadMore
+      on 100 leaf nodes in a 10K-node graph accumulates 100×(per-leaf-payload-size)
+      of nodes/edges in the slice AND in the rendered SVG tree until they
+      navigate away. The LoadMoreButton hides itself after click
+      (Node.tsx:174 — `setHideLoadMore(true)`) but the underlying data
+      stays. Module-level mutable globals (`localUpstreamState`,
+      `localDownstreamState` at slice.ts:30-48) live OUTSIDE Redux's
+      Immer drafts — they are NOT in DevTools timeline, NOT in any
+      snapshot. PRIMARY-SOURCE CONFIRMED batch J.
+    expected: collapse-this-branch affordance OR LRU eviction OR
+      max-node-count cap in the slice
+    drift_class: structural_amplification_surface
+    provenance: STATIC — primary-source verification at
+      dataEntityLineage.slice.ts:30-48, 206-220, 285-299 +
+      LoadMoreButton.tsx:55-65 + LineageGraph sidecar
+      bugs_limitations_corner_cases[3] + implicit_adrs[5] (the
+      module-level globals trade Redux observability for accumulator
+      performance — deliberate).
+  - facet: Click-through compounds depth — node.depth becomes new `d` (batch J)
+    observed: |-
+      `Node.tsx:46-52` — clicking a graph node title navigates to
+      `dataEntityLineagePath(entityId, lineageQueryString)` where
+      `lineageQueryString` is built from `useQueryParams({...defaultLineageQuery,
+      d: node.depth || 1})`. The new view opens with `d` set to the
+      CLICKED NODE'S DEPTH — for a node 5 hops out from root, the new
+      view loads with depth=5 (NOT the original `d`). Compounds REFACTOR-202
+      on every click: drill 5 hops in → click → new view fetches lineage
+      to depth=5 around that new root → drill another 5 → click → depth=5
+      again. A casual user clicking through the canvas can rapidly trigger
+      arbitrarily-expensive recursive CTE walks WITHOUT touching the
+      depth slider. PRIMARY-SOURCE CONFIRMED batch J.
+    expected: documented behaviour OR depth-on-click is preserved (not
+      compounded) OR an explicit UI prompt before high-depth navigation
+    drift_class: structural_amplification_surface
+    provenance: STATIC — primary-source verification at Node.tsx:49-52
+      + LineageGraph sidecar implicit_adrs[4] (the click-compounds-depth
+      decision is deliberate per intent_anchor) +
+      bugs_limitations_corner_cases (the consequence is real).
+  - facet: Sequential fetch + 500-class brittle error mode (batch J)
+    observed: |-
+      `HierarchyLineage.tsx:44-67` issues downstream FIRST, then `.then()`
+      upstream — if downstream returns 500 (e.g. the F-005 NPE branch),
+      upstream NEVER fires. The user sees ONE error (downstream) but the
+      UI cannot recover by retrying just upstream. Failure is BINARY:
+      either both succeed (canvas renders) or AppErrorPage shows. No
+      automatic retry, no exponential backoff, no "retry" button on the
+      error page. A flaky network sees the user navigate away. PRIMARY-SOURCE
+      CONFIRMED batch J.
+    expected: parallel fetch (Promise.allSettled) + per-stream error states
+      OR an explicit retry affordance
+    drift_class: null
+    provenance: STATIC — primary-source verification at
+      HierarchyLineage.tsx:44-67, 129-133 + LineageGraph sidecar
+      bugs_limitations_corner_cases[4] + [9].
+  - facet: LineageDepth.empty() semantics (batch H — STATIC corner case)
+    observed: '`LineageDepth.empty()` returns `new LineageDepth(-1, true)`. The `tDepth.lessThan(-1)` recursive-step termination
+      is FALSE on the first iteration (depth starts at 1), so recursion terminates after the SEED step — i.e. only the depth-1
+      edges touching the anchor oddrn set are returned. The `boolean empty` flag is NEVER read inside lineageCte; only the
+      depth integer matters. A reader of DataEntityRelationsServiceImpl.java:34 who sees `LineageDepth.empty()` and assumes
+      "zero edges returned" would be wrong — the actual behaviour is "seed-only one-hop expansion".'
+    expected: Self-documenting code — either rename `.empty()` to `.seedOnly()` or add Javadoc clarifying the actual semantics
+    drift_class: misleading_api_naming
+    provenance: STATIC — primary-source verification in batch-H ReactiveLineageRepositoryImpl sidecar bugs_limitations_corner_cases[7]
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - LineageService.getLineage signature — accept Integer + null-handling for default
+    - LineageDepth.empty() semantics regression — assert seed-only output (batch-H finding)
+  integration:
+    state: PARTIAL
+    covered:
+    - behaviour: GET without lineage_depth returns 5xx (NPE)
+      pinned_by_probe_run: R-20260519T012533Z-P-008
+      cell_evidence: lineage/odd-platform/probe-runs/2026-05-19-P-008.yaml
+      note: 'PINNING-BUG: TEST-GAP-279 / DOC-GAP-089 confirmed. Fix → 200 + sensible default OR spec change to required:true.'
+    - behaviour: Recursive-CTE traversal happy-path on tree shapes (depth=1/2/3 in BOTH directions) is COVERED by `LineageRepositoryTest.getLineageRelationsTest_WithRoots`
+        (LineageRepositoryTest.java:130-281) per batch-H sidecar tests_coverage_semantic.covered_behaviours. This is the ONE
+        existing integration test the repo has — but it uses a 7-edge tree with NO cycle, NO diamond, NO depth-stress, NO
+        soft-deleted edges.
+      pinned_by_probe_run: existing-suite
+      cell_evidence: LineageRepositoryTest.java:130-281 (Testcontainers-Postgres integration test)
+      note: Existing test pins happy-path tree behaviour; surfaces no regression for cycle/diamond/depth-extreme cases.
+    uncovered:
+    - Default-depth value, once defined, returns N nodes/edges
+    - Cyclic graph terminates at depth bound (batch-H static finding — REFACTOR-202)
+    - Diamond DAG intermediate-row growth bounded (batch-H static finding)
+    - Soft-deleted edges excluded from CTE seed AND recursive step (batch-H finding — no test exercises this)
+    - LineageDepth.empty() produces seed-only output (batch-H finding)
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Recursive CTE depth bound — DoS surface (REFACTOR-202, batch-H confirms from primary source — depth flows directly into
+      SQL with no Math.min)
+    - 10K-edge graph + depth=10 — assert <Postgres work_mem ceiling
+    - Soft-delete OR-predicate index gap — batch-H known_performance_gaps[3]
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - Cross-tenant lineage traversal (REFACTOR-203, batch-H confirms from primary source — no owner column on lineage table,
+      no JOIN-side filter)
+    - LineageServiceImpl.getLineage (negative case — no anchor-set defence) vs DataEntityRelationsServiceImpl.getDependentOddrns
+      (positive case) — distinct empirical contract per call site
+control_summary: |-
+  2 of 4 cells PROBED+EXISTING — integration (PROBED-PINNING-BUG for
+  default-depth + EXISTING for happy-path tree). 6 uncovered behaviours newly
+  surfaced by batch-H primary-source SQL audit
+  (cycle/diamond/soft-delete/empty()/owner-anchor-pattern). Batch-H adds the
+  resolved chain hop for the recursive CTE + folds in REFACTOR-202 +
+  REFACTOR-203 primary-source confirmation + surfaces the
+  anchor-set-defence-in-depth pattern as a NEW drift_class. Batch-I closes
+  the negative-case half of the anchor-set pattern PRIMARY-SOURCE at the
+  service tier (LineageServiceImpl.java:54-57 no AuthIdentityProvider field,
+  87-122 no fetchAssociatedOwner call) AND adds the no-upper-bound-check
+  service-tier facet (line 96 hands raw int to repo) AND surfaces the
+  DEG-lineage inner-DEG suppression carve-out (line 71 comment). Batch-J
+  adds the UI HALF PRIMARY-SOURCE CONFIRMED: the lineage canvas
+  (`Lineage.tsx` → `HierarchyLineage` → `LineageProvider` → `Zoom` →
+  `ZoomableLineage` → `LineageGraph`) ALWAYS fetches via the
+  anchor-set-undefended endpoints (`/api/dataentities/{id}/lineage/{down,up}stream`)
+  — never the `/my/{down,up}stream` anchor-set-defended endpoints used by
+  DataEntityRelationsServiceImpl. The UI is the user-observable realisation
+  point of REFACTOR-203. ALSO: d3-hierarchy renders diamond-DAG duplicates
+  (REFACTOR-202 amplified into the visual layer); the UI hardcodes `d=1`
+  default which silently masks the F-005 NPE caveat; the URL `?d=` has NO
+  upper bound + the depth slider exposes [1..20] but the URL accepts ANY
+  integer; LoadMore monotonic accumulation has no collapse affordance;
+  click-through on a node title compounds depth (`d = node.depth`). FIVE
+  new UI-axis drift facets + ZERO unit/integration tests at any layer of
+  the UI tree. Batch M adds the DEG-anchored variant cross-reference
+  via getDataEntityGroupsLineage primary-source: the read-collaborative
+  posture extends to DEG-anchored reads with a STRICTLY WIDER blast
+  radius (DEGs commonly span owner boundaries — the inter-member edges
+  ARE the cross-owner lineage). The DEG-anchored variant is captured
+  as F-016 (P-05:F-002 DEG-Anchored Lineage) — distinct feature_id
+  because the chain, SQL overload, 404-conflation, inner-DEG carve-out,
+  and per-component partitioning are DEG-specific. One new drift facet
+  (co_membership_leakage) added here so a reader of F-005 finds the
+  DEG variant via cross-link.
+related_refactoring_scopes:
+- REFACTOR-202
+- REFACTOR-203
+- REFACTOR-185
+related_test_gaps:
+- TEST-GAP-279
+related_doc_gaps:
+- DOC-GAP-089
+related_concepts:
+- Lineage Graph Traversal
+- Data Entity
+- Data Entity Group
+- Read-Collaborative Posture
+related_retrospectives:
+- LSN-017
+related_probes: null
+probe_verifications:
+- probe_id: P-008
+  probe_run_id: R-20260519T023712Z-P-008
+  outcome: PASS
+  test_class: integration
+  ran_at: 2026-05-19 02:37:12+00:00
+  ran_against_substrate_commit: ede5d277
+  verdict: all assertions passed
+  artefact: lineage/odd-platform/probe-runs/2026-05-19-P-008.yaml
+maintainer_curated: true

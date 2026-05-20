@@ -1,0 +1,9 @@
+- **REFACTOR-137** (NEW 2026-05-12C): No structured audit log of notifications sent — only `log.debug(...)` at DEBUG level. No `notification_delivery` table, no metric counter, no Prometheus gauge. Operators cannot answer 'when did notifications last work?' or 'which alert IDs were delivered to which channels?'
+  - **Category**: missing-audit
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[11]` (severity MEDIUM); `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:security.known_security_gaps.[3]` (severity MEDIUM)
+  - **Statement**: `AlertNotificationMessageProcessor.java:28` only emits `log.debug("Sending notification message via {}: {}", ...)` — DEBUG-level, not INFO. Production deployments running at INFO level get no notification audit signal. No DB-resident table records per-alert-per-channel outcomes. No Micrometer counter increments per delivery. Operators have no way to retrospectively verify delivery.
+  - **Evidence**: `AlertNotificationMessageProcessor.java:28`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-042 (fail-soft fan-out) accepts silent partial-failure as the price; the gap is observability not at the failure boundary.
+  - **Proposed remedy**: Combine with REFACTOR-127 — implement the `notification_delivery` table + Micrometer metrics. Bump the in-loop log statement to INFO-level for the success path.
+  - **Severity rationale**: MEDIUM — operability gap; pairs with REFACTOR-127.
+  - **Suggested backlog grouping**: `Notifications hardening`

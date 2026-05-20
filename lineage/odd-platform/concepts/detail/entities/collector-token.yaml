@@ -1,0 +1,143 @@
+name: Collector Token
+canonical_in_docs: false
+canonical_candidate: true
+description: '40-character alphanumeric shared-secret bearer token used by an ODD
+  collector to authenticate `POST /ingestion/entities` requests against the S2S `IngestionDataEntitiesFilter`.
+  Stored in plaintext in the TOKEN table; compared via literal `.equals(...)` (no
+  hashing layer). Rotation is an in-place UPDATE; no overlap window between old and
+  new (regenerateCollectorToken sidecar `concepts.invariants.[1-3]`). vocabulary_status:
+  codebase-anchored, doc-side-partially-covered (main-concepts.md mentions S2S authentication
+  but not the token-rotation contract; live `/permissions` names COLLECTOR_TOKEN_REGENERATE
+  Permission). **BATCH Q EXTENSION** — UI-tier hazards added (plaintext token
+  rendered into DOM as text node + fragile substring-prefix-sniff masking detection
+  per CollectorsList sidecar — see new sibling invariant
+  `plaintext-token-rendered-into-dom-fragile-substring-prefix-sniff-masking`).'
+vocabulary_status: codebase-anchored, doc-side-partially-covered
+axes_present:
+- controllers
+- ui_components
+nodes:
+- odd-platform java CollectorController controller-method:regenerateCollectorToken
+- odd-platform ts react-component component:CollectorsList
+contributors:
+- 'regenerateCollectorToken: entities[Token (40-char alphanumeric shared secret),
+  TokenPojo]; invariants[in-place UPDATE no overlap; plaintext in DB; plaintext in
+  response; .equals-based filter check]'
+- |-
+  **NEW batch Q — CollectorsList.md (UI-tier credential hazards)**:
+  bugs_limitations_corner_cases.[0] (MEDIUM — substring-prefix sniff
+  masking detection at CollectorItemToken.tsx:25-27; a backend mask
+  format change would silently break detection) +
+  bugs_limitations_corner_cases.[2] (MEDIUM — Token plaintext rendered
+  into DOM as text node at CollectorItemToken.tsx:34 — no <input
+  type='password'>-style obfuscation, no Reveal-on-hover affordance,
+  no auto-hide-after-N-seconds timer) +
+  security.known_security_gaps.[1] (MEDIUM — Token plaintext rendered
+  into DOM) + security.known_security_gaps.[2] (MEDIUM — Token-
+  visibility detection is a literal substring prefix sniff) +
+  implicit_adrs.[0] (HIGH — Token visibility is detected client-side
+  via a substring-prefix sniff, not via a backend-supplied flag)
+evidence:
+- regenerateCollectorToken.md:concepts.entities.[Token]
+- regenerateCollectorToken.md:concepts.invariants.[1,2,3]
+- regenerateCollectorToken.md:implicit_adrs.[1,2,3]
+- |-
+  **NEW batch Q — CollectorsList.md**: bugs_limitations_corner_cases.[0,2]
+  + security.known_security_gaps.[1,2] + implicit_adrs.[0]
+  (UI-tier hazards: plaintext-DOM rendering + fragile substring-sniff;
+  see new sibling invariant
+  `plaintext-token-rendered-into-dom-fragile-substring-prefix-sniff-masking`)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - S2S
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: true
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: S2S filter consumes the token via plaintext-equality at IngestionDataEntitiesFilter.java:55-58.
+      Token rotation gated by COLLECTOR_TOKEN_REGENERATE (MANAGEMENT). The token IS
+      the auth credential for ingestion — not authorized BY something, but authorizing
+      OF something.
+  owner_scoping:
+    verdict: N/A
+    detail: Token is a global infrastructure credential, not data-scoped.
+  strengths:
+  - Token is opaque random string used over TLS-protected transport (the only sanctioned
+    ingress)
+  - 40-char alphanumeric ≈ 238 bits of input space — long enough that brute-force
+    is infeasible (assuming RNG quality)
+  weaknesses:
+  - RandomStringUtils.randomAlphanumeric(40) uses ThreadLocalRandom (non-CSPRNG) —
+    actual entropy depends on RNG quality, not just length. Should use `.secure().nextAlphanumeric(40)`
+    (regenerateCollectorToken.md:security.known_security_gaps.[1] HIGH)
+  - Stored in plaintext in TOKEN table — DB compromise carries credentials in the
+    clear (regenerateCollectorToken.md:security.known_security_gaps.[3] HIGH)
+  - Plaintext returned in response body on rotation — any middleware on the response
+    path records the credential (regenerateCollectorToken.md:security.known_security_gaps.[0]
+    MEDIUM)
+  - No rotation grace period — in-place UPDATE invalidates the old token immediately
+    (regenerateCollectorToken.md:security.known_security_gaps.[5] HIGH operational)
+  - No audit log — historical 'who rotated when' unrecoverable; updated_by column
+    overwrites on each rotation (regenerateCollectorToken.md:security.known_security_gaps.[2]
+    HIGH)
+  - |-
+    **NEW batch Q — UI-side: plaintext token rendered into DOM as text
+    node at CollectorItemToken.tsx:34 (no <input type='password'>, no
+    Reveal-on-hover, no auto-hide); any browser extension / screenshot
+    tool / accessibility reader captures the credential. The warning
+    admonition at CollectorItem.tsx:87-98 is the SOLE operational
+    mitigation — operator vigilance.** (MEDIUM —
+    CollectorsList.md:security.known_security_gaps.[1])
+  - |-
+    **NEW batch Q — UI-side: token-visibility detection is a literal
+    substring-prefix sniff on '******' at CollectorItemToken.tsx:25-27.
+    A future backend mask-format change would silently break detection —
+    UI would offer Copy button on masked value, leaking ******{last6}-
+    style fragments to clipboards.** (MEDIUM —
+    CollectorsList.md:security.known_security_gaps.[2])
+  cross_file_inconsistencies: []
+  contributing_files:
+  - regenerateCollectorToken.md
+  - CollectorsList.md
+  evidence:
+  - regenerateCollectorToken.md:security.known_security_gaps.[1,3,0,5,2]
+  - regenerateCollectorToken.md:concepts.invariants.[1-3]
+  - CollectorsList.md:security.known_security_gaps.[1,2] (NEW batch Q UI-tier evidence)
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+  - Token validation on every /ingestion/entities POST — IngestionDataEntitiesFilter
+    does literal `.equals(...)` against in-DB token value (regenerateCollectorToken.md:concepts.invariants.[3])
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: One token per collector; no bulk-token API. The expensive throughput surface
+      is /ingestion/entities itself, not token operations.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Token validation is a single DB SELECT per ingestion request. No locking.
+      Stateless across replicas.
+  strengths:
+  - Plaintext-equality check is O(1) — bounded cost per ingestion request
+  weaknesses:
+  - 'Per-ingestion-request DB hit for token validation — no in-memory cache observed
+    (likely intentional given the rotation contract: in-place UPDATE invalidates immediately)'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - regenerateCollectorToken.md
+  evidence:
+  - regenerateCollectorToken.md:concepts.invariants.[3]
+notes: 'Surface as canonicalisation candidate. main-concepts.md names S2S auth
+  mode and the Ingestion authentication filter, but does not name "Collector
+  Token" or "shared-secret rotation" as a first-class concept. The
+  operational mechanics (in-place UPDATE, plaintext-in-response, no grace
+  window) live entirely in the code; a `Token Rotation` section under
+  enable-security would close the loop.
+
+  **NEW batch Q** — the UI-tier hazards (plaintext-DOM rendering + fragile
+  substring-sniff) compound the backend-side weaknesses. See new sibling
+  invariant `plaintext-token-rendered-into-dom-fragile-substring-prefix-sniff-masking`
+  for the full UI-tier analysis. Every link in the token-handling chain
+  is fragile.'

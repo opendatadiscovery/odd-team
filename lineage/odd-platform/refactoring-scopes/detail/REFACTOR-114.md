@@ -1,0 +1,9 @@
+- **REFACTOR-114** (NEW 2026-05-12C): OAuth2 session storage uses Spring's default `WebSession` (in-memory per JVM). For multi-replica deployments without sticky sessions / shared session store, a user's OAuth2 token is tied to whichever pod handled the initial callback — subsequent requests routed elsewhere force re-prompting. No doc surface
+  - **Category**: no-multi-replica-session
+  - **Surfaced by**: `odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md:bugs_limitations_corner_cases.[6]` (severity MEDIUM)
+  - **Statement**: `OAuthSecurityConfiguration.java:1-269` has no `@EnableSpringWebSession` / Redis session store / sticky-session configuration. For HA deployments, this is a sharp edge with no doc surface. The shipped `application.yml:30` carries `session.provider: IN_MEMORY` — confirming the no-shared-store posture.
+  - **Evidence**: `OAuthSecurityConfiguration.java:1-269` + `application.yml:28-30`
+  - **Existing-ADR-or-implied-prescription**: None defends the absence of shared-session support.
+  - **Proposed remedy**: Document on the live OAuth2/OIDC page that HA deployments require either sticky sessions at the load balancer or a shared session store (Redis recommended). Optional: implement `@EnableSpringRedisWebSession` behind a `session.provider: REDIS` config switch.
+  - **Severity rationale**: MEDIUM — HA-deployment operational gap.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

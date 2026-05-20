@@ -1,0 +1,11 @@
+- **REFACTOR-019**: Under `auth.type=DISABLED`, `/api/genai/ask` is anonymously reachable; no fail-closed behaviour, no startup warning when `DISABLED` + `genai.enabled=true`
+  - **Category**: missing-auth
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__GenAIController.md:security.known_security_gaps.[4]` (severity HIGH)
+    - `concepts.yaml:entities[GenAI Assistant].security_aggregate.weaknesses.[2]`
+  - **Statement**: `auth.type=DISABLED` (the `application.yml:34` default) + `genai.enabled=true` produces an LLM proxy reachable from any caller able to reach the platform's HTTP port. There is no fail-closed behaviour in the controller, no startup banner log warning, no `@ConditionalOnProperty(value = "genai.enabled", havingValue = "true") + @ConditionalOnExpression("'${auth.type}' != 'DISABLED'")` guard.
+  - **Evidence**: `GenAIController.java:1-24` (no auth-mode check) + `DisabledAuthSecurityConfiguration.java:10` + `application.yml:34` (`auth.type: DISABLED` is the shipped default — but see `application.yml:18` ships `genai.enabled: false`, so the dangerous combination is not the default).
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-004 (GenAI disabled-by-default + fail-fast-on-misconfig) prescribes the fail-fast posture. This scope is a gap *under* that ADR — fail-fast happens at request time when `url`/`requestTimeout` are unset, but there is no fail-fast for the orthogonal misconfiguration "auth.type=DISABLED + genai.enabled=true."
+  - **Proposed remedy**: Add a `@PostConstruct` startup check in `GenAIServiceImpl` (or a dedicated `GenAIStartupValidator`): if `auth.type=DISABLED` AND `genai.enabled=true`, log a WARN-level banner and fail boot under a `genai.fail-on-disabled-auth: true` flag (default false for backward compatibility, recommended true in the live config-doc).
+  - **Severity rationale**: HIGH — defense-in-depth. The platform's fail-fast posture (ADR-CANDIDATE-004) is undermined by the absence of this orthogonal check.
+  - **Suggested backlog grouping**: `GenAI hardening sprint`

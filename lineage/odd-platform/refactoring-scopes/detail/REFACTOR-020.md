@@ -1,0 +1,12 @@
+- **REFACTOR-020** (formerly ADR-CANDIDATE-022): Pagination parameters (`PageParam`, `SizeParam`) are int32 with no min/max/default — caller can pass `size=2147483647`
+  - **Category**: missing-validation
+  - **Surfaced by**:
+    - `odd-platform__openapi__tags__openapi-tag__dataEntity.md:bugs_limitations_corner_cases.[1]` (MEDIUM)
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityController.md:bugs_limitations_corner_cases.[3]` (MEDIUM)
+    - `concepts.yaml:entities[Data Entity].performance_aggregate.weaknesses.[0]`
+  - **Statement**: `components.yaml:4213-4229`'s shared `PageParam` and `SizeParam` declarations are int32 with no `minimum`/`maximum`/`default`. Page-size validation is at the caller's discretion. Same wisdom-test classification as REFACTOR-044 — "service-layer defends" is descriptive of a gap, not a deliberate posture.
+  - **Evidence**: `components.yaml:4213-4229` + `openapi.yaml:828-866` (every list operation references these unconstrained params)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Update `components.yaml`'s `PageParam` (`minimum: 1`) and `SizeParam` (`minimum: 1`, `maximum: 200`, `default: 20`). Regenerate and re-test all list endpoints.
+  - **Severity rationale**: MEDIUM — pervasive across every list endpoint.
+  - **Suggested backlog grouping**: `OpenAPI contract hardening`

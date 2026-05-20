@@ -1,0 +1,115 @@
+name: Predefined role-name three-policy case-sensitivity mismatch (RoleServiceImpl create vs update vs delete)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  NEW HIGH-severity INVARIANT, batch 2026-05-20S (RoleServiceImpl primary source).
+  The same logical predicate — "is this role one of the seeded predefined roles
+  (Administrator / User)?" — is implemented THREE DIFFERENT WAYS across the
+  three mutating verbs in a single 143-line class. The drift is observable from
+  a single operator-level exploit.
+
+  Case-policy mismatch verbatim from RoleServiceImpl.java:
+    - CREATE (lines 49-61): NO case check at all. Protection is the partial
+      unique index `role_name_unique WHERE deleted_at IS NULL` (V0_0_55__add_
+      policies_and_roles.sql:42); Postgres VARCHAR equality is byte-for-byte
+      case-sensitive, so "administrator" (lowercase) is DISTINCT from
+      "Administrator" (the seeded row); creation of the lowercase variant
+      succeeds.
+    - UPDATE outer filter (line 68): case-SENSITIVE
+      `!role.getName().equals(UserProviderRole.ADMIN.getValue())` — only the
+      LITERAL "Administrator" is rename-blocked. A role named "administrator"
+      passes this filter and reaches updateRoleName (lines 103-110), which
+      blocks only "User"-rename, not "administrator"-rename. The lowercase
+      Administrator variant is rename-able to anything.
+    - DELETE filter (lines 81-82): case-INSENSITIVE
+      `Stream.of(UserProviderRole.values()).noneMatch(r ->
+      r.getValue().equalsIgnoreCase(role.getName()))` — BOTH literals AND
+      every case-variant ("administrator" / "ADMINISTRATOR" / "AdministratoR"
+      / "user" / "USER" / etc.) ARE protected. The lowercase Administrator
+      variant is NOT delete-able via the service path.
+
+  EXPLOITATION VECTOR (single-actor; ROLE_CREATE permission required):
+    1. POST /api/roles with `{name: "administrator", policies: [<seeded Admin
+       policy id>]}` → succeeds (no name check on create; unique index doesn't
+       collide).
+    2. The new role's policies confer MANAGEMENT/ALL permissions on any owner
+       attached to it.
+    3. POST /api/owners or PUT /api/owners/{id} to attach the new role to
+       the attacker's own owner → next authorized request, attacker holds
+       MANAGEMENT/ALL.
+    4. Defender attempts DELETE /api/roles/{id} → fails with
+       BadUserRequestException("Role is predefined and cannot be deleted")
+       at line 84 — the lowercase variant is treated as predefined, and
+       defender cannot remove it via the normal delete path.
+    5. Defender remediation requires DB-direct DELETE or careful update-then-
+       delete dance.
+
+  This is the F-006 batch S NEW HIGH finding. The 3-divergent-policy pattern
+  inside one class is the most discoverable kind of case-sensitivity bug;
+  the maintainer-readable evidence is the three distinct equals / equalsIgnoreCase
+  call sites at four lines of the file. The single-line fix at line 50-51 closes
+  the create-side gap: `if (UserProviderRole.values().stream().anyMatch(r ->
+  r.getValue().equalsIgnoreCase(formData.getName()))) return Mono.error(new
+  BadUserRequestException("Role name is reserved"))`.
+
+  Severity: HIGH (single-actor exploitable; the lowercase-role's policies
+  grant equivalent permissions to the seeded Administrator; defender s
+  normal-path remediation is blocked). Mitigation today: ROLE_CREATE is itself
+  MANAGEMENT-tier permission, so the attacker already holds high privileges
+  to exploit — but that exact contract assumes ROLE_CREATE is harder than
+  full-admin, which the case-sensitivity gap silently equates.
+axes_present:
+- services
+nodes:
+- odd-platform java service service:RoleServiceImpl
+contributors:
+- 'RoleServiceImpl.md (batch S): concepts.invariants.[1] (predefined-role name
+  reservation is ASYMMETRIC across create / update / delete AND case-asymmetric
+  within itself); bugs_limitations_corner_cases.[B] (DRIFT-FACET-B
+  case-sensitivity mismatch with full exploitation walk-through); security.
+  known_security_gaps.[B] (HIGH severity, single-actor exploitable).'
+evidence:
+- RoleServiceImpl.md:concepts.invariants.[1]
+- RoleServiceImpl.md:bugs_limitations_corner_cases.[B] (DRIFT-FACET-B)
+- RoleServiceImpl.md:security.known_security_gaps.[B]
+- 'RoleServiceImpl.java:49-61 (no case check on create), 68 (case-sensitive
+  update guard), 81-82 (case-insensitive delete guard), 104 (case-sensitive
+  User-rename guard)'
+- 'V0_0_55__add_policies_and_roles.sql:42 (partial unique index byte-for-byte
+  case-sensitive)'
+- 'V0_0_56__add_predefined_roles_and_policies.sql:33-36 (seeded Administrator
+  + User rows)'
+notes: |
+  Cross-link to the broader F-006 batch S findings:
+    - service-tier-reactive-transactional-asymmetry-policy-vs-role (the Role
+      side gets transactional protection but the create-side case check is
+      missing; symmetric drift on the Policy side per
+      PolicyServiceImpl batch I — create-side Administrator-name asymmetry).
+    - authorization-hot-path-getcurrentuserroles-per-request-no-cache (the
+      lowercase Administrator role's policies are resolved on EVERY authorized
+      request through getCurrentUserRoles + getCurrentUserPolicies; the
+      exploit lands on the platform-wide authorization hot path).
+    - no-audit-log-on-rbac-mutations-...-batch-f (the lowercase role's
+      create / update / delete attempts are forensically silent; the
+      exploit leaves no trail in the platform's logs; the 9-sidecar
+      audit-silence pattern means defender's post-incident reconstruction
+      relies on DB direct inspection only).
+
+  Recommended cleanup (highest leverage first):
+    (1) Add the case-insensitive name check on create at RoleServiceImpl.java
+        line 50-51 (one-line fix per quoted code above).
+    (2) Symmetric fix on the Policy side (PolicyServiceImpl.create at lines
+        62-69 — same case-insensitive name reservation against the seeded
+        Administrator policy name).
+    (3) Add a regression test pinning all three case-policy choices in one
+        place — a single-class test that asserts: create("administrator")
+        fails; update("administrator", "renamed") fails; delete on the
+        lowercase variant fails. The three assertions should be ONE test
+        method that exercises the asymmetry top-to-bottom.
+    (4) Document the asymmetry on
+        `https://docs.opendatadiscovery.org/configuration-and-deployment/
+        enable-security/authorization/roles` per batch S
+        SERVICE-DOC-GAP-C — the live Roles page does not warn operators of
+        the create-side gap nor the case-sensitivity exploitation vector.

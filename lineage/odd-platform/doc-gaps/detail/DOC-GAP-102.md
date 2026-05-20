@@ -1,0 +1,9 @@
+- **DOC-GAP-102**: `getMyObjects` empty-Flux degradation for unlinked users is documented at the wrong layer — `catalog-overview` mentions the Owner-link prerequisite but no page describes what the operator-facing failure mode looks like
+  - **Category**: drift (the doc names the prerequisite but doesn't surface the consumer-visible failure mode)
+  - **Surfaced by**: `getMyObjects.md:bugs_limitations_corner_cases[0]` + `getMyObjects.md:security.known_security_gaps[0]` + `getMyObjects.md:concepts.audiences[0]`
+  - **Evidence**:
+    - `DataEntityServiceImpl.java:212-216` — empty fetchAssociatedOwner emits empty Flux → HTTP 200 + body `[]`. No `.switchIfEmpty(Mono.error(...))`, no exception, no header.
+    - `AuthIdentityProviderImpl.java:50-53` — empty propagation.
+    - WebFetch `/features/data-discovery/catalog-overview` (2026-05-18, status 200): confirms "The Recommended panel requires the signed-in user to be linked to an Owner" and "without this association, the panel remains empty on auth-enabled deployments" — but gives no troubleshooting flow.
+  - **Proposed doc action**: Extend the existing `catalog-overview` admonition: (a) describe operator-visible failure mode (empty panel with no error toast); (b) link to `/management/owner-associations` admin flow; (c) add developer-side note that endpoint deliberately fails-open with `[]` rather than 4xx.
+  - **Severity rationale**: MEDIUM — doc partially covers prerequisite but operators on empty panel get no guidance.

@@ -1,0 +1,10 @@
+- **REFACTOR-054** (NEW 2026-05-10A): Slack-posting caller cannot observe send failure — controller returns 202 with `state=PENDING_SEND`; downstream `ERROR_SENDING` is only visible by polling `/api/dataentities/{id}/messages`
+  - **Category**: error-mapping
+  - **Surfaced by**:
+    - `odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md:bugs_limitations_corner_cases.[4]` (MEDIUM)
+  - **Statement**: The controller returns `202 Accepted` with a `Message` body whose `state` is `PENDING_SEND`. Downstream Slack failures (auth revoked, channel archived, text too long, rate-limited beyond retry budget) flip the row to `ERROR_SENDING` in the sender job. There is no notification, no push mechanism, no webhook back to the original caller. The user must re-fetch via the `/api/dataentities/{id}/messages` endpoints to see status.
+  - **Evidence**: `DataCollaborationController.java:38` + `DataCollaborationServiceImpl.java:96` + `DataCollaborationMessageSenderJob.java:58-63`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-020 (decoupled-outbound-delivery) describes the 202 model; this scope is the structural consequence (asynchrony precludes inline failure-reporting) but the absence of a polling/webhook/notification mechanism is a gap, not part of the ADR.
+  - **Proposed remedy**: Either (a) add a Server-Sent-Events endpoint or WebSocket channel that streams message-state changes to subscribed clients; (b) add a polling endpoint specifically for one message (`GET /api/datacollaboration/messages/{uuid}/state`); (c) document on the live `data-collaboration` page that the UI must poll the per-entity messages endpoint to discover send-failures.
+  - **Severity rationale**: MEDIUM — UX gap; users have no immediate signal whether their message succeeded.
+  - **Suggested backlog grouping**: `Data Collaboration hardening`

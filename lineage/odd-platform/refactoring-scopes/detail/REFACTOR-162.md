@@ -1,0 +1,9 @@
+- **REFACTOR-162** (NEW 2026-05-12D): `dnPattern` and `userFilter.filter` plain `String` fields with NO injection-aware validation guidance — Spring Security's `BindAuthenticator` and `FilterBasedLdapUserSearch` DO escape LDAP metacharacters in modern versions, but the Properties class does not assert this contract or warn operators of the implicit dependency on Spring Security's escaping
+  - **Category**: doc-code-drift
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDLDAPProperties.md:bugs_limitations_corner_cases.[5]` (LOW)
+  - **Statement**: `ODDLDAPProperties.dnPattern` + `userFilter.filter` are plain Strings. Operators following the live LDAP docs configure `dn-pattern: uid={0},ou=people,dc=mycompany,dc=com` with `{0}` substituted at runtime with the user-supplied login name. Spring Security's modern versions escape LDAP metacharacters (`(`, `)`, `\\`, `*`, NUL); the Properties class neither asserts this (`@Pattern`) nor documents the implicit dependency.
+  - **Evidence**: `ODDLDAPProperties.java:15,22-25` + Spring Security's `BindAuthenticator` source (escaping is built-in)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Add a Javadoc to `dnPattern` + `userFilter.filter` explicitly noting "user-supplied login name is escaped by Spring Security's `BindAuthenticator` / `FilterBasedLdapUserSearch`; operators MUST keep the `{0}` substitution intact and avoid post-processing the value". Alternative: ship a security-architecture page on the docs site explaining LDAP-injection defence-in-depth.
+  - **Severity rationale**: LOW — relies on Spring Security's own escaping; surfaced for completeness.
+  - **Suggested backlog grouping**: `LDAP hardening sprint`

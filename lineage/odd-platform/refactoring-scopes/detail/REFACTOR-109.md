@@ -1,0 +1,9 @@
+- **REFACTOR-109** (NEW 2026-05-12C): OAuth2 CSRF disabled with no defending comment (line 96). For an SPA + bearer-token / session-cookie deployment this is defensible, but a hardening reviewer cannot distinguish intentional disable from oversight. Same disable in `LDAPSecurityConfiguration.java:143` and `LoginFormSecurityConfiguration.java:54` (cross-mode pattern) but none of the four classes comments the reasoning
+  - **Category**: missing-csrf (doc-gap variant)
+  - **Surfaced by**: `odd-platform__java__OAuthSecurityConfiguration__config-key-consumer__auth_type@L71.md:bugs_limitations_corner_cases.[0]` (severity MEDIUM per sidecar; LOW at cross-mode coverage by REFACTOR-095)
+  - **Statement**: The four-file CSRF disable convention has no defending comment in any class. ADR-CANDIDATE-033 captures the convention; this scope is the doc-gap-per-file consequence.
+  - **Evidence**: `OAuthSecurityConfiguration.java:96`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-033 (CSRF-disabled cross-mode) captures the stance. This scope is largely subsumed by REFACTOR-095 (the cross-mode doc-gap); kept here for per-file traceability.
+  - **Proposed remedy**: Add an inline comment in each `*SecurityConfiguration` class explaining the stance, e.g. `// CSRF disabled: API is stateless REST surface; bearer-token auth in production modes does not need CSRF. See ADR-CANDIDATE-033.`
+  - **Severity rationale**: LOW — duplicate of REFACTOR-095; per-file in-code traceability.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

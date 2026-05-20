@@ -1,0 +1,11 @@
+- **REFACTOR-046** (NEW 2026-05-10A): Collector token rotation is not audit-logged — no `log.*` call on the regenerate path; the `TOKEN.updated_by` column is the only forensic trail and is overwritten on each rotation
+  - **Category**: missing-audit
+  - **Surfaced by**:
+    - `odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md:bugs_limitations_corner_cases.[1]` (severity HIGH)
+    - `odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md:security.known_security_gaps.[2]` (severity HIGH)
+  - **Statement**: `grep` for `log.(info|warn|debug|error)` against CollectorController, CollectorServiceImpl, TokenGeneratorImpl, ReactiveTokenRepositoryImpl returned zero matches. The TOKEN row's `updated_by` column captures the actor username from `AuthIdentityProvider.getCurrentUser()` — the only forensic trail — but `updated_by` is overwritten on the next rotation, so the audit trail is single-state, not append-only. A security-incident review of "who rotated token X 30 days ago" cannot answer from production data.
+  - **Evidence**: `TokenGeneratorImpl.java:28-52` (no log calls) + `CollectorServiceImpl.java:82-90` (no log calls) + `CollectorController.java:47-51` (no log calls)
+  - **Existing-ADR-or-implied-prescription**: None defends the absence. ADR-CANDIDATE-017 (token rotation semantics) describes the structural decisions; audit logging is not part of those decisions and the absence is a gap.
+  - **Proposed remedy**: Add INFO-level audit log at the regenerate boundary: `log.info("[token-rotation] collectorId={} actor={}", collectorId, currentUsername)`. Optionally append to a dedicated `audit_log` table for query-able forensic history (so rotation history beyond the most-recent state is recoverable). Document on the live `enable-security` page that rotation is logged.
+  - **Severity rationale**: HIGH — investigation-readiness gap on a credential-rotation surface. An attacker who rotates collector tokens to disrupt ingestion (REFACTOR-049 + REFACTOR-064 amplifier path) leaves no application-side trail.
+  - **Suggested backlog grouping**: `Token rotation hardening`

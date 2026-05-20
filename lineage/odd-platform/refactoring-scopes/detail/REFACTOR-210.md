@@ -1,0 +1,9 @@
+- **REFACTOR-210** (NEW 2026-05-12F): No optimistic locking on DataEntityPojo — concurrent status PUTs to the same `dataEntityId` race on last-writer-wins; the activity log captures both events with their respective oldState snapshots taken BEFORE the parallel mutation began
+  - **Category**: race-condition
+  - **Surfaced by**: `odd-platform__java__DataEntityController__controller-method__updateStatus.md:bugs_limitations_corner_cases.[2]`
+  - **Statement**: Two simultaneous operators each issuing a DEPRECATED + status_switch_time on the same entity can result in one of their `status_switch_time` values being silently overwritten. The activity log captures both events with their respective `oldState` snapshots taken BEFORE the parallel mutation began — so the audit shows two transitions FROM the same `oldState` to (potentially) different `newState` values, which can mislead a forensic reader.
+  - **Evidence**: `DataEntityInternalStateServiceImpl.java:75-98` (no `@Version` annotation on the entity, no `WHERE status = oldStatus AND status_updated_at = oldTimestamp` guard on the update) + `DataEntityServiceImpl.java:466-480` (no lock acquisition before the get/update sequence)
+  - **Existing-ADR-or-implied-prescription**: No defending ADR; concurrent status updates are not modelled.
+  - **Proposed remedy**: Add an optimistic-lock column (`updated_at` or `version`) to `data_entity`; the status-update SQL becomes `UPDATE ... SET status = ?, status_updated_at = ?, version = version + 1 WHERE id = ? AND version = ?`. The service detects a row-count of 0 as a concurrent-modification and either retries or returns 409 Conflict.
+  - **Severity rationale**: MEDIUM — concurrent-write correctness gap on an audit-critical operation.
+  - **Suggested backlog grouping**: `Data Entity write path hardening`

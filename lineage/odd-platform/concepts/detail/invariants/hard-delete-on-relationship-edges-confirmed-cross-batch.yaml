@@ -1,0 +1,173 @@
+name: HARD-DELETE on relationship-edge tables (multi-site confirmed)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-06
+description: |-
+  **NEW INVARIANT, batch 2026-05-19L** — cross-site confirmation of a
+  deliberate ODD architectural pattern: relationship-edge tables (join
+  tables between two first-class entities) use HARD-DELETE on user-initiated
+  unlink, distinct from the entity-deletion CASCADE which uses
+  SOFT-DELETE. The intent is encoded across multiple migrations + multiple
+  repository sites:
+
+  **Site 1 — `data_entity_to_term`** (term-linkage edge):
+    - Migration `V0_0_76__term_relations_hard_delete.sql:1-6` explicitly
+      DROPS the `deleted_at` column from `data_entity_to_term` AND deletes
+      any rows where `deleted_at IS NOT NULL`. The migration is forward-only
+      data-migrating, not just a schema change.
+    - `TermRelationsRepositoryImpl.java:81-87` issues `DSL.deleteFrom(DATA_ENTITY_TO_TERM)`
+      (physical DELETE) on user-initiated unlink.
+    - The composite PK `(data_entity_id, term_id, is_description_link)` per
+      `V0_0_77__data_entity_term_description.sql:13-14` supports the
+      two-row coexistence pattern (manual + description-link).
+
+  **Site 2 — `group_entity_relations`** (DEG-membership edge):
+    - `ReactiveGroupEntityRelationRepositoryImpl.java:57-65` uses
+      `DSL.deleteFrom(GROUP_ENTITY_RELATIONS)` (HARD-DELETE) on
+      user-initiated `deleteRelationsReturning`.
+    - The SIBLING `softDeleteRelationsForDeletedDataEntities` (lines 92-101)
+      uses `DSL.update(...).set(IS_DELETED, true)` for the
+      entity-deletion CASCADE only — paired with
+      `restoreRelationsForDataEntities` (lines 104-112).
+
+  **Site 3 — `ownership`** (cross-batch from batch H):
+    - `ReactiveOwnershipRepositoryImpl` uses physical DELETE on the
+      `ownership` edge table; no `deleted_at` column.
+
+  **The architectural intent** (cross-batch ADR shape):
+    - User-initiated unlink is a DELIBERATE removal — the operator
+      committed to ending the relationship; the row's removal is final.
+    - Entity-deletion CASCADE is a TENTATIVE removal — the underlying
+      entity might be restored (ingestion may re-emit a deleted entity);
+      the edge row is soft-deleted so `restore*` can resurrect it
+      symmetrically with the entity's restore.
+    - The semantic split prevents accidental data-loss while preserving
+      operator commit-to-removal for explicit actions.
+
+  **Operator-facing manifestation**:
+
+    - Once a user unlinks (term, entity) or (entity, DEG), there is NO
+      row-level restore — the only durable record is the
+      `@ActivityLog(TERM_ASSIGNMENT_UPDATED)` BEFORE/AFTER JSON state
+      (for term links; for DEG memberships there is ZERO audit because
+      `addDataEntityToDEG` + `deleteDataEntityFromDEG` carry NO
+      `@ActivityLog`).
+    - Restoring a soft-deleted entity DOES resurrect soft-deleted edges
+      via the `restore*` repository methods — but only edges that were
+      removed by the CASCADE, not by user action. Mixed-history is
+      surprising: "I deleted the entity, then restored it; some of my
+      DEG memberships came back but not the one I'd explicitly removed
+      last month."
+
+  **Pattern shape vs other soft-delete mechanisms**: cross-references the
+  batch-H "three-soft-delete-mechanisms-across-the-repository-layer"
+  invariant. Combined map:
+    - Operator-facing entities (data_entity, term, owner, role, policy,
+      datasource, collector, namespace, tag) — SOFT-DELETE
+      (deleted_at OR is_deleted OR STATUS state-machine; 3 variants).
+    - Relationship-edge tables (data_entity_to_term, group_entity_relations,
+      ownership, term_relations) — HARD-DELETE on user action,
+      SOFT-DELETE on cascade (where applicable).
+
+  **Documentation gap**: the operator-facing pages (groups-domains.md,
+  business-glossary.md) do NOT explain that user-initiated unlinks are
+  IRREVERSIBLE while cascade-driven unlinks are restorable. Operators
+  reasoning about "will my term-links come back after entity restore?"
+  need this knowledge but the docs are silent.
+axes_present:
+  - controllers
+  - repositories_reactive
+nodes:
+  - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
+  - odd-platform java DataEntityController controller-method:deleteTermFromDataEntity
+  - odd-platform java repository reactive repository:ReactiveOwnershipRepositoryImpl
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+  - odd-platform__java__DataEntityController__controller-method__deleteTermFromDataEntity.md
+contributors:
+  - |-
+    deleteDataEntityFromDataEntityGroup batch L (NEW SITE):
+    concepts.invariants.[5] (HARD-DELETE on user removal — soft-delete
+    reserved for entity-deletion cascade) + implicit_adrs.[3]
+    (HARD-delete on user removal — soft-delete reserved for
+    entity-deletion cascade; the split is deliberate) +
+    bugs_limitations_corner_cases.[5] (HARD vs soft-delete cascade
+    semantic gap)
+  - |-
+    deleteTermFromDataEntity batch L (NEW SITE):
+    concepts.invariants.[1] (HARD DELETE — the row is physically removed;
+    no soft-delete column exists — the previous deleted_at column was
+    DROPPED in V0_0_76) + implicit_adrs.[1] (HARD-DELETE on term-relations
+    — deliberate per migration V0_0_76) +
+    bugs_limitations_corner_cases.[4] (HARD-DELETE finality — no
+    audit-restore path)
+  - |-
+    ReactiveOwnershipRepositoryImpl batch H (CROSS-BATCH PRIOR ART):
+    the original site documented in
+    "three-soft-delete-mechanisms-across-the-repository-layer" invariant —
+    the ownership edge table follows the same HARD-DELETE pattern
+evidence:
+  - deleteDataEntityFromDataEntityGroup.md:concepts.invariants.[5]
+  - deleteDataEntityFromDataEntityGroup.md:implicit_adrs.[3]
+  - deleteDataEntityFromDataEntityGroup.md:bugs_limitations_corner_cases.[5]
+  - deleteTermFromDataEntity.md:concepts.invariants.[1]
+  - deleteTermFromDataEntity.md:implicit_adrs.[1]
+  - deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[4]
+  - |-
+    Cross-batch: three-soft-delete-mechanisms-across-the-repository-layer
+    (batch H — the ReactiveOwnershipRepositoryImpl site)
+triangulation_count: 3
+cross_batch: true
+severity: LOW
+severity_dim: durability-and-audit
+mitigations_unimplemented:
+  - |-
+    Document the HARD-DELETE-on-user-action vs SOFT-DELETE-on-cascade
+    split on the operator-facing pages:
+      - /features/data-discovery/groups-domains.md — DEG membership
+      - /features/data-glossary/business-glossary.md — term links
+      - /features/management.md (or owners section) — ownership rows
+  - |-
+    Strengthen the existing "three-soft-delete-mechanisms" architectural
+    invariant: add the HARD-DELETE-on-relationship-edges row to the
+    cross-batch map as the FOURTH mechanism (already implicit in the
+    invariant's notes; explicitly call out the relationship-edge pattern).
+  - |-
+    Add a build-time invariant scanner that flags new repository methods
+    using `DSL.deleteFrom` (physical DELETE) on tables that have a
+    `deleted_at` or `is_deleted` column — these are likely accidental
+    HARD-deletes that should use the soft-delete mechanism.
+notes: |-
+  Cross-batch confirmation captured in batch 2026-05-19L. Together with the
+  batch-H "three-soft-delete-mechanisms-across-the-repository-layer"
+  invariant, this completes the platform's persistence-layer deletion map:
+
+    Operator-facing entity tables → SOFT-DELETE (3 variants):
+      - deleted_at timestamp (policy, role, owner, datasource, collector,
+        namespace, tag, term)
+      - is_deleted boolean (lineage)
+      - STATUS = DELETED state-machine (data_entity)
+
+    Relationship-edge tables → HARD-DELETE on user action,
+      SOFT-DELETE on entity-deletion cascade (where applicable):
+      - data_entity_to_term (hard; cascade also hard, no restore)
+      - group_entity_relations (hard on user; soft on cascade; restore
+        path exists)
+      - ownership (hard; no cascade)
+      - term_ownership (hard; deleted_at dropped in V0_0_76)
+
+  Cross-cutting connections:
+    - Strengthens "three-soft-delete-mechanisms-across-the-repository-layer"
+      (batch H) with the relationship-edge cluster's behaviour
+    - Pairs with "no-audit-log-on-rbac-mutations" — when HARD-DELETE
+      removes the only persistent trace and no audit log exists, the
+      change is forensically invisible
+
+  Two DOC-NNN candidates:
+    (a) Document the HARD-DELETE-on-user vs SOFT-DELETE-on-cascade split
+        on operator-facing feature pages (groups-domains, business-glossary,
+        owners)
+    (b) Add a "Persistence layer deletion conventions" appendix to the
+        Architecture doc page naming all variants

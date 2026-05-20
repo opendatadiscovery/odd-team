@@ -1,0 +1,9 @@
+- **REFACTOR-152** (NEW 2026-05-12D): No URL / pattern validation on OAuth2 URI fields — `redirectUri`, `issuerUri`, `authorizationUri`, `tokenUri`, `userInfoUri`, `jwkSetUri`, `logoutUri`, `allowedDomain`, `organizationName` are all plain `String` with no `@URL` / `@Pattern`. Typos like `htp://example` boot successfully and fail at first OAuth2 callback
+  - **Category**: url-no-validation
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md:bugs_limitations_corner_cases.[5]` (LOW) + `security.known_security_gaps.[3]` (LOW)
+  - **Statement**: `ODDOAuth2Properties.OAuth2Provider` declares 21 fields including 7 URI-shaped fields, none with validation annotations. The narrow-validator (ADR-CANDIDATE-048) does not check URL format. Misconfiguration is detected only at first OAuth2 callback / first logout / first userinfo fetch.
+  - **Evidence**: `ODDOAuth2Properties.java:30-53` (no `@URL` / `@Pattern` constraints) + `ODDOAuth2Properties.java:16-28` (validator does not check URIs)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-048 (narrow-validator scope) is the design; this is the URL-format gap.
+  - **Proposed remedy**: Add `@URL` (Hibernate Validator) annotations to each URI field, paired with `@Validated` at class level. Document the boot-time strictness on the live OAuth2 docs page.
+  - **Severity rationale**: LOW — operator-config-fragility; the failure surfaces at first OAuth2 round-trip rather than at boot.
+  - **Suggested backlog grouping**: `OAuth2 hardening sprint`

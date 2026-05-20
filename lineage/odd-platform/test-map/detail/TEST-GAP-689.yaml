@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-689
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:RoleServiceImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "RoleServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[1, 2] (Administrator-name + lowercase-administrator create-path asymmetry)"
+  - "RoleServiceImpl.md:bugs_limitations_corner_cases.[0] (DRIFT-FACET-A predefined-name CREATE asymmetry)"
+  - "RoleServiceImpl.md:implicit_adrs.[2] (Administrator role protected from UPDATE and DELETE but NOT from CREATE)"
+behaviour: |-
+  **`RoleServiceImpl.create` HAS NO NAME-RESERVATION GUARD — `Administrator` and `User` are reserved against UPDATE / DELETE but not CREATE.** Lines 49-61 (create) have NO check against `formData.getName().equals(UserProviderRole.ADMIN.getValue())` or `.USER.getValue()`. The constants ARE consulted at line 43 (list admin-detection), 68 (update Administrator block), 81-82 (delete predefined-name block), 104 (update User-rename block) — FOUR distinct sites — but NOT on the create path. The only protection is the DB partial UNIQUE INDEX (V0_0_55__add_policies_and_roles.sql:42), which: (a) protects WHILE the seeded rows are live; (b) DOES NOT protect if the seeded row is ever soft-deleted out-of-band; (c) produces a `UniqueConstraintException` (translated to 'Role with this name already exists' per ExceptionUtils.java:57-59, HTTP 400) rather than the cleaner `BadUserRequestException` the rest of the file emits. The single-line fix at line 50-51 closes it. The test pins the CURRENT permissive behaviour as the regression baseline AND demonstrates the case-sensitive bypass route (creating 'administrator' lowercase — see TEST-GAP-690 sister gap).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/RoleServiceImplTest.java"
+  name: "create_administratorOrUserName_succeedsAtServiceLayer_onlyDbUniqueIndexDefends_pinsCreatePathAsymmetry"
+evidence:
+  - "RoleServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[1]): 'create() with name=''Administrator'' SUCCEEDS at the service layer (no name pre-check) — the DB UNIQUE constraint then trips and surfaces as UniqueConstraintException with message ''Role with this name already exists'' per ExceptionUtils.java:57-59. Pin the current (asymmetric) behaviour so a future symmetry-fix is detected.'"
+  - "RoleServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[2]): 'create() with name=''administrator'' (lowercase) SUCCEEDS — the unique index is byte-for-byte case-sensitive in Postgres; the new row co-exists with the seeded ''Administrator''. Pin the case-sensitivity exploitation vector.'"
+  - "RoleServiceImpl.md says (bugs_limitations_corner_cases.[0]): 'DRIFT-FACET-A (P-09:F-001 RBAC — role-create predefined-name asymmetry, PRIMARY-SOURCE at service tier). RoleServiceImpl.create (lines 49-61) has NO check against formData.getName().equals(UserProviderRole.ADMIN.getValue()) or .USER.getValue(). The constants are consulted at line 43 (list admin-detection), 68 (update Administrator block), 81-82 (delete predefined-name block), 104 (update User-rename block) — FOUR distinct sites — but NOT on the create path. The only protection against a duplicate Administrator or User role is the DB partial UNIQUE INDEX, which: (a) protects WHILE the seeded rows are live; (b) DOES NOT protect if the seeded row is ever soft-deleted out-of-band.' severity: HIGH"
+  - "Source: RoleServiceImpl.java:49-61 (no name check) + 68 (update Administrator block) + 81-82 (delete predefined block) + 104 (update User-rename block) + V0_0_55__add_policies_and_roles.sql:42 + V0_0_56__add_predefined_roles_and_policies.sql:33-36"
+cross_references:
+  - "TEST-GAP-220 (sister gap on Role-name-asymmetry at batch E — STRENGTHEN ME with this batch-S primary source)"
+  - "TEST-GAP-231 (Policy-side parallel — PolicyServiceImpl Administrator-name CREATE-side asymmetry)"
+  - "TEST-GAP-690 (the case-sensitivity-mismatch sister gap)"
+  - "REFACTOR-NNN-rbac-role-name-create-guard candidate"
+  - "F-006 (RBAC family — predefined-name asymmetric guards)"
+related_features: [F-006]
+related_pillar_features: ["P-09:F-001"]
+proposed_action: |-
+  Add `RoleServiceImplTest.create_administratorOrUserName_succeedsAtServiceLayer_onlyDbUniqueIndexDefends_pinsCreatePathAsymmetry`. (a) Testcontainers integration test. (b) Authenticate as a user with `ROLE_CREATE` permission. (c) FIRST: POST /api/roles with `{"name": "Administrator"}` — assert HTTP 400 with body containing 'Role with this name already exists' (the DB UNIQUE constraint kicks in because the seeded Administrator row is live). (d) SECOND: directly soft-delete the seeded Administrator role via DB UPDATE (simulating an out-of-band soft-delete). (e) POST /api/roles with `{"name": "Administrator"}` — assert HTTP 200 with a NEW role id (the create-path service has NO name-guard; the DB unique index no longer fires because the seeded row is soft-deleted). (f) Add a `// REGRESSION-PIN — RoleServiceImpl.create has NO name-reservation guard. Administrator and User are reserved against UPDATE/DELETE but NOT CREATE. The DB partial UNIQUE INDEX is the only defence and is bypassable on out-of-band soft-delete. A REFACTOR adding a service-layer name-guard at lines 50-51 will break step (e), making the fix deliberate.` comment block.
+batch: 2026-05-20-S
+feature_id: F-006

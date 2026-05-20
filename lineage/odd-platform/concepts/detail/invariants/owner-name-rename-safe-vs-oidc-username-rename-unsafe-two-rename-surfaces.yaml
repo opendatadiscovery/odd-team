@@ -1,0 +1,122 @@
+name: Two rename surfaces — owner.name SAFE vs OIDC_USERNAME UNSAFE (disambiguation)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+description: |-
+  **NEW DISAMBIGUATING INVARIANT, batch 2026-05-20-P** —
+  PRIMARY-SOURCE confirmed across batch P (`updateOwner` sidecar) +
+  batch O (`GithubUserHandler` finding) + batch N
+  (`ReactiveUserOwnerMappingRepositoryImpl` sidecar). The platform
+  has TWO rename surfaces that interact with the USER_OWNER_MAPPING
+  table. They are ORTHOGONAL and have OPPOSITE safety profiles. The
+  cross-batch concept catalog previously surfaced one half
+  (GitHub-side, REFACTOR-391); this invariant disambiguates BOTH
+  halves and back-links them.
+
+  **Surface 1 — owner.name rename (SAFE)**:
+    - Endpoint: `PUT /api/owners/{owner_id}` (`OwnerController.java:47-54`)
+    - Mechanism: `OwnerMapper.applyToPojo` applies the form's new
+      `name` directly onto the existing pojo; `ownerRepository.update`
+      issues an `UPDATE owner SET name = ?, updated_at = NOW() WHERE
+      id = ?`.
+    - **Why safe**: the `user_owner_mapping.owner_id` FK
+      (V0_0_4__add_user_owner_mapping.sql:3) references `owner(id)`
+      — `owner.id` is the bigserial PK, stable across name changes.
+      Rename mutates ONLY `owner.name`. USER_OWNER_MAPPING rows
+      continue to point at the same Owner identity.
+    - **Result**: the previously-associated user can still log in and
+      resolve to the SAME Owner after the rename. The user's
+      effective permissions are unchanged.
+    - **Five DISTINCT secondary concerns** still apply (no audit log,
+      name-collision behaviour as USR003-not-409, search-vector race
+      window, role re-bind semantics, OpenAPI 201-vs-200 drift —
+      see `update-owner-with-role-rebind` operation sidecar) — but
+      USER_OWNER_MAPPING survival is NOT one of them.
+
+  **Surface 2 — OIDC_USERNAME (login string) rename (UNSAFE)**:
+    - Endpoint: external — happens at the IdP (GitHub, Cognito, Azure,
+      Google, ODD_IAM). The user renames their `login` string on the
+      identity provider.
+    - Mechanism: on next login,
+      `AuthIdentityProviderImpl.fetchAssociatedOwner` calls
+      `ReactiveUserOwnerMappingRepositoryImpl.getByOidcUsername(oidc_username,
+      provider)` (lines 116-127 — the COMPOUND KEY lookup). The
+      prior `(oldname, github)` row is now ORPHANED — the user's
+      NEW `(newname, github)` tuple has no matching row.
+    - **Why unsafe**: the compound key `(oidc_username, provider)`
+      is the binding key; `oidc_username` is the FREE-RENAME string
+      the IdP allows users to change at will (GitHub: 90-day escrow
+      then released). There is NO stable-id fallback. NO migration
+      tool. NO live-doc warning.
+    - **Result**: a renamed user logs in with NO owner-link; their
+      `My Objects` view renders empty; the prior row's data is
+      ORPHANED in the database (the data survives but no user can
+      reach it).
+    - **Severity HIGH** per the GithubUserHandler sidecar — silent
+      loss of owner-linkage on any rename; latent until rename
+      happens; NOT detectable from server logs.
+
+  **The cross-batch concept catalog drift**:
+    - Batch O surfaced REFACTOR-391 / `github-username-rename-orphans-user-owner-mapping`
+      canonicalisation candidate — describes Surface 2.
+    - Batch P (this batch) surfaces the SAFE direction at Surface 1.
+    - Without this disambiguating invariant, future readers
+      conflating the two surfaces would either: (a) over-correct
+      Surface 1 (adding stable-id binding when the FK is already
+      stable), OR (b) under-correct Surface 2 (assuming OIDC_USERNAME
+      rename is also safe because owner.name rename is).
+
+  **The pair describes the rename hazard surface**: the OIDC_USERNAME
+  side is the dangerous direction; the OWNER.NAME side is the safe
+  direction. Cite BOTH in any future "owner-mapping-stability"
+  documentation; cite this invariant from BOTH directions.
+
+  **Severity**: MEDIUM — disambiguating value to the concept catalog;
+  the underlying concerns (owner.name rename + OIDC rename) are
+  surfaced individually elsewhere. This invariant exists to PREVENT
+  the conflation, not to surface new code defects.
+axes_present:
+  - controllers
+  - services
+nodes:
+  - odd-platform java OwnerController controller-method:updateOwner
+  - odd-platform java auth GithubUserHandler config-key-consumer:adminAttribute
+  - odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
+contributors:
+  - 'updateOwner.md:coherence_notes.distinguishes-from REFACTOR-391 (OIDC_USERNAME rename ORPHANS — this batch shows OWNER.NAME rename is SAFE)'
+  - 'updateOwner.md:concepts.invariants.[1] (Rename does NOT orphan USER_OWNER_MAPPING — the FK is by owner.id, the bigserial PK)'
+  - 'updateOwner.md:dependencies_semantic.requires-runtime (V0_0_4__add_user_owner_mapping.sql:3 — owner_id FK by id, not name)'
+  - 'GithubUserHandler.md (batch O): adminAttribute = USER_LOGIN means the username consumed downstream is the MUTABLE login string'
+  - 'ReactiveUserOwnerMappingRepositoryImpl.md (batch N): the compound (oidc_username, provider) lookup at lines 116-127'
+  - 'github-username-rename-orphans-user-owner-mapping canonicalisation_candidate (batch O) — the unsafe surface'
+evidence:
+  - updateOwner.md:coherence_notes.distinguishes-from REFACTOR-391 (explicit cross-batch disambiguation)
+  - updateOwner.md:concepts.invariants.[1] (OWNER.NAME rename is safe; PRIMARY SOURCE)
+  - updateOwner.md:dependencies_semantic.requires-runtime (V0_0_4 schema confirms FK by id)
+  - github-username-rename-orphans-user-owner-mapping canonicalisation_candidate (batch O) — the OPPOSITE surface
+  - ReactiveUserOwnerMappingRepositoryImpl.md:concepts.invariants (batch N) — the compound-key lookup
+  - REFACTOR-391 (the OIDC_USERNAME-rename hazard); REFACTOR-355 (the OIDC_USERNAME cross-provider duplication; orthogonal)
+notes: |-
+  **Required back-links**:
+
+    - From `github-username-rename-orphans-user-owner-mapping`
+      canonicalisation_candidate: add cross-reference TO this invariant
+      stating "the OPPOSITE rename surface (owner.name rename) is
+      SAFE — see `owner-name-rename-safe-vs-oidc-username-rename-unsafe-two-rename-surfaces`
+      invariant for the disambiguation".
+
+    - From the `user-owner-mapping` entity: cite BOTH this invariant
+      AND `github-username-rename-orphans-user-owner-mapping` as the
+      complete picture of rename-surface impact on the table.
+
+  Doc-side recommended action: extend
+  `/configuration-and-deployment/enable-security/authorization/owners`
+  with a "Renaming an Owner" subsection making the two-surface
+  distinction explicit: "Renaming the Owner via PUT /api/owners/{id}
+  is SAFE — user-owner mappings survive. Renaming the LOGIN STRING
+  at the identity provider (GitHub login change, etc.) is UNSAFE —
+  the user-owner mapping is orphaned; see [GitHub rename caveat]."
+
+  Backlog: DOC-NNN follow-up + upstream issue tracking the doc-side
+  cross-link.

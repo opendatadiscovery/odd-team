@@ -1,0 +1,11 @@
+- **REFACTOR-025**: `changeAlertStatus` accepts mutation with no permission gate — any authenticated user can resolve/reopen any alert by id
+  - **Category**: missing-auth
+  - **Surfaced by**:
+    - `odd-platform__java__AlertController__controller-method__changeAlertStatus.md:security.known_security_gaps.[0]` (severity HIGH per sidecar)
+    - `concepts.yaml:entities[Alert].security_aggregate.weaknesses.[1]` (severity HIGH)
+  - **Statement**: `PUT /api/alerts/{alert_id}/status` carries no `@PreAuthorize`, no `permissionService.hasPermission(...)` call, and no SECURITY_RULES entry. Combined with the deliberate "mutations are gated" posture (ADR-CANDIDATE-002), this is a clear rule-violation, not a posture-choice — every other mutation is gated; this one isn't.
+  - **Evidence**: `AlertController.java:1-58` (no security annotations) + `SecurityConstants.java:98-355` (no `/api/alerts/{alert_id}/status` matcher; only `DATASET_FIELD_ADD_TERM` for the per-entity halt-config mutation)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-002 (centralised SECURITY_RULES) prescribes "every mutating endpoint is one row in SECURITY_RULES." This scope is a **violation** of that ADR — a missing row for `changeAlertStatus`.
+  - **Proposed remedy**: Add a SECURITY_RULES entry for `PUT /api/alerts/{alert_id}/status` mapped to a new `ALERT_STATUS_UPDATE` permission. Define the policy semantics — does this require ALERT-RESOLVE on the data entity the alert is attached to, or platform-wide ALERT_STATUS_UPDATE? Maintainer call.
+  - **Severity rationale**: HIGH — privilege-boundary leak; explicitly violates ADR-CANDIDATE-002.
+  - **Suggested backlog grouping**: `Authorization audit batch`

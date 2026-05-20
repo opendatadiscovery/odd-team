@@ -1,0 +1,36 @@
+gap_id: TEST-GAP-643
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform ts react-component component:RolesList"
+  - "odd-platform java RoleController controller-method:createRole"
+pillars_affected: [P-09, P-08]
+surfaced_by:
+  - "RolesList.md:tests_coverage_semantic.uncovered_behaviours.[9] (Create role with attacker-chosen policies — security regression-pin)"
+  - "RolesList.md:concepts.invariants.[5] (Predefined-role name protection is UI-only)"
+  - "RolesList.md:docs_link_semantic.doc_drift_findings.[4] (No documentation of soft-delete behaviour on Roles)"
+  - "RolesList.md:downstream_side_effects (Create-role write side-effect: No client-side validation for the predefined-name asymmetry)"
+behaviour: |-
+  **CRITICAL: Re-create-Administrator-after-soft-delete UI exploit chain.** Per F-006 batch-N drift_class `role_create_administrator_name_asymmetry_mirror`, `RoleServiceImpl.create` (batch-E sidecar bugs_limitations_corner_cases[0]) has NO `UserProviderRole.values()` check, unlike `.update` and `.delete`. The partial unique index `role_name_unique ON role(name) WHERE deleted_at IS NULL` permits re-creation of soft-deleted role names. RolesList's Create-role flow (RoleForm at RoleForm.tsx:24-152, dispatched from RolesList.tsx:92-102) provides NO client-side validation either: the `Input` rules `{required: true, validate: value => !!value.trim()}` (RoleForm.tsx:85) have no length cap, no charset filter, no case-insensitive predefined-name reject. The end-to-end exploit chain: (a) operator with DB access (or any path that allows direct row UPDATE) soft-deletes the seeded `Administrator` row by setting `deleted_at`; (b) operator with `ROLE_CREATE` permission opens this UI's Create-role button; (c) types `Administrator` (matching the seeded name); (d) selects any policy list including high-privilege ones; (e) submits — the backend creates a NEW role named `Administrator` with attacker-chosen policies, which is then attached to users via the Owners tab. The result is a privilege-escalation surface where an unprivileged role attached to a user is RENAMED to `Administrator` in the UI but binds attacker-controlled policies. NO test pins this contract. This is the highest-criticality security regression-pin for the F-006 mutation surface; it is reachable from the operator UI in five clicks.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/Management/RolesList/__tests__/RolesList.integration.test.tsx (NEW file)"
+  name: "create_role_named_Administrator_with_attacker_policies_after_seed_soft_delete"
+evidence:
+  - "RolesList.md says (tests_coverage_semantic.uncovered_behaviours.[9]): 'Create role with attacker-chosen policies — no test asserts that after a soft-delete of the seeded Administrator row (e.g. via direct DB UPDATE), this form can re-create a role named Administrator with any policy list (the F-006 drift_class role_create_administrator_name_asymmetry_mirror end-to-end probe; pairs with batch-E security.known_security_gaps[0])'"
+  - "RolesList.md says (concepts.invariants.[5]): 'Predefined-role name protection is UI-only. These are CASE-SENSITIVE string matches against the literal name Administrator / User — a role named administrator (lowercase, see batch-N drift_class role_service_predefined_name_case_sensitivity_mismatch) would NOT be matched by isAdministrator and WOULD show Edit/Delete buttons.'"
+  - "RolesList.md says (docs_link_semantic.doc_drift_findings.[4]): 'No documentation of soft-delete behaviour on Roles. Per batch-N invariants[3] + F-006 drift_class role_create_administrator_name_asymmetry_mirror, the partial unique index role_name_unique ON role(name) WHERE deleted_at IS NULL permits re-creation of soft-deleted role names — combined with the create-path absence of UserProviderRole.values() check, an operator who soft-deletes the seeded Administrator row (e.g. via direct DB UPDATE) can use this exact UI surface (RolesList → Create role) to re-create a role named Administrator with attacker-chosen Policies.'"
+  - "RolesList.md says (downstream_side_effects): 'No client-side validation for the predefined-name asymmetry — batch-E sidecar bugs_limitations_corner_cases[0] surfaces that RoleServiceImpl.create has NO UserProviderRole.values() check, unlike .update and .delete. The UI provides NO protection either: a user typing Administrator or User into the new-role name field will succeed if the seeded rows have been soft-deleted via direct SQL.'"
+cross_references:
+  - "F-006 (drift_class role_create_administrator_name_asymmetry_mirror)"
+  - "TEST-GAP-094 family (RoleController batch-E known_security_gaps)"
+  - "ReactiveRoleRepositoryImpl batch-N (partial-unique-index + role_create_administrator_name_asymmetry_mirror)"
+  - "ADR-CANDIDATE for predefined-role name protection at create path"
+proposed_action: |-
+  Stand up `RolesList.integration.test.tsx` test `create_role_named_Administrator_with_attacker_policies_after_seed_soft_delete`. Use Testcontainers Postgres for the integration; pre-load V0_0_56 seed migration; soft-delete the seeded `Administrator` row via direct UPDATE; assert `role_name_unique WHERE deleted_at IS NULL` permits a new `Administrator` row; via the React-Testing-Library shell, click Create-role, fill name=`Administrator`, select 2 policies including any `MANAGEMENT_CONTROL` policy; submit; assert (a) the form submits successfully (no client-side block), (b) the DB now has two rows (one soft-deleted seed, one active attacker-controlled), (c) `getRolesPolicies` for the new role returns the attacker policies. Pin AS the current dangerous-but-shipping contract; surface to /review and the security pillar for an explicit ADR + fix that adds either a UI-side case-insensitive predefined-name reject (matching `UserProviderRole.values()`) OR a backend `RoleServiceImpl.create` UserProviderRole guard. Two probes for the case-sensitivity mismatch (lowercase admin) should accompany this test.
+related_features: [F-006]
+related_pillar_features: ["P-09:F-001"]
+related_refactors:
+  - "REFACTOR-160 family (UserProviderRole.values() coverage on create path)"
+batch: 2026-05-20-Q
+feature_id: F-006

@@ -1,0 +1,12 @@
+- **REFACTOR-033**: Multi-instance LOCAL attachment storage broken — chunk staging directory keyed by `uploadId` only, no replica id; cross-replica chunk assembly is undefined
+  - **Category**: race-condition
+  - **Surfaced by**:
+    - `concepts.yaml:entities[Attachment].performance_aggregate.weaknesses.[1]` (severity HIGH)
+    - `odd-platform__yaml__application_yml__config-prefix__attachment.md:bugs_limitations_corner_cases.[3]` (MEDIUM)
+  - **Statement**: For LOCAL storage, chunk staging is a per-instance filesystem path. A horizontally-scaled deployment with LOCAL storage produces intermittent failures whenever the load balancer routes `uploadFileChunk` and `completeFileUpload` to different instances. REMOTE (S3) is shared by construction.
+  - **Evidence**: `LocalFileUploadServiceImpl.java:32-52` + `RemoteFileUploadServiceImpl.java:53-77` (both use `FileUtils.getChunkDirectory(uploadId)` which is local-fs)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-012 (boot-time wiring) does not address multi-instance deployment.
+  - **Proposed remedy**: Document on the live config page that LOCAL storage requires single-instance deployment OR a shared volume mount. Optional: add a `attachment.local.shared-volume: true` flag that switches off the per-instance assumption (no-op for now, advisory only).
+  - **Severity rationale**: HIGH (concept-aggregate) — silent failure mode on multi-instance LOCAL deployments.
+  - **Suggested backlog grouping**: `Attachment integrity sprint`
+  - **NEW — see also REFACTOR-058 (2026-05-10A)**: Per uploadFileChunk sidecar, the chunk staging path constant `FileUtils.CHUNK_BASE_PATH = "/tmp/odd/chunks"` is **storage-backend-INDEPENDENT** — REMOTE deployments share the same per-instance failure mode. REFACTOR-033 captures the LOCAL-storage flavour; REFACTOR-058 generalises the finding to REMOTE storage.

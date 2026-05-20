@@ -1,0 +1,7 @@
+- **DOC-GAP-020**: Concept "Locale Bundle" / "Multilingual UI" — F-047 is filed; cross-referenced here
+  - **Category**: missing-page
+  - **Surfaced by**: `concepts.yaml:entities[Locale Bundle]`; sidecar refs.
+  - **Evidence**: WebFetch `/configuration-and-deployment/odd-platform` 2026-05-08 — verbatim "no mention of language selection, multilingual support..."
+  - **Proposed doc action**: Already filed as F-047; no new authoring action.
+  - **Cross-references**: F-047; LSN-013.
+  - **Severity rationale**: MEDIUM (per F-047).

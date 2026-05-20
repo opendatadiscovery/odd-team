@@ -1,0 +1,173 @@
+name: Silent-200-on-missing-pair / missing-entity on upsert family
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-11
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-19L** — surfaced by
+  cross-reading the `upsertDataEntityMetadataFieldValue` (batch L PRIMARY
+  SOURCE) and `upsertDataEntityInternalDescription` (batch G prior art)
+  sidecars. Two endpoint-pair instances confirm the same pattern: the
+  `upsert*` family of PUT endpoints on DataEntityController silently
+  return `200 OK` with empty body when the target pair OR the target
+  entity does NOT exist. Operators reading the OpenAPI "upsert" name
+  expect POST-or-PUT semantics; the actual mechanism is pure UPDATE with
+  silent no-op on missing-row.
+
+  **Site 1 — `upsertDataEntityMetadataFieldValue`** (batch L PRIMARY SOURCE):
+    - Endpoint: `PUT /api/dataentities/{data_entity_id}/metadata/{metadata_field_id}`
+    - Service body: `DataEntityServiceImpl.upsertMetadataFieldValue` (lines 287-305)
+    - Mechanism: `ReactiveMetadataFieldValueRepositoryImpl.update` (lines 95-104)
+      issues `DSL.update(METADATA_FIELD_VALUE).set(...).where((dataEntityId, metadataFieldId) match).returning()`.
+    - On missing pair (no row in `metadata_field_value` for the
+      `(dataEntityId, metadataFieldId)` pair), the UPDATE matches zero
+      rows; the returning Mono completes empty; the downstream
+      `updateMetadataVectors` and mapper are short-circuited via
+      empty-mono propagation; controller returns `200 OK` with empty body.
+    - There is NO `reactiveDataEntityRepository.get(dataEntityId)`
+      existence check (contrast with `createMetadata` at lines 257-258
+      which DOES check).
+
+  **Site 2 — `upsertDataEntityInternalDescription`** (batch G prior art):
+    - Endpoint: `PUT /api/dataentities/{data_entity_id}/description`
+    - Same UPDATE-not-UPSERT shape; silent 200 OK on missing entity.
+
+  **Operator-facing manifestation**:
+
+    - The UI's redux thunks hardcode success toasts on any non-error
+      response. For `upsertDataEntityMetadataFieldValue`, the thunk emits
+      "Metadata successfully updated." on 200 (regardless of body); for
+      `upsertDataEntityInternalDescription`, it emits the description
+      success toast. Both UIs claim success on writes that did not
+      happen.
+
+    - Operators using direct REST clients receive 200 OK with empty body
+      and cannot distinguish "successfully updated" from "id was wrong"
+      from "the pair did not exist yet — should I call create instead?".
+
+    - Idempotent reconciliation scripts that retry-on-error find the
+      endpoint mis-reports success for non-existent pairs; the script
+      "succeeds" without writing.
+
+  **The mechanism is a Reactor empty-mono short-circuit pattern**: when
+  the repository's `Mono<T>` returns empty, the downstream `.then(...)`
+  and `.flatMap(...)` chains short-circuit; the controller's
+  `Mono<ResponseEntity<T>>.map(ResponseEntity::ok)` (cross-ref the
+  "Reactive Mono<ResponseEntity<...>>.map(ResponseEntity::ok) is the
+  uniform success-response pattern" invariant) completes with empty body
+  + `200 OK`. The pattern is technically correct WebFlux but
+  semantically misleading.
+
+  **Why this exists (intent — partially confirmed)**: the OpenAPI
+  operationId is `upsert*`, suggesting an UPSERT contract; the
+  implementation is UPDATE-only, suggesting either (a) the maintainer
+  chose UPDATE-only as the safe default (no row-creation as a side
+  effect; the row was created earlier via the create endpoint), OR (b)
+  the OpenAPI name is aspirational (the implementation drifted from the
+  intended UPSERT semantics). The metadata-field-value endpoint has a
+  separate `createDataEntityMetadataFieldValue` (POST) so (a) is the
+  more likely intent — but the OpenAPI naming muddles it for callers.
+
+  **Cross-pattern shape**: the **silent-204-on-no-op DELETE** sibling
+  invariant (DEG-membership + term-unlink) is the matching pattern on
+  the DELETE side; together they form a cluster: at ODD, the
+  load-bearing assumption of HTTP semantics ("a 2xx means something
+  happened") is selectively false on no-op DELETE paths AND on
+  no-op-target UPSERT paths.
+
+  **Audit ambiguity compounds the silent-200**: the affected upsert
+  endpoints carry NO `@ActivityLog` annotations (per the
+  custom-metadata enum reserved-but-unwired pattern) — operators
+  cannot cross-reference the activity feed to verify whether the write
+  actually happened.
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue
+  - odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue.md
+  - odd-platform__java__DataEntityController__controller-method__upsertDataEntityInternalDescription.md
+contributors:
+  - |-
+    upsertDataEntityMetadataFieldValue batch L (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[0] (silent 200-on-missing pair) +
+    bugs_limitations_corner_cases.[1] (silent 200-on-missing data entity)
+    + concepts.invariants.[1] (endpoint is an UPDATE, not an UPSERT) +
+    concepts.invariants.[2] (non-existent metadataFieldId → 404, but
+    non-existent dataEntityId → 200-with-empty-body)
+  - |-
+    upsertDataEntityInternalDescription batch G (PRIOR ART): the
+    matching silent-200 pattern surfaced first on the description-upsert
+    endpoint; batch L pairs the metadata-upsert site to confirm the
+    shape is a family
+evidence:
+  - upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[0,1]
+  - upsertDataEntityMetadataFieldValue.md:concepts.invariants.[1,2]
+  - |-
+    upsertDataEntityInternalDescription.md (batch G prior art —
+    referenced in the existing concepts/detail/operations/upsert-internal-description-markdown.yaml
+    which already notes "the 'upsert' name is MISLEADING — underlying is
+    pure UPDATE with silent no-op on missing entity (200 OK, empty body,
+    no 404)")
+triangulation_count: 2
+cross_batch: true
+severity: MEDIUM
+severity_dim: api-contract
+mitigations_unimplemented:
+  - |-
+    Add an existence-check pre-condition at the service layer: every
+    `upsert*` endpoint on DataEntityController should call
+    `reactiveDataEntityRepository.get(dataEntityId).switchIfEmpty(NotFoundException)`
+    BEFORE the UPDATE, matching the pattern at `createMetadata`
+    (lines 257-258).
+  - |-
+    Add a `switchIfEmpty(NotFoundException)` on the UPDATE's returning
+    Mono — when the row predicate matches zero, the service should
+    raise a 404 with a specific message rather than completing empty.
+  - |-
+    Document the contract drift on
+    /developer-guides/api-reference — the OpenAPI operationId `upsert*`
+    promises an UPSERT contract; the actual mechanism is UPDATE-only.
+    Either rename the operations OR fix the implementation; either fix
+    the docs explicitly.
+  - |-
+    Add regression tests:
+      (a) PUT a non-existent (dataEntityId, metadataFieldId) pair —
+          assert 404 (under the fix) OR 200 with empty body (under
+          current behaviour — pin the current state).
+      (b) PUT a non-existent dataEntityId on the description endpoint —
+          same assertion shape.
+  - |-
+    Fix the UI's redux thunks to inspect the response body and emit a
+    different toast for empty-body responses ("Metadata may not have
+    updated — please verify the entity/field combination exists.") OR
+    align with the backend fix once it lands.
+notes: |-
+  NEW invariant captured in batch 2026-05-19L. The pattern is the upsert
+  family's sibling of the DELETE family's silent-204 pattern
+  (silent-204-on-no-op-delete-vs-400-duplicate-on-no-op-add). Together
+  they form a coherent ODD-platform "silent success on no-op" cluster —
+  the maintainer must take an explicit stance per endpoint on whether
+  "2xx means something happened" is the contract or not.
+
+  Cross-cutting connections:
+    - Pairs with "silent-204-on-no-op-delete-vs-400-duplicate-on-no-op-add"
+      — the DELETE family's matching pattern; together they characterize
+      ODD's "silently succeed on no-op writes" stance
+    - Pairs with "Reactive Mono<ResponseEntity<...>>.map(ResponseEntity::ok)
+      is the uniform success-response pattern" — the structural shape
+      that ENABLES the silent-200 propagation through empty-Mono
+      short-circuits
+    - Cross-references "Operation name vs behaviour drift — create*-shaped
+      operationId for replace-all semantic tag relations" — same class
+      of OpenAPI-operationId-vs-implementation drift
+
+  Three DOC-NNN candidates:
+    (a) Document the silent-200 contract on /developer-guides/api-reference
+        for the upsert family
+    (b) Either fix the implementation (add existence checks) OR rename
+        the OpenAPI operations from upsert* to update* to match
+    (c) Add regression tests pinning the current behaviour so the
+        contract drift is detectable

@@ -1,0 +1,11 @@
+- **REFACTOR-016**: GenAI `genai.url` is operator-supplied with no allowlist, no scheme check, no SSRF guard, no `@URL` constraint
+  - **Category**: missing-validation
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__GenAIController.md:security.known_security_gaps.[2]` (severity HIGH)
+    - `concepts.yaml:entities[GenAI Assistant].security_aggregate.weaknesses.[1]`
+  - **Statement**: `GenAIProperties.url` carries no validation annotations; `WebClientConfiguration.java:28` calls `baseUrl(genAIProperties.getUrl())` with no validation. An operator could set `genai.url=http://internal-only.corp/x` (or any internal-network URL); if config injection is achievable elsewhere (e.g. `application.yml` overlay, ConfigMap mutation), an attacker pivots the platform's egress.
+  - **Evidence**: `GenAIProperties.java:10` (no validation annotations) + `WebClientConfiguration.java:28` (`baseUrl(genAIProperties.getUrl())` with no validation)
+  - **Existing-ADR-or-implied-prescription**: None. The thin-proxy stance does not defend the absence of URL validation.
+  - **Proposed remedy**: Add `@URL`, `@NotBlank`, and `@Pattern(regexp = "^https?://...")` on `GenAIProperties.url`. Optional: add `genai.url-allowlist` for operators who want to constrain to a known set of LLM endpoints. Add `@Validated` at the class level to engage Spring Boot's `@ConfigurationProperties` validation pipeline.
+  - **Severity rationale**: HIGH — SSRF surface. An attacker landing config injection can use the platform as a confused deputy to reach internal services.
+  - **Suggested backlog grouping**: `GenAI hardening sprint`

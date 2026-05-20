@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-476
+category: missing-performance
+criticality: LOW
+node_ids:
+  - "odd-platform java service service:AuthIdentityProviderImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "AuthIdentityProviderImpl.md:performance.known_performance_gaps.[0] (no per-request memoization)"
+  - "AuthIdentityProviderImpl.md:performance.known_performance_gaps.[1] (no per-session caching)"
+  - "AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[4] (no caching)"
+  - "AuthIdentityProviderImpl.md:implicit_adrs.[3] (stateless / no-cache by omission)"
+behaviour: |-
+  Per-call DB round-trip on the principal-lookup query. Every fetchAssociatedOwner invocation issues `SELECT owner.* FROM user_owner_mapping JOIN owner ... WHERE oidc_username = ? AND deleted_at IS NULL AND (provider = ? OR provider IS NULL)` (ReactiveUserOwnerMappingRepositoryImpl.java:77-85). For a UI rendering catalog home (mounting Recommended → My Objects + My Alerts count + Activity feed simultaneously), a single user page-load triggers 3-5 sequential identical queries to user_owner_mapping. The query is indexed and small, but the absence of even a per-request memoization (e.g. reactor Context attribute) or per-session in-memory cache is a measurable per-page cost. The maintainer's deliberate absence (implicit ADR) is the trade-off: cache-invalidation surface vs. per-request DB round-trip.
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/AuthIdentityProviderNoCacheTest.java"
+  name: "threeSequentialFetchAssociatedOwnerCallsInOneRequest_threeDBRoundTrips_noCacheNoMemoization"
+evidence:
+  - |-
+    AuthIdentityProviderImpl.md says: 'Every fetchAssociatedOwner invocation issues SELECT owner.* FROM user_owner_mapping JOIN owner ... For a UI rendering catalog home, a single user page-load triggers 3-5 sequential identical queries to user_owner_mapping.'
+  - "AuthIdentityProviderImpl.java:17-21 (only one private final field, no @Cacheable, no map field)"
+  - "AuthIdentityProviderImpl.java:50-53 (raw flatMap, no Context.put/Context.get)"
+cross_references:
+  - "concepts.yaml:entities[User-owner association]"
+proposed_action: |-
+  Testcontainers integration test. Spy ReactiveUserOwnerMappingRepository. Drive three sequential fetchAssociatedOwner() calls within one reactor chain. Assert getAssociatedOwner invoked exactly 3 times — no caching. LOCKS the no-cache contract; promotes to a fix-required regression when per-request memoization lands.
+batch: 2026-05-19-K
+feature_id: null

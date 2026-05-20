@@ -1,0 +1,9 @@
+- **REFACTOR-131** (NEW 2026-05-12C): Dead config field — `NotificationsProperties.webhookUrl` (the top-level one on this POJO) has NO consumer. The active webhook URL is `notifications.receivers.webhook.url` read by `NotificationConfiguration#webhookNotificationSender` via `@Value`. An operator setting `notifications.webhookUrl=...` gets silent acceptance and zero effect
+  - **Category**: dead-code
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[0]` (severity MEDIUM per sidecar; LOW at concept-level — config-hygiene, not exploit)
+  - **Statement**: `NotificationsProperties.java:9` declares `private String webhookUrl;` (top-level). grep across the notification package finds no consumer reading `getWebhookUrl()`. The active key is `notifications.receivers.webhook.url`. The top-level field is dead code.
+  - **Evidence**: `NotificationsProperties.java:9` + grep across notification package (no consumer)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-040 (Notifications off-by-default) implies the `@ConfigurationProperties` surface should be complete; this scope is a hygiene gap.
+  - **Proposed remedy**: Remove the field from `NotificationsProperties`. Verify no operator deployments reference the top-level key (the platform would have been silently accepting `notifications.webhookUrl=...` with no effect, so the impact is null-impact removal).
+  - **Severity rationale**: LOW — config-hygiene. Note: this is the 2nd "dead code in load-bearing position" finding this codebase (paired with REFACTOR-071 AuthorizationManagerCondition — 2-sidecar triangulated for a hygiene audit sprint).
+  - **Suggested backlog grouping**: `Notifications hardening` (or new `Codebase hygiene audit` sprint paired with REFACTOR-071)

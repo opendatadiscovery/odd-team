@@ -1,0 +1,10 @@
+- **REFACTOR-167** (NEW 2026-05-12D): Email `sender` has no `@Email` validation, and the same field doubles as `JavaMailSenderImpl.username` — if the SMTP-AUTH username is NOT the sender address (a common enterprise pattern), there is no way to express that distinction in ODD config. Misconfigured `sender` accepted silently and only fails at SMTP-send time
+  - **Category**: no-email-validation
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__EmailSenderProperties.md:bugs_limitations_corner_cases.[4]` (MEDIUM)
+  - **Statement**: `EmailSenderProperties.java:9` declares `private String sender;` with no `@Email` (Jakarta validation) annotation. `NotificationConfiguration.java:39-41` blank-checks only. The same field is then assigned as the SMTP-AUTH username at `NotificationConfiguration.java:55` (`mailSender.setUsername(emailProperties.getSender())`). Two consequences: (a) typos / malformed addresses pass boot and fail at SMTP-send time with a confusing JavaMail error; (b) enterprises with a service-account-email-distinct-from-the-From-address pattern (common in Microsoft 365 deployments) cannot express the distinction in ODD config.
+  - **Evidence**: `EmailSenderProperties.java:9` (no `@Email`) + `NotificationConfiguration.java:39-41` + `NotificationConfiguration.java:55` (sender = username)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-048 (narrow-validator scope) defers semantic correctness to runtime.
+  - **Proposed remedy**: Add `@Email` annotation to `EmailSenderProperties.sender` (after adding `@Validated` at class level). Add an optional `private String authUsername;` field — when set, override `setUsername()` with `authUsername`, otherwise fall back to `sender`. Document the username-vs-sender distinction on the live notifications page.
+  - **Severity rationale**: MEDIUM — operator-config-fragility + enterprise-pattern-incompat.
+  - **Suggested backlog grouping**: `Notifications hardening`

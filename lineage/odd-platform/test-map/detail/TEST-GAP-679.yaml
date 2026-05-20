@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-679
+category: missing-unit
+criticality: LOW
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveDatasetFieldRepositoryImpl"
+pillars_affected: [P-01]
+surfaced_by:
+  - "ReactiveDatasetFieldRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[3] (updateInternalName empty-string normalises to NULL — no test)"
+  - "ReactiveDatasetFieldRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[2] (updateDescription empty-string normalises to NULL — uncovered)"
+  - "ReactiveDatasetFieldRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[4] (updateInternalName / updateDescription return Mono.empty for unknown id — no NotFoundException at repo layer)"
+behaviour: |-
+  **`updateInternalName` has ZERO test coverage at all — including the load-bearing empty-to-null normalisation and the silent-no-op-vs-404 contract.** Line 85: `bare DSL.update(DATASET_FIELD).set(INTERNAL_NAME, StringUtils.isEmpty(internalName) ? null : internalName).where(ID.eq(id)).returning()`. Same shape as `updateDescription` (line 75) but with NO test (the existing test covers only `updateDescription`). The empty-to-null normalisation is significant because (a) downstream consumers including the activity-feed mapper, the FTS index, and the UI's filled-flag tracking treat NULL and empty-string differently; (b) a maintainer "improving" the API to accept whitespace-trimmed empty strings might re-introduce the empty-string-as-empty-string path; (c) the operator's intent of "clear this name" must round-trip as NULL, not "". Also untested: BOTH methods return `Mono.empty()` for unknown ids — NO `NotFoundException` at this repository layer. The service layer's `DatasetFieldServiceImpl.updateInternalName` line 104 does `.switchIfEmpty(Mono.error(new NotFoundException(...)))` — good. But `DatasetFieldServiceImpl.updateDescription` lines 87-95 does NOT switchIfEmpty before delegating — verify the downstream service's contract. If the chain completes empty for an unknown id, the API returns 200 OK with an empty body. UX gap.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDatasetFieldRepositoryImplTest.java (covers testUpdateDescription happy-path — no empty-string variant, no unknown-id variant, NO updateInternalName test)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDatasetFieldRepositoryEditEdgeCasesTest.java"
+  name: "updateDescription_emptyToNull_andUnknownIdSilent_pinsContracts"
+evidence:
+  - "ReactiveDatasetFieldRepositoryImpl.md says (uncovered_behaviours.[2]): 'updateDescription empty-string normalises to NULL (line 75) — uncovered; the test seeds a populated description'"
+  - "ReactiveDatasetFieldRepositoryImpl.md says (uncovered_behaviours.[3]): 'updateInternalName empty-string normalises to NULL (line 85) — no test for updateInternalName at all'"
+  - "ReactiveDatasetFieldRepositoryImpl.md says (uncovered_behaviours.[4]): 'updateInternalName / updateDescription return Mono.empty when id does not exist (no NotFoundException at repo layer) — the silent-no-op-vs-404 contract unverified'"
+  - "ReactiveDatasetFieldRepositoryImpl.java:72-90 (the two update methods)"
+  - "DatasetFieldServiceImpl.java:86-115 (the asymmetric switchIfEmpty handling)"
+cross_references:
+  - "TEST-GAP-664 (DatasetField verbatim XSS — sibling on the same edit surface)"
+  - "TEST-GAP-666 (DatasetField description-edit no @ActivityLog asymmetry)"
+  - "REFACTOR-NNN candidate: add `.switchIfEmpty(Mono.error(new NotFoundException(...)))` at DatasetFieldServiceImpl.updateDescription"
+proposed_action: |-
+  Repository-layer unit + integration test. (a) Create a dataset_field via `bulkCreate` with `internalDescription='abc'`. (b) Call `updateDescription(id, "")`. Read back. Assert `internalDescription IS NULL`. (c) Call `updateDescription(id, null)`. Read back. Assert `internalDescription IS NULL`. (d) Call `updateDescription(id, "  ")` (whitespace). Read back. Assert `internalDescription = "  "` (whitespace is NOT trimmed today — pin the current behaviour). (e) Call `updateDescription(99999999, "x")` (non-existent id). Assert the returned Mono is EMPTY (no error). (f) Repeat all 4 cases for `updateInternalName`. (g) Add a `// REGRESSION-PIN — Empty-to-null is the documented behaviour. Whitespace is NOT trimmed today. Unknown id silently no-ops at the repository layer; the service layer must guard with switchIfEmpty. A REFACTOR that trims whitespace OR adds repository-layer NotFoundException will flip parts of this test.` comment block.
+related_features: [F-002]
+related_pillar_features: ["P-01:F-002"]
+batch: 2026-05-20-R
+feature_id: F-002

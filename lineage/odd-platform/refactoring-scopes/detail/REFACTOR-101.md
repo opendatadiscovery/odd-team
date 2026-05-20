@@ -1,0 +1,9 @@
+- **REFACTOR-101** (NEW 2026-05-12C): `auth.login-form-credentials` has no default and crashes Spring boot if unset under `auth.type=LOGIN_FORM`. Line 70 uses `@Value("${auth.login-form-credentials}")` with no fallback (compare line 41 / line 42 which both use `${...:default}` form). The shipped `application.yml:37` carries `admin:admin,root:root` so no-override deployments use those credentials, but custom-overrides that supply LOGIN_FORM without credentials fail hard at boot
+  - **Category**: missing-default
+  - **Surfaced by**: `odd-platform__java__LoginFormSecurityConfiguration__config-key-consumer__auth_type@L31.md:bugs_limitations_corner_cases.[2]` (severity LOW)
+  - **Statement**: Line 70's `@Value("${auth.login-form-credentials}")` has no fallback. An operator switching `auth.type` from DISABLED → LOGIN_FORM in a customised application.yml without supplying `auth.login-form-credentials` triggers `IllegalArgumentException: Could not resolve placeholder...` which surfaces as a `BeanCreationException` at boot. This is fail-loud (correct posture), but the doc surface does not flag the required-pair nature of these two keys.
+  - **Evidence**: `LoginFormSecurityConfiguration.java:70` + `application.yml:37`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-031 (LOGIN_FORM dev/demo) frames LOGIN_FORM as opt-in via two paired keys.
+  - **Proposed remedy**: Either (a) add a `:default` value (e.g., `${auth.login-form-credentials:admin:admin}` matching the application.yml fallback); or (b) document the required-pair nature on the live LOGIN_FORM page.
+  - **Severity rationale**: LOW — fail-loud, operator-fixable.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

@@ -1,0 +1,214 @@
+name: Slack collaboration app
+canonical_in_docs: true
+canonical_candidate: false
+description: 'Full Slack app for in-app per-entity Discussions threads — bidirectional
+  integration via OAuth bot token (`datacollaboration.slack-oauth-token`) plus the
+  Slack Events API webhook to read replies back into the platform (main-concepts.md
+  Terms & Aliases: ''Slack collaboration app'' aka ''Slack Events API'', ''Slack OAuth
+  integration'', ''Data Collaboration Slack''). Outbound delivery is decoupled from
+  HTTP request via `202 Accepted` + Postgres-advisory-lock-elected sender queue (DataCollaborationMessageSenderJob);
+  inbound Slack events are consumed by a second leader-elected thread (DataCollaborationMessageEventProcessor).
+  Both leader-election locks are operator-tunable advisory-lock-IDs (sender=120, receiver=110
+  by default). Batch 2026-05-12D adds `DataCollaborationProperties` — typed config-POJO
+  that binds 3 of 7 `datacollaboration.*` keys (sender-message-advisory-lock-id, receive-event-advisory-lock-id,
+  sending-messages-retry-count); the other 4 keys (`enabled`, `slack-oauth-token`,
+  `message-partition-period`) are `@Value`-scattered across four different files.
+  Partial-home pattern.'
+axes_present:
+- controllers
+- config_prefixes
+nodes:
+- odd-platform java DataCollaborationController controller-method:postMessageInSlack
+- odd-platform java org.opendatadiscovery.oddplatform.datacollaboration.config config-properties-class:DataCollaborationProperties
+contributors:
+- 'DataCollaborationController.postMessageInSlack: entities[MessageRequest, Message,
+  MessagePojo, MessageChannelDto, MessageProviderDto, DataEntityPojo]; operations[enqueue-slack-message,
+  resolve-channel-by-id, resolve-data-entity, persist-pending-message]'
+- 'DataCollaborationProperties (batch 2026-05-12D): entities[DataCollaborationProperties,
+  Postgres advisory lock, retry budget, message-sender thread, message-event-receiver
+  thread]; operations[bind 3 of 7 datacollaboration.* keys, validate retry-count non-negative
+  at @PostConstruct]; invariants[`sending-messages-retry-count >= 0` (DataCollaborationProperties.java:16-19);
+  senderMessageAdvisoryLockId=120 default, receiveEventAdvisoryLockId=110 default;
+  class has @ConditionalOnDataCollaboration gate (whole bean tree absent when datacollaboration.enabled=false);
+  partial-home — only binds 3 keys, slack-oauth-token + enabled + message-partition-period
+  are @Value-scattered]'
+evidence:
+- postMessageInSlack.md:concepts.entities.[MessageRequest, Message, MessagePojo]
+- postMessageInSlack.md:concepts.operations.[enqueue-slack-message, resolve-channel-by-id,
+  resolve-data-entity, persist-pending-message]
+- postMessageInSlack.md:implicit_adrs.[3,4] (decoupled 202+queue + Postgres-advisory-lock
+  single-sender)
+- DataCollaborationProperties.md:concepts.entities + concepts.invariants + concepts.operations
+- DataCollaborationProperties.md:implicit_adrs.[0-2] (fail-fast retry validation +
+  lock-id-as-property + Postgres advisory locks as election mechanism)
+- DataCollaborationProperties.md:bugs_limitations_corner_cases.[0-5] (lock-id collision
+  risks, partial-home, no @Validated)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: POST /api/datacollaboration/providers/slack/messages has NO @PreAuthorize,
+      NO SecurityRule in SecurityConstants.SECURITY_RULES, and NO programmatic permission
+      check in DataCollaborationServiceImpl.createAndSendMessage. Falls through to
+      AuthorizationCustomizer.pathMatchers('/**').authenticated() catch-all (postMessageInSlack.md:security.known_security_gaps.[0]
+      HIGH). The class is @ConditionalOnDataCollaboration-gated so endpoints return
+      404 when datacollaboration.enabled=false — but no permission gate above the
+      authenticated-only baseline.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: Service accepts any user-supplied data_entity_id with only existence +
+      hollow-check (DataCollaborationServiceImpl.java:50-52); NO ownership check.
+      User A can attach a message to a data entity owned by user B's owner — cross-tenant
+      message-injection path (postMessageInSlack.md:security.known_security_gaps.[2]
+      HIGH). Channel_id is also fully user-supplied (DataCollaborationController.java:34-37);
+      no server-side mapping of `(data_entity, allowed_channels)`. Users without an
+      owner association can still post — MessagePojo.ownerId is null (postMessageInSlack.md:security.known_security_gaps.[1]
+      MEDIUM).
+  strengths:
+  - 'Disabled-by-default via @ConditionalOnDataCollaboration + application.yml:205
+    ships enabled: false explicitly'
+  - Fail-fast empty-check on `datacollaboration.slack-oauth-token` at boot — `throw
+    new IllegalArgumentException` when unset (DataCollaborationConfiguration.java:23-25)
+  - Spring's default Sanitizer masks `token`-suffixed keys via /actuator/env — `slack-oauth-token`
+    matches the pattern so values are masked (postMessageInSlack.md:bugs_limitations_corner_cases.[8]
+    LOW)
+  - AsyncMethodsClient built once at boot — shared across all requests; no per-request
+    client allocation (DataCollaborationConfiguration.java:27)
+  weaknesses:
+  - No authorization gate on POST — any authenticated user can post to any Slack channel
+    the bot can reach, attached to any data_entity_id (postMessageInSlack.md:security.known_security_gaps.[0]
+    HIGH)
+  - 'Cross-tenant posting: user A can attach a message to user B''s owned entity (postMessageInSlack.md:security.known_security_gaps.[2]
+    HIGH)'
+  - Channel-id fully user-supplied; no `(data_entity, allowed_channels)` server-side
+    mapping (postMessageInSlack.md:security.known_security_gaps.[3] MEDIUM)
+  - 'No body validation: MessageRequest.text is `required` only — no max-length, no
+    sanitisation; 4MB body accepted and persisted; Slack''s per-message ~40KB limit
+    only hits AFTER 202 has returned (postMessageInSlack.md:bugs_limitations_corner_cases.[1]
+    MEDIUM)'
+  - No audit logging — `messages` row records ownerId but not the calling user's id
+    when no owner association; no log.info on the post path (postMessageInSlack.md:bugs_limitations_corner_cases.[6]
+    MEDIUM)
+  - No rate limit / throttling — single authenticated user can flood the messages
+    table; sender thread is the bottleneck, not the inbound (postMessageInSlack.md:bugs_limitations_corner_cases.[7]
+    MEDIUM)
+  - 'Slack error leak: SlackAPIException messages persisted to messages.failure_reason
+    via `markMessageAsFailed(message.getUuid(), e.getMessage())` — literal Slack error
+    strings (`invalid_auth`, `token_revoked`) become a token-state oracle if surfaced
+    via read endpoints (postMessageInSlack.md:security.known_security_gaps.[4] LOW)'
+  - Slack rate-limit handling is non-discriminating — every Exception caught at DataCollaborationMessageSenderJob.java:55
+    retried 3× with fixed 1-second sleep, regardless of whether it's 429/auth/channel
+    error (postMessageInSlack.md:bugs_limitations_corner_cases.[5] MEDIUM)
+  - '**No upper bound on `sending-messages-retry-count` — operator setting Integer.MAX_VALUE
+    blocks the single-leader sender thread indefinitely on poisoned messages (MEDIUM
+    — batch D primary-source)** — `DataCollaborationProperties.validate()` enforces
+    `>= 0` only; no upper bound. Combined with the fixed 1-second `Thread.sleep(1000)`
+    between retries in `DataCollaborationMessageSenderJob.java:60`, a single poisoned
+    message can block the whole deployment''s Slack delivery indefinitely. (DataCollaborationProperties.md:bugs_limitations_corner_cases.[1])'
+  - '**Lock-ID collision risk with cross-subsystem advisory locks (MEDIUM — batch
+    D primary-source)** — `DataCollaborationProperties.senderMessageAdvisoryLockId`
+    (default 120) and `receiveEventAdvisoryLockId` (default 110) are operator-tunable
+    but unvalidated. No `@PostConstruct` check that they are mutually disjoint and
+    disjoint from sibling advisory-lock subsystems (`partition.advisory-lock-id`=90
+    + `notifications.wal.advisory-lock-id`=100). An operator who copies default 100
+    into `datacollaboration.sender-message-advisory-lock-id` silently makes the Slack
+    sender + Notifications WAL subscriber contend on the same Postgres advisory lock
+    — neither subsystem works. (DataCollaborationProperties.md:bugs_limitations_corner_cases.[2]
+    + security.known_security_gaps.[1])'
+  - '**Partial-home @ConfigurationProperties — config-prefix coverage incomplete on
+    the typed POJO (LOW — batch D primary-source)** — `DataCollaborationProperties`
+    binds only 3 of the 7 `datacollaboration.*` keys. The other 4 (`enabled`, `slack-oauth-token`,
+    `message-partition-period`) are scattered as `@Value` reads across `DataCollaborationConfiguration.java:21`,
+    `FeatureResolverImpl.java:17`, `DataCollaborationFeatureCondition.java:18-22`,
+    and `MessageTablePartitionManager.java:19`. A maintainer reading the Properties
+    class to understand the config-prefix sees three int fields and would falsely
+    conclude the prefix has only three keys. Surfaced separately as a cross-cutting
+    invariant. (DataCollaborationProperties.md:bugs_limitations_corner_cases.[3,4])'
+  cross_file_inconsistencies:
+  - Live /developer-guides/api-reference/data-collaboration documents the endpoint
+    but omits authentication/authorization, request validation, and rate-limit behaviour
+    — operators reading the docs cannot infer the security model (postMessageInSlack.md:docs_link_semantic.doc_drift_findings.[0,1])
+  - Live /active-platform-features/data-collaboration returns 404 even though source
+    exists in documentation/docs/active-platform-features/data-collaboration.md —
+    operators Googling 'odd data collaboration' currently land on broken page (postMessageInSlack.md:docs_link_semantic.doc_drift_findings.[2]
+    HIGH for doc-drift)
+  contributing_files:
+  - postMessageInSlack.md
+  - DataCollaborationProperties.md
+  evidence:
+  - postMessageInSlack.md:security.known_security_gaps.[0-4]
+  - postMessageInSlack.md:bugs_limitations_corner_cases.[0-8]
+  - DataCollaborationProperties.md:security.known_security_gaps.[0,1]
+  - DataCollaborationProperties.md:bugs_limitations_corner_cases.[0-5]
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - Per-request Slack `conversations.info` round-trip in DataCollaborationServiceImpl.createAndSendMessage
+    line 53-56 — Slack outage/latency directly drives endpoint latency (postMessageInSlack.md:performance.hot_paths.[0])
+  - Per-request dataEntityRepository.get() + authIdentityProvider.fetchAssociatedOwner()
+    — 2 DB round-trips before queueing (postMessageInSlack.md:performance.hot_paths.[1,2])
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-message POST — no bulk endpoint. Outbound to Slack decoupled via
+      202 Accepted; single-leader sender drains queue at ~1 message per second (fixed
+      1-second sleep in DataCollaborationMessageSenderJob.java:60,70).
+  scaling_shape:
+    verdict: STATEFUL_LOCKED
+    detail: Sender thread is single-leader across the deployment via Postgres advisory
+      lock id 120 (default `datacollaboration.sender-message-advisory-lock-id`). Horizontal
+      scaling of the API process does NOT linearly scale Slack delivery — only one
+      node ever holds the lock and drains the queue. Inbound endpoint scales horizontally
+      (stateless); outbound is single-writer-by-design.
+  strengths:
+  - Decoupled 202+queue+sender pattern — outbound Slack failure doesn't cascade to
+    inbound 5xx
+  - Caffeine cache on channels (max 1, TTL 1 minute) — bounded memory; bounded refetch
+    cadence (SlackMessageProviderClient.java:38-44)
+  - Postgres-advisory-lock single-leader avoids external queue dependency — preserves
+    Postgres-as-only-dependency posture
+  weaknesses:
+  - Sender throughput bounded at ~1 msg/sec by fixed sleep — backlog of 1000 messages
+    takes >16 minutes to drain at best (postMessageInSlack.md:performance.known_performance_gaps.[0]
+    LOW)
+  - Caffeine channel-cache miss every minute boundary triggers full conversations.list
+    walk (paginated 200/page); workspace with N channels pays O(N/200) Slack round-trips/min
+    idle (postMessageInSlack.md:performance.known_performance_gaps.[1] LOW)
+  - No pagination/cap on inbound — pathological user can attach 10K messages to single
+    entity, growth unbounded by sender drain rate
+  - '**Receiver-thread ceiling — one global thread for ALL inbound Slack events (LOW
+    — batch D primary-source)** — `DataCollaborationProperties.receiveEventAdvisoryLockId`
+    (default 110) is the leader-election lock for `DataCollaborationMessageEventProcessor`
+    — exactly one thread per cluster consumes ALL inbound Slack events. A workspace
+    with high event throughput (busy channels mentioning data entities frequently)
+    queues events behind a single thread that processes at the speed of one Postgres
+    advisory-lock connection × one HTTP fetch per event. (DataCollaborationProperties.md:performance.known_performance_gaps.[0]
+    + performance.scaling_characteristics)'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - postMessageInSlack.md
+  - DataCollaborationProperties.md
+  evidence:
+  - postMessageInSlack.md:performance.hot_paths.[0-2]
+  - postMessageInSlack.md:performance.throughput_characteristics
+  - postMessageInSlack.md:performance.scaling_characteristics
+  - postMessageInSlack.md:performance.known_performance_gaps.[0,1]
+  - DataCollaborationProperties.md:performance.scaling_characteristics + performance.known_performance_gaps.[0]
+notes: "Canonical in main-concepts.md Terms & Aliases as \"Slack collaboration\napp\"\
+  \ with explicit aliases \"Slack Events API / Slack OAuth integration\n/ Data Collaboration\
+  \ Slack\". Distinct from \"Slack alert webhook\"\n(outgoing-only notifications via\
+  \ notifications.receivers.slack.url) —\nthe collaboration app is bidirectional.\
+  \ The single-leader sender via\nPostgres advisory lock is an architecturally significant\
+  \ pattern not\nseen elsewhere in the catalog so far; surface for invariant-tracking.\n\
+  \nBatch 2026-05-12D adds `DataCollaborationProperties` as the canonical\ntyped-config\
+  \ home for 3 of the 7 `datacollaboration.*` keys. Two\nobservations promoted to\
+  \ cross-cutting invariants:\n  - Partial-home @ConfigurationProperties pattern (also\
+  \ seen on\n    EmailSenderProperties — recipient list lives outside the POJO).\n\
+  \  - Advisory-lock-ID-collision risk (no startup assertion that the\n    four subsystem\
+  \ locks — partition=90, notifications.wal=100,\n    datacollaboration.receive-event=110,\
+  \ datacollaboration.sender-\n    message=120 — stay disjoint; operator override\
+  \ could silently\n    collide). Now 3-sidecar evidence cross-subsystem.\n"

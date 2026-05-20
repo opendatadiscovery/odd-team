@@ -1,0 +1,135 @@
+name: AlertManager webhook bypasses AlertActionResolver — no idempotency guard
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW INVARIANT, batch 2026-05-19I (AlertServiceImpl sidecar)** —
+  the two alert-ingestion paths (`handleExternalAlerts` for the AlertManager webhook;
+  `applyAlertActions` for in-platform ingestion derived from DQ-test / job-run /
+  schema-change deltas) deliberately DIVERGE on de-duplication semantics, leaving
+  the AlertManager webhook path with NO idempotency guard. **Confirmed by file:line
+  evidence at AlertServiceImpl.java**: (a) `applyAlertActions` (lines 202-231) consumes
+  `AlertAction` objects already pre-grouped by `AlertUniqueConstraint` from `AlertActionResolver`
+  (the discriminator dispatch at lines 211-227 shows `chunks` already keyed by
+  `AlertUniqueConstraint.fromAlert`); the resolver loads the open-alerts snapshot
+  first via `getOpenAlertsForEntities` + halt configs via `AlertHaltConfigRepository`,
+  then computes the diff. (b) `handleExternalAlerts` (lines 151-191) constructs
+  `AlertPojo` DIRECTLY from the webhook payload (lines 174-187) and skips the resolver
+  — no snapshot read, no halt-config consultation, no de-duplication. The shared
+  `createAlerts` helper (lines 261-300) does NOT de-duplicate at the SQL level
+  (no `ON CONFLICT` clause per batch H repository sidecar). Two POSTs of the same
+  AlertManager payload (e.g. Prometheus retry on transient network error) produce
+  TWO duplicate ALERT rows. The decision is intentional and architecturally defensible
+  per the implicit ADR (the AlertManager webhook path is a thin adapter with no
+  state context; loading the open-alerts snapshot is the expensive part; the AlertManager
+  webhook is low-frequency in production deployments). But the OPERATOR-FACING
+  consequence is uncovered: the live AlertManager-integration doc page acknowledges
+  the unauthenticated posture and the `entity_oddrn` orphaning behaviour (verified
+  via batch-F neighbour sidecar 2026-05-08 status 200) but says NOTHING about idempotency.
+  Operators reading the docs cannot learn that a Prometheus retry on transient
+  network error produces duplicate alerts. **Severity**: MEDIUM (the AlertManager
+  endpoint is unauthenticated and low-frequency; combined with the `entity_oddrn`
+  trust trapdoor — see companion invariant — and the absence of any UI-side de-duplication,
+  duplicate alerts persist in the platform indefinitely and surface in the All
+  / per-entity views as visual duplicates that operators cannot easily distinguish
+  from legitimate sibling alerts).
+
+  **BATCH P STRENGTHEN (2026-05-20)** — METHOD-TIER PRIMARY-SOURCE
+  CONFIRMATION at AlertManagerController#postAlerts. The new sidecar
+  (postAlerts.md, batch P) confirms the controller-method tier carries
+  no Idempotency-Key header inspection (the request DTO has no
+  idempotency-key field; the controller does not consult any header)
+  and does not log on entry. From the controller signature
+  `alertManagerWebhook(@RequestBody final Mono<AlertManagerRequest>)`
+  there is NO @Valid, NO @Headers binding, NO @RequestHeader for
+  Idempotency-Key — the receiver is entirely AlertManager-shape-driven
+  and silent on retries. The F-007 `no_idempotency_no_audit` drift
+  facet is now confirmed at THREE tiers:
+
+    1. **Spec / controller-shape (batch P, postAlerts.md)** — the
+       method signature carries no idempotency-key path.
+    2. **Service layer (batch 2026-05-19I, AlertServiceImpl.md)** —
+       handleExternalAlerts skips AlertActionResolver.
+    3. **Persistence layer (batch H, ReactiveAlertRepositoryImpl.md)**
+       — createAlerts has NO ON CONFLICT clause.
+
+  End-to-end: HTTP → service → SQL all three layers are forensically
+  duplicate-tolerant on the AlertManager-derived alert path. Prometheus
+  retries duplicate AlertPojo rows uniformly. Severity remains MEDIUM
+  (unauthenticated + low-frequency; doc-side gap on the operator side).
+  The cleanup options enumerated in the original notes section
+  (DB-level partial unique index OR re-route through AlertActionResolver
+  OR doc-only) are unchanged; the batch P confirmation merely PINS the
+  controller-tier evidence.'
+axes_present:
+- services
+- controllers
+nodes:
+- odd-platform java service service:AlertServiceImpl
+- odd-platform java AlertManagerController controller-method:postAlerts
+contributors:
+- 'AlertServiceImpl.md (batch I): concepts.invariants.[6] — The shared createAlerts
+  private helper is shared by both ingestion paths. implicit_adrs.[3] — The two
+  ingestion paths deliberately diverge on de-duplication. bugs_limitations_corner_cases.[1]
+  — The AlertManager webhook path (handleExternalAlerts) has NO idempotency guard.
+  Severity: MEDIUM. tests_coverage_semantic.uncovered_behaviours — No test asserts
+  the AlertManager webhook idempotency gap.'
+- 'AlertManagerController#postAlerts.md (batch P): security.known_security_gaps.[2]
+  + bugs_limitations_corner_cases.[2] — method-tier PRIMARY-SOURCE confirmation of
+  the no-idempotency, no-audit facet. STRENGTHENS the AlertServiceImpl batch-I
+  service-layer finding with the controller signature evidence. The F-007 facet
+  is now confirmed at THREE tiers (HTTP/service/SQL); the controller layer was
+  previously inferred from the class-level sidecar, now PRIMARY at method-tier.'
+evidence:
+- AlertServiceImpl.md:concepts.invariants.[6] (shared helper) + .[4] (DISTRIBUTION_ANOMALY
+  hardcoded for AlertManager-derived alerts)
+- AlertServiceImpl.md:implicit_adrs.[3] (the two ingestion paths deliberately diverge
+  — intent visible in absence-of-AlertActionResolver-call from handleExternalAlerts)
+- AlertServiceImpl.md:bugs_limitations_corner_cases.[1] (no idempotency guard; MEDIUM
+  severity)
+- AlertServiceImpl.md:docs_link_semantic.doc_drift_findings.[1] (idempotency gap
+  is observable at this service; live doc says nothing)
+- (cross-batch) ReactiveAlertRepositoryImpl.md (batch H — createAlerts has NO ON
+  CONFLICT; bulk INSERT only)
+- 'BATCH P PRIMARY-SOURCE: AlertManagerController#postAlerts.md:security.known_security_gaps.[2]
+  (No idempotency on retry: there is no Idempotency-Key header inspection, no
+  idempotency field in the request DTO; severity HIGH) + bugs_limitations_corner_cases.[2]
+  (F-007 facet `no_idempotency_no_audit` confirmed at the method tier)'
+notes: |
+  Cross-batch architectural-hygiene observation. The divergence is INTENTIONAL
+  (the implicit ADR is named) but the operator-facing doc-gap is concrete: the
+  AlertManager-integration page describes the unauthenticated posture and the
+  entity_oddrn orphan case, but does NOT name the idempotency gap.
+
+  Combined with the entity_oddrn payload-trust surface (see companion invariant
+  `entity-oddrn-trust-from-alertmanager-webhook`), the AlertManager path has
+  THREE compounding gaps:
+
+    (1) Unauthenticated by design (operator-delegated network controls).
+    (2) entity_oddrn label trusted verbatim — spoof + orphan + XSS surfaces.
+    (3) No idempotency — Prometheus retries produce duplicate alerts.
+
+  Recommended cleanup paths:
+
+    (a) Doc: extend `/configuration-and-deployment/odd-platform#prometheus-alertmanager-integration`
+        with an 'Idempotency' subsection: "AlertManager retries (on transient
+        network errors) produce duplicate alerts. Configure AlertManager's
+        `repeat_interval` and `group_wait` accordingly."
+
+    (b) Code: add a DB-level partial unique index on (data_entity_oddrn, type,
+        labels_hash) WHERE status = 'OPEN' AND deleted_at IS NULL — closes
+        the gap at the persistence layer; cheaper than re-routing the webhook
+        path through AlertActionResolver.
+
+    (c) Code: route handleExternalAlerts through AlertActionResolver — closes
+        the gap at the service layer but adds the snapshot-read cost to every
+        AlertManager webhook call. Likely-acceptable trade-off given low
+        webhook frequency.
+
+  Cross-references:
+    - Companion: `entity-oddrn-trust-from-alertmanager-webhook` (the second
+      AlertManager-path gap; both surfaced by the AlertServiceImpl batch-I sidecar).
+    - Existing concept: `alertmanager-webhook-receiver` (the entity covering
+      the webhook surface; this invariant adds the de-duplication semantic).
+    - BATCH P method-tier confirmation: `postAlerts.md` (the controller-method
+      sidecar providing PRIMARY-SOURCE evidence at the HTTP/spec tier; the
+      SUPERSEDE of the prior 404 claim on the alerting doc page lives at the
+      `alertmanager-webhook-receiver` entity).

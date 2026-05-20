@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-492
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue"
+pillars_affected: [P-01]
+surfaced_by:
+  - "upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[0] (Silent 200-on-missing pair)"
+  - "upsertDataEntityMetadataFieldValue.md:tests_coverage_semantic.uncovered_behaviours.[2] (Missing-pair path)"
+  - "upsertDataEntityMetadataFieldValue.md:concepts.invariants.[1] (Endpoint is an UPDATE, not an UPSERT)"
+behaviour: |-
+  silent-200-on-missing-pair regression-pin for upsertMetadataFieldValue (HIGH — operator-deceptive). PUT /api/dataentities/{id}/metadata/{field_id} is named UPSERT in the OpenAPI but the implementation is pure UPDATE. ReactiveMetadataFieldValueRepositoryImpl.update at lines 95-104 issues `DSL.update(METADATA_FIELD_VALUE).set(VALUE, ...).set(ACTIVE, pojo.getActive()).where(METADATA_FIELD_ID.eq(...).and(DATA_ENTITY_ID.eq(...))).returning()`. If no row exists for the (dataEntityId, metadataFieldId) pair, the query matches zero rows, `mono(query).map(r -> r.into(MetadataFieldValuePojo.class))` returns Mono.empty, the rest of the pipeline (search-vector refresh, mapper) is short-circuited via empty-mono propagation, and the controller returns 200 OK with empty body. The path lacks any `switchIfEmpty(Mono.error(new NotFoundException(...)))` (DataEntityServiceImpl.java:287-305). The UI's redux thunk metadata.thunks.ts:51-54 hardcodes a 'Metadata successfully updated.' success toast on any non-error response — the user is told the write succeeded when no row was touched. Same pattern as `upsertDataEntityInternalDescription` (batch G TEST-GAP-XXX) — a class-shape across DataEntityController write paths. Three semantically-different missing-pair outcomes are indistinguishable: (a) data entity X doesn't exist (no row in data_entity), (b) metadata field F doesn't exist for the global field table (caught by `MetadataFieldServiceImpl.get` 404, but only the field side), (c) valid (X, F) but no prior value row in metadata_field_value (the silent-200 path). The DataEntityServiceImpl.upsertMetadataFieldValue path does NOT do `reactiveDataEntityRepository.get(dataEntityId)` validation (unlike createMetadata which DOES at line 257-258). Test would assert: missing-pair → silent 200 with empty body (current contract); test FLIPS to 404 when the bug is fixed. Cross-pillar P-01 (Discovery / catalog metadata is what users TRUST as authoritative; silent failures undermine that trust).
+test_class: missing-edge-case
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataEntityServiceTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/DataEntityMetadataUpsertSemanticsTest.java"
+  name: "upsertMetadataFieldValue_missingPair_returns200WithEmptyBody_pinsTheSilentNoOpContract"
+evidence:
+  - "upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[0]: 'When (dataEntityId, metadataFieldId) has no existing row in metadata_field_value, ReactiveMetadataFieldValueRepositoryImpl.update matches zero rows, the Mono collapses to empty, the FTS vector refresh and mapper are short-circuited, and the controller returns 200 OK with an empty body rather than 404 Not Found.'"
+  - "ReactiveMetadataFieldValueRepositoryImpl.java:95-104 (UPDATE-with-WHERE, no switchIfEmpty)"
+  - "DataEntityServiceImpl.java:287-305 (no reactiveDataEntityRepository.get check, no switchIfEmpty)"
+  - "metadata.thunks.ts:51-54 (UI hardcodes 'Metadata successfully updated.' toast)"
+  - "DataEntityServiceTest.java:164-191 (existing happy-path test; missing-pair untested)"
+  - "Pair with upsertDataEntityInternalDescription same silent-200 pattern (batch G)"
+cross_references:
+  - "TEST-GAP-294-ish (similar pattern from upsertDataEntityInternalDescription batch G)"
+  - "concepts.yaml:entities[silent-200-on-missing-pattern]"
+  - "DOC-NNN candidate: document the UPDATE-not-UPSERT semantics in the OpenAPI spec OR fix to add switchIfEmpty + 404"
+proposed_action: |-
+  Testcontainers integration test. (a) Pre-create data entity X and metadata field F (so the field side resolves). (b) DO NOT create a row in metadata_field_value for (X, F). (c) PUT /api/dataentities/X/metadata/F with body {value: 'test'}. (d) Assert HTTP 200 with empty/null response body (current contract). (e) Query `SELECT count(*) FROM metadata_field_value WHERE data_entity_id=X AND metadata_field_id=F` returns 0 (no row touched). (f) Test comment 'LOCKS the silent-200-no-op contract. When REFACTOR-NNN adds switchIfEmpty+404, this test FLIPS to expect 404.' Pair with TEST-GAP-496 (silent-200-on-missing-data-entity) — the two missing cases share a fix.
+batch: 2026-05-19-L
+feature_id: null

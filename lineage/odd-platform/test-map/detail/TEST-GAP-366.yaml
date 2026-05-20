@@ -1,0 +1,70 @@
+gap_id: TEST-GAP-366
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+- odd-platform java service service:AlertServiceImpl
+- odd-platform java AlertManagerController controller-method:postAlerts
+surfaced_by:
+- AlertServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[6]
+- AlertServiceImpl.md:bugs_limitations_corner_cases.[1]
+- AlertManagerController#postAlerts.md:bugs_limitations_corner_cases.[2] (no_idempotency_no_audit
+  — primary source at method tier)
+- AlertManagerController#postAlerts.md:performance.known_performance_gaps.[1] (no
+  deduplication across batches — applyAlertActions DOES dedup, handleExternalAlerts
+  deliberately skips)
+behaviour: 'AlertManager webhook idempotency gap — `handleExternalAlerts` (lines 151-191)
+  bypasses `AlertActionResolver` (which the in-platform ingestion path uses) and forwards
+  directly to `createAlerts` (line 190), a bulk INSERT with no ON CONFLICT (per batch-H
+  ReactiveAlertRepositoryImpl sidecar). Two POSTs of the same AlertManager payload (e.g.
+  Prometheus retry on transient network error) produce two duplicate ALERT rows. The
+  applyAlertActions path de-duplicates via the resolver; handleExternalAlerts deliberately
+  skips it. No test asserts row count = 1 after a duplicate POST. STRENGTHENED batch
+  P — the AlertManagerController#postAlerts sidecar PRIMARY-SOURCE at the method
+  tier confirms the deliberate skip pattern AND adds a NEW dimension: the AlertUniqueConstraint.fromAlert
+  (AlertServiceImpl.java:187) deduplicates WITHIN a single batch but NOT across batches.
+  So Prometheus''s standard retry policy (transient network failures, configurable
+  per-receiver, group_interval 5m default + repeat_interval 4h default) re-sends
+  the same group every interval; each re-send creates a fresh AlertPojo row even
+  if the underlying `(entity_oddrn, type=DISTRIBUTION_ANOMALY)` already has an OPEN
+  alert. The parallel applyAlertActions path at AlertServiceImpl.java:222-227 DOES
+  route through AlertActionResolver to deduplicate. The asymmetry is intentional —
+  this asymmetric handling vs AlertActionResolver path is named verbatim in the
+  postAlerts sidecar.'
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/AlertManagerWebhookIdempotencyTest.java
+  name: handleExternalAlerts_duplicatePayload_createsTwoRowsButShouldCreateOne
+evidence:
+- 'AlertServiceImpl.md says: ''Two POSTs of the same AlertManager payload (e.g. Prometheus
+  retry on transient network error) produce two duplicate ALERT rows because `handleExternalAlerts`
+  does not de-duplicate'''
+- 'postAlerts.md says (security.known_security_gaps.[2]): ''No idempotency on retry:
+  there is no Idempotency-Key header inspection, no idempotency field in the request
+  DTO, and the downstream createAlerts (AlertServiceImpl.java:261-300) issues INSERT
+  … RETURNING with no ON CONFLICT clause. Prometheus''s standard retry policy (transient
+  network failures, configurable per-receiver) duplicates rows.'''
+- 'postAlerts.md says (performance.known_performance_gaps.[1]): ''AlertUniqueConstraint.fromAlert
+  (AlertServiceImpl.java:187) deduplicates within a single batch but not across
+  batches. The applyAlertActions path (used by in-platform ingestion at AlertServiceImpl.java:222-227)
+  DOES route through AlertActionResolver to deduplicate; handleExternalAlerts deliberately
+  skips this path.'''
+- 'AlertServiceImpl.java:154-191 — handleExternalAlerts body — no `AlertActionResolver`
+  use, no `getOpenAlertsForEntities` snapshot, no de-dup'
+- cross-reference batch-H bugs_limitations_corner_cases[2] (`createAlerts` issues INSERT
+  ... RETURNING with no upsert)
+cross_references:
+- TEST-GAP-363 (repository-tier — pairs with this service-tier finding)
+- TEST-GAP-014 / TEST-GAP-015 / TEST-GAP-011 / TEST-GAP-013 (controller-tier batch
+  P strengthens)
+- concepts.yaml:entities[Alert].security_aggregate.weaknesses (webhook duplicate-alert
+  amplification surface)
+- F-007 (P-07:F-001 AlertManager Integration drift facet no_idempotency_no_audit)
+proposed_action: Add `AlertManagerWebhookIdempotencyTest` that POSTs the same well-formed
+  AlertManager payload twice via WebTestClient against the live endpoint; assert that
+  `alertRepository.listAllWithStatusOpen` returns exactly ONE row for the given entity_oddrn
+  + type (the expectation), then mark the test as `@DisabledUntilFixed` referencing
+  REFACTOR-NNN if not yet remediated, so the test pins the current (broken) behaviour
+  vs the target.
+batch: 2026-05-20-P-STRENGTHENED
+feature_id: F-007

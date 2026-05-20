@@ -1,0 +1,11 @@
+- **REFACTOR-057** (NEW 2026-05-10A): `getActivity` and `getActivityCounts` exposes cross-owner aggregate counts to any authenticated user via `/api/activity/counts`
+  - **Category**: missing-auth
+  - **Surfaced by**:
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:bugs_limitations_corner_cases.[5]` (LOW per sidecar but MEDIUM at concept-aggregate given the cross-owner aggregate exposure)
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:security.data_exposure.[1]`
+  - **Statement**: `getActivityCounts` returns `totalCount`, `myObjectsCount`, `downstreamCount`, `upstreamCount` in a single payload. `totalCount` is computed without any owner filter (`ActivityServiceImpl.java:219-230`). Any authenticated user calling `/api/activity/counts` learns the total cross-owner activity volume in the window, even if they cannot enumerate the events themselves under `MY_OBJECTS`. (In practice they CAN enumerate via `type=ALL` per REFACTOR-053, but the counts endpoint trivially exposes the aggregate without paging — a low-cost reconnaissance signal.)
+  - **Evidence**: `ActivityServiceImpl.java:139-166` (the `zip` of four counts) + `ActivityServiceImpl.java:219-230` (`getTotalCount` with no owner filter)
+  - **Existing-ADR-or-implied-prescription**: Same as REFACTOR-053 — ADR-CANDIDATE-003 borderline.
+  - **Proposed remedy**: Same triage as REFACTOR-053. If the maintainer adds `PLATFORM_ACTIVITY_READ_ALL`, gate `getActivityCounts.totalCount` behind it (return only `myObjectsCount` to non-admin callers). If the maintainer confirms read-collaborative posture, no change required but the live-doc must say so.
+  - **Severity rationale**: MEDIUM — informational; the same data is reachable via the list endpoint (REFACTOR-053), but the counts endpoint is trivially queryable.
+  - **Suggested backlog grouping**: `Authorization audit batch` (paired with REFACTOR-053)

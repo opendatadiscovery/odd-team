@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-587
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java auth filter:IngestionDataEntitiesFilter"
+pillars_affected: [P-10, P-09]
+surfaced_by:
+  - "IngestionDataEntitiesFilter.md:dependencies_semantic.coupling[3] (S2S filter ordering — undocumented)"
+  - "IngestionDataEntitiesFilter.md:tests_coverage_semantic.uncovered_behaviours.[8] (Filter ordering versus S2sAuthenticationFilter)"
+behaviour: |-
+  **Filter ordering vs S2sAuthenticationFilter — undocumented interaction.** Under `auth.s2s.enabled=true` + `auth.ingestion.filter.enabled=true`, a request carrying valid `X-API-Key` (S2S) but NO `Authorization: Bearer <ingestion-token>` header reaches the platform. The S2S filter populates the SecurityContext with ADMIN identity BEFORE the SecurityWebFilterChain. The ingestion filter THEN runs its own check at IngestionDataEntitiesFilter.java:41 via `resolveToken` — and finds NO Bearer header → throws `AccessDeniedException("Token is missed")` → 401. The S2S ADMIN identity does NOT satisfy the ingestion filter's token check (the ingestion filter is orthogonal to S2S — different mechanism). The S2S doc page WebFetched 2026-05-19 recommends combining both, but the actual combined behaviour is: S2S call to `/ingestion/entities` REQUIRES BOTH `X-API-Key` AND `Authorization: Bearer`. This is undocumented and counter-intuitive to operators trying to use S2S as a 'master key' for the ingestion path.
+test_class: missing-integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionFilterS2sOrderingTest.java"
+  name: "ingestionEntities_s2sAndIngestionFilterBothEnabled_xApiKeyOnly_rejectsWithTokenMissed"
+evidence:
+  - "IngestionDataEntitiesFilter.md says (dependencies_semantic.coupling[3]): 'A request carrying a valid S2S X-API-Key reaches POST /ingestion/entities regardless of this filter's state. The S2S doc page (live, WebFetched 2026-05-19) recommends combining S2S with auth.ingestion.filter.enabled=true — a defense-in-depth pairing the platform does not enforce.'"
+  - "IngestionDataEntitiesFilter.md says (uncovered_behaviours.[8]): 'Under auth.s2s.enabled=true + auth.ingestion.filter.enabled=true, request with valid X-API-Key and no Authorization: Bearer header should reach the controller (S2S grants ADMIN identity, which the ingestion filter sees as a populated SecurityContext that does NOT satisfy its own check). This ordering behaviour is undocumented.'"
+  - "S2sAuthenticationFilter.java:17-48 (sibling filter)"
+  - "IngestionDataEntitiesFilter.java:41 (resolveToken — Bearer-only)"
+cross_references:
+  - "F-008"
+  - "F-006"
+  - "DOC-NNN candidate: S2S+ingestion-filter combined behaviour undocumented"
+proposed_action: |-
+  Test matrix over (auth.s2s.enabled × auth.ingestion.filter.enabled × X-API-Key × Authorization-Bearer-token). For each combination, assert the expected behaviour. Key cases: (a) both enabled + X-API-Key only → 401 Token is missed (current behaviour, undocumented); (b) both enabled + Bearer-token only → 2xx (filter satisfies via its own check); (c) both enabled + both headers → 2xx; (d) only S2S enabled + X-API-Key → 2xx (filter unregistered, S2S permits); (e) only ingestion-filter + Bearer → 2xx. Document the combined matrix as part of the assertion.
+batch: 2026-05-19-O
+feature_id: F-008

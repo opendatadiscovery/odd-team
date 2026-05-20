@@ -1,0 +1,12 @@
+- **REFACTOR-026**: LSN-001 reactivation — LOCAL attachment storage default writes to ephemeral `/tmp/odd/attachments`; container restart wipes all uploaded files
+  - **Category**: buggy-default
+  - **Surfaced by**:
+    - `odd-platform__yaml__application_yml__config-prefix__attachment.md:bugs_limitations_corner_cases.[0]` (severity HIGH)
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityAttachmentController.md:bugs_limitations_corner_cases.[4]` (related)
+    - `concepts.yaml:entities[Attachment].performance_aggregate.weaknesses.[0]` (severity HIGH)
+  - **Statement**: `application.yml:218-219` ships `attachment.local.path: /tmp/odd/attachments`. Kubernetes pod restart, Docker `docker stop`/`docker rm`, and most container schedulers wipe `/tmp` on container lifecycle events. The live doc page documents this and recommends `/var/lib/odd/attachments` + a persistent volume; the YAML still ships the ephemeral default. This is the canonical retrospective for the entire workspace's "danger of unsafe defaults" line.
+  - **Evidence**: `application.yml:218-219` + `LocalFilePathConstructor.java:14-23` + `retrospectives/LSN-001-attachment-ephemeral-default.md`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-012 (attachment-storage `@ConditionalOnProperty` boot-time wiring) does NOT defend the ephemeral default — the ADR is about the *wiring mechanism*, not the *path value*. The default path is a gap; the maintainer didn't decide `/tmp/odd/attachments` was a safe production default.
+  - **Proposed remedy**: Change `application.yml:218-219` default to `/var/lib/odd/attachments` (matches the live doc). Update Helm chart / Docker Compose examples to declare the volume mount. Update LSN-001 retrospective with the post-fix state.
+  - **Severity rationale**: HIGH — production-data-loss; the canonical case the entire workspace exists to catch.
+  - **Suggested backlog grouping**: `Attachment integrity sprint` (priority 1)

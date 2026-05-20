@@ -1,0 +1,180 @@
+name: Activity Table Partitioning
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Operational concept covering the range-partitioning lifecycle of the
+  `public.activity` table — partition WIDTH set by `odd.activity.partition-period`
+  (default 30 days; each partition spans 2× the period for deliberate forward-overlap),
+  CREATE driven by `ActivityTablePartitionManager` extending `AbstractPartitionManager`,
+  orchestrated by `PostgreSQLPartitionCreationJob` at boot (under Postgres advisory
+  lock id `partition.advisory-lock-id` default 90) AND nightly via Spring `@Scheduled(cron="0
+  1 0 * * *")` (under ShedLock `partitionCreationJob` with lockAtLeastFor=10m / lockAtMostFor=10m).
+  **No retention/DROP path** — the activity table grows monotonically; `PartitionService.dropPartition`
+  + `getEmptyPastPartitions` exist on the service interface but are never invoked
+  for this table. Sibling `MessageTablePartitionManager` (under `@ConditionalOnDataCollaboration`)
+  uses the same pattern for the messages table. vocabulary_status: codebase-anchored,
+  doc-side-partially-covered (the partition-period config key is documented at `/configuration-and-deployment/odd-platform#metric-storage-backend`
+  adjacent — verified WebFetch 2026-05-10 — but the doc claim ''retention and partitioning
+  are controlled by'' is INCORRECT: setting controls WIDTH only).'
+vocabulary_status: codebase-anchored, doc-side-partially-covered
+axes_present:
+- config_prefixes
+nodes:
+- odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
+contributors:
+- 'ActivityTablePartitionManager@L11: entities[ActivityTablePartitionManager, AbstractPartitionManager,
+  PartitionManager, PartitionService, PostgreSQLPartitionCreationJob, TablePartition,
+  Tables.ACTIVITY]; operations[inject-partition-period, create-partition-if-not-exists,
+  append-rolling-partition, boot-time-partition-init, nightly-cron-partition-refresh,
+  acquire-advisory-lock, acquire-shedlock]; invariants[2x WIDTH-to-CADENCE ratio;
+  advisory-lock-90 boot-time + ShedLock nightly; silent-fail catch + continue; no
+  DROP path; partition naming `{tableName}_{yyyyMMdd}_{yyyyMMdd}` parser-coupled]'
+evidence:
+- ActivityTablePartitionManager@L11.md:concepts.entities + concepts.operations + concepts.invariants
+- ActivityTablePartitionManager@L11.md:implicit_adrs.[0-3] (2x WIDTH; dual-lock boot+cron;
+  List<PartitionManager> discovery; silent catch+continue)
+- ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0-6]
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant: []
+  ingestion_filter_relevance: N/A
+  authorization_consistency:
+    verdict: N/A
+    detail: Partition-lifecycle code, not HTTP-surface. `@Component` bean wired unconditionally;
+      runs in Spring scheduling context.
+  owner_scoping:
+    verdict: N/A
+    detail: DDL-surface, not data-row-surface. No caller-user context inside `createPartitionsIfNotExists`.
+  strengths:
+  - 'Dual-mechanism concurrency safety: Postgres advisory lock id `90` at boot, ShedLock
+    `partitionCreationJob` with 10m hold at nightly cron — defence-in-depth against
+    multi-instance races on CREATE TABLE'
+  - Spring `List<PartitionManager>` collection injection is the extensibility seam
+    — adding a new table-partition manager only requires creating a new `@Component`
+    extending AbstractPartitionManager
+  - Default partition WIDTH (`:30`) is in the `@Value` annotation itself — operator
+    who unsets the key still gets sensible behaviour
+  weaknesses:
+  - '**Partition creation requires CREATE TABLE privilege on `public` schema** — deployment
+    doc does not surface this requirement. Operator running ODD against a managed
+    Postgres with least-privileged DB role (INSERT/SELECT but no DDL) fails partition
+    creation at boot, logs ERROR, silently degrades. Deployment-pre-req documentation
+    gap with security-policy implications. Severity MEDIUM (ActivityTablePartitionManager@L11.md:security.known_security_gaps.[0])'
+  - No audit log on partition CREATE / DROP operations — unlike data-mutation paths
+    covered by `@ActivityLog`, schema-level DDL is silent. Debug-level log line only.
+    Severity LOW (ActivityTablePartitionManager@L11.md:security.known_security_gaps.[1])
+  - Boot-time advisory-lock path has NO `:default` for `partition.advisory-lock-id`
+    — `@Value("${partition.advisory-lock-id}")` carries no fallback. Operator who
+    removes the key from customised application.yml fails bean wiring at boot. Docs
+    do NOT list this key. Severity LOW (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[5])
+  cross_file_inconsistencies: []
+  contributing_files:
+  - ActivityTablePartitionManager@L11.md
+  evidence:
+  - ActivityTablePartitionManager@L11.md:security.known_security_gaps.[0,1]
+  - ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[5]
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - Boot-time `@PostConstruct` blocks application startup until partition advisory
+    lock is acquired AND all partition managers complete. Multi-instance deployment
+    where a slow leader holds lock 90 makes follower instances unable to reach readiness
+    probe until lock release — startup latency unbounded under contention
+  - Nightly cron at `00:01` local-server-time, once per 24h per ShedLock-electable
+    instance. 10m lock window prevents intra-instance re-fire and inter-instance double-fire
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-shot per cycle. Each manager's createPartitionsIfNotExists issues
+      a small fixed number of CREATE TABLE statements (typically 0-1 per cycle, since
+      the previous cycle covered the next-period window). Synchronous JDBC, not reactive.
+  scaling_shape:
+    verdict: STATEFUL_LOCKED
+    detail: Postgres advisory lock id 90 is a global serialisation point at boot.
+      ShedLock `partitionCreationJob` is a global serialisation point at nightly cron.
+      Adding a third partition manager would serialise behind activity + message managers.
+      Advisory-lock-id values managed by convention, not central registry.
+  strengths:
+  - Postgres-advisory-lock and ShedLock both use Postgres as the coordination point
+    — preserves Postgres-as-only-dependency posture
+  - '@PostConstruct + @Scheduled dual-execution path covers boot AND nightly without
+    external scheduler'
+  - DDL `CREATE TABLE IF NOT EXISTS` is idempotent — re-running the same partition
+    window is safe
+  weaknesses:
+  - '**Unbounded monotonic growth of `public.activity`** — no DROP, no retention,
+    no cleanup (cross-references Activity Feed concept''s weakness). Severity HIGH
+    at scale (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0]).
+    **Now 2-sidecar primary-source confirmed in batch 2026-05-12D**: HousekeepingTTLProperties
+    has exactly three TTL fields (`resolved_alerts_days`, `search_facets_days`, `data_entity_delete_days`)
+    and NO `activity*Days` field. The only activity-touching housekeeping bean is
+    `ActivityEmptyPartitionsHousekeepingJob` which drops EMPTY past partitions only
+    (`isPartitionEmpty` at PartitionServiceImpl.java:133-141) — partitions with even
+    one row are retained indefinitely. Drift confirmed from two angles: partition-WIDTH
+    side AND housekeeping-coverage side. Live docs page''s ''retention and partitioning''
+    claim is unsupported by the code. (HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[0]
+    — drift CONFIRMED from second angle)'
+  - '**Silent-fail on CREATE failure** — log ERROR + continue. Severity HIGH (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[2])'
+  - '**No `@Min(1)` validation on `partition-period`** — `0` silently skips creation;
+    negative values fail Postgres at CREATE time. Severity MEDIUM (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[1])'
+  - '**No Micrometer / health-check observability** on partition lifecycle — operators
+    have no metric to alert on ''partition creation has been failing silently for
+    30 days''. Severity MEDIUM (ActivityTablePartitionManager@L11.md:performance.known_performance_gaps.[1])'
+  - '**Boot-time partition init blocks application readiness** — no async / background
+    variant. Severity LOW under normal operation (ActivityTablePartitionManager@L11.md:performance.known_performance_gaps.[0])'
+  - '**Tables.ACTIVITY hardcoded to public schema** — `PartitionServiceImpl.DEFAULT_SCHEMA
+    = "public"`. Multi-tenant or schema-isolated deployments not supported. Severity
+    LOW (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[3])'
+  - '**Partition naming parser-coupled** — split-on-underscore expects exactly 3 parts;
+    manually-created partitions with other names crash the parser. Severity LOW (ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[4])'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - ActivityTablePartitionManager@L11.md
+  evidence:
+  - ActivityTablePartitionManager@L11.md:performance.hot_paths
+  - ActivityTablePartitionManager@L11.md:performance.known_performance_gaps.[0-2]
+  - ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0-4]
+notes: 'Activity Table Partitioning is the OPERATIONAL counterpart to the
+
+  Activity Feed concept — Activity Feed is the read surface, this is
+
+  the durability surface. The concept also covers the sibling
+
+  MessageTablePartitionManager (DataCollaboration messages table) by
+
+  pattern. main-concepts.md does not name "Partition" or "Partitioning"
+
+  as a canonical term; the operator-facing reference at
+
+  `/configuration-and-deployment/odd-platform#activity-feed-partitioning-odd-activity-partition-period`
+
+  documents the partition-period config but mis-describes its effect
+
+  (claims retention; actually width-only) and omits coupled keys
+
+  (partition.advisory-lock-id). Three high-priority DOC-NNN candidates
+
+  flow from this concept: (a) correct the retention claim on the
+
+  activity-feed feature page, (b) add `partition.advisory-lock-id` +
+
+  DB-role-privilege requirements to the operator reference, (c) add
+
+  operational observability guidance (the partition-creation failure
+
+  mode is currently invisible).
+
+
+  Batch 2026-05-12D adds 2-sidecar primary-source triangulation for the
+
+  activity-retention-drift weakness — HousekeepingTTLProperties confirms
+
+  that no `activity*Days` field exists ANYWHERE in the codebase; the only
+
+  activity-touching housekeeping path requires partitions to already be
+
+  empty before dropping. REFACTOR-085 is now confirmed from two angles
+
+  and surfaced as a separate cross-cutting invariant ("Retention claim
+
+  vs code drift").
+
+  '

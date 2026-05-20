@@ -1,0 +1,133 @@
+name: GenAI Assistant
+canonical_in_docs: true
+canonical_candidate: false
+description: Opt-in proxy from a single platform endpoint (`POST /api/genai/ask`)
+  to an external AI service the operator runs. The platform does not embed an LLM.
+  API-only today (no in-app UI affordance). Three-key configuration (`genai.enabled`
+  request-time gate, `genai.url` + `genai.request_timeout` baked into genAiWebClient
+  at startup) (GenAIController + GenAIProperties sidecars; main-concepts.md `## AI
+  aspects` names this as 'GenAI assistant').
+axes_present:
+- controllers
+- config_prefixes
+nodes:
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController
+- odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:GenAIProperties
+contributors:
+- 'GenAIController: entities[GenAIRequest, GenAIResponse, external genai service]'
+- 'GenAIProperties: entities[GenAIProperties (typed config POJO), genai.* YAML namespace,
+  genAiWebClient Spring bean]'
+evidence:
+- GenAIController.md:concepts.entities.[GenAIRequest, GenAIResponse]
+- GenAIProperties.md:concepts.entities.[GenAIProperties, genai.* namespace, genAiWebClient]
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - DISABLED
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: 'GenAIController has no @PreAuthorize, no programmatic permissionService.hasPermission(...)
+      call. Generated GenaiApi interface has zero authorization annotations. SecurityConstants
+      has no SECURITY_RULES entry for `/api/genai/ask` — falls through to `pathMatchers("/**").authenticated()`.
+      Net: any authenticated user under LOGIN_FORM/OAUTH2/LDAP can invoke the LLM
+      proxy; under auth.type=DISABLED it is anonymously reachable.'
+  owner_scoping:
+    verdict: N/A
+    detail: Endpoint takes free-form prompt, returns LLM answer; does not query catalog,
+      filter by owner, or associate output with any DataEntity. Owner scoping is not
+      a meaningful concept here. Relevant scoping question is 'should arbitrary authenticated
+      users be allowed to call this endpoint?'
+  strengths:
+  - 'Disabled-by-default — `application.yml:18` ships `genai.enabled: false` explicitly
+    (visible to operators reading YAML, not just an absence)'
+  - Live config-doc warning admonition explicitly flags silent-misconfiguration scenario
+    (`genai.enabled=true` with unset url/timeout)
+  - Live feature page acknowledges 'thin proxy' stance and 'Injection concerns fall
+    to your external service implementation'
+  weaknesses:
+  - Prompt-injection from authenticated platform users → external LLM is unmitigated
+    at platform boundary — `GenAIServiceImpl.java:43` forwards `genAIRequest.body`
+    verbatim, no length cap, no character filter, no system-prompt overlay (severity
+    HIGH)
+  - Outbound URL operator-supplied via `genai.url` with NO allowlist, NO scheme check,
+    NO SSRF guard; `WebClientConfiguration.java:28` baseUrl(...) without validation;
+    an attacker landing config injection elsewhere can pivot the platform's egress
+    (severity HIGH)
+  - Under auth.type=DISABLED, `/api/genai/ask` is anonymously reachable; no fail-closed
+    behaviour, no startup warning when DISABLED + genai.enabled=true (severity HIGH)
+  - No outbound authentication sent to {genai.url} — no defaultHeader(HttpHeaders.AUTHORIZATION,
+    ...), no apiKey/token field on GenAIProperties; operators must put external service
+    on a trusted network or front it with their own auth proxy (severity MEDIUM)
+  - 'No per-user / global rate limit, no abuse-detection — authenticated user can
+    issue unbounded prompts; combined with no @Size on GenAIRequest.body (only the
+    implicit spring.codec.max-in-memory-size: 20MB ceiling) this is DoS + unbounded-cost
+    surface (severity MEDIUM)'
+  - Neither prompt nor response is logged for audit/abuse-investigation — controller
+    has no @Slf4j, GenAIServiceImpl's @Slf4j-provided log is unused (severity MEDIUM)
+  - No @PreAuthorize at controller; no `GENAI_USE` Permission in vocabulary — every
+    authenticated user can consume external AI quota with no role gate (severity MEDIUM)
+  cross_file_inconsistencies:
+  - Both sidecars (GenAIController + GenAIProperties) confirm zero authorization at
+    runtime AND at config-binding layer; no cross-file disagreement
+  contributing_files:
+  - GenAIController.md
+  - GenAIProperties.md
+  evidence:
+  - GenAIController.md:security.known_security_gaps.[0-6]
+  - GenAIProperties.md:security.known_security_gaps.[0-3]
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - POST /api/genai/ask — one synchronous outbound HTTP call to {genai.url}/query_data
+    per request; latency floor is round-trip to external LLM (typically seconds-to-minutes);
+    configured timeout is in MINUTES, not seconds — GenAIController + GenAIProperties
+  - genAIProperties.isEnabled() re-read on every request (cheap volatile field read
+    on singleton, but worth noting it's request-time not startup-time) — GenAIServiceImpl
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-prompt-per-request only; no batch / multi-prompt endpoint, no streaming
+      response (no SSE / chunked / Flux<GenAIResponse> variant). Consumer needing
+      10 LLM answers issues 10 sequential POST calls.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless controller (single GenAIService field). Each platform instance
+      fires its own outbound — no shared rate limiter, no distributed concurrency
+      cap, no token bucket. N replicas behind a load balancer multiply request rate
+      to external service by N. genAiWebClient bean is per-instance; config changes
+      require Platform restart.
+  strengths:
+  - Single shared genAiWebClient bean (Reactor Netty HttpClient.create() + WebClient.builder())
+    — no per-request client construction
+  - Reactive Mono signature throughout — non-blocking on server side
+  - Stateless config bean (GenAIProperties) — instances scale horizontally without
+    coordination
+  weaknesses:
+  - request_timeout configured in MINUTES, primitive `int` default 0 → `Duration.ofMinutes(0)`
+    zero-duration timeout when operator sets `genai.enabled=true` without setting
+    request_timeout. Every request fires immediately as ReadTimeoutException with
+    confusing 'Gen AI request take longer that 0 min' message (LSN-002-class concern,
+    severity HIGH)
+  - No retry / exponential backoff / circuit breaker on outbound — single transient
+    blip surfaces as 500 to caller
+  - No outbound concurrency cap declared on genAiWebClient — relies on Reactor Netty
+    default ConnectionProvider (default pendingAcquireTimeout=45s)
+  - No prompt-result caching — identical prompts re-fan-out to external LLM (cost
+    amplification)
+  - No request-throughput observability at controller or service layer
+  - No max-in-memory-size override on genAiWebClient — uses Spring WebFlux default
+    256KB; large LLM responses may truncate
+  - 'Hot-reload not supported: genai.url + genai.request_timeout baked into bean at
+    startup; operators cannot tune timeout without downtime'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - GenAIController.md
+  - GenAIProperties.md
+  evidence:
+  - GenAIController.md:performance.known_performance_gaps.[0-5]
+  - GenAIProperties.md:performance.known_performance_gaps.[0-3]
+  - GenAIProperties.md:bugs_limitations_corner_cases.[0,1] (silent misconfiguration,
+    requestTimeout=0)

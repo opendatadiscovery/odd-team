@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-670
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveDataSourceRepositoryImpl"
+pillars_affected: [P-10]
+surfaced_by:
+  - "ReactiveDataSourceRepositoryImpl.md:concepts.invariants.[5] (getIdByOddrnForUpdate uses forUpdate() — SQL-tier row lock for ingestion serialisation)"
+  - "ReactiveDataSourceRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[0] (getIdByOddrnForUpdate returns row-locked id; concurrent calls BLOCK)"
+behaviour: |-
+  **The most operationally load-bearing behaviour of this repository — the `SELECT … FOR UPDATE` row lock acquisition in `getIdByOddrnForUpdate` (lines 94-101) — has zero test coverage.** The lock is held until the surrounding `@ReactiveTransactional` commits or rolls back, serialising ingestion against concurrent UI deletes of the same datasource AND against concurrent collector re-registrations of the same datasource. Without this lock, the `IngestionService`'s downstream `persistDataEntities` flow (`IngestionServiceImpl.java:65-74`) could be racing the operator's delete or the collector's UPSERT for the same data_source_id. The current `DataSourceRepositoryImplTest` (260+ lines) covers happy-path read/write/delete round-trips but does NOT pin the row-lock semantic. A regression that accidentally removed `.forUpdate()` from line 98 would compile, pass every existing test, AND silently introduce a race window in the ingestion pipeline that only manifests under concurrent load against the same datasource — exactly the kind of bug that ships and surfaces months later in production when a customer ingestion volume scales up.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/DataSourceRepositoryImplTest.java (no row-lock test)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataSourceRepositoryRowLockSemanticTest.java"
+  name: "getIdByOddrnForUpdate_secondConcurrentCallBlocks_pinsForUpdateLockAcquisition"
+evidence:
+  - "ReactiveDataSourceRepositoryImpl.md says (concepts.invariants.[5]): 'getIdByOddrnForUpdate(oddrn) (lines 94-101) uses forUpdate() — a SQL-tier SELECT … FOR UPDATE row lock held until the surrounding @ReactiveTransactional commits or rolls back. This serialises ingestion against concurrent UI deletes of the same datasource AND against concurrent collector re-registrations of the same datasource.'"
+  - "ReactiveDataSourceRepositoryImpl.java:94-101 (the for-update method)"
+  - "IngestionServiceImpl.java:65-74 (the caller — `getIdByOddrnForUpdate` is the FIRST step of POST /ingestion/entities)"
+cross_references:
+  - "TEST-GAP-661 (partial-unique-rollback — sibling integration concern)"
+  - "F-008 (P-10:F-001 Batch Ingestion) — `single_transaction_per_batch_no_per_entity_isolation` drift facet"
+  - "REFACTOR-NNN candidate: add `// SQL-tier row lock — DO NOT remove .forUpdate() without restructuring the ingestion serialisation strategy` comment at line 98"
+proposed_action: |-
+  Testcontainers integration test (two concurrent transactions). (a) Seed a live datasource with oddrn `//snow/prod`. (b) Open TX-A; call `getIdByOddrnForUpdate("//snow/prod")` — acquires row lock; hold the TX open with a slow downstream operation (e.g. `Mono.delay(2 seconds)`). (c) From TX-B (separately), call `getIdByOddrnForUpdate("//snow/prod")` — assert this Mono BLOCKS for ~2 seconds until TX-A commits. (d) After TX-A commits, TX-B unblocks and returns the same id. (e) Pin the lock semantic with a comment: `// REGRESSION-PIN — Removing .forUpdate() from line 98 would compile and pass happy-path tests but introduce a race in the ingestion pipeline. This test asserts the lock acquisition.` (f) Pair with a soft-delete variant — TX-A soft-deletes the datasource while TX-B is waiting; TX-B unblocks and gets `Mono.empty()` (the row no longer matches deleted_at IS NULL).
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001"]
+batch: 2026-05-20-R
+feature_id: F-008

@@ -1,0 +1,365 @@
+name: Role (Authorization)
+canonical_in_docs: true
+canonical_candidate: false
+description: |-
+  A named bundle of Policy references that can be attached to an Owner
+  (and through the user→owner mapping, to authenticated users) to grant
+  authorization permissions. Two predefined roles seeded by V0_0_56:
+  `Administrator` (all permissions on every resource type) and `User`
+  (regular user with no permissions by default). Custom roles are
+  created via `POST /api/roles` (gated by `ROLE_CREATE` NO_CONTEXT,
+  SecurityConstants.java:169) and bound to Policies via `role_to_policy`.
+  The platform's authoritative mapping from policy graphs to authenticated
+  subjects. Canonical doc anchor:
+  `configuration-and-deployment/enable-security/authorization/roles`
+  (200, 2026-05-12).
+
+  **STRENGTHENED BATCH N (2026-05-19N) — REPOSITORY-LAYER PRIMARY SOURCE
+  NOW PINNED.** ReactiveRoleRepositoryImpl
+  (`repository/reactive/repository/ReactiveRoleRepositoryImpl.java`,
+  94 lines) adds exactly three custom methods that return the role-with-
+  joined-policies view — `getDto(id)`, `listDto(page, size, nameQuery)`,
+  `getByName(name)` — each issuing a `SELECT role.* + jsonArrayAgg(POLICY.*)`
+  aggregated through `ROLE_TO_POLICY`. Standard CRUD is inherited from
+  `ReactiveAbstractSoftDeleteCRUDRepository` (lines 28-29); soft-delete
+  means `delete(id)` is an UPDATE setting `deleted_at = NOW()`, never a
+  `DELETE FROM`, and every `get` / `list` is auto-scoped to
+  `WHERE deleted_at IS NULL`. The three custom methods DO carry the
+  soft-delete filter on the ROLE table — `addSoftDeleteFilter(ROLE.ID.eq(id))`
+  at lines 47, `listCondition(nameQuery)` at line 56, and
+  `addSoftDeleteFilter(ROLE.NAME.eq(name))` at line 89 — but NONE of
+  them filter `POLICY.deleted_at IS NULL` on the joined policy table.
+
+  **NEW HIGH-SEVERITY FINDING BATCH N**: the SYMMETRIC MIRROR of
+  batch-H's ReactivePolicyRepositoryImpl.getRolesPolicies finding. Both
+  repositories exhibit the SAME bug class — a soft-deleted Policy with
+  surviving `role_to_policy` bindings shows up aggregated into the
+  policy_relations JSON returned by getDto/listDto/getByName. Combined
+  with no `ON DELETE CASCADE` on the role_to_policy FK
+  (V0_0_55__add_policies_and_roles.sql:52), a UI screen rendering a
+  Role's bound policies displays soft-deleted policy entries to operators
+  with no indication that the policy is gone — AND the in-memory
+  permission-extractor chain computes permissions FROM those
+  soft-deleted policies' statements if the dto view is consumed
+  transitively. The single-line fix is symmetric across BOTH
+  repositories: `AND policy.deleted_at IS NULL` in the LEFT JOIN's
+  ON-clause.
+
+  The DB-side counterpart is a partial UNIQUE INDEX `role_name_unique
+  ON role(name) WHERE deleted_at IS NULL`
+  (`V0_0_55__add_policies_and_roles.sql:42`, recreated by
+  `V0_0_58__rename_constraints.sql:3-9` then by
+  `V0_0_64__remove_is_deleted_field.sql:88-90`) — the SQL-layer
+  recreation-after-soft-delete invariant that the controller-layer
+  `Administrator`-name asymmetry (batch E) depends on. **Batch N
+  STRENGTHENS the Administrator-name-asymmetry finding**: the
+  partial-unique-index design MAKES the create-side gap exploitable —
+  if a direct DB UPDATE soft-deletes the seeded Administrator row
+  (bypassing the service-layer protection on .delete), the index frees
+  the name AND `RoleServiceImpl.create` succeeds with attacker-chosen
+  policy bindings (DRIFT-FACET-C in the batch-N sidecar's
+  bugs_limitations_corner_cases). The schema is correct; the gap is at
+  the service create path.
+axes_present:
+- controllers
+- repositories_reactive
+nodes:
+- odd-platform java RoleController controller-method:createRole
+- odd-platform java PermissionController controller-method:getResourcePermissions
+- odd-platform java OwnerController controller-method:createOwner
+- odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
+contributors:
+- 'RoleController.createRole: entities[Role (id, name, policies), RoleFormData (request
+  body: name + policies[]), RolePojo, RoleDto, UserProviderRole.ADMIN/.USER (predefined
+  seeded roles), ROLE_CREATE permission (PolicyPermissionDto)]; operations[accept
+  POST /api/roles, map to RolePojo, INSERT role_to_policy rows]'
+- 'PermissionController.getResourcePermissions: RoleService.getCurrentUserRoles is
+  the policy-resolution path — `PolicyServiceImpl.java:103-107` flattens roles → policies
+  → statements identical to the mutation enforcer'
+- 'OwnerController.createOwner: RoleFormData carries an optional `roles[]`; service
+  `ownerToRoleRepository.createRelations(ownerId, roleIds)` writes one row per role
+  per new Owner'
+- |-
+  ReactiveRoleRepositoryImpl (batch N — STRENGTHENS — SQL layer):
+  entities[RolePojo, RoleRecord, ROLE jOOQ table, ROLE_TO_POLICY,
+  POLICY, PolicyPojo, RoleDto, role_name_unique partial unique index]
+  + operations[getDto, listDto, getByName + inherited CRUD]
+  + concepts.invariants[soft-delete filter on ROLE side correct;
+  POLICY side missing deleted_at filter — DRIFT-FACET-A symmetric
+  mirror of batch H; role_name_unique partial unique index; CTE-based
+  listDto query prevents policy multiplicity from inflating page
+  boundaries; single-statement INSERT/UPDATE without @ReactiveTransactional
+  at repository tier]
+  + implicit_adrs[6 ADRs — soft-delete via deleted_at; partial unique
+  index enables recreation-after-soft-delete; ExceptionUtils
+  centralised translation; repository CRUD is role-AGNOSTIC; jsonArrayAgg
+  single-query density; CTE-then-join pattern for paginated dto]
+  + bugs_limitations_corner_cases[DRIFT-FACET-A — symmetric Policy
+  mirror HIGH; DRIFT-FACET-B — forensic-silence drift HIGH;
+  DRIFT-FACET-C — name-create-path asymmetry drift HIGH;
+  DRIFT-FACET-D — service-bypassing-update drift MEDIUM]
+evidence:
+- createRole.md:concepts.entities + concepts.invariants.[0-4]
+- createRole.md:implicit_adrs.[0] (uniform SECURITY_RULES gating) + implicit_adrs.[1]
+  (predefined-name mutation-only protection) + implicit_adrs.[2] (rewrite-on-update
+  / insert-on-create) + implicit_adrs.[3] (ReactiveTransactional)
+- getResourcePermissions.md:dependencies_semantic.couples-to (RoleService.getCurrentUserRoles)
+- createOwner.md:concepts.entities (OwnerToRole link side effect) + dependencies_semantic.couples-to
+  (ownerToRoleRepository.createRelations)
+- |-
+  ReactiveRoleRepositoryImpl.md (batch N — NEW SQL-LAYER PRIMARY
+  SOURCE):
+    concepts.invariants.[every CRUD read auto-scoped to deleted_at IS NULL
+    via addSoftDeleteFilter; three custom JOIN methods miss
+    policy.deleted_at filter — symmetric mirror of batch H finding;
+    role-name uniqueness enforced at DB via partial unique index;
+    soft-delete + partial unique index together enable recreation-
+    after-soft-delete with the seeded Administrator/User names freed
+    if the seeded rows are ever soft-deleted; CTE-based listDto query
+    correctly decouples row-multiplicity from page size]
+    + implicit_adrs.[0,1,2,3,4,5] (6 ADRs)
+    + bugs_limitations_corner_cases.[DRIFT-FACET-A through D]
+    + downstream_side_effects.[the "no-audit-log-on-RBAC-mutations"
+    4-sidecar pattern is now CONFIRMED — Role-repo emits ZERO
+    security-relevant log lines, SYMMETRIC to Policy-repo batch H]
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  - S2S
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      SECURITY_RULES gates ROLE_CREATE / ROLE_UPDATE / ROLE_DELETE at
+      lines 169-173 (NO_CONTEXT MANAGEMENT-tier). GET /api/roles is
+      permitAll under SECURITY_RULES — any authenticated user can list
+      roles. Under `auth.type=DISABLED` the gate is INERT
+      (DisabledAuthSecurityConfiguration). Under `auth.type=LOGIN_FORM`
+      the AuthorizationCustomizer is NOT wired and every form-authenticated
+      user is ADMIN with effective ROLE_CREATE. Under any non-DISABLED
+      mode with `auth.s2s.enabled=true`, any X-API-Key caller is injected
+      as ADMIN (S2sAuthenticationFilter.java:31-39) and holds ROLE_CREATE
+      globally — REFACTOR-108.
+      **STRENGTHENED batch N — SQL primary source confirms**:
+      ReactiveRoleRepositoryImpl has NO authorization annotations
+      whatsoever; defence-in-depth is null; a direct service-bypass
+      invocation reaches the SQL with no caller-ID check. Authorization
+      is the upstream controller / service layer's responsibility. The
+      repository CRUD is role-AGNOSTIC at the persistence layer
+      (implicit_adrs.[4]) — consistent with the policy-AGNOSTIC pattern
+      from batch H.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      Roles are platform-global; not owned by any Owner. They ARE the
+      binding between Permission bundles and Owners. GET /api/roles is
+      permitAll under SECURITY_RULES (no list-roles gate).
+  strengths:
+  - '`@ReactiveTransactional` wraps the create flow (RoleServiceImpl.java:50) — no
+    orphan role rows without their policy relations (createRole.md:implicit_adrs.[3])'
+  - Partial-unique partial-index `role_name_unique` on `role(name) WHERE deleted_at
+    IS NULL` (V0_0_55__add_policies_and_roles.sql:42) — DB-level name uniqueness enforcement
+  - Role-policy relation is rewritten ENTIRELY on every update (`deleteRoleRelationsExcept`
+    then `createRelations`); INSERT-only on create. Edges owned by Role, not Policy
+    (createRole.md:implicit_adrs.[2])
+  - |-
+    **NEW batch N — centralised friendly-error translation via
+    ExceptionUtils.translateDatabaseException** (JooqReactiveOperations.java:41)
+    — every R2DBC query maps `DataAccessException` →
+    `UniqueConstraintException` with per-constraint human-readable
+    message (e.g. ROLE_NAME_UNIQUE → "Role with this name already
+    exists"). Consistent with the batch-H Policy-side translation.
+    (ReactiveRoleRepositoryImpl.md:implicit_adrs.[2])
+  - |-
+    **NEW batch N — Soft-delete-via-deleted_at with consolidated
+    schema**. Role has cleanly consolidated on `deleted_at` as the
+    canonical soft-delete predicate — V0_0_64 DROPPED the redundant
+    `is_deleted` boolean column. Cleaner schema than batch-H Policy
+    (where `is_deleted` remains in the DDL as dead schema).
+    (ReactiveRoleRepositoryImpl.md:bugs_limitations_corner_cases.[7])
+  - |-
+    **NEW batch N — listDto CTE pagination correctness**. The CTE-then-join
+    pattern correctly decouples row-multiplicity from page size. A role
+    with 10 policies appears as ONE row in the result Page (not 10
+    rows). Same pattern as batch-K TermServiceImpl + batch-I
+    DataEntityServiceImpl.
+    (ReactiveRoleRepositoryImpl.md:implicit_adrs.[5])
+  weaknesses:
+  - '**Administrator-name reservation asymmetry on create (HIGH)** — `update` (RoleServiceImpl.java:67-69)
+    + `delete` (lines 81-84) check `UserProviderRole.values()`; `create` (lines 51-61)
+    does NOT. If the seeded Administrator row is hard-deleted (e.g. direct SQL bypassing
+    soft-delete), this endpoint can recreate a row named `Administrator` with attacker-chosen
+    policies. The unique-index is the only fence and depends on the seeded row remaining
+    present. (createRole.md:security.known_security_gaps.[0]).
+    **STRENGTHENED batch N (DRIFT-FACET-C)**: the partial-unique-index
+    design `role_name_unique ... WHERE deleted_at IS NULL` MAKES the
+    gap exploitable — a direct DB UPDATE that soft-deletes the seeded
+    Administrator row leaves the name available; the service-layer
+    create path has NO name protection. The schema is correct; the
+    gap is at the service layer.
+    (ReactiveRoleRepositoryImpl.md:bugs_limitations_corner_cases.[DRIFT-FACET-C])'
+  - '**No audit log on role mutations (HIGH)** — `RoleServiceImpl.create/.update/.delete`
+    emit no `@Slf4j` log lines, publish no events, and insert into no audit table.
+    A hijacked admin can rewrite the authorization model invisibly. Activity feed
+    does NOT cover Role / Policy / Permission mutations. (createRole.md:security.known_security_gaps.[1]).
+    **NEW BATCH N — SQL PRIMARY SOURCE CONFIRMATION**: the Role repository
+    emits ZERO security-relevant log lines on any of {create, update,
+    delete}. Symmetric to Policy-repo batch H. The 3-sidecar pattern is
+    now 5-sidecar (Role-controller + Policy-controller + Owner-controller
+    + Policy-repo batch H + Role-repo batch N) at the SQL primary
+    source. The cross-batch concept catalog entry
+    `no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f`
+    is REFINED by this batch with a SECOND repository confirmation
+    (Role symmetric to Policy).
+    (ReactiveRoleRepositoryImpl.md:bugs_limitations_corner_cases.[DRIFT-FACET-B] +
+    downstream_side_effects)'
+  - '**Under `auth.type=DISABLED`, ROLE_CREATE is bypassed entirely (HIGH on DISABLED
+    deployments)** — combined with anonymous ADMIN principal under DISABLED, an attacker
+    can issue `POST /api/roles` with a custom Administrator-equivalent policy attached.
+    (createRole.md:security.known_security_gaps.[2])'
+  - '**Under LOGIN_FORM/OAUTH2/LDAP with `auth.s2s.enabled=true`, any X-API-Key holder
+    can create roles (HIGH — REFACTOR-108)** — S2sAuthenticationFilter.java:31-39
+    grants ADMIN globally, not scoped to ingestion. (createRole.md:security.known_security_gaps.[3])'
+  - |-
+    **NEW HIGH BATCH N — RBAC soft-delete persistence on Role
+    aggregation methods**. ReactiveRoleRepositoryImpl's THREE custom
+    dto methods (getDto / listDto / getByName) do NOT filter
+    `policy.deleted_at IS NULL` on the joined POLICY rows. A
+    soft-deleted Policy with surviving `role_to_policy` bindings
+    shows up aggregated into the `policy_relations` JSON returned to
+    the caller. SYMMETRIC MIRROR of batch-H's ReactivePolicyRepositoryImpl.getRolesPolicies
+    finding. Both repositories exhibit the bug class. Single-line fix
+    at each of FOUR sites (3 in Role-repo, 1 in Policy-repo) closes
+    the bug class.
+    (ReactiveRoleRepositoryImpl.md:concepts.invariants.[1] +
+    bugs_limitations_corner_cases.[DRIFT-FACET-A] +
+    rbac-soft-delete-persistence-role-policy-aggregation-symmetric-policy-mirror.yaml
+    NEW invariant batch N)
+  - '**No validation that policy ids reference live, non-soft-deleted Policies (MEDIUM)**
+    — FK-error surfaces as 500; soft-deleted Policy ids may still satisfy the FK depending
+    on `role_to_policy` semantics (unverified). (createRole.md:security.known_security_gaps.[4])'
+  - '**Role rows vs. LDAP / OAuth2 group mapping confusion (MEDIUM — doc gap)** —
+    LDAP admin-groups + OAuth2 admin claims map DIRECTLY to `UserProviderRole.ADMIN/.USER`,
+    NOT to platform Role rows. Operators reasonably expect a role named `admins` to
+    be auto-granted to LDAP users in `admin-groups`; it is not. (createRole.md:security.known_security_gaps.[7])'
+  - '**Case-sensitivity mismatch (LOW)** — delete uses `equalsIgnoreCase`; update
+    uses case-sensitive `.equals`. Inconsistent guard. (createRole.md:bugs_limitations_corner_cases.[case-sensitivity
+    mismatch])'
+  cross_file_inconsistencies:
+  - Role + Policy + Owner CRUD all share the same Administrator-name-on-update-but-not-create
+    asymmetry pattern AND the no-audit-log pattern. Catalog records both as cross-cutting
+    invariants. **STRENGTHENED batch N — symmetric Role-repo confirmation now anchors
+    the pattern at the SQL primary source for BOTH halves of the RBAC mutation surface.**
+  - Live `/authorization/roles` page describes Roles as 'useful for combining multiple
+    policies together' but does NOT document the `POST /api/roles` creation surface,
+    the ROLE_CREATE permission, the partial-unique-name index, the predefined-name
+    protection, the spec-vs-code 201-vs-200 drift, the audit-logging absence, or the
+    LDAP/OAuth2-group-mapping relationship.
+  - |-
+    **NEW batch N — three repository-doc-gaps from ReactiveRoleRepositoryImpl
+    docs_link_semantic.doc_drift_findings**:
+      REPOSITORY-DOC-GAP-A (mirrors batch-H REPOSITORY-DOC-GAP-A on
+      Policies): soft-delete-aware recreation invariant undocumented on
+      the Roles operator page;
+      REPOSITORY-DOC-GAP-B: the soft-deleted-policy aggregation behaviour
+      undocumented on the Roles page;
+      REPOSITORY-DOC-GAP-C: the create-side `Administrator`/`User` name
+      asymmetry undocumented on the Roles page.
+  contributing_files:
+  - createRole.md
+  - getResourcePermissions.md
+  - createOwner.md
+  - ReactiveRoleRepositoryImpl.md
+  evidence:
+  - createRole.md:security.known_security_gaps.[0-7]
+  - createOwner.md:dependencies_semantic.requires-runtime (owner_to_role table)
+  - |-
+    ReactiveRoleRepositoryImpl.md:bugs_limitations_corner_cases.[DRIFT-FACET-A
+    through D] + concepts.invariants.[1] + downstream_side_effects (no
+    log lines on the RBAC mutation path)
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+  - 'Single POST per role-creation: 3 DB calls (roleRepository.create → roleToPolicyRepository.createRelations(N
+    rows) → roleRepository.getDto). N = policies.length, typically 1-10 (createRole.md:performance.hot_paths.[0])'
+  - |-
+    **NEW batch N — Role.getByName on AUTHORIZATION HOT PATH**:
+    PolicyServiceImpl.getCurrentUserPolicies → RoleServiceImpl.getCurrentUserRoles
+    → roleRepository.getByName(role.getValue()) is invoked on EVERY
+    authorized HTTP request whose user has no explicit owner-attached
+    roles. The query is a 3-table JOIN (ROLE LEFT JOIN ROLE_TO_POLICY
+    LEFT JOIN POLICY) with jsonArrayAgg(policy.*). Sub-millisecond on
+    typical row counts (single-digit policies per role). No caching at
+    repository, service, or extractor level.
+    (ReactiveRoleRepositoryImpl.md:dependencies_semantic.coupling — the
+    AUTHORIZATION HOT PATH via getByName)
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: No batch-create endpoint; admin migrating 100 Roles issues 100 POSTs (createRole.md:performance.throughput_characteristics.[0])
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless controller; concurrent creates of the same name race at the
+      DB unique-index (createRole.md:performance.scaling_characteristics.[0])
+  strengths:
+  - Reactive Mono signature — non-blocking I/O preserved
+  - |-
+    **NEW batch N — jsonArrayAgg single-query density**. The dto-aggregation
+    methods use jsonArrayAgg(POLICY.asterisk()) to materialise the
+    policies-attached-to-a-role view in a SINGLE query rather than N+1
+    round-trips. Consistent across every Reactive*Repository that
+    returns a multi-table dto (Grep returned 16 files using the same
+    pattern).
+    (ReactiveRoleRepositoryImpl.md:implicit_adrs.[4])
+  weaknesses:
+  - No bulk-create endpoint (LOW)
+  - No upper bound on `RoleFormData.policies[]` size (components.yaml:3368-3379) —
+    a 10000-policy request produces 10000 INSERTs into role_to_policy in one transaction
+    (createRole.md:performance.known_performance_gaps.[1])
+  cross_file_inconsistencies: []
+  contributing_files:
+  - createRole.md
+  - ReactiveRoleRepositoryImpl.md
+  evidence:
+  - createRole.md:performance.known_performance_gaps.[0,1]
+  - ReactiveRoleRepositoryImpl.md:dependencies_semantic.coupling
+notes: |-
+  STRENGTHENED batch 2026-05-19N — REPOSITORY-LAYER PRIMARY SOURCE
+  PINNED. The 94-line ReactiveRoleRepositoryImpl is the structural
+  mirror of batch-H's ReactivePolicyRepositoryImpl — both adding exactly
+  custom dto JOIN methods on top of the inherited soft-delete CRUD; both
+  exhibit the SAME bug class on the LEFT JOIN against POLICY (missing
+  deleted_at filter); both forensically silent on the RBAC mutation
+  path; both have the partial-unique-index design that makes the
+  service-tier create-path name-asymmetry exploitable.
+
+  The symmetric pair (Role-repo + Policy-repo) now anchors the cross-batch
+  observations:
+    - no-audit-log-on-rbac-mutations: 4-sidecar at batches E + H + L,
+      now 5-sidecar at batch N (Role-repo confirms persistence-layer
+      silence)
+    - three-soft-delete-mechanisms-across-the-repository-layer: the
+      Role-repo extends the same ReactiveAbstractSoftDeleteCRUDRepository
+      base as Policy-repo
+    - repository-transactional-boundary-at-service-layer: Role-repo
+      confirms the no-@ReactiveTransactional convention at the
+      persistence layer
+
+  Anchored on `configuration-and-deployment/enable-security/authorization/roles`
+  live page (200, 2026-05-12). Live page omits API-creation guidance,
+  ROLE_CREATE Permission name, predefined-name protection rules,
+  spec-vs-code drift, audit-logging absence, and Role-row-vs-LDAP/OAuth-group
+  mapping. Five distinct doc-drift findings flow from this concept
+  (createRole.md:docs_link_semantic.doc_drift_findings.[0-4]).
+
+  **NEW batch N — THREE MORE doc-drift findings** from
+  ReactiveRoleRepositoryImpl.md:docs_link_semantic.doc_drift_findings:
+    REPOSITORY-DOC-GAP-A: soft-delete-aware recreation invariant
+      undocumented on the Roles operator page
+    REPOSITORY-DOC-GAP-B: the soft-deleted-policy aggregation behaviour
+      undocumented
+    REPOSITORY-DOC-GAP-C: create-side `Administrator` / `User` name
+      asymmetry undocumented at the operator surface

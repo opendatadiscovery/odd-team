@@ -1,0 +1,27 @@
+gap_id: TEST-GAP-620
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java IngestionController controller-method:createDataSourceEntity"
+pillars_affected: [P-10]
+surfaced_by:
+  - "createDataSourceEntity.md:concepts.invariants.[5] (Merge semantics on UPDATE: name + description ONLY)"
+  - "createDataSourceEntity.md:implicit_adrs.[2] (Re-registration is UPSERT by ODDRN with PARTIAL-MERGE semantics)"
+behaviour: |-
+  **RE-REGISTRATION PARTIAL-MERGE — only name + description are overwritten; everything else is PRESERVED.** `DataSourceIngestionServiceImpl.prepareForUpdate` (lines 74-92) is a hand-built shallow merger: it copy-constructs the existing `DataSourcePojo` and overwrites ONLY `name` + `description` from the new payload. The existing `connection_url`, `active` flag, `type`, `namespace_id`, `collector_id`, `token_id`, soft-delete flag, all timestamps, AND any custom fields — all PRESERVED. The trade-offs: (1) An operator who renames a datasource in the UI sees their rename OVERWRITTEN by the collector's payload (the collector wins on name and description). (2) A collector that genuinely needs to update `connection_url` (e.g. the source's hostname changed) CANNOT do so via this endpoint — only name and description are propagated. (3) A collector cannot 'take over' an existing datasource by registering with a new collector_id — the existing collector_id is preserved on update (DataSourceIngestionServiceImpl.java:86-88). The merge semantics are deliberately narrow but invisible to integration authors reading the live docs. Plus the namespace-from-COLLECTOR invariant compounds: a `namespace_name` field in the payload (the upstream Ingestion API contract has this field) is SILENTLY IGNORED — the Collector's namespace wins (DataSourceIngestionServiceImpl.java:106). NO test pins these merge contracts. A future refactor changing `prepareForUpdate` to overwrite `connection_url` from the payload would silently break operator UI edits.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceTest.java (6-case parameterized; covers existing-vs-new ODDRN partitioning but NOT the field-merge semantics, NOT the cross-collector takeover prohibition, NOT the namespace inheritance)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceMergeSemanticsTest.java"
+  name: "createDataSources_reRegistrationOnly_overwritesNameAndDescription_preservesEverythingElse"
+evidence:
+  - "createDataSourceEntity.md says (concepts.invariants.[5]): 'Merge semantics on UPDATE: DataSourceIngestionServiceImpl.prepareForUpdate (lines 74-92) preserves the existing DataSourcePojo and OVERWRITES only name + description from the new payload. The existing connection_url, active flag, type, namespace_id, collector_id, token_id, soft-delete flag, all created_at / updated_at timestamps — all preserved.'"
+  - "createDataSourceEntity.md says (implicit_adrs.[2]): 'Re-registration is UPSERT by ODDRN with PARTIAL-MERGE semantics (name + description only) — evidence: DataSourceIngestionServiceImpl.java:74-92 — confidence: MEDIUM (the consistent application of the same partial-merge to both create and update paths is evidence of intent; no comment / annotation defends the SPECIFIC field choices).'"
+  - "Source: DataSourceIngestionServiceImpl.java:74-92 (prepareForUpdate) + 86-88 (collector_id preserved) + 106 (namespace from collector)"
+cross_references:
+  - "F-008 (P-10:F-001 Batch Ingestion) drift facet partial_merge_semantics"
+  - "TEST-GAP-621 (cross-collector takeover prohibition — narrower facet)"
+proposed_action: |-
+  Add `DataSourceIngestionServiceMergeSemanticsTest` with three test methods: (1) re-register existing datasource with modified connection_url, type, active, namespace_name — assert ONLY name + description changed; (2) re-register with payload-side namespace_name set to a different namespace — assert namespace_id remains the COLLECTOR's namespace (collector wins); (3) UI-side rename then collector re-registration — assert the collector's name wins. Pins the current partial-merge contract; future enhancement that propagates connection_url breaks the test, forcing explicit re-authoring.
+batch: 2026-05-20-P
+feature_id: F-008

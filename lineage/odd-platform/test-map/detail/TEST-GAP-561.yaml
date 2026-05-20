@@ -1,0 +1,38 @@
+gap_id: TEST-GAP-561
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveUserOwnerMappingRepositoryImpl"
+  - "odd-platform java repository_reactive repository:ReactiveAlertRepositoryImpl"
+  - "odd-platform java repository_reactive repository:ReactiveActivityRepositoryImpl"
+  - "odd-platform java repository_reactive repository:ReactiveOwnerAssociationRequestRepositoryImpl"
+  - "odd-platform java repository_reactive repository:ReactiveOwnerRepositoryImpl"
+pillars_affected: [P-09, P-07, P-08]
+surfaced_by:
+  - "ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[1] (Cross-provider username row-duplication via OIDC_USERNAME-only JOINs)"
+  - "ReactiveUserOwnerMappingRepositoryImpl.md:docs_link_semantic.doc_drift_findings.[3] (External JOINs use OIDC_USERNAME ONLY — no provider)"
+  - "ReactiveUserOwnerMappingRepositoryImpl.md:security.known_security_gaps.[2]"
+behaviour: |-
+  **Cross-provider username row-duplication via OIDC_USERNAME-only JOINs.** Four other repositories (Alert / Activity / OwnerAssociationRequest / Owner) LEFT JOIN user_owner_mapping `ON USER_OWNER_MAPPING.OIDC_USERNAME = X AND USER_OWNER_MAPPING.DELETED_AT IS NULL` — **NO provider equality clause**. If two ACTIVE rows exist for (alice, null) AND (alice, GITHUB), the LEFT JOIN matches BOTH rows and produces a Cartesian product — alerts/activity entries get DUPLICATED (one per matching mapping), and the Owner display becomes one of the two non-deterministically (depending on Postgres physical row order). Row-duplication is more severe than incorrect-display — operators investigating alerts see phantom doubled entries; auditors see duplicated activity events. The same authoritative compound-key contract at this repository's lines 116-127 is NOT respected by the consuming JOINs. Cross-cutting integration test required.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/CrossProviderUsernameRowDuplicationTest.java"
+  name: "externalJoins_oidcUsernameOnly_crossProviderActiveMappings_produceCartesianRowDuplication"
+evidence:
+  - "ReactiveUserOwnerMappingRepositoryImpl.md says (bugs_limitations_corner_cases.[1]): 'If two ACTIVE user_owner_mapping rows exist for the same oidc_username under different providers (alice@null + alice@GITHUB), the LEFT JOIN matches BOTH rows and produces a Cartesian product — alerts/activity entries get duplicated (one per matching mapping).' severity: MEDIUM (display correctness; row-duplication for the same alert/activity event)"
+  - "ReactiveAlertRepositoryImpl.java:83-86 (the OIDC_USERNAME-only JOIN at alert layer)"
+  - "ReactiveActivityRepositoryImpl.java:156-158 (activity layer)"
+  - "ReactiveOwnerAssociationRequestRepositoryImpl.java:80-84"
+  - "ReactiveOwnerRepositoryImpl.java:77-78"
+  - "ReactiveUserOwnerMappingRepositoryImpl.java:116-127 (the authoritative compound-key contract NOT respected by consumers)"
+cross_references:
+  - "F-006"
+  - "P-09:F-001"
+  - "P-07 (Alerts / Activity row-duplication)"
+  - "TEST-GAP-553 (provider-null cross-mode bleed pair)"
+  - "REFACTOR-NNN candidate: extend the 4 consumer JOINs to include provider equality (or align everything on a synthetic surrogate key)"
+proposed_action: |-
+  Testcontainers cross-cutting integration test. (a) Seed user_owner_mapping (alice, null, X) AND (alice, GITHUB, Y) — two ACTIVE mappings, distinct owners. (b) Create an alert with `STATUS_UPDATED_BY = 'alice'`. (c) Call ReactiveAlertRepositoryImpl.listAllWithStatusOpen / list — the LEFT JOIN matches BOTH user_owner_mapping rows. Assert: the alert appears TWICE in the result with different owner_id values. (d) Mirror for ActivityRepositoryImpl with `CREATED_BY = 'alice'`. (e) Mirror for OwnerAssociationRequestRepository. (f) Assert each cross-pillar surface is corrupted. This pins the CRITICAL cross-provider row-duplication contract. Pair with TEST-GAP-553. Future REFACTOR-NNN adding provider equality clauses to all 4 JOINs would FLIP all four asserts to expect single-row results.
+batch: 2026-05-19-N
+feature_id: F-006

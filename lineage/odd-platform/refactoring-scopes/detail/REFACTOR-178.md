@@ -1,0 +1,9 @@
+- **REFACTOR-178** (NEW 2026-05-12D; folds into REFACTOR-182): DataCollaboration partial-home `@ConfigurationProperties` — 3 keys here (`sender-message-advisory-lock-id`, `receive-event-advisory-lock-id`, `sending-messages-retry-count`); 3 keys via `@Value` elsewhere (`enabled`, `slack-oauth-token`, `message-partition-period`). Folds into REFACTOR-182 (cross-cutting partial-home)
+  - **Category**: partial-home-properties
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md:bugs_limitations_corner_cases.[3]` (LOW)
+  - **Statement**: See REFACTOR-182 for the cross-cutting framing. The DataCollab-specific view: a maintainer reading `DataCollaborationProperties.java` sees 3 fields and misses 3 keys.
+  - **Evidence**: `DataCollaborationProperties.java:1-21` + `DataCollaborationConfiguration.java:20-21` + `FeatureResolverImpl.java:17` + `MessageTablePartitionManager.java:19`
+  - **Existing-ADR-or-implied-prescription**: Folded into REFACTOR-182.
+  - **Proposed remedy**: Consolidate the 6 keys into a unified `DataCollaborationProperties`.
+  - **Severity rationale**: LOW (folded).
+  - **Suggested backlog grouping**: `@ConfigurationProperties consolidation refactor`

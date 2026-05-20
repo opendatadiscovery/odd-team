@@ -1,0 +1,35 @@
+- **DOC-GAP-074**: OpenAPI declares 201 Created for `POST /api/owners` (and sibling create endpoints) but `OwnerController.java:26` returns 200 OK via `ResponseEntity::ok` — third concrete instance of a class-wide 201-vs-200 OpenAPI/implementation drift on RBAC create operations
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__OwnerController__controller-method__createOwner.md:docs_link_semantic.doc_drift_findings.[0]` + `:bugs_limitations_corner_cases.[0]` (severity MEDIUM) **(NEW batch E)**
+    - `odd-platform__java__RoleController__controller-method__createRole.md:tests_coverage_semantic.uncovered_behaviours.[0]` (sibling drift — RoleController also declares 201 in `openapi.yaml:3629` but returns 200) **(NEW batch E)**
+    - `concepts.yaml:entities[Owner (Authorization directory entry)].cross_file_inconsistencies.[0]`
+  - **Evidence**:
+    - `openapi.yaml` `/api/owners` POST declares `responses.201` (Created); generated `OwnerApi.java:57` carries `@ApiResponse(responseCode = '201')`.
+    - `OwnerController.java:26` — `.map(ResponseEntity::ok)` returns HTTP 200 OK.
+    - createOwner.md notes: "Sibling create operations have the same pattern (e.g. `updateOwner` declares 201 in OpenAPI for an update — itself unusual — and the controller returns 200)." RoleController.createRole exhibits the same drift (openapi.yaml:3629 declares 201; `RoleController.java:24` returns 200).
+    - Class-wide pattern verified across at least 3 RBAC create operations (Owner + Role + Policy — Policy's spec assertion not separately verified in this pass but the controller pattern at PolicyController.java:25 follows the same `.map(ResponseEntity::ok)` shape).
+  - **Proposed doc action**: Single upstream fix — file `/log-issue odd-platform` (or extend an existing OpenAPI-vs-impl drift issue) to either (a) update controller returns to `ResponseEntity.status(HttpStatus.CREATED).body(...)` to match the spec, OR (b) update the OpenAPI spec `responses.201` → `responses.200` to match the implementation. Recommended (a) — `POST` returning 201 Created is the REST convention and the OpenAPI page is the authoritative consumer contract. The fix is class-wide: audit every `*Controller.create*` method against its `openapi.yaml` `responses.201` declaration. Doc-side: no immediate page-level action; the spec/codegen mismatch is operationally visible to OpenAPI consumers (the OpenAPI Swagger UI page declares 201 verbatim).
+  - **Cross-references**:
+    - DOC-GAP-018 (API spec carries no security block — same class of spec-vs-runtime drift)
+    - createRole.md:tests_coverage_semantic.uncovered_behaviours.[0] (sibling drift on Role)
+    - Drives `/log-issue odd-platform` upstream for the spec-vs-impl alignment audit
+  - **Severity rationale**: MEDIUM — operationally visible to OpenAPI clients (codegen produces a method signature expecting 201; runtime receives 200). Contract clients that test for `2xx` succeed; clients that strictly check `status == 201` fail. The class-wide pattern (3+ instances) makes this worth a single audit pass rather than per-endpoint fixes.
+
+#### Batch 2026-05-20-P STRENGTHENS — 5-instance class-wide pattern now spans BOTH create and update operations
+
+- Sidecar `odd-platform__java__OwnerController__controller-method__updateOwner.md:bugs_limitations_corner_cases.[0]` (MEDIUM per sidecar — "OpenAPI declared 201 Created for an UPDATE vs implementation-returned 200 OK") **(NEW batch P — controller-method primary source on the PUT-UPDATE side)**.
+- Verbatim shape at `openapi.yaml:195-201`: the `updateOwner` operation declares `responses.'201': 'The resource has been successfully updated'` for the PUT operation. The 201 is DOUBLY anomalous: (a) PUT-update canonically declares 200, not 201 — 201 is the POST-creation status code; (b) the implementation at `OwnerController.java:53` (`.map(ResponseEntity::ok)`) returns 200, disagreeing with the spec.
+- The class-wide pattern now spans 5 distinct OpenAPI operations:
+  - `POST /api/owners` createOwner — spec declares 201, impl returns 200 (DOC-GAP-074 originally)
+  - `POST /api/policies` createPolicy — same pattern (DOC-GAP-074 cross-link)
+  - `POST /api/roles` createRole — same pattern (DOC-GAP-074 cross-link)
+  - `POST /ingestion/entities` postDataEntityList — spec declares 201, impl returns 200 (DOC-GAP-093 batch F)
+  - `PUT /api/owners/{owner_id}` updateOwner — spec declares 201 (anomalous on PUT), impl returns 200 (canonical for PUT) (THIS finding's batch-P extension)
+- **The PUT-update instance is structurally distinct from the POST-create instances**: in the POST-create cases, the spec declares the canonical 201 and the impl drifts to 200 (impl wrong, spec right); in the PUT-update case, the spec declares an anomalous 201 (spec wrong; PUT-update should declare 200) and the impl returns the canonical 200 (impl right, spec wrong). The upstream fix must distinguish the two directions.
+- **Updated upstream fix recommendation** (extends DOC-GAP-074's original recommendation): the upstream audit should run a class-wide spec-vs-impl reconciliation:
+  - For POST-create operations: change impl from `ResponseEntity::ok` to `ResponseEntity.status(HttpStatus.CREATED).body(...)` to MATCH the canonical spec (201).
+  - For PUT-update operations: change spec from `responses.201` to `responses.200` to MATCH the canonical impl (200).
+  - This converges on REST conventions on both sides and closes the class-wide drift.
+- Tracked as **DOC-GAP-184** for back-link convenience; the PUT-update side's batch-P confirmation is recorded under DOC-GAP-184 as a standalone finding for traceability. DOC-GAP-074 remains the canonical class-level finding; DOC-GAP-184 is the 5th instance.
+- Doc-side action unchanged: no central-docs-site page-level surface; the spec/codegen surface is the only consumer-visible drift. Severity stays MEDIUM at the class level.

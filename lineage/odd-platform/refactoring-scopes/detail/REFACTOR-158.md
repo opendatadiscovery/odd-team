@@ -1,0 +1,9 @@
+- **REFACTOR-158** (NEW 2026-05-12D): General provider-conditional required-fields are not validated at boot — provider-conditional required fields (e.g. Azure logoutUri, GitHub scope-contains-read:org, Google scope-contains-openid) are deferred to runtime usage-sites. Operator's mental model of "boot success = correct config" is incorrect for provider-conditional cases
+  - **Category**: provider-conditional-unvalidated
+  - **Surfaced by**: cross-citation across `odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md:bugs_limitations_corner_cases.[0]` + `[6]` + `[2]` (LOW aggregate)
+  - **Statement**: This is the umbrella entry for the per-provider gaps (REFACTOR-155, -157, -158) — ADR-CANDIDATE-048 (narrow-validator scope) deliberately limits validation to fields that prevent bean construction. Provider-specific semantic correctness is the operator's responsibility. The mismatch between "boot succeeded" and "deployment will work for my provider" is the operator-confusing surface.
+  - **Evidence**: `ODDOAuth2Properties.java:16-28` (the narrow validator)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-048 (narrow-validator scope) is the design; the maintainer must decide whether provider-conditional checks (per-provider expansion of the validator) are within the ADR's acceptable scope.
+  - **Proposed remedy**: Either (a) extend the validator with a `Map<String, Consumer<OAuth2Provider>>` per-provider validation registry (Provider name → ProviderValidator); or (b) doc-side surface a per-provider "boot-time checklist" so operators can verify their config matches their provider's expectations. Option (a) closes REFACTOR-155 + REFACTOR-157 in one fix.
+  - **Severity rationale**: LOW — meta-gap; the per-provider gaps are the actionable surfaces.
+  - **Suggested backlog grouping**: `OAuth2 hardening sprint` (umbrella for REFACTOR-155 + REFACTOR-157)

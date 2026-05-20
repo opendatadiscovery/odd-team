@@ -1,0 +1,39 @@
+gap_id: TEST-GAP-518
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java SearchController controller-method:facets"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "facets.md:bugs_limitations_corner_cases.[0] (GET /api/search/{search_id} and /facet/{facet_type} expose CROSS-OWNER catalog cardinality)"
+  - "facets.md:security.known_security_gaps.[0] (No SecurityRule entry; facet aggregators have no OWNERSHIP join)"
+  - "facets.md:tests_coverage_semantic.uncovered_behaviours.[1] (Cross-owner facet-count enumeration regression)"
+  - "facets.md:docs_link_semantic.doc_drift_findings.[0] (Live page silent on facet count scoping)"
+behaviour: |-
+  Cross-owner facet-count enumeration regression-pin (CRITICAL — cross-pillar P-01+P-09; catalog-cardinality exposure surface). Both `GET /api/search/{search_id}` and `GET /api/search/{search_id}/facet/{facet_type}` expose cross-owner catalog cardinality to any authenticated user via facet drill-down. The facet aggregators in `ReactiveSearchFacetRepositoryImpl` apply only `getDataEntityDefaultConditions` (HOLLOW=false, STATUS != DELETED, EXCLUDE_FROM_SEARCH NULL-or-false) with NO `OWNERSHIP` join: entity-class facet at lines 163-249, owner facet at 339-372, tag facet at 374-407, type facet at 251-337, group facet at 409-452, status facet at 454-534. The owner facet (`getOwnerFacetForDataEntity`) is the PRIMARY catalog-cardinality discovery surface — it enumerates EVERY OWNER NAME in the platform with the count of entities each owns. An authenticated attacker can: (1) `getFiltersForFacet(OWNERS)` to enumerate every owner name + per-owner entity count, (2) `getFiltersForFacet(NAMESPACES)` to enumerate every namespace, (3) `getFiltersForFacet(TAGS)` / `(GROUPS)` to enumerate the platform's full tag and group cardinality — all catalog-wide. The single owner-derived input on the path — `authIdentityProvider.fetchAssociatedOwner()` at `SearchServiceImpl.java:128` — feeds ONLY the optional `myObjectsCount` field; if the caller has no owner association, the count switches to `0L` and the request still returns catalog-wide totals successfully. Pairs with REFACTOR-024 (the BATCH alert read) and REFACTOR-340 (the PER-ENTITY alert read): together they form the catalog-wide cross-owner enumeration surface. Live `features/data-discovery/search` doc (WebFetched 2026-05-19 status 200) is SILENT on whether facet counts respect any per-user / per-owner / per-tenant scope — operators may assume the `My Objects` toggle scopes counts (it only scopes the result LIST). Under `auth.type=DISABLED` the endpoints are anonymously reachable.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/SearchFacetsCrossOwnerEnumerationTest.java"
+  name: "getFiltersForFacet_anyAuthenticatedUser_enumeratesCrossOwnerCatalogCardinality_pinsTheReadCollaborativePosture"
+evidence:
+  - "facets.md:bugs_limitations_corner_cases.[0]: 'GET /api/search/{search_id} and GET /api/search/{search_id}/facet/{facet_type} expose CROSS-OWNER catalog cardinality to any authenticated user via facet drill-down — the same cross-owner read posture as REFACTOR-024 / REFACTOR-340, applied to the facet-COUNTS surface.' severity: HIGH"
+  - "facets.md:security.known_security_gaps.[0]: 'GET /api/search/{search_id} and /facet/{facet_type} have NO entry in SecurityConstants.SECURITY_RULES; the catch-all .authenticated() applies. The facet aggregators have NO OWNERSHIP join. An authenticated caller can drill getFiltersForFacet(OWNERS) to enumerate every owner name + per-owner entity count.' severity: HIGH"
+  - "SearchController.java:30-47 (no @PreAuthorize)"
+  - "SecurityConstants.java (no rule for /api/search/* — verified by grep)"
+  - "ReactiveSearchFacetRepositoryImpl.java:339-372 (owner facet SQL — no OWNERSHIP filter, no caller-principal predicate)"
+  - "SearchServiceImpl.java:128 (fetchAssociatedOwner is consulted ONLY for myObjectsCount, never scopes the facet aggregates)"
+  - "WebFetch `https://docs.opendatadiscovery.org/features/data-discovery/search` 2026-05-19 status 200 (silent on facet count scoping)"
+cross_references:
+  - "TEST-GAP-249 (search cross-owner — same posture at the search endpoint)"
+  - "TEST-GAP-004 (getAllAlerts cross-owner — REFACTOR-024 sibling)"
+  - "TEST-GAP-493 (getDataEntityAlerts cross-owner — REFACTOR-340 sibling)"
+  - "REFACTOR-024 (cross-owner read posture — sibling at alerts)"
+  - "REFACTOR-340 (cross-owner read posture — sibling at per-entity alerts)"
+  - "ADR-CANDIDATE-003 (read-collaborative posture — facet-count corollary)"
+  - "concepts.yaml:entities[Search Session].security_aggregate (HIGH)"
+  - "F-001 (Search and Filtering)"
+proposed_action: |-
+  WebTestClient integration test. (a) Create Owner X with user uX owning 3 entities; Owner Y with user uY owning 5 entities. (b) Authenticate uX. (c) POST /api/search with empty query to create a search session for uX. (d) GET /api/search/{session_id}/facet/OWNERS?page=1&size=100. (e) Assert response contains BOTH Owner X AND Owner Y in the CountableSearchFilter list (the cross-owner enumeration), with their respective counts (3 and 5). (f) Assert response also contains other owners' names + counts (catalog-wide). (g) Test comment 'LOCKS the cross-owner facet-count enumeration contract as of 2026-05-19 (REFACTOR-024/340 sibling on facets surface). When owner-scoping is added to facet aggregators, this test FLIPS to expect ONLY Owner X (and possibly Owner-X-co-owned-entities-counts) in the response.' Pair with DISABLED-mode anonymous test asserting unauthenticated callers receive the same payload. This is regression-pin + vulnerability-proof.
+batch: 2026-05-19-M
+feature_id: F-001

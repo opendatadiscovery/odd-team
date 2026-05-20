@@ -1,0 +1,79 @@
+name: Resolve Roles to Policies (per-request authorization hot path)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW OPERATION, batch 2026-05-19H** — the per-request hot-path operation
+  that resolves the current user''s effective policy set from their role list. The
+  canonical implementation is `ReactivePolicyRepositoryImpl.getRolesPolicies(List<Long>
+  roleIds)` (lines 27-39) — a JOIN over policy ⋈ role_to_policy filtered by `role_to_policy.role_id
+  IN (...)`, returning `Mono<List<PolicyPojo>>`. Invoked on EVERY authorized HTTP
+  request that traverses the permission framework via two extractors: (a) `ManagementPermissionExtractor.getNonContextualPermissions`
+  (line 33) — invoked for every MANAGEMENT-tier permission check; (b) `AbstractContextualPermissionExtractor.getContextualResourcePermissions`
+  (line 27) — invoked for every DATA_ENTITY / TERM / QUERY_EXAMPLE permission check.
+  The call path: SecurityRule fires → AuthorizationManager evaluates → `PolicyService.getCurrentUserPolicies()`
+  → `policyRepository.getRolesPolicies(roleIds)` → SQL. NO caching at any layer; every
+  authorized request hits Postgres. Result list collected to memory and consumed in-memory
+  by the extractor (flatMapIterable). For typical user policies (~1-10 PolicyPojos,
+  ~500 bytes each), trivial allocation cost. A pathological user attached to thousands
+  of policies would see proportional heap allocation per request — but typical role
+  cardinality is single-digit per user. **NEW HIGH-severity gap**: `getRolesPolicies`
+  does NOT filter by `policy.deleted_at IS NULL`. A soft-deleted policy with surviving
+  role_to_policy bindings continues to confer permissions on users in those roles
+  — PolicyServiceImpl.delete defends at the cascade-delete check (lines 89-92), but
+  any DB-direct UPDATE setting deleted_at, schema migration mistake, or future refactor
+  weakening the cascade re-opens the gap. The fix is one line: `AND policy.deleted_at
+  IS NULL` in the JOIN''s WHERE clause. **Performance characteristics**: single JOIN
+  per call; sub-millisecond on typical row counts; no streaming (collectList); identifies
+  THE canonical "authorization hot path" of the platform — every read and every mutation
+  routes through it.'
+axes_present:
+- repositories_reactive
+nodes:
+- odd-platform java repository reactive repository:ReactivePolicyRepositoryImpl
+contributors:
+- 'ReactivePolicyRepositoryImpl (batch H): the canonical SQL primary source for the
+  operation. operations[getRolesPolicies — JOIN policy ⋈ role_to_policy filtered by
+  role_id IN (...)]. performance.hot_paths.[0] — invoked on EVERY authorized HTTP
+  request. security.known_security_gaps.[0] — missing deleted_at filter creates orphan-binding
+  permission leak (HIGH).'
+- 'PolicyServiceImpl.java:106 (cross-ref from ReactivePolicyRepositoryImpl.md:upstream_callers):
+  sole non-test caller via `policyRepository::getRolesPolicies` from `getCurrentUserPolicies()`.
+  Invoked from ManagementPermissionExtractor.getNonContextualPermissions (ManagementPermissionExtractor.java:33)
+  AND AbstractContextualPermissionExtractor.getContextualResourcePermissions (AbstractContextualPermissionExtractor.java:27)
+  — both fire on every authorized HTTP request.'
+evidence:
+- ReactivePolicyRepositoryImpl.md:concepts.operations + concepts.invariants.[1] (no
+  deleted_at filter on getRolesPolicies)
+- ReactivePolicyRepositoryImpl.md:performance.hot_paths.[0] (per-request authorization
+  hot path)
+- ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[0] (orphan-binding
+  permission leak HIGH)
+- ReactivePolicyRepositoryImpl.md:upstream_callers (PolicyServiceImpl.java:106 + ManagementPermissionExtractor.java:33
+  + AbstractContextualPermissionExtractor.java:27)
+notes: 'NEW operation captured in batch H. The single repository method is the platform''s
+  authorization hot path; every authenticated request that traverses any SECURITY_RULES
+  entry transitively invokes it.
+
+
+  Recommended fixes (in priority order):
+
+
+    (1) HIGH-severity: add `.and(POLICY.DELETED_AT.isNull())` to the JOIN at line
+  34. Closes the orphan-binding permission leak.
+
+
+    (2) MEDIUM-leverage: introduce a short-TTL request-scoped or user-scoped cache
+  to amortise the DB cost across N authorized requests/sec. A 30-second cache keyed
+  on (userId, roleIds) would significantly reduce DB load on busy platforms without
+  meaningfully delaying permission propagation.
+
+
+    (3) LOW-leverage: project away policy text for callers that only need permissions
+  (currently the only consumer needs the full policy text to compute permissions,
+  so this is not a real gap).
+
+
+  Doc-gap candidate: extend `/configuration-and-deployment/enable-security/authorization`
+  with a "Permission resolution mechanism" subsection naming the per-request hot path,
+  the cache absence, and the deleted_at filter gap (until fixed).
+
+  '

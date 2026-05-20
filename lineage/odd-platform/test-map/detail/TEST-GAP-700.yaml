@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-700
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:DataSourceIngestionServiceImpl"
+pillars_affected: [P-10]
+surfaced_by:
+  - "DataSourceIngestionServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[2] (Empty ODDRN defense-in-depth validation)"
+  - "DataSourceIngestionServiceImpl.md:implicit_adrs.[3] (Defense-in-depth ODDRN validation at the service tier — service does NOT trust the controller's validation)"
+behaviour: |-
+  **`DataSourceIngestionServiceImpl` HAS A DEFENSE-IN-DEPTH ODDRN VALIDATION AT THE SERVICE TIER (line 103) — the service does NOT trust the controller's validation.** `if (StringUtils.isEmpty(ds.getOddrn())) throw new BadUserRequestException("ODDRN must be filled for all data sources")`. The controller already validates non-empty ODDRN at `IngestionController.java:97-102` (per batch P sidecar); the service-tier check is REDUNDANT in the current invocation path. The deliberate choice is "the service guarantees its own preconditions" — a future refactor that moves the controller's validation downstream OR exposes the service to a DIFFERENT caller cannot bypass this check. The test pins the defense-in-depth pattern as the EXPECTED contract: any future caller that bypasses the controller's validation MUST still trigger this throw. Without a test, a maintainer "simplifying" the service by removing the redundant check could silently re-open the empty-ODDRN attack surface.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceImplDefenseInDepthTest.java"
+  name: "createDataSources_payloadWithEmptyOddrn_throwsBadUserRequestException_pinsServiceTierDefenseInDepth"
+evidence:
+  - "DataSourceIngestionServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[2]): 'Empty ODDRN defense-in-depth validation — line 103 `throw new BadUserRequestException(\"ODDRN must be filled for all data sources\")` is uncovered. A test with `new DataSource().name(\"x\")` (oddrn omitted) would exercise this; none exists.'"
+  - "DataSourceIngestionServiceImpl.md says (implicit_adrs.[3]): 'Defense-in-depth ODDRN validation at the service tier (line 103) — service does NOT trust the controller''s validation. The controller already validates non-empty ODDRN at IngestionController.java:97-102; the service-tier check is REDUNDANT in the current invocation path. The deliberate choice is `the service guarantees its own preconditions` — a future refactor that moves the controller''s validation downstream or exposes the service to a different caller cannot bypass this check.' confidence: MEDIUM"
+  - "Source: DataSourceIngestionServiceImpl.java:102-103"
+cross_references:
+  - "F-008 (P-10:F-001 — defense-in-depth ingestion validation pattern)"
+  - "TEST-GAP-697 (sister gap — namespace silent-drop)"
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001"]
+proposed_action: |-
+  Add `DataSourceIngestionServiceImplDefenseInDepthTest.createDataSources_payloadWithEmptyOddrn_throwsBadUserRequestException_pinsServiceTierDefenseInDepth`. (a) Mockito-style unit test bypassing the controller layer entirely (invoke `dataSourceIngestionService.createDataSources(collectorId, payload)` directly). (b) Mock `reactiveCollectorRepository.getDto(collectorId)` to return a valid CollectorDto. (c) POST a `DataSourceList` with one DataSource: `{ name: "test" }` — NO oddrn field set. (d) Use `StepVerifier` to expect a `BadUserRequestException` with message `"ODDRN must be filled for all data sources"`. (e) `verify(reactiveDataSourceRepository, never()).bulkCreate(any())` — confirm the validation fires BEFORE any DB write. (f) Add a `// REGRESSION-PIN — Service-tier defense-in-depth at AlertServiceImpl.java:103 is REDUNDANT with the controller's check but DELIBERATE. A REFACTOR removing this check (e.g., the maintainer "simplifying" because the controller already validates) would silently re-open the empty-ODDRN surface for any future caller bypassing the controller. The defense-in-depth pattern is the platform's posture per batch P sidecar's observation on the controller's session-attribute check at IngestionController.java:53-55.` comment block.
+batch: 2026-05-20-S
+feature_id: F-008

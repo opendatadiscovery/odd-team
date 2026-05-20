@@ -1,0 +1,28 @@
+gap_id: TEST-GAP-625
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java OwnerController controller-method:updateOwner"
+pillars_affected: [P-01, P-06, P-08]
+surfaced_by:
+  - "updateOwner.md:concepts.invariants.[6] (Search vectors refresh AFTER role update — within the same transaction)"
+  - "updateOwner.md:implicit_adrs.[3] (Search-vector refresh is INSIDE the update transaction)"
+behaviour: |-
+  **SEARCH-VECTOR REFRESH-AFTER-RENAME IS IN-TRANSACTION; DELETE PATH SKIPS IT (asymmetry).** updateOwner's search-vector refresh runs INSIDE the @ReactiveTransactional boundary via `Mono.zip` over `searchEntrypointRepository.updateChangedOwnerVectors` + `termSearchEntrypointRepository.updateChangedOwnerVectors` (OwnerServiceImpl.java:82, 109-114); both UPDATE statements complete before the final `getDto(owner.getId())` re-read. The transaction boundary covers all six writes; a rollback restores name, role-bindings, AND search vectors. **However: the sibling deleteOwner path does NOT refresh search vectors** (OwnerServiceImpl.java:89-100 has no `updateSearchVectors` call). The asymmetry produces a real bug after delete: FTS searches against `search_entrypoint` continue to surface the deleted owner's name in catalog search results until another event refreshes the affected entities' vectors. NO test asserts: (a) update path: searches by OLD name no longer match after rename, AND searches by NEW name DO match; (b) delete path: searches by deleted name STILL match (the current buggy behaviour). Both vectors must update; a regression in either `updateChangedOwnerVectors` would leave stale indexes. Plus the search-vector cost scales O(N) over the number of search-entries referencing this owner — for a high-cardinality owner, rename is amortised admin-time expensive but unrelated to test gap.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/OwnerSearchVectorRefreshTest.java"
+  name: "updateOwner_refreshesSearchVectors_oldNameNoLongerMatches_newNameMatches_AND_deleteOwner_doesNotRefresh_oldNameStillMatches"
+evidence:
+  - "updateOwner.md says (concepts.invariants.[6]): 'Search vectors refresh AFTER role update, AFTER name update — but within the same transaction. updateSearchVectors runs in the post-role-rebind position (OwnerServiceImpl.java:82, 109-114); both Mono.zipped UPDATE statements complete before the final getDto(owner.getId()) re-read.'"
+  - "updateOwner.md says (implicit_adrs.[3]): 'Search-vector refresh is INSIDE the update transaction, not deferred to a background job — updateChangedOwnerVectors × 2 are awaited via Mono.zip inside the @ReactiveTransactional boundary. The choice trades response latency for read-after-write consistency.'"
+  - "deleteOwner.md says (bugs_limitations_corner_cases.[2]): 'FTS search vector NOT refreshed on owner delete — OwnerServiceImpl.update calls updateSearchVectors(owner) refreshing BOTH searchEntrypointRepository.updateChangedOwnerVectors and termSearchEntrypointRepository.updateChangedOwnerVectors. OwnerServiceImpl.delete does NOT.'"
+  - "Source: OwnerServiceImpl.java:82, 109-114 (update path) + 89-100 (delete path) + ReactiveSearchEntrypointRepository.updateChangedOwnerVectors + ReactiveTermSearchEntrypointRepository.updateChangedOwnerVectors"
+cross_references:
+  - "TEST-GAP-630 (delete-path missing search-vector refresh — sister gap)"
+  - "F-006 batch-K observed_vs_expected.facet delete_search_vector_not_refreshed (OwnershipServiceImpl version)"
+  - "P-01 (Data Discovery) feature pillar — the search experience consumes these vectors"
+proposed_action: |-
+  Add `OwnerSearchVectorRefreshTest` with two test methods: (a) seed Owner with name "Alice" + data entity ownership; PUT /api/owners/{id} with `{name: "Alice2"}`; GET /api/search?query=Alice should NOT find the entity; GET /api/search?query=Alice2 should find it. Pins the update-path refresh. (b) seed Owner "Bob" + data entity ownership; DELETE /api/owners/{id}; GET /api/search?query=Bob should still match the entity (the current buggy behaviour) — pins the delete-path miss. Both tests pair to surface the asymmetry. Future fix that adds search-vector refresh to delete path will flip test (b) and trigger explicit re-authoring.
+batch: 2026-05-20-P
+feature_id: F-006

@@ -1,0 +1,9 @@
+- **REFACTOR-123** (NEW 2026-05-12C): `management.health.ldap.enabled: false` (the bundled default in `application.yml:242-243`) means `/actuator/health` does NOT include LDAP-server reachability — directory outage invisible to standard health probes
+  - **Category**: no-health-check
+  - **Surfaced by**: `odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md:security.known_security_gaps.[6]` (severity LOW)
+  - **Statement**: When `auth.type=LDAP`, the bundled application.yml line 242-243 disables LDAP health-check. Operators monitoring health-probes don't see LDAP-server outages.
+  - **Evidence**: `application.yml:241-243`
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Either (a) enable `management.health.ldap.enabled: true` in the bundled application.yml; or (b) auto-enable when `auth.type=LDAP` via a conditional. Document on the live LDAP setup page.
+  - **Severity rationale**: LOW — operability gap.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

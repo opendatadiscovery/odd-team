@@ -1,0 +1,10 @@
+- **DOC-GAP-098**: `createDataEntityTagsRelations` operationId is misleading — semantic is replace-all (delete missing) but spec/operationId/method-name say "create" (additive); third-party consumers will silently lose tags
+  - **Category**: drift (OpenAPI contract drift; create-language for replace-all behaviour)
+  - **Surfaced by**: `createDataEntityTagsRelations.md:bugs_limitations_corner_cases[1]` + `createDataEntityTagsRelations.md:docs_link_semantic.doc_drift_findings[1]`
+  - **Evidence**:
+    - `openapi.yaml:1173-1175` — operation summary "Creates tags relations for DataEntity entity" + operationId `createDataEntityTagsRelations` + description "Creates tags relations tags for DataEntity entity. Also creates corresponding tags in the system if they don't exist."
+    - `TagServiceImpl.java:113-120` — actual logic: `pojosToDelete = current - updated` + `deleteDataEntityRelations(toDelete).thenMany(createDataEntityRelations(updated))` — replace-all-internal-tags.
+    - `odd-platform-ui/src/redux/thunks/dataentities.thunks.ts:46` — UI redux action correctly named `updateDataEntityTagsActionType` (UI authors understood; spec authors did not).
+    - External tag relations (`tag_to_data_entity.external = true`) ARE preserved (`.filter(pojo -> !pojo.getExternal())` line 102) — undocumented entirely.
+  - **Proposed doc action**: (a) Rename OpenAPI operation to `replaceDataEntityInternalTagsRelations`; (b) explicit description block covering: REPLACE-ALL semantics on INTERNAL tags; EXTERNAL preservation; auto-create-on-miss; `important = false` default; `TAG_CREATE` scope-asymmetry.
+  - **Severity rationale**: HIGH — ingestion-pipeline mistake by third-party API consumer using only the spec would silently delete data entity's internal tag history. LSN-001 class.

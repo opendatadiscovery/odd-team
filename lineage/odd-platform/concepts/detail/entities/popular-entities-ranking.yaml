@@ -1,0 +1,133 @@
+name: Popular Entities Ranking
+canonical_in_docs: true
+canonical_candidate: true
+pillar_affinity:
+- P-01
+description: 'Read-only list-shaped surface at GET /api/dataentities/popular ranking
+  by view_count DESC. The CONSUMER half of the view_count loop opened by getDataEntityDetails
+  (the producer). Surfaces 9-field DataEntityRef projection of the top-N most-viewed
+  entities across all owners to every authenticated caller (and any anonymous caller
+  under DISABLED). **Batch J — UI HALF (P-01 pillar)**: the UI surface that displays
+  the Popular column is one of FOUR columns inside `OwnerEntitiesList.tsx` (not a
+  standalone PopularStrip component — the substrate node-id has a name-drift; the
+  rendering is actually inside `OwnerEntitiesList/DataEntityList`). Fetched once on
+  mount via `dispatch(fetchPopularDataEntitiesList({page: 1, size: 5}))` with empty
+  deps array (no polling, no auto-refresh, no interval). Each tile is a `<Link>` to
+  `dataEntityDetailsPath(item.id)` which navigates to `/dataentities/{id}/overview`
+  — clicking a Popular tile mounts DataEntityDetails which fires fetchDataEntityDetails
+  which increments view_count. **THIS CLOSES THE F-001 LOOP ON THE CLIENT SIDE**:
+  the UI surface that displays the inflatable ranking is the SAME surface that triggers
+  view_count increments on click. No client-side debouncing, no idempotency key, no
+  per-tab-per-entity cache. Two UI doc-drift findings: (a) docs say click target is
+  Structure tab, code navigates to Overview tab; (b) docs say Recommended panel is
+  visible under DISABLED auth mode, code hides it. Owner-association gate at OwnerAssociation.tsx:84-86
+  (`if (identity && ownership)`) limits the UI Popular column to owner-associated
+  users — but the API endpoint remains anonymous-reachable under DISABLED (UI-only
+  gate, not security).'
+nodes:
+- odd-platform java DataEntityController controller-method:getPopular
+- odd-platform ts react-component component:PopularStrip
+contributing_files:
+- odd-platform__java__DataEntityController__controller-method__getPopular.md
+- odd-platform__ts__react-component__component__PopularStrip.md
+evidence:
+- getPopular.md:concepts.entities[DataEntityRef, DataEntityRefList, DATA_ENTITY.VIEW_COUNT]
+- getPopular.md:concepts.invariants[ranking is exclusively view_count DESC + id DESC
+  tiebreaker]
+- getPopular.md:implicit_adrs.[0]
+- 'PopularStrip.md (batch J — UI HALF): concepts.entities[DataEntityRef 9-field projection
+  missing view_count, Redux state slice state.dataEntities.popular, fetchPopularDataEntitiesList
+  thunk, getPopularEntities selector]; concepts.invariants[fetch fires exactly once
+  per OwnerEntitiesList mount with [] deps; page=1, size=5 hardcoded; no client-side
+  view-tracking; rendering gate: owner-association required AND auth.type != DISABLED]'
+- 'PopularStrip.md:bugs_limitations_corner_cases.[0] HIGH — F-001 LOOP CLOSURE: clicking
+  Popular tile triggers view_count increment via destination detail-page mount, closing
+  the inflation loop on the client side'
+- 'PopularStrip.md:doc_drift_findings.[0,1,2]: click-target Structure-vs-Overview;
+  DISABLED-mode rendering Recommended-panel hidden contradicts docs; Popular = most-viewed-OR-most-used
+  misleads about single view_count signal'
+axes_present:
+- controllers
+- openapi_paths
+- ui_routes
+- ui_components
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  authorization_consistency:
+    verdict: UNGATED
+    detail: 'Backend has no @PreAuthorize, no SecurityRule entry, falls through to
+      pathMatchers(''/**'').authenticated(). DISABLED-mode = anonymous access at API
+      layer. UI Popular column is gated on owner-association (UI-only gate, not security)
+      — but UI gate does NOT extend to the API endpoint.'
+  owner_scoping:
+    verdict: BYPASSES
+    detail: Returns popular entities across all owners; no per-user/per-tenant filter
+      at backend or UI fetch layer.
+  strengths:
+  - Soft-deleted + hollow entities correctly excluded
+  - UI owner-association gate narrows home-page UI exposure (the Recommended panel
+    is reachable only when identity && ownership)
+  weaknesses:
+  - 'INFLATABILITY (HIGH severity): view_count loop trivially pumpable by any authenticated
+    caller. No rate-limit, no idempotency key, no per-user view-count cap, no time-decay,
+    no anti-abuse signal in the chain.'
+  - 'F-001 UI LOOP CLOSURE (HIGH): clicking a Popular tile navigates to /dataentities/{id}/overview
+    which mounts DataEntityDetails which fires fetchDataEntityDetails which increments
+    view_count — the SAME signal that determines Popular ranking. A user clicking
+    Popular -> back -> clicking again from a remounted Popular observes a real-time
+    ranking shift.'
+  - EXCLUDE_FROM_SEARCH is NOT applied — internal/staging entities marked hidden-from-search
+    ARE surfaced on the platform's home page. Every other list-shape respects this
+    flag (9 locations); Popular is the sole list-shape that ignores it.
+  - DISABLED-mode anonymous read of the platform's home-page recommendation surface
+  - Cross-owner visibility — multi-tenant deployments cannot constrain Popular to
+    caller's own team
+  - hasAlerts disclosure — coarse-grained platform-health signal leaks to every viewer
+  - 'UI lacks client-side analytics-only mode — clicking Popular always triggers
+    the destination detail-page mount which always fires the view_count increment;
+    no analytics-only thunk dispatch path exists'
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - Backend `GET /api/dataentities/popular` runs sequential scan + in-memory sort
+    on every call (no index on view_count)
+  - 'UI mount fires fetch once per OwnerEntitiesList mount; back-button navigation
+    re-mounts and re-fetches (no Redux cache check)'
+  weaknesses:
+  - No index on data_entity.view_count — every Popular page render is sequential scan
+    + in-memory sort
+  - No caching at any layer (service / controller / HTTP) — every home-page refresh
+    re-hits DB
+  - No HTTP cache headers (no ETag, no Cache-Control, no Last-Modified)
+  - Per-row hasAlerts EXISTS subquery — adds ALERT-table lookup per row
+  - 'UI: empty deps useEffect in dev React Strict Mode double-fires the fetch on first
+    mount (harmless but inflates dev environment view_count baseline)'
+  - 'UI: no Redux-cache check before dispatch — fetch always re-issues even when
+    state.dataEntities.popular is non-empty'
+notes: |-
+  Strengthened in batch 2026-05-19J with PopularStrip UI sidecar closing the F-001
+  consumer-side loop on the client. The substrate node-id "PopularStrip" has a
+  name-drift — the actual rendering lives in OwnerEntitiesList.tsx as one of four
+  columns under the "Recommended" h1 heading; no dedicated PopularStrip.tsx file
+  exists in the codebase. The substrate-axis-name-drift is captured as a separate
+  canonicalisation candidate.
+
+  Three new UI-side doc-drift findings flow from the PopularStrip sidecar:
+    (a) **Click target mismatch** — live docs say "Clicking a tile opens that
+        entity's Structure page"; code at DataEntityList.tsx:38 navigates to
+        /dataentities/{id}/overview (default path='overview'). Either docs are
+        wrong (more likely) or code's default should change to 'structure' (but
+        that would BREAK the F-001 loop closure since Overview is the
+        read-as-write endpoint).
+    (b) **DISABLED-mode rendering mismatch** — docs say "on auth-disabled
+        deployments the panel is visible but the per-user filtering does not
+        apply"; code hides the entire Recommended panel under DISABLED (Overview.tsx:25-27,
+        :53-59 gate `authType !== 'DISABLED'`).
+    (c) **"Popular = most-viewed OR most-used" doc claim is misleading** —
+        the ranking signal is exclusively view_count DESC; there is no "most-used"
+        signal (no usage-frequency counter, no edit-count, no API-call-count).

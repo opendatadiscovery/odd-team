@@ -1,0 +1,200 @@
+name: Data Entity Group Membership Edge
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+description: |-
+  **NEW ENTITY, batch 2026-05-19L** — the per-(child-data-entity, DEG)
+  binding edge stored as a row in `public.group_entity_relations` with PK
+  `(group_oddrn, data_entity_oddrn)` per
+  `V0_0_21__add_data_entity_group_relation.sql:6` + an `is_deleted`
+  boolean (DEFAULT FALSE, added by `V0_0_79__data_deprecation.sql:14-15`
+  for the entity-deletion cascade soft-delete only — NOT part of the PK).
+
+  **What lives in the edge row**: just the two ODDRNs (parent DEG ODDRN
+  + child data-entity ODDRN) and the `is_deleted` cascade-soft-delete
+  flag. The edge carries NO metadata of its own — no `created_at`, no
+  `created_by`, no audit fields, no edge-id surrogate key.
+
+  **Write surfaces** (the per-edge CRUD):
+    - POST /api/dataentities/{data_entity_id}/data_entity_group
+      (`addDataEntityToDEG` → `createRelationsReturning` with
+      `onDuplicateKeyIgnore` + RETURNING)
+    - DELETE /api/dataentities/{data_entity_id}/data_entity_group/{data_entity_group_id}
+      (`deleteDataEntityFromDEG` → `deleteRelationsReturning` — HARD DELETE)
+
+  **Read surfaces** (the edge is queryable from BOTH sides):
+    - `getDataEntityGroupsItems` (`DataEntityController.java:109-116`)
+      lists children for a DEG
+    - `getDataEntityGroupsChildren` (lines 100-106) — ML-experiment-runs
+      slice
+    - `getDataEntityGroupLineage` (lines 275-281) — lineage joined across
+      the DEG's children
+    - `getDataEntityDetails` (lines 140-147) returns the child entity's
+      `parentGroups` list via `enrichParentGroups` (lines 144-146)
+
+  **Cascade soft-delete**: the entity-deletion path
+  (`softDeleteRelationsForDeletedDataEntities` at
+  `ReactiveGroupEntityRelationRepositoryImpl.java:92-101`) flips
+  `is_deleted = true` when the underlying data-entity is deleted (e.g.
+  via `STATUS = DELETED` cascade); the paired
+  `restoreRelationsForDataEntities` (lines 104-112) is the only path
+  to flip the bit back. User-initiated unlink (via the DELETE endpoint
+  above) is HARD-DELETE — physically removes the row.
+
+  **Six DATA_ENTITY_GROUP sub-types share this binding edge**
+  (per `DataEntityClassDto.java:50`): DEG / Domain / ML Experiment / DAG
+  / DATABASE_SERVICE / API_SERVICE / KAFKA_SERVICE — the membership
+  binding is identical across all subtypes; the rendering and
+  pillar-affinity differ.
+
+  **Key intent properties**:
+    - The PK `(group_oddrn, data_entity_oddrn)` does NOT incorporate
+      `is_deleted`, so a soft-deleted prior membership row BLOCKS re-add
+      via `onDuplicateKeyIgnore` even when `getManuallyCreatedRelations`
+      (which filters `is_deleted=false`) shows zero memberships. This is
+      the soft-deleted-membership-confuses-duplicate-detection corner
+      case (per addDataEntityDataEntityGroup
+      bugs_limitations_corner_cases.[2]).
+    - The membership row carries NO audit trail — no `@ActivityLog` on
+      the write paths, no `created_by`, no edge-id. The
+      `DATA_ENTITY_RELATION_UPDATED` enum value exists in
+      `ActivityEventTypeDto.java:12` but no `@ActivityLog` references
+      it; the enum is reserved-but-never-fired.
+nodes:
+  - odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup
+  - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+  - odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+contributors:
+  - |-
+    addDataEntityDataEntityGroup batch L (PRIMARY SOURCE):
+    concepts.entities (DataEntityDataEntityGroupFormData,
+    DataEntityRef, GroupEntityRelationsPojo with PK
+    (group_oddrn, data_entity_oddrn) + is_deleted boolean) +
+    concepts.invariants.[2] (DB-level duplicate prevention via
+    onDuplicateKeyIgnore) + dependencies_semantic.requires-runtime
+    (Postgres group_entity_relations table)
+  - |-
+    deleteDataEntityFromDataEntityGroup batch L (PRIMARY SOURCE):
+    concepts.entities (GroupEntityRelationsPojo, group_entity_relations
+    table — HARD-DELETE target on user-initiated removal,
+    data_entity_filled.CUSTOM_GROUP marker, isManuallyCreatedDEG
+    predicate)
+evidence:
+  - addDataEntityDataEntityGroup.md:concepts.entities
+  - addDataEntityDataEntityGroup.md:concepts.invariants.[2]
+  - addDataEntityDataEntityGroup.md:dependencies_semantic.requires-runtime
+  - deleteDataEntityFromDataEntityGroup.md:concepts.entities
+  - deleteDataEntityFromDataEntityGroup.md:dependencies_semantic.requires-runtime
+axes_present:
+  - controllers
+  - openapi_paths
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      ADD gated by DATA_ENTITY_ADD_TO_GROUP; DELETE gated by
+      DATA_ENTITY_DELETE_FROM_GROUP; both are CHILD-side
+      DATA_ENTITY-scoped. NO DEG-side authorization at any layer.
+      Cross-DEG pollution permitted — any caller with the
+      child-side permission can write into any manually-created DEG.
+      Pairs with the write-collaborative-DEG invariant.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      Owner-scope basis is the data-entity (the CHILD), not the
+      parent DEG. Operators owning a DEG cannot defend it from
+      drive-by membership writes by other authorized callers.
+  weaknesses:
+    - |-
+      HIGH: NO DEG-side authorization — child-side gate only;
+      cross-DEG pollution; Catalog Overview's Domain tiles can be
+      polluted by any caller with DATA_ENTITY_ADD_TO_GROUP on any
+      child entity.
+    - |-
+      MEDIUM: NO @ActivityLog on add or delete — DEG membership flips
+      are forensically silent; the
+      ActivityEventTypeDto.DATA_ENTITY_RELATION_UPDATED enum value is
+      reserved-but-never-fired.
+    - |-
+      MEDIUM: Soft-deleted membership row blocks re-add via
+      onDuplicateKeyIgnore — PK does not include is_deleted; the
+      misleading "Data entity is already in this DEG" error fires
+      against rows the user perceives as not-in-DEG.
+    - |-
+      HIGH (under DISABLED): anonymous traffic can write to and delete
+      from any DEG's membership without authentication.
+  strengths:
+    - |-
+      isManuallyCreatedDEG defensive predicate at
+      DataEntityServiceImpl.java:483-486 enforces that membership
+      writes can ONLY target manually-created DEGs (NOT ingested DEGs)
+      — the structural divergence from the REFACTOR-199 family of
+      auto-create-on-miss side-doors.
+    - |-
+      @ReactiveTransactional at the service layer guarantees the two
+      pre-checks + the INSERT/DELETE + the filled-bit toggle commit
+      atomically.
+    - |-
+      ADD/DELETE are DISTINCT separately-grantable Policy capabilities
+      (DATA_ENTITY_ADD_TO_GROUP + DATA_ENTITY_DELETE_FROM_GROUP) per
+      SecurityConstants.java:228-236 — supports "I trust user U to
+      populate DEGs but not to remove entries" stewardship patterns.
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      DEG-membership-write is on the per-entity-page write path; ~4
+      DB round-trips per call (2× DataEntity GET + 1× edge INSERT/DELETE +
+      1× filled-bit UPDATE). The unfilled-marker check on DELETE adds
+      1× SELECT (getManuallyCreatedRelations).
+  weaknesses:
+    - |-
+      No bulk-membership endpoint at this controller — bulk writes
+      route through DataEntityGroupController.createDataEntityGroup
+      (the DEG-creation endpoint accepts a batch). Reorganising 50
+      entities via the per-entity endpoint = 100 round-trips (50
+      DELETEs + 50 ADDs).
+    - |-
+      getManuallyCreatedRelations on DELETE materialises ALL manual
+      DEG memberships for the entity to check emptiness (full
+      collectList + isEmpty). A countManuallyCreatedRelations or
+      existsManuallyCreatedRelation would be O(1) at the SQL level.
+    - |-
+      No method-level observability (no @Timed, no Micrometer counter).
+notes: |-
+  NEW entity captured in batch 2026-05-19L. The edge is the
+  per-membership binding for the Data Entity Group feature (P-01
+  sub-feature) — DEGs are themselves Data Entities of class
+  DATA_ENTITY_GROUP, with their own metadata; this edge connects them
+  to their children.
+
+  Cross-cutting connections:
+    - Related operations: bind-data-entity-as-DEG-child-member (NEW
+      batch L), unbind-data-entity-from-DEG (NEW batch L)
+    - Related invariants:
+      - write-collaborative-deg-no-deg-side-authorization (NEW HIGH)
+      - add-delete-permission-asymmetry-on-deg-membership (NEW MEDIUM)
+      - silent-204-on-no-op-delete-vs-400-duplicate-on-no-op-add (NEW)
+      - hard-delete-on-relationship-edges-confirmed-cross-batch (NEW)
+      - deg-is-manually-created-deg-defensive-check (NEW)
+    - Cross-references the existing "data-entity-detail-page-shell"
+      entity (the DEG memberships surface on the entity detail page's
+      Groups panel) and the "inner-deg-suppression-comment-marked-deferred-feature"
+      invariant (the DEG-of-DEGs case the current cycle-detection
+      absence does not handle)
+
+  Three DOC-NNN candidates flow from this entity:
+    (a) Add a Permissions / Audit / Cross-Domain subsection to
+        /features/data-discovery/groups-domains.md
+    (b) Document the manually-created vs ingested DEG distinction
+    (c) Document the silent-204 and silent-200 contract semantics on
+        the developer API reference

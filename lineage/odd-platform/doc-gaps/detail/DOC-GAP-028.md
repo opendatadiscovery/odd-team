@@ -1,0 +1,7 @@
+- **DOC-GAP-028**: Activity Feed counts endpoint (`/api/activity/counts`) issues 4 parallel aggregation queries per call
+  - **Category**: drift
+  - **Surfaced by**: `getActivity.md:performance.known_performance_gaps.[1]` + `:performance.hot_paths.[2]`.
+  - **Evidence**: 4-parallel `Mono.zip` queries (totalCount + myObjects + downstream + upstream); no caching.
+  - **Proposed doc action**: Fold into DOC-GAP-029 api-reference content; recommend ≥30s polling cadence on high-traffic platforms.
+  - **Cross-references**: DOC-GAP-029.
+  - **Severity rationale**: LOW.

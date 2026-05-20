@@ -1,0 +1,132 @@
+name: metadata_field_value.active column silently drops to NULL on every UPDATE
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-19L** — primary-source
+  confirmed at `ReactiveMetadataFieldValueRepositoryImpl.java:97-98` +
+  `DataEntityServiceImpl.java:292-295` + `V0_0_1__init.sql:175-186`. The
+  custom-metadata upsert path silently corrupts the `active` column on
+  every UPDATE.
+
+  **The bug mechanism**:
+    - `ReactiveMetadataFieldValueRepositoryImpl.update` (lines 95-104)
+      writes `.set(METADATA_FIELD_VALUE.ACTIVE, pojo.getActive())` in
+      the SET clause.
+    - The upsert path's pojo construction at
+      `DataEntityServiceImpl.upsertMetadataFieldValue` (lines 292-295)
+      builds the pojo by setting ONLY `value` — never calls `.setActive(...)`.
+    - The jOOQ-generated `MetadataFieldValuePojo.getActive()` returns
+      `Boolean` (boxed reference). Unset = `null`.
+    - The DB column is `boolean DEFAULT TRUE` per
+      `V0_0_1__init.sql:180`, but column DEFAULTs apply on INSERT ONLY.
+      An UPDATE that explicitly SETs the column writes the explicit
+      value — in this case, `null`.
+    - Net effect: every successful upsert silently flips
+      `metadata_field_value.active` from `TRUE` (post-INSERT default) to
+      `NULL`.
+
+  **Why this is a silent state-corruption bug**:
+    - The column is `boolean`, intended for two-valued state (TRUE / FALSE);
+      ending up at NULL is the THIRD logical state that downstream
+      consumers likely don't expect.
+    - Any code that filters `WHERE active = TRUE` (or `WHERE active IS NOT
+      FALSE`, etc.) will treat post-edit rows differently. The actual
+      downstream usage of `active` needs auditing — the impact depends
+      on which queries gate on this column.
+    - The corruption is silent — no error, no warning, no
+      diff-visibility. Every edit on every field for every entity
+      systematically degrades the column's state from TRUE to NULL.
+    - First edit corrupts; subsequent edits are idempotent (NULL → NULL
+      via the same .set(... pojo.getActive())).
+
+  **Why the bug exists** (the architectural mistake): the repository
+  layer's UPDATE statement uses an "always set every column" pattern
+  (every settable column on the pojo flows into the SET clause); the
+  service layer's pojo construction only sets the columns it explicitly
+  cares about. The decoupling means: every NULL in the pojo becomes a
+  NULL in the SET clause regardless of whether the service intended to
+  "leave this column alone" or "set it to NULL". A jOOQ-idiomatic fix
+  would be to use a partial-update pattern (`.set(column, value)` only
+  for explicitly-set columns); the codebase's repository layer
+  generally favors the full-pojo pattern for symmetry with INSERT, but
+  the symmetry breaks for nullable columns.
+
+  **The bug is currently untested**: there is no test asserting
+  `active` stays TRUE after an upsert. The only happy-path test
+  (`DataEntityServiceTest.upsertMetadataFieldValueTest` at lines
+  164-191) mocks `reactiveMetadataFieldValueRepository.update` to
+  return the persisted pojo — so the test never exercises the actual
+  SET-clause statement.
+
+  **Pairs with**: the broader "silent state-corruption" pattern at
+  ODD — the silent-200-on-missing pattern (the operator doesn't know
+  their write didn't land), the EXTERNAL-overwrite pattern (the
+  operator doesn't know they overwrote ingested data). The `active`
+  regression is the THIRD silent-corruption shape on the same
+  endpoint.
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+nodes:
+  - odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue.md
+contributors:
+  - |-
+    upsertDataEntityMetadataFieldValue batch L (PRIMARY SOURCE):
+    concepts.invariants.[5] (active column gets set to NULL on every
+    update — the boolean DEFAULT TRUE applies on INSERT only) +
+    bugs_limitations_corner_cases.[4] (active column dropped to NULL on
+    every UPDATE — silent state-corruption)
+evidence:
+  - upsertDataEntityMetadataFieldValue.md:concepts.invariants.[5]
+  - upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[4]
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: data-corruption
+mitigations_unimplemented:
+  - |-
+    Fix the bug — either:
+      (a) At the service layer: load the existing pojo via a
+          repository GET, then call `.setActive(existingPojo.getActive())`
+          before passing to `.update()` (preserves the prior state).
+      (b) At the repository layer: refactor `update` to use a
+          partial-update pattern, only including columns the caller
+          explicitly set (omits NULL-valued columns from the SET clause).
+      (c) Provide a `setActiveAware` constructor / setter on the pojo
+          that defaults to TRUE — matching the column's DEFAULT TRUE.
+  - |-
+    Audit downstream queries for usages of `metadata_field_value.active`
+    to gauge the bug's impact. If no consumer filters on `active`, the
+    bug is latent (operator-invisible but real); if any consumer does,
+    edited rows silently disappear from those queries.
+  - |-
+    Add regression tests:
+      (a) Insert a row (active=TRUE by default);
+      (b) Upsert it;
+      (c) Assert the post-upsert active column is still TRUE.
+notes: |-
+  NEW invariant captured in batch 2026-05-19L. The bug is a real
+  state-corruption mechanism with unclear-but-potentially-significant
+  downstream impact. Audit of `metadata_field_value.active`
+  consumers is a prerequisite to severity-pinning.
+
+  Cross-cutting connections:
+    - Pairs with "silent-200-on-missing-pair-or-entity-on-upsert-family"
+      — same endpoint, different silent-corruption shape
+    - Pairs with "EXTERNAL-origin metadata field overwrite — silent,
+      no origin check, no audit" — same endpoint, third
+      silent-corruption shape; together the three findings characterize
+      the metadata upsert path as a forensic black hole
+    - Cross-references "Three soft-delete mechanisms across the
+      repository layer" — both are architectural-hygiene issues
+      surfaced by reading the repository-layer SQL primary source
+
+  Two DOC-NNN candidates:
+    (a) Fix the bug (pojo.getActive() = NULL propagation through SET clause)
+    (b) Audit downstream queries on the `active` column to assess
+        whether the latent bug is actually breaking anything

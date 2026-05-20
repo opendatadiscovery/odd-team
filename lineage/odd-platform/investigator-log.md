@@ -703,7 +703,7 @@ Until batch G fires, the held-back spot-check set should be matched against batc
 - **Substrate commit**: `ede5d277` (45 prior sidecars + 5 new = **50 total; 12.7% coverage of 395 substrate nodes**)
 - **Theme**: DataEntityController method-level deepening round 2 — five high-leverage methods chosen against next-batch planning notes from batch F: known-bug validation (term path-mismatch from TEST-GAP-017) + new-area attack-surface exploration (XSS / Markdown rendering) + pattern-check (Tag auto-create vs Owner/Title batch-F sub-pattern) + ADR-CANDIDATE-015 primary-source confirmation (owner-scoped reads) + cross-batch loop closure (view_count from getDataEntityDetails → getPopular ranking).
 - **Pre-batch catch-up**: `/test-coverage` refreshed first to fold in batch-F sidecars (sidecar_count: 40 → 45; +34 TEST-GAPs; total 252 → 286). Cleanest catch-up per batch-F next-batch notes.
-- **Source repo**: re-cloned at `/home/raman/work/odd/odd-platform` (commit ede5d277) — was missing from the working tree before this batch; needed for file-analyser primary-source reads.
+- **Source repo**: re-cloned at `<REPO_ROOT>` (commit ede5d277) — was missing from the working tree before this batch; needed for file-analyser primary-source reads.
 - **Retry note**: 2 of 5 file-analyser agents (createDataEntityTagsRelations + getPopular) hit stream-idle timeouts on first attempt (likely WebFetch-induced); both succeeded on retry with explicit "no WebFetch" mode (source-only primary-read).
 
 ### Sidecars added (5)
@@ -782,7 +782,7 @@ Until batch G fires, the held-back spot-check set should be matched against batc
 
 Three high-leverage themes for batch H:
 
-1. **Repository layer** — still 0 enriched. With the source repo now reliably cloned at `/home/raman/work/odd/odd-platform`, the substrate axis (currently jOOQ-based + `Reactive*RepositoryImpl` shape) is reachable. Where transaction boundaries, advisory-lock interactions, tenant-isolation enforcement, jOOQ FTS injection territory live. Pick anchors: `ReactiveDataEntityRepositoryImpl` (the largest by far), `ReactiveLineageRepositoryImpl` (cycle-detection territory), `ReactiveOwnershipRepositoryImpl` (Owner-scoping enforcement).
+1. **Repository layer** — still 0 enriched. With the source repo now reliably cloned at `<REPO_ROOT>`, the substrate axis (currently jOOQ-based + `Reactive*RepositoryImpl` shape) is reachable. Where transaction boundaries, advisory-lock interactions, tenant-isolation enforcement, jOOQ FTS injection territory live. Pick anchors: `ReactiveDataEntityRepositoryImpl` (the largest by far), `ReactiveLineageRepositoryImpl` (cycle-detection territory), `ReactiveOwnershipRepositoryImpl` (Owner-scoping enforcement).
 2. **DataEntityController.* further deepening** — 9 of 40 methods enriched after batches F + G. 31+ uncovered methods on the mega-tag — `addDataEntityDataEntityGroup`, `deleteDataEntityFromDataEntityGroup`, `getDataEntityActivity`, `getDataEntityAlerts`, `getDataEntityMessages`, `getDataEntityMetrics`, `getDataEntityUpstreamLineage`, `deleteTermFromDataEntity`, `deleteOwnership`, `updateOwnership`, `upsertDataEntityInternalName`, `upsertDataEntityMetadataFieldValue`, `getMessages`, `getDataEntityGroupsLineage`, etc. Symmetric DELETE/UPDATE methods are high-leverage (likely confirm or refute Owner/Tag/Title symmetric bypasses).
 3. **Anchor-set defence-in-depth audit** — batch G's NEW cross-cutting pattern. Enumerate every controller method that resolves owner via `fetchAssociatedOwner` and computes a derived response set (lineage, recommendations, search-scope filters). For each, the question is: does the derived-set logic apply a JOIN-side owner filter, or does it rely on anchor-set correctness? Only enrichment can answer; potential single-batch theme.
 
@@ -837,3 +837,813 @@ Per dynamic-verification ADR slice 5: each batch's investigator-log entry now re
 Each PASS/FAIL run merged a `## probe_verifications` entry into the contributing sidecars under `lineage/odd-platform/understanding/` (per dynamic-verification ADR Rule 4).
 
 ---
+
+## Batch 2026-05-19-H — Repository layer (5 nodes; FIRST rev-2 batch on sharded artefacts)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate commit**: `ede5d277` (50 prior sidecars + 5 new = **55 total**)
+- **Theme**: Repository layer — `Reactive*RepositoryImpl` files. Closes batch G's open theme (transaction boundaries / advisory-lock interactions / tenant-isolation enforcement / jOOQ FTS-injection territory).
+- **FIRST batch under rev-2 mechanics**: sharded registry artefacts (slice 6) + reducer prompts spawning grep-then-narrow-Read against the sharded indexes (slice 7) + emergent feature registry sharded from day 1 (slice 9) + coverage metrics on manifest (slice 8). Validated end-to-end in this batch.
+- **Substrate-axis gap surfaced**: The substrate (nodes.jsonl) does NOT yet enumerate repository nodes; the 5 batch-H sidecars use synthetic `node_id: ... repository:Reactive*RepositoryImpl` IDs. The coverage `## Integrity audit` block surfaces this as "Sidecars referencing nodes NOT in substrate: 5". **LSN candidate**: log as `LSN-018-repository-axis-gap` in a follow-up — the substrate's axis set needs `repository` added for clean denominator semantics. The methodology accommodated the gap gracefully (sidecars + feature-flow chains both reference the synthetic IDs; reducers consumed without issue).
+
+### Sidecars added (5)
+
+| Sidecar | Headline finding |
+|---|---|
+| `ReactiveDataEntityRepositoryImpl` | **NEW HIGH: SQL-format injection in `getHighlightedResult` (lines 799-806) via raw `String.formatted()` on user-controllable inputs** — the only raw-SQL-format path across the 5-repository batch; under DISABLED-mode anonymous remote SQL injection. Plus F-001 / F-003 / F-004 hops primary-source confirmed. REFACTOR-222 EXCLUDE_FROM_SEARCH inconsistency primary-source confirmed. |
+| `ReactiveLineageRepositoryImpl` | **REFACTOR-202 cycle/diamond amplification + REFACTOR-203 cross-owner enumeration both PRIMARY-SOURCE confirmed at SQL layer**. **NEW pattern**: anchor-set defence-in-depth bifurcated — `DataEntityRelationsServiceImpl` is the positive case; `LineageServiceImpl.getLineage` is the negative case. |
+| `ReactiveOwnershipRepositoryImpl` | **CROSS-BATCH CORRECTION**: batch-F `createOwnership` sidecar's "5xx surface on duplicate-key" claim is WRONG. Actual surface is HTTP 400 + `USR003`. **Orchestrator-hypothesis refuted**: this repository does NOT own the JOIN OWNERSHIP for `/my` reads — that lives in `ReactiveDataEntityRepositoryImpl#listByOwner:526-527`. |
+| `ReactivePolicyRepositoryImpl` | **NEW HIGH: `getRolesPolicies` (per-request RBAC hot path) does NOT filter soft-deleted policies** — soft-deleted policies still grant permissions. Plus 5 implicit ADRs including the canonical `policy_name_unique` partial UNIQUE INDEX `WHERE deleted_at IS NULL` pattern from primary source. |
+| `ReactiveAlertRepositoryImpl` | **NEW HIGH: AlertManager webhook `POST /ingestion/alert/alertmanager` is NOT gated by IngestionDataEntitiesFilter** — untrusted `entity_oddrn` label admits cross-tenant alert creation (extends REFACTOR-082). REFACTOR-024 PRIMARY-SOURCE confirmed at SQL layer. REFACTOR-188 narrowed: alert activity emission at service layer, not repository. |
+
+### Reducer diffs (rev-2 sharded; all 5 ran without timeout/rate-limit)
+
+| Reducer | Before → After | Delta | Highlights |
+|---|---|---|---|
+| concept-merger | 153 → **160 concepts** | +7 net-new (1 entity / 3 invariants / 3 operations); 8 strengthened | New invariants codify repo-layer patterns: **three soft-delete mechanisms across the persistence layer**, **repository transactional boundary at service layer not repository** (5/5 repos uniformly transaction-free), **DB-uniqueness with centralised friendly-error translation** (USR-codes via ExceptionUtils). |
+| adr-archaeologist (ADRs) | 67 → **75 candidates** | +8 new (068-075); 2 strengthened (058 + 067) | **0 wisdom-test fails** (8th consecutive batch). ADR-067 `@ReactiveTransactional` boundary asymmetry now **9-sidecar**. ADR-075 NEW: "repositories take no Principal" — codebase-wide architectural finding (HIGH). |
+| adr-archaeologist (scopes) | 211 → **227 scopes** | +16 new (229-244); 6 strengthened (024, 082, 202, 203, 207, 222) | **REFACTOR-229 SQL-format injection** (HIGH). **REFACTOR-230 getRolesPolicies soft-delete bypass** (HIGH). **REFACTOR-231 AlertManager webhook payload-driven alert creation** (HIGH; extends REFACTOR-082). **REFACTOR-232 cross-batch correction**: createOwnership = HTTP 400/USR003, NOT 5xx. REFACTOR-024 strengthened to **full-stack 8-sidecar** (controller+service+repository SQL). |
+| doc-gap-finder | 103 → **112 findings** | +9 new (104-112); 8 strengthened | **DOC-GAP-104 SQL-injection** (first in catalog). **DOC-GAP-105 Lineage CTE no defence** — supersedes DOC-GAP-021 with 4-angle primary-source. **DOC-GAP-106 getRolesPolicies returns soft-deleted policies**. **DOC-GAP-107 AlertManager webhook bypass**. **DOC-GAP-108 cross-batch correction** (5xx→400/USR003). DOC-GAP-082 now **13-sidecar** (DISABLED-mode bypass cluster). WebFetch denied this session — same constraint as batches D/E/F/G; inherited verifications cited. |
+| test-coverage-mapper | 312 → **364 gaps** | +52 new (313-364); 11 strengthened | **4 NEW CRITICAL**: TEST-GAP-316 (FTS SQL-injection), TEST-GAP-345 (getRolesPolicies soft-delete), TEST-GAP-356 (REFACTOR-024 SQL-layer), TEST-GAP-363 (AlertManager webhook unauth). 13 HIGH / 27 MEDIUM / 8 LOW. **0 sidecar-quality findings** (all test_files claims grep-verified). |
+| feature-flow-builder | 5 → **7 features** | +2 new (F-006, F-007); 4 extended (F-001, F-003, F-004, F-005) | **F-006 NEW: RBAC policy lifecycle** — soft-delete + permission-grant persistence. **F-007 NEW: AlertManager webhook ingestion** — ungated cross-tenant alert creation. F-001 / F-003 / F-004 / F-005 each gained extended_features delta with primary-source SQL evidence and new facets. |
+
+### Rev-2 mechanics validation (FIRST batch under sharded artefacts — empirical cost-ceiling test)
+
+- **Reducer context budget**: All 5 reducers operated within their per-batch budget (vs 200-800 KB monolithic-input pattern of batches A-G). **ZERO rate-limit hits this batch. ZERO stream-idle timeouts.** The cost-ceiling promise of rev-2 principle 7 is empirically validated on the first batch.
+- **Grep-then-narrow-Read pattern**: adr-archaeologist hit the read-limit on full index files (25K-token Read cap) and naturally fell back to Grep-then-narrow — exactly the rev-2 design ("never load the full index"). Output as `index-batch-H-append.md` files which the orchestrator merged into the live indexes.
+- **Cross-batch correction propagation**: ReactiveOwnershipRepositoryImpl sidecar surfaced batch-F's `createOwnership` 5xx-claim is wrong; the correction propagated as REFACTOR-232 + DOC-GAP-108 across 3 reducer artefacts. The architecture supports cross-batch corrections without resurfacing as duplicates.
+- **Emergent-feature registry** (rev-2 principle 8): 2 new features (F-006, F-007) discovered organically; NOT pre-enumerated. 4 existing features extended without merge. Zero auto-merges; zero maintainer-triage-ambiguous cases.
+
+### Cumulative state after batch H
+
+| Layer | Count |
+|---|---|
+| Substrate scaffold | 395 nodes / 479 edges (unchanged) |
+| Sidecars | **55** (13.9% direct; **16.5% effective coverage** via feature-flow chains) |
+| Features | **7** (5 prior + 2 new) — 4 with ≥1 PROBED cell |
+| concepts/ | catalog v9; **160 concepts** |
+| implicit-adrs/ | **75 ADR candidates** (22 HIGH / 48 MEDIUM / 5 LOW) |
+| refactoring-scopes/ | **227 scopes** (66 HIGH / 106 MEDIUM / 55 LOW) |
+| doc-gaps/ | **112 findings** (58 HIGH / 43 MEDIUM / 11 LOW) |
+| test-map/ | **364 test gaps** (85 CRITICAL / 122 HIGH / 115 MEDIUM / 42 LOW) |
+
+### Next-batch planning notes
+
+Three high-leverage themes for batch I:
+
+1. **Service layer** — `AlertServiceImpl`, `DataEntityServiceImpl`, `IngestionService`, `NotificationsDispatcher`, `PolicyServiceImpl`. The integration-tier between controllers and repositories. ZERO enriched. Will resolve UNRESOLVED references in the new F-006 / F-007 chains + extend F-001 / F-003 / F-005 with service-layer hops. The lost-update race surfaced in F-006 (`PolicyServiceImpl.update` lines 71-81 outside `@ReactiveTransactional`) is a candidate primary-source target.
+2. **Anchor-set defence-in-depth audit** — batch H's NEW pattern from ReactiveLineageRepositoryImpl. Enumerate every controller method resolving owner via `fetchAssociatedOwner` then computing a derived response set. Narrower scope than service layer; can pair with #1.
+3. **UI-axis sidecars** — `DataEntityDetails.tsx` + redux thunks. Resolve remaining UNRESOLVED references in F-001's chain (the UI useEffect dep-array bug at hop 1). Pairs with the live dynamic-verification P-001/P-004 probes that already pin the +2 behaviour empirically.
+
+Plus follow-ups from this batch:
+- **`LSN-018-repository-axis-gap`** — write the retrospective; propose a `repository` axis for the substrate (slice 10 candidate).
+- **`shard.py` improvement** — the feature-flow-builder occasionally writes YAML scalars containing unquoted `: ` or leading `@` which break parsing. 3 of 7 F-NNN detail files needed post-write quoting fixes this batch. Add a yaml-safe-dump validator in either the sharder or the feature-flow-builder prompt's emit rules.
+
+
+## Batch 2026-05-19-I — Service layer A (5 nodes; FIRST autonomous-driver batch via /next-batch)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate commit**: `ede5d277` (55 prior sidecars + 5 new = **60 total**)
+- **Theme**: Service layer A — AlertServiceImpl + DataEntityServiceImpl + IngestionServiceImpl + PolicyServiceImpl + LineageServiceImpl
+- **FIRST batch via the `/next-batch` autonomous skill** — pre-flight checks, theme-pick from sprint-themes.yaml, theme-lock, 5 file-analysers in parallel, 5 reducers in parallel, delta merge, coverage refresh, log + commit + push. Validates the skill's orchestration end-to-end before /loop kicks off overnight.
+- **Substrate-axis gap (service)**: same shape as batch H repository-axis gap. 5 new synthetic `service:...` node_ids. Coverage integrity audit shows 10 outside-substrate nodes now (5 repository + 5 service). LSN-018 candidate broadens to: substrate needs both `repository` AND `service` axes.
+
+### Sidecars added (5)
+
+| Sidecar | Headline finding |
+|---|---|
+| `AlertServiceImpl` | Service-tier cross-owner bypass on 3 methods (REFACTOR-024 family confirmed at service layer); AlertManager webhook `entity_oddrn` spoofing surface; `@ActivityLog` AOP `@Profile("!integration-test")` test-coverage trap. |
+| `DataEntityServiceImpl` | 22 methods, 8 `@ReactiveTransactional` boundaries quantified; F-001/F-003/F-004 service-tier hops triangulated. Silent-UPDATE-on-missing for description/business-name (existence-check asymmetry vs metadata/DEG paths). |
+| `IngestionServiceImpl` | **NEW HIGH (CRITICAL-class data-loss surface): silent metadata-delete-on-absence + lineage-replace-on-each-call destruction.** Operators expect "merge" semantics; service does "replace" → silent data loss on every ingestion batch. F-008 new feature minted. |
+| `PolicyServiceImpl` | **PRIMARY-SOURCE confirmation of batch-H lost-update race at lines 71-81.** Sibling RoleServiceImpl IS `@ReactiveTransactional` on the same shape — sibling-asymmetry is the canonical invariant. Cascade-delete check at lines 89-92 is sole service-layer defence against orphan-binding permission leak. |
+| `LineageServiceImpl` | **Anchor-set defence-in-depth NEGATIVE-CASE primary-source confirmed** (no AuthIdentityProvider field; getLineage doesn't call fetchAssociatedOwner). REFACTOR-203 cross-owner enumeration is unmitigated end-to-end. LineageDepth.empty()/of(0) folklore (misleading API naming). |
+
+### Reducer diffs (rev-2 sharded; ALL 5 ran without timeout/rate-limit)
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 160 → **179 concepts** (rebuilt index has 176 — 3 entity files have YAML emit bug; see follow-ups) | +19 net-new (9 invariants + 7 operations + 3 canon-cands); 4 strengthened. Key new invariants: service-tier transactional asymmetry between siblings; anchor-set defence-in-depth positive vs negative; silent data-loss replace-not-merge ingestion. |
+| adr-archaeologist (ADRs) | 75 → **83** | +8 new (076-083); 6 strengthened. ADR-067 (`@ReactiveTransactional` boundary at service-not-repository) now **14-sidecar** — strongest after ADR-001 at 18. ADR-079/080/081/082 are HIGH. |
+| adr-archaeologist (scopes) | 227 → **259** | +32 new (245-276) + REFACTOR-189 re-sharded. New HIGHs: REFACTOR-258 (ingestion silent metadata delete), 259 (silent lineage-replace), 266 (Policy lost-update race), 267 (Policy orphan-binding race). |
+| doc-gap-finder | 112 → **127 findings** | +15 new (113-127); 5 strengthened. New HIGHs: DOC-GAP-113/114 (ingestion silent destruction LSN-001 family), 115 (anchor-set asymmetry), 116 META (txn-at-service boundary undocumented platform-wide), 117 (AlertManager webhook generatorURL XSS chain). |
+| test-coverage-mapper | 312 → **416 gaps** (rebuilt index has 413 — 3 detail files have YAML emit bug; see follow-ups) | +52 new (365-416); 14 strengthened. 4 new CRITICAL: TEST-GAP-388 (silent metadata-delete), 389 (silent lineage-replace), 392 (cross-tenant ingestion under filter-OFF), 403 (Policy cascade-delete race). |
+| feature-flow-builder | 7 → **8 features** | +1 new (F-008 Ingestion-replace destruction surface — `webhook:POST /ingestion/entities`; HIGH user-observable feature). 6 extended (F-001 hop-3.5 + F-003 service pass-through + F-004 silent-200-on-missing + F-005 anchor-set negative-case + F-006 lost-update race primary source + F-007 entity_oddrn primary source). |
+
+### Coverage state after batch I
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment (nodes with own sidecar) | 60 | **15.2%** |
+| Effective coverage (touched by any feature-flow OR own sidecar) | 72 | **18.2%** |
+| Features discovered | 8 | (informational; no denominator) |
+| Features with ≥1 cell PROBED | 4 | (informational) |
+
+### Critical follow-up — YAML emit bug in 6 detail files
+
+Same shape as the batch-H feature-flows YAML emit bug — reducers emit YAML scalars containing unquoted `: ` substrings (e.g. embedded `@ReactiveTransactional on update` or `(proposed: ...)` parentheticals inside list items). YAML parses these as ambiguous mapping values and rejects the file.
+
+Affected files this batch:
+- `test-map/detail/TEST-GAP-402.yaml` (line 32)
+- `test-map/detail/TEST-GAP-403.yaml` (line 37)
+- `test-map/detail/TEST-GAP-410.yaml` (line 32)
+- `concepts/detail/entities/alert.yaml` (line 144)
+- `concepts/detail/entities/data-entity.yaml` (line 144)
+- `concepts/detail/entities/lineage-graph-traversal.yaml` (line 96)
+
+**Structural fix needed BEFORE /loop overnight** — without it, every batch produces ~5-10% broken YAML files that need manual triage. Two options: (a) add an explicit rule to every reducer's prompt: "any string scalar containing `: ` or starting with `@` MUST use `|-` block-scalar form OR be single-quoted"; (b) add a post-reducer `yaml-validator` pass in `/next-batch` Phase 3 that catches + auto-quotes broken scalars.
+
+Detail files preserve the DATA (the 6 files are present on disk; only the YAML parse is broken). Indexes rebuilt from detail/ via `/tmp/rebuild_indexes.py` — captures 413 test-gaps + 176 concepts; 6 entries deferred until detail files are fixed.
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-024 family** — now **full-stack 4-layer**: controller (batch A) + repository (batch H) + service (batch I) + concept invariant. Read-collaborative cross-owner enumeration end-to-end confirmed.
+- **ADR-067 txn-at-service-not-repository** — 14-sidecar (was 9-sidecar at batch H). The PolicyServiceImpl OUTLIER is the canonical break-the-rule example.
+- **REFACTOR-203 (cross-owner lineage enumeration)** — now unmitigated end-to-end at THREE layers (controller, service, repository).
+- **Forensic silence (no audit on mutations)** — 3-batch confirmed (E + H + I) for RBAC mutations.
+
+### Rev-2 mechanics validation (SECOND batch under sharded artefacts)
+
+- **Reducer context budget**: All 5 ran without timeout/rate-limit. Repeating the batch-H validation finding.
+- **Grep-then-narrow-Read pattern**: adr-archaeologist + concept-merger + test-coverage-mapper all fell back to `index-batch-I-append.md` / `index.delta.yaml` / `concepts.delta.batch-I.yaml` files when their full Read on indexes exceeded the 25K cap. The orchestrator (this skill) merged them.
+- **Append-merge robustness**: The implicit-adrs + refactoring-scopes awk-merge worked cleanly. The test-map delta merger hit a key-name mismatch (`test_gaps_index_append` expected, got something else) — fix landed in next batch by rebuilding index from detail/. The concepts delta hit the YAML emit bug as above.
+- **Emergent-feature registry**: F-008 minted organically (NOT pre-enumerated); 6 features extended without merge. Zero auto-merges.
+
+### Next-batch planning notes
+
+Two follow-ups BEFORE batch J:
+1. **Fix the YAML emit bug** — update reducer prompts to enforce `|-` block scalars / single quotes on any value containing `: ` or starting with `@`. Without this, batch J will produce another ~6 broken files.
+2. **Fix merge_deltas.py key-name mismatch** — test-coverage-mapper's delta uses a key the merger doesn't recognize. Quick fix to the merger.
+
+Then batch J can fire: UI-axis — DataEntityDetails.tsx + thunks + Description + PopularStrip + LineageGraph. Resolves F-001 hop 1+2 (the LSN-017 useEffect dep-array bug from primary source) + F-003/F-004/F-005 UI sides.
+
+
+## Rev-3 transition — Layer 0 system mission anchor + F-001..F-008 re-classification (2026-05-19, post batch I)
+
+- **Trigger**: maintainer review after batch I — "we have so many nodes but 8 features that are mostly about some particular caveats of features"; the diagnosis was that the methodology lacked the platform's gestalt (what "feature" means at operator-facing granularity).
+- **Methodology change**: new Layer 0 sits beneath the existing 5 layers. New `domain-extractor` subagent (`.claude/agents/domain-extractor.md`) reads canonical docs (live URLs or local source-of-truth markdown) + maintainer-curated concepts + (when needed) maintainer interview, and emits `lineage/{repo}/system-mission.md` — a doc-anchored 8-12-pillar shape.
+- **ADR**: `adrs/drafts/feature-anchored-ontology.md` rev 3 + APPROACH.md §13 (universal Layer 0 framing for any project bootstrapping the methodology).
+- **Reducer prompts updated**: feature-flow-builder (Rule 0 LOAD-BEARING: consult Layer 0 before classifying) + concept-merger / adr-archaeologist / doc-gap-finder / test-coverage-mapper (lighter "consult system-mission.md" rules for pillar-anchored naming, severity weighting, pillar-coverage gaps, integration-boundary test classification).
+
+### `system-mission.md` produced
+
+11 pillars + 4 canonicalisation candidates + 12 audiences + 6 architectural pillars. Doc source: local `documentation/docs/**/*.md` (WebFetch denied this session — same constraint as batches D-I; live verification logged as known follow-up per the Layer-0 doc-source contract). Confidence: MEDIUM (local-anchored; live verification pending).
+
+| Pillar | Capability |
+|---|---|
+| P-01 Data Discovery | Find existing data entities (Search, Directory, Catalog Overview) + annotate (tags, statuses, descriptions, attachments, groupings) |
+| P-02 Data Modelling | Capture dataset contract (Query Examples + Relationships / ERDs) |
+| P-03 Master Data Management | Operator-curated reference data (Lookup Tables — partial-MDM scope) |
+| P-04 Data Quality | Aggregate per-dataset quality signals (aggregator only — checks performed externally) |
+| P-05 Data Lineage | Upstream/downstream traceability across data + microservices |
+| P-06 Data Glossary | Business-term catalog + term-entity linkage |
+| P-07 Active Platform Features | Event-driven actor surfaces (alerts/notifications/activity/collab/genai) |
+| P-08 Management & Administration | 9-tab operator UI (config / policies / roles / owners / namespaces / collectors / tokens / settings / audit) |
+| P-09 Security & Access Control | 3 auth surfaces + RBAC |
+| P-10 Integrations & Ingestion | Producer ecosystem (collectors + push adapters + Ingestion API) |
+| P-11 Platform API & Developer Surface | API Reference + Swagger + custom-collector authoring |
+
+### F-001..F-008 → pillar-anchored re-classification
+
+Each rev-2 bug-anchored feature is now a `drift_class` facet inside a pillar-anchored feature. Detail files preserve all existing content; pillar_id + pillar_anchored_id + primary_drift_class + drift_class_summary + rev3_reclassification fields added at the top.
+
+| rev-2 F-NNN | rev-3 pillar_anchored_id | Pillar-anchored feature name | Primary drift class |
+|---|---|---|---|
+| F-001 (Detail-page view tracking) | **P-01:F-001** | Popular Entities Ranking | `ui_amplification` |
+| F-002 (Term linking) | **P-06:F-001** | Term-to-Entity Linkage | `auth_layer_hides_endpoint` |
+| F-003 (Popular ranking exclude-from-search) | **P-01:F-001** ← merge candidate with F-001 | Popular Entities Ranking | `filter_application_inconsistency` |
+| F-004 (Markdown description) | **P-01:F-002** | Entity Description Editing | `external_lib_assumes_sanitisation` |
+| F-005 (Downstream lineage) | **P-05:F-001** | Lineage Graph Traversal | `spec_says_X_impl_does_Y` |
+| F-006 (RBAC policy lifecycle) | **P-09:F-001** | Role-Based Access Control | `permission_persistence_after_soft_delete` |
+| F-007 (AlertManager webhook) | **P-07:F-001** | AlertManager Integration | `unauthenticated_payload_trust` |
+| F-008 (Ingestion-replace destruction) | **P-10:F-001** | Batch Ingestion (S2S API) | `silent_destruction_replace_not_merge` |
+
+**Merge candidate surfaced**: F-001 + F-003 are both `P-01:F-001` Popular Entities Ranking with different drift facets. Per rev-2 principle 8, merges are maintainer-triggered, not automatic. The two detail files stay separate; the rev3_reclassification block carries `merge_candidate_with: F-001` / `F-003` cross-references for the maintainer to decide.
+
+### Pillar coverage from existing 60 sidecars (informational)
+
+- P-01 Data Discovery: ~25 sidecars touching this pillar (controllers + services + repositories for data-entity surface)
+- P-09 Security & Access Control: ~12 sidecars (auth configs + RBAC controllers/services/repository)
+- P-10 Integrations & Ingestion: ~8 sidecars (IngestionService + IngestionDataEntitiesFilter + AlertManager + collector controllers)
+- P-07 Active Platform Features: ~7 sidecars (Activity / Alerting / Slack collab / GenAI / Notifications)
+- P-04 Data Quality: ~3 sidecars (sparse — most DQ code lives in collectors, outside odd-platform)
+- P-05 Data Lineage: ~3 sidecars (lineage controller + service + repository)
+- P-06 Data Glossary: ~2 sidecars (Term controller paths + concept entries)
+- P-08 Management & Admin: ~5 sidecars (Settings / Policies UI surfaces — partial)
+- P-02 Data Modelling: 0 sidecars yet (Query Examples + Relationships not enriched)
+- P-03 Master Data Management: 0 sidecars yet (Lookup Tables not enriched)
+- P-11 Platform API & Developer Surface: 0 sidecars yet (api-reference surface itself not enriched)
+
+Pillars P-02, P-03, P-11 are doc-mentioned-but-code-uncovered → batch theme candidates ranked by pillar-coverage gap.
+
+### Methodology state after rev 3
+
+- 60 direct sidecars (15.2%) + 72 effective coverage (18.2%) [unchanged from batch I]
+- 8 features now properly pillar-anchored (was bug-pin features)
+- 1 merge candidate surfaced for maintainer review (F-001 + F-003)
+- 11 pillars + 4 canon-candidates + 12 audiences + 6 architectural pillars in system-mission.md
+- Layer 0 confidence: MEDIUM (live-URL verification deferred to WebFetch-enabled session)
+
+### Follow-ups for /loop overnight
+
+- Subsequent batches (J / K / L / ...) use the new pillar-anchored shape for any new features they discover or extend. The rev-3 feature-flow-builder prompt is the gate.
+- Live-URL verification of all 14 pillar/mission/relationship URLs is a known follow-up — needs WebFetch-enabled session (same constraint as batches D-I).
+- F-001 + F-003 merge triage is maintainer-pending.
+- The 3 broken-yaml-pending-fix files from batch I (alert.yaml, data-entity.yaml, TEST-GAP-402.yaml) remain quarantined; the new YAML-safe-emit reducer rule prevents future occurrences but doesn't auto-fix the existing 3.
+
+
+## Batch 2026-05-19-J — UI-axis (DataEntityDetails + thunks closes F-001 chain; 5 nodes; SECOND autonomous-driver batch)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate commit**: `ede5d277` (60 prior sidecars + 5 new = **65 total**)
+- **Theme**: UI-axis — DataEntityDetails + fetchDataEntityDetails thunk + DataEntityDescription + PopularStrip + LineageGraph. Closes F-001/F-003/F-004/F-005 chains at the UI half.
+- **Second autonomous /next-batch invocation** — second validation of the orchestration end-to-end + the rev-3 Layer-0 consult pattern.
+- **Substrate-axis gap (UI components / redux-thunk)**: 5 new synthetic node_ids (ts react-component + ts redux-thunk kinds). Integrity audit will surface in the next coverage report. Total substrate-axis-gap nodes now: 15 (5 repository + 5 service + 5 UI).
+
+### Sidecars added (5)
+
+| Sidecar | Headline finding |
+|---|---|
+| `DataEntityDetails` | **LSN-017 root-cause PRIMARY-SOURCE PINNED** at lines 56-64 — `useEffect` dep-array contains `details.status?.status` derived from fetch response → re-fires after first fetch lands → +2 fetch dispatches per page-open. 3 ADRs, 10 uncovered_behaviours. **Zero `.test.tsx` files exist anywhere in odd-platform-ui codebase** (vitest + testing-library installed but unused — META-finding). |
+| `fetchDataEntityDetails thunk` | **Self-feeding double-fetch loop CONFIRMED from UI side** — `handleResponseAsyncThunk` 1:1 dispatch:HTTP multiplicity; thunk's own fulfilled action populates `details.status?.status` which retriggers the DataEntityDetails useEffect. Loop closure end-to-end with empirical P-001+P-004 measurements. 3 ADRs, 6 corner cases. |
+| `DataEntityDescription` | **F-004 UI half EXHAUSTIVELY CONFIRMED** — `MDEditor.Markdown` invoked with NO `rehypePlugins` override at `Markdown.tsx:112-124`. `grep -rln 'rehype-sanitize' <odd-platform-ui>` returns 0 matches in source AND 0 in `pnpm-lock.yaml`. `@uiw/react-md-editor@3.25.6` → `@uiw/react-markdown-preview@4.2.2` transitively pulls in `rehype-raw@6.1.1` (pnpm-lock.yaml:5911-5938). **Permission gating is PARTIAL** — `<WithPermissions Permission.DATA_ENTITY_DESCRIPTION_UPDATE>` wraps ONLY Edit/Add buttons; the `<Markdown value>` content render at `InternalDescriptionPreview.tsx:21` is UNCONDITIONAL for every `DATA_ENTITY_VIEW` holder. 7 ADRs, 8 corner cases. |
+| `PopularStrip` | **SUBSTRATE PATH DRIFT**: the substrate's target `OverviewPopular/OverviewPopular.tsx` does NOT exist as of `9ac6436e`. The Popular surface is implemented as the 4th column inside `OwnerEntitiesList.tsx`. Surfaced as canonicalisation_candidate. **NEW doc-vs-code drift**: live docs say tile-click opens Structure tab; code opens Overview tab. Plus: docs say Recommended panel visible under DISABLED auth; code unconditionally hides it under DISABLED. 4 ADRs, 8 corner cases. |
+| `LineageGraph` | **REFACTOR-202 UI realisation PRIMARY-SOURCE CONFIRMED**: d3-hierarchy is tree-not-DAG, so diamond DAGs render DUPLICATE nodes at the UI layer. UI ALWAYS supplies `d=1` from `defaultLineageQuery` (constants.ts:77) — F-005 NPE caveat masked from typical UI path. **REFACTOR-203 UI realisation**: UI's only fetch path is the NEGATIVE-anchor-set `getDataEntityDownstreamLineage` / `getDataEntityUpstreamLineage`, NEVER `getMyObjectsWith*` (anchor-set-defended endpoints unused at UI). 6 ADRs, 10 corner cases, 5 doc-drift findings, 14 uncovered_behaviours. |
+
+### Reducer diffs (rev-3 sharded; all 5 ran cleanly)
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 177 → **198 concepts** (rebuilt index has 198; 1 entity file lineage-graph-traversal.yaml broke from a write at line 1 col 1 — quarantined to .broken-yaml-backup; see follow-ups) | +22 net-new (4 entities + 3 operations + 10 invariants + 5 canon-candidates); 11 strengthened. Pillar_affinity field added per concept (rev-3 Layer-0 consult applied). |
+| adr-archaeologist (ADRs) | 83 → **97 candidates** | +14 new (084-097) + 3 strengthened (ADR-003 read-collaborative now 4-sidecar; ADR-054 view-count read-as-write; ADR-066 Popular single-signal). Wisdom test: 14 PASS + 8 reclassified to scopes. ADR-CANDIDATE-089 NEW HIGH: partial-permission-gating-at-UI architectural commit. ADR-CANDIDATE-084 NEW: handleResponseAsyncThunk wrapper codified as project-wide pattern (15 thunk files). |
+| adr-archaeologist (scopes) | 259 → **300 scopes** | +24 new (277-300) + 6 strengthened (REFACTOR-200/203/218/220/225+237/227). **REFACTOR-289 NEW (CRITICAL-class META)**: zero `.test.tsx` files across entire odd-platform-ui SPA — cross-cutting foundational gap that unblocks every other UI hardening item. REFACTOR-287 NEW HIGH: P-05+P-09 cross-pillar `d=` URL exploit. REFACTOR-220 strengthened with empirical P-004 measurement. |
+| doc-gap-finder | 127 → **126 sharded findings** (index frontmatter claims 138 — see follow-ups; the discrepancy is from batch F's DOC-GAP-084..095 IDs that were assigned but never sharded; surfaced for reconciliation next batch) | +11 new (128-138; minus 12 not-yet-sharded IDs from batch F) + 5 strengthened (DOC-GAP-101/105/096/100). 2 new HIGH: DOC-GAP-130 (LSN-017 +2 doubling undocumented end-to-end); DOC-GAP-137 META (zero UI test coverage). 4 live WebFetches at status 200 — WebFetch IS available in this session for some agents. |
+| test-coverage-mapper | 415 → **453 gaps** | +38 new (417-454, all in sharded detail/) + 0 strengthened. **4 new CRITICAL**: TEST-GAP-417 (LSN-017 useEffect dep-array regression-pin), TEST-GAP-428 (rehype-sanitize XSS defence-in-depth cross-Markdown-surface), TEST-GAP-438 (F-001 cross-tier Playwright spec promoting P-001+P-004 to CI), TEST-GAP-454 META (UI test infrastructure baseline). **Probe-to-test promotion pattern proposed for the first time**: P-001+P-004 → CI-permanent Playwright specs via TEST-GAP-417 + TEST-GAP-438. 1 sidecar-quality finding: 4 of 5 batch-J sidecars overstate "zero UI tests"; actually 7 leaf-component tests exist — log for /enrich refresh. |
+| feature-flow-builder | 8 → **8 features** (unchanged count; 4 extended) | +0 new + 4 extended (F-001/F-003/F-004/F-005 each gained UI-side drift facets). 24 total new drift facets across the 4 features. F-001 chain now PRIMARY-SOURCE CONFIRMED end-to-end at every layer (UI + thunk + controller + service + repository + DB) + empirically measured (P-001/P-004). All 5 detail YAMLs validated parse-clean per YAML-safe emit rule. |
+
+### Coverage state after batch J
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment (nodes with own sidecar) | 65 | **16.5%** |
+| Effective coverage (touched by any feature-flow OR own sidecar) | 79 | **20.0%** ← crossed 20% milestone |
+| Features discovered | 8 | (unchanged; rev-3 8-feature pillar-anchored shape stable) |
+| Features with ≥1 cell PROBED | 4 | (unchanged) |
+
+### Cross-batch triangulation deltas (rev-3 pillar-anchored)
+
+- **F-001 / P-01:F-001 Popular Entities Ranking** — chain CLOSED end-to-end at every tier; LSN-017 root-cause locus now PRIMARY-SOURCE pinned at UI; the +2 doubling is empirically measured AND structurally explained from UI through DB. Strongest single end-to-end story in the catalog.
+- **REFACTOR-202 / REFACTOR-203 (Lineage Graph Traversal drifts)** — now BOTH have UI-layer primary-source confirmation; the abstract "cross-owner enumeration" + "diamond DAG amplification" findings have explicit UI realisations.
+- **REFACTOR-218 (F-004 stored XSS)** — UI half EXHAUSTIVELY confirmed; pnpm-lock primary-source citation for rehype-raw transitive dependency. Permission gating PARTIAL → strengthens REFACTOR-218 with the partial-gating-attack-surface dimension.
+- **ADR-CANDIDATE-003 (read-collaborative GET posture)** — now 11+ sidecars triangulated; strongest in the catalog.
+- **ADR-CANDIDATE-089 NEW**: partial-UI-permission-gating-as-architectural-commit — strengthens ADR-003 end-to-end read-collaborative posture at the UI layer.
+- **REFACTOR-289 NEW**: zero-UI-test-codebase-wide cross-cutting META scope.
+
+### Rev-3 mechanics validation (FIRST batch under Layer 0)
+
+- All 5 reducers consulted `system-mission.md` per rev-3 Rule 0; pillar-affinity / pillars-affected / pillar-anchored fields added to outputs.
+- feature-flow-builder produced 0 new features (correct outcome — UI sidecars are downstream HOPS in existing pillar-anchored features, not new pillar entries). Drift facets attached INSIDE existing features per rev-3 principle 9.
+- WebFetch worked for some agents (4 live URL verifications at status 200). Session-level permission may have improved since batches D-I.
+
+### Follow-ups (logged, not blocking)
+
+- `concepts/detail/entities/lineage-graph-traversal.yaml` broke during the concept-merger write (line 1 col 1 — likely a malformed top-of-file write). Backup in `.broken-yaml-backup`; quarantine + manual fix or next-batch regeneration recovers.
+- `doc-gaps/index.md` frontmatter claims `total_findings: 138`; actual sharded entries are 126 (batch F's DOC-GAP-084..095 IDs were referenced but never sharded). Reconcile in next batch.
+- adr-archaeologist + refactoring-scopes detail directories now contain "X-strengthen-batch-J" suffixed files alongside the canonical numbered ones (e.g. `ADR-CANDIDATE-003-strengthen-batch-J.md`). These are NEW SHAPE this batch — strengthens were emitted as separate files instead of appending to the canonical detail file. The markdown verify surfaces them as "detail without index" (25 in implicit-adrs + 63 in refactoring-scopes). Reducer-prompt fix: strengthens MUST append to canonical detail (per rev-2 playbook) rather than mint -strengthen-batch-N files.
+- 1 test-coverage-mapper sidecar-quality finding: 4 of 5 batch-J sidecars overstate "zero UI tests" — actually 7 leaf-component tests exist. /enrich refresh candidate.
+
+### Next-batch planning notes
+
+Three high-leverage themes for batch K (already in queue):
+
+1. **Theme K — Service layer B** (NotificationsDispatcher + HousekeepingJobManager + AuthIdentityProviderImpl + TermServiceImpl + OwnershipServiceImpl). Continues service-tier coverage; pairs with batch I service-layer findings.
+2. **Theme L — DataEntityController continuation 1** (5 more controller methods).
+3. **Theme M — Anchor-set defence audit** (cross-cutting; ~5 controllers).
+
+P-02 Data Modelling + P-03 Master Data Management + P-11 Platform API & Developer Surface remain at 0-sidecar coverage — surface for future batch theme prioritisation.
+
+
+## Batch 2026-05-19-K — Service layer B (5 nodes; THIRD autonomous batch under rev-3 Layer 0)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: ede5d277 (65 prior + 5 new = **70 total**)
+- **Theme**: Service layer B — NotificationsDispatcher + HousekeepingJobManager + AuthIdentityProviderImpl + TermServiceImpl + OwnershipServiceImpl
+- **Headline coverage jump**: effective **20.0% → 30.1%** (+10 percentage points in one batch) thanks to 3 new pillar-anchored features pulling many existing nodes into chains.
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline finding |
+|---|---|---|
+| `NotificationsDispatcher` (real name: AlertNotificationMessageProcessor) | P-07 | Exception-type asymmetry: email RuntimeException bypasses per-sender catch and aborts mid-message; poison-message WAL replay loop (10s back-off blocks subsequent delivery). |
+| `HousekeepingJobManager` | P-08 + P-04 + P-07 | **REFACTOR-142 jOOQ operator-precedence bug PRIMARY-SOURCE PINNED at AlertHousekeepingJob.java:28-34**. REFACTOR-145 .block()-inside-transaction PRIMARY-SOURCE at DataEntityHousekeepingJob.java:142. 14m-vs-15m ShedLock window. |
+| `AuthIdentityProviderImpl` | P-09 | **NEW HIGH: S2S username='ADMIN' literal-collision** at S2sAuthenticationFilter.java:31 — S2S API key holders inherit ADMIN's Owner. **LOGIN_FORM ↔ LDAP provider=null cross-mode bleed** primary-source at lines 29-33. No auto-create-on-first-login UX trap. ADR-CANDIDATE-015 POSITIVE-CASE PRIMARY-SOURCE CONFIRMED. |
+| `TermServiceImpl` | P-06 | REFACTOR-217 service-tier — TermServiceImpl has **ZERO permission checks at service tier** (defence-in-depth absent). **NEW HIGH BUG**: second SecurityConstants path-mismatch — `/api/alerts/{id}/status` PUT gated by `DATASET_FIELD_ADD_TERM` (wrong permission entirely). REFACTOR-227 `[[ns:term]]` auto-link side-channel PRIMARY-SOURCE. REFACTOR-228 triple-re-query PRIMARY-SOURCE. |
+| `OwnershipServiceImpl` | P-09 + P-01 | **REFACTOR-199 primary anchor**: `ownerService.getOrCreate` at OwnershipServiceImpl.java:52 bypasses OWNER_CREATE permission. **Cross-batch correction PRIMARY-SOURCE**: ExceptionUtils.java:69-71 returns HTTP 400 USR003 (NOT 5xx as batch-F claimed). DEG-propagation cascade audit-feed asymmetry (lines 134-148 emit no per-child events). |
+
+### Reducer diffs (rev-3 sharded; all 5 ran cleanly)
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 198 → **212 concepts** (3 broken yaml — 2 batch-K + 1 batch-J carried; see follow-ups) | +16 net-new (2 entities + 9 invariants + 5 operations); 9 strengthened. `permission-bypass-via-owner-auto-create` now 4-way (Owner + Title + Tag + Namespace getOrCreate's). |
+| adr-archaeologist (ADRs) | 97 → **112 candidates** | +15 (098-112) + 4 strengthened (ADR-015 / -040 / -046 / -075). ADR-015 + -075 + new -104/-105/-106 form a 4-ADR authorization-plumbing family now complete end-to-end. Strengthens batch-J followed CANONICAL append pattern (NOT -strengthen-batch-K suffix). |
+| adr-archaeologist (scopes) | 300 → **330 scopes** | +30 (301-330) + 7 strengthened (REFACTOR-142 / -145 / -199 / -206 / -217 / -228 / -232). **REFACTOR-301 NEW HIGH: S2S 'ADMIN' username-collision**. **REFACTOR-314 NEW HIGH: 2nd SecurityConstants bug `/api/alerts/{id}/status` wrong permission**. **REFACTOR-318 NEW HIGH: TermServiceImpl service-tier defence-in-depth absence** (no permission checks at service layer). |
+| doc-gap-finder | 127 → **137 findings** (frontmatter reconciled to actual count) | +11 (139-149) + 10 strengthened. 5 new HIGH (139 SecurityConstants 2nd bug; 140 auto-link side-channel; 141 S2S ADMIN; 142 no auto-create UX trap; 143 WAL poison-message). 5 live WebFetches at status 200. META: DOC-GAP-149 P-09 pillar-overpromise on user-owner-association doc. |
+| test-coverage-mapper | 453 → **486 gaps** | +33 (455-487) + 3 strengthened (TEST-GAP-017 / 211 / 265 — all CRITICAL). 4 new CRITICAL: 455 (WAL replay-loop), 471 (provider=null bleed), 472 (S2S ADMIN collision), 477 (alerts/status wrong permission). 0 sidecar-quality findings. |
+| feature-flow-builder | 8 → **11 features** (+3 new) | **F-009 / P-07:F-002 WAL-driven Notification Delivery** (NEW); **F-010 / P-08:F-002 Housekeeping TTL Enforcement** (NEW; cross-pillar to P-04+P-07); **F-011 / P-09:F-002 Principal-to-Owner Resolution** (NEW; feeds P-01/P-05/P-06/P-07). F-002 + F-006 extended with service-tier hops. ~40 total new drift facets. All 5 detail YAMLs validated parse-clean. |
+
+### Coverage state after batch K
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 70 | **17.7%** (was 16.5%) |
+| Effective coverage | 119 | **30.1%** (was 20.0%) ← **major milestone** |
+| Features discovered | 11 (was 8) | 3 NEW pillar-anchored features (F-009/F-010/F-011) |
+| Features with ≥1 cell PROBED | 4 | unchanged (probes pending for new features) |
+
+The 10-percentage-point effective-coverage jump validates rev-3 Layer-0 anchoring: features-as-pillars naturally pull more nodes into chains, vs the rev-2 bug-pin shape that confined each feature to a narrow drift surface.
+
+### Cross-batch triangulation deltas
+
+- **F-011 NEW HIGH HEADLINE**: S2S 'ADMIN' username-collision — S2S API key holders inherit operator-named 'ADMIN' user's Owner. Single line of code (S2sAuthenticationFilter.java:31). Cross-pillar P-09 + P-10 implications.
+- **REFACTOR-142** jOOQ-precedence: now PRIMARY-SOURCE pinned at exact lines. Empirical fix candidate.
+- **REFACTOR-199** OWNER_CREATE bypass: now PRIMARY-SOURCE pinned at OwnershipServiceImpl.java:52.
+- **REFACTOR-217** path-mismatch: now defence-in-depth at service tier confirmed ABSENT (TermServiceImpl has no permission checks); strengthens cross-tier.
+- **`permission-bypass-via-owner-auto-create`** invariant: now 4-way (Owner + Title + Tag + Namespace getOrCreate's all bypass create-side permissions). Codebase-wide audit candidate.
+- **Cross-batch correction (batch-F 5xx → HTTP 400 USR003)**: now 3-layer triangulated (controller + service + ExceptionUtils primary-source).
+
+### Follow-ups (logged, not blocking)
+
+- 2 NEW broken yaml files this batch: `operations/manage-ownership-lifecycle-with-deg-cascade.yaml` (leading `@` in scalar) + `operations/run-housekeeping-cycle-five-jobs.yaml` (leading backtick in scalar). Both autofix-unfixable; quarantined to `.broken-yaml-backup`. The reducer's YAML-safe-emit rule needs to add backtick to the banned-leading-character set (currently catches `@`/`>`/`|`/`*`/`&`/`?`/`!`/`%` but not backtick).
+- 1 broken yaml carried from batch J: `entities/lineage-graph-traversal.yaml` (line 1 col 1 — malformed top-of-file). Still quarantined.
+- 88 + 5 detail-without-index in implicit-adrs + refactoring-scopes — adr-archaeologist's NEW batch-K strengthens used canonical-append (correct), but batch-J's `*-strengthen-batch-J` files still polluting the detail directory. Future cleanup: rename them OR fold into canonical detail files.
+
+### Next-batch planning notes
+
+Theme L next: DataEntityController continuation 1 (5 controller methods). Pillar P-01 Data Discovery continuation.
+
+P-02 Data Modelling + P-03 Master Data Management + P-11 Platform API & Developer Surface remain 0-sidecar — surface for prioritisation.
+
+
+## Batch 2026-05-19-L — DataEntityController continuation 1 (5 nodes; FOURTH autonomous batch)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: ede5d277 (70 prior + 5 new = **75 total**)
+- **Theme**: DataEntityController continuation — addDataEntityDataEntityGroup + deleteDataEntityFromDataEntityGroup + getDataEntityAlerts + upsertDataEntityMetadataFieldValue + deleteTermFromDataEntity
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `addDataEntityDataEntityGroup` | P-01 | **NEW HIGH: write-collaborative DEG (NO DEG-side authorization)** — any DATA_ENTITY_ADD_TO_GROUP holder writes into ANY manually-created DEG. DEG path DIVERGES from REFACTOR-199/206/223 family (explicit isManuallyCreatedDEG defensive check — NOT auto-create-on-miss). Forensic silence: DATA_ENTITY_RELATION_UPDATED enum dead-code. |
+| `deleteDataEntityFromDataEntityGroup` | P-01 | 3 documented-nowhere asymmetries: distinct ADD/DELETE permissions per Policy resolver; silent-204 no-op DELETE vs 400-duplicate no-op ADD; no @ActivityLog on membership flips. |
+| `getDataEntityAlerts` | P-07 + P-01 | REFACTOR-024 cross-owner posture EXTENDED to per-entity surface. Live alerting doc names this endpoint as "audit-export workaround" but silent on audience scoping. |
+| `upsertDataEntityMetadataFieldValue` | P-01 | NOT a REFACTOR-199 family member (permission IS enforced) but silent-200-on-missing-pair + silent-200-on-missing-entity (same as batch G upsertInternalDescription — pattern now 2-sidecar). EXTERNAL-origin-writable, active=NULL regression, no type validation. |
+| `deleteTermFromDataEntity` | P-06 | **REFACTOR-217 DELETE half SYMMETRIC PRIMARY-SOURCE CONFIRMED** at SecurityConstants.java:240-242 singular `/term/{term_id}` vs openapi.yaml:1042 plural `/terms/{term_id}`. HARD-DELETE amplifies under DISABLED-mode (anonymous reach + irreversible). |
+
+### Reducer diffs (rev-3 sharded)
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 212 → **228 concepts** | +16 net-new (3 entities + 5 operations + 8 invariants) + 7 strengthened. NEW HIGH invariants: write-collaborative-DEG; ADD/DELETE permission asymmetry; HARD-DELETE on relationship edges (3rd site confirmed). |
+| adr-archaeologist (ADRs) | 112 → **116** | +4 (113-116) + 6 strengthened (ADR-001/-002 now 23-sidecar tied for strongest; ADR-007 now 19-sidecar; ADR-067 11-sidecar; ADR-003 + ADR-069 strengthened). ADR-113 NEW HIGH: DEG no-auto-create (counter-example to REFACTOR-199 family — intent-anchored). |
+| adr-archaeologist (scopes) | 330 → **342** | +12 (331-342) + 2 strengthened. **REFACTOR-331 NEW HIGH: write-collaborative DEG**. **REFACTOR-340 NEW HIGH: cross-owner per-entity alert read** (extends REFACTOR-024 to per-entity surface). REFACTOR-217 substrate now EXHAUSTED (POST + service + DELETE all triangulated). |
+| doc-gap-finder | 137 → **146** | +9 (150-158) + 2 strengthened. **DOC-GAP-153 NEW HIGH**: DEG activity-feed page MISREPRESENTS coverage (CUSTOM_GROUP_UPDATED claims membership-flips recorded; code emits NOTHING — DOC-CLAIMS-CODE-PROVIDES-SILENCE drift, strongest drift class in catalog). DOC-GAP-150 DEG write-collaborative. DOC-GAP-156 silent-200 metadata upsert. DOC-GAP-157 cross-owner per-entity alert read. 4 live WebFetches at status 200. |
+| test-coverage-mapper | 486 → **502 gaps** | +16 (488-503) + 4 strengthened. 3 NEW CRITICAL: TEST-GAP-488 (DEG write-collaborative regression-pin), TEST-GAP-489 (REFACTOR-217 DELETE half primary-source pin), TEST-GAP-491 (@Profile("!integration-test") META trap). |
+| feature-flow-builder | 11 → **14 features** (+3 new) | **F-012 / P-01:F-003 Data Entity Group Membership** (NEW; primary drift: write_collaborative_no_deg_side_authorization). **F-013 / P-01:F-004 Custom Metadata Field Editing** (NEW; primary drift: silent_200_on_missing_pair — sibling of F-004 Description Editing). **F-014 / P-07:F-003 Per-Entity Alert View** (NEW; cross-pillar P-07+P-01; REFACTOR-024 family extension). F-002 extended with DELETE half REFACTOR-217 SYMMETRIC PRIMARY-SOURCE. 36 new drift facets across batch. |
+
+### Coverage state after batch L
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 75 | **19.0%** (was 17.7%) |
+| Effective coverage | 133 | **33.7%** (was 30.1%) |
+| Features discovered | 14 (was 11) | 3 NEW pillar-anchored features |
+| Features with ≥1 cell PROBED | 4 | unchanged |
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-217**: now full substrate-exhausted — POST (batch G) + service (batch K) + DELETE (batch L). One-PR-fixes-both-halves observation reinforced.
+- **write-collaborative DEG** (NEW HIGH): joins read-collaborative cross-owner enumeration as a sibling — write surface too is cross-tenant-permissive.
+- **silent-200-on-missing-pair**: now 2-sidecar (batch G upsertInternalDescription + batch L upsertMetadataFieldValue) — codebase-wide upsert-family pattern.
+- **HARD-DELETE on relationship edges**: now 3-site confirmed (term_relations + group_entity_relations + ownership) — strengthens batch-H three-soft-delete-mechanisms invariant.
+- **Reserved-but-never-fired activity enum**: now 4-slot pattern (DATA_ENTITY_RELATION_UPDATED + CUSTOM_METADATA_CREATED/UPDATED/DELETED) — cohesive cleanup sprint candidate.
+
+### Follow-ups (logged, not blocking)
+
+- 3 broken-yaml files persist (2 from batch K + 1 from batch J): manage-ownership-lifecycle-with-deg-cascade.yaml (leading `@`), run-housekeeping-cycle-five-jobs.yaml (leading backtick), lineage-graph-traversal.yaml (line 1 col 1).
+- doc-gaps detail-vs-index: 11 detail-without-index + 4 index-without-detail (batch-F orphan IDs 084-088). Reconcile next batch.
+- 105 detail-without-index in refactoring-scopes (batch-J *-strengthen orphans persist; batches K+L correctly used canonical-append).
+
+### Next-batch planning notes
+
+Theme M next: Anchor-set defence audit (cross-cutting; ~5 controllers — getDataEntityUpstreamLineage / getDataEntityGroupsLineage / getMyObjectsWithUpstream / getMyObjectsWithDownstream / SearchController.facets).
+
+
+## Batch 2026-05-19-M — Anchor-set defence audit (4/5 nodes; FIFTH autonomous batch)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: ede5d277 (75 prior + 4 new = **79 total**; 1 deferred — getDataEntityUpstreamLineage socket-errored 2× both attempts; symmetric to batch F downstream sibling, inheritance applied)
+- **Theme**: Anchor-set defence audit — getDataEntityGroupsLineage + getMyObjectsWithUpstream + getMyObjectsWithDownstream + SearchController.facets + getDataEntityUpstreamLineage (DEFERRED)
+
+### Sidecars added (4)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `getDataEntityGroupsLineage` | P-05 + P-01 | DEG-anchored sibling of REFACTOR-203 — cross-owner enumeration via DEG-internal lineage graph; no SecurityRule entry. Co-membership leakage on multi-team DEGs/Domains materially WIDER than per-entity REFACTOR-203. NEW: DEG-membership read vs write authorization asymmetry (write gated; read open). Inner-DEG suppression deferred-feature lacks backlog/ADR/test anchor. |
+| `getMyObjectsWithUpstream` | P-09 + P-01 + P-05 | **REFACTOR-225 PRIMARY-SOURCE CONFIRMED**: anchor-set scoping at DataEntityRelationsServiceImpl.java:26 is single-point-of-failure; listByOddrns at ReactiveDataEntityRepositoryImpl.java:228-253 has NO JOIN-side OWNERSHIP filter (vs listByOwner at :515-534 which DOES). **DOC-GAP-099 PRIMARY-SOURCE CONFIRMED**: openapi.yaml:843-844 says "data entities owned by current user with upstream dependencies" but DataEntityRelationsServiceImpl.java:37 explicitly excludes owned set via `Predicate.not` — the spec is the LYING contract layer. LineageDepth.empty() = `-1` sentinel single-hop encoding. |
+| `getMyObjectsWithDownstream` | P-09 + P-01 + P-05 | Symmetric REFACTOR-225 + DOC-GAP-099 confirmation (now 4-angle triangulated: controller G + repo H + service I + batch M). |
+| `SearchController.facets` | P-01 | NEW HIGH: cross-owner facet-count enumeration via 5 facet aggregators; search-session UUIDs no per-user binding at SCHEMA level (V0_0_1__init.sql:204-211); to_tsquery operator-injection DoS at JooqFTSHelper.java:164-168 reached from EVERY facet aggregator (compounds batch H finding). Side-effect UPDATE on read. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 228 → **238 concepts** | +10 net-new (1 entity + 2 operations + 7 invariants) + 9 strengthened. NEW HIGH invariants: REFACTOR-225 PRIMARY SOURCE; DOC-GAP-099 inverse-semantic 4-angle; DEG read-vs-write auth asymmetry; tsquery injection via persisted state; cross-owner facet enumeration. |
+| adr-archaeologist (ADRs) | 116 → **122** | +6 (117-122) + 3 strengthened (ADR-003 13-sidecar; ADR-015 16-sidecar — controller-method TRIPLET COMPLETED via /my + /my/upstream + /my/downstream; ADR-075 6-sidecar PRIMARY-SOURCE). 2 borderline_flag ADRs (118/121). 0 wisdom-test reclassifications (every implicit_adrs entry had explicit positive intent anchor). |
+| adr-archaeologist (scopes) | 342 → **352** | +10 (343-352) + 6 strengthened (REFACTOR-024 5-batch/5-surface; REFACTOR-185 15-sidecar STRONGEST in catalog; REFACTOR-203 sibling DEG-anchored; REFACTOR-225 BOTH /my halves; REFACTOR-229 SECOND invocation site at facet aggregators; REFACTOR-242 LineageDepth.empty sentinel). **REFACTOR-343 NEW HIGH**: DEG-lineage cross-owner CO-MEMBERSHIP enumeration. **REFACTOR-344 NEW HIGH**: search_facets no user binding bearer-token vector. |
+| doc-gap-finder | 146 → **155** | +9 (159-167) + 5 strengthened (DOC-GAP-099 4-angle triangulated end-to-end; DOC-GAP-105 7-angle; DOC-GAP-115 controller-method-tier 2/2+3/3; DOC-GAP-104 2-invocation-site; DOC-GAP-009 9-column row template). DOC-GAP-167 THIRD pillar-overpromise META (P-05 Data Lineage) — cross-pillar pattern with P-09 + P-01 META. |
+| test-coverage-mapper | 502 → **522 gaps** | +20 (504-523) + 4 strengthened. 3 NEW CRITICAL: TEST-GAP-504 (DEG-anchored lineage cross-owner); TEST-GAP-512 (REFACTOR-225 PRIMARY-SOURCE BOTH /my halves); TEST-GAP-518 (cross-owner facet-count enumeration). 2 reclassifications: TEST-GAP-308 HIGH→CRITICAL, TEST-GAP-252 LOW→HIGH. |
+| feature-flow-builder | 14 → **17 features** (+3 new) | **F-015 / P-09:F-003 My-Objects Anchor-Set Reads** (NEW; primary drift: anchor_set_single_point_of_failure). **F-016 / P-05:F-002 DEG-Anchored Lineage** (NEW; cross-pillar P-05+P-01; primary drift: co_membership_leakage — WIDEST blast). **F-017 / P-01:F-005 Search Filter Facets** (NEW; primary drift: cross_owner_facet_enumeration + bearer-token-shaped session UUIDs + tsquery DoS). F-005 extended. |
+
+### Coverage state after batch M
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 79 | **20.0%** (was 19.0%) ← 20% direct milestone |
+| Effective coverage | 144 | **36.5%** (was 33.7%) |
+| Features discovered | 17 (was 14) | 3 NEW pillar-anchored features |
+| Features with ≥1 cell PROBED | 4 | unchanged |
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-185 DISABLED-mode bypass**: now **15-sidecar** — STRONGEST single finding in the catalog
+- **REFACTOR-024 cross-owner enumeration family**: now **5-batch / 5-surface** (BATCH alerts + per-entity alerts + per-entity catalog search + facet aggregators + lineage-graph traversal)
+- **ADR-CANDIDATE-015 owner-scoping mechanism**: 16-sidecar with controller-method TRIPLET completed (`/my` + `/my/upstream` + `/my/downstream`)
+- **DOC-GAP-099 OpenAPI inverse-semantic**: 4-angle triangulated end-to-end
+- **REFACTOR-225 anchor-set defence**: PRIMARY-SOURCE for BOTH /my/upstream + /my/downstream
+- **REFACTOR-229 FTS SQL-injection**: SECOND invocation site at facet aggregators compounds with REFACTOR-344 (poison-session DoS)
+- **3rd pillar-overpromise META** (DOC-GAP-167 P-05): cross-pillar META pattern across P-09 / P-01 / P-05 — methodology reviewer-checklist gate recommendation
+
+### Follow-ups (logged, not blocking)
+
+- getDataEntityUpstreamLineage DEFERRED — socket-errored both attempts. Symmetric to batch F downstream; logged as deferred-sidecar carve-out. Future-batch retry candidate (likely just enriches identically to downstream).
+- 3 broken-yaml files persist from batch J/K (lineage-graph-traversal.yaml, manage-ownership-lifecycle-with-deg-cascade.yaml, run-housekeeping-cycle-five-jobs.yaml). Quarantined.
+- 115 detail-without-index in refactoring-scopes (batch-J *-strengthen orphans + batch-K/L canonical patterns); doc-gaps has 11 detail-without-index + 4 index-without-detail (batch-F orphans 084-088).
+
+
+## Batch 2026-05-19-N — Repository continuation: Term + Tag + Search + User-owner mapping + Role (4/5 nodes; SIXTH autonomous batch)
+
+- **Date**: 2026-05-19
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: ede5d277 (79 prior + 4 new = **83 total**; 1 deferred — ReactiveSearchEntrypointRepositoryImpl socket-errored; below 3-failure threshold)
+- **Theme**: Repository-tier continuation — Term + Tag + Search + UserOwnerMapping + Role
+
+### Sidecars added (4)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `ReactiveTermRepositoryImpl` | P-06 + P-09 | F-002 (Term-to-Entity Linkage) repository-tier; `term_to_term.deleted_at` V0_0_76-vs-V0_0_91 SCHEMA-DRIFT — column retained but NEVER filtered at any of 7 read sites; `hasDescriptionRelations` excludes parent `STATUS=DELETED` → Term mentioned only in soft-deleted entity dangles on entity restore (MEDIUM corner-case); `getTermDetailsDto` 12-JOIN + 7 jsonArrayAgg fanout on permission-resolution HOT PATH via `TermPermissionExtractor` (every authorized TERM-scoped request); zero direct test coverage of any of 15 public methods. |
+| `ReactiveTagRepositoryImpl` | P-01 | REFACTOR-223 repository-side substrate CONFIRMED + NEW HIGH TOCTOU `listByNames`→`bulkCreate` race in `getOrCreateTagsByName`; MEDIUM: case-sensitive `listByNames` silently forks case-duplicate rows (`PII` vs `pii`); 6 implicit_adrs (partial-unique-index, dynamic conflict-target, RETURNING-trigger no-op, soft/hard delete asymmetry, onDuplicateKeyIgnore relations, bulkCreate-vs-ingestData dual contract). |
+| `ReactiveUserOwnerMappingRepositoryImpl` | P-09 | **PRIMARY-SOURCE of provider-null cross-mode bleed at lines 121-125** (SQL-layer ground truth — was 5-sidecar inferred from upstream; now SQL-layer manifestation of AuthIdentityProviderImpl ADR); NEW HIGH: 4 external repos (Alert/Activity/OwnerAssociationRequest/Owner) JOIN on `OIDC_USERNAME` ONLY without provider clause → cross-provider username collision row-duplication; clear-active-then-insert two-clear pattern is the persistence-layer twin of the principal-resolution ADR. |
+| `ReactiveRoleRepositoryImpl` | P-09 | 4-SIDECAR audit-silence pattern CLOSED (RoleController E + PolicyController E + ReactivePolicyRepositoryImpl H + this N); `getDto`/`listDto`/`getByName` LEFT JOIN POLICY WITHOUT `policy.deleted_at IS NULL` is the **symmetric mirror** of batch-H's `getRolesPolicies` finding — soft-deleted policy still bound to a role surfaces in policy_relations aggregation; partial unique index `role_name_unique WHERE deleted_at IS NULL` makes `Administrator`/`User` name gap exploitable across BOTH halves of RBAC mutation surface. |
+| `ReactiveSearchEntrypointRepositoryImpl` | DEFERRED | socket-errored ~10min in (0 tokens). Pairs with REFACTOR-229 + batch-M facet-aggregator finding remain unaddressed at write-side this batch. Next-batch retry candidate. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 238 → **246 concepts** | +8 net-new (5 invariants + 3 operations) + 6 strengthened. NEW HIGH invariants: provider-null cross-mode bleed SQL-layer PRIMARY-SOURCE; cross-provider username row-duplication in external JOINs; Tag TOCTOU listByNames→bulkCreate race; RBAC soft-delete persistence Role/Policy aggregation SYMMETRIC mirror; hasDescriptionRelations parent soft-delete bypass; term_to_term.deleted_at schema-drift V0_0_76-vs-V0_0_91. |
+| adr-archaeologist (ADRs) | 122 → **131** | +9 (123-131) + 5 strengthened. ADR-CANDIDATE-130 NEW HIGH: provider-null collapse architectural triangle (principal+SQL+schema vertices closed). |
+| adr-archaeologist (scopes) | 352 → **389** | +37 (353-389) + 6 strengthened. THREE NEW HIGH consequences of ADR-130: REFACTOR-353 LOGIN_FORM↔LDAP bleed; REFACTOR-354 S2S 'ADMIN' literal collision; REFACTOR-355 cross-provider OIDC_USERNAME-only LEFT JOIN row-duplication. REFACTOR-356 Term V0_0_91 schema-vs-application drift; REFACTOR-357 RBAC soft-delete-filter symmetric mirror. |
+| doc-gap-finder | 155 → **160** | +5 (168-172) + 9 strengthened. NEW: Tag tagging-surface FIRST 3 DOC-GAPs (DOC-GAP-168 directory side-door via DATA_ENTITY_TAGS_UPDATE per-entity permission mints global Tag-directory rows; DOC-GAP-169 case-sensitivity divergence; DOC-GAP-170 delete-then-recreate loses relations). DOC-GAP-172 LOW: term_to_term schema-drift. DOC-GAP-106 + DOC-GAP-112 closed FOUR-CORNERED across RBAC primary surface. |
+| test-coverage-mapper | 522 → **577 gaps** | +55 (524-578); 100 → **103 CRITICAL**. 3 NEW CRITICAL: TEST-GAP for provider-null cross-mode bleed SQL primary source; cross-provider OIDC-only JOIN row-duplication on 4 repos; Role getDto missing policy.deleted_at filter (symmetric to batch-H Policy TEST-GAP-345). |
+| feature-flow-builder | 17 → **18 features** (+1 new) | **F-018 / P-01:F-006 Manual Object Tagging** (NEW; primary drift: REFACTOR-223 directory-side-door — promoted from drift-facet to standalone pillar feature). F-002 + F-006 + F-011 EXTENDED (6/4/6 new drift facets each). F-002 hop-3 resolved. F-011 SQL-layer PRIMARY-SOURCE — provider-null architectural triangle CLOSED. |
+
+### Coverage state after batch N
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 83 | **21.0%** (was 20.0%) |
+| Effective coverage | 157 | **39.7%** (was 36.5%) |
+| Features discovered | 18 (was 17) | 1 NEW pillar-anchored feature (F-018) |
+| Features with ≥1 cell PROBED | 4 | unchanged |
+| Total test-gaps | 577 (was 522) | 103 CRITICAL (was 100) |
+
+### Cross-batch triangulation deltas
+
+- **Provider-null cross-mode bleed ARCHITECTURAL TRIANGLE CLOSED**: principal layer (batch K/G inferred) + SQL layer (batch N PRIMARY-SOURCE at UserOwnerMapping:121-125) + schema layer (V0_0_x migrations + partial unique index)
+- **RBAC audit-silence pattern**: now 4-SIDECAR closed (RoleController-E + PolicyController-E + ReactivePolicyRepositoryImpl-H + ReactiveRoleRepositoryImpl-N)
+- **ADR-015 owner-scoping mechanism**: now at JOIN-source repo → **17-sidecar** (was 16)
+- **REFACTOR-223 (Tag auto-create-on-miss)**: substrate-finding promoted with repository-side TOCTOU primary source + F-018 pillar-anchored feature elevation
+- **Term-side schema-drift**: NEW class of finding — V0_0_76-vs-V0_0_91 retained-but-unfiltered columns at 7 read sites
+- **Cross-provider OIDC_USERNAME-only LEFT JOINs**: NEW HIGH propagating across 4 sibling external repos
+- **DOC-GAP-099 + DOC-GAP-105 + DOC-GAP-115**: untouched this batch (controller/service tier — no new evidence in repo-tier sidecars)
+- **Tagging surface FIRST 3 DOC-GAPs**: tagging-feature documentation never reviewed pre-batch-N
+
+### Follow-ups (logged, not blocking)
+
+- `ReactiveSearchEntrypointRepositoryImpl` DEFERRED — socket-errored. Pairs with REFACTOR-229 + batch-M facet-aggregator finding remain WRITE-SIDE unaddressed. Next-batch retry candidate (priority: HIGH for FTS triangulation closure).
+- 3 broken-YAML files persist from earlier batches (lineage-graph-traversal.yaml, manage-ownership-lifecycle-with-deg-cascade.yaml, run-housekeeping-cycle-five-jobs.yaml). Quarantined.
+- **152 detail-without-index** in refactoring-scopes (batch-J `-strengthen-batch-J` legacy + batch-K/L/M/N canonical-append-pattern entries lacking index lines). The reducers grep detail/ directly so this is functionally OK; rebuild_indexes.py reconstructs index.yaml from detail/. Markdown index lags but data is intact.
+- **6 detail-without-index** + **4 index-without-detail** in doc-gaps (batch-F orphans 084-088).
+- F-001 + F-003 merge candidate still maintainer-pending (P-01:F-001 Popular Entities Ranking).
+
+
+## Batch 2026-05-20-O — Auth handlers: OAuth provider chain + Logout + Ingestion filter (5/5 nodes; SEVENTH autonomous batch — LSN-018 Rule 6 OPERATIONAL)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: 83 prior + 5 new = **88 total**; 0 deferred (first full-success batch since J)
+- **Theme**: Auth handlers — OAuth provider chain (Google + Github) + Logout (Azure + Cognito) + IngestionDataEntitiesFilter
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `GoogleUserHandler` | P-09 | Silently no-ops `admin-groups` config (documented for Cognito/GitHub, never read by Google handler); 4 implicit ADRs (two-layer hd defence-in-depth, admin-attribute defaults to email, diverges from AbstractOIDCUserHandler, Mono.error rejection); LSN-018 Rule 6: 3 strengthens, back-links to F-011 + ADR-034 + REFACTOR-152 + REFACTOR-154 + ADR-035. |
+| `GithubUserHandler` | P-09 | 8 corner cases (HIGH: username-rename orphans USER_OWNER_MAPPING; MEDIUM: GHES hard-coded incompatible, admin-principals bypass org gate, undocumented); 2 outbound HTTPS to api.github.com for /user/orgs + /user/teams gating. **LSN-018 Rule 6 surfaced CONFLICT** with existing `substring-match-admin-escalation-ldap-containsignorecase.yaml` canonicalisation_candidate — `OperationUtils.containsIgnoreCase` is full-string `equalsIgnoreCase`, NOT substring; concept-merger SUPERSEDED the wrong candidate in this batch. |
+| `AzureLogoutSuccessHandler` | P-09 | Local-only WebSession invalidation (no Azure token revocation, no end_session_endpoint discovery); URI.create(null) NPE if operator omits logout-uri (docs flag as required); post_logout_redirect_uri derived from inbound Host header with no platform-side allowlist (open-redirect class bounded by Azure-side App Registration); **LSN-018 confirmation**: search_facets NOT cleaned at logout but doesn't need to be — F-010 TTL eviction is correct sole reaper. |
+| `CognitoLogoutSuccessHandler` | P-09 | 302 to AWS /logout with client_id + dynamic logout_uri from UriUtils.getBaseUri(); atomic local-session invalidation; silent no-op on empty logoutUri HIGH; no upstream-IdP signout MEDIUM (contrasts with Google/Github which DO revoke). |
+| `IngestionDataEntitiesFilter` | P-10 + P-09 | **STRONGEST**: bundled `auth.type=DISABLED` + `auth.ingestion.filter.enabled=false` default produces unauthenticated centerpiece S2S endpoint reachable by any HTTP caller. Body-buffered-before-auth (DoS class); plaintext-equality token compare (timing-attack class); hard-coded path; orthogonal to all 4 UI auth modes. **REFACTOR-185 SIXTEENTH-SIDECAR**: filter-class layer added — STRONGEST single finding in catalog reaffirmed. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 246 → **253 concepts** | +7 new (4 invariants + 3 canonicalisation_candidates) + 4 strengthened + **1 SUPERSEDED** (substring-match LDAP candidate — LSN-018 Rule 6 first-fire in production). New: oauth-provider-quirks-strategy-pattern, admin-groups-silent-no-op-asymmetric, logout-side-token-revocation-asymmetric, admin-principals-bypass-org-gate, github-enterprise-server-unsupported, oauth-admin-allowlist-full-string-equality (CORRECT canonical replacing the retracted substring claim), github-username-rename-orphans-user-owner-mapping. Coherence: strengthens=4 supersedes=1 conflicts_surfaced=1-resolved. |
+| adr-archaeologist (ADRs) | 131 → **139** | +8 (132-139) + 3 strengthened (ADR-034 OAuth provider-quirks now cross-handler-anchored; ADR-027, ADR-017). 5 HIGH + 3 MEDIUM new. 22 implicit_adrs entries reclassified to scopes via wisdom test (~73% reclass rate). |
+| adr-archaeologist (scopes) | 389 → **418** | +29 (390-418) + 4 strengthened. **REFACTOR-185 now 16-SIDECAR** (filter-class-layer added as new invocation site — reaffirms STRONGEST single finding in catalog). REFACTOR-073 + REFACTOR-155 + REFACTOR-113 strengthened. 4 HIGH + 13 MEDIUM + 12 LOW new. |
+| doc-gap-finder | 160 → **165** | +5 (173-177) + 3 strengthened (DOC-GAP-038 filter-class-layer evidence; DOC-GAP-048 consumer-site NPE at AzureLogoutSuccessHandler.java:39; DOC-GAP-082 META now 14-sidecar). New: DOC-173 Google admin-groups silent no-op HIGH; DOC-174 GHES silent incompatibility MEDIUM; DOC-175 logout-flow provider-asymmetry MEDIUM; DOC-176 GitHub admin-principals bypass org-gate MEDIUM; DOC-177 GitHub username-rename orphans USER_OWNER_MAPPING HIGH. |
+| test-coverage-mapper | 577 → **616 gaps** | +39 (579-617) + 13 strengthened. **+3 CRITICAL**: IngestionDataEntitiesFilter DISABLED+disabled-filter default unauthenticated endpoint, plaintext-equality token timing-attack, body-buffered DoS. 0 test files exist for auth/handler/ + auth/logout/ + IngestionDataEntitiesFilter (verified via Glob — entire packages have zero test coverage). |
+| feature-flow-builder | 18 → **18 features** (+0 new, +2 extended) | **F-008 (P-10:F-001 Batch Ingestion) EXTENDED**: 3 → 8 drift classes (+5 new auth-tier facets); 7 → 8 contributing nodes (+IngestionDataEntitiesFilter); 6 → 11 facets. **F-011 (P-09:F-002 Principal-to-Owner Resolution) EXTENDED**: 13 → 18 drift classes (+5 new OAuth handler-tier facets); 10 → 14 contributing nodes (+4 OAuth handlers); 4 → 5 chain hops (+hop-0 oauth-handler tier); 13 → 18 facets. Strong cross-batch architectural anchoring across all 4 handler sidecars. |
+
+### Coverage state after batch O
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 88 | **22.3%** (was 21.0%) |
+| Effective coverage | 163 | **41.3%** (was 39.7%) |
+| Features discovered | 18 (was 18) | 0 NEW (auth tier extends pillar features) |
+| Total test-gaps | 616 (was 577) | 106 CRITICAL (was 103) |
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-185 DISABLED-mode bypass**: now **16-SIDECAR** — STRONGEST in catalog (filter-class layer added)
+- **ADR-CANDIDATE-034 OAuth provider-quirks**: now cross-batch architectural anchoring across 4 handler sidecars (Google + Github + Microsoft from earlier batches if present)
+- **LSN-018 mechanism OPERATIONAL**: first production-fire of the supersede protocol (substring-match LDAP candidate retracted with primary-source verification)
+- **LSN-018 positive confirmation**: AzureLogoutSuccessHandler confirms F-010 TTL eviction is correct (search_facets cleanup at logout NOT needed because TTL job handles it)
+- **F-011 Principal-to-Owner Resolution**: now spans 5-hop chain (oauth-handler → identity-provider → user-owner-mapping repo → permission-extractor → query layer)
+- **LSN-001 pattern third surface**: Cognito empty-logout-uri silent no-op (after attachment-ephemeral-default + admin-groups silent no-op patterns)
+
+### Follow-ups (logged, not blocking)
+
+- 3 broken-YAML files persist (lineage-graph-traversal, manage-ownership-lifecycle-with-deg-cascade, run-housekeeping-cycle-five-jobs). Quarantined.
+- 181 detail-without-index in refactoring-scopes; 67 in implicit-adrs (batch-J `-strengthen-batch-J` legacy + batch-K/L/M/N/O canonical-append-pattern entries lacking index lines). The reducers grep detail/ directly so this is functionally OK; rebuild_indexes.py reconstructs index.yaml from detail/.
+- 6 detail-without-index + 4 index-without-detail in doc-gaps (batch-F orphans persist).
+- Coherence-sweep candidate count grew 27.8k → 29.8k (linear with new artefacts; fanout dominant — most are one anchor matching N test-gaps via same class). Audit pass deferred.
+- F-001 + F-003 merge candidate still maintainer-pending.
+
+
+## Batch 2026-05-20-P — Controllers: Ingestion + AlertManager + Owner trio + Permission (5/5 nodes; LSN-018 PRODUCING REAL VALUE)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: 88 prior + 5 new = **93 total**; 0 deferred (1 PHANTOM — sidecar documents methodology miss)
+- **Theme**: Controllers deeper — IngestionController.createDataSourceEntity + AlertManagerController.postAlerts + OwnerController.{updateOwner,deleteOwner} + PermissionController.getPolicyPermissions (PHANTOM)
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `IngestionController.createDataSourceEntity` | P-10 | TWO ingestion filters ASYMMETRIC: `/datasources` ALWAYS-auth-required (unconditional `@Component`) vs `/entities` OPT-IN (auth.ingestion.filter.enabled=false default). Collector identity via stringly-typed `COLLECTOR_ID_SESSION_KEY` WebSession attribute (NOT Principal) — cluster-deployment-without-sticky-sessions produces HTTP 500 not 401. UPSERT-by-ODDRN PARTIAL-MERGE (only name + description propagate). |
+| `AlertManagerController.postAlerts` | P-07 | METHOD-TIER primary-source confirmation of F-007's 3 named drift facets (unauthenticated_payload_trust + cross_tenant_alert_creation + no_idempotency_no_audit). 4 ancillary corner-cases. **SUPERSEDE**: prior class-level sidecar's 404 finding on alerting page → 200 in this session. |
+| `OwnerController.updateOwner` | P-09 | Owner-name rename SAFE for USER_OWNER_MAPPING (FK by `owner.id` at V0_0_4:3, NOT by name — **DISAMBIGUATES from REFACTOR-355** OIDC_USERNAME-rename which IS unsafe). 5 concerns: no @ActivityLog, empty/omitted roles silently DELETES all role-links (HIGH destructive default), name collision returns 400 not 409, case-sensitive no normalization, OpenAPI 201-vs-controller 200. |
+| `OwnerController.deleteOwner` | P-09 | **5th audit-silence sidecar** (no @ActivityLog); 3-leg cascade-block + HARD-DELETE on OWNER_TO_ROLE + SOFT-DELETE on owner.deleted_at; **closes orphan-binding CORRECTLY on Owner side** (positive case-law contrast to F-006 Policy/Role half which does it WRONGLY); race-window between cascade-check and delete; FTS search vector NOT refreshed; orphan owner_association_request rows. **SUPERSEDE**: createOwner sidecar's claim of non-partial UNIQUE on owner.name is WRONG (V0_0_64 made it partial). |
+| `PermissionController.getPolicyPermissions` | P-09 | **PHANTOM NODE** — method does NOT exist on PermissionController.java (file 27 lines; single method is getResourcePermissions already enriched). Synthetic-node walker emitted candidate from rationale-only synthesis without method-existence verification. Negative finding documented as substrate_quality canonicalisation_candidate; methodology gap surfaced. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 253 → **267 concepts** | +14 new (3 operations + 10 invariants + 1 canonicalisation_candidate) + 3 strengthened + **2 SUPERSEDED** (createOwner partial-unique-index correction + alertmanager-receiver 404→200). Coherence: 3 strengthens, 2 supersedes, 3 conflicts surfaced (all resolved). |
+| adr-archaeologist (ADRs) | 139 → **145** | +6 (140-145) + 6 strengthened (ADR-002/006/014/015/027/067). ADR-015 owner-scoping mechanism now **19-SIDECAR** (was 17). ADR-140 Ingestion-endpoint auth ASYMMETRIC by design HIGH; ADR-141 Collector identity via WebSession attribute HIGH; ADR-142 UPSERT-by-ODDRN partial-merge HIGH; ADR-143/144/145 MEDIUM. |
+| adr-archaeologist (scopes) | 418 → **435** | +17 (419-435) + 4 strengthened. **REFACTOR-185 now 17+18-SIDECAR** (createDataSourceEntity + filter-class additions). HIGH: REFACTOR-419 cluster fragility; -425 destructive empty roles; -426 no audit on Owner mutations; -427 owner_association_request orphans; -431 no audit on datasource registration. REFACTOR-435 substrate-quality phantom-node MEDIUM. |
+| doc-gap-finder | 165 → **172 detail / 184 reported** | +7 (178-184) + 5 strengthened + 1 SUPERSEDED (DOC-GAP-011 wording-correction). 3 HIGH + 4 MEDIUM new. DOC-GAP-082 META now 17+ surfaces. |
+| test-coverage-mapper | 616 → **631 indexed (107 CRITICAL)** | +16 (618-633) + 9 strengthened + 1 SUPERSEDED (TEST-GAP-239 partial-index correction). 2 NEW CRITICAL: TEST-GAP-618 IngestionController createDataSource asymmetric auth; TEST-GAP-622 updateOwner empty-roles destructive. |
+| feature-flow-builder | 18 → **19 features** (+1 new, +4 extended) | **F-019 / P-08:F-003 Owner Lifecycle Management** (NEW — the createOwner/updateOwner/deleteOwner trinity now coherent user-observable feature; 13 facets). F-006 RBAC: 5-SIDECAR audit-silence + positive case-law contrast. F-007 AlertManager: METHOD-TIER primary source for 3 facets. F-008 Batch Ingestion: 5 architectural-asymmetry facets. F-011 Principal-to-Owner: OWNER.NAME rename safe disambiguation. Coherence: strengthens=4 supersedes=1 conflicts_surfaced=0. |
+
+### Coverage state after batch P
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 93 | **23.5%** (was 22.3%) |
+| Effective coverage | 171 | **43.3%** (was 41.3%) |
+| Features discovered | 19 (was 18) | +1 NEW (F-019 Owner Lifecycle Management) |
+| Total test-gaps | 631 indexed (632 written, 1 broken) | 107 CRITICAL (was 106) |
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-185 DISABLED-mode bypass**: now **17-18 SIDECAR** (createDataSourceEntity adds new invocation site; STRONGEST in catalog reaffirmed)
+- **ADR-015 owner-scoping mechanism**: now **19-SIDECAR** (updateOwner + deleteOwner add 2 touch-points)
+- **F-006 audit-silence pattern**: now **5-SIDECAR** (deleteOwner + updateOwner extend Role+Policy closure)
+- **F-006 positive case-law contrast**: Owner-side OWNER_TO_ROLE hard-delete CLOSES orphan-binding pattern that Policy/Role half does WRONGLY — first POSITIVE pattern in F-006 (canonicalisation candidate)
+- **F-011 rename hazard surface complete**: OWNER.NAME rename SAFE (FK by owner.id) vs OIDC_USERNAME rename UNSAFE (REFACTOR-391)
+- **LSN-018 Rule 6 production fire #2-5**: 5 supersedes across registries this batch (concept-merger 2 + doc-gap-finder 1 + test-coverage-mapper 1 + feature-flow-builder 1)
+
+### Follow-ups (logged, not blocking)
+
+- **TEST-GAP-363 broken YAML** introduced this batch (strengthen-edit corrupted scalar). Auto-quarantined to `.broken-yaml-pending-fix`; data preserved in `.broken-yaml-backup`. Recoverable next batch.
+- 3 broken-YAML files persist from earlier batches (lineage-graph-traversal, manage-ownership-lifecycle-with-deg-cascade, run-housekeeping-cycle-five-jobs).
+- 199 detail-without-index in refactoring-scopes; 78 in implicit-adrs (legacy batch-J + ongoing canonical-append-pattern). rebuild_indexes.py reconstructs from detail/ so functional. Markdown indexes lag.
+- 13 detail-without-index + 4 index-without-detail in doc-gaps.
+- **PHANTOM-NODE methodology miss** captured as REFACTOR-435 + substrate_quality concept. Future sprint-themes entries should run a "method-existence verification" (Grep for the method name in the source_file) BEFORE adding to the theme queue.
+- Coherence-sweep candidates: 29.8k (batch O) → 33.1k (batch P; linear growth, fanout-dominated).
+
+
+## Batch 2026-05-20-Q — UI-axis: AppToolbar + RBAC + Owner + Collector lists (5/5; LSN-018 phantom-prevention pre-fired)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: 93 prior + 5 new = **98 total**; 0 deferred. **FIRST UI-axis batch in the ontology.**
+- **Theme**: UI-axis — Auth + RBAC + Settings surfaces (LoginForm originally a PHANTOM; substituted with AppToolbar)
+
+### Pre-Phase-1 path corrections (LSN-018 phantom-node prevention)
+
+The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firing file-analysers. Outcome:
+- **5/5 original paths were wrong**:
+  - 1 PHANTOM: LoginForm.tsx — no component by that name exists in odd-platform-ui. Auth model is OIDC-redirect-only with no local login form. **Substituted**: AppToolbar.tsx (the actual user-facing auth surface)
+  - 4 directory-naming typos: Policies/Policies.tsx → PolicyList/PolicyList.tsx, Roles/Roles.tsx → RolesList/RolesList.tsx, Owners/Owners.tsx → OwnersList/OwnersList.tsx, Collectors/Collectors.tsx → CollectorsList/CollectorsList.tsx
+- Corrections committed before Phase 1: this is the LSN-018 phantom-node prevention working end-to-end. Methodology cost of correction: ~30 seconds; methodology cost without correction: 5 wasted file-analyser cycles + 5 phantom sidecars.
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `AppToolbar` (substitute for phantom LoginForm) | P-09 | Only user-facing auth UI surface; Identity wire has NO provider field → **POSITIVE: NOT a leak surface for F-011 provider-null cross-mode bleed**; Management tab visible to ALL authenticated users (unpermissioned visibility); logout = full-page navigation deferring to backend chain. Zero test files. |
+| `PolicyList` | P-09 | 5 ADRs, 5 security gaps (1 HIGH catalogue-vs-grant soft-delete asymmetry). **REFUTED LSN-017 doubling hypothesis** (stable thunk ref). CONFIRMED LSN-001 catalogue-vs-GRANT pattern: permissions shown as JSON-schema CODES not labels. |
+| `RolesList` | P-09 | **F-006 audit-silence now 6-SIDECAR** (UI tier added). Soft-deleted ROLES invisible BUT soft-deleted POLICIES still render in chip list (F-006 drift_class A UI manifestation). RoleForm has NO predefined-name validation → viable exploit path for batch-H/N create-path asymmetry. |
+| `OwnersList` | P-08 | **Destructive empty-roles UPDATE is REACHABLE FROM UI in 3 clicks with NO confirmation modal** (while more-reversible Delete has one). Elevates batch-P REFACTOR-425 from API-only to UI-operator-reachable. GET /api/owners has NO SecurityRule — any authenticated user reads full directory. 17th DISABLED-mode anonymous surface. |
+| `CollectorsList` | P-08+P-10 | Tokens returned as 40-char PLAINTEXT on register/regenerate, rendered as DOM text. UI distinguishes plaintext-vs-masked via FRAGILE substring-prefix sniff with no test. **UI-vs-API asymmetry under DISABLED: UI hides COLLECTOR_* mutation buttons while backend endpoints accept anonymous mutations — NEW REFACTOR-185 facet**. **REFACTOR-185 now 19-SIDECAR (NEW STRONGEST count)**. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 267 → **274 indexed (276 written; 2 quarantined)** | +9 new (1 entity + 7 invariants + 1 operation) + 6 strengthened. 2 BROKEN-YAML quarantined (`destructive-empty-roles-update-reachable-from-ui-three-clicks-no-confirmation.yaml` + `plaintext-token-rendered-into-dom-fragile-substring-prefix-sniff-masking.yaml` — backtick scalars; data preserved in `.broken-yaml-backup`). Coherence: strengthens=6 supersedes=0 conflicts_surfaced=0 positive_findings=3. |
+| adr-archaeologist (ADRs) | 145 → **150** | +5 (146-150) + 5 strengthened. ADR-001 to 23-sidecar UI-shell mirror; ADR-003 to 12-sidecar UI-tier confirmation. 8 candidates failed wisdom test → reclassified to scopes. |
+| adr-archaeologist (scopes) | 435 → **455** | +20 (436-455) + 7 strengthened. **REFACTOR-185 NOW 19-SIDECAR — NEW STRONGEST COUNT** (was 17-18). REFACTOR-425 elevated to UI-REACHABLE. REFACTOR-426 audit-silence now 6-SIDECAR with UI tier. |
+| doc-gap-finder | 184 → **190** | +6 (185-190) + 5 strengthened. NEW HIGH: DOC-187 UI-vs-API asymmetry under DISABLED operator-trap; DOC-188 empty-roles UI-reachable destructive UPDATE. DOC-082 META now 17→24-sidecar; DOC-083 8→9+; DOC-137 5→9. |
+| test-coverage-mapper | 632 → **657 detail (656 indexed)** | +25 (634-658) + 1 strengthened. **3 NEW CRITICAL** (TEST-643 UI exploit chain for create-path asymmetry; TEST-647 empty-roles destructive UI; TEST-652 UI-vs-API asymmetry under DISABLED). 110 CRITICAL total. **5 LSN-017 negative findings recorded** (useEffect doubling does NOT exhibit in batch-Q components). |
+| feature-flow-builder | 19 → **20 features** (+1 new, +4 extended) | **F-020 / P-08:F-004 Collector Lifecycle Management** (NEW — minted per system-mission.md P-08 sub-feature seed; credential-AUTHORING side under Management, distinct from F-008 credential-CONSUMER side under Integrations). F-006/F-008/F-011/F-019 extended. Coherence: strengthens=4 supersedes=0 conflicts_surfaced=0. |
+
+### Coverage state after batch Q
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 98 | **24.8%** (was 23.5%) |
+| Effective coverage | 188 | **47.6%** (was 43.3%) |
+| Features discovered | 20 (was 19) | +1 NEW (F-020 Collector Lifecycle Management) |
+| Total test-gaps | 656 indexed (657 written; 1 broken from batch P) | 110 CRITICAL (was 107) |
+
+### Cross-batch triangulation deltas
+
+- **REFACTOR-185 DISABLED-mode bypass**: now **19-SIDECAR** (UI-vs-API asymmetry from CollectorsList adds a NEW facet beyond filter/controller surfaces). STRONGEST in catalog reaffirmed.
+- **F-006 audit-silence pattern**: now **6-SIDECAR** (UI tier added: PolicyList + RolesList + AppToolbar all forensically silent)
+- **F-019 Owner Lifecycle Management**: UI-tier elevated batch-P REFACTOR-425 (empty-roles destructive UPDATE) from API-only to UI-operator-reachable
+- **F-011 Principal-to-Owner Resolution**: AppToolbar POSITIVE finding — Identity wire has NO provider field, RULES OUT provider-null leak at UI surface
+- **LSN-001 catalogue-vs-grant pattern**: 3rd surface (Cognito empty-logout + admin-groups silent + PolicyList JSON-schema codes)
+- **LSN-017 doubling**: explicit NEGATIVE findings recorded for 4/5 UI components (useEffect dep-arrays are guarded by `if (!query)` or primitive deps)
+- **LSN-018 phantom-node prevention**: PRE-PHASE-1 fire saved 5 file-analyser cycles
+
+### Follow-ups (logged, not blocking)
+
+- **2 new BROKEN-YAML quarantines** (concept-merger emit-bug — backtick scalars): `destructive-empty-roles-update-reachable-from-ui-three-clicks-no-confirmation.yaml` + `plaintext-token-rendered-into-dom-fragile-substring-prefix-sniff-masking.yaml`. Data preserved in `.broken-yaml-backup`. Recoverable next batch.
+- 1 broken-yaml from batch P (TEST-GAP-363) persists.
+- 3 broken-yaml from earlier batches persist (lineage-graph-traversal, manage-ownership-lifecycle-with-deg-cascade, run-housekeeping-cycle-five-jobs).
+- 199 detail-without-index in refactoring-scopes; 78 in implicit-adrs (legacy + ongoing canonical-append).
+- 17 detail-without-index + 4 index-without-detail in doc-gaps.
+- Coherence-sweep candidates: 33k (P) → 36k (Q; linear growth, fanout-dominated).
+- F-001 + F-003 merge candidate still maintainer-pending.
+
+
+## Batch 2026-05-20-R — Repository continuation: Activity + DataSource + MetadataField + Collector + DatasetField (5/5; LSN-018 phantom-prevention pre-fired)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: 98 prior + 5 new = **103 total**; 0 deferred. LSN-018 path-verification: 5/5 paths verified pre-Phase-1.
+- **Theme**: Repository-tier — Activity (audit-trail backbone) + DataSource (UPSERT-by-ODDRN SQL primary) + MetadataField (TOCTOU + soft-delete partial-unique-mismatch) + Collector (token storage) + DatasetField (versioning-by-reference)
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `ReactiveActivityRepositoryImpl` | P-07+P-09 | **F-006 audit-silence rooted in SCHEMA** (data_entity_id NOT NULL FK at V0_0_48:4,12 — Activity is data-entity-scoped, structurally cannot audit RBAC/Owner/Datasource mutations); Provider-agnostic LEFT JOIN to USER_OWNER_MAPPING.OIDC_USERNAME at 4 sites = LSN-018 cross-mode-bleed READ-side mirror; monotonic growth (no DELETE path); 27 enum values vs 20 documented. |
+| `ReactiveDataSourceRepositoryImpl` | P-10+P-08 | SQL-tier PRIMARY SOURCE for ADR-142 (UPSERT-by-ODDRN partial-merge is SERVICE-tier convention, NOT repo or schema enforced). **2 NEW CONFLICTS**: (1) listDto page-vs-count predicate divergence (startsWithIgnoreCase vs containsIgnoreCase) breaks pagination math; (2) data_source.name partial-unique-index silent-failure rolls back transaction with no diagnostic. |
+| `ReactiveMetadataFieldRepositoryImpl` | P-01 | Soft-delete + partial-unique-index MISMATCH (Tag fixed V0_0_64; metadata_field NOT migrated → INTERNAL fields un-recreatable after soft-delete). TOCTOU sibling. Case-sensitivity asymmetry. IX_UNIQUE_EXTERNAL_NAME_TYPE missing from ExceptionUtils.formatMessage. getDtosByDataEntityId surfaces soft-deleted values. |
+| `ReactiveCollectorRepositoryImpl` | P-08+P-10 | **Plaintext token at-rest SEV-HIGH** → end-to-end plaintext-everywhere chain with batch-Q CollectorsList DOM-render finding. Orphaned token rows. No-rotation-audit. |
+| `ReactiveDatasetFieldRepositoryImpl` | P-01+P-05 | Versioning-by-reference (rows SHARED across dataset_versions via M:N); NO native soft-delete; NO orphan cleanup → unbounded accumulation; Missing @ActivityLog on description edits (asymmetric vs updateInternalName); Verbatim XSS-class storage. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 274 → **281 indexed (281 written; 0 new quarantines)** | +7 new (all invariants) + 7 strengthened. provider-null-cross-mode-bleed now 4-vertex (principal + persistence-write + schema + persistence-READ at Activity 4 JOIN sites). three-soft-delete-mechanisms now 6-mechanism. plaintext-equality-shared-secret-token-model now 4-axis. No new YAML quarantines (rule fired cleanly). |
+| adr-archaeologist (ADRs) | 150 → **153** | +3 (146-148) + 3 strengthened. ADR-146 audit-log schema-rooted (RESOLVES F-006 family question: STRUCTURAL not annotation gap). ADR-147 dataset_field versioning-by-reference. ADR-148 operator-metadata forward-copy. ADR-142 UPSERT-by-ODDRN now 3-LAYER triangulation (service+repo+SQL). |
+| adr-archaeologist (scopes) | 455 → **461** | +6 (436-441) + 3 strengthened. REFACTOR-085 (activity-table monotonic growth) now 3-sidecar triangulated. REFACTOR-185 + REFACTOR-419 SQL-tier confirmation. 2 borderline-ADR candidates surfaced for maintainer triage (TOKEN.value plaintext, activity retention). |
+| doc-gap-finder | 190 → **195** | +5 (191-195) + 2 strengthened. DOC-191 Activity 27-vs-20 enum HIGH; DOC-192 Activity scope constraint HIGH; DOC-193 Custom Metadata absent HIGH; DOC-194 Collector token threat model HIGH; DOC-195 DatasetField audit-invisible MEDIUM. 4 live WebFetches at 200. |
+| test-coverage-mapper | 656 → **677 indexed** | +21 (659-679) + 4 strengthened. **2 NEW CRITICAL** (Activity audit-silence schema-rooted; Collector plaintext-at-rest SQL primary). 112 CRITICAL total. |
+| feature-flow-builder | 20 → **21 features** (+1 new, +8 extended) | **F-021 / P-07:F-004 Activity Feed Audit-Trail Surface** (NEW — distinct user-observable Active Platform sub-feature per system-mission.md P-07). F-004/F-006/F-007/F-008/F-010/F-011/F-013/F-020 ALL extended (44 new drift facets across batch — largest reducer extension of the sprint). Coherence: 8 strengthens / 0 supersedes / 0 conflicts. |
+
+### Coverage state after batch R
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 103 | **26.1%** (was 24.8%) |
+| Effective coverage | 196 | **49.6%** (was 47.6%) — approaching 50% milestone |
+| Features discovered | 21 (was 20) | +1 NEW (F-021 Activity Feed P-07:F-004) |
+| Total test-gaps | 677 indexed (677 written) | 112 CRITICAL (was 110) |
+
+### Cross-batch triangulation deltas
+
+- **F-006 audit-silence pattern**: now **8-SIDECAR with SCHEMA-LAYER ROOT CAUSE identified** (data_entity_id NOT NULL FK structurally limits Activity to data-entity events). The pattern was 6-SIDECAR (controller/service/repo at API + UI); now adds Activity-repo + DatasetField-repo asymmetric, with SCHEMA ROOT confirmed.
+- **provider-null cross-mode-bleed**: now **4-VERTEX** (principal + persistence-write + schema + persistence-READ via Activity 4 JOIN sites)
+- **three-soft-delete-mechanisms**: now **6-mechanism × 10+ sites** (NEW: NO-DELETION-AT-ALL with M:N edge lifecycle on dataset_field; V0_0_64 CONVERGENCE OUTLIERS at collector.name + metadata_field partial indexes)
+- **plaintext-equality-shared-secret-token-model**: now **4-axis** (rotate + verify-annotation + verify-filter + SQL primary)
+- **ADR-142 UPSERT-by-ODDRN partial-merge**: now **3-LAYER triangulation** (service + repo + SQL primary)
+- **End-to-end plaintext token chain CLOSED**: SQL at-rest (batch R) + DOM render (batch Q) + plaintext-equality verify (batch P) — single class spanning 3 batches
+- **F-010 user-initiated extension**: 3 new drift facets folded into F-010 during this batch (activity monotonic growth + empty-partition-sole-reaper + orphan-token-no-housekeeping)
+- **LSN-018 Rule 6 sustained**: 5+3 conflicts surfaced this batch (all resolved via SUPERSEDE or CONFLICT-FOLD); zero contradictions reached the registry
+
+### Follow-ups (logged, not blocking)
+
+- 2 broken-yaml from batch Q persist (destructive-empty-roles + plaintext-token concepts — backtick scalars); 1 from batch P (TEST-GAP-363); 3 from earlier batches. All quarantined.
+- 207 detail-without-index in refactoring-scopes; 82 in implicit-adrs (legacy + ongoing canonical-append).
+- 22 detail-without-index + 4 index-without-detail in doc-gaps.
+- Coherence-sweep candidates: 36k (Q) → 40k (R; linear growth, fanout-dominated).
+- F-001 + F-003 merge candidate still maintainer-pending.
+- Concept-merger deferred 1 strengthen for next batch (read-collaborative-cross-owner-enumeration; DatasetField.listByTerm as 25th surface — file size risk).
+
+
+## Batch 2026-05-20-S — Services tier: Owner + Policy + Role + DataSourceIngestion + Alert (auto-extended; **50% effective-coverage milestone CROSSED**)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-rev2-sprint-2026-05-19`
+- **Substrate**: 103 prior + 5 new = **106 total**; 0 deferred. **Auto-extended** after queue exhaustion at R (4 consecutive `/next-batch` invocations into empty queue triggered auto-extension).
+- **Theme**: Services tier — F-006 audit-silence primary-source closure (the canonical missing layer — referenced 5+ times across batches H-R but never directly enriched)
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `OwnerServiceImpl` | P-08+P-09 | **REFACTOR-425 destructive-empty-roles cascade COMPOSED across 3 lines** (71+76-81+117-122 — getRoleIdsList null+empty collapse silently reaches the explicit wipe-all primitive that delete uses INTENTIONALLY at line 97). Full-set REPLACEMENT role-rebind. Cascade-block not atomic with soft-delete. Service-tier closure of F-019 + 6-sidecar audit-silence intersection. |
+| `PolicyServiceImpl` | P-09 | 4 F-006 drift facets PRIMARY-SOURCE at service tier. **NO @ReactiveTransactional** (asymmetric vs RoleServiceImpl) — likely accidental, lost-update race exposed. NO @ActivityLog (7th audit-silence sidecar). **Schema-rooted fix requirement**: V0_0_48 NOT NULL FK means annotation fix would FAIL → schema migration required. **10 STRENGTHENS**. |
+| `RoleServiceImpl` | P-09 | 10 drift facets (A-J). Create-path Administrator/User name asymmetry PRIMARY-SOURCE (lines 49-61 no check vs 68/81-82/104 four guards). **Three-policy case-sensitivity mismatch** (create no-check / update case-sensitive .equals / delete case-insensitive .equalsIgnoreCase). @ReactiveTransactional uniformity = deliberate POSITIVE contrast. **AUTHORIZATION HOT PATH**: getCurrentUserRoles invoked from PolicyServiceImpl on every authorized request. |
+| `DataSourceIngestionServiceImpl` | P-10+P-08 | **SERVICE-TIER VERTEX of ADR-142+143 triangulation** — primary file:line at 74-92 (copy-construct + 2-field setter) and line 106 (namespace inheritance via MappingUtils). ADR-142 now **4-LAYER triangulated** (controller P + service S + repo R + schema). 3 NEW conflicts: dead-code branch lines 82-84; asymmetric defense-in-depth (ODDRN checked but not name); operator-name-precedence convention extension. |
+| `AlertServiceImpl` | P-07 | **All 3 F-007 drift facets PRIMARY-SOURCE at service tier** (cross_tenant_alert_creation verbatim at line 178; no_idempotency_no_audit via handleExternalAlerts SKIP-AlertActionResolver lines 151-191 vs applyAlertActions 222-227; unauthenticated_payload_trust via deliberate AuthIdentityProvider OMISSION). Activity emission is via BATCH SAVE path NOT @ActivityLog AOP — **audit gap is at INGRESS only**. **11 STRENGTHENS — strongest single-sidecar coherence signal of the sprint**. 2 SUPERSEDES (doc URL refreshes). |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 281 → **296 concepts** | +11 new (9 invariants + 2 operations) + 11 strengthened + 4 superseded-tombstones (Rule 6 caught 4 duplicates pre-emit; folded into existing). NEW: @ReactiveTransactional asymmetry; three-policy case-sensitivity mismatch; authorization hot path no-cache; ALERTSERVICE handle-external-alerts skip-resolver; audit-silence at INGRESS only (not state-transitions); destructive-empty-roles COMPOSED; ADR-142+143 service-tier vertex; PolicyService lost-update race; F-006 9-sidecar extension. |
+| adr-archaeologist (ADRs) | 153 → **156** | +3 (154-156) + 4 strengthened (ADR-142 → 4-LAYER triangulation; ADR-015 owner-scoping → 21+ sidecar; ADR-146 schema-rooted audit; ADR-144). New: audit-context-at-service-not-controller; reopen-conflict-guard-intent; ingestion-path-divergence. |
+| adr-archaeologist (scopes) | 461 → **466** | +5 (462-466) + 2 strengthened (REFACTOR-425 service-tier composition; REFACTOR-085 activity retention). New HIGH: PolicyService @ReactiveTransactional gap; AlertManager service-tier compound XSS/cross-tenant/no-idempotency; authorization hot-path no-cache; reopen-conflict race; IllegalArgumentException → HTTP 500. 5 wisdom-test reclassifications from implicit-ADRs → scopes. |
+| doc-gap-finder | 195 → **197** | +2 (196-197) + 5 strengthened (DOC-107 + DOC-180 + DOC-181 + DOC-122 + DOC-082 META). |
+| test-coverage-mapper | 677 → **701 indexed (702 written; 1 new broken-yaml quarantine — TEST-GAP-687)** | +25 (680-704) + 7 strengthened. +2 CRITICAL → 114 CRITICAL (TEST-GAP-680 OwnerService REFACTOR-425 composition; TEST-GAP for AlertService cross_tenant_alert_creation). |
+| feature-flow-builder | 21 → **21 features** (+0 new, +5 extended) | F-019 + F-006 + F-007 + F-008 + F-020 ALL extended. F-006 audit-silence now **8-SIDECAR** at feature-flow level (UI tier + 6 mutation tier including services); concept tier sees 9-SIDECAR refinement. Coherence: 33 strengthens / 0 supersedes / 0 conflicts. |
+
+### Coverage state after batch S
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 106 | **26.8%** (was 26.1%) |
+| Effective coverage | 198 | **50.1%** (was 49.6%) — **50% milestone CROSSED** |
+| Features discovered | 21 (unchanged) | service tier extends API features |
+| Total test-gaps | 701 indexed (702 written) | 114 CRITICAL (was 112) |
+
+### Cross-batch triangulation deltas
+
+- **50% effective-coverage milestone CROSSED** (50.1%)
+- **F-006 audit-silence pattern**: now **9-SIDECAR with SCHEMA-LAYER ROOT identified + 8-tier closure** (Controller-E + Policy-repo-H + Role-repo-N + UI-Q + Activity-repo-R schema root + Owner-service-P→S + Policy-service-S + Role-service-S). Schema migration is the load-bearing fix anchor.
+- **ADR-142 UPSERT-by-ODDRN partial-merge**: now **4-LAYER triangulated** (controller + service + repo + SQL) with full file:line evidence at every layer
+- **ADR-015 owner-scoping mechanism**: now **21+-SIDECAR** (was 19; OwnerService + PolicyService + RoleService all touch)
+- **AlertServiceImpl 11-strengthens**: strongest single-sidecar coherence signal of the entire sprint
+- **Authorization HOT PATH discovered**: `getCurrentUserRoles` invoked from PolicyServiceImpl on every authorized request (no cache; 2-JOIN cost per request)
+- **Audit-emission asymmetry refined**: INGRESS silence vs state-transition audit — F-007 webhook ingress is unauthenticated AND silently received, but the RESULTING `OPEN_ALERT_RECEIVED` events ARE persisted via batch save path
+- **REFACTOR-185 DISABLED-mode bypass**: now 19-SIDECAR (unchanged from R; service tier inherits but adds no new invocation site)
+- **LSN-018 Rule 6**: 4 supersede-tombstones caught pre-emit by concept-merger; 5 wisdom-test reclassifications by adr-archaeologist; all conflicts resolved before commit
+
+### Follow-ups (logged, not blocking)
+
+- TEST-GAP-687 broken-yaml (test-coverage-mapper emit-bug — block-collection issue); quarantined.
+- 2 broken-yaml from batch Q + 1 from batch P + 3 earlier persist.
+- 207 detail-without-index in refactoring-scopes; 82 in implicit-adrs.
+- 17 detail-without-index + 4 index-without-detail in doc-gaps.
+- Coherence-sweep candidates: 40k (R) → 41k (S; linear growth).
+- F-001 + F-003 merge candidate still maintainer-pending.
+

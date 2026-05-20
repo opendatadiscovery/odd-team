@@ -1,0 +1,183 @@
+name: '[[ns:term]] auto-link side-channel — REFACTOR-227 primary source'
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-06
+- P-01
+- P-09
+description: |-
+  **NEW INVARIANT — PRIMARY-SOURCE PIN of REFACTOR-227, batch 2026-05-19K.**
+  The Business Glossary's description-mention auto-link is a service-tier
+  side-channel that creates `data_entity_to_term` rows with
+  `is_description_link=TRUE` WITHOUT consulting the controller-tier
+  `DATA_ENTITY_ADD_TERM` permission. The regex parser
+  `findTermsInDescription` at `TermServiceImpl.java:337-360` matches
+  `\[\[([^:]*?):([^\]]*?)\]\]` against any description text supplied via
+  `PUT /api/dataentities/{id}/description`. The flow:
+    (a) `DataEntityServiceImpl.upsertDescription` (line 328 of
+        DataEntityServiceImpl) calls `termService.handleDataEntityDescriptionTerms(...)`;
+    (b) `TermServiceImpl.handleDataEntityDescriptionTerms` (lines
+        201-207) invokes `findTermsInDescription` then
+        `updateDataEntityDescriptionTermsState`;
+    (c) `updateDataEntityDescriptionTermsState` (lines 362-389)
+        INSERTs `data_entity_to_term` rows with `is_description_link=TRUE`
+        for newly-mentioned terms.
+  The only auth gate consulted on this entire path is
+  `DATA_ENTITY_DESCRIPTION_UPDATE` (SecurityConstants.java:194-197) on
+  the description-update endpoint — `DATA_ENTITY_ADD_TERM` (the gate
+  that nominally protects term-linkage at the direct-link endpoint
+  `POST /api/dataentities/{id}/terms`) is NEVER consulted. **The side-channel
+  PERSISTS even if REFACTOR-217 is fixed.** REFACTOR-217's path-mismatch
+  bug disables the controller-tier gate on the DIRECT-LINK endpoint; this
+  invariant identifies a SECOND, independent path that bypasses the gate
+  even when correctly wired — the description-edit path is service-tier-invoked,
+  not controller-tier, so a controller-tier gate cannot fire here.
+  Operator-facing manifestation: a user holding `DATA_ENTITY_DESCRIPTION_UPDATE`
+  but NOT `DATA_ENTITY_ADD_TERM` can paste `[[finance:Customer]]` into a
+  description and create a term-link row. The `is_description_link=TRUE`
+  flag distinguishes the row from a manual link, but the row exists with
+  the same `term_id` and the same `data_entity_id` — visible in the
+  Terms section of the data-entity detail page identically to a manual
+  link. **Backward-compat side-effect**: a description-mention for a term
+  that doesn't yet exist is staged in `data_entity_description_unhandled_term`
+  (per `buildDataEntityUnknownTerms` at line 501); when the matching term
+  is later created via `createTerm`, `resolveUnhandledDescriptionMentions`
+  (line 421-442) drains the staging and materialises real link rows. So
+  a user with DESCRIPTION_UPDATE can mention `[[finance:NEW_TERM]]` today;
+  an admin with TERM_CREATE creates the term tomorrow; the link row
+  materialises automatically — auto-linking flows ACROSS TIME without
+  either user holding DATA_ENTITY_ADD_TERM at any point.
+  vocabulary_status: PRIMARY-SOURCE PIN — prior batches surfaced the
+  side-channel from the UI angle (DataEntityDescription batch J — the
+  TERM_PATTERN regex on lib/constants.ts:177) and the
+  controller-method angle (upsertDataEntityInternalDescription batch F);
+  batch K is the first pin at the service-tier regex compile site
+  AND the staging-table backward-resolution mechanism.
+nodes:
+- odd-platform java service service:TermServiceImpl
+- odd-platform java DataEntityController controller-method:upsertDataEntityInternalDescription
+- odd-platform ts react-component component:DataEntityDescription
+contributors:
+- |-
+  TermServiceImpl batch K: concepts.operations[handleDataEntityDescriptionTerms,
+  handleDatasetFieldDescriptionTerms, findTermsInDescription,
+  resolveUnhandledDescriptionMentions] + concepts.entities[DescriptionParsedTerms,
+  TermBaseInfoDto, DataEntityToTermPojo, DataEntityDescriptionUnhandledTermPojo]
+  + concepts.invariants[Description-mention rows stored as is_description_link=TRUE;
+  manual links as is_description_link=FALSE; both coexist; Description-mention
+  guard blocks rename/delete; Unhandled-mention staging with auto-resolution
+  on term-create] + implicit_adrs[Description-mention rows stored as
+  is_description_link=TRUE — INTENTIONAL pattern; Unhandled-mention staging
+  with auto-resolution — INTENTIONAL forward-compat]
+- |-
+  upsertDataEntityInternalDescription batch G existing reference:
+  bugs_limitations_corner_cases.[3] (description-edit side-channel
+  bypasses DATA_ENTITY_ADD_TERM)
+- |-
+  DataEntityDescription batch J existing reference: concepts.entities[TERM_PATTERN
+  regex at lib/constants.ts:177 — the UI-side parser]
+evidence:
+- |-
+  TermServiceImpl.md:bugs_limitations_corner_cases.[2] (PRIMARY SOURCE —
+  auto-link side-channel HIGH severity) — evidence: TermServiceImpl.java:201-207
+  + DataEntityServiceImpl.java:328 + SecurityConstants.java:194-197 (the
+  description-update gate) + SecurityConstants.java:237-239 (the
+  link-term gate that the side-channel bypasses)
+- |-
+  TermServiceImpl.md:security.known_security_gaps.[2] (description-edit
+  auto-link side-channel — HIGH severity)
+- |-
+  TermServiceImpl.md:implicit_adrs.[3] (Unhandled-mention staging with
+  auto-resolution on term-create — the intentional forward-compat pattern
+  that ALSO enables cross-time auto-linking without DATA_ENTITY_ADD_TERM)
+- |-
+  TermServiceImpl.md:docs_link_semantic.doc_drift_findings.[1] HIGH
+  (live business-glossary doc does NOT name the auto-link side-channel)
+- |-
+  upsertDataEntityInternalDescription.md:bugs_limitations_corner_cases.[3]
+  (description-edit side-channel — controller-method-level)
+- |-
+  DataEntityDescription.md (batch J — UI-side TERM_PATTERN regex; UI
+  perspective on the same side-channel)
+axes_present:
+- services
+- controllers
+- ui_components
+triangulation_count: 3
+cross_batch: true
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+- |-
+  Add a service-tier permission check in
+  `TermServiceImpl.handleDataEntityDescriptionTerms` (and the symmetric
+  `handleDatasetFieldDescriptionTerms`): for any term-link row about to be
+  created, consult `permissionService.hasPermission(DATA_ENTITY_ADD_TERM)`
+  for the caller. Rejection drops the parsed mentions silently OR returns
+  a 403 — design decision pending.
+- |-
+  Add a docs section to `/features/data-glossary/business-glossary`
+  describing the side-channel: name it as a deliberate feature (operator
+  reads "description edits auto-create term links if you mention them
+  via [[ns:term]] — this is a deliberate convenience") OR as a bug
+  (operator reads "currently a user with DESCRIPTION_UPDATE can create
+  term links without holding ADD_TERM; we plan to require ADD_TERM in
+  vX.Y").
+- |-
+  Document the unhandled-mention staging on the same doc page — operators
+  authoring descriptions need to know that `[[ns:NEW_TERM]]` mentions for
+  terms that don't yet exist are NOT silently dropped, but staged and
+  later materialised.
+- |-
+  Add a regression test:
+    (a) Authenticate as a user with DESCRIPTION_UPDATE but NOT ADD_TERM;
+    (b) Call PUT /api/dataentities/{id}/description with body containing
+        `[[finance:Customer]]`;
+    (c) Assert the response is 200 AND a data_entity_to_term row exists
+        with is_description_link=TRUE (pins the current side-channel
+        behaviour explicitly) OR assert the response is 403 / the row
+        does NOT exist (under the proposed fix).
+notes: |-
+  NEW invariant captured in batch 2026-05-19K — PRIMARY-SOURCE PIN of
+  REFACTOR-227. The side-channel is now 3-way triangulated across the
+  stack:
+    - UI tier: TERM_PATTERN regex at lib/constants.ts:177 (DataEntityDescription
+      batch J)
+    - Controller tier: upsertDataEntityInternalDescription endpoint and
+      auth gate (upsertDataEntityInternalDescription batch G)
+    - Service tier: handleDataEntityDescriptionTerms + findTermsInDescription
+      + auto-resolution staging (TermServiceImpl batch K)
+  The first two are mirror UI/HTTP surfaces of the same architectural
+  pattern; the third is the LOAD-BEARING enabler — the regex compile
+  site at TermServiceImpl.java:67 and the INSERT site at
+  updateDataEntityDescriptionTermsState are where the rows actually
+  get created.
+
+  The UI vs backend regex asymmetry (per the existing Term-mention
+  Syntax concept) is also surfaced by this batch's
+  bugs_limitations_corner_cases.[11] — the backend regex is STRICTER
+  in that empty groups produce empty matches that short-circuit, but
+  the absence of escaping for nested brackets is a latent issue.
+
+  Cross-cutting connections:
+    - Pairs with the "Authorization path-mismatch — SECURITY_RULES /term
+      vs OpenAPI /terms" invariant — REFACTOR-217 (controller-tier)
+      and REFACTOR-227 (service-tier auto-link) are INDEPENDENT
+      bypass paths
+    - Pairs with the "TermServiceImpl service-tier zero permission
+      checks" invariant — the service-tier-zero-checks architecture
+      enables this side-channel
+    - Pairs with the "Term-mention Syntax [[Namespace:TermName]]" entity
+      concept — that entity captures the syntax; this invariant
+      captures the security implication
+    - Companion of the "Permission-bypass via Owner auto-create
+      (side-door write path)" invariant — same architectural class
+      (service-tier auto-create-on-missing pattern bypasses
+      controller-tier permission gates)
+
+  Four DOC-NNN candidates flow from this invariant:
+    (a) Document the side-channel on the business-glossary doc page
+    (b) Document the unhandled-mention staging on the same page
+    (c) Decide the auth-contract (deliberate convenience vs bug);
+        ship a fix or an explicit acceptance ADR
+    (d) Add a regression test that pins the current behaviour

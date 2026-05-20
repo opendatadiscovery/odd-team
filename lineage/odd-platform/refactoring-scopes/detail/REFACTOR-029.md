@@ -1,0 +1,10 @@
+- **REFACTOR-029**: S3 credentials (`attachment.remote.access-key`, `attachment.remote.secret-key`) exposed via `/actuator/env` by default
+  - **Category**: missing-validation (config-leak)
+  - **Surfaced by**:
+    - `concepts.yaml:entities[Attachment].security_aggregate.weaknesses.[2]` (severity HIGH)
+  - **Statement**: With Spring Boot Actuator's standard exposure list and `endpoint.env.enabled: true`, `/actuator/env` returns the values of `@Value`-injected properties. Spring's default key-pattern sanitisation masks values matching `password|secret|key|token` by name, but the keys themselves leak (path + endpoint exposure). Operators who forget to disable `/actuator/env` (or who whitelist it for ops tooling) leak the creds' presence + the configuration shape.
+  - **Evidence**: `MinioConfig.java:14-17` (`@Value("${attachment.remote.access-key}")` + `@Value("${attachment.remote.secret-key}")`) + Spring Boot Actuator default config
+  - **Existing-ADR-or-implied-prescription**: None. The attachment-storage ADRs do not address the actuator exposure.
+  - **Proposed remedy**: Document the actuator exposure on the live config page; recommend `management.endpoint.env.show-values: WHEN_AUTHORIZED` (Spring Boot 3 default but worth the explicit override). Optional: integrate with Spring Cloud Config / Vault — see REFACTOR-030.
+  - **Severity rationale**: HIGH (concept-level) — credentials leak via standard actuator endpoint.
+  - **Suggested backlog grouping**: `Attachment integrity sprint`

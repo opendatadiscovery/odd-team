@@ -1,0 +1,10 @@
+- **REFACTOR-088** (NEW 2026-05-10B): `partition.advisory-lock-id` has no `:default` and is undocumented on the live config page — operator deletion of the key fails bean wiring at boot
+  - **Category**: missing-validation
+  - **Surfaced by**:
+    - `odd-platform__java__ActivityTablePartitionManager__config-key-consumer__odd_activity_partition-period@L11.md:bugs_limitations_corner_cases.[5]` (severity LOW)
+  - **Statement**: `PostgreSQLPartitionCreationJob.java:26` declares `@Value("${partition.advisory-lock-id}")` with NO `:default` (unlike the partition-period's `:30`). If an operator deletes the `partition.advisory-lock-id` key from a customised `application.yml` (or sets `PARTITION_ADVISORY_LOCK_ID=`), bean wiring at boot fails with `Could not resolve placeholder`. The live `/configuration-and-deployment/odd-platform` page does NOT list `partition.advisory-lock-id` — it is a "configuration ghost" for operators, while sibling lock-ids (`notifications.wal.advisory-lock-id`, `datacollaboration.receive-event-advisory-lock-id`) ARE listed.
+  - **Evidence**: `PostgreSQLPartitionCreationJob.java:26` (no `:default`) + `application.yml:197-198` (`partition: advisory-lock-id: 90`) + WebFetch of `/configuration-and-deployment/odd-platform` on 2026-05-10 (status 200, `partition.advisory-lock-id` ABSENT from the documented set)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-028 (NEW) describes the dual-lock concurrency model but does NOT defend the missing default + undocumented key.
+  - **Proposed remedy**: Add `:90` default (`@Value("${partition.advisory-lock-id:90}")`) so removing the key from application.yml still boots. Document the key on the live `/configuration-and-deployment/odd-platform` page alongside the other advisory-lock-id keys.
+  - **Severity rationale**: LOW — operator-error gated; ships with sane default.
+  - **Suggested backlog grouping**: `Activity partition lifecycle hardening` (doc-side DOC-NNN follow-up)

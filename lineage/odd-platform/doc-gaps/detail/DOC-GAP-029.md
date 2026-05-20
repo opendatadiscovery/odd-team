@@ -1,0 +1,11 @@
+- **DOC-GAP-029**: No `/developer-guides/api-reference/activity` page — global Activity feed has no first-party API reference
+  - **Category**: missing-page
+  - **Surfaced by**:
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:docs_link_semantic.inferred_docs.[1]` (status 404, confidence LOW) + `:docs_link_semantic.doc_drift_findings.[2]`
+    - `concepts.yaml:entities[Activity Feed].notes`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference/activity` 2026-05-10 status 404.
+    - WebFetch `https://docs.opendatadiscovery.org/developer-guides/api-reference` 2026-05-10 status 200 — no "Activity" entry.
+  - **Proposed doc action**: Create `developer-guides/api-reference/activity.md` enumerating `GET /api/activity` (twelve query parameters with their semantics — beginDate/endDate required, size, datasourceId, namespaceId, tagIds, ownerIds, userIds, type [MY_OBJECTS|UPSTREAM|DOWNSTREAM|ALL with default=ALL], eventType, lastEventId, lastEventDateTime cursor pair); `GET /api/activity/counts`. Add to SUMMARY.md under API Reference. Include DOC-GAP-025's visibility-scope caveat.
+  - **Cross-references**: DOC-GAP-009, DOC-GAP-025, DOC-GAP-030.
+  - **Severity rationale**: HIGH — Activity Feed is the only first-party API consumer surface for audit trails; same family as DOC-GAP-009.

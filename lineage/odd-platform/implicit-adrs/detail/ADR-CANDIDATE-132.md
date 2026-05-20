@@ -1,0 +1,51 @@
+## ADR-CANDIDATE-132 — OAuth logout — provider-specific token-revocation strategies; Google + GitHub explicitly revoke server-side, Cognito + Azure + ODD_IAM rely on end-session-redirect + WebSession invalidation; revocation responsibility per provider is determined by what the IdP's OAuth2 spec supports
+
+**Severity**: HIGH
+**Classification**: promote
+**Pillars affected**: [P-09-security-access-control]
+**Support count**: 5 sidecars (batch O — AzureLogoutSuccessHandler + CognitoLogoutSuccessHandler + GoogleUserHandler + GithubUserHandler) + cross-batch (the Google/GitHub UserHandler sidecars reference their sibling LogoutSuccessHandlers as the active-revocation counter-example)
+**Axes present**: auth_handlers, auth_logout_handlers
+**Batch**: O (2026-05-19)
+
+**Surfaced by**:
+- `AzureLogoutSuccessHandler.md:implicit_adrs.[0]` (HIGH) — "The platform delegates token revocation responsibility to the IdP's natural TTL for Azure (no server-side revoke). The decision is encoded by ABSENCE — the handler invalidates the WebSession but issues no outbound HTTP to Azure. The intent anchor is the symmetric DIFFERENCE: `GoogleLogoutSuccessHandler.java:43-54` AND `GithubLogoutSuccessHandler.java:51-63` BOTH explicitly call provider revocation endpoints; `AzureLogoutSuccessHandler` deliberately does not (and Azure AD v2.0 does not expose a token revocation endpoint, so even attempting one would 404). The pattern is consistent with `CognitoLogoutSuccessHandler.java:30-50` and `ODDIAMLogoutSuccessHandler.java:30-46` which also only invalidate the session — for OIDC-style providers, the end-session redirect IS the revocation mechanism (the provider invalidates its own session/cookie when the user lands on the end-session URL)."
+- `CognitoLogoutSuccessHandler.md:implicit_adrs.[3]` (HIGH) — "Local platform session is invalidated atomically with the IdP-side logout (the redirect header is set first; the session-invalidation Mono is the returned value that Spring's framework subscribes to)... This invariant is symmetric across all five siblings — every `*LogoutSuccessHandler.handle()` ends with `exchange.getExchange().getSession().flatMap(WebSession::invalidate)`."
+- `CognitoLogoutSuccessHandler.md:bugs_limitations_corner_cases.[3]` (MEDIUM) — "No token-revocation step. The handler clears the local Spring WebFlux session and redirects to Cognito's `/logout`, but it does NOT explicitly call Cognito's token-revocation endpoint... Compare with `GoogleLogoutSuccessHandler.java:43-54` which DOES call Google's /revoke endpoint to invalidate the access token, and `GithubLogoutSuccessHandler.java:51-65` which calls GitHub's /applications/{client_id}/grant DELETE to revoke the grant."
+
+**Decision statement**: ODD's OAuth2 logout flow is **per-provider asymmetric**: Google + GitHub handlers issue OUTBOUND HTTP to provider revocation endpoints (`POST https://oauth2.googleapis.com/revoke` + `DELETE https://api.github.com/applications/{client_id}/grant`) on logout, ACTIVELY invalidating the access/refresh tokens at the IdP; Cognito + Azure + ODD_IAM handlers do NOT — they only construct a 302 redirect to the provider's end-session endpoint (Cognito's `/logout`, Azure's `oauth2/v2.0/logout`, ODD_IAM's issuer-uri-derived logout URL) and invalidate the local Spring `WebSession`. The asymmetry is grounded in three provider-level facts: (a) Azure AD v2.0 does NOT expose an RFC 7009 token revocation endpoint — attempting one would 404; (b) Cognito's `/logout` endpoint clears the User Pool session cookie but does NOT expose `/oauth2/revoke` in the same handler-call shape (a separate endpoint exists at `/oauth2/revoke` per AWS docs; this handler doesn't use it); (c) for OIDC-style providers (Cognito + Azure + ODD_IAM), the end-session redirect IS the revocation mechanism — the provider invalidates its own session/cookie when the user lands on the end-session URL. The architectural choices encoded:
+
+- **(a) Per-provider revocation strategy is a chain-of-responsibility responsibility** — each `*LogoutSuccessHandler` decides whether to issue an outbound revocation call based on the provider's contract. The 5-handler split (Cognito / Azure / Google / GitHub / ODDIAM) is the configuration surface; the dispatcher (`OAuthLogoutSuccessHandler.java:30-42`) selects the matching handler via `shouldHandle(provider)`.
+- **(b) Local WebSession invalidation is the platform-side invariant** — every handler ends with `exchange.getExchange().getSession().flatMap(WebSession::invalidate)` (symmetric across all 5 siblings). The local Mono terminator is the platform's commitment: regardless of provider revocation, the platform-side session is gone.
+- **(c) The trade-off is explicit per provider** — Google + GitHub: stronger revocation guarantee (token invalidated at provider); Cognito + Azure + ODD_IAM: weaker (token remains valid at provider until natural TTL — Azure AD typical 60-90 minutes for access tokens, up to 90 days for refresh tokens). Operators with stringent immediate-revocation compliance requirements need to know which providers they choose; the docs do not surface this asymmetry (REFACTOR-404 + REFACTOR-408).
+- **(d) Revocation responsibility cannot be uniformly applied** — RFC 7009 (OAuth2 token revocation) requires a `/revoke` endpoint that the IdP must expose. Azure AD v2.0 does not; ODD_IAM uses Spring's `OidcClientInitiatedServerLogoutSuccessHandler` default which relies on the OIDC `end_session_endpoint`; Cognito has `/oauth2/revoke` but the platform doesn't use it. The architectural commitment IS "best-effort per-provider revocation, not uniform" — operators inherit the provider's contract.
+
+**Wisdom test**: PASS on all three questions.
+1. **Intentional?** YES — the 5-handler split with explicit Google + GitHub revocation calls AND the deliberate absence of revocation calls in Cognito/Azure/ODDIAM (despite Cognito having a `/oauth2/revoke` endpoint available) IS the design. The maintainer wrote the Google handler's `https://oauth2.googleapis.com/revoke` POST and the GitHub handler's `DELETE /applications/{client_id}/grant` and DELIBERATELY did not write equivalent calls in the OIDC-style handlers because (i) Azure has no revocation endpoint, (ii) the OIDC end-session redirect mechanism IS the revocation for OIDC providers per the OIDC RP-Initiated Logout 1.0 spec, (iii) the per-provider asymmetry follows the IdP contract.
+2. **Structural impact?** YES — affects every OAuth2 logout flow; affects the security guarantee operators inherit from their chosen IDP; affects compliance posture (immediate-revocation vs. natural-TTL-expiry); affects the per-provider handler-class contract (revocation logic lives in the handler, not in the dispatcher).
+3. **Switching to uniform revocation strategy is REFACTORING or STRUCTURAL?** STRUCTURAL — adding revocation to Azure would require either (i) waiting for Microsoft to expose RFC 7009 revocation in v2.0 (not on roadmap), (ii) implementing Microsoft's `https://login.microsoftonline.com/{tenant}/oauth2/logout` end-session call as a revocation surrogate (but this is what the Azure handler ALREADY does — the end-session redirect IS the revocation for Microsoft Entra ID per Microsoft's docs). Adding revocation to Cognito would require calling `/oauth2/revoke` separately from the existing `/logout` — but Cognito's `/logout` IS the User Pool session terminator; the access token revocation is a Cognito-side architectural choice. The per-provider asymmetry is forced by the IdP contracts; switching to uniform is not a refactor — it requires IdP-level changes outside the platform.
+
+**Evidence**:
+- AzureLogoutSuccessHandler.java:31-48 (only WebSession invalidate; no outbound HTTP)
+- GoogleLogoutSuccessHandler.java:43-54 (POST to `https://oauth2.googleapis.com/revoke`)
+- GithubLogoutSuccessHandler.java:51-63 (DELETE to `/applications/{client_id}/grant`)
+- CognitoLogoutSuccessHandler.java:30-50 (302 redirect to Cognito `/logout` + WebSession invalidate; no `/oauth2/revoke` call)
+- ODDIAMLogoutSuccessHandler.java:30-46 (delegates to issuer-uri end-session URL; WebSession invalidate)
+- OAuthLogoutSuccessHandler.java:30-42 (dispatcher iterates `List<LogoutSuccessHandler>` filtered by `shouldHandle(provider)`)
+
+**Existing ADR**: none. **Composes with ADR-CANDIDATE-034** (OAuth provider-quirks strategy pattern — the chain-of-responsibility framing). **Composes with ADR-CANDIDATE-006** (operator-delegated network-layer revocation for AlertManager — same shape: revocation is delegated, the platform's commitment is platform-side cleanup only).
+
+**Co-surfaced gaps** (link from `refactoring-scopes.md`):
+- REFACTOR-404 NEW — Cognito no token revocation (asymmetric vs. Google/GitHub) (MEDIUM)
+- REFACTOR-408 NEW — Azure no server-side token revocation (MEDIUM) — note Azure AD v2.0 lacks RFC 7009 surface; the gap is operator-documentation, not implementation
+- REFACTOR-411 NEW — Logout handlers all lack `@Slf4j` audit logging on the rejection / admin-grant paths (MEDIUM)
+
+**Proposed action**: Promote to `adrs/drafts/oauth-logout-revocation-per-provider.md` (new ADR). Document:
+- The per-provider revocation matrix: Google explicit, GitHub explicit, Cognito end-session-only, Azure end-session-only (Azure AD v2.0 lacks RFC 7009), ODD_IAM Spring-default OIDC end-session.
+- The structural reason: IdP contracts dictate what revocation is possible; the platform follows the contract.
+- The trade-off explicit per provider: stronger revocation (Google + GitHub) vs. weaker (OIDC providers — token TTL-bound).
+- The maintainer-extension contract: any new `*LogoutSuccessHandler` MUST decide its revocation stance based on the IdP's spec and document the consequence in the live docs page.
+- The doc-side gap: the OAuth2/OIDC live page does not surface the per-provider revocation asymmetry; an operator choosing a provider should know which path their tokens follow.
+
+**Severity rationale**: HIGH — security-architecture-defining. Affects compliance posture for every OAuth2-mode deployment; affects the per-provider operator-debug story; affects the architectural commitment that future provider handlers must reckon with. The 4-of-5 explicit handlers + 1 Spring-default-fallback handler is a clear pattern that any future Okta/Keycloak handler (REFACTOR-113) inherits.
+
+---

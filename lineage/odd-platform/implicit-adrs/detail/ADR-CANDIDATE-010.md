@@ -1,0 +1,14 @@
+- **ADR-CANDIDATE-010**: Language preference is persisted client-side only, in `localStorage('i18nextLng')`, with no server-side user-profile binding
+  - **Category**: promote
+  - **Support**: surfaced by 2 sidecars (i18n_ts + SelectLanguage)
+  - **Surfaced by**:
+    - `odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md:implicit_adrs.[1]` ("Language preference is persisted client-side only, in `localStorage` under the key `i18nextLng`, with no server-side user-profile binding.")
+    - `odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__SelectLanguage.md:implicit_adrs.[0]` ("Language preference is persisted **client-side only**, in `localStorage` under the key `i18nextLng`, with no server-side user-profile binding. Switching browsers / private mode / clearing site data resets the choice to default English.")
+  - **Decision statement**: The user's selected UI language is stored only in browser `localStorage` under the key `i18nextLng`. There is no backend user-profile field, no API call on language change, and no cross-device sync. Clearing site data, private browsing, or switching browsers resets the choice to default English.
+  - **Wisdom test**: PASS. Deliberate (no API call on language change, no Redux dispatch — the absence is a positive design choice for "no backend round-trip"); structural for the UX shape.
+  - **Evidence**:
+    - i18n_ts.md says: "`odd-platform-ui/src/locales/i18n.ts:22` (read) + `SelectLanguage.tsx:30` (write — `localStorage.setItem('i18nextLng', lang)`). No backend API call accompanies the language change; no user record stores it."
+    - SelectLanguage.md says: "grep for `i18nextLng` across `odd-platform-api/src/main/java/` returns zero matches at commit ede5d277."
+  - **Existing ADR**: none.
+  - **Proposed action**: Promote (or fold into ADR-CANDIDATE-009 as a section "Persistence shape"). The decision is small but UX-defining for multi-device users.
+  - **Severity rationale**: MEDIUM — UX decision affecting every user-visible localised string.

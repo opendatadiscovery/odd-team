@@ -1,0 +1,186 @@
+name: UI-vs-API asymmetry under DISABLED — UI hides mutation buttons (read-only appearance), backend accepts anonymous mutations
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+description: |-
+  **NEW HIGH-severity INVARIANT, batch 2026-05-20-Q (CollectorsList +
+  RolesList + OwnersList + PolicyList primary sources)**. Under
+  `auth.type=DISABLED`, the SPA experience is SEMANTICALLY SAFER
+  than the API experience — an operator clicking around the UI sees
+  a READ-ONLY surface (mutation affordances all hidden) and may
+  reasonably infer "this deployment is locked down". The BACKEND is
+  the opposite: every Management endpoint accepts anonymous mutations
+  (per `DisabledAuthSecurityConfiguration.java:11-19` bypassing all
+  `SECURITY_RULES`).
+
+  **The asymmetry mechanism**:
+
+    1. Under DISABLED, the backend's `GET /api/identity` returns an
+       Identity whose `permissions` array is EMPTY (verified per the
+       batch-O `auth-mode` sidecar's auth-flow trace + the
+       `usePermissions` hook's `hasAccessTo()` evaluation against an
+       empty list).
+
+    2. Every Management list component uses `<WithPermissions
+       permissionTo={Permission.X_CREATE/UPDATE/DELETE}>` to wrap
+       its mutation affordances. `WithPermissions` returns `null`
+       when `hasAccessTo` returns false (`WithPermissions.tsx:27-29`).
+
+    3. With empty `permissions`, every `hasAccessTo` call returns
+       `false`, so every mutation affordance renders as `null`. The
+       operator sees the catalogues (read-collaborative) but NO
+       buttons.
+
+    4. Meanwhile, the BACKEND's
+       `DisabledAuthSecurityConfiguration.java:11-19` chain configures
+       `.csrf().disable()` + `.authorizeExchange().anyExchange().permitAll()`
+       — every endpoint, every method, every path is anonymously
+       reachable. The four COLLECTOR_* / OWNER_* / ROLE_* / POLICY_*
+       permissions registered in `SecurityConstants.java` SECURITY_RULES
+       are entirely bypassed.
+
+    5. A direct `curl POST /api/collectors` / `curl POST /api/owners`
+       / `curl POST /api/roles` / `curl POST /api/policies` from any
+       network-reachable client succeeds anonymously.
+
+  **The UX hazard**: an operator inspecting the UI sees no mutation
+  buttons and concludes "the platform is locked down for my session;
+  I don't have permission to do anything". They miss the fact that
+  any external caller — including an unauthenticated attacker on the
+  same network — can mutate the catalogue at will. The UI's HIDING
+  posture LIES about the platform's actual security state.
+
+  **This is the 19th-and-final-known sidecar facet of REFACTOR-185**
+  (the DISABLED-mode anonymous-mutation surface enumeration). The
+  prior 18 facets covered backend-only surfaces (controllers, services,
+  ingestion paths). Batch Q's UI-layer evidence is the FIRST UI-side
+  facet — the UI is COMPLICIT in the asymmetry by HIDING information
+  the operator needs to make an informed decision.
+
+  **The full enumeration of UI surfaces affected** (per the 5 batch-Q
+  sidecars):
+    - CollectorsList (Management → Collectors tab): COLLECTOR_CREATE
+      / COLLECTOR_UPDATE / COLLECTOR_DELETE / COLLECTOR_TOKEN_REGENERATE
+      — buttons hidden under DISABLED, endpoints anonymous
+    - OwnersList (Management → Owners tab): OWNER_CREATE / OWNER_UPDATE
+      / OWNER_DELETE — same shape
+    - RolesList (Management → Roles tab): ROLE_CREATE / ROLE_UPDATE /
+      ROLE_DELETE — same shape
+    - PolicyList (Management → Policies tab): POLICY_CREATE /
+      POLICY_UPDATE / POLICY_DELETE — same shape
+
+  **The mitigation surface**: under DISABLED, the UI should render a
+  PERSISTENT BANNER on every authenticated route: "Auth is DISABLED.
+  Any external caller can mutate the platform's catalogues. Do not
+  run DISABLED in production." A one-time toast on app load is
+  insufficient — operators who navigate during an active session
+  miss it. The banner approach is internally consistent with the
+  documented stance "DISABLED is dev-only" — make the dev-only
+  warning unmissable.
+
+  **Cross-batch coherence (LSN-018)**: this sidecar STRENGTHENS
+  REFACTOR-185 by adding 4 UI-layer evidence points (one per
+  Management list component). It is the FIRST sidecar pattern in the
+  catalog to surface UI-vs-API SAFETY asymmetry as a distinct
+  invariant.
+axes_present:
+  - ui_components
+  - controllers
+  - services
+nodes:
+  - odd-platform ts react-component component:CollectorsList
+  - odd-platform ts react-component component:OwnersList
+  - odd-platform ts react-component component:RolesList
+  - odd-platform ts react-component component:PolicyList
+  - odd-platform java DisabledAuthSecurityConfiguration config-key-consumer:auth.type@L10
+contributors:
+  - |-
+    CollectorsList.md:bugs_limitations_corner_cases.[1] (HIGH — UI is
+    QUIETER than the API on this surface; security-critical UI-vs-API
+    asymmetry; the NEW 19th sidecar facet of REFACTOR-185) +
+    security.known_security_gaps.[0] (HIGH — UI-vs-API asymmetry
+    under DISABLED)
+  - |-
+    OwnersList.md:security.known_security_gaps.[2] (LOW — corollary of
+    REFACTOR-185; DISABLED is dev-only per docs; OwnersList is the
+    operator-facing affordance trigger; under DISABLED, anonymous
+    network-reachable callers can rename or delete any Owner via this
+    UI)
+  - |-
+    RolesList.md:security.known_security_gaps.[3] (HIGH — DISABLED-mode
+    anonymous access; the role catalog is fully readable to unauthenticated
+    callers; the UI is COMPLICIT — it renders the role catalog without
+    any 'this deployment is auth-disabled' warning banner)
+  - |-
+    PolicyList.md:security.auth_mode_relevance (under auth.type=DISABLED
+    the route is reachable by anyone able to hit the platform's HTTP
+    port; the component itself does not gate by auth mode)
+evidence:
+  - CollectorsList.md:bugs_limitations_corner_cases.[1] (HIGH)
+  - CollectorsList.md:security.known_security_gaps.[0] (HIGH — explicitly called out as 19th-facet contribution)
+  - OwnersList.md:security.known_security_gaps.[2] (LOW)
+  - RolesList.md:security.known_security_gaps.[3] (HIGH)
+  - PolicyList.md:security.auth_mode_relevance
+  - |-
+    Code anchor: DisabledAuthSecurityConfiguration.java:11-19
+    (`.anyExchange().permitAll()` — the source of the anonymous
+    mutation surface) + WithPermissions.tsx:27-29 (the UI-side
+    hiding mechanism — returns null when hasAccessTo is false) +
+    SecurityConstants.java:127-137 (the bypassed COLLECTOR_* rules)
+    + SecurityConstants.java:143-147 (the bypassed OWNER_* rules) +
+    SecurityConstants.java:169-173 (the bypassed ROLE_* rules) +
+    SecurityConstants.java for POLICY_* rules
+triangulation_count: 4
+cross_batch: true
+cross_batch_refs:
+  - REFACTOR-185 (the 18-prior-sidecar DISABLED-mode anonymous-mutation
+    enumeration — batch-Q adds the 19th UI-layer facet)
+  - REFACTOR-073 (`login-form-without-authorizationcustomizer`)
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Render a PERSISTENT banner on every authenticated route when
+    `appInfo.authType === 'DISABLED'`. Banner text: "Authentication
+    is DISABLED. The platform's API endpoints are anonymously
+    reachable. Do not run this configuration in production." Banner
+    is dismissible per session but reappears on next mount. The
+    banner is a 10-line React component + a redux selector + a
+    persistent-storage flag.
+  - |-
+    Under DISABLED, render the mutation affordances as DISABLED
+    (greyed out) rather than HIDDEN (null) — combined with the
+    persistent banner, this surfaces the asymmetry to operators
+    instead of papering over it. Caveat: this contradicts the
+    `WithPermissions` HIDE-not-DISABLE convention (per the existing
+    invariant `partial-permission-gating-edit-button-gated-content-unconditional`),
+    so the alternative is to add a DISABLED-mode-specific render
+    path. Trade-off worth surfacing to maintainer.
+  - |-
+    Doc-side: extend `/configuration-and-deployment/enable-security/authentication`
+    with explicit UI-vs-API caveat — "Under auth.type=DISABLED, the
+    UI hides mutation affordances (UI behaves as if locked down) but
+    the API endpoints are anonymously reachable. The UI's appearance
+    is NOT a security boundary."
+  - |-
+    Refactor: introduce a `disabled_mode_alert` flag on AppInfo that
+    the SPA reads to render the persistent banner. Wire from
+    application.yml via existing AppInfoController.
+notes: |-
+  The 19th-facet contribution is significant: REFACTOR-185 was
+  catalogued as a backend-mutation issue for 18 sidecars. The UI-
+  layer evidence pattern adds a DISTINCT shape of risk — operators
+  who interact with the UI as their primary mental model are
+  systematically misled about the platform's actual security state
+  under DISABLED.
+
+  Cross-references:
+    - REFACTOR-185 (the parent surface enumeration)
+    - `login-form-without-authorizationcustomizer-refactor-073-validated`
+      (REFACTOR-073)
+    - `auth-mode` (the `auth.type` knob entity)
+    - `partial-permission-gating-edit-button-gated-content-unconditional`
+      (the HIDE-not-DISABLE convention)
+    - `read-collaborative-cross-owner-enumeration` (the read posture
+      that allows the catalogue rendering even under DISABLED)

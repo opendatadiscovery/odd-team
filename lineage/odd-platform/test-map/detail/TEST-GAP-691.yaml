@@ -1,0 +1,32 @@
+gap_id: TEST-GAP-691
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java service service:AlertServiceImpl"
+pillars_affected: [P-07]
+surfaced_by:
+  - "AlertServiceImpl.md:bugs_limitations_corner_cases.[1] (F-007 facet `no_idempotency_no_audit` PRIMARY-SOURCE at this service tier — handleExternalAlerts skips AlertActionResolver)"
+  - "AlertServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[6] (AlertManager webhook idempotency gap)"
+  - "AlertServiceImpl.md:implicit_adrs.[3] (deliberate divergence between handleExternalAlerts and applyAlertActions)"
+behaviour: |-
+  **REFACTOR-024 family CRITICAL — `AlertServiceImpl.handleExternalAlerts` PRIMARY-SOURCE confirms the F-007 `no_idempotency_no_audit` facet at the service tier: the AlertManager webhook SKIPS `AlertActionResolver`.** Lines 151-191 (`handleExternalAlerts`) construct `AlertPojo` from the webhook payload and forward to `createAlerts` (line 190), which is a bulk INSERT with no ON CONFLICT. Two POSTs of the same payload (Prometheus retry on transient network error) produce TWO duplicate ALERT rows. The in-platform ingestion path (`applyAlertActions` lines 202-231) AVOIDS this by routing through `AlertActionResolver` (which loads the open-alerts snapshot first), but `handleExternalAlerts` DELIBERATELY skips the resolver — `implicit_adrs[3]` captures the rationale: the AlertManager webhook is a thin adapter with no state context, so it cannot economically de-duplicate at the service layer. The audit-side companion finding (no `log.info` at WEBHOOK INGRESS, no `@Timed`, no correlation-id capture) lives at the `AlertManagerController` controller-method tier (batch P) — but the consequence visible at THIS service tier is that the only post-hoc signal of a webhook arrival is the alert rows themselves. The asymmetry between the in-platform path (de-dupes via AlertActionResolver) and the webhook path (no de-dup) is the EXACT shape of the F-007 facet — service-tier PRIMARY-SOURCE.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AlertManagerWebhookIdempotencyTest.java"
+  name: "handleExternalAlerts_postSamePayloadTwice_createsTwoRowsNotOne_pinsNoIdempotencyContract"
+evidence:
+  - "AlertServiceImpl.md says (bugs_limitations_corner_cases.[1]): 'F-007 facet `no_idempotency_no_audit` PRIMARY-SOURCE at this service tier: the AlertManager webhook path (`handleExternalAlerts`) has NO idempotency guard. Lines 151-191 construct AlertPojo from the webhook payload and forward to createAlerts (line 190), which is a bulk INSERT with no ON CONFLICT. Two POSTs of the same payload (e.g. Prometheus retry on transient network error) produce two duplicate ALERT rows. The in-platform ingestion path (applyAlertActions) avoids this via AlertActionResolver, but handleExternalAlerts deliberately skips the resolver — there is no equivalent guard for the webhook path.' severity: HIGH"
+  - "AlertServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[6]): 'No test asserts the AlertManager webhook idempotency gap (F-007 facet no_idempotency_no_audit). Two POSTs of the same AlertManager payload produce two duplicate ALERT rows because handleExternalAlerts does not de-duplicate. The applyAlertActions path DOES de-duplicate via AlertActionResolver; the AlertManager path bypasses it. A test that POSTs the same payload twice and asserts row count = 1 would surface the gap.'"
+  - "AlertServiceImpl.md says (implicit_adrs.[3]): 'The two ingestion paths (handleExternalAlerts for AlertManager, applyAlertActions for in-platform ingestion) deliberately diverge on de-duplication. handleExternalAlerts constructs AlertPojo directly from the webhook payload and skips the resolver (lines 174-187). The shared createAlerts helper (lines 261-300) does NOT de-duplicate at the SQL level. The CONSEQUENCE of the asymmetry is the F-007 no_idempotency_no_audit facet at the service tier.'"
+  - "Source: AlertServiceImpl.java:151-191 (handleExternalAlerts body — no AlertActionResolver use, no getOpenAlertsForEntities snapshot, no de-dup logic) + AlertServiceImpl.java:202-231 (applyAlertActions — uses AlertActionResolver) + AlertServiceImpl.java:261-300 (shared createAlerts — no ON CONFLICT) + cross-reference to batch H ReactiveAlertRepositoryImpl bugs_limitations_corner_cases[2] (createAlerts issues INSERT … RETURNING with no upsert)"
+cross_references:
+  - "TEST-GAP-015 (AlertManager cross_tenant_alert_creation primary-source — STRENGTHEN ME with idempotency partner)"
+  - "F-007 (P-07:F-001 AlertManager Integration — facet `no_idempotency_no_audit`)"
+  - "REFACTOR-024 family (compound surface)"
+  - "LSN-017 (cross-layer-user-effect — the per-node-scan-cannot-see this is exactly the cross-batch composition the methodology surfaces)"
+related_features: [F-007]
+related_pillar_features: ["P-07:F-001"]
+proposed_action: |-
+  Add `AlertManagerWebhookIdempotencyTest.handleExternalAlerts_postSamePayloadTwice_createsTwoRowsNotOne_pinsNoIdempotencyContract` as a WebTestClient integration test. (a) Construct a valid AlertManager payload with `labels.entity_oddrn=<known existing entity oddrn>` + `alertname=DistributionAnomalyOnFreshness`. (b) POST `/ingestion/alert/alertmanager` with the payload. Assert HTTP 204. Query `SELECT COUNT(*) FROM alert WHERE data_entity_oddrn = ? AND status = 'OPEN'`. Expect 1. (c) Sleep 100ms. POST THE SAME PAYLOAD AGAIN. Assert HTTP 204. Query the same count. Expect 2 (the current buggy behaviour). (d) Add a `// REGRESSION-PIN — handleExternalAlerts has NO idempotency guard. Two POSTs of the same payload create TWO rows. The de-dup asymmetry (in-platform path de-dupes; webhook path does not) is the F-007 no_idempotency_no_audit facet. A REFACTOR adding ON CONFLICT OR a hash-based de-dup will FLIP this test from 2 to 1 — making the fix deliberate.` comment block. Pair with the in-platform-path test that asserts 1 (de-dupe via AlertActionResolver works).
+batch: 2026-05-20-S
+feature_id: F-007

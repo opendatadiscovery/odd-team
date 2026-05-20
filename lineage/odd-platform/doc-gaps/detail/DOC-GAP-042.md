@@ -1,0 +1,7 @@
+- **DOC-GAP-042**: Activity-feed partition WIDTH is `2 × partition-period` (60 days at default) but docs say "a new partition every 30 days"
+  - **Category**: drift
+  - **Surfaced by**: `ActivityTablePartitionManager@L11.md:doc_drift_findings.[1]`; `concepts.yaml:entities[Activity Table Partitioning]`.
+  - **Evidence**: WebFetch 2026-05-11 — "2x partition width" not mentioned. Code at `AbstractPartitionManager.java:35` uses `lastPartitionDate.plusDays(partitionDaysPeriod * 2L)`.
+  - **Proposed doc action**: Update `odd.activity.partition-period` section on `configuration-and-deployment/odd-platform.md` to surface the 2x overlap.
+  - **Cross-references**: DOC-GAP-041, DOC-GAP-043.
+  - **Severity rationale**: MEDIUM.

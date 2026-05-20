@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-702
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:OwnerServiceImpl"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "OwnerServiceImpl.md:bugs_limitations_corner_cases.[9] (Visibility asymmetry: soft-deleted owners visible via getOwnerDtoById but hidden from list)"
+  - "OwnerServiceImpl.md:security.known_security_gaps.[5] (Soft-deleted owner visible via getOwnerDtoById but hidden from list)"
+behaviour: |-
+  **`OwnerServiceImpl.getOwnerDtoById` RETURNS SOFT-DELETED OWNERS — `list` HIDES THEM — VISIBILITY ASYMMETRY (service-tier confirmation of deleteOwner sidecar's bugs[6]).** `list` at lines 44-52 calls `ownerRepository.list` which routes through `enrichSelect → listCondition` (inherited from `ReactiveAbstractSoftDeleteCRUDRepository`) adding `deleted_at IS NULL`. `getOwnerDtoById` at lines 102-107 calls `ownerRepository.getDto(ownerId)` which (per ReactiveOwnerRepositoryImpl.java:65-83) does NOT filter on `deleted_at IS NULL` for the OWNER side. A soft-deleted owner is INVISIBLE from `GET /api/owners` but VISIBLE from `GET /api/owners/{id}`. The `.switchIfEmpty(NotFoundException)` at line 105 fires ONLY when the id does not exist at all — not when it's soft-deleted. **If a soft-deleted Owner's name carries PII or sensitive info, the by-id surface leaks it.** Sister of TEST-GAP-628 (which pins the same surface at the controller-tier); THIS batch-S entry pins the SERVICE-TIER PRIMARY-SOURCE explicitly.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/OwnerServiceImplVisibilityAsymmetryTest.java"
+  name: "softDeletedOwner_invisibleViaList_visibleViaGetOwnerDtoById_pinsServiceTierAsymmetry"
+evidence:
+  - "OwnerServiceImpl.md says (bugs_limitations_corner_cases.[9]): 'Visibility asymmetry: soft-deleted owners visible via `getOwnerDtoById` but hidden from `list`. `list` at lines 44-52 calls `ownerRepository.list` which routes through `enrichSelect → listCondition` adding `deleted_at IS NULL`. `getOwnerDtoById` at lines 102-107 calls `ownerRepository.getDto(ownerId)` which does NOT filter on `deleted_at IS NULL` for the OWNER side. If a soft-deleted Owner''s name is sensitive PII, the by-id surface leaks it.' severity: MEDIUM"
+  - "OwnerServiceImpl.md says (security.known_security_gaps.[5]): 'Soft-deleted owner visible via `getOwnerDtoById` but hidden from `list` — the visibility asymmetry at lines 102-107 (returns soft-deleted) vs 44-52 (filters them out). If a soft-deleted Owner''s name is sensitive PII the by-id surface leaks it. Surface for triage.' severity: MEDIUM"
+  - "Source: OwnerServiceImpl.java:44-52, 102-107 + ReactiveOwnerRepositoryImpl.java:65-83 (getDto — no deleted_at filter)"
+cross_references:
+  - "TEST-GAP-628 (controller-tier sister — STRENGTHEN candidate with this batch-S service-tier primary-source)"
+  - "F-006 (RBAC family — visibility asymmetry)"
+  - "REFACTOR-NNN-soft-delete-visibility-unification candidate"
+related_features: [F-006]
+related_pillar_features: ["P-08:F-NN-owner-directory"]
+proposed_action: |-
+  Add `OwnerServiceImplVisibilityAsymmetryTest.softDeletedOwner_invisibleViaList_visibleViaGetOwnerDtoById_pinsServiceTierAsymmetry`. (a) Testcontainers integration test. (b) Authenticate as an admin user. (c) Create Owner X via POST /api/owners. (d) DELETE /api/owners/{X.id} (soft-delete). (e) GET /api/owners — assert X is NOT in the response (filtered by listCondition). (f) GET /api/owners/{X.id} — assert HTTP 200 with X's full DTO (NOT 404). (g) Add a `// REGRESSION-PIN — Soft-deleted owners are INVISIBLE via list but VISIBLE via getOwnerDtoById. The asymmetry is at ReactiveOwnerRepositoryImpl.getDto (no deleted_at filter) vs ReactiveAbstractSoftDeleteCRUDRepository.listCondition (filter present). A REFACTOR that unifies the visibility (either filtering getDto OR not filtering list) will flip one half of this test, making the choice deliberate. If the deleted Owner's name is sensitive PII the by-id surface leaks it — the test surfaces this attack precondition for triage.` comment block.
+batch: 2026-05-20-S
+feature_id: F-006

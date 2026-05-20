@@ -1,0 +1,11 @@
+- **REFACTOR-418** (NEW 2026-05-19O): IngestionDataEntitiesFilter has NO token cache — every ingestion request re-fetches the datasource (and possibly the collector) from PostgreSQL on the auth path. On a high-throughput ingestion stream, this is 1-2 extra DB round-trips per request, on the hot path
+  - **Category**: no-conn-pool
+  - **Surfaced by**:
+    - `IngestionDataEntitiesFilter.md:bugs_limitations_corner_cases.[8]` (MEDIUM)
+    - `IngestionDataEntitiesFilter.md:performance.known_performance_gaps.[1]` (MEDIUM)
+  - **Statement**: `IngestionDataEntitiesFilter.java:43-54` performs a SELECT on `data_source` by ODDRN (`dataSourceRepository.getDtoByOddrn`); IF the datasource has `token() == null`, performs an ADDITIONAL SELECT on `collector` by id (`collectorRepository.getDto`). These are non-cached reactive DB calls. On a high-throughput ingestion stream (hundreds of `POST /ingestion/entities` per second), this is N+M extra DB round-trips on the hot path. A short-TTL token cache (Caffeine, keyed by `dataSourceOddrn`) would eliminate the per-request DB hits with a known invalidation requirement on `regenerateCollectorToken` / datasource token rotation.
+  - **Evidence**: `IngestionDataEntitiesFilter.java:43-54` (no caching — every request hits DB)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-138 NEW (body-buffered-before-auth is structural) — the per-request DB cost is part of the documented cost. The fix is to add a cache layer with explicit invalidation hooks on token rotation.
+  - **Proposed remedy**: Add a Caffeine cache keyed by `dataSourceOddrn` with a short TTL (e.g., 60 seconds — balance freshness vs. per-request cost). On `regenerateCollectorToken` / datasource token rotation, invalidate the affected cache entries. The fix is one cache bean + cache-aside read-pattern + invalidation hooks on the rotation paths.
+  - **Severity rationale**: MEDIUM — performance gap; affects high-throughput ingestion. Not security-critical; operator-observable as DB-load amplification under steady-state ingestion.
+  - **Suggested backlog grouping**: `Ingestion hardening sprint` (performance dimension; paired with REFACTOR-416 duplicate-parse — both are per-request-cost optimisations)

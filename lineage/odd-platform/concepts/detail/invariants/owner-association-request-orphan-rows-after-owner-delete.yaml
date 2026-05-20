@@ -1,0 +1,149 @@
+name: owner_association_request orphan rows persist after owner-delete
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20-P** —
+  PRIMARY-SOURCE confirmed at `OwnerServiceImpl.java:90-91` +
+  `V0_0_51__add_owner_association_request.sql:11`. The cascade-block
+  on `DELETE /api/owners/{owner_id}` checks `termOwnership` +
+  `ownership` + `userOwnerMapping` (three EXISTS queries) BUT does
+  NOT check the `owner_association_request` table — even though
+  `owner_association_request` has a foreign key to `owner(id)` with
+  NO `ON DELETE` clause and NO soft-delete column.
+
+  **The mechanism**:
+
+    - `V0_0_51__add_owner_association_request.sql:11` declares
+      `CONSTRAINT owner_association_request_owner_fk FOREIGN KEY
+      (owner_id) REFERENCES owner (id)` — no `ON DELETE CASCADE`,
+      no `ON DELETE SET NULL`. PostgreSQL defaults to
+      `ON DELETE NO ACTION` which would BLOCK the delete with a
+      foreign-key-violation error — except that the owner deletion
+      is SOFT (UPDATE `deleted_at`, not DELETE FROM), so the FK is
+      never consulted.
+
+    - `owner_association_request` has NO `deleted_at` column (no
+      soft-delete capability) and NO `is_deleted` flag. A
+      `PENDING` or `APPROVED` request for the just-deleted owner
+      survives as a hard-persisted row pointing into soft-deleted
+      space.
+
+    - `OwnerServiceImpl.java:90-91` cascade-block legs:
+      ```
+      Mono.zip(
+          termOwnershipRepository.existsByOwner(id),
+          ownershipRepository.existsByOwner(id),
+          userOwnerMappingRepository.isOwnerAssociated(id)
+      )
+      ```
+      Three legs. The FOURTH potential leg — `existsByOwnerAssociationRequest(id)`
+      — is ABSENT. No `OwnerAssociationRequestRepository.existsByOwner`
+      query exists in the codebase.
+
+  **The operator-impacting consequence**:
+
+    - The next `GET /api/owner_association_request` listing query
+      RETURNS the orphan row.
+    - The listing endpoint joins `owner LEFT` — verified via
+      `ReactiveOwnerRepositoryImpl.java:147-149` showing the
+      OWNER_ASSOCIATION_REQUEST relationship is the `allowedForSync`
+      filter in `enrichSelect`. The LEFT JOIN doesn't filter
+      `OWNER.deleted_at IS NULL` on the joined owner side.
+    - Operators see a request for an owner whose name has likely
+      been REUSED (the partial-unique-index pattern allows
+      re-creating an owner with the same name after soft-delete),
+      with no UI signal that the original owner is gone.
+
+  **The long-game-persistence attack vector** (the HIGH-severity
+  framing): an attacker with `OWNER_ASSOCIATION_*` permissions can
+  submit a `PENDING` `owner_association_request` against any active
+  owner. The request persists indefinitely (no TTL, no auto-clean,
+  no cascade). When the owner is later deleted and re-created (a
+  legitimate operator workflow per the partial-unique-index pattern),
+  the orphan request remains — but the operator who created the new
+  owner with the same name has no signal that the orphan request is
+  not associated with their new owner. An operator processing the
+  orphan request (clicking 'Approve' in the Management → Associations
+  tab) inadvertently associates a user with the (soft-deleted) old
+  owner.
+
+  Whether the approval flow succeeds depends on the downstream
+  `OwnerAssociationRequest` processing logic — IF that logic
+  references the `owner_id` from the request and resolves it via
+  `ownerRepository.get` (which filters `deleted_at IS NULL`), the
+  approval would 404. IF the logic resolves via `getDto` (which
+  does NOT filter — see sibling invariant
+  `owner-soft-delete-asymmetry-list-hides-by-id-surfaces`), the
+  approval would proceed and associate the user with a soft-deleted
+  owner. This is uncovered by tests; the actual flow has not been
+  traced in this batch.
+
+  **The cleanup paths**:
+
+    (a) **Add a fourth cascade-block leg** —
+        `owner_association_request.existsByOwner(id)`. Reject
+        owner-delete with `CascadeDeleteException` if any request
+        rows reference the owner. **Same shape as the existing
+        three legs.** Lowest-cost fix.
+
+    (b) **Add ON DELETE CASCADE on the FK** —
+        `V0_0_51__add_owner_association_request.sql` would need
+        an `ALTER` migration. But owner-delete is SOFT, not HARD,
+        so the FK action wouldn't fire anyway.
+
+    (c) **Soft-delete the request rows on owner-delete** — add
+        `owner_association_request.deleted_at` column + migrate
+        all existing rows + extend `OwnerServiceImpl.delete` to
+        soft-delete the requests. Largest-cost fix but aligns
+        with the platform's soft-delete-everywhere posture.
+
+    (d) **Document-only** — extend the live `/owners` doc page
+        with a warning: "Deleting an owner does NOT cancel
+        pending association requests targeting that owner. Cancel
+        the requests separately via the Management → Associations
+        tab before deletion." Insufficient on its own.
+
+  **Severity**: HIGH — orphan-row class; long-game persistence;
+  silent; not surfaced anywhere in the live docs. Mirror of the
+  F-006 family cascade-incompleteness pattern but at a different
+  table.
+axes_present:
+  - controllers
+  - services
+nodes:
+  - odd-platform java OwnerController controller-method:deleteOwner
+contributors:
+  - 'deleteOwner.md:bugs_limitations_corner_cases.[1] (owner_association_request orphan rows are NOT cleaned up on owner delete — cascade-block does not check this table; severity HIGH)'
+  - 'deleteOwner.md:security.known_security_gaps.[1] (owner_association_request orphan rows persist after owner-delete — long-game persistence technique; severity MEDIUM with rise under DISABLED)'
+  - 'deleteOwner.md:concepts.entities.[OWNER_ASSOCIATION_REQUEST] (the fourth FK-bearing table NOT checked by the cascade-block)'
+evidence:
+  - deleteOwner.md:bugs_limitations_corner_cases.[1] (PRIMARY SOURCE; OwnerServiceImpl.java:90-91 + V0_0_51__add_owner_association_request.sql:11)
+  - deleteOwner.md:security.known_security_gaps.[1] (HIGH severity — attack vector framing)
+  - deleteOwner.md:concepts.entities (fourth FK-bearing table absent from cascade-block)
+notes: |-
+  Pairs with:
+
+    - `owner-soft-delete-asymmetry-list-hides-by-id-surfaces` invariant
+      (new in this batch) — the post-delete visibility asymmetry
+      compounds the attack vector: the approval flow's downstream
+      resolution depends on which read path it takes (list-filtered
+      vs by-id-unfiltered).
+
+    - `delete-owner-with-cascade-block` operation (new in this batch)
+      — the operation whose incomplete cascade-block produces this
+      orphan-row class.
+
+    - `rbac-soft-delete-persistence-role-policy-aggregation-symmetric-policy-mirror`
+      invariant (existing) — same architectural-hygiene pattern
+      (incomplete cascade / orphan rows) at a different table.
+
+  Recommended cleanup path: (a) — add the fourth cascade-block leg.
+  Smallest code change; consistent with the existing three legs;
+  surfaces the orphan-request constraint to operators via the
+  cascade-error message.
+
+  Backlog: file DOC-NNN follow-up + a backlog item for the code
+  fix (CODE-NNN — add `OwnerAssociationRequestRepository.existsByOwner`
+  query + cascade-block extension at `OwnerServiceImpl.java:90`).

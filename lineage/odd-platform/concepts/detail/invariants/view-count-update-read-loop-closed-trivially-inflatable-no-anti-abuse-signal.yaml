@@ -1,0 +1,131 @@
+name: view_count UPDATE→READ loop closed; trivially inflatable; no anti-abuse signal
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+- P-09
+description: |-
+  Producer half: getDataEntityDetails increments data_entity.view_count on every
+  read (ReactiveDataEntityRepositoryImpl.java:173-180; no rate-limit, no idempotency
+  key, no client-id-based debouncing). Consumer half: listPopular ranks exclusively
+  by view_count DESC (ReactiveDataEntityRepositoryImpl.java:633, sole orderBy; id
+  DESC tiebreaker only). Neither endpoint carries an authorization gate beyond
+  .authenticated() (UNGATED under LOGIN_FORM/OAUTH2/LDAP; ANONYMOUS under DISABLED).
+  No anti-abuse signal exists anywhere in the chain: no IP throttling, no
+  signed-request, no sampling, no time-decay, no per-user view-count cap. A scripted
+  loop of N calls to GET /api/dataentities/{id} pushes entity {id} to the top of
+  GET /api/dataentities/popular. Under DISABLED the attacker need not authenticate.
+  No index on data_entity.view_count — every Popular page render is a sequential
+  scan + in-memory sort. REFACTOR-201 confirmed from primary source (the closure
+  of the loop). **Batch H** — SQL primary-source triangulated: incrementViewCount
+  (lines 173-180) is bare `UPDATE data_entity SET view_count = view_count + 1 WHERE
+  id = ?` with no rate-limiting layer; listPopular ORDER BY VIEW_COUNT.sort(DESC)
+  is the SOLE order signal at line 633. **Batch J — UI HALF CONFIRMED END-TO-END**:
+  the F-001 loop is now empirically pinned at the UI layer with two ADDITIONAL
+  amplifications:
+    (1) **LSN-017 DOUBLING** — DataEntityDetails.tsx:56-64 useEffect dep-array
+        contains `details.status?.status` which is itself populated by the fetch's
+        fulfilled action; first render fetches (status undefined → real value),
+        second render re-fires (status value unchanged), net: **TWO `GET
+        /api/dataentities/{id}` calls per page-open = TWO `view_count + 1` UPDATEs**.
+        Empirically pinned by probe P-004 (xhr_count=2 + DB delta=2; regex-filtered
+        exact path match).
+    (2) **F-001 UI LOOP CLOSURE** — PopularStrip (rendered as one of four columns
+        in OwnerEntitiesList) is the surface that DISPLAYS the inflatable ranking
+        AND triggers view_count increments on click: every click on a Popular
+        tile navigates to /dataentities/{id}/overview which mounts DataEntityDetails
+        which fires fetchDataEntityDetails which increments view_count. The UI
+        does NOT break this loop with any client-side debouncing, idempotency key,
+        per-tab-per-entity 'already-counted-this-session' guard, or analytics-only
+        mode. **Combined with LSN-017**: every Popular-tile click = +2 view_count.
+  Under DISABLED auth the API loop is reachable anonymously (but the UI Recommended
+  panel is hidden by Overview.tsx gate — so home-page UI-driven inflation is
+  closed for DISABLED, while API-driven inflation is open). Under
+  LOGIN_FORM/OAUTH2/LDAP both UI and API loops are open. The 2x amplification
+  baseline is empirically pinned, not inferred.
+contributing_files:
+- getPopular.md
+- getDataEntityDetails.md
+- ReactiveDataEntityRepositoryImpl.md
+- DataEntityDetails.md
+- fetchDataEntityDetails.md
+- PopularStrip.md
+triangulation_count: 6
+cross_batch: true
+severity: HIGH
+severity_dim: security
+evidence:
+- getPopular.md:bugs_limitations_corner_cases.[0] HEADLINE — REFACTOR-201 primary-source
+  confirmed
+- getPopular.md:implicit_adrs.[0] (ranking by view_count DESC)
+- getPopular.md:security.known_security_gaps.[0] HIGH
+- getDataEntityDetails.md:implicit_adrs.[2] (the producer half — batch F)
+- ReactiveDataEntityRepositoryImpl.md:concepts.invariants.[7] (read-as-write — SQL
+  primary source)
+- ReactiveDataEntityRepositoryImpl.md:implicit_adrs.[2] (read-as-write decision —
+  intentional caller-controlled side effect)
+- ReactiveDataEntityRepositoryImpl.md:security.known_security_gaps.[3] (view-count
+  inflation surface structural — SQL-primary-source confirmation)
+- ReactiveDataEntityRepositoryImpl.md:performance.known_performance_gaps.[0] (no view_count
+  index MEDIUM — full-table scan + top-N sort hazard)
+- 'DataEntityDetails.md (batch J — UI HALF): bugs_limitations_corner_cases.[0] HIGH
+  — LSN-017 dep-array bug empirically pinned by probe P-004 run R-20260519T010758Z-P-004
+  (xhr_count=2 + DB delta=2 regex-filtered exact path match); security.known_security_gaps.[0]
+  view_count inflation is 2x cheaper from this component than from a direct API call'
+- 'fetchDataEntityDetails.md (batch J — UI HALF): bugs_limitations_corner_cases.[self-feeding
+  double-fetch loop] HIGH — self-feeding refire loop driven by details.status?.status
+  in the useEffect dep array, today emits 2 view_count increments per page-open;
+  performance.known_performance_gaps.[0] HIGH — 2-dispatch-per-mount baseline
+  minimum doubles the load on /api/dataentities/{id}'
+- 'PopularStrip.md (batch J — UI HALF): bugs_limitations_corner_cases.[0] HIGH —
+  F-001 LOOP CLOSURE: the UI surface that DISPLAYS the inflatable ranking is
+  ALSO the surface that triggers view_count increments on click; concepts.invariants[click
+  side-effect fires the F-001 LOOP — every click on Popular increments the very
+  signal that determines Popular ranking]'
+mitigations_unimplemented:
+- Rate-limit getDataEntityDetails (per-caller, per-entity, per-window)
+- Sample the view_count increment (probability 1/N)
+- Per-user view-count cap per entity per day
+- 'Signal-mix: combine view_count with recency, owner-popularity, alert-state'
+- Human-curated popular list override
+- CREATE INDEX idx_data_entity_view_count_desc ON data_entity (view_count DESC) WHERE
+  hollow = false AND status != <DELETED_id> — partial descending B-tree index on popular-eligible
+  rows
+- Async batch view-count increment via outbox pattern to relieve row-lock contention
+  on popular entities
+- Separate counter table or Postgres advisory-counter to decouple write throughput
+  from the data_entity row
+- '**Batch J — UI-LAYER MITIGATIONS (additive to backend fixes)**'
+- 'Fix LSN-017 1-line at DataEntityDetails.tsx:63 — remove details.status?.status
+  from the dep-array; reduces UI-driven inflation by 50% (from +2 to +1 per
+  page-open). Empirically pinned regression by probe P-004; promoting P-004 to
+  a CI-permanent Playwright spec turns it into a regression-pin.'
+- 'Debounce fetchDataEntityDetails per (session, entityId) pair — first click
+  counts, subsequent clicks within N minutes do not refetch (would close the
+  PopularStrip click-loop side of inflation).'
+- 'Intercept the Popular-tile click to dispatch an analytics-only thunk that
+  does NOT trigger incrementViewCount (would decouple ranking signal from the
+  read-as-write side-effect).'
+- 'Cache the detail-page mount in Redux so back-and-forward navigation does not
+  refire the read (would close the back-button re-fetch surface that compounds
+  the loop).'
+notes: |-
+  Strengthened in batch 2026-05-19J from 3-sidecar to 6-sidecar with three UI-side
+  confirmations (DataEntityDetails + fetchDataEntityDetails + PopularStrip). The
+  F-001 loop is now empirically pinned end-to-end UI → API → service → SQL with
+  two new amplifications:
+    (1) LSN-017 doubles UI-driven inflation to +2 per page-open (probe P-004).
+    (2) PopularStrip click-loop: the UI surface displaying the ranking is also
+        the surface triggering increments on click — closes the loop on the client
+        side.
+
+  Combined effect: each Popular-tile click costs the backend +2 view_count UPDATEs
+  on the destination entity. Under default config (LOGIN_FORM/OAUTH2/LDAP) this
+  is bot-amplifiable; under DISABLED auth, the UI Recommended panel is hidden but
+  the API path remains open for anonymous scripted inflation.
+
+  The fix has TWO halves now:
+    (a) Backend: rate-limit + index + signal-mix (per batches F/H findings).
+    (b) UI: 1-line LSN-017 fix + analytics-only Popular click handler.
+  Either half alone halves the inflation surface; both together reduce it
+  proportionally and close the read-as-write feedback.

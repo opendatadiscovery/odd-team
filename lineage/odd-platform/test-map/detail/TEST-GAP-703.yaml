@@ -1,0 +1,27 @@
+gap_id: TEST-GAP-703
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:PolicyServiceImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "PolicyServiceImpl.md:security.known_security_gaps.[5] (No anti-elevation guard)"
+behaviour: |-
+  **`PolicyServiceImpl.create` HAS NO ANTI-ELEVATION GUARD — a POLICY_CREATE-bearing user can author a `MANAGEMENT/ALL` policy and (with ROLE_CREATE or ROLE_UPDATE) bind it to a role they belong to, completing a self-elevation chain.** The validator (`PolicyJSONValidator` + `policy_schema.json`) ACCEPTS MANAGEMENT/ALL as a legal shape — identical to the seeded Administrator. There is NO 'cannot grant permissions you don't already have' check. This is INTENTIONAL in the platform's design (an administrator can author administrator policies — that's the bootstrap) but the consequence is that POLICY_CREATE is FUNCTIONALLY ROOT ON THE PLATFORM. Carry-over from batch-E PolicyController.createPolicy known_security_gaps[2]; service-tier confirmation here. The current contract is documented at the concept-catalog level as INTENTIONAL but is NOT regression-pinned. A future refactor that pursued anti-elevation (e.g., reject policies granting permissions the caller does not already hold) would close the elevation chain — and breaks this test, making the security-tightening deliberate. The current test pins the PERMISSIVE behaviour so that operators auditing 'what does POLICY_CREATE enable' can read the test as the documented contract: POLICY_CREATE is platform-root.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/PolicyServiceImplAntiElevationGuardAbsenceTest.java"
+  name: "createPolicy_managementAllStatement_byPolicyCreateOnlyUser_succeeds_pinsNoAntiElevationGuard"
+evidence:
+  - "PolicyServiceImpl.md says (security.known_security_gaps.[5]): 'No anti-elevation guard. A POLICY_CREATE-bearing user can author a MANAGEMENT/ALL policy and then (with ROLE_CREATE or ROLE_UPDATE — both MANAGEMENT-tier) bind it to a role they belong to, completing a self-elevation chain. The validator (PolicyJSONValidator + schema) accepts MANAGEMENT/ALL as a legal shape — identical to the seeded Administrator. There is no `cannot grant permissions you don''t already have` check. This is intentional in the platform''s design (an administrator can author administrator policies — that''s the bootstrap) but the consequence is that POLICY_CREATE is functionally root-on-the-platform.' severity: HIGH"
+  - "Source: PolicyServiceImpl.java:62-69 (no elevation check) + policy_schema.json (accepts MANAGEMENT/ALL) + V0_0_56__add_predefined_roles_and_policies.sql:1-31 (Administrator uses MANAGEMENT/ALL)"
+cross_references:
+  - "TEST-GAP-NN (batch E PolicyController.createPolicy security gap[2] — sister surface at controller tier)"
+  - "F-006 (RBAC family — POLICY_CREATE is functionally root)"
+  - "concepts.yaml:invariants[policy-create-is-functionally-root]"
+related_features: [F-006]
+related_pillar_features: ["P-09:F-001"]
+proposed_action: |-
+  Add `PolicyServiceImplAntiElevationGuardAbsenceTest.createPolicy_managementAllStatement_byPolicyCreateOnlyUser_succeeds_pinsNoAntiElevationGuard` as a Testcontainers integration test. (a) Seed user U with role R that has ONLY `POLICY_CREATE` permission (NOT MANAGEMENT/ALL). (b) Authenticate as U. (c) POST /api/policies with body containing a MANAGEMENT/ALL statement (identical shape to the seeded Administrator policy). (d) Assert HTTP 200 + the policy is created. (e) Demonstrate the elevation chain: POST /api/roles with the new policy bound (requires ROLE_CREATE; if U doesn't have it, simulate by directly INSERTing the role_to_policy row). (f) Add a `// REGRESSION-PIN — POLICY_CREATE is functionally root: no anti-elevation guard at PolicyServiceImpl.create (lines 62-69). The current behaviour is INTENTIONAL per the design (an administrator can author administrator policies) but UNSTATED — operators auditing the trust model assume policy authoring is constrained to "permissions you hold". This test surfaces the truth: it is NOT. A REFACTOR adding an anti-elevation guard will close the elevation chain; the test will flip; the change will be deliberate.` comment block. Pair with documentation update: surface the contract at /authorization/policies as "POLICY_CREATE is functionally root; restrict the assignment of POLICY_CREATE accordingly".
+batch: 2026-05-20-S
+feature_id: F-006

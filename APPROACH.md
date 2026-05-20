@@ -474,3 +474,97 @@ This document is the methodology surface. The depth lives elsewhere in this work
 - `playbooks/` — PROTOCOL-format universal rules (deep-research, pause-and-ask, consumer-read, live-site-verification, follow-up-on-disk, …). *(rev 2 will add: `entry-point-traversal.md`, `feature-flow-composition.md`.)*
 
 If you're a Claude Code session invoked from another project pointed at this workspace: read this file end-to-end, then drop into the ADRs for the design rationale (start with `feature-anchored-ontology.md` if you're new to rev 2; otherwise the foundational pair first), then read one or two representative sidecars in `lineage/odd-platform/understanding/` to see the schema in practice. That's enough to bootstrap.
+
+---
+
+## 13. System mission anchor — Layer 0 (rev 3)
+
+*(Added 2026-05-19 after batch I post-deployment review surfaced the bottom-up-only failure mode: 60 sidecars produced only 8 features, all bug-anchored caveats rather than user-observable pillars. The maintainer's diagnosis was sharp — the agent lacked the platform's gestalt. Rev 3 of `feature-anchored-ontology.md` introduces this universal layer beneath all others.)*
+
+### Why this layer exists
+
+Layers 1-5 of the methodology (substrate / per-node enrichment / cross-file reducers / feature-anchored synthesis / dynamic verification) all assume the agent already knows what "feature" means in the target project's domain. Without that anchor, code-walks produce drift findings at the granularity of the drift, not the granularity of the user. The canonical failure shape: a 60-sidecar code-walk produces 8 features, each anchored on a specific bug (a useEffect doubling, a path mismatch, a soft-delete leak, an ungated webhook). What's missing is the user-observable capability the bug LIVES INSIDE — "Popular Entities Ranking" is the feature; the doubling bug is one drift facet of it.
+
+Layer 0 supplies the gestalt. A new subagent (`domain-extractor`) reads the project's canonical documentation source + the maintainer-curated concepts catalog + (when needed) maintainer-supplied framing, and emits `lineage/{repo}/system-mission.md` — a doc-anchored 8-12-pillar shape against which every downstream layer classifies its findings.
+
+### The universal shape
+
+`system-mission.md` is the same shape for every project the methodology ports to. The CONTENT is per-project (a Django catalog tool, a Go observability service, a Rust embedded controller — each gets its own 8-12 pillars), but the STRUCTURE is universal:
+
+| Block | What it carries |
+|---|---|
+| **Mission statement** | 1-2 paragraphs anchored on the project's landing page narrative. Audience + problem + value delivered. |
+| **Feature pillars (8-12)** | The primary user-observable capabilities at operator-facing granularity. Per pillar: one-line capability, primary user actions, data entities operated on, doc-side narrative excerpt (verbatim), doc URL + verification status, cross-pillar relationships, sub-feature seed list, audiences served, confidence. |
+| **Audiences (6-10)** | Tagged audience identities + which pillars each primarily interacts with. |
+| **Architectural pillars** | Orthogonal to feature pillars — the exposure shapes (UI, REST API, S2S, scheduled jobs, webhooks). Each names sidecar axes it correlates with. |
+| **Canonicalisation candidates** | Pillars where doc coverage is thin OR code signal contradicts docs OR maintainer-curated vocabulary diverges. Surfaced for maintainer review. |
+| **Cross-pillar relationships** | Compact graph view: which pillars feed which (the integration boundaries worth probing in Type-7 probe rounds). |
+| **Sources** | Per-URL verification status with `fetched_at` timestamps. |
+| **Confidence per pillar** | HIGH / MEDIUM / LOW with reason. MEDIUM is acceptable when local-source-of-truth markdown is read but live URLs aren't WebFetch-verified this session. |
+| **Maintainer notes** | Preserved across `domain-extractor` refreshes. The only block the maintainer hand-edits. |
+
+### Pillar discipline (universal)
+
+A pillar qualifies as a pillar when:
+1. The project's marketing / landing-page narrative names it as a primary capability.
+2. The docs have a top-level section dedicated to it.
+3. An operator can describe it in one sentence.
+4. Multiple sub-features compose under it.
+
+What is NOT a pillar:
+- Architecture concerns (UI, REST API, scheduled jobs) — those go under `architectural_pillars`.
+- A single mutation / bug surface (the rev-2 failure mode).
+- A substrate axis (controllers, repositories, config-properties) — those are implementation slicing.
+
+**Pillar count must land in [8, 12].** Below 6, too coarse (sub-features missed). Above 12, too fine (over-sliced). `domain-extractor` STOPS and surfaces to maintainer if the count falls outside that band.
+
+### Doc-source contract
+
+Live URLs are the gold standard for content verification (rendering matches what operators see; GitBook macros applied; SUMMARY ordering honoured; redirects resolved). When WebFetch is denied, **local source-of-truth markdown** (the project's documentation source repo) is an acceptable substitute with explicit `confidence: MEDIUM (local-anchored; live verification pending)`. Pretraining is **never** acceptable — same discipline as Rule 1 of `file-analyser.md`.
+
+The contract:
+- WebFetch denied AND no local doc source available → STOP; explicit error.
+- Local docs read instead of live → confidence drops to MEDIUM; `live_url_verifications` frontmatter records `status: pending-WebFetch-session` per URL; live verification is logged as a known follow-up.
+- Live URLs read AND verified → confidence HIGH.
+
+### Run cadence
+
+`domain-extractor` runs **once per substrate scan**, not per batch. It refreshes when:
+- The substrate is re-scanned (project structure has shifted enough that the substrate IDs change).
+- The project's documentation IA changes substantively (a new pillar lands; an existing one is renamed; the SUMMARY restructures).
+- The maintainer hand-edits the `## Maintainer notes` block to override agent classifications.
+
+Re-runs are CHEAP at the run level (no batch coordination needed); the artefact is small (~30-50 KB), single-pass written, and the downstream reducers consult it on every batch.
+
+### Downstream consumption
+
+Every downstream reducer's prompt gains a "consult `system-mission.md` for classification" rule. The largest changes are in `feature-flow-builder`:
+
+- Reads `system-mission.md` BEFORE producing/updating any feature.
+- For each emerging code chain:
+  - **Map to a pillar** — classify into one of the pillars; if none fits, surface as `canonical_candidate: true` for maintainer review (never invent a new pillar autonomously).
+  - **Mint feature_id within the pillar's namespace** — two-tier IDs: `P-NN:F-NNN` (e.g. `P-01:F-001` for "Data Discovery → Popular Entities Ranking").
+  - **Bug-shaped findings become `drift_class` facets** inside pillar-anchored features, NOT standalone features.
+  - **Cross-pillar interactions** surface as relationship-edges on `system-mission.md`, NOT separate features.
+
+Other reducers (concept-merger, doc-gap-finder, test-coverage-mapper, adr-archaeologist) get lighter touches — they consult Layer 0 to anchor naming, severity weighting, and integration-test gap classification (cross-pillar = integration; within-pillar = unit).
+
+### Bootstrapping a new project
+
+When porting this methodology to a new project (Django, Go, Node, anything), Layer 0 is the FIRST agent invocation after the substrate scan:
+
+```
+1. Run substrate scan         → nodes.jsonl + edges.jsonl
+2. Run domain-extractor       → lineage/{repo}/system-mission.md   ← Layer 0
+3. Maintainer reviews mission → curates pillar names + cross-refs in ## Maintainer notes
+4. Run enrichment batches     → sidecars (Layers 2-5)
+```
+
+Without step 2 + 3, the methodology produces bug-pin features — the rev-2 failure shape. With them, features emerge at the operator-facing granularity from the first batch.
+
+### Cross-references
+
+- `adrs/drafts/feature-anchored-ontology.md` rev 3 — the ADR introducing this layer.
+- `.claude/agents/domain-extractor.md` — the Layer 0 subagent's system prompt + output schema.
+- `lineage/{repo}/system-mission.md` — the canonical output (one per project).
+- `.claude/agents/feature-flow-builder.md` rev 3 — the primary downstream consumer; classifies code chains against the pillar shape.

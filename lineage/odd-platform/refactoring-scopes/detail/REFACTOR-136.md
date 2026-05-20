@@ -1,0 +1,9 @@
+- **REFACTOR-136** (NEW 2026-05-12C): Slack webhook response-status check is hard-coded `== HttpStatus.OK.value()` (200). Slack's incoming webhook can return 2xx other than 200 in edge cases; non-200 2xx misclassified as failure and logged as error even though Slack accepted the message
+  - **Category**: status-code-narrow
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[8]` (severity LOW)
+  - **Statement**: `AbstractNotificationSender.java:24-27` checks `if (response.statusCode() != HttpStatus.OK.value())`. Slack's incoming webhook may return 2xx variants; the platform's narrow check produces false-positive failure logs and may trigger the fail-soft path even on successful delivery.
+  - **Evidence**: `AbstractNotificationSender.java:24-27`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-042 (fail-soft fan-out) is the framing; the gap is the narrow success check.
+  - **Proposed remedy**: Change the check to `response.statusCode() / 100 == 2` (any 2xx) or use `HttpStatus.valueOf(response.statusCode()).is2xxSuccessful()`.
+  - **Severity rationale**: LOW — false-positive failures; log noise + potential mis-counted metric in REFACTOR-127's hardening.
+  - **Suggested backlog grouping**: `Notifications hardening`

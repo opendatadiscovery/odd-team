@@ -1,0 +1,219 @@
+name: S2S Ingestion Pipeline
+canonical_in_docs: true
+canonical_candidate: false
+description: '**NEW CONCEPT, batch 2026-05-12F — completes the S2S surface** — the
+  canonical Server-to-Server ingestion path from a collector (or any HTTP client)
+  to the ODD Platform metadata catalog. Path: `POST /ingestion/entities` accepting
+  a `DataEntityList` payload (`data_source_oddrn` + list of `DataEntity` items). The
+  pipeline composes THREE distinct concerns: (1) PATH-WHITELISTING — `/ingestion/**`
+  is in `SecurityConstants.WHITELIST_PATHS` (line 95-96), exempted from the UI authentication
+  chain in EVERY mode (DISABLED/LOGIN_FORM/OAUTH2/LDAP); (2) PATH-SCOPED AUTH — `IngestionDataEntitiesFilter`
+  (batch B) is `@ConditionalOnProperty("auth.ingestion.filter.enabled", havingValue="true")`
+  and matches `POST /ingestion/entities` only, validating `Authorization: Bearer <token>`
+  against the matched datasource''s per-datasource TOKEN row (or fallback to parent
+  collector''s TOKEN row); (3) CONTROLLER — `IngestionController.postDataEntityList`
+  (batch F) is a 4-line proxy with NO `@PreAuthorize` that delegates to `IngestionServiceImpl.ingest(...)`
+  (inside `@ReactiveTransactional`). Datasource scoping is PAYLOAD-DRIVEN, NOT TOKEN-DRIVEN
+  at the controller layer: the caller chooses which datasource by writing `data_source_oddrn`
+  in the body; the filter validates the token against THAT datasource. **`auth.ingestion.filter.enabled`
+  defaults FALSE** — bundled deployment ships `/ingestion/entities` UNAUTHENTICATED,
+  and the UI auth modes do NOT protect it because it is whitelisted. Distinct from
+  the GLOBAL `S2sAuthenticationFilter` (`auth.s2s.enabled`, single shared `X-API-Key`
+  cluster-wide token granting ADMIN globally) — see batch C cross-cutting ''S2S composes-not-mutex''
+  invariant. Two auth filters with different headers, different scope, different token
+  sources — operators conflate them (doc-drift invariant ''Doc-vs-code spelling/format
+  mismatch'' captures this). main-concepts.md names `ODD Specification` as the wire
+  contract and `Server-to-server (S2S) authentication` in Terms & Aliases; this concept
+  records the actual code-side pipeline.'
+axes_present:
+- controllers
+- config_prefixes
+nodes:
+- odd-platform java IngestionController controller-method:postDataEntityList
+- odd-platform java IngestionDataEntitiesFilter config-key-consumer:auth.ingestion.filter.enabled@L20
+- odd-platform java CollectorController controller-method:regenerateCollectorToken
+contributors:
+- 'IngestionController.postDataEntityList (batch F): the CONTROLLER side. 4-line reactive
+  proxy with NO @PreAuthorize. Authentication delegated to the filter. Datasource
+  lookup is payload-driven (`dataSourceRepository.getIdByOddrnForUpdate(dataEntityList.getDataSourceOddrn())`).
+  4 ADRs: OpenAPI-contract-driven path; filter-based-auth-not-annotation; code-side
+  empty-list validation; 200-vs-201 spec drift.'
+- 'IngestionDataEntitiesFilter@L20 (batch B): the FILTER side. `@ConditionalOnProperty("auth.ingestion.filter.enabled",
+  havingValue="true")` — default FALSE. Path matcher hard-coded `POST /ingestion/entities`
+  only. Token comparison plaintext `String.equals(...)`. Body-buffered-before-auth-check
+  (reads full body to extract `dataSourceOddrn` BEFORE validating token — DoS-amplification
+  vector).'
+- 'CollectorController.regenerateCollectorToken (batch A): the TOKEN-MANAGEMENT side.
+  Mints/rotates the 40-char alphanumeric plaintext-stored shared secret that the filter
+  validates. In-place UPDATE — no rotation grace window.'
+evidence:
+- postDataEntityList.md:concepts.invariants + implicit_adrs.[0-3] + bugs_limitations_corner_cases.[0-8]
+- 'IngestionDataEntitiesFilter@L20.md (batch B): concepts.invariants.[0-4] + implicit_adrs.[0-3]
+  + security.known_security_gaps.[0-4]'
+- regenerateCollectorToken.md:concepts.invariants.[1-3] (plaintext-equality across
+  the rotate-side AND verify-side)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - S2S
+  - DISABLED
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: true
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: 'Default-off insecure: `auth.ingestion.filter.enabled=false` ships in
+      `application.yml:48`. The four UI auth modes do NOT protect this path (`/ingestion/**`
+      is in WHITELIST_PATHS). When the filter IS enabled, per-datasource bearer-token
+      auth is enforced. When disabled (default), ANY caller able to reach `POST /ingestion/entities`
+      can submit a `DataEntityList` payload targeting ANY datasource. **CONFIRMED
+      FROM TWO ANGLES**: WIRING side (IngestionDataEntitiesFilter batch B) + CONTROLLER
+      side (postDataEntityList batch F) — the controller has no `@PreAuthorize` to
+      act as defence-in-depth.'
+  owner_scoping:
+    verdict: N/A
+    detail: Ingestion path is not owner-scoped. The filter authenticates the CALLER
+      (collector/datasource via shared-secret token) but does not associate the request
+      with an ODD Owner. Token = identity-of-collector, not identity-of-user. Ingested
+      entities are not stamped with `created_by_owner` from the calling collector.
+  strengths:
+  - Disabled-by-default for the per-datasource auth path — operator must opt in to
+    ingestion auth enforcement
+  - Per-datasource tokens stored in DB (when filter enabled) — different from the
+    single-shared-secret S2S model
+  - '`@ReactiveTransactional` on IngestionServiceImpl.ingest ensures per-batch atomicity'
+  - Path matcher per filter subclass — IngestionDataEntitiesFilter ↔ /ingestion/entities,
+    IngestionDataSourceFilter ↔ /ingestion/datasources — discoverable by file name
+  weaknesses:
+  - '**Default-off ingestion auth (HIGH, LSN-001-class)** — bundled deployment ships
+    `/ingestion/entities` reachable without credentials. Operator-trap: the property
+    `auth.ingestion.filter.enabled` is NOT surfaced in any live doc (configuration-and-deployment/data-ingestion
+    → 404; data-ingestion → 404). 2-sidecar primary-source confirmed (batch B + batch
+    F).'
+  - '**Datasource scoping is payload-driven, not token-driven, at the controller (HIGH
+    under default-off)** — controller passes the entire `Mono<DataEntityList>` to
+    the service unchanged; service resolves the datasource BY ODDRN FROM THE PAYLOAD.
+    When filter is OFF, the controller blindly trusts the payload''s `data_source_oddrn`.
+    (postDataEntityList.md:bugs_limitations_corner_cases.[2])'
+  - '**Plaintext-equality `.equals()` not constant-time (MEDIUM)** — `IngestionDataEntitiesFilter.java:56`
+    uses `String.equals(...)`, not `MessageDigest.isEqual(...)`. (IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[1])'
+  - '**Body-buffered-before-auth (MEDIUM)** — filter reads full request body to extract
+    `dataSourceOddrn` BEFORE validating token. Attacker submitting 20MB payloads with
+    invalid tokens forces the platform to buffer+parse before rejecting — heap-pressure
+    DoS. (IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[4])'
+  - '**Unknown `data_source_oddrn` returns 5xx, not 404 (MEDIUM)** — no `@ExceptionHandler(NotFoundException)`
+    returning 404 on the reactive ingestion path. (postDataEntityList.md:bugs_limitations_corner_cases.[4])'
+  - '**`X-API-Key` (S2S) vs `Authorization: Bearer` (this filter) doc-drift (MEDIUM)**
+    — operator copy-paste-from-docs-using-X-API-Key fails when only `auth.ingestion.filter.enabled=true`
+    is set. Live S2S doc curl example uses `X-API-Key` (the OTHER filter). See cross-cutting
+    invariant ''Doc-vs-code spelling/format mismatch''. (postDataEntityList.md:docs_link_semantic.doc_drift_findings.[1])'
+  - '**No canonical doc page for the endpoint (MEDIUM)** — `configuration-and-deployment/data-ingestion`
+    returns 404; `data-ingestion` returns 404. The entire `/ingestion/*` surface is
+    under-documented except for the S2S sub-page''s brief mention. (postDataEntityList.md:docs_link_semantic.doc_drift_findings.[0])'
+  cross_file_inconsistencies:
+  - 'Live `/configuration-and-deployment/enable-security/authentication/s2s` page
+    conflates the two auth filters — the page documents `auth.s2s.enabled` + `auth.s2s.token`
+    + `X-API-Key` header but does NOT mention `auth.ingestion.filter.enabled` + `Authorization:
+    Bearer` + `IngestionDataEntitiesFilter`. Operators reading only the S2S page miss
+    the path-scoped filter entirely.'
+  - 'OpenAPI status-code drift: spec declares `201 Created` (odd_api.yaml:23-25);
+    controller returns `200 OK`; tests lock in 200. 2-sidecar status-code drift with
+    OwnerController.createOwner — see cross-cutting invariant ''OpenAPI 200-vs-201
+    status-code drift''.'
+  contributing_files:
+  - postDataEntityList.md
+  - IngestionDataEntitiesFilter@L20.md
+  - regenerateCollectorToken.md
+  evidence:
+  - postDataEntityList.md:security.known_security_gaps.[0-5]
+  - postDataEntityList.md:bugs_limitations_corner_cases.[0-8]
+  - IngestionDataEntitiesFilter@L20.md:security.known_security_gaps.[0-4]
+  - regenerateCollectorToken.md:concepts.invariants.[3] (plaintext-equality)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - 'Every `POST /ingestion/entities` incurs: full-body reactive parse (up to 20MB),
+    Jackson deserialise to DataEntityList, empty-check, service-call to IngestionServiceImpl.ingest.
+    When filter active, body parsed TWICE (filter + controller)'
+  - 'Per-ingestion DB writes: datasource SELECT-FOR-UPDATE + bulk dedup-and-upsert
+    (bulkUpdate + bulkCreate inside the transaction) + processor chain + OTLP metric
+    export'
+  - Synchronous response — HTTP connection held for the duration of the pipeline;
+    bursty collectors with slow downstream processors cause cascading timeouts
+  throughput_shape:
+    verdict: BATCH_FRIENDLY
+    detail: Per-request can carry hundreds-to-thousands of DataEntity items (one collector-tick
+      batched). No streaming or chunking — whole list buffered to 20MB cap
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless controller. Per-datasource row-level lock (`getIdByOddrnForUpdate`)
+      serialises concurrent ingestions for SAME datasource; cross-datasource scales
+      linearly
+  strengths:
+  - Reactive non-blocking signature
+  - Per-datasource lock isolation — different collectors / datasources scale linearly
+  - Idempotency-by-ODDRN at the data layer (upsert on existing rows)
+  weaknesses:
+  - '**Synchronous-blocking-on-pipeline (LOW)** — no async-accept mode; HTTP connection
+    held for full pipeline duration. (postDataEntityList.md:performance.known_performance_gaps.[0])'
+  - '**Duplicate body parse when filter active (MEDIUM)** — filter parses body for
+    dataSourceOddrn, controller re-parses for DataEntityList. (IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[0])'
+  - '**OTLP metric export inside per-request flow (MEDIUM)** — slow/unhealthy OTLP
+    backend slows every ingestion request. No timeout/circuit-breaker. (postDataEntityList.md:performance.known_performance_gaps.[2])'
+  - '**No token cache** — every ingestion request re-fetches datasource (and possibly
+    collector) from DB. (IngestionDataEntitiesFilter@L20.md:performance.known_performance_gaps.[2])'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - postDataEntityList.md
+  - IngestionDataEntitiesFilter@L20.md
+  evidence:
+  - postDataEntityList.md:performance.hot_paths.[0-1] + performance.known_performance_gaps.[0-2]
+  - IngestionDataEntitiesFilter@L20.md:performance.hot_paths + performance.known_performance_gaps.[0-2]
+notes: 'NEW concept captured in batch 2026-05-12F — completes the S2S
+
+  ingestion surface that batch B''s IngestionDataEntitiesFilter
+
+  opened. 2-sidecar primary-source on the inbound side (filter +
+
+  controller) + 1-sidecar primary-source on the token-management
+
+  side (CollectorController.regenerateCollectorToken from batch A).
+
+
+  main-concepts.md already names canonical S2S concepts (`Server-to-server
+
+  (S2S) authentication` and `Ingestion authentication filter` in
+
+  Terms & Aliases). This concept records the actual code-side
+
+  PIPELINE — the three concerns (path-whitelisting + path-scoped
+
+  auth filter + controller) that compose into the operator-facing
+
+  experience.
+
+
+  Recommended canonicalisation: this entry IS the canonical
+
+  pipeline concept; main-concepts.md''s existing aliases are correct.
+
+  The doc-side gap is the absence of an end-to-end
+
+  `/configuration-and-deployment/data-ingestion` page that explains
+
+  the pipeline as one unit; today the three concerns are split across
+
+  `enable-security/authentication/s2s` (briefly) and zero canonical
+
+  pages for the ingestion-controller-side and the
+
+  ingestion-auth-filter-side. The cross-cutting invariants
+
+  ''Doc-vs-code spelling/format mismatch'' (Authorization-vs-X-API-Key
+
+  conflation) and ''OpenAPI 200-vs-201 status-code drift'' both surface
+
+  via this concept.
+
+  '

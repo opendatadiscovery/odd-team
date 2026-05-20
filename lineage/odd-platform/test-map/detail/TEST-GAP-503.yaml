@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-503
+category: missing-performance
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataEntityController controller-method:getDataEntityAlerts"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "getDataEntityAlerts.md:bugs_limitations_corner_cases.[2] (Pagination parameters are unbounded at every layer)"
+  - "getDataEntityAlerts.md:performance.known_performance_gaps.[0] (No upper bound on pagination size)"
+  - "getDataEntityAlerts.md:performance.scaling_characteristics.[2] (No upper bound on size)"
+behaviour: |-
+  Unbounded-pagination-size DoS-amp regression-pin for getDataEntityAlerts (HIGH — audit-export workaround amplification). The controller does NOT validate `page` or `size` (DataEntityController.java:317-318 — `Integer page, Integer size` without validation annotations); the OpenAPI `PageParam`/`SizeParam` at components.yaml:4213-4229 carry NO `minimum:` or `maximum:`; the repository computes `OFFSET = (page - 1) * size` (ReactiveAlertRepositoryImpl.java:189) with NO clamping. A caller passing `size=1000000` triggers a single jOOQ query bounded only by what Postgres / network buffers tolerate. The audit-export workaround use case from the live alerting doc (WebFetched 2026-05-19) AMPLIFIES the risk: operators naturally want large pages to complete an export with fewer round-trips. Combined with the AlertManager-derived alert_chunk_list (raw generator-URL strings which can be arbitrarily long), peak memory is proportional to caller-supplied size × per-chunk-length, which has NO upper bound either. Under DISABLED auth-mode the endpoint is anonymously reachable (TEST-GAP-493 cross-ref) AND unbounded — a single curl with `size=1000000` against `/api/dataentities/{id}/alerts` becomes a DoS vector. The deep-pagination cost is O((page-1)*size) — even a moderate page query at page=100, size=1000 forces Postgres to scan 100k rows. Cross-pillar P-07 (Alerts performance) + P-09 (DoS-amp security boundary).
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/DataEntityAlertsPaginationBoundaryTest.java"
+  name: "getDataEntityAlerts_sizeParameterIsUnbounded_pinsTheDoSAmplificationVector"
+evidence:
+  - "getDataEntityAlerts.md:bugs_limitations_corner_cases.[2]: 'Pagination parameters are unbounded at every layer this method touches — the controller does not validate page or size; the OpenAPI PageParam / SizeParam at components.yaml:4213-4229 carry no minimum: or maximum:; the repository computes OFFSET = (page - 1) * size (ReactiveAlertRepositoryImpl.java:189) with no clamping. A caller passing size=1_000_000 triggers a single jOOQ query bounded only by what Postgres / network buffers tolerate.'"
+  - "DataEntityController.java:317-318 (Integer page, Integer size without validation annotations)"
+  - "openapi.yaml:1326-1329 (parameter refs to PageParam/SizeParam)"
+  - "components.yaml:4213-4229 (no minimum/maximum on PageParam/SizeParam)"
+  - "ReactiveAlertRepositoryImpl.java:189 ((page - 1) * size)"
+  - "WebFetch alerting page 2026-05-19 status 200 (audit-export workaround amplifies the risk; operators want large pages)"
+cross_references:
+  - "TEST-GAP-493 (cross-owner per-entity alert read — combined, the DoS-amp is reachable by any authenticated user)"
+  - "TEST-GAP-502 (soft-delete-inclusive — co-located)"
+  - "TEST-GAP-019 (similar pattern for lineage depth — DoS-amp)"
+  - "REFACTOR-NNN candidate: add `maximum: 1000` to SizeParam in components.yaml AND clamp at the controller"
+proposed_action: |-
+  Performance-boundary test (use a marker — these tests run separately). (a) Pre-seed 10,000 alerts on entity X. (b) GET /api/dataentities/X/alerts?page=1&size=1000000. (c) Assert HTTP 200 (current contract — the request is accepted). (d) Measure response time and response body size; record as baseline. (e) Test comment 'LOCKS the unbounded-size contract as of 2026-05-19. When REFACTOR-NNN adds maximum: clamp, this test FLIPS to expect 400 (validation rejection) or response-truncation at the clamp value.' Secondary test: POST with `size=-1`, `page=0`, `size=0` exercises edge-case boundary values. Cross-pillar HIGH because the DoS-amp vector is reachable by any authenticated user (TEST-GAP-493 cross-owner read) AND by anonymous callers under DISABLED.
+batch: 2026-05-19-L
+feature_id: null

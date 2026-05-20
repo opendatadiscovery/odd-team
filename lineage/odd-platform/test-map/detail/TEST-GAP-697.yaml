@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-697
+category: missing-unit
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:DataSourceIngestionServiceImpl"
+pillars_affected: [P-10, P-08]
+surfaced_by:
+  - "DataSourceIngestionServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[1] (Namespace inheritance from Collector NOT from payload — uncovered)"
+  - "DataSourceIngestionServiceImpl.md:bugs_limitations_corner_cases.[2] (Silent namespace drop — payload's namespace_name is NEVER read)"
+  - "DataSourceIngestionServiceImpl.md:implicit_adrs.[1] (Namespace inheritance from Collector — collector-tenancy model, payload namespace_name silently ignored)"
+behaviour: |-
+  **`DataSourceIngestionServiceImpl` SILENTLY DROPS PAYLOAD `namespace_name` — every datasource registered through `/ingestion/datasources` inherits the Collector's namespace; the payload's namespace_name field is NEVER read.** Line 106 hardcodes namespace_id to `MappingUtils.extractFieldFromNullableObject(c.namespace(), NamespacePojo::getId)` — extracted from the matched Collector, NEVER from the payload. A custom-collector author following the OpenAPI contract sets `namespace_name = "my-team"` and expects the datasource to land under `my-team`; in reality it lands under the Collector's pre-configured namespace. No log, no warning, no UI surface. The protective invariant (a stolen Collector A token cannot register datasources into Collector B's namespace) is the intentional side; the SILENT DROP is the operational caveat. Per REFACTOR-424. The existing `DataSourceIngestionServiceTest` (lines 60-93) creates a CollectorDto with `new NamespacePojo()` (line 78) — a NamespacePojo with `id = null` — and uses the simple `DataSource().oddrn(...).name(...)` payload (lines 100-105) WITHOUT any namespace field. A regression that READ namespace_name from the payload would NOT be caught: the existing test would still pass (because the assertion only checks oddrn + name via the DataSource contract model).
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceImplNamespaceInheritanceTest.java"
+  name: "createDataSources_payloadWithNamespaceName_isSilentlyIgnored_finalRowInheritsCollectorNamespace"
+evidence:
+  - "DataSourceIngestionServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[1]): 'Namespace inheritance from Collector NOT from payload — the test creates a CollectorDto with `new NamespacePojo()` (DataSourceIngestionServiceTest.java:78) — a NamespacePojo with id = null. The mapper then receives null as the namespaceId. The test does NOT verify that the payload''s hypothetical namespace_name field is dropped — because the test uses the simple DataSource().oddrn(...).name(...) (lines 100-105) without any namespace field. A regression that read namespace_name from the payload would NOT be caught.'"
+  - "DataSourceIngestionServiceImpl.md says (bugs_limitations_corner_cases.[2]): 'Silent namespace drop: payload''s `namespace_name` field is NEVER read. Line 106 hardcodes the namespace_id to the Collector''s namespace via MappingUtils.extractFieldFromNullableObject(c.namespace(), NamespacePojo::getId). A custom-collector author following the OpenAPI contract sets namespace_name = my-team and expects the datasource to land under my-team; in reality it lands under the Collector''s configured namespace. No log, no warning, no UI surface.' severity: MEDIUM"
+  - "DataSourceIngestionServiceImpl.md says (implicit_adrs.[1]): 'Namespace inheritance from Collector — collector-tenancy model, payload namespace_name silently ignored. The design choice: (a) the upstream Ingestion API contract''s DataSource model has a namespace_name field; (b) the platform''s mapper takes namespaceId as a parameter, NOT a derived value; (c) this service explicitly passes the COLLECTOR''s namespace_id from CollectorDto.namespace(); (d) the protective invariant: a stolen Collector A token cannot register datasources into Collector B''s namespace.' confidence: HIGH"
+  - "Source: DataSourceIngestionServiceImpl.java:99-111 (mapDataSources — invokes mapper with collector-side namespace) + DataSourceIngestionMapperImpl.java:9-19 (mapper signature takes namespaceId; never reads from ds payload)"
+cross_references:
+  - "REFACTOR-424 (the named scope — silent payload-namespace-drop)"
+  - "ADR-CANDIDATE-143 (the namespace-inheritance protective invariant)"
+  - "F-008 (P-10:F-001 Batch Ingestion)"
+  - "DOC-GAP-NNN (developer-guides/build-and-run/custom-collectors silent on namespace inheritance — see DataSourceIngestionServiceImpl.md:doc_drift_findings.[1])"
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001"]
+proposed_action: |-
+  Add `DataSourceIngestionServiceImplNamespaceInheritanceTest.createDataSources_payloadWithNamespaceName_isSilentlyIgnored_finalRowInheritsCollectorNamespace`. (a) Mockito-style unit test extending the existing test infrastructure. (b) Mock `reactiveCollectorRepository.getDto(collectorId)` to return a CollectorDto with a Collector having `namespace_id=NS1` (assigned namespace). (c) POST a `DataSourceList` with one DataSource: `{ oddrn: "//x", name: "test", namespace_name: "my-team-NS2" }`. (d) Invoke `dataSourceIngestionService.createDataSources(collectorId, payload)`. (e) Capture the `DataSourcePojo` passed to `reactiveDataSourceRepository.bulkCreate(...)`. (f) Assert `pojo.getNamespaceId() == NS1` (Collector's namespace) NOT NS2 (payload's). (g) Add a `// REGRESSION-PIN — Payload's namespace_name is SILENTLY DROPPED. The Collector's namespace_id wins via MappingUtils.extractFieldFromNullableObject. The protective invariant (cross-collector namespace stealing blocked) is the intentional side; the silent drop is the operational caveat. A REFACTOR that reads namespace_name from the payload (e.g., to support multi-namespace collectors) will break this test, making the change deliberate.` comment block.
+batch: 2026-05-20-S
+feature_id: F-008

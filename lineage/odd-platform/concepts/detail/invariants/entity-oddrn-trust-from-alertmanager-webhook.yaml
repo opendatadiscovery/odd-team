@@ -1,0 +1,105 @@
+name: entity_oddrn label trusted verbatim from unauthenticated AlertManager webhook
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW INVARIANT, batch 2026-05-19I (AlertServiceImpl sidecar)** —
+  the AlertManager webhook path (`AlertServiceImpl.handleExternalAlerts`, line 178)
+  reads `externalAlert.getLabels().get("entity_oddrn")` and assigns it to `setDataEntityOddrn`
+  DIRECTLY, with no validation against the calling principal (there is none — the
+  webhook endpoint is on the `/ingestion/**` whitelist, batch-A finding) and no
+  validation against the data-entity registry (no existence check, no ODDRN shape
+  validation, no ownership check). Combined with the unauthenticated endpoint (`/ingestion/alert/alertmanager`
+  is in the `/ingestion/**` Spring Security whitelist AND is NOT covered by `IngestionDataEntitiesFilter`
+  which only matches `/ingestion/entities` POST), any caller with network reach
+  to the platform can POST AlertManager-shaped payloads naming arbitrary data-entity
+  ODDRNs. **Three concrete surfaces**: (1) **SPOOF**: an attacker who knows or
+  guesses a data-entity ODDRN can create arbitrary `DISTRIBUTION_ANOMALY` alerts
+  on it (the type is hardcoded — line 177); (2) **ORPHAN**: a payload with `labels`
+  missing `entity_oddrn` produces an `AlertPojo` with `dataEntityOddrn=null` —
+  the alert is created with a null FK, visible nowhere in the UI but persisted
+  (documented on the live AlertManager-integration doc page per batch-F neighbour
+  sidecar 2026-05-08 status 200); (3) **XSS/OPEN-REDIRECT vector**: line 168-185
+  builds the URL via `UriComponentsBuilder.fromUri(externalAlert.getGeneratorURL())`
+  and embeds it verbatim in the chunk description as `String.format("Distribution
+  Anomaly. URL: %s", queryUrl)`. The `URI` type does some shape validation but does
+  NOT block `javascript:` scheme or arbitrary host URLs. If the UI renders the
+  description as a clickable link (or as innerHTML), this is a stored-XSS / open-redirect
+  surface — and the endpoint is unauthenticated, so any caller can plant the payload.
+  The orphan case is documented; the spoof case is NOT; the XSS surface depends
+  on UI rendering layer (out of scope for this file). **Severity**: HIGH (spoof
+  + XSS) / MEDIUM (orphan documented). The fix is multi-layered: (a) require S2S
+  authentication on the AlertManager webhook (extend `IngestionDataEntitiesFilter`''s
+  path match or wire a sibling filter); (b) validate `entity_oddrn` against the
+  `data_entity` table and reject the payload if absent; (c) escape the generator
+  URL when embedding in chunk descriptions, and validate the UI rendering layer
+  uses `rehype-sanitize` (cross-ref `markdown-rendering-pipeline-rehype-raw-without-rehype-sanitize`
+  invariant).'
+axes_present:
+- services
+- controllers
+nodes:
+- odd-platform java service service:AlertServiceImpl
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
+contributors:
+- 'AlertServiceImpl.md (batch I): bugs_limitations_corner_cases.[2] — The AlertManager
+  webhook payload''s entity_oddrn label is trusted verbatim and never validated.
+  Severity: HIGH. bugs_limitations_corner_cases.[3] — The AlertManager webhook
+  payload''s generatorURL is propagated verbatim into the alert chunk description
+  rendered in the UI. Severity: MEDIUM. security.known_security_gaps.[2,3] —
+  Cross-references the unauthenticated posture + entity_oddrn trust.'
+- 'AlertManagerController (existing entity sidecar from prior batch): documents
+  the unauthenticated endpoint posture + the `/ingestion/**` whitelist + the absence
+  of IngestionDataEntitiesFilter coverage.'
+evidence:
+- AlertServiceImpl.md:bugs_limitations_corner_cases.[2] (HIGH severity entity_oddrn
+  spoof)
+- AlertServiceImpl.md:bugs_limitations_corner_cases.[3] (MEDIUM severity URL embedding
+  XSS surface)
+- AlertServiceImpl.md:security.known_security_gaps.[2,3] (cross-references)
+- AlertServiceImpl.md:concepts.invariants.[4,5] (hardcoded type + verbatim URL
+  embedding format)
+- (cross-batch) AlertManagerController sidecar (entity_oddrn orphan documented;
+  spoof NOT documented)
+notes: |
+  Cross-batch security-finding capture. The AlertManager webhook path has THREE
+  compounding gaps:
+
+    (1) Unauthenticated by design (operator-delegated network controls).
+    (2) entity_oddrn label trusted verbatim — spoof + orphan + XSS surfaces.
+    (3) No idempotency — Prometheus retries produce duplicates (companion
+        invariant `alertmanager-webhook-bypasses-alert-action-resolver-no-idempotency`).
+
+  The cumulative blast radius: a network-reachable attacker (in DISABLED deployments,
+  this is any caller; in default deployments under operator-deployed network
+  controls, this is anyone inside the network perimeter) can:
+
+    (a) Create spoof DISTRIBUTION_ANOMALY alerts on arbitrary data entities;
+    (b) Plant XSS payloads via the generator URL field rendered by the UI;
+    (c) Pollute the alert feed via Prometheus-retry-induced duplicates.
+
+  Recommended cleanup paths:
+
+    (a) Doc: extend `/configuration-and-deployment/odd-platform#prometheus-alertmanager-integration`
+        with a 'Security model' subsection explicitly warning that the
+        webhook is unauthenticated by design and that the operator MUST
+        ensure network-layer isolation. Cross-reference the LSN that this
+        bundles with (it's adjacent to LSN-001 ephemeral-default + LSN-002
+        region-unset in the class of "bundled defaults that hurt operators").
+
+    (b) Code: require S2S authentication on the AlertManager webhook (extend
+        IngestionDataEntitiesFilter's path match). Trade-off: more friction
+        for Prometheus operators; but mitigates the spoof + XSS surfaces.
+
+    (c) Code: validate entity_oddrn against the data_entity table — reject
+        the payload if the entity doesn't exist. This is a one-line
+        switchIfEmpty in handleExternalAlerts.
+
+    (d) Code: escape the generator URL when embedding in chunk descriptions;
+        verify the UI rendering layer uses rehype-sanitize.
+
+  Cross-references:
+    - Companion: `alertmanager-webhook-bypasses-alert-action-resolver-no-idempotency`
+      (the third AlertManager-path gap).
+    - LSN-001 / LSN-002 class: bundled defaults that ship with destructive trade-offs
+      not signposted in docs.
+    - Existing concept: `alertmanager-webhook-receiver` (the entity covering the
+      webhook surface; this invariant adds the trust-perimeter semantic).

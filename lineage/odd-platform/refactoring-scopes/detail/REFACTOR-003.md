@@ -1,0 +1,11 @@
+- **REFACTOR-003**: GenAI endpoint has no rate-limit, no per-user quota, no abuse-detection
+  - **Category**: missing-rate-limit
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__GenAIController.md:security.known_security_gaps.[5]`
+    - `concepts.yaml:entities[GenAI Assistant].security_aggregate.weaknesses.[4]` ("No per-user / global rate limit, no abuse-detection — authenticated user can issue unbounded prompts; combined with no @Size on GenAIRequest.body this is DoS + unbounded-cost surface")
+  - **Statement**: Every authenticated user can fire prompts at the LLM at maximum throughput. There is no `@Throttle` annotation, no `Bucket4j` integration, no distributed token bucket, no per-user spend cap. Combined with no `@Size` on `GenAIRequest.body` and only the implicit `spring.codec.max-in-memory-size: 20MB` ceiling, this is a denial-of-service surface AND an unbounded-cost surface (operators billing per token at the LLM see N×bill from N concurrent users).
+  - **Evidence**: `GenAIController.java:1-24` (no rate-limit annotation) + `GenAIServiceImpl.java:36-52` (no rate-limit in pipeline) + `application.yml:14-15` (`spring.codec.max-in-memory-size: 20MB`)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-005 (thin-proxy) does NOT defend this absence — the previous run's ADR-CANDIDATE-007 incorrectly bundled "no rate-limit" into the thin-proxy stance. Per the wisdom test split, rate-limit is a gap, not a stance commitment.
+  - **Proposed remedy**: Adopt a Bucket4j-based rate limiter on `/api/genai/ask`; expose `genai.rate-limit.requests-per-minute` (per-user) and `genai.rate-limit.global-concurrent` (platform-wide). Default to permissive values (e.g., 60 req/min/user, 10 concurrent global) so opt-in operators are not surprised, but document the levers.
+  - **Severity rationale**: HIGH — DoS surface + unbounded-cost-to-operator. The previous run mis-classified this as part of an architectural stance.
+  - **Suggested backlog grouping**: `GenAI hardening sprint`

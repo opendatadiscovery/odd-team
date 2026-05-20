@@ -1,0 +1,46 @@
+name: Update Data Entity Status (lifecycle with cascade)
+canonical_in_docs: true
+canonical_candidate: false
+description: '`PUT /api/dataentities/{data_entity_id}/statuses` — gated by `DATA_ENTITY_STATUS_UPDATE`
+  per-data-entity Permission via SECURITY_RULES (SecurityConstants.java:277-281).
+  Body is `Mono<DataEntityStatusFormData>` carrying target `DataEntityStatus` (one
+  of UNASSIGNED / DRAFT / STABLE / DEPRECATED / DELETED) + optional `propagate` +
+  optional `status_switch_time` (REQUIRED when target is DRAFT or DEPRECATED — `isSwitchable=true`
+  on the enum). Delegates to `DataEntityService.updateStatus(...)` → `DataEntityInternalStateServiceImpl.changeStatusForDataEntities(...)`
+  which mutates the pojo + cascades on DELETED transitions (soft-delete cascade: lineage
+  relations + group relations + parent-group relations + statistics + `MANUALLY_CREATED`
+  filled-flag) OR on restore-from-DELETED transitions (mirror cascade). **Programmatic
+  activity-event emission** via `logStatusChangeEvents(oldStates, ids)` — captures
+  `DATA_ENTITY_STATUS_UPDATED` events with explicit `oldState`/`newState` JSON payloads
+  PER POJO (NOT AOP `@ActivityLog` because the mutation is bulk; oldState must be
+  captured per-pojo BEFORE the in-place mutation). DEG propagation (`propagate=true`
+  on a Data Entity Group target) fetches all member oddrns + applies status to each
+  plus the parent. Scheduled `DataEntityStatusSwitchJob` runs every 10 minutes (ShedLock
+  9-minute window) and uses the SAME write path to bulk-flip entities whose `status_switch_time
+  <= now` to DELETED.'
+axes_present:
+- controllers
+nodes:
+- odd-platform java DataEntityController controller-method:updateStatus
+contributors:
+- 'updateStatus.md:concepts.operations: update-data-entity-status, propagate-status-to-group-members,
+  schedule-status-auto-switch-to-deleted, soft-delete-data-entity, restore-deleted-data-entity'
+- updateStatus.md:implicit_adrs.[0-5] (settable-resource-property NOT state-machine;
+  closed 5-member enum; isSwitchable boolean encodes auto-flip-to-DELETED; soft-delete
+  IS the deletion model; programmatic activity-event emission per-pojo; propagate
+  as per-call opt-in for DEGs)
+evidence:
+- updateStatus.md:concepts.operations + concepts.invariants.[0-4]
+- updateStatus.md:implicit_adrs.[0-5]
+notes: "Operation vocabulary captured for future DOC-NNN follow-ups on\ndata-entity\
+  \ status updates. Two doc-gaps surface:\n  (a) The API endpoint surface (`PUT /api/dataentities/{id}/statuses`)\n\
+  \      and the `propagate` request-body flag's semantics\n      (group-only, silently\
+  \ ignored on non-groups) are not\n      documented on `/features/data-discovery/statuses`.\n\
+  \  (b) Auto-flip job 10-minute cadence + 9-minute ShedLock window\n      is not\
+  \ documented — operators wondering when a DRAFT/DEPRECATED\n      entity will tip\
+  \ into DELETED cannot derive precision.\n\nCross-batch defect: the HIGH-severity\
+  \ statusUpdatedAt ordering bug\n(DataEntityMapperImpl.applyStatus@L242-253) interacts\
+  \ with batch D's\nHousekeepingTTLProperties to break the 30-day data-entity-delete\
+  \ TTL\n— see cross-cutting invariant \"TTL retention broken by\nstatusUpdatedAt\
+  \ nullification\". Recommended cleanup: 3-line fix\nin applyStatus + regression\
+  \ test.\n"

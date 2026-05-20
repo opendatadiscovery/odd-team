@@ -1,0 +1,136 @@
+name: REFACTOR-425 destructive empty-roles cascade composed across three lines (OwnerServiceImpl primary source)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-08
+- P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20S (OwnerServiceImpl primary source — STRENGTHENS
+  REFACTOR-425 at the SERVICE TIER). The destructive-empty-roles UPDATE pipeline
+  surfaced as REFACTOR-425 from batch E + batch P sidecars is COMPOSED across
+  THREE distinct file-lines in OwnerServiceImpl.java, none of which is individually
+  catastrophic but the composition silently strips all role bindings from any
+  Owner on any PUT that omits the `roles` field.
+
+  THE THREE-LINE COMPOSITION (verbatim from OwnerServiceImpl.java):
+    (a) OwnerServiceImpl.java:71 — `final List<Long> newRoles = getRoleIdsList(updateEntityForm);`
+        — the update path calls the helper, expecting a clean role-id list.
+    (b) OwnerServiceImpl.java:116-122 (getRoleIdsList) —
+        `if (CollectionUtils.isEmpty(formData.getRoles())) return List.of();
+         else return formData.getRoles().stream().map(Role::getId).toList();`
+        — the helper collapses both null AND empty `formData.getRoles()` to
+        `List.of()`. The discriminator between "don't touch" and "explicitly
+        clear" is LOST at this layer.
+    (c) OwnerServiceImpl.java:76-81 — the update path's role-rebind cascade:
+        `.flatMap(o -> ownerToRoleRepository.deleteOwnerRelationsExcept(o.getId(),
+        newRoles).thenReturn(o)).flatMap(o ->
+        ownerToRoleRepository.createRelations(o.getId(), newRoles).thenReturn(o))`.
+        The `deleteOwnerRelationsExcept(ownerId, List.of())` issues
+        `DELETE FROM OWNER_TO_ROLE WHERE OWNER_ID = ? AND ROLE_ID NOT IN ()`
+        which jOOQ folds to `DELETE FROM OWNER_TO_ROLE WHERE OWNER_ID = ?` —
+        wiping ALL of the owner's role bindings.
+
+  CRUCIAL: the SAME primitive `deleteOwnerRelationsExcept(ownerId, List.of())`
+  is used INTENTIONALLY at OwnerServiceImpl.java:97 in the `delete(id)` path
+  with `List.of()` as the EXPLICIT "wipe all" call. This is NOT a defaulting
+  bug at the persistence layer — it is a DELIBERATELY DESTRUCTIVE primitive
+  whose intent is "explicit clear" at the DELETE site, but the UPDATE site
+  inherits the same destructive default via `getRoleIdsList`'s null+empty
+  collapse. The intent-via-shared-primitive is the ADR-CANDIDATE-144 anchor
+  (set-replacement role-rebind); the BUG is in the helper collapsing two
+  semantics into one.
+
+  COMPOUNDING WITH THE OPENAPI CONTRACT: `OwnerFormData.roles` is OPTIONAL
+  at the OpenAPI spec layer (components.yaml:419-422 — no `required` marker).
+  An API consumer issuing `PUT /api/owners/{id}` with `{"name": "X"}`
+  (omitting `roles`) is treated identically to `PUT` with `{"name": "X",
+  "roles": []}` — both produce `getRoleIdsList → List.of() →
+  deleteOwnerRelationsExcept(ownerId, []) → DELETE FROM OWNER_TO_ROLE
+  WHERE OWNER_ID = ?`. ALL role bindings are stripped.
+
+  COMPOUNDING WITH AUDIT-SILENCE (F-006 9-sidecar pattern): the role-stripping
+  produces NO @ActivityLog event (OwnerServiceImpl carries no @ActivityLog
+  on any of create/update/delete — Grep-verified `@ActivityLog`
+  <odd-platform-api>/service/*.java 2026-05-20 returns 10 files, NONE
+  OwnerServiceImpl per the batch S sidecar concepts.invariants.[1]). The
+  destructive behaviour is silent AND irrecoverable from logs.
+
+  COMPOUNDING WITH UI (batch Q OwnersList sidecar): the destructive
+  behaviour is reachable from the UI in three clicks (Edit → remove all
+  role TagItems → Save). No UI confirmation modal, no warning, no
+  vanishing-toast that reads "this will strip all roles".
+
+  Severity: HIGH (load-bearing service-tier primary source for the
+  highest-priority finding in F-019; the destructive-empty-roles
+  UPDATE is the single most-impactful UX hazard in the Owner directory
+  lifecycle; combined with the audit-silence pattern, role-stripping
+  is silent AND irreversible from logs).
+
+  THE FIX (one-line at each level):
+    Path A — OpenAPI: declare `roles` as `required` in components.yaml
+    (forces clients to send the field; explicit empty list becomes the
+    only way to "clear all roles").
+    Path B — Service: change `getRoleIdsList` to RETURN null on null
+    input and `List.of()` only on empty input; update lines 71-81 to
+    `if (newRoles == null) skip the rebind; else rebind`.
+    Path C — UI: add a confirmation modal "This will strip all role
+    assignments. Continue?" on Save-with-empty-roles. Cheapest fix;
+    closest to the operator's eyes; doesn't fix the API consumer path
+    but reduces accidental UI usage.
+
+  Recommended cleanup is Path A + Path B together (one-line at each
+  level), with Path C as the operator-facing belt-and-suspenders.
+axes_present:
+- services
+- repositories_reactive
+nodes:
+- odd-platform java service service:OwnerServiceImpl
+- odd-platform java repository reactive repository:ReactiveOwnerToRoleRepositoryImpl
+contributors:
+- 'OwnerServiceImpl.md (batch S): concepts.invariants.[2-3] (role-rebind
+  primitive shared between update and delete; getRoleIdsList collapses null
+  and empty to List.of()); bugs_limitations_corner_cases.[0] (the destructive
+  empty-roles UPDATE lives HERE — service-tier closure of REFACTOR-425;
+  HIGH severity); security.known_security_gaps.[1] (Empty roles field
+  silently destroys all role bindings — HIGH severity).'
+- 'OwnersList.md (batch Q): bugs_limitations_corner_cases.[N] (UI surface
+  enables the operator to silently strip all roles from any Owner with
+  NO trace; HIGH severity combined with the audit silence).'
+- 'updateOwner.md (batch P): the controller-tier first surfaced REFACTOR-425;
+  this batch S OwnerServiceImpl is the SERVICE-tier PRIMARY-source CLOSURE.'
+evidence:
+- 'OwnerServiceImpl.md:bugs_limitations_corner_cases.[0] (destructive empty-roles
+  UPDATE - service-tier closure of REFACTOR-425; HIGH severity)'
+- 'OwnerServiceImpl.md:concepts.invariants.[2] (role-rebind primitive shared
+  between update and delete) + .[3] (getRoleIdsList null+empty collapse)'
+- 'OwnerServiceImpl.md:security.known_security_gaps.[1] (HIGH)'
+- 'OwnerServiceImpl.md:implicit_adrs.[1] (role-rebind set-replacement;
+  ADR-CANDIDATE-144 anchor)'
+- 'OwnerServiceImpl.java:71, 76-81, 97, 116-122 (the four file:lines composing
+  the destructive cascade)'
+- 'components.yaml:419-422 (OwnerFormData.roles optional; no required marker)'
+- 'ReactiveOwnerToRoleRepositoryImpl.java:52-56 (the jOOQ DSL.delete primitive
+  that issues DELETE FROM OWNER_TO_ROLE WHERE OWNER_ID = ? AND ROLE_ID NOT IN ())'
+- 'REFACTOR-425 in <odd-team>/lineage/odd-platform/refactoring-scopes/detail/REFACTOR-425.md'
+- 'ADR-CANDIDATE-144 in <odd-team>/lineage/odd-platform/implicit-adrs/detail/ADR-CANDIDATE-144.md'
+notes: |
+  Cross-batch composition observation. The destructive shape was first
+  surfaced at the controller tier (batch P updateOwner sidecar), then
+  confirmed at the UI tier (batch Q OwnersList sidecar). This batch S
+  OwnerServiceImpl sidecar is the SERVICE-TIER PRIMARY-SOURCE — the
+  file:line evidence at the three composition points.
+
+  The asymmetric-intent observation is the key teaching moment for the
+  invariant: the SAME primitive `deleteOwnerRelationsExcept(ownerId,
+  List.of())` is used at BOTH the update site AND the delete site;
+  the maintainer's intent is "this is the explicit wipe-all primitive";
+  the UPDATE site inherits the intent VIA the helper s null+empty
+  collapse, producing the destructive UX hazard. This is the rare
+  case where the BUG is in the HELPER, not in the consumer — and the
+  fix at the helper layer (Path B above) closes the gap at one site
+  without disturbing the ADR-CANDIDATE-144 contract.
+
+  Cross-link to F-019 (P-08:F-003 Owner Lifecycle Management) — this
+  invariant is the highest-leverage drift facet in F-019; the
+  remediation is one-line at the helper + one-line at the OpenAPI
+  contract.

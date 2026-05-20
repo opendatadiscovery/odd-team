@@ -1,0 +1,10 @@
+- **REFACTOR-065** (NEW 2026-05-10A): Token-rotation endpoint has no idempotency token (no `If-Match` ETag); UI double-submit (slow click, network retry) rotates the token twice and invalidates the value the user just copied to clipboard
+  - **Category**: idempotency
+  - **Surfaced by**:
+    - `odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md:bugs_limitations_corner_cases.[7]` (LOW)
+  - **Statement**: `CollectorController.java:47-51` consults no headers on the PUT. `CollectorApi` has no `If-Match` parameter on the operation. A UI double-submit (slow click → user clicks again before response, network-retry by browser) rotates the token twice. The response body's `token.value` would be the most recent, but the in-flight first response is now stale immediately — if the user copy-paste-uses the first response's token, ingestion fails.
+  - **Evidence**: `CollectorController.java:47-51` (no header check) + `CollectorApi` (generated; no `If-Match` parameter on the operation)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Add `If-Match` ETag support: include the current `TOKEN.updated_at` (or a ULID/UUID per token state) in `Collector` GET responses; require `If-Match: <etag>` on the rotation PUT; reject mismatch with HTTP 412 Precondition Failed. UI consumes the etag; double-submit produces a clear 412 instead of a silent stale-token UX.
+  - **Severity rationale**: LOW — UX papercut on a critical flow.
+  - **Suggested backlog grouping**: `Token rotation hardening`

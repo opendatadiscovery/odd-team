@@ -1,0 +1,35 @@
+gap_id: TEST-GAP-600
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java auth logout:AzureLogoutSuccessHandler"
+  - "odd-platform java auth logout:CognitoLogoutSuccessHandler"
+pillars_affected: [P-09]
+surfaced_by:
+  - "AzureLogoutSuccessHandler.md:bugs_limitations_corner_cases.[1] (No platform-side allowlist on post_logout_redirect_uri — MEDIUM)"
+  - "AzureLogoutSuccessHandler.md:security.known_security_gaps.[1]"
+  - "AzureLogoutSuccessHandler.md:docs_link_semantic.doc_drift_findings.[2]"
+  - "AzureLogoutSuccessHandler.md:implicit_adrs.[2] (inbound-request-derived redirect)"
+  - "CognitoLogoutSuccessHandler.md:doc_drift_findings (Allowed sign-out URLs not in docs)"
+behaviour: |-
+  **`post_logout_redirect_uri` derived from inbound Host header — NO platform-side allowlist; depends entirely on IdP-side enforcement.** Both Azure AND Cognito logout handlers compute the post-logout redirect target via `UriUtils.getBaseUri(requestUri)` (`UriUtils.java:11-22`) which strips path/query/fragment from the INBOUND HTTP request URI and returns scheme+host+port. The Host header is operator-controlled at deployment (via the reverse proxy) but request-controlled at runtime — a forwarded `X-Forwarded-Host` that the proxy trusts and synthesizes into the request URI propagates to the logout endpoint's `post_logout_redirect_uri` (Azure) / `logout_uri` (Cognito) query param. The platform carries NO `odd.platform-url` / `platform.base-url` config to cross-check against (verified by Grep against application.yml). Mitigations: (a) Azure's standard App Registration "Logout URL" validation; (b) Cognito's "Allowed sign-out URLs" app-client allowlist. If an operator has registered wildcard or multiple Logout URLs on the IdP side (e.g. multi-environment App Registration sharing), the IdP-side bound is removed and the inbound Host becomes the open-redirect target. Same shape across 4 sibling OIDC handlers using the same `UriUtils.getBaseUri` helper. Docs silent on the operator-side dependency.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/logout/PostLogoutRedirectUriHostHeaderOpenRedirectTest.java"
+  name: "azureAndCognitoLogout_xForwardedHostHeader_propagatesToIdPRedirectParam_pinsNoAllowlist"
+evidence:
+  - "AzureLogoutSuccessHandler.md says (bugs_limitations_corner_cases.[1]): 'No platform-side allowlist on post_logout_redirect_uri. The redirect target is derived from the inbound request Host header via UriUtils.getBaseUri(requestUri). A reverse proxy that trusts and forwards a user-controlled Host or X-Forwarded-Host header without sanitization would propagate that value into the Azure logout request.' severity: MEDIUM"
+  - "AzureLogoutSuccessHandler.java:40 + UriUtils.java:11-22"
+  - "CognitoLogoutSuccessHandler doc_drift_findings: Cognito's 'Allowed sign-out URLs' not mentioned in ODD docs"
+  - "Grep against application.yml for `platform.base-url|odd.platform-url|allowed.redirect`: 0 matches (verified)"
+cross_references:
+  - "F-011"
+  - "P-09:F-001"
+  - "DOC-NNN candidate: post_logout_redirect_uri allowlist dependency on operator-side IdP config undocumented"
+  - "REFACTOR-NNN candidate: add `odd.platform-url` config + cross-check Host"
+  - "TEST-GAP-367 (AlertManager generatorURL — sibling Host-trust class)"
+proposed_action: |-
+  WebTestClient + cookie test. (a) Boot with `auth.type=OAUTH2` + Azure provider configured with logout-uri. (b) Authenticate a stub Azure user; obtain session. (c) POST /logout with explicit `X-Forwarded-Host: attacker.example.com` header. (d) Assert response 302 Location contains `post_logout_redirect_uri=https://attacker.example.com/` (the Host header propagates without sanitization). (e) Mirror for Cognito: assert `logout_uri=https://attacker.example.com/`. (f) Pin the current Host-trusting behaviour; future REFACTOR adding `odd.platform-url` + cross-check flips assertions to expect 400 OR the configured platform URL substituted.
+batch: 2026-05-19-O
+feature_id: F-011

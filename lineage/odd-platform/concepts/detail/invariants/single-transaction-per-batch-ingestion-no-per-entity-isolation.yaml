@@ -1,0 +1,88 @@
+name: Single-transaction-per-batch ingestion — no per-entity isolation
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW INVARIANT, batch 2026-05-19I (IngestionService sidecar)** —
+  the entire ingestion pipeline runs inside one `@ReactiveTransactional` (`IngestionServiceImpl.java:66`)
+  spanning: datasource lookup + entity bulkUpdate + entity restore + entity bulkCreate
+  + the 14-processor chain (across all 3 phases INITIAL / MAIN / FINALIZING) +
+  OTLP metric export. One failure ANYWHERE rolls back EVERYTHING. There is NO per-entity
+  isolation, NO DLQ, NO partial-success response shape, NO per-entity error reporting.
+  A single failing processor (constraint violation on `dataset_version`, OOM in
+  metadata processing, deadlock against another concurrent ingestion, OTLP backend
+  unreachable causing the metric extraction to fail) ROLLS BACK ALL of the above
+  — the entire batch is lost. The HTTP response is binary: 200 OK (all writes
+  committed) or 5xx (everything rolled back, no body detail). For a 1000-entity
+  payload where entity 500 has a constraint violation, the other 999 are also
+  rolled back; the operator''s only signal is the application log. The collector
+  receives no payload-level error report indicating WHICH entity failed. The
+  decision is intentional (the `@ReactiveTransactional` annotation IS the artefact
+  of intent; the maintainer chose a custom annotation to make the boundary visible)
+  — alternative shapes (per-entity transactions, async DLQ) would require restructuring
+  the processor chain. The operator-facing trade-off: ATOMICITY at the cost of
+  PARTIAL-SUCCESS DEBUGGABILITY. The `IngestionController.postDataEntityList` controller
+  returns `Mono<ResponseEntity<Void>>` — void body, no error detail surface (controller
+  sidecar batch F). Combined with the silent replace-not-merge semantics (`silent-data-loss-via-replace-not-merge-ingestion-semantics`),
+  the ingestion contract has TWO uncovered-in-docs surprises for collector authors:
+  (1) per-entity isolation is NOT provided; (2) omission deletes. A collector reading
+  the OpenAPI contract would see `POST /ingestion/entities` accepts a list and
+  reasonably assume per-entity success/failure isolation — both assumptions are
+  WRONG, neither is signposted.'
+axes_present:
+- services
+nodes:
+- odd-platform java service service:IngestionService
+contributors:
+- 'IngestionService.md (batch I): concepts.invariants.[0] — Single Postgres transaction
+  wraps the ENTIRE ingest pipeline. @ReactiveTransactional on ingest() at IngestionServiceImpl.java:66.
+  One failure anywhere rolls back EVERYTHING — there is no per-entity isolation.
+  implicit_adrs.[0] — Single-transaction-per-batch is intentional — there is no
+  per-entity isolation, no DLQ, no partial-success response. The annotation IS
+  the decision; the maintainer chose a custom annotation (vs raw @Transactional)
+  to make the boundary visible. bugs_limitations_corner_cases.[5] — Transactional
+  rollback is all-or-nothing with no partial-success response. A 1000-entity payload
+  where entity 500 has a constraint violation rolls back the other 999.'
+evidence:
+- IngestionService.md:concepts.invariants.[0] (single transaction wraps entire pipeline)
+- IngestionService.md:implicit_adrs.[0] (intent — no per-entity isolation, no DLQ)
+- IngestionService.md:bugs_limitations_corner_cases.[5] (1000-entity payload rolls
+  back all on one failure; HTTP 5xx with no body detail)
+- IngestionService.md:tests_coverage_semantic.uncovered_behaviours (no test asserts
+  the all-or-nothing invariant)
+notes: |
+  Cross-batch architectural-hygiene finding. The invariant is INTENTIONAL design
+  (the `@ReactiveTransactional` annotation is the explicit artefact of intent)
+  but operationally surprising for collector authors reading the OpenAPI spec.
+
+  Combined with the replace-not-merge surface, the ingestion pipeline has TWO
+  uncovered-in-docs surprises that compound:
+
+    (1) "One bad entity rolls back the batch": no per-entity error report, no
+        partial-success body, no DLQ. Operators debugging a flaky collector
+        must read application logs for the actual failing entity.
+
+    (2) "Omission deletes": replace-not-merge for lineage and metadata. An
+        attacker with a valid token (or any caller under filter-OFF, the
+        default) can erase existing data by re-emitting incomplete state.
+
+  Recommended cleanup paths:
+
+    (a) Doc: add an explicit operator-facing 'Ingestion contract' page with
+        the all-or-nothing rule + the replace-not-merge rule + a worked
+        example of a failed-batch debugging session.
+
+    (b) Code: extend the HTTP response shape to carry per-entity outcome
+        details (or at minimum, the failing entity's ODDRN and the error
+        class) — currently `Mono<ResponseEntity<Void>>` is the entire
+        contract.
+
+    (c) Code: add a feature-flag for `ingestion.per-entity-isolation` that
+        switches to a per-entity transaction-per-entity model when enabled.
+        Trade-off: lose cross-entity atomicity (e.g. lineage edges that
+        span two entities in the batch); gain partial-success debuggability.
+
+  Cross-references:
+    - Companion invariant: `silent-data-loss-via-replace-not-merge-ingestion-semantics`
+      (the other side of the same gap).
+    - Companion invariant: `repository-transactional-boundary-at-service-layer-not-repository`
+      (the persistence-layer side of the same architectural choice — the
+      repository is transaction-AGNOSTIC; the service tier owns atomicity).

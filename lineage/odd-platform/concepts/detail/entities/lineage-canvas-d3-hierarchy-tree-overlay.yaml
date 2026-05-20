@@ -1,0 +1,80 @@
+name: Lineage Canvas (d3-hierarchy tree + crossEdges overlay)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-05
+description: |-
+  **NEW CONCEPT, batch 2026-05-19J** — the UI rendering primitive for lineage
+  visualisation. The Lineage tab on every data-entity detail page renders an SVG
+  tree built with `d3-hierarchy` (NOT force-directed, NOT Cytoscape, NOT D3-force).
+  Two independent `d3.tree<T>().nodeSize(...).separation(...)` instances are built
+  — one for upstream (x-coordinate negated via `-(width + mx)` so it grows leftward),
+  one for downstream (grows rightward). Backend-supplied `nodesById + edgesById +
+  crossEdges` are SHAPED INTO A TREE by `d3-hierarchy`'s `hierarchy(root, childAccessor)`
+  walker. **Critical layout invariant**: `hierarchy(...)` ENFORCES tree topology,
+  NOT DAG — visiting the SAME node id along multiple paths yields DUPLICATE
+  HierarchyPointNode entries. Diamond shapes (A→B→D, A→C→D) render D TWICE. There
+  is no client-side dedupe BEFORE the tree builder runs; React keys at
+  LineageGraph.tsx:91 use `node.x${node.y}` so different positions are distinct keys
+  and React mounts two SVG nodes. **crossEdges** carry the edges that the BACKEND
+  has marked as "not tree-shaped" (cycles, diamonds closures). They are rendered
+  SEPARATELY as `<CrossLink>` SVG components (LineageGraph.tsx:69-83) with no
+  participation in the tree layout. The crossEdges resolution silently drops edges
+  whose endpoints aren't materialised in the tree (generateGraph.ts:81-95) — a
+  backend payload skew loses lineage edges invisibly. The choice prioritises layout
+  determinism (same input → same SVG coordinates) over visual DAG faithfulness.
+  Cost: diamond/DAG duplication; benefit: predictable layout as data grows. No
+  virtualisation — every node + every link is mounted as an SVG component; for an
+  N-node graph the React tree is O(N) SVG primitives. Pan/zoom via `Zoom<SVGSVGElement>`
+  from `@visx/zoom` (`scaleXMin/Max=0.05/2`); transform matrix is JSON-encoded into
+  `?t=` URL param for shareability.
+nodes:
+- odd-platform ts react-component component:LineageGraph
+contributing_files:
+- odd-platform__ts__react-component__component__LineageGraph.md
+evidence:
+- 'LineageGraph.md:concepts.entities[HierarchyPointNode<TreeNodeDatum> /
+  HierarchyPointLink<TreeNodeDatum> d3-hierarchy types; Zoom from @visx/zoom;
+  LineageContext React Context]'
+- 'LineageGraph.md:concepts.invariants[backend-supplied nodesById+edgesById+crossEdges
+  are SHAPED INTO A TREE at the UI by d3-hierarchy; visiting same node id along
+  multiple paths yields DUPLICATE HierarchyPointNode entries; crossEdges rendered
+  separately as CrossLink with no participation in tree layout; two independent
+  trees mirrored layout; no virtualisation every node mounted as SVG]'
+- 'LineageGraph.md:implicit_adrs.[2] d3-hierarchy over force-directed graph
+  (deterministic layout); [3] two-direction independent layouts mirrored'
+- 'LineageGraph.md:bugs_limitations_corner_cases.[diamond DAG amplification at UI
+  MEDIUM; silent crossEdge drops MEDIUM]'
+axes_present:
+- ui_components
+security_aggregate:
+  overall: MEDIUM
+  weaknesses:
+  - 'Cross-owner enumeration realisation point — lineage canvas displays every
+    reachable entity regardless of caller ownership; UI provides no restricted
+    view mode (inherits backend read-collaborative posture)'
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - 'useMemo([data, nodeSize]) computes tree on every data or nodeSize change;
+    parseData O(N) + d3-hierarchy O(N) + crossEdges resolution O(C*N) linear scan
+    (worst case 5M comparisons for 1K cross-edges + 5K nodes)'
+  - 'hover-highlight scans every link per frame; LineageContext re-renders on
+    every highLightedLinks change'
+  weaknesses:
+  - 'No virtualisation — every node mounted as SVG; large graphs (1K+ nodes)
+    become render-time hot paths in the browser'
+  - 'Diamond/DAG node duplication inflates the visual node count (REFACTOR-202
+    amplification at the UI)'
+notes: |-
+  New concept captured in batch 2026-05-19J. The UI lineage rendering primitive
+  is a tree-with-overlay design, not a DAG visualisation. The maintainer may
+  want to consider migrating to a DAG-aware renderer (e.g. react-flow with manual
+  layering) to eliminate diamond duplication — but this would be a deep refactor
+  affecting the entire Lineage tab UX.
+
+  The d3-hierarchy choice is intentional (`implicit_adrs[2]` at LineageGraph.md)
+  — the project prioritises layout determinism over DAG faithfulness. Diamonds
+  appear twice because the underlying graph topology demands it; a DAG-aware
+  layout would require introducing visited-set tracking + a layout algorithm
+  capable of node-reuse (Sugiyama-style layered rendering or similar).

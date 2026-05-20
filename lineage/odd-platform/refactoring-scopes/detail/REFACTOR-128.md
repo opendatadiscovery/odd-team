@@ -1,0 +1,10 @@
+- **REFACTOR-128** (NEW 2026-05-12C): Email per-recipient silent partial delivery — `EmailNotificationSender` iterates `notificationsEmails` in order reusing the SAME `MimeMessage`; any thrown `MessagingException` aborts the loop. Recipients after the failing one never receive the alert. No per-recipient try/catch
+  - **Category**: partial-delivery
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[4]` (severity HIGH)
+  - **Statement**: `EmailNotificationSender.java:53-61` runs `for (final String notificationsEmail : notificationsEmails) { helper.setTo(notificationsEmail); emailSender.send(mimeMessage); }`. Any thrown `MessagingException` propagates up to `AlertNotificationMessageProcessor`'s outer catch — recipients after the failing one never receive the alert. The live doc page documents this as a "known limitation". Even so, the code has no fault-tolerance (no per-recipient try/catch, no continue-on-error). Combined with the shared `MimeMessage` instance across recipients (a memory-saving optimisation that complicates error recovery), the partial-delivery hazard is unresolved.
+  - **Evidence**: `EmailNotificationSender.java:53-61`
+  - **Existing-ADR-or-implied-prescription**: None defends the absence of per-recipient retry. ADR-CANDIDATE-042 (fail-soft fan-out) is at the CHANNEL level (one Slack failure doesn't block email); this scope is intra-channel (one email recipient failure shouldn't block other recipients on the same channel).
+  - **Proposed remedy**: Wrap the per-recipient `emailSender.send(...)` in its own try/catch; on `MessagingException`, log at ERROR with recipient identification and continue the loop. Optional: track per-recipient delivery in the `notification_delivery` table (REFACTOR-127).
+  - **Severity rationale**: HIGH — operability gap; email-list members downstream of a failing recipient silently miss alerts.
+  - **Suggested backlog grouping**: `Notifications hardening`

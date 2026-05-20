@@ -1,0 +1,468 @@
+name: Notifications
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+description: |-
+  Outbound alert-notification subsystem — a feature-flagged, off-by-default
+  service that streams `ALERT` table changes via PostgreSQL logical-replication
+  WAL and fans them out to Slack (incoming webhook), generic webhook (JSON
+  POST), and SMTP email channels. Each channel is independently activated by
+  the presence of its URL/sender key. Disabled by default at
+  `notifications.enabled=false` (read by `NotificationsFeatureCondition`
+  from the Spring `Environment` — bypassing `NotificationsProperties.enabled`
+  field on the boot path). The WAL subscriber is a leader-elected
+  single-thread consumer gated by Postgres advisory lock id
+  `notifications.wal.advisory-lock-id` (default 100), running ONE thread
+  named `notification-subscriber-thread` on the elected leader. Replication
+  slot + publication are created LAZILY on first run if absent; ODD never
+  drops them on shutdown — operator owns cleanup. Fan-out through
+  `List<NotificationSender>` is sequential and fail-soft: per-sender
+  exceptions are caught at the processor and the loop continues. Distinct
+  from the platform's internal `Alert` lifecycle (this is the OUTBOUND
+  delivery surface for alerts) and from the `Slack collaboration app`
+  (which is bidirectional in-app Discussions, not alert notifications).
+  vocabulary_status: codebase-anchored, doc-side-feature-page-covered
+  (`features/active-platform-features/notifications` returns 200;
+  `active-platform-features/notifications` returns 404 — GitBook IA drift).
+  main-concepts.md names `Slack alert webhook` in Terms & Aliases (outgoing
+  variant) but does NOT name `Notifications` as a first-class canonical
+  feature. Batch 2026-05-12D adds `EmailSenderProperties` as the canonical
+  typed-config surface for the EMAIL CHANNEL — 6 top-level fields (sender
+  / password / host / port / protocol / smtp) + nested `SmtpProperties`
+  (auth + starttls). Recipient list
+  `notifications.receivers.email.notification.emails` is NOT modelled on
+  this POJO — partial-home pattern (consumed via raw `@Value` in
+  `NotificationConfiguration.java:104`). **STRENGTHENED batch
+  2026-05-19K**: AlertNotificationMessageProcessor (the dispatcher, sole
+  implementor of PostgresWALMessageProcessor) is now primary-source pinned
+  — the dispatcher's 3-step body (translate-uncaught → fan-out-sequential
+  → per-sender-catch-and-continue) is the runtime of every claim on the
+  live notifications doc page. Two NEW HIGH-severity findings: (a)
+  poison-message WAL replay loop — translation failure propagates to
+  NotificationSubscriber's outer catch which waits 10s and re-acquires
+  the lock; the SAME WAL LSN is re-delivered indefinitely, blocking
+  subsequent messages; (b) exception-type asymmetry — EmailNotificationSender
+  wraps as RuntimeException (NOT NotificationSenderException), bypassing
+  the dispatcher's per-sender catch and aborting fan-out mid-message.
+vocabulary_status: codebase-anchored, doc-side-feature-page-covered
+axes_present:
+- config_prefixes
+- services
+nodes:
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:EmailSenderProperties
+- odd-platform java service service:NotificationsDispatcher
+contributors:
+- |-
+  NotificationsProperties: entities[NotificationsProperties, WalProperties,
+  EmailSenderProperties (sibling), AlertNotificationMessage, DecodedWALMessage,
+  NotificationSender (Slack | Webhook | Email)]; operations[feature-flag
+  gating, WAL replication-slot coordinates carrier, fan-out alert delivery,
+  leader-elected single-thread WAL consumer]; invariants[subsystem disabled
+  by default; feature-condition reads notifications.enabled from Spring
+  Environment directly; WAL subscriber leader-elected via advisory lock id
+  100; replication-slot + publication lazily created; never dropped;
+  fan-out sequential + fail-soft per channel]
+- |-
+  EmailSenderProperties (batch 2026-05-12D): entities[EmailSenderProperties,
+  SmtpProperties (nested), JavaMailSenderImpl (Spring), MimeMessage (Jakarta
+  Mail)]; operations[SMTP-credential carrier, JavaMail Properties bag
+  population, boot-time blank-field validation (sender / host / protocol
+  throw IllegalArgumentException), STARTTLS toggle]; invariants[channel
+  only activates when notifications.receivers.email.sender is set
+  (@ConditionalOnProperty); no JavaMail SMTP timeout configured —
+  defaults are infinite (LSN-002-shape — corroborates batch C);
+  STARTTLS-only TLS (no implicit-TLS / port 465 support); no
+  mail.smtp.ssl.trust override; SmtpProperties.auth + .starttls are boxed
+  Boolean — null is binding-legal and produces Properties#put-NPE at first
+  send; recipient list (notifications.receivers.email.notification.emails)
+  NOT modelled on this POJO — read via raw @Value at
+  NotificationConfiguration.java:104 (partial-home pattern); password leak
+  via Lombok @Data toString() — no @ToString.Exclude annotation (matches
+  NotificationsProperties + ODDLDAPProperties + ODDOAuth2Properties pattern
+  — 4-sidecar triangulated)]
+- |-
+  NotificationsDispatcher (batch 2026-05-19K — STRENGTHENS): entities[PostgresWALMessageProcessor
+  (interface); AlertNotificationMessageProcessor (sole implementor);
+  DecodedWALMessage; AlertNotificationMessage; NotificationSender (Slack
+  | Webhook | Email); NotificationMessageTranslator;
+  NotificationSenderException]; operations[translate-decoded-WAL-to-AlertNotificationMessage;
+  fan-out-sequential-per-channel; per-sender exception catch-and-log;
+  continue-on-channel-failure]; invariants[dispatcher runs ONLY inside
+  leader-elected single-thread WAL consumer; dispatcher conditional on
+  notifications.enabled; fan-out sequential through List<NotificationSender>;
+  per-sender NotificationSenderException caught and loop continues; loop
+  iterates every registered sender — no per-channel filter; translation
+  runs BEFORE fan-out — translation failure throws AND is NOT caught,
+  triggering 10s back-off re-acquisition]; implicit_adrs[per-channel
+  catch-and-continue; sequential synchronous fan-out; dispatcher
+  conditional; translate-before-fan-out atomic with bifurcated fail-loud
+  vs fail-soft]; bugs[exception-type asymmetry — email RuntimeException
+  bypasses per-sender catch NEW HIGH; poison-message WAL replay loop NEW
+  HIGH; no retry/DLQ/audit; PII surface; DEBUG-level full-payload log]
+evidence:
+- NotificationsProperties.md:concepts.entities + concepts.operations + concepts.invariants
+- NotificationsProperties.md:implicit_adrs.[0-5]
+- NotificationsProperties.md:dependencies_semantic.requires-config (notifications.*
+  + odd.platform-base-url + Postgres logical-replication runtime)
+- EmailSenderProperties.md:concepts.entities + concepts.invariants + bugs_limitations_corner_cases.[0-14]
+  (15 corner cases — most of any sidecar)
+- EmailSenderProperties.md:implicit_adrs.[0-2] (presence-gated channel + fail-fast
+  on blank required fields + protocol pass-through for non-smtp values)
+- EmailSenderProperties.md:dependencies_semantic.requires-config (email channel keys
+  + odd.platform-base-url for deep-link rendering)
+- |-
+  NotificationsDispatcher.md (batch K — STRENGTHENS): concepts.entities +
+  concepts.operations + concepts.invariants.[0-5] (all six load-bearing
+  invariants) + implicit_adrs.[0-3] + bugs_limitations_corner_cases.[0-9]
+  (10 surface findings including exception-type asymmetry + poison-message
+  replay loop)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - INTERNAL_ONLY
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: BYPASSES
+    detail: |-
+      NotificationsProperties is a config-binding POJO, not an HTTP surface
+      — no `@PreAuthorize` applicable. Downstream effect: the WAL subscriber
+      reads `ALERT` table rows directly via Postgres logical replication,
+      bypassing any application-layer authorization. Fan-out is unconditional:
+      every configured channel receives every alert event regardless of
+      which data-entity owners would have been entitled to see it. The
+      `AlertNotificationMessage` payload includes `owners[]` (owner name +
+      title) for the alerted entity, but does NOT route based on them.
+      Cross-tenant / multi-team deployments cannot scope notifications to
+      the owning team. **STRENGTHENED batch K** — the dispatcher's
+      authorization_assertions[] is verified empty via primary-source
+      examination at AlertNotificationMessageProcessor.java:1-37 (no
+      @PreAuthorize, no programmatic permission check). The dispatcher
+      operates with full platform privileges via DSLContext.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      Fan-out unconditional — every Slack channel / webhook URL / email
+      recipient gets every alert. `AlertNotificationMessageProcessor.java:25-36`
+      loop iterates `List<NotificationSender>` unconditionally on every
+      `AlertNotificationMessage`; no per-recipient owner filter; no
+      per-channel routing predicate. **STRENGTHENED batch K** — the
+      AlertNotificationMessage payload INCLUDES dataEntity.owners[]
+      populated by AlertNotificationMessageTranslator#fetchAlertedDataEntity
+      but the dispatcher does NOT consult them for routing.
+  strengths:
+  - Disabled-by-default — `notifications.enabled=false` is the default read by `NotificationsFeatureCondition.java:8-13`
+    from the Spring `Environment` (single source of truth, enforced uniformly across
+    `NotificationConfiguration`, `NotificationSubscriberStarter`, and `AlertNotificationMessageProcessor`
+    via `@ConditionalOnNotifications`)
+  - Per-channel URL-presence activation — `@ConditionalOnProperty(name = "notifications.receivers.slack.url"
+    | "notifications.receivers.webhook.url" | "notifications.receivers.email.sender")`
+    on each sender bean method. Absence of a key = no bean = silently no-op for that
+    channel. Operators configure only the channels they want.
+  - Email password masked by Spring's default `/actuator/env` sanitisation (`password`-suffixed
+    keys in Spring's default mask list) — partial mitigation
+  - Single `HttpClient` bean shared across Slack + Webhook senders — bounded resource
+    footprint
+  weaknesses:
+  - |-
+    **Exception-type asymmetry between sender impls (NEW HIGH severity,
+    batch K)** — the dispatcher's per-sender try/catch catches
+    `NotificationSenderException` (checked) only. `EmailNotificationSender`
+    wraps `MessagingException | TemplateException | IOException` as
+    `new RuntimeException(...)` at EmailNotificationSender.java:59,
+    NOT as `NotificationSenderException`. Email failure therefore BYPASSES
+    the dispatcher's catch and aborts fan-out for that message — subsequent
+    senders (if email is not last in the list) do NOT receive the alert.
+    (NotificationsDispatcher.md:bugs_limitations_corner_cases.[0])
+  - |-
+    **Poison-message WAL replay loop (NEW HIGH severity, batch K)** — a
+    persistently-bad ALERT row (unknown alert-type code, missing FK,
+    null type_id) causes translate() to throw IllegalArgumentException
+    or IllegalStateException. The exception propagates OUT of process()
+    to NotificationSubscriber.java:90's outer catch which logs, waits
+    10s, re-acquires the lock. The SAME WAL LSN is re-delivered
+    indefinitely, blocking ALL subsequent WAL messages. No DLQ, no
+    skip-poison, no manual LSN advance API.
+    (NotificationsDispatcher.md:bugs_limitations_corner_cases.[6])
+  - '**No retry / dead-letter queue / audit trail on failed notification delivery
+    (HIGH severity)** — `AlertNotificationMessageProcessor.java:30-35` catches `NotificationSenderException`,
+    logs at ERROR, and moves on. The alert is lost from that channel''s perspective
+    with no record in the `ALERT` table that delivery failed. No `notification_delivery`
+    table, no metric counter, no Prometheus gauge. Operators have no DB-visible signal
+    that notifications stopped working. (NotificationsProperties.md:bugs_limitations_corner_cases.[3]
+    + known_security_gaps.[3])'
+  - '**Email per-recipient silent partial delivery (HIGH severity)** — `EmailNotificationSender.java:53-61`
+    iterates `notificationsEmails` in order, reusing the same `MimeMessage` and calling
+    `helper.setTo(email); emailSender.send(mimeMessage);` per iteration. Any thrown
+    `MessagingException` aborts the loop via the surrounding try/catch — recipients
+    after the failing one never receive the alert. Documented as a known limitation
+    on the live doc, but the code has no fault-tolerance (no continue-on-error, no
+    per-recipient try/catch). (NotificationsProperties.md:bugs_limitations_corner_cases.[4])'
+  - '**No rate-limiting / throttling at any layer (HIGH severity)** — WAL streams
+    as fast as Postgres can decode, the loop in `AlertNotificationMessageProcessor`
+    is synchronous, and senders block on HTTP. A burst of 10k alerts (misconfigured
+    data-quality run) will fire 10k Slack messages + 10k webhook POSTs + 10k emails
+    with no rate cap. Slack will rate-limit the webhook (429); platform has no retry-with-backoff
+    on 429 — logs the failure, drops the alert. (NotificationsProperties.md:bugs_limitations_corner_cases.[10]
+    + known_performance_gaps.[0])'
+  - '**Webhook delivery unsigned / no shared secret / no HMAC (MEDIUM)** — `WebhookNotificationSender.java:18-23`
+    is `HttpRequest.newBuilder().uri(webhookUrl).POST(...)` with no auth header, no
+    signature. The receiving endpoint cannot verify the webhook actually originated
+    from ODD Platform vs an attacker who scraped the webhook URL. (NotificationsProperties.md:known_security_gaps.[0])'
+  - '**Alert payload routes to ALL configured channels regardless of owner (MEDIUM)**
+    — cross-tenant / multi-team deployments cannot scope notifications to the owning
+    team. `AlertNotificationMessage` carries `owners[]` but the processor does not
+    consult them for routing. (NotificationsProperties.md:known_security_gaps.[2])'
+  - '**PII surface in notification payloads (MEDIUM)** — `AlertNotificationMessage`
+    carries `dataEntity.{name, dataSourceName, namespaceName}`, `owners[].ownerName`,
+    `eventAt`, and `downstream` lineage entities up to `notifications.message.downstream-entities-depth`.
+    Any operator-supplied free-text (descriptions, table names) is rendered verbatim
+    into Slack/webhook/email — no redaction, no allowlist. (NotificationsProperties.md:bugs_limitations_corner_cases.[11]
+    + NotificationsDispatcher.md:bugs_limitations_corner_cases.[8])'
+  - '**Dead config field: `NotificationsProperties.webhookUrl` (MEDIUM)** — top-level
+    field declared on the POJO but NO consumer reads it; the active webhook URL is
+    `notifications.receivers.webhook.url` read via `@Value` in `NotificationConfiguration`.
+    An operator setting `notifications.webhookUrl=...` gets silent acceptance and
+    zero effect. (NotificationsProperties.md:bugs_limitations_corner_cases.[0])'
+  - '**No structured audit log of notifications sent (MEDIUM)** — only `log.debug("Sending
+    notification message via {}: {}", ...)`. Operators have no way to answer ''when
+    did notifications last work?'' or ''which alert IDs were delivered to which channels?''.
+    (NotificationsProperties.md:bugs_limitations_corner_cases.[11] +
+    NotificationsDispatcher.md:bugs_limitations_corner_cases.[1])'
+  - '**Replication-slot orphan risk (MEDIUM)** — if operator renames `notifications.wal.replication-slot-name`
+    between deployments and forgets to drop the old slot, Postgres retains WAL for
+    the orphaned slot indefinitely — risking primary disk exhaustion. Live doc warns
+    about manual cleanup but does not warn about rename-orphan specifically. (NotificationsProperties.md:bugs_limitations_corner_cases.[12])'
+  - '**Advisory-lock-id collision risk (MEDIUM)** — `notifications.wal.advisory-lock-id`
+    defaults to 100. Cross-subsystem collision targets: `partition.advisory-lock-id=90`,
+    `datacollaboration.receive-event-advisory-lock-id=110`, `datacollaboration.sender-message-advisory-lock-id=120`.
+    Distinct in shipped defaults, but operator customisation could collide silently.
+    (NotificationsProperties.md:bugs_limitations_corner_cases.[2])'
+  - |-
+    **Sender iteration order undefined / Spring-bean-order-dependent (LOW
+    — batch K PRIMARY SOURCE)** — `List<NotificationSender>` is injected
+    as a bean collection; the order depends on Spring's bean-registration
+    order, which is class-scan-order-dependent. Operators cannot predict
+    which channel runs first.
+    (NotificationsDispatcher.md:bugs_limitations_corner_cases.[5])
+  - '**Email + Slack URL accept any scheme/host (LOW)** — `notifications.receivers.slack.url=file:///etc/passwd`
+    boots OK and fails at HTTP-send time; no `@URL` constraint, no allowlist, no SSRF
+    guard. (NotificationsProperties.md:bugs_limitations_corner_cases.[6] + known_security_gaps.[1])'
+  - '**PG replication role is broad (LOW)** — `ALTER ROLE ... WITH REPLICATION` is
+    required cluster-wide; ODD does not document scoping to a per-publication role.
+    (NotificationsProperties.md:known_security_gaps.[4])'
+  - '**Email password leak via Lombok @Data toString() (MEDIUM — batch D primary-source)**
+    — `EmailSenderProperties.java:6-10` declares `@Data` + `private String password`
+    with no `@ToString.Exclude`. Any code path that logs the bean (or any future `log.info("props
+    = {}", emailProperties)` addition) emits the SMTP password verbatim. Spring Boot
+    3.4.10''s `/actuator/env` masks `password`-suffixed keys by default — the actuator
+    path is partially protected — but the in-process toString path is not. Same pattern
+    as ODDLDAPProperties + ODDOAuth2Properties; 4-sidecar triangulated (EmailSenderProperties.md:bugs_limitations_corner_cases.[3]
+    + security.known_security_gaps.[0])'
+  - '**STARTTLS-only TLS — implicit-TLS-required relays cannot be used (MEDIUM — batch
+    D primary-source)** — `EmailSenderProperties.SmtpProperties` exposes only `auth`
+    and `starttls` Boolean fields. `NotificationConfiguration.java:63-69` only sets
+    `mail.smtp.starttls.enable` from these. The implicit-TLS keys (`mail.smtp.ssl.enable`,
+    `mail.smtps.*` namespace) are never set. Gmail port 465 and many corporate SMTP
+    relays REQUIRE implicit TLS — those will not work. Live doc confirms this is a
+    known limitation. (EmailSenderProperties.md:bugs_limitations_corner_cases.[1]
+    + security.known_security_gaps.[4])'
+  - '**No `mail.smtp.ssl.trust` override exposed (MEDIUM)** — Operators using self-signed
+    or internal-CA SMTP certificates cannot configure trust from ODD''s YAML — must
+    add cert to JVM truststore or pass `-Djavax.net.ssl.trustStore=...` at boot. Live
+    doc surfaces the limitation but the config surface offers no remediation. (EmailSenderProperties.md:bugs_limitations_corner_cases.[2]
+    + security.known_security_gaps.[3])'
+  - '**No XOAUTH2 / modern SMTP-AUTH support (MEDIUM)** — `EmailSenderProperties.SmtpProperties.auth`
+    is binary Boolean only; ODD does NOT expose `mail.smtp.auth.mechanisms`, `mail.smtp.auth.login.disable`,
+    or any modern-auth knob. SMTP-AUTH OAUTH2 (XOAUTH2) is not configurable — operators
+    on Microsoft 365 / Gmail with OAUTH2-only SMTP cannot use this channel. Live doc
+    does not call this out. (EmailSenderProperties.md:bugs_limitations_corner_cases.[12]
+    + security.known_security_gaps.[5])'
+  - '**Sender address has no @Email validation (LOW)** — `EmailSenderProperties.sender`
+    is a free-form `String` with only `StringUtils.isBlank` check. Spoofed/malformed
+    sender addresses accepted silently; SMTP-AUTH username = sender address (relays
+    where service-account username differs from From address cannot be expressed).
+    (EmailSenderProperties.md:bugs_limitations_corner_cases.[4] + security.known_security_gaps.[2])'
+  - '**Recipient list comma-split with no per-address trim (LOW)** — `NotificationConfiguration.java:118`
+    does `notificationEmails.trim().split(",")` — a single outer trim, no per-address
+    trim. List with whitespace (`''a@x.com, b@x.com''`) yields ` b@x.com` (leading
+    space) → JavaMail `InternetAddress` rejection → recipient loop aborts before subsequent
+    emails are sent. Compounds the silent-partial-delivery defect in NotificationsProperties
+    weaknesses. (EmailSenderProperties.md:bugs_limitations_corner_cases.[9] + security.known_security_gaps.[6])'
+  - '**Recipient list lives OUTSIDE the typed POJO (partial-home pattern — LOW)**
+    — `notifications.receivers.email.notification.emails` is NOT a field on `EmailSenderProperties`;
+    it is consumed via raw `@Value` in `NotificationConfiguration.java:104`. A maintainer
+    reading the POJO source to understand the email channel sees a partial picture.
+    Surfaced separately as a cross-cutting invariant. (EmailSenderProperties.md:bugs_limitations_corner_cases.[8])'
+  cross_file_inconsistencies:
+  - 'GitBook IA drift: `active-platform-features/notifications` returns 404; canonical
+    is `features/active-platform-features/notifications` (200). Same drift class as
+    DataCollaboration''s 404 — surface in cross-cutting invariants.'
+  - '`notifications.message.downstream-entities-depth` is consumed via raw `@Value`
+    in `NotificationConfiguration#alertNotificationMessageTranslator`, NOT through
+    this `@ConfigurationProperties` POJO — the POJO model is incomplete vs the actual
+    config surface. Cosmetic inconsistency vs ODD''s `@ConfigurationProperties` pattern
+    elsewhere. (NotificationsProperties.md:bugs_limitations_corner_cases.[1])'
+  - '`NotificationsProperties.enabled` field exists but is NOT the gate — `NotificationsFeatureCondition`
+    reads `notifications.enabled` directly from the Spring `Environment`, bypassing
+    this POJO. Two parallel paths for reading the same key — a future maintainer wiring
+    `@ConditionalOnProperty(matchIfMissing=false)` on the bean methods would conflict
+    with the existing Condition class.'
+  - |-
+    **NEW batch K**: Live `/features/active-platform-features/notifications`
+    says "every channel that is enabled" receives every alert (TRUE per
+    code) but does NOT mention the exception-type asymmetry: email failures
+    abort fan-out (RuntimeException not caught), Slack/webhook failures
+    do not (NotificationSenderException caught). Operator-facing framing
+    is incomplete.
+  contributing_files:
+  - NotificationsProperties.md
+  - EmailSenderProperties.md
+  - NotificationsDispatcher.md
+  evidence:
+  - NotificationsProperties.md:bugs_limitations_corner_cases.[0-13]
+  - NotificationsProperties.md:security.known_security_gaps.[0-4]
+  - NotificationsProperties.md:implicit_adrs.[0-5]
+  - EmailSenderProperties.md:bugs_limitations_corner_cases.[0-14]
+  - EmailSenderProperties.md:security.known_security_gaps.[0-6]
+  - EmailSenderProperties.md:security.data_exposure.[0-3]
+  - NotificationsDispatcher.md:bugs_limitations_corner_cases.[0,1,6,8] (asymmetry +
+    poison-replay + no-audit + PII surface — PRIMARY SOURCE batch K)
+  - NotificationsDispatcher.md:security.known_security_gaps.[0,1,2,3]
+  - NotificationsDispatcher.md:implicit_adrs.[0-3]
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - 'Per WAL message: `messageDecoder.decode(buffer)` (sync, in-thread) then `messageProcessor.process(decodedMessage)`
+    runs `messageTranslator.translate(...)` (multi-statement jOOQ query: alert chunks
+    + alerted data entity + recursive downstream CTE) then sequentially iterates `List<NotificationSender>`
+    calling `.send(...)` on each — every send is a synchronous HTTP/SMTP round-trip.
+    End-to-end latency per alert ≈ (decode) + (DB roundtrips for downstream depth≥1)
+    + Σ per-channel network RTT — NotificationsProperties + NotificationSubscriber.java:64-77
+    + AlertNotificationMessageProcessor.java:25-36 + AlertNotificationMessageTranslator.java:60-86'
+  - 'Per email send: freemarker render + NEW SMTP connection + STARTTLS handshake
+    fires per recipient (JavaMailSenderImpl does NOT pool by default — no `mail.smtp.connectionpoolsize`).
+    End-to-end latency for an alert with N recipients ≈ freemarker render + N × (TCP
+    + STARTTLS + SMTP HELO/AUTH/MAIL/RCPT/DATA). (EmailSenderProperties.md:performance.hot_paths.[0])'
+  - Recursive downstream lineage CTE in `AlertNotificationMessageTranslator#fetchDownstream`
+    — depth-bounded by `notifications.message.downstream-entities-depth` (default
+    1). At depth N over wide lineage graphs, CTE cost scales with the branching factor.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-thread WAL consumer per cluster (leader-elected at advisory lock
+      id 100). Throughput bounded by the slowest sender plus translation DB cost.
+      No parallelisation across channels. No batching — one HTTP/SMTP roundtrip per
+      alert per channel. Polling loop sleeps 10ms between empty `readPending()` calls
+      — idle CPU baseline bounded.
+  scaling_shape:
+    verdict: STATEFUL_LOCKED
+    detail: Stateful at the cluster level — Postgres advisory lock id 100 + named
+      replication slot + named publication. Horizontal scaling = exactly one active
+      subscriber. Replication slot + publication are global Postgres objects; renaming
+      requires manual drop of the prior slot or WAL accumulation on the primary. No
+      queueing layer between WAL decode and HTTP send — bursts of alerts directly
+      translate into bursts of outbound HTTP/SMTP requests; no backpressure mechanism.
+  strengths:
+  - Single shared `HttpClient` bean across Slack + Webhook senders — connection reuse
+  - Polling loop sleeps 10ms between empty reads — bounded idle CPU
+  - Email sender reuses single `MimeMessage` across recipients — minor allocation
+    savings
+  - 'Default partition WIDTH `:30` and default `downstream-entities-depth: 1` are
+    sensible safe defaults'
+  weaknesses:
+  - '**No rate-limiting — bursty alert events translate 1:1 into outbound deliveries
+    (HIGH severity)** — Slack will 429; platform has no retry-with-backoff. (NotificationsProperties.md:performance.known_performance_gaps.[0])'
+  - '**Synchronous fan-out — one slow sender stalls all subsequent senders for the
+    same alert (MEDIUM)** — misconfigured webhook with 30s SLA blocks Slack + email
+    delivery. (NotificationsProperties.md:performance.known_performance_gaps.[1])'
+  - '**SMTP timeouts unset — hung SMTP server blocks subscriber thread forever, stopping
+    ALL notification delivery (HIGH severity — 2-sidecar primary-source confirmed)**
+    — `NotificationConfiguration.java:34-68` has no `mail.smtp.connectiontimeout`
+    / `mail.smtp.timeout` / `mail.smtp.writetimeout` in the Properties bag. Live-doc-documented
+    limitation. Confirmed from second angle by batch D `EmailSenderProperties` sidecar
+    (`bugs_limitations_corner_cases.[0]` + `performance.known_performance_gaps.[0]`).
+    Cross-channel impact: fan-out is sequential on a single thread — hung SMTP also
+    stalls Slack + webhook delivery. (NotificationsProperties.md:performance.known_performance_gaps.[2]
+    + EmailSenderProperties.md:performance.known_performance_gaps.[0])'
+  - |-
+    **Poison-message WAL replay loop (NEW HIGH severity, batch K)** —
+    translation failure triggers NotificationSubscriber's outer catch
+    → 10s back-off → re-acquire → same WAL LSN re-delivered indefinitely.
+    A persistently-bad row (unknown alert-type code, FK-missing data entity)
+    blocks the WAL stream indefinitely.
+    (NotificationsDispatcher.md:performance.known_performance_gaps.[3])
+  - |-
+    **Empty-senders DB cost (LOW — batch K PRIMARY SOURCE)** —
+    `notifications.enabled=true` with ZERO receivers still triggers
+    translate() (multi-statement jOOQ read incl. recursive CTE) for every
+    WAL event. DB cost paid for zero delivery.
+    (NotificationsDispatcher.md:performance.known_performance_gaps.[2])
+  - '**No connection-pool sizing knobs surfaced for the shared `HttpClient` (LOW)**
+    — `HttpClient.newHttpClient()` uses default executor + default pool. (NotificationsProperties.md:performance.known_performance_gaps.[3])'
+  - '**Slack response-status check is hard-coded == 200 (LOW)** — Slack''s incoming
+    webhook can return 2xx other than 200; non-200 2xx will be misclassified as failure.
+    (NotificationsProperties.md:bugs_limitations_corner_cases.[8])'
+  - '**Per-recipient SMTP handshake (no connection pool — MEDIUM)** — N recipients
+    = N TCP+STARTTLS handshakes per alert. `JavaMailSenderImpl` does not pool SMTP
+    connections by default and ODD does not configure `mail.smtp.connectionpoolsize`.
+    (EmailSenderProperties.md:performance.known_performance_gaps.[1])'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - NotificationsProperties.md
+  - EmailSenderProperties.md
+  - NotificationsDispatcher.md
+  evidence:
+  - NotificationsProperties.md:performance.hot_paths.[0-1]
+  - NotificationsProperties.md:performance.throughput_characteristics + scaling_characteristics
+  - NotificationsProperties.md:performance.known_performance_gaps.[0-3]
+  - EmailSenderProperties.md:performance.hot_paths.[0]
+  - EmailSenderProperties.md:performance.known_performance_gaps.[0-3]
+  - EmailSenderProperties.md:performance.throughput_characteristics + scaling_characteristics
+  - NotificationsDispatcher.md:performance.hot_paths.[0]
+  - NotificationsDispatcher.md:performance.known_performance_gaps.[0-4]
+notes: |-
+  Notifications is the outbound counterpart to the platform's internal
+  `Alert` concept — Alert is the data-entity-scoped issue surface, this
+  is the operator-facing delivery channel for those alerts. Three
+  channels (Slack incoming webhook, generic JSON webhook, SMTP email)
+  each independently activated by the presence of its URL/sender key.
+
+  main-concepts.md names `Slack alert webhook` in Terms & Aliases (the
+  OUTGOING variant — distinct from `Slack collaboration app` which is
+  the bidirectional Discussions integration), but does NOT name
+  "Notifications" as a first-class canonical feature. Live feature page
+  exists at `features/active-platform-features/notifications` (200); the
+  legacy/alternate path `active-platform-features/notifications` returns
+  404 — GitBook IA drift mirrored by DataCollaboration.
+
+  STRENGTHENED batch 2026-05-19K. The dispatcher
+  (AlertNotificationMessageProcessor) is now primary-source pinned at
+  the SERVICE layer. Two new HIGH-severity findings:
+    - Poison-message WAL replay loop (translation failure → 10s back-off
+      → same LSN re-delivered indefinitely)
+    - Exception-type asymmetry (EmailNotificationSender RuntimeException
+      bypasses dispatcher's catch and aborts fan-out)
+
+  Cross-cutting connections:
+    - 202+queue+Postgres-advisory-lock single-sender pattern: 2-sidecar
+      triangulated (NotificationsProperties + postMessageInSlack)
+    - WAL Consumer + Postgres Replication Slot: NEW concept this batch
+      capturing the durability mechanism
+    - Lazy-create-no-drop replication artefacts: 2-sidecar triangulated
+    - Dead code in load-bearing positions: webhookUrl field
+    - Legacy-vs-canonical doc-path drift
+
+  Recommended canonicalisation: add `Notifications` to main-concepts.md
+  as a first-class feature concept with sub-concepts for each channel
+  (Slack incoming webhook, generic JSON webhook, SMTP email); also extend
+  `enable-security` to document the operator's responsibility to scope
+  the Postgres REPLICATION role and to manually drop the replication
+  slot + publication on uninstall.
+
+  Three NEW DOC-NNN candidates from batch K:
+    (d) Document poison-message replay limitation on live notifications page
+    (e) Either fix the email RuntimeException OR document the
+        exception-type asymmetry caveat
+    (f) Document the sender iteration order undefined-by-Spring-injection
+        (operators choosing channel order matter)

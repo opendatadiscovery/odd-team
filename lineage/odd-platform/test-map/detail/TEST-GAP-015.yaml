@@ -1,0 +1,86 @@
+gap_id: TEST-GAP-015
+category: missing-security
+criticality: CRITICAL
+node_ids:
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
+- odd-platform java AlertManagerController controller-method:postAlerts
+- odd-platform java service service:AlertServiceImpl
+surfaced_by:
+- AlertManagerController.md:security.known_security_gaps.[3] (severity HIGH — alert-spoofing)
+- AlertManagerController#postAlerts.md:security.known_security_gaps.[1] (cross_tenant_alert_creation
+  primary-source at method tier)
+- AlertManagerController#postAlerts.md:security.data_exposure.[1] (Cross-tenant
+  attribution)
+- AlertServiceImpl.md:bugs_limitations_corner_cases.[2] (F-007 facet `cross_tenant_alert_creation` PRIMARY-SOURCE at this service tier — entity_oddrn label trusted verbatim never validated)
+- AlertServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[7] (No test asserts the AlertManager webhook entity_oddrn cross-tenant attribution)
+behaviour: |-
+  Caller chooses arbitrary `entity_oddrn`; no check that the caller is authorised
+  to raise a DISTRIBUTION_ANOMALY against that entity. Fabricated alerts surface to
+  all authenticated users on the target entity's page. STRENGTHENED batch P — the
+  AlertManagerController#postAlerts sidecar PRIMARY-SOURCE confirms the spoof surface
+  at the method-tier with THREE independent anchors: (1) AlertManagerController.java:24
+  passes `req.getAlerts()` verbatim into AlertServiceImpl with no validation step
+  between; (2) AlertServiceImpl.java:178 maps `externalAlert.getLabels().get("entity_oddrn")`
+  directly to `AlertPojo.dataEntityOddrn` with no entity-existence check, no caller-identity
+  binding; (3) compound surface confirmed at method tier — combined with REFACTOR-024's
+  cross-owner read on `GET /api/alerts` (every authenticated user sees forged alerts
+  on the platform-wide All tab). The live doc verbatim 2026-05-20: "Anyone with
+  network reach to the platform can POST arbitrary AlertManager-shaped payloads
+  and create alerts on any data entity." This is the F-007 `cross_tenant_alert_creation`
+  facet — NOW PRIMARY-SOURCE at the method tier. STRENGTHENED batch S — the AlertServiceImpl
+  service-tier closure sidecar (2026-05-20) PRIMARY-SOURCE confirms three negations
+  at the SERVICE TIER: (a) no lookup against DATA_ENTITY to confirm the oddrn refers
+  to a real entity; (b) no caller-identity check (the AlertManager path has no SecurityContext
+  to consult by design); (c) no ownership/permission check that the (anonymous-or-authenticated)
+  caller is authorised to alert on the named entity. The service-tier line `setDataEntityOddrn(externalAlert.getLabels().get("entity_oddrn"))`
+  at AlertServiceImpl.java:178 is the LOAD-BEARING line; combined with the unauthenticated
+  webhook (per batch P AlertManagerController.postAlerts security.known_security_gaps[2,3])
+  and the cross-owner read at `listAll` (REFACTOR-024 family), this is the canonical
+  forge-and-display compound. The orphan case (label missing → null entity FK) is
+  documented on the live page; the spoof case (label present but referencing an entity
+  the caller has no business creating alerts on) is NOT.
+test_files_existing: []
+test_files_proposed:
+  path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AlertManagerWebhookTest.java
+  name: alertManagerWebhook_arbitraryEntityOddrn_persistsAlertAndSurfacesOnEntityPage
+evidence:
+- 'AlertManagerController.md says: ''fabricated alerts surface to all authenticated
+  users on the target entity''s page'' (severity HIGH)'
+- 'concepts.yaml:entities[AlertManager Webhook Receiver].security_aggregate.weaknesses.[1]
+  verbatim: ''Alert spoofing: caller chooses arbitrary `entity_oddrn`, no check that
+  caller is authorised to raise DISTRIBUTION_ANOMALY against that entity'''
+- 'postAlerts.md says (bugs_limitations_corner_cases.[1]): ''A POST with `labels.entity_oddrn=<any-data-entity-oddrn>`
+  produces an OPEN alert attributed to that data entity, visible on the target entity''s
+  page to all authenticated users. Compounded with REFACTOR-024 (cross-owner GET
+  /api/alerts) — every authenticated user sees forged alerts on the platform-wide
+  All tab.'''
+- 'AlertServiceImpl.md says (bugs_limitations_corner_cases.[2]): ''F-007 facet cross_tenant_alert_creation
+  PRIMARY-SOURCE at this service tier: the AlertManager webhook payload''s entity_oddrn
+  label is trusted verbatim and never validated. Line 178 reads externalAlert.getLabels().get("entity_oddrn")
+  and assigns it to setDataEntityOddrn directly. Three negations confirm the trust
+  contract: (a) no lookup against DATA_ENTITY; (b) no caller-identity check; (c) no
+  ownership/permission check.'' severity: HIGH'
+- 'AlertServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[7]): ''No
+  test asserts the AlertManager webhook entity_oddrn cross-tenant attribution (F-007
+  facet cross_tenant_alert_creation). A POST with labels.entity_oddrn=<entity-owned-by-other-tenant>
+  produces a row attributed to that entity, visible on the platform-wide All tab.
+  The verbatim mapping at line 178 has no validation.'''
+- 'Source — AlertManagerController.java:24 + AlertServiceImpl.java:178 + WebFetch
+  configuration-and-deployment/odd-platform 2026-05-20 status 200'
+cross_references:
+- concepts.yaml:entities[AlertManager Webhook Receiver].security_aggregate.weaknesses.[1]
+- F-007 (P-07:F-001 AlertManager Integration) drift facet cross_tenant_alert_creation
+- REFACTOR-024 (cross-owner GET /api/alerts read posture — compound surface)
+- TEST-GAP-691 (NEW batch S — AlertManager webhook idempotency sister gap)
+- TEST-GAP-693 (NEW batch S — generatorURL XSS sister gap)
+- TEST-GAP-694 (NEW batch S — startsAt timezone-strip sister gap)
+- LSN-017 (per-node-scan-cannot-see-cross-layer-user-effects — the F-007 compound surface is the case-study)
+related_features: [F-007]
+related_pillar_features: ["P-07:F-001"]
+proposed_action: Add test posting AlertManager payload with arbitrary `entity_oddrn`;
+  assert alert is created on that entity's page; document the expected operator-side
+  perimeter control. Pair with TEST-GAP-691 (idempotency), TEST-GAP-693 (generatorURL
+  XSS), and TEST-GAP-694 (timezone-strip) — all four batch-S sister gaps together
+  form the AlertManager-webhook security harness.
+batch: 2026-05-20-S-STRENGTHENED
+feature_id: F-007

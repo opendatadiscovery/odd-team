@@ -1,0 +1,63 @@
+gap_id: TEST-GAP-281
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+- odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
+- odd-platform java repository_reactive repository:ReactiveLineageRepositoryImpl
+- odd-platform java service service:LineageServiceImpl
+surfaced_by:
+- getDataEntityDownstreamLineage.md:bugs_limitations_corner_cases.[3]
+- getDataEntityDownstreamLineage.md:bugs_limitations_corner_cases.[7]
+- ReactiveLineageRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[3]
+- ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[0]
+- ReactiveLineageRepositoryImpl.md:security.known_security_gaps.[1]
+- LineageServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[5, 6]
+- LineageServiceImpl.md:bugs_limitations_corner_cases.[3]
+behaviour: 'No cycle-detection inside the recursive CTE — `UNION ALL` body without
+  visited-set guard; termination depends solely on `tDepth.lessThan(lineageDepth.getDepth())`.
+  For graphs with cycles or diamond-shaped DAGs, intermediate row counts grow multiplicatively
+  before the outer `selectDistinct` deduplicates. STRENGTHENED batch H — the repository
+  sidecar confirms this at the SQL primary source: `lineageCte` (lines 150-176) uses
+  UNION ALL with no inner DISTINCT, no Postgres `WITH ... CYCLE` clause (PG 14+ feature
+  not used here), no LIMIT inside the CTE, no row-count cap. The outer `selectDistinct`
+  (line 127) deduplicates the FINAL result but does NOT prune the CTE intermediate
+  work — confirming REFACTOR-202 amplification at the SQL layer. STRENGTHENED batch
+  I — the service sidecar adds the COMPOSITION cost: getLineage merges the recursive-CTE
+  result with the depth-1 expansion fan-out via `Flux.mergeWith(...).distinct()` (lines
+  100-101), then `.collectList()` (line 102). For a depth-N diamond pattern with branching
+  factor B, intermediate row count grows O(B^N) at SQL BEFORE the service-tier distinct
+  prunes — the cost is paid in BOTH Postgres work_mem AND JVM heap during `.distinct().collectList()`.
+  Service tier is the JVM-heap amplification site.'
+test_files_existing:
+- odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/LineageRepositoryTest.java
+test_files_proposed:
+  path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/integration/LineageCycleHandlingTest.java
+  name: getDataEntityDownstreamLineage_cyclicGraph_terminatesViaDepthBoundOnly
+evidence:
+- 'getDataEntityDownstreamLineage.md says: ''For a lineage graph with a cycle, row-count
+  growth before depth-termination is unbounded by graph structure'''
+- 'ReactiveLineageRepositoryImpl.md says: ''No cycle-detection inside the recursive
+  CTE: the CTE body is UNION ALL without a visited-set guard or Postgres WITH...CYCLE
+  clause'''
+- 'LineageServiceImpl.md says: ''Diamond-DAG amplification is COMPOSED at this service
+  — getLineage merges the recursive-CTE result with the depth-1 expansion fan-out
+  via Flux.mergeWith(...).distinct(), then .collectList(). For a depth-N diamond pattern
+  with branching factor B, the intermediate row count grows as O(B^N) at the SQL layer
+  BEFORE the service''s distinct prunes — the cost is paid both in Postgres work_mem
+  AND in JVM heap during the .distinct().collectList()'''
+- 'ReactiveLineageRepositoryImpl.java:163-175 (CTE body: UNION ALL with no DISTINCT/no
+  cycle guard)'
+- ReactiveLineageRepositoryImpl.java:126-128 (outer selectDistinct over CTE result)
+- LineageServiceImpl.java:95-102 (service-tier merge + distinct + collectList)
+cross_references:
+- concepts.yaml:entities[Data Entity].performance_aggregate.weaknesses (No CTE cycle
+  guard — batch F + batch H + batch I primary-source confirmation)
+- REFACTOR-202
+- F-005 (Data Lineage)
+proposed_action: Build a fixture with a 3-node cycle; call with depth=10; assert response
+  shape (no infinite recursion) AND DB CPU time is bounded. Additionally, build a
+  diamond-DAG fixture (A→B, A→C, B→D, C→D); assert the merged edge set deduplicates
+  correctly through the service-tier `.distinct()`. Cover BOTH the SQL-layer cycle
+  case (TEST-GAP-281 origin) and the SERVICE-TIER composition cost.
+batch: 2026-05-19-I-STRENGTHENED
+feature_id: F-005

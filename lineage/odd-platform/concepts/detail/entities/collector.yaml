@@ -1,0 +1,200 @@
+name: Collector
+canonical_in_docs: true
+canonical_candidate: false
+description: Container of pull adapters plus the runtime around them (main-concepts.md
+  verbatim). Authenticated to the platform via a shared-secret bearer token used by
+  S2S `IngestionDataEntitiesFilter` on `/ingestion/entities`. Platform-level infrastructure
+  (no Owner association). Managed via `/api/collectors/*` endpoints — list, create,
+  update, delete, regenerate-token. Token rotation is an in-place UPDATE with no grace
+  window. **BATCH Q EXTENSION** — Management → Collectors UI tab catalogued
+  (CollectorsList sidecar); UI-tier credential hazards documented (plaintext token
+  rendered into DOM + fragile substring-prefix-sniff masking detection); see new
+  sibling invariant `plaintext-token-rendered-into-dom-fragile-substring-prefix-sniff-masking`.
+axes_present:
+- controllers
+- ui_components
+nodes:
+- odd-platform java CollectorController controller-method:regenerateCollectorToken
+- odd-platform ts react-component component:CollectorsList
+contributors:
+- 'CollectorController.regenerateCollectorToken: entities[Collector, Token (40-char
+  alphanumeric shared secret), TokenPojo, CollectorDto]; operations[regenerate-collector-token,
+  rotate-ingestion-secret, return-plaintext-token]'
+- |-
+  **NEW batch Q — CollectorsList.md (Management → Collectors UI tab)**:
+  concepts.entities.[0] (Collector — the generated API model with id, name,
+  description, namespace, token: { value: string }, createdAt, updatedAt) +
+  concepts.operations[list-collectors-paginated, search-collectors-debounced,
+  create-collector, update-collector, delete-collector, regenerate-token,
+  copy-token-to-clipboard, detect-masked-token-by-prefix] +
+  bugs_limitations_corner_cases.[0,1,2,3,4] (UI-tier hazards including
+  the UI-vs-API asymmetry under DISABLED — the 19th-and-final-known
+  sidecar facet of REFACTOR-185)
+evidence:
+- regenerateCollectorToken.md:concepts.entities.[Collector, Token, TokenPojo, CollectorDto]
+- regenerateCollectorToken.md:concepts.operations
+- regenerateCollectorToken.md:concepts.invariants.[0-3]
+- |-
+  **NEW batch Q — CollectorsList.md**: concepts.entities.[Collector] +
+  concepts.operations + bugs_limitations_corner_cases.[1] HIGH UI-vs-API
+  asymmetry under DISABLED (the 19th facet of REFACTOR-185)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: 'Endpoint IS gated: SecurityConstants.java:135-137 registers `SecurityRule(NO_CONTEXT,
+      PUT /api/collectors/{collector_id}/token, COLLECTOR_TOKEN_REGENERATE)`. Permission
+      is MANAGEMENT-tier per PolicyPermissionDto.java:58. No @PreAuthorize on controller
+      (consistent with the centralised-SECURITY_RULES pattern). Live `/configuration-and-deployment/enable-security/authorization/permissions`
+      (verified 200, 2026-05-10) documents COLLECTOR_TOKEN_REGENERATE verbatim. The
+      gate is correctly wired — the weakness is what the operation EXPOSES, not whether
+      it''s gated. **BATCH Q** — adds that the UI WIRING is also consistent — all 4
+      mutating affordances wrapped in WithPermissions(COLLECTOR_*).'
+  owner_scoping:
+    verdict: N/A
+    detail: Collector is a global resource — platform-level infrastructure, not data-scoped.
+      MANAGEMENT-tier permission gates globally; no per-collector ACL beyond the policy.
+  strengths:
+  - Gated by COLLECTOR_TOKEN_REGENERATE Permission (MANAGEMENT tier) via SECURITY_RULES
+    — declarative authorization (regenerateCollectorToken.md:security.authorization_assertions.[0])
+  - Centralised gate declaration consistent with the platform-wide SecurityConstants.SECURITY_RULES
+    pattern — no scattered @PreAuthorize
+  - Token entropy is 40 alphanumeric chars ≈ 238 bits of input space — adequate length
+    for a shared secret
+  - |-
+    **NEW batch Q — UI gates parity with SECURITY_RULES**: all 4 UI-side
+    gates (CollectorsList COLLECTOR_CREATE + CollectorItem COLLECTOR_UPDATE
+    + CollectorItem COLLECTOR_DELETE + CollectorItemToken
+    COLLECTOR_TOKEN_REGENERATE) are MIRRORS of the backend SECURITY_RULES
+    at SecurityConstants.java:127-137 — same permission names, same
+    path/method coverage; the maintainer's UI permission-gate parity with
+    SECURITY_RULES convention (CollectorsList.md:security.authorization_assertions)
+  weaknesses:
+  - Token entropy uses `RandomStringUtils.randomAlphanumeric(40)` which delegates
+    to ThreadLocalRandom (non-CSPRNG); should use `RandomStringUtils.secure().nextAlphanumeric(40)`
+    or explicit SecureRandom (regenerateCollectorToken.md:security.known_security_gaps.[1]
+    HIGH)
+  - 'Token plaintext returned in response body on rotation — any reverse-proxy / browser-history
+    / response-logging middleware records the new credential; no `Cache-Control: no-store`,
+    no sensitive-body header (regenerateCollectorToken.md:security.known_security_gaps.[0]
+    MEDIUM)'
+  - Token stored in plaintext in the TOKEN table — DB read/replica/backup carries
+    credentials in the clear; IngestionDataEntitiesFilter.java:55-58 confirms plaintext
+    `.equals(...)` check (no hashing layer) (regenerateCollectorToken.md:security.known_security_gaps.[3]
+    HIGH)
+  - Token rotation not audit-logged — grep for log.* against CollectorController/CollectorServiceImpl/TokenGeneratorImpl/ReactiveTokenRepositoryImpl
+    returned zero matches. TOKEN.updated_by column is the only forensic trail but
+    is overwritten on next rotation — single-state, not append-only (regenerateCollectorToken.md:security.known_security_gaps.[2]
+    HIGH)
+  - Under auth.type=DISABLED the gate is bypassed entirely — TokenGeneratorImpl.java:30-31
+    falls through to `regenerate(tokenPojo, null)` with NULL updated_by. Any caller
+    reaching the platform can rotate any collector's token and receive plaintext (regenerateCollectorToken.md:security.known_security_gaps.[4]
+    HIGH in DISABLED deployments)
+  - No rotation grace period — in-flight ingestion using old token will 401 the moment
+    UPDATE commits (regenerateCollectorToken.md:security.known_security_gaps.[5] HIGH
+    operational severity)
+  - No rate-limit on rotation — stolen MANAGEMENT-permission session can rotate every
+    collector's token in a loop, breaking platform-wide ingestion (regenerateCollectorToken.md:security.known_security_gaps.[6]
+    MEDIUM)
+  - |-
+    **NEW batch Q — UI-tier credential hazards**: (a) plaintext token
+    rendered into DOM as text node at CollectorItemToken.tsx:34 (no
+    obfuscation, no auto-hide; browser extensions / screenshot tools /
+    accessibility readers capture the credential by default) — MEDIUM
+    severity; (b) token-visibility detection is a substring-prefix
+    sniff at CollectorItemToken.tsx:25-27 (future backend mask change
+    breaks silently) — MEDIUM severity. See new sibling invariant
+    `plaintext-token-rendered-into-dom-fragile-substring-prefix-sniff-masking`.
+  - |-
+    **NEW batch Q — UI-vs-API asymmetry under DISABLED**: the UI hides
+    Add/Edit/Delete/Regenerate buttons (because /api/identity returns
+    empty permissions under DISABLED) while the BACKEND endpoints accept
+    anonymous mutations (DisabledAuthSecurityConfiguration bypasses
+    SECURITY_RULES). The 19th sidecar facet of REFACTOR-185 — see
+    sibling invariant `ui-vs-api-asymmetry-under-disabled-ui-hides-mutation-buttons-backend-accepts-anonymous`.
+    HIGH severity.
+  - |-
+    **NEW batch Q — Anonymous list-enumeration under DISABLED leaks
+    last-6-chars of every token**: GET /api/collectors/list is NOT in
+    SECURITY_RULES; under DISABLED an anonymous probe can enumerate
+    every collector's name + namespace + last-6-token-chars (the mask
+    format includes the last-6-chars). MEDIUM severity
+    (CollectorsList.md:security.known_security_gaps.[5]).
+  cross_file_inconsistencies:
+  - Live `/configuration-and-deployment/enable-security/authentication` enumerates
+    S2S auth mode without explaining how its credential is rotated; `/permissions`
+    names COLLECTOR_TOKEN_REGENERATE without operational guidance (no rotation grace
+    period, plaintext-in-response shape) (regenerateCollectorToken.md:docs_link_semantic.doc_drift_findings.[0])
+  - |-
+    **NEW batch Q** — Live `/features/management` page (WebFetched
+    2026-05-20 status 200) documents Collectors tab as "Registered
+    Collectors and their tokens. Issue new tokens, view existing token
+    IDs, regenerate or revoke" but is SILENT on (a) auth.ingestion.filter.enabled
+    default-OFF caveat (UI rotation has no security effect on default
+    deployment); (b) auth.type=DISABLED bypassing all four COLLECTOR_*
+    permissions on the backend; (c) one-shot token visibility; (d)
+    in-place rotation no-grace-period semantic
+    (CollectorsList.md:docs_link_semantic.doc_drift_findings.[0-3])
+  contributing_files:
+  - regenerateCollectorToken.md
+  - CollectorsList.md
+  evidence:
+  - regenerateCollectorToken.md:security.known_security_gaps.[0-6]
+  - regenerateCollectorToken.md:bugs_limitations_corner_cases.[0-7]
+  - CollectorsList.md:security.known_security_gaps.[0-5] (NEW batch Q UI-tier evidence)
+  - CollectorsList.md:bugs_limitations_corner_cases.[0-4] (NEW batch Q UI-tier hazards)
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+  - 'PUT /api/collectors/{collector_id}/token — synchronous from caller''s perspective:
+    1 DB SELECT with joins (NAMESPACE + TOKEN), in-memory mutation, 1 DB UPDATE RETURNING.
+    2 DB round-trips total. Not on the ingestion hot path. (regenerateCollectorToken.md:performance.hot_paths.[0])'
+  - |-
+    **NEW batch Q** — UI mount fires fetchCollectorsList({page: 1, size: 30})
+    once per page-open; each delete completion re-fires page 1 fetch;
+    debounced search 500ms (CollectorsList.md:performance.hot_paths)
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-collector PUT — no bulk-rotate endpoint. Rotating N collectors
+      makes N requests.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless controller. No locks, no advisory locks. Last-write-wins for
+      concurrent rotations on same collector_id — no optimistic locking (no @Version
+      column, no WHERE updated_at = :prev).
+  strengths:
+  - Reactive Mono signature — non-blocking on WebFlux thread
+  - Stateless — instances scale horizontally without coordination
+  - Minimal resource footprint per call (one CollectorDto + one TokenPojo + projection)
+  weaknesses:
+  - No bulk-rotate endpoint — rotating all collectors after a credential leak requires
+    N HTTP calls (regenerateCollectorToken.md:performance.known_performance_gaps.[0]
+    LOW)
+  - Concurrent-rotation race produces silently-discarded credentials — operators issuing
+    rapid retries may walk away with a token that is not actually the persisted one
+    (regenerateCollectorToken.md:performance.known_performance_gaps.[1] LOW)
+  cross_file_inconsistencies: []
+  contributing_files:
+  - regenerateCollectorToken.md
+  - CollectorsList.md
+  evidence:
+  - regenerateCollectorToken.md:performance.hot_paths
+  - regenerateCollectorToken.md:performance.known_performance_gaps.[0,1]
+notes: 'Collector is canonical in main-concepts.md ("a container of pull adapters
+  plus the runtime around them"). The Token Rotation operation surfaces
+  multiple architectural concerns (in-place UPDATE, plaintext storage,
+  plaintext-in-response, non-CSPRNG entropy, no audit, no grace period,
+  no rate limit) — see also the related "Collector Token" concept entry.
+
+  **BATCH Q EXTENSION** — UI-tier hazards added via the CollectorsList
+  sidecar. The UI-vs-API asymmetry under DISABLED (the 19th sidecar
+  facet of REFACTOR-185), the plaintext token DOM-rendering, and the
+  fragile substring-prefix-sniff masking detection are all catalogued
+  in new sibling invariants for the per-concern depth. Every link in
+  the Collector + Token handling chain — from token generation through
+  backend storage through UI display — is fragile.'

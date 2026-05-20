@@ -1,0 +1,32 @@
+gap_id: TEST-GAP-677
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveDatasetFieldRepositoryImpl"
+pillars_affected: [P-10, P-01]
+surfaced_by:
+  - "ReactiveDatasetFieldRepositoryImpl.md:concepts.invariants.[4] (getLastVersionDatasetFieldsByOddrns uses a window-function CTE)"
+  - "ReactiveDatasetFieldRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[5] (window-function CTE correctness)"
+  - "ReactiveDatasetFieldRepositoryImpl.md:tests_coverage_semantic.gaps[1] (CTE-versioning drift — load-bearing for entire dataset-structure ingestion flow)"
+behaviour: |-
+  **The most load-bearing read shape — `getLastVersionDatasetFieldsByOddrns` — has ZERO test coverage.** Lines 92-113 use a window-function CTE: `MAX(DATASET_VERSION.VERSION).OVER(PARTITION BY DATASET_FIELD.ODDRN).AS(maxVersion)` to pick "the dataset_field row that belongs to the most recent dataset_version for each oddrn". The result drives the UPDATE-vs-INSERT decision in `DatasetFieldServiceImpl.buildDatasetFieldIngestionDto` (lines 375-396) for EVERY ingestion request containing dataset entities — called from BOTH `DatasetStructureIngestionRequestProcessor` (via `DatasetFieldServiceImpl.createOrUpdateDatasetFields` line 141) AND `DatasetFieldMetadataIngestionServiceImpl.ingestMetadata` (line 47). If the window function or the `version = max_version` filter returns a non-maximal row (due to a future jOOQ planner change, a Postgres version upgrade, or a maintainer's refactor), every subsequent UPDATE-vs-INSERT decision is skewed, leading to silent orphan-row creation OR in-place edits of the WRONG historical version. **Severity: HIGH because the failure mode is silent data corruption in the dataset_structure / dataset_field relationship — no exception, no log, no alert.** Partition-batching at 1000 oddrns adds further untested complexity: the same oddrn appearing twice across batches would receive TWO separate CTE evaluations.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDatasetFieldRepositoryLastVersionByOddrnsTest.java"
+  name: "getLastVersionDatasetFieldsByOddrns_returnsMaxVersionRowPerOddrn_pinsWindowFunctionCorrectness"
+evidence:
+  - "ReactiveDatasetFieldRepositoryImpl.md says (concepts.invariants.[4]): 'getLastVersionDatasetFieldsByOddrns uses a window-function CTE (lines 99-110: MAX(DATASET_VERSION.VERSION).OVER(PARTITION BY DATASET_FIELD.ODDRN).AS(maxVersion)). The WHERE version = max_version filter (line 110) picks the most recent dataset_version row each oddrn appears in.'"
+  - "ReactiveDatasetFieldRepositoryImpl.md says (gaps[1]): 'CTE-versioning drift. A maintainer changing the window function or removing the version = max_version filter would silently break ingestion's view of current fields. No test asserts that adding a NEWER dataset_version for the same oddrn promotes the new row to current.'"
+  - "ReactiveDatasetFieldRepositoryImpl.java:92-113 (the CTE)"
+  - "DatasetFieldMetadataIngestionServiceImpl.java:47 (caller)"
+  - "DatasetFieldServiceImpl.java:141, 375-396 (the consumer chain)"
+cross_references:
+  - "TEST-GAP-665 (DatasetField orphan accumulation — what happens when this method is correct)"
+  - "F-008 (P-10:F-001 Batch Ingestion)"
+  - "F-010 (P-08:F-002 Housekeeping) — coverage gap"
+proposed_action: |-
+  Testcontainers integration test. (a) Create three dataset_version rows for `data_entity #1` with versions [1, 2, 3]. (b) Create dataset_field rows: oddrn `//col1` linked to v1 + v2 + v3 (SAME row across versions), oddrn `//col2` linked to v1 + v2 with one row + v3 with a NEW row (representing a column rename). (c) Call `getLastVersionDatasetFieldsByOddrns(List.of("//col1", "//col2"))`. (d) Assert: `//col1` returns the single shared row; `//col2` returns the v3-linked row (NEWEST). (e) Add a v4 dataset_version with a NEW row for `//col2`. (f) Re-call `getLastVersionDatasetFieldsByOddrns(...)`. Assert: `//col2` now returns the v4-linked row (the promotion is correct). (g) Pair with the partition-boundary case: 1001 oddrns input → splits into chunk-1 (1000) + chunk-2 (1) — assert ALL 1001 results returned, no duplicates. (h) Add a `// REGRESSION-PIN — Window-function CTE correctness is load-bearing for ingestion. A planner change OR refactor that returns non-maximal rows would silently corrupt the dataset_structure model.` comment block.
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001", "P-01:F-NN-dataset-schema-diff"]
+batch: 2026-05-20-R
+feature_id: F-008

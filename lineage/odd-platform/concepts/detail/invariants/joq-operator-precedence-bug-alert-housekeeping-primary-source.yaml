@@ -1,0 +1,109 @@
+name: jOOQ operator-precedence bug — AlertHousekeepingJob primary-source location
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-08
+- P-04
+- P-07
+description: |-
+  **NEW INVARIANT, batch 2026-05-19K — PRIMARY-SOURCE PIN of REFACTOR-142.**
+  The AlertHousekeepingJob TTL filter at `housekeeping/job/AlertHousekeepingJob.java:28-34`
+  builds its jOOQ DELETE predicate as:
+  `.where(ALERT.STATUS.eq(RESOLVED)).or(ALERT.STATUS.eq(RESOLVED_AUTOMATICALLY)).and(ALERT.STATUS_UPDATED_AT.lessOrEqual(cutoff))`
+  jOOQ's fluent-builder precedence: `.and(...)` binds to the most recent
+  `.or(...)`. The emitted SQL is therefore
+  `WHERE (STATUS = 'RESOLVED') OR (STATUS = 'RESOLVED_AUTOMATICALLY' AND STATUS_UPDATED_AT <= cutoff)`.
+  The TTL applies ONLY to `RESOLVED_AUTOMATICALLY` rows; manual `RESOLVED`
+  rows are hard-deleted on the very next 15-minute housekeeping cycle
+  regardless of `housekeeping.ttl.resolved_alerts_days`. The live docs
+  (WebFetch /configuration-and-deployment/odd-platform 2026-05-19, status
+  200) acknowledge the bug VERBATIM: "a known platform bug currently exempts
+  manual resolutions from the retention check — manual RESOLVED alerts are
+  hard-deleted on the next housekeeping run regardless of this value." The
+  bug is therefore docs-acknowledged BUT: (a) there is NO `// TODO`, NO
+  `// BUG`, NO comment in the source pointing to the docs acknowledgement;
+  (b) NO GitHub-issue link; (c) NO regression test asserting either current
+  behaviour or intended behaviour; (d) NO mention of the fix shape (the
+  parenthesisation needed). A future maintainer reading the docs page learns
+  the bug exists but cannot find the corresponding code line; a future
+  maintainer reading the code cannot infer the bug is known. **The fix**:
+  parenthesise the predicate as
+  `.where(STATUS.eq(RESOLVED).or(STATUS.eq(RESOLVED_AUTOMATICALLY))).and(STATUS_UPDATED_AT.lessOrEqual(cutoff))`.
+  The HousekeepingJobManager sidecar primary-source confirms the bug from
+  the orchestrator-side angle (HousekeepingJobManager.java:33-35 invokes
+  the buggy job in the same 15-min cycle as the other four jobs). The
+  HousekeepingTTLProperties batch-D sidecar surfaced the bug from the
+  config-key angle. **This batch-K finding is the FIRST primary-source
+  pin to the actual code line and the exact jOOQ predicate text.**
+nodes:
+- odd-platform java service service:HousekeepingJobManager
+- odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
+contributors:
+- |-
+  HousekeepingJobManager batch K: bugs_limitations_corner_cases.[1] (PRIMARY
+  SOURCE — file:line citation + verbatim docs acknowledgement + fix shape)
+- |-
+  HousekeepingTTLProperties batch D (existing reference):
+  bugs_limitations_corner_cases.[3] (the bug from the config-key consumer
+  angle — TTL field `resolved_alerts_days` is applied incorrectly)
+evidence:
+- |-
+  HousekeepingJobManager.md:bugs_limitations_corner_cases.[1] (PRIMARY
+  SOURCE) — evidence: AlertHousekeepingJob.java:28-34 (the jOOQ predicate
+  chain) + WebFetch /configuration-and-deployment/odd-platform 2026-05-19
+  status 200 (verbatim docs acknowledgement)
+- |-
+  HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[3] (the
+  config-key-consumer-angle finding)
+axes_present:
+- services
+- config_prefixes
+triangulation_count: 2
+cross_batch: true
+severity: HIGH
+severity_dim: data-integrity
+mitigations_unimplemented:
+- |-
+  Apply the parenthesisation fix at AlertHousekeepingJob.java:28-34 —
+  one-line change.
+- |-
+  Add a regression test that:
+    (a) inserts an ALERT row with status=RESOLVED and status_updated_at
+        BEFORE the cutoff,
+    (b) runs AlertHousekeepingJob.doHousekeeping(),
+    (c) asserts the row STILL EXISTS (under the fixed semantic) or asserts
+        the row IS DELETED (under the current buggy semantic; pin the
+        current behaviour explicitly so the next maintainer cannot
+        unknowingly flip the contract).
+- |-
+  Add a `// BUG: jOOQ operator-precedence — see ADR-NNN or DOCS-NNN` comment
+  at AlertHousekeepingJob.java:28 so future readers find the docs
+  acknowledgement.
+- |-
+  File a GitHub issue and link it from both the source line AND the docs
+  page (so the bug is tracked, not just acknowledged).
+notes: |-
+  NEW invariant captured in batch 2026-05-19K. The bug is known and
+  docs-acknowledged but has been a "documented gap" for an undetermined
+  duration. The HousekeepingJobManager batch-K sidecar is the FIRST
+  primary-source pin to the exact code line and the fix shape — prior
+  batches surfaced the bug from the config-key-consumer angle
+  (HousekeepingTTLProperties batch D) without naming the source line.
+
+  Cross-cutting connections:
+    - Pairs with the "Housekeeping TTL retention" entity concept — that
+      concept's weaknesses[2] cites this bug; this invariant is the
+      primary-source pin
+    - Pairs with the "Dead code in load-bearing positions" invariant —
+      both are cases where the platform's quality posture has acknowledged
+      a defect without remediating it
+    - Cross-cutting case-law for "documented bug without tracked issue" —
+      a recurring failure mode in OSS projects where the docs are honest
+      about a defect but the codebase has no internal pointer
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Code-side: add a // BUG comment at AlertHousekeepingJob.java:28
+        with link to docs/issue
+    (b) Docs-side: add a tracking-issue link to the
+        /configuration-and-deployment/odd-platform#housekeeping acknowledgement
+    (c) The fix itself — one-line parenthesisation change

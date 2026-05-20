@@ -1,0 +1,11 @@
+- **REFACTOR-017**: AlertManager endpoint has no rate-limit, payload-size limit, or duplicate-suppression — unauthenticated DoS / noise injection vector
+  - **Category**: missing-rate-limit
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md:bugs_limitations_corner_cases.[2]` (MEDIUM)
+    - `concepts.yaml:entities[AlertManager Webhook Receiver].security_aggregate.weaknesses.[2]`
+  - **Statement**: A misconfigured AlertManager (or a malicious caller — the endpoint is unauthenticated by design per ADR-CANDIDATE-006) can flood ODD with alerts. Each `ExternalAlert` produces one `AlertPojo` row + one `AlertChunkPojo` row inside `@ReactiveTransactional` `handleExternalAlerts`; cross-batch volume is not bounded. AlertManager `group_interval` re-sends every 5m by default; each re-send creates a fresh `AlertPojo` even if `(entity_oddrn, type=DISTRIBUTION_ANOMALY)` already has an OPEN alert (no dedup).
+  - **Evidence**: `AlertManagerController.java:21-26` + `AlertServiceImpl.java:152-191`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-006 (network-delegated auth) explicitly defers application-layer auth to the network layer. The ADR does NOT defend the absence of rate-limit / dedup / payload-cap; those are gaps.
+  - **Proposed remedy**: Add Bucket4j or Spring Cloud Gateway-style rate-limit on `/ingestion/alert/alertmanager`. Implement upsert-on-conflict for `(entity_oddrn, type, status=OPEN)` to dedup re-sends.
+  - **Severity rationale**: MEDIUM — DoS + noise-injection on the unauthenticated path.
+  - **Suggested backlog grouping**: `AlertManager hardening`

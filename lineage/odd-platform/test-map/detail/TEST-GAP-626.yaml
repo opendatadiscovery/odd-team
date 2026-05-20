@@ -1,0 +1,27 @@
+gap_id: TEST-GAP-626
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java OwnerController controller-method:deleteOwner"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "deleteOwner.md:bugs_limitations_corner_cases.[1] (owner_association_request orphan rows persist after owner delete — severity HIGH)"
+  - "deleteOwner.md:security.known_security_gaps.[1] (owner_association_request orphan rows persist — severity MEDIUM)"
+behaviour: |-
+  **OWNER_ASSOCIATION_REQUEST ORPHAN ROWS PERSIST AFTER OWNER DELETE — cascade-block check is incomplete.** The cascade-block at OwnerServiceImpl.java:90-91 checks termOwnership + ownership + userOwnerMapping, but NOT `owner_association_request`. The owner_association_request table has a foreign key to `owner(id)` (V0_0_51__add_owner_association_request.sql:11: `CONSTRAINT owner_association_request_owner_fk FOREIGN KEY (owner_id) REFERENCES owner (id)`) but NO `ON DELETE` clause (defaults to NO ACTION). Because owner uses soft-delete (UPDATE `deleted_at`, not DELETE FROM), the FK is never consulted. Result: a `PENDING` or `APPROVED` owner_association_request for the just-deleted owner persists. The next `GET /api/owner_association_request` listing query returns the orphan row (the listing endpoint joins owner LEFT — verified via ReactiveOwnerRepositoryImpl.java:147-149 showing the OWNER_ASSOCIATION_REQUEST relationship is the `allowedForSync` filter in `enrichSelect`). Operators see a request for an owner whose name has likely been reused, with no UI signal that the original owner is gone. **MIRRORS F-006 family's cascade-incompleteness pattern.** Plus from a security angle: an attacker who can submit an OWNER_ASSOCIATION_REQUEST against any owner could plant orphan rows that survive future owner directory churn — useful for a long-game persistence technique. The attack precondition (the attacker must hold OWNER_ASSOCIATION_* permissions to submit the request) makes severity conservative, BUT severity RISES under DISABLED.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/OwnerDeleteCascadeCompletenessTest.java"
+  name: "deleteOwner_doesNotCleanUpOwnerAssociationRequest_orphanRowsPersist"
+evidence:
+  - "deleteOwner.md says (bugs_limitations_corner_cases.[1]): 'owner_association_request orphan rows are NOT cleaned up on owner delete — the cascade-block checks termOwnership + ownership + userOwnerMapping but NOT owner_association_request. The table has a foreign key to owner(id) (V0_0_51__add_owner_association_request.sql:11) but NO ON DELETE clause. Because owner uses soft-delete (UPDATE deleted_at, not DELETE FROM), the FK is never consulted. Result: a PENDING or APPROVED owner_association_request for the just-deleted owner persists.'"
+  - "deleteOwner.md says (security.known_security_gaps.[1]): 'An attacker who can submit an OWNER_ASSOCIATION_REQUEST against any owner could plant orphan rows that survive future owner directory churn — useful for a long-game persistence technique. Severity is conservative because the attacker would need OWNER_ASSOCIATION_* permissions to submit the request in the first place; severity rises under DISABLED.'"
+  - "Source: OwnerServiceImpl.java:90-91 (no check) + V0_0_51__add_owner_association_request.sql:11 (FK no ON DELETE; no deleted_at column) + ReactiveOwnerRepositoryImpl.java:147-149"
+cross_references:
+  - "F-006 family cascade-incompleteness pattern"
+  - "TEST-GAP-622 (Owner directory write-side family)"
+  - "TEST-GAP-627 (race-window between cascade-check and delete — sister surface)"
+proposed_action: |-
+  Add `OwnerDeleteCascadeCompletenessTest` with three test methods: (a) seed Owner + PENDING owner_association_request; DELETE /api/owners/{id}; assert delete succeeds AND the owner_association_request row persists; (b) GET /api/owner_association_request; assert the orphan row is returned with owner_id pointing to soft-deleted space; (c) seed Owner + APPROVED owner_association_request; DELETE /api/owners/{id}; assert same orphan persistence. All pin the current cascade-incomplete behaviour; future fix that extends the cascade-block to owner_association_request will break these tests (deliberately).
+batch: 2026-05-20-P
+feature_id: F-006

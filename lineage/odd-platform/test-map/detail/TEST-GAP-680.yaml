@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-680
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java service service:OwnerServiceImpl"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "OwnerServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[4] (the REFACTOR-425 destructive-empty-roles regression pin)"
+  - "OwnerServiceImpl.md:bugs_limitations_corner_cases.[0] (destructive empty-roles UPDATE — service-tier closure)"
+  - "OwnerServiceImpl.md:security.known_security_gaps.[1] (empty `roles` field silently destroys all role bindings; severity HIGH)"
+behaviour: |-
+  **SERVICE-TIER COMPOSITION TEST: prove the 3-line cascade (line 71 + lines 117-122 + lines 76-81) yields the destructive empty-roles behaviour PRIMARY-SOURCE at the enclosing-class.** TEST-GAP-622 already pins the EXTERNALLY-OBSERVABLE PUT-omits-roles surface at the controller tier; this batch S sidecar's `bugs_limitations_corner_cases[0]` confirms the hazard is composed across THREE distinct source lines in OwnerServiceImpl.java: (a) line 71 (`final List<Long> newRoles = getRoleIdsList(updateEntityForm);`) — the call site; (b) lines 117-122 (`getRoleIdsList` helper) — the null+empty collapse to `List.of()`; (c) lines 76-81 (`deleteOwnerRelationsExcept(ownerId, newRoles).then(createRelations(ownerId, newRoles))`) — the persistence-layer cascade where the empty list lands. A pure-unit test against OwnerServiceImpl (Mockito-style, no SpringBootTest, no controller-tier needed) should INVOKE `update(ownerId, OwnerFormData{name:"X"})` with no roles field set + assert that `ownerToRoleRepository.deleteOwnerRelationsExcept(ownerId, List.of())` is called THEN `createRelations(ownerId, List.of())` is called. The test pins the 3-line composition INDEPENDENTLY of the controller's request-deserialisation behaviour and INDEPENDENTLY of the JSON omission semantics. A maintainer "fixing" the destructive default at any ONE of the three lines (e.g., changing `getRoleIdsList` to throw on null OR adding a guard at line 76 OR adding @Valid on the form) would require this test to be rewritten — making the change deliberate. Distinct from TEST-GAP-622 which is the API-surface regression-pin; this is the service-tier ALGORITHM-pin.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/OwnerServiceImplTest.java"
+  name: "update_omittedAndEmptyRolesField_composesGetRoleIdsListNullCollapseWithDeleteOwnerRelationsExcept_destructiveEmptyRolesCascade"
+evidence:
+  - "OwnerServiceImpl.md says (bugs_limitations_corner_cases.[0]): 'The destructive empty-roles UPDATE lives HERE — service-tier closure of REFACTOR-425. The hazardous semantic is composed across THREE source-file lines: (a) OwnerServiceImpl.java:71 (`final List<Long> newRoles = getRoleIdsList(updateEntityForm);`); (b) lines 117-122 of the same file (`getRoleIdsList`) — the null+empty collapse to `List.of()`; (c) lines 76-81 — the `deleteOwnerRelationsExcept(ownerId, List.of()).then(createRelations(ownerId, List.of()))` cascade which the empty list reaches at the persistence layer. ALL role bindings are stripped. The destructive behaviour is reachable from the UI in three clicks per the OwnersList batch-Q sidecar AND from any API consumer that omits `roles`. This sidecar is the load-bearing service-tier primary source for the highest-priority finding in F-019.'"
+  - "OwnerServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[4]): '`update` with `roles=[]` DESTROYS all role bindings — the REFACTOR-425 destructive UX hazard regression pin (HIGHEST PRIORITY). Seed Owner X with roles [A, B]; PUT with OwnerFormData{name: ''X'', roles: []}; assert (a) the call succeeds with HTTP 200; (b) owner_to_role rows for owner_id=X are gone; (c) NO @ActivityLog event in the activity feed. Pin this as the CURRENT destructive contract (regression pin BEFORE the fix; convert to regression FOR the fix once REFACTOR-425 ships Path A — required `roles` field at OpenAPI).'"
+  - "OwnerServiceImpl.md says (gaps): 'The destructive-empty-roles regression test is the HIGHEST-PRIORITY missing test in the entire ODD platform repository: a `roles=[]` PUT silently strips all role bindings on any Owner, with no audit trail, no UI confirmation, and the API contract treats it as a valid request.'"
+  - "Source: OwnerServiceImpl.java:71, 76-81, 117-122 (the 3-line cascade) + ReactiveOwnerToRoleRepositoryImpl.java:52-56 (the SQL primitive) + REFACTOR-425.md"
+cross_references:
+  - "TEST-GAP-622 (controller-tier API-surface regression-pin — this batch-S entry is the service-tier algorithm-pin counterpart)"
+  - "REFACTOR-425 (the named scope)"
+  - "F-019 (RBAC + Owner-directory destructive UX class)"
+  - "F-006 (RBAC role-rebind set-replacement pattern)"
+  - "ADR-CANDIDATE-144 (role-rebind set-replacement intent — the GOOD design that makes empty-list-as-empty-set technically correct)"
+related_features: [F-006, F-019]
+related_pillar_features: ["P-08:F-NN-owner-directory", "P-09:F-001"]
+proposed_action: |-
+  Add `OwnerServiceImplTest.update_omittedAndEmptyRolesField_composesGetRoleIdsListNullCollapseWithDeleteOwnerRelationsExcept_destructiveEmptyRolesCascade`. (a) Mockito-mock `ownerRepository`, `ownerToRoleRepository`, `searchEntrypointRepository`, `termSearchEntrypointRepository`. (b) Stub `ownerRepository.get(id)` to return a populated OwnerPojo with id=1. (c) Stub `ownerRepository.updateWithoutSync` and the search-vector helpers as `Mono.empty`. (d) Invoke `ownerService.update(1L, new OwnerFormData().name("X"))` — no roles set. (e) `verify(ownerToRoleRepository).deleteOwnerRelationsExcept(1L, List.of())`. (f) `verify(ownerToRoleRepository, never()).createRelations(eq(1L), argThat(list -> !list.isEmpty()))`. (g) Repeat with `OwnerFormData().name("X").roles(List.of())` — assert IDENTICAL verification (both null and empty collapse to the same persistence call). (h) Add a `// REGRESSION-PIN — The 3-line composition (line 71 + lines 117-122 + lines 76-81) is the destructive-empty-roles cascade. A REFACTOR fixing any one line will flip this test, making the fix deliberate.` comment block. Distinct from TEST-GAP-622 because this is unit-level and operates on the service collaboration graph; TEST-GAP-622 is integration-level and operates on HTTP semantics.
+batch: 2026-05-20-S
+feature_id: F-006

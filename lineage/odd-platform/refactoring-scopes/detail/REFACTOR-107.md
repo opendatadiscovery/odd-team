@@ -1,0 +1,9 @@
+- **REFACTOR-107** (NEW 2026-05-12C): No connection-throttling / brute-force protection on LOGIN_FORM — an attacker can submit unlimited login attempts. BCrypt encoding adds ~100ms cost per attempt; this is the only natural rate-limit
+  - **Category**: no-brute-force-defence
+  - **Surfaced by**: `odd-platform__java__LoginFormSecurityConfiguration__config-key-consumer__auth_type@L31.md:performance.known_performance_gaps.[0]` (severity LOW)
+  - **Statement**: `LoginFormSecurityConfiguration.java:53-66` has no rate-limit filter, no lockout. The only rate-limit is BCrypt's encoding cost (~100ms). For a dev/demo mode this is acceptable; for any production-leaking deployment this is exploitable.
+  - **Evidence**: `LoginFormSecurityConfiguration.java:53-66`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-031 (LOGIN_FORM dev/demo) frames LOGIN_FORM as ephemeral; this scope is the brute-force gap.
+  - **Proposed remedy**: Document the absence on the live LOGIN_FORM page as another dev-only-disqualifier. Optional: implement Bucket4j-based per-IP rate-limit if maintainer wants to defend LOGIN_FORM further.
+  - **Severity rationale**: LOW — bounded by dev-only positioning.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

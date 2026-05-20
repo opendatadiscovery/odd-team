@@ -1,0 +1,172 @@
+name: ADR-CANDIDATE-142 + ADR-CANDIDATE-143 — service-tier ENACTMENT vertex (partial-merge UPSERT + namespace inheritance)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-10
+- P-08
+description: |-
+  NEW INVARIANT, batch 2026-05-20S (DataSourceIngestionServiceImpl primary
+  source — the SERVICE-TIER vertex of the 4-LAYER ADR-CANDIDATE-142 + 143
+  triangulation, COMPLETING the controller (batch P) + service (this batch S)
+  + repository (batch R) + SQL/migration end-to-end chain).
+
+  THE TWO ENACTED ADRs:
+
+  ADR-CANDIDATE-142 (partial-merge UPSERT — ONLY `name` + `description` from
+  payload propagate; everything else is preserved from existing row). The
+  SERVICE-TIER ENACTMENT POINT is DataSourceIngestionServiceImpl.java:86-88:
+  `new DataSourcePojo(a).setName(i.getName()).setDescription(i.getDescription())`
+  — a COPY-CONSTRUCT from the existing pojo (`new DataSourcePojo(a)`) followed
+  by EXPLICIT-SETTER on only `name` + `description`. The intent is structurally
+  visible: a maintainer adding a new payload-driven field MUST add
+  `.setXxx(i.getXxx())` here; the repository would faithfully propagate it.
+  The narrowing happens HERE; the repository (batch R primary source —
+  ReactiveDataSourceRepositoryImpl) confirms the SQL-tier would NOT have
+  constrained it.
+
+  ADR-CANDIDATE-143 (namespace inherited from Collector, NOT from payload —
+  collector-tenancy model). The SERVICE-TIER ENACTMENT POINT is
+  DataSourceIngestionServiceImpl.java:99-111 (`mapDataSources`), line 106
+  specifically: `MappingUtils.extractFieldFromNullableObject(c.namespace(),
+  NamespacePojo::getId)`. The mapper takes `namespaceId` as a parameter,
+  NOT a derived value from `ds`; this service explicitly passes the COLLECTOR's
+  namespace_id from `CollectorDto.namespace()`. The DataSource payload's
+  hypothetical `namespace_name` field is NEVER read by this code path —
+  the payload-side namespace info is SILENTLY DROPPED in favor of the
+  Collector's pre-configured namespace_id.
+
+  THE 4-LAYER END-TO-END TRIANGULATION:
+    1. Controller (batch P, IngestionController.createDataSource) — observes
+       the service call but does NOT enforce either ADR; it is a 25-line
+       proxy delegating to the service.
+    2. Service (this batch S, DataSourceIngestionServiceImpl) — the
+       PRIMARY-SOURCE ENACTMENT vertex; lines 74-92 (prepareForUpdate
+       narrows to 2 fields) + lines 99-111 (mapDataSources stamps namespace
+       from Collector). The deliberate structural choice lives HERE.
+    3. Repository (batch R, ReactiveDataSourceRepositoryImpl) — confirms
+       the SQL-tier would propagate ANY column the service supplies; the
+       narrowing happens upstream. Inherits bulkUpdate / bulkCreate from
+       ReactiveAbstractCRUDRepository.
+    4. SQL / migration — `data_source.namespace_id` is the ONLY namespace
+       column on `data_source` (V0_0_11__add_namespace_support.sql:1-2);
+       no `namespace_name` column exists; the SQL layer cannot receive
+       payload-side namespace info even if the service-layer narrowing
+       were removed.
+
+  THE PROTECTIVE INVARIANTS ENFORCED HERE:
+    (a) Cross-collector namespace stealing BLOCKED. A stolen Collector A
+        token cannot register datasources into Collector B's namespace
+        because the mapper hard-codes namespace_id from the matched
+        Collector via line 106.
+    (b) Cross-collector ownership preservation. The COPY-CONSTRUCT at line
+        86 (`new DataSourcePojo(a)`) preserves the EXISTING collector_id
+        (which may differ from the current request's collector); only
+        name + description are overwritten. A stolen Collector A token
+        CANNOT "take over" a datasource originally registered by Collector
+        B by re-POSTing with the same ODDRN.
+
+  THE OPERATOR-FACING TRADE-OFFS:
+    - REFACTOR-422 silent no-propagation of `connection_url` / `type` /
+      `active`: a collector whose source's hostname genuinely changed
+      has NO mechanism to push the new connection_url through this
+      endpoint. Operator must use the UI's PUT /api/datasources/{id}.
+    - REFACTOR-423 silent overwrite of operator UI edits: a collector's
+      next POST overwrites operator-renamed `name` via the partial-merge
+      path. Operator confusion is operationally common.
+    - REFACTOR-424 silent namespace drop: payload `namespace_name` field
+      is silently dropped. Custom-collector authors following the OpenAPI
+      contract are surprised.
+
+  Severity: MEDIUM (the ENACTED ADRs are architecturally defensible — the
+  tenancy model is the protective half — but the operator-facing trade-offs
+  are undocumented at every live doc page; the service-tier file:line
+  evidence makes this the canonical anchor for future doc updates).
+axes_present:
+- services
+- controllers
+- repositories_reactive
+- schema_migrations
+nodes:
+- odd-platform java service service:DataSourceIngestionServiceImpl
+- odd-platform java IngestionController controller-method:createDataSource
+- odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl
+contributors:
+- 'DataSourceIngestionServiceImpl.md (batch S): implicit_adrs.[0] (partial-merge
+  enactment); implicit_adrs.[1] (namespace inheritance enactment);
+  concepts.invariants.[0] (the SHAPE of prepareForUpdate); concepts.invariants.[1]
+  (namespace inheritance — the platform s collector-tenancy model); concepts.invariants.[2]
+  (collector_id inheritance — cross-collector preservation invariant);
+  bugs_limitations_corner_cases.[0-2] (REFACTOR-422/423/424 DIRECT primary
+  sources HERE).'
+- 'IngestionController.createDataSource.md (batch P): controller-tier observer
+  of the service call; surfaced REFACTOR-419 (session-bridge) UPSTREAM; the
+  partial-merge + namespace-inheritance ADRs are observable from the controller s
+  view but not ENACTED there.'
+- 'ReactiveDataSourceRepositoryImpl.md (batch R): repository-tier confirmation
+  that bulkUpdate / bulkCreate would faithfully propagate ANY column the
+  service supplies; the partial-merge narrowing is NOT enforced at the SQL
+  tier; this completes the 4-layer triangulation.'
+evidence:
+- 'DataSourceIngestionServiceImpl.md:implicit_adrs.[0-1] (the two ADR enactments)'
+- 'DataSourceIngestionServiceImpl.md:concepts.invariants.[0-2] (the 3 service-tier
+  invariants composing the partial-merge + namespace + collector_id model)'
+- 'DataSourceIngestionServiceImpl.md:bugs_limitations_corner_cases.[0-2] (the 3
+  operator-facing trade-offs — REFACTOR-422 + 423 + 424 DIRECT primary sources)'
+- 'DataSourceIngestionServiceImpl.java:74-92 (prepareForUpdate — the partial-merge
+  shape) + :99-111 (mapDataSources — namespace inheritance) + :106 (the
+  MappingUtils.extractFieldFromNullableObject call site — the namespace drop)'
+- 'DataSourceIngestionMapperImpl.java:9-19 (the create-path mapper — sets 5
+  fields oddrn/name/description/namespaceId/collectorId; namespace from
+  PARAMETER not from payload)'
+- 'CollectorDto.java:6 (CollectorPojo + NamespacePojo + TokenDto record)'
+- 'V0_0_11__add_namespace_support.sql:1-2 (the schema-tier — namespace_id is
+  the only namespace column on data_source)'
+- batch P IngestionController.createDataSource sidecar (controller-tier observer)
+- batch R ReactiveDataSourceRepositoryImpl sidecar (repository-tier confirmation
+  of the 4-layer triangulation completion)
+- 'ADR-CANDIDATE-142 in <odd-team>/lineage/odd-platform/implicit-adrs/detail/'
+- 'ADR-CANDIDATE-143 in <odd-team>/lineage/odd-platform/implicit-adrs/detail/'
+- 'REFACTOR-422 + REFACTOR-423 + REFACTOR-424 in <odd-team>/lineage/odd-platform/refactoring-scopes/detail/'
+- F-008 (P-10:F-001 Batch Ingestion) feature-flow detail
+notes: |
+  This invariant is the SYNTHESIS of the 4-layer triangulation:
+    - Controller (batch P) observed the service call from the controller s
+      view but did not have the file:line for either ADR; the controller
+      sidecar treated both as implicit ADRs surfaced from the service.
+    - Service (batch S, THIS) ENACTS both ADRs at concrete file:line evidence.
+      Lines 74-92 and 99-111 are the canonical anchor.
+    - Repository (batch R) confirmed the SQL-tier would not have constrained
+      the field set; the narrowing happens at the service tier.
+    - Schema (V0_0_11) — namespace_name column does NOT exist on data_source;
+      the SQL layer is the structural reason payload-side namespace info
+      cannot be persisted.
+
+  The 4-LAYER triangulation gives the maintainer a complete picture of WHERE
+  to apply remediation:
+    - REFACTOR-422 fix (propagate connection_url / type / active) — service
+      tier (lines 74-92 + mapper line set extension); LOW risk.
+    - REFACTOR-423 fix (operator UI overwrite hazard) — service tier
+      (introduce a `last_modified_by` discrimination on name/description
+      mutation; defer to operator on collision); MEDIUM risk because it
+      changes the collector-wins contract.
+    - REFACTOR-424 fix (payload namespace_name silent drop) — service tier
+      OR controller tier (validation: warn the operator that namespace_name
+      is ignored); LOW risk; doc-side cleanup recommended in parallel.
+
+  The ADR-CANDIDATE-142 + 143 pair are POSITIVE case-law — they are
+  architecturally defensible and INTENTIONAL design choices. The drift
+  facets enumerated in F-008 (REFACTOR-422 + 423 + 424) are the operator-
+  facing trade-offs of the enacted ADRs; remediation is at the doc layer
+  (extending the developer-guides/build-and-run/custom-collectors page
+  with a caveat block) AND optionally at the service layer (per the
+  refactor scope recommendations).
+
+  Cross-references:
+    - F-008 (P-10:F-001 Batch Ingestion) feature-flow detail (the master
+      drift-facet enumeration).
+    - ADR-CANDIDATE-142 + 143 (the formal architectural decision records).
+    - REFACTOR-422 + 423 + 424 (the drift facets' refactoring scopes).
+    - Existing entity `s2s-ingestion-pipeline` (the S2S surface this service
+      is part of).
+    - Existing entity `Collector` (the tenancy unit this service binds
+      datasources to).

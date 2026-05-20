@@ -1,0 +1,11 @@
+- **REFACTOR-079** (NEW 2026-05-10B): Plaintext-equality token comparison on the ingestion filter — `String.equals(...)` is not constant-time; timing-based token discovery is theoretically feasible on a local network
+  - **Category**: missing-constant-time
+  - **Surfaced by**:
+    - `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md:bugs_limitations_corner_cases.[2]` (severity MEDIUM)
+    - `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md:security.known_security_gaps.[1]` (severity MEDIUM)
+  - **Statement**: `IngestionDataEntitiesFilter.java:56` compares the inbound token to the in-DB value via `String.equals(...)` — NOT `MessageDigest.isEqual(...)`. For a 40-character alphanumeric token (62^40 ≈ 2.4e71 search space) the practical attack surface is small, but the principle of constant-time secret comparison is violated. The sibling `S2sAuthenticationFilter` has the same issue (`s2sTokenProvider.isValidToken(...)` against a YAML-configured `auth.s2s.token`). NOTE: this scope **strengthens REFACTOR-048** (token plaintext-at-rest) from the verify side — the storage shape (REFACTOR-048) and the comparison shape (REFACTOR-079) compose ADR-CANDIDATE-017's full plaintext-equality model.
+  - **Evidence**: `IngestionDataEntitiesFilter.java:56` (`.equals(...)`)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-017 (token rotation semantics) codifies plaintext-equality as the model; the ADR's rationale ("long-random over TLS") implicitly accepts that timing attacks are not the primary concern. This scope is a defence-in-depth gap within the deliberate model — fixing it does NOT alter the architectural decision.
+  - **Proposed remedy**: Replace `.equals(...)` with `MessageDigest.isEqual(a.getBytes(StandardCharsets.UTF_8), b.getBytes(StandardCharsets.UTF_8))` in BOTH `IngestionDataEntitiesFilter.java:56` AND `S2sTokenProvider.isValidToken`. Add a unit test asserting constant-time semantics under adversarial input. No ADR change required.
+  - **Severity rationale**: MEDIUM — defence-in-depth gap on the credential-comparison surface.
+  - **Suggested backlog grouping**: `Token rotation hardening` + `Ingestion-endpoint auth hardening`

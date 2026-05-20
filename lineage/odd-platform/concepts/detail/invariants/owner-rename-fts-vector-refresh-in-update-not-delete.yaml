@@ -1,0 +1,118 @@
+name: FTS vector refreshed on owner-update but NOT on owner-delete
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+  - P-01
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20-P** —
+  PRIMARY-SOURCE confirmed at `OwnerServiceImpl.java:69-85` (update)
+  vs `:87-100` (delete). The update path refreshes BOTH FTS search
+  entrypoints inside the transaction; the delete path does NOT.
+  After successful owner-delete, the FTS index continues to surface
+  the deleted owner's name in catalog searches until another event
+  refreshes the affected entities' vectors.
+
+  **The mechanism**:
+
+    - `OwnerServiceImpl.update` (lines 69-85) calls
+      `updateSearchVectors(owner)` at line 82 →
+      `updateSearchVectors` private method (lines 109-114) does
+      `Mono.zip(searchEntrypointRepository.updateChangedOwnerVectors(id),
+      termSearchEntrypointRepository.updateChangedOwnerVectors(id))`.
+      BOTH vectors refresh, in parallel, awaited inside the
+      `@ReactiveTransactional` boundary.
+
+    - `OwnerServiceImpl.delete` (lines 87-100) has NO
+      `updateSearchVectors` call. The transactional pipeline ends
+      with `ownerRepository.delete(id)` (the soft-delete UPDATE).
+      The two `search_entrypoint` tables retain the deleted owner's
+      name in their text-search vectors.
+
+  **The operator-impacting consequence**: searching the catalog
+  for the deleted owner's name continues to match against entities
+  the owner bore. The orange-clock-stale indicator doesn't fire
+  (the entities were not modified); the data-entity detail page
+  still shows the deleted owner's name in the Owners section (UNLESS
+  the page-render's ownership query filters `OWNER.deleted_at IS
+  NULL` — which varies per query; the rendered surface depends on
+  the specific query path).
+
+  **The drift between update and delete**:
+
+    - **Update** ensures READ-AFTER-WRITE consistency on the FTS
+      surface. An UPDATE that completes guarantees searches by the
+      new name return the renamed owner immediately. The trade-off
+      is the response-latency cost of doing the vector refresh
+      synchronously.
+
+    - **Delete** does NOT. The trade-off is the response-latency
+      cost would be the same — but the implementation skips the
+      step. Whether this is an OVERSIGHT or an intentional
+      decision is unclear; no comment defends the absence; no
+      test pins either side.
+
+  **Mirror of F-006 batch-K `delete_search_vector_not_refreshed`
+  facet** (originally surfaced on `OwnershipServiceImpl.delete`).
+  Same shape: the platform's three-table soft-delete posture
+  (OWNER + USER_OWNER_MAPPING are soft-delete; OWNERSHIP +
+  TERM_OWNERSHIP are hard-delete; OWNER_TO_ROLE is hard-delete)
+  is paired with FTS vector materialisation that the update paths
+  invalidate-and-refresh but the delete paths LEAVE STALE.
+
+  **The cleanup path** (one-line fix):
+
+  Extend `OwnerServiceImpl.delete` (around line 99) with:
+    ```
+    .then(updateSearchVectors(deletedOwnerPojo))
+    .then();
+    ```
+    where `deletedOwnerPojo` is the soft-deleted owner row
+    (resolved from the `Mono<OwnerPojo>` chain). The
+    `updateChangedOwnerVectors(id)` calls already handle the
+    deleted state (they look up `search_entrypoint` rows
+    referencing the owner_id and recompute their vectors based on
+    the current OWNER state — which post-soft-delete shows the
+    owner as deleted).
+
+  **Severity**: MEDIUM — operationally visible only via stale
+  catalog search results; not a security gap, not actively
+  misleading; UX inconsistency between update and delete. The
+  severity rises in deployments where owner names are sensitive
+  (the stale FTS vector continues to match against the deleted
+  name).
+axes_present:
+  - controllers
+  - services
+nodes:
+  - odd-platform java OwnerController controller-method:deleteOwner
+  - odd-platform java OwnerController controller-method:updateOwner
+contributors:
+  - 'deleteOwner.md:bugs_limitations_corner_cases.[2] (FTS search vector NOT refreshed on owner delete — update calls updateSearchVectors; delete does NOT; severity MEDIUM)'
+  - 'updateOwner.md:concepts.invariants.[6] (Search vectors refresh AFTER role update, AFTER name update — within the same transaction; primary source of the working pattern)'
+  - 'updateOwner.md:implicit_adrs.[3] (Search-vector refresh is INSIDE the update transaction, not deferred to a background job)'
+evidence:
+  - deleteOwner.md:bugs_limitations_corner_cases.[2] (PRIMARY SOURCE — OwnerServiceImpl.java:69, 82 update DOES refresh; :89-100 delete does NOT; F-006 batch K facet cross-link)
+  - updateOwner.md:concepts.invariants.[6] (update path's positive case — same source file, contrasting behaviour)
+  - updateOwner.md:implicit_adrs.[3] (update's design choice — refresh inside transaction; trade-off named)
+  - F-006 batch K observed_vs_expected.facet `delete_search_vector_not_refreshed` (existing cross-batch pattern)
+notes: |-
+  Pairs with:
+
+    - `owner-soft-delete-asymmetry-list-hides-by-id-surfaces`
+      invariant (new in this batch) — describes the by-id read
+      surface that ALSO surfaces stale post-delete data. The two
+      compound: list / by-id / FTS are THREE different
+      post-delete-visibility behaviours.
+
+    - `delete-owner-with-cascade-block` operation (new in this batch)
+      — the operation whose missing search-vector refresh produces
+      this stale-FTS class.
+
+  Doc-side recommended action: extend the live `/owners` page with
+  a "Search index after delete" note: "After deletion, the
+  full-text-search index may continue to surface the deleted
+  owner's name in catalog searches until the affected entities
+  are independently modified. To force a refresh, edit any data
+  entity the owner bore." Backlog: DOC-NNN follow-up + CODE-NNN
+  for the one-line fix.

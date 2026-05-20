@@ -1,0 +1,8 @@
+- **REFACTOR-037**: Reopen-conflict guard on `changeAlertStatus` is read-then-write without serialisable fence — two concurrent OPEN requests for sibling alerts on same entity can both pass the guard
+  - **Category**: race-condition
+  - **Surfaced by**: `concepts.yaml:entities[Alert].security_aggregate.weaknesses.[2]`
+  - **Statement**: `AlertServiceImpl.updateStatus` checks "no open alert of same type for this entity exists" then writes. Concurrent requests can both pass the check before either writes. No `SELECT ... FOR UPDATE`, no advisory lock, no transactional fence.
+  - **Evidence**: `AlertServiceImpl.java:124-131`
+  - **Proposed remedy**: Either (a) `@Transactional(isolation = SERIALIZABLE)` on `updateStatus`, or (b) add a UNIQUE INDEX on `(data_entity_id, type, status='OPEN')` and rely on the DB to reject duplicate OPENs.
+  - **Severity rationale**: MEDIUM — duplicate OPEN alerts under concurrency.
+  - **Suggested backlog grouping**: `Alert reliability cleanup`

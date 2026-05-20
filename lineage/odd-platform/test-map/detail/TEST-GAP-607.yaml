@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-607
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java auth logout:AzureLogoutSuccessHandler"
+  - "odd-platform java auth logout:CognitoLogoutSuccessHandler"
+pillars_affected: [P-09]
+surfaced_by:
+  - "AzureLogoutSuccessHandler.md:performance.known_performance_gaps.[0] (Multi-replica orphan WebSessions)"
+  - "AzureLogoutSuccessHandler.md:performance.scaling_characteristics"
+behaviour: |-
+  **Multi-replica deployments without shared session store leave orphaned WebSessions on non-logout-handling pods.** The default Spring WebSession store is in-memory (no `@EnableSpringWebSession` bean, no Redis/Hazelcast wired per `OAuthSecurityConfiguration.java:1-269` ABSENCE). For multi-replica deployments without sticky sessions, the WebSession lives only on the pod that handled the original OAuth2 callback. If the logout request lands on a DIFFERENT pod (sticky-session misconfiguration), `exchange.getExchange().getSession()` resolves an empty session, `WebSession::invalidate` is a no-op on the empty session, AND the user appears logged out on the original pod but their session persists silently on others until natural TTL. A user clicks logout on pod A, the session on pod A is invalidated, but pods B and C still hold the session attribute map if the user's load balancer routing differed earlier in the session. Affects all 5 OIDC logout handlers identically.
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/logout/MultiReplicaSessionStoreOrphanTest.java"
+  name: "azureLogout_secondPodHoldsSession_pod1Invalidates_pod2StillHasSession_pinsNoSharedStore"
+evidence:
+  - "AzureLogoutSuccessHandler.md says (performance.known_performance_gaps.[0]): 'Multi-replica deployments without shared session store leave orphaned WebSessions on non-logout-handling pods. Same root cause as the OAuthSecurityConfiguration sidecar known_performance_gaps[0] (no @EnableSpringWebSession / Redis session store wired).' severity: MEDIUM"
+  - "AzureLogoutSuccessHandler.java:47 + OAuthSecurityConfiguration.java:1-269 (no session store bean)"
+cross_references:
+  - "F-011"
+  - "P-09:F-001"
+  - "REFACTOR-NNN candidate: add Spring Session Redis backend"
+  - "OAuthSecurityConfiguration sidecar known_performance_gaps.[0] — STRENGTHENED"
+proposed_action: |-
+  Integration test simulating multi-pod deployment. (a) Boot TWO application contexts (or two app instances under test). (b) Authenticate via Azure OAuth on context A; capture the session-id cookie. (c) Issue an authenticated request to context A — succeeds. (d) Issue an authenticated request to context B with the SAME session-id — FAILS (the session doesn't exist on context B). (e) Invoke logout on context A — only context A's session is cleared. (f) The orphan-on-non-logout-pod behaviour is the architectural finding. Pin until shared-session-store landed.
+batch: 2026-05-19-O
+feature_id: F-011

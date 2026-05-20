@@ -1,0 +1,11 @@
+- **REFACTOR-027**: LSN-002 reactivation — REMOTE on AWS S3 silently restricted to `us-east-1` (MinIO SDK `MinioAsyncClient.builder()` omits `.region(...)`)
+  - **Category**: buggy-default
+  - **Surfaced by**:
+    - `odd-platform__yaml__application_yml__config-prefix__attachment.md:bugs_limitations_corner_cases.[1]` (severity HIGH)
+    - `concepts.yaml:entities[Attachment].performance_aggregate.weaknesses.[2]` (severity HIGH)
+  - **Statement**: `MinioConfig.minioClient()` constructs `MinioAsyncClient.builder()` with `.endpoint()` + `.credentials()` only, never `.region(...)`. The MinIO SDK defaults the region to `us-east-1` for SigV4 signing; AWS S3 buckets in any other region reject the request with `AuthorizationHeaderMalformed` or `PermanentRedirect`. Self-hosted MinIO is unaffected because it ignores the region header.
+  - **Evidence**: `MinioConfig.java:19-25` (no `.region(...)` call) + `retrospectives/LSN-002-minio-region-unset.md`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-013 (REMOTE = MinIO SDK only) is the architectural decision; this scope is the canonical retrospective for "what breaks when you assume MinIO-SDK semantics on AWS S3."
+  - **Proposed remedy**: Add `attachment.remote.region: ""` to `application.yml`; in `MinioConfig.minioClient()`, call `.region(...)` when non-empty. Document on the live `configuration-and-deployment/odd-platform` page as a required field for AWS deployments.
+  - **Severity rationale**: HIGH — silent us-east-1 lock-in for AWS-deploying operators.
+  - **Suggested backlog grouping**: `Attachment integrity sprint` (priority 2)

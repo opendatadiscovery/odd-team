@@ -1,0 +1,73 @@
+name: Redux Fan-Out — Three Slices Mutated on Detail Fulfilled
+canonical_in_docs: false
+canonical_candidate: false
+pillar_affinity:
+- P-01
+description: |-
+  **NEW INVARIANT, batch 2026-05-19J**. The `fetchDataEntityDetails` thunk's
+  `fulfilled` action triggers SIMULTANEOUS extraReducers in THREE Redux slices:
+  (a) `dataentities.slice.ts:97-99` — `byId[payload.id]` populated with the full
+  `DataEntityDetails` payload minus metadata + ownership (those fields stripped
+  by `updateDataEntity` at lines 20-67); (b) `metadata.slice.ts:18-22` —
+  `metadataFieldValues` extracted into the metadata-by-entity index;
+  (c) `owners.slice.ts:52-54` — `ownership` extracted into the owners-by-entity
+  index. **All three reducers consume the SAME `{ payload }` and partition it by
+  field**. **The author rejected a "nested entity record" shape in favour of
+  side-by-side normalised slices** — visible in the verbatim comment at
+  `dataentities.slice.ts:55`: `// Metadata and Ownership are being stored in
+  MetadataState and OwnersState`. **The fan-out is synchronous at fulfilled-time**:
+  three slices update in the same Redux action dispatch tick; no async/debounced
+  reducer composition. **Consequence for component rendering**: every component
+  subscribing to any of the three slices (Header reads owners, Tabs read metadata,
+  child route components read dataentities) re-renders on the same action — the
+  detail-page repaint is atomic relative to the response landing. **Fragility**:
+  a backend field-name change on `DataEntityDetails` (e.g. renaming `ownership`
+  to `owners`) could silently break the metadata-slice or owners-slice extraReducer
+  WITHOUT breaking compilation if the field becomes optional in the OpenAPI-generated
+  type. A future contributor authoring a new slice that ALSO consumes
+  `fetchDataEntityDetails.fulfilled` would not need to coordinate with the existing
+  three — extraReducers are additive — but the field-partition discipline relies
+  on convention, not type-level enforcement.
+contributing_files:
+- fetchDataEntityDetails.md
+- DataEntityDetails.md
+triangulation_count: 2
+cross_batch: false
+severity: LOW
+severity_dim: code-quality
+evidence:
+- 'fetchDataEntityDetails.md:concepts.operations[on success: write fulfilled to
+  loader-slice + run three extraReducers that splice the payload into three
+  different slices]'
+- 'fetchDataEntityDetails.md:concepts.invariants[the resolved payload fans into
+  THREE slices simultaneously via three independent extraReducers (dataentities/metadata/owners)
+  — they all consume the same { payload } and partition it by field]'
+- 'fetchDataEntityDetails.md:implicit_adrs.[2] The fulfilled action''s payload is
+  intentionally fanned across three slices rather than nested into a single
+  dataentities-slice shape. The author rejected a "nested entity record" shape in
+  favour of side-by-side normalised slices (dataentities + metadata + owners),
+  each with its own extraReducer registering on the same fetchDataEntityDetails.fulfilled
+  action — visible in dataentities.slice.ts:97, metadata.slice.ts:18, owners.slice.ts:52.
+  The COMMENT in dataentities.slice.ts:55 makes the intent explicit'
+- 'DataEntityDetails.md:downstream_side_effects[dataentities.slice.ts:97-99 byId[id]
+  populated with the full DataEntityDetails payload (every field of the 34-field
+  response); owners.slice.ts:53 owner records extracted from the response and
+  merged into the owners slice; metadata.slice.ts:18 metadata field values merged
+  into the metadata slice]'
+mitigations_unimplemented:
+- 'Add a TypeScript test that asserts the field-partition convention — a
+  field that lives in the response payload MUST be claimed by exactly one of the
+  three slices'
+- 'Document the convention at a top-level Redux store README — future
+  contributors adding a fourth slice should understand the partition discipline'
+notes: |-
+  New invariant captured in batch 2026-05-19J. The three-slice fan-out is a
+  conscious normalisation choice — it lets components subscribe to the minimum
+  slice they need without over-rendering. The trade-off is convention-based
+  type safety: the OpenAPI-generated type owns the shape, the slice extraReducers
+  own the partition, and the convention lives only in the verbatim comment at
+  dataentities.slice.ts:55.
+
+  This is well-understood; the gap is just the absence of a type-level partition
+  test. Low priority but worth a 1-day cleanup when the maintainer touches the
+  detail-page state model.

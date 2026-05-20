@@ -1,0 +1,220 @@
+name: Attachment
+canonical_in_docs: false
+canonical_candidate: true
+description: Per-data-entity attachments — uploaded files (chunked multipart upload)
+  and external links — accessible under `/api/dataentities/{data_entity_id}/{attachments|files|links}*`.
+  Files use a 3-step state machine (initiate → upload-part(s) → complete) keyed by
+  a server-issued `uploadId` UUID. Storage backend is operator-configurable (LOCAL
+  filesystem default vs REMOTE S3-compatible); however chunk staging path `/tmp/odd/chunks`
+  is hardcoded and storage-mode-independent (DataEntityAttachmentController + AttachmentServiceImpl
+  + uploadFileChunk + attachment config-prefix sidecars).
+axes_present:
+- controllers
+- config_prefixes
+nodes:
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController
+- odd-platform java AttachmentServiceImpl config-key-consumer:attachment.max-file-size@L27
+- odd-platform yaml application.yml config-prefix:attachment
+- odd-platform java DataEntityAttachmentController controller-method:uploadFileChunk
+contributors:
+- 'DataEntityAttachmentController: entities[DataEntityAttachments, DataEntityFile,
+  DataEntityLink, DataEntityUpload, uploadId]'
+- 'AttachmentServiceImpl@L27: entities[DataEntityUploadOptions, DataEntityFile, attachment
+  upload session]'
+- 'attachment config-prefix: entities[attachment storage backend, S3-compatible bucket,
+  local filesystem path, attachment upload session, attachment file size cap]'
+- 'uploadFileChunk: entities[uploadId, index, Part, dataEntityId]; operations[parse-chunk-index,
+  delegate-chunk-upload, lift-to-200-ok]; invariants[uploadId is authoritative session
+  key, dataEntityId cosmetic at chunk-upload]'
+evidence:
+- DataEntityAttachmentController.md:concepts.entities.[DataEntityAttachments]
+- AttachmentServiceImpl@L27.md:concepts.entities.[DataEntityUploadOptions]
+- attachment-config-prefix.md:concepts.entities.[attachment storage backend, S3-compatible
+  bucket]
+- uploadFileChunk.md:concepts.invariants.[0] (uploadId authoritative; dataEntityId
+  cosmetic)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: POST/PUT/DELETE on `/files/**` and `/links/**` gated by DATA_ENTITY_ATTACHMENT_MANAGE
+      (SecurityConstants.java:247-276); GET endpoints (`getAttachments`, `getUploadOptions`,
+      `downloadFile`) carry NO permission gate — only authentication required. Six
+      gates on writes, zero gates on reads. Chunk-upload path matches `POST /api/dataentities/{data_entity_id}/files/**`
+      glob and IS gated — but the gate evaluates against URL's data_entity_id while
+      the file row resolves by uploadId, enabling cross-entity hijack (uploadFileChunk.md:security.known_security_gaps.[0]).
+  owner_scoping:
+    verdict: BYPASSES
+    detail: Read endpoints return data without owner filtering. `getAttachments` and
+      `downloadFile` accept dataEntityId only, no caller-identity, no ownership filter.
+      Combined with the missing-GET-gate, any authenticated user can read every data
+      entity's attachments and download every file. Whether this is intentional read-availability
+      or a missed gate is unresolved. Chunk-upload write path is N/A (no data returned),
+      but the cross-entity hijack is owner-scoping-adjacent — gate context entity
+      (path) and mutated entity (uploadId) diverge.
+  strengths:
+  - DATA_ENTITY_ATTACHMENT_MANAGE permission centralised in SECURITY_RULES with DATA_ENTITY
+    policy context (per-entity policy evaluation)
+  - Live doc page acknowledges DATA_ENTITY_ATTACHMENT_MANAGE in `#rbac` section (operators
+    can find the gate)
+  - Chunked-upload state machine requires the uploadId's FilePojo to be in PROCESSING
+    state (FileServiceImpl.java:93-102) — guards against late chunk arrivals after
+    completion
+  weaknesses:
+  - Read-path authorization asymmetry — GET endpoints unprotected (severity HIGH per
+    controller sidecar). Live doc names DATA_ENTITY_ATTACHMENT_MANAGE but is silent
+    on read-side posture
+  - Server-side attachment.max-file-size cap is advertised via getUploadOptions but
+    NOT enforced on the chunked upload path — non-browser caller can submit arbitrary-size
+    chunks (severity HIGH per consumer + controller + uploadFileChunk sidecars; tracked
+    as REFACTOR-013 HIGH)
+  - 'S3 credentials (attachment.remote.access-key, attachment.remote.secret-key) exposed
+    via /actuator/env by default (Spring Boot Actuator''s standard exposure list with
+    endpoint.env.enabled: true) — Spring''s default key-pattern sanitisation masks
+    values but the keys themselves leak (severity HIGH per config-prefix sidecar)'
+  - 'Cross-entity uploadId hijack: a user with DATA_ENTITY_ATTACHMENT_MANAGE on entity
+    X who learns another user''s uploadId Y issued for entity Z can post chunks via
+    `POST /api/dataentities/X/files/uploads/Y/chunks` — gate authorises path''s data
+    entity, service forwards to uploadId''s data entity. Confirmed at method level
+    (uploadFileChunk.md:security.known_security_gaps.[0] MEDIUM)'
+  - 'Same-`index` race: client retries chunk index=3 while prior attempt still flushing
+    — `transferTo` is last-writer-wins; assembled file may silently include partial
+    bytes from the prior attempt (uploadFileChunk.md:bugs_limitations_corner_cases.[4]
+    MEDIUM)'
+  - No audit logging on attachment download (severity MEDIUM); no audit logging on
+    chunk acceptance either — cross-entity hijack leaves no application-side trace
+    (uploadFileChunk.md:security.known_security_gaps.[2] MEDIUM)
+  - No virus / malware scanning on upload — storage backends are passive byte sinks;
+    live doc advertises 'no restriction on file type' (severity MEDIUM)
+  - Content-Disposition filename injection on download — `filename=" + dto.fileName()`
+    unsanitised (severity MEDIUM)
+  - No rate limit / per-uploadId concurrency cap — thousands of in-flight chunks against
+    one uploadId amplify the disk-DOS surface against /tmp/odd/chunks (uploadFileChunk.md:bugs_limitations_corner_cases.[5]
+    MEDIUM)
+  cross_file_inconsistencies:
+  - Server-side enforcement bypass surfaces in THREE sidecars (controller + AttachmentServiceImpl@L27
+    consumer + uploadFileChunk method) — same root cause documented at three layers;
+    cross-ref strengthens the systemic-finding signal
+  - Live doc danger box on LOCAL ephemerality (LSN-001) is consistent across config-prefix
+    and controller sidecars; YAML default still ships `/tmp/odd/attachments`; uploadFileChunk
+    reveals chunk path /tmp/odd/chunks is ALSO ephemeral AND storage-mode-independent
+    — operator following defaults vs operator following docs diverge
+  contributing_files:
+  - DataEntityAttachmentController.md
+  - AttachmentServiceImpl@L27.md
+  - attachment-config-prefix.md
+  - uploadFileChunk.md
+  evidence:
+  - DataEntityAttachmentController.md:security.known_security_gaps.[0-5]
+  - AttachmentServiceImpl@L27.md:security.known_security_gaps.[0] (server-side bypass
+    HIGH)
+  - attachment-config-prefix.md:security.known_security_gaps.[0] (S3 creds via /actuator/env
+    HIGH)
+  - uploadFileChunk.md:security.known_security_gaps.[0-3] (hijack, no virus scan,
+    no audit log, no size enforcement)
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - downloadFile — every UI download click streams Resource via reactive pipeline;
+    LOCAL → page-cache, REMOTE → one S3 GetObject per request — DataEntityAttachmentController
+  - uploadFileChunk — once per chunk per upload (N invocations for N-MB file at default
+    chunk size); each call dispatches Integer.parseInt(index), checkProcessingUploadById
+    DB SELECT, then FilePart.transferTo filesystem write (uploadFileChunk.md:performance.hot_paths.[0])
+  - getAttachments — every entity-detail page load (Attachments tab); two parallel
+    DB reads via Mono.zip — DataEntityAttachmentController
+  - getUploadOptions — every upload-dialog open; multiplies maxFileSize × 1_000_000
+    inline — AttachmentServiceImpl@L27
+  throughput_shape:
+    verdict: STREAMING
+    detail: Chunked upload supports multi-part transfers but no single-request multi-chunk
+      batch endpoint. Single-file download per request — no Range request support.
+      Bulk-create on links via DataEntityLinkListFormData (single-request multi-link
+      create); updates and deletes are single-item per request. Each chunk POST carries
+      TLS + HTTP-framing overhead per chunk.
+  scaling_shape:
+    verdict: STATEFUL_LOCKED
+    detail: Chunked-upload session state lives in storage backend keyed by uploadId.
+      For LOCAL storage the finalised file path is per-instance filesystem — chunks
+      staged on instance A cannot be completed by instance B without a shared volume.
+      Chunk staging path /tmp/odd/chunks is hardcoded in FileUtils.CHUNK_BASE_PATH
+      (FileUtils.java:24) and is storage-mode-independent — applies to BOTH attachment.storage=LOCAL
+      AND REMOTE. The class-level sidecar identified the LOCAL multi-instance risk;
+      the method-level uploadFileChunk sidecar reveals it's universal.
+  strengths:
+  - Chunk persistence streams via FilePart.transferTo(Path) — chunk-bounded memory;
+    aggregate memory pressure scales with concurrent in-flight chunks, NOT total upload
+    size
+  - Stateless controller (only injected service collaborator) — horizontal scaling
+    unconstrained at controller layer
+  - Reactive Mono/Flux — non-blocking on server I/O thread
+  weaknesses:
+  - LSN-001 — LOCAL default writes to ephemeral `/tmp/odd/attachments`; container/pod
+    restart wipes all uploaded files. YAML still ships this default despite live doc
+    danger box (severity HIGH)
+  - 'Multi-instance LOCAL storage broken: chunk staging directory keyed by uploadId
+    only, no replica id; cross-replica chunk assembly is undefined. uploadFileChunk
+    method-level finding extends scope: this applies to REMOTE storage too because
+    the chunk staging path is upstream of the storage-backend dispatch (severity HIGH;
+    uploadFileChunk.md:performance.known_performance_gaps.[0])'
+  - LSN-002 — REMOTE on AWS S3 silently restricted to us-east-1 (MinioConfig.minioClient()
+    omits .region(...); MinIO SDK defaults to us-east-1 for SigV4) (severity HIGH)
+  - MinIO SDK HTTP-client timeouts (~5min) not configurable — slow networks combined
+    with large attachment.max-file-size produce unrecoverable socket timeouts
+  - Per-chunk DB round-trip via checkProcessingUploadById gating each chunk write
+    — for a 200-MB upload split into 200 × 1-MB chunks that's 200 DB SELECTs against
+    `file` table (uploadFileChunk.md:performance.known_performance_gaps.[1] LOW)
+  - 'No client-side resume protocol: downloadFile does not honour Range requests;
+    flaky-connection user must restart from byte 0 on each retry. Chunk endpoint accepts
+    (uploadId, index) but does not advertise which chunks the server has already accepted
+    — recovering client must re-upload all or query out-of-band (uploadFileChunk.md:performance.known_performance_gaps.[2]
+    LOW)'
+  - REMOTE bucket not auto-created and not auto-validated for existence at boot —
+    typos boot cleanly, fail on first upload
+  - No pagination on getAttachments — Mono.zip materialises both file list and link
+    list fully in memory before serialisation (memory spike per request; combined
+    with no API pagination, this is DoS-against-platform)
+  - Reflection-based ODDRN-property extraction in Directory unmemoised; affects per-data-source
+    attachment property listing
+  cross_file_inconsistencies:
+  - controller sidecar reports REMOTE-backend HTTP client pooling unconfirmed pending
+    MinioConfig sidecar; config-prefix sidecar confirms a single shared MinioAsyncClient
+    bean (no custom OkHttpClient pooling) — cross-file complement, not contradiction
+  - Storage-tier × file-size interaction surfaces in all four sidecars (LOCAL ephemeral
+    × 20MB cap × N concurrent uploads = LSN-001 risk surface)
+  - uploadFileChunk method-level sidecar promotes the LOCAL-only multi-instance finding
+    to a storage-mode-independent one — the chunk path was assumed config-driven,
+    the method-level evidence (FileUtils.CHUNK_BASE_PATH constant) shows it's hardcoded
+  contributing_files:
+  - DataEntityAttachmentController.md
+  - AttachmentServiceImpl@L27.md
+  - attachment-config-prefix.md
+  - uploadFileChunk.md
+  evidence:
+  - DataEntityAttachmentController.md:performance.known_performance_gaps.[0-4]
+  - AttachmentServiceImpl@L27.md:performance.known_performance_gaps.[0-2]
+  - attachment-config-prefix.md:performance.known_performance_gaps.[0-2]
+  - uploadFileChunk.md:performance.known_performance_gaps.[0-2]
+notes: '"Attachment" is not in main-concepts.md as a canonical term but is a
+
+  first-class platform feature with its own live doc page
+
+  (`features/data-discovery/attachments`), per-entity REST surface,
+
+  RBAC permission (DATA_ENTITY_ATTACHMENT_MANAGE), config-prefix
+
+  (`attachment.*`), and two retrospectives (LSN-001, LSN-002).
+
+  Surface as a canonicalisation candidate. Method-level uploadFileChunk
+
+  sidecar adds the chunk-staging path universality finding (REMOTE
+
+  storage also affected by multi-instance breakage) and the
+
+  cross-entity hijack vulnerability shape.
+
+  '

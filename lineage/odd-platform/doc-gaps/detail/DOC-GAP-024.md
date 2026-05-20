@@ -1,0 +1,7 @@
+- **DOC-GAP-024**: OpenAPI tag `alert` has no `description:` field and no `externalDocs.url`
+  - **Category**: drift
+  - **Surfaced by**: `openapi-tag-alert.md:doc_drift_findings.[0,2]`.
+  - **Evidence**: spec's `alert` tag declaration is `name: alert` only (openapi.yaml:30).
+  - **Proposed doc action**: Add `description:` + `externalDocs:` to the `alert` tag in `odd-platform-specification/openapi.yaml`; mirror for `dataEntity` and `activity` tags. Upstream spec change.
+  - **Cross-references**: DOC-GAP-029.
+  - **Severity rationale**: LOW.

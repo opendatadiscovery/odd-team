@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-345
+category: missing-security
+criticality: CRITICAL
+node_ids:
+- odd-platform java repository_reactive repository:ReactivePolicyRepositoryImpl
+- odd-platform java service service:PolicyServiceImpl
+surfaced_by:
+- ReactivePolicyRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[2]
+- ReactivePolicyRepositoryImpl.md:bugs_limitations_corner_cases.[0]
+- ReactivePolicyRepositoryImpl.md:security.known_security_gaps.[0]
+- PolicyServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[17]
+- PolicyServiceImpl.md:bugs_limitations_corner_cases.[5]
+- PolicyServiceImpl.md:security.known_security_gaps.[0]
+behaviour: '**SOFT-DELETE-ORPHAN-BINDING SECURITY GAP.** getRolesPolicies does NOT
+  filter by `deleted_at IS NULL` — soft-deleted policies still attached to a role
+  appear in the result. A soft-deleted policy retains its statements; transitively,
+  a soft-deleted MANAGEMENT/ALL policy bound to a user''s role continues to grant
+  ALL Management permissions. The PolicyServiceImpl.delete defence at lines 89-92
+  prevents this in normal flows by refusing to soft-delete a bound policy, BUT (a)
+  any direct DB UPDATE setting deleted_at on a bound policy creates the orphan-binding
+  security gap; (b) any future refactor weakening the service-layer check re-opens
+  the gap. STRENGTHENED batch I — the PolicyServiceImpl sidecar primary-source confirms
+  the SERVICE-TIER race condition: the cascade-delete check (line 89) and the soft-delete
+  (line 93) are SEPARATE R2DBC calls OUTSIDE any transaction. A concurrent role-binding
+  mutation can land between them, creating the orphan-binding state EVEN WITHOUT
+  direct-DB intervention. TEST-GAP-403 (NEW) is the service-tier race-window pin paired
+  with this repository-tier gap. The service-layer also does NOT filter the repository''s
+  output (PolicyServiceImpl.getCurrentUserPolicies just returns what getRolesPolicies
+  emits — no second-layer compensation).'
+test_files_existing: []
+test_files_proposed:
+  path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactivePolicyRepositorySoftDeleteOrphanBindingTest.java
+  name: getRolesPolicies_softDeletedPolicyWithSurvivingRoleBinding_stillReturned
+evidence:
+- 'ReactivePolicyRepositoryImpl.md says: ''Pin the current (potentially-buggy) behaviour'''
+- 'PolicyServiceImpl.md says: ''returns SOFT-DELETED policies that still have surviving
+  role bindings — pin the batch-H repository-level finding at the service-level surface
+  (the service does NOT filter the repository''s output)'''
+- 'PolicyServiceImpl.md says: ''The defence at lines 89-92 closes the gap in the SEQUENTIAL
+  operator case but NOT in the concurrent-mutation case'''
+- 'Source: ReactivePolicyRepositoryImpl.java:32-35 (the JOIN with no deleted_at filter)
+  + V0_0_55__add_policies_and_roles.sql:44-53 (no FK cascade) + PolicyServiceImpl.java:89-92
+  (service-layer defence) + PolicyServiceImpl.java:83-95 (multi-call delete flow under
+  no transaction)'
+cross_references:
+- concepts.yaml:invariants[no-audit-log-on-rbac-mutations]
+- TEST-GAP-231 (Administrator policy soft-delete bypass — sister gap)
+- TEST-GAP-403 (NEW batch I — service-tier race window that CREATES the orphan-binding
+  state)
+- TEST-GAP-407 (NEW batch I — service does not compensate for the repository gap)
+- REFACTOR-230 (orphan-binding cascade-check race)
+proposed_action: Seed Administrator-equivalent policy → role binding; direct UPDATE
+  setting policy.deleted_at = NOW(); call getRolesPolicies(roleId); assert the soft-deleted
+  policy IS returned (pins current buggy behaviour). Future fix MUST add AND deleted_at
+  IS NULL to the JOIN. Also pair with TEST-GAP-403 service-tier race-window pin.
+batch: 2026-05-19-I-STRENGTHENED
+feature_id: null

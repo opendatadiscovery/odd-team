@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-687
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:PolicyServiceImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "PolicyServiceImpl.md:security.known_security_gaps.[4] (Read-side endpoints are NOT in SECURITY_RULES — any authenticated user can read every policy)"
+  - "PolicyServiceImpl.md:upstream_callers.PolicyController.java:30 (no SECURITY_RULES entry for getPolicyDetails)"
+behaviour: |-
+  **`PolicyServiceImpl.getPolicyDetails(id)` returns FULL policy JSON for ANY authenticated user — no role-based scoping, no permission gate.** `PolicyController.java:30` (`policyService.getPolicyDetails(policyId)`) handles `GET /api/policies/{policy_id}` with NO `SecurityRule` entry — falls through to the catch-all `pathMatchers("/**").authenticated()`. The list endpoint at `PolicyServiceImpl.list` (lines 52-60) DOES branch by role (admin gets paged repository result; non-admin gets in-memory filter of own-role-attached policies) — but `getPolicyDetails` does NOT apply any role-based filter. A non-admin user with a valid policy id can fetch ANY policy's full JSON statements, learning which permissions are bundled into which role. This is a CONFIDENTIALITY ISSUE: privileged Management/All policies are enumerable by id from any authenticated user. An attacker probing ids `1..N` reads every policy's statements; combined with the list-endpoint's role-based filter, the attacker can find policies they DO NOT have access to by id but learns their CONTENT. The disclosed information enables (a) building an attack model of how permissions are bundled; (b) targeting users to social-engineer into roles attached to specific policies.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/PolicyServiceImplGetPolicyDetailsTest.java"
+  name: "getPolicyDetails_nonAdminCallerWithKnownId_returnsFullPolicyJson_pinsNoRoleScopedFilter"
+evidence:
+  - "PolicyServiceImpl.md says (security.known_security_gaps.[4]): 'Read-side endpoints (GET /api/policies, GET /api/policies/{id}, GET /api/policies/schema) are NOT in SECURITY_RULES — they require only .authenticated(). Any authenticated user can enumerate every policy by id and read every statement. The list-path branches by role is a partial defence — non-admin users see only their role-attached policies in the LIST — but getPolicyDetails(id) (line 45-50) does NOT apply role-based scoping; any authenticated user with a valid id can fetch any policy''s full details. This is a confidentiality issue: a non-admin user can iterate ids and read MANAGEMENT/ALL policy statements.' severity: MEDIUM"
+  - "PolicyServiceImpl.md says (upstream_callers): 'PolicyController.java:30 — policyService.getPolicyDetails(policyId) from getPolicyDetails(Long, ServerWebExchange) — handles GET /api/policies/{policy_id}. No SECURITY_RULES entry for this path (line 28-32) — falls through to the catch-all pathMatchers("/**").authenticated() — any authenticated user can read policy details.'"
+  - "Source: PolicyServiceImpl.java:45-50 (no role-based filter) + PolicyController.java:27-32 (no programmatic check) + SecurityConstants.java:163-168 (no SecurityRule for GET endpoints)"
+cross_references:
+  - "REFACTOR-024 family (the broader 'no per-Owner scoping' posture)"
+  - "F-006 (RBAC family — read-side confidentiality)"
+  - "concepts.yaml:invariants[read-collaborative-cross-owner-enumeration]"
+related_features: [F-006]
+related_pillar_features: ["P-09:F-001"]
+proposed_action: |-
+  Add `PolicyServiceImplGetPolicyDetailsTest.getPolicyDetails_nonAdminCallerWithKnownId_returnsFullPolicyJson_pinsNoRoleScopedFilter` as a Testcontainers integration test. (a) Seed user U with role R that has NO attached policies. (b) Seed an Administrator policy P (MANAGEMENT/ALL) via direct DB INSERT. (c) Authenticate as U. (d) Call `GET /api/policies/{id of P}`. (e) Assert HTTP 200 + the response body contains the full policy JSON (resource types, conditions, permissions, the MANAGEMENT/ALL statements). (f) Add a `// REGRESSION-PIN — getPolicyDetails returns full policy JSON to ANY authenticated user without role-based scoping. A REFACTOR adding role-based filter (e.g., only return policies the caller has access to) will break this test, surfacing the confidentiality-tightening as deliberate.` comment block. Pair with a `getPolicyList_nonAdmin_returnsOnlyOwnRoleAttachedPolicies` test that DOES assert role-based filter on the list endpoint — surfacing the asymmetry between list and getPolicyDetails.
+batch: 2026-05-20-S
+feature_id: F-006

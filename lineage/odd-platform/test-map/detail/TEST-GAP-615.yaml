@@ -1,0 +1,28 @@
+gap_id: TEST-GAP-615
+category: missing-performance
+criticality: LOW
+node_ids:
+  - "odd-platform java auth handler:GithubUserHandler"
+pillars_affected: [P-09]
+surfaced_by:
+  - "GithubUserHandler.md:bugs_limitations_corner_cases.[7] (Three calls per login)"
+  - "GithubUserHandler.md:performance.hot_paths.[critical path 3 outbound HTTPS calls]"
+behaviour: |-
+  **GitHub OAuth2 login = 3 sequential outbound HTTPS calls to api.github.com per login** — (1) Spring's `DefaultReactiveOAuth2UserService.loadUser` `/user` call (OAuthSecurityConfiguration.java:130-131); (2) this handler's `/user/orgs` (line 78); (3) this handler's `/user/teams` (line 106, only if `adminGroups` non-empty). Total login latency = sum of three RTT to api.github.com + JSON parse. Typical: 300-600ms; tail latencies > 2s observed in GitHub-API incidents. No caching of org/team membership — every login re-fetches both lists. For a user logging in 10 times per day, 20 GitHub API tokens are consumed per user per day. Bounded but multiplicative; consistent with the broader no-cache stance (AuthIdentityProviderImpl batch K implicit_adrs[3]). The 3-call architecture is structural — GitHub's `/user` endpoint does NOT return org/team membership, so the handler MUST make the subsequent calls. Pin the cost model.
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/handler/GithubUserHandlerThreeCallsPerLoginTest.java"
+  name: "githubLogin_threeOutboundCalls_userPlusOrgsPlusTeams_pinsCostModel"
+evidence:
+  - "GithubUserHandler.md says (bugs_limitations_corner_cases.[7]): 'The total outbound calls per GitHub login are THREE: (1) Spring's /user call to populate the OAuth2User, (2) this handler's /user/orgs call, (3) this handler's /user/teams call (if adminGroups non-empty). All three are sequential; total login latency is bounded by the sum.' severity: LOW (informational)"
+  - "GithubUserHandler.md says (performance.hot_paths): 'No caching of org/team membership — every login re-fetches both lists.'"
+  - "OAuthSecurityConfiguration.java:128-139 + GithubUserHandler.java:76-85, 104-113"
+cross_references:
+  - "F-011"
+  - "TEST-GAP-476 (AuthIdentityProviderImpl no-cache — same architectural stance)"
+  - "REFACTOR-NNN candidate: cache org/team membership per session OR short-TTL"
+proposed_action: |-
+  Unit test on GithubUserHandler with spied WebClient. (a) Configure provider with organizationName + adminGroups non-empty. (b) Invoke enrichUserWithProviderInformation. (c) Assert WebClient.get() invoked exactly TWICE in this handler (orgs + teams; the third call from Spring's DefaultReactiveOAuth2UserService is in upstream code). (d) Mirror: adminGroups empty → assert WebClient invoked exactly ONCE (orgs only, teams call skipped). (e) Pin the cost model.
+batch: 2026-05-19-O
+feature_id: F-011

@@ -1,0 +1,287 @@
+name: DEG-Anchored Lineage (group-internal co-membership view)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-05
+  - P-09
+  - P-01
+description: |-
+  NEW ENTITY, batch 2026-05-19M (getDataEntityGroupsLineage sidecar) — the
+  DEG-anchored lineage view returned by
+  GET /api/dataentitygroups/{data_entity_group_id}/lineage. Rooted not at a
+  single data entity but at a Data Entity Group (DEG), the response is one
+  DataEntityLineageStream per starting-oddrn-anchored CONNECTED COMPONENT of
+  the inter-member lineage graph (LineageServiceImpl.java:78-82 +
+  establishDEGRelations lines 200-216 + getRelationsForEntities lines
+  218-233). Three deliberate carve-outs at the service layer:
+    (a) **DEG-member recursion**: getDEGEntitiesOddrns
+        (ReactiveGroupEntityRelationRepositoryImpl.java:177-204) is a Postgres
+        WITH RECURSIVE CTE that walks nested DEGs at the SQL layer — the
+        member set is transitive across nested-DEG containment;
+    (b) **Inner-DEG suppression**: the conditional filter at
+        LineageServiceImpl.java:71-75 strips edges where ANY endpoint is a
+        DEG AND removes DEG-typed entries from the metadata dictionary — the
+        rendered graph is FLAT (only non-DEG members appear). Anchored by
+        the literal source-level comment
+        // Remove this when we will support inner DEGs for DEG lineage
+        — the explicit deferred-feature marker;
+    (c) **Bidirectional edge filter**: getLineageRelations(List<String>)
+        (ReactiveLineageRepositoryImpl.java:112-119) requires BOTH PARENT_ODDRN
+        and CHILD_ODDRN in the member set — edges crossing the DEG boundary
+        (exiting to a non-member or entering from a non-member) are DROPPED.
+  Distinct query shape from the per-entity lineage path: the per-entity
+  /api/dataentity/{id}/lineage uses the recursive-CTE variant
+  (ReactiveLineageRepositoryImpl.java:122-148 with LineageDepth bound + depth-1
+  fan-out); the DEG-lineage path uses the simpler list-based
+  getLineageRelations(List<String>) — recursion happens at the MEMBERSHIP
+  layer, not at the edge layer. Read-only, NOT transactional, NO
+  fetchAssociatedOwner call (the service has no AuthIdentityProvider field).
+  **Operator-facing posture**: cross-owner-readable at the DEG layer — any
+  authenticated user (or under DISABLED, any anonymous probe) can read any
+  DEG full member-graph + per-member metadata. The DEG-anchored variant is
+  WIDER blast than the per-entity REFACTOR-203 because the DEG itself is a
+  CONCEPTUAL grouping (a Domain or a multi-team data product) — leaking
+  "team A and team B both contribute to the Finance Domain" exposes
+  organisational structure that the DEG was designed to REPRESENT but not
+  necessarily to DISCLOSE to every authenticated user.
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+nodes:
+  - odd-platform java DataEntityController controller-method:getDataEntityGroupsLineage
+  - odd-platform java service service:LineageServiceImpl
+  - odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__getDataEntityGroupsLineage.md
+contributors:
+  - |-
+    getDataEntityGroupsLineage.md (batch M PRIMARY SOURCE):
+    understanding — DEG-anchored sibling of the per-entity lineage endpoints;
+    rooted at a Data Entity Group; returns lineage among the entities that
+    belong to the given group;
+    concepts.entities — DataEntityGroupLineageList response payload, the
+    DataEntityLineageStream per-component, the DataEntityGroupLineageDto
+    internal Java record;
+    concepts.operations — resolve-DEG-members-recursive (SQL-layer nested
+    DEG walk) + 404-on-empty-DEG-membership (LineageServiceImpl.java:62) +
+    filter-out-inner-DEGs (deferred-feature filter) +
+    establish-per-member-streams + assemble-response;
+    concepts.invariants — pure pass-through at controller + 404 only when
+    DEG has ZERO members + inner-DEG suppression service-layer-only +
+    distinct query shape from per-entity lineage + no expanded_entity_ids /
+    lineage_depth parameter + edges filtered bidirectionally;
+    implicit_adrs.[0] DEG-lineage is INNER-DEG-FREE by deliberate carve-out;
+    implicit_adrs.[1] DEG-lineage uses a SIMPLER edge-fetch than per-entity
+    lineage; implicit_adrs.[2] DEG-lineage is per-connected-component;
+    implicit_adrs.[3] Member-resolution at SQL layer DOES walk nested DEGs;
+    implicit_adrs.[4] Edges filtered BIDIRECTIONALLY to BOTH endpoints;
+    bugs_limitations_corner_cases — anchor-set defence-in-depth NOT applied
+    HIGH + DEG cross-owner enumeration is GRAPH-SHAPED HIGH + 404 conflates
+    three semantically distinct conditions + inner-DEG suppression lacks
+    backlog citation + JVM-stack recursion + empty-edge-set produces 200 +
+    cross-boundary edges silently filtered + hard-delete race window + no
+    lineage_depth on this endpoint + DEG-lineage activity is unaudited.
+  - |-
+    LineageServiceImpl.md (batch I cross-reference):
+    concepts.operations — getDataEntityGroupLineage at lines 59-85;
+    concepts.invariants.[1,2,9] — 404 on empty DEG + inner-DEG suppression +
+    always-empty group memberships;
+    implicit_adrs.[3,4] — deferred-feature carve-out + per-member streams.
+  - |-
+    ReactiveLineageRepositoryImpl.md (batch H cross-reference):
+    operations — getLineageRelations(List<String>) at lines 112-119 (the
+    simpler list-based query that the DEG-lineage path uses).
+evidence:
+  - |-
+    getDataEntityGroupsLineage.md:understanding (the architectural shape of
+    the DEG-anchored lineage view)
+  - |-
+    getDataEntityGroupsLineage.md:concepts.entities (the
+    DataEntityGroupLineageList + DataEntityLineageStream + member metadata)
+  - |-
+    getDataEntityGroupsLineage.md:concepts.invariants[*] (the seven invariants
+    surfaced — pure pass-through, 404 only on empty members, inner-DEG
+    suppression, distinct query shape, no parameters, bidirectional filter,
+    per-component response)
+  - |-
+    getDataEntityGroupsLineage.md:implicit_adrs.[0,1,2,3,4] (five ADRs
+    capturing the deferred-feature + simpler-query + per-component +
+    recursive-member + bidirectional-filter decisions)
+  - |-
+    getDataEntityGroupsLineage.md:bugs_limitations_corner_cases[*]
+    (anchor-set absence + graph-shaped enumeration + 404 conflation +
+    deferred-feature lacking backlog + recursion stack + empty-edge-set +
+    cross-boundary filter + race-window + no parameters disclosure +
+    unaudited)
+  - |-
+    LineageServiceImpl.java:59-85 (the service method primary source)
+  - |-
+    LineageServiceImpl.java:71-75 (the inner-DEG suppression filter)
+  - |-
+    LineageServiceImpl.java:200-216 (the per-component partitioning)
+  - |-
+    LineageServiceImpl.java:218-233 (the BFS-shaped recursion)
+  - |-
+    ReactiveGroupEntityRelationRepositoryImpl.java:177-204 (the recursive
+    member CTE)
+  - |-
+    ReactiveLineageRepositoryImpl.java:112-119 (the simpler list-based
+    edge query)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      No SecurityRule entry for /api/dataentitygroups/{id}/lineage (verified
+      Grep dataentitygroups.*lineage in SecurityConstants.java returns zero
+      matches). Falls through to pathMatchers("/**").authenticated() at
+      AuthorizationCustomizer.java:29-30. No @PreAuthorize, no @Secured, no
+      programmatic permissionService.hasPermission call. Crucially the
+      WRITE side IS gated (DATA_ENTITY_ADD_TO_GROUP /
+      DATA_ENTITY_DELETE_FROM_GROUP at SecurityConstants.java:228-236) —
+      the read-vs-write asymmetry is the load-bearing finding.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      The returned DEG-lineage graph is not filtered by the caller owner
+      relationships at any layer. LineageServiceImpl has no AuthIdentityProvider
+      field (verified by reading LineageServiceImpl.java:54-57). The DEG ID
+      itself becomes the anchor; visibility of the DEG implies visibility of
+      its full member-graph + reachable edges + per-member metadata.
+  strengths:
+    - |-
+      WRITE side IS RBAC-gated (DATA_ENTITY_ADD_TO_GROUP /
+      DATA_ENTITY_DELETE_FROM_GROUP) — the asymmetry is INTENTIONAL
+      consistent with the read-collaborative posture
+    - |-
+      Inner-DEG suppression is bounded — only the IMMEDIATE inter-member
+      edge graph is exposed; nested DEG structure does not surface
+  weaknesses:
+    - |-
+      Anchor-set defence-in-depth NOT applied at the service tier — the
+      service has no AuthIdentityProvider field; cross-owner read is
+      unmitigated (HIGH severity)
+    - |-
+      Graph-shaped CO-MEMBERSHIP leakage — for a multi-team DEG / Domain,
+      the per-connected-component partitioning surfaces "team A and team B
+      both contribute to the Finance DEG" (HIGH severity — wider blast
+      than per-entity REFACTOR-203 because the DEG itself is a conceptual
+      grouping)
+    - |-
+      404 conflates three semantically distinct conditions — DEG-not-found
+      vs DEG-has-no-members vs non-DEG-typed-ID (MEDIUM severity —
+      operator-debuggability gap)
+    - |-
+      Inner-DEG suppression is comment-marked deferred-feature with no
+      backlog / ADR / @Disabled regression test anchor (MEDIUM severity —
+      lift-time regression vector)
+    - |-
+      DEG-lineage reads are UNAUDITED — no Activity-Feed event; an operator
+      asking "who read this Finance DEG lineage last quarter?" has no
+      source-of-truth (LOW severity)
+  cross_file_inconsistencies:
+    - |-
+      Live /features/data-lineage feature page (200, 2026-05-19) names the
+      Group lineage entry point but is silent on the cross-owner-readable
+      posture AND on the inner-DEG suppression carve-out — operators
+      reading the doc have no signal that nested DEGs are silently
+      flattened
+    - |-
+      Live /developer-guides/api-reference/lineage page (200, 2026-05-19)
+      documents the endpoint verbatim with operationId but does not surface
+      permissions, owner-scoping, the inner-DEG suppression, or the
+      empty-DEG vs DEG-not-found error shape
+    - |-
+      WRITE-side endpoints (addDataEntityDataEntityGroup +
+      deleteDataEntityFromDataEntityGroup per batch L) carry SecurityRule
+      entries; the matching READ-side endpoint does NOT — operators
+      auditing the SecurityConstants catalogue see RBAC protection on the
+      WRITE half and reasonably assume the READ half is similarly gated
+  contributing_files:
+    - getDataEntityGroupsLineage.md
+    - LineageServiceImpl.md
+    - addDataEntityDataEntityGroup.md
+    - deleteDataEntityFromDataEntityGroup.md
+  evidence:
+    - getDataEntityGroupsLineage.md:security.* (full block)
+    - LineageServiceImpl.md:security.known_security_gaps.[0,1]
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      Three DB round-trips per call — (a) getDEGEntitiesOddrns recursive CTE
+      on group_entity_relations, (b) getLineageRelations(List<String>)
+      SELECT-DISTINCT on lineage, (c) getDataEntitiesWithDataSourceAndNamespace
+      for per-member metadata — fully sequential at the service layer
+    - |-
+      In-memory partitioning via establishDEGRelations (BFS-shaped
+      recursion) — cost scales with DEG-member-graph size, not pagination
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One DEG ID per request; no batch endpoint, no streaming variant. The
+      response is fully assembled in heap before serialisation.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: |-
+      No lineage_depth parameter, no expanded_entity_ids, no
+      pagination — the response shape is bounded by the DEG member
+      cardinality + the inter-member edge count; for a Domain spanning
+      hundreds of entities the response can be large.
+  strengths:
+    - |-
+      SQL-layer recursive CTE walks nested DEGs in ONE round-trip — single
+      RTT for unbounded-depth member resolution
+    - |-
+      Simpler edge query (List<String>-based) avoids the recursive-CTE
+      cost of the per-entity lineage path — bounded by DEG size, not by
+      graph reachability
+    - |-
+      Stateless controller scales horizontally
+  weaknesses:
+    - |-
+      JVM-stack recursion in getRelationsForEntities — tail-shaped but no
+      TCO in Java; very-wide connected components approach default JVM
+      stack limit (~5000 frames) for DEG diameter > ~5000 (LOW severity)
+    - |-
+      Full-graph in-memory materialisation — no streaming, no pagination
+      (MEDIUM)
+    - |-
+      No statement_timeout enforcement at repository layer (MEDIUM)
+    - |-
+      Hard-delete race window — entity hard-deleted between
+      getDEGEntitiesOddrns and getDataEntityWithDatasourceMap surfaces as
+      generic 500 (LOW)
+  cross_file_inconsistencies: []
+  contributing_files:
+    - getDataEntityGroupsLineage.md
+  evidence:
+    - getDataEntityGroupsLineage.md:performance.* (full block)
+notes: |-
+  This entity is the DEG-anchored sibling of the broader lineage-graph-traversal
+  concept; the per-entity Lineage tab and the DEG Lineage tab are sibling UI
+  surfaces over the same underlying lineage table but with materially different
+  query shapes, parameter sets, and security postures.
+
+  Cross-references:
+    - Lineage Graph Traversal (entity) — the broader concept; this entity is
+      the DEG-anchored variant.
+    - Get data entity group lineage (operation) — the operation primitive
+      this entity is the response shape for.
+    - Inner-DEG suppression — comment-marked deferred feature (invariant) —
+      one carve-out within this entity's response semantics.
+    - DEG-membership read vs write authorization asymmetry — the
+      authorization-asymmetry finding that this entity is the primary
+      surface for.
+    - REFACTOR-225 anchor-set single-point-of-failure — adjacent finding;
+      this entity is the WIDEST blast (no anchor-set at all, not just
+      single-point-of-failure).
+    - Read-collaborative cross-owner enumeration — this entity is the
+      SEVENTEENTH read-collaborative surface.

@@ -1,0 +1,160 @@
+name: Permission (Authorization)
+canonical_in_docs: true
+canonical_candidate: false
+description: 'An enumerated capability granted by a Policy statement. ODD''s `PolicyPermissionDto`
+  enum carries permissions across five categories per live docs (Data entity / Term
+  / Query Example / Lookup table / Management) — though the code''s `PermissionResourceType`
+  enum exposes only FOUR contextual values (DATA_ENTITY / TERM / QUERY_EXAMPLE / MANAGEMENT).
+  The `Permission` OpenAPI-generated enum mirrors `PolicyPermissionDto` by name. Read-side
+  discovery via `GET /api/resource/{type}/{id}/permissions` — server-side evaluation
+  of the SAME policy graph the mutation enforcer uses. Authoritative-not-UI-hint by
+  design (forged response does NOT bypass mutation gating). Canonical doc anchor:
+  `configuration-and-deployment/enable-security/authorization/permissions` (200, 2026-05-12).'
+axes_present:
+- controllers
+nodes:
+- odd-platform java PermissionController controller-method:getResourcePermissions
+- odd-platform java PolicyController controller-method:createPolicy
+- odd-platform java RoleController controller-method:createRole
+contributors:
+- 'PermissionController.getResourcePermissions: entities[Permission (response item
+  — enum value), PermissionResourceType (path param enum — DATA_ENTITY / TERM / QUERY_EXAMPLE
+  / MANAGEMENT — maps 1-1 to PolicyTypeDto), PolicyDto, DataEntityPolicyResolverContext];
+  operations[evaluate-current-user-permissions-on-contextual-resource]'
+- 'PermissionController.implicit_adrs.[0]: read-side permission discovery is a first-class
+  endpoint, not a derived computation client-side'
+- 'PermissionController.implicit_adrs.[1]: authoritative server-side evaluation, not
+  UI-only hint — the response is the SAME permission set that would be enforced if
+  the user attempted the mutation, computed via the SAME policy graph'
+- 'PermissionController.implicit_adrs.[2]: resource-type ↔ context coupling encoded
+  at the enum (`PolicyTypeDto.hasContext`), not at the controller'
+- 'PermissionController.implicit_adrs.[3]: read-side endpoint deliberately left out
+  of SECURITY_RULES — catch-all `.authenticated()` only'
+- 'PolicyController.createPolicy: PolicyPermissionDto enum is the catalog of permissions
+  a policy statement can grant'
+- 'RoleController.createRole: ROLE_CREATE is itself a PolicyPermissionDto value (MANAGEMENT
+  tier) — every Permission gates a CRUD operation somewhere'
+evidence:
+- getResourcePermissions.md:concepts.entities + concepts.invariants.[0-4]
+- getResourcePermissions.md:implicit_adrs.[0-3]
+- createPolicy.md:concepts.entities (PolicyPermissionDto)
+- createRole.md:concepts.entities (ROLE_CREATE permission)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: '`GET /api/resource/{permission_resource_type}/{resource_id}/permissions`
+      has NO SECURITY_RULES entry — falls through to `pathMatchers(''/**'').authenticated()`.
+      Intentional per implicit_adrs.[3] (read-collaborative posture; the answer reveals
+      only what the policy graph would grant the same caller anyway). BUT: under `auth.type=DISABLED`
+      the response is empty while mutation endpoints are simultaneously `.permitAll()`
+      — UI shows ''you can do nothing''; API says ''anyone can do anything''. Under
+      `auth.type=LOGIN_FORM` the response is ALWAYS the full admin permission set
+      (every caller is admin per `getAuthorities(true)` at LoginFormSecurityConfiguration.java:74-82).'
+  owner_scoping:
+    verdict: RESPECTS
+    detail: Context resolution includes the caller's associated owner — DataEntityPermissionExtractor.java:51-55
+      explicitly fetches `authIdentityProvider.fetchAssociatedOwner()` and includes
+      it in the `DataEntityPolicyResolverContext`. Ownership-conditional policies
+      evaluate against the caller's owner.
+  strengths:
+  - Authoritative-not-UI-hint design — read endpoint and mutation enforcer share one
+    evaluation graph; forged response cannot bypass mutation gating (getResourcePermissions.md:implicit_adrs.[1])
+  - Resource-type ↔ context coupling encoded at the enum (`PolicyTypeDto.hasContext`)
+    — invariant guarded by `BadUserRequestException` at the service layer (getResourcePermissions.md:implicit_adrs.[2])
+  - Per-call recomputation against live policy/role tables — no caching layer hides
+    a stale-permission window (getResourcePermissions.md:concepts.invariants.[4])
+  weaknesses:
+  - '**Under `auth.type=DISABLED`, endpoint returns empty Flux while mutation endpoints
+    are unprotected (HIGH — UI-vs-API contradiction)** — DisabledAuth''s `permitAll()`
+    skips the security filter chain, so `ReactiveSecurityContextHolder.getContext()`
+    is empty; the role/policy chain cascades through `Mono.just(List.of())` to no
+    permissions. UI buttons all disabled; direct API caller can perform every mutation.
+    Silent deception. (getResourcePermissions.md:security.known_security_gaps.[0])'
+  - '**Under `auth.type=LOGIN_FORM`, returns ALL permissions for every caller (HIGH
+    bypass undermining per-policy returns)** — the static admin authority hard-coded
+    in LoginFormSecurityConfiguration.java:74-82 + the seeded Administrator policy
+    carrying `''ALL''` on every contextual resource type. The endpoint cannot distinguish
+    a real admin from ''platform is in single-tenant dev mode''. Operators using LOGIN_FORM
+    for staging may believe per-resource gating is honoured when it is not. (getResourcePermissions.md:security.known_security_gaps.[1])'
+  - '**Lookup-table permissions unreachable through this endpoint (MEDIUM doc gap)**
+    — `PermissionResourceType` exposes DATA_ENTITY/TERM/QUERY_EXAMPLE/MANAGEMENT only;
+    LOOKUP_TABLE_* live as non-contextual MANAGEMENT permissions. A UI rendering buttons
+    for a specific lookup table cannot ask ''what can I do on lookup table X?'' through
+    this endpoint. (getResourcePermissions.md:bugs_limitations_corner_cases.[2])'
+  - '**Resource-existence response asymmetry (MEDIUM)** — DATA_ENTITY: missing resource
+    → 404 via NotFoundException (DataEntityPermissionExtractor.java:64-66). TERM /
+    QUERY_EXAMPLE extractor existence-check behaviour not verified — if they return
+    empty Mono on miss instead of throwing, controller emits 200-with-empty (indistinguishable
+    from ''you have no permissions here''). (getResourcePermissions.md:bugs_limitations_corner_cases.[4])'
+  cross_file_inconsistencies:
+  - Live `/authorization/permissions` page lists 5 categories (Data entity / Term
+    / Query Example / Lookup table / Management) but `PermissionResourceType` enum
+    exposes 4. Doc-code shape mismatch. (getResourcePermissions.md:docs_link_semantic.doc_drift_findings.[1])
+  - Live `/authorization/permissions` lists Lookup table as a category, but the seeded
+    Administrator policy (V0_0_56 + V0_0_88) covers DATA_ENTITY / TERM / QUERY_EXAMPLE
+    / MANAGEMENT only — no LOOKUP_TABLE migration. Administrator's effective scope
+    on lookup tables depends on whether `policyPermissionExtractor` treats `'ALL'`
+    on MANAGEMENT as expanding to every LOOKUP_TABLE_* constant. Unverified at this
+    node. (getResourcePermissions.md:docs_link_semantic.doc_drift_findings.[2])
+  contributing_files:
+  - getResourcePermissions.md
+  evidence:
+  - getResourcePermissions.md:security.known_security_gaps.[0-2]
+  - getResourcePermissions.md:docs_link_semantic.doc_drift_findings.[0-2]
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - 'Per-resource-page-render request — the controller induces 4 DB round-trips per
+    call: (a) getRolesPolicies jOOQ; (b) dataEntityService.getDimensions; (c) tagRepository.listDataEntityDtos;
+    (d) authIdentityProvider.fetchAssociatedOwner. Hot path on every data-entity /
+    term / query-example detail page button-state computation (getResourcePermissions.md:performance.hot_paths.[0])'
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Per-resource call shape — no batch variant. A UI rendering a list of N
+      data entities issues N requests × 4 DB queries = 4N — N+1 scaled by fan-out
+      (getResourcePermissions.md:performance.throughput_characteristics.[0])
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: Stateless controller; per-resource call shape forces UI N+1 for list views;
+      no caching at any layer (per-call re-runs the full 4-query fan-out)
+  strengths:
+  - Stateless — horizontal scaling unconstrained at this layer
+  weaknesses:
+  - '**No batch variant (HIGH on list-view rendering)** — N × 4 DB round-trips for
+    an N-entity catalog page. A `POST /api/resource/{type}/permissions` accepting
+    `{resource_ids: [...]}` returning `Map<resourceId, List<Permission>>` would reduce
+    fan-out to one policies+roles fetch plus one batched extractor fetch. (getResourcePermissions.md:performance.known_performance_gaps.[0])'
+  - '**No per-request caching of getRolesPolicies (MEDIUM)** — within a single page
+    render multiple resources re-fetch the same policy list for the same user. A request-scoped
+    Mono.cache() would eliminate. (getResourcePermissions.md:performance.known_performance_gaps.[1])'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - getResourcePermissions.md
+  evidence:
+  - getResourcePermissions.md:performance.known_performance_gaps.[0-2]
+notes: 'The read-side dual of the mutation-enforcement chain. The implicit ADRs
+
+  from this sidecar are load-bearing — they reveal that ODD deliberately
+
+  shares ONE policy-evaluation graph between read and enforce paths,
+
+  avoiding UI-shaped permission caches. Surface this as a NEW
+
+  canonicalisation candidate (''Authoritative server-side permission
+
+  evaluation graph (shared read + enforce)''). DOC-GAP candidates from
+
+  getResourcePermissions.md:docs_link_semantic.doc_drift_findings.[0-2]:
+
+  the entire read-side discovery model is undocumented across three live
+
+  pages.
+
+  '

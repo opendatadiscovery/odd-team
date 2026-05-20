@@ -1,0 +1,7 @@
+- **DOC-GAP-014**: Legacy URL `/data-discovery/directory` returns 404 — canonical at `/features/data-discovery/directory`
+  - **Category**: broken-url
+  - **Surfaced by**: `DirectoryController.md:docs_link_semantic.inferred_docs.[1]` + `:doc_drift_findings.[1]`
+  - **Evidence**: WebFetch `/data-discovery/directory` 2026-05-08 status 404; canonical 200.
+  - **Proposed doc action**: Same as DOC-GAP-011. See DOC-GAP-058.
+  - **Cross-references**: DOC-GAP-011, DOC-GAP-035, DOC-GAP-056, DOC-GAP-058, F-039.
+  - **Severity rationale**: MEDIUM.

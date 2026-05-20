@@ -1,0 +1,9 @@
+- **REFACTOR-122** (NEW 2026-05-12C): Active Directory mode silently ignores `dn-pattern` and `user-filter` config — `ActiveDirectoryLdapAuthenticationProvider(domain, url)` does NOT use BindAuthenticator, so the user-filter / dnPattern configuration is structurally inert under AD. `ODDLDAPProperties.validate()` STILL enforces the dnPattern-OR-filter requirement even in AD mode — operators must configure a search method that's then ignored
+  - **Category**: ad-config-ignored
+  - **Surfaced by**: `odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md:bugs_limitations_corner_cases.[9]` (severity MEDIUM per sidecar; LOW at concept level — operator-confusion not exploit)
+  - **Statement**: `LDAPSecurityConfiguration.java:76-83` constructs `ActiveDirectoryLdapAuthenticationProvider` bypassing BindAuthenticator; the operator's `dn-pattern` / `user-filter` are inert. `ODDLDAPProperties.validate()` (lines 45-48) still requires one of them even in AD mode — confusing.
+  - **Evidence**: `LDAPSecurityConfiguration.java:76-83` + `ODDLDAPProperties.java:45-48`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-037 (LDAP Active-Directory dedicated branch) describes the AD path but does not address the validate-requirement-vs-ignored-config tension.
+  - **Proposed remedy**: Either (a) make `validate()` skip the dnPattern/filter requirement when `activeDirectory.enabled=true`; or (b) document in the live LDAP page that AD mode ignores dn-pattern + user-filter but still requires them in config (workaround).
+  - **Severity rationale**: LOW — operator-confusion, not exploit.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

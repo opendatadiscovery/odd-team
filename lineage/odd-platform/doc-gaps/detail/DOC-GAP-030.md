@@ -1,0 +1,7 @@
+- **DOC-GAP-030**: Activity Feed feature page omits `type` parameter, visibility model, cursor pagination mechanics
+  - **Category**: drift
+  - **Surfaced by**: `getActivity.md:doc_drift_findings.[0,1,3]`.
+  - **Evidence**: WebFetch `/features/active-platform-features/activity-feed` 2026-05-10 — 7 filter facets + 20+ event types; missing `type` / visibility / pagination / payload-shape descriptions.
+  - **Proposed doc action**: Extend `features/active-platform-features/activity-feed.md` with type-of-feed + pagination + payload-shape sub-sections.
+  - **Cross-references**: DOC-GAP-025, DOC-GAP-029, DOC-GAP-031.
+  - **Severity rationale**: MEDIUM.

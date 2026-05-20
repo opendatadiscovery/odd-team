@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-676
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveCollectorRepositoryImpl"
+pillars_affected: [P-08]
+surfaced_by:
+  - "ReactiveCollectorRepositoryImpl.md:bugs_limitations_corner_cases.[4] (collector.name UNIQUE is a FULL unique constraint, NOT partial)"
+behaviour: |-
+  **`collector.name UNIQUE` is a FULL unique constraint, NOT partial (asymmetric with role/policy/owner/tag patterns).** `V0_0_29__add_collector.sql:4` — `name varchar(255) UNIQUE`. The constraint applies to ALL rows including soft-deleted ones. A soft-deleted collector's name CANNOT be reused without first hard-deleting the row. This is INCONSISTENT with the recreate-after-delete pattern used for `role.name` (where the partial unique index `role_name_unique ON role(name) WHERE deleted_at IS NULL` per V0_0_55:42 + V0_0_64:88-90 allows re-creation), `policy.name` (same pattern, batch H), `owner.name` (TEST-GAP-239 — V0_0_64:68-70 reissues the partial), `tag.name` (V0_0_64:103-105). An operator deleting a collector named 'snowflake-prod' and trying to re-create with the same name hits a `UniqueConstraintException` with no doc explanation. **The schema-layer asymmetry is undocumented; the user-facing error wrapping does NOT distinguish "name held by a soft-deleted collector you can't see" from "name held by a live collector you can see".**
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveCollectorRepositoryFullUniqueNameTest.java"
+  name: "collectorRecreateWithSameName_AfterSoftDelete_throwsUniqueConstraint_pinsSchemaAsymmetryWithRoleTag"
+evidence:
+  - "ReactiveCollectorRepositoryImpl.md says (bugs_limitations_corner_cases.[4]): 'collector.name UNIQUE is a FULL unique constraint, NOT partial (V0_0_29__add_collector.sql:4 — name varchar(255) UNIQUE). A soft-deleted collector's name CANNOT be reused without first hard-deleting the row. This is inconsistent with the recreate-after-delete pattern used for role.name (partial unique index) and policy.name (same pattern).'"
+  - "V0_0_29__add_collector.sql:4 (`name varchar(255) UNIQUE` — full unique)"
+  - "V0_0_55__add_policies_and_roles.sql:42 (role.name partial unique — the sibling pattern)"
+  - "V0_0_64__remove_is_deleted_field.sql (the cross-table soft-delete normalization that MISSED collector.name)"
+cross_references:
+  - "TEST-GAP-239 (Owner partial-unique-name re-creation — sibling WORKING pattern)"
+  - "TEST-GAP-543 (Tag soft-delete recreation — sibling WORKING pattern)"
+  - "TEST-GAP-663 (MetadataField soft-delete partial-unique mismatch — analogous gap on metadata_field side)"
+  - "REFACTOR-NNN candidate: V0_NN migration converting collector.name to partial UNIQUE WHERE deleted_at IS NULL (mirroring role/policy/owner/tag)"
+proposed_action: |-
+  Testcontainers integration test. (a) Create a collector named 'snowflake-prod'. (b) Soft-delete via `CollectorServiceImpl.delete(id)`. (c) Attempt to create a NEW collector with the same name 'snowflake-prod'. (d) Assert: `UniqueConstraintException` raised (the FULL UNIQUE blocks). (e) Compare with the analogous role-side workflow: create a role 'Admin', soft-delete, re-create 'Admin' — succeeds with a fresh id (the PARTIAL UNIQUE permits). (f) Pin the asymmetry: `// REGRESSION-PIN — collector.name uses FULL UNIQUE; role.name / policy.name / owner.name / tag.name use PARTIAL UNIQUE WHERE deleted_at IS NULL. The asymmetry is a schema oversight from V0_0_29 not corrected by V0_0_64. REFACTOR-NNN will harmonise; this test flips to assert re-creation succeeds.`
+related_features: [F-020]
+related_pillar_features: ["P-08:F-004"]
+batch: 2026-05-20-R
+feature_id: F-020

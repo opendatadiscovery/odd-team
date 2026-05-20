@@ -1,0 +1,116 @@
+name: Poison-message WAL replay loop (notifications)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+description: |-
+  **NEW INVARIANT, batch 2026-05-19K** — the load-bearing fragility of the
+  notifications WAL consumer. The dispatcher
+  (`AlertNotificationMessageProcessor.process()` at
+  `notification/processor/AlertNotificationMessageProcessor.java:23-36`) invokes
+  `messageTranslator.translate(message)` BEFORE the per-sender fan-out, and the
+  translate call is UNCAUGHT — only sender-layer `NotificationSenderException`
+  is caught at lines 29-35. The translator
+  (`AlertNotificationMessageTranslator`) throws
+  `IllegalArgumentException` on unknown alert-type code (line 87) and
+  `IllegalStateException` on missing/duplicate alerted-entity rows (lines
+  94-101). Both bypass the dispatcher's try/catch and reach
+  `NotificationSubscriber.java:90`'s outer catch which: (a) logs the error,
+  (b) releases the advisory lock, (c) waits 10 seconds, (d) re-acquires the
+  lock, (e) the SAME WAL LSN is re-delivered. The dispatcher's `process()`
+  re-invokes; the translator throws again; loop repeats. The setAppliedLSN /
+  setFlushedLSN are NOT advanced — the WAL position stays pinned at the bad
+  row. Net effect: a persistently-bad ALERT row (unknown type_id, FK to
+  deleted data_entity, NULL message column) blocks ALL subsequent WAL
+  messages from being processed indefinitely. The only operator remediations
+  are: (a) clean up the bad row in the database; OR (b) drop the
+  replication slot (which also drops all in-flight undelivered alerts).
+  **There is NO dead-letter queue, NO skip-poison mechanism, NO manual
+  setAppliedLSN advance API.** Distinct from the "sequential fan-out blocks
+  channels" finding (a slow Slack call still completes within seconds —
+  this is unbounded back-off). Distinct from the rate-limiting gap (10k
+  alerts is still 10k delivered, eventually — this is zero delivered until
+  remediated). This is the load-bearing fragility of the entire P-07
+  Notifications pillar. Cross-batch implication: any future feature that
+  consumes WAL via PostgresWALMessageProcessor inherits this fragility
+  unless it adopts a poison-skip strategy at the processor level.
+nodes:
+- odd-platform java service service:NotificationsDispatcher
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+contributors:
+- |-
+  NotificationsDispatcher (AlertNotificationMessageProcessor) batch K:
+  bugs_limitations_corner_cases.[6] (translate-failure WAL replay loop —
+  PRIMARY SOURCE) + implicit_adrs.[3] (translate-before-fan-out atomic;
+  bifurcated fail-loud vs fail-soft) — the bifurcation is INTENTIONAL:
+  translation failures are data-integrity errors that fail-LOUD via WAL
+  replay; delivery failures are operational errors that fail-SOFT via
+  per-sender catch-and-continue
+- |-
+  NotificationsProperties batch C (existing reference): invariants[WAL
+  subscriber leader-elected via advisory lock id 100; replication-slot +
+  publication lazily created]
+evidence:
+- |-
+  NotificationsDispatcher.md:bugs_limitations_corner_cases.[6]
+  (translate-failure WAL replay loop) — evidence:
+  AlertNotificationMessageProcessor.java:23-24 + NotificationSubscriber.java:60-91
+- |-
+  NotificationsDispatcher.md:implicit_adrs.[3] (translate-before-fan-out
+  atomic; fail-loud on data-integrity errors; fail-soft on delivery errors)
+- |-
+  NotificationsDispatcher.md:performance.known_performance_gaps.[3]
+  (poison-message replay — operator-facing performance gap)
+- |-
+  NotificationsDispatcher.md:concepts.invariants.[5]
+  (translate-uncaught — explicit primary-source invariant)
+axes_present:
+- services
+- config_prefixes
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: durability
+mitigations_unimplemented:
+- |-
+  Catch translation exceptions at the dispatcher and route to a dedicated
+  poison-message table (alert_notification_poison) instead of propagating;
+  advance setAppliedLSN past the bad LSN to unblock subsequent messages.
+- |-
+  Emit a Prometheus counter (`notification_poison_total{alert_id, error_class}`)
+  on each WAL replay-loop cycle so operators get alerted when the loop is
+  active.
+- |-
+  Add a `notifications.poison-skip.enabled` config flag + an operator API
+  endpoint to manually mark an ALERT row as poison-skip; the dispatcher
+  consults the flag on translate failure and advances LSN past the row.
+- |-
+  Add a docs section on `/features/active-platform-features/notifications`
+  explicitly naming this failure mode and the remediation steps (clean up
+  the bad row or drop the replication slot).
+notes: |-
+  NEW invariant captured in batch 2026-05-19K. The most operationally
+  consequential finding of the batch — a persistently-bad ALERT row blocks
+  ALL outbound alert delivery cluster-wide with no observability surface
+  beyond log inspection. The fragility is INTENTIONAL by the architectural
+  posture (the bifurcation between data-integrity errors and delivery
+  errors is deliberate per implicit_adrs.[3]) but the absence of a
+  remediation path is the operational gap.
+
+  Cross-cutting connections:
+    - Pairs with the "WAL Consumer + Postgres Replication Slot" entity
+      concept — this is the entity's load-bearing failure mode
+    - Companion of the "Exception-type asymmetry between sender impls"
+      invariant — both surface the bifurcation between fail-loud and
+      fail-soft paths in the dispatcher
+    - Companion of the "Lazy-create-no-drop replication artefacts"
+      invariant — dropping the replication slot to remediate the poison
+      loop also drops in-flight undelivered alerts
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Document the failure mode on the live notifications page with
+        operator-facing remediation steps
+    (b) Document a Prometheus alerting recipe for detecting the replay
+        loop
+    (c) Document the alternative architecture (poison-skip table + LSN
+        advance) as a future-evolution ADR

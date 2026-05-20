@@ -1,0 +1,215 @@
+name: |-
+  hasDescriptionRelations rename/delete guard bypasses for Terms mentioned only in soft-deleted entities
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-06
+- P-01
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-19N — surfaced by
+  primary-source examination of ReactiveTermRepositoryImpl.**
+
+  `hasDescriptionRelations(termId)` (ReactiveTermRepositoryImpl.java:409-438)
+  is the LOAD-BEARING guard for two operator-facing invariants:
+    (a) `TermServiceImpl.updateTerm` rename-protection — blocks a Term
+        from being renamed while any active description references it
+        (TermServiceImpl.java:128)
+    (b) `TermServiceImpl.delete` deletion-protection — blocks a Term
+        from being hard-deleted while any active description mentions
+        it (TermServiceImpl.java:156)
+
+  The guard issues 3 nested EXISTS subqueries — one per link table —
+  OR-combined into a single SELECT. The decision-shape is:
+    Subquery 1 — `data_entity_to_term` (lines 410-416) — does any
+      data-entity have an active description mentioning this term?
+      Filter: `IS_DESCRIPTION_LINK.isTrue()` AND
+      `DATA_ENTITY.STATUS.ne(DataEntityStatusDto.DELETED.getId())`
+    Subquery 2 — `dataset_field_to_term` (lines 417-426) — does any
+      dataset-field have an active description? The 4-table chain joins
+      `dataset_field → dataset_structure → dataset_version → data_entity`
+      to filter the parent data-entity's status.
+      Filter: `DATA_ENTITY.STATUS.ne(DELETED)` for the parent (line 425)
+    Subquery 3 — `term_to_term` (lines 427-433) — does any active term
+      reference this term?
+      Filter: `TERM.DELETED_AT.isNull()` on the TARGET term (different
+      semantic — uses term's soft-delete column, not data-entity's
+      STATUS state-machine)
+
+  **The bug shape**: lines 415, 425 filter
+  `DATA_ENTITY.STATUS.ne(DataEntityStatusDto.DELETED.getId())` on the
+  data-entity / dataset-field branches. A Term mentioned ONLY in a
+  soft-deleted data-entity's description (or in the description of a
+  dataset-field belonging to a soft-deleted data-entity) is treated by
+  the guard as 'not mentioned' — the EXISTS subquery returns FALSE.
+
+  **Consequence**: the guard permits the Term to be renamed or hard-
+  deleted via `TermServiceImpl.delete`. The descriptions of the
+  soft-deleted entities still contain the `[[ns:term]]` syntactic
+  reference to the now-renamed-or-deleted Term.
+
+  **When the data-entity is later restored** (`PUT /api/dataentities/{id}/status →
+  ACTIVE` — a documented operator workflow per the data-entity-status
+  feature page), one of three things happens to the description:
+    (i) If the Term was DELETED: the description's `[[ns:term]]` text is
+        now a broken reference; the term-resolution path silently
+        downgrades the mention to 'unhandled' on the next description
+        edit (TermServiceImpl.updateDataEntityDescriptionTermsState path);
+        the staged-unhandled-mention table records the unresolvable
+        reference. The UI renders the description with un-styled,
+        un-linked `[[ns:term]]` text inline.
+    (ii) If the Term was RENAMED: same shape — the description's text
+         still references the old name; the next description edit
+         either downgrades to unhandled, OR if the same operator who
+         renamed the term updates the description, they can manually
+         fix the references. But there is no automatic re-link based
+         on rename.
+    (iii) If both the Term WAS deleted AND a new Term with the same
+          name was later created (the soft-delete-aware recreation
+          invariant — the partial unique index
+          `term_name_namespace_unique` permits reuse), the description
+          would point at the NEW term row with a DIFFERENT id — the
+          mention silently rebinds across what was conceptually a
+          discontinuity.
+
+  **The asymmetry vs term-to-term branch**: the term-to-term subquery
+  (lines 427-433) uses `TERM.DELETED_AT.isNull()` on the TARGET — a
+  fundamentally different soft-delete predicate. The data-entity and
+  dataset-field branches use STATUS state-machine; the term branch uses
+  deleted_at timestamp. The asymmetry reflects the platform's broader
+  three-soft-delete-mechanisms-across-the-repository-layer invariant
+  (batch H), but introduces THIS specific corner case: the same
+  semantic question ("is this term mentioned anywhere active?") is
+  answered differently across the three subqueries.
+
+  **The intent is explicit**: the maintainer DELIBERATELY filtered
+  STATUS != DELETED on the data-entity branches so operators can clean
+  up the Term catalog after a wave of entity deletions. The trade-off
+  the maintainer accepted: a Term mentioned ONLY in soft-deleted
+  entities can be cleaned up; the consequence (dangling reference on
+  restore) is undocumented. Operator-visible inconsistency surface:
+  restore-soft-deleted-entity is a documented feature but its
+  interaction with Term lifecycle is undocumented.
+
+  **Pair with the term_to_term schema-drift invariant**: both findings
+  surface from the same repository file (ReactiveTermRepositoryImpl);
+  both involve the term-rename-protection guard's behaviour around
+  soft-deletion of the surrounding context. The combined picture: the
+  guard's three subqueries each handle soft-deletion DIFFERENTLY, and
+  one of them (term_to_term) has a schema-drift gap that compounds
+  the bypass surface.
+nodes:
+- odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+contributors:
+- |-
+  ReactiveTermRepositoryImpl batch N (PRIMARY SOURCE): concepts.invariants.[
+  hasDescriptionRelations excludes parents with STATUS = DELETED] +
+  bugs_limitations_corner_cases.[1] (hasDescriptionRelations returns FALSE
+  for Terms mentioned only in soft-deleted entities — MEDIUM severity) +
+  security.known_security_gaps.[1] (parent-soft-delete corner case can
+  leak Term references across the rename-protection boundary) +
+  docs_link_semantic.doc_drift_findings.[REPOSITORY-DOC-GAP-A] (MEDIUM
+  doc-drift; rename-protection corner case not documented anywhere)
+- |-
+  TermServiceImpl batch K (cross-reference — the consumers):
+  TermServiceImpl.java:128 (updateTerm rename-protection consumer) +
+  TermServiceImpl.java:156 (delete deletion-protection consumer);
+  both invoke hasDescriptionRelations and surface 400
+  BadUserRequestException "Can't update/delete term, which was
+  mentioned in description" when the guard returns TRUE
+evidence:
+- |-
+  ReactiveTermRepositoryImpl.md:bugs_limitations_corner_cases.[1]
+  (PRIMARY SOURCE — MEDIUM severity) — evidence:
+    ReactiveTermRepositoryImpl.java:415, 425 (the STATUS.ne(DELETED)
+    filters on the data-entity / dataset-field branches) +
+    ReactiveTermRepositoryImpl.java:432 (the TERM.DELETED_AT.isNull()
+    filter on the term-to-term branch — the ASYMMETRIC SEMANTIC)
+- |-
+  ReactiveTermRepositoryImpl.md:concepts.invariants.[hasDescriptionRelations
+  excludes parents with STATUS = DELETED] (verified at lines 415, 425)
+- |-
+  ReactiveTermRepositoryImpl.md:security.known_security_gaps.[1] (parent-
+  soft-delete corner case — MEDIUM severity; rename-protection boundary
+  leak)
+- |-
+  Cross-batch evidence — three-soft-delete-mechanisms-across-the-repository-layer
+  (batch H — the architectural-mechanism map; the data-entity STATUS
+  state-machine vs term deleted_at asymmetry is captured there)
+axes_present:
+- repositories_reactive
+- services
+triangulation_count: 1
+cross_batch: true
+severity: MEDIUM
+severity_dim: durability-and-UX
+mitigations_unimplemented:
+- |-
+  Decide on the corner-case semantic explicitly. Two options:
+    (Option A) Strict guard — change line 415 + 425 to NOT filter
+      STATUS != DELETED. Result: a Term mentioned only in soft-deleted
+      entities CANNOT be renamed/deleted until the entities are
+      hard-deleted (a permission that today operators don't have via
+      the UI — hard-delete is housekeeping-driven via TTL). This
+      prevents the dangling-reference-on-restore case but blocks
+      catalog cleanup until housekeeping fires.
+    (Option B) Cleanup workflow — keep the current filter but add a
+      post-restore reconciliation step that rewrites any
+      [[ns:renamed-term]] references AND surfaces a UI warning to
+      operators restoring entities whose descriptions contain known-
+      missing terms. Higher scope; preserves the catalog-cleanup UX.
+- |-
+  Document the corner case on the business-glossary doc page —
+  operators need to know that renaming or deleting a Term while it is
+  mentioned only in soft-deleted entities is silently permitted, and
+  that restoring the entity later produces dangling references.
+- |-
+  Add a regression test pinning the corner case:
+    (a) Create a Term;
+    (b) Create a Data Entity, set description to "[[ns:term]] is
+        mentioned here";
+    (c) Soft-delete the Data Entity (STATUS → DELETED);
+    (d) Call hasDescriptionRelations(termId) — assert FALSE (current
+        behaviour);
+    (e) Delete the Term — assert it succeeds;
+    (f) Restore the Data Entity (STATUS → DRAFT);
+    (g) Read the description — assert the `[[ns:term]]` text is
+        present but unlinked.
+- |-
+  Add a UI warning on the entity-restore action when any of the
+  entity's descriptions contain unresolvable [[ns:term]] mentions.
+- |-
+  Add an audit-script for operators that lists all Terms whose mentions
+  exist only in soft-deleted entities — gives the operator visibility
+  into the "safe to delete?" question.
+notes: |-
+  NEW MEDIUM-severity invariant captured in batch 2026-05-19N. The bug
+  is a deliberate-by-design corner case — the maintainer chose to
+  permit Term-catalog cleanup after entity-deletion waves, accepting
+  the dangling-reference-on-restore consequence. The gap is in the
+  documentation, not the code.
+
+  The asymmetric semantic (STATUS for data-entity branches, deleted_at
+  for term-to-term branch) reflects the platform's broader three-soft-
+  delete-mechanisms architectural inconsistency — different soft-delete
+  shapes lead to different read-time semantic decisions.
+
+  Cross-cutting connections:
+    - Pairs with term-to-term-deleted-at-schema-drift-v0_0_76-vs-v0_0_91
+      (batch N) — both findings stem from the same repository file
+      and the same architectural-class hygiene gap
+    - Pairs with three-soft-delete-mechanisms-across-the-repository-layer
+      (batch H — strengthened batches L + N) — the different mechanisms
+      lead to the corner-case asymmetry
+    - Pairs with Term Linkage entity — the
+      `hasDescriptionRelations` guard is a load-bearing component of
+      the term-linkage feature; its corner case affects the linkage's
+      rename/delete protection
+    - Cross-references TermServiceImpl batch K which already records
+      the broader update-without-rename bypass; this batch-N finding
+      surfaces a DIFFERENT bypass class (parent-soft-delete) on the
+      same guard
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Document the corner case on business-glossary OR fix the
+        guard (Option A)
+    (b) Add the regression test pinning the corner case

@@ -1,0 +1,35 @@
+gap_id: TEST-GAP-661
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveDataSourceRepositoryImpl"
+pillars_affected: [P-10, P-08]
+surfaced_by:
+  - "ReactiveDataSourceRepositoryImpl.md:coherence_check.conflicts_surfaced.[1] (data_source_name_unique partial-index — silent rollback of entire batch on rename collision)"
+  - "ReactiveDataSourceRepositoryImpl.md:concepts.invariants.[2] (the partial unique on name was DROPPED then RE-CREATED — V0_0_18 + V0_0_31:27)"
+  - "ReactiveDataSourceRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[5] (create with name colliding against a LIVE row — no test)"
+behaviour: |-
+  **HIGH-impact silent failure mode on COLLECTOR-DRIVEN UPSERT: a `bulkUpdate` rename to a name already held by ANOTHER live datasource rolls back the ENTIRE transaction** including the paired `bulkCreate` of new datasources. The partial unique index `data_source_name_unique ON data_source(name) WHERE deleted_at IS NULL` (V0_0_31__add_deleted_at_field.sql:27) was DROPPED by V0_0_18__pull_push_data_sources.sql:1-3 then RE-CREATED in V0_0_31:27 — so `name` IS unique-on-live-rows, but operators reading the schema history may miss this. The collector-driven UPSERT pathway is shielded for the OPERATOR-EDITED name case because `prepareForUpdate` overwrites name from payload (DataSourceIngestionServiceImpl.java:86-88) — so if collector A originally registered ODDRN X with name "snowflake-prod", and the same collector A re-emits a payload renaming X to "redshift-prod" (a name already held by ANOTHER live datasource), the `bulkUpdate` SQL hits SQLSTATE 23505 mid-transaction, rolling back BOTH the rename AND any paired `bulkCreate` of new datasources from the same ingestion call (the bulk methods are `@ReactiveTransactional` per ReactiveAbstractCRUDRepository.java:128). The operator sees a 500 with the underlying message; there is NO `name collision with another datasource` distinction at the controller / mapper / service layer. Severity: HIGH because (a) a single failing datasource silently corrupts the success of all OTHER datasources in the same `createDataSources` batch; (b) collector retry logic typically re-emits the same payload, producing a stable 500 with no operator-actionable signal.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/DataSourceRepositoryImplTest.java (covers happy-path create / listDto / getDtoByOddrn — does NOT pin partial-unique-name collision)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServiceTest.java (6-case parameterized UPSERT — does NOT pin name-collision mid-batch rollback)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceIngestionServicePartialUniqueRollbackTest.java"
+  name: "createDataSources_renameToCollidingLiveName_rollsBackEntireBatch_pinsSilentFailureMode"
+evidence:
+  - "ReactiveDataSourceRepositoryImpl.md says (coherence_check.conflicts_surfaced.[1]): 'a collector UPSERTing a datasource that renames an existing row to a name held by another LIVE row fails with SQLSTATE 23505 mid-transaction — this rolls back the entire bulkUpdate AND the paired bulkCreate. No partial commit. The operator sees a 500 with the underlying message; no `name collision` distinction at the UI.' severity: MEDIUM (upgraded to HIGH because the cascading-rollback over an entire ingestion batch makes this operationally severe)"
+  - "ReactiveDataSourceRepositoryImpl.md says (concepts.invariants.[2]): 'The data_source.name column ALSO has a partial unique index data_source_name_unique ON data_source(name) WHERE deleted_at IS NULL (V0_0_31:27). The constraint was DROPPED then RE-CREATED — V0_0_18__pull_push_data_sources.sql:1-3 dropped data_source_name_key; V0_0_31:27 re-established uniqueness ONLY on live rows.'"
+  - "V0_0_31__add_deleted_at_field.sql:27 (`CREATE UNIQUE INDEX data_source_name_unique ON data_source(name) WHERE deleted_at IS NULL`)"
+  - "V0_0_18__pull_push_data_sources.sql:1-3 (the drop)"
+  - "ReactiveAbstractCRUDRepository.java:128-142 (bulkUpdate @ReactiveTransactional — entire batch rolls back on any partition failure)"
+cross_references:
+  - "TEST-GAP-239 (Owner partial-unique-name re-creation pattern — sibling)"
+  - "REFACTOR-425 (NEW — count-vs-query predicate divergence on listDto, sibling REFACTOR allocated by this sidecar)"
+  - "F-008 (P-10:F-001 Batch Ingestion) — `single_transaction_per_batch_no_per_entity_isolation` drift facet"
+  - "REFACTOR-NNN candidate: surface `UniqueConstraintException` with structured 'name=X clashes with datasource id=Y' detail at ExceptionUtils translation layer"
+proposed_action: |-
+  Testcontainers integration test. (a) Seed two live datasources: `(name='snowflake-prod', oddrn='//snowflake/prod', collector_id=C1)` and `(name='redshift-prod', oddrn='//redshift/prod', collector_id=C1)`. (b) Issue a collector-driven `POST /ingestion/datasources` payload that includes (i) ODDRN `//snowflake/prod` renamed to `name=redshift-prod` (the colliding name), (ii) a NEW ODDRN `//mysql/prod` to be CREATED. (c) Assert: the response is HTTP 500 with a `UniqueConstraintException`-rooted body. (d) Verify both datasources unchanged: `snowflake-prod` still has its original name; `mysql/prod` was NOT created (the bulkCreate rolled back). (e) Pin the silent-rollback regression: a future REFACTOR that introduces per-row error handling (the F-008 drift facet enumerates this) would flip this test to expect the `mysql/prod` insert to succeed.
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001", "P-08:F-004"]
+batch: 2026-05-20-R
+feature_id: F-008

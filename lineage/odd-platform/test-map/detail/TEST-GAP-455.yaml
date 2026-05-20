@@ -1,0 +1,31 @@
+gap_id: TEST-GAP-455
+category: missing-edge-case
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java service service:NotificationsDispatcher"
+pillars_affected: [P-07]
+surfaced_by:
+  - "NotificationsDispatcher.md:bugs_limitations_corner_cases.[6] (translate-failure WAL replay loop)"
+  - "NotificationsDispatcher.md:performance.known_performance_gaps.[3] (poison-message replay)"
+  - "NotificationsDispatcher.md:tests_coverage_semantic.uncovered_behaviours.[1] (translation failure propagates)"
+behaviour: |-
+  WAL replay-loop regression-pin for poison-message handling. A RuntimeException from translate() (unknown alert-type code at AlertNotificationMessageTranslator.java:87 IllegalArgumentException, missing or duplicate alerted-entity rows at lines 94-101 IllegalStateException) bypasses AlertNotificationMessageProcessor's per-sender try/catch and reaches NotificationSubscriber.java:90. The subscriber logs the error, releases the advisory lock, waits 10s via Thread.sleep, then re-acquires and re-decodes the SAME WAL LSN. setAppliedLSN/setFlushedLSN are NOT called for the failing LSN at line 83-84 (only called inside the try block AFTER process() returns successfully). The poison message replays indefinitely with 10s back-off between cycles. No test pins this contract — a regression that wrapped translate() in try/catch and advanced LSN on failure would silently drop alerts; a regression that removed the 10s back-off would burn CPU and DB on replay; a regression that broke the FK / type-code constraints upstream would block the entire notification subsystem indefinitely.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/NotificationSubscriberPoisonMessageReplayTest.java"
+  name: "translateThrows_LSN_notAdvanced_messageReplaysAfter10sBackoff"
+evidence:
+  - |-
+    NotificationsDispatcher.md says: 'A `RuntimeException` (e.g. `IllegalArgumentException` from unknown alert type code, `IllegalStateException` from missing data entity) inside `translate()` bypasses the dispatcher and reaches `NotificationSubscriber.java:90`. NotificationSubscriber logs the error, releases the lock, waits 10s, and re-acquires. The SAME WAL LSN is replayed — the dispatcher is invoked again on the same poison message indefinitely.'
+  - "AlertNotificationMessageProcessor.java:23-24 (uncaught translate call)"
+  - "NotificationSubscriber.java:60-91 (outer try/catch + 10s back-off + re-acquire)"
+  - "NotificationSubscriber.java:83-84 (setAppliedLSN/setFlushedLSN inside try block only)"
+  - "Grep `notification` against odd-platform-api/src/test returned 0 matches — entire subsystem untested"
+cross_references:
+  - "concepts.yaml:entities[202-queue-postgres-advisory-lock-single-sender-pattern]"
+  - "system-mission.md:P-07 Active Platform Features > Notifications"
+proposed_action: |-
+  Testcontainers-Postgres integration test. (1) Configure notifications.enabled=true with a single in-memory NotificationSender stub. (2) INSERT a poison ALERT row with type_id NOT in the AlertTypeEnum range (forces IllegalArgumentException in translate). (3) Start NotificationSubscriber. (4) Assert: (a) the stub sender's send(...) is NOT invoked, (b) the setAppliedLSN is NOT advanced past the poison LSN within 30 seconds, (c) the same LSN appears in the subscriber's replay attempts at ≥10s cadence, (d) NO log advances past 'Error processing decoded message'. Pins the WAL-replay-loop contract; a future fix that introduces a poison-message bypass MUST update this test.
+batch: 2026-05-19-K
+feature_id: null

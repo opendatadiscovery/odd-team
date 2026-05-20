@@ -1,0 +1,68 @@
+name: Replace lineage paths (establisher-keyed atomic rewrite)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW OPERATION, batch 2026-05-19I (LineageServiceImpl sidecar)**
+  — `LineageServiceImpl.replaceLineagePaths(List<LineagePojo>)` at lines 124-133.
+  The ingestion-side primitive for lineage-edge updates. Contract: "delete ALL
+  edges by these establishers, then insert the supplied edges, ALL inside one Spring
+  reactive transaction". Implementation: group by `establisher_oddrn` → `lineageRepository.batchDeleteByEstablisherOddrn(establishers)`
+  → `lineageRepository.batchInsertLineages(pojos)`, under `@ReactiveTransactional`
+  (LineageServiceImpl.java:125). The ONLY `@ReactiveTransactional`-annotated method
+  on the service. **Establisher-keyed scope** is the safety net for multi-producer
+  ingestion: edges declared by OTHER entities (not in the input pojo set''s establisher
+  set) are LEFT UNTOUCHED — a producer can re-publish its own lineage without
+  destroying another producer''s edges. **Per-producer trapdoor**: if an establisher
+  in the input pojo set has NO current edges to delete, the delete clause is a
+  no-op; if an existing establisher is NOT in the input pojo set, its edges are
+  LEFT UNTOUCHED; if an existing establisher IS in the input set with an INCOMPLETE
+  edge list, the omitted edges are DELETED (the silent-data-loss case captured
+  in the `silent-data-loss-via-replace-not-merge-ingestion-semantics` invariant).
+  Caller: `LineageIngestionRequestProcessor` (`LineageIngestionRequestProcessor.java:15-18`)
+  in the MAIN phase of the ingestion processor chain — wraps `.then()` to convert
+  `Flux<LineagePojo>` to `Mono<Void>`. Failure modes: empty pojos list → `batchDeleteByEstablisherOddrn(emptySet)`
+  becomes a Postgres `WHERE FALSE` (one wasted round-trip); a `batchInsertLineages`
+  failure rolls back the `batchDeleteByEstablisherOddrn` per Spring reactive transaction
+  semantics. Spring proxy caveat: self-invocation (`this.replaceLineagePaths(...)`)
+  would bypass the `@ReactiveTransactional` proxy — no self-call exists today,
+  but a future internal refactor splitting the method into helpers and invoking
+  from a third method would silently lose the transactional contract.'
+axes_present:
+- services
+nodes:
+- odd-platform java service service:LineageServiceImpl
+contributors:
+- 'LineageServiceImpl.md (batch I): concepts.operations — replaceLineagePaths(List<LineagePojo>):
+  group by establisher_oddrn → batchDeleteByEstablisherOddrn → batchInsertLineages,
+  under @ReactiveTransactional. concepts.invariants.[7] — establisher-keyed provenance
+  property. implicit_adrs.[1] — Establisher-keyed atomic-rewrite contract for ingestion.
+  bugs_limitations_corner_cases.[8] — empty-input no-op without early return.
+  bugs_limitations_corner_cases.[9] — Self-invocation would silently bypass @ReactiveTransactional.'
+evidence:
+- LineageServiceImpl.md:concepts.operations (replaceLineagePaths at lines 124-133)
+- LineageServiceImpl.md:concepts.invariants.[7] (establisher-keyed provenance —
+  the safety net for multi-producer ingestion)
+- LineageServiceImpl.md:implicit_adrs.[1] (the atomic-rewrite contract; @ReactiveTransactional
+  is the artefact of intent)
+- LineageServiceImpl.md:bugs_limitations_corner_cases.[8,9] (operational edges)
+- LineageServiceImpl.md:upstream_callers — LineageIngestionRequestProcessor (MAIN
+  phase processor)
+notes: |
+  Operation vocabulary captured for the lineage-ingestion primitive. Three doc
+  + test gaps surface:
+
+    (a) Test: no test asserts the @ReactiveTransactional rollback contract for
+        replaceLineagePaths. A failure in batchInsertLineages should roll back
+        batchDeleteByEstablisherOddrn — no test pins this.
+
+    (b) Doc: no operator-facing page documents the per-establisher scope (the
+        safety net for multi-producer ingestion). A collector author reading
+        the OpenAPI spec cannot infer the semantics.
+
+    (c) Code-quality: the empty-input no-op (wasted round-trip) is a low-severity
+        defensive-early-return candidate.
+
+  Cross-references:
+    - Companion invariant: `silent-data-loss-via-replace-not-merge-ingestion-semantics`
+      (the destructive side of the replace verb).
+    - Companion entity: `lineage-graph-traversal` (the read-side; this is the
+      write-side primitive).

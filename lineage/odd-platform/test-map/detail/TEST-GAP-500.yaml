@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-500
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataEntityController controller-method:deleteTermFromDataEntity"
+pillars_affected: [P-06]
+surfaced_by:
+  - "deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[3] (Description-linked term cannot be removed via API; UI hides the button BUT API call still returns 204)"
+  - "deleteTermFromDataEntity.md:tests_coverage_semantic.uncovered_behaviours.[4] (Description-link protection)"
+  - "deleteTermFromDataEntity.md:concepts.invariants.[2] (Description-linked rows are PROTECTED from delete)"
+  - "deleteTermFromDataEntity.md:implicit_adrs.[2] (Description-linked rows are PROTECTED from the unlink-API path)"
+behaviour: |-
+  Description-link protection regression-pin for deleteTermFromDataEntity (MEDIUM — load-bearing intent untested). The DELETE WHERE clause includes `.and(DATA_ENTITY_TO_TERM.IS_DESCRIPTION_LINK.isFalse())` (TermRelationsRepositoryImpl.java:84). A term linked to a data-entity ONLY via a `[[namespace:name]]` description mention cannot be removed via this endpoint; the user must edit the description (which routes through `handleDataEntityDescriptionTerms` / `updateDataEntityDescriptionTermsState` to remove description-link rows separately at TermServiceImpl.java:198-207 + lines 362-385). The UI gates the X button via `!linkedTerm.isDescriptionLink` (TermItem.tsx:46), so UI users never see the X for description-linked terms. However, an API caller bypassing the UI (curl, custom script — and per the REFACTOR-217 DELETE-half path-mismatch, ANY authenticated user, see TEST-GAP-489) calls DELETE /api/dataentities/{id}/terms/{termId} and gets 204 with NO actual change. The pair has a composite PK `(data_entity_id, term_id, is_description_link)` per V0_0_77__data_entity_term_description.sql:13-14 — manual and description-link rows can coexist for the SAME (data_entity, term) pair. A regression that dropped the `IS_DESCRIPTION_LINK.isFalse()` filter would silently allow API callers to remove description-link rows (which should only be removed by re-parsing the description), breaking the description→link inference invariant. The intentional design is undocumented at the operator-facing surface. Cross-pillar P-06 (Glossary integrity / the description-mention auto-link contract is load-bearing for term discoverability).
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/integration/TermDeleteDescriptionLinkProtectionTest.java"
+  name: "deleteTermFromDataEntity_descriptionLinkedTerm_returns204_butLeavesRowIntact"
+evidence:
+  - "deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[3]: 'The DELETE WHERE clause filters IS_DESCRIPTION_LINK.isFalse() (TermRelationsRepositoryImpl.java:84); a term linked to a data-entity ONLY via a [[namespace:name]] description mention cannot be detached via this endpoint. The UI gates the X button with !linkedTerm.isDescriptionLink (TermItem.tsx:46), so a UI user never sees the X for description-linked terms. However, an API caller bypassing the UI (curl, custom script) calls DELETE /api/dataentities/{id}/terms/{termId} and gets 204 with no actual change.'"
+  - "TermRelationsRepositoryImpl.java:80-88 (the IS_DESCRIPTION_LINK.isFalse() predicate)"
+  - "TermItem.tsx:46-56 (UI gating on !isDescriptionLink)"
+  - "TermServiceImpl.java:198-207 + 362-385 (the description-edit pipeline for description-link cleanup)"
+  - "V0_0_77__data_entity_term_description.sql:13-14 (composite PK including is_description_link)"
+cross_references:
+  - "TEST-GAP-489 (REFACTOR-217 DELETE-half — combined with this, unauthorized callers cannot break description-links but CAN write 204-with-no-change audit noise)"
+  - "TEST-GAP-499 (silent-204 + activity-event-noise — same DELETE endpoint, different semantic case)"
+  - "REFACTOR-227 (description-mention auto-link interaction — adjacent)"
+  - "DOC-NNN candidate: document the description-link protection in business-glossary.md"
+proposed_action: |-
+  Testcontainers integration test. (a) Create data entity X, term T. (b) Create row in data_entity_to_term with (X.id, T.id, is_description_link=TRUE) — simulating the description-mention auto-link. (c) DELETE /api/dataentities/X/terms/T.id. (d) Assert HTTP 204. (e) Query `SELECT count(*) FROM data_entity_to_term WHERE data_entity_id=X.id AND term_id=T.id AND is_description_link=TRUE` returns 1 (the description-link row is intact). (f) Test comment 'LOCKS the description-link protection contract — DELETE only removes manual links (is_description_link=FALSE), preserves description-mention auto-links. A regression that dropped the IS_DESCRIPTION_LINK.isFalse() filter would FAIL this test.'
+batch: 2026-05-19-L
+feature_id: null

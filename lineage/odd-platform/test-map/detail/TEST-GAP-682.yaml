@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-682
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform java service service:OwnerServiceImpl"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "OwnerServiceImpl.md:bugs_limitations_corner_cases.[6] (create does NOT call updateSearchVectors — NEW asymmetry discovered at the enclosing-class tier via LSN-018 pre-emit coherence check)"
+  - "OwnerServiceImpl.md:implicit_adrs.[4] (Search-vector refresh INSIDE the update transaction, not deferred to a background job — asymmetry)"
+behaviour: |-
+  **NEW asymmetry surfaced via LSN-018 pre-emit coherence check at the enclosing-class tier: `OwnerServiceImpl.create` does NOT call `updateSearchVectors`, in deliberate symmetric absence with `delete`.** Lines 54-66 (create), 82 (update calls helper), 87-100 (delete — also no call), 109-114 (the helper itself). New Owners are seeded into FTS LAZILY — the `search_entrypoint` row for an owner's name is populated when a downstream data entity references the owner (via OwnershipServiceImpl.create's `updateChangedOwnershipVectors`) or via the housekeeping batch refresh. The asymmetry is: rename refreshes (read-after-write consistency), create does not (lazy seeding), delete does not (lazy invalidation). The maintainer's intent is plausibly INTENTIONAL but the asymmetry is unstated and uncovered. A REGRESSION-PIN would: (a) verify create does NOT call either `searchEntrypointRepository.updateChangedOwnerVectors` or `termSearchEntrypointRepository.updateChangedOwnerVectors`; (b) document the lazy-seed contract via a comment block so a future maintainer adding FTS refresh on create breaks the test deliberately. Sister gap to TEST-GAP-625 (which pins update-refresh-yes + delete-refresh-no); this batch-S sidecar adds the create-refresh-no axis.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/OwnerServiceImplTest.java"
+  name: "create_doesNotCallUpdateSearchVectors_pinsLazyFtsSeedingContract"
+evidence:
+  - "OwnerServiceImpl.md says (bugs_limitations_corner_cases.[6]): '`create` does NOT call `updateSearchVectors` — NEW asymmetry discovered at the service-tier sidecar. Per the LSN-018 pre-emit coherence check (see coherence_notes.[rule-6-pre-emit-check]), this asymmetry was IMPLICIT in batch P sidecars but only becomes EXPLICIT at the enclosing-class tier: OwnerServiceImpl.create (lines 54-66) does NOT call updateSearchVectors. New Owners are seeded into FTS lazily.'"
+  - "OwnerServiceImpl.md says (implicit_adrs.[4]): 'Search-vector refresh INSIDE the update transaction, not deferred to a background job — the create + delete pipelines deliberately omit it; the maintainer''s intent is asymmetric (rename refreshes, create + delete defer).'"
+  - "Source: OwnerServiceImpl.java:54-66 (create) vs OwnerServiceImpl.java:82 (update calls helper) vs OwnerServiceImpl.java:87-100 (delete) + OwnerServiceImpl.java:109-114 (the helper)"
+cross_references:
+  - "TEST-GAP-625 (sister surface — update-refresh-yes + delete-refresh-no)"
+  - "LSN-018 (the pre-emit coherence check that surfaced this NEW asymmetry from cross-batch composition)"
+  - "F-006 batch-K observed_vs_expected.facet delete_search_vector_not_refreshed (OwnershipServiceImpl version — same asymmetric pattern at a different service)"
+related_features: [F-006]
+related_pillar_features: ["P-08:F-NN-owner-directory"]
+proposed_action: |-
+  Add Mockito test `create_doesNotCallUpdateSearchVectors_pinsLazyFtsSeedingContract` in `OwnerServiceImplTest`. (a) Mock `ownerRepository`, `ownerToRoleRepository`, `searchEntrypointRepository`, `termSearchEntrypointRepository`. (b) Stub `ownerRepository.create` to return a populated OwnerPojo. (c) Invoke `ownerService.create(new OwnerFormData().name("Alice"))`. (d) `verify(searchEntrypointRepository, never()).updateChangedOwnerVectors(anyLong())`. (e) `verify(termSearchEntrypointRepository, never()).updateChangedOwnerVectors(anyLong())`. (f) Add a `// REGRESSION-PIN — Create deliberately does NOT call updateSearchVectors. The maintainer's choice is lazy FTS seeding: an Owner becomes findable when downstream data entities reference it. A REFACTOR adding updateSearchVectors to create will break this test, making the decision deliberate.` comment block. Pair with TEST-GAP-625 (which pins the SAME absence for delete + presence for update) to surface the FULL asymmetry across all three lifecycle verbs.
+batch: 2026-05-20-S
+feature_id: F-006

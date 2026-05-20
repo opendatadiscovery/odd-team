@@ -1,0 +1,35 @@
+gap_id: TEST-GAP-519
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java SearchController controller-method:facets"
+  - "odd-platform java SearchController controller-method:search"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "facets.md:bugs_limitations_corner_cases.[1] (search_facets table has no user binding — any authenticated user in possession of any other user's searchId UUID can READ, UPDATE, and DRIVE that session)"
+  - "facets.md:security.known_security_gaps.[1] (Session-state has no per-user binding)"
+  - "facets.md:implicit_adrs.[2] (Search session is bearer-token-shaped by design at the schema layer)"
+  - "facets.md:tests_coverage_semantic.uncovered_behaviours.[2] (searchId ownership boundary)"
+behaviour: |-
+  Search-session UUID cross-user enumeration regression-pin for the FACET ENDPOINT FAMILY (HIGH — cross-pillar P-01+P-09; second invocation site after TEST-GAP-252 at /search). STRENGTHENS TEST-GAP-252 by extending it from /search-create + /search-results to the facet endpoints AND criticality-bumping from LOW to HIGH given the additional data exposure surface (cross-owner facet counts). The `search_facets` table schema (`V0_0_1__init.sql:204-211`) has NO `owner_id` / `created_by` / `user_id` column — the UUID is the sole identifier. `SearchServiceImpl.search` creates a row WITHOUT capturing the caller's principal (`SearchServiceImpl.java:75-82`); `updateFacets` reads+merges+writes WITHOUT checking ownership (`SearchServiceImpl.java:84-96`); `fetchFacetState(searchId)` does a raw lookup with NO owner predicate (`SearchServiceImpl.java:157-160`); `ReactiveSearchFacetRepositoryImpl.get` (lines 99-106) is a raw UUID-keyed UPDATE-RETURNING. Any authenticated user with knowledge of any other user's UUID can read AND mutate that user's session state via: `GET /api/search/{search_id}`, `GET /api/search/{search_id}/facet/{facet_type}`, `PUT /api/search/{search_id}` (updateSearchFacets), `POST /api/search/{search_id}` (searchByQuery resync), `GET /api/search/{search_id}/results`. Concrete impact: (a) an operator who copies a search URL into a bug report exposes their entire saved-filter state including `My Objects` posture, (b) a CSRF-style cross-tab actor with read access to URL bars in the browser can hijack the session, (c) an authenticated attacker can probe `GET /api/search/{guess}/facet/OWNERS` UUIDs — most return 404, but a hit yields full facet drill-down of another user's session including the cross-owner catalog cardinality (TEST-GAP-518). The UUID space is 122-bit `gen_random_uuid()` so brute-force is infeasible, but URL leakage is not. The TODOs at `V0_0_1__init.sql:206-207` (`more clever way to generate uuid` + `find a way to define TTL`) acknowledge maintenance gaps but no migration addresses the unscoped posture. Under `auth.type=DISABLED` the endpoints become anonymously reachable AND unbound — combined effect: any unauthenticated client on the network can probe UUIDs and read facet drill-downs. Cross-pillar P-01 (Discovery — search session state) + P-09 (Security — session ownership model).
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/SearchFacetSessionCrossUserAccessTest.java"
+  name: "getFacets_and_getFiltersForFacet_otherUserSearchId_currentlySucceeds_pinsBearerTokenPosture"
+evidence:
+  - "facets.md:bugs_limitations_corner_cases.[1]: 'The search_facets table has no user binding — any authenticated user in possession of any other user's searchId UUID can READ, UPDATE, and DRIVE that session. Cross-link to batch E (SearchController.search session-UUID-has-no-per-user-binding finding).' severity: HIGH"
+  - "facets.md:security.known_security_gaps.[1]: 'Session-state has no per-user binding. The search_facets schema has no owner_id / created_by / user_id column. Any authenticated user with knowledge of any other user's UUID can read AND mutate that user's session state.' severity: HIGH"
+  - "V0_0_1__init.sql:204-211 (schema with no owner column + TODOs)"
+  - "SearchServiceImpl.java:75-82, 84-96, 157-160 (no principal capture, no ownership check)"
+  - "ReactiveSearchFacetRepositoryImpl.java:99-106 (raw UUID-keyed UPDATE-RETURNING)"
+cross_references:
+  - "TEST-GAP-252 (search-session UUID per-user binding — STRENGTHENED at facet endpoint surface)"
+  - "TEST-GAP-518 (cross-owner facet-count enumeration — co-located, primary security finding)"
+  - "ADR-CANDIDATE-003 (read-collaborative posture)"
+  - "concepts.yaml:entities[Search Session].security_aggregate.weaknesses.[3] (Search-session UUID has no per-user owner-binding)"
+  - "F-001 (Search and Filtering)"
+proposed_action: |-
+  WebTestClient integration test. (a) User A authenticates; POST /api/search with query 'finance' → A receives session_id S_A. (b) User B authenticates (different principal). (c) User B calls GET /api/search/S_A → assert HTTP 200 with the SearchFacetsData payload of A's session (including A's query 'finance'). (d) User B calls GET /api/search/S_A/facet/OWNERS?page=1&size=100 → assert HTTP 200 with the catalog-wide owner facets. (e) User B calls PUT /api/search/S_A with new query 'engineering' → assert HTTP 200 — B has now MUTATED A's session. (f) User A re-fetches S_A → assert the query is now 'engineering' (B's mutation succeeded — session was hijacked). (g) Test comment 'LOCKS the bearer-token-shaped search-session posture as of 2026-05-19 (TEST-GAP-252 extended to facet endpoints; criticality bumped from LOW to HIGH given additional cross-owner facet-count exposure). When per-user owner-binding is added to search_facets, this test FLIPS to expect 403/404 on all of B's reads + writes.' This is regression-pin + vulnerability-proof — operators reading the test understand the session-hijack surface.
+batch: 2026-05-19-M
+feature_id: F-001

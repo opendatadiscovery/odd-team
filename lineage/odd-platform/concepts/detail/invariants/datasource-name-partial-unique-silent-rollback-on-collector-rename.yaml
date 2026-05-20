@@ -1,0 +1,212 @@
+name: data_source.name partial-unique silent rollback on collector-driven rename
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-10
+- P-08
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20R** — surfaced by the
+  ReactiveDataSourceRepositoryImpl batch-R sidecar's coherence sweep
+  (conflicts_surfaced.[1]). The `data_source.name` column carries a
+  PARTIAL UNIQUE INDEX `data_source_name_unique ON data_source(name)
+  WHERE deleted_at IS NULL` per `V0_0_31__add_deleted_at_field.sql:27`.
+  The constraint history: V0_0_18__pull_push_data_sources.sql:1-3
+  DROPPED the original `data_source_name_key` UNIQUE constraint;
+  V0_0_31__add_deleted_at_field.sql:27 RE-CREATED uniqueness as a
+  partial index scoped to live rows only. Soft-deleted datasources
+  with the same name DO NOT count against uniqueness.
+
+  **The silent-rollback path**: a collector POSTing
+  `/ingestion/datasources` with a `DataSourceList` payload triggers
+  `DataSourceIngestionServiceImpl.createDataSources` (lines 35-72).
+  Per the UPSERT-by-ODDRN partial-merge invariant, an existing row
+  matched by ODDRN has its `name` overwritten from the payload
+  (`prepareForUpdate` at line 74-92 sets `.setName(payload.getName()))`.
+  If the operator (or an unaware collector deployment) sends a payload
+  that renames an existing datasource to a `name` already held by ANOTHER
+  LIVE row, the bulk `UPDATE … SET name = ?, …` issued by inherited
+  `bulkUpdate` (ReactiveAbstractCRUDRepository.java:128-142 →
+  updateMany at 203-223) hits the `data_source_name_unique` partial
+  index → `SQLSTATE 23505` → `UniqueConstraintException`.
+
+  **The transaction rolls back ALL of it**: `bulkUpdate` is
+  `@ReactiveTransactional` (parent line 129). The paired `bulkCreate`
+  for any genuinely-new ODDRNs in the same payload is ALSO rolled back
+  (Datasource ingestion runs as ONE transaction per ingestion call).
+  An operator who sent a 50-datasource payload — 49 unchanged + 1
+  renaming to a colliding name — sees the ENTIRE batch fail with a
+  500 Internal Server Error. The 49 unchanged datasources DO get
+  re-touched (their `updated_at` advances) but the rolled-back
+  transaction means even those touches are undone.
+
+  **The operator-facing message is misleading**: the surface error is
+  `UniqueConstraintException` translated by `ExceptionUtils`, but the
+  collector-side log line typically shows "ingestion failed: HTTP
+  500" with no clear indication that "name collision with another
+  datasource" was the root cause. The collector's automation pipeline
+  retries with the SAME payload → same failure → same 500. No
+  remediation path short of the operator manually identifying the
+  name conflict and adjusting the collector configuration.
+
+  **The UI path is differently broken**: `POST /api/datasources` via
+  `DataSourceController.createDataSource` → `DataSourceServiceImpl.create`
+  → inherited `create(pojo)` from ReactiveAbstractCRUDRepository.java:103-106.
+  This path issues a single `INSERT INTO data_source` with NO
+  `onDuplicateKey` clause. A name collision against a live row raises
+  `SQLSTATE 23505` → `UniqueConstraintException` mapped via
+  `ExceptionUtils.translateDatabaseException`. The UI-side error is
+  visible to the operator immediately ("datasource with this name
+  already exists"), but the cause is the SAME partial unique index.
+  The UI and collector paths share the index; only their error-surface
+  ergonomics differ.
+
+  **The collector-side ergonomics gap is the operational hazard**:
+  the SQL constraint protects the platform's integrity (prevents
+  duplicate-name datasources), but the collector-driven path surfaces
+  it as an opaque 500. The remediation path (deduplicate the name)
+  is operator-only — collectors cannot reliably detect another
+  datasource holding the desired name without a pre-write GET pass
+  (which races with concurrent collector activity).
+
+  **Cross-collector preservation is also affected**: the partial-merge
+  invariant preserves `collector_id` on UPSERT (the copy-construct in
+  `prepareForUpdate` retains the existing collector_id). So a name
+  collision between datasources owned by DIFFERENT collectors fails
+  the same way. Collector A's payload trying to rename its
+  ODDRN-matched row to a name held by collector B's datasource → 500.
+nodes:
+- odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl
+contributors:
+- |-
+  ReactiveDataSourceRepositoryImpl batch R (PRIMARY SOURCE):
+  coherence_check.conflicts_surfaced.[1] (NEW finding — data_source.name
+  partial-unique-on-live-rows; not surfaced at the controller layer per
+  batch P; collector-rename to a colliding name fails at the SQL layer
+  mid-transaction, rolling back the entire createDataSources call;
+  MEDIUM severity but operationally HIGH because the operator-facing
+  message is opaque) +
+  concepts.invariants.[2] (data_source.name partial unique index
+  data_source_name_unique ON data_source(name) WHERE deleted_at IS NULL
+  at V0_0_31:27; a collector UPSERTing a datasource that renames an
+  existing row to a name held by another LIVE row fails with
+  SQLSTATE 23505 mid-transaction) +
+  concepts.invariants.[7] (three soft-delete mechanisms — data_source
+  uses deleted_at and the partial-unique-index pattern; soft-delete-aware
+  recreation is enabled for ODDRN but the name index is the silent collision
+  surface) +
+  bugs_limitations_corner_cases (the constraint history: V0_0_18 dropped
+  the original UNIQUE; V0_0_31 re-created as partial index) +
+  tests_coverage_semantic.uncovered_behaviours (test case proposal:
+  `create with a name colliding against a LIVE row raises
+  UniqueConstraintException via the data_source_name_unique partial
+  index` — NO existing test pins the constraint at the repository
+  layer)
+evidence:
+- |-
+  ReactiveDataSourceRepositoryImpl.md:coherence_check.conflicts_surfaced.[1]
+  (PRIMARY SOURCE — MEDIUM severity, operationally HIGH due to opaque
+  collector-facing error) — evidence:
+    V0_0_31__add_deleted_at_field.sql:27 (the partial unique index
+      data_source_name_unique on (name) WHERE deleted_at IS NULL) +
+    V0_0_18__pull_push_data_sources.sql:1-3 (dropped the original
+      data_source_name_key UNIQUE constraint — the migration narrative
+      shows the deliberate transition to partial-on-live-rows) +
+    ReactiveDataSourceRepositoryImpl.java (no explicit name-collision
+      check; the bulkUpdate inherited path writes name unconditionally) +
+    DataSourceIngestionServiceImpl.java:74-92 (prepareForUpdate
+      overwrites name + description from payload) +
+    DataSourceIngestionServiceImpl.java (the @ReactiveTransactional
+      boundary at line 40 — ALL of createDataSources commits or
+      rolls back together) +
+    ExceptionUtils.translateDatabaseException (the SQLSTATE 23505
+      translation to UniqueConstraintException — opaque to collectors)
+- |-
+  ReactiveDataSourceRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours
+  (no test pins the constraint at the repository layer — the bulk-batch
+  rollback semantic under name collision is not exercised; a regression
+  introducing a new field write that ALSO needed to be name-unique
+  would not be caught)
+axes_present:
+- repositories_reactive
+- schema_migrations
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: correctness-and-operational-ergonomics
+mitigations_unimplemented:
+- |-
+  Improve the collector-facing error message: extend
+  `ExceptionUtils.formatMessage` to specifically detect the
+  `data_source_name_unique` constraint name in the SQL error and
+  surface a clear message ("Datasource name 'X' already in use by
+  another datasource — choose a different name in the collector
+  configuration"). Cheapest fix; preserves the SQL constraint;
+  improves operator triage time.
+- |-
+  Add a pre-write name-collision check at
+  `DataSourceIngestionServiceImpl.createDataSources` — for the
+  payload's set of (oddrn, name) pairs, issue a single SELECT to
+  identify any name that's already held by a DIFFERENT-ODDRN row.
+  Surface the collision as a structured response BEFORE the
+  transaction commits. Adds one round-trip per ingestion call;
+  pays back in clarity of the error.
+- |-
+  Add the regression test from the test-coverage proposal: insert
+  two datasources `[(oddrn1, name='snow-A'), (oddrn2, name='snow-B')]`;
+  call createDataSources with a payload renaming oddrn1 to 'snow-B';
+  assert the call fails with UniqueConstraintException AND that
+  oddrn2's row is UNCHANGED (verifying the transactional rollback).
+- |-
+  Document the name-uniqueness contract on the collector-author docs:
+  "Datasource names must be unique across all live datasources in the
+  platform. A collector renaming an existing datasource to a name
+  already held by another datasource will fail the entire ingestion
+  batch."
+- |-
+  Consider relaxing the name uniqueness to PER-COLLECTOR uniqueness
+  (partial unique index on `(collector_id, name) WHERE deleted_at IS
+  NULL` instead of `(name) WHERE deleted_at IS NULL`). This would
+  scope the constraint to each collector's namespace; collisions
+  across collectors would be permitted. HIGH-scope schema change;
+  preserves backward compatibility within a single-collector
+  deployment; opens the door to name reuse across multi-collector
+  deployments.
+notes: |-
+  This is a HIGH-severity operational invariant, not because the
+  constraint itself is wrong (it serves a real purpose — preventing
+  duplicate datasource names that would confuse users) but because
+  the COLLECTOR-FACING ERROR SURFACE is opaque. A collector's
+  automation pipeline encountering this error has no programmatic
+  way to recover; the operator must intervene manually. The 500
+  → opaque message → automation retry loop is the failure mode.
+
+  Cross-cutting connections:
+    - Pairs with the upsert-by-oddrn-partial-merge invariant — the
+      UPSERT contract is that `name` IS one of the two fields that
+      propagates from payload. That propagation enables this collision
+      surface
+    - Pairs with the three-soft-delete-mechanisms invariant — the
+      data_source table's partial-unique-on-live-rows pattern is one
+      instance of the deleted_at + partial-unique-index combination;
+      the ODDRN index uses the same shape and serves correctness;
+      the name index uses the same shape and serves consistency
+    - Pairs with the namespace-inherited-from-collector-not-payload
+      invariant — both invariants describe behaviour the collector
+      cannot reasonably know about from the API surface; both are
+      service-tier conventions that surface as opaque collector errors
+    - Pairs with `LSN-001` retrospective pattern — silent-failure-mode
+      where the actual cause (name collision) is hidden behind an
+      opaque 500 status
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Document the name-uniqueness contract on the collector-author
+        docs (developer-guides/build-and-run/custom-collectors and
+        the Datasource Ingestion API reference)
+    (b) Document the collector-vs-UI error-surface ergonomics gap on
+        the operator-facing Datasources tab help text — operators
+        debugging "collector failed to register datasource" need
+        clear guidance to check for name collisions in the catalog
+    (c) Document the V0_0_31 partial-unique-index design choice in an
+        internal architecture note — the schema decision is non-obvious
+        and the operational consequence (silent collector errors) is
+        a real ongoing cost

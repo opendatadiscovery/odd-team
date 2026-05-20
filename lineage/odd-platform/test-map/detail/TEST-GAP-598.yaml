@@ -1,0 +1,28 @@
+gap_id: TEST-GAP-598
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java auth handler:GithubUserHandler"
+pillars_affected: [P-09]
+surfaced_by:
+  - "GithubUserHandler.md:bugs_limitations_corner_cases.[5] (No retry, timeout, rate-limit handling)"
+  - "GithubUserHandler.md:tests_coverage_semantic.uncovered_behaviours.[9] (GitHub API rate-limit failure)"
+  - "GithubUserHandler.md:performance.known_performance_gaps.[0,1]"
+behaviour: |-
+  **No retry, timeout, or rate-limit handling on outbound GitHub calls — transient flake = hard login failure.** GitHub's REST API enforces rate limits (5000 req/hr authenticated default; secondary limits for abuse). A 403 with `X-RateLimit-Remaining: 0`, a 429 status, OR a transient network flake will surface to the user as a HARD login failure — `.bodyToMono(...)` fails-out the Mono via WebClientResponseException propagated to the OAuth2 login flow. NO `.retryWhen` (lines 76-85, 104-113), NO `.timeout(...)`, NO `.onErrorResume(...)`, NO fallback to cached membership signal. The handler hard-codes `WebClient.create(...)` (line 39) without `.responseTimeout(...)` — relies on Reactor Netty default timeouts. A high-traffic login surface (e.g. a SAML-like flow with thousands of automated re-logins, or a shared NAT-IP egress) CAN exhaust the rate limit. Per-user rate-limit is the binding constraint (token is per-user); aggregate platform GitHub-API usage is bounded by sum of per-user limits.
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/handler/GithubUserHandlerNoRetryTimeoutTest.java"
+  name: "enrichUser_githubApi429RateLimit_propagatesHardFailure_noRetryNoFallback"
+evidence:
+  - "GithubUserHandler.md says (bugs_limitations_corner_cases.[5]): 'No retry, no timeout, no rate-limit handling on outbound GitHub calls. GitHub's 5000-req-per-hr rate limit can be exhausted by a high-traffic login surface. The two outbound calls (/user/orgs + /user/teams) consume 2 tokens per login. A 403 or 429 response surfaces as a login failure with no fallback.' severity: LOW (operationally unusual; relevant for very large platform deployments)"
+  - "GithubUserHandler.md says (performance.known_performance_gaps.[0,1]): 'No retry on transient failures + No client-side timeout — relies on Reactor Netty default'"
+  - "GithubUserHandler.java:39, 76-85, 104-113 (no .retryWhen / .timeout / .onErrorResume)"
+cross_references:
+  - "F-011"
+  - "REFACTOR-NNN candidate: add .retryWhen + .timeout + .onErrorResume to outbound GitHub WebClient calls"
+proposed_action: |-
+  Unit test on GithubUserHandler with mocked WebClient. (a) Mock /user/orgs to return 429 (or 403 with X-RateLimit-Remaining: 0). (b) Invoke enrichUserWithProviderInformation. (c) Assert the Mono terminates with WebClientResponseException (propagated unchanged); the login flow surfaces this as an OAuth2 error to the user. (d) Verify NO retry attempts (the WebClient was called exactly once). (e) Pin the no-retry contract. Future REFACTOR adding `.retryWhen(Retry.backoff(2, Duration.ofSeconds(1)))` flips the assert to expect 2 retry attempts.
+batch: 2026-05-19-O
+feature_id: F-011

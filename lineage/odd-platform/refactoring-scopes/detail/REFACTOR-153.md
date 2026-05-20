@@ -1,0 +1,9 @@
+- **REFACTOR-153** (NEW 2026-05-12D): Empty `auth.oauth2.client` map passes the validator and fails downstream with obscure `InMemoryReactiveClientRegistrationRepository` error. Boot fails with a Spring stack trace, not a "you set `auth.type=OAUTH2` but registered zero clients" message
+  - **Category**: empty-map-passes
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_auth__config-properties-class__ODDOAuth2Properties.md:bugs_limitations_corner_cases.[4]` (LOW) + `security.known_security_gaps.[4]` (LOW)
+  - **Statement**: `ODDOAuth2Properties.validate()` iterates `getClient().values()` — empty map is a no-op. An operator with `auth.type=OAUTH2` and empty `auth.oauth2.client` boots past validation, then hits `InMemoryReactiveClientRegistrationRepository` constructor's `registrations cannot be empty` error at `OAuthSecurityConfiguration.java:177`. The error is far from the actual root cause.
+  - **Evidence**: `ODDOAuth2Properties.java:17-19` (validator iterates values; no count check) + `OAuthSecurityConfiguration.java:177`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-048 (narrow-validator scope) does not defend the empty-map case.
+  - **Proposed remedy**: Add to `ODDOAuth2Properties.validate()`: `if (client.isEmpty()) { throw new IllegalStateException("You set auth.type=OAUTH2 but registered zero OAuth2 clients via auth.oauth2.client.*. See live docs for client configuration."); }`.
+  - **Severity rationale**: LOW — operator-friendliness; the deployment still fails to start (correct behaviour), just with a confusing error.
+  - **Suggested backlog grouping**: `OAuth2 hardening sprint`

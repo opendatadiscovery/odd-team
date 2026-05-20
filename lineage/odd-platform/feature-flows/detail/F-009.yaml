@@ -1,0 +1,363 @@
+feature_id: F-009
+pillar_id: P-07
+pillar_anchored_id: P-07:F-002
+pillar_anchored_feature_name: WAL-driven Notification Delivery
+primary_drift_class: poison_message_replay_loop
+drift_class_summary:
+- poison_message_replay_loop
+- exception_type_asymmetry_across_senders
+- unconditional_broadcast_no_routing
+- no_retry_no_dlq_no_audit
+- pii_passthrough_to_every_channel
+- empty_senders_silent_db_cost
+- sender_iteration_order_undefined
+- debug_log_full_payload_leak
+batch_origin: K
+created_in_batch: K
+feature_name: WAL-driven outbound alert notification fan-out (Slack / Webhook / Email)
+discovered_from_entry_point: wal-event:postgres-logical-replication:ALERT-table-INSERT/UPDATE
+description: |-
+  ODD Platform's Notifications subsystem is a leader-elected, single-thread,
+  WAL-driven outbound fan-out from the `ALERT` table to operator-configured
+  delivery channels (Slack incoming webhook, generic webhook, SMTP email). The
+  entry point is NOT a REST controller — it is the Postgres logical-replication
+  stream feeding `NotificationSubscriber.run()`, which acquires the
+  `notifications.wal.advisory-lock-id` (default 100) via
+  `PostgreSQLLeaderElectionManager`, decodes WAL messages into
+  `DecodedWALMessage` objects, and dispatches them through
+  `AlertNotificationMessageProcessor.process(...)`.
+
+  The dispatcher (the substrate's `service:NotificationsDispatcher` node, which
+  maps to `AlertNotificationMessageProcessor` — the sole implementor of
+  `PostgresWALMessageProcessor`) translates each decoded WAL row to an
+  `AlertNotificationMessage` via `AlertNotificationMessageTranslator.translate(...)`
+  (a multi-statement jOOQ read of `alert_chunk` + the alerted `data_entity` row
+  + a recursive downstream-lineage CTE bounded by
+  `notifications.message.downstream-entities-depth`), then iterates
+  `List<NotificationSender>` synchronously and calls `.send(...)` on each,
+  catching `NotificationSenderException` per-sender and continuing the loop on
+  failure.
+
+  The user-observable promise (per the live notifications doc, WebFetched
+  2026-05-19 status 200): "An alert dispatched to multiple channels is
+  delivered to every channel that is enabled." The user-observable reality
+  diverges on multiple facets — RuntimeException from email bypasses the
+  per-sender catch and aborts fan-out mid-message; a translation failure
+  triggers an infinite WAL re-delivery loop with 10s back-off; every channel
+  receives every alert with full PII payload regardless of which Owner the
+  data entity belongs to; an empty `List<NotificationSender>` still pays the
+  per-message recursive-CTE DB cost; sender iteration order is
+  Spring-bean-discovery-order (undefined).
+contributing_nodes:
+- odd-platform java service service:NotificationsDispatcher
+- odd-platform java NotificationSubscriber
+- odd-platform java NotificationSubscriberStarter
+- odd-platform java AlertNotificationMessageTranslator
+- odd-platform java sender:SlackNotificationSender
+- odd-platform java sender:WebhookNotificationSender
+- odd-platform java sender:EmailNotificationSender
+- odd-platform java PostgreSQLLeaderElectionManager
+- odd-platform java config-properties:NotificationsProperties
+chain:
+- hop: 1
+  node: odd-platform java NotificationSubscriberStarter
+  sidecar: '(not separately enriched — context from NotificationsDispatcher sidecar dependencies_semantic)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    NotificationSubscriberStarter.java:21-32 — single-thread executor (`Executors.newSingleThreadExecutor`)
+    runs `NotificationSubscriber.run()` on the leader-elected platform instance.
+    Cluster-wide ONE active subscriber.
+  unresolved: false
+- hop: 2
+  node: odd-platform java NotificationSubscriber
+  sidecar: '(not separately enriched — context inferred from NotificationsDispatcher sidecar)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    NotificationSubscriber.java:39-46 (leader acquire) + lines 60-91 (outer try/catch
+    with 10s back-off) + line 80 (calls messageProcessor.process(decodedMessage)) +
+    lines 83-84 (advances setAppliedLSN / setFlushedLSN unconditionally after process()
+    returns). Acquires the advisory lock identified by `notifications.wal.advisory-lock-id`
+    (default 100) and registers publication only for `Tables.ALERT`.
+  unresolved: false
+- hop: 3
+  node: odd-platform java service service:NotificationsDispatcher
+  sidecar: odd-platform__java__service__service__NotificationsDispatcher.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    AlertNotificationMessageProcessor.java:14-37 — the dispatcher.
+    Line 23 — invokes `messageTranslator.translate(message)` (the recursive-CTE
+    read; throws IllegalArgumentException on unknown alert-type code +
+    IllegalStateException on missing/duplicate alerted-entity rows — BOTH bypass
+    the per-sender catch and propagate to NotificationSubscriber.java:90).
+    Lines 25-36 — sequential for-loop over `List<NotificationSender>`.
+    Lines 29-35 — per-sender try/catch on NotificationSenderException only.
+  unresolved: false
+  resolved_in_batch: K
+- hop: 4a
+  node: odd-platform java sender:SlackNotificationSender
+  sidecar: '(not separately enriched — referenced from NotificationsDispatcher sidecar)'
+  multiplicity_per_trigger: 'depends on configured receivers (0..1 per send)'
+  evidence: |-
+    SlackNotificationSender.java:40-49 — HTTP POST via shared HttpClient
+    (NotificationConfiguration.java:31-34) to `notifications.receivers.slack.url`;
+    AbstractNotificationSender.java:16-30 wraps non-2xx as NotificationSenderException
+    (line 24-27 the 200-only check; no 429 handling — Slack rate-limit responses
+    surface as NotificationSenderException and are catch-and-logged).
+  unresolved: false
+- hop: 4b
+  node: odd-platform java sender:WebhookNotificationSender
+  sidecar: '(not separately enriched — referenced from NotificationsDispatcher sidecar)'
+  multiplicity_per_trigger: 'depends on configured receivers (0..1 per send)'
+  evidence: |-
+    WebhookNotificationSender.java:18-23 — JSONSerDeUtils.serializeJson over
+    AlertNotificationMessage + HTTP POST via shared HttpClient. Same 200-only
+    accept; non-2xx → NotificationSenderException (caught by dispatcher).
+  unresolved: false
+- hop: 4c
+  node: odd-platform java sender:EmailNotificationSender
+  sidecar: '(not separately enriched — referenced from NotificationsDispatcher sidecar)'
+  multiplicity_per_trigger: 'depends on configured receivers (0..N per send — one per recipient)'
+  evidence: |-
+    EmailNotificationSender.java:58-60 — wraps MessagingException | TemplateException |
+    IOException as `new RuntimeException(...)` (NOT NotificationSenderException) —
+    LOAD-BEARING ASYMMETRY: RuntimeException bypasses the dispatcher's per-sender
+    catch at AlertNotificationMessageProcessor.java:31 and aborts fan-out for that
+    message. Lines 60-89 — Freemarker `email.ftlh` template rendering. JavaMailSender
+    used per-send; no SMTP connection pooling configured.
+  unresolved: false
+terminal_side_effect:
+  side_effect_class: external-call
+  description: |-
+    For each ALERT-row WAL event: 0..N outbound HTTP/SMTP delivery calls (one per
+    configured NotificationSender bean). Each successful delivery is observed
+    externally by the receiving Slack channel / webhook endpoint / email inbox.
+    Side-effect-class is external-call (network egress); within the platform there
+    is NO db-write to a delivery-audit table, NO activity-event emission, NO
+    metric counter increment — only `log.debug` (default-off) per-send and
+    `log.error` on per-sender catch.
+  evidence: |-
+    AlertNotificationMessageProcessor.java:25-36 (the fan-out loop) +
+    SlackNotificationSender.java:40-49 + WebhookNotificationSender.java:18-23 +
+    EmailNotificationSender.java:60-89 + AbstractNotificationSender.java:16-30
+    (the shared send method) + AlertNotificationMessageProcessor.java:27
+    (log.debug only) + lines 30-35 (log.error on catch only).
+  cardinality_per_call: 'sum of configured-and-non-failing senders (0..3 typical)'
+amplification_factor: 'configured_senders_count (0..3) per WAL event'
+amplification_factor_provenance: |-
+  STATIC — confirmed from primary-source in batch K NotificationsDispatcher sidecar.
+  The mathematical product across hops is bounded by the number of registered
+  NotificationSender beans (each gated by @ConditionalOnProperty on
+  notifications.receivers.{slack.url | webhook.url | email.sender}). Per WAL
+  event, ONE translate() runs (one recursive-CTE DB read) and N synchronous
+  external-call hops fire (where N = configured senders count). The
+  amplification_factor is intentionally configurable (operator-driven) but
+  bounded by the conditional-bean count — there is no hidden multiplier.
+observed_vs_expected:
+  facets:
+  - facet: per-channel exception-type asymmetry (email RuntimeException bypasses catch)
+    observed: |-
+      The dispatcher catches NotificationSenderException only
+      (AlertNotificationMessageProcessor.java:31). EmailNotificationSender wraps
+      MessagingException / TemplateException / IOException as raw `new RuntimeException(...)`
+      at EmailNotificationSender.java:59 — NOT as NotificationSenderException. An email
+      failure therefore BYPASSES the dispatcher's per-sender catch and aborts fan-out
+      mid-message. If email is registered before Slack/webhook in
+      `List<NotificationSender>` (Spring-bean-discovery-order, undefined), an email
+      failure aborts delivery to subsequent channels for that alert. Live doc
+      framing ("If recipient N fails ... the loop stops — recipients N+1, N+2, …
+      never receive the alert. There is no retry and no partial-failure metric.")
+      describes the WITHIN-EMAIL behaviour but does not describe the CROSS-CHANNEL
+      abort for non-NotificationSenderException email failures.
+    expected: |-
+      One channel's failure should not block other channels (per the catch-and-continue
+      implicit ADR). Either email should throw NotificationSenderException
+      (symmetric with the other senders) OR the dispatcher should catch the broader
+      Exception type.
+    drift_class: exception_type_asymmetry_across_senders
+    provenance: STATIC — primary-source in NotificationsDispatcher sidecar
+      bugs_limitations_corner_cases[0] + AlertNotificationMessageProcessor.java:31
+      + EmailNotificationSender.java:58-60
+  - facet: translation failure causes infinite WAL re-delivery loop
+    observed: |-
+      `messageTranslator.translate(message)` (line 23-24) is UNCAUGHT. Translation
+      throws IllegalArgumentException on unknown alert-type code
+      (AlertNotificationMessageTranslator.java:87) and IllegalStateException on
+      missing or duplicate alerted-entity rows (lines 94-101). Both bypass the
+      dispatcher and reach NotificationSubscriber.java:90. The subscriber's outer
+      catch logs, releases the lock, waits 10s, re-acquires, and the SAME WAL LSN
+      is replayed. A persistently-bad row blocks the WAL stream indefinitely with
+      10s back-off cycles, deferring every subsequent alert delivery behind the
+      poison message.
+    expected: |-
+      A translation failure should poison-quarantine the offending WAL LSN
+      (skip-and-advance with a structured warning) and unblock subsequent messages.
+      The current behaviour is a fail-loud / stall-the-stream stance with no
+      operator escape hatch short of database manipulation.
+    drift_class: poison_message_replay_loop
+    provenance: STATIC — primary-source in NotificationsDispatcher sidecar
+      bugs_limitations_corner_cases[6] + AlertNotificationMessageProcessor.java:23-24
+      + NotificationSubscriber.java:60-91
+  - facet: unconditional broadcast — every channel gets every alert
+    observed: |-
+      The for-loop at lines 25-36 iterates `notificationSenders` unconditionally.
+      There is no filter by alert type, severity, data-entity Owner, or namespace.
+      An operator asking "can I route Critical to Slack and Minor to email?" finds
+      no configuration knob. Live doc framing ("An alert dispatched to multiple
+      channels is delivered to every channel that is enabled.") is accurate but
+      invites the routing question; the absence of routing is not documented
+      explicitly.
+    expected: |-
+      Either an operator-visible per-channel filter (alert-type predicate,
+      severity threshold, owner-match rule) OR a documented "all-or-nothing"
+      framing that names the absence as deliberate.
+    drift_class: unconditional_broadcast_no_routing
+    provenance: STATIC — primary-source in NotificationsDispatcher sidecar
+      bugs_limitations_corner_cases[3] + AlertNotificationMessageProcessor.java:25-36
+  - facet: no retry / no DLQ / no audit on delivery
+    observed: |-
+      A failed delivery (any channel, any reason) is logged at ERROR and the
+      message is treated as delivered from the dispatcher's perspective. The WAL
+      stream's setAppliedLSN / setFlushedLSN are advanced regardless
+      (NotificationSubscriber.java:83-84) — the dispatcher has no way to signal
+      "do not advance LSN." Operators have NO database record of delivery
+      success/failure per alert per channel. There is no `notifications_sent_total`
+      counter, no `delivery_latency_seconds` histogram, no `failure_rate_by_channel`
+      metric. Operators cannot answer "how many alerts went to Slack last week?"
+      without log greppable receiver-id strings.
+    expected: |-
+      At minimum: structured audit row per (alert, channel, status) in the same
+      transaction OR Prometheus counter + log JSON with principal / channel /
+      result. Operationally load-bearing for compliance reviews and incident
+      reconstruction.
+    drift_class: no_retry_no_dlq_no_audit
+    provenance: STATIC — primary-source in NotificationsDispatcher sidecar
+      bugs_limitations_corner_cases[1] + bugs_limitations_corner_cases[4] +
+      AlertNotificationMessageProcessor.java:30-35 + NotificationSubscriber.java:83-84
+  - facet: PII pass-through to every channel
+    observed: |-
+      AlertNotificationMessage carries `dataEntity.{id, name, dataSourceName,
+      namespaceName, owners[]}` + downstream lineage entities to configured depth +
+      alertChunks[]. Every configured channel receives the same payload — Slack
+      (corporate workspace, potentially many viewers), webhook (operator-defined
+      URL, security posture unknown to ODD), email (inbox security varies). No
+      redaction hook, no PII-tag-aware filter, no allowlist. Owner-scoping is
+      bypassed at the dispatcher level — `dataEntity.owners[]` is populated by
+      AlertNotificationMessageTranslator but never consulted for routing.
+    expected: |-
+      Either an operator-configurable redaction filter (PII-tag-driven payload
+      shaping) OR a documented "every channel sees everything" framing with
+      operator guidance on channel selection given dataset PII exposure.
+    drift_class: pii_passthrough_to_every_channel
+    provenance: STATIC — primary-source in NotificationsDispatcher sidecar
+      bugs_limitations_corner_cases[8] + AlertNotificationMessageProcessor.java:24-30 +
+      AlertNotificationMessageTranslator.java:73-83
+  - facet: empty-senders silent DB cost
+    observed: |-
+      When `notifications.enabled=true` but ZERO receivers are configured
+      (`notifications.receivers.{slack.url, webhook.url, email.sender}` all absent),
+      the conditionally-registered sender beans never instantiate and
+      `List<NotificationSender>` is empty. The dispatcher still RUNS — translate()
+      executes the multi-statement jOOQ read incl. the recursive downstream-lineage
+      CTE on every WAL event — and then no-ops the empty fan-out loop. DB cost is
+      paid for zero delivery. There is no boot-time warning, no per-message warning,
+      no operator-visible signal that work is being wasted.
+    expected: |-
+      Either skip translate() when the sender collection is empty OR log a
+      boot-time warning when `notifications.enabled=true` but no receivers
+      are configured.
+    drift_class: empty_senders_silent_db_cost
+    provenance: STATIC — primary-source in NotificationsDispatcher sidecar
+      bugs_limitations_corner_cases[7] + AlertNotificationMessageProcessor.java:23 +
+      NotificationConfiguration.java:36,69,83
+  - facet: sender iteration order is Spring-bean-discovery-order
+    observed: |-
+      `List<NotificationSender>` is injected as a bean collection
+      (AlertNotificationMessageProcessor.java:19) with no `@Order` annotation,
+      no Comparator, no explicit sort. Order depends on Spring's bean-registration
+      sequence (class-scan-order-dependent in practice). A rename or package move
+      can silently flip the order; combined with the email RuntimeException-bypass
+      asymmetry, a change that puts email first could silently abort fan-out for
+      every alert when email fails.
+    expected: |-
+      Either an explicit ordering contract (`@Order` annotations + a documented
+      sender-priority sequence) OR an explicit no-order statement in code (sort
+      by class name, log the resolved order at boot).
+    drift_class: sender_iteration_order_undefined
+    provenance: STATIC — primary-source in NotificationsDispatcher sidecar
+      bugs_limitations_corner_cases[5] + AlertNotificationMessageProcessor.java:19
+  - facet: DEBUG-level full-payload log leak
+    observed: |-
+      `log.debug("Sending notification message via {}: {}", notificationSender.receiverId(),
+      notificationMessage)` at line 27 invokes Lombok @ToString on
+      AlertNotificationMessage (declared at AlertNotificationMessage.java:21).
+      Production INFO mitigates; a DEBUG-on incident exfiltrates the full payload
+      (data-entity name, owners, downstream lineage entities) into log aggregation.
+    expected: |-
+      Either redact PII before toString OR drop the message payload from the
+      log line (keep receiver id + LSN; details available via audit table
+      if one is added).
+    drift_class: debug_log_full_payload_leak
+    provenance: STATIC — primary-source in NotificationsDispatcher sidecar
+      bugs_limitations_corner_cases[9] + AlertNotificationMessageProcessor.java:27 +
+      AlertNotificationMessage.java:21
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - Fan-out continues to next sender after one sender throws NotificationSenderException
+    - Translation failure (unknown alert type, missing data entity, null type_id) propagates out of process()
+    - Empty `List<NotificationSender>` — process() decodes + translates + no-ops the fan-out loop
+    - Per-sender exception is NotificationSenderException specifically — RuntimeException from email bypasses the catch
+    - Sequential fan-out — slow sender N blocks senders N+1..M for the same message
+    - ALL configured senders receive ALL alerts — no per-channel filter
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - End-to-end WAL → dispatcher → Slack/webhook/email under docker-compose with all three senders configured
+    - Translation-failure poison-message replay loop (assert WAL LSN replays with 10s back-off, subsequent messages stall)
+    - Cross-channel abort on email RuntimeException (assert subsequent senders skipped when email is first)
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Empty-senders DB cost (translate runs on every WAL event for zero delivery)
+    - Burst-throughput (10k alerts in 1s — assert dispatcher serial latency + Slack 429 handling)
+    - Translation recursive-CTE cost at depth=5 vs depth=1 on a wide lineage graph
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - Owner-scoping bypass at dispatcher (every channel gets every alert regardless of Owner)
+    - PII pass-through to every channel
+    - DEBUG-level log full payload leak
+    - No delivery audit (compliance reviewers cannot reconstruct who-saw-what)
+control_summary: |-
+  0 of 4 cells COVERED — feature emerges from batch-K primary-source audit of
+  NotificationsDispatcher (AlertNotificationMessageProcessor). The entire
+  notification/ package — dispatcher + senders + translator + decoder + subscriber +
+  leader-election interaction — has ZERO test coverage at the odd-platform-api
+  level (verified via `find <odd-platform-repo> -name '*Test*.java' -path '*notification*'`
+  returning zero matches). The two highest-leverage probe candidates are: (a) the
+  RuntimeException-bypass asymmetry (drop a poisoned email into the chain + assert
+  fan-out continues OR aborts at email — pins the exception-type contract); (b) the
+  translation-failure poison-message replay loop (inject a WAL event with an unknown
+  alert_type_id + assert the LSN replays with 10s back-off + subsequent messages
+  stall — pins the WAL-acknowledgement contract). Local docker-compose probe
+  stack is sufficient: ODD platform + Postgres with logical replication + a
+  mock-Slack endpoint (WireMock) + a SMTP capture server (e.g. MailHog) + an
+  injected ALERT row to drive the WAL stream.
+related_refactoring_scopes:
+- REFACTOR-145
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+- Alert
+- Notification Dispatcher (Outbound)
+- WAL-driven Outbound Subsystem
+related_retrospectives:
+- LSN-001
+related_probes: null
+probe_verifications: []
+maintainer_curated: false

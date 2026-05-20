@@ -1,0 +1,10 @@
+- **REFACTOR-038**: Directory landing-page DataSource list loaded without pagination — O(N) memory + parsing on every Directory navigation
+  - **Category**: missing-pagination
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DirectoryController.md:bugs_limitations_corner_cases.[0]` (MEDIUM)
+    - `concepts.yaml:entities[Directory].performance_aggregate.weaknesses.[0]`
+  - **Statement**: `DirectoryServiceImpl.getDataSourceTypes` calls `dataSourceRepository.list()` (full scan) then groups in memory by ODDRN prefix. For platforms with tens of thousands of registered data sources, the cost compounds linearly per Directory landing-page hit.
+  - **Evidence**: `DirectoryServiceImpl.java:48-50`
+  - **Proposed remedy**: Add a DB-level aggregate query that returns counts grouped by ODDRN prefix (eliminating the in-memory grouping). Or paginate the unfiltered list and force the UI to render incrementally.
+  - **Severity rationale**: MEDIUM — performance scaling issue on the Directory landing page.
+  - **Suggested backlog grouping**: `Directory performance` (potentially fold into Directory cleanup)

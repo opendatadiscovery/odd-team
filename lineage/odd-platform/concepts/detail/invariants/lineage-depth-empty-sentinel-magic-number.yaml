@@ -1,0 +1,115 @@
+name: |-
+  LineageDepth.empty() sentinel magic-number encoding (deferred-feature naming gap)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-05
+description: |-
+  NEW INVARIANT, batch 2026-05-19M — the one-hop traversal semantic for the
+  owner-anchored lineage-variant endpoints (/my/upstream and /my/downstream) is
+  encoded via LineageDepth.empty() at DataEntityRelationsServiceImpl.java:34 —
+  NOT via LineageDepth.of(1). Per LineageDepth.java:16-18, empty() returns
+  new LineageDepth(-1, true) — a depth=-1 integer with the auxiliary boolean
+  empty=true. The recursive CTE inside ReactiveLineageRepositoryImpl uses
+  tDepth.lessThan(lineageDepth.getDepth()) at line 174 — with depth=-1 the
+  recursive step never fires (the seed step's tDepth=0 is NOT less than -1),
+  so recursion terminates after the seed step. **The boolean empty field is
+  NEVER consumed by the CTE** — only the int depth value is. The encoding is
+  the magic number -1 + a structural factory-method-name signal; the
+  semantic is "seed-only edges" not "no recursion bound". **Three load-bearing
+  observations**: (a) a maintainer reading
+  lineageRepository.getLineageRelations(oddrns, LineageDepth.empty(), ...) at
+  the call site could reasonably misinterpret empty() as "no depth limit /
+  unlimited recursion" rather than "single-hop only" — the class-level boolean
+  empty field is the explicit disambiguation but is consulted only at the
+  CTE-construction site, not anywhere that reads the field name; (b) a future
+  refactor changing the CTE termination predicate to lessThanOrEqual would
+  silently expand the endpoint to two hops because the empty() flag is not
+  consumed as a special case — only the magic -1 integer; (c) the dual-encoding
+  is fragile by design — the factory method name is the documentation, the
+  semantic is the SQL behaviour, and they are not connected at code-execution
+  time. The encoding works correctly today; the gap is documentation / naming
+  clarity AND the brittleness of a magic-number sentinel buried in a single
+  WHERE-clause comparison. **Severity**: LOW (latent today; future refactor
+  vector).
+axes_present:
+  - services
+  - repositories_reactive
+nodes:
+  - odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream
+  - odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream
+  - odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+contributors:
+  - |-
+    getMyObjectsWithUpstream.md (batch M):
+    concepts.entities.LineageDepth.empty — the depth parameter passed at
+    DataEntityRelationsServiceImpl.java:34;
+    concepts.invariants.[2] — LineageDepth.empty() disables the recursive CTE
+    branch; single-hop only;
+    implicit_adrs.[1] — Single-hop lineage expansion via LineageDepth.empty()
+    is an explicit choice; the maintainer chose the empty() semantic to mean
+    seed-only edges rather than of(1) to mean one hop — subtle but consequential;
+    bugs_limitations_corner_cases.[6] — LineageDepth.empty() is fragile encoding
+    — depth=-1 is sentinel, not unlimited.
+  - |-
+    getMyObjectsWithDownstream.md (batch M SYMMETRIC):
+    bugs_limitations_corner_cases.[5] LineageDepth.empty() sentinel is not
+    honored by the recursive CTE — the boolean empty field is set to true by
+    LineageDepth.empty() but is never read by the CTE; only the int depth value
+    via tDepth.lessThan(lineageDepth.getDepth());
+    implicit_adrs.[2] One-hop traversal encoded via LineageDepth.empty(), not
+    LineageDepth.of(1) — the architectural posture "depth=-1 is a magic-number
+    sentinel".
+  - |-
+    Cross-batch H — ReactiveLineageRepositoryImpl batch sidecar:
+    bugs_limitations_corner_cases — LineageDepth.empty() folklore (MEDIUM);
+    the SQL primary source that encodes the comparison.
+evidence:
+  - |-
+    LineageDepth.java:8-19 (the dual-encoding — depth=-1 with empty=true)
+  - |-
+    LineageDepth.java:16-18 (the empty() factory method returning -1, true)
+  - |-
+    DataEntityRelationsServiceImpl.java:34 (LineageDepth.empty() call site —
+    the single invocation in the owner-anchored lineage path)
+  - |-
+    ReactiveLineageRepositoryImpl.java:174 (the sentinel-driven guard
+    tDepth.lessThan(lineageDepth.getDepth()) — reads only the int depth value,
+    not the empty flag)
+  - |-
+    getMyObjectsWithUpstream.md:concepts.invariants.[2] + implicit_adrs.[1]
+    + bugs_limitations_corner_cases.[6]
+  - |-
+    getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[5] +
+    implicit_adrs.[2]
+mitigations_unimplemented:
+  - |-
+    Rename LineageDepth.empty() to LineageDepth.singleHop() — the factory
+    method name should encode the semantic, not the structural emptiness; the
+    rename is a one-touch refactor that makes the call site self-documenting.
+  - |-
+    Add an explicit if (empty) return seed branch to the CTE construction in
+    ReactiveLineageRepositoryImpl — the empty field is then consumed at the
+    construction site; the magic-number sentinel becomes a defensive guard.
+  - |-
+    Add a CTE unit test that asserts LineageDepth.empty() produces single-hop
+    output (not zero-hop, not multi-hop) — pins the current semantic against
+    a future refactor of the termination predicate.
+  - |-
+    Doc: a maintainer-facing developer note in the LineageDepth class JavaDoc
+    explicitly stating "empty() means seed-step only; the recursive UNION ALL
+    does not fire" — discoverable at the type level.
+notes: |-
+  This invariant is a documentation / naming-clarity finding, not a runtime
+  correctness defect. The encoding works correctly today; the gap is the
+  brittleness of a magic-number sentinel buried in a single WHERE-clause
+  comparison that could be silently broken by an innocent-looking refactor
+  (e.g. "let me use lessThanOrEqual everywhere for consistency").
+
+  Cross-references:
+    - Traverse Lineage Graph (recursive-CTE) — the broader operation; this
+      invariant is one carve-out within the recursion-bound mechanism.
+    - REFACTOR-225 anchor-set single-point-of-failure — the lineage-variant
+      endpoints that consume LineageDepth.empty() are the same endpoints
+      affected by the single-point-of-failure; the magic-number encoding is
+      load-bearing on the response shape for those endpoints.

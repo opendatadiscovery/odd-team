@@ -1,0 +1,176 @@
+name: Bind Data Entity as DEG Child Member
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-09
+description: |-
+  **NEW OPERATION, batch 2026-05-19L** — primary-source confirmed at
+  `DataEntityServiceImpl.addDataEntityToDEG` (lines 387-408) +
+  `DataEntityController.addDataEntityDataEntityGroup` (lines 332-340).
+  `POST /api/dataentities/{data_entity_id}/data_entity_group` with body
+  `{data_entity_group_id: <long>}` — write a per-(child-data-entity, DEG)
+  edge into `group_entity_relations`, mark the child's
+  `data_entity_filled.CUSTOM_GROUP` flag TRUE, return the parent DEG's
+  `DataEntityRef`.
+
+  **The six-DB-round-trip shape**:
+    1. `reactiveDataEntityRepository.get(dataEntityId)` (child existence
+       check; switchIfEmpty → 404 NotFoundException)
+    2. `reactiveDataEntityRepository.get(formData.getDataEntityGroupId())`
+       paired with `.filter(isManuallyCreatedDEG).switchIfEmpty(BadUserRequest
+       "Entity with id %s is not manually created DEG")` (DEG existence +
+       validity check)
+    3. `reactiveGroupEntityRelationRepository.createRelationsReturning(groupOddrn,
+       [childOddrn])` (INSERT with `onDuplicateKeyIgnore` + RETURNING; empty
+       Flux signals duplicate)
+    4. Empty-Flux short-circuit via
+       `.switchIfEmpty(BadUserRequest "Data entity is already in this DEG")` → 400
+    5. `dataEntityFilledService.markEntityFilled(dataEntityId, CUSTOM_GROUP)`
+       (UPSERT into data_entity_filled)
+    6. `dataEntityMapper.mapRef(groupPojo)` — map parent DEG → DataEntityRef
+
+  All steps run inside one `@ReactiveTransactional` boundary at the service
+  (`DataEntityServiceImpl.java:388`); the controller is a thin reactive
+  proxy with no transaction annotation.
+
+  **Authorization**: `SecurityRule(DATA_ENTITY,
+  '/api/dataentities/{data_entity_id}/data_entity_group', POST,
+  DATA_ENTITY_ADD_TO_GROUP)` at `SecurityConstants.java:228-231`. The
+  resource-scope is the CHILD entity (the data_entity_id from the path);
+  the parent DEG (data_entity_group_id from the body) has NO
+  authorization check. The asymmetric scope produces the
+  write-collaborative-DEG surface — cross-DEG pollution is permitted by
+  design.
+
+  **Side-effects on success**:
+    - DB write: INSERT INTO `group_entity_relations(group_oddrn,
+      data_entity_oddrn)` with `onDuplicateKeyIgnore`
+    - DB write: UPSERT INTO `data_entity_filled` setting `CUSTOM_GROUP=TRUE`
+    - NO activity-feed write (no `@ActivityLog`;
+      `DATA_ENTITY_RELATION_UPDATED` enum value is reserved-but-never-fired)
+    - NO search-index update — DEG membership does NOT participate in
+      catalog FTS vectors
+    - NO outbound HTTP — purely intra-process DB writes
+
+  **Error contract**:
+    - HTTP 400 with `"Entity with id %s is not manually created DEG"` —
+      the target DEG id does not exist OR is not manually-created OR is
+      not a DEG (the three failure modes are conflated; per the
+      operator-friendly-error doc-drift candidate)
+    - HTTP 400 with `"Data entity is already in this DEG"` — the
+      membership already exists (the onDuplicateKeyIgnore signal); ALSO
+      fires misleadingly when a soft-deleted row blocks the INSERT
+      (`is_deleted` is not in the PK; the user perceives no
+      membership but the system says "already in")
+    - HTTP 404 — child data_entity does not exist
+    - HTTP 400 with `"Entity with id null is not manually created DEG"`
+      — the OpenAPI schema does not mark `data_entity_group_id` as
+      required; `null` body → null lookup → empty Mono → null-mentioning
+      error message
+
+  **Audiences**:
+    - ODD Platform UI — Data Entity overview / Groups panel; redux
+      thunk `addDataEntityToGroup` (`dataentities.thunks.ts:219-236`);
+      UI gated by `<WithPermissions permissionTo={Permission.DATA_ENTITY_ADD_TO_GROUP}>`
+      (UI-only; bypassed by direct API callers)
+    - Direct REST clients holding `DATA_ENTITY_ADD_TO_GROUP` (commonly
+      granted via `dataEntity:owner` Policy scope to every entity owner)
+    - S2S programmatic consumers under `auth.s2s.enabled=true` (X-API-Key
+      grants ADMIN scope including this permission)
+    - Anonymous callers under `auth.type=DISABLED` (DISABLED-bypass)
+
+  **Operator-facing significance**: DEG membership is the principal
+  organizational primitive for the Data Discovery pillar (P-01) —
+  Domains, ML Experiments, DAGs, DATABASE_SERVICE / API_SERVICE /
+  KAFKA_SERVICE microservice-style groupings all express themselves
+  through this endpoint. Cross-pillar dependencies: lineage (P-05; DEG
+  members surface on getDataEntityGroupLineage), search (FTS only
+  partially reflects DEG-membership), Catalog Overview (Domain tiles).
+nodes:
+  - odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+contributors:
+  - |-
+    addDataEntityDataEntityGroup batch L (PRIMARY SOURCE):
+    concepts.operations[bind-data-entity-as-DEG-child-member] +
+    concepts.invariants.[0-5] (transactional shape, no auto-create-on-miss,
+    onDuplicateKeyIgnore duplicate detection, NO @ActivityLog,
+    permission gate is on CHILD not PARENT, data_entity_filled toggle)
+    + implicit_adrs.[0-5] (the load-bearing decisions)
+evidence:
+  - addDataEntityDataEntityGroup.md:concepts.operations
+  - addDataEntityDataEntityGroup.md:concepts.invariants.[0-5]
+  - addDataEntityDataEntityGroup.md:implicit_adrs.[0-5]
+  - addDataEntityDataEntityGroup.md:dependencies_semantic
+axes_present:
+  - controllers
+  - openapi_paths
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      Child-side gate IS wired correctly (SecurityRule path matches
+      OpenAPI surface; permission is DATA_ENTITY-scoped via
+      DataEntityPermissionExtractor). DEG-side gate is ABSENT entirely.
+      Cross-DEG pollution permitted by design — any DATA_ENTITY_ADD_TO_GROUP
+      holder can write into any manually-created DEG.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      Owner-scope is the CHILD, not the parent DEG. Domain owners
+      cannot defend their DEG from drive-by membership writes.
+  weaknesses:
+    - HIGH — write-collaborative DEG (no DEG-side authorization)
+    - MEDIUM — forensic silence (no @ActivityLog despite enum value exists)
+    - MEDIUM — soft-deleted membership produces misleading 400
+    - HIGH under DISABLED — anonymous Domain pollution
+  strengths:
+    - |-
+      Defensive predicate isManuallyCreatedDEG prevents accidental
+      ingested-DEG corruption — the structural divergence from
+      REFACTOR-199/206/223 auto-create-on-miss family
+    - |-
+      @ReactiveTransactional boundary at the service guarantees
+      atomicity across the 4 DB writes
+    - |-
+      Centralised duplicate detection via onDuplicateKeyIgnore →
+      switchIfEmpty → 400 with friendly message (vs DB-level
+      USR003 generic)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      4 DB round-trips per call (2× GET + 1× INSERT + 1× markEntityFilled).
+      Cost is constant per call; no bulk endpoint at this controller.
+  weaknesses:
+    - |-
+      LOW — no bulk variant; reorganising 50 entities = 100 round-trips
+      across the add + delete pair
+    - LOW — no @Timed / Micrometer / structured log observability
+  strengths:
+    - |-
+      Reactive non-blocking I/O end-to-end; no thread held during DB awaits
+notes: |-
+  NEW operation captured in batch 2026-05-19L. Pairs with the symmetric
+  unbind-data-entity-from-DEG operation; together they form the
+  per-entity DEG-membership CRUD surface.
+
+  Cross-cutting connections:
+    - Related entity: data-entity-group-membership-edge (NEW)
+    - Related invariants:
+      - write-collaborative-deg-no-deg-side-authorization (NEW HIGH)
+      - add-delete-permission-asymmetry-on-deg-membership (NEW)
+      - silent-204-on-no-op-delete-vs-400-duplicate-on-no-op-add (NEW)
+      - deg-is-manually-created-deg-defensive-check (NEW)
+    - Cross-references the existing "Bind Owner to Data Entity (with
+      optional DEG propagation)" operation — both write to per-entity
+      child rows; bind-owner uses DEG propagation as a cascade, this
+      uses the DEG-membership table directly

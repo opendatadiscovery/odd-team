@@ -1,0 +1,7 @@
+- **DOC-GAP-017**: GenAI feature page: OpenAPI spec declares only 200 OK — no documented 400/500 error contract for `/api/genai/ask`
+  - **Category**: drift
+  - **Surfaced by**: `GenAIController.md:docs_link_semantic.doc_drift_findings.[2]`
+  - **Evidence**: spec declares only 200; runtime returns 400 on disabled, 500 on timeout.
+  - **Proposed doc action**: Either update the OpenAPI spec to declare 400/500, or add an "Error contract" section to the GenAI feature page. Drive an upstream spec issue separately.
+  - **Cross-references**: DOC-GAP-018 (spec security block absence — same class).
+  - **Severity rationale**: MEDIUM.

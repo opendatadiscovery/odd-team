@@ -1,0 +1,183 @@
+name: Write-collaborative DEG — NO DEG-side authorization on membership writes
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-09
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19L** — primary-source confirmed
+  at SecurityConstants.java:228-231 + DataEntityServiceImpl.java:387-408 + the
+  absence of any DEG-side gate. The Data Entity Group (DEG / Domain / ML
+  Experiment / DAG / DATABASE_SERVICE / API_SERVICE / KAFKA_SERVICE) membership
+  write surface is gated EXCLUSIVELY on the CHILD data-entity, not on the
+  parent DEG:
+
+    - POST /api/dataentities/{data_entity_id}/data_entity_group with body
+      {data_entity_group_id: <long>} →
+      SecurityRule(DATA_ENTITY, '/api/dataentities/{data_entity_id}/data_entity_group',
+      POST, DATA_ENTITY_ADD_TO_GROUP) at SecurityConstants.java:228-231.
+    - URLResourceExtractor pulls data_entity_id (the CHILD) from the path;
+      DataEntityPermissionExtractor builds the DataEntityPolicyResolverContext
+      for the CHILD; Policies are evaluated against the CHILD's context.
+    - The target DEG id (data_entity_group_id from the BODY) has NO
+      authorization check whatsoever; no DEG-side resource lookup, no
+      ownership check on the DEG, no admin override.
+
+  **Operator-facing manifestation**: ANY caller holding
+  DATA_ENTITY_ADD_TO_GROUP on entity X (commonly granted via
+  `"is": "dataEntity:owner"` to every owner of every data entity) can
+  add X into ANY manually-created DEG in the catalog — including DEGs they
+  do not own, DEGs in different organizational silos, the Administrators-only
+  "Critical Systems" domain, the "Finance Domain" they have no business
+  in. The DEG operator who curates "Finance Domain" has no veto on what
+  entities end up in their domain. This is a "write-collaborative DEG"
+  surface — symmetric in shape with the platform's READ-collaborative
+  posture (every authenticated user reads every entity) but applied to
+  the WRITE side of DEG membership.
+
+  **Cross-pillar implications**:
+
+    - **P-01 Data Discovery**: the Catalog Overview's Domain tiles can be
+      polluted from the outside. A careless authorized caller can drop
+      unrelated entities into a Domain whose owner had no input. Domain
+      tiles thus reflect what callers PUT THERE, not what the Domain
+      owner CURATED.
+
+    - **P-09 Security & Access Control**: the read-collaborative posture
+      (every authenticated user sees all entities) combines with the
+      no-DEG-side-gate to produce a write-collaborative DEG surface —
+      every DATA_ENTITY_ADD_TO_GROUP-holder can write into any DEG.
+      Operators cannot defend the DEG from drive-by membership writes
+      without revoking DATA_ENTITY_ADD_TO_GROUP from every owner.
+
+  **Documentation drift**: the live Permissions page (WebFetched 2026-05-19,
+  status 200) describes DATA_ENTITY_ADD_TO_GROUP as "Allows adding a data
+  entity to a manually created group" — TRUE but INCOMPLETE; the page is
+  silent on which side (CHILD vs DEG) is authorized. Operators reading the
+  page assume DEG-side gating (mental model: "managing DEG membership is
+  a DEG-stewardship action"); the actual implementation gates the CHILD.
+
+  **Architectural pattern shape**: same shape as the F-006 RBAC self-grant
+  decoupling — the resource boundary expected by the operator (DEG-side
+  authorization for DEG-stewardship) is not what the implementation
+  enforces (child-side authorization for data-entity-owner). The
+  asymmetry is intentional per the implicit ADR (the CHILD is the
+  load-bearing identity; the DEG is treated as a passive container) but
+  the asymmetry is operator-surprising.
+
+  **Mitigation options** (in increasing scope):
+    1. Document the write-collaborative DEG posture on the live
+       groups-domains.md page + the permissions doc page.
+    2. Introduce a DATA_ENTITY_GROUP_MEMBERSHIP_MANAGE-style DEG-side
+       permission that gates "I can decide what enters my DEG" separately
+       from the existing child-side gate.
+    3. Audit shipped default Policies: any Policy granting
+       DATA_ENTITY_ADD_TO_GROUP to every owner via dataEntity:owner scope
+       enables the cross-DEG pollution; explicit operator guidance is
+       needed for production deployments using multi-team Domain
+       isolation.
+axes_present:
+  - controllers
+  - services
+nodes:
+  - odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup
+  - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+  - odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+contributors:
+  - |-
+    addDataEntityDataEntityGroup batch L (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[1] (HIGH — no DEG-side authorization, the
+    gate is on the CHILD) + security.known_security_gaps.[0] (HIGH —
+    write-collaborative DEG surface, Domain tile pollution) +
+    concepts.invariants.[4] (permission gate is on the CHILD, NOT the
+    PARENT DEG) + implicit_adrs.[1] (per-data-entity authorization on DEG
+    membership writes; cross-owner DEG-membership permitted by design)
+  - |-
+    deleteDataEntityFromDataEntityGroup batch L (PRIMARY SOURCE,
+    SYMMETRIC SHAPE): security.known_security_gaps.[1] (owner-scope basis
+    is the data-entity, not the DEG; mental model of "domain-owner curates"
+    is incorrect under this scoping) + concepts.invariants documents the
+    symmetric DELETE-side gate also on the CHILD
+evidence:
+  - |-
+    addDataEntityDataEntityGroup.md:bugs_limitations_corner_cases.[1] HIGH
+    severity write-collaborative DEG surface
+  - |-
+    addDataEntityDataEntityGroup.md:security.known_security_gaps.[0] HIGH
+    severity no DEG-side authorization
+  - |-
+    addDataEntityDataEntityGroup.md:concepts.invariants.[4] permission gate
+    is on the CHILD
+  - |-
+    addDataEntityDataEntityGroup.md:implicit_adrs.[1] per-data-entity
+    authorization on DEG membership writes (the design intent statement)
+  - |-
+    deleteDataEntityFromDataEntityGroup.md:security.known_security_gaps.[1]
+    owner-scope basis is the data-entity, not the DEG (the symmetric
+    DELETE-side confirmation)
+  - |-
+    deleteDataEntityFromDataEntityGroup.md:concepts.invariants documents
+    the same child-side authorization for DELETE
+triangulation_count: 2
+cross_batch: false
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Document the write-collaborative DEG posture on the live
+    /features/data-discovery/groups-domains page (DOC-NNN — operators
+    deploying ODD in multi-team / multi-domain environments need to know
+    the cross-DEG pollution risk).
+  - |-
+    Document the child-side scope explicitly on the
+    /configuration-and-deployment/enable-security/authorization/permissions
+    page — the line for DATA_ENTITY_ADD_TO_GROUP / DATA_ENTITY_DELETE_FROM_GROUP
+    should disambiguate (CHILD vs PARENT DEG) and include the cross-DEG
+    addability example.
+  - |-
+    Introduce a DEG-side permission (e.g. DATA_ENTITY_GROUP_MEMBERSHIP_MANAGE)
+    that gates "can callers add entities to MY DEG" — orthogonal to the
+    existing child-side gate. Higher scope; requires schema-level change to
+    SECURITY_RULES + the Permission enum.
+  - |-
+    Add a regression test that asserts a caller with
+    DATA_ENTITY_ADD_TO_GROUP on entity X but ZERO permissions on DEG Y can
+    successfully POST entity X into DEG Y (current behaviour; pin the
+    write-collaborative posture explicitly so the next maintainer cannot
+    silently tighten the contract without a test failure).
+  - |-
+    Audit shipped default Policies: identify Policies granting
+    DATA_ENTITY_ADD_TO_GROUP via dataEntity:owner scope; warn operators
+    that those Policies enable cross-DEG pollution.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-19L. Surfaced by
+  the primary-source examination of the DEG-membership write pair
+  (addDataEntityDataEntityGroup + deleteDataEntityFromDataEntityGroup).
+  The pattern is independent of REFACTOR-217 (the term path-mismatch bug);
+  here the SecurityRule is correctly wired AND the path matches the
+  OpenAPI surface AND the permission is correctly evaluated — but the
+  scope is the CHILD entity, not the parent DEG, so the gate doesn't
+  defend the resource an operator believes it defends.
+
+  Cross-cutting connections:
+    - Pairs with the "Read-collaborative cross-owner enumeration"
+      invariant — the READ side of the same posture; together they
+      characterize ODD's "collaborative" stance applied to BOTH read
+      and the DEG-membership write surface
+    - Companion of "Permission-bypass via Owner auto-create" — that
+      invariant covers the directory-growth side-door; this covers
+      the membership-write cross-DEG pollution
+    - Cross-references "ADD/DELETE permission asymmetry on DEG-membership"
+      (sibling invariant) — that captures the policy-asymmetry
+      observation; this captures the resource-scope observation
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) /features/data-discovery/groups-domains.md — add a Permissions
+        / Audit / Cross-Domain subsection
+    (b) /configuration-and-deployment/enable-security/authorization/permissions
+        page — disambiguate the scope (CHILD vs DEG) for the two
+        DEG-membership permissions
+    (c) Possibly a new ADR formalizing the write-collaborative DEG posture
+        as deliberate (matching the read-collaborative ADR pattern)

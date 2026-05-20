@@ -1,0 +1,34 @@
+gap_id: TEST-GAP-603
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java auth logout:CognitoLogoutSuccessHandler"
+pillars_affected: [P-09]
+surfaced_by:
+  - "CognitoLogoutSuccessHandler.md:tests_coverage_semantic.uncovered_behaviours.[3] (empty logoutUri short-circuit)"
+  - "CognitoLogoutSuccessHandler.md:concepts.invariants.[2]"
+  - "CognitoLogoutSuccessHandler.md:gaps (silent failure-mode)"
+  - "CognitoLogoutSuccessHandler.md:doc_drift_findings.[4]"
+behaviour: |-
+  **Empty `provider.getLogoutUri()` → Mono.empty() short-circuit — silent 'logout that doesn't log out'.** Lines 33-35: `if (StringUtils.isEmpty(provider.getLogoutUri())) return Mono.empty();` returns BEFORE setting redirect AND BEFORE invalidating the session. An operator who omits `logout-uri` from Cognito YAML configuration sees the logout button do nothing visible — NO redirect, NO error, just a response cycle that returns the user to the same page STILL LOGGED IN. This is operator-hostile silent failure: the user clicks logout, the request returns 200, the browser stays on the page with the same session cookie. No log warning, no boot-time check. The Cognito handler is the ONLY one with this guard — Azure NPEs (TEST-GAP-599), Google/GitHub don't have this code path (different logout shapes), ODDIAM has similar but different fallback. The asymmetry is operator-hostile because the behaviour DIFFERS between Cognito (silent-success-doing-nothing) and Azure (loud-NPE-500). A unified contract would either fail-fast at boot OR consistently silent-success across all handlers.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/logout/CognitoLogoutEmptyLogoutUriSilentFailureTest.java"
+  name: "handle_cognitoProvider_logoutUriEmpty_returnsMonoEmpty_userStillLoggedIn_pinsSilentFailure"
+evidence:
+  - "CognitoLogoutSuccessHandler.md says (uncovered_behaviours.[3]): 'empty provider.getLogoutUri() returns Mono.empty() and leaves the response status as default (NOT 302) — no test asserts the short-circuit branch'"
+  - "CognitoLogoutSuccessHandler.md says (gaps): 'silently changing the short-circuit branch — the current behaviour leaves the user logged in if logoutUri is omitted, which is a plausible graceful degradation interpretation but also a silent failure-mode (the user clicks logout and stays logged in with no error)'"
+  - "CognitoLogoutSuccessHandler.md says (doc_drift_findings.[4]): 'The handler short-circuits silently when logoutUri is empty — the user logs out from ODD's perspective (the request returns successfully) but Spring's logout filter calls this handler with NO redirect set and NO local session invalidation; the user is left logged in.'"
+  - "CognitoLogoutSuccessHandler.java:33-35 (the silent short-circuit)"
+  - "AzureLogoutSuccessHandler.java:39 (sibling that NPEs instead of short-circuit — asymmetric guard)"
+cross_references:
+  - "F-011"
+  - "P-09:F-001"
+  - "TEST-GAP-599 (Azure NPE on null logoutUri — asymmetric guard sibling)"
+  - "TEST-GAP-602 (shouldHandle + 302 shape base test — adjacent coverage)"
+  - "DOC-NNN candidate: Cognito empty-logoutUri silent failure undocumented"
+proposed_action: |-
+  Unit test on CognitoLogoutSuccessHandler. (a) Mock OAuth2Provider with logoutUri=null + clientId='c' + provider='cognito'. (b) Mock WebFilterExchange + Authentication + the WebSession (spied). (c) Invoke handle(). (d) Assert (i) result is Mono.empty(); (ii) response.setStatusCode was NEVER called (status defaults to 200); (iii) response.getHeaders().setLocation was NEVER called; (iv) WebSession.invalidate was NEVER called. (e) Pin: empty logoutUri = silent-no-op = user remains logged in server-side. Future fix (align with Azure NPE, or add boot-time check, or invalidate session even without redirect) flips assertions.
+batch: 2026-05-19-O
+feature_id: F-011

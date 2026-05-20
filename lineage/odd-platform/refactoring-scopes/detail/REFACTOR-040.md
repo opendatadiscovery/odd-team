@@ -1,0 +1,8 @@
+- **REFACTOR-040**: SelectLanguage friendly-name and country-code maps use TypeScript casts with no runtime guard — adding a locale to `i18n.ts` without updating `LANGUAGES_MAP`/`LANG_TO_COUNTRY_CODE_MAP` crashes the language dialog
+  - **Category**: missing-validation
+  - **Surfaced by**: `odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__SelectLanguage.md:bugs_limitations_corner_cases.[0]` (MEDIUM in sidecar but LOW at concept level)
+  - **Statement**: `SelectLanguage.tsx:48-50, 60` use TypeScript casts; if a locale is added to `i18n.ts` but not the constant maps, the dialog crashes with a `TypeError`.
+  - **Evidence**: `SelectLanguage.tsx:48-50, 60` + `lib/constants.ts:158-174`
+  - **Proposed remedy**: Either add a runtime guard (`if (LANGUAGES_MAP[lang]) ...`) or unify the locale list into a single source-of-truth that the maps derive from.
+  - **Severity rationale**: LOW — surfaces only when a contributor adds a locale.
+  - **Suggested backlog grouping**: `i18n cleanup`

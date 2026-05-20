@@ -1,0 +1,36 @@
+gap_id: TEST-GAP-652
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform ts react-component component:CollectorsList"
+  - "odd-platform java auth filter:DisabledAuthSecurityConfiguration"
+pillars_affected: [P-09, P-08, P-10]
+surfaced_by:
+  - "CollectorsList.md:security.known_security_gaps.[0] (UI-vs-API asymmetry under DISABLED — 19th sidecar contribution to REFACTOR-185 — severity HIGH)"
+  - "CollectorsList.md:bugs_limitations_corner_cases.[1] (Add collector + Edit/Delete/Regenerate buttons hidden under DISABLED, backend endpoints accept anonymous mutations regardless)"
+  - "CollectorsList.md:coherence_check (strengthens REFACTOR-185 — 18→19 SIDECAR via COLLECTOR_* UI-side permission family)"
+behaviour: |-
+  **CRITICAL: UI-vs-API security asymmetry under `auth.type=DISABLED` for COLLECTOR_* permissions (REFACTOR-185 19th sidecar facet).** Under `auth.type=DISABLED`, `/api/identity` returns empty `permissions` → `WithPermissions` HIDES every Add / Edit / Delete / Regenerate button (because `hasAccessTo(*) === false` for all COLLECTOR_* permissions). An operator clicking around the UI sees a **READ-ONLY surface** and may reasonably infer "this deployment is locked down" or "COLLECTOR_* permissions are missing from my role". BUT the BACKEND `DisabledAuthSecurityConfiguration.java:11-19` bypasses ALL `SECURITY_RULES` including the four `COLLECTOR_*` permissions at `SecurityConstants.java:127-137`. A direct `curl POST /api/collectors` succeeds anonymously. The UI is QUIETER than the API on this surface — a security-critical UI-vs-API asymmetry that compounds with REFACTOR-185's other 18 facets. An attacker bypassing the UI with `curl POST /api/collectors` can mint a new collector token, then use it at `POST /ingestion/datasources` (always-on filter chain) to bootstrap a hostile collector identity (per ADR-CANDIDATE-141). The compound surface under default `auth.type=DISABLED`: anyone on the network can `POST /api/collectors`, copy the response token, and `POST /ingestion/datasources` with that token to spawn a hostile collector — the DISABLED-mode bypass extends through the ENTIRE collector boot-of-self chain. NO test asserts (a) under `auth.type=DISABLED`, the UI renders zero Add / Edit / Delete / Regenerate buttons (positive UI-side pin); (b) under the same configuration, the BACKEND endpoint accepts an anonymous `POST /api/collectors` (negative-finding pin); (c) the cross-layer asymmetry is the regression-pin — the UI promises a security property the backend does not enforce.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/CollectorDisabledModeAsymmetryTest.java (NEW file)"
+  name: "ui_hides_collector_buttons_under_disabled_but_backend_accepts_anonymous_mutations"
+evidence:
+  - "CollectorsList.md says (security.known_security_gaps.[0]): 'UI-vs-API asymmetry under DISABLED: the UI hides Add / Edit / Delete / Regenerate buttons (because /api/identity returns empty permissions under DISABLED) while the BACKEND endpoints accept anonymous mutations (DisabledAuthSecurityConfiguration bypasses SECURITY_RULES). Operators may infer this deployment is locked down from the UI's read-only appearance and miss the fact that direct REST calls succeed. This is the 19th sidecar contribution to REFACTOR-185 — the COLLECTOR_* permission family was not in the prior 18-sidecar enumeration. severity: HIGH'"
+  - "CollectorsList.md says (bugs_limitations_corner_cases.[1]): 'The Add collector button + Edit / Delete / Regenerate buttons are hidden under auth.type=DISABLED because /api/identity returns empty permissions, but the underlying REST endpoints accept anonymous mutations regardless (DisabledAuthSecurityConfiguration bypasses all SECURITY_RULES). Operators clicking around the UI on a DISABLED deployment will see a READ-ONLY surface and may infer this is locked down; an attacker bypassing the UI with curl POST /api/collectors succeeds with no auth.'"
+  - "CollectorsList.md says (coherence_check): 'strengthens: REFACTOR-185 (now 18→19 SIDECAR via the COLLECTOR_* UI-side permission family observation); ADR-CANDIDATE-140 (the asymmetric ingestion postures finding gains a UI-axis source — the UI hands out one credential that two different filters consume).'"
+  - "CollectorsList.md says (back_links.refactoring-scope): 'REFACTOR-185 (DISABLED-mode bypass) — this sidecar adds the 19th supporting sidecar to the catalog's strongest finding. The compound surface under default auth.type=DISABLED: anyone on the network can POST /api/collectors (no UI signal), copy the response token, and (per ADR-CANDIDATE-141) POST /ingestion/datasources with that token to bootstrap a hostile collector identity — the DISABLED-mode bypass extends through the ENTIRE collector boot-of-self chain.'"
+cross_references:
+  - "REFACTOR-185 (19th supporting sidecar — COLLECTOR_* permission family)"
+  - "ADR-CANDIDATE-140 (asymmetric ingestion postures)"
+  - "ADR-CANDIDATE-141 (collector identity via WebSession attribute)"
+  - "TEST-GAP-104 family (REFACTOR-185 DISABLED-mode bypass tests)"
+  - "TEST-GAP-622 (Owner update destructive default — symmetric UI hazard)"
+proposed_action: |-
+  Stand up `CollectorDisabledModeAsymmetryTest.java` — Spring `@SpringBootTest` with `auth.type=DISABLED`. Method (a): mount the UI shell (React-Testing-Library + Vitest, OR pure backend assert of `/api/identity` returning empty permissions); assert via direct call that `/api/identity` returns `{permissions: []}`; via DOM assertion (if running the UI in jsdom), assert ZERO Add / Edit / Delete / Regenerate buttons present (the UI's read-only appearance). Method (b): with the same configuration, fire `POST /api/collectors` ANONYMOUSLY (no Cookie, no X-API-Key); assert HTTP 201 with a fresh collector token in the response. Method (c): the cross-layer pin — assert (a) AND (b) hold simultaneously: UI promises locked-down, backend accepts anonymous mutation. This is the regression-pin that surfaces the UI-vs-API asymmetry; the fix path is either harden DISABLED mode to apply SECURITY_RULES (changing semantics, requires ADR) OR add a UI banner stating "DISABLED auth mode — REST endpoints are anonymously reachable". Either fix breaks one or both halves of this test, forcing intentional re-authoring.
+related_features: [F-008]
+related_pillar_features: ["P-09:F-001", "P-08", "P-10:F-001"]
+related_refactors:
+  - "REFACTOR-185"
+batch: 2026-05-20-Q
+feature_id: F-008

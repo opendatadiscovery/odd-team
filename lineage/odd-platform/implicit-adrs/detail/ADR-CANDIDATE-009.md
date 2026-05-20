@@ -1,0 +1,12 @@
+- **ADR-CANDIDATE-009**: i18n is loaded eagerly at app start as a side-effect import; every locale's JSON ships in the main bundle (no lazy per-locale loading)
+  - **Category**: promote
+  - **Support**: surfaced by 1 sidecar (i18n_ts) — UI-shell decision
+  - **Surfaced by**:
+    - `odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts.md:implicit_adrs.[0]` ("i18n is loaded eagerly at app start as a side-effect import, not lazily per-locale; every locale's JSON ships in the main bundle.")
+  - **Decision statement**: `odd-platform-ui/src/index.tsx:23` imports `'locales/i18n'` as a side-effect; `i18n.ts` statically imports six locale JSON files at module load. Bundle bandwidth is traded for startup determinism; locale-bundle-size optimisation is not pursued. Adding a locale increases the main bundle proportionally; switching language at runtime requires no network fetch.
+  - **Wisdom test**: PASS. Deliberate trade-off (bundle-size vs zero-network locale switch); structural (UI bootstrap shape).
+  - **Evidence**:
+    - i18n_ts.md says: "`odd-platform-ui/src/index.tsx:23` (`import 'locales/i18n';` with no module specifier guard) + `odd-platform-ui/src/locales/i18n.ts:3-8` (six static `import` declarations for each locale's JSON, not dynamic `import()`)"
+  - **Existing ADR**: none.
+  - **Proposed action**: Promote to `adrs/drafts/i18n-eager-bootstrap.md` (new ADR). Document together with ADR-CANDIDATE-010 (localStorage) and ADR-CANDIDATE-011 (natural-keys) as the i18n architectural posture.
+  - **Severity rationale**: MEDIUM — pattern-shaping decision. A future "let's lazy-load locales" PR is the kind of refactor this ADR would gate.

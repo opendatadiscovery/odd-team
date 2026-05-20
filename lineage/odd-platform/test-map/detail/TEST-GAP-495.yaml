@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-495
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue"
+pillars_affected: [P-01, P-10]
+surfaced_by:
+  - "upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[3] (EXTERNAL-origin fields are writable)"
+  - "upsertDataEntityMetadataFieldValue.md:security.known_security_gaps.[2] (EXTERNAL metadata overwrite is silent)"
+  - "upsertDataEntityMetadataFieldValue.md:tests_coverage_semantic.uncovered_behaviours.[4] (EXTERNAL-origin field overwrite)"
+behaviour: |-
+  EXTERNAL-origin metadata overwrite regression-pin (MEDIUM — silent data-quality risk). The upsert path does NOT check `MetadataFieldPojo.getOrigin()`. EXTERNAL fields are populated by collectors during ingestion (`MetadataFieldServiceImpl.java:62-71` `ingestMetadataFields`); a user with DATA_ENTITY_CUSTOM_METADATA_UPDATE can overwrite the collector-ingested value through PUT /api/dataentities/{id}/metadata/{field_id}. The next ingestion cycle will replace it, but until then the catalog shows the user's edit as authoritative. The user-facing distinction between 'discovered' (EXTERNAL) and 'curated' (INTERNAL) metadata is therefore NOT enforced at write time. Combined with TEST-GAP-491 (no @ActivityLog) the audit-trail gap, this creates a silent data-quality risk: the catalog can show fabricated 'source-system' values for fields with `origin=EXTERNAL` and no record of the fabrication. Cross-pillar P-01 (Discovery / catalog metadata authority) + P-10 (Integrations / ingestion-vs-UI metadata authority boundary). The current single happy-path test (DataEntityServiceTest) mocks a STRING-typed INTERNAL field — the EXTERNAL-origin path is unexercised; a future tightening that added `if (pojo.getOrigin() == EXTERNAL) throw BadUserRequestException` would have no test to validate against.
+test_class: missing-security
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataEntityServiceTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/integration/MetadataExternalOriginOverwriteTest.java"
+  name: "upsertMetadataFieldValue_targetingExternalOriginField_writesUserValueOverCollectorValue"
+evidence:
+  - "upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[3]: 'A user with DATA_ENTITY_CUSTOM_METADATA_UPDATE can overwrite the collector-ingested value through this endpoint. The next ingestion cycle will replace it, but until then the catalog shows the user's edit as authoritative. The user-facing distinction between discovered (EXTERNAL) and curated (INTERNAL) metadata is therefore not enforced at write time.'"
+  - "DataEntityServiceImpl.java:287-305 (no origin check)"
+  - "MetadataFieldServiceImpl.java:62-71 (EXTERNAL field creation in collector path)"
+  - "MetadataFieldServiceImpl.java:86-91 (additional EXTERNAL field creation path)"
+  - "DataEntityServiceTest.java:164-191 (existing happy-path test uses INTERNAL field, not EXTERNAL)"
+cross_references:
+  - "TEST-GAP-491 (no @ActivityLog — the audit gap compounds the data-quality risk)"
+  - "TEST-GAP-494 (active=NULL regression — co-located corruption pattern)"
+  - "DOC-NNN candidate: document EXTERNAL vs INTERNAL origin write semantics in a metadata feature page"
+  - "REFACTOR-NNN candidate: either fail-loud on EXTERNAL-origin write (BadUserRequestException) OR document the silent override"
+proposed_action: |-
+  Testcontainers integration test. (a) Pre-create data entity X. (b) Pre-create metadata field F with origin=EXTERNAL via the collector path (MetadataFieldServiceImpl.ingestMetadataFields). (c) Insert a value row (X, F, 'collector-value') with origin=EXTERNAL. (d) As a user with DATA_ENTITY_CUSTOM_METADATA_UPDATE, PUT /api/dataentities/X/metadata/F with body {value: 'user-fabricated'}. (e) Assert HTTP 200. (f) Query `SELECT value FROM metadata_field_value WHERE data_entity_id=X AND metadata_field_id=F` returns 'user-fabricated' (the user override, not the collector value). (g) Test comment 'LOCKS the EXTERNAL-origin overwrite contract as of 2026-05-19. Cross-reference TEST-GAP-491 — the override leaves no activity-feed trail.' When REFACTOR-NNN adds origin-gating, this test FLIPS to expect 400.
+batch: 2026-05-19-L
+feature_id: null

@@ -1,0 +1,156 @@
+name: |-
+  REFACTOR-225 anchor-set single-point-of-failure (no JOIN-side owner defence-in-depth)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+  - P-05
+  - P-01
+description: |-
+  NEW INVARIANT, batch 2026-05-19M (4-sidecar PRIMARY-SOURCE confirmation across the
+  anchor-set defence audit) — the owner-scoping invariant for the lineage-variant /my
+  endpoints (and the DEG-anchored lineage endpoint and the search-facets surface) is
+  enforced at EXACTLY ONE site (the anchor resolution via
+  authIdentityProvider.fetchAssociatedOwner) with NO defence-in-depth at the SQL-JOIN
+  layer. The downstream listByOddrns scan at
+  ReactiveDataEntityRepositoryImpl.java:228-253 is a pure WHERE DATA_ENTITY.ODDRN IN (?, ?, ...)
+  scan with no JOIN against OWNERSHIP; the lineage recursive CTE at
+  ReactiveLineageRepositoryImpl.java:122-176 has no owner JOIN and no owner predicate.
+  This contrasts SHARPLY with the sibling /my endpoint (getMyObjects) which routes to
+  the JOIN-side defended listByOwner at
+  ReactiveDataEntityRepositoryImpl.java:515-534 with explicit WHERE OWNERSHIP.OWNER_ID = ?
+  — that endpoint has belt-and-braces enforcement; the /my/upstream and /my/downstream
+  endpoints do not. A regression at the SOLE owner-defence site
+  (DataEntityRelationsServiceImpl.java:26) — e.g. (a) a future refactor adding a
+  fallback owner-id for DISABLED mode, (b) a misordered WebFilter dropping the
+  SecurityContext, (c) a corrupted USER_OWNER_MAPPING row, (d) a flatMap-vs-map typo
+  passing through to a hardcoded fallback — silently leaks the lineage neighbourhood
+  of an unintended anchor with no SQL-layer trip-wire. **Latent today** (current
+  fetchAssociatedOwner correctly returns empty for unmapped users) — the architecture
+  provides ZERO defence against a future regression at this single load-bearing call
+  site. **Architectural-hygiene observation**: the existence of two distinct repository
+  methods (listByOwner with the JOIN, listByOddrns without) is the structural evidence
+  of intent — if the maintainer wanted the lineage variants to be JOIN-defended, they
+  would have constructed a listByOddrnsAndOwner(oddrns, ownerId) method or added a
+  Long ownerId parameter to listByOddrns; the absence is the architectural decision
+  that creates this single-point-of-failure. **Severity**: HIGH (latent vulnerability;
+  the gap is the missing redundant SQL filter, not a present-day defect).
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+nodes:
+  - odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream
+  - odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream
+  - odd-platform java DataEntityController controller-method:getDataEntityGroupsLineage
+  - odd-platform java DataEntityController controller-method:getMyObjects
+  - odd-platform java service service:DataEntityServiceImpl
+  - odd-platform java service service:LineageServiceImpl
+  - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+contributors:
+  - |-
+    getMyObjectsWithUpstream.md (batch M PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[0] REFACTOR-225 PRIMARY-SOURCE confirmation —
+    anchor-set single-point-of-failure with NO JOIN-side defence-in-depth (HIGH);
+    security.owner_scoping RESPECTS — anchor-set only, NO JOIN-side defence-in-depth;
+    security.known_security_gaps.[0] HIGH severity latent vector;
+    implicit_adrs.[2] No defence-in-depth at the derived-set SQL retrieval —
+    listByOddrns is owner-agnostic by design; the structural evidence of intent.
+  - |-
+    getMyObjectsWithDownstream.md (batch M SYMMETRIC SIBLING):
+    bugs_limitations_corner_cases.[0] REFACTOR-225 SYMMETRIC SIBLING (MEDIUM);
+    security.owner_scoping PARTIAL — anchor-set defence-in-depth only; SQL JOIN-side
+    filter is absent at the response layer; security.known_security_gaps.[0] MEDIUM
+    latent vector; implicit_adrs.[1] Owner-scoped lineage variants use a DIFFERENT
+    code path than getMyObjects — the lineage-expanded set is NON-owner-scoped at
+    the response layer.
+  - |-
+    getDataEntityGroupsLineage.md (batch M DEG-anchored sibling):
+    bugs_limitations_corner_cases.[0] Anchor-set defence-in-depth is NOT applied —
+    DEG ID is the anchor; any DEG visible to the caller exposes its full
+    member-graph + reachable edges + per-member metadata (HIGH);
+    security.owner_scoping BYPASSES — the returned DEG-lineage graph is not
+    filtered by the caller owner relationships; the LineageServiceImpl has no
+    AuthIdentityProvider field at all (verified by reading LineageServiceImpl.java:54-57).
+  - |-
+    LineageServiceImpl batch I (cross-reference): bugs_limitations_corner_cases.[0]
+    NEGATIVE-CASE SIBLING — same shape at getLineage; no anchor-set defence-in-depth.
+  - |-
+    DataEntityRelationsServiceImpl.java:25-39 — the POSITIVE case sibling:
+    fetchAssociatedOwner at line 26 IS the SOLE owner-defence; line 37
+    Predicate.not(oddrns::contains) is the explicit exclusion of the anchor;
+    no defence-in-depth at downstream layers.
+evidence:
+  - |-
+    DataEntityRelationsServiceImpl.java:25-39 (the anchor + expand + exclude pipeline;
+    line 26 = the SOLE owner-defence site)
+  - |-
+    DataEntityServiceImpl.java:218-225 (the orchestration entrypoint;
+    flatMapMany to listByOddrns)
+  - |-
+    ReactiveDataEntityRepositoryImpl.java:228-253 (the unprotected listByOddrns
+    scan — no OWNERSHIP join, no owner predicate)
+  - |-
+    ReactiveDataEntityRepositoryImpl.java:515-534 (the CONTRAST site — listByOwner
+    DOES have the OWNERSHIP join)
+  - |-
+    ReactiveLineageRepositoryImpl.java:122-176 (the lineage recursive CTE
+    with no owner JOIN, no owner predicate)
+  - |-
+    LineageServiceImpl.java:54-57 (no AuthIdentityProvider field — the DEG-lineage
+    negative-case sibling identification)
+  - |-
+    getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[0] +
+    security.known_security_gaps.[0] + implicit_adrs.[2]
+  - |-
+    getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[0] +
+    security.owner_scoping + security.known_security_gaps.[0]
+  - |-
+    getDataEntityGroupsLineage.md:bugs_limitations_corner_cases.[0] +
+    security.owner_scoping + security.known_security_gaps
+mitigations_unimplemented:
+  - |-
+    Introduce a listByOddrnsAndOwner(oddrns, ownerId) repository method that
+    JOINs against OWNERSHIP with WHERE OWNERSHIP.OWNER_ID = ? as a belt-and-braces
+    filter; route the /my/upstream and /my/downstream endpoints through it.
+  - |-
+    Add a Long ownerId parameter to listByOddrns and require it at the
+    lineage-variant call sites; treat null as a deliberate cross-owner read
+    that must be commented at the call site.
+  - |-
+    Service-layer guard: a mustScope(reason) annotation on methods that
+    deliberately BYPASS the anchor — the maintainer must explicitly justify the
+    bypass in code review.
+  - |-
+    Test: a REFACTOR-225 regression-vector unit test that injects a misconfigured
+    AuthIdentityProvider returning a wrong owner and asserts the response does
+    NOT leak unscoped lineage neighbours — surfaces the single-point-of-failure
+    to maintainers reading the test corpus.
+notes: |-
+  This invariant is the 4-angle triangulated finding from batch M:
+    (a) /my/upstream — getMyObjectsWithUpstream sidecar (PRIMARY SOURCE);
+    (b) /my/downstream — getMyObjectsWithDownstream sidecar (SYMMETRIC SIBLING);
+    (c) /api/dataentitygroups/{id}/lineage — getDataEntityGroupsLineage sidecar
+        (DEG-anchored sibling — even broader because the DEG anchor exposes the
+        full member-graph + reachable edges + per-member metadata);
+    (d) /api/dataentities/{id}/lineage/{downstream|upstream} — the negative-case
+        sibling per batch I LineageServiceImpl + batch H repository, where there
+        is no anchor-set at all (cross-owner enumeration unmitigated).
+
+  The DEG-anchored variant (c) is the WIDEST blast — for a multi-team DEG (e.g. a
+  Domain), the per-connected-component partitioning at LineageServiceImpl.java:200-216
+  surfaces team A and team B both contribute to the Finance DEG even when the
+  individual entities would not be cross-team-searchable. The DEG anchor wraps
+  the whole co-membership graph as the discovery primitive.
+
+  Cross-references:
+    - Read-collaborative cross-owner enumeration — same posture across 19 surfaces
+      (extended from 15-surface to 19-surface by batch M: getMyObjectsWithUpstream
+      + getMyObjectsWithDownstream + getDataEntityGroupsLineage + facets).
+    - Anchor-set defence-in-depth — positive vs negative cases at the service tier
+      (the platform-level invariant; this is the controller-side instance with
+      explicit single-point-of-failure framing).
+    - Owner-scoped routes — controllers take NO principal parameter (the
+      controller-shape primary source — third member of the triplet confirmed by
+      batch M).

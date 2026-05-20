@@ -1,0 +1,9 @@
+- **REFACTOR-034**: MinIO SDK HTTP-client timeouts (~5min default) not configurable at YAML — slow networks combined with large `attachment.max-file-size` produce unrecoverable socket timeouts
+  - **Category**: buggy-default
+  - **Surfaced by**: `odd-platform__yaml__application_yml__config-prefix__attachment.md:bugs_limitations_corner_cases.[4]` (MEDIUM)
+  - **Statement**: `MinioConfig` builds `MinioAsyncClient` with no custom `OkHttpClient`, so the SDK defaults apply globally to all REMOTE operations. There is no `attachment.remote.timeout` knob; tuning requires a code change.
+  - **Evidence**: `MinioConfig.java:19-25` (no `.httpClient(...)` call)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Add `attachment.remote.connect-timeout-millis`, `attachment.remote.read-timeout-millis`, `attachment.remote.write-timeout-millis` properties; in `MinioConfig`, build a custom `OkHttpClient` from these and pass `.httpClient(...)`.
+  - **Severity rationale**: MEDIUM — operational tuning lever missing.
+  - **Suggested backlog grouping**: `Attachment integrity sprint`

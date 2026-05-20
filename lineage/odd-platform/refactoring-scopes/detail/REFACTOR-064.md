@@ -1,0 +1,10 @@
+- **REFACTOR-064** (NEW 2026-05-10A): `CollectorServiceImpl.regenerateToken` is NOT `@ReactiveTransactional` — inconsistent with sibling `create` / `update` / `delete` methods on the same service
+  - **Category**: transactional-consistency
+  - **Surfaced by**:
+    - `odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md:bugs_limitations_corner_cases.[2]` (LOW)
+  - **Statement**: `CollectorServiceImpl.java:82-90` has no `@ReactiveTransactional` (compare with `create`, `update`, `delete` at lines 38, 51, 72 — all annotated). The current rotation is a single DB UPDATE so a transaction boundary is not strictly required for atomicity, but the absence is inconsistent. If a future change adds an audit-log insert (REFACTOR-046) or a notification dispatch, the developer must remember to add the annotation; a forgotten annotation produces silent partial-failure (token rotated but audit row not written, or vice-versa).
+  - **Evidence**: `CollectorServiceImpl.java:82-90` (no `@ReactiveTransactional`) vs lines 38, 51, 72 (annotated)
+  - **Existing-ADR-or-implied-prescription**: None directly. Implicit convention: every mutating service method is `@ReactiveTransactional` (the sibling methods establish this).
+  - **Proposed remedy**: Add `@ReactiveTransactional` to `regenerateToken`. The change is no-op for the current single-UPDATE shape; sets up the convention for future additions.
+  - **Severity rationale**: LOW — defensive consistency.
+  - **Suggested backlog grouping**: `Token rotation hardening`

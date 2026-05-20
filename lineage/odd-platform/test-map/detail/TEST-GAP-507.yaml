@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-507
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataEntityController controller-method:getDataEntityGroupsLineage"
+pillars_affected: [P-05]
+surfaced_by:
+  - "getDataEntityGroupsLineage.md:bugs_limitations_corner_cases.[2] (404 conflates three semantically distinct conditions)"
+  - "getDataEntityGroupsLineage.md:tests_coverage_semantic.uncovered_behaviours.[3, 4] (DEG-not-found 404; Non-DEG-typed ID)"
+  - "getDataEntityGroupsLineage.md:docs_link_semantic.doc_drift_findings.[2] (404 conflation undocumented)"
+behaviour: |-
+  404-conflation regression-pin for getDataEntityGroupsLineage (MEDIUM — P-05). `NotFoundException("Data entity group", dataEntityGroupId)` at `LineageServiceImpl.java:62` fires when: (a) the DEG ID does not exist, (b) the ID references a non-DEG-typed entity, OR (c) the DEG exists but has zero non-soft-deleted members. The SQL CTE at `ReactiveGroupEntityRelationRepositoryImpl.java:177-204` selects from `group_entity_relations` keyed on the entity's oddrn — for cases (a) and (b) the inner subquery `DSL.select(DATA_ENTITY.ODDRN).from(DATA_ENTITY).where(DATA_ENTITY.ID.eq(dataEntityGroupId))` either returns no row OR returns the wrong-typed oddrn, and the outer recursive CTE returns empty in both cases. The error message is identical for all three: 'Data entity group {id} doesn't exist'. Operators debugging 'why is my DEG-lineage call returning 404?' cannot discriminate between: (i) the DEG doesn't exist (their fault — wrong ID), (ii) the entity exists but isn't a DEG (misleading), (iii) the DEG exists but has no members (legitimate empty state arguably should be 200 with empty items). The live API-reference docs treat this as a single error condition; the code surface treats it as three. NO test pins the conflation, so a future refactor splitting the conditions (e.g. returning 200/[] for case (c) and 404 only for (a)/(b), or differentiating (b) with a distinct error code) has no regression anchor.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/DataEntityGroupLineage404ConflationTest.java"
+  name: "getDataEntityGroupsLineage_threeNotFoundConditions_returnIdentical404_pinsTheConflation"
+evidence:
+  - "getDataEntityGroupsLineage.md:bugs_limitations_corner_cases.[2]: '404 conflates three semantically distinct conditions — NotFoundException(Data entity group, dataEntityGroupId) at LineageServiceImpl.java:62 fires when (a) the DEG ID does not exist, (b) the ID references a non-DEG-typed entity, OR (c) the DEG exists but has zero non-soft-deleted members.' severity: MEDIUM"
+  - "LineageServiceImpl.java:61-62 (the switchIfEmpty + NotFoundException site)"
+  - "ReactiveGroupEntityRelationRepositoryImpl.java:182-204 (the SQL — empty CTE for all three failure modes)"
+cross_references:
+  - "TEST-GAP-415 (getDataEntityGroupLineage service-layer test gap — co-located)"
+  - "TEST-GAP-504 (DEG-anchored cross-owner — co-located)"
+  - "DOC-GAP-NNN candidate: document the three 404 conditions distinctly in the API-reference doc"
+  - "F-005 (Data Lineage)"
+proposed_action: |-
+  WebTestClient integration test, three sub-cases. (a) Sub-case (i) — DEG ID does not exist: GET /api/dataentitygroups/99999999/lineage; assert HTTP 404 with body containing 'Data entity group' and 'doesn't exist'. (b) Sub-case (ii) — non-DEG-typed entity: create a Dataset entity D (not a DEG); GET /api/dataentitygroups/D.id/lineage; assert HTTP 404 with the IDENTICAL body. (c) Sub-case (iii) — DEG with no members: create empty DEG E; GET /api/dataentitygroups/E.id/lineage; assert HTTP 404 with the IDENTICAL body. (d) Test comment 'LOCKS the 404-conflation contract as of 2026-05-19. If a future refactor splits any of the three conditions (e.g. returns 200 [] for empty DEG, or 422 for wrong-type), this test FLIPS to expect the new contract on the specific case.' This is a contract-pinning test that documents the deliberate conflation.
+batch: 2026-05-19-M
+feature_id: F-005

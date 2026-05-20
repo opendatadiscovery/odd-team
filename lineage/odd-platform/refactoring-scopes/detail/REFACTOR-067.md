@@ -1,0 +1,11 @@
+- **REFACTOR-067** (NEW 2026-05-10A): `getActivity` `size` parameter has no documented or enforced upper bound — caller submitting `size=Integer.MAX_VALUE` is rate-limited only by the repository's query plan
+  - **Category**: missing-validation
+  - **Surfaced by**:
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:bugs_limitations_corner_cases.[3]` (LOW per sidecar)
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:performance.known_performance_gaps.[0]` (MEDIUM per sidecar)
+  - **Statement**: `ActivityController.java:26` declares `final Integer size` with no `@Max` annotation, no programmatic check. `ActivityServiceImpl.java:179-181` passes the parameter through to the repository unchanged. A caller submitting `size=Integer.MAX_VALUE` is rate-limited only by the repository's query plan and Postgres's LIMIT clause behaviour. The cursor design assumes well-behaved clients page through with reasonable `size`; that assumption is undocumented.
+  - **Evidence**: `ActivityController.java:26` + `ActivityServiceImpl.java:179-181`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-021 (cursor pagination) describes the cursor shape; this scope is the missing per-page bound.
+  - **Proposed remedy**: Add `@Max(200)` on `size`. Add `default: 50` on the OpenAPI spec. Document on the live activity-feed page.
+  - **Severity rationale**: LOW — consistent with REFACTOR-020 (the platform-wide pagination-unbounded gap class).
+  - **Suggested backlog grouping**: `Activity feed hardening` (parallels `OpenAPI contract hardening`)

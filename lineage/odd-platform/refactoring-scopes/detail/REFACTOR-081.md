@@ -1,0 +1,11 @@
+- **REFACTOR-081** (NEW 2026-05-10B): Body-buffered-before-auth-check — `IngestionDataEntitiesFilter` reads the full request body into memory (up to 20 MB) BEFORE validating the token, allowing low-effort heap-pressure DoS via invalid-token + max-size payload
+  - **Category**: body-before-auth
+  - **Surfaced by**:
+    - `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md:bugs_limitations_corner_cases.[5]` (severity MEDIUM)
+    - `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md:security.known_security_gaps.[4]` (severity MEDIUM)
+  - **Statement**: `IngestionDataEntitiesFilter.java:37-40` calls `super.getBody().collectList()` which buffers the entire body, then `readBody(dataBuffer, DataEntityList.class)` parses it to extract `dataSourceOddrn`, THEN the token is validated against the resolved datasource. An attacker submitting maximum-size 20 MB payloads with invalid tokens forces the platform to buffer + parse the body before rejecting. The order is body-first because the dataSourceOddrn determines WHICH token to compare against. A 20-attacker concurrent burst with max-size payloads holds 400 MB in heap during validation.
+  - **Evidence**: `IngestionDataEntitiesFilter.java:37-60` (body-first ordering) + `application.yml:14-15` (`spring.codec.max-in-memory-size: 20MB`)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-027 (NEW — ingestion-endpoint auth trust gradient) codifies the per-subclass filter pattern; the ADR does NOT defend the body-first ordering.
+  - **Proposed remedy**: Reorder to (1) parse the `Authorization` header first; (2) require a fast-extractable identity from the header itself (e.g., a `X-DataSource-Oddrn` companion header sent by collectors); (3) validate the token against the named datasource WITHOUT reading the body; (4) THEN parse the body and continue. Alternative: add a smaller pre-check buffer cap (e.g. 1 MB) on the ingestion path specifically — invalid tokens reject after buffering 1 MB instead of 20 MB.
+  - **Severity rationale**: MEDIUM — heap-pressure DoS amplifier on an unauthenticated-by-default path (REFACTOR-078).
+  - **Suggested backlog grouping**: `Ingestion-endpoint auth hardening`

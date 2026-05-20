@@ -1,0 +1,310 @@
+name: Lineage Graph Traversal
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW CONCEPT, batch 2026-05-12F** — the platform''s lineage-graph read
+  interface. `GET /api/dataentities/{id}/lineage/downstream` (sibling `/upstream`)
+  returns the FULL reachable lineage subgraph from a rooted data entity, walked via
+  a single Postgres `WITH RECURSIVE` CTE (`ReactiveLineageRepositoryImpl.java:122-176`).
+  Two client-driven inputs control the traversal: `lineage_depth` (recursion depth
+  bound) + `expandedEntityIds` (depth-1 fan-out around selected nodes for UI progressive
+  expansion). Edges are persisted as `LineagePojo` rows in the `lineage` table (parent_oddrn
+  ↔ child_oddrn ↔ establisher_oddrn directed-edge rows with an is_deleted soft-delete
+  flag). Response is a `DataEntityLineage` graph DTO (root + downstream + upstream
+  + nodes + edges + children-count/parents-count maps). **Batch H adds the SQL primary-source
+  persistence layer**: 177-line repository with 11 public methods + 1 private CTE-assembly
+  helper. The CTE is a hand-written `WITH RECURSIVE` (lineageCte at lines 150-176)
+  walking from a root oddrn set for at most `lineageDepth.getDepth()` hops in the
+  chosen direction (DOWNSTREAM follows parent→child, UPSTREAM follows child→parent),
+  filtering soft-deleted edges in both seed and recursive step. The depth bound is
+  the **only** recursion terminator — no visited-set guard, no Postgres WITH ... CYCLE
+  clause, no upper cap on the depth value. Soft-delete is canonical: every read filters
+  `IS_DELETED.isFalse()` (7 sites); only hard-delete path is ingestion''s rewrite-by-establisher.
+  The `lineage` table has NO owner column (V0_0_2 + V0_0_17 + V0_0_79 confirmed) —
+  owner-scoping at the data-entity level cannot be applied at the lineage table directly;
+  the batch-G anchor-set pattern at DataEntityRelationsServiceImpl.java:34 (passing
+  `LineageDepth.empty()`) is the ONLY caller that applies owner-scoping at the seed
+  set, and even that is anchor-set defence-in-depth, NOT JOIN-side owner filter. main-concepts.md
+  names `Data Lineage` as a Data Governance pillar (`### Data Lineage`) but does NOT
+  name the API surface, the recursion-bound mechanism, the dual-input expansion model,
+  or the cross-owner enumeration semantics. The closest doc anchor is `/features/data-lineage`
+  (verified 200, 2026-05-12) which describes lineage as a discoverable graph and refers
+  readers to `/developer-guides/api-reference/lineage` (also 200) for API details.
+  **The API-reference page contains TWO doc-drift findings** (per getDataEntityDownstreamLineage.md:docs_link_semantic.doc_drift_findings):
+  (1) claims `lineage_depth` defaults to platform''s default when unset — UNIMPLEMENTED
+  (null-Integer NPE on the service boundary; batch H confirms at SQL: value flows
+  directly into `tDepth.lessThan(lineageDepth.getDepth())` with no defensive Math.min);
+  (2) describes `expanded_entity_ids` as ''IDs of Data Entity Group entities'' — code
+  accepts ANY data-entity IDs (parameter is `List<Long>` with no group-class filter).
+  Sibling features replicate the lineage pattern: DataEntityGroup lineage (`/api/dataentitygroups/{id}/lineage`)
+  accepts no depth parameter at all (openapi.yaml:2418-2433); microservices lineage
+  via OpenTelemetry; ML experiment/model lineage.'
+axes_present:
+- controllers
+- repositories_reactive
+nodes:
+- odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
+- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+contributors:
+- getDataEntityDownstreamLineage.md:concepts.entities (DataEntity root, LineagePojo
+  edges, DataEntityLineage response DTO, LineageDepth wrapper, DataEntityLineageNode/Edge)
+- getDataEntityDownstreamLineage.md:concepts.operations (resolve root → recursive
+  walk → fan-out at expandedEntityIds → merge + distinct → fetch metadata → compute
+  counts → map to DataEntityLineage)
+- getDataEntityDownstreamLineage.md:implicit_adrs.[0] (single-query recursive-CTE)
+  + implicit_adrs.[1] (dual-input client-driven expansion model)
+- 'ReactiveLineageRepositoryImpl (batch H): entities[LineagePojo (parent_oddrn, child_oddrn,
+  establisher_oddrn, is_deleted), LineageDepth wrapper, LineageStreamKind (UPSTREAM
+  | DOWNSTREAM enum), CommonTableExpression<Record> jOOQ CTE handle, LINEAGE jOOQ
+  table reference]; operations[batchDeleteByEstablisherOddrn (ingest-rewrite primitive),
+  batchInsertLineages (multi-row INSERT with onDuplicateKeyIgnore on (parent, child,
+  establisher) tuples), getTargetsCount + getChildrenCount + getParentCount (group-by
+  fan-out counts on non-deleted edges), softDeleteLineageRelations + restoreLineageRelations
+  (UPDATE is_deleted for entity status-change cascade), getLineageRelations(List)
+  (DEG-internal edges — distinct (parent,child) where BOTH endpoints in oddrn list),
+  getLineageRelations(Set, LineageDepth, LineageStreamKind) (THE recursive-CTE traversal
+  — primary read), getLineageRelationsForDepthOne (depth-1 fan-out around entity IDs
+  joined to DATA_ENTITY — progressive-expansion primitive), lineageCte (private CTE
+  assembly)]; 5 ADRs (soft-delete canonical via is_deleted flag — every read filters
+  IS_DELETED.isFalse(); ingestion atomicity via paired batchDelete + batchInsert under
+  caller @ReactiveTransactional; single-query recursive-CTE traversal — one DB round-trip
+  not BFS-per-node; idempotent batch insert via onDuplicateKeyIgnore on PK (parent,
+  child, establisher); establisher-keyed edge provenance enables non-destructive cross-producer
+  ingestion). **Soft-delete mechanism distinct from policy/data-entity** — uses is_deleted
+  boolean (NOT deleted_at timestamp, NOT STATUS state-machine), added in V0_0_79__data_deprecation.sql:11-12.'
+evidence:
+- getDataEntityDownstreamLineage.md:concepts.entities + concepts.operations + concepts.invariants.[0-3]
+- getDataEntityDownstreamLineage.md:implicit_adrs.[0,1]
+- getDataEntityDownstreamLineage.md:dependencies_semantic.couples-to (LineageService.getLineage
+  + ReactiveLineageRepositoryImpl.lineageCte)
+- ReactiveLineageRepositoryImpl.md:concepts.invariants.[0,1,2,3,4,5]
+- ReactiveLineageRepositoryImpl.md:implicit_adrs.[0,1,2,3,4]
+- ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[0,1,2,3,7]
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: NO SECURITY_RULES entry — falls through to `pathMatchers('/**').authenticated()`
+      catch-all (AuthorizationCustomizer.java:29-30). No `@PreAuthorize`, no programmatic
+      permission check. Read-collaborative-GET ADR-CANDIDATE-003 posture surfaced
+      on a graph-shaped vector. Under `auth.type=DISABLED`, anonymously reachable.
+      **Batch H confirms at SQL primary source**: ReactiveLineageRepositoryImpl has
+      NO authorization annotations; defence-in-depth is null; any service-bypass invocation
+      reaches the SQL with no caller-ID check. Owner-scoping at the upstream caller
+      (DataEntityRelationsServiceImpl uses `authIdentityProvider.fetchAssociatedOwner()`
+      at the anchor set) is the ONLY defence; the recursive CTE expands the reachable
+      subgraph WITHOUT owner filtering.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: Returned graph is NOT filtered by caller's owner relationships. The `lineage`
+      table itself carries NO owner column; `LineageServiceImpl.getLineage(...)` performs
+      no per-row owner check (lines 87-122); repository walk filters only by `LINEAGE.IS_DELETED.isFalse()`.
+      Authenticated caller sees every entity reachable from the root via lineage edges,
+      including entities owned by other teams. **Batch H confirms at SQL primary source**:
+      schema (V0_0_2 + V0_0_17 + V0_0_79) has no owner column; the CTE seed + recursive
+      step filter ONLY on is_deleted (lines 167, 174). The recursive expansion is
+      the **graph-shaped cross-owner enumeration sink** — its SQL embodies the property
+      REFACTOR-203 names.
+  strengths:
+  - Single-query recursive-CTE traversal — one DB round-trip, not BFS-per-node (efficient
+    at the query layer)
+  - Client-driven progressive-expansion model — UI can ask for shallow tree first
+    then expand on click, bounding initial response size
+  - '**Batch H — soft-delete-via-is_deleted is canonical** — every read filters `IS_DELETED.isFalse()`
+    at 7 distinct call sites (lines 65, 76, 86, 115, 145, 167, 174); soft-delete +
+    restore are paired symmetric methods; only hard-delete path is ingestion''s rewrite-by-establisher
+    (batchDeleteByEstablisherOddrn). Defence-in-depth at the SQL layer keeps deleted
+    edges invisible to reads. (ReactiveLineageRepositoryImpl.md:implicit_adrs.[0])'
+  - '**Batch H — Establisher-keyed edge provenance enables non-destructive cross-producer
+    ingestion**: each lineage edge carries the oddrn of the entity that DECLARED it
+    (`establisher_oddrn` PK column). This is the model element that enables "when
+    entity X re-publishes its lineage, rewrite ONLY the edges X declared, leaving
+    edges declared by Y untouched". Index `lineage_establisher_oddrn` (V0_0_17:119)
+    supports the batchDeleteByEstablisherOddrn primitive. (ReactiveLineageRepositoryImpl.md:implicit_adrs.[4])'
+  - '**Batch H — Anchor-set defence-in-depth pattern (batch G ADR-CANDIDATE-015)**:
+    when invoked from DataEntityRelationsServiceImpl.getDependentOddrns (line 34 —
+    the getMyObjectsWith{Upstream,Downstream} flow), the CALLER applies owner-scoping
+    at the anchor set via `authIdentityProvider.fetchAssociatedOwner()`. With `LineageDepth.empty()`
+    (depth=-1), `tDepth.lessThan(-1)` is FALSE on first iteration so recursion terminates
+    after seed step — effectively a one-hop expansion. (ReactiveLineageRepositoryImpl.md:upstream_callers
+    table)'
+  weaknesses:
+  - '**Graph-shaped cross-owner enumeration vector (HIGH)** — lineage edges encode
+    causal connections; leaking the existence of a downstream transformer / consumer
+    reveals another team''s internal pipeline structure even if their entities are
+    not separately enumerable via other endpoints. 5th surface in the read-collaborative
+    invariant (after getAllAlerts + getActivity + search + getDataEntityDetails).
+    (getDataEntityDownstreamLineage.md:security.known_security_gaps.[0]). **Batch
+    H SQL PRIMARY-SOURCE CONFIRMED**: `lineage` table has no owner column; CTE filters
+    only on is_deleted; for the lineage-canvas read path (LineageServiceImpl.java:95-99),
+    NO owner-scoping is applied at any layer. The repository is the graph-shaped
+    cross-owner enumeration sink. (ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[2]
+    + security.known_security_gaps.[0])'
+  - '**No `lineage_depth` upper-bound cap + no rate-limit — DoS-amplification vector
+    (HIGH)** — `@Min(1)` enforces a lower bound but no `@Max(...)` exists; depth=10000
+    against a dense subgraph is permissible. The CTE row count grows multiplicatively
+    with depth; no cycle guard inside the recursion (only outer `selectDistinct`).
+    (getDataEntityDownstreamLineage.md:security.known_security_gaps.[1]). **Batch
+    H SQL PRIMARY-SOURCE CONFIRMED**: lineageCte at line 174 — `tDepth.lessThan(lineageDepth.getDepth())`
+    — no Math.min, no defensive check; Integer.MAX_VALUE recurses until graph exhausted
+    or Postgres rejects for work_mem / statement_timeout / stack-depth. (ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[3]
+    + security.known_security_gaps.[1])'
+  - '**DISABLED-mode reachability (HIGH)** — 11th sidecar in the DISABLED-bypass cross-cutting
+    invariant; anonymous network probe can drive cross-owner enumeration AND DoS-amplification.
+    (getDataEntityDownstreamLineage.md:security.known_security_gaps.[2])'
+  - '**Null-`lineage_depth` NPE returns 500 to caller (MEDIUM)** — generic 500 leaks
+    server-side exception trace; docs claim ''Unset returns the platform''s default
+    depth'' which is UNIMPLEMENTED. Doc-drift + error-handling-hole compounded. (getDataEntityDownstreamLineage.md:security.known_security_gaps.[3])'
+  - '**NEW BATCH H — No cycle-detection inside the recursive CTE (HIGH)**: lineageCte
+    body is `UNION ALL` (line 168) without a visited-set guard or Postgres `WITH ...
+    CYCLE` clause; only termination is the depth bound. For a lineage graph with a
+    cycle (e.g. a transformer that consumes its own downstream artefact), row-count
+    growth before depth-termination is unbounded by graph structure and limited only
+    by the depth ceiling — which itself has no repository-layer upper bound. The outer
+    `selectDistinct` deduplicates the FINAL result but does NOT prune the CTE''s intermediate
+    work. (ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[0])'
+  - '**NEW BATCH H — No `statement_timeout` enforcement at repository (MEDIUM)**:
+    JooqReactiveOperations.flux does not set a per-statement timeout; long-running
+    CTE queries depend on Postgres session-level `statement_timeout` (set externally,
+    if at all) or R2DBC client request timeout (not configured here). (ReactiveLineageRepositoryImpl.md:security.known_security_gaps.[2])'
+  cross_file_inconsistencies:
+  - Concept name 'Lineage' is canonical in main-concepts.md (`Data Lineage` Data Governance
+    pillar) but the API surface, recursion-bound mechanism, dual-input expansion model,
+    and cross-owner-enumeration posture are all undocumented at the concept layer.
+    Sub-page `/developer-guides/api-reference/lineage` covers the parameters but with
+    two inaccuracies (the null-default claim + the group-only `expanded_entity_ids`
+    claim).
+  - '**Batch H — soft-delete mechanism asymmetry across `Reactive*Repository` siblings**:
+    ReactiveLineageRepositoryImpl uses `is_deleted` boolean (V0_0_79__data_deprecation.sql:11-12);
+    ReactivePolicyRepositoryImpl + most other CRUDable entities use `deleted_at` timestamp;
+    ReactiveDataEntityRepositoryImpl OVERRIDES the inherited deleted_at base with
+    STATUS state-machine. Three different deletion mechanisms across the repository
+    layer. See ''Soft-delete by STATUS state-machine vs deleted_at timestamp'' cross-cutting
+    invariant.'
+  contributing_files:
+  - getDataEntityDownstreamLineage.md
+  - ReactiveLineageRepositoryImpl.md
+  evidence:
+  - getDataEntityDownstreamLineage.md:security.known_security_gaps.[0-3]
+  - getDataEntityDownstreamLineage.md:bugs_limitations_corner_cases.[0-7]
+  - ReactiveLineageRepositoryImpl.md:security.known_security_gaps.[0,1,2]
+  - ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[0,1,2,3,7] (no
+    cycle guard HIGH; diamond DAG amplification MEDIUM; no owner JOIN HIGH; no depth
+    cap HIGH; LineageDepth.empty() folklore MEDIUM)
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - Every lineage-canvas open in the UI issues a `GET /api/dataentities/{id}/lineage/downstream`
+    AND `/upstream`; each subsequent click on a node to expand re-issues the same
+    endpoint with an updated `expanded_entity_ids` list — fully synchronous, fully
+    un-cached
+  - Recursive-CTE materialises one row per (depth, parent_oddrn, child_oddrn) tuple
+    inside the recursion — highest-DB-cost read on the entity-detail screen
+  - Per-oddrn metadata fetch loads every entity referenced anywhere in the edge set
+    + every group oddrn — a 10K-edge response triggers a 20K-oddrn metadata fetch
+    in the same Mono assembly
+  - '**Batch H SQL primary source**: `getLineageRelations(Set, LineageDepth, LineageStreamKind)`
+    at ReactiveLineageRepositoryImpl.java:122-131 is the per-request hot path for
+    every lineage-canvas open; cost grows multiplicatively with depth × branching
+    factor.'
+  - '**Batch H SQL primary source**: `getLineageRelationsForDepthOne(rootIds, kind)`
+    at lines 134-148 is the per-click hot path for every progressive UI expansion
+    — separate query merged into the canvas response by LineageServiceImpl.java:98-100.'
+  - '**Batch H SQL primary source**: `getChildrenCount` + `getParentCount` (lines
+    72-89) — invoked once per lineage-canvas open over the full result-set oddrn
+    list to compute fan-out badges on each node; cost scales with response oddrn
+    set size.'
+  - '**Batch H SQL primary source**: `batchInsertLineages` + `batchDeleteByEstablisherOddrn`
+    (lines 43-58) — invoked on every ingestion of an entity whose lineage edges changed;
+    in high-throughput ingestion this is the highest-write hot path on the repository.'
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single Mono pipeline per request — one request → one response holding
+      the full graph; no streaming variant; no batching of multiple lineage requests.
+      **Batch H — single SQL statement per public method, no per-row round-trip**;
+      the recursive CTE walks N hops in ONE round-trip; the depth-1 fan-out is ONE
+      round-trip; the counts are ONE round-trip each; batch insert is a single multi-row
+      INSERT.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: Stateless controller scales horizontally; the bottleneck is unbounded
+      Postgres recursive-CTE cost on diamond-shaped DAGs + full-graph in-memory materialisation
+      in JVM heap before serialisation. **Batch H — repository is stateless; bottleneck
+      is Postgres**.
+  strengths:
+  - Stateless controller — horizontal scaling unconstrained at this layer
+  - Reactive `Mono` signature — non-blocking on the request thread
+  - '**Batch H — single round-trip per method via reactive R2DBC**; no per-row fan-out;
+    reactive Flux signatures non-blocking; batch insert uses jOOQ multi-row VALUES
+    with onDuplicateKeyIgnore (single INSERT statement regardless of pojo count).'
+  weaknesses:
+  - '**No upper bound on `lineage_depth` parameter (HIGH)** — operators cannot defend
+    a small Postgres instance against a depth=10000 request without an external WAF/reverse-proxy
+    validation rule'
+  - '**No cap on `expanded_entity_ids` list length (MEDIUM)** — a multi-thousand-ID
+    list hits the Postgres 32K-parameter prepared-statement limit before producing
+    a useful error message'
+  - '**Full-graph in-memory materialisation (MEDIUM)** — no streaming response and
+    no pagination cursor; a 100K-node downstream subgraph holds its full edge list
+    + per-node metadata in heap before serialisation'
+  - '**No CTE-level cycle guard (MEDIUM)** — diamond DAGs and true cycles inflate
+    intermediate row counts inside the CTE before final pruning at outer `selectDistinct`'
+  - '**No caching (LOW)** — identical repeated calls re-walk the CTE and re-fetch
+    every entity''s metadata. **Batch H — `@Cacheable` keyed on (rootOddrns, depth,
+    streamKind) would absorb most UI-canvas re-opens** (the lineage table changes
+    only on ingestion). (ReactiveLineageRepositoryImpl.md:performance.known_performance_gaps.[4])'
+  - '**NEW BATCH H — No covering index for soft-delete filter (MEDIUM)**: `is_deleted
+    = false` is a query that benefits from a partial index `(parent_oddrn, child_oddrn)
+    WHERE is_deleted = false`; none declared in any migration. For a large soft-deleted
+    tail the planner falls back to full-table scans on read. V0_0_79__data_deprecation.sql:11-12
+    added the column with NO covering index. (ReactiveLineageRepositoryImpl.md:performance.known_performance_gaps.[2])'
+  - '**NEW BATCH H — No covering index for soft-delete OR predicate on either-endpoint
+    (MEDIUM)**: `LINEAGE.CHILD_ODDRN.in(...).or(LINEAGE.PARENT_ODDRN.in(...))` cannot
+    use the (parent, child, establisher) PK efficiently for the CHILD_ODDRN leg;
+    a separate index on `(child_oddrn, is_deleted)` would help. For soft-delete cascade
+    involving many entity oddrns, the planner may degrade to sequential scan. (ReactiveLineageRepositoryImpl.md:performance.known_performance_gaps.[3])'
+  - '**NEW BATCH H — Misleading OR-predicate in getLineageRelations(List<String>)
+    (LOW)**: lines 113-117 build an OR-clause where both legs are LOGICALLY EQUIVALENT:
+    `(PARENT in oddrns AND CHILD in oddrns) OR (CHILD in oddrns AND PARENT in oddrns)`
+    — the two conjuncts are identical under commutativity. jOOQ generates redundant
+    SQL; Postgres''s planner collapses it but the source code is misleading. Intent
+    was likely "edges where AT LEAST ONE endpoint is in the list" but the code implements
+    "edges where BOTH endpoints are in the list". The existing test (LineageRepositoryTest.java:111-128)
+    does NOT distinguish the two semantics. (ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[6])'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - getDataEntityDownstreamLineage.md
+  - ReactiveLineageRepositoryImpl.md
+  evidence:
+  - getDataEntityDownstreamLineage.md:performance.hot_paths.[0-2]
+  - getDataEntityDownstreamLineage.md:performance.known_performance_gaps.[0-4]
+  - ReactiveLineageRepositoryImpl.md:performance.hot_paths.[0-4]
+  - ReactiveLineageRepositoryImpl.md:performance.known_performance_gaps.[0-5]
+notes: "NEW concept captured in batch 2026-05-12F. Single-sidecar\nprimary-source\
+  \ (getDataEntityDownstreamLineage) until batch H added\nthe repository-layer primary source\
+  \ (ReactiveLineageRepositoryImpl).\nThe sibling `/upstream` endpoint runs the same\
+  \ flow with `LineageStreamKind.UPSTREAM`\n— same code path, mirror semantics. DataEntityGroup-lineage\n\
+  (`/api/dataentitygroups/{id}/lineage`) extends the pattern to\ngroups (no depth\
+  \ parameter on that variant — DEG-lineage is\nalways one-hop).\n\nmain-concepts.md\
+  \ names `Data Lineage` as a Data Governance pillar\nbut does not name the API surface\
+  \ or the dual-input expansion\nmechanism. Recommended canonicalisation: extend main-concepts.md's\n\
+  Data Lineage section with a 'Lineage Graph Traversal' sub-concept\nnaming `GET /api/dataentities/{id}/lineage/{downstream|upstream}`,\n\
+  the `lineage_depth` recursion bound, and the `expanded_entity_ids`\nprogressive-expansion\
+  \ fan-out. Plus fix two doc-bugs on\n`/developer-guides/api-reference/lineage`:\n\
+  \  (a) Correct the `lineage_depth` 'Unset returns the platform's\n      default\
+  \ depth' claim — there IS no default; unset is a 500.\n  (b) Correct the `expanded_entity_ids`\
+  \ 'IDs of Data Entity Group\n      entities' claim — the parameter accepts any data-entity\
+  \ IDs,\n      not just groups.\n\nStrong member of the Read-collaborative cross-owner\
+  \ enumeration\ncross-cutting invariant (6-sidecar now with ReactiveLineageRepositoryImpl)\
+  \ — graph-shaped enumeration is\na UNIQUE blast-radius shape: lineage edges leak\
+  \ causal connections\neven when individual entities are not separately enumerable.\n\
+  \nBatch H reveals a useful contrast point: the lineage table uses\n`is_deleted` boolean\
+  \ for soft-delete (V0_0_79__data_deprecation.sql:11-12),\nwhile every other operator-facing\
+  \ entity uses `deleted_at` timestamp,\nand DataEntity uses STATUS state-machine.\
+  \ Three different deletion\nmechanisms across the repository layer — see 'Soft-delete\
+  \ by STATUS\nstate-machine vs deleted_at timestamp' cross-cutting invariant.\n"

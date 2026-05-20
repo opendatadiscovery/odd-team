@@ -1,0 +1,11 @@
+- **REFACTOR-018**: AlertManager payload silent orphan — alert missing `entity_oddrn` label is accepted, persisted with null `data_entity_oddrn`, returns 204; caller has no signal of misconfiguration
+  - **Category**: error-mapping
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md:bugs_limitations_corner_cases.[0]` (HIGH)
+    - `concepts.yaml:entities[AlertManager Webhook Receiver].security_aggregate.weaknesses.[3]`
+  - **Statement**: `externalAlert.getLabels().get("entity_oddrn")` returns null for missing key; no null-check before `.setDataEntityOddrn(...)`. Controller returns 204 No Content unconditionally. Operators relying on AlertManager's notification-success signal cannot detect this misconfiguration.
+  - **Evidence**: `AlertServiceImpl.java:178` + `AlertManagerController.java:25` (`.map(o -> ResponseEntity.noContent().build())`)
+  - **Existing-ADR-or-implied-prescription**: None defends silent acceptance.
+  - **Proposed remedy**: Reject AlertManager payloads where any alert is missing `entity_oddrn` with HTTP 400 + an explanatory body. Optional: support a partial-success mode where each alert reports its routing outcome.
+  - **Severity rationale**: HIGH (per sidecar) — silent data loss for operators.
+  - **Suggested backlog grouping**: `AlertManager hardening`

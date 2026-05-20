@@ -1,0 +1,62 @@
+name: Lombok @Data toString() sensitive-field leak
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Cross-cutting code-hygiene invariant: ODD''s @ConfigurationProperties
+  POJOs that carry credentials / secrets uniformly use Lombok `@Data` (which auto-generates
+  `toString()` covering ALL fields) WITHOUT applying `@ToString.Exclude` / `@JsonIgnore`
+  to the sensitive fields. 4-sidecar triangulated in batch 2026-05-12D: (a) NotificationsProperties
+  (batch C — `sender / password` hint); (b) EmailSenderProperties (batch D — `private
+  String password` + `@Data`, no `@ToString.Exclude`); (c) ODDLDAPProperties (batch
+  D — `private String password` + `@Data`, no `@ToString.Exclude`); (d) ODDOAuth2Properties
+  (batch D — `private String clientSecret` on nested `OAuth2Provider` + `@Data` on
+  both outer and nested classes, no `@ToString.Exclude`). The Spring Boot 3.4.10 default
+  for `/actuator/env` IS sanitised (`management.endpoint.env.show-values: NEVER` is
+  the framework default; `keys-to-sanitize` masks `password|secret|token|key` patterns)
+  — so the actuator surface is SAFE. The DURABLE leak surface is `toString()` invocation
+  in: (i) explicit `log.*("props = {}", properties)` (zero current call sites in the
+  repo, but the @Data boundary is fragile against future additions); (ii) Spring Boot
+  Actuator''s `/actuator/configprops` text rendering for non-default exposure configurations;
+  (iii) accidental serialiser registration (a future Jackson `ObjectMapper` configured
+  WITHOUT credential-suffix sanitisation); (iv) IDE / debugger / heap-dump inspection
+  feeding into a log capture. Recommended cross-cutting remediation: add `@ToString.Exclude`
+  to every sensitive field across the four POJOs OR (cleaner) wrap credentials in
+  a sealed `Credential` type that overrides `toString` with masking. The CORRECT actuator-env
+  claim is: ''Spring Boot defaults DO sanitise /actuator/env keys named password/secret/token
+  — the durable leak risk is Lombok-toString, not actuator-env.'' Earlier batch-C
+  narratives that said ''auth.ldap.password leaks via /actuator/env'' should be read
+  as ''auth.ldap.password leaks via Lombok-toString IF logged, AND actuator-env is
+  safe by Spring''s default sanitiser.'' This is the ONE invariant that should be
+  cited whenever a sidecar surfaces a credential-field exposure claim.'
+axes_present:
+- config_prefixes
+nodes:
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:EmailSenderProperties
+- odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDLDAPProperties
+- odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDOAuth2Properties
+contributors:
+- 'NotificationsProperties (batch C, hint): credential-shaped fields under notifications.receivers.*
+  (slack.url, webhook.url, email.password, email.sender)'
+- 'EmailSenderProperties (batch D): `private String password` at line 7 + `@Data`
+  at line 6 — Lombok toString() includes password verbatim'
+- 'ODDLDAPProperties (batch D): `private String password` at line 14 + `@Data` at
+  line 10 — same pattern; auth.ldap.password leak surface'
+- 'ODDOAuth2Properties.OAuth2Provider (batch D): `private String clientSecret` at
+  line 34 + `@Data` at line 30 — same pattern; per-client OAuth2 credentials'
+evidence:
+- NotificationsProperties.md (batch C — credential-shaped fields, original batch-C
+  narrative)
+- EmailSenderProperties.md:bugs_limitations_corner_cases.[3] (Lombok toString leaks
+  password) + security.known_security_gaps.[0]
+- ODDLDAPProperties.md:bugs_limitations_corner_cases.[0] (password unmasked) + security.known_security_gaps.[0]
+- ODDOAuth2Properties.md:bugs_limitations_corner_cases.[3] (clientSecret in toString)
+  + security.known_security_gaps.[0]
+notes: "Promoted to a NEW cross-cutting invariant in batch 2026-05-12D after\nthe\
+  \ third + fourth primary-source sidecars confirmed the pattern.\nThe earlier batch-C\
+  \ actuator-env claim was too broad; the actual\ndurable leak surface is Lombok-toString.\
+  \ Recommended cleanup (single\nchange touching 4+ files):\n  - Add `@ToString.Exclude`\
+  \ annotations to `password` (ODDLDAPProperties,\n    EmailSenderProperties) and\
+  \ `clientSecret` (ODDOAuth2Properties.\n    OAuth2Provider).\n  - OR introduce a\
+  \ `Credential` sealed type / record that overrides\n    `toString` to emit `Credential[****]`.\n\
+  Either approach makes the masking discipline opt-out (the default is\nsafe), rather\
+  \ than the current opt-in via `@ToString.Exclude`.\n"

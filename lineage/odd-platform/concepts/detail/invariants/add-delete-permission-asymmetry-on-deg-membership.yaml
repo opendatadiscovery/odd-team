@@ -1,0 +1,134 @@
+name: ADD/DELETE permission asymmetry on DEG-membership writes
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-09
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-19L** — surfaced by
+  cross-reading the addDataEntityDataEntityGroup + deleteDataEntityFromDataEntityGroup
+  sidecar pair. DEG-membership ADD and DELETE require DISTINCT, independently-grantable
+  Policy permissions, but operator-facing documentation does NOT highlight the
+  asymmetry. Direct primary source: SecurityConstants.java:228-236 and
+  PolicyPermissionDto.java:22-23.
+
+  **The two permissions**:
+
+    - `DATA_ENTITY_ADD_TO_GROUP` gates POST /api/dataentities/{id}/data_entity_group
+      (SecurityConstants.java:228-231).
+    - `DATA_ENTITY_DELETE_FROM_GROUP` gates DELETE
+      /api/dataentities/{id}/data_entity_group/{group_id} (SecurityConstants.java:232-236).
+    - Both declared as separate `DATA_ENTITY`-scoped enum values in
+      PolicyPermissionDto.java:22-23.
+
+  **Operator-surprising states this enables**:
+
+    - Policy P1 grants only DATA_ENTITY_ADD_TO_GROUP. User U holding P1 can
+      add entity X to DEG Y but cannot remove it; the server returns 403
+      for the DELETE. The user must request P2 from an admin to clean up
+      their own addition.
+
+    - Policy P2 grants only DATA_ENTITY_DELETE_FROM_GROUP. User V holding
+      P2 can remove memberships but cannot add — they can curate a DEG by
+      pruning but not by adding new members; weird but legitimate
+      stewardship pattern.
+
+  **Compound capability is undocumented**: a Policy designed around
+  "data steward can curate domain contents" likely needs BOTH grants, but
+  the live Permissions page (WebFetched 2026-05-19, status 200) lists the
+  two permissions as separate one-line entries — no "manage DEG memberships"
+  composite capability is named, no examples of paired Policies are
+  given, no warning about granting only one. An operator authoring a
+  Policy via the Roles tab is likely to grant ADD without DELETE (or vice
+  versa) and discover the asymmetry only when a user complains.
+
+  **Why this exists (the architectural intent)**: the implicit ADR
+  (addDataEntityDataEntityGroup implicit_adrs.[1]) is that ADD and DELETE
+  are SEPARABLE capabilities — "I trust user U to populate DEGs but not
+  to remove entries" is a legitimate stewardship pattern. The asymmetry
+  is INTENTIONAL. The OWNERSHIP_CREATE / OWNERSHIP_UPDATE / OWNERSHIP_DELETE
+  trio (SecurityConstants.java:213-227) follows the same shape — three
+  permissions for one resource's CRUD lifecycle. The DEG-membership pair
+  is a deliberate copy of that pattern.
+
+  **The doc-level fix is the load-bearing one**: the asymmetry is
+  intentional; what's MISSING is the operator-facing guidance that
+  Policies targeting "manage DEG memberships" need BOTH grants. The
+  Permissions doc page is the natural home for that guidance.
+
+  **HTTP contract asymmetry compounds the policy asymmetry**: the matching
+  contract asymmetry is captured in the sibling invariant
+  "silent-204-on-no-op-delete-vs-400-duplicate-on-no-op-add" — the
+  policy-asymmetry observation here is independent (the POLICIES are
+  separable; the RESPONSE shapes are also asymmetric, for different
+  reasons).
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup
+  - odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__addDataEntityDataEntityGroup.md
+  - odd-platform__java__DataEntityController__controller-method__deleteDataEntityFromDataEntityGroup.md
+contributors:
+  - |-
+    addDataEntityDataEntityGroup batch L (PRIMARY SOURCE):
+    implicit_adrs.[1] (per-data-entity authorization on DEG membership writes
+    — ADD permission separate from DELETE) +
+    concepts.invariants.[4] (permission gate is on the CHILD with the
+    DATA_ENTITY_ADD_TO_GROUP permission)
+  - |-
+    deleteDataEntityFromDataEntityGroup batch L (PRIMARY SOURCE):
+    implicit_adrs.[1] (ADD and DELETE are DISTINCT policy capabilities) +
+    bugs_limitations_corner_cases.[3] (asymmetric permission grants create
+    operator-surprising states) + security.authorization_assertions.[1]
+    (INDEPENDENT from ADD permission)
+evidence:
+  - addDataEntityDataEntityGroup.md:implicit_adrs.[1]
+  - deleteDataEntityFromDataEntityGroup.md:implicit_adrs.[1]
+  - deleteDataEntityFromDataEntityGroup.md:bugs_limitations_corner_cases.[3]
+  - |-
+    deleteDataEntityFromDataEntityGroup.md:security.authorization_assertions.[1]
+    (independent from ADD permission)
+triangulation_count: 2
+cross_batch: false
+severity: MEDIUM
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Document the asymmetry on
+    /configuration-and-deployment/enable-security/authorization/permissions
+    — add a "manage DEG memberships" composite-capability section showing
+    the paired permissions and the use case for granting them separately.
+  - |-
+    Document the asymmetry on /features/data-discovery/groups-domains.md
+    — operators reading the page should understand that DEG membership
+    management is a TWO-permission capability.
+  - |-
+    Audit shipped default Policies: any Policy aiming to grant
+    "manage DEG memberships" should grant both permissions; identify any
+    that grant only one and document the gap.
+  - |-
+    Add a regression test that asserts:
+      (a) user with only ADD_TO_GROUP can POST but receives 403 on DELETE;
+      (b) user with only DELETE_FROM_GROUP can DELETE but receives 403 on POST;
+      (c) user with BOTH succeeds on both.
+notes: |-
+  NEW invariant captured in batch 2026-05-19L. The pattern is
+  intentional (the maintainer's implicit ADR is that ADD and DELETE are
+  separable capabilities) and matches the OWNERSHIP_CREATE/UPDATE/DELETE
+  trio shape. The doc-level guidance is what's missing, not the code.
+
+  Cross-cutting connections:
+    - Companion of "Write-collaborative DEG — NO DEG-side authorization"
+      — the resource-scope observation (gate is on CHILD); this
+      captures the policy-asymmetry observation (two grants needed)
+    - Companion of "silent-204-on-no-op-delete-vs-400-duplicate-on-no-op-add"
+      — the HTTP contract asymmetry observation
+    - Cross-references the OWNERSHIP_CREATE / OWNERSHIP_UPDATE /
+      OWNERSHIP_DELETE pattern in SecurityConstants.java:213-227
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) /authorization/permissions page — composite-capability section
+    (b) /features/data-discovery/groups-domains.md — operator guidance
+        on the paired-grant requirement for stewardship Policies

@@ -1,0 +1,7 @@
+- **DOC-GAP-033**: Slack Data Collaboration api-reference page omits authentication/authorization/validation/rate-limit
+  - **Category**: drift
+  - **Surfaced by**: `postMessageInSlack.md:doc_drift_findings.[0,1]`.
+  - **Evidence**: WebFetch `/developer-guides/api-reference/data-collaboration` 2026-05-10 — absence verbatim.
+  - **Proposed doc action**: Covered by DOC-GAP-032's authoring; surfaced separately as the doc-page-level gap.
+  - **Cross-references**: DOC-GAP-032.
+  - **Severity rationale**: MEDIUM.

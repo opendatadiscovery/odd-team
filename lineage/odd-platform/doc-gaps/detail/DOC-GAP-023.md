@@ -1,0 +1,7 @@
+- **DOC-GAP-023**: Cross-entity uploadId hijack (Attachment) — undocumented; method-level evidence confirms the attack shape
+  - **Category**: drift
+  - **Surfaced by**: `DataEntityAttachmentController.md:known_security_gaps` (MEDIUM); `uploadFileChunk.md:security.known_security_gaps.[0]` + `:bugs_limitations_corner_cases.[2]`; `concepts.yaml:entities[Attachment].security_aggregate.weaknesses.[3]`.
+  - **Evidence**: `AttachmentService.java:30` signature has no `dataEntityId`; `FileServiceImpl.java:93-102` resolves by `uploadId` only — gate authorises path entity, service forwards by uploadId.
+  - **Proposed doc action**: Fold into DOC-GAP-010's wire-protocol authoring; recommend service-side cross-validation upstream.
+  - **Cross-references**: DOC-GAP-010.
+  - **Severity rationale**: MEDIUM.

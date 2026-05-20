@@ -1,0 +1,9 @@
+- **REFACTOR-006**: `requestTimeout=0` accepted at startup; `Duration.ofMinutes(0)` is legal but produces immediate ReadTimeoutException with confusing error message
+  - **Category**: buggy-default
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_config_properties__config-properties-class__GenAIProperties.md:bugs_limitations_corner_cases.[1]` + `[3]` (MEDIUM + LOW)
+  - **Statement**: `WebClientConfiguration.java:23` calls `Duration.ofMinutes(genAIProperties.getRequestTimeout())`; Java primitive default is `0`. Operator sets `genai.enabled=true` without setting `request_timeout` → zero-duration timeout. Every request fires immediately as a `ReadTimeoutException`; the error message at `GenAIServiceImpl.java:48-51` is `"Gen AI request take longer that %s min".formatted(...)` which renders as `"Gen AI request take longer that 0 min"` — diagnostic of the misconfiguration but the message implies upstream slowness. Plus a typo: "longer that" should be "longer than".
+  - **Evidence**: `WebClientConfiguration.java:22-23` + `GenAIProperties.java:11` (no initializer) + `GenAIServiceImpl.java:48-51`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-004 prescribes fail-fast; this is the canonical "fail-fast at first request, not at boot" instance.
+  - **Proposed remedy**: (a) Add `@Min(1)` on `requestTimeout` (covered by REFACTOR-005). (b) Fix the typo in the error message. (c) When `requestTimeout < 1`, raise a clearer `BadConfigurationException` at the WebClient construction in `WebClientConfiguration.java:22-23` rather than at the first request.
+  - **Severity rationale**: MEDIUM — UX of misconfiguration discovery.
+  - **Suggested backlog grouping**: `GenAI hardening sprint`

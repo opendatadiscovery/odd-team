@@ -1,0 +1,26 @@
+- **DOC-GAP-131**: UI Lineage canvas hardcodes a depth-1 default + caps the visible depth slider at 20 + accepts unbounded `?d=` URL param — three UI-side caveats invisible across `/features/data-lineage`, `/features/data-lineage/data-objects`, AND `/developer-guides/api-reference/lineage`
+  - **Category**: drift (3 live pages WebFetched; all silent on UI defaults, slider range, and URL-clamp absence; api-reference's "Unset returns default" is unreachable from UI which ALWAYS supplies d=1)
+  - **Surfaced by**:
+    - `odd-platform__ts__react-component__component__LineageGraph.md:docs_link_semantic.doc_drift_findings[0,1]`
+    - `odd-platform__ts__react-component__component__LineageGraph.md:invariants[2,3,4]` (URL is source of truth; UI always sends d=1; LoadMore is depth-1 expansion)
+    - `odd-platform__ts__react-component__component__LineageGraph.md:bugs_limitations_corner_cases[1]` ("No upper bound on `d` URL param parsing")
+    - `odd-platform__ts__react-component__component__LineageGraph.md:implicit_adrs[0]` ("UI defaults `d=1`")
+  - **Evidence**:
+    - WebFetched `https://docs.opendatadiscovery.org/features/data-lineage` 2026-05-19 status 200 — page is silent on lineage_depth defaults / UI slider / cycle handling / cross-owner enumeration / depth-1 LoadMore.
+    - WebFetched `https://docs.opendatadiscovery.org/features/data-lineage/data-objects` 2026-05-19 status 200 — page is silent on the SAME six topics; only mentions "pan, zoom, and on-click expansion of intermediate nodes" at a high level.
+    - WebFetched `https://docs.opendatadiscovery.org/developer-guides/api-reference/lineage` 2026-05-19 status 200 — declares `lineage_depth` "Number of hops to traverse from the rooted entity. Unset returns the platform's default depth." Minimum: 1. Maximum: NOT specified.
+    - Code primary source `odd-platform-ui/src/components/DataEntityDetails/Lineage/lib/constants.ts:74-84` — `defaultLineageQuery = { d: 1, full: true, fn: false, eag: false, t: '...', exd: [], exu: [], exdg: [], exug: [] }`. The `d:1` is the hardcoded UI default; the api-ref's "unset returns platform's default depth" branch IS UNREACHABLE because the UI always supplies `d=1`.
+    - Code primary source `odd-platform-ui/src/components/DataEntityDetails/Lineage/lib/constants.ts:97-99` — `export const lineageDepth = [...Array(20).keys()].map(x => ({...}))` — the dropdown caps at 20.
+    - Code primary source `odd-platform-ui/src/lib/hooks/useQueryParams.ts:33-36` — `parseNumbers: true` converts `?d=10000` to `d: 10000` with no clamp.
+    - `HierarchyLineage.tsx:47` — passes the URL-parsed `d` straight to `fetchDataEntityDownstreamLineage({lineageDepth: d, ...})` (and upstream) — backend (per batch-I LineageServiceImpl sidecar) has NO upper bound either.
+  - **Proposed doc action**: Three-part action:
+    - Update `documentation/docs/developer-guides/api-reference/lineage.md` to declare the maximum value of `lineage_depth` AND name the "platform's default depth" explicitly (e.g. "When `lineage_depth` is omitted, the UI sends `1`; direct API callers without an explicit value will trigger a NullPointerException via auto-unboxing — DOC-GAP-105 / F-005").
+    - Update `documentation/docs/features/data-lineage/data-objects.md` to describe the UI affordances: depth slider [1..20], LoadMore depth-1 expansion, full vs compact view, full-names toggle, expand-all-groups, transform-matrix persistence in `?t=` URL. The doc-product editorial framing is "the docs describe the FEATURE, the api-reference describes the WIRE CONTRACT, the operator's mental model needs both."
+    - Code-side (separate UI-FIX-NNN backlog item): clamp `?d=` URL parsing to `[1..20]` with `Math.max(1, Math.min(20, d))` at `useQueryParams.ts` or at `HierarchyLineage.tsx:47` before dispatch. Defence-in-depth against REFACTOR-202 amplification.
+  - **Cross-references**:
+    - DOC-GAP-021 — Lineage feature page does not document `lineageDepth` / `expandedEntityIds` parameters or unbounded-depth caveat — now 4-angle (controller + service + repository SQL + **UI canvas**). UI is the per-OPERATOR consumer surface for the same parameters.
+    - DOC-GAP-105 — Lineage recursive-CTE no cycle guard, no upper bound on `lineageDepth`, no owner JOIN — strengthens to 5-angle: the UI canvas is the EXPLICIT realisation surface for "no upper bound on `lineageDepth`" — a curious user editing `?d=10000` reaches the unbounded backend.
+    - DOC-GAP-115 — Lineage anchor-set defence asymmetry positive vs negative case — UI canvas is the negative-case realisation point.
+    - DOC-GAP-005 — Lineage feature page silent on the d=1 default-depth UI override; this batch's primary-source UI confirmation pins the finding.
+  - **Severity**: MEDIUM
+  - **Severity rationale**: The UI provides a slider [1..20] (which any operator would assume is the policy ceiling), but the URL accepts any positive int — a 30-second hand-edit reaches the unbounded REFACTOR-202 amplification surface. The undocumented d=1 default produces shallow first-impressions of large lineage graphs (operators wonder why the canvas looks empty), and the unclamped URL is a denial-of-correctness vector under non-trivial catalog sizes. Three pages need updates; the code-side fix is a 1-line clamp.

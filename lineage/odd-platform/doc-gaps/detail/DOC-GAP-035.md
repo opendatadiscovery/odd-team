@@ -1,0 +1,7 @@
+- **DOC-GAP-035**: `/active-platform-features/data-collaboration` returns 404 on legacy URL — canonical at `/features/active-platform-features/data-collaboration`
+  - **Category**: broken-url
+  - **Surfaced by**: `postMessageInSlack.md:inferred_docs.[0]` (status 404, LOW confidence) + `:doc_drift_findings.[2]` (HIGH for doc-drift); `concepts.yaml:entities[Slack collaboration app].cross_file_inconsistencies.[0]`.
+  - **Evidence**: WebFetch `/active-platform-features/data-collaboration` 2026-05-10 status 404; canonical 200.
+  - **Proposed doc action**: Same as DOC-GAP-011 class. See DOC-GAP-058 (cross-cutting meta).
+  - **Cross-references**: DOC-GAP-011..015, DOC-GAP-056, DOC-GAP-058.
+  - **Severity rationale**: MEDIUM (broken-URL rubric); HIGH per sidecar's doc-drift framing (operators cannot find the only page describing a feature they need to configure with care).

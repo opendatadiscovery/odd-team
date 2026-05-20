@@ -1,0 +1,26 @@
+gap_id: TEST-GAP-630
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java AlertManagerController controller-method:postAlerts"
+pillars_affected: [P-07]
+surfaced_by:
+  - "postAlerts.md:bugs_limitations_corner_cases.[4] (DTO silently drops AlertManager wire fields — severity MEDIUM)"
+  - "postAlerts.md:concepts.invariants.[3] (DTO contract is hand-rolled; TODO comment marks unfinished spec-first migration)"
+behaviour: |-
+  **AlertManagerRequest INNER DTO SILENTLY DROPS WIRE FIELDS — `status: resolved`, `endsAt`, `annotations`, `fingerprint`, `groupKey` etc.** AlertManagerController.java:28-32 declares an INNER static DTO `AlertManagerRequest` with ONE field (`List<ExternalAlert> alerts`); `ExternalAlert.java:9-15` declares THREE fields (`labels: Map<String, String>`, `generatorURL: URI`, `startsAt: LocalDateTime`). The AlertManager v2 webhook wire format includes far more fields: `status` (firing | resolved), `endsAt`, `annotations`, `fingerprint`, `groupKey`, `groupLabels`, `commonLabels`, `commonAnnotations`, `externalURL`, `version`, `receiver`. ALL are silently dropped by Jackson on deserialisation. The MOST OPERATIONALLY-IMPACTFUL drop is `status: resolved` — the live doc-side `/features/active-platform-features/alerting` (refreshed 2026-05-20 status 200) documents that AlertManager-driven alerts CANNOT be auto-resolved on receipt of `status: resolved`, because the platform never sees the field. Operators reading the AlertManager docs reasonably expect the platform to auto-close alerts when Prometheus signals resolution; the platform silently ignores the field. NO test pins the silent-drop contract. Plus the controller has a `// TODO: define OpenAPI spec based on alert provider contract` comment (AlertManagerController.java:20) signalling the DTO contract is unfinished — any future OpenAPI-contract migration that renames `alerts` to a contract-generated `payload` field would not be caught at build time. This is the F-007 `no_openapi_contract` implicit_adr drift facet.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AlertManagerWebhookWireDropTest.java"
+  name: "alertManagerWebhook_resolvedStatusAndEndsAtFields_silentlyDropped_alertRemainsOpen"
+evidence:
+  - "postAlerts.md says (bugs_limitations_corner_cases.[4]): 'DTO silently drops AlertManager wire fields: AlertManagerRequest carries one field (List<ExternalAlert> alerts), and ExternalAlert carries three fields (labels, generatorURL, startsAt). The AlertManager v2 webhook wire format includes status (firing | resolved), endsAt, annotations, fingerprint, groupKey, groupLabels, commonLabels, commonAnnotations, externalURL, version, receiver. All are silently dropped by Jackson on deserialisation.'"
+  - "postAlerts.md says (concepts.invariants.[3]): 'The DTO contract is hand-rolled — AlertManagerRequest is an inner static class with one field (List<ExternalAlert> alerts), and the explicit comment // TODO: define OpenAPI spec based on alert provider contract (line 20) marks this as an unfinished spec-first migration.'"
+  - "Source: AlertManagerController.java:20 (TODO comment) + AlertManagerController.java:28-32 (inner DTO) + ExternalAlert.java:9-15 + WebFetch active-platform-features/alerting 2026-05-20 status 200 (the doc-side acknowledgment)"
+cross_references:
+  - "F-007 (P-07:F-001 AlertManager Integration) drift facets no_openapi_contract + silent_wire_field_drop"
+  - "TEST-GAP-013 (timezone strip — sibling silent-wire-field issue)"
+proposed_action: |-
+  Add `AlertManagerWebhookWireDropTest` with four test methods: (a) POST a real-world AlertManager v2 payload with `status: resolved`, `endsAt`, `annotations`, `fingerprint`; assert HTTP 204; assert alert row was CREATED (NOT resolved) — pins the silent-drop / no-auto-resolve behaviour; (b) seed an OPEN alert, then POST a `status: resolved` AlertManager payload referencing the same entity_oddrn; assert the original alert remains OPEN; (c) assert annotations field is not stored anywhere; (d) assert fingerprint/groupKey are not stored. All pin the current wire-field drop. Future fix that adds resolved-status handling will break (a) and (b), forcing explicit migration.
+batch: 2026-05-20-P
+feature_id: F-007

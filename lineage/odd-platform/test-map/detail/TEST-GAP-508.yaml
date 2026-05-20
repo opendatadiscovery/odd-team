@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-508
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataEntityController controller-method:getDataEntityGroupsLineage"
+pillars_affected: [P-05, P-08]
+surfaced_by:
+  - "getDataEntityGroupsLineage.md:performance.known_performance_gaps.[4] (Recursive-member CTE is unbounded by depth)"
+behaviour: |-
+  Circular DEG-nesting CTE unbounded-recursion regression-pin (MEDIUM — P-05+P-08 cross-pillar). `getDEGEntitiesOddrns` (`ReactiveGroupEntityRelationRepositoryImpl.java:177-204`) has no termination guard other than 'no new GROUP_ODDRN matches'. For a pathological circular DEG-membership (DEG A contains DEG B contains DEG A), the CTE could loop indefinitely — Postgres's recursive-CTE `UNION ALL` does NOT deduplicate intermediate rows; only the `selectDistinct` at the final wrap deduplicates the FINAL result. The DEG-creation paths do NOT actively prevent circular DEG nesting at the application layer (verified by sidecar's Grep: no DEG-cycle check anywhere). For a 5-level deep nested DEG with 1000 members at each level, intermediate row count can reach 5000+; for true circular nesting the row count could exceed memory bounds. The pathological case is constructible by ANY authenticated operator with `DATA_ENTITY_ADD_TO_GROUP` permission — this is a self-DoS surface accessible to legitimate operators (mistakes), and a deliberate-DoS surface accessible to authenticated attackers. The cure is either (a) add a cycle-detection clause to the recursive CTE, (b) clamp recursion depth at the application layer, or (c) prevent circular DEG creation at the write path. NO test exists exercising the cycle case. Cross-pillar P-05 (Data Lineage performance) + P-08 (Management — DEG creation validation gap).
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/DataEntityGroupLineageCircularNestingTest.java"
+  name: "getDataEntityGroupsLineage_circularDEGNesting_doesNotInfiniteLoopAtCTE_pinsTheTerminationGuard"
+evidence:
+  - "getDataEntityGroupsLineage.md:performance.known_performance_gaps.[4]: 'Recursive-member CTE is unbounded by depth — getDEGEntitiesOddrns has no termination guard other than no new GROUP_ODDRN matches. For a pathological circular DEG-membership (DEG A contains DEG B contains DEG A), the CTE could loop indefinitely. The DEG-creation paths do not actively prevent circular DEG nesting at the application layer (verified by Grep — no DEG-cycle check anywhere).' severity: MEDIUM"
+  - "ReactiveGroupEntityRelationRepositoryImpl.java:177-204 (the recursive CTE with no cycle clause)"
+  - "addDataEntityDataEntityGroup.md (batch L — no DEG-cycle check at the write path)"
+cross_references:
+  - "TEST-GAP-415 (getDataEntityGroupLineage service-layer test gap — co-located)"
+  - "TEST-GAP-504 (DEG-anchored cross-owner — co-located)"
+  - "TEST-GAP-503 (unbounded pagination — DoS-amp pattern, related but distinct)"
+  - "REFACTOR-NNN candidate: add CYCLE clause to recursive CTE OR application-layer DEG cycle detection"
+  - "F-011 (Data Entity Groups)"
+proposed_action: |-
+  Testcontainers integration test. (a) Create DEG A, DEG B. (b) Use the data layer DIRECTLY to insert circular relationships: insert GROUP_ENTITY_RELATIONS rows (group_oddrn=A_oddrn, data_entity_oddrn=B_oddrn) and (group_oddrn=B_oddrn, data_entity_oddrn=A_oddrn). (c) GET /api/dataentitygroups/A.id/lineage with a Reactor timeout of 5 seconds. (d) Assert either: (i) the request completes within 5 seconds (Postgres's planner caps the recursion via work_mem exhaustion), OR (ii) the test times out — pinning the unbounded-recursion vulnerability. (e) Test comment 'LOCKS the unbounded-recursion-on-circular-DEG vector as of 2026-05-19. When a CYCLE clause is added to the recursive CTE OR cycle prevention is added at the write path, this test FLIPS to expect bounded completion time AND assert no rows beyond the cycle expansion limit.' This is both a regression-pin AND a vector-proof — operators reading the test understand the DoS surface.
+batch: 2026-05-19-M
+feature_id: F-005

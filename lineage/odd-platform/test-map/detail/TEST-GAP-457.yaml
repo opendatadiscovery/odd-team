@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-457
+category: missing-performance
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:NotificationsDispatcher"
+pillars_affected: [P-07]
+surfaced_by:
+  - "NotificationsDispatcher.md:bugs_limitations_corner_cases.[2] (no rate-limiting)"
+  - "NotificationsDispatcher.md:performance.known_performance_gaps.[0] (no rate-limit)"
+behaviour: |-
+  No rate-limiting / no batching / no token bucket. WAL streams alerts as fast as Postgres decodes them; dispatcher runs synchronously; senders block on HTTP/SMTP. A burst of 10k alerts (e.g. a misconfigured DQ run flagging every dataset) translates 1:1 into 10k Slack messages, 10k webhook POSTs, 10k emails. Slack will rate-limit at the receiver (HTTP 429); the AbstractNotificationSender.java:24-27 only checks for HTTP 200, treating 429 as a NotificationSenderException — dispatcher logs and drops the alert from that channel. No retry, no exponential backoff, no batching. The 'fan-out to all configured channels' contract collapses under burst load with NO operator-visible signal beyond log.error.
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/processor/AlertNotificationDispatchRateLimitTest.java"
+  name: "burst10kAlerts_slack429_droppedSilently_noRetryNoBatching"
+evidence:
+  - |-
+    NotificationsDispatcher.md says: 'No rate-limiting: bursty alert events translate 1:1 into outbound deliveries. Slack will rate-limit at the receiver (429), dispatcher logs and drops the alert from that channel.'
+  - "AbstractNotificationSender.java:24-27 (200-only check, no 429 handling)"
+  - "AlertNotificationMessageProcessor.java:30-35 (catch-and-log only, no retry)"
+  - "AlertNotificationMessageProcessor.java:25-36 (sequential synchronous loop, no batching, no throttle)"
+cross_references:
+  - "concepts.yaml:entities[NotificationSender] — channel fan-out contract"
+  - "TEST-GAP-456 (related: per-sender exception handling)"
+proposed_action: |-
+  Unit test with @Mock SlackNotificationSender that throws NotificationSenderException on every 3rd call (simulating 429). Drive AlertNotificationMessageProcessor.process(...) 30 times in a tight loop. Assert: (a) every alert is attempted exactly once on every channel, (b) NO retry of the failing alerts (count slackMock.send invocations == 30, not 30 + retries), (c) NO batching (count == 30, not 1 batched message), (d) log.error fires for the 10 failing alerts. Locks the current contract; promotes to a fix-required regression when rate-limit/retry/batching lands.
+batch: 2026-05-19-K
+feature_id: null

@@ -1,0 +1,594 @@
+feature_id: F-017
+pillar_id: P-01
+pillar_anchored_id: P-01:F-005
+pillar_anchored_feature_name: Search Filter Facets
+primary_drift_class: cross_owner_facet_enumeration
+drift_class_summary:
+- cross_owner_facet_enumeration
+- bearer_token_shaped_session_uuids
+- tsquery_operator_injection_dos_via_persisted_query
+- disabled_mode_bypass
+- unbounded_pagination_at_every_layer
+- side_effect_update_on_every_get
+- session_state_accumulates_forever
+- search_session_no_user_binding
+- workaround_doc_silent_on_facet_count_scoping
+- catalog_wide_count_design_my_objects_not_a_boundary
+discovered_from_entry_point: rest:GET /api/search/{search_id}/facet/{facet_type}
+contributing_nodes:
+- odd-platform java SearchController controller-method:facets
+- odd-platform java service service:SearchServiceImpl
+- odd-platform java ReactiveSearchFacetRepositoryImpl
+- odd-platform java ReactiveDataEntityRepositoryImpl
+- odd-platform java JooqFTSHelper
+- odd-platform java service service:AuthIdentityProviderImpl
+- odd-platform java SecurityConstants
+- odd-platform java AuthorizationCustomizer
+- odd-platform sql migration:V0_0_1__init.sql (search_facets schema)
+description: |-
+  The "facets" surface on SearchController is realised by TWO sibling
+  reactive endpoints that operate on the SAME `SearchFacets` session UUID:
+  (a) `getSearchFacetList` (`SearchController.java:42-47` — `GET /api/search/{search_id}`
+  per `openapi.yaml:654-674`) returns the seven-facet aggregate counts +
+  total entity counts for the session, and (b) `getFiltersForFacet`
+  (`SearchController.java:30-40` — `GET /api/search/{search_id}/facet/{facet_type}`
+  per `openapi.yaml:702-732`) returns the paginated list of countable
+  filter options for a single facet type (TAGS / OWNERS / TYPES / GROUPS
+  / STATUSES per `MultipleFacetType`). Both endpoints delegate to
+  `SearchServiceImpl` (`SearchServiceImpl.java:51-72`) which mints SQL
+  via `ReactiveSearchFacetRepositoryImpl`.
+
+  The user-observable promise (per the live Search and Filtering page
+  WebFetched 2026-05-19 status 200): "The platform incorporates faceted
+  search capabilities. This means you can refine your search results
+  based on specific attributes, ensuring that you find exactly what you
+  are looking for." The page lists seven facets: Datasource, Type,
+  Namespace, Owner, Tag, Groups, Statuses.
+
+  The user-observable reality, per primary-source code-walk of
+  SearchController.facets + SearchServiceImpl + ReactiveSearchFacetRepositoryImpl
+  + the V0_0_1__init.sql migration:
+
+  (1) **Cross-owner facet enumeration** — every facet count is computed
+  CATALOG-WIDE with no `OWNERSHIP` join and no principal-derived
+  predicate. The six aggregators in `ReactiveSearchFacetRepositoryImpl`
+  (entity-class 163-249, type 251-337, owner 339-372, tag 374-407,
+  group 409-452, status 454-534) all join `SEARCH_ENTRYPOINT` +
+  `DATA_ENTITY` and apply only `getDataEntityDefaultConditions`
+  (HOLLOW=false, STATUS != DELETED, EXCLUDE_FROM_SEARCH NULL-or-false) —
+  no owner-side filter. Only `myObjectsCount` at `SearchServiceImpl.java:128-130`
+  is owner-scoped, and it is shown ALONGSIDE the cross-owner `total`,
+  not as a scoping predicate. An authenticated caller drilling
+  `getFiltersForFacet(OWNERS)` enumerates EVERY OWNER NAME in the
+  platform + per-owner entity counts; then `getFiltersForFacet(NAMESPACES)`
+  (via the aggregate response) enumerates every namespace; then TAGS /
+  GROUPS / TYPES / STATUSES enumerate the full catalog cardinality.
+
+  (2) **Bearer-token-shaped session UUIDs** — the `search_facets`
+  table (`V0_0_1__init.sql:204-211`) has NO `owner_id`, `created_by`,
+  or `user_id` column — the schema is `id uuid PRIMARY KEY DEFAULT
+  gen_random_uuid(), query_string varchar(255), filters jsonb`. The
+  service layer never captures the principal — `SearchServiceImpl.search`
+  creates a row without owner binding (lines 75-82); `updateFacets`
+  accepts any caller for any UUID (lines 84-96); `fetchFacetState` is
+  a raw UUID lookup (lines 157-160). Any authenticated user in possession
+  of any other user's UUID can READ, UPDATE, and DRIVE that session.
+  The UUID space is 122-bit so brute force is infeasible, but URL
+  leakage (copy/paste, screenshot, bug report) hands the recipient full
+  read+update access.
+
+  (3) **tsquery operator injection → SQL parser DoS via persisted query** —
+  `JooqFTSHelper.tsQuery` (`JooqFTSHelper.java:164-168`) does NOT
+  escape tsquery operators; persisted `query_string` reaches
+  `to_tsquery(?)` directly via `JooqFTSHelper.java:100-105`. A caller
+  who POSTs a search with `query='foo )('` persists the row; every
+  subsequent facet aggregator that runs on that row's state fails at
+  `to_tsquery` parse time with Postgres syntax error 42601. The session
+  becomes permanently broken — the row is reachable but every facet
+  read 500s. Same code path as batch-H `getHighlightedResult` finding;
+  the facet endpoints are a SECOND invocation site for the same bug
+  shape.
+facets_summary: |-
+  10 substantive drifts: cross-owner facet enumeration (catalog-wide
+  counts expose cardinality across all owners — REFACTOR-024 family
+  extension to the facet surface) + bearer-token-shaped session UUIDs
+  (search_facets schema has no user binding; URL leak = session hijack)
+  + tsquery operator injection DoS via persisted query (same code path
+  as batch-H getHighlightedResult; SECOND invocation site) + DISABLED-mode
+  anonymous facet enumeration + unbounded pagination at controller +
+  OpenAPI + repository layers (size=1M triggers single jOOQ query
+  bounded only by Postgres / network buffers) + side-effect UPDATE of
+  last_accessed_at on every GET (GET is not idempotent + row contention
+  under concurrent UI tabs) + session-state accumulates forever (no
+  TTL eviction, no archive policy — V0_0_1 TODOs acknowledge the gap
+  but no migration fixes it) + workaround doc silent on facet count
+  scoping (operators may assume My Objects toggles facet counts —
+  it does not) + catalog-wide count is by design (myObjectsCount is
+  EXTRA scope, NOT a boundary) + zero test coverage at any layer.
+chain:
+- hop: 1
+  node: odd-platform java SearchController controller-method:facets
+  sidecar: odd-platform__java__SearchController__controller-method__facets.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    SearchController.java:30-47 — two reactive endpoint method bodies.
+    `getSearchFacetList(searchId)` at lines 42-47 is one-line — `searchService.getFacets(searchId).map(ResponseEntity::ok)`.
+    `getFiltersForFacet(searchId, facetType, page, size, query)` at lines
+    30-40 is symmetric — `searchService.getFilterOptions(searchId,
+    facetType, page, size, query).collectList().map(ResponseEntity::ok)`.
+    NO @PreAuthorize. NO entry in SecurityConstants.SECURITY_RULES for
+    `/api/search`, `/api/search/{search_id}`, or
+    `/api/search/{search_id}/facet/{facet_type}` (verified by Grep
+    `search\|facet` against SecurityConstants.java — zero matches).
+    Falls through to AuthorizationCustomizer's catch-all
+    `pathMatchers("/**").authenticated()` at lines 29-30.
+  unresolved: false
+- hop: 2
+  node: odd-platform java service service:SearchServiceImpl
+  sidecar: '(referenced from batch-M primary-source citation; sibling to batch-E search sidecar)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    SearchServiceImpl.getFacets(UUID) at lines 65-72 calls
+    fetchFacetState + getFacetsData(state). getFacetsData at lines
+    122-155 issues FOUR concurrent Monos via `Mono.zip`: (a)
+    entity-class facet aggregator; (b) catalog-wide `countByState(state)`;
+    (c) `myObjectsCount` via `authIdentityProvider.fetchAssociatedOwner()`
+    flatMap to `countByState(state, owner)` — switches to `Mono.just(0L)`
+    if no owner association; (d) the fetchFacetState that UPDATEs
+    last_accessed_at. `getFilterOptions(UUID, MultipleFacetType, page,
+    size, query)` at lines 51-63 fetches the session row + dispatches
+    facet-type-specific paginated query via lines 162-175 (a Java-17
+    exhaustive switch over MultipleFacetType). `fetchFacetState(searchId)`
+    at lines 157-160 lifts `NotFoundException("Search not found")` if
+    the row doesn't exist — no ownership check.
+  unresolved: false
+- hop: 3
+  node: odd-platform java ReactiveSearchFacetRepositoryImpl
+  sidecar: '(referenced from batch-M primary-source citation)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveSearchFacetRepositoryImpl — six facet aggregators with
+    identical structural shape: entity-class 163-249, type 251-337,
+    owner 339-372, tag 374-407, group 409-452, status 454-534. Every
+    aggregator joins `SEARCH_ENTRYPOINT` + `DATA_ENTITY` and applies
+    `getDataEntityDefaultConditions(HOLLOW=false, STATUS != DELETED,
+    EXCLUDE_FROM_SEARCH NULL-or-false)` — NO OWNERSHIP join, NO owner
+    predicate. When the persisted query is non-empty, every aggregator
+    additionally applies `jooqFTSHelper.ftsCondition(SEARCH_ENTRYPOINT.SEARCH_VECTOR,
+    state.getQuery())` at lines 182, 267, 469, 582 etc — the
+    persisted-query path that exposes the tsquery-injection surface.
+    `get(UUID)` at lines 99-106 is an UPDATE-RETURNING shape that
+    side-effects `last_accessed_at` on every read — GET is not
+    idempotent at the storage layer.
+  unresolved: false
+- hop: 3a
+  node: odd-platform java ReactiveDataEntityRepositoryImpl
+  sidecar: '(referenced from batch-H primary-source confirmation)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveDataEntityRepositoryImpl.countByState(state) is the
+    catalog-wide total count (no owner predicate); `countByState(state,
+    owner)` is the owner-scoped my-objects count. Both are invoked
+    from `SearchServiceImpl.java:126, 129`. The catalog-wide count is
+    SHOWN ALONGSIDE the owner-scoped count in the SearchFacetsData
+    payload — confirming the "myObjects is EXTRA scope, NOT a boundary"
+    posture.
+  unresolved: false
+- hop: 3b
+  node: odd-platform java JooqFTSHelper
+  sidecar: '(referenced from batch-H primary-source confirmation — getHighlightedResult finding)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    JooqFTSHelper.tsQuery at lines 164-168 does
+    `Arrays.stream(plainQuery.split(" ")).map(q -> q + ":*").collect(Collectors.joining("&"))`
+    — every word becomes a prefix-match token AND-joined; NO escaping
+    of tsquery operators (`!`, `(`, `)`, `:`, `<->`, `&`, `|`, `'`, `\`).
+    `ftsCondition` at lines 100-105 inlines the result into a raw
+    `to_tsquery(?)` parameter. Persisted query_string with operator
+    characters fails at parse time → Postgres 42601 → 500. The same
+    code path is the source of batch-H finding on getHighlightedResult;
+    the facet endpoints are a SECOND invocation site.
+  unresolved: false
+- hop: 3c
+  node: odd-platform java service service:AuthIdentityProviderImpl
+  sidecar: '(referenced from batch-K primary-source confirmation)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    AuthIdentityProviderImpl.fetchAssociatedOwner at lines 50-53 — the
+    only principal-derived input on the facet path. Used ONLY to compute
+    the optional `myObjectsCount` field at SearchServiceImpl.java:128-130;
+    if the principal has no owner association the call switches to
+    `Mono.just(0L)` and the request still succeeds with catalog-wide
+    totals. The principal-derived input is NOT a scoping predicate at
+    the facet aggregator layer.
+  unresolved: false
+- hop: 4
+  node: odd-platform sql migration:V0_0_1__init.sql (search_facets schema)
+  sidecar: '(referenced from batch-M primary-source citation)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    V0_0_1__init.sql:204-211 — the search_facets table schema:
+    `id uuid PRIMARY KEY DEFAULT gen_random_uuid(), query_string
+    varchar(255), filters jsonb`. NO `owner_id`, `created_by`, or
+    `user_id` column. Two TODOs at lines 206-207: `TODO: find more
+    clever way to generate uuid` + `TODO: find a way to define TTL`.
+    The unscoped session-state design is the schema-level invariant
+    that the service-tier owner-scoping silence reflects. V0_0_52
+    housekeeping migration has no policy for `search_facets`.
+  unresolved: false
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    Two distinct response shapes:
+    (a) `getSearchFacetList` → 200 OK with `SearchFacetsData` (entity-class
+    aggregate counts + catalog-wide `total` + owner-scoped `myObjectsTotal`
+    + the session's `query` string + `FacetState` listing selected/unselected
+    filters).
+    (b) `getFiltersForFacet` → 200 OK with `Flux<CountableSearchFilter>`
+    (paginated list of `{name, count, selected}` filter options for
+    the chosen facet type).
+    Both responses surface catalog-wide cardinality across owner boundaries.
+  evidence: |-
+    SearchController.java:30-47 + SearchServiceImpl.java:51-72,
+    122-155 + ReactiveSearchFacetRepositoryImpl.java:163-534.
+  cardinality_per_call: |-
+    SearchFacetsData = 1 payload per GET. CountableSearchFilter[] =
+    0..size rows per GET; pagination unbounded at controller + OpenAPI
+    + repository (no minimum / maximum at any layer). size=1M triggers
+    single jOOQ query bounded only by Postgres / network buffers.
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+  - facet: cross-owner facet enumeration — REFACTOR-024 family extension to facet surface
+    observed: |-
+      The endpoints have NO permission gate at the controller, NO entry
+      in SecurityConstants.SECURITY_RULES for any `/api/search/*` path
+      (verified by Grep search/facet against SecurityConstants.java —
+      zero matches), and the facet aggregators in
+      ReactiveSearchFacetRepositoryImpl.java:163-534 have NO OWNERSHIP
+      join, NO owner predicate. Only `getDataEntityDefaultConditions`
+      (HOLLOW=false, STATUS != DELETED, EXCLUDE_FROM_SEARCH NULL-or-false)
+      apply. An authenticated caller drilling `getFiltersForFacet(OWNERS)`
+      enumerates EVERY OWNER NAME in the platform + per-owner entity
+      counts. Drilling NAMESPACES (via the aggregate getSearchFacetList
+      response) enumerates every namespace. TAGS / GROUPS / TYPES /
+      STATUSES enumerate the full catalog cardinality. The facet COUNTS
+      surface is sharper than the search RESULTS surface — an attacker
+      who cannot read an entity directly can still infer its existence
+      by watching the OWNERS / NAMESPACES / TAGS counts increment as
+      ingestion fires. Pairs with REFACTOR-024 (batch alert read) and
+      REFACTOR-340 (per-entity alert read).
+    expected: |-
+      Either: (a) add owner-scoping to facet counts — every aggregator
+      JOINs OWNERSHIP and applies a per-owner filter; OR (b) document
+      the cross-owner posture explicitly on the live Search and
+      Filtering page so operators understand the access model. The
+      structural precedent (read-collaborative posture across the
+      platform) suggests (b) is the platform's chosen direction.
+    drift_class: cross_owner_facet_enumeration
+    provenance: |-
+      STATIC — primary-source in batch-M SearchController.facets sidecar
+      security.known_security_gaps[0] + bugs_limitations_corner_cases[0]
+      + security.owner_scoping + SearchController.java:30-47 (no
+      @PreAuthorize) + SecurityConstants.java (no rule) +
+      ReactiveSearchFacetRepositoryImpl.java:163-534 (no OWNERSHIP
+      join) + WebFetch search page 2026-05-19 (silent on the posture).
+      Severity: HIGH (catalog cardinality enumeration). Pairs with
+      REFACTOR-024 (catalog-wide cross-owner enumeration on getAllAlerts)
+      and REFACTOR-340 (per-entity alert cross-owner read).
+  - facet: bearer-token-shaped session UUIDs — no user binding
+    observed: |-
+      `search_facets` schema at V0_0_1__init.sql:204-211 has NO
+      `owner_id`, `created_by`, or `user_id` column. `SearchServiceImpl.search`
+      creates a row without capturing the principal (lines 75-82);
+      `updateFacets` accepts any caller for any UUID (lines 84-96);
+      `fetchFacetState` is a raw UUID lookup with no ownership check
+      (lines 157-160); `ReactiveSearchFacetRepositoryImpl.get(UUID)`
+      at lines 99-106 is a raw UUID-keyed UPDATE-RETURNING. Any
+      authenticated user in possession of any other user's UUID can
+      READ, UPDATE, and DRIVE that session. Concrete impact:
+      (a) an operator who copies a search URL into a bug report exposes
+      their entire saved-filter state including My Objects posture;
+      (b) a CSRF-style cross-tab actor with browser URL-bar access
+      can hijack the session; (c) authenticated UUID-probing via
+      `GET /api/search/{guess}` yields 404 OR 200+session-data. UUID
+      space is 122-bit (brute force infeasible) but URL leakage is not.
+    expected: |-
+      Either: (a) add `owner_id` column to search_facets + populate
+      from the SecurityContext at create-time + enforce on read/update;
+      OR (b) document the bearer-token semantic explicitly so operators
+      treat the UUID as a secret.
+    drift_class: search_session_no_user_binding
+    provenance: |-
+      STATIC — primary-source in batch-M SearchController.facets sidecar
+      implicit_adrs[2] (the deliberate schema-level decision) +
+      bugs_limitations_corner_cases[1] +
+      security.known_security_gaps[1] +
+      V0_0_1__init.sql:204-211 (schema with no owner column +
+      acknowledging TODOs but no defence of the unscoped posture).
+      Severity: HIGH (cross-link batch-E SearchController.search same
+      finding).
+  - facet: tsquery operator injection DoS via persisted query (SECOND invocation site)
+    observed: |-
+      JooqFTSHelper.tsQuery at lines 164-168 does NOT escape tsquery
+      operators; persisted `query_string` reaches `to_tsquery(?)`
+      directly via JooqFTSHelper.java:100-105. A caller who POSTs a
+      search with `query='foo )('` persists the row in
+      `search_facets.query_string`; every subsequent facet aggregator
+      that joins to SEARCH_ENTRYPOINT and applies
+      `ftsCondition(SEARCH_ENTRYPOINT.SEARCH_VECTOR, state.getQuery())`
+      at ReactiveSearchFacetRepositoryImpl.java:182, 267, 469, 582 fails
+      at `to_tsquery` parse time with Postgres syntax error 42601 → 500.
+      The session becomes permanently broken — the row is reachable
+      but every facet read 500s. Same code path as batch-H
+      getHighlightedResult finding; the facet endpoints are a SECOND
+      invocation site for the same shape.
+    expected: |-
+      Either: (a) escape tsquery operators in JooqFTSHelper.tsQuery
+      before joining (use the proper to_tsquery quoting API); OR (b)
+      validate query_string at create-time and reject inputs with
+      tsquery syntax characters.
+    drift_class: tsquery_operator_injection_dos_via_persisted_query
+    provenance: |-
+      STATIC — primary-source in batch-M SearchController.facets sidecar
+      bugs_limitations_corner_cases[5] +
+      security.known_security_gaps[2] + JooqFTSHelper.java:100-105,
+      164-168 + ReactiveSearchFacetRepositoryImpl.java:182, 267, 469,
+      582. Cross-link batch-H getHighlightedResult finding. Severity:
+      HIGH (the SECOND invocation site of the same bug raises severity
+      because the exploit surface is wider).
+  - facet: DISABLED-mode anonymous facet enumeration
+    observed: |-
+      Under `auth.type=DISABLED` no SecurityContext is populated; the
+      missing SecurityRule entry combined with
+      `.anyExchange().permitAll()` means any unauthenticated client on
+      the network can enumerate the entire catalog cardinality by
+      creating sessions and walking facets. Combined with the
+      cross-owner posture and the bearer-token-shaped UUIDs, DISABLED
+      mode hands the full catalog discovery surface to anonymous
+      callers. DISABLED is documented as dev-only but operators who
+      misuse it expose the catalog cardinality across the platform.
+    expected: |-
+      DISABLED documented as truly dev-only; the pattern repeats across
+      batches A/B/C/E/F/G/K/L/M.
+    drift_class: disabled_mode_bypass
+    provenance: |-
+      STATIC — primary-source in batch-M SearchController.facets sidecar
+      bugs_limitations_corner_cases[2] +
+      security.known_security_gaps[0] + SearchController.java:30-47 +
+      SecurityConstants.java + AuthorizationCustomizer.java:29-30.
+      Severity: MEDIUM on network-reachable DISABLED.
+  - facet: unbounded pagination at controller + OpenAPI + repository layers
+    observed: |-
+      Controller params `Integer page, Integer size`
+      (SearchController.java:33-34) carry no validation annotations;
+      OpenAPI PageParam / SizeParam (components.yaml:4213-4229) have
+      no `minimum:` or `maximum:`; the repository computes
+      `OFFSET = (page - 1) * size` at multiple sites
+      (ReactiveSearchFacetRepositoryImpl.java:129, 157, 315, 369, 404,
+      449, 515) with no clamping. A caller passing `size=1_000_000`
+      triggers a single facet aggregator query bounded only by Postgres
+      / network buffers and table cardinality. `page=0` produces a
+      negative OFFSET (implementation-defined). Cross-link batch-L
+      getDataEntityAlerts finding — same pattern at multiple endpoint
+      families.
+    expected: |-
+      Add `maximum: 1000` (or platform-appropriate bound) to SizeParam
+      in components.yaml; add `minimum: 1` to PageParam; clamp at the
+      controller boundary with explicit @Min/@Max annotations.
+    drift_class: unbounded_pagination_at_every_layer
+    provenance: |-
+      STATIC — primary-source in batch-M SearchController.facets sidecar
+      bugs_limitations_corner_cases[3] + SearchController.java:33-34 +
+      components.yaml:4213-4229 +
+      ReactiveSearchFacetRepositoryImpl.java:129, 157, 315, 369, 404,
+      449, 515. Severity: MEDIUM.
+  - facet: side-effect UPDATE on every GET — last_accessed_at + row contention
+    observed: |-
+      `ReactiveSearchFacetRepositoryImpl.get(UUID)` at lines 99-106 is
+      an UPDATE-RETURNING shape that side-effects `last_accessed_at`
+      on every read. Implications: (a) `GET /api/search/{search_id}`
+      is NOT idempotent at the storage layer; (b) the UPDATE acquires
+      a row lock; concurrent UI tabs hitting the same session
+      simultaneously stall on lock contention; (c) the `last_accessed_at`
+      field is updated but is NEVER READ by any housekeeping job (verified
+      by `grep search_facets V0_0_52__introduce_housekeeping.sql` —
+      zero matches). The field is dead — written but unused. No comment,
+      annotation, or surrounding code defends the side-effect read
+      posture as intentional.
+    expected: |-
+      Either: (a) remove the side-effect UPDATE and use a TTL-on-create
+      OR background touch via worker; OR (b) keep the UPDATE and add a
+      housekeeping policy that consumes `last_accessed_at` for eviction.
+    drift_class: side_effect_update_on_every_get
+    provenance: |-
+      STATIC — primary-source in batch-M SearchController.facets sidecar
+      bugs_limitations_corner_cases[6] +
+      ReactiveSearchFacetRepositoryImpl.java:99-106 +
+      V0_0_1__init.sql:206-207 (TTL TODO) +
+      V0_0_52__introduce_housekeeping.sql (no policy). Severity: LOW.
+  - facet: session-state accumulates forever
+    observed: |-
+      Every `POST /api/search` creates a row via
+      `searchFacetRepository::create` (SearchServiceImpl.java:80); no
+      TTL eviction, no row deletion on user logout, no archive policy.
+      Operators on long-running platforms see the table grow forever.
+      Combined with the no-user-binding posture, the table is an
+      indefinitely-growing pool of bearer-token-shaped session state
+      with full filter history retained as jsonb.
+    expected: |-
+      Add a housekeeping policy that evicts session rows older than
+      N days (consume `last_accessed_at` which is already populated).
+    drift_class: session_state_accumulates_forever
+    provenance: |-
+      STATIC — primary-source in batch-M SearchController.facets sidecar
+      bugs_limitations_corner_cases[7] + SearchServiceImpl.java:75-82
+      + V0_0_1__init.sql:204-211 (no TTL column or trigger). Severity:
+      LOW (storage cost).
+  - facet: workaround doc silent on facet count scoping
+    observed: |-
+      The live Search and Filtering page (WebFetched 2026-05-19 status
+      200) lists the seven facets but is SILENT on whether facet
+      counts respect any per-user / per-owner / per-tenant scope. The
+      page does NOT mention search-session UUIDs at all — operators
+      have no documented expectation about session lifetime, sharing,
+      or isolation. Operators reading the page may assume facet
+      drill-down respects the My Objects toggle; the toggle only
+      affects which entities appear in the result list
+      (SearchServiceImpl.java:105-111), NOT the facet COUNTS. The
+      doc-vs-code asymmetry is sharper here than on Search itself
+      because facet counts expose catalog cardinality — an attacker
+      who cannot read an entity directly can still infer its existence
+      by watching the OWNERS/NAMESPACES/TAGS counts increment.
+    expected: |-
+      Augment the live page with a "Facet counts: scope and access"
+      subsection explaining (a) facet counts are catalog-wide, (b) the
+      My Objects toggle scopes RESULTS not COUNTS, (c) session UUIDs
+      are bearer-token-shaped and should not be shared. Cross-link
+      from the Configure security page.
+    drift_class: workaround_doc_silent_on_facet_count_scoping
+    provenance: |-
+      STATIC — primary-source in batch-M SearchController.facets sidecar
+      docs_link_semantic.doc_drift_findings[0,1] + WebFetch search page
+      2026-05-19. Severity: MEDIUM (operator-relevant access-model
+      gap).
+  - facet: catalog-wide count by design — myObjects is EXTRA scope, NOT boundary
+    observed: |-
+      SearchServiceImpl.getFacetsData (lines 122-155) computes BOTH
+      `allCount` (catalog-wide `reactiveDataEntityRepository.countByState(state)`,
+      line 126) AND `myObjectsCount` (owner-scoped via
+      `authIdentityProvider.fetchAssociatedOwner()`, lines 128-130) and
+      returns BOTH in the SearchFacetsData payload as the `total` and
+      `myObjectsTotal` fields. The `myObjects` boolean
+      (FacetStateDto.myObjects) is a UI-level toggle that controls
+      which entities the user SEES in the result list, NOT facet
+      COUNTS. The structural choice to surface BOTH totals confirms
+      the intent: "show the user what their slice of the catalog is,
+      AND what the whole catalog looks like". This mirrors
+      ADR-CANDIDATE-003 (read-collaborative catalog) extended to facet
+      aggregates. The implicit ADR is real but the docs don't name it.
+    expected: |-
+      Add an implicit-ADR entry for "catalog-wide counts are the design,
+      myObjects is an additional scope". Reference from the live
+      Search page so operators understand the boundary model.
+    drift_class: catalog_wide_count_design_my_objects_not_a_boundary
+    provenance: |-
+      STATIC — primary-source in batch-M SearchController.facets sidecar
+      implicit_adrs[1] (the deliberate four-Mono zip with both totals)
+      + SearchServiceImpl.java:122-155 + FacetStateDto.java:21-29
+      (myObjects alongside query, NOT a scope predicate at aggregate
+      layer). Severity: LOW (architectural-clarification gap).
+  - facet: facet endpoints uncovered by tests
+    observed: |-
+      `find <odd-platform> -path '*test*' -name 'SearchController*'`,
+      `... -name 'SearchServiceImpl*'`, `... -name
+      'ReactiveSearchFacetRepository*'` ALL returned ZERO matches (run
+      2026-05-19 during enrichment). The cross-owner read posture, the
+      unbounded pagination, the side-effect read, the tsquery-injection
+      surface, and the bearer-token-shaped UUID posture are ALL
+      uncovered. A regression in OpenAPI routing generation, WebFlux
+      configuration, Jackson serialisation, the facet aggregators, or
+      the SQL would silently break either endpoint with the build still
+      green.
+    expected: |-
+      Add WebTestClient integration test suite covering: (a)
+      round-trip POST /api/search → GET /api/search/{id} →
+      GET /api/search/{id}/facet/OWNERS to lock in the contract;
+      (b) regression test asserting userA cannot read userB's session
+      — currently impossible to write because the schema has no user
+      binding, so the test documents the gap rather than enforcing a
+      behaviour; (c) tsquery-injection coverage on the persisted query
+      (cross-link batch-H getHighlightedResult); (d) pagination boundary
+      tests; (e) DISABLED-mode anonymous reachability pin.
+    drift_class: group_lineage_endpoint_uncovered_by_tests
+    provenance: |-
+      STATIC — primary-source in batch-M SearchController.facets sidecar
+      tests_coverage_semantic.uncovered_behaviours + file-system search
+      2026-05-19 + bugs_limitations_corner_cases[8]. Severity: MEDIUM.
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - SearchServiceImpl.getFacets four-Mono zip composition in isolation
+    - SearchServiceImpl.getFilterOptions MultipleFacetType exhaustive switch regression
+    - ReactiveSearchFacetRepositoryImpl per-facet aggregator SQL correctness
+    - JooqFTSHelper.tsQuery operator-escape pin (PINS the current unescaped behaviour so a future escape attempt has an explicit migration)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - HTTP-level smoke test through WebTestClient — full GET /api/search/{id} + GET /api/search/{id}/facet/{type} + response shapes
+    - Cross-owner enumeration via OWNERS facet — assert response lists every owner regardless of caller's relationship
+    - Cross-owner enumeration via NAMESPACES facet — same
+    - Session hijack regression — userA creates session + userB reads via UUID + assert 200 (PINS current behaviour for future fix)
+    - tsquery operator injection — POST search with `query='foo )('` + GET facets + assert 500 (PINS the current parse-error surface)
+    - Pagination boundaries — page=0 (negative OFFSET) / size=0 / size=Integer.MAX_VALUE / size=1_000_000
+    - Side-effect last_accessed_at — assert UPDATE fires on every GET (PINS the side-effect read)
+    - DISABLED-mode anonymous facet enumeration
+    - NotFound 404 — non-existent searchId raises Search not found
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Large catalog facet aggregator cost — measure six aggregator response time at catalog sizes 1k / 10k / 100k entities
+    - Concurrent UI tabs on same session — assert row-lock contention under last_accessed_at UPDATE
+    - Per-keystroke hot path — facet drill-down click cadence — measure Mono.zip cost
+    - Large facet page (size=1_000_000) — characterise jOOQ + Postgres + WebFlux response-body behaviour
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - Cross-owner facet enumeration — REFACTOR-024 family extension to the facet surface
+    - Session hijack via UUID leak (URL, screenshot, bug report)
+    - tsquery operator injection DoS — persisted state breaks every subsequent facet read
+    - DISABLED-mode anonymous facet enumeration
+    - Implicit ADR pin — catalog-wide counts by design (so a future "fix" to scope counts has an explicit migration)
+    - Unbounded pagination — size=1_000_000 DoS
+control_summary: |-
+  0 of 4 cells COVERED. Feature emerges from batch-M primary-source audit
+  of SearchController.facets (TWO endpoints — getSearchFacetList +
+  getFiltersForFacet) + SearchServiceImpl + ReactiveSearchFacetRepositoryImpl
+  + JooqFTSHelper + V0_0_1__init.sql schema migration. Ten substantive
+  drift facets cluster around three load-bearing themes: (1) cross-owner
+  facet enumeration — REFACTOR-024 family extension to the facet COUNTS
+  surface; sharper than the search RESULTS surface because facet counts
+  expose catalog cardinality across all owners; HIGH severity; (2)
+  bearer-token-shaped session UUIDs — the search_facets schema has no
+  user binding; URL leakage = session hijack; SECOND batch surfacing
+  this finding (batch-E was the first); HIGH severity; (3) tsquery
+  operator injection DoS via persisted query — SECOND invocation site
+  of the batch-H getHighlightedResult bug; the persisted state breaks
+  every subsequent facet read for the affected session; HIGH severity.
+  Secondary findings: unbounded pagination at every layer + side-effect
+  UPDATE on every GET + session-state accumulates forever + workaround
+  doc silent on facet count scoping + catalog-wide count by design
+  (implicit ADR) + zero test coverage at any layer. The highest-leverage
+  probe candidates are: (a) cross-owner facet enumeration — local
+  docker-compose with ODD platform + Postgres + N seeded owners + invoke
+  GET /api/search/{id}/facet/OWNERS as one of them + assert response
+  lists every owner with their per-owner entity counts; (b) session
+  hijack — userA POSTs /api/search + userB invokes GET /api/search/{A's
+  UUID} as userB + assert 200 OK (pins the current bearer-token-shaped
+  posture); (c) tsquery injection — POST /api/search with
+  `query='foo )('` + GET /api/search/{id} + assert 500 with Postgres
+  42601 (pins the parse-error surface). Local probe stack: docker-compose
+  with ODD platform + PostgreSQL + multiple seeded owners + ingested
+  catalog with rich tag/namespace/group cardinality + curl scripts.
+related_refactoring_scopes:
+- REFACTOR-024
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+- Search Filter Facets
+- Faceted Search
+- Cross-Owner Enumeration
+- Read-Collaborative Posture
+- tsQuery Injection
+- Search Session State
+related_retrospectives:
+- LSN-017
+related_probes: null
+probe_verifications: []
+maintainer_curated: false
+merge_candidate_with: null

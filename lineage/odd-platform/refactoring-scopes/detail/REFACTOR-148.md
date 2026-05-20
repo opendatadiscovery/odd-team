@@ -1,0 +1,9 @@
+- **REFACTOR-148** (NEW 2026-05-12D): No backlog metric — invisible bloat. No counter, no gauge, no `housekeeping.backlog{table=...}` metric exposes the number of rows awaiting deletion. An operator cannot answer 'is housekeeping keeping up?' without manual SQL queries
+  - **Category**: no-backlog-metric
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md:performance.known_performance_gaps.[1]` (LOW)
+  - **Statement**: None of the three jobs emit Micrometer counters or gauges. An operator investigating "is housekeeping keeping up with the soft-delete rate?" has no observable surface — they must manually run `SELECT count(*) FROM alert WHERE status IN (...) AND status_updated_at <= now() - 30 days`. Adding a Prometheus gauge at the start of each cycle would surface backlog growth before it becomes a 14-minute-ShedLock problem.
+  - **Evidence**: `AlertHousekeepingJob.java` + `SearchFacetsHousekeepingJob.java` + `DataEntityHousekeepingJob.java` (no Micrometer instrumentation)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Add `housekeepingBacklog` Micrometer gauge per job, populated by running the eligibility count query at cycle start. Tag by table.
+  - **Severity rationale**: LOW — operability instrumentation; surfaces only when an operator actively investigates.
+  - **Suggested backlog grouping**: `Housekeeping performance sprint`

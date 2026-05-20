@@ -1,0 +1,117 @@
+name: Deployment Introspection (/api/appInfo)
+canonical_in_docs: false
+canonical_candidate: true
+description: '`GET /api/appInfo` is a pre-auth (under DISABLED) / post-auth (under
+  LOGIN_FORM/OAUTH2/LDAP) endpoint that returns `{projectVersion, authType}` — used
+  by the frontend SPA to discover which auth mode the backend is running so it can
+  render the appropriate login flow. The endpoint is the REPORTER of the active auth
+  mode (it READS `auth.type` and echoes the string in the response body). Distinct
+  from the consumer-of-mode pattern used by the four `*SecurityConfiguration` classes.
+  Carries deployment metadata that is operator-sensitive under `auth.type=DISABLED`
+  (the application.yml default) — passive fingerprinting surface for network attackers.
+  vocabulary_status: codebase-anchored, doc-side-absent (live `enable-security` does
+  NOT name `/api/appInfo` or document the auth-mode echo).'
+vocabulary_status: codebase-anchored, doc-side-absent
+axes_present:
+- controllers
+- config_prefixes
+nodes:
+- odd-platform java AppInfoController config-key-consumer:auth.type@L18
+contributors:
+- 'AppInfoController@L18: entities[AppInfo DTO {projectVersion: String, authType:
+  String}, BuildProperties]; operations[inject-auth.type-as-String, echo-authType-into-response];
+  invariants[authType field initialised once at controller construction (final field);
+  no normalisation, no enum mapping at this layer]'
+evidence:
+- AppInfoController@L18.md:concepts.entities + concepts.operations + concepts.invariants
+- AppInfoController@L18.md:implicit_adrs.[0,1] (deliberate published-contract field
+  for SPA + reporter-not-reactor pattern via @Value vs @ConditionalOnProperty)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - DISABLED
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: Controller has no @PreAuthorize, no programmatic permission check. Path
+      `/api/appInfo` is not in `SecurityConstants.SECURITY_RULES`. Generated `AppInfoApi`
+      interface has no @PreAuthorize and no SecurityRequirement. Falls through to
+      whatever the active SecurityWebFilterChain decides for 'any path not in WHITELIST_PATHS
+      / SECURITY_RULES' — `authenticated()` for LOGIN_FORM/OAUTH2/LDAP, `permitAll()`
+      for DISABLED.
+  owner_scoping:
+    verdict: N/A
+    detail: Endpoint returns deployment metadata, not data entities.
+  strengths:
+  - The published contract intentionally exposes authType — this is the SPA's login-flow
+    gate, not an accidental leak. AppInfoApi.java:43 + AppInfo.java:48-66 confirm
+    the field is part of the OpenAPI surface
+  weaknesses:
+  - '**Under `auth.type=DISABLED` (application.yml default), the endpoint is anonymously
+    reachable and discloses {projectVersion, authType} to any network caller** — passive
+    fingerprinting surface. Severity MEDIUM. (AppInfoController@L18.md:security.known_security_gaps.[0])'
+  - '**Empty-string `auth.type` injection silently produces a deployment with no SecurityWebFilterChain
+    bean** — `@Value("${auth.type}")` declares no default; if an operator overrides
+    to empty string (`AUTH_TYPE=` env var), Spring injects empty string, controller
+    echoes it, and every downstream `@ConditionalOnProperty(havingValue="...")` fails
+    to match. Severity LOW (AppInfoController@L18.md:security.known_security_gaps.[1])'
+  - '**No enum validation** — typo (`OUATH2`) silently disables all `@ConditionalOnProperty`
+    matches and produces the same no-SecurityWebFilterChain deployment, with `/api/appInfo`
+    echoing the typo. No boot-time fail-fast. Severity LOW (AppInfoController@L18.md:security.known_security_gaps.[2])'
+  - '**Whitelist gap for LOGIN_FORM**: `/api/appInfo` is NOT in `SecurityConstants.WHITELIST_PATHS`
+    and NOT in `LoginFormSecurityConfiguration.permittedPaths`. Under LOGIN_FORM the
+    SPA needs the response BEFORE the user authenticates (to render the form). Either
+    the current configuration is relying on a path I have not traced, or the SPA calls
+    /api/appInfo post-auth in LOGIN_FORM mode — undocumented behaviour either way.
+    Severity MEDIUM (AppInfoController@L18.md:bugs_limitations_corner_cases.[4])'
+  cross_file_inconsistencies:
+  - AppInfoController@L18 is the only sidecar where `auth.type` is itself the DATA
+    being exposed — all other controller sidecars treat it as opaque gating. The two
+    layers (consumer-of-mode vs reporter-of-mode) coexist in the codebase and the
+    catalog has to surface both.
+  contributing_files:
+  - AppInfoController@L18.md
+  evidence:
+  - AppInfoController@L18.md:security.known_security_gaps.[0,1,2]
+  - AppInfoController@L18.md:bugs_limitations_corner_cases.[0,1,2,3,4]
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-call, single-response — `Mono.just(new AppInfo(...)).map(ResponseEntity::ok)`.
+      No streaming, no backpressure, no bulk.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless controller. authType captured at construction (final field).
+      Horizontal scaling unaffected.
+  strengths:
+  - Pure in-memory field access — no DB round-trip, no I/O
+  - Trivial allocation cost (new AppInfo DTO per request)
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+  - AppInfoController@L18.md
+  evidence: []
+notes: 'The concept name "Deployment Introspection" is the closest available
+
+  label; the live docs name neither the concept nor the endpoint.
+
+  Recommended canonicalisation: add a "Deployment Introspection"
+
+  section to the live `enable-security` page covering (a) which fields
+
+  `/api/appInfo` exposes, (b) the fingerprinting surface under
+
+  `auth.type=DISABLED`, (c) the operator''s options for restricting
+
+  pre-auth access (whitelist gap discussion). The 2026-05-10B sidecar
+
+  surfaces this as a doc-drift candidate for the maintainer''s DOC-NNN
+
+  queue.
+
+  '

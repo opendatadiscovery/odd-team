@@ -1,0 +1,34 @@
+gap_id: TEST-GAP-642
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:RolesList"
+  - "odd-platform java repository_reactive repository:ReactivePolicyRepositoryImpl"
+pillars_affected: [P-09, P-08]
+surfaced_by:
+  - "RolesList.md:concepts.invariants.[4] (Soft-deleted Policies STILL APPEAR in the per-row policies list)"
+  - "RolesList.md:tests_coverage_semantic.uncovered_behaviours.[6] (soft-deleted policy still rendered)"
+  - "RolesList.md:docs_link_semantic.doc_drift_findings.[2] (Soft-deleted policies still rendered in the UI — no documentation acknowledges this)"
+behaviour: |-
+  **SOFT-DELETED POLICIES STILL RENDERED IN ROLE CHIP LIST (UI manifestation of F-006 `role_repo_left_join_no_policy_deleted_at_filter_mirror`).** `RoleItem.tsx:42-48` renders `policies.map(policy => policy.name)` for each Role row. The underlying `getDto/listDto` LEFT JOIN against `policy` has NO `policy.deleted_at IS NULL` predicate (`ReactiveRoleRepositoryImpl.java:45-48, 67-70, 87-90`) per the batch-N invariants[1] + F-006 drift_class `role_repo_left_join_no_policy_deleted_at_filter_mirror`. So a Role whose Policy has been soft-deleted but whose `role_to_policy` edge survives will still render the deleted Policy's NAME in the per-row chip list, with no indication that the Policy is gone. The PolicyList tab will show the policy as GONE; the RolesList tab will show the same policy STILL ATTACHED to roles — operators investigating "which roles use Policy X" via the Roles tab will believe the binding is live. No test exists at any layer for this drift. The integration scenario: (a) seed Role 7 with Policy 99 via `role_to_policy`; (b) soft-delete Policy 99 via direct DB UPDATE; (c) render RolesList; assert the Role 7 row's policies chip array STILL contains Policy 99's name. This is the UI half of the cross-layer drift; combined with TEST-GAP-637 (PolicyList catalogue-vs-grant) it surfaces a TWO-WAY differential render that breaks operator audit reasoning.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/Management/RolesList/__tests__/RolesList.integration.test.tsx (NEW file)"
+  name: "soft_deleted_policy_still_renders_in_role_chip_list"
+evidence:
+  - "RolesList.md says (concepts.invariants.[4]): 'Soft-deleted Policies STILL APPEAR in the per-row policies list. The RoleItem renders policies.map(policy => policy.name) (RoleItem.tsx:42-48). Per batch-N invariants[1] + F-006 drift_class role_repo_left_join_no_policy_deleted_at_filter_mirror, the getDto/listDto LEFT JOIN against policy has NO policy.deleted_at IS NULL predicate. So a Role whose Policy has been soft-deleted but whose role_to_policy edge survives will still render the deleted Policy's NAME in the per-row chip list, with no indication that the Policy is gone.'"
+  - "RolesList.md says (tests_coverage_semantic.gaps): 'The HIGHEST-LEVERAGE regression-pin candidate is the soft-deleted policy still rendered test: a Role whose Policy has been soft-deleted but whose role_to_policy edge survives WILL appear in the chip list (per F-006 drift_class role_repo_left_join_no_policy_deleted_at_filter_mirror). An integration test that seeds this exact state and asserts the UI surface either (a) shows the deleted Policy with a deleted badge OR (b) hides it entirely — would force the fix to surface on either the SQL side or the UI side.'"
+  - "RolesList.md says (docs_link_semantic.doc_drift_findings.[2]): 'Soft-deleted policies still rendered in the UI — no documentation acknowledges this. Live docs at /authorization/roles are silent on policy deletion semantics; operators cannot tell from the docs that a deleted Policy might still appear next to a Role they administer.'"
+  - "Glob verified: zero RolesList*.test.* files (run 2026-05-20)"
+cross_references:
+  - "F-006 (drift_class role_repo_left_join_no_policy_deleted_at_filter_mirror)"
+  - "TEST-GAP-637 (PolicyList catalogue-vs-grant — the inverse differential render)"
+  - "ReactivePolicyRepositoryImpl batch-H, ReactiveRoleRepositoryImpl batch-N (backend halves)"
+proposed_action: |-
+  Stand up `RolesList.integration.test.tsx` (NEW file required — Vitest + React-Testing-Library + Testcontainers OR stubbed API with hand-crafted response mirroring the drift). Test method `soft_deleted_policy_still_renders_in_role_chip_list` seeds: (a) Role id=7 with policies=[{id:99, name:'StaleAdminPolicy', deleted_at: now()}, {id:42, name:'NormalPolicy'}] in the stubbed API response (mirroring what the LEFT-JOIN-no-deleted-filter SQL would return), (b) mount RolesList; (c) assert the Role-7 row's chip array contains BOTH policy names (current dangerous behaviour); (d) optionally pin EXPECTED behaviour as a `.todo` test — e.g. `soft_deleted_policy_should_show_deleted_badge_or_be_hidden` — surfaces the fix-needed state. The pin freezes the contract; the future fix on either SQL or UI surfaces in this test.
+related_features: [F-006]
+related_pillar_features: ["P-09:F-001"]
+related_refactors:
+  - "REFACTOR-141 family (soft-delete-aware visibility inconsistency)"
+batch: 2026-05-20-Q
+feature_id: F-006

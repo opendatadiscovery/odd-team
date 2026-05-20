@@ -1,0 +1,157 @@
+name: Retention claim vs code drift (REFACTOR-085 confirmed from THREE angles — batch
+  R SQL-tier primary source via Activity repo)
+canonical_in_docs: false
+canonical_candidate: true
+description: |-
+  Cross-cutting doc-vs-code-drift invariant for retention claims. The
+  live `/features/active-platform-features/activity-feed#configuration` page claims
+  `odd.activity.partition-period` controls 'retention and partitioning'. 2-sidecar
+  primary-source confirmed in batch 2026-05-12D that this is unsupported by the codebase:
+  (a) ActivityTablePartitionManager (batch B): the partition-period config controls
+  CADENCE only — there is no `dropPartition` / `getEmptyPastPartitions` invocation
+  for the activity table (`PartitionService.dropPartition` exists on the interface
+  but is never called from the activity-table side); the activity table grows monotonically.
+  (b) HousekeepingTTLProperties (batch D): the entire housekeeping TTL surface has
+  exactly three fields (`resolved_alerts_days`, `search_facets_days`, `data_entity_delete_days`)
+  — NO `activity*Days` field. The only activity-touching housekeeping path is `ActivityEmptyPartitionsHousekeepingJob`
+  which drops EMPTY past partitions only (`COUNT(*) = 0` check at PartitionServiceImpl.java:133-141)
+  — partitions with even one row are retained indefinitely. Time-based retention for
+  the ACTIVITY table does not exist anywhere in the platform codebase from BOTH the
+  partition-WIDTH angle AND the housekeeping-coverage angle. Same applies to the MESSAGE
+  table (no `messageDays` field on HousekeepingTTLProperties; only `MessageEmptyPartitionsHousekeepingJob`
+  drops empty past partitions).
+
+  **STRENGTHENED batch 2026-05-20-R — SQL-tier PRIMARY SOURCE (third
+  angle)**: ReactiveActivityRepositoryImpl batch-R sidecar pins the
+  monotonic-growth posture at the **SQL repository tier**.
+  bugs_limitations_corner_cases.[0] (HIGH severity — the activity
+  table grows monotonically): no `deleteFrom(ACTIVITY)` anywhere in
+  the repository file (grep verified zero matches). The repository
+  WRITES but does NOT DELETE. Combined with the housekeeping job that
+  only drops empty partitions (batch B + D confirmation) AND the
+  absence of a per-row TTL field (batch D confirmation), the activity
+  table has NO ROW-LEVEL DELETION PATH AT ALL. Once a partition has
+  any activity row, it persists forever. A high-volume deployment
+  (1M events/day) accumulates ~365GB+/year of audit data with no
+  recovery path short of manual `DROP TABLE activity_YYYYMMDD_YYYYMMDD`.
+  performance.known_performance_gaps.[0] HIGH (unbounded growth of
+  activity table — mirror of ActivityTablePartitionManager
+  bugs_limitations_corner_cases.[0] from the upstream sidecar; the
+  repository writes; nothing deletes; multi-year deployments
+  accumulate 100s of GB of audit data with no recovery path).
+
+  **Three-angle confirmation**:
+    Angle 1 (partition-WIDTH side, batch B): no DROP for non-empty
+      partitions; partition-period controls width only
+    Angle 2 (housekeeping-coverage side, batch D): no `activity*Days`
+      TTL field; ActivityEmptyPartitionsHousekeepingJob requires
+      partitions to already be EMPTY before dropping
+    Angle 3 (SQL repository tier, batch R — NEW): no `deleteFrom(
+      ACTIVITY)` anywhere in the codebase; the repository writes
+      via `save` + `saveReturning` and reads via 7 SELECT paths;
+      there is no DELETE-from-activity path
+
+  REFACTOR-085 is now triangulated at the doc-page side + the
+  configuration-side + the partition-job side + the housekeeping-TTL
+  side + the **SQL repository tier**. Five-evidence-point primary
+  source for what the maintainer should consider a CONFIRMED bug
+  class.
+
+  Recommended remediation: rewrite the activity-feed docs Configuration
+  section to say 'partitioning is controlled by `odd.activity.partition-period`;
+  ODD does NOT currently retention-delete activity rows — operators
+  with high-volume activity must manually drop old partitions or
+  implement application-level archival.' Refactoring-side: a new
+  `housekeeping.ttl.activity_days` field + corresponding
+  `ActivityHousekeepingJob` would close the gap; the abstract base
+  `EmptyPartitionsHousekeepingJob` already supports the per-partition-drop
+  primitive — but the per-row deletion (for partitions still receiving
+  current-window writes) would require a separate
+  `delete-from-activity-where-created_at-older-than-X` query path
+  that does NOT currently exist in ReactiveActivityRepositoryImpl.
+axes_present:
+- config_prefixes
+- repositories_reactive
+nodes:
+- odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
+- odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+contributors:
+- 'ActivityTablePartitionManager (batch B): no DROP path; partition-period controls
+  width-not-retention'
+- 'HousekeepingTTLProperties (batch D): no `activity*Days` field; ActivityEmptyPartitionsHousekeepingJob
+  requires partitions to already be EMPTY before dropping'
+- |-
+  **ReactiveActivityRepositoryImpl batch R (NEW — SQL-tier confirmation)**:
+  bugs_limitations_corner_cases.[0] (HIGH — the activity table grows
+  monotonically; no DELETE path; no non-empty-partition DROP path;
+  the docs' 'retention and partitioning are controlled' framing is
+  misleading; high-volume deployment accumulates 365GB+/year of audit
+  data with no recovery path) +
+  performance.known_performance_gaps.[0] (HIGH — unbounded growth of
+  activity table; the repository writes; nothing deletes; multi-year
+  deployments accumulate 100s of GB with no recovery path) +
+  performance.scaling_characteristics (activity table size growth is
+  unbounded — no DELETE, no DROP of non-empty partitions; postgres
+  planner overhead grows with partition count even when partition
+  pruning is effective)
+evidence:
+- ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[0] (no DROP
+  path; monotonic growth — Angle 1)
+- HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[0] (no activity-retention
+  field; drift CONFIRMED from second angle — Angle 2)
+- HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[1] (same gap for MESSAGE
+  table)
+- HousekeepingTTLProperties.md:docs_link_semantic.doc_drift_findings.[0] (the activity-feed
+  page's 'retention' claim is unsupported from two angles)
+- |-
+  **ReactiveActivityRepositoryImpl.md (batch R — SQL-TIER PRIMARY SOURCE,
+  third angle)**: bugs_limitations_corner_cases.[0] +
+  performance.known_performance_gaps.[0] —
+  evidence:
+    ReactiveActivityRepositoryImpl.java (grep for `deleteFrom(ACTIVITY)`
+      returns zero matches — verified verbatim by the batch-R sidecar) +
+    ActivityEmptyPartitionsHousekeepingJob.java:9-17 (only EMPTY
+      partition drops; non-empty partitions never drop) +
+    WebFetch activity-feed#configuration ('retention and partitioning
+      are controlled by' — the doc claim) +
+    cross-reference to ActivityTablePartitionManager batch B (the
+      partition-creation side has no DROP path either)
+notes: |-
+  Promoted to a NEW cross-cutting invariant in batch 2026-05-12D after
+  the second-angle confirmation. The earlier batch-B narrative cited
+  this as a per-feature weakness on the Activity Feed concept; the
+  batch-D evidence makes it a doc-product-level invariant about how
+  retention claims are documented vs implemented in ODD.
+
+  **STRENGTHENED batch 2026-05-20-R — THIRD ANGLE PINNED AT SQL
+  REPOSITORY TIER**. The ReactiveActivityRepositoryImpl batch-R
+  sidecar adds the persistence-layer primary source: zero
+  `deleteFrom(ACTIVITY)` matches in the repository file; the
+  monotonic-growth posture is confirmed end-to-end (partition-WIDTH
+  side + housekeeping-coverage side + SQL repository tier). The
+  triangulation is now FIVE evidence points across THREE distinct
+  code/config axes — sufficient confidence to call REFACTOR-085
+  PRIMARY-SOURCE-PINNED rather than INFERRED.
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Rewrite the activity-feed Configuration section per the
+        recommendation above.
+    (b) Add a parallel statement on the data-collaboration page for
+        the MESSAGE table.
+    (c) Add a code-side roadmap entry (or backlog item) for the
+        `housekeeping.ttl.activity_days` / `housekeeping.ttl.message_days`
+        fields, with the abstract `EmptyPartitionsHousekeepingJob`
+        pattern reused.
+
+  **NEW batch R fourth DOC-NNN candidate**: document the per-row vs
+  per-partition deletion-path distinction in an internal architecture
+  note — implementing `housekeeping.ttl.activity_days` requires
+  EITHER (a) a new `delete-from-activity-where-created_at-older-than-X`
+  query path in ReactiveActivityRepositoryImpl (which does NOT
+  currently exist; the repository is INSERT + SELECT only) OR (b)
+  waiting for current-window partitions to age out completely (which
+  is what `ActivityEmptyPartitionsHousekeepingJob` does — but the
+  operator would need to ALSO configure the partition cadence to
+  match the desired TTL such that older partitions naturally become
+  empty within the retention window).

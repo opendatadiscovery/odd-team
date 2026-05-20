@@ -1,0 +1,663 @@
+feature_id: F-007
+pillar_id: P-07
+pillar_anchored_id: P-07:F-001
+pillar_anchored_feature_name: AlertManager Integration
+primary_drift_class: unauthenticated_payload_trust
+drift_class_summary:
+- unauthenticated_payload_trust
+- cross_tenant_alert_creation
+- no_idempotency_no_audit
+- alerting_doc_supersede_2026_05_20_was_404_now_200
+- activity_event_doc_drift_27_enum_values_in_code_vs_20_in_live_docs
+- alert_received_activity_events_persist_via_batch_save_path
+- alert_activity_partial_commit_under_partition_rotation
+- service_tier_primary_source_for_all_three_drift_facets_at_lines_178_151_191_222_227
+- audit_emission_asymmetry_ingress_gap_vs_state_transition_audited_via_batch_save
+- update_status_no_reactive_transactional_aop_provided_synthetic_transaction
+- generator_url_ui_render_surface_service_tier_primary_source_line_168_185
+batch_extensions:
+- batch: P
+  entry_point_added: |-
+    controller-method:postAlerts (the AlertManagerController#alertManagerWebhook
+    method, single-method @PostMapping at `ingestion/alert/alertmanager`).
+    Hop-1 of F-007's chain previously cited the class-level
+    AlertManagerController sidecar from batch H + the AlertServiceImpl
+    sidecar from batch I; this batch closes hop-1 at the METHOD TIER
+    with PRIMARY-SOURCE confirmation of the three drift facets named
+    in the drift_class_summary header — all anchored at
+    AlertManagerController.java:21-26.
+  contributing_nodes_added:
+  - odd-platform java AlertManagerController controller-method:postAlerts
+  notes: |-
+    Method-tier primary-source evidence for the three load-bearing
+    F-007 drift facets:
+    (1) `unauthenticated_payload_trust` confirmed at AlertManagerController.java:21-26 —
+    the four-line handler has NO `@PreAuthorize`, NO `@Secured`, NO
+    `@ConditionalOnProperty`, NO programmatic auth check, NO header
+    inspection. Auth wiring is delegated entirely to
+    `SecurityConstants.WHITELIST_PATHS[2]` (`/ingestion/**`) which
+    exempts the path from the UI auth chain across all four `auth.type`
+    modes, AND to the absence of any path matcher in
+    `IngestionDataEntitiesFilter` (line 28 binds to `/ingestion/entities`
+    POST only). The endpoint accepts any AlertManager-shaped JSON from
+    any caller with network reach under all auth modes. The live doc
+    page now documents this verbatim — refreshed 2026-05-20 status 200,
+    excerpt: "The AlertManager webhook endpoint is not authenticated.
+    ODD Platform whitelists the entire `/ingestion/**` namespace in
+    Spring Security, and the ingestion auth filter controlled by
+    `auth.ingestion.filter.enabled` only guards `/ingestion/entities`
+    (POST) — it does not cover `/ingestion/alert/alertmanager`."
+    The doc-side intent is operator-delegated network-layer auth.
+    (2) `cross_tenant_alert_creation` confirmed at AlertManagerController.java:24 —
+    `req.getAlerts()` is delegated verbatim to
+    `AlertService.handleExternalAlerts` with NO validation step between.
+    Downstream at AlertServiceImpl.java:178 the `entity_oddrn` label
+    is mapped directly to `AlertPojo.dataEntityOddrn` with no check
+    that (a) the entity_oddrn refers to an existing DataEntity row,
+    (b) the calling principal (if any) is authorised to alert on it.
+    A POST with `labels.entity_oddrn=<any-data-entity-oddrn>` produces
+    an OPEN alert attributed to that data entity, visible on the target
+    entity's page to every authenticated user. Compounded with
+    REFACTOR-024 (cross-owner GET /api/alerts) — every authenticated
+    user sees forged alerts on the platform-wide All tab.
+    (3) `no_idempotency_no_audit` confirmed at AlertManagerController.java:21-26 +
+    AlertServiceImpl.java:151-191 vs 222-227 — the method does not
+    inspect any `Idempotency-Key` header; the request DTO has no
+    idempotency-key field; the downstream `handleExternalAlerts`
+    deliberately SKIPS the `AlertActionResolver` (which IS used by
+    the in-platform ingestion path at AlertServiceImpl.java:222-227
+    for de-duplication via AlertUniqueConstraint snapshots). The
+    `createAlerts` private helper (lines 261-300) issues INSERT …
+    RETURNING with NO `.onConflict(...)` clause. Prometheus's standard
+    retry policy duplicates rows. The method has NO audit log — no
+    `log.info(...)` at entry, no `@Timed` Micrometer counter, no
+    per-call correlation-id capture. From the operator's perspective
+    the only post-hoc signal that a webhook arrived is the alert table
+    rows themselves; forensic reconstruction of "who POSTed what when"
+    after a forge incident is not possible.
+    NEW SUPERSEDE — the live doc page
+    `https://docs.opendatadiscovery.org/features/active-platform-features/alerting`
+    was 404 in the 2026-05-08 batch H enrichment; refreshed 2026-05-20
+    in batch P returns status 200. The page now exists and cross-links
+    to this endpoint, documents the Distribution Anomaly halt-toggle
+    limitation ("the Distribution Anomaly halt toggle doesn't enforce
+    suppression on AlertManager-driven alerts, recommending operators
+    use Prometheus Alertmanager configuration layers instead to manage
+    alert noise"). The prior 404 finding is SUPERSEDED — flag
+    `superseded_by: batch-P 2026-05-20`. Also new: batch P adds two
+    SECONDARY drift facets via the sidecar's bugs_limitations_corner_cases
+    block: (a) silent loss of timestamp offset (ExternalAlert.startsAt
+    is LocalDateTime; Jackson strips RFC3339 timezone offsets — the
+    embedded Prometheus query URL is keyed by ODD server's local time
+    not the alert's actual time; mirror of batch I `misaligned_timestamp_contract`
+    facet); (b) DTO silently drops AlertManager wire fields (`status`,
+    `endsAt`, `annotations`, `fingerprint`, `groupKey`, `groupLabels`,
+    `commonLabels`, `commonAnnotations`, `externalURL`, `version`,
+    `receiver` are all silently dropped — most operationally impactful
+    drop is `status: resolved`, the platform never sees the field;
+    doc-cross-link confirmed via live alerting page excerpt). Both
+    secondary facets are non-headline but represent the architectural
+    DTO-shape coupling between AlertManagerController and the wire
+    format.
+- batch: R
+  entry_point_added: |-
+    repository-tier:ReactiveActivityRepositoryImpl — the SQL bridge
+    between AlertServiceImpl's alert-receive emissions and the audit
+    surface. The repository sidecar surfaces three load-bearing
+    AlertManager-cross-pillar facets at the SQL layer:
+    (a) AlertServiceImpl.java:252,258,318,324 issue
+    `activityService.createActivityEvents(...).systemEvent(true)` for
+    OPEN_ALERT_RECEIVED, RESOLVED_ALERT_RECEIVED, and ALERT_STATUS_UPDATED
+    — those flows reach this repository via the `save(List<ActivityPojo>)`
+    batch path (line 57-71). The write side for F-007's audit-trail
+    contribution is HERE, not in AlertServiceImpl — the alert-received
+    events DO write to the activity table via the `is_system_event=true`
+    discriminator (V0_0_48__add_activity.sql:8).
+    (b) The activity-feed live doc lists 20 event types in 6 groups;
+    code's ActivityEventTypeDto.java:3-31 declares 27 values. Seven
+    are undocumented — including the three ALERT-* types
+    (OPEN_ALERT_RECEIVED / RESOLVED_ALERT_RECEIVED / ALERT_STATUS_UPDATED).
+    The webhook-driven alert flow surfaces in operator UIs as
+    `is_system_event=true` activity rows; the doc says nothing about
+    the system-event subset. Cross-link: doc page lists 'Auto-resolved
+    alert events' verbatim per ReactiveActivityRepositoryImpl
+    docs_link_semantic[0] fetched_excerpts but does NOT enumerate the
+    27-vs-20 enum drift.
+    (c) Partial-commit on batch `save(List<ActivityPojo>)` leaves
+    audit gaps — repository line 62-70 dispatches to
+    `executeInPartition` which chunks at 1000 rows + reduces via
+    `.zipWith(Integer::sum)` with NO transaction wrap; a large alert
+    batch arriving at midnight (partition rotation boundary) could
+    produce a partial commit with N/2 alerts missing from the audit.
+    No compensating delete. AlertServiceImpl's batch alert flows
+    (line 252-258, 318-324) are the most exposed.
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+  notes: |-
+    Three new drift facets surface from the activity-repository
+    primary source, all elaborating the audit-trail contribution of
+    F-007's alert-received flows:
+    (1) ACTIVITY EVENT DOC DRIFT 27-VS-20 (MEDIUM, doc-class) —
+    ActivityEventTypeDto.java:3-31 has 27 values; the activity-feed
+    live doc (WebFetched 2026-05-20 status 200) lists 20 in 6 groups.
+    Seven undocumented: DATA_ENTITY_OVERVIEW_UPDATED,
+    DATA_ENTITY_METADATA_UPDATED, DATA_ENTITY_SCHEMA_UPDATED,
+    DATA_ENTITY_RELATION_UPDATED, CUSTOM_METADATA_CREATED,
+    CUSTOM_METADATA_UPDATED, CUSTOM_METADATA_DELETED. F-007's three
+    ALERT-* event types ARE documented at the activity feed page
+    (under 'Alerts' grouping); the GAP is at the data-entity
+    lifecycle + custom-metadata side. Filed as DOC-GAP-NNN candidate
+    (deferred to doc-gap-finder).
+    (2) ALERT-RECEIVED PERSISTENCE PRIMARY-SOURCE (LOW, positive
+    case-law) — AlertServiceImpl.java:252,258,318,324 → save batch
+    path → ReactiveActivityRepositoryImpl line 57-71 → INSERT with
+    `is_system_event=true` (the schema column at V0_0_48:8). Despite
+    F-007's `no_idempotency_no_audit` headline for the AlertManager
+    PAYLOAD itself, the DOWNSTREAM activity-event audit DOES happen
+    via this batch path. The audit gap is at the WEBHOOK INGRESS
+    (no log line of WHO POSTed the payload), not at the alert-state
+    transition (OPEN/RESOLVED/STATUS_UPDATED are audited).
+    (3) ALERT ACTIVITY PARTIAL-COMMIT UNDER PARTITION ROTATION (MEDIUM)
+    — repository line 62-70 has no transaction wrap on the
+    `executeInPartition` batch INSERT. A large alert batch arriving
+    at midnight rotation boundary could produce a partial commit
+    with N/2 alerts missing from the audit. AlertServiceImpl's batch
+    flows (line 252-258 OPEN_ALERT_RECEIVED + 318-324 RESOLVED) are
+    the most exposed. Practical impact: an attacker triggering a
+    high-volume AlertManager payload exactly at partition rotation
+    could hide a subset of alert-events from the audit. Cross-link
+    to F-010 partition-management coupling (the partition-rotation
+    cron's failure mode is the trigger).
+    Coherence: STRENGTHENS F-007's existing `no_idempotency_no_audit`
+    drift_class with a refinement (the WEBHOOK INGRESS is unaudited;
+    the resulting alert-state-transitions ARE audited via the
+    activity-feed batch save path). NO contradictions surfaced.
+    NO supersedes.
+- batch: S
+  entry_point_added: |-
+    service-tier:AlertServiceImpl — re-anchored as PRIMARY SOURCE for
+    ALL 3 F-007 drift facets at the SERVICE TIER under schema v0.3.0
+    framing. Hop-2 was previously resolved at batch I with the
+    AlertServiceImpl sidecar; batch S refreshes the sidecar with the
+    LSN-018 pre-emit coherence sweep + the rev-2 schema upgrade
+    (related_features / related_pillar_features / related_refactors /
+    related_retrospectives back-links + the explicit cross-link to the
+    batch R ReactiveActivityRepositoryImpl finding). The refresh
+    surfaces the FOUR audit-emission patterns of the class as a single
+    architectural lens (the @ActivityLog AOP for updateStatus + the
+    THREE manual `activityService.createActivityEvents(...)` call sites
+    for the bulk-mutation paths) AND the AUDIT-EMISSION-ASYMMETRY
+    refinement between the WEBHOOK INGRESS gap and the alert-state-transition
+    audit pathway.
+  contributing_nodes_added: []
+  notes: |-
+    THREE refinements + ONE new finding surface from the batch-S
+    AlertServiceImpl re-enrichment:
+    (1) F-007 ALL 3 DRIFT FACETS PRIMARY-SOURCE-CONFIRMED AT
+    AlertServiceImpl.java:178 + 151-191 + 222-227 (HIGH, refinement)
+    — the SERVICE-TIER ANCHOR for the three load-bearing F-007 drift
+    facets is now PRIMARY SOURCE with explicit file:line evidence:
+    (a) `unauthenticated_payload_trust` at AlertServiceImpl.java:151-191
+    — the `handleExternalAlerts` method does NOT consult
+    `AuthIdentityProvider` (the four UI-driven paths DO at lines 84,
+    93, 117, 235; this deliberate omission is the intent_anchor for
+    the implicit ADR);
+    (b) `cross_tenant_alert_creation` at AlertServiceImpl.java:178
+    — `setDataEntityOddrn(externalAlert.getLabels().get("entity_oddrn"))`
+    maps the untrusted webhook label verbatim with no validation
+    (three negations confirmed: no DATA_ENTITY lookup, no caller-identity
+    check, no ownership/permission gate);
+    (c) `no_idempotency_no_audit` at AlertServiceImpl.java:151-191 +
+    222-227 — `handleExternalAlerts` SKIPS the `AlertActionResolver`
+    that `applyAlertActions` consumes; the shared `createAlerts`
+    private helper (lines 261-300) issues `INSERT … RETURNING` with
+    no `.onConflict(...)`. The AlertManager path bypasses both the
+    application-level de-duplication AND the SQL-level idempotency.
+    The batch-I sidecar surfaced these facets at the service tier;
+    batch S re-emits with the rev-2 schema upgrade + the LSN-018
+    pre-emit coherence sweep results (STRENGTHENS=10, SUPERSEDES=0
+    [2 doc-URL refreshes per batch P], CONFLICTS=0).
+    (2) AUDIT-EMISSION-ASYMMETRY REFINEMENT (MEDIUM, new lens) —
+    AlertServiceImpl emits activity events via FOUR patterns: (a)
+    @ActivityLog AOP for `updateStatus` (line 112 — the only
+    AOP-annotated method); (b) `registerNewAlertsActivityEvents`
+    (lines 309-325) emits OPEN_ALERT_RECEIVED / RESOLVED_ALERT_RECEIVED
+    per created alert; (c) `registerAutomaticallyResolvedAlertsActivityEvents`
+    (lines 247-259) emits ALERT_STATUS_UPDATED with `systemEvent=true`
+    per auto-resolved id; (d) NO emission for `handleExternalAlerts`
+    INGRESS itself (no `log.info` of WHO POSTed, no @Timed, no
+    correlation-id capture). The audit-emission ASYMMETRY between
+    the INGRESS (gap) and the alert-state-transitions (audited via
+    the batch R `save(List<ActivityPojo>)` path with
+    `is_system_event=true` discriminator per V0_0_48__add_activity.sql:8)
+    is now the SERVICE-TIER lens for F-007's `no_idempotency_no_audit`
+    facet. The webhook INGRESS gap remains; the alert-state-transition
+    audit pathway DOES persist.
+    (3) `updateStatus` SERVICE-TIER NO @ReactiveTransactional —
+    AOP-PROVIDED SYNTHETIC TRANSACTION (MEDIUM, structural refinement)
+    — `AlertServiceImpl.updateStatus` (lines 111-113) is the ONLY
+    user-driven mutation method on the class; it has NO method-level
+    @ReactiveTransactional. The transaction wrapping comes from
+    `ActivityAspect.monoActivityAspect` (`ActivityAspect.java:42`)
+    which adds a synthetic `@ReactiveTransactional` to the
+    AOP-intercepted Mono. Consequence: the reopen-conflict guard at
+    lines 124-131 reads `openAlertWithTheSameTypeExistsForDataEntity`
+    THEN writes `updateAlertStatus` inside the AOP's synthetic
+    transaction, but no row-level lock is taken on either step. Two
+    concurrent reopen requests for sibling alerts of the same type
+    can BOTH pass. STRENGTHENS F-006's
+    `service_tier_transactional_asymmetry` finding (this batch's
+    Policy/Role pair) with a parallel structural pattern at AlertService
+    — the AOP-coupling makes the boundary invisible at this file.
+    (4) NEW DRIFT FACET — generatorURL UI-render-side surface
+    PRIMARY-SOURCE at service tier (MEDIUM, refinement of batch I)
+    — line 168 builds the URL via `UriComponentsBuilder.fromUri(externalAlert.getGeneratorURL())`;
+    line 185 embeds it in the description as `String.format("Distribution
+    Anomaly. URL: %s", queryUrl)`. The URI type does NOT block
+    javascript: scheme. Combined with the unauthenticated webhook and
+    the cross-owner display via REFACTOR-024, this is the canonical
+    forge-and-display-and-render compound. STRENGTHENS existing F-007
+    facet `untrusted_input_to_rendered_text` with the service-tier
+    line:numbers anchor.
+    No conflicts; no supersedes (the batch-P doc-URL supersedes from
+    the AlertManagerController hop-1 method-tier remain accurate).
+    Cross-batch coherence: STRENGTHENS=10 confirmed at service tier;
+    the WEBHOOK INGRESS audit gap + the alert-state-transition audit
+    pathway are the TWO halves of F-007's audit story.
+rev3_reclassification:
+  migrated_at: '2026-05-19T15:17:32.753499+00:00'
+  from_rev2_feature_name: AlertManager webhook ingestion — ungated cross-tenant alert creation
+  notes: AlertManager Integration is the Active Platform Features pillar's Alerting-sub-feature integration surface. F-007
+    was bug-anchored on the unauthenticated entity_oddrn spoofing. The bug becomes a drift facet inside the pillar-anchored
+    feature. The chain crosses to P-10 Integrations & Ingestion (webhook receiver is an ingestion surface) — cross-pillar
+    relationship-edge per principle 9.
+  merge_candidate_with: null
+  method: manual mapping per maintainer dialogue 2026-05-19 + system-mission.md pillar list
+feature_name: AlertManager webhook ingestion — ungated cross-tenant alert creation
+discovered_from_entry_point: webhook:POST /ingestion/alert/alertmanager
+description: 'The platform exposes a webhook receiver at `POST /ingestion/alert/alertmanager`
+
+  (AlertManagerController.java:21) that ingests Prometheus AlertManager-shaped
+
+  webhook payloads and creates OPEN alerts in the ODD `alert` table. The handler
+
+  delegates to AlertServiceImpl.handleExternalAlerts → createAlerts (the batched
+
+  INSERT … RETURNING path on ReactiveAlertRepositoryImpl).
+
+
+  The webhook receiver is path-mounted at `/ingestion/alert/alertmanager` — a path
+
+  the IngestionDataEntitiesFilter does NOT match (the filter''s path matcher is
+
+  `/ingestion/entities` POST only). The receiver therefore inherits ONLY the global
+
+  WebFilterChain auth gate (which is BYPASSED under `auth.type=DISABLED`); under
+
+  every other auth mode the gate is `.authenticated()` with no DataEntity-scope
+
+  check.
+
+
+  The webhook payload carries `labels.entity_oddrn` as an UNTRUSTED string used by
+
+  AlertServiceImpl.handleExternalAlerts (line 178) to populate `alert.data_entity_oddrn`
+
+  — meaning any successful POST (anonymous under DISABLED; any authenticated user
+
+  otherwise) can attribute alerts to any data entity in the platform, including
+
+  data entities owned by other tenants. Combined with REFACTOR-024 (the `GET /api/alerts`
+
+  cross-owner default read), this creates a full forge-and-display cycle: a hostile
+
+  POST can inject false-positive alerts attributed to other teams'' data entities,
+
+  and those alerts surface on the platform-wide "All" tab that every authenticated
+
+  user can read.
+
+
+  The receiver carries a `// TODO: define OpenAPI spec based on alert provider contract`
+
+  comment on AlertManagerController.java:20 — the endpoint is undocumented in the
+
+  OpenAPI spec and on operator-facing pages.
+
+  '
+contributing_nodes:
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
+- odd-platform java AlertManagerController controller-method:postAlerts
+- odd-platform java AlertServiceImpl
+- odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+chain:
+- hop: 1
+  node: odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
+  sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md
+  multiplicity_per_trigger: 1
+  evidence: AlertManagerController.java:21 — `@PostMapping(path = "ingestion/alert/alertmanager") public Mono<Void> alertManagerWebhook(@RequestBody
+    AlertManagerWebhook webhook)`. No SECURITY_RULES entry (verified — SecurityConstants.java does not list this path). No
+    IngestionDataEntitiesFilter match (the filter is /ingestion/entities POST only). The path falls through to the WebFilterChain's
+    default `.authenticated()` requirement under non-DISABLED auth modes; bypassed entirely under DISABLED.
+  unresolved: false
+- hop: 1-method-tier
+  node: odd-platform java AlertManagerController controller-method:postAlerts
+  sidecar: odd-platform__java__AlertManagerController__controller-method__postAlerts.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    AlertManagerController.java:21-26 — the 4-line handler body:
+    `@PostMapping(path = "ingestion/alert/alertmanager")
+    public Mono<ResponseEntity<Void>> alertManagerWebhook(
+      @RequestBody final Mono<AlertManagerRequest> request) {
+        return request.flatMap(req ->
+          alertService.handleExternalAlerts(req.getAlerts()))
+          .map(o -> ResponseEntity.noContent().build());
+    }` — no `@PreAuthorize`, no `@Secured`, no
+    `@ConditionalOnProperty`, no programmatic auth check, no header
+    inspection, no `@Valid` on the request body. The inner DTO
+    `AlertManagerRequest` (lines 28-32) is hand-rolled with a single
+    field (`List<ExternalAlert> alerts`); the explicit
+    `// TODO: define OpenAPI spec based on alert provider contract`
+    at line 20 marks the unfinished spec-first migration. Success
+    response is always 204 No Content (line 25 — `.map(o ->
+    ResponseEntity.noContent().build())` discards the inner signal
+    entirely). The method is the SOLE method on the controller class
+    (verified — single `@PostMapping`, no other handlers). All three
+    F-007 drift facets (unauthenticated_payload_trust,
+    cross_tenant_alert_creation, no_idempotency_no_audit) confirmed
+    PRIMARY-SOURCE at the method tier. NEW supersede recorded — the
+    `/features/active-platform-features/alerting` doc page was 404 in
+    batch H but returns status 200 in batch P (refreshed 2026-05-20),
+    so the previously-recorded "Alerting feature page returns 404"
+    finding is superseded.
+  unresolved: false
+  resolved_in_batch: P
+- hop: 2
+  node: odd-platform java AlertServiceImpl
+  sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+  multiplicity_per_trigger: 1
+  evidence: 'AlertServiceImpl.handleExternalAlerts (line 152 — @ReactiveTransactional;
+
+    lines 153-191) confirmed PRIMARY-SOURCE in batch-I. Maps the webhook payload
+
+    to AlertPojo via setDataEntityOddrn(externalAlert.getLabels().get("entity_oddrn"))
+
+    at line 178 — NO validation of the oddrn against the calling principal, NO
+
+    check that the oddrn refers to a real DataEntity, NO sanitisation. Constructs
+
+    chunk description `String.format("Distribution Anomaly. URL: %s", queryUrl)`
+
+    at line 185 — the queryUrl is the Prometheus GeneratorURL from the webhook
+
+    (untrusted). The path also hardcodes type=DISTRIBUTION_ANOMALY at line 177
+
+    (AlertManager-side `alertname` / `severity` labels are ignored). Crucially,
+
+    handleExternalAlerts SKIPS AlertActionResolver (which IS used by the in-platform
+
+    ingestion path at line 222-227) — the de-duplication boundary is asymmetric:
+
+    Prometheus retries produce duplicate ALERT rows. The ExternalAlert.startsAt
+
+    is LocalDateTime (timezone-naive) — the URL-encoded generator URL points to a
+
+    Prometheus query window keyed by the SERVER''s local time, not the alert''s actual
+
+    timestamp.'
+  unresolved: false
+  resolved_in_batch: I
+- hop: 3
+  node: odd-platform java repository reactive repository:ReactiveAlertRepositoryImpl
+  sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+  multiplicity_per_trigger: 1
+  evidence: 'ReactiveAlertRepositoryImpl.createAlerts at lines 324-343 — batched INSERT INTO ALERT … RETURNING via executeInPartitionReturning
+    (1000-row partitions). NO `.onConflict(...)` clause — retry by Prometheus duplicates rows. NO caller-identity check; trusts
+    the caller-provided AlertPojo verbatim. Side-effect: db-write of new ALERT rows with status=OPEN, data_entity_oddrn=untrusted-input.
+    Wrapped by handleExternalAlerts @ReactiveTransactional; activity emission via AlertServiceImpl.registerNewAlertsActivityEvents
+    (OPEN_ALERT_RECEIVED).'
+  unresolved: false
+terminal_side_effect:
+  side_effect_class: db-write
+  description: INSERT INTO alert (data_entity_oddrn, type, status, description) — creates OPEN alert rows with attacker-controllable
+    data_entity_oddrn and chunk-description content; surfaces on the platform-wide /api/alerts feed via REFACTOR-024''s unfiltered
+    listAllWithStatusOpen
+  evidence: ReactiveAlertRepositoryImpl.java:324-343 (createAlerts INSERT … RETURNING) + AlertServiceImpl.java:178 (untrusted
+    entity_oddrn mapped to AlertPojo.dataEntityOddrn) + AlertManagerController.java:21 (path mount not gated by IngestionDataEntitiesFilter)
+  cardinality_per_call: N (one INSERT per alert in the webhook payload's `alerts` list; one chunk row per alert)
+amplification_factor: 1
+amplification_factor_provenance: 'STATIC — confirmed from primary source. The amplification is structural rather than mathematical:
+  ONE successful POST produces N alert rows (N = payload.alerts.size), and those rows immediately become readable by every
+  authenticated user on the cross-owner GET /api/alerts (the F-007 + REFACTOR-024 compound surface). No active probe yet;
+  the amplification factor is recorded as 1 because the per-call multiplicity is 1 per element of the input array.'
+observed_vs_expected:
+  facets:
+  - facet: AlertManager path not gated by IngestionDataEntitiesFilter
+    observed: POST /ingestion/alert/alertmanager bypasses IngestionDataEntitiesFilter (the filter's path matcher is /ingestion/entities
+      POST only — confirmed from primary source across multiple sidecars). Under auth.type=DISABLED, the endpoint is fully
+      anonymous and accepts any AlertManager-shaped payload. Under LOGIN_FORM/OAUTH2/LDAP, ANY authenticated user can POST
+      — there is no DataEntity-scope check, no ALERT_CREATE permission, no S2S-token check.
+    expected: Either documented S2S-token gating (the AlertManager webhook is by definition a server-to-server channel; typical
+      practice is shared-secret header or mutual-TLS) OR an IngestionDataEntitiesFilter-equivalent path matcher on this path
+    drift_class: webhook_receiver_ungated
+    provenance: STATIC — primary-source verification in batch-H ReactiveAlertRepositoryImpl sidecar known_security_gaps[1]
+      + AlertManagerController sidecar. Proposed Type-7 probe — POST anonymous AlertManager-shaped payload to a docker-compose
+      stack with AUTH_TYPE=DISABLED + verify alert row appears in /api/alerts attributed to whatever entity_oddrn the payload
+      claimed.
+  - facet: untrusted entity_oddrn enables cross-tenant attribution
+    observed: AlertServiceImpl.handleExternalAlerts maps `labels.entity_oddrn` (a payload field, untrusted) directly to `AlertPojo.dataEntityOddrn`
+      at line 178 — NO validation that the oddrn refers to a real DataEntity, NO check that the calling principal owns the
+      entity, NO sanitisation. A hostile POST can attribute alerts to ANY data entity. Combined with the cross-owner read
+      surface (REFACTOR-024 / F-007 facet 3), an attacker can inject false-positive alerts on competitors' data entities that
+      surface on the platform-wide "All" tab.
+    expected: Server-side validation — assert entity_oddrn exists in DATA_ENTITY AND the calling principal has permission
+      to alert on it
+    drift_class: untrusted_input_to_authoritative_state
+    provenance: STATIC — primary-source verification in batch-H ReactiveAlertRepositoryImpl sidecar known_security_gaps[1]
+      + AlertServiceImpl.java:178 (the verbatim mapping)
+  - facet: forge + display compound with REFACTOR-024
+    observed: F-007 (forge alerts) + REFACTOR-024 (cross-owner read at listAllWithStatusOpen) compound into a full forge-and-display
+      cycle. An attacker (anonymous under DISABLED; any authenticated user otherwise) POSTs false-positive alerts attributed
+      to other teams' data entities; those alerts are immediately readable on the platform-wide /api/alerts feed by every
+      authenticated user. The "All" tab's live-docs framing ("Platform-wide triage; stewards and admins watching the full
+      alert surface") makes the displayed alerts authoritative-looking — a reviewer triaging the All tab cannot distinguish
+      forged alerts from real ones. The compound surface is the canonical example of why cross-cutting drift (one feature's
+      assumption violated by another feature's posture) requires layer-4 composition to surface.
+    expected: Either (a) IngestionDataEntitiesFilter-equivalent gate on the AlertManager path, OR (b) owner-scoped /api/alerts
+      read, OR (c) cross-validation that alert.data_entity_oddrn references an entity the alert-creator has permission on
+    drift_class: cross_feature_compound_amplification
+    provenance: STATIC — primary-source verification in batch-H ReactiveAlertRepositoryImpl sidecar known_security_gaps[0]+[1]
+      + the AlertController.getAllAlerts neighbour sidecar's REFACTOR-024 entry (the 7-sidecar finding cluster)
+  - facet: undocumented webhook endpoint (OpenAPI gap)
+    observed: 'AlertManagerController.java:20 carries a `// TODO: define OpenAPI spec based on alert provider contract` comment.
+      The endpoint is NOT in the OpenAPI spec, NOT on the operator-facing alerting doc, NOT in any /developer-guides/api-reference
+      page (verified by neighbour sidecar inheritance).'
+    expected: OpenAPI spec entry + operator-facing doc page describing the contract, the entity_oddrn schema, the auth posture,
+      the de-duplication guarantee (or absence thereof)
+    drift_class: undocumented_security_surface
+    provenance: STATIC — primary-source verification in batch-H AlertManagerController + ReactiveAlertRepositoryImpl sidecars
+  - facet: no idempotency on retry — Prometheus webhook retries duplicate alerts
+    observed: createAlerts issues INSERT … RETURNING with NO `.onConflict(...)` clause and no SELECT-then-INSERT de-duplication.
+      If Prometheus retries the same webhook (transient network error → standard retry), TWO duplicate ALERT rows are inserted.
+      The application-level de-duplication via AlertActionResolver (used by ingestion's applyAlertActions path at AlertServiceImpl.java:223-227)
+      is NOT invoked on the AlertManager webhook path (handleExternalAlerts at lines 153-191).
+    expected: Idempotency key OR `ON CONFLICT (data_entity_oddrn, type, status, external_id) DO NOTHING`
+    drift_class: missing_idempotency
+    provenance: STATIC — primary-source verification in batch-H ReactiveAlertRepositoryImpl sidecar bugs_limitations_corner_cases[2]
+  - facet: AlertActionResolver asymmetry confirmed PRIMARY-SOURCE at service tier (batch I)
+    observed: 'AlertServiceImpl.applyAlertActions (lines 200-231, used by the in-platform ingestion
+
+      path AlertIngestionRequestProcessor) consumes AlertAction objects pre-grouped
+
+      by AlertUniqueConstraint from AlertActionResolver — full de-duplication is
+
+      applied. AlertServiceImpl.handleExternalAlerts (lines 151-191, the AlertManager
+
+      webhook path) constructs AlertPojo DIRECTLY from the webhook payload and skips
+
+      the resolver entirely. The shared `createAlerts` private helper (lines 261-300)
+
+      does NOT de-duplicate at the SQL level. The asymmetry is deliberate (per batch-I
+
+      implicit_adrs[3] — the in-platform ingestion has rich state context, the webhook
+
+      is a thin adapter with no snapshot); the consequence is the Prometheus-retry
+
+      idempotency gap.'
+    expected: 'Either route the AlertManager path through AlertActionResolver too (build a
+
+      synthetic snapshot inside the txn) OR add ON CONFLICT idempotency at the SQL
+
+      level OR document the retry-produces-duplicates contract for operators'
+    drift_class: missing_idempotency
+    provenance: STATIC — primary-source verification in batch-I AlertServiceImpl sidecar implicit_adrs[3] + bugs_limitations_corner_cases[1]
+      + downstream_side_effects table.
+  - facet: generator URL embedded in chunk description — UI-render-side surface (batch I)
+    observed: 'AlertServiceImpl.handleExternalAlerts line 168 builds the URL via UriComponentsBuilder.fromUri(externalAlert.getGeneratorURL());
+
+      line 185 embeds it in the description as `String.format("Distribution Anomaly.
+
+      URL: %s", queryUrl)`. The URI type does some shape validation but does not
+
+      block javascript: scheme or arbitrary host URLs. The chunk description is then
+
+      rendered back in the UI on the alerts feed; if the UI renders descriptions
+
+      as innerHTML (or as a clickable link), this is a stored-XSS / open-redirect
+
+      surface. Combined with the unauthenticated webhook endpoint, any caller with
+
+      network reach can plant the payload — and combined with the cross-owner read
+
+      on /api/alerts (REFACTOR-024), every authenticated user sees it.'
+    expected: 'Validate the generator URL against an allow-list of schemes (http/https only)
+
+      AND sanitise rendering on the UI side'
+    drift_class: untrusted_input_to_rendered_text
+    provenance: STATIC — primary-source verification in batch-I AlertServiceImpl sidecar bugs_limitations_corner_cases[3]
+      + security.known_security_gaps[3]. Proposed local probe — POST AlertManager payload with generatorURL=`javascript:alert(1)`
+      + GET /api/alerts via UI + assert no script execution + verify URL is sanitised or escaped.
+  - facet: ExternalAlert.startsAt timezone-naive — embedded Prometheus query window misaligned (batch I)
+    observed: 'AlertServiceImpl line 67-68 declares ALERT_MANAGER_TIME_FORMATTER as `yyyy-MM-dd
+
+      HH:mm:ss` (no timezone). The webhook payload''s ExternalAlert.startsAt field
+
+      is `LocalDateTime` (ExternalAlert.java:14) — timezone-naive — and Jackson''s
+
+      default deserialisation strips any offset present in the AlertManager-side
+
+      RFC3339 string. The URL embedded in the chunk description (line 162-172) uses
+
+      this naive timestamp for `g0.moment_input` / `g0.end_input` query params —
+
+      operators clicking the link land in a Prometheus query window keyed by the
+
+      ODD server''s local time, not the alert''s actual timestamp. If the ODD server
+
+      and the Prometheus deployment are in different timezones, the linked window
+
+      misses the data.'
+    expected: ZonedDateTime for ExternalAlert.startsAt + UTC formatter for the query param + documentation of the timestamp
+      convention
+    drift_class: misaligned_timestamp_contract
+    provenance: STATIC — primary-source verification in batch-I AlertServiceImpl sidecar bugs_limitations_corner_cases[7]
+      + ExternalAlert.java:14 (the LocalDateTime type).
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - AlertManagerWebhook payload deserialisation — assert all fields parsed correctly (entity_oddrn, status, labels, generatorURL)
+    - AlertServiceImpl.handleExternalAlerts maps entity_oddrn verbatim (pin the current trust contract)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - POST /ingestion/alert/alertmanager → alert row appears in /api/alerts feed (end-to-end happy path)
+    - POST with attacker-controllable entity_oddrn → alert attributed to that entity (the cross-tenant attribution surface)
+    - Duplicate POST → 2 alert rows (the missing-idempotency surface)
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Webhook batch-size limit — assert N>1000 alerts per webhook spans multiple INSERT partitions correctly (the executeInPartitionReturning
+      boundary)
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - Anonymous POST under auth.type=DISABLED — the headline regression-pin
+    - Authenticated POST under LOGIN_FORM with no ALERT_CREATE permission — the missing-permission-gate surface
+    - 'Cross-tenant attribution: POST with entity_oddrn of a data entity owned by a DIFFERENT tenant → alert created'
+    - Forge-and-display compound — POST anonymous + GET /api/alerts as second anonymous user → forged alert visible
+    - S2S-token absence — assert webhook accepts any payload without authentication header
+control_summary: |-
+  0 of 4 cells PROBED — feature emerged from batch-H primary-source
+  audit; no probe authored yet. The headline behaviour (anonymous AlertManager
+  POST creating cross-tenant alerts visible on the platform-wide All tab) is the
+  highest-leverage candidate for the next probe round. Proposed P-NNN — POST
+  AlertManager-shaped payload to the docker-compose stack with AUTH_TYPE=DISABLED
+  + verify alert row appears in GET /api/alerts AND assert attacker-chosen entity_oddrn
+  was accepted verbatim. Batch-I closes hop-2 with AlertServiceImpl primary-source
+  confirmation — entity_oddrn-trusted path PROVEN at line 178, AlertActionResolver
+  asymmetry PROVEN (handleExternalAlerts skips the resolver, applyAlertActions uses
+  it). Three NEW facets surface — (1) AlertActionResolver asymmetry; (2) generator-URL-embedded-in-chunk
+  UI render surface; (3) ExternalAlert.startsAt timezone-naive (embedded Prometheus
+  query window misaligned).
+
+  Batch P closes hop-1 at the METHOD TIER with PRIMARY-SOURCE confirmation
+  of the three load-bearing drift facets (unauthenticated_payload_trust,
+  cross_tenant_alert_creation, no_idempotency_no_audit) directly at the
+  4-line `alertManagerWebhook` body (AlertManagerController.java:21-26). The
+  method has zero auth annotations, zero validation annotations, zero
+  header inspection, zero audit logging, and the inner static
+  `AlertManagerRequest` DTO is the deliberate hand-rolled alternative
+  to OpenAPI-contract generation (per the explicit
+  `// TODO: define OpenAPI spec based on alert provider contract` at line 20).
+  Hop-1 is now PRIMARY-SOURCE at both the class tier (batch H) AND the
+  method tier (batch P). NEW SUPERSEDE recorded — the live doc page
+  `https://docs.opendatadiscovery.org/features/active-platform-features/alerting`
+  was 404 in the batch-H 2026-05-08 enrichment; refreshed 2026-05-20 in
+  batch P returns status 200. The page now cross-links to this endpoint
+  and documents the Distribution Anomaly halt-toggle limitation. The prior
+  404 finding is superseded; the doc-product surface has improved between
+  batches H and P. Two new SECONDARY drift facets (timestamp offset stripping
+  + DTO silently drops wire fields including `status: resolved`) are
+  evidence-anchored at the controller-method tier and complement the
+  existing chain's primary facets without changing the headline.
+  The HIGHEST-LEVERAGE probe candidates remain unchanged from batch H/I —
+  anonymous POST under DISABLED for the headline regression-pin, the
+  cross-tenant attribution surface for the entity_oddrn-trust contract,
+  and the duplicate-POST surface for the missing-idempotency contract.
+  The doc-side improvement (the alerting page now exists) does NOT
+  reduce the security-side findings — the verbatim doc text confirms
+  the unauthenticated posture is INTENDED-as-documented, which makes
+  the operator-side network-controls reliance EXPLICIT but does not
+  reduce the cross-pillar compound surface (F-007 + REFACTOR-024 forge-and-display).
+related_refactoring_scopes:
+- REFACTOR-024
+- REFACTOR-073
+related_test_gaps: []
+related_test_gaps_batch_p_candidates:
+- TEST-GAP-NNN (`@WebFluxTest(AlertManagerController.class)` + WebTestClient smoke test asserting 204 on a valid payload — the smallest meaningful regression pin; deferred to test-coverage-mapper)
+- TEST-GAP-NNN (anonymous-POST-under-DISABLED regression-pin for the unauthenticated_payload_trust facet)
+- TEST-GAP-NNN (cross-tenant attribution + forge-and-display compound with REFACTOR-024)
+- TEST-GAP-NNN (idempotency / duplicate-POST surface)
+related_doc_gaps: []
+related_doc_gaps_batch_p_candidates:
+- DOC-GAP-NNN (cross-feature compound surface F-007 + REFACTOR-024 not documented as a compound on the alerting page; deferred to doc-gap-finder)
+- DOC-GAP-NNN (alerting page silent on the cross-link to the broader `/configuration-and-deployment/enable-security` WHITELIST_PATHS scope)
+related_concepts:
+- Alert
+- Ingestion (External Webhook)
+related_retrospectives:
+- LSN-017
+- LSN-018  # coherence-supersede protocol — the alerting-page 404→200 supersede is the load-bearing case here
+related_probes: null
+probe_verifications: []
+maintainer_curated: false
+batch_origin: 2026-05-19 batch H — net-new feature surfaced from ReactiveAlertRepositoryImpl sidecar enrichment. The AlertManager
+  webhook receiver was visible in earlier sidecars (AlertManagerController sidecar from a prior batch) but the SECURITY SHAPE
+  — that the path bypasses IngestionDataEntitiesFilter AND consumes untrusted entity_oddrn from an unauthenticated source
+  — required the repository-layer primary-source confirmation (createAlerts emits the INSERT verbatim) to surface as a feature-flow.

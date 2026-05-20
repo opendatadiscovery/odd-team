@@ -1,0 +1,17 @@
+- **DOC-GAP-138**: `DataEntityDetails.tsx` `useEffect` dispatches `fetchDataEntityDetails({ dataEntityId: NaN })` for invalid route params — `useDataEntityRouteParams()` calls `parseInt(dataEntityId, 10)` with NO `Number.isNaN` guard; backend likely 404s but no UI-side validation surfaces the error at the source; user sees a generic `<AppErrorPage>`
+  - **Category**: drift (UX-correctness; no live-doc claim to drift against; latent regression hazard absent from the developer-guides / contributing tree)
+  - **Surfaced by**:
+    - `odd-platform__ts__react-component__component__DataEntityDetails.md:bugs_limitations_corner_cases[1]` (Invalid route param `:dataEntityId` yields `NaN` with no client-side guard)
+    - `odd-platform__ts__redux-thunk__thunk__fetchDataEntityDetails.md:bugs_limitations_corner_cases[no-id-validation]` (the thunk side of the same gap)
+  - **Evidence**:
+    - Code primary source `odd-platform-ui/src/routes/dataEntitiesRoutes.ts:47-58` — `useDataEntityRouteParams()` calls `parseInt(dataEntityId, 10)` with no `Number.isNaN` check.
+    - Code primary source `DataEntityDetails.tsx:32, 57` — the parsed value flows directly into `dispatch(fetchDataEntityDetails({ dataEntityId }))` with no client-side validation.
+    - Code primary source `dataentities.thunks.ts:36-41` — the thunk's request envelope is `{ dataEntityId: number }`; the OpenAPI-generated client converts NaN to the literal string `'NaN'` in the URL path.
+    - Net behaviour: a manually-typed bad URL (e.g. `/dataentities/abc/overview`), a mis-encoded query string, or a stale bookmark to a deleted entity yields `dataEntityId: NaN` → API request `GET /api/dataentities/NaN` → backend 404 → generic AppErrorPage with NO indication that the URL itself was malformed.
+  - **Proposed doc action**: Two options:
+    - Option A (code fix; primary): Add a guard at the top of `DataEntityDetails.tsx` after the route-param read: `if (!Number.isFinite(dataEntityId)) return <NotFoundPage />`. Surfaces the error at the right layer; no API call; clearer UX.
+    - Option B (doc note; secondary): Add a small note to `documentation/docs/developer-guides/contributing/testing-the-ui.md` (the page proposed in DOC-GAP-137) describing the "client-side validation" expectation for route params — a checklist item for the test-class-unit category.
+  - **Cross-references**:
+    - DOC-GAP-137 META — UI test coverage gap; the NaN-route-param test is one of the 10 uncovered DataEntityDetails behaviours.
+  - **Severity**: LOW
+  - **Severity rationale**: UX-correctness only; the backend's 404 is the correct response, just at the wrong layer for the user. The fix is a 2-line code edit; no security/data-loss surface.

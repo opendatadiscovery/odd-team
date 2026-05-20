@@ -372,6 +372,35 @@ When `MODE: full` (no prior artefacts, prompt-version bumped, or `--full`), fall
 
 Both `implicit-adrs.md` AND `refactoring-scopes.md` carry `processed_node_ids:` in frontmatter (newline-separated). Future incremental runs use the field to compute `NEW_SIDECAR_FILES`. Missing field triggers a one-shot full backfill.
 
+## Rule 6.5 (rev 3) — Consult Layer 0 (`system-mission.md`) for severity weighting + cross-pillar clustering
+
+`lineage/{repo}/system-mission.md` (produced once per substrate scan by `domain-extractor`) carries the 8-12-pillar shape + cross-pillar relationships graph. Use it when:
+
+- **Severity weighting** — ADR candidates / refactoring scopes that span multiple pillars get a severity bump relative to within-one-pillar findings. A bug at a cross-pillar integration boundary (e.g. AlertManager ingestion feeding Alerting → Notifications) has higher operator-blast-radius than the same shape within one pillar.
+- **Cross-pillar clustering** — when 3+ sidecars surface an invariant that spans pillars (e.g. "the same auth-bypass pattern affects Data Discovery + Governance + Alerting"), the candidate ADR / scope gains a `pillars_affected: [P-NN, ...]` field. Cross-pillar invariants are higher-impact and warrant their own ADR draft sooner.
+- **Pillar-anchored severity rationale** — when writing severity_rationale, name the affected pillar(s) from `system-mission.md` (operators recognise pillar names from the docs; "affects Governance + Data Discovery" is more meaningful than "affects 4 sidecars").
+
+If `system-mission.md` does not exist, fall back to rev-2 behaviour and flag the situation.
+
+## Rule 7 (rev 2) — Dedup via `registry-search` subagent; never load the sharded index directly
+
+**Supersedes rev-1's read-the-full-prior-artefact pattern for dedup.** After slice 6, `implicit-adrs.md` and `refactoring-scopes.md` shard into `implicit-adrs/{index.md, detail/{ID}.md}` and `refactoring-scopes/{index.md, detail/{ID}.md}`. The full registry lives across hundreds of files; loading the entire `index.md` into your own context defeats the rev-2 cost-ceiling fix.
+
+For every fresh ADR-candidate AND every fresh refactoring scope you're about to commit, spawn the `registry-search` subagent following `playbooks/registry-search-spawn.md`:
+
+- **For ADR candidates** — pass `INDEX_PATH=lineage/{repo}/implicit-adrs/index.md`, `ARTEFACT_KIND=implicit-adrs`. `QUERY_TEXT` is the candidate's discriminating prose (decision statement + source sidecar's `implicit_adrs[N]` line + supporting sidecars' slugs).
+- **For refactoring scopes** — pass `INDEX_PATH=lineage/{repo}/refactoring-scopes/index.md`, `ARTEFACT_KIND=refactoring-scopes`. `QUERY_TEXT` is the candidate's discriminating prose (scope title + source sidecar's `bugs_limitations_corner_cases[N]` text + node anchor + cross-references).
+
+Act on the verdict per the playbook's decision tree (`0 matches — create new` / `1 strong match — strengthen {ID}` / `N candidates — maintainer-triage-ambiguous`).
+
+When strengthening: read ONLY `detail/{ID}.md`, append the new sidecar to its `surfaced_by` list, append a `## STRENGTHENS — {new_sidecar} (batch {batch_id})` block with the new evidence. Do NOT rewrite existing prose. Update the index headline ONLY if severity / classification / category changed.
+
+When minting new: write `detail/{NEW_ID}.md` with the full entry, append a multi-paragraph headline to `index.md` matching the existing entries' shape (see `lineage/_extractor/registry-shard/shard.py:_index_headline_md` and `_index_headline_adr` for the canonical shape).
+
+Never auto-merge across HIGH-confidence candidates. Maintainer-triggered merges only.
+
+**Per-finding context budget**: ≤ 30 KB (the subagent's response + 1-2 detail files when strengthening). Per-batch reducer total: ≤ 200 KB regardless of registry size. This is the rev-2 cost-ceiling promise.
+
 ## Exit
 
 Reply with exactly three lines:
@@ -379,3 +408,26 @@ Reply with exactly three lines:
 1. `Wrote ADRs: <absolute path to implicit-adrs.md>`
 2. `Wrote scopes: <absolute path to refactoring-scopes.md>`
 3. `Summary: <Na> ADR candidates (<H> HIGH, <M> MEDIUM, <L> LOW; <PROMOTE> promote / <EXTEND> extend-existing / <DRIFT> drift / <UNIQUE> unique-load-bearing) | <Ns> refactoring scopes (<C> CRITICAL, <H> HIGH, <M> MEDIUM, <L> LOW); <K> candidates failed the wisdom test and were reclassified to scopes; mode=<incremental|full>; consumed <S> sidecars (<New> new this batch) + <A> existing ADRs + concepts.yaml.`
+
+## Rule 6 (LOAD-BEARING — added 2026-05-19 per LSN-018) — Pre-emit coherence check
+
+DEDUP (Rule 2/3) catches *"do we already have this fact?"* — same-registry duplicate detection. COHERENCE is a different protocol: *"does this new finding CONTRADICT what other registries already say?"*. Both must run, and Rule 6 implements the latter.
+
+**Trigger.** Before WRITING (or EDITING in-place) a detail file with a claim that asserts presence, absence, or behaviour about a named entity (class, repository, controller, service, job, config key, table, file:line, migration file, pillar feature).
+
+**Procedure.**
+
+1. **Extract anchors** from the proposed finding text: class names, file:line citations, Spring config keys (with dots), migration filenames, pillar-anchored feature IDs (`P-NN:F-NNN`), snake_case table/column names.
+2. **Grep `feature-flows/index.yaml` + `feature-flows/detail/`** for each anchor. If matches → Read the matched detail files in full.
+3. **Grep the OTHER FOUR registries' index files** (`concepts/index.yaml`, `test-map/index.yaml`, `doc-gaps/index.md`, `refactoring-scopes/index.md`, `implicit-adrs/index.md`) for each anchor. For matches → Read 1-3 candidate detail files (cheapest signal first).
+4. **Classify the relationship** between the proposed finding and each cross-registry hit:
+    - `STRENGTHENS` — same polarity (both assert the entity exists / behaves the same way). Emit with `related_features: [F-NNN]` back-link (or analogous list for the matched artefact type) added to the new file AND to the matched file.
+    - `SUPERSEDES` — opposite polarity AND clear file:line evidence the new claim is correct. Emit with `superseded` block on the OLD artefact (`superseded_by: <new-id>`, `superseded_note: <reason>`) and `supersedes: [old-id]` on the NEW artefact. Reference LSN-018 in the supersede note.
+    - `CONTRADICTS` — opposite polarity but the new finding's evidence is no stronger than the existing claim's. **DO NOT EMIT.** Append a single line to `state/coherence-conflicts-batch-{theme_id}.md` and surface in your reply summary as `conflicts_surfaced: <N>`. The maintainer (or a follow-up agent) resolves before commit.
+5. **Always emit back-links**. Every new detail file MUST declare which pillar-anchored feature(s) it relates to (`related_features: [F-NNN]` or `related_pillar_features: [P-NN:F-MMM]`). Every feature detail this reducer edits MUST gain a corresponding `related_<artefact_type>: [<new-id>]` entry.
+
+**Why this matters.** The methodology has been emitting contradictory artefacts across batches because dedup catches "have I said this before" but never catches "does the existing registry already disagree". Canonical case-law: 2026-05-19 F-010 (Housekeeping TTL Enforcement, batch K) enumerated `SearchFacetsHousekeepingJob` as one of 5 active jobs; TEST-GAP-523 (batch M) two days later asserted "NO TTL eviction, V0_0_52 has no search_facets entry, TTL TODO never implemented" — all four claims ground-truth-wrong; F-010 was right. The two coexisted in the registry until the maintainer eyeballed it. LSN-018 captures the miss and this Rule 6 is the structural fix.
+
+**Cost bound.** Rule 6 adds ≤2 grep operations + ≤3 Read operations per emitted finding. For a batch emitting ~20 new artefacts the budget is ~60 extra Read calls — bounded and small relative to the file-analyser layer.
+
+**Reply summary changes.** Add to your final reply line: `coherence_strengthens: <N>` / `coherence_supersedes: <N>` / `coherence_conflicts_surfaced: <N>`. A non-zero `conflicts_surfaced` is a SIGNAL TO THE MAINTAINER, not a reducer failure; the batch still commits but the conflicts file is reviewed before the next batch fires.

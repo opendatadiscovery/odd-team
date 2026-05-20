@@ -1,0 +1,79 @@
+name: Get lineage (recursive-CTE walk with depth-1 expansion fan-out)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW OPERATION, batch 2026-05-19I (LineageServiceImpl sidecar)**
+  — `LineageServiceImpl.getLineage(long dataEntityId, int lineageDepth, List<Long>
+  expandedEntityIds, LineageStreamKind)` at lines 87-122. The lineage-canvas read
+  for F-005, called from `DataEntityController.getDataEntityDownstreamLineage`
+  / `getDataEntityUpstreamLineage`. Two-query assembly: (1) recursive-CTE walk
+  for the bulk subgraph: `lineageRepository.getLineageRelations(Set.of(root.getDataEntity().getOddrn()),
+  LineageDepth.of(lineageDepth), lineageStreamKind)` (lines 95-97); (2) depth-1
+  fan-out for `expandedEntityIds`: `lineageRepository.getLineageRelationsForDepthOne(expandedEntityIds,
+  lineageStreamKind)` (lines 98-99). Merged via `Flux.mergeWith(...).distinct().collectList()`
+  (lines 100-102), then enriched in parallel via `Mono.zip(repositoryMapsMono,
+  getChildrenCount, getParentCount)` (lines 113-114). **Three concrete bugs at
+  the service-layer boundary**: (a) **null-lineageDepth NPE**: the service signature
+  uses primitive `int`; the controller passes a boxed `Integer` (`DataEntityController.java:257`)
+  which is null-allowed by the OpenAPI spec. Autoboxing at the call site throws
+  NullPointerException BEFORE the service body executes. The doc claims `lineage_depth`
+  "Unset returns the platform''s default depth" — the realised behaviour is unimplementable
+  as written. (b) **no upper-bound check on lineageDepth**: there is no defensive
+  clamp (`Math.min(lineageDepth, MAX)`), no warning log, no safety net. A caller
+  passing `lineageDepth=Integer.MAX_VALUE` runs the recursive CTE to whatever
+  Postgres or graph-density limits enforce (REFACTOR-202 amplification). (c) **anchor-set
+  defence-in-depth NOT applied**: the service has no `AuthIdentityProvider` field
+  (verified by reading lines 19, 54-57), no `fetchAssociatedOwner()` call anywhere
+  in the method body; cross-owner enumeration is unmitigated (REFACTOR-203 confirmation
+  at the service layer). **One observed race**: the `Optional.orElseThrow(...)`
+  blocks at lines 152-154 and 170-173 throw `RuntimeException("Entity with oddrn
+  %s wasn''t fetched")` if the metadata fetch returned fewer oddrns than the edge
+  set referenced (race window: an entity hard-deleted between the lineage walk
+  and the metadata fetch). The user sees a generic 500. **Read-only, NOT
+  transactional** — multiple separate DB round-trips per call; each is its own
+  statement.'
+axes_present:
+- services
+nodes:
+- odd-platform java service service:LineageServiceImpl
+contributors:
+- 'LineageServiceImpl.md (batch I): concepts.operations — getLineage at lines 87-122.
+  concepts.invariants.[0,3,4,5,6] — emit 404 only on root NotFound; single-root
+  set; two-input split (CTE + depth-1 expansion); oddrnsToFetch as the union;
+  reactive composition on single Mono without scheduler. implicit_adrs.[0] —
+  Single-Mono pipeline per public method. implicit_adrs.[2] — Two-query lineage
+  assembly. bugs_limitations_corner_cases.[0,1,2,3,5] — anchor-set absence (HIGH);
+  null-NPE (HIGH); no upper-bound (HIGH); diamond-DAG amplification (MEDIUM);
+  race-window error (LOW). security.known_security_gaps.[0,2,3] — cross-owner
+  HIGH; DoS amplification HIGH; null-NPE generic 500 MEDIUM.'
+evidence:
+- LineageServiceImpl.md:concepts.operations (getLineage at lines 87-122)
+- LineageServiceImpl.md:concepts.invariants.[0,3,4,5,6] (operational invariants)
+- LineageServiceImpl.md:implicit_adrs.[0,2] (single-Mono pipeline; two-query split)
+- LineageServiceImpl.md:bugs_limitations_corner_cases.[0,1,2,3,5] (the four
+  service-layer bugs)
+- LineageServiceImpl.md:security.known_security_gaps.[0,2,3]
+notes: |
+  Operation vocabulary captured for the F-005 lineage-canvas read. Four headline
+  test + doc + code gaps surface:
+
+    (a) No test asserts the null-lineageDepth NPE. Doc-drift: live API-reference
+        page documents lineage_depth "Unset returns the platform's default depth"
+        which is not implemented.
+
+    (b) No test exercises lineageDepth=Integer.MAX_VALUE (REFACTOR-202 amplification
+        test).
+
+    (c) No test asserts the anchor-set absence — a future change that adds the
+        anchor would silently change visibility semantics with no regression
+        catcher.
+
+    (d) No test exercises the hard-delete-during-fetch race window (the
+        Optional.orElseThrow RuntimeException path).
+
+  Cross-references:
+    - Companion: `anchor-set-defence-in-depth-positive-vs-negative-cases` (this
+      operation is the NEGATIVE-CASE sibling).
+    - Companion entity: `lineage-graph-traversal` (the broader operation concept;
+      this is the canvas-read specifically).
+    - Companion: `read-collaborative-cross-owner-enumeration` (the platform-wide
+      stance this operation embodies at the service layer).

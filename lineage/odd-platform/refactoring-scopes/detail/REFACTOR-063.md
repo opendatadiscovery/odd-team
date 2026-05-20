@@ -1,0 +1,11 @@
+- **REFACTOR-063** (NEW 2026-05-10A): No rate-limit on token rotation endpoint — attacker with a stolen MANAGEMENT-permission session can rotate every collector's token in a tight loop, breaking platform-wide ingestion
+  - **Category**: missing-rate-limit
+  - **Surfaced by**:
+    - `odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md:bugs_limitations_corner_cases.[5]` (MEDIUM)
+    - `odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md:security.known_security_gaps.[6]` (MEDIUM)
+  - **Statement**: `CollectorController.java:47-51` carries no `@RateLimited` annotation; `SecurityConstants.java:135-137` has no rate-limit metadata on the SecurityRule; there is no programmatic throttle. An attacker who has stolen a valid session of a user with `COLLECTOR_TOKEN_REGENERATE` permission can rotate every collector's token in a tight loop. Combined with REFACTOR-047 (no grace period), this breaks platform-wide ingestion within a single attacker request burst.
+  - **Evidence**: `CollectorController.java:47-51` (no `@RateLimited`) + `SecurityConstants.java:135-137` (no throttle metadata)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Add Bucket4j rate-limit on the rotation endpoint (e.g., 10 rotations/minute/user, 100 rotations/minute platform-wide). Expose `collector.token.rotation-rate-limit` properties for operators.
+  - **Severity rationale**: MEDIUM — DoS amplifier when combined with stolen credentials.
+  - **Suggested backlog grouping**: `Token rotation hardening`

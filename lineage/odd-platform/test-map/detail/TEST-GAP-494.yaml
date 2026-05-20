@@ -1,0 +1,32 @@
+gap_id: TEST-GAP-494
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue"
+pillars_affected: [P-01]
+surfaced_by:
+  - "upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[4] (active column dropped to NULL on every UPDATE)"
+  - "upsertDataEntityMetadataFieldValue.md:concepts.invariants.[5] (active column gets set to NULL on every update)"
+  - "upsertDataEntityMetadataFieldValue.md:tests_coverage_semantic.uncovered_behaviours.[5] (active-to-NULL regression)"
+behaviour: |-
+  active=NULL regression-pin on upsertMetadataFieldValue (HIGH — silent state corruption). ReactiveMetadataFieldValueRepositoryImpl.java:97-98 writes `.set(METADATA_FIELD_VALUE.ACTIVE, pojo.getActive())`, but the upsert path's pojo construction at DataEntityServiceImpl.java:292-295 never calls `setActive(...)`. The jOOQ-generated `MetadataFieldValuePojo.getActive()` returns boxed Boolean NULL when unset. The DB column is `boolean DEFAULT TRUE` (V0_0_1__init.sql:180), but DEFAULTs apply on INSERT only — an UPDATE that explicitly sets the column writes NULL, dropping a previously-TRUE row to NULL. This is a silent state-corruption bug — every edit converts an active=TRUE row to active=NULL. The downstream impact depends on whether any platform code filters `WHERE metadata_field_value.active = TRUE` (rather than `IS DISTINCT FROM FALSE`) — edited rows would silently disappear from those queries. Operators editing a custom metadata value via the UI's Overview > Metadata panel may notice the row 'disappearing' from filtered views. The current single happy-path test (DataEntityServiceTest.upsertMetadataFieldValueTest) MOCKS the repository and does NOT exercise the actual SQL — the mock cannot capture the NULL-writing behaviour. A real DB integration test would expose it. Cross-pillar P-01 (Discovery / custom metadata is a P-01 authoring surface; silent state corruption undermines operator trust).
+test_class: missing-edge-case
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataEntityServiceTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/integration/MetadataFieldValueActiveRegressionTest.java"
+  name: "upsertMetadataFieldValue_dropsActiveColumnFromTRUEtoNULL_pinsTheSilentStateCorruption"
+evidence:
+  - "upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[4]: 'ReactiveMetadataFieldValueRepositoryImpl.java:98 writes .set(METADATA_FIELD_VALUE.ACTIVE, pojo.getActive()), but the upsert path's pojo construction at DataEntityServiceImpl.java:292-295 never calls setActive(...). The jOOQ-generated MetadataFieldValuePojo.getActive() returns boxed Boolean null when unset. The DB column is boolean DEFAULT TRUE, but DEFAULTs apply on INSERT only; an UPDATE that sets the column writes the explicit NULL.'"
+  - "ReactiveMetadataFieldValueRepositoryImpl.java:97-98 (the SET clause)"
+  - "DataEntityServiceImpl.java:292-295 (no setActive call)"
+  - "V0_0_1__init.sql:180 (active boolean DEFAULT TRUE)"
+  - "DataEntityServiceTest.java:164-191 (existing happy-path mock test cannot catch this)"
+cross_references:
+  - "TEST-GAP-492 (silent-200-on-missing-pair — co-located in upsertMetadataFieldValue)"
+  - "REFACTOR-NNN candidate: either add pojo.setActive(true) at line 292-295 OR change the UPDATE to omit the ACTIVE column when null OR make the column NOT NULL with check constraint"
+  - "DOC-NNN candidate: document the active column semantics + when rows might disappear from filtered queries"
+proposed_action: |-
+  Testcontainers integration test. (a) Pre-create data entity X, metadata field F, and a metadata_field_value row with (X, F, value='initial', active=TRUE). (b) PUT /api/dataentities/X/metadata/F with body {value: 'edited'}. (c) Assert HTTP 200. (d) Query `SELECT active FROM metadata_field_value WHERE data_entity_id=X AND metadata_field_id=F` returns NULL (current contract — the bug). (e) Test comment 'LOCKS the silent-active-to-NULL regression as of 2026-05-19. When REFACTOR-NNN adds pojo.setActive(true) or fixes the SET clause, this test FLIPS to expect TRUE.' (f) Optional second assertion: query a hypothetical downstream filter that uses `WHERE active = TRUE` and confirm the row is excluded after edit — explicit proof of the downstream impact.
+batch: 2026-05-19-L
+feature_id: null

@@ -1,0 +1,50 @@
+proposed_canonical: GitHub username-rename orphans USER_OWNER_MAPPING
+rationale: |-
+  GitHub allows users to FREELY rename their `login` string at any time (the
+  old name enters a 90-day escrow and is then released to others). The
+  `GithubUserHandler.java:36` constant `USER_LOGIN = "login"` + line 56 default
+  `adminAttribute = USER_LOGIN` means the username consumed downstream by
+  `AuthIdentityProviderImpl.java:29-30` is the MUTABLE `login` string, NOT the
+  stable numeric GitHub user `id`. A user `alice` who renames to `alice2`
+  presents `(alice2, github)` to `AuthIdentityProviderImpl.fetchAssociatedOwner`
+  on next login; the prior `(alice, github)` USER_OWNER_MAPPING row at
+  `ReactiveUserOwnerMappingRepositoryImpl.java:116-127` is ORPHANED. There is
+  NO `id`-based fallback. NO migration tool. NO live-doc warning. The compound
+  key `(oidc_username, provider)` was always silent in the docs per F-011's
+  `compound_key_silent_in_docs` drift facet; the GitHub-specific extension is
+  that the silence has a new failure mode beyond migration (LOGIN_FORM →
+  OAUTH2). A simple in-place identity change at the IDP breaks the binding.
+  Severity HIGH per the GithubUserHandler sidecar — silent loss of owner-
+  linkage on any GitHub rename; latent until rename happens; NOT detectable
+  from server logs. Mitigations: (a) use GitHub's stable numeric `id` for
+  USER_OWNER_MAPPING binding (one-line code change in
+  `GithubUserHandler.java` to set userNameAttribute to `id`); (b) document
+  the rename-risk on the live OAuth2/OIDC GitHub config page; (c) operator-
+  side admin tool to merge orphan rows; (d) silent fail-open is the present
+  state (a renamed user logs in with NO owner-link; their `My Objects` view
+  renders empty; the prior row's data is orphaned).
+
+  **BATCH P DISAMBIGUATION (2026-05-20)**: this is the DANGEROUS RENAME
+  surface. The OPPOSITE rename surface — `PUT /api/owners/{owner_id}` —
+  is SAFE because `user_owner_mapping.owner_id` FKs by `owner.id` (the
+  bigserial PK, stable across name changes). Owner-name rename mutates
+  only `owner.name`; USER_OWNER_MAPPING rows continue to point at the
+  same Owner identity. See sibling invariant
+  `owner-name-rename-safe-vs-oidc-username-rename-unsafe-two-rename-surfaces`
+  (batch P) for the full disambiguation across the two surfaces. The
+  pair describes the rename hazard surface end-to-end: OIDC_USERNAME
+  side is dangerous, OWNER.NAME side is safe. Cite both in any future
+  "owner-mapping-stability" documentation. The platform's only
+  rename-safe primary key for user-owner linkage is the bigserial PK;
+  any IdP-side string that the platform consumes as the binding key
+  (OIDC_USERNAME, login, sAMAccountName, etc.) is rename-fragile.
+contributing_concepts:
+  - GithubUserHandler.java:36 (USER_LOGIN = "login" — the mutable username)
+  - GithubUserHandler.java:56 (default adminAttribute = login)
+  - AuthIdentityProviderImpl.java:29-30 (UserDto(name, "github") construction)
+  - ReactiveUserOwnerMappingRepositoryImpl.java:116-127 (compound-key lookup)
+  - F-011 `compound_key_silent_in_docs` drift facet (the parent finding)
+  - GithubUserHandler.bugs_limitations_corner_cases[0] (HIGH severity)
+  - 'BATCH P CROSS-LINK: owner-name-rename-safe-vs-oidc-username-rename-unsafe-two-rename-surfaces invariant (the SAFE opposite rename surface; cite both halves in any owner-mapping-stability doc)'
+  - 'BATCH P CROSS-LINK: updateOwner.md sidecar (the operation that confirms the SAFE direction; coherence_notes.distinguishes-from REFACTOR-391 entry names the dichotomy explicitly)'
+suggested_add_to_docs: true

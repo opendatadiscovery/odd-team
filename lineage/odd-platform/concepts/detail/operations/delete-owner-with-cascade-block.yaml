@@ -1,0 +1,114 @@
+name: Delete Owner — soft-delete with cascade-block
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  **NEW OPERATION, batch 2026-05-20-P** — the reactive
+  `DELETE /api/owners/{owner_id}` handler (`OwnerController.java:40-45`),
+  a four-line WebFlux delegation that calls `ownerService.delete(ownerId)`
+  and lifts to 204 No Content. The destruction verb for the Owner
+  directory entity. Gated by `OWNER_DELETE` via
+  `SecurityConstants.SECURITY_RULES[146-147]` — same centralised pattern
+  as createOwner / updateOwner.
+
+  The underlying `OwnerServiceImpl.delete` (`OwnerServiceImpl.java:88-100`)
+  runs a transactional three-leg cascade-block + role-binding hard-delete
+  + owner soft-delete:
+
+    1. **Cascade-block** — `Mono.zip(termOwnership.existsByOwner,
+       ownership.existsByOwner, userOwnerMapping.isOwnerAssociated)` →
+       `.filter(exists -> !exists)`. If ANY leg returns true, the
+       transaction emits `CascadeDeleteException("Owner cannot be
+       deleted: there are still resources attached")` →
+       `ControllerAdvice.handleCascadeDelete` → HTTP 400 with body
+       `{ errorCode: 'USR004', message: ..., resolvable: true,
+       retryable: false }`.
+
+    2. **Hard-delete role bindings** —
+       `ownerToRoleRepository.deleteOwnerRelationsExcept(id, List.of())`
+       issues `DELETE FROM owner_to_role WHERE owner_id = ?`. The role
+       binding history is PERMANENTLY LOST. This is the F-006 family
+       pattern done CORRECTLY at this surface — see invariant
+       `f-006-owner-side-closes-orphan-binding-correctly-contrast-with-policy-role-half`.
+
+    3. **Soft-delete owner row** — `ownerRepository.delete(id)` inherits
+       `ReactiveAbstractSoftDeleteCRUDRepository.delete(long)` which
+       issues `UPDATE owner SET deleted_at = NOW() WHERE id = ? AND
+       deleted_at IS NULL`. The owner directory row persists with
+       `deleted_at` set; the name is FREED for re-use via the partial-
+       unique-index `owner_name_unique ON owner(name) WHERE deleted_at
+       IS NULL`. See SUPERSEDE note on the createOwner sidecar (the
+       partial-unique index was added in V0_0_64; the createOwner
+       sidecar's claim that owner.name UNIQUE is non-partial is
+       INCORRECT).
+
+  **Asymmetric persistence shape**: the owner row is SOFT-deleted, but
+  its role bindings are HARD-deleted. The role-binding history is
+  permanently lost; the owner directory row persists indefinitely.
+  This is INTENTIONAL — a deleted owner SHOULD NOT continue to confer
+  their previously-attached roles' permissions; the hard-delete is the
+  persistence-layer enforcement of revocation.
+
+  **The cascade-block is NOT atomic with the deletes** — under READ
+  COMMITTED isolation (Spring/R2DBC default), the three existsBy* reads
+  and the writes are inside one transaction but the reads do not
+  acquire row-level locks. Concurrent
+  `POST /api/dataentities/{id}/ownership` racing with this delete is
+  theoretically able to slip a fresh OWNERSHIP row past the existence
+  check. Mirror of F-006 batch-I `cascade_check_non_atomic` facet
+  (PolicyServiceImpl.delete + role_to_policy).
+
+  **`owner_association_request` orphan rows persist** — the cascade-block
+  does NOT check this table; the FK has no ON DELETE clause. A PENDING
+  or APPROVED request for the just-deleted owner survives — orphan
+  rows visible at `GET /api/owner_association_request`. Surfaced as
+  the sibling HIGH-severity invariant
+  `owner-association-request-orphan-rows-after-owner-delete`.
+
+  **FTS search vector NOT refreshed on delete** — `update` calls
+  `updateSearchVectors(owner)` refreshing BOTH search entrypoints;
+  `delete` does NOT. After successful delete, the FTS index continues
+  to surface the deleted owner's name. Sibling invariant
+  `owner-rename-fts-vector-refresh-in-update-not-delete`.
+
+  **Idempotency / not-found indistinguishable** — no
+  `switchIfEmpty(Mono.error(NotFoundException))` on the delete path;
+  calling delete against a non-existent or already-soft-deleted id
+  returns empty Mono → HTTP 204. Caller cannot distinguish 'deleted
+  now' from 'already deleted' from 'never existed'. Mirror of F-006
+  batch-K `delete_no_not_found_validation` facet.
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java OwnerController controller-method:deleteOwner
+contributors:
+  - 'deleteOwner.md:concepts.operations: delete-owner-with-cascade-block (3-leg existence check + role-binding hard-delete + owner soft-delete)'
+  - 'deleteOwner.md:concepts.invariants.[0-3]: soft+hard delete asymmetry + cascade-block is SOLE persistence-layer safety + non-atomic cascade check + isOwnerAssociated filters deleted_at but existsByOwner does not'
+  - 'deleteOwner.md:implicit_adrs.[0-3]: soft-delete intentional + role-bindings hard-deleted + cascade-block defence + centralised SecurityConstants gate'
+evidence:
+  - deleteOwner.md:understanding (the destruction-verb four-line WebFlux delegation)
+  - deleteOwner.md:concepts.operations + concepts.invariants
+  - deleteOwner.md:bugs_limitations_corner_cases.[0-7]
+  - deleteOwner.md:security.authorization_assertions + .known_security_gaps.[0-4]
+  - deleteOwner.md:implicit_adrs.[0-3]
+notes: |-
+  This is the 5TH corroborating sidecar in the
+  `no-audit-log-on-rbac-mutations` pattern at the OWNER mutation surface
+  (after createRole/createPolicy/createOwner/ReactivePolicyRepositoryImpl
+  + the batch-N additions). The deletion is invisible to the activity
+  feed; combined with the role-binding hard-delete (irreversible) and
+  the soft-delete-on-owner-row (name freed for re-creation), the audit
+  story is silent — an operator can delete an owner and re-create
+  another owner with the same name, with NO trace anywhere except
+  (a) the DB row's `deleted_at` timestamp and (b) the absence of
+  OWNER_TO_ROLE rows.
+
+  The live `/permissions` page (WebFetched 2026-05-20 status 200)
+  defines `OWNER_DELETE: 'Allows deleting an owner.'` but says nothing
+  about the cascade-delete contract, the soft-delete semantics, the
+  role-binding hard-delete (irreversible), the search-vector staleness,
+  the orphan owner_association_request rows, or the idempotency
+  semantics — six distinct contracts undocumented on a permission
+  page that names the operation.

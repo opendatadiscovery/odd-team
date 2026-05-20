@@ -1,0 +1,71 @@
+name: Apply alert actions (discriminated-union dispatch for in-platform alert ingestion)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW OPERATION, batch 2026-05-19I (AlertServiceImpl sidecar)** —
+  `AlertServiceImpl.applyAlertActions(Collection<AlertAction>)` at lines 200-231.
+  The terminal sink for the `AlertIngestionRequestProcessor` FINALIZING-phase processor;
+  the platform-internal ingestion-derived alert write path. Contract: takes a list
+  of pre-grouped `AlertAction` objects from `AlertActionResolver` (which itself
+  loads the open-alerts snapshot + halt configs before computing the diff) and
+  dispatches by the discriminated-union subtype: `ResolveAutomaticallyAlertAction
+  → ids` (bulk auto-resolve), `StackAlertAction → chunks` (append to existing alert),
+  `CreateAlertAction → alerts + chunks` (new alert + chunks). The dispatcher then
+  composes `createAlerts(alertsToCreate, chunks).then(automaticallyResolveAlerts(idsToResolve))`
+  (line 230) — both stages atomic inside the method''s `@ReactiveTransactional`
+  (line 201). **Two-stage activity emission**: (1) `registerNewAlertsActivityEvents`
+  (lines 309-325) emits `OPEN_ALERT_RECEIVED` or `RESOLVED_ALERT_RECEIVED` per
+  created alert based on alert status (line 316-317); (2) `registerAutomaticallyResolvedAlertsActivityEvents`
+  (lines 247-259) emits `ALERT_STATUS_UPDATED` with `systemEvent=true`, oldState=OPEN,
+  newState=RESOLVED_AUTOMATICALLY per auto-resolved id. The audit attribution
+  `status_updated_by = NULL` for auto-resolved (the repo uses `DSL.inline(null,
+  String.class)` per `ReactiveAlertRepositoryImpl.java:317`); for newly-created
+  alerts, `status_updated_by` is NOT SET. **Contrast with handleExternalAlerts**
+  (the AlertManager webhook path): `applyAlertActions` USES the AlertActionResolver
+  (de-duplication + halt-config awareness); `handleExternalAlerts` does NOT —
+  the divergence is intentional per the implicit ADR (see `alertmanager-webhook-bypasses-alert-action-resolver-no-idempotency`
+  invariant). The shared `createAlerts` private helper (lines 261-300) is the
+  common SQL write path; the discriminator dispatch is the in-memory branch BEFORE
+  the helper. Caller: `AlertIngestionRequestProcessor.process` (`AlertIngestionRequestProcessor.java:65`)
+  invokes via `alertService::applyAlertActions` method-reference as terminal `.flatMap`
+  sink. The DQ test runs, job runs, and schema-change deltas all flow through
+  this single sink — the unified ingestion-side alert write.'
+axes_present:
+- services
+nodes:
+- odd-platform java service service:AlertServiceImpl
+contributors:
+- 'AlertServiceImpl.md (batch I): concepts.operations — applyAlertActions(lines
+  200-231 — discriminated-union dispatcher). concepts.invariants.[7] — Activity
+  emission for applyAlertActions is in TWO stages. concepts.invariants.[6] — Shared
+  createAlerts helper. implicit_adrs.[3] — The two ingestion paths deliberately
+  diverge on de-duplication (applyAlertActions USES the resolver). downstream_side_effects
+  — applyAlertActions table; the bulk write paths via createAlerts / createChunks
+  / setLastCreatedAt / resolveAutomatically.'
+evidence:
+- AlertServiceImpl.md:concepts.operations (applyAlertActions at lines 200-231)
+- AlertServiceImpl.md:concepts.invariants.[6,7] (shared helper + two-stage activity)
+- AlertServiceImpl.md:implicit_adrs.[3] (the divergence; AlertActionResolver IS
+  consulted here)
+- AlertServiceImpl.md:downstream_side_effects.applyAlertActions (the per-action
+  side-effect table)
+- AlertServiceImpl.md:upstream_callers.AlertIngestionRequestProcessor (the
+  ingestion processor terminal sink)
+- (cross-batch) ReactiveAlertRepositoryImpl.md (batch H — the bulk INSERT /
+  bulk UPDATE / chunk INSERT SQL primary sources)
+notes: |
+  Operation vocabulary captured for the platform-internal ingestion-derived alert
+  write path. Two test gaps surface:
+
+    (a) The activity emission paths inside applyAlertActions are NOT directly
+        asserted in any test (AlertIngestionTest asserts alert status but NOT
+        the activity-feed rows).
+
+    (b) The discriminator dispatch is not directly unit-tested — a regression
+        that drops one of the if-let-else branches would silently change
+        ingestion semantics.
+
+  Cross-references:
+    - Companion: `alertmanager-webhook-bypasses-alert-action-resolver-no-idempotency`
+      (the divergence between this operation and handleExternalAlerts).
+    - Companion entity: `alert` (the broader alert concept; this is the
+      ingestion-side write operation).

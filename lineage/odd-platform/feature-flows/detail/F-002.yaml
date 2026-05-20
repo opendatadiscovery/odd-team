@@ -1,0 +1,804 @@
+feature_id: F-002
+pillar_id: P-06
+pillar_anchored_id: P-06:F-001
+pillar_anchored_feature_name: Term-to-Entity Linkage
+primary_drift_class: auth_layer_hides_endpoint
+drift_class_summary:
+- auth_layer_hides_endpoint
+- disabled_mode_bypass
+- description_edit_auto_link_side_channel
+- second_security_constants_misrouted_path
+- no_service_tier_permission_checks
+- term_assignment_handler_triple_re_query
+- tag_create_bypass_via_upsert_tags
+- namespace_create_bypass_via_get_or_create
+- cross_namespace_term_pollution
+- asymmetric_duplicate_insert_handling
+- symmetric_delete_path_mismatch_refactor_217
+- hard_delete_finality_no_audit_restore_path
+- description_link_protection_silent_204_via_api
+- activity_event_fires_on_no_op_delete
+- silent_204_on_non_existent_ids
+- v0_0_76_vs_v0_0_91_link_table_schema_asymmetry
+- term_to_term_deleted_at_dead_schema_or_missing_filter
+- has_description_relations_parent_soft_delete_corner
+- get_term_details_dto_12_join_hot_path_amplification
+- count_by_state_unconditional_fts_join_asymmetry
+- list_term_ref_dtos_count_vs_list_filter_mismatch
+batch_extensions:
+- batch: K
+  entry_point_added: 'service:TermServiceImpl (all 17 methods including the auto-link side-channel)'
+  contributing_nodes_added:
+  - odd-platform java service service:TermServiceImpl
+  - odd-platform java ReactiveTermRepositoryImpl
+  - odd-platform java DataEntityDescriptionUnhandledTermRepository
+  - odd-platform java TermAssignmentActivityHandler
+- batch: L
+  entry_point_added: 'rest:DELETE /api/dataentities/{id}/terms/{term_id} (the SYMMETRIC counterpart to addDataEntityTerm)'
+  contributing_nodes_added:
+  - odd-platform java DataEntityController controller-method:deleteTermFromDataEntity
+  - odd-platform java TermRelationsRepositoryImpl (deleteRelationWithDataEntity HARD-DELETE)
+  notes: |-
+    The DELETE half of REFACTOR-217 is PRIMARY-SOURCE CONFIRMED — same
+    singular/plural SecurityRule path-mismatch (SecurityConstants.java:240-242
+    `/term/{term_id}` SINGULAR vs openapi.yaml:1042 `/terms/{term_id}`
+    PLURAL). DATA_ENTITY_DELETE_TERM is uncheckable just like
+    DATA_ENTITY_ADD_TERM. Five new drift facets surface: symmetric path
+    mismatch (REFACTOR-217 covers BOTH halves in one fix), HARD-DELETE
+    finality (no audit-restore path beyond activity-event JSON), description-link
+    protection (UI hides the X but API call returns 204 silently), activity
+    event fires on no-op delete (BEFORE=AFTER), silent-204 on non-existent
+    ids.
+- batch: N
+  entry_point_added: |-
+    repository-tier:ReactiveTermRepositoryImpl (the persistence-layer hub for every
+    term read + the three link-table read shapes that drive P-06:F-001 + the
+    TermPermissionExtractor hot path; 15 public methods across single-row lookups,
+    paginated lists, FTS-ranked suggestions, faceted search, and the
+    hasDescriptionRelations rename-protection guard)
+  contributing_nodes_added:
+  - odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+  notes: |-
+    Six new drift facets surface from primary-source repository-tier audit:
+    (1) V0_0_76 vs V0_0_91 link-table schema asymmetry — V0_0_76__term_relations_hard_delete
+    DROPPED `deleted_at` from data_entity_to_term / dataset_field_to_term /
+    tag_to_term / term_ownership, but V0_0_91__add_term_to_term re-introduced
+    `deleted_at` on term_to_term per line 6; (2) term_to_term.deleted_at is
+    NEVER filtered at 7 read sites (lines 198-199, 227-231, 324-325, 345,
+    429-430, 448-454, 472-491, 510-523) — either dead schema or missing filter;
+    (3) hasDescriptionRelations parent-soft-delete corner — lines 415, 425
+    filter `DATA_ENTITY.STATUS.ne(DELETED.getId())`, so a Term mentioned only
+    in a soft-deleted entity's description CAN be renamed/hard-deleted, then
+    restoring the entity leaves the `[[ns:term]]` text dangling; (4)
+    getTermDetailsDto 12-JOIN + 7 jsonArrayAgg + 4 countDistinct query
+    (lines 194-238) invoked by TermPermissionExtractor.getContext on EVERY
+    authorized request to a TERM-scoped endpoint (HOT PATH for permission
+    resolution); (5) countByState unconditional JOIN to TERM_SEARCH_ENTRYPOINT
+    even when state.getQuery() is empty (line 361 vs findByState conditional
+    join at 296-298) — count-vs-list desynchronisation for Terms missing FTS
+    rows; (6) listTermRefDtos count-vs-list filter mismatch — `fetchCount(nameQuery)`
+    ignores the `updatedAt` date range filter that the paginated list DOES
+    respect (lines 113-114, 133), reported `total` higher than actual. Hop-3
+    (ReactiveTermRepositoryImpl) — previously '(referenced from TermServiceImpl
+    sidecar coupling)' — now PRIMARY-SOURCE CONFIRMED. ZERO direct test
+    coverage (NamespaceServiceImplTest mocks existsByNamespace; no
+    *RepositoryTest* class exists). The repository-tier read-collaborative
+    posture is now SQL-anchored: every read returns Terms across every
+    namespace to every authenticated user, paginated, with no per-namespace
+    or per-owner scoping at this layer.
+rev3_reclassification:
+  migrated_at: '2026-05-19T15:17:32.753499+00:00'
+  from_rev2_feature_name: Term linking with permission gate
+  notes: Term-to-Entity Linkage is the Data Glossary sub-feature; F-002 was bug-anchored on the SecurityRule /term vs /terms
+    path mismatch. The bug becomes a drift facet inside the pillar-anchored feature.
+  merge_candidate_with: null
+  method: manual mapping per maintainer dialogue 2026-05-19 + system-mission.md pillar list
+feature_name: Term linking with permission gate
+discovered_from_entry_point: rest:POST /api/dataentities/{id}/terms
+description: 'The platform exposes a term-linking endpoint at POST /api/dataentities/{id}/terms.
+
+  The maintainer-documented intent is for DATA_ENTITY_ADD_TERM permission to
+
+  gate this endpoint (per /authorization/permissions doc). The implementation
+
+  registers the permission at the SINGULAR path `/api/dataentities/{id}/term`
+
+  while OpenAPI exposes the PLURAL path `/api/dataentities/{id}/terms`. The
+
+  AuthorizationCustomizer''s path-matcher never matches; the gate never fires.
+
+  '
+contributing_nodes:
+- odd-platform java DataEntityController controller-method:addDataEntityTerm
+- odd-platform java DataEntityController controller-method:deleteTermFromDataEntity
+- odd-platform java SecurityConstants (the SECURITY_RULES singular path declaration — line 237-242)
+- odd-platform java AuthorizationCustomizer (the dispatch chain with .authenticated() fall-through)
+- odd-platform java service service:TermServiceImpl
+- odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+- odd-platform java TermRelationsRepositoryImpl
+- odd-platform java DataEntityDescriptionUnhandledTermRepository
+- odd-platform java TermAssignmentActivityHandler
+- odd-platform java service permission extractor:TermPermissionExtractor
+chain:
+- hop: 1
+  node: odd-platform java DataEntityController controller-method:addDataEntityTerm
+  sidecar: '(batch-G enrichment; not re-read this batch)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    POST /api/dataentities/{id}/terms (PLURAL — openapi.yaml:973). The
+    SecurityRule registered at SecurityConstants.java:237-239 binds to /term
+    (SINGULAR) — the matcher never fires; the gate never sees the request.
+  unresolved: false
+- hop: 2
+  node: odd-platform java service service:TermServiceImpl
+  sidecar: odd-platform__java__service__service__TermServiceImpl.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    TermServiceImpl.linkTermWithDataEntity (lines 170-179) — `@ReactiveTransactional`
+    + `@ActivityLog(TERM_ASSIGNMENT_UPDATED)`. INSERTs `data_entity_to_term` with
+    `is_description_link=FALSE`. On PK collision the repo emits empty; the
+    service translates via `.switchIfEmpty(BadUserRequestException 'Term already
+    assigned to data entity')`. Marks `data_entity_filled.TERMS`. The service
+    performs NO permission check; the controller-tier gate is the SOLE
+    authorization point and it does not fire (REFACTOR-217). The auto-link
+    side-channel `handleDataEntityDescriptionTerms` (lines 201-207) is the
+    OTHER entry into `data_entity_to_term`, invoked from
+    DataEntityServiceImpl.upsertDescription (line 328) when the description
+    body contains `[[ns:term]]` mentions — it bypasses
+    `DATA_ENTITY_ADD_TERM` entirely (only `DATA_ENTITY_DESCRIPTION_UPDATE` is
+    consulted upstream).
+  unresolved: false
+  resolved_in_batch: K
+- hop: 3
+  node: odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+  sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveTermRepositoryImpl.java:162-179 — the cross-namespace lookup
+    `getByNameAndNamespace(List)` (no tenant filter; case-INSENSITIVE OR-chain
+    for the regex-parsed [[ns:term]] mentions; sole caller TermServiceImpl.findTermsInDescription).
+    Lines 409-438 — `hasDescriptionRelations` 3-EXISTS guard
+    (data-entity-description + dataset-field-description + term-to-term branches;
+    parent-soft-delete corner at 415, 425). Lines 194-238 —
+    `getTermDetailsDto` 12-JOIN + 4 countDistinct + 7 jsonArrayAgg HOT PATH
+    consumed by TermPermissionExtractor on every authorized TERM-scoped
+    request. Line 79 — extends `ReactiveAbstractSoftDeleteCRUDRepository`
+    (soft-delete on `term` only; link tables hard-deleted per V0_0_76 except
+    `term_to_term` which retains `deleted_at` but is never filtered).
+    Soft-delete filter on TERM at every read site (lines 143, 156, 188, 234,
+    257, 279, 367, 387, 403, 432, 451, 461, 505); NO filter on POLICY-equivalent
+    soft-delete (which doesn't exist here — link tables are the parallel).
+  unresolved: false
+  resolved_in_batch: N
+- hop: 1b
+  node: odd-platform java DataEntityController controller-method:deleteTermFromDataEntity
+  sidecar: odd-platform__java__DataEntityController__controller-method__deleteTermFromDataEntity.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataEntityController.java:158-163 — three-line reactive proxy. DELETE
+    /api/dataentities/{data_entity_id}/terms/{term_id} (PLURAL —
+    openapi.yaml:1042). SecurityRule registered at
+    SecurityConstants.java:240-242 binds permission on SINGULAR
+    `/term/{term_id}` — SAME path-mismatch bug as the ADD endpoint
+    (REFACTOR-217 covers BOTH halves). The matcher never fires; the
+    DATA_ENTITY_DELETE_TERM gate is uncheckable. UI gates the X button
+    via `WithPermissions permissionTo={Permission.DATA_ENTITY_DELETE_TERM}`
+    (TermItem.tsx:48) and conditionally on `!linkedTerm.isDescriptionLink`
+    (line 46) — both client-side only, bypassable by any caller crafting
+    the HTTP request.
+  unresolved: false
+  resolved_in_batch: L
+- hop: 2b
+  node: odd-platform java service service:TermServiceImpl (removeTermFromDataEntity)
+  sidecar: odd-platform__java__service__service__TermServiceImpl.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    TermServiceImpl.removeTermFromDataEntity (lines 181-196) —
+    `@ReactiveTransactional` + `@ActivityLog(TERM_ASSIGNMENT_UPDATED)`.
+    Issues `termRelationsRepository.deleteRelationWithDataEntity(dataEntityId,
+    termId)` (HARD DELETE filtered to `IS_DESCRIPTION_LINK = FALSE`).
+    Returns the deleted POJO for use by `getDataEntityTerms`; on the
+    no-op zero-row delete, the flatMap short-circuits because Mono emits
+    no element. Service performs NO permission check. The conditional
+    `markEntityUnfilled(TERMS)` (lines 188-191) fires only when
+    `getDataEntityTerms` returns empty post-delete.
+  unresolved: false
+  resolved_in_batch: L
+- hop: 3b
+  node: odd-platform java TermRelationsRepositoryImpl (deleteRelationWithDataEntity)
+  sidecar: '(referenced from coupling in deleteTermFromDataEntity sidecar)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    TermRelationsRepositoryImpl.deleteRelationWithDataEntity (lines
+    80-88) — `DSL.deleteFrom(DATA_ENTITY_TO_TERM).where(DATA_ENTITY_ID.eq(...).and(TERM_ID.eq(...)).and(IS_DESCRIPTION_LINK.isFalse()))`.
+    HARD DELETE — the row is physically removed. No soft-delete column
+    exists post-migration V0_0_76__term_relations_hard_delete.sql:1-6
+    (the `deleted_at` column was DROPPED and any tombstoned rows DELETED).
+    Once unlinked, the only record of prior existence is the activity-event
+    JSON state in `activity` rows.
+  unresolved: false
+  resolved_in_batch: L
+- hop: 4
+  node: odd-platform java TermAssignmentActivityHandler
+  sidecar: '(referenced from TermServiceImpl sidecar bugs_limitations_corner_cases[4])'
+  multiplicity_per_trigger: 3 (per-link or per-de-link)
+  evidence: |-
+    TermAssignmentActivityHandler.java:30-43 — the triple-re-query pattern.
+    `getContextInfo` calls `getDataEntityTerms` (1st full-list) BEFORE the
+    annotated method; the method itself calls `getDataEntityTerms` at line 188
+    (2nd full-list — drives `markEntityUnfilled` decision for de-link path);
+    the handler's `getUpdatedState` re-queries again (3rd full-list) AFTER.
+    For an entity with 100 terms, a single de-link = 3 full-list re-queries +
+    1 DELETE. REFACTOR-228 primary-source.
+  unresolved: false
+  resolved_in_batch: K
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    INSERT row into data_entity_to_term with is_description_link=false
+    (ADD path), OR HARD DELETE row from data_entity_to_term filtered by
+    is_description_link=false (DELETE path, batch L). Both paths emit
+    TERM_ASSIGNMENT_UPDATED activity event (DELETE path emits even on
+    no-op zero-row deletion — BEFORE=AFTER audit noise).
+  evidence: |-
+    ADD: TermServiceImpl.linkTermWithDataEntity (lines 170-179) +
+    ReactiveTermRelationsRepository INSERT. DELETE: TermServiceImpl.removeTermFromDataEntity
+    (lines 181-196) + TermRelationsRepositoryImpl.deleteRelationWithDataEntity
+    (lines 80-88) — HARD DELETE via DSL.deleteFrom(...).
+  cardinality_per_call: 1
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+  - facet: permission-gate enforcement under DISABLED
+    observed: anonymous caller successfully creates term-link; data_entity_to_term row appears with no auth check
+    expected: either documented anonymous-OK posture OR 401/403
+    drift_class: auth_layer_hides_endpoint
+    provenance: MEASURED — P-005 (run R-20260519T011344Z-P-005) created a term + POSTed the link as anonymous; observed final_term_count
+      - initial_term_count == 1
+  - facet: description-edit auto-link side-channel bypasses DATA_ENTITY_ADD_TERM (batch K — PRIMARY-SOURCE)
+    observed: |-
+      TermServiceImpl.handleDataEntityDescriptionTerms (lines 201-207) is
+      invoked from DataEntityServiceImpl.upsertDescription (line 328) whenever
+      a description body contains `[[ns:term]]` mentions. The regex
+      `\[\[([^:]*?):([^\]]*?)\]\]` at TermServiceImpl.java:67 parses mentions
+      and synthesises `DataEntityToTermPojo` rows with
+      `is_description_link=TRUE` via the `*_unhandled_term` staging tables.
+      A user holding ONLY `DATA_ENTITY_DESCRIPTION_UPDATE` (the gate on PUT
+      /api/dataentities/{id}/description) can paste `[[finance:Customer]]`
+      into a description and create term-link rows — `DATA_ENTITY_ADD_TERM` is
+      NEVER consulted on this path. Even if REFACTOR-217 (the /term vs /terms
+      path mismatch on the direct endpoint) were fixed, this side-channel
+      would remain — the auto-link path is service-tier, not controller-tier.
+    expected: |-
+      Either a service-tier permission check inside handleDataEntityDescriptionTerms
+      (consult `DATA_ENTITY_ADD_TERM` before INSERTing the link rows) OR a
+      documented "description-mention is part of DATA_ENTITY_DESCRIPTION_UPDATE's
+      scope" framing in the Business Glossary doc.
+    drift_class: description_edit_auto_link_side_channel
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      bugs_limitations_corner_cases[2] + security.known_security_gaps[2] +
+      TermServiceImpl.java:201-207, 67 + DataEntityServiceImpl.java:323-333 +
+      SecurityConstants.java:194-197 (the description-update gate) +
+      SecurityConstants.java:237-239 (the link-term gate the side-channel bypasses)
+  - facet: second independent SecurityConstants bug — /api/alerts/{id}/status PUT gated by DATASET_FIELD_ADD_TERM
+    observed: |-
+      SecurityConstants.java:295-296 registers
+      `new SecurityRule(ALERT, new PathPatternParserServerWebExchangeMatcher(
+      "/api/alerts/{alert_id}/status", PUT), DATASET_FIELD_ADD_TERM)` — a Term
+      permission applied to an alert-status path. Almost certainly a
+      copy/paste error: the AlertController.changeAlertStatus endpoint should
+      gate on `DATA_ENTITY_ALERT_RESOLVE`. Effect: an operator with
+      `DATASET_FIELD_ADD_TERM` can change alert statuses on any data entity;
+      an operator with `DATA_ENTITY_ALERT_RESOLVE` (the named permission for
+      that operation) cannot.
+    expected: |-
+      `SecurityRule(... , DATA_ENTITY_ALERT_RESOLVE)` at SecurityConstants.java:295-296
+      replacing the misrouted permission.
+    drift_class: second_security_constants_misrouted_path
+    provenance: |-
+      STATIC — primary-source in batch K TermServiceImpl sidecar
+      understanding (the headline finding) + bugs_limitations_corner_cases[1] +
+      security.known_security_gaps[1] + SecurityConstants.java:295-296.
+      Cross-reference: AlertController sidecar should be augmented with this finding.
+  - facet: zero service-tier permission checks (architectural)
+    observed: |-
+      TermServiceImpl performs NO `@PreAuthorize`, no programmatic
+      `permissionService.hasPermission(...)`, no role gate, no policy lookup
+      at the service layer. All authorization is supposed to happen at the
+      controller perimeter via SecurityConstants.SECURITY_RULES matchers in
+      AuthorizationCustomizer. Per REFACTOR-217 the controller-tier gate does
+      NOT fire for POST/DELETE /api/dataentities/{id}/terms — making the
+      entire term-linkage surface effectively unauthenticated-mutation-allowed
+      under DISABLED + read-collaborative-with-no-gate under LOGIN_FORM/OAUTH2/LDAP.
+    expected: |-
+      Defence-in-depth: service-tier permission checks as a backstop against
+      controller-tier path-mismatch bugs. Or alternatively, an integration test
+      that asserts SecurityConstants paths match every OpenAPI path (preventing
+      the singular/plural divergence class entirely).
+    drift_class: no_service_tier_permission_checks
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      security.authorization_assertions + the absence of any `@PreAuthorize` in TermServiceImpl
+  - facet: TermAssignmentActivityHandler triple-re-query (REFACTOR-228 PRIMARY-SOURCE)
+    observed: |-
+      `removeTermFromDataEntity` (TermServiceImpl.java:184-196) emits
+      `TERM_ASSIGNMENT_UPDATED`; `TermAssignmentActivityHandler.getContextInfo`
+      re-queries `getDataEntityTerms` (1st full-list) BEFORE method execution;
+      the method itself calls `getDataEntityTerms` at line 188 (2nd full-list,
+      drives the markEntityUnfilled decision); the handler's `getUpdatedState`
+      re-queries AGAIN (3rd full-list) AFTER. For a data entity with 100
+      linked terms, a single de-link produces 3 full-list re-queries plus 1
+      DELETE. Same pattern applies to `removeTermFromDatasetField` (lines 226-239).
+    expected: |-
+      Cache the BEFORE state in the activity-feed AOP context so getUpdatedState
+      can compute the diff without a re-query, OR fold the markEntityUnfilled
+      decision into the BEFORE-state query (already fetching the full list).
+    drift_class: term_assignment_handler_triple_re_query
+    provenance: STATIC — REFACTOR-228 PRIMARY-SOURCE in batch K TermServiceImpl
+      sidecar bugs_limitations_corner_cases[4] + TermServiceImpl.java:184-196 +
+      TermAssignmentActivityHandler.java:30-43
+  - facet: TAG_CREATE bypass via upsertTags
+    observed: |-
+      TermServiceImpl.upsertTags (line 257) calls `tagService.getOrCreateTagsByName(names)`
+      which creates new tags as needed — bypassing the `TAG_CREATE` permission
+      that gates `POST /api/tags`. Cross-ref: same pattern in OwnerController#createOwner
+      and the broader `getOrCreate*` family across the platform.
+    expected: |-
+      Either consult `TAG_CREATE` inside `tagService.getOrCreateTagsByName` (move
+      the gate from the controller perimeter to the upsert primitive) OR document
+      "TERM_TAGS_UPDATE includes tag-create scope" explicitly.
+    drift_class: tag_create_bypass_via_upsert_tags
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      bugs_limitations_corner_cases[10] + TermServiceImpl.java:257
+  - facet: NAMESPACE_CREATE bypass via createTerm / updateTerm
+    observed: |-
+      TermServiceImpl.createTerm (line 103) and .updateTerm (line 138) call
+      `namespaceService.getOrCreate(name)` — silently creating namespaces when
+      the caller-supplied name is novel. Bypasses the `NAMESPACE_CREATE`
+      permission that protects POST /api/namespaces.
+    expected: |-
+      Either consult `NAMESPACE_CREATE` inside `namespaceService.getOrCreate`
+      OR document the `TERM_CREATE / TERM_UPDATE` permissions as inclusive of
+      namespace-create scope.
+    drift_class: namespace_create_bypass_via_get_or_create
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      bugs_limitations_corner_cases[10] + TermServiceImpl.java:103, 138
+  - facet: cross-namespace term pollution / no per-tenant scoping
+    observed: |-
+      Neither TermServiceImpl nor ReactiveTermRepositoryImpl references
+      `odd.tenant-id` or any tenant scoping. `getByNameAndNamespace(List)`
+      (ReactiveTermRepositoryImpl.java:162-179) joins `term` and `namespace`
+      with NO tenant filter. A description in team-A's namespace that
+      references `[[team-B-ns:term]]` silently auto-links to team-B's term.
+    expected: |-
+      Per-tenant or per-namespace scoping at the service or repository layer
+      OR documented "the namespace concept is informational, not isolating"
+      framing.
+    drift_class: cross_namespace_term_pollution
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      bugs_limitations_corner_cases[3] + ReactiveTermRepositoryImpl.java:162-179 +
+      TermServiceImpl.java:350-359
+  - facet: linkTermWithDataEntity vs linkTermWithDatasetField asymmetric on duplicate-INSERT
+    observed: |-
+      `linkTermWithDataEntity` (TermServiceImpl.java:173-174) translates the
+      empty INSERT result to `BadUserRequestException 'Term already assigned
+      to data entity'`. `linkTermWithDatasetField` (line 215) has NO
+      `.switchIfEmpty` — a duplicate INSERT silently succeeds, returning an
+      empty Mono that flatMaps onwards into
+      `termRepository.getTermRefDto(relation.getTermId())` with `relation==null`
+      (NullPointerException risk).
+    expected: |-
+      Symmetric `.switchIfEmpty` on both link methods — either both emit 400
+      on duplicate OR both silently succeed (idempotent semantics) with a
+      documented contract.
+    drift_class: asymmetric_duplicate_insert_handling
+    provenance: STATIC — primary-source in batch K TermServiceImpl sidecar
+      bugs_limitations_corner_cases[5] + TermServiceImpl.java:173-174 vs 215
+  - facet: SYMMETRIC DELETE path mismatch — REFACTOR-217 covers BOTH halves
+    observed: |-
+      DELETE /api/dataentities/{data_entity_id}/terms/{term_id} (PLURAL
+      per openapi.yaml:1042) is gated by SecurityRule at
+      SecurityConstants.java:240-242 registered with PathPatternParserServerWebExchangeMatcher
+      for SINGULAR `/api/dataentities/{data_entity_id}/term/{term_id}`.
+      The mismatch is symmetric with the ADD endpoint (batch G):
+      AuthorizationCustomizer.customize (AuthorizationCustomizer.java:24-30)
+      only invokes the manager(...) permission check when `rule.matcher()`
+      matches — the singular `term/{term_id}` matcher does NOT match the
+      plural `terms/{term_id}` URL. The customizer's fallback at lines
+      29-30 is `.pathMatchers("/**").authenticated()` — any authenticated
+      user passes. Net effect: ANY authenticated user under
+      LOGIN_FORM/OAUTH2/LDAP can DELETE any term-to-data-entity relation
+      regardless of their Policy set. REFACTOR-217 (the upstream backlog
+      item) covers BOTH POST and DELETE in one fix — changing the
+      SecurityRule path strings to plural. Live Permissions doc WebFetched
+      2026-05-19 status 200 documents the permission verbatim
+      ("DATA_ENTITY_DELETE_TERM: Allows removing a term from a data
+      entity"); the doc describes the intended access model — the
+      code wiring is wrong.
+    expected: |-
+      Change `SecurityConstants.java:240-242` to register the path as
+      `/api/dataentities/{data_entity_id}/terms/{term_id}` (PLURAL) +
+      add a WebFluxTest regression that asserts a no-permission user
+      receives 403 for DELETE.
+    drift_class: symmetric_delete_path_mismatch_refactor_217
+    provenance: |-
+      STATIC — primary-source in batch L deleteTermFromDataEntity sidecar
+      understanding (the headline finding) +
+      bugs_limitations_corner_cases[0] +
+      security.known_security_gaps[0] + SecurityConstants.java:240-242 +
+      openapi.yaml:1042 + DataEntityController.java:158-163 +
+      AuthorizationCustomizer.java:24-30. Severity: HIGH.
+  - facet: HARD-DELETE finality — no audit-restore path
+    observed: |-
+      Once a term-relation is removed via this endpoint, the only record
+      of its prior existence is the TermAssignmentActivityHandler
+      BEFORE/AFTER JSON state in `activity` rows. The row in
+      `data_entity_to_term` is PHYSICALLY GONE — migration
+      V0_0_76__term_relations_hard_delete.sql:1-6 dropped the
+      `deleted_at` column AND deleted any rows where `deleted_at IS NOT
+      NULL` (irreversibly). An operator wanting to restore a removed
+      term-link must inspect the activity log and re-issue an
+      addDataEntityTerm call (which writes a NEW row, not a
+      restoration — the relation has no continuity-id). For high-stakes
+      deployments with extensive term taxonomies, accidental removals
+      via the path-mismatch-bug-enabled unauthorized caller require
+      manual restoration via API calls.
+    expected: |-
+      Either: (a) re-introduce a soft-delete column with a documented
+      restore endpoint, OR (b) keep the HARD-DELETE finality and
+      document the constraint operationally ("Term-link removal is
+      permanent; restore requires re-link via the add endpoint").
+    drift_class: hard_delete_finality_no_audit_restore_path
+    provenance: |-
+      STATIC — primary-source in batch L sidecar implicit_adrs[1] +
+      bugs_limitations_corner_cases[4] +
+      V0_0_76__term_relations_hard_delete.sql:1-6 (migration that
+      removes the soft-delete column and deletes tombstoned rows) +
+      TermRelationsRepositoryImpl.java:80-88. Severity: MEDIUM (LOW for
+      typical deployments; HIGH if combined with the auth-bypass and
+      unauthorized mass-deletion).
+  - facet: description-link protection silent via API — UI gates the button but API call returns 204
+    observed: |-
+      The DELETE WHERE clause filters `IS_DESCRIPTION_LINK.isFalse()`
+      (TermRelationsRepositoryImpl.java:84); a term linked to a data-entity
+      ONLY via a `[[namespace:name]]` description mention cannot be
+      detached via this endpoint. The UI gates the X button with
+      `!linkedTerm.isDescriptionLink` (TermItem.tsx:46), so a UI user
+      never sees the X for description-linked terms. However, an API
+      caller bypassing the UI (curl, DevTools, custom script — and per
+      the path-mismatch bug, ANY authenticated user) calls DELETE on a
+      description-linked term and gets 204 with no actual change. To
+      remove a description-link, the user must edit the description
+      (which routes through `handleDataEntityDescriptionTerms` →
+      `updateDataEntityDescriptionTermsState` → `deleteTermDataEntityRelations`
+      at TermServiceImpl.java:362-385). This is INTENTIONAL (the
+      description/manual separation ADR) but UNDOCUMENTED at the
+      operator-facing surface. Pairs with REFACTOR-227
+      (description-mention auto-link interaction).
+    expected: |-
+      Either: (a) return 400 ("Cannot remove description-linked term;
+      edit the description instead") when the DELETE WHERE clause matches
+      a description-link row, OR (b) document the description-link
+      protection in the dictionary feature docs + the API reference.
+    drift_class: description_link_protection_silent_204_via_api
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[3] +
+      TermRelationsRepositoryImpl.java:80-88 (`IS_DESCRIPTION_LINK.isFalse()`
+      predicate) + TermItem.tsx:46-56 (UI gating) +
+      TermServiceImpl.java:198-207, 362-385 (description-edit pipeline).
+      Severity: LOW (intentional design; gap is in documentation, not
+      behaviour).
+  - facet: activity event fires on no-op DELETE — audit noise
+    observed: |-
+      `@ActivityLog(event = TERM_ASSIGNMENT_UPDATED)` annotates the
+      service method unconditionally (TermServiceImpl.java:183). The
+      handler re-queries the data-entity's terms-list BEFORE invocation
+      and AFTER (TermAssignmentActivityHandler.java:29-43); a no-op
+      DELETE yields BEFORE = AFTER but the event row is still written.
+      Auditors investigating "who removed term T from entity E" see an
+      activity event that LOOKS like a real removal but where nothing
+      actually changed. The signal-to-noise ratio of GET /api/activity
+      is degraded for term-management investigations. Pairs with the
+      silent-204 bug below — together they make the audit trail
+      unreliable for term-unlinking forensics.
+    expected: |-
+      Either: (a) skip the @ActivityLog emission when the DELETE matches
+      zero rows (move the annotation logic to fire only on actual
+      mutation), OR (b) include a `change_count` field in the event
+      payload so consumers can filter no-op events.
+    drift_class: activity_event_fires_on_no_op_delete
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[2] + TermServiceImpl.java:181-196
+      (no early-exit for zero-row DELETE before `@ActivityLog` triggers)
+      + TermAssignmentActivityHandler.java:23-43 (state captured
+      regardless of caller intent or outcome). Severity: MEDIUM.
+  - facet: silent-204 on non-existent ids — no 404 surface
+    observed: |-
+      `Long dataEntityId` and `Long termId` come as path variables from
+      the URL; there is no validation that either id exists in the DB.
+      The DELETE WHERE clause matches zero rows for non-existent ids
+      (no FK-violation; DELETE on non-matching rows is a no-op in SQL);
+      the response is 204. Callers cannot distinguish "I unlinked
+      successfully" from "I targeted a non-existent entity" from "the
+      term was only description-linked, no-op". Pairs with the silent-204
+      pattern observed across the platform (cross-ref F-013
+      upsertMetadataFieldValue silent-200, F-004 upsertDescription).
+    expected: |-
+      Pre-check `reactiveDataEntityRepository.get(dataEntityId).switchIfEmpty(NotFoundException)`
+      + `reactiveTermRepository.get(termId).switchIfEmpty(NotFoundException)`
+      before issuing the DELETE.
+    drift_class: silent_204_on_non_existent_ids
+    provenance: |-
+      STATIC — primary-source in batch L sidecar
+      bugs_limitations_corner_cases[6] + TermRelationsRepositoryImpl.java:81-87
+      (no existence check) + TermServiceImpl.java:184-195 (no
+      NotFoundException translation). Severity: LOW.
+  - facet: V0_0_76 vs V0_0_91 link-table schema asymmetry (batch N — repository-tier)
+    observed: |-
+      Migration V0_0_76__term_relations_hard_delete.sql:1-22 DROPPED the
+      `deleted_at` column from data_entity_to_term, dataset_field_to_term,
+      tag_to_term, and term_ownership tables — committing the platform to
+      HARD-DELETE for these link tables. Migration V0_0_91__add_term_to_term.sql:6
+      then created a NEW link table `term_to_term` WITH a `deleted_at TIMESTAMP`
+      column. The asymmetry is either intentional future-soft-delete provision
+      that the application code does not yet exercise, OR an oversight in the
+      V0_0_76 cleanup — the migration history alone does not resolve which.
+      The user-observable consequence is the DRIFT-FACET-A bug below.
+    expected: |-
+      Either (a) drop `term_to_term.deleted_at` in a V0_0_NNN migration mirroring
+      V0_0_76's link-table cleanup, OR (b) add the `term_to_term.deleted_at IS NULL`
+      filter to every term_to_term read site + a documented soft-delete contract
+      for term-to-term links.
+    drift_class: v0_0_76_vs_v0_0_91_link_table_schema_asymmetry
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      concepts.invariants[1] + V0_0_76__term_relations_hard_delete.sql:1-22 +
+      V0_0_91__add_term_to_term.sql:6. Severity: LOW (recorded as evidence of
+      design drift; not currently exploited).
+  - facet: term_to_term.deleted_at not filtered — dead schema or missing filter
+    observed: |-
+      ReactiveTermRepositoryImpl reads `term_to_term` at 7 distinct sites
+      (lines 198-199, 227-231, 324-325, 345, 429-430, 448-454, 472-491,
+      510-523) WITHOUT a `term_to_term.deleted_at IS NULL` filter. Effect:
+      a `term_to_term` row with `deleted_at = NOW()` (set by a future
+      operator hot-fix or migration) is STILL returned by
+      `getLinkedTermsByTargetTermId`, `listByTerm`, `getTermByIdAndLinkedTermId`,
+      and `getTermDetailsDto`'s assigned-terms aggregation. Theoretical
+      today (no code path writes the column), but a regression vector for any
+      future soft-delete activation on term-to-term.
+    expected: |-
+      Either match the schema intent — add the filter to every read site —
+      OR drop the column.
+    drift_class: term_to_term_deleted_at_dead_schema_or_missing_filter
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      bugs_limitations_corner_cases[0] + security.known_security_gaps[0] +
+      V0_0_91__add_term_to_term.sql:6. Severity: LOW.
+  - facet: hasDescriptionRelations parent-soft-delete corner case
+    observed: |-
+      ReactiveTermRepositoryImpl.java:415, 425 filter
+      `DATA_ENTITY.STATUS.ne(DataEntityStatusDto.DELETED.getId())` on the
+      data-entity-description and dataset-field-description branches of
+      the rename-protection / delete-protection guard. A Term mentioned ONLY
+      in a soft-deleted data-entity's description (or dataset-field belonging
+      to one) is treated as 'not mentioned' and CAN be renamed or hard-deleted.
+      When the data-entity is later restored via
+      `PUT /api/dataentities/{id}/status -> ACTIVE`, the description's
+      `[[ns:term]]` text now references a non-existent or differently-named
+      Term — silently downgrades to 'unhandled' on the next description edit
+      OR remains as broken-link text. The 3 EXISTS branches have ASYMMETRIC
+      filters — data-entity uses STATUS, term-to-term uses TARGET deleted_at.
+    expected: |-
+      Either document the restore-soft-deleted-entity interaction with Term
+      lifecycle OR include soft-deleted-parent rows in the existence guard
+      (with a documented operator-cleanup workflow).
+    drift_class: has_description_relations_parent_soft_delete_corner
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      bugs_limitations_corner_cases[1] + security.known_security_gaps[1] +
+      ReactiveTermRepositoryImpl.java:415, 425, 432 +
+      TermServiceImpl.java:125-145, 154-165. Severity: MEDIUM.
+  - facet: getTermDetailsDto 12-JOIN HOT PATH — TermPermissionExtractor amplification
+    observed: |-
+      `ReactiveTermRepositoryImpl.getTermDetailsDto` (lines 194-238) issues a
+      single query with 11 LEFT JOINs + 1 hard JOIN + 7 jsonArrayAgg
+      projections + 4 countDistinct aggregates + GROUP BY over
+      `TERM.fields() + NAMESPACE.fields()`. The intermediate row count scales
+      O(N x M x P x Q x R x S) BEFORE the countDistinct aggregates reduce —
+      for a Term with 10 owners x 20 tags x 100 data-entities x 50
+      dataset-fields x 20 query-examples x 10 assigned-terms, the
+      intermediate is ~2M rows. CRITICALLY: this method is invoked by
+      `TermPermissionExtractor.getContext(resourceId)` (line 43) on EVERY
+      authorized request that traverses a TERM-scoped SecurityRule
+      (`PUT /api/terms/{id}`, `POST /api/terms/{id}/ownership`, etc. per
+      SecurityConstants.java:174-188) — the permission-resolution HOT PATH.
+      No caching layer at any tier. A heavily-linked Term (1000+ relations
+      per dimension) could push permission-evaluation latency into seconds
+      on every request.
+    expected: |-
+      Either (a) split into N targeted queries for the 4 aggregate counts
+      + a thin row fetch, OR (b) cache the TermDetailsDto per-resource with
+      explicit invalidation on Term mutation, OR (c) document an upper bound
+      on linked-entity counts per Term + raise a 503 when exceeded.
+    drift_class: get_term_details_dto_12_join_hot_path_amplification
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      bugs_limitations_corner_cases[4] + performance.hot_paths[0] +
+      performance.known_performance_gaps[1] +
+      ReactiveTermRepositoryImpl.java:194-238 + TermPermissionExtractor.java:43 +
+      SecurityConstants.java:174-188. Severity: MEDIUM (correctness preserved;
+      latency-ceiling undocumented).
+  - facet: countByState unconditional FTS JOIN — count-vs-list desynchronisation
+    observed: |-
+      `ReactiveTermRepositoryImpl.countByState` (line 361) joins
+      `TERM_SEARCH_ENTRYPOINT` UNCONDITIONALLY, regardless of whether the
+      state has an FTS predicate. `findByState` (lines 296-298) makes the
+      same JOIN CONDITIONAL on `state.getQuery()` being non-empty. A Term
+      whose `term_search_entrypoint` row is missing (e.g. a Term created
+      via a path that bypasses `TermServiceImpl.updateSearchVectors`) would
+      appear in the paginated `findByState` list but NOT in the count. The
+      caller's pagination math (`total` vs items rendered) becomes
+      desynchronised — last page may be empty, or vice-versa.
+    expected: |-
+      Make the JOIN conditional symmetric with `findByState`, OR document the
+      invariant "every Term must have a term_search_entrypoint row" and add
+      a boot-time integrity check.
+    drift_class: count_by_state_unconditional_fts_join_asymmetry
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      bugs_limitations_corner_cases[7] + performance.known_performance_gaps[2] +
+      ReactiveTermRepositoryImpl.java:296-298 vs 361. Severity: MEDIUM.
+  - facet: listTermRefDtos count-vs-list filter mismatch — wrong pagination ceiling
+    observed: |-
+      `ReactiveTermRepositoryImpl.listTermRefDtos` (lines 108-135) applies a
+      `updatedAt` date-range filter to the paginated list query (lines 113-114)
+      BUT `pageifyResult(records, mapper, fetchCount(nameQuery))` (line 133)
+      uses the inherited `fetchCount` which through the soft-delete base's
+      `listCondition(query)` only filters on `name` + `deleted_at IS NULL`.
+      The reported `total` is HIGHER than the actual filtered result count.
+      UI sees the wrong pagination ceiling — operator clicks page N+1 and
+      sees an empty page where `total / size` indicated more results existed.
+    expected: |-
+      Override `fetchCount` to accept the same filter parameter set as the
+      paginated list query — keep `total` and `data` in sync.
+    drift_class: list_term_ref_dtos_count_vs_list_filter_mismatch
+    provenance: |-
+      STATIC — primary-source in batch N ReactiveTermRepositoryImpl sidecar
+      bugs_limitations_corner_cases[10] + performance.known_performance_gaps[3] +
+      ReactiveTermRepositoryImpl.java:113-114, 133 + inherited fetchCount in
+      ReactiveAbstractCRUDRepository. Severity: MEDIUM.
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - TermServiceImpl.linkTermWithDataEntity in isolation
+    - TermServiceImpl.removeTermFromDataEntity in isolation
+    - SecurityRule path-pattern match logic — assert singular path doesn't match plural URL (BOTH halves)
+    - description-link-row protection — assert DELETE on a description-linked term is silent 204 with no actual delete
+  integration:
+    state: PROBED-PINNING-BUG
+    covered:
+    - behaviour: POST /api/dataentities/{id}/terms succeeds AND creates a term_relation row when caller has NO permission
+        (DISABLED mode)
+      pinned_by_probe_run: R-20260519T011344Z-P-005
+      cell_evidence: lineage/odd-platform/probe-runs/2026-05-19-P-005.yaml
+      note: 'PINNING-BUG: the path-mismatch bug means DATA_ENTITY_ADD_TERM is uncheckable. Fix changes SecurityConstants.java:237
+        path `/term` → `/terms`; assertion flips.'
+    uncovered:
+    - Under LOGIN_FORM/OAUTH2/LDAP, a caller WITHOUT DATA_ENTITY_ADD_TERM should receive 403 (target — auth-mode-matrix probe
+      stack)
+    - Same probe under LDAP / OAuth2 stacks (defence-in-depth)
+    - DELETE-half symmetric probe — caller WITHOUT DATA_ENTITY_DELETE_TERM should receive 403 (REFACTOR-217 symmetric coverage)
+    - DELETE-half DISABLED-mode probe — anonymous DELETE succeeds against /api/dataentities/{id}/terms/{term_id}
+    - Activity-event no-op assertion — DELETE on already-unlinked term still produces TERM_ASSIGNMENT_UPDATED row with BEFORE=AFTER
+      state
+    - HARD-delete finality — no row left in data_entity_to_term after DELETE (the V0_0_76 migration's invariant)
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - TermAssignmentActivityHandler's 2× full-list re-query on every link write (REFACTOR-228)
+    - Same on every de-link write — symmetric overhead on the DELETE path
+  security:
+    state: PROBED-PINNING-BUG
+    covered:
+    - behaviour: Path-mismatch bug confirmed via anonymous successful link
+      pinned_by_probe_run: R-20260519T011344Z-P-005
+    uncovered:
+    - Cross-namespace term assignment unconstrained even with path fix (TEST-GAP-289)
+    - DELETE-half — anonymous DELETE succeeds via path-mismatch bug (REFACTOR-217 symmetric coverage)
+    - HARD-delete + mass-deletion attack — anonymous caller deletes ALL term-relations and corrupts taxonomy with no restore-from-row
+      path
+control_summary: |-
+  2 of 4 cells PROBED — integration (PROBED-PINNING-BUG) + security
+  (PROBED-PINNING-BUG). Batch K extends the chain with full TermServiceImpl
+  service-tier hop primary-source confirmation — the auto-link side-channel
+  (description-mention `[[ns:term]]` → INSERT `data_entity_to_term` with
+  `is_description_link=TRUE`) is the SECOND endpoint bypassing
+  `DATA_ENTITY_ADD_TERM`, and a SECOND independent SecurityConstants bug
+  surfaces (`/api/alerts/{id}/status` PUT gated by `DATASET_FIELD_ADD_TERM` —
+  copy/paste error, alert-status authorization is effectively misrouted).
+  Seven new drift facets surface: description-edit auto-link bypass +
+  misrouted alert-status permission + zero service-tier permission checks +
+  TermAssignmentActivityHandler triple-re-query (REFACTOR-228 primary-source) +
+  TAG_CREATE bypass via upsertTags + NAMESPACE_CREATE bypass via getOrCreate +
+  cross-namespace term pollution + asymmetric duplicate-INSERT handling
+  between data-entity and dataset-field link methods. The unit/performance
+  cells remain GAP — `TermServiceImpl` has ZERO direct test coverage
+  (TermServiceImplTest does not exist; `DataEntityServiceTest.java:80` mocks
+  TermService but never exercises it).
+
+  Batch N extends with repository-tier PRIMARY-SOURCE CONFIRMATION at
+  ReactiveTermRepositoryImpl (hop-3 — previously a coupling reference, now
+  fully resolved). Six NEW drift facets surface: (1) V0_0_76 vs V0_0_91
+  link-table schema asymmetry (term_to_term retains `deleted_at` while
+  sibling link tables had it dropped — either dead schema or missing filter);
+  (2) term_to_term.deleted_at is NEVER filtered at 7 distinct read sites
+  (lines 198-199, 227-231, 324-325, 345, 429-430, 448-454, 472-491, 510-523)
+  — a regression vector for any future soft-delete activation; (3)
+  hasDescriptionRelations parent-soft-delete corner — lines 415, 425 exclude
+  `DATA_ENTITY.STATUS = DELETED` from the existence guard, so a Term mentioned
+  only in a soft-deleted entity's description can be renamed/hard-deleted,
+  leaving a dangling `[[ns:term]]` reference on restore; (4) getTermDetailsDto
+  12-JOIN + 7 jsonArrayAgg + 4 countDistinct (lines 194-238) is the
+  TermPermissionExtractor HOT PATH invoked on every TERM-scoped authorized
+  request — Cartesian intermediate fan-out O(N×M×P×Q×R×S) before reduction,
+  no caching; (5) countByState unconditional FTS JOIN (line 361) creates
+  count-vs-list desynchronisation against findByState's conditional JOIN
+  (296-298); (6) listTermRefDtos fetchCount ignores the `updatedAt` date
+  filter (113-114, 133), producing wrong pagination ceiling. ZERO direct
+  test coverage at the repository tier (NamespaceServiceImplTest mocks
+  existsByNamespace only; no *RepositoryTest* class). The repository
+  policy-agnostic invariant is preserved — every business rule (rename
+  protection, duplicate prevention, FTS refresh orchestration) lives in
+  TermServiceImpl; the repository is a thin persistence shell.
+
+  Batch L extends the feature with the DELETE half PRIMARY-SOURCE CONFIRMED.
+  The SecurityConstants path-mismatch bug is symmetric — line 240-242
+  registers `/term/{term_id}` SINGULAR while openapi.yaml:1042 declares
+  `/terms/{term_id}` PLURAL — making DATA_ENTITY_DELETE_TERM equally
+  uncheckable. REFACTOR-217 now covers BOTH halves in one fix. Five new
+  drift facets surface: (1) SYMMETRIC DELETE path mismatch (auth uncheckable
+  on remove just like on add); (2) HARD-DELETE finality (migration
+  V0_0_76__term_relations_hard_delete dropped the soft-delete column +
+  irreversibly deleted any tombstoned rows; no audit-restore path beyond
+  the activity-event JSON state); (3) description-link protection silent
+  via API (UI hides the X button via WithPermissions + !isDescriptionLink
+  guards but API call to DELETE on a description-linked term returns 204
+  with no actual change — same misleading idempotence); (4) activity event
+  fires on no-op DELETE (@ActivityLog fires unconditionally; BEFORE=AFTER
+  state in audit log on zero-row deletion — degrades forensic
+  signal-to-noise ratio); (5) silent-204 on non-existent ids (no
+  NotFoundException translation). Combined with the path-mismatch bug,
+  the worst-case shape under DISABLED is: anonymous caller mass-deletes
+  every term-to-data-entity relation in the catalog, leaving only
+  activity-event JSON state as forensic trail; the HARD-delete finality
+  means there is no row-level restore. The unit/performance cells remain
+  GAP — neither addDataEntityTerm nor deleteTermFromDataEntity has
+  HTTP-level test coverage (`find ... -name 'DataEntityController*'`
+  + grep for `removeTermFromDataEntity` both returned zero matches).
+related_refactoring_scopes:
+- REFACTOR-217
+- REFACTOR-073
+related_test_gaps:
+- TEST-GAP-017
+related_doc_gaps:
+- DOC-GAP-001
+related_concepts:
+- Term Linkage
+- Permission (Authorization)
+related_retrospectives:
+- LSN-017
+related_probes: null
+probe_verifications:
+- probe_id: P-005
+  probe_run_id: R-20260519T023708Z-P-005
+  outcome: PASS
+  test_class: security
+  ran_at: 2026-05-19 02:37:08+00:00
+  ran_against_substrate_commit: ede5d277
+  verdict: all assertions passed
+  artefact: lineage/odd-platform/probe-runs/2026-05-19-P-005.yaml
+maintainer_curated: true

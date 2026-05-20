@@ -1,0 +1,460 @@
+name: User-Owner Mapping
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+- P-09
+description: |-
+  user_owner_mapping table row — the gate that turns an authenticated
+  principal (oidc_username + provider) into an Owner identity. Schema:
+  (owner_id, oidc_username, provider, deleted_at). The PRIMARY mechanism
+  for owner-scoped reads (getMyObjects family); also the per-data-entity
+  authorization Policy's anchor for 'is: dataEntity:owner' scoping.
+  **STRENGTHENED batch 2026-05-19K** — AuthIdentityProviderImpl sidecar
+  primary-source confirms the row's runtime consumer at
+  `AuthIdentityProviderImpl.java:50-53` (the fetchAssociatedOwner Mono
+  chain) and the case-sensitive `.eq()` lookup at
+  `ReactiveUserOwnerMappingRepositoryImpl.java:116-127`. NEW load-bearing
+  finding: the LOGIN_FORM ↔ LDAP cross-mode bleed is HIGH severity
+  (previously LOW-MEDIUM) — provider=null is the SAME lookup key for both
+  modes, and during auth-mode migration scenarios (a documented operator
+  use case) the second-mode user inherits the first-mode user's Owner.
+  ADDITIONAL: the S2sAuthenticationFilter hardcodes username='ADMIN'
+  (uppercase) and produces UsernamePasswordAuthenticationToken → falls
+  into the else-branch at line 32 → provider=null → if an operator named
+  a LOGIN_FORM/LDAP user 'ADMIN' (case-sensitive exact), the S2S caller
+  inherits that user's Owner-link (NEW HIGH-severity literal collision
+  invariant). The single-Mono lookup at fetchAssociatedOwner is the doc-side
+  invariant verbatim at "one user can be associated only with one owner
+  and vice versa" (WebFetched 2026-05-19 status 200) — schema enforcement
+  is application-side via clear-active-then-insert pattern, NOT a partial
+  unique index.
+
+  **STRENGTHENED BATCH N (2026-05-19N) — REPOSITORY-LAYER PRIMARY SOURCE
+  NOW PINNED.** ReactiveUserOwnerMappingRepositoryImpl
+  (`repository/reactive/repository/ReactiveUserOwnerMappingRepositoryImpl.java`,
+  128 lines) is the SQL primary source for every USER_OWNER_MAPPING read
+  and write. The class exposes six method-level operations:
+    - createRelation (line 41-51) — CLEAR-ACTIVE-THEN-INSERT pattern
+      via `deleteActiveRelationByOwner(ownerId).then(insert)`
+    - deleteRelation (line 54-62) — soft-delete by (oidc_username, provider)
+    - deleteActiveRelationByOwner (line 65-74) — soft-delete by owner_id
+    - getAssociatedOwner (line 77-85) — the LOAD-BEARING owner-scoping
+      primitive consumed by AuthIdentityProviderImpl.fetchAssociatedOwner
+    - isOwnerAssociated (line 88-96) — boolean existence consumed by
+      OwnerServiceImpl.delete cascade-block
+    - getUserRolesByOwner (line 99-114) — 4-way JOIN ROLE ← ROLE_TO_POLICY
+      ← OWNER_TO_ROLE → USER_OWNER_MAPPING; the AUTHORIZATION HOT PATH
+      consumed by RoleServiceImpl.getCurrentUserRoles
+
+  **NEW PRIMARY-SOURCE FINDINGS BATCH N**:
+    (a) **PROVIDER-NULL CROSS-MODE BLEED PRIMARY SOURCE PINNED AT SQL
+        LAYER** — getConditions helper at lines 116-127 builds
+        `OIDC_USERNAME.eq(oidcUsername) AND DELETED_AT.isNull() AND
+         (StringUtils.isNotEmpty(provider) ? PROVIDER.eq(provider) :
+         PROVIDER.isNull())`. The branch fires the IS NULL predicate
+        for BOTH null AND empty-string provider. (Strengthens
+        provider-null-cross-mode-bleed invariant from 1-sidecar to
+        2-sidecar with SQL-layer primary source.)
+    (b) **Cross-provider username row-duplication in external JOINs**
+        (NEW HIGH invariant) — FOUR sibling repositories
+        (ReactiveAlertRepositoryImpl, ReactiveActivityRepositoryImpl,
+        ReactiveOwnerAssociationRequestRepositoryImpl,
+        ReactiveOwnerRepositoryImpl) LEFT JOIN user_owner_mapping on
+        OIDC_USERNAME ONLY without the provider half of the compound
+        key. Two-row coexistence (alice, null) + (alice, GITHUB)
+        produces Cartesian-product row duplication in alert / activity
+        / owner-display read paths.
+    (c) **Soft-delete-only growth** — three "delete" methods are all
+        UPDATE statements setting deleted_at = generateNow(). No
+        `DELETE FROM user_owner_mapping` anywhere. Table grows
+        monotonically.
+    (d) **Clear-active-then-insert pattern** — createRelation issues
+        deleteActiveRelationByOwner(ownerId) FIRST, then INSERT.
+        UserOwnerMappingServiceImpl.createRelation ADDS an outer
+        clear by (username, provider). Two-step clear enforces both
+        partial unique indexes from V0_0_89:
+          - unique_deleted_at_per_owner ON (owner_id) WHERE
+            deleted_at IS NULL
+          - user_owner_mapping_oidc_username_provider_deleted_key ON
+            (oidc_username, provider) WHERE deleted_at IS NULL
+    (e) **No @ReactiveTransactional on multi-statement createRelation**
+        — the inner DELETE + INSERT chain via .then() is NOT atomic
+        across R2DBC connections; OwnerAssociationRequestServiceImpl
+        wraps in @ReactiveTransactional but UserOwnerMappingServiceImpl
+        does NOT.
+
+  Single-Mono lookup at fetchAssociatedOwner is the doc-side invariant
+  verbatim at "one user can be associated only with one owner and vice
+  versa" (WebFetched 2026-05-19 status 200) — schema enforcement is
+  application-side via the clear-active-then-insert pattern AND DB-side
+  via the two partial unique indexes added in V0_0_89.
+
+  **STRENGTHENED batch 2026-05-19-O (GithubUserHandler sidecar)** —
+  GitHub-specific identity-drift finding: the username field consumed
+  by USER_OWNER_MAPPING is GitHub's MUTABLE `login` string (per
+  GithubUserHandler.java:36 + line 56 default `adminAttribute = USER_LOGIN`).
+  GitHub allows free login renames at any time (the old name enters a
+  90-day escrow, then is released to others). A renamed user presents
+  `(alice2, github)` to AuthIdentityProviderImpl.fetchAssociatedOwner
+  on next login; the prior `(alice, github)` USER_OWNER_MAPPING row is
+  ORPHANED. NO id-based fallback. NO migration tool. NO live-doc warning.
+  Extends the F-011 `compound_key_silent_in_docs` drift facet to a new
+  failure mode: identity-drift-at-IDP, not just compound-key mapping or
+  auth-mode migration. HIGH severity per the GithubUserHandler sidecar
+  primary-source assessment.
+nodes:
+- odd-platform java DataEntityController controller-method:getMyObjects
+- odd-platform java service service:AuthIdentityProviderImpl
+- odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
+- odd-platform java auth handler:GithubUserHandler
+contributing_files:
+- odd-platform__java__DataEntityController__controller-method__getMyObjects.md
+- odd-platform__java__service__service__AuthIdentityProviderImpl.md
+- odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl.md
+- odd-platform__java__auth__handler__GithubUserHandler.md
+evidence:
+- getMyObjects.md:concepts.entities[USER_OWNER_MAPPING row]
+- getMyObjects.md:implicit_adrs.[0] (ADR-CANDIDATE-015 primary source)
+- getMyObjects.md:invariants[oidc_username+provider composite key; single Mono lookup]
+- |-
+  AuthIdentityProviderImpl.md:concepts.entities[USER_OWNER_MAPPING row at
+  ReactiveUserOwnerMappingRepositoryImpl.java:116-127] +
+  concepts.invariants[OAuth2 ONLY auth flow with non-null provider;
+  single-Mono one-Owner-per-user; case-sensitive .eq() lookup] +
+  implicit_adrs.[1,2] (OAuth2-only non-null provider as IDP-namespace
+  choice; single-Mono Owner contract reflecting doc-side at-most-one
+  invariant)
+- |-
+  AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[0,1]
+  (LOGIN_FORM/LDAP cross-mode bleed PRIMARY SOURCE; S2S 'ADMIN' literal
+  collision NEW HIGH severity)
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl.md (batch N — NEW REPOSITORY
+  LAYER PRIMARY SOURCE):
+    concepts.entities[USER_OWNER_MAPPING jOOQ Tables constant;
+      UserOwnerMappingPojo; OwnerPojo; RoleDto;
+      unique_deleted_at_per_owner partial unique index;
+      user_owner_mapping_oidc_username_provider_deleted_key partial
+      unique index]
+    + concepts.operations[createRelation; deleteRelation;
+      deleteActiveRelationByOwner; getAssociatedOwner; isOwnerAssociated;
+      getUserRolesByOwner; getConditions helper]
+    + concepts.invariants[1,2,3,4,5,6,7] (soft-delete only;
+      clear-active-then-insert; case-sensitive .eq(); empty/null
+      provider collapse; positional INSERT; DELETED_AT IS NULL filter
+      coverage; no race-window-safe primitives)
+    + implicit_adrs.[0,1,2,3] (soft-delete-only via deleted_at;
+      clear-active-then-insert; provider-null deliberate collapse;
+      service-layer-agnostic persistence)
+    + bugs_limitations_corner_cases.[0] (provider-null cross-mode bleed
+      PRIMARY SOURCE — HIGH) + [1] (cross-provider username row
+      duplication in external JOINs — MEDIUM)
+- |-
+  GithubUserHandler.md (batch O — NEW HANDLER-LAYER EVIDENCE):
+    concepts.invariants.[0] (username = GitHub mutable login, not stable id)
+    + bugs_limitations_corner_cases.[0] (GitHub username-rename orphans
+      USER_OWNER_MAPPING row — HIGH severity)
+    + security.known_security_gaps.[0] (silent loss of owner-linkage;
+      latent until rename happens; not detectable from server logs)
+contributors:
+- |-
+  getMyObjects (batch G): entities[USER_OWNER_MAPPING row];
+  invariants[oidc_username+provider composite key; single Mono lookup]
+- |-
+  AuthIdentityProviderImpl (batch K — STRENGTHENS): entities[USER_OWNER_MAPPING
+  row]; invariants[OAuth2 ONLY auth flow with non-null provider;
+  single-Mono one-Owner-per-user]; implicit_adrs[OAuth2-only non-null
+  provider; single-Mono Owner contract; stateless / no-cache by deliberate
+  omission]; bugs[LOGIN_FORM/LDAP cross-mode bleed HIGH; S2S 'ADMIN'
+  literal collision NEW HIGH]
+- |-
+  ReactiveUserOwnerMappingRepositoryImpl (batch N — STRENGTHENS — SQL
+  layer): the AUTHORITATIVE site for the (oidc_username, provider)
+  compound key contract. 128-line repository class implementing 6
+  public methods. PRIMARY-SOURCE confirmation for: provider-null
+  cross-mode bleed (SQL WHERE clause); soft-delete only (UPDATE-not-DELETE
+  pattern); clear-active-then-insert (two partial unique indexes from
+  V0_0_89); case-sensitive .eq() on both oidc_username AND provider;
+  DELETED_AT IS NULL filter coverage on every read path.
+  NEW finding: cross-provider username row-duplication in external
+  JOINs (NEW MEDIUM-going-on-HIGH invariant — 4 sibling repositories
+  violate the compound-key contract on display-name resolution).
+- |-
+  GithubUserHandler (batch O — STRENGTHENS — handler layer): the
+  identity-source for OAUTH2 + provider=github. Username = mutable
+  GitHub `login` string (not stable numeric id). Adds a NEW HIGH
+  severity failure mode: GitHub free-rename produces an orphan
+  USER_OWNER_MAPPING row that the (alice2, github) lookup cannot find;
+  the prior (alice, github) row remains but has no incoming auth.
+  Extension of the F-011 compound_key_silent_in_docs facet beyond
+  cross-mode migration to identity-drift-at-IDP. Mitigation paths:
+  (a) switch GithubUserHandler to use stable numeric `id` as the
+  username attribute (one-line code change); (b) document the rename-
+  risk on the live OAuth2/OIDC GitHub config page; (c) operator-side
+  admin tool to merge orphan rows; (d) accept the current silent
+  fail-open posture and document the recovery procedure (request a
+  new owner-association after rename).
+axes_present:
+- controllers
+- services
+- config_prefixes
+- repositories_reactive
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      Single mechanism: ReactiveSecurityContextHolder.getContext() →
+      Authentication.getName() + provider → SELECT user_owner_mapping
+      WHERE oidc_username=? AND deleted_at IS NULL AND (provider=? OR
+      provider IS NULL) → Owner. STRENGTHENED batch K: the runtime
+      resolver is now primary-source pinned at
+      AuthIdentityProviderImpl.java:23-53; the case-sensitive .eq()
+      lookup at ReactiveUserOwnerMappingRepositoryImpl.java:116-127 is
+      the load-bearing SQL.
+      **STRENGTHENED batch N**: the SQL primary source is now
+      independently pinned at the repository layer; the getConditions
+      helper IS the WHERE clause. End-to-end pinning: HTTP → service
+      (AuthIdentityProvider) → SQL (UserOwnerMappingRepo) is
+      consistent on the happy-path contract.
+      **STRENGTHENED batch O**: the GitHub identity-source primary
+      source confirms username = mutable GitHub `login` for
+      provider=github (consistent with the broader compound-key
+      contract; the bug is at the IDP-mutability angle, not the SQL
+      lookup correctness).
+  owner_scoping:
+    verdict: RESPECTS
+    detail: |-
+      Owner-id is the principal-derived parameter passed into the
+      OWNERSHIP JOIN at the SQL layer.
+      **STRENGTHENED batch N** — ReactiveUserOwnerMappingRepositoryImpl
+      is the persistence-layer enforcement of the owner-scoping
+      mechanism. Every owner-scoped read in the platform consumes the
+      OwnerPojo this repository's getAssociatedOwner returns. The
+      case-sensitive .eq() predicates at lines 119 and 122 are the
+      SQL-layer load-bearing component of the entire defence-in-depth
+      anchor-set pattern documented in ADR-CANDIDATE-015
+      (DataEntityController.getMyObjects sidecar batch G).
+  strengths:
+  - Composite-key (oidc_username, provider) correctly isolates owner identity across
+    OAuth2 providers
+  - 'Single Mono lookup per request — architectural posture: one user, one Owner identity'
+  - clear-active-then-insert pattern ensures only ONE active mapping per (user, provider)
+  - |-
+    **STRENGTHENED batch K**: the runtime resolver is a single chokepoint
+    at AuthIdentityProviderImpl — 15 callsites all funnel through three
+    Monos (getCurrentUser / getCurrentUserProviderRole /
+    fetchAssociatedOwner)
+  - |-
+    **STRENGTHENED batch N**: the SQL primary source has TWO partial
+    unique indexes from V0_0_89 as the DB-side safety net —
+    `unique_deleted_at_per_owner ON (owner_id) WHERE deleted_at IS NULL`
+    AND `user_owner_mapping_oidc_username_provider_deleted_key ON
+    (oidc_username, provider) WHERE deleted_at IS NULL`. Together they
+    enforce "at most one ACTIVE row per owner AND at most one ACTIVE
+    row per (username, provider)". The two-step clear-active pattern at
+    the service layer is the application-side complement.
+  weaknesses:
+  - |-
+    **LOGIN_FORM and LDAP both produce provider=null → cross-mode user-identity
+    bleed during auth.type migrations (HIGH severity — RAISED from previous
+    LOW-MEDIUM, batch K primary-source confirmation; SQL-LAYER PRIMARY-SOURCE
+    UPGRADED batch N)**. Two HIGH-severity scenarios:
+      (a) Migration LOGIN_FORM → LDAP retaining usernames silently inherits
+          old user-owner mappings without invalidation
+      (b) Concurrent LOGIN_FORM + LDAP deployments with overlapping
+          usernames silently collide
+    No mode-check, no warning log, no fail-fast.
+    (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[0] +
+    ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[0])
+  - |-
+    **S2S 'ADMIN' literal collision with operator-named users (NEW HIGH
+    severity, batch K)** — S2sAuthenticationFilter.java:31 hardcodes
+    username="ADMIN" (uppercase) → provider=null. If an operator created
+    a LOGIN_FORM/LDAP user 'ADMIN' (case-sensitive exact match), the S2S
+    caller resolves to THAT user's Owner. Case-sensitivity mitigates but
+    does not eliminate.
+    (AuthIdentityProviderImpl.md:bugs_limitations_corner_cases.[1])
+  - |-
+    **NEW MEDIUM batch N — Cross-provider username row-duplication in
+    external JOINs**. FOUR sibling repositories (Alert / Activity /
+    Owner / OwnerAssociationRequest) LEFT JOIN user_owner_mapping on
+    OIDC_USERNAME ONLY without the provider half of the compound key.
+    Two-row coexistence produces Cartesian-product row duplication in
+    alert / activity / owner-display read paths during cross-mode
+    deployments or auth-mode migrations.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[1]
+    + docs_link_semantic.doc_drift_findings.[3])
+  - |-
+    **NEW LOW batch N — Empty-string vs null provider indistinguishable**
+    — the `StringUtils.isNotEmpty(provider)` branch fires the IS NULL
+    predicate for BOTH null AND empty-string. The partial unique index
+    `user_owner_mapping_oidc_username_provider_deleted_key` IS on
+    (oidc_username, provider) so empty-string and null could theoretically
+    coexist (Postgres treats them as distinct values in unique
+    constraints). But the read path bypasses the empty-string row.
+    Unreachable rows; latent data-corruption surface.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[3])
+  - |-
+    **NEW MEDIUM batch N — Positional INSERT values; schema-evolution
+    fragility.** Line 45 passes values positionally
+    `.values(ownerId, oidcUsername, provider, DSL.val(null, DATE))`. A
+    future migration that adds a column BETWEEN existing columns would
+    silently break the INSERT. Plus a TYPE MISMATCH on deleted_at
+    (DSL.val(null, DATE) vs TIMESTAMP column).
+    (ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[4,5])
+  - |-
+    **NEW MEDIUM batch N — No @ReactiveTransactional on multi-statement
+    createRelation**. The inner DELETE + INSERT chain via .then() is NOT
+    atomic across R2DBC connections. UserOwnerMappingServiceImpl is also
+    NOT annotated; OwnerAssociationRequestServiceImpl IS annotated at
+    the entry method (so transitive callers are atomic within that
+    flow). If the UPDATE succeeds and the INSERT fails (partial unique
+    index violation), the user is left in an unmapped state.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:bugs_limitations_corner_cases.[6])
+  - |-
+    **NEW HIGH batch O — GitHub username-rename orphans USER_OWNER_MAPPING
+    row (latent identity-drift)**. The GithubUserHandler.java:36 + line
+    56 default `adminAttribute = USER_LOGIN` means the username consumed
+    by USER_OWNER_MAPPING for provider=github is GitHub's MUTABLE `login`
+    string, NOT the stable numeric `id`. GitHub allows free login renames
+    (90-day escrow, then re-released). A renamed user logs in as
+    (alice2, github); the prior (alice, github) row is ORPHANED. No
+    id-based fallback, no migration tool, no live-doc warning. The bug
+    is structural: the compound key is bound to a mutable IDP identifier,
+    so identity drift at the IDP silently breaks the binding. Operator
+    mitigations: (a) use GitHub's stable numeric `id` as the username
+    attribute (one-line code change in GithubUserHandler); (b) document
+    the rename-risk on the live OAuth2/OIDC GitHub config page;
+    (c) operator-side admin tool to merge orphan rows; (d) accept the
+    silent fail-open posture and document recovery (new owner-association
+    request after rename).
+    (GithubUserHandler.md (batch O):invariants.[0] +
+    bugs_limitations_corner_cases.[0] + security.known_security_gaps.[0];
+    canonicalisation candidate:
+    github-username-rename-orphans-user-owner-mapping batch O)
+  - DISABLED mode = no SecurityContext = empty Flux degradation indistinguishable
+    from owning-nothing
+  - No fail-fast for unlinked user — 200 OK with [] body is the only signal (silent
+    UX trap)
+  - Per-request principal lookup (no session cache) — multiplicative on /my call rate
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    **STRENGTHENED batch N — TWO HOT PATHS NOW SQL-PRIMARY-SOURCE PINNED**:
+      Hot path 1 — getAssociatedOwner — invoked by
+        AuthIdentityProviderImpl.fetchAssociatedOwner on every owner-
+        scoped read (15 distinct upstream callsites per
+        AuthIdentityProviderImpl audiences). Two-table JOIN at lines
+        79-84. Single page-load (Recommended + My Objects + My Alerts)
+        triggers 3-5 sequential identical queries.
+      Hot path 2 — getUserRolesByOwner — invoked transitively from
+        PolicyServiceImpl.getCurrentUserPolicies on EVERY authorized
+        HTTP request via the RBAC permission framework. 4-way JOIN
+        with jsonArrayAgg over policy column. This is the SINGLE
+        MOST-FREQUENT query against user_owner_mapping.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:performance.hot_paths.[0,1])
+  weaknesses:
+  - Per-request DB round-trip for principal lookup — short-lived session cache would
+    eliminate this for high-RPS callers
+  - |-
+    **STRENGTHENED batch K**: the per-request DB round-trip is multiplicative
+    across 15 callsites; a single page-load (catalog home rendering
+    Recommended + My Objects + My Alerts) triggers 3-5 sequential
+    identical queries.
+    (AuthIdentityProviderImpl.md:performance.hot_paths.[0])
+  - |-
+    **STRENGTHENED batch N** — the RBAC permission framework's
+    `policyService.getCurrentUserPolicies()` invokes getUserRolesByOwner
+    on EVERY authorized HTTP request. No caching at repository, service,
+    or extractor level. For a busy platform with N authorized req/s,
+    this is N+M DB calls (N for permission resolution, M ≪ N for
+    mutations). A short-TTL request-scoped or user-scoped cache would
+    significantly reduce DB load.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:performance.known_performance_gaps.[0])
+  - |-
+    **NEW LOW batch N — Soft-delete-only table growth.** Without
+    operator-driven pruning, the user_owner_mapping table grows
+    monotonically with every binding change. A platform with 1000 users
+    churning mappings monthly accumulates ~12,000 rows annually — small
+    enough that the partial unique indexes' WHERE-clause coverage keeps
+    query times bounded, but the operator may not know they can
+    `DELETE FROM user_owner_mapping WHERE deleted_at IS NOT NULL`
+    safely.
+    (ReactiveUserOwnerMappingRepositoryImpl.md:performance.known_performance_gaps.[1])
+notes: |-
+  STRENGTHENED batch 2026-05-19N — REPOSITORY-LAYER PRIMARY SOURCE
+  PINNED. The runtime resolver AuthIdentityProviderImpl (batch K) is now
+  paired with the SQL primary source ReactiveUserOwnerMappingRepositoryImpl
+  (batch N) — end-to-end pinning of the owner-scoping mechanism's
+  persistence layer:
+    HTTP layer — getMyObjects controller method (batch G)
+    Service layer — AuthIdentityProviderImpl (batch K)
+    Persistence layer — ReactiveUserOwnerMappingRepositoryImpl (batch N)
+    Identity-source layer (per-provider) — GithubUserHandler (batch O)
+
+  New invariants surfaced in batch N (each promoted to its own
+  invariant concept):
+    - LOGIN_FORM/LDAP provider=null cross-mode bleed — UPGRADED to
+      2-sidecar SQL primary source (batch N)
+    - Cross-provider username row-duplication in external JOINs
+      (NEW MEDIUM-going-on-HIGH invariant, batch N)
+    - Clear-active-then-insert user-owner binding (NEW operation —
+      see batch-N operations)
+
+  Existing batch K invariants preserved (each promoted to its own
+  invariant concept in prior batches):
+    - LOGIN_FORM/LDAP provider=null cross-mode bleed (NEW HIGH at batch K)
+    - S2S 'ADMIN' username literal collision (NEW HIGH at batch K)
+    - AuthIdentityProvider (per-request principal resolution chokepoint)
+      [new entity concept]
+    - Resolve Current Principal and Associated Owner [new operation]
+
+  Three DOC-NNN candidates flow from the new findings:
+    (a) Document the (username, provider) compound key shape on
+        user-owner-association doc page
+    (b) Document the auth-mode migration playbook on the authentication
+        doc page (audit user_owner_mapping for overlapping usernames
+        before migrating)
+    (c) Document the S2S username='ADMIN' literal on the S2S auth doc
+        page until the code-fix lands
+
+  **NEW batch N — TWO MORE DOC-NNN candidates**:
+    (d) Document the multi-row-per-oidc_username schema permission on
+        the user-owner-association doc page — operators' mental model
+        is "one user, one mapping" but the schema permits two-row
+        coexistence; an operator inspecting USER_OWNER_MAPPING needs
+        the docs
+    (e) Add an operator-facing audit-script in the operations playbook
+        to scan for cross-provider username overlap (e.g.
+        `SELECT oidc_username, COUNT(*) FROM user_owner_mapping WHERE
+         deleted_at IS NULL GROUP BY oidc_username HAVING COUNT(*) > 1`)
+
+  **NEW batch O — TWO MORE DOC-NNN candidates**:
+    (f) Document the GitHub username-rename risk on the OAuth2/OIDC
+        GitHub config page — operators need to know that
+        `user-name-attribute: login` (the default) binds USER_OWNER_MAPPING
+        to a mutable IDP identifier. Suggest using `id` as the username
+        attribute for stable identity binding.
+    (g) Add an operator-recovery procedure for orphan USER_OWNER_MAPPING
+        rows post-rename: (1) operator detects rename via business
+        channel; (2) operator either re-creates the association request
+        with the new username OR runs a manual UPDATE to migrate the
+        owner_id binding from (old_login, github) to (new_login, github).
+        Suggest adding admin tooling at /api/owner_association_request
+        to support this workflow.
+
+  Cross-link to F-011 (Principal-to-Owner Resolution): batch O confirms
+  the GitHub identity-source angle of F-011's compound_key_silent_in_docs
+  facet. The drift facet now has THREE distinct manifestations:
+  (1) cross-mode migration (LOGIN_FORM ↔ LDAP, batch K + N),
+  (2) S2S 'ADMIN' literal collision (batch K),
+  (3) GitHub free-rename identity drift (batch O — NEW).
+  Same facet, different surface; each requires distinct operator
+  awareness + distinct mitigation.

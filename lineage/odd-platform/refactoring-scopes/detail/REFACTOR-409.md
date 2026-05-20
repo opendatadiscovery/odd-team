@@ -1,0 +1,10 @@
+- **REFACTOR-409** (NEW 2026-05-19O): Azure end-session redirect has NO `state` parameter — `post_logout_redirect_uri` + `client_id` are the only query params (lines 40-41). RFC 7636 + OIDC RP-Initiated Logout 1.0 §5 recommends `state` to bind the logout request to the user session and prevent CSRF on the post-logout redirect. The platform does not generate one
+  - **Category**: missing-csrf
+  - **Surfaced by**:
+    - `AzureLogoutSuccessHandler.md:security.known_security_gaps.[3]` (LOW)
+  - **Statement**: `AzureLogoutSuccessHandler.java:38-44` constructs the Azure end-session URL with `post_logout_redirect_uri` + `client_id` query parameters only. NO `state` parameter. RFC 7636 (PKCE) + OIDC RP-Initiated Logout 1.0 §5 RECOMMEND a `state` parameter to bind the logout request to the user session and prevent CSRF on the post-logout redirect. The platform does not generate one. Risk: an attacker who induces the user to follow a logout link with a crafted state can replay the post-logout redirect (low severity because the local session is already invalidated; no auth bypass). The omission is shared across all 5 sibling handlers (REFACTOR-405 captures the same shape for Cognito).
+  - **Evidence**: `AzureLogoutSuccessHandler.java:38-44` (no state param) + RFC OIDC RP-Initiated Logout 1.0 §5 (state RECOMMENDED)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-132 NEW (per-provider revocation strategy) + ADR-CANDIDATE-133 NEW (post-logout redirect URI inbound-request-derived) — the broader logout-flow ADRs do not address CSRF; the project-wide absence is the same shape as REFACTOR-405.
+  - **Proposed remedy**: Same as REFACTOR-405 — add a generated `state` parameter to the logout handler's query-param construction. Apply to all 5 sibling handlers (or document the project-wide trade-off). Composed with REFACTOR-405 — same fix shape.
+  - **Severity rationale**: LOW — low-severity attack vector; local session is already invalidated.
+  - **Suggested backlog grouping**: `OAuth2 hardening sprint` (consolidate with REFACTOR-405 into one project-wide logout-CSRF fix)

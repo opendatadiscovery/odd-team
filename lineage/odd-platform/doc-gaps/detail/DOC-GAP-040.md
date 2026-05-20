@@ -1,0 +1,7 @@
+- **DOC-GAP-040**: `AuthorizationManagerCondition` is unwired dead code — Authorization page describes the framework as if a centralised condition gates it
+  - **Category**: drift
+  - **Surfaced by**: `AuthorizationManagerCondition@L11.md:bugs_limitations_corner_cases.[0]` (MEDIUM) + `:security.known_security_gaps.[0]` (MEDIUM); `concepts.yaml:entities[Auth Mode]`.
+  - **Evidence**: grep returns only the file's own path 2026-05-10; no `@Conditional(AuthorizationManagerCondition.class)` anywhere. Authorization wiring is per-config `@ConditionalOnProperty(value="auth.type", havingValue="OAUTH2"|"LDAP")` directly. Triangulated by 2026-05-12C OAuthSecurityConfiguration + LDAPSecurityConfiguration sidecars — both wire `new AuthorizationCustomizer(...)` directly at the per-config level, confirming the Condition class is vestigial.
+  - **Proposed doc action**: Primarily code-hygiene (drive `/log-issue odd-platform`); doc-side is covered by DOC-GAP-039.
+  - **Cross-references**: DOC-GAP-039.
+  - **Severity rationale**: MEDIUM.

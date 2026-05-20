@@ -1,0 +1,32 @@
+gap_id: TEST-GAP-540
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveTagRepositoryImpl"
+  - "odd-platform java service service:TagServiceImpl"
+pillars_affected: [P-01, P-10]
+surfaced_by:
+  - "ReactiveTagRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[1]"
+  - "ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[0] (TOCTOU between listByNames and bulkCreate)"
+  - "ReactiveTagRepositoryImpl.md:tests_coverage_semantic.gaps.[2]"
+behaviour: |-
+  **TOCTOU race between `listByNames` and `bulkCreate` in `TagServiceImpl.getOrCreateTagsByName`** — the service calls `listByNames(tagNames)` to filter existing names, then `bulkCreate(tagsToCreate)` for the remainder. Between these two reactor stages, another caller can insert the same novel name. In PostgreSQL's READ COMMITTED isolation, the `listByNames` snapshot does NOT see uncommitted INSERTs from a concurrent TX, so the second caller will attempt `bulkCreate` with the now-conflicting name, hit `tag_name_unique`, and receive `UniqueConstraintException("Tag with this name already exists")`. The user sees a 500-level error on a normal-looking PUT request. There is NO caller-side retry of `listByNames` after the conflict. The `ingestData` upsert path is safe; the `bulkCreate` path is NOT.
+test_class: missing-integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplConcurrencyTest.java"
+  name: "testBulkCreate_ConcurrentDuplicateName_ThrowsUniqueConstraintException_pinsTOCTOU"
+evidence:
+  - "ReactiveTagRepositoryImpl.md says (uncovered_behaviours.[1]): 'Concurrent novel-name race — two parallel ingestData calls with overlapping names.'"
+  - "ReactiveTagRepositoryImpl.md says (uncovered_behaviours.[2]): 'Concurrent bulkCreate race — two parallel bulkCreate with the same novel name. The expected outcome is UniqueConstraintException from one caller.'"
+  - "ReactiveTagRepositoryImpl.md says (bugs_limitations_corner_cases.[0]): 'between these two reactor stages, another caller can insert the same novel name. The user sees a 500-level error on a normal-looking PUT request.' severity: HIGH"
+  - "TagServiceImpl.java:80-86 + TagServiceImpl.java:144-159 (the broken read-then-write path)"
+  - "ReactiveAbstractCRUDRepository.java:113-126 (inherited bulkCreate — no onConflict)"
+cross_references:
+  - "F-001"
+  - "REFACTOR-223 (Tag side-door)"
+  - "REFACTOR-NNN candidate: SEC-NNN authorization-audit sprint clustering Tag + Owner + Title + Term auto-create-on-miss family"
+proposed_action: |-
+  Testcontainers test with concurrent reactor pipelines. (a) Two parallel Monos calling getOrCreateTagsByName(["NovelTag"]) at the same time (Mono.zip). (b) Assert ONE caller succeeds with the persisted Tag id; the OTHER caller surfaces UniqueConstraintException (the TOCTOU pin). (c) Test comment: 'PINS the TOCTOU contract. Future fix using INSERT … ON CONFLICT … DO NOTHING / DO UPDATE (or SELECT FOR UPDATE before INSERT) would FLIP this test to expect both callers to get the same id.' Also pair with the ingestData equivalent test that SHOULD succeed (proves ingestData's upsert is safe while bulkCreate is not).
+batch: 2026-05-19-N
+feature_id: F-001

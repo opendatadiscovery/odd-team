@@ -1,0 +1,9 @@
+- **REFACTOR-149** (NEW 2026-05-12D): `lockAtMostFor="14m"` dangerously close to `fixedRate=15m` — under contention or a long cascade, the lock can release before the cycle commits, allowing a SECOND instance to acquire the lock while the first is still finalising. ShedLock's contract is best-effort
+  - **Category**: lock-window-race
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md:performance.known_performance_gaps.[2]` (LOW)
+  - **Statement**: `HousekeepingJobManager.java:25-26` declares `@Scheduled(fixedRate=15, MINUTES)` + `@SchedulerLock(name="housekeepingJob", lockAtLeastFor="14m", lockAtMostFor="14m")`. The 14-minute upper bound is dangerously close to the 15-minute schedule: a job that runs for 14 minutes 1 second releases the lock prematurely and a second instance can acquire it for the next cycle while the first is still committing. Safer setting: `lockAtMostFor` >= 2 × fixedRate (e.g. `30m` for a 15-min rate).
+  - **Evidence**: `HousekeepingJobManager.java:25-26` (the ratio)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Raise `lockAtMostFor` to `"30m"` (2x the fixedRate) for safety. Alternatively, separate the slow cascade (DataEntityHousekeepingJob) from the fast cycle and run them with different cadences + lock windows.
+  - **Severity rationale**: LOW — theoretical; would manifest only with a 14m+ cascade. Capacity-planning concern.
+  - **Suggested backlog grouping**: `Housekeeping performance sprint`

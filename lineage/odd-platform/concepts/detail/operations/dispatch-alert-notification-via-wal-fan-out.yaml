@@ -1,0 +1,149 @@
+name: Dispatch Alert Notification via WAL Fan-Out
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+description: |-
+  **NEW OPERATION, batch 2026-05-19K** — the load-bearing
+  outbound-notification dispatch operation. Per WAL message received by
+  `NotificationSubscriber` from the named Postgres replication slot, the
+  dispatcher (`AlertNotificationMessageProcessor.process(decodedMessage)`
+  at `notification/processor/AlertNotificationMessageProcessor.java:23-36`)
+  performs three steps:
+    1. **Translate** — `messageTranslator.translate(message)` enriches the
+       DecodedWALMessage into an AlertNotificationMessage via a
+       multi-statement jOOQ read: alert_chunk rows + alerted-data-entity
+       join (owner / namespace / data_source) + recursive downstream-lineage
+       CTE bounded by `notifications.message.downstream-entities-depth`.
+       UNCAUGHT — translation failures throw `IllegalArgumentException`
+       (unknown alert-type code) or `IllegalStateException` (missing
+       alerted-entity row); both propagate OUT of process() to
+       NotificationSubscriber's outer catch which logs and waits 10s
+       before re-acquiring the lock (poison-message WAL replay loop).
+    2. **Fan-out** — synchronous for-loop over `List<NotificationSender>`
+       at lines 26-30 calling `.send(notificationMessage)` on each
+       registered sender. Spring's bean-collection iteration order is
+       package-scan-order-dependent and undefined; operators cannot
+       predict whether Slack runs before email or vice versa.
+    3. **Per-sender catch-and-continue** — `try { notificationSender.send(...);
+       } catch (NotificationSenderException e) { log.error(...); }` at
+       lines 29-35. The loop continues to the next sender on
+       checked-exception failure. EmailNotificationSender violates this
+       contract by throwing `RuntimeException` (NOT NotificationSenderException),
+       bypassing the catch and aborting fan-out mid-message.
+  After dispatch returns (successfully or via exception), NotificationSubscriber
+  advances `setAppliedLSN(lsn).setFlushedLSN(lsn)` UNCONDITIONALLY at
+  NotificationSubscriber.java:83-84 — the dispatcher has no way to signal
+  "do not advance LSN". The architectural anchor: this is the platform's
+  PRIMARY outbound-delivery operation — every alert raised in the platform
+  (by ingestion-side schema-diff detection, by AlertManager webhook, by
+  manual user action) flows through THIS operation to reach external
+  channels.
+nodes:
+- odd-platform java service service:NotificationsDispatcher
+contributors:
+- |-
+  NotificationsDispatcher (AlertNotificationMessageProcessor) batch K:
+  concepts.operations[translate-decoded-WAL-to-AlertNotificationMessage;
+  fan-out-sequential-per-channel; per-sender exception catch-and-log;
+  continue-on-channel-failure] + concepts.invariants[leader-elected;
+  conditional-on-notifications; sequential-fan-out; per-sender-catch-and-continue;
+  unconditional-broadcast; translate-uncaught] + implicit_adrs[0,1,2,3]
+  (per-channel catch-and-continue; sequential synchronous fan-out;
+  dispatcher conditional, disabled by default; translate-before-fan-out
+  atomic with bifurcated fail-loud vs fail-soft)
+evidence:
+- |-
+  NotificationsDispatcher.md:concepts.operations (PRIMARY SOURCE) —
+  evidence: AlertNotificationMessageProcessor.java:23-36 (the three-step
+  body) + AlertNotificationMessageTranslator.java:60-86 (the translate
+  step's multi-statement jOOQ read) + AbstractNotificationSender.java:16-30
+  (the .send() base class)
+- |-
+  NotificationsDispatcher.md:concepts.invariants (the seven invariants
+  that constrain the operation)
+- |-
+  NotificationsDispatcher.md:implicit_adrs.[0,1,2,3] (the four
+  architectural decisions embedded in this operation)
+axes_present:
+- services
+- config_prefixes
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - INTERNAL_ONLY
+  authorization_consistency:
+    verdict: BYPASSES
+    detail: |-
+      Operates with full platform privileges (DSLContext + JavaMailSender +
+      HttpClient with the platform's process-level credentials). No
+      @PreAuthorize, no programmatic permission check, no per-channel
+      filter, no per-recipient filter. Every configured Slack/webhook/email
+      channel receives every alert regardless of which Owner is attached.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      AlertNotificationMessage payload INCLUDES dataEntity.owners[] but
+      the dispatcher does NOT consult them for routing.
+  strengths:
+  - Disabled by default — operators must opt in via
+    `notifications.enabled=true` AND configure at least one channel
+  - Per-channel URL-presence activation — absence of a channel-specific
+    URL means no sender bean and no delivery (silent no-op for that
+    channel)
+  weaknesses:
+  - Translation failures → poison-message WAL replay loop
+  - Exception-type asymmetry — email RuntimeException bypasses
+    per-sender catch and aborts fan-out
+  - No per-channel filtering, no severity gate, no owner-scoping at
+    the dispatcher layer — every alert reaches every channel
+  - No delivery audit / DLQ / retry — failed deliveries logged only
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - |-
+    Per WAL message: translate() runs multi-statement jOOQ read +
+    recursive downstream-lineage CTE; sequential for-loop calls
+    .send() on every registered sender (synchronous HTTP/SMTP).
+    End-to-end per-alert latency ≈ (DB roundtrips for translation) +
+    Σ (per-channel network RTT).
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-thread WAL consumer; no batching; one HTTP/SMTP roundtrip
+      per alert per channel.
+  scaling_shape:
+    verdict: STATEFUL_LOCKED
+    detail: Cluster-wide single active subscriber via Postgres advisory lock
+      id 100; horizontal scaling = exactly one active dispatcher.
+notes: |-
+  NEW operation captured in batch 2026-05-19K. The dispatch operation is
+  the runtime that implements every claim on the live
+  `/features/active-platform-features/notifications` page. The architectural
+  decisions embedded in it (catch-and-continue per channel; sequential
+  fan-out; translate-before-fan-out atomic) are deliberate trade-offs
+  the maintainer chose for simplicity over robustness.
+
+  Cross-cutting connections:
+    - Pairs with the "WAL Consumer + Postgres Replication Slot" entity
+      concept — that entity captures the durability mechanism; this
+      operation captures the dispatch step that runs on top of it
+    - Pairs with the "Notifications" entity concept (existing) — that
+      entity captures the operator-facing config + sender chain;
+      this operation captures the dispatch runtime
+    - Pairs with the "Receive AlertManager Webhook" operation — both
+      involve the AlertManager → ALERT-table → WAL pipeline; this
+      operation is the OUTBOUND step
+    - Pairs with the "Apply alert actions (discriminated-union dispatch)"
+      operation — that's the INBOUND alert-state-mutation step; this is
+      the OUTBOUND alert-notification step. The two together form the
+      Alert subsystem's WAL-driven event chain.
+
+  Three DOC-NNN candidates flow from this operation:
+    (a) Document the three-step dispatch flow on the live notifications
+        page (currently the page describes the BEHAVIOUR — fan-out, per-channel
+        failure — but does not name the implementation site or the
+        translate-then-fan-out order)
+    (b) Document the operator's responsibility to monitor for
+        poison-message replay (no Prometheus metric ships today; would
+        be a future enhancement)
+    (c) Document the exception-type asymmetry caveat OR fix the code

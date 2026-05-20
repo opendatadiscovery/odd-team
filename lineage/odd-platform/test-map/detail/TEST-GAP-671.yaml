@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-671
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveDataSourceRepositoryImpl"
+pillars_affected: [P-10, P-08]
+surfaced_by:
+  - "ReactiveDataSourceRepositoryImpl.md:concepts.invariants.[3] (The partial-merge contract on UPSERT is NOT enforced at this repository — bulkUpdate writes ALL non-non-updatable columns)"
+  - "ReactiveDataSourceRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[9] (bulkUpdate writes ALL non-non-updatable columns — pin the SQL-tier behaviour)"
+  - "ReactiveDataSourceRepositoryImpl.md:coherence_check.strengthens.[3] (REFACTOR-422 — silent-no-propagation)"
+behaviour: |-
+  **Service-bypass attack surface: the repository's inherited `bulkUpdate` faithfully writes ANY non-non-updatable column the caller supplies — the "only name + description" narrowing is a SERVICE-TIER convention enforced by `DataSourceIngestionServiceImpl.prepareForUpdate`** (lines 86-88: `new DataSourcePojo(a).setName(i.getName()).setDescription(i.getDescription())`). The repository's `bulkUpdate` (inherited at `ReactiveAbstractCRUDRepository.java:128-142` → `updateMany` at lines 203-223) builds the SET clause from `recordTable.fields()` MINUS `getNonUpdatableFields()` (id, created_at, deleted_at per `ReactiveAbstractSoftDeleteCRUDRepository.java:113-117`). Every other column (name, oddrn, description, namespace_id, collector_id, token_id, updated_at) is in the SET clause. **A service-bypassing caller invoking `dataSourceRepository.bulkUpdate(pojoListWithChangedCollectorId)` DIRECTLY could write ANY column on `data_source`.** This is the load-bearing refinement to ADR-CANDIDATE-142: the partial-merge contract lives ONE LAYER above the persistence. A future maintainer "improving" the API to expose a bulk-update endpoint without going through `prepareForUpdate` would silently break the cross-collector preservation invariant (a collector B's payload could rebind ODDRN X from collector A to collector B). No test exists at any layer pinning this contract.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataSourceRepositoryBulkUpdateContractTest.java"
+  name: "bulkUpdate_writesAllNonNonUpdatableColumns_pinsServiceTierNarrowingConvention"
+evidence:
+  - "ReactiveDataSourceRepositoryImpl.md says (concepts.invariants.[3]): 'The partial-merge contract on UPSERT is NOT enforced at this repository. bulkUpdate (inherited at ReactiveAbstractCRUDRepository.java:128-142 → updateMany at 203-223) builds the SET clause from recordTable.fields() MINUS getNonUpdatableFields() (id, created_at, deleted_at). Every other column is in the SET clause. The narrowing to ONLY name + description is enforced by DataSourceIngestionServiceImpl.prepareForUpdate (lines 74-92).'"
+  - "ReactiveAbstractCRUDRepository.java:128-142, 203-223 (the bulkUpdate primitive)"
+  - "ReactiveAbstractSoftDeleteCRUDRepository.java:113-117 (the non-updatable-fields override)"
+  - "DataSourceIngestionServiceImpl.java:86-88 (the prepareForUpdate narrowing — copy-construct + override name+description)"
+cross_references:
+  - "REFACTOR-422 (silent-no-propagation — strengthened by this finding)"
+  - "REFACTOR-423 (silent overwrite of operator UI edits)"
+  - "REFACTOR-424 (silent namespace drop)"
+  - "ADR-CANDIDATE-142 (the partial-merge ADR — load-bearing refinement)"
+  - "F-008 (P-10:F-001 Batch Ingestion)"
+proposed_action: |-
+  Repository-layer integration test. (a) Seed live datasource: `(id=1, name='snowflake-prod', oddrn='//snow/prod', description='original desc', namespace_id=10, collector_id=100, token_id=1000)`. (b) Construct a service-bypassing pojo: `new DataSourcePojo().setId(1).setName('snowflake-prod').setOddrn('//snow/prod').setDescription('new desc').setNamespaceId(99).setCollectorId(999).setTokenId(9999)` (deliberately changes namespace_id + collector_id + token_id). (c) Call `dataSourceRepository.bulkUpdate(List.of(pojo))` DIRECTLY (bypassing the service). (d) Read the row back. Assert: `namespace_id == 99` (CHANGED), `collector_id == 999` (CHANGED), `token_id == 9999` (CHANGED). (e) Pin the CONTRACT — the partial-merge protection is a SERVICE-tier guard, NOT a repository-tier guard. (f) Add a `// REGRESSION-PIN — bulkUpdate accepts ANY non-non-updatable column overwrite. The "only name + description" narrowing lives at DataSourceIngestionServiceImpl.prepareForUpdate. A future bulk-update endpoint that bypasses that mapper would silently break cross-collector preservation. REFACTOR-NNN could elevate the narrowing to the repository tier via a typed UpdateMask parameter.` comment block.
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001", "P-08:F-NN-Datasources-tab"]
+batch: 2026-05-20-R
+feature_id: F-008

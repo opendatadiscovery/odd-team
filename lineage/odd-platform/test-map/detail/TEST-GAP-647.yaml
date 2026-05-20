@@ -1,0 +1,34 @@
+gap_id: TEST-GAP-647
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform ts react-component component:OwnersList"
+  - "odd-platform java OwnerController controller-method:updateOwner"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "OwnersList.md:bugs_limitations_corner_cases.[5] (Empty-roles destructive UPDATE is fully reachable from the UI — three clicks, no warning — severity HIGH)"
+  - "OwnersList.md:security.known_security_gaps.[0] (Empty-roles destructive UPDATE reachable from UI in three clicks — NO confirmation modal — severity HIGH)"
+  - "OwnersList.md:coherence_notes (strengthens F-019 empty_roles_field_silently_destroys_bindings — escalates from API-consumer-only hazard to UI-REACHABLE-DESTRUCTIVE-DEFAULT)"
+behaviour: |-
+  **CRITICAL: empty-roles destructive UPDATE is UI-reachable in three clicks (elevation of TEST-GAP-622 from API-only to UI-operator-reachable).** OwnerForm.tsx form validation requires non-blank `name` ONLY; `roles` has NO validation rules (`OwnerForm.tsx:40-43` — `useFieldArray` with no validation). The Save button (`OwnerForm.tsx:108-117`) is disabled only by `!formState.isValid` which checks ONLY the name rule. An operator who removes every role TagItem via the `onRemoveClick={handleRemove(idx)}` X-icon (line 95-103) can still submit. The resulting `OwnerFormData` carries `roles: []`. Per F-019 batch-P `OwnerServiceImpl.update`, this triggers `deleteOwnerRelationsExcept(ownerId, []).then(createRelations(ownerId, []))` — DELETES all role-bindings, no audit log, no recovery. **THE UI HAS A CONFIRMATION MODAL ON DELETE (which is REVERSIBLE — soft-delete + name re-use) BUT NO CONFIRMATION ON EDIT (which is IRREVERSIBLE — role bindings hard-deleted)**. The UX asymmetry inverts the actual destructiveness. Flow: (1) Edit owner row → opens OwnerForm with existing roles as TagItems; (2) click X on each TagItem; (3) click Save (enabled because name is unchanged and valid). Three clicks, NO confirmation modal, NO before/after diff, NO warning banner, NO audit log entry. Combined with TEST-GAP-622 (the API-side destructive-default) and TEST-GAP-238 family (Owner audit-silence), this is the operator-facing trigger for silent privilege removal. NO test asserts (a) `OwnerForm.formState.isValid` becomes `true` after removing all role TagItems; (b) the Save button is enabled in that state; (c) the submit fires `updateOwner({ ownerId, ownerFormData: { name, roles: [] } })`; (d) NO ConfirmationDialog is mounted (regression-pin: future fix that adds a confirmation modal breaks this test).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/Management/OwnersList/OwnerForm/__tests__/OwnerForm.integration.test.tsx (NEW file)"
+  name: "empty_roles_destructive_update_is_reachable_in_three_clicks_no_confirmation"
+evidence:
+  - "OwnersList.md says (bugs_limitations_corner_cases.[5]): 'Empty-roles destructive UPDATE is fully reachable from the UI — three clicks, no warning. Flow: (1) Edit on an Owner row → opens OwnerForm with existing roles as TagItems; (2) click X on each TagItem (onRemoveClick={handleRemove(idx)}); (3) click Save (enabled because formState.isValid only checks name). The submitted OwnerFormData carries roles: []. Per F-019 batch-P OwnerServiceImpl.update, this triggers deleteOwnerRelationsExcept(ownerId, []).then(createRelations(ownerId, [])) — DELETES all role-bindings (no audit, no recovery). NO confirmation modal, NO before/after diff, NO warning banner. severity: HIGH'"
+  - "OwnersList.md says (security.known_security_gaps.[0]): 'Empty-roles destructive UPDATE reachable from UI in three clicks — NO confirmation modal. An operator (or anyone shoulder-surfing an operator's session) can strip all roles from any Owner with zero confirmation. Combined with the no-audit-log gap (F-019 trinity), the role-strip leaves NO trace anywhere except the owner_to_role row count delta. severity: HIGH'"
+  - "OwnersList.md says (coherence_notes): 'The batch-P F-019 finding (empty roles payload on PUT silently destroys all role bindings) escalates from API-consumer-only hazard, UI in practice always sends the current roles list to UI-REACHABLE-DESTRUCTIVE-DEFAULT with this sidecar's evidence.'"
+cross_references:
+  - "TEST-GAP-622 (API-side destructive-empty-roles — this entry is the UI-axis elevation, strengthens TEST-GAP-622)"
+  - "F-019 (P-08:F-003 Owner Lifecycle Management, drift facet empty_roles_field_silently_destroys_bindings)"
+  - "REFACTOR-425 (destructive empty-roles UPDATE — UI form does NOT force role selection)"
+  - "TEST-GAP-238 (Owner audit-silence — compounds the irreversibility)"
+proposed_action: |-
+  Stand up `OwnerForm.integration.test.tsx` test `empty_roles_destructive_update_is_reachable_in_three_clicks_no_confirmation`. Mount OwnerForm pre-seeded with an existing Owner `{ id: 1, name: 'Alice', roles: [{id: 10}, {id: 20}] }`; assert formState.isValid initially true; click the X icon on the first role TagItem; assert formState.isValid REMAINS true (regression-pin against future role-required validation); click the X on the second; assert isValid still true; assert Save button is enabled; assert NO ConfirmationDialog component is mounted in the DOM (regression-pin: future fix that adds a confirmation modal breaks this test, forcing intentional re-authoring); click Save; assert `updateOwner({ ownerId: 1, ownerFormData: { name: 'Alice', roles: [] } })` is dispatched. The pin freezes the CURRENT dangerous UX; a fix that adds role-required validation OR a confirmation modal will break the test AND surface to /review for explicit security-pillar approval. Pair with `delete_owner_has_confirmation_dialog_demonstrating_ux_asymmetry` test that pins the existing Delete-confirmation modal on EditableOwnerItem, surfacing the asymmetry side-by-side.
+related_features: [F-019, F-006]
+related_pillar_features: ["P-08:F-003", "P-09:F-001"]
+related_refactors:
+  - "REFACTOR-425 (UI-reachable destructive UPDATE)"
+batch: 2026-05-20-Q
+feature_id: F-019

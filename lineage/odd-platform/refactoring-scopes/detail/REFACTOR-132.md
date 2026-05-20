@@ -1,0 +1,9 @@
+- **REFACTOR-132** (NEW 2026-05-12C): `notifications.message.downstream-entities-depth` is a runtime config key the POJO does NOT model — consumed via raw `@Value` in `NotificationConfiguration#alertNotificationMessageTranslator`. The `@ConfigurationProperties` surface is incomplete vs the actual config-key namespace
+  - **Category**: no-config-field
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[1]` (severity LOW)
+  - **Statement**: `NotificationConfiguration.java:116-117` reads `notifications.message.downstream-entities-depth` via `@Value` but `NotificationsProperties` has no `message` sub-class. The `@ConfigurationProperties` surface is missing this key.
+  - **Evidence**: `NotificationConfiguration.java:116-117` + `NotificationsProperties.java` (no `message` sub-class)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-040 (Notifications off-by-default) implies the POJO should be complete.
+  - **Proposed remedy**: Add a `message: MessageProperties` nested class on `NotificationsProperties` with `downstreamEntitiesDepth: Integer`. Refactor the `@Value` injection to consume from the typed POJO.
+  - **Severity rationale**: LOW — config-completeness; hygiene.
+  - **Suggested backlog grouping**: `Notifications hardening`

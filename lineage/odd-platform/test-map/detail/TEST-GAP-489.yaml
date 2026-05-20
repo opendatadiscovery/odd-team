@@ -1,0 +1,36 @@
+gap_id: TEST-GAP-489
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataEntityController controller-method:deleteTermFromDataEntity"
+pillars_affected: [P-06, P-09]
+surfaced_by:
+  - "deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[0] (HEADLINE: SecurityRule path mismatch silently disables DATA_ENTITY_DELETE_TERM authorization)"
+  - "deleteTermFromDataEntity.md:security.known_security_gaps.[0] (Path-pattern mismatch silently disables DATA_ENTITY_DELETE_TERM enforcement)"
+  - "deleteTermFromDataEntity.md:tests_coverage_semantic.uncovered_behaviours.[2] (Authorization regression — SAME TEST GAP as addDataEntityTerm TEST-GAP-017)"
+  - "deleteTermFromDataEntity.md:implicit_adrs.[3] (Per-data-entity authorization VIA SecurityRule registration — DESIGN intent NOT current behaviour)"
+behaviour: |-
+  REFACTOR-217 DELETE-half regression-pin (CRITICAL — DATA_ENTITY_DELETE_TERM bypass primary-source confirmed). The SYMMETRIC counterpart of the addDataEntityTerm path-mismatch (TEST-GAP-017). SecurityConstants.java:240-242 registers `new PathPatternParserServerWebExchangeMatcher("/api/dataentities/{data_entity_id}/term/{term_id}", DELETE)` (SINGULAR `term`); openapi.yaml:1042 declares the operation path as `/api/dataentities/{data_entity_id}/terms/{term_id}` (PLURAL); the controller @Override (DataEntityController.java:158-163) inherits the plural path from generated DataEntityApi. AuthorizationCustomizer.customize (AuthorizationCustomizer.java:24-30) only fires the permission check when `rule.matcher()` matches the request — the singular matcher NEVER matches the plural request path. The no-match fallback at line 29-30 is `.pathMatchers("/**").authenticated()`. Net effect: ANY authenticated user under LOGIN_FORM/OAUTH2/LDAP can DELETE any term-to-data-entity relation regardless of their Policy set. The UI gates the X button via `WithPermissions permissionTo={Permission.DATA_ENTITY_DELETE_TERM}` (TermItem.tsx:48), but UI gating is client-side only — a curl/DevTools caller bypasses it. Both POST (link) and DELETE (unlink) on the term-to-data-entity surface are unauthorized server-side. Combined with the HARD-DELETE semantics (migration V0_0_76 removed soft-delete and tombstoned existing rows), unauthorized callers can mass-delete term taxonomy with no row-level restore path. The activity-feed event captures BEFORE/AFTER JSON state, providing the only forensic trail — but on a high-traffic DISABLED deployment, that log fills rapidly. Permissions doc (live 2026-05-19, status 200) verbatim describes DATA_ENTITY_DELETE_TERM as 'Allows removing a term from a data entity' — the intended access model — and is silent on the wiring bug. Cross-pillar P-06 (Glossary integrity) + P-09 (Authorization).
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/DataEntityTermAuthorizationTest.java"
+  name: "deleteTermFromDataEntity_userWithoutDATA_ENTITY_DELETE_TERMPolicy_returns200_pinsBrokenAuthorizationContract"
+evidence:
+  - |-
+    deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[0]: 'SecurityConstants.java:240-242 registers a path-pattern rule for DELETE /api/dataentities/{data_entity_id}/term/{term_id} (SINGULAR term); openapi.yaml:1042 declares the actual endpoint as DELETE /api/dataentities/{data_entity_id}/terms/{term_id} (PLURAL terms); the controller @Override inherits the plural path. AuthorizationCustomizer.customize only invokes the manager(...) permission check when rule.matcher() matches the request — the singular term/{term_id} matcher does NOT match the plural terms/{term_id} path. The fallback at line 29-30 is .pathMatchers(\"/**\").authenticated().'
+  - "SecurityConstants.java:240-242 (singular path: /api/dataentities/{data_entity_id}/term/{term_id})"
+  - "openapi.yaml:1042 (plural path: /api/dataentities/{data_entity_id}/terms/{term_id})"
+  - "DataEntityController.java:158-163 (@Override inheriting plural path)"
+  - "AuthorizationCustomizer.java:24-30 + 29-30 (path-pattern dispatch + fallback to authenticated-only)"
+  - "WebFetch 2026-05-19 of permissions doc status 200 (DATA_ENTITY_DELETE_TERM described as gating but unenforced at runtime)"
+  - "Grep `deleteTermFromDataEntity|removeTermFromDataEntity` against odd-platform-api/src/test returned ZERO matches"
+cross_references:
+  - "REFACTOR-217 (covers BOTH POST and DELETE in one fix)"
+  - "TEST-GAP-017 (the ADD-half — same path-mismatch failure mode)"
+  - "concepts.yaml:entities[authorization-path-string-drift]"
+  - "DOC-NNN candidate: document the broken DATA_ENTITY_DELETE_TERM gate until REFACTOR-217 lands"
+proposed_action: |-
+  WebFluxTest. (a) Configure a test Policy that does NOT grant DATA_ENTITY_DELETE_TERM to the test user. (b) Pre-create data-entity X and term T, link them via direct repository write. (c) As the test user, DELETE /api/dataentities/X/terms/T. (d) Assert HTTP 200 (current broken contract — the test PINS the bug). (e) Assert the row is gone from data_entity_to_term. (f) Test comment 'LOCKS REFACTOR-217 DELETE-half. When the SecurityRule path is fixed to PLURAL terms, this test FLIPS to expect 403'. Pair-test with TEST-GAP-017 (the ADD half) so the fix can be validated end-to-end. Cross-pillar critical because P-06 Glossary integrity is destructible by unauthorized callers via HARD-DELETE.
+batch: 2026-05-19-L
+feature_id: null

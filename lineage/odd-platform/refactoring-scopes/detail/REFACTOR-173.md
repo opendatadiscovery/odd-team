@@ -1,0 +1,9 @@
+- **REFACTOR-173** (NEW 2026-05-12D): No connection-pool / per-message reuse policy — `JavaMailSenderImpl` opens a new SMTP connection per `.send()` call. For a burst of alerts, each `send()` is a fresh TCP+STARTTLS handshake — latency-amplified and load-amplified on the SMTP relay
+  - **Category**: no-conn-pool
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__EmailSenderProperties.md:bugs_limitations_corner_cases.[12]` (LOW)
+  - **Statement**: `NotificationConfiguration.java:51-71` constructs the JavaMail Properties bag with no connection-pool keys (`mail.smtp.connectionpoolsize` etc.). Each `EmailNotificationSender.send()` opens a fresh SMTP connection. For a burst of N alerts × M recipients, this is N × M TCP+STARTTLS handshakes against the relay.
+  - **Evidence**: `NotificationConfiguration.java:51-71` (no connection-pool keys)
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Add `mail.smtp.connectionpoolsize: 5` (or configurable via `notifications.receivers.email.smtp.pool-size`). Latency reduction + load reduction on relay.
+  - **Severity rationale**: LOW — performance; current scale is tolerable.
+  - **Suggested backlog grouping**: `Notifications hardening`

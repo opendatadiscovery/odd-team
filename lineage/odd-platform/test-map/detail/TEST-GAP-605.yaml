@@ -1,0 +1,28 @@
+gap_id: TEST-GAP-605
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform java auth logout:CognitoLogoutSuccessHandler"
+pillars_affected: [P-09]
+surfaced_by:
+  - "CognitoLogoutSuccessHandler.md:doc_drift_findings.[2] (Allowed sign-out URLs not in ODD docs)"
+  - "CognitoLogoutSuccessHandler.md:gaps (UriUtils.getBaseUri preserves only root)"
+behaviour: |-
+  **Cognito requires the `logout_uri` parameter to be in the App Client's "Allowed sign-out URLs" allowlist — failure mode is a Cognito-side error page, NOT a 302 back to ODD.** Per AWS Cognito docs: 'if the value of `logout_uri` is one of the Allowed sign-out URLs for your app client, Amazon Cognito redirects users to that URL'. Otherwise the user sees a Cognito error page after logout. This handler dynamically derives the `logout_uri` from `UriUtils.getBaseUri(requestUri)` (line 43) — root URL only, path/query stripped. Operators who deploy ODD behind hostname A but the user accesses via hostname B (load balancer / DNS alias / multi-hostname proxy) get `logout_uri=https://B/`. If B is NOT in the App Client's Allowed sign-out URLs, the Cognito-side check fails. The ODD docs are silent on this dependency on operator-side AWS Console configuration; the handler dynamically derives the URI from the incoming request, making the coupling implicit. Edge case: a user logging out from `https://odd/dashboard?filter=foo` gets `logout_uri=https://odd/` — only the root URL is passed (the path/query is stripped by UriUtils.getBaseUri).
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/auth/logout/CognitoLogoutUriRootOnlyTest.java"
+  name: "handle_cognitoLogout_logoutUriIsRequestRootOnly_pathQueryStripped"
+evidence:
+  - "CognitoLogoutSuccessHandler.md says (doc_drift_findings.[2]): 'The ODD docs do not mention AWS Cognito's Allowed sign-out URLs app-client allowlist requirement. Per AWS docs, if the logout_uri parameter (which ODD computes from UriUtils.getBaseUri(requestUri)) is NOT in the app client's Allowed sign-out URLs list, Amazon Cognito redirects users to that URL fails — the user sees a Cognito error page.'"
+  - "CognitoLogoutSuccessHandler.java:43 (UriUtils.getBaseUri usage)"
+  - "UriUtils.java:11-22 (strips path/query/fragment)"
+cross_references:
+  - "F-011"
+  - "DOC-NNN candidate: Cognito Allowed sign-out URLs dependency undocumented"
+  - "TEST-GAP-600 (sibling Host-header open-redirect — same dynamic-derivation concern)"
+proposed_action: |-
+  Unit test on CognitoLogoutSuccessHandler. (a) Mock WebFilterExchange with request URI = 'https://odd-prod.example.com/dashboard?filter=foo&user=bar#section'. (b) Invoke handle() with valid Cognito logoutUri. (c) Assert response Location contains `logout_uri=https://odd-prod.example.com/` (path/query/fragment stripped, root only). (d) Negative: Mock URI = 'https://odd:8080/x' → logout_uri = 'https://odd:8080/' (port preserved). Pin the root-only contract.
+batch: 2026-05-19-O
+feature_id: F-011

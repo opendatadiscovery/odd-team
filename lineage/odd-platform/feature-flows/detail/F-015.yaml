@@ -1,0 +1,616 @@
+feature_id: F-015
+pillar_id: P-09
+pillar_anchored_id: P-09:F-003
+pillar_anchored_feature_name: My-Objects Anchor-Set Reads
+cross_pillar_ids:
+- P-01
+- P-05
+primary_drift_class: anchor_set_single_point_of_failure
+drift_class_summary:
+- anchor_set_single_point_of_failure
+- spec_says_X_impl_does_Y
+- inverse_semantic_openapi_summary
+- no_join_side_defence_in_depth
+- silent_empty_indistinguishable_from_unlinked
+- unbounded_in_clause_anchor_fanout
+- unstable_pagination_no_order_by
+- in_memory_dedup_defeats_sql_pagination
+- hollow_and_softdelete_silent_exclusion
+- doc_silent_on_owner_anchored_lineage_view
+discovered_from_entry_point: rest:GET /api/dataentities/my/with-{upstream,downstream}
+contributing_nodes:
+- odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream
+- odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream
+- odd-platform java service service:DataEntityServiceImpl
+- odd-platform java DataEntityRelationsServiceImpl
+- odd-platform java service service:AuthIdentityProviderImpl
+- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+- odd-platform java ReactiveDataEntityRepositoryImpl
+- odd-platform ts react-component:OwnerEntitiesList
+cross_pillar_relationships:
+- pillar: P-01
+  kind: shares_data_with
+  via: |-
+    The endpoint backs the Recommended -> Upstream/Downstream dependents
+    tiles on the Catalog Overview home page (P-01 Data Discovery surface).
+    The OwnerEntitiesList.tsx component (lines 18, 58-64, 85-91) mounts
+    the four-tile Recommended panel and fires fetchMyUpstreamDataEntitiesList
+    + fetchMyDownstreamDataEntitiesList in parallel; the panel is the
+    user-observable home for this anchor-set-read feature.
+- pillar: P-05
+  kind: feeds_from
+  via: |-
+    The derived-set computation depends on the LINEAGE table populated by
+    P-10 ingestion and traversed by ReactiveLineageRepositoryImpl's
+    recursive CTE generator (the same code path as F-005 lineage canvas
+    reads). The architectural inversion here is that this endpoint
+    confines recursion to single-hop via LineageDepth.empty() while the
+    canvas reads (F-005) take a caller-supplied depth.
+description: |-
+  The platform exposes a triplet of owner-anchored discovery endpoints on
+  DataEntityController: `GET /api/dataentities/my`,
+  `GET /api/dataentities/my/upstream`, and `GET /api/dataentities/my/downstream`.
+  Each takes only `(page, size, exchange)` — no Authentication, no
+  Principal, no owner-id parameter — and resolves the caller's owner
+  identity via reactor Context propagation inside the service chain. The
+  /my endpoint returns the set of entities the caller's Owner row directly
+  owns (defended at SQL via JOIN OWNERSHIP WHERE OWNERSHIP.OWNER_ID = ?).
+  The /my/upstream and /my/downstream variants compose a DIFFERENT chain:
+  (a) resolve owner via authIdentityProvider.fetchAssociatedOwner(); (b)
+  list owned entities via listByOwner (JOIN-defended at this anchor); (c)
+  traverse one lineage hop via getLineageRelations(oddrns,
+  LineageDepth.empty(), {UP|DOWN}STREAM) — recursive CTE base step only;
+  (d) flatten parent+child oddrns, distinct; (e) EXCLUDE the anchor via
+  `Predicate.not(oddrns::contains)`; (f) fetch entity rows for the
+  derived set via listByOddrns(oddrns, false, false, page, size) — which
+  has NO OWNERSHIP join, NO owner predicate, only DATA_ENTITY.ODDRN.in(...)
+  + soft-delete + hollow filters.
+
+  The user-observable promise (per `openapi.yaml:843-844` summary):
+  "Returns list of data entities owned by current user with upstream
+  dependencies". The user-observable reality, per primary-source code-walk
+  of DataEntityRelationsServiceImpl.java:25-39: the response is the
+  NON-owned-but-reachable upstream-adjacent set — entities the caller
+  does NOT own that are referenced as upstream parents of entities they
+  own. The OpenAPI summary is literally INVERSE of the actual semantic;
+  the UI label `Upstream dependents` (OwnerEntitiesList.tsx:87) is
+  semantically correct but the API contract layer external consumers
+  read disagrees with both the code and the UI.
+
+  Beyond the contract inversion, the architecture has a structural
+  defence-in-depth gap: the owner-scoping invariant is enforced at
+  EXACTLY ONE site (DataEntityRelationsServiceImpl.java:26 —
+  `authIdentityProvider.fetchAssociatedOwner()`). The downstream
+  `listByOddrns` projection at ReactiveDataEntityRepositoryImpl.java:228-253
+  has NO OWNERSHIP join — the SQL trusts the input oddrn set. Contrast
+  with the base `/my` endpoint's repository method
+  `listByOwner` (lines 515-534) which DOES JOIN OWNERSHIP with
+  `WHERE OWNERSHIP.OWNER_ID = ?`. The structural inconsistency between
+  the two paths is the architectural finding: a regression at
+  fetchAssociatedOwner (fallback owner-id for DISABLED mode, misordered
+  WebFilter dropping the SecurityContext, USER_OWNER_MAPPING corruption,
+  flatMap-vs-map typo) silently leaks the lineage neighbourhood of an
+  unintended anchor. Today the code is correct; the architecture
+  provides ZERO defence against a future regression at this single
+  load-bearing call site (REFACTOR-225 PRIMARY-SOURCE).
+facets_summary: |-
+  10 substantive drifts: anchor-set single-point-of-failure (REFACTOR-225
+  PRIMARY-SOURCE) + OpenAPI summary inversion (DOC-GAP-099 inverse-semantic
+  4-angle triangulated — controller for upstream + controller for downstream
+  + thunk + UI label) + no JOIN-side defence-in-depth contrast with /my
+  endpoint's listByOwner + silent empty-set indistinguishable from
+  no-owner-link from unlinked-user from no-lineage-data + unbounded
+  IN-clause anchor fan-out (admin-owner / CI-bot DoS) + in-memory dedup
+  defeats SQL pagination (cost O(anchor) not O(page)) + unstable
+  pagination from missing ORDER BY on listByOddrns + hollow+soft-delete
+  silent exclusion despite live LINEAGE rows + Data Lineage / Permissions
+  doc-product silent on the owner-anchored lineage view + LineageDepth.empty()
+  fragile sentinel encoding.
+chain:
+- hop: 1
+  node: odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream
+  sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataEntityController.java:299-305 — four-line reactive pass-through.
+    `(page, size, exchange) -> dataEntityService.listAssociated(page, size,
+    LineageStreamKind.UPSTREAM).map(ResponseEntity::ok)`. NO @PreAuthorize.
+    NO SECURITY_RULES entry. Falls through to AuthorizationCustomizer's
+    catch-all `pathMatchers("/**").authenticated()` (lines 29-30).
+  unresolved: false
+- hop: 1b
+  node: odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream
+  sidecar: odd-platform__java__DataEntityController__controller-method__getMyObjectsWithDownstream.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataEntityController.java:291-297 — symmetric four-line reactive
+    pass-through with `LineageStreamKind.DOWNSTREAM`. Identical signature,
+    identical security posture, identical absence of permission gating.
+    The OpenAPI summary at openapi.yaml:861-862 is similarly inverse
+    ("Returns list of data entities owned by current user with downstream
+    dependencies" — actually returns non-owned-but-reachable downstream).
+  unresolved: false
+- hop: 2
+  node: odd-platform java service service:DataEntityServiceImpl
+  sidecar: '(referenced from batch-I primary-source confirmation; same service shell)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataEntityServiceImpl.listAssociated(page, size, streamKind) at lines
+    218-225 — delegates to
+    `dataEntityRelationsService.getDependentDataEntityOddrns(streamKind)
+    .flatMapMany(oddrns -> reactiveDataEntityRepository.listByOddrns(
+    oddrns, false, false, page, size)).map(dataEntityMapper::mapRef)`.
+    `includeHollow=false, includeDeleted=false`. No principal pass-through.
+    No owner-scoping at this layer.
+  unresolved: false
+- hop: 3
+  node: odd-platform java DataEntityRelationsServiceImpl
+  sidecar: '(referenced from primary-source citation — line-precise in batch-M sidecars)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataEntityRelationsServiceImpl.getDependentDataEntityOddrns(streamKind)
+    at lines 25-31 — the two-phase anchor+derive orchestrator. (a) Resolve
+    caller's owner via `authIdentityProvider.fetchAssociatedOwner()` at
+    line 26 (THE SINGLE LOAD-BEARING SCOPING SITE — REFACTOR-225). (b)
+    `dataEntityRepository.listByOwner(o.getId())` at line 27 — the anchor
+    is JOIN-OWNERSHIP-defended at THIS step (ReactiveDataEntityRepositoryImpl.java:515-534
+    DOES join OWNERSHIP). (c) Project to oddrns and collect into Set<String>
+    at lines 28-29. (d) `lineageRepository.getLineageRelations(oddrns,
+    LineageDepth.empty(), streamKind)` at line 34 — single-hop recursive
+    CTE base step. (e) Flatten parent+child oddrns via flatMap.distinct
+    at lines 35-36. (f) `Predicate.not(oddrns::contains)` at line 37 —
+    the explicit exclusion of the owned set that produces the
+    NON-owned-but-reachable response shape (the OpenAPI-summary contradiction).
+  unresolved: false
+- hop: 3a
+  node: odd-platform java service service:AuthIdentityProviderImpl
+  sidecar: '(referenced from batch-K primary-source confirmation)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    AuthIdentityProviderImpl.fetchAssociatedOwner at lines 50-53 — the
+    canonical principal-to-owner resolver invoked at
+    DataEntityRelationsServiceImpl.java:26. Per batch-K sidecar: returns
+    Mono<OwnerPojo> resolved from USER_OWNER_MAPPING via the active
+    SecurityContext provider; emits empty Mono if no mapping exists.
+    `flatMapMany` then produces empty Flux -> empty oddrn Set -> empty
+    derived response (the silent-empty degradation).
+  unresolved: false
+- hop: 4
+  node: odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+  sidecar: '(referenced from batch-H primary-source confirmation)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveLineageRepositoryImpl.getLineageRelations(Set<String>,
+    LineageDepth, LineageStreamKind) at lines 122-131 + the CTE
+    construction at 160-176. With `LineageDepth.empty()` (depth=-1,
+    empty=true per LineageDepth.java:16-18), the termination predicate
+    `tDepth.lessThan(lineageDepth.getDepth())` at line 174 evaluates
+    `0 < -1` (never true) — the recursive UNION ALL NEVER fires.
+    Single-hop only. NO OWNERSHIP join in the CTE. NO owner predicate.
+    The seed selects ALL edges where the direction-appropriate column is
+    in the anchor oddrn set; no owner-side filter at the SQL layer.
+  unresolved: false
+- hop: 5
+  node: odd-platform java ReactiveDataEntityRepositoryImpl
+  sidecar: '(referenced from batch-H primary-source confirmation)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveDataEntityRepositoryImpl.listByOddrns(Collection<String>,
+    boolean includeHollow, boolean includeDeleted, Integer page, Integer
+    size) at lines 228-253 — generic
+    `WHERE DATA_ENTITY.ODDRN.in(oddrns)` scan with NO OWNERSHIP join, NO
+    owner predicate. Only soft-delete and hollow flags filter. SQL
+    pagination via `LIMIT/OFFSET` at lines 249-250 with NO `.orderBy(...)`
+    call — unstable pagination across consecutive requests. CONTRAST with
+    listByOwner at lines 515-534 which DOES JOIN OWNERSHIP — the
+    structural difference is the architectural anchor of REFACTOR-225.
+  unresolved: false
+- hop: 6
+  node: odd-platform ts react-component:OwnerEntitiesList
+  sidecar: '(referenced from batch-J UI realisation pattern)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    OwnerEntitiesList.tsx:18, 58-64, 85-91 — the four-tile Recommended
+    panel mount. Fires `fetchMyDataEntitiesList`,
+    `fetchMyUpstreamDataEntitiesList`,
+    `fetchMyDownstreamDataEntitiesList`, `fetchPopularDataEntitiesList`
+    in parallel at lines 58-64 with hardcoded `{ page: 1, size: 5 }`
+    from line 59. The label `Upstream dependents` at line 87 is
+    semantically accurate (non-owned-but-reachable upstream entities) —
+    UI is consistent with the code; the OpenAPI summary contradicts both.
+    Thunks at dataentities.thunks.ts:158-165 and :167-175 bind the API
+    calls.
+  unresolved: false
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    200 OK with `Flux<DataEntityRef>` (paginated; default UI fetch is
+    size=5) of the NON-owned single-hop upstream-or-downstream adjacent
+    set — entities the caller does NOT own that are referenced in
+    LINEAGE rows touching the caller's owned set. Same DataEntityRef
+    shape as the base /my endpoint and the search/listByOwner endpoints.
+  evidence: |-
+    DataEntityController.java:291-297 (downstream) + :299-305 (upstream)
+    + DataEntityServiceImpl.java:218-225 + DataEntityRelationsServiceImpl.java:25-39
+    + ReactiveDataEntityRepositoryImpl.java:228-253.
+  cardinality_per_call: |-
+    0..size rows per request. Default UI size=5; OpenAPI PageParam/SizeParam
+    carry no minimum/maximum (components.yaml:4213-4229); a caller passing
+    size=1_000_000 triggers the full derived-set materialisation in memory
+    THEN SQL pagination slices the materialised list.
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+  - facet: anchor-set single-point-of-failure (REFACTOR-225 PRIMARY-SOURCE)
+    observed: |-
+      Owner-scoping is enforced at EXACTLY ONE site —
+      `DataEntityRelationsServiceImpl.java:26` (`authIdentityProvider.fetchAssociatedOwner()`).
+      Downstream the lineage CTE (`ReactiveLineageRepositoryImpl.java:122-176`)
+      has NO OWNERSHIP join NO owner predicate; the final projection
+      `listByOddrns` (`ReactiveDataEntityRepositoryImpl.java:228-253`) is
+      a pure `WHERE DATA_ENTITY.ODDRN.in(...)` scan with no owner JOIN.
+      A regression at the anchor (fallback owner-id under DISABLED, a
+      misordered WebFilter dropping SecurityContext, USER_OWNER_MAPPING
+      corruption returning wrong owner, flatMap-vs-map typo) silently
+      leaks the lineage neighbourhood of an unintended owner. Today's
+      code is correct; the architecture provides ZERO defence against a
+      future regression at this single load-bearing call site. CONTRAST
+      with the base `/my` endpoint's repository method `listByOwner`
+      (`ReactiveDataEntityRepositoryImpl.java:515-534`) which DOES JOIN
+      OWNERSHIP — a regression there at worst leaks entities the user
+      genuinely co-owns with the wrong owner.
+    expected: |-
+      Add `listByOddrnsAndOwner(oddrns, ownerId)` repository method (or
+      a `Long ownerId` parameter to `listByOddrns`) that JOINs against
+      OWNERSHIP with `WHERE OWNERSHIP.OWNER_ID = ?` as belt-and-braces
+      filter. OR document the single-point-of-failure architecture
+      explicitly so a future maintainer understands the constraint.
+    drift_class: anchor_set_single_point_of_failure
+    provenance: |-
+      STATIC — primary-source in batch-M getMyObjectsWithUpstream sidecar
+      bugs_limitations_corner_cases[0] + security.known_security_gaps[0]
+      + security.owner_scoping + DataEntityRelationsServiceImpl.java:25-31
+      + ReactiveDataEntityRepositoryImpl.java:228-253 (no owner JOIN) vs
+      :515-534 (the contrast site, JOIN-defended). 4-angle triangulated
+      across batch-G (`getMyObjects`) + batch-H (`ReactiveLineageRepositoryImpl`)
+      + batch-I (`LineageServiceImpl` NEGATIVE case) + batch-M (this
+      endpoint pair, controller-method PRIMARY SOURCE for both UPSTREAM
+      + DOWNSTREAM). Severity: HIGH (latent — today correct, regression
+      vector unmitigated).
+  - facet: OpenAPI summary inversion (DOC-GAP-099 inverse-semantic, 4-angle triangulated)
+    observed: |-
+      `openapi.yaml:843-844` declares `getMyObjectsWithUpstream` summary
+      as "Get my objects with upstream dependencies" and description as
+      "Returns list of data entities owned by current user with upstream
+      dependencies". Symmetric copy at `openapi.yaml:861-862` for
+      `getMyObjectsWithDownstream`. The actual response is the INVERSE:
+      the NON-owned upstream/downstream-adjacent set
+      (`Predicate.not(oddrns::contains)` at
+      `DataEntityRelationsServiceImpl.java:37` explicitly excludes the
+      owned set). UI label `Upstream dependents` at `OwnerEntitiesList.tsx:87`
+      is semantically accurate — the UI consumer renders the response
+      correctly because the front-end was written against the
+      implementation, not against the spec. Third-party API consumers
+      building integrations against the OpenAPI contract receive the
+      wrong shape — either consuming the response as "my entities"
+      (wrong: they're not theirs) or never realising the discrepancy
+      because the DataEntityRef shape is the same as the /my endpoint.
+    expected: |-
+      Either: (a) rewrite the OpenAPI summaries to match the
+      implementation — e.g. "Returns list of data entities upstream of
+      the current user's owned set (entities the user does not own that
+      flow INTO entities they own)"; OR (b) document the three-endpoint
+      composition (`/my` + `/my/upstream` + `/my/downstream` answering
+      "what do I own?" / "what flows IN?" / "what flows OUT?") on the
+      Data Lineage feature page and the Permissions page.
+    drift_class: spec_says_X_impl_does_Y
+    provenance: |-
+      STATIC — primary-source 4-angle triangulated: batch-G via
+      `getMyObjects` sidecar (the contrasting positive case) + batch-H
+      via `ReactiveLineageRepositoryImpl` no-owner-JOIN SQL primary
+      source + batch-I via `LineageServiceImpl` NEGATIVE-CASE SIBLING +
+      batch-M via this batch's two sidecars (controller-method primary
+      source for both UPSTREAM + DOWNSTREAM). DOC-GAP-099 promoted from
+      a candidate to PRIMARY-SOURCE-CONFIRMED. Severity: HIGH.
+  - facet: silent-empty indistinguishable from no-owner-link / no-data
+    observed: |-
+      Four distinct conditions produce the SAME HTTP 200 + `[]`
+      response: (a) caller has no `USER_OWNER_MAPPING` row;
+      (b) caller's owner exists but owns zero entities; (c) owned
+      entities exist but have no upstream/downstream LINEAGE edges; (d)
+      no SecurityContext is populated (e.g. DISABLED auth mode —
+      `fetchAssociatedOwner` emits empty -> anchor empty -> derived
+      empty). There is no 401, no 403, no `OwnerNotAssociatedException`,
+      no signal in the response distinguishing the four cases. A new
+      operator hitting this endpoint and receiving `[]` has no path to
+      debug whether the platform thinks they own nothing, thinks they're
+      not linked to an owner, or has no upstream data to show.
+    expected: |-
+      Either: (a) discriminate the four cases at the HTTP layer (401 for
+      no SecurityContext, 403 for no owner link, 200+`[]` for genuine
+      empty-data); OR (b) include a metadata envelope in the response
+      naming which case applies; OR (c) document the unified empty
+      response explicitly on the Data Discovery / Data Lineage pages.
+    drift_class: silent_empty_indistinguishable_from_unlinked
+    provenance: |-
+      STATIC — primary-source in batch-M getMyObjectsWithUpstream sidecar
+      bugs_limitations_corner_cases[3] + invariants[4] +
+      DataEntityRelationsServiceImpl.java:26-30 (empty anchor propagates)
+      + DataEntityServiceImpl.java:218-225 (no .switchIfEmpty). Same
+      shape as the base /my endpoint per batch-G. Severity: LOW
+      (information-quality issue).
+  - facet: unbounded anchor-set IN-clause fan-out (admin-owner DoS)
+    observed: |-
+      `dataEntityRepository.listByOwner(o.getId())` at
+      `DataEntityRelationsServiceImpl.java:27` fetches ALL owned entities
+      with NO pagination — an admin owner or CI-bot owner owning thousands
+      of entities materialises the entire owned-entity table-slice into
+      the JVM. Then `getLineageRelations(oddrns, LineageDepth.empty(),
+      UPSTREAM)` constructs a CTE with `WHERE CHILD_ODDRN IN (?, ?, ...)`
+      where the IN-list cardinality equals the full anchor-set size.
+      Postgres planner cost is non-linear above ~1000 IN elements; jOOQ
+      does not paginate the IN clause. The lineage-CTE result is then
+      `.distinct().filter.collectList()` — fully materialised in memory
+      BEFORE pagination kicks in at `listByOddrns`'s SQL LIMIT/OFFSET.
+      Memory and DB-CPU cost scale with anchor set size, NOT with the
+      requested page size.
+    expected: |-
+      Either: (a) cache the owned-oddrn set per-session (currently no
+      caching at any layer); OR (b) bound the anchor at SQL — e.g.
+      `listByOwner(ownerId, ANCHOR_MAX)` defaulting to a sensible cap
+      with a request-rejection if exceeded; OR (c) push pagination into
+      the derived-set SQL by passing `oddrns` + `(page, size)` to a
+      single `listByOddrnsLineagePaginated` method that does the
+      JOIN-LATERAL-style lineage-fetch INSIDE the paginated query.
+    drift_class: unbounded_in_clause_anchor_fanout
+    provenance: |-
+      STATIC — primary-source in batch-M getMyObjectsWithUpstream sidecar
+      bugs_limitations_corner_cases[2] +
+      performance.known_performance_gaps[0,1,2] +
+      DataEntityRelationsServiceImpl.java:27 (no `(page, size)` on
+      listByOwner) + :34 (no IN-list bound on getLineageRelations) +
+      :35-38 (in-memory dedup defeats SQL pagination). Severity: MEDIUM
+      (operationally — the endpoint is meaningful only for small
+      ownership cardinalities). Proposed local k6 probe: seed an
+      "admin" owner with 10k owned entities + invoke /my/upstream with
+      `size=5` + measure response time vs same call for a typical
+      owner with 5 owned entities.
+  - facet: in-memory dedup defeats SQL pagination (cost O(anchor) not O(page))
+    observed: |-
+      `.flatMap.distinct.filter.collectList()` at
+      `DataEntityRelationsServiceImpl.java:35-38` materialises the full
+      deduplicated derived-oddrn set in JVM memory before passing to
+      `listByOddrns`. SQL `LIMIT 5 OFFSET 0` then slices the materialised
+      list, but the cost-per-call is fixed by the unscoped derived set
+      size. Reactive backpressure is defeated — the lineage-Flux is
+      collapsed via `.collectList()`, the entire derived oddrn list lands
+      in heap, then a separate Flux is materialised for the final
+      listByOddrns call.
+    expected: |-
+      Replace `.collectList()` + `listByOddrns(list, ...)` with a
+      streaming join that pages through derived oddrns directly. Or
+      accept the O(anchor) memory cost and document the constraint.
+    drift_class: in_memory_dedup_defeats_sql_pagination
+    provenance: |-
+      STATIC — primary-source in batch-M getMyObjectsWithUpstream sidecar
+      performance.throughput_characteristics[2] +
+      bugs_limitations_corner_cases[2] +
+      DataEntityRelationsServiceImpl.java:35-38. Severity: MEDIUM.
+  - facet: unstable pagination from missing ORDER BY on listByOddrns
+    observed: |-
+      `ReactiveDataEntityRepositoryImpl.java:247-250` builds
+      `DSL.selectFrom(DATA_ENTITY).where(conditions).limit(size).offset(...)`
+      with NO `.orderBy(...)` call. Postgres documents pagination without
+      ORDER BY as "undefined" — the planner is free to return rows in
+      heap-scan order, which may change across consecutive identical
+      queries (especially under concurrent writes). Pagination across
+      pages may produce duplicates and/or missing entries between
+      consecutive requests. A UI re-fetching `page=2, size=5` after
+      `page=1, size=5` may see entity X on BOTH pages or on NEITHER.
+    expected: |-
+      Add `.orderBy(DATA_ENTITY.ID.asc())` (or a stable user-meaningful
+      ordering) before the `.limit/.offset` call. This is the canonical
+      fix used throughout the rest of the platform.
+    drift_class: unstable_pagination_no_order_by
+    provenance: |-
+      STATIC — primary-source in batch-M getMyObjectsWithUpstream sidecar
+      performance.scaling_characteristics[3] +
+      bugs_limitations_corner_cases[5] +
+      ReactiveDataEntityRepositoryImpl.java:247-250 (the missing
+      ORDER BY). Severity: MEDIUM (pagination correctness).
+  - facet: hollow+soft-deleted entities silently excluded from derived set
+    observed: |-
+      `DataEntityServiceImpl.java:223` passes `includeHollow=false,
+      includeDeleted=false` to `listByOddrns`. If an upstream LINEAGE
+      edge points to a hollow entity (oddrn-only stub created during
+      ingestion when the parent isn't yet ingested) or a soft-deleted
+      entity, the LINEAGE row is in the derived oddrn set, but the
+      entity is filtered out at the final scan. The caller's response is
+      shorter than the lineage suggests — no signal that the upstream
+      graph contains stubs / deleted entities. This may be intentional
+      (don't show stubs in user-facing UI tiles) but is undocumented.
+    expected: |-
+      Document the includeHollow=false / includeDeleted=false default
+      behaviour OR include a tombstone-counter field in the response
+      indicating "N upstream stubs / deleted entities elided".
+    drift_class: hollow_and_softdelete_silent_exclusion
+    provenance: |-
+      STATIC — primary-source in batch-M getMyObjectsWithUpstream sidecar
+      invariants[8] + bugs_limitations_corner_cases[4] +
+      DataEntityServiceImpl.java:223 + ReactiveDataEntityRepositoryImpl.java:228-253.
+      Severity: LOW.
+  - facet: Data Lineage / Permissions docs silent on owner-anchored lineage view
+    observed: |-
+      Live Data Lineage feature page (`documentation/docs/data-lineage.md:5-29`
+      + WebFetch 2026-05-19 at `https://docs.opendatadiscovery.org/features/data-lineage`)
+      describes the pillar across data-object + microservices lineage,
+      lists subsections, the per-entity Lineage tab + Group lineage entry
+      point, the API Reference page for per-entity / group / microservices
+      lineage APIs — but does NOT mention `/api/dataentities/my/upstream`
+      or `/api/dataentities/my/downstream` or `getMyObjectsWithUpstream` /
+      `getMyObjectsWithDownstream`. Live Permissions page (WebFetched
+      2026-05-19 status 200) documents the 5 permission categories but
+      does NOT name a permission code that gates these endpoints — they
+      rely entirely on user-owner-association, not the RBAC catalogue.
+      An operator auditing "which endpoints are owner-scoped vs cross-owner?"
+      has no doc path that names this endpoint family.
+    expected: |-
+      Add a Data Lineage subsection or Permissions subsection that names
+      the `/my*` triplet, explains the anchor-set-defended posture,
+      documents the OpenAPI-summary inversion as a known doc bug under
+      maintenance, and disambiguates "owned by current user" from
+      "in the lineage neighbourhood of the current user's owned set".
+    drift_class: doc_silent_on_owner_anchored_lineage_view
+    provenance: |-
+      STATIC — primary-source in batch-M getMyObjectsWithUpstream sidecar
+      docs_link_semantic.inferred_docs[0,1,2] + doc_drift_findings[1,2]
+      + live `permissions.md` WebFetched 2026-05-19 status 200 + local
+      `data-lineage.md:5-29`. Severity: MEDIUM (P-09 + P-05 doc-coverage
+      gap).
+  - facet: LineageDepth.empty() fragile sentinel encoding
+    observed: |-
+      `DataEntityRelationsServiceImpl.java:34` passes `LineageDepth.empty()`
+      to `getLineageRelations`. Per `LineageDepth.java:16-18`,
+      `empty()` returns `new LineageDepth(-1, true)`. The recursive-CTE
+      termination predicate at `ReactiveLineageRepositoryImpl.java:174`
+      consults ONLY the int depth field via `tDepth.lessThan(lineageDepth.getDepth())`;
+      with depth=-1 the recursive UNION ALL never fires (seed-only). But
+      a maintainer reading only the call site sees `LineageDepth.empty()`
+      and may reasonably misinterpret "empty" as "no depth limit /
+      unlimited recursion" rather than "single-hop only". The class-level
+      `boolean empty` field is the explicit disambiguation, but the CTE
+      ignores it. A future refactor changing the termination to
+      `lessThanOrEqual` would silently expand this endpoint to two hops
+      because the `empty=true` flag is not honoured by the CTE.
+    expected: |-
+      Either: (a) rename the factory to `LineageDepth.seedOnly()` /
+      `singleHop()` so the call-site is self-documenting; OR (b) make
+      the CTE honour the `empty=true` flag explicitly (early-return at
+      seed); OR (c) inline-comment the call site naming the seed-only
+      semantic.
+    drift_class: spec_says_X_impl_does_Y
+    provenance: |-
+      STATIC — primary-source in batch-M getMyObjectsWithUpstream sidecar
+      bugs_limitations_corner_cases[6] +
+      `LineageDepth.java:8-19` (the dual-encoding) +
+      `ReactiveLineageRepositoryImpl.java:174` (the sentinel-driven
+      guard). Severity: LOW (works correctly today; the gap is
+      documentation / naming clarity).
+  - facet: no JOIN-side defence-in-depth contrast with /my endpoint
+    observed: |-
+      The base `/my` endpoint routes via
+      `ReactiveDataEntityRepositoryImpl.listByOwner` (lines 515-534)
+      which JOINs OWNERSHIP and applies
+      `WHERE OWNERSHIP.OWNER_ID = ?` as the SQL-layer scoping. The
+      `/my/upstream` and `/my/downstream` endpoints route via
+      `listByOddrns` (lines 228-253) which is a generic IN-set scan
+      with NO OWNERSHIP join. The existence of two distinct repository
+      methods is the structural evidence of intent — if the maintainer
+      wanted the lineage variants to be JOIN-defended, they would have
+      constructed an `listByOddrnsAndOwner(oddrns, ownerId)` method or
+      added a `Long ownerId` parameter; the absence of either is the
+      architectural decision.
+    expected: |-
+      Add `listByOddrnsAndOwner(oddrns, ownerId)` and route the lineage
+      variants through it, OR document the deliberate
+      anchor-set-only-defence posture inline.
+    drift_class: no_join_side_defence_in_depth
+    provenance: |-
+      STATIC — primary-source in batch-M getMyObjectsWithUpstream sidecar
+      implicit_adrs[2] (the deliberate two-method structural choice) +
+      ReactiveDataEntityRepositoryImpl.java:228-253 vs :515-534. The
+      same architectural choice carries across the
+      `getMyObjectsWithDownstream` sibling per batch-M's second sidecar
+      bugs_limitations_corner_cases[0]. Severity: HIGH (latent — paired
+      with the anchor-set-single-point-of-failure facet above).
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - getDependentDataEntityOddrns happy-path 2-phase pipeline
+    - Predicate.not(oddrns::contains) anchor-exclusion pin
+    - LineageDepth.empty() single-hop semantic regression
+    - listByOddrns no-OWNERSHIP-join contract pin (REFACTOR-225 regression vector)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - HTTP-level smoke test through WebTestClient — full GET /api/dataentities/my/{up,down}stream + response shape
+    - Happy-path 2-phase expansion — user owns N entities with M upstream edges -> response is M distinct non-owned upstream-adjacent
+    - Anchor-set isolation — userA does NOT receive userB's lineage neighbourhood
+    - Unlinked-user path — caller with no USER_OWNER_MAPPING returns 200 + empty (vs 401/403)
+    - Empty-lineage path — caller owns entities but no upstream edges -> []
+    - Hollow / deleted entity exclusion — LINEAGE rows pointing to stubs/deleted entities silently elided
+    - Pagination boundaries — page=0 (negative OFFSET) / size=0 / size=Integer.MAX_VALUE
+    - Unstable pagination — repeated page=1/page=2 produces consistent set membership (FAILS today — no ORDER BY)
+    - DISABLED-mode anonymous read returns empty (not cross-owner leak)
+    - REFACTOR-225 regression vector — inject misconfigured AuthIdentityProvider returning wrong owner -> response leaks lineage neighbourhood of wrong anchor
+    - OpenAPI-summary inversion pin — assert response semantics NON-owned-but-reachable (so a future refactor "fixing" to match summary breaks the build)
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Large anchor-set fan-out — admin owner with 10k owned entities + /my/upstream + size=5 — measure DB CPU + response time
+    - Lineage IN-clause cardinality cost — measure Postgres planner cost at IN-list cardinality 100/1000/10000
+    - In-memory dedup memory pressure — measure JVM heap during .collectList of derived oddrn set
+    - Per-page-mount hot path — Recommended panel fires 4 endpoints in parallel; measure aggregate cost
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - Cross-owner lineage neighbourhood leak — REFACTOR-225 regression vector
+    - Permission-catalog silence — assert no owner-scoping documentation gap exists once docs are updated
+    - DISABLED-mode behaviour pin — endpoint returns empty (not cross-owner) under DISABLED auth
+    - User-owner association corruption — wrong USER_OWNER_MAPPING active row resolves to wrong owner -> response leak
+control_summary: |-
+  0 of 4 cells COVERED. Feature emerges from batch-M primary-source audit
+  of getMyObjectsWithUpstream + getMyObjectsWithDownstream sidecars + the
+  symmetric chain to DataEntityRelationsServiceImpl orchestrator + the
+  AuthIdentityProviderImpl resolver + the ReactiveLineageRepositoryImpl
+  CTE generator + the ReactiveDataEntityRepositoryImpl scan + the
+  OwnerEntitiesList UI realisation. Ten substantive drift facets cluster
+  around three load-bearing themes: (1) REFACTOR-225
+  anchor-set-single-point-of-failure — owner-scoping enforced at exactly
+  one site with no JOIN-side defence-in-depth; latent regression vector;
+  HIGH severity; (2) DOC-GAP-099 OpenAPI-summary inversion — "owned by
+  current user" is inverse of the actual "non-owned-but-reachable"
+  semantic; 4-angle triangulated PRIMARY-SOURCE; HIGH severity; (3)
+  performance + correctness gaps — unbounded anchor fan-out, in-memory
+  dedup defeating SQL pagination, missing ORDER BY producing unstable
+  pagination, silent hollow+soft-delete exclusion; MEDIUM severity each.
+  The highest-leverage probe candidates are: (a) REFACTOR-225 regression
+  vector — local docker-compose with ODD platform + Postgres + two
+  seeded Owners + lineage edges between their owned entities + invoke
+  /my/upstream as user A while AuthIdentityProvider is patched to return
+  user B's owner-id + assert response leaks user B's upstream
+  neighbourhood (pins the architecture's defence-in-depth gap); (b)
+  OpenAPI-summary inversion — POST /api/search + populate sample
+  catalog + invoke GET /api/dataentities/my/upstream as a user with N
+  owned entities + M upstream-LINEAGE-edges + assert response is
+  precisely the M distinct non-owned upstream-adjacent entities (NOT
+  the user's owned entities); (c) admin-owner DoS — seed CI-bot owner
+  with 10k owned entities + invoke /my/upstream + size=5 + measure
+  response time vs typical-owner baseline. Local probe stack:
+  docker-compose with ODD platform + PostgreSQL + 2 seeded owners +
+  cross-owner lineage edges + Playwright for end-to-end UI mounting
+  via Recommended panel.
+related_refactoring_scopes:
+- REFACTOR-225
+related_test_gaps:
+- TEST-GAP-020
+related_doc_gaps:
+- DOC-GAP-099
+related_concepts:
+- Anchor Set
+- Derived Set
+- User-Owner Association
+- Lineage Graph Traversal
+- Read-Collaborative Posture
+- Data Entity
+related_retrospectives:
+- LSN-017
+related_probes: null
+probe_verifications: []
+maintainer_curated: false
+merge_candidate_with: null

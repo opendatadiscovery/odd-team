@@ -1,0 +1,86 @@
+gap_id: TEST-GAP-007
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+- odd-platform java AlertController controller-method:changeAlertStatus
+- odd-platform java repository_reactive repository:ReactiveAlertRepositoryImpl
+- odd-platform java service service:AlertServiceImpl
+surfaced_by:
+- changeAlertStatus.md:tests_coverage_semantic.uncovered_behaviours.[1]
+- ReactiveAlertRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[2]
+- ReactiveAlertRepositoryImpl.md:bugs_limitations_corner_cases.[1]
+- AlertServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[0, 1]
+- AlertServiceImpl.md:bugs_limitations_corner_cases.[0] (reopen-conflict guard at lines 124-131 is unfenced)
+- AlertServiceImpl.md:implicit_adrs.[2] (reopen-conflict guard is server-enforced application
+  logic, not DB constraint — intentional trade-off)
+behaviour: 'Reopen-conflict path: caller sends OPEN while another OPEN alert of the
+  same type exists for the same data entity → 400 BadUserRequestException (AlertServiceImpl.java:128-129).
+  The reopen-guard is read-then-write without serialisable fence — two concurrent
+  OPEN requests for sibling alerts on same entity can both pass the guard. STRENGTHENED
+  batch H — the repository sidecar confirms `openAlertWithTheSameTypeExistsForDataEntity`
+  is a read-only SELECT EXISTS over a self-join CTE (lines 397-420); the service-level
+  `updateStatus` reads-then-writes without SELECT FOR UPDATE; there is NO `UNIQUE
+  (data_entity_oddrn, type) WHERE status = OPEN` partial-index constraint to back-stop
+  the race. The repository confirms the SQL shape that produces the race. STRENGTHENED
+  batch I — the AlertServiceImpl sidecar primary-source confirms BOTH (a) the error
+  message string is part of the user-facing contract (`Cannot reopen alert since
+  the system already has an open alert of the same type`) and is unpinned, AND (b)
+  the race window: both `openAlertWithTheSameTypeExistsForDataEntity` (read) and `updateAlertStatus`
+  (write) are unfenced at every layer. The application invariant ''one OPEN alert
+  of the same type per data entity'' is server-enforced application logic with NO
+  DB-level constraint. Implicit_adrs.[2] captures the deliberate trade-off: tolerate
+  brief invariant violation under concurrency to keep schema simple and error UX human-readable.
+  STRENGTHENED batch S — the AlertServiceImpl service-tier closure sidecar (2026-05-20)
+  PRIMARY-SOURCE re-confirms the unfenced read-then-write composition at lines 124-131
+  AND surfaces the implicit_adrs[2] intent: the literal English error message string
+  (`Cannot reopen alert since the system already has an open alert of the same type`)
+  is the OPERATOR-VISIBLE contract; the application-level invariant is server-enforced
+  and not DB-backed; no SELECT FOR UPDATE; no partial-index. The trade-off is captured
+  explicitly: "tolerate a brief invariant violation under concurrency to keep the
+  DB schema simple and the error UX human-readable" — making this an OFFICIAL design
+  choice, not an oversight. The test pins BOTH the error-message contract AND the
+  race window so a future maintainer adding either DB-level fencing OR changing the
+  error message string is caught.'
+test_files_existing:
+- odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/AlertIngestionTest.java
+test_files_proposed:
+  path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/AlertServiceImplTest.java
+  name: updateStatus_reopenConflict_returns400AndDoesNotCreateDuplicateOpenAlert
+evidence:
+- 'changeAlertStatus.md says: ''no controller, service, or repository test exercises
+  updateStatus / changeAlertStatus'''
+- 'AlertServiceImpl.md says: ''Two concurrent reopen requests for sibling alerts of
+  the same type on the same data entity can BOTH pass the openAlertWithTheSameTypeExistsForDataEntity
+  check (each sees the other in RESOLVED state) and BOTH proceed to UPDATE — neither
+  the read nor the write takes a row lock. The application invariant is unprotected
+  at every layer'''
+- 'concepts.yaml:entities[Alert].security_aggregate.weaknesses.[2] verbatim: ''Reopen-conflict
+  guard is read-then-write without serialisable fence (severity MEDIUM)'''
+- 'ReactiveAlertRepositoryImpl.md says: ''Two concurrent reopen requests for two different
+  alerts of the same type on the same data entity can BOTH pass the EXISTS check'''
+- 'AlertServiceImpl.java:124-131 (the unsequenced read-then-write composition)'
+- 'BATCH S — AlertServiceImpl.md says (implicit_adrs.[2]): ''The reopen-conflict guard
+  is server-enforced application logic, not a DB constraint. The intent is visible
+  in the structure of the code (an if (AlertStatusEnum.OPEN == status) branch with
+  an explicit exception throw) and in the error message string. The decision: tolerate
+  a brief invariant violation under concurrency to keep the DB schema simple and the
+  error UX human-readable.'' confidence: HIGH'
+cross_references:
+- concepts.yaml:entities[Alert].security_aggregate.weaknesses.[2]
+- AlertServiceImpl.md:implicit_adrs.[2] (server-enforced application logic, not DB
+  constraint — intentional trade-off)
+- TEST-GAP-691 (NEW batch S — AlertManager webhook idempotency sister gap)
+- TEST-GAP-695 (NEW batch S — getTotals.zipDelayError sister gap)
+related_features: [F-007]
+related_pillar_features: ["P-07:F-001"]
+proposed_action: |-
+  Add `AlertServiceImplTest` covering single-thread reopen-conflict
+  (returns 400 with the canonical message string) and concurrent-thread reopen-conflict
+  (asserts the race window or proves it is closed). With Testcontainers, exercise
+  the repository's read-then-write composition with two parallel reactive subscriptions.
+  Pin BOTH the error-message contract AND the race window per AlertServiceImpl primary-source.
+  Batch S adds: the test ALSO verifies the implicit_adrs[2] design choice — the error
+  message string is the operator-visible contract; any refactor changing the string
+  OR adding DB-level fencing breaks the test, surfacing the change as deliberate.
+batch: 2026-05-20-S-STRENGTHENED
+feature_id: F-007

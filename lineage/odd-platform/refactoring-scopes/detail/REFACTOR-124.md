@@ -1,0 +1,9 @@
+- **REFACTOR-124** (NEW 2026-05-12C): LDAP bind credentials, search filters, and active-directory.domain are simple `String` fields with NO validation beyond empty-check on url + {dnPattern, filter} XOR. Injection of LDAP filter metacharacters into `dn-pattern` or `user-filter.filter` is operator's responsibility — no sanitisation
+  - **Category**: missing-validation
+  - **Surfaced by**: `odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51.md:security.known_security_gaps.[7]` (severity LOW)
+  - **Statement**: `ODDLDAPProperties.java:12-19,36-37` are plain Strings. Spring Security's BindAuthenticator escapes by default in modern versions, but the platform code does not warn about the operator's responsibility for filter pattern safety.
+  - **Evidence**: `ODDLDAPProperties.java:12-19,36-37` + `LDAPSecurityConfiguration.java:66-74` + WebFetch LDAP docs 2026-05-12
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Document on the live LDAP page the operator's responsibility for filter pattern safety + the `{0}` placeholder's behaviour.
+  - **Severity rationale**: LOW — mitigated by Spring's escaping in practice.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

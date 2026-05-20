@@ -277,6 +277,58 @@ When `MODE: full` (no prior catalog, prompt-version bumped, or maintainer-forced
 
 Add `processed_node_ids:` to the catalog frontmatter (newline-separated list of every `node_id` whose sidecar contributed to this catalog version). Future incremental runs of this reducer use the field to compute `NEW_SIDECAR_FILES`. Missing field on the next invocation triggers a one-shot full backfill.
 
+## Rule (rev 2) — Dedup via `registry-search` subagent; never load the sharded index directly
+
+**Supersedes rev-1's read-the-full-prior-catalog pattern for dedup.** After slice 6, `concepts.yaml` shards into `concepts/{index.yaml, detail/{kind}/{slug}.yaml}` grouped under `entities | audiences | invariants | operations | canonicalisation_candidates`. The full catalog lives across 150+ detail files; loading the entire `index.yaml` into your own context defeats the rev-2 cost-ceiling fix.
+
+For every fresh concept (or canonicalisation candidate) you're about to commit, spawn the `registry-search` subagent following `playbooks/registry-search-spawn.md`:
+
+- Pass `INDEX_PATH=lineage/{repo}/concepts/index.yaml`, `ARTEFACT_KIND=concepts`.
+- `QUERY_TEXT` is the candidate's discriminating fields: name + description + axes_present + contributing sidecar slugs + (if applicable) `canonical_in_docs` URL or `proposed_canonical` text.
+
+Act on the verdict:
+- `0 matches — create new` → write `detail/{kind}/{slug}.yaml` with the full concept content, append a headline entry under `by_kind.{kind}` in `index.yaml` matching the existing entries' shape (see `lineage/_extractor/registry-shard/shard.py:shard_concepts` for the canonical headline shape).
+- `1 strong match — strengthen {slug}` → read `detail/{kind}/{slug}.yaml`, append the new sidecar to `contributors`, merge new `nodes` entries (dedup by node_id), refresh aggregates (`security_aggregate.weaknesses`, `performance_aggregate.weaknesses`) by adding new weaknesses without removing existing ones, recompute `overall` based on the union. Do NOT rewrite existing `description` prose unless the candidate explicitly proposes a refined definition (in which case append `## REFINED — {batch_id}` block, do not replace).
+- `N candidates — maintainer-triage-ambiguous` → mint new slug with `maintainer_triage_pending: true` + ambiguity block; surface in investigator-log.
+
+Never auto-merge two concept entries even when they appear identical (e.g., "Data Entity" vs "DataEntity" or "Auth Mode" vs "Authentication Mode"). Naming-equivalence merges are maintainer-triggered.
+
+**Per-finding context budget**: ≤ 30 KB. Per-batch total: ≤ 200 KB regardless of catalog size.
+
+## Rule (rev 3) — Consult Layer 0 (`system-mission.md`) for pillar-anchored naming
+
+`lineage/{repo}/system-mission.md` (produced once per substrate scan by `domain-extractor`) is the doc-anchored 8-12-pillar shape for the project. When clustering concept candidates:
+
+- Anchor concept naming on the pillar vocabulary FIRST, then on `documentation/docs/main-concepts.md`, then on the maintainer-curated catalog. If a concept aligns with a pillar's `primary user actions` or `data entities operated on`, use the pillar's term verbatim.
+- For each cluster of sidecar-surfaced concepts that doesn't map cleanly to an existing pillar's vocabulary, surface a `canonical_candidate` entry in `concepts/index.yaml` and cross-reference `system-mission.md`'s canonicalisation_candidates block.
+- Per-concept `pillar_affinity:` field (NEW): every concept entry gains a `pillar_affinity: [P-NN, P-NN]` field naming which pillars it serves. Concepts spanning >2 pillars are integration-boundary concepts (worth probing).
+
+If `system-mission.md` does not exist, log a quality warning at the head of the catalog refresh and continue with rev-2 behaviour for this batch — but flag the situation in the maintainer-facing reply so Layer 0 is initialised before the next batch.
+
+## Rule (rev 2 / batch-I follow-up) — YAML-safe emit (LOAD-BEARING)
+
+**Never emit a YAML scalar that contains an unquoted `: ` (colon + space) substring AND never emit a scalar that begins with `@`, `>`, `|`, `*`, `&`, `?`, `!`, `%` (YAML reserved-character prefixes).**
+
+Such scalars are interpreted as ambiguous mapping values by YAML's scanner and break parsing. Batch I produced 6 broken detail files (~10% of emissions) from this exact pattern — patterns like `**SECURITY-HIGH**: ReactiveDataEntityRepositoryImpl has...`, `(proposed: add @ReactiveTransactional)`, `resolved: true` inside prose.
+
+Two safe forms:
+
+**(A) Block-literal scalar `|-`** — preferred for prose / multi-line content:
+```yaml
+description: |-
+  text containing : and @ characters
+  and (proposed: foo) parentheticals
+  and **SECURITY-HIGH**: prefix patterns
+  is safe inside a block literal scalar.
+```
+
+**(B) Single-quoted flow scalar** — for short single-line content:
+```yaml
+note: 'short text with : embedded — single-quote-safe'
+```
+
+Apply this rule EVERY TIME you emit a `concepts/detail/{kind}/{slug}.yaml` file. The orchestrator runs `yaml_safe_fix.py` after your output but autofix recovers only ~50% of cases; the other 50% land in `.broken-yaml-pending-fix` quarantine and become next-batch backlog. Save the maintainer that work — emit safe YAML the first time.
+
 ## Exit
 
 Reply with exactly two lines:
@@ -285,3 +337,26 @@ Reply with exactly two lines:
 2. `Catalog: <N concepts (E entities, O operations, I invariants, A audiences); C canonicalisation candidates; mode=<incremental|full>; consumed <S> sidecars (<New> new this batch); aggregated security on <Sx> concepts and performance on <Px> concepts>`
 
 The orchestrator (the `/concepts` skill) parses your reply and surfaces the catalog summary to the maintainer.
+
+## Rule 6 (LOAD-BEARING — added 2026-05-19 per LSN-018) — Pre-emit coherence check
+
+DEDUP (Rule 2/3) catches *"do we already have this fact?"* — same-registry duplicate detection. COHERENCE is a different protocol: *"does this new finding CONTRADICT what other registries already say?"*. Both must run, and Rule 6 implements the latter.
+
+**Trigger.** Before WRITING (or EDITING in-place) a detail file with a claim that asserts presence, absence, or behaviour about a named entity (class, repository, controller, service, job, config key, table, file:line, migration file, pillar feature).
+
+**Procedure.**
+
+1. **Extract anchors** from the proposed finding text: class names, file:line citations, Spring config keys (with dots), migration filenames, pillar-anchored feature IDs (`P-NN:F-NNN`), snake_case table/column names.
+2. **Grep `feature-flows/index.yaml` + `feature-flows/detail/`** for each anchor. If matches → Read the matched detail files in full.
+3. **Grep the OTHER FOUR registries' index files** (`concepts/index.yaml`, `test-map/index.yaml`, `doc-gaps/index.md`, `refactoring-scopes/index.md`, `implicit-adrs/index.md`) for each anchor. For matches → Read 1-3 candidate detail files (cheapest signal first).
+4. **Classify the relationship** between the proposed finding and each cross-registry hit:
+    - `STRENGTHENS` — same polarity (both assert the entity exists / behaves the same way). Emit with `related_features: [F-NNN]` back-link (or analogous list for the matched artefact type) added to the new file AND to the matched file.
+    - `SUPERSEDES` — opposite polarity AND clear file:line evidence the new claim is correct. Emit with `superseded` block on the OLD artefact (`superseded_by: <new-id>`, `superseded_note: <reason>`) and `supersedes: [old-id]` on the NEW artefact. Reference LSN-018 in the supersede note.
+    - `CONTRADICTS` — opposite polarity but the new finding's evidence is no stronger than the existing claim's. **DO NOT EMIT.** Append a single line to `state/coherence-conflicts-batch-{theme_id}.md` and surface in your reply summary as `conflicts_surfaced: <N>`. The maintainer (or a follow-up agent) resolves before commit.
+5. **Always emit back-links**. Every new detail file MUST declare which pillar-anchored feature(s) it relates to (`related_features: [F-NNN]` or `related_pillar_features: [P-NN:F-MMM]`). Every feature detail this reducer edits MUST gain a corresponding `related_<artefact_type>: [<new-id>]` entry.
+
+**Why this matters.** The methodology has been emitting contradictory artefacts across batches because dedup catches "have I said this before" but never catches "does the existing registry already disagree". Canonical case-law: 2026-05-19 F-010 (Housekeeping TTL Enforcement, batch K) enumerated `SearchFacetsHousekeepingJob` as one of 5 active jobs; TEST-GAP-523 (batch M) two days later asserted "NO TTL eviction, V0_0_52 has no search_facets entry, TTL TODO never implemented" — all four claims ground-truth-wrong; F-010 was right. The two coexisted in the registry until the maintainer eyeballed it. LSN-018 captures the miss and this Rule 6 is the structural fix.
+
+**Cost bound.** Rule 6 adds ≤2 grep operations + ≤3 Read operations per emitted finding. For a batch emitting ~20 new artefacts the budget is ~60 extra Read calls — bounded and small relative to the file-analyser layer.
+
+**Reply summary changes.** Add to your final reply line: `coherence_strengthens: <N>` / `coherence_supersedes: <N>` / `coherence_conflicts_surfaced: <N>`. A non-zero `conflicts_surfaced` is a SIGNAL TO THE MAINTAINER, not a reducer failure; the batch still commits but the conflicts file is reviewed before the next batch fires.

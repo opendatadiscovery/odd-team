@@ -1,0 +1,21 @@
+- **DOC-GAP-132**: UI Lineage canvas amplifies diamond DAGs into duplicate visual nodes (D appears twice for A→B→D + A→C→D) AND silently drops crossEdges that reference missing nodes — neither behaviour documented; visual-correctness gap on the platform's marquee F-005 surface
+  - **Category**: drift (live pages silent on cycle / diamond / cross-edge visualisation; UI behaviour is a structural surprise that operators cannot self-diagnose)
+  - **Surfaced by**:
+    - `odd-platform__ts__react-component__component__LineageGraph.md:invariants[0,1]` (d3-hierarchy enforces tree topology; cross-edges are an overlay)
+    - `odd-platform__ts__react-component__component__LineageGraph.md:bugs_limitations_corner_cases[0]` (diamond amplification — D rendered twice)
+    - `odd-platform__ts__react-component__component__LineageGraph.md:bugs_limitations_corner_cases[2]` (silent crossEdge drop on missing node lookup)
+    - `odd-platform__ts__react-component__component__LineageGraph.md:implicit_adrs[2]` (d3-hierarchy over force-directed graph)
+  - **Evidence**:
+    - WebFetched `https://docs.opendatadiscovery.org/features/data-lineage` 2026-05-19 status 200 — silent on cycle visualisation, diamond DAG, duplicate nodes, cross-edge rendering.
+    - WebFetched `https://docs.opendatadiscovery.org/features/data-lineage/data-objects` 2026-05-19 status 200 — silent on the same.
+    - Code primary source `odd-platform-ui/src/components/DataEntityDetails/Lineage/.../generateGraph.ts:68-76` (upstream) + `:108-116` (downstream) — `hierarchy(parsedData.root, d => parsedData.upstream.edgesById[d.id]?.map(...))` recursively visits children with NO visited-set check; the same `d3attrs.id` UUID appears at multiple HierarchyPointNode positions for diamond shapes.
+    - Code primary source `generateGraph.ts:81-95, 121-135` — `crossEdges` resolution: `nUp.find(node => node.data.id === edge.sourceId)`; `if (sourceNode && targetNode) { ... }` — if the find returns `undefined`, the cross-edge is SILENTLY DROPPED with no log, no Sentry breadcrumb, no UI signal.
+    - Code primary source `LineageGraph.tsx:84-110` — node-per-instance SVG rendering with React keys `${node.x}${node.y}` — DIFFERENT positions for the same logical node ARE distinct React keys, so React mounts two SVG nodes for a diamond's bottom vertex.
+    - Cross-reference: REFACTOR-202 is the backend-side cycle/diamond amplification (recursive-CTE without `WHERE depth < limit AND target NOT IN visited`); the UI inherits the multiplicity and renders it visually.
+  - **Proposed doc action**: Update `documentation/docs/features/data-lineage/data-objects.md` to add a "Visual model" section explaining: (a) the canvas is a TREE layout (d3-hierarchy), not a DAG; (b) diamond shapes (an entity reachable via two paths) render that entity TWICE (once per path); (c) cycle edges are rendered as separate **cross-link** styled overlays — they participate in highlight-on-hover but not in tree layout; (d) cross-edges that reference an entity outside the fetched subgraph (e.g. backend pagination skew) are silently omitted — operators noticing missing edges should increase `lineage_depth`. Live re-publish; cross-link DOC-GAP-105 for the backend amplification anchor.
+  - **Cross-references**:
+    - DOC-GAP-105 — Lineage recursive-CTE no cycle guard; the backend produces duplicating rows; the UI's tree-not-DAG choice IS the visual realisation; the doc gap is "neither side is described".
+    - DOC-GAP-131 (this batch) — depth slider + URL clamp; affects how deep a user sees diamonds being rendered.
+    - DOC-GAP-115 — anchor-set defence asymmetry; orthogonal to this finding but co-located (same canvas).
+  - **Severity**: MEDIUM
+  - **Severity rationale**: F-005 is the platform's marquee lineage surface; an operator seeing the same node twice in their diamond-shaped data pipeline cannot self-diagnose whether it's a bug or a design choice. The silent crossEdge drop is a worse failure — operators have no signal that edges are missing. Not a security/data-loss surface, but a doc-product editorial coherence failure on a load-bearing page. One section addition + one cross-link.

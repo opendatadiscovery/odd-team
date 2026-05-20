@@ -245,6 +245,34 @@ When `MODE: full` (no prior artefact, prompt-version bumped, or `--full`), fall 
 
 `doc-gaps.md` carries `processed_node_ids:` in frontmatter (newline-separated). Future incremental runs use the field to compute `NEW_SIDECAR_FILES`. Missing field triggers a one-shot full backfill.
 
+## Rule (rev 3) — Consult Layer 0 (`system-mission.md`) for pillar-coverage gaps
+
+`lineage/{repo}/system-mission.md` carries the 8-12-pillar shape with per-pillar doc URL + verification status. Use it as a CHECKLIST:
+
+- **Pillar-without-implementation findings** — if `system-mission.md` names pillar X with a doc URL but code-walks (sidecar coverage) for that pillar are sparse-to-zero, the docs may be overpromising. Surface as a new doc-gap class `pillar-overpromise`: "docs name pillar X but code coverage is < N sidecars or < M%" — maintainer-triages whether to flesh out implementation or trim the doc claim.
+- **Implementation-without-pillar findings** — when sidecars surface a coherent code-side capability that lacks any pillar home in `system-mission.md`, surface as `pillar-undocumented` (cross-reference `system-mission.md`'s canonicalisation_candidates entry).
+- **Thin-doc pillars** — pillars whose `confidence: LOW` or whose `live_url_verifications.status: pending-WebFetch-session` get an automatic doc-gap candidate to schedule a verification pass.
+
+If `system-mission.md` does not exist, fall back to rev-2 behaviour and flag the situation.
+
+## Rule (rev 2) — Dedup via `registry-search` subagent; never load the sharded index directly
+
+**Supersedes rev-1's read-the-full-prior-artefact pattern for dedup.** After slice 6, `doc-gaps.md` shards into `doc-gaps/{index.md, detail/{DOC-GAP-NNN}.md}`. The full registry lives across ~100 detail files; loading the entire `index.md` into your own context defeats the rev-2 cost-ceiling fix.
+
+For every fresh DOC-GAP candidate you're about to commit, spawn the `registry-search` subagent following `playbooks/registry-search-spawn.md`:
+
+- Pass `INDEX_PATH=lineage/{repo}/doc-gaps/index.md`, `ARTEFACT_KIND=doc-gaps`.
+- `QUERY_TEXT` is the candidate's discriminating fields: drift description + the live URL + WebFetch status code + the contributing sidecar's `docs_link_semantic.doc_drift_findings[N]` text + concept anchor.
+
+Act on the verdict (see `playbooks/registry-search-spawn.md` for the full tree):
+- `0 matches — create new` → mint NEXT_AVAILABLE_ID + 1, write `detail/{NEW_ID}.md` with full entry (severity, category, URL, last_verified_status, drift narrative, proposed wording, related concepts), append headline to `index.md` matching `lineage/_extractor/registry-shard/shard.py:_index_headline_doc_gap` shape.
+- `1 strong match — strengthen {DOC-GAP-NNN}` → read `detail/{DOC-GAP-NNN}.md`, append `## STRENGTHENS — {new_sidecar} (batch {batch_id})` block with the new sidecar's contribution to `surfaced_by` + any new evidence (different page URL where the same drift appears, a refined wording proposal, etc.). Do NOT rewrite existing prose. Update index headline ONLY if severity / category / verification-status changed.
+- `N candidates — maintainer-triage-ambiguous` → mint NEW_ID with `maintainer_triage_pending: true` + ambiguity block; surface in next investigator-log entry.
+
+Never auto-merge across HIGH-confidence candidates (e.g., two DOC-GAP entries on adjacent doc pages that LOOK like the same drift but might be distinct page-level issues). Merges are maintainer-triggered.
+
+**Per-finding context budget**: ≤ 30 KB. Per-batch total: ≤ 200 KB regardless of registry size. The rev-2 cost-ceiling promise.
+
 ## Exit
 
 Reply with exactly two lines:
@@ -253,3 +281,26 @@ Reply with exactly two lines:
 2. `Findings: <N> total (<H> HIGH, <M> MEDIUM, <L> LOW); <Bcat> categories covered; mode=<incremental|full>; consumed <S> sidecars (<New> new this batch) + concepts.yaml; verified <U> live URLs.`
 
 The `/doc-gap-check` skill parses your reply and surfaces the summary to the maintainer.
+
+## Rule 6 (LOAD-BEARING — added 2026-05-19 per LSN-018) — Pre-emit coherence check
+
+DEDUP (Rule 2/3) catches *"do we already have this fact?"* — same-registry duplicate detection. COHERENCE is a different protocol: *"does this new finding CONTRADICT what other registries already say?"*. Both must run, and Rule 6 implements the latter.
+
+**Trigger.** Before WRITING (or EDITING in-place) a detail file with a claim that asserts presence, absence, or behaviour about a named entity (class, repository, controller, service, job, config key, table, file:line, migration file, pillar feature).
+
+**Procedure.**
+
+1. **Extract anchors** from the proposed finding text: class names, file:line citations, Spring config keys (with dots), migration filenames, pillar-anchored feature IDs (`P-NN:F-NNN`), snake_case table/column names.
+2. **Grep `feature-flows/index.yaml` + `feature-flows/detail/`** for each anchor. If matches → Read the matched detail files in full.
+3. **Grep the OTHER FOUR registries' index files** (`concepts/index.yaml`, `test-map/index.yaml`, `doc-gaps/index.md`, `refactoring-scopes/index.md`, `implicit-adrs/index.md`) for each anchor. For matches → Read 1-3 candidate detail files (cheapest signal first).
+4. **Classify the relationship** between the proposed finding and each cross-registry hit:
+    - `STRENGTHENS` — same polarity (both assert the entity exists / behaves the same way). Emit with `related_features: [F-NNN]` back-link (or analogous list for the matched artefact type) added to the new file AND to the matched file.
+    - `SUPERSEDES` — opposite polarity AND clear file:line evidence the new claim is correct. Emit with `superseded` block on the OLD artefact (`superseded_by: <new-id>`, `superseded_note: <reason>`) and `supersedes: [old-id]` on the NEW artefact. Reference LSN-018 in the supersede note.
+    - `CONTRADICTS` — opposite polarity but the new finding's evidence is no stronger than the existing claim's. **DO NOT EMIT.** Append a single line to `state/coherence-conflicts-batch-{theme_id}.md` and surface in your reply summary as `conflicts_surfaced: <N>`. The maintainer (or a follow-up agent) resolves before commit.
+5. **Always emit back-links**. Every new detail file MUST declare which pillar-anchored feature(s) it relates to (`related_features: [F-NNN]` or `related_pillar_features: [P-NN:F-MMM]`). Every feature detail this reducer edits MUST gain a corresponding `related_<artefact_type>: [<new-id>]` entry.
+
+**Why this matters.** The methodology has been emitting contradictory artefacts across batches because dedup catches "have I said this before" but never catches "does the existing registry already disagree". Canonical case-law: 2026-05-19 F-010 (Housekeeping TTL Enforcement, batch K) enumerated `SearchFacetsHousekeepingJob` as one of 5 active jobs; TEST-GAP-523 (batch M) two days later asserted "NO TTL eviction, V0_0_52 has no search_facets entry, TTL TODO never implemented" — all four claims ground-truth-wrong; F-010 was right. The two coexisted in the registry until the maintainer eyeballed it. LSN-018 captures the miss and this Rule 6 is the structural fix.
+
+**Cost bound.** Rule 6 adds ≤2 grep operations + ≤3 Read operations per emitted finding. For a batch emitting ~20 new artefacts the budget is ~60 extra Read calls — bounded and small relative to the file-analyser layer.
+
+**Reply summary changes.** Add to your final reply line: `coherence_strengthens: <N>` / `coherence_supersedes: <N>` / `coherence_conflicts_surfaced: <N>`. A non-zero `conflicts_surfaced` is a SIGNAL TO THE MAINTAINER, not a reducer failure; the batch still commits but the conflicts file is reviewed before the next batch fires.

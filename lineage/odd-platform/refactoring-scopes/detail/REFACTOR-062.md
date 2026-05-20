@@ -1,0 +1,11 @@
+- **REFACTOR-062** (NEW 2026-05-10A): Token-rotation response body returns the new plaintext token without `Cache-Control: no-store` or other sensitive-body headers — every reverse-proxy / API-gateway / browser-history / response-logging middleware between UI and backend records the credential
+  - **Category**: response-cache-leak
+  - **Surfaced by**:
+    - `odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md:bugs_limitations_corner_cases.[3]` (MEDIUM)
+    - `odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md:security.known_security_gaps.[0]` (MEDIUM)
+  - **Statement**: `CollectorController.java:50` returns the rotated Collector via `.map(ResponseEntity::ok)` with NO response-header customisation. The new plaintext token is in the body. Any logging / caching / proxying middleware on the response path captures the credential. No header marks the body as sensitive (no `Cache-Control: no-store`, no custom `X-Sensitive-Body` signal for downstream tooling).
+  - **Evidence**: `CollectorController.java:50` + `TokenMapper.java:15-18` (plaintext returned when showToken=true)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-017 (token rotation semantics) requires returning plaintext on rotate (the user has no other way to learn the secret); the ADR does NOT defend the absence of cache/log-prevention headers — those are a gap-shape orthogonal to the rotation model.
+  - **Proposed remedy**: Add `Cache-Control: no-store, no-cache, must-revalidate` and `Pragma: no-cache` to the rotation response. Optionally add a custom `X-Sensitive-Body: token` advisory header for downstream log-redaction tooling. Document on the live `enable-security` page that operators should redact response bodies for `PUT /api/collectors/*/token` in any logging tier.
+  - **Severity rationale**: MEDIUM — credential exposure via standard middleware behaviour.
+  - **Suggested backlog grouping**: `Token rotation hardening`

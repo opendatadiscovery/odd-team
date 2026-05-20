@@ -1,0 +1,145 @@
+name: Bind Owner to Data Entity (with optional DEG propagation)
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+- P-08
+- P-09
+description: |-
+  `POST /api/dataentities/{data_entity_id}/ownership` — gated by
+  `DATA_ENTITY_OWNERSHIP_CREATE` per-data-entity Permission via
+  SECURITY_RULES (SecurityConstants.java:215-217). `OwnershipServiceImpl.create`
+  runs under `@ReactiveTransactional` + `@ActivityLog(event =
+  OWNERSHIP_CREATED)`: `Mono.zip(ownerService.getOrCreate(owner_name),
+  titleService.getOrCreate(title_name))` → ownership-row INSERT →
+  optional propagation to children if data-entity is a DEG →
+  search-index refresh → mark `data_entity_filled.OWNERS` → mapDto.
+  **Side-effecting auto-create**: novel `owner_name` silently creates an
+  Owner directory row; novel `title_name` silently creates a Title
+  directory row. Both side-doors past their respective create-side
+  permissions. **Activity-event emission CONFIRMED** for the
+  ownership-binding (contrast OwnerController.createOwner which has NONE
+  — the audit decision is per-write). DEG propagation (`propagate=true`
+  on a Data Entity Group target) cascades the ownership row to every
+  child via `createOrUpdate` with `onConflictOnConstraint(...).doUpdate().set(TITLE_ID,
+  excluded)` — children with existing ownership rows for this Owner are
+  RE-TITLED, NOT skipped. **STRENGTHENED batch 2026-05-19K** —
+  OwnershipServiceImpl primary-source pinned at the SERVICE LAYER (lines
+  47-74); the create flow's 6-step body is now line-cited. Two CROSS-BATCH
+  corrections propagated from batch H + K:
+    (a) Duplicate-key error surface — HTTP 400 USR003 (NOT 5xx as batch
+        F sidecar claimed); the path is
+        JooqReactiveOperations.onErrorMap → ExceptionUtils.translateDatabaseException
+        → UniqueConstraintException("Ownership for this data entity and
+        owner already exists") → ControllerAdvice.handleUniqueConstraint →
+        HttpStatus.BAD_REQUEST.
+    (b) Self-grant decoupling primary-source confirmation — owner_name is
+        taken VERBATIM from the form, NOT inferred from the principal
+        (no authIdentityProvider call; no SecurityContext read inside the
+        method). Cross-namespace / cross-tenant grant is unconstrained at
+        the service tier.
+  NEW finding: the DEG-propagation cascade emits NO per-child activity
+  events (deliberate audit-granularity choice per
+  OwnershipServiceImpl.implicit_adrs.[2]). The delete flow does NOT
+  refresh the search vector (FTS staleness on owner removal).
+axes_present:
+- controllers
+- services
+nodes:
+- odd-platform java DataEntityController controller-method:createOwnership
+- odd-platform java service service:OwnershipServiceImpl
+contributors:
+- |-
+  createOwnership.md:concepts.operations: bind-owner-to-data-entity —
+  Mono.zip(ownerService.getOrCreate, titleService.getOrCreate) →
+  ownershipRepository.create → optional propagation to children if
+  data-entity is a DEG → search-index refresh → markEntityFilled(OWNERS)
+  → mapDto
+- |-
+  createOwnership.md:implicit_adrs.[0] (per-data-entity SecurityRule with
+  DATA_ENTITY policy resolver context) + implicit_adrs.[1] (activity-feed
+  emission via @ActivityLog) + implicit_adrs.[2] (reactive transactional
+  at service) + implicit_adrs.[3] (DEG-propagation onConflict-doUpdate
+  cascade)
+- |-
+  OwnershipServiceImpl (batch K — STRENGTHENS): concepts.operations[create;
+  delete; update; propagateIfDEG; propagateOwnership] + concepts.invariants
+  (11 invariants — most consequential: @ReactiveTransactional at every
+  public method; No service-tier permission gate; Owner + Title auto-create
+  on miss; Duplicate prevention surfaces as HTTP 400 USR003 [CROSS-BATCH
+  CORRECTION]; No self-grant inference) + implicit_adrs.[0-5] (six
+  architectural decisions — DELIBERATE owner+title auto-create;
+  @ReactiveTransactional at service layer; activity-feed at public-method
+  boundary not per-child cascade; DB-constraint-driven uniqueness with
+  centralised friendly-error translation; DEG-propagation opt-in via
+  form-data; principal-independent owner_name) +
+  bugs_limitations_corner_cases.[0-9] (REFACTOR-199 primary anchor;
+  REFACTOR-206 sibling; delete flow does NOT refresh FTS vector; delete
+  flow does NOT validate ownership exists; update propagation uses CREATE
+  action; DEG NPE-safety latent; activity-feed AOP boundary; no
+  observability; cross-tenant leak; DISABLED-mode anonymously reachable)
+evidence:
+- createOwnership.md:concepts.operations + concepts.invariants.[0-4]
+- createOwnership.md:implicit_adrs.[0-3]
+- |-
+  OwnershipServiceImpl.md (batch K — STRENGTHENS): concepts.operations
+  (5 operations including propagateIfDEG + propagateOwnership) +
+  concepts.invariants.[0-10] + implicit_adrs.[0-5] +
+  bugs_limitations_corner_cases.[0-9]
+- |-
+  OwnershipServiceImpl.md:implicit_adrs.[3] (CROSS-BATCH CORRECTION —
+  duplicate-prevention is HTTP 400 USR003 not 5xx; the batch-F sidecar's
+  bugs_limitations_corner_cases.[2] and known_security_gaps.[3] claims are
+  INCORRECT and SUPERSEDED)
+- |-
+  OwnershipServiceImpl.md:implicit_adrs.[5] (principal-independent
+  owner_name; self-grant decoupling)
+- |-
+  OwnershipServiceImpl.md:implicit_adrs.[2] (Activity-feed audit at
+  public-method boundary; deliberate granularity — DEG cascade emits
+  NO per-child events)
+- |-
+  OwnershipServiceImpl.md:bugs_limitations_corner_cases.[2] (delete flow
+  does NOT refresh FTS vector — latent search-result staleness)
+notes: |-
+  STRENGTHENED batch 2026-05-19K. The service-layer orchestration is now
+  primary-source pinned at OwnershipServiceImpl.java:47-74 (create) +
+  76-97 (delete) + 99-119 (update) + 121-149 (DEG cascade). Two cross-batch
+  corrections propagated:
+    - HTTP 400 USR003 duplicate-key surface (NOT 5xx; batch F was
+      incorrect)
+    - Self-grant decoupling primary-source confirmed (owner_name verbatim
+      from form, no principal inference)
+
+  Companion new concepts surfaced this batch:
+    - Manage Ownership Lifecycle (create/update/delete with DEG cascade)
+      [new operation — service-layer counterpart of this controller-method
+      operation]
+    - DEG-propagation cascade audit-feed asymmetry [new invariant]
+
+  Operation vocabulary captured for future DOC-NNN follow-ups on the
+  ownership-binding surface. Six doc-gaps surface from this operation:
+    (a) Permission DATA_ENTITY_OWNERSHIP_CREATE listed with one-sentence
+        description; no enumeration of who holds it by default.
+    (b) Self-grant feasibility undocumented (now PRIMARY-SOURCE confirmed
+        the service is principal-independent — a Policy granting
+        OWNERSHIP_CREATE unconditionally lets the holder grant any owner
+        to any data entity).
+    (c) Owner auto-create side-effect via getOrCreate undocumented
+        (REFACTOR-199 — now cross-batch primary-source confirmed).
+    (d) Title auto-create side-effect via getOrCreate undocumented
+        (REFACTOR-206 — now cross-batch primary-source confirmed).
+    (e) DEG propagation semantics (propagate: true cascade to children,
+        onConflict-doUpdate-title) undocumented.
+    (f) Duplicate-prevention surface error shape — HTTP 400 USR003 NOT
+        5xx (CORRECTED batch H + K; batch F was wrong).
+
+  The OWNERSHIP_CREATED activity event payload shape
+  (OwnershipActivityStateDto = (ownerName, titleName)) is also
+  undocumented on the activity-feed doc page.
+
+  NEW DOC-NNN from batch K:
+    (g) Document the DEG-propagation audit-feed asymmetry — per-child
+        events are NOT emitted; cascade audit-trail inference required.
+    (h) Document the delete-flow FTS staleness — search results may
+        still surface old owner names until next mutation refreshes the
+        vector.

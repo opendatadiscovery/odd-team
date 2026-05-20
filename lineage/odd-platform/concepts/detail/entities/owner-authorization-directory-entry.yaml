@@ -1,0 +1,141 @@
+name: Owner (Authorization directory entry)
+canonical_in_docs: true
+canonical_candidate: false
+description: 'A platform-managed directory entry representing a Data Owner — ''people
+  who manage and maintain a particular data entity or term'' (live owners doc verbatim).
+  Owners are NOT Users — Owners are objects in the `owner` table; Users authenticate
+  via LDAP/OAuth2/LOGIN_FORM and must SEPARATELY associate with an Owner via `POST
+  /api/owner_association_request` (`OwnerAssociationRequestServiceImpl.java:52-76`).
+  **No auth flow auto-creates an Owner on first login** — operators must manually
+  pre-create per-user Owner rows (or accept the manual association request). Owner
+  directory CRUD is gated by SECURITY_RULES (OWNER_CREATE / OWNER_UPDATE / OWNER_DELETE
+  NO_CONTEXT). Owner directory is identity-decoupled from the authenticated principal.
+  Canonical doc anchor: `configuration-and-deployment/enable-security/authorization/owners`
+  (200, 2026-05-12).'
+axes_present:
+- controllers
+nodes:
+- odd-platform java OwnerController controller-method:createOwner
+contributors:
+- 'OwnerController.createOwner: entities[Owner (response payload), OwnerFormData (name
+  + optional roles[]), OwnerPojo (jOOQ row), OwnerToRole (join-table link)]; operations[create-owner-with-optional-roles
+  — single transactional insert + per-role link insert + read-back as DTO]'
+- 'implicit_adrs.[1]: Owner-creation decoupled from user identity by design — request
+  body carries only `name` + optional `roles`; controller never reads the security
+  context; user→owner mapping is created only through the SEPARATE association-request
+  flow'
+evidence:
+- createOwner.md:concepts.entities + concepts.invariants.[0-2]
+- createOwner.md:implicit_adrs.[0] (SECURITY_RULES gating) + implicit_adrs.[1] (identity-decoupled
+  directory CRUD) + implicit_adrs.[2] (ReactiveTransactional at service)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: SECURITY_RULES gates OWNER_CREATE NO_CONTEXT at line 143 — caller needs
+      a Policy granting OWNER_CREATE. Under `auth.type=DISABLED` the rule is INERT
+      (DisabledAuthSecurityConfiguration bypasses the chain). Under LOGIN_FORM, AuthorizationCustomizer
+      is not wired and every form-authenticated user is ADMIN.
+  owner_scoping:
+    verdict: N/A
+    detail: Owner directory entries are top-level; they have no `owner_id` parent.
+      OWNER_CREATE is a global capability.
+  strengths:
+  - '`@ReactiveTransactional` boundary at the service — owner row + role-link rows
+    + read-back are atomic (createOwner.md:implicit_adrs.[2])'
+  - Identity-decoupled directory CRUD pattern — admin creates Owner as a directory
+    entry; Owner is claimed via separate association request flow. Three-controller
+    split (`OwnerController` for CRUD, `OwnerAssociationRequestController` for user-claim,
+    downstream `UserOwnerMappingService` callers) reinforces the separation (createOwner.md:implicit_adrs.[1])
+  weaknesses:
+  - '**Owner-creation emits NO activity-feed event (MEDIUM)** — `@ActivityLog` is
+    NOT applied to `OwnerServiceImpl.create` (grep verified — only AlertHaltConfig
+    / Alert / DataEntityInternalState / DataEntity / DataEntityGroup carry it). Owner
+    directory changes are invisible to the audit, even when they cascade into ownership-row
+    changes that ARE recorded. Same shape as the no-audit-log on Policy + Role. (createOwner.md:security.known_security_gaps.[0])'
+  - '**Non-partial `name UNIQUE` blocks soft-delete recovery (MEDIUM)** — `owner.name
+    varchar(255) NOT NULL UNIQUE` is a plain (non-partial) unique constraint; a soft-deleted
+    owner (`deleted_at` set, row remains) permanently holds the name. The `user_owner_mapping`
+    table received a partial-unique migration (`V0_0_89__update_user_owner.sql:9-15`)
+    but the `owner` table did not. Operators recovering from an accidental delete
+    cannot ''just re-create''. (createOwner.md:security.known_security_gaps.[2])'
+  - '**Input validation one-sided (LOW)** — `@NotNull` on `name`, NO `@NotBlank`/`@Size`/`@Pattern`.
+    Empty strings, whitespace-only, homoglyph-attack names, and 256-char names pass.
+    Mitigated by OWNER_CREATE permission gate. (createOwner.md:security.known_security_gaps.[1])'
+  - '**Under `auth.type=DISABLED`, OWNER_CREATE is anonymously reachable (LOW — corollary
+    of REFACTOR-073)** — combined with absence of rate-limit and absence of audit
+    log, the directory can be populated with arbitrary names without trace (createOwner.md:security.known_security_gaps.[3])'
+  - '**No identity auto-creation on first login (operator confusion)** — Live owners
+    doc states ''Every ODD Platform user should associate themselves with one of the
+    existing owners'' — implying the association is manual. The code confirms this:
+    no auth flow (`AuthIdentityProviderImpl.java`, `LDAPSecurityConfiguration.java`,
+    `OAuthSecurityConfiguration.java`) calls `OwnerService.create` or `getOrCreate`
+    on login. `getOrCreate` is invoked ONLY from `OwnerAssociationRequestServiceImpl.createOwnerAssociationRequest`.
+    Doc-code alignment, but operator-discoverability gap. (createOwner.md:docs_link_semantic.doc_drift_findings.[2])'
+  cross_file_inconsistencies:
+  - OpenAPI declares 201 Created (`OwnerApi.java:57`) but controller returns 200 OK
+    (`OwnerController.java:26`). Same drift on `updateOwner` (OpenAPI 201 for an update
+    — unusual). Sibling Role + Policy CRUD share the same 200-vs-201 drift; class-wide
+    inconsistency. (createOwner.md:docs_link_semantic.doc_drift_findings.[0])
+  - 'Live owners doc explicitly disclaims coverage of: owner creation mechanics, OWNER_CREATE
+    permission, association-request mechanics, and owner-sprawl prevention. Each IS
+    a real concern in the code; doc-gap NOT contradiction. (createOwner.md:docs_link_semantic.doc_drift_findings.[1])'
+  contributing_files:
+  - createOwner.md
+  evidence:
+  - createOwner.md:security.known_security_gaps.[0-3]
+  - createOwner.md:docs_link_semantic.doc_drift_findings.[0-2]
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: 'One owner per request; no bulk-create variant. Per-request: 1 INSERT
+      into `owner` + N INSERTs into `owner_to_role` + 1 SELECT-with-joins read-back.
+      Three round-trips simple case; 2+N with roles (createOwner.md:performance.throughput_characteristics.[1])'
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: Stateless controller; `@ReactiveTransactional` boundary at the service
+      holds a DB connection through INSERT + role-links + read-back. Connection-pool
+      contention scales with request rate × transaction duration (createOwner.md:performance.scaling_characteristics.[1])
+  strengths:
+  - Reactive non-blocking signature — no thread held during DB awaits
+  weaknesses:
+  - No method-level observability (LOW) — no `@Timed`, no Micrometer counter, no structured
+    log; admin-time op so impact bounded (createOwner.md:performance.known_performance_gaps.[0])
+  cross_file_inconsistencies: []
+  contributing_files:
+  - createOwner.md
+  evidence:
+  - createOwner.md:performance.known_performance_gaps.[0,1]
+notes: 'Owner is a tricky concept — main-concepts.md does not explicitly name
+
+  it, but the live `/authorization/owners` page does. The catalog uses
+
+  "Owner (Authorization directory entry)" to disambiguate from the
+
+  adjacent "User-owner association" concept (the user → owner mapping
+
+  table, not modelled here) and "Ownership" (the owner ↔ data-entity
+
+  relation, also not modelled here). All three are part of ODD''s
+
+  authorization vocabulary per `enable-security/authorization`. Five
+
+  doc-drift findings: 201-vs-200 + creation mechanics absent + OWNER_CREATE
+
+  undocumented + association mechanics undocumented + sprawl-prevention
+
+  undocumented. The identity-decoupled directory CRUD invariant is
+
+  a single-sidecar canonical observation worth surfacing as
+
+  ADR-CANDIDATE — see canonicalisation_candidates.
+
+  '

@@ -1,0 +1,324 @@
+name: |-
+  Tag TOCTOU race — listByNames then bulkCreate auto-create-on-miss (STRENGTHENED
+  batch R — MetadataField sibling primary source; bug class confirmed at SECOND site)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+- P-09
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19N — SQL-LAYER PRIMARY
+  SOURCE from ReactiveTagRepositoryImpl; STRENGTHENED batch R with
+  MetadataField SIBLING INSTANCE at ReactiveMetadataFieldRepositoryImpl** —
+  the auto-create-on-miss UX for tag-relations has a Time-Of-Check /
+  Time-Of-Use race window between `TagServiceImpl.getOrCreateTagsByName`
+  and the underlying repository primitives.
+
+  **The race window** (TAG instance):
+    1. `TagServiceImpl.divideTagsByExistence` (TagServiceImpl.java:144-159)
+       calls `tagRepository.listByNames(tagNames)` — returns the set of
+       existing tag rows for the candidate names.
+    2. `TagServiceImpl.getOrCreateTagsByName` filters the input by the
+       existing-set and calls `tagRepository.bulkCreate(tagsToCreate)`
+       (TagServiceImpl.java:80-86 → ReactiveAbstractCRUDRepository.bulkCreate
+       at lines 113-126) for the remainder.
+    3. Between (1) and (2), a CONCURRENT caller can insert the same
+       novel name. Under PostgreSQL READ COMMITTED isolation (the
+       default for R2DBC + jOOQ-Reactive), the first caller's listByNames
+       snapshot does NOT see the second caller's uncommitted INSERT.
+    4. The first caller's `bulkCreate` reaches Postgres with the
+       now-conflicting name; hits the `tag_name_unique` partial index
+       (V0_0_64__remove_is_deleted_field.sql:105); receives a
+       `unique_violation` SQLSTATE 23505 which the
+       `ExceptionUtils.translateDatabaseException` chain
+       (ExceptionUtils.java:54-56) translates to a
+       `UniqueConstraintException("Tag with this name already exists")`.
+    5. **There is no caller-side retry** — neither `TagServiceImpl`
+       nor any upstream service catches the exception to re-fetch and
+       re-attempt. The user sees a 5xx-level error on a normal-looking
+       PUT request (the OpenAPI shape is `200 OK` for happy path; the
+       race surfaces as the global ControllerAdvice catch-all).
+
+  **The ingestData upsert path is SAFE**: the parallel write path used by
+  `ExternalTagIngestionRequestProcessor` calls `tagRepository.ingestData`
+  which issues `INSERT ... ON CONFLICT (name) WHERE deleted_at IS NULL DO
+  UPDATE SET name = EXCLUDED.name RETURNING *`
+  (ReactiveTagRepositoryImpl.java:191-213). The `ON CONFLICT` clause
+  serialises concurrent novel-name inserts at the DB level and returns
+  the existing row's id — no race surface. The asymmetry between
+  `bulkCreate` (no ON CONFLICT) and `ingestData` (ON CONFLICT DO UPDATE)
+  is INTENTIONAL per the batch-N repository sidecar's implicit_adrs.[6]:
+  `TagController.createTag` (operator-explicit creation gated by
+  `TAG_CREATE`) MUST fail on duplicate to surface the error; ingestion-
+  side calls MUST not fail because a tag with the same name was added
+  moments earlier by a parallel pipeline. **The race surface is at the
+  bulkCreate (UI tag-assignment) path**.
+
+  **BATCH R EXTENSION — METADATAFIELD SIBLING INSTANCE (STRUCTURALLY
+  IDENTICAL TOCTOU SHAPE)**: ReactiveMetadataFieldRepositoryImpl batch R
+  sidecar surfaces the SAME race shape at a second site:
+    1. `MetadataFieldServiceImpl.getOrCreateMetadataFields`
+       (MetadataFieldServiceImpl.java:42-59) calls
+       `reactiveMetadataFieldRepository.listByKey(metadataMap.keySet())` —
+       returns existing rows matching the candidate `(name, type)` keys
+       (case-SENSITIVE exact match).
+    2. The service filters by existing-set and calls
+       `reactiveMetadataFieldRepository.bulkCreate(metadataFieldsToCreate)`
+       (inherited from ReactiveAbstractCRUDRepository.bulkCreate
+       lines 113-126) for the remainder.
+    3. Between (1) and (2), a concurrent caller can insert the same
+       novel `(name, type)` pair.
+    4. The first caller's `bulkCreate` hits the `IX_UNIQUE_INTERNAL_NAME`
+       partial index (`metadata_field(name) WHERE origin = 'INTERNAL'`,
+       V0_0_1__init.sql:242-244); receives SQLSTATE 23505; the
+       `ExceptionUtils.translateDatabaseException` translates to
+       `UniqueConstraintException("Internal metadata with this name
+       already exists")` (ExceptionUtils.java:63-65).
+    5. NO service-tier retry. The race-window-resolves-via-exception
+       behaviour is structurally identical to Tag.
+
+  **The ingestData upsert is the SAFE counterpart** for collector-tier
+  metadata writes — `ReactiveMetadataFieldRepositoryImpl.ingestData`
+  (lines 73-109) pins to `IX_UNIQUE_EXTERNAL_NAME_TYPE` with the
+  matching `.where(ORIGIN.ne(INTERNAL))` clause and uses `ON CONFLICT
+  ... DO UPDATE SET name = EXCLUDED.name RETURNING *`. The asymmetry
+  between INTERNAL (UI-tier, race-prone) and EXTERNAL (collector-tier,
+  race-tolerant) is INTENTIONAL per ReactiveMetadataFieldRepositoryImpl
+  batch R implicit_adrs.[2]: UI writes are operator-intentional and a
+  collision should surface as an error; ingestion writes must be
+  idempotent.
+
+  **Two-sidecar primary source for the same bug class**: the
+  identification of the bug as a CROSS-CUTTING pattern (not a Tag-specific
+  bug) is now SECOND-INSTANCE confirmed. The pair (Tag + metadata_field)
+  share:
+    - The listBy → bulkCreate two-step at the service tier
+    - The race-window-resolves-via-UniqueConstraintException at the
+      partial-unique-index
+    - The intentional dual-method design (UPSERT for ingestion;
+      fail-on-duplicate for UI-tier)
+
+  **Triggering scenarios in real deployments** (same shape for both
+  Tag and MetadataField):
+    (a) Two end-users concurrently apply a novel tag/field to two
+        different entities. One succeeds; the other hits the race;
+        the loser sees the 5xx-level surface.
+    (b) A single user double-clicks a UI submit. React state may
+        deduplicate; if the UI does NOT debounce, the second click
+        races the first.
+    (c) An automation script applies a tag/field to many entities in
+        parallel. The first batch wins; subsequent batches with the
+        same novel name race.
+
+  **The DB-side partial unique index is the PROTECTION** (in both
+  cases) — without it, both racers would succeed and produce two
+  distinct rows with the same name (the silent-duplicate case is
+  WORSE than the explicit 5xx surface, so the protection is
+  appropriate at the DB layer). The gap is in the SERVICE layer's
+  failure-handling: a UniqueConstraintException loser should re-read
+  via listBy and reuse the now-existing id, not surface as a 5xx
+  error to the user.
+
+  **Pair with REFACTOR-223 (Tag side-door class)** — the auto-create
+  surface is wide-open per the spec-documented design intent, but the
+  TOCTOU race surfaces the operational fragility: the wide-open
+  auto-create UX produces 5xx errors under concurrent load. The
+  pairing is the diagnostic — the side-door creates the bug class;
+  the TOCTOU surfaces it operationally.
+
+  **Companion finding — same auto-create-on-miss class affects other
+  tables**:
+    - Owner auto-create at OwnerServiceImpl.getOrCreate (batch F finding;
+      Owner has a similar partial unique index `owner_name_unique` per
+      V0_0_64).
+    - Namespace auto-create at NamespaceServiceImpl (batch K finding via
+      TermServiceImpl.upsertTags transitive path);
+      `namespace_name_unique` partial index per V0_0_64.
+    - Title auto-create at OwnershipServiceImpl path (similar shape).
+    - **NEW batch R**: MetadataField INTERNAL auto-create at
+      MetadataFieldServiceImpl.getOrCreateMetadataFields (this batch's
+      sibling instance).
+  **The TOCTOU race shape applies to every "auto-create-on-miss"
+  service-tier method that does listBy → bulkCreate without the
+  DB-side ON CONFLICT protection.** This invariant now captures TWO
+  PRIMARY SOURCES for the class — the Tag instance (batch N) and the
+  MetadataField INTERNAL instance (batch R). The cross-cutting
+  auto-create-class finding is captured at the
+  spec-documented-auto-create-with-scope-asymmetry invariant.
+nodes:
+- odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveMetadataFieldRepositoryImpl
+contributors:
+- |-
+  ReactiveTagRepositoryImpl batch N (PRIMARY SOURCE — first instance):
+  concepts.invariants.[hard-delete vs soft-delete asymmetry; tag-name
+  partial-unique-index as race protection] + implicit_adrs.[0]
+  (partial-unique-index-as-race-protection — the platform's only locking
+  mechanism for the auto-create-on-miss path) + implicit_adrs.[6]
+  (bulkCreate is the ONE create path that does NOT use onConflict —
+  the dual-method design rationale: TagController MUST fail on
+  duplicate, ingestion-side MUST not fail) +
+  bugs_limitations_corner_cases.[0] (TOCTOU between listByNames and
+  bulkCreate in TagServiceImpl.getOrCreateTagsByName — HIGH) +
+  tests_coverage_semantic.uncovered_behaviours.[ingestData concurrent
+  novel name; bulkCreate concurrent duplicate name]
+- |-
+  ReactiveMetadataFieldRepositoryImpl batch R (PRIMARY SOURCE — second
+  instance, STRUCTURALLY IDENTICAL TO TAG):
+  concepts.invariants.[4] (TOCTOU race window in
+  MetadataFieldServiceImpl.getOrCreateMetadataFields — same shape as Tag;
+  the race resolves via UniqueConstraintException("Internal metadata
+  with this name already exists") from the IX_UNIQUE_INTERNAL_NAME
+  partial index; the ingestion path uses ingestData with ON CONFLICT
+  and is tolerant) +
+  implicit_adrs.[2] (ingestData is the collector-only path with
+  race-tolerant semantics — ON CONFLICT DO UPDATE; the UI tier uses
+  plain bulkCreate with race-exception-driven resolution; the deliberate
+  split is the same as Tag) +
+  tests_coverage_semantic.uncovered_behaviours (TOCTOU concurrent-create
+  test — no test exercises two simultaneous calls to
+  MetadataFieldServiceImpl.getOrCreateMetadataFields with overlapping
+  keys; the race-window-resolves-via-UniqueConstraintException behaviour
+  is unverified)
+evidence:
+- |-
+  ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[0] (PRIMARY
+  SOURCE — HIGH severity, first instance) — evidence:
+    TagServiceImpl.java:80-86 (the writeback step) +
+    TagServiceImpl.java:144-159 (the read step) +
+    ReactiveAbstractCRUDRepository.java:113-126 (bulkCreate without
+    onConflict) +
+    ExceptionUtils.java:30-36, 54-56 (the translation to
+    UniqueConstraintException)
+- |-
+  ReactiveTagRepositoryImpl.md:implicit_adrs.[0,6] (partial-unique-index-as-race-protection;
+  the dual-method design rationale)
+- |-
+  V0_0_64__remove_is_deleted_field.sql:105 — the tag_name_unique partial
+  unique index that serialises the race at the DB level
+- |-
+  **ReactiveMetadataFieldRepositoryImpl.md:concepts.invariants.[4] +
+  implicit_adrs.[2]** (PRIMARY SOURCE — second instance, HIGH severity)
+  — evidence:
+    MetadataFieldServiceImpl.java:42-59 (the listByKey + bulkCreate
+      two-step in getOrCreateMetadataFields) +
+    ReactiveMetadataFieldRepositoryImpl.java:58-71 (listByKey —
+      case-sensitive partition-batched lookup) +
+    ReactiveAbstractCRUDRepository.java:113-126 (inherited bulkCreate
+      without ON CONFLICT) +
+    V0_0_1__init.sql:242-244 (IX_UNIQUE_INTERNAL_NAME — the
+      partial-unique-index protection) +
+    ExceptionUtils.java:63-65 (the translation to
+      UniqueConstraintException with the user-facing message)
+- |-
+  ReactiveMetadataFieldRepositoryImpl.md:implicit_adrs.[2] (the
+  intentional split between ingestData [race-tolerant] and
+  bulkCreate [race-exception-driven] — identical design intent to Tag)
+axes_present:
+- repositories_reactive
+- services
+- schema_migrations
+triangulation_count: 2
+cross_batch: true
+severity: HIGH
+severity_dim: availability-and-UX
+mitigations_unimplemented:
+- |-
+  Add a service-layer retry-on-UniqueConstraintException loop in
+  TagServiceImpl.getOrCreateTagsByName AND
+  MetadataFieldServiceImpl.getOrCreateMetadataFields: on first
+  UniqueConstraintException, re-fetch listBy*, filter out the
+  now-existing names, and re-attempt bulkCreate with the (now-empty
+  or now-smaller) residual. Bounded retry count (max 2 attempts).
+  Same fix shape for both sites.
+- |-
+  Migrate TagServiceImpl.getOrCreateTagsByName AND
+  MetadataFieldServiceImpl.getOrCreateMetadataFields to use the
+  upsert path (ingestData equivalent) instead of bulkCreate. The
+  upsert returns the existing row's id; the caller wraps the result
+  list into the relation-create call. For both Tag and MetadataField,
+  the upsert variant ALREADY EXISTS (just used only on the
+  ingestion path). Requires a routing decision at each respective
+  Controller — the explicit create path (which wants the
+  fail-on-duplicate semantic) vs the assign-to-entity flow (which
+  wants the return-existing).
+- |-
+  Wrap the listBy + bulkCreate pair in a @ReactiveTransactional
+  with isolation = SERIALIZABLE on TagServiceImpl.updateRelationsWithDataEntity
+  AND on the metadata equivalent. Serialisable would cause the race
+  losers to fail with serialisation-failure (40001) which is RETRY-able
+  rather than the silent-no-recovery 5xx today.
+- |-
+  Add regression tests at BOTH sites:
+    (a) Set up parallel Mono<Void> with the same tag/field name
+        list at each respective service;
+    (b) Run them concurrently via Mono.zip / StepVerifier with
+        parallel scheduler;
+    (c) Assert that ONE succeeds AND the other surfaces
+        UniqueConstraintException (pinning the current — buggy —
+        behaviour as a regression baseline) OR assert BOTH return
+        the same id (under the proposed retry-or-upsert fix).
+- |-
+  Document the TOCTOU race window in the API reference for the
+  data-entity-tags-update endpoint AND the metadata-field-create
+  endpoint — operators can plan retry strategies client-side until
+  the server fix lands.
+notes: |-
+  STRENGTHENED batch 2026-05-20R — MetadataField SIBLING INSTANCE
+  PINNED AT SQL PRIMARY SOURCE. Same bug class, same architectural
+  shape, same dual-method intentional split (ingestData
+  race-tolerant; bulkCreate race-exception-driven). The triangulation
+  across TWO repositories confirms the class is CROSS-CUTTING, not
+  a Tag-specific defect.
+
+  Original batch N notes (preserved):
+  NEW HIGH-severity invariant captured in batch 2026-05-19N. Primary
+  source is the ReactiveTagRepositoryImpl repository sidecar's
+  bugs_limitations_corner_cases.[0] — the TOCTOU between
+  TagServiceImpl.divideTagsByExistence (listByNames) and the subsequent
+  TagServiceImpl.upsertTags (bulkCreate). The race is at the SERVICE
+  layer; the repository's DB-side `tag_name_unique` partial index is the
+  load-bearing protection that prevents silent-duplicate data corruption,
+  at the cost of surfacing the race as a 5xx error to the user.
+
+  Class shape: this is ONE INSTANCE of a CROSS-CUTTING bug class —
+  every auto-create-on-miss service-tier method that does listBy →
+  bulkCreate without the DB-side ON CONFLICT protection has the same
+  race surface. Other instances:
+    - Owner auto-create (batch F finding)
+    - Namespace auto-create (batch K finding via TermServiceImpl)
+    - Title auto-create (similar shape)
+    - **MetadataField INTERNAL auto-create (NEW batch R — primary source)**
+
+  Cross-cutting connections:
+    - Pairs with spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
+      — the side-door creates the wide-open surface; the TOCTOU
+      surfaces the operational fragility under concurrent load
+    - Pairs with permission-bypass-via-owner-auto-create-side-door-write-path
+      — same architectural shape on Owner
+    - Pairs with the batch-N
+      `ingestData-upsert-with-returning-conflict-trigger` operation —
+      the SAFE counterpart that the race-prone path should migrate to
+    - **NEW batch R** — pairs with
+      `metadata-field-soft-delete-partial-unique-index-mismatch`
+      invariant — the metadata_field TOCTOU race compounds with the
+      soft-delete + unique-index mismatch: a TOCTOU loser hits the
+      partial-index collision AND the stale-soft-deleted-row collision
+    - **NEW batch R** — pairs with
+      `metadata-field-asymmetric-uniqueness-by-origin` invariant — the
+      INTERNAL TOCTOU race surface is exactly the side that gets the
+      fail-on-duplicate ergonomic; the EXTERNAL side gets the
+      race-tolerant ingestData
+
+  Companion testing gap: BOTH batch-N + batch-R sidecars'
+  tests_coverage_semantic.uncovered_behaviours blocks name the race
+  as a HIGH-severity uncovered test case. Neither repository has
+  direct test coverage for the concurrent-race scenario.
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Document the auto-create-on-miss race window for tag-assignment
+        callers AND for metadata-field create callers
+    (b) Fix the service layer at BOTH sites (retry-on-conflict OR
+        migrate to ingestData upsert path)
+    (c) Add the regression tests pinning the race behaviour as a
+        baseline AT BOTH sites

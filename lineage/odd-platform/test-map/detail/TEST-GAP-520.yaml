@@ -1,0 +1,34 @@
+gap_id: TEST-GAP-520
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java SearchController controller-method:facets"
+  - "odd-platform java SearchController controller-method:search"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "facets.md:bugs_limitations_corner_cases.[4] (Persisted state.getQuery() is passed directly to to_tsquery(?) without escaping tsquery operators)"
+  - "facets.md:security.known_security_gaps.[2] (tsquery-operator injection on persisted query_string → SQL parser DoS)"
+  - "facets.md:tests_coverage_semantic.uncovered_behaviours.[4] (tsquery operator injection on the persisted query)"
+behaviour: |-
+  to_tsquery operator-injection DoS regression-pin — SECOND INVOCATION SITE (HIGH — cross-pillar P-01+P-09; STRENGTHENS TEST-GAP-250 at the facet endpoint surface). `JooqFTSHelper.tsQuery` (`JooqFTSHelper.java:164-168`) does `Arrays.stream(plainQuery.split(" ")).map(q -> q + ":*").collect(Collectors.joining("&"))` — every word becomes a `prefix-match` token AND-joined. But if the persisted `query_string` contains characters that to_tsquery treats as syntax (`!`, `(`, `)`, `:`, `<->`, `&`, `|`, `'`, `\\`), they are NOT escaped before reaching the parser. A caller who POSTs a search with `query = 'foo ) | (bar'` PERSISTS that string in `search_facets.query_string`. Every subsequent facet aggregator that joins to SEARCH_ENTRYPOINT (entity-class facet at line 182, type facet at 267, owner facet at 469, tag facet at 582 — ALL FOUR call `ftsCondition(SEARCH_ENTRYPOINT.SEARCH_VECTOR, state.getQuery())`) will fail at SQL-parse time with a Postgres `syntax error in tsquery`, **breaking the session permanently** — the row is reachable but every facet read 500s. The injection is bounded by Postgres tsquery semantics (the parser does not eval SQL — it raises `42601`), but it IS a denial-of-service surface AND it is the SAME code path that batch H flagged on `getHighlightedResult`. The facet endpoints are an ADDITIONAL invocation site for the same bug — meaning: (a) the same input attack reaches FOUR different facet aggregators in this controller surface alone, (b) every UI re-mount on a tampered session re-triggers the 500, (c) combined with TEST-GAP-519 (cross-user session hijack) an attacker can permanently poison another user's session with a single PUT. Cross-link batch H finding on `getHighlightedResult` (TEST-GAP-250 — same code path); this finding STRENGTHENS the existing TEST-GAP-250 with a second/third/fourth invocation site at the facet endpoints.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/SearchFacetTSQueryInjectionTest.java"
+  name: "getFiltersForFacet_persistedQueryWithTSQuerySyntaxChars_returns500_permanentlyPoisonsSession"
+evidence:
+  - "facets.md:bugs_limitations_corner_cases.[4]: 'Persisted state.getQuery() is passed directly to to_tsquery(?) without escaping tsquery operators. A caller who POSTs a search with query = foo ) | (bar will persist that string in search_facets.query_string; every subsequent facet aggregator that joins to SEARCH_ENTRYPOINT will fail at SQL-parse time with a Postgres syntax error in tsquery, breaking the session permanently. The facet endpoints are an additional invocation site for the same bug.' severity: HIGH (paired with batch H SQL-injection / DoS finding)"
+  - "JooqFTSHelper.java:100-105, 164-168 (the unescaped tsquery construction)"
+  - "ReactiveSearchFacetRepositoryImpl.java:182, 267, 469, 582 (FOUR facet aggregators — every facet aggregator call site)"
+  - "batch H finding on getHighlightedResult (cross-link — TEST-GAP-250 primary)"
+cross_references:
+  - "TEST-GAP-250 (tsquery syntax-error vector at /search — STRENGTHENED at facet endpoints with 4 ADDITIONAL invocation sites)"
+  - "TEST-GAP-518 (cross-owner facet-count enumeration — co-located)"
+  - "TEST-GAP-519 (search-session cross-user hijack — combined: attacker permanently poisons another user's session)"
+  - "concepts.yaml:entities[Search Session].security_aggregate.weaknesses.[1] (to_tsquery syntax-error vector)"
+  - "REFACTOR-NNN candidate: sanitise via quote_literal + phraseto_tsquery, or escape tsquery metacharacters before joining"
+  - "F-001 (Search and Filtering)"
+proposed_action: |-
+  Testcontainers integration test, parameterised over the four facet aggregators. (a) Authenticate user A. (b) POST /api/search with query 'foo ) | (bar' (containing unbalanced paren + tsquery operators) → A receives session_id S. (c) Assert that the POST succeeds and persists the row (the bug is at READ time, not write time). (d) For each facet_type in {TAGS, OWNERS, TYPES, GROUPS, STATUSES}: GET /api/search/S/facet/{facet_type} → assert HTTP 500 with body containing 'syntax error in tsquery'. (e) Re-fetch GET /api/search/S (the aggregate endpoint) → assert HTTP 500 (the session is permanently poisoned). (f) Test comment 'LOCKS the tsquery operator-injection DoS at the FACET endpoint surface as of 2026-05-19 (TEST-GAP-250 STRENGTHENED with 4 facet aggregator invocation sites + 1 aggregate endpoint = 5 invocation sites at this controller alone). When JooqFTSHelper.tsQuery sanitises input or escapes metacharacters, this test FLIPS to expect either (a) 400 BadUserRequest at write time, or (b) 200 with the syntax-meaningless input treated as literal text.' Pair with batch H's TEST-GAP-250 test if existing — this is the second/third/fourth invocation surface in the same code path.
+batch: 2026-05-19-M
+feature_id: F-001

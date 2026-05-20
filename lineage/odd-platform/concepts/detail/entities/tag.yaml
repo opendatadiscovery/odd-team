@@ -1,0 +1,309 @@
+name: Tag
+canonical_in_docs: true
+canonical_candidate: false
+description: |-
+  Global, cross-tenant directory entry for taxonomic labelling of data
+  entities. Schema: (id, name UNIQUE WHERE NOT deleted, important boolean,
+  deleted_at). Created either via the dedicated POST /api/tags (TAG_CREATE-
+  gated, MANAGEMENT scope) OR side-door via the upsertTags flow
+  (DATA_ENTITY_TAGS_UPDATE on any single entity is sufficient; spec-
+  documented at openapi.yaml:1174).
+
+  **STRENGTHENED BATCH N (2026-05-19N) — SQL-LAYER PRIMARY SOURCE NOW
+  PINNED.** ReactiveTagRepositoryImpl
+  (`repository/reactive/repository/ReactiveTagRepositoryImpl.java`) is the
+  jOOQ/Reactor persistence surface for everything ODD does with Tag rows
+  and their three relation tables (TAG_TO_DATA_ENTITY, TAG_TO_DATASET_FIELD,
+  TAG_TO_TERM). Extends ReactiveAbstractSoftDeleteCRUDRepository — all
+  base CRUD reads through a `tag.deleted_at IS NULL` filter.
+
+  **NEW LOAD-BEARING FINDINGS BATCH N**:
+    (a) **The DUAL-METHOD WRITE DESIGN** — TWO conflict-handling methods
+        on the Tag write path with EXPLICITLY DIFFERENT semantics:
+          - `ingestData` (lines 199-210) — UPSERT via INSERT ... ON
+            CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
+            name = EXCLUDED.name RETURNING * — RACE-SAFE; concurrent
+            novel-name inserts merge cleanly
+          - `bulkCreate` (inherited, lines 113-126) — FAIL-ON-DUPLICATE;
+            no ON CONFLICT; collision raises UniqueConstraintException
+        TagController.createTag uses bulkCreate (operator-explicit;
+        MUST surface the 400 on duplicate). ExternalTagIngestionRequestProcessor
+        uses ingestData (ingestion-side; MUST not fail on parallel-
+        pipeline conflict).
+    (b) **TOCTOU race vulnerability** — TagServiceImpl.getOrCreateTagsByName
+        does `listByNames(tagNames)` then `bulkCreate(tagsToCreate)` for
+        the residual. Between the two stages, a CONCURRENT caller can
+        insert the same novel name; the first caller's bulkCreate hits
+        the `tag_name_unique` partial index and raises
+        UniqueConstraintException with NO service-tier retry. The
+        ingestData upsert path is SAFE; the bulkCreate path is NOT.
+        (NEW HIGH invariant — see batch N
+        `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`.)
+    (c) **Case-sensitive listByNames enables silent duplicate Tag rows**
+        — `TAG.NAME.in(names)` is case-sensitive SQL; PII and pii are
+        treated as distinct novel names by `divideTagsByExistence`.
+        UI tag-dropdown renders both rows. (MEDIUM severity.)
+    (d) **No name validation at any layer** — no PostgreSQL CHECK
+        constraint, no service-layer validation, no OpenAPI pattern
+        constraint. An operator with DATA_ENTITY_TAGS_UPDATE can mint
+        Tag rows of arbitrary length, whitespace-only names, or
+        control-character names. REFACTOR-223 DoS class.
+    (e) **listMostPopular is globally-scoped** — no per-data-entity,
+        per-owner, per-namespace, per-tenant filter. Combined with the
+        side-door write path, a per-data-entity-owner can populate
+        every other user's popular-tags surface.
+    (f) **Soft-delete + hard-delete asymmetry** — tag rows are
+        SOFT-DELETED (deleted_at IS NULL filter); the four relation
+        tables are HARD-DELETED. A tag-name reuse after soft-delete
+        produces a fresh row with a DIFFERENT id — prior relations are
+        gone (hard-deleted in TagServiceImpl.delete BEFORE the
+        soft-delete; not reattached on recreate).
+    (g) **Three migrations** to land on the current partial unique
+        index shape (V0_0_36 → V0_0_57 → V0_0_64). The is_deleted
+        boolean was DROPPED in V0_0_64; only deleted_at is the
+        soft-delete signal in the post-V0_0_64 era.
+    (h) **No repository-tier audit log on writes** — every write path
+        is silent. The TAG_ASSIGNMENT_UPDATED activity event is
+        emitted by DataEntityServiceImpl.upsertTags @ActivityLog;
+        the ingestion-side ExternalTagIngestionRequestProcessor
+        write produces NO activity-feed entry. Tier-1c-equivalent
+        pattern per the no-audit-log-on-rbac-mutations invariant.
+nodes:
+- odd-platform java DataEntityController controller-method:createDataEntityTagsRelations
+- odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+contributing_files:
+- odd-platform__java__DataEntityController__controller-method__createDataEntityTagsRelations.md
+- odd-platform__java__repository__reactive__repository__ReactiveTagRepositoryImpl.md
+evidence:
+- createDataEntityTagsRelations.md:concepts.entities[Tag, TagsFormData, TagPojo, TagToDataEntityPojo,
+  TagDto]
+- createDataEntityTagsRelations.md:invariants[side-effecting auto-creation; important
+  = false; replace-all internal only]
+- |-
+  ReactiveTagRepositoryImpl.md (batch N — NEW SQL-LAYER PRIMARY SOURCE):
+    concepts.entities[TagPojo; TagDto; TagToDataEntityPojo; TagToDatasetFieldPojo;
+    TagToTermPojo; Indexes.TAG_NAME_UNIQUE partial unique index]
+    + concepts.operations[ingestData upsert with RETURNING-trigger;
+    bulkCreate fail-on-duplicate; getDto; listMostPopular UNION-ALL CTE
+    aggregation; six hard-delete relation methods]
+    + concepts.invariants[soft-delete on tag; hard-delete on relations;
+    partial unique index as race protection; case-sensitive name match;
+    no name validation; dual-method conflict semantics]
+    + implicit_adrs.[0,1,2,3,4,5,6,7] (the seven architectural choices)
+    + bugs_limitations_corner_cases.[0,1,2,3,4,5,6,7,8]
+    + security.known_security_gaps.[0,1,2] (no audit on writes; no
+    name normalisation; hardcoded WHERE deleted_at IS NULL coupling)
+contributors:
+- |-
+  createDataEntityTagsRelations (batch — controller-method): concepts.entities[Tag,
+  TagsFormData, TagPojo, TagToDataEntityPojo, TagDto]; concepts.invariants[
+  side-effecting auto-creation; important = false; replace-all internal only]
+- |-
+  ReactiveTagRepositoryImpl (batch N — STRENGTHENS — SQL layer): the
+  jOOQ/Reactor persistence surface; primary source for the TOCTOU race,
+  the dual-method conflict-handling design, the case-sensitive
+  listByNames, the no-name-validation surface, the globally-scoped
+  listMostPopular CTE, the soft-delete + hard-delete asymmetry, the
+  repository-tier audit silence.
+axes_present:
+- controllers
+- openapi_paths
+- repositories_reactive
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      Scope asymmetry: TAG_CREATE is MANAGEMENT-scoped (unconditional),
+      DATA_ENTITY_TAGS_UPDATE is DATA_ENTITY-scoped (grantable via
+      'is: dataEntity:owner'). The latter can mint Tag rows in the
+      global directory without holding TAG_CREATE.
+      **STRENGTHENED batch N — SQL primary source confirms**:
+      ReactiveTagRepositoryImpl has NO authorization annotations
+      whatsoever (no @PreAuthorize, no @Secured, no programmatic
+      permission check). The class trusts the caller to have already
+      evaluated permissions. The 18-method contract surface would, if
+      mistakenly invoked from an unauthorised path, write directly to
+      the tag directory or the relation tables with no native defence.
+      The architectural assumption is that SecurityConstants.SECURITY_RULES
+      covers every controller path that reaches here.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      Tag directory is global; no per-tenant/per-namespace scoping at
+      the Tag layer.
+      **STRENGTHENED batch N**: there is no `tag.owner_id` column, no
+      per-Owner Tag filtering anywhere in this class. listMostPopular
+      and listByNames return globally. The Tag directory is a flat,
+      globally-shared namespace BY DESIGN; the side-door write surface
+      (REFACTOR-223) compounds this.
+  strengths:
+  - Auto-create IS spec-documented at openapi.yaml:1174 — intentional UX trade-off
+  - important = false hardcoded for auto-created tags — admin-curated 'important'
+    distinction preserved
+  - External tag relations PROTECTED from this endpoint (filter !external in TagServiceImpl.java:100-103)
+  - |-
+    **NEW batch N — Partial-unique-index as RACE PROTECTION**.
+    `tag_name_unique ON tag(name) WHERE tag.deleted_at IS NULL`
+    (V0_0_64:105) is the platform's only locking mechanism for the
+    auto-create-on-miss path. The `ingestData` upsert leans on this
+    via ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE — makes
+    concurrent novel-name inserts idempotent without an
+    application-level lock.
+    (ReactiveTagRepositoryImpl.md:implicit_adrs.[0])
+  - |-
+    **NEW batch N — RETURNING-trigger pattern via no-op DO UPDATE SET
+    name = EXCLUDED.name**. The conflicting row's name is set to itself
+    to trigger the RETURNING clause; the caller (getOrInjectTagByName)
+    needs every row's id to build TagToDataEntityPojo relations. A
+    deliberate trade-off: per-row touch on every ingestion-time
+    conflict in exchange for caller convenience.
+    (ReactiveTagRepositoryImpl.md:implicit_adrs.[2])
+  - |-
+    **NEW batch N — Centralised friendly-error translation via
+    ExceptionUtils.translateDatabaseException** — every R2DBC query
+    maps DataAccessException → UniqueConstraintException with the
+    tailored "Tag with this name already exists" message
+    (ExceptionUtils.java:54-56). Consistent with the platform-wide
+    centralised translation idiom.
+  weaknesses:
+  - Tag side-door past TAG_CREATE via DATA_ENTITY_TAGS_UPDATE — per-data-entity-owner
+    can globally pollute the Tag directory (MEDIUM)
+  - Cross-tenant Tag pollution — no per-tag ACL; mint a tag for entity X in tenant
+    A, it appears in tenant B's popular-tags surface (MEDIUM)
+  - Unique-index race on concurrent novel-tag creation surfaces as UniqueConstraintException;
+    UI must retry-on-conflict
+  - Soft-deleted tag recreation produces NEW row (orphans history; data-entity relations
+    stay frozen at old id)
+  - No length/character-set/whitespace validation on tag names (homoglyph/typo pollution
+    accumulates)
+  - |-
+    **NEW HIGH batch N — TOCTOU race between listByNames and
+    bulkCreate in TagServiceImpl.getOrCreateTagsByName** (PRIMARY
+    SOURCE — see batch N
+    `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`
+    invariant). The service-layer's read-then-write pattern is
+    race-prone; the `bulkCreate` path is NOT protected by the upsert
+    that `ingestData` uses. The unique-index loser sees a 5xx-level
+    error on a normal-looking PUT request. NO caller-side retry.
+    (ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[0])
+  - |-
+    **NEW MEDIUM batch N — Case-sensitive `listByNames`** enables
+    silent duplicate Tag rows. `TAG.NAME.in(names)` is case-sensitive
+    SQL; `TagServiceImpl.divideTagsByExistence` calls listByNames
+    then `existingTagNames.contains(n)` — also case-sensitive.
+    Submitting `PII` against a directory that already contains `pii`
+    sees `pii` as missing and mints a fresh `PII` row. Two operators
+    looking for `pii` may apply different rows, fragmenting the
+    search facet.
+    (ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[1])
+  - |-
+    **NEW MEDIUM batch N — No tag-name validation at any layer** —
+    no PostgreSQL CHECK constraint, no service-layer validation, no
+    OpenAPI pattern constraint. An operator with
+    DATA_ENTITY_TAGS_UPDATE can mint Tag rows with arbitrary names
+    (any length, whitespace-only, control-character) visible to
+    every other user via `GET /api/tags/popular`. REFACTOR-223 DoS class.
+    (ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[2])
+  - |-
+    **NEW MEDIUM batch N — listMostPopular is globally-scoped, no
+    pagination cap**. The `size` parameter is passed through verbatim
+    to paginate; `size=100000` would force a full-directory aggregate.
+    Combined with the side-door write path (REFACTOR-223), an
+    attacker can populate the popular-tags surface for ALL users.
+    (ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[3] +
+    performance.scaling_characteristics.[2])
+  - |-
+    **NEW MEDIUM batch N — Repository emits NO audit log on writes**.
+    `ingestData`, `bulkCreate`, `delete`, every `create*Relations` /
+    `delete*Relations` method writes with NO repository-side activity
+    event. The TAG_ASSIGNMENT_UPDATED activity event is emitted by
+    DataEntityServiceImpl.upsertTags @ActivityLog (the UI write
+    path); the ingestion-side ExternalTagIngestionRequestProcessor
+    write produces NO activity-feed entry. Tier-1c-equivalent of the
+    audit-log-presence-asymmetry pattern.
+    (ReactiveTagRepositoryImpl.md:security.known_security_gaps.[0])
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    **NEW batch N — Three hot paths now SQL-primary-source pinned**:
+      Hot path 1 — ingestData per Collector batch: every Collector
+        push with novel tags lands here once per batch via
+        ExternalTagIngestionRequestProcessor.process.
+      Hot path 2 — listMostPopular per `GET /api/tags/popular` call:
+        non-trivial UNION-ALL CTE across two relation tables with
+        per-tag aggregates. Hot for Catalog Overview + tag-search-facet
+        rendering.
+      Hot path 3 — listDataEntityDtos on EVERY data-entity detail page
+        load: triple-call shape (DataEntityServiceImpl + DataEntityPermissionExtractor
+        + TagActivityHandlerImpl all call listDataEntityDtos for the
+        same data entity in a single HTTP request).
+    (ReactiveTagRepositoryImpl.md:performance.hot_paths.[0,1,2])
+  throughput_shape:
+    verdict: BATCH_FRIENDLY
+    detail: |-
+      The ingestData upsert is partitioned by executeInPartitionReturning
+      at BATCH_SIZE (typically 1000); a 5000-row upsert is 5 sequential
+      round-trips in the caller's TX. Flux.concat (sequential), not
+      Flux.merge — each partition is a separate INSERT ... ON CONFLICT
+      ... DO UPDATE statement.
+  weaknesses:
+  - No cap on tag_name_list size — abusive caller can submit million-string list (Postgres
+    parameter limit ~32K breaks at driver layer)
+  - Tag directory grows monotonically with tag-related activity; popular-tags query
+    latency degrades over years
+  - |-
+    **NEW LOW batch N — Triple-fetch of listDataEntityDtos during one
+    request** — DataEntityServiceImpl + DataEntityPermissionExtractor
+    + TagActivityHandlerImpl all call the same `listDataEntityDtos(dataEntityId)`
+    in a single HTTP request. No request-scoped cache. Three identical
+    DB round-trips per data-entity detail-page load.
+    (ReactiveTagRepositoryImpl.md:performance.known_performance_gaps.[0])
+  - |-
+    **NEW LOW batch N — listMostPopular UNION-ALL CTE has no
+    pagination cap** — `size` parameter passed verbatim to paginate;
+    no upper bound. An attacker can force a full-directory aggregate.
+    (ReactiveTagRepositoryImpl.md:performance.known_performance_gaps.[1])
+notes: |-
+  STRENGTHENED batch 2026-05-19N — REPOSITORY-LAYER PRIMARY SOURCE
+  PINNED. The 18-method persistence surface is now SQL-anchored; the
+  dual-method write design (ingestData upsert vs bulkCreate
+  fail-on-duplicate) is the architectural diagnostic; the TOCTOU race
+  on the bulkCreate path is now a HIGH-severity primary-sourced
+  finding.
+
+  New invariants surfaced in batch N (each promoted to its own
+  invariant concept):
+    - Tag TOCTOU race between listByNames and bulkCreate (NEW HIGH)
+
+  New operations surfaced in batch N:
+    - ingestData upsert with RETURNING-trigger conflict-target
+
+  Cross-cutting connections:
+    - Pairs with spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
+      (existing) — the spec-documented auto-create is the wide-open
+      surface; this batch's repository-tier confirms the SQL primary
+      source for the auto-create write paths
+    - Pairs with three-soft-delete-mechanisms-across-the-repository-layer
+      (batch H — strengthened batch L + N) — Tag is one of the
+      `deleted_at` mechanism's primary-source sites
+    - Pairs with repository-transactional-boundary-at-service-layer-not-repository
+      (batch H — strengthened batch I + N) — Tag repository methods
+      are NOT @ReactiveTransactional; service-layer wrapping enforces
+      atomicity
+    - Pairs with no-audit-log-on-rbac-mutations — the Tag repository
+      has no audit log; the audit-trail asymmetry on the
+      ingestion-side write path is the Tier-1c-equivalent
+
+  Three DOC-NNN candidates flow from this strengthening:
+    (a) Document the dual-method design at the internal architecture
+        page (ingestData vs bulkCreate; the contract distinction)
+    (b) Document the TOCTOU race window on the tag-assignment API
+        until a service-layer retry-or-upsert fix lands
+    (c) Document case-sensitivity of tag names on the tagging operator
+        page (PII vs pii are distinct rows; no normalisation)

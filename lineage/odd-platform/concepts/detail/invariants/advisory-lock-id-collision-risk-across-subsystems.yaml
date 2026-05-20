@@ -1,0 +1,79 @@
+name: Advisory-lock-ID collision risk across subsystems
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Cross-cutting concurrency-correctness invariant: ODD uses Postgres advisory
+  locks as the single-leader-election primitive across 4 distinct subsystems, each
+  with its own operator-tunable advisory-lock-ID. Shipped defaults are non-overlapping
+  (90 / 100 / 110 / 120) but there is NO startup assertion that they STAY disjoint
+  when operators override them. 3-sidecar triangulated: (a) ActivityTablePartitionManager
+  (batch B) — `partition.advisory-lock-id` default 90, boot-time partition creation
+  lock. (b) NotificationsProperties (batch C) — `notifications.wal.advisory-lock-id`
+  default 100, leader-elected WAL consumer (notifications-subscriber-thread). (c)
+  DataCollaborationProperties (batch D) — `datacollaboration.receive-event-advisory-lock-id`
+  default 110 + `datacollaboration.sender-message-advisory-lock-id` default 120, the
+  two single-leader Data Collaboration background threads. An operator who customises
+  any of these IDs (e.g. copying `notifications.wal.advisory-lock-id=100` into `datacollaboration.receive-event-advisory-lock-id=100`
+  to align with internal naming convention) silently makes the Notifications WAL subscriber
+  + Data Collaboration receiver contend on the same Postgres advisory lock — exactly
+  one of the two subsystems works, the other silently does not. Failure mode is operator-discoverable
+  only after manifestation (Slack messages stop flowing or alert notifications stop
+  firing). Recommended cross-cutting remediation: (i) add a startup-time `AdvisoryLockIdRegistryValidator`
+  `@PostConstruct` that asserts the four IDs are distinct; (ii) maintain a central
+  advisory-lock-id registry in code OR docs naming all four IDs and the convention;
+  (iii) docs-page admonitions on the four affected pages.'
+axes_present:
+- config_prefixes
+nodes:
+- odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+- odd-platform java org.opendatadiscovery.oddplatform.datacollaboration.config config-properties-class:DataCollaborationProperties
+contributors:
+- 'ActivityTablePartitionManager (batch B): partition.advisory-lock-id (default 90)
+  — boot-time partition creation lock'
+- 'NotificationsProperties (batch C): notifications.wal.advisory-lock-id (default
+  100) — leader-elected WAL subscriber'
+- 'DataCollaborationProperties (batch D): datacollaboration.receive-event-advisory-lock-id
+  (default 110) + datacollaboration.sender-message-advisory-lock-id (default 120)
+  — TWO single-leader threads'
+evidence:
+- ActivityTablePartitionManager@L11.md:bugs_limitations_corner_cases.[5] (partition.advisory-lock-id
+  has no `:default`)
+- NotificationsProperties.md:bugs_limitations_corner_cases.[2] (advisory-lock-id collision
+  risk)
+- DataCollaborationProperties.md:bugs_limitations_corner_cases.[2] (cross-subsystem
+  lock-id collisions undetected)
+- DataCollaborationProperties.md:security.known_security_gaps.[1] (no validation against
+  lock-id collisions)
+notes: 'Promoted to a NEW cross-cutting invariant in batch 2026-05-12D after
+
+  the third primary-source sidecar (DataCollaborationProperties)
+
+  surfaced this as a per-feature weakness. Now 3-sidecar triangulated
+
+  across all known advisory-lock subsystems.
+
+
+  The same observation appears in the "202+queue+Postgres-advisory-lock
+
+  single-sender pattern" invariant''s notes (which named the lock-ID
+
+  candidates 90/100/110/120 by convention). That invariant is the
+
+  ARCHITECTURAL PATTERN (when to use this lock-shape); this invariant
+
+  is the COLLISION-AVOIDANCE concern (how to keep the IDs disjoint
+
+  across the four subsystems that already use the pattern).
+
+
+  Recommended cleanup: introduce an `AdvisoryLockId` enum with the four
+
+  named values, replace the per-Properties-class `int` fields with the
+
+  enum, and add a `@PostConstruct` validator to a top-level
+
+  configuration-validator bean. This makes the invariant code-enforced
+
+  rather than convention-enforced.
+
+  '

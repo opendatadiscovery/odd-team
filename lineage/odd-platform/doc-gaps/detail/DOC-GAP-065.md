@@ -1,0 +1,9 @@
+- **DOC-GAP-065**: DataCollaboration `sending-messages-retry-count: 0` is accepted by `@PostConstruct` validator (`< 0` check is strict) but docs imply minimum is 1 — semantic edge case undocumented
+  - **Category**: drift
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md:docs_link_semantic.doc_drift_findings.[2]` (severity LOW per sidecar) **(NEW batch D)**
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` 2026-05-12 status 200 — verbatim: "`datacollaboration.sending-messages-retry-count`: ... Cannot be less than zero. Defaults to `3`." The "cannot be less than zero" phrasing implies values >= 0 are accepted; "Defaults to 3" implies typical use is >= 1.
+    - DataCollaborationProperties.md verifies code: `DataCollaborationProperties.java:14-20` — validator is `if (sendingMessagesRetryCount < 0)` (strict `<`, not `<=`). Value `0` is accepted; `shouldRetry()` check uses strict `<` again, meaning `retry-count: 0` produces "try once, no retry" behaviour (the message is attempted once and either succeeds or is marked failed, with NO retry).
+  - **Proposed doc action**: Add a single-sentence clarification to the Enable Data Collaboration section: "Setting `datacollaboration.sending-messages-retry-count: 0` is accepted and means 'attempt once, no retry on failure' (the message is sent once; if delivery fails, it is marked failed immediately with no retry attempts). Setting `1` means 'attempt once, retry once on failure'."
+  - **Cross-references**: DOC-GAP-064 (lock-id collision); DOC-GAP-071 (partial-home).
+  - **Severity rationale**: LOW — semantic edge case; the operational impact is minor (operators setting `0` likely intend "no retry" anyway). Docs accuracy improvement.

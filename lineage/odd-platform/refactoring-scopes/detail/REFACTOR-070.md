@@ -1,0 +1,9 @@
+- **REFACTOR-070** (NEW 2026-05-10B): No test coverage for `AppInfoController` — grep across `odd-platform-api/src/test` for `AppInfoController`, `getAppInfo`, and the literal `auth.type` returns no hits
+  - **Category**: missing-test
+  - **Surfaced by**:
+    - `odd-platform__java__AppInfoController__config-key-consumer__auth_type@L18.md:tests_coverage_semantic.gaps` (severity LOW)
+  - **Statement**: Zero test coverage. No `@WebFluxTest`, no slice test, no integration test asserts the path security of `/api/appInfo` or the shape of the returned `AppInfo` payload. A regression that (1) silently drops `authType` from the DTO, (2) changes path security so an unauthenticated caller can no longer reach `/api/appInfo` (breaking the SPA's login render), or (3) adds new fields to `AppInfo` containing operator-sensitive metadata (build SHA, hostname, etc.) would not be caught.
+  - **Evidence**: grep results 2026-05-10 (zero matches)
+  - **Proposed remedy**: Add `@WebFluxTest(AppInfoController.class)`; assert for each of `DISABLED / LOGIN_FORM / OAUTH2 / LDAP` (a) the returned `authType` matches the configured value, (b) the response shape is `{projectVersion, authType}` only (no operator-sensitive metadata leaked), (c) the path-security posture is as documented (currently undocumented — see REFACTOR-068).
+  - **Severity rationale**: LOW — process leverage; catches REFACTOR-068-class regressions if path-security ever changes.
+  - **Suggested backlog grouping**: `Controller test bootstrap`

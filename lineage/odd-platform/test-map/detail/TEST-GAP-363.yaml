@@ -1,0 +1,61 @@
+gap_id: TEST-GAP-363
+category: missing-security
+criticality: CRITICAL
+node_ids:
+- odd-platform java repository_reactive repository:ReactiveAlertRepositoryImpl
+- odd-platform java AlertManagerController controller-method:postAlerts
+surfaced_by:
+- ReactiveAlertRepositoryImpl.md:security.known_security_gaps.[1]
+- ReactiveAlertRepositoryImpl.md:bugs_limitations_corner_cases.[2]
+- AlertManagerController#postAlerts.md:security.known_security_gaps.[0..3] (FOUR
+  HIGH-severity gaps at the method tier: unauthenticated_payload_trust, cross_tenant_alert_creation,
+  no_idempotency_no_audit, no_audit_log)
+behaviour: '**AlertManager WEBHOOK AUTH-GATING TEST.** The AlertManager webhook path
+  does NOT go through IngestionDataEntitiesFilter — the filter only matches `/ingestion/entities`
+  POST, not `POST /ingestion/alert/alertmanager`. The data flows into `createAlerts`
+  via `handleExternalAlerts` with no S2S-token check, no DataEntity-scope check, and
+  no validation of the untrusted `labels.entity_oddrn` against the calling principal.
+  Combined with `auth.type=DISABLED` (dev mode default), any caller can POST AlertManager-shaped
+  payloads and create OPEN alerts attributed to any data entity ODDRN. Plus the controller
+  has a `// TODO: define OpenAPI spec based on alert provider contract` comment signalling
+  the endpoint is unaudited. Plus `createAlerts` has NO ON CONFLICT semantics — duplicate
+  webhook calls insert duplicate ALERT rows. test_class: security / integration. STRENGTHENED
+  batch P — the AlertManagerController#postAlerts sidecar PRIMARY-SOURCE at the
+  method tier consolidates ALL FOUR drift facets into one method''s evidence: (1)
+  AlertManagerController.java:21-26 has NO @PreAuthorize / @Secured / programmatic
+  check (unauthenticated_payload_trust); (2) `req.getAlerts()` passed verbatim to
+  AlertService with no validation step (cross_tenant_alert_creation); (3) NO Idempotency-Key
+  header inspection, NO idempotency field in the request DTO, downstream skips AlertActionResolver
+  (no_idempotency); (4) NO log.info on entry, NO @Timed counter, NO correlation-id
+  capture (no_audit_log). This is the F-007 mega-gap consolidation at the method
+  tier — the in-platform ingestion path through AlertActionResolver and applyAlertActions
+  (AlertServiceImpl.java:222-227) DOES dedup, but handleExternalAlerts (lines 151-191)
+  DELIBERATELY skips that path. Severity remains CRITICAL.'
+test_files_existing:
+- odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/AlertIngestionTest.java
+test_files_proposed:
+  path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AlertManagerWebhookAuthGatingTest.java
+  name: alertManagerWebhook_unauthenticatedCaller_canCreateAlertsAttributedToAnyEntity
+evidence:
+- 'ReactiveAlertRepositoryImpl.md says: ''any caller can POST AlertManager-shaped
+  payloads and create OPEN alerts attributed to any data entity ODDRN'''
+- 'postAlerts.md says (security.known_security_gaps.[0..3] consolidated): four HIGH-severity
+  gaps at this method-tier; unauthenticated + cross-tenant + no-idempotency + no-audit
+  fold into one webhook endpoint that ANY network-reachable caller can hit'
+- 'Source: AlertManagerController.java:20-26 + AlertServiceImpl.java:151-191, 178
+  + ReactiveAlertRepositoryImpl.java:332-342 (createAlerts no ON CONFLICT) + IngestionDataEntitiesFilter.java:28
+  + SecurityConstants.java:96'
+cross_references:
+- concepts.yaml:invariants[read-collaborative-cross-owner-enumeration]
+- TEST-GAP-218 (DISABLED-mode RBAC bypass — sister pattern)
+- TEST-GAP-150 (AlertManager entity_oddrn missing label silent-loss — sister gap)
+- TEST-GAP-365 (service-tier spoof half)
+- TEST-GAP-366 (service-tier idempotency half)
+- TEST-GAP-367 (service-tier XSS half)
+- F-007 (P-07:F-001 AlertManager Integration drift class summary — all 4 facets
+  consolidate at this gap)
+proposed_action: Under auth.type=DISABLED, send POST /ingestion/alert/alertmanager
+  with a payload setting labels.entity_oddrn to a victim entity's oddrn; call GET
+  /api/alerts; assert the spoofed alert appears in the All tab.
+batch: 2026-05-20-P-STRENGTHENED
+feature_id: F-007

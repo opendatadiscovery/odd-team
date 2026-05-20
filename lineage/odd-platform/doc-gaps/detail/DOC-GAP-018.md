@@ -1,0 +1,7 @@
+- **DOC-GAP-018**: API spec carries no `security:` block and no `components.securitySchemes` — invariant of contract-vs-runtime mismatch undocumented
+  - **Category**: drift
+  - **Surfaced by**: `openapi-tag-alert.md:doc_drift_findings.[3]` + `:implicit_adrs.[3]`; `openapi-tag-dataEntity.md:implicit_adrs.[0]`; `concepts.yaml:invariants[Spec carries no security: block]`
+  - **Evidence**: exhaustive grep for `security:` block returns zero matches; api-reference does not warn.
+  - **Proposed doc action**: Add a "Security note" admonition to `developer-guides/api-reference.md` directing readers to Authorization/Permissions pages for auth model.
+  - **Cross-references**: DOC-GAP-009 (when data-entities api-ref page lands).
+  - **Severity rationale**: MEDIUM.

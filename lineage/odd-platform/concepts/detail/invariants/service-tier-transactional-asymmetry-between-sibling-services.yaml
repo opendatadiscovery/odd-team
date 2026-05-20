@@ -1,0 +1,125 @@
+name: Service-tier transactional asymmetry between sibling services (Policy vs Role vs DataEntity)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW INVARIANT, batch 2026-05-19I (service-layer sidecars)** — sibling
+  services that own structurally identical CRUD surfaces apply `@ReactiveTransactional`
+  asymmetrically, creating concrete lost-update race windows on some paths while
+  others are protected. The cross-batch headline: `RoleServiceImpl.create / update
+  / delete` ARE all `@ReactiveTransactional` (RoleServiceImpl.java:50, 64, 77) but
+  the SIBLING `PolicyServiceImpl.create / update / delete` (PolicyServiceImpl.java:62,
+  71, 83) carry NO annotation. Both classes operate on similar RBAC primary-surface
+  shapes (single-row CRUD over base `ReactiveAbstractSoftDeleteCRUDRepository`). The
+  asymmetry surfaces as: (a) `PolicyServiceImpl.update` reads-then-writes outside
+  any transaction (lines 71-81: `policyRepository.get(id)` then `policyRepository.update(...)`)
+  — two concurrent UPDATEs on the same policy id can lost-update (client A reads
+  v1, client B reads v1, A writes v2, B writes v3 BASED ON v1; A''s change clobbered);
+  (b) `PolicyServiceImpl.delete` (lines 83-95) issues `get` → `isPolicyAttachedToRole`
+  → conditional `CascadeDeleteException` → `delete` — four separate R2DBC calls outside
+  any transaction, race-window between the cascade check and the delete (a concurrent
+  role binding can land between the check and the soft-delete, leaving an orphan-binding
+  permission leak — the exact state batch H identified at the repository layer);
+  (c) `DataEntityServiceImpl` (DataEntityServiceImpl.java) carries 8 `@ReactiveTransactional`
+  occurrences (lines 197, 246, 288, 308, 324, 337, 357, 388, 411), the repository
+  has zero — every write that needs atomicity is delimited at the service tier. The
+  pattern in `DataEntityServiceImpl` is the platform IDIOM; `PolicyServiceImpl` IS
+  the outlier. **Batch-I AlertServiceImpl confirms the same idiom with a DELIBERATE
+  EXCEPTION**: `handleExternalAlerts` (line 152) and `applyAlertActions` (line 201)
+  carry `@ReactiveTransactional`; `updateStatus` (lines 111-113) DELIBERATELY does
+  NOT — the AOP-injected `@ReactiveTransactional` from `ActivityAspect.monoActivityAspect`
+  (ActivityAspect.java:42) provides the wrapping transaction; the design tolerates
+  the read-then-write race on user-driven status changes because the reopen-conflict
+  guard catches the data-integrity case at the application level. The contrast:
+  AlertServiceImpl''s missing annotation is INTENTIONAL with a named compensating
+  mechanism; PolicyServiceImpl''s missing annotation has NO defending comment, NO
+  AOP fallback, and NO compensating mechanism — it appears to be an oversight relative
+  to the sibling RoleServiceImpl. **The single highest-leverage fix is one annotation**:
+  add `@ReactiveTransactional` to `PolicyServiceImpl.update / delete` (matching
+  `RoleServiceImpl`). Higher-leverage doc-side path: extend the persistence-layer
+  conventions doc with the rule "every service-layer read-then-write composition
+  MUST be wrapped in `@ReactiveTransactional`" and audit existing services for compliance.'
+axes_present:
+- services
+nodes:
+- odd-platform java service service:PolicyServiceImpl
+- odd-platform java service service:DataEntityServiceImpl
+- odd-platform java service service:AlertServiceImpl
+- odd-platform java service service:IngestionService
+- odd-platform java service service:LineageServiceImpl
+contributors:
+- 'PolicyServiceImpl.md (batch I): concepts.invariants.[3] — NO `@ReactiveTransactional`
+  on create (line 62), update (line 71), or delete (line 83). Sibling RoleServiceImpl
+  IS annotated at lines 50, 64, 77. The asymmetry yields concrete LOST-UPDATE race
+  on PolicyServiceImpl.update (bugs_limitations_corner_cases.[0]) AND orphan-binding
+  race on PolicyServiceImpl.delete (bugs_limitations_corner_cases.[5]).'
+- 'DataEntityServiceImpl.md (batch I): concepts.invariants.[0] — 8 occurrences at
+  lines 197/246/288/308/324/337/357/388/411. The repository has zero. Every write
+  that needs atomicity is delimited at the service tier. updateStatus (line 458)
+  is the exception — it has NO annotation at this layer because the txn boundary
+  lives in the downstream DataEntityInternalStateServiceImpl.changeStatusForDataEntities
+  (line 74-75) — a deliberate punt to the tier that owns the business logic.'
+- 'AlertServiceImpl.md (batch I): concepts.invariants.[0] + implicit_adrs.[0] — `@ReactiveTransactional`
+  placement is asymmetric across mutation methods. handleExternalAlerts (line 152)
+  and applyAlertActions (line 201) are annotated; updateStatus (lines 111-113) is
+  NOT — the activity emission for updateStatus runs INSIDE the ActivityAspect''s
+  synthetic @ReactiveTransactional (ActivityAspect.java:42). The asymmetry is INTENTIONAL
+  with a named compensating mechanism.'
+- 'IngestionService.md (batch I): concepts.invariants.[0] + implicit_adrs.[0] — Single
+  Postgres transaction wraps the ENTIRE ingest pipeline. @ReactiveTransactional on
+  ingest() at IngestionServiceImpl.java:66. One failure rolls back EVERYTHING —
+  no per-entity isolation. Sibling ingestStats is NOT @ReactiveTransactional —
+  delegates entirely to DatasetFieldService.updateStatistics(...).'
+- 'LineageServiceImpl.md (batch I): concepts.invariants.[7] + implicit_adrs.[1] —
+  replaceLineagePaths is the ONLY method on this service that is @ReactiveTransactional
+  (line 125); getLineage and getDataEntityGroupLineage are read-only and NOT transactional.
+  The contract is "delete-then-insert atomic rewrite for an establisher''s edges".'
+evidence:
+- PolicyServiceImpl.md:concepts.invariants.[3] + bugs_limitations_corner_cases.[0]
+  (LOST-UPDATE race) + bugs_limitations_corner_cases.[5] (orphan-binding race) +
+  implicit_adrs.[4] (the asymmetry-vs-RoleServiceImpl observation)
+- DataEntityServiceImpl.md:concepts.invariants.[0] + implicit_adrs.[0] (txn at service
+  tier is platform idiom)
+- AlertServiceImpl.md:concepts.invariants.[0] + implicit_adrs.[0] (asymmetric placement
+  intentional; AOP provides the compensating boundary)
+- IngestionService.md:concepts.invariants.[0] + implicit_adrs.[0] (single-transaction-per-batch)
+- LineageServiceImpl.md:concepts.invariants.[7] + implicit_adrs.[1] (atomic-rewrite-by-establisher)
+notes: |
+  Cross-batch architectural-hygiene observation surfaced by triangulating the 5 batch-I
+  service-layer sidecars together. The platform's IDIOM is "service-tier @ReactiveTransactional
+  delimits multi-statement writes"; the ASYMMETRY is between siblings that should
+  follow the idiom uniformly but don't.
+
+  Concrete instances surfaced by batch I:
+
+    (a) PolicyServiceImpl.update lost-update race (MEDIUM): no transaction; concurrent
+        PUTs on same policy id can lost-update silently. Sibling RoleServiceImpl
+        IS transactional. One-line fix: add @ReactiveTransactional to PolicyServiceImpl.update.
+
+    (b) PolicyServiceImpl.delete orphan-binding race (MEDIUM): non-atomic cascade
+        check + soft-delete. A concurrent role binding lands between check and
+        soft-delete → soft-deleted policy with surviving role bindings. This is
+        the EXACT state batch H identified at the repository layer (getRolesPolicies
+        JOIN missing deleted_at filter).
+
+    (c) AlertServiceImpl.updateStatus DELIBERATE absence: the ActivityAspect AOP
+        provides the wrapping transaction; the reopen-conflict guard catches the
+        data-integrity case at the application level. Distinct from PolicyServiceImpl's
+        oversight-shaped absence.
+
+  Recommended cleanup paths:
+
+    - Audit every service-layer method that calls a Reactive*Repository to confirm
+      @ReactiveTransactional is present on read-then-write paths.
+
+    - Surface a project-internal `@RequiresTransaction` annotation on repository
+      methods that callers MUST wrap (e.g. `update`, `delete`, `cascade-check-then-delete`).
+      Verify at build time via Spring AOP or custom Checkstyle rule.
+
+    - Document the convention in a top-level repository conventions doc so future
+      maintainers can infer the atomicity contract from a single canonical location.
+
+  Cross-references:
+    - Companion invariant: `repository-transactional-boundary-at-service-layer-not-repository`
+      (batch H — established the platform's repository-side untransactional posture).
+    - Companion invariant: `reopen-conflict-server-enforced-application-logic-not-db-constraint`
+      (batch I — the compensating mechanism for AlertServiceImpl.updateStatus's
+      deliberately-non-transactional posture).

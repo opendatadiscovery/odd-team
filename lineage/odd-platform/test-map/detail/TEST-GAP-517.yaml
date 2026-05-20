@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-517
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream"
+  - "odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream"
+pillars_affected: [P-05]
+surfaced_by:
+  - "getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[6] (LineageDepth.empty() is fragile encoding — depth=-1 is sentinel, not unlimited)"
+  - "getMyObjectsWithUpstream.md:implicit_adrs.[1] (Single-hop lineage expansion via LineageDepth.empty() — explicit choice to bound the response)"
+  - "getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[5] (LineageDepth.empty() sentinel is not honored by the recursive CTE)"
+behaviour: |-
+  `LineageDepth.empty()` sentinel encoding regression-pin (LOW — P-05; fragile encoding). The `getLineageRelations` implementation guards the recursive branch via `tDepth.lessThan(lineageDepth.getDepth())` (`ReactiveLineageRepositoryImpl.java:174`). With `LineageDepth.empty()` (`LineageDepth.java:16-18`: `depth=-1, empty=true`), the guard becomes `tDepth < -1` (never true) and the recursive UNION ALL never fires — single-hop only. **CRITICAL fragility**: the recursive CTE termination predicate reads ONLY the `int depth` field via `tDepth.lessThan(lineageDepth.getDepth())`; the `boolean empty` flag (set to `true` by `LineageDepth.empty()`) is NEVER read by the CTE. The current behaviour (recursion terminates after seed step when depth=-1) depends on the SQL semantics of `lessThan(-1)`, NOT on an explicit `if (empty) return seed` branch. A future refactor changing the termination predicate to `lessThanOrEqual` would SILENTLY EXPAND this endpoint to two hops without any test catching it — because the `empty()` semantic is encoded only by the magic `-1` integer, not by a dedicated code path. The dual-encoding at `LineageDepth.java:8-19` (boolean `empty` + int `depth`) is misleading — a maintainer reading `LineageDepth.empty()` could reasonably misinterpret it as 'no depth limit / unlimited recursion' rather than 'single-hop only'. NO test pins the single-hop semantic. Cross-link to batch H DOC-GAP-105 (recursive CTE no upper bound).
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/MyObjectsLineageDepthEmptySemanticTest.java"
+  name: "getMyObjectsWithUpstream_lineageDepthEmpty_recursionTerminatesAfterSeedStep_pinsTheSingleHopSemantic"
+evidence:
+  - "getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[6]: 'LineageDepth.empty() is fragile encoding — depth=-1 is sentinel, not unlimited. With LineageDepth.empty() (depth=-1), the guard becomes tDepth < -1 (never true) and the recursive UNION ALL never fires — single-hop. But a maintainer reading only lineageRepository.getLineageRelations(oddrns, LineageDepth.empty(), ...) at DataEntityRelationsServiceImpl.java:34 could reasonably misinterpret empty() as no depth limit / unlimited recursion rather than single-hop only.' severity: LOW"
+  - "LineageDepth.java:8-19 (the dual-encoding)"
+  - "ReactiveLineageRepositoryImpl.java:174 (the sentinel-driven guard tDepth.lessThan(lineageDepth.getDepth()))"
+  - "DataEntityRelationsServiceImpl.java:34 (LineageDepth.empty() call site)"
+cross_references:
+  - "TEST-GAP-019 (DOC-GAP-105 recursive CTE no upper bound — batch H)"
+  - "TEST-GAP-512 (REFACTOR-225 — co-located)"
+  - "DOC-GAP-NNN candidate: document the LineageDepth.empty() semantic in JavaDoc"
+  - "REFACTOR-NNN candidate: explicit if (lineageDepth.isEmpty()) return seedOnly() branch instead of magic -1"
+  - "F-005 (Data Lineage)"
+proposed_action: |-
+  Testcontainers integration test. (a) Create owner A with entity a1; entity b1 with edge b1->a1; entity c1 with edge c1->b1. (b) Authenticate uA. (c) GET /api/dataentities/my/upstream. (d) Assert response contains b1 (one hop upstream of a1). (e) Assert response does NOT contain c1 (two hops upstream — would only appear if recursion fired). (f) Test comment 'LOCKS the LineageDepth.empty() = single-hop-only semantic as of 2026-05-19. The encoding is fragile (depth=-1 + boolean empty=true with only the int read by the CTE); if a future refactor changes the CTE termination predicate to lessThanOrEqual, c1 would appear in the response and this test would FAIL — exactly the regression-catcher needed.' Pair with /my/downstream symmetric test.
+batch: 2026-05-19-M
+feature_id: F-005

@@ -1,0 +1,16 @@
+- **DOC-GAP-133**: UI Lineage canvas renders microservices lineage identically to data-entity lineage with NO mode toggle, NO class-based override, NO microservices-specific affordances — `/features/data-lineage/microservices` (if it exists) cannot describe a separate UI surface because there isn't one
+  - **Category**: drift (live `/features/data-lineage` references a "microservices lineage" sub-surface; code reveals the SAME `<Lineage />` component handles both; live page silent on the unification)
+  - **Surfaced by**:
+    - `odd-platform__ts__react-component__component__LineageGraph.md:bugs_limitations_corner_cases[8]` (microservices lineage same component, no mode toggle)
+  - **Evidence**:
+    - WebFetched `https://docs.opendatadiscovery.org/features/data-lineage` 2026-05-19 status 200 — Note section verbatim: "directs users to subsections for detailed information... [Data Objects Lineage] and [Microservices Lineage]" — implies two separate surfaces.
+    - Code primary source `Lineage.tsx:12-26` — branches ONLY on `isDEG` (Data Entity Group); every non-DEG entity (including microservices) routes to `HierarchyLineage`; NO mode flag, NO class-based override, NO `?ms=` URL param.
+    - Code-side absence: grep `microservice` across the Lineage tree files (`Lineage/`, `HierarchyLineage/`, `LineageGraph/`, etc.) returns ZERO matches — there is no microservices-specific code path at the UI canvas level.
+    - Consequence (per sidecar): "(a) all caveats above (diamond amplification, no upper-bound on d, monotonic LoadMore) apply identically to microservices traces; (b) microservices-specific affordances (e.g. service name vs operation name, trace timing) are NOT rendered — they are silently dropped if the response has them."
+  - **Proposed doc action**: Update `documentation/docs/features/data-lineage/microservices.md` (if exists) or `documentation/docs/features/data-lineage.md` to add a one-paragraph clarification: "The microservices lineage view uses the same Lineage canvas as data-object lineage. Microservices are themselves Data Entities (of type `MICROSERVICE`) and are reached from any catalogued microservice entity via the same Lineage tab. There is no separate 'microservices canvas'; trace-timing or call-graph-specific affordances (operation names, latency overlays) are not rendered at the UI today." Cross-link to the OpenTelemetry odd-tracing-gateway docs.
+  - **Cross-references**:
+    - DOC-GAP-131 (this batch) — depth slider applies identically to microservices traces.
+    - DOC-GAP-132 (this batch) — diamond amplification applies identically.
+    - System-mission P-05 pillar — `odd-tracing-gateway` is the platform's ONLY standalone-gateway push adapter; microservices lineage is the only consumer-facing surface of that ingestion path.
+  - **Severity**: LOW
+  - **Severity rationale**: Operators evaluating ODD for microservice-heavy deployments may expect richer trace visualisation (operation name, latency, span colours) than data-entity lineage offers — the doc-product currently does not set that expectation correctly. Not a security/data-loss surface; informational-quality fix on a page that may not exist yet.

@@ -1,0 +1,78 @@
+name: Service-tier @ReactiveTransactional asymmetry — Policy vs Role (positive case-law contrast)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20S. Two sibling RBAC services in the same package
+  diverge on transactional boundary placement, producing operator-visible behavioural
+  differences with no defending comment. RoleServiceImpl carries @ReactiveTransactional
+  uniformly on all three mutating methods (RoleServiceImpl.java:50, 64, 77 — create,
+  update, delete). PolicyServiceImpl carries @ReactiveTransactional on NONE of its
+  three mutating methods (PolicyServiceImpl.java:62, 71, 83 — create, update, delete
+  all unannotated). The base ReactiveAbstractCRUDRepository methods (create/update/
+  delete at lines 102-110, 144-149) are un-annotated; only the bulk* methods at
+  lines 113-142 are wrapped. The service-layer composition (read-then-write multi-
+  call chains — update s get + name-check + update + relation rewrite; delete s
+  get + name-check + cascade-check + relation rewrite + delete) therefore runs
+  WITHOUT a transaction boundary on the Policy side, and WITH one on the Role side.
+
+  OPERATOR-VISIBLE CONSEQUENCE: PUT /api/policies/{id} can lost-update silently
+  under two concurrent admin sessions touching the same policy. Client A reads
+  v1 (PolicyServiceImpl.java:74), client B reads v1 concurrently, client A
+  applies its form-data and writes v2 (line 79), client B applies its DIFFERENT
+  form-data to ITS OWN copy of v1 and writes v3 (line 79). Client A s change is
+  silently overwritten. The same shape on Role (RoleServiceImpl.java:71-72)
+  scopes read+write to a single R2DBC connection — strictly stronger though
+  still NOT guaranteeing optimistic-concurrency (no row-version on RolePojo or
+  PolicyPojo). The platform s pattern is therefore inconsistent across the two
+  halves of the RBAC mutation surface.
+
+  POSITIVE CASE-LAW CONTRAST: this is the rare paired-invariant where the WRONG
+  shape and the RIGHT shape live in adjacent files. A maintainer scanning the
+  two services side-by-side can directly observe the asymmetry. The Role-side
+  presence is uniform across all three mutations AND matches the platform s
+  other transactional services (DataEntityServiceImpl, OwnershipServiceImpl,
+  OwnerServiceImpl per batch P) — strong evidence the Policy-side absence is
+  the oversight, not the Role-side presence. NO comment defends the absence;
+  NO architectural decision is recorded; batch I (PolicyServiceImpl sidecar)
+  marked the absence confidence:LOW for this reason.
+
+  Severity: MEDIUM (the platform is single-admin in production; the race surfaces
+  on multi-admin operator audits but is hard to exercise; the operator-facing
+  surface is "I changed X and it s back to Y" with no error signal). The fix is
+  one line: add @ReactiveTransactional to PolicyServiceImpl.create / update /
+  delete to match the Role-side pattern.
+axes_present:
+- services
+nodes:
+- odd-platform java service service:PolicyServiceImpl
+- odd-platform java service service:RoleServiceImpl
+contributors:
+- 'PolicyServiceImpl.md (batch S): concepts.invariants.[3] — no @ReactiveTransactional
+  on create/update/delete; sibling RoleServiceImpl IS @ReactiveTransactional uniformly.
+  bugs_limitations_corner_cases.[0] — Lost-update race on PUT /api/policies/{id}
+  (MEDIUM). implicit_adrs.[4] — confidence: LOW because no defending comment.'
+- 'RoleServiceImpl.md (batch S): concepts.invariants.[0] — All THREE mutating methods
+  are @ReactiveTransactional (lines 50, 64, 77); deliberate asymmetry vs PolicyServiceImpl
+  is the POSITIVE case-law contrast. implicit_adrs.[1] — uniform pattern, strongest
+  expression of "every mutating method runs in a transaction"; confidence: HIGH.'
+evidence:
+- PolicyServiceImpl.md:concepts.invariants.[3] + bugs_limitations_corner_cases.[0]
+  + implicit_adrs.[4]
+- RoleServiceImpl.md:concepts.invariants.[0] + implicit_adrs.[1] + dependencies_semantic.coupling.[4]
+notes: |
+  Cross-batch architectural-hygiene observation. The asymmetry is between two
+  sibling RBAC services in the same package; no third service is involved.
+  The Owner side (OwnerServiceImpl batch P) ALSO carries @ReactiveTransactional
+  on all three mutating methods, mirroring Role; the Policy side is the SINGLE
+  outlier across the RBAC + Owner mutation surface.
+
+  Recommended cleanup: add @ReactiveTransactional to PolicyServiceImpl.create
+  (line 62), PolicyServiceImpl.update (line 71), and PolicyServiceImpl.delete
+  (line 83). One-line each. The annotation is the platform s wrapper at
+  org.opendatadiscovery.oddplatform.annotation.ReactiveTransactional which
+  meta-binds to @Transactional("reactiveTransactionManager"). The fix
+  strictly improves correctness (scopes read+write to one R2DBC connection);
+  does NOT prevent lost-update without row-version tracking; combine with
+  SELECT FOR UPDATE on the existence check to fully close the race.

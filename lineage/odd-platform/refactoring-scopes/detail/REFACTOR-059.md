@@ -1,0 +1,11 @@
+- **REFACTOR-059** (NEW 2026-05-10A): `getActivity` `type=null` and `type=ALL` route to `fetchAllActivities` via separate code branches — defence-in-depth gap; a future refactor adding owner-scoping to one branch would silently bypass via the other
+  - **Category**: dual-path
+  - **Surfaced by**:
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:bugs_limitations_corner_cases.[1]` (MEDIUM)
+    - `odd-platform__java__ActivityController__controller-method__getActivity.md:security.known_security_gaps.[1]` (MEDIUM)
+  - **Statement**: `ActivityServiceImpl.java:103-105` has `if (type == null) { return fetchAllActivities(...) }` BEFORE the four-arm switch; the switch's `case ALL ->` ALSO routes to `fetchAllActivities`. There are two paths to the same destination. A future refactor that adds owner-scoping to the `ALL` enum case (e.g., to address REFACTOR-053 partially) would silently bypass the new gate when callers omit the `type` parameter. Defence-in-depth requires either collapsing the two branches OR asserting `type != null` at the controller layer.
+  - **Evidence**: `ActivityServiceImpl.java:103-105` (the `if (type == null)` branch) + `ActivityServiceImpl.java:114` (`case ALL -> fetchAllActivities(...)`)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-022 (NEW — view-modes-as-single-parameter dispatch) describes the enum-dispatch shape; this scope is the implementation gap.
+  - **Proposed remedy**: Either (a) remove the `if (type == null)` branch and let the switch handle null via `default ->` (which currently does nothing — would require explicit null handling); (b) add `if (type == null) type = ActivityType.ALL` at the start; (c) reject `type=null` at the controller with `@NotNull` (breaking change, requires OpenAPI update).
+  - **Severity rationale**: MEDIUM — defence-in-depth gap on a security-relevant code path.
+  - **Suggested backlog grouping**: `Activity feed hardening`

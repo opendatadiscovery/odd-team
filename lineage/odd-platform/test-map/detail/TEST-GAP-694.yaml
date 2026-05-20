@@ -1,0 +1,27 @@
+gap_id: TEST-GAP-694
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:AlertServiceImpl"
+pillars_affected: [P-07]
+surfaced_by:
+  - "AlertServiceImpl.md:bugs_limitations_corner_cases.[6] (ExternalAlert.startsAt is LocalDateTime — timezone-naive — and AlertManager's startsAt is RFC3339)"
+behaviour: |-
+  **`AlertServiceImpl.handleExternalAlerts` STRIPS THE TIMEZONE FROM `ExternalAlert.startsAt` — the embedded generator URL points to a Prometheus query window keyed by the SERVER'S local time, not the alert's actual timestamp.** Lines 67-68 declare `ALERT_MANAGER_TIME_FORMATTER` with pattern `yyyy-MM-dd HH:mm:ss` — no timezone. `ExternalAlert.startsAt` (ExternalAlert.java:14) is `LocalDateTime` (timezone-naive). Jackson's default `LocalDateTime` deserialisation silently strips the offset from AlertManager's RFC3339 payload. Lines 162-172 embed the naive timestamp in the URL query params `g0.moment_input` / `g0.end_input` of the embedded generator URL. An operator clicking the link sees no data because the Prometheus query window is off (offset by the server's UTC delta + the alert's source timezone). The fix is straightforward: switch `ExternalAlert.startsAt` to `OffsetDateTime` or `ZonedDateTime` + adjust the formatter pattern. The test pins the CURRENT timezone-naive behaviour to make the fix deliberate.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AlertManagerTimezoneStripTest.java"
+  name: "handleExternalAlerts_rfc3339WithOffset_silentlyStripsTimezone_embeddedUrlPointsToWrongWindow"
+evidence:
+  - "AlertServiceImpl.md says (bugs_limitations_corner_cases.[6]): 'The ExternalAlert.startsAt is LocalDateTime — timezone-naive — and AlertManager''s startsAt is RFC3339. Lines 162-166 read externalAlert.getStartsAt().format(ALERT_MANAGER_TIME_FORMATTER) (pattern yyyy-MM-dd HH:mm:ss, lines 67-68) and use the result in the g0.moment_input / g0.end_input query parameters of the embedded generator URL. AlertManager''s payload carries timezone info; Jackson''s default LocalDateTime deserialisation silently strips the offset. The URL embedded in the chunk description points to a Prometheus query window keyed by the SERVER''s local time, not the alert''s actual timestamp. Operators clicking the link may see no data because the query window is off.' severity: MEDIUM"
+  - "Source: AlertServiceImpl.java:67-68 (formatter, no timezone) + 162-172 (embedded URL) + ExternalAlert.java:14 (private LocalDateTime startsAt)"
+cross_references:
+  - "F-007 (P-07:F-001 AlertManager Integration)"
+  - "TEST-GAP-691 (sister surface — webhook idempotency gap)"
+  - "REFACTOR-NNN-alertmanager-timezone-pin candidate"
+related_features: [F-007]
+related_pillar_features: ["P-07:F-001"]
+proposed_action: |-
+  Add `AlertManagerTimezoneStripTest.handleExternalAlerts_rfc3339WithOffset_silentlyStripsTimezone_embeddedUrlPointsToWrongWindow`. (a) POST `/ingestion/alert/alertmanager` with `startsAt: "2026-01-01T12:00:00+09:00"` (Tokyo time). (b) Query `SELECT description FROM alert_chunk WHERE alert_id = (SELECT MAX(id) FROM alert)`. (c) Extract the `g0.moment_input=` parameter from the URL. (d) Assert it equals `"2026-01-01 12:00:00"` (the LOCAL time stripped of offset). (e) DOCUMENT the deviation from the true UTC equivalent `"2026-01-01 03:00:00"`. (f) Add a `// REGRESSION-PIN — ExternalAlert.startsAt is LocalDateTime; Jackson silently strips the offset on deserialisation; the generator URL points to a Prometheus query window keyed by the server's local time. A REFACTOR switching to OffsetDateTime/ZonedDateTime + updating the formatter pattern will flip this test, making the fix deliberate.` comment block.
+batch: 2026-05-20-S
+feature_id: F-007

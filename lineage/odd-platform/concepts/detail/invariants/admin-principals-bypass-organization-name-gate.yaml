@@ -1,0 +1,67 @@
+name: admin-principals bypass organization-name gate
+canonical_in_docs: false
+canonical_candidate: true
+description: |-
+  In the GitHub OAuth handler (`GithubUserHandler.java:54-67`), the
+  `admin-principals` matching path fires BEFORE the `organization-name`
+  membership check at line 68: if `adminPrincipals` is non-empty AND the
+  user's `admin-attribute` (default `login`) claim case-insensitively
+  full-string-equals any entry, the handler returns ADMIN via early
+  `return Mono.just(...)` WITHOUT calling `/user/orgs` to verify
+  organizationName membership. An operator who sets
+  `auth.oauth2.client.github.organization-name: my-cool-org` AND
+  `auth.oauth2.client.github.admin-principals: [external-consultant]`
+  grants `external-consultant` ADMIN even if `external-consultant` is
+  NOT a member of `my-cool-org`. This is BY DESIGN — the explicit
+  allowlist is more specific than the org gate, allowing operators to
+  grant ADMIN to consultants or external admins outside the
+  organization. The same `admin-principals` semantic is present in
+  `GoogleUserHandler.java:56-65` (admin-attribute default `email`,
+  containsIgnoreCase against adminPrincipals list — also full-string
+  equality per `OperationUtils.containsIgnoreCase`). The live OAuth2/OIDC
+  docs (WebFetched 2026-05-19 status 200) describe `admin-principals` as
+  "Direct list of users granted ADMIN role" WITHOUT flagging the org-bypass
+  semantic. Operator threat-model risk: an operator who configures
+  `organization-name` expecting it to be a GLOBAL gate (every user must
+  be in the org) does not realise that `admin-principals` overrides this
+  gate. Misconfiguration or stale config can elevate an out-of-org user
+  to ADMIN without organizational visibility.
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java auth handler:GithubUserHandler
+  - odd-platform java auth handler:GoogleUserHandler
+contributors:
+  - 'GithubUserHandler.invariants[3]: Admin-principals match BYPASSES the org-membership gate. Lines 54-67 fire BEFORE the org check at lines 68-96.'
+  - 'GithubUserHandler.implicit_adrs[1]: Admin-principals override organization-name (explicit allowlist beats org-gate). The if-block at lines 54-67 has its own return Mono.just(...) at lines 62-65 BEFORE any org-check; the ordering IS the precedence.'
+  - 'GithubUserHandler.docs_link_semantic.doc_drift_findings[4]: Doc silent on the adminPrincipals org-bypass behaviour. The live docs describe admin-principals as "Direct list of users granted ADMIN role" without flagging the org-bypass semantic.'
+  - 'GithubUserHandler.bugs_limitations_corner_cases[2]: Admin-principals bypass the organization-name gate without doc warning. Operator threat model: a misuse can elevate an out-of-org user. Severity: MEDIUM.'
+  - 'GithubUserHandler.security.known_security_gaps[1]: Admin-principals bypass organization-name membership — operators may misunderstand the gate''s scope. Deliberate design per implicit_adrs[1]; undocumented per doc_drift_findings; operator threat-model risk.'
+  - 'GoogleUserHandler.operations: containsIgnoreCase-admin (line 60) — same OperationUtils.containsIgnoreCase helper (full-string equality per OperationUtils.java:7-10).'
+evidence:
+  - GithubUserHandler.md:invariants.[3] (admin-principals-bypass-org)
+  - GithubUserHandler.md:implicit_adrs.[1] (explicit allowlist beats org-gate)
+  - GithubUserHandler.md:docs_link_semantic.doc_drift_findings.[4] (live docs silent)
+  - GithubUserHandler.md:bugs_limitations_corner_cases.[2] (MEDIUM severity)
+  - GithubUserHandler.md:security.known_security_gaps.[1] (operator threat-model risk)
+  - GoogleUserHandler.md:operations (containsIgnoreCase-admin via OperationUtils helper — full-string equality, not substring)
+  - 'Code anchors: GithubUserHandler.java:54-67 (early return); GithubUserHandler.java:68 (subsequent org-empty check); GoogleUserHandler.java:56-65 (parallel structure)'
+notes: |-
+  Cross-link to canonicalisation-candidate `substring-match-admin-escalation-ldap-containsignorecase`
+  (now superseded as factually wrong): `OperationUtils.containsIgnoreCase` is
+  full-string `equalsIgnoreCase`, NOT substring. So `admin-principals: [alice]`
+  matches user `alice`, `ALICE`, `Alice` — but NOT `alice2` or `alicia`. This
+  invariant is about the BYPASS ORDERING (admin-principals beats org-name),
+  NOT about substring matching.
+
+  Operator mitigation today: do NOT use `admin-principals` if you want
+  organization-name to be a strict gate. Use `admin-groups` (Cognito/GitHub
+  only — silently no-op for Google per sibling invariant
+  `admin-groups-silent-no-op-asymmetric-provider-support`) which IS scoped
+  by organization-name (team must belong to organizationName) — GitHub-only
+  semantic at `GithubUserHandler.java:114-119`.
+
+  Doc-side follow-up DOC-NNN candidate: live OAuth2/OIDC page should add an
+  ADMONITION block on the GitHub config example noting
+  "admin-principals BYPASSES organization-name — use admin-groups for
+  organization-scoped admin assignment".

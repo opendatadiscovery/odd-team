@@ -1,0 +1,7 @@
+- **DOC-GAP-015**: Legacy URL `/main-concepts` returns 404 — canonical at `/introduction/main-concepts.md`
+  - **Category**: broken-url
+  - **Surfaced by**: `DataEntityController.md:docs_link_semantic.doc_drift_findings.[0]` + openapi-tag-dataEntity sidecar.
+  - **Evidence**: WebFetch `/main-concepts` 2026-05-08 status 404.
+  - **Proposed doc action**: Same as DOC-GAP-011. See DOC-GAP-058.
+  - **Cross-references**: DOC-GAP-011, DOC-GAP-035, DOC-GAP-056, DOC-GAP-058.
+  - **Severity rationale**: MEDIUM.

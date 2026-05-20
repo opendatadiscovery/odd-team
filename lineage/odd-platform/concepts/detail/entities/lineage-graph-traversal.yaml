@@ -1,0 +1,289 @@
+name: Lineage Graph Traversal
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-05
+description: |-
+  **NEW CONCEPT, batch 2026-05-12F** — the platform's lineage-graph read interface.
+  `GET /api/dataentities/{id}/lineage/downstream` (sibling `/upstream`) returns the
+  FULL reachable lineage subgraph from a rooted data entity, walked via a single
+  Postgres `WITH RECURSIVE` CTE (`ReactiveLineageRepositoryImpl.java:122-176`). Two
+  client-driven inputs control the traversal: `lineage_depth` (recursion depth bound)
+  + `expandedEntityIds` (depth-1 fan-out around selected nodes for UI progressive
+  expansion). Edges are persisted as `LineagePojo` rows in the `lineage` table.
+  **Batch H** adds the SQL primary-source persistence layer with 11 public methods +
+  1 private CTE-assembly helper. The CTE is a hand-written `WITH RECURSIVE` walking
+  from a root oddrn set for at most `lineageDepth.getDepth()` hops in the chosen
+  direction. The depth bound is the **only** recursion terminator — no visited-set
+  guard, no Postgres `WITH ... CYCLE` clause, no upper cap on the depth value.
+  Soft-delete is canonical: every read filters `IS_DELETED.isFalse()` (7 sites);
+  only hard-delete path is ingestion's rewrite-by-establisher. The `lineage` table
+  has NO owner column. **Batch J — UI HALF (P-05 pillar)**: the UI surface that
+  renders the lineage graph is the `<Lineage />` component family at
+  `odd-platform-ui/src/components/DataEntityDetails/Lineage/` — comprising `Lineage.tsx`
+  (route-dispatch shell choosing DEGLineage vs HierarchyLineage based on isDEG flag),
+  `HierarchyLineage.tsx` (sequential downstream-then-upstream fetch driver), and
+  `LineageGraph.tsx` (the SVG render canvas using `d3-hierarchy`). **Critical
+  invariants surfaced at the UI**: (1) the UI ALWAYS sends `lineageDepth=d` even
+  when URL omits `?d=` (defaultLineageQuery.d=1 at constants.ts:77) — the F-005
+  NPE on null lineage_depth is unreachable from the UI but the choice of 1 gives an
+  artificially shallow first impression; (2) `d3-hierarchy.hierarchy()` builds a
+  TREE not a DAG — diamond shapes (A→B→D, A→C→D) render D TWICE, amplifying
+  REFACTOR-202 into the UI; (3) `crossEdges` resolution silently drops edges whose
+  endpoints aren't materialised in the tree (generateGraph.ts:81-95) — a backend
+  payload skew loses lineage edges invisibly; (4) URL is the source of truth for
+  view state — depth `d`, full-names `fn`, view-mode `full`, expand-all-groups
+  `eag`, transform matrix `t`, and 4 expansion-id arrays all live in the query
+  string; (5) `lineageDepth=1` LoadMore expansion is depth-1 fan-out + slice
+  monotonic accumulation with no collapse affordance; (6) click-through preserves
+  URL params bag with `d: node.depth || 1` — clicking deep into a graph and
+  navigating opens a NEW view with `d=clicked node's depth` (compounds REFACTOR-202
+  cost); (7) **anchor-set defence-in-depth NOT used at the UI** — fetches use
+  `/api/dataentities/{id}/lineage/{downstream|upstream}` (the NEGATIVE case of
+  REFACTOR-225/237), NOT the owner-scoped `/my` variant; the user-observable
+  consequence of REFACTOR-203 is realised at this canvas. **Eight UI-side
+  bugs/limitations**: diamond DAG amplification, no upper bound on `?d=` URL param
+  (curious user can pass `?d=10000`), silent crossEdge drops, LoadMore monotonic
+  accumulation, sequential fetch fragility under partial failures, useEffect deps
+  mismatch (renderedNodes vs renderedLinks), upstream/downstream highlight
+  asymmetry, microservices lineage rendered by same component with no mode toggle.
+axes_present:
+- controllers
+- repositories_reactive
+- ui_components
+nodes:
+- odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
+- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+- odd-platform ts react-component component:LineageGraph
+contributors:
+- getDataEntityDownstreamLineage.md:concepts.entities (DataEntity root, LineagePojo
+  edges, DataEntityLineage response DTO, LineageDepth wrapper, DataEntityLineageNode/Edge)
+- getDataEntityDownstreamLineage.md:concepts.operations (resolve root → recursive
+  walk → fan-out at expandedEntityIds → merge + distinct → fetch metadata → compute
+  counts → map to DataEntityLineage)
+- getDataEntityDownstreamLineage.md:implicit_adrs.[0] (single-query recursive-CTE)
+  + implicit_adrs.[1] (dual-input client-driven expansion model)
+- 'ReactiveLineageRepositoryImpl (batch H): entities[LineagePojo, LineageDepth wrapper,
+  LineageStreamKind enum, CommonTableExpression jOOQ CTE handle]; operations[batchDeleteByEstablisherOddrn,
+  batchInsertLineages, getTargetsCount + getChildrenCount + getParentCount,
+  softDeleteLineageRelations + restoreLineageRelations, getLineageRelations(List),
+  getLineageRelations(Set, LineageDepth, LineageStreamKind) — THE recursive-CTE
+  traversal, getLineageRelationsForDepthOne, lineageCte private]; 5 ADRs.'
+- 'LineageGraph.md (batch J — UI HALF): concepts.entities[DataEntityLineageById
+  Redux state, LineageQueryParams URL-bound state, TreeNodeDatum with d3attrs.id,
+  HierarchyPointNode/Link d3-hierarchy types, LineageContext React Context, Zoom
+  from @visx/zoom, lineageDepth array [1..20]]; concepts.operations[Lineage.tsx
+  route-dispatch, HierarchyLineage sequential fetch chain, LineageGraph useMemo
+  tree build via d3-hierarchy, LineageProvider DOM-measure of titleHeight, LoadMore
+  depth-1 expansion + URL param append, LineageControls depth-slider write to URL,
+  Node click-through navigation]; concepts.invariants[backend-supplied nodesById+edgesById+crossEdges
+  shaped into a TREE not DAG; crossEdges rendered separately as CrossLink; URL is
+  source of truth for view state; UI always sends lineageDepth=d (default 1); LoadMore
+  is depth-1 expansion not user-driven depth increase; click-through preserves URL
+  params with d: node.depth as new d; two independent trees mirrored layout
+  upstream/downstream; no virtualisation every node mounted as SVG]
+- 'LineageGraph.md:implicit_adrs.[0] UI defaults d=1 silent default-depth contract;
+  [1] URL is source of truth for view state; [2] d3-hierarchy tree over force-directed
+  graph (deterministic layout cost: DAG diamonds duplicate); [3] two-direction
+  independent layouts mirrored; [4] click-through preserves URL params bag and uses
+  node.depth as new d; [5] module-level mutable globals in slice for LoadMore
+  accumulator'
+- 'LineageGraph.md:bugs_limitations_corner_cases.[diamond DAG amplification at UI
+  MEDIUM; no upper bound on ?d= URL param HIGH; silent crossEdge drops MEDIUM;
+  LoadMore monotonic accumulation no collapse MEDIUM; sequential fetch fragility
+  MEDIUM; useEffect deps mismatch LOW; upstream/downstream highlight asymmetry LOW;
+  microservices lineage rendered by same component no mode toggle MEDIUM; no retry
+  on transient failure LOW; anchor-set defence not exercisable at UI HIGH]'
+evidence:
+- getDataEntityDownstreamLineage.md:concepts.entities + concepts.operations + concepts.invariants.[0-3]
+- getDataEntityDownstreamLineage.md:implicit_adrs.[0,1]
+- ReactiveLineageRepositoryImpl.md:concepts.invariants.[0,1,2,3,4,5]
+- ReactiveLineageRepositoryImpl.md:implicit_adrs.[0,1,2,3,4]
+- ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[0,1,2,3,7]
+- LineageGraph.md:concepts.entities + concepts.operations + concepts.invariants
+- LineageGraph.md:implicit_adrs.[0-5]
+- LineageGraph.md:bugs_limitations_corner_cases.[0-9]
+- LineageGraph.md:security.known_security_gaps.[0-3]
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      NO SECURITY_RULES entry at backend — falls through to `pathMatchers('/**').authenticated()`
+      catch-all. NO @PreAuthorize on the controller, NO programmatic permission check at
+      the service. UI mirrors the absence — no permission gates, no usePermission-style
+      hook in the lineage component tree; the UI is a thin client of the unguarded
+      backend surface. Under DISABLED auth, anonymously reachable end-to-end.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      Returned graph is NOT filtered by caller's owner relationships at any layer.
+      The `lineage` table itself carries NO owner column; `LineageServiceImpl.getLineage`
+      performs no per-row owner check; repository walk filters only by IS_DELETED.isFalse().
+      **Batch J UI confirms**: the UI fetches via the NEGATIVE-case lineage endpoints
+      (`/lineage/downstream` + `/upstream`), NOT the owner-scoped `/my` variants;
+      the user-observable consequence of REFACTOR-203 is realised at this canvas.
+      The UI provides NO "restricted view" mode, no "show only my owners" toggle.
+  strengths:
+  - Single-query recursive-CTE traversal — one DB round-trip, not BFS-per-node (efficient
+    at the query layer)
+  - Client-driven progressive-expansion model — UI can ask for shallow tree first
+    then expand on click, bounding initial response size
+  - 'Soft-delete-via-is_deleted is canonical at SQL layer — every read filters IS_DELETED.isFalse()
+    at 7 distinct call sites; defence-in-depth at the SQL layer keeps deleted edges
+    invisible to reads'
+  - 'Establisher-keyed edge provenance enables non-destructive cross-producer ingestion'
+  - 'Anchor-set defence-in-depth pattern at the POSITIVE-case caller
+    (DataEntityRelationsServiceImpl.getDependentOddrns uses authIdentityProvider.fetchAssociatedOwner)
+    — proves the project knows how to scope by owner where it chooses'
+  weaknesses:
+  - 'Graph-shaped cross-owner enumeration vector (HIGH) — lineage edges encode causal
+    connections; leaking the existence of a downstream transformer / consumer reveals
+    another team''s internal pipeline structure even if their entities are not separately
+    enumerable. **Batch J — UI realisation point**: the lineage canvas is the user-observable
+    surface; any authenticated user can click the Lineage tab on ANY entity and
+    enumerate the full reachable subgraph; the UI provides no restricted view.'
+  - 'No `lineage_depth` upper-bound cap + no rate-limit — DoS amplification vector (HIGH).
+    **Batch J UI compounds**: the UI does NOT validate / clamp `?d=` URL param; a curious
+    user editing `?d=10000` triggers the backend amplification surface FROM THE URL.
+    The dropdown caps at 20 but the URL accepts any integer.'
+  - 'DISABLED-mode reachability (HIGH) — anonymous network probe can drive cross-owner
+    enumeration AND DoS amplification at both API and UI layers'
+  - 'Null lineage_depth NPE returns 500 to caller (MEDIUM) — generic 500 leaks
+    server-side exception trace; docs claim ''Unset returns the platform''s default
+    depth'' which is UNIMPLEMENTED. UI masks this by always sending d=1.'
+  - 'No cycle-detection inside the recursive CTE (HIGH) — only termination is the
+    depth bound. **Batch J UI compounds**: d3-hierarchy.hierarchy() builds a TREE
+    not a DAG; diamonds duplicate at the UI (D appears twice if reachable via two
+    paths); cycles are handled via separate crossEdges overlay but the depth bound
+    is the only safeguard against runaway recursion.'
+  - 'No statement_timeout enforcement at repository (MEDIUM)'
+  cross_file_inconsistencies:
+  - Concept name 'Lineage' is canonical in main-concepts.md (`Data Lineage` Data Governance
+    pillar) but the API surface, recursion-bound mechanism, dual-input expansion model,
+    and cross-owner-enumeration posture are all undocumented at the concept layer.
+    Sub-page `/developer-guides/api-reference/lineage` covers the parameters but with
+    two inaccuracies (the null-default claim + the group-only `expanded_entity_ids`
+    claim).
+  - 'Soft-delete mechanism asymmetry across `Reactive*Repository` siblings:
+    ReactiveLineageRepositoryImpl uses `is_deleted` boolean; ReactivePolicyRepositoryImpl
+    + most other CRUDable entities use `deleted_at` timestamp; ReactiveDataEntityRepositoryImpl
+    OVERRIDES the inherited deleted_at base with STATUS state-machine. Three different
+    deletion mechanisms across the repository layer.'
+  - '**Batch J — UI vs backend regex asymmetry**: the UI lineage canvas does not
+    surface owner information visually at all; the rendered graph shows entity names,
+    types, classes, and entity relationships but no owner-scoping affordance. A user
+    cannot tell from the UI whether they are reading their team''s lineage or
+    another team''s.'
+  contributing_files:
+  - getDataEntityDownstreamLineage.md
+  - ReactiveLineageRepositoryImpl.md
+  - LineageGraph.md
+  evidence:
+  - getDataEntityDownstreamLineage.md:security.known_security_gaps.[0-3]
+  - getDataEntityDownstreamLineage.md:bugs_limitations_corner_cases.[0-7]
+  - ReactiveLineageRepositoryImpl.md:security.known_security_gaps.[0,1,2]
+  - ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[0,1,2,3,7]
+  - LineageGraph.md:security.known_security_gaps.[0-3]
+  - LineageGraph.md:bugs_limitations_corner_cases.[diamond + no-upper-d + silent-crossEdge
+    + LoadMore-monotonic + anchor-set-defence-not-at-UI]
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - Every lineage-canvas open in the UI issues a `GET /api/dataentities/{id}/lineage/downstream`
+    AND `/upstream`; each subsequent click on a node to expand re-issues the same
+    endpoint with an updated `expanded_entity_ids` list — fully synchronous, fully
+    un-cached
+  - Recursive-CTE materialises one row per (depth, parent_oddrn, child_oddrn) tuple
+    inside the recursion — highest-DB-cost read on the entity-detail screen
+  - Per-oddrn metadata fetch loads every entity referenced anywhere in the edge set
+    + every group oddrn — a 10K-edge response triggers a 20K-oddrn metadata fetch
+    in the same Mono assembly
+  - 'getLineageRelations(Set, LineageDepth, LineageStreamKind) at
+    ReactiveLineageRepositoryImpl.java:122-131 is the per-request hot path for every
+    lineage-canvas open; cost grows multiplicatively with depth x branching factor'
+  - 'getLineageRelationsForDepthOne(rootIds, kind) at lines 134-148 is the per-click
+    hot path for every progressive UI expansion'
+  - 'getChildrenCount + getParentCount (lines 72-89) invoked once per lineage-canvas
+    open over the full result-set oddrn list'
+  - 'batchInsertLineages + batchDeleteByEstablisherOddrn (lines 43-58) invoked on
+    every ingestion of an entity whose lineage edges changed'
+  - '**Batch J — UI render**: useMemo computes the tree on every data or nodeSize
+    change; for an N-node graph the React tree is O(N) SVG primitives (no virtualisation);
+    crossEdges lookup is O(C * N) linear scan; hover scans L links to compute
+    highlights (per-frame hot path on graphs with hundreds of nodes)'
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single Mono pipeline per request — one request → one response holding
+      the full graph; no streaming variant; no batching of multiple lineage requests.
+      The recursive CTE walks N hops in ONE round-trip; the depth-1 fan-out is ONE
+      round-trip.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: Stateless controller scales horizontally; the bottleneck is unbounded
+      Postgres recursive-CTE cost on diamond-shaped DAGs + full-graph in-memory materialisation
+      in JVM heap before serialisation. UI renders every node + every link as an SVG
+      component — for large graphs the React tree is O(N).
+  strengths:
+  - Stateless controller — horizontal scaling unconstrained at this layer
+  - Reactive `Mono` signature — non-blocking on the request thread
+  - 'Single round-trip per method via reactive R2DBC; batch insert uses jOOQ
+    multi-row VALUES with onDuplicateKeyIgnore (single INSERT statement regardless
+    of pojo count)'
+  weaknesses:
+  - 'No upper bound on `lineage_depth` parameter (HIGH) — operators cannot defend
+    a small Postgres instance against a depth=10000 request without an external WAF/reverse-proxy
+    validation rule. **Batch J UI confirms**: useQueryParams parseNumbers:true means
+    `?d=999999999` flows directly to the API.'
+  - 'No cap on `expanded_entity_ids` list length (MEDIUM)'
+  - 'Full-graph in-memory materialisation (MEDIUM) — no streaming response and no
+    pagination cursor'
+  - 'No CTE-level cycle guard (MEDIUM)'
+  - 'No caching (LOW)'
+  - 'No covering index for soft-delete filter (MEDIUM)'
+  - 'No covering index for soft-delete OR predicate on either-endpoint (MEDIUM)'
+  - 'Misleading OR-predicate in getLineageRelations(List<String>) (LOW)'
+  - '**Batch J UI**: no virtualisation in LineageGraph SVG render — every node is
+    a mounted SVG component; large graphs (1K+ nodes) become render-time hot paths
+    in the browser'
+  - '**Batch J UI**: hover-highlight scans every link per frame (LineageContext
+    re-renders on every highLightedLinks change) — quadratic with graph size for
+    move-over-node interactions'
+  - '**Batch J UI**: LoadMore monotonic accumulation has no collapse affordance,
+    no LRU eviction, no max-size cap — a user clicking LoadMore on 100 leaves
+    accumulates 100x payload-size in memory'
+  cross_file_inconsistencies: []
+  contributing_files:
+  - getDataEntityDownstreamLineage.md
+  - ReactiveLineageRepositoryImpl.md
+  - LineageGraph.md
+  evidence:
+  - getDataEntityDownstreamLineage.md:performance.hot_paths.[0-2]
+  - getDataEntityDownstreamLineage.md:performance.known_performance_gaps.[0-4]
+  - ReactiveLineageRepositoryImpl.md:performance.hot_paths.[0-4]
+  - ReactiveLineageRepositoryImpl.md:performance.known_performance_gaps.[0-5]
+  - LineageGraph.md:performance.hot_paths + bugs_limitations_corner_cases.[diamond
+    + no-virtualisation + LoadMore-monotonic]
+notes: |-
+  Strengthened in batch 2026-05-19J with LineageGraph UI sidecar closing the F-005
+  lineage canvas UI half. The UI mirrors the backend's read-collaborative posture
+  exactly — no UI-side authorization, no owner-scoping affordance, no restricted-view
+  mode. The user-observable consequence of REFACTOR-203 is realised at this canvas:
+  any authenticated user can click the Lineage tab on any entity and enumerate the
+  full reachable subgraph including cross-owner edges.
+
+  Three high-leverage UI findings flow from the LineageGraph sidecar:
+    (a) **Diamond DAG amplification at the UI** — d3-hierarchy.hierarchy() builds
+        a tree, not a DAG; diamonds duplicate (REFACTOR-202 surfaces at the UI).
+    (b) **No upper bound on `?d=` URL param** — useQueryParams parseNumbers:true
+        forwards `?d=10000` straight to the backend (REFACTOR-202 amplification
+        from the URL).
+    (c) **Anchor-set defence-in-depth NOT used at the UI** — fetches use the
+        NEGATIVE case (`/lineage/downstream` + `/upstream`), not the owner-scoped
+        `/my` variant.

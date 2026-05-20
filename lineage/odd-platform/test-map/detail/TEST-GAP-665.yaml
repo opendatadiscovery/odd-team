@@ -1,0 +1,33 @@
+gap_id: TEST-GAP-665
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveDatasetFieldRepositoryImpl"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "ReactiveDatasetFieldRepositoryImpl.md:bugs_limitations_corner_cases.[0] (dataset_field has no soft-delete + no orphan-cleanup job — monotonic table growth)"
+  - "ReactiveDatasetFieldRepositoryImpl.md:concepts.invariants.[0] (dataset_field has NO native soft-delete column)"
+  - "ReactiveDatasetFieldRepositoryImpl.md:concepts.invariants.[1] (Version-aware identity — a dataset_field row is SHARED across every dataset_version that contains it)"
+behaviour: |-
+  **Unbounded monotonic growth of the dataset_field table for any churning dataset.** `dataset_field` has NO native soft-delete column (`V0_0_1__init.sql:148-164` plus every subsequent `ALTER TABLE dataset_field` migration verified — none adds `deleted_at` / `is_deleted` / `status`). `delete(id)` / `delete(ids)` inherited from `ReactiveAbstractCRUDRepository.java:144-155` would issue HARD DELETE — BUT no caller in the platform invokes them. The version-aware identity model (V0_0_9__normalize_dataset_structure.sql:1-43 introduced the M:N `dataset_structure` table AND DROPPED the `dataset_field.dataset_version_id` FK) means that every column-schema change in a dataset creates a NEW dataset_field row; the OLD row is preserved (still referenced by historical dataset_versions via dataset_structure). There is NO scheduled housekeeping job referencing the DATASET_FIELD table (Grep against `<odd-platform>/odd-platform-api/src/main/java/.../housekeeping/job/*.java` returns zero matches). Over many ingestion cycles on a churning dataset (say a Snowflake table where columns are added/renamed monthly), `dataset_field` accumulates row-count well above the current column count × retained-versions. No retention policy, no TTL, no admin endpoint to purge. For a deployment ingesting 1000 datasets × 100 columns × 12 schema-changes/year, this is 1.2M new rows/year with no cleanup — over 5 years, ~6M rows in dataset_field alone (separate from the dataset_structure M:N which grows similarly).
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDatasetFieldRepositoryImplTest.java (covers happy-path read/write — does NOT pin orphan-accumulation invariant)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDatasetFieldRepositoryOrphanAccumulationTest.java"
+  name: "datasetFieldRows_accumulateMonotonically_acrossSchemaVersionForks_pinsNoCleanupContract"
+evidence:
+  - "ReactiveDatasetFieldRepositoryImpl.md says (bugs_limitations_corner_cases.[0]): 'delete(id) / delete(ids) inherited from ReactiveAbstractCRUDRepository issue HARD DELETE on dataset_field rows, but no caller in the platform invokes them — there is also NO scheduled orphan-cleanup job. Schema-change forks leave the OLD dataset_field row in place, still referenced by the OLD dataset_structure row + the OLD dataset_version row. Over many ingestion cycles on a churning dataset, the dataset_field table grows monotonically.' severity: MEDIUM"
+  - "ReactiveDatasetFieldRepositoryImpl.md says (concepts.invariants.[0]): 'dataset_field has NO native soft-delete column. Verified by V0_0_1__init.sql:148-164 defining the schema and every subsequent ALTER TABLE dataset_field migration adding only internal_name / reference_oddrn / default_value / is_primary_key / is_sort_key — none adds deleted_at or is_deleted or status.'"
+  - "V0_0_9__normalize_dataset_structure.sql:1-43 (introduced M:N table + DROPPED dataset_field.dataset_version_id FK)"
+  - "DatasetFieldServiceImpl.java:375-396 (hash-diff partition that creates NEW rows on schema change)"
+  - "ReactiveAbstractCRUDRepository.java:144-155 (inherited HARD DELETE — never invoked)"
+cross_references:
+  - "F-010 (P-08:F-002 Housekeeping TTL Enforcement) — coverage gap: no job targets dataset_field"
+  - "TEST-GAP-NNN family (Activity table monotonic growth — sibling pattern at the audit-log surface, TEST-GAP-659)"
+  - "REFACTOR-NNN candidate: introduce DatasetFieldOrphanHousekeepingJob — delete dataset_field rows not referenced by any dataset_structure row"
+proposed_action: |-
+  Testcontainers integration test. (a) Ingest a 10-column dataset via the IngestionService pipeline. (b) Ingest 5 successive ingestion calls each renaming ONE column (5 schema-version forks). (c) Query raw `SELECT COUNT(*) FROM dataset_field WHERE oddrn LIKE '%/test_dataset/%'`. (d) Assert row count = 15 (the original 10 + 5 new rows for the 5 renames; the OLD rows for the renamed columns are preserved). (e) Assert NO housekeeping job has touched the table: query `SELECT COUNT(*) FROM dataset_field WHERE id NOT IN (SELECT dataset_field_id FROM dataset_structure)` — assert 0 (the orphan-search yields no orphans because every dataset_field is still linked to at least one dataset_version). (f) Pin the architectural choice with a comment: `// REGRESSION-PIN — Schema evolution creates NEW dataset_field rows (DatasetFieldServiceImpl.buildDatasetFieldIngestionDto:375-396). The OLD rows are preserved indefinitely (no cleanup job, no soft-delete). REFACTOR-NNN will introduce DatasetFieldOrphanHousekeepingJob; this test will then flip to assert the cleanup behaviour.`
+related_features: [F-010]
+related_pillar_features: ["P-08:F-002", "P-01:F-NN-dataset-schema-diff"]
+batch: 2026-05-20-R
+feature_id: F-010

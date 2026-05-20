@@ -1,0 +1,14 @@
+- **DOC-GAP-071**: DataCollab `datacollaboration.*` prefix is a partial-home — 3 of 7 keys bind to `DataCollaborationProperties`, 4 scattered across `@Value` in 4 files (specific instance of DOC-GAP-068 META)
+  - **Category**: drift
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md:docs_link_semantic.doc_drift_findings.[0]` + `:bugs_limitations_corner_cases.[3]` (severity LOW per sidecar) **(NEW batch D)**
+    - `concepts.yaml:entities[Slack collaboration app]`
+  - **Evidence**:
+    - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` 2026-05-12 status 200 — Enable Data Collaboration section enumerates all 6 documented `datacollaboration.*` keys as a coherent surface (the docs are accurate for operators).
+    - DataCollaborationProperties.md verifies code-side: `DataCollaborationProperties.java:1-21` binds exactly three int fields (`senderMessageAdvisoryLockId`, `receiveEventAdvisoryLockId`, `sendingMessagesRetryCount`). Remainder scattered:
+      - `enabled` → `FeatureResolverImpl.java:17` + `DataCollaborationFeatureCondition.java:18-22`
+      - `slack-oauth-token` → `DataCollaborationConfiguration.java:21`
+      - `message-partition-period` → `MessageTablePartitionManager.java:19`
+  - **Proposed doc action**: Per DOC-GAP-068 (META), add a "Where these keys are bound" note to the Enable Data Collaboration section listing the scattered consumers. The doc fix is MAINTAINER-onboarding-oriented; the operator-impact is LOW.
+  - **Cross-references**: DOC-GAP-068 (META — parent finding); DOC-GAP-064 (lock-id collision); Drives `/log-issue odd-platform` for partial-home consolidation of `datacollaboration.*`.
+  - **Severity rationale**: MEDIUM — instance of DOC-GAP-068 META pattern; isolated docs-completeness gap with maintainer-side impact.

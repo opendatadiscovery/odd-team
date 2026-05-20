@@ -1,0 +1,12 @@
+- **REFACTOR-002**: GenAI outbound calls have no retry / backoff / circuit-breaker on transient upstream failure
+  - **Category**: missing-retry
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_config_properties__config-properties-class__GenAIProperties.md:implicit_adrs.[4]` (originally bundled with REFACTOR-001 in ADR-CANDIDATE-005 of run 0.1.0)
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__GenAIController.md:performance.known_performance_gaps.[1]`
+    - `concepts.yaml:entities[GenAI Assistant].performance_aggregate.weaknesses.[1]`
+  - **Statement**: The Mono pipeline at `GenAIServiceImpl.java:41-51` has `.onErrorResume(...)` that translates errors into `GenAIException`, but NO `.retry(...)` / `.retryWhen(...)`. A transient network blip on the way to `genai.url` produces an immediate 500 to the caller; the caller must retry from outside. Combined with the per-request HTTP cost (potentially seconds-to-minutes), this amplifies user-visible latency variance.
+  - **Evidence**: `GenAIServiceImpl.java:41-51` (no retry operator)
+  - **Existing-ADR-or-implied-prescription**: None. Thin-proxy stance does not defend retry-absence; retry is request-routing reliability, not "prompt engineering" or "RAG" (which the proxy stance explicitly delegates).
+  - **Proposed remedy**: Add `.retryWhen(Retry.backoff(maxAttempts, minBackoff).filter(this::isTransient))` on the WebClient call; expose `genai.retry.max-attempts` (default 3) and `genai.retry.min-backoff-millis` (default 200) via `GenAIProperties`. Document in the live config-doc.
+  - **Severity rationale**: HIGH — for a feature whose latency floor is seconds-to-minutes, a single transient upstream blip surfacing as a 500 is operationally hostile.
+  - **Suggested backlog grouping**: `GenAI hardening sprint`

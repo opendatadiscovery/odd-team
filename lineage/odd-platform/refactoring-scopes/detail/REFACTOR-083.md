@@ -1,0 +1,11 @@
+- **REFACTOR-083** (NEW 2026-05-10B): Failed-auth attempts on the ingestion filter are not logged — no `log.*` call on the 401 path, no metric counter, no rate-limit, no lockout
+  - **Category**: missing-audit
+  - **Surfaced by**:
+    - `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md:bugs_limitations_corner_cases.[7]` (severity MEDIUM)
+    - `odd-platform__java__IngestionDataEntitiesFilter__config-key-consumer__auth_ingestion_filter_enabled@L20.md:security.known_security_gaps.[2]` (severity MEDIUM)
+  - **Statement**: When a token mismatch occurs, `IngestionDataEntitiesFilter.java:55-58` throws `AccessDeniedException("Token is not correct")` and `AbstractIngestionFilter.java:66-72`'s `writeResponse` returns the message verbatim — but neither path emits a log statement. A security incident review of "how many failed-auth attempts in the last hour against the ingestion endpoint" cannot be answered from application logs. There is no rate-limit / lockout / metric counter on the failure path. Same shape as REFACTOR-046 (no token rotation audit log) — investigation-readiness gap.
+  - **Evidence**: `IngestionDataEntitiesFilter.java:55-58` (throw, no log) + `AbstractIngestionFilter.java:34-41` (no log on filter-match path) + `AbstractIngestionFilter.java:66-72` (writeResponse, no log)
+  - **Existing-ADR-or-implied-prescription**: None defends the absence.
+  - **Proposed remedy**: Add `log.warn("[ingestion-auth] failed-auth attempt from remoteAddress={} path={} reason={}", ...)` on both the missing-header and wrong-token paths in `AbstractIngestionFilter`. Add Micrometer counters `ingestion.auth.failure_total{reason}` (reason ∈ {`missing_header`, `wrong_token`, `unknown_datasource`}). Optionally: add a rate-limit on failed attempts per remote IP (e.g. 10 failures/minute/IP → temporary 429).
+  - **Severity rationale**: MEDIUM — investigation-readiness gap on a security-critical path.
+  - **Suggested backlog grouping**: `Ingestion-endpoint auth hardening`

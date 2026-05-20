@@ -1,0 +1,28 @@
+gap_id: TEST-GAP-627
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java OwnerController controller-method:deleteOwner"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "deleteOwner.md:bugs_limitations_corner_cases.[4] (Race-window between cascade-check and soft-delete — severity MEDIUM)"
+  - "deleteOwner.md:security.known_security_gaps.[4] (Race-window — severity LOW, narrow window)"
+  - "deleteOwner.md:concepts.invariants.[2] (Cascade-block is NOT atomic with the deletes that follow)"
+behaviour: |-
+  **RACE-WINDOW BETWEEN CASCADE-CHECK AND SOFT-DELETE — orphan OWNERSHIP rows possible.** The three `existsBy*` reads (OwnerServiceImpl.java:90-91) and the `ownerRepository.delete` (line 98) run inside one @ReactiveTransactional boundary (line 88) — BUT the reads do NOT acquire row-level locks (no `SELECT FOR UPDATE`, no Postgres advisory lock on `owner_id`). Under `READ COMMITTED` isolation (Spring/R2DBC default — `READ COMMITTED` does not serialize the read against concurrent writes on the same key), a concurrent `POST /api/dataentities/{id}/ownership` (creating an OWNERSHIP row for this owner) racing with `DELETE /api/owners/{owner_id}` is theoretically able to slip a fresh OWNERSHIP row past the existence check. Result: an OWNERSHIP row pointing to a soft-deleted OWNER. **MIRRORS F-006 batch I `cascade_check_non_atomic` facet (PolicyServiceImpl.delete + role_to_policy)** — same shape, different table. The race window is bounded by the transaction's isolation level but is NOT zero. NO test exercises the concurrent-write race. A regression that flips the @ReactiveTransactional annotation or changes isolation level would silently widen the window with the build green. The race-window severity is LOW in practice (concurrent admin-time operations are rare) but the structural concern is correctness — a successful exploit produces an orphan OWNERSHIP row pointing to a soft-deleted owner; the data entity continues to surface ownership info (including the deleted owner's name and roles) until the ownership row is independently cleaned. The data-exposure consequence escalates severity to HIGH (the post-attack state surfaces info to authenticated users via the entity's owner-list).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/OwnerDeleteRaceWindowTest.java"
+  name: "deleteOwner_concurrentOwnershipCreation_canSlipPastCascadeCheck_producingOrphanOwnership"
+evidence:
+  - "deleteOwner.md says (bugs_limitations_corner_cases.[4]): 'Race-window between cascade-check and soft-delete — the three existsBy* reads (OwnerServiceImpl.java:90-91) and the ownerRepository.delete (OwnerServiceImpl.java:98) run inside one @ReactiveTransactional boundary (line 88) but the reads do NOT acquire row-level locks (no SELECT FOR UPDATE, no Postgres advisory lock on owner_id). Under READ COMMITTED isolation (Spring/R2DBC default), a concurrent POST /api/dataentities/{id}/ownership (creating an OWNERSHIP row for this owner) racing with DELETE /api/owners/{owner_id} is theoretically able to slip a fresh OWNERSHIP row past the existence check.'"
+  - "deleteOwner.md says (security.known_security_gaps.[4]): 'Race-window between cascade-check and soft-delete — same evidence as bugs_limitations_corner_cases[4]; restated here as a security gap because a successful exploit produces an orphan OWNERSHIP row pointing to a soft-deleted owner.'"
+  - "Source: OwnerServiceImpl.java:88-100 (cascade-check + delete in one @ReactiveTransactional but no FOR UPDATE)"
+cross_references:
+  - "F-006 batch I observed_vs_expected.facet cascade_check_non_atomic (PolicyServiceImpl.delete + role_to_policy mirror)"
+  - "TEST-GAP-403 (PolicyServiceImpl race-window — sister gap on a sibling delete path)"
+  - "TEST-GAP-626 (cascade-incompleteness for owner_association_request — sister gap)"
+proposed_action: |-
+  Add `OwnerDeleteRaceWindowTest` (Testcontainers + R2DBC + parallel reactive subscriptions). (a) Seed Owner with NO ownership rows; (b) start two parallel subscriptions: thread A does POST /api/dataentities/{id}/ownership creating an Ownership for the seeded owner; thread B does DELETE /api/owners/{id}; (c) use Testcontainers to set short network delays so thread B's existence-check completes before thread A's INSERT commits; (d) assert the resulting state: SELECT * FROM ownership WHERE owner_id = O AND EXISTS(SELECT 1 FROM owner WHERE owner.id = O AND owner.deleted_at IS NOT NULL) returns ONE row (the orphan); pin the current race-window behaviour. Future fix that adds SELECT FOR UPDATE on the cascade-check or moves to a Postgres advisory lock will break this test.
+batch: 2026-05-20-P
+feature_id: F-006

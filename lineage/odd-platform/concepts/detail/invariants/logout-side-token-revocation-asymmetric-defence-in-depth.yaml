@@ -1,0 +1,72 @@
+name: Logout-side token revocation (asymmetric defence-in-depth)
+canonical_in_docs: false
+canonical_candidate: true
+description: |-
+  Among the five `auth/logout/*` provider-specific success-handlers (Cognito,
+  Azure, Google, GitHub, ODD_IAM), only TWO actively revoke the provider-side
+  OAuth2 token at logout — `GoogleLogoutSuccessHandler.java:43-54` POSTs to
+  `https://oauth2.googleapis.com/revoke`, `GithubLogoutSuccessHandler.java:51-63`
+  calls `DELETE /applications/{client_id}/grant`. The OTHER THREE
+  (`AzureLogoutSuccessHandler.java:31-48`, `CognitoLogoutSuccessHandler.java:33-50`,
+  `ODDIAMLogoutSuccessHandler.java:30-46`) invalidate ONLY the local Spring
+  WebFlux `WebSession` — they emit `exchange.getExchange().getSession().flatMap(WebSession::invalidate)`
+  as their terminal Mono with NO outbound provider HTTP. Azure AD v2.0 does NOT
+  expose RFC 7009 token revocation (the end-session-endpoint IS the only sign-out
+  mechanism in v2.0), so the absence is a Microsoft-platform limitation as much
+  as an ODD gap. Cognito's `/logout` similarly drops only the User Pool session
+  cookie; the access token remains valid at Cognito-issued downstream APIs until
+  natural TTL (default 1 hour for Cognito). ODD_IAM is OIDC-end-session-pattern-
+  compliant. The asymmetry has a security consequence: a token exfiltrated from
+  an Azure/Cognito/ODD_IAM session (XSS, browser-extension exfiltration, non-
+  HttpOnly storage harvest) RETAINS authority at the provider after the user has
+  "logged out" of ODD Platform until natural TTL — for Cognito (1 hour access
+  token), Azure (60-90 minutes access, up to 90 days refresh), this is a real
+  exposure window. Google + GitHub close this window via active revocation;
+  Cognito + Azure + ODD_IAM leave it open. The docs (live OAuth2/OIDC page
+  WebFetched 2026-05-19 status 200) do NOT surface this asymmetry — operators
+  with stringent compliance requirements (immediate-revocation-on-logout) need
+  to know.
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java auth logout:AzureLogoutSuccessHandler
+  - odd-platform java auth logout:CognitoLogoutSuccessHandler
+contributors:
+  - 'AzureLogoutSuccessHandler.invariants[2]: Session invalidation is the only platform-side cleanup — there is NO call to revoke the Azure access/refresh/id token at Microsoft Graph or the Azure token endpoint. Compare: GoogleLogoutSuccessHandler.java:43-54 calls oauth2.googleapis.com/revoke; GithubLogoutSuccessHandler.java:51-63 calls DELETE /applications/{client_id}/grant.'
+  - 'AzureLogoutSuccessHandler.docs_link_semantic.doc_drift_findings[3]: NO server-side Azure token revocation on logout. The handler invalidates only the local WebSession. Tokens issued by Azure remain valid at Azure until their natural TTL expires.'
+  - 'AzureLogoutSuccessHandler.security.known_security_gaps[2]: No Azure token revocation on logout — the access/refresh/id tokens remain valid at Azure until natural TTL. Compromised tokens retain authority to other Azure resources the user consented for.'
+  - 'CognitoLogoutSuccessHandler.bugs_limitations_corner_cases[3]: No token-revocation step. The handler does NOT explicitly call Cognito''s token-revocation endpoint. An attacker who exfiltrated the access token before logout could continue using it against Cognito-issued downstream APIs until the token expires.'
+  - 'CognitoLogoutSuccessHandler.security.known_security_gaps[0]: No token revocation. Compare with GoogleLogoutSuccessHandler.java:43-54 which DOES call /revoke. Asymmetric treatment across the 5 sibling handlers.'
+  - 'CognitoLogoutSuccessHandler.implicit_adrs[3]: Local platform session is invalidated atomically with the IdP-side logout — every *LogoutSuccessHandler.handle() ends with exchange.getExchange().getSession().flatMap(WebSession::invalidate). This invariant is symmetric across all five siblings.'
+evidence:
+  - AzureLogoutSuccessHandler.md:invariants.[2] (no server-side revocation)
+  - AzureLogoutSuccessHandler.md:docs_link_semantic.doc_drift_findings.[3] (drift; operator-stringent-compliance gap)
+  - AzureLogoutSuccessHandler.md:security.known_security_gaps.[2] (MEDIUM severity)
+  - AzureLogoutSuccessHandler.md:implicit_adrs.[0] (delegate revocation to natural TTL)
+  - CognitoLogoutSuccessHandler.md:bugs_limitations_corner_cases.[3] (MEDIUM; AWS Cognito has its own /oauth2/revoke but unused)
+  - CognitoLogoutSuccessHandler.md:security.known_security_gaps.[0] (asymmetric across 5 siblings)
+  - 'Code anchors: AzureLogoutSuccessHandler.java:31-48 (no outbound HTTP); CognitoLogoutSuccessHandler.java:33-50 (no /revoke); ODDIAMLogoutSuccessHandler.java:30-46 (no revoke); GoogleLogoutSuccessHandler.java:43-54 (active /revoke); GithubLogoutSuccessHandler.java:51-63 (grant DELETE)'
+notes: |-
+  The five logout handlers split into a 2+3 cluster — Google and GitHub
+  ACTIVELY revoke; Cognito, Azure, ODD_IAM rely on session invalidation
+  + natural TTL. The split is partially protocol-driven (Azure v2.0 has
+  no RFC 7009 endpoint; ODD_IAM is OIDC-end-session-only) and partially
+  implementation-choice (Cognito DOES expose /oauth2/revoke, but the ODD
+  Cognito handler doesn't call it). The shared invariant across ALL FIVE
+  is local WebSession invalidation (`WebSession::invalidate`) — a
+  symmetric platform-side guarantee.
+
+  Cross-link to F-010 (Housekeeping TTL Enforcement): AzureLogoutSuccessHandler
+  sidecar coherence_check section confirms F-010 is correct that
+  search_facets rows are NOT cleaned at logout — the search_facets table
+  has NO user binding column (`V0_0_1__init.sql:204-211`), so logout-time
+  cleanup is structurally impossible; the SearchFacetsHousekeepingJob TTL
+  eviction is the sole reaper. F-010's TTL-eviction enumeration is
+  validated empirically by this sidecar's primary-source Read.
+
+  Cross-link to F-011 (Principal-to-Owner Resolution): the WebSession
+  invalidation IS the termination of the principal lifecycle. After logout,
+  the WebSession is empty by design, and F-011's
+  `empty_security_context_silent_propagation` drift facet is the post-logout
+  state observable on any non-logout endpoint — the silent-empty-result
+  fallback IS the post-logout state (correctly safe; no contradiction).

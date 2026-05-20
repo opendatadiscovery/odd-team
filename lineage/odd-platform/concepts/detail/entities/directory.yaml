@@ -1,0 +1,113 @@
+name: Directory
+canonical_in_docs: true
+canonical_candidate: false
+description: 'Catalogue''s hierarchical browse interface complementing Search — four-level
+  navigation: data source type → data source → entity type → entity. Read-only `GET`
+  endpoints under `/api/directory`, with ODDRN prefix as the grouping key (sources
+  whose ODDRN can''t be parsed bucket under `Other`/UNKNOWN_DATASOURCE_TYPE) (DirectoryController
+  sidecar `understanding`; main-concepts.md `Data Discovery` pillar names Directory
+  as one of four entry paths).'
+axes_present:
+- controllers
+nodes:
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DirectoryController
+contributors:
+- 'DirectoryController: entities[Data Source Type, Data Source, Data Entity Type,
+  Data Entity, ODDRN]; operations[list-data-source-types-with-counts, list-data-sources-by-prefix,
+  list-data-entity-types-within-datasource, list-data-entities-by-datasource-and-type-paged]'
+evidence:
+- DirectoryController.md:concepts.entities.[Data Source Type, Data Source, Data Entity
+  Type, Data Entity, ODDRN]
+- DirectoryController.md:concepts.operations.[four levels]
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: DirectoryController has zero @PreAuthorize annotations and no entry in
+      SecurityConstants.SECURITY_RULES (rule list is mutating-method-only; all four
+      Directory routes are GETs). Falls through to global SecurityFilterChain `authenticated()`
+      rule. Under auth.type=DISABLED Directory is open to any caller.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: All four Directory endpoints return platform-wide aggregates with no filtering
+      by current user's owner identity. `getDataSourceTypes` lists every registered
+      data source via unfiltered `dataSourceRepository.list()`. `getDirectoryDatasourceList(prefix)`
+      returns every data source matching the prefix. Directory is a non-owner-scoped
+      view of the whole catalogue — any authenticated user (in LOGIN_FORM/OAUTH2/LDAP)
+      can enumerate every registered data source's name, ODDRN, host, database, and
+      entity counts.
+  strengths:
+  - Read-only feature surface — no mutation paths to gate
+  - Stateless controller — no in-memory session state
+  weaknesses:
+  - 'Directory is a reconnaissance surface: an authenticated user with no Permissions
+    and no Owner association can still enumerate every registered data source''s ODDRN,
+    host, database, and per-type entity count (severity MEDIUM)'
+  - Live `data-discovery/directory` doc page does NOT warn operators that Directory
+    is platform-wide and unscoped by ownership
+  - ODDRN-derived properties exposed via `getOddrnProperties` include `host` and `database`
+    of every data source — for deployments intentionally avoiding internal hostname
+    exposure, the Directory leaks them; reflection-based extractor walks every @PathField
+    with no allow-list/redaction step (severity LOW)
+  - No fail-closed per-route gate as a second line of defence — global filter regression
+    silently makes `/api/directory*` open
+  cross_file_inconsistencies: []
+  contributing_files:
+  - DirectoryController.md
+  evidence:
+  - DirectoryController.md:security.known_security_gaps.[0-3]
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+  - GET /api/directory (getDataSourceTypes) — Directory landing page, fires on every
+    navigation; runs `dataSourceRepository.list()` (full scan, no pagination) AND
+    `dataEntityRepository.getCountByDataSources()` aggregate count; cross-DB round-trips
+    parallelised via Mono.zip but in-memory grouping cost grows linearly — DirectoryController
+  - GET /api/directory/datasources?prefix={prefix} — every type-card click; runs `findByPrefix(prefix)`
+    + per-source-id count + reflection-based ODDRN-property extraction on every returned
+    source — DirectoryController
+  - GET /api/directory/datasources/{id} — every entity-type drill-down click; delegates
+    to dataEntityService.getDataEntitiesByDatasourceAndType which paginates at DB
+    level (page/size mandatory @NotNull) — DirectoryController
+  throughput_shape:
+    verdict: MIXED
+    detail: Level 4 (entities) paginates with mandatory page/size. Levels 1, 2, 3
+      return ALL matching items in single response — no pagination on the type-card
+      list or per-prefix data-source list.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: Levels 1, 2 unpaginated — response payload size grows O(N) with registered-data-source
+      count. A platform with 10K+ data sources renders a 10K-item type-card landing
+      page (after grouping, fewer cards but each carries the per-prefix count over
+      all 10K rows). No HTTP caching, no ETag, no @Cacheable — every UI navigation
+      re-runs the full pipeline.
+  strengths:
+  - All four endpoints reactive (Mono/Flux)
+  - Stateless controller — instances scale horizontally
+  - Pagination at level 4 (entity-leaf) is mandatory (page + size @NotNull) — bounded
+    response size for the leaf
+  weaknesses:
+  - No pagination on `/api/directory` (level 1 type list) — degrades response time
+    and memory linearly with registered-data-source count (severity MEDIUM)
+  - No pagination on `/api/directory/datasources?prefix=...` (level 2 data-source
+    list) — single popular prefix (e.g. `postgresql` with 5K registered sources) produces
+    5K-item response with reflection-based property extraction per row (severity MEDIUM)
+  - Reflection-based getOddrnPathProperties unmemoised — per request, per data source,
+    the @PathField field set is re-discovered and the getter Method re-resolved (severity
+    LOW)
+  - No HTTP / server-side caching — data is read-mostly (registrations change rarely,
+    counts at ingestion cadence) but every UI navigation re-runs full DB+grouping
+    pipeline (severity LOW)
+  - getDataSourceTypes runs aggregation across ALL data sources even though response
+    only needs counts grouped by prefix; pre-aggregation by ODDRN-prefix at DB level
+    would shrink work materially
+  cross_file_inconsistencies: []
+  contributing_files:
+  - DirectoryController.md
+  evidence:
+  - DirectoryController.md:performance.known_performance_gaps.[0-4]

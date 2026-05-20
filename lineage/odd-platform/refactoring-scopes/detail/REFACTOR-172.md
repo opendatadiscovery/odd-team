@@ -1,0 +1,10 @@
+- **REFACTOR-172** (NEW 2026-05-12D): Email recipient list comma-split with no per-address trim — `notificationEmails.trim().split(",")` yields recipients with leading spaces. JavaMail rejects the second as invalid `InternetAddress`, aborting the recipient loop before subsequent emails are sent
+  - **Category**: recipient-parse-fragile
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__EmailSenderProperties.md:bugs_limitations_corner_cases.[9]` (MEDIUM) + `security.known_security_gaps.[6]` (LOW)
+  - **Statement**: `NotificationConfiguration.java:118` reads `notification.emails` via `@Value`, then `List.of(notificationEmails.trim().split(","))` parses. A YAML value like `'a@x.com, b@x.com'` yields recipients `'a@x.com'` and `' b@x.com'` (the second has a leading space). JavaMail's `InternetAddress.parse(' b@x.com')` throws. `EmailNotificationSender.java:54-57` iterates per-recipient and any exception aborts the whole loop. Combined with REFACTOR-128 (silent partial delivery), recipients after the typo-ed address never receive the alert.
+  - **Evidence**: `NotificationConfiguration.java:118` + `EmailNotificationSender.java:54-57`
+  - **Existing-ADR-or-implied-prescription**: None. ADR-CANDIDATE-042 (fail-soft fan-out) is the channel-level posture; this gap is intra-channel and the fail-soft does not extend per-recipient.
+  - **Proposed remedy**: Change the parse to `Arrays.stream(notificationEmails.split(",")).map(String::trim).filter(s -> !s.isEmpty()).toList()`. Add `@Email` validation per element. Optional: log a WARN at boot listing the parsed-recipient set so operators can verify.
+  - **Severity rationale**: MEDIUM — operator-trap with silent multi-recipient delivery loss.
+  - **Suggested backlog grouping**: `Notifications hardening`

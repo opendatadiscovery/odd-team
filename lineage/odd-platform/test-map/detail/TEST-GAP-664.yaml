@@ -1,0 +1,32 @@
+gap_id: TEST-GAP-664
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveDatasetFieldRepositoryImpl"
+pillars_affected: [P-09, P-01]
+surfaced_by:
+  - "ReactiveDatasetFieldRepositoryImpl.md:bugs_limitations_corner_cases.[2] (updateDescription stores user input VERBATIM — F-004 fingerprint)"
+  - "ReactiveDatasetFieldRepositoryImpl.md:security.known_security_gaps.[1]"
+  - "ReactiveDatasetFieldRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[1] (updateDescription stores Markdown/HTML verbatim — no backend sanitisation)"
+behaviour: |-
+  **F-004 stored-XSS class fingerprint at the dataset_field surface.** `ReactiveDatasetFieldRepositoryImpl.updateDescription` (line 72-80) stores user-supplied input VERBATIM with only empty-to-null normalisation (line 75): `bare DSL.update(DATASET_FIELD).set(INTERNAL_DESCRIPTION, StringUtils.isEmpty(description) ? null : description).where(ID.eq(id)).returning()`. NO `Jsoup.clean()`, NO `Encode.html()`, NO length cap, NO HTML tag stripping. A Markdown / HTML / JavaScript payload submitted via `PUT /api/datasetfields/{id}/description` (`DATASET_FIELD_DESCRIPTION_UPDATE` permission per SecurityConstants.java:282-303) persists through reads of `getDatasetFieldWithTags` (line 127-139) and `listByTerm` (line 141-204). Same fingerprint pattern as `ReactiveDataEntityRepositoryImpl.setInternalDescription` (verified TEST-GAP-NNN family at the DataEntity layer, batch H + I sidecars). The defence-in-depth is the UI render layer (DefiniteDOMSanitiserPipeline + DOMPurify per P-009 / F-004 sidecars + dynamic-verification probe P-009 from 2026-05-19). But: the UI defence is documented to be Markdown-only at the render layer; a backend-leaked field rendered via a third-party tool (CLI, custom dashboard, OpenAPI-generated SDK consumer) would surface the raw payload. F-004 fingerprint at the dataset_field surface is UNVERIFIED at backend tier — no test asserts "the storage MUST be verbatim because the defence is at render time; this is the documented architectural choice".
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDatasetFieldRepositoryImplTest.java (covers testUpdateDescription happy path — asserts equality, not safety)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDatasetFieldRepositoryStoredXssClassFingerprintTest.java"
+  name: "updateDescription_storesScriptTagAndImgOnerrorVerbatim_pinsBackendStorageContractF004"
+evidence:
+  - "ReactiveDatasetFieldRepositoryImpl.md says (bugs_limitations_corner_cases.[2]): 'updateDescription stores user input VERBATIM with only empty-to-null normalisation — no Jsoup.clean, no Encode.html, no length cap. Same F-004 verbatim-storage fingerprint as ReactiveDataEntityRepositoryImpl.setInternalDescription. A Markdown / HTML payload submitted via PUT /api/datasetfields/{id}/description persists through reads.' severity: MEDIUM (upgraded to HIGH because the dataset_field surface is the per-column metadata layer that an automation / SDK consumer most likely renders verbatim)"
+  - "ReactiveDatasetFieldRepositoryImpl.java:72-80 (updateDescription — bare jOOQ update, no sanitisation)"
+  - "ReactiveDatasetFieldRepositoryImpl.java:75 (the empty-to-null normalisation — the ONLY transform applied)"
+cross_references:
+  - "F-004 (Stored XSS / verbatim-storage defence-in-depth class)"
+  - "TEST-GAP-NNN family (DataEntity description verbatim storage — batch H + I sidecars)"
+  - "P-009 probe (2026-05-19 — DOM-tier XSS defence verified for the entity layer)"
+  - "REFACTOR-NNN candidate: explicit architectural-decision-record stating 'verbatim storage + render-time defence' with the dataset_field surface enumerated"
+proposed_action: |-
+  Repository-layer regression-pin test (security contract pin, not a vulnerability assert). (a) Create a dataset_field via `bulkCreate`. (b) Call `updateDescription(id, "<script>alert('xss')</script>")`. (c) Read back via `get(id)` and assert `pojo.getInternalDescription()` byte-equals `<script>alert('xss')</script>` (storage is verbatim). (d) Variant: payload `<img src=x onerror=alert('xss')>` — same verbatim-storage assertion. (e) Variant: payload `javascript:void(0)` — same. (f) Add a `// CONTRACT PIN: This test asserts the documented F-004 verbatim-storage architectural choice. The defence lives at the UI render layer (DefiniteDOMSanitiserPipeline + DOMPurify) per P-009 / F-004 sidecars. A REFACTOR introducing backend sanitisation will flip this test to assert the chosen sanitiser's output. A REFACTOR weakening the UI defence will require this storage layer to gain sanitisation; the test pair documents both ends of the contract.` comment block. (g) Cross-link to the dataset_field-tier dynamic probe candidate.
+related_features: [F-004]
+related_pillar_features: ["P-09:F-XX-XSS-defence", "P-01:F-002"]
+batch: 2026-05-20-R
+feature_id: F-004

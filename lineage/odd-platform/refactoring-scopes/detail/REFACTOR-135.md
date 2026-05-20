@@ -1,0 +1,9 @@
+- **REFACTOR-135** (NEW 2026-05-12C): Webhook delivery is single-shot, NO signing, NO shared-secret, NO HMAC. The receiving endpoint cannot verify webhook origin — an attacker who scrapes the webhook URL can spoof ODD-originated alerts
+  - **Category**: unsigned-webhook
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:bugs_limitations_corner_cases.[7]` (severity MEDIUM); `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__NotificationsProperties.md:security.known_security_gaps.[0]` (severity MEDIUM)
+  - **Statement**: `WebhookNotificationSender.java:18-23` issues `HttpRequest.newBuilder().uri(webhookUrl).POST(...)` with no Auth header, no signature header, no HMAC. The receiving endpoint cannot distinguish a genuine ODD webhook from a forged one. Industry-standard solutions (Stripe-style HMAC-SHA256 with shared secret) are not implemented.
+  - **Evidence**: `WebhookNotificationSender.java:18-23`
+  - **Existing-ADR-or-implied-prescription**: None defends the absence.
+  - **Proposed remedy**: Add `notifications.receivers.webhook.secret` config; when set, compute `HMAC-SHA256(secret, body)` and emit as `X-ODD-Signature` header. Receivers can verify. Document on the live notifications page.
+  - **Severity rationale**: MEDIUM — webhook-spoofing surface.
+  - **Suggested backlog grouping**: `Notifications hardening`

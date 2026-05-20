@@ -1,0 +1,8 @@
+- **REFACTOR-023**: No controller-level integration test exists for GenAIController
+  - **Category**: missing-test
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__GenAIController.md:bugs_limitations_corner_cases.[1]` (MEDIUM)
+  - **Statement**: A regression in the OpenAPI generator template, the WebFlux configuration, the `ControllerAdvice` exception mapping, or the security filter chain (e.g. accidentally adding `/api/genai/**` to the WHITELIST_PATHS) could silently change the endpoint's contract or auth posture with the build still passing.
+  - **Evidence**: empty find result for `*GenAI*|*Genai*|*genai*` test files
+  - **Proposed remedy**: Add `@WebFluxTest(GenAIController.class)`; assert `403` for unauthenticated callers under `LOGIN_FORM`, `200` for authenticated callers, `400` when `genai.enabled=false`.
+  - **Severity rationale**: MEDIUM — defense-in-depth; catches the WHITELIST_PATHS-misconfig class of bug.
+  - **Suggested backlog grouping**: `Controller test bootstrap`

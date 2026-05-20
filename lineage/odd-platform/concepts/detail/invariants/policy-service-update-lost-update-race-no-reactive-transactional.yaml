@@ -1,0 +1,94 @@
+name: PolicyServiceImpl.update lost-update race (no @ReactiveTransactional — non-atomic read-then-write)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20S (PolicyServiceImpl primary source — service-tier
+  enactment of the lost-update race window on PUT /api/policies/{id}).
+
+  THE PIPELINE (PolicyServiceImpl.java:71-81): the update method issues:
+    (1) Line 73 — synchronous JSON-schema validation via PolicyJSONValidator.validate
+        (throws IllegalArgumentException on malformed body, BEFORE any Mono is
+        constructed).
+    (2) Line 74 — `policyRepository.get(id)` reads the current row.
+    (3) Line 75 — `switchIfEmpty(Mono.error(new NotFoundException("Policy with id %d hasn't been found", id)))`.
+    (4) Line 77 — `filter(policyPojo -> !policyPojo.getName().equals(ADMINISTRATOR_POLICY))`
+        — the Administrator-name reservation guard.
+    (5) Line 78 — `policyMapper.applyToPojo(formData, policyPojo)` — mutates
+        the existing pojo in-place with form-data fields (MapStruct @MappingTarget
+        semantics).
+    (6) Line 79 — `policyRepository.update(policyPojo)` writes the mutated pojo.
+
+  CRUCIAL: the entire pipeline runs WITHOUT a transaction boundary. PolicyServiceImpl
+  does NOT carry @ReactiveTransactional on `update` (line 71 — Grep-verified
+  absence) and the base ReactiveAbstractCRUDRepository methods at lines 102-110
+  are themselves un-annotated (only bulk* methods carry the annotation per
+  ReactiveAbstractCRUDRepository.java:113, 129).
+
+  THE RACE WINDOW: two concurrent PUTs on the same policy id can BOTH read
+  v1 (line 74), both apply form-data to their OWN copies of v1 (line 78), and
+  both write (line 79). Client A's write produces v2; client B's write produces
+  v3 BUT v3 was derived from v1, not v2. Client A's change is silently
+  OVERWRITTEN. The platform has no optimistic-concurrency token on PolicyPojo
+  (no `version` field; verified by reading the imports at lines 7-21 of
+  PolicyServiceImpl.java), no row-level lock (no SELECT FOR UPDATE), no DB
+  trigger to detect concurrent updates.
+
+  POSITIVE CASE-LAW CONTRAST WITH ROLE SIDE: the sibling `RoleServiceImpl.update`
+  (RoleServiceImpl.java:64) IS @ReactiveTransactional. The transaction does
+  not by itself prevent lost-update without SELECT FOR UPDATE — but it at
+  least scopes the read+write to a single R2DBC connection (strictly stronger
+  than PolicyServiceImpl's complete absence). The inconsistency between the
+  two sibling RBAC services is the architectural drift surface that batch S
+  surfaces; the Role-side presence is uniform across all three mutating
+  methods + matches the platform's other transactional services
+  (DataEntityServiceImpl, OwnershipServiceImpl, OwnerServiceImpl per batch P).
+  Strong evidence the Policy-side absence is the OVERSIGHT, not the Role-side
+  presence.
+
+  Severity: MEDIUM (policy authoring is administrator-rare; typical platforms
+  have ~5-20 policies, single admin team; the race surfaces on multi-admin
+  operator audits but is hard to exercise; the silent-lost-update mode is
+  exactly the class of bug that ships unnoticed until an audit notices).
+
+  THE ONE-LINE FIX: add `@ReactiveTransactional` to PolicyServiceImpl.update
+  (line 71). Symmetric one-liners on PolicyServiceImpl.create (line 62) and
+  PolicyServiceImpl.delete (line 83) close the cascade-delete race on the
+  delete path (per the companion invariant
+  `cascade-delete-check-non-atomic-policy-vs-role-symmetry`).
+axes_present:
+- services
+nodes:
+- odd-platform java service service:PolicyServiceImpl
+contributors:
+- 'PolicyServiceImpl.md (batch S): concepts.invariants.[3] (NO @ReactiveTransactional
+  on create / update / delete; deliberate asymmetry vs RoleServiceImpl);
+  bugs_limitations_corner_cases.[0] (lost-update race on PUT /api/policies/{id};
+  MEDIUM severity); implicit_adrs.[4] (the asymmetry vs sibling service; routed
+  here as confidence: LOW for absence-of-defending-comment).'
+evidence:
+- 'PolicyServiceImpl.md:concepts.invariants.[3] + bugs_limitations_corner_cases.[0]
+  + implicit_adrs.[4]'
+- 'PolicyServiceImpl.java:71-81 (the read-then-write pipeline under no transaction)'
+- 'PolicyServiceImpl.java:62, 71, 83 (the three un-annotated mutating methods)'
+- 'RoleServiceImpl.java:50, 64, 77 (the three @ReactiveTransactional-annotated
+  sibling mutating methods — the positive case-law contrast)'
+- 'ReactiveAbstractCRUDRepository.java:102-110, 144-149 (base methods un-annotated)'
+- 'ReactiveTransactional.java:9-13 (the annotation wrapper)'
+notes: |
+  This invariant is one of the two specific operator-facing consequences
+  of the broader service-tier-reactive-transactional-asymmetry-policy-vs-role
+  invariant; the other is the cascade-delete non-atomic race
+  (cascade-delete-check-non-atomic-policy-vs-role-symmetry). Both are
+  symptoms of the same root cause (PolicyServiceImpl missing @ReactiveTransactional)
+  and both are closed by the same one-line fix.
+
+  Cross-references:
+    - Master invariant: `service-tier-reactive-transactional-asymmetry-policy-vs-role`
+      (the root cause; batch S).
+    - Sibling specific symptom: cascade-delete non-atomic race (the
+      orphan-binding race window opened by batch H's missing JOIN filter
+      and exacerbated by batch I/S's missing transaction).
+    - Cross-link to PolicyServiceImpl.md batch I sidecar (the prior
+      observation; this batch S confirms PRIMARY-SOURCE).

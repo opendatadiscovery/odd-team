@@ -1,0 +1,84 @@
+name: Handle external AlertManager webhook (unauthenticated direct alert ingestion)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW OPERATION, batch 2026-05-19I (AlertServiceImpl sidecar)** —
+  `AlertServiceImpl.handleExternalAlerts(List<ExternalAlert>)` at lines 151-191.
+  The platform-side handler for `POST /ingestion/alert/alertmanager` (the Prometheus
+  AlertManager webhook surface, unauthenticated by design — on the `/ingestion/**`
+  Spring Security whitelist, NOT covered by `IngestionDataEntitiesFilter`). Contract:
+  translates each `ExternalAlert` (webhook payload — `labels`, `generatorURL`,
+  `startsAt`) into an `AlertPojo` with HARDCODED `type=DISTRIBUTION_ANOMALY` (line
+  177), URL-encoded chunk description (`Distribution Anomaly. URL: %s` with the
+  AlertManager `generatorURL` + `g0.moment_input` + `g0.end_input` query params
+  per line 168-185), and `status=AlertStatusEnum.OPEN.getCode()` (line 179). The
+  `entity_oddrn` label from the webhook payload becomes the alert''s `data_entity_oddrn`
+  FK (line 178) — trusted verbatim, no validation against the data-entity registry
+  (see `entity-oddrn-trust-from-alertmanager-webhook` invariant). The method is
+  `@ReactiveTransactional` (line 152) — the entire batch (multiple INSERTs across
+  ALERT + ALERT_CHUNK tables + activity emission) is atomic. **No de-duplication
+  guard**: the method skips `AlertActionResolver` (used by `applyAlertActions`,
+  the other ingestion sink) — Prometheus retries on transient network error produce
+  duplicate alerts (see `alertmanager-webhook-bypasses-alert-action-resolver-no-idempotency`
+  invariant). The shared `createAlerts` private helper (lines 261-300) emits `OPEN_ALERT_RECEIVED`
+  activity events per created alert via `registerNewAlertsActivityEvents` (lines
+  309-325) with `systemEvent=true` (line 318) and `oldState="{}"` (line 319). The
+  generator URL embedded in chunk descriptions is propagated verbatim from the
+  webhook payload (untrusted input) — if the UI renders the description as innerHTML,
+  this is a stored-XSS / open-redirect surface (companion invariant). The `ExternalAlert.startsAt`
+  is `LocalDateTime` (timezone-naive) while AlertManager''s `startsAt` is RFC3339
+  with timezone — Jackson silently strips the offset; the URL embedded in chunk
+  descriptions points to a Prometheus query window keyed by the SERVER''s local
+  time, not the alert''s actual timestamp. Caller: `AlertManagerController.alertManagerWebhook`
+  (`AlertManagerController.java:24` — `alertService.handleExternalAlerts(req.getAlerts())`).'
+axes_present:
+- services
+nodes:
+- odd-platform java service service:AlertServiceImpl
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:AlertManagerController
+contributors:
+- 'AlertServiceImpl.md (batch I): concepts.operations — handleExternalAlerts at
+  lines 151-191. concepts.invariants.[4] — Hardcoded type=DISTRIBUTION_ANOMALY.
+  concepts.invariants.[5] — Chunk description format with URL-encoded generatorURL.
+  implicit_adrs.[3] — The two ingestion paths deliberately diverge on de-duplication
+  (handleExternalAlerts SKIPS the resolver). bugs_limitations_corner_cases.[2,3,7]
+  — entity_oddrn trust HIGH; generator URL XSS surface MEDIUM; LocalDateTime
+  timezone-naivety MEDIUM.'
+- 'AlertManagerController (existing sidecar from prior batch): documents the unauthenticated
+  endpoint posture + the path mounting at /ingestion/alert/alertmanager.'
+evidence:
+- AlertServiceImpl.md:concepts.operations (handleExternalAlerts at lines 151-191)
+- AlertServiceImpl.md:concepts.invariants.[4,5] (hardcoded type + chunk description
+  format)
+- AlertServiceImpl.md:implicit_adrs.[3] (the divergence — handleExternalAlerts
+  SKIPS AlertActionResolver)
+- AlertServiceImpl.md:bugs_limitations_corner_cases.[1,2,3,7] (idempotency gap;
+  entity_oddrn trust; XSS surface; timezone-naivety)
+- AlertServiceImpl.md:downstream_side_effects.handleExternalAlerts (the per-row
+  side-effect table)
+notes: |
+  Operation vocabulary captured for the AlertManager-webhook adapter path. Five
+  test + doc + code gaps surface:
+
+    (a) No test asserts the entity_oddrn orphan behaviour (label absent → null
+        FK, alert persisted but invisible).
+
+    (b) No test asserts the idempotency gap (POST same payload twice → assert
+        row count = 1 vs 2 — captures the bug).
+
+    (c) No test asserts the LocalDateTime timezone-naivety on the embedded
+        generator URL window.
+
+    (d) Live doc says nothing about idempotency (companion invariant); says
+        nothing about the LocalDateTime timezone gap; documents the orphan
+        case but not the spoof case.
+
+    (e) Code: the generator URL should be validated against javascript: scheme
+        and escaped before embedding in chunk descriptions.
+
+  Cross-references:
+    - Companion: `alertmanager-webhook-bypasses-alert-action-resolver-no-idempotency`
+      (the idempotency gap).
+    - Companion: `entity-oddrn-trust-from-alertmanager-webhook` (the entity_oddrn
+      + XSS surfaces).
+    - Companion entity: `alertmanager-webhook-receiver` (the controller-side surface).
+    - Companion entity: `alert` (the underlying domain object).

@@ -1,0 +1,27 @@
+gap_id: TEST-GAP-618
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java IngestionController controller-method:createDataSourceEntity"
+pillars_affected: [P-09, P-10]
+surfaced_by:
+  - "createDataSourceEntity.md:coherence_check.strengthens.[1] (REFACTOR-185 17th surface — DISABLED + UI-open + create-collector + token-leak chain to ingestion-datasource creation)"
+  - "createDataSourceEntity.md:implicit_adrs.[1] (datasource auth is ALWAYS-ON via unconditional @Component IngestionDataSourceFilter)"
+behaviour: |-
+  **ASYMMETRIC AUTH POSTURE: `/ingestion/datasources` is ALWAYS-ON; `/ingestion/entities` is OFF-BY-DEFAULT — the two endpoints in the SAME controller use entirely different auth pipelines.** IngestionController.createDataSource (POST /ingestion/datasources) is protected by the sibling unconditional `@Component IngestionDataSourceFilter` (no `@ConditionalOnProperty`), which validates the `Authorization: Bearer <token>` header against the COLLECTOR table and writes `COLLECTOR_ID_SESSION_KEY` into the WebSession before the controller runs. In contrast, the sibling `postDataEntityList` method on the SAME controller class is protected by `IngestionDataEntitiesFilter` which IS conditional on `auth.ingestion.filter.enabled=true` (default `false` per application.yml:48). REFACTOR-185 family adds a NEW invocation site: under DISABLED + default deployment, the IngestionDataSourceFilter STILL runs and requires a valid token. BUT under DISABLED there's no UI auth on the platform either — an attacker who can REACH the platform can also create a new Collector via the UI (POST /api/collectors), copy the new token, and then call POST /ingestion/datasources with that token. The DISABLED-mode bypass therefore EXTENDS to datasource creation by composition: DISABLED → UI is open → create-collector → token-leak → ingestion datasource creation. The 17th surface in the REFACTOR-185 enumeration. Plus NO test exists at the controller-boundary tier (zero matches for IngestionController test class).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/IngestionDataSourceFilterIntegrationTest.java"
+  name: "createDataSource_disabledAuth_attackerCreatesCollectorViaUIAndUsesTokenForIngestion_endToEndBypass"
+evidence:
+  - "createDataSourceEntity.md says (coherence_check.strengthens.[1]): 'REFACTOR-185 (16-sidecar DISABLED-mode bypass) — adds a NEW invocation site: this controller is the FIRST step in a collector's lifecycle. Under DISABLED + default deployment, the IngestionDataSourceFilter STILL runs (it's unconditional) and STILL requires a valid token (lines 31-38). But under DISABLED, there is no UI auth on the platform either — meaning an attacker who can REACH the platform can also create a new Collector via the UI (POST /api/collectors per CollectorController), copy the new token, and then call POST /ingestion/datasources with that token.'"
+  - "createDataSourceEntity.md says (implicit_adrs.[1]): 'Datasource auth is ALWAYS-ON; data-entity ingestion auth is OFF-BY-DEFAULT — deliberate asymmetry — evidence: IngestionDataSourceFilter.java:15-20 (@Component, no @ConditionalOnProperty) vs IngestionDataEntitiesFilter.java:19-20 (@Component + @ConditionalOnProperty(value=auth.ingestion.filter.enabled, havingValue=true) + application.yml:48 explicit false)'"
+  - "Source: IngestionDataSourceFilter.java:15-20, 31-38 + IngestionDataEntitiesFilter.java:19-20 + application.yml:48 + SecurityConstants.java:96 + CollectorController POST /api/collectors"
+cross_references:
+  - "REFACTOR-185 (DISABLED-mode bypass — 17th surface)"
+  - "F-008 (P-10:F-001 Batch Ingestion) drift facet default_off_unauthenticated_ingestion_at_filter_layer"
+  - "TEST-GAP-218 (DISABLED-mode RBAC bypass — sister pattern)"
+proposed_action: |-
+  Integration test under `auth.type=DISABLED`. (a) POST /api/collectors creates a new Collector via the UI (no auth required); (b) copy the issued token from the response body; (c) POST /ingestion/datasources with `Authorization: Bearer <new-token>` and a DataSourceList payload; (d) assert 200 OK; (e) GET /api/datasources should return the newly-registered datasource. Pins the composition surface; future fix that adds UI-auth-required on /api/collectors will break this test (deliberately — re-author the test for the new posture).
+batch: 2026-05-20-P
+feature_id: F-008

@@ -1,0 +1,61 @@
+name: admin-groups silent no-op (asymmetric provider support)
+canonical_in_docs: false
+canonical_candidate: true
+description: |-
+  `ODDOAuth2Properties.OAuth2Provider.adminGroups : Set<String>` (line 49 of the
+  config-POJO) binds successfully from `auth.oauth2.client.{id}.admin-groups: [...]`
+  YAML for EVERY provider — but the runtime READ of `provider.getAdminGroups()`
+  is implemented ONLY in `AbstractOIDCUserHandler.java:44-55` (Cognito / Azure /
+  Custom-OIDC, which all `extends AbstractOIDCUserHandler`) and in
+  `GithubUserHandler.java:99-120` (with team-membership scoping). It is NOT
+  implemented in `GoogleUserHandler.java:1-74` (which does NOT extend the abstract
+  base and never calls `getAdminGroups()`) and NOT relevant to `ODDIAMUserHandler`
+  (which uses a flag-based admin scheme). The live docs (WebFetched 2026-05-19,
+  status 200) document `admin-groups` for AWS Cognito and GitHub ONLY, NOT for
+  Google — consistent with the runtime behaviour, BUT the POJO field is provider-
+  agnostic so YAML config DOES bind. The asymmetry produces silent operator
+  hostility: an operator setting `auth.oauth2.client.google.admin-groups:
+  [workspace-admins]` (perhaps following the Cognito/GitHub pattern) sees the
+  field bind successfully at boot, no warning log, no rejection — and at runtime
+  the intended ADMIN-by-group assignment NEVER takes effect. The user logs in as
+  USER. This is the LSN-001-pattern miss applied to authorization: a silently-
+  ignored security-policy config produces a deployment that LOOKS configured but
+  is in a fail-OPEN state (intended admins do not get admin; intended-policy not
+  enforced). Mitigations: (a) validate at boot — reject if `adminGroups` is non-
+  empty for a `provider=google` client; (b) implement admin-groups for Google
+  via the OIDC `groups` custom claim (Workspace supports this); (c) document the
+  per-provider support matrix explicitly.
+axes_present:
+  - controllers
+  - config_prefixes
+nodes:
+  - odd-platform java auth handler:GoogleUserHandler
+  - odd-platform java auth handler:GithubUserHandler
+  - odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDOAuth2Properties
+contributors:
+  - 'GoogleUserHandler.invariants[6]: Admin-group support is ABSENT. Google handler reads adminPrincipals ONLY — adminGroups is not consulted. Operators who set `auth.oauth2.client.google.admin-groups` see ZERO effect.'
+  - 'GoogleUserHandler.bugs_limitations_corner_cases[0]: admin-groups config silently no-op for Google. The bug class: silent no-op config IS operator hostility — no boot warning, no log, no rejection.'
+  - 'GoogleUserHandler.docs_link_semantic.doc_drift_findings[3]: admin-groups for Google is silently unsupported. The live docs document admin-groups for AWS Cognito and GitHub, NOT for Google.'
+  - 'GoogleUserHandler.security.known_security_gaps[0]: admin-groups silently no-op (security policy gap) — operator setting admin-groups expects group-based admin assignment matching the Cognito/GitHub pattern; the handler never reads provider.getAdminGroups() — the user is silently USER.'
+  - 'GithubUserHandler.dependencies_semantic.requires-config: admin-groups for GitHub is fully implemented at lines 99-120 — the user must be a member of a team whose name case-insensitively equals any admin-groups entry AND whose team belongs to organizationName.'
+  - 'ODDOAuth2Properties (existing sidecar): OAuth2Provider.adminGroups Set<String> binds provider-agnostically; no @Validation annotation guards per-provider semantic correctness.'
+evidence:
+  - GoogleUserHandler.md:invariants.[6] (admin-groups absent)
+  - GoogleUserHandler.md:bugs_limitations_corner_cases.[0] (silent no-op operator hostility)
+  - GoogleUserHandler.md:docs_link_semantic.doc_drift_findings.[3] (live docs cite admin-groups for Cognito + GitHub only)
+  - GoogleUserHandler.md:security.known_security_gaps.[0] (silent policy failure)
+  - GithubUserHandler.md:dependencies_semantic.requires-config.admin-groups (full implementation with team-org scoping)
+  - 'Code anchors: GoogleUserHandler.java:1-74 (no getAdminGroups call); ODDOAuth2Properties.java:49 (field binds); AbstractOIDCUserHandler.java:44-55 (the supported analogue); GithubUserHandler.java:99-120 (org-scoped team-membership check)'
+notes: |-
+  Related to the OAuth Provider-Quirks Strategy Pattern (sibling invariant).
+  When the maintainer adopts the recommended fix path, the BEST option for
+  documentation discipline is to ADD a Google-side admin-groups implementation
+  (via the OIDC `groups` custom claim, which Google Workspace supports via
+  custom-claims directory configuration) — this preserves operator mental
+  model parity across all OAuth providers. Second-best is a boot-time
+  validation rejection (fail-fast) so the operator hears about the misconfiguration
+  at deployment time. Worst is the current silent-no-op state, which is
+  the LSN-001 pattern instantiated at the OAuth authorization layer.
+  Surfaces a follow-up DOC-NNN: the live `oauth2-oidc` page should make
+  the per-provider support matrix for `admin-groups` explicit (currently
+  reader infers absence-of-mention = absence-of-support).

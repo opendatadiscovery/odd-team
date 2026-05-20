@@ -1,0 +1,28 @@
+gap_id: TEST-GAP-582
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java auth filter:IngestionDataEntitiesFilter"
+pillars_affected: [P-10, P-09]
+surfaced_by:
+  - "IngestionDataEntitiesFilter.md:bugs_limitations_corner_cases.[4] (Body-buffered-before-auth ordering allows heap-pressure DoS)"
+  - "IngestionDataEntitiesFilter.md:performance.known_performance_gaps.[2]"
+behaviour: |-
+  **STRENGTHENS TEST-GAP-122 with filter-class anchor.** The filter class itself confirms the body-buffered-before-auth ordering at file:line level: `super.getBody().collectList()` (line 38) materialises the entire byte stream BEFORE the token check at line 56. The body is parsed to `DataEntityList` to extract `dataSourceOddrn` (line 40) — the datasource identity is in the BODY, not in a header, so the platform cannot route to the correct token without parsing the body first. An attacker submitting 20MB invalid-token requests forces materialise + parse before rejection. Per `application.yml:14-15` (`spring.codec.max-in-memory-size: 20MB`), heap pressure scales linearly with concurrent attack requests. The implicit_adr[2] frames this as a structural consequence of the API contract (datasource ODDRN in body); a protocol redesign (e.g. requiring `X-Datasource-Oddrn` header) would unlock auth-first ordering but break the Ingestion API contract. Pin the present ordering so any future protocol change is detected.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionFilterBodyBufferedBeforeAuthTest.java"
+  name: "ingestionEntities_oversizedInvalidTokenPayload_bodyMaterialisedBeforeReject_pinsCurrentOrdering"
+evidence:
+  - "IngestionDataEntitiesFilter.md says (bugs_limitations_corner_cases.[4]): 'Body-buffered-before-auth ordering allows heap-pressure DoS: an attacker submitting 20MB invalid-token payloads forces the platform to buffer + Jackson-parse the body before token rejection.' severity: MEDIUM"
+  - "IngestionDataEntitiesFilter.java:37-44 (super.getBody().collectList() + readBody before token check)"
+  - "IngestionDataEntitiesFilter.java:56 (token compare site)"
+  - "application.yml:14-15 (spring.codec.max-in-memory-size: 20MB)"
+cross_references:
+  - "TEST-GAP-122 (config-key-consumer sidecar half — STRENGTHENED with filter-class structural anchor)"
+  - "F-008"
+proposed_action: |-
+  WebTestClient + heap-instrumented test. (a) Boot with `auth.ingestion.filter.enabled=true`. (b) POST `/ingestion/entities` with a 20MB DataEntityList payload + malformed Authorization (or missing). (c) Instrument the test to track JVM heap allocation OR set the test profile to a memory-bound limit. (d) Assert (i) response is 401 with body `"Token is not correct"` or `"Token is missed"`, (ii) the full payload was Jackson-deserialised before rejection (e.g. assert a custom DataEntityList deserializer counter increments before the 401 path is taken). (e) Pin the body-first ordering; a future auth-first protocol change (e.g. `X-Datasource-Oddrn` header) flips the assertion to expect zero parse-cycles before reject.
+batch: 2026-05-19-O
+feature_id: F-008

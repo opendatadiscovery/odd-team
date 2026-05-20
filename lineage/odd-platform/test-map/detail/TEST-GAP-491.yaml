@@ -1,0 +1,36 @@
+gap_id: TEST-GAP-491
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataEntityController controller-method:addDataEntityDataEntityGroup"
+  - "odd-platform java DataEntityController controller-method:deleteDataEntityFromDataEntityGroup"
+  - "odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue"
+  - "odd-platform java DataEntityController controller-method:deleteTermFromDataEntity"
+pillars_affected: [P-07, P-09, P-01, P-06]
+surfaced_by:
+  - "addDataEntityDataEntityGroup.md:bugs_limitations_corner_cases.[0] (no @ActivityLog despite enum exists)"
+  - "upsertDataEntityMetadataFieldValue.md:bugs_limitations_corner_cases.[5] (No @ActivityLog annotation despite CUSTOM_METADATA_UPDATED enum reserved)"
+  - "deleteTermFromDataEntity.md:bugs_limitations_corner_cases.[2] (Activity-event fires even on no-op delete)"
+behaviour: |-
+  META trap — @Profile("!integration-test") on ActivityAspect means integration tests cannot catch missing-activity-emission regressions for an entire class of write paths. ActivityAspect.java:23-24 declares `@Aspect @Profile("!integration-test")` — the AOP bean is disabled in the `integration-test` Spring profile. Every existing integration test runs under that profile (DataEntityDomainsTest, DataEntityServiceTest, etc.). Consequence: an integration test asserting 'after upsertTags, the activity table has a new row' CANNOT VERIFY the @ActivityLog wiring — the AOP is silent, no row is written, the test would (incorrectly) suggest the annotation is broken. Conversely, tests asserting 'after addDataEntityToDEG, NO row is added' (the forensic-silence pin from TEST-GAP-490) cannot distinguish 'no @ActivityLog' (the real condition) from 'AOP disabled by profile'. This META trap means: (a) every existing integration test that uses the activity feed is testing the WRONG thing or is implicitly broken; (b) the @ActivityLog contract is only testable via a Mockito unit test that intercepts the aspect manually OR via a Spring test that activates a non-integration-test profile; (c) ANY new @ActivityLog wiring (or removal) lands in production with ZERO regression-test coverage — the AOP silently disabled in the test surface. Cross-pillar P-07 (Activity Feed is broken at the test layer), P-09 (Authorization cannot be audited from test surface), P-01+P-06 (every entity-mutation surface inherits the bug). The trap is INVISIBLE — there is no compile-time signal, no test-failure signal; the wrong things just pass. Test-mapper-level META finding. CRITICAL because (a) it invalidates the implied-coverage of a CLASS of behaviours, (b) it co-locates with the forensic-silence concerns of TEST-GAP-490 + TEST-GAP-487, (c) cross-pillar — every controller write path inherits.
+test_class: missing-integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/activity/ActivityAspectProfileTrapTest.java"
+  name: "activityAspect_disabledUnderIntegrationTestProfile_pinsTheMETAtrap"
+evidence:
+  - "ActivityAspect.java:23-24 (verbatim): `@Aspect @Profile(\"!integration-test\")` — the AOP bean is excluded from the integration-test profile"
+  - "ActivityAspect.java:29 (`@Pointcut(\"@annotation(ActivityLog)\")`) — confirms the aspect IS the @ActivityLog binding"
+  - "Sibling write paths: DataEntityServiceImpl.java:358 (upsertTags @ActivityLog), 198 (updateStatus @ActivityLog), 239 (upsertBusinessName @ActivityLog), 153 via TermService (TERM_ASSIGNMENT_UPDATED) — ALL silently no-op in integration-test profile"
+  - "DataEntityDomainsTest.java (and every test under /odd-platform-api/src/test/.../integration/) runs under @ActiveProfiles(\"integration-test\") — the AOP is silently disabled"
+  - "Cross-batch consequence: TEST-GAP-490 (DEG add/delete activity-feed) + TEST-GAP-487 (OwnershipServiceImpl principal-independence) + TEST-GAP-009 (ALERT_STATUS_UPDATED emission) — all uncoverable by integration test"
+cross_references:
+  - "TEST-GAP-490 (DEG add/delete activity-feed forensic-silence — co-pinned)"
+  - "TEST-GAP-487 (OwnershipServiceImpl audit-trail gap — co-pinned)"
+  - "TEST-GAP-009 (ALERT_STATUS_UPDATED activity emission — co-pinned)"
+  - "concepts.yaml:entities[audit-log-presence-asymmetry-2-tier-audit-story]"
+  - "REFACTOR-NNN candidate: split @ActivityLog AOP from @Profile guard OR introduce a test-only ActivityCapture bean"
+proposed_action: |-
+  Three-test bundle. (1) `testActivityAspect_isAbsentUnderIntegrationTestProfile`: Spring context test asserting that `ApplicationContext.getBean(ActivityAspect.class)` THROWS NoSuchBeanDefinitionException under `@ActiveProfiles("integration-test")`. LOCKS the trap as a known design choice. (2) `testActivityAspect_isPresentUnderDefaultProfile`: same test, no profile activation, asserts the bean IS present. LOCKS the inverse. (3) Sidecar a registry-level note in `playbooks/activity-log-testing.md` documenting that any future test asserting an activity-table row must use either a Mockito unit test on the service method OR a Spring test outside the integration-test profile. THIS test bundle is the META lever — it makes the trap loud and prevents new tests from silently passing under the false assumption that @ActivityLog wiring is observed. Promote to a backlog item with cross-pillar consequence flagged: P-07 audit surface, P-09 security audit, P-01+P-06 entity mutations.
+batch: 2026-05-19-L
+feature_id: null

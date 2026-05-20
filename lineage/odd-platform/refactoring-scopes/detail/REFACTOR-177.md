@@ -1,0 +1,9 @@
+- **REFACTOR-177** (NEW 2026-05-12D; folds into REFACTOR-183): Cross-subsystem lock-id collision risk — DataCollab Properties evidence is the third sidecar in the cross-cutting REFACTOR-183 triangulation. The application.yml defaults (90 / 100 / 110 / 120) are non-overlapping; the code has zero startup assertion that they STAY non-overlapping. An operator who copies one default into another override produces a deployment where two subsystems contend on the same advisory lock
+  - **Category**: advisory-lock-collision
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties.md:bugs_limitations_corner_cases.[2]` (MEDIUM at the sidecar; classified LOW here because it FOLDS into REFACTOR-183)
+  - **Statement**: This is the per-subsystem view of REFACTOR-183's cross-cutting registry absence. DataCollabProperties carries operator-tuneable lock IDs without per-subsystem disjoint-allocation enforcement. The cross-cutting fix (REFACTOR-183) closes this gap as a side-effect.
+  - **Evidence**: `DataCollaborationProperties.java:10-11` + `application.yml:177, 198, 201-202`
+  - **Existing-ADR-or-implied-prescription**: Folded into REFACTOR-183.
+  - **Proposed remedy**: Implement REFACTOR-183's cross-cutting `AdvisoryLockRegistry`; REFACTOR-177 closes as a side-effect.
+  - **Severity rationale**: LOW (folded — the cross-cutting REFACTOR-183 is the canonical surface).
+  - **Suggested backlog grouping**: `Cross-cutting cluster-coordination hardening`

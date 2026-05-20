@@ -1,0 +1,9 @@
+- **REFACTOR-171** (NEW 2026-05-12D): Email recipient list NOT modeled on this `@ConfigurationProperties` POJO — partial-home shape. Operator inspecting the `EmailSenderProperties` source to understand the email channel will miss the recipient-list key entirely. STRENGTHENS REFACTOR-182 (cross-cutting partial-home)
+  - **Category**: partial-home-properties
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__EmailSenderProperties.md:bugs_limitations_corner_cases.[8]` (LOW)
+  - **Statement**: `EmailSenderProperties.java` does not declare a `notificationEmails` field. The recipient list `notifications.receivers.email.notification.emails` is read via raw `@Value` in `NotificationConfiguration.java:104`. An operator reading the POJO source sees 5 fields and misses the recipient-list key.
+  - **Evidence**: `EmailSenderProperties.java` (no recipient-list field) + `NotificationConfiguration.java:104`
+  - **Existing-ADR-or-implied-prescription**: Folded into REFACTOR-182 (cross-cutting partial-home @ConfigurationProperties).
+  - **Proposed remedy**: Add `private List<String> notificationEmails;` to `EmailSenderProperties` (sibling to `sender`).
+  - **Severity rationale**: LOW — code-organisation + operator-discoverability.
+  - **Suggested backlog grouping**: `@ConfigurationProperties consolidation refactor`

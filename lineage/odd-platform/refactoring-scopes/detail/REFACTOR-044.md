@@ -1,0 +1,12 @@
+- **REFACTOR-044** (formerly part of ADR-CANDIDATE-021 in run 0.1.0): Lineage endpoints accept unbounded `lineageDepth` and unbounded `expandedEntityIds` at the controller — no `@Max`, no `@Size`, no clamp
+  - **Category**: missing-validation
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityController.md:bugs_limitations_corner_cases.[2]` (MEDIUM)
+    - `odd-platform__openapi__tags__openapi-tag__dataEntity.md:bugs_limitations_corner_cases.[0]` (HIGH)
+    - `concepts.yaml:entities[Data Entity].performance_aggregate.weaknesses.[1]`
+  - **Statement**: `getDataEntityDownstreamLineage` / `getDataEntityUpstreamLineage` declare `Integer lineageDepth, List<Long> expandedEntityIds` with no constraints. A caller passing `lineageDepth=1000000` triggers a `LineageService` traversal bounded only by whatever (if any) limit the service enforces. The previous run classified this as ADR-CANDIDATE-021 ("the back-end trusts the UI"); per the wisdom test, "trust the UI" is not a defensible architectural stance for a public API — it's a missing validation.
+  - **Evidence**: `DataEntityController.java:256-273, 308-313, 368-371` + `openapi.yaml:1260-1276` + `components.yaml:2033-2065`
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Add `@Max(20)` (or whatever the production-realistic ceiling is) on `lineageDepth` at the controller; add `@Size(max = 1000)` on `expandedEntityIds`. Update the OpenAPI spec's `lineageDepth` parameter to declare `maximum: 20`.
+  - **Severity rationale**: HIGH (concept-aggregate) — DoS surface on the platform's hottest endpoint.
+  - **Suggested backlog grouping**: `OpenAPI contract hardening`

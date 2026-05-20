@@ -1,0 +1,159 @@
+name: |-
+  Expand lineage from owner anchor (non-owned-but-reachable subgraph)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-05
+  - P-09
+  - P-01
+description: |-
+  NEW OPERATION, batch 2026-05-19M (controller-method PRIMARY SOURCES at
+  getMyObjectsWithUpstream + getMyObjectsWithDownstream) — the
+  two-phase derived-set computation that powers
+  GET /api/dataentities/my/upstream and GET /api/dataentities/my/downstream.
+  **Phase 1 (anchor set resolution)**: resolve the caller owner via
+  authIdentityProvider.fetchAssociatedOwner() at
+  DataEntityRelationsServiceImpl.java:26 then list the owner's owned data
+  entities via dataEntityRepository.listByOwner(o.getId()) (no-page overload
+  at line 27); project to oddrns and collect into a Set<String>. **Phase 2
+  (derived set expansion)**: one-hop lineage traversal via
+  lineageRepository.getLineageRelations(oddrns, LineageDepth.empty(),
+  UPSTREAM|DOWNSTREAM) at line 34 — the LineageDepth.empty() encoding
+  produces depth=-1 which makes the recursive CTE termination predicate
+  tDepth.lessThan(lineageDepth.getDepth()) at
+  ReactiveLineageRepositoryImpl.java:174 always-false (the seed step's
+  tDepth=0 is NOT less than -1), so the recursion terminates after the
+  seed step — single-hop only. Flatten edges via
+  flatMap(lp -> Flux.just(parentOddrn, childOddrn)).distinct() at lines
+  35-36; EXCLUDE the anchor set via
+  filter(Predicate.not(oddrns::contains)) at line 37 — this is the line
+  that makes the response semantically NON-owned. Fetch the resulting
+  oddrn list via reactiveDataEntityRepository.listByOddrns(oddrns, false,
+  false, page, size) at DataEntityServiceImpl.java:223 — NO owner filter
+  at this SQL layer (a pure WHERE DATA_ENTITY.ODDRN IN (?, ...) scan).
+  **Three structural posture findings**:
+    (a) **Owner-scoping is SINGLE-POINT-OF-FAILURE** — the anchor
+        fetchAssociatedOwner is the SOLE owner-defence; everything
+        downstream trusts the anchor was correct (REFACTOR-225);
+    (b) **OpenAPI summary is the INVERSE of the semantic** — the spec
+        declares "data entities OWNED BY current user with upstream
+        dependencies"; the response is the entities the user does NOT own
+        that are reachable from owned (DOC-GAP-099, 4-angle triangulated);
+    (c) **LineageDepth.empty() is fragile magic-number encoding** — the
+        boolean empty field is not consumed by the CTE; only the int
+        depth=-1 is; a future refactor changing the termination predicate
+        silently expands the endpoint to two hops.
+  **Severity**: HIGH (latent today; security and contract findings).
+axes_present:
+  - controllers
+  - services
+nodes:
+  - odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream
+  - odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream
+  - odd-platform java service service:DataEntityServiceImpl
+contributing_files:
+  - odd-platform__java__DataEntityController__controller-method__getMyObjectsWithUpstream.md
+  - odd-platform__java__DataEntityController__controller-method__getMyObjectsWithDownstream.md
+contributors:
+  - |-
+    getMyObjectsWithUpstream.md (batch M PRIMARY SOURCE for UPSTREAM half):
+    concepts.entities — DataEntityRef + OwnerPojo + LineageStreamKind.UPSTREAM
+    + LineageDepth.empty() + anchor set + derived set + LINEAGE table;
+    concepts.operations — delegate + resolve-anchor + single-hop-expand +
+    flatten + exclude-anchor + fetch-entity-rows + map-and-lift;
+    concepts.invariants — response contains entities the user does NOT own;
+    LineageDepth.empty() disables recursive CTE; no JOIN-side owner filter
+    on the derived-set retrieval;
+    implicit_adrs.[0,1,2] — anchor + derived architecture, LineageDepth.empty
+    single-hop choice, no defence-in-depth at listByOddrns;
+    bugs_limitations_corner_cases — REFACTOR-225 PRIMARY-SOURCE + DOC-GAP-099
+    PRIMARY-SOURCE + unbounded lineage-CTE fan-out + empty-derived
+    indistinguishable + hollow/deleted exclusion + unstable pagination +
+    LineageDepth.empty naming fragility.
+  - |-
+    getMyObjectsWithDownstream.md (batch M SYMMETRIC SIBLING):
+    concepts.entities — same shapes with LineageStreamKind.DOWNSTREAM;
+    concepts.operations — symmetric eight-step pipeline;
+    concepts.invariants — owner-scoping is single-point-of-failure at the
+    anchor; non-owned-but-reachable semantic; LineageDepth.empty single-hop
+    encoding;
+    implicit_adrs.[0,1,2] — ADR-CANDIDATE-015 controller-shape third member
+    of the triplet, owner-scoped lineage variants use DIFFERENT code path
+    than getMyObjects, LineageDepth.empty() magic-number sentinel;
+    bugs_limitations_corner_cases — REFACTOR-225 SYMMETRIC SIBLING +
+    DOC-GAP-099 DOWNSTREAM half + silent empty Flux degradation + page=0
+    negative offset + unbounded size + LineageDepth.empty() sentinel +
+    no documentation surface + potentially-dead UI thunk.
+  - |-
+    DataEntityRelationsServiceImpl.java:25-39 (the SOLE service-tier
+    implementation of the anchor + expand + exclude pipeline — both
+    upstream and downstream endpoints share this method).
+evidence:
+  - |-
+    DataEntityRelationsServiceImpl.java:25-39 (the full eight-step pipeline)
+  - |-
+    DataEntityRelationsServiceImpl.java:26 (fetchAssociatedOwner — the SOLE
+    owner-defence site)
+  - |-
+    DataEntityRelationsServiceImpl.java:34 (LineageDepth.empty() single-hop
+    encoding)
+  - |-
+    DataEntityRelationsServiceImpl.java:37 (Predicate.not(oddrns::contains) —
+    the explicit exclusion of the owned set)
+  - |-
+    DataEntityServiceImpl.java:218-225 (the orchestration entrypoint)
+  - |-
+    DataEntityServiceImpl.java:223 (listByOddrns(oddrns, false, false,
+    page, size) — NO owner filter)
+  - |-
+    ReactiveDataEntityRepositoryImpl.java:228-253 (the unprotected
+    listByOddrns SQL — pure WHERE ODDRN IN scan)
+  - |-
+    LineageDepth.java:16-18 (the empty() factory returning -1, true)
+  - |-
+    ReactiveLineageRepositoryImpl.java:174 (the tDepth.lessThan(...) gate)
+  - |-
+    openapi.yaml:843-844 (the upstream summary — literally incorrect)
+  - |-
+    openapi.yaml:859-871 (the downstream summary — literally incorrect)
+  - |-
+    OwnerEntitiesList.tsx:87 (the CORRECT UI label — contract drift at
+    the API contract layer)
+  - |-
+    getMyObjectsWithUpstream.md:concepts.operations + concepts.invariants[*]
+    + implicit_adrs.[0,1,2] + bugs_limitations_corner_cases.[0,1,2,5,6]
+  - |-
+    getMyObjectsWithDownstream.md:concepts.operations + concepts.invariants[*]
+    + implicit_adrs.[0,1,2] + bugs_limitations_corner_cases.[0,1,5]
+notes: |-
+  Operation vocabulary captured for the lineage-variant /my* triplet. The
+  operation is materially distinct from:
+    (a) listByOwner (the canonical owner-scoped read — JOIN-side defended
+        at ReactiveDataEntityRepositoryImpl.java:515-534) — used by
+        getMyObjects;
+    (b) the per-entity lineage read at /api/dataentity/{id}/lineage — uses
+        the recursive-CTE variant with LineageDepth bound + depth-1 fan-out;
+    (c) the DEG-anchored lineage read at /api/dataentitygroups/{id}/lineage
+        — uses the simpler getLineageRelations(List<String>) without
+        recursion at the edge layer.
+
+  The architectural posture "anchor + expand + exclude" is the
+  defence-in-depth primitive the platform supports — proves the project
+  knows how to scope by owner via the anchor-set pattern; the absence of
+  redundant JOIN-side filtering at the derived-set layer is the
+  single-point-of-failure documented at REFACTOR-225.
+
+  Cross-references:
+    - REFACTOR-225 anchor-set single-point-of-failure (invariant) — the
+      security finding this operation is the primary surface for.
+    - DOC-GAP-099 OpenAPI summary inverse-semantic (invariant) — the
+      contract finding this operation is the primary surface for.
+    - LineageDepth.empty() sentinel magic-number encoding (invariant) —
+      the naming-fragility finding this operation depends on.
+    - Owner-scoped routes — controllers take NO principal parameter
+      (invariant) — the ADR-CANDIDATE-015 controller-shape this
+      operation's three endpoints (getMyObjects, getMyObjectsWithUpstream,
+      getMyObjectsWithDownstream) jointly anchor.
+    - Anchor-set defence-in-depth — positive vs negative cases (invariant)
+      — the platform-level pattern this operation IS the positive-case
+      embodiment of.

@@ -1,0 +1,52 @@
+name: 202+queue+Postgres-advisory-lock single-sender pattern
+canonical_in_docs: false
+canonical_candidate: true
+description: 'Cross-cutting concurrency convention for outbound integrations / async
+  consumers that must serialise to ONE worker across a multi-replica deployment. The
+  pattern: (a) inbound endpoint accepts request, persists intent to Postgres, returns
+  202 Accepted immediately (OR a WAL row gets emitted as a side-effect of a different
+  mutation); (b) a background thread acquires a Postgres advisory lock (different
+  ID per subsystem) to elect itself as the single cluster-wide leader; (c) the leader
+  drains the queue / consumes the WAL stream / processes events serially; (d) on lock
+  release (JVM shutdown / failure) another replica acquires leadership. Triangulated
+  across 2 sidecars in 2026-05-12C: (a) DataCollaborationMessageSenderJob (batch 2026-05-10A,
+  postMessageInSlack sidecar implicit_adrs[3,4]) — Slack outbound message queue draining
+  at advisory lock id `datacollaboration.sender-message-advisory-lock-id` (default
+  120). (b) NotificationSubscriber (batch 2026-05-12C, NotificationsProperties sidecar
+  implicit_adrs[3]) — leader-elected WAL consumer at advisory lock id `notifications.wal.advisory-lock-id`
+  (default 100). Sibling ActivityTablePartitionManager uses advisory lock id 90 for
+  partition creation (boot-time short-window lock, not the steady-state single-sender
+  lock). The convention preserves Postgres-as-only-dependency posture while still
+  decoupling external-service latency from the inbound HTTP critical path. Advisory-lock
+  ID convention is operator-tunable (each subsystem has its own config key) but unmanaged
+  — collision avoidance is via the shipped defaults plus the operator''s discipline.'
+axes_present:
+- controllers
+- config_prefixes
+nodes:
+- odd-platform java DataCollaborationController controller-method:postMessageInSlack
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+contributors:
+- 'postMessageInSlack.implicit_adrs[3,4]: 202+queue+sender decomposition + Postgres
+  advisory lock 120 for single-sender ordering'
+- 'NotificationsProperties.implicit_adrs[3]: WAL subscriber leader-elected via advisory
+  lock 100 + single-thread executor `notification-subscriber-thread`'
+evidence:
+- postMessageInSlack.md:implicit_adrs.[3,4]
+- NotificationsProperties.md:implicit_adrs.[3]
+- NotificationsProperties.md:dependencies_semantic.requires-runtime (PostgreSQLLeaderElectionManager)
+notes: 'Surface as cross-cutting concurrency convention. Future maintainers
+
+  adding a third single-sender subsystem (outbound webhooks for things
+
+  other than alerts, OAuth bot-event consumer, etc.) should reuse this
+
+  pattern + pick a new advisory-lock ID that doesn''t collide with
+
+  90 / 100 / 110 / 120. Recommended: maintain a central advisory-lock-id
+
+  registry in code or docs so operators customising IDs don''t accidentally
+
+  collide subsystems silently.
+
+  '

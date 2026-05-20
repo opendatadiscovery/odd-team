@@ -1,0 +1,30 @@
+gap_id: TEST-GAP-683
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:OwnerServiceImpl"
+pillars_affected: [P-09]
+surfaced_by:
+  - "OwnerServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[22] (getOrCreate permission-bypass)"
+  - "OwnerServiceImpl.md:security.known_security_gaps.[3] (getOrCreate is a service-tier permission-bypass for OWNER row minting)"
+  - "OwnerServiceImpl.md:bugs_limitations_corner_cases.[8] (getOrCreate permission-bypass write path)"
+behaviour: |-
+  **`OwnerServiceImpl.getOrCreate` is a SERVICE-TIER PERMISSION-BYPASS WRITE PATH for OWNER row minting.** Lines 38-42. Reached from `OwnerAssociationRequestServiceImpl.createOwnerAssociationRequest` (line 57 of that file) AND `OwnershipServiceImpl.create` (line 52 of that file) AND `TermOwnershipServiceImpl.create`. The Owner row is auto-created WITHOUT the caller holding `OWNER_CREATE` — the SecurityRule at `SecurityConstants.SECURITY_RULES[143]` gates `POST /api/owners` (`OwnerController.createOwner`), NOT `OwnerServiceImpl.getOrCreate`. The bypass is INTENTIONAL (the association-request and ownership-creation flows need to mint the owner if absent) but is the documented `permission-bypass-via-owner-auto-create-side-door-write-path` concept. Any future per-Owner authorization scoping decision must consider that the side-door produces Owner rows whose `OWNER_CREATE`-permission attribution is the CALLER OF THE SIDE-DOOR, not necessarily a holder of `OWNER_CREATE`. The current contract is documented at the concept-catalog level but is NOT regression-pinned: a refactor that "tightens" `getOrCreate` to require `OWNER_CREATE` would break the OwnerAssociationRequest flow; a refactor that "tightens" `OwnerAssociationRequestServiceImpl` to require `OWNER_CREATE` before invoking `getOrCreate` would break the user-facing 'I want to associate with owner X' flow. The test pins the CURRENT permission-bypass behaviour as the EXPECTED contract so a regression is detected.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/OwnerServiceImplTest.java"
+  name: "getOrCreate_calledFromOwnerAssociationRequest_doesNotRequireOwnerCreatePermission_documentsBypass"
+evidence:
+  - "OwnerServiceImpl.md says (bugs_limitations_corner_cases.[8]): '`getOrCreate` is a permission-bypass write path for OWNER row creation. Lines 38-42 — called by `OwnerAssociationRequestServiceImpl.createOwnerAssociationRequest` (line 57 of that file) AND `OwnershipServiceImpl.create` (line 52 of that file) AND `TermOwnershipServiceImpl.create`. The Owner row is auto-created WITHOUT the caller holding `OWNER_CREATE`. The bypass is intentional but is the documented `permission-bypass-via-owner-auto-create-side-door-write-path` concept.'"
+  - "OwnerServiceImpl.md says (security.known_security_gaps.[3]): '`getOrCreate` is a service-tier permission-bypass for OWNER row minting. An authenticated user can mint arbitrary Owner rows by submitting OwnerAssociationRequests with names that do not yet exist (each request creates the corresponding Owner row). The caller''s only friction is the partial-unique-index on `owner.name`. NO @ActivityLog → silent owner sprawl. The bypass is INTENTIONAL but unmonitored.' (severity MEDIUM)"
+  - "Source: OwnerServiceImpl.java:38-42 (no permission check) + OwnerAssociationRequestServiceImpl.java:57 (side-door caller) + OwnershipServiceImpl.java:52 (side-door caller) + concepts catalog `permission-bypass-via-owner-auto-create-side-door-write-path`"
+cross_references:
+  - "concepts.yaml:canonicalisation_candidates[permission-bypass-via-owner-auto-create-side-door-write-path]"
+  - "F-011 (Owner-User association lifecycle — the side-door's HTTP entry point)"
+  - "REFACTOR-024 family (the broader 'no per-Owner scoping' posture)"
+related_features: [F-006, F-011]
+related_pillar_features: ["P-09:F-001"]
+proposed_action: |-
+  Add Mockito test `getOrCreate_calledFromOwnerAssociationRequest_doesNotRequireOwnerCreatePermission_documentsBypass`. (a) Mock `ownerRepository` to return `Mono.empty()` on the `getByName` lookup and a populated OwnerPojo on `create`. (b) Invoke `ownerService.getOrCreate("new-owner-name")` WITHOUT any security context setup. (c) Assert the returned Mono completes with an OwnerPojo. (d) `verify(ownerRepository).create(any())`. (e) Add a `// REGRESSION-PIN — getOrCreate is a deliberate permission-bypass write path for OWNER row minting. The bypass is reached from OwnerAssociationRequestServiceImpl + OwnershipServiceImpl + TermOwnershipServiceImpl. A REFACTOR that adds @PreAuthorize('hasPermission(OWNER_CREATE)') will break this test, surfacing the dependency. Document the side-door at the test level so the regression is intentional.` comment block. Pair with a test of `OwnerAssociationRequestServiceImpl.createOwnerAssociationRequest` showing the side-door is INVOKED.
+batch: 2026-05-20-S
+feature_id: F-011

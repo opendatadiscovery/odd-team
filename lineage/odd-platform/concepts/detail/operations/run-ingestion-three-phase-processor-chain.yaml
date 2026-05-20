@@ -1,0 +1,92 @@
+name: Run ingestion three-phase processor chain (INITIAL → MAIN → FINALIZING)
+canonical_in_docs: false
+canonical_candidate: true
+description: '**NEW OPERATION, batch 2026-05-19I (IngestionService sidecar)** —
+  the orchestration primitive for the platform''s 14 `IngestionRequestProcessor`
+  implementations. Invoked from `IngestionServiceImpl.ingest(...)` (`IngestionServiceImpl.java:71`)
+  via `processIngestionRequest` — delegates to `IngestionProcessorChain` (`IngestionProcessorChain.java:17-56`).
+  Contract: groups all `IngestionRequestProcessor` beans by `IngestionProcessingPhase`
+  (enum: INITIAL=1, MAIN=2, FINALIZING=3) into a TreeMap ordered by `phase.order`.
+  Within a phase, processors run via `Mono.zip(...)` (line 36) — parallel reactive
+  subscription. Between phases, `.concatMap` (line 39) enforces sequential ordering.
+  The 14 processors split across phases: **INITIAL phase**: `HollowDataEntityIngestionRequestProcessor`
+  (creates hollow `data_entity` rows for ODDRNs referenced in lineage / DQ-test
+  datasets but not in the current payload — placeholders for future ingestion).
+  **MAIN phase (11 processors)**: `DatasetStructureIngestionRequestProcessor` (writes
+  `dataset_version` + `dataset_field` rows; sets `datasetSchemaChanged=true` flag
+  feeding FINALIZING phase''s BIS alert raising), `TaskRunIngestionRequestProcessor`
+  (bulk-INSERT new task runs / bulk-UPDATE existing into `data_entity_task_run`;
+  nests `@ReactiveTransactional`), `MetadataIngestionRequestProcessor` (writes
+  metadata_field + metadata_field_value; **DELETE-on-absence** of bindings — silent
+  data loss per companion invariant), `LineageIngestionRequestProcessor` (delegates
+  to `LineageServiceImpl.replaceLineagePaths` — **REPLACE-not-merge** per companion
+  invariant), `DataQualityTestRelationIngestionRequestProcessor`, `GroupEntityRelationIngestionRequestProcessor`,
+  `GroupParentGroupIngestionRequestProcessor`, `RelationshipIngestionRequestProcessor`
+  (writes `erd_relationships` + `graph_relationships`), `ExternalTagIngestionRequestProcessor`,
+  `UsageReportIngestionRequestProcessor` (runs on EVERY ingestion — `shouldProcess`
+  returns `true` unconditionally; even zero-delta payloads write to `data_entity_statistics`).
+  **FINALIZING phase (3 processors)**: `FTSVectorsIngestionRequestProcessor` (rebuilds
+  Postgres FTS tsvector index for EVERY non-JOB_RUN entity in the request — no diff
+  check; hot Postgres CPU on idempotent re-ingestion), `ActivityIngestionRequestProcessor`
+  (emits `DATA_ENTITY_CREATED` rows for NEW entities ONLY — UPDATEs from ingestion
+  emit NO activity event; an audit gap), `AlertIngestionRequestProcessor` (the
+  BIS alert raiser — consumes `request.getChangedDatasetIds()` and `request.getTaskRuns()`
+  + halt configs, computes `AlertAction` candidates, dispatches via `AlertServiceImpl::applyAlertActions`).
+  **Within-phase execution order is non-deterministic** (Spring bean injection order)
+  — a future processor with an undeclared write-then-read dependency on another
+  MAIN-phase processor would silently fail under different Spring resolution orders.
+  The whole chain runs INSIDE one `@ReactiveTransactional` (per `single-transaction-per-batch-ingestion`
+  invariant).'
+axes_present:
+- services
+nodes:
+- odd-platform java service service:IngestionService
+contributors:
+- 'IngestionService.md (batch I): concepts.operations.run-processor-chain-by-phase.
+  concepts.entities.IngestionProcessorChain + IngestionProcessingPhase. concepts.invariants.[0]
+  — Single Postgres transaction wraps the ENTIRE ingest pipeline INCLUDING the
+  processor chain. implicit_adrs.[1] — Three-phase processor chain with parallel
+  execution WITHIN a phase, sequential BETWEEN phases. dependencies_semantic.requires-feature
+  — 14 IngestionRequestProcessor implementations. dependencies_semantic.coupling.processor_chain_composition.
+  bugs_limitations_corner_cases — within-phase execution order is non-deterministic;
+  FTS recompute runs on EVERY ingestion; UsageReport runs on EVERY ingestion;
+  activity log only records CREATEs not UPDATEs.'
+evidence:
+- IngestionService.md:concepts.operations + concepts.entities (the 14 processors
+  + IngestionProcessorChain + IngestionProcessingPhase enum)
+- IngestionService.md:implicit_adrs.[1] (three-phase chain is intentional; intra-phase
+  parallelism + inter-phase sequencing)
+- IngestionService.md:downstream_side_effects (per-processor side-effect tables)
+- IngestionService.md:bugs_limitations_corner_cases (within-phase order; FTS unconditional;
+  UsageReport unconditional; activity create-only)
+- IngestionService.md:dependencies_semantic.coupling (Spring DI composition; phase
+  enum as ordering signal)
+notes: |
+  Operation vocabulary captured for the ingestion pipeline orchestration primitive.
+  Five doc + test + code gaps surface:
+
+    (a) The 14-processor chain is an internal architectural detail invisible to
+        operator-facing docs and the OpenAPI contract. Contributor-facing doc
+        gap (no `/developer-guides/...` page for new-processor authoring).
+
+    (b) Within-phase execution order is non-deterministic — no test catches a
+        regression where a MAIN-phase processor develops an undeclared write-then-read
+        dependency on another MAIN-phase processor.
+
+    (c) FTSVectorsIngestionRequestProcessor processes ALL entities every time
+        (no diff check). A high-frequency idempotent collector burns Postgres
+        CPU recomputing identical tsvectors.
+
+    (d) UsageReportIngestionRequestProcessor runs on EVERY ingestion regardless
+        of delta — wasted writes to data_entity_statistics on zero-delta requests.
+
+    (e) ActivityIngestionRequestProcessor emits CREATE rows only — UPDATEs from
+        ingestion are silently un-audited. An operator investigating "who changed
+        this entity's description via ingestion" cannot answer from logs.
+
+  Cross-references:
+    - Companion invariant: `single-transaction-per-batch-ingestion-no-per-entity-isolation`
+      (the broader transaction scope).
+    - Companion invariant: `silent-data-loss-via-replace-not-merge-ingestion-semantics`
+      (the destructive semantics of MetadataIngestionRequestProcessor + LineageIngestionRequestProcessor).
+    - Companion entity: `s2s-ingestion-pipeline` (the broader pipeline concept).

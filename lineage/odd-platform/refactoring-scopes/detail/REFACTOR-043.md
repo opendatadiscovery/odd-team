@@ -1,0 +1,8 @@
+- **REFACTOR-043**: Generated AlertManager `generatorURL` is rewritten with Prometheus-Web-UI–specific query params — non-Prometheus AlertManager fronts (Mimir, Thanos, VictoriaMetrics) produce non-functional UI links
+  - **Category**: missing-validation
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md:bugs_limitations_corner_cases.[4]` (LOW)
+  - **Statement**: `AlertServiceImpl.java:168-172` embeds `g0.moment_input` and `g0.end_input` (Prometheus PromQL UI query params) into the stored alert chunk's description. If the operator's AlertManager fronts something other than Prometheus, the link may not navigate.
+  - **Evidence**: `AlertServiceImpl.java:168-172` + `AlertServiceImpl.java:185`
+  - **Proposed remedy**: Make the URL-rewrite optional via `attachment.alertmanager.rewrite-prometheus-ui-params: true` (default true to preserve current behaviour). Add a code comment explaining the Prometheus-specific assumption.
+  - **Severity rationale**: LOW — affects non-Prometheus deployments.
+  - **Suggested backlog grouping**: `AlertManager hardening`

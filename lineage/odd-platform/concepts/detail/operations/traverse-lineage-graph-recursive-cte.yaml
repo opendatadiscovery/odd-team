@@ -1,0 +1,104 @@
+name: Traverse Lineage Graph (recursive-CTE)
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+- P-05
+description: |-
+  `GET /api/dataentities/{data_entity_id}/lineage/downstream` (sibling `/upstream`)
+  — NO SECURITY_RULES entry, falls through to `.authenticated()`. Three-line
+  delegation to `LineageService.getLineage(dataEntityId, lineageDepth, expandedEntityIds,
+  LineageStreamKind.DOWNSTREAM)`. Service issues a single Postgres `WITH RECURSIVE`
+  CTE walking `lineage` table rows from the root entity's `oddrn` for `depth` hops
+  (`ReactiveLineageRepositoryImpl.lineageCte`); UNIONed with a depth-1 fan-out
+  around any IDs in `expandedEntityIds`; merged + distinct; per-oddrn metadata
+  fetch; children-count / parents-count maps; assemble + map to `DataEntityLineage`
+  graph DTO. Two client-driven inputs: `lineage_depth` (recursion depth bound —
+  `@Min(1)`, no `@Max`) + `expandedEntityIds` (depth-1 fan-out around selected
+  nodes for UI progressive expansion). No streaming variant; full graph is
+  `.collectList()`-materialised in heap before serialisation. No cycle guard in
+  the recursion (only outer `selectDistinct`). **Batch H — SQL PRIMARY-SOURCE
+  CONFIRMATION**: the CTE (lineageCte at lines 150-176) has seed = edges touching
+  the root oddrn set; recursive step = JOIN cte on direction-appropriate equality,
+  depth+1, `tDepth < lineageDepth` AND not deleted. Soft-delete filter
+  `IS_DELETED.isFalse()` at both seed (line 167) and recursive step (line 174).
+  Outer `selectDistinct` deduplicates the FINAL projection but does NOT prune
+  intermediate CTE rows. The depth bound is the SOLE termination mechanism.
+  **Batch J — UI TRAVERSAL OPERATION END-TO-END**: the UI caller is the
+  `<Lineage />` component family at `DataEntityDetails/Lineage/`. The dispatch
+  shell (`Lineage.tsx:12-25`) routes between DEGLineage (for Data Entity Groups)
+  and HierarchyLineage (for all other entity classes). `HierarchyLineage` issues
+  two sequential thunks: `fetchDataEntityDownstreamLineage` then on `.then()`
+  resolution `fetchDataEntityUpstreamLineage` (then optional
+  expandEntitiesFromDownstreamGroup + expandEntitiesFromUpstreamGroup). The UI
+  ALWAYS sends `lineageDepth=d` (defaultLineageQuery.d=1 at constants.ts:77) —
+  the null-lineage_depth NPE is unreachable from the UI but the default of 1
+  gives an artificially shallow first impression. LoadMore expansion uses
+  `lineageDepth: 1` (depth-1 fan-out around clicked node); slice MERGES new
+  nodes/edges into local state monotonically with no collapse affordance. Click-through
+  on a node title navigates to that node's own Lineage tab with `d: node.depth
+  || 1` — clicking deep into a graph and navigating opens a NEW view with
+  d=clicked-node's-depth (compounds REFACTOR-202 cost). The UI uses the NEGATIVE
+  case of the anchor-set defence-in-depth pattern: fetches via
+  `/api/dataentities/{id}/lineage/{downstream|upstream}`, NOT the owner-scoped
+  `/my` variant — the user-observable consequence of REFACTOR-203 is realised
+  at the canvas.
+axes_present:
+- controllers
+- repositories_reactive
+- ui_components
+nodes:
+- odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
+- odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
+- odd-platform ts react-component component:LineageGraph
+contributors:
+- 'getDataEntityDownstreamLineage.md:concepts.operations: resolve root by id (404
+  if not found), recursively walk lineage edges DOWNSTREAM for lineage_depth hops,
+  fan out depth-1 set around expanded_entity_ids, merge + distinct, fetch entity+datasource+namespace+group
+  metadata, compute children-count/parents-count maps, assemble + map to DataEntityLineage'
+- getDataEntityDownstreamLineage.md:implicit_adrs.[0] (single-query recursive-CTE
+  — one DB round-trip, not BFS-per-node) + implicit_adrs.[1] (client-driven progressive
+  expansion via dual-input split)
+- 'ReactiveLineageRepositoryImpl.md:concepts.operations.[getLineageRelations(Set,LineageDepth,LineageStreamKind)
+  + lineageCte private]: SQL primary source for CTE shape, seed + recursive step,
+  direction toggle, soft-delete filter at both seed and recursive step.'
+- 'ReactiveLineageRepositoryImpl.md:implicit_adrs.[2]: SQL primary source for
+  single-query design — CTE walks N hops in ONE DB round-trip; depth-1 fan-out is
+  SEPARATE query merged downstream.'
+- 'ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[0,1,2,3,7]: no
+  cycle-detection inside the recursive CTE (HIGH); diamond-DAG cost amplification
+  (MEDIUM); no JOIN-side owner filter (HIGH); no upper bound on lineageDepth (HIGH);
+  LineageDepth.empty() folklore (MEDIUM).'
+- 'LineageGraph.md (batch J — UI HALF): concepts.operations[Lineage.tsx route-dispatch;
+  HierarchyLineage sequential downstream-then-upstream fetch with .then() chain;
+  LineageGraph useMemo tree build via d3-hierarchy; LoadMore depth-1 expansion +
+  URL param append; LineageControls depth-slider write to URL; Node click-through
+  navigation with d: node.depth as new d]'
+- 'LineageGraph.md:implicit_adrs.[0] UI defaults d=1 silent default-depth contract;
+  [4] click-through preserves URL params bag with node.depth as new d (compounds
+  depth on drill-in)'
+evidence:
+- getDataEntityDownstreamLineage.md:concepts.operations + concepts.invariants.[0-3]
+- getDataEntityDownstreamLineage.md:implicit_adrs.[0,1]
+- ReactiveLineageRepositoryImpl.md:concepts.operations + concepts.invariants.[3,4,5]
+- ReactiveLineageRepositoryImpl.md:implicit_adrs.[2]
+- ReactiveLineageRepositoryImpl.md:bugs_limitations_corner_cases.[0,1,2,3,7]
+- LineageGraph.md:concepts.operations + concepts.invariants
+- LineageGraph.md:implicit_adrs.[0,4] + bugs_limitations_corner_cases.[diamond +
+  no-upper-d + LoadMore-monotonic + anchor-set-defence-not-at-UI]
+notes: |-
+  Strengthened in batch 2026-05-19J with LineageGraph UI sidecar closing the
+  traversal operation UI half. Two UI-driven amplifications now confirmed at the
+  operation layer:
+    (a) UI ALWAYS sends lineageDepth=d (default 1) — masks F-005 NPE from the
+        UI path but the silent default may give artificially shallow first
+        impression.
+    (b) Click-through compounds depth: clicking deep and navigating opens new
+        view with d=clicked node's depth (not 1) — compounds backend recursive-CTE
+        cost on drill-in.
+
+  Two doc-bugs remain live on `/developer-guides/api-reference/lineage`:
+    (a) `lineage_depth` 'Unset returns the platform's default depth' claim is
+        UNIMPLEMENTED — there is no default; unset is a 500 NPE; UI masks by
+        sending 1.
+    (b) `expanded_entity_ids` 'IDs of Data Entity Group entities' claim is
+        incorrect — code accepts ANY data-entity IDs.

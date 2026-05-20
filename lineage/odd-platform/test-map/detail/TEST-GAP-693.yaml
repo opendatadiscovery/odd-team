@@ -1,0 +1,29 @@
+gap_id: TEST-GAP-693
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service service:AlertServiceImpl"
+pillars_affected: [P-07]
+surfaced_by:
+  - "AlertServiceImpl.md:bugs_limitations_corner_cases.[3] (The AlertManager webhook payload's generatorURL is propagated verbatim into the alert chunk description rendered in the UI)"
+behaviour: |-
+  **`AlertServiceImpl.handleExternalAlerts` PROPAGATES `externalAlert.getGeneratorURL()` VERBATIM into the alert chunk description, rendered later by the UI — STORED-XSS / OPEN-REDIRECT surface.** Line 168 builds the URL via `UriComponentsBuilder.fromUri(externalAlert.getGeneratorURL())`; line 185 embeds it in the description as `String.format("Distribution Anomaly. URL: %s", queryUrl)`. The UI then renders this description text. The `URI` type does some shape validation but does NOT block `javascript:` scheme or arbitrary host URLs. Combined with the UNAUTHENTICATED webhook (per `AlertManagerController` batch P), ANY caller can plant the payload. The end-to-end exploit: (1) attacker POSTs `/ingestion/alert/alertmanager` with `generatorURL=javascript:alert(document.cookie)` and `entity_oddrn=<target entity>`; (2) the AlertManager webhook processes the payload + creates an OPEN alert with the malicious URL in its chunk description; (3) ANY authenticated user visiting `/entities/<entity>/alerts` sees the alert; (4) the UI renders the description — if as innerHTML or as a clickable link, the malicious payload executes / redirects. The file-local evidence does not confirm whether the UI renders description as `innerHTML` (the UI tier is out of scope for this sidecar), but the platform-doc surface from batch P names the externally-injected alert path as the EXPECTED workflow — so the link IS clickable.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AlertManagerGeneratorUrlXssTest.java"
+  name: "handleExternalAlerts_javascriptSchemeGeneratorUrl_persistsAsChunkDescription_pinsXssSurface"
+evidence:
+  - "AlertServiceImpl.md says (bugs_limitations_corner_cases.[3]): 'The AlertManager webhook payload''s `generatorURL` is propagated verbatim into the alert chunk description rendered in the UI. Line 168 builds the URL via UriComponentsBuilder.fromUri(externalAlert.getGeneratorURL()); line 185 embeds it in the description as String.format(\"Distribution Anomaly. URL: %s\", queryUrl). The UI then renders this description text. The URI type does some shape validation but does not block javascript: scheme or arbitrary host URLs. If the UI renders the description as a clickable link (or as innerHTML), this is a stored-XSS / open-redirect surface — and the AlertManager endpoint is unauthenticated, so any caller can plant the payload.' severity: MEDIUM (escalates to HIGH if the UI renders description as innerHTML)"
+  - "AlertServiceImpl.md says (security.data_exposure for external alerts): 'the AlertManager endpoint is unauthenticated, so any caller can plant the payload'"
+  - "Source: AlertServiceImpl.java:168, 185 (URL build + format) + AlertManagerController.java:21-26 (unauthenticated endpoint) + UriComponentsBuilder (does not block javascript: scheme)"
+cross_references:
+  - "TEST-GAP-015 (AlertManager cross_tenant_alert_creation — sister surface from same unauthenticated webhook)"
+  - "TEST-GAP-691 (AlertManager idempotency gap — sister surface)"
+  - "F-007 (P-07:F-001 AlertManager Integration)"
+  - "P-009 (UI XSS defence-in-depth — Slice 4 finding)"
+related_features: [F-007]
+related_pillar_features: ["P-07:F-001"]
+proposed_action: |-
+  Add `AlertManagerGeneratorUrlXssTest.handleExternalAlerts_javascriptSchemeGeneratorUrl_persistsAsChunkDescription_pinsXssSurface` as a WebTestClient test. (a) POST `/ingestion/alert/alertmanager` with body `{ "alerts": [{ "labels": { "alertname": "x", "entity_oddrn": "<known-oddrn>" }, "startsAt": "2026-01-01T00:00:00", "generatorURL": "javascript:alert(1)" }] }`. (b) Assert HTTP 204. (c) Query `SELECT description FROM alert_chunk WHERE alert_id = (SELECT MAX(id) FROM alert WHERE data_entity_oddrn = '<known-oddrn>')`. (d) Assert the description CONTAINS the literal string `javascript:alert(1)`. (e) GET `/api/dataentities/<entity-id>/alerts` as an authenticated user. (f) Assert the alert is returned with the JS-scheme URL in the description payload. (g) Add a `// REGRESSION-PIN — handleExternalAlerts accepts ANY URL scheme in generatorURL and embeds it verbatim in the chunk description. UriComponentsBuilder does NOT block javascript: scheme. Combined with the unauthenticated webhook, ANY caller can plant a stored payload. UI tier must defend (sanitise on render); the API tier currently does not. A REFACTOR adding scheme validation at AlertServiceImpl.java:168 (e.g., reject non-http/https schemes) will flip this test, making the fix deliberate.` comment block. Pair with a UI-tier `e2e/xss-resilience.spec.ts` test once the UI render path is mapped.
+batch: 2026-05-20-S
+feature_id: F-007

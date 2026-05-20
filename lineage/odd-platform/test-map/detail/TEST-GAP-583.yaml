@@ -1,0 +1,27 @@
+gap_id: TEST-GAP-583
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java auth filter:IngestionDataEntitiesFilter"
+pillars_affected: [P-10]
+surfaced_by:
+  - "IngestionDataEntitiesFilter.md:bugs_limitations_corner_cases.[7] (NotFoundException on unknown datasource/collector surfaces as 5xx not 401)"
+  - "IngestionDataEntitiesFilter.md:concepts.invariants.[6]"
+behaviour: |-
+  **NotFoundException → 5xx (NOT 401) — info-leak + misleading status code.** The filter throws `NotFoundException` at line 44 (unknown `dataSourceOddrn`) and lines 50-51 (datasource has null token AND parent collector lookup is empty). The parent `AbstractIngestionFilter.filter` only catches `AccessDeniedException` (line 40) to write 401; other exceptions including `NotFoundException` propagate to the default reactive error handler and surface as 500 Internal Server Error. Behavioral consequence: an attacker probing with arbitrary payload + valid token can DISTINGUISH (a) 'datasource exists, wrong token' (401) from (b) 'datasource does not exist' (5xx) — minor info-leak about which ODDRNs are registered. Operationally misleading too: an operator seeing 5xx in collector logs may chase a wrong root cause (think 'platform crashed') when the actual cause is a half-configured collector record. The fix (catch NotFoundException → 404 OR 401 with neutral message) is one-liner; pin the current behaviour first.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionFilterNotFoundStatusTest.java"
+  name: "ingestionEntities_unknownDataSourceOddrn_returns5xx_currentMisleadingStatus"
+evidence:
+  - "IngestionDataEntitiesFilter.md says (bugs_limitations_corner_cases.[7]): 'NotFoundException on unknown datasource/collector surfaces as 5xx (not 401). The parent only catches AccessDeniedException to write a 401 response. Any other exception — including the two NotFoundException throws at lines 44 and 50-51 — propagates to the default reactive error handler and surfaces as 500 Internal Server Error.' severity: LOW (info-leak) / MEDIUM (operator-debug misleading)"
+  - "IngestionDataEntitiesFilter.java:43-51 (NotFoundException throws)"
+  - "AbstractIngestionFilter.java:40 (only catches AccessDeniedException)"
+cross_references:
+  - "F-008"
+  - "TEST-GAP-119 (collector-fallback — partial overlap; STRENGTHEN — distinct concerns)"
+proposed_action: |-
+  WebTestClient test. (a) Boot with `auth.ingestion.filter.enabled=true`. (b) POST `/ingestion/entities` with a valid token AND a payload naming a `dataSourceOddrn` that does NOT exist. (c) Assert HTTP 5xx (current). (d) Compare with POST naming an EXISTING datasource and WRONG token → 401. (e) Pin the distinguishability. Future fix catching `NotFoundException` → flipping assertion (c) to 404 or 401.
+batch: 2026-05-19-O
+feature_id: F-008

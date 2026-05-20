@@ -1,0 +1,227 @@
+name: |-
+  Term schema-drift V0_0_76-vs-V0_0_91 — term_to_term retains deleted_at; application never filters it
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-06
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19N — surfaced by
+  primary-source examination of ReactiveTermRepositoryImpl plus the
+  migration suite.**
+
+  Cross-migration architectural drift in the term-linkage schema. The
+  platform's intent (per V0_0_76) was to HARD-DELETE term-relation rows
+  on user-initiated unlink; the V0_0_91 migration that ADDED `term_to_term`
+  for the new term-to-term-linking feature DID NOT INHERIT the same
+  hard-delete schema commitment.
+
+  **The migration history**:
+
+    V0_0_76__term_relations_hard_delete.sql:1-22 — explicit migration
+      that DROPPED the `deleted_at` column from THREE link tables
+      (`data_entity_to_term`, `dataset_field_to_term`, `tag_to_term`,
+      `term_ownership`). The migration's name is the affirmation: term
+      RELATIONS are hard-deleted on user action; the soft-delete schema
+      was a vestigial-from-before-V0_0_76 mistake.
+
+    V0_0_91__add_term_to_term.sql:1-12 — the NEW term-to-term link
+      table created with the FULL legacy soft-delete schema:
+        - PK (target_term_id, assigned_term_id)
+        - is_description_link boolean DEFAULT FALSE
+        - **deleted_at TIMESTAMP** (line 6)
+      The column was added DESPITE V0_0_76's explicit commitment to
+      hard-delete on term-relation tables.
+
+  **The application layer never filters `term_to_term.deleted_at`**:
+  ReactiveTermRepositoryImpl reads `term_to_term` at 7 distinct sites
+  (lines 198-199, 227-231, 324-325, 345, 429-430, 448-454, 472-491,
+  510-523 per the batch-N sidecar bugs_limitations_corner_cases.[0]).
+  NONE of the 7 read sites carry a `TERM_TO_TERM.DELETED_AT.isNull()`
+  predicate. The sibling V0_0_76-cleaned tables ARE filtered correctly
+  (V0_0_76 dropped the column, so no filter is possible / needed); the
+  new V0_0_91 table has the column but the application never filters.
+
+  **The bug shape**: a `term_to_term` row with `deleted_at = NOW()` (set
+  by some external operator hot-fix, future API endpoint, or migration)
+  is STILL returned by every read path:
+    - `getLinkedTermsByTargetTermId` (line 441-454) — the inverse-side
+      term-link list
+    - `listByTerm` (line 457-499) — the "linked terms for a term"
+      paginated list
+    - `getTermByIdAndLinkedTermId` (line 502-527) — the single-edge
+      lookup for verify-link-exists semantics
+    - `getTermDetailsDto` (line 194-238) — the assigned-terms graph
+      aggregation in the full-detail view
+    - `hasDescriptionRelations` (line 409-438) — the term-to-term
+      description-mention guard for rename/delete protection
+
+  **Two possible interpretations of the maintainer's intent**:
+    (a) **The column is dead schema** — V0_0_91 was authored before
+        V0_0_76's hard-delete commitment had crystallised in maintainer
+        memory; the deleted_at column should have been omitted to match
+        the sibling tables. A V0_0_NNN follow-up migration mirroring
+        V0_0_76's structure (DROP COLUMN deleted_at FROM term_to_term)
+        is the correct fix.
+    (b) **The application code is missing the filter** — V0_0_91
+        deliberately retained deleted_at as forward-compat provision
+        for a future term-to-term soft-delete feature; the application
+        code SHOULD filter `term_to_term.deleted_at IS NULL` at every
+        read site and was just under-implemented; the 7 missing filter
+        sites are a follow-up patch.
+
+  **Either interpretation yields a follow-up**: the current state is
+  inconsistent — the schema permits a deleted_at signal that the
+  application silently ignores. A maintainer reading the migration
+  history linearly would conclude (a); a maintainer reading the schema
+  only would conclude (b).
+
+  **Severity HIGH because**: today no code path writes
+  `term_to_term.deleted_at`, so the bug is THEORETICAL — but the gap is
+  in the AUTHORIZATION-EQUIVALENT shape. If a future term-relations
+  cleanup feature (an operator-driven "soft-delete this term-link"
+  workflow) lands at the schema layer without also patching the 7 read
+  sites, the cleanup would be SILENTLY INEFFECTIVE — operators clicking
+  "Remove" on a term-to-term assignment would see the row's
+  deleted_at populated in the DB but the UI/API would STILL display the
+  link. Same architectural class as
+  `policy-getRolesPolicies-missing-deleted_at-filter` (batch H —
+  orphan-binding permission leak via missing deleted_at filter): a
+  schema permission for soft-deletion that the application code does
+  not honour creates an invisibility gap.
+
+  **The asymmetry vs the sibling tables**:
+    - data_entity_to_term — V0_0_76 dropped deleted_at; reads cannot
+      drift (no column to filter)
+    - dataset_field_to_term — V0_0_76 dropped deleted_at; reads cannot
+      drift
+    - tag_to_term — V0_0_76 dropped deleted_at; reads cannot drift
+    - term_ownership — V0_0_76 dropped deleted_at; reads cannot drift
+    - **term_to_term — V0_0_91 added deleted_at; reads SILENTLY DRIFT**
+
+  **The detection method**: `Grep TERM_TO_TERM.*DELETED_AT
+  odd-platform-api/src/main` should return zero matches — confirming
+  the application never filters. The batch-N sidecar verifies this
+  exhaustively across 7 read sites (each line-cited at
+  bugs_limitations_corner_cases.[0]).
+nodes:
+- odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+contributors:
+- |-
+  ReactiveTermRepositoryImpl batch N (PRIMARY SOURCE): concepts.entities.[
+  TERM_TO_TERM join table — V0_0_91 ASYMMETRIC EXCEPTION retains deleted_at]
+  + concepts.invariants.[soft-delete is for term ONLY; the term-to-term
+  table is the ASYMMETRIC exception] + bugs_limitations_corner_cases.[0]
+  (term_to_term.deleted_at is NEVER filtered — 7 read sites missing the
+  filter) + security.known_security_gaps.[0] (LOW severity: theoretical
+  today but architectural-class drift) +
+  docs_link_semantic.doc_drift_findings.[REPOSITORY-DOC-GAP-B]
+  (asymmetry is undocumented at the operator surface)
+evidence:
+- |-
+  ReactiveTermRepositoryImpl.md:bugs_limitations_corner_cases.[0]
+  (PRIMARY SOURCE — 7 read sites verified by primary source line refs)
+  — evidence:
+    V0_0_91__add_term_to_term.sql:6 (the column declaration) +
+    ReactiveTermRepositoryImpl.java:198-199, 227-231, 324-325, 345,
+    429-430, 448-454, 472-491, 510-523 (the 7 read sites without filter)
+- |-
+  ReactiveTermRepositoryImpl.md:concepts.invariants.[soft-delete-is-for-term-ONLY;
+  V0_0_76 dropped deleted_at from 3 link tables; V0_0_91 retained
+  deleted_at on term_to_term — the ASYMMETRIC EXCEPTION]
+- |-
+  ReactiveTermRepositoryImpl.md:implicit_adrs.[hard-delete-link-tables]
+  (the V0_0_76 intent statement — the migration's name verbatim
+  affirms the platform's commitment; the V0_0_91 deviation either
+  contradicts or precedes a delayed cleanup)
+- |-
+  Cross-batch evidence:
+    V0_0_76__term_relations_hard_delete.sql:1-22 (the migration that
+    DROPPED deleted_at from 3 link tables — the affirmative intent)
+    V0_0_91__add_term_to_term.sql:1-12 (the migration that ADDED
+    deleted_at to term_to_term — the deviating implementation)
+    V0_0_77__data_entity_term_description.sql:13-14, 28-29 (the
+    is_description_link PK extension that ASSUMES hard-delete — a
+    soft-deleted row would block re-insertion of the same
+    (de, term, FALSE) tuple)
+axes_present:
+- repositories_reactive
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: architectural-hygiene-and-correctness
+mitigations_unimplemented:
+- |-
+  **Option A (cleanup migration)** — add a V0_0_NNN migration mirroring
+  V0_0_76's structure:
+    DELETE FROM term_to_term WHERE deleted_at IS NOT NULL;
+    ALTER TABLE term_to_term DROP COLUMN IF EXISTS deleted_at;
+  This brings term_to_term in line with the 3 sibling link tables.
+  Lowest-cost; preserves the existing read-path semantics.
+- |-
+  **Option B (filter-coverage patch)** — add
+  `TERM_TO_TERM.DELETED_AT.isNull()` predicate to all 7 read sites in
+  ReactiveTermRepositoryImpl. Forward-compat with a future term-to-term
+  soft-delete feature; higher per-query cost.
+- |-
+  **Option C (add the soft-delete feature)** — wire the V0_0_91
+  `deleted_at` column to a service-tier soft-delete-then-restore method
+  on term-to-term links, then add the filters (Option B) AND a restore
+  API. Highest scope; defensible if the maintainer originally intended
+  to add term-to-term soft-delete and never finished.
+- |-
+  Document the asymmetry on the business-glossary operator page —
+  operators inspecting the schema or running ad-hoc queries against
+  term_to_term need to know that deleted_at is not honoured today.
+- |-
+  Add a regression test pinning the current behaviour:
+    (a) Insert a term_to_term row;
+    (b) Set deleted_at = NOW();
+    (c) Call getLinkedTermsByTargetTermId — assert the soft-deleted
+        row IS STILL RETURNED (pinning the buggy behaviour as the
+        regression baseline) OR assert it is NOT returned (under
+        Option B / Option C).
+- |-
+  Add a build-time invariant scanner that flags any new
+  repository read against a table with a deleted_at column that
+  lacks the matching `.deleted_at.isNull()` predicate — the bug class
+  is bigger than just term_to_term.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-19N. The bug is
+  THEORETICAL today (no code path writes `term_to_term.deleted_at`) but
+  the architectural-class drift is real: a schema permission for
+  soft-deletion that the application code does not honour creates the
+  same shape of bug as the batch-H Policy.getRolesPolicies orphan-
+  binding permission leak — a deleted state in the DB that the
+  application silently ignores at read time.
+
+  The maintainer's most-likely intent was Option A — V0_0_76 dropped
+  deleted_at from the 3 sibling tables as the platform's commitment to
+  hard-delete-on-relationship-edges; V0_0_91 should have inherited the
+  same shape and didn't. The cleanup is one DROP COLUMN migration plus
+  no code change.
+
+  Cross-cutting connections:
+    - Pairs with hard-delete-on-relationship-edges-confirmed-cross-batch
+      (batch L) — the same architectural commitment; term_to_term is
+      the ASYMMETRIC EXCEPTION that batch L's invariant does NOT cover
+    - Pairs with three-soft-delete-mechanisms-across-the-repository-layer
+      (batch H — strengthened batch L) — adds term_to_term as a FIFTH
+      shape: schema-permits-soft-delete-but-app-never-filters
+    - Cross-references policy-getRolesPolicies-missing-deleted_at-filter
+      (batch H — the symmetric architectural-class bug on the RBAC
+      pillar)
+    - Cross-references the rbac-soft-delete-persistence-policy-aggregation
+      invariant batch H (symmetric pattern on the LEFT JOIN side of
+      the role-policy edge — policies aren't deleted_at-filtered in
+      Role's getDto/listDto/getByName per the batch-N Role-repo finding)
+
+  This invariant ALSO pairs with the batch-N
+  hasDescriptionRelations-parent-soft-delete-bypass invariant — same
+  repository file (ReactiveTermRepositoryImpl), same architectural-
+  class: a soft-delete signal that the read path treats inconsistently.
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Drop the column (V0_0_NNN follow-up migration)
+    (b) Document the term-to-term schema asymmetry on
+        business-glossary if the column stays
+    (c) Add a regression test pinning the read-path behaviour

@@ -1,0 +1,9 @@
+- **REFACTOR-168** (NEW 2026-05-12D): `port` is a Java `int` primitive — defaults to 0 when YAML key is absent. JavaMail interprets port=0 as "use the protocol default". For an operator who intends to set port explicitly but typos the key (`port: 587` vs `port-number: 587`), the symptom is "mail goes to port 25" with no boot-time warning
+  - **Category**: port-default-zero
+  - **Surfaced by**: `odd-platform__java__org_opendatadiscovery_oddplatform_notification_config__config-properties-class__EmailSenderProperties.md:bugs_limitations_corner_cases.[5]` (LOW)
+  - **Statement**: `EmailSenderProperties.java:12` declares `private int port;` (primitive). Spring's relaxed binder maps the YAML `port` key, but a typo (`port-number` vs `port`) silently leaves the int at 0. JavaMail's `mailSender.setPort(0)` falls back to the protocol-default port (25 for SMTP). The operator's intended 587 / 465 / explicit-port-config is silently bypassed. No `@Min(1) @Max(65535)` validation.
+  - **Evidence**: `EmailSenderProperties.java:12`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-048 (narrow-validator scope) defers this; the field is primitive-default-leak shape.
+  - **Proposed remedy**: Promote to `Integer port` (boxed) + check for null in `NotificationConfiguration` + throw `IllegalArgumentException` on null; OR add `@Min(1) @Max(65535)` via `@Validated`; OR add a Java initialiser `private int port = 587;` (defensible default for STARTTLS).
+  - **Severity rationale**: LOW — operator-trap on typo; the deployment functions but routes mail incorrectly.
+  - **Suggested backlog grouping**: `Notifications hardening`

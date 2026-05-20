@@ -1,0 +1,174 @@
+name: Plaintext collector token rendered into DOM + fragile substring-prefix-sniff masking detection (UI-side credential hazards)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  **NEW MEDIUM-severity INVARIANT, batch 2026-05-20-Q (CollectorsList
+  primary source)** — two coupled UI-side hazards in the collector
+  token surface:
+
+  **(A) Plaintext token rendered into DOM text node**: A freshly-
+  created or freshly-regenerated collector token (40-char alphanumeric
+  per `RandomStringUtils.randomAlphanumeric` per the existing
+  `collector-token` entity) is rendered DIRECTLY INTO THE DOM as
+  plaintext via `<Token>{collector.token.value}</Token>` at
+  `CollectorItemToken.tsx:34`. There is:
+    - NO `<input type='password'>`-style obfuscation
+    - NO Reveal-on-hover affordance
+    - NO auto-hide-after-N-seconds timer
+    - NO copy-to-clipboard-and-immediately-mask pattern
+    - NO viewport-scrolled-out-of-view defence
+
+  Any browser extension with content-script access, any screenshot
+  tool, any accessibility screen reader, any DOM-inspection tool,
+  any browser-cache mechanism captures the credential by default.
+  The visible warning admonition ("Save token in a secure location.
+  You will not be able to retrieve it again." per
+  `CollectorItem.tsx:87-98`) is the SOLE operational mitigation —
+  operator vigilance.
+
+  **(B) Token-visibility detection is a literal substring-prefix sniff
+  on `'******'`** (six exact stars): `useEffect(() => {
+  setIsHidden(collector.token.value.substring(0, 6) === '******'); },
+  [collector.token.value]);` at `CollectorItemToken.tsx:25-27`. The
+  client-side flag `isHidden` drives:
+    - The mask-vs-plaintext rendering branch
+    - The Copy-button vs Regenerate-button choice
+    - The warning admonition's appearance
+
+  The mask format is decided by the backend at
+  `TokenMapper.java:15-18`: `"******" + value.substring(value.length()
+  - 6)`. A FUTURE BACKEND CHANGE to the mask format (e.g. shortening
+  to 4 stars `****{last6}`, switching to a Unicode block character
+  `▒▒▒▒▒▒…`, prepending whitespace, dropping the mask entirely)
+  would SILENTLY BREAK the visibility detection — the UI would offer
+  the Copy button on a masked value, copying `******abc123`-style
+  fragments to the operator's clipboard.
+
+  **The shared underlying pattern**: the token-visibility contract
+  between backend and UI is implicit (mask format) and unenforced
+  (no automated test, no version negotiation, no API-level "is this
+  masked" boolean). A backend refactor changing the mask is
+  detectable only by manual UI testing.
+
+  **Why MEDIUM severity**:
+    - (A) — operator vigilance can mitigate; the admonition is
+      visible; not all token-display surfaces are equally exposed
+      (the regenerate / create response IS the only display path
+      for the plaintext). Severity is bounded by operator awareness.
+    - (B) — silent regression on a refactor would leak credential
+      fragments to clipboards in a way operators expect to be safe.
+      Severity is bounded by the likelihood of a backend mask-format
+      change (LOW probability — the backend mask format has been
+      stable). Combined severity MEDIUM.
+
+  **Mitigations** (already enumerated in CollectorsList sidecar
+  bugs_limitations_corner_cases + security.known_security_gaps):
+    - Use `<input type='password'>` with a Reveal-on-hover affordance
+      (industry-standard pattern for secret display)
+    - Auto-hide the plaintext after N seconds with a "Copy now"
+      countdown
+    - Backend-supplied `tokenVisible: boolean` field on the Collector
+      DTO removes the substring-sniff entirely (explicit contract)
+    - Vitest tests asserting (i) plaintext renders Copy + admonition;
+      (ii) masked renders Regenerate; (iii) various mask formats
+      (4 stars, 6 stars, Unicode) handled per current code
+
+  **Cross-batch coherence (LSN-018)**: this sidecar STRENGTHENS the
+  existing `collector-token` entity (the regenerateCollectorToken
+  sidecar already catalogued the backend-side plaintext + non-CSPRNG
+  + no-audit weaknesses; this sidecar adds the UI-side DOM-rendering
+  + fragile-detection hazards as the THIRD evidence point in the
+  token-hygiene cluster).
+axes_present:
+  - ui_components
+  - controllers
+nodes:
+  - odd-platform ts react-component component:CollectorsList
+  - odd-platform java CollectorController controller-method:regenerateCollectorToken
+contributors:
+  - |-
+    CollectorsList.md:bugs_limitations_corner_cases.[0] (MEDIUM —
+    Token-visibility detection is a string-prefix sniff on `******`
+    — future backend mask format change would silently break the
+    visibility detection)
+  - |-
+    CollectorsList.md:bugs_limitations_corner_cases.[2] (MEDIUM —
+    Token plaintext rendered into DOM as text node — no `<input
+    type='password'>` obfuscation, no Reveal-on-hover affordance,
+    no auto-hide timer)
+  - |-
+    CollectorsList.md:security.known_security_gaps.[1] (MEDIUM —
+    Token plaintext rendered into DOM as text node)
+  - |-
+    CollectorsList.md:security.known_security_gaps.[2] (MEDIUM —
+    Token-visibility detection is a literal substring prefix sniff)
+  - |-
+    CollectorsList.md:implicit_adrs.[0] (HIGH — Token visibility is
+    detected client-side via a substring-prefix sniff, not via a
+    backend-supplied flag — the design intent is the SAME Collector
+    API shape on the visible and masked branches — no `tokenVisible:
+    boolean` field in the contract)
+evidence:
+  - CollectorsList.md:bugs_limitations_corner_cases.[0] (MEDIUM — substring sniff hazard)
+  - CollectorsList.md:bugs_limitations_corner_cases.[2] (MEDIUM — DOM plaintext rendering)
+  - CollectorsList.md:security.known_security_gaps.[1] (MEDIUM — DOM plaintext)
+  - CollectorsList.md:security.known_security_gaps.[2] (MEDIUM — substring sniff)
+  - CollectorsList.md:implicit_adrs.[0] (HIGH confidence ADR — substring-sniff over backend-flag)
+  - |-
+    Code anchors: CollectorItemToken.tsx:25-27 (the substring sniff)
+    + CollectorItemToken.tsx:34 (the plaintext DOM render) +
+    CollectorItem.tsx:87-98 (the warning admonition) +
+    TokenMapper.java:15-18 (the backend mask format —
+    `'******' + value.substring(value.length() - 6)`)
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+  - `collector-token` entity (the backend-side plaintext + non-CSPRNG + no-audit cluster)
+  - `regenerate-collector-token` operation
+severity: MEDIUM
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    UI: render the visible plaintext via `<input type='password'>` with
+    a Reveal-on-hover affordance. Standard pattern across the industry
+    (Stripe, AWS console, GCP console all use this for secret display).
+  - |-
+    UI: auto-hide the plaintext after 30 seconds with a "Copy now"
+    countdown timer. Forces operator action; minimises the visible-
+    plaintext window.
+  - |-
+    Contract: add a `tokenVisible: boolean` field to the Collector
+    DTO (`components.yaml` Collector schema). Backend sets `true` on
+    the regenerate response, `false` on subsequent reads. UI consumes
+    the explicit flag instead of the substring sniff. Removes the
+    fragile detection entirely.
+  - |-
+    Test: Vitest test on CollectorItemToken that asserts (i)
+    plaintext (40-char alphanumeric) renders Copy + admonition;
+    (ii) masked (`******{last6}`) renders Regenerate; (iii) variant
+    mask formats (4 stars, Unicode, prepended whitespace) render
+    DEFENSIVE behaviour (default to "treat as masked", showing
+    Regenerate rather than Copy). The third assertion is the
+    regression-pin for a future backend change.
+  - |-
+    Doc: extend `/configuration-and-deployment/enable-security/authorization/permissions`
+    with explicit caveat on the COLLECTOR_TOKEN_REGENERATE permission
+    "The plaintext token is displayed ONCE — on the regenerate
+    response — and is rendered into the DOM as a text node. Browser
+    extensions, screenshot tools, and accessibility readers may
+    capture the value. Copy the token immediately and store securely."
+notes: |-
+  Pairs with the existing `collector-token` entity's catalogued
+  weaknesses (non-CSPRNG entropy, plaintext-in-DB, no rotation grace
+  period, no audit log). The UI-side hazards compound those backend-
+  side hazards — every link in the chain is fragile.
+
+  Cross-references:
+    - `collector-token` entity
+    - `regenerate-collector-token` operation
+    - `plaintext-equality-shared-secret-token-model` invariant
+    - `lombok-data-tostring-sensitive-field-leak` invariant (sibling
+      Lombok-DAT-side credential exposure surface)

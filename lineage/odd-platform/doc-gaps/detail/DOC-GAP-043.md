@@ -1,0 +1,7 @@
+- **DOC-GAP-043**: Activity-feed partition CREATE failures are silently swallowed; operator has no metric / alert / health-check signal — undocumented; `partition.advisory-lock-id` undocumented
+  - **Category**: drift
+  - **Surfaced by**: `ActivityTablePartitionManager@L11.md:doc_drift_findings.[3]` + `:bugs_limitations_corner_cases.[2]` (HIGH) + `:performance.known_performance_gaps.[1]` (MEDIUM); `concepts.yaml:entities[Activity Table Partitioning]`.
+  - **Evidence**: WebFetch 2026-05-11 — partition-period section lacks failure-mode discussion; `partition.advisory-lock-id` absent from documented set despite sibling lock ids being listed.
+  - **Proposed doc action**: Three-part fix (Failure modes + DB role requirements + `partition.advisory-lock-id` documentation) per the existing DOC-GAP-043 plan.
+  - **Cross-references**: DOC-GAP-041, DOC-GAP-042; LSN-001.
+  - **Severity rationale**: MEDIUM.

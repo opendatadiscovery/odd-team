@@ -1,0 +1,9 @@
+- **REFACTOR-106** (NEW 2026-05-12C): LOGIN_FORM permit-all paths are hand-coded as a local constant (lines 49-51 inline the path list) rather than referencing the shared `SecurityConstants.WHITELIST_PATHS`. A maintainer who adds a new always-public path to WHITELIST_PATHS leaves LOGIN_FORM out of sync — paths public in OAUTH2 / LDAP modes require authentication in LOGIN_FORM
+  - **Category**: doc-code-drift (cross-mode)
+  - **Surfaced by**: `odd-platform__java__LoginFormSecurityConfiguration__config-key-consumer__auth_type@L31.md:bugs_limitations_corner_cases.[7]` (severity LOW)
+  - **Statement**: `LoginFormSecurityConfiguration.java:49-51` declares the path list inline (`/actuator/health`, `/favicon.ico`, `/ingestion/entities`, `/ingestion/datasources`, `/api/slack/events`); the OAUTH2 + LDAP modes use `SecurityConstants.WHITELIST_PATHS` via `AuthorizationCustomizer.java:22`. The inline list aligns with the shared list today but is not centralised — drift risk for future additions.
+  - **Evidence**: `LoginFormSecurityConfiguration.java:49-51` + `AuthorizationCustomizer.java:22` (`SecurityConstants.WHITELIST_PATHS`)
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-002 (centralised SECURITY_RULES) prescribes centralisation; this scope is the LOGIN_FORM-specific deviation.
+  - **Proposed remedy**: Replace the inline list with `SecurityConstants.WHITELIST_PATHS` reference. One-line change.
+  - **Severity rationale**: LOW — centralisation hygiene.
+  - **Suggested backlog grouping**: `Authentication / boot-time security posture hardening`

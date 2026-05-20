@@ -1,0 +1,167 @@
+name: |-
+  Compute facet counts catalog-wide (the catalog-cardinality enumeration surface)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-09
+description: |-
+  NEW OPERATION, batch 2026-05-19M (SearchController.facets sidecar — covers
+  both getSearchFacetList at GET /api/search/{search_id} and
+  getFiltersForFacet at GET /api/search/{search_id}/facet/{facet_type}) —
+  the facet-count surface that powers the seven-facet UI sidebar on the
+  Catalog tab. **getSearchFacetList**: returns the seven-facet aggregate
+  counts + the total catalog count + the optional myObjectsCount for the
+  current owner. Issues FOUR parallel-via-Mono.zip DB calls at
+  SearchServiceImpl.java:122-155: (a) entity-class facet aggregator
+  (ReactiveSearchFacetRepositoryImpl.java:163-249 — runs
+  unnest(DATA_ENTITY.ENTITY_CLASS_IDS) + count(DATA_ENTITY.ID) GROUP BY
+  entity class), (b) catalog-wide total via
+  reactiveDataEntityRepository.countByState(state), (c) owner-scoped
+  myObjectsCount via countByState(state, owner) — runs UNCONDITIONALLY even
+  when my_objects=false, (d) the UPDATE-RETURNING fetch of the session row
+  for last_accessed_at side-effect.
+  **getFiltersForFacet**: returns paginated CountableSearchFilter[] for a
+  single facet type (TAGS / OWNERS / TYPES / GROUPS / STATUSES per
+  MultipleFacetType). Issues TWO DB calls: (a) the UPDATE-RETURNING session
+  fetch, (b) the facet-type-specific aggregator (owner facet at
+  :339-372 runs OWNER LEFT JOIN OWNERSHIP LEFT JOIN SEARCH_ENTRYPOINT
+  LEFT JOIN DATA_ENTITY with countDistinct(SEARCH_ENTRYPOINT.DATA_ENTITY_ID)
+  ORDER BY count DESC LIMIT/OFFSET; tag/group/type/status facets follow
+  the same shape).
+  **Five load-bearing structural findings**:
+    (a) **Catalog-wide computation by design** — every aggregator applies
+        only getDataEntityDefaultConditions (HOLLOW=false, STATUS != DELETED,
+        EXCLUDE_FROM_SEARCH NULL-or-false); NO OWNERSHIP join, NO
+        principal-derived predicate. The myObjects toggle controls which
+        entities the user SEES in the RESULT list (SearchServiceImpl.java:105-111),
+        NOT the facet counts;
+    (b) **FTS query reaches every aggregator** — every facet applies
+        ftsCondition(SEARCH_ENTRYPOINT.SEARCH_VECTOR, state.getQuery()) when
+        the persisted session query is non-empty; the to_tsquery operator-
+        injection vector reaches FIVE distinct aggregator invocation sites
+        (see tsquery operator-injection via persisted state invariant);
+    (c) **Side-effect UPDATE on every read** — fetchFacetState
+        (ReactiveSearchFacetRepositoryImpl.java:99-106) issues
+        UPDATE search_facets SET last_accessed_at WHERE id = ? on every
+        GET — every facet GET is a WRITE; the last_accessed_at field is
+        never read by any housekeeping job;
+    (d) **Unbounded pagination at every layer** — controller params
+        Integer page, Integer size carry no validation annotations;
+        components.yaml:4213-4229 PageParam/SizeParam have no minimum/maximum;
+        the repository computes OFFSET = (page - 1) * size with no clamping;
+    (e) **No upper bound on session UUID validity** — get(id) is a raw
+        UUID-keyed lookup with no per-user owner predicate (search_facets
+        schema has no owner_id column); any authenticated user with any
+        UUID can drive the operation.
+  **Severity**: HIGH (cross-owner cardinality enumeration via owner facet;
+  catalog-cardinality discovery via tag/group/namespace/status facets;
+  bearer-token-shaped session reach).
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+nodes:
+  - odd-platform java SearchController controller-method:facets
+  - odd-platform java service service:SearchServiceImpl
+  - odd-platform java repository reactive repository:ReactiveSearchFacetRepositoryImpl
+contributing_files:
+  - odd-platform__java__SearchController__controller-method__facets.md
+contributors:
+  - |-
+    facets.md (batch M PRIMARY SOURCE):
+    understanding — the two sibling reactive endpoints on the SAME
+    SearchFacets session UUID; every facet count is computed CATALOG-WIDE
+    with no OWNERSHIP join and no principal-derived predicate;
+    concepts.entities — SearchFacetsData response + CountableSearchFilter
+    filter-option element + MultipleFacetType enum + SearchFacetsPojo DB
+    row + FacetStateDto in-memory state + SearchFilterId row key;
+    concepts.operations — getSearchFacetList + getFiltersForFacet +
+    fetch-session-row-side-effect + compute-catalog-wide-total +
+    compute-owner-scoped-myObjects + facet-type-specific aggregators +
+    filter-already-selected;
+    concepts.invariants — no @PreAuthorize / @Secured /
+    permissionService.hasPermission; reactive Mono signatures with
+    success-always-200; search_facets schema has no owner/user binding;
+    pagination unbounded; free-text query is facet-row-name filter (NOT
+    FTS); persisted FacetStateDto.query IS bound to FTS via to_tsquery;
+    getFacetsData runs 4 concurrent DB calls;
+    implicit_adrs.[0,1,2] — centralised SecurityConstants.SECURITY_RULES
+    falls through to .authenticated(); catalog-wide facet counts are the
+    design; search session is bearer-token-shaped by design at the schema
+    layer;
+    bugs_limitations_corner_cases — cross-owner catalog cardinality
+    enumeration HIGH; search_facets has no user binding HIGH; DISABLED-mode
+    anonymously reachable MEDIUM; pagination unbounded MEDIUM; tsquery
+    operator-injection via persisted query HIGH; side-effect UPDATE on
+    every read LOW; unbounded table growth LOW; no HTTP-level test.
+evidence:
+  - |-
+    SearchController.java:30-47 (both facet endpoints — no annotations)
+  - |-
+    SearchServiceImpl.java:51-72 (getFilterOptions + getFacets service
+    methods)
+  - |-
+    SearchServiceImpl.java:122-155 (getFacetsData with the 4-call Mono.zip)
+  - |-
+    SearchServiceImpl.java:128-130 (the ONLY principal-derived input —
+    fetchAssociatedOwner used ONLY for the optional myObjectsCount field)
+  - |-
+    SearchServiceImpl.java:162-175 (the facet-type-specific dispatcher)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:99-106 (the UPDATE-RETURNING
+    side-effect on every read)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:163-249 (entity-class facet
+    SQL — no OWNERSHIP join)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:251-337 (type facet SQL)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:339-407 (owner facet SQL — PRIMARY
+    catalog-cardinality enumeration vector)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:409-452 (group facet SQL)
+  - |-
+    ReactiveSearchFacetRepositoryImpl.java:454-534 (status facet SQL)
+  - |-
+    V0_0_1__init.sql:204-211 (search_facets schema with no owner column +
+    TODOs for UUID/TTL)
+  - |-
+    facets.md:concepts.operations + concepts.invariants +
+    implicit_adrs.[0,1,2] + bugs_limitations_corner_cases.[0-8] +
+    security.* + performance.*
+notes: |-
+  This operation is the FACET-COUNTS sibling of the search-creation
+  operation (Search Catalog faceted session-as-server-state). The two
+  operations share the same search_facets session row and the same
+  cross-owner-enumeration posture; the facet-counts surface is the
+  CATALOG-CARDINALITY discovery vector (REFACTOR-024 family extension),
+  the search-creation operation is the SESSION-CREATION primitive.
+
+  Operator-relevant compounding from this operation:
+    (a) per-keystroke hot path on the Catalog tab — dozens of facet
+        queries per user-minute;
+    (b) each getSearchFacetList = 4 DB calls (3 aggregators + the
+        UPDATE-RETURNING side-effect);
+    (c) each getFiltersForFacet = 2 DB calls (UPDATE-RETURNING + aggregator);
+    (d) no caching at any layer; no Cache-Control, no ETag;
+    (e) every read is a write (last_accessed_at UPDATE) — under concurrent
+        UI tabs the row-lock contention can serialise writes;
+    (f) the tsquery-operator-injection vector reaches all FIVE aggregators —
+        a poisoned session_facets.query value permanently breaks the session.
+
+  Cross-references:
+    - Search Catalog (faceted, session-as-server-state) — the parent
+      operation that creates the session row this operation consumes.
+    - Search Session — the entity that this operation is the
+      cardinality-aggregation surface for.
+    - Cross-owner facet-count enumeration via drill-down — the security
+      invariant this operation embodies.
+    - tsquery operator-injection via persisted state — the DoS class this
+      operation amplifies via FIVE aggregator invocations.
+    - Search-facets bearer-token-shaped — no user binding — the
+      session-state invariant this operation depends on.
+    - Read-collaborative cross-owner enumeration — the broader posture;
+      this operation is one of the catalog-wide read surfaces.
+    - Pagination parameters declared but unconstrained — the
+      cross-cutting pagination invariant this operation is one site for.

@@ -1,0 +1,10 @@
+- **REFACTOR-052** (NEW 2026-05-10A): Slack-posting endpoint has no inbound rate-limit — a single authenticated user can fill the `messages` table at maximum throughput; sender thread becomes the bottleneck
+  - **Category**: missing-rate-limit
+  - **Surfaced by**:
+    - `odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md:bugs_limitations_corner_cases.[7]` (MEDIUM)
+  - **Statement**: `POST /api/datacollaboration/providers/slack/messages` has no per-endpoint rate-limiting, no Bucket4j integration, no per-user throttle. A single authenticated user can call the endpoint in a tight loop with 4 MB bodies, all of which are persisted to `messages` and then drained by a single-leader sender (`DataCollaborationMessageSenderJob`). The sender thread becomes the bottleneck, not the inbound, so attacker-controlled growth of `messages` rows is unbounded by the inbound. Combined with REFACTOR-050 (no authz gate) and REFACTOR-051 (no body validation), this is a queue-pollution + DB-disk-fill surface for any authenticated user.
+  - **Evidence**: `DataCollaborationController.java:33-39` + no per-endpoint rate-limiting in this controller, the global filter chain (`AuthorizationCustomizer.java:19-31`), or in `DataCollaborationServiceImpl.createAndSendMessage(...)`
+  - **Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-020 (decoupled-outbound-delivery) describes the 202+queue+retry shape; this scope is a gap on the inbound side. The ADR's queue model ASSUMES bounded inbound; the absence of an enforceable upper bound is the gap.
+  - **Proposed remedy**: Add per-user rate-limit on `POST /api/datacollaboration/providers/slack/messages` (e.g., 10 messages/minute/user). Expose `datacollaboration.rate-limit.requests-per-minute-per-user`. Document on the live `data-collaboration` page.
+  - **Severity rationale**: MEDIUM — queue pollution / DB-disk-fill via attacker-controlled inbound.
+  - **Suggested backlog grouping**: `Data Collaboration hardening`

@@ -1,0 +1,11 @@
+- **REFACTOR-012**: `downloadFile` Content-Disposition header injection — `dto.fileName()` injected verbatim with no sanitisation, no quoting, no `filename*=UTF-8''...` encoding
+  - **Category**: header-injection
+  - **Surfaced by**:
+    - `odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityAttachmentController.md:bugs_limitations_corner_cases.[2]` (MEDIUM)
+    - `concepts.yaml:entities[Attachment].security_aggregate.weaknesses.[6]`
+  - **Statement**: `DataEntityAttachmentController.java:77` does `"attachment;filename=" + dto.fileName()`. CR/LF in filename → header injection; non-ASCII renders inconsistently across browsers; `"` or `;` truncates the value. Filename originates from `DataEntityUploadFormData.fileName` posted at `initiateFileUpload` — fully attacker-controlled.
+  - **Evidence**: `DataEntityAttachmentController.java:73-80` + `FileServiceImpl.java:41-55`
+  - **Existing-ADR-or-implied-prescription**: None.
+  - **Proposed remedy**: Use Spring's `ContentDisposition.attachment().filename(dto.fileName(), StandardCharsets.UTF_8).build().toString()`. Reject CR/LF in filenames at upload time (a separate fast-fail validation).
+  - **Severity rationale**: MEDIUM — header injection vulnerability.
+  - **Suggested backlog grouping**: `Attachment integrity sprint`

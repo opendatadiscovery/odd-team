@@ -1,0 +1,87 @@
+gap_id: TEST-GAP-844
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:Lineage"
+  - "odd-platform ts react-component component:LineageGraph"
+pillars_affected: [P-05, P-09]
+surfaced_by:
+  - "Lineage.md:security.known_security_gaps.[0] — 'No defence-in-depth owner gate at the dispatch layer. The dispatcher is the natural chokepoint for a UI-layer owner-scope check that would short-circuit BEFORE either subtree mounts and fetches.'"
+  - "Lineage.md:security.known_security_gaps.[1] — 'The shell inherits BOTH F-005 + F-016 read-collaborative posture as a single user-observable surface.'"
+  - "Lineage.md:tests_coverage_semantic.uncovered_behaviours.[*] — multiple uncovered behaviours pinning the dispatcher contract"
+behaviour: |-
+  **MEDIUM — UI-layer defense-in-depth absent at the Lineage dispatcher. The natural chokepoint for an owner-scope check is unguarded.** Lineage.tsx is a 28-line pure dispatcher that decides between DEG-branch (F-016) and non-DEG-branch (F-005) based on `entityClasses` containing `ENTITY_GROUP`. Both branches inherit the read-collaborative posture from their respective backend chains (F-005 facet `UI uses anchor-set-undefended endpoints`; F-016 facet `co-membership leakage`).
+
+  **The dispatcher is the natural defense-in-depth chokepoint** — a single short-circuit at this layer would prevent EITHER subtree from mounting if the user lacks an Owner relationship to the entity. The check is:
+  ```
+  if (!callerHasAnyRelation(dataEntityId)) return <RestrictedPlaceholder />
+  ```
+  This is the CHEAPEST UI-side mitigation for REFACTOR-203 + F-016 co-membership leakage. **It is absent.**
+
+  **Why this isn't HIGH or CRITICAL**:
+  - The backend gap is the LOAD-BEARING fix (REFACTOR-203 — recursive CTE has no anchor-owner filter)
+  - UI-side defense-in-depth is a complement, not a substitute
+  - Per system-mission.md line 267 (read-collaborative posture), the catalog-wide visibility is a DELIBERATE design choice (ADR-CANDIDATE-003)
+  - The Lineage view specifically inheriting that posture is consistent with the architectural stance
+
+  **Why it's MEDIUM (not LOW)**:
+  - Lineage is the SINGLE chokepoint at which a UI-layer owner-scope check would be cheapest to add — it sits above both F-005 and F-016 subtrees
+  - Adding the check here is a 5-line change vs adding it at both subtree entrypoints (DEG-side + HierarchyLineage-side)
+  - The absence is structural; a future maintainer cannot easily retrofit it without first surfacing this gap
+  - **The shell amplifies the exposure by making the routing trivial** — the user clicks the tab, the shell does the rest, the lineage graph reveals every neighbour entity regardless of Owner
+
+  **Test gap shape**: A `Lineage.test.tsx` that pins the contract:
+  - **PINS-THE-CONTRACT mode** (today): mount with user lacking Owner relation to the entity, assert the shell still routes to the subtree (no short-circuit). Documents the current read-collaborative posture.
+  - **PINS-THE-FIX mode** (after defense-in-depth added): same setup, assert `<RestrictedPlaceholder />` renders instead of the subtree. The test flips assertion direction.
+
+  The maintainer's policy call (ADR-CANDIDATE-003) determines which mode the test ships in; either way the test is the canonical pin for the dispatcher's owner-scope posture.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/DataEntityDetails/Lineage/__tests__/Lineage.test.tsx"
+    name: "renderLineage_userLacksOwnerRelationToEntity_currentlyRoutesToSubtree_pinsReadCollaborativePosture"
+  - path: "odd-platform-ui/src/components/DataEntityDetails/Lineage/__tests__/Lineage.test.tsx"
+    name: "renderLineage_userHasOwnerRelationToEntity_routesToSubtree_pinsHappyPath"
+  - path: "odd-platform-ui/src/components/DataEntityDetails/Lineage/__tests__/Lineage.test.tsx"
+    name: "renderLineage_isDEGtrueAndIsLoadedTrue_mountsDEGLineageInsideJotaiProvider_pinsDispatcherContract"
+  - path: "odd-platform-ui/src/components/DataEntityDetails/Lineage/__tests__/Lineage.test.tsx"
+    name: "renderLineage_isDEGfalseAndIsLoadedTrue_mountsHierarchyLineageWithoutProvider_pinsDispatcherContract"
+  - path: "odd-platform-ui/src/components/DataEntityDetails/Lineage/__tests__/Lineage.test.tsx"
+    name: "renderLineage_isLoadedFalse_returnsNull_pinsRenderNullGuard"
+evidence:
+  - "Lineage.md says (security.known_security_gaps.[0]): 'No defence-in-depth owner gate at the dispatch layer. The dispatcher is the natural chokepoint for a UI-layer owner-scope check that would short-circuit BEFORE either subtree mounts and fetches. Adding such a gate is the cheapest UI-side mitigation for REFACTOR-203 + F-016 co-membership leakage — but it is absent.'"
+  - "Lineage.md says (security.known_security_gaps.[1]): 'A user opening the Lineage tab on ANY entity (DEG or not) gets cross-owner lineage data. The shell amplifies the exposure by making the routing trivial — the user clicks the tab, the shell does the rest.'"
+  - "Verified at primary source: Lineage.tsx:1-28 (28-line file with NO owner-scope check anywhere)"
+  - "Cross-reference: F-005 batch-J facet `UI uses anchor-set-undefended endpoints` (the backend half — the shell inherits this)"
+  - "Cross-reference: F-016 facet `co-membership leakage` (the DEG-side backend half)"
+  - "Cross-reference: REFACTOR-203 (recursive CTE no anchor-owner filter — the load-bearing backend fix)"
+  - "Reducer-side Glob verification: `/home/raman/work/odd/odd-platform/odd-platform-ui/**/Lineage.test.*` returned 0 matches"
+cross_references:
+  - "REFACTOR-203 (lineage-CTE cross-owner enumeration — the load-bearing backend fix; UI defense-in-depth is the complement)"
+  - "F-005 (Lineage Graph Traversal — backend half)"
+  - "F-016 (DEG-Anchored Lineage — backend half)"
+  - "ADR-CANDIDATE-003 (read-collaborative catalog posture — the implicit ADR for the absence)"
+  - "TEST-GAP-842 (sister cross-owner family at Popular column — same architectural posture)"
+  - "TEST-GAP-843 (sister cross-owner family at Directory — same architectural posture)"
+  - "concepts.yaml:invariants[ui-layer-owner-scope-chokepoint-absent-lineage-dispatcher]"
+related_features: [F-005, F-016]
+related_pillar_features: ["P-05:F-001 Lineage Graph Traversal", "P-05:F-002 DEG-Anchored Lineage", "P-09:Security & Access Control"]
+proposed_action: |-
+  **Phase 1 — Vitest dispatcher contract tests** (5 unit tests covering the dispatch decision matrix):
+
+  1. `renderLineage_userLacksOwnerRelationToEntity_currentlyRoutesToSubtree_pinsReadCollaborativePosture` — render `<Lineage />` with mocked Redux state representing a user with no Owner relation to the entity. Assert the subtree mounts (HierarchyLineage or DEGLineage based on isDEG). PINS the current read-collaborative posture.
+
+  2. `renderLineage_userHasOwnerRelationToEntity_routesToSubtree_pinsHappyPath` — same with Owner relation present, assert subtree mounts. PINS the happy path.
+
+  3. `renderLineage_isDEGtrueAndIsLoadedTrue_mountsDEGLineageInsideJotaiProvider_pinsDispatcherContract` — assert the jotai Provider wraps DEGLineage on the DEG branch (line 20-22 of Lineage.tsx).
+
+  4. `renderLineage_isDEGfalseAndIsLoadedTrue_mountsHierarchyLineageWithoutProvider_pinsDispatcherContract` — assert no jotai Provider on the non-DEG branch.
+
+  5. `renderLineage_isLoadedFalse_returnsNull_pinsRenderNullGuard` — assert the render-null guard at line 17.
+
+  **Architectural fix decision** (maintainer policy call):
+  - Option A (preserve read-collaborative posture per ADR-CANDIDATE-003): the test PINS the contract; UI defense-in-depth is intentionally absent
+  - Option B (add UI-layer defense-in-depth at the dispatcher): add `<RestrictedPlaceholder />` short-circuit; test flips assertion direction
+
+  Coherence note (LSN-018 Rule 6): STRENGTHENS F-005 + F-016 by establishing the UI dispatcher tier as the single defense-in-depth chokepoint. NO contradiction with existing artefacts. The read-collaborative posture is consistent across the codebase (Search, Directory, Popular, Lineage all share the stance); the Lineage dispatcher is the cheapest place to add a defense-in-depth check IF the maintainer ever wants one.
+batch: 2026-05-20-ZA
+feature_id: F-005

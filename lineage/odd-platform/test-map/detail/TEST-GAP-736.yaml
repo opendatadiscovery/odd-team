@@ -1,0 +1,59 @@
+gap_id: TEST-GAP-736
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java OwnerAssociationRequestController controller-class:OwnerAssociationRequestController"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "OwnerAssociationRequestController.md:security.known_security_gaps.[1] (GET /api/owner_association_request/activity has NO SecurityRule entry — the audit-trail surface is reachable by any authenticated user — severity HIGH)"
+  - "OwnerAssociationRequestController.md:security.authorization_assertions (ABSENT — GET /api/owner_association_request/activity has NO SecurityRule entry; gated only by Spring default `.authenticated()` even though it exposes the full audit-trail of who requested/approved which association)"
+  - "OwnerAssociationRequestController.md:bugs_limitations_corner_cases.[3] (Live doc names two flows + the activity-log read endpoint surface exists but is doc-invisible)"
+behaviour: |-
+  **HIGH — `GET /api/owner_association_request/activity` has NO SecurityRule entry — the audit-trail surface is reachable by ANY authenticated user, exposing forensic data about WHO requested association with WHICH Owner, WHO approved/declined, WHEN.** Primary-source confirmed in the batch-V OwnerAssociationRequestController sidecar:
+
+  - The controller method (`OwnerAssociationRequestController.java:47-53`) returns `OwnerAssociationRequestActivityList` — a paginated history of every owner-association request + status-update across the platform.
+  - `SecurityConstants.java:148-162` declares the 5 path-pattern entries for this controller's protected paths: GET /api/owner_association_request (OWNER_ASSOCIATION_MANAGE), PUT /api/owner_association_request/{id} (same), POST /api/owners/mapping (OWNER_RELATION_MANAGE), DELETE /api/owners/mapping/{id} (same). **NO entry for `/api/owner_association_request/activity`.**
+  - The endpoint falls through to the global `pathMatchers("/**").authenticated()` catch-all. Any authenticated user with ZERO RBAC permissions can call this endpoint.
+
+  **Asymmetric with the LIST endpoint**: GET `/api/owner_association_request` (the PENDING/APPROVED/DECLINED list view) REQUIRES `OWNER_ASSOCIATION_MANAGE`. GET `/api/owner_association_request/activity` (the audit/historical view) requires NO permission. The activity view is strictly a SUPERSET of the list view in sensitivity — it exposes the same data PLUS the historical status-change audit trail. The asymmetry is unintentional (the activity view is more sensitive, not less). Per `OwnerAssociationRequestController.md:security.known_security_gaps.[1]` verbatim: "The asymmetry is unintended (the activity view is strictly a superset of the list view in sensitivity)."
+
+  **Operator-observable consequences**:
+  - An authenticated user with no permissions (e.g. a newly-onboarded user awaiting approval, an unprivileged programmatic client) can fetch the full forensic history of platform owner-association events: WHO requested association with WHICH owner, WHO approved/declined, WHEN, plus the role list per request.
+  - In a deployment where `owner.name` carries sensitive PII or organisational structure (e.g. team-name = project-codename indicating an unannounced product), the activity feed leaks the organisational chart to every authenticated user.
+  - In a deployment with operator-direct manual-mapping (per the MANUAL flow at POST /api/owners/mapping — see TEST-GAP-738 sister gap), every `REQUEST_MANUALLY_APPROVED` row reveals "admin X bound user Y to owner Z at time T" — full audit trail leaked to anyone authenticated.
+
+  **Compound with the audit-trail-is-the-ONLY-forensic-record finding**: per `OwnerAssociationRequestController.md:coherence_notes.[2]` (the F-006 audit-presence asymmetry POSITIVE half), the OwnerAssociationRequest workflow IS one of the few RBAC-adjacent surfaces with a DEDICATED audit table. The asymmetry framing: RBAC mutations (Role create, Policy edit) have NO audit log; OwnerAssociation mutations DO. But the BENEFIT of the audit log is undermined when the audit log itself is READ by any authenticated user. The forensic surface exists but is not RBAC-gated.
+
+  **Why HIGH not CRITICAL**: the leaked information is metadata about owner-association requests + their status transitions + approver identities. It does NOT directly enable a mutation (the attacker cannot ESCALATE via this read). But it provides reconnaissance for further attacks (which admins to target, which owners exist, which requests are pending). HIGH information disclosure.
+
+  **Test gap shape**: regression-pin asserting the endpoint is reachable by an authenticated user with zero MANAGEMENT permissions. Pin the asymmetry with the LIST endpoint (which requires OWNER_ASSOCIATION_MANAGE).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/OwnerAssociationActivityListUnauthorizedTest.java"
+  name: "getOwnerAssociationRequestActivityList_userWithZeroManagementPermissions_succeeds_exposesForensicTrail"
+evidence:
+  - "OwnerAssociationRequestController.md says (security.known_security_gaps.[1]): 'GET /api/owner_association_request/activity has NO SecurityRule entry — the audit-trail surface is reachable by any authenticated user, exposing forensic data (who requested association with which Owner, who approved/declined, when). Contrast with the LIST endpoint (line 148-150 of SecurityConstants requires OWNER_ASSOCIATION_MANAGE for the LIVE-PENDING view but NOT for the historical activity view). The asymmetry is unintended (the activity view is strictly a superset of the list view in sensitivity).' — severity HIGH"
+  - "OwnerAssociationRequestController.md says (security.authorization_assertions): 'ABSENT — GET /api/owner_association_request/activity has NO SecurityRule entry; gated only by Spring default .authenticated() even though it exposes the full audit-trail of who requested/approved which association — evidence: SecurityConstants.java:148-162 (no entry for /api/owner_association_request/activity) + OwnerAssociationRequestController.java:47-53'"
+  - "OwnerAssociationRequestController.md says (bugs_limitations_corner_cases.[3]): 'Live doc has NO mention of the activity-log read endpoint (GET /api/owner_association_request/activity — line 47-53). The audit-trail surface exists but is doc-invisible.'"
+  - "Verified at primary source: SecurityConstants.java:148-162 — Grep against `/api/owner_association_request/activity` returns ZERO matches (sidecar invariants[3] verified)"
+cross_references:
+  - "TEST-GAP-729 (NEW batch V — DIRECT_OWNER_SYNC + getOrCreate privilege-escalation chain — sister gap on same controller)"
+  - "TEST-GAP-737 (NEW batch V — MANUAL-mapping flow + Admin self-bind — sister gap on same controller)"
+  - "TEST-GAP-626 (Owner-delete + owner_association_request orphan rows — sister cascade-incompleteness)"
+  - "F-006 (audit-silence pattern — this gap is the POSITIVE half-with-asymmetric-read-gate variant)"
+  - "concepts: f006-audit-trail-read-collaborative-asymmetry (NEW concept candidate — audit table exists, but the audit READ is read-collaborative-posture rather than RBAC-gated; the asymmetry is unintended)"
+  - "REFACTOR-NNN candidate: add SecurityRule for GET /api/owner_association_request/activity with OWNER_ASSOCIATION_MANAGE permission (the natural symmetry with the LIST endpoint)"
+  - "DOC-NNN candidate: surface the activity-log read endpoint on the user-owner-association doc page (currently doc-invisible per sidecar coherence note)"
+related_features: [F-019, F-006]
+related_pillar_features: ["P-08:F-003", "P-09:F-NN"]
+proposed_action: |-
+  Add `OwnerAssociationActivityListUnauthorizedTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `getOwnerAssociationRequestActivityList_userWithZeroManagementPermissions_succeeds_exposesForensicTrail` — authenticate as a user with ZERO permissions (no OWNER_ASSOCIATION_MANAGE, no OWNER_RELATION_MANAGE, no DIRECT_OWNER_SYNC); GET `/api/owner_association_request/activity`; assert HTTP 200 with a paginated activity list response. PIN the current unauthorized-read surface.
+  2. `getOwnerAssociationRequestList_userWithZeroManagementPermissions_returns403_pinsAsymmetry` — same authentication context; GET `/api/owner_association_request` (the LIST endpoint, NOT activity); assert HTTP 403 (the LIST endpoint IS gated). PIN the asymmetry between the two endpoints.
+  3. `getOwnerAssociationRequestActivityList_underAuthDisabled_anonymousReadSucceeds` — pin the DISABLED-mode behaviour. Under auth.type=DISABLED, no authentication is required; the activity list is open to anonymous callers.
+
+  Add a `// REGRESSION-PIN — GET /api/owner_association_request/activity has NO SecurityRule entry. The endpoint is read-collaborative-posture by accident, not by design — the LIST endpoint requires OWNER_ASSOCIATION_MANAGE; the ACTIVITY endpoint does not. A REFACTOR adding the SecurityRule will flip test #1 to 403 and break test #3 (under DISABLED the new rule may still allow anonymous access — depends on the rule's auth-mode-relevance).` comment block.
+
+  Pair with REFACTOR-NNN: add `SecurityRule(NO_CONTEXT, /api/owner_association_request/activity, GET, OWNER_ASSOCIATION_MANAGE)` to SecurityConstants. Pair with DOC-NNN: surface the activity-log read endpoint on the user-owner-association doc page; document the OWNER_ASSOCIATION_MANAGE gate it should carry post-fix.
+batch: 2026-05-20-V
+feature_id: F-019

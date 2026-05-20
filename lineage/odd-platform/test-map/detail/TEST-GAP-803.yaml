@@ -1,0 +1,72 @@
+gap_id: TEST-GAP-803
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java notification.processor class:PostgresWALMessageProcessor"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "PostgresWALMessageProcessor.md:bugs_limitations_corner_cases.[4] HIGH (NO notification-delivery audit-event is emitted from the seam OR the implementor; cross-feature corroborates F-006 audit-silence ENUM-ROOTED)"
+behaviour: |-
+  **HIGH — F-006 audit-silence ENUM-ROOTED extends to notification delivery.** `ActivityEventTypeDto.java:3-31` enumerates 26 activity event types (`OWNERSHIP_CREATED`, `ALERT_STATUS_UPDATED`, `OPEN_ALERT_RECEIVED`, `RESOLVED_ALERT_RECEIVED`, etc.) but **ZERO of them name notification delivery**: no `NOTIFICATION_SENT`, no `NOTIFICATION_FAILED`, no `NOTIFICATION_DELIVERY_ATTEMPTED`, no `NOTIFICATION_DELIVERED_TO_CHANNEL`.
+
+  This is a STRUCTURAL silence — even if a future maintainer wanted to emit notification-delivery audit events from `AlertNotificationMessageProcessor` (the sole implementor of `PostgresWALMessageProcessor`), they cannot: there is no enum constant to name the event. The activity-feed pipeline (`@ActivityLog` annotation + `ActivityEventTypeDto` enum + `activity_event` table) is enum-driven; adding a new event type requires a code change to the enum, a Flyway migration to the constraint, and updates to the activity-feed UI's switch statement.
+
+  **The F-006 audit-silence family** (per the F-006 feature flow's drift class `audit_silence_enum_rooted_activity_event_type_dto_term_namespace_owner_lifecycle`):
+  - Term lifecycle events: silent
+  - Namespace lifecycle events: silent
+  - Owner lifecycle events: silent
+  - Role / Policy / Permission mutations: silent (see TEST-GAP-573 — sister coverage)
+  - **Notification delivery events: silent** (THIS gap — the seam adds the 5th surface)
+
+  **Compliance / forensics consequences**:
+  1. Multi-tenant deployments with regulatory requirements ("data alerts must be delivered or auditable as undelivered" per GDPR / SOC2 / HIPAA frameworks) cannot meet the requirement.
+  2. Operators asking "did the webhook receive alert X" or "which alerts failed Slack delivery between 14:00 and 14:30 yesterday" can ONLY answer via `grep` of stdout for the receiver-id strings — which are not structured, not timestamped uniformly, and not queryable.
+  3. SIEM integrations expecting per-action audit events have no ODD-side feed for notification activity — the platform's `/api/activity` endpoint returns nothing for notification delivery.
+  4. Post-incident forensics (operator asks "what alert went to which channel?" after a security incident) is impossible.
+
+  **The seam's role**: `PostgresWALMessageProcessor.process(DecodedWALMessage)` carries no per-message identifier (no LSN, no message-id, no correlation-id) — even if the enum had `NOTIFICATION_SENT`, the dispatcher implementor would have no per-message anchor to emit. The LSN is known only to the caller (`NotificationSubscriber`).
+
+  **Cross-feature corroboration**: F-006 catalogues the ENUM-rooted silence at the term / namespace / owner / RBAC surfaces. This gap pins the 5th surface — notification delivery — anchored to the same `ActivityEventTypeDto.java:3-31` enum gap.
+
+  **Test gap shape**: regression-pin asserting that the `ActivityEventTypeDto` enum has NO `NOTIFICATION_*` constants. PINS the structural silence; pairs with REFACTOR-NNN extending the enum + adding `@ActivityLog`-on-process surfaces.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/NotificationDeliveryAuditEnumGapRegressionPinTest.java"
+  name: "activityEventTypeDto_noNotificationEventConstants_pinsStructuralAuditSilence"
+evidence:
+  - "PostgresWALMessageProcessor.md says (bugs_limitations_corner_cases.[4]): 'NO notification-delivery audit-event is emitted from the seam OR the implementor — ActivityEventTypeDto.java:3-31 enumerates 26 activity event types (OWNERSHIP_CREATED, ALERT_STATUS_UPDATED, OPEN_ALERT_RECEIVED, RESOLVED_ALERT_RECEIVED, etc.) but ZERO of them name notification delivery. F-006 audit_silence_enum_rooted drift class names this exact enum gap as a root cause. From the seam perspective: a dispatcher implementor cannot emit a notification-delivery activity event because the enum has no constant to name; the enum gap is a STRUCTURAL silence on this entire subsystem observability.' — severity HIGH (cross-feature; corroborates F-006 audit-silence ENUM-ROOTED)"
+  - "Verified at primary source: ActivityEventTypeDto.java:3-31 (no NOTIFICATION_SENT / NOTIFICATION_FAILED / NOTIFICATION_DELIVERY_* constants in the 26 enum values)"
+  - "Verified at primary source: PostgresWALMessageProcessor.java:6 (seam carries no per-message id)"
+  - "Verified at primary source: AlertNotificationMessageProcessor.java:25-36 (no @ActivityLog annotation, no activity_event INSERT)"
+cross_references:
+  - "F-006 (parent — audit-silence ENUM-ROOTED drift class; this gap adds the 5th surface)"
+  - "TEST-GAP-573 (sister surface — Role mutation audit silence; same ENUM-rooted root cause)"
+  - "TEST-GAP-458 (sister surface — no delivery audit at dispatcher; this gap pins the STRUCTURAL cause — the enum)"
+  - "REFACTOR-NNN (proposed, multi-step): (a) add `NOTIFICATION_DELIVERY_ATTEMPTED` + `NOTIFICATION_DELIVERY_FAILED` + `NOTIFICATION_DELIVERED` constants to ActivityEventTypeDto; (b) Flyway migration extending the activity_event_type check constraint; (c) emit `@ActivityLog`-driven audit events from AlertNotificationMessageProcessor for each per-channel send attempt; (d) extend the activity-feed UI's switch statement"
+  - "DOC-GAP-NNN (proposed): live `/features/active-platform-features/notifications` should state explicitly that notification delivery is NOT audited in the activity feed — operators cannot rely on `/api/activity` for delivery forensics"
+  - "concepts.yaml: `audit-silence-notification-delivery-enum-rooted` invariant — extends F-006's audit-silence-enum-rooted to the notification subsystem"
+related_features: [F-006, F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery", "P-09:F-001 Security"]
+proposed_action: |-
+  Add `NotificationDeliveryAuditEnumGapRegressionPinTest`. Static-analysis unit test:
+
+  1. `activityEventTypeDto_noNotificationEventConstants_pinsStructuralAuditSilence` —
+     - Use reflection to enumerate `ActivityEventTypeDto.values()`.
+     - Assert NONE of the enum values has a `name()` matching the regex `NOTIFICATION.*` or `.*NOTIFICATION.*`.
+     - PINS the current 26-enum-value list without notification constants.
+
+  2. `alertNotificationMessageProcessor_noActivityLogAnnotation_pinsAuditMechanismAbsence` —
+     - Use reflection on `AlertNotificationMessageProcessor.class` methods.
+     - Assert NO method carries `@ActivityLog` annotation.
+     - PINS the absence of activity-feed integration.
+
+  3. `notificationDelivery_anyEnumExtensionExistsAndIsLogged_confirmsFixDirection` — (UPDATE once REFACTOR-NNN lands)
+     - After REFACTOR-NNN: assert `ActivityEventTypeDto` includes `NOTIFICATION_DELIVERY_ATTEMPTED` constant.
+     - Integration test: trigger an alert; assert `/api/activity` returns a row of type `NOTIFICATION_DELIVERY_ATTEMPTED` for the alert.
+     - CONFIRMS the fix's effectiveness.
+
+  Pair with REFACTOR-NNN (multi-step enum + Flyway + @ActivityLog emission + UI switch) and DOC-GAP-NNN (live doc audit-coverage clarification).
+
+  Coherence note (LSN-018 Rule 6): This finding STRENGTHENS F-006 (ENUM-rooted audit silence) by adding the notification-delivery surface as the 5th instance of the family. STRENGTHENS TEST-GAP-458 (no delivery audit at dispatcher) by surfacing the structural root cause — the ENUM gap. NO contradiction. NET-NEW at the enum-anchored evidence layer.
+batch: 2026-05-20-Y
+feature_id: F-006

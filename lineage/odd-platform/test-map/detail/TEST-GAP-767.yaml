@@ -1,0 +1,86 @@
+gap_id: TEST-GAP-767
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DatasetController controller-class:DatasetController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "DatasetController.md:bugs_limitations_corner_cases.[Per-entity-scoping bypass at getDataSetStructureByVersionId — the data_entity_id URL parameter is NOT enforced against the version_id. A client calling GET /api/datasets/{any_id}/structure/{valid_version_id_for_other_dataset} receives the OTHER dataset's structure. The only consumer of the datasetId argument at the service tier is the NotFoundException message text; the SQL filters WHERE DATASET_VERSION.ID = datasetVersionId only — severity HIGH]"
+  - "DatasetController.md:security.known_security_gaps.[Per-entity-scoping bypass at getDataSetStructureByVersionId — data_entity_id URL parameter is NOT enforced; any authenticated user can read any dataset version's full column structure by passing a known version_id. Combined with the read-collaborative posture, this is the F-004 verbatim-description read-side blast radius on steroids — every dataset_field.internal_description payload across the catalog is reachable via a brute-forced version_id — severity HIGH]"
+  - "DatasetController.md:implicit_adrs.[5] (getLatestDatasetVersion correctly cross-checks data_entity_id; getDatasetVersion and getDatasetVersionDiff do NOT — three different SQL shapes in the SAME repository, only one of which scopes — confidence MEDIUM)"
+  - "DatasetController.md:tests_coverage_semantic.uncovered_behaviours.[GET /api/datasets/{wrong_id}/structure/{valid_version_id_for_other_dataset} returns the OTHER dataset's structure (id-confusion bypass)]"
+behaviour: |-
+  **CRITICAL — Per-entity-scoping bypass at `getDataSetStructureByVersionId`: a client calling `GET /api/datasets/{any_id}/structure/{valid_version_id_for_other_dataset}` receives the OTHER dataset's structure. The `data_entity_id` URL parameter is NOT enforced against the `version_id` at the SQL level — the WHERE clause filters by `version_id` only.** Primary-source confirmed in batch-W DatasetController sidecar:
+
+  **Persistence-tier evidence**:
+  - `DatasetController.getDataSetStructureByVersionId` (lines 23-30): accepts `dataEntityId` from URL path; passes BOTH to `datasetVersionService.getDatasetVersion(dataEntityId, versionId)`.
+  - `DatasetVersionServiceImpl.getDatasetVersion` (lines 39-45): the `datasetId` argument is consumed ONLY by the `NotFoundException` message text — the SQL call ignores it.
+  - `ReactiveDatasetVersionRepositoryImpl.getDatasetVersion` (lines 97-144): the WHERE clause at line 129 is `DATASET_VERSION.ID = datasetVersionId` — NO `DATA_ENTITY.ID = datasetId` join condition.
+  - Compare to `getLatestDatasetVersion` (lines 160-217, line 167): DOES use `DATA_ENTITY.ID.eq(datasetId)`. Three SQL shapes in the same repository, only one of which scopes.
+
+  **Attack scenario**:
+  ```
+  # Attacker has authenticated access (LOGIN_FORM / OAUTH2 / LDAP — ANY auth.type with authenticated()).
+  # Attacker has NO ownership of dataset 200; dataset 100 is one they can see.
+
+  curl -X GET https://platform/api/datasets/100/structure/999 \
+       -H "Authorization: Bearer $TOKEN"
+
+  # Result: if version_id=999 belongs to dataset 200, the response is dataset 200's structure.
+  #         The URL path advertised dataset 100; the SQL returns 200.
+  ```
+
+  **Blast radius**:
+  - **Cross-owner column-metadata enumeration**: any authenticated user can read any dataset's `internal_description`, `internal_name`, tags, terms, metadata-field values, enum-value counts, lookup-table definitions for any version of any dataset in the catalog by brute-forcing version_ids.
+  - **`dataset_version.id` is a monotonically increasing surrogate** (jOOQ sequence) — sequential enumeration `/api/datasets/1/structure/{1..N}` walks the entire catalog's version history.
+  - **No rate-limit, no audit-log, no soft-delete-filter exclusion** on the endpoint.
+  - **Compound with TEST-GAP-770**: the verbatim-storage F-004 XSS read-side surface IS reachable here. Any operator-supplied Markdown / HTML in `dataset_field.internal_description` round-trips verbatim through this endpoint.
+
+  **What the docs claim vs what the code enforces**:
+  - Live `https://docs.opendatadiscovery.org/features/data-discovery` (WebFetch 2026-05-20, status 200): describes "Dataset schema diff" as a feature but provides NO API anchor, NO permission model, NO commentary on owner-scoping or who-can-view.
+  - Live `https://docs.opendatadiscovery.org/developer-guides/api-reference` (status 200): explicitly omits a `dataSet` sub-page. Per the live page verbatim: "The reference hub documents these feature areas: Alerts, Data Collaboration, Directory, Glossary, Integrations, Lineage, Query Examples, Reference Data, Relationships. None of these sections mention dataset-specific CRUD operations, versioning, or diff functionality."
+  - Operators reading the feature description cannot infer the id-confusion behaviour.
+
+  **Why CRITICAL not HIGH (the sidecar's own rating)**:
+  - The sidecar rates this HIGH. We elevate to CRITICAL because:
+  - **Combined with the cross-owner read posture (no SecurityRule on the 4 endpoints) AND the F-004 verbatim-description payload (TEST-GAP-770)**, this is the canonical cross-tenant enumeration class — every column-level description payload (including ones that may carry sensitive operational text, table-level annotations, or operator-curated notes) is reachable by any authenticated user.
+  - **The URL path implies a parent-child relationship that the implementation does not enforce**: operators wiring permission policies on `/api/datasets/{id}/...` reasonably assume the parent is scoped. The mismatch is a permission-model-violation.
+  - **Audit-log attribution wrong**: audit logs / tracing tools tagging requests by `data_entity_id` attribute reads to the WRONG dataset. Forensic investigation of "who read this dataset" returns false positives.
+
+  **Test gap shape**: regression-pin asserting: (a) `GET /api/datasets/{A}/structure/{version_id_for_B}` returns dataset B's structure (not A's, not 404); (b) the SQL WHERE clause is over `dataset_version.id` only; (c) `getLatestDatasetVersion` DOES scope (sister contract). The current state is PINNED — failures land if a future maintainer ADDS a `data_entity_id` WHERE clause to the SQL (which would FIX the bypass). When the fix lands, the test inverts to assert 404.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDatasetVersionRepositoryImplTest.java (2 tests on getDatasetVersion positive + empty; does NOT exercise the id-confusion bypass)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetVersionPerEntityScopingBypassTest.java"
+  name: "getDataSetStructureByVersionId_urlDataEntityIdMismatchesVersionIdParent_returnsOtherDatasetStructure_pinsBypass"
+evidence:
+  - "DatasetController.md says (bugs_limitations_corner_cases.[per-entity-bypass-by-version]): 'Per-entity-scoping bypass at getDataSetStructureByVersionId — the data_entity_id URL parameter is NOT enforced against the version_id. A client calling GET /api/datasets/{any_id}/structure/{valid_version_id_for_other_dataset} receives the OTHER dataset's structure. The only consumer of the datasetId argument at the service tier is the NotFoundException message text (DatasetVersionServiceImpl.java:41-43); the SQL filters WHERE DATASET_VERSION.ID = datasetVersionId only (ReactiveDatasetVersionRepositoryImpl.java:129). Cross-link to F-005 cross-owner enumeration class (same blast radius — any authenticated user can enumerate any dataset's version history by guessing version ids). Severity HIGH because: (a) URL parameter implies a parent-child relationship that the implementation does not enforce; (b) operator wiring permission policies on /api/datasets/{id}/... would assume the parent is scoped; (c) audit logs / tracing tools tagging requests by data_entity_id may attribute reads to the wrong dataset.' — evidence: DatasetController.java:23-30 + DatasetVersionServiceImpl.java:39-45 + ReactiveDatasetVersionRepositoryImpl.java:97-144 — severity: HIGH"
+  - "DatasetController.md says (security.known_security_gaps.[per-entity-bypass-by-version]): 'Per-entity-scoping bypass at getDataSetStructureByVersionId — data_entity_id URL parameter is NOT enforced; any authenticated user can read any dataset version's full column structure by passing a known version_id. Combined with the read-collaborative posture, this is the F-004 verbatim-description read-side blast radius on steroids — every dataset_field.internal_description payload across the catalog is reachable via a brute-forced version_id.'"
+  - "DatasetController.md says (implicit_adrs.[5]): 'getLatestDatasetVersion correctly cross-checks data_entity_id; getDatasetVersion and getDatasetVersionDiff do NOT — three different SQL shapes in the SAME repository, only one of which scopes. The three SQL shapes are written by the same author in the same file... The decision-shape is ambiguous — this entry is HEDGED at MEDIUM confidence; the alternative routing is bugs_limitations_corner_cases if the maintainer reads it as oversight rather than intent.'"
+  - "Verified at primary source: DatasetController.java:23-30 + DatasetVersionServiceImpl.java:39-45 (datasetId used ONLY for NotFoundException message) + ReactiveDatasetVersionRepositoryImpl.java:129 (WHERE DATASET_VERSION.ID = datasetVersionId — no DATA_ENTITY join condition)"
+  - "Contrast at primary source: ReactiveDatasetVersionRepositoryImpl.java:160-217 line 167 (getLatestDatasetVersion DOES use DATA_ENTITY.ID.eq(datasetId))"
+cross_references:
+  - "TEST-GAP-768 (NEW batch W — sister per-entity-scoping bypass at getDataSetStructureDiff — parallel CRITICAL surface)"
+  - "TEST-GAP-770 (NEW batch W — F-004 verbatim-description read-side at the column-level — compound with this bypass)"
+  - "REFACTOR-203 (LineageServiceImpl cross-owner enumeration — sister architectural class; F-005 cross-pillar)"
+  - "F-005 (Lineage cross-owner enumeration — sister blast radius)"
+  - "system-mission.md:267 (read-collaborative posture canonicalisation candidate)"
+  - "concepts: cross-tenant-enumeration-via-monotonic-surrogate-ids (NEW concept candidate — dataset_version.id sequential enumeration)"
+  - "REFACTOR-NNN candidate: add DATA_ENTITY.ID = datasetId WHERE clause to the getDatasetVersion SQL shape; symmetric fix for getDataSetStructureDiff (TEST-GAP-768)"
+  - "DOC-NNN candidate: surface the read-collaborative posture on the Data Discovery doc + the Security Architecture doc; explain owner-scoping is NOT enforced on structure / version / diff / relationships endpoints"
+  - "LSN-001 / LSN-002 (operator-cliff failure-mode case-law — operators expecting URL-implied scoping)"
+related_features: []
+related_pillar_features: ["P-01:F-NN-dataset-structure-read", "P-09:F-001"]
+proposed_action: |-
+  Add `DatasetVersionPerEntityScopingBypassTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `getDataSetStructureByVersionId_urlDataEntityIdMismatchesVersionIdParent_returnsOtherDatasetStructure_pinsBypass` — seed two datasets A and B with distinct versions; GET `/api/datasets/{A_id}/structure/{B_version_id}`; assert HTTP 200 with B's structure in the response (NOT 404). PIN the bypass.
+  2. `getDataSetStructureByVersionId_wrongVersionIdNonexistent_returnsNotFound_pinsExistingErrorPath` — GET with `/api/datasets/{A}/structure/999999`; assert HTTP 404 with the canonical NotFoundException message.
+  3. `getLatestDatasetVersion_DOES_scopeByDataEntityId_pinsAsymmetricSibling` — GET `/api/datasets/{B_id}/structure` (latest); assert response is B's structure. GET `/api/datasets/{A_id}/structure` for a dataset with no versions; assert 404. PIN the sibling contract that DOES scope.
+  4. `sqlWhereClause_isOverDatasetVersionIdOnly_pinsSqlShape` — query `pg_stat_activity` or use jOOQ's debug logging during a `getDatasetVersion` call; capture the WHERE clause; assert it includes `DATASET_VERSION.ID = ?` but NOT `DATA_ENTITY.ID = ?`. PIN the SQL shape contract.
+  5. `enumerationVector_sequentialVersionIds_returnsAllDatasetsHistoryAcrossOwners_pinsBlastRadius` — for version_id in {1..N}; GET `/api/datasets/1/structure/{version_id}`; collect all returned dataset oddrns; assert the set covers MULTIPLE distinct datasets. PIN the catalog-wide enumeration capability.
+
+  Pair with REFACTOR-NNN: add `DATA_ENTITY.ID = datasetId` WHERE clause to the `getDatasetVersion` SQL shape AT `ReactiveDatasetVersionRepositoryImpl.java:97-144`. When the fix lands, test #1 inverts to assert HTTP 404 on the mismatched-id case.
+
+  Cross-pair with DOC-NNN: surface the read-collaborative posture on the Data Discovery doc + the Security Architecture doc. Until the code fix lands, the docs are the only surface that can warn operators.
+batch: 2026-05-20-W
+feature_id: null

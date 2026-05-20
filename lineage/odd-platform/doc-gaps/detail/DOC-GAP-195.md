@@ -47,3 +47,46 @@
     - **F-004 verbatim-storage fingerprint** (cross-batch concept across DataEntityServiceImpl, DatasetFieldServiceImpl, MetadataFieldValue) — the SAME service methods that store verbatim ALSO have the asymmetric audit pattern; the combination of "stores raw input" + "no audit trail" is the operator-trap shape
     - **LSN-001 / LSN-002 class** — operator-trap class: operator concludes "no one edited the description" from the Activity Feed absence; the platform's actual state is "the edit happened, the audit emit was skipped"; the trust-gap manifests when forensic reconstruction is needed
   - **Severity rationale**: MEDIUM — within-feature asymmetric audit emission with one documented-but-never-fired event type AND one operator-investigation failure mode AND a single-line code-side fix. The most material consequences: (a) operators investigating column-description edits cannot find them in the Activity Feed and incorrectly conclude either "no edit happened" or "the audit is broken"; (b) the doc-vs-code contradiction (live doc enumerates DATASET_FIELD_DESCRIPTION_UPDATED, code does not fire it) is a sharp factual error in the docs; (c) the fix is bounded — single doc-page edit + single one-line code annotation. Severity is MEDIUM (not HIGH) because: (i) the gap is recoverable — operators with reverse-proxy logs can still reconstruct the description-edit history; (ii) the missing audit does not enable a security bypass (description content is user-curated, not privilege-bearing); (iii) the code-side fix is trivial. Severity is NOT LOW because the doc-vs-code contradiction is operator-misleading on a documented event, and the within-feature asymmetric pattern is a structural signal of broader ad-hoc audit coverage (the META-level concern is captured at DOC-GAP-149).
+
+## Batch V append
+
+### Batch 2026-05-20-V STRENGTHENS — positive corroboration (NOT a gap) — supersedes the prior inference that `DATASET_FIELD_DESCRIPTION_UPDATED` is silent
+
+The DatasetFieldController controller-class sidecar (`odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md`) carries a verbatim POSITIVE coherence-check that SUPERSEDES the prior F-004 batch-R inference (and the related DOC-GAP-195 framing) that the `DATASET_FIELD_DESCRIPTION_UPDATED` activity event is "NEVER emitted":
+
+**The verbatim doc-drift finding (per DatasetFieldController sidecar `docs_link_semantic.doc_drift_findings.[2]`)**: "Live docs DO list `DATASET_FIELD_DESCRIPTION_UPDATED`, `DATASET_FIELD_INTERNAL_NAME_UPDATED`, `DATASET_FIELD_TAGS_UPDATED`, `DATASET_FIELD_TERM_ASSIGNMENT_UPDATED` as activity-feed event types at `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed#event-types`. Earlier batches (F-004 batch-R extension notes lines 78-91) claimed `DATASET_FIELD_DESCRIPTION_UPDATED` is 'NEVER emitted' — that prior claim contradicts both the live docs AND the code at `DatasetFieldInternalInformationServiceImpl.java:28`. The doc surface is correct; the prior sidecar inference was wrong."
+
+**Verification — verbatim from the DatasetFieldController sidecar `inferred_docs.[0].fetched_excerpts` (WebFetched 2026-05-20 status 200)**:
+> "Dataset fields (columns):
+>  - `DATASET_FIELD_VALUES_UPDATED`
+>  - `DATASET_FIELD_DESCRIPTION_UPDATED`
+>  - `DATASET_FIELD_INTERNAL_NAME_UPDATED`
+>  - `DATASET_FIELD_TAGS_UPDATED`
+>  - `DATASET_FIELD_TERM_ASSIGNMENT_UPDATED`"
+
+**Code-side evidence chain** (per DatasetFieldController sidecar `concepts.invariants.[7]` + `concepts.operations`):
+- `DatasetFieldServiceImpl.updateDescription` (NO `@ActivityLog` at this layer) DELEGATES to →
+- `DatasetFieldInternalInformationServiceImpl.updateDescription` which HAS `@ActivityLog(DATASET_FIELD_DESCRIPTION_UPDATED)` at line 28 — **the event IS emitted** AND additionally,
+- `DatasetFieldServiceImpl.updateDescription` (lines 87-95) calls `termService.handleDatasetFieldDescriptionTerms` which emits a SEPARATE `DATASET_FIELD_TERM_ASSIGNMENT_UPDATED` event when the new description contains term mentions — so one description-edit can produce TWO activity events.
+
+The structural asymmetry (description's @ActivityLog at the inner service vs internal-name/tags at the outer service) exists but **has NO operator-visible consequence** — all four documented event types ARE emitted. The prior batch-R inference that `DATASET_FIELD_DESCRIPTION_UPDATED` is silent was a stale-inference defect — the F-004 batch-R reading of `DatasetFieldServiceImpl` missed the delegation to `DatasetFieldInternalInformationServiceImpl` (the inner service) where the annotation actually lives. Per LSN-018 Rule 6 (coherence sweep), this corrects the cross-batch incoherence by surfacing the discrepancy and supplying the primary-source resolution.
+
+**Updated DOC-GAP-195 framing** (the original finding remains valid as an EVIDENCE PRESENCE finding — DatasetField description IS audit-logged via `DATASET_FIELD_DESCRIPTION_UPDATED` — but the within-feature audit-asymmetry pattern still applies because the dual-event semantics (one description-edit → DESCRIPTION_UPDATED + TERM_ASSIGNMENT_UPDATED) are undocumented):
+
+- **OBSOLETE claim** (now superseded): "`DATASET_FIELD_DESCRIPTION_UPDATED` is never fired" — INCORRECT per the live doc + the code at `DatasetFieldInternalInformationServiceImpl.java:28`.
+- **CORRECTED claim** (now anchored): "DatasetField description's `@ActivityLog(DATASET_FIELD_DESCRIPTION_UPDATED)` lives at the INNER service `DatasetFieldInternalInformationServiceImpl.java:28` (structurally one layer deeper than internal-name/tags). The event IS emitted. However: a single description-edit can produce TWO activity events (DESCRIPTION_UPDATED + TERM_ASSIGNMENT_UPDATED when the new description contains term mentions per `[[ns:term]]` syntax) — the dual-event semantics are undocumented at the activity-feed page."
+
+**Doc-side action shift** (from "fix the missing event emission" to "document the dual-event semantics"):
+- **Doc-side PRIMARY** — `documentation/docs/features/active-platform-features/activity-feed.md`: under the "Dataset fields (columns)" event-type list, add a note: "**Dual-event semantics on description edit**: editing a dataset field's description (`PUT /api/datasetfields/{id}/description`) produces ONE `DATASET_FIELD_DESCRIPTION_UPDATED` event AND — if the new description text contains term-link syntax `[[namespace:term]]` — an additional `DATASET_FIELD_TERM_ASSIGNMENT_UPDATED` event for each new term mention. Operators reading the feed see two separate rows for a single user operation; this is correct behaviour."
+
+This batch-V STRENGTHEN supersedes the F-004 batch-R inference and DOC-GAP-195's narrower framing; the broader audit-asymmetry pattern (DOC-GAP-149 META) is unaffected — the asymmetry remains in OTHER cases (e.g., Term lifecycle per DOC-GAP-206 + Custom Metadata per DOC-GAP-193), just not on this specific event.
+
+**Cross-references**:
+- **DOC-GAP-149 META** (within-feature audit-asymmetry pattern — still valid; the META's evidence base shifts from "DatasetField description is silent" to "DatasetField description's dual-event semantics are undocumented")
+- **DOC-GAP-192** (batch-R schema-tier root cause — `activity.data_entity_id NOT NULL` schema constraint; DatasetField events DO pass this constraint because dataset fields have a parent DataEntity, unlike Term-only mutations per DOC-GAP-206)
+- **DOC-GAP-206** (batch-U Term lifecycle audit-silence — the within-feature audit-asymmetry pattern's true canonical instance; Term itself has NO `TERM_CREATED` / `TERM_UPDATED` events, validating the META even as the DatasetField inference is corrected)
+- **DOC-GAP-211** (NEW batch V — QueryExample audit-silence — sibling within-feature audit-silence anchor; QueryExample has ZERO `@ActivityLog` annotations per QueryExampleController sidecar `dependencies_semantic.requires-runtime.[3]`)
+- **F-004 batch-R extension notes lines 78-91** — the original stale-inference source; corrected by this batch-V coherence-check
+- **LSN-018 Rule 6** — the coherence-sweep protocol that surfaced this stale-inference correction
+
+The STRENGTHEN does NOT add a NEW finding count; it corrects an existing finding's primary-source claim. Net effect on the index: DOC-GAP-195 remains in the catalog with refined evidence; the META (DOC-GAP-149) gains a more accurate primary-source within-feature instance; no severity change. Total findings count unchanged by this STRENGTHEN.

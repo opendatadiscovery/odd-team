@@ -1,0 +1,208 @@
+---
+probe_id: P-016
+feature_id: F-021
+test_class: integration
+verified_against_commit: 9ac6436e
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-2
+emitted_from_sidecar: odd-platform__java__ActivityController__controller-class__ActivityController.md
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+stress_category: A (tunables)
+stress_question_ids: [STRESS_A1, STRESS_A2]
+expected_outcome: |
+  STRESS_A1 + STRESS_A2 PROBE: pin the actual HTTP response when ActivityController.getActivity
+  is called with degenerate `size` values.
+
+  The controller's `final Integer size` parameter (ActivityController.java:26) has
+  no @Max, no @Min, no @NotNull. The OpenAPI spec marks SizeParam as `required: true`
+  (components.yaml:4226) but the Java method signature accepts null.
+
+  Expected outcomes by size value:
+  - size=null: STATIC-INFERRED MEDIUM — Spring may reject at binding step (OpenAPI required)
+    OR pass through to controller. If through, JOOQ .limit(null) omits LIMIT, full unbounded
+    scan, HTTP 200 with all rows.
+  - size=0: STATIC-INFERRED HIGH — LIMIT 0, HTTP 200 with empty array []
+  - size=-1: STATIC-INFERRED MEDIUM — Postgres rejects LIMIT -1; ControllerAdvice's generic
+    Exception handler returns HTTP 500. THE PROBE-NEEDED CASE.
+  - size=Integer.MAX_VALUE (2.1B): STATIC-INFERRED HIGH — DB plans full scan, HTTP 200
+
+triggers:
+  - ActivityController.java:26 — `final Integer size` (no validation annotations)
+  - components.yaml:4226 — `required: true` on SizeParam (contradicts the Java nullable binding)
+  - ReactiveActivityRepositoryImpl.java:292 — `.limit(size)` (JOOQ accepts null and negative)
+  - ControllerAdvice.java:61-66 — generic Exception handler mapping to HTTP 500
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (3016, '//probe-source-P-016/db', 'probe-source-P-016')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id,
+                               view_count, source_created_at, source_updated_at)
+      VALUES (3016, '//probe-source-P-016/db/tables/p016_entity', 'p016_entity',
+              3016, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # 3 activity rows so size=null returns 3, size=2 returns 2, size=0 returns 0.
+  - kind: sql
+    query: |
+      INSERT INTO activity (data_entity_id, event_type, created_at, created_by,
+                            old_state, new_state)
+      SELECT 3016, 'BUSINESS_NAME_UPDATED',
+             NOW() - (interval '1 minute' * gs),
+             'p016_user',
+             '{"oldName": "before"}'::jsonb,
+             '{"newName": "after"}'::jsonb
+      FROM generate_series(1, 3) AS gs
+
+act:
+  - kind: rest
+    method: GET
+    path: /api/activity?begin_date=2026-05-19T00:00:00Z&end_date=2030-01-01T00:00:00Z
+    capture_as: response_size_null
+  - kind: rest
+    method: GET
+    path: /api/activity?begin_date=2026-05-19T00:00:00Z&end_date=2030-01-01T00:00:00Z&size=0
+    capture_as: response_size_0
+  - kind: rest
+    method: GET
+    path: /api/activity?begin_date=2026-05-19T00:00:00Z&end_date=2030-01-01T00:00:00Z&size=2
+    capture_as: response_size_2
+  - kind: rest
+    method: GET
+    path: /api/activity?begin_date=2026-05-19T00:00:00Z&end_date=2030-01-01T00:00:00Z&size=-1
+    capture_as: response_size_neg1
+  - kind: rest
+    method: GET
+    path: /api/activity?begin_date=2026-05-19T00:00:00Z&end_date=2030-01-01T00:00:00Z&size=2147483647
+    capture_as: response_size_max
+
+observe:
+  - kind: jsonpath
+    from: response_size_null_status
+    path: "$"
+    capture_as: status_null
+  - kind: jsonpath
+    from: response_size_null_body
+    path: "$"
+    capture_as: items_null
+
+  - kind: jsonpath
+    from: response_size_0_status
+    path: "$"
+    capture_as: status_0
+  - kind: jsonpath
+    from: response_size_0_body
+    path: "$"
+    capture_as: items_0
+
+  - kind: jsonpath
+    from: response_size_2_status
+    path: "$"
+    capture_as: status_2
+  - kind: jsonpath
+    from: response_size_2_body
+    path: "$"
+    capture_as: items_2
+
+  - kind: jsonpath
+    from: response_size_neg1_status
+    path: "$"
+    capture_as: status_neg1
+
+  - kind: jsonpath
+    from: response_size_max_status
+    path: "$"
+    capture_as: status_max
+
+oracle:
+  # size=null: 200 with 3 rows (Spring accepts the spec violation) OR 400 (Spring enforces
+  # spec at the binding step). Either is informative.
+  - "status_null in [200, 400]"
+
+  # size=0: empty array.
+  - "status_0 == 200"
+  - "len(items_0) == 0"
+
+  # size=2: exactly 2 rows.
+  - "status_2 == 200"
+  - "len(items_2) == 2"
+
+  # STRESS_A2 PRIMARY: size=-1 should NOT return HTTP 200.
+  - "status_neg1 != 200"
+
+  # size=MAX_VALUE: 200, returns up to 3 rows.
+  - "status_max == 200"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM activity WHERE data_entity_id = 3016
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id = 3016
+  - kind: sql
+    query: |
+      DELETE FROM data_source WHERE id = 3016
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+resolves_to:
+  - sidecar_field: stress_findings.STRESS_A1 (PROBE-VERIFIED null-binding behaviour)
+  - sidecar_field: stress_findings.STRESS_A2 (PROBE-VERIFIED size-boundary behaviour)
+  - sidecar_field: docs_link_semantic.doc_drift_findings.[size-required-vs-nullable]
+    (CONFIRMED or REFUTED based on size_null outcome)
+  - on confirmation of size_null==200: emit DOC-GAP for the live activity-feed.md page
+    (operators relying on size=undefined receive unbounded result sets — surface as caveat)
+
+severity_if_confirmed: MEDIUM (the unbounded-size case is a DoS vector under high traffic;
+  the negative-size case is a hard error but contained)
+
+probe_owner: probe-runner (next batch)
+estimated_runtime: 15 minutes (docker-compose + 5 HTTP calls + assertions)
+
+cross_references:
+  refactoring_scopes: []
+  test_gaps:
+    - TEST-GAP-LSN-019-ActivityController-size-boundary
+  doc_gaps:
+    - DOC-GAP-LSN-019-activity-feed-size-undocumented
+  related_concepts:
+    - "Activity Feed"
+    - "Page-size boundary handling"
+  retrospectives: [LSN-019]
+  enrichment_sources:
+    - "lineage/odd-platform/understanding/odd-platform__java__ActivityController__controller-class__ActivityController.md"
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ActivityController.java"
+    lines: "26"
+    role: "size parameter declared as final Integer (nullable, no @Max, no @Min)"
+  - file: "odd-platform-specification/components.yaml"
+    lines: "4222-4229"
+    role: "SizeParam definition with required: true — contradicts the Java nullable binding"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryImpl.java"
+    lines: "292"
+    role: ".limit(size) — JOOQ accepts null (omits LIMIT) and negative values (propagates to PG)"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/exception/ControllerAdvice.java"
+    lines: "61-66"
+    role: "Generic Exception handler maps unknown exceptions to HTTP 500"
+
+realism_caveats: |
+  - If size=null is rejected by Spring at the binding step, STRESS_A1 resolves to
+    STATIC-INFERRED RESOLVED (Spring binding enforces required) and the doc-drift
+    finding flips polarity (the Java nullable binding is dead code).
+  - The size=-1 outcome distinguishes whether Postgres's error percolates cleanly
+    to a 4xx (Spring sometimes maps DataIntegrityViolation to 400) or a generic 500.
+  - The probe runs under DISABLED auth. The size behaviour is auth-mode-agnostic.
+---

@@ -1,0 +1,80 @@
+gap_id: TEST-GAP-735
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataEntityAttachmentController controller-class:DataEntityAttachmentController"
+pillars_affected: [P-01, P-08, P-09]
+surfaced_by:
+  - "DataEntityAttachmentController.md:bugs_limitations_corner_cases.[1] (File-name is propagated raw from user-supplied DataEntityUploadFormData.fileName into the storage path AND into the Content-Disposition header on download. There is no sanitization, no rejection of path-traversal characters, no NUL-byte filter, no length cap, no quoting/encoding of the header value — severity HIGH)"
+  - "DataEntityAttachmentController.md:security.known_security_gaps.[2] (filename is propagated raw into storage path AND into Content-Disposition header — path-traversal write/read + CRLF header injection on download — severity HIGH)"
+  - "DataEntityAttachmentController.md:security.data_exposure.[3] (Filenames in Content-Disposition header are unsanitized — exposes the raw stored name verbatim to downloaders)"
+behaviour: |-
+  **HIGH — A user-supplied fileName like `../../../etc/odd-secret.txt` resolves outside `attachment.local.path` for LOCAL storage writes; the same filename CRLF-injects response headers on download. This is the FULL path-traversal + CRLF-injection compound across the upload-write and download-read paths.** Primary-source confirmed in the batch-V DataEntityAttachmentController sidecar:
+
+  - **Upload-write path-traversal** (LOCAL storage):
+    - `FileMapper.java:30-31` propagates `fileMetadata.getFileName()` verbatim into `pathConstructor.getFilePath(fileMetadata.getFileName(), dataEntityId)`.
+    - `LocalFilePathConstructor.java:31-33` declares `return getFileDirectory(dataEntityId).resolve(fileName).toString();` — using `Path.resolve(fileName)`. If `fileName` starts with `..` (path-traversal sequence), `Path.resolve` interprets it as a relative-up: e.g. `Path.of("/tmp/odd/attachments/100").resolve("../../etc/odd-secret.txt")` resolves to `/tmp/odd/etc/odd-secret.txt`. Filesystem-level path-resolution semantics + NO canonicalisation check.
+    - The same vulnerability applies to S3 object keys in REMOTE storage: a fileName containing `../` becomes part of the S3 object key, which most S3 implementations accept verbatim but can produce object keys outside the expected `{dataEntityId}/{fileName}` namespace.
+
+  - **Download-read CRLF header injection**:
+    - `DataEntityAttachmentController.java:76-79` declares `.header(HttpHeaders.CONTENT_DISPOSITION, "attachment;filename=" + dto.fileName())` — string concatenation of user-supplied fileName directly into HTTP header value.
+    - A fileName containing `\r\n` (CR-LF) injects new headers into the response. E.g. fileName = `foo.txt\r\nX-Forwarded-Host: evil.example\r\nSet-Cookie: session=hijacked`. The downstream response carries the injected headers verbatim. Browser-cache-poisoning and session-fixation vectors open.
+    - A fileName containing `"` (quote) breaks the `filename=...` quoting per RFC 6266. The header is truncated.
+    - RFC 6266 quoting is ABSENT — the controller does not wrap the filename in quotes or apply RFC 5987 `filename*=UTF-8''...` encoding.
+
+  **Compound attack vector**:
+  ```
+  # Step 1: Upload a file with a malicious filename — path-traversal write OUTSIDE attachment.local.path
+  POST /api/dataentities/100/files/uploads
+  { "fileName": "../../../etc/odd-secret.txt" }
+
+  # Step 2: Stage chunks (the chunk-staging path uses /tmp/odd/chunks/{uploadId}/ — but the FINAL path-resolution
+  #         happens at /complete and uses LocalFilePathConstructor.getFilePath which is vulnerable)
+
+  # Step 3: Complete — the file is moved to /tmp/odd/odd-secret.txt (outside attachment.local.path)
+  POST /api/dataentities/100/files/uploads/{uploadId}/complete
+
+  # Step 4: Download — the file's stored path has been overwritten. The Content-Disposition header carries
+  #         the original malicious filename, which CRLF-injects on download:
+  GET /api/dataentities/100/files/{file_id}
+  # Response includes injected headers from the CR-LF in dto.fileName()
+  ```
+
+  **Existing partial coverage**: TEST-GAP-027 (existing CRITICAL gap) covers the Content-Disposition CRLF angle. THIS gap STRENGTHENS that with the upload-write path-traversal vulnerability — a NEW vector at the UPLOAD path, not the DOWNLOAD path. TEST-GAP-027 was authored against the method-level uploadFileChunk sidecar; the controller-class sidecar (batch V) surfaces the FULL filename-handling lifecycle: upload writes a malicious path + download CRLF-injects. The compound is stronger than either half alone.
+
+  **Why HIGH not CRITICAL**: the LOCAL-storage path-traversal write requires the attacker to hold `DATA_ENTITY_ATTACHMENT_MANAGE` on at least one entity AND requires the platform deployment to be using LOCAL storage (which the post-LSN-001 docs now strongly discourage). The REMOTE-storage variant is bounded by S3-bucket-permission scoping (the S3 client cannot write outside the bucket). The CRLF-injection on download is reachable by ANY caller with `DATA_ENTITY_ATTACHMENT_MANAGE` who uploads a file. The two halves combine to HIGH (downgraded from CRITICAL because the LOCAL storage requirement narrows the practical exploitability, but the surface remains).
+
+  **Test gap shape**: regression-pin asserting (a) the upload-write accepts `../` in fileName; (b) the resulting stored path traverses outside the expected directory; (c) the download response carries CRLF-injected headers. Pin the three independent vulnerabilities.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AttachmentFilenamePathTraversalAndCrlfInjectionTest.java"
+  name: "initiateFileUploadAndDownloadFile_filenameWithPathTraversalAndCrlf_writesOutsideBasePath_andCrlfInjectsResponseHeaders"
+evidence:
+  - "DataEntityAttachmentController.md says (bugs_limitations_corner_cases.[1]): 'File-name is propagated raw from the user-supplied DataEntityUploadFormData.fileName into (a) the storage path (Paths.get(basePath, dataEntityId, fileName) for LOCAL, S3 object key for REMOTE) and (b) the Content-Disposition header on download. There is no sanitization, no rejection of path-traversal characters (.., /, \\\\), no NUL-byte filter, no length cap, no quoting/encoding of the header value. A filename like ../../../etc/odd-secret.txt resolves outside attachment.local.path for LOCAL writes/reads; a filename containing CRLF could inject headers on download (RFC 6266 quoting is absent).' — severity HIGH"
+  - "DataEntityAttachmentController.md says (security.known_security_gaps.[2]): 'filename is propagated raw into storage path AND into Content-Disposition header — path-traversal write/read + CRLF header injection on download — evidence: FileMapper.java:30-31 + DataEntityAttachmentController.java:77 — severity HIGH'"
+  - "Verified at primary source: FileMapper.java:30-31 (`filePojo.setName(fileMetadata.getFileName()); filePojo.setPath(pathConstructor.getFilePath(fileMetadata.getFileName(), dataEntityId));`) + LocalFilePathConstructor.java:31-33 (`return getFileDirectory(dataEntityId).resolve(fileName).toString();`) + DataEntityAttachmentController.java:76-79 (`.header(HttpHeaders.CONTENT_DISPOSITION, \"attachment;filename=\" + dto.fileName())`)"
+cross_references:
+  - "TEST-GAP-027 (Content-Disposition CRLF injection — sister gap; THIS gap STRENGTHENS that with the upload-write path-traversal vector)"
+  - "TEST-GAP-022 (uploadId hijack — sister attachment-surface security gap)"
+  - "TEST-GAP-028 (Read endpoints have no SecurityRule — sister attachment-surface security gap)"
+  - "TEST-GAP-731 (NEW batch V — cross-entity URL-spoofing — sister attachment-surface compound bypass)"
+  - "TEST-GAP-740 (NEW batch V — STRENGTHEN TEST-GAP-028 read endpoints with controller-class evidence)"
+  - "concepts: attachment-filename-unsanitized-aggregate (the cumulative finding: filename is the single weakest input across the attachment subsystem)"
+  - "REFACTOR-NNN candidate: at FileMapper.toPojo, normalise fileName via Path.normalize() + reject any normalisation that escapes the configured base path; at DataEntityAttachmentController.downloadFile, wrap dto.fileName() in RFC 6266 quoted-string OR apply RFC 5987 percent-encoding for non-ASCII"
+  - "LSN-001 / LSN-002 (operator-cliff failure-mode case-law — operators using LOCAL storage are exposed to the path-traversal write surface; the post-LSN-001 doc fix discourages LOCAL but does not warn about path-traversal)"
+related_features: [F-008]
+related_pillar_features: ["P-01:F-007", "P-09:F-001"]
+proposed_action: |-
+  Add `AttachmentFilenamePathTraversalAndCrlfInjectionTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Six test methods:
+  1. `initiateFileUpload_filenameWithDotDotSlash_storesOutsideAttachmentLocalPath_LOCALStorage` — configure `attachment.storage=LOCAL` + `attachment.local.path=/tmp/odd/test-attachments`; POST `/api/dataentities/100/files/uploads` with `fileName: "../../../etc/path-traversal-evidence.txt"`; complete the upload; assert the stored path resolves OUTSIDE `/tmp/odd/test-attachments` (the path-traversal escaped the base directory). PIN the current vulnerability.
+  2. `initiateFileUpload_filenameWithNulByte_acceptsAndPersists` — sister test for NUL-byte injection (Java + Postgres may truncate the filename at NUL).
+  3. `downloadFile_filenameWithCRLF_responseCarriesInjectedHeaders` — upload a file with `fileName: "foo\\r\\nX-Injected: yes"`; GET /api/dataentities/100/files/{id}; assert the response includes `X-Injected: yes` as a separate header (the CRLF in fileName injected the header).
+  4. `downloadFile_filenameWithQuote_responseHeaderTruncated` — upload a file with `fileName: "foo\\\".txt"`; GET; assert the Content-Disposition header is truncated at the quote (RFC 6266 quoting absent).
+  5. `downloadFile_filenameWithNonAscii_responseDoesNotApplyRfc5987Encoding` — upload a file with `fileName: "déjà-vu.txt"`; GET; assert the Content-Disposition uses the raw UTF-8 bytes (NO RFC 5987 percent-encoding). Pin the encoding-class.
+  6. `initiateFileUpload_filenameWithDotDotSlash_REMOTEStorage_S3ObjectKeyTraversesOutsideExpectedPrefix` — sister test for REMOTE storage (S3 object key prefix manipulation).
+
+  Add a `// REGRESSION-PIN — filename is the single weakest input in the attachment subsystem. Path-traversal writes outside attachment.local.path; CRLF injects headers; quote truncates; non-ASCII bypasses RFC 5987. A REFACTOR applying Path.normalize + base-path-prefix-assert + RFC 6266 quoting will break tests #1, #3, #4 simultaneously; the maintainer must re-author them to assert the sanitized behaviour.` comment block.
+
+  Pair with REFACTOR-NNN closing both halves: (a) at FileMapper, normalise fileName + reject path-traversal-escapes; (b) at downloadFile, wrap fileName in RFC 6266 quoted-string or apply RFC 5987 encoding. Pair with DOC-NNN warning operators about the LOCAL-storage path-traversal surface until the code fix lands.
+batch: 2026-05-20-V
+feature_id: F-008

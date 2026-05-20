@@ -1,0 +1,63 @@
+gap_id: TEST-GAP-745
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java QueryExampleController controller-class:QueryExampleController"
+pillars_affected: [P-02, P-11]
+surfaced_by:
+  - "QueryExampleController.md:tests_coverage_semantic.gaps (The HTTP layer is 100% untested. All 13 endpoints behaviour around status-code shape, content-type negotiation, security-rule gating (especially the 3-of-13 gating asymmetry), and request-body validation is verified only by the operator hitting the running platform)"
+  - "QueryExampleController.md:tests_coverage_semantic.uncovered_behaviours.[0] (QueryExampleController HTTP-layer wiring untested — test_class: QueryExampleControllerTest does NOT exist)"
+  - "QueryExampleController.md:concepts.invariants.[5] (3-of-13 endpoint gating asymmetry — createQueryExamples, updateQueryExample, deleteQueryExample are gated; everything else falls through to authenticated())"
+  - "QueryExampleController.md:bugs_limitations_corner_cases.[0] (Status-code drift between controller and OpenAPI — createQueryExamples returns 200 but OpenAPI declares 201)"
+behaviour: |-
+  **MEDIUM — `QueryExampleController` has ZERO controller-tier HTTP test coverage across all 13 endpoints — the 3-of-13 security gating asymmetry, the spec/code response-code drift, the broken-pagination-by-design, and the search-session-via-UUID-only-no-caller-binding contracts are ALL unverified at the HTTP boundary.** Primary-source confirmed in the batch-V QueryExampleController sidecar:
+
+  **The 13 untested endpoints**:
+  - 4 CRUD: `createQueryExamples`, `updateQueryExample`, `deleteQueryExample`, `getQueryExampleDetails`
+  - 2 read-by-relationship: `getQueryExampleByDatasetId`, `getQueryExampleByTermId`
+  - 1 list: `getQueryExampleList`
+  - 5 search: `queryExamplesSearch`, `getQueryExampleSearchFacetList`, `getQueryExampleSearchResults`, `updateQueryExampleSearchFacetList`, `getQueryExampleSearchSuggestions`
+  - 1 by-term: included in read-by-relationship above
+
+  **The 3 specific contracts left untested** (per the sidecar `tests_coverage_semantic.gaps`):
+  - Status-code shape: `createQueryExamples` + `updateQueryExample` return 200 (controller) but OpenAPI declares 201 (spec).
+  - Security-rule gating: 3 of 13 endpoints have SecurityRules (CREATE, UPDATE, DELETE); the other 10 fall through to `authenticated()`. The asymmetry is INTENTIONAL per `system-mission.md:267` read-collaborative posture, but undocumented.
+  - Search-session-ownership: a search session created by user A is reachable by user B if B obtains the searchId UUID (URL leak, screenshot). No explicit caller-id binding.
+
+  **Existing partial coverage**: `QueryExampleServiceTest` covers `createQueryExample`, `getQueryExampleDetails`, `deleteQueryExample`, `createQueryExampleToDatasetRelationship` (a method NOT exposed by this controller — that endpoint lives on `DataEntityController.createQueryExampleToDatasetRelationshipNew`), and a `BadUserRequestException` duplicate-relation path — but the HTTP wiring is untested.
+
+  **Sister-controller pattern**: this gap is part of the systemic HTTP-floor gap across multiple controllers — TEST-GAP-001 (AlertController), TEST-GAP-016 (DataEntityController 37-of-40), TEST-GAP-717 (DataQualityController), etc. The pattern is consistent: thin proxy controllers implementing OpenAPI-generated interfaces with NO direct HTTP test surface.
+
+  **Why MEDIUM not LOW**: the 3-of-13 security gating asymmetry is the load-bearing finding — a SecurityConstants regression (e.g. moving the create-rule line) would silently expose the createQueryExamples endpoint to any authenticated user. The asymmetry is intentional today but invisibly fragile to refactors. Cross-pillar P-02 + P-11.
+
+  **Test gap shape**: `@WebFluxTest(QueryExampleController.class)` driving the 13 endpoints' HTTP contract: status codes, security-rule gating, content-type negotiation, request-body validation, search-session-ownership-via-UUID.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/QueryExampleServiceTest.java (covers SERVICE layer; does NOT exercise HTTP boundary)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/QueryExampleRepositoryTest.java (JOOQ-tier; does NOT exercise HTTP boundary)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/QueryExampleControllerHttpFloorTest.java"
+  name: "queryExampleController_allThirteenEndpoints_pinSecurityRulesStatusCodesAndReadCollaborativePosture"
+evidence:
+  - "QueryExampleController.md says (tests_coverage_semantic.gaps): 'The HTTP layer is 100% untested. All 13 endpoints behaviour around status-code shape, content-type negotiation, security-rule gating (especially the 3-of-13 gating asymmetry), and request-body validation (markdown payloads, empty strings, oversized SQL) is verified only by the operator hitting the running platform. The single highest-value next test would be a QueryExampleControllerTest integration suite with @WebFluxTest covering: (a) status-code drift for create + update; (b) the 3 SecurityRules enforcement (write a WithMockUser test that asserts 403 when the user lacks QUERY_EXAMPLE_CREATE); (c) the read endpoints read-collaborative posture (positive test that a user with NO owner-association still reads everyone else query examples — pinning the documented behaviour); (d) the Markdown injection vector.'"
+  - "QueryExampleController.md says (tests_coverage_semantic.uncovered_behaviours.[0]): 'QueryExampleController HTTP-layer wiring untested — test_class: QueryExampleControllerTest (does NOT exist). All 13 endpoints status-code shape, header handling, and security-rule gating are validated only at runtime.'"
+  - "QueryExampleController.md says (concepts.invariants.[5]): '3-of-13 endpoint gating asymmetry: createQueryExamples (line 26), updateQueryExample (line 35), deleteQueryExample (line 45) are gated; everything else falls through to authenticated(). The 10 ungated endpoints are all reads OR session-state mutations on search facets.'"
+cross_references:
+  - "TEST-GAP-001 (AlertController HTTP-layer floor — sister gap)"
+  - "TEST-GAP-016 (DataEntityController 37-of-40 endpoints untested — sister gap)"
+  - "TEST-GAP-717 (DataQualityController HTTP-layer floor — sister gap)"
+  - "TEST-GAP-732 (NEW batch V — QueryExample F-004 4th surface — sister gap on same controller)"
+  - "concepts: http-layer-floor-pattern-aggregate (cumulative finding — multiple controllers with no HTTP-tier test surface)"
+related_features: [F-NN-query-example-lifecycle]
+related_pillar_features: ["P-02:F-001"]
+proposed_action: |-
+  Add `QueryExampleControllerHttpFloorTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Six test methods minimum (one per architectural concern):
+  1. `createQueryExamples_returnsHttp200NotSpecDeclared201_pinsStatusCodeDrift` — POST `/api/queryexample` with valid body; assert 200 (not the spec-declared 201).
+  2. `createQueryExamples_callerWithoutQUERY_EXAMPLE_CREATE_returns403` — pin the SecurityRule enforcement at line 112-113.
+  3. `getQueryExampleByDatasetId_callerWithNoOwnerAssociation_succeedsCrossOwner_pinsReadCollaborativePosture` — pin the 10-of-13 ungated read posture.
+  4. `queryExamplesSearch_searchIdFromAnotherUser_canBeRetrieved_pinsSessionUuidOnly` — pin the no-caller-binding contract.
+  5. `getQueryExampleByDatasetId_returnsHasNextFalseAlways_pinsBrokenPagination` — pin the hard-coded `hasNext=false` contract (per `QueryExampleMapper.mapListToQueryExampleList` line 72-74).
+  6. `deleteQueryExample_orphanLinkRowAndSearchEntrypoint_pinsCascadeIncompleteness` — pin the cascade-incompleteness from TEST-GAP-742 at the HTTP boundary.
+
+  Add a `// REGRESSION-PIN — QueryExampleController HTTP-tier floor. Asserts the 3-of-13 gating asymmetry + the spec/code response-code drift + the read-collaborative posture + the broken-pagination + the cascade-incompleteness all at the HTTP boundary. A SecurityConstants editing error moving any of the 3 gated rules will break the relevant test.` comment block.
+batch: 2026-05-20-V
+feature_id: null

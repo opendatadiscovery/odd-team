@@ -1,0 +1,149 @@
+name: OpenAPI spec declares no securitySchemes and zero per-operation security blocks — machine-readable auth absent
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+- P-11
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20-Z (odd-platform-public-api
+  spec sidecar)** — the platform-api OpenAPI spec (4212 lines of `openapi.yaml`
+  + 2937 lines of `components.yaml`) declares ZERO `components.securitySchemes`
+  entries and ZERO per-operation `security:` declarations across all 194
+  operations (verified by Grep across both files — 0 matches for
+  `securitySchemes` and 0 matches for `security:`). The platform supports 4
+  UI auth modes (DISABLED / LOGIN_FORM / OAUTH2 / LDAP) + S2S (X-API-Key) +
+  Ingestion filter — NONE of these are declared in the spec.
+
+  **The structural consequence**: SDK generators (openapi-generator-cli,
+  swagger-codegen) consuming this spec produce typed CLIENT classes for
+  every endpoint with NO authentication code — no Bearer-token wiring,
+  no session-cookie handling, no X-API-Key injection. Third-party consumers
+  must hand-author auth glue, which is the most error-prone surface in any
+  client integration. Operators who federate this spec into an API gateway
+  (Apigee, Kong, AWS API Gateway) get NO machine-readable auth policy to
+  configure.
+
+  **The promotion-strengthens-batch-Z evidence**: this invariant promotes the
+  prior `spec-carries-no-security-block-authorization-is-wholly-out-of-band-of-the-openapi-contract`
+  finding from a tag-axis observation (alert + dataEntity tags both declare
+  zero `security:` blocks) to a SPEC-LEVEL primary source observation
+  (the ENTIRE 194-operation surface across all 35 tags carries no security
+  declarations; the `components.securitySchemes` block is completely absent
+  from both files). The pattern is documented at the spec layer for the
+  first time.
+
+  **The directional remedy**: spec-side is the source of truth for path /
+  method / shape; security wiring lives in SecurityConstants.SECURITY_RULES.
+  Adding `securitySchemes` + per-operation `security:` to the spec would
+  make the contract machine-readable AND would surface drift (the
+  spec saying 'this op requires DATA_ENTITY_ADD_TERM' vs SecurityConstants
+  registering a different permission for the same path would be catchable
+  at build time). This is the same directional remedy as REFACTOR-217
+  (the spec is authoritative for the path; SecurityConstants is the bug).
+
+  **Severity**: MEDIUM in absolute terms (auth IS enforced server-side; the
+  gap is in SDK quality + third-party integration, not in actual security
+  boundary failure) BUT HIGH composition with REFACTOR-217 + the
+  AUTH-MODE-ORTHOGONAL facet: a `security:` block on `/ingestion/**`
+  operations would have surfaced the WHITELIST_PATHS exemption as a
+  three-way asymmetry (spec says 'require X-API-Key', code says 'permitAll
+  via whitelist') — making the gap machine-discoverable instead of
+  prose-discoverable.
+axes_present:
+- openapi_specs
+- openapi_tags
+nodes:
+- odd-platform openapi spec:odd-platform-public-api
+- odd-platform openapi tags openapi-tag:alert
+- odd-platform openapi tags openapi-tag:dataEntity
+contributors:
+- |-
+  odd-platform-public-api spec.md (batch Z PRIMARY SOURCE):
+    concepts.invariants.[4] (no securitySchemes block declared; no
+    operation-level security: declaration; no OAuth2/Bearer/SessionCookie/
+    X-API-Key formal contract surface; API's authentication posture is
+    implicit and not machine-readable) +
+    bugs_limitations_corner_cases.[0] (no securitySchemes — verified by
+    Grep across both openapi.yaml and components.yaml; SDK generators cannot
+    produce typed authentication clients; third-party consumers must
+    reverse-engineer auth from the running service; severity MEDIUM in
+    absolute terms but HIGH in composition with REFACTOR-185
+    AUTH-MODE-ORTHOGONAL facet — a securitySchemes declaration would
+    have surfaced the WHITELIST_PATHS exemption as machine-discoverable
+    drift) +
+    docs_link_semantic.doc_drift_findings.[8] (No declared securitySchemes
+    despite live security doc enumerating 4 auth modes + S2S API-key —
+    the spec is machine-readable for shape but not for auth) +
+    security.known_security_gaps.[1] MEDIUM (No machine-readable auth →
+    generated SDKs silently omit auth code — third-party SDK consumers
+    must hand-author auth glue, which is the easiest place for a
+    misconfiguration)
+- |-
+  Existing tag-axis findings (this invariant SUPERSEDES):
+    openapi-tag:alert.implicit_adrs.[3] + openapi-tag:dataEntity.implicit_adrs.[0]
+    (both tags declare zero `security:` blocks; the prior
+    `spec-carries-no-security-block-...` invariant captured this at the
+    tag layer; this invariant promotes to SPEC layer)
+evidence:
+- |-
+  odd-platform-public-api spec.md:bugs_limitations_corner_cases.[0]
+  (verbatim: 'no securitySchemes block declared — the spec is completely
+  silent on the platform's authentication model'; Grep evidence: 0 matches
+  for `securitySchemes` and 0 matches for `security:` across both files)
+- |-
+  odd-platform-public-api spec.md:concepts.invariants.[4]
+  (the platform-wide spec-level confirmation)
+- |-
+  odd-platform-public-api spec.md:docs_link_semantic.doc_drift_findings.[8]
+  (Live security docs at /configuration-and-deployment/enable-security
+  enumerate 4 auth modes + S2S API-key + Ingestion filter — NONE machine-
+  readable from the spec)
+- |-
+  odd-platform-public-api spec.md:security.auth_mode_relevance + .ingestion_filter_relevance +
+  .authorization_assertions (all N/A — the spec declares no security schemes;
+  auth is enforced server-side via SecurityWebFilterChain, not via the
+  spec's contract surface)
+mitigations_unimplemented:
+- |-
+  Add a `components.securitySchemes` block declaring (at minimum) the S2S
+  `X-API-Key` apiKey scheme + the LOGIN_FORM session-cookie scheme +
+  the OAUTH2 authorizationCode scheme. The four declarations are operator-
+  facing — they describe what AUTH the server expects, not WHICH auth-mode
+  is configured on a given deployment.
+- |-
+  Add per-operation `security:` declarations. For UI/API endpoints under
+  `/api/**`, declare the relevant auth scheme(s) + (for RBAC-gated
+  operations) an x-required-permission extension naming the SECURITY_RULES
+  permission. This would make a build-time validator possible (compare
+  spec's x-required-permission to SecurityConstants.SECURITY_RULES entries).
+- |-
+  Build-time validator: walk the OpenAPI spec's per-operation `security:`
+  declarations; for each declaration, verify there exists a corresponding
+  SECURITY_RULES entry with the same path pattern. Fails fast on
+  REFACTOR-217-class drift (singular vs plural, mistyped permission name,
+  missing rule entry).
+- |-
+  Doc-side: at the developer-guides/api-reference hub, add a 'Spec security
+  is currently out-of-band' caveat naming the absent `securitySchemes` block
+  AND naming where the auth model IS canonically documented
+  (configuration-and-deployment/enable-security). Third-party API consumers
+  reading the spec need this signpost.
+severity: MEDIUM
+severity_dim: developer-surface-machine-readable-auth-absent
+cross_batch: true
+notes: |-
+  Surfaced batch 2026-05-20Z by the odd-platform-public-api spec sidecar.
+  Promotes the prior `spec-carries-no-security-block-...` invariant from
+  a tag-axis observation to a spec-layer primary source.
+
+  Composition partners:
+    - REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (this batch) — a
+      securitySchemes declaration would surface the WHITELIST_PATHS
+      exemption as machine-discoverable
+    - REFACTOR-217 (authorization-path-mismatch...term-vs-terms) — a
+      per-operation `security:` declaration with x-required-permission
+      would have caught the SECURITY_RULES path-string drift at build time
+    - Existing companion: spec-carries-no-security-block-authorization-is-wholly-
+      out-of-band-of-the-openapi-contract (this invariant SUPERSEDES at
+      the spec layer; the existing tag-axis observation remains valid
+      as a per-tag instance citation)

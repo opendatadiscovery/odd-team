@@ -1,0 +1,83 @@
+gap_id: TEST-GAP-843
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:Directory"
+  - "odd-platform java DirectoryController controller-class:DirectoryController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "Directory.md:tests_coverage_semantic.uncovered_behaviours.[7] — 'DISABLED-mode anonymous reach — under auth.type=DISABLED the route renders for anonymous callers; no test pin (cross-link to F-023 security gap)'"
+  - "Directory.md:bugs_limitations_corner_cases.[2] — 'Under auth.type=DISABLED the route is anonymously reachable. Unlike Overview.tsx:53-59 (which gates the Recommended panel by appInfo.authType !== DISABLED), Directory.tsx has NO authType check.'"
+  - "Directory.md:security.known_security_gaps.[1] — 'no appInfo.authType gate at the component or route — under DISABLED, anonymous caller reaches the level-1 catalog inventory.'"
+  - "F-023 (batch-T just-minted) facet 5 — disabled_mode_anonymous_reach_directory"
+behaviour: |-
+  **HIGH — Directory level-1 catalog inventory anonymously reachable under DISABLED. UI-tier confirmation of F-023 facet 5 (disabled_mode_anonymous_reach_directory).** Directory.tsx:14-55 has NO `authType` check. The route mount at App.tsx:72 (`<Route path={`${directoryPath()}/*`} element={<DirectoryRoutes />}/>`) is unconditional. Under `auth.type=DISABLED`, the SPA serves `/directory` to ANY anonymous caller AND the level-1 cards render with full `entitiesCount` per ODDRN-prefix bucket.
+
+  **Contrast with sibling components**:
+  - `Overview.tsx:53-59` gates the Recommended panel by `appInfo.authType !== 'DISABLED'` (the OwnerAssociation wrapper hides the Popular column under DISABLED)
+  - `PopularStrip` sidecar invariant 6 (batch J) — same authType check
+  - `Directory.tsx` has NEITHER check
+
+  **The asymmetry is structural**: Overview's authType check is intentional (the Popular column inside the Recommended panel SHOULD NOT render under DISABLED per the doc); Directory's absence is similarly intentional under ADR-CANDIDATE-003 (read-collaborative catalog posture). BUT the result is that the level-1 catalog inventory leaks operational fingerprinting data to ANY anonymous caller under DISABLED:
+  - Every ODDRN-prefix bucket (postgresql, snowflake, kafka, airflow, mysql, ...) — reveals deployment stack composition
+  - `entitiesCount` per bucket — reveals deployment scale and per-source proportionality
+  - The 4-level drill-down navigation (level-2 reveals datasource instances with HOST/PORT/DATABASE per F-023 facet 2; level-3 reveals entity-class distributions; level-4 reveals individual entity ODDRNs)
+
+  **The doc page** (data-discovery/directory, WebFetched 2026-05-20 status 200) does NOT warn that under DISABLED the Directory is anonymously reachable. Operators reading the doc cannot calibrate the risk.
+
+  **Why HIGH**:
+  - **Security**: anonymous reach to catalog inventory under default config (DISABLED is the application.yml default per AppInfoController sidecar batch-T)
+  - **Fingerprinting**: the level-1 grid reveals deployment composition without authentication
+  - **Cascade**: the level-1 cards are `<Link to={prefix}>` — clicking drills into level-2 (datasource instances), level-3 (entity types), level-4 (individual entities) — all unscoped per F-023
+
+  **Test gap shape**: Integration test confirming the route is anonymously reachable under DISABLED + the cards render with full content + the level-2/3/4 chain is also reachable.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/tests/regression-pins/directory-disabled-anonymous-reach.spec.ts"
+    name: "anonymousCallerUnderDISABLEDNavigatesToDirectory_routeRenders_pinsDisabledAnonymousReach"
+  - path: "odd-platform-ui/tests/regression-pins/directory-disabled-anonymous-reach.spec.ts"
+    name: "anonymousCallerUnderDISABLEDNavigatesToDirectoryLevel2_clicksThroughToDataSourceList_pinsCascadeReach"
+  - path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DirectoryDisabledAnonymousTest.java"
+    name: "anonymousCallerUnderDISABLEDGetsApiDirectory_returns200WithFullPayload_pinsBackendAnonymousReach"
+  - path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DirectoryDisabledAnonymousTest.java"
+    name: "anonymousCallerUnderDISABLEDGetsApiDirectoryLevel2_returns200WithFullPayload_pinsCascadeBackend"
+evidence:
+  - "Directory.md says (bugs_limitations_corner_cases.[2]): 'Under auth.type=DISABLED the route is anonymously reachable. Unlike Overview.tsx:53-59 (which gates the Recommended panel by appInfo.authType !== DISABLED), Directory.tsx has no authType check.'"
+  - "Directory.md says (security.known_security_gaps.[1]): 'no appInfo.authType gate at the component or route — under DISABLED, anonymous caller reaches the level-1 catalog inventory. Sister-component PopularStrip and OwnerEntitiesList DO check authType (Overview.tsx:53-59); Directory.tsx does NOT'"
+  - "Verified at primary source: Directory.tsx:14-55 (no authType gate); DirectoryRoutes.tsx:8-20 (no authType branching); App.tsx:72 (unconditional route mount)"
+  - "Cross-reference: F-023 batch-T facet 5 (the canonical finding at controller tier — this entry is the UI-tier closure)"
+  - "Cross-reference: REFACTOR-185 (DISABLED auth bypass family)"
+  - "Counter-example primary source: Overview.tsx:53-59 (the authType check that Directory.tsx LACKS)"
+  - "Reducer-side Glob verification: `/home/raman/work/odd/odd-platform/odd-platform-ui/**/Directory.test.*` returned 0 matches"
+cross_references:
+  - "F-023 batch-T (Directory Browsing feature; facet 5 documents the controller-tier reach; THIS entry pins the UI-tier reach)"
+  - "REFACTOR-185 (DISABLED auth bypass family — extended to a 6th supporting sidecar)"
+  - "REFACTOR-024 (cross-owner read posture — Directory level 1 is the catalog-cardinality enumeration vector)"
+  - "ADR-CANDIDATE-003 (read-collaborative catalog posture — the implicit ADR)"
+  - "ADR-CANDIDATE-122 (catalog-wide aggregate counts as deliberate design)"
+  - "TEST-GAP-842 (sister Popular cross-owner — same architectural family, different UI surface)"
+  - "DOC-GAP-NNN (proposed): docs/features/data-discovery/directory.md should explicitly state DISABLED-mode anonymous reach"
+related_features: [F-023]
+related_pillar_features: ["P-01:F-007 Directory Browsing UI", "P-09:Security & Access Control"]
+proposed_action: |-
+  **Phase 1 — UI Playwright regression-pin**:
+
+  1. `anonymousCallerUnderDISABLEDNavigatesToDirectory_routeRenders_pinsDisabledAnonymousReach` — boot test-platform with `auth.type=DISABLED`, NO authenticated session, navigate to `/directory`, assert the level-1 grid renders with N cards.
+
+  2. `anonymousCallerUnderDISABLEDNavigatesToDirectoryLevel2_clicksThroughToDataSourceList_pinsCascadeReach` — same setup, click a level-1 card, assert level-2 DataSourceList renders with HOST/PORT/DATABASE properties per card (per F-023 facet 2). PINS the cascade reach.
+
+  **Phase 2 — Backend integration tests**:
+
+  3. `anonymousCallerUnderDISABLEDGetsApiDirectory_returns200WithFullPayload_pinsBackendAnonymousReach` — WebTestClient with no auth header against `GET /api/directory`, assert 200 with full payload.
+
+  4. `anonymousCallerUnderDISABLEDGetsApiDirectoryLevel2_returns200WithFullPayload_pinsCascadeBackend` — same for `GET /api/directory/{prefix}`.
+
+  **Architectural fix decision**:
+  - Option A (preserve read-collaborative posture): the test PINS the contract; doc fix is the only change. Add explicit DISABLED-anonymous-reach warning to docs.
+  - Option B (gate under DISABLED): add `appInfo.authType !== 'DISABLED'` check to Directory.tsx + backend route. Test flips assertion direction (anonymous caller gets a redirect or 401 under DISABLED).
+
+  The maintainer's policy call (per ADR-CANDIDATE-003) is currently Option A — the test pins the contract. This is consistent with system-mission.md line 267 (read-collaborative posture as an architectural stance).
+
+  Coherence note (LSN-018 Rule 6): STRENGTHENS F-023 + REFACTOR-185 by establishing the UI-tier consequence explicitly. NO contradiction with existing artefacts. The asymmetry with Overview.tsx (which DOES gate the Recommended panel) is structural and deliberate per ADR-CANDIDATE-003. The test pins both the absence of the gate AND the rationale.
+batch: 2026-05-20-ZA
+feature_id: F-023

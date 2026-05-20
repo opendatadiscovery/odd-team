@@ -1,0 +1,96 @@
+name: Null entity-class-ids NPE on existing-entity update path — calculateDeltaValues
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-10
+description: |-
+  **NEW LOW-SEVERITY INVARIANT, batch 2026-05-20-Z (IngestionServiceImpl sidecar)** —
+  `IngestionServiceImpl.calculateTotalDeltaCount` line 276-301 maintains
+  a `Map<entityClassId, Map<typeId, Long>>` of class×type counters across
+  the ingestion batch. For each existing-entity update branch (line
+  288-292), the code DECREMENTS the PREVIOUS class×type counter by 1
+  ONLY IF the previous pojo had non-null class-and-type
+  (`previousPojo.getEntityClassIds() != null && previousPojo.getTypeId() != null`).
+  The condition guards against legacy rows in the DB where the class-ids
+  or type-id is null — a state that should not occur in normal operation
+  but CAN occur for hollow entities or for entities created before the
+  class-ids schema was added.
+
+  **The composition with the bulkCreate enrichment join (line 142-143)**:
+  for newly-inserted rows, the code re-joins the returned row to the
+  original input DTO via the ODDRN key:
+  `.map(d -> new EnrichedDataEntityIngestionDto(d.getId(), null,
+  ingestionDtoMap.get(d.getOddrn())))`. If the DB returns a row with
+  an ODDRN that doesn't match any key in `ingestionDtoMap` (e.g. a DB
+  trigger that rewrites the ODDRN value during insert — unverified
+  in this batch but architecturally possible), `ingestionDtoMap.get(d.getOddrn())`
+  returns NULL. The EnrichedDto carries null for the underlying DTO,
+  which propagates downstream into the calculateTotalDeltaCount +
+  buildIngestionRequest paths as null entity-class-ids — NPE risk.
+
+  **Severity LOW**: the failure modes are bounded — hollow-entity legacy
+  rows are rare, ODDRN-rewriting triggers are not present in the
+  shipped schema, the NPE is fail-loud rather than fail-silent. The
+  invariant is RECORDED as a defensive-programming finding rather than
+  an exploitation surface.
+
+  **Why this surfaces as an invariant**: the F-008 closure batch
+  Z surfaced THREE new architectural-hygiene findings at the
+  IngestionServiceImpl layer — this one + the duplicate-ODDRN-crash +
+  the silent-destructive-no-audit (the @Slf4j-annotation-unused class).
+  Together they form a small cluster of "fail-loud-with-poor-diagnostic"
+  patterns in the ingestion service tier that contrast with the
+  "fail-silent" class documented at the service tier (replace-not-merge).
+axes_present:
+- services
+nodes:
+- odd-platform java service service:IngestionServiceImpl
+contributors:
+- |-
+  IngestionServiceImpl.md (batch Z PRIMARY SOURCE):
+    concepts.invariants — calculateTotalDeltaCount (line 276-301)
+    maintains a Map<entityClassId, Map<typeId, Long>> of class×type
+    counters; existing entities have their PREVIOUS class×type
+    DECREMENTED by 1 IF the previous pojo had non-null classes-and-type
+    (line 288-292); the guard exists because legacy DB rows may have
+    null entity-class-ids; absence of guard = NPE +
+    concepts.invariants — bulkCreate enrichment join at line 142-143
+    requires every newly-inserted DB row to have an ODDRN that matches
+    a key in ingestionDtoMap; if the DB returns a row with a different
+    ODDRN (e.g. via a trigger that rewrites the value), the map lookup
+    returns null and the EnrichedDto carries null for the underlying DTO
+evidence:
+- |-
+  IngestionServiceImpl.md:concepts.invariants (the two per-line
+  citations — the guard at line 288-292 + the null-propagation risk
+  at line 142-143)
+mitigations_unimplemented:
+- |-
+  Code-side: add an explicit guard at line 142-143 — if
+  `ingestionDtoMap.get(d.getOddrn())` returns null, log.error and
+  throw a domain-specific exception (e.g.
+  `IngestionPipelineConsistencyException`) instead of letting null
+  propagate downstream. Surfaces the DB-trigger-rewriting-ODDRN
+  scenario explicitly.
+- |-
+  Code-side: add a corresponding guard at calculateTotalDeltaCount —
+  same shape, log.warn at the null-entity-class-ids branch BEFORE
+  the existing skip-branch logic. Surfaces the legacy-row scenario
+  for operator awareness.
+- |-
+  Test-side: add a unit test pinning the current null-tolerant
+  behaviour at calculateTotalDeltaCount (existing null entityClassIds
+  → no NPE, no decrement) — the test locks the defensive guard in
+  place against future refactors that might inadvertently remove it.
+severity: LOW
+severity_dim: defensive-programming-null-tolerance-legacy-row-tolerance
+cross_batch: true
+notes: |-
+  Surfaced batch 2026-05-20Z by the IngestionServiceImpl sidecar
+  (F-008 service-tier vertex). Logged as a F-008 batch-extension drift
+  class candidate: `null_entity_class_ids_npe_existing_entity_restore_path`.
+
+  Cross-references:
+    - duplicate-oddrn-within-payload-crashes-ingestion-illegal-state
+      (sibling fail-loud-poor-diagnostic finding from the same sidecar)
+    - F-008 (the ingestion service tier vertex)

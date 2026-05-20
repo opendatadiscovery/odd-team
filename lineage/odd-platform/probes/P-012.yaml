@@ -1,0 +1,137 @@
+---
+id: P-012
+status: pending-stress-protocol
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-2
+emitted_from_sidecar: odd-platform__java__housekeeping__job__ActivityEmptyPartitionsHousekeepingJob.md
+question: |
+  Does ActivityEmptyPartitionsHousekeepingJob silently DROP a partition that
+  became NON-EMPTY between the `isPartitionEmpty` check (PartitionServiceImpl.java:133-142,
+  `SELECT count(*) = 0 FROM <partition>`) and the `DROP TABLE` call
+  (PartitionServiceImpl.java:121-127) — i.e. does a concurrent
+  `INSERT INTO activity` landing in the race window result in the just-inserted
+  row being silently destroyed without any error returned to the inserting
+  caller?
+
+  This is the boundary verification of the class name's promise:
+  "EmptyPartitions" implies "only empty partitions are dropped". The centre
+  meaning holds (the check fires). The boundary meaning is at risk.
+
+stress_category: B (name-behavior pairs), E (resource boundaries)
+stress_question_ids: [Q-B.2, Q-E.3, Q-E.5]
+
+triggers:
+  - Class name `ActivityEmptyPartitionsHousekeepingJob` promises empty-only
+  - PartitionServiceImpl.java:108-117 (two-statement non-transactional pattern)
+  - PartitionServiceImpl.java:134 (the SELECT count(*) = 0)
+  - PartitionServiceImpl.java:122 (the DROP TABLE, no IF EXISTS)
+  - EmptyPartitionsHousekeepingJob.java:16-33 (parent class does NOT use
+    `DSL.using(connection).transaction(...)`, unlike AlertHousekeepingJob.java:25)
+  - No row-lock or partition-lock held across the check + drop
+
+arrange:
+  - docker-compose: postgres + odd-platform (build from main).
+  - Configure: `housekeeping.enabled=true`; `odd.activity.partition-period=1`
+    (so we can quickly bracket the experiment).
+  - Manually create ONE past empty partition: `activity_20260101_20260102`
+    via direct SQL (`CREATE TABLE activity_20260101_20260102 PARTITION OF
+    activity FOR VALUES FROM ('2026-01-01') TO ('2026-01-02');`).
+  - Verify the partition is initially empty: `SELECT count(*) FROM
+    activity_20260101_20260102;` returns 0.
+  - Stand up a parallel client process (Python script, k6 script, or curl
+    loop) that calls an odd-platform endpoint which generates an activity
+    event with `created_at = '2026-01-01T12:00:00Z'` (within the past
+    partition's range). The endpoint candidates:
+      - `POST /api/dataentities/{id}/term` (entity-term-add — covered by `@ActivityLog`)
+      - `POST /api/owners` (owner-create — covered by `@ActivityLog`)
+    Tunable: select an endpoint that allows the test to FORCE the activity
+    insert's `created_at` to fall in the target partition range. If
+    `created_at` is server-derived (DateTimeUtil.generateNow()), this
+    probe must instead manipulate the test database's `pg_partman` or
+    insert directly into the partition via raw SQL.
+  - Instrument the odd-platform JVM with a debugger breakpoint set at
+    PartitionServiceImpl.java:111 (just before `emptyPartitions.add(partitionName)`)
+    — this lets us pause AFTER the empty-check succeeds and BEFORE the
+    DROP statement.
+
+act:
+  - Step 1: trigger the housekeeping cycle (`HousekeepingJobManager.runHousekeepingJobs()`
+    via test harness OR wait 15 minutes).
+  - Step 2: pause at the breakpoint after `isPartitionEmpty` returns TRUE
+    for `activity_20260101_20260102`.
+  - Step 3: WHILE PAUSED, from the parallel client, issue a direct
+    `INSERT INTO activity (data_entity_id, event_type, created_at, ...)
+    VALUES (..., '2026-01-01T12:00:00Z', ...);` against the database.
+    Verify the INSERT commits (RETURN row id).
+  - Step 4: verify the row is present: `SELECT id FROM
+    activity_20260101_20260102;` returns 1 row.
+  - Step 5: resume the JVM. PartitionServiceImpl.java:122 issues
+    `DROP TABLE activity_20260101_20260102`.
+  - Step 6: observe what happens to the just-inserted row.
+
+observe:
+  - kind: db_state
+    target: information_schema.tables
+    after_cycle: |
+      Does `activity_20260101_20260102` still exist? Expected: NO.
+  - kind: db_state
+    target: pg_catalog (the row id from Step 3)
+    after_cycle: |
+      Does the row from Step 3 still exist anywhere? Expected: NO.
+      The partition was dropped — the row is gone with no audit trail.
+  - kind: client_response
+    target: parallel client's INSERT
+    after_step_3: |
+      Did the INSERT return SUCCESS (row id)? Expected: YES.
+      The client SAW its row as committed; the platform later destroyed
+      it without notice.
+  - kind: postgres_log
+    grep_for:
+      - "INSERT INTO activity"
+      - "DROP TABLE activity_20260101_20260102"
+      - "AccessExclusiveLock"
+      - "AccessShareLock"  # held by INSERT
+  - kind: application_log
+    target: odd-platform stdout
+    grep_for:
+      - "Dropping activity_20260101_20260102 partition"
+      - "Dropped 1 partitions for table activity"
+
+oracle:
+  - **HYPOTHESIS CONFIRMED (HIGH severity)**: row was lost — the partition
+    was dropped despite the row being inserted between the check and the
+    drop; no error returned to the inserting client.
+  - **HYPOTHESIS REJECTED (the race is benign)**: either (a) the
+    `AccessShareLock` held by the in-progress INSERT blocks the
+    `AccessExclusiveLock` of DROP TABLE — the DROP waits until INSERT
+    commits, then re-evaluates emptiness... but PartitionServiceImpl
+    does NOT re-evaluate; the DROP fires regardless. So (b) is the only
+    benign outcome: the INSERT physically lands in the dropped table
+    BEFORE the DROP attempts to acquire its lock, but the table is
+    already gone — INSERT errors with `relation does not exist`. Both
+    (a) and (b) require empirical verification; the static reading
+    (no transaction, no re-check) suggests row loss is the actual
+    outcome.
+
+resolves_to:
+  - sidecar_field: stress_findings.Q-B.2 (PROBE-VERIFIED — does the name
+    promise hold at the boundary)
+  - sidecar_field: stress_findings.Q-E.3 (PROBE-VERIFIED — cascading writes
+    during DROP)
+  - sidecar_field: bugs_limitations_corner_cases.[1] confidence
+    (HIGH severity confirmed empirically)
+  - on confirmation: emit DOC-GAP for the live `/active-platform-features/activity-feed`
+    page (warn operators about the silent-row-loss race window)
+  - on confirmation: emit REFACTOR candidate to wrap
+    `EmptyPartitionsHousekeepingJob.doHousekeeping` in a transaction with
+    a `SELECT pg_try_advisory_xact_lock` on a partition-specific lock id,
+    OR re-evaluate emptiness inside the DROP transaction with `SELECT
+    1 FROM <partition> LIMIT 1` immediately before issuing DROP.
+
+severity_if_confirmed: HIGH (silent data loss on the audit trail — LSN-001
+  shape; activity events vanish with no operator notice)
+
+probe_owner: probe-runner (next batch)
+estimated_runtime: 45 minutes (docker-compose + debugger orchestration + parallel client coordination)
+---

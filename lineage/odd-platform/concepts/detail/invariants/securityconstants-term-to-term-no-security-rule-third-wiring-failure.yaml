@@ -1,0 +1,240 @@
+name: |-
+  SecurityConstants wiring failure — term-to-term linkage has NO SecurityRule (third independent SecurityConstants bug after REFACTOR-217 and the alerts-status DATASET_FIELD_ADD_TERM mis-gate)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-06
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20U — surfaced by primary-source
+  examination of TermController.java:237-249 in the batch-U TermController sidecar
+  AND independently corroborated by SecurityConstants.java grep verification.
+  This is the THIRD independent SecurityConstants wiring failure in the codebase
+  after REFACTOR-217 (path-mismatch /term singular vs /terms plural for
+  DATA_ENTITY_ADD_TERM) and the alerts-status mis-gate (PUT /api/alerts/id/status
+  gated by DATASET_FIELD_ADD_TERM). The pattern that emerges across three
+  independent failures: the SecurityConstants.SECURITY_RULES static list at
+  SecurityConstants.java is the SOLE authorization perimeter for the platform
+  AND has NO compile-time, test-time, or startup-time integrity check.
+
+  THE THIRD FAILURE — DETAILS:
+
+    Endpoint 1 — POST /api/terms/term_id/term (addLinkedTermToTerm)
+      TermController.java:237-243 — write that creates a term_to_term row
+      via termService.linkTermWithTerm. NO SecurityRule entry in
+      SecurityConstants.java for this path. Verified by exhaustive grep
+      across SecurityConstants.java for any token matching the term-to-term
+      path pattern returning zero matches.
+
+    Endpoint 2 — DELETE /api/terms/term_id/term/linked_term_id (deleteLinkedTermFromTerm)
+      TermController.java:246-249 — write that removes a term_to_term row.
+      NO SecurityRule entry in SecurityConstants.java. Same grep verification.
+
+  Both endpoints fall through to AuthorizationCustomizer.java:29-30 catch-all
+  pathMatchers /** authenticated() — any authenticated user (LOGIN_FORM /
+  OAUTH2 / LDAP) can link or unlink terms regardless of the seven TERM_*
+  permissions the Business Glossary docs declare.
+
+  THE DOC-DRIFT IMPACT:
+
+    The live Business Glossary docs WebFetched 2026-05-20 status 200 declare
+    TERM_UPDATE gates 'directly-linked terms' (the WebFetch excerpt is in
+    TermController.md:docs_link_semantic.inferred_docs[1].fetched_excerpts).
+    Operators authoring RBAC policies based on the docs will silently
+    fail-open — withholding TERM_UPDATE on a set of terms expecting
+    term-to-term linking to be blocked has no enforcement mechanism. The
+    runtime accepts the link/unlink from ANY authenticated user.
+
+  THE THREE-FAILURE PATTERN:
+
+    Failure 1 — REFACTOR-217 path-mismatch (batch K primary source):
+      SecurityConstants.java:237-242 wires singular /term path; OpenAPI
+      operation paths at openapi.yaml:973, 1042 are plural /terms.
+      Matchers never fire. DATA_ENTITY_ADD_TERM is silently unenforced.
+
+    Failure 2 — alerts-status DATASET_FIELD_ADD_TERM mis-gate (batch K):
+      SecurityConstants.java:295-296 wires PUT /api/alerts/alert_id/status
+      to DATASET_FIELD_ADD_TERM, a TERM permission applied to an ALERT
+      path. Almost certainly a copy/paste error. Two-way bypass: users
+      with DATASET_FIELD_ADD_TERM can change alert statuses; users with
+      the named DATA_ENTITY_ALERT_RESOLVE cannot.
+
+    Failure 3 — term-to-term linkage NO SecurityRule (batch U primary source — THIS INVARIANT):
+      TermController.java:237-249 endpoints have no SecurityRule entry
+      at all. Catch-all authenticated() is the only gate.
+
+  THE COMMON ROOT CAUSE:
+
+    SECURITY_RULES is a hand-curated static List<SecurityRule> at
+    SecurityConstants.java:98. The list is the SINGLE SOURCE OF TRUTH for
+    URL-to-permission gating. There is NO build-time scanner that
+    cross-checks the list against (a) OpenAPI operation paths, (b)
+    permission-name to URL-path-prefix consistency rules, (c) endpoint
+    completeness (every mutating endpoint should have an entry). The
+    failure mode is uniform: a maintainer adding a new endpoint to the
+    OpenAPI spec or TermController and forgetting to register a
+    SecurityRule produces a SILENT fail-open. The three discovered
+    failures probably are NOT the only three — they are the three that
+    primary-source examination uncovered. The DEFENCE-IN-DEPTH absence at
+    the service tier (per term-service-tier-zero-permission-checks)
+    means there is no fallback.
+
+  SEVERITY HIGH — combination of:
+    (a) The runtime accepts the operation from any authenticated user
+        (no defence-in-depth at service-tier).
+    (b) The docs claim TERM_UPDATE gates the surface — operators
+        authoring RBAC policies based on the docs silently fail-open.
+    (c) Three independent failures in one file with no scanner suggest
+        more failures await discovery.
+    (d) The audit trail is also absent — addLinkedTermToTerm and
+        deleteLinkedTermFromTerm are NOT @ActivityLog-annotated
+        (TermServiceImpl.java:288-301), so even forensic recovery
+        after-the-fact is blocked. Cross-link to enum-rooted audit
+        silence below.
+
+  THE OPERATOR-FACING MANIFESTATION:
+
+    An admin authors a Policy saying 'data-science team has TERM_UPDATE
+    on namespace=data-science only'. They EXPECT team members cannot
+    add a term-to-term link from a data-science term to a finance term
+    without holding TERM_UPDATE on the finance namespace too. The
+    runtime ignores the Policy entirely on this surface — any
+    authenticated user can create the link.
+
+  REMEDIATION:
+    (a) Add two SecurityRule entries at SecurityConstants.java for
+        POST and DELETE on the term-to-term path. Most likely intended
+        permission is TERM_UPDATE on the source term_id (per docs).
+    (b) Build-time scanner — cross-check SECURITY_RULES against OpenAPI
+        operation paths; flag any mutating operation without a matching
+        SecurityRule entry. Would catch THIS bug plus REFACTOR-217's
+        plural mismatch plus the alerts-status mis-gate plus any future
+        instances.
+    (c) Add a regression test that exercises POST /api/terms/term_id/term
+        with a caller holding NO TERM_* permissions and asserts 403
+        (under the fix) OR documents 200 as current behaviour (under the
+        bug — pins the buggy state as the regression baseline).
+nodes:
+  - odd-platform java TermController controller-class:TermController
+  - odd-platform java service service:TermServiceImpl
+contributors:
+  - |-
+    TermController batch U (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[0] HIGH HEADLINE (term-to-term linkage
+    endpoints have NO SecurityRule entry; verified by exhaustive grep) +
+    security.known_security_gaps.[0] HIGH (term-to-term linkage endpoints
+    have NO SecurityRule — any authenticated user can link/unlink terms
+    regardless of TERM_* permissions held) + concepts.invariants.[5]
+    (Term-to-term linkage is NOT RBAC-gated) + implicit_adrs.[3]
+    (Term linkage write operations route resource-extractor through
+    AuthorizationManagerType.TERM not DATA_ENTITY — note the term-to-term
+    endpoints are absent from this routing entirely)
+  - |-
+    TermServiceImpl batch K + batch U (CORROBORATING):
+    bugs_limitations_corner_cases.[0] (REFACTOR-217 path mismatch — Failure 1
+    in the three-failure pattern) + bugs_limitations_corner_cases.[1]
+    (second SecurityConstants bug at alerts-status — Failure 2) +
+    security.known_security_gaps.[0,1] (HIGH for both prior failures)
+evidence:
+  - |-
+    TermController.md:bugs_limitations_corner_cases.[0] HIGH HEADLINE —
+    evidence: TermController.java:237-249 (the two unguarded endpoints) +
+    SecurityConstants.java:174-193 (the term SecurityRules verified by grep
+    that the term-to-term paths are absent) + AuthorizationCustomizer.java:29-30
+    (the catch-all pathMatchers /** authenticated()) + live doc fetch
+    2026-05-20 Business Glossary RBAC table
+  - |-
+    TermController.md:security.known_security_gaps.[0] HIGH severity —
+    cross-references the doc-drift implication
+  - |-
+    TermController.md:concepts.invariants.[5] (Term-to-term linkage is NOT
+    RBAC-gated — verified by Grep that /api/terms/term_id/term path is
+    absent from SecurityConstants.java)
+  - |-
+    Cross-references existing invariant
+    authorization-path-mismatch-security-rules-term-vs-openapi-terms-silently-disables-permission-gate
+    (REFACTOR-217 — Failure 1 in the three-failure pattern)
+  - |-
+    Cross-references existing invariant
+    second-securityconstants-bug-alerts-status-wrong-permission
+    (the alerts-status DATASET_FIELD_ADD_TERM mis-gate — Failure 2)
+axes_present:
+  - controllers
+  - services
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-K (REFACTOR-217 primary source)
+  - batch-K (alerts-status DATASET_FIELD_ADD_TERM primary source)
+  - batch-U (term-to-term NO SecurityRule primary source — THIS INVARIANT)
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Add two SecurityRule entries to SecurityConstants.java covering the
+    POST and DELETE on /api/terms/term_id/term/optional-linked_term_id paths.
+    Likely intended permission is TERM_UPDATE on the source term_id (per
+    Business Glossary docs WebFetched 2026-05-20 stating TERM_UPDATE
+    gates 'directly-linked terms').
+  - |-
+    Build-time scanner that cross-checks SECURITY_RULES against OpenAPI
+    operation paths. Three different shapes of failure have surfaced
+    in one file across batches K and U — a single scanner closes the
+    failure class. Required checks:
+      - Every operation declared in openapi.yaml under tags=term + path=/api/terms/**
+        has a matching SecurityRule entry (catches THIS bug).
+      - Every SecurityRule path string parses against an OpenAPI operation
+        path including singular-vs-plural exactness (catches REFACTOR-217).
+      - Every SecurityRule permission name has a prefix matching the
+        first URL segment after /api/ (catches the alerts-status mis-gate).
+  - |-
+    Add a service-tier @PreAuthorize on TermServiceImpl.linkTermWithTerm
+    and removeTermToLinkedTermRelation as defence-in-depth. Per the
+    term-service-tier-zero-permission-checks invariant, the entire
+    TermServiceImpl carries no service-tier authorization — fixing this
+    invariant alone would close this gap regardless of SecurityConstants
+    correctness.
+  - |-
+    Regression test pinning the current behaviour:
+    (a) Authenticate as a user with NO TERM_* permission;
+    (b) Call POST /api/terms/100/term with body containing linkedTermId=200;
+    (c) Assert 403 (under the fix) OR 200 (under the current bug — pins
+        the buggy state as the regression baseline so a future fix is
+        evidence-based).
+  - |-
+    Add @ActivityLog(TERM_LINK_ASSIGNMENT_UPDATED) to TermServiceImpl.linkTermWithTerm
+    and removeTermToLinkedTermRelation — the missing audit trail compounds
+    the missing authorization gate. Note this requires extending
+    ActivityEventTypeDto with a new value AND extending the schema beyond
+    the F-006 data-entity-rooted constraint (per the
+    f-006-audit-silence-enum-rooted-deeper-than-schema-rooted invariant
+    from this same batch U).
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20U from the
+  TermController class-level sidecar. The two unguarded term-to-term
+  endpoints were not visible at the prior controller-method granularity
+  because no controller-method sidecar covered addLinkedTermToTerm or
+  deleteLinkedTermFromTerm individually — the class-level read in batch
+  U surfaces them.
+
+  Cross-cutting connections:
+    - Companion of REFACTOR-217 and the alerts-status mis-gate — three
+      failures of the same architectural family
+    - Pairs with term-service-tier-zero-permission-checks (batch K) —
+      the service-tier absence amplifies every controller-perimeter
+      failure
+    - Pairs with f-006-audit-silence-enum-rooted (batch U) — the
+      audit trail on these endpoints is structurally absent because
+      ActivityEventTypeDto has no TERM_LINK_ASSIGNMENT_UPDATED value;
+      even fixing the SecurityRule does NOT add forensic coverage
+    - Pairs with the read-collaborative posture invariant (batch L
+      28-sidecar) — even after this fix, reading term-to-term links
+      remains uniformly unscoped
+
+  Four DOC-NNN candidates flow from this invariant:
+    (a) Code fix — add the two SecurityRule entries
+    (b) Build-time scanner — cross-check SECURITY_RULES vs OpenAPI
+    (c) Docs admission — until the fix lands, document that the
+        Business Glossary's TERM_UPDATE does NOT gate term-to-term
+        linkage at runtime
+    (d) Regression test pinning the current vs intended state

@@ -22,7 +22,7 @@ Substitute these into every Agent prompt below. Never hardcode an absolute path 
 
 ## Pre-flight (FIRST 5 actions in order — abort if any fails)
 
-1. **Branch check.** `git rev-parse --abbrev-ref HEAD` must equal `feature/ontology-rev2-sprint-2026-05-19`. If it doesn't, ABORT — surface "wrong branch, halting loop" and exit. Never run on `main`.
+1. **Branch check.** `git rev-parse --abbrev-ref HEAD` must equal `feature/ontology-finalize-2026-05-20`. If it doesn't, ABORT — surface "wrong branch, halting loop" and exit. Never run on `main`.
 
 2. **Clean-tree check.** `git status -s` should show no uncommitted unrelated changes. The only acceptable state is "clean working tree" OR pending changes confined to `lineage/` / `state/` / `.claude/` from a prior interrupted batch. If foreign changes exist, ABORT.
 
@@ -37,7 +37,7 @@ Substitute these into every Agent prompt below. Never hardcode an absolute path 
 In ONE assistant message, fire 5 Agent tool calls with `subagent_type: file-analyser` and `run_in_background: false`. Each prompt follows this template (substitute per target_node from the picked theme):
 
 ```
-You are the file-analyser subagent. Enrich ONE node end-to-end per your system prompt's non-negotiable rules. This is batch {THEME_ID} of the ODD agentic-ontology rev-2 sprint (autonomous overnight run on feature/ontology-rev2-sprint-2026-05-19).
+You are the file-analyser subagent. Enrich ONE node end-to-end per your system prompt's non-negotiable rules. This is batch {THEME_ID} of the ODD agentic-ontology rev-2 sprint (autonomous overnight run on feature/ontology-finalize-2026-05-20).
 
 WORKSPACE_ROOT_ABS: <WORKSPACE_ROOT>
 REPO_ROOT_ABS: <REPO_ROOT>
@@ -133,13 +133,13 @@ Run these Bash commands in sequence:
            state/sprint-themes.yaml \
            state/batch-{THEME_ID}-trace.yaml
    git commit -m "batch {THEME_ID} (autonomous) — {THEME_NAME}; coverage {direct%} direct / {effective%} effective"
-   git push origin feature/ontology-rev2-sprint-2026-05-19
+   git push origin feature/ontology-finalize-2026-05-20
    ```
 
    If push fails (non-fast-forward — unlikely in single-session mode):
    ```bash
-   git pull --rebase origin feature/ontology-rev2-sprint-2026-05-19
-   git push origin feature/ontology-rev2-sprint-2026-05-19
+   git pull --rebase origin feature/ontology-finalize-2026-05-20
+   git push origin feature/ontology-finalize-2026-05-20
    ```
    If push still fails → mark theme `blocked` with `blocked_reason: push-conflict-after-rebase` and exit.
 
@@ -148,7 +148,7 @@ Run these Bash commands in sequence:
    if ls lineage/odd-platform/**/*.broken-yaml-pending-fix 2>/dev/null | grep -q .; then
      git add lineage/odd-platform/**/*.broken-yaml-pending-fix lineage/odd-platform/**/*.broken-yaml-backup 2>/dev/null
      git commit -m "[next-batch] theme {THEME_ID} — preserve broken-yaml-pending-fix files for next-batch recovery"
-     git push origin feature/ontology-rev2-sprint-2026-05-19
+     git push origin feature/ontology-finalize-2026-05-20
    fi
    ```
    No force-push needed — this is a fresh commit appended to the sprint branch.
@@ -183,7 +183,8 @@ Reply with EXACTLY ONE of these formats (the loop driver's status surface):
 - NEVER run `git push --force`, `git reset --hard`, `git checkout main`, `rm -rf`, `git branch -D` autonomously.
 - NEVER write to source repos at `<REPO_ROOT>`, `<DOCS_REPO>`, etc. — these are READ-ONLY from this skill's perspective. Only the workspace at `<WORKSPACE_ROOT>` is writeable.
 - NEVER edit `adrs/drafts/*` — those are maintainer-authored design docs.
-- NEVER edit `CLAUDE.md` or `APPROACH.md` — those are governance surfaces; the maintainer hand-authors changes.
+- NEVER edit `CLAUDE.md` — it is the governance surface; the maintainer hand-authors changes.
+- `APPROACH.md` is the deliverable — update it when methodology insights land (new failure modes, new rules, new layers, new probe classes, new bootstrapping signals). Do NOT rewrite the methodology unilaterally; do NOT delete sections; preserve revision history. Substantive additions land alongside an LSN entry that triggered them.
 - If a tool call hits a permission prompt → that's a settings.local.json gap; halt the loop (don't try to bypass).
 
 ## Resumption after a halt

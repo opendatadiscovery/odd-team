@@ -1,0 +1,64 @@
+gap_id: TEST-GAP-829
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform openapi spec:odd-platform-public-api"
+pillars_affected: [P-11]
+surfaced_by:
+  - "openapi-spec.md:bugs_limitations_corner_cases.[1] MEDIUM (only 3 operations declare non-2xx error responses)"
+  - "openapi-spec.md:concepts.invariants.[3] (no declared error model)"
+  - "openapi-spec.md:tests_coverage_semantic.uncovered_behaviours (error-response shape coverage)"
+behaviour: |-
+  **MEDIUM — Only 3 of 194 operations declare a non-2xx error response in the spec. Third-party SDK clients have NO typed error shapes for 191 operations.**
+
+  Verified by Grep on `openapi.yaml`:
+  - `'4..':` → 2 occurrences (line 172 = `POST /api/owners` 403; line 3433 = `POST /api/owners/mapping/{owner_id}` 403).
+  - `'5..':` → 1 occurrence (line 152 = `GET /api/owners` 500).
+
+  **Result**: 191 operations declare ONLY their happy-path 2xx response shape. The platform DOES return 4xx and 5xx in production (per every controller-method sidecar), but the spec is silent on what those responses look like.
+
+  **Impact**:
+  - Third-party SDKs cannot type their error catch blocks. Java's `throws IOException` is the only signal; TypeScript's `Promise<T>` swallows errors.
+  - Operators debugging from spec-consuming clients have no schema for the error body — `{"message": "...", "code": "..."}` vs `{"error": {...}}` vs the bare string body — all undocumented.
+  - The spec's contract surface is "shape if it succeeds; you're on your own if it fails" — a quarter-of-a-contract.
+
+  **Concrete impact pattern**:
+  - Operator calls `POST /api/dataentities/{id}/terms` (per REFACTOR-217 — the spec'd path).
+  - With auth bypassed (REFACTOR-217 not yet fixed), SUCCESS. Once REFACTOR-217 is fixed, the same call returns 403.
+  - The SDK's typed contract doesn't know about the 403 — operator's integration silently swallows it.
+
+  **Why MEDIUM**: this is a quality-of-API contract gap, not a security boundary failure. But the absence of typed error shapes is a load-bearing reason operators report ODD's API as "harder to integrate than alternatives" — same operator-pain class as DOC-GAP-099 inverse-semantic on `getMyObjects*`.
+
+  **Test gap shape**: build-time contract test that asserts:
+  1. Every operation declares at least one 4xx OR 5xx response (or is explicitly marked as never-failing in an `x-error-free` allowlist).
+  2. The 4xx response references a canonical `ErrorResponse` schema in `components.yaml`.
+  3. The schema matches what the controllers actually return (via cross-reference with the Spring `@ExceptionHandler` chain).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/openapi/OpenAPISpecErrorResponseContractTest.java"
+  name: "spec_everyOperationDeclares4xx5xxResponses_AND_referencesErrorResponseSchema"
+evidence:
+  - "openapi-spec.md says (bugs_limitations_corner_cases.[1]): 'Only 3 operations declare non-2xx error responses — across 194 operations, only 3 declare a 4xx or 5xx response: POST /api/owners declares 403 (openapi.yaml:172); GET /api/owners declares 500 (openapi.yaml:152); POST /api/owners/mapping/{owner_id} declares 403 (openapi.yaml:3433). The remaining 191 operations declare ONLY their 2xx happy path. The platform DOES return 4xx and 5xx in production (per controller sidecars), but the spec doesn't say what those error responses look like. Third-party SDK clients have no typed error shapes.' (severity MEDIUM)"
+  - "openapi-spec.md says (concepts.invariants.[3]): 'No declared error model: only 3 operations declare a non-2xx response. The remaining 191 operations declare ONLY their 2xx happy path.'"
+  - "Verified: Grep on openapi.yaml `'4..':` → 2 occurrences; `'5..':` → 1 occurrence — primary-source counts"
+cross_references:
+  - "TEST-GAP-828 (sister — no securitySchemes; same contract-test class)"
+  - "TEST-GAP-830 (sister — REFACTOR-217 path mismatch; the canonical drift the contract test would prevent)"
+  - "DOC-GAP-099 (spec-drift META cluster; this entry extends to the error-response axis)"
+  - "REFACTOR-NNN (proposed): canonical ErrorResponse schema + every operation declares 400 + 401 + 403 + 404 + 500 minimum)"
+  - "system-mission.md P-11 (Platform API & Developer Surface) — the spec is this pillar's load-bearing artefact"
+related_features: [F-008]
+related_pillar_features: ["P-11:Platform API & Developer Surface"]
+proposed_action: |-
+  Add `OpenAPISpecErrorResponseContractTest`. Build-time test:
+
+  1. **Parse spec** with `swagger-parser`.
+  2. **For each of 194 operations**: assert `operation.responses` contains at least one entry with status code matching `4..` or `5..`.
+  3. **For 4xx/5xx responses**: assert each references a canonical `ErrorResponse` schema (or one of a small fixed set of error schemas in `components.yaml`).
+  4. **Cross-check** against Spring's `@ExceptionHandler` chain (via reflection at test setup): assert the spec'd error responses are a superset of what the controllers actually throw.
+
+  The test fails today on (2) for 191 operations. Each failure is a structural finding for the maintainer to triage. Once 191 operations are spec'd, the test guards against silent re-introduction of unspec'd errors.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Sister to TEST-GAP-828/830 — together they form the spec-conformance test suite. STRENGTHENS DOC-GAP-099 (spec-drift META cluster) by adding the ERROR-RESPONSE axis. No contradiction with TEST-GAP-285 (postDataEntityList 200-vs-201) — that entry is about a single happy-path drift; this entry is about the absence of error responses altogether.
+batch: 2026-05-20-Z
+feature_id: F-008

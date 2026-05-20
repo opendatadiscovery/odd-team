@@ -1,0 +1,289 @@
+name: Activity Event State Differ (currently misnamed 'ActivityHandler')
+canonical_in_docs: false
+canonical_candidate: true
+description: |-
+  **NEW ENTITY, batch VAL-LSN-019-B (2026-05-20)** — first-class concept entry
+  for the snapshot-differ component that produces the JSON `oldState` /
+  `newState` payloads recorded on every ActivityPojo row. **The name
+  'ActivityHandler' on the Java interface is misleading**: the interface does
+  NOT handle events, write activity rows, or mutate state. It is a read-only
+  state snapshotter — `getContextInfo(parameters)` captures the OLD state of
+  the affected `data_entity` BEFORE the wrapped business mutation runs;
+  `getUpdatedState(parameters, dataEntityId)` captures the NEW state AFTER
+  the mutation runs; the wrapping `ActivityAspect` does JSON-string diff +
+  persist + dispatch (`ActivityAspect.java:48-94`).
+
+  **The shape**: 4-method interface (`ActivityHandler.java:9-22`):
+    - `boolean isHandle(ActivityEventTypeDto)` — dispatch predicate
+    - `Mono<ActivityContextInfo> getContextInfo(Map<String,Object> parameters)`
+    - `Mono<String> getUpdatedState(parameters, Long dataEntityId)` (single-id)
+    - `Mono<String> getUpdatedState(parameters, List<Long> dataEntityIds)` —
+      DEFAULT method THROWS `UnsupportedOperationException`
+
+  **The implementation set**: 18 concrete @Component impls (verified Glob)
+  + 2 abstract bases (AbstractOwnershipActivityHandler,
+  AbstractCustomGroupActivityHandler) located under
+  `service/activity/handler/`. The 18 concrete classes are autowired into
+  `ActivityServiceImpl.handlers` (`:41`) as a `List<ActivityHandler>` for
+  linear dispatch via `getActivityHandler(eventType)` (`:260-264`):
+  `handlers.stream().filter(h -> h.isHandle(eventType)).findFirst().orElseThrow(RuntimeException)`.
+
+  **The contract — three implementation patterns**:
+    (a) DB-snapshot pattern (most impls): `getContextInfo` reads the OLD
+        state from the DB (e.g. `BusinessNameUpdatedActivityHandler:27-32`
+        loads the current DataEntityPojo to capture its business_name).
+        `getUpdatedState` re-reads the same DB shape AFTER the mutation.
+        Two DB reads per handler invocation; within @ReactiveTransactional
+        they see TX-consistent snapshots.
+    (b) Parameter-snapshot pattern: `DataEntityStatusUpdatedActivityHandler:32-37`
+        reads the OLD DataEntityPojo directly from the @ActivityParameter
+        bag (no DB read for old state — caller passes pre-mutation pojo).
+        Optimisation for hot paths where the caller already holds the
+        pre-mutation entity.
+    (c) Hardcoded-empty pattern: `DataEntityCreatedActivityHandler:31` and
+        `CustomGroupCreatedActivityHandler:24` hard-code `oldState = "{}"`
+        for CREATE events (no pre-existence to snapshot).
+
+  **Coverage hole — multi-id default-throws-at-runtime**: only 2 of 18 impls
+  override the multi-id `getUpdatedState(parameters, List<Long>)` —
+  `DataEntityCreatedActivityHandler:46-49` and
+  `DataEntityStatusUpdatedActivityHandler:51-55`. The other 16 inherit the
+  default-throw from `ActivityHandler.java:18-21`. The ONLY caller of the
+  multi-id path is `ActivityIngestionRequestProcessor.process` (`:25-32`)
+  which dispatches `DATA_ENTITY_CREATED` only — so current runtime is safe,
+  but the interface contract advertises a polymorphic batch path that 14
+  of 16 impls do NOT support. A future @ActivityLog annotation passing a
+  multi-id parameters bag for any other event type would throw at runtime
+  with the misleading message "getUpdatedState for multiple ids is not
+  implemented yet for this handler" — a latent NPE-class regression.
+
+  **Three of 27 ActivityEventTypeDto values are NOT covered by any concrete
+  handler in `service/activity/handler/`**: `DATA_ENTITY_OVERVIEW_UPDATED`,
+  `DATA_ENTITY_METADATA_UPDATED`, `DATA_ENTITY_SCHEMA_UPDATED`,
+  `DATA_ENTITY_RELATION_UPDATED`, `CUSTOM_METADATA_CREATED/UPDATED/DELETED`,
+  `OPEN_ALERT_RECEIVED`, `RESOLVED_ALERT_RECEIVED`. An @ActivityLog-annotated
+  method using one of these would throw `RuntimeException("Can't find handler
+  for event type ...")` at `ActivityServiceImpl.java:263`. Some of these are
+  handled via direct service calls (the AlertServiceImpl OPEN/RESOLVED paths
+  via `createActivityEvents` skip the aspect entirely), some are dead.
+
+  See also: canonicalisation candidate
+  `activity-event-state-differ-vs-activityhandler-name-drift` for the name
+  vs behavior drift; new invariant
+  `activity-handler-concurrent-oldstate-capture-race` for the concurrent
+  same-entity race; new invariant
+  `activity-handler-multi-id-default-throws-runtime-not-compile` for the
+  16-of-18 coverage hole.
+
+  vocabulary_status: codebase-anchored, doc-side-absent (main-concepts.md
+  does not name the snapshot-differ pattern; the live activity-feed.md
+  page does not name 'ActivityHandler' or 'state differ').
+vocabulary_status: codebase-anchored, doc-side-absent
+axes_present:
+- services
+nodes:
+- odd-platform java service activity handler:ActivityHandler
+- odd-platform java service:ActivityServiceImpl
+contributors:
+- |-
+  ActivityHandler interface (batch VAL-LSN-019-B — FRESH): entities[the
+  interface itself, 18 concrete impls, 2 abstract bases, ActivityContextInfo,
+  ActivityCreateEvent, ActivityEventTypeDto, ActivityParameter,
+  ActivityParameterNames]; operations[isHandle, getContextInfo,
+  getUpdatedState single + multi-id default-throws];
+  invariants[snapshot-differ NOT write-handler / JSON-string diff equality /
+  linear dispatch first-match-wins / multi-id default-throws-at-runtime /
+  TX-coupled emit / system-event auto-degradation]
+- |-
+  ActivityServiceImpl (batch VAL-LSN-019-B — FRESH): `handlers` Spring
+  autowire (line 41) + `getActivityHandler(eventType)` linear dispatch
+  (line 260-264) + `getContextInfo` / `getUpdatedInfo single` /
+  `getUpdatedInfo multi-id` (line 65-83) dispatch methods
+evidence:
+- |-
+  ActivityHandler.md:concepts.entities (the interface + 18 impls + 2
+  abstract bases) + concepts.operations.[0-3] (isHandle, getContextInfo,
+  getUpdatedState single + multi-id default-throws)
+- |-
+  ActivityHandler.md:concepts.invariants.[0] (snapshot-differ contract NOT
+  write-handler contract) + invariants.[1] (JSON-string diff equality at
+  ActivityAspect:86 — NOT semantic equality)
+- |-
+  ActivityHandler.md:concepts.invariants.[2] (linear handler dispatch O(N)
+  with N=18; runs twice per @ActivityLog method invocation)
+- |-
+  ActivityHandler.md:concepts.invariants.[4] (multi-id getUpdatedState
+  throws at RUNTIME not at compile time — 16 of 18 impls inherit the
+  default-throw)
+- |-
+  ActivityHandler.md:concepts.invariants.[5] (wrapping @ReactiveTransactional
+  makes emit failure roll back the wrapped mutation)
+- |-
+  ActivityHandler.md:concepts.invariants.[6] (system-event auth-context
+  auto-degradation — null username for ingestion / scheduler flows)
+- |-
+  ActivityServiceImpl.md:concepts.entities (mentions all 17 handler types via
+  bean list — actual count varies 17-18 depending on which abstract bases
+  are counted as concrete) + concepts.operations.[10] (getActivityHandler
+  linear-scan dispatch with RuntimeException on miss)
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant: []
+  ingestion_filter_relevance: N/A
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Handlers run inside the wrapping `ActivityAspect` reactive flow on
+      @ActivityLog-annotated business methods, OR are invoked directly by
+      `ActivityIngestionRequestProcessor.process` (S2S ingestion path).
+      The handler interface itself carries no auth concept. Authorization
+      is inherited from the wrapping context: the @ActivityLog method's
+      own @PreAuthorize (e.g.
+      `DataEntityServiceImpl.upsertBusinessName` carries
+      `@PreAuthorize(DATA_ENTITY_BUSINESS_NAME_UPDATE)`); the ingestion
+      processor inherits the S2S filter at the controller boundary.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      Handlers read data_entity / ownership / tag / term state to produce
+      JSON snapshots. They do not enforce caller ownership; they trust the
+      wrapping context to have done so.
+  strengths:
+  - |-
+    @ReactiveTransactional wrapping at the aspect makes audit emit atomic
+    with the business mutation — no partial-state (mutation succeeded but
+    audit didn't) is structurally possible (ActivityAspect.java:42, 62)
+  - |-
+    Snapshot-differ shape lets future maintainers extend audit coverage
+    by adding a single @Component class (no orchestrator change)
+  weaknesses:
+  - |-
+    **JSON-string equality, not semantic equality** (ActivityAspect.java:86):
+    a field-order change in a *ActivityStateDto class (Lombok upgrade, IDE
+    field reorder, `@JsonPropertyOrder` introduction) silently changes
+    `oldState` bytes for identical underlying state — every active diff
+    comparator emits a spurious activity. Conversely, two semantically-
+    different states that serialize to identical JSON silently NOT emit.
+    Severity MEDIUM (audit-trail truthfulness depends on JSON byte-stability)
+  - |-
+    **System-event auth-context auto-degradation** (ActivityServiceImpl.java:46-49):
+    when no SecurityContext is present (ingestion thread, scheduler,
+    DISABLED-mode anonymous), the `switchIfEmpty` fallback writes
+    `created_by = NULL` SILENTLY — no warning logged, no metric, no
+    fail-fast. The resulting ActivityPojo is permanently anonymous in
+    the audit trail. Severity MEDIUM (forensics — operator cannot
+    distinguish 'unattributable system event' from 'lost SecurityContext
+    via reactive boundary')
+  - |-
+    **Concurrent oldState capture race** (handler-tier, see new invariant
+    activity-handler-concurrent-oldstate-capture-race): two parallel
+    @ActivityLog mutations on the same data entity both capture the SAME
+    pre-mutation oldState; the second handler's diff records wrong
+    attribution. Discoverable as "the audit log shows X changed twice"
+    even though only one change happened. Severity HIGH at scale
+  - |-
+    **Multi-id default-throws-at-runtime**: 16 of 18 concrete impls
+    inherit the throwing default for `getUpdatedState(parameters,
+    List<Long>)`. Current code dispatches only DATA_ENTITY_CREATED to
+    this path, but a future @ActivityLog passing a multi-id parameters
+    bag for ANY other event throws `UnsupportedOperationException` at
+    first subscription. Severity MEDIUM (latent regression class)
+  cross_file_inconsistencies:
+  - |-
+    Three ActivityEventTypeDto values (DATA_ENTITY_OVERVIEW/METADATA/SCHEMA/
+    RELATION_UPDATED, CUSTOM_METADATA_CREATED/UPDATED/DELETED, OPEN/RESOLVED_
+    ALERT_RECEIVED) are not covered by any handler under
+    service/activity/handler/. Some are handled via direct
+    `createActivityEvents` calls bypassing the aspect (Alert events from
+    AlertServiceImpl.applyAlertActions); others are dead. No CI-time check
+    asserts complete coverage.
+  contributing_files:
+  - ActivityHandler.md
+  - ActivityServiceImpl.md
+  evidence:
+  - ActivityHandler.md:concepts.invariants.[0,1,4,5,6]
+  - |-
+    ActivityServiceImpl.md:concepts.operations.[10] (linear-scan dispatch
+    with RuntimeException on miss — handler missing surfaces at first
+    invocation as 500)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    Linear-scan handler dispatch — `ActivityServiceImpl.getActivityHandler`
+    (`:260-264`) iterates all 17-18 handler beans calling `isHandle(eventType)`
+    until one returns true. Average dispatch cost ~9 isHandle calls. Runs
+    twice per @ActivityLog method invocation (once for getContextInfo,
+    once for getUpdatedInfo). No caching, no event-type-to-handler lookup
+    Map.
+  - |-
+    Per-handler DB reads — each `getContextInfo` AND each `getUpdatedState`
+    typically issues ONE DB read against the affected entity's repository
+    (e.g. `dataEntityRepository.get(dataEntityId)`). Two reads per
+    @ActivityLog method invocation, in addition to the wrapped business
+    mutation's own DB ops.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      Each handler invocation runs once per @ActivityLog method invocation,
+      sequentially in the reactive chain. No batching at the handler tier.
+      The multi-id path exists (`getUpdatedState(parameters, List<Long>)`)
+      but only 2 of 18 impls override it; the rest throw
+      UnsupportedOperationException.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless beans — instances scale horizontally. Per-call cost is
+      bounded by the underlying entity repository's read cost; no in-memory
+      cache, no per-instance counter.
+  strengths:
+  - |-
+    Two-snapshot pattern with `oldState == newState` filter at
+    ActivityAspect:86 — idempotent same-value writes do NOT emit redundant
+    activity rows (the diff is empty, so the emit is skipped)
+  - |-
+    Reactive Mono/Flux signature — non-blocking on the wrapped business
+    method's thread
+  weaknesses:
+  - |-
+    **O(N) linear dispatch per invocation** (N=18) — each @ActivityLog
+    mutation incurs ~9 isHandle predicate calls × 2 (for context + updated)
+    = ~18 calls. Low absolute cost (microseconds) but a quietly recurring
+    overhead on every audit-emitting mutation. A future Map<EventType,
+    ActivityHandler> would O(1) the lookup. Severity LOW
+  - |-
+    **Per-handler 2 DB reads per @ActivityLog method** — for high-throughput
+    paths (e.g. bulk-update tags), the activity emission cost equals or
+    exceeds the underlying mutation cost. Severity LOW (deployment-dependent;
+    the handlers are inside the wrapping TX so the reads are TX-cheap)
+  - |-
+    **Multi-id batch path exists but only 2/18 impls support it** —
+    ActivityIngestionRequestProcessor uses the path for DATA_ENTITY_CREATED;
+    other bulk update paths fall back to N×single-emit which is N×2 DB reads.
+    A future bulk operation that emits N OWNERSHIP_UPDATED events would do
+    2N DB reads instead of 2; refactoring 16 handlers to support multi-id
+    is a non-trivial change. Severity LOW (no current high-throughput
+    multi-id user)
+  cross_file_inconsistencies: []
+  contributing_files:
+  - ActivityHandler.md
+  - ActivityServiceImpl.md
+  evidence:
+  - ActivityHandler.md:concepts.invariants.[2] + downstream_side_effects (DB
+    reads from each handler; pattern uniformity across impls)
+  - |-
+    ActivityServiceImpl.md:concepts.operations.[10] (linear-scan dispatch
+    cost characterisation)
+notes: |-
+  Promoted to a first-class entity in batch VAL-LSN-019-B because the
+  handler-tier mechanism is load-bearing for the Activity Feed feature and
+  was previously implicit (mentioned in the Activity Feed concept's
+  contributors but not its own entry).
+
+  The name 'ActivityHandler' is the canonicalisation candidate's
+  proposal target — see canonicalisation_candidates entry
+  `activity-event-state-differ-vs-activityhandler-name-drift`. The
+  interface should be renamed to `ActivityStateSnapshotter` or
+  `ActivityStateDiffer` to match its actual contract (read-only
+  state-capture, not event-handling). Until then, document the name
+  trap in the feature page.

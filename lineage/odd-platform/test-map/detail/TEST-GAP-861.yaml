@@ -1,0 +1,73 @@
+gap_id: TEST-GAP-861
+category: missing-unit
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service:TagServiceImpl"
+pillars_affected: [P-01, P-02]
+surfaced_by:
+  - "TagServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[update triple-zip search-vector refresh — no test asserts that all three updateChangedTag*Vectors calls fire on update]"
+  - "TagServiceImpl.md:stress_findings.E.S-E-2 (update's updateSearchVectors — three CONCURRENT search-vector refreshes via Mono.zip; safe parallelism across different tables)"
+  - "TagServiceImpl.md:implicit_adrs.[Search-vector refresh is part of the update / delete contract]"
+behaviour: |-
+  **MEDIUM — `TagServiceImpl.update(tagId, formData)` (lines 44-55, `@ReactiveTransactional`) triggers THREE concurrent search-vector refreshes via `Mono.zip` in `updateSearchVectors` (lines 161-167): (1) `reactiveSearchEntrypointRepository.updateChangedTagVectors`, (2) `reactiveSearchEntrypointRepository.updateChangedTagStructureVector`, (3) `reactiveTermSearchEntrypointRepository.updateChangedTagVectors`. The triple-zip is intentional parallelism for latency; it is ALSO synchronously awaited as part of the TX, meaning a failure in any of the three rolls back the entire `update` operation. A regression replacing the zip with a single call (or with `.subscribe()` fire-and-forget) would silently break the term-search FTS index AND/OR change the TX-rollback semantics.** No test pins the triple-zip contract; no test pins that the THREE calls fire on every update.
+
+  **Primary-source chain**:
+  - `TagServiceImpl.java:44-55` (`update`): five-step flow (getDto → external check → applyToPojo → repository.update → updateSearchVectors).
+  - **Line 53**: `.flatMap(this::updateSearchVectors)` — synchronously awaited, IN the `@ReactiveTransactional` boundary.
+  - `TagServiceImpl.java:161-167` (`updateSearchVectors`, private):
+    ```
+    private Mono<TagPojo> updateSearchVectors(final TagPojo tag) {
+      return Mono.zip(
+        reactiveSearchEntrypointRepository.updateChangedTagVectors(tag.getId()),
+        reactiveSearchEntrypointRepository.updateChangedTagStructureVector(tag.getId()),
+        reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tag.getId())
+      ).thenReturn(tag);
+    }
+    ```
+  - **Implicit ADR** (per TagServiceImpl.md:implicit_adrs.[Search-vector refresh is part of the update / delete contract]): the `flatMap` placement (vs `subscribe` for fire-and-forget) shows the maintainer explicitly chose to make search-index consistency PART OF the synchronous transaction boundary. A user who updates a tag and immediately searches sees the refreshed index. The triple-zip is concurrent (not sequential) — intentional parallelism for latency.
+
+  **Operator-visible consequences if the contract regresses**:
+  - **search-index drift**: if the refresh becomes fire-and-forget, an immediate search after an update may return stale results (the tag's old name still indexed).
+  - **term-search drift**: if `reactiveTermSearchEntrypointRepository.updateChangedTagVectors` is dropped specifically, the term-search FTS surface lags behind tag renames. Terms tagged with the renamed tag still show the old tag's tokens.
+  - **TX-rollback semantic change**: if any of the three is removed from the zip, the `@ReactiveTransactional` rollback boundary shrinks — a user who renames a tag and a downstream failure occurs would see a partial state.
+
+  **Why MEDIUM not LOW**:
+  - The triple-zip is a coordinated three-table write; "refactoring" to reduce redundancy is a plausible future change that could silently break one of the three.
+  - The asymmetry vs `delete` (which only calls #3 — the term-side refresh — at line 68-69, per TagServiceImpl.md:bugs_limitations_corner_cases.[delete-search-vector-incomplete]) reveals that the search-vector refresh is NOT uniform across mutations. The test for `update` pins the triple-call contract; a sister test for `delete` (separately) would surface the asymmetry.
+test_class: unit
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TagServiceImplUpdateSearchVectorRefreshTest.java"
+  name: "update_invokesAllThreeSearchVectorRefreshCallsConcurrently_pinsTripleZipContract"
+evidence:
+  - "TagServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[update triple-zip search-vector refresh]): 'no test asserts that all three updateChangedTag*Vectors calls fire on update. A regression replacing the zip with a single call would silently break the term-search FTS index.' test_class: TagServiceImplTest (would add testUpdate_TripleSearchVectorRefresh) — Mockito-style test asserting three verify(...).updateChangedTag…) calls. severity: MEDIUM"
+  - "TagServiceImpl.md says (stress_findings.E.S-E-2): 'update's updateSearchVectors (:162-167) — three CONCURRENT search-vector refreshes via Mono.zip. The three repositories (reactiveSearchEntrypointRepository and reactiveTermSearchEntrypointRepository) write to DIFFERENT tables (search_entrypoint vs term_search_entrypoint), so the concurrency is safe.' confidence: HIGH"
+  - "TagServiceImpl.md says (implicit_adrs.[Search-vector refresh is part of update/delete contract]): 'update triggers THREE vector refreshes via Mono.zip (search-entrypoint + tag-structure + term-search); delete triggers one (term-search). These are not best-effort fire-and-forget; they are awaited as part of the response.' confidence: HIGH"
+  - "Verified at primary source: TagServiceImpl.java:44-55 (update with the flatMap to updateSearchVectors) + TagServiceImpl.java:161-167 (the triple Mono.zip)"
+cross_references:
+  - "TEST-GAP-866 (NEW VAL-LSN-019 — delete search-vector refresh INCOMPLETE — sister surface; together they pin the search-vector asymmetry across update vs delete)"
+  - "REFACTOR-NNN candidate: extract the search-vector-refresh into a UNIFIED helper that is called from BOTH update and delete, so the asymmetry is explicit and the regressions are caught at a single test-pin"
+  - "DOC-NNN candidate: surface the search-vector freshness guarantee on the Tagging doc + the Search doc — explain that update propagates immediately to FTS results"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-02:F-001-search"]
+proposed_action: |-
+  Add `TagServiceImplUpdateSearchVectorRefreshTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/` using Mockito + `@SpringBootTest` (or pure Mockito unit test if the search-entrypoint repositories are mockable). Three test methods:
+
+  1. **`update_invokesAllThreeSearchVectorRefreshCallsConcurrently_pinsTripleZipContract`** (HEADLINE):
+     - Arrange: stub `reactiveTagRepository.getDto`, `reactiveTagRepository.update`. Stub all three search-entrypoint refreshes to return `Mono.empty()`. Spy on the three search-entrypoint repositories.
+     - Act: `tagService.update(tagId, TagFormData with name='new-name').block()`.
+     - Assert: `verify(reactiveSearchEntrypointRepository, times(1)).updateChangedTagVectors(tagId)`; `verify(reactiveSearchEntrypointRepository, times(1)).updateChangedTagStructureVector(tagId)`; `verify(reactiveTermSearchEntrypointRepository, times(1)).updateChangedTagVectors(tagId)`. PIN: all three fire.
+
+  2. **`update_searchVectorRefreshFailure_rollsBackTransaction_pinsSyncAwaitedZip`**:
+     - Arrange: stub the third call (`reactiveTermSearchEntrypointRepository.updateChangedTagVectors`) to return `Mono.error(new RuntimeException())`.
+     - Act: `tagService.update(tagId, ...)`.
+     - Assert: the call fails with the propagated exception. Query the DB: the `tag` row's `name` is UNCHANGED (rollback succeeded). PIN: the triple-zip is synchronously awaited; failure rolls back.
+
+  3. **`update_searchVectorCallsAreParallelNotSequential_pinsConcurrency`**:
+     - Arrange: instrument each search-entrypoint call with `Mono.delay(Duration.ofMillis(100))` (3 delays of 100ms each).
+     - Act: measure the total elapsed time for `tagService.update(tagId, ...)`.
+     - Assert: elapsed time is LESS than 300ms (closer to 100ms) — proves parallel zip, not sequential flatMap. PIN: the zip's concurrency intent is preserved.
+
+  Cross-pair with TEST-GAP-866 (the asymmetric `delete` refresh): after both tests land, a maintainer can clearly see "update refreshes 3, delete refreshes 1" — surface this on the doc + extract a shared helper. Cross-pair with REFACTOR-NNN.
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

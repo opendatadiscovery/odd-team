@@ -1,0 +1,38 @@
+gap_id: TEST-GAP-710
+category: missing-performance
+criticality: HIGH
+node_ids:
+  - "odd-platform java ActivityController controller-class:ActivityController"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "ActivityController.md:performance.known_performance_gaps.[0] (`size` parameter has no `@Max` constraint — severity MEDIUM)"
+  - "ActivityController.md:bugs_limitations_corner_cases.[4] (`size=Integer.MAX_VALUE` triggers a wide DB scan — severity MEDIUM)"
+  - "ActivityController.md:tests_coverage_semantic.uncovered_behaviours.[7] (Unbounded `size`: `getActivity` with `size=Integer.MAX_VALUE` does not reject the call)"
+  - "ActivityController.md:security.known_security_gaps.[3] (id enumeration via response-cardinality side-channel)"
+behaviour: |-
+  **ActivityController `getActivity` ACCEPTS UNBOUNDED `size` AND NO RATE LIMIT — a single hostile or mis-tuned client can drive arbitrarily-expensive cross-owner audit-trail dumps.** The controller method signature at `ActivityController.java:26` declares `final Integer size` with NO `@Max`, NO `@Valid`, NO programmatic upper-bound check. The OpenAPI spec (`openapi.yaml:3206-3284`) declares no maximum. The downstream `ActivityServiceImpl.java:179-181` passes the parameter through unchanged. `ReactiveActivityRepositoryImpl.java:292` applies `.limit(size)` directly to the Postgres LIMIT clause. **A caller submitting `size=Integer.MAX_VALUE`** triggers a wide scan limited only by Postgres's plan + the partition layout; combined with `type=null` (the default — unscoped across owners) + no `@RateLimit` annotation anywhere in the controller package (verified by grep — zero matches), a single mis-tuned client can issue a wide-window cross-owner audit-trail dump. **Compounded amplification**: the `userIds` / `ownerIds` filter parameters (lines 30-31) accept arbitrary ID lists; passing `userIds=[1..N]` lets the same call probe which IDs correspond to active users via response cardinality (the response is owner-unfiltered by default, so every valid ID contributes proportionally to the response). Cost amplification: per-call work scales linearly with `size`; per-call work also scales linearly with the `userIds`/`ownerIds` list cardinality (Postgres needs to evaluate the IN clause for every row scanned). **No test catches either dimension**: `find <odd-platform> -path '*test*' -name 'ActivityController*'` returned no matches 2026-05-20; `Grep ActivityController|getActivity|api/activity` against `odd-platform-api/src/test/` returned 0 files. **Combined with TEST-GAP-706 (cross-owner read posture)** this is the DoS amplifier on top of the audit-trail exposure surface; combined with REFACTOR-024 it is the cross-owner read at scale.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ActivityControllerUnboundedSizeAndRateLimitTest.java"
+  name: "getActivity_sizeIntegerMaxValue_isAccepted_AND_noRateLimitOnHotPath_pinsDoSAmplifierSurface"
+evidence:
+  - "ActivityController.md says (performance.known_performance_gaps.[0]): '`size` parameter has no `@Max` constraint and no programmatic upper bound (line 26). A single call with `size=Integer.MAX_VALUE` triggers a wide DB scan.' severity: MEDIUM"
+  - "ActivityController.md says (bugs_limitations_corner_cases.[4]): 'size parameter has no @Max constraint, no documented upper bound, and no programmatic check at controller or service layer. A caller submitting size=Integer.MAX_VALUE triggers a wide DB scan limited only by Postgres''s LIMIT plan and the partition layout. Combined with the absence of type=null owner-scoping, a single mis-tuned client can issue a wide-window cross-owner audit-trail dump.' severity: MEDIUM"
+  - "ActivityController.md says (security.known_security_gaps.[3]): 'userIds and ownerIds filter parameters allow low-cost id enumeration via response-cardinality side-channel. No rate limiting on the endpoint. Combined with the unbounded size parameter, a sweep of id ranges is operationally trivial.' severity: MEDIUM"
+  - "ActivityController.md says (tests_coverage_semantic.uncovered_behaviours.[7]): 'Unbounded `size`: `getActivity` with `size=Integer.MAX_VALUE` does not reject the call; the DB plans a wide scan. No `@Max` constraint, no programmatic check (line 26).'"
+  - "Source: ActivityController.java:26-30 (parameter declarations, no @Max) + ActivityServiceImpl.java:179-181 (pass-through) + ReactiveActivityRepositoryImpl.java:292 (.limit(size)) + grep `@RateLimit|RateLimiter` in odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ returns 0 matches"
+cross_references:
+  - "TEST-GAP-706 (ActivityController cross-owner audit-trail no-authz — the underlying exposure)"
+  - "REFACTOR-024 (cross-owner read posture family)"
+  - "F-021 (P-07:F-003 Activity Feed Audit-Trail Surface)"
+  - "concepts.yaml — read-collaborative-cross-owner-enumeration-posture"
+related_features: [F-021]
+related_pillar_features: ["P-07:F-003"]
+proposed_action: |-
+  Add `ActivityControllerUnboundedSizeAndRateLimitTest` with three regression-pin methods:
+  (a) `getActivity_sizeIntegerMaxValue_returns200_pinsAbsentUpperBound`: WebTestClient GET `/api/activity?beginDate=...&endDate=...&size=2147483647`; assert response 200 (NOT 400 or 422). The test is a regression-pin: a future maintainer adding `@Max(1000)` to size will flip this to 400/422, and the test (with an updated `// REGRESSION-PIN` comment) becomes the asserter of the new clamp.
+  (b) `getActivity_sizeIntegerMaxValueAndTypeNull_returnsCrossOwnerActivitySetWithoutFilter_pinsAmplifiedDump`: seed multiple Owners each with activity events; GET with `size=Integer.MAX_VALUE` and `type=null`; assert the response contains events from ALL owners (not just the caller's). Pins the DoS amplifier surface — combined with cross-owner unscoping (TEST-GAP-706), the per-call work is unbounded.
+  (c) `getActivity_500RequestsInOneSecond_allReturn200_pinsAbsentRateLimit`: fire 500 sequential WebTestClient calls within a 1-second window; assert all return 200 (no rate-limit response). Then `verify`-style assertion: zero `@RateLimit` annotations on the controller class or method (use reflection or a static grep gating test). Pins the no-rate-limit reality.
+  Add `// REGRESSION-PIN — ActivityController.getActivity has NO size upper-bound, NO rate-limit; combined with the cross-owner audit-trail (TEST-GAP-706) this is the DoS amplifier on the most-sensitive read endpoint. If the maintainer adds @Max(N) or a RateLimiter, methods (a) and (c) will fail with informative messages; update the assertions to pin the new clamp. The current asserts pin the absent-clamp reality so future regressions adding-then-removing the clamp are caught.` comment block.
+batch: 2026-05-20-T
+feature_id: F-021

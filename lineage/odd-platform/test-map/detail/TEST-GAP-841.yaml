@@ -1,0 +1,86 @@
+gap_id: TEST-GAP-841
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:Search"
+  - "odd-platform java SearchController controller-method:search"
+  - "odd-platform java SearchController controller-method:facets"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "Search.md:security.known_security_gaps.[2] — 'Session UUID is bearer-token-shaped — REFACTOR-344 family. The search_facets row has no user-binding column. Anyone with the UUID can read/update the session.'"
+  - "Search.md:security.data_exposure.[3] — 'URL-visible session UUID (/search/{uuid}) — the UUID is opaque to outside observers but constitutes an unguessable bearer of session state on the server.'"
+  - "Search.md:bugs_limitations_corner_cases.[6] — 'Session-expiry: stale URL UUID with no recovery path.'"
+behaviour: |-
+  **HIGH — Bearer-token-shaped session UUID with no user binding. REFACTOR-344 family — extended by this batch to a new propagation surface (URL sharing / Slack-linking).** The `/search/{uuid}` URL contains the session UUID in clear visibility to:
+  - The user (in their browser address bar)
+  - Anyone they share the URL with (paste into Slack, save as bookmark, paste into a ticket)
+  - Anyone who can read the user's browser history / clipboard
+  - Anyone with network-traffic visibility (the UUID is in the URL, not just request body)
+
+  **The server-side `search_facets` row has NO user-binding column** (per REFACTOR-344 batch-M evidence). Anyone who knows the UUID can:
+  - **READ** the session via `GET /api/search/{uuid}` — sees the prior user's query text, facet selections, and result page state
+  - **UPDATE** the session via `PUT /api/search/{uuid}/facets` — overwrites the prior user's facet state
+  - **POISON** the session via `PUT /api/search/{uuid}/facets` with FTS-injection payload (per TEST-GAP-838 / REFACTOR-229) — every subsequent facet read 500s
+
+  **Combined with REFACTOR-229 (FTS injection)**:
+  - User A submits poisoned query, session UUID poisoned
+  - User A shares Slack link with team B's analyst
+  - Team B's analyst clicks link, lands on broken page (500s on facet reads)
+  - Team B's analyst cannot recover (no fallback to fresh session per bugs section [7])
+
+  **DoS amplification by sharing**: A single poisoned UUID can break every recipient's facet view. With Slack-message permanence + bookmark caches, the poisoning persists past the user's session — a 30-day-old Slack link from a poisoned session still 500s when clicked.
+
+  **Why HIGH**:
+  - **Security**: bearer-token-shaped without bearer-token semantics (no TLS-only flag, no HttpOnly cookie, no expiry beyond the 30-day TTL, no user binding for revocation)
+  - **Availability**: the poisoning DoS vector propagates by social sharing — no defense
+  - **Surface**: 100% of authenticated users have the bearer URL in their browser
+
+  **Test gap shape**: Integration test that demonstrates: (a) two different users sharing a UUID can each read+update the session, (b) a poisoned UUID propagates the 500 to every subsequent caller, (c) the session has no per-user revocation path.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/tests/regression-pins/search-session-bearer-token.spec.ts"
+    name: "userAsubmitsQuery_userBVisitsSameSessionUUID_userBSeesSameSessionState_pinsBearerTokenShape"
+  - path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/SearchSessionBearerTokenTest.java"
+    name: "putFacetsOnSearchUUID_authenticatesAsUserOtherThanCreator_succeeds_pinsNoUserBinding"
+  - path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/SearchSessionBearerTokenTest.java"
+    name: "putFacetsWithFTSInjection_subsequentGetFacetsReturns500_pinsPropagatedPoisoning"
+  - path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/SearchSessionBearerTokenTest.java"
+    name: "getSearchSession_authenticatesAsAnonymousUnderDISABLED_returns200WithFullState_pinsAnonymousReach"
+evidence:
+  - "Search.md says (security.known_security_gaps.[2]): 'Session UUID is bearer-token-shaped — REFACTOR-344 family. The search_facets row has no user-binding column. Anyone with the UUID can read/update the session. Sharing the URL /search/{uuid} shares the SESSION as well as the filter state. Combined with REFACTOR-229 (above), a poisoned UUID becomes a denial-of-service vector that propagates by sharing.'"
+  - "Search.md says (security.data_exposure.[3]): 'URL-visible session UUID — the UUID is opaque to outside observers but constitutes an unguessable bearer of session state on the server.'"
+  - "Verified at primary source: Search.tsx:37-48 (the URL-backed session pattern); useCreateSearch.ts:16-18 (the navigate-to-uuid)"
+  - "Cross-reference: REFACTOR-344 (search_facets no user binding — the canonical finding)"
+  - "Cross-reference: TEST-GAP-838 (FTS injection — composes into the propagation DoS vector)"
+  - "Reducer-side Grep verification: `search_facets` user-binding-column existence check across migrations — no migration adds `user_id` or `owner_id` to search_facets (per REFACTOR-344 evidence)"
+cross_references:
+  - "REFACTOR-344 (search_facets no user binding — the architectural fix point; per-user session ownership is the load-bearing fix)"
+  - "TEST-GAP-838 (FTS injection — composes into the propagation DoS vector)"
+  - "REFACTOR-229 (FTS injection at JooqFTSHelper.tsQuery)"
+  - "F-010 (search_facets housekeeping job — the 30-day TTL is the only revocation mechanism today)"
+  - "concepts.yaml:invariants[search-session-uuid-bearer-token-shaped-no-user-binding]"
+  - "TEST-GAP-457 (similar pattern at notification subscriber — no rate-limit + no per-user binding = propagation DoS class)"
+related_features: [F-002]
+related_pillar_features: ["P-01:F-002 Search and Filtering", "P-09:Security & Access Control"]
+proposed_action: |-
+  **Phase 1 — Playwright cross-user integration test**:
+
+  1. `userAsubmitsQuery_userBVisitsSameSessionUUID_userBSeesSameSessionState_pinsBearerTokenShape` — boot test-platform with two test users (UserA, UserB). UserA logs in, navigates to `/search`, submits `customer dataset`, captures the session UUID from URL. UserB logs in (different browser context), navigates directly to `/search/{UserA_uuid}`, assert UserB sees UserA's filter state + query text. PINS the bearer-token-shape.
+
+  **Phase 2 — Backend integration test (Java + WebTestClient)**:
+
+  2. `putFacetsOnSearchUUID_authenticatesAsUserOtherThanCreator_succeeds_pinsNoUserBinding` — UserA creates session via `POST /api/search`, captures UUID. UserB authenticates, calls `PUT /api/search/{UserA_uuid}/facets` with new facet selections, assert 200 OK. PINS the cross-user mutability.
+
+  3. `putFacetsWithFTSInjection_subsequentGetFacetsReturns500_pinsPropagatedPoisoning` — UserA poisons the UUID with `foo ) | (bar`, then UserB calls `GET /api/search/{poisoned_uuid}/facet/owners` → assert backend returns 500. PINS the propagation DoS.
+
+  4. `getSearchSession_authenticatesAsAnonymousUnderDISABLED_returns200WithFullState_pinsAnonymousReach` — boot platform with `auth.type=DISABLED`, anonymous caller hits `GET /api/search/{any_uuid}`, assert 200 with full state. PINS the DISABLED-mode reach (compound risk).
+
+  **Architectural fix recommendation**:
+  - Add `created_by_user_id` column to `search_facets` (REFACTOR-344 fix)
+  - Add per-user authorization check on `GET/PUT /api/search/{uuid}` (current owner OR shared-with)
+  - Add session-share mechanism (explicit "share this filter view" affordance) instead of implicit bearer-URL sharing
+  - The tests then UPDATE to assert the new posture (UserB cannot access UserA's session unless explicitly shared)
+
+  Coherence note (LSN-018 Rule 6): STRENGTHENS REFACTOR-344 by establishing the UI-tier propagation surface. NO contradiction with existing artefacts. The pattern parity with TermSearch batch-U is expected (clone relationship — same URL-backed session model).
+batch: 2026-05-20-ZA
+feature_id: F-002

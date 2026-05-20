@@ -1647,3 +1647,546 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - Coherence-sweep candidates: 40k (R) → 41k (S; linear growth).
 - F-001 + F-003 merge candidate still maintainer-pending.
 
+
+## Batch 2026-05-20-T — Discovery cross-cuts: Activity + AppInfo + DataQuality + Directory + Relationship (4/5; new branch feature/ontology-finalize-2026-05-20)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20` (NEW working branch off merged main; PR #144 closed rev-2 sprint)
+- **Substrate**: 106 prior + 4 new = **110 total**; 1 deferred (RelationshipController socket-errored; P-02 first sidecar still pending).
+- **Theme**: Discovery cross-cuts — first batch of the finalization sprint (themes T-ZA queued)
+
+### Sidecars added (4)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `ActivityController` | P-07+P-09 | F-021 read surface is this 2-method class with **ZERO authorization wiring**. F-006 audit-silence reaches **10-SIDECAR** at this layer. The 27-vs-20 enum mismatch (batch R) RECONCILED via WebFetch 200: "20 named + 7 categorical = 27" is the actual taxonomy split. |
+| `AppInfoController` | P-09 | **REFACTOR-185 NOW 19-SIDECAR at controller-class layer** (symmetric with batch-O IngestionDataEntitiesFilter two-axis pattern). expose-mode-hide-provider contract paired with IdentityController. NEW finding: Overview.tsx silently mis-gates OwnerAssociation card on auth.type typo. /api/appInfo is a DISABLED-mode fingerprint surface NOT documented or warned. |
+| `DataQualityController` | P-04 | **P-04's FIRST direct sidecar**. CRITICAL NEW: /api/datasets/{id}/sla returns **image/png** but live doc claims DataSetSLAReport JSON — operator/BI-engineer falls-off-the-cliff drift. Sibling endpoint /sla_report is the actual JSON one. 5 implicit ADRs. REFACTOR-024 cross-owner family +4 invocation sites. |
+| `DirectoryController` | P-01 | **NEW page-vs-count predicate divergence at level 4** — listByDatasourceAndType (HOLLOW+soft-delete only) vs countByDatasourceAndType (full getDataEntityDefaultConditions including EXCLUDE_FROM_SEARCH). STRUCTURALLY analogous to REFACTOR-425 but at a DISTINCT repository site (ReactiveDataEntityRepositoryImpl). Reflection property leak (infrastructure-revealing ODDRN extractor). |
+| `RelationshipController` | DEFERRED | Socket-errored ~5min in (agent abdc2d561a8d84ac2; 0 tokens). DEFERRED to next-batch retry. **P-02 Data Modelling first-sidecar still pending** — needs retry. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 296 → **314 concepts** | +18 new (4 entities + 9 invariants + 3 operations + 2 canon-candidates) + 3 strengthened + 1 SUPERSEDED (DirectoryController v0.1.0 STALE). F-006 audit-silence now 10-SIDECAR; REFACTOR-185 19-SIDECAR; REFACTOR-024 28-sidecar. |
+| adr-archaeologist (ADRs) | 156 → **160** | +4 (157-160) + 3 strengthened. Activity-event-enum-as-2-tier-taxonomy ADR; Expose-mode-hide-provider ADR; SLA-as-PNG-for-BI ADR; Existence-check-includes-soft-deleted ADR. |
+| adr-archaeologist (scopes) | 466 → **470** | +4 (467-470) + 2 strengthened. REFACTOR-185 now **23-SIDECAR** triangulated; REFACTOR-024 cross-owner family now ~30 read endpoints. NEW HIGH: SLA-PNG-vs-JSON live-doc drift. NEW MEDIUM: page-vs-count predicate at ReactiveDataEntityRepositoryImpl (REFACTOR-425 sibling). |
+| doc-gap-finder | 197 → **202** | +5 (198-202) + 2 META strengthened (DOC-082 now 33-sidecar; DOC-083 now 9-sidecar bifurcated into PRESENCE-axis + VISIBILITY-axis). DOC-198 HIGH (SLA PNG/JSON drift); DOC-199 HIGH (AppInfo fingerprint); DOC-200 HIGH (Activity no-authz cross-owner); DOC-201 MEDIUM; DOC-202 MEDIUM. |
+| test-coverage-mapper | 701 → **714 indexed** | +13 (705-717) + 3 strengthened. **3 NEW CRITICAL** (TEST-705 SLA PNG-vs-JSON drift; TEST-706 ActivityController cross-owner audit no-authz; TEST-717 cross-cutting 4-controller HTTP-tier integration absence). 117 CRITICAL total. |
+| feature-flow-builder | 21 → **23 features** (+2 new, +4 extended) | **F-022 / P-04:F-001 Per-Dataset DQ Tests & SLA** (NEW — P-04's FIRST anchored feature). **F-023 / P-01:F-007 Directory Browsing** (NEW — distinct from F-001 search + F-003 popular ranking). F-021 + F-011 + F-008 + F-007 extended. 43 new drift facets — second-largest batch extension after batch R. |
+
+### Coverage state after batch T
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 110 | **27.8%** (was 26.8%) |
+| Effective coverage | 209 | **52.9%** (was 50.1%) |
+| Features discovered | 23 (was 21) | +2 NEW (F-022 P-04 DQ + F-023 P-01 Directory) |
+| Total test-gaps | 714 indexed | 117 CRITICAL (was 114) |
+
+### Cross-batch triangulation deltas
+
+- **P-04 Data Quality pillar now anchored** (was entirely empty) — F-022 first feature minted
+- **F-006 audit-silence pattern**: 9-SIDECAR → **10-SIDECAR** (ActivityController controller-class layer added)
+- **REFACTOR-185 DISABLED-mode bypass**: 19 → **23-SIDECAR** triangulated (AppInfoController + ActivityController + DirectoryController + DataQualityController all reachable in DISABLED)
+- **REFACTOR-024 cross-owner enumeration family**: 24 → **28 invocation sites / 9 feature surfaces**
+- **REFACTOR-425 page-vs-count divergence**: now confirmed at TWO repository sites (was DataSource-only; now also ReactiveDataEntityRepositoryImpl)
+- **LSN-001 pattern (insecure default)**: AppInfo `/api/appInfo` adds a 4th surface (the DISABLED fingerprint)
+- **DOC-082 META (DISABLED bypass operator-trap)**: 29 → **33-sidecar**; 8th tier (cross-cutting endpoints) added
+- **DOC-083 META (no-audit-log)**: 8 → **9-sidecar**, BIFURCATED into PRESENCE-axis + VISIBILITY-axis (Activity feed itself is cross-owner unscoped)
+
+### Follow-ups (logged, not blocking)
+
+- **RelationshipController DEFERRED** — socket-errored. P-02 Data Modelling first-sidecar still pending; next-batch retry candidate (priority HIGH for closing P-02).
+- 2 broken-yaml from batches Q+P+S persist; 3 from earlier. Quarantined.
+- 207 detail-without-index in refactoring-scopes; 82 in implicit-adrs; 22+4 in doc-gaps.
+- Coherence-sweep candidates: 41k (S) → 43k (T; linear growth).
+- F-001 + F-003 merge candidate still maintainer-pending.
+
+
+## Batch 2026-05-20-U — Term + Glossary: **P-06 Data Glossary 5-LAYER closure** (5/5)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 110 prior + 4 new + 1 UI subst = **114 total**; 0 deferred
+- **Theme**: P-06 Data Glossary closure (Term controller + service + UI list + UI details + FTS write repo)
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `TermController` | P-06+P-09 | 23 endpoints; **term-to-term linkage POST/DELETE have NO SecurityRule entry** (2nd SecurityConstants wiring failure — different bug class from REFACTOR-217). Status-code drift. NAMESPACE_CREATE + TAG_CREATE side-doors. Term link/unlink invisible to Activity Feed. |
+| `TermServiceImpl` | P-06+P-09 | **F-004 stored-XSS intersection at handleDataEntityDescriptionTerms**: `[[<script>:foo]]` payloads persist verbatim in unhandled-staging rows. **V0_0_91 term_to_term.deleted_at confirmed DEAD-schema MISSED migration** (not intentional — Grep zero matches for TERM_TO_TERM.DELETED_AT writes). **F-006 audit-silence ENUM-ROOTED**: ActivityEventTypeDto has NO TERM/TAG/NAMESPACE values — structurally invisible. |
+| `TermSearch` (UI, substitute for phantom TermsList) | P-06 | TWO LSN-017-class dep-array smells (latent + potentially active). **Broken 1500ms debouncer recreated every render**. Stale-session-UUID broken-page (cross-link F-010 30-day TTL). 5 ADRs (URL-backed server session model; WithPermissions UI-hide pattern; 1500ms leading-edge debouncer; read-collaborative posture; pageSize=30 twice). |
+| `TermDetails` (UI) | P-06 | **REFUTES LSN-017 doubling for TermDetails** BUT surfaces sibling-class: **cross-component fetch duplication** (shell + Overview tab both fire `getTermDetailsDto` 12-JOIN hot path per page-open). **F-004 stored-XSS EXTENDS to TermDefinition** (rehype-raw bundled via @uiw/react-md-editor 6.1.1, **no rehype-sanitize anywhere in odd-platform-ui** — Grep verified). 5th UI shell confirming LSN-017-negative cluster — DataEntityDetails increasingly SOLE platform-wide canonical instance. |
+| `ReactiveTermSearchEntrypointRepositoryImpl` | P-06+P-01 | Term-side FTS WRITE surface. **REFACTOR-229 ROLE-DISAMBIGUATED** (not strengthened): WRITE path stores tokenized (safe); READ path detonates user-controlled query text. Sidecar is UPSTREAM-of-vulnerability node. Patch scope tightened to READ side only. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 314 → **328 concepts** | +8 new + 6 strengthened. NEW: third-SecurityConstants-wiring-failure; F-004-extends-to-TermDefinition; no-rehype-sanitize-anywhere-in-odd-platform-ui systemic; V0_0_91-dead-schema-classification (severity HIGH→MEDIUM after disambiguation); F-006-audit-silence-ENUM-ROOTED (deeper than schema-rooted); REFACTOR-229-WRITE-vs-READ-disambiguation; cross-component-fetch-duplication (sibling-class to LSN-017); broken-debouncer-recreation-every-render; cross_namespace_term_pollution UI surface confirmed; NAMESPACE_CREATE+TAG_CREATE side-doors. LSN-017-5-UI-shell-negative-cluster: TermDetails confirms DataEntityDetails as SOLE platform-wide canonical. |
+| adr-archaeologist (ADRs) | 160 → **163** | +3 (161-163: URL-backed search-session / per-source-column tsvector / recompute-don't-delta FTS) + 2 strengthened (ADR-089 UI-only-hide WithPermissions 6-sidecar; ADR-152 @ReactiveTransactional uniformity — TermService POSITIVE-COMMITMENT exemplar). 5 wisdom-test reclassifications → scopes. |
+| adr-archaeologist (scopes) | 470 → **480** | +10 (471-480) + 2 strengthened (REFACTOR-229 WRITE-vs-READ disambiguation patch-scope tightened; REFACTOR-188 audit-silence ENUM-ROOTED at ActivityEventTypeDto.java:3-31 — 9-SIDECAR). 2 HIGH + 8 MEDIUM new. |
+| doc-gap-finder | 202 → **210** | +8 (203-210) + 3 META strengthened (DOC-082 + DOC-083 + DOC-099). 2 HIGH (term-to-term unguarded; TermDefinition stored-XSS) + 6 MEDIUM. |
+| test-coverage-mapper | 714 → **724 indexed** | +10 (718-727) + 7 strengthened + 1 SUPERSEDED (TEST-538). **4 NEW CRITICAL** (TermController term-to-term no-authz; TermServiceImpl stored-XSS in unhandled-staging; TermDefinition rehype-raw XSS; F-006 audit-silence ENUM-ROOTED on TermController.deleteTerm). 121 CRITICAL total. |
+| feature-flow-builder | 23 → **24 features** (+1 new, +3 extended) | **F-024 / P-06:F-002 Term Search & Browse — Dictionary tab** (NEW — distinct from F-002 Term-to-Entity Linkage; sibling capability per system-mission.md P-06 sub-features). F-002 + F-004 + F-006 extended. F-002 achieves **FULL 5-LAYER pillar chain closure**. 18 new drift facets. |
+
+### Coverage state after batch U
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 114 | **28.9%** (was 27.8%) |
+| Effective coverage | 215 | **54.4%** (was 52.9%) |
+| Features discovered | 24 (was 23) | +1 NEW (F-024 P-06:F-002 Term Search & Browse) |
+| Total test-gaps | 724 indexed | 121 CRITICAL (was 117) |
+
+### Cross-batch triangulation deltas
+
+- **P-06 Data Glossary CLOSED at 5-LAYER** (controller + service + UI list + UI detail + FTS write repo)
+- **F-002 FULL pillar chain** (was repository-only at batch N; now 5-layer with this batch)
+- **F-004 stored-XSS surface count**: 2 → **3** (data-entity description + dataset-field description + term-definition — all unsanitized markdown via rehype-raw)
+- **F-006 audit-silence pattern**: 10-SIDECAR → **ENUM-ROOTED at ActivityEventTypeDto** (deeper than schema-rooted; 4-tier remediation required: schema migration + enum extension + ActivityHandler implementations + ~25 service-method annotations)
+- **SecurityConstants wiring failures**: 3 distinct cases (REFACTOR-217 path-mismatch + batch-K alert-status mis-permission + term-to-term no-rule) — startup-time invariant scanner case strengthened
+- **LSN-017 negative cluster**: 5 UI shells confirmed (PolicyList + RolesList + OwnersList + CollectorsList + TermDetails) — **DataEntityDetails is the SOLE platform-wide canonical instance** of within-component doubling
+- **Cross-component fetch duplication**: NEW sibling-class to LSN-017 (within-component → cross-component multiplication)
+- **REFACTOR-229 patch scope tightened**: write-side stores safely tokenized; read-side detonates — fix at JooqFTSHelper.tsQuery covers all current + future consumers
+
+### Follow-ups (logged, not blocking)
+
+- RelationshipController DEFERRED from batch T still pending (P-02 first sidecar)
+- 2 broken-yaml from batches P+S persist; 3 from earlier; quarantined
+- 207 detail-without-index in refactoring-scopes; 82 in implicit-adrs; 30+4 in doc-gaps
+- Coherence-sweep candidates: 43k (T) → 44.6k (U)
+- F-001 + F-003 merge candidate still maintainer-pending
+
+
+## Batch 2026-05-20-V — P-02/P-03/P-04 surfaces: **P-02 + P-03 ANCHORED; F-027 LSN-001 canonical surface; F-004 5-SURFACE**
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 114 prior + 5 new = **119 total**; 0 deferred
+- **Theme**: P-02 + P-03 + P-04 controller surfaces + F-019 association-request + F-004 attachment surface
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `QueryExampleController` | P-02 | 13 endpoints; **F-004 4th XSS surface CONFIRMED** (definition + query rendered via MDEditor.Markdown in 2 UI sites, no rehype-sanitize). 3-of-13 RBAC gating asymmetry. Permission grid splits across 3 controllers. Live docs reference Name field that doesn't exist. |
+| `ReferenceDataController` | P-03 | **P-03 Master Data Management FIRST direct sidecar**. LookupCharValidator returns verbatim row values (F-004 sibling). buildTableName collision risk. **Cascade NOT enforced via FK** — parent DataEntity delete orphans lookup_tables_schema.n_*. Two-transaction split catalog DELETE + DDL DROP. updateLookupTableField discards lookupTableId (auth-scope bypass). Rename via ALTER TABLE breaks downstream SQL. |
+| `OwnerAssociationRequestController` | P-09+P-08 | **REFACTOR-427 orphans CONFIRMED at controller layer**. DIRECT_OWNER_SYNC + getOrCreate compose privilege-escalation chain (HIGH). 3 endpoints NO SecurityRule. **POSITIVE-half of F-006 audit asymmetry** — this controller HAS a dedicated audit table (owner_association_request_activity). BIFURCATES F-006. |
+| `DataEntityAttachmentController` | P-08 | **LSN-001 STRENGTHENS** with NEW in-code residue: CHUNK_BASE_PATH `/tmp/odd/chunks` hardcoded **regardless of attachment.storage mode** — REMOTE deployments still lose in-flight chunked uploads on container restart. **LSN-002 minio-region-unset CONFIRMED at MinioConfig.java:19-25**. Cross-entity escalation via discarded URL dataEntityId. Filename path-traversal + CRLF injection. |
+| `DatasetFieldController` | P-01+P-05 | **3 SUPERSEDES (LSN-018 Rule 6 production fire)**: (1) batch-R DATASET_FIELD_DESCRIPTION_UPDATED never emitted = WRONG (@ActivityLog at DatasetFieldInternalInformationServiceImpl.java:28); (2) batch-R 200-on-missing-id = WRONG (.switchIfEmpty → 404); (3) F-006 audit-silence should NOT include dataset-field. **NEW: 2 SecurityConstants wiring bugs at lines 295-299** (alerts-status copy-paste + DATA_ENTITY_ADD_TERM mis-used for /terms POST) — strengthens SecurityConstants invariant scanner case to 5 failures. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 328 → **348 concepts** | +20 new (3 entities + 4 operations + 13 invariants) + 5 strengthened + 3 SUPERSEDED. New: CHUNK_BASE_PATH ephemeral residue, F-006 BIFURCATION, SecurityConstants 5-failure family, F-004 4th+5th surfaces, lookup-table rename breaks downstream SQL, filename-path-traversal+CRLF, DIRECT_OWNER_SYNC privilege escalation. |
+| adr-archaeologist (ADRs) | 163 → **168** | +5 (164-168) + 3 strengthened (ADR-001 24-sidecar, ADR-002 23-sidecar, ADR-146). New: storage @ConditionalOnProperty, 3-step chunked upload, LookupTable physical Postgres, OwnerAssociationRequest dedicated audit, three-tier RBAC for LookupTable. |
+| adr-archaeologist (scopes) | 480 → **486** | +6 (481-486) + 2 strengthened. NEW HIGH: chunk-staging /tmp residue; SecurityConstants wiring 295-299; DIRECT_OWNER_SYNC escalation chain; filename path-traversal CRLF. 3 SUPERSEDES applied. |
+| doc-gap-finder | 210 → **217** | +7 (211-217) + 1 SUPERSEDED (DOC-195 positive corroboration on DATASET_FIELD_DESCRIPTION_UPDATED). 4 HIGH + 3 MEDIUM. DOC-211 QueryExample Name field doesn't exist (DOC-099 6th failure shape). DOC-217 F-004 5th surface. |
+| test-coverage-mapper | 724 → **745 indexed** | +21 (728-748) + 1 strengthened + 2 SUPERSEDED (TEST-666 + TEST-679 batch-R DatasetField claims). **+4 CRITICAL → 125 CRITICAL**. Sites: TEST-728 SecurityConstants wiring; TEST for DIRECT_OWNER_SYNC escalation; TEST for chunk-staging residue; TEST for cross-entity escalation via discarded URL dataEntityId. |
+| feature-flow-builder | 24 → **27 features** (+3 new, +4 extended) | **F-025 / P-02:F-001 Query Examples** (NEW — P-02 ANCHORED). **F-026 / P-03:F-001 Lookup Tables** (NEW — P-03 ANCHORED). **F-027 / P-08:F-005 Attachment Lifecycle** (NEW — LSN-001 canonical surface). F-019 + F-004 + F-006 + F-005 extended. F-004 stored-XSS now 5-SURFACE. F-006 BIFURCATED into POSITIVE/NEGATIVE halves. |
+
+### Coverage state after batch V
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 119 | **30.1%** (was 28.9%) |
+| Effective coverage | 257 | **65.1%** (was 54.4%) — **+10.7pp jump from 3 new features extending feature-flow reach** |
+| Features discovered | 27 (was 24) | **+3 NEW** (F-025 P-02 + F-026 P-03 + F-027 P-08:F-005) |
+| Total test-gaps | 745 indexed | 125 CRITICAL (was 121) |
+
+### Cross-batch triangulation deltas
+
+- **P-02 Data Modelling ANCHORED** with F-025 Query Examples (was empty)
+- **P-03 Master Data Management ANCHORED** with F-026 Lookup Tables (was empty)
+- **All 11 pillars now have at least one anchored feature** (after batch T added P-04)
+- **F-004 stored-XSS surface count: 4 → 5** (entity desc + dataset-field desc + term-def + query-example + lookup-table)
+- **F-006 audit-silence BIFURCATED** into POSITIVE-half (OwnerAssociationRequest dedicated audit table) vs NEGATIVE-half (RBAC mutations) — corrects scope; DatasetField is NOT in negative half (3 SUPERSEDES applied)
+- **SecurityConstants wiring failures: 3 → 5** (alerts-status copy-paste + DATA_ENTITY_ADD_TERM mis-used + term-to-term no-rule + REFACTOR-217 path-mismatch + initial alert-status mis-permission = 5)
+- **LSN-001 IN-CODE RESIDUE**: CHUNK_BASE_PATH `/tmp/odd/chunks` hardcoded — REMOTE deployments still lose chunked-upload state on container restart (doc-side healthy; code-side residue)
+- **LSN-002 minio-region-unset PRIMARY-SOURCE CONFIRMED** at MinioConfig.java:19-25
+- **getOrCreate side-door family**: now Owner + Term + Tag + Namespace + Datasource = 5 surfaces
+- **3 SUPERSEDES applied** (LSN-018 Rule 6 production fire — strongest correction batch since batch O)
+
+### Follow-ups (logged, not blocking)
+
+- RelationshipController DEFERRED from batch T still pending (P-02 first sidecar — partially closed via F-025 minting from this batch's QueryExample anchoring; P-02 architecturally anchored even if RelationshipController not enriched)
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 214 detail-without-index in refactoring-scopes; 90 in implicit-adrs; 37+4 in doc-gaps
+- Coherence-sweep candidates: 44.6k (U) → 47.7k (V)
+
+
+## Batch 2026-05-20-W — Management/admin tier: DataSource + Collector + Namespace + Tag + Dataset controllers (5/5)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 119 prior + 5 new = **124 total**; 0 deferred
+- **Theme**: Management/admin tier — closes F-020 controller half, F-018 controller half, F-008 5-vertex triangulation, F-005 column-level read-side, namespace as new pillar feature
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `DataSourceController` | P-08+P-10 | 5-endpoint UI admin **DISJOINT from S2S** createDataSourceEntity (separate auth + service + mutation semantics). **5th vertex of ADR-142/143 triangulation closed**. NEW: implicit namespace creation bypasses NAMESPACE_CREATE; regenerateDataSourceToken missing @ReactiveTransactional; 201-vs-200 status drift. |
+| `CollectorController` | P-08+P-10 | **End-to-end plaintext token chain CLOSED at controller tier** (register POST + regenerate-token PUT both return 40-char plaintext via showToken=true). GET unrestricted. **Orphan TOKEN row on delete CONFIRMED**. Zero audit logging. |
+| `NamespaceController` | P-08 | **NAMESPACE_CREATE side-door confirmed at 4 sister services** (TermService + DataSourceService + CollectorService + DataEntityGroupService — 8 call sites bypass via getOrCreate). Partial-unique-index allows soft-delete reincarnation. TOCTOU between cascade-check and concurrent referent insert. |
+| `TagController` | P-01+P-08 | REFACTOR-223 side-door is at SERVICE LAYER (TagServiceImpl.getOrCreateTagsByName invoked from 5 paths). This controller is the GATED path. **deleteTag cascade ASYMMETRIC** — cleans tag_to_data_entity + tag_to_term but NOT tag_to_dataset_field. getPopularTagList open-read + per-entity-tag-editors compose to write+read directory bypass without TAG_*. |
+| `DatasetController` | P-01+P-05 | **HIGH: per-entity-scoping BYPASS** — dataEntityId URL parameter NOT enforced against version_id at SQL (ReactiveDatasetVersionRepositoryImpl filters on DATASET_VERSION.ID only). 4 endpoints NO SecurityRule. F-004 verbatim-description read-side surface at column level. Undocumented `dataSet` OpenAPI tag. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 348 → **367 concepts** | +19 new (13 invariants + 6 operations) + 8 strengthened. End-to-end plaintext token chain CLOSED across 5 tiers. NAMESPACE_CREATE side-door 4-sister closure. DatasetController scoping-bypass invariant. deleteTag asymmetric cascade. Soft-delete reincarnation general pattern. |
+| adr-archaeologist (ADRs) | 168 → **171** | +3 (169-171) + 6 strengthened. 9 wisdom-test reclassifications → scopes. |
+| adr-archaeologist (scopes) | 486 → **495** | +9 (487-495) + 4 strengthened. 4 HIGH new (NAMESPACE_CREATE side-door / deleteTag cascade asymmetric / getPopularTagList directory bypass / DatasetController per-entity-scoping bypass). |
+| doc-gap-finder | 217 → **217 (in-memory)** | Reducer returned findings inline rather than writing files this batch (will reconcile in next batch). 7 candidate findings noted (DOC-218..224 candidates: F-020 docs split, datasource sub-page broken-URL, NAMESPACE side-door undocumented, getPopularTagList asymmetry, etc.). |
+| test-coverage-mapper | 745 → **770 indexed** | +25 (749-773) + 1 strengthened (TEST-726). **5 NEW CRITICAL** → 130 CRITICAL. CRITICAL: regenerateDataSourceToken non-transactional, DataSource end-to-end plaintext token, Collector end-to-end plaintext token, DatasetController per-entity-scoping bypass at by-version + diff. |
+| feature-flow-builder | 27 → **28 features** (+1 new, +4 extended) | **F-028 / P-08:F-006 Namespace Lifecycle Management** (NEW — distinct independent capability per pillar's sub-feature seed). F-020 + F-008 + F-018 + F-005 + F-004 extended. 24 new drift facets. |
+
+### Coverage state after batch W
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 124 | **31.4%** (was 30.1%) |
+| Effective coverage | 267 | **67.6%** (was 65.1%) |
+| Features discovered | 28 (was 27) | +1 NEW (F-028 P-08:F-006 Namespace Lifecycle) |
+| Total test-gaps | 770 indexed | 130 CRITICAL (was 125) |
+
+### Cross-batch triangulation deltas
+
+- **F-020 Collector Lifecycle** controller-tier closes end-to-end plaintext token chain (now 6-tier 5-controller picture)
+- **F-018 Manual Object Tagging** controller-tier confirms side-door is SERVICE layer; introduces ASYMMETRIC cascade finding
+- **F-008 Batch Ingestion** 5-vertex ADR-142/143 triangulation (UI admin counterfactual closes the picture)
+- **NAMESPACE_CREATE side-door**: 4 sister services + 8 call sites → full side-door class confirmed
+- **DatasetController per-entity-scoping bypass** — NEW HIGH class (dataEntityId URL parameter NOT enforced at SQL — by-version + diff endpoints)
+- **deleteTag cascade asymmetric** — orphan tag_to_dataset_field invisible to reads (NEW HIGH bug)
+- **End-to-end plaintext token chain** 6-tier: controller register + regenerate (THIS BATCH) + service + repo write + repo read + at-rest + UI render
+- **Read-collaborative cross-owner enumeration**: 24 → **29 surfaces**
+
+### Follow-ups (logged, not blocking)
+
+- doc-gap-finder reducer returned findings inline (in-memory) rather than writing detail/ files; 7 candidate findings (DOC-218..224) noted in concept/scope evidence but NOT on disk as separate detail files — recover in next batch
+- RelationshipController + DOC-216-batch-W-append still pending
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 214 detail-without-index in refactoring-scopes; 90 in implicit-adrs; 37+4 in doc-gaps
+- Coherence-sweep candidates: 47.7k (V) → 49.9k (W)
+
+
+## Batch 2026-05-20-X — Config-properties sweep: LoginForm + Notification + Minio + Session + R2DBC (5/5; **LSN-002 PRIMARY SOURCE LOCKED**)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 124 prior + 5 new = **129 total**; 0 deferred
+- **Theme**: Operator-config surface — auth-mode + notification + storage + session + DB config
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `LoginFormSecurityConfiguration` | P-09 | **LOAD-BEARING SECURITY**: AuthorizationCustomizer NOT wired (lines 55-57). **Every form-authenticated user is hard-coded ADMIN at line 81.** Policies/Permissions/Roles framework INERT. SECURITY_RULES bypassed. CSRF disabled. **REFACTOR-185 now 24-SIDECAR** (LOGIN_FORM facet). |
+| `NotificationConfiguration` | P-07 | F-009 config-tier closure. **SMTP case-sensitivity trap at L63** ('smtp' lowercase code vs 'SMTP' uppercase docs — silent STARTTLS bypass). No URI scheme allowlist (SSRF class). |
+| `MinioConfig` | P-08 | **LSN-002 PRIMARY SOURCE LOCKED at MinioConfig.java:21-24** (.endpoint + .credentials + .build; no .region(...)). @ConditionalOnProperty REMOTE opt-in. Gate-5 unset-parameter audit: 3 of 5 builder params caveat-defaulted. |
+| `SessionConfiguration` | P-08 | **REFACTOR-419 cluster-fragility now 3-SIDECAR TRIANGULATION CLOSED** (controller + filter + config). IN_MEMORY default. spring.session.timeout=-1 makes housekeeping NO-OP. **Zero cookie-security-attribute config** (HttpOnly/Secure/SameSite). PostgreSQLSessionHousekeepingJob NO @SchedulerLock. |
+| `R2DBCConfiguration` | P-08+P-03 | 6 beans (primary + custom). customConnectionPool SOLELY for Lookup Tables (P-03) with ?schema=lookup_tables_schema query-param injection. ALL 10 R2dbcProperties.Pool settings framework defaults (zero overrides). Plaintext creds + /actuator/env default exposure. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 367 → **375 concepts** | +8 new + 6 strengthened + 2 superseded (canonicalisation candidates promoted to invariants). NEW HIGH: login-form-admin-for-every-user; session-cookie-security-attributes-unset; spring-session-timeout-minus-one-housekeeping-noop; smtp-protocol-case-sensitivity-trap. STRENGTHENED: LSN-002 primary-source confirmed; REFACTOR-419 3-sidecar; REFACTOR-185 24-sidecar; provider-null bleed 5-vertex pentagon. |
+| adr-archaeologist (ADRs) | 171 → **177** | +6 (172-177) + 2 strengthened. ADR-172 LOGIN_FORM-dev-demo HIGH; ADR-173..176 channel-presence/REMOTE-opt-in/3-provider-session/custom-R2DBC-pool MEDIUM; ADR-177 IN_MEMORY-default borderline. |
+| adr-archaeologist (scopes) | 495 → **507** | +12 (496-507) + 5 strengthened. 4 HIGH: LOGIN_FORM ADMIN-for-all; cookie-security-attributes; spring.session.timeout=-1 housekeeping no-op; SMTP case-sensitivity. 5 MEDIUM. 3 LOW. |
+| doc-gap-finder | 217 → **232** | +15 (218-232) + 5 META strengthened (DOC-082/006/038/053/197). 6 HIGH + 9 MEDIUM. **WROTE FILES** (recovered from batch W's in-memory miss). |
+| test-coverage-mapper | 770 → **790 indexed** | +20 (774-793) + 10 strengthened. **5 NEW CRITICAL → 135 CRITICAL**: LOGIN_FORM admin-hardcode; SMTP case-sensitivity; LSN-002 region unset; cookie-security unset; auth-mode quartet RBAC contract. |
+| feature-flow-builder | 28 → **28 features** (+0 new, +7 extended) | F-011 + F-009 + F-027 + F-008 + F-020 + F-010 + F-026 all extended. 26 new drift facets. Auth-mode quartet closed. REFACTOR-419 3-SIDECAR triangulation. |
+
+### Coverage state after batch X
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 129 | **32.7%** (was 31.4%) |
+| Effective coverage | 273 | **69.1%** (was 67.6%) |
+| Features discovered | 28 (unchanged) | config-tier extends existing pillar features |
+| Total test-gaps | 790 indexed | 135 CRITICAL (was 130) |
+
+### Cross-batch triangulation deltas
+
+- **LSN-002 PRIMARY SOURCE LOCKED** at MinioConfig.java:21-24 (Gate-5 unset-parameter audit canonical test case closed)
+- **REFACTOR-419 cluster-fragility 3-SIDECAR TRIANGULATION** (controller + filter + config)
+- **REFACTOR-185 DISABLED-mode bypass** now 24-SIDECAR (LOGIN_FORM facet — ADMIN-for-all is a second-mode bypass)
+- **Provider-null cross-mode bleed**: 4-vertex → 5-vertex PENTAGON (auth-config layer root cause anchor added)
+- **Auth-mode quartet picture CLOSED**: DISABLED + LOGIN_FORM + OAUTH2 + LDAP all have config sidecars
+- **5 canonical "default ships operator-invisible failure" instances** (LOGIN_FORM-ADMIN / DISABLED-permitAll / MinIO-region-default / IN_MEMORY-session / spring.session.timeout=-1)
+- **Coherence-sweep candidates**: 49.9k (W) → 53.1k (X)
+- **Doc-gap recovery**: batch W's in-memory findings written to disk this batch
+
+### Follow-ups (logged, not blocking)
+
+- doc-gap-finder writing-files protocol RECOVERED (was in-memory only in batch W)
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 214 detail-without-index in refactoring-scopes; 90 in implicit-adrs; 52+4 in doc-gaps (grew due to batch X writing append files but not index lines)
+- RelationshipController still pending (P-02 first sidecar; now somewhat redundant since P-02 anchored via F-025)
+- Coherence-sweep candidates linear growth continues
+
+
+## Batch 2026-05-20-Y — F-009 Notification delivery 5-LAYER CLOSURE: Subscriber + 3 Senders + WAL Processor (5/5; 4 path corrections per LSN-018)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 129 prior + 5 new = **134 total**; 0 deferred
+- **Theme**: F-009 P-07:F-002 WAL-driven Notification Delivery — was uncovered until batch X config-tier; this batch closes 5-LAYER full picture
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `NotificationSubscriber` | P-07 | F-009 PRIMARY SURFACE — leader-elected single-thread WAL consumer. 8 ADRs (pgoutput hardcoded / lazy-create-no-drop / leader-elected / LSN-advance-after-process at-least-once / single-table publication / polling not event-driven / 10s retry cadence). **HIGH: poison-message WAL replay loop**; **HIGH: WAL-retention disk-exhaustion under poison-replay**; **MEDIUM: publication-name DDL-injection at line 151**. NotificationSubscriberStarter no-thread-death-detection. |
+| `EmailNotificationSender` | P-07 | F-009 Email channel. 6 ADRs (Freemarker template / per-recipient fail-stop / HTML-only / MimeMessage reuse / manual subject string-replace / ALERT_PATH hard-coded). **HIGH: RuntimeException bypass at L58-60 aborts cross-channel fan-out**. Live-doc bullets 2-3 promise owners+downstream BUT template OMITS them. No setFrom allowlist (spoofing). |
+| `SlackNotificationSender` | P-07 | F-009 Slack channel. 4 ADRs + 10 corner cases. **HIGH: 429-Retry-After IGNORED**; **HIGH: mrkdwn-injection via AlertChunkPojo.description** (F-004 6th surface). No connect-timeout blocks subscriber. Unconditional cross-team broadcast. |
+| `WebhookNotificationSender` | P-07 | F-009 generic webhook channel. **HIGH: NO HMAC / NO signature / NO retry / NO timeout (dispatcher stall)**; **HIGH: cross-tenant exposure** (one URL per deployment → every alert across every Owner). 200-only HTTP accept. Latent JsonProcessingException → RuntimeException extension. |
+| `PostgresWALMessageProcessor` | P-07 | F-009 BRIDGE SPI interface (7 lines). **LOAD-BEARING structural root** of F-009's no-retry/no-DLQ/no-audit class (void return + unconditional LSN advance). **F-006 ENUM-ROOTED corroboration**: ActivityEventTypeDto has ZERO NOTIFICATION_* constants. Cross-channel RuntimeException abort undocumented. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 375 → **386 concepts** | +7 new + 4 strengthened. NEW HIGH: WAL-retention disk exhaustion / mrkdwn-injection / webhook no-HMAC / webhook cross-tenant exposure / cross-channel RuntimeException abort. STRENGTHENED: F-006 ENUM-ROOTED (12 categories with notification-delivery) / lazy-create-no-drop primary source / poison-message WAL replay loop 4-layer architecture / exception-type-asymmetry-notification-senders 4-part picture. |
+| adr-archaeologist (ADRs) | 177 → **188** | +11 (178-188) + 1 strengthened (ADR-146 F-006 ENUM-ROOTED gains 3rd structural barrier via SPI seam). 6 HIGH + 4 MEDIUM + 1 LOW. |
+| adr-archaeologist (scopes) | 507 → **538** | +31 (508-538) + 2 strengthened (REFACTOR-085 now 5-sidecar / REFACTOR-183 4-sidecar). 18 wisdom-test reclassifications. |
+| doc-gap-finder | 232 → **237** | +5 (233-237) + 5 META strengthened (DOC-143/147/057/054/083). 3 HIGH + 2 MEDIUM. **WROTE FILES** (recovered from batch W's miss). |
+| test-coverage-mapper | 790 → **811 indexed** | +21 (794-814) + 6 strengthened. **3 NEW CRITICAL → 138 CRITICAL**: poison-message WAL replay loop / WAL-retention disk-exhaustion / publication-name DDL-injection / Email RuntimeException cross-channel. |
+| feature-flow-builder | 28 → **28 features** (+0 new, +4 extended) | F-009 5-LAYER CLOSURE (18 new drift facets). F-004 6-SURFACE (Slack mrkdwn cross-channel render). F-006 10-SIDECAR pattern. F-007 → F-009 downstream chain primary-source complete (forged AlertManager amplifies through F-009 with mrkdwn). |
+
+### Coverage state after batch Y
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 134 | **33.9%** (was 32.7%) |
+| Effective coverage | 278 | **70.4%** (was 69.1%) |
+| Features discovered | 28 (unchanged) | F-009 EXTEND completes 5-LAYER closure |
+| Total test-gaps | 811 indexed | 138 CRITICAL (was 135) |
+
+### Cross-batch triangulation deltas
+
+- **F-009 P-07:F-002 WAL-driven Notification Delivery CLOSED at 5-LAYER** (subscriber + processor + 3 senders + config-tier from batch X)
+- **F-004 stored-XSS surface count: 5 → 6** (added Slack mrkdwn-injection via AlertChunkPojo.description — DIFFERENT rendering pipeline from web rehype-raw, requires SECOND fix-point)
+- **F-006 audit-silence ENUM-ROOTED**: now 12 categories with notification-delivery (was 11); Layer 6 (SPI tier) added — 10-SIDECAR pattern
+- **lazy-create-no-drop replication artefacts**: now 3-sidecar with primary source at NotificationSubscriber
+- **F-007 → F-009 downstream chain PRIMARY-SOURCE COMPLETE**: forged AlertManager (batch P unauthenticated payload) amplifies through F-009 outbound to every channel with mrkdwn injection → 4-surface compound (F-007 → F-009 + F-004 → F-014 → F-022)
+- **NotificationSubscriber thread-death-detection** absent — NotificationSubscriberStarter inert if thread dies
+- **Cross-channel RuntimeException abort** — Email RuntimeException stops Slack + Webhook for the SAME alert (void-return root cause at SPI seam)
+- **Coherence-sweep candidates**: 53.1k (X) → 55.1k (Y)
+
+### Follow-ups (logged, not blocking)
+
+- doc-gap-finder file-writing protocol RECOVERED (was in-memory in batch W; restored in X + Y)
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 247 detail-without-index in refactoring-scopes; 102 in implicit-adrs; 57+4 in doc-gaps
+- 5 probe candidates logged (P-W-1..P-W-5) — local docker-compose feasible (PG + WireMock + MailHog + injected ALERT row)
+
+
+## Batch 2026-05-20-Z — P-11 Platform API closure: IngestionController methods + openapi.yaml + IngestionServiceImpl (5/5; retry after API 529 overload)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 134 prior + 5 new = **139 total**; 0 deferred; **retry #1 after API 529 overload on first attempt**
+- **Theme**: P-11 Platform API & Developer Surface — THE LAST UNCOVERED PILLAR
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `IngestionController.getDataEntitiesByDEGOddrn` | P-10+P-11 | **GET /ingestion/entities/{degOddrn} is UNAUTHENTICATED in EVERY shipped deployment mode** — SecurityConstants.WHITELIST_PATHS exempts /ingestion/**, IngestionDataEntitiesFilter binds only POST /ingestion/entities, no @PreAuthorize anywhere. Sequential-ID enumeration. Cross-owner DEG-member enumeration. F-016 sibling empty-200-vs-404 contract asymmetry. **REFACTOR-185 17th sidecar**. |
+| `IngestionController.postDataSetStatsList` | P-10 | Existing sidecar already enriched (verified intact). UNAUTHENTICATED stats write. Cross-dataset stats write (no parent-child consistency). TAG_CREATE-permission bypass via tagService.getOrCreateTagsByName side-effect. F-008 silent_destruction_replace_not_merge family. |
+| `IngestionController.ingestMetrics` | P-07+P-10 | 4-line proxy → mirrored beans. **UNAUTHENTICATED in every deployment posture**. **INTERNAL_POSTGRES path has NO tenant_id column — tenant isolation NONEXISTENT on default backend**. Path correction: /ingestion/metric_sets → /ingestion/metrics. |
+| `odd-platform-specification/openapi.yaml` | P-11 | **P-11 CLOSED at canonical contract layer**. 4212 + 2937 lines (spec + components). 194 operations across 35 tags. **ZERO securitySchemes / ZERO security: declarations** — spec doesn't model auth. **REFACTOR-217 path-mismatch confirmed**: spec at openapi.yaml:973,1042 is CORRECT, SecurityConstants is WRONG. 9+ status-code-drift instances enumerated. |
+| `IngestionServiceImpl` | P-10 | **F-008 5-VERTEX closure** (filter + controller + service + repo + SQL). @ReactiveTransactional outer-txn binding 14-processor chain. Establisher-keyed lineage replacement. 3 NEW F-008 drift facet candidates. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 386 → **399 concepts** | +13 new (11 invariants + 1 entity + 1 canonicalisation candidate) + 3 strengthened + 1 SUPERSEDED (metrics-ingestion path /metric_sets→/metrics). NEW: 3-unauth-ingestion-endpoints; tenant_id absent INTERNAL_POSTGRES; openapi ZERO securitySchemes; platform-api-architectural-shape META; F-016 contract asymmetry; 3 IngestionServiceImpl drift facets. |
+| adr-archaeologist (ADRs) | 188 → **192** | +4 (189-192) + 4 strengthened (ADR-001/003/026/027). ADR-189 OpenAPI-as-SoT / ADR-190 @ReactiveTransactional outer-txn / ADR-191 establisher-keyed lineage / ADR-192 S2S read AUTH-MODE-ORTHOGONAL (borderline_flag). |
+| adr-archaeologist (scopes) | 538 → **545** | +7 (539-545) + 2 strengthened. 5 HIGH: 3 unauth endpoints / tenant_id absent / cross-dataset stats / TAG_CREATE bypass / spec ZERO securitySchemes. 2 MEDIUM. REFACTOR-185 → 17+18-SIDECAR with AUTH-MODE-ORTHOGONAL property. REFACTOR-217 direction-of-fix PINNED. |
+| doc-gap-finder | 237 → **245** | +8 (238-245) + 7 META strengthened (DOC-001/009/018/038/074/099/107). 5 HIGH + 2 MEDIUM + 1 LOW. |
+| test-coverage-mapper | 811 → **832 indexed** | +21 (815-835) + 7 strengthened. **5 NEW CRITICAL → 143 CRITICAL**: unauth-everywhere ingestion endpoints (3); tenant_id absent; cross-dataset stats write. |
+| feature-flow-builder | 28 → **30 features** (+2 new, +3 extended) | **F-029 / P-11:F-001 Platform Public API Contract** (NEW — **CLOSES THE LAST UNCOVERED PILLAR**). **F-030 / P-07:F-005 Metrics Ingestion** (NEW). F-008 + F-016 + F-018 extended. 41 new drift facets. **ALL 11 PILLARS NOW HAVE MINTED FEATURES.** |
+
+### Coverage state after batch Z
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 139 | **35.2%** (was 33.9%) |
+| Effective coverage | 286 | **72.4%** (was 70.4%) |
+| Features discovered | 30 (was 28) | **+2 NEW** (F-029 P-11:F-001 + F-030 P-07:F-005) |
+| Total test-gaps | 832 indexed | 143 CRITICAL (was 138) |
+
+### Cross-batch triangulation deltas
+
+- **🎯 ALL 11 PILLARS NOW HAVE MINTED FEATURES** — P-11 closed by F-029
+- **REFACTOR-185 DISABLED-mode bypass now 17+18-SIDECAR** with NEW AUTH-MODE-ORTHOGONAL read-side property
+- **REFACTOR-217 path-mismatch direction-of-fix PINNED**: spec is correct, SecurityConstants is wrong
+- **F-008 5-VERTEX closure** with IngestionServiceImpl service-tier vertex
+- **3 unauthenticated /ingestion/** endpoints exposed in EVERY deployment mode (not just DISABLED — REFACTOR-185 extends to AUTH-MODE-ORTHOGONAL class)
+- **Tenant isolation NONEXISTENT** on INTERNAL_POSTGRES metrics backend
+- **OpenAPI spec ZERO securitySchemes** — platform's auth posture is illegible to its own contract
+- **F-016 DEG-Anchored Lineage** sibling-endpoint contract asymmetry (empty-200 vs 404)
+- **Concept-catalog SUPERSEDE** applied: metrics-ingestion path corrected /metric_sets → /metrics (LSN-018 Rule 6)
+- **Coherence-sweep candidates**: 55.1k (Y) → 60.5k (Z)
+
+### Follow-ups (logged, not blocking)
+
+- 1 transient failure mode learned: API 529 overload mid-batch — retry-after-30s + retry-after-loop-tick both viable recovery paths
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 256 detail-without-index in refactoring-scopes; 110 in implicit-adrs; 65+4 in doc-gaps
+- ZA still pending — UI canonical surface (LSN-017 region)
+
+
+## Batch 2026-05-20-ZA — UI canonical surface: DataEntityDetails + Lineage + Search + Directory + Overview (5/5; **FINAL batch of finalization sprint**)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 139 prior + 5 new = **143 total**; 0 deferred
+- **Theme**: UI canonical surface — closes LSN-017 PRIMARY-SOURCE LOCK + 9-shell negative cluster + F-001 inflation loop traced end-to-end
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `DataEntityDetails` | P-01 | **LSN-017 PRIMARY-SOURCE LOCKED** at lines 56-64 (re-verified — bug intact). F-001 chain formulation: hop-1 multiplicity=2 × hops 2-4=1 × +1 UPDATE = +2 per page-open. **SOLE platform-wide canonical instance** of response-derived-dep-array bug. |
+| `Lineage` (substituted from phantom LineageInteractive) | P-05 | 5-line pure dispatcher (DEGLineage vs HierarchyLineage by isDEG). LSN-017 NOT applicable. F-005 + F-016 UI realization chokepoint. UI-layer defense-in-depth absent (chokepoint identified). |
+| `Search` | P-01 | Catalog page root. 12 bugs. 3 LSN-017-class dep-array smells. **IDENTICAL broken-debouncer to TermSearch (clone propagation)**. **REFACTOR-229 now 3-invocation-site** (UI zero mitigation). REFACTOR-425 page-vs-count blind trust. Bearer-token UUID propagation. |
+| `Directory` (corrected from Directory/Directory.tsx) | P-01 | F-023 P-01:F-007 Level-1 root. **LSN-017 NOT APPLICABLE** (TanStack useQuery NOT useEffect — explicit negative). **REFACTOR-024 now 4-tier UI confirmation**. F-023 facets 1+5 confirmed at UI tier. No authType gate (anonymous DISABLED reach). |
+| `Overview` | P-01 | **OwnerAssociation mis-gating ROOT-CAUSE LOCKED at lines 25-27** (string-equality predicate; 4 failure scenarios documented). **LSN-017 ABSENT here** (no useEffect; only useMemo). **HOME-PAGE MOUNT for F-001 inflation loop**. Cross-owner enumeration via Popular column for authenticated users. 5 doc-drift findings. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 399 → **399 (UNCHANGED)** | **FAILED** (socket error) — concepts/ index not updated this batch. Backfill candidate for next batch. |
+| adr-archaeologist (ADRs) | 192 → **197** | +5 (193-197) + 4 strengthened (ADR-003 / 114 / 122 / 185). |
+| adr-archaeologist (scopes) | 545 → **551** | +6 (546-551) + 4 strengthened (REFACTOR-024 / 073 / 185 / 229). |
+| doc-gap-finder | 245 → **254 (unique)** | +9 (246-254) + 5 META strengthened (DOC-082 / 083 / 099 / 130 / 137). |
+| test-coverage-mapper | 832 → **851 indexed** | +19 (836-854) + 3 strengthened. **1 NEW CRITICAL → 144 CRITICAL**: LSN-017 view_count doubling regression-pin (TEST-836). |
+| feature-flow-builder | 30 → **30 features** (+0 new, +8 extended) | F-001 + F-003 + F-005 + F-011 + F-016 + F-017 + F-018 + F-023 ALL extended. LSN-017 chain composition complete. 8-feature extension breadth. |
+
+### Coverage state after batch ZA (FINAL SPRINT STATE)
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 143 | **36.2%** (was 35.2%) |
+| Effective coverage | 295 | **74.7%** (was 72.4%) |
+| Features discovered | 30 (unchanged) | UI extends existing pillar features |
+| Total test-gaps | 851 indexed | 144 CRITICAL (was 143) |
+
+### Sprint final summary (T-ZA, 8 batches on finalization branch)
+
+| Metric | At sprint start (post-S) | Final (after ZA) | Delta |
+|---|---|---|---|
+| Direct sidecars | 106 / 395 (26.8%) | **143 / 395 (36.2%)** | +37 sidecars |
+| Effective coverage | 198 / 395 (50.1%) | **295 / 395 (74.7%)** | +97 nodes / **+24.6pp** |
+| Features | 21 | **30** | +9 features |
+| Test-gaps | 631 | **851** | +220 test-gaps |
+| CRITICAL test-gaps | 107 | **144** | +37 CRITICAL |
+| Pillars anchored | 9/11 | **11/11** | P-06 + P-11 closed |
+
+### Cross-batch triangulation deltas (cumulative)
+
+- **🎯 ALL 11 PILLARS HAVE MINTED FEATURES** (P-06 closed batch U, P-11 closed batch Z)
+- **LSN-017 PRIMARY-SOURCE LOCKED** at DataEntityDetails.tsx:56-64 with 9-shell negative cluster
+- **REFACTOR-185 DISABLED-mode bypass**: 19-SIDECAR → 24-SIDECAR (LOGIN_FORM facet) → 17+18-SIDECAR AUTH-MODE-ORTHOGONAL (3 unauth /ingestion/** endpoints in EVERY mode)
+- **REFACTOR-024 cross-owner enumeration family**: 4-tier UI confirmation
+- **REFACTOR-229 FTS injection**: 3-invocation-site
+- **REFACTOR-217 path-mismatch DIRECTION-OF-FIX PINNED** (spec correct, SecurityConstants wrong)
+- **F-006 audit-silence pattern**: 6-SIDECAR → 7 → 8 → 9 → 10 → ENUM-ROOTED (notification-delivery extension)
+- **F-004 stored-XSS surfaces**: 3 → 4 → 5 → 6 surfaces (data-entity / dataset-field / term / query-example / lookup-table / Slack-mrkdwn)
+- **F-008 5-VERTEX closure** (filter + controller + service + repo + SQL)
+- **F-009 5-LAYER closure** (subscriber + processor + 3 senders + config)
+- **End-to-end plaintext collector token chain 6-tier**
+- **LSN-001 + LSN-002 PRIMARY-SOURCED** (CHUNK_BASE_PATH residue + MinioConfig.java:21-24)
+- **OwnerAssociation mis-gating ROOT-CAUSE LOCKED** at Overview.tsx:25-27
+- **SecurityConstants wiring failures**: 5 total (3 path-mismatch + 2 mis-permission)
+
+### Sprint methodology lessons reinforced
+
+- **LSN-018 phantom-node prevention** fired across **6 batches** (Q + S + V + W + X + Y + ZA) — 18+ path corrections caught before file-analysers wasted cycles
+- **LSN-018 Rule 6 supersedes**: 10+ across batch O / Q / V / Y / Z (canonical wrong-claim corrections)
+- **API resilience**: 2 transient failures (rate-limit batch S; 529 overload batch Z) — both recovered via retry
+- **Doc-gap reducer file-writing protocol**: lost in batch W (in-memory only) → recovered in batches X+Y+Z+ZA
+- **concept-merger** socket-errored in batch ZA (final) — backfill candidate
+
+### Follow-ups (logged, not blocking)
+
+- concept-merger socket-failure backfill needed (batch ZA additions not in concepts/ index)
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 256 detail-without-index in refactoring-scopes; 110 in implicit-adrs; 74+4 in doc-gaps
+- F-001 + F-003 merge candidate still maintainer-pending
+
+
+---
+
+## Batch VAL-LSN-019 — 2026-05-20 — LSN-019 Stress Protocol validation canary
+
+**The first run of file-analyser/0.4.0 (Rule 9 — Stress Protocol) on real production nodes.** The methodology change shipped 2026-05-20 was validated end-to-end: 3 sidecars enriched, 27 stress questions answered (22 STATIC-INFERRED + 3 PROBE-NEEDED → ~88% stress_verified_pct on the canary surface), 10 probe-skeletons emitted, all 5 reducers consumed the new sidecars correctly. The previously-wrong "orders by descending count" claim on `listMostPopular` is now corrected through the methodology — not by hand-patching.
+
+### Sidecars (3)
+
+- `odd-platform__java__TagController__controller-class__TagController.md` — REWRITE under file-analyser/0.4.0. Stress Protocol emitted 8 triggers / 27 questions / 26 STATIC-INFERRED + 1 PROBE-NEEDED. LSN-019 drift VERIFIED via JOOQ static trace; P-010 emitted (also referenced by Repository sidecar).
+- `odd-platform__java__repository__reactive__repository__ReactiveTagRepositoryImpl.md` — REWRITE under file-analyser/0.4.0. Stress Protocol emitted 17 stress_findings across 5 categories. SMOKING-GUN trace: `paginate(homogeneousQuery, [OrderByField(TAG.ID, ASC)], (page-1)*size, size)` at `ReactiveTagRepositoryImpl.java:148` inside the CTE → the outer `cteSelect.orderBy(COUNT_FIELD.desc())` at line 158 only re-ranks the already-truncated window. Confidence: HIGH.
+- `odd-platform__java__service__TagServiceImpl.md` — FRESH enrichment. Stress Protocol emitted 18 stress_findings across all categories. Service-tier auth verdict: **ZERO `@PreAuthorize` / ZERO `permissionService.*` / ZERO `SecurityContextHolder` reads** across all 9 public methods + 2 private helpers; 5 of 9 methods mint directory rows via side-doors bypassing `TAG_CREATE`. Emitted 8 narrative probe-skeletons in `.md` format (deviation from the canonical `P-NNN.yaml` shape — see Follow-ups).
+
+### Probe-skeletons emitted (analyser-authored, Type-8 per APPROACH.md §7)
+
+- `lineage/odd-platform/probes/P-010.yaml` — Repository smoking-gun probe (35 equally-tagged tags → assert response = set([1009..1038])). Canonical YAML format, runnable by probe-runner.
+- `lineage/odd-platform/probes/P-LSN019-{listMostPopular-drift, updateRelations-external-preserve, divide-case-sensitive, getOrCreate-vs-getOrInject-toctou, deleteRelationsWithTerm-case, updateRelations-empty-deletes-all, service-auth-zero, createRelationsWithTerm-tx-propagation}.md` (8 files) — narrative skeletons emitted by the TagServiceImpl agent. Each carries concrete arrange/act/observe/assert content in markdown form. **Format-deviation follow-up:** convert to `P-NNN.yaml` shape so probe-runner can execute.
+
+### Reducer outputs
+
+- **concept-merger** — 7 new concept entries + 6 existing concepts strengthened + 4 concepts CORRECTED with `superseded_in_batch: VAL-LSN-019` (the wrong "popularity-ranked" framing on `get-popular-tag-list` operation + Tag entity is now corrected). New dedicated invariant `lsn-019-listmostpopular-name-vs-behavior-drift-pagination-precedes-ranking`. New canonicalisation candidate `top-tags-ui-label-vs-implementation-drift-operator-visible` (the operator-visible UI lie).
+- **adr-archaeologist** — 2 new ADRs (ADR-CANDIDATE-193 `!external` guard pattern + ADR-CANDIDATE-194 dual-method create design) + 2 ADR strengthens (065, 067) + 9 new REFACTORs (REFACTOR-546..554). Headline: REFACTOR-546 (HIGH — name-behaviour-drift, LSN-019 listMostPopular) + REFACTOR-547 (HIGH — missing-authz-gate, service-tier zero-auth) + REFACTOR-552 (size-limit-silent-trunc).
+- **doc-gap-finder** — 2 new DOC-GAPs (DOC-GAP-255 OpenAPI-spec drift + DOC-GAP-256 published-docs propagation across 3 live pages) + 3 existing DOC-GAPs strengthened. WebFetch SUCCEEDED on `/features/data-discovery/tagging`, `/features/data-discovery/catalog-overview`, `/features/data-discovery` (status 200).
+- **test-coverage-mapper** — 13 new TEST-GAPs (TEST-GAP-855..867); 2 CRITICAL + 6 HIGH + 5 MEDIUM. Headline: TEST-GAP-855 (CRITICAL — repository-tier listMostPopular drift) + TEST-GAP-856 (CRITICAL — HTTP-boundary sister via WebTestClient) + TEST-GAP-867 (HIGH — tie-break-absence at equal counts).
+- **feature-flow-builder** — F-018 Manual Object Tagging extended with 5 net-new drift_facets + 6 strengthens + 1 supersedes (batch-W TagController "orders by descending count" mistranscription superseded). Headline: F-018-DRIFT-LSN019-listMostPopular-ranking codifies the smoking-gun trace.
+
+### Coverage (the honest axes, post-rev-4)
+
+Static enrichment coverage (vanity, kept for trend continuity):
+- nodes_with_sidecar: 146 / 395 = **37.0%** direct (+1 vs ZA — 3 sidecars; 2 rewrites + 1 new)
+- effective: 295+ / 395 = **74.7%+** (same; F-018 already touched these nodes via prior batches)
+
+**Stress Protocol coverage** (the rev-4 honest axis):
+- stress_questions_total: **25** (TagController + Repository + Service contribute 8 + 9 + 8 = 25 questions; pre-Rule-9 sidecars contribute 0)
+- stress_verified_pct: **88.0%** (22 STATIC-INFERRED + 0 PROBE-VERIFIED out of 25)
+- stress_unanswered_pct: **12.0%** (3 PROBE-NEEDED; will flip to PROBE-VERIFIED when probe-runner consumes the analyser-emitted probes)
+- sidecars_with_stress_section: 3 / 146 = **2.1%** (the canary trio)
+- sidecars_pre_stress_protocol: 143 / 146 = **97.9%** (awaiting backfill)
+
+### Coherence sweep
+
+`state/coherence-sweep-batch-VAL-LSN-019.md` — 67,718 raw anchor-overlap candidates from a registry of 1281+ artefacts. Top candidate (F-002 ↔ TEST-GAP-725 about ActivityEventTypeDto.java:3-31) is unrelated to the canary batch — pre-existing noise. The batch's own artefacts (REFACTOR-546..554, TEST-GAP-855..867, DOC-GAP-255..256, the F-018 drift_facets) cross-reference each other and LSN-019 consistently; no new contradictions surfaced.
+
+### What was validated
+
+The Stress Protocol mechanically generated questions that the prior file-analyser/0.3.0 never asked:
+- "Method name `listMostPopular` promises popularity ordering. Does the SQL deliver it? Trace the JOOQ chain end-to-end." → STATIC-INFERRED trace caught the paginate-inside-CTE pattern at line 148.
+- "What does the operator see when 35 tags are equally popular?" → PROBE-NEEDED, P-010 emitted with concrete fixture and assertion.
+- "What does TagServiceImpl return for each of DISABLED / LOGIN_FORM / OAUTH2 / LDAP?" → STATIC-INFERRED: identical (zero `@PreAuthorize`, zero permissionService calls → auth lives at controller perimeter only).
+
+Each of these would have been a maintainer's empirical-test discovery under the old methodology (the LSN-019 incident itself was the canonical example). Now they are autonomous emit-time findings.
+
+### Follow-ups
+
+- **8 narrative probe-skeletons in .md format** (P-LSN019-*.md emitted by TagServiceImpl agent) need structural conversion to canonical `P-NNN.yaml` format so probe-runner can execute. The content is concrete (arrange/act/observe/assert all present in prose); the work is reformatting. Either renumber to P-011..P-018 with YAML structure, or update probe-runner to accept the narrative shape — maintainer judgment.
+- **Stress Protocol filename guardrail** — the file-analyser system prompt says "Pick the next free `P-NNN` by Glob/grep against the existing `probes/` directory" but did not strictly enforce filename pattern in the canary. Strengthen Rule 9 / workflow step 6.5 with an explicit `MUST match regex ^P-\\d{3}\\.yaml$` constraint and reject the sidecar if any probe-skeleton path violates it.
+- **P-010 reference collision** — both TagController and Repository sidecars reference P-010; the actual file on disk is the Repository's version. Sidecars are internally consistent (both point at the same drift) but the methodology should clarify which agent owns the probe-ID allocation when multiple analysers fire in the same batch. (Likely fix: each analyser reserves IDs at the start of its run by appending an empty placeholder.)
+- **Reducer prompt updates for stress_findings consumption** — current reducers consumed the new sidecars correctly via their normal sections; the explicit `stress_findings.name_behavior_pairs[].drift: DRIFT_NAME_VS_BEHAVIOR` channel into refactoring-scopes worked (adr-archaeologist surfaced REFACTOR-546). Make this explicit in the next-round update of `.claude/agents/adr-archaeologist.md` and `test-coverage-mapper.md`.
+- **143-sidecar backfill** — queued as a future batch theme. Stress Protocol coverage starts at 2.1% sidecar-adoption; backfilling the existing pile is the path to full rev-4 compliance.
+- **3 new broken-yaml-pending-fix files** (from concept-merger output containing backticks in non-block-scalar contexts). Preserved per SKILL phase 3 step 8; recoverable next batch when the reducer prompt's YAML-safe rule applies.
+- **265 detail-without-index in refactoring-scopes / 114 in implicit-adrs / 76+4 in doc-gaps** — known pre-existing reducer noise, not a regression from this batch.
+

@@ -1,0 +1,66 @@
+gap_id: TEST-GAP-740
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java ReferenceDataController controller-class:ReferenceDataController"
+pillars_affected: [P-03, P-09]
+surfaced_by:
+  - "ReferenceDataController.md:bugs_limitations_corner_cases.[5] (updateLookupTableField(columnId, formData) discards the lookupTableId path parameter — a client could PATCH /api/referencedata/table/999/column/{column_id} and the update succeeds regardless of whether columnId belongs to table 999 — severity MEDIUM)"
+  - "ReferenceDataController.md:security.known_security_gaps.[3] (updateLookupTableField discards path-param lookupTableId at the service layer — an authorized caller with LOOKUP_TABLE_DEFINITION_UPDATE granted via Policy on table A can PATCH a column belonging to table B by spoofing the URL — severity MEDIUM)"
+behaviour: |-
+  **HIGH — `updateLookupTableField` discards the `lookupTableId` path parameter — a caller authorized for table A can PATCH a column belonging to table B by URL-spoofing.** Primary-source confirmed in the batch-V ReferenceDataController sidecar:
+
+  - **Controller signature** (`ReferenceDataController.java:131-141`): the method accepts `lookupTableId` in the URL path and `columnId` in a sibling path segment. The controller passes BOTH to `referenceDataService.updateLookupTableField(...)`.
+  - **Service signature** (`ReferenceDataServiceImpl.java:126-143`): `updateLookupTableField(final Long columnId, final LookupTableFieldUpdateFormData formData)` — **the lookupTableId is silently dropped from the service contract**. The service operates ONLY on `columnId`.
+  - **No cross-check at the service layer**: the service does NOT verify that `columnId` belongs to `lookupTableId`. The update succeeds for any column matching `columnId`.
+  - **Asymmetric with `getLookupTableField`**: `ReferenceDataServiceImpl.java:58-70` (`getLookupTableField`) DOES enforce the parent-table linkage (raises `BadUserRequestException` for column reads with mismatched parent — per `concepts.invariants[1]` of the sidecar). The asymmetry is between READ (validates) and UPDATE (does not validate) — operators familiar with the READ contract have no warning that the UPDATE contract is laxer.
+
+  **Attack scenario**:
+  ```
+  # Attacker holds LOOKUP_TABLE_DEFINITION_UPDATE via Policy attached to lookup_table A.
+  # Column 999 belongs to lookup_table B (attacker has NO permission on B).
+
+  curl -X PATCH https://platform/api/referencedata/table/{A_id}/column/999 \
+       -H "Authorization: Bearer $TOKEN" \
+       -d '{ "name": "renamed-column" }'
+
+  # Result: column 999 is renamed. Authorization manager checked LOOKUP_TABLE_DEFINITION_UPDATE
+  #         on the URL's table A (granted). Service operated on column 999 (which belongs to table B,
+  #         not A). Cross-table mutation succeeds.
+  ```
+
+  **Compound with TEST-GAP-739 (NO_CONTEXT permission scope)**: even with TEST-GAP-739's NO_CONTEXT permission asymmetry (LOOKUP_TABLE_* grants are platform-global), THIS gap surfaces an ADDITIONAL bypass at the per-method service-signature layer. Even if a future REFACTOR scoped LOOKUP_TABLE_* permissions to specific tables (per TEST-GAP-739's recommended fix), the discarded-lookupTableId-in-updateLookupTableField bug would BYPASS that scoping. The two gaps must be fixed TOGETHER.
+
+  **Why HIGH not MEDIUM**: this is a path-id-binding-bypass class — the URL says "column on table A" but the service operates "any column whose id matches". Operators reasoning about authorization at the URL level (which the sidecar's `OwnerAssociationRequestController.implicit_adrs.[6]` ALSO documents on a SISTER controller for the attachment surface) have no warning. The asymmetry with the READ contract (`getLookupTableField` enforces) elevates severity — operators tested READ behaviour and inferred UPDATE behaviour matches.
+
+  **Test gap shape**: regression-pin asserting the path-id-binding bypass: `PATCH /api/referencedata/table/{A}/column/{B-belonging-column-id}` succeeds. Pair with the sister test asserting `GET /api/referencedata/table/{A}/column/{B-belonging-column-id}` returns BadUserRequestException (the asymmetry).
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/LookupDataServiceTest.java (service-tier; does NOT exercise the discarded-path-param bypass)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ReferenceDataUpdateColumnPathParamDiscardedTest.java"
+  name: "updateLookupTableField_pathTableIdDoesNotMatchColumnsParentTable_succeeds_pinsCurrentBypass"
+evidence:
+  - "ReferenceDataController.md says (bugs_limitations_corner_cases.[5]): 'updateLookupTableField(columnId, formData) discards the lookupTableId path parameter — the service signature is updateLookupTableField(final Long columnId, final LookupTableFieldUpdateFormData formData) (no table-id) so a client could PATCH /api/referencedata/table/999/column/{column_id} and the update succeeds regardless of whether columnId belongs to table 999. Inconsistent with getLookupTableField which validates the parent-table linkage (ReferenceDataServiceImpl.java:62-66).' — severity MEDIUM"
+  - "ReferenceDataController.md says (security.known_security_gaps.[3]): 'updateLookupTableField discards path-param lookupTableId at the service layer — an authorized caller with LOOKUP_TABLE_DEFINITION_UPDATE granted via Policy on table A can PATCH a column belonging to table B by spoofing the URL. The NO_CONTEXT permission doesn't catch the cross-table jump.' — severity MEDIUM"
+  - "Verified at primary source: ReferenceDataController.java:131-141 (controller passes lookupTableId in but the service-call only uses columnId), ReferenceDataServiceImpl.java:126-143 (service signature drops lookupTableId), vs ReferenceDataServiceImpl.java:58-70 (getLookupTableField enforces the cross-check)"
+cross_references:
+  - "TEST-GAP-733 (NEW batch V — ReferenceData verbatim-storage XSS — sister gap on same controller)"
+  - "TEST-GAP-734 (NEW batch V — ReferenceData buildTableName collision — sister gap on same controller)"
+  - "TEST-GAP-739 (NEW batch V — NO_CONTEXT permission scope — COMPOUND with this gap)"
+  - "TEST-GAP-731 (NEW batch V — DataEntityAttachmentController cross-entity URL spoofing — SISTER pattern at the attachment surface)"
+  - "concepts: path-id-binding-bypass-class (NEW concept candidate — controller URL hierarchy is layout-only; service signatures discard the path's parent id; consistent class across multiple controllers)"
+  - "REFACTOR-NNN candidate: at ReferenceDataServiceImpl.updateLookupTableField, fetch the column's parent lookup_table_id BEFORE the update; if mismatched against the URL's lookupTableId, raise BadUserRequestException (symmetric with the READ contract)"
+related_features: [F-006]
+related_pillar_features: ["P-03:F-001", "P-09:F-001"]
+proposed_action: |-
+  Add `ReferenceDataUpdateColumnPathParamDiscardedTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `updateLookupTableField_pathTableIdDoesNotMatchColumnsParentTable_succeeds_pinsCurrentBypass` — seed table A (id=100) with column 999; seed table B (id=200) with column 888; authenticate with LOOKUP_TABLE_DEFINITION_UPDATE; PATCH `/api/referencedata/table/100/column/888` with new form data; assert HTTP 200 (the column 888 update succeeds despite the URL claiming it's under table 100). PIN the current bypass.
+  2. `getLookupTableField_pathTableIdDoesNotMatchColumnsParentTable_returns400_pinsAsymmetryWithUpdate` — GET `/api/referencedata/table/100/column/888`; assert HTTP 400 BadUserRequestException (the READ contract enforces). PIN the asymmetric contract.
+  3. `deleteLookupTableField_pathTableIdDoesNotMatchColumnsParentTable_succeedsOrFails_TBD` — sister test on the DELETE surface to surface the symmetric contract OR discover that DELETE also bypasses (the sidecar does not explicitly note DELETE's behaviour — this test surfaces the missing third surface).
+  4. `updateLookupTableField_callerHoldsPermissionViaPolicyOnTableA_butColumnBelongsToTableB_succeeds_compoundWithNoContextScope` — pin the COMPOUND with TEST-GAP-739: authentication has LOOKUP_TABLE_DEFINITION_UPDATE via Policy on table A; column belongs to table B; assert HTTP 200.
+
+  Add a `// REGRESSION-PIN — updateLookupTableField discards path-param lookupTableId; the service signature is asymmetric with the READ contract. A REFACTOR adding the parent-table cross-check at the service layer will break test #1 (now 400 BadUserRequest) and align with the READ contract.` comment block.
+
+  Pair with REFACTOR-NNN closing the bypass; pair with TEST-GAP-739 fix; the two REFACTORs must ship together.
+batch: 2026-05-20-V
+feature_id: F-006

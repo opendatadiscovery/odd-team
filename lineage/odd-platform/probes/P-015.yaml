@@ -1,0 +1,159 @@
+---
+probe_id: P-015
+feature_id: F-021
+test_class: integration
+verified_against_commit: 9ac6436e
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-2
+emitted_from_sidecar: odd-platform__java__ActivityController__controller-class__ActivityController.md
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+stress_category: B (name-behavior pairs)
+stress_question_ids: [STRESS_B2]
+expected_outcome: |
+  STRESS_B2 PROBE: pin the actual HTTP response shape when ActivityController.getActivity
+  is called with `beginDate=null`. The controller's code path is:
+
+  ActivityController.getActivity(beginDate=null, endDate=<any>, ...)
+   → Mono.just(activityService.getActivityList(null, <any>, ...)).map(ResponseEntity::ok)
+
+  Where getActivityList synchronously returns Flux.error(new BadUserRequestException(...))
+  at ActivityServiceImpl.java:98-100.
+
+  The OUTER Mono produces ResponseEntity.ok(<error-flux>) successfully — the 200 status is
+  constructed. The Flux body errors only when WebFlux's response writer subscribes to it.
+
+  Three possible runtime outcomes:
+  (a) HTTP 400 + ErrorResponse JSON body (ControllerAdvice rescues via @ExceptionHandler)
+  (b) HTTP 200 + malformed/error-in-stream body (headers committed before subscription)
+  (c) HTTP 500 + generic ErrorResponse (generic Exception handler catches what BadUserRequest
+      missed at the body-subscription seam)
+
+  This probe pins the actual behaviour. If (a) — the design is implicitly defended by Spring's
+  rescue path; if (b) or (c) — the controller's Mono.just(Flux.error()) shape is a latent bug
+  that should be fixed to Mono.error(...) for symmetric error propagation with getActivityCounts
+  (line 53).
+
+triggers:
+  - ActivityController.java:37-40 — `Mono.just(activityService.getActivityList(...)).map(ResponseEntity::ok)`
+  - ActivityServiceImpl.java:98-100 — `Flux.error(BadUserRequestException)`
+  - ControllerAdvice.java:24-28 — @ExceptionHandler maps BadUserRequestException → HTTP 400
+  - Asymmetry with line 53's `.map(ResponseEntity::ok)` on a Mono (NOT wrapped in Mono.just)
+
+arrange:
+  - kind: docker-compose-up
+  # Auth: use DISABLED so the SecurityWebFilterChain doesn't reject the call before
+  # the controller. The validation path is auth-mode-agnostic.
+
+act:
+  # Intentionally omit begin_date. Spring's parameter binding MAY reject this at the
+  # binding step (WebExchangeBindException → 400 via ControllerAdvice.handleException
+  # at lines 48-53). If so, the STRESS_B2 question (about the controller's Mono.just/
+  # Flux.error seam) is masked — the binding-side rejection is the actual behaviour
+  # and the controller's wrapper is dead code.
+  - kind: rest
+    method: GET
+    path: /api/activity?end_date=2026-05-20T00:00:00Z
+    capture_as: response_no_begin_date
+
+  - kind: rest
+    method: GET
+    path: /api/activity
+    capture_as: response_no_dates
+
+  # Valid baseline.
+  - kind: rest
+    method: GET
+    path: /api/activity?begin_date=2026-05-19T00:00:00Z&end_date=2026-05-20T00:00:00Z&size=10
+    capture_as: response_valid
+
+observe:
+  - kind: jsonpath
+    from: response_no_begin_date_status
+    path: "$"
+    capture_as: status_no_begin
+  - kind: jsonpath
+    from: response_no_begin_date_body
+    path: "$"
+    capture_as: body_no_begin
+  - kind: jsonpath
+    from: response_no_dates_status
+    path: "$"
+    capture_as: status_no_dates
+  - kind: jsonpath
+    from: response_valid_status
+    path: "$"
+    capture_as: status_valid
+
+oracle:
+  # Sanity.
+  - "status_valid == 200"
+
+  # STRESS_B2 PRIMARY: what status does Spring actually return for the omitted-begin-date
+  # case? Expected: HTTP 400 (either via binding rejection OR via @ExceptionHandler rescue).
+  # If status_no_begin == 200, the controller is leaking an error-in-stream — file a
+  # REFACTOR for symmetric error propagation.
+  - "status_no_begin == 400"
+  - "status_no_dates == 400"
+  - "'code' in body_no_begin"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+resolves_to:
+  - sidecar_field: stress_findings.STRESS_B2 (PROBE-VERIFIED status code + body shape)
+  - on confirmation of HTTP 200: emit REFACTOR-NNN candidate to replace
+    Mono.just(activityService.getActivityList(...)).map(ResponseEntity::ok) with
+    activityService.getActivityList(...).collectList().map(list -> ResponseEntity.ok(Flux.fromIterable(list)))
+    OR change the return type to Mono<ResponseEntity<List<Activity>>> for symmetric error
+    propagation with getActivityCounts (ActivityController.java:53)
+
+severity_if_confirmed: HIGH if HTTP 200 with error-in-stream; LOW if HTTP 400 via Spring rescue
+  (in which case the controller's design is implicitly defended and the probe becomes a
+  regression test)
+
+probe_owner: probe-runner (next batch)
+estimated_runtime: 10 minutes (docker-compose + 3 HTTP calls + assertion)
+
+cross_references:
+  refactoring_scopes: []
+  test_gaps:
+    - TEST-GAP-LSN-019-ActivityController-validation-shape
+  doc_gaps: []
+  related_concepts:
+    - "Activity Feed"
+    - "Validation-error response shape"
+  retrospectives: [LSN-019]
+  enrichment_sources:
+    - "lineage/odd-platform/understanding/odd-platform__java__ActivityController__controller-class__ActivityController.md"
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ActivityController.java"
+    lines: "37-40"
+    role: "Mono.just(activityService.getActivityList(...)).map(ResponseEntity::ok) — the asymmetric error-propagation seam"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/ActivityServiceImpl.java"
+    lines: "98-100"
+    role: "Flux.error(BadUserRequestException) emitted on null beginDate/endDate"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/exception/ControllerAdvice.java"
+    lines: "24-28"
+    role: "@ExceptionHandler(BadUserRequestException.class) → @ResponseStatus(HttpStatus.BAD_REQUEST)"
+  - file: "retrospectives/LSN-019-file-analyser-describes-not-interrogates.md"
+    lines: "57-72"
+    role: "Stress Protocol case-law authorising this probe"
+
+realism_caveats: |
+  - If Spring's parameter binding rejects the missing begin_date parameter at the
+    binding step (per OpenAPI required: true), the STRESS_B2 question about the
+    Mono.just(Flux.error()) seam is masked — file as STATIC-INFERRED RESOLVED.
+  - If begin_date binding accepts null (Integer is boxed nullable; OffsetDateTime
+    is also nullable when not @NotNull), the controller body runs and the actual
+    behaviour is observed.
+  - The 7 sibling Mono-return controllers (e.g. getActivityCounts at line 53)
+    propagate errors UP the outer Mono where @RestControllerAdvice catches at the
+    boundary; this getActivity path is asymmetric. The probe surfaces whether the
+    asymmetry has operator-visible consequences.
+---

@@ -1,0 +1,65 @@
+gap_id: TEST-GAP-827
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java IngestionController controller-method:ingestMetrics"
+pillars_affected: [P-07, P-08]
+surfaced_by:
+  - "ingestMetrics.md:bugs_limitations_corner_cases.[9] MEDIUM (Cross-storage-migration is one-way and undocumented)"
+  - "ingestMetrics.md:tests_coverage_semantic.uncovered_behaviours.[7] (cross-storage migration)"
+behaviour: |-
+  **MEDIUM — Switching `metrics.storage` between INTERNAL_POSTGRES and PROMETHEUS is a ONE-WAY operation that makes pre-switch historical data UNREADABLE. No live doc warns operators.**
+
+  Mechanism:
+  - INTERNAL_POSTGRES writes to `metric_series` / `metric_point` Postgres tables.
+  - PROMETHEUS writes to the operator's external Prometheus via remote-write.
+  - Read-side routing (`metrics.storage` consumed by readers): `InternalMetricReader` reads Postgres, `ExternalMetricReader` reads Prometheus.
+
+  **Failure modes**:
+  1. **INTERNAL_POSTGRES → PROMETHEUS**: post-switch reads route through `ExternalMetricReader`, which queries Prometheus. Pre-switch metric_series rows in Postgres become INVISIBLE to the UI's per-DataEntity Metrics tab. No migration tooling exists to copy Postgres data to Prometheus.
+  2. **PROMETHEUS → INTERNAL_POSTGRES**: post-switch reads route through `InternalMetricReader`, which queries Postgres. Pre-switch Prometheus series become orphaned (still in Prometheus, but ODD can't read them).
+
+  **Live docs SILENT**: `/configuration-and-deployment/odd-platform` (WebFetched 2026-05-20 status 200) documents BOTH modes' configuration but does NOT mention the one-way migration semantics. An operator considering "let me try PROMETHEUS for performance, can roll back if it doesn't work" has NO warning that the rollback loses data.
+
+  **Same shape as LSN-001 attachment-storage-migration drift**: a sensible-looking config change silently invalidates historical data.
+
+  **Why MEDIUM**: rare event (operators don't switch storage backends often) BUT silent + irreversible when it happens; one operator burned per quarter is one too many.
+
+  **Test gap shape**: integration test that:
+  1. Configures INTERNAL_POSTGRES, ingests 100 metric series, asserts visible.
+  2. Switches to PROMETHEUS (via property reload OR a new Spring context), ingests 50 NEW metric series.
+  3. Asserts: the per-DataEntity Metrics tab shows only the 50 new PROMETHEUS series — the 100 INTERNAL_POSTGRES series are invisible (PINS the data-invisibility).
+  4. Asserts: no migration tooling exists (no `MetricStorageMigrationService` class via reflection).
+
+  Pair with REFACTOR-NNN (migration tooling or fail-fast guard) and DOC-GAP-NNN (live docs warn explicitly).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestMetricsCrossStorageMigrationOneWayDataLossRegressionPinTest.java"
+  name: "switchInternalPostgresToPrometheus_preSwitchSeriesInvisible_pinsOneWayDataLoss"
+evidence:
+  - "ingestMetrics.md says (bugs_limitations_corner_cases.[9]): 'Cross-storage-migration is one-way and undocumented. Switching metrics.storage from INTERNAL_POSTGRES (default) to PROMETHEUS in a running deployment makes pre-switch historical metric_series rows in Postgres UNREADABLE — the PROMETHEUS-side read controller routes through ExternalMetricReader, which queries Prometheus, not Postgres. Going the other direction (PROMETHEUS → INTERNAL_POSTGRES) makes pre-switch metric labels in Prometheus orphaned. Same shape as the LSN-001 attachment-storage migration drift. No live doc warns operators.' (severity MEDIUM)"
+  - "ingestMetrics.md says (tests_coverage_semantic.uncovered_behaviours.[7]): 'Cross-storage migration path: a deployment that runs INTERNAL_POSTGRES for 30 days, then operator switches to PROMETHEUS — the existing Postgres metric_series data becomes UNREADABLE (ExternalMetricReader queries Prometheus, not Postgres). No test asserts the read-side behaviour after a storage switch; the documentation does not warn operators.'"
+  - "Verified at primary source: InternalIngestionMetricsServiceImpl.java:78 (writes to metric_series/metric_point) vs ExternalIngestionMetricsServiceImpl.java:202-220 (writes to Prometheus) + InternalMetricReader.java vs ExternalMetricReader.java (read-side dispatch) + no migration tooling in the codebase (no MetricStorageMigrationService class)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-05-20 status 200 — documents both modes but SILENT on migration semantics"
+cross_references:
+  - "TEST-GAP-823 (sister — same node; security)"
+  - "TEST-GAP-824 (sister — same node; tenant isolation)"
+  - "LSN-001 (attachment-storage migration drift; same class)"
+  - "REFACTOR-NNN (proposed): migration tooling OR fail-fast guard that detects pre-switch data and warns"
+  - "DOC-GAP-NNN (proposed): live odd-platform.md must warn 'storage-backend switch is one-way; historical data does not migrate'"
+related_features: [F-008]
+related_pillar_features: ["P-07:metrics-ingestion", "P-08:F-Custom navigation links"]
+proposed_action: |-
+  Add `IngestMetricsCrossStorageMigrationOneWayDataLossRegressionPinTest`. Two-phase Spring-context-reload test:
+
+  1. **Phase 1**: Spring context with `metrics.storage=INTERNAL_POSTGRES`. Ingest 100 metric series across 10 entities. Query `GET /api/dataentities/{id}/metrics` for each — assert all 100 visible.
+  2. **Phase 2**: reload Spring context with `metrics.storage=PROMETHEUS` against a fresh Prometheus testcontainer. Ingest 50 NEW metric series across the SAME 10 entities.
+  3. **Assert**:
+     - `GET /api/dataentities/{id}/metrics` returns ONLY the 50 PROMETHEUS series (the 100 INTERNAL_POSTGRES series are GONE from the user's view).
+     - `SELECT count(*) FROM metric_series` still returns 100 rows (the data is on disk; only the read-side is blind).
+     - No migration utility class exists (`ApplicationContext.getBeansOfType(...).filter(MetricStorageMigrationService).isEmpty()`).
+  4. **Reverse phase** (PROMETHEUS → INTERNAL_POSTGRES): reload context back to INTERNAL_POSTGRES, ingest 30 more series. Assert UI shows only the 30 (the 100 from Phase 1 are STILL invisible because they're keyed on different `metric_entity` rows registered before the schema-version-bump or similar).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Sister to TEST-GAP-823/824/825/826 (same node, different aspect). Sister-class to LSN-001 (attachment-storage migration drift) — same class of "config-change-silently-invalidates-data". STRENGTHENS the metrics-ingestion concept entry by adding `migration_one_way_data_invisibility` weakness.
+batch: 2026-05-20-Z
+feature_id: F-008

@@ -1,0 +1,125 @@
+name: SLA-as-PNG endpoint vs DataSetSLAReport JSON doc-vs-code drift
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-04
+- P-11
+description: |-
+  **NEW HIGH-severity INVARIANT, batch 2026-05-20T (DataQualityController class
+  sidecar)** — the live sla-statuses.md page (WebFetched 2026-05-20 status 200)
+  describes the response of GET /api/datasets/{id}/sla as 'a DataSetSLAReport
+  that includes: the dataset's current SLA colour — GREEN, YELLOW, or RED, a
+  breakdown of severity weights, and a slaRef self-link' — implying a JSON
+  object. The OpenAPI spec at openapi.yaml:1880-1894 and the controller code
+  at DataQualityController.java:42-48 + CachingByteArraySLAResourceResolver.java:30-54
+  return **image/png** — a hardcoded sla_red.png / sla_yellow.png / sla_green.png
+  byte-array.
+
+  The JSON DataSetSLAReport shape the doc describes is the response of the
+  SIBLING endpoint GET /api/datasets/{id}/sla_report (operationId
+  getDatasetSLAReport, openapi.yaml:1898-1913). The doc conflates two endpoints
+  with DIFFERENT operation IDs, DIFFERENT content types, and DIFFERENT consumer
+  audiences.
+
+  **Operator surface manifestation**: a BI engineer reading the docs verbatim
+  writes a JSON-parsing client; the response is a 1-2 KB PNG byte stream; the
+  JSON parser fails. The error message ('not valid JSON') gives no hint that
+  the URL is correct but the doc's content-type claim was wrong. The BI engineer
+  must either (a) discover the sla_report sibling endpoint by reading the OpenAPI
+  spec directly, or (b) file a support issue.
+
+  **Why HIGH severity**: this is the canonical 'operator follows our guide off
+  a cliff' scenario for the BI-tool integration audience the sla-statuses.md
+  page explicitly targets. The doc is the ONLY user-facing description of how
+  to integrate the SLA badge into a BI dashboard — operators have no parallel
+  source of truth. Per the CLAUDE.md system mission framing (`docs.opendatadiscovery.org`
+  is read by operators 'when their data platform is on fire'), a doc-drift on
+  THIS specific endpoint is exactly the failure mode the workspace exists to
+  prevent.
+
+  **The fix is doc-side**: sla-statuses.md must disambiguate the two endpoints.
+  Recommended copy: `GET /api/datasets/{id}/sla returns image/png — the embeddable
+  badge for img-src renderers (BI dashboards, Confluence, Excel); GET
+  /api/datasets/{id}/sla_report returns application/json DataSetSLAReport — the
+  programmatic surface for clients that want the underlying weight counts and
+  the slaRef self-link.` Concrete: surface the response-shape distinction in
+  the live sla-statuses.md page IMMEDIATELY before any code-block example;
+  cross-link from the BI-workflow section to both endpoints.
+
+  **Alternative**: change the wire contract so /sla returns JSON and /sla_image
+  returns PNG — this is the cleaner long-term shape but breaks every deployed
+  BI integration today and would require a deprecation cycle.
+
+  Severity: HIGH (doc-drift on a code path documented for an integration audience;
+  the response is a hard-to-debug binary blob when the doc claims JSON; the
+  failure mode is silent at the operator's BI-tool layer).
+axes_present:
+- controllers
+- openapi_paths
+nodes:
+- odd-platform java DataQualityController controller-class:DataQualityController
+contributors:
+- |-
+  DataQualityController.md (batch T):
+    bugs_limitations_corner_cases.[1] (HIGH — getSLA Content-Type is image/png;
+    live doc implies JSON; the canonical 'follow our guide off a cliff' scenario
+    for BI integration) +
+    docs_link_semantic.doc_drift_findings.[0] (HIGH — verbatim doc quote vs
+    spec content-type declaration vs PNG resolver code) +
+    implicit_adrs.[2] (the dual-endpoint shape IS deliberate — PNG for BI embed,
+    JSON for programmatic consumers — but the doc must communicate the distinction)
+evidence:
+- |-
+  DataQualityController.md:bugs_limitations_corner_cases.[1] — file:lines
+  DataQualityController.java:42-48 + CachingByteArraySLAResourceResolver.java:30-54 +
+  openapi.yaml:1880-1896 + WebFetch sla-statuses.md 2026-05-20 status 200 (the verbatim
+  'returns a DataSetSLAReport that includes...' description)
+- |-
+  DataQualityController.md:docs_link_semantic.doc_drift_findings.[0] — HIGH severity
+  explicit
+- |-
+  DataQualityController.md:implicit_adrs.[2] — SLA-as-PNG-image NOT-JSON intent_anchor
+  at openapi.yaml:1888-1894 + CachingByteArraySLAResourceResolver.java:45-49
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: doc-drift-correctness-and-UX
+mitigations_unimplemented:
+- |-
+  Doc-side fix (recommended) — update sla-statuses.md to disambiguate:
+    BEFORE: 'Each dataset exposes its current aggregate SLA at:
+            GET https://{platform_url}/api/datasets/{data_entity_id}/sla.
+            The endpoint returns a DataSetSLAReport that includes...'
+    AFTER:  'Each dataset exposes its current aggregate SLA at two endpoints:
+            GET /api/datasets/{data_entity_id}/sla → image/png — the embeddable
+              colour badge for BI dashboards.
+            GET /api/datasets/{data_entity_id}/sla_report → application/json
+              DataSetSLAReport — the programmatic surface with severity weights
+              breakdown and slaRef self-link.'
+  File: documentation/docs/features/data-quality/sla-statuses.md (live URL
+  https://docs.opendatadiscovery.org/features/data-quality/sla-statuses). Single
+  paragraph edit; no code change. Trace to DOC-NNN follow-up.
+- |-
+  Alternative wire-contract change (NOT recommended) — swap content types:
+  /sla returns JSON, /sla_image returns PNG. Breaks every deployed BI integration;
+  needs a deprecation cycle (announce in CHANGELOG, ship a 410 Gone after one
+  release).
+- |-
+  Test-side defence — add a Content-Type assertion to the (currently missing)
+  WebFluxTest for DataQualityController.getSLA: the response Content-Type MUST be
+  image/png. A regression that changes the content-type (e.g. a content-negotiation
+  refactor) would be caught.
+notes: |-
+  The dual-endpoint shape (PNG + JSON) is the CORRECT architectural decision —
+  two audiences with two contracts. The drift is purely doc-side; no code change
+  is needed. The fix is small (one paragraph in sla-statuses.md) and the failure
+  mode is large (BI engineers writing JSON-parsing clients against a PNG response).
+  This is a strong DOC-NNN candidate.
+
+  Cross-references:
+    - Companion entity: `dataset-sla` (the dual-endpoint shape)
+    - Cross-link to data-quality.md pillar landing (mentioned but not the specific
+      endpoint disambiguation)
+    - First instance in the catalog of a HIGH-severity doc drift where the doc's
+      claim about content-type contradicts the spec's content-type declaration —
+      a pattern worth scanning for across other dual-endpoint surfaces.

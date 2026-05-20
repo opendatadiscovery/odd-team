@@ -1,0 +1,53 @@
+gap_id: TEST-GAP-718
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java TermController controller-class:TermController"
+  - "odd-platform java service service:TermServiceImpl"
+pillars_affected: [P-06, P-09]
+surfaced_by:
+  - "TermController.md:bugs_limitations_corner_cases.[0] (HEADLINE — Term-to-term linkage endpoints have NO SecurityRule entry in SecurityConstants.java)"
+  - "TermController.md:security.known_security_gaps.[0] (Term-to-term linkage endpoints have NO SecurityRule — any authenticated user can link/unlink terms regardless of TERM_* permissions held — severity HIGH)"
+  - "TermController.md:concepts.invariants.[5] (Term-to-term linkage is NOT RBAC-gated — `/api/terms/{term_id}/term` POST + `/api/terms/{term_id}/term/{linked_term_id}` DELETE have NO SecurityRule entries in SecurityConstants.java)"
+  - "TermController.md:concepts.operations.addLinkedTermToTerm (lines 237-243 — write that creates a term_to_term row via termService.linkTermWithTerm(fd.getLinkedTermId(), termId); NO SecurityRule in SecurityConstants.java for this path; falls through to pathMatchers(/**).authenticated())"
+  - "TermController.md:concepts.operations.deleteLinkedTermFromTerm (lines 246-249 — write that removes a term_to_term row; NO SecurityRule; same as the add half)"
+behaviour: |-
+  **CRITICAL — TermController term-to-term linkage endpoints (POST /api/terms/{term_id}/term + DELETE /api/terms/{term_id}/term/{linked_term_id}) have ZERO RBAC enforcement at any tier.** Verified by exhaustive Grep against `SecurityConstants.java` for the two paths: ZERO matches for `/api/terms/{term_id}/term` (the add-half) AND for `/api/terms/{term_id}/term/{linked_term_id}` (the delete-half). The catch-all `pathMatchers("/**").authenticated()` at `AuthorizationCustomizer.java:29-30` is the ONLY gate. The 9 OTHER write endpoints on this controller carry proper `TERM_*` SecurityRules (`SecurityConstants.java:111, 174-193` — verified line by line) — the term-to-term linkage pair is the asymmetric outlier.
+
+  **What the Business Glossary docs claim vs what the code enforces:** the live-fetched 2026-05-20 docs page declares `TERM_UPDATE — Edit the term's name, description, namespace, or directly-linked terms.` Operators reading the docs and authoring an RBAC Policy that withholds `TERM_UPDATE` on a set of terms expecting term-to-term linking to be blocked WILL SILENTLY FAIL-OPEN — `TERM_UPDATE` is NEVER consulted on these two endpoints. Per the system-mission.md read-collaborative posture (line 267), any authenticated user can ALSO enumerate every term across every namespace; combined with the unguarded linkage write, ANY authenticated user (under LOGIN_FORM / OAUTH2 / LDAP — under DISABLED, anonymous users) can link any term in the catalog to any other term, including cross-namespace linkages that operators would expect to be team-isolated.
+
+  **Compound failure with TermServiceImpl service-tier zero-permission-checks (batch-K invariant) + the term-mention auto-link side-channel:** the service tier carries NO `@PreAuthorize` or programmatic permission check (per batch-K — `term-service-tier-zero-permission-checks` invariant, verified by Grep returning zero matches). So bypass is two-layer: (a) the controller has no SecurityRule; (b) even if it did, the service trusts the caller blindly. There is also NO `@ActivityLog` annotation on `linkTermWithTerm` / `removeTermToLinkedTermRelation` (`TermServiceImpl.java:288-301` — separate from the gated linkage operations at lines 169, 183, 211, 225 which DO carry the annotation) — the term-to-term family is INVISIBLE to the Activity Feed (F-006 audit-silence pattern), so an attacker who exploits this has no forensic trail.
+
+  **Pattern, not isolated gap:** the unguarded term-to-term linkage is a NEW invocation site for the path-mismatch / no-gate family that already includes REFACTOR-217 (data-entity-side `/term` singular vs `/terms` plural) and TEST-GAP-489 (REFACTOR-217 DELETE-half). REFACTOR-217 has a misregistered matcher; this gap has NO matcher at all — strictly worse. Both produce the same operator-observable surface: docs claim `TERM_UPDATE` / `DATA_ENTITY_ADD_TERM` gates work, code lets any authenticated user link unconditionally.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TermControllerLinkageSecurityTest.java"
+  name: "termToTermLinkage_anyAuthenticatedUser_canLinkAndUnlinkRegardlessOfTermPermissions"
+evidence:
+  - "TermController.md says (bugs_limitations_corner_cases.[0]): 'Term-to-term linkage endpoints (POST /api/terms/{term_id}/term and DELETE /api/terms/{term_id}/term/{linked_term_id}) have NO SecurityRule entry in SecurityConstants.java. Verified by exhaustive grep: grep -nE /api/terms/.*term\\b SecurityConstants.java returns ZERO matches for the term-to-term paths.'"
+  - "TermController.md says (concepts.invariants.[5]): 'Term-to-term linkage is NOT RBAC-gated — /api/terms/{term_id}/term POST + /api/terms/{term_id}/term/{linked_term_id} DELETE have NO SecurityRule entries in SecurityConstants.java (verified by grep). The catch-all pathMatchers(/**).authenticated() is the only gate. Any authenticated user can link/unlink terms regardless of which seven TERM_* permissions they hold.'"
+  - "TermServiceImpl.md says (security.known_security_gaps.[1]): 'TermServiceImpl service-tier has ZERO permission checks (batch-K invariant) — controller perimeter is the SOLE defence — severity HIGH'"
+  - "TermController.md says (docs_link_semantic.doc_drift_findings.[0]): 'Business Glossary docs declare TERM_UPDATE — Edit ... directly-linked terms but the controller has NO SecurityRule for POST /api/terms/{term_id}/term or DELETE /api/terms/{term_id}/term/{linked_term_id}. HIGH-severity doc-drift'"
+  - "TermController.md says (downstream_side_effects.addLinkedTermToTerm/deleteLinkedTermFromTerm): 'TermServiceImpl.java:288-301 — write to / delete from term_to_term table via TermRelationsRepositoryImpl.createRelationWithTerm (line 164) / deleteTermToLinkedTermRelation (line 222). No @ActivityLog — these mutations are INVISIBLE to the Activity Feed.'"
+  - "Verified absent test infrastructure: Glob over odd-platform-api/src/test/**/*Term* returns ZERO files (verified 2026-05-20)"
+cross_references:
+  - "TEST-GAP-477 (Alerts-status DATASET_FIELD_ADD_TERM mis-wiring — sister SecurityConstants bug surfaced by TermServiceImpl batch-K)"
+  - "TEST-GAP-489 (REFACTOR-217 DELETE-half — DATA_ENTITY_DELETE_TERM singular-vs-plural path-mismatch — sister at DataEntityController surface)"
+  - "TEST-GAP-017 (REFACTOR-217 ADD-half — DATA_ENTITY_ADD_TERM singular-vs-plural — sister at DataEntityController surface)"
+  - "TEST-GAP-478 (description-edit auto-link side-channel — same author-can-link surface, different bypass class)"
+  - "TEST-GAP-001 + TEST-GAP-717 (controller-tier HTTP-floor pattern — Term-side instance compounds the cross-controller pattern)"
+  - "concepts: term-service-tier-zero-permission-checks (batch-K) — service-tier defence-in-depth absence amplifies this bug"
+  - "concepts: term-to-term-deleted-at-schema-drift-v0_0_76-vs-v0_0_91 (the deleted_at semantics that make a DELETE call's side-effect hard to audit)"
+  - "REFACTOR-217 (path-mismatch family — this gap is a NEW site that REFACTOR-217 does not yet enumerate; the family scope expands)"
+  - "LSN-001 / LSN-002 (operator-cliff failure-mode case-law — operators reading docs that claim gates work, while gates don't fire)"
+related_features: [F-002]
+related_pillar_features: ["P-06:F-001"]
+proposed_action: |-
+  Add a `TermControllerLinkageSecurityTest` (or fold into a broader `TermControllerSecurityTest`) extending `@SpringBootTest(webEnvironment=RANDOM_PORT)` or `@WebFluxTest(TermController.class)`. Three test methods minimum:
+  1. `termToTermLinkage_anyAuthenticatedUser_canLinkRegardlessOfPermissions` — authenticate as a user holding NONE of the seven `TERM_*` permissions; assert that POST `/api/terms/100/term` with body `{linkedTermId: 200}` returns 200 (the current contract) — failing this test would mean a future maintainer added a SecurityRule, which should be loud rather than silent. Pair with a code comment that explicitly DOCUMENTS the design intent (or, if undesigned, propose a SecurityRule in the same PR).
+  2. `termToTermLinkage_anyAuthenticatedUser_canUnlinkRegardlessOfPermissions` — same posture on the DELETE half.
+  3. `termToTermLinkage_underAuthDisabled_anonymousUserCanLinkAndUnlink` — pin the `DISABLED` auth-mode behaviour. Combined with TEST-GAP-708 (AppInfo DISABLED-mode fingerprint) and TEST-GAP-148-ish family (auth-mode regression-pinning), this completes the DISABLED-mode posture across the P-06 surface.
+
+  Triangulate with a documentation fix: either update `data-glossary/business-glossary.md` to EXPLICITLY state that `TERM_UPDATE` does NOT gate term-to-term linkage (current ground truth), OR fix `SecurityConstants.java` to add the missing rules AND change these tests to assert 403. The current state — docs claim a gate the code lacks — is the cliff.
+batch: 2026-05-20-U
+feature_id: F-002

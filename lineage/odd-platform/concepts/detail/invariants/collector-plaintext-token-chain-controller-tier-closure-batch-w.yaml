@@ -1,0 +1,335 @@
+name: |-
+  Collector plaintext token chain — CONTROLLER-tier closure (5-tier end-to-end picture, batch W STRENGTHENS existing master)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  STRENGTHENED INVARIANT, batch 2026-05-20W — adds the CONTROLLER-tier
+  closure to the existing collector-plaintext-token-at-rest-end-to-end-sql-to-dom-chain
+  master invariant. The end-to-end plaintext token chain is now
+  5-tier confirmed at primary source: (1) controller-tier (CollectorController +
+  DataSourceController, THIS BATCH); (2) service-tier (CollectorServiceImpl +
+  DataSourceServiceImpl, THIS BATCH + batch-B regenerateCollectorToken);
+  (3) repository-tier (ReactiveCollectorRepositoryImpl + ReactiveTokenRepositoryImpl,
+  batch R); (4) at-rest schema (V0_0_28__add_token.sql, batch R);
+  (5) UI render-tier (CollectorsList batch Q + CollectorItemToken.tsx).
+
+  THE NEW VERTEX — controller-tier confirmation (batch W):
+
+    CollectorController batch W primary source confirms the
+    plaintext-everywhere assumption at the HTTP entry-points:
+
+      CollectorController.registerCollector (POST /api/collectors,
+        lines 22-31): calls CollectorServiceImpl.create → returns
+        Mono<ResponseEntity<Collector>> where Collector.Token.value
+        is the FULL 40-character alphanumeric PLAINTEXT (via
+        TokenDto(..., true) set in ReactiveTokenRepositoryImpl.create).
+        Response header has NO Cache-Control: no-store, NO
+        X-Sensitive-Body marker.
+
+      CollectorController.regenerateCollectorToken (PUT
+        /api/collectors/{id}/token, lines 46-51): same — returns
+        the new plaintext token via TokenDto(..., true) from
+        ReactiveTokenRepositoryImpl.updateToken.
+
+      CollectorController.updateCollector (PUT /api/collectors/{id},
+        lines 33-40): returns Token.value MASKED as
+        '******{last6chars}' (via TokenMapper.mapValue using
+        showToken=false default from listDto/getDto).
+
+      CollectorController.getCollectorList (GET /api/collectors,
+        lines 19-25): returns Token.value MASKED similarly. NO
+        SecurityRule entry — any authenticated user enumerates.
+
+    DataSourceController batch W primary source confirms the SAME
+    pattern for the DataSource token (which IS THE COLLECTOR TOKEN
+    per the schema — data_source.token_id REFERENCES token.id, the
+    same TOKEN table that backs collectors):
+
+      DataSourceController.registerDataSource (POST /api/datasources,
+        lines 30-36): generates a new token via tokenGenerator.generateToken(),
+        persists via tokenRepository.create, returns the DataSource
+        with the embedded plaintext token. Same TokenDto showToken=true
+        path.
+
+      DataSourceController.regenerateDataSourceToken (PUT
+        /api/datasources/{id}/token, lines 53-59): NOT
+        @ReactiveTransactional (unique compared to other DataSource
+        write paths) — in-memory rotation + DB write are separately
+        committed. Same plaintext-everywhere semantic.
+
+  THE CLOSED 5-TIER CHAIN — complete picture:
+
+    Tier 1 — CONTROLLER (batch W primary source for both Collector + DataSource):
+      Two register endpoints + two regenerate endpoints return the
+      40-char alphanumeric plaintext token in the response body.
+      The four endpoints share TokenDto's showToken=true branch
+      (TokenMapper.mapValue at TokenMapper.java:15-18). NO response-
+      header markers. The HTTP response is the wire-carrier of the
+      credential.
+
+    Tier 2 — SERVICE (batch B regenerateCollectorToken + batch S
+    DataSourceServiceImpl + batch W class-level closure):
+      CollectorServiceImpl + DataSourceServiceImpl both invoke
+      TokenGenerator.regenerateToken/generateToken which mutates
+      the in-memory TokenPojo via RandomStringUtils.randomAlphanumeric(40).
+      The Random implementation is ThreadLocalRandom (NOT a CSPRNG).
+      The plaintext value is then handed to the repository tier
+      for persistence — NO sanitization, hashing, encoding at the
+      service tier. Service classes are @ReactiveTransactional
+      except DataSourceServiceImpl.regenerateDataSourceToken
+      (line 98 missing annotation — file-local code-shape issue).
+
+    Tier 3 — REPOSITORY (batch R ReactiveCollectorRepositoryImpl +
+    ReactiveTokenRepositoryImpl):
+      ReactiveTokenRepositoryImpl.create + .updateToken both INSERT
+      / UPDATE the token.value column as plaintext. ReactiveCollectorRepositoryImpl.getByToken
+      performs the SELECT-then-equality at line 89-97 — plaintext
+      WHERE clause. No hashing, no salt, no BCryptPasswordEncoder.
+
+    Tier 4 — AT-REST SCHEMA (V0_0_28__add_token.sql:1-9, batch R):
+      token.value varchar(40) NOT NULL — plaintext column. NO
+      UNIQUE constraint on value. NO index on value (the
+      `getByToken` query falls back to sequential scan of the
+      TOKEN table). Soft-deleted collectors' TOKEN rows persist
+      forever (orphan-row class — see collector-plaintext-token-at-rest
+      master invariant).
+
+    Tier 5 — UI RENDER (batch Q CollectorsList + CollectorItemToken.tsx):
+      CollectorItemToken.tsx:34 — `<Token>{collector.token.value}</Token>`
+      renders the plaintext token directly into the DOM as a text
+      node. NO `<input type="password">` obfuscation, NO Reveal-on-hover,
+      NO auto-hide timer. Any browser extension, screenshot tool,
+      accessibility screen reader, DOM-inspection tool, browser
+      cache captures the credential.
+
+  CONFIRMED EXPOSURE POINTS — six points where the credential
+  could leak:
+
+    (1) PostgreSQL row at rest — `SELECT * FROM token` (DB admin)
+    (2) Backup / replica / pg_dump — credential travels with the row
+    (3) jOOQ query log if enabled at DEBUG / TRACE — bound parameter
+        surfaces
+    (4) Application log if any code path logs TokenPojo — currently
+        no such path but no defence either
+    (5) Browser DOM after token creation/rotation — until full page
+        unmount
+    (6) Network transport — TLS-protected; no application-layer
+        signing or HMAC
+
+    PLUS new this batch:
+    (7) HTTP response body buffered by reverse proxies, API gateways,
+        APM tools, browser request-response loggers — between the
+        platform's HTTP stack and the UI consumer, ANY intermediate
+        component records the plaintext credential. No response
+        header (Cache-Control: no-store, X-Sensitive-Body) marks
+        the body as sensitive.
+
+  THE REAFFIRMED LOAD-BEARING IMPLICIT ADR — plaintext-everywhere:
+
+    Per the master invariant collector-plaintext-token-at-rest-end-to-end-sql-to-dom-chain
+    (originally batch R primary source), the plaintext-everywhere
+    assumption IS the load-bearing architectural decision. Every
+    component of the bearer-token flow assumes plaintext-at-rest.
+    Introducing token hashing requires coordinated changes at FIVE
+    layers (now SIX — the response header at the controller tier
+    + the five tiers in the master).
+
+    Batch W's closure adds:
+      - HTTP response header surface (Cache-Control / X-Sensitive-Body
+        annotations) — no defence at this layer either.
+      - The DataSource token (same TOKEN table; same plaintext;
+        same risk; same operator-facing surfaces) — broadens the
+        master's Collector-only framing to include DataSources.
+      - The DataSourceController.regenerateDataSourceToken missing
+        @ReactiveTransactional — NEW partial-rotation failure mode
+        (separate from the master's destructive-rotation class).
+
+  WHY BATCH W EXISTS AS A SEPARATE INVARIANT:
+
+    The master invariant is at 5-tier (SQL + filter + service +
+    UI). Batch W adds an explicit CONTROLLER-tier vertex via the
+    HTTP response body's role in carrying the plaintext, AND extends
+    the framing from Collector-only to Collector+DataSource (since
+    they share the TOKEN table). The master invariant's mitigations
+    enumerate the FIVE layers needing coordinated changes; batch
+    W adds the SIXTH layer (HTTP response).
+
+    The TWO invariants together carry the complete picture; this
+    one is the closure vertex.
+
+  SEVERITY HIGH — same as the master invariant.
+
+nodes:
+  - odd-platform java CollectorController controller-class:CollectorController
+  - odd-platform java DataSourceController controller-class:DataSourceController
+  - odd-platform java service service:CollectorServiceImpl
+  - odd-platform java service service:DataSourceServiceImpl
+
+contributors:
+  - |-
+    CollectorController batch W (PRIMARY SOURCE — Tier 1 controller
+    vertex for Collector):
+    concepts.invariants[2] (register and regenerate-token return
+    plaintext token in the response body via TokenDto showToken=true
+    from ReactiveTokenRepositoryImpl.create/updateToken; list and
+    update return masked tokens) +
+    bugs_limitations_corner_cases.[3] MEDIUM (Register and
+    regenerate-token endpoints return the plaintext token in the
+    HTTP response body — any reverse-proxy, API gateway, browser
+    history, request/response logger, APM tool captures the
+    credential in cleartext) +
+    security.known_security_gaps.[1] MEDIUM (the end-to-end
+    plaintext token chain explicitly framed at the controller tier:
+    controller-tier → response wire → CollectorsList UI plaintext
+    DOM render batch Q → repository at-rest batch R)
+  - |-
+    DataSourceController batch W (PRIMARY SOURCE — Tier 1 controller
+    vertex for DataSource, BROADENS the master's Collector-only
+    framing):
+    coherence_check.conflicts_surfaced.[1] LOW
+    (regenerateDataSourceToken is NOT @ReactiveTransactional —
+    file-local code-shape inconsistency; partial-rotation failure
+    mode) +
+    security.data_exposure (Token value on create/regenerate
+    response — the new token is returned in the response body via
+    DataSourceMapper.mapDto)
+
+evidence:
+  - |-
+    CollectorController.md:bugs_limitations_corner_cases.[3] MEDIUM
+    severity — evidence: CollectorController.java:27-31, 47-51 +
+    TokenMapper.java:15-18 + ReactiveTokenRepositoryImpl.java:26, 38
+  - |-
+    CollectorController.md:concepts.invariants[2] — plaintext-vs-masked
+    branching at TokenMapper
+  - |-
+    CollectorController.md:security.known_security_gaps.[1] —
+    end-to-end plaintext token chain at controller tier
+  - |-
+    DataSourceController.md:coherence_check.conflicts_surfaced.[1]
+    — evidence: DataSourceServiceImpl.java:98-106 (no
+    @ReactiveTransactional; cf. lines 52, 69, 86 which DO have it)
+  - |-
+    DataSourceController.md:security.data_exposure — token plaintext
+    in DataSource response
+  - |-
+    Cross-references master concept collector-plaintext-token-at-rest-end-to-end-sql-to-dom-chain
+    (the comprehensive 5-tier picture; THIS invariant adds the
+    controller-tier closure + the DataSource broadening + the
+    response-header surface as a NEW exposure point)
+  - |-
+    Cross-references concept plaintext-equality-shared-secret-token-model
+    (the WRITE/VERIFY pair at the FILTER tier; this invariant
+    closes the WRITE end at the CONTROLLER tier)
+
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+  - schema_migrations
+  - ui_components
+
+triangulation_count: 5
+cross_batch: true
+cross_batch_refs:
+  - batch-B (regenerateCollectorToken — Tier 2 service primary source)
+  - batch-O (IngestionDataEntitiesFilter — verify-side at filter)
+  - batch-Q (CollectorsList + CollectorItemToken.tsx — Tier 5 UI render primary source)
+  - batch-R (ReactiveCollectorRepositoryImpl + V0_0_28 schema — Tier 3 + 4 SQL primary source)
+  - batch-S (DataSourceIngestionServiceImpl — Tier 2 service for DataSource)
+  - batch-W (CollectorController + DataSourceController — Tier 1 controller closure THIS INVARIANT)
+
+severity: HIGH
+severity_dim: security
+
+mitigations_unimplemented:
+  - |-
+    SIMPLE FIX A (controller-tier defence): add `Cache-Control:
+    no-store` + `X-Sensitive-Body: true` response headers to the
+    4 endpoints that return plaintext tokens (CollectorController.registerCollector +
+    .regenerateCollectorToken + DataSourceController.registerDataSource +
+    .regenerateDataSourceToken). Signals to intermediate components
+    (reverse proxies, gateways, APMs) that the body is sensitive.
+    Doesn't eliminate the plaintext-on-the-wire; reduces accidental
+    caching / logging.
+  - |-
+    Add @ReactiveTransactional to DataSourceServiceImpl.regenerateDataSourceToken
+    (line 98). One-line fix; makes the partial-rotation race
+    impossible. Consistent with the surrounding @ReactiveTransactional
+    methods (create line 52, update line 69, delete line 86).
+  - |-
+    SIMPLE FIX B (coordinated multi-layer hashing — same as master
+    invariant): introduce token hashing across ALL SIX layers
+    (now including the HTTP response). The fix at the response-body
+    layer means returning the plaintext ONCE (at register / regenerate)
+    for operator capture, then hashing for all subsequent reads.
+    Cross-link to the master invariant's mitigations_unimplemented.
+  - |-
+    Regression test for the controller-tier plaintext + response
+    headers: after fix A, assert response.headers contains
+    'Cache-Control: no-store' for the 4 register/regenerate
+    endpoints; assert response.body still contains the plaintext
+    token (for operator capture).
+  - |-
+    Update the /configuration-and-deployment/enable-security/authentication/server-to-server
+    live page with the controller-tier exposure + the response-header
+    mitigation. Operator-facing text on the threat model: 'When
+    a Collector or Data Source registers or rotates a token, the
+    new token value is returned in the HTTP response body. Operators
+    must ensure (1) TLS-only transport between platform and clients
+    consuming this response, (2) intermediate components do not
+    log response bodies for the affected paths.'
+  - |-
+    Add the response-header check to a build-time scanner —
+    enumerate every controller endpoint that returns sensitive
+    content (Token, Credential, Password). Verify the endpoint
+    sets appropriate response headers. The four token-returning
+    endpoints would be caught + the broader inventory across the
+    platform would be uncovered.
+
+notes: |-
+  This invariant is the CONTROLLER-TIER CLOSURE of the existing
+  master collector-plaintext-token-at-rest-end-to-end-sql-to-dom-chain.
+  Previous batches established 5 tiers (write @ service, verify @
+  filter, persist @ repo, schema @ migration, UI @ DOM); this batch
+  adds the 6th vertex (controller @ HTTP response body) and broadens
+  the framing from Collector-only to Collector+DataSource (same
+  TOKEN table, same plaintext, same risk).
+
+  The picture's load-bearing observation: the HTTP RESPONSE BODY is
+  itself an exposure surface. The platform's documented threat
+  model focuses on the database (where the token is stored), the
+  UI (where it's rendered), and the wire (TLS-protected). The
+  HTTP response BODY is at the boundary between server and UI —
+  a region the operator's threat model often overlooks. Reverse
+  proxies, API gateways, APM tools all sit in this region; all
+  can be configured to log response bodies; all carry the
+  credential.
+
+  Cross-cutting connections:
+    - STRENGTHENS the master collector-plaintext-token-at-rest-end-to-end-sql-to-dom-chain
+      (adds Tier 1 + the DataSource broadening + the response-header
+      surface as a NEW exposure point)
+    - STRENGTHENS collector-token entity concept (adds the
+      controller-tier framing of the plaintext-everywhere posture)
+    - Pairs with plaintext-equality-shared-secret-token-model (the
+      filter-tier WRITE/VERIFY pair — this invariant closes the
+      WRITE end at the controller tier)
+    - Pairs with datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation
+      (THIS BATCH sibling — the DataSource token surfaces at this
+      controller; same plaintext-everywhere risk as the Collector
+      token)
+
+  Two DOC-NNN candidates:
+    (a) /configuration-and-deployment/enable-security/authentication/server-to-server
+        — explicit text on the controller-tier exposure + the
+        recommended mitigations (TLS-only, disable response-body
+        logging, Cache-Control headers)
+    (b) Operator playbook for incident response on a leaked token —
+        the rotation contract (in-place UPDATE, no grace window) +
+        the audit-log absence (no record of who rotated when) means
+        incident response is hard; the playbook needs explicit
+        steps for token revocation + collector restart

@@ -1,0 +1,271 @@
+name: |-
+  Cross-component fetch duplication on hot path — Shell + Tab both fire getTermDetailsDto on every TermDetails mount (sibling class to LSN-017, expressed as cross-component composition)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-06
+  - P-01
+description: |-
+  NEW INVARIANT, batch 2026-05-20U — captures a SIBLING CLASS to the
+  LSN-017 canonical case (DataEntityDetails.tsx:56-64 self-feeding
+  double-fetch via dep-array). Where LSN-017 is a WITHIN-COMPONENT bug
+  (one useEffect dep-array doubles its own fire), THIS invariant
+  captures a CROSS-COMPONENT bug (two independent components fetching
+  the same data on every mount). Both produce per-page-open multipliers
+  on a backend hot path; both are invisible to per-node scans; the
+  remediation shapes are different.
+
+  THE BATCH-U PRIMARY-SOURCE EVIDENCE (TermDetails sidecar):
+
+    TermDetails.tsx:37-45 — the shell component's mount-useEffect fires
+    dispatch(fetchTermDetails({termId})) — backend hit: GET /api/terms/termId
+    → TermController.getTermDetails → TermServiceImpl.getTermDetails →
+    ReactiveTermRepositoryImpl.getTermDetailsDto (the 12-LEFT-JOIN +
+    4-countDistinct + 7-jsonArrayAgg hot path documented in F-002 drift
+    facet get_term_details_dto_12_join_hot_path_amplification).
+
+    Overview.tsx:19-21 — the default-tab Overview component uses
+    useGetTermByID({termId}) which is an INDEPENDENT fetcher (a
+    React-Query / RTK Query hybrid hook). Verified by reading
+    Overview.tsx end-to-end + Grep'ing useGetTermByID — it is a
+    SEPARATE hook, not a wrapper around fetchTermDetails or a Redux
+    selector. It fires its own GET /api/terms/termId on every mount.
+
+    Net effect: a user landing on /terms/termId/overview (the DEFAULT
+    route per TermDetailsRoutes.tsx:46) fires TWO identical backend
+    GET /api/terms/termId requests on every page-open. Each GET runs
+    the 12-JOIN hot path. For a heavily-linked term (e.g. a Customer
+    term linked to 500 datasets with 200 tags + 50 owners), the
+    intermediate JOIN fan-out before DISTINCT can materialise N x M x
+    P x Q rows TWICE per page-open.
+
+  THE SIBLING-CLASS COMPARISON TO LSN-017:
+
+    LSN-017 (DataEntityDetails.tsx:56-64 — canonical case):
+      ONE component. ONE useEffect. Dep-array contains
+      details.status?.status — a value DERIVED from the fetch response.
+      Each fetch updates details.status → effect re-fires → another
+      fetch. The doubling is WITHIN the component's lifecycle.
+      Backend cost: x2 view_count UPDATEs per page-open (the read-loop
+      closes via the trivially-inflatable view-count signal — separate
+      invariant).
+
+    Cross-component fetch duplication (TermDetails — batch U primary source):
+      TWO components. TWO independent useEffects (shell at
+      TermDetails.tsx:37-45 + Overview at Overview.tsx:19-21). NEITHER
+      dep-array contains a fetch-derived value — verified — so this
+      is NOT an LSN-017 instance. The doubling is BETWEEN the two
+      components: both fetch the same data because neither is aware
+      the other already populated Redux. Backend cost: x2
+      getTermDetailsDto invocations per page-open. NO view-count side
+      effect (the Term backend has no view_count column equivalent —
+      getTermDetailsDto is a pure SELECT).
+
+  THE STRUCTURAL FAMILY:
+
+    Both LSN-017 and this invariant belong to a broader pattern:
+    'cross-layer / cross-component composition produces per-page-open
+    multiplier on a backend hot path; no per-node enrichment catches
+    it'. The pattern has at LEAST two known shapes:
+      (a) Within-component doubling via response-derived dep-array
+          (LSN-017 — DataEntityDetails).
+      (b) Cross-component duplication via independent fetchers
+          (THIS invariant — TermDetails shell + Overview tab).
+
+    Both shapes share the diagnostic property: NO per-node scan would
+    have caught the bug. Per-component scans see legal useEffect
+    shapes; per-tier scans see expected DB query volumes. The bug
+    requires CROSS-NODE composition to surface — exactly the gap
+    LSN-018 retrospective names ('coherence cannot be self-detected
+    per-node').
+
+  WHY THIS IS NOT A NEW LSN-017 INSTANCE:
+
+    Per the TermDetails batch U sidecar's coherence_check
+    (LSN-018 Rule 6), the LSN-017 hypothesis on TermDetails is
+    REFUTED structurally:
+      - TermDetails.tsx:45 deps array is [termId] only — no
+        response-derived value.
+      - Even if the dep-array drifted, the Term backend has NO
+        view_count UPDATE on read (getTermDetailsDto is a pure SELECT),
+        so the LSN-017 second-order effect (view-count inflation)
+        cannot occur on this surface.
+
+    The double-fetch in TermDetails is a DIFFERENT FAILURE — same
+    family (composition-multiplier on a hot path), different shape
+    (cross-component instead of within-component), different remediation
+    (consolidate fetchers instead of fix dep-array), different backend
+    consequence (extra JOIN work instead of view-count inflation).
+
+  THE LSN-017-NEGATIVE-CLUSTER GROWS TO 5 UI SHELLS:
+
+    Per the batch-Q invariant
+    lsn-017-doubling-anti-pattern-absent-in-management-list-components,
+    four UI shells (PolicyList + RolesList + OwnersList + CollectorsList)
+    were verified safe from the within-component LSN-017 doubling
+    shape. Batch U adds TermDetails as the FIFTH shell verified
+    safe from LSN-017 — bringing the negative cluster to 5 shells.
+
+    The cluster is INCREASINGLY narrow: DataEntityDetails remains
+    the SOLE platform-wide instance of the canonical LSN-017
+    within-component dep-array doubling. Five other shells (the
+    4 Management list components + TermDetails) all DO NOT exhibit
+    the shape. The LSN-017 lesson is therefore VERY LOCALISED —
+    one component's idiosyncratic dep-array choice, not a generalised
+    anti-pattern.
+
+    BUT the broader composition-multiplier family IS GENERALISED —
+    THIS invariant adds the cross-component shape from TermDetails
+    + Overview. The family is platform-wide; only the within-component
+    instance is localised to DataEntityDetails.
+
+  THE OBSERVABLE COST:
+
+    For a heavily-linked term (e.g., a Customer term linked to 500
+    datasets + 200 tags + 50 owners — realistic at large-glossary
+    operator scale):
+
+      Single 12-JOIN getTermDetailsDto query: empirical timing not
+      available in this sidecar's primary-source set but the JOIN
+      fan-out before DISTINCT is N x M x P x Q intermediate rows.
+
+      DOUBLED query: 2 x the row count, 2 x the planner time, 2 x
+      the GIN-index work on term_search_entrypoint reads, 2 x the
+      DISTINCT collapse cost.
+
+      User-perceived: doubled time-to-first-paint on the Term
+      detail page. Operator-perceived: doubled DB load per
+      page-open.
+
+  REMEDIATION SHAPES (two equally-valid options):
+
+    (a) Drop the shell's fetchTermDetails — rely on Overview's
+        useGetTermByID. Cost: the Header's name + updatedAt fields
+        come from termDetails which is now populated only AFTER
+        Overview mounts. Brief flash-of-no-header on cold load.
+
+    (b) Drop Overview's useGetTermByID — read from Redux via
+        getTermDetails selector. Cost: Overview becomes coupled to
+        the shell's fetch lifecycle; a refactor that moves Overview
+        out of the TermDetails sub-tree (or changes the route mount
+        order) breaks the assumption.
+
+    (c) Compose both into a shared hook — useTermDetails(termId)
+        — that internally selects from Redux if populated, fetches
+        if not. Cost: new abstraction; coordinated change at two
+        call sites; future-proof. Recommended.
+
+  SEVERITY MEDIUM — the backend cost is real and bounded; the failure
+  mode is not security-critical (no privilege escalation, no
+  data corruption); the bug is observably wasteful per page-open and
+  scales with term-link cardinality. Pin via a Vitest + react-testing-library
+  test asserting 'opening /terms/termId/overview produces EXACTLY ONE
+  GET /api/terms/termId request' — fails today (2 requests), pins the
+  fix as regression.
+nodes:
+  - odd-platform ts react-component component:TermDetails
+contributors:
+  - |-
+    TermDetails batch U (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[0] MEDIUM (Double-fetch: shell +
+    Overview both load the same TermDetails; cross-component fetch
+    duplication on a hot backend path; SIBLING class to LSN-017) +
+    performance.known_performance_gaps.[0] MEDIUM (Double-fetch with
+    Overview: 2x getTermDetailsDto invocations per page-open; closest
+    TermDetails analog to LSN-017's view_count doubling but expressed
+    via two independent components rather than one useEffect doubling) +
+    coherence_check (LSN-018 Rule 6 — REFUTES the LSN-017 hypothesis
+    on TermDetails structurally; adds TermDetails as the 5th UI sidecar
+    verified safe from canonical LSN-017 dep-array doubling)
+evidence:
+  - |-
+    TermDetails.md:bugs_limitations_corner_cases.[0] MEDIUM severity —
+    evidence: TermDetails.tsx:37-45 (shell's fetchTermDetails dispatch) +
+    Overview.tsx:19-21 (Overview's useGetTermByID independent fetch) +
+    ReactiveTermRepositoryImpl.java:194-238 (the 12-JOIN hot path)
+  - |-
+    TermDetails.md:performance.known_performance_gaps.[0] — the explicit
+    LSN-017 analogy with the differentiating-shape note
+  - |-
+    TermDetails.md:coherence_check (LSN-018 Rule 6) — REFUTES the LSN-017
+    hypothesis structurally; cross-references the canonical LSN-017
+    case at DataEntityDetails.tsx:56-64
+  - |-
+    Cross-references existing invariant
+    lsn-017-self-feeding-double-fetch-dep-array-cross-layer-bug
+    (batch J — the canonical LSN-017 case at DataEntityDetails)
+  - |-
+    Cross-references existing invariant
+    lsn-017-doubling-anti-pattern-absent-in-management-list-components
+    (batch Q — the 4-component negative cluster; THIS invariant adds
+    TermDetails as the 5th member of the negative cluster)
+  - |-
+    Cross-references the LSN-018 retrospective (per-node-scan-cannot-see-cross-layer-user-effects)
+    — both LSN-017 and this invariant are instances of the cross-layer /
+    cross-component multiplier family that per-node enrichment cannot
+    self-detect
+axes_present:
+  - ui_components
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-J (LSN-017 canonical case at DataEntityDetails)
+  - batch-Q (LSN-017 4-component negative cluster)
+  - batch-U (TermDetails — cross-component fetch duplication AND 5th LSN-017-negative-cluster member, THIS INVARIANT)
+severity: MEDIUM
+severity_dim: performance
+mitigations_unimplemented:
+  - |-
+    Consolidate to one fetcher per term detail page-open. Recommended
+    shape (c) from the description — a shared useTermDetails(termId)
+    hook that selects from Redux if populated, fetches if not.
+    Coordinated change at TermDetails.tsx:37-45 (replace
+    fetchTermDetails dispatch with the new hook) + Overview.tsx:19-21
+    (replace useGetTermByID with the same hook).
+  - |-
+    Vitest + react-testing-library regression test pinning 'opening
+    /terms/termId/overview produces EXACTLY ONE GET /api/terms/termId
+    request'. Mock the API layer; count network calls; assert count
+    is 1. The test would FAIL today (2 requests) and serve as the
+    regression-pin for any future consolidation fix.
+  - |-
+    A live integration probe (sibling to P-004 for the LSN-017 case)
+    that opens /terms/termId/overview against a populated test database
+    and counts xhr_calls + database queries. Measurement-truth
+    consistent with the LSN-017 precedent — empirically pin the
+    double-fetch count, then re-run after the fix to confirm the
+    flip from 2 to 1.
+  - |-
+    Codify the platform's detail-page composition convention — one
+    fetcher per detail page; sub-tabs read from Redux. Document at
+    /odd-platform-ui/src/components/README.md or sibling. The
+    convention prevents future detail-page surfaces from inheriting
+    the same shape.
+notes: |-
+  NEW invariant captured in batch 2026-05-20U from the TermDetails
+  sidecar's primary-source examination of the shell + Overview tab
+  pair. The cross-component shape is a NEW species in the broader
+  cross-layer-multiplier family — LSN-017 captured the within-component
+  shape; this captures the cross-component shape.
+
+  Cross-cutting connections:
+    - Sibling class to LSN-017
+      (lsn-017-self-feeding-double-fetch-dep-array-cross-layer-bug —
+      batch J primary source)
+    - Strengthens the LSN-017 NEGATIVE cluster
+      (lsn-017-doubling-anti-pattern-absent-in-management-list-components
+      from batch Q) by adding TermDetails as the 5th UI shell verified
+      safe from canonical LSN-017
+    - DataEntityDetails remains the SOLE platform-wide instance of
+      canonical LSN-017; 5 other shells (PolicyList + RolesList +
+      OwnersList + CollectorsList + TermDetails) all REFUTE the
+      shape
+    - The broader composition-multiplier FAMILY is platform-wide; the
+      specific canonical LSN-017 instance is localised
+    - Pairs with the LSN-018 retrospective on per-node-scan limitations
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Code fix — consolidate to one fetcher (shape c recommended)
+    (b) Regression test — Vitest + react-testing-library pin
+    (c) Detail-page composition convention — document for future
+        surfaces

@@ -1,150 +1,333 @@
 name: Metrics Ingestion
 canonical_in_docs: false
 canonical_candidate: true
-description: 'Operator-selected metrics-storage subsystem driven by `metrics.storage`
-  (`INTERNAL_POSTGRES` default vs `PROMETHEUS`). PROMETHEUS mode writes Prometheus-shaped
-  time series via the Prometheus remote-write protocol to `metrics.prometheus-host`/api/v1/write
-  (Snappy-compressed) and queries via `/api/v1/query`. Mirrored bean structure: `extractors/external/Counter|Gauge|Histogram|SummaryTimeSeriesExtractor`
+description: |-
+  Operator-selected metrics-storage subsystem driven by `metrics.storage`
+  (`INTERNAL_POSTGRES` default vs `PROMETHEUS`). The HTTP entry point is
+  `POST /ingestion/metrics` (per BaseIngestionTest.java:92 ground-truth;
+  this SUPERSEDES the prior catalog claim of `/ingestion/metric_sets` —
+  the path-naming was authored from the MetricSetList payload typename,
+  not from the actual contract path; corrected batch 2026-05-20-Z by the
+  ingestMetrics controller-method sidecar). PROMETHEUS mode writes
+  Prometheus-shaped time series via the Prometheus remote-write protocol
+  to `metrics.prometheus-host`/api/v1/write (Snappy-compressed) and
+  queries via `/api/v1/query`. Mirrored bean structure:
+  `extractors/external/Counter|Gauge|Histogram|SummaryTimeSeriesExtractor`
   (gated `havingValue="PROMETHEUS"`) vs `extractors/internal/Counter|...|MetricsSeriesExtractor`
-  (gated `havingValue="INTERNAL_POSTGRES", matchIfMissing=true`). Per-MetricType extractor
-  dispatch via `extractors.stream().filter(canExtract).findFirst()` — new MetricType
-  support is add-a-class. vocabulary_status: codebase-anchored, doc-side-covered (live
-  `/configuration-and-deployment/odd-platform#metric-storage-backend` enumerates both
-  modes and documents `metrics.prometheus-host` + the Prometheus `--web.enable-remote-write-receiver`
-  runtime requirement — verified WebFetch 2026-05-10).'
+  (gated `havingValue="INTERNAL_POSTGRES", matchIfMissing=true`). Service-
+  tier dispatch via mirrored `@ConditionalOnProperty` on the two
+  IngestionMetricsService implementations (boot-time selection). Per-MetricType
+  extractor dispatch via `extractors.stream().filter(canExtract).findFirst()` —
+  new MetricType support is add-a-class. vocabulary_status:
+  codebase-anchored, doc-side-covered (live `/configuration-and-deployment/odd-platform#metric-storage-backend`
+  enumerates both modes and documents `metrics.prometheus-host` + the
+  Prometheus `--web.enable-remote-write-receiver` runtime requirement —
+  verified WebFetch 2026-05-20). **STRENGTHENED batch 2026-05-20-Z** by
+  the ingestMetrics controller-method sidecar — adds the controller-layer
+  view above the extractor layer the existing contributor covers.
 vocabulary_status: codebase-anchored, doc-side-covered
 axes_present:
 - config_prefixes
+- controllers
 nodes:
 - odd-platform java CounterTimeSeriesExtractor config-key-consumer:metrics.storage@L20
+- odd-platform java IngestionController controller-method:ingestMetrics
 contributors:
-- 'CounterTimeSeriesExtractor@L20: entities[MetricType.COUNTER, MetricFamilyPojo,
+- |-
+  CounterTimeSeriesExtractor@L20: entities[MetricType.COUNTER, MetricFamilyPojo,
   MetricPoint, CounterValue, TimeSeries / Sample / Label (Prometheus remote-write
-  proto)]; operations[gate-bean-instantiation-on-metrics.storage=PROMETHEUS, accept-counter-point,
-  emit-two-TimeSeries-per-counter-point (total + created), null-check counterValue.getTotal,
-  NaN-substitute counterValue.getCreated, append tenant_id system label]; invariants[mirrored
-  extractors via matchIfMissing=true on internal side; counterValue.getTotal mandatory;
-  NaN substitution for missing created; tenant_id label append only when tenantId
-  != null]'
+  proto)]; operations[gate-bean-instantiation-on-metrics.storage=PROMETHEUS,
+  accept-counter-point, emit-two-TimeSeries-per-counter-point (total + created),
+  null-check counterValue.getTotal, NaN-substitute counterValue.getCreated,
+  append tenant_id system label]; invariants[mirrored extractors via
+  matchIfMissing=true on internal side; counterValue.getTotal mandatory;
+  NaN substitution for missing created; tenant_id label append only when
+  tenantId != null]
+- |-
+  ingestMetrics.md (batch Z PRIMARY SOURCE for the CONTROLLER layer):
+    concepts.entities[MetricSetList, MetricSet, MetricFamily, Metric,
+    MetricPoint, IngestionMetricsService (interface — 2 mirrored
+    implementations), Mono<ResponseEntity<Void>>] +
+    concepts.operations[accept-metric-set-list, delegate-to-ingestion-metrics-service,
+    dispatch-by-conditional-on-property-to-internal-postgres-or-prometheus-impl,
+    return-201-Created] +
+    concepts.invariants[controller no auth in any deployment posture;
+    service dispatch is BOOT-TIME via mirrored @ConditionalOnProperty;
+    response code 201 Created MATCHES OpenAPI spec contract; per-tenant
+    scoping is BY-LABEL-CONVENTION at EXTRACTOR layer, NOT enforced at
+    controller; reactive body parsing with 20MB cap; NO empty-payload
+    guard at controller (unlike postDataEntityList sibling)] +
+    docs_link_semantic.doc_drift_findings.[2,3] (path-naming drift in the
+    concept catalog — claims /ingestion/metric_sets; ground-truth from
+    BaseIngestionTest.java:92 is /ingestion/metrics — corrected here;
+    ingestion_filter_relevance INDIRECT is insufficiently strong — the
+    ground-truth is NO, the filter is exact-POST-only and the path is
+    in the UI-auth whitelist)
 evidence:
 - CounterTimeSeriesExtractor@L20.md:concepts.entities + concepts.operations + concepts.invariants
-- CounterTimeSeriesExtractor@L20.md:implicit_adrs.[0,1] (mirrored beans with matchIfMissing
-  default-on; per-MetricType class explodes the switch)
-- CounterTimeSeriesExtractor@L20.md:dependencies_semantic.requires-config (metrics.storage
-  + metrics.prometheus-host + odd.tenant-id)
+- |-
+  CounterTimeSeriesExtractor@L20.md:implicit_adrs.[0,1] (mirrored beans
+  with matchIfMissing default-on; per-MetricType class explodes the switch)
+- |-
+  CounterTimeSeriesExtractor@L20.md:dependencies_semantic.requires-config
+  (metrics.storage + metrics.prometheus-host + odd.tenant-id)
+- |-
+  **BATCH Z** ingestMetrics.md:understanding (controller-layer view —
+  POST /ingestion/metrics, 3-line proxy, mirrored service dispatch, no
+  auth in ANY deployment posture)
+- |-
+  **BATCH Z** ingestMetrics.md:concepts.invariants.[0-5] (six controller-
+  layer invariants — unauth posture, boot-time dispatch, 201 spec-aligned,
+  tenant-by-label convention only, reactive 20MB cap, no empty-guard)
+- |-
+  **BATCH Z** ingestMetrics.md:bugs_limitations_corner_cases.[0,2]
+  HIGH/MEDIUM (the unauthenticated posture HIGH + the tenant-isolation-
+  nonexistent-on-INTERNAL_POSTGRES MEDIUM)
+- |-
+  **BATCH Z** ingestMetrics.md:docs_link_semantic.doc_drift_findings.[2]
+  (PATH SUPERSEDE — concept catalog claims /ingestion/metric_sets; ground-
+  truth from BaseIngestionTest.java:92 is /ingestion/metrics)
+- |-
+  **BATCH Z** ingestMetrics.md:docs_link_semantic.doc_drift_findings.[3]
+  (SECURITY WORDING SUPERSEDE — concept claims INDIRECT; ground-truth is
+  NO coverage at all)
 security_aggregate:
-  overall: MEDIUM
+  overall: LOW
   auth_modes_relevant:
   - INTERNAL_ONLY
-  ingestion_filter_relevance: INDIRECT
+  - DISABLED
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  ingestion_filter_relevance: NO
   authorization_consistency:
-    verdict: N/A
-    detail: '`@Component`-layer extractor — not on the HTTP surface. Auth gates apply
-      upstream at the ingestion controller boundary; whether `auth.ingestion.filter.enabled`
-      covers the metric-sets path depends on which ingestion route mounts `IngestionMetricsService`
-      (NOT `/ingestion/entities`, so NOT covered by IngestionDataEntitiesFilter).'
+    verdict: UNGATED
+    detail: |-
+      **CORRECTED batch 2026-05-20-Z**: the prior `INDIRECT` verdict
+      under-specified the security posture. Ground-truth (per the
+      ingestMetrics sidecar): the endpoint is uncovered by EVERY ingestion
+      filter (the IngestionDataEntitiesFilter exact-POST-only matcher
+      binds /ingestion/entities only; the IngestionDataSourceFilter
+      binds /ingestion/datasources only; no IngestionMetricsFilter exists)
+      AND the path is in SecurityConstants.WHITELIST_PATHS (/ingestion/**)
+      so UI auth modes do NOT fall through. Net effect: UNGATED in EVERY
+      deployment posture, regardless of which auth mode is configured
+      AND regardless of whether auth.ingestion.filter.enabled is true.
+      Per Security docs page (WebFetched 2026-05-20, status 200) +
+      ingestMetrics sidecar primary source.
   owner_scoping:
-    verdict: N/A
-    detail: Extractor is per-MetricType, not per-Owner. Injected oddrn + MetricFamilyPojo.id
-      are the only scoping keys; ODD Owners do not appear in the metric label set.
+    verdict: BYPASSES
+    detail: |-
+      No owner consult at any layer; the platform's Owner / User-owner-
+      association model applies to UI/API CRUD operations; metric
+      ingestion is a collector-to-platform machine-to-machine flow keyed
+      by ODDRN, not by Owner. Ingested metric_entity rows are not stamped
+      with `created_by_owner`; the calling collector has no identity
+      attached to its writes.
   strengths:
-  - Disabled-by-default for the PROMETHEUS path — `matchIfMissing=true` is on the
-    INTERNAL_POSTGRES side; an operator who never mentions `metrics.storage` runs
-    the internal-postgres path (no external write)
-  - Default `metrics.prometheus-host` is `http://localhost:9090` (localhost) — operator
-    must actively change to expose to network
-  - Fail-fast at boot when `metrics.storage=PROMETHEUS` AND `metrics.prometheus-host`
-    is empty — `IllegalStateException("Prometheus host is not defined")` (per live
-    doc verbatim)
+  - |-
+    Disabled-by-default for the PROMETHEUS path — `matchIfMissing=true`
+    is on the INTERNAL_POSTGRES side; an operator who never mentions
+    `metrics.storage` runs the internal-postgres path (no external write)
+  - |-
+    Default `metrics.prometheus-host` is `http://localhost:9090` (localhost)
+    — operator must actively change to expose to network
+  - |-
+    Fail-fast at boot when `metrics.storage=PROMETHEUS` AND
+    `metrics.prometheus-host` is empty — `IllegalStateException("Prometheus
+    host is not defined")` (per live doc verbatim)
   weaknesses:
-  - '**Metric labels propagated VERBATIM from ingestion payload to Prometheus proto
-    label list** — no allowlist, no PII filter. If a collector ingests a metric whose
-    labels carry PII (`user_email=...`, `dataset_owner_email=...`), that PII is written
-    verbatim to the operator''s Prometheus and becomes readable to every operator/team
-    with access to the Prometheus UI. Cardinality risk is the well-known Prometheus
-    property; ODD adds no pre-filtering. Severity MEDIUM (CounterTimeSeriesExtractor@L20.md:security.known_security_gaps.[1])'
-  - '**No rate-limit / per-tenant quota** on metric ingestion at this layer. A misbehaving
-    collector POSTing high-cardinality labels can balloon Prometheus storage on the
-    operator''s shared Prometheus — no per-tenant cap protects co-tenants. Severity
-    LOW (CounterTimeSeriesExtractor@L20.md:security.known_security_gaps.[2])'
-  - '**Tenant-isolation is by-label-convention, not enforcement** — see Multi-Tenant
-    Configuration concept; cross-link to the tenant-id label asymmetry'
-  cross_file_inconsistencies: []
+  - |-
+    **BATCH Z STRENGTHENS** — `POST /ingestion/metrics` is UNAUTHENTICATED
+    in EVERY supported deployment posture. No filter, no UI auth
+    (whitelisted), no S2S coverage. The bundled deployment is open-write
+    on metrics. No live ODD doc surfaces this — features/active-platform-features
+    does not mention metrics ingestion (WebFetched 2026-05-20); the
+    configuration-and-deployment/odd-platform page documents only the
+    storage backend config. Same severity-class as AlertManagerController
+    unauthenticated-by-default finding in F-008 — but WORSE because there
+    is NO TOGGLE to fail-close. Severity HIGH
+    (ingestMetrics.md:security.known_security_gaps.[0])
+  - |-
+    **BATCH Z STRENGTHENS** — Tenant isolation BYPASSED on INTERNAL_POSTGRES
+    storage. The odd.tenant-id mechanism applies ONLY to PROMETHEUS path
+    (as a label append at extractor construction). The INTERNAL_POSTGRES
+    path has no `tenant_id` column on `metric_series` / `metric_point`
+    tables. A deployment configured with `odd.tenant-id=tenantA` AND
+    `metrics.storage=INTERNAL_POSTGRES` (the SHIPPED DEFAULT) STILL writes
+    ALL metrics into ONE untyped Postgres namespace. The live doc lists
+    `odd.tenant-id` semantically as 'tenant identifier appended as a
+    Prometheus query label' — implicitly Prometheus-only — but does NOT
+    explicitly state INTERNAL_POSTGRES ignores it. Severity MEDIUM
+    (ingestMetrics.md:security.known_security_gaps.[3] +
+    tenant-isolation-nonexistent-on-default-backend-internal-postgres invariant)
+  - |-
+    **Metric labels propagated VERBATIM from ingestion payload to
+    Prometheus/Postgres proto label list** — no allowlist, no PII filter.
+    Severity MEDIUM (ingestMetrics.md:security.known_security_gaps.[2] +
+    CounterTimeSeriesExtractor@L20.md:security.known_security_gaps.[1])
+  - |-
+    **ODDRN-by-payload attack**: caller writes MetricSet.oddrn=any-string;
+    InternalIngestionMetricsServiceImpl.registerMetricEntityOddrns creates
+    a metric_entity row with ZERO validation against data_entity.oddrn
+    referential integrity. Attacker can mint thousands of fake-ODDRN
+    metric_entity rows (Postgres cardinality DoS) or thousands of
+    fake-ODDRN Prometheus series. Severity MEDIUM
+    (ingestMetrics.md:security.known_security_gaps.[1])
+  - |-
+    **No rate-limit / per-tenant quota** on metric ingestion at this layer.
+    A misbehaving collector POSTing high-cardinality labels can balloon
+    Prometheus storage on the operator's shared Prometheus — no per-tenant
+    cap protects co-tenants. Severity LOW
+    (CounterTimeSeriesExtractor@L20.md:security.known_security_gaps.[2] +
+    ingestMetrics.md:bugs_limitations_corner_cases.[5])
+  - |-
+    **No audit log on metric writes** — the platform's Activity Feed covers
+    metadata-side mutations but NOT metric writes. Combined with the
+    unauthenticated-write posture, metric tampering is undetectable from
+    platform-side logs alone. Severity LOW
+    (ingestMetrics.md:security.known_security_gaps.[5])
+  cross_file_inconsistencies:
+  - |-
+    **BATCH Z RESOLVED**: the prior `ingestion_filter_relevance: INDIRECT`
+    wording at this concept entry was under-specified. Ground-truth per
+    the batch-Z ingestMetrics sidecar primary source: `NO — /ingestion/metrics
+    is NOT covered by any ingestion filter; UI auth is whitelisted away`.
+    Corrected this batch.
   contributing_files:
   - CounterTimeSeriesExtractor@L20.md
+  - ingestMetrics.md
   evidence:
   - CounterTimeSeriesExtractor@L20.md:security.data_exposure
   - CounterTimeSeriesExtractor@L20.md:security.known_security_gaps.[0-2]
+  - ingestMetrics.md:security.auth_mode_relevance + .ingestion_filter_relevance
+  - ingestMetrics.md:security.known_security_gaps.[0-5]
 performance_aggregate:
   overall: MEDIUM
   hot_paths:
-  - extractTimeSeries invoked on every metric_point of every metric of every metric_family
-    of every metric_set in every POST /ingestion/metric_sets request — quadruple-nested
-    loop; dispatcher resolution is O(M) over M extractor beans (currently 4) per metric-point
-    per call
-  - Entire ingestion request batch serialised into a single Prometheus remote-write
-    payload, Snappy-compressed, POSTed in one shot. Latency of operator's Prometheus
-    is on the per-request critical path
+  - |-
+    extractTimeSeries invoked on every metric_point of every metric of every
+    metric_family of every metric_set in every POST /ingestion/metrics
+    request (path CORRECTED batch Z from /ingestion/metric_sets) —
+    quadruple-nested loop; dispatcher resolution is O(M) over M extractor
+    beans (currently 4) per metric-point per call
+  - |-
+    Entire ingestion request batch serialised into a single Prometheus
+    remote-write payload, Snappy-compressed, POSTed in one shot. Latency
+    of operator's Prometheus is on the per-request critical path
+  - |-
+    **BATCH Z ADDS** — INTERNAL_POSTGRES path: per-batch the service runs
+    N+1-shaped sequence of registerMetricEntityOddrns +
+    createOrUpdateMetricFamilies + getOrCreateMetricLabels +
+    getOrCreateMetricLabelValues + createOrUpdateMetricSeries +
+    getPointsBySeriesId + deletePoints + createOrUpdatePoints. All inside
+    ONE @ReactiveTransactional. Connection-pool pressure under high
+    cardinality.
   throughput_shape:
     verdict: BATCH_FRIENDLY
-    detail: A MetricSetList of N MetricSets each with M MetricFamilies fans out to
-      N*M*P TimeSeries records (P metric points per metric), all sent in a single
-      Snappy-compressed POST. No per-MetricSet streaming or chunking — whole list
-      must fit in the WebClient codec budget (`spring.codec.max-in-memory-size` default
-      20MB).
+    detail: |-
+      A MetricSetList of N MetricSets each with M MetricFamilies fans out
+      to N*M*P TimeSeries records (P metric points per metric), all sent
+      in a single Snappy-compressed POST. No per-MetricSet streaming or
+      chunking — whole list must fit in the WebClient codec budget
+      (`spring.codec.max-in-memory-size` default 20MB).
   scaling_shape:
     verdict: HORIZONTALLY_SCALABLE
-    detail: Stateless component — each extractor instance holds tenantId + IngestionMetricsMapper
-      reference. Multiple replicas write to the same Prometheus host — Prometheus's
-      own write throughput is the cluster-wide scaling ceiling. No per-replica sharding.
+    detail: |-
+      Stateless component — each extractor instance holds tenantId +
+      IngestionMetricsMapper reference. Multiple replicas write to the
+      same Prometheus host — Prometheus's own write throughput is the
+      cluster-wide scaling ceiling. No per-replica sharding. INTERNAL_POSTGRES
+      path: Postgres's write throughput is the cluster-wide ceiling.
   strengths:
-  - Reactive Mono signature on saveMetricsToPrometheus — non-blocking on JVM side
+  - |-
+    Reactive Mono signature on saveMetricsToPrometheus — non-blocking on
+    JVM side
   - Single shared WebClient per service — no per-request client construction
   - Stateless extractor instances — safe to reuse across requests
   weaknesses:
-  - '**No retry / backoff / DLQ on Prometheus /api/v1/write failures** — `onErrorMap`
-    rethrows as `PrometheusException`; transient Prometheus outage loses the entire
-    batch. No in-memory queue, no Postgres fallback, no eventual-consistency. Severity
-    MEDIUM (CounterTimeSeriesExtractor@L20.md:performance.known_performance_gaps.[0])'
-  - '**One bad point aborts the entire batch** — `counterValue.getTotal() == null`
-    throws IllegalArgumentException at request time; exception escapes the Mono upstream
-    of webClient.post(); no per-extractor try/catch. A single bad counter from one
-    DataEntity rejects metrics for every co-batched DataEntity. Severity MEDIUM (CounterTimeSeriesExtractor@L20.md:bugs_limitations_corner_cases.[2])'
-  - '**No codec override on Prometheus WebClient** — bounded by `spring.codec.max-in-memory-size:
-    20MB`. Large ingestion request (high-cardinality / high-fanout) producing >20MB
-    Snappy-compressed Prometheus write silently fails at the codec layer with DataBufferLimitException
-    before the POST is sent'
-  - '**`Double.NaN` substitution divergence between storage backends** — Prometheus
-    path emits NaN where Postgres path stores null. Same input metric produces divergent
-    query behaviour across storage backends. Severity LOW (CounterTimeSeriesExtractor@L20.md:bugs_limitations_corner_cases.[3])'
-  - '**Linear-scan dispatcher per metric point** — `getExtractor(MetricType)` is O(M)
-    where M = number of TimeSeriesExtractor beans. Small today (M=4); future extractor-set
-    explosion would multiply request latency. Severity LOW (CounterTimeSeriesExtractor@L20.md:performance.known_performance_gaps.[1])'
+  - |-
+    **No retry / backoff / DLQ on Prometheus /api/v1/write failures** —
+    `onErrorMap` rethrows as `PrometheusException`; transient Prometheus
+    outage loses the entire batch. No in-memory queue, no Postgres
+    fallback, no eventual-consistency. Severity MEDIUM
+    (CounterTimeSeriesExtractor@L20.md:performance.known_performance_gaps.[0] +
+    ingestMetrics.md:performance.known_performance_gaps.[0])
+  - |-
+    **One bad point aborts the entire batch** — `counterValue.getTotal() == null`
+    throws IllegalArgumentException at request time; exception escapes the
+    Mono upstream of webClient.post(); no per-extractor try/catch. A single
+    bad counter from one DataEntity rejects metrics for every co-batched
+    DataEntity. Severity MEDIUM
+    (CounterTimeSeriesExtractor@L20.md:bugs_limitations_corner_cases.[2])
+  - |-
+    **BATCH Z ADDS** — PROMETHEUS path: external HTTP POST inside a Postgres
+    @ReactiveTransactional boundary. Holds the DB transaction open for the
+    Prometheus round-trip duration. A slow Prometheus indirectly saturates
+    the R2DBC connection pool. Severity MEDIUM
+    (ingestMetrics.md:performance.known_performance_gaps.[2])
+  - |-
+    **No codec override on Prometheus WebClient** — bounded by
+    `spring.codec.max-in-memory-size: 20MB`. Large ingestion request
+    (high-cardinality / high-fanout) producing >20MB Snappy-compressed
+    Prometheus write silently fails at the codec layer with
+    DataBufferLimitException before the POST is sent. Severity MEDIUM
+    (ingestMetrics.md:performance.known_performance_gaps.[4])
+  - |-
+    **`Double.NaN` substitution divergence between storage backends** —
+    Prometheus path emits NaN where Postgres path stores null. Same input
+    metric produces divergent query behaviour across storage backends.
+    Severity LOW
+    (CounterTimeSeriesExtractor@L20.md:bugs_limitations_corner_cases.[3])
+  - |-
+    **Linear-scan dispatcher per metric point** — `getExtractor(MetricType)`
+    is O(M) where M = number of TimeSeriesExtractor beans. Small today
+    (M=4); future extractor-set explosion would multiply request latency.
+    Severity LOW
+    (CounterTimeSeriesExtractor@L20.md:performance.known_performance_gaps.[1])
+  - |-
+    **BATCH Z ADDS** — Cross-storage-migration is one-way and undocumented.
+    Switching `metrics.storage` from INTERNAL_POSTGRES (default) to
+    PROMETHEUS in a running deployment makes pre-switch historical
+    metric_series rows in Postgres UNREADABLE. Same shape as LSN-001
+    attachment-storage migration drift. Severity MEDIUM
+    (ingestMetrics.md:bugs_limitations_corner_cases.[9])
   cross_file_inconsistencies: []
   contributing_files:
   - CounterTimeSeriesExtractor@L20.md
+  - ingestMetrics.md
   evidence:
   - CounterTimeSeriesExtractor@L20.md:performance.hot_paths
   - CounterTimeSeriesExtractor@L20.md:performance.known_performance_gaps.[0,1]
   - CounterTimeSeriesExtractor@L20.md:bugs_limitations_corner_cases.[2,3]
-notes: 'The Counter sidecar at @L20 is representative — the same concept
-
-  spans Gauge / Histogram / Summary mirrors in the same package (one
-
-  pair of beans per MetricType, gated by the same `metrics.storage`
-
-  switch). main-concepts.md does not name "Metrics" or "Metrics
-
-  Ingestion" as a canonical concept; the live `/configuration-and-deployment/odd-platform`
-
+  - ingestMetrics.md:performance.hot_paths
+  - ingestMetrics.md:performance.known_performance_gaps.[0-4]
+notes: |-
+  The Counter sidecar at @L20 is representative — the same concept spans
+  Gauge / Histogram / Summary mirrors in the same package (one pair of
+  beans per MetricType, gated by the same `metrics.storage` switch).
+  main-concepts.md does not name "Metrics" or "Metrics Ingestion" as a
+  canonical concept; the live `/configuration-and-deployment/odd-platform`
   page documents the config keys but does NOT surface the per-MetricType
-
   fan-out, the silent-third-value fallthrough (a `metrics.storage` value
-
   outside the enumeration produces a zero-extractor config that throws
-
   at request time), or the read/write tenant-id label asymmetry (split
-
   into the separate Multi-Tenant Configuration concept).
 
-  '
+  **BATCH Z PATH-NAMING SUPERSEDE**: the prior catalog claim
+  `POST /ingestion/metric_sets` is incorrect; ground-truth is
+  `POST /ingestion/metrics` per BaseIngestionTest.java:92 (the only
+  in-repo ground-truth for the contract path). The prior wording was
+  authored from the MetricSetList payload typename, not from the
+  contract. Corrected this batch.
+
+  **BATCH Z SECURITY WORDING SUPERSEDE**: the prior
+  `ingestion_filter_relevance: INDIRECT` was under-specified. Ground-truth
+  is `NO — not covered by any filter, AND whitelisted from UI auth`.
+  Corrected this batch.
+
+  Cross-references:
+    - REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (this batch)
+    - tenant-isolation-nonexistent-on-default-backend-internal-postgres
+      (this batch — composition partner)
+    - multi-tenant-configuration-odd-tenant-id (canonicalisation candidate)

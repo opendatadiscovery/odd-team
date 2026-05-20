@@ -1,0 +1,164 @@
+name: spring.session.timeout=-1 default makes PostgreSQLSessionHousekeepingJob a no-op
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20X — a compound boot-default chains
+  through three components and silently disables the platform's only session-expiry
+  cleanup mechanism, producing monotonic resource growth on a long-running platform.
+
+  **THE CHAIN**:
+
+    Step 1 — application.yml:2-3 ships `spring.session.timeout: -1`. The value
+    `-1` means 'sessions never expire' (the live `/select-session-provider` doc
+    page WebFetched 2026-05-20 status 200 confirms this verbatim).
+
+    Step 2 — JooqSessionRepository.java:138-148 computes the EXPIRY_TIME column
+    value as `expiry_time = lastAccessedTime.plusSeconds(maxInactiveInterval.
+    toSeconds()).getEpochSecond()`. When `maxInactiveInterval` is unset or negative
+    (which it IS under `spring.session.timeout: -1`), the expiry is effectively
+    never reached — the resulting Long is either at its arithmetic-saturation
+    limit or interpreted as 'never' by downstream queries.
+
+    Step 3 — PostgreSQLSessionHousekeepingJob.java:30 issues the housekeeping
+    SQL DELETE with predicate `expiry_time < now()`. Under the unexpiring-expiry
+    from Step 2, the predicate NEVER matches and the housekeeping is a NO-OP for
+    every session row.
+
+  **NET EFFECT**:
+    - IN_MEMORY mode: the ConcurrentHashMap grows monotonically until JVM restart;
+      a long-running platform with many UI logins / many collector connections
+      accumulates session entries on the heap forever.
+    - INTERNAL_POSTGRESQL mode: the SPRING_SESSION + SPRING_SESSION_ATTRIBUTES
+      tables grow monotonically; the hourly housekeeping job (hardcoded cadence
+      at PostgreSQLSessionHousekeepingJobHandler.java:13) runs but deletes zero
+      rows.
+    - REDIS mode: keys persist with no TTL set; operator-side Redis tooling
+      (`maxmemory-policy`) is the only eviction surface.
+
+  **WHY THIS IS A COMPOUND DEFAULT**:
+    The platform ships TWO independent defaults that, separately, would each be
+    defensible:
+      (a) `spring.session.timeout: -1` — for the dev/demo case (no manual logout
+          friction, sessions persist across restart-free dev workflows).
+      (b) Hourly housekeeping cadence at PostgreSQLSessionHousekeepingJobHandler —
+          designed to keep the SPRING_SESSION table bounded.
+    Combined, the housekeeping is operator-visible but functionally inert. An
+    operator who reads the housekeeping code may reasonably conclude the platform
+    is bounding the session-state surface; in fact the platform is NOT.
+
+  **DOC PRESENCE**: the live doc at
+  `/configuration-and-deployment/odd-platform#select-session-provider` documents
+  BOTH facts independently:
+    - 'spring.session.timeout: -1 means sessions never expire.'
+    - 'Expired-session cleanup runs hourly and is not configurable.'
+  But does NOT make the compound dependency explicit. An operator who switches
+  to a finite `spring.session.timeout` (the recommended posture for any
+  internet-facing deployment) gets the housekeeping job active; an operator who
+  retains the default gets monotonic growth.
+
+  **SEVERITY**: HIGH — operator-invisible monotonic growth on production
+  deployments. The IN_MEMORY case is the worst (heap pressure → OOM kill →
+  service restart drops every UI login) but the INTERNAL_POSTGRESQL case is the
+  sneakier (a 100,000-session SPRING_SESSION table grows quietly until a DBA
+  notices the disk pressure).
+nodes:
+- odd-platform java SessionConfiguration config-class:SessionConfiguration
+- odd-platform yaml application.yml config-prefix:spring.session
+contributors:
+- |-
+  SessionConfiguration batch X (PRIMARY SOURCE for the compound chain):
+    bugs_limitations_corner_cases.[2] (HIGH — spring.session.timeout: -1
+    default makes the housekeeping job a no-op; operator-invisible monotonic
+    growth)
+    + security.known_security_gaps.[2] (HIGH — session never expires under
+    shipped defaults; stolen cookie remains valid until manual invalidation)
+    + performance.resource_allocation (under -1 timeout the map / table grows
+    monotonically)
+    + performance.scaling_characteristics.[housekeeping-no-op] — pinpoints the
+    three-step chain
+- |-
+  application.yml batch X: spring.session.timeout: -1 at line 3
+- |-
+  PostgreSQLSessionHousekeepingJob.java:30 (the DELETE predicate `expiry_time
+  < now()` never matches under -1 expiry)
+- |-
+  JooqSessionRepository.java:138-148 (the recordFromSession method that computes
+  expiry_time — the link between application.yml configuration and the housekeeping
+  job's SQL predicate)
+evidence:
+- |-
+  SessionConfiguration.md:bugs_limitations_corner_cases.[2] — primary source
+  citing the three-step chain (application.yml:2-3 + JooqSessionRepository.java:138-148
+  + PostgreSQLSessionHousekeepingJob.java:30)
+- |-
+  SessionConfiguration.md:security.known_security_gaps.[2] — HIGH severity
+  security-relevance (stolen cookie + never-expire compounds the cookie-attribute
+  finding)
+- |-
+  SessionConfiguration.md:performance.resource_allocation — bounded-by-restart
+  growth profile under IN_MEMORY; bounded-by-housekeeping-AND-finite-timeout
+  growth profile under INTERNAL_POSTGRESQL
+- |-
+  application.yml:2-3 (spring.session.timeout: -1)
+- |-
+  WebFetched 2026-05-20 of /configuration-and-deployment/odd-platform#select-
+  session-provider — both facts documented but the compound dependency is not
+  cross-linked
+axes_present:
+- config_classes
+- config_prefixes
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: operational-monotonic-resource-growth
+mitigations_unimplemented:
+- |-
+  Code-side: change `spring.session.timeout` default to a finite duration
+  (e.g., 8h or 24h). Document the trade-off (UX friction of more frequent
+  logins vs operational hygiene of bounded session storage) on the docs side.
+- |-
+  Code-side: log a WARN at SessionConfiguration boot if
+  `spring.session.timeout=-1` AND session.provider != IN_MEMORY (the
+  INTERNAL_POSTGRESQL / REDIS paths produce monotonic external storage growth
+  that operators may not anticipate).
+- |-
+  Code-side: add a boot-time `@PostConstruct` assertion that, if
+  spring.session.timeout: -1, the PostgreSQLSessionHousekeepingJob also
+  fail-fasts (or at minimum logs 'housekeeping job is a no-op under
+  spring.session.timeout: -1') so the inertness is operator-visible.
+- |-
+  Doc-side: extend the /select-session-provider live doc page to make the
+  compound dependency explicit — 'Under spring.session.timeout: -1 (default),
+  the PostgreSQLSessionHousekeepingJob does nothing. Tables / heap will grow
+  monotonically. Configure a finite timeout for production deployments.'
+- |-
+  Doc-side: add operator-facing telemetry — emit a metric for SPRING_SESSION
+  row count (and IN_MEMORY map size) so operators can observe the growth via
+  /actuator/prometheus without running ad-hoc DB queries.
+notes: |-
+  NEW HIGH-SEVERITY INVARIANT captured in batch 2026-05-20X surfaced by
+  SessionConfiguration batch X primary-source examination of the compound chain:
+  the link from a single application.yml default through the JooqSessionRepository
+  expiry computation into the housekeeping job's SQL predicate. The live doc
+  documents each step independently but does NOT make the dependency explicit.
+
+  Cross-cutting connections:
+    - session-cookie-security-attributes-unset (batch X) — both compound with
+      a stolen-cookie scenario; under -1 timeout AND no Secure flag the cookie
+      is valid forever after disclosure
+    - housekeeping-job-no-scheduler-lock-multi-instance-amplification (batch X) —
+      separate operational gap on the same housekeeping job
+    - housekeeping-ttl-retention (existing entity) — sibling pattern for the
+      TTL/retention story; this invariant is the SESSION-specific case
+    - collector-identity-via-websession-attribute-not-principal — the COLLECTOR_ID
+      session attribute is a payload that benefits from session-state cleanup
+      (which doesn't happen under -1 timeout)
+
+  Two DOC-NNN candidates:
+    (a) Cross-link the two adjacent doc paragraphs on /select-session-provider
+        to make the dependency explicit
+    (b) Add a session-storage-observability section (metrics for row count /
+        map size) so operators can monitor what the housekeeping job is NOT
+        doing

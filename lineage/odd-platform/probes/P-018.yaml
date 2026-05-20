@@ -1,0 +1,246 @@
+---
+probe_id: P-018
+feature_id: F-activity-feed
+test_class: integration
+verified_against_commit: ede5d277
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-2
+emitted_from_sidecar: odd-platform__java__service__activity__handler__ActivityHandler.md
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+stress_category: E (resource boundaries)
+stress_question_ids: [S-E-4]
+expected_outcome: |
+  LSN-019 STRESS-FINDING S-E-4: Pin whether Postgres row-order non-determinism
+  in the ownership-list query produces SPURIOUS activity events when the
+  underlying ownership set is unchanged.
+
+  Mechanism: `ReactiveOwnershipRepositoryImpl.getOwnershipsByDataEntityId`
+  (`:130-145`) issues a 3-table JOIN (OWNERSHIP × OWNER × TITLE) with NO
+  `ORDER BY` clause. `AbstractOwnershipActivityHandler.getDataEntityOwnerships`
+  (`:18-22`) `.collectList()`s the Flux and `JSONSerDeUtils.serializeJson`s
+  the list. `ActivityAspect.postActivity` (`:81-95`) compares old vs new as
+  `String.equals` (`:86`). If Postgres returns the same owner set in
+  DIFFERENT order between `getContextInfo` (before mutation) and
+  `getUpdatedState` (after mutation), the byte-strings differ, the filter
+  passes, and a SPURIOUS ActivityPojo row is created showing "ownership
+  updated" when nothing semantically changed.
+
+  Arrange: 1 data entity (id 1018) + 2 pre-existing ownerships
+  (alpha/lead, beta/steward) + CLUSTER OWNERSHIP table to force a
+  storage perturbation between reads.
+
+  Act: PUT a no-op ownership update (same title onto the same ownership)
+  that triggers the @ActivityLog path.
+
+  Observe: query the `activity` table for the resulting OWNERSHIP_UPDATED
+  row. Parse `old_state` and `new_state` JSON. Are they byte-different
+  but semantically equal as sets of (owner_name, title_name) tuples?
+
+  Assertion (current bug state, if the race manifests):
+  - A spurious ActivityPojo row exists with byte-different old/new states
+    that are semantically equal.
+
+  Assertion (clean state if the race does NOT manifest in this setup):
+  - No spurious row. Probe-runner reports `probe-inconclusive` because
+    the bug mechanism is structurally present; this run just didn't
+    perturb storage enough to make Postgres flip row order.
+
+  When the fix lands (add `ORDER BY ownership.owner_id, ownership.title_id`
+  to `getOwnershipsByDataEntityId`, or order in-memory before
+  serialization in the handler), this probe's spurious-row assertion
+  flips to "no spurious row even under storage churn" — surfacing the
+  fix in CI.
+
+triggers:
+  - service/activity/handler/ActivityHandler.java:9-22 (interface contract — read-only state-snapshot differ)
+  - service/activity/ActivityAspect.java:81-95 (postActivity diff via String.equals at :86)
+  - service/activity/handler/AbstractOwnershipActivityHandler.java:18-22 (collectList → JSON without ORDER BY)
+  - repository/reactive/ReactiveOwnershipRepositoryImpl.java:130-145 (the 3-table JOIN with no ORDER BY)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1018, '//probe-source-P-018/db', 'probe-source-P-018')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1018, '//probe-source-P-018/db/tables/p018_ownership_race', 'p018_ownership_race',
+              1018, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO owner (id, name, is_deleted)
+      VALUES (1018, 'p018_owner_alpha', false), (1019, 'p018_owner_beta', false)
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO title (id, name, is_deleted)
+      VALUES (1018, 'p018_title_lead', false), (1019, 'p018_title_steward', false)
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO ownership (id, data_entity_id, owner_id, title_id)
+      VALUES (1018, 1018, 1018, 1018), (1019, 1018, 1019, 1019)
+      ON CONFLICT (id) DO NOTHING
+
+  # Storage perturbation: CLUSTER forces Postgres to physically reorder
+  # rows on disk. Subsequent reads may return rows in non-insertion order.
+  - kind: sql
+    query: |
+      CLUSTER ownership USING ownership_pkey
+
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS baseline_count
+      FROM activity
+      WHERE data_entity_id = 1018
+        AND event_type = 'OWNERSHIP_UPDATED'
+    capture_as: baseline_activity_count
+
+act:
+  # A no-op ownership update: PUT the SAME title onto ownership 1018.
+  # `OwnershipServiceImpl.update` (`:100-102`) is @ActivityLog +
+  # @ReactiveTransactional; the path through `ActivityAspect` reads
+  # ownerships pre and post mutation.
+  - kind: rest
+    method: PUT
+    path: /api/dataentities/1018/ownerships/1018
+    body:
+      title_name: "p018_title_lead"
+    capture_as: putresp
+
+observe:
+  - kind: sql
+    query: |
+      SELECT id, old_state, new_state, created_at
+      FROM activity
+      WHERE data_entity_id = 1018
+        AND event_type = 'OWNERSHIP_UPDATED'
+      ORDER BY created_at DESC
+      LIMIT 1
+    capture_as: latest_ownership_activity
+
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS now_count
+      FROM activity
+      WHERE data_entity_id = 1018
+        AND event_type = 'OWNERSHIP_UPDATED'
+    capture_as: now_activity_count
+
+  # Sanity: ownership set unchanged — still 2 ownerships, same owners + titles.
+  - kind: sql
+    query: |
+      SELECT owner_id, title_id
+      FROM ownership
+      WHERE data_entity_id = 1018
+      ORDER BY owner_id, title_id
+    capture_as: final_ownership_set
+
+oracle:
+  # Sanity assertions.
+  - "len(final_ownership_set) == 2"
+
+  # PRIMARY ASSERTION (current bug state if the race manifests):
+  # A spurious row was created (count delta = 1) AND the old/new state
+  # strings differ AND the JSON-parsed sets are semantically equal.
+  - "now_activity_count - baseline_activity_count == 1"
+
+  # Byte-different strings.
+  - "latest_ownership_activity.old_state != latest_ownership_activity.new_state"
+
+  # Semantic-equality of the parsed JSON sets. The probe-runner must
+  # support JSON parsing + tuple-set construction; if not, encode as
+  # human-inspect.
+  - "set(tuple(d.get('owner_name'), d.get('title_name')) for d in parse_json(latest_ownership_activity.old_state)) == set(tuple(d.get('owner_name'), d.get('title_name')) for d in parse_json(latest_ownership_activity.new_state))"
+
+cleanup:
+  - kind: sql
+    query: DELETE FROM activity WHERE data_entity_id = 1018
+  - kind: sql
+    query: DELETE FROM ownership WHERE id IN (1018, 1019)
+  - kind: sql
+    query: DELETE FROM title WHERE id IN (1018, 1019)
+  - kind: sql
+    query: DELETE FROM owner WHERE id IN (1018, 1019)
+  - kind: sql
+    query: DELETE FROM data_entity WHERE id = 1018
+  - kind: sql
+    query: DELETE FROM data_source WHERE id = 1018
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: []
+  test_gaps:
+    - TEST-GAP-LSN-019-ownership-list-roworder-spurious-activity
+  doc_gaps: []
+  related_concepts:
+    - "Activity Feed"
+    - "Ownership Management"
+    - "Activity Snapshot Differ"
+  retrospectives: [LSN-019]
+  enrichment_sources:
+    - "lineage/odd-platform/understanding/odd-platform__java__service__activity__handler__ActivityHandler.md"
+
+resolves_to:
+  - sidecar_field: stress_findings.S-E-4 (PROBE-VERIFIED when probe-runner produces a verdict)
+  - on confirmation: bugs_limitations_corner_cases.[Postgres row-order non-determinism] severity stays HIGH with measured row-order-flip evidence
+  - on inconclusive: re-emit P-018-B with more aggressive perturbation (concurrent UPDATE traffic + VACUUM ANALYZE between captures)
+
+severity_if_confirmed: HIGH (Activity Feed shows spurious "ownership updated"
+  rows that the user did not produce; trust-destroyer for the accountability
+  surface)
+
+probe_owner: probe-runner (next batch)
+estimated_runtime: 10 minutes (docker-compose + 4 SQL setups + 1 REST call + 3 SQL observes)
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveOwnershipRepositoryImpl.java"
+    lines: "130-145"
+    role: "the 3-table JOIN with NO ORDER BY — source of row-order non-determinism"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/handler/AbstractOwnershipActivityHandler.java"
+    lines: "18-22"
+    role: "collectList + JSON serialize — propagates Postgres row order into the diff string"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/ActivityAspect.java"
+    lines: "81-95"
+    role: "postActivity computes oldState.equals(newState) — string-equality flips on byte-order"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/activity/handler/ActivityHandler.java"
+    lines: "9-22"
+    role: "the interface contract being interrogated"
+  - file: "retrospectives/LSN-019-file-analyser-describes-not-interrogates.md"
+    lines: "57-69"
+    role: "Stress Protocol Category E (Resource boundaries) — the rule that fires this probe"
+
+realism_caveats: |
+  - This probe relies on Postgres reordering rows in storage between
+    pre-mutation and post-mutation reads. CLUSTER + no-op UPDATE is the
+    chosen perturbation; in production, VACUUM, HOT-updates, or
+    concurrent UPDATE traffic may reproduce the same race. Necessary
+    condition test: if bug manifests → mechanism proven; if not →
+    `probe-inconclusive`, not `passed`.
+
+  - The PUT endpoint path needs verification against OpenAPI spec; body
+    field name (`title_name`) may differ in the actual contract.
+
+  - DISABLED auth — the row-order non-determinism is auth-mode-agnostic.
+
+  - Complementary probe variant (future P-018-B) should pin the same
+    behaviour for the TAG-list path (`ReactiveTagRepositoryImpl.listDataEntityDtos`,
+    `TagActivityHandlerImpl`); the mechanism is identical, the wrapped
+    event type is TAG_ASSIGNMENT_UPDATED.
+---

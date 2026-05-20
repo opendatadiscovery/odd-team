@@ -1,0 +1,79 @@
+gap_id: TEST-GAP-856
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java TagController controller-class:TagController"
+  - "odd-platform java service:TagServiceImpl"
+pillars_affected: [P-01, P-08, P-11]
+surfaced_by:
+  - "TagController.md:tests_coverage_semantic.uncovered_behaviours.[getPopularTagList LSN-019 drift — 35 tags fixture (5 youngest have higher count than 30 oldest), assert the response contains the OLDEST 30 by id (NOT the 5 most-popular). Pinned by P-010]"
+  - "TagController.md:stress_findings.name_behavior_pairs[0] (getPopularTagList — DRIFT_NAME_VS_BEHAVIOR)"
+  - "TagController.md:bugs_limitations_corner_cases.[LSN-019-popular-drift]"
+  - "TagController.md:docs_link_semantic.doc_drift_findings.[LSN-019]"
+behaviour: |-
+  **CRITICAL — `GET /api/tags?page=1&size=30` returns the OLDEST 30 tags by `tag.id` ASC (creation order), NOT the 30 most-popular tags. This is the HTTP-boundary surface of the same LSN-019 drift that TEST-GAP-855 pins at the repository tier — but here the assertion is at the controller perimeter, the same level an integration / SDK consumer would observe.** No test exists for the controller; the repository-tier `testListMostPopular` is structurally blind (see TEST-GAP-855). The HTTP surface is the OpenAPI contract: an SDK consumer building against `openapi.yaml:344-346` ('Gets the list of existing tags sorted by popularity') and asserting `assertThat(response.items.get(0).usedCount).isGreaterThanOrEqualTo(response.items.get(1).usedCount)` across pages will FAIL the moment the directory exceeds `size`.
+
+  **Why a SEPARATE gap from TEST-GAP-855**:
+  - TEST-GAP-855 is the repository-tier (TagRepositoryImplTest using `@ExtendWith(BaseIntegrationTest)`); it pins the SQL behavior.
+  - This gap (856) is the HTTP-boundary tier (`WebTestClient` against a full `@SpringBootTest`); it pins the END-TO-END behavior — the JSON response shape, the path-mapping wiring, the `TagsResponse.items` ordering, and the (absence of) authorisation gate on `GET /api/tags`.
+  - A future refactor that fixes the repository BUT breaks the controller-tier serialisation, OR a future refactor that adds a UI-side re-sort to mask the repository drift, would be caught by ONE but not the OTHER. Both layers need pinning.
+
+  **Operator-visible chain at the HTTP boundary**:
+  - `TagController.getPopularTagList` (`TagController.java:36-44`): delegates straight-through to `tagService.listMostPopular(query, ids, page, size).map(ResponseEntity::ok)`. No re-sort, no transformation.
+  - `TagsResponse.items` is serialised as a JSON array; the array order IS the response order.
+  - The OpenAPI spec describes this as 'sorted by popularity' — but the JSON array is sorted by `tag.id` ASC when the directory exceeds `size`.
+  - Combined with the absence of `@PreAuthorize` on the read endpoint (per `SecurityConstants.java:138-142` no GET entry), ANY authenticated user under LOGIN_FORM/OAUTH2/LDAP — and ANY unauthenticated user under DISABLED — can issue this request and observe the LSN-019 response shape.
+
+  **Why CRITICAL**:
+  - This is the SAME structural defect as TEST-GAP-855 but at the END-TO-END SDK-consumer-observable layer.
+  - It corroborates the docs/spec drift (TagController.md:doc_drift_findings.[LSN-019]): the live page mentions a 'Top tags' surface; the API spec promises popularity; the controller returns oldest by id. The triple gap (spec vs code vs UI label) makes this a HIGHEST-VISIBILITY defect.
+  - A regression-pin probe at the HTTP boundary catches BOTH spec-side and code-side regressions.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagControllerLSN019Test.java"
+  name: "getPopularTagList_directoryExceedsSize_returnsOldestSizeByTagIdAscNotMostPopular_pinsLSN019DriftAtHttpBoundary"
+evidence:
+  - "TagController.md says (tests_coverage_semantic.uncovered_behaviours[getPopularTagList LSN-019 drift]): '35 tags fixture (5 youngest have higher count than 30 oldest), assert the response contains the OLDEST 30 by id (NOT the 5 most-popular). Pinned by P-010.' test_class: integration. criticality: HIGH. note: Existing TagRepositoryImplTest.testListMostPopular is structurally blind to this drift — it uses containsExactlyInAnyOrder (no order check) and numberOfTestTags = size (no LIMIT exercised); see test_files."
+  - "TagController.md says (stress_findings.name_behavior_pairs[0]): 'drift: DRIFT_NAME_VS_BEHAVIOR ... operator_visible_consequence: With more than size tags in the directory, the response contains the OLDEST size tags by creation order, NOT the size most-popular. The UI's Top Tags label is operator-misleading.'"
+  - "TagController.md says (bugs_limitations_corner_cases[LSN-019]): 'getPopularTagList LSN-019 name-vs-behavior drift — the endpoint name + method name + @GetMapping(/popular) promise popularity ordering ... With > 30 tags where the YOUNGEST have higher counts than the OLDEST 30, the response contains the OLDEST 30 and the actual-most-popular are missing.' severity: HIGH"
+  - "TagController.md says (docs_link_semantic.doc_drift_findings[LSN-019]): 'LSN-019 — name-vs-behavior drift on getPopularTagList: UI surface labels the response Top Tags / popular tags; method name is listMostPopular; the implementation selects the OLDEST 30 tags by TAG.ID ASC via the inner paginate BEFORE counting, then re-orders only those 30 by count DESC.'"
+  - "Verified at primary source: TagController.java:36-44 (no re-sort, no transformation) + TagServiceImpl.java:72-77 (pure pass-through) + ReactiveTagRepositoryImpl.java:144-158 (the load-bearing paginate) + openapi.yaml:344-346 (the broken spec promise)"
+  - "Probe shape: lineage/odd-platform/probes/P-010.yaml + lineage/odd-platform/probes/P-LSN019-listMostPopular-drift.md"
+  - "Empirical reproduction: retrospectives/LSN-019-file-analyser-describes-not-interrogates.md:23-32 (2026-05-20 maintainer test)"
+cross_references:
+  - "TEST-GAP-855 (NEW VAL-LSN-019 — repository-tier sister; this gap is the HTTP-tier complement; both anchor LSN-019)"
+  - "TEST-GAP-547 (existing batch-N — listMostPopular pagination boundary; complementary at LOW severity for page=2 + size cap)"
+  - "TEST-GAP-763 (existing batch-W — Tag directory bypass; sister TagController gap; pairs with this LSN-019 finding because the same uncategorised authenticated user can both enumerate the directory AND see the broken popularity ordering)"
+  - "TEST-GAP-773 (existing batch-W — HTTP-tier floor cross-cutting; this gap is the specific LSN-019 instance at the TagController HTTP boundary that the cross-cutting floor never pinned)"
+  - "REFACTOR-NNN (same as TEST-GAP-855: push ORDER BY count INSIDE the paginate window OR update spec + name to match actual semantics)"
+  - "DOC-GAP-NNN (same as TEST-GAP-855: surface the LSN-019 drift in Tagging doc + API Reference page)"
+  - "retrospectives/LSN-019-file-analyser-describes-not-interrogates.md (case-law origin)"
+  - "lineage/odd-platform/probes/P-010.yaml (the probe skeleton this test converts into a CI run)"
+related_features: [F-001, F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-08:F-NN-tags-tab", "P-11:F-001-api-reference"]
+proposed_action: |-
+  Add `TagControllerLSN019Test` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/` using `WebTestClient` against a full `@SpringBootTest` with Testcontainers Postgres. Four test methods:
+
+  1. **`getPopularTagList_directoryExceedsSize_equalUsageCounts_returnsOldestSizeByTagIdAscNotMostPopular_pinsLSN019DriftAtHttpBoundary`** (HEADLINE):
+     - Arrange: via repository test fixture, seed 35 tags 'http-tag-001..http-tag-035' with serial IDs. For each tag, insert a single `tag_to_data_entity` row → every tag has usedCount=1.
+     - Act: `webTestClient.get().uri("/api/tags?page=1&size=30").exchange()`.
+     - Assert: HTTP 200; response body `TagsResponse.items` has exactly 30 elements. Map items to `id` field; assert IDs are exactly `[1, 2, ..., 30]` in ascending order. PIN the LSN-019 drift at the HTTP boundary.
+
+  2. **`getPopularTagList_directoryExceedsSize_unevenUsageCounts_returnsOldestSizeReorderedByCountDesc_pinsInnerSelectionOuterSortAtHttp`**:
+     - Arrange: 35 tags. OLDEST 5 have usedCount=1; middle 25 have usedCount=10; YOUNGEST 5 (IDs 31-35) have usedCount=100.
+     - Act: `webTestClient.get().uri("/api/tags?page=1&size=30").exchange()`.
+     - Assert: response contains IDs 1..30 (NOT 31..35); WITHIN the response, items are ordered by usedCount DESC. PIN both the inner ID-ASC selection AND the outer count-DESC sort within the page at the HTTP layer.
+
+  3. **`getPopularTagList_userWithoutTagPermissions_returns200_pinsOpenReadPostureFromLSN019`**:
+     - Arrange: 35 tags as in #1. Authenticate as a user with NO `TAG_*` permissions.
+     - Act: same GET request.
+     - Assert: HTTP 200 (NOT 403); response body returns the same LSN-019-affected oldest-30. PIN the cross-cutting open-read posture compounded with the LSN-019 drift (sister to TEST-GAP-763).
+
+  4. **`openApiSpec_declaresSortedByPopularity_butControllerReturnsSortedByIdAsc_documentsSpecVsCodeDrift`**:
+     - Parse `openapi.yaml`; locate `/api/tags` GET operation; assert description contains the phrase "sorted by popularity" (the spec-side promise that the code does NOT keep).
+     - Cross-reference assertion: this is a documentation-test that the spec disagrees with the code. PIN the spec-vs-code drift as a regression target — when REFACTOR-NNN lands, EITHER the spec changes OR the code changes; this test forces the maintainer to do BOTH.
+
+  After landing the test: pair with REFACTOR-NNN (same as TEST-GAP-855 — push ORDER BY count INSIDE the paginate window, OR update spec + name + UI label to match actual semantics). When the fix lands, tests #1, #2 INVERT (assert "youngest 5 with count=100 plus oldest 25 with count=10" or similar); test #4 INVERTS (assert the spec description matches the code).
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

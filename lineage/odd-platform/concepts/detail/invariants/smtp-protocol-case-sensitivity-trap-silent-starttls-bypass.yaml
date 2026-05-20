@@ -1,0 +1,173 @@
+name: SMTP protocol case-sensitivity trap — silent STARTTLS + AUTH bypass on uppercase 'SMTP'
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-07
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20X — surfaces a doc-vs-code
+  case-sensitivity drift in the notification subsystem's SMTP wiring that
+  silently disables STARTTLS and SMTP-AUTH on operator deployments that copy
+  the live-doc Gmail example verbatim.
+
+  **THE PRIMARY SOURCE — NotificationConfiguration.java:63**:
+    The mailSender bean's protocol branch performs `if (emailProperties.getProtocol()
+    .equals("smtp")) { ... populate mail.smtp.auth + mail.smtp.starttls.enable
+    keys in Properties bag ... } else { props.put("mail.transport.protocol",
+    emailProperties.getProtocol()); }`. The `.equals("smtp")` comparison is
+    CASE-SENSITIVE LOWERCASE.
+
+  **THE DOC GMAIL EXAMPLE — WebFetched 2026-05-20 status 200**:
+    The live `/configuration-and-deployment/odd-platform` page's Gmail example
+    YAML writes `protocol: SMTP` (UPPERCASE — JavaMail's documented convention).
+    An operator copying the doc YAML VERBATIM produces a deployment where:
+      - The code's `.equals("smtp")` branch returns false (uppercase != lowercase)
+      - The ELSE branch fires, populating only `mail.transport.protocol` with
+        the literal string 'SMTP'
+      - `mail.smtp.auth` and `mail.smtp.starttls.enable` are NEVER set in the
+        Properties bag, regardless of the operator's `smtp.auth: true` and
+        `smtp.starttls: true` configuration
+
+  **NET EFFECT**:
+    - STARTTLS does NOT engage even when configured (`smtp.starttls: true` is
+      ignored)
+    - SMTP AUTH does NOT negotiate even when configured (`smtp.auth: true` is
+      ignored)
+    - Depending on the relay:
+        - If the relay requires STARTTLS to accept the connection, delivery
+          fails plaintext
+        - If the relay accepts plaintext SMTP-AUTH, credentials travel in clear
+          text on the wire
+    - There is NO boot warning, NO log line, NO IllegalArgumentException —
+      the misconfiguration is SILENT
+    - The operator discovers the misconfiguration only after the first failed
+      delivery (or worse, never — if their relay accepts plaintext AUTH and
+      logs the password)
+
+  **WHY THIS IS A LSN-001-CLASS PATTERN**:
+    The shape mirrors the LSN-002 retrospective + the lsn-002-class-primitive-default
+    invariant: a typed config field accepts a value that is legal at boot but
+    silently broken at first use. Here the cause is doc-vs-code case-sensitivity
+    drift rather than a missing default, but the failure pattern (silent
+    misconfiguration, operator-invisible, doc-as-the-only-surface) is identical.
+
+  **THE COMPOUND WITH OTHER NOTIFICATION CONFIG GAPS** (per the NotificationConfiguration
+  sidecar):
+    - SMTP timeouts are unset (JavaMail defaults infinite — confirmed by live doc
+      'Known limitations')
+    - No implicit-TLS support (STARTTLS-only — Gmail port 465 et al cannot work
+      even when correctly cased)
+    - No custom-CA trust path (`mail.smtp.ssl.trust` not surfaced)
+    - boxed Boolean fields on SmtpProperties accept null (operator omitting the
+      key disables AUTH/STARTTLS silently)
+  The case-sensitivity trap is the WORST of the family because it produces
+  the SILENT plaintext-AUTH scenario rather than just a failed connection.
+
+  **DOC DRIFT FINDING**:
+    Captured on the NotificationConfiguration sidecar as the headline doc-drift
+    item. The drift is operator-copy-paste-from-docs-silently-fails — the
+    canonical cross-cutting concept the catalog already names. This instance
+    is particularly hazardous because the failure mode includes credentials in
+    plaintext on the wire.
+nodes:
+- odd-platform java NotificationConfiguration config-class:NotificationConfiguration
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:EmailSenderProperties
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+contributors:
+- |-
+  NotificationConfiguration batch X (PRIMARY SOURCE for the case-sensitivity
+  trap):
+    bugs_limitations_corner_cases.[0] (HIGH severity — protocol case-sensitivity
+    trap; operator copying live-doc Gmail example hits the ELSE branch)
+    + docs_link_semantic.doc_drift_findings.[0] — live-doc Gmail example uses
+    uppercase 'SMTP' while the code's branch at L63 compares case-sensitive
+    to lowercase 'smtp'
+    + implicit_adrs.[4] (the protocol-branch decision; case-sensitivity is more
+    likely an oversight than explicit decision)
+- |-
+  EmailSenderProperties (existing sidecar batch D): the typed-POJO carrier for
+  the protocol field — `String protocol;` accepts any case
+- |-
+  NotificationsProperties (existing sidecar): the parent subsystem properties
+  POJO — the protocol field is a leaf inside the email receiver block
+evidence:
+- |-
+  NotificationConfiguration.md:bugs_limitations_corner_cases.[0] (HIGH severity)
+  — evidence: NotificationConfiguration.java:63 (the `.equals("smtp")` lowercase
+  comparison) + WebFetched live-doc Gmail example with uppercase 'SMTP' on
+  2026-05-20
+- |-
+  NotificationConfiguration.md:docs_link_semantic.doc_drift_findings.[0] — the
+  doc-vs-code drift
+- |-
+  EmailSenderProperties.md (existing): protocol field is String accepting any
+  case
+- |-
+  retrospectives/LSN-001-attachment-ephemeral-default.md — LSN-001-class pattern
+  precedent (silent misconfiguration + doc-as-the-only-surface)
+- |-
+  doc-vs-code-spelling-format-mismatch-operator-copy-paste-from-docs-silently-fails.yaml
+  (existing canonicalisation_candidate) — the cross-cutting concept this
+  invariant strengthens
+axes_present:
+- config_classes
+- config_prefixes
+triangulation_count: 2
+cross_batch: true
+severity: HIGH
+severity_dim: doc-vs-code-drift-with-credential-leak-consequence
+mitigations_unimplemented:
+- |-
+  Code-side: change the branch comparison to `.equalsIgnoreCase("smtp")` OR
+  `.toLowerCase().equals("smtp")` at NotificationConfiguration.java:63. The
+  fix is one-line and removes the case-sensitivity surface entirely. Backward-
+  compatible (lowercase 'smtp' deployments continue to work; uppercase 'SMTP'
+  deployments start working as the docs imply).
+- |-
+  Code-side: replace the case-sensitive string comparison with an explicit
+  enum `SmtpProtocol { SMTP, SMTPS, … }` AND Spring's enum-binding (which
+  IS case-insensitive). The typed approach also closes the door on
+  raw-string typos that would land in the else branch.
+- |-
+  Code-side: emit a boot-time WARN log if the else branch is taken — 'protocol
+  configured as {x}; not equal to lowercase smtp; STARTTLS + AUTH properties
+  will NOT be set'. Surfaces the misconfiguration without breaking existing
+  non-SMTP transports.
+- |-
+  Doc-side: update the live `/configuration-and-deployment/odd-platform`
+  Gmail example to use lowercase 'protocol: smtp'. If the code change is
+  applied (recommended), keep the docs consistent. If the code change is
+  NOT applied, the docs MUST be corrected immediately to prevent ongoing
+  operator-copy-paste failures.
+- |-
+  Doc-side: add a notification-channel section heading 'Protocol value is
+  case-sensitive — use lowercase smtp' as an admonition until the code-side
+  fix lands.
+- |-
+  Test-side: add a unit test on NotificationConfiguration#mailSender asserting
+  that protocol='smtp' and protocol='SMTP' produce IDENTICAL Properties bag
+  contents. The asymmetry is currently uncovered (entire notification package
+  has zero test files per the NotificationConfiguration sidecar's gaps section).
+notes: |-
+  NEW HIGH-SEVERITY INVARIANT captured in batch 2026-05-20X via the
+  NotificationConfiguration sidecar's primary-source examination. The drift
+  is particularly hazardous because the failure mode silently strips two
+  defence-in-depth layers (STARTTLS encryption + SMTP-AUTH negotiation) in
+  one step, with no boot-time signal.
+
+  Cross-cutting connections:
+    - doc-vs-code-spelling-format-mismatch-operator-copy-paste-from-docs-silently-fails
+      (existing canonicalisation_candidate) — this invariant is a specific
+      instance of that pattern. Strengthens that candidate from N-occurrence
+      to N+1.
+    - lsn-002-class-primitive-default-ships-disabled-but-broken-when-enabled
+      (existing invariant) — same shape (silent misconfiguration, broken at
+      first use), different cause (case-sensitivity drift vs missing default)
+    - operator-copy-paste-from-docs-silently-fails — this is the canonical
+      example. A maintainer-style audit of every config-key live-doc example
+      would surface other case-sensitivity / format-mismatch drifts.
+
+  Two DOC-NNN candidates (with severity ordering by impact):
+    (a) Immediate doc-correction (lowercase 'protocol: smtp' in the Gmail
+        example) — even before any code fix lands; the doc is currently
+        misleading operators in production
+    (b) Code-side fix to `.equalsIgnoreCase` — removes the trap entirely

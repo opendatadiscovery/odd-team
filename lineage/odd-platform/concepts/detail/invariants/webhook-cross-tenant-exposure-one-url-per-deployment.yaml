@@ -1,0 +1,254 @@
+name: |-
+  Webhook cross-tenant exposure — ONE URL per platform deployment, every alert reaches every receiver regardless of Owner / namespace / tenant (batch Y)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20Y — surfaced by primary-source
+  examination of WebhookNotificationSender.java. The generic-webhook channel
+  binds exactly ONE URL per platform deployment at bean-construction time;
+  the dispatcher feeds it every AlertNotificationMessage produced by every
+  alert across every namespace, owner, data source. In a multi-tenant or
+  multi-team deployment, every tenant's alerts flow to the one operator-
+  configured URL — the receiver cannot route to per-tenant destinations
+  without parsing the payload and routing receiver-side.
+
+  THE PRIMARY-SOURCE EVIDENCE — WebhookNotificationSender batch Y:
+
+    WebhookNotificationSender.java:11 — the URL field:
+      private final URI webhookUrl;
+    Bound ONCE at constructor time from NotificationConfiguration.java:88-99
+    (the @Bean factory method). The class has no setter, no @RefreshScope,
+    no @ConfigurationProperties-watched-bean, no reload mechanism. The
+    URL cannot change without a Spring context restart.
+
+    WebhookNotificationSender.java:18-23 (the send method):
+      public void send(AlertNotificationMessage message)
+              throws NotificationSenderException, IOException, InterruptedException {
+          final HttpRequest request = HttpRequest.newBuilder()
+              .uri(webhookUrl)
+              .POST(BodyPublishers.ofString(serializeJson(message)))
+              .build();
+          sendAndValidate(request);
+      }
+    The send method takes the AlertNotificationMessage but does NOT branch
+    on it. Every message — regardless of dataEntity.owners[], regardless
+    of dataEntity.namespaceName, regardless of dataEntity.dataSourceName,
+    regardless of alertType — is POSTed to the same webhookUrl.
+
+    AlertNotificationMessage.java:28 — the owners field IS populated:
+      private Set<OwnershipPair> owners;
+    populated by AlertNotificationMessageTranslator#fetchAlertedDataEntity
+    — but THIS class never reads it (verified by reading lines 1-30
+    end-to-end at batch Y; no message.getDataEntity() invocation).
+
+  THE STRUCTURAL FAILURE MODE — multi-tenant + read-collaborative compound:
+
+    Layer 1 — ONE URL per deployment (THIS invariant):
+      Operators wanting per-team / per-owner / per-severity / per-tenant
+      webhook routing have NO platform-side configuration knob. The URL
+      is a single bean-construction-time binding.
+
+    Layer 2 — Dispatcher fan-out is unconditional (existing finding):
+      AlertNotificationMessageProcessor.java:25-36 iterates
+      List<NotificationSender> unconditionally on every
+      AlertNotificationMessage; no per-recipient filter, no per-channel
+      routing predicate. Combined with Layer 1: every alert reaches every
+      configured URL with no filtering.
+
+    Layer 3 — The PII surface (existing finding):
+      AlertNotificationMessage carries dataEntity.{id, name,
+      dataSourceName, namespaceName, owners[]}, downstream lineage
+      entities to configured depth, and alertChunks[] (the alert's
+      reason/lastReason text). For organisations encoding customer
+      identifiers / PII in dataset names (a common pattern in
+      multi-tenant SaaS data platforms), every alert leaks the
+      identifier verbatim.
+
+    Layer 4 — The read-collaborative posture (REFACTOR-024 + 203 + 201
+              compounded):
+      ODD's read paths are cross-owner by design. The Alert read API
+      surfaces every alert to every authenticated user. The webhook
+      channel extends this read-collaborative surface to an EXTERNAL
+      receiver — the operator's webhook endpoint sees every alert
+      regardless of which team / tenant / owner owns the alerted
+      entity.
+
+  THE OPERATOR REMEDIATION BURDEN — what the platform DOES NOT provide:
+
+    Pending a platform-side fix (per-tenant URL routing, owner-scoped
+    fan-out, namespace-keyed channel selection), operators must
+    implement the routing receiver-side:
+      - parse the payload: extract dataEntity.namespaceName /
+        dataEntity.owners[].name; branch the routing decision on these
+        fields; forward to the correct per-tenant downstream
+      - implement an HTTP gateway in front of the real receiver — a
+        Lambda / Function / nginx-with-lua that does the parsing and
+        forwarding
+      - accept that the routing layer is a separately-failing component
+        and instrument it
+    Each option DOUBLES the failure surface. The live doc does not
+    surface any of these options.
+
+  THE LIVE DOC CONTRAST — silence vs the absence:
+
+    Live `/features/active-platform-features/notifications` describes the
+    webhook channel without naming the single-URL-per-deployment
+    constraint. Operators reading the doc see "each channel that is
+    enabled" and reasonably infer multi-channel possible — but multi-
+    channel means multi-CHANNEL-TYPE (Slack OR Webhook OR Email), not
+    multi-INSTANCE per type.
+
+    Verified at batch Y WebhookNotificationSender.md:docs_link_semantic.doc_drift_findings.[4]:
+      "Operators wanting per-team / per-owner / per-severity webhook
+       routing cannot configure two webhook URLs in ODD — the channel is
+       intentionally single-URL (one bean, one constructor URI). The doc
+       framing 'each channel that is enabled' invites the multi-webhook
+       expectation; the code reality is one-or-zero. DOC-NNN candidate."
+
+  THE COMPLETENESS BEYOND THE WEBHOOK CHANNEL:
+
+    The same one-URL-per-deployment constraint applies to:
+      - Slack: notifications.receivers.slack.url is a single URI (one
+        Slack channel per deployment)
+      - Email: notifications.receivers.email.notification.emails is a
+        single comma-separated recipient list (no per-tenant routing)
+    The webhook channel is the most consequential example because:
+      (a) the payload is the full JSON DTO (Slack and email get
+          channel-shaped subsets — Slack carries Block Kit, email
+          carries Freemarker-rendered HTML)
+      (b) the receiver is operator-curated (Slack channel is operator-
+          managed, email recipients are operator-managed too, but the
+          webhook receiver is an arbitrary HTTP endpoint with arbitrary
+          downstream behaviour)
+      (c) the trust posture is operator-defined (Slack workspace and
+          SMTP relay have their own security envelopes; the webhook
+          receiver's posture is entirely operator-deployed)
+
+    The cross-tenant-exposure pattern is therefore a P-07 FEATURE-LEVEL
+    constraint, not a webhook-channel-only finding. THIS invariant
+    primary-sources it at the webhook level and cross-links to the
+    sibling Slack / email constraints.
+
+  CROSS-LINK TO F-009 DRIFT FACETS:
+
+    F-009 already catalogues drift facets:
+      - unconditional_broadcast_no_routing (this invariant is the
+        primary-source pin for the webhook channel)
+      - pii_passthrough_to_every_channel (sibling — same root cause but
+        at the alert-payload-content level)
+    The two facets are complements; both reflect the architectural
+    decision to NOT scope outbound delivery by owner.
+
+  SEVERITY HIGH — bounded by the trust posture of the deployment, but
+  structurally present at the code level and undocumented.
+nodes:
+  - odd-platform java notification.sender class:WebhookNotificationSender
+  - odd-platform java service service:NotificationsDispatcher
+contributors:
+  - |-
+    WebhookNotificationSender batch Y (PRIMARY SOURCE — one URL per deployment,
+    cross-tenant exposure):
+    bugs_limitations_corner_cases.[5] (Cross-tenant data exposure: ONE URL
+    receives ALL alerts regardless of which Owner is attached — severity HIGH) +
+    security.known_security_gaps.[3] (Full PII payload to one URL across all
+    owners / namespaces / tenants — severity HIGH) +
+    docs_link_semantic.doc_drift_findings.[4] (live doc silent on the
+    single-URL-per-deployment constraint) +
+    docs_link_semantic.doc_drift_findings.[5] (live doc silent on the
+    every-alert-to-one-URL-regardless-of-Owner behaviour) +
+    implicit_adrs.[3] (ONE webhook URL per platform deployment — the
+    architectural commitment at the bean-factory level)
+  - |-
+    NotificationsDispatcher batch K (existing reference — the dispatcher
+    side of the unconditional fan-out; per-channel filter absent at the
+    dispatcher AND the channel level)
+evidence:
+  - |-
+    WebhookNotificationSender.md:bugs_limitations_corner_cases.[5]
+    (Cross-tenant data exposure: ONE URL receives ALL alerts regardless
+    of which Owner is attached — severity HIGH) — evidence:
+    WebhookNotificationSender.java:11,13-16 + AlertNotificationMessageProcessor.java:25-36
+  - |-
+    WebhookNotificationSender.md:security.known_security_gaps.[3]
+    (Full PII payload to one URL across all owners / namespaces /
+    tenants — severity HIGH)
+  - |-
+    WebhookNotificationSender.md:docs_link_semantic.doc_drift_findings.[4]
+    (live doc silent on the single-URL-per-deployment constraint)
+  - |-
+    WebhookNotificationSender.md:docs_link_semantic.doc_drift_findings.[5]
+    (live doc silent on the every-alert-to-one-URL-regardless-of-Owner
+    behaviour)
+  - |-
+    WebhookNotificationSender.md:implicit_adrs.[3] (ONE webhook URL per
+    platform deployment — bean-factory architectural commitment)
+  - |-
+    Cross-references NotificationsDispatcher.md:bugs_limitations_corner_cases.[8]
+    (PII surface — the dispatcher side of the same architectural posture)
+axes_present:
+  - services
+  - config_prefixes
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-Y (WebhookNotificationSender — PRIMARY SOURCE)
+  - batch-K (NotificationsDispatcher — unconditional fan-out caller side)
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Add a new config shape notifications.receivers.webhook.routes (List
+    of {url, predicate-on-namespace, predicate-on-owner}) — operators
+    configure multiple receivers with routing predicates. Implement at
+    NotificationConfiguration as a List of WebhookNotificationSender
+    beans + a routing-aware AlertNotificationMessageProcessor that
+    filters before fan-out.
+  - |-
+    OR (smaller scope): add per-channel owner-allowlist config knob —
+    notifications.receivers.webhook.owners-allowlist (a List of owner
+    names). The webhook sender consults dataEntity.owners[] and
+    short-circuits if no owner matches. Single fix-point at
+    WebhookNotificationSender.send; no schema change.
+  - |-
+    Document the one-URL-per-deployment constraint on the live
+    notifications page with operator-facing mitigation guidance —
+    deploy a routing relay (Lambda / nginx-lua) that parses the payload
+    and forwards to the correct downstream.
+  - |-
+    Cross-cutting case-law: surface "unconditional broadcast across
+    owners" as a P-07 PILLAR-LEVEL design constraint in the system
+    mission; doc-side operators reading active-platform-features should
+    know the platform's posture before deploying notifications.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20Y from the
+  WebhookNotificationSender sidecar's primary-source evidence. The
+  cross-tenant-exposure pattern is a P-07 FEATURE-LEVEL constraint that
+  applies to all three channels (Slack, Webhook, Email), but is most
+  consequential at the webhook channel where the payload is the full
+  JSON DTO with the broadest PII surface.
+
+  Cross-cutting connections:
+    - Pairs with the webhook-no-hmac-no-signature invariant (also batch Y)
+      — the URL is BOTH a routing key AND a credential; leaking it
+      reveals BOTH the cross-tenant audience AND the forgery vector
+    - Pairs with the slack-mrkdwn-injection invariant (also batch Y) —
+      the broadcast blast radius is set by the single channel membership
+      across owners
+    - Pairs with the cross-channel-runtimeexception-abort invariant
+      (also batch Y) — all four batch-Y findings stem from the
+      architectural simplicity of "one fan-out loop, no per-recipient
+      logic"
+    - Extends the unconditional-broadcast / pii-passthrough drift class
+      with primary-source evidence at the webhook channel
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Document the one-URL-per-deployment constraint on the live
+        notifications page; surface as a P-07 PILLAR posture, not just
+        a webhook-channel detail
+    (b) Cross-link from the P-09 Security & Access Control pillar to the
+        outbound-delivery posture — multi-tenant deployments need to
+        know the posture before relying on the platform for alert
+        delivery

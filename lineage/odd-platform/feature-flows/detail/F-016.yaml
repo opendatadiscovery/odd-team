@@ -26,6 +26,8 @@ contributing_nodes:
 - odd-platform java SecurityConstants
 - odd-platform java AuthorizationCustomizer
 - odd-platform ts react-component:DEGLineage
+- odd-platform ts react-component:Lineage (batch ZA — UI DISPATCHER that realizes the DEG branch via `isDEG ? <DEGLineageAtomProvider><DEGLineage/></DEGLineageAtomProvider>` at Lineage.tsx:19-22)
+- odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn
 cross_pillar_relationships:
 - pillar: P-01
   kind: shares_data_with
@@ -479,6 +481,55 @@ observed_vs_expected:
       docs_link_semantic.doc_drift_findings[0,1,2] + WebFetch live
       pages 2026-05-19. Severity: MEDIUM (P-05 + P-09 doc-coverage
       gap; operationally relevant for compliance audits).
+  - facet: Lineage.tsx UI dispatcher realizes the DEG branch via entity-class routing (batch ZA — PRIMARY-SOURCE)
+    observed: |-
+      `Lineage.tsx:19-22` realizes the DEG branch of the lineage UI:
+      `isDEG ? <DEGLineageAtomProvider><DEGLineage /></DEGLineageAtomProvider> : <HierarchyLineage />`.
+      The dispatcher decision is class-driven: `getIsDataEntityBelongsToClass(dataEntityId).isDEG`
+      (Lineage.tsx:14, selectors.ts:43-45) is true iff `entityClasses`
+      contains `ENTITY_GROUP`. The DEG branch mounts a fresh `<jotai.Provider>`
+      via `DEGLineageAtomProvider` (Lineage.tsx:8, 20-22 — 5-line wrapper
+      at DEGLineageAtomProvider.tsx:1-9), giving DEGLineage a SCOPED
+      jotai atom universe (no leakage between DEG mounts; sidecar
+      implicit_adrs[1] — "two distinct rendering subsystems with
+      disjoint state stacks; DEG = jotai; non-DEG = Redux"). The DEGLineage
+      child fires `useDataEntityGroupLineage({dataEntityId})` (TanStack
+      Query at DEGLineage.tsx:12-17) → `GET /api/dataentitygroups/{id}/lineage`
+      — the API F-016 already enumerates at the controller / service /
+      repository tiers. This dispatcher confirms the UI REALIZATION
+      point of F-016 — Lineage.tsx + DEGLineage are the user-observable
+      surface of the DEG-anchored lineage feature; everything else is
+      backend. Per the sidecar invariants[3]: "no per-feature toggle
+      DEG vs hierarchy is exposed to the user — the branch is
+      class-driven, not query-param-driven. A user CANNOT request
+      'show me the hierarchy lineage of this DEG' from the URL —
+      DEGs always route to the DEG subtree." This is an implicit ADR
+      ("the entity itself decides which lineage variant is meaningful;
+      the user cannot override" — sidecar implicit_adrs[0]). On 404
+      response (the F-016 404-conflation surface), DEGLineage renders
+      `<EmptyContentPlaceholder/>` (DEGLineage.tsx:23-25) — NO error
+      toast, NO retry, NO disambiguation of the three conflated
+      conditions (DEG-not-found / empty-DEG / non-DEG-typed-ID).
+    expected: |-
+      Either (a) keep the class-driven routing AND document the
+      single-URL-two-subsystems behaviour on the live data-lineage page
+      (today silent — sidecar doc_drift_findings[0]); OR (b) surface
+      a UI-tier owner-scope check at the dispatcher (Lineage.tsx) as
+      defence-in-depth for the co-membership leakage; OR (c) improve
+      the DEG 404 UX with a per-condition message (DEG-not-found /
+      empty-DEG / not-a-DEG).
+    drift_class: doc_silent_on_read_collaborative_posture
+    provenance: |-
+      STATIC — primary-source verification at Lineage.tsx:1-28 +
+      Lineage sidecar concepts.entities.DEGLineage + DEGLineageAtomProvider
+      + sidecar implicit_adrs[0,1] + dependencies_semantic.requires-feature.F-016
+      + DEGLineage.tsx:12-17 (cross-referenced from sidecar
+      downstream_side_effects.DEG-branch-mount). Closes the UI half
+      of the F-016 chain at hop 6 (where the DEGLineage UI component
+      was previously cited but not as a chain participant from the
+      dispatcher); the dispatcher (Lineage.tsx) is now the explicit
+      route-mount → DEGLineage entry. No probe needed; the dispatcher
+      routing is structurally anchored at file:line.
   - facet: group-lineage endpoint uncovered by tests
     observed: |-
       `grep -rln 'getDataEntityGroupsLineage|getDataEntityGroupLineage'
@@ -577,6 +628,117 @@ control_summary: |-
   all three (pins the operator-visible conflation). Local probe stack:
   docker-compose with ODD platform + PostgreSQL + 2 seeded owners +
   cross-owner DEG + nested DEGs.
+batch_extensions:
+- batch: Z
+  entry_point_added: |-
+    controller-method:getDataEntitiesByDEGOddrn — the S2S READ-SIDE
+    companion to the /api/dataentitygroups/{id}/lineage endpoint
+    catalogued in F-016. The two endpoints answer different operator
+    questions (lineage among members vs flat member list) but share
+    the DEG-member-resolution call AND the read-collaborative posture.
+    The architectural ASYMMETRY surfaced this batch: the lineage
+    endpoint raises NotFoundException on empty membership (404); the
+    membership endpoint returns 200 OK with empty items — TWO endpoints
+    on the same platform produce TWO different contracts for the SAME
+    semantic situation ("DEG exists but has no members").
+  contributing_nodes_added:
+  - odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn
+  notes: |-
+    TWO new drift facets surface from the S2S read-side sibling +
+    one STRENGTHENS on the existing 404 conflation facet. Listed in
+    order of architectural leverage:
+
+    (1) **CONTRACT ASYMMETRY between sibling DEG-read endpoints —
+    404 vs empty-200 on the SAME semantic condition** (MEDIUM
+    severity, NEW FINDING) — `LineageServiceImpl.java:62`
+    (getDataEntityGroupLineage, on the /api/ namespace) raises
+    `NotFoundException("Data entity group", dataEntityGroupId)` via
+    `.switchIfEmpty(...)` when the member-resolution Flux is empty.
+    `DataEntityGroupServiceImpl.java:92-108` (listEntitiesWithinDEG,
+    on the /ingestion/ namespace) has NO switchIfEmpty — returns
+    `CompactDataEntityList(items=[])` 200 OK for the same empty-
+    membership condition. A third-party integration that probes both
+    endpoints with the same DEG ODDRN must handle TWO different
+    contracts. No docs name the asymmetry. The lineage-side raises
+    on "empty member resolution"; the membership-side returns empty.
+    Two methods on different services produce different shapes for
+    the same input. NEW drift facet:
+    `sibling_deg_read_endpoint_contract_asymmetry_lineage_404_vs_membership_empty_200`.
+
+    (2) **Single-level (non-recursive) DEG-member projection vs
+    recursive lineage walk — intentional asymmetry, undocumented at
+    the S2S read surface** (LOW severity, NEW FINDING) —
+    `ReactiveDataEntityRepositoryImpl.getDEGEntities(String)` at
+    lines 318-326 is a flat SELECT with no `WITH RECURSIVE` CTE,
+    contrasting `ReactiveGroupEntityRelationRepositoryImpl.java:177-204`
+    (the recursive-CTE used by getDataEntityGroupLineage). A DEG-A
+    containing nested DEG-B containing entity E:
+    - GET /ingestion/entities/<DEG-A oddrn> returns DEG-B as a
+      DATA_ENTITY_GROUP-typed CompactDataEntity (single-level
+      membership);
+    - GET /api/dataentitygroups/<DEG-A id>/lineage walks nested DEGs
+      via the recursive CTE then strips DEG-typed entries via the
+      LineageServiceImpl.java:71-75 filter (the inner-DEG suppression
+      F-016 cataloged) — the response carries entity E.
+    The MEMBERSHIP read returns DEG-B (parent's direct child) and
+    HIDES E; the LINEAGE read returns E and HIDES DEG-B. Same
+    nested structure, opposite projections. Architecturally
+    intentional but undocumented at the S2S read surface. NEW drift
+    facet:
+    `single_level_membership_vs_recursive_lineage_projection_asymmetry_undocumented`.
+
+    (3) **404 conflation STRENGTHENED — same operator-debug shape
+    extends to the SIBLING membership endpoint** (existing facet
+    `404_conflation_three_conditions_one_error` STRENGTHENED by
+    cross-endpoint mirror) — F-016's existing 404 conflation facet
+    documents three conditions (DEG-not-found / empty-DEG / non-DEG-
+    typed-ID) producing the same 404. The sibling membership
+    endpoint produces the SAME conflation but with the INVERTED
+    polarity (200 with empty items instead of 404). All FOUR
+    conditions across the two endpoints surface as
+    indistinguishable shapes:
+    - lineage endpoint: 404 for {DEG-not-found, empty-DEG, non-DEG-typed-ID}
+    - membership endpoint: 200 empty-list for {DEG-not-found, empty-DEG, non-DEG-typed-ID, malformed ODDRN}
+    The DOC GAP DOUBLES — operators debugging "why am I getting
+    empty results?" cannot discriminate from EITHER endpoint, and
+    the two endpoints disagree on the polarity. STRENGTHENS via
+    PRIMARY-SOURCE LINE-ANCHOR:
+    `404_conflation_extends_to_sibling_membership_endpoint_with_inverted_polarity_empty_200`.
+
+    Coherence (LSN-018 Rule 6 sweep):
+    STRENGTHENS=2 — F-016's existing
+    `404_conflation_three_conditions_one_error` + F-016's existing
+    `inner_deg_suppression_undocumented_carve_out` (the membership
+    endpoint surfaces inner DEGs as opaque members; the lineage
+    endpoint suppresses them via the Java filter — the SAME
+    suppression machinery viewed from two angles).
+    SUPERSEDES=0.
+    CONFLICTS=0.
+
+    HIGHEST-LEVERAGE remediation: document the asymmetry on the
+    live API-reference Lineage page + the (currently nonexistent)
+    S2S read-API page. The structural fix candidate would be to
+    align the two endpoints (pick one shape — probably 404 on empty
+    membership, matching the lineage endpoint and the operator-debug
+    expectation that empty input is a "thing was not found"
+    condition) but this is an SDK-consumer-coordinated change.
+    Local docker-compose probe: ODD platform + Postgres + a
+    pre-seeded DEG + assert both endpoints' behavior on (a) valid
+    DEG with N members; (b) DEG with zero members; (c) non-existent
+    DEG ID; (d) non-DEG-typed entity ID. Pin all 8 cells (2 endpoints
+    × 4 conditions).
+
+    Cross-references: F-008 batch-Z extension adds the S2S read-
+    side unauthenticated finding from the SAME endpoint — the two
+    findings are complementary (F-008 carries the auth dimension;
+    F-016 carries the contract-shape dimension); F-029 (Platform
+    Public API Contract) documents the spec-side gap where the
+    sibling ingestion-api spec is silent on the empty-payload
+    contract for this endpoint family.
+drift_class_summary_batch_z_extensions:
+- sibling_deg_read_endpoint_contract_asymmetry_lineage_404_vs_membership_empty_200
+- single_level_membership_vs_recursive_lineage_projection_asymmetry_undocumented
+- 404_conflation_extends_to_sibling_membership_endpoint_with_inverted_polarity_empty_200
 related_refactoring_scopes:
 - REFACTOR-203
 related_test_gaps:
@@ -591,7 +753,11 @@ related_concepts:
 - Inner-DEG Suppression
 related_retrospectives:
 - LSN-017
+- LSN-018
 related_probes: null
 probe_verifications: []
+related_features:
+- F-008   # Batch Ingestion — the SAME getDataEntitiesByDEGOddrn sidecar contributes the S2S read-side unauthenticated finding to F-008's batch-Z extension; the two features are complementary
+- F-029   # Platform Public API Contract — the platform-api spec is silent on the membership-vs-lineage contract asymmetry catalogued here
 maintainer_curated: false
 merge_candidate_with: null

@@ -1,0 +1,97 @@
+gap_id: TEST-GAP-855
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveTagRepositoryImpl"
+  - "odd-platform java service:TagServiceImpl"
+  - "odd-platform java TagController controller-class:TagController"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "ReactiveTagRepositoryImpl.md:stress_findings.B1 (LSN-019 SMOKING GUN — paginate-inside-CTE chain trace, line by line)"
+  - "ReactiveTagRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[0] (LSN-019 — listMostPopular boundary case: N > size with equal counts → returns OLDEST size by tag.id ASC)"
+  - "ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[0] (LSN-019 SMOKING GUN: listMostPopular does not deliver popularity-ranked results when the directory exceeds size tags)"
+  - "TagController.md:stress_findings.name_behavior_pairs[getPopularTagList] (DRIFT_NAME_VS_BEHAVIOR)"
+  - "TagController.md:bugs_limitations_corner_cases.[LSN-019-popular-drift]"
+  - "TagController.md:tests_coverage_semantic.uncovered_behaviours.[getPopularTagList LSN-019 drift]"
+  - "TagServiceImpl.md:stress_findings.B.S-B-1 (CANARY HEADLINE — name-behaviour drift)"
+behaviour: |-
+  **CRITICAL — `listMostPopular` does NOT order results by popularity when the tag directory exceeds `size` tags. The method name + the OpenAPI description (`'Gets the list of existing tags sorted by popularity'` at `openapi.yaml:345`) + the UI label ('Top Tags') all promise count-ranked results. The implementation truncates the candidate pool by `TAG.ID ASC` (= creation order, since `tag.id` is a serial column) BEFORE counts are computed.** No integration test exists that pins the ACTUAL ranking semantics (oldest-window selection, then count-DESC re-sort INSIDE that window) under the equal-usage-count degenerate case. The existing `testListMostPopular` at `TagRepositoryImplTest.java:239-267` is STRUCTURALLY BLIND to the drift: (a) it creates only 8 tags with `size = numberOfTestTags = 8`, so the LIMIT never fires; (b) it uses `containsExactlyInAnyOrder` (line 264), so any order would pass; (c) it gives 4 of the 8 distinct, sortable usage counts via the renamed `PopularName0..3` subset, so the drift is MASKED. A future test that ASSUMED the name's promise (e.g. "create 35 tags with the 5 youngest having HIGHER counts; assert response contains the 5 youngest") would FAIL on a real platform — empirically reproduced 2026-05-20.
+
+  **The chain trace** (per ReactiveTagRepositoryImpl.md:stress_findings.B1):
+  - `ReactiveTagRepositoryImpl.java:144-145`: `final Select<TagRecord> homogeneousQuery = DSL.selectFrom(TAG).where(conditions);` — base select, soft-delete filter + optional name-substring + optional id-list.
+  - **`ReactiveTagRepositoryImpl.java:148`**: `paginate(homogeneousQuery, List.of(new OrderByField(TAG.ID, SortOrder.ASC)), (page - 1) * size, size)` — load-bearing INNER pagination by `TAG.ID ASC` BEFORE count aggregation.
+  - `JooqQueryHelper.java:63-90` (paginate): emits SQL `SELECT u.*, count(*) OVER () _total, row_number() OVER (ORDER BY u.id ASC) _row FROM (homogeneous) u ORDER BY u.id ASC LIMIT size OFFSET (page-1)*size`.
+  - `ReactiveTagRepositoryImpl.java:150`: `tag_cte` materialised over the OLDEST `size` tags by tag.id.
+  - `ReactiveTagRepositoryImpl.java:151 + 373-391` (`getDataEntityWithDatasetFields`): WITH tag_cte AS (...) LEFT JOIN tag_to_data_entity GROUP BY tag_cte.fields UNION ALL LEFT JOIN tag_to_dataset_field GROUP BY tag_cte.fields AS union_usages — count aggregation OVER the CTE rows ONLY.
+  - **`ReactiveTagRepositoryImpl.java:158`**: outer `cteSelect.orderBy(field(COUNT_FIELD).desc())` — re-orders ALREADY-SELECTED `size` rows by count DESC, but cannot reach excluded tags.
+  - **Tie-break absence**: outer ORDER BY count DESC has NO secondary sort key (per ReactiveTagRepositoryImpl.md:stress_findings.C1). When two tags have equal aggregated count, PostgreSQL preserves the GROUP BY's natural row order — inherited from the CTE = tag.id ASC. So at equal-counts, the result is tag.id ASC = oldest-first.
+
+  **Empirical confirmation** (`retrospectives/LSN-019:23-32`, 2026-05-20 maintainer test against demo.oddp.io): 35 tags created with known IDs, every entity tagged by all 35, size=30, page=1 → response contains tags with IDs 1..30 in tag.id ASC order; tags with IDs 31..35 are MISSING from the response despite being EQUALLY POPULAR. The "Top Tags" UI surface renders 30 OLDEST tags, NOT 5 youngest-and-popular.
+
+  **Operator-visible consequences**:
+  - The Catalog Overview "Top Tags" chip strip + the tag-search facet + the data-entity detail tag-dropdown all render the OLDEST 30 tags. Recently-created popular tags are INVISIBLE on page 1.
+  - On a directory with >30 tags, the operator-meaningful "what's trending" semantics is broken at the application layer; only by paging through every page can a user discover newer tags.
+  - The OpenAPI promise — `'Gets the list of existing tags sorted by popularity'` — is silently unmet. SDK consumers building against the spec build wrong expectations.
+
+  **Why CRITICAL not HIGH**: this is a structural correctness defect on a user-facing surface (`/api/tags`, `/api/tags/popular`); empirically reproducible; widely-affected (every operator-visible "Top Tags" surface); no test gate at any layer; a future "fix" that pushes ORDER BY count INSIDE the paginate window would silently CHANGE observable behavior with no CI signal. The previous batch-W sidecar transcribed the SQL as "orders by descending count" — the WRONG claim, the canonical LSN-019 failure mode (file-analyser describes-not-interrogates). A regression-pin probe (P-010) is emitted as a yaml skeleton; this test gap converts the probe into a CI-runnable Testcontainers-backed `@SpringBootTest`.
+test_class: integration
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:239-267 (testListMostPopular — STRUCTURALLY BLIND to LSN-019: uses size=numberOfTestTags=8 so LIMIT never fires; uses containsExactlyInAnyOrder so order is not checked; uses 4 distinct usage-counts via PopularName0..3 so the equal-count drift is masked)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplLSN019Test.java"
+  name: "listMostPopular_directoryExceedsSize_equalUsageCounts_returnsOldestSizeByTagIdAscNotMostPopular_pinsLSN019Drift"
+evidence:
+  - "ReactiveTagRepositoryImpl.md says (stress_findings.B1): 'NAME PROMISES POPULARITY; SQL DELIVERS ID-ASC-PAGINATED THEN-RANKED. (LSN-019 SMOKING GUN.) ... Net behaviour: pick the size lowest-ID tags matching the search/id filter; rank those size tags by usage count desc; on ties, PostgreSQL preserves the CTE-natural row order which is tag.id ASC. For a directory of 35 tags (all with equal usage_count) and size=30, page=1: tags with id=1..30 are returned in tag.id ASC order; tags with id=31..35 are not in the response at all.' — Confidence: STATIC-INFERRED via end-to-end JOOQ chain trace + EMPIRICAL via LSN-019; probe P-010 queued to pin the SQL behaviour in CI."
+  - "TagController.md says (stress_findings.name_behavior_pairs[getPopularTagList]): 'drift: DRIFT_NAME_VS_BEHAVIOR ... Maintainer's 2026-05-20 test (35 tags, every entity tagged by all 35) returned the OLDEST 30 by created_at ASC — empirical confirmation of the static trace.' confidence: STATIC-INFERRED. evidence: TagController.java:37-44 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:144-158 + JooqQueryHelper.java:63-90 (paginate semantics) + P-010 (runtime pin)."
+  - "TagController.md says (bugs_limitations_corner_cases.[LSN-019-popular-drift]): 'getPopularTagList LSN-019 name-vs-behavior drift ... With > 30 tags where the YOUNGEST have higher counts than the OLDEST 30, the response contains the OLDEST 30 and the actual-most-popular are missing. The previous batch-W sidecar transcribed this as orders by descending count — the WRONG claim, the canonical LSN-019 failure.' severity: HIGH"
+  - "TagServiceImpl.md says (stress_findings.B.S-B-1 CANARY HEADLINE): 'NAME-BEHAVIOUR DRIFT — listMostPopular delegates straight-through to the repository which paginates by TAG.ID ASC BEFORE the outer CTE applies orderBy(field(COUNT_FIELD).desc()). The outer popularity-sort only re-orders the already-selected size oldest tags; it does NOT select the most popular tags globally.'"
+  - "Verified at primary source: TagController.java:37-44 + TagServiceImpl.java:72-77 + ReactiveTagRepositoryImpl.java:144-158 + JooqQueryHelper.java:63-90"
+  - "Verified test-file blindness: TagRepositoryImplTest.java:240 (numberOfTestTags=8) + :257 (size=numberOfTestTags so LIMIT never fires) + :264 (containsExactlyInAnyOrder — no order check)"
+  - "Empirical reproduction: retrospectives/LSN-019-file-analyser-describes-not-interrogates.md:23-32 (2026-05-20 maintainer test against demo.oddp.io)"
+  - "Probe shape: lineage/odd-platform/probes/P-010.yaml + lineage/odd-platform/probes/P-LSN019-listMostPopular-drift.md"
+cross_references:
+  - "TEST-GAP-547 (existing batch-N — listMostPopular pagination boundary at page=2 + size cap LOW; this gap COMPLEMENTS — TEST-GAP-547 covers page-boundary, this covers N > size + equal-count ranking drift)"
+  - "TEST-GAP-545 (existing batch-N — listMostPopular with tag_to_dataset_field usage; complements by exercising the UNION-ALL arm)"
+  - "TEST-GAP-856 (NEW VAL-LSN-019 — HTTP-tier version of this gap; this gap is the repository-tier, that is the controller-tier)"
+  - "TEST-GAP-867 (NEW VAL-LSN-019 — tie-break absence sister; pins the missing secondary ORDER BY)"
+  - "REFACTOR-NNN candidate: push ORDER BY count INSIDE the paginate window (requires a 2-pass query: first an aggregate count over the full filtered set, then paginate by count DESC + tag.id ASC tiebreak) OR update the OpenAPI spec + method name to match the actual semantics ('returns oldest-N matching tags ranked among themselves by count')"
+  - "DOC-NNN candidate: surface the LSN-019 drift in the Tagging doc page; explain that 'Top Tags' surface is the OLDEST tags re-ranked within the page, NOT the most-popular globally; pair with REFACTOR resolution"
+  - "retrospectives/LSN-019-file-analyser-describes-not-interrogates.md (case-law origin)"
+  - "lineage/odd-platform/probes/P-010.yaml (the probe skeleton this test converts into a CI run)"
+related_features: [F-001, F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-08:F-NN-tags-tab"]
+proposed_action: |-
+  Add `TagRepositoryImplLSN019Test extends BaseIntegrationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/`. Five test methods that implement the P-010 probe shape as CI-runnable assertions:
+
+  1. **`listMostPopular_directoryExceedsSize_equalUsageCounts_returnsOldestSizeByTagIdAscNotMostPopular_pinsLSN019Drift`** (the headline):
+     - Arrange: create 35 tags via `reactiveTagRepository.bulkCreate(35 TagPojos with names 'tag-001'..'tag-035')`; capture their IDs (will be serial → tag-001 has lowest, tag-035 has highest).
+     - Create 1 data_entity. For each of the 35 tags, insert a `tag_to_data_entity` row (`external=false`) — every tag has usage_count=1.
+     - Act: `reactiveTagRepository.listMostPopular(null, List.of(), 1, 30).block()`.
+     - Assert: `page.getData()` has exactly 30 elements. Extract tag IDs. Assert `extractedIds.equals(IDs 1..30 in ascending order)` — i.e. the OLDEST 30, NOT a random 30, NOT the youngest 5 + first 25 oldest. PIN the LSN-019 drift.
+     - Add inline comment: "PINS LSN-019 — if a future refactor pushes ORDER BY count INSIDE the paginate window, this test FAILS and forces an explicit coordinated change to spec + docs + UI."
+
+  2. **`listMostPopular_directoryExceedsSize_unevenUsageCounts_returnsOldestSizeReorderedByCountDesc_pinsInnerSelectionOuterSort`**:
+     - Arrange: 35 tags created in id-order tag-001..tag-035. The OLDEST 5 (IDs 1-5) get 1 tag_to_data_entity row each (count=1). The OLDEST 25 next (IDs 6-30) get 10 rows each (count=10). The 5 YOUNGEST (IDs 31-35) get 100 rows each (count=100). Total in directory = 35.
+     - Act: `listMostPopular(null, List.of(), 1, 30)`.
+     - Assert: `page.getData()` has exactly 30 elements. Extract IDs. Assert the response contains IDs 1..30 (the OLDEST 30), NOT 31..35. Then assert the WITHIN-PAGE order is count DESC: tags 6..30 (count=10) come before tags 1..5 (count=1). PIN: the inner-selection-by-id semantics + outer-sort-by-count behavior.
+
+  3. **`listMostPopular_directoryUnderSize_orderByCountDescApplied_pinsHappyPath`**:
+     - Arrange: 5 tags created tag-001..tag-005; usage counts 1, 5, 3, 4, 2 respectively.
+     - Act: `listMostPopular(null, List.of(), 1, 30)`.
+     - Assert: `page.getData()` has 5 elements in count-DESC order: [tag-002, tag-004, tag-003, tag-005, tag-001]. PIN: under directory size ≤ size, the outer ORDER BY count DESC IS effective (the drift only manifests when N > size).
+
+  4. **`listMostPopular_paginatePageTwo_returnsNextSizeWindowByIdAsc_pinsPaginationStrideAcrossLimit`**:
+     - Arrange: 60 tags equal-counts.
+     - Act: `listMostPopular(null, List.of(), 2, 30)`.
+     - Assert: response contains IDs 31..60 in tag.id ASC order. PIN: pagination IS by tag.id ASC across both pages.
+
+  5. **`listMostPopular_withQuerySubstring_appliesNameContainsBeforePagination_pinsListConditionShape`**:
+     - Arrange: 20 tags with names "alpha-1..alpha-10" + "beta-1..beta-10".
+     - Act: `listMostPopular("alpha", List.of(), 1, 30).block()`.
+     - Assert: response contains only alpha-* tags (10 tags), ranked by count DESC since under size. PIN: the listCondition substring filter applies BEFORE the LSN-019 paginate, so the pool of candidates filtered to alpha-* is the entire alpha-* set.
+
+  After landing the test: pair with REFACTOR-NNN (push ORDER BY count INSIDE the paginate window OR update spec + name to match actual semantics) AND DOC-NNN (surface the drift / actual semantics on the Tagging doc + API Reference page).
+
+  **Note for future maintainer**: when REFACTOR-NNN lands and the implementation actually orders by count DESC across the full directory, tests #1, #2, #4 INVERT — the assertion changes from "oldest 30 by id" to "highest-count 30 by count". The test comment makes this inversion the EXPLICIT coordinated-change-required signal.
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

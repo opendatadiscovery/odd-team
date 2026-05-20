@@ -1,0 +1,88 @@
+gap_id: TEST-GAP-799
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java notification.sender class:WebhookNotificationSender"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "WebhookNotificationSender.md:bugs_limitations_corner_cases.[0] HIGH (NO HMAC / signature / shared-secret / authentication header)"
+  - "WebhookNotificationSender.md:security.known_security_gaps.[0] HIGH (No HMAC / signature / shared-secret — operator endpoint cannot verify origin)"
+behaviour: |-
+  **HIGH — Generic webhook sends UNSIGNED, UNAUTHENTICATED payloads.** The `HttpRequest` construction at `WebhookNotificationSender.java:20-22` carries ONLY `.uri(...)` + `.POST(BodyPublishers.ofString(...))` + `.build()`. There is:
+  - **NO `Authorization` header** — no Bearer token, no API key, no Basic auth.
+  - **NO `X-ODD-Signature` / `X-Hub-Signature-256` / `X-Slack-Signature`-style HMAC** — no shared-secret-derived signature, no body hash, no replay-protection nonce.
+  - **NO operator config knob** — no `notifications.receivers.webhook.secret`, no `notifications.receivers.webhook.headers.*`, no signing-algorithm option.
+  - **NO User-Agent identifying ODD** — receivers cannot programmatically distinguish ODD alerts from any other tool POSTing to the same URL.
+
+  **The threat model**:
+  1. An attacker learns the webhook URL via:
+     - `/actuator/env` exposure (Spring's default sanitisation does NOT mask the substring `url` — verified at Spring Boot framework level).
+     - Deployment artefacts in CI/CD logs.
+     - Leaked container images / Kubernetes ConfigMaps.
+     - A stolen `application.yml` from a developer's laptop.
+  2. The attacker POSTs a forged `AlertNotificationMessage`-shaped payload to the URL.
+  3. The operator's receiver — built assuming "only ODD reaches this URL" — accepts the forged payload as legitimate.
+  4. The receiver may trigger automated downstream actions: PagerDuty escalation, OpsGenie alert, automated rollback scripts, etc.
+
+  **Comparison to industry standards**:
+  - **GitHub Webhooks**: ship HMAC-SHA256 in `X-Hub-Signature-256` header. Receivers SHOULD reject mismatched signatures.
+  - **Slack Events API**: ships HMAC-SHA256 in `X-Slack-Signature` header. Receivers MUST validate.
+  - **Stripe Webhooks**: ship HMAC-SHA256 in `Stripe-Signature` header with timestamp.
+  - **AlertManager Webhooks**: support `basic_auth`, `bearer_token`, `tls_config.client_cert_file` in `webhook_config`.
+  - **ODD Generic Webhook**: ships NONE.
+
+  **Operator mitigations available today** (none in-platform):
+  - Deploy ODD and the receiver in a private network (eliminates external reach but doesn't prevent insider impersonation).
+  - Place an HTTP gateway (nginx, envoy) between ODD and the receiver to inject auth headers — doubles deployment complexity.
+  - Use mTLS at the network layer — ODD has NO config knob for client-side certs.
+  - Use a unique URL per deployment + strict IP allowlist on receiver — relies on URL secrecy (the failure mode this gap addresses).
+
+  **The live doc is SILENT on this**: per WebFetched live `/features/active-platform-features/notifications` (status 200, 2026-05-20), the webhook section describes the URL key and that "the platform POSTs the full alert payload (JSON)" but does NOT warn operators that ODD does not sign payloads OR recommend operator-side mitigations.
+
+  **Test gap shape**: regression-pin asserting that the outbound POST has NO Authorization / Signature / HMAC headers. PINS the current vulnerability; pairs with REFACTOR-NNN adding `notifications.receivers.webhook.secret` + HMAC-SHA256 signing.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/sender/WebhookNotificationSenderNoSignatureRegressionPinTest.java"
+  name: "send_outboundRequestHasNoSignatureOrAuthHeader_pinsForgeryVulnerability"
+evidence:
+  - "WebhookNotificationSender.md says (bugs_limitations_corner_cases.[0]): 'NO HMAC / signature / shared-secret / authentication header — operator endpoint cannot verify the payload origin. The HttpRequest at lines 20-22 carries only .uri(...) + .POST(BodyPublishers.ofString(...)) + .build(). No Authorization header, no X-ODD-Signature, no HMAC-SHA256 over the body, no shared-secret config knob. An attacker who learns the webhook URL (e.g. via /actuator/env if exposed, via deployment artefacts, via leaked container images) can POST a forged payload that the operator receiver cannot distinguish from a legitimate ODD alert. This is the load-bearing security gap for the generic-webhook channel.' — severity HIGH"
+  - "WebhookNotificationSender.md says (security.known_security_gaps.[0]): 'No HMAC / signature / shared-secret — operator webhook receiver cannot verify the payload came from ODD. Anyone with the URL can forge an arbitrary AlertNotificationMessage-shaped payload. Mitigations require operator-side IP allowlisting, VPN deployment, or HTTP gateway with mTLS — none of which ODD docs surface.' — severity HIGH"
+  - "Verified at primary source: WebhookNotificationSender.java:20-22 (HttpRequest builder receives no `.header(...)` calls; class has no headers field)"
+  - "WebFetch https://docs.opendatadiscovery.org/features/active-platform-features/notifications 2026-05-20 status 200 — live doc SILENT on signing"
+cross_references:
+  - "TEST-GAP-800 (sister gap — no Content-Type header set; SAME single-method shortcoming on the same HttpRequest builder)"
+  - "TEST-GAP-801 (sister gap — 200-only HTTP accept rejects 201/202/204)"
+  - "REFACTOR-NNN (proposed): add `notifications.receivers.webhook.secret` config key; on send, compute HMAC-SHA256 of body, set `X-ODD-Signature: sha256=<hex>` header"
+  - "REFACTOR-NNN (proposed): add `notifications.receivers.webhook.headers` Map<String,String> config knob for operator-supplied auth headers (Authorization, X-API-Key, X-Tenant-ID)"
+  - "DOC-GAP-NNN (proposed): live `/features/active-platform-features/notifications#generic-webhook` should add a security section naming the no-HMAC + no-auth-header gap + operator mitigations (private network, HTTP gateway, mTLS)"
+  - "concepts.yaml (proposed addition): `outbound-webhook-no-signature` invariant — F-009 generic-webhook channel ships UNSIGNED"
+  - "LSN-001 (analogous trust-the-default failure mode — operator assumes the channel is secure; platform delivers without auth)"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery", "P-09:F-001 Security"]
+proposed_action: |-
+  Add `WebhookNotificationSenderNoSignatureRegressionPinTest`. Unit test stubbing `HttpClient.send(...)` to capture the outbound `HttpRequest`:
+
+  1. `send_outboundRequestHasNoSignatureOrAuthHeader_pinsForgeryVulnerability` —
+     - Stub `HttpClient.send(...)` capturing the request.
+     - Invoke `webhookSender.send(message)`.
+     - Assert the captured `HttpRequest.headers()` does NOT contain any of: `Authorization`, `X-ODD-Signature`, `X-Hub-Signature-256`, `X-Slack-Signature`, `Stripe-Signature`.
+     - Assert the captured headers also do NOT contain `User-Agent` (or contain only the JDK default).
+     - PINS the current shipping-unsigned vulnerability.
+
+  2. `send_payloadCanBeForged_pinsMatchingSemantics` —
+     - Build TWO `AlertNotificationMessage` instances: one constructed by the platform, one constructed by a "forger" Test class.
+     - Stub `HttpClient.send(...)`; capture both POST bodies.
+     - Assert the two captured bodies are byte-identical when the forger sends an identical message shape.
+     - PINS that a forger with the URL produces wire-indistinguishable traffic.
+
+  3. `send_hmacSignedHeader_presentInCapturedRequest_confirmsFixDirection` — (UPDATE this test once REFACTOR-NNN adds signing)
+     - After REFACTOR-NNN: configure `notifications.receivers.webhook.secret=test-secret-32-bytes-minimum`.
+     - Assert the captured request has `X-ODD-Signature: sha256=<hex>` header.
+     - Assert the hex matches `HMAC-SHA256(test-secret-32-bytes-minimum, body)`.
+     - CONFIRMS the fix's effectiveness.
+
+  Pair with REFACTOR-NNN (HMAC signing + custom headers config) and DOC-GAP-NNN (security caveat + operator mitigations on live doc).
+
+  Coherence note (LSN-018 Rule 6): This finding is NET-NEW — no prior TEST-GAP pins the no-HMAC / no-signature surface for the generic webhook channel. Sister gaps at the same node (TEST-GAP-800 / TEST-GAP-801) cover other single-method HttpRequest builder shortcomings. No contradiction with any existing artefact.
+batch: 2026-05-20-Y
+feature_id: F-009

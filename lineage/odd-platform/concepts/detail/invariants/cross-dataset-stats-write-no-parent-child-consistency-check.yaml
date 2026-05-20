@@ -1,0 +1,137 @@
+name: Cross-dataset stats-write — payload dataset_oddrn NOT validated against field-ODDRN parent relationship
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+- P-04
+- P-10
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20-Z (postDataSetStatsList sidecar)** —
+  the `POST /ingestion/entities/datasets/stats` endpoint accepts a
+  `DatasetStatisticsList` payload of per-dataset records, each carrying
+  a `dataset_oddrn: String` + a `fields: Map<datasetFieldOddrn, DataSetFieldStat>`
+  map. The implementation
+  (`DatasetFieldServiceImpl.updateStatistics` line 158-181) uses the payload
+  in two structurally-independent ways:
+    (a) the per-DataSetStatistics `dataset_oddrn` is consumed ONLY to
+        compute the set of dataset ODDRNs whose FTS structure vectors to
+        recompute (line 168-170, 179);
+    (b) the per-field `dataset_field` rows are resolved by FIELD ODDRN from
+        the payload's `fields.keySet()` (line 172-174 —
+        `getLastVersionDatasetFieldsByOddrns`); the actual writes target
+        the resolved field rows regardless of which dataset they belong to.
+
+  **The structural consequence**: there is NO parent-child consistency check
+  between the declared `dataset_oddrn` and the resolved field's actual
+  parent dataset. A malicious payload of shape
+  `{dataset_oddrn: A, fields: {odd:datasource:B:dataset:b:field:b1: <stats>}}`
+  writes stats to field `b1` of dataset B while triggering FTS recalc on
+  the unrelated dataset A. An attacker with knowledge of ANY field's ODDRN
+  (deterministic per `{datasource_oddrn}/datasets/{dataset_name}/fields/{field_name}`
+  shape; visible in the platform's UI to all authenticated users) can write
+  arbitrary statistics to that field's `stats` JSONB column.
+
+  **Composition with REFACTOR-185 AUTH-MODE-ORTHOGONAL facet**: the endpoint
+  is unauthenticated in every shipped deployment posture (per the batch-Z
+  REFACTOR-185 27-sidecar extension). Combined with this cross-dataset
+  write gap, the data path is: any HTTP caller → arbitrary field-by-ODDRN
+  writes → catalog-wide poisoning of the Dataset Structure tab + the
+  Quality Dashboard rings + BI tools consuming `dataset_field.stats`.
+
+  **The audit-trail amplifier**: no `@ActivityLog` on
+  `DatasetFieldServiceImpl.updateStatistics` (line 158-181) — unlike the
+  sibling `updateInternalName` (line 99) and `updateDatasetFieldTags`
+  (line 119) which ARE audited. The cross-dataset write surface is
+  unaudited. Per the AUDIT-LOG-PRESENCE-ASYMMETRY-2-TIER pattern: stats
+  writes fall through both tiers (no Activity Feed, no domain log).
+
+  **Severity HIGH**: write-to-any-field-by-ODDRN cross-dataset, combined
+  with unauthenticated reach and no audit-trail. Same shape as the F-008
+  `datasource_scoping_is_payload_driven_not_principal_driven` drift facet
+  but applied to a SEPARATE endpoint with NO ingestion-filter coverage.
+axes_present:
+- controllers
+- services
+nodes:
+- odd-platform java IngestionController controller-method:postDataSetStatsList
+contributors:
+- |-
+  postDataSetStatsList.md (batch Z PRIMARY SOURCE):
+    concepts.invariants.[4] (Dataset scoping is payload-driven, NOT
+    principal-driven — DatasetFieldServiceImpl.updateStatistics line 172-174
+    keys fields by getLastVersionDatasetFieldsByOddrns(statistics.keySet()) —
+    field ODDRNs come from the payload; no check that the caller has any
+    relationship to the targeted dataset's parent datasource, owner, or
+    namespace; endpoint has NO datasource resolution at all — no
+    dataSourceRepository.getIdByOddrnForUpdate(...) call) +
+    bugs_limitations_corner_cases.[1] HIGH (Cross-dataset stats-write —
+    payload's dataset_oddrn used ONLY to compute FTS-recalc set; actual
+    writes target dataset_field rows resolved BY FIELD ODDRN from the
+    payload's fields map; no parent-child consistency check; attacker
+    who knows a target field's ODDRN can write arbitrary statistics
+    regardless of which dataset's ODDRN they declare) +
+    bugs_limitations_corner_cases.[2] HIGH (Cross-owner stats-write —
+    combines with unauthenticated posture; collector A can post stats
+    payloads targeting fields owned by team B; no owner-scoping check)
+evidence:
+- |-
+  postDataSetStatsList.md:concepts.invariants.[4] (payload-driven dataset
+  scoping; no principal consult)
+- |-
+  postDataSetStatsList.md:bugs_limitations_corner_cases.[1] HIGH
+  (cross-dataset write — no parent-child consistency check)
+- |-
+  postDataSetStatsList.md:bugs_limitations_corner_cases.[2] HIGH
+  (cross-owner stats-write — default behaviour)
+- |-
+  postDataSetStatsList.md:security.known_security_gaps.[1] HIGH
+  (Cross-owner stats-write is the DEFAULT behaviour) +
+  security.known_security_gaps.[3] MEDIUM (Cross-dataset stats-write —
+  payload dataset_oddrn is NOT validated against field ODDRNs' parent-
+  dataset relationship)
+- |-
+  postDataSetStatsList.md:security.known_security_gaps.[5] MEDIUM
+  (No diagnostic logging on the controller path; no @ActivityLog on
+  DatasetFieldServiceImpl.updateStatistics — unlike sibling
+  updateInternalName + updateDatasetFieldTags methods which ARE audited)
+mitigations_unimplemented:
+- |-
+  Code-side: validate parent-child relationship in
+  `DatasetFieldServiceImpl.updateStatistics` — for each resolved
+  `dataset_field` row, verify its parent dataset's ODDRN matches the
+  declared `dataset_oddrn` in the containing DataSetStatistics. Throw
+  `BadUserRequestException` on mismatch. Surface affected count in the
+  response body.
+- |-
+  Code-side: add `@ActivityLog(event = DATASET_FIELD_STATS_UPDATED)` to
+  `DatasetFieldServiceImpl.updateStatistics`. Same shape as sibling
+  `updateDatasetFieldTags` line 119. Closes the audit-trail gap.
+- |-
+  Code-side: add a per-field owner-scoping check — require the caller's
+  associated Owner (when authenticated) to have write permission on the
+  field's parent dataset's datasource. Composes with the
+  AUTH-MODE-ORTHOGONAL fix (requires the path to be brought under auth
+  in the first place).
+- |-
+  Doc-side: extend the Data Quality page's reference to
+  POST /ingestion/entities/datasets/stats with the parent-child contract
+  explicitly: the payload's dataset_oddrn is the FTS-recalc anchor; the
+  per-field stats are written by FIELD ODDRN regardless of the parent;
+  this is a writes-by-ODDRN contract, not a writes-under-the-named-dataset
+  contract.
+severity: HIGH
+severity_dim: security-cross-dataset-cross-owner-stats-write-unauthenticated
+cross_batch: true
+notes: |-
+  Surfaced batch 2026-05-20Z by the postDataSetStatsList sidecar.
+  Composes with REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (the endpoint
+  is unauthenticated in every shipped deployment posture) and with
+  AUDIT-LOG-PRESENCE-ASYMMETRY (the writes are unaudited at both tiers).
+
+  Cross-references:
+    - REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (this batch)
+    - no-audit-log-on-rbac-mutations + audit-log-presence-asymmetry-2-tier-audit-story
+    - F-008 (the entity-list path; same payload-driven scoping shape on
+      a different sibling endpoint)
+    - tag-creation-as-side-effect-bypasses-tag-create-permission (this
+      batch) — composition partner; same endpoint surfaces both gaps

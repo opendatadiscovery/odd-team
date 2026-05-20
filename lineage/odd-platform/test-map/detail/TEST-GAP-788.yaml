@@ -1,0 +1,46 @@
+gap_id: TEST-GAP-788
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java NotificationConfiguration config-class:NotificationConfiguration"
+pillars_affected: [P-07]
+surfaced_by:
+  - "NotificationConfiguration.md:bugs_limitations_corner_cases.[4] HIGH (SMTP timeouts are not set — confirmed live-doc warning)"
+  - "NotificationConfiguration.md:performance.known_performance_gaps.[1] HIGH (JavaMail timeouts unset)"
+  - "NotificationConfiguration.md:security.data_exposure (the Properties bag at L61-69 contains protocol/auth/starttls ONLY)"
+behaviour: |-
+  **MEDIUM (compound when paired with the case-sensitivity trap TEST-GAP-775) — `NotificationConfiguration.java:61-69` populates JavaMail's Properties bag with `mail.transport.protocol`, `mail.smtp.auth`, `mail.smtp.starttls.enable` ONLY. NONE of `mail.smtp.connectiontimeout`, `mail.smtp.timeout`, `mail.smtp.writetimeout` is set. JavaMail's defaults are INFINITE. A hung SMTP relay blocks the notification-subscriber thread indefinitely, stalling delivery on ALL channels (Slack + webhook + email — they share the single-threaded WAL subscriber).**
+
+  **STRENGTHENS existing TEST-GAP-178 + TEST-GAP-202** with the config-class-tier primary source. Prior batches surfaced this from the EmailSenderProperties tier (TEST-GAP-178) and a sibling tier (TEST-GAP-202). This sidecar is the config-class primary source confirming the EXACT lines of the missing keys.
+
+  **Cross-channel impact** (a deeper finding from this sidecar): the notification subscriber is SINGLE-THREADED per `NotificationSubscriber.java` (sibling sidecar). The shared `HttpClient` at L31-34 is also single per JVM. So a hung SMTP relay blocks the THREAD, which in turn blocks the Slack + webhook senders that depend on the same thread's continuation. The TIMEOUT-UNSET issue is not just an email-channel problem — it's a notification-subsystem-wide single point of failure.
+
+  **Live doc evidence** (WebFetched 2026-05-20 from `/configuration-and-deployment/odd-platform`): the SMTP timeout warning IS in the docs ("an unreachable SMTP server will hang notification delivery"). Doc-side remediation is in place. Code-side remediation is unimplemented.
+
+  **Test gap shape**: integration test with a stub SMTP server that NEVER responds (Testcontainers GenericContainer running `nc -l 25` or a slow-resolver mock); send an alert; assert the platform's `JavaMailSenderImpl.send(...)` blocks INDEFINITELY (or until JVM-test-timeout fires, e.g., 30s). PINS the current behaviour. The fix (REFACTOR-NNN) adds three `mail.smtp.connectiontimeout=5000` etc. lines to NotificationConfiguration.java:61-69.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/config/NotificationConfigurationSmtpTimeoutsUnsetRegressionPinTest.java"
+  name: "javaMailSender_underHungSmtpRelay_blocksIndefinitely_pinsTimeoutsUnsetWithCompoundCrossChannelImpact"
+evidence:
+  - "NotificationConfiguration.md says (bugs_limitations_corner_cases.[4]): 'SMTP timeouts are not set — confirmed live-doc warning. The Properties bag populated at L61-69 contains mail.transport.protocol, mail.smtp.auth, mail.smtp.starttls.enable ONLY. None of mail.smtp.connectiontimeout, mail.smtp.timeout (read), mail.smtp.writetimeout is set — JavaMail defaults (infinite) apply. A hung SMTP relay blocks the notification-subscriber thread indefinitely, stalling delivery on ALL channels (not just email — the subscriber is single-threaded per sibling NotificationSubscriber.java).'"
+  - "NotificationConfiguration.md says (performance.known_performance_gaps.[1]): 'JavaMail timeouts unset — confirmed by live-doc and re-verified here: the Properties bag at L61-69 sets protocol / auth / starttls only. SMTP connection / read / write timeouts default to infinite.'"
+  - "Verified at primary source: NotificationConfiguration.java:61-69 (the Properties bag content — no timeout keys)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-05-20 status 200 — confirms doc-side warning is in place"
+cross_references:
+  - "TEST-GAP-178 (STRENGTHENED — was tied to the properties-class tier; this is config-class tier with cross-channel-impact finding added)"
+  - "TEST-GAP-202 (STRENGTHENED — same finding from a different vantage point; now config-class-tier primary)"
+  - "TEST-GAP-775 (COMPOUND — case-sensitivity + timeouts unset → operator using uppercase SMTP gets STARTTLS skipped AND no timeout protection)"
+  - "REFACTOR-NNN (proposed — add `mail.smtp.connectiontimeout`, `mail.smtp.timeout`, `mail.smtp.writetimeout` to the Properties bag at NotificationConfiguration.java:61-69; defaults of 5s each)"
+related_features: [F-NN-notifications-smtp]
+related_pillar_features: ["P-07:F-002 Notifications"]
+proposed_action: |-
+  Add `NotificationConfigurationSmtpTimeoutsUnsetRegressionPinTest`. One test method using Testcontainers + a slow-responder TCP server:
+
+  1. `javaMailSender_underHungSmtpRelay_blocksUntilJvmTestTimeout_pinsInfiniteTimeoutDefault` — Testcontainers `GenericContainer` exposing TCP 25 with a slow-responder shell command; `@SpringBootTest(properties = { "notifications.enabled=true", "notifications.receivers.email.host=<container-ip>", "notifications.receivers.email.port=25", ... })`; trigger an alert; assert that the JavaMail send call blocks longer than 10s before the JUnit @Timeout(value=15, unit=SECONDS) fires (the test PASSES if blocking detected, FAILS if not — pinning the timeout-unset surface).
+
+  Add a `// COMPOUND-RISK-PIN — SMTP timeouts unset means a hung relay blocks the single-threaded notification subscriber, stalling ALL channels (slack + webhook + email). This test pins the current behaviour until REFACTOR-NNN adds explicit timeout properties.` comment block.
+
+  Pair with: (a) REFACTOR-NNN — three lines at NotificationConfiguration.java:61-69 setting connectiontimeout/read-timeout/write-timeout to e.g. 5000ms each, configurable via `notifications.receivers.email.timeout.{connect,read,write}.ms` with sensible defaults; (b) test the COMPOSITE with TEST-GAP-775 (case-sensitivity) — the operator using uppercase SMTP currently has neither STARTTLS NOR timeouts.
+batch: 2026-05-20-X
+feature_id: null

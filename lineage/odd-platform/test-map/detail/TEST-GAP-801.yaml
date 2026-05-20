@@ -1,0 +1,80 @@
+gap_id: TEST-GAP-801
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java notification.sender class:WebhookNotificationSender"
+pillars_affected: [P-07]
+surfaced_by:
+  - "WebhookNotificationSender.md:bugs_limitations_corner_cases.[7] MEDIUM (200-only HTTP accept — common 2xx-success codes treated as failure)"
+  - "WebhookNotificationSender.md:doc_drift_findings.[1] (Live doc is silent on the 200-only HTTP accept policy)"
+behaviour: |-
+  **HIGH — Generic webhook treats 201 / 202 / 204 as FAILURE.** The parent `AbstractNotificationSender.sendAndValidate` at lines 26-29 checks `response.statusCode() != HttpStatus.OK.value()` — i.e. **exactly 200**. Any other 2xx status is wrapped as `NotificationSenderException`.
+
+  **Receiver-side reality**:
+  - **PagerDuty Events API v2**: returns **202 Accepted** on successful event ingestion (queued for async processing).
+  - **AWS API Gateway → Lambda async invocation**: returns **202 Accepted**.
+  - **Kafka REST Proxy** (the `confluentinc/cp-kafka-rest` shape): returns **204 No Content** on POST success.
+  - **Custom async-accept webhook receivers** (queue-backed processors common in event-driven architectures): typically return **201 Created** or **202 Accepted**.
+
+  **Result chain**:
+  1. Operator points `notifications.receivers.webhook.url` at PagerDuty.
+  2. ODD fires an alert.
+  3. PagerDuty's Events API accepts the event and returns 202.
+  4. ODD treats 202 as a failure: `NotificationSenderException` raised.
+  5. The alert is logged at ERROR ("Notification sender response didn't complete with 200 status code") — misleading: the alert IS being processed by PagerDuty.
+  6. Operator looking at logs sees `log.error(...)` lines for every alert, concludes "PagerDuty integration is broken", investigates for hours.
+  7. The alerts ARE actually being processed — but ODD's logs say otherwise.
+
+  **The error message is structurally misleading**: per `AbstractNotificationSender.java:26-29`, the exception message is `"Notification sender response didn't complete with 200 status code"` — it does NOT include the actual status code. Operators cannot diagnose from the log alone whether the receiver returned 202 (success but reported as failure) vs 500 (genuine failure).
+
+  **Promoted to HIGH** (sidecar rates MEDIUM) because:
+  - The fix is one line (`response.statusCode() / 100 != 2` or `HttpStatus.valueOf(...).is2xxSuccessful()`).
+  - The cost of NOT fixing is operator-onboarding friction with **the most popular generic webhook receivers** (PagerDuty, AWS, Kafka REST Proxy).
+  - Compounds with TEST-GAP-799 (no signature) and TEST-GAP-800 (no Content-Type) — the webhook channel collectively feels broken to anyone evaluating it against incumbent alternatives.
+
+  **Test gap shape**: regression-pin asserting 201 / 202 / 204 are treated as failure. PINS the current state; pairs with REFACTOR-NNN broadening to "any 2xx success".
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/sender/WebhookNotificationSender200OnlyHTTPAcceptRegressionPinTest.java"
+  name: "send_receiverReturns202Accepted_treatedAsFailure_pinsAsyncReceiverIncompatibility"
+evidence:
+  - "WebhookNotificationSender.md says (bugs_limitations_corner_cases.[7]): '200-only HTTP accept — common 2xx-success codes treated as failure. The parent sendAndValidate at AbstractNotificationSender.java:26-29 checks response.statusCode() != HttpStatus.OK.value() — i.e. exactly 200. A webhook receiver that responds 201 (Created), 202 (Accepted, common for async receive), 204 (No Content) is treated as a failure; the alert is dropped from logs with a misleading Notification sender response didnt complete with 200 status code error message. Operators integrating with async-accept webhook receivers (queue-backed, batch processors) cannot use ODD generic webhook without an HTTP gateway that rewrites 2xx to 200.' — severity MEDIUM"
+  - "WebhookNotificationSender.md says (doc_drift_findings.[1]): 'Live doc is silent on the 200-only HTTP accept policy. A webhook receiver returning 201/202/204 (common for async-accept patterns) is treated as failure — the alert is dropped from that channel with no operator-visible counter. The doc framing POSTs the full alert payload invites the operator expectation and accepts the standard 2xx range; the code reality is narrower.'"
+  - "Verified at primary source: AbstractNotificationSender.java:26-29 (`response.statusCode() != HttpStatus.OK.value()`)"
+  - "WebFetch https://docs.opendatadiscovery.org/features/active-platform-features/notifications 2026-05-20 status 200 — live doc SILENT on accepted status codes"
+cross_references:
+  - "TEST-GAP-799 (sister — no HMAC / signature)"
+  - "TEST-GAP-800 (sister — no Content-Type header)"
+  - "TEST-GAP-802 (sister — no timeout, unreachable URL hangs subscriber thread)"
+  - "TEST-GAP-798 (sister — Slack 429 Retry-After ignored; same status-code-handling bluntness on the Slack side)"
+  - "REFACTOR-NNN (proposed): in `AbstractNotificationSender.sendAndValidate`, change the status check to `if (response.statusCode() / 100 != 2)` (any 2xx is success) OR use Spring's `HttpStatus.valueOf(code).is2xxSuccessful()`; include the actual status code in the `NotificationSenderException` message"
+  - "DOC-GAP-NNN (proposed): live `/features/active-platform-features/notifications#generic-webhook` should document the accepted status codes (or fix the code to accept any 2xx)"
+  - "concepts.yaml: `outbound-http-200-only` invariant — F-009 sender path treats only 200 as success, rejecting all other 2xx codes"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery"]
+proposed_action: |-
+  Add `WebhookNotificationSender200OnlyHTTPAcceptRegressionPinTest`. Unit test stubbing `HttpClient.send(...)`:
+
+  1. `send_receiverReturns202Accepted_treatedAsFailure_pinsAsyncReceiverIncompatibility` —
+     - Stub `HttpClient.send(...)` to return HttpResponse with statusCode=202.
+     - Invoke `webhookSender.send(message)`.
+     - Assert `NotificationSenderException` is thrown.
+     - PINS the current rejection of 202.
+
+  2. `send_receiverReturns201Created_treatedAsFailure_pinsCreatedRejection` —
+     - Stub statusCode=201; assert NotificationSenderException is thrown.
+
+  3. `send_receiverReturns204NoContent_treatedAsFailure_pinsNoContentRejection` —
+     - Stub statusCode=204; assert NotificationSenderException is thrown.
+
+  4. `send_receiverReturns200OK_returnsNormally_pinsHappyPath` —
+     - Stub statusCode=200; assert no exception.
+
+  5. `send_anySuccessful2xx_returnsNormally_confirmsFixDirection` — (UPDATE once REFACTOR-NNN lands)
+     - After REFACTOR-NNN: parametrise with [200, 201, 202, 204] and assert no exception for any.
+
+  Pair with REFACTOR-NNN (broaden status check to any 2xx) and DOC-GAP-NNN (document the request/response contract).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. The closest prior coverage is TEST-GAP-798 (Slack 429 Retry-After ignored — same status-code-handling bluntness on the Slack side, different sub-surface). Both stem from the `AbstractNotificationSender.sendAndValidate` blunt 200-only check; both must be tested. No contradiction with any existing artefact.
+batch: 2026-05-20-Y
+feature_id: F-009

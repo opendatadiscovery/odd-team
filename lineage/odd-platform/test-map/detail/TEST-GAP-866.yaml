@@ -1,0 +1,70 @@
+gap_id: TEST-GAP-866
+category: missing-unit
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service:TagServiceImpl"
+pillars_affected: [P-01, P-02]
+surfaced_by:
+  - "TagServiceImpl.md:bugs_limitations_corner_cases.[delete-search-vector-incomplete] (Search-vector refresh on delete is INCOMPLETE — delete updates only reactiveTermSearchEntrypointRepository.updateChangedTagVectors; does NOT call reactiveSearchEntrypointRepository.updateChangedTagVectors or .updateChangedTagStructureVector despite update updating all three)"
+behaviour: |-
+  **MEDIUM — `TagServiceImpl.delete` (lines 57-70, `@ReactiveTransactional`) updates ONLY the term-side search vectors (`reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId)` at lines 68-69); it DOES NOT call `reactiveSearchEntrypointRepository.updateChangedTagVectors` or `reactiveSearchEntrypointRepository.updateChangedTagStructureVector` despite `update` calling ALL THREE (per the triple-zip at lines 161-167). After a tag delete, the main `search_entrypoint` table still contains the deleted tag's tokens until the next entity-level refresh. The UI tag-search facet may surface the deleted tag's name until the index naturally refreshes via the next data-entity write.** This asymmetry is documented as a bug per the sidecar — severity LOW per the file-analyser; we elevate to MEDIUM because the test pinning forces the maintainer to make the asymmetry an EXPLICIT design choice OR fix it.
+
+  **Primary-source chain**:
+  - `TagServiceImpl.java:57-70` (`delete`):
+    - Line 60: `getDto` (read step)
+    - Line 62-63: `!external` filter
+    - Line 64-65: `Flux.zip(deleteTermRelations, deleteDataEntityRelations)` (concurrent hard-deletes)
+    - Line 66: `repository.delete(tagId)` (soft-delete)
+    - **Line 68-69**: `reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId)` — **ONLY ONE search-vector call**, despite `update` calling THREE.
+  - `TagServiceImpl.java:161-167` (`updateSearchVectors`, called from `update`):
+    - `Mono.zip(reactiveSearchEntrypointRepository.updateChangedTagVectors(tag.getId()), reactiveSearchEntrypointRepository.updateChangedTagStructureVector(tag.getId()), reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tag.getId()))`.
+
+  **The asymmetry**:
+  - **Update** refreshes: search_entrypoint vectors + tag-structure vectors + term-search vectors (THREE).
+  - **Delete** refreshes: ONLY term-search vectors (ONE).
+  - The main `search_entrypoint` and `search_entrypoint_structure` tables retain the deleted tag's tokens.
+
+  **Operator-visible consequences**:
+  - **Stale search results after delete**: a user searches for "PII" after the operator deleted the "PII" tag — the search returns entities tagged "PII" until the next per-entity write triggers the refresh. The deleted tag's name lingers in search index.
+  - **Asymmetric UX**: a user renames "PII" to "Sensitive-PII" via `update` (3 indexes refreshed → immediate); a user deletes "PII" via `delete` (1 index refreshed → stale for hours/days). The two operations have different freshness guarantees.
+  - **Search-result fidelity**: search engine consumers (e.g., a tag-cloud visualisation) re-rank by frequency. A deleted tag still counted in `search_entrypoint` skews the visualisation.
+
+  **Why MEDIUM not LOW** (the sidecar's own rating):
+  - The sidecar rates this LOW: "After a tag delete, the main search-entrypoint table still contains the deleted tag's tokens until the next entity-level refresh."
+  - We elevate to MEDIUM because the asymmetry is a SUBTLE design intent (deliberate or oversight). The test pinning forces a coordinated decision. A future maintainer who "fixes" the asymmetry by adding the two missing calls to delete would change the freshness guarantee — a UX-visible change that should be a coordinated decision.
+
+  **Connection to TEST-GAP-861** (the sister update gap):
+  - TEST-GAP-861 pins that `update` calls ALL THREE search-vector refreshes.
+  - This gap pins that `delete` calls ONLY ONE.
+  - Together they pin the asymmetry as the EXPLICIT current contract.
+test_class: unit
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TagServiceImplDeleteSearchVectorRefreshTest.java"
+  name: "delete_invokesOnlyTermSearchVectorRefresh_pinsAsymmetricRefreshVsUpdate"
+evidence:
+  - "TagServiceImpl.md says (bugs_limitations_corner_cases.[delete-search-vector-incomplete]): 'Search-vector refresh on delete is INCOMPLETE — delete updates only reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId) (:68-69); it does NOT call reactiveSearchEntrypointRepository.updateChangedTagVectors or .updateChangedTagStructureVector despite update updating all three. After a tag delete, the main search-entrypoint table still contains the deleted tag's tokens until the next entity-level refresh. The UI tag-search facet may surface the deleted tag's name until the index naturally refreshes via the next data-entity write.' — evidence: TagServiceImpl.java:64-69 (the delete chain's final flatMap omits the two main search-vector calls that update makes at :162-166) — severity: LOW"
+  - "TagServiceImpl.md says (implicit_adrs.[Search-vector refresh is part of the update / delete contract]): 'update triggers THREE vector refreshes via Mono.zip (search-entrypoint + tag-structure + term-search); delete triggers one (term-search). These are not best-effort fire-and-forget; they are awaited as part of the response.' confidence: HIGH"
+  - "Verified at primary source: TagServiceImpl.java:57-70 (delete with single search-vector call at :68-69) + TagServiceImpl.java:161-167 (update's triple Mono.zip)"
+cross_references:
+  - "TEST-GAP-861 (NEW VAL-LSN-019 — update triple-zip refresh sister gap; together they pin the asymmetry)"
+  - "REFACTOR-NNN candidate: extract a shared 'refresh-all-search-vectors' helper that is called from BOTH update and delete; make the asymmetry impossible by construction"
+  - "DOC-NNN candidate: surface the post-delete search-index freshness guarantee on the Tagging doc + Search doc — explain that deleted tags linger in search results until next entity write"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-02:F-001-search"]
+proposed_action: |-
+  Add `TagServiceImplDeleteSearchVectorRefreshTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/` using Mockito + `@SpringBootTest`. Two test methods:
+
+  1. **`delete_invokesOnlyTermSearchVectorRefresh_pinsAsymmetricRefreshVsUpdate`** (HEADLINE):
+     - Arrange: spy on `reactiveSearchEntrypointRepository` AND `reactiveTermSearchEntrypointRepository`. Seed a non-external tag.
+     - Act: `tagService.delete(tagId).block()`.
+     - Assert: `verify(reactiveTermSearchEntrypointRepository, times(1)).updateChangedTagVectors(tagId)`; `verify(reactiveSearchEntrypointRepository, never()).updateChangedTagVectors(any())`; `verify(reactiveSearchEntrypointRepository, never()).updateChangedTagStructureVector(any())`. PIN: the asymmetric refresh.
+
+  2. **`delete_andUpdate_haveDifferentRefreshCounts_documentsAsymmetryAsContract`**:
+     - Arrange: same spy setup. Seed a non-external tag.
+     - Act: `tagService.update(tagId, formData).block()` → THEN `tagService.delete(tagId).block()` on a SECOND tag.
+     - Assert: across BOTH operations, `reactiveTermSearchEntrypointRepository.updateChangedTagVectors` was called TWICE (once per op); `reactiveSearchEntrypointRepository.updateChangedTagVectors` was called ONCE (update only); `reactiveSearchEntrypointRepository.updateChangedTagStructureVector` was called ONCE (update only). PIN: the asymmetry is per-operation, NOT a configuration-driven choice.
+
+  Cross-pair with TEST-GAP-861. After both land, REFACTOR-NNN can extract a unified helper. Cross-pair with DOC-NNN to surface the freshness asymmetry.
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

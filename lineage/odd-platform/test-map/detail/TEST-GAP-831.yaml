@@ -1,0 +1,74 @@
+gap_id: TEST-GAP-831
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:IngestionServiceImpl"
+pillars_affected: [P-10]
+surfaced_by:
+  - "IngestionServiceImpl.md:concepts.invariants.[0] (@ReactiveTransactional outer transaction binding the WHOLE 14-processor chain)"
+  - "IngestionServiceImpl.md:dependencies_semantic.coupling (F-008 chain coupling)"
+  - "IngestionService.md (interface sibling — 14-processor chain inventory)"
+behaviour: |-
+  **HIGH — `IngestionServiceImpl.ingest(...)` carries `@ReactiveTransactional` on the OUTER transaction binding the WHOLE 14-processor chain + the OTLP metric export. One failure anywhere in the 14-processor sequence rolls back the entire batch. NO test asserts this batch-atomicity-without-signal contract.**
+
+  Per the sidecar's `concepts.invariants.[0]`: "The `@ReactiveTransactional` here is the **outer** transaction binding the WHOLE 14-processor chain (per F-008 chain hop-3) + the OTLP export — one failure anywhere rolls back the entire batch (the `batch_atomicity_without_signal` F-008 drift facet enforced at THIS line)."
+
+  **What atomic-rollback means in practice**:
+  - Inbound payload contains 1000 DataEntities + 50 lineage edges + 10 quality test results.
+  - Mid-batch (e.g. processor #9 — `LineageIngestionRequestProcessor`) throws an exception.
+  - Postgres rolls back the ENTIRE transaction: zero of the 1000 entities persist, zero of the 50 lineage edges, zero of the 10 quality test results.
+  - The HTTP response is 5xx with a stack trace. The collector sees a generic error.
+  - **No signal to the operator** about which processor failed, which entity caused it, or how to recover.
+
+  **Compound issue**: combined with F-008's `silent_destruction_replace_not_merge` drift facet, a partial failure can leave the catalog in a confusing state for the OPERATOR (because the rollback works) but a confusing state for the COLLECTOR (because the next retry may have different inputs based on transient state).
+
+  **Test gap shape**: Testcontainers integration test that:
+  1. Constructs a payload with N entities where the Mth entity will provoke a known-failure (e.g. a malformed lineage edge referencing a non-existent parent ODDRN in a way that breaks `LineageIngestionRequestProcessor`).
+  2. POSTs the payload.
+  3. Asserts: 5xx response.
+  4. Asserts: ZERO new entities in `data_entity` table (atomic rollback verified).
+  5. Asserts: ZERO new lineage rows in `lineage` table.
+  6. Asserts: ZERO new metadata bindings.
+  7. Asserts: OTLP export did NOT fire (the OTLP step is downstream of the failing processor in the same transaction).
+
+  PINS the all-or-nothing contract.
+
+  **Why HIGH**: the contract is load-bearing for every collector's retry semantics + downstream consumer expectations + the F-008 5-vertex picture's correctness. A regression that, e.g., refactored `IngestionProcessorChain.processIngestionRequest` to commit per-phase (instead of per-batch) would break this contract with no test signal.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionServiceBatchAtomicRollback14ProcessorChainTest.java"
+  name: "ingest_midBatchProcessorFailure_atomicRollback_zeroEntitiesPersisted_zeroOTLP_pinsAtomicity"
+evidence:
+  - "IngestionServiceImpl.md says (concepts.invariants.[0]): 'ingest(...) is @ReactiveTransactional (line 66, expanded via ReactiveTransactional.java:11 to @Transactional(\"reactiveTransactionManager\")); ingestStats(...) is NOT (line 76-79 carries only @Override). The @ReactiveTransactional here is the outer transaction binding the WHOLE 14-processor chain (per F-008 chain hop-3) + the OTLP export — one failure anywhere rolls back the entire batch (the batch_atomicity_without_signal F-008 drift facet enforced at THIS line).'"
+  - "IngestionServiceImpl.md says (dependencies_semantic.coupling): 'F-008 chain coupling. Every IngestionRequestProcessor bean (14 total) couples to the IngestionRequest shape assembled at line 154-197. Adding a new field on the request (e.g. a new relationsToReplace list) requires updating the builder here AND all 14 processors. Removing a field (e.g. retiring groupParentGroupRelations) would orphan the corresponding extract helper here and possibly a downstream processor — silent dead code without a centralised registration mechanism.'"
+  - "Verified at primary source: IngestionServiceImpl.java:65-74 (@ReactiveTransactional + 5-step reactive chain) + ReactiveTransactional.java:11 (@Transactional(\"reactiveTransactionManager\") expansion)"
+  - "Reducer-side Grep against `<odd-platform-repo>/odd-platform-api/src/test`: no test class exists for IngestionServiceImpl-specific atomic rollback (verified)"
+cross_references:
+  - "TEST-GAP-832 (sister — duplicate-ODDRN crash; complementary failure mode the same atomic rollback would also be exercised by)"
+  - "TEST-GAP-833 (sister — null entity_class_ids NPE)"
+  - "TEST-GAP-834 (sister — @Slf4j unused, no audit trail; combined with this entry, atomic rollback happens silently with no operational signal)"
+  - "TEST-GAP-285 (existing — postDataEntityList 200-vs-201; the response code contract is a sister concern)"
+  - "TEST-GAP-097 (existing — collector token rotation; cross-batch sister)"
+  - "F-008 detail YAML — 5-vertex picture (filter, controller, service, processor chain, repository) — this entry adds the SERVICE-VERTEX atomic-rollback test that the existing F-008 detail does not name"
+  - "REFACTOR-NNN (proposed): structured error response naming the failing processor; sub-batch transactions for resilience"
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001 Batch Ingestion (S2S API)"]
+proposed_action: |-
+  Add `IngestionServiceBatchAtomicRollback14ProcessorChainTest`. Testcontainers integration test:
+
+  1. **Setup**: Postgres testcontainer, ODD with default `auth.ingestion.filter.enabled=false`, a known-failing processor scenario (e.g. lineage edge with non-resolvable parent ODDRN that breaks `LineageIngestionRequestProcessor`).
+  2. **Pre-baseline**: count rows in `data_entity`, `lineage`, `dataset_field`, `metadata_field_value`, `group_entity_relations`, `data_quality_test_relations` tables.
+  3. **POST /ingestion/entities** with payload containing 100 valid entities + 1 malformed lineage edge.
+  4. **Assert**:
+     - HTTP 500 response.
+     - `data_entity` row count UNCHANGED.
+     - `lineage` row count UNCHANGED.
+     - All other ingestion-touched tables: row counts UNCHANGED.
+     - OTLP metric export: 0 export calls (verify via mocking `OTLPMetricService`).
+  5. **Sister assertion**: POST without the malformed edge → 200 + all 100 entities persist + all expected lineage edges.
+
+  Pair with REFACTOR-NNN (structured error response naming failing processor; e.g. `{error: "PROCESSOR_FAILED", processor: "LineageIngestionRequestProcessor", cause: "..."}`).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. STRENGTHENS the F-008 detail YAML by adding the SERVICE-VERTEX atomic-rollback test — the existing F-008 detail names the destructive-write picture but does NOT name a regression-pin for the atomic-rollback contract. NO contradiction with TEST-GAP-832/833 (duplicate-ODDRN, null entityClassIds) — those are different failure modes inside the same transaction, both of which this atomic-rollback test would also exercise.
+batch: 2026-05-20-Z
+feature_id: F-008

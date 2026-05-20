@@ -1,0 +1,204 @@
+name: |-
+  WAL-retention disk-exhaustion under poison-message-replay loop — no bound, no operator-visible signal (batch Y)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-08
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20Y — surfaced by primary-source
+  examination of NotificationSubscriber.java (the WAL listener thread itself,
+  not just the dispatcher implementor sidecar in batch K). PROMOTES the
+  poison-message replay loop from a delivery-latency-only finding to a
+  disk-exhaustion / availability finding for the entire Postgres primary.
+
+  THE NEW PRIMARY-SOURCE EVIDENCE — NotificationSubscriber sidecar batch Y:
+
+    NotificationSubscriber.java:77-91 — the inner loop:
+      buffer = stream.readPending() → decode → process() (UNCAUGHT) →
+      stream.setAppliedLSN(stream.getLastReceiveLSN()) +
+      stream.setFlushedLSN(stream.getLastReceiveLSN())
+    The LSN advance is positioned AFTER process(); a throwing process()
+    bypasses the LSN advance entirely. The outer catch at L90-92 logs and
+    releases the lock; the 10s sleep + reacquire at L94-100 re-acquires
+    and re-builds the stream.
+
+    Postgres WAL retention behaviour (live doc + replication-mechanics):
+      A replication slot retains WAL on the primary from confirmed_flush_lsn
+      to current_wal_lsn. While the subscriber is stuck in the poison-replay
+      loop, confirmed_flush_lsn does NOT advance — the slot's WAL accumulates
+      indefinitely on the Postgres primary. Disk usage grows linearly with
+      time at the primary's full WAL-write rate (every write to every table
+      in the cluster, not just the alert table). For an active OLTP cluster
+      this can reach the primary's free disk in hours.
+
+    NO OPERATOR-VISIBLE SIGNAL from THIS file's telemetry:
+      - performance.known_performance_gaps.[4]: no Prometheus gauge for
+        notification_wal_last_applied_lsn, no counter for in-flight WAL
+        backlog. Operators must SHELL INTO POSTGRES and run
+        SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)
+        FROM pg_replication_slots WHERE slot_name=?
+        to detect the backlog.
+      - bugs_limitations_corner_cases.[9]: log.debug at L75 is the ONLY
+        in-process trace of LSN progress, and DEBUG is not on by default.
+
+  THE TWO-LAYER FAILURE MODE — distinct but compound:
+
+    Layer 1 — DELIVERY STOPPED (batch K primary source, existing invariant
+              poison-message-wal-replay-loop):
+      The dispatcher's process() throws on every retry; no alerts reach
+      Slack/Webhook/Email. The platform appears to be silent — operators
+      configuring alerts notice the absence.
+
+    Layer 2 — POSTGRES DISK EXHAUSTION (batch Y primary source, THIS
+              INVARIANT):
+      WAL on the primary grows unbounded while the loop runs. The
+      primary's data + WAL share a filesystem in most ODD deployments
+      (the live `/configuration-and-deployment/odd-platform` page does
+      not warn operators to mount pg_wal on a separate volume); a full
+      WAL volume causes Postgres to refuse new writes — affecting ALL
+      ODD writes (ingestion, RBAC, owner-association requests,
+      data-entity updates), not just notifications. The notification
+      poison message therefore can cause platform-wide unavailability.
+
+  THE OPERATOR REMEDIATION PATH — the live doc names ONLY one option:
+
+    live `/configuration-and-deployment/odd-platform` Cleanup SQL (verbatim,
+    WebFetched 2026-05-20 status 200):
+      SELECT pg_drop_replication_slot('<replication_slot_name>');
+      DROP PUBLICATION IF EXISTS <publication_name>;
+
+    Dropping the replication slot DOES release the WAL retention — but it
+    also discards every in-flight undelivered alert that has accumulated in
+    the WAL stream behind the poison row. There is NO operator API to
+    advance LSN past a single bad row; the only choice is "lose all
+    in-flight alerts" or "let the disk fill".
+
+  WHY THIS IS A DISTINCT INVARIANT (not a duplicate of the existing
+  poison-message-wal-replay-loop invariant):
+
+    The existing invariant captured DELIVERY blocked (notifications go
+    silent). This invariant captures STORAGE growing (Postgres primary
+    runs out of disk). The two failure modes have:
+      - different MTTD (delivery silence — operator notices when an alert
+        they expected didn't fire; disk growth — operator notices when
+        Postgres refuses writes platform-wide)
+      - different remediation urgency (delivery silence — non-urgent;
+        disk exhaustion — emergency)
+      - different blast radius (delivery silence — notifications-only;
+        disk exhaustion — platform-wide write outage)
+
+    The two invariants are complements; both should be cited when the
+    F-009 poison-message fragility is discussed.
+
+  SEVERITY HIGH — same severity as the parent poison-replay invariant;
+  this invariant ADDS to the existing finding rather than refining its
+  severity. The combined picture is: a persistently-bad ALERT row blocks
+  ALL outbound delivery AND threatens platform-wide write availability via
+  Postgres-primary disk exhaustion.
+nodes:
+  - odd-platform java notification class:NotificationSubscriber
+  - odd-platform java service service:NotificationsDispatcher
+  - odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+contributors:
+  - |-
+    NotificationSubscriber batch Y (PRIMARY SOURCE — WAL-retention disk-exhaustion
+    primary source pin):
+    bugs_limitations_corner_cases.[0] (poison-message WAL replay loop —
+    severity HIGH) + bugs_limitations_corner_cases.[9] (no LSN telemetry) +
+    bugs_limitations_corner_cases.[4] (replication-slot orphan on rename — the
+    sibling rename-orphan disk-exhaustion path) + performance.known_performance_gaps.[3]
+    (poison-message replay loop pins WAL position — disk exhaustion explicit
+    in this gap) + performance.resource_allocation.[5] (WAL retention on the
+    slot — operator-visible only via pg_replication_slots query) +
+    security.known_security_gaps.[3] (no audit trail of WAL messages
+    consumed / advanced)
+  - |-
+    NotificationsDispatcher batch K (existing reference — the dispatcher
+    implementor side; bugs_limitations_corner_cases.[6] establishes the
+    delivery-blocked layer of the same root cause)
+  - |-
+    NotificationsProperties batch C (existing reference — invariants
+    [WAL subscriber leader-elected; replication-slot lazy-created])
+evidence:
+  - |-
+    NotificationSubscriber.md:bugs_limitations_corner_cases.[0] (poison-message
+    WAL replay loop — primary source for delivery-blocked layer)
+  - |-
+    NotificationSubscriber.md:performance.known_performance_gaps.[3]
+    (poison-message replay loop pins WAL position — primary source for
+    disk-exhaustion layer)
+  - |-
+    NotificationSubscriber.md:performance.resource_allocation (WAL retention
+    on the slot — operator-visible only via pg_replication_slots query)
+  - |-
+    NotificationSubscriber.md:performance.known_performance_gaps.[4]
+    (no slot-growth telemetry — operator-visible signal absence)
+  - |-
+    NotificationSubscriber.md:bugs_limitations_corner_cases.[4]
+    (replication-slot orphan on rename — sibling disk-exhaustion path)
+  - |-
+    Cross-references existing invariant poison-message-wal-replay-loop
+    (batch K primary source — DELIVERY-BLOCKED layer)
+  - |-
+    Cross-references existing invariant lazy-create-no-drop-replication-artefacts-operator-owns-cleanup
+    (batch C — same operator-owns-cleanup posture; THIS invariant is its
+    catastrophic-cousin)
+axes_present:
+  - services
+  - config_prefixes
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+  - batch-K (poison-replay delivery-blocked layer primary source)
+  - batch-C (lazy-create-no-drop replication-artefact posture)
+  - batch-Y (WAL-retention disk-exhaustion primary source — THIS INVARIANT)
+severity: HIGH
+severity_dim: availability
+mitigations_unimplemented:
+  - |-
+    Emit a Prometheus gauge notification_wal_backlog_bytes (sourced from
+    pg_wal_lsn_diff against confirmed_flush_lsn for the slot) — operators
+    can alert on growing backlog before disk exhaustion.
+  - |-
+    Document the disk-exhaustion failure mode on the live
+    /features/active-platform-features/notifications page with operator-facing
+    remediation: monitor slot lag, set up Postgres-side disk alerts on
+    pg_wal volume, separate WAL volume from data volume per Postgres
+    best-practice.
+  - |-
+    Add a notifications.poison-skip.enabled config flag + an operator API
+    endpoint to manually advance setAppliedLSN past a known-bad LSN range.
+    Operators retain auditability (the skipped LSNs are logged) AND avoid
+    the disk-exhaustion path.
+  - |-
+    Pair with the existing poison-skip mitigation candidate on the
+    poison-message-wal-replay-loop invariant — implementing skip-poison
+    at the dispatcher closes BOTH the delivery-blocked layer AND the
+    disk-exhaustion layer simultaneously.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20Y from the
+  NotificationSubscriber sidecar's primary-source evidence at the WAL listener
+  thread itself. The disk-exhaustion path is implicit in the existing
+  poison-message-wal-replay-loop invariant but was never explicitly named —
+  this invariant pins it as a distinct, more-severe consequence with a
+  different MTTD, different remediation urgency, and different blast radius.
+
+  Cross-cutting connections:
+    - Pairs with poison-message-wal-replay-loop (batch K primary source) —
+      both describe the same root cause but at different layers
+      (delivery-blocked vs storage-exhausted)
+    - Pairs with lazy-create-no-drop-replication-artefacts (batch C) — the
+      operator-owns-cleanup posture means there is NO automated path to
+      release WAL retention; combined with poison-replay this becomes a
+      latent disk-exhaustion bomb
+    - Cross-cutting case-law for "operator-owns-cleanup posture combined
+      with no observability surface" — a class of architectural decisions
+      where the platform relies on operator vigilance with no automation
+      and no telemetry surface
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Document the disk-exhaustion failure mode on the live
+        notifications page with operator-facing remediation
+    (b) Document the pg_wal volume separation as a Postgres-side
+        prerequisite for production deployment

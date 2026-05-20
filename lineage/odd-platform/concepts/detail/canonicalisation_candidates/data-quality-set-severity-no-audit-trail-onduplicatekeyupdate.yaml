@@ -1,0 +1,90 @@
+name: Data-quality set-severity mutation has no audit trail (onDuplicateKeyUpdate without ActivityEvent)
+canonical_in_docs: false
+canonical_candidate: true
+proposed_canonical: 'Severity-change audit gap (F-006 audit-silence extension to DATA_ENTITY-scoped mutation)'
+rationale: |-
+  **NEW canonicalisation candidate, batch 2026-05-20T (DataQualityController class
+  sidecar)** — the lone DataQualityController mutation PUT /api/datasets/{id}/dataqatests/{tid}/severity
+  passes through DataQualityServiceImpl.setDataQualityTestSeverity (lines 62-81)
+  which calls reactiveDataQualityRepository.upsertSeverity (line 73). The repository
+  upsert (ReactiveDataQualityRepositoryImpl.java:90-101) writes to
+  DATA_QUALITY_TEST_SEVERITY with onDuplicateKeyUpdate on (DATA_QUALITY_TEST_ID,
+  DATASET_ID) — idempotent in outcome, but NO ActivityEvent emission, NO audit
+  log, NO last_modified_by, NO version increment.
+
+  **A maintainer auditing 'who set this severity to Critical?' has no answer
+  from the platform**. The DATA_QUALITY_TEST_SEVERITY table records the current
+  severity but not its history. No row in the activity table either — the F-006
+  audit-silence pattern (now 9-sidecar+1 with the ActivityController class
+  evidence from this same batch) extends to this DATA-ENTITY-SCOPED mutation
+  rather than only the RBAC / Owner / Datasource / Collector mutations the
+  F-006 pattern previously enumerated.
+
+  **Note the asymmetry within DataQualityController**: the mutation IS gated
+  via DATA_ENTITY AuthorizationManagerType + DATASET_TEST_RUN_SET_SEVERITY
+  permission — so the AUTHORIZATION story is complete (only owners + admins
+  can set severity). But the AUDIT story is absent — even when the mutation IS
+  authorized, NO trail is recorded.
+
+  **The fix sketch**: extend the F-006 audit-silence remediation scope to
+  include DataQualityServiceImpl.setDataQualityTestSeverity. Per the
+  schema-rooted invariant `f-006-audit-silence-schema-rooted-data-entity-id-not-null-fk`,
+  adding @ActivityLog or an ActivityEventEmitter call to the service method is
+  INSUFFICIENT — the activity table's data_entity_id NOT NULL FK constraint
+  is the schema-rooted limit; severity changes ARE scoped to a data entity
+  (the dataset), so the schema constraint DOES allow audit emission. The fix
+  here is simpler than the F-006 RBAC remediation: emit an
+  ALERT_HALT_CONFIG_UPDATED-like activity event with the data_entity_id set
+  to the dataset's id. Severity (MINOR / MAJOR / CRITICAL) goes into the
+  old_state / new_state payload.
+
+  Severity: MEDIUM (audit gap on an authorization-relevant mutation; the gap
+  itself does not weaken authorization but it weakens post-hoc forensics).
+contributing_concepts:
+- 'set-data-quality-test-severity-owner-scoped-mutation'
+- 'Data Quality Test Severity'
+- 'F-006 audit-silence 9-sidecar pattern extension'
+suggested_add_to_docs: true
+maintainer_question: |-
+  Should the audit-event emission for severity changes piggyback on an existing
+  activity event type (DATA_ENTITY_OVERVIEW_UPDATED is the closest semantic
+  match), or warrant a new type (DATASET_QA_TEST_SEVERITY_UPDATED)? A new type
+  is the cleanest semantically but requires (a) ActivityEventTypeDto enum
+  extension, (b) OpenAPI spec extension at components.yaml:3167-3196, (c) doc
+  update to enumerate the new type on the activity-feed.md page. Reusing
+  DATA_ENTITY_OVERVIEW_UPDATED keeps the schema unchanged but conflates two
+  semantically distinct operator actions.
+status: pending-maintainer-decision
+nodes:
+- odd-platform java DataQualityController controller-class:DataQualityController
+evidence:
+- |-
+  DataQualityController.md:bugs_limitations_corner_cases.[4] (HIGH severity —
+  audit-trail absence on severity changes; onDuplicateKeyUpdate without
+  ActivityEvent emission) — file:line:
+    ReactiveDataQualityRepositoryImpl.java:87-102 (the upsert; no audit emission
+      visible in the call site) +
+    DataQualityServiceImpl.java:62-81 (the service method; no activityRepository
+      or ActivityEvent reference)
+- |-
+  Existing invariant: f-006-audit-silence-batch-s-9-sidecar-pattern-extension
+  (the cross-batch F-006 audit-silence pattern this finding extends)
+- |-
+  Existing invariant: f-006-audit-silence-schema-rooted-data-entity-id-not-null-fk
+  (the schema-tier root cause; data_entity_id NOT NULL FK constraint — severity
+  changes ARE scoped to a data entity, so the constraint does NOT block emission)
+notes: |-
+  This canonicalisation candidate extends the F-006 audit-silence pattern beyond
+  RBAC / Owner / Datasource mutations. The DataQuality severity-change is the
+  FIRST mutation in the catalog that:
+    (a) IS authorization-gated (DATA_ENTITY-scoped via DATASET_TEST_RUN_SET_SEVERITY)
+    (b) IS data-entity-scoped (so the schema-rooted activity table FK constraint
+        does NOT block emission)
+    (c) STILL emits no audit event
+  Categories (a) + (b) make this the SIMPLEST F-006 remediation target — no
+  schema migration needed, just add the activity event emission to the service
+  method.
+
+  Pair with the f-006-audit-silence-batch-s-9-sidecar-pattern-extension invariant
+  for the cross-batch narrative; this candidate is the DATA-ENTITY-SCOPED extension
+  of that pattern.

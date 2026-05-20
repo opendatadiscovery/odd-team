@@ -1,0 +1,63 @@
+gap_id: TEST-GAP-817
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn"
+pillars_affected: [P-10, P-11]
+surfaced_by:
+  - "getDataEntitiesByDEGOddrn.md:bugs_limitations_corner_cases.[2] MEDIUM (404 vs empty-200)"
+  - "getDataEntitiesByDEGOddrn.md:bugs_limitations_corner_cases.[3] LOW (no ODDRN format validation)"
+  - "getDataEntitiesByDEGOddrn.md:implicit_adrs.[3] (the empty-200 contract is itself an implicit ADR)"
+behaviour: |-
+  **MEDIUM — Four distinct conditions collapse to indistinguishable `200 OK + items: []` responses, contradicting the sibling lineage endpoint.**
+
+  The endpoint silently conflates:
+  1. **Unknown DEG** (the ODDRN does not exist in the catalog).
+  2. **Empty DEG** (the ODDRN exists but has no GROUP_ENTITY_RELATIONS).
+  3. **Malformed ODDRN** (`""`, `"x"`, `"//garbage"`, URL-encoded edge cases like `%20`).
+  4. **Soft-deleted DEG** (`group_entity_relations.is_deleted=true` for all members — though TEST-GAP-818 establishes that the soft-deleted DATA_ENTITY *members* surface here, the soft-deleted EDGE filter handles this case differently).
+
+  All four return `200 OK` with `items: []`. Caller has no contract distinguishing them.
+
+  **Contradicts the sibling endpoint**: `LineageServiceImpl.getDataEntityGroupLineage` (`LineageServiceImpl.java:62`) DOES raise `NotFoundException("Data entity group", id)` for the same empty-membership condition. The same platform produces two different contracts for the same semantic situation depending on which endpoint the caller hits — F-016 (DEG-Anchored Lineage) returns 404, F-008's read-side sibling returns 200-empty. The asymmetry is silent in code (no comment defends either choice) and silent in docs (no live ODD page describes either).
+
+  **No ODDRN format validation**: `IngestionController.java:76` declares `final String degOddrn` — a raw String passed verbatim into a parameterised SQL predicate. There is no `OddrnFormatValidator` class (Grep across odd-platform-api/src/main/java returns no match). Garbage input produces empty-200 silently.
+
+  **Why MEDIUM** (not HIGH): the absence of a 404 contract is a usability/integration-quality gap, not a security failure (the unauthenticated-reach is in TEST-GAP-815/816). But a refactor that adds `switchIfEmpty(Mono.error(new NotFoundException(...)))` between releases would silently break every third-party reader that depends on the empty-200 shape — and the test today does NOT pin either contract.
+
+  **Test gap shape**: regression-pin test that asserts the current empty-200 contract for each of the four conditions AND asserts the sibling F-016 endpoint raises 404 — pinning BOTH sides of the asymmetry so future fixes are deliberate.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/GetDataEntitiesByDEGOddrn404VsEmptyContractAsymmetryRegressionPinTest.java"
+  name: "get_unknownDEG_emptyDEG_malformedOddrn_softDeletedEdgeDEG_allReturn200Empty_pinsCurrentSilentConflation"
+evidence:
+  - "getDataEntitiesByDEGOddrn.md says (bugs_limitations_corner_cases.[2]): '404 vs empty-200 silent conflation: an unknown DEG, an empty DEG, a malformed ODDRN, and a NULL-equivalent ODDRN all produce the same 200 OK with items: []. There is no contract distinguishing these conditions. The closely-related getDataEntityGroupLineage (F-016 sibling) DOES raise 404 on the same empty-membership condition (LineageServiceImpl.java:62) — the same platform produces two different contracts for the same semantic situation depending on which endpoint a caller hits.' (severity MEDIUM)"
+  - "getDataEntitiesByDEGOddrn.md says (bugs_limitations_corner_cases.[3]): 'No ODDRN format validation: the path parameter is a raw String passed verbatim into a parameterised SQL predicate. There is no OddrnFormatValidator (Grep across <odd-platform-repo>/odd-platform-api/src/main/java returns no such class). Callers can submit any string; the response is silently empty for garbage input.' (severity LOW)"
+  - "getDataEntitiesByDEGOddrn.md implicit_adrs.[3]: 'Empty result IS the contract for unknown-DEG, NOT NotFoundException — two methods on different services produce different shapes for the same input (empty DEG membership). The membership-read returns empty-200; the lineage-read returns 404.' (confidence MEDIUM)"
+  - "Verified at primary source: DataEntityGroupServiceImpl.java:92-108 (no switchIfEmpty error) + LineageServiceImpl.java:62 (sibling explicitly raises NotFoundException)"
+cross_references:
+  - "TEST-GAP-815 (sister — unauthenticated reach; pins the SECURITY half of the contract gap)"
+  - "TEST-GAP-816 (sister — sequential id enumeration; the silent 200-empty makes detection harder)"
+  - "TEST-GAP-818 (sister — soft-deleted member leak; another contract asymmetry on the same endpoint)"
+  - "F-016 (DEG-Anchored Lineage; the sibling that DOES raise 404)"
+  - "DOC-GAP-NNN (proposed): the live S2S page must describe the four-way conflation explicitly so integrators know to disambiguate"
+related_features: [F-008, F-016]
+related_pillar_features: ["P-10:F-001 Batch Ingestion (S2S API)", "P-11:Platform API & Developer Surface"]
+proposed_action: |-
+  Add `GetDataEntitiesByDEGOddrn404VsEmptyContractAsymmetryRegressionPinTest`. Testcontainers integration test:
+
+  1. **Setup**: seed one DEG with 3 members (DEG-A), one DEG with zero members (DEG-B), zero DEG for ODDRN "literally-nonexistent" (DEG-C unknown).
+  2. **Assertions**:
+     - `GET /ingestion/entities/{DEG-A.oddrn}` → 200 + items.length == 3.
+     - `GET /ingestion/entities/{DEG-B.oddrn}` → 200 + items.length == 0 (pins empty-DEG contract).
+     - `GET /ingestion/entities/{DEG-C.oddrn}` → 200 + items.length == 0 (pins unknown-DEG contract).
+     - `GET /ingestion/entities/` (empty path segment) → routing-level 404 or 405 (whichever; pins URL shape).
+     - `GET /ingestion/entities/garbage-string-not-an-oddrn` → 200 + items.length == 0 (pins no-validation).
+     - `GET /ingestion/entities/%20%20` (URL-encoded blanks) → 200 + items.length == 0.
+  3. **Sibling contract pin**: `GET /api/dataentitygroups/{DEG-B.id}/lineage` → 404 (pins the F-016 contract that DOES raise 404 on the same empty-membership condition).
+
+  Pair with DOC-GAP-NNN (live S2S page describes the four-way conflation + the F-016 asymmetry).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. No prior TEST-GAP pins the 404-vs-empty contract on this endpoint. Sister to TEST-GAP-815/816 (security half) and TEST-GAP-818 (soft-delete half) — together they form a 4-entry cluster pinning the full uncovered_behaviours surface for getDataEntitiesByDEGOddrn. STRENGTHENS F-016 detail YAML by establishing the contract-asymmetry as a load-bearing comparison.
+batch: 2026-05-20-Z
+feature_id: F-008

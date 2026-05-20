@@ -1,0 +1,158 @@
+name: |-
+  Query Example CRUD + Faceted Search (the 13-endpoint surface owned by QueryExampleController)
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+  - P-02
+description: |-
+  Operation cluster for the Query Example feature: 4 catalog CRUD endpoints
+  (createQueryExamples, updateQueryExample, deleteQueryExample plus the
+  getQueryExampleList paginated browse) + 2 read-by-relationship endpoints
+  (getQueryExampleByDatasetId, getQueryExampleByTermId) + 1 detail endpoint
+  (getQueryExampleDetails) + 5 faceted-search-session endpoints
+  (queryExamplesSearch creates session, getQueryExampleSearchFacetList +
+  Results + updateFacetList + Suggestions operate on session state).
+
+  All 13 endpoints are 1-or-2-line reactive delegations to either
+  QueryExampleService (9 endpoints) or QueryExampleSearchService (4 endpoints).
+  No business logic at the controller layer; the OpenAPI-generated
+  QueryExampleApi interface dictates signatures.
+
+  KEY SEMANTICS:
+
+    Write semantics:
+      createQueryExamples is INTENTIONALLY plural in the OpenAPI operationId
+      but creates a SINGLE example per call (body is a single
+      QueryExampleFormData, not a list). Naming inconsistency with siblings
+      createTerm / createOwner.
+      Status-code drift: openapi spec declares 201 for create + update PUTs;
+      controller returns 200 via ResponseEntity::ok. Same drift class as
+      TermController.
+
+    Delete semantics:
+      Hard-delete-of-links + soft-delete-of-entity asymmetry. Three-step
+      transaction: hard-delete data_entity_to_query_example link rows +
+      hard-delete query_example_to_term link rows + soft-delete the query
+      example itself (deleted_at = NOW + is_deleted = TRUE per the
+      ReactiveAbstractSoftDeleteCRUDRepository base). Search-vector cleanup
+      is NOT performed — query_example_search_entrypoint rows leak on delete.
+
+    Read semantics — read-collaborative posture:
+      All 10 non-mutating endpoints (4 reads + 5 search-session endpoints +
+      1 list — the 'mutate-facet' search-session endpoint is technically
+      a write but on the session, not the data) have NO SecurityRule.
+      They fall through to .authenticated() catch-all. Any authenticated
+      user can browse every query example across every namespace.
+
+    Search semantics — UUID-only session ownership:
+      queryExamplesSearch issues a UUID searchId; subsequent GET/PUT/Results
+      calls use the UUID as the sole authority. NO caller-id binding —
+      session-hijack on UUID leak is theoretically possible (mitigated by
+      128-bit entropy).
+
+  SIDE EFFECTS:
+
+    createQueryExamples: INSERT query_example + INSERT search-entrypoint
+    updateQueryExample: UPDATE query_example + UPDATE search-entrypoint
+    deleteQueryExample: 3-step transaction (HARD-delete data_entity_to_query_example
+      + HARD-delete query_example_to_term + SOFT-delete query_example) +
+      LEAVES search-entrypoint row (the leak)
+    queryExamplesSearch: INSERT search_facets row (shared facet-session table)
+
+    NO Activity Feed emission — QueryExampleServiceImpl carries no
+    @ActivityLog annotations. Mutations do NOT appear in the global Activity
+    Feed or per-data-entity Activity tab. Audit-log presence asymmetry
+    (per the F-006 master, not a new finding).
+
+  AUTHORIZATION (3 SecurityRules at SecurityConstants.java):
+    QUERY_EXAMPLE_CREATE — line 112-113 (NO_CONTEXT resolver)
+    QUERY_EXAMPLE_UPDATE — line 312-314 (QUERY_EXAMPLE resolver via
+      QueryExamplePermissionExtractor)
+    QUERY_EXAMPLE_DELETE — line 315-317 (QUERY_EXAMPLE resolver)
+
+    NOTE — 4 more permissions (QUERY_EXAMPLE_DATASET_CREATE / _DELETE +
+    QUERY_EXAMPLE_TERM_CREATE / _DELETE) live on OTHER controllers per the
+    cross-controller permission split pattern.
+nodes:
+  - odd-platform java QueryExampleController controller-class:QueryExampleController
+contributors:
+  - |-
+    QueryExampleController batch V (PRIMARY SOURCE):
+    concepts.operations (the 13 listed operations with file:line + service
+    delegation citations) +
+    concepts.invariants (read-collaborative posture; hard-delete-of-links +
+    soft-delete-of-entity asymmetry; status-code drift) +
+    downstream_side_effects (per-endpoint DB writes; activity-feed absence;
+    search-facet-session lifecycle) +
+    implicit_adrs.[3] (hard-delete-of-links) + [4] (search-session via UUID)
+evidence:
+  - |-
+    QueryExampleController.md:concepts.operations — each of 13 with
+    file:line at QueryExampleController.java + delegations
+  - |-
+    QueryExampleController.md:concepts.invariants — read-collaborative,
+    hard-delete-of-links, status-code-drift, no-activity-log
+  - |-
+    QueryExampleController.md:downstream_side_effects — per-endpoint
+    PostgreSQL writes
+  - |-
+    QueryExampleController.md:implicit_adrs.[3,4]
+  - |-
+    Live doc WebFetch
+    https://docs.opendatadiscovery.org/features/data-modelling/query-examples
+    status 200 2026-05-20
+axes_present:
+  - controllers
+  - services
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant: [LOGIN_FORM, OAUTH2, LDAP, DISABLED]
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      3 of 13 endpoints gated; the other 10 fall through to .authenticated().
+      The 3-of-13 asymmetry is intentional (read-collaborative posture for
+      reads + search-as-public-to-authenticated for facets) but
+      under-documented.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      The 3 gated endpoints check QUERY_EXAMPLE_* permissions but do NOT
+      filter by Owner — a holder of QUERY_EXAMPLE_UPDATE can update any
+      example owned by anyone.
+  strengths:
+    - 3 mutating endpoints gated with documented permissions
+  weaknesses:
+    - F-004 stored-XSS family 4th surface — HIGH
+    - 10 of 13 endpoints have no RBAC — read-collaborative posture
+      exposes SQL bodies cross-owner
+    - cross-owner edit possible within the QUERY_EXAMPLE permission scope
+    - search-session UUID-only ownership
+  contributing_files:
+    - QueryExampleController.md
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - 'getQueryExampleDetails 3-step fan-out — QueryExampleController.md'
+    - 'by-dataset / by-term 5-jsonArrayAgg JOIN unpaginated —
+      QueryExampleController.md'
+    - 'getQueryExampleSearchSuggestions FTS-ranked GIN index lookup —
+      QueryExampleController.md'
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: by-dataset and by-term endpoints hard-code hasNext=false
+  contributing_files:
+    - QueryExampleController.md
+notes: |-
+  This operation entry captures the 13-endpoint surface of the Query Example
+  CRUD + Faceted Search operations. The 4 remaining permission-bearing
+  endpoints (linkage on DataEntityController + TermController) are
+  captured in the cross-controller-permission-split-batch-v-pattern invariant.
+
+  Cross-cutting connections:
+    - Entity: query-example.yaml (the entity entry)
+    - Companion invariant: cross-controller-permission-split-batch-v-pattern
+    - Companion invariant: f-004-stored-xss-extends-to-query-example-fourth-markdown-surface
+    - F-006 audit-silence: QueryExampleServiceImpl no @ActivityLog
+    - LSN-018 finding: operationId plural-but-singular ('createQueryExamples'
+      creates one example)

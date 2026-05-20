@@ -1,0 +1,71 @@
+gap_id: TEST-GAP-846
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:Search"
+pillars_affected: [P-01]
+surfaced_by:
+  - "Search.md:bugs_limitations_corner_cases.[4] — 'No .catch on the create-session promise chain — unhandled rejection on session-create failure. IDENTICAL pattern to TermSearch batch-U bugs[3].'"
+  - "Search.md:bugs_limitations_corner_cases.[6] — 'Session-expiry: stale URL UUID with no recovery path.'"
+  - "Search.md:security.known_security_gaps.[4] — 'Unhandled-rejection silent-failure on session-create / restore.'"
+behaviour: |-
+  **MEDIUM — Unhandled rejection + missing .rejected reducer combine into silent-failure mode. Auth-token-expired mid-session reproduces this.** `useCreateSearch.ts:14-19`: `dispatch(createDataEntitiesSearch({searchFormData})).unwrap().then(({searchId}) => { ... navigate(searchLink); })`. NO `.catch(...)` follows the `.then`. `.unwrap()` re-throws on rejection. If `createDataEntitiesSearch` rejects (server-side 500, network failure, auth expiry mid-flight), the rejection lands in the React error boundary (if any wraps the Route — App.tsx:60-65 verified NO `<ErrorBoundary>` wraps the Route element) or the browser console.
+
+  **The slice has missing `.rejected` reducers** (slice.ts:214-260 verified — only `.fulfilled` cases). Neither the slice nor the UI surfaces the failure.
+
+  **Net failure mode**: User sees a frozen empty page with no error message; the URL stays at `/search`; refreshing repeats the same path.
+
+  **Reproduction scenarios**:
+  1. Auth-token-expired mid-session — `GET /api/search/{searchId}` returns 401 → thunk rejects → slice silent → URL retains `:searchId` → user sees frozen empty page → refresh repeats.
+  2. Stale URL UUID from 30+ day old Slack link — server-side `SearchFacetsHousekeepingJob` evicted the session (default `housekeeping.ttl.search_facets_days: 30` per F-010) → GET 404 → same silent failure.
+  3. Server-side 500 from FTS injection (per TEST-GAP-838) — same silent failure.
+
+  **Why MEDIUM**:
+  - **Operator-misleading silent failure mode** — the user has no diagnostic path
+  - Combined with FTS-injection + session-bearer-token (TEST-GAP-838 + TEST-GAP-841), the silent-failure compounds: poisoned UUID shared → recipient sees broken page → no error trace
+  - **Defense-in-depth + observability gap** — silent failures inhibit operator diagnostics
+  - **Cross-cutting**: same pattern in TermSearch batch-U bugs[3]; clone-propagated
+
+  **Test gap shape**: Three error-path tests asserting that rejection paths surface user-visible diagnostics (or PIN the current silent-failure).
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.error-paths.test.tsx"
+    name: "createSearch_rejects500_uiDoesNotSurfaceError_pinsSilentFailureMode"
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.error-paths.test.tsx"
+    name: "getSearch_rejects401_uiDoesNotSurfaceError_pinsAuthExpiryFrozenPage"
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.error-paths.test.tsx"
+    name: "getSearch_rejects404OnStaleUUID_uiDoesNotFallbackToCreateFreshSession_pinsBookmarkRotFailure"
+evidence:
+  - "Search.md says (bugs_limitations_corner_cases.[4]): 'No .catch on the create-session promise chain — unhandled rejection on session-create failure. IDENTICAL pattern to TermSearch batch-U bugs[3]. The slice's missing .rejected reducer (slice.ts:214-260 verified — only .fulfilled cases) compounds this.'"
+  - "Search.md says (bugs_limitations_corner_cases.[6]): 'Session-expiry: stale URL UUID with no recovery path. An operator hitting a stale Slack-shared link from 30+ days ago sees a permanently broken page until they manually navigate back to /search (without the UUID).'"
+  - "Verified at primary source: useCreateSearch.ts:14-19 (missing .catch); slice.ts:214-260 (no .rejected cases); App.tsx:60-65 (no error-boundary)"
+  - "Cross-reference: TermSearch batch-U bugs[3] (clone-propagated)"
+  - "Cross-reference: F-010 (SearchFacetsHousekeepingJob 30-day TTL)"
+cross_references:
+  - "TermSearch batch-U bugs[3] (clone-propagated; fix together)"
+  - "TEST-GAP-839 (Search broken debouncer — sister clone-propagated bug)"
+  - "TEST-GAP-841 (session bearer-token — compound with this silent-failure)"
+  - "TEST-GAP-838 (FTS injection — reproduces this silent-failure)"
+  - "F-010 (SearchFacetsHousekeepingJob)"
+  - "concepts.yaml:invariants[search-session-no-catch-no-rejected-reducer-silent-failure-clone-propagated]"
+related_features: [F-002]
+related_pillar_features: ["P-01:F-002 Search and Filtering"]
+proposed_action: |-
+  **Vitest error-path tests** (3 tests with mocked rejected promises):
+
+  1. `createSearch_rejects500_uiDoesNotSurfaceError_pinsSilentFailureMode` — mock `createDataEntitiesSearch` to reject with 500, render Search, assert NO error toast/notification appears. PINS the current silent-failure.
+
+  2. `getSearch_rejects401_uiDoesNotSurfaceError_pinsAuthExpiryFrozenPage` — mock `getDataEntitiesSearch` to reject with 401, render Search with URL UUID, assert UI stays frozen with no error. PINS the auth-expiry case.
+
+  3. `getSearch_rejects404OnStaleUUID_uiDoesNotFallbackToCreateFreshSession_pinsBookmarkRotFailure` — mock the GET to return 404, render Search with URL UUID, assert NO automatic fallback to `createDataEntitiesSearch` happens. PINS the stale-bookmark case.
+
+  **Architectural fix**:
+  - Add `.catch(error => slice.dispatch(setSessionError(error)))` to useCreateSearch.ts:14-19
+  - Add `.rejected` reducer cases to slice.ts:214-260 that set `error` field with diagnostic text
+  - Add `<ErrorBoundary fallback={<SessionRecoveryPlaceholder />}>` around the Route element at App.tsx:60-65 OR add a per-Search local boundary
+  - Add fallback logic: on 404 from GET, automatically dispatch `createDataEntitiesSearch` to recover
+  - The tests then flip assertion direction: assert the error message IS surfaced
+
+  Coherence note (LSN-018 Rule 6): STRENGTHENS TermSearch batch-U bugs[3] by establishing the clone-propagation explicitly. NO contradiction with existing artefacts.
+batch: 2026-05-20-ZA
+feature_id: F-002

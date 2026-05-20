@@ -1,0 +1,73 @@
+gap_id: TEST-GAP-757
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java CollectorController controller-class:CollectorController"
+pillars_affected: [P-09, P-08, P-07]
+surfaced_by:
+  - "CollectorController.md:bugs_limitations_corner_cases.[No audit logging on any mutating endpoint. Grep against CollectorController.java, CollectorServiceImpl.java, TokenGeneratorImpl.java, ReactiveTokenRepositoryImpl.java for log\\.(info|warn|debug|error) returns zero matches on the F-020 paths. The TOKEN.updated_by column captures the actor on rotation, but it is overwritten on each rotation (single-state, not append-only). Forensic investigation of who registered / deleted / rotated collector X and when is unanswerable from production data alone — severity HIGH]"
+  - "CollectorController.md:security.known_security_gaps.[Zero audit logging across the entire F-020 surface — no record of who registered, updated, deleted, or rotated any collector, beyond the in-place updated_by column (single-state). Forensic incident response cannot reconstruct collector-lifecycle history from production data — severity HIGH]"
+  - "CollectorController.md:doc_drift_findings.[The doc-stack does not warn that GET /api/collectors is callable by ANY authenticated user (no Permission gate in SecurityConstants), exposing the collector inventory ... to read-only auditors who lack any MANAGEMENT permission]"
+  - "DataSourceController.md:downstream_side_effects.[NO Activity Event emission for ANY data_source mutation. No activityEventEmitter call in DataSourceServiceImpl] (parallel finding — the audit-log absence extends across F-020 + F-008)"
+behaviour: |-
+  **HIGH — F-020 Collector Lifecycle has ZERO audit logging across the entire surface: no Activity Feed entries, no `@Slf4j` logger statements, no record of who registered / updated / deleted / rotated any collector. The `TOKEN.updated_by` column captures the LAST actor on rotation (single-state, not append-only) — overwritten on each rotation. Forensic incident response cannot reconstruct collector-lifecycle history from production data alone.** Primary-source confirmed in batch-W CollectorController sidecar:
+
+  **Audit-tier evidence (the absence)**:
+  - `CollectorController.java:1-52` — NO `@Slf4j` annotation, NO `log.info`/`log.warn`/`log.debug`/`log.error` calls (verified by Grep returning zero matches).
+  - `CollectorServiceImpl.java:1-110` — same. No log statements at any severity.
+  - `TokenGeneratorImpl.java:1-53` — same.
+  - `ReactiveTokenRepositoryImpl.java` — same on the relevant paths.
+  - **No `@ActivityLog` annotation** on any of the 5 endpoint methods (register / update / delete / regenerate-token; the GET-list path doesn't need one but mutations do).
+  - **No `activityEventEmitter` call** anywhere in the F-020 surface.
+
+  **The TOKEN.updated_by column** captures the LAST actor on the last rotation, single-state. If operator A rotates the token, then operator B rotates again, the column shows B. The forensic question "did operator A rotate this token in 2024-Q3?" is unanswerable from production data alone.
+
+  **Cross-pillar context** — this is the same audit-log-presence-asymmetry pattern surfaced in the canonicalisation candidate at system-mission.md §"Audit-log Presence Asymmetry (2-tier audit story)":
+  - **Tier 1 (Activity Feed)**: records entity-side metadata changes (description edits, tag assignments, ownership changes).
+  - **Tier 2 (NO audit log)**: RBAC mutations (Role create/edit, Policy edit, Owner role-attach) — and now F-020 Collector Lifecycle — and F-008 Datasource Lifecycle (per batch-W DataSourceController sidecar: "NO Activity Event emission for ANY data_source mutation").
+
+  **Why HIGH not MEDIUM**:
+  - **Incident response**: an operator investigating "someone rotated the collector token at 02:14 UTC on 2026-05-15 — who?" gets the last rotator from `TOKEN.updated_by` but cannot tell if there were intermediate rotations or who-did-what.
+  - **Compliance**: SOX, GDPR, ISO 27001 all require auditability of credential lifecycle events. The platform's audit story for collector tokens is "the last rotator's name". This is insufficient for compliance auditors.
+  - **Operator deception**: the Activity Feed in the UI shows "entity X was tagged at 14:32 by user Y" — operators reasonably expect the same audit trail for "collector X was registered at 14:32 by user Y" or "token X was rotated at 14:32 by user Y". The asymmetry is invisible until an operator goes looking.
+  - **Cross-pillar reach**: the audit-log absence on F-020 (Collector Lifecycle) AND F-008 (Datasource Lifecycle) AND RBAC mutations means the ENTIRE Management tab surface — the place operators expect the highest audit-trail granularity — has the LOWEST audit-trail granularity. The canonicalisation candidate in system-mission.md captures this as an open question; this test gap is the F-020-specific instance pinning the regression.
+
+  **Test gap shape**: regression-pin asserting: (a) `POST /api/collectors` produces NO Activity Feed entries; (b) `PUT /api/collectors/{id}` produces NO Activity Feed entries; (c) `DELETE /api/collectors/{id}` produces NO Activity Feed entries; (d) `PUT /api/collectors/{id}/token` produces NO Activity Feed entries; (e) `CollectorServiceImpl` carries NO `@Slf4j` annotation (verifiable via reflection); (f) the `TOKEN.updated_by` column is overwritten on each rotation (not append-only). The current state is PINNED — failures land if a future maintainer adds Activity Event emission OR moves `TOKEN.updated_by` to an append-only history table.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/CollectorLifecycleAuditSilenceTest.java"
+  name: "registerUpdateDeleteRegenerateCollector_produceZeroActivityEventsAndZeroLogStatements_pinsAuditSilencePosture"
+evidence:
+  - "CollectorController.md says (bugs_limitations_corner_cases.[audit-silence]): 'No audit logging on any mutating endpoint. Grep against CollectorController.java, CollectorServiceImpl.java, TokenGeneratorImpl.java, ReactiveTokenRepositoryImpl.java for log\\.(info|warn|debug|error) returns zero matches on the F-020 paths. The TOKEN.updated_by column captures the actor on rotation, but it is overwritten on each rotation (single-state, not append-only). Forensic investigation of who registered / deleted / rotated collector X and when is unanswerable from production data alone.' — evidence: CollectorController.java:1-52 (no @Slf4j, no log imports) + CollectorServiceImpl.java:1-110 (no log statements at any severity) + TokenGeneratorImpl.java:1-53 (no log statements) — severity: HIGH"
+  - "CollectorController.md says (security.known_security_gaps.[audit-silence]): 'Zero audit logging across the entire F-020 surface — no record of who registered, updated, deleted, or rotated any collector, beyond the in-place updated_by column (single-state). Forensic incident response cannot reconstruct collector-lifecycle history from production data.' — evidence: CollectorController.java:1-52 + CollectorServiceImpl.java:1-110 + TokenGeneratorImpl.java:1-53 — severity: HIGH"
+  - "Verified at primary source: CollectorController.java:1-52 (no @Slf4j annotation) + CollectorServiceImpl.java:1-110 (no log statements) + TokenGeneratorImpl.java:1-53 (no log statements) — all three files verified line-by-line by the sidecar"
+  - "Cross-link to system-mission.md §Audit-log Presence Asymmetry — open canonicalisation candidate"
+  - "Cross-link batch-W DataSourceController.md: same audit-silence pattern extends to F-008 Datasource Lifecycle (verified)"
+cross_references:
+  - "TEST-GAP-754 (NEW batch W — sister plaintext-token-chain — the audit-silence compounds with plaintext-on-the-wire: forensic investigation cannot trace token leaks)"
+  - "TEST-GAP-755 (NEW batch W — DELETE leaves orphan TOKEN row — sister at-rest persistence gap; audit-silence means orphan growth is undetectable from logs)"
+  - "TEST-GAP-756 (NEW batch W — token entropy ThreadLocalRandom — sister generation-tier gap)"
+  - "TEST-GAP-749 (NEW batch W — split-state regenerateDataSourceToken — same pattern on DataSource surface)"
+  - "TEST-GAP-752 (NEW batch W — cross-path silent-overwrite — DataSource counterpart; audit-silence on BOTH UI and S2S paths means the cross-path-race is invisible)"
+  - "concepts: audit-log-presence-asymmetry-2-tier-audit-story (canonicalisation candidate — this gap extends to F-020 + F-008)"
+  - "REFACTOR-NNN candidate: add @ActivityLog annotations to CollectorController + DataSourceController mutating endpoints; add an ActivityEventTypeDto enum value COLLECTOR_LIFECYCLE_EVENT + DATA_SOURCE_LIFECYCLE_EVENT; move TOKEN.updated_by to an append-only audit table"
+  - "DOC-NNN candidate: explicitly document the audit-log-presence-asymmetry in the Management doc + Security Architecture doc; operators expecting forensic-grade collector-lifecycle history must know the current state"
+  - "LSN-NNN candidate: the audit-silence on Management mutations is a class of finding worth its own retrospective"
+related_features: [F-020, F-008]
+related_pillar_features: ["P-09:F-001", "P-08:F-004-collector-lifecycle", "P-07:F-002-activity-feed"]
+proposed_action: |-
+  Add `CollectorLifecycleAuditSilenceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `registerCollector_produceZeroActivityFeedEntries_pinsAuditSilence` — register an ActivityEventEmitter mock; POST `/api/collectors`; assert ZERO ActivityEvent invocations.
+  2. `updateCollector_produceZeroActivityFeedEntries_pinsAuditSilence` — sister test on update.
+  3. `deleteCollector_produceZeroActivityFeedEntries_pinsAuditSilence` — sister test on delete.
+  4. `regenerateCollectorToken_produceZeroActivityFeedEntries_pinsAuditSilence` — sister test on rotate.
+  5. `collectorServiceImpl_carriesNoSlf4jAnnotation_pinsLoggerAbsence` — use reflection to assert `CollectorServiceImpl.class.isAnnotationPresent(lombok.extern.slf4j.Slf4j.class)` returns false. PIN the logger-absence at the service-tier.
+  6. `tokenUpdatedByColumn_overwrittenOnEachRotation_notAppendOnly_pinsSingleStateAuditTrail` — sequentially rotate the same collector's token as user A, then user B; assert `SELECT updated_by FROM token WHERE id = ?` returns 'B' (not 'A,B' or a list); demonstrate the audit trail loses the intermediate rotator.
+
+  Pair with REFACTOR-NNN: add `@ActivityLog(event = COLLECTOR_LIFECYCLE_EVENT)` annotations to CollectorController's 4 mutating methods + add the enum value to ActivityEventTypeDto. Mirror for DataSourceController (TEST-GAP-749/750/752 family).
+
+  Cross-pair with DOC-NNN: surface the audit-log-presence-asymmetry on the Management doc + Security Architecture doc. Operators expecting forensic-grade collector-lifecycle history must know the current state.
+
+  Consider LSN-NNN: write a retrospective on the Management-tab audit-silence as a recurring class of findings worth its own framework attention.
+batch: 2026-05-20-W
+feature_id: F-020

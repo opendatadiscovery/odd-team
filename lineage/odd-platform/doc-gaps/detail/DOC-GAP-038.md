@@ -45,3 +45,74 @@
   - DOC-GAP-179 (NEW batch P) — the WebSession-attribute identity propagation (cluster fragility)
   - DOC-GAP-180 (NEW batch P) — the UPSERT-by-ODDRN partial-merge semantics + namespace inheritance
 - Severity stays HIGH at the META level — the cross-endpoint cluster is the platform's largest single-feature security posture (three distinct ingestion endpoints, three distinct auth models, all under-documented). Doc-side action remains a single coverage-table + admonition on the S2S sub-page + cross-references on each individual finding's affected pages.
+
+## Batch X append
+
+#### Batch 2026-05-20-X STRENGTHENS — `permittedPaths` hand-coded whitelist under LOGIN_FORM mode leaves `/ingestion/entities` + `/ingestion/datasources` anonymously reachable regardless of `auth.ingestion.filter.enabled`
+
+The original DOC-GAP-038 was anchored on `IngestionDataEntitiesFilter` (the filter-config-key-consumer sidecar from batch B). The batch-X LoginFormSecurityConfiguration sidecar adds the LOGIN_FORM-mode-specific evidence:
+
+- **`LoginFormSecurityConfiguration.java:49-51`** (per sidecar primary source): verbatim `permittedPaths` array includes `/ingestion/entities` + `/ingestion/datasources` + `/api/slack/events` — these paths are PERMIT-ALL under LOGIN_FORM regardless of `auth.ingestion.filter.enabled` setting.
+
+The auth-mode-tier consequence is structurally identical to the DISABLED-mode pattern that DOC-GAP-082 META captures: under LOGIN_FORM, the SecurityWebFilterChain's `.authorizeExchange(...)` lambda explicitly permit-alls the ingestion paths at the chain-construction tier — BEFORE the `auth.ingestion.filter.enabled` toggle has a chance to apply (since the filter is wired conditionally on `auth.ingestion.filter.enabled=true`, not unconditionally).
+
+**The LOGIN_FORM permittedPaths array vs `SecurityConstants.WHITELIST_PATHS` divergence** (per LoginFormSecurityConfiguration sidecar `implicit_adrs.[hand-rolled-whitelist-divergence]`):
+- LOGIN_FORM hand-coded list: `["/actuator/health", "/favicon.ico", "/ingestion/entities", "/ingestion/datasources", "/api/slack/events"]`
+- `SecurityConstants.WHITELIST_PATHS` (used by AuthorizationCustomizer under OAUTH2/LDAP): `["/actuator/**", "/favicon.ico", "/ingestion/**", "/img/**", "/api/slack/events"]`
+
+The two lists diverge:
+- LOGIN_FORM is NARROWER on `/actuator/**` (only `/actuator/health` is whitelisted, not the prometheus/env/info endpoints)
+- LOGIN_FORM is NARROWER on `/ingestion/**` (only `/ingestion/entities` + `/ingestion/datasources` are explicitly whitelisted, not other `/ingestion/*` subpaths)
+- LOGIN_FORM is MISSING `/img/**`
+
+For the `/ingestion/*` family specifically: under LOGIN_FORM, ONLY `/ingestion/entities` and `/ingestion/datasources` are permit-all. Other `/ingestion/*` paths (e.g., `/ingestion/alert/alertmanager` per AlertManagerController.java) fall through to `.pathMatchers("/**").authenticated()` — they require authentication under LOGIN_FORM but are then WIDE-OPEN to any form-authenticated ADMIN user (per DOC-GAP-218).
+
+**The auth-mode coverage of the `/ingestion/*` family**:
+| Path | DISABLED | LOGIN_FORM | OAUTH2 / LDAP |
+|---|---|---|---|
+| `/ingestion/entities` | permit-all | **permit-all (NEW batch X)** | whitelisted via SecurityConstants |
+| `/ingestion/datasources` | permit-all | **permit-all (NEW batch X)** | whitelisted via SecurityConstants |
+| `/ingestion/alert/alertmanager` | permit-all | authenticated-but-any-user-ADMIN | whitelisted via SecurityConstants (no filter) |
+| `/ingestion/...` (other paths) | permit-all | authenticated-but-any-user-ADMIN | whitelisted via SecurityConstants |
+
+The structural insight: under THREE of four auth modes, every `/ingestion/*` path is effectively anonymously-reachable OR ADMIN-equivalent. The `auth.ingestion.filter.enabled` toggle only applies to `/ingestion/entities` POST and only when the filter is wired (per IngestionDataEntitiesFilter sidecar) — even when enabled, the toggle doesn't cover the other ingestion paths AND doesn't cover the permit-all paths under LOGIN_FORM (the filter would have to compete with the permittedPaths at the chain-construction tier).
+
+**The compound with DOC-GAP-082 META**: the META's DISABLED-bypass-RBAC pattern is mirrored by LOGIN_FORM in the auth-mode-tier — the ingestion paths inherit the same anonymous-reachability under both DISABLED and LOGIN_FORM. The doc-side fix on DOC-GAP-038 needs to enumerate the auth-mode-tier coverage:
+
+- "**`/ingestion/entities` is permit-all under DISABLED AND LOGIN_FORM**, regardless of `auth.ingestion.filter.enabled`. Under DISABLED, the chain's `.anyExchange().permitAll()` makes ALL paths anonymous. Under LOGIN_FORM, the hand-coded `permittedPaths` array at `LoginFormSecurityConfiguration.java:49-51` explicitly permit-alls `/ingestion/entities`. **Only under OAUTH2 and LDAP** does the ingestion filter actually gate the POST — and only when `auth.ingestion.filter.enabled=true` (the shipped default is `false`)."
+
+**Severity stays HIGH** — the operator-trap shape ("set auth.ingestion.filter.enabled=true to protect /ingestion/entities") only protects the path under OAUTH2/LDAP. Operators on DISABLED or LOGIN_FORM are bypassed regardless. The doc-side fix is bounded (extend the existing coverage table in DOC-GAP-038 with the auth-mode-tier dimension).
+
+**Coherence**: strengthens=1 (DOC-GAP-038 with LOGIN_FORM evidence), supersedes=0, conflicts_surfaced=0.
+
+## Batch Z append
+
+## Batch Z append
+
+#### Batch 2026-05-20-Z STRENGTHENS — cluster promoted from 3 endpoints to 6 endpoints; THREE NEW unauthenticated ingestion endpoints
+
+Batch Z's three IngestionController controller-method sidecars (`getDataEntitiesByDEGOddrn` + `postDataSetStatsList` + `ingestMetrics`) each surface as INDEPENDENT unauthenticated ingestion endpoints, promoting the DOC-GAP-038 cluster from 3 endpoints (entities POST + alertmanager + datasources) to SIX endpoints.
+
+**The compound ingestion-namespace auth-coverage table** (per the three new findings):
+
+| Endpoint | Auth coverage | `auth.ingestion.filter.enabled` effect | DOC-GAP |
+|---|---|---|---|
+| POST `/ingestion/entities` | Whitelisted via `SecurityConstants` AND gated by `IngestionDataEntitiesFilter` IFF property `true` | Toggle gates this path; `true` → bearer-token required; `false` (default) → unauthenticated | DOC-GAP-038 (original) |
+| **GET `/ingestion/entities/{degOddrn}` (NEW batch Z)** | Whitelisted via `SecurityConstants` AND NOT covered by ANY filter | Toggle has NO effect; the path is unauthenticated regardless | **DOC-GAP-238 NEW** |
+| **POST `/ingestion/entities/datasets/stats` (NEW batch Z)** | Whitelisted via `SecurityConstants` AND NOT covered by ANY filter | Toggle has NO effect; the path is unauthenticated regardless | **DOC-GAP-239 NEW** |
+| POST `/ingestion/datasources` | Whitelisted via `SecurityConstants` AND gated by `IngestionDataSourceFilter` UNCONDITIONALLY | Toggle has NO effect; the filter is always-on | DOC-GAP-178 (batch P) |
+| POST `/ingestion/alert/alertmanager` | Whitelisted via `SecurityConstants` AND NOT covered by ANY filter | Toggle has NO effect; the path is unauthenticated regardless | DOC-GAP-003 / DOC-GAP-107 |
+| **POST `/ingestion/metrics` (NEW batch Z)** | Whitelisted via `SecurityConstants` AND NOT covered by ANY filter | Toggle has NO effect; the path is unauthenticated regardless | **DOC-GAP-240 NEW** |
+
+**The structural insight: FOUR of six endpoints have NO opt-in toggle even in principle** (alertmanager + getDEG + stats + metrics). The other two endpoints (entities POST + datasources POST) have varying mitigation: entities POST has the `auth.ingestion.filter.enabled` toggle; datasources POST is always-on. Operators believing the platform's S2S surface is "lockable" by setting one toggle are mistaken — only ONE endpoint is gated by the toggle.
+
+**The doc-side coverage-table expansion** (per the three new findings' proposed actions):
+- Extend the live `/configuration-and-deployment/enable-security` page's existing ingestion-filter coverage enumeration to name ALL six endpoints + their respective auth coverage shapes.
+- Cross-reference from each operator-facing page (data-quality for stats, configuration-and-deployment for metrics, the S2S sub-page for getDEG read) — so operators discovering an endpoint at any page also discover the auth caveat.
+- The `/configuration-and-deployment/enable-security` page (WebFetched 2026-05-20 status 200) ALREADY enumerates `/ingestion/entities/datasets/stats` + `/ingestion/alert/alertmanager` + `/ingestion/entities/degs/children` as paths "outside the ingestion filter's coverage" but is MISSING `/ingestion/metrics` and the `GET /ingestion/entities/{degOddrn}` sibling — this batch's findings add those.
+
+**The structural code-side fix** (across all six endpoints): a single PR can broaden `IngestionDataEntitiesFilter`'s path matcher to `/ingestion/**` for ALL HTTP methods (subject to backwards-compatibility with the existing POST tests + the `IngestionDataSourceFilter`'s always-on coverage on `/ingestion/datasources` POST). The PR closes the cluster's coverage gap at the path-matcher level. Alternatively, per-endpoint filters (sibling `IngestionMetricsFilter`, `IngestionReadFilter`) preserve the per-endpoint opt-in semantics.
+
+**The compound with DOC-GAP-082 META (DISABLED-bypasses-RBAC)**: under DISABLED, ALL six endpoints are anonymously reachable. Under OAUTH2/LDAP, the four no-filter endpoints remain anonymously reachable (whitelisted via `SecurityConstants`); the two filter-gated endpoints are conditionally gated. Under LOGIN_FORM (per batch X's `LoginFormSecurityConfiguration` evidence), the `permittedPaths` hand-coded list explicitly permit-alls `/ingestion/entities` + `/ingestion/datasources` — so EVEN MORE endpoints are unauthenticated under LOGIN_FORM than under OAUTH2/LDAP. The auth-mode coverage of the `/ingestion/*` family is highly non-uniform.
+
+**Severity stays HIGH** at the META framing — the cluster is now 6 endpoints with 4 having no opt-in protection. The doc-side fix is bounded but spans multiple pages; the code-side fix is structurally cheap on the filter path-matcher line. Coherence: strengthens DOC-GAP-038 with THREE NEW endpoint instances (DOC-GAP-238 + DOC-GAP-239 + DOC-GAP-240) + the operator-trap framing at higher granularity. No conflicts with existing batch-H/O/P/Q/R/X framing.

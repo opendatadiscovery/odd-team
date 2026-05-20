@@ -1,0 +1,62 @@
+gap_id: TEST-GAP-776
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java MinioConfig config-class:MinioConfig"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "MinioConfig.md:bugs_limitations_corner_cases.[0] HIGH (`.region(...)` never called — LSN-002 canonical anchor)"
+  - "MinioConfig.md:unset_parameter_audit (`.region(String)` caveat-defaulted, SDK default `us-east-1`)"
+  - "MinioConfig.md:tests_coverage_semantic.uncovered_behaviours.[3,4] (no test verifies absence of `.region(...)`; no test exercises non-us-east-1 failure mode)"
+  - "MinioConfig.md:pre_emit_coherence_check (STRENGTHENS LSN-002 — primary-source confirmed)"
+behaviour: |-
+  **CRITICAL — LSN-002 canonical anchor reaffirmed at config-class tier. `MinioAsyncClient.builder()` at MinioConfig.java:19-25 has EXACTLY THREE method calls: `.endpoint(url)`, `.credentials(accessKey, secretKey)`, `.build()`. `.region(...)` is NEVER called. MinIO SDK default region is `us-east-1`. Production AWS S3 deployments outside `us-east-1` fail with `AuthorizationHeaderMalformed` / `PermanentRedirect` on every `putObject` / `getObject`.**
+
+  **CONFIRMS PRIMARY SOURCE at the file the LSN-002 retrospective named.** The retrospective said: "constructed `MinioAsyncClient.builder()` without calling `.region(...)`". Verified at MinioConfig.java:19-25 — the builder chain is `.endpoint(url).credentials(accessKey, secretKey).build()`. Zero matches for `attachment.remote.region` across the entire codebase. No `@PostConstruct` guard. No in-code comment cross-referencing LSN-002.
+
+  **STRENGTHENS existing TEST-GAP-052** (which already names the LSN-002 region failure mode from the YAML angle). This sidecar provides the config-class-tier primary source: the EXACT builder chain shape with the EXACT line numbers, with the gate-level evidence that REMOTE-mode beans only materialise under `attachment.storage=REMOTE`. Together TEST-GAP-052 + TEST-GAP-776 form a two-tier anchor for the regression pin (YAML config + Java builder).
+
+  **Doc-side remediation is HEALTHY** (WebFetched 2026-05-20 status 200 from `/configuration-and-deployment/odd-platform#attachment-storage-configuration`): "AWS S3 region pinned to `us-east-1`. The attachment client is built without an explicit region, so it uses the MinIO Java SDK's default region (`us-east-1`) for request signing. Against AWS S3 this means only buckets in `us-east-1` work." The OPERATOR knows. The CODE remains unguarded.
+
+  **Code-side remediation is UNIMPLEMENTED**:
+  - No `attachment.remote.region` config key (grep returns zero matches).
+  - No `.region(operatorRegionOrDefault)` call in MinioConfig.java:19-25.
+  - No `@PostConstruct` validator on RemoteFileUploadServiceImpl or MinioConfig that warns when a non-MinIO endpoint is configured without a region key.
+  - No in-code comment block `// LSN-002 — region defaults to us-east-1 against AWS S3` at the builder call site.
+
+  **Test gap shape**: REGRESSION-PIN against the current behaviour — a `@SpringBootTest` driving the bean wiring under `attachment.storage=REMOTE` + valid credentials, asserting (a) `MinioAsyncClient` is registered, AND (b) reflection / proxied-builder introspection confirms `.region(...)` was NEVER called. Until the REFACTOR-027 fix lands, the test pins the absence. When the fix lands (operator-configurable `attachment.remote.region` with documented default), the test is the natural place to add the positive contract.
+
+  **Integration-level regression pin** (the OPERATOR FAILURE MODE): a `@SpringBootTest` with Testcontainers running MinIO (which ignores the region header — so happy path proves wiring) + a stub AWS S3 SigV4 validator that requires a specific region header — assert the SigV4 signature carries `us-east-1` regardless of operator config. The two-tier test (unit + integration) prevents both a builder refactor (someone adds `.region(...)` with the wrong default) and a deployment surprise.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/attachment/config/MinioConfigBuilderRegressionPinTest.java"
+  name: "minioAsyncClient_builderChainContainsExactlyEndpointCredentialsBuild_assertsRegionNeverCalled_pinsLSN002"
+evidence:
+  - "MinioConfig.md says (bugs_limitations_corner_cases.[0] HIGH): 'MinioAsyncClient.builder() does NOT call .region(...) — the SDK default region (us-east-1) governs all signing. Operators running ODD against AWS S3 in any other region see opaque signature/redirect errors (AuthorizationHeaderMalformed, PermanentRedirect) on the first putObject call. The doc-side warning is in place at https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#attachment-storage-configuration (verified live 2026-05-20 status 200); the in-code residue is unmitigated — no attachment.remote.region config key exists anywhere in the codebase (grep returns zero matches), no @PostConstruct validation guards the assumption, no code comment cross-references LSN-002. Self-hosted MinIO is unaffected.'"
+  - "MinioConfig.md says (unset_parameter_audit): '.region(String) | caveat-defaulted — SDK default us-east-1 | MinioConfig.java:19-25 — .region(...) is NEVER called.'"
+  - "MinioConfig.md says (pre_emit_coherence_check): 'LSN-002 — primary source. This is the file the retrospective named. The retrospective's account matches the live file at lines 19-25 verbatim — the builder chain is .endpoint(url).credentials(accessKey, secretKey).build(), no .region(...).'"
+  - "Verified at primary source: MinioConfig.java:19-25 (the three-method builder chain)"
+  - "Grep `attachment.remote.region` across odd-platform: 0 matches"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-05-20 status 200 — confirms doc-side remediation healthy"
+  - "retrospectives/LSN-002-minio-region-unset.md — the canonical retrospective"
+cross_references:
+  - "TEST-GAP-052 (STRENGTHENED — YAML-tier anchor now has the Java-tier config-class anchor; together they form a two-tier regression pin)"
+  - "TEST-GAP-047 (RELATED — bean-wiring under each attachment.storage value)"
+  - "LSN-002 (PRIMARY ANCHOR — this is the file the retrospective named)"
+  - "REFACTOR-027 (the YAML-angle refactoring scope) + REFACTOR-NNN-new (the Java-tier fix: add .region(operatorRegionOrDefault))"
+  - "concepts: minio-sdk-region-not-set-aws-s3-us-east-1-pin (existing concept, now config-class-tier-primary)"
+  - "TEST-GAP-777 (sibling — same file, .httpClient(...) unset — Gate-5 unset-parameter-audit dual)"
+related_features: [F-NN-attachment-storage]
+related_pillar_features: ["P-01:F-007-attachments-remote-storage"]
+proposed_action: |-
+  Add `MinioConfigBuilderRegressionPinTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/attachment/config/`. Two test methods:
+
+  1. `minioAsyncClient_builderChainContainsExactlyEndpointCredentialsBuild` — `@SpringBootTest(properties = { "attachment.storage=REMOTE", "attachment.remote.url=http://localhost:9000", "attachment.remote.access-key=test", "attachment.remote.secret-key=test", "attachment.remote.bucket=test" })`; inject `MinioAsyncClient` bean; reflect on the client's internal state OR record the builder calls via a `@MockBean` `MinioAsyncClient.Builder` and assert the call sequence is exactly `endpoint() → credentials() → build()`. Assert NO `region()` call. PIN the LSN-002 in-code state.
+
+  2. `minioAsyncClient_signaturesAreSignedAsUsEast1` — `@SpringBootTest` + Testcontainers MinIO (which ignores the region header — happy path proves wiring) + a stub `httpClient` that captures the outgoing SigV4 `Authorization` header; assert the `Credential` scope string ends with `/us-east-1/s3/aws4_request`. PIN the runtime consequence.
+
+  Add a `// REGRESSION-PIN — LSN-002 — MinioAsyncClient.builder() never calls .region(...). AWS S3 buckets outside us-east-1 fail. This test pins the current behaviour until REFACTOR-027 lands an operator-configurable attachment.remote.region key. When the fix lands, change the assertion from \"no .region() call\" to \"the configured region OR documented default\". Live-doc cross-link: https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#attachment-storage-configuration` comment block.
+
+  Pair with: (a) REFACTOR-027 implementation (add `attachment.remote.region` config key with `:us-east-1` default and `.region(operatorRegion)` builder call); (b) live-doc update once fix lands — change the warning to "operators MUST set `attachment.remote.region` for buckets outside us-east-1".
+batch: 2026-05-20-X
+feature_id: null

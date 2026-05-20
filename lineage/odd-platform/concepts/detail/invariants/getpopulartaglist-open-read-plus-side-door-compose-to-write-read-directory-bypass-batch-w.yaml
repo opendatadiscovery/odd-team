@@ -1,0 +1,459 @@
+name: |-
+  getPopularTagList open-read + per-entity-tag-editors compose to WRITE+READ directory bypass (HIGH severity, batch W cross-batch closure; STRENGTHENED batch VAL-LSN-019 with TagServiceImpl service-tier confirmation of zero-auth posture)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-08
+  - P-09
+description: |-
+  HIGH-SEVERITY INVARIANT, batch 2026-05-20W — composes the
+  existing TAG_CREATE side-door (write-side, batch K + U) with the
+  newly-confirmed open-read on getPopularTagList (read-side, batch W
+  primary source) into a complete WRITE+READ bypass of the dedicated
+  TAG_* permissions. A per-entity-tag-editor with NO `TAG_*`
+  permissions can both MUTATE and ENUMERATE the global Tag directory.
+  STRENGTHENED batch VAL-LSN-019 with TagServiceImpl confirming
+  zero service-tier authorisation across all 9 public methods.
+
+  THE COMPOUND PATTERN:
+
+    Write side (existing — strengthened batch W + batch VAL-LSN-019):
+      A caller holding ONLY DATA_ENTITY_TAGS_UPDATE (or
+      TERM_TAGS_UPDATE / DATASET_FIELD_TAGS_UPDATE / S2S ingestion)
+      can MINT NEW global Tag rows via tagService.getOrCreateTagsByName
+      WITHOUT holding TAG_CREATE. The side-door has been progressively
+      enumerated:
+        - batch F initial finding — Tag side-door past TAG_CREATE
+          (spec-documented-auto-create-with-scope-asymmetry...)
+        - batch K — TermServiceImpl.upsertTags + DatasetFieldServiceImpl
+          + ExternalTagIngestionRequestProcessor confirmed as 3 of 4
+          call sites
+        - batch U — TermController class-level confirms the 3 side-door
+          call sites + adds the architectural class
+          (getOrCreate-as-side-door-pattern)
+        - batch W — TagController class-level explicitly enumerates
+          ALL 4 side-door call sites + their gating permissions:
+            (a) TagServiceImpl.updateRelationsWithDataEntity
+                (`:105`) — DATA_ENTITY_TAGS_UPDATE permission
+                (per-entity scope)
+            (b) TermServiceImpl.upsertTags (`:257`) —
+                TERM_TAGS_UPDATE permission (per-term scope)
+            (c) DatasetFieldServiceImpl (`:202, 266`) —
+                DATASET_FIELD_TAGS_UPDATE permission (per-field
+                scope)
+            (d) ExternalTagIngestionRequestProcessor (`:104`) —
+                gated only by `auth.ingestion.filter.enabled` S2S
+                filter
+        - NEW batch VAL-LSN-019 — TagServiceImpl class-level
+          confirms ZERO service-tier authorisation. Across all 9
+          public methods + 2 private helpers:
+            - ZERO `@PreAuthorize` annotations
+            - ZERO `permissionService.hasPermission(...)` calls
+            - ZERO `OwnerAuthorizationFacade` invocations
+            - ZERO `SecurityContextHolder` reads
+          The controller perimeter is the SOLE auth defence. The
+          four side-door write paths apply their per-feature
+          permission (DATA_ENTITY_TAGS_UPDATE etc.) BEFORE reaching
+          this service; the service-tier methods themselves have no
+          second-axis check. The dual-method design
+          (getOrCreateTagsByName vs getOrInjectTagByName, the
+          "create-shape" choice) IS the only TAG_*-related architectural
+          variance at this layer — neither variant gates on TAG_CREATE.
+
+    Read side (TagController controller-class — batch W):
+      GET /api/tags (getPopularTagList) has NO SecurityRule entry
+      at SecurityConstants.java:138-142 — verified by reading the
+      file end-to-end. The endpoint falls through to
+      AuthorizationCustomizer.java:29-30 `.authenticated()`
+      catch-all. ANY authenticated user — including a user with
+      ONLY per-entity DATA_ENTITY_TAGS_UPDATE — can enumerate the
+      ENTIRE global tag directory regardless of `TAG_*` permissions
+      or Management-scope role. The page-size parameter is NOT
+      clamped at the controller, service, or repository tier
+      (TagController.java:37-42 passes `size` straight through);
+      a single request can enumerate the entire directory.
+
+      NEW batch VAL-LSN-019 — the read-side compound with the
+      LSN-019 drift: an enumerator gets the OLDEST tags in tag.id
+      ASC order (per the LSN-019 listMostPopular drift). For an
+      attacker mapping the global tag namespace, this is a
+      side-channel — the youngest tags (the ones a defender might
+      consider sensitive, e.g., newly-added "pii_classification"
+      tags) are MORE DIFFICULT to enumerate because they require
+      paging beyond the first page. NOT a defence against
+      enumeration (every authenticated user can page); just an
+      operational note that the LSN-019 drift makes the surface
+      ordered-but-unexpected.
+
+  THE COMPOUND CONSEQUENCE:
+
+    A user holding ONLY DATA_ENTITY_TAGS_UPDATE on entity X (the
+    Policy condition `is: dataEntity:owner` is the canonical way
+    to grant this) can:
+      (1) Read the entire global tag directory via GET /api/tags
+          (NO TAG_* permission needed).
+      (2) Discover existing tag names + their popularity rankings
+          across all owners. (Caveat: LSN-019 means the "popularity"
+          ordering is OLDEST-first ranked-by-count within the
+          window; the user enumerates the OLDEST tags first.)
+      (3) MINT new tag names via PUT /api/dataentities/X/tags with
+          novel tag-name entries (DATA_ENTITY_TAGS_UPDATE permission
+          alone).
+      (4) The newly-minted tags are immediately visible to every
+          other authenticated user via GET /api/tags.
+      (5) The user has both READ and WRITE access to the global
+          tag namespace WITHOUT holding ANY `TAG_*` permission.
+
+    The Policy author who granted DATA_ENTITY_TAGS_UPDATE 'on entity
+    X' expects the user to mutate ONE entity's tags. The compound
+    bypass elevates that grant to FULL DIRECTORY READ+WRITE — a
+    cross-tenant catalog vocabulary pollution surface.
+
+    The doc-side framing is consistently 'vocabulary-level vs
+    assignment-level' (per the live /features/data-discovery/tagging
+    page WebFetched 2026-05-20 status 200, verbatim): 'TAG_CREATE,
+    TAG_UPDATE, TAG_DELETE: All three govern vocabulary-level
+    mutations, not assignment operations.' But the compound bypass
+    inverts this — DATA_ENTITY_TAGS_UPDATE is doc-framed as an
+    'assignment' permission yet ARCHITECTURALLY-IT-IS a vocabulary-
+    mutation permission for novel names.
+
+  THE COMPOUND WITH deleteTag CASCADE ASYMMETRY (cross-link to
+  batch W sibling invariant):
+
+    The per-entity-tag-editor MINTS rows in tag_to_dataset_field
+    via the DATASET_FIELD_TAGS_UPDATE side-door. When the operator
+    (with TAG_DELETE) later deletes the tag, the
+    tag_to_dataset_field rows are NOT cleaned up (per the deletetag-cascade-asymmetric
+    invariant). The orphan rows persist forever; the
+    per-entity-tag-editor's actions outlast the operator's cleanup.
+
+  THE COMPOUND WITH ZERO AUDIT-LOG (cross-link to existing concept):
+
+    Tag directory mutations (createTag, updateTag, deleteTag) do
+    NOT emit Activity Feed entries (confirmed batch W from
+    TagController class-level sidecar; STRENGTHENED batch
+    VAL-LSN-019 from TagServiceImpl). The platform's
+    @ActivityLog(event = TAG_ASSIGNMENT_UPDATED) annotation exists
+    at DataEntityServiceImpl.java:358 (per-entity tag-assignment
+    path) but NOT at the directory-vocabulary path. Operators using
+    the Management → Tags tab to delete or rename a tag produces
+    NO audit trace. Combined with the side-door + open-read, the
+    Tag-directory mutations are TRIPLY-DARK:
+      - The mutations themselves are not audited.
+      - The side-door entry point is not gated by TAG_*.
+      - The read posture allows unrestricted enumeration.
+
+  THE COMPOUND WITH LSN-019 (NEW cross-link, batch VAL-LSN-019):
+
+    The open-read endpoint AT WHICH the directory is enumerated
+    ALSO lies about its ordering. An attacker enumerating the tag
+    namespace believes they are seeing tags ranked by popularity
+    (per the UI label "Top Tags" + the method name + the OpenAPI
+    description). They are actually seeing OLDEST tags ranked by
+    count DESC within the OLDEST window. The compound bypass is
+    not a NEW security risk from the LSN-019 drift — but it does
+    mean the attacker's mental model is wrong; recently-minted
+    tags (e.g., the attacker's own newly-side-door-created
+    "novel_name_xyz") are NOT at the top of page 1. The defender,
+    too, has a wrong mental model — checking page 1 for "what
+    recently appeared" returns OLDEST tags, not RECENT additions.
+
+  THE THREE-DOC-PAGE SILENCE:
+
+    Live /features/data-discovery/tagging (WebFetched 2026-05-20
+    status 200): describes the per-entity 'create a new tag inline'
+    UX, but the permission framing names ONLY TAG_CREATE / TAG_UPDATE
+    / TAG_DELETE and describes them as 'vocabulary-level mutations'.
+    Does NOT state that DATA_ENTITY_TAGS_UPDATE alone can mint
+    new tag-vocabulary rows.
+
+    Live /configuration-and-deployment/enable-security/authorization/permissions
+    (WebFetched 2026-05-20 status 200): names BOTH TAG_CREATE
+    (MANAGEMENT scope) AND DATA_ENTITY_TAGS_UPDATE (DATA_ENTITY
+    scope) but does NOT describe the side-channel. Verbatim:
+    'The documentation does not describe any mechanism by which the
+    DATA_ENTITY_TAGS_UPDATE permission can create new global tags.
+    Only TAG_CREATE is listed as enabling tag creation in the
+    Management permissions section.'
+
+    The doc pages frame the system as if the dedicated TAG_*
+    permissions are the SOLE write surface. The architecture
+    contradicts this framing across 4 side-doors AND on the
+    read side AND at the service-tier (zero authorisation).
+
+  SEVERITY HIGH — operator-policy-authoring surface inverted from
+  doc framing; cross-tenant catalog pollution; compound with
+  cascade-asymmetry, audit-silence, and LSN-019 misnaming.
+
+nodes:
+  - odd-platform java TagController controller-class:TagController
+  - odd-platform java service:TagServiceImpl
+  - odd-platform java TermController controller-class:TermController
+  - odd-platform java service:TermServiceImpl
+  - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+
+contributors:
+  - |-
+    TagController batch W (PRIMARY SOURCE — controller-tier
+    consolidation):
+    concepts.invariants[getPopularTagList NOT RBAC-gated; side-door
+    write paths bypass this controller entirely] +
+    bugs_limitations_corner_cases.[3] MEDIUM (open-read on
+    getPopularTagList) +
+    bugs_limitations_corner_cases.[4] HIGH severity (side-door
+    directory growth via DATA_ENTITY_TAGS_UPDATE / TERM_TAGS_UPDATE /
+    DATASET_FIELD_TAGS_UPDATE / S2S ingestion) +
+    security.known_security_gaps.[0] HIGH (the compound side-door
+    pattern with the cross-batch evidence chain) +
+    security.known_security_gaps.[1] MEDIUM (open-read posture) +
+    implicit_adrs.[1] (read endpoints not RBAC-gated — intentional
+    read-collaborative posture) +
+    implicit_adrs.[5] (bulk-create as the operator-explicit API
+    shape vs the upsert side-door — dual create-shape design)
+  - |-
+    TagServiceImpl batch VAL-LSN-019 (PRIMARY SOURCE — service-tier
+    zero-auth confirmation):
+    concepts.invariants[Zero @PreAuthorize and zero programmatic
+    permission checks across all 168 lines (verified end-to-end).
+    The service inherits whatever auth posture the call-site
+    provides; for TagController calls this is the perimeter
+    SecurityRule (TAG_CREATE/TAG_UPDATE/TAG_DELETE for the three
+    writes, no rule for getPopularTagList → catch-all authenticated());
+    for the FOUR side-door surfaces (TermServiceImpl, DataEntityServiceImpl,
+    DatasetFieldServiceImpl, ExternalTagIngestionRequestProcessor) the
+    auth check varies per surface and TAG_CREATE is NEVER held even
+    though directory rows are minted] +
+    security.authorization_assertions[] (empty — verified zero) +
+    security.known_security_gaps[Service-tier has ZERO authorization
+    checks. Controller perimeter is the SOLE auth defence] +
+    implicit_adrs[Tag-directory writes have NO service-tier
+    authorisation — the controller perimeter is the SOLE auth
+    defence; the four side-door write paths intentionally use their
+    own per-feature permission rather than TAG_CREATE]
+  - |-
+    TermController batch U (CORROBORATING — TermServiceImpl.upsertTags
+    side-door call site #2; the b vertex of the 4-side-door evidence)
+  - |-
+    ReactiveTagRepositoryImpl batch N (CORROBORATING — the SQL-tier
+    primary source for the directory mutations; identifies all 4
+    bypass entry points at the SERVICE tier)
+
+evidence:
+  - |-
+    TagController.md:bugs_limitations_corner_cases.[4] HIGH severity
+    — evidence: TagController.java:23 (gated by TAG_CREATE) +
+    TagService.java:24 (getOrCreateTagsByName) + grep call-sites:
+    TagServiceImpl.java:105 + TermServiceImpl.java:257 +
+    DatasetFieldServiceImpl.java:202, 266 +
+    ExternalTagIngestionRequestProcessor.java:104
+  - |-
+    TagController.md:bugs_limitations_corner_cases.[3] MEDIUM
+    severity — evidence: SecurityConstants.java:138-142 (no GET
+    entry for /api/tags) + TagController.java:36-44 (no @PreAuthorize)
+    + AuthorizationCustomizer.java:29-30 (catch-all `authenticated()`
+    rule)
+  - |-
+    TagController.md:security.known_security_gaps.[0] HIGH — side-door
+    directory growth via 4 entry points
+  - |-
+    TagController.md:security.known_security_gaps.[1] MEDIUM —
+    open-read posture on getPopularTagList
+  - |-
+    TagController.md:security.known_security_gaps.[4] MEDIUM —
+    no audit log on this controller's write paths (createTag /
+    updateTag / deleteTag produce no Activity Feed entries)
+  - |-
+    TagController.md:doc_drift_findings.[0,1,2,3] — four live-doc
+    drift findings (the side-door + cascade + open-read + 201-vs-200
+    drift)
+  - |-
+    TagServiceImpl.md (NEW batch VAL-LSN-019 — service-tier
+    zero-auth confirmation):
+    concepts.invariants[Zero @PreAuthorize and zero programmatic
+    permission checks across all 168 lines] +
+    security.authorization_assertions[] (empty) +
+    security.known_security_gaps[Service-tier has ZERO authorization
+    checks] +
+    implicit_adrs[Tag-directory writes have NO service-tier
+    authorisation]
+  - |-
+    TagServiceImpl.java:31-167 (verified line-by-line: no @PreAuthorize,
+    no permissionService.*, no OwnerAuthorizationFacade, no
+    SecurityContextHolder)
+  - |-
+    Cross-references concept spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
+    (the WRITE half of this compound — strengthened by the explicit
+    enumeration of 4 call sites instead of the original 1-call-site
+    framing)
+  - |-
+    Cross-references concept namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths
+    (the architectural class — TAG_CREATE bypass is the second
+    member of the getOrCreate-as-side-door pattern; this invariant
+    closes the WRITE+READ picture for Tag specifically)
+  - |-
+    Cross-references concept read-collaborative-cross-owner-enumeration
+    (the open-read on getPopularTagList joins the catalogue of 24+
+    no-SecurityRule read surfaces; the read-side of THIS compound
+    bypass)
+  - |-
+    Cross-references concept audit-log-presence-asymmetry-2-tier-audit-story
+    (the Tag-directory mutations are Tier-2 unaudited; the compound
+    bypass is forensically dark)
+  - |-
+    Cross-references concept deletetag-cascade-asymmetric-orphans-tag-to-dataset-field
+    (sibling — the orphan rows after deleteTag are the
+    persistent shadow of this bypass; the operator's cleanup
+    doesn't undo the per-entity-tag-editor's side-door creations)
+  - |-
+    NEW batch VAL-LSN-019 — Cross-references concept
+    lsn-019-listmostpopular-name-vs-behavior-drift-pagination-precedes-ranking
+    (the open-read endpoint lies about its ordering; enumerator's
+    mental model is wrong; the defender's mental model is also wrong)
+
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+
+triangulation_count: 4
+cross_batch: true
+cross_batch_refs:
+  - batch-F (initial Tag side-door surfacing via createDataEntityTagsRelations)
+  - batch-K (TermServiceImpl.upsertTags side-door call site)
+  - batch-N (ReactiveTagRepositoryImpl — SQL-tier substrate)
+  - batch-U (TermController class-level — 3 side-door enumeration)
+  - batch-W (TagController class-level — 4-side-door + read-side closure, ORIGINAL INVARIANT)
+  - batch-VAL-LSN-019 (TagServiceImpl — service-tier zero-auth confirmation; LSN-019 cross-link)
+
+severity: HIGH
+severity_dim: security+policy-authoring
+
+mitigations_unimplemented:
+  - |-
+    SIMPLE FIX A (close the open-read): add a SecurityRule for
+    GET /api/tags at SecurityConstants.java:138-142, gated by
+    TAG_CREATE (or a new TAG_READ permission). Mirrors the
+    closed-read pattern on Owner-association-request (the only
+    GET endpoint currently in SECURITY_RULES).
+  - |-
+    SIMPLE FIX B (close the write side-door): refactor
+    tagService.getOrCreateTagsByName into two methods:
+      - getByName (no permission needed; pure read)
+      - createIfMissing (requires TAG_CREATE; novel-name path)
+    Call sites at the 4 side-door entry points then need to invoke
+    createIfMissing AND check the caller's TAG_CREATE permission
+    before bypassing. Same architectural fix as the namespace
+    side-door at batches U + W.
+  - |-
+    SIMPLE FIX C (introduce per-Tag namespace/ACL for multi-tenant
+    deployments): the Tag directory becomes namespace-scoped at the
+    SQL level; getPopularTagList filters by the caller's
+    namespace-scope; the side-doors mint within the per-entity-owner's
+    namespace. Higher-cost but resolves the cross-tenant pollution
+    class.
+  - |-
+    Document the compound bypass on the
+    /features/data-discovery/tagging live doc page. Operators
+    wiring RBAC policies need to know that DATA_ENTITY_TAGS_UPDATE
+    grants implicit TAG_CREATE for novel names. Surface as an
+    admonition block.
+  - |-
+    Add @ActivityLog to the 3 TagServiceImpl directory-mutation
+    methods (bulkCreate, update, delete). Requires
+    ActivityEventTypeDto to gain TAG_CREATED / TAG_UPDATED /
+    TAG_DELETED values (cross-link to
+    f-006-audit-silence-enum-rooted-deeper-than-schema-rooted).
+  - |-
+    Regression test: authenticate as a user with ONLY
+    DATA_ENTITY_TAGS_UPDATE on a single entity. Hit
+    GET /api/tags?size=999. Assert the response includes tags
+    from OTHER entities the user does not own. Hit
+    PUT /api/dataentities/{entity_id}/tags with a novel tag name.
+    Assert the next GET /api/tags shows the new tag. Pins the
+    current behaviour; once the fix lands, the test asserts
+    closed-read + closed-write.
+  - |-
+    Cross-pillar audit follow-up — enumerate every per-entity
+    write permission (DATA_ENTITY_TAGS_UPDATE, DATASET_FIELD_TAGS_UPDATE,
+    TERM_TAGS_UPDATE, DATA_ENTITY_TERMS_UPDATE, etc.) AND verify
+    whether each grants implicit creation of a directory primitive
+    (Tag, Term, Owner, Namespace, etc.). Same architectural class
+    as the existing cross-pillar follow-up from
+    namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths.
+
+notes: |-
+  STRENGTHENED batch VAL-LSN-019 (2026-05-20) — TagServiceImpl
+  service-tier zero-auth confirmation pins the design choice across
+  ALL nine public methods. The maintainer's explicit pattern (no
+  @PreAuthorize anywhere in the file; no programmatic permission
+  checks; the controller perimeter is the SOLE defence) is now
+  triple-anchored across controller + service + repository sidecars.
+
+  This invariant captures the FIRST controller-class-level
+  enumeration of the FULL bypass picture for the Tag directory.
+  Previous batches established each half separately:
+    - batch F-K-U focused on the WRITE side-door
+    - batches D-F-H-J-M established the read-collaborative posture
+      pattern across many surfaces (24+ corroborating sidecars)
+    - batch W was the FIRST controller-class-level confirmation that
+      THIS specific controller — TagController — exhibits BOTH halves
+      simultaneously, AND surfaces the architectural intent (the dual
+      create-shape design between bulk-explicit and upsert-side-door
+      is INTENTIONAL per implicit_adrs.[5])
+    - batch VAL-LSN-019 PROMOTES the architectural intent observation
+      to triple-anchored evidence — the service-tier confirms the
+      maintainer's INTENT (zero auth at this layer is by design) and
+      enumerates the FULL call-site graph (4 side-doors with their
+      respective per-feature permissions)
+
+  The architectural intent observation is load-bearing: the
+  maintainer wrote TWO distinct service methods (bulkCreate for
+  the gated path, getOrCreateTagsByName for the side-door) with
+  DIFFERENT conflict semantics. The choice was deliberate. The
+  question for the maintainer is: should the dual-method shape
+  REMAIN, with explicit TAG_CREATE-permission-gating added inside
+  getOrCreateTagsByName? Or should the dual shape be COLLAPSED
+  into a single bulkCreate-everywhere model that surfaces conflicts
+  uniformly?
+
+  Cross-cutting connections:
+    - STRENGTHENS spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
+      (the WRITE half — was 1-sidecar-1-call-site; now 1-sidecar-4-call-sites
+      with the architectural intent + the read-side context)
+    - Pairs with namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths
+      (the broader pattern — Tag is the FIRST closed picture for
+      this class; Namespace will follow when its read-side
+      surfaces are similarly enumerated)
+    - Pairs with read-collaborative-cross-owner-enumeration (the
+      24+ no-SecurityRule read surfaces; the open-read on
+      getPopularTagList is one of them — distinguished here by
+      composing with the write-side)
+    - Pairs with audit-log-presence-asymmetry-2-tier-audit-story
+      (the compound is forensically dark — neither side emits
+      Activity events for the directory mutations)
+    - Pairs with deletetag-cascade-asymmetric-orphans-tag-to-dataset-field
+      (the cascade asymmetry + the directory bypass
+      compound: per-entity-editor creates rows that operator
+      cleanup cannot remove)
+    - **NEW batch VAL-LSN-019** — pairs with
+      lsn-019-listmostpopular-name-vs-behavior-drift-pagination-precedes-ranking
+      (the open-read endpoint also LIES about its ordering — both
+      defenders and attackers have wrong mental models when they
+      enumerate the directory)
+
+  Four DOC-NNN candidates:
+    (a) /features/data-discovery/tagging — admonition on the
+        compound bypass; explicit text on which permissions
+        ACTUALLY gate which mutations
+    (b) /configuration-and-deployment/enable-security/authorization/permissions
+        — explicit text on DATA_ENTITY_TAGS_UPDATE granting
+        implicit TAG_CREATE for novel names; symmetric text for
+        the other 3 side-door permissions
+    (c) /features/management — Tag tab text on the read posture
+        (every authenticated user can enumerate; the popular-tags
+        UI surface reflects EVERYONE's tag-namespace use)
+    (d) /developer-guides/api-reference/tagging NEW page — the 4
+        endpoints + the 4 side-door surfaces + the cross-pillar
+        write paths

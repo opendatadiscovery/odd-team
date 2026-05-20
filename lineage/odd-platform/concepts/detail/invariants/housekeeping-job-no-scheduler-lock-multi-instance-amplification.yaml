@@ -1,0 +1,164 @@
+name: PostgreSQLSessionHousekeepingJob has NO @SchedulerLock — N-instance DB-load amplification
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20X — surfaces an operational
+  inconsistency in the platform's scheduled-jobs leader-election convention. The
+  PostgreSQLSessionHousekeepingJobHandler is the SOLE `@Scheduled` job in the
+  codebase WITHOUT leader-election (Postgres advisory lock or ShedLock
+  @SchedulerLock). The asymmetry produces N× DB load on multi-replica deployments
+  for the cleanup pass.
+
+  **THE PRIMARY SOURCE**:
+    PostgreSQLSessionHousekeepingJobHandler.java:13 declares
+    `@Scheduled(fixedRate = 1, timeUnit = TimeUnit.HOURS)` — fires the cleanup
+    hourly. There is NO `@SchedulerLock(name = ...)` annotation, NO Postgres
+    advisory-lock acquire/release wrapping, NO `@ConditionalOnProperty` gating
+    by an advisory-lock-id config key. Every replica runs the housekeeping job
+    every hour independently.
+
+  **THE CONVENTION THIS BREAKS**:
+    The platform's other scheduled background jobs ALL use leader-election:
+      - ActivityTablePartitionManager (boot-time partition creation + nightly
+        `@Scheduled(cron="0 1 0 * * *")`) — uses ShedLock
+        `partitionCreationJob` with lockAtLeastFor=10m / lockAtMostFor=10m
+        AND Postgres advisory lock id `partition.advisory-lock-id`
+        default 90
+      - NotificationSubscriberStarter — uses Postgres advisory lock id
+        `notifications.wal.advisory-lock-id` default 100; single-thread WAL
+        consumer
+      - DataCollaborationReceiveEventThread + DataCollaborationSenderMessageThread —
+        use two distinct advisory locks `datacollaboration.receive-event-advisory-lock-id`
+        default 110 + `datacollaboration.sender-message-advisory-lock-id`
+        default 120
+    Every other background job has a leader-elected single-thread execution
+    contract. The session housekeeping is the asymmetric outlier.
+
+  **OPERATIONAL CONSEQUENCE**:
+    On a 5-replica deployment under `session.provider=INTERNAL_POSTGRESQL`:
+      - 5 replicas × 1 housekeeping invocation per hour = 5 DELETE statements
+        per hour against `SPRING_SESSION` + `SPRING_SESSION_ATTRIBUTES`
+      - The deletes are IDEMPOTENT — the second DELETE in any given minute
+        sees no rows matching `expiry_time < now()` that the first DELETE
+        didn't already remove
+      - So the CORRECTNESS is OK, but the DB load is 5× the intended rate
+      - On a busier deployment the SAME job competes for connection-pool slots
+        against application traffic, briefly throttling the pool 5x per hour
+    The cost grows linearly with replica count.
+
+  **WHY IT MATTERS — INCONSISTENCY HARMS DEBUGABILITY**:
+    Operators reasoning about ODD's background-job semantics learn the
+    advisory-lock convention from the (4 of 5) jobs that use it. They reasonably
+    assume session housekeeping ALSO uses the convention. When debugging an
+    unexpected DB-side connection-pool spike, the natural mental model is
+    'leader-elected job ran' — but in the housekeeping case the spike is N×.
+    This is a latent diagnostic surface.
+
+  **AGGRAVATING FACTOR — `spring.session.timeout: -1` MAKES THE JOB A NO-OP**:
+    Compound finding with spring-session-timeout-minus-one-housekeeping-noop
+    (batch X). Under the shipped default the housekeeping does nothing — so
+    the lack of leader-election produces N× no-ops, not N× actual deletes.
+    This MITIGATES the immediate impact at default settings but the gap
+    SURFACES the moment an operator switches to a finite session timeout
+    (the recommended posture for production). In other words, the missing
+    @SchedulerLock is benign under defaults but becomes the operational gap
+    the moment operators harden their session timeout.
+
+  **SEVERITY**: MEDIUM — operational inconsistency / observability hazard rather
+  than correctness bug. The deletes are idempotent so duplicate execution does
+  not corrupt state, but the inconsistency violates the platform's own
+  leader-election convention AND amplifies DB load on multi-replica deployments
+  under finite session timeouts.
+nodes:
+- odd-platform java SessionConfiguration config-class:SessionConfiguration
+- odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
+- odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+- odd-platform java org.opendatadiscovery.oddplatform.datacollaboration.config config-properties-class:DataCollaborationProperties
+contributors:
+- |-
+  SessionConfiguration batch X (PRIMARY SOURCE for the missing @SchedulerLock):
+    performance.scaling_characteristics — pinpoints the inconsistency vs the
+    rest of the platform's @Scheduled jobs which DO use advisory locks
+    + performance.known_performance_gaps.[0] — MEDIUM operational-inconsistency
+    severity classification
+- |-
+  PostgreSQLSessionHousekeepingJobHandler.java:13 — primary-source citation
+  of the missing `@SchedulerLock` annotation (only `@Scheduled(fixedRate=1,
+  timeUnit=TimeUnit.HOURS)`)
+- |-
+  ActivityTablePartitionManager + NotificationsProperties + DataCollaborationProperties
+  (existing concept entries): the convention this asymmetry departs from —
+  ShedLock + Postgres advisory locks per subsystem
+evidence:
+- |-
+  SessionConfiguration.md:performance.scaling_characteristics — explicit
+  citation of the inconsistency + the four contrasting advisory-lock-using
+  jobs across the codebase
+- |-
+  SessionConfiguration.md:performance.known_performance_gaps.[0] —
+  MEDIUM severity classification
+- |-
+  PostgreSQLSessionHousekeepingJobHandler.java:13 — primary source confirming
+  the @Scheduled annotation with NO @SchedulerLock
+- |-
+  application.yml:177 (notifications.wal.advisory-lock-id pattern), 198
+  (partition advisory-lock pattern), 201-202 (data-collaboration advisory-locks
+  pattern) — the convention this housekeeping departs from
+- |-
+  retrospectives — operational hygiene case-law informing the convention
+axes_present:
+- config_classes
+- config_prefixes
+triangulation_count: 4
+cross_batch: true
+severity: MEDIUM
+severity_dim: operational-leader-election-inconsistency
+mitigations_unimplemented:
+- |-
+  Code-side: add `@SchedulerLock(name = "sessionHousekeepingJob",
+  lockAtLeastFor = "10m", lockAtMostFor = "1h")` to
+  PostgreSQLSessionHousekeepingJobHandler.java:13. Aligns with the
+  ActivityTablePartitionManager pattern. ShedLock is already on the classpath
+  per the partition pattern.
+- |-
+  Code-side alternative: add a `spring.session.housekeeping.advisory-lock-id`
+  config key (default e.g. 130 — fifth slot in the platform's advisory-lock
+  registry alongside 90/100/110/120) AND wrap the DELETE in a
+  PostgresLeaderElectionManager block. Pattern parity with NotificationSubscriberStarter +
+  DataCollaboration's two background threads.
+- |-
+  Cross-cutting hardening: add a startup-time `AdvisoryLockIdRegistryValidator`
+  `@PostConstruct` that asserts all advisory-lock-ids are distinct AND warns
+  if any scheduled job lacks leader-election. This is also the recommended
+  remediation for the advisory-lock-id-collision-risk-across-subsystems
+  cross-cutting invariant.
+- |-
+  Doc-side: extend /configuration-and-deployment/odd-platform to publish the
+  advisory-lock-id registry — list all four (and proposed fifth) IDs by
+  convention, the operator-tunable knobs, and the cross-subsystem distinctness
+  requirement.
+notes: |-
+  NEW MEDIUM-SEVERITY INVARIANT captured in batch 2026-05-20X surfaced by the
+  SessionConfiguration sidecar's cross-cutting examination of the @Scheduled
+  job ecology. The asymmetry — 4 of 5 scheduled jobs use leader-election, the
+  session housekeeping does not — is the kind of operational-inconsistency
+  finding that surfaces only when the maintainer holds the cross-subsystem
+  picture in mind. Single-file analysis would not catch it.
+
+  Cross-cutting connections:
+    - spring-session-timeout-minus-one-housekeeping-noop (batch X) — sibling
+      finding on the same housekeeping job; this invariant's impact is
+      mitigated by the no-op compound at shipped defaults
+    - advisory-lock-id-collision-risk-across-subsystems — would be PROMOTED
+      to 4-subsystem (currently 3-subsystem) when the session-housekeeping
+      lock is added per the recommended remediation
+    - The platform's @Scheduled-job-uses-leader-election convention is itself
+      an implicit ADR worth surfacing — the consistency across 4 jobs
+      encodes intent
+
+  One DOC-NNN candidate:
+    Cross-link the advisory-lock-id registry as an operator-facing reference
+    on the configuration page. The four existing IDs (90/100/110/120) are
+    convention-only without a single docs surface naming them.

@@ -1,0 +1,77 @@
+gap_id: TEST-GAP-824
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java IngestionController controller-method:ingestMetrics"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "ingestMetrics.md:concepts.invariants.[3] (tenant-id at extractor only)"
+  - "ingestMetrics.md:bugs_limitations_corner_cases.[2] MEDIUM (no per-tenant scoping at controller)"
+  - "ingestMetrics.md:security.known_security_gaps.[3] MEDIUM (Tenant isolation BYPASSED on INTERNAL_POSTGRES)"
+  - "ingestMetrics.md:tests_coverage_semantic.uncovered_behaviours.[4]"
+behaviour: |-
+  **CRITICAL — Multi-tenant isolation NONEXISTENT on `metrics.storage=INTERNAL_POSTGRES` (the default-on backend). The `odd.tenant-id` config property is a Prometheus-mode-only label; on the default backend, all tenants share one untyped Postgres namespace.**
+
+  **Mechanism**:
+  - `odd.tenant-id` (`application.yml:208-210`, default empty) is consumed at **extractor bean construction** via `@Value("${odd.tenant-id}")` — `CounterTimeSeriesExtractor.java:22-25` etc.
+  - The PROMETHEUS-side extractors APPEND `tenant_id={value}` as a label on every TimeSeries written to the external Prometheus.
+  - The INTERNAL_POSTGRES-side extractors / repository chain DO NOT REFERENCE `tenant_id` at all — `metric_series`, `metric_point`, `metric_family`, `metric_label`, `metric_label_value`, `metric_entity` tables have NO `tenant_id` column (verified at JOOQ POJO level — `MetricEntityPojo`, `MetricFamilyPojo`, `MetricLabelPojo`, `MetricLabelValuePojo`, `MetricPointPojo`, `MetricSeriesPojo` do not declare tenant fields per `InternalIngestionMetricsServiceImpl.java:39-44`).
+
+  **Operator-pain chain**:
+  1. Operator configures `odd.tenant-id=tenantA` AND `metrics.storage=INTERNAL_POSTGRES` (the default) — believing they have enabled multi-tenant isolation.
+  2. Operator deploys 3 instances of ODD (one per tenant) against the same Postgres cluster.
+  3. All 3 instances write metrics to the same `metric_series` / `metric_point` tables with no `tenant_id` column.
+  4. Tenant A's data scientists see Tenant B's metrics in their per-DataEntity Metrics tab — no isolation.
+  5. The live `/configuration-and-deployment/odd-platform` page (WebFetched 2026-05-20 per ingestMetrics.md docs_link_semantic.inferred_docs.[0]) describes `odd.tenant-id` as "tenant identifier appended as a Prometheus query label" — implicitly Prometheus-only — but does NOT explicitly state that INTERNAL_POSTGRES ignores it. Operators consulting the docs may believe `odd.tenant-id` is universal.
+
+  **Why CRITICAL** (the sidecar rates MEDIUM):
+  - Tenant isolation is a load-bearing security property in any multi-tenant deployment.
+  - The asymmetry between PROMETHEUS (isolation applied) and INTERNAL_POSTGRES (isolation absent) **inverts** the operator's mental model — the DEFAULT mode is the LESS SECURE one. LSN-001 class: a sensible-looking default produces silent data leak.
+  - The leak is **multi-tenant cross-organisation** — far worse than the single-org cross-owner leak class (REFACTOR-024) because tenants are usually different customer organisations.
+  - Combined with TEST-GAP-823 (unauthenticated metrics write), an attacker on tenant A can deliberately POLLUTE tenant B's metrics namespace.
+
+  **Test gap shape**: integration test that:
+  1. Configures `odd.tenant-id=tenantA` + `metrics.storage=INTERNAL_POSTGRES`.
+  2. Posts metrics for ODDRN `urn:..:tenantB:some-entity` (i.e. another tenant's ODDRN).
+  3. Asserts the metric_series / metric_point rows are written with NO tenant scoping.
+  4. Asserts a tenant-B-configured ODD instance reading the same Postgres sees the polluted data.
+
+  PINS the absence of isolation; pairs with REFACTOR-NNN (add `tenant_id` column + scope) and DOC-GAP-NNN (live docs explicitly state INTERNAL_POSTGRES has no tenant isolation).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestMetricsInternalPostgresTenantIdAbsentTenantIsolationLeakTest.java"
+  name: "post_metricsForOtherTenantsOddrn_internalPostgresWritesUnscoped_pinsTenantIsolationAbsent"
+evidence:
+  - "ingestMetrics.md says (concepts.invariants.[3]): 'Per-tenant scoping is BY-LABEL-CONVENTION at the EXTRACTOR layer, not enforced at the controller. The controller passes MetricSetList verbatim; the downstream service splits into per-MetricType extractors which read odd.tenant-id at bean construction (@Value(\"${odd.tenant-id}\")) and append tenant_id={value} as a Prometheus label (PROMETHEUS path) or do nothing tenant-related (INTERNAL_POSTGRES path — there is no tenant_id column on metric_series / metric_point tables).'"
+  - "ingestMetrics.md says (security.known_security_gaps.[3]): 'Tenant isolation BYPASSED on INTERNAL_POSTGRES storage. The odd.tenant-id mechanism applies ONLY to the PROMETHEUS path. The INTERNAL_POSTGRES path has no tenant_id column on metric_series / metric_point tables. A deployment that configures odd.tenant-id=tenantA AND metrics.storage=INTERNAL_POSTGRES STILL writes all metrics into one untyped Postgres namespace — there is NO multi-tenant isolation on the default storage backend.' (severity MEDIUM)"
+  - "Verified at primary source: InternalIngestionMetricsServiceImpl.java:1-295 (no tenant_id field in any JOOQ POJO) + CounterTimeSeriesExtractor.java:22-25 (PROMETHEUS-side only) + application.yml:208-210 (odd.tenant-id default empty)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-05-20 status 200 — describes odd.tenant-id as Prometheus-label-related; SILENT on INTERNAL_POSTGRES no-isolation"
+cross_references:
+  - "TEST-GAP-823 (sister — unauthenticated reach; together with this entry forms the attacker-pollutes-tenant-B blast radius)"
+  - "TEST-GAP-825 (sister — ODDRN-by-payload cardinality DoS; the no-isolation lets pollution cross tenant boundaries trivially)"
+  - "concepts/detail/entities/multi-tenant-configuration-odd-tenant-id (the concept this entry's evidence STRENGTHENS — the concept should gain a `storage_backend_asymmetry` weakness)"
+  - "system-mission.md canonicalisation_candidates[2] — 'Multi-Tenant Metrics Storage' pillar candidate; this entry is evidence that the candidate is operationally LOAD-BEARING"
+  - "LSN-001 (default-silently-misconfigured class)"
+  - "REFACTOR-NNN (proposed): either add tenant_id column + scope to INTERNAL_POSTGRES OR remove `odd.tenant-id` from the PROMETHEUS path AND document the deliberate single-tenancy stance"
+  - "DOC-GAP-NNN (proposed): live odd-platform.md page must explicitly state INTERNAL_POSTGRES has NO tenant isolation"
+related_features: [F-008]
+related_pillar_features: ["P-07:metrics-ingestion", "P-09:Security & Access Control"]
+proposed_action: |-
+  Add `IngestMetricsInternalPostgresTenantIdAbsentTenantIsolationLeakTest`. Testcontainers integration test:
+
+  1. **Setup A**: ODD instance configured `odd.tenant-id=tenantA`, `metrics.storage=INTERNAL_POSTGRES`. Same Postgres testcontainer shared with Setup B.
+  2. **Setup B**: ODD instance (different bean profile) configured `odd.tenant-id=tenantB`, `metrics.storage=INTERNAL_POSTGRES`. Same Postgres.
+  3. **From A**: POST metrics for ODDRN `urn:..:tenantA:entity-A1` with labels `{tenant_id: "tenantA"}`.
+  4. **From B**: POST metrics for ODDRN `urn:..:tenantB:entity-B1` with labels `{tenant_id: "tenantB"}`.
+  5. **Cross-poll**: from A, POST metrics for ODDRN `urn:..:tenantB:entity-B1` (using tenant B's ODDRN) — assert 201 (pin no controller-side rejection).
+  6. **Assert leak**:
+     - `SELECT count(*) FROM metric_series` returns 3 rows — A, B, and A's cross-tenant write.
+     - From B, `GET /api/dataentities/{B1.id}/metrics` returns BOTH B's metrics AND A's polluted metrics — pins the cross-tenant visibility.
+     - From A, `GET /api/dataentities/{B1.id}/metrics` (if B1 is somehow visible to A) returns its own pollution back.
+  7. **Comparison sister**: same setup but `metrics.storage=PROMETHEUS` (against a Prometheus testcontainer) — assert tenant_id label IS appended and queries with the wrong tenant_id return empty. PINS the storage-asymmetry.
+
+  Pair with REFACTOR-NNN, DOC-GAP-NNN, and a concept-merger pass to add `storage_backend_asymmetry` to the `multi-tenant-configuration-odd-tenant-id` entity weakness.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. The sidecar's batch-Z `bugs_limitations_corner_cases.[2]` rates this MEDIUM; promoted to CRITICAL here per the multi-tenant cross-org impact analysis above. SUPERSEDES NOTHING — no prior TEST-GAP names tenant_id-absent on INTERNAL_POSTGRES. STRENGTHENS the `multi-tenant-configuration-odd-tenant-id` concept entry by adding the storage_backend_asymmetry weakness. STRENGTHENS system-mission.md canonicalisation_candidates[2] by providing the operational evidence the candidate currently lacks.
+batch: 2026-05-20-Z
+feature_id: F-008

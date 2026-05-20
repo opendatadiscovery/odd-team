@@ -24,3 +24,48 @@
   - the dispatcher's per-sender catch handles `NotificationSenderException` (which is what a Slack 429 raises through `AbstractNotificationSender.java:24-29`) by logging at ERROR and continuing — the alert is GONE from that channel for that message.
   - the WAL-stream backpressure exists only INSIDE the platform (the WAL queue grows while `process()` blocks); outbound delivery has zero backpressure mechanism.
 - 3-sidecar triangulation status: NotificationsProperties (config layer) + NotificationsDispatcher (runtime dispatcher layer) + Notifications doc page (operator-facing). Three layers, one gap. Doc-side action stands; severity stays HIGH.
+
+## Batch Y append
+
+#### Batch 2026-05-20-Y STRENGTHENS — Slack 429 Retry-After IGNORED is now sender-class PRIMARY SOURCE; the rate-limit silence is structurally committed at the sender + parent layer
+
+- Batch Y adds the **SlackNotificationSender sender-class sidecar + AbstractNotificationSender parent-class evidence** as the canonical primary source for the Slack 429 Retry-After silence. Previously DOC-GAP-054 framed the rate-limit absence as a subsystem-level operational gap; batch Y reveals the structural commitment is at the sender + parent tier.
+- **SlackNotificationSender.java:43-48** (NEW batch Y primary source — the `send` method body): the HttpRequest construction calls only `.uri(slackWebhookUrl)` + `.POST(BodyPublishers.ofByteArray(serializePayload(message)))` + `.build()`. NO `.header("Retry-After", ...)` read after send (which would not be applicable on outbound; the Retry-After is a response header), NO inspection of the response status code class (the parent's `sendAndValidate` at AbstractNotificationSender.java:24-29 checks `response.statusCode() != HttpStatus.OK.value()` — exactly 200), NO branch on 429-specifically, NO `Retry-After` header read from the HttpResponse, NO local sleep + retry, NO per-status-class handling.
+- **AbstractNotificationSender.java:24-29** (NEW batch Y primary source — verbatim the parent's `sendAndValidate` body): `final HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString()); if (response.statusCode() != HttpStatus.OK.value()) { throw new NotificationSenderException("Notification sender response didn't complete with 200 status code"); }`. The parent treats 429 EXACTLY identically to 400 / 403 / 500 / 503: throws NotificationSenderException with the same message string, no body / status-code / header information preserved.
+- **The structural insight from batch Y**: the rate-limit silence is committed at THREE distinct code locations, none of which look at the response body or status code class:
+  1. **SlackNotificationSender.send** (line 43-48) — does NOT read the response Retry-After header
+  2. **AbstractNotificationSender.sendAndValidate** (line 24-29) — does NOT branch on status code class; treats 429 as just "not 200"
+  3. **AlertNotificationMessageProcessor.process** (line 30-35 per batch-K sidecar — the dispatcher) — logs the failure with `log.error` and proceeds to the next sender; no retry, no backoff, no rate-cap, no token bucket
+- **Slack's documented rate-limit behaviour** (cross-link to public Slack incoming-webhooks docs): ~1 message per second per webhook with short-burst tolerance. On excess, Slack returns `429 Too Many Requests` with a `Retry-After: N` header (where N is seconds). Slack documents that workspaces respecting Retry-After avoid backoff penalties; workspaces ignoring Retry-After get extended rate-limit windows. ODD's behaviour (ignore the header, retry the NEXT alert at the same cadence) makes the rate-limit DURATION extend — operators with bursty alerts see the platform stop delivering Slack notifications for the entire workspace-imposed rate-limit window (which can be minutes).
+- **The operator-impact narrative** (per batch-Y SlackNotificationSender sidecar `bugs_limitations_corner_cases.[0]`): "Operators with high-cardinality alert bursts (e.g. a single failed dbt run that produces 50+ alerts) will silently lose most of them to rate-limiting with no operator-visible signal beyond the log-line." The compound is:
+  - Alert burst arrives (50 alerts in 30 seconds)
+  - SlackNotificationSender attempts 50 sequential POSTs (no batching, no rate-limit, no token bucket)
+  - Slack returns 200 for ~5-10 of the 50 (the short-burst tolerance)
+  - Slack returns 429 for the remaining 40-45, each with a Retry-After header
+  - SlackNotificationSender treats each 429 as `NotificationSenderException("response didn't complete with 200 status code")`
+  - The dispatcher logs each failure with `log.error("Error occurred while sending notification via Slack")`
+  - The alerts are GONE from the Slack channel — no retry, no backoff, no DLQ
+  - The operator sees 5-10 Slack alerts (the lucky ones); the remaining 40-45 alerts are visible only in the application log
+- **The compound with DOC-GAP-237 (WAL retention)**: the 429-rate-limited alerts DO advance the LSN (because the dispatcher catches NotificationSenderException and proceeds to the next sender — the loop completes successfully from the WAL stream's perspective). So 429-rate-limit is NOT a WAL-retention pathology. The compound is at the OPERATOR-TRUST layer: alerts SILENTLY DROPPED with no replay, no DLQ, no audit.
+- **The compound with DOC-GAP-055 (no audit trail)**: combined with no audit, operators have NO way to answer "how many alerts were rate-limited on Slack between 14:00 and 14:30 yesterday?" The platform's only signal is `log.error` lines containing the literal substring `Notification sender Slack:`; operators must grep / parse / aggregate the application logs to count rate-limited alerts.
+- Doc-side action expands to:
+  - **`features/active-platform-features/notifications.md`** (the existing DOC-GAP-054 admonition): the "Operational limits — No rate-limiting" admonition gains a sub-bullet specific to Slack: "**Slack's documented rate limit is ~1 message per second per incoming webhook URL with short-burst tolerance. ODD does NOT respect Slack's `Retry-After` response header — every 429 is treated identically to a 400 / 500 error: logged at ERROR level, alert dropped from the Slack channel, no retry. Operators with bursty alert generation (e.g. 50+ alerts in 30 seconds from a single failed dbt run) will see ~5-10 alerts delivered to Slack and the remaining 40-45 silently lost. Mitigation: implement upstream alert-deduplication / suppression / windowing BEFORE the alerts reach ODD, OR run ODD against an internal Slack-relay service that respects Retry-After on behalf of the platform.**"
+  - **NEW batch Y companion**: name the file-line evidence for the 429 silence: `SlackNotificationSender.java:43-48` (HttpRequest builder) + `AbstractNotificationSender.java:24-29` (status check) — the operator who reads the code can see exactly where the silence is committed.
+- Code-side option gains a NEW DIMENSION at batch Y: a Slack-specific 429-handler that:
+  - Reads the `Retry-After` response header on 429 status
+  - Sleeps for the indicated duration (capped at e.g. 60 seconds)
+  - Retries the SAME alert ONCE
+  - On second 429: logs at WARN + drops the alert + emits a `notification_rate_limited_total{channel="Slack"}` counter
+  - This is a Slack-specific (not general) mitigation; the webhook + email channels have different rate-limit semantics (webhook receivers vary; email is unbounded but vulnerable to relay-side rate caps)
+- The META is now **3-sidecar triangulated at the rate-limit dimension** (was 2 at batch K):
+  - **NotificationsProperties** batch C (the config-tier — no rate-limit knob)
+  - **NotificationsDispatcher** batch K (the dispatcher-tier — synchronous fan-out, no token bucket)
+  - **SlackNotificationSender** batch Y NEW (the SENDER-tier — no Retry-After read, no per-status branch)
+  - 3-tier coverage: CONFIG (no knob) ↔ DISPATCHER (no token bucket) ↔ SENDER (no Retry-After). The fix must live at MULTIPLE tiers; the SENDER-tier fix (read Retry-After) addresses Slack-specifically; the DISPATCHER-tier fix (token bucket) addresses cross-channel; the CONFIG-tier fix (operator-tunable rate cap) addresses the doc-product policy.
+- Severity stays HIGH — the rate-limit silence is the load-bearing operational defect for Slack-heavy deployments. Batch Y reconfirms HIGH; coherence: STRENGTHENS, no contradiction.
+- Cross-references gained:
+  - **DOC-GAP-237** (NEW batch Y — WAL retention disk exhaustion) — sibling: rate-limit drop is NOT a WAL-pin pathology (LSN advances normally); the two failure modes are orthogonal but both reduce to "alerts silently lost"
+  - **DOC-GAP-055** (no audit trail of delivery) — sibling: combined with rate-limit silence, operators cannot answer "how many alerts were lost to rate-limiting?"
+  - **DOC-GAP-230** (HttpClient no timeouts) — sibling structural defect: the shared HttpClient bean has no timeouts AND the dispatcher has no rate-limit; both are HttpClient-tier gaps
+  - **LSN-017** (per-node-scan-cannot-see-cross-layer-user-effects) — case-law: the 3-tier triangulation (config / dispatcher / sender) is exactly the cross-layer composition LSN-017 names
+  - **LSN-018** (cross-batch reducer coherence) — case-law: batch Y's SlackNotificationSender sidecar correctly STRENGTHENS DOC-GAP-054 without contradiction

@@ -1,0 +1,213 @@
+name: |-
+  Cross-controller permission split — QueryExample owns _CREATE/_UPDATE/_DELETE, DataEntity owns _DATASET_*, Term owns _TERM_* link permissions (pattern invariant from batch V)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-02
+  - P-06
+  - P-09
+description: |-
+  NEW PATTERN INVARIANT, batch 2026-05-20V — surfaces a structural pattern
+  visible only by cross-reading the QueryExampleController + DataEntityController
+  + TermController SecurityRules layout. The 7-permission Query Examples grid
+  (per the live docs at /features/data-modelling/query-examples) is INTENTIONALLY
+  SPLIT across THREE controllers, mirroring the resource the permission scopes.
+
+  THE SPLIT — file:line citations from the QueryExampleController batch V
+  sidecar and corroborating evidence from existing TermController sidecar:
+
+    Cluster 1 — Query Example itself (CRUD):
+      QUERY_EXAMPLE_CREATE — gated at QueryExampleController.createQueryExamples
+        via SecurityConstants.java:112-113 (NO_CONTEXT resolver since the
+        example doesn't yet exist)
+      QUERY_EXAMPLE_UPDATE — gated at QueryExampleController.updateQueryExample
+        via SecurityConstants.java:312-314 (QUERY_EXAMPLE resource extractor;
+        resolves the per-example policy context via QueryExamplePermissionExtractor)
+      QUERY_EXAMPLE_DELETE — gated at QueryExampleController.deleteQueryExample
+        via SecurityConstants.java:315-317 (QUERY_EXAMPLE resource extractor)
+
+    Cluster 2 — Query Example to Dataset linkage:
+      QUERY_EXAMPLE_DATASET_CREATE — gated at DataEntityController.createQueryExampleToDatasetRelationshipNew
+        via SecurityConstants.java:318-321 (DATA_ENTITY resource extractor)
+      QUERY_EXAMPLE_DATASET_DELETE — gated at DataEntityController.deleteQueryExampleToDatasetRelationshipNew
+        via SecurityConstants.java:322-324 (DATA_ENTITY resource extractor)
+
+    Cluster 3 — Query Example to Term linkage:
+      QUERY_EXAMPLE_TERM_CREATE — gated at TermController.createQueryExampleToTermRelationship
+        via SecurityConstants.java:187-189 (TERM resource extractor)
+      QUERY_EXAMPLE_TERM_DELETE — gated at TermController.deleteQueryExampleToTermRelationship
+        via SecurityConstants.java:190-192 (TERM resource extractor)
+
+  THE LOAD-BEARING DESIGN OBSERVATIONS:
+
+    Resolver-coupling drives the split:
+      - QUERY_EXAMPLE_* permissions use QUERY_EXAMPLE resolver — keyed on
+        example_id; the resource is the example itself.
+      - QUERY_EXAMPLE_DATASET_* permissions use DATA_ENTITY resolver —
+        keyed on data_entity_id; the resource is the dataset, not the
+        example. Granting QUERY_EXAMPLE_DATASET_CREATE on a Policy applies
+        to a SPECIFIC dataset (the one being linked), not to all datasets.
+      - QUERY_EXAMPLE_TERM_* permissions use TERM resolver — keyed on
+        term_id; granting QUERY_EXAMPLE_TERM_CREATE applies to the SPECIFIC
+        term being linked.
+
+    Operator-side consequence:
+      Policies can scope linkage permissions FINELY: 'allow user U to
+      attach query examples to datasets owned by team A but not team B'
+      via Policy with QUERY_EXAMPLE_DATASET_CREATE on datasets owned by A.
+      The split makes this kind of fine-scope possible.
+
+    Doc-side framing:
+      The live docs at /features/data-modelling/query-examples present
+      the 7 permissions as a flat grid. The split is INVISIBLE in the doc
+      — an operator reading the page sees 7 permissions and assumes they're
+      enforced uniformly. The actual enforcement runs through 3 different
+      controllers + 3 different resource extractors + 3 different
+      DTOs at the SecurityConstants level.
+
+  THE GENERALISED PATTERN — observed in 3 sub-graphs:
+
+    Sub-graph 1 — Query Examples (batch V — primary observation):
+      QueryExampleController owns CREATE/UPDATE/DELETE on the example itself
+      DataEntityController owns DATASET_CREATE/DELETE on the (example,dataset) link
+      TermController owns TERM_CREATE/DELETE on the (example,term) link
+
+    Sub-graph 2 — Terms (batch K + batch U):
+      TermController owns TERM_CREATE/UPDATE/DELETE on the term itself
+      DataEntityController owns DATA_ENTITY_ADD_TERM/_REMOVE_TERM on the
+        (term,entity) link
+      DatasetFieldController owns DATASET_FIELD_ADD_TERM/_REMOVE_TERM on
+        the (term,field) link
+        — and Failure 4 from the SecurityConstants 5-failure invariant is
+        the WRONG permission wired at this surface
+
+    Sub-graph 3 — Attachments (batch V — DataEntityAttachmentController):
+      DataEntityAttachmentController owns DATA_ENTITY_ATTACHMENT_MANAGE
+        on attachments scoped to the parent DataEntity. There is no separate
+        Attachment-CRUD controller; attachments are inherently child entities
+        of DataEntity. The pattern here is COLLAPSED rather than SPLIT —
+        attachment owns no top-level resource because it doesn't exist
+        independently of its parent.
+
+  THE LSN-018 RULE-6 OBSERVATION:
+
+    Operator-facing docs MUST disclose the split. The current doc surface
+    (single flat grid of permissions per feature) hides where each permission
+    is enforced; a Policy author cannot determine the resource scope from
+    docs alone. Two doc-NNN candidates flow:
+      (a) Each feature's permission grid should show the resolver
+          (QUERY_EXAMPLE / DATA_ENTITY / TERM) alongside the permission
+          name — operators authoring Policies need this to scope correctly.
+      (b) The SecurityConstants wiring failure modes (the 5-failure invariant)
+          become more discoverable when paired with the cross-controller
+          split observation — wrong-resolver wiring would be visible at
+          docs-vs-code review.
+
+  SEVERITY: LOW (the split itself is sound design; the finding is the doc-side
+  invisibility + the operator-facing risk that fine-scope Policy authoring is
+  not enabled by the current documentation). This invariant promotes the
+  observation to a first-class catalog entry for cross-pillar discoverability.
+nodes:
+  - odd-platform java QueryExampleController controller-class:QueryExampleController
+  - odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityController
+  - odd-platform java TermController controller-class:TermController
+contributors:
+  - |-
+    QueryExampleController batch V (PRIMARY SOURCE for the QueryExample
+    sub-graph):
+    concepts.invariants.[5] (3-of-13 endpoint gating asymmetry — the 3
+    gated endpoints are CREATE/UPDATE/DELETE; the doc's 7-permission grid
+    is partial for this controller; the other 4 apply on DataEntityController
+    and TermController) +
+    concepts.entities.note-on-what-is-NOT-here (explicit cross-controller
+    boundary statement: linkage CRUD lives on the OTHER controllers, NOT
+    here) +
+    dependencies_semantic.requires-feature[P-09 Security & Access Control] +
+    dependencies_semantic.requires-feature[P-06:F-001 Term-to-Entity Linkage]
+evidence:
+  - |-
+    QueryExampleController.md:concepts.invariants[5] — the 7-permission
+    split anchored at SecurityConstants.java:112-113 + 312-317 (3 here) +
+    DataEntityController :318-324 (2 there) + TermController :187-193 (2
+    there)
+  - |-
+    QueryExampleController.md:concepts.entities[note-on-what-is-NOT-here] —
+    explicit boundary statement
+  - |-
+    QueryExampleController.md:dependencies_semantic — cross-pillar coupling
+  - |-
+    Cross-references existing batch-K TermController sidecar (the Terms
+    sub-graph observation)
+  - |-
+    Cross-references existing batch-V DataEntityAttachmentController sidecar
+    (the Attachments collapsed pattern)
+  - |-
+    Cross-references the 5-failure SecurityConstants invariant
+    (securityconstants-wiring-failures-count-grows-to-5-fourth-and-fifth-from-batch-v) —
+    one of the 5 failures (Failure 4) is a wrong-resolver wiring at the
+    DatasetFieldController /terms POST endpoint
+axes_present:
+  - controllers
+triangulation_count: 3
+cross_batch: true
+cross_batch_refs:
+  - batch-F (DataEntityController createQueryExampleToDatasetRelationshipNew)
+  - batch-K (TermController initial pattern observation)
+  - batch-U (TermController batch U strengthening)
+  - batch-V (QueryExampleController + DatasetFieldController + ReferenceDataController + DataEntityAttachmentController + OwnerAssociationRequestController class-level sidecars all confirm the cross-controller pattern, THIS INVARIANT)
+severity: LOW
+severity_dim: doc-discoverability
+mitigations_unimplemented:
+  - |-
+    Doc enhancement — every feature's permission grid in the
+    /configuration-and-deployment/enable-security/authorization/permissions
+    page should annotate each permission with its resolver (QUERY_EXAMPLE /
+    DATA_ENTITY / TERM / DATASET_FIELD / NO_CONTEXT). Operators authoring
+    Policies need this to scope correctly.
+  - |-
+    Doc enhancement — feature-pillar pages (e.g. data-modelling/query-examples,
+    data-glossary, data-discovery) should disclose the cross-controller
+    split — when a permission lives on a DIFFERENT controller than the
+    feature's primary surface, that should be visible to operators reading
+    the feature page.
+  - |-
+    Code annotation — add JavaDoc-style cross-references on the controller
+    methods that own non-self-resource permissions (e.g.
+    DataEntityController.createQueryExampleToDatasetRelationshipNew should
+    have a JavaDoc note: 'gates QUERY_EXAMPLE_DATASET_CREATE — owned by
+    this controller because the resolver is DATA_ENTITY (dataset-scoped),
+    not QUERY_EXAMPLE'). The annotation gives the next code reader the
+    architectural intent.
+  - |-
+    Build-time scanner Rule R2 (from the 5-failure SecurityConstants
+    invariant) — every SecurityRule's resource-extractor MUST match the
+    permission's documented scope. The R2 rule subsumes the pattern: if
+    QUERY_EXAMPLE_DATASET_CREATE is documented as 'scoped to dataset', the
+    resolver must be DATA_ENTITY. Catches wrong-resolver wiring at build
+    time.
+notes: |-
+  NEW pattern invariant captured in batch 2026-05-20V from the
+  QueryExampleController class-level sidecar's cross-controller observation,
+  triangulated against TermController batches K + U and against the
+  DatasetFieldController batch V SecurityConstants finding. The pattern
+  is structural — visible only by cross-reading three controllers'
+  SecurityRules layouts — and previously implicit in the catalog.
+
+  Cross-cutting connections:
+    - 5-failure SecurityConstants invariant: securityconstants-wiring-failures-count-grows-to-5-fourth-and-fifth-from-batch-v
+      (Failure 4 — wrong resolver at the DatasetFieldController /terms POST
+      endpoint — is a direct violation of this pattern)
+    - Build-time scanner Rule R2: the proposed name-prefix consistency
+      check turns the implicit pattern into an enforced invariant
+    - Doc gap on the canonical permissions page: operators reading the
+      flat grid can't infer the resolver
+
+  Two DOC-NNN candidates flow:
+    (a) Annotate each permission with its resolver on the live
+        /authorization/permissions page
+    (b) Disclose the cross-controller split on each feature-pillar page
+
+  The pattern itself is SOUND architecture — fine-scope Policy authoring
+  IS possible because of the split — but the cost of that capability is
+  poor doc discoverability and the build-time-scanner-absent failure
+  mode the 5-failure invariant catalogs.

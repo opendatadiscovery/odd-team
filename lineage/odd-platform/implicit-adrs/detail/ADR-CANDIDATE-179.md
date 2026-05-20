@@ -1,0 +1,40 @@
+## ADR-CANDIDATE-179 — Leader-elected single-writer-per-cluster via Postgres advisory lock — no external coordinator (Zookeeper / Redis / Consul), atomic lock-leak prevention via JDBC connection close
+
+**Severity**: HIGH
+**Classification**: promote (NEW ADR; POSITIVE-INTENT — deliberate "Postgres is the only runtime dependency" stance)
+**Pillars affected**: [P-07-active-platform-features (Notifications sub-feature), P-10-deployment-architecture (HA / single-leader topology)]
+**Support count**: 1 sidecar primary source (batch Y NotificationSubscriber) + cross-batch corroboration with ADR-CANDIDATE-020 (Data Collaboration decoupled outbound delivery — "Postgres-as-only-runtime-dependency" stance) + ADR-CANDIDATE-043 (single-leader WAL — sibling decision)
+**Axes present**: notification, leaderelection
+**Batch**: Y (2026-05-20)
+
+**Surfaced by**:
+- `NotificationSubscriber.md:implicit_adrs.[2]` (HIGH) — "**Leader-elected single-writer-per-cluster** — the run loop acquires `pg_advisory_lock(notifications.wal.advisory-lock-id)` on the very first statement of the outer loop (L47) and any code path that loses or fails to acquire the lock results in either blocking-in-acquire (the canonical happy path for the non-leader) or releasing-and-retrying-after-10s (the leader-failover path). The decision encodes 'duplicate-notification prevention by Postgres-mediated serialisation' — there is no application-level lease, no Zookeeper, no Redis, just PG advisory locks. The intent is operational simplicity (no extra service to deploy) and atomicity (the lock is automatically released by the JDBC connection close, ruling out lock-leak-on-crash)." — intent_anchor: `try (final Connection connection = leaderElectionManager.acquire(walProperties.getAdvisoryLockId(), true)) { ... }` (NotificationSubscriber.java:47) + `PostgreSQLLeaderElectionManagerImpl.java:22` (`SELECT pg_advisory_lock(%d)`)
+
+**Decision statement**: ODD Platform elects the leader for the Notifications WAL subscriber via PostgreSQL session-scoped advisory lock (`pg_advisory_lock(notifications.wal.advisory-lock-id)`, default lock-id 100), NOT via an external coordinator. The lock is acquired on the very first statement of the subscriber's outer run loop (`NotificationSubscriber.java:47` via `PostgreSQLLeaderElectionManager.acquire(...)`) and the entire WAL processing (slot probe, publication probe, stream open, inner-poll loop) happens INSIDE the try-with-resources scope of the lock-holding JDBC Connection. When the Connection closes (graceful shutdown OR uncaught Exception OR JVM crash), Postgres atomically releases the lock — other instances waiting in `acquire(...)` immediately unblock and contend for leadership.
+
+The architectural commitments:
+- **(a) Postgres is the ONLY runtime dependency.** No Zookeeper cluster, no Redis cluster, no Consul cluster, no Hazelcast in-memory grid. Operators deploying ODD need exactly one external service (Postgres) — the same Postgres that holds the platform's data also hosts the leader-election primitive. This composes with ADR-CANDIDATE-020 (Data Collaboration outbound queue) which also uses PG advisory locks (lock-ids 110 + 120) — the namespace is shared across the four advisory-lock-using subsystems (partition 90, notifications 100, datacollab-receive 110, datacollab-send 120).
+- **(b) Atomicity is delegated to PG.** The advisory lock is session-scoped — bound to the JDBC Connection. The try-with-resources at line 47 ensures Connection close on any path out of the outer try block (graceful interrupt, uncaught Exception, normal completion). PG-side, session close ALWAYS releases all session-held advisory locks atomically. There is no lock-leak failure mode at the application layer — a `kill -9` on the JVM closes the TCP socket; PG-side this is detected as session termination and the lock is released within `tcp_keepalives_idle` seconds.
+- **(c) Failover is bounded by 10s + lock-acquire latency.** When the lock-holder dies, other instances waiting in `leaderElectionManager.acquire(...)` block until PG-side lock release. The outer-loop retry cadence at NotificationSubscriber.java:96 is 10s — so a flapping leader produces at most 6 leadership churns per minute. There is no exponential back-off, no jitter — the cadence is deterministic.
+- **(d) No split-brain by construction.** Postgres advisory locks are exclusive within the lock-id namespace. Two simultaneous holders of `pg_advisory_lock(100)` are impossible by PG's lock-manager semantics — the second caller blocks. This is structurally stronger than application-layer leases (which can split-brain on clock skew or network partition).
+- **(e) Cluster scaling adds redundancy, NOT throughput.** Horizontal scaling of ODD instances increases failover speed (more candidates ready to take leadership) but does NOT increase notification throughput. The single subscriber thread is the sole consumer of WAL events; per-message latency is the cluster-wide bound.
+
+**Wisdom test**: PASS on all three questions.
+1. **Intentional?** YES — three independent commitments to the design:
+   - The try-with-resources scoping at NotificationSubscriber.java:47 (the entire WAL processing happens inside the lock-holding Connection's scope; if the lock-holder design were different, the Connection wouldn't be the lifetime anchor).
+   - The four-lock-id namespace (90/100/110/120 per `application.yml:172-179, 197-202`) shows the pattern is platform-wide — not a one-off for Notifications.
+   - The hardcoded 10s outer-loop sleep + the absence of any "leader-lease-renewal" code path show the choice is "Postgres-detects-death-naturally" rather than "application-pings-coordinator."
+2. **Structural impact?** YES — every future HA / multi-region / leader-failover question is bounded by Postgres's advisory-lock semantics. Adding cross-region leader election would require either (a) Postgres logical replication of the lock state (which PG does not support — advisory locks are local to the primary), or (b) a different coordinator entirely. Both are structural changes, not incremental refactors.
+3. **Refactoring or structural?** STRUCTURAL — replacing PG advisory locks with Zookeeper requires rewriting `PostgreSQLLeaderElectionManagerImpl` + adding a new dependency + operator-deployment-time installation of Zookeeper + new failure-mode documentation. This is not a single-file refactor.
+
+**Existing ADR**: none in `adrs/`. Cross-references ADR-CANDIDATE-020 (Data Collaboration decoupled outbound — the sibling subsystem that ALSO uses PG advisory locks) and ADR-CANDIDATE-043 (single-leader WAL — older formulation of the same single-leader stance).
+
+**Co-surfaced gaps** (link from `refactoring-scopes.md`):
+- REFACTOR-183 STRENGTHENED (advisory-lock-ID registry absence — 4 IDs in shared namespace; no startup disjoint-allocation assertion; cross-batch with NotificationsProperties + DataCollaborationProperties + ActivityTablePartitionManager — now **4-sidecar triangulated** with batch-Y NotificationSubscriber sidecar joining)
+- REFACTOR-519 NEW batch Y (NotificationSubscriberStarter no thread-death detection — the dual-fragility companion: PG releases the lock atomically but the executor's single thread is dead and the Future is not retained)
+
+**Proposed action**: Promote to `adrs/drafts/leader-election-via-pg-advisory-lock.md` (new ADR). Document the four sub-decisions (advisory-lock-id namespace, session-scoped atomicity, no external coordinator, 10s failover cadence). Cross-link with ADR-CANDIDATE-020 + ADR-CANDIDATE-043 to make the platform-wide "Postgres is the only coordinator" stance explicit. Doc-side: the live `configuration-and-deployment/odd-platform` page documents the advisory-lock-id config knob but does NOT name the HA-failover story; this drives a DOC-NNN follow-up to surface the "lock-holder dies → 10s window → new leader" narrative.
+
+**Severity rationale**: HIGH — defines the platform's HA / failover topology; defines the operator's deployment dependency footprint (one external service, not two); structural for any future multi-region or multi-coordinator question.
+
+---

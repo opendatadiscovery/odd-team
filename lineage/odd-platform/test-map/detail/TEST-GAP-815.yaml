@@ -1,0 +1,67 @@
+gap_id: TEST-GAP-815
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn"
+pillars_affected: [P-09, P-10, P-11]
+surfaced_by:
+  - "getDataEntitiesByDEGOddrn.md:tests_coverage_semantic.uncovered_behaviours.[8,9,10]"
+  - "getDataEntitiesByDEGOddrn.md:bugs_limitations_corner_cases.[0] HIGH"
+  - "getDataEntitiesByDEGOddrn.md:security.known_security_gaps.[0] HIGH"
+behaviour: |-
+  **CRITICAL — `GET /ingestion/entities/{degOddrn}` is unauthenticated in EVERY shipped deployment mode**, including when the operator has enabled `auth.ingestion.filter.enabled=true` believing they have locked down the ingestion surface. The endpoint enumerates the entire member list of any Data Entity Group by ODDRN. Three independent failures compound:
+
+  1. **`@PreAuthorize` absent**: `IngestionController.java:75-79` carries no auth annotation; the OpenAPI-generated `IngestionApi` interface declares no security; `DataEntityGroupServiceImpl.listEntitiesWithinDEG` (lines 92-108) carries no `fetchAssociatedOwner` call, no AuthIdentityProvider field.
+  2. **WHITELIST_PATHS exempts `/ingestion/**`**: `SecurityConstants.java:96` puts the entire `/ingestion/**` namespace into the auth-bypass whitelist. Under OAUTH2/LDAP/LOGIN_FORM the SecurityWebFilterChain skips it.
+  3. **`IngestionDataEntitiesFilter` path matcher is hard-coded to `POST /ingestion/entities` ONLY**: `IngestionDataEntitiesFilter.java:28` declares `PathPatternParserServerWebExchangeMatcher("/ingestion/entities", HttpMethod.POST)` — exact-literal, method-scoped to POST. The templated `GET /ingestion/entities/{degOddrn}` path does NOT match this matcher even when `auth.ingestion.filter.enabled=true`.
+
+  **Result chain**:
+  - Under shipped default (`auth.type=DISABLED`, `auth.ingestion.filter.enabled=false`): any HTTP caller reaching the platform's port enumerates any DEG by ODDRN.
+  - Under operator's belief of "I enabled the filter": still anonymously reachable; the filter's matcher silently passes the GET.
+  - Under `auth.type=OAUTH2`/`LDAP`/`LOGIN_FORM` with a session cookie or a `Bearer` token: STILL anonymously reachable; `/ingestion/**` whitelist bypasses UI auth.
+  - Under `auth.s2s.enabled=true`: STILL anonymously reachable; S2S applies only to `/api/*` paths, not `/ingestion/*`.
+
+  **Blast radius**: a network probe can enumerate the full DEG-to-members mapping. Combined with TEST-GAP-816 (sequential DEG ODDRN enumeration), the attacker collects the entire DEG membership graph in O(N) requests with no audit trail (TEST-GAP-834).
+
+  **Why CRITICAL**: this is the read-side complement to F-008 (the destructive-write surface). F-008's `destruction_under_default_off_auth` drift facet is mirrored here on the READ side — but worse: F-008's filter at least *exists* on POST /ingestion/entities (toggleable via the config flag); this GET has NO toggle that can fail-close it. No live ODD doc warns operators (per sidecar docs_link_semantic — both inferred URLs returned 404 or are silent on this endpoint). LSN-001 attachment-storage-default-data-loss class extended to the DEG-member-enumeration vector.
+
+  **Test gap shape**: WebTestClient integration test for each of the 5 auth-mode permutations × 2 filter-state permutations × 2 token-presence permutations. PINS the current reachability matrix; pairs with REFACTOR-NNN candidate (add a `GET` matcher to `IngestionDataEntitiesFilter` or extend `SecurityConstants.WHITELIST_PATHS` scope correction) and DOC-GAP-NNN (live S2S page must list this endpoint and its unauthenticated reach explicitly).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/GetDataEntitiesByDEGOddrnUnauthenticatedReachMatrixTest.java"
+  name: "get_unauthenticatedReachConfirmedAcrossEvery_authType_x_filterEnabled_permutation"
+evidence:
+  - "getDataEntitiesByDEGOddrn.md says (bugs_limitations_corner_cases.[0]): 'Endpoint is UNAUTHENTICATED in EVERY shipped deployment mode — including when the operator has enabled auth.ingestion.filter.enabled=true believing they have locked down the ingestion surface. The filter's path matcher is hard-coded to POST /ingestion/entities exactly (IngestionDataEntitiesFilter.java:28); GET /ingestion/entities/{anything} does NOT match.' (severity HIGH)"
+  - "getDataEntitiesByDEGOddrn.md says (security.known_security_gaps.[0]): 'Endpoint is unauthenticated in every shipped auth mode (DISABLED / OAUTH2 / LDAP / LOGIN_FORM) because /ingestion/** is in WHITELIST_PATHS and the IngestionDataEntitiesFilter path matcher excludes GET / templated child paths. No live doc warns operators.' (severity HIGH)"
+  - "Verified at primary source: IngestionController.java:75-79 + IngestionDataEntitiesFilter.java:28 + SecurityConstants.java:96 + application.yml:32-34, 46-48"
+  - "Reducer-side Grep `getDataEntitiesByDEGOddrn|listEntitiesWithinDEG|getDEGEntities` against `<odd-platform-repo>/odd-platform-api/src/test`: 0 matches (verified 2026-05-20)"
+cross_references:
+  - "TEST-GAP-816 (sister — sequential DEG ODDRN enumeration; combined into the CRITICAL blast-radius)"
+  - "TEST-GAP-823 (sister — ingestMetrics unauthenticated reach; same class)"
+  - "TEST-GAP-819 (sister — postDataSetStatsList unauthenticated reach; same class)"
+  - "TEST-GAP-097 (existing — S2S filter coupling regression-pin; this entry is the GET-side mirror)"
+  - "TEST-GAP-119 (existing — IngestionDataEntitiesFilter collector-fallback)"
+  - "F-008 (5-vertex picture; this entry is the read-side complement to the destructive write)"
+  - "F-016 (DEG-Anchored Lineage P-05:F-002; architectural sibling — also read-collaborative but lives on /api which IS authenticated)"
+  - "REFACTOR-185 (DISABLED auth bypass; this is the 17th supporting sidecar in the family)"
+  - "REFACTOR-024 (cross-owner read posture; the read-collaborative posture extends to S2S — 6th surface)"
+  - "concepts/detail/invariants/two-ingestion-filters-asymmetric-auth.yaml (extends the asymmetric-filter family)"
+  - "LSN-001 (default-data-class-loss class; extended to read-side DEG enumeration)"
+related_features: [F-008, F-016]
+related_pillar_features: ["P-09:Security & Access Control", "P-10:F-001 Batch Ingestion (S2S API)", "P-11:Platform API & Developer Surface"]
+proposed_action: |-
+  Add `GetDataEntitiesByDEGOddrnUnauthenticatedReachMatrixTest`. WebTestClient-based reachability matrix:
+
+  1. `get_authDisabled_filterDisabled_noBearer_returns200_pinsAnonymousReach` — the shipped-default reachability.
+  2. `get_authDisabled_filterEnabled_noBearer_returns200_pinsFilterIrrelevance` — proves the filter does NOT cover this GET path.
+  3. `get_authOauth2_filterEnabled_noBearer_returns200_pinsWhitelistBypass` — proves UI auth does NOT protect /ingestion/**.
+  4. `get_authLdap_filterEnabled_noBearer_returns200_pinsLDAPDoesNotProtect` — same for LDAP.
+  5. `get_authLoginForm_filterEnabled_noBearer_returns200_pinsLoginFormDoesNotProtect` — same for LOGIN_FORM.
+  6. `get_authS2SEnabled_invalidApiKey_returns200_pinsS2SDoesNotProtect_ingestionPaths` — proves S2S filter applies only to `/api/*`, not `/ingestion/*`.
+  7. `get_authOauth2_validSessionCookie_filterEnabled_returns200_confirmsAuthenticatedCallerAlsoBypassed` — same reach even when authenticated.
+
+  Each assertion pins the current production reachability. Pair with REFACTOR-NNN (the fix) and DOC-GAP-NNN (live S2S page must document the endpoint + its unauthenticated reach).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. No prior TEST-GAP names the GET /ingestion/entities/{degOddrn} unauthenticated reach. Sister gaps TEST-GAP-097 / 119 cover the POST /ingestion/entities filter coupling; TEST-GAP-017 / 478 cover REFACTOR-217 (path-string drift on /terms vs /term); this entry pins the READ-side complement. STRENGTHENS the cross-cutting F-008 chain by adding the read-side mirror that the original F-008 closure did not cover (F-008 detail YAML is single-vertex on the destructive write).
+batch: 2026-05-20-Z
+feature_id: F-008

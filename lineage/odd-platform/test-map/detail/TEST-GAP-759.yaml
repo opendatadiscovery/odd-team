@@ -1,0 +1,55 @@
+gap_id: TEST-GAP-759
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java NamespaceController controller-class:NamespaceController"
+pillars_affected: [P-08]
+surfaced_by:
+  - "NamespaceController.md:bugs_limitations_corner_cases.[2 — MEDIUM TOCTOU between cascade-check and concurrent referent insert. NamespaceServiceImpl.delete (lines 73-90) runs the 4 existsByNamespace* checks in parallel via Mono.zip, then filters on !exists, then invokes namespaceRepository.delete(id). The check + delete are NOT inside a single SELECT FOR UPDATE on the namespace row, nor inside any explicit @ReactiveTransactional. Between the zip-check and the soft-delete UPDATE, a concurrent dataSourceService.createDataSource(...) could insert a new data_source row with namespace_id = id — the delete proceeds, the new datasource references a soft-deleted namespace.]"
+  - "NamespaceController.md:tests_coverage_semantic.uncovered_behaviours.[TOCTOU class — concurrent delete(id) with concurrent dataSourceService.create(...) registering a new datasource against namespace_id=id between the existsByNamespace zip-check and the namespaceRepository.delete(id) call. The check + write are NOT in a single SELECT FOR UPDATE on the namespace row.]"
+behaviour: |-
+  **MEDIUM — `DELETE /api/namespaces/{id}` is vulnerable to a TOCTOU race between the cascade-check phase and the namespace-delete phase. A concurrent `POST /api/datasources` (or any of the 7 other "side-door" namespace-referencing endpoints) can insert a new referent row with `namespace_id = id` between the zip-existsByNamespace check and the namespaceRepository.delete UPDATE. The delete proceeds; the new referent row is orphan-attached to a soft-deleted namespace.** Primary-source confirmed in batch-W NamespaceController sidecar:
+
+  **Concurrent-execution evidence**:
+  - `NamespaceServiceImpl.delete` (lines 73-90): NOT annotated with `@ReactiveTransactional` (verified by sidecar primary-source — contrasted with the surrounding `update` at lines 62-71 which IS annotated). NO SELECT FOR UPDATE on the namespace row. NO advisory-lock.
+  - The check phase: `Mono.zip(dataSourceRepository.existsByNamespace(id), collectorRepository.existsByNamespace(id), termRepository.existsByNamespace(id), dataEntityRepository.existsNonDeletedByNamespace(id))` — 4 parallel SELECTs.
+  - The filter phase: `.filter(tuple -> !tuple.t1() && !tuple.t2() && !tuple.t3() && !tuple.t4())` — application-tier boolean.
+  - The delete phase: `.then(namespaceRepository.delete(id))` — `UPDATE namespace SET deleted_at = NOW() WHERE id = ?`.
+  - **Race window**: between the 4 existsByNamespace SELECTs and the namespace soft-delete UPDATE, ANY of the 8 side-door call sites (per NamespaceController.md:bugs_limitations_corner_cases.[1] — TermServiceImpl.createTerm/updateTerm, DataSourceServiceImpl.create/update, CollectorServiceImpl.create/update, DataEntityGroupServiceImpl.createDataEntityGroup/updateDEG) can INSERT a new row with `namespace_id = id`. The cascade-check has already returned "no children"; the new child arrives after the check; the delete proceeds.
+
+  **Operator-visible consequence**:
+  - The new datasource (or term / collector / DEG) references a soft-deleted namespace via `namespace_id`. Reads via `dataSourceService.list(...)` will JOIN through the namespace and find `deleted_at IS NOT NULL` — depending on the JOIN's filter, the datasource may appear with NULL namespace OR may be filtered out entirely.
+  - The FK `data_source.namespace_id → namespace.id` has NO `ON DELETE CASCADE` (verified by V0_0_11 migration); the new referent row is technically orphan-attached but the FK is still valid (the parent row exists, just soft-deleted).
+  - The race is REACHABLE at multi-instance scale (the platform can scale horizontally; concurrent operator + collector mutations on different instances are common).
+
+  **Sibling pattern**: this is the same architectural class as `ReactiveTagRepositoryImpl` TOCTOU (batch N) — the cascade-check + write are not atomic at the persistence tier; the application-tier zip-check is best-effort under concurrency.
+
+  **Why MEDIUM not HIGH**: the operator-impact is RECOVERABLE — the orphan-attached referent can be deleted by the operator and re-attached to a new namespace. The race is statistically rare (requires concurrent ops on the same namespace within milliseconds). MEDIUM rather than LOW because: (a) the race window is REACHABLE; (b) the application invariant ("namespaces with non-deleted referents cannot be deleted") is violated; (c) there is no DB-tier constraint backing the invariant.
+
+  **Test gap shape**: regression-pin asserting the TOCTOU is reachable: concurrent `DELETE /api/namespaces/{id}` + `POST /api/datasources?namespace_name={target_name}` produces a state where the datasource references a soft-deleted namespace. The current state is PINNED — failures land if a future maintainer adds `@ReactiveTransactional` + SELECT FOR UPDATE.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/NamespaceServiceImplTest.java (service-tier mock-based; DOES exercise the 4-blocker cascade guard but does NOT exercise the concurrent-race window)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/NamespaceDeleteTOCTOURaceTest.java"
+  name: "concurrentDeleteAndDataSourceCreate_orphanReferentReachable_pinsTOCTOURaceWindow"
+evidence:
+  - "NamespaceController.md says (bugs_limitations_corner_cases.[2]): 'MEDIUM — TOCTOU class between cascade-check and concurrent referent insert. NamespaceServiceImpl.delete (lines 73-90) runs the 4 existsByNamespace* checks in parallel via Mono.zip, then filters on !exists, then invokes namespaceRepository.delete(id). The check + delete are NOT inside a single SELECT FOR UPDATE on the namespace row, nor inside any explicit @ReactiveTransactional. Between the zip-check and the soft-delete UPDATE, a concurrent dataSourceService.createDataSource(...) could insert a new data_source row with namespace_id = id — the delete proceeds, the new datasource references a soft-deleted namespace. Sibling pattern to ReactiveTagRepositoryImpl TOCTOU (batch N).' — evidence: NamespaceServiceImpl.java:73-90 (no @ReactiveTransactional, no SELECT FOR UPDATE, no advisory-lock) + V0_0_1__init.sql:84 (FK without ON DELETE — orphan-row possibility is real) — severity: MEDIUM"
+  - "NamespaceController.md says (bugs_limitations_corner_cases.[6 — LOW transactional asymmetry]): 'updateNamespace is @ReactiveTransactional but delete is not. The update path (NamespaceServiceImpl.java:62-71) explicitly annotates @ReactiveTransactional; the delete path (lines 73-90) is NOT annotated. Without an explicit transaction the cascade-check + delete UPDATE can interleave with other DB writes...'"
+  - "Verified at primary source: NamespaceServiceImpl.java:62-71 (@ReactiveTransactional on update) vs lines 73-90 (no annotation on delete)"
+cross_references:
+  - "TEST-GAP-726 (STRENGTHENED batch W — the 4-sister-service NAMESPACE_CREATE side-door; this gap's race window opens via those 8 side-door call sites)"
+  - "TEST-GAP-760 (NEW batch W — namespace case-sensitivity — sister Namespace gap)"
+  - "TEST-GAP-761 (NEW batch W — soft-delete reincarnation — sister Namespace gap)"
+  - "concepts: three-soft-delete-mechanisms-across-the-repository-layer (existing concept)"
+  - "REFACTOR-NNN candidate: add @ReactiveTransactional + SELECT FOR UPDATE to NamespaceServiceImpl.delete; closes the race"
+related_features: [F-NN-namespace-management]
+related_pillar_features: ["P-08:F-NN-namespaces-tab"]
+proposed_action: |-
+  Add `NamespaceDeleteTOCTOURaceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `concurrentDeleteAndDataSourceCreate_dataSourceReferencesSoftDeletedNamespace_pinsTOCTOURaceWindow` — seed a namespace with NO children; start two reactive subscriptions in parallel: (a) `DELETE /api/namespaces/{id}`; (b) `POST /api/datasources` with `namespaceName={same_name}`. Use a barrier to ensure the existsByNamespace check fires BEFORE the createDataSource INSERT but the namespaceRepository.delete fires AFTER. Assert the datasource is created AND the namespace is soft-deleted AND the datasource's namespace_id references the soft-deleted namespace.
+  2. `namespaceServiceImplDeleteMethod_lacksReactiveTransactionalAnnotation_pinsCurrentNonAtomicPosture` — use reflection to assert `NamespaceServiceImpl.delete` does NOT carry `@ReactiveTransactional` (while `update` DOES).
+  3. `concurrentDeleteAndTermCreate_sameRaceClass_assertsRaceExtendsToAllFourSideDoors` — repeat #1 with `POST /api/terms` instead of `/api/datasources`; assert the same race outcome. Demonstrates the race is structural (all 8 side-door call sites exhibit it), not endpoint-specific.
+
+  Pair with REFACTOR-NNN: add `@ReactiveTransactional` to NamespaceServiceImpl.delete AND change the cascade-check to use `SELECT ... FOR UPDATE` on the namespace row. When the fix lands, test #1 inverts to assert the createDataSource is BLOCKED on the namespace row lock OR the delete is BLOCKED on the concurrent referent.
+batch: 2026-05-20-W
+feature_id: null

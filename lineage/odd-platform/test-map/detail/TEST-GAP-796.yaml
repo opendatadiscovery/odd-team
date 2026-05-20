@@ -1,0 +1,83 @@
+gap_id: TEST-GAP-796
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java notification class:NotificationSubscriber"
+pillars_affected: [P-07]
+surfaced_by:
+  - "NotificationSubscriber.md:bugs_limitations_corner_cases.[7] HIGH (NotificationSubscriberStarter has no thread-death detection)"
+  - "NotificationSubscriber.md:bugs_limitations_corner_cases.[8] MEDIUM (Outer-loop retry sleep is itself uncancellable — re-throw exits run() entirely)"
+behaviour: |-
+  **CRITICAL — `NotificationSubscriberStarter` has no thread-death detection; subscriber dies silently.** The starter at `NotificationSubscriberStarter.java:33-35` submits `new NotificationSubscriber(...)` to a single-thread `ExecutorService` but **never holds the returned `Future`** — there is no `future.get()`, no `setUncaughtExceptionHandler(...)`, no restart logic, no health-probe integration. If `NotificationSubscriber.run()` exits (e.g. via the `NotificationSubscriberException` re-thrown at lines 89 / 99 on `InterruptedException` during the inner OR outer 10s sleep), the executor's single worker thread dies and the subscriber is gone for the rest of the JVM lifetime.
+
+  **The platform continues to accept alerts** (INSERT/UPDATE into `alert` table continues; alert-creation paths are untouched). **Postgres continues to retain WAL** on the slot (`confirmed_flush_lsn` is frozen at the LSN the dead subscriber left it at). **No notifications fire** — silently. **No log line tracks the dead subscriber** (the run() method's exit is via re-throw, which the executor's default UncaughtExceptionHandler logs at WARN-level to stderr — but ODD's logging configuration does not surface this to operator dashboards). **Operators discover the failure when an alert they expected never delivers** — which may be hours or days after the death event.
+
+  **Compound with TEST-GAP-795** (the WAL-retention disk-exhaustion finding): the dead subscriber's frozen `confirmed_flush_lsn` causes the same WAL retention pathology — but with the additional pathology that the platform CANNOT recover by itself (no restart logic). The operator must restart the entire JVM process.
+
+  **The brittleness extends to graceful-shutdown paths**: a SIGTERM during normal operation reaches the executor service; the inner-loop `Thread.interrupt()` checkpoint at L62 honours the interrupt and exits cleanly (no LSN advance on in-flight). BUT: a SIGTERM arriving during the OUTER 10 s back-off sleep at L96 hits the catch block at L97-100, which re-interrupts and throws `NotificationSubscriberException` — exiting `run()` entirely. The same dead-subscriber-no-detection pathology applies. The 10-second back-off cadence means there is a ~33% chance (10s out of 30s effective duty cycle on a typical poison-replay scenario) that any random SIGTERM lands during the outer sleep and produces a dead subscriber rather than a clean exit.
+
+  **Why CRITICAL**: silent subsystem death + no observability + recovery requires JVM restart + compounds with WAL retention. The platform's only outbound alerting mechanism can be silently disabled by a single transient `InterruptedException` event.
+
+  **Test gap shape**: integration test demonstrating the death-via-InterruptedException scenario and pinning the absence of recovery. Three test methods:
+  1. Drive an `InterruptedException` during the outer 10s sleep → assert the subscriber thread exits AND no restart occurs.
+  2. After the death event, INSERT a new ALERT row → assert no notification fires.
+  3. Assert that `pg_replication_slots.confirmed_flush_lsn` for the slot remains frozen at the LSN held when the subscriber died.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/NotificationSubscriberStarterNoThreadDeathDetectionRegressionPinTest.java"
+  name: "subscriberInterruptedDuringOuterSleep_threadDiesSilently_noRestart_pinsSilentSubsystemLoss"
+evidence:
+  - "NotificationSubscriber.md says (bugs_limitations_corner_cases.[7]): 'NotificationSubscriberStarter has no thread-death detection — sibling NotificationSubscriberStarter.java:33-35 submits new NotificationSubscriber(...) to a single-thread ExecutorService but never holds the returned Future. If THIS file run() exits (e.g. via the NotificationSubscriberException thrown at L89 or L99 on outer-loop InterruptedException), the executor worker dies and the subscriber is gone for the rest of the JVM lifetime. The platform continues to accept alerts (INSERT/UPDATE into alert), Postgres continues to retain WAL on the slot, and no notifications fire — silently. No log line tracks the dead subscriber; operators discover the failure when an alert they expected never delivers.' — severity HIGH"
+  - "NotificationSubscriber.md says (bugs_limitations_corner_cases.[8]): 'Outer-loop retry sleep is itself uncancellable — TimeUnit.SECONDS.sleep(10L) at L96 catches InterruptedException AND re-throws as NotificationSubscriberException (L99). If a graceful shutdown signal arrives during the 10 s sleep, the subscriber thread exits via the re-throw — the same dead-subscriber-no-detection pathology applies.' — severity MEDIUM"
+  - "Verified at primary source: NotificationSubscriber.java:87-100 (re-throw on InterruptedException paths)"
+  - "Verified at primary source: NotificationSubscriberStarter.java:33-35 (no Future retained, no exception handler) — sidecar primary-source"
+cross_references:
+  - "TEST-GAP-795 (COMPOUND — WAL retention applies identically when subscriber dies; recovery additionally requires JVM restart)"
+  - "TEST-GAP-455 (sister F-009 fragility; the poison-replay loop CAN survive InterruptedException at the inner-loop checkpoint but NOT at the outer-sleep checkpoint)"
+  - "TEST-GAP-175 (sister coverage at config-properties node — the leader-elected single-thread invariant is pinned there; this gap adds the death-without-detection pathology that the single-thread design assumes does NOT occur)"
+  - "REFACTOR-NNN (proposed): `NotificationSubscriberStarter` should retain the `Future<?>` from `executor.submit(...)`, install a scheduled health-check that `future.isDone()` triggers a restart, OR use a `ScheduledExecutorService.scheduleWithFixedDelay(...)` pattern that auto-restarts on uncaught throws"
+  - "REFACTOR-NNN (proposed): emit Prometheus gauge `odd_notification_subscriber_alive` (1=alive / 0=dead) + Spring Boot actuator health-indicator contributing to `/actuator/health`"
+  - "DOC-GAP-NNN (proposed): live `/configuration-and-deployment/odd-platform#enable-alert-notifications` should warn that SIGTERM during the outer 10s back-off may produce a dead subscriber state recoverable only by JVM restart"
+  - "LSN-001 (analogous failure mode — silent subsystem failure with no observability; same case-law class)"
+  - "LSN-017 (cross-layer composition — the F-009 chain's load-bearing composition assumes the subscriber thread is always alive; this gap pins the assumption-violation surface)"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery"]
+proposed_action: |-
+  Add `NotificationSubscriberStarterNoThreadDeathDetectionRegressionPinTest`. Testcontainers-Postgres setup:
+
+  1. `subscriberInterruptedDuringOuterSleep_threadDiesSilently_noRestart_pinsSilentSubsystemLoss` —
+     - Boot platform with `notifications.enabled=true` and a stub `NotificationSender` recording every send invocation.
+     - Force the subscriber into the outer 10s back-off by injecting a poison ALERT.
+     - During the back-off window, `Thread.interrupt(...)` the subscriber's worker thread.
+     - Wait 5 s.
+     - Assert the subscriber thread is no longer alive (`executor.getActiveCount() == 0`).
+     - Assert NO restart fires (executor's queue is empty, no new submission).
+     - PINS the silent subsystem-loss.
+
+  2. `subscriberDead_newAlertInserted_noNotificationFires_pinsAlertLossWhileDead` —
+     - Continue from test 1's dead-subscriber state.
+     - INSERT a valid ALERT row (well-formed type_id, valid data_entity_oddrn).
+     - Wait 30 s.
+     - Assert the stub `NotificationSender` did NOT receive `.send(...)`.
+     - PINS the alert-loss-while-subscriber-dead.
+
+  3. `subscriberDead_walSlotLsnFrozen_pinsWalRetentionAfterDeath` —
+     - Continue from test 2's dead-subscriber state.
+     - Query `SELECT confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = '<configured>'`.
+     - Wait 30 s.
+     - Re-query.
+     - Assert the LSN is the SAME (i.e. frozen — no advance because no subscriber to advance it).
+     - PINS the WAL retention compound failure.
+
+  4. `subscriberDead_jvmRestart_subscriberResumes_pinsOnlyRecoveryPath` —
+     - Continue from test 3.
+     - Restart the entire platform (Spring context refresh).
+     - Wait 15 s.
+     - Assert the stub sender received the alert from test 2 (proves recovery is via restart only).
+     - CONFIRMS the recovery is JVM-restart-only.
+
+  Pair with REFACTOR-NNN (retain Future + auto-restart) — after the fix, test 1 should be updated to assert the restart fires within bounded time; the test transitions from "pin the absence of recovery" to "pin the auto-restart".
+
+  Coherence note (LSN-018 Rule 6): This finding does NOT contradict TEST-GAP-455 (poison-replay loop). Both can coexist: the poison-replay loop is what KEEPS the subscriber spinning on a bad message; this gap is what happens when the subscriber's worker thread DIES (e.g. SIGTERM hits the outer sleep, InterruptedException re-throws). Distinct failure modes; both load-bearing for F-009. NET-NEW finding — no prior TEST-GAP pins the thread-death-no-detection pathology.
+batch: 2026-05-20-Y
+feature_id: F-009

@@ -36,3 +36,35 @@
 - `deleteTermFromDataEntity` sidecar (6th sidecar; SYMMETRIC DELETE half PRIMARY-SOURCE confirmed) — REFACTOR-217 is verified at FOUR independent sources for the DELETE half: (1) `SecurityConstants.java:240-242` singular path; (2) `openapi.yaml:1042` plural path; (3) `DataEntityController.java:158-163` implementing `DataEntityApi` via `@Override`; (4) `AuthorizationCustomizer.java:24-30` dispatch mechanism with `.pathMatchers("/**").authenticated()` fallback at line 29-30. The triangulation is now four-source for EACH of the ADD and DELETE halves; REFACTOR-217 fix needs to touch both SecurityRule entries.
 - The DELETE-term sidecar ALSO surfaces the audit-noise companion finding (`@ActivityLog` fires on no-op deletes producing identical BEFORE/AFTER state JSON) — captured in the strengthened "evidence" section above. The forensic-noise complement to DOC-GAP-153's forensic-silence on DEG-membership creates the cross-cutting pattern documented in the strengthened cross-references.
 - 6-sidecar triangulation status: DataEntityController class-level + concepts.yaml entity + DataEntityController batch-G ADD-term + TermServiceImpl batch-K service-tier + deleteTermFromDataEntity batch-L controller-method + REFACTOR-217 anchor (the upstream-fix tracking). Doc-side action expanded to cover BOTH the path-mismatch AND the audit-noise complement; the fix is upstream (correct BOTH matcher paths to plural) AND the doc admonition is the holding-pattern.
+
+## Batch Z append
+
+## Batch Z append
+
+#### Batch 2026-05-20-Z STRENGTHENS — openapi-spec axis PRIMARY SOURCE confirms directional fix (spec is right, SecurityConstants is wrong)
+
+Batch Z's `odd-platform__openapi__spec__odd-platform-public-api.md` sidecar provides the spec-axis primary source confirmation that the path declaration in the OpenAPI spec is the PLURAL form (`/api/dataentities/{data_entity_id}/terms` at `openapi.yaml:973` + `openapi.yaml:1042`), and the platform's controllers `@Override` methods from the generated `*Api` interface (per the spec sidecar's `implicit_adrs.[0]`: "EVERY `/api/**` endpoint is declared here — controllers `implement` the generated `*Api` interface and do NOT define their own `@RequestMapping`; the spec is the path/method authority"). This DIRECTIONAL confirmation is load-bearing for REFACTOR-217's fix direction.
+
+**The SecurityConstants path-mismatch confirmation (per sidecar `security.known_security_gaps.[3]`)** — verbatim:
+> "**SecurityConstants path-mismatch confirmation point** — the spec's `/terms` PLURAL path is the source of truth; the SecurityConstants registration of `/term` SINGULAR is the silent bug. The spec IS correct; the security registration is wrong. This direction matters: the remedy per REFACTOR-217 is to change SecurityConstants to match the spec, not the spec to match SecurityConstants. **severity: HIGH (the gap is structurally caught at the spec layer — a build-time validator that compares SECURITY_RULES paths against OpenAPI paths would catch every such drift)**"
+
+This is the FIRST primary source to explicitly name the directional fix. The prior 6-sidecar triangulation (DataEntityController class + concepts.yaml + DataEntityController batch-G + TermServiceImpl batch-K + deleteTermFromDataEntity batch-L + REFACTOR-217) established the GAP but did not explicitly name WHICH SIDE TO FIX. The openapi-spec sidecar does — the spec is the authority; the SecurityConstants is the bug.
+
+**The 7-sidecar triangulation status** (was 6-sidecar at batch L):
+1. DataEntityController class-level (original batch A)
+2. concepts.yaml entity (original batch A)
+3. DataEntityController batch-G ADD-term controller-method
+4. TermServiceImpl batch-K service-tier
+5. deleteTermFromDataEntity batch-L controller-method (the SYMMETRIC DELETE half)
+6. REFACTOR-217 anchor (the upstream-fix tracking)
+7. **(NEW batch Z) odd-platform-public-api openapi-spec primary source — names the directional fix explicitly**
+
+**The CI gate framing (from the spec sidecar's `security.known_security_gaps.[3]`)**: "a build-time validator that compares SECURITY_RULES paths against OpenAPI paths would catch every such drift" — this is the structural fix that closes the entire REFACTOR-217 class. The proposed CI gate composes naturally with the DOC-GAP-099 META cluster's CI gate proposal (per DOC-GAP-074 + DOC-GAP-099 batch-U + DOC-GAP-244 batch-Z): a single CI gate that exercises every spec operation against a running controller AND asserts SECURITY_RULES coverage for paths that should be auth-gated.
+
+**The DOC-GAP-099 META cluster framing**: REFACTOR-217 path-mismatch is one instance of a broader "spec-vs-SecurityConstants drift" class within the 6-failure-shape META. The spec sidecar's `docs_link_semantic.doc_drift_findings.[7]` enumerates this finding under the COVERAGE-GAP shape's framing (path-pattern drift between spec and SecurityConstants has SECURITY-RELEVANT consequences).
+
+**Cross-references additions** (in addition to the existing batch-A/G/K/L cross-references):
+- DOC-GAP-242 (NEW batch Z — no securitySchemes in spec) — sibling spec-authoring-quality finding; cross-link to the broader spec-as-source-of-truth class.
+- DOC-GAP-099 META — the OpenAPI authoring-quality cluster (now 6 failure shapes per DOC-GAP-242 + DOC-GAP-244 batch-Z) — this finding is one instance of the spec-vs-SecurityConstants drift class.
+
+**Severity stays HIGH** — the directional confirmation does not change severity but strengthens the prescription. REFACTOR-217's fix is now explicitly anchored: change SecurityConstants to match the spec, NOT the spec to match SecurityConstants. The doc-side admonition stands; the upstream fix is unambiguous. Coherence: strengthens DOC-GAP-001 with spec-axis primary source naming the directional fix. No conflicts with existing batch-A/G/K/L framing.

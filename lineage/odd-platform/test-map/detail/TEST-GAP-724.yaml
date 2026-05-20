@@ -1,0 +1,60 @@
+gap_id: TEST-GAP-724
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:TermServiceImpl"
+  - "odd-platform java TermController controller-class:TermController"
+pillars_affected: [P-06]
+surfaced_by:
+  - "TermServiceImpl.md:bugs_limitations_corner_cases.[6] (V0_0_91 term_to_term.deleted_at is a DEAD schema column — missed-migration drift, NOT intentional soft-delete — severity MEDIUM)"
+  - "TermServiceImpl.md:invariants.[2] (Soft-delete via deleted_at — Asymmetry — the term itself is soft-deleted; its link rows in data_entity_to_term / dataset_field_to_term / term_to_term are HARD-DELETED via deleteRelationsWithDataEntities and deleteRelationsWithDatasetFields, with term_to_term cascading via deleteTermToTermRelations only when updateTermDefinitionTermsState runs description reconciliation. Term-itself delete does NOT remove term_to_term rows where the deleted term is assigned_term_id or target_term_id)"
+  - "TermController.md:bugs_limitations_corner_cases.[3] (deleteTerm cleans up data_entity_to_term and dataset_field_to_term link rows but NOT term_to_term — severity MEDIUM)"
+behaviour: |-
+  **HIGH — V0_0_91's `term_to_term.deleted_at` column is a DEAD schema artefact: declared in migration, never written to by code, never filtered on read — confirming a missed migration NOT an intentional soft-delete.** Triangulated across all three batch-U Term-side sidecars + verified against the platform's primary source 2026-05-20:
+
+  **Schema declaration**: `odd-platform-api/src/main/resources/db/migration/V0_0_91__add_term_to_term.sql:6` declares `deleted_at TIMESTAMP WITHOUT TIME ZONE` on the `term_to_term` table (verified by reading the migration file end-to-end). This pattern would suggest soft-delete intent.
+
+  **Schema asymmetry — primary-source evidence the column is DEAD**: migration `V0_0_76__term_relations_hard_delete.sql:5-22` had already established the OPPOSITE pattern: it DROPPED `deleted_at` from `data_entity_to_term`, `tag_to_term`, and `term_ownership` and converted those tables to hard-delete-only semantics. V0_0_91 reverted that pattern WITHOUT JUSTIFICATION (no Javadoc / comment / commit-message context in the migration file).
+
+  **Live-code evidence the column is DEAD**:
+  - `TermRelationsRepositoryImpl.deleteTermToTermRelations` (line 204-219) calls `DSL.delete(TERM_TO_TERM)` — a hard DELETE
+  - `deleteTermToLinkedTermRelation` (line 222-230) calls `DSL.deleteFrom(TERM_TO_TERM)` — also a hard DELETE
+  - **No code path sets `TERM_TO_TERM.DELETED_AT`** (`grep -rn 'TERM_TO_TERM\.DELETED_AT' /home/raman/work/odd/odd-platform/odd-platform-api/src/main/java` returns ZERO matches, per the sidecar's primary-source claim)
+  - **No read path filters on it** (per the F-002 batch-N sidecar's 7-site enumeration of unfiltered reads — that batch surfaced the OPPOSITE interpretation: "the 7 read sites skip the filter, that's the bug"; this sidecar's primary-source clarification flips the interpretation to "the column is dead, the migration was incomplete")
+
+  **Why HIGH not MEDIUM**: this is a PRIMARY-SOURCE SUPERSEDE on the batch-N interpretation. TEST-GAP-538 (existing, LOW criticality) frames the issue as "read sites should filter `deleted_at IS NULL` — pin the buggy current behaviour". This sidecar's clarification — confirmed via the V0_0_76-vs-V0_0_91 migration history — reveals the truth: the COLUMN ITSELF should be dropped. Pinning the current "bug" via TEST-GAP-538 would lock in a misinterpretation. The maintainer fix is: (a) a cleanup migration `ALTER TABLE term_to_term DROP COLUMN IF EXISTS deleted_at`, (b) a defensive schema-shape regression test that fails if a future maintainer reintroduces a `deleted_at` column on `term_to_term` without ALSO wiring code that USES it.
+
+  **Compound gap with the term-itself-delete cascade**: `TermServiceImpl.delete` (`TermServiceImpl.java:154-165`) cascades to `data_entity_to_term` (line 162) and `dataset_field_to_term` (line 163), then soft-deletes the term — but does NOT call any `termRelationsRepository.deleteRelationsWithTerm(termId)` for `term_to_term`. So even with the dead `deleted_at` column dropped, dangling `term_to_term` rows pointing at soft-deleted terms persist indefinitely. The read paths `JOIN term` and filter on `term.deleted_at IS NULL` so the orphans are EFFECTIVELY HIDDEN from API responses — but the rows accumulate in the DB. A future maintainer adding direct `term_to_term` queries that bypass the JOIN would surface the orphans.
+
+  **Test gap shape**: regression-pin asserting (a) `term_to_term` schema does NOT carry a `deleted_at` column (post-fix); (b) `TermServiceImpl.delete(termId)` results in zero `term_to_term` rows referencing the deleted term (cascading cleanup); (c) the 7 read sites from batch-N do NOT filter `term_to_term.deleted_at IS NULL` because there is no such column to filter on (post-fix). Pre-fix, this gap pins the CURRENT state via a schema-shape assertion + a cascade-cleanup-missing assertion as the canary for any maintainer reading this evidence.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/term/TermToTermDeletedAtMissedMigrationTest.java"
+  name: "v0_0_91_termToTerm_deletedAtIsDeadSchemaColumn_termServiceImplDeleteLeavesDanglingRowsCurrentState"
+evidence:
+  - "TermServiceImpl.md says (bugs_limitations_corner_cases.[6]): 'V0_0_91 term_to_term.deleted_at is a DEAD schema column — missed-migration drift, NOT intentional soft-delete. Migration V0_0_91 (V0_0_91__add_term_to_term.sql:1-12) created the term_to_term table WITH deleted_at TIMESTAMP WITHOUT TIME ZONE. However, migration V0_0_76 (V0_0_76__term_relations_hard_delete.sql:5-22) had already established the OPPOSITE pattern: it DROPPED deleted_at from data_entity_to_term, tag_to_term, and term_ownership and converted those tables to hard-delete-only semantics. Live-code evidence confirms the column is DEAD on term_to_term: TermRelationsRepositoryImpl.deleteTermToTermRelations (line 204-219) calls DSL.delete(TERM_TO_TERM) — a hard DELETE; deleteTermToLinkedTermRelation (line 222-230) calls DSL.deleteFrom(TERM_TO_TERM) — also a hard DELETE; no code path sets TERM_TO_TERM.DELETED_AT'"
+  - "TermServiceImpl.md says (sources): 'V0_0_91__add_term_to_term.sql:1-12 + V0_0_76__term_relations_hard_delete.sql:1-22 + V0_0_35__add_terms.sql:46-56 + TermRelationsRepositoryImpl.java:204-230 (hard DELETE only) + grep verification grep -rn TERM_TO_TERM.DELETED_AT <odd-platform-repo>/odd-platform-api/src/main/java returns zero matches'"
+  - "Verified V0_0_91 schema: /home/raman/work/odd/odd-platform/odd-platform-api/src/main/resources/db/migration/V0_0_91__add_term_to_term.sql:6 — `deleted_at TIMESTAMP WITHOUT TIME ZONE` (verified 2026-05-20)"
+  - "TermController.md says (bugs_limitations_corner_cases.[3]): 'deleteTerm cleans up data_entity_to_term and dataset_field_to_term link rows but NOT term_to_term link rows. TermServiceImpl.java:155-164 calls only deleteRelationsWithDataEntities + deleteRelationsWithDatasetFields; the term_to_term table is silently left with orphan edges pointing at the soft-deleted term.'"
+  - "TermServiceImpl.md says (bugs_limitations_corner_cases.[7]): 'Term delete does NOT cascade term_to_term rows. delete (TermServiceImpl.java:154-165) cascades to data_entity_to_term (line 162, deleteRelationsWithDataEntities) and dataset_field_to_term (line 163, deleteRelationsWithDatasetFields), then soft-deletes the term. There is NO corresponding termRelationsRepository.deleteRelationsWithTerm(termId) for term_to_term. Effect: a term that is assigned_term_id or target_term_id in term_to_term rows leaves DANGLING rows after delete.'"
+cross_references:
+  - "TEST-GAP-538 (term_to_term deleted_at-aware filtering — SUPERSEDED interpretation; this gap clarifies the migration-history primary-source AND elevates criticality from LOW to HIGH)"
+  - "F-002 (drift facet v0_0_76_vs_v0_0_91_link_table_schema_asymmetry — this gap is the primary-source confirmation of the drift facet's nature: missed migration, not intentional soft-delete)"
+  - "F-002 (drift facet term_to_term_deleted_at_dead_schema_or_missing_filter — clarified to dead-schema interpretation)"
+  - "TEST-GAP-721 (P-06 pillar-floor — this gap is one of the SPECIFIC instances that the repository-tier harness would address)"
+  - "LSN-018 (Rule 6 coherence check — this gap REFINES batch-N's interpretation of the same schema artefact, primary-source supersede)"
+  - "concepts: v0_0_76_vs_v0_0_91_link_table_schema_asymmetry — adds primary-source intent_anchor (dead-schema, not missing-filter)"
+related_features: [F-002]
+related_pillar_features: ["P-06:F-001"]
+proposed_action: |-
+  Add `TermToTermDeletedAtMissedMigrationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/term/`. Four test methods:
+  1. `v0_0_91_termToTerm_deletedAtColumnExistsButNoCodePathWritesToIt` — schema-shape assertion: query `information_schema.columns WHERE table_name='term_to_term' AND column_name='deleted_at'` returns ONE row (the dead column). PIN the current state. Pair with the maintainer note that this should return ZERO rows post-cleanup-migration.
+  2. `termServiceImplDelete_doesNotCleanUpTermToTermRows_currentStateLeavesDangling` — call `TermServiceImpl.delete(termId)` on a term that is in N `term_to_term` rows; assert `SELECT COUNT(*) FROM term_to_term WHERE assigned_term_id = ? OR target_term_id = ?` returns N (the dangling state). PIN the bug. Pair with the maintainer note that this should return 0 post-cascade-fix.
+  3. `termServiceImplDelete_doesCleanUpDataEntityToTermAndDatasetFieldToTerm_assertsPositiveCascade` — pin the symmetric POSITIVE behaviour for the two sibling link tables to make the asymmetry clear.
+  4. `linkTermWithTerm_thenDelete_assertsHardDeleteNotSoftDelete` — call `linkTermWithTerm(A, B)`, then `removeTermToLinkedTermRelation(A, B)`, assert the row is GONE from `term_to_term` (hard delete) and NOT merely flagged with `deleted_at`. PIN the actual mutation semantics.
+
+  Pair with a follow-up backlog item proposing a cleanup migration `V0_0_NNN__drop_term_to_term_deleted_at.sql` that runs `ALTER TABLE term_to_term DROP COLUMN IF EXISTS deleted_at` — and that also adds a `termRelationsRepository.deleteRelationsWithTerm(termId)` method called from `TermServiceImpl.delete` to fix the orphan-rows issue. When the fix lands, test #1 inverts to assert ZERO rows; test #2 inverts to assert 0 dangling.
+
+  This gap is a primary-source SUPERSEDE on TEST-GAP-538's interpretation — recommend the maintainer mark TEST-GAP-538 with `superseded_by: TEST-GAP-724` per the LSN-018 Rule 6 coherence-correction protocol.
+batch: 2026-05-20-U
+feature_id: F-002

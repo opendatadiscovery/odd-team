@@ -1,0 +1,205 @@
+name: |-
+  Cross-entity privilege escalation — attachment mutation endpoints discard URL's dataEntityId, accept fileId/linkId from any path (DataEntityAttachmentController HIGH)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20V — surfaced by primary-source
+  examination of the attachment-mutation endpoints in DataEntityAttachmentController
+  batch V. Five of the controller's six mutation endpoints (deleteFile,
+  updateLink, deleteLink, downloadFile, completeFileUpload) accept the parent
+  dataEntityId as a URL path parameter but DO NOT pass it to the service —
+  the service signatures take only fileId / linkId. The authorization gate
+  is keyed on the URL's dataEntityId (via the DATA_ENTITY resource extractor
+  on the SecurityRule), so a user holding DATA_ENTITY_ATTACHMENT_MANAGE on
+  ONE data entity can mutate files/links belonging to ANY OTHER data entity
+  by spoofing the URL prefix.
+
+  THE EVIDENCE — file:line citations from the batch V sidecar:
+
+    Five mutation endpoints that discard dataEntityId:
+      DataEntityAttachmentController.java:65-70 (completeFileUpload —
+        signature accepts dataEntityId; body calls attachmentService.completeFileUpload(uploadId)
+        — dataEntityId NOT forwarded)
+      DataEntityAttachmentController.java:73-80 (downloadFile —
+        accepts dataEntityId; body calls attachmentService.downloadFile(fileId)
+        — dataEntityId NOT forwarded)
+      DataEntityAttachmentController.java:83-88 (deleteFile —
+        accepts dataEntityId; body calls attachmentService.deleteFile(fileId)
+        — dataEntityId NOT forwarded)
+      DataEntityAttachmentController.java:100-107 (updateLink —
+        accepts dataEntityId; body calls attachmentService.updateLink(linkId,
+        body) — dataEntityId NOT forwarded)
+      DataEntityAttachmentController.java:110-114 (deleteLink —
+        accepts dataEntityId; body calls attachmentService.deleteLink(linkId)
+        — dataEntityId NOT forwarded)
+
+    The service signatures (AttachmentServiceImpl.java:71-88) take ONLY
+    fileId/linkId — no parent-entity verification. The SecurityRule entries
+    (SecurityConstants.java:247-276) are keyed on the URL path's
+    {data_entity_id} via the DATA_ENTITY resource extractor — the
+    permission check resolves the URL prefix's dataEntityId but never
+    cross-checks it against the actual file/link's parent.
+
+  THE ATTACK SHAPE:
+
+    1. User U has DATA_ENTITY_ATTACHMENT_MANAGE on data entity A (granted
+       legitimately via a Policy attached to U's Owner with A in scope).
+    2. User U does NOT have any permission on data entity B (B may be
+       in a different namespace, owned by a different team).
+    3. User U calls DELETE /api/dataentities/{A}/files/{file_id_belonging_to_B}.
+    4. SecurityRule check: does U have DATA_ENTITY_ATTACHMENT_MANAGE on
+       entity A? YES (legitimate grant). The check passes.
+    5. Controller routes to AttachmentServiceImpl.deleteFile(file_id_belonging_to_B).
+       No parent-entity check; the file belonging to B is deleted.
+    6. The same path applies to updateLink, deleteLink, downloadFile,
+       completeFileUpload — all five exploit shapes are equivalent.
+
+    Bonus: downloadFile is even WORSE than the mutating endpoints because
+    of the read-side no-RBAC finding (separate batch-V invariant — read
+    endpoints have NO SecurityRule). The downloadFile path is therefore
+    DOUBLY-permissive: even without DATA_ENTITY_ATTACHMENT_MANAGE on any
+    entity, any authenticated user can download any file.
+
+  THE SCOPE OF THE BYPASS:
+
+    The bypass affects:
+      - File contents (cross-entity read on downloadFile)
+      - File deletion (cross-entity write on deleteFile)
+      - Link contents (cross-entity read on updateLink — the link's url
+        and description are returned in the response)
+      - Link mutation (cross-entity write on updateLink + deleteLink)
+      - Upload completion (cross-entity write on completeFileUpload — a
+        user who knows the uploadId belonging to entity B can complete it
+        from entity A's URL prefix — uploadId is the server-side UUID;
+        guessability is bounded by 128-bit entropy, but URL leakage is
+        possible)
+
+  THE IMPLICIT-ADR INTERPRETATION:
+
+    The QueryExampleController batch V sidecar names this as 'URL hierarchy
+    is layout-only; mutation operations on a specific file or link do NOT
+    verify that the file/link actually belongs to the data entity in the
+    path'. The sidecar classifies this as an implicit ADR (the pattern is
+    consistent across 5 methods) but the consistency itself is the BUG
+    — the maintainer's intent appears to be 'use the URL hierarchy for
+    organisation, rely on the WebFilter for authorization' but the
+    WebFilter only checks DataEntity-scope permission, not file-belongs-to-DataEntity.
+
+  THE MITIGATION SCOPE:
+
+    Layer 1 — service-tier verification: every mutation method should
+    take dataEntityId AS PART OF ITS SIGNATURE and verify
+    fileRepository.getById(fileId).dataEntityId == dataEntityId. The
+    verification belongs at the service tier (defence-in-depth; mirrors
+    the QueryExamplePermissionExtractor pattern for QUERY_EXAMPLE_UPDATE
+    where the example's parent is checked).
+
+    Layer 2 — controller-tier path-param forwarding: at minimum, forward
+    dataEntityId to the service method even before adding the verification.
+    The current signature drops it; the dropped parameter is the immediate
+    signal that something is wrong.
+
+    Layer 3 — repository-tier filter: every file/link query at the
+    repository should accept a parent-entity scope and fail-fast on
+    mismatch. Eliminates the cross-entity vector at the data layer.
+
+    Layer 1 + Layer 3 together close the bypass at two tiers; Layer 2 is
+    the minimum step.
+
+  SEVERITY: HIGH — direct cross-owner privilege escalation reachable by
+  any user holding DATA_ENTITY_ATTACHMENT_MANAGE on any one data entity
+  (a commonly-granted permission in real Policies). Combined with the
+  read-side no-RBAC finding, the read-on-any-file vector is reachable
+  by ANY authenticated user.
+nodes:
+  - odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController
+contributors:
+  - |-
+    DataEntityAttachmentController batch V (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.dataEntityId-spoofing HIGH (the explicit
+    five-method finding) +
+    implicit_adrs.url-hierarchy-layout-only (the consistent five-method
+    pattern observation) +
+    security.known_security_gaps.cross-entity-privilege-escalation HIGH +
+    security.owner_scoping (BYPASSES — explicit cross-batch coupling to
+    REFACTOR-024 cross-owner enumeration class)
+evidence:
+  - |-
+    DataEntityAttachmentController.md:bugs_limitations_corner_cases.dataEntityId-spoofing HIGH
+    — evidence: DataEntityAttachmentController.java:65-114 + AttachmentServiceImpl.java:71-88 +
+    SecurityConstants.java:248
+  - |-
+    DataEntityAttachmentController.md:implicit_adrs.url-hierarchy-layout-only
+    — evidence: 5 method signatures consistently accept dataEntityId then
+    never reference it
+  - |-
+    DataEntityAttachmentController.md:security.owner_scoping BYPASSES — the
+    cross-tier finding spanning controller + service tiers
+axes_present:
+  - controllers
+  - services
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: security-privilege-escalation
+mitigations_unimplemented:
+  - |-
+    Layer 1 — service-tier verification at AttachmentServiceImpl: every
+    mutation method takes dataEntityId AND fileId/linkId; verifies
+    fileRepository.findById(fileId).getDataEntityId() == dataEntityId
+    OR linkRepository.findById(linkId).getDataEntityId() == dataEntityId;
+    throws NotFoundException OR BadUserRequestException on mismatch.
+  - |-
+    Layer 2 — controller-tier path-param forwarding at
+    DataEntityAttachmentController: pass dataEntityId to the service in
+    every mutation method signature.
+  - |-
+    Layer 3 — repository-tier filter at FileRepository / LinkRepository:
+    every find/update/delete query accepts a parent-entity scope as part of
+    the WHERE clause. Eliminates the cross-entity vector at the data layer.
+  - |-
+    Regression tests — five tests, one per mutation method:
+      (a) Authenticate as user with DATA_ENTITY_ATTACHMENT_MANAGE on entity
+          A but not entity B.
+      (b) Issue the mutation against entity B's file/link via entity A's
+          URL prefix.
+      (c) Assert response is 403 OR 404 (under the fix) or 200 (under
+          current behaviour — pin as regression boundary).
+  - |-
+    Live docs — disclose the URL-hierarchy-vs-resource-binding decoupling
+    on the attachment-related docs. Operators authoring Policies must know
+    that DATA_ENTITY_ATTACHMENT_MANAGE on entity A grants mutation access
+    to ANY file/link in the platform until the fix lands.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20V from the
+  DataEntityAttachmentController class-level sidecar. The finding is a
+  direct cross-owner privilege escalation surface — visible only by
+  cross-reading the controller signatures and the service signatures
+  together.
+
+  Cross-cutting connections:
+    - Companion attachment finding: attachment-read-endpoints-no-securityrule-cross-owner-file-download
+      (the read-side has NO permission gate at all; combined with this
+      finding, downloadFile is reachable by ANY authenticated user)
+    - Companion attachment finding: filename-path-traversal-and-crlf-header-injection
+      (the filename surface compounds: user with MANAGE on A uploads a
+      malicious filename targeting B's storage path)
+    - REFACTOR-024 / REFACTOR-203 read-collaborative posture — this
+      finding is the WRITE-SIDE compound of the read-collaborative
+      posture; the platform's stance is read-collaborative for reads AND
+      effectively write-collaborative for attachment mutations
+    - Parent permission resolver: the DATA_ENTITY resolver pattern is the
+      correct scope shape; the bug is that the controller's URL hierarchy
+      is layout-only, not authorization-binding
+    - F-006 audit-silence: attachment mutations have NO @ActivityLog (per
+      the existing F-006 master) — the cross-entity write is also
+      untraceable in the activity feed
+
+  Three DOC-NNN candidates flow:
+    (a) Code fix Layer 1 + Layer 2 + Layer 3 (defence-in-depth)
+    (b) Regression tests pinning all five attack shapes
+    (c) Doc admission disclosing the URL-hierarchy-vs-resource-binding
+        decoupling until the fix lands

@@ -1,0 +1,67 @@
+gap_id: TEST-GAP-725
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:TermServiceImpl"
+  - "odd-platform java TermController controller-class:TermController"
+pillars_affected: [P-06, P-07, P-09]
+surfaced_by:
+  - "TermServiceImpl.md:implicit_adrs.[5] (Activity events emitted only on mutations affecting data-entity / dataset-field-term links — NOT on Term CRUD itself; the enum has no Term-lifecycle values to use even if a maintainer wanted to)"
+  - "TermServiceImpl.md:bugs_limitations_corner_cases.[16] (F-006 audit-silence amplified at the enum schema level — Term lifecycle is structurally invisible in the Activity feed — severity MEDIUM)"
+  - "TermServiceImpl.md:security.known_security_gaps.[7] (Term-lifecycle audit-silence — createTerm / updateTerm / delete produce no activity event; the enum has no value for Term lifecycle — severity MEDIUM)"
+  - "TermController.md:dependencies_semantic.requires-runtime (Note on term-to-term linkage: TermServiceImpl.linkTermWithTerm and removeTermToLinkedTermRelation are NOT annotated with @ActivityLog — there is no Activity Feed entry created when terms are linked or unlinked from each other)"
+behaviour: |-
+  **HIGH — F-006 audit-silence pattern extends to the ENUM SCHEMA on the entire Term-lifecycle surface.** Primary-source-confirmed via the batch-U TermServiceImpl sidecar:
+
+  - `TermServiceImpl.createTerm` (`TermServiceImpl.java:99-117`) carries NO `@ActivityLog`.
+  - `TermServiceImpl.updateTerm` (`TermServiceImpl.java:121-145`) carries NO `@ActivityLog`.
+  - `TermServiceImpl.delete` (`TermServiceImpl.java:154-165`) carries NO `@ActivityLog`.
+  - `TermServiceImpl.upsertTags` (`TermServiceImpl.java:253-264`) carries NO `@ActivityLog`.
+  - `TermServiceImpl.linkTermWithTerm` (`TermServiceImpl.java:289-294`) carries NO `@ActivityLog`.
+  - `TermServiceImpl.removeTermToLinkedTermRelation` (`TermServiceImpl.java:297-302`) carries NO `@ActivityLog`.
+
+  Beyond service-tier omission, **the `ActivityEventTypeDto` enum at `ActivityEventTypeDto.java:3-31` does NOT define `TERM_CREATED`, `TERM_UPDATED`, `TERM_DELETED`, `TERM_DESCRIPTION_UPDATED`, `TERM_TAGS_UPDATED`, `NAMESPACE_CREATED`, `NAMESPACE_DELETED`, `TAG_CREATED`, or `TAG_DELETED`** (verified by the sidecar's primary-source `grep -n 'TERM_CREATED\|TERM_UPDATED\|TERM_DELETED\|TAG_CREATED\|NAMESPACE_CREATED' returns zero matches`). The audit-silence on catalog-vocabulary lifecycle is SCHEMA-ROOTED, not just service-side: a maintainer adding `@ActivityLog(TERM_CREATED)` would FAIL TO COMPILE.
+
+  **Why HIGH not MEDIUM**: this is a STRUCTURAL gap, not a service-tier omission. The F-006 audit-silence pattern was previously enumerated across 8+ sidecars at the service tier (operator-investigation surface — "I deleted a Role, no audit trail"). This sidecar surfaces a deeper variant: even if a maintainer wanted to instrument these mutations, the schema doesn't HAVE the right enum values. The intent is encoded by absence — catalog-vocabulary-curation is silent BY DESIGN at the enum level. Whether this is durable design or oversight is decision-shaped; the schema-level absence ELEVATES the gap from "service didn't choose to log" to "platform-design decided catalog-vocabulary is silent". This is the SAME enum-root pattern as the F-006 batch-G primary-source discovery (`seven_sidecar_audit_silence_pattern_repo_tier_schema_root_cause`) but applied to a NEW surface (Term lifecycle vs the previously-enumerated RBAC + ownership surfaces).
+
+  **Operational consequences**:
+  - Operator who deletes a term has no forensic trace in the activity feed; restoring deleted catalog-vocabulary requires DB introspection.
+  - Auditor investigating "who renamed the `Customer` term in `finance` namespace last quarter" has no answer from the activity feed.
+  - Auditor investigating "who linked term A to term B" has no answer (compound with TEST-GAP-718 unauthenticated term-to-term linkage — any authenticated user can link/unlink with no audit trail).
+  - Compliance frameworks (SOX, GDPR-derived data-cataloguing requirements) cannot demonstrate auditability for the Business Glossary.
+
+  **Test gap shape**: a regression-pin asserting that (a) the enum at `ActivityEventTypeDto.java` does NOT contain `TERM_CREATED` / `TERM_UPDATED` / `TERM_DELETED` / etc.; (b) `TermServiceImpl.createTerm/updateTerm/delete/upsertTags/linkTermWithTerm/removeTermToLinkedTermRelation` produce ZERO activity-feed entries on any path. The current state is PINNED to make the design intent visible — any future maintainer adding enum values + `@ActivityLog` instrumentation will see the test fail and must explicitly update both layers in the same PR.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/term/TermLifecycleAuditSilenceEnumRootedTest.java"
+  name: "termLifecycle_createUpdateDeleteUpsertTagsLinkUnlink_produceZeroActivityEvents_enumLacksCorrespondingValues"
+evidence:
+  - "TermServiceImpl.md says (bugs_limitations_corner_cases.[16]): 'F-006 audit-silence amplified at the enum schema level — Term lifecycle is structurally invisible in the Activity feed. createTerm, updateTerm, delete (TermServiceImpl.java:99-117, 121-145, 154-165) carry no @ActivityLog. Beyond service-tier omission, the ActivityEventTypeDto enum (ActivityEventTypeDto.java:3-31) defines TERM_ASSIGNMENT_UPDATED (line 13) and DATASET_FIELD_TERM_ASSIGNMENT_UPDATED (line 24) for LINK changes but does NOT define TERM_CREATED / TERM_UPDATED / TERM_DELETED / TERM_DESCRIPTION_UPDATED / TERM_TAGS_UPDATED / NAMESPACE_CREATED / NAMESPACE_DELETED / TAG_CREATED / TAG_DELETED.'"
+  - "TermServiceImpl.md says (implicit_adrs.[5]): 'The audit-silence on catalog-vocabulary lifecycle is schema-rooted, not just service-side: a maintainer adding @ActivityLog(TERM_CREATED) would not compile. Whether this is durable design or oversight is decision-shaped; the schema-level absence ELEVATES it from service didn't choose to log to platform-design decided catalog-vocabulary is silent.'"
+  - "TermServiceImpl.md says (security.known_security_gaps.[7]): 'Term-lifecycle audit-silence — createTerm / updateTerm / delete produce no activity event; the enum has no value for Term lifecycle (F-006 schema-rooted audit-silence)'"
+  - "TermController.md says (dependencies_semantic.requires-runtime): 'Note on term-to-term linkage: TermServiceImpl.linkTermWithTerm (line 290) and removeTermToLinkedTermRelation (line 299) are NOT annotated with @ActivityLog — there is no Activity Feed entry created when terms are linked or unlinked from each other.'"
+cross_references:
+  - "F-006 (audit-silence pattern; concept: seven_sidecar_audit_silence_pattern_repo_tier_schema_root_cause — this gap extends the pattern to the Term-lifecycle surface)"
+  - "TEST-GAP-232 (audit-silence pattern parent gap — recommend cross-reference added)"
+  - "TEST-GAP-714 (DQ severity-change audit absence — sister F-006 surface from batch T)"
+  - "TEST-GAP-706 (Activity-feed cross-owner audit no-authz — sister F-006 surface from batch T)"
+  - "TEST-GAP-721 (P-06 pillar-floor — this gap is one of the SPECIFIC instances that the service-tier harness would address)"
+  - "TEST-GAP-718 (term-to-term linkage no-authz — COMPOUND with this gap: unauthenticated + unlogged = no defence + no forensic trail)"
+  - "concepts: f006-audit-silence-enum-rooted (new concept candidate; recommend concept-merger flag)"
+  - "LSN-001 / LSN-002 (operator-cliff failure-mode case-law — operators reliant on auditability for compliance get no signal)"
+related_features: [F-006]
+related_pillar_features: ["P-07:F-001"]
+proposed_action: |-
+  Add `TermLifecycleAuditSilenceEnumRootedTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/term/`. Six test methods:
+  1. `activityEventTypeDtoEnum_doesNotDefineTermCreatedUpdatedDeleted_enumRootedSilence` — read the enum via reflection or by listing `ActivityEventTypeDto.values()`; assert NONE of `TERM_CREATED`, `TERM_UPDATED`, `TERM_DELETED`, `TERM_DESCRIPTION_UPDATED`, `TERM_TAGS_UPDATED` are present. PIN the schema-level absence.
+  2. `termServiceImplCreateTerm_producesZeroActivityEvents` — call `TermServiceImpl.createTerm(formData)` with a fresh term; assert no rows in `activity` table mention the new term's id. PIN the service-tier silence.
+  3. `termServiceImplUpdateTerm_producesZeroActivityEvents` — call `TermServiceImpl.updateTerm(termId, formData)` with a rename; assert no rows.
+  4. `termServiceImplDeleteTerm_producesZeroActivityEvents` — call `TermServiceImpl.delete(termId)`; assert no rows.
+  5. `termServiceImplUpsertTags_producesZeroActivityEvents` — call `TermServiceImpl.upsertTags(termId, tagsFormData)`; assert no rows.
+  6. `termServiceImplLinkTermWithTermAndRemove_producesZeroActivityEvents` — call `linkTermWithTerm(A, B)` then `removeTermToLinkedTermRelation(A, B)`; assert no rows. PIN the compound failure (unauthenticated + unlogged per TEST-GAP-718).
+
+  Pair with a maintainer-decision-on-disk DOC-NNN candidate: either disclose the current "catalog vocabulary is silent by design" decision on `documentation/docs/features/data-glossary/business-glossary.md` AND the `active-platform-features.md` activity-feed page, OR add the enum values + service-tier `@ActivityLog` instrumentation in a separate PR. When/if instrumentation lands, test #1 inverts to assert PRESENCE, tests #2-#6 invert to assert positive activity-event production.
+
+  Cross-pair with concept-merger to surface a NEW concept entry: `f006-audit-silence-enum-rooted-term-lifecycle` (the SECOND enum-rooted variant; first was `seven_sidecar_audit_silence_pattern_repo_tier_schema_root_cause` for RBAC).
+batch: 2026-05-20-U
+feature_id: F-006

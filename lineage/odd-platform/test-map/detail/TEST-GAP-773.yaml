@@ -1,0 +1,109 @@
+gap_id: TEST-GAP-773
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataSourceController controller-class:DataSourceController"
+  - "odd-platform java CollectorController controller-class:CollectorController"
+  - "odd-platform java NamespaceController controller-class:NamespaceController"
+  - "odd-platform java TagController controller-class:TagController"
+  - "odd-platform java DatasetController controller-class:DatasetController"
+pillars_affected: [P-08, P-01, P-09]
+surfaced_by:
+  - "DataSourceController.md:tests_coverage_semantic.covered_behaviours.[ZERO. There is no DataSourceControllerTest, no DataSourceServiceImplTest, no DataSourceServiceTest — verified by Glob ... all returning 'No files found']"
+  - "CollectorController.md:tests_coverage_semantic.test_files (single repository-tier test only; NO file named CollectorControllerTest exists)"
+  - "NamespaceController.md:tests_coverage_semantic.test_files (service-tier mock-based only; controller-tier integration test absent)"
+  - "TagController.md:tests_coverage_semantic.test_files (zero matches for TagController in src/test; the only test coverage of the tag surface is at the repository layer)"
+  - "DatasetController.md:tests_coverage_semantic.test_files (NO direct controller test verified via Grep DatasetController in src/test — 0 matches)"
+behaviour: |-
+  **MEDIUM — Cross-cutting: ALL FIVE batch-W controllers (DataSourceController, CollectorController, NamespaceController, TagController, DatasetController) have ZERO direct HTTP-tier tests. The test coverage gap is systemic: every test currently in the repo is at the service tier (mock-based) or the repository tier (Testcontainers DB) — NO `*ControllerTest.java` exists for any of the 5 controllers. The HTTP boundary (path mapping, SecurityRule wiring, request-body parsing, reactive response shape, ControllerAdvice exception mapping) is unverified.** Primary-source confirmed across all 5 batch-W sidecars:
+
+  - **DataSourceController**: ZERO. No `DataSourceControllerTest`, no `DataSourceServiceImplTest`, no `DataSourceServiceTest` (verified by Glob returning 'No files found'). The only test that touches DataSourceService indirectly is `DataEntityServiceTest` (mocks create/list).
+  - **CollectorController**: ZERO direct controller tests. `CollectorRepositoryImplTest` (repository tier, Testcontainers) exists but does NOT exercise the controller, service, authorization gate, or token-visibility contract.
+  - **NamespaceController**: ZERO direct controller tests. `NamespaceServiceImplTest` (service tier, mock-based) exists with 10 tests but does NOT exercise the controller-tier security wiring.
+  - **TagController**: ZERO direct controller tests. `TagRepositoryImplTest` (repository tier, 10 tests) exists but does NOT exercise the controller's TAG_CREATE / TAG_UPDATE / TAG_DELETE SecurityRule wiring.
+  - **DatasetController**: ZERO direct controller tests. `ReactiveDatasetVersionRepositoryImplTest` (repository tier, 2 tests on getDatasetVersion) exists but does NOT exercise the 4 endpoints' HTTP behaviour.
+
+  **What the HTTP-tier tests would cover that no other tier can**:
+  - **Path mapping**: does the OpenAPI-generated path actually wire to the controller method? (A refactor changing the `@RequestMapping` or `@PostMapping` annotation silently breaks the endpoint without compile-time failure.)
+  - **SecurityRule wiring**: does `SecurityConstants.SECURITY_RULES` actually gate the right path → permission? (Test by calling without the permission, expecting 403.)
+  - **Request body parsing**: does the OpenAPI-generated FormData unwrap correctly into the controller's `Mono<FormData>` argument? (Test by sending malformed JSON, expecting 400.)
+  - **ControllerAdvice exception mapping**: does `BadUserRequestException` map to HTTP 400, `NotFoundException` to 404, `UniqueConstraintException` to 400, `CascadeDeleteException` to 400? (Test by triggering each exception and asserting the status.)
+  - **Reactive response shape**: does `Mono<ResponseEntity<...>>` serialize correctly under WebFlux's reactive codec? (Test for large payloads, empty payloads, streaming.)
+
+  **Architectural pattern**: this is the same gap class as the canonicalisation candidate at the system-mission level — the platform's controllers are intentionally thin OpenAPI-passthrough delegates, AND the test posture is intentionally service-tier mock-heavy. The HTTP boundary is the SOLE place where path mapping + auth wiring + exception mapping converge. The absence of HTTP-tier tests means refactors at the boundary are unverified.
+
+  **Aggregate count**: 5 controllers × ~4-6 endpoints each = ~25-30 HTTP-tier endpoints uncovered.
+
+  **Why MEDIUM not HIGH**:
+  - The functional behaviour IS covered (per-controller service-tier tests catch business-logic regressions).
+  - The boundary regressions are RECOVERABLE — a broken path mapping fails on first real call; the platform's deployment process catches this in staging.
+  - HIGH would be inappropriate because each individual missing test is MEDIUM-LOW; the AGGREGATE is MEDIUM because the pattern is systemic.
+
+  **Test gap shape**: regression-pin asserting that each of the 5 controllers' endpoints is reachable via WebTestClient with the documented permission and returns the documented status code. The test file is a single fixture exercising all 5 controllers' happy-paths + auth-403 paths + bad-input-400 paths. Establishes a HTTP-tier baseline for the batch-W surface.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/NamespaceServiceImplTest.java (1 service-tier test exists for the 5 batch-W controllers — Namespace only)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/CollectorRepositoryImplTest.java (1 repository-tier test)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java (1 repository-tier test, 10 tests)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDatasetVersionRepositoryImplTest.java (1 repository-tier test, 2 tests)"
+  - "(NO DataSourceControllerTest, NO CollectorControllerTest, NO NamespaceControllerTest, NO TagControllerTest, NO DatasetControllerTest)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/BatchWHttpTierFloorTest.java"
+  name: "datasourceCollectorNamespaceTagDataset_httpBoundaryHappyPathsAndAuthAndExceptionMapping_establishesHttpTierFloor"
+evidence:
+  - "DataSourceController.md says (tests_coverage_semantic.covered_behaviours): 'ZERO. There is no DataSourceControllerTest, no DataSourceServiceImplTest, no DataSourceServiceTest — verified by Glob **/DataSourceControllerTest*.java / **/DataSourceServiceImplTest*.java / **/DataSourceService*Test*.java all returning No files found. The controller and its service are entirely uncovered by JUnit tests in this repository.'"
+  - "CollectorController.md says (tests_coverage_semantic.gaps): 'The entire CollectorController surface is uncovered at the controller, service, and integration layers. A regression that flips response-body token visibility, removes a SecurityRule entry, breaks the cascade-delete check, or changes update semantics from full-replace to partial would all ship un-caught.'"
+  - "NamespaceController.md says (tests_coverage_semantic.gaps): 'The existing test suite covers the service-layer happy paths + the cascade-on-delete guard EXHAUSTIVELY. The major regression risk lies OUTSIDE the file: (a) the cross-pillar side-door from 4 sister services that bypass NAMESPACE_CREATE; (b) the central SECURITY_RULES wiring that the controller depends on but doesn't assert; (c) the TOCTOU race between cascade-check and concurrent referent-row insertion. None of these would be caught by NamespaceServiceImplTest.'"
+  - "TagController.md says (tests_coverage_semantic.gaps): 'No tests exist for this controller at all — no TagControllerTest.java under odd-platform-api/src/test. The only test coverage of the tag surface is at the repository layer (TagRepositoryImplTest.java, 10 tests). The controller-perimeter authorisation wiring (does TAG_CREATE actually gate POST /api/tags?), the OpenAPI request-binding (does the BulkTagFormData wrapper unwrap correctly into Flux<TagFormData>?), and the response-shape (does Flux<Tag> serialise to a JSON array correctly?) are all unverified.'"
+  - "DatasetController.md says (tests_coverage_semantic.gaps): 'The controller has ZERO direct HTTP-boundary tests; the service tier has ZERO direct tests. Every behaviour observable at the HTTP boundary — the id-confusion / per-entity-scoping bypass at by-version-id + diff endpoints, the 500-on-missing-version-id on diff (vs 404 elsewhere), the identical-versions 400 contract, the F-004 verbatim-description read-side surface, the cross-owner read posture under all four auth modes including DISABLED, the parent-field cascade semantics in diff — is unverified.'"
+  - "Verified across 5 sidecars: Glob `**/{DataSource,Collector,Namespace,Tag,Dataset}ControllerTest*.java` returns ZERO matches (verified per each sidecar's `tests_coverage_semantic.test_files` block)"
+cross_references:
+  - "TEST-GAP-001 (existing — sister HTTP-tier-floor pattern at the alerts surface)"
+  - "TEST-GAP-745 (batch-V — QueryExampleController HTTP floor — sister cross-cutting gap)"
+  - "TEST-GAP-746 (batch-V — OwnerAssociationRequestController HTTP floor — sister cross-cutting gap)"
+  - "All 24 NEW batch-W TEST-GAP-749..TEST-GAP-772 (this gap is the aggregate AT-THE-HTTP-BOUNDARY summary; the 24 specific gaps are the per-behaviour pins)"
+  - "REFACTOR-NNN candidate: establish a WebTestClient-based HTTP-tier test convention; backfill across the controller package"
+  - "concepts: http-tier-test-floor-systematic-absence (NEW canonicalisation candidate; this is the 3rd cross-cutting gap surfacing this pattern across batches V + W)"
+related_features: []
+related_pillar_features: ["P-08:F-NN-Datasources-tab", "P-08:F-004-collector-lifecycle", "P-08:F-NN-namespaces-tab", "P-01:F-006-manual-object-tagging", "P-01:F-NN-dataset-structure-read"]
+proposed_action: |-
+  Add `BatchWHttpTierFloorTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. One test class per controller, ~5 happy-path + auth + exception test methods each:
+
+  **DataSourceController** (~5 tests):
+  1. `registerDataSource_withValidForm_returns200WithDataSourceBody`
+  2. `getDataSourceList_authenticatedUser_returns200WithList`
+  3. `updateDataSource_withInvalidId_returns404`
+  4. `deleteDataSource_withCascadeBlock_returns400`
+  5. `registerDataSource_withoutDataSourceCreatePermission_returns403`
+
+  **CollectorController** (~5 tests):
+  1. `registerCollector_returns200WithFullPlaintextToken`
+  2. `getCollectorList_returns200WithMaskedTokens`
+  3. `regenerateCollectorToken_returns200WithFreshPlaintextToken`
+  4. `deleteCollector_withCascadeBlock_returns400`
+  5. `registerCollector_withoutCollectorCreatePermission_returns403`
+
+  **NamespaceController** (~5 tests):
+  1. `createNamespace_withValidForm_returns200_pinsSecurityRuleWiring` — assert NAMESPACE_CREATE is required
+  2. `getNamespaceList_returns200_pinsReadCollaborativePosture` — authenticated user with no Tag* permissions can list
+  3. `deleteNamespace_withCascadeBlock_returns400_pinsCascadeGuard`
+  4. `updateNamespace_withNonexistentId_returns404`
+  5. `createNamespace_withDuplicateName_returns400_pinsUniqueIndex`
+
+  **TagController** (~5 tests):
+  1. `createTag_returns200WithBulkBody_pinsBulkCreateContract`
+  2. `getPopularTagList_returns200_pinsReadCollaborativePosture`
+  3. `deleteTag_withExternalTrue_returns400`
+  4. `updateTag_withoutTagUpdatePermission_returns403`
+
+  **DatasetController** (~5 tests):
+  1. `getDataSetStructure_returns200_pinsLatestPathHttpContract`
+  2. `getDataSetStructureByVersionId_returns200_pinsByVersionHttpContract`
+  3. `getDataSetStructureDiff_returns200_pinsDiffHttpContract`
+  4. `getDataSetStructureDiff_withMissingVersionId_returns500_pinsErrorContractDrift`
+  5. `getDataSetStructureDiff_withIdenticalVersionIds_returns400`
+
+  Total: ~25 test methods establishing the HTTP-tier baseline across the 5 controllers. Each test uses WebTestClient against the @SpringBootTest WebFlux stack with policy-scoped users.
+
+  Pair with REFACTOR-NNN: establish a WebTestClient HTTP-tier test convention; backfill across the controller package.
+batch: 2026-05-20-W
+feature_id: null

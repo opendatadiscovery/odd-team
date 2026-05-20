@@ -1,0 +1,40 @@
+gap_id: TEST-GAP-706
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java ActivityController controller-class:ActivityController"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "ActivityController.md:security.known_security_gaps.[0] (`/api/activity` + `/api/activity/counts` have no per-endpoint authorization wiring — severity HIGH)"
+  - "ActivityController.md:bugs_limitations_corner_cases.[2] (No @PreAuthorize at any tier; not in SECURITY_RULES — severity HIGH)"
+  - "ActivityController.md:tests_coverage_semantic.uncovered_behaviours.[3] (Authorization: cross-owner read posture untested)"
+  - "ActivityController.md:tests_coverage_semantic.uncovered_behaviours.[4] (DISABLED-mode anonymous reachability)"
+behaviour: |-
+  **ActivityController EXPOSES THE GLOBAL CROSS-OWNER AUDIT TRAIL TO ANY AUTHENTICATED USER — no `@PreAuthorize`, no SECURITY_RULES entry, no programmatic permission check. UNDER `auth.type=DISABLED` this becomes anonymous read of every recorded change on every entity across all owners.** The class is registered with `@RestController` only (`ActivityController.java:18-19`); SecurityConstants.java:95-356 has been read end-to-end (357 lines) and contains ZERO matches for 'activity' / 'Activity' / 'ACTIVITY' / `/api/activity`. The two paths fall through to LoginFormSecurityConfiguration.java:57's `.pathMatchers('/**').authenticated()` (and AuthorizationCustomizer.java:29-30 for OAUTH2/LDAP). The default request (no `type` parameter or `type=ALL`) bypasses owner filtering entirely — `ActivityServiceImpl.fetchAllActivities` at lines 168-182 has no owner filter. Only `type=MY_OBJECTS` consults `authIdentityProvider.fetchAssociatedOwner()`. The Activity payload (`components.yaml:2861-2935`) includes structured `old_state`/`new_state` before/after for descriptions, business names, internal names, custom-metadata key/value pairs, tag/term assignments, ownership transitions, alert halt-config changes — every cross-owner read leaks free-text content that may include incident notes, customer identifiers, or internal tickets. The live `documentation/docs/active-platform-features/activity-feed.md` page (WebFetched 2026-05-20 status 200) makes NO statement about visibility, ownership scoping, or audit-trail sensitivity. No test catches this: `find <odd-platform> -path '*test*' -name 'ActivityController*'` returned no matches 2026-05-20; the only adjacent tests are activity-table-partition-manager and ingestion-side AlertIngestionTest (which covers the WRITE path via @ActivityLog AOP, not the controller READ path). STRENGTHENS REFACTOR-024 family (read-collaborative cross-owner enumeration posture) with a NEW invocation vector — the controller-tier test pin for the global audit-trail.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ActivityControllerCrossOwnerReadPostureTest.java"
+  name: "getActivity_typeDefaultAndAll_returnsCrossOwnerActivityRows_pinsReadCollaborativePosture"
+evidence:
+  - "ActivityController.md says (security.known_security_gaps.[0]): '/api/activity and /api/activity/counts have no per-endpoint authorization wiring — no @PreAuthorize, no programmatic permission check, no entry in SecurityConstants.SECURITY_RULES. Any authenticated user reads the GLOBAL cross-owner audit trail, including audit events on resources they have no ownership association with. The Policies/Permissions/Roles/Owners framework documented at /enable-security/authorization is not applied. The user-facing activity-feed.md page contains no warning about this.' severity: HIGH"
+  - "ActivityController.md says (bugs_limitations_corner_cases.[2]): 'No @PreAuthorize, no programmatic authorization gate at the controller layer, and no entry for either endpoint in SecurityConstants.SECURITY_RULES (verified: zero matches across the 357-line file for activity / ACTIVITY / Activity). The endpoints fall through to Spring's default .authenticated() rule; under DISABLED auth mode, anonymous traffic reaches them. The OpenAPI spec contains no security requirement annotation on either endpoint. The read-collaborative cross-owner enumeration posture concept in the catalog is rooted here.' severity: HIGH"
+  - "ActivityController.md says (tests_coverage_semantic.uncovered_behaviours.[3]): 'Authorization: when auth.type=LOGIN_FORM (or OAUTH2 / LDAP) and the caller is unauthenticated, the SecurityWebFilterChain rejects the request before the controller runs (HTTP 401). When the caller IS authenticated, the request reaches the controller regardless of ownership association — there is no per-endpoint Permission gate to test.'"
+  - "Source: ActivityController.java:18-57 (no annotations) + SecurityConstants.java:95-356 (full file read; zero matches) + ActivityServiceImpl.java:86-117 + ActivityServiceImpl.java:168-182 (fetchAllActivities — no owner filter) + components.yaml:2861-2935 (audit payload schema with old_state/new_state) + WebFetch activity-feed.md 2026-05-20 status 200 (no visibility statement) + Glob ActivityControllerTest* returned no matches"
+cross_references:
+  - "REFACTOR-024 (cross-owner read posture family — Activity controller is a fresh invocation vector)"
+  - "TEST-GAP-232 (RBAC audit-silence — sister gap; same forensic-silence picture from the WRITE side)"
+  - "ADR-CANDIDATE-003 (read-collaborative catalog)"
+  - "concepts.yaml — read-collaborative-cross-owner-enumeration-posture, audit-log-presence-asymmetry-2-tier-audit-story"
+  - "F-021 (P-07:F-003 Activity Feed Audit-Trail Surface)"
+  - "F-006 (P-09:F-001 RBAC — cross-cutting authorization model)"
+  - "DOC-GAP-NNN (activity-feed.md missing visibility statement; logged separately by doc-gap-finder)"
+related_features: [F-021, F-006]
+related_pillar_features: ["P-07:F-003", "P-09:F-001"]
+proposed_action: |-
+  Add `ActivityControllerCrossOwnerReadPostureTest` with three regression-pin methods:
+  (a) `getActivity_typeNull_returnsActivityForEntitiesOwnedByOthers_pinsCrossOwnerVisibility`: seed Owner A + Owner B each owning a data entity; have @ActivityLog-annotated services record events on both entities; authenticate as a user associated only with Owner A; WebTestClient GET `/api/activity` (no `type` param); assert the response Flux<Activity> contains events from BOTH Owner A's entity AND Owner B's entity. Pins the unscoped default behaviour.
+  (b) `getActivity_typeMyObjects_returnsOnlyCallerOwnerEntities_pinsTheOnlyOwnerScopedBranch`: same fixture; GET `/api/activity?type=MY_OBJECTS`; assert only Owner A's entity events return. Pins the MY_OBJECTS-only owner-scoping (i.e., the asymmetric branch in ActivityServiceImpl.fetchMyActivities).
+  (c) `getActivity_typeUpstream_returnsEventsAcrossLineageWithoutOwnerFilter_pinsLineageBypass`: build lineage Owner A's entity → Owner B's entity; authenticate as Owner A; GET `/api/activity?type=UPSTREAM` for Owner A's entity; assert events on Owner B's lineage-connected entity ARE returned (no owner filter on the lineage walk).
+  Add `// REGRESSION-PIN — ActivityController surfaces the read-collaborative cross-owner audit-trail; only the MY_OBJECTS branch consults caller ownership. If the maintainer ever tightens to require Owner-context, this test breaks and the maintainer must coordinate the doc fix at activity-feed.md.` comment block. Pair with DOC-GAP that adds the visibility statement at activity-feed.md.
+batch: 2026-05-20-T
+feature_id: F-021

@@ -1,0 +1,65 @@
+gap_id: TEST-GAP-744
+category: sidecar-stale
+criticality: LOW
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveDatasetFieldRepositoryImpl"
+  - "odd-platform java DatasetFieldController controller-class:DatasetFieldController"
+pillars_affected: [P-01, P-07]
+surfaced_by:
+  - "DatasetFieldController.md:coherence_corrections (SUPERSEDES three factually-wrong claims from prior batches per LSN-018 Rule 6)"
+  - "DatasetFieldController.md:concepts.invariants.[7] (No `@ActivityLog` lives on the controller layer — every emit (description, internal-name, tags, term-add, term-delete) happens at the service or inner-service layer. Description @ActivityLog lives at the INNER service DatasetFieldInternalInformationServiceImpl.java:28)"
+  - "DatasetFieldController.md:concepts.invariants.[8] (Description-edit returns 404 on missing id, NOT 200 OK with empty body — F-004 batch-R coherence correction: the prior claim was wrong)"
+behaviour: |-
+  **CORRECTION-CONSOLIDATION — TEST-GAP-666 + TEST-GAP-679 + F-004 batch-R drift facets SUPERSEDED by batch-V DatasetFieldController primary-source evidence. The prior claims "DATASET_FIELD_DESCRIPTION_UPDATED is NEVER emitted" and "updateDescription returns 200-OK-with-empty-body on missing id" are FACTUALLY WRONG.** Primary-source confirmed via the batch-V DatasetFieldController sidecar AND verified at the source files:
+
+  **What batch-R got wrong**:
+  - **Claim 1 (TEST-GAP-666, F-004 batch-R `dataset_field_description_edit_no_activity_log_asymmetric_with_internal_name`)**: "`DatasetFieldServiceImpl.updateDescription` has NO @ActivityLog → description edits NOT recorded in activity feed → DATASET_FIELD_DESCRIPTION_UPDATED is NEVER emitted."
+  - **Claim 2 (TEST-GAP-679 + F-004 batch-R `dataset_field_update_description_silent_no_op_on_missing_id`)**: "`DatasetFieldServiceImpl.updateDescription` does NOT switchIfEmpty → API returns 200 OK with empty body for a non-existent field id."
+
+  **Batch-V primary-source corrections**:
+  - **Correction 1**: The `@ActivityLog` annotation lives one layer deeper at `DatasetFieldInternalInformationServiceImpl.java:28` — NOT at `DatasetFieldServiceImpl.updateDescription`. Description-edit DOES emit `DATASET_FIELD_DESCRIPTION_UPDATED`. Verified at code: `Grep @ActivityLog /home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldInternalInformationServiceImpl.java:28` returns `@ActivityLog(event = ActivityEventTypeDto.DATASET_FIELD_DESCRIPTION_UPDATED)`. The handler at `DatasetFieldInformationUpdatedActivityHandler.java:27-29` handles the event. The live docs at `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed#event-types` (verified 2026-05-20 status 200) list it.
+  - **Correction 2**: The `.switchIfEmpty(Mono.error(NotFoundException))` lives at the INNER service `DatasetFieldInternalInformationServiceImpl.java:33` — BEFORE the activity-log emission and the downstream filled-flag updates. Verified at code: `Grep switchIfEmpty /home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldInternalInformationServiceImpl.java:33` returns `.switchIfEmpty(Mono.error(new NotFoundException(\"DatasetField\", datasetFieldId)))`. The outer `DatasetFieldServiceImpl.updateDescription` (lines 87-95) does NOT need its own switchIfEmpty because the inner service throws first. PUT /api/datasetfields/{id}/description on a missing id returns 404, NOT 200.
+
+  **Effect on prior gap classifications**:
+  - **TEST-GAP-666 (DatasetField description-edit no @ActivityLog)**: STALE — the underlying claim is wrong. The "asymmetric with internal_name" framing was based on misreading the service-layer annotation depth; the actual symmetry is STRUCTURAL-ONLY (depth in the service stack), with NO operator-visible consequence. Recommended action: re-author TEST-GAP-666 to assert the POSITIVE contract (description-edit emits exactly ONE DATASET_FIELD_DESCRIPTION_UPDATED activity event, plus an additional DATASET_FIELD_TERM_ASSIGNMENT_UPDATED if the new description text contains term references — the dual-event semantics from batch-V `DatasetFieldController.md:dependencies_semantic.coupling.[3]`). The "no activity log on description-edit" original framing should be **withdrawn**.
+  - **TEST-GAP-679 (DatasetField updateDescription silent no-op on missing id)**: STALE on the missing-id half — the missing-id behaviour returns 404, not 200. The empty-string normalisation half (the OTHER half of TEST-GAP-679) is correct and remains valid. Recommended action: re-author TEST-GAP-679 to assert (a) the 404 contract on missing id (POSITIVE), (b) the empty-to-null normalisation contract (POSITIVE), (c) drop the "silent no-op on missing id" framing.
+  - **F-004 batch-R drift facets**:
+    - `dataset_field_description_edit_no_activity_log_asymmetric_with_internal_name` (line 14 of F-004.yaml) → RECLASSIFY as `dataset_field_description_edit_activity_log_at_inner_service_layer_structural_only_no_operator_impact` (per batch-V sidecar `coherence_corrections.[1]`).
+    - `dataset_field_update_description_silent_no_op_on_missing_id` (line 15 of F-004.yaml) → REMOVE (per batch-V sidecar `coherence_corrections.[2]` — the missing-id behaviour returns 404).
+    - F-006 audit-silence canonicalisation candidate cross-coupling — DatasetField description-edit is NOT a member of the asymmetric audit-silence class; the dataset-field surface has SYMMETRIC activity-log coverage across description, internal-name, tags, term-link, term-unlink. F-006 audit-silence is at the RBAC mutation surface (role/policy/owner-association), not at the dataset-field metadata surface.
+
+  **Why LOW**: this is a sidecar-quality / consolidation finding rather than a new vulnerability. The substrate's integrity matters because future maintainers reading TEST-GAP-666 + TEST-GAP-679 would author tests against false claims; this entry surfaces the correction. Per Rule 6 LSN-018, supersede actions are logged as new entries with the SUPERSEDES claim explicit.
+
+  **Action required from concept-merger / orchestrator**:
+  - Update F-004 detail file (`feature-flows/detail/F-004.yaml`) lines 14-15 to reclassify the two drift facets per the corrections above.
+  - Add `superseded_by_batch_v: TEST-GAP-744` notes (or maintainer_notes) to TEST-GAP-666 and TEST-GAP-679 detail files OR allow the orchestrator to re-author the entries in place per the SUPERSEDES contract.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetFieldDescriptionEditActivityFeedAndNotFoundContractTest.java"
+  name: "updateDescription_emitsDatasetFieldDescriptionUpdatedActivityEvent_AND_returns404OnMissingId_pinsCorrectedContract"
+evidence:
+  - "DatasetFieldController.md says (coherence_corrections.[1]): 'F-004 batch-R + ReactiveDatasetFieldRepositoryImpl sidecar prior claim DatasetFieldServiceImpl.updateDescription has NO @ActivityLog → description edits are NOT recorded in the activity feed → DATASET_FIELD_DESCRIPTION_UPDATED is NEVER emitted. Correction: description-edit DOES emit DATASET_FIELD_DESCRIPTION_UPDATED. The @ActivityLog annotation lives one layer deeper at DatasetFieldInternalInformationServiceImpl.java:28, NOT at DatasetFieldServiceImpl.updateDescription. The handler at DatasetFieldInformationUpdatedActivityHandler.java:27-29 handles the event; the live docs list it.'"
+  - "DatasetFieldController.md says (coherence_corrections.[2]): 'F-004 batch-R + ReactiveDatasetFieldRepositoryImpl sidecar prior claim DatasetFieldServiceImpl.updateDescription does NOT switchIfEmpty → If the chain completes empty, the API returns 200 OK with empty body for a non-existent field id. Correction: the .switchIfEmpty(Mono.error(NotFoundException)) lives at the INNER service DatasetFieldInternalInformationServiceImpl.java:33, BEFORE the activity-log emission and the downstream filled-flag updates. The outer service does not need its own switchIfEmpty because the inner service throws first. PUT /api/datasetfields/{id}/description on a missing id returns 404, NOT 200.'"
+  - "Verified at primary source: Grep @ActivityLog at /home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldInternalInformationServiceImpl.java line 28: `@ActivityLog(event = ActivityEventTypeDto.DATASET_FIELD_DESCRIPTION_UPDATED)`"
+  - "Verified at primary source: Grep switchIfEmpty NotFoundException at same file line 32-33: `.switchIfEmpty(Mono.error(new NotFoundException(\"DatasetField\", datasetFieldId)))`"
+cross_references:
+  - "TEST-GAP-666 (STALE — supersede prior batch-R claim; the asymmetric-no-activity-log framing was wrong; this gap supersedes)"
+  - "TEST-GAP-679 (STALE on the missing-id half — supersede prior batch-R claim about silent no-op; empty-string-to-null half remains valid)"
+  - "F-004.yaml line 14 (RECLASSIFY drift facet `dataset_field_description_edit_no_activity_log_asymmetric_with_internal_name`)"
+  - "F-004.yaml line 15 (REMOVE drift facet `dataset_field_update_description_silent_no_op_on_missing_id`)"
+  - "F-006 audit-silence canonicalisation candidate — DatasetField is NOT a member of the asymmetric class"
+  - "concepts: dataset-field-activity-log-symmetric-structural-only (NEW concept candidate to replace the canonicalisation candidate)"
+  - "LSN-018 Rule 6 (pre-emit coherence check + supersede actions logged as new entries)"
+related_features: [F-002, F-007]
+related_pillar_features: ["P-01:F-002", "P-07:F-003"]
+proposed_action: |-
+  Add `DatasetFieldDescriptionEditActivityFeedAndNotFoundContractTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods asserting the CORRECTED contract:
+  1. `updateDescription_emitsDatasetFieldDescriptionUpdatedActivityEvent` — call `PUT /api/datasetfields/{id}/description`; query `SELECT COUNT(*) FROM activity WHERE event_type = 'DATASET_FIELD_DESCRIPTION_UPDATED' AND data_entity_id = ?`; assert returns 1. PIN the activity emission contract.
+  2. `updateDescription_emitsDualActivityEventsWhenDescriptionContainsTermReferences` — call PUT with description containing `[[term-name]]` syntax; assert TWO activity rows: DATASET_FIELD_DESCRIPTION_UPDATED + DATASET_FIELD_TERM_ASSIGNMENT_UPDATED (per the batch-V dependencies_semantic.coupling[3] finding).
+  3. `updateDescription_returns404OnMissingDatasetFieldId` — call PUT with `{id}` = 999999999; assert HTTP 404 (NotFoundException from the inner service). PIN the 404 contract.
+
+  Pair with: (a) UPDATE F-004 detail file to reclassify the drift facets; (b) UPDATE concept-merger to remove DatasetField from the F-006 audit-silence class; (c) UPDATE TEST-GAP-666 + TEST-GAP-679 to add `superseded_by: TEST-GAP-744` notes OR allow the orchestrator to re-author them in place.
+
+  Add a `// CORRECTION-PIN — Batch-V SUPERSEDES the prior batch-R claims that DATASET_FIELD_DESCRIPTION_UPDATED is never emitted and that updateDescription returns 200 OK on missing id. The corrected contract is: the event IS emitted (annotation lives at the inner service); the missing-id contract IS 404 (switchIfEmpty lives at the inner service). This test asserts the corrected contract.` comment block.
+batch: 2026-05-20-V
+feature_id: F-007

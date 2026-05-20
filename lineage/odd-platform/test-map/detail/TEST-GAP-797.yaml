@@ -1,0 +1,84 @@
+gap_id: TEST-GAP-797
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java notification.sender class:SlackNotificationSender"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "SlackNotificationSender.md:bugs_limitations_corner_cases.[2] HIGH (Mrkdwn injection via AlertChunkPojo.description)"
+  - "SlackNotificationSender.md:security.known_security_gaps.[0] HIGH (Mrkdwn injection — @channel / @here / fake-link injection via upstream-supplied description strings)"
+behaviour: |-
+  **HIGH — Slack mrkdwn injection via `AlertChunkPojo.description`.** `AlertChunkPojo.description` strings flow into Slack as `markdownText(...)` at `SlackMessageGenerator.java:77` (the chain `buildDescriptionsFromChunks` helper at lines 95-101 builds the description block from the latest 3 chunks). Slack interprets `*bold*`, `_italic_`, `~strikethrough~`, `<url|text>`, `@channel`, `@here`, `<!channel>`, `<!here>` as mrkdwn markup. `AlertChunkPojo` populates `.description` from ingestion-side `AlertActionResolverImpl.java:162` which sets it from upstream collector-supplied content (e.g. a dbt test description, a Great Expectations expectation result string, a schema-diff narrative).
+
+  **The F-004 cross-pillar XSS / injection family — 6th surface confirmed at the Slack channel**. Prior 5 surfaces enumerated in F-004:
+  - DOM-tier markdown rendering (UI side; LSN-017 measured truth)
+  - DataEntity description (mid-tier)
+  - DatasetField description (mid-tier)
+  - QueryExample Markdown (P-02)
+  - ReferenceData LookupCharValidator (P-03)
+
+  This gap pins the 6th surface: outbound Slack notifications. Distinct from the UI surfaces in that the ATTACK SINK is a Slack workspace's channel members (not browser users). An upstream-side actor with control over the description string can inject:
+  - `@channel` → broadcast-notify the entire Slack channel membership (operationally disruptive)
+  - `<!here>` → alert online users in the channel
+  - `<https://attacker.example/|click here>` → render a fake-link with operator-trusted text (phishing within an operator-trusted channel)
+  - `*bold*` / `_italic_` / `~strikethrough~` → spoof formatting authority (e.g. fake `*CRITICAL ALERT*` for a benign event)
+
+  **The attack vector is upstream-collector-side**: ingestion accepts arbitrary descriptions; ODD does NOT validate / sanitise / escape collector-supplied content per the platform's "trust upstream metadata" stance. A compromised collector OR a malicious metadata-source row can inject the markup. The trust boundary is wide: any of the 41 pull-collector adapters + 6 push-adapter shapes (per P-10) is a viable injection point.
+
+  **No mitigation in code**:
+  - No `MrkdwnUtils.escape(...)` exists in `MrkdwnUtils.java:1-14`; the only mrkdwn helpers are `bold(...)` and `buildLink(...)` for platform-controlled strings — operator-supplied / ingestion-supplied strings are passed through raw.
+  - No allowlist on description chars, no length cap, no normalisation.
+  - No live-doc warning to operators.
+
+  **Distinguishes from prior coverage**: F-004's existing 5 surfaces are all UI XSS / markdown-rendering surfaces. The Slack mrkdwn-injection surface is a NEW SINK class — an external workspace channel, not a browser. Operator threat-model for the Slack channel is "I trust the channel members"; the platform's threat-model is "I trust the upstream collectors". The two trust models don't compose: a compromised collector becomes an injection sink that reaches the operator's trusted Slack channel verbatim.
+
+  **Test gap shape**: regression-pin asserting that mrkdwn metacharacters in `alertChunks.description` reach the Slack POST body verbatim. PINS the current vulnerability; pairs with REFACTOR-NNN adding a `MrkdwnUtils.escape(...)` helper.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/sender/SlackNotificationSenderMrkdwnInjectionRegressionPinTest.java"
+  name: "alertChunkDescriptionContainsAtChannel_reachesSlackPostBody_pinsMrkdwnInjectionVector"
+evidence:
+  - "SlackNotificationSender.md says (bugs_limitations_corner_cases.[2]): 'Mrkdwn injection via AlertChunkPojo.description. AlertChunkPojo.description strings flow into Slack as markdownText(...) at SlackMessageGenerator.java:77 (lines 95-101 build the description block from the latest 3 chunks). Slack interprets *bold*, _italic_, ~strikethrough~, <url|text>, @channel, @here, <!channel>, <!here> as mrkdwn markup. AlertChunkPojo populates .description from ingestion-side AlertActionResolverImpl.java:162 which sets it from upstream collector-supplied content (e.g. a dbt test description, a Great Expectations expectation result string, a schema-diff narrative). An upstream-side actor with control over the description string can inject @channel to broadcast-notify the entire Slack channel membership, inject <https://attacker.example/|click here> to render a fake-link, or inject <!here> to alert online users — all rendered as Slack-side markup with NO platform-side escaping.' — severity HIGH"
+  - "SlackNotificationSender.md says (security.known_security_gaps.[0]): 'Mrkdwn injection via AlertChunkPojo.description — ingestion-supplied strings rendered as Slack markdownText without escaping; @channel / @here / fake <url|text> links can be injected. — severity HIGH'"
+  - "Verified at primary source: SlackMessageGenerator.java:77 (`.text(markdownText(...))`); SlackMessageGenerator.java:95-101 (buildDescriptionsFromChunks); MrkdwnUtils.java:1-14 (no escape function)"
+  - "Verified at primary source: AlertActionResolverImpl.java:162 (chunk.setDescription from upstream)"
+  - "WebFetch https://docs.opendatadiscovery.org/features/active-platform-features/notifications 2026-05-20 status 200 — live doc SILENT on mrkdwn injection class"
+cross_references:
+  - "F-004 (the cross-pillar XSS / injection family — this gap adds the 6th surface)"
+  - "TEST-GAP-732 (F-004 4th surface QueryExample Markdown)"
+  - "TEST-GAP-733 (F-004 P-03 sibling ReferenceData LookupCharValidator)"
+  - "REFACTOR-NNN (proposed): add `MrkdwnUtils.escape(String)` enforcing escape of `*`, `_`, `~`, `<`, `>`, `@`, `!`, `&` for ingestion-supplied strings; apply to AlertChunkPojo.description rendering in SlackMessageGenerator.buildDescriptionsFromChunks"
+  - "DOC-GAP-NNN (proposed): live `/features/active-platform-features/notifications` should add a security caveat naming the upstream-collector-as-injection-source threat model"
+  - "concepts.yaml (proposed addition): `mrkdwn-injection-via-ingestion-supplied-description` invariant — F-004 family extends to outbound Slack channel"
+  - "LSN-001 (analogous trust-the-default failure mode — operator trusts the Slack channel as a closed surface; platform delivers untrusted content into it)"
+related_features: [F-004, F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery", "P-09:F-001 Security"]
+proposed_action: |-
+  Add `SlackNotificationSenderMrkdwnInjectionRegressionPinTest`. Unit test stubbing `HttpClient.send(...)` to capture the outbound JSON body:
+
+  1. `alertChunkDescriptionContainsAtChannel_reachesSlackPostBody_pinsMrkdwnInjectionVector` —
+     - Build an `AlertNotificationMessage` with `alertChunks = [{ description: '@channel test message' }]`.
+     - Stub `HttpClient.send(...)` to capture the outbound body.
+     - Invoke `slackSender.send(message)`.
+     - Assert the captured JSON body literally contains `@channel` (proves no escaping).
+     - PINS the current injection vector.
+
+  2. `alertChunkDescriptionContainsFakeLink_reachesSlackPostBody_pinsPhishingVector` —
+     - Same setup; `description = 'Click here for help: <https://attacker.example/|safe-looking-text>'`.
+     - Assert the captured body contains the `<https://attacker.example/|...>` mrkdwn link syntax verbatim.
+     - PINS the phishing-via-fake-link vector.
+
+  3. `alertChunkDescriptionContainsBoldMarkup_reachesSlackPostBody_pinsAuthoritySpoofing` —
+     - Same setup; `description = '*CRITICAL OPERATOR-REQUIRED ACTION*'`.
+     - Assert the body contains the asterisk-wrapped string verbatim.
+     - PINS the authority-spoofing vector.
+
+  4. `alertChunkDescriptionEscapedByMrkdwnUtils_renderedAsLiteral_confirmsFixDirection` — (UPDATE this test once REFACTOR-NNN adds the escape helper)
+     - After REFACTOR-NNN: assert that `@channel` is escaped to `@channel` (or whatever escape strategy chosen) in the body.
+     - CONFIRMS the fix's effectiveness.
+
+  Pair with REFACTOR-NNN (MrkdwnUtils.escape) and DOC-GAP-NNN (live doc security caveat).
+
+  Coherence note (LSN-018 Rule 6): This finding adds a 6th surface to F-004 (cross-pillar XSS / injection family). It does NOT contradict any prior F-004 finding — extends the family laterally to the outbound-Slack sink. NET-NEW finding.
+batch: 2026-05-20-Y
+feature_id: F-004

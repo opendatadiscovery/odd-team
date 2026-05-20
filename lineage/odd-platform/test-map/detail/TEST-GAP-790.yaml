@@ -1,0 +1,36 @@
+gap_id: TEST-GAP-790
+category: missing-performance
+criticality: LOW
+node_ids:
+  - "odd-platform java MinioConfig config-class:MinioConfig"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "MinioConfig.md:bugs_limitations_corner_cases.[1] MEDIUM (Builder asymmetry: .httpClient(...) absent)"
+  - "MinioConfig.md:unset_parameter_audit (`.httpClient(OkHttpClient)` caveat-defaulted)"
+  - "MinioConfig.md:performance.known_performance_gaps.[0] MEDIUM (No operator knob for MinIO SDK HTTP timeouts)"
+behaviour: |-
+  **LOW — MinioConfig.java:19-25 never calls `.httpClient(...)` on `MinioAsyncClient.builder()`. The MinIO SDK's default OkHttp client uses ~5-minute timeouts that are NOT operator-tunable. Operators on slow networks with large `attachment.max-file-size` see unrecoverable socket timeouts.**
+
+  **Sibling to TEST-GAP-776** (`.region(...)` unset, LSN-002 — CRITICAL). Both are Gate-5 unset-parameter-audit findings on the same builder chain. Severity is LOW here because the SDK default timeouts are NOT a security risk (unlike the region issue) and NOT a data-loss risk — they are a slow-deployment usability issue with a manual workaround (operators can increase `attachment.max-file-size` or reduce file sizes on slow networks).
+
+  **Test gap shape**: regression-pin asserting the builder chain has EXACTLY three calls (`.endpoint`, `.credentials`, `.build`) — no `.httpClient(...)`. PINS the absence; drives REFACTOR-034 to surface operator-tunable timeouts.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/attachment/config/MinioConfigHttpClientUnsetRegressionPinTest.java"
+  name: "minioAsyncClient_builderDoesNotCallHttpClient_pinsTimeoutGap"
+evidence:
+  - "MinioConfig.md says (bugs_limitations_corner_cases.[1]): 'Builder asymmetry: .endpoint(url) and .credentials(accessKey, secretKey) are wired from operator config; .region(...) and .httpClient(...) are absent — left at SDK defaults. The MinIO SDK default HTTP client uses ~5-minute timeouts with no operator-tunable knob (no attachment.remote.connect-timeout-millis, etc.). Operators on slow networks with large attachment.max-file-size see unrecoverable socket timeouts. REFACTOR-034 captures the same finding.'"
+  - "MinioConfig.md says (unset_parameter_audit): '.httpClient(OkHttpClient) | caveat-defaulted — SDK default ~5-minute timeouts, default OkHttp connection pool | MinioConfig.java:19-25 — .httpClient(...) is NEVER called. No attachment.remote.connect-timeout-millis / .read-timeout-millis / .write-timeout-millis config keys exist. CAVEAT IS NOT DOCUMENTED in the live operator page.'"
+  - "Verified at primary source: MinioConfig.java:19-25 (no .httpClient(...) call)"
+  - "Grep `attachment.remote.connect-timeout` across odd-platform: 0 matches"
+cross_references:
+  - "TEST-GAP-776 (SIBLING — .region(...) unset on same builder; together they form the Gate-5 dual finding)"
+  - "TEST-GAP-791 (SIBLING — .credentialsProvider(...) unset; the third Gate-5 finding on the same builder)"
+  - "REFACTOR-034 (the YAML-tier refactoring scope — operator-tunable MinIO timeouts)"
+  - "DOC-GAP-NNN (proposed — live docs should add a sizing-guidance section for attachment-storage timeouts)"
+related_features: [F-NN-attachment-storage]
+related_pillar_features: ["P-01:F-007 Attachments REMOTE storage"]
+proposed_action: |-
+  Add `MinioConfigHttpClientUnsetRegressionPinTest`. One test method: `@SpringBootTest(properties = { "attachment.storage=REMOTE", ... })`; reflect on the `MinioAsyncClient` bean; assert no operator-controlled `OkHttpClient` is wired. PINS current state; pair with REFACTOR-034.
+batch: 2026-05-20-X
+feature_id: null

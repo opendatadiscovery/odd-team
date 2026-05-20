@@ -1,0 +1,182 @@
+name: Session cookie security attributes (HttpOnly / Secure / SameSite) are not configured anywhere
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20X — the platform offloads ALL session-
+  cookie security to the deployment topology. NO in-code override of cookie security
+  attributes exists ANYWHERE in the repo. Verified via Grep over the entire odd-platform
+  repository for the patterns `CookieWebSession|SameSite|HttpOnly|Secure.*cookie|
+  sessionIdResolver|WebSessionIdResolver` — ZERO matches.
+
+  **WHAT THIS MEANS**:
+    Spring WebFlux's `CookieWebSessionIdResolver` framework default produces a
+    session cookie with:
+      - HttpOnly = true (the default)
+      - SameSite = lax (the default — permits cross-site GET / top-level navigation
+        cookie leakage)
+      - Secure = NOT set (must be enabled by the operator OR added by an upstream
+        TLS-terminating reverse proxy / Ingress)
+      - Path = / (the default)
+    The platform does NOT register a custom `WebSessionIdResolver` bean to override
+    any of these defaults. Operators expecting strict cross-site protection
+    (`SameSite=Strict`) OR plaintext-bind safety (the `Secure` flag set by the
+    platform itself, not the proxy) get the framework defaults silently.
+
+  **AFFECTED AUTH MODES**:
+    LOGIN_FORM is the canonical case — it is the ONLY auth.type mode that issues
+    a session cookie as the primary credential bearer (form-login establishes a
+    `SESSION` cookie). OAUTH2 and LDAP also use the WebSession for state but
+    typically pair with an external IdP / LDAP server that adds its own session
+    semantics on top. DISABLED does not populate a session by design (no auth
+    pipeline runs) but a session may still be created lazily on any first-request
+    `exchange.getSession()` call.
+
+  **COMPOUND WITH `spring.session.timeout: -1`**:
+    application.yml:1-3 ships `spring.session.timeout: -1` — sessions NEVER
+    expire. A stolen cookie remains valid until manual platform-side invalidation:
+    logout (LOGIN_FORM), restart (IN_MEMORY only), or eviction (the
+    PostgreSQLSessionHousekeepingJob no-op under spring.session.timeout=-1 — see
+    the housekeeping-job-no-scheduler-lock-multi-instance-amplification companion
+    invariant). The LOGIN_FORM live doc verbatim: 'does not support … session
+    revocation'.
+
+  **DOC DRIFT**:
+    The live `/configuration-and-deployment/odd-platform#select-session-provider`
+    page covers session storage (IN_MEMORY / INTERNAL_POSTGRESQL / REDIS) and the
+    `spring.session.timeout: -1` warning but does NOT document the session-cookie
+    attributes that ship by default OR the operator's responsibility to add `Secure`
+    via TLS-fronting infrastructure. Confirmed WebFetched 2026-05-20 status 200.
+
+  **EVIDENCE CHAIN**:
+    - SessionConfiguration.java:22-65 — the session-provider switch — does not
+      register a CookieWebSessionIdResolver bean
+    - Grep across the entire odd-platform repo for
+      `CookieWebSession|SameSite|HttpOnly|Secure.*cookie|sessionIdResolver|
+      WebSessionIdResolver` — 0 matches confirmed 2026-05-20
+    - LoginFormSecurityConfiguration.java:53-66 — the LOGIN_FORM SecurityWebFilterChain
+      does not configure session attributes via the chain
+    - application.yml:1-3 — `spring.session.timeout: -1`
+
+  **THIS IS THE 'Spring framework defaults + operator must configure TLS proxy'
+  posture stated implicitly** — the platform does NOT take a stance and does NOT
+  warn operators. Operators on plaintext-HTTP deployments (the LOGIN_FORM dev/demo
+  case) ship session cookies in clear. Operators behind a TLS-terminating proxy
+  may or may not configure the proxy to add the Secure flag.
+
+  **SEVERITY**: HIGH — the compound (no-Secure + SameSite=lax + never-expiring +
+  no-revocation) on a session-cookie-based auth mode (LOGIN_FORM) is the worst-case
+  scenario; mitigated only by deployment topology (TLS proxy adds Secure;
+  operator-discipline rotates cookies). For DISABLED + S2S-only deployments the
+  session-cookie posture is less load-bearing but the framework defaults still apply.
+nodes:
+- odd-platform java SessionConfiguration config-class:SessionConfiguration
+- odd-platform java LoginFormSecurityConfiguration config-class:LoginFormSecurityConfiguration
+- odd-platform yaml application.yml config-prefix:spring.session
+contributors:
+- |-
+  SessionConfiguration batch X (PRIMARY SOURCE for the session-cookie security
+  posture absence):
+    bugs_limitations_corner_cases.[3] (HIGH — no cookie-security attributes
+    configured anywhere; Grep zero-matches confirmed across entire repo)
+    + security.known_security_gaps.[0] (MEDIUM — cookie attributes inherit Spring
+    framework defaults; no Secure / no SameSite-Strict)
+    + docs_link_semantic.doc_drift_findings.[1] (no cookie-security-attribute
+    documentation in live /select-session-provider page)
+- |-
+  LoginFormSecurityConfiguration config-class batch X (PRIMARY SOURCE for the
+  LOGIN_FORM-mode session-cookie consequence):
+    bugs_limitations_corner_cases.[session-cookie-flags-unset] (MEDIUM —
+    session cookie has no Secure / HttpOnly / SameSite configured at this layer;
+    spring.session.timeout: -1 makes sessions never expire)
+    + security.known_security_gaps.[session-cookie-flags] (MEDIUM — cookie
+    compromised on HTTP or via XSS is valid until JVM restart)
+- |-
+  application.yml batch X (compound evidence):
+    spring.session.timeout: -1 at line 3 — sessions never expire AND no
+    cookie-security attributes anywhere
+evidence:
+- |-
+  SessionConfiguration.md:bugs_limitations_corner_cases.[3] (HIGH severity) —
+  evidence: SessionConfiguration.java:22-65 (no WebSessionIdResolver override)
+  + Grep over <odd-platform-repo> for
+  `CookieWebSession|SameSite|HttpOnly|Secure.*cookie|sessionIdResolver|
+  WebSessionIdResolver` returning ZERO matches 2026-05-20
+- |-
+  SessionConfiguration.md:security.known_security_gaps.[0] (MEDIUM) — cookie
+  attributes inherit Spring framework defaults; offloads cookie security to
+  deployment topology
+- |-
+  SessionConfiguration.md:docs_link_semantic.doc_drift_findings.[1] — live
+  /configuration-and-deployment/odd-platform#select-session-provider does NOT
+  document cookie attributes (HttpOnly / Secure / SameSite / Path) WebFetched
+  2026-05-20 status 200
+- |-
+  LoginFormSecurityConfiguration (config-class).md:bugs_limitations_corner_cases.
+  [session-cookie-flags-unset] (MEDIUM) — the LOGIN_FORM-mode consequence
+- |-
+  LoginFormSecurityConfiguration (config-class).md:security.known_security_gaps.
+  [session-cookie-flags] (MEDIUM) — compound with spring.session.timeout: -1
+- |-
+  application.yml:1-3 (spring.session.timeout: -1)
+axes_present:
+- config_classes
+- config_prefixes
+triangulation_count: 2
+cross_batch: true
+severity: HIGH
+severity_dim: security-posture-session-cookie-defaults
+mitigations_unimplemented:
+- |-
+  Code-side: register a `WebSessionIdResolver` bean (typically
+  `CookieWebSessionIdResolver`) that explicitly sets:
+    .setCookieName("ODD_SESSION") or accept default SESSION
+    .setCookieSecure(true) for HTTPS-only deployments OR pair with a
+       boot-time guard 'if not HTTPS in production, log warning + accept'
+    .setCookieSameSite(Cookie.SameSite.STRICT) for strict cross-site
+       protection (default is Lax; the platform's REST surface justifies Strict)
+    .setCookieMaxAge(some-finite-value) — avoid never-expiring sessions even
+       when spring.session.timeout: -1
+  Wire into the SessionConfiguration.java bean topology so all three
+  session.provider variants get consistent cookie attributes.
+- |-
+  Code-side OR docs-side: change `spring.session.timeout: -1` default to a
+  finite TTL (e.g., 8 hours). Document the never-expire-by-default trade-off
+  loudly on the docs side if the code-side default is preserved for backward
+  compatibility.
+- |-
+  Doc-side: extend `/configuration-and-deployment/odd-platform#select-session-provider`
+  with a cookie-attributes subsection documenting:
+    - Default attributes (HttpOnly=true; Secure=NOT set by platform; SameSite=lax;
+      never-expiring via spring.session.timeout: -1 default)
+    - Operator responsibility to terminate TLS and add Secure via reverse proxy
+    - Recommended hardening (TLS-only deployment + finite timeout + SameSite=Strict)
+- |-
+  Doc-side: cross-link the LOGIN_FORM auth-mode page to the session-cookie posture
+  warning — LOGIN_FORM is the only auth.type that uses the session cookie as the
+  primary credential bearer, so the cookie security implications are
+  load-bearing for LOGIN_FORM-mode deployments.
+notes: |-
+  NEW HIGH-SEVERITY INVARIANT captured in batch 2026-05-20X surfaced by the
+  cross-cutting examination of SessionConfiguration + LoginFormSecurityConfiguration
+  config-class sidecars. The Grep zero-matches confirmation is the load-bearing
+  evidence — across the ENTIRE odd-platform repository, no code overrides the
+  Spring WebFlux defaults for session-cookie attributes.
+
+  Cross-cutting connections:
+    - LOGIN_FORM-ADMIN-for-every-user-rbac-inert (batch X) — paired LOGIN_FORM
+      security posture invariant
+    - REFACTOR-185 (DISABLED-mode anonymous bypass) — session cookies are not
+      load-bearing under DISABLED (no auth pipeline runs) but the absence of
+      cookie-security defaults applies to any session-creating path
+    - spring-session-timeout-minus-one-housekeeping-noop (batch X) — compound
+      effect with never-expiring sessions
+    - The LSN-001 + LSN-002 case-law pattern — silent insecure default with
+      warning-only or absent doc surface
+
+  Three doc-product candidates:
+    (a) Cookie-attributes section on the select-session-provider docs page
+    (b) Hardening checklist on the LOGIN_FORM docs page
+    (c) Operator-side reverse-proxy guidance (the Secure flag must come from
+        the TLS termination layer because the platform does not set it)

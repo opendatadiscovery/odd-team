@@ -1,0 +1,97 @@
+gap_id: TEST-GAP-871
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java service:ActivityServiceImpl"
+  - "odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "ActivityServiceImpl.md:stress_findings.S-D-1 (Zero authorization at the service layer)"
+  - "ActivityServiceImpl.md:stress_findings.S-D-3 (getDataEntityActivityList has no per-data-entity authorization)"
+  - "ActivityServiceImpl.md:security.known_security_gaps.[cross-owner-readable-by-any-authenticated-user]"
+  - "ActivityServiceImpl.md:bugs_limitations_corner_cases.[getDataEntityActivityList no per-data-entity authorization] (severity MEDIUM in sidecar; elevated to HIGH here because TEST-GAP-083 only pins /api/activity not /api/dataentities/{id}/activity)"
+  - "ReactiveActivityRepositoryImpl.md:security.known_security_gaps.[3] + invariants.[2] (cross-owner read default at SQL layer)"
+behaviour: |-
+  **HIGH — `getDataEntityActivityList(dataEntityId, ...)` has NO per-data-entity authorization check at ANY layer (controller, service, repository, OpenAPI generator). Any authenticated user can read the FULL activity history (including JSONB old_state / new_state payloads) for ANY data entity by ID — including data entities the caller has no other read permission for. This SUPERSEDES TEST-GAP-083 in scope.** TEST-GAP-083 pinned the global `/api/activity` cross-owner visibility; this gap pins the **per-data-entity** read surface (`GET /api/dataentities/{data_entity_id}/activity` via `DataEntityController.getDataEntityActivity` + `ActivityServiceImpl.getDataEntityActivityList`). The OpenAPI-generated `DataEntityApi` interface carries no auth annotations; `DataEntityController` has no `@PreAuthorize`; `ActivityServiceImpl.getDataEntityActivityList` (`:119-136`) has no permission check; `ReactiveActivityRepositoryImpl.findDataEntityActivities` (`:128-142`) issues `DATA_ENTITY.ID.eq(dataEntityId)` unconditionally with no caller-context predicate. The activity payload includes structured `old_state` / `new_state` JSON of every tracked field — descriptions, business names, ownership transitions, dataset-field internal-name edits, custom-metadata values — for entities the caller may have no permission to even SEE in the catalog.
+
+  **Why this is a SEPARATE gap from TEST-GAP-083**:
+  - **TEST-GAP-083 scope**: pins the global `GET /api/activity` cross-owner read default — the FEED is visible to any authenticated user
+  - **This gap (871) scope**: pins the per-entity `GET /api/dataentities/{id}/activity` cross-owner read — the per-ENTITY history is visible to any authenticated user, even if the entity itself is hidden from the user (e.g. via a future hypothetical permission-scoped catalog)
+  - Together they fully characterise the cross-owner audit-visibility surface: BOTH the feed and the per-entity tabs are read-collaborative by default
+  - The per-entity surface is operationally MORE sensitive because:
+    - Forensic-narrow reads ("show me everything that ever happened to this dataset") are more targeted than feed scans
+    - Per-entity reads bypass the date-window guard that the feed enforces (the feed requires beginDate+endDate; per-entity does too but the date window is narrower so the leak is finer-grained)
+    - Per-entity activity includes detail like dataset-field internal-name edits that are NOT enumerated in the global feed's filter facets
+
+  **Primary-source chain**:
+  - `ActivityServiceImpl.java:119-136` (`getDataEntityActivityList`) — accepts a `dataEntityId` parameter and unconditionally fetches activity; no permission check
+  - `ActivityServiceImpl.java:33-273` (lines 33-273) — ZERO `@PreAuthorize` annotations end-to-end (verified line-by-line in sidecar)
+  - `ReactiveActivityRepositoryImpl.java:128-142` (`findDataEntityActivities`) — `DATA_ENTITY.ID.eq(dataEntityId)` predicate; NO caller-identity predicate
+  - `DataEntityController.getDataEntityActivity` (per `ActivityServiceImpl.md:concepts.audiences`) — the HTTP entry point; no `@PreAuthorize` annotation
+  - The OpenAPI-generated `DataEntityApi` carries no auth annotation for this operation
+  - Per `ReactiveActivityRepositoryImpl.md:concepts.invariants.[2]` — every read path LEFT JOINs `USER_OWNER_MAPPING ON OIDC_USERNAME = ACTIVITY.CREATED_BY` provider-agnostically; the read posture is HIGH-confidence cross-owner
+
+  **Operator-visible consequences**:
+  - **Forensic-trail leakage**: a contractor employee with read-only platform access can request `/api/dataentities/<sensitive-dataset-id>/activity` and read the full edit history of a dataset containing customer PII identifiers (the `old_state` / `new_state` JSON includes description text that may carry PII per `ActivityServiceImpl.md:security.data_exposure.[0]`)
+  - **Audit-log discoverability**: an attacker enumerating data-entity IDs (`/api/dataentities/{id}/activity`) can iterate over the entire catalog, reading every entity's edit history without authorization
+  - **Compliance disclosure surface**: SOX / GDPR records-of-processing controls may require per-entity audit-visibility to be permission-gated; the current behaviour fails that bar
+
+  **Why HIGH not CRITICAL**:
+  - **CRITICAL** is reserved for security-flagged uncovered behaviours where the security_aggregate of the concept is HIGH AND the operator-visible impact is unauthorised mutation or data-loss.
+  - Activity Feed concept's security_aggregate flags audit-visibility weaknesses (per concepts.yaml); the operator-visible impact here is data-EXPOSURE not data-mutation.
+  - We rate HIGH because: (a) the per-entity surface is more exfiltration-friendly than the global feed; (b) the activity payload carries free-text fields with high PII risk; (c) the absence is a structural defence-in-depth gap, not just a posture documentation gap; (d) the cross-tier verification (controller + service + repository all lack the gate) means the structural fix requires coordinated multi-tier work.
+
+  **Connection to TEST-GAP-083**:
+  - TEST-GAP-083 pins `/api/activity` (global feed) cross-owner read
+  - TEST-GAP-871 (this) pins `/api/dataentities/{id}/activity` (per-entity tab) cross-owner read
+  - TEST-GAP-018 (existing batch entry) pins `getDataEntityActivity` as part of a 27-read endpoint cluster but does NOT focus on the per-entity tab specifically
+
+  **Connection to TEST-GAP-868 + TEST-GAP-869**:
+  - TEST-GAP-868 + TEST-GAP-869 pin WRITE-side audit-trail integrity (race + TX coupling)
+  - TEST-GAP-871 pins READ-side audit-trail authorization (cross-owner exposure)
+  - Together they characterise the audit-trail's full contract surface (write-integrity + read-authorization)
+test_class: security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ActivityCrossOwnerVisibilityAuthorizationTest.java"
+  name: "getDataEntityActivity_authenticatedCallerWithNoEntityPermission_returns200WithFullAuditPayload"
+evidence:
+  - "ActivityServiceImpl.md says (stress_findings.S-D-3): 'getDataEntityActivityList has no per-data-entity authorization — Trigger: :119-136 getDataEntityActivityList(dataEntityId) — accepts a dataEntityId parameter and unconditionally fetches activity for that ID. Resolution: TRACE-answer (STATIC-INFERRED) — this service has no permission check; the controller has no @PreAuthorize (per the existing controller class sidecar coherence_notes.F-006); the generated ActivityApi interface carries no annotations; the repository's findDataEntityActivities (line 129-142 of repo) issues DATA_ENTITY.ID.eq(dataEntityId) unconditionally. Every authenticated user can read activity for every data entity in the system, including data entities they have no other permission to see, and read the JSON old/newState payloads which may include description content, tag changes, ownership changes, term assignments. Severity: MEDIUM (forensic-visibility leak; the data-entity-level access control is bypassed for the activity surface).' confidence: STATIC-INFERRED HIGH"
+  - "ActivityServiceImpl.md says (security.known_security_gaps.[0]): 'controller-tier authorization is .authenticated()-only; service-tier authorization is zero; the entire Activity Feed is visible to any authenticated user across all owners. evidence: ActivityServiceImpl.java:33-273 (no @PreAuthorize) + ActivityController.java (per existing sidecar, no @PreAuthorize on either method); severity: MEDIUM — this is per-design for the global Activity Feed BUT operator-visible via the per-data-entity endpoint (getDataEntityActivityList) which exposes activity for entities the caller may have no other access to.'"
+  - "ReactiveActivityRepositoryImpl.md says (security.owner_scoping): 'BYPASSES at the repository SQL layer for findAllActivities, findDependentActivities, findDataEntityActivities, and the corresponding count methods (no OWNERSHIP.OWNER_ID = currentUser.ownerId predicate; only filter-parameter-driven narrowing).'"
+  - "Verified at primary source: ActivityServiceImpl.java:119-136 (no permission check) + ReactiveActivityRepositoryImpl.java:128-142 (no caller-identity predicate) + sidecar coherence verified that the OpenAPI-generated DataEntityApi carries no auth annotation for this operation"
+  - "Verified no existing test: Glob src/test/**/*Activity*.java + Grep getDataEntityActivity returns 0 matches"
+cross_references:
+  - "TEST-GAP-083 (existing batch 1 — pinned `/api/activity` global feed cross-owner read; STRENGTHENED by this entry which extends scope to per-entity tab)"
+  - "TEST-GAP-018 (existing — 27-endpoint cluster including getDataEntityActivity; this gap drills down to the activity-specific surface)"
+  - "TEST-GAP-298 (existing — Activity-feed description leakage; old/new description JSON exposed via global /api/activity; per-entity sister)"
+  - "REFACTOR-NNN candidate: introduce a per-data-entity permission check (`hasPermission(#dataEntityId, 'DATA_ENTITY', 'DATA_ENTITY_ACTIVITY_READ')`) at DataEntityController.getDataEntityActivity; defence-in-depth at service layer too"
+  - "DOC-NNN candidate: surface the cross-owner visibility posture on activity-feed.md AND on the per-entity Activity tab UX (`active-platform-features/activity-feed`); the live page is silent on this per `ActivityServiceImpl.md:docs_link_semantic.doc_drift_findings.[0]`"
+  - "concepts.yaml:entities[Activity Feed].security_aggregate"
+related_features: [F-021, F-006]
+related_pillar_features: ["P-07:F-003", "P-09:F-001"]
+proposed_action: |-
+  Add `ActivityCrossOwnerVisibilityAuthorizationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/` using `@WebFluxTest(DataEntityController.class)` + `WebTestClient` + Spring Security test fixtures. The HEADLINE test method:
+
+  1. **`getDataEntityActivity_authenticatedCallerWithNoEntityPermission_returns200WithFullAuditPayload`** (HEADLINE):
+     - Arrange: seed `data_entity` owned by Owner A; seed activity rows with description-edit events (oldState contains "BEFORE: PII X"; newState contains "AFTER: PII Y"). Authenticate as Bob — a real user with NO ownership association with Owner A, no role, no policy granting access to this entity.
+     - Act: `webTestClient.get().uri("/api/dataentities/{id}/activity?begin_date=...&end_date=...", entityId).exchange()`
+     - Assert: `expectStatus().isOk()`; response body contains BOTH activity rows; the `old_state` and `new_state` JSON fields are NOT redacted; PIN the cross-owner visibility default.
+     - Comment: this is the SECURITY POSTURE test — locking in the current behaviour so a future refactor that adds an authorization gate is a coordinated decision (the test would FAIL until updated to expect 403 — making the maintainer surface the change).
+
+  2. **`getDataEntityActivity_authenticatedCallerWithOwnerLink_returns200WithFullAuditPayload`** (CONTROL):
+     - Same fixture; Bob is associated with Owner A via user_owner_mapping.
+     - Assert: same 200 with full payload (the owner-linked case is the expected positive).
+
+  3. **`getDataEntityActivity_anonymousCallerUnderDisabledAuth_returns200WithFullAuditPayload`**:
+     - Set `auth.type=DISABLED`; no authentication header.
+     - Assert: same 200 with full payload (the anonymous-mutator case from DisabledAuthSecurityConfiguration).
+
+  4. **`getDataEntityActivity_revealsPiiInDescriptionEditPayload_pinsLeakageSurface`**:
+     - Fixture: description-edit activity row whose `new_state` JSON includes a fake PII string `"customer_email": "alice@example.com"`.
+     - Authenticated caller is Bob (no entity permission).
+     - Assert: response body contains the PII string verbatim; PIN the data-exposure surface.
+
+  After this test lands, REFACTOR-NNN can introduce a `@PreAuthorize("hasPermission(#dataEntityId, 'DATA_ENTITY', 'DATA_ENTITY_ACTIVITY_READ')")` at the controller; this test becomes the regression-pin proving the new gate fires. Cross-pair with DOC-NNN to surface the visibility posture on activity-feed.md (currently silent per `ActivityServiceImpl.md:docs_link_semantic`).
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-021

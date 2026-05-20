@@ -6,7 +6,7 @@ A portable methodology for building a queryable, self-maintaining ontology of an
 
 **Scope of portability.** The METHODOLOGY ports: four-layer architecture, sidecar schema, reducer subagent shapes, entry-point principle, feature-flow composition, 4-class test matrix, case-law format, probe protocol, Quality Bar rules. The CONCRETE INSTANCES do not: per-language tree-sitter extractors, project-specific node kinds (controllers vs CLI commands vs GraphQL resolvers), entry-point classes (Django views vs Express handlers vs Lambda functions), the case-law file contents (LSN incidents are project-specific), the canonical concept page. Copy the framework; author the instances.
 
-**Revision history.** Rev 1 (2026-05-12): initial portability surface with three-layer architecture (substrate / per-node enrichment / reducers). Rev 2 (2026-05-19): fourth layer added — feature-anchored synthesis with entry-point traversal, feature-flow composition, and 4-class test matrix. Trigger: LSN-017 (per-node scan cannot see cross-layer user effects). Anchor ADR: `adrs/drafts/feature-anchored-ontology.md`.
+**Revision history.** Rev 1 (2026-05-12): initial portability surface with three-layer architecture (substrate / per-node enrichment / reducers). Rev 2 (2026-05-19): fourth layer added — feature-anchored synthesis with entry-point traversal, feature-flow composition, and 4-class test matrix. Trigger: LSN-017 (per-node scan cannot see cross-layer user effects). Rev 3 (2026-05-19): Layer 0 added — `system-mission.md` mission anchor produced once per substrate scan by the `domain-extractor` subagent; supplies the user-observable pillar gestalt that the rev-2 failure mode lacked. Trigger: post-batch-I review (60 sidecars → only 8 features, all bug-anchored). Rev 4 (2026-05-20): **Stress Protocol** bolted into Layer 2 — every file-analyser invocation now interrogates the code (boundary cases, name-behavior drift, ordering semantics, auth-mode posture, resource boundaries) instead of describing it; analyser-emitted probe-skeletons become first-class artefacts; the coverage metric splits into "static enrichment coverage" (vanity, kept for trend continuity) vs "stress_verified_pct" (the honest axis). Trigger: LSN-019 (the `listMostPopular` drift — method named "popular" returns the OLDEST 30 by creation order because the SQL has no `ORDER BY count` clause; the methodology had transcribed the surface meaning as truth for weeks). Rev 5 (2026-05-21): **Two complementary additions to close the cross-file intent-vs-implementation gap** — (a) Category F bolted into the Stress Protocol (request-input naming alignment — every named query parameter / request DTO field / path variable / header is interrogated for whether the implementation's actual scope matches the name's promise; the inverse-direction check looks for available-but-unused columns and parameter-name-vs-SQL-column drift across the chain); (b) Layer 4b added — `feature-reflector` subagent — a top-down product-owner reflection pass over each composed feature flow, producing a stepped-back narrative, 5-15 falsifiable user-facing hypotheses, and per-hypothesis verdicts (confirmed / contradicted / partial / probe-needed) traced through the implementation chain. Contradictions are the highest-priority bug/caveat findings — cross-file semantic mismatches that no single sidecar can see in isolation. Trigger: LSN-020 (the Activity Feed `userIds` filter — query parameter named `userIds` binds to `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` at the SQL layer; users without an owner mapping cannot be filtered, owner-user association changes retroactively rewrite past attribution, the actual actor column `activity.created_by` is JOINED but never FILTERED; the methodology's per-file Stress Protocol had Category B for METHOD-name drift but no equivalent for PARAMETER-name drift, AND no top-down reflection pass to ask *"what does this feature promise users, and does the assembled chain deliver it?"*). Anchor ADRs: `adrs/drafts/feature-anchored-ontology.md` (rev 2-3) + rev-4 / rev-5 update pending.
 
 ---
 
@@ -29,26 +29,31 @@ The outcome is **lineage of meaning, not paths, anchored on user-observable feat
 
 ## 2. Why this approach exists (the failure modes it solves)
 
-Two failure modes the approach exists to defeat. Both have case-law in `retrospectives/`.
+Three failure modes the approach exists to defeat. All have case-law in `retrospectives/`.
 
 **Failure A — tribal-knowledge decay** (pre-LLM operating mode). Architecture, conventions, corner-cases live in maintainers' heads. Doc drifts; new joiners reinvent. ADRs get written retroactively if at all. Most projects ship knowledge-loss as a feature.
 
 **Failure B — heuristic-only enumeration** (early pre-LLM tooling, the trap LSN-016 calls out). A tree-sitter / regex / annotation walker produces syntactically-correct nodes ("here is every `@RestController`") but zero semantic content ("what is this controller FOR? where does the doc disagree? what bugs lurk?"). It misses code that does the same thing with a different annotation. It produces no `implicit_adrs`, no `caveats`, no divergence findings. **A heuristic substrate that calls itself lineage is the antipattern.**
 
-The approach defeats both by **layering**: heuristic gives stable IDs cheaply (the scaffold); LLM agents enrich those IDs with semantic content (the meat); reducers turn per-file signals into emergent cross-file findings (the payload). The layering matches the 2024-2025 industry consensus (LazyGraphRAG / Aider repo-map / Sourcegraph-deprecating-embeddings / KG-CodeGen-May-2025) and was validated through the substrate ADR's research pass — see `adrs/drafts/research/agentic-code-ontology/` for the long-form.
+**Failure C — descriptive enrichment without interrogation** *(rev 4, LSN-019)*. The methodology adds Layer 2 (per-node enrichment) on top of the substrate and assumes the LLM will surface anything worth surfacing. **But an LLM reading code defaults to transcription**: it sees `size: 30` and writes *"shows top 30"*; it sees `listMostPopular` and writes *"orders by popularity"*; it sees `@PreAuthorize("hasRole('ADMIN')")` and writes *"admin-only"*. The surface description is correct AT THE CENTER and wrong AT THE BOUNDARIES — which is exactly where operators get hurt. The canonical incident: `tagService.listMostPopular` was transcribed as *"returns most-popular tags"* because the method name and the count-CTE in the SQL suggest popularity ordering; the actual JOOQ chain has no `ORDER BY count` clause, so the SQL returns rows in natural (creation) order; the operator sees the OLDEST 30 tags labelled *"Top Tags"*. The wrong claim shipped with `confidence: HIGH` for weeks because the methodology never generated the question *"the SQL has a count column — does the OUTER select actually `ORDER BY count DESC`?"*. A senior engineer reading the same code generates that question instantly. **Failure C is the agent-tooling analogue of Failure B** — one layer up: where Failure B is structurally complete + semantically empty (heuristic walker emits node, no meaning), Failure C is semantically populated + interrogatively empty (LLM emits sidecar, no boundary thinking). The fix shape is the same in both cases: bake question-generation into the layer itself, mechanically, on every invocation. Failure C's fix is the **Stress Protocol** (section 5, rule 13 + section 14).
+
+**Failure D — bottom-up assembly without product-owner reflection** *(rev 5, LSN-020)*. Even with the Stress Protocol catching per-file drift (Failure C's fix), the methodology still misses bugs that span across files because their signal is the assembled feature's gap between what it PROMISES the user and what it DELIVERS. Each layer in isolation is locally consistent; only the assembled chain reveals the drift. The canonical incident: Activity Feed's `userIds` query parameter binds to `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` at the SQL layer (`ReactiveActivityRepositoryImpl.java:272-273`) — the controller takes a parameter named `userIds`, the service forwards `userIds`, the repository binds `userIds` to `OWNER_ID`. Each sidecar's claim is locally accurate; the Stress Protocol's Category B catches method-name drift but no category catches parameter-name drift across files; and no layer steps back to ask *"the feature is named 'Activity Feed' and the parameter is named 'userIds' — does filtering by userIds=[42] actually return events the USER with id 42 generated, or events on entities the OWNER with id 42 owns?"*. The bug shipped with the sidecar flagging "user-id enumeration" as the concern while completely missing that the filter does not do what the parameter name promises. **Failure D is the cross-file analogue of Failure C** — one layer up again: where Failure C is per-file transcription without per-file interrogation, Failure D is per-file interrogation without cross-file product-owner reflection. The fix is twofold: (a) **Category F** added to the Stress Protocol — every named request input fires the question "the name promises X, does the implementation operate on X?"; (b) **Layer 4b** added — the `feature-reflector` subagent runs a top-down pass on each composed feature flow, generates falsifiable user-facing hypotheses derived from endpoint shape / DTO names / UI labels / pillar mission, and validates each hypothesis by tracing the implementation chain. Contradictions are the highest-priority bug/caveat findings. See section 15.
+
+The approach defeats all four by **layering with interrogation, bottom-up AND top-down**: heuristic gives stable IDs cheaply (the scaffold); LLM agents enrich those IDs with semantic content (the meat); **the analyser runs a Stress Protocol on every node to interrogate boundaries, name-behavior drift, ordering semantics, auth-mode posture, resource limits, and request-input naming alignment — generating runnable probe-skeletons when the answer requires runtime**; reducers turn per-file signals into emergent cross-file findings (the payload); **the feature-reflector runs a top-down product-owner pass on each composed feature flow, generating falsifiable hypotheses and validating them against the implementation chain — surfacing contradictions that no per-file pass can see** *(rev 5)*; the coherence-sweep catches cross-artefact contradictions. The layering matches the 2024-2025 industry consensus (LazyGraphRAG / Aider repo-map / Sourcegraph-deprecating-embeddings / KG-CodeGen-May-2025) and was validated through the substrate ADR's research pass — see `adrs/drafts/research/agentic-code-ontology/` for the long-form. The interrogation discipline is the rev-4 contribution; the reflection discipline is the rev-5 contribution — see sections 14 and 15.
 
 ---
 
-## 3. The four-layer architecture
+## 3. The four-layer architecture (with Layer 4b in rev 5)
 
 | Layer | Lives in | What it produces | Why this layer exists |
 |---|---|---|---|
 | **1. Substrate** (deterministic) | `lineage/_extractor/` Python driver; tree-sitter parsers per language | `nodes.jsonl` (one node per code entity) + `edges.jsonl` (containment, calls, configures, exposes, mounts, references) + `manifest.yaml` (commit anchor, axis versions) | Stable IDs are the join key for everything downstream. Deterministic enumeration is cheap and never hallucinates a node. A heuristic walker is the ONLY layer that should be heuristic. |
-| **2. Per-node enrichment** (agentic) | `.claude/agents/file-analyser.md`; one Markdown sidecar per node at `lineage/{repo}/understanding/{slug}.md` | Per-node `understanding`, `concepts`, `dependencies_semantic`, `tests_coverage_semantic` (with per-behaviour `test_class`), `docs_link_semantic`, `implicit_adrs`, `bugs_limitations_corner_cases`, `security`, `performance`, **`upstream_callers`**, **`downstream_side_effects`**, `sources`, `confidence_per_field` | A subagent reads ONE node end-to-end, walks 1-hop neighbours when material, WebFetches the live published doc for any claimed link, and emits a sidecar a maintainer would be proud to ship. Each sidecar carries the call-graph references (upstream + downstream) and user/externally-observable consequences, enabling layer-4 composition. Per-file context window stays manageable; semantic content is the deliverable. Schema v0.3.0 (rev 2). |
+| **2. Per-node enrichment** (agentic, with **Stress Protocol** in rev 4 + **Category F** in rev 5) | `.claude/agents/file-analyser.md`; one Markdown sidecar per node at `lineage/{repo}/understanding/{slug}.md`; zero-or-more analyser-emitted probe-skeletons at `lineage/{repo}/probes/P-{NNN}.yaml` | Per-node `understanding`, `concepts`, `dependencies_semantic`, `tests_coverage_semantic` (with per-behaviour `test_class`), `docs_link_semantic`, `implicit_adrs`, `bugs_limitations_corner_cases`, **`stress_findings`** *(rev 4, with `request_inputs` sub-category in rev 5)*, `security`, `performance`, **`upstream_callers`**, **`downstream_side_effects`**, `sources`, `confidence_per_field` | A subagent reads ONE node end-to-end, walks 1-hop neighbours when material, WebFetches the live published doc for any claimed link, **runs the Stress Protocol on every trigger detected in the code (tunables / name-behavior pairs / orderings / auth gates / resource boundaries / request-input naming alignment — each with a fixed question list, each question answered via trace-answer with `STATIC-INFERRED` evidence, OR probe-answer with a runnable skeleton emitted under `probes/`, OR reference-answer pointing at another sidecar)**, and emits a sidecar a maintainer would be proud to ship. Each sidecar carries the call-graph references (upstream + downstream) and user/externally-observable consequences, enabling layer-4 composition. Per-file context window stays manageable; semantic content + interrogation are the deliverables. Schema v0.5.0 (rev 5). |
 | **3. Cross-file reducers** (agentic, cross-file) | `.claude/agents/{concept-merger,adr-archaeologist,doc-gap-finder,test-coverage-mapper,feature-advisor}.md`; outputs at `lineage/{repo}/{concepts.yaml,implicit-adrs.md,refactoring-scopes.md,doc-gaps.md,test-map.yaml,feature-walks/}` | Cross-sidecar emergence: shared concepts; recurring ADR patterns; doc divergences; test gaps; impact assessments for proposed features | Single-file enrichment can't see patterns. The reducer steps back across all sidecars + canonical docs and surfaces what no single sidecar could. The 18-sidecar "DISABLED-mode bypass" finding in ODD's `investigator-log.md` is the proof: emergence only the cross-product can produce. |
-| **4. Feature-anchored synthesis** (agentic, cross-layer) | `.claude/agents/feature-flow-builder.md`; output at `lineage/{repo}/feature-flows.yaml` | Per-feature observed-vs-expected user-observable behaviour, composed from entry-point sidecar chains. Each entry: contributing_nodes, amplification_factor, cross-layer drift annotations, and a 4-class test matrix (unit / integration / performance / security). | Reducers compose by *concept*. The feature layer composes by *user-observable boundary*. The view_count doubling bug (LSN-017) cannot be surfaced by either layer 2 or layer 3 alone — the cross-layer product (UI dispatch-multiplicity × backend per-call delta) lives only at the system's external boundary, which is layer 4's home. |
+| **4a. Feature-anchored composition** (agentic, cross-layer, bottom-up) | `.claude/agents/feature-flow-builder.md`; output at `lineage/{repo}/feature-flows.yaml` + `feature-flows/detail/F-NNN.yaml` | Per-feature observed-vs-expected user-observable behaviour, composed from entry-point sidecar chains. Each entry: contributing_nodes, amplification_factor, cross-layer drift annotations, and a 4-class test matrix (unit / integration / performance / security). | Reducers compose by *concept*. The feature layer composes by *user-observable boundary*. The view_count doubling bug (LSN-017) cannot be surfaced by either layer 2 or layer 3 alone — the cross-layer product (UI dispatch-multiplicity × backend per-call delta) lives only at the system's external boundary, which is layer 4a's home. |
+| **4b. Top-down product-owner reflection** *(rev 5, agentic, top-down)* | `.claude/agents/feature-reflector.md`; output at `lineage/{repo}/feature-reflections/detail/{F-NNN}.yaml` + `feature-reflections/index.yaml` | Per-feature stepped-back product-owner narrative + 5-15 falsifiable user-facing hypotheses + per-hypothesis verdicts (confirmed / contradicted / partial / probe-needed) traced through the implementation chain. Contradictions become bug/caveat candidates; probe-needed verdicts emit probe-skeletons; doc-claim-vs-code mismatches surface as DOC-GAP candidates. | Bottom-up composition (4a) threads the chain mechanically; it does not ASK whether the assembled chain delivers what the feature promises users. The Activity Feed `userIds` bug (LSN-020) is locally consistent at every layer and only surfaces when a top-down pass asks *"when a user passes userIds=[42], what do they EXPECT to see, and does the chain deliver that?"*. Layer 4b runs the top-down pass mechanically: hypotheses from endpoint shape / DTO names / UI labels / pillar mission; verdicts traced back through the chain. |
 
-**Rule of layering**: lower layers never depend on higher layers. The substrate doesn't read sidecars. Sidecars don't read each other (per-node scope only — but they DO record cross-references for layer 4). Cross-file reducers don't read source code (they read sidecars). Feature-flow synthesis reads sidecars + reducer outputs + the substrate's edge graph (it does not re-read source code). The flow is one-way; the dependencies are clear.
+**Rule of layering**: lower layers never depend on higher layers. The substrate doesn't read sidecars. Sidecars don't read each other (per-node scope only — but they DO record cross-references for layer 4). Cross-file reducers don't read source code (they read sidecars). Feature-flow composition reads sidecars + reducer outputs + the substrate's edge graph (it does not re-read source code). **Feature-reflector reads composed feature flows + contributing sidecars + system-mission.md + concepts.yaml + live docs as cross-reference (it does NOT re-read source code; the one exception is a single-line validation read recorded as `source_read_for_validation: true` for the next file-analyser refresh)** *(rev 5)*. The flow is one-way; the dependencies are clear.
 
 ---
 
@@ -176,6 +181,47 @@ the source file.
 ## bugs_limitations_corner_cases
 - "<single bug/limitation> — evidence: <file:line> — severity: CRITICAL/HIGH/MEDIUM/LOW"
 
+## stress_findings                                              # rev 4 — interrogation phase
+# Five trigger categories — every triggered question gets an answer (trace / probe / reference).
+# Empty categories are EXPLICIT `[]` so "I checked; no triggers" is distinct from "I forgot".
+stress_findings:
+  tunables:                       # numeric constants, defaults, limits, page sizes, timeouts, retries
+    - location: "<file:line>"
+      name: "<constant or @Value name>"
+      value: "<the value>"
+      questions:
+        - q: "What at N > tunable?"
+          a: "<trace OR PROBE-NEEDED OR REFERENCE>"
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "<file:line OR probe_id OR node_id>"
+        - q: "What is the tie-breaker when sort-key values are equal?"
+          a: "..."
+          confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+          evidence: "..."
+  name_behavior_pairs:            # method names, endpoints, doc promises
+    - name: "<method or endpoint>"
+      promise: "<what the name promises>"
+      implementation: "<what the code actually does, traced end-to-end>"
+      drift: NONE | MINOR | DRIFT_NAME_VS_BEHAVIOR
+      operator_visible_consequence: "<one sentence, if drift>"
+      confidence: STATIC-INFERRED | PROBE-NEEDED | REFERENCE
+      evidence: "..."
+  orderings: [...]                # every ORDER BY / LIMIT / paginate / sort site
+  auth_gates: [...]               # every endpoint × 4 auth modes × unauthenticated × wrong-role
+  resource_boundaries: [...]      # every Transactional / lock / cache / idempotency site
+  probes_emitted:                 # audit trail — probe skeletons written under probes/
+    - probe_id: P-NNN
+      question: "<the stress question the probe targets>"
+      probe_path: "lineage/{repo}/probes/P-NNN.yaml"
+  stress_summary:                 # honest at-a-glance metric
+    triggers_total: <N>
+    questions_total: <N>
+    answers_static_inferred: <N>
+    answers_probe_needed: <N>
+    answers_reference: <N>
+    answers_probe_verified: <N>    # populated by probe-runner on resolution
+    drift_flags: <N>               # name_behavior_pairs with drift != NONE
+
 ## security
 - auth_mode_relevance: <which auth modes this code participates in>
 - ingestion_filter_relevance: <YES/NO + why>
@@ -241,9 +287,10 @@ Three structural rules apply to the schema:
 | `doc-gap-finder` | All sidecars' `docs_link_semantic` blocks; live doc URLs via WebFetch; canonical concepts page; **(rev 2)** feature-flows.yaml | `doc-gaps.md` | DOC-NNN candidates: broken URLs, missing anchors, code-doc drift, missing pages, coverage gaps, stale pages, **(rev 2)** feature-control-gaps (features uncontrolled along one or more axes whose doc page doesn't warn). |
 | `test-coverage-mapper` | All sidecars' `tests_coverage_semantic` blocks; actual test files via Glob+Grep; **(rev 2)** feature-flows.yaml; `test_axis` substrate classifications | `test-map.yaml` | TEST-GAP-NNN candidates ranked by node criticality. **(rev 2)** Also dual-keyed by `per_feature` matrix: for each feature × test_class (unit / integration / performance / security), `covered` + `uncovered` + `verdict`. |
 | `feature-advisor` | All sidecars + concepts.yaml + implicit-adrs.md + refactoring-scopes.md + doc-gaps.md + test-map.yaml + **(rev 2)** feature-flows.yaml + existing `adrs/`; live docs via WebFetch | `feature-walks/{date}-{slug}.md` | Query-time impact analysis. Maintainer asks "I want to add X — what's affected?" before writing code. |
-| **`feature-flow-builder`** *(rev 2)* | All sidecars' `upstream_callers` + `downstream_side_effects` blocks; substrate's edge graph; concepts.yaml; `test_axis` classifications | `feature-flows.yaml` | Per-feature observed-vs-expected user-observable behaviour, composed from entry-point sidecar chains. `amplification_factor` where multipliers stack across layers; `cross_layer_drift` annotations; per-feature 4-class test matrix; cross-references to refactoring-scopes / doc-gaps / test-gaps that contribute. |
+| **`feature-flow-builder`** *(rev 2)* | All sidecars' `upstream_callers` + `downstream_side_effects` blocks; substrate's edge graph; concepts.yaml; `test_axis` classifications | `feature-flows.yaml` + `feature-flows/detail/F-NNN.yaml` | Per-feature observed-vs-expected user-observable behaviour, composed from entry-point sidecar chains. `amplification_factor` where multipliers stack across layers; `cross_layer_drift` annotations; per-feature 4-class test matrix; cross-references to refactoring-scopes / doc-gaps / test-gaps that contribute. |
+| **`feature-reflector`** *(rev 5)* | One composed feature flow at a time (`feature-flows/detail/F-NNN.yaml`); contributing sidecars; `system-mission.md`; `concepts.yaml`; live docs via WebFetch (cross-reference only) | `feature-reflections/detail/F-NNN.yaml` + `feature-reflections/index.yaml` | Top-down product-owner reflection: a stepped-back narrative (3-5 paragraphs) of what the feature delivers to a user; 5-15 falsifiable hypotheses derived from endpoint shape / DTO field names / UI labels / pillar mission / negative-space user expectations; per-hypothesis verdicts (confirmed / contradicted / partial / probe-needed) traced through the implementation chain. Contradictions are the cross-file intent-vs-implementation drifts no single sidecar can see. Bug-candidate / caveat-candidate / doc-drift / validation-gap findings route into the backlog and downstream registries. |
 
-The six reducer outputs together form the **payload**. The substrate + sidecars are inputs to the payload; the payload is what a maintainer consumes day-to-day. `feature-flows.yaml` is the **product surface** — it expresses the system as users observe it, anchored on code-derived truth.
+The seven reducer outputs together form the **payload**. The substrate + sidecars are inputs to the payload; the payload is what a maintainer consumes day-to-day. `feature-flows.yaml` is the **product surface** — it expresses the system as users observe it, anchored on code-derived truth. `feature-reflections/` is the **product critique** — for each feature, the user-facing hypotheses + verdicts that expose where the implementation does not deliver what the feature promises.
 
 ---
 
@@ -263,6 +310,9 @@ These are universal across projects. They appear in `file-analyser.md` and the r
 10. ***(rev 2)* Entry points are the unit of analysis.** Batch planning picks 1-3 entry points (not 5 random code nodes) and traverses outward. The same code is visited many times — that is the structural justification for the ontology. References act as placeholders during early passes; later passes flesh them. Re-visiting the same code from a new entry-point context is expected and welcomed.
 11. ***(rev 2)* Features are controlled along four orthogonal axes.** Unit / integration / performance / security. A feature can be fully unit-tested and still fail integration (the canonical view_count case). The per-feature test matrix has a 4-cell row; empty cells are gaps, covered cells are pinned. Test classification is automatic from `test_axis` substrate annotations.
 12. ***(rev 2)* Local-only execution — no remote or cloud infrastructure for any component of the methodology.** Every part of the ontology runs on the maintainer's workstation: substrate extractor, sidecar enrichment, reducers, probe execution, dynamic-verification mirror (when added), headless-browser probes, load injection, external-system mocks. **No remote VMs, no managed databases, no per-hour cloud bills, no hosted observability, no managed CI runners as part of the probe loop.** The methodology must not introduce a recurring infrastructure cost beyond the maintainer's existing Claude Code subscription and their own machine. Open-source local tooling only: docker-compose / podman-compose for the runtime mirror, Testcontainers + jOOQ + Postgres for ephemeral DB, Playwright / Puppeteer for headless-browser probes, k6 / wrk for load, WireMock / MockServer for external mocks. The dynamic-verification layer — when drafted as its own ADR — must declare this constraint as the load-bearing operational invariant.
+13. ***(rev 4, extended in rev 5)* Interrogate, do not transcribe — the Stress Protocol is non-negotiable.** The file-analyser does NOT emit a sidecar without first running the Stress Protocol on the code it read. **Six trigger categories** — **tunables** (every hardcoded number / default / limit), **name-behavior pairs** (every method or endpoint whose name promises observable behavior), **orderings** (every `ORDER BY` / `LIMIT` / paginate / sort), **auth gates** (every endpoint × 4 auth modes × unauthenticated × wrong-role), **resource boundaries** (every `@Transactional` / lock / cache / idempotency site), **request-input naming alignment** *(rev 5 — Category F)* (every named query parameter / request DTO field / path variable / header — does the implementation's actual scope match the name's promise? what about available-but-unused columns? what about parameter-name-vs-SQL-column drift across the chain?). Each trigger fires a fixed question list (see section 14 for the full catalogue). Each question is answered via ONE of: (a) **trace-answer** — the answer is in the code + 1-hop neighbours; record `confidence: STATIC-INFERRED` + `file:line` evidence; (b) **probe-answer** — answer requires runtime; the analyser writes a concrete runnable probe-skeleton under `lineage/{repo}/probes/P-{NNN}.yaml` (`emitted_by: file-analyser`, `status: pending-stress-protocol`); the sidecar records `confidence: PROBE-NEEDED` + the `probe_id`; (c) **reference-answer** — answer lives in another sidecar; record `confidence: REFERENCE` + the `node_id` of the sidecar that owns it. **No triggered question may be skipped.** A sidecar with `stress_findings.stress_summary.triggers_total == 0` on a node that visibly contains numeric literals, method-name verbs, endpoint annotations, ORDER BYs, `@PreAuthorize` annotations, or named request inputs is REJECTED. The methodology generates its own questions — it does not ask the maintainer to remember things. The Stress Protocol is what closes Failure C (section 2). Case-law: `retrospectives/LSN-019` (Categories A-E); `retrospectives/LSN-020` (Category F). The file-analyser system prompt lives in `.claude/agents/file-analyser.md` at version `file-analyser/0.5.0` (or newer).
+14. ***(rev 4, extended in rev 5)* Coverage is a stress-verified-AND-reflection-verified percentage, not a node-touched percentage.** The honest metric has two complementary axes: **stress-verified coverage** = `(STATIC-INFERRED + PROBE-VERIFIED) / total stress questions across all sidecars` (the bottom-up interrogation axis); **reflection-verified coverage** *(rev 5)* = `(confirmed + contradicted-with-cited-failure-modes) / total hypotheses across all feature-reflections` (the top-down reflection axis — `partial` and `probe-needed` count as in-flight, not verified). The vanity metric `(nodes_with_sidecar / total_substrate_nodes)` is kept for trend continuity but is NEVER the headline. A registry with 100% node-touched coverage and 0% on either honest axis is a registry of descriptive transcription. The maintainer's reading of "X% coverage" must mean *"X% of operator-observable claims have been interrogated against the code (Stress Protocol) AND X% of user-facing feature promises have been traced through the assembled chain (reflection)"*, not *"X% of nodes have some sidecar"*. The `coverage.py` reducer's dashboard renders three axes side-by-side, with explicit framing distinguishing them.
+15. ***(rev 5)* Reflect, do not just compose — the top-down feature-reflector pass is non-negotiable for every feature flow.** After `feature-flow-builder` produces or updates a `feature-flows/detail/F-NNN.yaml`, the `feature-reflector` subagent runs a top-down pass on that feature: a stepped-back product-owner narrative (3-5 paragraphs, every claim cited), 5-15 falsifiable user-facing hypotheses derived from endpoint shape / DTO field names / UI labels / pillar mission / negative-space user expectations, and per-hypothesis verdicts (`confirmed` / `contradicted` / `partial` / `probe-needed`) traced through the implementation chain. Contradictions are surfaced as bug-candidate or caveat-candidate findings with operator-visible failure modes enumerated; `probe-needed` verdicts emit probe-skeletons (`emitted_by: feature-reflector`, `status: pending-reflection-verification`); doc-claim-vs-code mismatches surface as DOC-GAP candidates. **Documentation is a downstream cross-reference, never the source of intent** — intent is reasoned from code-internal signals (names, DTOs, UI labels, pillar anchor, available-but-unused data). A feature flow without a refresh-aged reflection is incomplete; a feature flow with a reflection containing zero hypotheses on a non-trivial feature is rejected at validation. Case-law: `retrospectives/LSN-020`. The feature-reflector system prompt lives in `.claude/agents/feature-reflector.md` at version `feature-reflector/0.1.0` (or newer).
 
 ---
 
@@ -357,8 +407,9 @@ A probe is a four-step exercise (see `lineage/PROBES.md` for the worked example)
 | Type-5 | Doc-linkage faithfulness | Bidirectional drift check: live doc page content vs sidecar understanding |
 | Type-6 | Implicit-ADR confirmation | Maintainer writes 5 ADRs they know are followed; ≥3 must surface in `implicit-adrs.md` top-10 |
 | **Type-7 *(rev 2)*** | **User-observable invariants — executable** | **Maintainer authors single-sentence user-facing promises ("opening detail page registers as 1 view"); each is run live against a demo/staging instance. Ontology must surface the invariant under a feature-flow node; live probe must confirm OR fail-and-be-cited as a known caveat. A FAIL where ontology was silent = methodology miss → log as LSN.** |
+| **Type-8 *(rev 4)*** | **Analyser-emitted stress probes — file-analyser-authored, probe-runner-resolved** | **The file-analyser emits a probe-skeleton at `lineage/{repo}/probes/P-{NNN}.yaml` whenever the Stress Protocol (rule 13) produces a question that cannot be trace-answered from code alone. The skeleton is concrete (arrange/act/observe/assert filled in); `emitted_by: file-analyser`, `status: pending-stress-protocol`. The probe-runner subagent picks up `pending-stress-protocol` probes on its next sweep, executes against the local docker-compose mirror, and flips the originating sidecar's confidence from `PROBE-NEEDED` to `PROBE-VERIFIED` (or `PROBE-CONTRADICTED` if the measured value disagrees). Type-8 is the channel through which descriptive transcription becomes verified truth — the executable closure of Failure C. Case-law: LSN-019.** |
 
-Type-7 probes are the closure of the feature-anchored layer. They convert documented features into runnable acceptance tests against live behaviour. Each batch should add 2-3 Type-7 probes; each gets refreshed at each `/probe` invocation.
+Type-7 probes are authored at the user-observable boundary by the maintainer; Type-8 probes are auto-emitted by the file-analyser whenever its Stress Protocol cannot derive an answer from the code. Together they form the *measurement layer* on top of the descriptive layers — the methodology shifts from *"the code says X"* to *"running the system at boundary case Y produces observable Z"*. Each batch should add 2-3 Type-7 probes (maintainer-driven) AND surface 5-20 Type-8 probes per analyser invocation (mechanically, from the Stress Protocol's coverage of the node).
 
 ---
 
@@ -451,8 +502,11 @@ What's NOT a discipline (deliberate non-optimisation):
 | ***(rev 2)*** A Type-7 probe FAILS where the ontology was silent | The methodology has a blind-spot — log as LSN, add to the rule set. (LSN-017-class incidents.) |
 | ***(rev 2)*** A feature's 4-class test matrix shows non-empty cells in all four axes | The feature is structurally controlled — the empty-cells discipline is biting. |
 | ***(rev 2)*** A documented feature appears in `feature-flows.yaml` with a matching `observed_vs_expected.expected` (drift = 0) | Code↔doc gap has narrowed to zero for this feature — the bridge is being built. |
+| ***(rev 4)*** A sidecar's `stress_findings` block contains a `name_behavior_pair` with `drift: DRIFT_NAME_VS_BEHAVIOR` flagged AND an emitted Type-8 probe that the probe-runner subsequently resolves to `PROBE-VERIFIED` | The Stress Protocol caught and confirmed a real drift autonomously — the canonical `listMostPopular`-shape catch. Failure C is being closed *mechanically*. |
+| ***(rev 4)*** The coverage dashboard's `stress_verified_pct` crosses 50% on a high-traffic node-set (controllers, repositories, schedulers) | The honest coverage axis is climbing. The methodology has moved from descriptive transcription to interrogated truth on the load-bearing surface. |
+| ***(rev 4)*** A maintainer's empirical test of the running system matches what the ontology predicts for boundary, degenerate, and overflow cases | The interrogation discipline has reached the point where running the platform confirms the ontology, not contradicts it. This is the inverse of LSN-019. |
 
-If a quarter goes by and none of these signals fire, the approach isn't taking hold — likely the sidecar quality is too shallow (Gate 9 not enforced), or the canonical concepts page hasn't been authored, or the project-specific axes don't actually cover the high-leverage code, or *(rev 2)* entry-point traversals aren't reaching the user-observable boundary (sidecars stop at services without recording downstream side-effects).
+If a quarter goes by and none of these signals fire, the approach isn't taking hold — likely the sidecar quality is too shallow (Gate 9 not enforced), or the canonical concepts page hasn't been authored, or the project-specific axes don't actually cover the high-leverage code, or *(rev 2)* entry-point traversals aren't reaching the user-observable boundary (sidecars stop at services without recording downstream side-effects), or *(rev 4)* the Stress Protocol is being skipped (sidecars emitting with empty `stress_findings` on nodes that contain tunables / orderings / endpoints — the rev-4 failure mode resurfacing).
 
 ---
 
@@ -468,6 +522,8 @@ This document is the methodology surface. The depth lives elsewhere in this work
 - `retrospectives/LSN-013` — research-punt case-law (why ADRs don't end with "open questions for human review").
 - `retrospectives/LSN-016` — heuristic-vs-agentic case-law (why a tree-sitter substrate alone is not lineage; why Claude Code is the runtime, not the Anthropic API).
 - **`retrospectives/LSN-017`** *(rev 2)* — per-node-vs-feature-anchored case-law (why per-node enrichment misses cross-layer user-observable composition; the view_count doubling probe).
+- **`retrospectives/LSN-018`** *(rev 3)* — cross-batch reducer contradiction case-law (why parallel reducers emit contradictions; the coherence-sweep transverse to all reducers).
+- **`retrospectives/LSN-019`** *(rev 4)* — file-analyser-describes-not-interrogates case-law (why descriptive enrichment without interrogation fails at boundaries; the `listMostPopular` drift; the Stress Protocol mechanism). The case-law that motivated rev 4 and section 14 of this document.
 - `lineage/PROBES.md` — probe-driven validation as worked example (the i18n class, the security-default class, the housekeeping class). *(rev 2: extended with Type-7 user-observable invariant class.)*
 - `CLAUDE.md` — workspace-operating bar (Principal Full-Stack standard, Quality Bar, autonomous-execution discipline). The `.claude/` directory is the executable form.
 - `pillars/documentation/` — active pillar's cornerstones, gates, canonical-homes table, authoring rules. Template for activating new pillars.
@@ -568,3 +624,174 @@ Without step 2 + 3, the methodology produces bug-pin features — the rev-2 fail
 - `.claude/agents/domain-extractor.md` — the Layer 0 subagent's system prompt + output schema.
 - `lineage/{repo}/system-mission.md` — the canonical output (one per project).
 - `.claude/agents/feature-flow-builder.md` rev 3 — the primary downstream consumer; classifies code chains against the pillar shape.
+
+---
+
+## 14. Stress Protocol — Layer 2 interrogation (rev 4)
+
+*(Added 2026-05-20 after the maintainer's empirical test of the running platform exposed a drift between `tagService.listMostPopular`'s name and its actual SQL behavior. The ontology had transcribed the method as "returns most-popular tags" — because the name says so and the JOOQ chain has a count CTE — while the OUTER select had no `ORDER BY count` clause, so the SQL returns rows in natural order and the operator sees the OLDEST 30 tags labelled "Top Tags". The wrong claim shipped with `confidence: HIGH` for weeks because Layer 2 was descriptive, not interrogative. Rev 4 of the methodology bolts the Stress Protocol into Layer 2 as a non-negotiable pre-emit phase. Case-law: `retrospectives/LSN-019`.)*
+
+### Why this discipline exists
+
+Layers 1-5 of the methodology assume the LLM running Layer 2 will surface anything operator-relevant. **An unprompted LLM defaults to transcription**: it describes what the code says, accurately at the surface and silently wrong at the boundaries. A senior engineer reading `size: 30` does not stop at *"shows 30"*; they ask *what at N=0? at N=31? at N=10000? what determines which 30? what's the tie-break? what does the operator see when the underlying set exceeds the limit?* — and answer each by tracing the code or running it. A senior engineer reading `listMostPopular` does not stop at *"returns popular tags"*; they ask *the name promises popularity; does the SQL deliver it? trace the chain. look for ORDER BY count. if absent — what does the natural row order produce?*. The Stress Protocol bakes these questions into the file-analyser system prompt mechanically — every triggered question fires; every triggered question is answered.
+
+This is the agent-tooling analogue of the heuristic-substrate-vs-agentic-enrichment pivot (LSN-016): Layer 1 was structurally complete and semantically empty until Layer 2 added meaning; Layer 2 was semantically populated and interrogatively empty until rev 4 added the Stress Protocol. The fix shape is the same in both cases — make question-generation explicit and mechanical, do not depend on the LLM/walker to ask the right thing on its own.
+
+### The universal shape — five trigger categories
+
+The categories are universal across projects (they map to load-bearing operator-observable shapes in any code). Each category carries a fixed question list; the LLM does not invent the questions, it answers them.
+
+| Category | Triggers (enumerate in every node) | Mandatory questions |
+|---|---|---|
+| **A — Tunables** | Numeric literals > 1 in limits / sizes / counts / timeouts / retries / intervals / page sizes; `@Value("${...:default}")` annotations; `private static final` constants; default property values; magic strings that gate behavior | Q1: What at N=0 / N=1? Q2: What at N=tunable / tunable+1 / tunable×100? Q3: What at null / negative / non-numeric? Q4: What does the operator see at each boundary — silent truncation, error, wrong-but-plausible result? |
+| **B — Name-behavior pairs** | Method names with promising verbs (`listMostPopular`, `findActive`, `deleteExpired`, `topN`, `getRecent`); endpoint annotations (`@GetMapping("/popular")`); javadocs / comments making behavioral claims | Q1: What does the name *promise*? Q2: What does the implementation *actually do* (SQL end-to-end, body logic, paginate-wrappers, decorators)? Q3: Does the implementation match the promise? If NO → `drift: DRIFT_NAME_VS_BEHAVIOR` + operator-visible consequence |
+| **C — Orderings / pagination / aggregation** | Every `ORDER BY` in SQL / JOOQ chain; every `LIMIT` / `OFFSET` / `paginate(...)` / `Page<...>` return; every `.sort(...)` / `Comparator`; every GROUP BY / aggregation function | Q1: What is the actual ORDER BY at the lowest layer (the SQL the database executes)? Q2: What is the tie-breaker when sort-key values are equal — deterministic or undefined? Q3: When result-set > page size, which subset is returned? Q4: Does any layer above re-sort or filter? Does that hide a backend ordering issue? |
+| **D — Authorization gates** | Every controller endpoint; every `@PreAuthorize`; every programmatic `permissionService.hasPermission(...)` | Q1: What does this endpoint return for each auth mode (project-specific — for ODD: DISABLED / LOGIN_FORM / OAUTH2 / LDAP; for Django: ALLOW_ANY / SessionAuth / TokenAuth / PermissionRequired; etc.)? Q2: What does an unauthenticated caller see? Q3: What does a wrong-role caller see? Q4: Where does the gate live — controller / service / repository / nowhere? |
+| **E — Resource boundaries** | `@Transactional`, `synchronized`, explicit lock acquisition; caches (`@Cacheable`, manual); "insert or update" / `ON CONFLICT DO UPDATE`; `@Async` / `Flux`/`Mono`; scheduled jobs touching shared state | Q1: Can two simultaneous calls produce corrupted state — lock violation, duplicate row, lost update? Q2: Is the call replay-safe — same payload + same caller → idempotent? Q3: If a cache fronts this, what is the TTL / eviction key / staleness window? |
+| **F — Request-input naming alignment** *(rev 5)* | Every path parameter (`@PathVariable`, `{id}`); every query parameter (`@RequestParam`); every field of every request body DTO (POST/PUT/PATCH); every header read by the handler (`@RequestHeader`); every local-variable name that implies a domain entity used to filter / select / route to a specific column. Plus inverse-direction triggers: every SQL/JOOQ WHERE predicate where the variable name and column name diverge semantically; every column read in JOIN/SELECT but absent from WHERE where the column name suggests the user expected to filter by it (the "available-but-unused" smell). | Q1: What does the input NAME promise the caller, in plain user-facing English? Q2: When the request supplies this input, what does the implementation actually USE it for (trace through the chain — service → repository → SQL)? Q3: Does the implementation's actual scope MATCH the name's promise? Four shapes — MATCHES / TRANSLATES_LEGITIMATELY (with cited reason) / TRANSLATES_SILENTLY (drift) / UNRESOLVED (downstream sidecar owns the trace). Q4: For TRANSLATES_SILENTLY: enumerate the operator-visible failure modes (empty results / wrong results / cross-data inconsistencies / retroactive rewrites). Q5: Is there a column / field / variable that DOES match the input's name and is NOT being used? |
+
+**Category triggers are language-agnostic in concept; language-specific in detection.** A Java project triggers Category D on `@PreAuthorize`; a Django project triggers it on `permission_classes`; a Rust Axum service triggers it on `axum::middleware::from_fn`. A Java project triggers Category F on `@RequestParam` / `@PathVariable` / `@RequestHeader` / Java DTO field names; a Django project triggers it on URL kwargs / DRF serializer fields / `request.GET`; a Rust Axum service triggers it on `Path<T>` / `Query<T>` / `Json<T>` extractors. The category exists in every project; the detection rules adapt to the stack.
+
+**Add a category when a maintainer's empirical test exposes a class the existing six don't cover.** Categories are open-ended; rev 5 ships with six. Rev 4 shipped with five because those covered the LSN-019 incident and the surrounding ODD case-law (auth-mode posture from REFACTOR-185, ordering drift from listMostPopular, tunable boundaries from page sizes, name-promise drift from miscellaneous controller methods, resource boundaries from the housekeeping jobs). Rev 5 added Category F because LSN-020 exposed the cross-layer parameter-name-vs-implementation drift class (Activity Feed `userIds` filter binds to `OWNER_ID`); the existing Category B caught method-name drift but had no equivalent for the more numerous parameter-name drift surface. The next maintainer test will likely expose Category G.
+
+### How an answer is recorded
+
+Every triggered question takes EXACTLY ONE of three answer forms. They are not interchangeable:
+
+| Form | When | Recorded as | What downstream consumer does |
+|---|---|---|---|
+| **(a) Trace-answer** | The answer is in the code (this file + 1-hop neighbours) | `confidence: STATIC-INFERRED` + `evidence: <file:line>` + the trace conclusion as the answer text | This is the file-analyser's normal output. Reducers consume it directly. |
+| **(b) Probe-answer** | The answer requires running the system (boundary behavior, race condition, cache staleness, auth-mode interaction) | The file-analyser **writes a concrete probe-skeleton** at `lineage/{repo}/probes/P-{NNN}.yaml` (next free ID; `emitted_by: file-analyser`, `status: pending-stress-protocol`, with `arrange`/`act`/`observe`/`assert` filled in concretely — same structure as maintainer-curated probes). The sidecar records `confidence: PROBE-NEEDED` + the `probe_id` | The `probe-runner` subagent picks up `pending-stress-protocol` probes on its next sweep, executes against the local docker-compose mirror, and flips the originating sidecar's confidence to `PROBE-VERIFIED` (or `PROBE-CONTRADICTED` if the measured value disagrees with the analyser's trace hypothesis). |
+| **(c) Reference-answer** | The answer lives in another node's sidecar (e.g. a UI-side question encountered while enriching a backend controller) | `confidence: REFERENCE` + `evidence: <node_id of the answering sidecar>` | The feature-flow-builder composes answers across referenced nodes on its next pass. The reference resolves automatically when the target sidecar exists. |
+
+**No triggered question may be skipped.** A sidecar emitting `stress_findings.stress_summary.triggers_total == 0` on a node containing numeric literals, method-name verbs, endpoint annotations, ORDER BYs, or `@PreAuthorize` annotations is REJECTED. Empty categories on a node that genuinely has no triggers in that category (e.g. a pure mapper class) are recorded as explicit `[]` — distinguishing "I checked; no triggers" from "I forgot to check".
+
+### Honest confidence after the Stress Protocol
+
+The sidecar's `confidence_overall` is **downgraded to MEDIUM** when more than half of load-bearing stress questions resolve to `PROBE-NEEDED`. **HIGH confidence overall requires** that the load-bearing operator-observable claims are either `STATIC-INFERRED` with strong evidence OR `PROBE-VERIFIED`. The vanity case — sidecar has many `bugs_limitations_corner_cases` items but no `stress_findings` — is mechanically detectable: `stress_summary.triggers_total > 0 AND stress_summary.answers_static_inferred + answers_probe_verified < stress_summary.questions_total / 2` → confidence is structurally LOW or MEDIUM, never HIGH.
+
+### Coverage metric — the honest axis
+
+The coverage reducer (`lineage/_extractor/registry-shard/coverage.py` in the reference implementation) produces TWO axes side-by-side:
+
+| Axis | Formula | What it counts |
+|---|---|---|
+| **Static enrichment coverage** *(vanity, kept for trend continuity)* | `nodes_with_sidecar / total_substrate_nodes` | Nodes TOUCHED. Climbs as the file-analyser is invoked on more nodes. Does NOT distinguish a thorough interrogation from a shallow transcription. |
+| **Stress Protocol coverage** *(the honest axis, rev 4)* | `(STATIC-INFERRED + PROBE-VERIFIED) / total stress questions across all sidecars` | Claims VERIFIED. Climbs as the Stress Protocol interrogates more triggers AND as the probe-runner resolves probe-skeletons into measured truths. PROBE-NEEDED and REFERENCE count as unfinished work, not as coverage. |
+
+The maintainer's reading of "X% coverage" must mean *"X% of load-bearing operator-observable claims are interrogated against the code or measured against the running system"*, not *"X% of nodes have some sidecar"*. The dashboard renders both, with explicit framing distinguishing them. The substantive question — *"can the operator trust this ontology?"* — is answered by the stress-protocol axis, not the node-touched axis.
+
+### Run cadence
+
+The Stress Protocol fires on **every file-analyser invocation** — there is no opt-out. The protocol runs between the structural enrichment phase (workflow step 6 in `file-analyser.md`) and the self-check phase (step 7); the analyser does NOT write the sidecar until the Stress Protocol has completed. Probe-skeleton files are written as part of the same invocation. One sidecar per invocation is mandatory; zero-to-many probe-skeleton files per invocation are normal.
+
+For existing sidecars authored before file-analyser/0.4.0 (pre-rev-4): a batch theme of "Stress Protocol backfill" re-enriches them under the new prompt. The coverage dashboard's `sidecars_pre_stress_protocol` count makes the backfill gap visible until closed.
+
+### Bootstrapping a new project
+
+When porting this methodology to a new project (Django, Go, Node, anything), the Stress Protocol is wired in from day one:
+
+```
+1. Run substrate scan         → nodes.jsonl + edges.jsonl
+2. Run domain-extractor       → system-mission.md       ← Layer 0 (rev 3)
+3. Maintainer reviews mission → curates pillar names
+4. Run enrichment batches     → sidecars + analyser-emitted probes  ← Layer 2 with Stress Protocol (rev 4)
+5. Run probe-runner on pending-stress-protocol probes → resolves PROBE-NEEDED → PROBE-VERIFIED
+6. Run reducers + feature-flow-builder + coherence-sweep  ← Layers 3-4
+```
+
+The six categories in section 14's table are universal; their detection rules are stack-specific (one paragraph per category in the new project's `file-analyser.md` instance, naming the language-specific triggers — `@PreAuthorize` for Spring, `permission_classes` for DRF, `axum::middleware::from_fn` for Axum, etc.).
+
+### Cross-references
+
+- `retrospectives/LSN-019` — the case-law that motivated rev 4.
+- `retrospectives/LSN-020` *(rev 5)* — the case-law that motivated Category F + Layer 4b.
+- `.claude/agents/file-analyser.md` rev `file-analyser/0.5.0` — the Stress Protocol (Categories A-F) baked into the system prompt; the universal source of truth for category triggers + question lists + answer forms.
+- `.claude/agents/probe-runner.md` — the downstream consumer that resolves `pending-stress-protocol` probes into measured truths.
+- `lineage/_extractor/registry-shard/coverage.py` — the reducer that renders the honest stress-verified axis alongside the static-coverage axis.
+- `adrs/drafts/feature-anchored-ontology.md` rev 4-5 (pending) — the ADR update incorporating rules 13-15 and sections 14-15 into the formal methodology design.
+
+---
+
+## 15. Top-down product-owner reflection — Layer 4b (rev 5)
+
+*(Added 2026-05-21 after the maintainer's empirical test of the Activity Feed surfaced a parameter-name-vs-implementation drift the rev-4 Stress Protocol did not catch. The query parameter `userIds` on `GET /api/activity` binds to `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` at the SQL layer — the parameter promises filtering by users-who-performed-the-action, the implementation filters by owners-of-entities via the user-owner mapping; users without an owner mapping cannot be filtered, owner-user association changes retroactively rewrite past attribution, the actual actor column `activity.created_by` is JOINED but never FILTERED. Each per-file sidecar was internally consistent; the Stress Protocol's Category B caught METHOD-name drift but had no equivalent for PARAMETER-name drift; and no layer ran a top-down pass to ask "what does this feature promise users, and does the assembled chain deliver it?". Rev 5 closes both gaps: Category F bottom-up at Layer 2 (section 14) + Layer 4b top-down. Case-law: `retrospectives/LSN-020`.)*
+
+### Why this layer exists
+
+Layers 1-4a are all bottom-up. Layer 1 enumerates code units; Layer 2 enriches each unit with semantic content + Stress Protocol interrogation; Layer 3 reduces across units; Layer 4a composes user-observable chains from entry points. **Every layer's question is "what does the code DO?"** None ask "what does the assembled feature PROMISE users, and does the implementation deliver it?". This is the cross-file analogue of Failure C: the per-file interrogation discipline (Stress Protocol) closed the per-file transcription gap; the cross-file reflection discipline (this layer) closes the per-feature promise-vs-delivery gap.
+
+Bottom-up alone produces sidecars and feature flows that mechanically describe what each layer does and how the layers compose — but it does NOT challenge the assembled product against the user's expectation. A senior engineer, after composing the chain, would step back and ask:
+
+- *"This feature is called 'Activity Feed' and it takes a parameter called `userIds`. If I were a user passing `userIds=[42]`, what would I expect to see? Activity rows where Alice (user 42) performed the change. Does the chain deliver that?"*
+- *"This feature is called 'Most Popular Tags' and it returns 30 rows. If I were a user opening 'Top Tags', what would I expect? The 30 tags assigned to the most data entities right now. Does the chain deliver that?"*
+- *"This feature is called 'Activity Feed' and the docs say it shows audit history. If I were a security reviewer, what would I expect? Every RBAC mutation, every owner change, every data-entity edit — a complete audit trail. Does the chain deliver that?"* (Spoiler: the F-006 audit-silence pattern proves it doesn't — RBAC mutations are schema-locked out by `activity.data_entity_id NOT NULL`.)
+
+The first question is the LSN-020 case. The second is the LSN-019 case (caught by Stress Protocol Category B, BUT a top-down hypothesis would also catch it). The third is a 9-sidecar audit-silence pattern the methodology HAS already surfaced through bottom-up reducer aggregation — but the surfacing is anchored in technical drift_class facets, not in the user-facing question "is the audit trail complete?". A top-down hypothesis frames the failure as the user sees it.
+
+Layer 4b makes this discipline mechanical: every feature flow gets a reflection; every reflection generates falsifiable hypotheses derived from code-internal signals; every hypothesis is validated against the implementation chain.
+
+### The universal shape — hypothesis generation seeds
+
+The reflection's quality is determined by hypothesis quality. Hypotheses come from EIGHT seed sources, applied to every feature:
+
+| Seed source | What it produces |
+|---|---|
+| **Endpoint shape** | One hypothesis per named query parameter / DTO field / path variable — what the input promises and what behaviour follows from supplying it ("when X is passed, Y happens"). |
+| **Response shape** | One hypothesis per prominent response field — what it represents in the user's mental model ("the `created_by` field shows who performed the action, not who owns the affected entity"). |
+| **View-mode dispatches** | For each branch of a switch/strategy on the entry-point side (e.g. `type=ALL/MY_OBJECTS/UPSTREAM/DOWNSTREAM`), one hypothesis per branch about the filtering scope. |
+| **UI labels** | When UI sidecars are in the chain, one hypothesis per labeled UI control (button text, filter chip name, form field label) about the implementation behind the label. |
+| **Pillar mission anchor** | For each `primary user action` enumerated in `system-mission.md`'s pillar for this feature, one hypothesis about whether the chain delivers it. |
+| **Cross-pillar promises** | For each cross-pillar relationship in `system-mission.md`, one hypothesis about the boundary behaviour. |
+| **Doc-claim seeds** | For each user-facing claim in the live doc page, one hypothesis (confirmed if code matches doc; contradicted if not — doc is a cross-reference, never a source of truth, but a doc claim that contradicts code IS still a hypothesis worth surfacing). |
+| **Negative-space** | For each user expectation that would be NORMAL but the chain might not deliver (e.g. "deleted owner's historical activity rows still show original actor"). These are the highest-leverage catches. |
+
+Aim for 5-15 hypotheses per feature. Below 5 suggests the feature is truly tiny OR the agent stopped generating early; above 15 suggests the feature is over-large and should be split.
+
+### Verdict shapes
+
+Each hypothesis carries a verdict from a fixed set:
+
+| Verdict | When | What it produces downstream |
+|---|---|---|
+| **`confirmed`** | Implementation does what hypothesis predicts; trace cited | Adds to confidence in the feature's user-promise alignment. |
+| **`contradicted`** | Implementation does something else; trace cited; operator-visible failure modes enumerated | The HIGHEST-priority finding class. Routes to bug-candidate (fix proposed) or caveat-candidate (document the actual behaviour). Severity HIGH unless cosmetic. |
+| **`partial`** | Hypothesis is partly true (works in some conditions, not others); gap described; both sides cited | Routes to caveat-candidate, sometimes bug-candidate. Severity MEDIUM. |
+| **`probe-needed`** | Verdict requires running the system; probe-skeleton emitted at `lineage/{repo}/probes/P-NNN.yaml` (`emitted_by: feature-reflector`, `status: pending-reflection-verification`) | Probe-runner subagent picks up on next sweep. Reflection's verdict updates from `probe-needed` to `confirmed` or `contradicted` based on the measured outcome. |
+
+A `contradicted` verdict without `operator_visible_failure` enumeration is rejected — the WHOLE POINT is for the maintainer to see what users encounter.
+
+### Run cadence
+
+The feature-reflector runs **once per feature flow per substantive refresh**. Triggers:
+- A feature-flow detail file (`feature-flows/detail/F-NNN.yaml`) is created (new feature).
+- A feature-flow detail file is extended with a new entry point or new contributing nodes.
+- A contributing sidecar's `understanding` / `upstream_callers` / `downstream_side_effects` / Category-F `request_inputs` block changes substantively (i.e. the chain's behaviour shifted in a way the reflection might re-verdict).
+- The maintainer manually re-fires via `/reflect-feature F-NNN`.
+
+If a prior reflection exists, the reflector PRESERVES `maintainer_curated: true` hypotheses verbatim and refreshes only the auto-derived hypotheses + verdicts. Past contradictions that are now confirmed (because the code changed) move into a `superseded_by_refresh` block with the timestamp + the new verdict — the audit trail survives.
+
+### Bootstrapping a new project
+
+When porting this methodology to a new project, the reflector activates in step 6 of the cycle:
+
+```
+1. Run substrate scan         → nodes.jsonl + edges.jsonl
+2. Run domain-extractor       → system-mission.md       ← Layer 0 (rev 3)
+3. Maintainer reviews mission → curates pillar names
+4. Run enrichment batches     → sidecars + analyser-emitted probes  ← Layer 2 with Stress Protocol (rev 4-5, includes Category F)
+5. Run probe-runner on pending-stress-protocol probes → resolves PROBE-NEEDED → PROBE-VERIFIED
+6. Run reducers + feature-flow-builder + feature-reflector + coherence-sweep  ← Layers 3, 4a, 4b
+7. Run probe-runner on pending-reflection-verification probes → resolves reflection PROBE-NEEDED → PROBE-VERIFIED / PROBE-CONTRADICTED
+```
+
+The reflector's prompt is stack-agnostic at the framework level (system prompt in `.claude/agents/feature-reflector.md`) — the maintainer authoring the new project's `system-mission.md` + `concepts.yaml` + per-language `file-analyser.md` does NOT need to author a new reflector; the existing one composes correctly against any feature flow.
+
+### Cross-references
+
+- `retrospectives/LSN-020` *(rev 5)* — the case-law that motivated this layer.
+- `.claude/agents/feature-reflector.md` rev `feature-reflector/0.1.0` — the system prompt + output schema + worked example.
+- `.claude/skills/reflect-feature/SKILL.md` — the maintainer-facing slash command.
+- `lineage/{repo}/feature-reflections/index.yaml` + `feature-reflections/detail/F-NNN.yaml` — the canonical output paths.
+- `.claude/agents/probe-runner.md` — the downstream consumer that resolves `pending-reflection-verification` probes.
+- `adrs/drafts/feature-anchored-ontology.md` rev 5 (pending) — the ADR update incorporating rule 15 and section 15 into the formal methodology design.

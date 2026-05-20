@@ -1,0 +1,66 @@
+gap_id: TEST-GAP-762
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java TagController controller-class:TagController"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "TagController.md:bugs_limitations_corner_cases.[deleteTag cascade asymmetry — tag_to_dataset_field rows NOT cleaned up. TagServiceImpl.delete hard-deletes tag_to_term and tag_to_data_entity rows (TagServiceImpl.java:64-65), then soft-deletes the tag row (:66). It does NOT call reactiveTagRepository.deleteDatasetFieldRelations(tagId) (which exists at ReactiveTagRepositoryImpl.java:299-306). A tag attached to dataset fields via the side-door DATASET_FIELD_TAGS_UPDATE path, when deleted via this controller, leaves orphaned tag_to_dataset_field rows referencing the soft-deleted tag id]"
+  - "TagController.md:tests_coverage_semantic.uncovered_behaviours.[deleteTag cascade asymmetry — DELETE /api/tags/{tag_id} for a tag attached to BOTH a data entity (via DATA_ENTITY_TAGS_UPDATE) AND a dataset field (via DATASET_FIELD_TAGS_UPDATE), assert that tag_to_data_entity and tag_to_term rows are removed but tag_to_dataset_field rows persist orphaned referencing the soft-deleted tag id]"
+  - "TagController.md:feature_hint.drift_class_facets (Cascade asymmetry on deleteTag — tag_to_data_entity + tag_to_term are cleaned up, tag_to_dataset_field is NOT — orphans persist invisibly)"
+behaviour: |-
+  **HIGH — `DELETE /api/tags/{tag_id}` cascade is INCOMPLETE: the service hard-deletes `tag_to_data_entity` + `tag_to_term` join rows, soft-deletes the `tag` row, but DOES NOT hard-delete `tag_to_dataset_field` rows. Tags attached to dataset fields via the side-door `DATASET_FIELD_TAGS_UPDATE` path, when deleted via this controller, leave orphaned `tag_to_dataset_field` rows referencing the soft-deleted tag id indefinitely. The orphans are filter-hidden from reads via `addSoftDeleteFilter` on the join, but persist in the DB.** Primary-source confirmed in batch-W TagController sidecar:
+
+  - `TagServiceImpl.delete` (lines 57-70, `@ReactiveTransactional`): the cascade-aware deletion logic.
+  - **Line 64**: `reactiveTagRepository.deleteTermRelations(tagId)` — hard-deletes `tag_to_term`.
+  - **Line 65**: `reactiveTagRepository.deleteDataEntityRelations(tagId)` — hard-deletes `tag_to_data_entity`.
+  - **MISSING line — would be `reactiveTagRepository.deleteDatasetFieldRelations(tagId)`**: this method EXISTS at `ReactiveTagRepositoryImpl.java:299-306` but is NOT called from `TagServiceImpl.delete`. Verified by sidecar's Grep on `deleteDatasetFieldRelations` returning no caller in TagServiceImpl.
+  - **Line 66**: the soft-delete of the `tag` row.
+
+  **The orphan growth pattern**:
+  - A tag created via the side-door `DATASET_FIELD_TAGS_UPDATE` path (DatasetFieldServiceImpl.java:202, 266) gets a `tag_to_dataset_field` row.
+  - When the operator (or a future maintainer running cleanup scripts) deletes the tag via `DELETE /api/tags/{id}`, the `tag_to_data_entity` + `tag_to_term` rows go away — but the `tag_to_dataset_field` row remains, referencing the now-soft-deleted tag id.
+  - Reads via `listDatasetFieldDtos` filter these out via `addSoftDeleteFilter` on the join (`ReactiveDatasetFieldRepositoryImpl.java:84-98` per batch-R sidecar) — so the orphans are UI-invisible — but they persist in the DB indefinitely.
+
+  **Operator-visible consequences**:
+  - **DB bloat (slow growing)**: every tag ever attached to a dataset field and then deleted leaves an orphan `tag_to_dataset_field` row. For a heavily-tagged catalog, the orphan table can grow to non-trivial size over years.
+  - **Migration hazard**: a future maintainer changing the join-filter logic (e.g., removing `addSoftDeleteFilter`) would suddenly SURFACE all the orphan rows in reads — a regression at the read-side that exposes the orphan accumulation.
+  - **Schema-migration hazard**: any migration that introduces FK constraints on `tag_to_dataset_field` would fail because the orphan rows reference soft-deleted tags.
+  - **Audit confusion**: a forensic investigation querying `SELECT * FROM tag_to_dataset_field WHERE tag_id = X` after a tag has been "deleted via the UI" finds rows — the operator must understand the soft-delete-with-orphan-cascade semantics.
+
+  **Why HIGH not MEDIUM (the sidecar's own rating)**: the sidecar rates this MEDIUM. We elevate to HIGH because:
+  - **Cascade asymmetry is invisible to code-review**: a maintainer reading `TagServiceImpl.delete` sees the 2-line cascade (`deleteTermRelations + deleteDataEntityRelations`) and reasonably assumes that's the full cascade — there's no comment explaining that `tag_to_dataset_field` is intentionally NOT cleaned up. The pattern is silently asymmetric.
+  - **Cross-side-door reach**: the side-door `DATASET_FIELD_TAGS_UPDATE` mints tag entries (TEST-GAP-763 — the directory side-door), and the cleanup is INCOMPLETE; together these create a unilateral data-accumulation surface (operators can CREATE via side-door, but cannot DELETE cleanly).
+  - **No housekeeping job**: the 5-job housekeeping cycle (per batch-K F-010) does NOT include a `TagToDatasetFieldHousekeepingJob`. The orphans grow without bound.
+
+  **Test gap shape**: regression-pin asserting: (a) seed a tag; attach it to BOTH a data_entity AND a dataset_field via the appropriate side-door paths; (b) DELETE the tag via `/api/tags/{id}`; (c) assert `tag_to_data_entity` row is GONE (hard-deleted); (d) assert `tag_to_term` row is GONE; (e) assert `tag_to_dataset_field` row STILL EXISTS (orphan); (f) assert the soft-deleted tag row's `deleted_at IS NOT NULL`. The current state is PINNED — failures land if a future maintainer adds `deleteDatasetFieldRelations(tagId)` to the cascade.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java (10 tests on the repository tier; does NOT exercise the cascade asymmetry — covers tag_to_data_entity only)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagDeleteCascadeAsymmetryTest.java"
+  name: "deleteTag_cascadesToDataEntityAndTerm_butLeavesOrphanedTagToDatasetField_pinsCascadeAsymmetry"
+evidence:
+  - "TagController.md says (bugs_limitations_corner_cases.[deleteTag-cascade-asymmetry]): 'deleteTag cascade asymmetry — tag_to_dataset_field rows NOT cleaned up. TagServiceImpl.delete hard-deletes tag_to_term and tag_to_data_entity rows (TagServiceImpl.java:64-65), then soft-deletes the tag row (:66). It does NOT call reactiveTagRepository.deleteDatasetFieldRelations(tagId) (which exists at ReactiveTagRepositoryImpl.java:299-306). A tag attached to dataset fields via the side-door DATASET_FIELD_TAGS_UPDATE path, when deleted via this controller, leaves orphaned tag_to_dataset_field rows referencing the soft-deleted tag id. Reads via listDatasetFieldDtos filter these out via addSoftDeleteFilter on the join (:84-98) so the orphans are UI-invisible — but they persist in the DB indefinitely. Future garbage-collection migrations would need to address this; right now no cleanup job exists.' — evidence: TagServiceImpl.java:57-70 (delete method) + ReactiveTagRepositoryImpl.java:299-306 (deleteDatasetFieldRelations exists but is NOT called from TagServiceImpl) + grep deleteDatasetFieldRelations returns no caller in TagServiceImpl — severity: MEDIUM"
+  - "TagController.md says (feature_hint.drift_class_facets): 'Cascade asymmetry on deleteTag — tag_to_data_entity + tag_to_term are cleaned up, tag_to_dataset_field is NOT — orphans persist invisibly'"
+  - "Verified at primary source: TagServiceImpl.java:57-70 (the delete method's cascade chain) + ReactiveTagRepositoryImpl.java:299-306 (deleteDatasetFieldRelations exists, uncalled)"
+cross_references:
+  - "TEST-GAP-763 (NEW batch W — TagController directory side-door — sister architectural gap; side-door + cascade-incomplete = unbounded data accumulation)"
+  - "TEST-GAP-765 (NEW batch W — !external guard test — sister TagController gap)"
+  - "TEST-GAP-766 (NEW batch W — TagController audit-log absence — sister observability gap)"
+  - "concepts: housekeeping-ttl-retention (existing concept — tag_to_dataset_field orphan GC is NOT in the housekeeping cycle)"
+  - "REFACTOR-NNN candidate: add reactiveTagRepository.deleteDatasetFieldRelations(tagId) to TagServiceImpl.delete (1-line fix); OR add a housekeeping job for tag_to_dataset_field orphans"
+  - "DOC-NNN candidate: surface the cascade-asymmetry on the Tagging doc; explain operator-impact on backups and migrations"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+proposed_action: |-
+  Add `TagDeleteCascadeAsymmetryTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `deleteTag_cascadesToTagToDataEntity_pinsHardDeleteOnSurface1` — POST a tag; attach to a data_entity via DATA_ENTITY_TAGS_UPDATE; DELETE the tag; assert `tag_to_data_entity` row is GONE via raw DB SELECT.
+  2. `deleteTag_cascadesToTagToTerm_pinsHardDeleteOnSurface2` — sister test on the term linkage.
+  3. `deleteTag_doesNotCascadeToTagToDatasetField_pinsCascadeIncompleteOnSurface3` — POST a tag; attach to a dataset_field via DATASET_FIELD_TAGS_UPDATE; DELETE the tag; assert `tag_to_dataset_field` row STILL EXISTS via raw DB SELECT. PIN the asymmetry.
+  4. `deleteTag_softDeletedTagRowReferencedByOrphanedTagToDatasetField_pinsOrphanShape` — same setup; after DELETE, query `SELECT tag.deleted_at, ttdf.tag_id FROM tag JOIN tag_to_dataset_field ttdf ON ttdf.tag_id = tag.id WHERE tag.id = ?`; assert the row exists with `deleted_at IS NOT NULL`. PIN the orphan-attached-to-soft-deleted shape.
+
+  Pair with REFACTOR-NNN: add `reactiveTagRepository.deleteDatasetFieldRelations(tagId)` to `TagServiceImpl.delete`. The fix is a 1-line addition. When the fix lands, tests #3-#4 invert to assert the cascade IS complete.
+
+  Cross-pair with DOC-NNN: surface the cascade-asymmetry on the Tagging doc; explain operator-impact on backups and migrations.
+batch: 2026-05-20-W
+feature_id: F-018

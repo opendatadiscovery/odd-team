@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-774
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java LoginFormSecurityConfiguration config-class:LoginFormSecurityConfiguration"
+pillars_affected: [P-09, P-08]
+surfaced_by:
+  - "LoginFormSecurityConfiguration.md (config-class — batch X):tests_coverage_semantic.uncovered_behaviours.[10] (AuthorizationCustomizer absence — the load-bearing regression pin)"
+  - "LoginFormSecurityConfiguration.md:concepts.invariants.[every authenticated user receives UserProviderRole.ADMIN authority (line 81 hard-codes getAuthorities(true))]"
+  - "LoginFormSecurityConfiguration.md:downstream_side_effects.[EVERY authenticated request runs WITHOUT the Policies/Permissions/Roles/Owners framework]"
+  - "LoginFormSecurityConfiguration.md:bugs_limitations_corner_cases.[0] HIGH"
+behaviour: |-
+  **CRITICAL — LOGIN_FORM hardcodes ADMIN for EVERY authenticated user AND omits AuthorizationCustomizer wiring. The compound posture means any valid credential pair = unrestricted platform access.** Two file-level facts compose into the operator-facing surface:
+
+  (1) **GrantedAuthorityExtractor(true) at line 81** — `mapReactiveUserDetailsService(...)` populates every in-memory `UserDetails` with `grantedAuthorityExtractor.getAuthorities(true)`. The boolean `true` parameter is the `isAdmin` flag; `GrantedAuthorityExtractor.java:13-14` returns `UserProviderRole.ADMIN`. There is NO per-user role distinction in LOGIN_FORM mode — `admin:admin`, `root:root`, and any operator-added entry resolve to identical ADMIN authority.
+
+  (2) **AuthorizationCustomizer NOT wired at lines 55-57** — the chain has `.authorizeExchange(spec -> spec.pathMatchers(permittedPaths).permitAll().pathMatchers("/**").authenticated())` and NOTHING ELSE. Sibling `OAuthSecurityConfiguration.java:98` and `LDAPSecurityConfiguration.java:145` BOTH call `new AuthorizationCustomizer(permissionService, extractors)`; LOGIN_FORM does NOT. The `SecurityConstants.SECURITY_RULES:98-355` rule table — every `*_CREATE`, `*_UPDATE`, `*_DELETE`, `*_MANAGE` Permission — is INERT under LOGIN_FORM. An operator who authored Policies + Roles + Owner bindings via the platform UI gets a fully-built RBAC configuration that the live auth chain silently ignores.
+
+  **STRENGTHENS existing TEST-GAP-140 (REFACTOR-073 validated) + TEST-GAP-141 (ADMIN-for-every-user)** with the config-class-tier primary source. Prior batch C surfaced these from the config-key-consumer view; this sidecar is the config-class primary source confirming both facts in one place plus the cross-batch composition (S2S also injects ADMIN at line 31-34 of S2sAuthenticationFilter; under LOGIN_FORM + S2S enabled, BOTH cookie-bearing and X-API-Key-bearing requests are operationally indistinguishable — both are ADMIN, both bypass the missing AuthorizationCustomizer).
+
+  **Operator-impact scenario** (the operator-cliff failure mode per LSN-001 / LSN-002 family): an operator reads the live `/enable-security/authorization` page (WebFetched 2026-05-20 status 200 — confirms framework description is silent on which `auth.type` modes wire it), configures Policies + Roles + Owner-association in the UI, runs `auth.type=LOGIN_FORM` (the shipped default credential set is `admin:admin,root:root` per application.yml:37), and assumes the framework gates access. The chain wires no gate; every credential-bearer is ADMIN; every endpoint is reachable. The doc surface gives no warning.
+
+  **Test gap shape**: regression-pin asserting (a) form-authenticated user receives ONLY `ADMIN` authority (no per-user distinction), (b) a request from a form-authenticated user with NO Policy/Role association can call `POST /api/permissions/{id}/policies` (a `PERMISSION_*_MANAGE`-gated endpoint per SecurityConstants) and receives HTTP 200 (not 403). PINS the intentional absence so a future maintainer wiring AuthorizationCustomizer "to match OAuth/LDAP" trips the test and must explicitly update it.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/LoginFormHardcodedAdminAndNoAuthorizationCustomizerRegressionTest.java"
+  name: "loginForm_anyAuthenticatedUserIsAdmin_AND_callsEveryRBACGatedEndpoint_pinsCompoundWideOpenPosture"
+evidence:
+  - "LoginFormSecurityConfiguration.md says (concepts.invariants): 'every authenticated user receives UserProviderRole.ADMIN authority (line 81 hard-codes getAuthorities(true); GrantedAuthorityExtractor.java:13-14 returns ADMIN)'"
+  - "LoginFormSecurityConfiguration.md says (concepts.invariants): 'the chain does NOT wire AuthorizationCustomizer — the only post-permitAll gate is pathMatchers(\"/**\").authenticated() (lines 55-57); no SECURITY_RULES enforcement, no WHITELIST_PATHS lookup, no per-Policy/Permission/Role manager wiring'"
+  - "LoginFormSecurityConfiguration.md says (downstream_side_effects): 'EVERY authenticated request runs WITHOUT the Policies/Permissions/Roles/Owners framework. The SecurityWebFilterChain at lines 53-65 does NOT call .authorizeExchange(new AuthorizationCustomizer(permissionService, extractors)) — the only authorization gate is .pathMatchers(\"/**\").authenticated() (line 57). Side-effect: every form-authenticated user can hit every endpoint defined in SecurityConstants.SECURITY_RULES:98-355 regardless of any Policy / Role / Owner configuration.'"
+  - "Verified at primary source: LoginFormSecurityConfiguration.java:81 (`grantedAuthorityExtractor.getAuthorities(true)`)"
+  - "Verified at primary source: LoginFormSecurityConfiguration.java:55-57 (no AuthorizationCustomizer)"
+  - "Verified at primary source: OAuthSecurityConfiguration.java:98 (the missing call)"
+  - "Verified at primary source: LDAPSecurityConfiguration.java:145 (the missing call)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization 2026-05-20 status 200 — confirms framework is described as if it applies universally, without naming the LOGIN_FORM/DISABLED precondition"
+cross_references:
+  - "TEST-GAP-140 (STRENGTHENED — was config-key-consumer-tier; this is config-class-tier primary source)"
+  - "TEST-GAP-141 (STRENGTHENED — ADMIN-for-every-user pin)"
+  - "TEST-GAP-149 (cross-reference — S2S also injects ADMIN; under LOGIN_FORM + S2S the two are indistinguishable)"
+  - "REFACTOR-073 (validated — the authorization-framework absence under LOGIN_FORM)"
+  - "ADR-CANDIDATE-029 (auth-mode determines authorization-framework wiring)"
+  - "concepts: read-collaborative-posture-wide-open-variant"
+  - "DOC-GAP-NNN (proposed — live /enable-security/authorization page must name the precondition: framework wired in OAUTH2/LDAP only)"
+related_features: [F-008, F-011]
+related_pillar_features: ["P-09:F-001 UI authentication", "P-09:F-002 Principal-to-Owner Resolution"]
+proposed_action: |-
+  Add `LoginFormHardcodedAdminAndNoAuthorizationCustomizerRegressionTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Two test methods asserting the compound posture as the CURRENT intentional behaviour:
+
+  1. `loginForm_anyAuthenticatedUserHasExactlyAdminAuthority` — `@SpringBootTest` with `auth.type=LOGIN_FORM` + custom credentials `alice:alicepw,bob:bobpw`; authenticate as `alice` via form-login; query SecurityContext; assert authority set equals exactly `[ADMIN]` (no `USER`, no per-Policy permissions).
+  2. `loginForm_anyAuthenticatedUserCanCallEveryRBACGatedEndpoint` — same setup; POST to `/api/permissions/{id}/policies` (a `PERMISSION_*_MANAGE`-gated endpoint per SecurityConstants.SECURITY_RULES); assert HTTP 200 (the current intentional wide-open posture). Then for the OPPOSITE auth mode, configure `auth.type=OAUTH2` with stub OAuth provider, authenticate `alice` without any Policy assignment, POST same endpoint, assert HTTP 403 (the OAUTH2 enforcement contract).
+
+  Add a `// REGRESSION-PIN — LOGIN_FORM hardcodes ADMIN for every authenticated user AND omits AuthorizationCustomizer. The two facts compose into compound wide-open posture. This test asserts the INTENTIONAL absence of authorization gates under LOGIN_FORM so a future maintainer wiring AuthorizationCustomizer "to match OAuth/LDAP" trips this test and must explicitly update it AND update live /enable-security/authorization docs.` comment block.
+
+  Pair with: (a) DOC-GAP-NNN — live `/enable-security/authorization` page must name the AUTH_MODE precondition (OAUTH2/LDAP only); (b) REFACTOR-073 follow-up (a fail-fast boot warning when LOGIN_FORM is active AND the operator has configured Policies — emit log.warn naming the disconnect).
+batch: 2026-05-20-X
+feature_id: F-008

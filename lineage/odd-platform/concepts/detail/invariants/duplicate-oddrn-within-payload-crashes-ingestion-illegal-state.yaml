@@ -1,0 +1,104 @@
+name: Duplicate ODDRN within a single ingestion payload crashes the batch with IllegalStateException — Collectors.toMap default merger
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-10
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20-Z (IngestionServiceImpl sidecar)** —
+  `IngestionServiceImpl.persistDataEntities` line 83-86 builds the
+  per-call dedup map via:
+    `items.stream().filter(d -> d.getType() != JOB_RUN)`
+    `.map(de -> ingestionMapper.createIngestionDto(de, dataSourceId))`
+    `.collect(Collectors.toMap(DataEntityIngestionDto::getOddrn, identity()))`
+  The two-argument `Collectors.toMap(keyMapper, valueMapper)` form uses the
+  default merge function which THROWS `IllegalStateException: Duplicate key`
+  on any duplicate key. Inbound `DataEntityList` payloads with the SAME
+  ODDRN appearing in two items crash the ENTIRE ingestion batch with an
+  IllegalStateException that escapes the reactive Mono chain and surfaces
+  as HTTP 500.
+
+  **The operator-trap**: a collector that emits the same entity twice in
+  one payload (e.g. due to a bug in the collector's dedup logic, an
+  inadvertent over-pagination, a race in the producer-side data source)
+  receives HTTP 500 with no specific diagnostic — the IllegalStateException
+  message names the duplicate ODDRN but the platform's reactive error
+  handler renders it as a generic 500. The entire batch (potentially
+  thousands of legitimate non-duplicate entities) is dropped. No
+  test asserts this behaviour.
+
+  **Composition with F-008 single-transaction-per-batch invariant**: the
+  per-batch transaction enforces "all-or-nothing" atomicity; a single
+  duplicate ODDRN within the payload makes the entire batch fail. The
+  duplicate-ODDRN-crash drift facet was logged as a F-008 batch-extension
+  candidate in this batch (F-008 detail YAML line 47:
+  `duplicate_oddrn_within_payload_crashes_ingestion_with_illegal_state_exception_5xx`).
+
+  **Severity MEDIUM**: the failure surface is real (collector bugs do
+  occur) and the diagnostic is poor (HTTP 500 + opaque message), but
+  the failure is fail-loud rather than fail-silent — operators see
+  HTTP 500s in their collector logs and can investigate. Contrast with
+  the silent-replace-not-merge class which is fail-silent.
+axes_present:
+- services
+nodes:
+- odd-platform java service service:IngestionServiceImpl
+contributors:
+- |-
+  IngestionServiceImpl.md (batch Z PRIMARY SOURCE):
+    concepts.invariants — Entity dedup is by ODDRN at the application
+    layer; ingestionDtoMap is Map<String, DataEntityIngestionDto> keyed
+    by ODDRN (Collectors.toMap(DataEntityIngestionDto::getOddrn,
+    identity()) line 86). If the same ODDRN appears twice in the inbound
+    items list, Collectors.toMap THROWS IllegalStateException:
+    Duplicate key (default merge function refuses duplicates). The
+    platform does not silently deduplicate within a single payload —
+    same-ODDRN duplicates within one request crash the entire ingestion.
+    No test asserts this behaviour.
+evidence:
+- |-
+  IngestionServiceImpl.md:concepts.invariants (the per-line citation
+  at IngestionServiceImpl.java:86 — the two-arg Collectors.toMap call;
+  default-throwing merger semantics)
+- |-
+  F-008 detail YAML line 47 (drift class
+  duplicate_oddrn_within_payload_crashes_ingestion_with_illegal_state_exception_5xx) —
+  recorded as a batch-Z drift facet at the F-008 closure
+mitigations_unimplemented:
+- |-
+  Code-side: convert the two-arg `Collectors.toMap` to a three-arg form
+  with an explicit merger (e.g. `(existing, replacement) -> replacement`
+  to silently dedup by last-write-wins, OR `(existing, replacement) ->
+  { log.warn("duplicate ODDRN in payload: {}", existing.getOddrn());
+  return replacement; }` to dedup-with-warning). Decision: maintainer's
+  call between silent-dedup vs warn-dedup; both close the 5xx-on-
+  duplicate failure surface.
+- |-
+  Code-side (alternative): add an explicit pre-collect guard:
+  `items.stream().map(getOddrn).collect(toSet())` and compare size
+  against the original list; throw BadUserRequestException with the
+  duplicate-ODDRN list if mismatch. This surfaces as HTTP 400 with
+  a structured error body (better operator diagnostic than HTTP 500).
+- |-
+  Test-side: add a test asserting the current behaviour — POST
+  `/ingestion/entities` with a payload containing two items at the
+  same ODDRN returns HTTP 500 (or the new chosen contract). Closes
+  the contract gap that the maintainer can lock in.
+severity: MEDIUM
+severity_dim: ingestion-error-handling-poor-operator-diagnostic-5xx
+cross_batch: true
+notes: |-
+  Surfaced batch 2026-05-20Z by the IngestionServiceImpl sidecar
+  (F-008 service-tier vertex). Composition partner: F-008
+  `single_transaction_per_batch_no_per_entity_isolation` drift class.
+
+  The Collectors.toMap pattern is widely used elsewhere in the codebase —
+  a parallel audit would identify the other call sites with the same
+  default-throw semantic; not in scope for this batch.
+
+  Cross-references:
+    - F-008 batch-Z drift class
+      duplicate_oddrn_within_payload_crashes_ingestion_with_illegal_state_exception_5xx
+    - single-transaction-per-batch-ingestion-no-per-entity-isolation
+    - silent-data-loss-replace-not-merge-ingestion-semantics
+      (architectural sibling — the destructive-semantic concern; this
+      one is the fail-loud-but-poor-diagnostic concern)

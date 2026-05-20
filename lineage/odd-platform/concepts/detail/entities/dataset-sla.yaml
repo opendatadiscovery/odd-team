@@ -1,0 +1,168 @@
+name: Dataset SLA (Green/Yellow/Red aggregate + PNG badge)
+canonical_in_docs: true
+canonical_candidate: false
+description: |-
+  Per-dataset aggregate quality trust signal — three values: GREEN | YELLOW | RED.
+  Computed deterministically by SLACalculator (an aggregation-based, NOT direct
+  severity-to-colour, algorithm — SLACalculator.java:80-100). The SLA encodes
+  failure-PATTERN semantics, not a per-test mapping: at-least-one-critical-failed
+  → RED, all-majors-failed → RED, some-majors-failed → YELLOW, all-minors-failed
+  → YELLOW, no-tests-defined → YELLOW (cautious default), all-passed → GREEN.
+  Reclassifying ONE test's severity from Major to Critical can flip the entire
+  dataset's colour without any test's pass/fail status changing.
+
+  **TWO endpoints surface the SLA, with DELIBERATELY DISTINCT response shapes**
+  (NEW entity, batch 2026-05-20T):
+    - GET /api/datasets/{data_entity_id}/sla → image/png byte-array (BI-tool
+      embeddable badge). PNG bytes resolved from sla/sla_red.png /
+      sla/sla_yellow.png / sla/sla_green.png classpath resources cached at
+      bean init via CachingByteArraySLAResourceResolver.java:30-54.
+    - GET /api/datasets/{data_entity_id}/sla_report → application/json
+      DataSetSLAReport (total/success weights + severity_weights breakdown +
+      slaColour + slaRef self-link).
+
+  **Two audiences encoded explicitly**: PNG for BI embed (Confluence, Excel,
+  any img-src renderer); JSON for programmatic consumers. The dual-endpoint
+  pattern is the architectural shape; merging the two would couple audiences.
+
+  vocabulary_status: codebase-anchored + doc-side-covered (live
+  https://docs.opendatadiscovery.org/features/data-quality/sla-statuses WebFetched
+  2026-05-20 status 200; the SLA enum and the PNG-vs-JSON distinction are
+  partially-described — see canonicalisation candidate
+  sla-as-png-vs-jsonsla-report-drift for the HIGH-severity doc misalignment
+  surfaced by this batch).
+vocabulary_status: codebase-anchored, doc-side-covered-with-drift
+axes_present:
+- controllers
+nodes:
+- odd-platform java DataQualityController controller-class:DataQualityController
+contributors:
+- |-
+  DataQualityController (class) batch T:
+    entities[SLA enum GREEN/YELLOW/RED, DataSetSLAReport,
+    Resource (PNG byte-array)];
+    operations[render-sla-colour-as-png, compute-detailed-sla-report-as-json];
+    invariants[SLA-deterministic-aggregation-not-direct-mapping,
+    YELLOW-cautious-default-for-zero-tests, hierarchical-multiplicative-weight-aggregation,
+    PNG-resource-classpath-loaded-cached-at-bean-init]
+evidence:
+- |-
+  DataQualityController.md:concepts.entities.[SLA enum] + .[DataSetSLAReport] +
+  .[Resource PNG]
+- |-
+  DataQualityController.md:concepts.invariants.[3] (YELLOW cautious default)
+- |-
+  DataQualityController.md:concepts.invariants.[5] (image/png declared by OpenAPI
+  spec + physically resolved from classpath at bean init)
+- |-
+  DataQualityController.md:concepts.invariants.[6] (hierarchical-multiplicative
+  weight aggregation — not additive)
+- |-
+  DataQualityController.md:implicit_adrs.[2] (SLA-as-PNG is deliberate dual-audience
+  shape, NOT a content-negotiation accident)
+- |-
+  DataQualityController.md:implicit_adrs.[3] (deterministic aggregation algorithm
+  encodes failure-pattern semantics — the doc-side framing matches the code)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      Both SLA endpoints (PNG and JSON) are reads; neither has a SecurityRule entry
+      at SecurityConstants.java:98-355. Falls through to the global authenticated()
+      rule under LOGIN_FORM / OAUTH2 / LDAP; anonymously reachable under DISABLED.
+      Consistent with the read-collaborative posture (ADR-CANDIDATE-003) extended
+      to a new feature surface.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      ReactiveDataQualityRepositoryImpl.java:105-126 (getSLA SQL) applies no
+      OWNERSHIP join, no principal-derived predicate. The SLA colour for any
+      dataset id is readable by any authenticated user under LOGIN_FORM/OAUTH2/LDAP,
+      or anonymously under DISABLED.
+  strengths:
+  - |-
+    Dual-endpoint shape (PNG + JSON) intentionally encoded — BI-tool embeddability
+    AND programmatic introspection are SEPARATE audiences with SEPARATE contracts.
+    Merging them would couple latencies.
+  - |-
+    PNG resource integrity asserted at bean init time — CachingByteArraySLAResourceResolver.java:35-36
+    fails-fast with IllegalStateException if any of the three classpath PNG files
+    are missing; misconfigured builds do NOT silently degrade.
+  weaknesses:
+  - |-
+    SLA colour exposed for any dataset id to any authenticated user — readable cross-owner.
+    Under DISABLED, anonymous network callers can read SLA badges for arbitrary dataset
+    ids if they can enumerate them. Severity depends on operator's classification of
+    SLA-colour-as-data-sensitivity.
+  - |-
+    PNG endpoint is cross-origin embeddable (image content-type; no @CrossOrigin
+    restriction, no Cache-Control: private, no X-Frame-Options set at this layer).
+    A malicious page can img-tag the badge cross-origin; combined with cookie-based
+    auth (CSRF cookie present), it becomes a cookie-bearing read leaking the colour
+    for known dataset ids to embedding pages.
+  - |-
+    No HTTP caching headers — every BI-dashboard render fires fresh SQL aggregation.
+  cross_file_inconsistencies:
+  - |-
+    The live sla-statuses.md page describes GET /api/datasets/{id}/sla as returning
+    'a DataSetSLAReport that includes SLA colour, severity weights breakdown, and
+    a slaRef self-link' — implying JSON. The code returns image/png. The JSON shape
+    described is the response of the SIBLING endpoint /sla_report. This is a HIGH-severity
+    doc drift filed as the invariant sla-as-png-vs-jsonsla-report-drift.
+  contributing_files:
+  - DataQualityController.md
+  evidence:
+  - DataQualityController.md:security.known_security_gaps.[1] (PNG cross-origin embeddability)
+  - DataQualityController.md:bugs_limitations_corner_cases.[1] (PNG vs JSON drift)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    BI-dashboard fan-out — for N dataset tiles each pulling SLA, request count is N
+    per dashboard render; PNG bytes cached in memory but SQL aggregation runs per
+    request. The PNG-file IO is NOT per-request (cached at bean init).
+  - |-
+    Per-dataset detail-page Test-reports tab — every navigation issues both
+    /test_report and either /sla or /sla_report.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      Per-dataset query. No bulk/batch endpoint for multi-dataset SLA fetch.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless controller. PNG bytes immutable post-bean-init. Horizontal scaling
+      unconstrained at the controller layer; the bottleneck is the SQL aggregation
+      (one round-trip per call) and the absence of HTTP caching.
+  strengths:
+  - |-
+    PNG byte-array cached in memory (~1-2 KB per colour × 3 colours = ~3-6 KB total)
+    at bean init — no per-request file IO
+  - |-
+    Reactive Mono/ResponseEntity throughout — non-blocking I/O
+  weaknesses:
+  - |-
+    No HTTP caching / ETag / Last-Modified on the PNG endpoint — BI tools cannot
+    cache the badge image bytes despite the response being fully determined by
+    (datasetId, current_test_states). The PNG byte-array is small (1-2 KB) but the
+    SQL aggregation cost compounds with BI-render frequency (severity LOW-MEDIUM).
+  cross_file_inconsistencies: []
+  contributing_files:
+  - DataQualityController.md
+  evidence:
+  - DataQualityController.md:performance.hot_paths.[1]
+  - DataQualityController.md:performance.known_performance_gaps.[1]
+notes: |-
+  The SLA enum is canonical in main-concepts.md / sla-statuses.md. The dual-endpoint
+  shape (PNG + JSON) is the architectural intent, deliberately encoded. The HIGH-severity
+  doc drift on the PNG endpoint's response shape is the headline batch-T finding —
+  the sla-statuses.md page must be corrected to disambiguate the two endpoints, OR
+  the JSON-returning endpoint must be /sla and the PNG moved to /sla_image (a wire-contract
+  change with breaking implications for any BI integration deployed today).

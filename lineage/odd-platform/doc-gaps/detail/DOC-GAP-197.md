@@ -36,3 +36,38 @@
     - **DOC-GAP-149 META** (REV-3 LAYER-0 Audit-log presence asymmetry — adjacent META; same operator-experience class)
     - **LSN-017 (per-node-scan-cannot-see-cross-layer-user-effects)** — this finding's cross-layer composition (RoleServiceImpl + PolicyServiceImpl + ManagementPermissionExtractor + AbstractContextualPermissionExtractor) is exactly the cross-layer pattern LSN-017 captures
   - **Severity rationale**: MEDIUM — operator-facing capacity-planning gap that does NOT enable a security bypass but IS the load-bearing performance characteristic of the platform's RBAC framework. The most material consequences: (a) operators deploying high-RPS workloads inherit unbounded authorization DB cost with no doc signal; (b) capacity-planning guidance (R2DBC pool sizing) does not surface authorization as a contributor; (c) cache absence is correctness-preserving but unbounded — the gap is the doc invisibility, not the implementation choice itself. Severity is MEDIUM (not HIGH) because: (i) for typical-scale deployments (sub-50 req/s) the cost is negligible; (ii) the cost is correctness-preserving (always-fresh permissions matches the platform's read-collaborative posture); (iii) the doc-side fix is bounded — single sub-section on the authorization page + cross-reference on the configuration page. Severity is NOT LOW because the operator-trap shape ("authorization is free") is widely-held and the platform's design commits to high-RPS readiness on the read-collaborative axis.
+
+## Batch X append
+
+#### Batch 2026-05-20-X STRENGTHENS — R2DBC POOL-SIZING DIMENSION added (DOC-GAP-228 NEW batch X is the pool-sizing capacity-planning sibling)
+
+DOC-GAP-197 (NEW batch S) captured the AUTHORIZATION HOT PATH performance characteristics: every authorized HTTP request issues 2 multi-table JOINs (RoleServiceImpl.getCurrentUserRoles + PolicyServiceImpl.getCurrentUserPolicies) with NO request-scoped cache, NO user-scoped cache. Batch X adds the COMPOUND SIBLING — DOC-GAP-228 (R2DBC pool sizing undocumented) — which surfaces the per-replica connection-pool ceiling that compounds with the per-request JOIN cost:
+
+- **`R2DBCConfiguration.java:41-50` + `:75-84`** (per R2DBCConfiguration sidecar NEW batch X): both primary + custom R2DBC pools wire `PropertyMapper.alwaysApplyingWhenNonNull()` for 10 `R2dbcProperties.Pool` knobs, but `application.yml` ships ZERO `spring.r2dbc.pool.*` values — every pool size/timeout is at Spring Boot's framework default (`maxSize=10` per pool at `spring-boot:3.x` + `r2dbc-pool:1.0.0.RELEASE`).
+
+**The compound arithmetic**:
+- Per DOC-GAP-197: 2 multi-table JOINs per authorized HTTP request (RoleServiceImpl + PolicyServiceImpl), no cache, always-fresh
+- Per DOC-GAP-228: pool `maxSize=10` × 2 pools per replica = 20-connection ceiling per replica
+- At 50 req/s × 2 JOINs = 100 JOINs/s, even with sub-100ms JOIN duration → pool saturated
+- Multiplier across replicas: 5 replicas × 20 = 100 PostgreSQL connection slots requested
+- PG `max_connections` default = 100 → at-the-edge with no headroom for HikariCP datasource (Flyway + ShedLock + PGConnectionFactory)
+
+**The structural insight**: DOC-GAP-197's per-request JOIN cost is BOUNDED by the connection-pool ceiling that DOC-GAP-228 captures. Without DOC-GAP-228's pool-sizing guidance, operators sizing R2DBC for high-RPS workloads inherit BOTH: (a) the unbounded per-request authorization cost; (b) the unspecified pool ceiling. Capacity-planning is impossible without both numbers.
+
+**The 3-part code-side recommendation extends**:
+- DOC-GAP-197's code-side recommendation (request-scoped cache + user-scoped TTL cache) eliminates the per-request cost
+- DOC-GAP-228's code-side recommendation (ship `spring.r2dbc.pool.max-size: 10` explicitly + add R2DBC Micrometer binder for observability) eliminates the framework-default-drift risk
+
+The TWO recommendations are INDEPENDENT and ADDITIVE: implementing both closes the entire authorization-hot-path-meets-pool-saturation surface.
+
+**The doc-side action**: the new "Capacity-planning for high-RPS deployments" sub-section proposed in DOC-GAP-228 is the canonical home for the cross-finding capacity-planning narrative. The sub-section combines:
+- DOC-GAP-197's per-request JOIN cost (2 JOINs per authorized request)
+- DOC-GAP-228's per-replica pool ceiling (max-size × 2 pools)
+- The pool-sizing formula: `pool max-size = ceil(peak req/s × avg JOINs/req × p99 JOIN duration in seconds × safety margin 1.5)`
+- The cross-replica constraint: `N replicas × 2 pools × max-size <= PG max_connections - 20`
+
+This single doc sub-section closes the capacity-planning gap structurally for BOTH findings.
+
+**Severity stays MEDIUM** (DOC-GAP-197 was MEDIUM at batch S; the pool-sizing compound doesn't escalate severity but expands the operator-trap class to cover the connection-pool dimension). The compound finding's blast radius extends to ANY high-RPS deployment running OAUTH2/LDAP authentication — exactly the production-recommended modes.
+
+**Coherence**: strengthens=1 (DOC-GAP-197 with pool-sizing dimension), supersedes=0, conflicts_surfaced=0. Cross-link to DOC-GAP-228 (the sibling sizing finding); cross-link to REFACTOR-389 + REFACTOR-384 (the underlying caching refactoring scope).

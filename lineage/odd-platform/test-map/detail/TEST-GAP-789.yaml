@@ -1,0 +1,56 @@
+gap_id: TEST-GAP-789
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java SessionConfiguration config-class:SessionConfiguration"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "SessionConfiguration.md:bugs_limitations_corner_cases.[5] MEDIUM (REDIS configuration branch has no health-check integration)"
+  - "SessionConfiguration.md:dependencies_semantic.requires-config.[spring.data.redis.* required when session.provider=REDIS]"
+behaviour: |-
+  **MEDIUM — `SessionConfiguration`'s REDIS branch (lines 61-65) only stamps `@EnableRedisWebSession` — no health-check wiring. `application.yml:244-245` ships `management.health.redis.enabled: false` as the default. Operators switching to `session.provider=REDIS` are not nudged to enable the health check. A Redis outage on a session-Redis-only deployment causes 5xx on every authenticated request, but `/actuator/health` does NOT reflect it.**
+
+  Sidecar primary source:
+  - SessionConfiguration.java:61-65 — the REDIS branch is JUST `@EnableRedisWebSession`; no `RedisHealthIndicator` bean, no `management.health.redis.enabled: true` recommendation in code or YAML.
+  - application.yml:244-245 — `management.health.redis: enabled: false` as the shipped default.
+  - WebFetched 2026-05-20 status 200 — live `/configuration-and-deployment/odd-platform#select-session-provider` mentions Spring Session Redis but does NOT recommend enabling the health check.
+
+  **Operator-impact scenario**:
+  1. Production operator sets `session.provider=REDIS` for cluster-safety (per TEST-GAP-781 mitigation).
+  2. K8s Ingress + Service routes `/actuator/health` to the platform; LB uses 200 OK as health-readiness signal.
+  3. Redis outage occurs (planned maintenance, network partition, OOM).
+  4. Every authenticated request returns 5xx (session lookup fails).
+  5. `/actuator/health` still returns 200 OK (Redis health check is disabled by default).
+  6. LB / K8s does NOT remove the platform pod from rotation; users see persistent 5xx.
+
+  **Test gap shape**:
+  1. `@SpringBootTest` with `session.provider=REDIS` + Testcontainers Redis; submit `/actuator/health`; assert response body does NOT contain `redis` component (the health check is disabled).
+  2. Stop the Redis container; submit an authenticated request; assert HTTP 5xx; submit `/actuator/health`; assert HTTP 200 (the silent-failure surface).
+  3. Hypothetical fix-direction: `@TestPropertySource("management.health.redis.enabled=true")`; assert `/actuator/health` returns 503 when Redis is down. CONFIRMS the fix's effectiveness.
+
+  PINS the current silent failure surface until REFACTOR-NNN enables the Redis health-check when `session.provider=REDIS` is selected (via a Spring `@Conditional` or via documented application.yml change).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/SessionRedisHealthCheckSilentFailureRegressionPinTest.java"
+  name: "actuatorHealth_redisDown_returnsHttp200_pinsSilentFailure"
+evidence:
+  - "SessionConfiguration.md says (bugs_limitations_corner_cases.[5]): 'the REDIS configuration branch has no health-check integration with Spring Boot Actuator. The management.health.redis.enabled: false setting in application.yml:244-245 is the DEFAULT — operators switching to session.provider=REDIS are not nudged to enable the health check. A Redis outage on a session-Redis-only deployment causes 5xx on every authenticated request but the /actuator/health endpoint does not reflect it'"
+  - "Verified at primary source: SessionConfiguration.java:61-65 (REDIS branch — just @EnableRedisWebSession)"
+  - "Verified at primary source: application.yml:244-245 (`redis: enabled: false`)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-05-20 status 200 — confirms doc does not recommend enabling the Redis health check"
+cross_references:
+  - "TEST-GAP-781 (RELATED — REDIS is the cluster-safe alternative for the collector-identity bridge; operators choosing REDIS land on this silent-health-failure surface)"
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/odd-platform#select-session-provider` MUST recommend `management.health.redis.enabled=true` when `session.provider=REDIS`)"
+  - "REFACTOR-NNN (proposed — auto-enable `management.health.redis.enabled` when `session.provider=REDIS`; or document the requirement in YAML comments at application.yml:244-245)"
+related_features: [F-008]
+related_pillar_features: ["P-09:F-001 UI authentication", "P-08:F-NN-actuator-defaults"]
+proposed_action: |-
+  Add `SessionRedisHealthCheckSilentFailureRegressionPinTest`. Three test methods:
+
+  1. `actuatorHealth_underSessionRedis_doesNotIncludeRedisComponent_pinsDefaultOff` — `@SpringBootTest(properties = { "session.provider=REDIS" })` + Testcontainers Redis; GET `/actuator/health`; assert response body does NOT include `redis` in `components`.
+  2. `actuatorHealth_redisDown_returns200_pinsSilentFailure` — same fixture; stop Redis; GET `/actuator/health`; assert HTTP 200 (despite the session backend being down). PINS the silent failure.
+  3. `actuatorHealth_redisHealthEnabled_returns503OnRedisDown_documentsFixDirection` — `@TestPropertySource("management.health.redis.enabled=true")`; stop Redis; GET `/actuator/health`; assert HTTP 503. CONFIRMS the fix's effectiveness.
+
+  Pair with: (a) REFACTOR-NNN — make `management.health.redis.enabled` conditional on `session.provider=REDIS` (or document the prerequisite in YAML); (b) DOC-GAP-NNN — live docs MUST cross-link session provider choice to actuator health check posture.
+batch: 2026-05-20-X
+feature_id: null

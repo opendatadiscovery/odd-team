@@ -1,0 +1,38 @@
+gap_id: TEST-GAP-708
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java AppInfoController controller-class:AppInfoController"
+pillars_affected: [P-09, P-11]
+surfaced_by:
+  - "AppInfoController.md:security.known_security_gaps.[0] (DISABLED-mode fingerprinting + 19th supporting sidecar for REFACTOR-185 — severity MEDIUM)"
+  - "AppInfoController.md:security.known_security_gaps.[1] (`/api/appInfo` highest-signal-density fingerprint endpoint — severity MEDIUM)"
+  - "AppInfoController.md:bugs_limitations_corner_cases.[3] (response body exposes projectVersion + authType under DISABLED — severity MEDIUM)"
+  - "AppInfoController.md:tests_coverage_semantic.uncovered_behaviours.[2] (security: unauthenticated GET /api/appInfo returns 200 under DISABLED)"
+behaviour: |-
+  **AppInfoController IS THE HIGHEST-SIGNAL-DENSITY FINGERPRINT ENDPOINT UNDER `auth.type=DISABLED` (the application.yml default).** Under the platform's default deployment config (`application.yml:34` — `auth.type=DISABLED`), `DisabledAuthSecurityConfiguration.java:13-18` applies `.anyExchange().permitAll()`; `/api/appInfo` (NOT in `SecurityConstants.WHITELIST_PATHS` per lines 95-96, NOT in `SecurityConstants.SECURITY_RULES`) becomes anonymously reachable. The endpoint returns `{projectVersion: String, authType: String}` (`AppInfoController.java:24-28` + `components.yaml:2493-2499`) — both fields together let any network caller (a) confirm the deployment IS ODD (`projectVersion` is the give-away — the field name + the version string format are ODD-specific), (b) learn the exact platform version (scoping CVE matching to known-vulnerable releases in the Spring Boot / WebFlux / Reactor / R2DBC / OAuth-client chains), and (c) learn the active auth mode (`DISABLED` / `LOGIN_FORM` / `OAUTH2` / `LDAP` — telling them whether to attempt credential stuffing vs OIDC tampering vs walking in unauthenticated). Compared with `/actuator/info` (whitelisted) or `/` (returns SPA HTML), `/api/appInfo` is the highest-signal-density fingerprint in a single 200 byte response. **No test catches this**: `find <odd-platform> -path '*test*' -name 'AppInfo*'` returned no matches 2026-05-20; `Grep 'AppInfoController|getAppInfo|api/appInfo'` against `odd-platform-api/src/test/` returned 0 files. The live `documentation/docs/configuration-and-deployment/enable-security` page (WebFetched 2026-05-20 status 200) names the `auth.type` switch but does NOT mention `/api/appInfo`, the AppInfo endpoint, or warn about the fingerprinting risk under DISABLED. This is the **19th supporting sidecar for REFACTOR-185 (DISABLED-mode bypass)** — the controller-class-tier confirmation of a finding originating in batch B at the config-key-consumer-axis layer.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AppInfoControllerDisabledModeFingerprintingTest.java"
+  name: "getAppInfo_authTypeDisabled_anonymousCallerReceivesProjectVersionAndAuthType_pinsFingerprintExposureSurface"
+evidence:
+  - "AppInfoController.md says (security.known_security_gaps.[0]): 'Under the application.yml default auth.type=DISABLED (application.yml:34) the entire HTTP surface — including /api/appInfo, which echoes the deployment's auth mode AND project version — is .anyExchange().permitAll() (DisabledAuthSecurityConfiguration.java:13-18). Any caller able to reach the platform's HTTP port can read the response, enumerate the deployment, and use the project version to scope CVE matching. The live docs name the auth.type switch but do NOT document the introspection surface that /api/appInfo provides, nor warn about the fingerprinting risk under DISABLED. This is the 19th supporting sidecar for REFACTOR-185 (DISABLED-mode bypass) — the controller-class layer view of a surface batch B already cited at the config-key-consumer-axis layer.' severity: MEDIUM"
+  - "AppInfoController.md says (security.known_security_gaps.[1]): '/api/appInfo is the simplest network-reachable fingerprint endpoint in the platform — no body, no auth, returns two strings. An attacker scanning a port range for ODD instances under DISABLED gets BOTH (a) confirmation it's ODD AND (b) the precise version + auth mode in a single GET. Compared with hitting /actuator/info (whitelisted) or / (returns SPA HTML), /api/appInfo is the highest-signal-density fingerprint.' severity: MEDIUM"
+  - "AppInfoController.md says (bugs_limitations_corner_cases.[3]): 'Response body exposes projectVersion from BuildProperties alongside authType. Combined with unauthenticated reachability under auth.type=DISABLED, a network attacker can fingerprint (a) the deployment's auth mode AND (b) the precise platform version (scoping CVE matching). Neither piece of metadata is documented as a public-disclosure surface in the live docs.' severity: MEDIUM"
+  - "Source: AppInfoController.java:14-28 + application.yml:32-34 + DisabledAuthSecurityConfiguration.java:13-18 + SecurityConstants.java:95-96 + SecurityConstants.java:98-355 (no rule for /api/appInfo) + components.yaml:2493-2499 + WebFetch enable-security 2026-05-20 status 200 (no /api/appInfo documentation)"
+  - "Grep verification: `Grep AppInfoController|getAppInfo|api/appInfo` against odd-platform-api/src/test/ returned 0 files 2026-05-20"
+cross_references:
+  - "REFACTOR-185 (DISABLED-mode bypass — 19-sidecar pattern; this is the 19th)"
+  - "F-009 / F-NN-application-security (4 auth modes; DISABLED dev-only framing)"
+  - "concepts.yaml — DISABLED-mode-bypass family"
+  - "DOC-GAP-NNN (enable-security/README.md doc-side rewrite required to disclose the /api/appInfo introspection surface)"
+related_features: []
+related_pillar_features: ["P-09:F-001"]
+proposed_action: |-
+  Add `AppInfoControllerDisabledModeFingerprintingTest` with three regression-pin methods:
+  (a) `getAppInfo_authTypeDisabled_anonymousCallerReceivesProjectVersionAndAuthType_pinsFingerprintSurface`: configure `@TestPropertySource(properties = {"auth.type=DISABLED"})`; WebTestClient (NO authentication) GET `/api/appInfo`; assert response status 200; assert body contains both `projectVersion` (non-null, non-empty) AND `authType` equal to "DISABLED". Pins the current fingerprinting surface.
+  (b) `getAppInfo_authTypeLoginForm_unauthenticatedCallerReceives302Or401_pinsAuthenticatedModeBehaviour`: configure `auth.type=LOGIN_FORM`; WebTestClient (no session) GET `/api/appInfo`; assert response is 302 (redirect to login) or 401 (Unauthorized) — NOT 200. Pins the authenticated-mode behaviour so a future regression that whitelists `/api/appInfo` is caught.
+  (c) `getAppInfo_authTypeOAuth2OrLdap_authenticatedCallerReceives200WithCorrectAuthType`: configure `auth.type=OAUTH2` (or LDAP); WebTestClient with a valid session GET `/api/appInfo`; assert response 200, body's `authType` equals "OAUTH2" verbatim (the round-trip behaviour). Pins the no-normalisation contract (per AppInfoController.md implicit_adrs[1]).
+  Add `// REGRESSION-PIN — AppInfoController under auth.type=DISABLED is anonymously reachable and exposes both projectVersion and authType — a high-signal-density fingerprint surface. The live enable-security docs do NOT disclose this. Pair with DOC-GAP-NNN that adds the caveat. If a future maintainer whitelists /api/appInfo into WHITELIST_PATHS (breaking authenticated-mode behaviour) OR removes the projectVersion field (breaking the SPA AboutMenu), test (b) or (a) will catch the change.` comment block.
+batch: 2026-05-20-T
+feature_id: null

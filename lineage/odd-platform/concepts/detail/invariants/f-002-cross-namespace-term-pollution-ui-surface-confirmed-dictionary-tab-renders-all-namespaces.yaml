@@ -1,0 +1,281 @@
+name: |-
+  F-002 cross-namespace term pollution — UI surface confirmed (Dictionary tab renders every term across every namespace; no per-namespace filter affordance)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-06
+  - P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20U — STRENGTHENS the existing F-002
+  drift class cross_namespace_term_pollution by surfacing the UI surface
+  where the leak manifests. The F-002 feature flow's repository tier
+  (batch N ReactiveTermRepositoryImpl) and service tier (batch K
+  TermServiceImpl) primary sources both captured the cross-namespace
+  pollution drift facet — no tenant filter, no per-namespace filter,
+  no per-owner filter at the SQL or service layer; every authenticated
+  user sees every term across every namespace. Batch U adds the UI
+  half of the evidence chain.
+
+  THE BATCH-U UI EVIDENCE (TermSearch + TermDetails sidecars):
+
+    TermSearch (the Dictionary tab at /termsearch/*) — TermSearchResults.tsx:64-110
+    renders the unscoped server payload. Each row at TermSearchResultItem.tsx:25-69
+    exposes name, namespace.name, ownership[].owner.name,
+    entitiesUsingCount + columnsUsingCount + linkedTermsUsingCount,
+    createdAt, updatedAt — for EVERY term the underlying GET
+    /api/termsearch/searchId/results returns. There is NO UI filter
+    affordance for 'show only terms in MY namespace' or 'show only
+    terms with MY owners' — verified by reading the
+    TermSearchFilters subtree at TermSearchFilters/TermSearchFilters.tsx
+    (sister component outside this file). Every authenticated user
+    landing on /termsearch sees the full term catalog regardless of
+    namespace or owner.
+
+    TermDetails (the per-term detail page at /terms/termId/*) —
+    TermDetails.tsx:71-72 mounts TermDetailsTabs + TermDetailsRoutes
+    UNCONDITIONALLY past the AppError gate. The WithPermissionsProvider
+    wrap at lines 59-70 covers ONLY the Header (Edit + Delete CTAs);
+    the tab content is universally readable. The Overview tab exposes
+    the full term definition + tag list + linked terms + linked entities
+    + linked columns + ownership history — to every authenticated user
+    regardless of namespace, owner, or permission set.
+
+  THE FULL CHAIN — UI to SQL:
+
+    UI tier (batch U primary source — THIS INVARIANT):
+      TermSearch + TermDetails render unscoped; no namespace / owner
+      filter affordance.
+
+    Service tier (batch K — TermServiceImpl):
+      TermServiceImpl carries no service-tier permission check on any
+      read; cross-namespace lookup is unconstrained per
+      bugs_limitations_corner_cases.[3] cross-namespace-pollution.
+
+    Repository tier (batch N — ReactiveTermRepositoryImpl):
+      ReactiveTermRepositoryImpl.java:162-179 — the
+      getByNameAndNamespace(List<TermBaseInfoDto>) batch lookup joins
+      term and namespace with NO tenant filter, NO per-owner filter,
+      NO per-namespace filter; the OR-chained WHERE clause walks the
+      full catalog per call.
+
+    Schema tier:
+      No odd.tenant-id reference anywhere in the term / namespace
+      schema (verified by Grep in batch K). No team-isolation column.
+      No partition / scoping mechanism at the SQL layer.
+
+  THE DOC-DRIFT IMPLICATION (cross-batch):
+
+    Per the TermServiceImpl batch K + TermDetails batch U sidecars'
+    docs_link_semantic.doc_drift_findings — the live Business Glossary
+    doc page (WebFetched 2026-05-20 status 200) does NOT state that
+    every authenticated user sees every term across every namespace.
+    The page mentions 'Searches and term-to-entity link operations
+    resolve within the namespace by default' (line 41 of
+    business-glossary.md) — implying per-namespace scoping that does
+    NOT exist at any layer in the platform.
+
+    Operators reading the docs and AUTHORING NAMING DECISIONS based on
+    the implied isolation (e.g., naming terms as 'team-A/PII Subject',
+    'team-B/PII Subject' expecting they remain visible only to their
+    own team) discover only at runtime — by clicking the Dictionary
+    tab and seeing every team's terms enumerated — that namespace is
+    a LABEL DIMENSION, not an ISOLATION boundary.
+
+  THE OPERATIONAL CONSEQUENCE:
+
+    Names like 'finance/PII Subject Identifiers',
+    'compliance/Restricted Trade Data',
+    'security/Internal Use Only' leak ORGANISATIONAL TAXONOMY to every
+    authenticated user. The TermDetails page click-through exposes the
+    FULL term definition — operator-curated content that may contain:
+      - Sensitive policy URLs.
+      - Internal contact names + email addresses.
+      - System architecture details intended for one team.
+      - Compliance-specific definitions that should not be platform-wide.
+
+    Per the partial-permission-gating invariant + the
+    read-collaborative-cross-owner-enumeration master invariant
+    (28-sidecar batch T), this is consistent with the platform's
+    documented read-collaborative posture (system-mission.md:267).
+    But the COMBINATION of:
+      - Read-collaborative (intentional).
+      - 'Namespace by default' doc implication (misleading).
+      - No UI-level scoping affordance (no escape hatch for operators
+        who wish to opt into namespace isolation).
+    means operators relying on namespace isolation have NO mechanism
+    at any layer to enforce it.
+
+  COMPOUND WITH BATCH-U SISTER FINDINGS:
+
+    The cross-namespace pollution surface is amplified by:
+      (a) F-004 stored-XSS extends to TermDefinition — payloads planted
+          in any namespace's term reach every authenticated viewer.
+      (b) Term-to-term-no-SecurityRule — any authenticated user can
+          create cross-namespace term-to-term links without holding
+          TERM_UPDATE.
+      (c) NAMESPACE_CREATE + TAG_CREATE side-doors via TermController —
+          a caller with TERM_CREATE can introduce new namespaces
+          (visible platform-wide) without holding NAMESPACE_CREATE.
+
+    The four surfaces together (this invariant + the three siblings)
+    make the Term subsystem the platform's READ-MOST-OPEN feature —
+    every authenticated user reads every term + every term's full
+    content + every term's linked-entity graph + every term's
+    ownership history; planting content into any term reaches every
+    reader; linking terms requires no permission; creating new
+    namespaces requires no NAMESPACE_CREATE.
+
+  SEVERITY MEDIUM — same severity as the existing F-002 drift facet.
+  The UI surface confirmation is the operator-facing manifestation
+  of an architectural posture that is consistent end-to-end. The
+  doc-side admission would be the smallest-cost remediation (operators
+  know what to expect) until the platform decides whether to add
+  per-namespace isolation as a P-09 feature.
+nodes:
+  - odd-platform ts react-component component:TermSearch
+  - odd-platform ts react-component component:TermDetails
+  - odd-platform java service service:TermServiceImpl
+  - odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+contributors:
+  - |-
+    TermSearch batch U (PRIMARY SOURCE — UI half — Dictionary tab):
+    concepts.invariants.[2] (Read-collaborative posture — no
+    per-namespace + no per-owner scoping at this layer; every
+    authenticated user sees every Term across every namespace) +
+    security.known_security_gaps.[0] (read-collaborative posture —
+    every authenticated user sees every Term across every namespace;
+    names like finance/PII Subject Identifiers may leak organisational
+    taxonomy; the 7 TERM_* permissions gate MUTATIONS not reads) +
+    bugs_limitations_corner_cases.[6] (Cross-namespace term pollution
+    at the row level — TermSearchResultItem.tsx:36-37 renders
+    termSearchResult.namespace.name for every Term including terms
+    from OTHER teams' namespaces; no UI filter 'show only terms in
+    MY namespace')
+  - |-
+    TermDetails batch U (PRIMARY SOURCE — UI half — per-term detail):
+    concepts.invariants.[1] (Permission gate scope is the HEADER, not
+    the page — TermDetailsTabs and TermDetailsRoutes render
+    unconditionally) + security.known_security_gaps.[1] (Permission-gate
+    scope is the HEADER only; the term content is uniformly readable;
+    a term marked as 'internal' or 'restricted' by its NAME confers
+    NO additional access control)
+  - |-
+    TermServiceImpl batch K (existing — service tier primary source):
+    bugs_limitations_corner_cases.[3] Cross-namespace term pollution +
+    security.known_security_gaps.[6] (Cross-namespace pollution —
+    no per-tenant or per-namespace scoping at the service or repository
+    layer; descriptions in one namespace can resolve [[other-namespace:term]]
+    references and auto-link across team boundaries)
+  - |-
+    ReactiveTermRepositoryImpl batch N (existing — SQL layer):
+    cross-namespace lookup with no tenant filter at lines 162-179
+evidence:
+  - |-
+    TermSearch.md:concepts.invariants.[2] (Read-collaborative posture
+    inherited from the repository tier; no UI-level scoping affordance)
+  - |-
+    TermSearch.md:security.known_security_gaps.[0] HIGH (read-collaborative
+    posture)
+  - |-
+    TermSearch.md:bugs_limitations_corner_cases.[6] MEDIUM
+    (Cross-namespace term pollution at the row level)
+  - |-
+    TermDetails.md:concepts.invariants.[1] (Permission gate scope is
+    the HEADER not the page) + security.known_security_gaps.[1] MEDIUM
+  - |-
+    Cross-references existing F-002 drift facet cross_namespace_term_pollution
+    (the master architectural-class entry from batches K + N)
+  - |-
+    Cross-references master invariant
+    read-collaborative-cross-owner-enumeration (28-sidecar — batch T
+    extension) — this invariant STRENGTHENS it with the Term-specific
+    UI surface
+  - |-
+    Cross-references docs_link_semantic.doc_drift_findings on
+    TermServiceImpl + TermDetails sidecars (the doc page's misleading
+    'by namespace by default' framing)
+axes_present:
+  - ui_components
+  - services
+  - repositories_reactive
+triangulation_count: 4
+cross_batch: true
+cross_batch_refs:
+  - batch-K (TermServiceImpl — service tier primary source)
+  - batch-N (ReactiveTermRepositoryImpl — SQL layer)
+  - batch-T (read-collaborative-cross-owner-enumeration 28-sidecar)
+  - batch-U (TermSearch + TermDetails — UI surface confirmation, THIS INVARIANT)
+severity: MEDIUM
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    The smallest-cost remediation — document on the
+    /features/data-glossary/business-glossary live doc page that
+    'namespace is a LABEL DIMENSION, not an ISOLATION BOUNDARY. Every
+    authenticated user sees every term across every namespace. The
+    TERM_* permissions gate MUTATIONS; reads are uniform across the
+    catalog.' Add an admonition block. Pairs with the existing
+    read-collaborative-posture-doc-silence DOC-NNN candidate.
+  - |-
+    UI-level affordance — add a 'Show only my owners' or 'Filter by
+    my namespace' option to TermSearchFilters. Pure UX (no SQL change);
+    operators who wish to scope their view can opt-in. The full
+    catalog remains read-collaborative at the architecture; the UI
+    just adds a self-scoping convenience.
+  - |-
+    Architectural change (largest scope) — add per-namespace isolation
+    as an opt-in P-09 feature. Requires:
+      - Schema: introduce a 'visibility' column on namespace
+        (PRIVATE / TEAM / PUBLIC) or use existing owner-binding for
+        team scope.
+      - Service tier: every Term read filters by visibility +
+        current-user-owner-set.
+      - UI: a Settings tab for operators to mark namespaces as
+        private.
+    Scope-doubling change; pause-and-ask the maintainer before
+    pursuing.
+  - |-
+    Add a regression test asserting the current behaviour:
+      (a) Create two terms in two different namespaces with two
+          different owners.
+      (b) Authenticate as a user with ownership of one but not the
+          other.
+      (c) GET /api/terms — assert BOTH terms are returned (pins the
+          current behaviour).
+      (d) GET /api/terms/term_id for the other-namespace term —
+          assert 200 (pins the current behaviour).
+    Without this test, a future per-namespace isolation feature would
+    break the read-collaborative invariant silently.
+notes: |-
+  NEW invariant captured in batch 2026-05-20U from the TermSearch +
+  TermDetails sidecars. The UI-surface confirmation completes the
+  end-to-end chain (UI to service to SQL) for the F-002
+  cross_namespace_term_pollution drift class.
+
+  The follow-up actions are mostly DOC-NNN candidates — the
+  architectural posture is consistent with the documented
+  read-collaborative stance, but the doc page's implicit framing
+  misleads operators. The smallest-cost fix is the doc admonition.
+
+  Cross-cutting connections:
+    - STRENGTHENS the F-002 cross_namespace_term_pollution drift facet
+      with the UI-surface confirmation
+    - Pairs with read-collaborative-cross-owner-enumeration master
+      invariant (28-sidecar — batch T) — adds Term as a specific
+      surface within the broader read-collaborative pattern
+    - Pairs with partial-permission-gating-edit-button-gated-content-unconditional
+      (6-component pattern — batch Q + J) — Term details are the 5th
+      surface where the partial-gating manifests
+    - Pairs with the three batch-U sister invariants
+      (f-004-stored-xss-extends-to-term-definition,
+      securityconstants-term-to-term-no-security-rule,
+      namespace-create-tag-create-side-doors) — together these four
+      make the Term subsystem the platform's most-open feature for
+      authenticated readers
+    - Pairs with the maintainer's pending canonicalisation candidate
+      for the read-collaborative posture explicit doc admission
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Doc admission — describe namespace-as-label vs namespace-as-isolation
+        on the business-glossary page
+    (b) UI affordance — 'Show only my namespace' filter as opt-in UX

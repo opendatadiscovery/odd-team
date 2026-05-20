@@ -1,0 +1,81 @@
+gap_id: TEST-GAP-763
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java TagController controller-class:TagController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "TagController.md:bugs_limitations_corner_cases.[Side-door directory growth via DATA_ENTITY_TAGS_UPDATE / TERM_TAGS_UPDATE / DATASET_FIELD_TAGS_UPDATE / S2S ingestion — this controller's createTag requires TAG_CREATE (SecurityConstants.java:138), but four DISTINCT bypass paths grow the same tag table without holding TAG_CREATE]"
+  - "TagController.md:bugs_limitations_corner_cases.[No RBAC gate on getPopularTagList — global tag directory enumeration available to every authenticated user]"
+  - "TagController.md:security.known_security_gaps.[Side-door directory growth — DATA_ENTITY_TAGS_UPDATE / TERM_TAGS_UPDATE / DATASET_FIELD_TAGS_UPDATE (Data Entity / Term / Dataset Field scope permissions) and S2S ingestion all mint new global Tag rows via TagServiceImpl.getOrCreateTagsByName / getOrInjectTagByName, WITHOUT holding TAG_CREATE — severity HIGH]"
+  - "TagController.md:security.known_security_gaps.[Open-read posture on getPopularTagList — any authenticated user (under LOGIN_FORM/OAUTH2/LDAP) can enumerate the entire global tag directory regardless of TAG_* permissions or Management-scope role]"
+  - "TagController.md:tests_coverage_semantic.uncovered_behaviours.[Side-door write path observability — assert that POST /api/dataentities/{id}/tags with novel tag names creates fresh tag rows visible from this controller's GET /api/tags, even when the caller does NOT hold TAG_CREATE. This is the integration test that pins REFACTOR-223 / DOC-GAP-168]"
+behaviour: |-
+  **HIGH — `getPopularTagList` + per-entity-tag-editors compose to a full directory bypass: an authenticated user with `DATA_ENTITY_TAGS_UPDATE` (or `TERM_TAGS_UPDATE` / `DATASET_FIELD_TAGS_UPDATE`) — but explicitly NOT `TAG_CREATE` — can both READ the global tag directory (via the ungated `GET /api/tags`) AND WRITE to it (via the side-door `getOrCreateTagsByName` chain). The controller-defended `TAG_CREATE` permission is effectively bypassed in BOTH directions.** Primary-source confirmed in batch-W TagController sidecar:
+
+  **Read-side: GET /api/tags is ungated** (per TagController.md:bugs_limitations_corner_cases):
+  - `TagController.getPopularTagList` (lines 37-44): no `@PreAuthorize`.
+  - `SecurityConstants.java:138-142`: only 3 entries for `/api/tags*` — POST (TAG_CREATE), PUT (TAG_UPDATE), DELETE (TAG_DELETE). NO GET entry.
+  - `AuthorizationCustomizer.java:29-30`: catch-all `pathMatchers("/**").authenticated()` — any authenticated user reaches the GET endpoint.
+
+  **Write-side: 4 side-door paths bypass TAG_CREATE** (per TagController.md:bugs_limitations_corner_cases):
+  - `TagServiceImpl.updateRelationsWithDataEntity → getOrCreateTagsByName` (TagServiceImpl.java:105) — DATA_ENTITY_TAGS_UPDATE caller mints tags.
+  - `TermServiceImpl.upsertTags → getOrCreateTagsByName` (TermServiceImpl.java:257) — TERM_TAGS_UPDATE caller mints tags.
+  - `DatasetFieldServiceImpl → getOrCreateTagsByName` (DatasetFieldServiceImpl.java:202, 266) — DATASET_FIELD_TAGS_UPDATE caller mints tags.
+  - `ExternalTagIngestionRequestProcessor.process → getOrInjectTagByName → ingestData upsert` (ExternalTagIngestionRequestProcessor.java:104) — S2S ingestion caller mints tags.
+
+  **The compound finding**:
+  - **READ + WRITE** without TAG_CREATE: a per-entity-tag-editor user can both list the entire global tag vocabulary AND extend it with new tags, all without holding the dedicated `TAG_CREATE` permission documented per the Management → Tags tab.
+  - **The TAG_CREATE permission gate is the controller's perimeter defence**: it gates the canonical `POST /api/tags` write surface. But the 4 side-door paths bypass the perimeter at the SERVICE layer (`getOrCreateTagsByName`).
+  - **No service-tier check**: per TagController.md:security.known_security_gaps.[Service-tier zero-checks posture]: "`TagServiceImpl` performs no `@PreAuthorize` or programmatic permission checks (`:1-167` end-to-end). The controller perimeter is the SOLE authorisation defence."
+
+  **What the docs claim vs what the code enforces** (per WebFetch 2026-05-20):
+  - Live `https://docs.opendatadiscovery.org/features/data-discovery/tagging` (status 200): describes `TAG_CREATE` as "Create a new tag in the catalog vocabulary"; describes `TAG_UPDATE` / `TAG_DELETE` as "vocabulary-level mutations". Does NOT name `DATA_ENTITY_TAGS_UPDATE` as a second write path into the directory.
+  - Live `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions` (status 200): names `TAG_CREATE` AND `DATA_ENTITY_TAGS_UPDATE` separately. Says `DATA_ENTITY_TAGS_UPDATE` "Allows editing a data entity's tags." Does NOT describe any mechanism by which `DATA_ENTITY_TAGS_UPDATE` can create new global tags.
+  - Operators authoring RBAC policies that GRANT `DATA_ENTITY_TAGS_UPDATE` but WITHHOLD `TAG_CREATE` reasonably expect that grantees cannot mint new tags. The code contradicts that expectation.
+
+  **Operator-impact**:
+  - A "data-entity-tagger" Role intended for analysts (with `DATA_ENTITY_TAGS_UPDATE` only) can pollute the global tag vocabulary indefinitely. The Management → Tags tab (intended as the controlled-vocabulary surface) is effectively ungated.
+  - Read-side enumeration: an authenticated auditor with ZERO `TAG_*` permissions can list every tag in the catalog (which may include tags reflecting internal team names, project codenames, sensitivity classifications).
+
+  **Why HIGH not MEDIUM (the sidecar's own rating)**: the sidecar rates the side-door write paths HIGH (per security.known_security_gaps.[Side-door directory growth]). The read-side is MEDIUM in isolation. The COMPOUND (read+write bypass on the same permission) is HIGH because operators authoring RBAC reason about WHERE permissions gate — and the platform's design says TAG_CREATE gates writes, but the code has 4 bypass paths AND no read gate at all. The aggregate is a perimeter-defence collapse.
+
+  **Test gap shape**: regression-pin asserting: (a) authenticated user with NO `TAG_*` permissions can GET `/api/tags` and receive a full result set; (b) authenticated user with `DATA_ENTITY_TAGS_UPDATE` ONLY (no `TAG_CREATE`) can `POST /api/dataentities/{id}/tags` with novel tag names and successfully create them; (c) the new tags appear in `GET /api/tags` for that user (verifying the side-door's write IS observable via the controller's read); (d) `POST /api/tags` (direct creation) fails with 403 for the same user. The current state is PINNED — failures land if a future maintainer adds RBAC gating to the side-door paths.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagDirectoryBypassReadWriteTest.java"
+  name: "perEntityTagEditor_canReadAndWriteGlobalTagDirectory_withoutTagCreate_pinsBidirectionalBypass"
+evidence:
+  - "TagController.md says (bugs_limitations_corner_cases.[Side-door directory growth]): 'Side-door directory growth via DATA_ENTITY_TAGS_UPDATE / TERM_TAGS_UPDATE / DATASET_FIELD_TAGS_UPDATE / S2S ingestion — this controller's createTag requires TAG_CREATE (SecurityConstants.java:138), but four DISTINCT bypass paths grow the same tag table without holding TAG_CREATE: (a) TagServiceImpl.updateRelationsWithDataEntity → getOrCreateTagsByName → bulkCreate for novel names; (b) TermServiceImpl.upsertTags → getOrCreateTagsByName; (c) DatasetFieldServiceImpl → getOrCreateTagsByName; (d) ExternalTagIngestionRequestProcessor.process → getOrInjectTagByName → ingestData upsert. The directory rows produced by any of these surfaces are immediately visible via this controller's getPopularTagList.' — severity: HIGH"
+  - "TagController.md says (bugs_limitations_corner_cases.[No RBAC gate on getPopularTagList]): 'the controller's read endpoint at /api/tags (GET, lines 37-44) has no SecurityRule entry in SecurityConstants.SECURITY_RULES (only POST/PUT/DELETE entries exist for the same path prefix, lines 138-142). Any authenticated user — including a user with only the per-entity DATA_ENTITY_TAGS_UPDATE permission — can enumerate every tag in the directory.' — severity: MEDIUM"
+  - "TagController.md says (security.known_security_gaps.[Open-read posture]): 'Open-read posture on getPopularTagList — any authenticated user (under LOGIN_FORM/OAUTH2/LDAP) can enumerate the entire global tag directory regardless of TAG_* permissions or Management-scope role. Combined with the side-door write paths, this means a per-entity-tag-editor can both READ and WRITE the global tag namespace without holding any vocabulary-level permission.'"
+  - "TagController.md says (doc_drift_findings): 'Live tagging page acknowledges the per-entity create a new tag inline UX, but the permission framing names ONLY TAG_CREATE / TAG_UPDATE / TAG_DELETE and explicitly describes them as vocabulary-level mutations. The doc page does NOT state that an operator with DATA_ENTITY_TAGS_UPDATE alone (no TAG_CREATE) can mint new tag-vocabulary rows visible to every other user via this controller's getPopularTagList.'"
+  - "Verified at primary source: TagController.java:36-44 (GET endpoint, no @PreAuthorize) + SecurityConstants.java:138-142 (no GET rule) + TagServiceImpl.java:105 + TermServiceImpl.java:257 + DatasetFieldServiceImpl.java:202, 266 + ExternalTagIngestionRequestProcessor.java:104"
+  - "REFACTOR-223 / DOC-GAP-168 (canonical cross-references)"
+cross_references:
+  - "TEST-GAP-021 (existing — DataEntity Tag-create side-door — sister pattern at the data-entity scope)"
+  - "TEST-GAP-726 (STRENGTHENED batch W — the broader 4-sister-service NAMESPACE_CREATE side-door — sister architectural class for namespaces)"
+  - "TEST-GAP-762 (NEW batch W — deleteTag cascade asymmetry — compound finding: side-door CREATE without symmetric DELETE)"
+  - "TEST-GAP-765 (NEW batch W — !external guard test — sister TagController gap)"
+  - "TEST-GAP-766 (NEW batch W — TagController audit-log absence — sister observability gap)"
+  - "REFACTOR-223 (NAMESPACE_CREATE side-door — sister architectural class)"
+  - "REFACTOR-222 (TAG_CREATE bypass via upsertTags — sister surface at OwnerController#createOwner)"
+  - "DOC-GAP-168 (DOC counterpart — canonical reference)"
+  - "concepts: getorcreate-permission-bypass-aggregate (existing concept — this gap is the Tag-specific instance)"
+  - "REFACTOR-NNN candidate: split TagServiceImpl.getOrCreateTagsByName into get + create; require TAG_CREATE for the create branch at each of the 4 side-door call sites"
+  - "DOC-NNN candidate: surface the read+write bypass on the Tagging doc + Permissions doc — operators authoring RBAC policies must know"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-09:F-001"]
+proposed_action: |-
+  Add `TagDirectoryBypassReadWriteTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `getPopularTagList_userWithNoTagPermissions_returns200WithFullDirectory_pinsOpenReadPosture` — authenticate as a user with NO `TAG_*` permissions and NO Management-scope role; GET `/api/tags`; assert HTTP 200 with full result set.
+  2. `perEntityTagger_postsDataEntityTagsWithNovelNames_succeeds_pinsWriteSideDoor` — authenticate as a user with `DATA_ENTITY_TAGS_UPDATE` only (NO `TAG_CREATE`); POST `/api/dataentities/{id}/tags` with `tagNames: ['fresh-' + UUID.randomUUID()]`; assert HTTP 200 AND assert `SELECT COUNT(*) FROM tag WHERE name = ?` returns 1. PIN the side-door.
+  3. `perEntityTagger_directCreateTagPostFails403_pinsControllerPerimeter` — same user; POST `/api/tags`; assert HTTP 403. PIN the perimeter-defence-WORKS-on-the-direct-path observation.
+  4. `perEntityTagger_postsDataEntityTagsThenGetPopularTagList_seesOwnSideDoorWrite_pinsBidirectionalBypass` — same user; POST `/api/dataentities/{id}/tags` with `tagNames: ['compound-bypass-test']`; then GET `/api/tags?query=compound-bypass-test`; assert the tag IS in the response.
+  5. `perEntityTagger_postsTermTagsWithNovelNames_succeeds_pinsTermSideDoorVertex` — same user with `TERM_TAGS_UPDATE` (no `TAG_CREATE`); PUT `/api/terms/{id}/tags` with novel names; assert success.
+
+  Pair with REFACTOR-NNN: split `getOrCreateTagsByName` at the 4 side-door call sites; require `TAG_CREATE` for the create branch. When the fix lands, tests #2 + #4 + #5 invert to assert HTTP 403 on the side-door write paths.
+
+  Cross-pair with DOC-NNN: surface the read+write bypass on the Tagging doc + Permissions doc — operators authoring RBAC policies need to see this to avoid the cliff.
+batch: 2026-05-20-W
+feature_id: F-018

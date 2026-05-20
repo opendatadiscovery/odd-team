@@ -1,0 +1,138 @@
+name: DEG-membership returns empty-200 / DEG-lineage returns 404 — contract asymmetry between two paths for the same condition
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-05
+- P-11
+description: |-
+  **NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20-Z (getDataEntitiesByDEGOddrn sidecar)** —
+  the platform exposes TWO closely-related read endpoints, both keyed by
+  a DEG ODDRN / DEG id, both returning DEG-scoped graph data, both
+  hitting the same DEG-membership tables — but they implement DIFFERENT
+  shapes for the SAME semantic condition (the DEG has no resolvable members):
+    - `GET /ingestion/entities/{deg_oddrn}` (the S2S read endpoint, batch Z):
+      DataEntityGroupServiceImpl.listEntitiesWithinDEG (line 92-108) maps
+      the always-present `Mono<List<DataEntityPojo>>` to a CompactDataEntityList
+      with empty items. No switchIfEmpty(Mono.error(...)). UNKNOWN DEG +
+      EMPTY DEG + MALFORMED ODDRN all return `200 OK` with `items: []`.
+    - `GET /api/dataentitygroups/{data_entity_group_id}/lineage` (the
+      UI-side endpoint, sidecar getDataEntityGroupsLineage batch M):
+      LineageServiceImpl.getDataEntityGroupLineage (line 62) explicitly
+      `.switchIfEmpty(Flux.error(new NotFoundException("Data entity
+      group", id)))` for the same empty-membership condition. Returns
+      `404 Not Found`.
+
+  **The structural consequence**: a third-party integration that wires
+  BOTH endpoints (e.g. a custom dashboard walking the catalog's DEG
+  graph + reading membership) must handle TWO different response shapes
+  for the same semantic situation. The S2S read silently conflates
+  "DEG exists with no members" / "DEG does not exist" / "wrong ODDRN
+  format"; the UI-side lineage endpoint distinguishes "DEG does not
+  exist" (404) from "DEG exists with empty edges" (200 with empty
+  streams) — but only for the lineage shape, not for the membership
+  shape.
+
+  **The four conditions and their responses on each endpoint**:
+  Condition                         | get-by-deg-oddrn | get-deg-lineage
+  -------------------------------- | ---------------- | ---------------
+  DEG exists, has N>0 members      | 200 + N items     | 200 + N streams
+  DEG exists, has 0 members        | 200 + []          | 404
+  DEG does not exist               | 200 + []          | 404
+  Malformed ODDRN                  | 200 + []          | 404
+
+  Three of the four conditions produce different status codes on the
+  two endpoints. The asymmetry is silent — no live doc on either
+  endpoint warns about it.
+
+  **The directional remedy candidates**:
+    (a) Align S2S read to UI behaviour: add
+        `.switchIfEmpty(Mono.error(NotFoundException))` to
+        DataEntityGroupServiceImpl.listEntitiesWithinDEG. Surface 404
+        for unknown + empty DEG + malformed. Breaks the silent-empty
+        contract; surfaces malformed-input cases as authentic 404
+        instead of silent empty.
+    (b) Align UI lineage to S2S behaviour: REMOVE the
+        `.switchIfEmpty(Flux.error(NotFoundException))` at
+        LineageServiceImpl.java:62. Return 200 with empty streams.
+        Aligns to S2S; removes the operator-friendly 404 distinction.
+    (c) Keep the asymmetry but document it. The maintainer's call.
+
+  **Severity MEDIUM**: contract-shape gap, not security gap. Third-party
+  integrations consuming both endpoints face complexity; operators
+  reading either endpoint in isolation are unaffected.
+axes_present:
+- controllers
+- services
+nodes:
+- odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn
+- odd-platform java DataEntityController controller-method:getDataEntityGroupsLineage
+- odd-platform java service service:LineageServiceImpl
+contributors:
+- |-
+  getDataEntitiesByDEGOddrn.md (batch Z PRIMARY SOURCE for the S2S side):
+    concepts.invariants.[1] (Unknown DEG returns 200 OK with empty items,
+    NOT 404; the SQL WHERE GROUP_ODDRN.eq(:degOddrn) returns zero rows;
+    .collectList() produces an empty list; the controller wraps it as
+    CompactDataEntityList(items=[]) and returns 200 OK; there is no
+    existence check on the DEG, no switchIfEmpty(Mono.error(NotFoundException)),
+    no contrast with the closely-related LineageServiceImpl.getDataEntityGroupLineage
+    line 62 which DOES raise NotFoundException on empty member resolution;
+    asymmetry is silent) +
+    implicit_adrs.[3] (Empty result IS the contract for unknown-DEG, NOT
+    NotFoundException — two methods on different services produce different
+    shapes for the same input — the membership-read returns empty-200; the
+    lineage-read returns 404; the asymmetry IS the implicit ADR) +
+    bugs_limitations_corner_cases.[2] MEDIUM (404 vs empty-200 silent
+    conflation — unknown DEG / empty DEG / malformed ODDRN / NULL-equivalent
+    ODDRN all produce the same 200 OK with items:[])
+- |-
+  Existing entity concept: deg-anchored-lineage (batch M):
+    bugs_limitations_corner_cases — 404 only when DEG has ZERO members
+    + inner-DEG suppression service-layer-only + 404 conflates three
+    semantically distinct conditions
+evidence:
+- |-
+  getDataEntitiesByDEGOddrn.md:concepts.invariants.[1] (the empty-200
+  contract; explicit contrast with LineageServiceImpl.java:62)
+- |-
+  getDataEntitiesByDEGOddrn.md:implicit_adrs.[3] (the asymmetry is the
+  implicit ADR; verifiable in code)
+- |-
+  getDataEntitiesByDEGOddrn.md:bugs_limitations_corner_cases.[2] MEDIUM
+  (the 404-vs-empty conflation finding)
+- |-
+  Existing concept: deg-anchored-lineage entity — 404 on empty DEG
+  membership at LineageServiceImpl.java:62 (the contrast side)
+mitigations_unimplemented:
+- |-
+  Per the directional-remedy enumeration in the description. Maintainer's
+  call between (a) align S2S to UI / (b) align UI to S2S / (c) document
+  the asymmetry. All three close the contract-shape gap.
+- |-
+  Doc-side: in developer-guides/api-reference, surface the asymmetry
+  at the DEG-membership and DEG-lineage operations explicitly — a
+  one-line contract caveat on each operation naming the empty-vs-404
+  contract on that operation, with a cross-link to the sibling.
+- |-
+  Test-side: add a regression test pinning the current contract on
+  both endpoints — get-by-deg-oddrn with an unknown ODDRN → 200 + [];
+  get-deg-lineage with an unknown DEG id → 404. The contract pair is
+  locked against silent change in either direction.
+severity: MEDIUM
+severity_dim: developer-surface-contract-shape-asymmetry-empty-vs-404
+cross_batch: true
+notes: |-
+  Surfaced batch 2026-05-20Z by the getDataEntitiesByDEGOddrn sidecar.
+  Composition partner: the existing `deg-anchored-lineage` entity
+  concept (batch M) which captures the UI-side 404 contract.
+
+  This invariant is a CONTRACT-SHAPE finding rather than a security
+  or correctness finding — but it surfaces a real operator-facing
+  asymmetry that affects third-party integrations.
+
+  Cross-references:
+    - deg-anchored-lineage (entity; UI-side contract)
+    - F-016 (DEG-Anchored Lineage feature)
+    - F-008 (the S2S read complement to the destructive-write surface)
+    - DOC-GAP-009 (the doc-coverage gap; this asymmetry would be
+      surfaced by per-operation contract documentation)

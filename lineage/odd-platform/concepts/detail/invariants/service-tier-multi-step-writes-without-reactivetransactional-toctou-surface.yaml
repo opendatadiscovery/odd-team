@@ -1,0 +1,259 @@
+name: |-
+  Service-tier multi-step writes without @ReactiveTransactional — TOCTOU surface across siblings (TagServiceImpl)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-09
+description: |-
+  NEW INVARIANT, batch VAL-LSN-019 (2026-05-20) — captures a
+  cross-method consistency pattern in TagServiceImpl where THREE
+  multi-step read-then-write methods LACK `@ReactiveTransactional`.
+  The omission creates TOCTOU windows of three distinct shapes:
+  exception-driven (UI-tier write), race-tolerant (ingestion-tier
+  upsert), and silent-miss (delete-relations).
+
+  THE NINE-METHOD AUDIT:
+
+    TagServiceImpl has 9 public methods. The @ReactiveTransactional
+    distribution is:
+
+      Methods WITH @ReactiveTransactional (4):
+        - update (line 45) — 5-step single-tag write
+        - delete (line 58) — 6-step soft-delete cascade
+        - updateRelationsWithDataEntity (line 97) — diff-with-protection
+        - createRelationsWithTerm (line 137) — bulk relation insert
+
+      Methods WITHOUT @ReactiveTransactional (5):
+        - bulkCreate (line 37-42) — single-step write; inherits
+          implicit TX from ReactiveAbstractCRUDRepository.bulkCreate
+          (which DOES carry @ReactiveTransactional at the inherited
+          method)
+        - listMostPopular (line 73-77) — pure read (no TX needed)
+        - getOrCreateTagsByName (line 79-86) — TWO-STEP READ-THEN-WRITE
+          WITHOUT TX
+        - getOrInjectTagByName (line 88-94) — TWO-STEP READ-THEN-WRITE
+          WITHOUT TX
+        - deleteRelationsWithTerm (line 123-134) — TWO-STEP
+          READ-THEN-WRITE WITHOUT TX
+
+    The 3 methods of concern are getOrCreateTagsByName,
+    getOrInjectTagByName, and deleteRelationsWithTerm.
+
+  THE THREE TOCTOU SHAPES:
+
+    Shape 1 — Exception-driven (`getOrCreateTagsByName`):
+      The two steps are `listByNames` (read) + `bulkCreate` (write,
+      no ON CONFLICT). A concurrent write between the two surfaces as
+      UniqueConstraintException. The DB's partial unique index is the
+      protection; the service-tier surfaces the exception to the user
+      as a 5xx-level error with no service-tier retry. See the
+      `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`
+      invariant (HIGH severity).
+
+      The omission of @ReactiveTransactional is INTENTIONAL per the
+      maintainer's dual-method design — the TX would not solve the
+      race (READ COMMITTED would not see the concurrent INSERT either
+      way; SERIALIZABLE would change the failure mode to 40001
+      serialization-failure rather than 23505 unique-violation, but
+      the service-tier still has no retry).
+
+    Shape 2 — Race-tolerant (`getOrInjectTagByName`):
+      The two steps are `listByNames` (read) + `ingestData` (write,
+      WITH ON CONFLICT DO UPDATE). The race-tolerant upsert silences
+      the conflict at the DB level. The service-tier never sees an
+      exception; both racers receive the same row's id.
+
+      The omission of @ReactiveTransactional is BENIGN — the upsert
+      is idempotent; concurrent calls converge on the same DB state.
+      The service-tier intent: ingestion-tier writes must succeed
+      regardless of parallel pipelines.
+
+    Shape 3 — Silent-miss (`deleteRelationsWithTerm`):
+      The two steps are `listByTerm` (read) + `deleteTermRelations`
+      (write). Between the steps, a concurrent caller can ADD a new
+      term-tag relation; the just-added relation is not in the
+      `currentTags` read-side collection and is therefore NOT in the
+      `idsToDelete` set. The relation persists silently.
+
+      The omission of @ReactiveTransactional is AMBIGUOUS — no comment
+      defends it. Concurrent term-tag-updates are not common in
+      practice (the operator UX serializes through a single tab), so
+      the operational risk is LOW. But the same pattern at another
+      site (where concurrency IS common) would be a silent-data-loss
+      surface.
+
+  THE PATTERN — what unifies the three:
+
+    All three are "auto-something-on-miss" semantics expressed as
+    listBy(input) + filter + bulkOperation(residual) at the service
+    tier. The pattern is consistent across the platform:
+      - OwnerServiceImpl.getOrCreate (batch F)
+      - NamespaceServiceImpl.getOrCreate (batch K)
+      - MetadataFieldServiceImpl.getOrCreateMetadataFields (batch R)
+      - TagServiceImpl.getOrCreateTagsByName / getOrInjectTagByName /
+        deleteRelationsWithTerm (this batch)
+
+    Each instance differs in:
+      (a) Whether the underlying write uses ON CONFLICT (race-safe)
+          or not (race-prone).
+      (b) Whether the caller retries on conflict.
+      (c) Whether the operation is destructive (delete) or additive
+          (create).
+
+    Without @ReactiveTransactional, the read-then-write is NOT
+    atomic. The protection (if any) lives at the DB layer (unique
+    index, partial unique index, ON CONFLICT clause) — NOT at the
+    service tier.
+
+  THE DESIGN INTENT vs THE GAP:
+
+    The maintainer's design intent (inferred from the consistent
+    pattern + the dual-method shape on Tag) is that the SERVICE TIER
+    expresses orchestration semantics; the DB TIER expresses
+    consistency semantics. The @ReactiveTransactional annotation is
+    used WHERE the service tier needs to enforce multi-step atomicity
+    that the DB cannot enforce alone (e.g., delete + cascade +
+    soft-delete must all succeed or all fail).
+
+    The gap: the design intent is NOT documented anywhere — no
+    comment in the source code defends the choice; no architectural
+    note explains why getOrCreateTagsByName is NOT transactional
+    while update + delete ARE. A new contributor would need to derive
+    the intent from the pattern.
+
+    The compound risk: a future refactor that adds
+    @ReactiveTransactional to getOrCreateTagsByName (under the
+    well-intentioned mantra of "all multi-step writes should be
+    transactional") would change the race behaviour without solving
+    the race (the TX still doesn't see the concurrent INSERT under
+    READ COMMITTED). The refactor would look "correct" but be a
+    no-op at best, a deadlock surface at worst.
+
+  THE TEST COVERAGE GAP (CRITICAL):
+
+    Per the TagServiceImpl sidecar's uncovered_behaviours:
+      - `testGetOrCreateTagsByName_ConcurrentNovelName_OneThrowsUniqueConstraintException` — HIGH
+      - `testGetOrInjectTagByName_ConcurrentNovelName_ReturnsSameId` — HIGH
+      - `testDeleteRelationsWithTerm_CaseSensitiveTagsToKeep` — LOW
+
+    There is NO TagServiceImplTest.java in the test corpus. The
+    intentional race-semantic asymmetry (the design's WHOLE POINT)
+    is unverified by automated test. A future refactor that
+    inadvertently changes the race behaviour at one of these methods
+    would pass all existing tests + change observable behaviour.
+
+nodes:
+  - odd-platform java service:TagServiceImpl
+
+contributors:
+  - |-
+    TagServiceImpl batch VAL-LSN-019 (PRIMARY SOURCE — service-tier
+    cross-method enumeration):
+    concepts.invariants[Methods that issue MULTI-step reads-then-writes
+    WITHOUT @ReactiveTransactional: bulkCreate (single-step write,
+    inherited TX), getOrCreateTagsByName (read listByNames + write
+    bulkCreate), getOrInjectTagByName (read listByNames + upsert
+    ingestData), deleteRelationsWithTerm (read listByTerm + write
+    deleteTermRelations). These are TOCTOU surfaces — a concurrent
+    caller can change the read-side state between the read and the
+    write. The ingestData path silences the race via ON CONFLICT ...
+    DO UPDATE; the bulkCreate path translates the race to
+    UniqueConstraintException; the deleteRelationsWithTerm path can
+    silently miss a concurrent term-tag-add] +
+    implicit_adrs[TX scope is the multi-statement orchestration, not
+    the call-site — four methods carry @ReactiveTransactional because
+    they issue multi-statement DB sequences; the others delegate
+    single-step to the repository] +
+    stress_findings.S-B-4 (getOrCreateTagsByName vs getOrInjectTagByName —
+    same shape, different race semantics)
+
+evidence:
+  - 'TagServiceImpl.java:45 (@ReactiveTransactional on update)'
+  - 'TagServiceImpl.java:58 (@ReactiveTransactional on delete)'
+  - 'TagServiceImpl.java:79-86 (getOrCreateTagsByName — NO @ReactiveTransactional)'
+  - 'TagServiceImpl.java:88-94 (getOrInjectTagByName — NO @ReactiveTransactional)'
+  - 'TagServiceImpl.java:97 (@ReactiveTransactional on updateRelationsWithDataEntity)'
+  - 'TagServiceImpl.java:123-134 (deleteRelationsWithTerm — NO @ReactiveTransactional)'
+  - 'TagServiceImpl.java:137 (@ReactiveTransactional on createRelationsWithTerm)'
+  - 'TagServiceImpl.md:concepts.invariants[Methods that issue MULTI-step reads-then-writes WITHOUT @ReactiveTransactional]'
+  - 'TagServiceImpl.md:implicit_adrs[TX scope is the multi-statement orchestration, not the call-site]'
+  - 'TagServiceImpl.md:stress_findings.S-B-4 (race-semantic asymmetry not advertised in method names)'
+
+axes_present:
+  - services
+
+triangulation_count: 1
+cross_batch: false
+
+severity: MEDIUM
+severity_dim: data-integrity+race
+
+mitigations_unimplemented:
+  - |-
+    Document the design intent at the internal architecture page —
+    explicit text: "TagServiceImpl's @ReactiveTransactional
+    distribution: methods that issue multi-step DB sequences carry
+    the annotation; methods that delegate single-step to the
+    repository do not. The 'multi-step read-then-write' methods
+    intentionally lack TX because the DB-tier ON CONFLICT clause
+    (where present) provides the consistency guarantee. The
+    bulkCreate path (race-prone) surfaces UniqueConstraintException;
+    callers must handle it as 'already created'." Documents the
+    intent so future contributors don't accidentally "fix" the
+    omission.
+  - |-
+    Add tests pinning the race-semantic ASYMMETRY between
+    getOrCreateTagsByName (race-prone) and getOrInjectTagByName
+    (race-tolerant). The intent is the architectural decision; the
+    tests pin it. A future refactor that collapses the two methods
+    into one would FAIL the tests rather than silently changing
+    semantics.
+  - |-
+    Add tests for `deleteRelationsWithTerm` concurrent-add scenario.
+    Pin the silent-miss behaviour as a baseline. If the silent-miss
+    is unacceptable, the fix is to wrap the method in
+    @ReactiveTransactional with isolation = SERIALIZABLE (which
+    would surface 40001 serialization-failure on the loser, allowing
+    a retry path).
+  - |-
+    Consider promoting the no-TX-by-design observation to an
+    `@AutoCreateOnMissNoTx` aspect-or-annotation. The four-method
+    pattern (getOrCreate-or-similar) appears across at least 5
+    services per the cross-batch evidence. Centralising the rationale
+    + the convention reduces the surface for future refactor-bypass.
+  - |-
+    Add an architectural-decision-record (ADR) drafted in
+    `adrs/drafts/` capturing the design intent — when does a service
+    method get @ReactiveTransactional, when does it NOT, and why.
+    Cite the four cross-batch instances (Tag, Owner, Namespace,
+    MetadataField) as the evidence base.
+
+notes: |-
+  CAPTURED batch VAL-LSN-019 (2026-05-20). The cross-method
+  enumeration is the LSN-019 Stress Protocol's E-category output
+  applied to TagServiceImpl: every @ReactiveTransactional decision
+  is interrogated; the absences are surfaced explicitly. The pattern
+  is consistent (the architectural intent is inferable) but
+  undocumented (no comment defends it).
+
+  Cross-cutting connections:
+    - Pairs with `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`
+      (the HIGH-severity surface where the no-TX choice creates the
+      race window)
+    - Pairs with `ingestdata-upsert-with-returning-conflict-trigger`
+      (the SAFE counterpart that the no-TX choice routes through for
+      ingestion-tier writes)
+    - Pairs with `repository-transactional-boundary-at-service-layer-not-repository`
+      (the broader pattern — the repository tier is NOT
+      @ReactiveTransactional; the service tier carries the TX where
+      one is needed)
+    - Pairs with the LSN-019 Stress Protocol — the E-category
+      auto-question on every @ReactiveTransactional method is what
+      surfaced this cross-method consistency analysis
+
+  Two DOC-NNN candidates:
+    (a) Document the design intent at the internal architecture page
+        on the service-tier transactional discipline
+    (b) ADR draft capturing the four-method @ReactiveTransactional
+        rationale + the four cross-batch evidence sites

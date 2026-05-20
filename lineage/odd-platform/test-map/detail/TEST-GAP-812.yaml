@@ -1,0 +1,42 @@
+gap_id: TEST-GAP-812
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform java notification class:NotificationSubscriber"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "NotificationSubscriber.md:bugs_limitations_corner_cases.[3] LOW (Publication-name probe at L133 IS parameterised; CREATE at L151 is NOT — asymmetric SQL-parameterisation)"
+behaviour: |-
+  **LOW — Asymmetric SQL-parameterisation between publication-name probe + CREATE.** `NotificationSubscriber.java:133-135` uses a PreparedStatement to probe `pg_publication`: `SELECT EXISTS (SELECT oid FROM pg_publication WHERE pubname = ?)` — the `pubname` parameter is bound via `setString(1, ...)`, parameterised. `NotificationSubscriber.java:151` uses `String.formatted(...)` to build the CREATE PUBLICATION DDL — interpolated.
+
+  **The asymmetry is structural** — Postgres bans parameterised DDL identifiers (you cannot `PREPARE create_pub AS CREATE PUBLICATION $1 FOR TABLE $2` and bind values). So the asymmetry is REQUIRED by Postgres's protocol. But it's worth noting:
+  - The probe-statement gets the prepared-statement guard rail (free SQL-injection protection at the JDBC layer).
+  - The create-statement does NOT — the operator-supplied `publicationName` is interpolated raw.
+
+  **This is the structural sibling of TEST-GAP-794** (the publication-name DDL injection finding). TEST-GAP-794 covers the offensive consequence (injection); THIS gap covers the structural defensive-discipline observation (only ONE of the two statements gets the guard rail).
+
+  **Severity is LOW because**:
+  - The fix is NOT removing the asymmetry (Postgres forbids fixing the CREATE side).
+  - The fix is adding validation on `publicationName` at boot — which is TEST-GAP-794's recommended REFACTOR.
+  - This gap is mainly documentation: a defensive-discipline review noting that the prepared-statement guard rail is NOT comprehensive across the publication-setup code path.
+
+  **Test gap shape**: static-analysis regression-pin asserting the parameterisation asymmetry. PINS the documented constraint.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/NotificationSubscriberPublicationProbeVsCreateAsymmetryRegressionPinTest.java"
+  name: "publicationProbeIsParameterised_createIsInterpolated_pinsStructuralAsymmetry"
+evidence:
+  - "NotificationSubscriber.md says (bugs_limitations_corner_cases.[3]): 'Publication-name probe uses pubname column from pg_publication — line 133: SELECT EXISTS (SELECT oid FROM pg_publication WHERE pubname = ?). The probe-statement IS parameterised (PreparedStatement), unlike the create statement at L151. The asymmetry is structural (PG bans parameterised DDL identifiers) but worth noting: only one of the two statements gets the SQL-injection guard rail.' — severity LOW"
+  - "Verified at primary source: NotificationSubscriber.java:133-135 (PreparedStatement probe — `pubname = ?` with setString)"
+  - "Verified at primary source: NotificationSubscriber.java:149-152 (`String.formatted(...)` CREATE — no parameterisation)"
+cross_references:
+  - "TEST-GAP-794 (THE primary finding — publication-name DDL injection CRITICAL; this gap is the structural-discipline sibling)"
+  - "DOC-GAP-NNN (proposed): inline code comment at NotificationSubscriber.java:148 documenting the parameterisation asymmetry + linking to the validation requirement"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery", "P-09:F-001 Security"]
+proposed_action: |-
+  Add a static-analysis regression-pin. Mainly serves as cross-reference anchor for TEST-GAP-794's REFACTOR.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW; structural sibling of TEST-GAP-794. No contradiction.
+batch: 2026-05-20-Y
+feature_id: F-009

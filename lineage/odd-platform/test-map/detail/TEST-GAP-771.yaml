@@ -1,0 +1,53 @@
+gap_id: TEST-GAP-771
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DatasetController controller-class:DatasetController"
+pillars_affected: [P-01, P-11]
+surfaced_by:
+  - "DatasetController.md:implicit_adrs.[3] (Identical-versions diff explicitly rejected via BadUserRequestException (400) — defensive guard at the service tier. evidence: DatasetVersionServiceImpl.java:59-61 — intent_anchor: Lines 59-61: if (firstVersionId == secondVersionId) { return Mono.error(new BadUserRequestException(Couldn't show diff for identical versions)); })"
+  - "DatasetController.md:tests_coverage_semantic.uncovered_behaviours.[GET /api/datasets/{id}/structure/diff?first_version_id=A&second_version_id=A returns HTTP 400 BadUserRequest — the identical-versions guard (line 59-61)]"
+behaviour: |-
+  **MEDIUM — `GET /api/datasets/{id}/structure/diff` with `first_version_id == second_version_id` returns HTTP 400 with the canonical message "Couldn't show diff for identical versions". The guard exists at the service tier; the error message is a user-facing contract.** Primary-source confirmed in batch-W DatasetController sidecar:
+
+  - `DatasetVersionServiceImpl.getDatasetVersionDiff` lines 59-61:
+    ```
+    if (firstVersionId == secondVersionId) {
+        return Mono.error(new BadUserRequestException("Couldn't show diff for identical versions"));
+    }
+    ```
+  - The exception is mapped to HTTP 400 via `ControllerAdvice.java:24-28`.
+
+  **Behaviour to pin** (the test gap):
+  - Same version_id passed twice → HTTP 400 with body containing the canonical message.
+  - The literal English string IS the user-facing contract; any UI client may surface this message verbatim to operators.
+
+  **Why MEDIUM not LOW**:
+  - The guard implements an explicit user-error class (operator submits an identical-versions diff request — typically by clicking the same version twice in the UI's version-picker).
+  - The error message is a user-facing contract string; a refactor changing the message would alter the UI surface.
+  - The test ensures the contract is pinned against accidental drift.
+
+  **Test gap shape**: regression-pin asserting: (a) `GET /api/datasets/{id}/structure/diff?first_version_id=42&second_version_id=42` returns HTTP 400; (b) the response body contains the literal string "Couldn't show diff for identical versions"; (c) the response does NOT reach the SQL layer (the guard fires before the repository call). The current state is PINNED — failures land if a future maintainer changes the message string OR removes the guard.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDatasetVersionRepositoryImplTest.java (does NOT exercise the identical-versions guard)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetVersionDiffIdenticalVersionsGuardTest.java"
+  name: "getDataSetStructureDiff_identicalVersionIds_returns400WithCanonicalMessage_pinsGuardContract"
+evidence:
+  - "DatasetController.md says (implicit_adrs.[3]): 'Identical-versions diff explicitly rejected via BadUserRequestException (400) — defensive guard at the service tier. evidence: DatasetVersionServiceImpl.java:59-61 — intent_anchor: Lines 59-61: if (firstVersionId == secondVersionId) { return Mono.error(new BadUserRequestException(Couldn't show diff for identical versions)); } — the explicit error message names the user-error class. Intentional input validation at the service tier rather than the controller; consistent with the thin-proxy pattern.' — confidence: HIGH"
+  - "DatasetController.md says (tests_coverage_semantic.uncovered_behaviours.[identical-versions]): 'GET /api/datasets/{id}/structure/diff?first_version_id=A&second_version_id=A returns HTTP 400 BadUserRequest — the identical-versions guard (line 59-61)'"
+  - "Verified at primary source: DatasetVersionServiceImpl.java:59-61 + ControllerAdvice.java:24-28"
+cross_references:
+  - "TEST-GAP-768 (NEW batch W — sister diff endpoint per-entity-scoping bypass)"
+  - "TEST-GAP-769 (NEW batch W — sister diff endpoint missing-version 500 contract)"
+  - "TEST-GAP-772 (NEW batch W — sister diff endpoint parent-cascade amplification)"
+related_features: []
+related_pillar_features: ["P-01:F-NN-dataset-structure-read", "P-11:F-001-api-reference"]
+proposed_action: |-
+  Add `DatasetVersionDiffIdenticalVersionsGuardTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Two test methods:
+  1. `getDataSetStructureDiff_identicalVersionIds_returns400_pinsGuard` — GET `/api/datasets/{id}/structure/diff?first_version_id=42&second_version_id=42`; assert HTTP 400 with body containing "Couldn't show diff for identical versions" verbatim.
+  2. `getDataSetStructureDiff_distinctVersionIds_proceedsToSQL_pinsGuardSelectivity` — GET with two DIFFERENT version_ids; assert HTTP 200 (the guard does NOT fire for distinct ids).
+
+  No refactor needed; this is a regression-pin to keep the contract stable.
+batch: 2026-05-20-W
+feature_id: null

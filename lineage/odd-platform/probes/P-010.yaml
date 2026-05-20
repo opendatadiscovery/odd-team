@@ -1,0 +1,269 @@
+---
+probe_id: P-010
+feature_id: F-018
+test_class: integration
+verified_against_commit: 9ac6436e
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+expected_outcome: |
+  LSN-019 SMOKING-GUN PROBE: Pin the `listMostPopular` SQL-layer behaviour in
+  CI so the spec-vs-code drift cannot regress silently.
+
+  The method's name and OpenAPI description (`'Gets the list of existing tags
+  sorted by popularity'` at `odd-platform-specification/openapi.yaml:345`)
+  promise count-ranked results. The implementation truncates the candidate
+  pool by `tag.id ASC` BEFORE counts are computed (paginate-inside-CTE at
+  `ReactiveTagRepositoryImpl.java:148`). For a directory of 35 tags all
+  equally popular, the response is the OLDEST 30 by tag.id ASC, NOT the most
+  popular 30 (which would be undefined among equally-popular tags but should
+  certainly INCLUDE tags with id 31-35 in proportion to size).
+
+  Arrange: 35 tags created at known IDs (1009..1043); 2 data entities each
+  tagged by ALL 35 tags (so each tag has usage_count = 2, identical across
+  the directory). Act: call `GET /api/tags?size=30&page=1`. Observe: the
+  response's tag IDs.
+
+  Assertion (current bug state): the 30 returned tag IDs are exactly the 30
+  LOWEST (1009..1038), in tag.id ASC order; the 5 highest (1039..1043) are
+  ABSENT despite being equally popular. Operator-visible drift: a newly-
+  created equally-popular tag is invisible on page 1.
+
+  When the fix lands (move paginate AFTER count aggregation, or add explicit
+  ORDER BY count DESC, tag.created_at DESC outside the CTE):
+  - The assertion flips to: returned IDs INCLUDE at least some of 1039..1043
+    (since all 35 tags are equally popular, the implementation choice of
+    tie-break would determine which exact 30 are returned; the bug-free
+    behaviour is "any 30 from the 35", not "always the oldest 30").
+  - A separate variation should also be tested: 35 tags with VARYING
+    usage counts (e.g., the 5 newest tagged on 100 entities, the 30 oldest
+    on only 2) — the response should then contain the 5 newest + 25 of
+    the older ones, ranked by count desc.
+---
+
+# P-010 — listMostPopular paginate-inside-CTE breaks popularity ordering (LSN-019)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1010, '//probe-source-P-010/db', 'probe-source-P-010')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1010, '//probe-source-P-010/db/tables/p010_tagged_entity_a', 'p010_tagged_entity_a',
+              1010, 1, 0, NOW(), NOW()),
+             (1011, '//probe-source-P-010/db/tables/p010_tagged_entity_b', 'p010_tagged_entity_b',
+              1010, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # Create 35 tags with explicit IDs 1009..1043. The IDs are sequential
+  # because the JOOQ chain paginates by tag.id ASC inside the CTE.
+  # Using `INSERT ... ON CONFLICT (id) DO NOTHING` for idempotent setup.
+  - kind: sql
+    query: |
+      INSERT INTO tag (id, name, important, created_at, updated_at)
+      SELECT 1009 + gs, 'p010_tag_' || lpad((1009 + gs)::text, 4, '0'), false, NOW(), NOW()
+      FROM generate_series(0, 34) AS gs
+      ON CONFLICT (id) DO NOTHING
+
+  # Tag both data entities with ALL 35 tags. Result: usage_count = 2 for
+  # every tag (identical across the directory). This is the LSN-019
+  # boundary scenario.
+  - kind: sql
+    query: |
+      INSERT INTO tag_to_data_entity (tag_id, data_entity_id, external)
+      SELECT t.id, de.id, false
+      FROM tag t
+      CROSS JOIN data_entity de
+      WHERE t.id BETWEEN 1009 AND 1043
+        AND de.id IN (1010, 1011)
+      ON CONFLICT (tag_id, data_entity_id) DO NOTHING
+
+  # Sanity: confirm tag usage_count is uniform at 2 across all 35 tags
+  # before we exercise the API.
+  - kind: sql
+    query: |
+      SELECT COUNT(DISTINCT t.id) AS tag_count,
+             MIN(usage.cnt) AS min_count,
+             MAX(usage.cnt) AS max_count
+      FROM tag t
+      JOIN (
+        SELECT tag_id, COUNT(*) AS cnt
+        FROM tag_to_data_entity
+        WHERE tag_id BETWEEN 1009 AND 1043
+        GROUP BY tag_id
+      ) usage ON usage.tag_id = t.id
+      WHERE t.id BETWEEN 1009 AND 1043
+
+act:
+  # Call the popular-tags endpoint with size=30. The endpoint's spec says
+  # "sorted by popularity" — with all 35 tags equally popular, popularity
+  # ranking is fully degenerate and any 30 of the 35 could be returned.
+  # The BUG is that the implementation always returns the same 30: the
+  # 30 lowest-id tags.
+  - kind: rest
+    method: GET
+    path: /api/tags?size=30&page=1
+    capture_as: popular_tags_response
+
+observe:
+  # Pull the response body's list of tag IDs into the assertion namespace.
+  # The response shape is TagsResponse { items: [{id, name, important, used_count, external}], pageInfo: {...} }.
+  - kind: jsonpath
+    from: popular_tags_response_body
+    path: "$.items[*].id"
+    capture_as: returned_tag_ids
+
+  # Sanity: total items returned.
+  - kind: jsonpath
+    from: popular_tags_response_body
+    path: "$.items"
+    capture_as: returned_items_list
+
+  # Backend sanity: confirm the 35 tags we set up are all in the directory
+  # (no leakage from a parallel test, no stale-state corruption).
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS total_tags
+      FROM tag
+      WHERE id BETWEEN 1009 AND 1043
+        AND deleted_at IS NULL
+    capture_as: setup_tag_count
+
+  # Confirm the usage count uniformity carried through (no race / pruning).
+  - kind: sql
+    query: |
+      SELECT MIN(cnt) AS min_count, MAX(cnt) AS max_count
+      FROM (
+        SELECT tag_id, COUNT(*) AS cnt
+        FROM tag_to_data_entity
+        WHERE tag_id BETWEEN 1009 AND 1043
+        GROUP BY tag_id
+      ) usage
+    capture_as: usage_uniformity
+
+assert:
+  # Setup sanity.
+  - "setup_tag_count == 35"
+  - "usage_uniformity.min_count == 2"
+  - "usage_uniformity.max_count == 2"
+  - "len(returned_items_list) == 30"
+
+  # LSN-019 SMOKING-GUN ASSERTION (current bug state).
+  # The 30 returned tag IDs are exactly [1009, 1010, ..., 1038]. The 5
+  # highest-ID tags (1039..1043) are ABSENT, even though they are equally
+  # popular (every tag has usage_count = 2).
+  #
+  # This pins the paginate-inside-CTE behaviour. When the fix lands
+  # (paginate-after-count or explicit popularity-ordering at the OUTER
+  # level), the returned set would include some of 1039..1043 and this
+  # assertion would flip — surfacing the fix as a probe-state change in CI.
+  - "set(returned_tag_ids) == set(range(1009, 1039))"
+
+  # Secondary assertion: the absent tags are the NEWEST. (If the bug is
+  # ever partially fixed — e.g. correctly distributing among ties but
+  # still preferring older IDs — this finer assertion catches the regime
+  # change.)
+  - "1039 not in returned_tag_ids"
+  - "1040 not in returned_tag_ids"
+  - "1041 not in returned_tag_ids"
+  - "1042 not in returned_tag_ids"
+  - "1043 not in returned_tag_ids"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM tag_to_data_entity WHERE tag_id BETWEEN 1009 AND 1043
+
+  - kind: sql
+    query: |
+      DELETE FROM tag WHERE id BETWEEN 1009 AND 1043
+
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id IN (1010, 1011)
+
+  - kind: sql
+    query: |
+      DELETE FROM data_source WHERE id = 1010
+
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: []   # not currently a REFACTOR; LSN-019 is the case-law that should generate one
+  test_gaps:
+    - TEST-GAP-LSN-019-listMostPopular-paginate-inside-CTE
+  doc_gaps:
+    - DOC-GAP-LSN-019-openapi-popular-tags-spec-vs-code
+  related_concepts:
+    - "Manual Object Tagging"
+    - "Tag Directory"
+    - "Tag Popularity Ranking"
+    - "TopTagsList chip strip"
+  retrospectives: [LSN-019]
+  enrichment_sources:
+    - "lineage/odd-platform/understanding/odd-platform__java__repository__reactive__repository__ReactiveTagRepositoryImpl.md"
+    - "lineage/odd-platform/understanding/odd-platform__java__TagController__controller-class__TagController.md"
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveTagRepositoryImpl.java"
+    lines: "138-167"
+    role: "method body — paginate-inside-CTE at line 148; outer ORDER BY count DESC at line 158 but candidate pool already truncated"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/util/JooqQueryHelper.java"
+    lines: "63-90"
+    role: "paginate function shape — inner LIMIT/OFFSET, ORDER BY tag.id ASC at lines 74, 80, 89"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveAbstractCRUDRepository.java"
+    lines: "294-299"
+    role: "paginate delegate from repository to query helper"
+  - file: "odd-platform-specification/openapi.yaml"
+    lines: "342-360"
+    role: "OpenAPI declares `description: 'Gets the list of existing tags sorted by popularity'` — the spec promise"
+  - file: "retrospectives/LSN-019-file-analyser-describes-not-interrogates.md"
+    lines: "23-32"
+    role: "empirical 2026-05-20 maintainer test — 35 tags, all equally popular, oldest 30 returned"
+
+realism_caveats: |
+  - The assertion `set(returned_tag_ids) == set(range(1009, 1039))` is
+    EXACT (closed-form). It works because all 35 tags have IDENTICAL
+    usage_count (2), so the outer ORDER BY count DESC at line 158 is
+    fully degenerate; the only effective ordering is tag.id ASC inherited
+    from the CTE. This makes the test deterministic.
+
+  - If the underlying ID assignment ever changes (e.g. table-wide id
+    sequence advances between probe runs causing 1009..1043 to be in use
+    by other test fixtures), the explicit `INSERT (id, ...)` setup may
+    conflict. The `ON CONFLICT (id) DO NOTHING` clauses are defensive,
+    but a partial-setup state could leave the assertions flapping. If this
+    becomes a problem, switch to a CTE that picks the lowest available
+    IDs in a single transaction.
+
+  - The probe runs under DISABLED auth. The popular-tags ordering bug
+    applies to ANY auth mode; the SQL chain is auth-mode-agnostic. So
+    DISABLED is sufficient and reduces the probe's setup cost.
+
+  - WHEN THE FIX LANDS (move pagination after count aggregation, or
+    introduce an outer ORDER BY count DESC, tag.created_at DESC over the
+    full candidate set), this probe's primary assertion FLIPS — the
+    failing assertion in CI surfaces the change. The maintainer would
+    then update the assertion to reflect the new contract (e.g.
+    `len(set(returned_tag_ids) & set(range(1039, 1044))) > 0`, asserting
+    that at least one of the newest tags is included). This is the
+    intended probe lifecycle: pin the bug, surface the fix, update the
+    assertion, ship.
+
+  - A complementary probe variant (P-010-B, future) should test the
+    NON-DEGENERATE case: 5 newest tags tagged 100x each, 30 oldest tags
+    tagged 2x each. The bug-free behaviour would return the 5 newest +
+    25 of the older ones; the buggy behaviour returns 30 oldest. P-010
+    pins the equal-count regime; P-010-B would pin the varying-count
+    regime.

@@ -1,0 +1,74 @@
+gap_id: TEST-GAP-754
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java CollectorController controller-class:CollectorController"
+pillars_affected: [P-09, P-08, P-10]
+surfaced_by:
+  - "CollectorController.md:tests_coverage_semantic.uncovered_behaviours.[Plaintext-vs-masked token contract test: assert POST and PUT-token responses carry full 40-char Token.value; GET-list and PUT-update responses carry masked '******{last6}' value]"
+  - "CollectorController.md:security.data_exposure.[Collector resource body on POST and PUT-token: { id, namespace, token.value (40-char PLAINTEXT) ...} → caller of POST /api/collectors holding COLLECTOR_CREATE, OR caller of PUT /api/collectors/{id}/token holding COLLECTOR_TOKEN_REGENERATE, OR any caller in auth.type=DISABLED]"
+  - "CollectorController.md:security.known_security_gaps.[plaintext-token-chain] (Register and regenerate-token endpoints return plaintext 40-char token in response body. No response header marks the body as sensitive. Cross-platform end-to-end plaintext token chain: controller-tier → response wire → CollectorsList UI plaintext DOM render (batch-Q) → repository at-rest (batch-R))"
+  - "CollectorController.md:bugs_limitations_corner_cases.[Register and regenerate-token endpoints return the plaintext token in the HTTP response body — any reverse-proxy, API gateway, browser history, request/response logger, or APM tool on the wire captures the credential in cleartext]"
+  - "CollectorController.md:implicit_adrs.[2] (Response shape for token-issuing operations returns plaintext token by design; read operations return masked tokens)"
+behaviour: |-
+  **CRITICAL — `POST /api/collectors` and `PUT /api/collectors/{id}/token` emit the full 40-character plaintext collector token in the HTTP response body. The token then traverses the wire to the UI (batch-Q CollectorsList.tsx renders plaintext to DOM), the at-rest store (batch-R: `TOKEN.value` stored plaintext), and any reverse-proxy / APM / browser DevTools on the path. NO `Cache-Control: no-store`, NO `X-Sensitive-Body`, NO documented warning to operators about wire-tier exposure.** Primary-source confirmed in batch-W CollectorController sidecar:
+
+  **Controller tier (this gap's surface)**:
+  - `CollectorController.registerCollector` (lines 27-31): `return collectorService.create(formData).map(ResponseEntity::ok)` — the service emits a `Collector` DTO whose `token.value` is the plaintext 40-char string per `ReactiveTokenRepositoryImpl.create` line 21 (`new TokenDto(r.into(TokenPojo.class), true)` — the `showToken=true` flag).
+  - `CollectorController.regenerateCollectorToken` (lines 47-51): same pattern — `tokenRepository.updateToken(...)` line 30 returns `new TokenDto(..., true)`.
+  - **Per `TokenMapper.mapValue` (TokenMapper.java:15-18)**: when `dto.showToken() == true`, returns the FULL plaintext. When false, returns `******{last6chars}`.
+
+  **The chain (the complete picture across 3 layers)**:
+  - **Vertex 1 — Wire-tier (THIS gap)**: HTTP response body contains plaintext. Reverse-proxy + APM + DevTools all capture it.
+  - **Vertex 2 — UI-tier (batch-Q CollectorsList.tsx)**: the UI renders the plaintext to DOM (no copy-to-clipboard masking; no on-screen scroll-clear; the token sits in browser memory as plaintext).
+  - **Vertex 3 — At-rest tier (batch-R TOKEN.value)**: stored plaintext. The platform compares plaintext-to-plaintext against the `IngestionDataEntitiesFilter`.
+
+  **Operator-visible consequences**:
+  - An operator clicking Register Collector in the Management → Collectors tab: the plaintext token traverses the response wire, renders in their browser, and is captured by any APM agent / proxy logger / browser cache.
+  - An operator screensharing during the Register flow: the token is leaked in the screenshare.
+  - An operator running the platform behind a corporate ingress with body-capture logging: every token they ever rotate is in the ingress log forever.
+  - A breach of the central APM aggregator: every collector token across every customer using that APM.
+  - **The leaked token is the FULL credential** — there is no salting, no HMAC, no derived form. The S2S filter at `IngestionDataEntitiesFilter` does a plaintext comparison.
+
+  **Why CRITICAL not MEDIUM (the sidecar's own rating per CollectorController.md)**: the sidecar rates this MEDIUM at the controller layer in isolation, but explicitly states "high in aggregate via the chain". This test pins the END-TO-END behaviour: the chain across wire + UI + at-rest is CRITICAL because ANY single-layer leak compromises the full credential (no recovery via HMAC-on-issue / derived-form / hashed-storage). The CollectorController's wire-tier is the FIRST exposure point.
+
+  **Test gap shape**: regression-pin asserting: (a) `POST /api/collectors` response body contains the plaintext 40-char token verbatim; (b) `PUT /api/collectors/{id}/token` response body contains the plaintext token; (c) `GET /api/collectors` (list) responses carry the masked `******{last6chars}` form; (d) `PUT /api/collectors/{id}` (update) responses carry the masked form; (e) NO response carries `Cache-Control: no-store` or `X-Sensitive-Body`. The current state is PINNED — any future maintainer adding header markers OR migrating to HMAC-on-issue will see tests #1-#4 fail and must update the wire contract + the UI + the docs in lockstep.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/CollectorRepositoryImplTest.java (repository-tier; exercises showToken=false default but NOT the plaintext-on-register/regenerate contract; does NOT exercise the wire-tier)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/CollectorTokenPlaintextOnWireTest.java"
+  name: "registerAndRegenerateCollector_responseBodyContainsPlaintextToken_listAndUpdateReturnMasked_pinsTokenVisibilityContract"
+evidence:
+  - "CollectorController.md says (security.known_security_gaps.[plaintext-token-chain]): 'Register and regenerate-token endpoints return plaintext 40-char token in response body. No response header marks the body as sensitive. Cross-platform end-to-end plaintext token chain: controller-tier (this file) → response wire → CollectorsList UI plaintext DOM render (batch-Q) → repository at-rest (batch-R).' — severity MEDIUM (high in aggregate via the chain)"
+  - "CollectorController.md says (bugs_limitations_corner_cases): 'Register and regenerate-token endpoints return the plaintext token in the HTTP response body — any reverse-proxy, API gateway, browser history, request/response logger, or APM tool on the wire captures the credential in cleartext. The platform does not set Cache-Control: no-store or any marker on the response indicating sensitive content; there is no documentation warning operators to verify TLS-only and to disable response-body logging on these paths.' — evidence: CollectorController.java:27-31, 47-51 + TokenMapper.java:15-18 + ReactiveTokenRepositoryImpl.java:26, 38 — severity: MEDIUM"
+  - "CollectorController.md says (implicit_adrs.[2]): 'Response shape for token-issuing operations returns plaintext token by design; read operations return masked tokens — evidence: ReactiveTokenRepositoryImpl.java:21-27 (create returns new TokenDto(r.into(TokenPojo.class), true)) + ReactiveTokenRepositoryImpl.java:29-39 (updateToken returns same with showToken=true) + ReactiveCollectorRepositoryImpl.java:114,124 (getDto/listDto map to new TokenDto(tokenPojo) defaulting showToken=false) + TokenMapper.java:15-18 (the mapValue branch: dto.showToken() ? dto.tokenPojo().getValue() : ****** + ...substring(...length()-6))' — confidence: HIGH"
+  - "Verified at primary source: CollectorController.java:27-31, 47-51 + TokenMapper.java:15-18 + ReactiveTokenRepositoryImpl.java:21-39 + ReactiveCollectorRepositoryImpl.java:114, 124 (the showToken default-false path for list/update)"
+  - "concepts.yaml:entities[CollectorToken].security_aggregate.weaknesses (existing aggregate — this gap is the wire-tier vertex)"
+cross_references:
+  - "TEST-GAP-750 (NEW batch W — sister DataSource end-to-end plaintext-token chain — same architectural finding on the parallel surface)"
+  - "TEST-GAP-755 (NEW batch W — DELETE leaves orphan TOKEN row — sister at-rest gap)"
+  - "TEST-GAP-756 (NEW batch W — token entropy ThreadLocalRandom — sister generation-tier gap)"
+  - "TEST-GAP-757 (NEW batch W — zero audit logging on F-020 — sister observability gap)"
+  - "TEST-GAP-758 (NEW batch W — plaintext-vs-masked token contract on full CollectorController surface)"
+  - "batch-Q CollectorsList.tsx finding (UI-tier plaintext DOM render — cross-link)"
+  - "batch-R ReactiveCollectorRepositoryImpl finding (at-rest plaintext storage — cross-link)"
+  - "concepts: shared-secret-tokens-stored-plaintext (existing concept — this gap extends to wire-tier)"
+  - "concepts: end-to-end-plaintext-token-chain-controller-to-ui-to-repository (NEW concept candidate)"
+  - "REFACTOR-NNN candidate: add Cache-Control: no-store + X-Sensitive-Body: true headers to register + regenerate-token responses; OR migrate to HMAC-on-issue (server stores hash, client retains plaintext)"
+  - "DOC-NNN candidate: surface the plaintext-on-the-wire posture in the Management → Collectors doc + Permissions doc — operators MUST know to disable APM body-capture and proxy logging on the two token paths"
+  - "LSN-001 / LSN-002 (operator-cliff failure-mode case-law)"
+related_features: [F-020]
+related_pillar_features: ["P-09:F-001", "P-08:F-004-collector-lifecycle"]
+proposed_action: |-
+  Add `CollectorTokenPlaintextOnWireTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `registerCollector_responseBodyContainsPlaintextToken40Chars_pinsPlaintextOnTheWire` — POST `/api/collectors` with valid form; capture response body; assert `token.value` is a 40-char alphanumeric string verbatim. Assert NO `Cache-Control: no-store` header.
+  2. `regenerateCollectorToken_responseBodyContainsPlaintextToken40Chars_pinsPlaintextOnRotation` — sister test on the rotation surface.
+  3. `getCollectorList_responseBodyContainsMaskedTokenStarsThenLast6_pinsListMaskingContract` — assert that `token.value` in the list response is `******{6chars}` format; assert the leading 6+ chars are NOT plaintext.
+  4. `updateCollector_responseBodyContainsMaskedToken_pinsUpdateMaskingContract` — PUT `/api/collectors/{id}`; assert masked token in response.
+  5. `dbTokenValueEqualsRegisterResponseTokenValue_assertsNoHmacOrDerivedFormBetweenLayers` — register; capture response token; query `TOKEN.value` directly via test fixture; assert identical. PIN the absence of HMAC-on-issue / hashing.
+
+  Pair with REFACTOR-NNN: add `Cache-Control: no-store` + `X-Sensitive-Body: true` headers to register + regenerate-token responses. Long-term: migrate to HMAC-on-issue.
+
+  Cross-pair with DOC-NNN: surface the end-to-end plaintext-token-chain on the Management → Collectors doc page + Permissions doc page — operators MUST know to disable APM body-capture and reverse-proxy logging on the two token paths.
+batch: 2026-05-20-W
+feature_id: F-020

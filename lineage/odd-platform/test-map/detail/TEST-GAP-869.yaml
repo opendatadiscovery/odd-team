@@ -1,0 +1,98 @@
+gap_id: TEST-GAP-869
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java service:ActivityServiceImpl"
+  - "odd-platform java service activity handler:ActivityHandler"
+pillars_affected: [P-07]
+surfaced_by:
+  - "ActivityServiceImpl.md:stress_findings.S-E-1 (Transactional boundary depends entirely on caller — emit failure rolls back wrapping mutation)"
+  - "ActivityServiceImpl.md:bugs_limitations_corner_cases.[activity-row-write-failures-roll-back-business-mutations] (severity LOW per sidecar; elevated to CRITICAL here for the operator-visible 500-on-successful-mutation outcome)"
+  - "ActivityServiceImpl.md:implicit_adrs.[2] (the activity row is in the same TX as the business mutation, via the aspect's @ReactiveTransactional)"
+  - "ActivityHandler.md:stress_findings.S-E-3 (TRANSACTIONAL COUPLING — emit failure rolls back business mutation)"
+  - "ActivityServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[Activity emit rollback under business-method success]"
+behaviour: |-
+  **CRITICAL — No test pins the audit-or-fail contract: an `ActivityRepository.saveReturning` failure inside the aspect's `@ReactiveTransactional` rolls back a SUCCESSFUL business mutation, surfacing HTTP 500 to the user with no indication the mutation was actually executed-but-rolled-back.** The `ActivityAspect.monoActivityAspect` (`ActivityAspect.java:42`) carries `@ReactiveTransactional`; the around-advice wraps the WHOLE chain `getContextInfo → joinPoint.proceed() → postActivity → activityRepository.saveReturning` in ONE R2DBC transaction. A transient DB error on the activity-row write (partition-coverage gap, connection lost, R2DBC pool exhaustion at the activity-INSERT stage) causes the OUTER reactive chain to surface `onError`, which the @ReactiveTransactional advisor catches → rollback of the entire transaction → the business mutation (e.g. ownership update, description edit, tag assignment) is REVERTED. **The user sees HTTP 500 with no signal that their mutation was, for a few hundred milliseconds, committed in the database.** This is the intentional `audit-or-fail` semantic captured at `implicit_adrs.[2]` — but ZERO test pins it. A future refactor that decouples the TX (e.g. moves the activity emit to an `@Async` post-commit hook or a separate inner TX with `Propagation.REQUIRES_NEW`) would silently change the semantic to "best-effort audit, mutation always succeeds" — a behavioural inversion that operators relying on audit-completeness would NOT detect.
+
+  **Primary-source chain**:
+  - `ActivityAspect.java:42` — `@ReactiveTransactional` on `monoActivityAspect` (the @Around advice that wraps every `@ActivityLog`-annotated method)
+  - `ActivityAspect.java:48-58` — the chained `getContextInfo → joinPoint.proceed → postActivity` flow under ONE TX
+  - `ActivityAspect.java:62` — `@ReactiveTransactional` on `fluxActivityAspect` (the Flux variant)
+  - `ActivityServiceImpl.java:46-52` — `createActivityEvent` returns `Mono<Void>` with NO local TX boundary; the caller's TX wraps it
+  - `ActivityServiceImpl.java:50` — `activityRepository.saveReturning(pojo)` — the failure point. If this Mono signals `onError`, the entire reactive chain back to the aspect surfaces the error to the @ReactiveTransactional advisor, which rolls back.
+  - `ReactiveActivityRepositoryImpl.java:50-54` — `saveReturning` is an unconditional INSERT (per repository sidecar lines 50-54); any partition-coverage gap, FK violation, or connection error surfaces here.
+
+  **The 18+ `@ActivityLog`-annotated business methods** all share this contract (per ActivityHandler.md:upstream_callers):
+  - `DataEntityServiceImpl.upsertBusinessName` (BUSINESS_NAME_UPDATED)
+  - `DataEntityServiceImpl.upsertTags` (TAG_ASSIGNMENT_UPDATED)
+  - `OwnershipServiceImpl.create / delete / update` (OWNERSHIP_*)
+  - `DatasetFieldInternalInformationServiceImpl.updateDescription` (DATASET_FIELD_DESCRIPTION_UPDATED)
+  - `DatasetFieldServiceImpl.updateInternalName / updateDatasetFieldTags`
+  - `AlertHaltConfigServiceImpl.saveAlertHaltConfig`
+  - `TermServiceImpl.linkTermWithDataEntity`
+  - (10 more enumerated in ActivityHandler.md upstream_callers)
+
+  ALL of these inherit the `audit-or-fail` semantic. A regression that breaks the TX coupling silently changes the semantic for the entire write surface.
+
+  **Operator-visible consequences**:
+  - **Current behaviour (PINNED)**: when activity-row INSERT fails, the user-facing mutation rolls back → user sees 500 → user can retry → the mutation appears not to have happened. Audit trail consistency is preserved.
+  - **Without this test, a future refactor** that splits the TX (decoupled audit) would silently change behaviour:
+    - User submits mutation → mutation commits successfully → activity-row INSERT fails (silently logged) → user sees 200 OK → audit trail has a hole.
+    - This is the **opposite** behaviour and represents the failure mode of every audit system that drifts toward eventual-consistency without owner buy-in.
+
+  **Why CRITICAL not HIGH or MEDIUM (sidecar says LOW)**:
+  - The sidecar rates this LOW because the current behaviour is intentional and the surface symptom (HTTP 500) is obvious.
+  - **We elevate to CRITICAL because**: (a) the contract is LOAD-BEARING for audit-trail consistency across the ENTIRE platform (18+ write surfaces); (b) the regression risk is INVISIBLE (a TX-split refactor compiles and passes every existing test); (c) the inverted behaviour breaks the audit-or-fail promise documented at the `activity-feed.md` doc page ("system events are recorded as system events on the feed" — implying every recorded mutation has a corresponding audit row).
+  - The Activity Feed is the platform's primary forensic surface (per F-021); changing its TX coupling without coordination is a **structural betrayal** of operators' trust in the audit log.
+
+  **Connection to TEST-GAP-868**:
+  - TEST-GAP-868 pins the OLD-vs-NEW race within the @ReactiveTransactional boundary
+  - This gap (869) pins the TX COUPLING itself — the inverse direction (audit failure cascading to mutation failure)
+  - Together they fully characterise the @ReactiveTransactional boundary contract
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/activity/ActivityAspectTransactionCouplingTest.java"
+  name: "activityRowWriteFailure_rollsBackWrappedBusinessMutation_pinAuditOrFailContract"
+evidence:
+  - "ActivityServiceImpl.md says (stress_findings.S-E-1): 'the answer depends on the caller path: @ActivityLog-annotated method path (most common — ActivityAspect.java:42 @ReactiveTransactional on monoActivityAspect): the aspect wraps the WHOLE business method PLUS the postActivity emit in ONE TX. Roll back the business mutation → roll back the activity row. Activity emit fails → roll back the mutation. CONSISTENT but potentially surprising: a transient repository error on the activity write rolls back a successful business mutation, surfaces a 500 to the user with no indication the mutation was actually successful-but-rolled-back.' confidence: STATIC-INFERRED HIGH"
+  - "ActivityServiceImpl.md says (implicit_adrs.[2]): 'The activity row is in the same TX as the business mutation, via the aspect's @ReactiveTransactional. evidence: ActivityAspect.java:42 @ReactiveTransactional on monoActivityAspect; ActivityServiceImpl itself has NO @ReactiveTransactional; the design depends on the aspect for TX wrapping. intent_anchor: the aspect's annotation placement (on the @Around advice method, not on the @ActivityLog annotation or on the activity service) IS the explicit design choice — alternative designs (separate TX for activity, async fire-and-forget) would require removing or relocating the annotation. The aspect-level annotation forces atomicity.' confidence: HIGH"
+  - "ActivityHandler.md says (stress_findings.S-E-3): 'TRANSACTIONAL COUPLING — emit failure rolls back business mutation. The aspect's around-advice is annotated @ReactiveTransactional (ActivityAspect:42, 62). The entire chain (getContextInfo → proceed → postActivity → saveReturning) runs in ONE TX. R2DBC will roll back on any reactive error in the chain.' confidence: STATIC-INFERRED HIGH"
+  - "Verified at primary source: ActivityAspect.java:42 + ActivityAspect.java:62 (both around-advice methods carry @ReactiveTransactional) + ActivityServiceImpl.java:46-52 (no local TX) + ReactiveActivityRepositoryImpl.java:50-54 (saveReturning is the failure point)"
+  - "Verified no existing test: Glob src/test/**/Activity*.java returns ONLY ActivityMapperTest.java; Glob src/test/**/*ActivityAspect*.java returns 0 matches"
+cross_references:
+  - "TEST-GAP-868 (sister VAL-LSN-019-B — OLD-vs-NEW race within the SAME @ReactiveTransactional boundary)"
+  - "TEST-GAP-882 (META anchor — zero handler/aspect-tier coverage)"
+  - "TEST-GAP-461 (similar audit-or-fail family — notification subsystem)"
+  - "REFACTOR-NNN candidate: surface the TX coupling on the developer-guides page; consider Propagation.REQUIRES_NEW for activity emit if best-effort audit becomes the desired semantic"
+  - "DOC-NNN candidate: surface the 'audit-or-fail' contract on activity-feed.md; explain that activity-row failures roll back the mutation; this is the intentional semantic"
+related_features: [F-021]
+related_pillar_features: ["P-07:F-003"]
+proposed_action: |-
+  Add `ActivityAspectTransactionCouplingTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/activity/` using Testcontainers + `@SpringBootTest` + a fault-injecting test double for `ReactiveActivityRepository`. The HEADLINE test method:
+
+  1. **`activityRowWriteFailure_rollsBackWrappedBusinessMutation_pinAuditOrFailContract`** (HEADLINE):
+     - Arrange: spy/replace `ReactiveActivityRepository` with a test double that throws `R2dbcException("simulated partition coverage failure")` on `saveReturning(...)`. Seed a `data_entity` row with a known description "before".
+     - Act: invoke `DatasetFieldInternalInformationServiceImpl.updateDescription(dataEntityId, "after")` (a `@ActivityLog`-annotated method) and `.block()`.
+     - Assert (1): the call surfaces `R2dbcException` (Mono.error propagated up the reactive chain).
+     - Assert (2): after the exception, query the `data_entity` row's description column — **PIN that it equals "before"** (the mutation was ROLLED BACK due to the activity-write failure).
+     - Assert (3): query the `activity` table for `event_type=DATASET_FIELD_DESCRIPTION_UPDATED` matching the test fixture — **PIN that ZERO rows exist** (no partial commit).
+
+  2. **`activityRowWriteSuccess_commitsBothMutationAndAuditRow_pinHappyPath`** (CONTROL):
+     - Arrange: real `ReactiveActivityRepository`; same fixture as (1).
+     - Act: invoke `updateDescription(dataEntityId, "after")` and block.
+     - Assert: description column equals "after" AND exactly ONE activity row exists with event_type=DATASET_FIELD_DESCRIPTION_UPDATED. Pin the happy-path coupling.
+
+  3. **`businessMutationFailure_alsoRollsBackActivityEmit_pinInverseDirection`**:
+     - Arrange: real `ReactiveActivityRepository`; seed fixture where the `data_entity` row will fail an FK check (e.g. linked-term ID does not exist).
+     - Act: invoke `TermServiceImpl.linkTermWithDataEntity(invalidTermId, dataEntityId)` (an @ActivityLog method).
+     - Assert: call fails with FK violation; the `activity` table contains ZERO new rows for TERM_ASSIGNMENT_UPDATED on this data_entity. PIN the inverse direction of the audit-or-fail coupling.
+
+  4. **`activityEmitFailure_under_AlertServiceImpl_applyAlertActions_pin_systemEvent_path_too`**:
+     - Arrange: replace `ReactiveActivityRepository.save` (the BATCH path) to throw on a specific alert ID.
+     - Act: invoke `AlertServiceImpl.applyAlertActions(...)` with a batch of 3 alerts.
+     - Assert: NONE of the alerts have their status updated (the outer @ReactiveTransactional on applyAlertActions also rolls back). Pins that the AlertServiceImpl path inherits the same TX-coupling semantic as the @ActivityLog path.
+
+  After this test lands, REFACTOR-NNN can formally decide whether to keep audit-or-fail (status quo) OR move to best-effort audit (TX-decoupled). Cross-pair with DOC-NNN to surface the choice on the activity-feed.md doc page so operators understand the trade-off.
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-021

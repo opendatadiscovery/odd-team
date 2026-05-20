@@ -1,0 +1,149 @@
+name: ReactiveDataEntityRepository page-vs-count predicate divergence on EXCLUDE_FROM_SEARCH (Directory level-4)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+- P-08
+description: |-
+  **NEW MEDIUM-severity INVARIANT, batch 2026-05-20T (DirectoryController class
+  sidecar)** — STRUCTURALLY ANALOGOUS to REFACTOR-425 (ReactiveDataSourceRepositoryImpl.listDto
+  page-vs-count divergence) but at a DISTINCT site. The Directory level-4 endpoint
+  GET /api/directory/datasources/{data_source_id} delegates to
+  DataEntityServiceImpl.getDataEntitiesByDatasourceAndType (DataEntityServiceImpl.java:164-179)
+  which composes the page query via reactiveDataEntityRepository.listByDatasourceAndType
+  (line 170) with the count query via reactiveDataEntityRepository.countByDatasourceAndType
+  (line 173). The two queries use DIFFERENT predicate sets:
+
+    PAGE path (ReactiveDataEntityRepositoryImpl.java:595-613):
+      - `cteConditions` includes only `DATA_SOURCE_ID = ?` (+ optional `TYPE_ID = ?`)
+      - `baseDimensionsSelect → cteDataEntitySelect` (lines 909-939) adds
+        `addSoftDeleteFilter(...)` (deleted_at IS NULL, STATUS != DELETED — derived
+        from getDeleteChangedFields override at lines 110-116 + addSoftDeleteFilter
+        override at lines 118-122) PLUS `DATA_ENTITY.HOLLOW.isFalse()` (line 918).
+      - **Missing**: `DATA_ENTITY.EXCLUDE_FROM_SEARCH.isNull() OR .isFalse()`
+        (the third filter from `getDataEntityDefaultConditions` at lines 970-976).
+
+    COUNT path (ReactiveDataEntityRepositoryImpl.java:616-627):
+      - `getDataEntityDefaultConditions()` returns THREE conditions:
+        HOLLOW.isFalse() + STATUS != DELETED.getId() + EXCLUDE_FROM_SEARCH IS NULL
+        or = FALSE. The page path applies the first two but NOT the third.
+
+  **Operator surface manifestation**: any DataEntity with `EXCLUDE_FROM_SEARCH = TRUE`
+  (a flag the platform sets on certain entities — e.g. transformer runs that should
+  not appear in search results) will be RETURNED by the page query but NOT COUNTED
+  by the count query. UI renders 'X of Y entities' where X > Y is possible, AND a
+  `page=2` request can return rows that 'shouldn't exist' according to the count.
+  The bug is INVISIBLE for catalogs whose per-datasource entities are all
+  EXCLUDE_FROM_SEARCH = FALSE (the common case); manifests in deployments using
+  EXCLUDE_FROM_SEARCH to hide intermediate entities (runs, transient inputs, hollow
+  placeholders).
+
+  **Cross-cutting bug class**: PREDICATE-DIVERGENCE-IN-PAGINATION-WRAPPERS, same
+  root pattern as REFACTOR-425 (which targets ReactiveDataSourceRepositoryImpl.listDto's
+  page-vs-count). The bug class is now confirmed at TWO sites; an audit sweep
+  across all repository `list*/count*` pairs in the codebase is the defensible
+  follow-up. Candidates to audit per the DirectoryController sidecar:
+  ReactiveCollectorRepositoryImpl (clean per batch R), ReactiveTermRepositoryImpl,
+  ReactiveTagRepositoryImpl, ReactiveOwnerRepositoryImpl, ReactiveRoleRepositoryImpl,
+  ReactivePolicyRepositoryImpl, ReactiveNamespaceRepositoryImpl.
+
+  **The fix is small** — align the predicate sets. Recommended: update
+  cteDataEntitySelect (or listByDatasourceAndType specifically) to apply
+  EXCLUDE_FROM_SEARCH filter, matching getDataEntityDefaultConditions. Alternative:
+  drop EXCLUDE_FROM_SEARCH from the count predicate (matches existing page behaviour
+  but changes the count semantics — riskier; breaks the implicit contract that the
+  count is a 'search-eligible entity count').
+
+  Severity: MEDIUM (correctness AND UX — pagination math breaks visibly in deployments
+  using EXCLUDE_FROM_SEARCH; invisible otherwise).
+axes_present:
+- controllers
+- repositories_reactive
+- services
+nodes:
+- odd-platform java DirectoryController controller-class:DirectoryController
+- odd-platform java repository_reactive repository:ReactiveDataEntityRepositoryImpl
+- odd-platform java service service:DataEntityServiceImpl
+contributors:
+- |-
+  DirectoryController.md (batch T):
+    coherence_check.conflicts_surfaced.[0] (NEW finding — page-vs-count predicate
+    divergence; STRUCTURALLY ANALOGOUS to REFACTOR-425 at a DIFFERENT site;
+    MEDIUM severity at the UI surface) +
+    bugs_limitations_corner_cases.[0] (LEVEL 4 page-vs-count predicate divergence —
+    full file:line analysis) +
+    docs_link_semantic.doc_drift_findings.[2] (level-4 page-vs-count creates UI-visible
+    artefact that docs do NOT acknowledge)
+evidence:
+- |-
+  DirectoryController.md:coherence_check.conflicts_surfaced.[0] (PRIMARY) — evidence:
+    DirectoryController.java:42 +
+    DataEntityServiceImpl.java:164-179 +
+    ReactiveDataEntityRepositoryImpl.java:595-613 (page query without EXCLUDE_FROM_SEARCH) +
+    ReactiveDataEntityRepositoryImpl.java:616-627 (count query WITH EXCLUDE_FROM_SEARCH
+      via getDataEntityDefaultConditions) +
+    ReactiveDataEntityRepositoryImpl.java:909-939 (cteDataEntitySelect — applies
+      addSoftDeleteFilter + HOLLOW only) +
+    ReactiveDataEntityRepositoryImpl.java:970-976 (getDataEntityDefaultConditions
+      defines the three filters)
+- |-
+  DirectoryController.md:tests_coverage_semantic.uncovered_behaviours (page-vs-count
+  divergence at level 4 — no test injects entities with EXCLUDE_FROM_SEARCH=TRUE
+  then asserts list-size vs count-total parity; the bug class is invisible to the
+  existing suite)
+- |-
+  Existing invariant `datasource-listdto-page-vs-count-predicate-divergence-refactor-425`
+  (the SIBLING site at ReactiveDataSourceRepositoryImpl — same bug class)
+triangulation_count: 2
+cross_batch: true
+severity: MEDIUM
+severity_dim: correctness-and-UX
+mitigations_unimplemented:
+- |-
+  Align the predicate sets. Concrete fix: update `cteDataEntitySelect` at
+  ReactiveDataEntityRepositoryImpl.java:909-939 to apply the EXCLUDE_FROM_SEARCH
+  filter, matching getDataEntityDefaultConditions. Single-method change; no schema
+  impact; no migration needed.
+
+  Implementation sketch:
+    REPLACE (line ~918):
+      ...
+      .where(DATA_ENTITY.HOLLOW.isFalse())
+      .and(addSoftDeleteFilter(...))
+      ...
+    WITH:
+      ...
+      .where(getDataEntityDefaultConditions())  // ← unified predicate
+      .and(addSoftDeleteFilter(...))            // ← still needed for the deleted_at scope
+      ...
+- |-
+  Add the regression test: create test fixtures with a datasource containing
+  entities split between EXCLUDE_FROM_SEARCH=FALSE and EXCLUDE_FROM_SEARCH=TRUE;
+  call /api/directory/datasources/{id}?type_id={t}&page=1&size=10; assert
+  pageData.size <= count.total (parity); under the proposed fix the test passes,
+  under the current bug the test fails when the population contains
+  EXCLUDE_FROM_SEARCH=TRUE entities.
+- |-
+  Pagination-wrapper predicate audit sprint (recommended) — sweep all repository
+  list*/count* pairs in `odd-platform-api/src/main/java/.../repository/reactive/`
+  for predicate divergence between the page query and the count query. Build a
+  test harness that confirms parity for each pair. Recommended grouping:
+  REFACTOR-425 (DataSource site) + this finding (DataEntity-by-datasource site)
+  + the audit's deliverable.
+notes: |-
+  This is the SECOND known instance of the PREDICATE-DIVERGENCE-IN-PAGINATION-WRAPPERS
+  bug class — REFACTOR-425 was the first (ReactiveDataSourceRepositoryImpl.listDto's
+  page query uses startsWithIgnoreCase, count query uses containsIgnoreCase). Both
+  sites share the root cause: a repository overrides one half of the page/count pair
+  (page query inline + count via inherited base, OR page via custom CTE + count via
+  default conditions) and the two halves drift over time as one branch is updated
+  without the other.
+
+  Cross-references:
+    - Sibling site: `datasource-listdto-page-vs-count-predicate-divergence-refactor-425`
+    - Cross-link to ReactiveDataEntityRepositoryImpl batch-H sidecar (page query
+      mechanics) and batch-O sidecar (overall repository structure)
+    - DOC-NNN candidate: surface 'paginated lists may show X of Y where X > Y in
+      deployments using EXCLUDE_FROM_SEARCH' as a known limitation on the Directory
+      doc page (low severity) OR fix the divergence first and document the
+      EXCLUDE_FROM_SEARCH semantic separately

@@ -1,0 +1,87 @@
+gap_id: TEST-GAP-868
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java service activity handler:ActivityHandler"
+  - "odd-platform java service:ActivityServiceImpl"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "ActivityHandler.md:stress_findings.S-E-2 (ORDERING — OLD-state capture vs. NEW-state capture race under concurrent mutations)"
+  - "ActivityHandler.md:bugs_limitations_corner_cases.[OLD-vs-NEW state race] (severity HIGH)"
+  - "ActivityHandler.md:probe_skeletons_emitted.P-019"
+  - "ActivityHandler.md:tests_coverage_semantic.uncovered_behaviours.[OLD-vs-NEW state race under concurrent mutations of the SAME data entity]"
+behaviour: |-
+  **CRITICAL — Concurrent `@ActivityLog`-annotated mutations on the SAME data entity produce wrong-attribution audit rows.** Two users A and B concurrently submitting `OwnershipServiceImpl.update` (or any other `@ActivityLog` write) on the SAME `data_entity_id` both call `getContextInfo(parameters)` BEFORE `joinPoint.proceed()` — both capture `oldState = pre-mutation` at the SAME baseline. Tx A's mutation commits at T1; Tx B's at T2. After joinPoint.proceed completes, each transaction's `getUpdatedState` runs and reads POST-mutation state — but under READ_COMMITTED isolation B's `getUpdatedState` reads post-A+post-B state (since A committed first). Both ActivityPojo rows record `pre-mutation → post-A+post-B`, with two rows attributed to A and B. **The Activity Feed shows two activity rows each claiming credit for the other user's change.** No test pins what the row diff content SHOULD be under interleaved commits, so any future refactor of the race window (e.g. moving capture to a `SELECT FOR UPDATE` boundary, switching to serializable isolation, batching multi-mutation events) lands without a regression catcher.
+
+  **Primary-source chain**:
+  - `ActivityAspect.java:41-59` (monoActivityAspect — the @ReactiveTransactional around-advice):
+    - Line 48: `activityService.getContextInfo(activityParameters, eventType)` — **pre-mutation snapshot capture**
+    - Line 49: `joinPoint.proceed()` — the business mutation runs
+    - Line 85: `activityService.getUpdatedInfo(activityParameters, info.getDataEntityId(), eventType)` — **post-mutation snapshot capture**
+  - `ActivityServiceImpl.java:46-50` (createActivityEvent):
+    - Line 47: `authIdentityProvider.getCurrentUser()` — actor identity capture
+    - Line 50: `activityRepository.saveReturning(pojo)` — INSERT (no ON CONFLICT, no dedup)
+  - `ActivityHandler.java:9-22` (interface): all 4 methods are READ-only state observers; diff and persist live OUTSIDE the handler.
+  - Per `ReactiveActivityRepositoryImpl.md:stress_findings.E3`: no unique index on `(data_entity_id, event_type, created_by, created_at)`; two parallel INSERTs commit two rows.
+
+  **The race window structure** (per ActivityHandler.md:stress_findings.S-E-2):
+  1. Tx A: `getContextInfo` reads pre-state at T=0
+  2. Tx B: `getContextInfo` reads pre-state at T=0 (same baseline)
+  3. Tx A: `joinPoint.proceed()` runs A's mutation; commits at T=1
+  4. Tx B: `joinPoint.proceed()` runs B's mutation; commits at T=2
+  5. Tx A: `getUpdatedState` reads post-A state at T=1
+  6. Tx B: `getUpdatedState` reads post-A+post-B state at T=2 (READ_COMMITTED)
+  7. Both Activity rows record: `oldState=pre, newState=post-A+post-B`, attributed to A and B respectively
+
+  **Operator-visible consequences**:
+  - **Forensic distortion**: a user investigating "who changed the description from X to Y" sees BOTH user A and user B's activity rows showing the FULL combined change — neither user actually made the full change alone
+  - **Wrong-attribution audit trail**: an operator looking at the activity feed for accountability cannot determine which user actually performed which sub-change
+  - **The Activity Feed is a user-facing accountability surface**: a wrong-diff bug under concurrent load is a **trust-destroyer** for the entire audit-trail story
+
+  **Why CRITICAL not HIGH**:
+  - The Activity Feed concept (concepts.yaml) carries security_aggregate weaknesses including audit-integrity claims; the wrong-attribution bug undermines the audit-or-fail semantic captured at `implicit_adrs.[0]` (ActivityHandler.md).
+  - Under sustained mutation load (operator UI flurry, bulk-tag assignment, concurrent ownership updates), this race is empirically observable.
+  - The race is INVISIBLE to single-threaded testing — a future refactor that moves capture timing OR switches isolation level COMPILES, passes every existing test, and silently changes the audit-trail's truthfulness for the entire dataset of historical activity rows.
+
+  **Connection to probe P-019**:
+  - The sidecar emits P-019 as the runtime measurement; this TEST-GAP is the regression-pin AFTER the probe surfaces the empirical timing.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/activity/ActivityHandlerConcurrentMutationRaceTest.java"
+  name: "concurrentOwnershipUpdatesOnSameDataEntity_pinDiffIntegrityUnderRace"
+evidence:
+  - "ActivityHandler.md says (stress_findings.S-E-2): 'both transactions start getContextInfo with the same pre-mutation owners. Tx A runs its mutation, Tx B runs its mutation. Tx A's getUpdatedState reads post-A state; Tx B's getUpdatedState reads post-A+post-B state (since A committed first if B is later; under READ_COMMITTED, B sees A's commit). Both ActivityPojo rows show pre-mutation → post-A+post-B, with two rows attributed to A and B.' confidence: PROBE-NEEDED — P-019 emitted"
+  - "ActivityHandler.md says (bugs_limitations_corner_cases): 'OLD-vs-NEW state race: two concurrent @ActivityLog-annotated mutations on the SAME data entity both capture oldState = pre-mutation, both wrapped mutations run interleaved, and getUpdatedState (called after each mutation completes) sees the AFTER-BOTH state. Handler A's emitted ActivityPojo records pre-mutation → after-A+post-B (wrong: A only saw its own change happen). Handler B records the same. The Activity Feed shows two activity rows each claiming credit for the other's change.' — severity: HIGH"
+  - "Verified at primary source: ActivityAspect.java:41-59 (the @ReactiveTransactional around-advice that orchestrates the two snapshots) + ActivityServiceImpl.java:46-50 (createActivityEvent — single saveReturning, no dedup) + ActivityHandler.java:9-22 (interface signature confirms all methods are read-only state observers)"
+  - "Verified at primary source: ReactiveActivityRepositoryImpl.md:stress_findings.E3 — 'NO uniqueness constraints beyond the PRIMARY KEY (id, created_at) on activity table. NO unique index on (data_entity_id, event_type, created_by, created_at) or any other deduplication tuple. Consequence: if two parallel @ActivityLog-annotated service methods fire on the same data entity for the same event at near-identical times, TWO activity rows are persisted. There is NO deduplication.'"
+  - "Verified no existing test: Glob src/test/**/Activity*.java returns ONLY ActivityMapperTest.java (mapper unit test, not handler-tier or aspect-tier)"
+cross_references:
+  - "TEST-GAP-869 (sister VAL-LSN-019-B — emit-failure rollback semantics; same TX boundary, opposite direction)"
+  - "TEST-GAP-882 (META anchor — zero handler-tier coverage)"
+  - "REFACTOR-NNN candidate: switch to SERIALIZABLE isolation OR SELECT FOR UPDATE on the affected data_entity row across the @ReactiveTransactional boundary; OR add a per-data-entity advisory lock at the aspect"
+  - "concepts.yaml:entities[Activity Feed] (security_aggregate flags audit-integrity weaknesses)"
+  - "probe-skeletons: P-019 (the runtime measurement that produces empirical timings)"
+related_features: [F-021]
+related_pillar_features: ["P-07:F-003", "P-09:F-001"]
+proposed_action: |-
+  Add `ActivityHandlerConcurrentMutationRaceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/activity/` using Testcontainers + `@SpringBootTest` + StepVerifier. The HEADLINE test method:
+
+  1. **`concurrentOwnershipUpdatesOnSameDataEntity_pinDiffIntegrityUnderRace`** (HEADLINE):
+     - Arrange: seed a `data_entity` with two existing `ownership` rows (owner X with title T1, owner Y with title T2). Two distinct authenticated users (Alice with `DATA_ENTITY_OWNERSHIP_UPDATE` permission, Bob with same).
+     - Act: dispatch two CONCURRENT calls to `OwnershipServiceImpl.update`:
+       - Alice's call: change owner X's title from T1 to T1'
+       - Bob's call: change owner Y's title from T2 to T2'
+     - Use `Mono.zipDelayError(monoAlice, monoBob).block()` to maximize the interleaved-commit window.
+     - Assert: query the resulting two activity rows by event_type=OWNERSHIP_UPDATED and data_entity_id; PIN the CURRENT behaviour:
+       - Alice's row: `created_by='alice'`, `old_state={ownerships: [X→T1, Y→T2]}`, `new_state=<whatever the race actually produced>`
+       - Bob's row: `created_by='bob'`, `old_state={ownerships: [X→T1, Y→T2]}`, `new_state=<whatever the race actually produced>`
+     - **The test asserts the CURRENT race behaviour** (likely both rows show old_state=pre AND new_state=post-A+post-B). After the test PINS the current truth, a future fix (SELECT FOR UPDATE, advisory lock, serializable isolation) becomes a coordinated, opt-in change that updates this test.
+
+  2. **`concurrentDescriptionUpdatesOnSameDataEntity_pinDiffIntegrityUnderRace`** (variant): same shape, with `DescriptionUpdatedActivityHandler` (single-row state, no list). Probes whether the race is specific to list-shaped state or applies to scalar fields too.
+
+  3. **`concurrentMutationOnDifferentDataEntities_noRace`** (CONTROL): assert that concurrent @ActivityLog mutations on DIFFERENT data entities produce CORRECT-attribution rows. This pins that the race is data-entity-scoped (not a global serialization issue).
+
+  After P-019 runs and the empirical timing surfaces, update this test's assertions to match the measured truth. Cross-pair with REFACTOR-NNN to formally classify the race as an intentional design choice (audit-or-fail with relaxed concurrency semantics) OR as a bug requiring fence-introduction.
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-021

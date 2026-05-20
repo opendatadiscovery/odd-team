@@ -1,0 +1,209 @@
+name: |-
+  DatasetField per-column metadata edit (description / internal-name / tags / enum-values / metrics / terms — 7 endpoints with parent-scoped authorization)
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+  - P-01
+  - P-07
+  - P-09
+description: |-
+  Operation cluster for the per-column dataset-field metadata surface — 7
+  endpoints under /api/datasetfields/{dataset_field_id}/... owned by
+  DatasetFieldController. Four collaborating services (DatasetFieldService,
+  EnumValueService, MetricService, TermService) consumed via thin-proxy
+  delegations.
+
+    Description (PUT /description): updateDatasetFieldDescription
+      → DatasetFieldServiceImpl.updateDescription
+      → DatasetFieldInternalInformationServiceImpl.updateDescription
+        (@ActivityLog(DATASET_FIELD_DESCRIPTION_UPDATED) at line 28)
+      → ReactiveDatasetFieldRepositoryImpl.updateDescription (verbatim storage)
+      → termService.handleDatasetFieldDescriptionTerms (re-extract term mentions;
+        emits DATASET_FIELD_TERM_ASSIGNMENT_UPDATED — DUAL-EVENT semantics)
+      Returns: DataSetFieldDescription (description + linkedTerms)
+      404 on missing id (.switchIfEmpty at inner-service line 33)
+      200 OK; spec declares 201 — drift class
+
+    Internal name (PUT /name): updateDatasetFieldInternalName
+      → DatasetFieldServiceImpl.updateInternalName (@ActivityLog
+        DATASET_FIELD_INTERNAL_NAME_UPDATED at line 99)
+      → ReactiveDatasetFieldRepositoryImpl.updateInternalName + markEntityFilled/Unfilled +
+        updateDatasetFieldSearchVectors
+
+    Tags (PUT /tags): updateDatasetFieldTags
+      → DatasetFieldServiceImpl.updateDatasetFieldTags (@ActivityLog
+        DATASET_FIELD_TAGS_UPDATED at line 119)
+      → delete-internal-relations + re-create + search-vector refresh +
+        markDataEntityByTags
+      Returns: Flux<Tag> (the new tag list)
+
+    Enum-values (POST /enum_values + GET /enum_values): createEnumValue / getEnumValues
+      → EnumValueService.createEnumValues + .getEnumValues
+      POST returns 201 (the ONE endpoint that correctly matches the spec)
+      GET has NO SecurityRule — read-collaborative
+
+    Metrics (GET /metrics): getDatasetFieldMetrics
+      → MetricService.getLatestMetricsForDatasetField
+      NO SecurityRule — read-collaborative
+
+    Terms (POST /terms + DELETE /terms/{id}): addDatasetFieldTerm /
+        deleteTermFromDatasetField
+      → TermService.linkTermWithDatasetField (@ActivityLog
+        DATASET_FIELD_TERM_ASSIGNMENT_UPDATED at TermServiceImpl.java:211) /
+        TermService.removeTermFromDatasetField (@ActivityLog at line 225)
+
+  KEY SEMANTICS:
+
+    Parent-scoped authorization (load-bearing):
+      Every DATASET_FIELD permission resolves to the PARENT DataEntity's
+      permission via DatasetFieldResourceExtractor. The extractor (lines
+      21-27 of DatasetFieldResourceExtractor.java) issues a DB round-trip:
+      reactiveDatasetFieldRepository.getDataEntityIdByDatasetFieldId(id) →
+      parent data_entity.id. The actual permission check runs against the
+      parent. There is NO FIELD-LEVEL permission — every field of a
+      DataEntity has the same effective permissions as the parent.
+
+    Wiring bugs at SecurityConstants.java:
+      Line 297-299: POST /api/datasetfields/{id}/terms wired to
+        DATA_ENTITY_ADD_TERM instead of DATASET_FIELD_ADD_TERM (per the
+        live docs). Captured in the 5-failure SecurityConstants invariant.
+      Line 295-296: PUT /api/alerts/{id}/status wired to DATASET_FIELD_ADD_TERM
+        (copy-paste from this controller's auth block). Captured in the
+        second-securityconstants-bug-alerts-status-wrong-permission invariant.
+
+    Activity-log emission depth asymmetry:
+      Description's @ActivityLog lives ONE LAYER DEEPER (at inner-service
+      DatasetFieldInternalInformationServiceImpl.java:28) than internal-name +
+      tags (at outer-service DatasetFieldServiceImpl.java:99, :119). The
+      structural asymmetry has NO OPERATOR-VISIBLE IMPACT — all three events
+      emit; all three appear in the activity-feed handler dispatch. CORRECTION
+      of prior batch-R + F-004 batch-R + F-006 master claims captured in
+      dataset-field-description-update-emits-activity-event-supersedes-batch-r-and-f-004-claims.yaml.
+
+    Dual-event semantics on description-edit:
+      A description PUT can trigger TWO activity events: one DATASET_FIELD_DESCRIPTION_UPDATED
+      from the inner service + one DATASET_FIELD_TERM_ASSIGNMENT_UPDATED
+      from the term re-extraction (TermServiceImpl.java:243). Undocumented.
+
+    404 on missing id:
+      DatasetFieldInternalInformationServiceImpl.java:33 carries
+      .switchIfEmpty(Mono.error(new NotFoundException('DatasetField',
+      datasetFieldId))) BEFORE the activity-log emission. PUT /description
+      on a missing id returns 404, not 200. CORRECTION of prior batch-R
+      claim per the supersede invariant.
+
+    Verbatim storage — F-004 family at the per-column surface:
+      ReactiveDatasetFieldRepositoryImpl.updateDescription (lines 73-80)
+      issues UPDATE with only empty-to-null normalisation. No Jsoup.clean,
+      no Encode.html, no length cap, no allowlist. Defence-in-depth lives
+      only at the UI Markdown.tsx render layer.
+
+  HOT PATHS:
+
+    Every authorized request issues 1 DB round-trip via DatasetFieldResourceExtractor
+    (3-table join dataset_field → dataset_structure → dataset_version →
+    data_entity) BEFORE the controller method executes. No cache.
+
+    Description-edit fans out to 4-5 sequential DB operations (write +
+    markEntityFilled + search-vector + term re-extraction).
+    Tags-edit fans out to 6 sequential DB operations.
+
+  AUTHORIZATION (6 SecurityRules at SecurityConstants.java:282-303):
+    DATASET_FIELD_INTERNAL_NAME_UPDATE — PUT /name
+    DATASET_FIELD_DESCRIPTION_UPDATE — PUT /description
+    DATASET_FIELD_TAGS_UPDATE — PUT /tags
+    DATASET_FIELD_ENUMS_UPDATE — POST /enum_values
+    DATA_ENTITY_ADD_TERM (WRONG; should be DATASET_FIELD_ADD_TERM) — POST /terms
+    DATASET_FIELD_DELETE_TERM — DELETE /terms/{term_id}
+    NO RULE for GET /enum_values and GET /metrics (read-collaborative posture)
+nodes:
+  - odd-platform java DatasetFieldController controller-class:DatasetFieldController
+contributors:
+  - |-
+    DatasetFieldController batch V (PRIMARY SOURCE):
+    concepts.operations (8 listed operations) +
+    concepts.invariants (thin-proxy; parent-scoped auth; spec-code drift;
+    SecurityConstants wiring bugs; dual-event semantics; 404 on missing id;
+    verbatim storage) +
+    implicit_adrs.[0-4] (thin-proxy; parent-scoped; activity-log at service
+    layer; read-endpoints omitted; dual-event on description) +
+    coherence_corrections (the SUPERSEDES of batch-R + F-004 + F-006 claims)
+evidence:
+  - |-
+    DatasetFieldController.md:concepts.operations — 8 listed
+  - |-
+    DatasetFieldController.md:concepts.invariants[1-8]
+  - |-
+    DatasetFieldController.md:implicit_adrs.[0-4]
+  - |-
+    DatasetFieldController.md:coherence_corrections — SUPERSEDES batch-R
+    and F-004 batch-R and F-006 dataset-field framing
+  - |-
+    Live doc WebFetch
+    https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed
+    status 200 2026-05-20 (DATASET_FIELD_* event types listed verbatim)
+  - |-
+    Live doc WebFetch
+    https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions
+    status 200 2026-05-20 (DATASET_FIELD_ADD_TERM as the documented gate)
+axes_present:
+  - controllers
+  - services
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant: [LOGIN_FORM, OAUTH2, LDAP, DISABLED]
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      5 of 7 endpoints have SecurityRule + correct permission. 1 endpoint
+      (POST /terms) has SecurityRule + WRONG permission (DATA_ENTITY_ADD_TERM
+      vs documented DATASET_FIELD_ADD_TERM). 2 read endpoints (GET /enum_values
+      and GET /metrics) have NO rule.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      Read endpoints platform-wide visible. Mutation endpoints gated by
+      parent-DataEntity permission, not field-level.
+  strengths:
+    - Activity-log emission symmetric across description, internal-name,
+      tags, term-link, term-unlink (CORRECTING prior batch-R claim)
+    - 404 on missing id at inner-service (CORRECTING prior batch-R claim)
+    - Parent-scoped authorization model is sound design
+  weaknesses:
+    - SecurityConstants.java:297-299 wires /terms POST to DATA_ENTITY_ADD_TERM
+      (HIGH — wrong permission)
+    - SecurityConstants.java:295-296 alerts-status copy-paste bug — HIGH
+    - F-004 verbatim-storage XSS-class at the per-column surface
+    - 2 read endpoints have no SecurityRule
+  contributing_files:
+    - DatasetFieldController.md
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - 'Every authorized request runs DatasetFieldResourceExtractor 3-table
+      join BEFORE the operation — DatasetFieldController.md'
+    - 'Description-edit chains 4-5 sequential DB operations —
+      DatasetFieldController.md'
+    - 'Tags-edit chains 6 sequential DB operations — DatasetFieldController.md'
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      Per-field user edits — single item per call. No bulk-edit endpoint.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless controller; @ReactiveTransactional service-tier boundaries
+      keep transactions short.
+  contributing_files:
+    - DatasetFieldController.md
+notes: |-
+  This operation entry captures the 7-endpoint per-column metadata surface.
+  The CORRECTION of prior batch-R + F-004 + F-006 claims is captured in the
+  supersedes invariant.
+
+  Cross-cutting connections:
+    - Companion invariant: dataset-field-description-update-emits-activity-event-supersedes-batch-r-and-f-004-claims
+    - Companion invariant: securityconstants-wiring-failures-count-grows-to-5-fourth-and-fifth-from-batch-v
+    - F-004 stored-XSS family: 2nd surface (column-level)
+    - F-006 audit-silence: dataset-field surface is FULLY AUDIT-COVERED
+      (CORRECTING prior framing)

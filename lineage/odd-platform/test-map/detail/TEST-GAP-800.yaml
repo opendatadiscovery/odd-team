@@ -1,0 +1,73 @@
+gap_id: TEST-GAP-800
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java notification.sender class:WebhookNotificationSender"
+pillars_affected: [P-07]
+surfaced_by:
+  - "WebhookNotificationSender.md:bugs_limitations_corner_cases.[6] MEDIUM (Content-Type: application/json header is NOT set)"
+  - "WebhookNotificationSender.md:doc_drift_findings.[2] (Live doc is silent on the Content-Type header absence)"
+behaviour: |-
+  **HIGH — Generic webhook sends with NO `Content-Type` header.** The `HttpRequest` construction at `WebhookNotificationSender.java:20-22` calls only `.uri(...)`, `.POST(BodyPublishers.ofString(...))`, `.build()` — no `.header("Content-Type", "application/json")`. The JDK `HttpClient` does NOT set a default `Content-Type` for `BodyPublishers.ofString(...)` unless the caller does explicitly.
+
+  **Receiver-side impact**:
+  - **Discord webhook receivers** strictly require `Content-Type: application/json` — reject with `400 Bad Request` otherwise.
+  - **Many corporate WAFs** (e.g. AWS WAF default rule set, Cloudflare's OWASP rule set) reject POSTs without `Content-Type` as anomalous.
+  - **Microsoft Teams webhook receivers** require `Content-Type: application/json` per their connector documentation.
+  - **Custom incident-management webhook receivers** (PagerDuty Events API v2, OpsGenie Webhook integration) require explicit Content-Type.
+
+  **Result chain**:
+  1. Operator configures `notifications.receivers.webhook.url` pointing at e.g. a Discord webhook URL.
+  2. ODD fires an alert.
+  3. The receiver rejects with 415 Unsupported Media Type OR 400 Bad Request.
+  4. `AbstractNotificationSender.sendAndValidate` raises `NotificationSenderException` because the status is not 200.
+  5. Operator sees `log.error("Notification sender Generic webhook: Notification sender response didn't complete with 200 status code")` — generic, no body / status / header info.
+  6. Operator (correctly) assumes their webhook URL is wrong, spends hours debugging.
+
+  **Promoted to HIGH (not MEDIUM as the sidecar rates)** because:
+  - The fix is **one line** (`.header("Content-Type", "application/json")` between lines 21 and 22).
+  - The cost of NOT fixing is operator-onboarding friction — the most popular generic webhook receivers (Discord, Teams) silently fail.
+  - The live doc is SILENT on this — operators cannot diagnose from documentation alone.
+  - Combined with TEST-GAP-799 (no signature) + TEST-GAP-801 (200-only accept), the webhook channel feels broken to anyone evaluating it against incumbent alternatives.
+
+  **Test gap shape**: regression-pin asserting the outbound POST has NO `Content-Type` header. PINS the current state; pairs with REFACTOR-NNN adding the one-line fix.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/sender/WebhookNotificationSenderNoContentTypeRegressionPinTest.java"
+  name: "send_outboundRequestHasNoContentTypeHeader_pinsReceiverRejection"
+evidence:
+  - "WebhookNotificationSender.md says (bugs_limitations_corner_cases.[6]): 'Content-Type: application/json header is NOT set. HttpRequest.BodyPublishers.ofString(...) does not set any Content-Type; the builder pattern in this class invokes only .uri(...), .POST(...), .build() (lines 20-23). Receivers strictly checking Content-Type (e.g. Discord, many corporate WAFs) reject the request with 415 Unsupported Media Type — surfaced as NotificationSenderException at the dispatcher, alert dropped. The fix is a one-line .header(\"Content-Type\", \"application/json\") between lines 21 and 22.' — severity MEDIUM"
+  - "WebhookNotificationSender.md says (doc_drift_findings.[2]): 'Live doc is silent on the Content-Type header absence. The JDK HttpClient does NOT set a default Content-Type for BodyPublishers.ofString(...) unless the caller does explicitly — and THIS class does not (WebhookNotificationSender.java:20-22 only sets .uri(...) + .POST(...)). Receivers strictly enforcing Content-Type: application/json will reject the request.'"
+  - "Verified at primary source: WebhookNotificationSender.java:20-23 (HttpRequest builder receives no `.header(...)` calls)"
+  - "WebFetch https://docs.opendatadiscovery.org/features/active-platform-features/notifications 2026-05-20 status 200 — live doc SILENT on Content-Type"
+cross_references:
+  - "TEST-GAP-799 (sister — no HMAC / signature; same single-method HttpRequest builder shortcoming)"
+  - "TEST-GAP-801 (sister — 200-only HTTP accept)"
+  - "REFACTOR-NNN (proposed, one-line fix): add `.header(\"Content-Type\", \"application/json\")` to the HttpRequest builder chain at WebhookNotificationSender.java:21"
+  - "DOC-GAP-NNN (proposed): live `/features/active-platform-features/notifications#generic-webhook` should document the request shape (headers, body schema) so operators know what to expect at their receiver"
+  - "concepts.yaml: `webhook-no-content-type` invariant adds to F-009's webhook-channel quirks list"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery"]
+proposed_action: |-
+  Add `WebhookNotificationSenderNoContentTypeRegressionPinTest`. Unit test stubbing `HttpClient.send(...)` to capture the outbound `HttpRequest`:
+
+  1. `send_outboundRequestHasNoContentTypeHeader_pinsReceiverRejection` —
+     - Stub `HttpClient.send(...)` capturing the request.
+     - Invoke `webhookSender.send(message)`.
+     - Assert the captured `HttpRequest.headers().firstValue("Content-Type")` is empty (or returns Optional.empty()).
+     - PINS the current shipping-without-Content-Type behaviour.
+
+  2. `send_contentTypeApplicationJson_presentInCapturedRequest_confirmsFixDirection` — (UPDATE once REFACTOR-NNN lands)
+     - After REFACTOR-NNN: assert the captured request has `Content-Type: application/json` header.
+     - CONFIRMS the fix's effectiveness.
+
+  3. `send_discordCompatibleReceiver_acceptsRequest_endToEnd` —
+     - Integration-test variant using a Testcontainers httpbin + Wiremock simulating Discord's strict Content-Type check.
+     - PRE-fix: assert receiver returns 415 OR 400 (depending on receiver mode).
+     - POST-fix: assert receiver returns 200.
+
+  Pair with REFACTOR-NNN (one-line fix) and DOC-GAP-NNN (document the request shape).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. No prior TEST-GAP names the Content-Type absence. Sister gaps at the same node cover the other single-method shortcomings.
+batch: 2026-05-20-Y
+feature_id: F-009

@@ -1,0 +1,99 @@
+gap_id: TEST-GAP-873
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service activity handler:ActivityHandler"
+pillars_affected: [P-07]
+surfaced_by:
+  - "ActivityHandler.md:stress_findings.S-E-4 (ROW-ORDER NON-DETERMINISM — Postgres returns rows without ORDER BY; JSON-string equality is row-order-sensitive)"
+  - "ActivityHandler.md:bugs_limitations_corner_cases.[Postgres row-order non-determinism in ownership-list and tag-list serialization]"
+  - "ActivityHandler.md:probe_skeletons_emitted (P-018)"
+  - "ActivityHandler.md:tests_coverage_semantic.uncovered_behaviours.[Postgres row-order non-determinism in ownership/tag list serialization]"
+behaviour: |-
+  **MEDIUM — Spurious Activity-Feed rows emitted when ownership / tag / term lists serialize in different Postgres row orders despite identical underlying state.** `OwnershipUpdatedActivityHandler` (via `AbstractOwnershipActivityHandler.java:19-22`), `TagActivityHandlerImpl.java:41-50`, and any handler reading list-shaped state (terms, custom-metadata, dataset-field enum values) issue queries with NO `ORDER BY` clause: `ReactiveOwnershipRepositoryImpl.getOwnershipsByDataEntityId` (`:130-145`) and `ReactiveTagRepositoryImpl.listDataEntityDtos` (`:69-81`) both lack `ORDER BY`. The `Flux<*Dto>.collectList()` collects in arrival order; Jackson serializes the list in iteration order. Postgres returns rows in storage order — which **can change** after `VACUUM`, `UPDATE`-MOVE relocations, or query-plan changes. The diff check at `ActivityAspect.java:86` is `!info.getOldState().equals(newState)` — STRING equality. A row-order flip emits a SPURIOUS activity row showing the same owners "changed" to the same owners in different order. Operator confidence in the Activity Feed degrades.
+
+  **Primary-source chain**:
+  - `ActivityAspect.java:86` — `.filter(newState -> !info.getOldState().equals(newState))` — STRING equality, NOT JSON-semantic equality
+  - `AbstractOwnershipActivityHandler.java:19-22` — collects `Flux<OwnershipDto>` to `List` then serializes as JSON
+  - `ReactiveOwnershipRepositoryImpl.java:130-145` — `getOwnershipsByDataEntityId` query — **NO `ORDER BY` clause** (per ActivityHandler.md citation)
+  - `ReactiveTagRepositoryImpl.java:69-81` — `listDataEntityDtos` query — **NO `ORDER BY`** (only `groupBy(TAG.fields())`)
+  - `TagActivityHandlerImpl.java:41-50` — list → JSON serialization for TAG_ASSIGNMENT_UPDATED
+  - `utils/JSONSerDeUtils.java:56-66` + `:14-20` — Jackson with `SNAKE_CASE` PropertyNamingStrategy; serialization in collection iteration order
+  - `ActivityAspect.java:81-95` (postActivity) — orchestrates getContextInfo + getUpdatedState + diff filter
+
+  **The race window structure** (per ActivityHandler.md:stress_findings.S-E-4):
+  1. Handler.getContextInfo runs `getOwnershipsByDataEntityId(123)` → returns `[Owner-A, Owner-B]` (storage order at T=0)
+  2. Time passes; the data entity's underlying storage may shift after VACUUM or `UPDATE` storage moves (TOAST relocation, HOT updates that overflow into a new TID)
+  3. Handler.getUpdatedState runs the SAME `getOwnershipsByDataEntityId(123)` → returns `[Owner-B, Owner-A]` (storage order at T=1)
+  4. Both produce identical OwnershipDto **content** but different JSON string output:
+     - Snapshot 1: `[{"name":"A"},{"name":"B"}]`
+     - Snapshot 2: `[{"name":"B"},{"name":"A"}]`
+  5. `String.equals` returns FALSE → spurious OWNERSHIP_UPDATED activity row emitted → operator sees "ownership changed" in the feed when nothing actually changed semantically
+
+  **Operator-visible consequences**:
+  - **Activity Feed noise**: spurious "ownership changed" / "tag changed" rows that operators investigate but find no semantic change. Erodes trust in the audit log.
+  - **False compliance/audit trail entries**: a SOX reviewer sees "ownership row updated by user X at time T" with old_state == new_state semantically — but the JSON strings differ. Forensic investigation wastes time.
+  - **Idempotency violation**: an "identity" mutation (re-saving the same owners list) should produce NO activity event per the design intent. Currently, a Postgres VACUUM between snapshots can produce one with no underlying change.
+
+  **Why MEDIUM not HIGH**:
+  - The empirical hit rate depends on Postgres workload (VACUUM frequency, UPDATE-MOVE rate, query-plan flux). In steady-state low-volume deployments, hits are rare.
+  - The data-side impact is "extra audit row" not "data loss" or "permission bypass".
+  - We rate MEDIUM (not LOW) because: (a) the failure mode is INVISIBLE to operators (they cannot tell a "ghost" event from a real one); (b) the fix is a one-line `.orderBy(OWNER.NAME.asc())` per repository query — but multi-tier coordination is needed; (c) compliance audit-quality is degraded.
+
+  **Connection to probe P-018**:
+  - The sidecar emits P-018 to MEASURE empirically whether the row-order flip actually occurs on a production-sized DB
+  - This TEST-GAP is the regression-pin AFTER P-018 confirms the mechanism
+
+  **Connection to TEST-GAP-868**:
+  - TEST-GAP-868 pins the cross-mutation race (different states, same row)
+  - This gap (873) pins the same-state row-order flux (same state, different serialization)
+  - Both produce wrong-attribution-class activity rows; the mechanisms are different
+
+  **Cross-cutting affected handlers** (per ActivityHandler.md):
+  - OwnershipUpdatedActivityHandler (ownership list)
+  - OwnershipCreatedActivityHandler (ownership list)
+  - OwnershipDeletedActivityHandler (ownership list)
+  - TagActivityHandlerImpl (tag list)
+  - TermAssignmentActivityHandler (term list)
+  - DatasetFieldTermAssignmentActivityHandler (dataset-field term list)
+  - DatasetFieldValuesUpdatedActivityHandler (enum-values list)
+  - Any future handler reading list-shaped state
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/activity/handler/OwnershipListOrderingActivityNoiseTest.java"
+  name: "ownershipUpdate_idempotentReSaveWithVacuumBetween_emitsNoSpuriousActivity"
+evidence:
+  - "ActivityHandler.md says (stress_findings.S-E-4): 'ROW-ORDER NON-DETERMINISM — Postgres returns rows without ORDER BY; JSON-string equality is row-order-sensitive. Question: for handlers serializing list-shaped state (owners, tags, terms), is the JSON output deterministic across query plans? Answer (TRACE): ReactiveOwnershipRepositoryImpl.getOwnershipsByDataEntityId:130-145 has NO ORDER BY. ReactiveTagRepositoryImpl.listDataEntityDtos:69-81 has NO ORDER BY. The Flux<OwnershipDto>.collectList() (AbstractOwnershipActivityHandler:19-22) collects in arrival order. The Jackson list serialization is in iteration order. Postgres can change row order after VACUUM, UPDATE-storage relocation, or query-plan change. Outcome: confidence PROBE-NEEDED. The mechanism is clear; the question does this actually flip under normal load on a production-sized DB? requires a runtime probe. Probe-skeleton emitted: P-018 below.'"
+  - "ActivityHandler.md says (bugs_limitations_corner_cases): 'Postgres row-order non-determinism in ownership-list and tag-list serialization: getOwnershipsByDataEntityId (ReactiveOwnershipRepositoryImpl.java:130-145) has NO ORDER BY; listDataEntityDtos (ReactiveTagRepositoryImpl.java:69-81) has NO ORDER BY (only groupBy(TAG.fields())). Both produce List<*Dto> which the activity handler serializes as JSON. Postgres returns rows in storage order, which can change after VACUUM, UPDATE-MOVE, or query-plan changes. SAME underlying owner/tag set can serialize as [A, B] or [B, A] — and ActivityAspect:86's info.getOldState().equals(newState) is string-equality. A row-order flip emits a spurious activity record showing the same entities changed. Operator confidence in the Activity Feed degrades.' — severity: HIGH"
+  - "Verified at primary source: ActivityAspect.java:86 (string-equality diff filter) + AbstractOwnershipActivityHandler.java:19-22 + ReactiveOwnershipRepositoryImpl.java:130-145 (no ORDER BY) + ReactiveTagRepositoryImpl.java:69-81 (no ORDER BY) + utils/JSONSerDeUtils.java:14-20"
+  - "Verified no existing test: Glob src/test/**/*OwnershipActivity*.java + src/test/**/*Activity*Test*.java returns ONLY ActivityMapperTest.java"
+cross_references:
+  - "TEST-GAP-868 (sister VAL-LSN-019-B — concurrent-mutation race; different mechanism, same wrong-attribution-class outcome)"
+  - "TEST-GAP-882 (META anchor — zero handler-tier coverage)"
+  - "REFACTOR-NNN candidate: add `.orderBy(OWNER.NAME.asc())` to `getOwnershipsByDataEntityId`, `.orderBy(TAG.NAME.asc())` to `listDataEntityDtos`, and equivalent per-handler list queries; OR sort the in-memory list before JSON serialization in JSONSerDeUtils; OR replace `String.equals` with Jackson-tree-equal diff"
+  - "DOC-NNN candidate: surface the diff-filter mechanism on the developer-guides page; explain that activity rows are emitted only when state JSON-strings differ, with the row-order caveat"
+  - "probe-skeletons: P-018"
+related_features: [F-021]
+related_pillar_features: ["P-07:F-003"]
+proposed_action: |-
+  Add `OwnershipListOrderingActivityNoiseTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/activity/handler/` using Testcontainers + a Postgres VACUUM-trigger harness. Three test methods:
+
+  1. **`ownershipUpdate_idempotentReSaveWithVacuumBetween_emitsNoSpuriousActivity`** (HEADLINE):
+     - Arrange: seed `data_entity` with 5 ownership rows (owners A, B, C, D, E, with assorted titles). Disable autovacuum on the test schema.
+     - Act:
+       - Step 1: call `OwnershipServiceImpl.update` with the EXACT current 5-ownership set (idempotent update).
+       - Step 2: run `VACUUM FULL public.ownership` (forces row re-layout).
+       - Step 3: call `OwnershipServiceImpl.update` again with the SAME 5-ownership set.
+     - Assert: count rows in `activity` table where `event_type=OWNERSHIP_UPDATED` AND `data_entity_id=<seed>`; PIN that the count is **at most 1** (the diff filter SHOULD have caught both idempotent updates as no-op).
+     - Comment: this test will likely FAIL in the current code (extra spurious row). The failure IS the regression-pin: a future fix that adds ORDER BY to the underlying query makes this test pass; the test then serves as a no-regression guarantee.
+
+  2. **`tagAssignmentUpdate_idempotentReSaveAfterStorageShift_emitsNoSpuriousActivity`**:
+     - Same shape, with `DataEntityServiceImpl.upsertTags` and `ReactiveTagRepositoryImpl.listDataEntityDtos` as the queried path.
+
+  3. **`ownershipDtoSerialisation_sortedByName_pinsCanonicalOrder`** (UNIT support):
+     - Direct unit test of the serialization layer: confirm that `OwnershipDto` list serialization is sorted (or NOT) by name; lock in the current behaviour as the contract.
+
+  After P-018 measures the empirical hit rate on a production-sized DB, refine the test. Cross-pair with REFACTOR-NNN to add the `.orderBy` clauses (a multi-repository coordinated fix); this test then proves the fix.
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-021

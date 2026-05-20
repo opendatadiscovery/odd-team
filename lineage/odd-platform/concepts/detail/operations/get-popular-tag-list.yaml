@@ -1,0 +1,190 @@
+name: Get Popular Tag List
+canonical_in_docs: false
+canonical_candidate: true
+correction_note: |
+  CORRECTED batch VAL-LSN-019 (2026-05-20) — the previous description's
+  claim "popularity-ranked paginated global tag directory" was WRONG and
+  is the canonical LSN-019 case. The SQL truth: the implementation
+  selects the OLDEST `size` tags by `TAG.ID ASC` BEFORE counts are
+  computed, then re-orders THAT pre-selected window by count DESC. With
+  N > size tags in the directory, the response is the OLDEST `size`
+  tags by creation order, NOT the most-popular `size` tags globally.
+  Operator-visible lie at the "Top Tags" UI surface. The smoking-gun
+  line is `ReactiveTagRepositoryImpl.java:148` —
+  `paginate(homogeneousQuery, List.of(new OrderByField(TAG.ID, SortOrder.ASC)),
+  (page-1)*size, size)`. This pre-truncates the candidate pool by id
+  ASC inside the CTE; the outer `cteSelect.orderBy(field(COUNT_FIELD).desc())`
+  at :158 re-orders the already-selected `size` rows by count DESC but
+  CANNOT reach tags excluded by the inner LIMIT.
+
+  Empirical confirmation: maintainer's 2026-05-20 test against
+  demo.oddp.io with 35 tags, every entity tagged by all 35 (equal counts)
+  → response returned the OLDEST 30 by created_at ASC. The 5 youngest
+  tags (regardless of count) were absent. See retrospectives/LSN-019.
+
+  Probe P-010 (`lineage/odd-platform/probes/P-010.yaml`) pins this in
+  CI permanently — pinned name-vs-behavior assertion.
+superseded_in_batch: VAL-LSN-019
+description: |-
+  GET /api/tags?page=&size=&query=&ids= — returns the `size` OLDEST tags
+  (by `TAG.ID ASC` = creation order, since `id` is a serial PK) matching
+  optional name-substring + id-list filters; the pre-selected window is
+  then re-ordered by descending usage count. The endpoint NAME, OpenAPI
+  description (`'Gets the list of existing tags sorted by popularity'`
+  at `odd-platform-specification/openapi.yaml:345`), and the UI's "Top
+  Tags" surface all PROMISE popularity-ranked global selection — the
+  IMPLEMENTATION delivers id-asc-paginated then-ranked. See LSN-019.
+
+  NO SecurityRule entry at SecurityConstants.java:138-142 (only
+  POST/PUT/DELETE entries on /api/tags exist); falls through to the
+  catch-all pathMatchers('/**').authenticated() rule at
+  AuthorizationCustomizer.java:29-30. ANY authenticated user under
+  LOGIN_FORM/OAUTH2/LDAP can enumerate the entire global tag directory
+  regardless of `TAG_*` permissions or Management-scope role.
+
+  Implementation chain (TagController -> TagServiceImpl -> ReactiveTagRepositoryImpl):
+
+    TagController.getPopularTagList (TagController.java:36-44)
+      -> tagService.listMostPopular(query, ids, page, size)
+         (argument-order swap at line 42)
+      -> TagServiceImpl.listMostPopular (TagServiceImpl.java:72-77)
+         (pass-through delegation with .map(tagMapper::mapToTagsResponse))
+      -> reactiveTagRepository.listMostPopular (ReactiveTagRepositoryImpl.java:137-167)
+
+    The repository chain (the smoking gun):
+      (a) lines 144-145: build homogeneous `selectFrom(TAG).where(conditions)`
+          with optional name-contains + optional id-list filter.
+      (b) **line 148: `paginate(homogeneousQuery, List.of(new OrderByField(TAG.ID, SortOrder.ASC)),
+          (page - 1) * size, size)` — THIS IS THE LIMITING STEP. The
+          `paginate` helper at JooqQueryHelper.java:63-90 emits SQL:
+          `SELECT u.*, count(*) OVER () _total, row_number() OVER
+          (ORDER BY u.id ASC) _row FROM (homogeneous) u
+          ORDER BY u.id ASC LIMIT size OFFSET offset`.
+      (c) line 150: the size-truncated, id-asc-ordered result becomes
+          `tag_cte`.
+      (d) `getDataEntityWithDatasetFields` (lines 373-392): unions
+          tag_to_data_entity + tag_to_dataset_field counts OVER THE CTE
+          ROWS ONLY. The aggregation runs over the already-truncated set.
+      (e) **line 158: outer `cteSelect.orderBy(field(COUNT_FIELD).desc())`**
+          — re-orders the size pre-selected rows by count DESC. CANNOT
+          reach tags excluded by step (b)'s LIMIT.
+
+  Four load-bearing properties:
+
+    (1) **LSN-019 DRIFT (HIGH, NEW THIS BATCH)**: NAME-vs-BEHAVIOR drift
+        between the operation's promise (popularity-ranked) and the SQL
+        truth (oldest-by-id pre-selected, then ranked within window).
+        Operator-visible at the "Top Tags" UI surface. See the
+        LSN-019 invariant + probe P-010.
+
+    (2) OPEN READ: Any authenticated user enumerates. The
+        read-collaborative posture extension. See
+        read-collaborative-cross-owner-enumeration master invariant.
+
+    (3) COMPOUND WITH WRITE-SIDE-DOOR: A per-entity-tag-editor
+        (DATA_ENTITY_TAGS_UPDATE, TERM_TAGS_UPDATE,
+        DATASET_FIELD_TAGS_UPDATE) can BOTH read this list AND
+        mint new tag rows via the side-door — without holding any
+        TAG_* permission. See the
+        getpopulartaglist-open-read-plus-side-door-compose-to-write-read-directory-bypass
+        invariant.
+
+    (4) NO SIZE CLAMP: `size` parameter is passed straight through
+        the controller, service, and repository tiers. A request
+        for `size=100000` performs a full-directory aggregate.
+        Severity LOW because tag count is typically bounded
+        operationally; severity rises for adversarial enumeration
+        scenarios.
+
+  The `query` parameter is a name-substring filter (case-insensitive
+  per ReactiveAbstractCRUDRepository.java:242-243); `ids` is an
+  optional id-set filter.
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+nodes:
+  - odd-platform java TagController controller-class:TagController
+  - odd-platform java service:TagServiceImpl
+  - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+contributors:
+  - |-
+    TagController batch W (PRIMARY SOURCE — controller-tier):
+    concepts.operations[getPopularTagList] +
+    bugs_limitations_corner_cases.[0] HIGH (LSN-019 drift) +
+    bugs_limitations_corner_cases.[3] MEDIUM (open-read posture) +
+    security.known_security_gaps.[1] MEDIUM (open-read) +
+    implicit_adrs.[1] (intentional read-collaborative posture)
+  - |-
+    TagServiceImpl batch VAL-LSN-019 (STRENGTHENS — service-tier
+    primary source):
+    concepts.operations[listMostPopular straight-through delegation:72-77]
+    + stress_findings.B1 (LSN-019 CANARY HEADLINE — NAME-vs-BEHAVIOR DRIFT;
+    the service propagates the drift one-to-one to its callers)
+    + bugs_limitations_corner_cases (drift propagation; no size cap at
+    service tier; service-tier has zero auth)
+  - |-
+    ReactiveTagRepositoryImpl batch N + VAL-LSN-019 (PRIMARY SOURCE
+    — SQL primary source — the smoking gun):
+    concepts.operations[listMostPopular — NAME PROMISES POPULARITY;
+    SQL DELIVERS ID-ASC-PAGINATED THEN-RANKED]
+    + concepts.invariants[listMostPopular's pagination is applied INSIDE
+    the CTE (before counts), not OUTSIDE (after ranking)]
+    + stress_findings.B1 (LSN-019 SMOKING GUN — empirical confirmation +
+    full JOOQ chain trace)
+    + bugs_limitations_corner_cases.[0] HIGH severity (LSN-019 SMOKING
+    GUN: listMostPopular does not deliver popularity-ranked results when
+    the directory exceeds `size` tags)
+    + implicit_adrs.[0] (paginate-inside-CTE pattern + the name-mismatch
+    only manifests on listMostPopular)
+    + docs_link_semantic.doc_drift_findings.[0] (spec-vs-code drift on
+    popular-tags ordering)
+evidence:
+  - TagController.md:concepts.operations[getPopularTagList]
+  - TagController.md:bugs_limitations_corner_cases.[0] (HIGH — LSN-019 drift)
+  - TagController.md:bugs_limitations_corner_cases.[3] (MEDIUM — open-read)
+  - TagController.md:bugs_limitations_corner_cases.[7] (LOW — no size clamp)
+  - TagController.md:stress_findings.name_behavior_pairs[0] DRIFT_NAME_VS_BEHAVIOR
+  - TagServiceImpl.md:concepts.operations[listMostPopular delegation at :72-77]
+  - TagServiceImpl.md:stress_findings.S-B-1 (CANARY HEADLINE — service propagates the drift)
+  - ReactiveTagRepositoryImpl.md:concepts.operations[listMostPopular]
+  - ReactiveTagRepositoryImpl.md:concepts.invariants[paginate INSIDE the CTE, before counts]
+  - ReactiveTagRepositoryImpl.md:stress_findings.B1 (SMOKING GUN — chain trace lines 144-158)
+  - ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[0] HIGH (LSN-019)
+  - ReactiveTagRepositoryImpl.md:docs_link_semantic.doc_drift_findings.[0]
+  - 'retrospectives/LSN-019:23-32 (empirical confirmation 2026-05-20 — 35 tags → oldest 30 returned)'
+  - 'odd-platform-specification/openapi.yaml:345 (the spec promise: "Gets the list of existing tags sorted by popularity")'
+  - 'P-010 (probe pinning the SQL contract in CI permanently)'
+notes: |-
+  STRENGTHENED + CORRECTED batch VAL-LSN-019 (2026-05-20) — the SQL
+  primary source is now triple-anchored across the controller, service,
+  and repository tiers. The previous "popularity-ranked" framing has
+  been replaced with the LSN-019 truth: pagination precedes ranking;
+  the outer count-DESC re-sort cannot reach excluded tags.
+
+  Pairs with `create-tag` (the operator-explicit + gated entry-point;
+  TAG_CREATE permission).
+  Pairs with `delete-tag` (the GUARD-by-app-tier-cascade endpoint with
+  the asymmetric tag_to_dataset_field bug — see
+  `deletetag-cascade-asymmetric-orphans-tag-to-dataset-field` invariant).
+  Pairs with
+  `getpopulartaglist-open-read-plus-side-door-compose-to-write-read-directory-bypass`
+  (the compound WRITE+READ bypass).
+  Pairs with `read-collaborative-cross-owner-enumeration` (the 24+
+  sidecar pattern).
+  Pairs with the NEW THIS BATCH invariant
+  `lsn-019-listmostpopular-name-vs-behavior-drift-pagination-precedes-ranking`
+  (the load-bearing LSN-019 finding promoted to its own invariant).
+  Pairs with the NEW THIS BATCH canonicalisation candidate
+  `top-tags-ui-label-vs-implementation-drift-operator-visible` (the
+  UI surface where the drift manifests).
+
+  Three DOC-NNN candidates flow from this:
+    (a) /features/data-discovery/tagging — admonition on the "Top Tags"
+        UI label NOT delivering most-popular when the directory exceeds
+        the page size; explicit note about the SQL-tier ordering.
+    (b) Update OpenAPI description at openapi.yaml:345 — replace
+        "sorted by popularity" with the truthful "OLDEST `size` tags
+        re-ordered by usage count within the window".
+    (c) /developer-guides/api-reference/tagging NEW page — explicit
+        documentation of the popularity ordering's semantic.

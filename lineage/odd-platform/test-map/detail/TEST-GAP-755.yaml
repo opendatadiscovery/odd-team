@@ -1,0 +1,61 @@
+gap_id: TEST-GAP-755
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java CollectorController controller-class:CollectorController"
+pillars_affected: [P-09, P-08]
+surfaced_by:
+  - "CollectorController.md:bugs_limitations_corner_cases.[DELETE leaves orphan TOKEN row: the soft-delete sets COLLECTOR.deleted_at but does NOT also soft-delete or hard-delete the joined TOKEN row referenced by COLLECTOR.token_id. After deletion, the TOKEN row remains in the table with its plaintext value, unreachable via Collector navigation but still present in backups, dumps, and DB reads. Confirmed by batch-R ReactiveCollectorRepositoryImpl sidecar]"
+  - "CollectorController.md:security.known_security_gaps.[DELETE leaves orphan TOKEN row — the plaintext credential of a deleted collector persists in the TOKEN table indefinitely. Backups, replicas, and dumps carry it. A subsequent operator query against TOKEN by id range (e.g. during incident response) sees credentials that should have been retired — severity HIGH]"
+  - "CollectorController.md:tests_coverage_semantic.uncovered_behaviours.[Orphan-TOKEN-row test: confirm that after DELETE, the TOKEN row remains and is no longer reachable via Collector navigation]"
+behaviour: |-
+  **HIGH — `DELETE /api/collectors/{id}` soft-deletes the `collector` row BUT LEAVES THE TOKEN ROW INTACT in the `token` table indefinitely. The plaintext credential of a deleted collector persists in DB backups, replicas, dumps, and reads forever.** Primary-source confirmed in batch-W CollectorController sidecar + cross-link to batch-R `ReactiveCollectorRepositoryImpl` sidecar:
+
+  **Persistence-layer evidence**:
+  - `CollectorServiceImpl.delete` (lines 71-80, `@ReactiveTransactional`): the only delete operation is `collectorRepository.delete(id)` (line 78). NO `tokenRepository.delete(...)` call. NO grep hit for `tokenRepository.delete` anywhere in `CollectorServiceImpl`.
+  - `ReactiveAbstractSoftDeleteCRUDRepository.delete` (lines 51-59): the inherited soft-delete UPDATEs ONLY the parent table — `UPDATE collector SET deleted_at = NOW() WHERE id = ?`. The FK `collector.token_id → token.id` remains; the `token` row is untouched.
+  - **The TOKEN row remains**: its `value` column carries the plaintext credential, indefinitely. The row is unreachable via Collector navigation (the parent is soft-deleted) but lives in the table.
+
+  **Operator-visible consequences**:
+  - **Backup retention**: an operator running standard PostgreSQL backups (pg_dump nightly, retained for 90 days per typical SOX/GDPR compliance) carries 90 days of plaintext deleted-collector tokens.
+  - **Replica drift**: a hot-standby or read-replica carries the orphan tokens until manual cleanup.
+  - **Incident response**: an operator investigating a credential leak ("did we ever issue a token for this URL?") queries `SELECT * FROM token WHERE created_at > '2025-01-01'` and sees credentials that have been "deleted" via the UI but are still in the table — confusing the investigation timeline.
+  - **GDPR right-to-erasure**: a customer requesting data erasure for their integration credentials cannot be told "the token has been deleted" — it has not.
+  - **Audit trail asymmetry**: the UI shows "Collector deleted"; the DB shows "TOKEN row still present". Audit reports comparing UI state to DB state surface a discrepancy.
+
+  **Why HIGH not MEDIUM (the sidecar's own rating)**: the sidecar rates this MEDIUM-HIGH per `bugs_limitations_corner_cases` and HIGH per `security.known_security_gaps`. We rate THIS gap HIGH because: (a) the plaintext-credential persistence has GDPR/SOX implications operators cannot mitigate without raw DB access; (b) the orphan growth is unbounded — every collector ever deleted leaves a row; (c) there is NO scheduled cleanup job (no entry in the 5-job housekeeping cycle covers the `token` table). The asymmetry between the UI's "deleted" view and the DB's "still present" reality is a forensic-investigation hazard.
+
+  **Test gap shape**: regression-pin asserting: (a) after `DELETE /api/collectors/{id}`, the `collector` row has `deleted_at IS NOT NULL`; (b) the `token` row referenced by the deleted collector's `token_id` STILL EXISTS in the `token` table; (c) the `token.value` column STILL HOLDS the plaintext credential; (d) no scheduled job (housekeeping cycle) removes the orphan token. The current state is PINNED — failures land if a future maintainer adds `tokenRepository.delete(collector.token_id)` to the delete path, or adds a housekeeping job to GC orphan tokens.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/CollectorRepositoryImplTest.java (sister repository-tier test; does NOT exercise the orphan-token contract)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/CollectorDeleteLeavesOrphanTokenRowTest.java"
+  name: "deleteCollector_softDeletesCollectorButLeavesTokenRowIntact_plaintextValuePersists_pinsOrphanGrowth"
+evidence:
+  - "CollectorController.md says (bugs_limitations_corner_cases.[orphan-token]): 'DELETE leaves orphan TOKEN row: the soft-delete sets COLLECTOR.deleted_at but does NOT also soft-delete or hard-delete the joined TOKEN row referenced by COLLECTOR.token_id. After deletion, the TOKEN row remains in the table with its plaintext value, unreachable via Collector navigation but still present in backups, dumps, and DB reads. Confirmed by batch-R ReactiveCollectorRepositoryImpl sidecar and by absence of any token-deletion call in CollectorServiceImpl.delete.' — evidence: CollectorServiceImpl.java:71-80 (delete path issues only collectorRepository.delete(id); no tokenRepository.delete(...)) + ReactiveAbstractSoftDeleteCRUDRepository.java:51-59 — severity: MEDIUM"
+  - "CollectorController.md says (security.known_security_gaps.[orphan-TOKEN]): 'DELETE leaves orphan TOKEN row — the plaintext credential of a deleted collector persists in the TOKEN table indefinitely. Backups, replicas, and dumps carry it. A subsequent operator query against TOKEN by id range (e.g. during incident response) sees credentials that should have been retired.' — severity: HIGH"
+  - "CollectorController.md says (doc_drift_findings.[orphan-token-undocumented]): 'The doc-stack does not warn that DELETE leaves an orphan TOKEN row in the database. This is invisible to operators but matters for backup / GDPR-style data-deletion contracts.'"
+  - "Verified at primary source: CollectorServiceImpl.java:71-80 (only collectorRepository.delete(id) — no tokenRepository.delete) + ReactiveAbstractSoftDeleteCRUDRepository.java:51-59 (the inherited soft-delete UPDATEs only the parent table)"
+  - "Cross-link batch-R ReactiveCollectorRepositoryImpl sidecar — confirms the orphan growth at the repository tier"
+cross_references:
+  - "TEST-GAP-754 (NEW batch W — sister plaintext-token-chain at wire-tier; this gap is the at-rest persistence side)"
+  - "TEST-GAP-756 (NEW batch W — token entropy ThreadLocalRandom — sister generation-tier gap)"
+  - "TEST-GAP-757 (NEW batch W — zero audit logging — sister observability gap)"
+  - "concepts: shared-secret-tokens-stored-plaintext (existing concept — this gap is the orphan-growth extension)"
+  - "concepts: housekeeping-ttl-retention (existing concept — orphan TOKEN cleanup is NOT in the 5-job housekeeping cycle)"
+  - "REFACTOR-NNN candidate: add tokenRepository.delete(collector.token_id) to CollectorServiceImpl.delete; OR add a sixth housekeeping job (TokenOrphanHousekeepingJob) that periodically GCs token rows with no live parent"
+  - "DOC-NNN candidate: surface the orphan-token semantics in Management → Collectors doc + GDPR/compliance section; operators MUST know that DELETE does not erase the credential at-rest"
+  - "LSN-001 (LSN family: operator follows documented workflow; downstream consequence is invisible)"
+related_features: [F-020]
+related_pillar_features: ["P-09:F-001", "P-08:F-004-collector-lifecycle"]
+proposed_action: |-
+  Add `CollectorDeleteLeavesOrphanTokenRowTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `deleteCollector_softDeletesCollectorRow_pinsParentDeletion` — POST `/api/collectors` to seed; capture token_id; DELETE `/api/collectors/{id}`; assert `SELECT deleted_at FROM collector WHERE id = ?` returns NON-NULL.
+  2. `deleteCollector_leavesTokenRowIntact_plaintextValuePersists_pinsOrphanGrowth` — same setup; after DELETE assert `SELECT COUNT(*), value FROM token WHERE id = ?` returns count=1 AND value=plaintext-40-char-string. PIN the orphan-row + plaintext-persistence.
+  3. `deleteCollector_subsequentHousekeepingCycleDoesNotGcOrphanToken_pinsNoCleanupJob` — DELETE the collector; trigger ALL existing housekeeping jobs via the scheduler; assert the orphan TOKEN row STILL EXISTS. PIN the absence of cleanup.
+
+  Pair with REFACTOR-NNN: add `tokenRepository.delete(...)` to `CollectorServiceImpl.delete` (synchronous fix) OR add a `TokenOrphanHousekeepingJob` (scheduled GC fix). When the synchronous fix lands, test #2 inverts to assert the TOKEN row is also deleted.
+
+  Cross-pair with DOC-NNN: add a "Compliance and Data Retention" subsection to the Management → Collectors doc page; explain that DELETE soft-deletes the collector but the credential persists in the at-rest store; advise on raw-DB cleanup procedures for compliance audits.
+batch: 2026-05-20-W
+feature_id: F-020

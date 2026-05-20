@@ -1,0 +1,69 @@
+name: Get Data Set Structure Diff
+canonical_in_docs: false
+canonical_candidate: true
+description: |-
+  GET /api/datasets/{data_entity_id}/structure/diff?first_version_id=A&second_version_id=B
+  — returns DataSetVersionDiffList { fieldList: List<DataSetVersionDiff> }
+  with per-field status (CREATED / UPDATED / DELETED / NO_CHANGES)
+  + per-version states across the two compared versions. NO
+  SecurityRule entry; any authenticated user can call. Implementation:
+  DatasetController.java:43-50 → DatasetVersionServiceImpl.getDatasetVersionDiff
+  (lines 55-64) → ReactiveDatasetVersionRepositoryImpl.getDatasetVersionWithFields
+  (lines 146-157).
+
+  Three load-bearing semantic properties:
+
+    (1) PER-ENTITY-SCOPING BYPASS: The URL's `data_entity_id`
+        parameter is NOT enforced — the SQL filters
+        WHERE DATASET_VERSION.ID IN (firstVersionId, secondVersionId)
+        only. A caller may diff two versions belonging to two
+        DIFFERENT datasets; the diff is computed over the raw
+        column lists keyed by oddrn. The cross-dataset diff is
+        well-formed but nonsensical. See
+        datasetcontroller-per-entity-scoping-bypass-data-entity-id-not-enforced-at-sql
+        invariant THIS BATCH.
+
+    (2) IDENTICAL-VERSIONS REJECTION: If firstVersionId == secondVersionId,
+        the service throws BadUserRequestException
+        ('Couldn't show diff for identical versions') → HTTP 400.
+        Defensive guard at line 59-61.
+
+    (3) MISSING-VERSION-ID = 500 (not 404): If one of the requested
+        version_ids does not exist, `versionFields.size() != 2`
+        triggers a generic RuntimeException at
+        DatasetVersionServiceImpl.java:69-71 — bubbles as HTTP 500.
+        INCONSISTENT with the other structure endpoints which
+        throw NotFoundException (HTTP 404) on missing version.
+
+  Parent-field cascade: a parent-field rename treats EVERY child
+  field as DELETED+CREATED via getParentOddrnChangedPojos (lines
+  156-180) — produces amplified diff output for nested struct
+  changes. Behaviour intentional (encodes the column-level
+  versioning-by-reference invariant) but UNDOCUMENTED at the live
+  /features/data-discovery 'Dataset schema diff' page.
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java DatasetController controller-class:DatasetController
+contributors:
+  - |-
+    DatasetController batch W (PRIMARY SOURCE):
+    concepts.operations[get-structure-diff] +
+    bugs_limitations_corner_cases.[1] HIGH severity (per-entity-scoping
+    bypass at diff endpoint) +
+    bugs_limitations_corner_cases.[2] MEDIUM (500-on-missing-version-id)
+evidence:
+  - DatasetController.md:concepts.operations[get-structure-diff]
+  - DatasetController.md:bugs_limitations_corner_cases.[1] (HIGH — bypass)
+  - DatasetController.md:bugs_limitations_corner_cases.[2] (MEDIUM — 500 vs 404)
+  - DatasetController.md:concepts.invariants.[4,7] (data_entity_id ignored; parent-field cascade)
+notes: |-
+  Pairs with get-data-set-structure-by-version-id (the sibling
+  bypass-class endpoint).
+  Pairs with datasetcontroller-per-entity-scoping-bypass-data-entity-id-not-enforced-at-sql
+  (the master architectural invariant THIS BATCH).
+  Pairs with f-004-read-side-surface-at-column-level-via-datasetcontroller
+  (the diff endpoint multiplies the F-004 read surface by the
+  number of versions in the diff).
+  Pairs with read-collaborative-cross-owner-enumeration (the
+  no-SecurityRule pattern).

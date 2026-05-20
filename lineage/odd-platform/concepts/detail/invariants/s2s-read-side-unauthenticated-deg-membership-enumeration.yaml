@@ -1,0 +1,171 @@
+name: S2S read-side endpoint /ingestion/entities/{degOddrn} unauthenticated in EVERY shipped deployment mode — DEG membership enumerable
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+- P-10
+- P-05
+description: |-
+  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20-Z (getDataEntitiesByDEGOddrn sidecar)** —
+  `GET /ingestion/entities/{deg_oddrn}` (IngestionController.java:75-79)
+  is unauthenticated in EVERY shipped deployment configuration, including
+  the fully-hardened (`auth.type=OAUTH2` + `auth.s2s.enabled=true` +
+  `auth.ingestion.filter.enabled=true`) posture. The bypass is structural
+  via three composing mechanisms:
+    (a) `/ingestion/**` is in `SecurityConstants.WHITELIST_PATHS` line 96 —
+        removed from EVERY UI auth chain (LOGIN_FORM / OAUTH2 / LDAP)
+        by AuthorizationCustomizer line 22.
+    (b) `IngestionDataEntitiesFilter` path matcher is exact-literal
+        `/ingestion/entities` + `HttpMethod.POST`
+        (IngestionDataEntitiesFilter.java:28) — does NOT match the
+        GET method on the templated child path.
+    (c) The controller method has NO `@PreAuthorize` annotation
+        (IngestionController.java:75-79).
+
+  **The blast radius**: any caller able to reach the platform's HTTP
+  port can enumerate the FULL member list of ANY Data Entity Group
+  (DEG) by submitting its ODDRN. ODDRNs for DEGs follow a sequential
+  numeric id convention (`ODDPlatformDataEntityGroupPath.builder().id(pojo.getId()).build()`
+  at DataEntityGroupServiceImpl.java:193-195) — iterating ids 1..N
+  with the GET endpoint collects the full DEG-to-members mapping in
+  O(N) requests. No rate-limit, no audit-log entry, no per-IP throttle.
+
+  **Composition with REFACTOR-185 AUTH-MODE-ORTHOGONAL facet**: this
+  is the FIRST S2S READ endpoint where the unauthenticated-by-design
+  posture is documented. Prior batches focused on the S2S WRITE side
+  (POST /ingestion/entities — IngestionController.postDataEntityList,
+  POST /ingestion/alert/alertmanager, POST /ingestion/datasources). The
+  READ side is the structural complement: BOTH SIDES of the S2S API
+  are anonymously reachable under default deployment, AND the read
+  side has NO opt-in toggle to fail-close (the IngestionDataEntitiesFilter
+  is POST-only by design; broadening to GET would require a separate
+  IngestionReadFilter class).
+
+  **Combined with read-collaborative-cross-owner-enumeration**: any
+  caller (authenticated or not) reads the member list of ANY DEG
+  regardless of which owner the DEG belongs to. Extends the
+  REFACTOR-024 / REFACTOR-203 cross-owner-read posture to the S2S
+  surface; the UI-counterparts (DEG-lineage / search / catalog-walk)
+  at least REQUIRE authentication; this one does not.
+
+  **Severity HIGH**: cross-owner enumeration of DEG MEMBERSHIP under
+  default deployment, with no auditability and no rate-limit. The
+  endpoint is the read-side complement to F-008 (the destructive-write
+  surface) — together both sides of the S2S API are anonymously
+  reachable.
+axes_present:
+- controllers
+- services
+- repositories_reactive
+nodes:
+- odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn
+contributors:
+- |-
+  getDataEntitiesByDEGOddrn.md (batch Z PRIMARY SOURCE):
+    understanding (three-line proxy delegating to
+    DataEntityGroupServiceImpl.listEntitiesWithinDEG; the path
+    /ingestion/** is in SecurityConstants.WHITELIST_PATHS line 96
+    so the four UI auth modes do NOT protect it; the only authentication
+    gate is IngestionDataEntitiesFilter whose path matcher is hard-coded
+    to POST /ingestion/entities exactly — does NOT match this GET
+    endpoint — making this method unauthenticated in every shipped
+    deployment configuration, including when the operator has
+    enabled auth.ingestion.filter.enabled=true) +
+    concepts.invariants.[0] (No authorization at any layer — controller
+    has no @PreAuthorize; IngestionApi interface carries no security
+    annotations; DataEntityGroupServiceImpl.listEntitiesWithinDEG
+    makes no fetchAssociatedOwner() call; SecurityConstants.WHITELIST_PATHS
+    line 96 contains /ingestion/**; IngestionDataEntitiesFilter
+    line 28 matches POST /ingestion/entities ONLY — not GET, not
+    the templated child path) +
+    concepts.invariants.[4] (Cross-owner reachability — any authenticated
+    caller or any caller at all under auth.type=DISABLED can read the
+    member list of ANY DEG by knowing or guessing its ODDRN; blast
+    radius is the entire DEG catalog × the entire member catalog) +
+    bugs_limitations_corner_cases.[0] HIGH (Endpoint is UNAUTHENTICATED
+    in EVERY shipped deployment mode — including when operator enabled
+    auth.ingestion.filter.enabled=true believing they have locked down
+    the ingestion surface; ANY caller able to reach platform HTTP port
+    can enumerate member list of any DEG by knowing or guessing its
+    ODDRN) +
+    bugs_limitations_corner_cases.[1] HIGH (Cross-owner enumeration of
+    DEG membership — extends REFACTOR-024 / REFACTOR-340 / REFACTOR-203
+    cross-owner-read posture to S2S surface; ODDRN values include
+    platform host + DEG id; sequential numeric DEG ids enable trivial
+    enumeration; no rate-limit, no audit log, no metric counter) +
+    security.auth_mode_relevance (UNAUTHENTICATED IN ALL FOUR MODES) +
+    security.known_security_gaps.[0,1,2,4] (4 high-severity gaps —
+    unauthenticated all modes; sequential id enumeration; cross-owner
+    enumeration; filter-coverage-gap operator-trap) +
+    implicit_adrs.[0] (Read-collaborative posture extends to the S2S
+    read surface — explicitly UNSCOPED reads by design)
+evidence:
+- |-
+  getDataEntitiesByDEGOddrn.md:concepts.invariants.[0] (no auth at any
+  layer; the three composing mechanisms named explicitly)
+- |-
+  getDataEntitiesByDEGOddrn.md:security.auth_mode_relevance
+  (UNAUTHENTICATED IN ALL FOUR UI MODES due to /ingestion/** WHITELIST_PATHS
+  coverage)
+- |-
+  getDataEntitiesByDEGOddrn.md:bugs_limitations_corner_cases.[0,1] HIGH
+  (the two compound findings — unauthenticated reach + sequential id
+  enumeration)
+- |-
+  getDataEntitiesByDEGOddrn.md:security.known_security_gaps.[0-4]
+- |-
+  getDataEntitiesByDEGOddrn.md:implicit_adrs.[0] (the read-collaborative
+  posture extension to the S2S read surface)
+- |-
+  F-008 detail YAML line 42-45 (drift facets
+  s2s_read_side_unauthenticated_get_data_entities_by_deg_oddrn +
+  s2s_read_side_404_vs_empty_200_silent_conflation_sibling_lineage_endpoint_differs +
+  s2s_read_side_soft_delete_leak_single_sided_is_deleted_filter +
+  auth_ingestion_filter_enabled_false_sense_of_security_extends_to_get_deg_oddrn) —
+  recorded at the F-008 closure
+mitigations_unimplemented:
+- |-
+  Per the REFACTOR-185 AUTH-MODE-ORTHOGONAL facet mitigations
+  enumeration (remove `/ingestion/**` from WHITELIST_PATHS; broaden
+  IngestionDataEntitiesFilter; introduce per-endpoint filter subclasses;
+  or network-layer controls). All three close this finding.
+- |-
+  Code-side specific to this endpoint: add a `IngestionReadFilter`
+  class binding to `GET /ingestion/entities/**` gated by
+  `auth.ingestion.filter.enabled` (or a new property
+  `auth.ingestion.read.filter.enabled`). Composes with the existing
+  filter pattern without touching the WHITELIST_PATHS structure.
+- |-
+  Code-side: add a `OddrnFormatValidator` at the read path — currently
+  the endpoint accepts any string as the degOddrn path parameter
+  (`""`, `"null"`, malformed values all produce 200 with empty items).
+  Validating the ODDRN format would surface input errors as 400 and
+  reduce the attacker reconnaissance surface.
+- |-
+  Doc-side: extend the configuration-and-deployment/enable-security/
+  authentication/s2s page with the S2S READ-side surface explicitly —
+  the page currently covers POST /ingestion/entities and is silent on
+  the GET-by-degOddrn complement.
+- |-
+  Audit-side: add `log.info` invocations + Prometheus counters at the
+  read path — currently `IngestionController.java:30` declares
+  `@Slf4j` but lines 75-79 have no log call. Composition with the
+  `slf4j-annotation-unused-no-audit-trail` finding from this batch.
+severity: HIGH
+severity_dim: security-s2s-read-side-unauthenticated-cross-owner-enumeration
+cross_batch: true
+notes: |-
+  Surfaced batch 2026-05-20Z by the getDataEntitiesByDEGOddrn sidecar.
+  Composes with REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (this batch),
+  with the F-016 DEG-Anchored Lineage feature (the architectural
+  sibling), and with the read-collaborative-cross-owner-enumeration
+  pattern (REFACTOR-024 / 203 family).
+
+  Cross-references:
+    - REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (this batch)
+    - F-008 (the write-side complement; batch-Z 5-vertex closure)
+    - F-016 DEG-Anchored Lineage (UI-side sibling — also unscoped, but
+      requires authentication)
+    - deg-membership-vs-deg-lineage-404-vs-empty-200-contract-asymmetry
+      (this batch) — the contract-shape sibling
+    - read-collaborative-cross-owner-enumeration

@@ -1,0 +1,68 @@
+gap_id: TEST-GAP-858
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java service:TagServiceImpl"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "TagServiceImpl.md:stress_findings.C.S-C-2 (updateRelationsWithDataEntity with EMPTY tagNames Set — INTERPRETED as remove all non-external tags from this data entity — destructive operation triggered by an empty input)"
+behaviour: |-
+  **HIGH — `TagServiceImpl.updateRelationsWithDataEntity(dataEntityId, Set.of())` is DESTRUCTIVE: with an empty `tagNames` Set, the diff computes `pojosToDelete = currentRelations \ updated = currentRelations` (every non-external relation goes into the delete set), then issues `deleteDataEntityRelations(pojosToDelete) + createDataEntityRelations(empty)`. The empty input is INTERPRETED as "remove all non-external tags from this entity" — a destructive operation triggered by what callers might intuitively read as "no change requested".** No test pins this contract; a future caller (`DataEntityServiceImpl.upsertTags`) that mistakenly passes `Set.of()` when meaning "no-op" will silently strip all non-external relations from the entity.
+
+  **Primary-source chain** (per TagServiceImpl.md:stress_findings.C.S-C-2):
+  - `TagServiceImpl.java:96-121` (`updateRelationsWithDataEntity`): the diff method.
+  - `:102` reads `currentRelations` filtered to `!external`.
+  - `:107-110` builds `updatedRelations` from `tagNames`. If `tagNames = Set.of()`, `getOrCreateTagsByName(Set.of())` returns `Flux.empty()` → `updatedRelations = []`.
+  - `:114-116`: `pojosToDelete = current.stream().filter(r -> !updated.contains(r)).toList()` → `pojosToDelete = current` (everything goes into delete set).
+  - `:117-118`: `deleteDataEntityRelations(pojosToDelete)` hard-deletes all non-external `tag_to_data_entity` rows.
+  - `:119`: `createDataEntityRelations(updated)` is a no-op (empty list short-circuits per repository's empty-batch guard).
+  - `:120-121`: `listDataEntityDtos(dataEntityId)` returns the post-state — which is ONLY the external relations.
+
+  **What this CAN do operationally**:
+  - **The path is reachable from `PUT /api/dataentities/{id}/tags` with `tagNames: []`**: an SDK consumer passing an empty array (perhaps as part of a multi-form-field UI's serialisation when the user clears all chips) triggers the destructive cascade. No client-side warning, no server-side warning.
+  - **The doc page DOES NOT advertise this semantic**: the live tagging page describes the per-entity assignment as "select from existing vocabulary or create new labels on the spot"; nothing names the empty-array-deletes-all behavior.
+  - **The test corpus does NOT pin this**: no `TagServiceImplTest` exists at all (per TagServiceImpl.md:tests_coverage_semantic.covered_behaviours = []).
+
+  **Why HIGH not MEDIUM**:
+  - The empty-input destructive operation is a SILENT data-loss surface. A user clicking "remove all tags" in a UI followed by Save triggers it intentionally; a UI bug submitting empty list when the user navigated away triggers it accidentally.
+  - The pattern is shared with REFACTOR-NNN class "empty-input destructive operations" — sister cases include other diff-style endpoints where empty means "remove all".
+  - The defense against it (cap empty-list to a UI confirmation or an explicit `removeAll: true` flag) requires either a contract change or a guard at the service layer.
+
+  **The OpenAPI side** — `openapi.yaml` documents `tag_name_list: List<String>` with no `minItems` constraint. Future SDK consumers building against the spec see the field as a regular list and submit empty lists for "no tags" / "clear all" / "no change" — three semantically distinct operator intents, ONE behavior.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TagServiceImplEmptyTagNamesDeletesAllTest.java"
+  name: "updateRelationsWithDataEntity_withEmptyTagNamesSet_removesAllNonExternalRelations_pinsDestructiveSemantic"
+evidence:
+  - "TagServiceImpl.md says (stress_findings.C.S-C-2): 'updateRelationsWithDataEntity with EMPTY tagNames Set — the path goes: currentRelations (list of !external relations) + updatedRelations (empty, because getOrCreateTagsByName({}) returns empty). The diff: pojosToDelete = current \\\\ updated = current (every current relation is in the delete set). Then deleteDataEntityRelations(pojosToDelete) + createDataEntityRelations(emptyList) + listDataEntityDtos(dataEntityId). Empty tagNames is INTERPRETED as remove all non-external tags from this data entity — this is a destructive operation triggered by an empty input. Caller (DataEntityServiceImpl.upsertTags) must NOT pass {} to mean no-op; that is a delete-all.' confidence: HIGH — behaviour is intentional (the diff semantic is well-defined) but the trap is real if a caller treats {} as no change requested."
+  - "Verified at primary source: TagServiceImpl.java:96-121 (the diff method) + :114-116 (the filter-based diff) + :117-119 (the cascade)"
+  - "Probe shape: lineage/odd-platform/probes/P-LSN019-updateRelations-empty-deletes-all.md"
+cross_references:
+  - "TEST-GAP-857 (NEW VAL-LSN-019 — !external preserved invariant; this gap is the EMPTY-INPUT complement at the same method)"
+  - "TEST-GAP-021 (existing — DataEntity Tag-create side-door; sister architectural class — the upstream PUT /api/dataentities/{id}/tags reaches this destructive semantic)"
+  - "REFACTOR-NNN candidate: differentiate empty-list (delete all) from null-list (no-op) at the OpenAPI + controller layer; OR require an explicit removeAll: true flag for the destructive semantic"
+  - "DOC-NNN candidate: surface the empty-array-deletes-all semantic on the per-entity Tag assignment doc page; warn operators authoring SDK clients against ambiguous empty-input meaning"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+proposed_action: |-
+  Add `TagServiceImplEmptyTagNamesDeletesAllTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/` using Testcontainers + `@SpringBootTest`. Three test methods:
+
+  1. **`updateRelationsWithDataEntity_withEmptyTagNamesSet_removesAllNonExternalRelations_pinsDestructiveSemantic`** (HEADLINE):
+     - Arrange: 1 data_entity. Seed 3 `tag_to_data_entity` rows: `(tagA, entity, external=false)`, `(tagB, entity, external=false)`, `(tagC, entity, external=true)` (Collector-pushed).
+     - Act: `tagService.updateRelationsWithDataEntity(entity.id, Set.of()).block()`.
+     - Assert: query `SELECT tag_id, external FROM tag_to_data_entity WHERE data_entity_id = ?`. Result: ONLY `(tagC, true)` remains. tagA and tagB are GONE. PIN: empty Set is destructive across the non-external set.
+
+  2. **`updateRelationsWithDataEntity_withEmptyTagNamesSet_externalRelationsPreserved_pinsExternalImmutabilityUnderDeleteAll`**:
+     - Arrange: 2 `tag_to_data_entity` rows both `external=true` (e.g., from a Collector push).
+     - Act: `updateRelationsWithDataEntity(entity.id, Set.of()).block()`.
+     - Assert: BOTH external rows STILL present. PIN: even the destructive empty-input does not breach the external-immutability invariant (sister to TEST-GAP-857).
+
+  3. **`updateRelationsWithDataEntity_withEmptyTagNamesSet_listReturnsOnlyExternalRelations_pinsPostStateShape`**:
+     - Arrange: as in #1.
+     - Act: capture the return value `List<TagDto>` from the call.
+     - Assert: returned list contains ONLY the tagC TagDto with `external = true`. PIN: the return shape after the destructive operation is the external-only residue.
+
+  After landing the test: pair with REFACTOR-NNN — either change the contract to differentiate empty-list (delete all) from absent / null (no-op) at the OpenAPI level, OR add a guard at the service layer. Cross-pair with DOC-NNN to surface this on the doc page so SDK authors don't get burned.
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

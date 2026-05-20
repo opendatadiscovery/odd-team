@@ -1,0 +1,58 @@
+gap_id: TEST-GAP-760
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java NamespaceController controller-class:NamespaceController"
+pillars_affected: [P-08, P-01]
+surfaced_by:
+  - "NamespaceController.md:bugs_limitations_corner_cases.[3 — MEDIUM Case-sensitivity is undocumented and operator-surprising. ReactiveNamespaceRepositoryImpl.getByName uses NAMESPACE.NAME.eq(name) (line 26 — case-sensitive byte-equality) and the unique index namespace_unique is over (name) with no case-folding (V0_0_31:25). An operator creating finance and Finance gets TWO distinct namespaces — but the docs treat namespace names as natural identifiers]"
+  - "NamespaceController.md:tests_coverage_semantic.uncovered_behaviours.[Case-sensitivity assertion: creating finance then Finance succeeds and returns two distinct namespace IDs]"
+  - "NamespaceController.md:implicit_adrs.[4] (Name validation is INTENTIONALLY minimal — varchar(64), no regex, no allowlist, no case-folding)"
+behaviour: |-
+  **MEDIUM — Namespace name comparison is CASE-SENSITIVE at every layer (repository getByName, unique-index `namespace_unique`, application-tier validation). An operator creating `finance` and then `Finance` gets TWO distinct namespaces with distinct ids — but the live docs treat namespace names as natural identifiers (`Create a namespace before authoring tags or terms that should be scoped to a particular team or domain`).** Primary-source confirmed in batch-W NamespaceController sidecar:
+
+  - **Repository tier**: `ReactiveNamespaceRepositoryImpl.getByName` line 26 uses `NAMESPACE.NAME.eq(name)` — jOOQ's `.eq` resolves to `=` SQL operator, which is BYTE-EQUALITY in PostgreSQL's `varchar` column (no case-folding, no collation override).
+  - **DB tier**: V0_0_31__add_deleted_at_field.sql:25 — `CREATE UNIQUE INDEX IF NOT EXISTS namespace_unique ON namespace (name) WHERE deleted_at IS NULL` — the index expression is `(name)`, NOT `(LOWER(name))` or `(name COLLATE "C")`. Case-sensitive uniqueness.
+  - **Mapper tier**: `NamespaceMapper.java:1-29` — no case-folding hook. The mapper passes name verbatim.
+  - **Controller tier**: `NamespaceController.java` — no normalization in the request handlers.
+
+  **Operator-visible consequences**:
+  - Operator A creates namespace `Finance`. Operator B searches the autocomplete for `finance`, doesn't see a match, creates `finance`. The platform now has TWO namespaces. Tags and terms scoped to one don't see the other.
+  - Cross-team confusion: when team B tags their data with `finance` and team A tagged theirs with `Finance`, the cross-namespace queries return disjoint results.
+  - The "natural identifier" framing in the docs (live-fetched 2026-05-20 from `/features/management`: "Create a namespace before authoring tags or terms that should be scoped to a particular team or domain") implies case-insensitive matching.
+  - UI Unicode confusables: `fіnance` (Cyrillic 'і') vs `finance` (ASCII 'i') — both ACCEPTED as distinct names. The platform offers no defense against homograph attacks for namespace selection.
+
+  **Why MEDIUM not HIGH**:
+  - Operator-impact is RECOVERABLE — duplicate namespaces can be merged (delete one, re-attach referents to the other).
+  - The behaviour is CONSISTENT with the platform's broader posture (per implicit_adrs.[4]): "Name validation is INTENTIONALLY minimal — varchar(64), no regex, no allowlist, no case-folding." — applied uniformly across owner / tag / label / data_source name columns.
+  - Not a security vulnerability per se; the issue is operator-surprise and cross-team data fragmentation.
+
+  **Test gap shape**: regression-pin asserting: (a) `POST /api/namespaces` with name `finance` then `POST /api/namespaces` with name `Finance` BOTH succeed and return DISTINCT ids; (b) the unique-index `namespace_unique` is over `(name)` not `(LOWER(name))`; (c) Unicode confusables (Cyrillic 'і' vs ASCII 'i') produce distinct namespaces. The current state is PINNED — failures land if a future maintainer adds case-folding at any layer.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/NamespaceServiceImplTest.java (sister service-tier test; does NOT exercise case-sensitivity)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/NamespaceCaseSensitivityTest.java"
+  name: "createNamespace_financeAndFinance_returnTwoDistinctIds_pinsCaseSensitiveUniqueness"
+evidence:
+  - "NamespaceController.md says (bugs_limitations_corner_cases.[3]): 'MEDIUM — Case-sensitivity is undocumented and operator-surprising. ReactiveNamespaceRepositoryImpl.getByName uses NAMESPACE.NAME.eq(name) (line 26 — case-sensitive byte-equality) and the unique index namespace_unique is over (name) with no case-folding (V0_0_31:25). An operator creating finance and Finance gets TWO distinct namespaces — but the docs treat namespace names as natural identifiers (Create a namespace before authoring tags or terms that should be scoped to a particular team or domain — live /features/management 2026-05-20).' — evidence: ReactiveNamespaceRepositoryImpl.java:26 + V0_0_31__add_deleted_at_field.sql:25 + NamespaceMapper.java:1-29 (no normalisation hook) — severity: MEDIUM"
+  - "NamespaceController.md says (implicit_adrs.[4]): 'Name validation is INTENTIONALLY minimal — varchar(64), no regex, no allowlist, no case-folding. evidence: V0_0_1__init.sql:13 (name varchar(64), — no CHECK constraint) + NamespaceMapper.java:1-29 (no validation hooks) + components.yaml:262-268 (NamespaceFormData OpenAPI schema has only name: string, required: true — no pattern, no minLength/maxLength).' — confidence: HIGH"
+  - "Verified at primary source: ReactiveNamespaceRepositoryImpl.java:26 (NAMESPACE.NAME.eq(name)) + V0_0_31__add_deleted_at_field.sql:25 (CREATE UNIQUE INDEX IF NOT EXISTS namespace_unique ON namespace (name) WHERE deleted_at IS NULL)"
+  - "WebFetch 2026-05-20 of https://docs.opendatadiscovery.org/features/management — page treats namespace names as natural identifiers (no case-sensitivity warning)"
+cross_references:
+  - "TEST-GAP-759 (NEW batch W — TOCTOU race — sister Namespace gap)"
+  - "TEST-GAP-761 (NEW batch W — soft-delete reincarnation — sister Namespace gap)"
+  - "TEST-GAP-726 (STRENGTHENED batch W — the 4-sister-service NAMESPACE_CREATE side-door; case-sensitivity COMPOUNDS the side-door problem because side-door callers can mint dozens of case-variants of an existing namespace)"
+  - "concepts: namespace-inherited-from-collector-not-payload-collector-scoped-tenancy (existing concept)"
+  - "DOC-NNN candidate: surface namespace case-sensitivity in the Management → Namespaces doc; warn operators about Unicode confusables"
+related_features: []
+related_pillar_features: ["P-08:F-NN-namespaces-tab"]
+proposed_action: |-
+  Add `NamespaceCaseSensitivityTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `createNamespace_financeAndFinance_returnTwoDistinctIds_pinsCaseSensitiveUniqueness` — POST `/api/namespaces` with `name='finance'`; capture id_lower; POST again with `name='Finance'`; capture id_capital; assert `id_lower != id_capital`.
+  2. `getByName_caseSensitiveByteEquality_pinsRepositoryContract` — seed `finance`; call `ReactiveNamespaceRepositoryImpl.getByName('Finance')`; assert Mono.empty().
+  3. `uniqueIndexDefinitionOverPlainName_pinsDbConstraint` — query `pg_indexes` for `namespace_unique`; assert the index definition is `(name) WHERE deleted_at IS NULL` (NOT `(LOWER(name))` and NOT with case-insensitive collation).
+  4. `unicodeConfusables_cyrillicI_vsAsciiI_returnTwoDistinctIds_pinsHomographAcceptance` — POST `finance` (ASCII) then POST `fіnance` (with Cyrillic 'і' codepoint U+0456); assert both succeed and return distinct ids.
+
+  Pair with DOC-NNN: surface namespace case-sensitivity in the Management doc; recommend a UI fix (warn on near-matches via Levenshtein distance or NFKC normalization).
+batch: 2026-05-20-W
+feature_id: null

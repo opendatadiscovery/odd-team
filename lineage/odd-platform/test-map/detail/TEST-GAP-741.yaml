@@ -1,0 +1,61 @@
+gap_id: TEST-GAP-741
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java ReferenceDataController controller-class:ReferenceDataController"
+pillars_affected: [P-03]
+surfaced_by:
+  - "ReferenceDataController.md:bugs_limitations_corner_cases.[3] (Cascade-on-parent-DataEntity-delete is NOT enforced by FK constraint — when an operator deletes the lookup table's parent DataEntity via /api/dataentities/{id}, the rows in lookup_tables_schema.n_* and the lookup_tables row become orphaned — severity HIGH)"
+  - "ReferenceDataController.md:bugs_limitations_corner_cases.[4] (No transactional consistency between the catalog-side delete (tableRepository.delete) and the lookup_tables_schema physical-table DROP — a failure between the catalog DELETE and the physical DROP TABLE leaves the catalog inconsistent with the data store — severity MEDIUM)"
+  - "ReferenceDataController.md:implicit_adrs.[3] (Row storage is delegated to a physical Postgres table in lookup_tables_schema, not stored as JSON in the catalog)"
+behaviour: |-
+  **MEDIUM — Two-transaction cascade non-atomic on Lookup Table delete: a failure between the catalog-side DELETE and the physical DROP TABLE leaves the catalog inconsistent with the data store. Plus, the cascade-on-parent-DataEntity-delete is NOT enforced — deleting the parent DataEntity via `/api/dataentities/{id}` orphans the lookup_tables_schema rows.** Primary-source confirmed in the batch-V ReferenceDataController sidecar:
+
+  **Two-transaction non-atomic delete**:
+  - `LookupDataServiceImpl.java:113` declares `deleteLookupTable` as `@ReactiveTransactional` (one transaction). The body orchestrates: (a) `lookupTableSearchEntrypointRepository.deleteByTableId`; (b) `tableDefinitionRepository.deleteByTableId`; (c) `tableRepository.delete` (catalog-side delete).
+  - `ReferenceDataRepositoryImpl.java:267` declares its own `@ReactiveCustomTransactional` on `deleteLookupTable` (DDL DROP TABLE) — a SEPARATE transaction.
+  - `ReferenceDataServiceImpl.java:154-158` composes the two: `referenceDataRepository.deleteLookupTable(table).then(lookupDataService.deleteLookupTable(table))` — TWO sequential transactions, ONE Mono chain, no rollback semantics across the boundary.
+  - **Failure mode**: if the physical DROP TABLE (transaction A) succeeds and the catalog-side delete (transaction B) FAILS (e.g. transient network error, statement timeout), the physical table is gone but the `lookup_tables` row still references it. Subsequent reads against the lookup_table fail with `relation "n_X__name" does not exist`.
+
+  **Cascade-on-parent-DataEntity-delete is NOT enforced by FK**:
+  - When an operator deletes the parent DataEntity via `DELETE /api/dataentities/{id}` OR via ingestion soft-delete-TTL, the cascade stops at the DataEntity tier. The `lookup_tables.data_entity_id` FK has NO `ON DELETE CASCADE` clause. The `lookup_tables_schema.n_X` physical tables remain. The catalog row in `lookup_tables` remains, now pointing to a tombstoned DataEntity.
+  - **Result**: orphaned lookup_tables rows + orphaned physical tables + orphaned search-entrypoint rows. The only cleanup path is via `DELETE /api/referencedata/table/{lookup_table_id}` — but the operator who deleted the parent DataEntity may have no awareness that the child Lookup Tables exist.
+
+  **Compound failure modes**:
+  - Operator deletes DataEntity 100; DataEntity tombstoned; Lookup Table 555 (whose `data_entity_id = 100`) becomes orphaned. Listing `/api/referencedata/table` filters out tables linked to deleted entities IF the listing query applies the `DELETED_AT IS NULL` filter on the JOIN — verified per sister gap analysis that the JOIN does NOT apply this filter. So orphan tables surface in the list response with a soft-deleted parent reference.
+  - The physical Postgres table `lookup_tables_schema.n_X__name` consumes storage indefinitely until the orphan is detected.
+
+  **Why MEDIUM not HIGH**: the failure mode is a DATA-INTEGRITY hazard, not a security or operational-outage class. The orphan rows are eventually-detectable via tooling. The two-transaction non-atomic deletion is a corner-case (requires a specific failure between two consecutive transactions). MEDIUM at the per-instance severity.
+
+  **Test gap shape**: regression-pin asserting (a) the parent-DataEntity-delete cascade leaves orphan rows; (b) the two-transaction non-atomic deletion leaves catalog-vs-data-store inconsistency on simulated mid-chain failure. Pin both shapes.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/LookupDataServiceTest.java (service-tier happy-path; does NOT exercise cascade failures)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ReferenceDataCascadeNonAtomicTest.java"
+  name: "deleteLookupTable_failureBetweenPhysicalDropAndCatalogDelete_leavesInconsistentState_AND_parentDataEntityDelete_orphansLookupTable"
+evidence:
+  - "ReferenceDataController.md says (bugs_limitations_corner_cases.[3]): 'Cascade-on-parent-DataEntity-delete is NOT enforced by FK constraint. If an operator deletes the lookup table parent DataEntity via /api/dataentities/{id} (or via ingestion soft-delete TTL), the rows in lookup_tables_schema.n_* and the lookup_tables row become orphaned. Cleanup only happens when the operator deletes via DELETE /api/referencedata/table/{lookup_table_id} — the controller-orchestrated path.' — severity HIGH"
+  - "ReferenceDataController.md says (bugs_limitations_corner_cases.[4]): 'No transactional consistency between the catalog-side delete (tableRepository.delete) and the lookup_tables_schema physical-table DROP. Both use @ReactiveCustomTransactional / @ReactiveTransactional separately (service-tier vs repository-tier) — a failure between the catalog DELETE (commit A) and the physical DROP TABLE (commit B) leaves the catalog inconsistent with the data store.' — severity MEDIUM"
+  - "Verified at primary source: LookupDataServiceImpl.java:113 (@ReactiveTransactional) + ReferenceDataRepositoryImpl.java:267 (@ReactiveCustomTransactional separate) + ReferenceDataServiceImpl.java:154-158 (referenceDataRepository.deleteLookupTable(table).then(lookupDataService.deleteLookupTable(table)) — two transactions, one Mono chain, no rollback across the boundary)"
+cross_references:
+  - "TEST-GAP-733 (NEW batch V — ReferenceData verbatim-storage XSS — sister gap on same controller)"
+  - "TEST-GAP-734 (NEW batch V — buildTableName collision — sister gap on same controller)"
+  - "TEST-GAP-739 (NEW batch V — NO_CONTEXT permission scope — sister gap on same controller)"
+  - "TEST-GAP-626 (Owner-delete + owner_association_request orphan rows — SISTER cascade-incompleteness pattern across controllers)"
+  - "concepts: two-transaction-non-atomic-cascade-class (NEW concept candidate — patterns in the codebase that compose multiple @Transactional methods via .then(...) without rollback semantics)"
+  - "REFACTOR-NNN candidate: unify the two-step delete into a single transaction (use @ReactiveCustomTransactional or a saga pattern with compensation steps); OR add boot-time housekeeping that detects + cleans orphan lookup_tables rows pointing to soft-deleted DataEntities"
+  - "DOC-NNN candidate: surface the orphan-on-parent-delete behaviour on the Lookup Tables doc page; operators planning a mass-cleanup of stale DataEntities need to know about Lookup Table orphans"
+related_features: [F-NN-master-data-management]
+related_pillar_features: ["P-03:F-001"]
+proposed_action: |-
+  Add `ReferenceDataCascadeNonAtomicTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `deleteParentDataEntity_orphansLookupTableRow_pinsCascadeIncompleteness` — seed a Lookup Table linked to DataEntity 100; DELETE `/api/dataentities/100`; assert the lookup_tables row still exists pointing to soft-deleted DataEntity 100; assert the physical table `lookup_tables_schema.n_X__name` still exists. PIN the orphan persistence.
+  2. `deleteLookupTable_failureBetweenPhysicalDropAndCatalogDelete_leavesInconsistentState` — mock the JOOQ executor to throw a transient error AFTER the DROP TABLE succeeds but BEFORE tableRepository.delete completes; call `DELETE /api/referencedata/table/{id}`; assert the physical table is GONE but the lookup_tables row REMAINS; verify the catalog/data-store inconsistency. PIN the non-atomic contract.
+  3. `getLookupTableById_afterOrphanedState_returnsCatalogRowButFollowUpReadOfRowDataFails` — pin the read-tier consequence: after the cascade-incompleteness or the non-atomic failure, GET `/api/referencedata/table/{id}` returns the lookup_tables row; subsequent GET `/api/referencedata/table/{id}/data` raises a Postgres error because the physical table is gone.
+  4. `getReferenceDataSearchResults_afterOrphanedState_continuesToSurfaceOrphanedTable_pinsListReadAsymmetry` — pin the LIST-side read behaviour: the listing surfaces the orphaned table in search results because the search-entrypoint row was not cleaned up.
+
+  Add a `// REGRESSION-PIN — Two cascade-incompleteness classes on the Lookup Tables controller: (a) parent-DataEntity-delete leaves orphan child rows; (b) two-transaction delete is non-atomic. A REFACTOR adding ON DELETE CASCADE or saga-style rollback compensations will break tests #1 and #2 respectively.` comment block.
+
+  Pair with REFACTOR-NNN: unify the two-step delete OR add boot-time orphan cleanup. Pair with DOC-NNN: surface the orphan-on-parent-delete behaviour.
+batch: 2026-05-20-V
+feature_id: null

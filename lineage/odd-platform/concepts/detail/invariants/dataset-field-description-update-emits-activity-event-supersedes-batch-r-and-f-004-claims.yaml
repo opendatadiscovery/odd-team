@@ -1,0 +1,271 @@
+name: |-
+  DatasetField description-update EMITS DATASET_FIELD_DESCRIPTION_UPDATED (supersedes batch-R + F-004 'never emitted' + F-006 'audit-silence dataset-field' claims)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-09
+description: |-
+  CORRECTION INVARIANT, batch 2026-05-20V — SUPERSEDES three prior factually-wrong
+  claims that classified DatasetField description-edit as an F-006-audit-silence
+  member or as an F-004 audit-emission gap. Primary-source examination of
+  DatasetFieldController + the inner-service chain in batch V establishes the
+  correct picture: DATASET_FIELD_DESCRIPTION_UPDATED IS emitted on every
+  /api/datasetfields/{id}/description PUT; the prior claim 'NEVER emitted' was
+  inferred from looking at DatasetFieldServiceImpl alone without descending into
+  the inner DatasetFieldInternalInformationServiceImpl one layer deeper.
+
+  THE CORRECTED PICTURE:
+
+    Outer service — DatasetFieldServiceImpl.updateDescription (lines 87-95):
+      Carries NO @ActivityLog annotation. Calls the inner service then chains
+      termService.handleDatasetFieldDescriptionTerms for term re-extraction.
+
+    Inner service — DatasetFieldInternalInformationServiceImpl.updateDescription
+    (line 28):
+      Carries @ActivityLog(event = DATASET_FIELD_DESCRIPTION_UPDATED). The
+      annotation lives ONE LAYER DEEPER in the call chain than the outer
+      DatasetFieldServiceImpl.updateInternalName / .updateDatasetFieldTags
+      annotations — but it IS present, IS triggered, and IS dispatched to the
+      activity-feed handler.
+
+    Activity handler — DatasetFieldInformationUpdatedActivityHandler.java:27-29:
+      Handles DATASET_FIELD_DESCRIPTION_UPDATED. The handler reads the new
+      state and dispatches to the activity table.
+
+    Live docs — https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed
+    (WebFetched 2026-05-20 status 200):
+      Lists DATASET_FIELD_DESCRIPTION_UPDATED verbatim under 'Dataset fields
+      (columns)' event types alongside DATASET_FIELD_INTERNAL_NAME_UPDATED,
+      DATASET_FIELD_TAGS_UPDATED, DATASET_FIELD_TERM_ASSIGNMENT_UPDATED,
+      DATASET_FIELD_VALUES_UPDATED.
+
+  THE STRUCTURAL ASYMMETRY remains, but it has NO OPERATOR-VISIBLE IMPACT:
+
+    The depth of @ActivityLog placement varies across DatasetField mutation
+    operations: description's annotation is at the inner service
+    (DatasetFieldInternalInformationServiceImpl.java:28); internal-name's
+    is at the outer service (DatasetFieldServiceImpl.java:99); tags' is at
+    the outer service (DatasetFieldServiceImpl.java:119). The structural
+    asymmetry exists because description does extra work (term re-extraction
+    via TermServiceImpl.handleDatasetFieldDescriptionTerms — itself emitting
+    a separate DATASET_FIELD_TERM_ASSIGNMENT_UPDATED). The outer service
+    delegates the inner-service-level emission to keep the annotation
+    co-located with the write that actually mutates the field row.
+
+    Operator-visible effect: ALL THREE events fire. The structural asymmetry
+    is a code-organisation observation, NOT an audit gap.
+
+  WHAT THIS SUPERSEDES:
+
+    1. F-006 master invariant
+       (no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f.yaml
+       lines 264-280, 720-755, 829-895) — the 'Tier 1c on DatasetField surface'
+       framing is WRONG. DatasetField description-edit is NOT a Tier 1c
+       audit-silence example. The Tier 1c slot should be EMPTY (the
+       audit-silence pattern is at RBAC + Owner + Datasource + Collector +
+       AlertManager-ingress mutations exclusively; the dataset-field surface
+       has FULL audit coverage).
+
+    2. F-004 batch-R drift facets
+       (feature-flows/detail/F-004.yaml lines 78-91) — the drift facet
+       'dataset_field_description_edit_no_activity_log_asymmetric_with_internal_name'
+       is WRONG. Re-classify as
+       'dataset_field_description_edit_activity_log_at_inner_service_layer_structural_only_no_operator_impact'
+       (low severity; cosmetic code-organisation observation; no remediation
+       required).
+
+    3. F-004 batch-R drift facet 'dataset_field_update_description_silent_no_op_on_missing_id'
+       (lines 92-107) — WRONG. PUT /api/datasetfields/{id}/description on a
+       missing id returns 404 NotFoundException, not 200 OK with empty body.
+       The .switchIfEmpty(Mono.error(new NotFoundException('DatasetField',
+       datasetFieldId))) lives at DatasetFieldInternalInformationServiceImpl.java:33
+       BEFORE the activity-log emission. The outer service does NOT need
+       its own switchIfEmpty because the inner service throws first.
+       Re-classify as 'dataset_field_update_description_404_at_inner_service_layer_correct_behaviour'
+       (RESOLVED; no defect; no remediation required).
+
+    4. ReactiveDatasetFieldRepositoryImpl sidecar (batch-R):
+        bugs_limitations_corner_cases.[1] — WRONG ('description edits NOT
+          recorded in activity feed').
+        bugs_limitations_corner_cases.[3] — WRONG ('switchIfEmpty missing
+          → 200 OK on missing id').
+        doc_drift_findings.[2] — WRONG (similar phrasing).
+        dependencies_semantic.coupling.[5] — WRONG (analogous claim).
+       All four should be SUPERSEDED-by-this-invariant on the next sidecar
+       refresh.
+
+  WHY THE PRIOR BATCH MISSED IT:
+
+    Batch R read DatasetFieldServiceImpl.java alone (the outer service) and
+    correctly observed no @ActivityLog on .updateDescription. Batch R DID
+    NOT descend to DatasetFieldInternalInformationServiceImpl.java which
+    DOES carry @ActivityLog at line 28. The inner-service split is a
+    code-organisation choice without operator-visible consequence; a primary-
+    source examination of ONLY the outer service produces the wrong picture.
+    Batch V reads BOTH services and the activity-feed handler; cross-checks
+    against the live activity-feed doc page; and reconciles the picture.
+
+  PATTERN-LEVEL LESSON:
+
+    Multi-layer service compositions (outer DatasetFieldServiceImpl → inner
+    DatasetFieldInternalInformationServiceImpl) require @ActivityLog tracing
+    at BOTH layers before declaring an audit gap. The pre-emit coherence
+    check at batch V is exactly the LSN-018 Rule-6 ritual that surfaces
+    such corrections; without that ritual the F-006 + F-004 mis-classifications
+    would have propagated forward across more batches.
+
+  SEVERITY: N/A (this invariant is a CORRECTION; it removes prior incorrect
+  HIGH/MEDIUM claims and replaces them with a verified-correct-behaviour
+  classification).
+nodes:
+  - odd-platform java DatasetFieldController controller-class:DatasetFieldController
+contributors:
+  - |-
+    DatasetFieldController batch V (PRIMARY SOURCE for the correction):
+    concepts.invariants[7] (activity-log-structural-asymmetry-but-no-operator-impact —
+    file:line citation at DatasetFieldServiceImpl.java:99, :119 +
+    DatasetFieldInternalInformationServiceImpl.java:28 + the live docs page
+    confirmation) +
+    concepts.invariants[8] (description-edit-404-on-missing-id —
+    DatasetFieldInternalInformationServiceImpl.java:33
+    .switchIfEmpty(Mono.error(new NotFoundException))) +
+    docs_link_semantic.doc_drift_findings.[2] (live docs confirm the four
+    event types ARE emitted) +
+    coherence_corrections.[1-3] (the three superseded claims explicit) +
+    bugs_limitations_corner_cases.[5] (the dual-activity-event semantics on
+    description-edit — DATASET_FIELD_DESCRIPTION_UPDATED + DATASET_FIELD_TERM_ASSIGNMENT_UPDATED)
+evidence:
+  - |-
+    DatasetFieldController.md:concepts.invariants[7] — file:line at
+    DatasetFieldServiceImpl.java:99, :119 + DatasetFieldInternalInformationServiceImpl.java:28
+  - |-
+    DatasetFieldController.md:concepts.invariants[8] — DatasetFieldInternalInformationServiceImpl.java:33
+    (.switchIfEmpty(Mono.error(new NotFoundException('DatasetField', datasetFieldId))))
+  - |-
+    DatasetFieldController.md:docs_link_semantic.inferred_docs[0] — WebFetch
+    https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed
+    status 200 2026-05-20 listing DATASET_FIELD_DESCRIPTION_UPDATED verbatim
+  - |-
+    DatasetFieldController.md:coherence_corrections.[1-3] (the three superseded
+    claims explicit + the activity-handler at
+    DatasetFieldInformationUpdatedActivityHandler.java:27-29 dispatching the event)
+  - |-
+    SUPERSEDED master invariant:
+    no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f
+    lines 264-280, 720-755, 829-895 — the 'Tier 1c on DatasetField surface'
+    framing is WRONG and should be reclassified on the next refresh
+  - |-
+    SUPERSEDED F-004 batch-R drift facets — see notes above
+axes_present:
+  - controllers
+  - services
+  - schema_migrations
+triangulation_count: 3
+cross_batch: true
+cross_batch_refs:
+  - batch-R (ReactiveDatasetFieldRepositoryImpl primary-source for the WRONG claim)
+  - batch-F (F-006 master invariant carrying the WRONG dataset_field Tier 1c framing)
+  - batch-V (DatasetFieldController primary-source CORRECTION)
+severity: N/A
+severity_dim: correction
+supersedes:
+  - claim: |-
+      F-006 master invariant (no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f)
+      lines 264-280, 720-755, 829-895 — claims DatasetField surface is a 'Tier 1c'
+      audit-silence example because DatasetField description-edit has no @ActivityLog.
+    correction: |-
+      WRONG. DATASET_FIELD_DESCRIPTION_UPDATED IS emitted via inner-service
+      DatasetFieldInternalInformationServiceImpl.java:28. The dataset_field surface
+      has SYMMETRIC activity-log coverage across description, internal-name, tags,
+      term-link, term-unlink. The F-006 audit-silence pattern is at the RBAC mutation
+      surface (role/policy/owner-association) exclusively; the dataset-field
+      surface is NOT a member.
+    superseded_by: |-
+      DatasetFieldController batch V (session-2026-05-20-V-DatasetFieldController) —
+      coherence_corrections.[1]
+    evidence:
+      - DatasetFieldInternalInformationServiceImpl.java:28 (@ActivityLog annotation)
+      - DatasetFieldInformationUpdatedActivityHandler.java:27-29 (dispatch handler)
+      - 'WebFetch https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed status 200 2026-05-20 (event type listed)'
+    impact:
+      - |-
+        The F-006 master invariant should be REFRESHED on the next batch — the
+        'Tier 1c on DatasetField surface' framing removed; the affected paragraph
+        rewritten to clarify that DataField surface has full audit coverage.
+      - |-
+        The 10-sidecar count for F-006 audit-silence stands (the 10 sidecars are
+        at RBAC + Owner + Datasource + Collector + AlertManager-ingress mutations
+        and ActivityController read-surface); DatasetField does NOT add a
+        sidecar to the count.
+      - |-
+        The DataQuality severity-set sidecar (batch T '10b — NEW SHAPE on data-entity-scoped
+        mutation') remains a legitimate F-006 audit-silence member; this
+        supersede does NOT affect that finding.
+  - claim: |-
+      F-004 batch-R drift facet 'dataset_field_description_edit_no_activity_log_asymmetric_with_internal_name'
+      (feature-flows/detail/F-004.yaml lines 78-91)
+    correction: |-
+      WRONG. The asymmetry is structural-only (outer-vs-inner service annotation
+      placement); operator-visible behaviour is symmetric (all three events emit).
+      Re-classify the drift facet as
+      'dataset_field_description_edit_activity_log_at_inner_service_layer_structural_only_no_operator_impact'.
+    superseded_by: |-
+      DatasetFieldController batch V — coherence_corrections.[1]
+    evidence:
+      - DatasetFieldInternalInformationServiceImpl.java:28
+      - DatasetFieldServiceImpl.java:99 (internal-name @ActivityLog)
+      - DatasetFieldServiceImpl.java:119 (tags @ActivityLog)
+    impact:
+      - |-
+        F-004 batch-R drift facet should be re-classified (NOT removed — the
+        structural observation is still useful for code-organisation reviews;
+        but the severity drops from MEDIUM to LOW and the audit-gap implication
+        is removed).
+  - claim: |-
+      F-004 batch-R drift facet 'dataset_field_update_description_silent_no_op_on_missing_id'
+      (feature-flows/detail/F-004.yaml lines 92-107) — claims PUT
+      /api/datasetfields/{id}/description on missing id returns 200 OK with
+      empty body.
+    correction: |-
+      WRONG. The inner service DatasetFieldInternalInformationServiceImpl.java:33
+      does .switchIfEmpty(Mono.error(new NotFoundException('DatasetField',
+      datasetFieldId))) BEFORE the activity-log emission and the downstream
+      filled-flag updates. PUT on a missing id returns 404 NotFoundException,
+      not 200. Re-classify as
+      'dataset_field_update_description_404_at_inner_service_layer_correct_behaviour'
+      (RESOLVED; no defect).
+    superseded_by: |-
+      DatasetFieldController batch V — coherence_corrections.[2]
+    evidence:
+      - DatasetFieldInternalInformationServiceImpl.java:33 (.switchIfEmpty(Mono.error(NotFoundException)))
+    impact:
+      - |-
+        F-004 batch-R drift facet should be REMOVED. The endpoint is correctly
+        behaved.
+      - |-
+        Note: the silent-200-on-missing-pair-or-entity-on-upsert-family invariant
+        (covering upsertDataEntityMetadataFieldValue + upsertDataEntityInternalDescription)
+        is UNAFFECTED. Those endpoints DO exhibit the silent-200 pattern; the
+        DatasetField description endpoint does NOT.
+notes: |-
+  This SUPERSEDE invariant captures the batch-V coherence correction at the
+  concept-catalog layer; future readers arriving at the F-006 or F-004
+  concept entries are routed HERE for the correction. The master F-006
+  invariant and the F-004 detail file should be refreshed on the next batch
+  to remove the WRONG claims; this invariant ensures the correction is
+  discoverable until that refresh ships.
+
+  Cross-cutting connections:
+    - Master invariant that needs refresh: no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f
+    - F-004 detail file that needs refresh: feature-flows/detail/F-004.yaml (lines 78-107)
+    - Sibling invariant (UNAFFECTED): silent-200-on-missing-pair-or-entity-on-upsert-family
+      (DataEntityController upsert endpoints DO exhibit the silent-200 pattern)
+    - Sibling invariant (UNAFFECTED): F-006 audit-silence schema-rooted master
+      (the schema-rooted RBAC + Owner + Datasource audit gap stands)
+
+  Pattern-level lesson: multi-layer service compositions require tracing
+  through BOTH layers before declaring an audit gap or a contract gap. The
+  pre-emit coherence-check at batch V is the LSN-018 Rule-6 ritual that
+  surfaced this correction; without it, the F-006 + F-004 mis-classifications
+  would have propagated forward.

@@ -1,0 +1,81 @@
+gap_id: TEST-GAP-857
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java service:TagServiceImpl"
+pillars_affected: [P-01, P-10]
+surfaced_by:
+  - "TagServiceImpl.md:stress_findings.B.S-B-2 (updateRelationsWithDataEntity — EXTERNAL relations are NEVER touched by UI diff; intentional but not advertised by name)"
+  - "TagServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[updateRelationsWithDataEntity !external invariant on read side — no test asserts that the diff input is filtered to !external only (line 102) and that EXTERNAL relations are LEFT UNTOUCHED across a UI-side rename]"
+  - "TagServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[updateRelationsWithDataEntity hardcoded external=false on new relations — no test asserts that new relations are written with external = false (line 109), preventing the UI from impersonating a Collector]"
+  - "TagServiceImpl.md:concepts.invariants.[updateRelationsWithDataEntity diff DOES NOT delete EXTERNAL relations]"
+behaviour: |-
+  **HIGH — `TagServiceImpl.updateRelationsWithDataEntity` (lines 96-121, `@ReactiveTransactional`) implements a DIFF that filters CURRENT relations to `!external` only (line 102), then hardcodes `external = false` (line 109) on all new relations. The architectural invariant: the Collector OWNS its `external=true` relations; the UI cannot delete them, modify them, or impersonate them. No test pins this invariant. A future refactor that removes the `.filter(!external)` clause at line 102 would compile, pass all existing tests, and silently let UI users overwrite Collector-pushed external tag relations on the next PUT.**
+
+  **Primary-source chain** (per TagServiceImpl.md:stress_findings.B.S-B-2):
+  - **Line 102**: `Mono<List<TagToDataEntityPojo>> currentRelations = reactiveTagRepository.listTagRelations(List.of(dataEntityId)).map(rs -> rs.stream().filter(r -> !r.getExternal()).toList());` — the diff input is restricted to non-external relations.
+  - **Line 109**: `.map(tag -> new TagToDataEntityPojo().setTagId(tag.getId()).setDataEntityId(dataEntityId).setExternal(false))` — new relations created with `external = false` HARDCODED.
+  - **Lines 112-119**: `Mono.zip(currentRelations, updatedRelations).flatMap(function((current, updated) -> { List<TagToDataEntityPojo> toDelete = current.stream().filter(r -> !updated.contains(r)).toList(); ... }))` — diff via `.contains()` on the relation rows.
+
+  **What this protects** (the contract the test must pin):
+  - **Symmetric immutability for external rows**: a tag with both EXTERNAL and INTERNAL relations to the same data entity stays EXTERNAL after a UI-driven PUT.
+  - **External-relation count invariant**: PUT `/api/dataentities/{id}/tags` with `tagNames = ['A']` against an entity with `[(tagA, external=false), (tagB, external=true)]` ends with `[(tagA, external=false), (tagB, external=true)]` — NOT just `[(tagA, external=false)]`.
+  - **UI cannot impersonate a Collector**: there is no way through this surface to write a row with `external = true`. The OpenAPI spec accepts only tag names, not the external flag — and even if a malicious caller posted JSON like `{"tags": [{"name": "x", "external": true}]}`, the unmarshalling discards unknown fields, and the service hardcodes `false`.
+
+  **Operator-visible consequences if the invariant breaks**:
+  - **Collector-pushed tags silently overwritten**: a Collector pushes tag "PII" with `external = true` on entity X; an analyst PUTs `tagNames: ['public']` on entity X via the UI; the "PII" relation is silently deleted. On the Collector's next push, "PII" is re-created — but only after the operator already shipped wrong governance signal downstream.
+  - **Audit-trail inversion**: an investigator chasing "who removed PII tag from entity X?" finds the UI user — but the architectural intent was that UI users cannot remove Collector-owned tags. The investigator's mental model is broken.
+  - **The dual-write coordination breaks**: REFACTOR-223 (Tag side-door) catalogues 5 paths into the Tag directory; this gap is the CASCADE-side complement. If the `!external` filter is removed, the UI suddenly has the ability to mutate Collector-owned relations at the per-entity level, even though the directory-level TAG_UPDATE remains gated.
+
+  **Why HIGH not MEDIUM**:
+  - The defense is a 1-line `.filter()` (line 102) + a 1-line `.setExternal(false)` (line 109). Both are easy targets for an "innocent" refactor that consolidates create paths.
+  - The architectural intent is captured in the implicit_adr (TagServiceImpl.md:implicit_adrs.[EXTERNAL relations are immutable to UI users]) — explicitly. But there is no test gate.
+  - A regression here cross-pillar drains: P-01 governance signal correctness + P-10 ingestion-source-of-truth + P-07 audit-feed semantics. Three pillars affected at once.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TagServiceImplExternalRelationsTest.java"
+  name: "updateRelationsWithDataEntity_externalRelationsAreNeitherDeletedNorOverwritten_pinsCollectorOwnedRelationsImmutability"
+evidence:
+  - "TagServiceImpl.md says (stress_findings.B.S-B-2): 'updateRelationsWithDataEntity — read-current → compute-diff → delete-removed → create-added → re-read. Subtle: the diff filters CURRENT relations to !external (:102) — only non-Collector relations are considered for diffing. EXTERNAL relations are NEVER touched (not in delete, not in update). This is INTENTIONAL (the Collector owns its rows; UI cannot impersonate); but the method name does not advertise the asymmetry. A user calling this method with tagNames = {A, B} against a data entity that has EXTERNAL relations to {C, D} will end up with {A, B, C, D} — not {A, B}.' confidence: HIGH (the filter at :102 is explicit) — DRIFT severity: MEDIUM — probe-id: P-LSN019-updateRelations-external-preserve (skeleton emitted)"
+  - "TagServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[!external invariant]): 'no test asserts that the diff input is filtered to !external only (line 102) and that EXTERNAL relations are LEFT UNTOUCHED across a UI-side rename.' test_class: TagServiceImplTest (would add testUpdateRelationsWithDataEntity_PreservesExternalRelations). severity: HIGH"
+  - "TagServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[hardcoded external=false]): 'no test asserts that new relations are written with external = false (line 109), preventing the UI from impersonating a Collector.' test_class: TagServiceImplTest (would add testUpdateRelationsWithDataEntity_NewRelationsExternalFalse). severity: MEDIUM"
+  - "TagServiceImpl.md says (implicit_adrs.[EXTERNAL relations are immutable to UI users]): 'both update and delete reject tags with external = true aggregate; updateRelationsWithDataEntity reads only !external relations for the diff; new relations are hardcoded external = false (:109). The Collector owns the EXTERNAL bit and the UI cannot impersonate.' confidence: HIGH"
+  - "Verified at primary source: TagServiceImpl.java:96-121 (the diff method) + :102 (the !external filter) + :109 (hardcoded false) + ExternalTagIngestionRequestProcessor.java:104 (the Collector path that creates external=true)"
+  - "Probe shape: lineage/odd-platform/probes/P-LSN019-updateRelations-external-preserve.md"
+cross_references:
+  - "TEST-GAP-765 (existing batch-W — !external guard on update / delete at TagController; sister surface — that gate protects the directory operation; THIS gap protects the per-entity diff)"
+  - "TEST-GAP-021 (existing — DataEntity Tag-create side-door; sister architectural class)"
+  - "REFACTOR-223 (Tag side-door — the auto-create side-door this guard partially defends against)"
+  - "concepts: external-tag-ingestion-collector-claims-ownership (existing concept candidate at concepts.yaml line 3290-3293 — strengths section names this defense)"
+  - "concepts.yaml line 3293: 'External tag relations PROTECTED from this endpoint (filter !external in TagServiceImpl.java:100-103)' — this is the concept this gap pins as a CI invariant"
+  - "TEST-GAP-858 (NEW VAL-LSN-019 — empty tagNames destructive operation; sister gap at the same method)"
+  - "DOC-NNN candidate: surface the EXTERNAL-immutability invariant on the per-entity Tag assignment doc page; explain why operators see Collector tags surviving their PUT requests"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-10:F-001-collector-push-ingestion"]
+proposed_action: |-
+  Add `TagServiceImplExternalRelationsTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/` using Testcontainers + `@SpringBootTest`. Four test methods:
+
+  1. **`updateRelationsWithDataEntity_externalRelationsAreNeitherDeletedNorOverwritten_pinsCollectorOwnedRelationsImmutability`** (HEADLINE):
+     - Arrange: 1 data_entity. Seed 2 tag rows: tagA, tagB. Seed `tag_to_data_entity` rows: `(tagA, entity, external=false)`, `(tagB, entity, external=true)` (the Collector-pushed one).
+     - Act: `tagService.updateRelationsWithDataEntity(entity.id, Set.of("tagA")).block()`.
+     - Assert: query raw DB `SELECT * FROM tag_to_data_entity WHERE data_entity_id = ?`. Result: BOTH rows present — `(tagA, false)` AND `(tagB, true)`. PIN: the !external filter at line 102 preserves Collector relations.
+
+  2. **`updateRelationsWithDataEntity_replaceAllInternalTags_keepsExternalTagsUntouched_pinsDualSpaceDiff`**:
+     - Arrange: 4 tag rows: tagA, tagB, tagC, tagD. Seed `(tagA, entity, external=false)`, `(tagB, entity, external=false)`, `(tagC, entity, external=true)`, `(tagD, entity, external=true)`.
+     - Act: `updateRelationsWithDataEntity(entity.id, Set.of("tagA")).block()` (drop tagB from the internal set; tagC + tagD untouched).
+     - Assert: query result: `(tagA, false)`, `(tagC, true)`, `(tagD, true)`. tagB-internal is GONE; both external relations PRESERVED.
+
+  3. **`updateRelationsWithDataEntity_newlyMintedTagAlwaysHasExternalFalse_pinsHardcodedFalseAtLine109`**:
+     - Arrange: 1 data_entity. NO existing tag rows. Submit fresh names that need auto-creation.
+     - Act: `updateRelationsWithDataEntity(entity.id, Set.of("freshTag1", "freshTag2")).block()`.
+     - Assert: query `SELECT external FROM tag_to_data_entity WHERE data_entity_id = ?`. BOTH rows have `external = false`. PIN: the hardcoded false at line 109.
+
+  4. **`updateRelationsWithDataEntity_existingExternalTrueRowDoesNotPromoteToFalseOnPutThatIncludesItsName_pinsRowIdentityNotTagIdentity`**:
+     - Arrange: tagX exists; seed `(tagX, entity, external=true)`. PUT `tagNames: ['tagX']` (re-asserting tagX in the internal set).
+     - Act: `updateRelationsWithDataEntity(entity.id, Set.of("tagX")).block()`.
+     - Assert: query result: `(tagX, false)` AND `(tagX, true)` BOTH PRESENT. The diff considers them different rows because `TagToDataEntityPojo.equals` includes the external flag. PIN: the implementation's row-identity semantic (this is subtle — re-asserting an external tag in the internal set creates a SECOND row, not a no-op). Document explicitly: if a future refactor changes `equals()` to ignore external, this test FAILS and forces an explicit policy decision.
+
+  Cross-pair with DOC-NNN: surface the EXTERNAL-immutability invariant on the per-entity Tag assignment doc page; explain that PUT requests preserve Collector-pushed tags.
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

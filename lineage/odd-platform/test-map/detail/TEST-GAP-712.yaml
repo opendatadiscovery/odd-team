@@ -1,0 +1,39 @@
+gap_id: TEST-GAP-712
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java ActivityController controller-class:ActivityController"
+  - "odd-platform java service service:ActivityServiceImpl"
+pillars_affected: [P-07]
+surfaced_by:
+  - "ActivityController.md:coherence_notes.[conflicts_surfaced — type parameter omission]"
+  - "ActivityController.md:docs_link_semantic.doc_drift_findings.[2] (type parameter undocumented)"
+  - "ActivityController.md:tests_coverage_semantic.uncovered_behaviours.[2] (View-mode dispatch: type=MY_OBJECTS vs UPSTREAM/DOWNSTREAM vs ALL)"
+behaviour: |-
+  **ActivityController.getActivity FOUR-WAY VIEW-MODE DISPATCH IS UNDOCUMENTED AND UNTESTED — `type` parameter accepts ALL / MY_OBJECTS / UPSTREAM / DOWNSTREAM, each branching to a DIFFERENT service method.** The controller method signature at `ActivityController.java:32` declares `final ActivityType type`; the OpenAPI spec (`openapi.yaml:3255-3258`) documents the parameter as enum `{ALL, MY_OBJECTS, DOWNSTREAM, UPSTREAM}`; the service implements a four-way dispatch in `ActivityServiceImpl.java:107-117` — `case ALL → fetchAllActivities` (no owner filter), `case MY_OBJECTS → fetchMyActivities` (consults `authIdentityProvider.fetchAssociatedOwner()`), `case UPSTREAM → fetchDependentActivities(LineageStreamKind.UPSTREAM)` (lineage-walk), `case DOWNSTREAM → fetchDependentActivities(LineageStreamKind.DOWNSTREAM)`. **The live `documentation/docs/active-platform-features/activity-feed.md` page** (WebFetched 2026-05-20 status 200) describes the 7 filter facets (Calendar / Datasource / Namespace / Event type / Tag / Owner / User) but makes NO mention of `type` — operators reading the doc cannot discover that the same endpoint serves four different ownership scopes, nor that 3 of those 4 scopes bypass owner filtering entirely (only MY_OBJECTS consults the principal). **`type=null` defaults to a fifth implicit branch** (per `ActivityServiceImpl.fetchActivityList` logic): a missing `type` falls into the same `fetchAllActivities` path as `type=ALL` — but the doc page doesn't even hint that omitting `type` is the equivalent of asking for cross-owner activity. **MY_OBJECTS empty-Mono edge case** (the highest-leverage gap): when a user has no owner association, `fetchAssociatedOwner()` returns empty; `ActivityServiceImpl.java:198` does `.switchIfEmpty(Flux.empty())` — the call silently returns an empty feed, visually indistinguishable on the UI from "no activity in window". A user troubleshooting "why is my activity feed empty" has no signal that the cause is missing owner association vs no recent events. **No test catches any of the four dispatch arms**: zero ActivityControllerTest, zero ActivityServiceImplTest under `odd-platform-api/src/test/`. A refactor that renames an enum value, collapses two branches, swaps lineage-walk direction, or changes the `switchIfEmpty` fallback to anything else (e.g. `Mono.error(NotFoundException)`) would silently regress.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ActivityControllerViewModeDispatchTest.java"
+  name: "getActivity_fourTypeBranchesDispatchToDifferentServiceMethods_AND_myObjectsEmptyOwnerReturnsEmptyFeed_pinsAllFourArms"
+evidence:
+  - "ActivityController.md says (coherence_notes.[conflicts_surfaced.[1]] — type parameter omission): 'The live activity-feed.md page (WebFetch 2026-05-20, status 200) makes no mention of the type query parameter on /api/activity — yet the controller (line 32) declares it, the OpenAPI spec documents it (openapi.yaml:3255-3258 schema = ActivityType {ALL, MY_OBJECTS, DOWNSTREAM, UPSTREAM}), and the service implements a four-way dispatch on it (ActivityServiceImpl.java:107-117). The doc page describes the 7 filter facets but not the 4 view-mode tabs (My objects / Upstream / Downstream / All) that are part of the UI surface per the per-method sidecar''s inference. Operators reading the doc cannot discover that the same endpoint serves four different ownership scopes, nor that 3 of those 4 scopes bypass owner filtering entirely (only MY_OBJECTS consults authIdentityProvider.fetchAssociatedOwner()).'"
+  - "ActivityController.md says (docs_link_semantic.doc_drift_findings.[2-type-param-undocumented]): 'activity-feed.md (no `type` mention) + ActivityController.java:32 + openapi.yaml:3255-3258 + ActivityServiceImpl.java:107-117'"
+  - "ActivityController.md says (tests_coverage_semantic.uncovered_behaviours.[2]): 'View-mode dispatch: getActivity with type=MY_OBJECTS filters by caller''s owner; with type=UPSTREAM/DOWNSTREAM walks lineage; with type=ALL (and type=null) bypasses owner filter. Four distinct response sets must be covered.'"
+  - "ActivityController.md says (gaps): 'The four-way view-mode dispatch is the largest uncovered surface — refactoring ActivityType (renaming an enum value, collapsing branches, or adding a fifth view mode) could regress one or more dispatch arms silently. The MY_OBJECTS branch in particular (only branch that consults authIdentityProvider.fetchAssociatedOwner()) is the highest-leverage test gap: a refactor that changes the empty-Mono behaviour silently degrades MY_OBJECTS into shows nothing — visually indistinguishable from no activity in window.'"
+  - "Source: ActivityController.java:32 + ActivityServiceImpl.java:107-117 (dispatch) + ActivityServiceImpl.java:168-217 (the four fetch* methods) + WebFetch activity-feed.md 2026-05-20 status 200 (no type mention)"
+cross_references:
+  - "F-021 (P-07:F-003 Activity Feed Audit-Trail Surface)"
+  - "TEST-GAP-706 (ActivityController cross-owner audit-trail no-authz — covers the cross-owner reachability dimension)"
+  - "DOC-GAP-NNN (activity-feed.md missing type parameter documentation)"
+related_features: [F-021]
+related_pillar_features: ["P-07:F-003"]
+proposed_action: |-
+  Add `ActivityControllerViewModeDispatchTest` with FIVE regression-pin methods, one per branch + the no-owner edge:
+  (a) `getActivity_typeAll_dispatchesToFetchAllActivities_returnsCrossOwnerSet`: seed multiple owners + events; authenticate as one; GET `/api/activity?type=ALL`; assert events from ALL owners are returned. Pin the ALL branch.
+  (b) `getActivity_typeMyObjects_dispatchesToFetchMyActivities_returnsOnlyCallerOwned`: same fixture; GET `/api/activity?type=MY_OBJECTS`; assert only caller-owned events. Pin the only owner-scoped branch.
+  (c) `getActivity_typeUpstream_walksLineageWithoutOwnerFilter`: build lineage A → B → C, owners A/B/C distinct; authenticate as A's owner; GET `/api/activity?type=UPSTREAM&data_entity_id={C}`; assert events from A's and B's entities appear (lineage-resolved). Pin lineage-walk.
+  (d) `getActivity_typeDownstream_walksLineageOppositeDirection`: same fixture; GET `?type=DOWNSTREAM&data_entity_id={A}`; assert events from B's and C's entities appear. Pin direction-correctness.
+  (e) `getActivity_typeMyObjects_callerHasNoOwnerAssociation_returnsEmptyFlux_pinsSilentEmptyFallback`: authenticate as a user with NO owner association; GET `/api/activity?type=MY_OBJECTS`; assert response 200 with EMPTY Flux<Activity>. Pin the `switchIfEmpty(Flux.empty())` silent-empty behaviour — the highest-leverage edge case the sidecar called out.
+  Add `// REGRESSION-PIN — ActivityController.getActivity has four dispatch arms + one no-owner edge. Methods (a)-(d) pin the four branches; method (e) pins the silent-empty fallback for no-owner-association. The doc page activity-feed.md does NOT document the type parameter; pair with DOC-GAP-NNN that adds the section. If a future refactor changes any branch (rename enum, collapse two, swap lineage direction) or changes the no-owner fallback (e.g. to Mono.error), one of (a)-(e) will catch it.` comment block.
+batch: 2026-05-20-T
+feature_id: F-021

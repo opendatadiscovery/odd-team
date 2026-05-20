@@ -1,0 +1,221 @@
+name: |-
+  DIRECT_OWNER_SYNC + OwnerService.getOrCreate composition — privilege-escalation chain (mint-Owner + self-bind in one transaction, no OWNER_CREATE required)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20V — composes two previously-known
+  invariants into a NEW privilege-escalation chain visible only when the two
+  are observed simultaneously at the OwnerAssociationRequestController surface:
+
+    Component A — the DIRECT_OWNER_SYNC permission (MANAGEMENT category):
+      OwnerAssociationRequestServiceImpl.java:60-67 — the createOwnerAssociationRequest
+      flow checks 'if permissionService.getNonContextualPermissionsForCurrentUser(MANAGEMENT)
+      contains DIRECT_OWNER_SYNC' and IF YES, auto-approves the request
+      synchronously (mapToApprovedRequest at line 67) without an Admin gate.
+      The auto-approval creates the USER_OWNER_MAPPING row immediately.
+
+    Component B — the OwnerService.getOrCreate side-door (existing
+    canonicalisation candidate permission-bypass-via-owner-auto-create-side-door-write-path):
+      OwnerAssociationRequestServiceImpl.java:57 — the createOwnerAssociationRequest
+      flow calls ownerService.getOrCreate(ownerName) where ownerName comes
+      from the user-submitted OwnerFormData. getOrCreate silently MINTS a
+      new Owner directory row when the name is novel. NO OWNER_CREATE
+      permission is checked at this call site (per the existing batch-F
+      finding).
+
+    The COMPOSITION — a complete privilege-escalation chain:
+      A user holding DIRECT_OWNER_SYNC (and NO other permissions, in
+      particular NOT OWNER_CREATE) can:
+        1. Submit POST /api/owner_association_request with body containing
+           ownerName = 'whatever-new-name-they-want'.
+        2. Component B silently creates Owner('whatever-new-name-they-want')
+           via ownerService.getOrCreate. The new Owner row is created
+           without an OWNER_CREATE permission check.
+        3. Component A auto-approves the just-created request synchronously
+           because the user holds DIRECT_OWNER_SYNC. The USER_OWNER_MAPPING
+           row is created immediately, binding the calling user to the new
+           Owner.
+        4. The new Owner inherits no roles by default — but the new Owner
+           IS a fresh directory entry the user now controls, AND the calling
+           user's USER_OWNER_MAPPING resolves to it.
+      Net effect: a single HTTP request with a single permission held mints
+      both an Owner AND a user-owner binding to it. The audit trail captures
+      the request as a REQUEST_CREATED followed by an auto-approval — but
+      the doc surface (live user-owner-association doc WebFetched 2026-05-20
+      status 200) says NOTHING about either DIRECT_OWNER_SYNC or the
+      auto-create-Owner side-door.
+
+  THE COMPONENT-A AND COMPONENT-B FACTS ARE INDIVIDUALLY KNOWN:
+
+    - Component A (DIRECT_OWNER_SYNC) is named in the OwnerAssociationRequestController
+      sidecar as implicit_adrs.[2] — explicitly framed as 'AUTO-APPROVE
+      permission as an escalation mechanism — collapses the two-step workflow
+      into one for designated principals'. Doc-side: not mentioned at the
+      live user-owner-association page (a separate batch-V doc-drift finding).
+    - Component B (getOrCreate side-door) is the canonicalisation candidate
+      permission-bypass-via-owner-auto-create-side-door-write-path.yaml,
+      anchored in batch F's createOwnership sidecar. Doc-side: surfaced as
+      a DOC-NNN candidate.
+
+  THE COMPOSITION IS NEW — the batch-V sidecar is the first place these two
+  are observed together at the same controller-method-call-site:
+
+    OwnerAssociationRequestServiceImpl.java:55-67 — the createOwnerAssociationRequest
+    method runs:
+      Line 55: authIdentityProvider.getCurrentUser().switchIfEmpty(...)
+      Line 57: ownerService.getOrCreate(ownerName)  ← Component B
+      Line 60-67: if (permissions.contains(DIRECT_OWNER_SYNC)) → auto-approve  ← Component A
+
+    The two components are composed IN ONE SERVICE METHOD with the user-supplied
+    ownerName flowing UNCHANGED from request body to Owner creation. There
+    is no intervening validation, no permission re-check, no Admin gate.
+
+  THE GAP-WIDENING OBSERVATION — beyond a single privilege-escalation chain:
+
+    DIRECT_OWNER_SYNC was designed for 'trust the IdP' deployments — where
+    an OIDC group claim maps to the permission and operators rely on the
+    IdP for the trust boundary. The combined chain weakens that trust model:
+    a user mapped via OIDC group to DIRECT_OWNER_SYNC CAN bypass the
+    organisation's Owner-naming conventions, mint Owner rows with
+    arbitrary names (potentially impersonating other teams: 'finance-team'
+    that doesn't yet exist, 'admin' as a name etc.), and self-bind. The
+    audit row shows REQUEST_MANUALLY_APPROVED but the OWNER creation has
+    no separate audit anchor in the activity table (per Tier 2 F-006
+    audit-silence pattern).
+
+  THE THIRD-PARTY-ATTACKER VECTOR:
+
+    A compromised IdP credential for a DIRECT_OWNER_SYNC user gains the
+    ability to mint Owner directory entries with arbitrary names. Subsequent
+    attacks reference the minted Owner names as if they were legitimate.
+    The new Owner row IS visible to administrators but they have no signal
+    that it was newly-created by self-association rather than by intentional
+    Admin onboarding. Anti-correlation between the operator's mental model
+    ('Owners are admin-curated') and the runtime behaviour ('Owners can be
+    self-minted via DIRECT_OWNER_SYNC + self-association') compounds the
+    risk.
+
+  SEVERITY: HIGH — the chain composes two MEDIUM-severity components into
+  a HIGH-severity privilege-escalation surface. The doc surface is silent
+  on both components and entirely silent on the composition. Operators
+  granting DIRECT_OWNER_SYNC via OIDC group mapping (the documented use
+  case for IdP-trusted deployments) inadvertently enable arbitrary-name
+  Owner creation.
+nodes:
+  - odd-platform java OwnerAssociationRequestController controller-class:OwnerAssociationRequestController
+contributors:
+  - |-
+    OwnerAssociationRequestController batch V (PRIMARY SOURCE — the composition):
+    security.known_security_gaps.[3] HIGH (the explicit composition finding —
+    DIRECT_OWNER_SYNC + getOrCreate chain) +
+    bugs_limitations_corner_cases.[0] (the getOrCreate side-door at
+    OwnerAssociationRequestServiceImpl.java:57 — MEDIUM severity in isolation) +
+    implicit_adrs.[2] (the DIRECT_OWNER_SYNC auto-approve component — MEDIUM
+    severity in isolation) +
+    coherence_notes.surfaces_new.[F-011] (the live doc surface absence on
+    BOTH DIRECT_OWNER_SYNC AND the MANUAL flow — the doc-side context for
+    why the composition is operator-invisible)
+evidence:
+  - |-
+    OwnerAssociationRequestController.md:security.known_security_gaps.[3] HIGH —
+    evidence: OwnerAssociationRequestServiceImpl.java:60-67 (DIRECT_OWNER_SYNC
+    branch) + OwnerAssociationRequestServiceImpl.java:57 (getOrCreate call)
+  - |-
+    OwnerAssociationRequestController.md:implicit_adrs.[2] — DIRECT_OWNER_SYNC
+    escalation mechanism design + PolicyPermissionDto.java:70 (the permission
+    declaration)
+  - |-
+    OwnerAssociationRequestController.md:bugs_limitations_corner_cases.[0] —
+    ownerService.getOrCreate side-door at OwnerAssociationRequestServiceImpl.java:57
+  - |-
+    Existing canonicalisation candidate:
+    permission-bypass-via-owner-auto-create-side-door-write-path.yaml
+    (the Component B observation in isolation — this invariant ADDS the
+    composition with Component A at the createOwnerAssociationRequest
+    call-site)
+  - |-
+    Existing implicit_adr observation across F-019 owner-lifecycle-management
+    (the getOrCreate pattern is project-wide — TagService.getOrCreate,
+    NamespaceService.getOrCreate, TermService.getOrCreate — every one of
+    these is a Component-B candidate)
+axes_present:
+  - controllers
+  - services
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+  - batch-F (createOwnership — Component B initial finding)
+  - batch-V (OwnerAssociationRequestController — Component A + composition, THIS INVARIANT)
+severity: HIGH
+severity_dim: security-privilege-escalation
+mitigations_unimplemented:
+  - |-
+    Component-A fix — require an explicit auth.direct_owner_sync.allow_self_create
+    config flag (default false) before the DIRECT_OWNER_SYNC auto-approve
+    branch fires for a request whose ownerName resolves to a NEWLY-CREATED
+    Owner (vs an existing Owner). The auto-approve for binding to an
+    EXISTING Owner remains permitted; only the mint-new-then-bind chain
+    requires the explicit opt-in.
+  - |-
+    Component-B fix — add an explicit OWNER_CREATE permission check at
+    OwnerAssociationRequestServiceImpl.java:57. The getOrCreate call should
+    fail-fast if the Owner is novel AND the caller does not hold OWNER_CREATE.
+    Same fix applies to every getOrCreate call-site project-wide (TagService,
+    NamespaceService, TermService, TitleService).
+  - |-
+    Composition fix — at the createOwnerAssociationRequest entry-point, add
+    an explicit branch:
+      if (ownerService.exists(ownerName)) then proceed normally
+      else if (caller has OWNER_CREATE) then proceed via getOrCreate
+      else throw 403 'Cannot self-request association with a non-existent
+        Owner without OWNER_CREATE permission'
+    Eliminates the composition by forcing the caller to either bind to an
+    existing Owner OR explicitly hold OWNER_CREATE.
+  - |-
+    Audit-trail enhancement — when DIRECT_OWNER_SYNC fires AND a new Owner
+    was created in the same transaction, emit BOTH a REQUEST_MANUALLY_APPROVED
+    event AND a (new) OWNER_AUTO_CREATED event. The new event documents
+    the side-door in the audit trail. Pair with operator-facing docs
+    explaining the chain.
+  - |-
+    Live docs — disclose DIRECT_OWNER_SYNC + the MANUAL flow + the side-door
+    on the live user-owner-association page. Four DOC-NNN candidates flow
+    from this finding alone:
+      (a) Document DIRECT_OWNER_SYNC and its escalation behaviour
+      (b) Document the MANUAL flow (POST /api/owners/mapping)
+      (c) Document the getOrCreate side-door for Owner creation
+      (d) Document the composition + the recommended mitigation
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20V from the
+  OwnerAssociationRequestController class-level sidecar. The finding composes
+  two previously-known MEDIUM-severity observations into a HIGH-severity
+  privilege-escalation chain visible only at the call-site composition.
+
+  Cross-cutting connections:
+    - Component A: implicit_adrs in this controller's sidecar
+    - Component B: canonicalisation candidate permission-bypass-via-owner-auto-create-side-door-write-path
+    - Project-wide pattern: every getOrCreate (TagService, NamespaceService,
+      TermService, TitleService) is a Component-B candidate; the audit
+      reaches one fix-point if a uniform OWNER_CREATE-class check is
+      applied to all getOrCreate call-sites
+    - Doc-drift: the live user-owner-association page does not name either
+      component (separate batch-V finding in the sidecar's coherence_notes)
+    - Tier 3 audit (this batch's other finding) — the chain IS audited
+      via REQUEST_MANUALLY_APPROVED but the audit trail does NOT name the
+      Owner-creation as a separate event
+    - F-019 owner-lifecycle-management: REFACTOR-427 orphan rows on Owner
+      delete pair with this finding — the side-door creates Owners; the
+      cascade-block omits the request rows; together they form the
+      complete data-integrity story for the Owner directory
+
+  Five DOC-NNN candidates flow:
+    (a) Code fix — Component-A config flag + Component-B permission check
+    (b) Code fix — composition fail-fast branch at createOwnerAssociationRequest
+    (c) Audit enhancement — new event type for Owner auto-create
+    (d) Live docs — disclose all four user-observable surfaces (SELF,
+        DIRECT_OWNER_SYNC, MANUAL, getOrCreate side-door)
+    (e) Default Policy audit — identify which shipped Policies grant
+        DIRECT_OWNER_SYNC; document the composition risk for operators

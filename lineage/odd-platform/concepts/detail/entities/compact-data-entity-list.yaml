@@ -1,0 +1,183 @@
+name: CompactDataEntityList (S2S read projection — oddrn + type only)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-10
+- P-01
+description: |-
+  **NEW ENTITY, batch 2026-05-20-Z (getDataEntitiesByDEGOddrn sidecar)** —
+  the minimal response projection of the S2S read endpoint
+  `GET /ingestion/entities/{deg_oddrn}`. Each `CompactDataEntity` carries
+  `{oddrn, type}` only — no name, no namespace, no owner, no parent-group
+  marker, no creation timestamp, no tags. The response is wrapped in
+  `CompactDataEntityList { items: List<CompactDataEntity> }`.
+
+  **The contract**: deliberately narrower than the UI-side `DataEntityRef`
+  / `DataEntityList` shape. The S2S surface exposes the minimal
+  identifier+type tuple sufficient for a collector or third-party
+  integration to walk a DEG's direct members. A consumer needing full
+  metadata must follow up with `GET /api/dataentities/...` calls per
+  member — but that endpoint lives on a different prefix (`/api/`,
+  authenticated under UI auth modes) and produces a different result
+  shape (`DataEntityRef` with name + namespace + ownerships).
+
+  **The model package**: `org.opendatadiscovery.oddplatform.ingestion.contract.model`
+  — generated from the external `opendatadiscovery-specification` repository
+  (loaded as the `ingestion-contract-server:0.1.40` gradle dep per
+  libs.versions.toml:6,65,142). Symmetric model package with `DataEntityList`
+  (the request shape on `POST /ingestion/entities`); the two endpoints
+  use a symmetric model for the request/response payload.
+
+  **Three undocumented invariants of the projection (per the
+  getDataEntitiesByDEGOddrn sidecar)**:
+    (a) Inner-DEG handling is opaque: a nested DEG within the queried DEG
+        appears as a single `DATA_ENTITY_GROUP`-typed CompactDataEntity
+        with no marker telling the caller it can be re-queried. Compare
+        the recursive-CTE behaviour of `getDataEntityGroupLineage` (F-016).
+    (b) Soft-deleted members surface: the SQL filter is
+        `GROUP_ENTITY_RELATIONS.IS_DELETED.isFalse()` (the EDGE
+        soft-delete), not `DATA_ENTITY.STATUS != DELETED` or
+        `DATA_ENTITY.HOLLOW = false`. A DEG containing a soft-deleted
+        entity returns that entity. Deviates from the platform's
+        `getDataEntityDefaultConditions` pattern used everywhere else.
+    (c) Response shape is unbounded (no pagination): a 10K-member DEG
+        returns a 10K-item list in one response. The sibling
+        `listDEGItems` (DataEntityGroupServiceImpl.java:111) DOES
+        paginate; this endpoint does not.
+
+  **vocabulary_status**: codebase-anchored, doc-side-absent (no live ODD
+  doc names the CompactDataEntityList projection; the
+  configuration-and-deployment/data-ingestion page does not exist —
+  prior batch-F WebFetch 2026-05-12 status 404).
+axes_present:
+- controllers
+- openapi_specs
+nodes:
+- odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn
+- odd-platform openapi spec:odd-platform-public-api
+contributors:
+- |-
+  getDataEntitiesByDEGOddrn.md (batch Z PRIMARY SOURCE):
+    concepts.entities.CompactDataEntityList — response payload:
+    items: List<CompactDataEntity> where each CompactDataEntity is
+    {oddrn, type} (no name, no namespace, no owner, no parent-group,
+    no creation timestamp);
+    bugs_limitations_corner_cases.[5,8] — single-level projection
+    (inner DEGs are opaque members) + minimal response shape;
+    related_concepts — CompactDataEntity (the minimal response
+    projection)
+evidence:
+- |-
+  getDataEntitiesByDEGOddrn.md:concepts.entities.CompactDataEntityList
+  (the projection definition)
+- |-
+  getDataEntitiesByDEGOddrn.md:bugs_limitations_corner_cases.[5]
+  (single-level projection — inner DEGs are opaque)
+- |-
+  getDataEntitiesByDEGOddrn.md:bugs_limitations_corner_cases.[8]
+  (minimal response shape — operator-clarity gap)
+- |-
+  IngestionController.java:11 (CompactDataEntityList import from
+  ingestion.contract.model package) + line 76 (return type)
+- |-
+  DataEntityGroupServiceImpl.java:102-107 (the mapper constructing
+  CompactDataEntity with oddrn + type only)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - INTERNAL_ONLY
+  ingestion_filter_relevance: NO
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      The endpoint that emits CompactDataEntityList
+      (`GET /ingestion/entities/{deg_oddrn}`) carries ZERO authorization
+      at ZERO layers (per REFACTOR-185 AUTH-MODE-ORTHOGONAL facet —
+      unauthenticated in every shipped deployment posture).
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      No owner consult at any layer; cross-owner reachability is the
+      default. Per the `read-collaborative-cross-owner-enumeration`
+      pattern extended to the S2S surface.
+  strengths:
+  - |-
+    Minimal projection — fewer fields exposed than the UI surface. An
+    attacker enumerating the catalog through this endpoint learns
+    ODDRNs + types, not names or namespaces; the leakage surface is
+    narrower than a comparable UI response.
+  weaknesses:
+  - |-
+    Combined with sequential ODDRN id enumeration (DEG ids are
+    monotonically increasing per ODDPlatformDataEntityGroupPath
+    generation), the full DEG-to-members graph is enumerable in O(N)
+    requests with no rate-limit, no audit-log, no per-IP throttle.
+  - |-
+    Soft-deleted members surface in the response — deviates from the
+    platform's `getDataEntityDefaultConditions` pattern; attackers can
+    enumerate intentionally-hidden entities through this endpoint.
+  cross_file_inconsistencies: []
+  contributing_files:
+  - getDataEntitiesByDEGOddrn.md
+  evidence:
+  - getDataEntitiesByDEGOddrn.md:security.data_exposure
+  - getDataEntitiesByDEGOddrn.md:security.known_security_gaps.[0,1,2]
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    Single SELECT against `GROUP_ENTITY_RELATIONS` joined to `DATA_ENTITY`
+    filtered by `GROUP_ODDRN.eq(:degOddrn).and(IS_DELETED.isFalse())`. No
+    OWNERSHIP join, no recursive CTE, no aggregation. For a DEG with N
+    members, the query returns N rows; the controller maps them to N
+    CompactDataEntity objects.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One DEG per request — no batch `?deg_oddrns=a,b,c` parameter. The
+      `Collection<String>` overload at ReactiveDataEntityRepository.java:60
+      exists at the repository layer but is NOT wired to any controller
+      endpoint.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: |-
+      No pagination — a 10K-member DEG returns a 10K-item list in one
+      response. Sibling `listDEGItems` paginates; this endpoint does
+      not. Operator-clarity gap.
+  strengths:
+  - |-
+    Stateless controller; non-blocking reactive Mono signature; no
+    @ReactiveTransactional (read-only path); horizontally scalable.
+  - |-
+    Per-member projection is small (~200 bytes per CompactDataEntity).
+  weaknesses:
+  - |-
+    No pagination + unbounded payload — pathological DEGs (10K+ members)
+    produce large responses; no operator-facing way to chunk the read.
+  - |-
+    No caching — repeated reads of the same DEG (common during catalog-
+    walk integrations) re-query the DB each time.
+  - |-
+    No batching — enumerating N DEGs costs N HTTP roundtrips.
+  cross_file_inconsistencies: []
+  contributing_files:
+  - getDataEntitiesByDEGOddrn.md
+  evidence:
+  - getDataEntitiesByDEGOddrn.md:performance.hot_paths
+  - getDataEntitiesByDEGOddrn.md:performance.known_performance_gaps.[0,1,2]
+notes: |-
+  Surfaced batch 2026-05-20Z by the getDataEntitiesByDEGOddrn sidecar.
+  CompactDataEntityList is the canonical S2S READ projection — distinct
+  from the UI/API DataEntityRef + DataEntityList shapes (which carry
+  name + namespace + ownerships).
+
+  The two projections being symmetrically named at the model-package
+  level (`ingestion.contract.model.CompactDataEntityList` +
+  `ingestion.contract.model.DataEntityList`) is a load-bearing observation
+  for future contract evolution — they evolve together via the
+  external opendatadiscovery-specification repository.
+
+  Cross-references:
+    - F-008 (the symmetric WRITE side — POST /ingestion/entities)
+    - F-016 DEG-Anchored Lineage (the architectural sibling read shape)
+    - REFACTOR-185 AUTH-MODE-ORTHOGONAL facet (the S2S surface)

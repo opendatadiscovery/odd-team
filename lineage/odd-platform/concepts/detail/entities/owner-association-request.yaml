@@ -1,0 +1,218 @@
+name: |-
+  Owner Association Request (User-to-Owner binding workflow with dedicated audit table — F-011 anchor)
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  First-class concept for the user-to-Owner binding workflow — the mechanism
+  by which an authenticated platform user (identified by oidc-username +
+  provider) becomes associated with a catalog-side Owner directory entry so
+  that owner-scoped behaviours (My Objects, owner-filtered alerts, ownership
+  badges) can resolve. Implements F-011 Principal-to-Owner Resolution as the
+  USER-FACING half (the in-service authIdentityProvider.fetchAssociatedOwner
+  resolution is the consumer half).
+
+  PRIMARY-SOURCE ANCHOR — file:line citations from
+  OwnerAssociationRequestController batch V:
+
+    Controller surface — 7 endpoints across two URL spaces:
+      Self-association flow (/api/owner_association_request*):
+        POST /api/owner_association_request (create-self-association-request)
+        GET /api/owner_association_request (list-pending-requests)
+        PUT /api/owner_association_request/{id} (approve-or-decline-request)
+        GET /api/owner_association_request/activity (list-request-activity)
+      Manual / direct mapping flow (/api/owners/mapping*):
+        POST /api/owners/mapping (create-manual-user-owner-mapping)
+        DELETE /api/owners/mapping/{owner_id} (delete-active-user-owner-mapping)
+      Discovery (/api/owners/providers):
+        GET /api/owners/providers (discover-auth-providers)
+
+    Two parallel control planes — SELF-service vs ADMIN-manual:
+      SELF plane — user submits a request (POST /api/owner_association_request);
+        Admin approves or declines (PUT /api/owner_association_request/{id}).
+        The Admin gate is OWNER_ASSOCIATION_MANAGE.
+      MANUAL plane — Admin directly creates a USER_OWNER_MAPPING bypassing
+        the request workflow (POST /api/owners/mapping). Gate is
+        OWNER_RELATION_MANAGE.
+
+    Dedicated audit table — owner_association_request_activity
+      (V0_0_51__add_owner_association_request.sql) with 5 typed event values
+      (OwnerAssociationRequestActivityType.java:3-8):
+        REQUEST_CREATED — user submits a self-request
+        REQUEST_DECLINED — Admin declines a pending self-request
+        REQUEST_APPROVED — Admin approves a pending self-request
+        REQUEST_MANUALLY_APPROVED — Admin direct-creates a mapping
+        REQUEST_MANUALLY_DECLINED — Admin manually revokes a mapping
+
+    Schema — V0_0_51__add_owner_association_request.sql:
+      owner_association_request: id, oidc_username, provider, owner_id (FK
+        to owner with NO ON DELETE clause — per REFACTOR-427), status,
+        status_updated_at, status_updated_by_user_id, created_at
+      owner_association_request_activity: id, request_id, event_type
+        (one of 5), event_user_id, event_at + indices
+
+    Authorization wiring (SecurityConstants.java:148-162):
+      LIST / APPROVE / DECLINE: OWNER_ASSOCIATION_MANAGE
+      MANUAL-MAP / MANUAL-REVOKE: OWNER_RELATION_MANAGE
+      ABSENT for: POST self-request, GET providers, GET activity-list
+      (three ungated endpoints — separate batch V invariant)
+
+  CROSS-PILLAR RELATIONSHIPS:
+
+    feeds: [P-09]  # produces USER_OWNER_MAPPING rows that F-011 consumes
+    feeds_from: [P-09]  # consumes OWNER_ASSOCIATION_MANAGE / _RELATION_MANAGE
+      permissions
+    shares_data_with: [P-08]  # Management UI surface
+
+  RELATED FEATURES (per F-011 + F-019 + F-006 connections):
+    F-011 Principal-to-Owner Resolution — THIS controller IS the producer
+      of the USER_OWNER_MAPPING rows
+    F-019 Owner Lifecycle Management — REFACTOR-427 orphan rows on Owner
+      delete; the FK has NO ON DELETE
+    F-006 RBAC + audit-silence — THIS controller is the POSITIVE half of
+      the 2-tier audit story (HAS a dedicated audit table; the parallel
+      RBAC mutations DO NOT)
+
+  AUDIENCES:
+    odd-platform-ui-end-user (the SELF-request creator)
+    platform-operator (the Admin who approves / manages / manually-binds
+      via the Management → Associations + Owners tabs)
+    odd-api-consumer (programmatic clients)
+nodes:
+  - odd-platform java OwnerAssociationRequestController controller-class:OwnerAssociationRequestController
+contributors:
+  - |-
+    OwnerAssociationRequestController batch V (PRIMARY SOURCE — anchors
+    F-011 and the dedicated audit table at the controller layer):
+    understanding (the 7-endpoint two-plane surface anchor) +
+    concepts.entities (OwnerAssociationRequest, OwnerFormData,
+      UserOwnerMappingFormData, OwnerAssociationRequestStatusFormData,
+      OwnerAssociationRequestActivityList, ProviderList) +
+    concepts.operations (7 listed operations) +
+    concepts.invariants (path-pattern-based RBAC; DIRECT_OWNER_SYNC
+      auto-approve; MANUAL bypass plane; activity-write at service layer) +
+    implicit_adrs.[0-5] (audit-log separation of concerns; dual-plane
+      approval; AUTO-APPROVE escalation; self-request intentionally
+      unprotected; provider-discovery intentionally unprotected;
+      centralised SecurityConstants wiring)
+evidence:
+  - |-
+    OwnerAssociationRequestController.md:understanding — primary anchor
+  - |-
+    OwnerAssociationRequestController.md:concepts.entities + operations +
+    invariants
+  - |-
+    OwnerAssociationRequestController.md:implicit_adrs.[0] (audit table
+    separation of concerns)
+  - |-
+    OwnerAssociationRequestController.md:implicit_adrs.[2] (DIRECT_OWNER_SYNC
+    auto-approve)
+  - |-
+    Live doc WebFetch
+    https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association
+    status 200 2026-05-20
+  - |-
+    V0_0_51__add_owner_association_request.sql (the schema for the
+    workflow + dedicated audit table)
+  - |-
+    system-mission.md lines 240-247 (P-08 Management — Associations tab)
+axes_present:
+  - controllers
+  - services
+  - schema_migrations
+nodes_count: 1
+contributors_count: 1
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  ingestion_filter_relevance: NO
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      5 of 7 endpoints have SecurityRule entries. THREE endpoints have NONE
+      (POST self-request, GET providers, GET activity-list). The
+      missing-rule asymmetry is the load-bearing finding (the activity-list
+      view is more sensitive than the list view but the activity-list view
+      is NOT gated).
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      The list endpoint returns ALL pending/approved/declined requests
+      across all users + all Owners without filtering by the calling user's
+      owner-scope. Read-collaborative posture on the LIST view.
+  strengths:
+    - Dedicated audit table with 5 typed event values — full forensic
+      coverage of the user-owner-binding workflow (the POSITIVE half of
+      the 2-tier audit story)
+    - Fail-closed under auth.type=DISABLED (4 explicit current-user
+      assertions throw 'There is no current authorization')
+  weaknesses:
+    - DIRECT_OWNER_SYNC + getOrCreate composition is a privilege-escalation
+      chain (HIGH — separate batch V invariant)
+    - GET /api/owner_association_request/activity ungated (HIGH — the
+      audit-trail superset disclosed without permission check)
+    - createUserOwnerMapping allows Admin to bind ANY oidc-username + provider
+      to ANY ownerId without consent or existence check
+    - REFACTOR-427 orphan rows on Owner delete (FK has no ON DELETE clause)
+  cross_file_inconsistencies:
+    - createOwnerAssociationRequest is fail-closed under DISABLED; OwnerController
+      Owner-CRUD verbs are fail-OPEN under DISABLED (REFACTOR-185) — the
+      user-owner-binding surface is more disciplined than the Owner-CRUD
+      surface
+  contributing_files:
+    - OwnerAssociationRequestController.md
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - 'getOwnerAssociationRequestList: paginated query joining
+      owner_association_request + owner + role tables —
+      OwnerAssociationRequestController.md'
+    - 'getOwnerAssociationRequestActivityList: paginated query joining
+      activity + owner (twice via aliases) + role —
+      OwnerAssociationRequestController.md'
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      All endpoints are single-item per call. Bulk-cancel inside the approve
+      path can fan out to N+1 activity-row writes per cancelled colliding
+      request (within @ReactiveTransactional).
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: |-
+      No page-size upper bound on either list endpoint. A malicious or
+      careless caller can request size=1_000_000.
+  strengths:
+    - Reactive Mono signatures across all 7 endpoints
+    - Stateless controller — horizontal scaling
+    - Per-mutating-method @ReactiveTransactional boundaries
+  weaknesses:
+    - No page-size upper bound (LOW)
+    - Cascade-cancel fan-out can deadlock on concurrent approvals (LOW)
+  cross_file_inconsistencies: []
+  contributing_files:
+    - OwnerAssociationRequestController.md
+notes: |-
+  This entity entry is the catalog landing page for the Owner Association
+  Request workflow + F-011 Principal-to-Owner Resolution producer half.
+  The entity carries the dedicated audit-table observation that REFINES the
+  F-006 audit-silence pattern.
+
+  Cross-cutting connections:
+    - Companion invariant: two-tier-audit-asymmetry-bifurcation-owner-association-request-has-dedicated-table-rbac-mutations-do-not
+      (the 3rd tier of the audit story)
+    - Companion invariant: direct-owner-sync-plus-getorcreate-composition-privilege-escalation-chain
+      (the HIGH privilege-escalation chain at the createOwnerAssociationRequest
+      entry-point)
+    - Companion invariant: owner-association-request-three-ungated-endpoints-create-providers-activity
+      (the three ungated endpoints — HIGH for the activity-list endpoint)
+    - F-019 Owner Lifecycle Management — REFACTOR-427 orphan rows
+    - F-006 master invariant: this controller is the POSITIVE counter-example
+      to the audit-silence pattern (HAS audit; RBAC mutations DO NOT)
+    - F-011 Principal-to-Owner Resolution — THIS controller IS the producer
+      of the USER_OWNER_MAPPING rows

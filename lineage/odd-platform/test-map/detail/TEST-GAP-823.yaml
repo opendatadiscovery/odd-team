@@ -1,0 +1,78 @@
+gap_id: TEST-GAP-823
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java IngestionController controller-method:ingestMetrics"
+pillars_affected: [P-07, P-09, P-10]
+surfaced_by:
+  - "ingestMetrics.md:bugs_limitations_corner_cases.[0] HIGH"
+  - "ingestMetrics.md:security.known_security_gaps.[0] HIGH"
+  - "ingestMetrics.md:tests_coverage_semantic.uncovered_behaviours.[0]"
+behaviour: |-
+  **CRITICAL — `POST /ingestion/metrics` is unauthenticated in EVERY supported deployment posture, AND there is NO configuration toggle that can fail-close it.**
+
+  The endpoint is reachable by ANY HTTP caller under EVERY combination of:
+  - `auth.type ∈ {DISABLED, LOGIN_FORM, OAUTH2, LDAP}` — `/ingestion/**` is in `SecurityConstants.WHITELIST_PATHS` (line 96); enforced for OAUTH2/LDAP via `AuthorizationCustomizer.java:22` and for LOGIN_FORM via `permittedPaths` configuration.
+  - `auth.s2s.enabled ∈ {true, false}` — the `S2sAuthenticationFilter` documented to gate "any endpoint that admins can call" does NOT cover `/ingestion/**` paths because of the WHITELIST short-circuit.
+  - `auth.ingestion.filter.enabled ∈ {true, false}` — `IngestionDataEntitiesFilter` exact-matches `/ingestion/entities` ONLY (not metrics); `IngestionDataSourceFilter` exact-matches `/ingestion/datasources` ONLY. Neither matches `/ingestion/metrics`. There is NO `IngestionMetricsFilter` class in the codebase.
+
+  **WORSE THAN F-008**: F-008's destructive-write surface (POST /ingestion/entities) at least HAS a toggle (`auth.ingestion.filter.enabled`); ingestMetrics has NO such toggle. To restrict the endpoint, an operator MUST:
+  - Deploy network-level controls (firewall rule, reverse-proxy auth), OR
+  - Patch the codebase to add a sister `IngestionMetricsFilter`.
+
+  Neither option is documented anywhere in the ODD configuration surface.
+
+  **Blast radius**:
+  - Attacker submits arbitrary `MetricSetList` with any ODDRN + any labels.
+  - INTERNAL_POSTGRES mode (default): metric_entity / metric_family / metric_label_value / metric_series / metric_point rows are created (per `InternalIngestionMetricsServiceImpl.java:78-98`).
+  - PROMETHEUS mode: TimeSeries are remote-written to the operator's external Prometheus instance (per `ExternalIngestionMetricsServiceImpl.java:202-220`). The operator's Prometheus storage costs balloon proportional to attacker traffic.
+  - Combined with TEST-GAP-825 (ODDRN-by-payload cardinality DoS), the attacker mints arbitrary metric series at unlimited rate.
+
+  **Live docs surface the gap PARTIALLY**:
+  - `/configuration-and-deployment/enable-security` (WebFetched 2026-05-20 status 200) explicitly states `IngestionDataEntitiesFilter` covers `/ingestion/entities` only and "sibling endpoints remain unprotected by this filter" — but does NOT enumerate `/ingestion/metrics` in its list of uncovered sibling paths (the page names `/ingestion/alert/alertmanager`, `/ingestion/entities/degs/children`, `/ingestion/entities/datasets/stats` but NOT `/ingestion/metrics`).
+  - `/features/active-platform-features` (WebFetched 2026-05-20) does NOT list metrics ingestion as a sub-feature at all.
+  - `/configuration-and-deployment/odd-platform` covers `metrics.storage` + `metrics.prometheus-host` but does NOT describe the endpoint's auth posture.
+
+  **Why CRITICAL**: matches the F-008 + TEST-GAP-815/819 class but with the additional structural worsening (no toggle). Same severity-class as the AlertManagerController unauthenticated-by-default finding in F-008 — that endpoint is uncovered by ANY filter too.
+
+  **Test gap shape**: WebTestClient matrix test covering every deployment posture × the lack-of-toggle assertion.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/BaseIngestionTest.java:90-96 (ingestMetrics scaffold; happy-path 201; does NOT cover any auth-mode negative path)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/MetricsIngestionTest.java (INTERNAL_POSTGRES happy paths)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/PrometheusMetricsIngestionTest.java (PROMETHEUS happy paths against testcontainer)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestMetricsUnauthenticatedReachMatrixNoToggleTest.java"
+  name: "post_unauthenticatedReachConfirmedAcrossEvery_authType_x_filterEnabled_AND_noToggleAvailable"
+evidence:
+  - "ingestMetrics.md says (bugs_limitations_corner_cases.[0]): 'POST /ingestion/metrics is UNAUTHENTICATED in every supported deployment posture. The controller has no @PreAuthorize. IngestionDataEntitiesFilter exact-matches /ingestion/entities POST only. IngestionDataSourceFilter exact-matches /ingestion/datasources POST only. /ingestion/** is in SecurityConstants.WHITELIST_PATHS, exempted from UI auth.' (severity HIGH)"
+  - "ingestMetrics.md says (security.known_security_gaps.[0]): 'POST /ingestion/metrics is unauthenticated in every supported deployment posture — no filter, no UI auth (whitelisted), no S2S coverage. Bundled deployment is open-write on metrics. ... Same severity-class as the AlertManagerController unauthenticated-by-default finding in F-008 — but worse because there is no toggle to fail-close.' (severity HIGH)"
+  - "Verified at primary source: IngestionController.java:89-95 + IngestionDataEntitiesFilter.java:28 + IngestionDataSourceFilter.java:20 + SecurityConstants.java:96 + AuthorizationCustomizer.java:22"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security 2026-05-20 status 200 — does NOT enumerate /ingestion/metrics in the uncovered-paths list (DOC-GAP-NNN candidate)"
+cross_references:
+  - "TEST-GAP-815 (sister — getDataEntitiesByDEGOddrn unauthenticated; same class)"
+  - "TEST-GAP-819 (sister — postDataSetStatsList unauthenticated; same class)"
+  - "TEST-GAP-824 (sister — INTERNAL_POSTGRES tenant_id absent; composes with this unauthenticated reach)"
+  - "TEST-GAP-825 (sister — ODDRN-by-payload cardinality DoS; amplification surface)"
+  - "F-008 (the broader S2S unauthenticated-reach picture; this entry extends to the metrics path)"
+  - "AlertManagerController uncovered-by-any-filter sibling (same severity class)"
+  - "concepts/detail/entities/metrics-ingestion.yaml (the concept entry that previously claimed 'INDIRECT' filter relevance — this entry's evidence supports the sidecar's correction to 'NO — not covered by any filter, and whitelisted from UI auth')"
+  - "REFACTOR-NNN (proposed): add IngestionMetricsFilter class with auth.ingestion.metrics-filter.enabled toggle"
+  - "DOC-GAP-NNN (proposed): live enable-security page must enumerate /ingestion/metrics in the uncovered-paths list explicitly"
+related_features: [F-008]
+related_pillar_features: ["P-07:metrics-ingestion", "P-09:Security & Access Control", "P-10:ingestion-pipeline"]
+proposed_action: |-
+  Add `IngestMetricsUnauthenticatedReachMatrixNoToggleTest`. WebTestClient matrix:
+
+  1. `post_authDisabled_filterDisabled_noBearer_returns201_pinsAnonymousReach`
+  2. `post_authDisabled_filterEnabled_noBearer_returns201_pinsFilterIrrelevance`
+  3. `post_authOauth2_filterEnabled_noBearer_returns201_pinsWhitelistBypass`
+  4. `post_authLdap_filterEnabled_noBearer_returns201_pinsLDAPDoesNotProtect`
+  5. `post_authLoginForm_filterEnabled_noBearer_returns201_pinsLoginFormDoesNotProtect`
+  6. `post_authS2SEnabled_invalidApiKey_returns201_pinsS2SDoesNotProtect_ingestionPaths`
+  7. **`post_noToggleAvailable_assertConfigSurface`** — assert no `auth.ingestion.metrics-filter.enabled` property exists in application.yml or @ConfigurationProperties; assert no `IngestionMetricsFilter` class exists in the codebase via reflection / Spring bean lookup. PINS the "no toggle" structural gap.
+
+  Pair with REFACTOR-NNN and DOC-GAP-NNN.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Sister to TEST-GAP-815/819 (same root cause, three different IngestionController sub-paths). The concept entry `metrics-ingestion.yaml` previously claimed `ingestion_filter_relevance: INDIRECT` which is INSUFFICIENTLY STRONG per the sidecar's batch-Z update — this test pins the corrected `NO` polarity at the code-level. The sidecar's batch-Z `Pre-emit coherence check` block flags the concept-entry path correction (`/ingestion/metric_sets` → `/ingestion/metrics`) and the security wording correction — both are in scope for the next concept-merger pass. NO contradiction with F-008; STRENGTHENS by extending the unauthenticated-reach picture to a 4th IngestionController sub-path (entities=conditionally, stats=never, metrics=never, alertmanager=never).
+batch: 2026-05-20-Z
+feature_id: F-008

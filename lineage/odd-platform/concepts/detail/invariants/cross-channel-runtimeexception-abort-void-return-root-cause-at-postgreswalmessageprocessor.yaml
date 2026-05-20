@@ -1,0 +1,295 @@
+name: |-
+  Cross-channel RuntimeException abort root-caused at PostgresWALMessageProcessor void-return seam — narrow throws clause + void return = no failure signal channel between dispatcher and subscriber (batch Y)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20Y — surfaced by primary-source
+  examination of PostgresWALMessageProcessor.java (the 7-line SPI interface)
+  + NotificationSubscriber.java + AlertNotificationMessageProcessor.java +
+  AlertNotificationMessageTranslator.java. ROOT-CAUSES the existing
+  exception-type-asymmetry-notification-senders invariant (batch K) by
+  identifying the SPI seam shape — void return + only InterruptedException
+  declared — as the STRUCTURAL REASON the dispatcher cannot signal
+  per-channel partial-failure, per-message retry-please, or this-LSN-is-poison-
+  skip-it to the subscriber.
+
+  THE PRIMARY-SOURCE EVIDENCE — PostgresWALMessageProcessor batch Y:
+
+    PostgresWALMessageProcessor.java (the entire 7-line file):
+      package org.opendatadiscovery.oddplatform.notification.processor;
+      import org.opendatadiscovery.oddplatform.notification.dto.DecodedWALMessage;
+      public interface PostgresWALMessageProcessor {
+          void process(final DecodedWALMessage message) throws InterruptedException;
+      }
+    The interface declares:
+      - return type: void (no per-call status carrier)
+      - throws clause: only InterruptedException (for cooperative thread
+        shutdown — see NotificationSubscriber.run() at lines 87-89)
+      - input type: DecodedWALMessage (hard-coded — alert-table-specific)
+
+  THE STRUCTURAL FAILURE MODES — three distinct gaps rooted in the seam:
+
+    Gap 1 — RuntimeException leak (the batch K
+            exception-type-asymmetry-notification-senders root cause):
+      The implementor (AlertNotificationMessageProcessor) wraps its
+      per-sender catch around NotificationSenderException (the documented
+      sender-failure type) — see AlertNotificationMessageProcessor.java:31.
+      EmailNotificationSender wraps MessagingException | TemplateException
+      | IOException as raw RuntimeException at EmailNotificationSender.java:58-60,
+      NOT NotificationSenderException. The RuntimeException bypasses the
+      per-sender catch AND THE SEAM TYPE: process() declares only
+      InterruptedException; RuntimeException is undeclared. The undeclared
+      exception escapes process() and lands in NotificationSubscriber.java:90's
+      generic catch (Exception e) — which logs, releases the lock, sleeps
+      10s, and retries the SAME WAL LSN. The poison-message replay loop
+      fires.
+
+    Gap 2 — Translation failure replay (the batch K
+            poison-message-wal-replay-loop root cause):
+      AlertNotificationMessageTranslator throws IllegalArgumentException
+      (lines 87) and IllegalStateException (lines 94, 101, 184) on
+      structural data-integrity errors (unknown alert-type code, missing
+      FK on alerted-data-entity, NULL type_id). Both are unchecked, both
+      undeclared at the seam, both escape via NotificationSubscriber.run()'s
+      generic catch. The translation step runs BEFORE per-sender fan-out;
+      a translation failure aborts the entire dispatch including channels
+      that would have succeeded. The poison loop replays the SAME WAL LSN
+      indefinitely.
+
+    Gap 3 — Successful-on-some-channels + failed-on-other = LSN advances
+            anyway (NEW finding, batch Y primary-source):
+      The seam's void return means the dispatcher has no way to signal
+      "delivered to Slack, failed Webhook + Email — please re-deliver
+      the partial". NotificationSubscriber.java:80-84 calls process()
+      and advances setAppliedLSN unconditionally after process() returns
+      normally. The dispatcher's per-sender catch logs the failure and
+      moves to the next sender — process() returns normally. From the
+      subscriber's perspective: success. From the operator's perspective:
+      Slack got the alert, Webhook and Email did not, and the WAL LSN
+      moved on. No retry, no DLQ, no audit trail.
+
+  WHY THE SEAM SHAPE IS THE STRUCTURAL ROOT:
+
+    The dispatcher's per-channel catch-and-continue posture (the
+    implicit ADR at AlertNotificationMessageProcessor.java:28-36) is
+    well-intentioned and matches the doc-side promise ("an alert
+    dispatched to multiple channels is delivered to every channel that
+    is enabled"). But the seam's void return DENIES the dispatcher the
+    ability to express:
+      - "all channels succeeded" — distinguishable from
+      - "some channels succeeded; please retry the failed ones"
+      - "the translation succeeded but a critical-channel failed; please
+        retry the whole message"
+      - "the translation failed; please advance LSN past this row (it is
+        unparseable)"
+    All four outcomes collapse to the same return-normally signal. The
+    SUBSCRIBER side then has only the binary "exception was thrown / was
+    not" to base LSN-advance decisions on.
+
+  WHAT A CHANGED SEAM WOULD ENABLE:
+
+    A void-to-typed-result refactor — e.g.
+      enum ProcessResult { ALL_DELIVERED, PARTIAL_DELIVERED_RETRYABLE,
+                           POISON_SKIP, TRANSIENT_RETRYABLE }
+      ProcessResult process(DecodedWALMessage message) throws InterruptedException;
+    — would let the dispatcher express per-message guidance to the
+    subscriber. The subscriber could then:
+      - ALL_DELIVERED → advance LSN (current behaviour)
+      - PARTIAL_DELIVERED_RETRYABLE → enqueue per-channel retry in a
+        dedicated table; advance LSN (because the alert IS delivered,
+        partially, with explicit retry planned)
+      - POISON_SKIP → advance LSN, emit a Prometheus counter, optionally
+        write to a poison-alert audit table — unblocks subsequent WAL
+        messages without losing the bad row
+      - TRANSIENT_RETRYABLE → do NOT advance LSN, sleep, retry — current
+        poison-replay behaviour but only for genuinely-transient
+        failures
+    The current seam structurally precludes any of this expressiveness.
+
+  THE LSN-018 COHERENCE WITH F-009 + F-006:
+
+    F-009 catalogues four drift facets that all reduce to the seam's
+    void-return + narrow-throws shape:
+      - no_retry_no_dlq_no_audit (this invariant root-causes it)
+      - exception_type_asymmetry_across_senders (this invariant
+        root-causes it at the seam level — the dispatcher's
+        NotificationSenderException-only catch is a workaround for
+        the seam's narrow throws clause)
+      - unconditional_broadcast_no_routing (orthogonal — sourced from
+        the implementor's choice not to consult dataEntity.owners,
+        not from the seam shape)
+      - pii_passthrough_to_every_channel (orthogonal — sourced from
+        the AlertNotificationMessage shape)
+
+    F-006 catalogues audit silence at multiple layers (schema, enum,
+    service, repo, UI). The seam's void return is a SIXTH layer — the
+    Java-interface-type layer. A dispatcher implementor that wanted to
+    emit an audit event "platform sent alert X to channels [Y, Z] at
+    time T with statuses [S1, S2]" has no per-message correlation-id in
+    the seam signature (the LSN is only known to the caller), no
+    return-channel for the status list, no audit-shape hook on the
+    interface. The audit silence on notification delivery is therefore
+    structurally rooted in the SAME pattern as F-006's other layers.
+
+  CROSS-LINK TO BATCH K AND C:
+
+    Batch K (NotificationsDispatcher) identified the symptom: email
+    RuntimeException bypasses the dispatcher's catch. Batch C
+    (NotificationsProperties) identified the LSN advance shape: WAL
+    leader-elected; lazy-create-no-drop; never advances on failure.
+
+    Batch Y (PostgresWALMessageProcessor — THIS INVARIANT) identifies
+    the STRUCTURAL ROOT: the seam's void + narrow-throws shape is the
+    architectural reason the symptom exists. Fixing the symptom
+    (broadening the dispatcher's catch from NotificationSenderException
+    to Exception) closes the email-bypass leak but does NOT close the
+    void-return-no-failure-signal gap. The full fix requires the seam
+    shape change.
+
+  SEVERITY HIGH — same severity as the symptom invariants this root-
+  causes; identifying the architectural root explains why all three
+  symptoms (Gap 1 / Gap 2 / Gap 3 above) cluster around the same
+  failure class.
+nodes:
+  - odd-platform java notification.processor class:PostgresWALMessageProcessor
+  - odd-platform java service service:NotificationsDispatcher
+  - odd-platform java notification class:NotificationSubscriber
+  - odd-platform java notification.sender class:EmailNotificationSender
+contributors:
+  - |-
+    PostgresWALMessageProcessor batch Y (PRIMARY SOURCE — seam-level root
+    cause):
+    invariants[interface has exactly ONE implementor; the contract is
+    void process(...) throws InterruptedException; the return type is
+    void — NO way for the dispatcher to signal partial-failure / retry /
+    poison-skip; the interface does NOT extend a generic message-handler
+    shape] +
+    implicit_adrs.[1] (Cooperative-shutdown via InterruptedException only —
+    the seam shape encodes "subscriber is responsible only for honouring
+    interrupt + completing-or-erroring per call; LSN state lives on the
+    OTHER side") +
+    bugs_limitations_corner_cases.[0] (void process — no return-value
+    channel) +
+    bugs_limitations_corner_cases.[1] (narrow throws clause — wider
+    exception surface undeclared)
+  - |-
+    NotificationsDispatcher batch K (existing reference — the
+    exception-type-asymmetry-notification-senders symptom)
+  - |-
+    NotificationSubscriber batch Y (sibling — the LSN-advance-after-process
+    pattern at lines 80-84; the outer catch (Exception e) at lines 90-100
+    that absorbs the void-return gap's downstream effect)
+  - |-
+    EmailNotificationSender batch Y (sibling — the bypass site at lines
+    58-60 where RuntimeException is wrapped instead of NotificationSenderException;
+    the contract violator)
+evidence:
+  - |-
+    PostgresWALMessageProcessor.md:concepts.invariants
+    (single-implementor; void return; only InterruptedException declared;
+    alert-table-specific input)
+  - |-
+    PostgresWALMessageProcessor.md:implicit_adrs.[1]
+    (Cooperative-shutdown via InterruptedException only — seam shape root)
+  - |-
+    PostgresWALMessageProcessor.md:bugs_limitations_corner_cases.[0,1]
+    (void return + narrow throws clause — primary source for THE seam
+    shape's failure modes)
+  - |-
+    PostgresWALMessageProcessor.md:dependencies_semantic.exception-type-coupling
+    (InterruptedException-only-declared at the seam; IllegalArgumentException
+    + IllegalStateException from the translator cross undeclared)
+  - |-
+    Cross-references existing invariant
+    exception-type-asymmetry-notification-senders (batch K symptom)
+  - |-
+    Cross-references existing invariant
+    poison-message-wal-replay-loop (batch K symptom — translate path)
+  - |-
+    Cross-references existing invariant
+    wal-retention-disk-exhaustion-under-poison-replay-no-bound (batch Y
+    consequence)
+axes_present:
+  - services
+  - config_prefixes
+triangulation_count: 3
+cross_batch: true
+cross_batch_refs:
+  - batch-K (exception-type-asymmetry + poison-replay symptoms)
+  - batch-C (NotificationsProperties + WAL LSN-advance shape)
+  - batch-Y (PostgresWALMessageProcessor seam shape — root cause, THIS INVARIANT)
+severity: HIGH
+severity_dim: durability
+mitigations_unimplemented:
+  - |-
+    Widen the seam's return type from void to a typed ProcessResult enum
+    (ALL_DELIVERED / PARTIAL_DELIVERED_RETRYABLE / POISON_SKIP /
+    TRANSIENT_RETRYABLE) — the subscriber consumes the result to decide
+    LSN-advance vs replay vs skip. Closes Gap 3 (per-channel partial
+    failure) AND enables operator-facing remediation for Gaps 1 and 2.
+  - |-
+    Widen the seam's throws clause to declare RuntimeException-derived
+    types the implementor actually surfaces (IllegalArgumentException,
+    IllegalStateException) so a maintainer reading the interface knows
+    the wider exception surface. Closes the documentation-leak half of
+    Gap 1.
+  - |-
+    Add a per-message correlation-id to the seam signature — e.g.
+    process(DecodedWALMessage message, ProcessContext context) where
+    ProcessContext carries LSN + arrival-time + a correlation-uuid that
+    the implementor can use for audit emission. Closes the audit-silence-
+    on-notification-delivery half of F-006.
+  - |-
+    Broaden the dispatcher's per-sender catch from
+    catch (NotificationSenderException e) to catch (Exception e) as
+    an INTERIM fix — closes the email-bypass leak (Gap 1 symptom)
+    without changing the seam. Leaves Gap 2 (translate-failure poison
+    loop) and Gap 3 (partial-failure no signal) open but addresses the
+    most operator-visible symptom.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20Y from the
+  PostgresWALMessageProcessor sidecar's primary-source evidence at the
+  7-line SPI interface. ROOT-CAUSES the existing batch-K
+  exception-type-asymmetry-notification-senders invariant by identifying
+  the architectural pattern — void return + narrow throws clause +
+  hard-coded input type — that structurally precludes the dispatcher
+  from signalling per-message status, per-channel partial failure, or
+  poison-skip guidance to the subscriber.
+
+  This is the F-009 LSN-class architectural finding — the 5-LAYER closure
+  of F-009 surfaces three SYMPTOM invariants (exception asymmetry,
+  poison-replay, retry-after-ignored) AND one ROOT-CAUSE invariant (the
+  seam shape). The 5-layer picture is now:
+    Layer 1 (config-layer batch C — NotificationsProperties): subsystem
+      gate + WAL coordinates
+    Layer 2 (subscriber-layer batch Y — NotificationSubscriber):
+      WAL polling + LSN-advance-after-process + poison-replay outer loop
+    Layer 3 (seam-layer batch Y — PostgresWALMessageProcessor — THIS
+      INVARIANT): void return + narrow throws — the architectural root
+      cause of multiple symptom findings
+    Layer 4 (dispatcher-layer batch K — AlertNotificationMessageProcessor):
+      translate-uncaught + per-sender catch + sequential fan-out
+    Layer 5 (sender-layer batch Y — Slack/Webhook/Email NotificationSender
+      impls): per-channel quirks (mrkdwn-injection, no-HMAC, RuntimeException
+      bypass, fail-stop email recipients)
+
+  Cross-cutting connections:
+    - ROOT-CAUSES the batch-K exception-type-asymmetry symptom invariant
+    - ROOT-CAUSES the batch-K poison-message-wal-replay-loop invariant's
+      no-retry / no-DLQ shape
+    - Cross-link to F-006 audit-silence at the type-layer (the seam's
+      lack of a correlation-id is a sixth layer of audit silence)
+    - Cross-cutting case-law for "narrow SPI seam designed for one
+      caller-impl pair + the silent-narrowing of the impl's actual
+      exception surface" — a class of architectural decisions that look
+      fine at design time and fail at extension time
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Document the seam's void-return contract on the live
+        notifications page — operators reading the page should know
+        the F-009 architecture's expressivity limit
+    (b) Cross-link from the F-009 feature-flow to this invariant as the
+        ROOT_CAUSE node — the symptom invariants reference it as their
+        cause

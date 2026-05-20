@@ -1,0 +1,72 @@
+gap_id: TEST-GAP-838
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:Search"
+  - "odd-platform java SearchController controller-method:search"
+  - "odd-platform java SearchController controller-method:facets"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "Search.md:bugs_limitations_corner_cases.[7] — 'FTS-injection: typed search-query text passes UNESCAPED through to to_tsquery(?) — REFACTOR-229 user-controlled query text — NO client-side sanitisation here'"
+  - "Search.md:security.known_security_gaps.[1] — 'FTS-injection / session-poisoning at the typed search-query field (REFACTOR-229 batch-M strengthening). The UI provides ZERO mitigation'"
+  - "Search.md:tests_coverage_semantic.uncovered_behaviours.[8] — 'FTS-injection regression: typed query containing tsquery metacharacters poisons the session UUID — assert UI surfaces the failure (currently does NOT — REFACTOR-229)'"
+behaviour: |-
+  **HIGH — REFACTOR-229 UI-side FTS injection on the typed search-query text. The third invocation site of the same architectural gap — batch H (getHighlightedResult) + batch M (facet aggregators) + batch ZA (Search.tsx UI-side dispatch).** MainSearchInput.tsx:42-44 builds `searchFormData = { query, pageSize: 30, filters: {} }` and dispatches verbatim. Server-side `JooqFTSHelper.tsQuery` at `JooqFTSHelper.java:164-168` performs `plainQuery.split(' ').map(q -> q + ':*').join('&')` — **NO escaping of tsquery metacharacters** (`!`, `(`, `)`, `:`, `<->`, `&`, `|`, `'`, `\`).
+
+  A typed query of `foo ) | (bar` reaches `to_tsquery(?)` and Postgres raises `42601 syntax error in tsquery`. The session UUID is then **permanently poisoned**: every subsequent facet read (`GET /api/search/{poisoned_uuid}/facet/{any}`) 500s per batch-M SearchController.facets sidecar bugs[4] + REFACTOR-229 strengthening (batch M).
+
+  **The UI offers ZERO mitigation** — no max-length, no metacharacter filter, no client-side `to_tsquery` validation. Search.tsx accepts arbitrary text from MainSearchInput and submits it as-is. **Combined with REFACTOR-344** (no user binding on `search_facets` row), the poisoned UUID can be shared as a denial-of-service vector — a malicious caller can poison a UUID, share it in a Slack channel, and break every recipient's facet reads.
+
+  **Why HIGH (security + availability)**:
+  - **Security**: Reflected operator-controlled text reaches database query language without sanitisation. The class is SQL-injection-adjacent (the metacharacters are tsquery-specific, not generic SQL, but the structural cause — unescaped operator-controlled text in DB query layer — is the same).
+  - **Availability**: Poisoned UUIDs DoS every subsequent facet read on the session. With session-sharing patterns (Slack-linked filtered Catalog views), the DoS propagates by sharing.
+
+  **Test gap shape**: TWO surfaces:
+  1. **Unit test on Search.tsx** asserting that a typed query containing tsquery metacharacters is REJECTED at the UI before dispatch (the fix point — currently the UI accepts it and the test PINS the unmitigated bypass).
+  2. **Integration test** asserting that submitting a poisoned query results in a backend 500 AND the UI surfaces an error message (currently the UI does NOT surface the failure — bugs section[7]).
+
+  The architectural fix point is the BACKEND (`JooqFTSHelper.tsQuery` — single source of truth for the FTS-escape). But UI-side defense-in-depth is the natural complement: the operator typing `foo ) | (bar` should see a "invalid characters in search query" prompt at the input field, not silently submit and get a frozen broken Catalog page.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.injection.test.tsx"
+    name: "submitQuery_containingTsqueryMetacharacters_currentlyDispatchesUnescaped_pinsREFACTOR229Bypass"
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.injection.test.tsx"
+    name: "submitQuery_containingTsqueryMetacharacters_currentlyDoesNotSurfaceErrorToUser_pinsSilentFailure"
+  - path: "odd-platform-ui/src/components/Search/__tests__/Search.injection.test.tsx"
+    name: "submitQuery_validQuery_dispatchesNormally_pinsHappyPath"
+  - path: "odd-platform-ui/tests/regression-pins/search-fts-injection.spec.ts"
+    name: "openSearchAndSubmitPoisonedQuery_sessionUUIDIs500dOnFacetReads_pinsBackendBypass_playwrightCIPermanent"
+evidence:
+  - "Search.md says (bugs_limitations_corner_cases.[7]): 'FTS-injection: typed search-query text passes UNESCAPED through to to_tsquery(?) — REFACTOR-229 user-controlled query text — NO client-side sanitisation here. A typed query of `foo ) | (bar` reaches `to_tsquery(?)` and Postgres raises 42601 syntax error in tsquery. The session UUID is then permanently poisoned.'"
+  - "Search.md says (security.known_security_gaps.[1]): 'FTS-injection / session-poisoning at the typed search-query field. The UI provides ZERO mitigation — no max-length, no metacharacter filter, no client-side to_tsquery validation. Search.tsx is the UI HALF of the REFACTOR-229 security finding'"
+  - "Verified at primary source: MainSearchInput.tsx:42-44 (raw query dispatch with no validation)"
+  - "Verified at primary source: Search.tsx:80 (MainSearch mount, no validation prop)"
+  - "Verified at primary source: JooqFTSHelper.java:164-168 (the unescaped server-side concatenation per REFACTOR-229)"
+  - "Cross-batch evidence: batch H sidecar ReactiveDataEntityRepositoryImpl tests_coverage_semantic.uncovered_behaviours[3] (the getHighlightedResult vector); batch M SearchController.facets sidecar bugs[4] (the facet-aggregator vector); THIS sidecar pins the UI-tier ingress vector"
+  - "Reducer-side Glob verification: `/home/raman/work/odd/odd-platform/odd-platform-ui/**/Search*.test.*` returned 0 matches — zero direct test coverage confirmed"
+cross_references:
+  - "REFACTOR-229 (FTS injection at JooqFTSHelper.tsQuery — the architectural fix point — UI half pinned by this entry)"
+  - "TEST-GAP-NNN batch-H (getHighlightedResult SQL-injection vector — sister at the read-time highlight pass)"
+  - "TEST-GAP-NNN batch-M (SearchController.facets injection vector — sister at the facet-read pass)"
+  - "REFACTOR-344 (search_facets no user binding — composes into bearer-token-shaped DoS vector)"
+  - "concepts.yaml:invariants[fts-tsquery-metacharacter-escape-not-applied-jooqftshelper-tsquery]"
+  - "DOC-GAP-NNN (proposed): docs page should warn that typed query is a tsquery prefix-match expression with restricted metacharacter set"
+related_features: [F-002]
+related_pillar_features: ["P-01:F-002 Search and Filtering", "P-09:Security & Access Control"]
+proposed_action: |-
+  **Phase 1 — Vitest UI tests** (3 unit tests + 1 integration spec):
+
+  1. `submitQuery_containingTsqueryMetacharacters_currentlyDispatchesUnescaped_pinsREFACTOR229Bypass` — render `<Search />` + mocked Redux. Submit `foo ) | (bar` via the MainSearchInput. Assert dispatch fires with the literal unescaped string. PINS the current UI-side bypass. **After REFACTOR-229's UI-side fix lands, this test UPDATES to assert the input is rejected at the field level with a validation message.**
+
+  2. `submitQuery_containingTsqueryMetacharacters_currentlyDoesNotSurfaceErrorToUser_pinsSilentFailure` — mock the backend to return 500 on the dispatch, render Search, submit poisoned query, assert NO error toast/notification is rendered. PINS the silent-failure UX gap.
+
+  3. `submitQuery_validQuery_dispatchesNormally_pinsHappyPath` — submit `customer pii dataset`, assert dispatch fires with the literal text + 200 response succeeds. PINS the happy-path doesn't regress with the validation fix.
+
+  **Phase 2 — Playwright CI-permanent regression-pin**:
+  - `openSearchAndSubmitPoisonedQuery_sessionUUIDIs500dOnFacetReads_pinsBackendBypass_playwrightCIPermanent` — boot test-platform, navigate to `/search`, submit `foo ) | (bar`, capture the session UUID from the URL, then call `GET /api/search/{uuid}/facet/owners` → assert backend returns 500 with `42601 syntax error in tsquery`. PINS the cross-tier bypass (UI submits → backend 500s → session permanently broken).
+
+  **Architectural fix dependency**: The REFACTOR-229 fix in `JooqFTSHelper.tsQuery` is the LOAD-BEARING fix. The UI-side defense-in-depth (input validation at MainSearchInput.tsx:42-48) is the natural complement. Both should ship together; the test pins both.
+
+  Coherence note (LSN-018 Rule 6): NO contradiction with existing artefacts. STRENGTHENS the REFACTOR-229 chain across THREE invocation sites (batch H getHighlightedResult + batch M facet aggregators + batch ZA UI-side). All three sites share the same architectural fix point. The 3-site evidence is now anchored to the same REFACTOR; the next test-pillar work cycle should treat them as ONE backlog item.
+batch: 2026-05-20-ZA
+feature_id: F-002

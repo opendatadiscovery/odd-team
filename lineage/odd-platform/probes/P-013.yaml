@@ -1,0 +1,107 @@
+---
+id: P-013
+status: pending-stress-protocol
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-2
+emitted_from_sidecar: odd-platform__java__housekeeping__job__ActivityEmptyPartitionsHousekeepingJob.md
+question: |
+  What is the actual I/O cost of `SELECT count(*) = 0 FROM <partition>`
+  (PartitionServiceImpl.java:133-142) when applied to a POPULATED activity
+  partition on a multi-year deployment?
+
+  The static-inferred fear: 96 cycles/day × N past partitions × per-partition
+  count-scan cost = potentially gigabytes of I/O per day, all spent confirming
+  that NO partition can be dropped (because all are populated).
+
+  Specifically: on a partition with 10M rows, does Postgres short-circuit
+  `count(*) = 0` (e.g. via planner optimisation that detects the predicate)
+  or does it sequentially scan the entire partition?
+
+  Cross-question: would rewriting as `WHERE NOT EXISTS (SELECT 1 FROM
+  <partition> LIMIT 1)` reduce the cost to O(1)?
+
+stress_category: A (tunables — scaling boundaries), Performance
+stress_question_ids: [Q-A.4]
+
+triggers:
+  - PartitionServiceImpl.java:134 (`SELECT count(*) = 0 FROM %s`)
+  - No `LIMIT`, no `EXISTS`, no early-exit hint
+  - Runs every 15 minutes per past partition
+  - Multi-year deployment with `partition-period=1` (e.g. compliance setting
+    for narrow partitions) accumulates 365 past partitions/year
+
+arrange:
+  - docker-compose: postgres + odd-platform.
+  - Configure: `housekeeping.enabled=true`; `odd.activity.partition-period=30`
+    (default).
+  - Seed scenarios:
+    - Scenario A (empty baseline): 10 past empty partitions, no rows.
+    - Scenario B (populated): 10 past partitions, EACH containing 1M rows
+      (synthesise via `INSERT INTO activity_YYYYMMDD_YYYYMMDD SELECT
+      ... FROM generate_series(1, 1000000)`).
+    - Scenario C (heavily populated): 10 past partitions, EACH containing
+      10M rows.
+  - Enable Postgres slow-query log (`log_min_duration_statement = 100`).
+  - Enable `EXPLAIN (ANALYZE, BUFFERS)` capture: alter
+    `PartitionServiceImpl.isPartitionEmpty` temporarily to log the query
+    plan + execution time per partition (or instrument via JDBC trace).
+
+act:
+  - Trigger one housekeeping cycle in each scenario.
+  - Measure: total cycle wall-clock time; per-partition `count(*) = 0` time;
+    per-partition I/O (buffers hit / buffers read from disk).
+
+observe:
+  - kind: postgres_explain
+    target: PartitionServiceImpl.java:134 expanded query
+    capture: EXPLAIN (ANALYZE, BUFFERS) SELECT count(*) = 0 FROM <partition>
+    expected:
+      - Scenario A: `Seq Scan` on 0 rows = ~0.001ms
+      - Scenario B: `Seq Scan` on 1M rows = expected ~50-200ms per partition
+      - Scenario C: `Seq Scan` on 10M rows = expected ~500ms-2s per partition
+    contrast: |
+      Run also: EXPLAIN (ANALYZE, BUFFERS) SELECT 1 FROM <partition> LIMIT 1
+      — measure short-circuit cost. Hypothesis: O(1) on any partition size
+      (planner emits `Limit` + `Seq Scan` with early exit on first row).
+  - kind: application_metric
+    target: cycle wall-clock duration (HousekeepingJobManager.java:30
+      `log.debug("Running housekeeping jobs")` start vs end)
+    capture: timestamped log lines OR JFR profiling
+  - kind: postgres_log
+    grep_for:
+      - "duration: .* statement: SELECT count\\(\\*\\) = 0 FROM activity_"
+      - "duration: .* statement: DROP TABLE activity_"
+  - kind: db_buffer_metric
+    target: pg_stat_statements
+    capture: total_exec_time, calls, shared_blks_hit, shared_blks_read for the
+      `SELECT count(*) = 0 FROM activity_%` statement
+
+oracle:
+  - **HYPOTHESIS CONFIRMED (MEDIUM severity)**: count-scan is full sequential
+    scan on populated partitions, taking >100ms per partition; on a deployment
+    with 30+ past partitions, the housekeeping cycle spends >3s per cycle
+    just confirming non-emptiness — that is 96×3s = ~5 minutes/day of DB
+    load purely for emptiness verification on a job that drops nothing.
+  - **HYPOTHESIS REJECTED (Postgres optimises this)**: planner detects
+    `count(*) = 0` and short-circuits — the cost is O(1) regardless of
+    partition size. The job's overhead is negligible.
+
+resolves_to:
+  - sidecar_field: stress_findings.Q-A.4 (PROBE-VERIFIED measured I/O cost)
+  - sidecar_field: performance.hot_paths.[0] (PROBE-VERIFIED scan cost)
+  - sidecar_field: performance.known_performance_gaps.[0] (PROBE-VERIFIED
+    severity; convert from inferred MEDIUM to measured MEDIUM/LOW based
+    on actual measurements)
+  - on confirmation of HIGH cost: emit REFACTOR candidate to rewrite
+    `SELECT count(*) = 0 FROM <partition>` as `NOT EXISTS (SELECT 1 FROM
+    <partition>)` in PartitionServiceImpl.java:134. Single-line change,
+    measurable orders-of-magnitude improvement on populated partitions.
+
+severity_if_confirmed: MEDIUM (operational efficiency; not a correctness or
+  safety issue, but a quietly-expensive design on long-lived deployments)
+
+probe_owner: probe-runner (next batch)
+estimated_runtime: 60 minutes (docker-compose + synthetic data generation
+  for Scenarios B and C + EXPLAIN ANALYZE captures + log scraping)
+---

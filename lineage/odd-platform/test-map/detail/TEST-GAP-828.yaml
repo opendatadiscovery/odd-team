@@ -1,0 +1,73 @@
+gap_id: TEST-GAP-828
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform openapi spec:odd-platform-public-api"
+pillars_affected: [P-09, P-11]
+surfaced_by:
+  - "openapi-spec.md:bugs_limitations_corner_cases.[0] MEDIUM (no securitySchemes block)"
+  - "openapi-spec.md:security.known_security_gaps.[1] MEDIUM (no machine-readable auth → SDKs silently omit auth)"
+  - "openapi-spec.md:tests_coverage_semantic.uncovered_behaviours (no spec-vs-runtime conformance test)"
+behaviour: |-
+  **HIGH — The 4212-line `openapi.yaml` + 2937-line `components.yaml` together declare 194 operations across 35 tags but contain ZERO `securitySchemes` blocks AND ZERO operation-level `security:` declarations.**
+
+  **Verified by Grep**:
+  - `openapi.yaml` Grep `securitySchemes` → 0 matches.
+  - `openapi.yaml` Grep `security:` → 0 matches.
+  - `components.yaml` Grep `securitySchemes` → 0 matches.
+
+  **What this MEANS for SDK consumers**:
+  - SDK generators producing typed clients from this spec emit NO authentication code — no `Bearer` token wiring, no session cookie handling, no `X-API-Key` injection.
+  - Third-party integrators MUST hand-author auth glue per their target language. The hand-authoring is the easiest place for misconfiguration.
+  - Operators evaluating ODD against incumbent alternatives (which usually DO declare auth in OpenAPI) see ODD's spec as "auth-less" — possibly believing the API IS auth-less.
+
+  **Confirmed by the spec's contrast with live docs**: the security configuration page at `/configuration-and-deployment/enable-security` (WebFetched 2026-05-20 per openapi-spec.md docs_link_semantic.inferred_docs.[0] + cross-batch evidence) enumerates 4 UI auth modes (DISABLED / LOGIN_FORM / OAUTH2 / LDAP) + S2S API-key + Ingestion filter. NONE of these are machine-readable from the spec.
+
+  **The contract-test gap on the SECURITY axis is HIGH-severity** because:
+  - The auth model IS enforced server-side (via `SecurityConstants.SECURITY_RULES`, `SecurityWebFilterChain`, `AuthorizationCustomizer`).
+  - But the model is NOT declared in the API contract.
+  - The DRIFT class (server-side enforces X, spec declares NOTHING) is exactly the class that produces REFACTOR-217 (path-mismatch silently disabled authorization) — see TEST-GAP-830 sister.
+
+  **Why HIGH** (the sidecar rates MEDIUM): the **absence of a contract-conformance test** is the structural finding. A contract test that compared `SecurityConstants.SECURITY_RULES` paths × permission requirements against the spec's declared operation-id → permission mapping would have caught REFACTOR-217 at spec-authoring time (instead of at sidecar-audit time, where it lived for an unknown number of releases as a silent authorization bypass). The same class of drift is loaded into every operation that the spec declares without a `security:` block — the spec cannot REFUTE a future drift.
+
+  **Test gap shape**: a build-time contract test that:
+  1. Parses `openapi.yaml` + `components.yaml`.
+  2. Asserts at LEAST ONE `securitySchemes` block exists.
+  3. Asserts every operation under `/api/*` declares a `security:` block OR is listed in an explicit "public unauthenticated allowlist" config.
+  4. Asserts every operation has a documented `permissionRequired` extension (`x-permission`) matching the runtime `SECURITY_RULES`.
+
+  PINS the current zero-declaration state; pairs with REFACTOR-NNN (declare auth in spec) and DOC-GAP-NNN (the openapi-spec sidecar's doc-drift findings).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/openapi/OpenAPISpecSecuritySchemesContractTest.java"
+  name: "spec_declaresAtLeastOneSecuritySchemeBlock_AND_everyApiOperationDeclaresSecurityOrPublicAllowlist"
+evidence:
+  - "openapi-spec.md says (bugs_limitations_corner_cases.[0]): 'No securitySchemes block declared — the spec is completely silent on the platform's authentication model. ... None of these are machine-readable from the spec. SDK generators cannot produce typed authentication clients; third-party consumers must reverse-engineer auth from the running service.' (severity MEDIUM)"
+  - "openapi-spec.md says (security.known_security_gaps.[1]): 'No machine-readable auth → generated SDKs silently omit auth — third-party SDKs generated from this spec contain NO authentication code (no Bearer token wiring, no session cookie handling, no X-API-Key injection). SDK consumers must hand-author auth glue, which is the easiest place for a misconfiguration.' (severity MEDIUM)"
+  - "openapi-spec.md says (security.auth_mode_relevance): 'N/A — the spec declares no security schemes; auth is enforced server-side via SecurityWebFilterChain, not via the spec's contract surface. Verified: openapi.yaml:1-49 (no securitySchemes block; no security: declaration anywhere — Grep'd to 0 matches) + components.yaml:1-2937 (Grep'd to 0 matches for securitySchemes).'"
+  - "Verified: Grep against `<odd-platform-specification>/openapi.yaml` and `components.yaml` for `securitySchemes|security:` returns 0 matches (the sidecar's Grep counts are primary-source)"
+  - "Reducer-side Grep against `<odd-platform-repo>/odd-platform-api/src/test`: `securitySchemes|openapi.*security|ContractTest|SpecConformance` returns 0 matches (no contract test exists)"
+cross_references:
+  - "TEST-GAP-829 (sister — only 3/194 ops declare 4xx/5xx; same contract-test gap class, different aspect)"
+  - "TEST-GAP-830 (sister — REFACTOR-217 path-mismatch silently disables permission; the canonical demonstration of why contract tests matter)"
+  - "TEST-GAP-285 (existing — postDataEntityList 200-vs-201 spec drift; sibling-class contract test gap)"
+  - "REFACTOR-217 (the case-law for what contract tests would have caught)"
+  - "F-008 (5-vertex picture; this entry extends contract-test coverage to the spec axis)"
+  - "DOC-GAP-099 (the spec-drift META cluster)"
+  - "REFACTOR-NNN (proposed): declare securitySchemes (OAuth2 / Bearer / SessionCookie / X-API-Key) + add operation-level security blocks"
+  - "system-mission.md P-09 (Security & Access Control) + P-11 (Platform API & Developer Surface) cross-pillar — the spec is the developer-facing surface for security claims"
+related_features: [F-008]
+related_pillar_features: ["P-09:Security & Access Control", "P-11:Platform API & Developer Surface"]
+proposed_action: |-
+  Add `OpenAPISpecSecuritySchemesContractTest`. Build-time test (no Spring context):
+
+  1. **Parse spec**: use `swagger-parser` or `openapi-parser` Maven dep to load `openapi.yaml` + `components.yaml`.
+  2. **Assertion 1 (CURRENTLY FAILING — the headline)**: `spec.components.securitySchemes` is NOT null AND has at least one scheme defined. PINS the absence.
+  3. **Assertion 2 (CURRENTLY FAILING)**: at most one operation under `/api/*` is declared without either a `security:` block OR an entry in an explicit `x-public-unauthenticated` allowlist (managed in a sibling YAML committed to the repo).
+  4. **Assertion 3 (CURRENTLY FAILING)**: every operation declares `x-permission` extension naming the required permission (e.g. `DATA_ENTITY_ADD_TERM`), and these MATCH `SecurityConstants.SECURITY_RULES` entries by `(httpMethod, pathPattern)` — the runtime-vs-spec contract.
+
+  The test fails today on assertion 1 (no securitySchemes), assertion 2 (no security: blocks), assertion 3 (no x-permission extensions). Each assertion's failure is a structural finding — pairs with REFACTOR-NNN.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Sister to TEST-GAP-829 (the 4xx/5xx absence; same contract-test class) and TEST-GAP-830 (the REFACTOR-217 path-mismatch contract test). Together they form the foundation of the spec-conformance test suite. STRENGTHENS DOC-GAP-099 (spec-drift META cluster) by adding the SECURITY axis. STRENGTHENS REFACTOR-217 by establishing the structural class of drift the test would prevent.
+batch: 2026-05-20-Z
+feature_id: F-008

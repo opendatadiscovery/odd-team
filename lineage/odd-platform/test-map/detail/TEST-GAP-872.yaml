@@ -1,0 +1,105 @@
+gap_id: TEST-GAP-872
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java service activity handler:ActivityHandler"
+  - "odd-platform java service:ActivityServiceImpl"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "ActivityHandler.md:stress_findings.S-E-5 (SYSTEM-EVENT USERNAME — silent NULL with no observable signal)"
+  - "ActivityHandler.md:bugs_limitations_corner_cases.[System-event username silently null]"
+  - "ActivityHandler.md:probe_skeletons_emitted (P-020)"
+  - "ActivityServiceImpl.md:concepts.invariants.[activity.created_by = NULL is the system-event signal]"
+  - "ActivityServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[createActivityEvent system-event fallback]"
+behaviour: |-
+  **HIGH — Ingestion-path and scheduler-driven activity events silently write `activity.created_by = NULL`; under DISABLED auth.type, anonymous mutations ALSO write NULL — and there is NO way at the schema level to distinguish "system event" from "auth-context-lost-due-to-bug" from "anonymous-mutation".** `ActivityServiceImpl.createActivityEvent` (`:46-49`) uses `authIdentityProvider.getCurrentUser().map(UserDto::username).switchIfEmpty(Mono.defer(() -> Mono.just(activityMapper.mapToPojo(event, activityCreateTime, null))))` — the `switchIfEmpty` fires when `ReactiveSecurityContextHolder.getContext()` is empty, which happens in THREE distinct cases: (a) `ActivityIngestionRequestProcessor.process` runs on the ingestion thread with NO SecurityContext (S2S path); (b) `AlertServiceImpl` scheduler-driven flows that lose the SecurityContext across reactor thread boundaries; (c) under `auth.type=DISABLED` (anonymous mutations). The `ActivityCreateEvent.systemEvent` boolean (`:13`) DOES propagate to `activity.is_system_event` per the MapStruct mapper at `ActivityMapper.java:79-81` — but the ingestion processor and AlertService set `systemEvent=true` explicitly, and a future caller forgetting that flag would silently produce an indistinguishable NULL-username row. **The Activity Feed has no schema-level way for an operator to determine whether a NULL-created_by row is genuinely systemic OR is a real-user mutation whose auth context was silently lost.**
+
+  **Primary-source chain**:
+  - `ActivityServiceImpl.java:46-50` (createActivityEvent single-row write):
+    - Line 47: `authIdentityProvider.getCurrentUser().map(UserDto::username)` — only username (not provider; cross-mode bleed mechanism per implicit_adrs.[1])
+    - Line 49: `.switchIfEmpty(Mono.defer(() -> Mono.just(activityMapper.mapToPojo(event, activityCreateTime, null))))` — the SILENT NULL fallback
+    - Line 50: `activityRepository.saveReturning(pojo)` — persists with created_by=NULL
+  - `ActivityServiceImpl.java:54-63` (createActivityEvents batch write) — same `.switchIfEmpty` pattern at line 60
+  - `ActivityIngestionRequestProcessor.process` (`service/ingestion/processor/ActivityIngestionRequestProcessor.java:24-32`):
+    - Sets `.systemEvent(true)` explicitly when building ActivityCreateEvent (per ActivityHandler.md:concepts.audiences — line 53 reference)
+    - Runs WITHOUT @ReactiveTransactional / SecurityContext on the ingestion path
+  - `AlertServiceImpl.registerNewAlertsActivityEvents` (`:309-325`) + `registerAutomaticallyResolvedAlertsActivityEvents` (`:247-258`):
+    - Both set `.systemEvent(true)` (per ActivityServiceImpl.md:concepts.audiences)
+  - `V0_0_48__add_activity.sql:10` — `created_by varchar(512)` NULLABLE
+  - `V0_0_48__add_activity.sql:8` — `is_system_event boolean NOT NULL`
+
+  **The structural ambiguity** (per ActivityHandler.md:bugs_limitations_corner_cases.[System-event username silently null]):
+  - NULL `created_by` + `is_system_event=true` → "this was an ingestion / AlertService scheduler event" ✓ (intentional)
+  - NULL `created_by` + `is_system_event=false` → AMBIGUOUS:
+    - (1) Anonymous mutation under DISABLED auth.type (operator-visible mutation, ABSENT operator identity)
+    - (2) A bug elsewhere caused SecurityContext to be lost across reactor boundaries on an authenticated request (silent auth-context drift)
+  - The `is_system_event` column EXISTS in the schema but **only the ingestion + alert paths set it to true**; the `@ActivityLog` AOP path goes through `createActivityEvent` (singular) which receives the `event.systemEvent` from `ActivityCreateEvent` — but `ActivityAspect.postActivity` (per ActivityHandler.md:concepts.entities) does NOT set `systemEvent`, so the AOP-path defaults to false. A regression that drops the explicit `.systemEvent(true)` on an ingestion call would produce indistinguishable rows.
+
+  **Operator-visible consequences**:
+  - **Forensic ambiguity**: a security reviewer investigating "who changed entity X" sees null-created_by, is_system_event=false → cannot distinguish "the platform did this autonomously" from "user Y did this but their auth context was lost".
+  - **DISABLED-mode operational fingerprint**: a dev/test deployment under `auth.type=DISABLED` accumulates indistinguishable-from-system activity rows for every anonymous mutation. If those activity rows are LATER copied to production (e.g. via DB export/import for debugging), the production audit log is contaminated with anonymous mutations indistinguishable from genuine system events.
+  - **Compliance shape**: SOX/GDPR records-of-processing requires actor attribution; NULL + ambiguous-flag means "platform" attribution for some real-user actions.
+
+  **Why HIGH not MEDIUM (sidecar says MEDIUM)**:
+  - The sidecar rates this MEDIUM because the current behaviour is intentional for the system-event path AND the symptom (null actor) is operator-visible.
+  - **We elevate to HIGH because**: (a) the schema-level ambiguity is STRUCTURAL — there's no `actor_kind` column distinguishing "auth-lost" from "anonymous" from "system"; (b) the regression risk is INVISIBLE (a future ingestion-path refactor that forgets `.systemEvent(true)` produces indistinguishable rows); (c) compliance frameworks (SOX/GDPR) explicitly require actor attribution.
+
+  **Connection to probe P-020**:
+  - The sidecar emits P-020 to verify the null-username persistence empirically and to characterise the UI rendering (does the UI show "system" or "unknown user" or blank?)
+  - This TEST-GAP is the regression-pin AFTER P-020 confirms the storage and UI behaviour
+
+  **Connection to TEST-GAP-869**:
+  - TEST-GAP-869 pins the TX-coupling for the @ActivityLog path
+  - This gap (872) pins the AUTH-context fallback (the OTHER side of the createActivityEvent contract)
+  - Together they characterise the full write-side contract (TX coupling + actor-resolution fallback)
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/activity/ActivitySystemEventNullUsernameTest.java"
+  name: "createActivityEvent_noSecurityContext_persistsNullCreatedByAndIsSystemEventDistinguishability"
+evidence:
+  - "ActivityHandler.md says (stress_findings.S-E-5): 'SYSTEM-EVENT USERNAME — silent NULL with no observable signal. Question: when an ingestion-driven activity event is emitted, what is the ActivityPojo.created_by_user_id? Answer (TRACE): the auth-context fallback at ActivityServiceImpl.createActivityEvent:46-49 produces username = null when no security context is present. ActivityIngestionRequestProcessor.process runs on the ingestion thread → no security context → null username → ActivityPojo.created_by_user_id = NULL. The systemEvent flag exists on the ActivityCreateEvent DTO (:13) but its propagation to the ActivityPojo column needs verification. Outcome: confidence PROBE-NEEDED. Probe-skeleton emitted: P-020 below.'"
+  - "ActivityHandler.md says (bugs_limitations_corner_cases.[System-event username silently null]): 'ActivityServiceImpl.createActivityEvent (:46-49) uses authIdentityProvider.getCurrentUser().map(UserDto::username).switchIfEmpty(Mono.defer(() -> Mono.just(activityMapper.mapToPojo(event, ..., null)))). When no security context is present (ingestion thread, background scheduler), the username falls back to null. No log.warn, no metric, no IllegalStateException for the system-event case. The resulting ActivityPojo.created_by_user_id is NULL with no in-system indicator that this was an ingestion-driven event. The systemEvent boolean exists on ActivityCreateEvent (:13) but is not used to distinguish a null-username system event from a null-username auth-context-bug user event.' — severity: MEDIUM"
+  - "ActivityServiceImpl.md says (security.known_security_gaps.[1]): 'anonymous-mutation attribution gap under DISABLED auth.type: under auth.type=DISABLED, anonymous traffic CAN mutate the catalog (description edits, tag assignments, ownership changes) and the resulting activity rows write created_by = null (ActivityServiceImpl line 47-49). These rows are visually indistinguishable from system events at the UI layer — the only discriminator is is_system_event which CAN be false (anonymous-mutation case) OR true (genuine ingestion / scheduler) for null-created_by rows.'"
+  - "ActivityServiceImpl.md says (concepts.invariants.[2]): 'activity.created_by = NULL is the system-event signal (line 49, 60). switchIfEmpty fires when authIdentityProvider.getCurrentUser() is Mono.empty() — which AuthIdentityProviderImpl produces when there is no SecurityContext, no Authentication, OR when ReactiveSecurityContextHolder.getContext() is empty in the Reactor context. Three code paths produce this: (a) ActivityIngestionRequestProcessor (no SecurityContext on S2S ingestion path); (b) AlertServiceImpl scheduled-job and reactive flows that lose the SecurityContext across thread boundaries; (c) DISABLED auth mode (per AuthIdentityProviderImpl.getCurrentUser there is no Authentication object). The mapper persists null to activity.created_by.'"
+  - "Verified at primary source: ActivityServiceImpl.java:46-49 (switchIfEmpty fallback) + ActivityServiceImpl.java:60 (same in createActivityEvents batch) + V0_0_48__add_activity.sql:10 (created_by NULLABLE) + V0_0_48__add_activity.sql:8 (is_system_event NOT NULL)"
+  - "Verified no existing test: Glob src/test/**/*Activity*.java returns ONLY ActivityMapperTest.java"
+cross_references:
+  - "TEST-GAP-869 (sister VAL-LSN-019-B — TX-coupling for the other side of the createActivityEvent contract)"
+  - "TEST-GAP-882 (META anchor — zero handler-tier coverage)"
+  - "REFACTOR-NNN candidate: add an `actor_kind` column to activity schema distinguishing INGESTION / SCHEDULER / ANONYMOUS / USER (and migrate existing nulls based on is_system_event + AlertService caller markers)"
+  - "DOC-NNN candidate: surface the system-event NULL semantics on activity-feed.md; explain that the absence of a `created_by` value can mean SYSTEM (ingestion / scheduler) OR ANONYMOUS (DISABLED auth) OR LOST-CONTEXT (a bug)"
+  - "concepts.yaml:entities[Activity Feed].security_aggregate (system_event attribution)"
+  - "probe-skeletons: P-020"
+related_features: [F-021]
+related_pillar_features: ["P-07:F-003", "P-09:F-001"]
+proposed_action: |-
+  Add `ActivitySystemEventNullUsernameTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/activity/` using Testcontainers + `@SpringBootTest` + Spring Security test-fixtures. Four test methods:
+
+  1. **`createActivityEvent_noSecurityContext_persistsNullCreatedByAndIsSystemEventDistinguishability`** (HEADLINE):
+     - Arrange: clear `ReactiveSecurityContextHolder` before invocation.
+     - Act: invoke `ActivityServiceImpl.createActivityEvent(ActivityCreateEvent.builder().dataEntityId(...).eventType(DESCRIPTION_UPDATED).oldState("{}").newState("{X:1}").systemEvent(true).build())` and `.block()`.
+     - Assert: query activity table for the resulting row; `created_by` IS NULL; `is_system_event` IS TRUE. PIN the system-event path's distinguishability.
+
+  2. **`createActivityEvent_systemEventFalseNoSecurityContext_persistsNullCreatedByAndIsSystemEventFalse_LEAKAGEPIN`**:
+     - Arrange: clear ReactiveSecurityContextHolder; build event with `.systemEvent(false)` (as @ActivityLog AOP path would).
+     - Act: invoke createActivityEvent.
+     - Assert: `created_by` IS NULL; `is_system_event` IS FALSE. PIN the structural ambiguity: a row in this state is INDISTINGUISHABLE from a "user-context-lost" bug or an anonymous DISABLED mutation.
+     - Comment: this is the LEAKAGE PIN — locking in the current ambiguity so a future schema migration (e.g. `actor_kind` column) is a coordinated decision.
+
+  3. **`createActivityEvent_authenticatedUser_persistsUsernameAsCreatedBy_pinHappyPath`** (CONTROL):
+     - Arrange: ReactiveSecurityContextHolder populated with `UserDto.builder().username("alice").provider("LOGIN_FORM").build()`.
+     - Act: invoke createActivityEvent with `.systemEvent(false)`.
+     - Assert: `created_by="alice"`; `is_system_event=false`. PIN the happy-path attribution.
+
+  4. **`createActivityEvent_alertServicePathAuto_setsSystemEventTrue_pinSchedulerSemantic`** (INTEGRATION):
+     - Arrange: trigger an `AlertServiceImpl.applyAlertActions` flow that emits OPEN_ALERT_RECEIVED activity events on the scheduler thread (no SecurityContext).
+     - Assert: every emitted activity row has `created_by=NULL` AND `is_system_event=TRUE`. PIN the alert-emitted system-event contract.
+
+  5. **`createActivityEvent_ingestionPath_setsSystemEventTrue_pinIngestionSemantic`** (INTEGRATION):
+     - Arrange: trigger a `POST /ingestion/entities` flow with auth.ingestion.filter.enabled=false (S2S path). The ingestion processor at FINALIZING phase fires DATA_ENTITY_CREATED activity events.
+     - Assert: every emitted activity row has `created_by=NULL` AND `is_system_event=TRUE`. PIN the ingestion-emitted system-event contract.
+
+  After P-020 measures the UI rendering of NULL-created_by rows, refine the test to assert the UI behaviour too. Cross-pair with REFACTOR-NNN to introduce an `actor_kind` schema column (or equivalent disambiguator). Cross-pair with DOC-NNN to surface the null-actor semantics on activity-feed.md.
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-021

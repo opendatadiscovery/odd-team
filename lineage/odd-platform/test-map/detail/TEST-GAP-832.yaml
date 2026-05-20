@@ -1,0 +1,71 @@
+gap_id: TEST-GAP-832
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java service service:IngestionServiceImpl"
+pillars_affected: [P-10]
+surfaced_by:
+  - "IngestionServiceImpl.md:concepts.invariants.[2] (Entity dedup by ODDRN — Collectors.toMap THROWS on duplicate)"
+  - "IngestionServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[0] (Duplicate ODDRN within a single payload)"
+behaviour: |-
+  **HIGH — Duplicate ODDRNs within a single `DataEntityList` payload CRASH the entire ingestion with `IllegalStateException: Duplicate key`. Caller receives 5xx with no structured 400 error message.**
+
+  Mechanism (`IngestionServiceImpl.java:86`):
+  ```java
+  ingestionDtoMap = items.stream()
+      .map(d -> mapper.createIngestionDto(d, dataSourceId))
+      .collect(Collectors.toMap(DataEntityIngestionDto::getOddrn, identity()));  // ← two-arg → throwing merger
+  ```
+
+  The `Collectors.toMap(keyMapper, valueMapper)` overload uses Java's default throwing merge function (per `Collectors.uniqKeysMapMerger`). If the same ODDRN appears twice in the inbound `items` list, the merger throws `IllegalStateException("Duplicate key " + key)`.
+
+  **Failure chain**:
+  1. Collector emits two `DataEntity` records with the same ODDRN in one `DataEntityList` (e.g. a Postgres collector enumerating the same table via two different schemas due to a search_path bug).
+  2. `IngestionServiceImpl.persistDataEntities` throws `IllegalStateException: Duplicate key urn:...` mid-stream.
+  3. The exception escapes the `@ReactiveTransactional` boundary; Postgres rolls back the entire batch (per TEST-GAP-831).
+  4. WebFlux default error handler returns HTTP 500 with the stack trace in the response body.
+  5. Operator sees a 500 with `IllegalStateException` — confusing, because they expected either a 400 "Duplicate ODDRN" structured error OR silent dedup.
+
+  **Why HIGH** (the sidecar rates this as untested behaviour without a severity):
+  - The crash is DETERMINISTIC for the duplicate-ODDRN input — every retry with the same input fails the same way.
+  - The error message is OPAQUE — collectors must reverse-engineer "Duplicate key in toMap" → "your payload has duplicate ODDRNs".
+  - The decision (crash vs silently dedup vs return 400) is undocumented + untested + load-bearing for every collector's idempotency story.
+
+  **Test gap shape**: regression-pin test that
+  1. POSTs a `DataEntityList` with 5 entities where two share the same ODDRN.
+  2. Asserts 5xx (the current crash behaviour).
+  3. Asserts the response body / log line contains `Duplicate key` (the implementation detail leak).
+  4. Pairs with REFACTOR-NNN (either structured 400 OR silent dedup; the choice is the maintainer's).
+
+  PINS the current behaviour so future refactors (silent dedup) are deliberate.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionDuplicateODDRNPayloadCrashRegressionPinTest.java"
+  name: "post_payloadWithDuplicateODDRN_crashesWith500_pinsCurrentCollectorsToMapThrow"
+evidence:
+  - "IngestionServiceImpl.md says (concepts.invariants.[2]): 'Entity dedup is by ODDRN at the application layer. ingestionDtoMap is Map<String, DataEntityIngestionDto> keyed by ODDRN (Collectors.toMap(DataEntityIngestionDto::getOddrn, identity()) — line 86). If the same ODDRN appears twice in the inbound items list, Collectors.toMap THROWS IllegalStateException: Duplicate key (default merge function refuses duplicates). The platform does not silently deduplicate within a single payload — same-ODDRN duplicates within one request crash the entire ingestion. No test asserts this behaviour.'"
+  - "IngestionServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[0]): 'Duplicate ODDRN within a single payload: Collectors.toMap(DataEntityIngestionDto::getOddrn, identity()) (line 86) uses the default throwing merger — duplicates THROW IllegalStateException: Duplicate key. Behaviour on the HTTP boundary: caller receives 5xx (not a structured 400 \"duplicate oddrn\" response). No test asserts this. A buggy collector emitting the same ODDRN twice in one payload crashes the entire ingestion with no clear error message. test_class: IngestionDuplicateOddrnTest (does not exist).'"
+  - "Verified at primary source: IngestionServiceImpl.java:83-86 (Collectors.toMap two-arg call)"
+cross_references:
+  - "TEST-GAP-831 (sister — atomic rollback; this crash exercises the rollback)"
+  - "TEST-GAP-833 (sister — null entity_class_ids NPE; sibling untested-crash class)"
+  - "TEST-GAP-285 (existing — postDataEntityList 200-vs-201; sister F-008 vertex)"
+  - "F-008 detail YAML — same chain, hop-2 (this service)"
+  - "REFACTOR-NNN (proposed): three-way choice — structured 400 with operationally-useful error code, OR silent dedup with last-wins semantics, OR silent dedup with first-wins semantics. The maintainer's choice should be locked by a deliberate test update."
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001 Batch Ingestion (S2S API)"]
+proposed_action: |-
+  Add `IngestionDuplicateODDRNPayloadCrashRegressionPinTest`. Testcontainers integration test:
+
+  1. **Setup**: Postgres testcontainer, ODD platform. Datasource D-A registered.
+  2. **POST /ingestion/entities** with payload `{data_source_oddrn: D-A.oddrn, items: [{oddrn: "urn:dup1", type: DATASET, ...}, {oddrn: "urn:dup1", type: DATASET, ...}]}` — two entities with the same ODDRN.
+  3. **Assert**:
+     - HTTP 5xx (500 or similar — pin the current shape).
+     - Response body or server log contains `IllegalStateException` and / or `Duplicate key`.
+     - `SELECT count(*) FROM data_entity WHERE oddrn='urn:dup1'` returns 0 (atomic rollback per TEST-GAP-831).
+  4. **Sister assertion**: POST with deduplicated payload → 200 + 1 entity persisted.
+  5. **Maintainer-choice gate**: when REFACTOR-NNN lands choosing the new behaviour (400 structured OR silent dedup), update this test to assert the new contract — explicit + deliberate.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. STRENGTHENS the IngestionServiceImpl impl-axis sidecar by adding the first regression-pin for an untested invariant. NO contradiction with F-008 detail — this is the first test that exercises the duplicate-ODDRN edge case at the service tier.
+batch: 2026-05-20-Z
+feature_id: F-008

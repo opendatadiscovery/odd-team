@@ -54,3 +54,33 @@
 - Batch S also confirms the F-007 `forge + display compound with REFACTOR-024` (sidecar `coherence_sweep.strengthens`): "the service is the missing-defence layer at BOTH the forge side (write path, no validation) and the display side (read path, no scoping — `listAll` is a three-line pass-through to `listAllWithStatusOpen` with no owner filter, per REFACTOR-024 family)." — the COMPOSITION across the same service file: forge-path (handleExternalAlerts) + display-path (listAll) both lack defences.
 
 - Coherence: this batch-S append STRENGTHENS DOC-GAP-107 with: (a) F-007 facet re-registration at service tier under rev-2 framing; (b) the 6th vector (audit-provenance asymmetry via DOC-GAP-196); (c) explicit forge+display compound naming. Supersedes: nothing — batch H + batch I findings stand verbatim. Conflicts_surfaced: none. Cross-batch coherence: NOW 6-vector compound triangulated across controller (batch A + P) + service (batch I + S) + repository (batch H) tiers + the audit-feed tier (batch R + S via DOC-GAP-196). Severity stays HIGH.
+
+## Batch Z append
+
+## Batch Z append
+
+#### Batch 2026-05-20-Z STRENGTHENS — 7th vector via openapi-spec sidecar PRIMARY SOURCE; spec confirms the `// TODO: define OpenAPI spec` admission
+
+Batch Z's `odd-platform__openapi__spec__odd-platform-public-api.md` sidecar provides the openapi-spec axis primary source confirmation that the AlertManager webhook endpoint at `POST /ingestion/alert/alertmanager` is ABSENT from the spec. The sidecar enumerates 35 tags / 194 operations in the platform-api spec; the AlertManagerController.java:20 verbatim comment `// TODO: define OpenAPI spec based on alert provider contract` (cited in DOC-GAP-107 evidence) is now confirmed: the platform-api spec does NOT include the AlertManager webhook endpoint. No operation in `openapi.yaml` matches `/ingestion/alert/alertmanager`; the endpoint is a hand-rolled `@PostMapping` rather than an OpenAPI-driven controller.
+
+**The 7-vector compound for DOC-GAP-107** (formerly 6-vector at batch S):
+1. Outside `IngestionDataEntitiesFilter` coverage (batch H — repository-layer SQL + ReactiveAlertRepositoryImpl no `ON CONFLICT`)
+2. `entity_oddrn` label trusted verbatim (batch I — AlertServiceImpl `handleExternalAlerts` line 178)
+3. No SQL-layer or application-layer dedup on AlertManager retry (batch H + service-tier service confirmation at batch I + S)
+4. Undocumented OpenAPI surface (batch A — confirmed by `// TODO` comment) + **(NEW batch Z confirmation) the openapi-spec sidecar's 35-tag enumeration does NOT include any AlertManager-webhook operation**
+5. generatorURL XSS surface (batch I — DOC-GAP-117 cross-link)
+6. Audit-provenance asymmetry between in-platform ingestion and webhook ingestion (batch S — DOC-GAP-196 cross-link)
+7. **(NEW batch Z) Spec-side primary-source confirmation that the AlertManager-webhook endpoint has NO OpenAPI contract surface AT ALL** — the spec axis sidecar makes this an enumerated structural fact rather than a `// TODO` admission.
+
+The 7th vector is qualitatively distinct from the prior 6: while the prior vectors are operational (auth coverage, dedup, audit, XSS, semantics), the 7th vector is a STRUCTURAL CONTRACT-SURFACE absence. Third-party Prometheus AlertManager operators integrating against ODD's webhook cannot find the endpoint in the spec; SDK generators cannot produce a typed client for the webhook; the endpoint is invisible to every spec-consuming integration tool.
+
+**The compound with DOC-GAP-242 (NEW batch Z — no securitySchemes)** — the AlertManager-webhook ALSO has no security model in the spec (since it has no spec entry at all). The compound is: unauthenticated + no-OpenAPI-contract + no-securitySchemes-anywhere = the endpoint is structurally invisible to every doc-side, spec-side, and SDK-side integration channel. The operator's ONLY discovery path is reading the source code or finding the live `/configuration-and-deployment/odd-platform#prometheus-alertmanager-integration` page (which DOES cover it).
+
+**The DOC-GAP-099 META cluster framing**: the AlertManager-webhook's spec-absence is one instance of the coverage-gap failure shape (per DOC-GAP-244 NEW batch Z) — but it's the EXTREME case because the endpoint isn't just under-documented, it's absent. The META cluster's CI gate (per DOC-GAP-074 + DOC-GAP-099 batch-U promotion) would NOT catch this finding because the endpoint isn't in the spec to be tested against — a different gate (spec-vs-controller endpoint inventory consistency) would be needed.
+
+**Doc-side action expansion** (in addition to the existing 3-part doc/code-side action):
+- Cross-link this finding from DOC-GAP-242 + DOC-GAP-244 as the EXTREME-CASE example of the coverage-gap failure shape (an endpoint that isn't even in the spec, not just an under-documented sub-page).
+- The `/log-issue odd-platform` for REFACTOR-007 (define OpenAPI spec for AlertManager webhook) is now anchored at THREE primary sources: the `// TODO` comment at AlertManagerController.java:20 (batch A) + the openapi-spec sidecar's 35-tag enumeration absence (batch Z) + the doc-side admission in DOC-GAP-019 (canonical_candidate not in main-concepts.md).
+- The CI gate proposed at DOC-GAP-099 META should compose with an endpoint-inventory gate: every `@PostMapping` / `@GetMapping` / etc. on the controllers should have a matching operation in the spec.
+
+**Severity stays HIGH** — the 7-vector compound + the structural contract-surface absence reinforce the existing severity rationale. The doc-side action remains a SINGLE admonition on the Prometheus AlertManager Integration section; the code-side fix is REFACTOR-007 (add the OpenAPI spec for the webhook). Coherence: strengthens DOC-GAP-107 with spec-axis confirmation that the endpoint has no OpenAPI contract surface. No conflicts with existing batch-A/H/I/S framing.

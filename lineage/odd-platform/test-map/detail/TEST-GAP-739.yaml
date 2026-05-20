@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-739
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java ReferenceDataController controller-class:ReferenceDataController"
+pillars_affected: [P-03, P-09]
+surfaced_by:
+  - "ReferenceDataController.md:security.known_security_gaps.[2] (Permission scope is global (NO_CONTEXT resolver) — a Policy granting LOOKUP_TABLE_UPDATE permits modifying ANY lookup table, not just those owned by the user's Owner. Inconsistent with TERM (TERM resolver) and DATA_ENTITY (DATA_ENTITY resolver) scoping in the same SecurityConstants table — severity MEDIUM)"
+  - "ReferenceDataController.md:security.authorization_assertions (All 9 rules use NO_CONTEXT resolver — the lookup_table_id in the URL is NOT used to scope the permission to the specific table's owners — any user with the LOOKUP_TABLE_* permission via ANY Policy can mutate ANY lookup table)"
+  - "ReferenceDataController.md:bugs_limitations_corner_cases.[5] (updateLookupTableField discards the lookupTableId path parameter — a client could PATCH /api/referencedata/table/999/column/{column_id} and the update succeeds regardless of whether columnId belongs to table 999)"
+behaviour: |-
+  **MEDIUM — All 9 LOOKUP_TABLE_* SecurityRules use the `NO_CONTEXT` permission resolver, meaning a Policy granting `LOOKUP_TABLE_UPDATE` permits modifying ANY lookup table platform-wide, NOT scoped to the user's Owner-attached lookup tables.** Primary-source confirmed in the batch-V ReferenceDataController sidecar:
+
+  - **Permission scope is global**: `SecurityConstants.java:114, 325-354` declare 9 `SecurityRule` entries for the Lookup Tables controller. Every entry uses `NO_CONTEXT` as the first argument to `new SecurityRule(NO_CONTEXT, ...)`. The `NO_CONTEXT` resolver means: when authorizing a request, the manager checks whether the caller holds the named permission VIA ANY POLICY — without resolving the URL's `lookup_table_id` to the table's owner context.
+  - **Contrast with TERM and DATA_ENTITY scoping**: `SecurityConstants.java:174-193` declares TERM-scoped rules (using `TERM` resolver) — these resolve the URL's `term_id` to the term's owner, then check whether the caller holds the permission VIA A POLICY ATTACHED TO AN OWNER MATCHING THE TERM'S OWNER. Similarly `SecurityConstants.java:194-227` declares DATA_ENTITY-scoped rules. The Lookup Tables surface is the ONLY ASYMMETRIC ENTRY in the SECURITY_RULES table — every other resource has resource-scoped permissions.
+  - **Effective grant blast radius**: an operator who authors a Role "Lookup Tables Steward" with `LOOKUP_TABLE_UPDATE` attached to an Owner "finance-team" expects the Role to grant mutation rights on lookup tables owned by `finance-team`. The code grants mutation rights on EVERY lookup table in the platform.
+
+  **Compound with `updateLookupTableField` discarded-path-param (TEST-GAP-744)**: the NO_CONTEXT permission grant + the discarded `lookupTableId` parameter at `updateLookupTableField` (per `bugs_limitations_corner_cases.[5]`) compound: even if the operator authored a Policy that would restrict to specific table IDs, the PATCH endpoint would bypass that restriction because the service signature discards the path's lookupTableId.
+
+  **Operator-observable consequences**:
+  - An operator authoring `LOOKUP_TABLE_DEFINITION_UPDATE` for a single team-owner expects scoped grant. The actual grant is platform-wide. A team-steward inadvertently modifies a sibling team's reference data with the WRONG team's-name in their commit message.
+  - The Lookup Tables surface contains operator-curated reference data — historically sensitive (employee-tier mappings, customer-segment codes, etc.). Cross-team blast radius means data-quality compromises spill across teams.
+  - The asymmetry with TERM/DATA_ENTITY/DEG scoping is architecturally inconsistent — operators familiar with the platform's other scoping models may not realise Lookup Tables are platform-global.
+
+  **Why MEDIUM not HIGH**: the bug is a PERMISSION-MODEL asymmetry, not a per-call bypass. Users still need `LOOKUP_TABLE_*` permissions to mutate. The asymmetry is between "scoped permission" (the operator's mental model) and "global permission" (the actual gate). This is a MEDIUM-severity scoping bug. Cross-pillar P-03 + P-09 keeps it from being LOW.
+
+  **Test gap shape**: regression-pin asserting that a user holding `LOOKUP_TABLE_UPDATE` via a Policy attached to Owner A can MUTATE a lookup table whose linked DataEntity is owned by Owner B (the cross-owner mutation). Pin the asymmetry with a sister test asserting that TERM_UPDATE / DATA_ENTITY-UPDATE require owner-scoping.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/LookupDataServiceTest.java (service-tier; does NOT exercise the NO_CONTEXT permission asymmetry)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ReferenceDataNoContextPermissionResolverTest.java"
+  name: "updateLookupTable_callerWithLOOKUP_TABLE_UPDATEViaPolicyOnOwnerA_canMutateTableOwnedByOwnerB_pinsNoContextAsymmetry"
+evidence:
+  - "ReferenceDataController.md says (security.known_security_gaps.[2]): 'Permission scope is global (NO_CONTEXT resolver) — a Policy granting LOOKUP_TABLE_UPDATE permits modifying ANY lookup table, not just those owned by the user Owner. Inconsistent with TERM (TERM resolver) and DATA_ENTITY (DATA_ENTITY resolver) scoping in the same SecurityConstants table.' — severity MEDIUM"
+  - "ReferenceDataController.md says (security.authorization_assertions): 'All 9 rules use NO_CONTEXT resolver (not the entity-scoped DATA_ENTITY / TERM / DEG resolvers). The lookup_table_id in the URL is NOT used to scope the permission to the specific table owners — any user with the LOOKUP_TABLE_* permission via ANY Policy can mutate ANY lookup table.' — evidence: SecurityConstants.java:114, 325 (NO_CONTEXT first-argument to every LOOKUP_TABLE_* SecurityRule); contrast with TERM-scoped rules at lines 174-193 and DATA_ENTITY-scoped rules at lines 194-227"
+  - "Verified at primary source: SecurityConstants.java:114, 325-354 (9 NO_CONTEXT rules for LOOKUP_TABLE_*)"
+cross_references:
+  - "TEST-GAP-733 (NEW batch V — ReferenceData verbatim-storage XSS — sister gap on same controller)"
+  - "TEST-GAP-734 (NEW batch V — buildTableName collision — sister gap on same controller)"
+  - "TEST-GAP-744 (NEW batch V — updateLookupTableField discards path's lookupTableId — sister compound with this gap)"
+  - "concepts: noncontextual-permission-asymmetry-lookuptable (NEW concept candidate)"
+  - "REFACTOR-NNN candidate: change LOOKUP_TABLE_* SecurityRules to use the DATA_ENTITY resolver (looking up the lookup_table's parent DataEntity owner) for consistency with the platform's other scoping models; OR explicitly document and code-comment the NO_CONTEXT as intentional design (Lookup Tables are platform-global by design)"
+  - "DOC-NNN candidate: surface the platform-global permission scope of LOOKUP_TABLE_* permissions on the Lookup Tables doc page; OR if the design changes to owner-scoped, the doc reflects the new model"
+related_features: [F-NN-master-data-management, F-006]
+related_pillar_features: ["P-03:F-001", "P-09:F-001"]
+proposed_action: |-
+  Add `ReferenceDataNoContextPermissionResolverTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `updateLookupTable_callerHoldsLOOKUP_TABLE_UPDATEViaOwnerA_canMutateTableLinkedToOwnerB_pinsNoContextScope` — seed two Owners (A and B); seed two Lookup Tables (one linked to A, one linked to B); authenticate as a user with `LOOKUP_TABLE_UPDATE` Policy attached to Owner A only; PUT `/api/referencedata/table/{B-linked-table-id}` with new form data; assert HTTP 200 (the mutation succeeds across owner-scope). PIN the current NO_CONTEXT behaviour.
+  2. `updateTerm_callerHoldsTERM_UPDATEViaOwnerA_cannotMutateTermOwnedByOwnerB_pinsTermScopedContract` — sister test on the TERM surface to demonstrate the asymmetry: a TERM_UPDATE caller scoped to Owner A is REJECTED for a term owned by B (per TERM_RESOLVER). HTTP 403.
+  3. `updateLookupTable_callerWithoutAnyLOOKUP_TABLE_UPDATEPolicy_returns403_pinsBaselineDeny` — pin the baseline: WITHOUT the permission, the endpoint returns 403.
+  4. `updateLookupTableField_columnFromTableA_butUrlPathTableB_succeedsBypassingPathBinding_compoundWithNoContext` — pin the COMPOUND vulnerability with TEST-GAP-744: combine NO_CONTEXT permission grant + path-id-spoofing in URL; assert the mutation succeeds.
+
+  Add a `// REGRESSION-PIN — LOOKUP_TABLE_* permissions are platform-global (NO_CONTEXT resolver), asymmetric with TERM/DATA_ENTITY/DEG owner-scoping in the same SecurityConstants table. A REFACTOR changing LOOKUP_TABLE_* to DATA_ENTITY resolver (looking up the lookup_table's parent DataEntity owner) will break test #1 (now 403) and align with the platform asymmetric scoping model.` comment block.
+
+  Pair with REFACTOR-NNN: align LOOKUP_TABLE_* scoping with DATA_ENTITY (the natural choice given Lookup Tables ARE Data Entities); pair with DOC-NNN updating the doc-side mental model.
+batch: 2026-05-20-V
+feature_id: F-006

@@ -1,0 +1,83 @@
+gap_id: TEST-GAP-768
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DatasetController controller-class:DatasetController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "DatasetController.md:bugs_limitations_corner_cases.[Per-entity-scoping bypass at getDataSetStructureDiff — data_entity_id URL parameter is NOT enforced against first_version_id or second_version_id. A client calling GET /api/datasets/{any_id}/structure/diff?first_version_id=A&second_version_id=B where A and B belong to two DIFFERENT datasets receives a cross-dataset structure diff. The diff computation operates on the raw column lists keyed by oddrn; columns from two unrelated datasets compare by oddrn-mismatch as DELETED+CREATED — producing a nonsensical but well-formed diff payload — severity HIGH]"
+  - "DatasetController.md:security.known_security_gaps.[Per-entity-scoping bypass at getDataSetStructureDiff — data_entity_id URL parameter is NOT enforced against first_version_id / second_version_id. Two unrelated datasets' versions can be diffed; the response is a nonsensical-but-well-formed structural diff payload — useful as an enumeration vector (a caller can prove which version ids exist by observing the diff status fields) — severity HIGH]"
+  - "DatasetController.md:tests_coverage_semantic.uncovered_behaviours.[GET /api/datasets/{any_id}/structure/diff?first_version_id=A&second_version_id=B where A and B belong to two DIFFERENT datasets returns a cross-dataset diff]"
+behaviour: |-
+  **CRITICAL — Per-entity-scoping bypass at `getDataSetStructureDiff`: a client calling `GET /api/datasets/{any_id}/structure/diff?first_version_id=A&second_version_id=B` where A and B belong to two DIFFERENT datasets receives a cross-dataset structural diff. The `data_entity_id` URL parameter is NOT enforced against the two `version_id` parameters at the SQL level.** Primary-source confirmed in batch-W DatasetController sidecar:
+
+  **Persistence-tier evidence**:
+  - `DatasetController.getDataSetStructureDiff` (lines 43-50): accepts `dataEntityId` from URL path; passes BOTH version ids to `datasetVersionService.getDatasetVersionDiff(dataEntityId, firstVersionId, secondVersionId)`.
+  - `DatasetVersionServiceImpl.getDatasetVersionDiff` (lines 55-64): the `datasetId` argument is consumed ONLY by the identical-versions guard's error context — the SQL call ignores it.
+  - `ReactiveDatasetVersionRepositoryImpl.getDatasetVersionWithFields` (lines 146-157): the WHERE clause at line 154 is `DATASET_VERSION.ID IN (firstVersionId, secondVersionId)` — NO `DATA_ENTITY.ID = datasetId` join condition.
+
+  **Attack scenario**:
+  ```
+  # Attacker has authenticated access. Datasets A=100 (owned by team X) and B=200 (owned by team Y).
+  # Attacker has NO ownership on EITHER.
+
+  curl -X GET "https://platform/api/datasets/100/structure/diff?first_version_id=999&second_version_id=1001" \
+       -H "Authorization: Bearer $TOKEN"
+
+  # If version_id=999 belongs to dataset A and version_id=1001 belongs to dataset B:
+  # The diff computation operates on the raw column lists keyed by oddrn.
+  # Columns from dataset A compare by oddrn-mismatch with dataset B as DELETED+CREATED.
+  # The response is a nonsensical-but-well-formed structural diff payload.
+  ```
+
+  **Blast radius**:
+  - **Nonsensical-but-useful enumeration vector**: even when the diff is semantically meaningless (datasets A and B have unrelated schemas), the response carries information — a caller can PROVE which version_ids exist by observing the diff status fields (`CREATED` / `DELETED` / `NO_CHANGES` per `DataSetFieldDiffState`).
+  - **Cross-tenant column enumeration**: the response includes the verbatim before/after snapshots of each column, including `internal_description` (the F-004 verbatim-description field), `internal_name`, tags, terms.
+  - **Compound with TEST-GAP-767** (sister per-entity-scoping bypass at by-version): the two bypasses TOGETHER mean the entire catalog's dataset-structure history is readable to any authenticated user.
+
+  **What the docs claim vs what the code enforces**:
+  - Live `https://docs.opendatadiscovery.org/features/data-discovery` (status 200, 2026-05-20): describes "Dataset schema diff" as "visual side-by-side comparison of dataset schema revisions, with backwards-incompatible changes additionally raising an alert" — NO mention of who-can-view, no permission model, no owner-scoping commentary.
+  - Live `https://docs.opendatadiscovery.org/developer-guides/api-reference` (status 200): NO `dataSet` sub-page; the diff endpoint is undocumented at the operator-facing API reference.
+
+  **Why CRITICAL not HIGH (the sidecar's own rating)**:
+  - The sidecar rates this HIGH. We elevate to CRITICAL because:
+  - **Combined with TEST-GAP-767** (sister bypass at by-version): the TWO bypasses together cover the full surface of the controller's primary read endpoints. The blast radius is the entire catalog's column-level history.
+  - **The diff payload INCLUDES `internal_description` verbatim** (the F-004 read-side surface — TEST-GAP-770). An attacker observing diffs can read every operator-supplied Markdown / HTML payload in the catalog.
+  - **Useful even when nonsensical**: a defender's mental model "the diff is meaningless across unrelated datasets so an attacker gains nothing" is wrong — the response IS information (version_id existence proofs, column-level snapshots, oddrn enumeration).
+
+  **Test gap shape**: regression-pin asserting: (a) `GET /api/datasets/{C}/structure/diff?first_version_id={A_version}&second_version_id={B_version}` returns HTTP 200 with a well-formed diff payload comparing A and B (NOT 404); (b) the response contains BOTH A's and B's `internal_description` / `internal_name` payloads verbatim; (c) the SQL WHERE clause is over `dataset_version.id IN (...)` only. The current state is PINNED — failures land if a future maintainer adds a `data_entity_id` WHERE clause.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDatasetVersionRepositoryImplTest.java (does NOT exercise getDatasetVersionWithFields / getDatasetVersionDiff)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetVersionDiffPerEntityScopingBypassTest.java"
+  name: "getDataSetStructureDiff_versionIdsBelongToDifferentDatasets_returnsCrossDatasetDiff_pinsBypass"
+evidence:
+  - "DatasetController.md says (bugs_limitations_corner_cases.[per-entity-bypass-diff]): 'Per-entity-scoping bypass at getDataSetStructureDiff — data_entity_id URL parameter is NOT enforced against first_version_id or second_version_id. A client calling GET /api/datasets/{any_id}/structure/diff?first_version_id=A&second_version_id=B where A and B belong to two DIFFERENT datasets receives a cross-dataset structure diff. The diff computation operates on the raw column lists keyed by oddrn (DatasetVersionServiceImpl.java:86-106); columns from two unrelated datasets compare by oddrn-mismatch as DELETED+CREATED — producing a nonsensical but well-formed diff payload. Severity HIGH for the same reasons as the by-version bypass.' — evidence: DatasetController.java:43-50 + DatasetVersionServiceImpl.java:55-64 + ReactiveDatasetVersionRepositoryImpl.java:146-157 — severity: HIGH"
+  - "DatasetController.md says (security.known_security_gaps.[per-entity-bypass-diff]): 'Per-entity-scoping bypass at getDataSetStructureDiff — data_entity_id URL parameter is NOT enforced against first_version_id / second_version_id. Two unrelated datasets' versions can be diffed; the response is a nonsensical-but-well-formed structural diff payload — useful as an enumeration vector (a caller can prove which version ids exist by observing the diff status fields).'"
+  - "Verified at primary source: DatasetController.java:43-50 + DatasetVersionServiceImpl.java:55-64 (datasetId used ONLY for identical-versions error context) + ReactiveDatasetVersionRepositoryImpl.java:146-157 (line 154 WHERE DATASET_VERSION.ID IN (...) — no DATA_ENTITY join)"
+cross_references:
+  - "TEST-GAP-767 (NEW batch W — sister per-entity-scoping bypass at by-version — parallel CRITICAL surface; the TWO bypasses together = full catalog history readable)"
+  - "TEST-GAP-769 (NEW batch W — sister diff endpoint contract gap — missing version_id returns 500 not 404)"
+  - "TEST-GAP-770 (NEW batch W — F-004 verbatim-description read-side — diff payload INCLUDES the F-004 surface)"
+  - "TEST-GAP-771 (NEW batch W — identical-versions 400 contract — sister diff endpoint contract gap)"
+  - "TEST-GAP-772 (NEW batch W — parent-field cascade DELETE+CREATE amplification — sister diff edge case)"
+  - "REFACTOR-203 (LineageServiceImpl cross-owner enumeration — sister architectural class)"
+  - "F-005 (Lineage cross-owner enumeration — sister blast radius)"
+  - "concepts: cross-tenant-enumeration-via-monotonic-surrogate-ids (NEW concept candidate)"
+  - "REFACTOR-NNN candidate: add DATA_ENTITY.ID = datasetId WHERE clause to getDatasetVersionWithFields; symmetric to TEST-GAP-767 fix"
+  - "DOC-NNN candidate: surface the dataSet endpoint family (NOT currently in the live API reference) including security caveats"
+related_features: []
+related_pillar_features: ["P-01:F-NN-dataset-structure-read", "P-09:F-001"]
+proposed_action: |-
+  Add `DatasetVersionDiffPerEntityScopingBypassTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `getDataSetStructureDiff_versionIdsBelongToDifferentDatasets_returnsCrossDatasetDiff_pinsBypass` — seed datasets A and B with distinct versions; GET `/api/datasets/{C}/structure/diff?first_version_id={A_ver}&second_version_id={B_ver}` where C is any third id; assert HTTP 200 with a well-formed diff payload comparing A's and B's columns. PIN the bypass.
+  2. `getDataSetStructureDiff_responseIncludesBothDatasetsInternalDescriptionVerbatim_pinsF004ReadSideExposure` — same setup; seed A with `internal_description = '<script>alert("A")</script>'` and B with `internal_description = '<script>alert("B")</script>'`; GET the cross-dataset diff; assert BOTH script payloads are in the response verbatim. PIN the compound with F-004.
+  3. `getDataSetStructureDiff_enumerationVectorViaSequentialVersionIds_returnsCatalogWideVersionExistenceProofs_pinsBlastRadius` — sweep version_id pairs `(1, 2), (2, 3), ... (N-1, N)` against `/api/datasets/1/structure/diff?...`; collect the dataset oddrns observable in the responses; assert the set covers MULTIPLE distinct datasets across owner boundaries.
+  4. `getDataSetStructureDiff_oneVersionIdMatchesPathDataEntityId_otherDoesNot_stillSucceeds_pinsAsymmetricSurface` — first_version_id belongs to dataset {path_id}; second_version_id belongs to OTHER dataset; assert HTTP 200 with cross-dataset diff. The check is purely WHERE IN over version_ids; the path id is decorative.
+  5. `sqlWhereClause_isOverDatasetVersionIdInOnly_pinsSqlShape` — capture jOOQ-emitted SQL during a diff call; assert the WHERE clause contains `DATASET_VERSION.ID in (?, ?)` but NOT `DATA_ENTITY.ID = ?`. PIN the SQL shape contract.
+
+  Pair with REFACTOR-NNN: add `DATA_ENTITY.ID = datasetId` WHERE clause to `getDatasetVersionWithFields` (ReactiveDatasetVersionRepositoryImpl.java:146-157). Symmetric fix to TEST-GAP-767. When the fix lands, test #1 inverts to assert HTTP 404 on the cross-dataset diff attempt.
+
+  Cross-pair with DOC-NNN: surface the dataSet endpoint family (currently OMITTED from the live API reference per WebFetch 2026-05-20) including the security model.
+batch: 2026-05-20-W
+feature_id: null

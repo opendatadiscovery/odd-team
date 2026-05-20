@@ -1,0 +1,83 @@
+gap_id: TEST-GAP-881
+category: missing-unit
+criticality: LOW
+node_ids:
+  - "odd-platform java service activity handler:ActivityHandler"
+pillars_affected: [P-07]
+surfaced_by:
+  - "ActivityHandler.md:stress_findings.S-B-3 (getUpdatedState(parameters, List<Long>) default-throws — but is advertised as a polymorphic API)"
+  - "ActivityHandler.md:bugs_limitations_corner_cases.[Default multi-id getUpdatedState throws at first subscription, not at boot]"
+  - "ActivityHandler.md:tests_coverage_semantic.uncovered_behaviours.[Multi-id getUpdatedState default-throws]"
+  - "ActivityHandler.md:invariants.[The default multi-id getUpdatedState throws at runtime, not at compile time]"
+behaviour: |-
+  **LOW — `ActivityHandler.getUpdatedState(Map<String, Object> parameters, List<Long> dataEntityIds)` (`:17-21`) is a DEFAULT method that throws `UnsupportedOperationException("getUpdatedState for multiple ids is not implemented yet for this handler")` UNLESS overridden by concrete impls. Only 2 of 18 concrete impls override the default — `DataEntityCreatedActivityHandler.getUpdatedState(parameters, List<Long>)` (`:46-49`) and `DataEntityStatusUpdatedActivityHandler.getUpdatedState(parameters, List<Long>)` (`:51-55`). All 16 other concrete impls inherit the throwing default. The ONLY current caller of the multi-id path is `ActivityIngestionRequestProcessor.process` (`:25-32`) which dispatches `DATA_ENTITY_CREATED` only — so the runtime is safe in current usage, but the interface contract advertises a polymorphic batch path that 14/16 impls do NOT support. A future `@ActivityLog` annotation passing a multi-id parameters bag for any other event would throw at runtime with the misleading error message above.** No CI-time check enumerates impl × method-override matrix.
+
+  **Primary-source chain**:
+  - `ActivityHandler.java:17-21` — the default method body:
+    ```
+    default Mono<Map<Long, String>> getUpdatedState(Map<String, Object> parameters, List<Long> dataEntityIds) {
+        throw new UnsupportedOperationException("getUpdatedState for multiple ids is not implemented yet for this handler");
+    }
+    ```
+  - `DataEntityCreatedActivityHandler.java:46-49` — ONE of two overrides (currently used)
+  - `DataEntityStatusUpdatedActivityHandler.java:51-55` — the SECOND override
+  - 16 other concrete handlers do NOT override (verified by sidecar enumeration)
+  - `ActivityServiceImpl.java:75` — `handler.getUpdatedState(parameters, dataEntityIds)` — the dispatch site
+  - `ActivityIngestionRequestProcessor.java:25-32` — the only current caller (dispatches DATA_ENTITY_CREATED only)
+
+  **The contract drift** (per ActivityHandler.md:stress_findings.S-B-3):
+  - The interface advertises the multi-id path as a polymorphic API
+  - 14/16 concrete impls inherit a throwing default — the multi-id path is effectively NOT implemented
+  - At current usage, the only caller dispatches the ONE event type whose handler DOES override the default — safe at the current state
+  - A future `@ActivityLog` annotation adding a batch path for any other event would throw at runtime — the error message is misleading ("not implemented yet for this handler") because it suggests intentional deferred implementation, not "we didn't think to implement this"
+
+  **Operator-visible consequences**:
+  - **No current impact**: only DATA_ENTITY_CREATED uses the batch path; the impl overrides; the system works
+  - **Latent regression risk**: a future maintainer adding `@ActivityLog(event = OWNERSHIP_UPDATED, multiId = true)` (or equivalent) would discover the missing override at FIRST INVOCATION, not at boot time
+  - **Error-message clarity**: the message "not implemented yet for this handler" frames the absence as deliberate-but-temporary, opt-in-when-needed; a maintainer reading this in a stack trace may pursue the wrong fix (assume it's a temporary missing impl rather than a structural gap)
+  - **Compile-time silence**: the interface contract does NOT use `@FunctionalInterface` or `abstract` on the multi-id method; the language allows any concrete impl to silently inherit the default — no IDE warning
+
+  **Why LOW not MEDIUM**:
+  - The current runtime is safe (the only caller dispatches an event whose handler overrides)
+  - The fix is well-understood: enumerate `ActivityEventTypeDto` × handler.isHandle × handler.getUpdatedState-override matrix at boot time
+  - We rate LOW because: (a) the failure mode is LOUD (UnsupportedOperationException with named message); (b) the empirical hit rate is currently zero; (c) the regression risk is real but bounded by the deliberate need to add a new multi-id call site
+
+  **Connection to TEST-GAP-882**:
+  - TEST-GAP-882 is the META anchor for handler-tier coverage; this gap (881) is one of the specific behaviours that the META coverage would assert
+test_class: unit
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/activity/handler/ActivityHandlerMultiIdContractTest.java"
+  name: "getUpdatedStateMultiId_for14NonOverridingImpls_throwsUnsupportedOperationExceptionWithDocumentedMessage"
+evidence:
+  - "ActivityHandler.md says (stress_findings.S-B-3): 'getUpdatedState(parameters, List<Long>) default-throws — but is advertised as a polymorphic API. Question: how many of the 18 concrete impls actually support the multi-id path? Which event types are safely batchable? Answer (TRACE): 2 of 18 override the default — DataEntityCreatedActivityHandler:46-49 and DataEntityStatusUpdatedActivityHandler:51-55. All other 16 inherit the throwing default. The ONLY caller dispatches DATA_ENTITY_CREATED only (ActivityIngestionRequestProcessor:25-32). Safe-at-current-state; latent regression on any extension. Outcome: confidence STATIC-INFERRED. Bug-shaped (documented in bugs_limitations_corner_cases).'"
+  - "ActivityHandler.md says (bugs_limitations_corner_cases): 'Default multi-id getUpdatedState throws at first subscription, not at boot: the interface advertises Mono<Map<Long, String>> getUpdatedState(parameters, List<Long>) as a polymorphic method, but 16 of 18 concrete impls inherit the throwing default. A future caller (or a @ActivityLog-annotated batch path) dispatching to any unimplemented event type would throw UnsupportedOperationException at runtime with the message getUpdatedState for multiple ids is not implemented yet for this handler. No boot-time validation enumerates impls × method-overrides.' — severity: MEDIUM"
+  - "ActivityHandler.md says (invariants): 'The default multi-id getUpdatedState throws at runtime, not at compile time. Concrete impls that do not need batch behaviour silently inherit the throw. A caller (specifically ActivityServiceImpl.getUpdatedInfo(parameters, List<Long>, eventType) at :72-76) that dispatches to an event type whose handler doesn't override the multi-id path would receive UnsupportedOperationException at the first subscription. The current code dispatches only DATA_ENTITY_CREATED to this path (verified via Grep — ActivityIngestionRequestProcessor is the only caller, line 27-28); adding a second multi-id event type without overriding would be a latent NPE-class regression'"
+  - "ActivityHandler.md says (implicit_adrs.[2]): 'Default-throw multi-id getUpdatedState as a lazy override opt-in: the interface provides a default getUpdatedState(parameters, List<Long>) that throws UnsupportedOperationException. Only handlers that need bulk behaviour override; others inherit the safe-fail default. The decision is explicit (the throw message names the intent: not implemented yet for this handler).' confidence: HIGH"
+  - "Verified at primary source: ActivityHandler.java:17-21 (the default throw) + DataEntityCreatedActivityHandler.java:46-49 (override 1) + DataEntityStatusUpdatedActivityHandler.java:51-55 (override 2) + ActivityServiceImpl.java:75 (the dispatch site)"
+cross_references:
+  - "TEST-GAP-882 (META anchor — zero handler-tier coverage; this gap is one specific behaviour that META covers)"
+  - "REFACTOR-NNN candidate: enforce the multi-id contract at the type level (split into ActivityHandler interface and BatchActivityHandler subinterface; @ActivityLog can declare which interface is needed); OR add a boot-time @PostConstruct in ActivityServiceImpl that enumerates `(eventType, handler.getClass().getMethod(getUpdatedState, Map.class, List.class).getDeclaringClass())` and warns on inherited defaults"
+related_features: [F-021]
+related_pillar_features: ["P-07:F-003"]
+proposed_action: |-
+  Add `ActivityHandlerMultiIdContractTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/activity/handler/` using JUnit 5 + Spring Context. Three test methods:
+
+  1. **`getUpdatedStateMultiId_for14NonOverridingImpls_throwsUnsupportedOperationExceptionWithDocumentedMessage`** (HEADLINE):
+     - Arrange: autowire `List<ActivityHandler> handlers` (16 + 2 = 18 impls); use reflection to enumerate the 16 that do NOT override `getUpdatedState(Map, List)`.
+     - Act: for each non-overriding handler, call `handler.getUpdatedState(Map.of(), List.of(1L, 2L)).block()`
+     - Assert: each call throws `UnsupportedOperationException` with the exact message `"getUpdatedState for multiple ids is not implemented yet for this handler"`. PIN the documented error message contract.
+
+  2. **`getUpdatedStateMultiId_forDataEntityCreated_returnsMapping_pinHappyPathOverride`** (CONTROL):
+     - Arrange: seed 3 data_entity rows; obtain `DataEntityCreatedActivityHandler` from context.
+     - Act: `handler.getUpdatedState(Map.of(), List.of(id1, id2, id3)).block()`
+     - Assert: returns `Map<Long, String>` with all 3 entries; PIN the multi-id override works.
+
+  3. **`activityHandlerInterface_enumerateAllOverridesAtBootTime_pinContractMatrix`** (META):
+     - Arrange: autowire `List<ActivityHandler>`; reflectively enumerate each impl × `getUpdatedState(Map, List).getDeclaringClass()`.
+     - Act: for each (eventType, impl) pair via `handler.isHandle(eventType)`, log whether the impl overrides the multi-id path.
+     - Assert: the matrix has EXACTLY 2 overrides (DataEntityCreated + DataEntityStatusUpdated). If a future PR adds another override OR removes one, this test FAILS — surfacing the contract change as a coordinated decision.
+
+  Cross-pair with REFACTOR-NNN to introduce type-level enforcement (split interface) OR boot-time validation. The test then becomes the regression-pin for either approach.
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-021

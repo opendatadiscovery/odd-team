@@ -1,0 +1,256 @@
+name: |-
+  Lazy-create-no-drop replication artefacts — STRENGTHENED batch Y with primary source at NotificationSubscriber lines 104-126 (slot) + 128-158 (publication)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-08
+description: |-
+  STRENGTHENS the existing
+  lazy-create-no-drop-replication-artefacts-operator-owns-cleanup
+  invariant (batch C) by PRIMARY-SOURCE pinning the lazy-create-no-drop
+  pattern at the actual code site (NotificationSubscriber.java lines
+  104-126 for the replication slot and lines 128-158 for the publication)
+  via the batch-Y NotificationSubscriber file-analyser sidecar. The batch-C
+  invariant was anchored on operator-facing documentation and a textual
+  sibling reference; this strengthening pins the code-side primary source.
+
+  THE NEW PRIMARY-SOURCE EVIDENCE — NotificationSubscriber batch Y:
+
+    NotificationSubscriber.java:104-126 (replication-slot lazy create):
+      // existence probe (parameterised SELECT EXISTS — L106-114)
+      try (final PreparedStatement ps = connection.prepareStatement(
+              "SELECT EXISTS (SELECT slot_name FROM pg_replication_slots WHERE slot_name = ?)")) {
+          ps.setString(1, walProperties.getReplicationSlotName());
+          try (final ResultSet rs = ps.executeQuery()) {
+              if (rs.next() && !rs.getBoolean(1)) {
+                  // conditional CREATE — L115-122
+                  pgConnection
+                      .getReplicationAPI()
+                      .createReplicationSlot()
+                      .logical()
+                      .withSlotName(walProperties.getReplicationSlotName())
+                      .withOutputPlugin(PG_REPLICATION_OUTPUT_PLUGIN) // "pgoutput"
+                      .make();
+              }
+          }
+      }
+    The slot is created if absent, never dropped here. The driver-side
+    createReplicationSlot() is the only construction site; no
+    pg_drop_replication_slot() invocation exists in the file (verified
+    by reading the entire 159-line file end-to-end at batch Y).
+
+    NotificationSubscriber.java:128-158 (publication lazy create):
+      // existence probe (parameterised SELECT EXISTS on pg_publication — L133-135)
+      try (final PreparedStatement ps = connection.prepareStatement(
+              "SELECT EXISTS (SELECT oid FROM pg_publication WHERE pubname = ?)")) {
+          ps.setString(1, walProperties.getPublicationName());
+          try (final ResultSet rs = ps.executeQuery()) {
+              if (rs.next() && !rs.getBoolean(1)) {
+                  // conditional CREATE — L144-152 via registerPublication
+                  registerPublication(connection, Tables.ALERT);
+              }
+          }
+      }
+      // registerPublication helper at L144-152
+      private void registerPublication(final Connection connection,
+                                       final Table<?> targetTable) throws SQLException {
+          final String tableName = targetTable.getSchema().getName() + "."
+                                   + targetTable.getName();
+          final String sql = "CREATE PUBLICATION %s FOR TABLE %s"
+                  .formatted(walProperties.getPublicationName(), tableName);
+          try (final Statement stmt = connection.createStatement()) {
+              stmt.execute(sql);
+          }
+      }
+    The publication is created if absent, never dropped here. No
+    DROP PUBLICATION invocation exists in the file.
+
+  THE OPERATOR-OWNS-CLEANUP POSTURE — primary source from the live doc
+  (NotificationSubscriber.md:docs_link_semantic.inferred_docs[0]):
+
+    WebFetch 2026-05-20 status 200 quotes from the live
+    /configuration-and-deployment/odd-platform page, Enable Alert
+    Notifications section:
+      "ODD Platform doesn't clean up replication slot it has created."
+      Cleanup SQL (operator-runs-manually):
+        SELECT pg_drop_replication_slot('<replication_slot_name>');
+        DROP PUBLICATION IF EXISTS <publication_name>;
+
+    The live-doc verbatim phrasing PRIMARY-SOURCES the operator-owns-
+    cleanup posture, which the batch-Y sidecar inherits and reflects in
+    implicit_adrs.[1] (Lazy-create-no-drop replication artefact policy).
+
+  THE RENAME-ORPHAN AMPLIFICATION — batch Y bugs_limitations_corner_cases.[4]:
+
+    A subtle case the live doc does NOT warn about: if an operator
+    renames notifications.wal.replication-slot-name between deployments
+    without first running pg_drop_replication_slot('<old_name>'), the OLD
+    slot accumulates WAL forever on the primary. The lazy-create at
+    L113-120 creates the NEW slot fine; the OLD slot is now invisible to
+    ODD Platform but still pinned by Postgres. Combined with the new
+    batch-Y wal-retention-disk-exhaustion-under-poison-replay invariant
+    (which describes a similar but different unbounded-WAL-retention
+    scenario), the lazy-create-no-drop posture has TWO failure modes
+    that both lead to Postgres-primary disk exhaustion:
+      - rename-orphan: operator renames slot-name without cleanup
+      - poison-replay: subscriber stuck in 10s retry loop with un-advanced LSN
+
+    Both failure modes share the same root cause: ODD does NOT manage
+    the slot lifecycle proactively, and there is NO telemetry exposing
+    slot-side WAL retention to the operator.
+
+  THE OUTPUT PLUGIN HARDCODING (batch Y additional finding):
+
+    Batch Y also primary-sources the choice of pgoutput as the output
+    plugin (NotificationSubscriber.java:30:
+      private static final String PG_REPLICATION_OUTPUT_PLUGIN = "pgoutput";
+    + line 119 use in withOutputPlugin call). This is consistent with the
+    lazy-create-no-drop pattern (the plugin is bound to the slot at
+    create time and persists with the slot); a future change to a
+    different output plugin would require dropping the existing slot
+    AND recreating with the new plugin AND updating
+    PostgresWALMessageDecoder to parse the new format. The
+    operator-owns-cleanup posture compounds this: there is no
+    platform-managed migration path.
+
+  THE SIBLING PATTERN — partition lazy-create (batch C reference):
+
+    ActivityTablePartitionManager (batch B primary source) ships
+    createPartitionsIfNotExists for the activity table — partitions are
+    lazily created at boot and on nightly schedule, never dropped. The
+    same pattern: idempotent create + no drop + operator-owns-cleanup.
+    Batch Y's pin extends the pattern to the replication slot +
+    publication, providing primary-source confirmation that the
+    code-side convention is consistent across the multiple
+    Postgres-resident-artefact subsystems.
+
+    Cross-subsystem coverage (extending the original batch-C 2-sidecar
+    triangulation to a 3-sidecar pin):
+      Subsystem 1 — Activity table partitions (batch B): lazy-create,
+        no drop, operator-owns-cleanup
+      Subsystem 2 — DataCollaboration message-table partitions (batch B
+        sibling): lazy-create, no drop, operator-owns-cleanup
+      Subsystem 3 — Notification replication slot + publication
+        (batch Y — THIS STRENGTHENING): lazy-create, no drop, operator-
+        owns-cleanup, PRIMARY-SOURCE pinned
+
+  SEVERITY remains MEDIUM (inherited from the batch-C invariant);
+  this strengthening does not change the severity assessment but
+  provides primary-source code-side confirmation and surfaces the
+  rename-orphan + poison-replay disk-exhaustion compounding.
+nodes:
+  - odd-platform java notification class:NotificationSubscriber
+  - odd-platform java ActivityTablePartitionManager config-key-consumer:odd.activity.partition-period@L11
+  - odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:NotificationsProperties
+contributors:
+  - |-
+    NotificationSubscriber batch Y (STRENGTHENING PRIMARY SOURCE — code-side
+    primary source for lazy-create-no-drop replication artefacts):
+    implicit_adrs.[1] (Lazy-create-no-drop replication artefact policy —
+    HIGH confidence) +
+    invariants[Lazy-create-no-drop policy: BOTH replication slot AND
+    publication are CREATEd on first leader run if absent; NEITHER is
+    DROPped by this code (cleanup is an operator responsibility documented
+    on the live doc page)] +
+    bugs_limitations_corner_cases.[4] (Replication-slot orphan on
+    slot-name rename — sibling disk-exhaustion path) +
+    docs_link_semantic.inferred_docs[0].fetched_excerpts (live-doc
+    verbatim "ODD Platform doesn't clean up replication slot it has
+    created.") +
+    implicit_adrs.[0] (Output plugin hardcoded to pgoutput — additional
+    primary source)
+  - |-
+    ActivityTablePartitionManager@L11 (batch B — sibling subsystem; existing
+    reference)
+  - |-
+    NotificationsProperties (batch C — original reference; the WalProperties
+    POJO carries the replicationSlotName + publicationName fields)
+evidence:
+  - |-
+    NotificationSubscriber.md:implicit_adrs.[1] (Lazy-create-no-drop
+    replication artefact policy — primary source code-side)
+  - |-
+    NotificationSubscriber.md:concepts.invariants[Lazy-create-no-drop
+    policy]
+  - |-
+    NotificationSubscriber.md:bugs_limitations_corner_cases.[4]
+    (Replication-slot orphan on rename — sibling rename-orphan disk-
+    exhaustion path)
+  - |-
+    NotificationSubscriber.md:docs_link_semantic.inferred_docs[0].fetched_excerpts
+    (live-doc operator-cleanup-statement verbatim — WebFetched 2026-05-20
+    status 200)
+  - |-
+    NotificationSubscriber.md:implicit_adrs.[0] (Output plugin hardcoded
+    to pgoutput — sibling artefact-binding)
+  - |-
+    ActivityTablePartitionManager@L11.md (batch B — sibling subsystem
+    primary source)
+  - |-
+    NotificationsProperties.md:bugs_limitations_corner_cases.[12]
+    (replication-slot orphan risk on rename — batch C original capture)
+axes_present:
+  - services
+  - config_prefixes
+triangulation_count: 3
+cross_batch: true
+cross_batch_refs:
+  - batch-B (ActivityTablePartitionManager — partition lazy-create sibling)
+  - batch-C (NotificationsProperties — original invariant capture; WalProperties POJO)
+  - batch-Y (NotificationSubscriber — code-side primary source, THIS STRENGTHENING)
+severity: MEDIUM
+severity_dim: durability
+mitigations_unimplemented:
+  - |-
+    Add a CLI / API hook for operator-initiated cleanup — instead of
+    requiring operators to manually run pg_drop_replication_slot / DROP
+    PUBLICATION via psql, expose a platform-level command that performs
+    the cleanup AND logs the operation to the audit trail (once the
+    audit-table-bifurcation invariant's notification_delivery_audit
+    is in place).
+  - |-
+    Document the rename-orphan scenario on the live doc (currently
+    silent — batch-C invariant flagged this gap; batch-Y strengthening
+    confirms it remains a live-doc gap).
+  - |-
+    Add Prometheus telemetry for slot-side WAL retention
+    (pg_wal_lsn_diff against confirmed_flush_lsn) — closes the
+    no-telemetry sibling of the lazy-create-no-drop pattern.
+  - |-
+    Cross-cutting case-law: document "lazy-create-no-drop is the ODD
+    convention for Postgres-resident server-side artefacts" in the
+    system-mission file as an explicit architectural pillar property.
+notes: |-
+  STRENGTHENS the existing batch-C invariant
+  (lazy-create-no-drop-replication-artefacts-operator-owns-cleanup) with
+  primary-source code-side confirmation from the NotificationSubscriber
+  sidecar batch Y. The strengthening:
+    - PINS the code-side primary source at NotificationSubscriber.java
+      lines 104-126 (slot) + lines 128-158 (publication)
+    - WebFetched 2026-05-20 status 200 the live-doc operator-cleanup
+      statement verbatim
+    - Adds the rename-orphan + poison-replay disk-exhaustion compounding
+      observation (pairs with the new batch-Y
+      wal-retention-disk-exhaustion-under-poison-replay-no-bound
+      invariant)
+    - Surfaces the pgoutput output-plugin hardcoding as a sibling
+      artefact-binding choice in the same lazy-create-no-drop family
+
+  Cross-cutting connections:
+    - Pairs with the new batch-Y
+      wal-retention-disk-exhaustion-under-poison-replay-no-bound
+      invariant — both findings describe unbounded WAL retention on the
+      Postgres primary, sourced from different failure modes
+      (rename-orphan vs poison-replay) but converging on the same
+      operator-visible consequence
+    - Extends the 2-sidecar batch-C triangulation to a 3-sidecar pin
+      with primary-source code-side evidence
+    - Cross-link to the broader "operator-owns-cleanup posture" case-law
+      observation across activity partitions + message-table partitions
+      + replication slot + publication
+
+  One DOC-NNN candidate flows from this invariant:
+    (a) Document the rename-orphan scenario on the live operator-cleanup
+        page; pair with the new disk-exhaustion-under-poison-replay
+        finding for completeness

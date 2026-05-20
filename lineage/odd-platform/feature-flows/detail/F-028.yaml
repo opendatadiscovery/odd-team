@@ -1,0 +1,478 @@
+feature_id: F-028
+pillar_id: P-08
+pillar_anchored_id: P-08:F-006
+pillar_anchored_feature_name: Namespace Lifecycle Management
+feature_name: Namespace Lifecycle — create / list / details / update / delete
+primary_drift_class: namespace_create_side_door_bypass_via_four_sister_services
+drift_class_summary:
+- namespace_create_side_door_bypass_via_four_sister_services
+- cascade_check_toctou_non_transactional
+- case_sensitivity_undocumented_silent_duplication
+- name_length_dbcap_only_no_app_validation_500_on_overflow
+- soft_delete_reincarnation_undocumented
+- update_transactional_delete_not_transactional_asymmetry
+- list_pagination_no_size_cap_at_controller_or_service
+- read_collaborative_posture_undocumented_at_management_namespaces_doc
+- ungated_list_and_detail_reads_no_security_rule_for_get
+- audit_silence_no_activity_log_no_at_slf4j_at_any_layer
+- name_no_regex_no_charset_allowlist_path_encoding_dangerous
+- disabled_mode_anonymous_namespace_mutation_lsn_001_pattern
+- no_dedicated_management_namespaces_doc_page_404
+- authorization_doc_does_not_enumerate_namespace_permission_triad
+- partial_unique_index_on_name_intentional_per_v0_0_31_pattern_undocumented
+cross_pillar_relationships:
+- pillar_id: P-01
+  kind: feeds
+  via: |-
+    Namespaces are the label-dimension scoping primitive for tags, terms,
+    data entities, and lookup tables (per system-mission.md:96 P-01 sub-feature
+    seed "Namespaces (label-dimension scoping for tags / terms)"). Namespace
+    rows produced by this feature surface in Catalog Overview, Search facets,
+    and the per-entity detail page namespace pill rendering.
+- pillar_id: P-06
+  kind: feeds
+  via: |-
+    Term-to-namespace binding is part of the Data Glossary primitive
+    (system-mission.md:193 P-06 references the namespace association on
+    Term entities). The F-002 (P-06:F-001 Term-to-Entity Linkage) reference
+    `cross_namespace_term_pollution` facet is the cross-pillar manifestation
+    of this feature's case-sensitivity + soft-delete-reincarnation invariants.
+- pillar_id: P-09
+  kind: shares_data_with
+  via: |-
+    Namespace mutation is gated by NAMESPACE_CREATE / NAMESPACE_UPDATE /
+    NAMESPACE_DELETE (Management-scope permissions) per SecurityConstants.java:98-108.
+    The four side-door services bypass this gate via parent-form permissions
+    (TERM_CREATE/UPDATE, DATA_SOURCE_CREATE/UPDATE, COLLECTOR_CREATE/UPDATE,
+    DATA_ENTITY_GROUP_CREATE/UPDATE) — the cross-pillar interaction with P-09
+    RBAC is the canonical "Namespace Side-Door" finding documented across
+    8 distinct call sites.
+- pillar_id: P-10
+  kind: shares_data_with
+  via: |-
+    Namespace binding on DataSource and Collector (the producer-ecosystem
+    primitives in P-10) flows through this feature's create surface OR via
+    the side-door (DataSourceServiceImpl.createDataSource / CollectorServiceImpl.create
+    call namespaceService.getOrCreate). Cross-link to F-008 (Batch Ingestion
+    + the DataSourceController batch-W ADR-CANDIDATE-143 counterfactual finding —
+    UI admin DataSource registration ACCEPTS namespace_name; S2S Ingestion
+    silently DROPS namespace from payload).
+discovered_from_entry_point: rest:POST /api/namespaces (+ GET / PUT / DELETE on /api/namespaces[/{id}])
+description: |-
+  Namespace Lifecycle Management is the operator-facing Management capability
+  exposing the namespace primitive (the label-dimension scope for tags, terms,
+  data sources, collectors, data entities, and lookup tables). Five endpoints
+  are surfaced via NamespaceController implementing NamespaceApi: create
+  (POST /api/namespaces, NAMESPACE_CREATE), get-details (GET /api/namespaces/{id},
+  ungated), list (GET /api/namespaces, ungated), update (PUT /api/namespaces/{id},
+  NAMESPACE_UPDATE), delete (DELETE /api/namespaces/{id}, NAMESPACE_DELETE).
+  The pillar P-08 sub-feature seed names "Namespaces (label-dimension scoping
+  for tags / terms)" as the first item; the Management UI tab "Namespaces"
+  (per live /features/management WebFetch 2026-05-20) is the user-observable
+  rendering.
+
+  The capability is anchored on three load-bearing invariants: (1) the central
+  RBAC gate at SecurityConstants.java:98-108 (POST/PUT/DELETE only — GET is
+  ungated; read-collaborative posture); (2) the cascade-on-delete application-tier
+  guard across exactly 4 referent classes (DataSource, Collector, Term,
+  non-deleted DataEntity) via Mono.zip of existsByNamespace* checks; (3) the
+  side-door problem — 4 sister services (TermServiceImpl, DataSourceServiceImpl,
+  CollectorServiceImpl, DataEntityGroupServiceImpl) call
+  namespaceService.getOrCreate(name) from their parent-form flows, minting
+  namespace rows WITHOUT requiring NAMESPACE_CREATE.
+contributing_nodes:
+- odd-platform java NamespaceController controller-class:NamespaceController
+- odd-platform java service service:NamespaceServiceImpl
+- odd-platform java repository reactive repository:ReactiveNamespaceRepositoryImpl
+- odd-platform java SecurityConstants
+- odd-platform java service service:TermServiceImpl              # side-door call site
+- odd-platform java service service:DataSourceServiceImpl        # side-door call site
+- odd-platform java service service:CollectorServiceImpl         # side-door call site
+- odd-platform java service service:DataEntityGroupServiceImpl   # side-door call site
+- odd-platform java service service:ExternalTagIngestionRequestProcessor  # indirect via tag side-door (cross-link)
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    INSERT INTO namespace(name) ... RETURNING id (create) OR
+    UPDATE namespace SET name = ?, updated_at = NOW() WHERE id = ? (update) OR
+    UPDATE namespace SET deleted_at = NOW() WHERE id = ? (soft-delete)
+  evidence: |-
+    NamespaceController.java:1-62 (5 thin proxies) →
+    NamespaceServiceImpl.java:1-100 (create + update [@ReactiveTransactional] +
+    delete [NOT @ReactiveTransactional] + list + get) →
+    ReactiveNamespaceRepositoryImpl.java:1-50 (jOOQ on R2DBC; inherits
+    ReactiveAbstractSoftDeleteCRUDRepository for soft-delete) →
+    V0_0_1__init.sql:9-15 (CREATE TABLE namespace) +
+    V0_0_31__add_deleted_at_field.sql:25 (CREATE UNIQUE INDEX namespace_unique
+    ON namespace(name) WHERE deleted_at IS NULL)
+  cardinality_per_call: 1
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+  - facet: namespace-create side-door bypass via four sister services
+    observed: |-
+      A caller holding TERM_CREATE / TERM_UPDATE / DATA_SOURCE_CREATE /
+      DATA_SOURCE_UPDATE / COLLECTOR_CREATE / COLLECTOR_UPDATE /
+      DATA_ENTITY_GROUP_CREATE / DATA_ENTITY_GROUP_UPDATE can submit a parent
+      form with a NEVER-SEEN namespaceName and silently create that namespace.
+      The dedicated NAMESPACE_CREATE permission (the gate on POST /api/namespaces)
+      is NEVER consulted on these paths.
+    expected: |-
+      Operators authoring RBAC policies expect NAMESPACE_CREATE to be the SOLE
+      authority over namespace minting (per /features/management live doc 2026-05-20
+      verbatim: "Create a namespace before authoring tags or terms that should
+      be scoped to a particular team or domain" — implies deliberate operator
+      step).
+    drift_class: namespace_create_side_door_bypass_via_four_sister_services
+    provenance: |-
+      STATIC — primary-source verification from batch-W NamespaceController
+      sidecar bugs_limitations_corner_cases[0] enumerating 8 call sites:
+      TermServiceImpl.java:103, 138; DataSourceServiceImpl.java:57, 75;
+      CollectorServiceImpl.java:43, 57; DataEntityGroupServiceImpl.java:65, 84.
+      Cross-anchor concept "namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths"
+      catalogued previously. Proposed local Type-7 probe — grant a user only
+      TERM_CREATE (NOT NAMESPACE_CREATE), POST /api/terms with new namespaceName,
+      then GET /api/namespaces and assert the row exists.
+  - facet: cascade-check + delete is non-transactional (TOCTOU class)
+    observed: |-
+      NamespaceServiceImpl.delete (lines 73-90) runs four existsByNamespace*
+      checks in parallel via Mono.zip, filters on !exists, then invokes
+      namespaceRepository.delete(id). The whole flow is NOT inside any
+      @ReactiveTransactional; the check + write are not under a SELECT FOR
+      UPDATE on the namespace row, no advisory-lock. A concurrent
+      dataSourceService.createDataSource(...) with namespace_id = id can
+      interleave between the zip-check and the soft-delete UPDATE.
+    expected: |-
+      Either a single TX wrapping check + delete OR an advisory-lock on the
+      namespace row OR foreign-key cascade at DB-tier (which is intentionally
+      NOT used per V0_0_1__init.sql FK without ON DELETE clause).
+    drift_class: cascade_check_toctou_non_transactional
+    provenance: |-
+      STATIC — NamespaceServiceImpl.java:73-90 lacks @ReactiveTransactional;
+      sibling pattern from batch-N ReactiveTagRepositoryImpl TOCTOU class.
+      Proposed local probe — fire delete + create against the same namespace
+      from two threads; observe orphan referent row OR delete-deferred outcome.
+  - facet: case-sensitivity is undocumented and operator-surprising
+    observed: |-
+      ReactiveNamespaceRepositoryImpl.getByName uses NAMESPACE.NAME.eq(name)
+      (line 26 — case-sensitive byte-equality); the unique index namespace_unique
+      is over (name) with no case-folding. "finance" and "Finance" coexist as
+      two distinct namespaces.
+    expected: |-
+      Either explicit case-fold normalisation at app-tier OR a doc-side warning
+      on the live /features/management Namespaces page. Neither exists.
+    drift_class: case_sensitivity_undocumented_silent_duplication
+    provenance: |-
+      STATIC — ReactiveNamespaceRepositoryImpl.java:26 + V0_0_31__add_deleted_at_field.sql:25
+      + NamespaceMapper.java:1-29 (no normalisation hook). WebFetch 2026-05-20
+      /features/management confirms doc-side silence.
+  - facet: name length only DB-capped (varchar 64) + 500 on overflow (NOT 400)
+    observed: |-
+      NamespaceFormData OpenAPI schema declares name as type: string only — no
+      minLength, maxLength, or pattern. A 65-character name reaches the DB,
+      fails with "value too long for type character varying(64)", surfaces as
+      DatabaseException → HTTP 500. The unique-constraint path (a name that
+      collides) gets a clean 400 via ExceptionUtils.formatMessage; the
+      check-constraint / value-too-long path does NOT.
+    expected: |-
+      400 with operator-friendly error message OR app-tier validation BEFORE
+      the DB round-trip.
+    drift_class: name_length_dbcap_only_no_app_validation_500_on_overflow
+    provenance: |-
+      STATIC — V0_0_1__init.sql:13 + components.yaml:262-268 + ExceptionUtils.java:30-36
+      (only C23_INTEGRITY_CONSTRAINT_VIOLATION is translated; check-constraint
+      / value-too-long is DatabaseException per line 35).
+  - facet: soft-delete reincarnation is undocumented
+    observed: |-
+      Deleting a namespace sets deleted_at = NOW() (soft-delete). The partial
+      unique index excludes that row. Subsequent create-by-same-name succeeds
+      with a NEW namespace id + NEW history. Any external bookmarks / cross-system
+      references using the old id break silently; tag / term assignments to
+      the soft-deleted namespace persist in the DB but are filtered out of reads.
+    expected: |-
+      Either a doc-side caveat OR an operator-facing warning at delete time.
+      Neither exists.
+    drift_class: soft_delete_reincarnation_undocumented
+    provenance: |-
+      STATIC — ReactiveAbstractSoftDeleteCRUDRepository.java:50-59 +
+      V0_0_31__add_deleted_at_field.sql:25.
+  - facet: update is @ReactiveTransactional but delete is NOT — asymmetry
+    observed: |-
+      NamespaceServiceImpl.java:62-71 update IS annotated @ReactiveTransactional
+      (the dual-FTS-vector refresh runs under one TX). NamespaceServiceImpl.java:73-90
+      delete is NOT annotated. The asymmetry is internal-inconsistency-shaped;
+      partial-failure mid-delete leaves the namespace as deleted_at = NULL
+      with NO compensating action.
+    expected: |-
+      Consistent transactional posture across all mutating methods.
+    drift_class: update_transactional_delete_not_transactional_asymmetry
+    provenance: STATIC — file-local primary source.
+  - facet: list pagination has no size cap at controller or service
+    observed: |-
+      NamespaceController.getNamespaceList (lines 44-50) passes size directly
+      to namespaceService.list(page, size, query). An attacker requesting
+      size=100000 performs an unbounded scan.
+    expected: |-
+      Server-side cap on size parameter (consistent with hardening across the
+      platform's other list endpoints).
+    drift_class: list_pagination_no_size_cap_at_controller_or_service
+    provenance: STATIC — NamespaceController.java:44-50.
+  - facet: read-collaborative posture (list + details ungated)
+    observed: |-
+      GET /api/namespaces + GET /api/namespaces/{id} have no SecurityRule entry.
+      Any authenticated user enumerates every namespace.
+    expected: |-
+      Either explicit doc-side framing of read-collaborative posture OR per-Owner
+      / per-Role scoping for read operations.
+    drift_class: ungated_list_and_detail_reads_no_security_rule_for_get
+    provenance: |-
+      STATIC — SecurityConstants.java:98-108 only contains POST/PUT/DELETE entries
+      for namespaces. Read-collaborative posture per system-mission.md:267
+      implicit ADR.
+  - facet: audit silence — no @ActivityLog, no @Slf4j, no Logger at any layer
+    observed: |-
+      Grep across NamespaceController.java, NamespaceServiceImpl.java,
+      ReactiveNamespaceRepositoryImpl.java returns ZERO @ActivityLog, ZERO
+      log statements. Operator-side forensic investigation of "who created /
+      deleted this namespace and when" is unanswerable from production data.
+    expected: |-
+      @ActivityLog on the three mutating service methods OR a separate audit
+      stream. ActivityEventTypeDto.java has NO NAMESPACE_CREATED / _UPDATED /
+      _DELETED enum (per batch-U enum-rooted audit-silence finding).
+    drift_class: audit_silence_no_activity_log_no_at_slf4j_at_any_layer
+    provenance: |-
+      STATIC — file Greps; cross-link to ActivityEventTypeDto.java:3-31 (per
+      batch-U TermController finding enum-rooted audit-silence — the SAME
+      enum gap blocks namespace lifecycle audit too).
+  - facet: name accepts arbitrary string content (no regex, no charset allowlist)
+    observed: |-
+      varchar(64) DB cap is the ONLY constraint. Names containing path-encoded
+      characters (`finance/sub`, `finance%2Fsub`), HTML / script injection
+      payloads, or unicode confusables (`fіnance` with Cyrillic 'і') are
+      accepted. UI consumers must escape on render; the namespace_name appears
+      in URL paths (`/api/terms/namespaces/{namespace_name}/names/{term_name}`
+      per openapi.yaml:2818) where path-encoding inconsistencies surface as
+      404 vs match.
+    expected: |-
+      Regex or charset allowlist at app-tier OR consistent path-encoding
+      handling across UI / API layers.
+    drift_class: name_no_regex_no_charset_allowlist_path_encoding_dangerous
+    provenance: STATIC — V0_0_1__init.sql:13 + openapi.yaml:2818.
+  - facet: DISABLED auth mode + the absence of fail-closed defaults
+    observed: |-
+      Under auth.type=DISABLED, all five endpoints (including the three
+      mutations) are reachable by anonymous principals. DISABLED is doc-marked
+      dev-only per system-mission.md Pillar P-09; operators running DISABLED
+      in production have effectively no namespace protection.
+    expected: |-
+      Either a doc-side warning on the auth.type=DISABLED page OR fail-closed
+      defaults for mutation endpoints under DISABLED.
+    drift_class: disabled_mode_anonymous_namespace_mutation_lsn_001_pattern
+    provenance: |-
+      STATIC — SecurityConstants.java:98-108 evaluates rules per active auth
+      mode; DISABLED bypasses authentication. LSN-001 pattern (permissive
+      defaults hide operator error).
+  - facet: no dedicated /features/management/namespaces doc page (404)
+    observed: |-
+      Live URL https://docs.opendatadiscovery.org/features/management/namespaces
+      returned 404 on WebFetch 2026-05-20. The Namespaces row appears on the
+      parent /features/management page but no dedicated sub-page documents
+      deletion guards (4 referent classes), case-sensitivity, soft-delete
+      reincarnation, the partial-unique-index semantic, the RBAC permission
+      triad, or the side-door warning.
+    expected: |-
+      A dedicated /features/management/namespaces page mirroring the level of
+      coverage seen on other Management surfaces (Tags, Owners, Datasources).
+    drift_class: no_dedicated_management_namespaces_doc_page_404
+    provenance: |-
+      WebFetch 2026-05-20 status 404. Cross-link to doc-gap-finder for DOC-NNN
+      candidate.
+  - facet: authorization doc does NOT enumerate NAMESPACE_* permission triad
+    observed: |-
+      Live URL https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization
+      (WebFetch 2026-05-20 status 200) provides only a high-level overview
+      pointing to JSON Schema; the permission catalog is not on the page. The
+      NAMESPACE_CREATE / NAMESPACE_UPDATE / NAMESPACE_DELETE permissions are
+      not named.
+    expected: |-
+      Permissions catalog page enumerates all three NAMESPACE_* permissions
+      alongside the other MANAGEMENT-tier permissions.
+    drift_class: authorization_doc_does_not_enumerate_namespace_permission_triad
+    provenance: WebFetch 2026-05-20 — page silent on the permission triad.
+  - facet: partial unique index on (name) WHERE deleted_at IS NULL — intentional V0_0_31 pattern but undocumented
+    observed: |-
+      V0_0_31__add_deleted_at_field.sql:25 creates the partial unique index;
+      sibling partial-unique indexes on data_source_name, collector_name,
+      data_source_oddrn are in the SAME migration (lines 27, 29, 31) — pattern
+      explicitly applied to enable delete-then-recreate semantics.
+    expected: |-
+      Either doc-side explanation of the soft-delete-reincarnation semantic
+      OR the consistency pattern called out as an implicit ADR (currently
+      catalogued under implicit-adrs.md as a partial-unique-index family).
+    drift_class: partial_unique_index_on_name_intentional_per_v0_0_31_pattern_undocumented
+    provenance: |-
+      STATIC — V0_0_31__add_deleted_at_field.sql:25, 27, 29, 31. Implicit ADR
+      candidate per system-mission.md canonicalisation candidates.
+  surfaced_by:
+  - 'NamespaceController.java:1-62 (sidecar — odd-platform__java__NamespaceController__controller-class__NamespaceController.md)'
+  - 'NamespaceServiceImpl.java:1-100 (referenced but not yet enriched as standalone sidecar)'
+  - 'ReactiveNamespaceRepositoryImpl.java:1-50 (referenced but not yet enriched as standalone sidecar)'
+  - 'SecurityConstants.java:98-108 (referenced by sidecar)'
+  - 'V0_0_1__init.sql:9-15 + V0_0_31__add_deleted_at_field.sql:25'
+test_matrix:
+  unit:
+    state: PARTIAL
+    covered:
+    - 'NamespaceServiceImplTest.java:73-99 — get(id) happy path'
+    - 'NamespaceServiceImplTest.java:101-112 — get(id) NotFoundException'
+    - 'NamespaceServiceImplTest.java:114-144 — create(form) happy path'
+    - 'NamespaceServiceImplTest.java:146-189 — update(id, form) happy + dual FTS vector update'
+    - 'NamespaceServiceImplTest.java:191-208 — update NotFoundException'
+    - 'NamespaceServiceImplTest.java:210-235 — delete(id) happy path'
+    - 'NamespaceServiceImplTest.java:237-256 — delete blocked by existing collector'
+    - 'NamespaceServiceImplTest.java:258-277 — delete blocked by existing data source'
+    - 'NamespaceServiceImplTest.java:279-298 — delete blocked by existing term'
+    - 'NamespaceServiceImplTest.java:300-319 — delete blocked by existing non-deleted data entity'
+    uncovered:
+    - Concurrent create({name: X}) race — two parallel requests same name
+    - Concurrent delete(id) with concurrent referent insert — TOCTOU class
+    - Soft-delete reincarnation pin (delete + recreate with same name)
+    - Case-sensitivity pin (finance vs Finance)
+    - Validation pin — oversize (>64-char) namespace name surfaces as 500 (NOT 400)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - Controller-tier integration test asserting NAMESPACE_CREATE gates POST /api/namespaces
+    - Side-door regression test — TERM_CREATE-only user creates namespace via /api/terms parent form
+    - DISABLED-mode anonymous reach across all 5 endpoints
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Unbounded list size attack — size=100000 unbounded scan
+    - Side-door amplification stress — N parent forms each minting a fresh namespace
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - Side-door directory growth via 4 sister services (REFACTOR-NNN candidate)
+    - Read-collaborative posture confirmation (any authenticated user enumerates)
+    - DISABLED-mode mutation reach (anonymous namespace create/update/delete)
+    - Path-encoded namespace_name handling (URL parameter consistency check)
+control_summary: |-
+  0 of 4 cells PROBED — feature MINTED this batch (W) from
+  NamespaceController class sidecar primary-source. FIFTEEN load-bearing
+  drift facets anchored on three themes: (a) side-door directory growth
+  via 4 sister services — REFACTOR-NNN-NamespaceSideDoor candidate
+  cross-cuts P-06 / P-08 / P-10 because TERM / DATA_SOURCE / COLLECTOR /
+  DATA_ENTITY_GROUP forms ALL bypass NAMESPACE_CREATE; (b) cascade-check
+  + delete non-transactional TOCTOU race; (c) operator-facing surprise
+  surfaces — case-sensitivity, soft-delete reincarnation, oversize-name
+  500-vs-400, ungated reads. Service-layer unit-test coverage at the
+  happy-path tier is comprehensive (NamespaceServiceImplTest exercises
+  10 distinct paths) but the controller-tier authorization wiring + the
+  cross-pillar side-door bypass + the TOCTOU race are unverified.
+
+  The HIGHEST-LEVERAGE probe candidates:
+  (a) Side-door directory growth regression-pin — grant a test user only
+      TERM_CREATE (NOT NAMESPACE_CREATE), POST /api/terms with a never-seen
+      namespaceName, then GET /api/namespaces and assert the row was minted.
+      Repeat for DATA_SOURCE_CREATE-only, COLLECTOR_CREATE-only,
+      DATA_ENTITY_GROUP_CREATE-only. 4-cell test matrix maps to the 4
+      sister services.
+  (b) TOCTOU race regression-pin — fire DELETE /api/namespaces/{id} + POST
+      /api/datasources with namespace_name=existing concurrently from two
+      threads; observe orphan data_source row referencing soft-deleted
+      namespace OR cascade-deferred outcome.
+  (c) Oversize name 500-vs-400 contract pin — POST /api/namespaces with
+      name of 65 characters; assert response status (currently 500;
+      after fix, should be 400).
+
+  Local docker-compose probe stack: ODD platform + Postgres + a pre-seeded
+  user with TERM_CREATE-only policy. The side-door probe is straightforward;
+  the TOCTOU probe requires concurrent dispatching which jOOQ on R2DBC
+  can drive via Reactor parallel scheduler.
+
+  Cross-feature coherence: this feature LIVES INSIDE pillar P-08 Management
+  & Administration (per system-mission.md:240 "Namespaces (label-dimension
+  scoping for tags / terms)" as the first P-08 sub-feature seed). It is
+  DISTINCT FROM F-019 (Owner Lifecycle Management) — both are P-08
+  operator-facing CRUD surfaces but namespaces are the SCOPING primitive
+  (labels) while owners are IDENTITY primitives (people / teams). Cross-link
+  to F-008 (the DataSourceController batch-W ADR-CANDIDATE-143 counterfactual
+  finding — UI admin DataSource path ACCEPTS namespace_name, S2S DROPS it;
+  the namespace inheritance asymmetry is the operator-surface manifestation
+  of the side-door behaviour catalogued in this feature). Cross-link to
+  F-002 (the P-06:F-001 cross_namespace_term_pollution facet is the
+  cross-pillar manifestation of THIS feature's case-sensitivity + name
+  no-validation invariants). Cross-link to F-018 (the P-01:F-006 Manual
+  Object Tagging feature catalogues TAG-side directory side-door bypass —
+  REFACTOR-223 — which is structurally identical to the NAMESPACE-side
+  side-door bypass via 4 sister services catalogued HERE).
+related_refactoring_scopes:
+- REFACTOR-NNN-NamespaceSideDoor # candidate to be filed: cross-pillar side-door bypass via 4 sister services
+related_test_gaps:
+- TEST-GAP-NNN (Side-door directory growth regression-pin across 4 sister services)
+- TEST-GAP-NNN (Namespace cascade-check + delete TOCTOU race)
+- TEST-GAP-NNN (Soft-delete reincarnation pin)
+- TEST-GAP-NNN (Case-sensitivity pin — finance vs Finance)
+- TEST-GAP-NNN (Oversize name 500-vs-400 contract pin)
+- TEST-GAP-NNN (Controller-tier integration — NAMESPACE_CREATE gates POST /api/namespaces)
+- TEST-GAP-NNN (DISABLED-mode anonymous reach across 5 endpoints)
+related_doc_gaps:
+- DOC-GAP-NNN (no dedicated /features/management/namespaces page — 404 confirmed 2026-05-20)
+- DOC-GAP-NNN (authorization doc page does NOT enumerate NAMESPACE_CREATE / _UPDATE / _DELETE)
+- DOC-GAP-NNN (live /features/management Namespaces row silent on case-sensitivity)
+- DOC-GAP-NNN (live /features/management Namespaces row silent on soft-delete reincarnation)
+- DOC-GAP-NNN (live /features/management Namespaces row silent on side-door directory growth via 4 sister services)
+- DOC-GAP-NNN (live /features/management Namespaces row under-describes binding surface — calls it 'taxonomy concepts' but binds to data_source / collector / data_entity / lookup_tables too)
+related_concepts:
+- Namespace (Management — label-dimension scope)
+- namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths
+- Audit-log Presence Asymmetry (2-tier audit story — cross-batch canonicalisation candidate)
+- Partial Unique Index on Soft-Delete Tables (cross-cutting V0_0_31 pattern)
+- read-collaborative posture (REFACTOR-024 family — namespace list reachable to any authenticated user)
+related_retrospectives:
+- LSN-017  # cross-layer effects — the controller alone cannot show the side-door reach
+- LSN-018  # pre-emit coherence — the side-door enumeration STRENGTHENS rather than supersedes the F-018 tag side-door analog
+- LSN-001  # permissive defaults hiding operator error — DISABLED + missing dedicated doc page combination
+related_features:
+- F-008   # Batch Ingestion — ADR-CANDIDATE-143 counterfactual (UI accepts namespace_name, S2S drops it); the namespace inheritance asymmetry
+- F-018   # Manual Object Tagging — structurally identical side-door bypass via DATA_ENTITY_TAGS_UPDATE etc.; cross-pillar pattern match
+- F-002   # Term-to-Entity Linkage — the cross_namespace_term_pollution facet manifests THIS feature's case-sensitivity + name no-validation
+- F-019   # Owner Lifecycle Management — sibling P-08 Management UI; matching audit-silence + DISABLED-mode bypass pattern
+- F-006   # RBAC — the central SECURITY_RULES gate the side-doors bypass
+- F-020   # Collector Lifecycle — one of the 4 side-door services; namespace inherited from Collector for S2S
+related_probes: null
+probe_verifications: []
+maintainer_curated: false
+batch_origin_note: |-
+  2026-05-20 batch W — NEW pillar-anchored feature minted from the
+  NamespaceController controller-class sidecar. Per Rule 0 evaluation: the
+  Namespace lifecycle is a USER-OBSERVABLE Management capability — operators
+  CRUD the label-dimension scope for tags / terms / data sources / collectors
+  via this surface. It is distinct from F-019 (Owner Lifecycle Management;
+  the operator surface for identity-primitives) and from F-008 (Batch
+  Ingestion; the receiving end of the producer ecosystem that USES
+  namespaces). The pillar P-08 sub-feature seed names "Namespaces
+  (label-dimension scoping for tags / terms)" as the FIRST sub-feature —
+  this anchors F-028 as a coherent independent feature within the same
+  pillar.
+
+  The substitution from EXTEND-an-existing-feature to MINT-F-028 is
+  justified because (a) the substrate evidence (the 5-endpoint controller
+  surface + 4-cascade-block delete logic + 4-side-door bypass + dual-FTS
+  vector update) is too rich to fold into any existing feature without
+  losing the user-observable shape; (b) the side-door problem cuts
+  ACROSS pillars (P-06 / P-08 / P-10) — catalogued here as THIS feature's
+  primary drift gives the cross-pillar finding a stable home; (c) the
+  operator-facing /features/management Namespaces row is itself a
+  documented user-observable surface in the Management UI.
+
+  Cross-references emit back-links to F-002 (term-namespace coupling),
+  F-008 (ADR-CANDIDATE-143 counterfactual closure), F-018 (structurally
+  identical tag-directory side-door pattern), F-019 (sibling P-08
+  Management capability), F-006 (the central RBAC gate the side-doors
+  bypass), F-020 (one of the 4 side-door services + Collector-driven
+  namespace inheritance for S2S).

@@ -18,6 +18,15 @@ drift_class_summary:
 - doc_silence_on_cross_owner_default_read
 - doc_silence_on_schema_rooted_audit_scope
 - jsonb_old_new_state_leaks_user_supplied_content_to_any_authenticated_reader
+drift_class_summary_batch_val_lsn_019_b_extensions:
+- activity_handler_interface_misnamed_state_snapshot_differ_not_write_handler
+- activity_emit_couples_rollback_to_business_mutation_same_reactive_transactional
+- activity_empty_partitions_housekeeping_check_then_drop_race_silent_row_loss
+- concurrent_oldstate_capture_race_wrong_attribution_in_second_handler_diff
+- service_tier_zero_authorization_cross_owner_visibility_multi_tenant_leak
+- spurious_activity_events_from_postgres_row_order_non_determinism_in_diff
+- ingestion_attribution_null_created_by_no_is_system_event_flag_disambiguator
+- doc_silence_on_visibility_type_filter_pagination_ordering_partition_lifecycle
 cross_pillar_relationships:
 - pillar: P-01
   kind: feeds
@@ -58,15 +67,378 @@ cross_pillar_relationships:
     feature's schema (activity.data_entity_id NOT NULL FK).
 batch_origin: R
 created_in_batch: R
+batch_extensions:
+- batch: T
+  entry_point_added: |-
+    controller-class:ActivityController — the class-level read entry
+    point for the global Activity Feed surface. Hop-1 of F-021's chain
+    previously cited the ActivityController.getActivity per-method
+    sidecar from batch A; this batch adds the CLASS-tier primary source
+    confirming all 13 drift facets at the controller surface PLUS three
+    new doc-vs-code drifts (the `type` parameter omission, the
+    enum-count partial drift, the visibility-framing absence) PLUS a
+    secondary `lasEventId` typo on the Java surface that the OpenAPI
+    spec corrects.
+  contributing_nodes_added:
+  - odd-platform java ActivityController controller-class:ActivityController
+  notes: |-
+    Five refinements + three new findings surface from the
+    ActivityController class-level primary source:
+    (1) F-021 ALL 13 DRIFT FACETS PRIMARY-SOURCE-CONFIRMED AT THE
+    CONTROLLER CLASS TIER (HIGH, refinement) — the controller-class
+    sidecar verifies the entire 13-facet drift_class_summary at the
+    REST surface: no @PreAuthorize, no SecurityConstants entry for
+    `/api/activity` or `/api/activity/counts` (0 matches across the
+    357-line SecurityConstants file), no rate-limiting, no upper
+    bound on `size`, no validation on `userIds`/`ownerIds`. The
+    schema-rooted scope finding is independently re-affirmed via the
+    sidecar's coupling block citing
+    `V0_0_48__add_activity.sql:4,12` as the load-bearing constraint.
+    (2) NEW DRIFT FACET — `type` parameter undocumented (MEDIUM,
+    code-doc drift) — the live `activity-feed.md` page (WebFetched
+    2026-05-20 status 200) lists the 7 filter facets but makes NO
+    mention of the `type` query parameter (`ActivityType: ALL /
+    MY_OBJECTS / UPSTREAM / DOWNSTREAM`) that the controller declares
+    (line 32), the OpenAPI spec documents
+    (`openapi.yaml:3255-3258`), and the service implements
+    (`ActivityServiceImpl.java:107-117`). The four UI tabs for
+    view-mode are documented NOWHERE on the public docs. Operators
+    cannot discover that the same endpoint serves four different
+    ownership scopes, nor that 3 of those 4 scopes bypass owner
+    filtering entirely (only MY_OBJECTS consults
+    `authIdentityProvider.fetchAssociatedOwner()`).
+    (3) NEW DRIFT FACET — enum-count partial drift (LOW, code-doc
+    drift) — `activity-feed.md` lists 20 named event types in the
+    global filter section + a CATEGORICAL mention of 7 internal
+    types ('entity overview / metadata / schema / relation updates,
+    custom metadata create / update / delete'); the spec
+    (`components.yaml:3167-3196`) and DTO
+    (`ActivityEventTypeDto.java:3-31`) carry 27 values. The 20 + 7
+    = 27 sum is reconcilable, but the 7 internal types are NOT
+    enumerated by name — an operator filtering for those internal
+    types via the API has no doc-side reference for their names.
+    STRENGTHENS F-021's existing
+    `doc_drift_27_enum_values_in_code_vs_20_in_live_docs` drift
+    facet with the controller-class tier confirmation that ALL 27
+    values are server-acceptable on the global endpoint without
+    rejection.
+    (4) NEW DRIFT FACET — visibility framing absent (HIGH refinement,
+    security implications) — the live `activity-feed.md` page makes
+    NO statement about WHO can see the global activity feed. The
+    authorization-vocabulary page
+    (`/configuration-and-deployment/enable-security/authorization`
+    status 200) names five core concepts (Policies / Permissions /
+    Roles / Owners / User-owner association) but does NOT mention
+    any per-endpoint protection wiring for `/api/activity` or
+    audit-log visibility controls. STRENGTHENS F-021's existing
+    `doc_silence_on_cross_owner_default_read` facet with the
+    cross-reference to the authorization page that ALSO omits the
+    per-endpoint wiring statement.
+    (5) NO API-REFERENCE PAGE for the `activity` tag (MEDIUM,
+    code-doc drift) — `/developer-guides/api-reference/activity`
+    returns 404 (verified 2026-05-20). Compare with
+    `/developer-guides/api-reference/alerts` which exists and
+    documents the `alerts` tag. The activity tag has the OpenAPI
+    spec only — there is no per-tag reference page. Bi-directional
+    code↔doc coverage gap (Gate 6).
+    (6) NEW DRIFT FACET — `lasEventId` Java-surface typo (LOW,
+    structural) — `ActivityController.java:34` declares
+    `final Long lasEventId` (missing the `t` in 'last'). The
+    OpenAPI parameter is `last_event_id` (correct); the service
+    interface declares `final Long lastEventId`
+    (`ActivityService.java:42`). The typo is local to this
+    controller's method signature; OpenAPI-generated client SDKs
+    use the spec's correct name. Surface-level only — does not
+    affect runtime — but a developer reading the controller source
+    directly sees the typo.
+    (7) `getActivityCounts` 4-parallel-query characteristic
+    (LOW, perf surface) — `ActivityController.java:43-56` —
+    `getActivityCounts` issues 4 parallel `SELECT COUNT(*)` queries
+    per call via `Mono.zip` of totalCount + myObjectsCount +
+    downstreamCount + upstreamCount
+    (`ActivityServiceImpl.java:158-165`). A UI polling the counts
+    endpoint on a refresh interval drives 4× the apparent endpoint
+    count of DB load. No caching, no debouncing, no precomputed
+    aggregate. Refines F-021's batch-R hot-path enumeration with
+    the counts-specific multiplier.
+    (8) FOUR ACTIVITY EVENT TYPES ORIGINATE FROM AlertServiceImpl
+    (LOW, structural refinement) — `OPEN_ALERT_RECEIVED`,
+    `RESOLVED_ALERT_RECEIVED`, `ALERT_STATUS_UPDATED`,
+    `ALERT_HALT_CONFIG_UPDATED` originate from AlertServiceImpl
+    flows (per ReactiveActivityRepositoryImpl batch-R coherence
+    note). This controller is the READ surface where F-007's
+    audit-trail contribution becomes user-visible. The
+    activity-feed doc page (line 65-68) cross-links to the
+    Alerting feature for these four event types; the controller
+    does NOT distinguish them from the 16 metadata-edit types —
+    they flow through the same `event_type` filter and the same
+    payload shape. Refines F-021 with the cross-pillar feed
+    confirmation from F-007.
+    Coherence sweep STRENGTHENS=4 (F-021 13-facet primary-source
+    refinement, F-007 4-event-type origin confirmation, F-006
+    audit-silence schema-rooted reaffirmation, F-010 partition
+    rotation read-path interaction). SUPERSEDES=0. CONFLICTS=0
+    (the doc-vs-code drifts surfaced are PARTIAL drift, not
+    contradictions — the existing F-021 facets already capture
+    them at the repository tier; this batch confirms them at the
+    controller tier).
+- batch: VAL-LSN-019-B
+  entry_point_added: |-
+    NONE — VAL-LSN-019-B is the SECOND Stress Protocol canary
+    batch (Activity feed feature). Sister batch to VAL-LSN-019
+    (Tag feature, F-018). Five new/rewritten sidecars carry the
+    rev-4 `stress_findings` block surfacing eight new drift facets
+    across the Activity feature. No new entry-points; the existing
+    chain (ActivityController + ActivityServiceImpl +
+    ReactiveActivityRepositoryImpl + ActivityIngestionRequestProcessor
+    + AlertServiceImpl + ActivityEmptyPartitionsHousekeepingJob) is
+    unchanged. What CHANGES is the operator-visible truth at the
+    ActivityHandler dispatch interface (state-snapshot differ, not
+    write-handler), the TX-coupling shape (audit-or-fail rather
+    than best-effort), the empty-partition reaper concurrency
+    contract, the concurrent-mutation oldState race, the
+    service-tier auth posture, the row-order non-determinism in
+    diff equality, the system-event attribution discriminator
+    absence, and the doc-side silence on visibility / lifecycle.
+  contributing_nodes_added:
+  - odd-platform java service activity handler:ActivityHandler
+  - odd-platform java housekeeping job:ActivityEmptyPartitionsHousekeepingJob
+  contributing_nodes_re_enriched:
+  - odd-platform java ActivityController controller-class:ActivityController
+  - odd-platform java service:ActivityServiceImpl
+  - odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
+  notes: |-
+    LSN-019 Stress Protocol VALIDATION CANARY — SECOND APPLICATION.
+    Sister batch to VAL-LSN-019 (which validated the rev-4 schema
+    against the Tag feature). This batch applies the same protocol
+    to the Activity feed feature — a structurally distinct shape
+    (audit-trail surface, aspect-driven write path, partition-based
+    lifecycle) — proving the protocol fires CONSISTENTLY across
+    feature shapes. Eight new drift facets surface; ordered by
+    architectural leverage:
+
+    (1) NEW MEDIUM — **ActivityHandler interface misnamed**
+    (F-021-DRIFT-ACTIVITYHANDLER-MISNAMED). The dispatch interface
+    name "ActivityHandler" lies — the 4-method contract is NOT a
+    write-side handler ("handle(event) → write row"); it is a
+    STATE-SNAPSHOT DIFFER. `getContextInfo(parameters)` captures
+    PRE-mutation state; `getUpdatedState(parameters, dataEntityId)`
+    captures POST-mutation state. Diff computation
+    (`info.getOldState().equals(newState)` at ActivityAspect.java:86)
+    and persistence (`activityRepository.saveReturning`) happen
+    OUTSIDE the handler in ActivityAspect + ActivityServiceImpl.
+    Evidence: ActivityHandler.java:9-22 (only READ methods declared)
+    + 18 concrete impls verified read-only. Operator-visible
+    consequence: a new contributor reading the interface name will
+    look for a "handle write" hook that does not exist; the
+    snapshot-pair semantics are the actual contract. Pin: the
+    interface SHOULD be renamed `ActivityStateDiffer` or
+    `ActivitySnapshotProvider` to match observed behaviour.
+
+    (2) NEW HIGH — **Activity emit couples rollback to business
+    mutation via shared @ReactiveTransactional**
+    (F-021-DRIFT-ACTIVITY-EMIT-COUPLES-ROLLBACK). The ActivityAspect
+    around-advice carries `@ReactiveTransactional` at
+    ActivityAspect.java:42, wrapping the WHOLE @ActivityLog business
+    method PLUS the postActivity emit (ActivityServiceImpl.java:50
+    `activityRepository.saveReturning`) in ONE transaction. An
+    activity-repository write failure rolls back the user's actual
+    change. Evidence: ActivityAspect.java:42 + ActivityServiceImpl.java
+    line-by-line absence of local TX. Operator-visible consequence:
+    a transient repository error on the activity write surfaces as
+    HTTP 500 to the user with the underlying business mutation
+    silently rolled back. The same coupling holds for
+    AlertServiceImpl.applyAlertActions (line 201
+    @ReactiveTransactional) and ActivityIngestionRequestProcessor
+    (IngestionServiceImpl.java:66 @ReactiveTransactional). The
+    audit-or-fail semantic is intentional but UNDOCUMENTED and
+    operationally surprising — operators expect audit to be
+    best-effort. Cross-reference: REFACTOR-NNN (extract activity
+    emit to compensating-action / outbox pattern) + TEST-GAP-NNN
+    (no test asserts the rollback contract — a future refactor
+    that decoupled the TX could silently break it).
+
+    (3) NEW HIGH — **ActivityEmptyPartitionsHousekeepingJob check-then-drop
+    race causes silent row loss**
+    (F-021-DRIFT-EMPTY-PARTITIONS-RACE). The job's name honors its
+    CENTRE meaning (only EMPTY past partitions dropped) — but the
+    implementation is two non-transactional statements:
+    `SELECT count(*) = 0 FROM <partition>` (PartitionServiceImpl.java:134)
+    followed by `DROP TABLE <partition>` (line 122). A concurrent
+    INSERT INTO activity that lands in the race window AFTER the
+    count-zero check and BEFORE the DROP TABLE causes the
+    just-inserted activity row to be DROPPED with the partition;
+    the INSERT caller sees success and the row is gone. The parent
+    template (EmptyPartitionsHousekeepingJob.java:16-33) does NOT
+    wrap in `DSL.using(connection).transaction(...)`, unlike sibling
+    AlertHousekeepingJob.java:25 which DOES. Evidence: structural
+    diff with AlertHousekeepingJob. Cross-reference: LSN-018 (the
+    structural analogue — coherence-check gap), F-010 (Housekeeping
+    TTL) batch-R activity-monotonic-growth confirmation. P-022 probe
+    emitted to pin empirically.
+
+    (4) NEW HIGH — **Concurrent oldState capture race produces wrong
+    attribution in second handler's diff**
+    (F-021-DRIFT-CONCURRENT-OLDSTATE-RACE). When two concurrent
+    @ActivityLog-annotated mutations target the SAME data entity
+    (e.g. two operators editing description in parallel; the UI
+    has no optimistic-concurrency check), both `getContextInfo`
+    calls capture the SAME pre-mutation oldState. Mutation A runs;
+    its `getUpdatedState` sees state after A. Mutation B runs after
+    A; its `getUpdatedState` ALSO sees state after both — but B
+    records diff (pre-A → after-A+B), claiming credit for A's
+    change. Evidence: ActivityHandler.java:12-15 (read-before /
+    read-after contract) + ActivityAspect.java:48-95 (the
+    around-advice flow; no inter-snapshot locking) + the
+    @ReactiveTransactional isolation is READ COMMITTED, NOT
+    SERIALIZABLE — handlers can see each other's committed writes.
+    Operator-visible consequence: the Activity Feed shows two rows
+    each claiming credit for the other's change. Cross-reference:
+    TEST-GAP-NNN (StepVerifier two-concurrent-OwnershipServiceImpl-update
+    integration test) + P-019 (the structural-analogue concurrent
+    write race surfaced at the Tag layer in VAL-LSN-019).
+
+    (5) NEW HIGH — **Service-tier zero authorization → cross-owner
+    visibility / multi-tenant data leak**
+    (F-021-DRIFT-CROSS-OWNER-VISIBILITY). ActivityServiceImpl.java
+    lines 33-273 verified line-by-line: zero @PreAuthorize, zero
+    programmatic `permissionService.hasPermission(...)`, zero owner
+    scoping on reads except `MY_OBJECTS` view-mode (and that scopes
+    along OBJECT-OWNERSHIP, not ACTOR axis). `getDataEntityActivityList`
+    (line 119-136) accepts a `dataEntityId` and unconditionally
+    fetches activity for that ID — any authenticated user reads
+    any data entity's audit trail including JSONB old/newState
+    descriptions. In a multi-tenant scenario operators of tenant A
+    see tenant B's lifecycle events including PII / credentials
+    accidentally pasted into description fields. Evidence:
+    ActivityServiceImpl.java:33-273 + ActivityController.java:1-58
+    (no @PreAuthorize) + ReactiveActivityRepositoryImpl.java:128-145
+    (no per-tenant filter). CROSS-CUTTING POSTURE CONFIRMATION:
+    this is the SAME root cause finding as F-018's
+    `tag_service_tier_zero_permission_checks_controller_perimeter_sole_authorization`
+    (VAL-LSN-019 batch). The two findings are not Tag-specific or
+    Activity-specific — they are the PLATFORM's service-tier auth
+    posture: controller perimeter is the sole authorization gate;
+    service tier is auth-free by design. The Activity feed proves
+    the pattern generalises; future batches will likely find it on
+    OwnershipServiceImpl, DataEntityServiceImpl, etc. Cross-reference:
+    REFACTOR-547 (the Tag analogue — same root cause).
+
+    (6) NEW MEDIUM — **Spurious activity events from Postgres row-order
+    non-determinism in ownership / tag list queries leaks into
+    JSON-string diff equality**
+    (F-021-DRIFT-SPURIOUS-EVENTS-FROM-UNSTABLE-ORDERING).
+    `getOwnershipsByDataEntityId` (ReactiveOwnershipRepositoryImpl.java:130-145)
+    has NO `ORDER BY`; `listDataEntityDtos` (ReactiveTagRepositoryImpl.java:69-81)
+    has only `groupBy(TAG.fields())`, NO `ORDER BY`. Both produce
+    `List<*Dto>` that ActivityHandler concrete impls serialize as
+    JSON (`AbstractOwnershipActivityHandler.java:19-22` collectList
+    → JSON; `TagActivityHandlerImpl.java:41-50` list → JSON). The
+    same underlying owner / tag set serializes as `[A, B]` or
+    `[B, A]` depending on Postgres row order (storage order, can
+    change after VACUUM, UPDATE-MOVE, or query-plan changes). The
+    `info.getOldState().equals(newState)` filter at
+    ActivityAspect.java:86 is STRING-equality — a row-order flip
+    emits a spurious activity event recording "same owners changed
+    to same owners in different order". Operator confidence in the
+    Activity Feed degrades. Evidence: structural diff between
+    repositories WITH `ORDER BY` and the two cited. Cross-reference:
+    P-018 probe emitted to pin empirically.
+
+    (7) NEW MEDIUM — **Ingestion-driven activity events persist
+    created_by_user_id = NULL with no is_system_event flag**
+    (F-021-DRIFT-INGESTION-ATTRIBUTION-NULL).
+    ActivityServiceImpl.java:46-49 + line 60: the
+    `switchIfEmpty(Mono.defer(() -> Mono.just(activityMapper.mapToPojo(event,
+    activityCreateTime, null))))` fallback fires when
+    `authIdentityProvider.getCurrentUser()` is Mono.empty() — for
+    ActivityIngestionRequestProcessor (S2S ingestion path; no
+    SecurityContext), AlertServiceImpl scheduler flows (background
+    thread; SecurityContext lost across boundary), and DISABLED-mode
+    anonymous mutations. The `ActivityCreateEvent` carries a
+    `systemEvent: boolean` field (line 13) but it is NOT used to
+    populate the activity row to discriminate "system did it" from
+    "user did it but auth context was lost due to a bug". The
+    schema's `is_system_event` column exists (V0_0_48__add_activity.sql:8)
+    but the mapper does not appear to set it from
+    `ActivityCreateEvent.systemEvent` in the create path. Operators
+    cannot distinguish "ingestion event" from "user-action with
+    auth-context bug". Evidence: ActivityServiceImpl.java:46-49,
+    58-60 + ActivityCreateEvent.java:13 + V0_0_48__add_activity.sql:8.
+    Cross-reference: TEST-GAP-NNN
+    (testCreateActivityEvent_NoAuthContext_PersistsNullUserId + UI
+    render of null user).
+
+    (8) NEW HIGH (doc-class) — **Live activity-feed doc silent on
+    visibility, type-filter values, pagination, ordering,
+    partition-based lifecycle**
+    (F-021-DRIFT-DOC-SILENCE-VISIBILITY-AND-LIFECYCLE). Live
+    activity-feed.md (WebFetched 2026-05-20 status 200) returns
+    "NOT MENTIONED" for FIVE categories: (a) authorization /
+    visibility / who can access; (b) the `type` query parameter
+    (ALL/MY_OBJECTS/UPSTREAM/DOWNSTREAM); (c) pagination / cursor /
+    page size; (d) ordering / sort order / chronological; (e) the
+    partition-based retention model (no row-level TTL; non-empty
+    partitions never drop). Each of the FIVE is operator-visible
+    behaviour the controller embodies. STRENGTHENS the existing
+    F-021 doc_silence facets with the five-category enumeration
+    closing the picture: this is not a single drift — it is a
+    structurally INCOMPLETE doc page. Evidence: WebFetch
+    /features/active-platform-features/activity-feed 2026-05-20
+    inventory + ActivityController.java:1-58 (visibility surface)
+    + ActivityServiceImpl.java:107-117 (type dispatch) +
+    ReactiveActivityRepositoryImpl.java:285-291 (cursor +
+    ordering) + ActivityEmptyPartitionsHousekeepingJob (lifecycle).
+    Cross-reference: DOC-GAP-NNN (each of the 5 categories deferred
+    to doc-gap-finder); REFACTOR-NNN (a dedicated visibility /
+    authorization section on the feature page would close most).
+
+    Coherence (LSN-018 Rule 6 sweep):
+    STRENGTHENS=4 (F-018 service-tier-zero-auth posture extended
+    by cross-feature CONFIRMATION; F-006 audit-silence schema-rooted
+    invariant strengthened by service-tier auth-free confirmation;
+    F-010 housekeeping-empty-partitions-race + activity-monotonic
+    growth strengthened by sister jobs' transactional contrast;
+    F-021 itself strengthened across all 8 new facets).
+    SUPERSEDES=0 (no prior claim contradicted — all new findings
+    are NEW DRIFT, not corrections).
+    CONFLICTS=0.
+
+    Methodology-meta: VAL-LSN-019-B is the SECOND application of
+    the rev-4 Stress Protocol schema, after VAL-LSN-019 (Tag
+    feature). The two batches together establish that the protocol
+    surfaces DRIFT-CLASS findings consistently across feature
+    SHAPES: a Discovery-pillar primary-write feature (Tag) AND an
+    Audit-pillar primary-read feature (Activity). The 8 new facets
+    are structurally distinct from F-018's 5 facets — different
+    code paths, different operator-impact classes — but all surface
+    from the SAME 5-category Stress Protocol exhaustion (A
+    tunables, B name-vs-behaviour, C orderings/pagination, D auth
+    gates, E resource boundaries). The protocol works.
+
+    CROSS-FEATURE FINDING — service-tier zero-authorization posture:
+    F-018 batch VAL-LSN-019 surfaced the finding ONCE as a
+    Tag-specific facet. F-021 batch VAL-LSN-019-B independently
+    surfaces the SAME root cause on an unrelated service tier
+    (Activity). The two findings VALIDATE each other — this is not
+    a Tag-specific or Activity-specific posture; it is the
+    PLATFORM's service-tier auth contract. Future batches will
+    surface the same pattern on additional services. The canonical
+    home REMAINS on F-018 (where it was first surfaced); F-021
+    adds a cross-reference back-link in the related_features block
+    + a `related_features_cross_batch_confirmation:` note pinning
+    that the two batches together prove system-wide applicability.
 discovered_from_entry_point: rest:GET /api/activity (+ per-entity tab GET /api/activity?data_entity_id={id})
 contributing_nodes:
+- odd-platform java ActivityController controller-class:ActivityController
 - odd-platform java ActivityController controller-method:getActivity (referenced from batch A primary-source)
 - odd-platform java service service:ActivityServiceImpl (referenced from batch A primary-source)
 - odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
 - odd-platform java ActivityTablePartitionManager (referenced from batch K primary-source)
-- odd-platform java ActivityEmptyPartitionsHousekeepingJob (referenced from F-010 batch K)
+- odd-platform java ActivityEmptyPartitionsHousekeepingJob (referenced from F-010 batch K + VAL-LSN-019-B primary-source)
 - odd-platform java ActivityIngestionRequestProcessor (referenced via repository upstream_callers)
 - odd-platform java service service:AlertServiceImpl (the system-event write-path caller)
+- odd-platform java service activity handler:ActivityHandler (snapshot-differ dispatch interface — VAL-LSN-019-B primary-source)
 description: |-
   The Activity Feed is the audit-trail consumer surface of the platform
   — the user-observable history of data-entity-scoped lifecycle and
@@ -489,6 +861,281 @@ observed_vs_expected:
       PRIMARY-SOURCE — V0_0_48__add_activity.sql:6-7 + repository
       line 290-291 + DescriptionActivityStateDto.java:3. Severity:
       MEDIUM (data-exposure class).
+  - facet: ActivityHandler interface misnamed — state-snapshot differ, not write-handler
+    observed: |-
+      The dispatch interface "ActivityHandler" name implies a
+      write-side handle(event) contract, but the 4-method body
+      (ActivityHandler.java:9-22) declares only state-READING
+      operations: isHandle / getContextInfo (snapshot PRE-mutation
+      state) / getUpdatedState (snapshot POST-mutation state) +
+      one default-throwing multi-id variant. Diff computation
+      (info.getOldState().equals(newState) at ActivityAspect.java:86)
+      and persistence (activityRepository.saveReturning at
+      ActivityServiceImpl.java:50) happen OUTSIDE the handler. The
+      18 concrete impls verified read-only. The interface SHOULD be
+      named ActivityStateDiffer / ActivitySnapshotProvider.
+    expected: |-
+      Either (a) rename interface to reflect snapshot-differ
+      semantics, OR (b) JavaDoc on the interface name that the
+      "handler" word is colloquial — the actual contract is read
+      snapshot pair + the AOP advice does the diff and write.
+    drift_class: activity_handler_interface_misnamed_state_snapshot_differ_not_write_handler
+    provenance: |-
+      PRIMARY-SOURCE — ActivityHandler.java:9-22 (4-method
+      interface, all read-only) + 18 concrete impl Glob
+      verification + ActivityAspect.java:86 (diff lives outside
+      handler) + ActivityServiceImpl.java:50 (write lives outside
+      handler). Severity: MEDIUM (name-vs-behaviour drift class —
+      the LSN-019 recurring shape; surfaced via Stress Protocol
+      Category B). Source batch: VAL-LSN-019-B.
+  - facet: Activity emit couples rollback to business mutation
+    observed: |-
+      `ActivityAspect.monoActivityAspect` carries
+      `@ReactiveTransactional` at ActivityAspect.java:42, wrapping
+      the WHOLE @ActivityLog-annotated business method PLUS the
+      `postActivity` call to `activityService.createActivityEvent`
+      in ONE transaction. ActivityServiceImpl itself has NO local
+      @ReactiveTransactional. Activity-repository write failure
+      rolls back the user's actual business mutation; the user
+      sees HTTP 500 with no indication that the mutation was
+      successful-but-rolled-back. Same coupling holds for
+      AlertServiceImpl.applyAlertActions (line 201
+      @ReactiveTransactional wraps alert mutation + activity emit)
+      and ActivityIngestionRequestProcessor (IngestionServiceImpl.java:66
+      @ReactiveTransactional wraps the whole ingestion pipeline).
+    expected: |-
+      Either (a) decouple via compensating-action / outbox pattern
+      (audit becomes best-effort), OR (b) explicit operator-facing
+      doc text "the activity emit is in the SAME transaction as
+      the business mutation; activity-write failure rolls back the
+      mutation".
+    drift_class: activity_emit_couples_rollback_to_business_mutation_same_reactive_transactional
+    provenance: |-
+      PRIMARY-SOURCE — ActivityAspect.java:42 (@ReactiveTransactional)
+      + ActivityServiceImpl.java line-by-line verified absence of
+      local TX + AlertServiceImpl.java:201 + IngestionServiceImpl.java:66.
+      Severity: HIGH (operator-surprising coupling; surfaced via
+      Stress Protocol Category E). Cross-reference REFACTOR-NNN
+      (extract activity emit to outbox) + TEST-GAP-NNN (no test
+      pins the rollback contract). Source batch: VAL-LSN-019-B.
+  - facet: ActivityEmptyPartitionsHousekeepingJob check-then-drop race → silent row loss
+    observed: |-
+      The job's name honors its CENTRE meaning (only EMPTY past
+      partitions dropped) — but the implementation is two
+      non-transactional statements: `SELECT count(*) = 0 FROM
+      <partition>` at PartitionServiceImpl.java:134 followed by
+      `DROP TABLE <partition>` at line 122. A concurrent
+      `INSERT INTO activity` landing AFTER the count-zero check
+      but BEFORE the DROP TABLE causes the just-inserted row to
+      be DROPPED with the partition. The INSERT caller sees
+      success; the row is GONE. The parent template
+      (EmptyPartitionsHousekeepingJob.java:16-33) does NOT wrap in
+      `DSL.using(connection).transaction(...)`, unlike sibling
+      AlertHousekeepingJob.java:25 which DOES.
+    expected: |-
+      Either (a) wrap empty-check + DROP in a `DSL.using(connection)
+      .transaction(...)` (structurally aligns with
+      AlertHousekeepingJob's pattern), OR (b) re-check emptiness
+      AFTER acquiring ACCESS EXCLUSIVE lock on the partition before
+      DROP, OR (c) explicit operator-facing doc text on
+      "DROP-without-IF-EXISTS race window".
+    drift_class: activity_empty_partitions_housekeeping_check_then_drop_race_silent_row_loss
+    provenance: |-
+      PRIMARY-SOURCE — PartitionServiceImpl.java:108-117 (the
+      two-statement non-transactional pattern) +
+      EmptyPartitionsHousekeepingJob.java:16-33 (no transaction
+      wrapper, contrast with AlertHousekeepingJob.java:25
+      `transaction(...)`). Severity: HIGH (silent-data-loss class —
+      LSN-001 sibling shape on the audit trail itself). Surfaced
+      via Stress Protocol Category E. Probe P-022 emitted.
+      Cross-reference LSN-018 (the structural-analogue —
+      coherence-check gap), F-010 (Housekeeping TTL) batch-R
+      activity-monotonic-growth confirmation. Source batch: VAL-LSN-019-B.
+  - facet: Concurrent oldState capture race → wrong attribution in second handler's diff
+    observed: |-
+      When two concurrent `@ActivityLog`-annotated mutations
+      target the SAME data entity, both `getContextInfo` calls
+      capture the SAME pre-mutation oldState (the
+      `@ReactiveTransactional` isolation is READ COMMITTED, not
+      SERIALIZABLE — both transactions read committed state
+      pre-A). Mutation A runs; A's `getUpdatedState` sees state
+      after A. Mutation B runs after A; B's `getUpdatedState`
+      sees state after both — but B records diff (pre-A →
+      after-A+B), claiming credit for A's change. The Activity
+      Feed shows two rows each claiming credit for the other's
+      change. No optimistic-concurrency check at the UI level
+      catches this; no SELECT-FOR-UPDATE at the handler level
+      serialises the snapshots.
+    expected: |-
+      Either (a) SERIALIZABLE isolation on @ActivityLog flows
+      (broad performance cost), OR (b) per-data-entity advisory
+      lock during the @ActivityLog window (handler-tier serialization),
+      OR (c) explicit doc text + UI optimistic-concurrency for
+      operator-visible-on-conflict semantics.
+    drift_class: concurrent_oldstate_capture_race_wrong_attribution_in_second_handler_diff
+    provenance: |-
+      PRIMARY-SOURCE — ActivityHandler.java:12-15 (read-before /
+      read-after contract) + ActivityAspect.java:48-95 (the
+      around-advice flow; no inter-snapshot locking) +
+      ActivityAspect.java:42 (READ COMMITTED isolation, default
+      Postgres). Severity: HIGH (audit-trail-trust class —
+      operator confidence in the feed degrades). Surfaced via
+      Stress Protocol Category E. Cross-reference TEST-GAP-NNN
+      (StepVerifier two-concurrent-OwnershipServiceImpl-update
+      integration test) + P-019 (the structural-analogue concurrent
+      write race surfaced at the Tag layer in VAL-LSN-019).
+      Source batch: VAL-LSN-019-B.
+  - facet: Service-tier zero authorization → cross-owner / multi-tenant data leak
+    observed: |-
+      ActivityServiceImpl.java lines 33-273 verified line-by-line:
+      zero @PreAuthorize, zero programmatic
+      `permissionService.hasPermission(...)`, zero owner scoping
+      on reads except `MY_OBJECTS` view-mode (which scopes along
+      OBJECT-OWNERSHIP, NOT ACTOR axis — see existing
+      `read_default_cross_owner_my_objects_axis_mismatch` facet).
+      `getDataEntityActivityList` (line 119-136) accepts a
+      `dataEntityId` and unconditionally fetches activity for that
+      ID — any authenticated user reads any data entity's audit
+      trail including JSONB old/newState descriptions. In a
+      multi-tenant scenario operators of tenant A see tenant B's
+      lifecycle events including PII / credentials accidentally
+      pasted into description fields.
+      CROSS-CUTTING POSTURE CONFIRMATION: this is the SAME root
+      cause finding as F-018's
+      `tag_service_tier_zero_permission_checks_controller_perimeter_sole_authorization`
+      (VAL-LSN-019 batch). The two findings are not Tag-specific
+      or Activity-specific — they are the PLATFORM's service-tier
+      auth posture: controller perimeter is the sole authorization
+      gate; service tier is auth-free by design.
+    expected: |-
+      Either (a) introduce a service-tier authorization layer
+      (e.g. @PreAuthorize on every public method), OR (b)
+      explicit ADR documenting the design — controller perimeter
+      sole authorization, no per-tenant scoping at service tier —
+      so operators understand the posture before deploying
+      multi-tenant.
+    drift_class: service_tier_zero_authorization_cross_owner_visibility_multi_tenant_leak
+    provenance: |-
+      PRIMARY-SOURCE — ActivityServiceImpl.java:33-273 (verified
+      line-by-line absence) + ActivityController.java:1-58 (no
+      @PreAuthorize) + ReactiveActivityRepositoryImpl.java:128-145
+      (no per-tenant filter). Severity: HIGH (multi-tenant data
+      leak class). Surfaced via Stress Protocol Category D. CROSS-
+      CONFEDERATE with F-018 VAL-LSN-019 finding — two distinct
+      services exhibit the SAME architectural posture; the cross-
+      batch confirmation validates that the protocol fires
+      consistently across feature shapes. Cross-reference
+      REFACTOR-547 (the Tag analogue — same root cause). Source
+      batch: VAL-LSN-019-B.
+  - facet: Spurious activity events from Postgres row-order non-determinism in diff equality
+    observed: |-
+      `getOwnershipsByDataEntityId`
+      (ReactiveOwnershipRepositoryImpl.java:130-145) has NO
+      `ORDER BY`; `listDataEntityDtos`
+      (ReactiveTagRepositoryImpl.java:69-81) has only
+      `groupBy(TAG.fields())`, NO `ORDER BY`. Both produce
+      `List<*Dto>` that ActivityHandler concrete impls serialize
+      as JSON (`AbstractOwnershipActivityHandler.java:19-22`
+      collectList → JSON; `TagActivityHandlerImpl.java:41-50`
+      list → JSON). The same underlying owner / tag set
+      serializes as `[A, B]` or `[B, A]` depending on Postgres
+      row order (storage order, can change after VACUUM,
+      UPDATE-MOVE, or query-plan changes). The
+      `info.getOldState().equals(newState)` filter at
+      ActivityAspect.java:86 is STRING-equality — a row-order
+      flip emits a spurious activity event recording "same
+      owners changed to same owners in different order".
+    expected: |-
+      Either (a) add `ORDER BY` on the list queries (cheapest,
+      most direct), OR (b) replace JSON-string-equality with
+      semantic-equality (deserialize + DTO comparator) at
+      ActivityAspect.java:86, OR (c) sort the List<*Dto>
+      deterministically before JSON-serialization at the handler.
+    drift_class: spurious_activity_events_from_postgres_row_order_non_determinism_in_diff
+    provenance: |-
+      PRIMARY-SOURCE — ReactiveOwnershipRepositoryImpl.java:130-145
+      (no ORDER BY) + ReactiveTagRepositoryImpl.java:69-81 (no
+      ORDER BY) + AbstractOwnershipActivityHandler.java:19-22 +
+      TagActivityHandlerImpl.java:41-50 + ActivityAspect.java:86
+      (string-equality). Severity: MEDIUM (audit-trail-noise
+      class — operator confidence degrades). Surfaced via Stress
+      Protocol Category C. P-018 probe emitted to pin
+      empirically. Source batch: VAL-LSN-019-B.
+  - facet: Ingestion attribution null — no is_system_event flag disambiguator at write
+    observed: |-
+      `ActivityServiceImpl.createActivityEvent` (line 46-49) +
+      `createActivityEvents` (line 60): the
+      `switchIfEmpty(Mono.defer(() -> Mono.just(activityMapper.mapToPojo(event,
+      activityCreateTime, null))))` fallback fires when
+      `authIdentityProvider.getCurrentUser()` is Mono.empty() —
+      for ActivityIngestionRequestProcessor (S2S ingestion path;
+      no SecurityContext), AlertServiceImpl scheduler flows
+      (background thread; SecurityContext lost across boundary),
+      and DISABLED-mode anonymous mutations. The
+      `ActivityCreateEvent` carries a `systemEvent: boolean`
+      field (line 13) but the fallback path passes the event
+      through `activityMapper.mapToPojo(event, time, null)` — the
+      mapper SHOULD set `is_system_event` from
+      `event.systemEvent()` (per the MapStruct convention) but the
+      audit-trail discriminator surface for operators is the
+      `created_by IS NULL` value, which conflates "ingestion did
+      it" with "user did it but auth context bug". Operators
+      cannot disambiguate from the UI.
+    expected: |-
+      Either (a) write `'<anonymous>'` / `'<ingestion-system>'`
+      literal into `created_by` for the no-auth-context case
+      (reserves NULL for genuine schema-default cases), OR (b)
+      surface `is_system_event` explicitly in the Activity Feed
+      UI render (operator visually distinguishes), OR (c)
+      operator-facing doc text on the discriminator semantics.
+    drift_class: ingestion_attribution_null_created_by_no_is_system_event_flag_disambiguator
+    provenance: |-
+      PRIMARY-SOURCE — ActivityServiceImpl.java:46-49, 58-60 +
+      ActivityCreateEvent.java:13 + V0_0_48__add_activity.sql:8
+      (is_system_event column exists). Severity: MEDIUM
+      (forensic-disambiguation class). Surfaced via Stress
+      Protocol Category B. Cross-reference TEST-GAP-NNN
+      (testCreateActivityEvent_NoAuthContext_PersistsNullUserId +
+      UI render of null user). Source batch: VAL-LSN-019-B.
+  - facet: Doc silence — visibility, type filter, pagination, ordering, partition lifecycle
+    observed: |-
+      Live `/features/active-platform-features/activity-feed`
+      doc (WebFetched 2026-05-20 status 200) returns "NOT MENTIONED"
+      for FIVE categories: (a) authorization / visibility / who
+      can access (anyone authenticated reads global feed cross-owner;
+      doc silent); (b) the `type` query parameter and 4 view-mode
+      tabs (ALL / MY_OBJECTS / UPSTREAM / DOWNSTREAM); (c)
+      pagination / cursor / page-size / default-size; (d) ordering
+      / sort-order / chronological framing; (e) the partition-based
+      retention model (no row-level TTL; non-empty partitions never
+      drop). Each of the FIVE is operator-visible behaviour the
+      controller embodies.
+    expected: |-
+      A dedicated "Visibility and Authorization" section on the
+      activity-feed page enumerating the cross-owner default,
+      the MY_OBJECTS object-axis scoping, the DISABLED-mode
+      anonymous reach; a "Filtering and Pagination" section
+      enumerating the type parameter values + cursor semantics +
+      size bounds; an "Ordering" section pinning the
+      `CREATED_AT DESC, ID DESC` tie-break + the
+      second-truncation cursor; a "Retention and Lifecycle"
+      section pinning the partition-based reaper + monotonic
+      growth + manual-drop-required path. Plus a per-tag API
+      reference page at `/developer-guides/api-reference/activity`
+      (currently 404; parallel to `/alerts`).
+    drift_class: doc_silence_on_visibility_type_filter_pagination_ordering_partition_lifecycle
+    provenance: |-
+      PRIMARY-SOURCE — WebFetch
+      /features/active-platform-features/activity-feed 2026-05-20
+      (5-category inventory NOT MENTIONED) +
+      ActivityController.java:1-58 (visibility surface) +
+      ActivityServiceImpl.java:107-117 (type dispatch) +
+      ReactiveActivityRepositoryImpl.java:285-291 (cursor +
+      ordering) + ActivityEmptyPartitionsHousekeepingJob (lifecycle).
+      Severity: HIGH (doc-class; combined with the in-product
+      surface this is a publishing-standard miss). Cross-reference
+      DOC-GAP-NNN (each of the 5 categories deferred to
+      doc-gap-finder). Source batch: VAL-LSN-019-B.
 test_matrix:
   unit:
     state: GAP
@@ -578,17 +1225,44 @@ related_concepts:
 - Read-Collaborative Posture
 - Activity Table Partitioning
 - Housekeeping (TTL Retention)
+- Name-vs-Behaviour Drift (LSN-019)
+- Service-Tier Zero-Authorization Posture (cross-feature — F-018 + F-021 confirmation)
 related_features:
 - F-006  # audit-silence schema-rooted — the activity-data-entity-fk root cause
 - F-007  # AlertManager — system-event write-path consumer
-- F-010  # Housekeeping — empty-partition drop is the sole reaper
+- F-010  # Housekeeping — empty-partition drop is the sole reaper; VAL-LSN-019-B adds check-then-drop race finding
 - F-011  # Principal-to-Owner Resolution — provider-agnostic JOIN cross-mode bleed read-side mirror
 - F-014  # Per-Entity Alert View — sibling P-07 surface
 - F-004  # Entity Description Editing — JSONB leak via old/new_state
+- F-018  # Manual Object Tagging — VAL-LSN-019 cross-batch confirmation: service-tier zero-auth posture is system-wide (Tag + Activity both surface the SAME root cause)
+- F-022  # Per-Dataset DQ Test Reports & SLA — severity-mutation produces NO Activity row (audit-silence pattern extension)
+- F-023  # Directory — sibling cross-owner read surface (P-01 enumeration) feeding into the same read-collaborative posture family
+related_features_cross_batch_confirmation:
+- batch_pair: [VAL-LSN-019, VAL-LSN-019-B]
+  finding: service_tier_zero_authorization_posture
+  canonical_home: F-018  # surfaced first on Tag service tier
+  confirmed_by: F-021    # independently surfaced on Activity service tier
+  note: |-
+    The service-tier zero-authorization posture is NOT a Tag-specific
+    or Activity-specific facet — it is the PLATFORM's service-tier
+    auth contract: controller perimeter is the sole authorization
+    gate; service tier is auth-free by design. Two independent
+    Stress Protocol applications (Tag in VAL-LSN-019, Activity in
+    VAL-LSN-019-B) surface the SAME root cause from structurally
+    distinct features. Future batches will likely find the same
+    pattern on additional services (OwnershipServiceImpl,
+    DataEntityServiceImpl, etc). REFACTOR-547 (the Tag analogue)
+    is the canonical anchor; this F-021 facet is the cross-feature
+    validator.
 related_retrospectives:
 - LSN-017
 - LSN-018  # cross-mode-bleed coherence-check pattern is the relevant case-law
-related_probes: null
+- LSN-019  # VAL-LSN-019-B: second application of rev-4 Stress Protocol; canary for cross-feature consistency
+related_probes:
+- P-018  # row-order non-determinism in diff equality — spurious activity events
+- P-019  # concurrent oldState capture race — wrong attribution
+- P-022  # empty-partition check-then-drop race — silent row loss (sister to VAL-LSN-019 P-021)
+- P-023  # getActivityCounts null-date unbounded count
 probe_verifications: []
 maintainer_curated: false
 merge_candidate_with: null

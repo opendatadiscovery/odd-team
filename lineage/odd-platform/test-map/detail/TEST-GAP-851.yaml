@@ -1,0 +1,51 @@
+gap_id: TEST-GAP-851
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform ts react-component component:Directory"
+pillars_affected: [P-01]
+surfaced_by:
+  - "Directory.md:bugs_limitations_corner_cases.[4] — 'TanStack Query cache key [dataSourceTypes] does NOT include any user-identity scope. If two users with DIFFERENT visibility constraints share a browser session, the cache leaks the level-1 view across users.'"
+behaviour: |-
+  **LOW — TanStack Query cache key has no user-identity scope; latent vulnerability if per-user scoping is added to the API in the future.** `directory.ts:13-14`: `queryKey: ['dataSourceTypes']` — a static cache key. Today the API returns the same catalog-wide view for every authenticated user (per the read-collaborative posture), so this is moot. **But if a future patch adds per-user scoping to the API while leaving the UI cache key untouched**, a cache-hit would return the prior user's view to the new user.
+
+  **Reproduction scenarios** (today: NONE; future after API-tier scoping):
+  - Shared workstation: UserA logs in, navigates to Directory (caches view); UserA logs out; UserB logs in (same browser session), navigates to Directory → cache hit returns UserA's view.
+  - SSO context-switch: same browser with multiple identities, cached view from prior identity leaks.
+
+  **Why LOW**:
+  - **Latent** — actionable only if API-tier scoping is added
+  - **Bounded scope** — requires shared browser session (rare in production but possible in dev/test environments)
+  - **Easy fix when actionable** — add `userId` or `session_id` to the queryKey
+  - **No data integrity / security impact today** — the API is read-collaborative by design
+
+  **Test gap shape**: A latent-regression-pin test that documents the cache-key-vs-identity assumption. Surfaces if a future maintainer adds API-tier scoping without updating the cache key.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Directory/__tests__/Directory.cache-key.test.tsx"
+    name: "renderDirectory_twoUsersSameSession_cacheLeaksAcrossIdentities_pinsLatentCacheKeyGap"
+  - path: "odd-platform-ui/src/lib/hooks/api/__tests__/directory.test.ts"
+    name: "useGetDataSourceTypes_queryKeyIsStatic_pinsNoUserIdentityScope"
+evidence:
+  - "Directory.md says (bugs_limitations_corner_cases.[4]): 'TanStack Query cache key [dataSourceTypes] does NOT include any user-identity scope. Today the API returns the same catalog-wide view for every authenticated user, so this is currently moot — but if a future patch adds per-user scoping to the API while leaving the UI cache key untouched, a cache-hit would return the prior user's view to the new user.'"
+  - "Verified at primary source: directory.ts:13-14 (static queryKey); index.tsx:30-48 (no per-session cache reset on identity change)"
+cross_references:
+  - "TEST-GAP-843 (sister Directory DISABLED-anonymous reach)"
+  - "concepts.yaml:invariants[tanstack-query-cache-key-no-user-identity-scope-latent]"
+related_features: [F-023]
+related_pillar_features: ["P-01:F-007 Directory Browsing UI"]
+proposed_action: |-
+  **Vitest cache-key contract tests** (2 tests):
+
+  1. `renderDirectory_twoUsersSameSession_cacheLeaksAcrossIdentities_pinsLatentCacheKeyGap` — render Directory as UserA (mock identity), wait for cache populate. Re-render as UserB (mock identity change). Assert UserB's render hits the cache → UserA's view. PINS the latent gap.
+
+  2. `useGetDataSourceTypes_queryKeyIsStatic_pinsNoUserIdentityScope` — unit test on the hook; assert the queryKey is exactly `['dataSourceTypes']` with no userId/sessionId.
+
+  **Architectural fix when actionable**:
+  - Add `userId` (or session-derived value) to queryKey: `['dataSourceTypes', userId]`
+  - Add `queryClient.removeQueries(['dataSourceTypes'])` on identity-change events
+  - Tests then flip assertion direction (assert cache is rebuilt per identity)
+
+  Coherence note (LSN-018 Rule 6): NO contradiction with existing artefacts. This is a LATENT regression-pin — pins the assumption today; flips direction when per-user API scoping is added.
+batch: 2026-05-20-ZA
+feature_id: F-023

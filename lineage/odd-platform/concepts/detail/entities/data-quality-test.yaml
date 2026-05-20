@@ -1,0 +1,201 @@
+name: Data Quality Test
+canonical_in_docs: true
+canonical_candidate: false
+description: |-
+  Per-dataset data-quality test entity — the unit of operator-visible quality
+  signal in Pillar P-04. ODD is an AGGREGATOR (per documentation/docs/data-quality.md
+  line 9) — quality checks are NOT performed inside ODD; the platform integrates
+  with external test frameworks (Great Expectations, dbt, custom push adapters)
+  and surfaces their results. **NEW entity, batch 2026-05-20T (DataQualityController
+  class sidecar)** — formalises the entity at the concept catalog layer.
+
+  Read surface: GET /api/datasets/{data_entity_id}/dataqatests returns a
+  DataEntityList of test entities for the dataset (DataQualityController.java:25-31).
+  Aggregate read surface: GET /api/datasets/{data_entity_id}/test_report returns
+  a DataSetTestReport (counts per status: success / failed / aborted / skipped /
+  broken / unknown). Mutation surface: PUT /api/datasets/{data_entity_id}/dataqatests/{dataqa_test_id}/severity
+  assigns operator-curated severity (MINOR / MAJOR / CRITICAL) — the lone
+  owner-scoped (gated via DATASET_TEST_RUN_SET_SEVERITY) endpoint among the
+  five DataQualityController routes.
+
+  vocabulary_status: codebase-anchored + doc-side-covered (live
+  https://docs.opendatadiscovery.org/features/data-quality and
+  https://docs.opendatadiscovery.org/features/data-quality/test-results-import
+  + https://docs.opendatadiscovery.org/features/data-quality/sla-statuses all
+  WebFetched 2026-05-20 status 200; the entity is named verbatim as
+  "data quality test" / "DQ test"; the live doc explicitly states the
+  "Test reports" tab as the per-entity surface backed by the read endpoints
+  THIS entity surfaces).
+vocabulary_status: codebase-anchored, doc-side-covered
+axes_present:
+- controllers
+- openapi_tags
+nodes:
+- odd-platform java DataQualityController controller-class:DataQualityController
+contributors:
+- |-
+  DataQualityController (class) batch T:
+    entities[DataEntityList, DataSetTestReport, DataSetSLAReport, SLA enum,
+    DataQualityTestSeverity, DataQualityTestSeverityForm, Resource (PNG byte-array)];
+    operations[list-data-quality-tests-for-dataset, aggregate-test-status-counts-for-dataset,
+    render-sla-colour-as-png, compute-detailed-sla-report-as-json, set-test-severity];
+    invariants[existsIncludingSoftDeleted-preserves-DQ-visibility-post-soft-delete,
+    severity-defaults-to-MAJOR-when-unset, SLA-deterministic-aggregation-not-direct-mapping];
+    audiences[odd-platform-ui-end-user (Test reports tab), viz-bi-engineer (PNG badge),
+    data-quality-engineer (severity-set), data-engineer-analyst]
+evidence:
+- |-
+  DataQualityController.md:concepts.entities (the five DTO types + the SLA + severity enums)
+- |-
+  DataQualityController.md:concepts.operations (the five operation IDs)
+- |-
+  DataQualityController.md:concepts.invariants.[2] (existsIncludingSoftDeleted precedes every
+  read path — explicit preservation of post-soft-delete DQ visibility)
+- |-
+  DataQualityController.md:implicit_adrs.[4] (aggregator-only pillar invariant: zero test-execution
+  endpoints; all five methods read or annotate existing data)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      Asymmetrical: four reads (getDataEntityDataQATests, getDatasetTestReport,
+      getSLA, getDatasetSLAReport) have NO SecurityRule entry; the lone mutation
+      (setDataQATestSeverity PUT) is gated via SecurityConstants.java:243-246
+      with the DATA_ENTITY AuthorizationManagerType + DATASET_TEST_RUN_SET_SEVERITY
+      permission. Read-collaborative posture (ADR-CANDIDATE-003) extended to
+      a new feature surface; the deliberate registration of exactly ONE rule
+      (not five) is the intent_anchor.
+  owner_scoping:
+    verdict: MIXED
+    detail: |-
+      Reads BYPASS owner-scoping at the repository tier — ReactiveDataQualityRepositoryImpl
+      applies only HOLLOW.isFalse() + STATUS != DELETED filters with no OWNERSHIP
+      join. The lone PUT (setDataQATestSeverity) RESPECTS owner-scoping via the
+      DATA_ENTITY SecurityRule — caller must be associated with one of the
+      dataset's owners.
+  strengths:
+  - |-
+    The PUT is consistently gated through the centralised SecurityConstants.SECURITY_RULES
+    table — not through method-level annotation; the authorization wiring follows the
+    platform-wide convention.
+  - |-
+    existsIncludingSoftDeleted as the existence-check primitive — soft-deleted datasets
+    still surface their historical DQ signal for forensic/audit workflows.
+  weaknesses:
+  - |-
+    Four read endpoints unscoped — any authenticated user reads per-dataset DQ tests,
+    test reports, SLA report, and SLA PNG badge for ANY dataset by id. New invocation
+    sites of the REFACTOR-024 cross-owner-read family (severity MEDIUM); the live
+    /features/data-quality docs are silent on access control.
+  - |-
+    Under auth.type=DISABLED, all five endpoints become anonymously reachable —
+    the DISABLED-mode blast radius (REFACTOR-185 family) extends to per-dataset
+    DQ data and SLA colours.
+  - |-
+    The SLA PNG endpoint is cross-origin embeddable (image/png; no @CrossOrigin,
+    no Cache-Control restrictions). A malicious page can img-tag the SLA badge
+    cross-origin to leak the colour for a known dataset id (severity LOW-MEDIUM
+    depending on operator's sensitivity classification of the SLA colour).
+  - |-
+    setDataQATestSeverity uses onDuplicateKeyUpdate at ReactiveDataQualityRepositoryImpl.java:90-101
+    — idempotent in outcome but NO ActivityEvent emission, NO audit log, NO last_modified_by.
+    Severity-change history is unrecoverable post-fact (audit-log presence asymmetry
+    instantiated on the DQ surface).
+  cross_file_inconsistencies:
+  - |-
+    Per-method authorization choices are CONSISTENT with platform-wide patterns:
+    reads cross-owner, mutations owner-scoped — but the read-collaborative
+    posture is undocumented on the live data-quality landing page (same shape
+    as alerting/lineage doc drift).
+  contributing_files:
+  - DataQualityController.md
+  evidence:
+  - |-
+    DataQualityController.md:security.known_security_gaps.[0] (cross-owner reads —
+    REFACTOR-024 family extension)
+  - |-
+    DataQualityController.md:security.known_security_gaps.[1] (PNG cross-origin embeddability)
+  - |-
+    DataQualityController.md:security.known_security_gaps.[2] (DISABLED reach)
+  - |-
+    DataQualityController.md:bugs_limitations_corner_cases.[4] (audit-trail absence on severity changes)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    GET /api/datasets/{id}/dataqatests + GET /api/datasets/{id}/test_report fire on
+    every dataset-detail-page 'Test reports' tab activation per the live data-quality.md
+    page — per-render cost compounds linearly with catalog navigation —
+    DataQualityController.java:25-39
+  - |-
+    GET /api/datasets/{id}/sla PNG endpoint is potentially embedded in BI dashboards
+    per the live sla-statuses.md page; for a dashboard with N tiles each pulling SLA
+    for a different dataset, request fan-out is N per render. PNG bytes cached at the
+    resolver layer (CachingByteArraySLAResourceResolver.java:15) so per-request cost
+    is SQL aggregation + byte-array copy; PNG-file IO is NOT per-request.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      No batch / bulk variant — setDataQATestSeverity operates on a single
+      (test, dataset) pair per call; an operator setting severities for 50
+      tests issues 50 PUTs. All four reads are reactive Mono with no
+      streaming / chunked alternative.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: |-
+      getDataEntityDataQATests returns the full list of DQ tests for the dataset —
+      no page / size parameters in the OpenAPI spec at openapi.yaml:1932-1947.
+      A dataset with thousands of tests returns thousands of rows in one response;
+      UI must render all at once.
+  strengths:
+  - |-
+    All four reads are reactive (Mono/ResponseEntity) — non-blocking I/O end-to-end
+  - |-
+    Single DB round-trip per request for getDatasetTestReport, getSLA, getSLAReport;
+    two parallel sub-queries (severities + dimensions) zipped for getDataEntityDataQATests
+  - |-
+    PNG resolver caches all 3 SLA images at bean init (CachingByteArraySLAResourceResolver.java:30-42)
+    — total cached bytes ~3-6 KB; no per-request file IO
+  - |-
+    setDataQATestSeverity is @ReactiveTransactional — existence check + upsert
+    run in a single reactive transaction (DataQualityServiceImpl.java:63-81)
+  weaknesses:
+  - |-
+    No pagination on getDataEntityDataQATests — full list of DQ tests for a dataset
+    in one response; no @Max, no client-side hint, no server-side clamp
+    (severity MEDIUM)
+  - |-
+    No HTTP caching headers (Cache-Control, ETag, Last-Modified) on any response —
+    every UI tab activation and BI-dashboard render hits the platform fresh.
+    For the PNG endpoint the response is fully determined by (datasetId,
+    current_test_states) — an ETag derived from underlying state would let BI tools
+    cache the badge (severity LOW-MEDIUM depending on BI-render frequency)
+  - |-
+    Default-MAJOR fallback for unset severities (ReactiveDataQualityRepositoryImpl.java:142-148)
+    inflates SLACalculator work — every unset test contributes to MAJOR weight
+    calculation through the hierarchical Counter arithmetic (severity LOW)
+  - |-
+    No method-level observability — no @Timed, no Micrometer counter, no structured
+    log; latency regressions on hot paths surface only in WebFlux/DB metrics
+    (severity LOW)
+  cross_file_inconsistencies: []
+  contributing_files:
+  - DataQualityController.md
+  evidence:
+  - DataQualityController.md:performance.hot_paths.[0-1]
+  - DataQualityController.md:performance.known_performance_gaps.[0-3]
+notes: |-
+  Data Quality Test is named in main-concepts.md / data-quality.md / sla-statuses.md
+  verbatim. The new DataQualityController class sidecar is the first concept-catalog
+  contributor at the controller-class layer; prior batches enriched only the
+  configuration / repository / service tiers. The five-endpoint surface this entity
+  embodies is documented at the live API-reference but not at a per-tag
+  /developer-guides/api-reference/data-quality page (the API-reference hub omits
+  data-quality from its per-feature sub-page list per WebFetch 2026-05-20).

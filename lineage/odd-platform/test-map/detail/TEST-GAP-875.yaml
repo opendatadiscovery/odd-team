@@ -1,0 +1,100 @@
+gap_id: TEST-GAP-875
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl"
+  - "odd-platform java housekeeping job:ActivityEmptyPartitionsHousekeepingJob"
+pillars_affected: [P-07, P-08]
+surfaced_by:
+  - "ReactiveActivityRepositoryImpl.md:stress_findings.E1 (Partition DROP vs concurrent INSERT/SELECT lock collision)"
+  - "ReactiveActivityRepositoryImpl.md:bugs_limitations_corner_cases.[Housekeeping DROP TABLE takes ACCESS EXCLUSIVE — blocks concurrent SELECT/INSERT]"
+  - "ReactiveActivityRepositoryImpl.md:emitted_probes.P-022"
+  - "ReactiveActivityRepositoryImpl.md:tests_coverage_semantic.uncovered_behaviours.[Partition DROP empty-only contract verification]"
+behaviour: |-
+  **MEDIUM — Housekeeping `DROP TABLE <activity_partition>` takes `ACCESS EXCLUSIVE` lock on the parent activity table, blocking all concurrent SELECTs and INSERTs touching that partition.** Different victim than TEST-GAP-870 (which addresses the empty-check-vs-drop race producing silent data loss); this gap addresses the READ-side lock collision: a `/api/activity` query (`findAllActivities`, `findDataEntityActivities`, etc.) that needs ACCESS SHARE on every child partition it scans will BLOCK behind a housekeeping DROP TABLE on any one of those partitions. Under sustained read traffic + partition cycling, reads stall in a measurable, observable, but currently unmeasured way.
+
+  **Primary-source chain**:
+  - `PartitionServiceImpl.java:120-127` — `DROP TABLE %s.formatted(partitionName)` issued via raw JDBC by the housekeeping cycle
+  - `HousekeepingJobManager.java:32` — `pgConnectionFactory.getConnection()` shared across all 5 housekeeping jobs; sequential within the cycle
+  - `ReactiveActivityRepositoryImpl.java:73-89` (`findAllActivities`) — SELECT requires ACCESS SHARE on every partition it touches via partition routing
+  - `ReactiveActivityRepositoryImpl.java:128-142` (`findDataEntityActivities`) — same lock requirement
+  - `ReactiveActivityRepositoryImpl.java:50-54` (`saveReturning`) — INSERT requires ROW EXCLUSIVE on parent + child partition
+  - `ReactiveActivityRepositoryImpl.java:57-71` (`save` batch) — same INSERT path
+  - PostgreSQL lock-modes documentation: ACCESS EXCLUSIVE conflicts with ALL other lock modes including ACCESS SHARE and ROW EXCLUSIVE
+
+  **The lock-collision shape** (per ReactiveActivityRepositoryImpl.md:stress_findings.E1):
+  1. Housekeeping cycle T=0: identifies empty past partition `activity_20240101_20240301`
+  2. Empty-check passes (count(*) = 0)
+  3. UI user T=1ms: requests `/api/activity?begin_date=2024-02-01&end_date=2024-02-28&size=100` (touches the targeted partition for SELECT)
+  4. Postgres routes the SELECT through the parent table; the SELECT needs ACCESS SHARE on `activity_20240101_20240301`
+  5. Housekeeping T=2ms: issues `DROP TABLE activity_20240101_20240301`; the DROP needs ACCESS EXCLUSIVE
+  6. Lock arbitration: ACCESS EXCLUSIVE conflicts with the held ACCESS SHARE → DROP queues behind the SELECT (typically wins after SELECT completes)
+  7. Meanwhile, ANOTHER SELECT from a different client at T=3ms tries to acquire ACCESS SHARE → it queues behind the queued DROP → cascading stall
+  8. Net effect: a single slow SELECT during a housekeeping cycle can stall multiple subsequent SELECTs/INSERTs
+
+  **Operator-visible consequences**:
+  - **Latency spikes during housekeeping cycles**: a `/api/activity` query that normally returns in 50ms can take 5+ seconds during a housekeeping cycle that's dropping an old empty partition stuck behind a slow read.
+  - **Sustained partition-cycling load amplifies the effect**: a deployment configured with `partition_period=1` (daily cycles per the docs' "narrower partitions for performance" guidance) drops MORE partitions per cycle → more lock-collision windows.
+  - **F-010 `shedlock_window_dangerously_close_to_schedule` interaction**: a 14m-or-longer housekeeping cycle that's stalled behind a slow query can OVERLAP with the next scheduled cycle, producing cascading log noise (`relation does not exist` from the second instance).
+
+  **Why MEDIUM not HIGH**:
+  - The lock collision is **not data-loss** (unlike TEST-GAP-870's silent INSERT loss)
+  - The lock collision is **observable** (latency spike, lock-wait log lines if enabled)
+  - The empirical hit rate depends on: write volume × partition-empty-cycle rate × concurrent read traffic
+  - We rate MEDIUM because: (a) the latency impact is operationally visible; (b) the empirical hit rate is high in production (multi-year deployments with 60+ partitions cycle through empty-checks every 15 min); (c) the read-path stall is invisible to the user beyond "this query is slow" — no error, no metric.
+
+  **Why this is a SEPARATE gap from TEST-GAP-870**:
+  - **TEST-GAP-870 scope**: silent data loss when a CONCURRENT INSERT lands in a partition between empty-check and DROP
+  - **TEST-GAP-875 scope**: lock-collision LATENCY when a SELECT/INSERT touches a partition concurrently being dropped — the victim is read throughput, not data
+  - Both are surfaced by P-022 (different facets of the same DDL lock contention)
+
+  **Connection to probe P-022**:
+  - The sidecar emits P-022 to MEASURE the lock-collision behaviour empirically
+  - This TEST-GAP is the regression-pin AFTER P-022 confirms the timing
+
+  **Connection to TEST-GAP-880**:
+  - TEST-GAP-880 pins read-during-DDL with CLIENT-DISCONNECT (does the in-flight DB query cancel?)
+  - TEST-GAP-875 (this) pins read-during-DDL with NO disconnect (does the DDL stall behind the read?)
+  - Both surfaces are part of the read-vs-DDL contract; this gap is the steady-state stall measurement
+test_class: performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryImplDdlLockCollisionTest.java"
+  name: "concurrentSelectDuringPartitionDrop_pinLockWaitLatency"
+evidence:
+  - "ReactiveActivityRepositoryImpl.md says (stress_findings.E1): 'Partition DROP vs concurrent INSERT/SELECT lock collision. YES, under the PostgreSQL lock model: DROP TABLE on a partition takes ACCESS EXCLUSIVE on that child table. INSERT INTO activity (...) on the parent table routes to the child partition via PG's partition-routing logic; that routing takes ROW EXCLUSIVE on the parent and ROW EXCLUSIVE on the child. SELECT FROM activity WHERE created_at >= X may scan multiple child partitions; each touched child needs ACCESS SHARE. ACCESS EXCLUSIVE conflicts with ROW EXCLUSIVE AND ACCESS SHARE → the DROP blocks all concurrent INSERT/SELECT touching that partition.' Probe P-022 emitted."
+  - "ReactiveActivityRepositoryImpl.md says (bugs_limitations_corner_cases.[8]): 'Housekeeping DROP TABLE <activity_partition> takes ACCESS EXCLUSIVE — blocks concurrent SELECT/INSERT on the parent activity table while the DROP holds the lock. PartitionServiceImpl.java:120-127 runs as bare JDBC DDL via the housekeeping connection; the DDL takes an ACCESS EXCLUSIVE lock on the target partition. PostgreSQL's partition-routing logic for the parent activity table — used by every R2DBC INSERT and every R2DBC SELECT against the parent — needs ACCESS SHARE on the targeted child partition. While the DROP is in flight, all concurrent INSERTs and SELECTs that touch THAT partition's date range BLOCK. There is no advisory-lock coordination between housekeeping and the R2DBC path; the only mediation is Postgres's lock manager FIFO. Stress Protocol E1; probe P-022 emitted.' — severity: MEDIUM"
+  - "ReactiveActivityRepositoryImpl.md says (known_performance_gaps.[5]): 'Housekeeping DROP TABLE may stall reads/writes briefly under load — the ACCESS EXCLUSIVE lock taken by DROP TABLE <activity_partition> (PartitionServiceImpl.java:122) blocks all concurrent INSERT/SELECT that route to that partition. Empirically measurable under high-write-rate × partition-drop-rate combinations.' severity: MEDIUM"
+  - "Verified at primary source: PartitionServiceImpl.java:120-127 (DROP TABLE) + HousekeepingJobManager.java:25 (15-min rate) + ReactiveActivityRepositoryImpl.java:50-54, 57-71, 73-89, 91-107, 109-126, 128-142 (every read and write path with no lock hint)"
+  - "Verified no existing test: Glob src/test/**/*Partition*.java + src/test/**/*DdlLock*.java returns 0 matches"
+cross_references:
+  - "TEST-GAP-870 (sister VAL-LSN-019-B — silent data loss when empty-check + DROP collide with concurrent INSERT; different victim, same DDL surface)"
+  - "TEST-GAP-880 (sister VAL-LSN-019-B — read-during-DDL with client disconnect; same DDL surface, opposite direction)"
+  - "TEST-GAP-882 (META anchor — zero handler-tier coverage)"
+  - "REFACTOR-NNN candidate: use `LOCK TABLE <partition> ACCESS EXCLUSIVE NOWAIT` in the empty-check + drop sequence to fail fast on contention; OR schedule housekeeping during low-traffic windows; OR introduce a partition-level advisory lock coordinated with the read path"
+  - "DOC-NNN candidate: surface the housekeeping-vs-read lock-collision behaviour in the operator-facing docs (the page is silent per ActivityEmptyPartitionsHousekeepingJob.md:docs_link_semantic.[0])"
+  - "probe-skeletons: P-022"
+related_features: [F-010, F-021]
+related_pillar_features: ["P-07:F-003", "P-08:F-002"]
+proposed_action: |-
+  Add `ReactiveActivityRepositoryImplDdlLockCollisionTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/` using Testcontainers + Postgres + a concurrency harness with `pg_locks` introspection. Three test methods:
+
+  1. **`concurrentSelectDuringPartitionDrop_pinLockWaitLatency`** (HEADLINE):
+     - Arrange: seed `activity` table with 3 past partitions; populate 1000 rows into the middle partition; mark the OLDEST partition as past + empty. Use a controllable barrier in the housekeeping job (via reflection / spied PartitionService).
+     - Act:
+       - Thread A (SELECT): start `repo.findAllActivities(beginDate=spanningOldestPartition, endDate=NOW, size=1000)` — this requires ACCESS SHARE on the empty past partition
+       - Thread B (DROP): the housekeeping cycle's `dropPartition` tries to acquire ACCESS EXCLUSIVE on the same partition
+     - Assert: query `pg_locks` view DURING the interleaved execution; assert that Thread B's session shows a `granted=false` lock-wait entry whose `mode=AccessExclusiveLock` is queued behind Thread A's `granted=true` `mode=AccessShareLock`. PIN the lock-collision mechanic.
+     - Assert: Thread B completes only AFTER Thread A completes; measure latency Δ = (Thread B completion time) − (Thread B start time) ≥ (Thread A duration). PIN the stall measurement.
+
+  2. **`concurrentInsertDuringPartitionDrop_pinLockWaitLatency`**:
+     - Same shape with `repo.saveReturning(pojo)` instead of SELECT; ROW EXCLUSIVE vs ACCESS EXCLUSIVE. The INSERT blocks the DROP; if the INSERT commits first, the DROP proceeds (potentially dropping a now-non-empty partition per TEST-GAP-870).
+
+  3. **`partitionDropNoConcurrentLoad_completesWithinMillis_pinHappyPath`** (CONTROL):
+     - Arrange: same empty past partition; no concurrent traffic.
+     - Act: run the housekeeping cycle.
+     - Assert: cycle completes in < 100ms; no lock-wait entries in pg_locks. Pins the happy-path performance.
+
+  After P-022 measures the empirical timing on production-sized partitions, refine the test's latency thresholds. Cross-pair with REFACTOR-NNN to introduce a `NOWAIT` LOCK strategy OR schedule-windowing fix. Cross-pair with DOC-NNN to surface the housekeeping latency impact.
+batch: 2026-05-20-VAL-LSN-019-B
+feature_id: F-010

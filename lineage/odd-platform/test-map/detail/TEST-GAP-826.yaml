@@ -1,0 +1,78 @@
+gap_id: TEST-GAP-826
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java IngestionController controller-method:ingestMetrics"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "ingestMetrics.md:tests_coverage_semantic.uncovered_behaviours.[5] (PII-label path)"
+  - "ingestMetrics.md:security.data_exposure.[1] (WRITE PII propagation)"
+  - "ingestMetrics.md:security.known_security_gaps.[2] MEDIUM (PII label propagation)"
+behaviour: |-
+  **MEDIUM — Metric labels are propagated verbatim from the ingestion payload through to the storage backend with NO allowlist, NO sanitisation, NO opt-out.**
+
+  `AbstractTimeSeriesExtractor.java:30-31` calls `mapper.mapToProtoLabels(labels)` as a straight pass-through. `CounterTimeSeriesExtractor.java:32-46` (and the three other extractors) apply no filtering. The labels flow:
+
+  **PROMETHEUS path**: labels are written verbatim as Prometheus label key-value pairs via the Snappy-compressed `WriteRequest` protobuf. PII labels (`user_email=joe@example.com`, `dataset_owner_email=`, internal-employee identifiers) are stored in the operator's external Prometheus AND become queryable by every operator/team with read access to that Prometheus instance.
+
+  **INTERNAL_POSTGRES path**: labels are written to `metric_label_value` table via `metricLabelValueRepository.getOrCreateMetricLabelValues(...)` (`InternalIngestionMetricsServiceImpl.java:159-160`). Stored in plaintext. Readable via the per-DataEntity Metrics tab to every authenticated platform user.
+
+  **PII surface examples**:
+  - A `DataConsumer`-typed entity ingests labels `{user_email: "...", session_id: "..."}` — PII enters the catalog.
+  - A `Job`-typed entity ingests labels `{run_user: "ml-team@corp.com", api_key_fragment: "..."}` — credentials leak.
+  - A `Dataset`-typed entity ingests labels `{sensitive_partition: "ssn_2024"}` — schema metadata that should be redacted leaks.
+
+  **No counter-measures**:
+  - No allowlist on label keys (verified: no `LabelSanitiser` / `MetricLabelFilter` / `PIIScrubber` class in the codebase).
+  - No regex filter on label values.
+  - No opt-out (operator cannot configure "drop these label keys").
+  - No PII tagging on stored labels (no `is_pii` column on `metric_label`).
+
+  **Compound failure**:
+  - **With TEST-GAP-823**: unauthenticated callers (i.e. anyone reaching the HTTP port) can inject PII into the catalog. A malicious actor floods the catalog with falsified PII to trigger downstream GDPR/CCPA compliance events.
+  - **With TEST-GAP-824**: multi-tenant deployments leak PII across tenant boundaries (INTERNAL_POSTGRES has no tenant isolation; PII from tenant A is visible to tenant B's users).
+
+  **Why MEDIUM** (the sidecar rates MEDIUM): the gap is real but PII injection requires intentional misuse or an upstream collector bug; legitimate metric labels are usually non-PII. But the absence of ANY guard is the structural finding — a single misconfigured collector emitting `user_email=` as a label silently leaks PII into the catalog forever.
+
+  **Test gap shape**: regression-pin asserting:
+  1. PII-shaped labels (`user_email=...`, `password=...`, `ssn=...`) ingest without filtering.
+  2. The labels become readable via `GET /api/dataentities/{id}/metrics`.
+  3. (PROMETHEUS variant) the labels are present in the external Prometheus `/api/v1/query` response.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestMetricsPIILabelPropagationVerbatimRegressionPinTest.java"
+  name: "post_metricsWithPIIShapedLabels_propagateVerbatimToStorage_readableByAllUsers_pinsNoFiltering"
+evidence:
+  - "ingestMetrics.md says (tests_coverage_semantic.uncovered_behaviours.[5]): 'PII-label path: a collector ingests a metric whose labels carry user-identifying values (user_email=joe@example.com); the extractors propagate the labels verbatim into Prometheus or Postgres without filtering. No test asserts label sanitisation (because there is none — see CounterTimeSeriesExtractor sidecar known_security_gaps.[1] MEDIUM).'"
+  - "ingestMetrics.md says (security.data_exposure.[1]): 'WRITE (PII propagation): metric labels are propagated verbatim from the ingestion payload through to the storage backend with no allowlist or sanitisation. If a collector ingests a metric whose labels carry PII (user_email=, dataset_owner_email=, internal-employee identifiers), that PII is written verbatim to the operator's Prometheus (PROMETHEUS path) or to ODD's PostgreSQL metric_label_value table (INTERNAL_POSTGRES path) and becomes readable to every operator/team with read access to the metrics surface.'"
+  - "ingestMetrics.md says (security.known_security_gaps.[2]): 'PII label propagation — verbatim passthrough from payload to storage (Postgres or Prometheus). No allowlist, no regex filter, no opt-out.' (severity MEDIUM)"
+  - "Verified at primary source: AbstractTimeSeriesExtractor.java:30-31 (mapper.mapToProtoLabels(labels) — straight pass-through) + CounterTimeSeriesExtractor.java:32-46 (no label-side filtering)"
+cross_references:
+  - "TEST-GAP-823 (sister — unauthenticated reach; precondition that lets external attackers inject PII)"
+  - "TEST-GAP-824 (sister — no tenant isolation; PII propagates across tenants on INTERNAL_POSTGRES)"
+  - "TEST-GAP-825 (sister — cardinality DoS; mass-PII injection is the worst-case version of cardinality attack)"
+  - "CounterTimeSeriesExtractor sidecar known_security_gaps.[1] (the source-of-truth for the extractor-layer dimension)"
+  - "REFACTOR-NNN (proposed): label allowlist / regex filter / opt-out at extractor layer; tenant-aware PII tag at storage layer"
+  - "DOC-GAP-NNN (proposed): live odd-platform.md page must explicitly warn 'labels are propagated verbatim; collectors must avoid PII labels'"
+related_features: [F-008]
+related_pillar_features: ["P-07:metrics-ingestion", "P-09:Security & Access Control"]
+proposed_action: |-
+  Add `IngestMetricsPIILabelPropagationVerbatimRegressionPinTest`. Two variants:
+
+  **Variant A (INTERNAL_POSTGRES)**:
+  1. Setup: ODD platform, Testcontainers Postgres.
+  2. POST metric for an entity with labels `{user_email: "joe@example.com", api_key: "sk-...", normal_label: "x"}`.
+  3. Assert 201.
+  4. `SELECT name, value FROM metric_label_value WHERE name IN ('user_email', 'api_key', 'normal_label')` returns 3 rows with values verbatim — NO sanitisation, NO redaction.
+  5. `GET /api/dataentities/{id}/metrics` as ANY authenticated user — assert the response carries the PII verbatim.
+
+  **Variant B (PROMETHEUS)**:
+  1. Setup: ODD configured `metrics.storage=PROMETHEUS`, Prometheus testcontainer.
+  2. POST same metric.
+  3. Query Prometheus `/api/v1/query` directly for the metric — assert labels are present.
+
+  Pair with REFACTOR-NNN and DOC-GAP-NNN.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. STRENGTHENS the CounterTimeSeriesExtractor sidecar's `known_security_gaps.[1]` by adding the controller-layer dimension (the verbatim pass-through starts at the controller; the extractor is a downstream confirmation). Sister to TEST-GAP-823/824/825 — together the four entries cover the ingestMetrics security surface: reach + isolation + DoS + PII.
+batch: 2026-05-20-Z
+feature_id: F-008

@@ -1,0 +1,56 @@
+gap_id: TEST-GAP-769
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DatasetController controller-class:DatasetController"
+pillars_affected: [P-01, P-11]
+surfaced_by:
+  - "DatasetController.md:bugs_limitations_corner_cases.[Missing version_id on diff endpoint returns HTTP 500, not 404. DatasetVersionServiceImpl.buildDataSetVersionDiffList line 69-71 throws a generic RuntimeException when versionFields.size() != 2 (i.e., one of the requested version ids does not exist). The runtime exception is NOT translated to a BadUserRequestException or NotFoundException — it bubbles as HTTP 500. The other two structure endpoints throw NotFoundException correctly (DatasetVersionServiceImpl.java:41-43, 50-51). Inconsistent error contract within the same controller's surface — severity MEDIUM]"
+  - "DatasetController.md:tests_coverage_semantic.uncovered_behaviours.[GET /api/datasets/{id}/structure/diff with a non-existent version_id returns HTTP 500, NOT 404]"
+behaviour: |-
+  **MEDIUM — `GET /api/datasets/{id}/structure/diff` with a non-existent `version_id` (one of the two requested ids does not exist) returns HTTP 500, NOT 404. The other two structure endpoints (`getDatasetVersion`, `getLatestDatasetVersion`) correctly throw `NotFoundException` → HTTP 404 on missing version. Inconsistent error contract within the same controller's surface.** Primary-source confirmed in batch-W DatasetController sidecar:
+
+  - `DatasetVersionServiceImpl.buildDataSetVersionDiffList` (lines 69-71): `if (versionFields.size() != 2) throw new RuntimeException(...)`. The runtime exception bubbles through `ControllerAdvice.handleException` (line 61-66) → HTTP 500.
+  - Compare: `DatasetVersionServiceImpl.getDatasetVersion` (lines 41-43): `Mono.error(new NotFoundException("Dataset version", versionId))` → HTTP 404.
+  - Compare: `DatasetVersionServiceImpl.getLatestDatasetVersion` (lines 50-51): same NotFoundException pattern → HTTP 404.
+
+  **Operator-visible consequences**:
+  - **Inconsistent client error handling**: a consumer driving against the API has to write DIFFERENT error-handling branches for the same logical error (missing version) on the diff endpoint vs the by-version / latest endpoints.
+  - **500 is misleading**: HTTP 500 implies a server-side bug (the platform's fault); the actual cause is a client-supplied invalid id (the client's fault). 404 would be the correct semantic.
+  - **Generic RuntimeException with no specific message**: the response body is the generic error envelope; the operator has no precise hint about which version_id was missing.
+
+  **The fix is local**: change line 69-71 to throw `NotFoundException` with a message identifying which id was missing. The diff endpoint then aligns with the sibling endpoints' contract.
+
+  **Why MEDIUM not LOW**:
+  - The inconsistency is REAL contract drift (same logical error, different HTTP status across siblings).
+  - The 500 is operator-confusing (implies server bug; actually a client error).
+  - The local impact is bounded but worth pinning to prevent future maintainers replicating the pattern.
+
+  **Test gap shape**: regression-pin asserting: (a) `GET /api/datasets/{id}/structure/diff?first_version_id={nonexistent}&second_version_id={valid}` returns HTTP 500 (PINNING the current state); (b) `GET /api/datasets/{id}/structure/{nonexistent_version_id}` returns HTTP 404 with NotFoundException (the sibling contract); (c) `GET /api/datasets/{nonexistent_dataset_id}/structure` (latest) returns HTTP 404 (the other sibling). The test documents the drift as the current state. The current state is PINNED — failures land if a future maintainer fixes the diff endpoint to return 404 (which is the desired direction).
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDatasetVersionRepositoryImplTest.java (2 tests on getDatasetVersion; does NOT exercise the diff endpoint's error contract)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetVersionDiffMissingVersionErrorContractTest.java"
+  name: "getDataSetStructureDiff_withNonexistentVersionId_returns500NotNotFound_pinsErrorContractDrift"
+evidence:
+  - "DatasetController.md says (bugs_limitations_corner_cases.[500-on-missing-version-diff]): 'Missing version_id on diff endpoint returns HTTP 500, not 404. DatasetVersionServiceImpl.buildDataSetVersionDiffList line 69-71 throws a generic RuntimeException when versionFields.size() != 2 (i.e., one of the requested version ids does not exist). The runtime exception is NOT translated to a BadUserRequestException or NotFoundException — it bubbles as HTTP 500. The other two structure endpoints throw NotFoundException correctly (DatasetVersionServiceImpl.java:41-43, 50-51). Inconsistent error contract within the same controller's surface.' — evidence: DatasetVersionServiceImpl.java:69-71 + DatasetController.java:43-50 — severity: MEDIUM"
+  - "Verified at primary source: DatasetVersionServiceImpl.java:69-71 (generic RuntimeException) vs lines 41-43 (NotFoundException for by-version) vs lines 50-51 (NotFoundException for latest)"
+cross_references:
+  - "TEST-GAP-767 (NEW batch W — sister per-entity-scoping bypass at by-version)"
+  - "TEST-GAP-768 (NEW batch W — sister per-entity-scoping bypass at diff)"
+  - "TEST-GAP-771 (NEW batch W — sister diff endpoint identical-versions 400 contract — the OTHER edge case)"
+  - "REFACTOR-NNN candidate: change DatasetVersionServiceImpl.java:69-71 to throw NotFoundException with a specific message; the fix is 2 lines"
+  - "DOC-NNN candidate: surface the dataSet endpoint family (NOT currently in API reference) with consistent error contract"
+related_features: []
+related_pillar_features: ["P-01:F-NN-dataset-structure-read", "P-11:F-001-api-reference"]
+proposed_action: |-
+  Add `DatasetVersionDiffMissingVersionErrorContractTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `getDataSetStructureDiff_firstVersionIdNonexistent_returns500_pinsErrorContractDrift` — GET `/api/datasets/{valid_id}/structure/diff?first_version_id=999999&second_version_id={valid_version}`; assert HTTP 500 (NOT 404). PIN the current drift.
+  2. `getDataSetStructureDiff_secondVersionIdNonexistent_returns500_pinsErrorContractDriftOnSecondArg` — sister test on second_version_id.
+  3. `getDatasetVersion_nonexistentVersionId_returns404WithNotFoundException_pinsSiblingContract` — GET `/api/datasets/{valid_id}/structure/999999`; assert HTTP 404 with body containing "Dataset version not found" (the NotFoundException message). PIN the sibling contract.
+
+  Pair with REFACTOR-NNN: change `DatasetVersionServiceImpl.java:69-71` from `throw new RuntimeException(...)` to `Mono.error(new NotFoundException("Dataset version not found"))`. When the fix lands, tests #1 and #2 invert to assert 404.
+
+  Cross-pair with DOC-NNN: surface the dataSet endpoint family in the API reference with a consistent error contract section.
+batch: 2026-05-20-W
+feature_id: null

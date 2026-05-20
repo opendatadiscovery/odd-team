@@ -1,0 +1,269 @@
+name: |-
+  F-004 stored-XSS extends to TermDefinition — third Markdown rendering surface (data-entity description + dataset-field description + term definition)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-06
+  - P-01
+  - P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20U — STRENGTHENS the master F-004
+  invariant markdown-rendering-via-rehype-raw-without-rehype-sanitize-stored-xss-surface-on-internal-description
+  from 2-surface (data-entity description + dataset-field description)
+  to 3-surface coverage by adding TermDefinition as the third user-curated
+  Markdown surface that flows through the same vulnerable
+  rehype-raw-without-rehype-sanitize pipeline.
+
+  THE F-004 FINGERPRINT REMAINS IDENTICAL:
+
+    Backend tier — term backend stores TermFormData.definition verbatim:
+      - TermServiceImpl.createTerm (batch K — TermServiceImpl.java:99-117) +
+        updateTerm (TermServiceImpl.java:121-145) accept TermFormData with
+        no Jsoup.clean, no Encode.html, no allowlist, no length cap.
+      - TermServiceImpl.handleDataEntityDescriptionTerms (TermServiceImpl.java:201-207)
+        + handleDatasetFieldDescriptionTerms (TermServiceImpl.java:244-250)
+        consume the SAME unsanitised Markdown body that the data-entity
+        and dataset-field description flows produce — the regex parse for
+        [[ns:term]] happens AFTER persistence, with the raw payload
+        intact.
+      - ReactiveTermRepositoryImpl carries no sanitisation in any mutation
+        path.
+
+    UI tier — TermDefinition.tsx renders via the platform's shared
+    Markdown.tsx which uses MDEditor.Markdown from @uiw/react-md-editor:
+      - TermDefinition.tsx:45 calls Markdown with value =
+        transformDescriptionToMarkdown(definition).
+      - Markdown.tsx:113-124 wraps MDEditor.Markdown which transitively
+        pulls rehype-raw@6.1.1 per pnpm-lock.yaml:3900,5922,8843.
+      - Grep over odd-platform-ui/src for rehype-sanitize returns ZERO
+        matches (verified end-to-end in the batch-U TermDetails sidecar).
+
+  THE NET ATTACK CHAIN — operationally equivalent to F-004:
+
+    1. Adversary holds TERM_UPDATE on any term they can reach (or any
+       authenticated user under the term-to-term-NO-SecurityRule failure
+       — they don't even need TERM_UPDATE for the term-to-term variant).
+    2. Adversary edits a term's definition or creates a new term with a
+       payload like script_alert_one in the definition field. (Backticks
+       are avoided in this YAML scalar — the payload contains an HTML
+       script tag opening, an alert call, and a script tag closing.)
+    3. TermFormData.definition flows through TermServiceImpl mutation
+       paths and lands in term.definition column verbatim.
+    4. Any subsequent viewer landing on /terms/term_id/overview triggers
+       TermDetails.tsx mount → Overview.tsx → TermDefinition.tsx →
+       Markdown.tsx → MDEditor.Markdown with rehype-raw → arbitrary
+       HTML+JS execution.
+
+  THE 3-SURFACE CLOSURE means F-004 is now fully end-to-end across the
+  USER-CURATED MARKDOWN inventory:
+    - data-entity internal_description (batch F + batch J primary source)
+    - dataset-field internal_description (batch R primary source)
+    - term definition (batch U primary source — THIS INVARIANT)
+
+  THE READ-COLLABORATIVE COMPOUNDING:
+
+    Per system-mission.md line 267 read-collaborative posture, every
+    authenticated user sees every Term across every namespace. There is
+    NO permission gate on the READ side of TermDetails (the
+    WithPermissionsProvider wrap at TermDetails.tsx:59-70 covers only
+    the Header's Edit/Delete affordances; the tab content renders
+    unconditionally — per the partial-permission-gating invariant).
+    Effect: an XSS payload planted by a single operator with TERM_UPDATE
+    on a single term fires for EVERY authenticated viewer who reaches
+    that term's detail page, regardless of their namespace, owner, or
+    permission set.
+
+  THE TERM-MENTION COMPOUND ATTACK:
+
+    Per the [[ns:term]] auto-link side-channel (REFACTOR-227 — primary
+    source TermServiceImpl batch K), a payload like
+    open-bracket open-bracket script-tag alert one close-script-tag
+    colon foo close-bracket close-bracket parses cleanly through the
+    findTermsInDescription regex (line 67 of TermServiceImpl.java —
+    char classes excluded-colon-star-eager and excluded-close-bracket-star-eager
+    accept any character that is not colon or close-bracket).
+    The unhandled-mention staging row data_entity_description_unhandled_term
+    persists the payload in term_name varchar 255 and term_namespace_name
+    varchar 64. Per batch K bugs_limitations_corner_cases.[3] F-004 XSS
+    intersection on auto-link, the staging row payload re-emerges through
+    the API on any subsequent getDataEntityTerms response that surfaces
+    unhandled mentions. The XSS surface compounds: definition payload
+    fires on direct view; mention payload fires on every entity that
+    references the un-created term via [[ns:term]] syntax.
+
+  THE BROWSER MITIGATION CAVEAT (inherited from F-004 master entry):
+
+    P-009 slice-5/-6 probe (run R-20260519T020610Z-P-009) confirmed for
+    the data-entity surface that the dangerous tags REACH THE DOM:
+    dom_has_script_tag is True, dom_has_xss_img_id is True,
+    dom_has_xss_iframe_id is True. Script execution is blocked by
+    Chromium HTML-parser policy and React attribute filtering — defence-in-depth
+    mitigations, NOT application-layer defences. Relaxing CSP, switching
+    to dangerouslySetInnerHTML, or testing on a different browser
+    (Firefox / Safari not empirically verified) re-opens the surface.
+    The TermDefinition surface has NOT been probed independently in
+    batch U — the inference is structural (same Markdown.tsx shared
+    element; same rehype-raw with no rehype-sanitize) and the probe
+    inference should hold. A P-N probe pinning the TermDefinition
+    surface specifically is recommended.
+
+  THE PLATFORM-WIDE CLOSURE — separate companion invariant:
+
+    Beyond the three user-curated Markdown surfaces, the platform's
+    Markdown.tsx is the SOLE renderer across every Markdown affordance:
+    Term definitions (this invariant), data-entity description, dataset-
+    field description, alert descriptions, query-example descriptions,
+    owner descriptions. A single rehype-sanitize addition at Markdown.tsx
+    fixes ALL surfaces simultaneously. The companion invariant
+    'no-rehype-sanitize-anywhere-in-odd-platform-ui-systemic'
+    (batch U — see sibling file) records the systemic absence
+    Grep-verified across the entire UI tree.
+
+  SEVERITY HIGH — extends the existing F-004 HIGH severity to the
+  third user-curated Markdown surface; combined with the read-collaborative
+  posture's all-authenticated-users see-all-Terms rule, the impact set
+  of a single TERM_UPDATE-holder is the entire platform's authenticated
+  user population.
+nodes:
+  - odd-platform ts react-component component:TermDetails
+  - odd-platform java service service:TermServiceImpl
+contributors:
+  - |-
+    TermDetails batch U (PRIMARY SOURCE — UI half for the third surface):
+    security.known_security_gaps.[0] HIGH (F-004 stored-XSS surface
+    extends to TermDefinition; Markdown-renderer chain verified end-to-end;
+    pnpm-lock.yaml citation lines 3900,5922,8843; Grep verification of
+    rehype-sanitize absence) + dependencies_semantic.requires-feature[F-004]
+    (the lineage from TermFormData.definition through TermServiceImpl to
+    Overview.tsx to TermDefinition.tsx to Markdown.tsx is documented
+    end-to-end) + bugs_limitations_corner_cases.[1] (DOC-GAP-A on the
+    data-glossary doc page absence of XSS warning)
+  - |-
+    TermServiceImpl batch K + batch U (CORROBORATING — backend half):
+    bugs_limitations_corner_cases.[3] F-004 stored-XSS intersection on the
+    auto-link side-channel (HIGH severity) + concepts.operations[handleDataEntityDescriptionTerms,
+    handleDatasetFieldDescriptionTerms — both inherit the unsanitised
+    body] + security.data_exposure[Stored XSS-payload-in-unhandled-mention
+    persists verbatim in *_unhandled_term staging rows]
+  - |-
+    TermController batch U (CORROBORATING — controller half):
+    concepts.entities[TermFormData — input payload for create and update;
+    validated against components.yaml schema; carries definition field
+    per upstream spec] + concepts.operations[createTerm, updateTerm —
+    both write the definition field verbatim through TermService]
+evidence:
+  - |-
+    TermDetails.md:security.known_security_gaps.[0] HIGH —
+    evidence: TermDefinition.tsx:45 (Markdown call site) +
+    Markdown.tsx:113-124 (MDEditor.Markdown render) +
+    pnpm-lock.yaml:3900,5922,8843 (rehype-raw bundled) +
+    Grep over odd-platform-ui/src for rehype-sanitize returning zero matches +
+    ReactiveTermRepositoryImpl sidecar operations (no sanitisation in
+    mutation paths) + F-004 drift_class external_lib_assumes_sanitisation
+  - |-
+    TermDetails.md:dependencies_semantic.requires-feature[F-004] —
+    the full chain from TermFormData.definition through TermServiceImpl
+    to Overview.tsx to TermDefinition.tsx to Markdown.tsx
+  - |-
+    TermServiceImpl.md:bugs_limitations_corner_cases.[3] F-004-XSS-intersection-on-auto-link —
+    evidence: TermServiceImpl.java:67, 201-207, 244-250, 513-522 +
+    DataEntityServiceImpl.java:325-328 + V0_0_78 schema for *_unhandled_term
+    tables holding user input verbatim
+  - |-
+    Cross-references master invariant
+    markdown-rendering-via-rehype-raw-without-rehype-sanitize-stored-xss-surface-on-internal-description
+    (the canonical F-004 record — this invariant STRENGTHENS that to
+    three surfaces)
+  - |-
+    Cross-references the F-004 feature flow with the 3-surface closure
+    recorded (left to feature-flow-builder reducer to wire in F-004's
+    contributing_nodes block adding odd-platform ts react-component
+    component:TermDetails and odd-platform java service service:TermServiceImpl)
+  - |-
+    P-009 slice-5/-6 probe run R-20260519T020610Z-P-009 — empirically
+    pinned the F-004 DOM penetration for the data-entity surface;
+    inference holds structurally for the TermDefinition surface (same
+    shared Markdown.tsx renderer) but a separate probe targeting
+    /terms/term_id/overview specifically is recommended for full closure
+axes_present:
+  - ui_components
+  - services
+  - controllers
+triangulation_count: 3
+cross_batch: true
+cross_batch_refs:
+  - batch-F (upsertDataEntityInternalDescription — first surface primary source)
+  - batch-J (DataEntityDescription cluster — UI half of first surface, P-009 empirical pin)
+  - batch-R (DatasetFieldServiceImpl — second surface primary source)
+  - batch-U (TermDetails + TermServiceImpl + TermController — third surface, THIS INVARIANT)
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Add rehype-sanitize to the shared Markdown.tsx wrapper with an
+    allowlist excluding script / iframe / style / onerror — ONE line
+    in ONE file fixes ALL THREE surfaces (data-entity description,
+    dataset-field description, term definition) PLUS the other Markdown
+    affordances on the platform (alerts, query examples, owner descriptions,
+    attachments). The shared element architecture is the asset here —
+    sanitisation at the leaf prop level is platform-wide.
+  - |-
+    Backend HTML sanitisation at write time — Jsoup or org.owasp.encoder
+    at TermServiceImpl.createTerm and TermServiceImpl.updateTerm (and
+    the parallel data-entity and dataset-field description endpoints).
+    Defence-in-depth that holds even if a future UI refactor accidentally
+    bypasses the shared Markdown.tsx wrapper.
+  - |-
+    Add @Size(max=...) on TermFormData.definition + InternalDescriptionFormData
+    + DatasetFieldDescriptionFormData — cap at e.g. 64 KiB. Bounds the
+    blast radius of the persistent staging row payload.
+  - |-
+    Add a regression test that stores a script tag and an img onerror tag
+    in a term's definition + the data-entity description + the dataset-
+    field description and asserts the round-trip is neutralised. Pin
+    the fix as a regression invariant.
+  - |-
+    Probe pin — promote P-009 to cover the TermDefinition surface
+    specifically; the inference from the shared Markdown.tsx element
+    holds structurally but is not empirically verified for the
+    /terms/term_id/overview route. A probe run targeting that route
+    closes the empirical pin.
+  - |-
+    Document on the data-glossary live doc page (UI-DOC-GAP-A from the
+    TermDetails sidecar) that term definitions are stored as raw
+    Markdown without HTML sanitisation; only trusted operators should
+    be granted TERM_UPDATE. The doc page admission alone is the
+    operator-facing transparency in lieu of (or alongside) the code fix.
+notes: |-
+  NEW invariant captured in batch 2026-05-20U from the TermDetails
+  sidecar's F-004 cross-batch coherence finding plus the TermServiceImpl
+  batch K cross-reference. The 3-surface closure means F-004 is now
+  fully end-to-end on every user-curated Markdown affordance the
+  platform exposes; the shared Markdown.tsx renderer is the SINGLE FIX
+  POINT for all three surfaces simultaneously.
+
+  Cross-cutting connections:
+    - STRENGTHENS the master F-004 invariant
+      (markdown-rendering-via-rehype-raw-without-rehype-sanitize-stored-xss-surface-on-internal-description)
+      from 2-surface to 3-surface coverage
+    - Pairs with the companion invariant
+      (no-rehype-sanitize-anywhere-in-odd-platform-ui-systemic)
+      from batch U — the systemic absence Grep-verified across the
+      entire UI tree
+    - Pairs with the partial-permission-gating-edit-button-gated-content-unconditional
+      invariant — the term content is uniformly readable; the XSS
+      attack surface reaches every authenticated viewer
+    - Pairs with read-collaborative-cross-owner-enumeration — the
+      impact set of a single TERM_UPDATE-holder is the entire
+      authenticated user population
+    - Pairs with [[ns:term]] auto-link side-channel REFACTOR-227 —
+      the staging-row XSS variant compounds the surface (TermServiceImpl
+      batch K bugs_limitations_corner_cases.[3] F-004 intersection)
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Code fix — add rehype-sanitize to Markdown.tsx (one line, three
+        surfaces fixed plus all other Markdown affordances)
+    (b) Backend sanitisation — Jsoup or org.owasp.encoder at the three
+        primary-write methods
+    (c) Docs admission — disclose the stored-XSS surface on each of
+        the three feature pages until the code fix lands

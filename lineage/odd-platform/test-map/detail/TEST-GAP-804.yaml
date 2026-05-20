@@ -1,0 +1,76 @@
+gap_id: TEST-GAP-804
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java notification.sender class:EmailNotificationSender"
+pillars_affected: [P-07]
+surfaced_by:
+  - "EmailNotificationSender.md:doc_drift_findings.[0] (Live doc says outbound email payload includes 'Attached owners' — THIS class's template model populates NINE fields, NONE of which carries owners; owners exist on AlertedDataEntity but are never threaded into the email template)"
+  - "EmailNotificationSender.md:doc_drift_findings.[1] (Live doc says outbound email payload includes 'Downstream entities' — THIS class's template model contains NO downstream block)"
+behaviour: |-
+  **HIGH — Live doc OVERPROMISES the email channel's payload (doc-drift; F-009 doc-drift facet at the email-channel sink).** The live `/features/active-platform-features/notifications` page (WebFetched 2026-05-20 status 200) enumerates 4 outbound-carried items in email:
+  1. Entity name and its data source/namespace
+  2. **Attached owners**
+  3. **Downstream entities (within configurable depth, default 1 level)**
+  4. Clickable links back to the platform UI (using `odd.platform-base-url`)
+
+  Bullets 1 and 4 are honoured by `EmailNotificationSender.getEmailContent` (lines 64-78 populate 9 model fields covering entity id / name / dataSourceName / namespaceName / type / link / alertType / alertDescription / eventAtTime). **Bullets 2 and 3 are NOT honoured** by the code:
+  - **Owners missing**: `AlertedDataEntity.owners` (AlertNotificationMessage.java:36) is a `Set<OwnershipPair>` populated by the translator — but the email template model (`EmailNotificationSender.getEmailContent` lines 64-78) does NOT include an `owners` entry. The `templates/email.ftlh:1-46` template has NO `<#list owners as o>` block, no `${owners}` reference.
+  - **Downstream missing**: `AlertNotificationMessage.downstream` (List<AlertedDataEntity> at line 30) is computed by the translator using the `notifications.message.downstream-entities-depth` knob — but the email template model does NOT include `downstream`. The template has NO `<#list downstream as d>` block.
+
+  **The doc-drift is operator-relevant**: a reader of the live doc reasonably assumes that an email alert carries owners (for attribution) and downstream lineage (for impact analysis). The Slack channel DOES carry both (via `SlackMessageGenerator`). The webhook channel carries both (raw POJO serialisation). The email channel does NOT — alone. Operators running multi-channel notifications cannot rely on cross-channel parity.
+
+  **Why HIGH** (compounds operator trust):
+  1. Operators reading the live doc to design their incident-response workflow ("when an email arrives, the owners are listed, contact them; downstream entities are listed, validate them") build runbooks predicated on payload contents that do not exist.
+  2. The asymmetry is silent: emails arrive looking complete (subject + body) but are missing the per-feature-doc-promised fields.
+  3. The fix is either (a) extend the email template to include the missing fields, or (b) correct the live doc. Either way, the current state is operator-facing trust erosion.
+
+  **Compares to TEST-GAP-461** (PII pass-through — every channel gets full payload regardless of channel security posture): TEST-GAP-461 catalogues the PRESENCE of fields in non-email channels; this gap catalogues the ABSENCE of fields in the email channel that the doc promises. Both are load-bearing.
+
+  **Test gap shape**: contract-test asserting the rendered email body includes the 4 doc-promised payload bullets. PINS the current absence; either fails on missing fields (when the template is extended) OR pins the doc-drift (until then).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/sender/EmailNotificationSenderPayloadDocPromiseRegressionPinTest.java"
+  name: "rendered_emailBody_doesNotContainOwnersBlock_pinsDocOverpromise"
+evidence:
+  - "EmailNotificationSender.md says (doc_drift_findings.[0]): 'Live doc says outbound email payload includes Attached owners (live-doc bullet 2 of 4). THIS class template model (getEmailContent at lines 64-78) populates NINE fields — dataEntityId, dataEntityName, dataEntityDataSourceName, dataEntityNamespaceName, dataEntityType, link, alertType, alertDescription, eventAtTime — NONE of which carries owners. Inspection of email.ftlh (verified at templates/email.ftlh:34-44) confirms the template renders the alerted entity attributes + alert type + event time only; there is no <#list owners as o> block, no ${owners} reference. The AlertedDataEntity record DOES carry Set<OwnershipPair> owners (AlertNotificationMessage.java:36) but it is never threaded into the email template model. The live doc OVERPROMISES the email channel payload.'"
+  - "EmailNotificationSender.md says (doc_drift_findings.[1]): 'Live doc says outbound email payload includes Downstream entities (within configurable depth, default 1 level) (live-doc bullet 3 of 4). THIS class template model contains NO downstream block; AlertNotificationMessage.downstream (the List<AlertedDataEntity> at AlertNotificationMessage.java:30) is computed by the translator (notifications.message.downstream-entities-depth knob) but NEVER read by this file getEmailContent method. The email channel ignores the downstream list entirely.'"
+  - "Verified at primary source: EmailNotificationSender.java:64-78 (9 .put calls, no `model.put(\"owners\", ...)`, no `model.put(\"downstream\", ...)`)"
+  - "Verified at primary source: templates/email.ftlh:1-46 (no <#list owners> block, no <#list downstream> block)"
+  - "WebFetch https://docs.opendatadiscovery.org/features/active-platform-features/notifications 2026-05-20 status 200 — live doc 4-bullet list"
+cross_references:
+  - "TEST-GAP-461 (sister — PII pass-through; this gap is the negative-space corollary at the email channel)"
+  - "DOC-GAP-NNN (proposed): EITHER live doc must be corrected to remove email's bullets 2 + 3, OR the email template must be extended"
+  - "REFACTOR-NNN (proposed): extend `EmailNotificationSender.getEmailContent` to populate `owners` (list of `OwnershipPair.title + name`) + `downstream` (list of `AlertedDataEntity` summaries); extend `templates/email.ftlh` with `<#list owners as o>` and `<#list downstream as d>` blocks; ensure HTML auto-escape applies to each interpolation"
+  - "concepts.yaml: `email-payload-doc-drift-owners-downstream-missing` invariant — F-009 doc-drift family adds the email-channel sink"
+  - "LSN-001 (analogous trust-the-default failure mode — operator follows the doc's promise off a cliff)"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery"]
+proposed_action: |-
+  Add `EmailNotificationSenderPayloadDocPromiseRegressionPinTest`. Unit test stubbing `JavaMailSender.send(...)` to capture the `MimeMessage`:
+
+  1. `rendered_emailBody_doesNotContainOwnersBlock_pinsDocOverpromise` —
+     - Build an `AlertNotificationMessage` with `dataEntity.owners=[{title:"Owner", name:"alice@example.com"}, {title:"Steward", name:"bob@example.com"}]`.
+     - Stub `JavaMailSender.send(...)` to capture the MimeMessage.
+     - Invoke `emailSender.send(message)`.
+     - Extract the rendered HTML body.
+     - Assert the body does NOT contain "alice@example.com" or "bob@example.com" or "Owner" or "Steward".
+     - PINS the current owners-missing state.
+
+  2. `rendered_emailBody_doesNotContainDownstreamBlock_pinsDocOverpromise` —
+     - Build a message with `downstream=[{name:"orders_summary", dataSourceName:"prod-dwh"}]`.
+     - Assert the body does NOT contain "orders_summary" or "prod-dwh" (from downstream).
+     - PINS the current downstream-missing state.
+
+  3. `rendered_emailBody_containsOwnersBlock_confirmsFixDirection` — (UPDATE once REFACTOR-NNN extends the template)
+     - After REFACTOR-NNN: assert the body DOES contain the owner names.
+     - CONFIRMS the fix's effectiveness.
+
+  4. `rendered_emailBody_containsDownstreamBlock_confirmsFixDirection` — (UPDATE once REFACTOR-NNN extends the template)
+     - After REFACTOR-NNN: assert the body DOES contain the downstream entity names.
+
+  Pair with REFACTOR-NNN (template extension) OR DOC-GAP-NNN (live doc correction) — the maintainer must choose which side of the drift to align.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. No prior TEST-GAP pins the doc-overpromise on the email channel specifically. TEST-GAP-461 is the sister at the cross-channel level (PII pass-through). No contradiction with any existing artefact.
+batch: 2026-05-20-Y
+feature_id: F-009

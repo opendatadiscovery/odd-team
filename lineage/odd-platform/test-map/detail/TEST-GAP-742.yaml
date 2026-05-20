@@ -1,0 +1,67 @@
+gap_id: TEST-GAP-742
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java QueryExampleController controller-class:QueryExampleController"
+pillars_affected: [P-02]
+surfaced_by:
+  - "QueryExampleController.md:bugs_limitations_corner_cases.[2] (`deleteQueryExample` leaks the search-entrypoint row — query_example_search_entrypoint rows are created/updated on create + update but NEVER cleaned up on delete — severity MEDIUM)"
+  - "QueryExampleController.md:bugs_limitations_corner_cases.[4] (Orphan link rows possible after DataEntity soft-deletion — data_entity_to_query_example FK constraints to data_entity but no ON DELETE CASCADE — severity MEDIUM)"
+  - "QueryExampleController.md:implicit_adrs.[3] (Hard-delete-of-links + soft-delete-of-entity asymmetry on deleteQueryExample)"
+behaviour: |-
+  **MEDIUM — `deleteQueryExample` has THREE cascade-incompleteness issues: (a) leaks `query_example_search_entrypoint` rows; (b) leaves the soft-deleted entity's name in FTS; (c) leaves orphan link rows when the parent DataEntity is soft-deleted.** Primary-source confirmed in the batch-V QueryExampleController sidecar:
+
+  **Search-entrypoint leak on delete**:
+  - `query_example_search_entrypoint` rows are CREATED/UPDATED on every create + update via `updateQueryExampleVectors` (`QueryExampleServiceImpl.java:166-167`).
+  - `deleteQueryExample` (`QueryExampleServiceImpl.java:84-92`) — the 3-step delete chain (a) hard-deletes link rows in `data_entity_to_query_example`, (b) hard-deletes link rows in `query_example_to_term`, (c) soft-deletes the example itself via the abstract soft-delete CRUD base. NO step touches `query_example_search_entrypoint`.
+  - **Search filters DO check** `QUERY_EXAMPLE.DELETED_AT IS NULL` (`ReactiveQueryExampleRepositoryImpl.java:80, 99`), so the leaked entrypoint row doesn't surface in search results — BUT the storage leak is real and unbounded over time.
+  - No housekeeping job exists. The leak accumulates linearly with query-example-deletion rate.
+
+  **Hard-delete-of-links + soft-delete-of-entity asymmetry**:
+  - The hard-deleted link rows (`data_entity_to_query_example`, `query_example_to_term`) are GONE — no recovery path for those relationships.
+  - The soft-deleted query_example row tombstones with `deleted_at` populated, NULL relationship references.
+  - If the platform ever adds an "undelete query example" affordance, the restored example would have NO linked datasets or terms — context lost.
+
+  **Orphan link rows after DataEntity soft-deletion**:
+  - `data_entity_to_query_example` has FK constraint to `data_entity` (`V0_0_84__create_query_example.sql:21-22`) with NO `ON DELETE CASCADE`. The DataEntity uses soft-delete (`is_deleted = TRUE`, not DELETE FROM).
+  - When a DataEntity is soft-deleted, its `data_entity_to_query_example` rows remain valid at the FK level but point to a tombstoned entity.
+  - The `getQueryExampleDatasetRelations` query (`ReactiveDataEntityQueryExampleRelationRepositoryImpl.java:62-72`) does NOT filter on `DATA_ENTITY.IS_DELETED = FALSE`, so the query example continues to report a linked-entity reference to a deleted entity.
+
+  **Operator-observable consequences**:
+  - Slow storage growth in `query_example_search_entrypoint` table; bounded by query-example deletion rate.
+  - Orphan link rows surface as "ghost references" in query example details: a Query Example detail page shows "Linked to: TombstonedDataEntity" until housekeeping picks up the parent entity.
+  - The asymmetric delete (links hard, entity soft) is undocumented; operators planning recovery scenarios cannot anticipate it.
+
+  **Why MEDIUM not HIGH**: each individual incompleteness is bounded — search filters catch the FTS leak in user-facing search; orphan link rows surface in detail pages but don't block reads; storage growth is slow. MEDIUM at the per-instance severity. Cross-pillar P-02 (Data Modelling — Query Examples surface).
+
+  **Test gap shape**: regression-pin asserting (a) search-entrypoint row remains after delete; (b) orphan link rows persist after parent DataEntity soft-delete; (c) hard-deleted link rows are not recoverable.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/QueryExampleServiceTest.java (covers deleteQueryExample happy-path — does NOT exercise the cascade-incompleteness)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/QueryExampleCascadeIncompletenessTest.java"
+  name: "deleteQueryExample_leavesSearchEntrypointRow_AND_softDeletedParentDataEntity_leavesOrphanLinkRow"
+evidence:
+  - "QueryExampleController.md says (bugs_limitations_corner_cases.[2]): 'deleteQueryExample leaks the search-entrypoint row — query_example_search_entrypoint rows are created/updated on create + update via updateQueryExampleVectors but NEVER cleaned up on delete. Search queries DO filter QUERY_EXAMPLE.DELETED_AT IS NULL so the row doesn leak into search results — but the storage leak is real and unbounded over time. No housekeeping job for this table exists.' — severity MEDIUM"
+  - "QueryExampleController.md says (bugs_limitations_corner_cases.[4]): 'Orphan link rows possible after DataEntity soft-deletion — data_entity_to_query_example has FK constraints to data_entity but PostgreSQL FK constraints by default do NOT prevent reference to soft-deleted rows. When a DataEntity is soft-deleted, its data_entity_to_query_example rows remain valid at the FK level but point to a tombstoned entity. The getQueryExampleDatasetRelations query does NOT filter on DATA_ENTITY.IS_DELETED = FALSE.' — severity MEDIUM"
+  - "QueryExampleController.md says (implicit_adrs.[3]): 'Hard-delete-of-links + soft-delete-of-entity asymmetry on deleteQueryExample — the delete cascades hard-deletes to link rows but soft-deletes the example itself. This encodes the decision that links are ephemeral references but the example is a recoverable artefact.'"
+  - "Verified at primary source: QueryExampleServiceImpl.java:84-92 (the 3-step delete chain doesn't touch query_example_search_entrypoint) + V0_0_84__create_query_example.sql:21-22 (FK with no ON DELETE clause) + ReactiveDataEntityQueryExampleRelationRepositoryImpl.java:62-72 (no soft-delete filter)"
+cross_references:
+  - "TEST-GAP-727 (Term FTS leak on TermServiceImpl.delete — SISTER cascade-incompleteness on the FTS side; same pattern as the search-entrypoint leak)"
+  - "TEST-GAP-741 (NEW batch V — ReferenceData cascade-incompleteness — sister pattern at Lookup Tables)"
+  - "TEST-GAP-732 (NEW batch V — QueryExample F-004 4th surface — sister gap on same controller)"
+  - "concepts: search-entrypoint-leak-aggregate (cumulative finding — multiple controllers leak FTS entrypoint rows; this gap adds QueryExample)"
+  - "REFACTOR-NNN candidate: at QueryExampleServiceImpl.deleteQueryExample, add a 4th step to delete the query_example_search_entrypoint row; OR add a housekeeping job that detects + cleans entrypoint rows pointing to soft-deleted examples"
+related_features: [F-NN-query-example-lifecycle]
+related_pillar_features: ["P-02:F-001"]
+proposed_action: |-
+  Add `QueryExampleCascadeIncompletenessTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `deleteQueryExample_leavesSearchEntrypointRow_pinsFTSLeak` — create a query example; delete it; query `SELECT COUNT(*) FROM query_example_search_entrypoint WHERE query_example_id = ?`; assert returns 1 (the dangling row). PIN the storage leak.
+  2. `parentDataEntitySoftDelete_leavesOrphanLinkRowInDataEntityToQueryExample` — create a query example linked to DataEntity 100; soft-delete DataEntity 100; query `SELECT COUNT(*) FROM data_entity_to_query_example WHERE query_example_id = ?`; assert returns 1; assert `getQueryExampleDatasetRelations` surfaces the orphan reference in the response.
+  3. `deleteQueryExample_hardDeletesLinkRowsButSoftDeletesEntity_pinsAsymmetry` — assert post-delete: (a) `data_entity_to_query_example` rows for the example are GONE (hard delete); (b) `query_example_to_term` rows for the example are GONE; (c) `query_example` row IS still present with `deleted_at` populated and `is_deleted = TRUE` (soft delete).
+  4. `deleteQueryExample_underAuthDisabled_anonymousUserCanDelete` — pin the DISABLED-mode behaviour.
+
+  Add a `// REGRESSION-PIN — deleteQueryExample has three cascade-incompleteness classes: search-entrypoint leak, hard/soft asymmetry, orphan link rows on parent soft-delete. A REFACTOR adding entrypoint cleanup will break test #1; a REFACTOR adding soft-delete filter on the JOIN will break test #2.` comment block.
+
+  Pair with REFACTOR-NNN closing the entrypoint leak; pair with the SISTER fix from TEST-GAP-727 (Term FTS leak) — both follow the same architectural pattern.
+batch: 2026-05-20-V
+feature_id: null

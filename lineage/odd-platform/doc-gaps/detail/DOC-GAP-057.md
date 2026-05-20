@@ -24,3 +24,45 @@
 
 - NotificationsDispatcher sidecar confirms 2 of the 5 sub-caveats at the dispatcher tier (per-channel filtering absence + PII pass-through); the other 3 (dead field, replication-slot orphan, webhook unsigned) are tied to NotificationsProperties / NotificationSubscriber / WebhookNotificationSender source files, unchanged in this batch.
 - 2-sidecar triangulation status (Properties + Dispatcher) on per-channel-filtering and PII; both are dispatcher-tier-structural and not operator-overrideable today. Doc-side action expands to a 7-caveat cluster when combined with new findings (DOC-GAP-143 + DOC-GAP-147).
+
+## Batch Y append
+
+#### Batch 2026-05-20-Y STRENGTHENS — 3 of 5 sub-findings get sender/subscriber-class PRIMARY SOURCE confirmation; sub-(4) + sub-(5) PROMOTED to dedicated HIGH-severity findings
+
+- Batch Y adds **4 NEW sidecars to the F-009 notification subsystem coverage** (NotificationSubscriber + EmailNotificationSender + SlackNotificationSender + WebhookNotificationSender + PostgresWALMessageProcessor SPI seam = 5 NEW sidecars). The batch confirms 3 of DOC-GAP-057's 5 sub-findings at file-local primary-source tier AND PROMOTES 2 sub-findings to dedicated HIGH-severity standalone DOC-GAPs:
+  - **Sub-(3) "No PII redaction"** → STRENGTHENED with sender-class confirmation across 3 senders. The PII pass-through is structurally committed at each sender's `send()` method body — no sender consults the data-entity owners/namespace for filtering. PROMOTED in part to the new DOC-GAP-235 (cross-tenant exposure HIGH-severity framing), which is the structural HIGH-severity variant of this MEDIUM-severity sub-finding.
+  - **Sub-(4) "Replication-slot orphan risk on rename"** → STRENGTHENED with the NotificationSubscriber class-level PRIMARY SOURCE. The lazy-create-no-drop policy is now anchored at:
+    - `NotificationSubscriber.java:104-126` (per batch-Y sidecar primary source — the SLOT EXISTS-then-CREATE branch): `final ResultSet resultSet = preparedStatement.executeQuery(); resultSet.next(); if (!resultSet.getBoolean(1)) { connection.unwrap(PGConnection.class).getReplicationAPI().createReplicationSlot()...build();`. The probe-then-create pattern; no DROP path; if operator renames `notifications.wal.replication-slot-name` between deploys, the old slot accumulates WAL forever (per `bugs_limitations_corner_cases.[4]`).
+    - `NotificationSubscriber.java:128-158` (per batch-Y sidecar — PUBLICATION EXISTS-then-CREATE — symmetric pattern): same lazy-create-no-drop applied to the publication.
+    - The cleanup obligation is on the operator, per the live doc's `pg_drop_replication_slot(...)` cleanup SQL.
+    - **Batch Y ADDS new corner case**: the CREATE PUBLICATION DDL at line 151 (`"CREATE PUBLICATION %s FOR TABLE %s".formatted(walProperties.getPublicationName(), tableName)`) is interpolated via `String.formatted(...)` directly — the publication-name from operator config is NOT escaped/validated. PG identifier rules + the no-validation stance make this a LOW-severity DDL injection surface (per sidecar `bugs_limitations_corner_cases.[2]`), but worth flagging.
+  - **Sub-(5) "Webhook unsigned delivery"** → STRENGTHENED + PROMOTED. The webhook-unsigned finding is now anchored at:
+    - `WebhookNotificationSender.java:18-23` (per batch-Y sidecar — verbatim the `send` method body): NO header / signing / HMAC / shared-secret. The HttpRequest builder is invoked with `.uri(...)` + `.POST(...)` + `.build()` only.
+    - `NotificationConfiguration.java:88-99` (per batch-Y sidecar — the bean factory): the bean accepts ONLY the URL — no `@Value("${notifications.receivers.webhook.secret}")`, no headers map config-knob.
+    - PROMOTED to DOC-GAP-234 (HIGH-severity standalone finding). DOC-GAP-057 sub-(5) remains as a cluster bullet referencing DOC-GAP-234.
+- **NEW batch Y additions to the 5-sub-finding cluster** (the cluster expands to 7+ sub-findings):
+  - **sub-(6) NEW batch Y — Email channel omits owners + downstream (DOC-GAP-233)**: the email template (`templates/email.ftlh:1-46`) does not render owners[] or downstream[] — bullets 2-3 of the live-doc universal-payload contract are violated by the email channel. PROMOTED to DOC-GAP-233 (HIGH-severity).
+  - **sub-(7) NEW batch Y — Cross-tenant exposure on Slack + Webhook (DOC-GAP-235)**: the single-URL-per-deployment bean shape commits a multi-tenant cross-leak at boot. PROMOTED to DOC-GAP-235 (HIGH-severity).
+  - **sub-(8) NEW batch Y — Slack mrkdwn-injection via AlertChunkPojo.description (DOC-GAP-236)**: ingestion-supplied description text rendered as Slack mrkdwn enables `@channel` / `@here` / fake-link injection. PROMOTED to DOC-GAP-236 (MEDIUM-severity).
+  - **sub-(9) NEW batch Y — WAL retention disk-exhaustion under poison-replay (DOC-GAP-237)**: poison-replay + lazy-create-no-drop + global WAL retention = primary disk exhaustion. PROMOTED to DOC-GAP-237 (MEDIUM-severity).
+- **The doc-side action is now a 9-sub-caveat cluster** on the same page (`/features/active-platform-features/notifications.md` + cross-link to `/configuration-and-deployment/odd-platform.md#enable-alert-notifications`). Per LSN-011 (doc-product-coherence), the right move is NOT to author 9 separate admonitions on the page; it is to AUTHOR the page as a **"Known limitations and operational caveats"** section that enumerates the 9 sub-findings (with cross-link to per-finding DOC-NN). The cluster is too large to ship as inline admonitions; it requires a dedicated sub-section on the page.
+- **The 3-tier cross-cutting analysis** that batch Y enables:
+  - **Subscriber tier** (NotificationSubscriber + PostgresWALMessageProcessor SPI seam) — the WAL-consume + LSN-advance + poison-replay surface
+  - **Sender tier** (EmailNotificationSender + SlackNotificationSender + WebhookNotificationSender) — the per-channel delivery + asymmetric exception-wrap + content-formatting surface
+  - **Configuration tier** (NotificationConfiguration — covered batch X; NotificationsProperties — covered batch C/D) — the bean-factory + config-key + HttpClient/JavaMailSender singleton surface
+  - **All 3 tiers** are now primary-source-anchored. The cluster's coherence is now structurally complete; the doc-side fix can name the cross-tier compositions (e.g., poison-replay loops compound with lazy-create-no-drop to produce disk exhaustion — DOC-GAP-237 is the COMPOSITIONAL finding that requires all 3 tiers' evidence).
+- Code-side actions are now anchored at the SOURCE tier:
+  - (a) Drop dead `webhookUrl` field — config-tier (NotificationsProperties.java:9) — UNCHANGED.
+  - (b) Per-channel routing config — config-tier + sender-tier; promoted to DOC-GAP-235's code-side option (a).
+  - (c) Webhook signing / HMAC option — sender-tier (WebhookNotificationSender.java:18-23) — promoted to DOC-GAP-234's code-side option (a).
+  - (d) NEW: email channel parity (owners + downstream) — sender-tier (EmailNotificationSender.java:64-78 + templates/email.ftlh) — promoted to DOC-GAP-233's code-side option (a).
+  - (e) NEW: mrkdwn escape for ingestion-supplied strings — sender-tier (MrkdwnUtils.java + SlackMessageGenerator.java:77) — promoted to DOC-GAP-236's code-side option (a).
+  - (f) NEW: poison-message retry budget + LSN-advance-past — subscriber tier (NotificationSubscriber.java:77-91) — promoted to DOC-GAP-237's code-side option (b).
+- Severity stays MEDIUM at the META level — the cluster's collective impact on operational confidence is significant but no single sub-finding (other than the PROMOTED standalone HIGH-severity DOC-GAPs) is independently HIGH. The PROMOTIONS recognise that 4 of the 9 sub-findings are now severe enough to warrant standalone tracking — but DOC-GAP-057 META remains the cluster-level entry for cross-reference.
+- Cross-references gained:
+  - **DOC-GAP-233 / 234 / 235 / 236 / 237** — the 5 PROMOTED standalone DOC-GAPs (NEW batch Y)
+  - **DOC-GAP-143 batch-Y append** — the SPI-seam tier framing of the poison-replay loop
+  - **DOC-GAP-147 batch-Y append** — the email-channel asymmetry's SOURCE-tier anchor
+  - **F-009 drift facets** — 5+ facets now sender/subscriber-tier primary-source-anchored (poison_message_replay_loop, exception_type_asymmetry_across_senders, unconditional_broadcast_no_routing, no_retry_no_dlq_no_audit, pii_passthrough_to_every_channel, mrkdwn_injection_via_alert_description NEW batch Y)
+  - **LSN-017** (per-node-scan-cannot-see-cross-layer-user-effects) — case-law: the 9-sub-caveat cluster across 3 tiers is exactly the cross-tier composition LSN-017 names; ONLY by AGGREGATING the sidecars from all 3 tiers does the full failure-mode picture emerge
+  - **LSN-018** (cross-batch reducer coherence) — case-law: batch Y's 5 NEW sidecars correctly STRENGTHEN DOC-GAP-057 (sub-(3) + sub-(4) + sub-(5)) AND emit 5 NEW dedicated DOC-GAPs (233-237) — the pre-emit coherence check fired correctly + no contradictions emerged

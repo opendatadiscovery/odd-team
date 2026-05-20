@@ -1,0 +1,44 @@
+gap_id: TEST-GAP-793
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform java SessionConfiguration config-class:SessionConfiguration"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "SessionConfiguration.md:bugs_limitations_corner_cases.[0] MEDIUM (invalid / misspelled session.provider value boots silently)"
+  - "SessionConfiguration.md:concepts.invariants.[a missing or misspelled session.provider value matches NEITHER inner branch, so NO ReactiveSessionRepository<MapSession> bean is registered]"
+behaviour: |-
+  **LOW — An invalid or misspelled `session.provider` value (e.g., `IN-MEMORY` with hyphen, `inmemory` lowercase, `postgres`, anything else) boots the platform SILENTLY with NO `ReactiveSessionRepository<MapSession>` bean registered. The `SpringWebSessionCondition.matches` at SessionConfiguration.java:51-57 returns `false` for anything other than literal strings `INTERNAL_POSTGRESQL` / `IN_MEMORY`. The REDIS branch's `@ConditionalOnProperty` similarly returns `false`. No fail-fast, no WARN log, no enum.**
+
+  Sidecar evidence:
+  - SessionConfiguration.java:51-57 — the `.equals("INTERNAL_POSTGRESQL")` / `.equals("IN_MEMORY")` checks are case-sensitive literals.
+  - SessionConfiguration.java:62 — REDIS branch via `@ConditionalOnProperty(havingValue = "REDIS")` — also case-sensitive.
+  - No enum, no central validator, no boot-time log naming the accepted set.
+
+  **Operator-impact scenario**: an operator setting `SESSION_PROVIDER=REDIS_CLUSTER` (a forwards-thinking value name not yet supported) or `IN-MEMORY` (typo) boots a platform with no session backing — Spring's auto-configuration may fall through to a default `InMemoryReactiveSessionRepository` or fail at first session-write request. The platform's behaviour in this degenerate state is dependent on whether Spring Boot's auto-config provides a fallback.
+
+  **Test gap shape**: parametrised test asserting:
+  1. Valid values (`IN_MEMORY`, `INTERNAL_POSTGRESQL`, `REDIS`) — bean wiring per provider.
+  2. Invalid values (`in_memory` lowercase, `IN-MEMORY`, `redis`, `''`) — assert either a fail-fast at boot OR (current behaviour) a silent fallback, documenting which.
+
+  PINS the current silent-boot surface; drives REFACTOR-NNN to add an enum-based validator.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/session/SessionProviderInvalidValueSilentBootRegressionPinTest.java"
+  name: "sessionProvider_misspelledValue_bootsSilentlyWithNoRepositoryBean_pinsAbsenceOfValidation"
+evidence:
+  - "SessionConfiguration.md says (bugs_limitations_corner_cases.[0]): 'invalid / misspelled session.provider value boots silently with NO ReactiveSessionRepository<MapSession> bean registered — the SpringWebSessionCondition.matches returns false for anything other than the literal strings INTERNAL_POSTGRESQL / IN_MEMORY (line 56), AND the REDIS branch @ConditionalOnProperty returns false unless the value is exactly REDIS — no compile-time enum, no fail-fast at boot, no WARN log'"
+  - "Verified at primary source: SessionConfiguration.java:51-57, 62 (the literal-string comparisons)"
+cross_references:
+  - "REFACTOR-NNN (proposed — replace string match with enum + validator + fail-fast log + enumerated set in error message)"
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/odd-platform#select-session-provider` should explicitly enumerate the accepted values + warn about case-sensitivity)"
+related_features: []
+related_pillar_features: ["P-09:F-001 UI authentication"]
+proposed_action: |-
+  Add `SessionProviderInvalidValueSilentBootRegressionPinTest`. Two parametrised cases:
+  1. Valid: each of IN_MEMORY / INTERNAL_POSTGRESQL / REDIS — assert correct bean wiring.
+  2. Invalid: `IN-MEMORY` / `in_memory` / `redis` / `''` — assert (current behaviour) NO bean of type `ReactiveSessionRepository<MapSession>` is registered AND no fail-fast occurs. PINS the silent surface.
+
+  Pair with REFACTOR-NNN: add an enum + boot-time validation `if (!ENUM.contains(value)) throw IllegalStateException("session.provider must be one of {IN_MEMORY, INTERNAL_POSTGRESQL, REDIS}, got: " + value)`.
+batch: 2026-05-20-X
+feature_id: null

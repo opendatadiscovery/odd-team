@@ -34,7 +34,31 @@ description: |-
   `AlertHousekeepingJob.java:28-34` with the exact emitted SQL + fix shape
   (one-line parenthesisation change). The `.block()`-inside-transaction
   anti-pattern (REFACTOR-145) is cross-confirmed from the manager-side
-  angle. vocabulary_status: codebase-anchored,
+  angle.
+
+  **STRENGTHENED batch VAL-LSN-019-B (2026-05-20)** —
+  `ActivityEmptyPartitionsHousekeepingJob` FRESH sidecar adds the FIRST
+  PRIMARY-SOURCE pin to the 4th of 5 housekeeping beans (the prior
+  HousekeepingTTLProperties + HousekeepingJobManager sidecars only
+  mentioned this bean by enumeration). Three NEW findings surface from
+  the dedicated activity-reaper sidecar:
+    (a) The empty-only contract is structurally enforced at the abstract
+        base's template method (the AND-guard at PartitionServiceImpl.java:110)
+        — the activity reaper cannot bypass the empty-check even if
+        someone wanted to.
+    (b) The activity reaper is functionally a near-no-op on steadily-used
+        platforms (60-day-wide partitions rarely empty out) — REFACTOR-085
+        is now confirmed from a FIFTH angle: the empty-only contract is
+        honored at the centre but rarely fires on busy deployments.
+    (c) Race window between count(*)=0 check and DROP TABLE — silent row
+        loss (promoted to dedicated invariant
+        `activity-empty-partitions-race-window-between-count-check-and-drop`).
+    (d) The `SELECT count(*) = 0` check is an unindexed sequential scan
+        on every past partition per 15-min cycle — for populated
+        deployments, multi-GB scans per partition per cycle (P-013 probe
+        emitted) — NEW performance finding.
+
+  vocabulary_status: codebase-anchored,
   doc-side-partially-covered (live
   `/configuration-and-deployment/odd-platform#housekeeping` documents the
   three TTL keys and the master gate, but enumerates only 'three cleanup
@@ -44,9 +68,11 @@ vocabulary_status: codebase-anchored, doc-side-partially-covered
 axes_present:
 - config_prefixes
 - services
+- housekeeping
 nodes:
 - odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
 - odd-platform java service service:HousekeepingJobManager
+- odd-platform java housekeeping job:ActivityEmptyPartitionsHousekeepingJob
 contributors:
 - |-
   HousekeepingTTLProperties: entities[HousekeepingTTLProperties,
@@ -85,6 +111,30 @@ contributors:
   anti-pattern from manager-side angle; lockAtMostFor=14m vs fixedRate=15m
   razor-thin race surface; observability absence; no dry-run; strict-opt-in
   ConditionalOnProperty; bean-discovery-order; no HikariCP integration]
+- |-
+  **NEW batch VAL-LSN-019-B — ActivityEmptyPartitionsHousekeepingJob
+  (FRESH PRIMARY-SOURCE pin of the 4th of 5 housekeeping beans)**:
+  entities[ActivityEmptyPartitionsHousekeepingJob,
+  EmptyPartitionsHousekeepingJob base, HousekeepingJob,
+  HousekeepingJobManager, PartitionService, PartitionServiceImpl,
+  Tables.ACTIVITY, ActivityTablePartitionManager];
+  operations[drop-empty-past-partition, list-partitions-by-prefix,
+  check-partition-in-past, check-partition-empty, log-debug-on-drop,
+  swallow-cycle-failure]; invariants[Tables.ACTIVITY target binding;
+  no exclusions override; real SELECT count(*)=0 check; past-check via
+  name parser; DROP TABLE no IF EXISTS; no @Transactional];
+  bugs[functionally near-no-op on steadily-used platforms (HIGH —
+  silent-data-growth class; LSN-001 shape); race window between
+  empty-check and DROP TABLE (HIGH — silent data loss; new invariant
+  activity-empty-partitions-race-window-between-count-check-and-drop);
+  DROP TABLE no IF EXISTS (MEDIUM — multi-instance race noise); LIKE
+  pattern matches more than partition tables (LOW — operator-misuse
+  hazard); no observability (MEDIUM — operators have no Prometheus
+  counter to detect "is this job ever dropping anything")];
+  performance[count(*)=0 unindexed sequential scan per past partition
+  per 15-min cycle (MEDIUM on populated deployments — P-013 probe);
+  ACCESS EXCLUSIVE lock on DROP TABLE blocks concurrent INSERTs to
+  OTHER partitions of the same parent for the lock duration]
 evidence:
 - HousekeepingTTLProperties.md:concepts.entities + concepts.operations + concepts.invariants
 - HousekeepingTTLProperties.md:implicit_adrs.[0-2] (housekeeping-vs-partition split
@@ -101,6 +151,26 @@ evidence:
   HousekeepingJobManager.md:docs_link_semantic.doc_drift_findings.[0-3]
   (3-vs-5 framing; ShedLock window not documented; per-job failure
   isolation not documented; strict opt-in vs "on by default" framing)
+- |-
+  **NEW batch VAL-LSN-019-B — ActivityEmptyPartitionsHousekeepingJob.md
+  (FRESH — 4th of 5 housekeeping beans pinned at primary source)**:
+    - concepts.entities + concepts.operations + concepts.invariants[0-5]
+    - bugs_limitations_corner_cases.[0] HIGH (functionally near-no-op
+      on steadily-used platforms — silent-data-growth)
+    - bugs_limitations_corner_cases.[1] HIGH (race window between
+      empty-check and DROP TABLE — silent data loss; new dedicated
+      invariant)
+    - bugs_limitations_corner_cases.[2-4] MEDIUM/LOW (DROP TABLE no
+      IF EXISTS; LIKE pattern overmatch; no observability)
+    - performance.hot_paths[0] + performance.known_performance_gaps[0]
+      (count(*)=0 sequential scan per 15-min cycle on every past
+      partition — multi-GB I/O on populated deployments; P-013 probe)
+    - security.known_security_gaps[0,1] (DDL privilege requirement
+      undocumented; no audit log of partition DROP)
+    - docs_link_semantic.doc_drift_findings.[0-2] (3-vs-5 framing
+      confirmed from activity-side; retention-via-emptiness model
+      not documented anywhere; no housekeeping.ttl.activity_days
+      knob)
 security_aggregate:
   overall: MEDIUM
   auth_modes_relevant:
@@ -117,6 +187,11 @@ security_aggregate:
       orchestrator-side — HousekeepingJobManager.java:18 is the conditional
       ON `housekeeping.enabled`, NOT on `auth.type`; the @Scheduled runtime
       context bypasses the HTTP / SecurityRule chain entirely.
+      **STRENGTHENED batch VAL-LSN-019-B**: confirmed at the
+      ActivityEmptyPartitionsHousekeepingJob layer too — line 8 is bare
+      @Component with no @ConditionalOnProperty on `auth.type`; the
+      activity reaper runs whenever housekeeping.enabled=true regardless
+      of auth mode.
   owner_scoping:
     verdict: BYPASSES
     detail: |-
@@ -128,6 +203,10 @@ security_aggregate:
       for the soft-deleted entity. This is intentional — housekeeping is
       a system-level admin operation — but means a future regression that
       narrowed the scope would break the design intent.
+      **Batch VAL-LSN-019-B**: confirmed at the activity-reaper layer —
+      `ActivityEmptyPartitionsHousekeepingJob` operates above the
+      ownership model (system-wide activity table has no per-Owner
+      partitioning; DROP TABLE is schema-level DDL).
   strengths:
   - Master gate `housekeeping.enabled=true` ships as default — bounded DB growth out-of-the-box
     (HousekeepingJobManager.java:18 + application.yml:165-166)
@@ -142,16 +221,31 @@ security_aggregate:
     try/catch at HousekeepingJobManager.java:41-47 catches Exception and
     logs at ERROR; one failing job does NOT abort the cycle. The
     architectural decision is deliberate per implicit_adrs.[0].
+  - |-
+    **NEW batch VAL-LSN-019-B**: The empty-only contract on the two
+    EmptyPartitionsHousekeepingJob subclasses is STRUCTURALLY enforced
+    by the abstract base's template method — subclasses can only
+    override `getTargetTable()` + optionally `exclusions()`; they
+    CANNOT bypass the count(*)=0 + isPartitionInPast AND-guard at
+    PartitionServiceImpl.java:110. The empty-only promise in the
+    class name is structurally honored AT THE CENTRE (verbatim from
+    ActivityEmptyPartitionsHousekeepingJob.md:implicit_adrs.[1]).
   weaknesses:
   - '**No `activity*Days` retention field — REFACTOR-085 / activity-feed retention
-    drift CONFIRMED from second angle (HIGH severity — silent-data-growth shape)**
+    drift CONFIRMED from FIVE angles (HIGH severity — silent-data-growth shape)**
     — `HousekeepingTTLProperties.java:8-12` has exactly three fields and there is
     no fourth for the ACTIVITY table. `ActivityEmptyPartitionsHousekeepingJob` (the
     only activity-touching housekeeping path) calls `partitionService.getEmptyPastPartitions(...)`
     which checks `COUNT(*) = 0` BEFORE dropping (PartitionServiceImpl.java:133-141)
     — partitions with one row are retained indefinitely. Time-based retention for
     activity data does not exist anywhere in the platform codebase. The /features/active-platform-features/activity-feed
-    docs page''s ''retention and partitioning'' claim is unsupported. (HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[0])'
+    docs page''s ''retention and partitioning'' claim is unsupported.
+    **Batch VAL-LSN-019-B fifth-angle confirmation**: the activity reaper
+    is FUNCTIONALLY a near-no-op on steadily-used platforms (60-day-wide
+    windows rarely empty out — verbatim from ActivityEmptyPartitionsHousekeepingJob.md:bugs_limitations_corner_cases.[0]).
+    The reaper bean exists; the empty-only contract is honored; but on
+    any busy deployment, no partition ever empties out and the reaper
+    is operationally inactive. (HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[0])'
   - '**No `messageDays` retention field for datacollaboration `MESSAGE` table (MEDIUM)**
     — symmetric to the activity gap. `MessageEmptyPartitionsHousekeepingJob` only
     drops EMPTY past partitions. Operators running DataCollaboration with high message-throughput
@@ -208,13 +302,36 @@ security_aggregate:
     housekeeping path. Per-job logging is debug-level only; default
     production config does NOT include DEBUG, so successful cycles are
     completely silent. (HousekeepingJobManager.md:bugs_limitations_corner_cases.[4])
+  - |-
+    **NEW batch VAL-LSN-019-B — Race window between count(*)=0 check
+    and DROP TABLE in the activity reaper (HIGH — silent data loss)**:
+    promoted to dedicated invariant
+    `activity-empty-partitions-race-window-between-count-check-and-drop`.
+    The check + drop are TWO separate SQL statements on the same
+    Connection with no JOOQ transaction wrapper — concurrent INSERT
+    INTO activity that lands between them survives the count check
+    but is dropped along with the partition. Caller sees INSERT-success;
+    row is gone. No log, no metric, no compensating transaction.
+  - |-
+    **NEW batch VAL-LSN-019-B — DDL privilege requirement undocumented
+    (MEDIUM)**: ActivityEmptyPartitionsHousekeepingJob requires DROP
+    TABLE privilege on public.activity_* partition tables; combined
+    with ActivityTablePartitionManager's CREATE requirement, the
+    application's DB role must hold BOTH CREATE TABLE on public AND
+    DROP TABLE on every partition it creates. Canonical config docs
+    don't enumerate. Operators running ODD against managed Postgres
+    (RDS) with least-privileged role discover the gap only when
+    partition lifecycle silently fails.
   cross_file_inconsistencies:
   - Live `/configuration-and-deployment/odd-platform` documents 'three cleanup tasks'
     — the code reality is FIVE HousekeepingJob beans (the three TTL'd plus ActivityEmptyPartitionsHousekeepingJob
     + MessageEmptyPartitionsHousekeepingJob). Doc-completeness gap rather than disagreement.
     (HousekeepingTTLProperties.md:docs_link_semantic.doc_drift_findings.[1] +
     HousekeepingJobManager.md:docs_link_semantic.doc_drift_findings.[0] — 2-sidecar
-    primary source)
+    primary source +
+    **batch VAL-LSN-019-B ActivityEmptyPartitionsHousekeepingJob.md
+    docs_link_semantic.doc_drift_findings.[0] — confirmation from
+    the activity-side as well**)
   - Live docs state `housekeeping.ttl.*` defaults to `30` without warning that the
     default lives ONLY in the shipped application.yml; a custom application.yml override
     that omits the block silently rebinds to `0`. (HousekeepingTTLProperties.md:docs_link_semantic.doc_drift_findings.[2])
@@ -228,9 +345,19 @@ security_aggregate:
     default" framing not surfaced — operators choosing 1-vs-N replicas
     or setting up log aggregation alerts cannot infer from the docs.
     (HousekeepingJobManager.md:docs_link_semantic.doc_drift_findings.[1,2,3])
+  - |-
+    **NEW batch VAL-LSN-019-B**: The retention-via-emptiness model is
+    not surfaced anywhere in the docs — operators reading
+    activity-feed#configuration get "partition-period controls retention
+    and partitioning" but the FIVE-angle confirmed reality is that the
+    setting controls partition WIDTH only; retention only happens for
+    partitions that already emptied out, which is structurally rare on
+    busy deployments.
+    (ActivityEmptyPartitionsHousekeepingJob.md:docs_link_semantic.doc_drift_findings.[1,2])
   contributing_files:
   - HousekeepingTTLProperties.md
   - HousekeepingJobManager.md
+  - ActivityEmptyPartitionsHousekeepingJob.md
   evidence:
   - HousekeepingTTLProperties.md:security.known_security_gaps.[0,1]
   - HousekeepingTTLProperties.md:security.owner_scoping
@@ -238,6 +365,11 @@ security_aggregate:
   - HousekeepingJobManager.md:security.owner_scoping
   - HousekeepingJobManager.md:security.known_security_gaps.[0,1,2]
   - HousekeepingJobManager.md:bugs_limitations_corner_cases.[1] (REFACTOR-142 PRIMARY-SOURCE)
+  - |-
+    **NEW batch VAL-LSN-019-B — ActivityEmptyPartitionsHousekeepingJob.md**:
+    security.known_security_gaps.[0,1] (DDL privilege undocumented; no
+    audit log of DROP) + bugs_limitations_corner_cases.[0,1] (functional
+    near-no-op + race window)
 performance_aggregate:
   overall: MEDIUM
   hot_paths:
@@ -255,6 +387,14 @@ performance_aggregate:
     job in the iteration — sequential execution on one connection (lines
     33-35). Total cycle time = SUM of all five jobs' durations.
     (HousekeepingJobManager.md:performance.hot_paths)
+  - |-
+    **NEW batch VAL-LSN-019-B**: ActivityEmptyPartitionsHousekeepingJob
+    runs `SELECT count(*) = 0 FROM <partition>` over EVERY past activity
+    partition per 15-min cycle. For multi-year deployments (N≈61
+    partitions, 600M rows/partition), this is a sequential count scan
+    per partition per cycle — HIDDEN DB load on busy deployments.
+    Probe P-013 emitted for empirical I/O cost measurement.
+    (ActivityEmptyPartitionsHousekeepingJob.md:performance.hot_paths[0])
   throughput_shape:
     verdict: SINGLE_ITEM_ONLY
     detail: 'Single connection, sequential job fan-out — `HousekeepingJobManager.runHousekeepingJobs`
@@ -305,10 +445,21 @@ performance_aggregate:
     Cheap per cycle but a quietly-recurring DB write for operators
     sizing PG IOPS.
     (HousekeepingJobManager.md:performance.known_performance_gaps.[3])
+  - |-
+    **NEW batch VAL-LSN-019-B — `SELECT count(*) = 0` is an unindexed
+    sequential scan on every past activity partition per 15-min cycle
+    (MEDIUM on populated deployments)**: for N≈61 partitions × 600M
+    rows × 96 cycles/day, this is catastrophic if applied to non-empty
+    partitions. The fix is `WHERE NOT EXISTS (SELECT 1 FROM <partition>
+    LIMIT 1)` which short-circuits on first row. Same applies to
+    MessageEmptyPartitionsHousekeepingJob (the symmetric sibling).
+    Probe P-013 emitted to measure actual I/O cost.
+    (ActivityEmptyPartitionsHousekeepingJob.md:performance.known_performance_gaps.[0])
   cross_file_inconsistencies: []
   contributing_files:
   - HousekeepingTTLProperties.md
   - HousekeepingJobManager.md
+  - ActivityEmptyPartitionsHousekeepingJob.md
   evidence:
   - HousekeepingTTLProperties.md:performance.hot_paths + throughput_characteristics
     + scaling_characteristics
@@ -316,6 +467,11 @@ performance_aggregate:
   - HousekeepingJobManager.md:performance.hot_paths + throughput_characteristics +
     scaling_characteristics
   - HousekeepingJobManager.md:performance.known_performance_gaps.[0-3]
+  - |-
+    **NEW batch VAL-LSN-019-B — ActivityEmptyPartitionsHousekeepingJob.md**:
+    performance.hot_paths[0] (count(*)=0 sequential scan per 15-min
+    cycle) + performance.known_performance_gaps.[0] (MEDIUM on populated
+    deployments)
 notes: |-
   Housekeeping TTL retention is the operational counterpart to the
   Activity Table Partitioning concept and the Activity Feed concept's
@@ -328,6 +484,21 @@ notes: |-
   anchor. The AlertHousekeepingJob jOOQ-precedence bug (REFACTOR-142)
   is now PRIMARY-SOURCE PINNED at AlertHousekeepingJob.java:28-34 with
   exact emitted SQL + fix shape.
+
+  **STRENGTHENED batch VAL-LSN-019-B (2026-05-20)** —
+  ActivityEmptyPartitionsHousekeepingJob FRESH sidecar primary-source
+  pins the 4th of 5 housekeeping beans:
+    - The empty-only contract is structurally enforced at the abstract
+      base's template method (the AND-guard at PartitionServiceImpl.java:110)
+    - Functional near-no-op finding: the reaper rarely fires on
+      steadily-used platforms (60-day windows don't empty out)
+    - Race window: count(*)=0 → DROP TABLE is non-transactional, silent
+      row loss (promoted to dedicated invariant
+      activity-empty-partitions-race-window-between-count-check-and-drop)
+    - Performance hot-path: count(*)=0 unindexed sequential scan per
+      past partition per 15-min cycle (P-013 probe)
+    - Security: DDL privilege requirement undocumented; no audit log
+      of DROP — compliance gap
 
   Companion new concepts surfaced this batch:
     - Run Housekeeping Cycle (five jobs, ShedLock-coordinated) [new
@@ -352,3 +523,14 @@ notes: |-
     (d) Document the 5 jobs (vs 3 in live docs) — close the docs gap
     (e) Document the ShedLock window contract (14m vs 15m razor-thin) +
         the per-job failure isolation behaviour
+  Two NEW DOC-NNN candidates from batch VAL-LSN-019-B:
+    (f) Document the activity reaper's near-no-op shape on busy
+        deployments — operators relying on "ODD's housekeeping handles
+        retention" should know the reaper is structurally near-useless
+        on platforms with daily activity (60-day-wide partitions
+        rarely empty out)
+    (g) Document the DDL privilege requirement (DROP TABLE on
+        public.activity_* partitions) on the operator reference; combined
+        with CREATE TABLE on public from ActivityTablePartitionManager,
+        operators running against managed Postgres need explicit
+        privilege grants

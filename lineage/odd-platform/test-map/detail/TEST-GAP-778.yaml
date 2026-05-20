@@ -1,0 +1,94 @@
+gap_id: TEST-GAP-778
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java LoginFormSecurityConfiguration config-class:LoginFormSecurityConfiguration"
+  - "odd-platform java OAuthSecurityConfiguration config-key-consumer:auth.type@L71"
+  - "odd-platform java LDAPSecurityConfiguration config-key-consumer:auth.type@L51"
+  - "odd-platform java DisabledAuthSecurityConfiguration config-key-consumer:auth.type@L10"
+pillars_affected: [P-09, P-08]
+surfaced_by:
+  - "LoginFormSecurityConfiguration.md (batch X):dependencies_semantic.requires-config.[the four sibling SecurityConfiguration classes must NOT have their conditions match simultaneously]"
+  - "LoginFormSecurityConfiguration.md:tests_coverage_semantic.uncovered_behaviours.[bean graph materialises ONLY when auth.type=LOGIN_FORM and skips for DISABLED / OAUTH2 / LDAP / unset]"
+  - "LoginFormSecurityConfiguration.md:gaps.(items 1-6 — six regression-prone refactors that NO test would catch)"
+  - "LoginFormSecurityConfiguration.md:concepts.invariants.[bean graph materialises only when auth.type=LOGIN_FORM exactly — no matchIfMissing, case-sensitive match]"
+behaviour: |-
+  **CRITICAL (cross-cutting) — NO integration test exists that verifies each of the four `auth.type` modes (DISABLED / LOGIN_FORM / OAUTH2 / LDAP) produces the EXPECTED authorization-framework wiring posture AND the EXPECTED authority for an authenticated user.** This is the systemic absence underlying every per-mode CRITICAL pin (TEST-GAP-140, TEST-GAP-141, TEST-GAP-774, TEST-GAP-149) — none individually catches the cross-mode quartet contract.
+
+  **The four-mode quartet contract** (assembled from the four sidecars):
+  | auth.type | AuthorizationCustomizer | Authority for authed user | RBAC enforced? | Cookie expiry | Test coverage |
+  |---|---|---|---|---|---|
+  | DISABLED | NOT wired | every request bypassed, no auth | NO (read-collaborative wide-open) | n/a (no session) | ZERO |
+  | LOGIN_FORM | NOT wired | ADMIN (hardcoded, every user) | NO (wide-open) | never expires | ZERO |
+  | OAUTH2 | wired (line 98) | per-OIDC-claim from `ODD_USER_ROLE_CLAIM` | YES | never expires | ZERO |
+  | LDAP | wired (line 145) | per-LDAP-attribute extraction | YES | never expires | ZERO |
+
+  The compound finding is the ASYMMETRY: OAUTH2 + LDAP wire the authorization framework, LOGIN_FORM + DISABLED do not. A maintainer adding `.authorizeExchange(new AuthorizationCustomizer(...))` to LOGIN_FORM "to match OAuth/LDAP" silently flips the posture from wide-open (intentional per docs) to RBAC-enforced — breaking existing deployments. A maintainer REMOVING the customizer from OAUTH2 "to simplify" silently flips it from RBAC to wide-open. No test catches either change.
+
+  **Cross-reference to the per-mode pins** (already cataloged but isolated):
+  - TEST-GAP-140 + TEST-GAP-774 (LOGIN_FORM no AuthorizationCustomizer)
+  - TEST-GAP-141 (LOGIN_FORM ADMIN-for-every-user)
+  - TEST-GAP-148 (OAUTH2 bean-graph contract — NO test asserts AuthorizationCustomizer is wired)
+  - TEST-GAP-149 (S2S composes with all three interactive modes producing ADMIN)
+  - TEST-GAP-3212 / batch H DISABLED mode read-collaborative posture pin
+
+  **What the quartet test catches that none of the above does in isolation**:
+  - A future refactor moving authorization wiring into a shared utility class (well-intentioned dedup) that silently changes the OAUTH2 + LDAP behaviour while leaving LOGIN_FORM/DISABLED untouched.
+  - A future change to `SecurityConstants.WHITELIST_PATHS` that breaks LOGIN_FORM's HAND-ROLLED permittedPaths divergence (line 49-51 vs SecurityConstants.java:95-96 — confirmed-divergent in the sidecar; see also TEST-GAP-147).
+  - A future change to `GrantedAuthorityExtractor.getAuthorities(isAdmin)` semantics — LOGIN_FORM hardcodes `true`, OAUTH2 + LDAP compute per-user, DISABLED never calls it.
+  - A `Provider.java` enum addition (e.g., adding OKTA, KEYCLOAK) that needs handler registration in OAuth2 mode but should not affect the other three modes — this test confirms each mode's bean graph is independent.
+
+  **Test gap shape**: parametrised `@SpringBootTest` running 4 boot cycles (one per `auth.type`), each asserting THE SAME contract:
+  1. Exactly ONE `SecurityWebFilterChain` bean is registered.
+  2. `AuthorizationCustomizer` bean presence matches the expected mode (present in OAUTH2/LDAP; absent in LOGIN_FORM/DISABLED).
+  3. An authenticated user's `SecurityContext.getAuthentication().getAuthorities()` matches the expected pattern (ADMIN-hardcoded for LOGIN_FORM; per-OIDC-claim for OAUTH2; per-LDAP-attribute for LDAP; bypassed for DISABLED).
+  4. A request to an RBAC-gated endpoint (e.g., `POST /api/permissions/{id}/policies`) without the gating permission returns 200 (LOGIN_FORM/DISABLED — wide-open) or 403 (OAUTH2/LDAP — RBAC-enforced).
+  5. The five permit-all paths (`/actuator/health`, `/favicon.ico`, `/ingestion/entities`, `/ingestion/datasources`, `/api/slack/events`) are reachable WITHOUT authentication under each mode (compatibility floor).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/AuthTypeQuartetContractIntegrationTest.java"
+  name: "authTypeQuartet_disabledLoginFormOauth2Ldap_eachModeWiresExpectedBeanGraphAndAuthorityAndRBACPosture_pinsCrossModeContract"
+evidence:
+  - "LoginFormSecurityConfiguration.md says (dependencies_semantic.requires-config): 'the four sibling SecurityConfiguration classes (DisabledAuthSecurityConfiguration / OAuthSecurityConfiguration / LDAPSecurityConfiguration / this) must NOT have their conditions match simultaneously — guaranteed by havingValue exclusivity on a single auth.type key'"
+  - "LoginFormSecurityConfiguration.md says (gaps.[1]): 'A future maintainer adding .authorizeExchange(new AuthorizationCustomizer(...)) to this chain to match OAuth/LDAP — would silently move LOGIN_FORM from wide-open authorization (read-collaborative wide-open variant) to Policies/Permissions/Roles/Owners gates enforced. No regression test exists to assert the INTENTIONAL absence; the gap surfaces only as operator-facing breakage of their existing role / policy expectations.'"
+  - "LoginFormSecurityConfiguration.md says (concepts.invariants): 'bean graph materialises only when auth.type=LOGIN_FORM exactly — no matchIfMissing clause (line 31; case-sensitive match)'"
+  - "Verified at primary source: LoginFormSecurityConfiguration.java:31 + OAuthSecurityConfiguration.java:71 + LDAPSecurityConfiguration.java:51 + DisabledAuthSecurityConfiguration.java:10 (all four use @ConditionalOnProperty on auth.type with havingValue exclusivity)"
+  - "Verified at primary source: OAuthSecurityConfiguration.java:98 + LDAPSecurityConfiguration.java:145 (AuthorizationCustomizer wired) vs LoginFormSecurityConfiguration.java:55-57 + DisabledAuthSecurityConfiguration.java (absent)"
+  - "Grep against odd-platform-api/src/test for 'auth\\.type|AuthType.*mode|AuthorizationCustomizer.*Test|SecurityWebFilterChain.*Test': 0 matches"
+cross_references:
+  - "TEST-GAP-140 (LOGIN_FORM no AuthorizationCustomizer — per-mode-pin captured by the quartet)"
+  - "TEST-GAP-141 (LOGIN_FORM ADMIN-for-every-user — per-mode-pin)"
+  - "TEST-GAP-148 (OAUTH2 bean-graph contract — per-mode-pin)"
+  - "TEST-GAP-149 (S2S composes-with-all-three — orthogonal-composition pin)"
+  - "TEST-GAP-3212 / DISABLED mode pin (per-mode)"
+  - "TEST-GAP-774 (this batch's LOGIN_FORM compound pin)"
+  - "ADR-CANDIDATE-029 (auth-mode determines authorization-framework wiring)"
+  - "REFACTOR-073 (the authorization-framework absence under LOGIN_FORM)"
+  - "concepts: auth-type-quartet-contract-asymmetric-rbac-wiring (NEW canonicalisation candidate)"
+related_features: [F-008, F-011, F-009]
+related_pillar_features: ["P-09:F-001 UI authentication", "P-09:F-002 Principal-to-Owner Resolution", "P-09:F-003 S2S API authentication"]
+proposed_action: |-
+  Add `AuthTypeQuartetContractIntegrationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four `@ParameterizedTest`s sharing a fixture, each running a Spring Boot context under one `auth.type` value:
+
+  **Method 1 — `bean_graph_quartet` (parametrised over auth.type)**:
+  - For each mode, assert: exactly one `SecurityWebFilterChain` bean is registered; AuthorizationCustomizer bean is present iff mode ∈ {OAUTH2, LDAP}; the corresponding `*SecurityConfiguration` class's beans are registered (e.g., for LOGIN_FORM, assert `mapReactiveUserDetailsService` bean is present).
+  - Pins the bean-graph contract for the quartet.
+
+  **Method 2 — `authority_for_authenticated_user_quartet`**:
+  - Under LOGIN_FORM: authenticate `alice:alicepw` (custom credentials); assert authorities == `[ADMIN]`.
+  - Under OAUTH2: stub OAuth2 provider returning a user with `ODD_USER_ROLE_CLAIM=USER`; assert authorities == `[USER]` (not ADMIN).
+  - Under LDAP: stub LDAP provider returning a user with a `memberOf` attribute that maps to USER role; assert authorities == `[USER]`.
+  - Under DISABLED: assert no authentication is required AND no `SecurityContext.getAuthentication()` is present (the chain bypasses).
+
+  **Method 3 — `rbac_enforcement_quartet`**:
+  - Under LOGIN_FORM + DISABLED: POST `/api/permissions/{id}/policies` without `PERMISSION_*_MANAGE` permission; assert HTTP 200 (wide-open).
+  - Under OAUTH2 + LDAP: same request without permission; assert HTTP 403 (RBAC-enforced).
+
+  **Method 4 — `permit_all_paths_quartet`**:
+  - For each mode, assert `/actuator/health`, `/favicon.ico`, `/ingestion/entities`, `/ingestion/datasources`, `/api/slack/events` are reachable WITHOUT authentication.
+
+  Add a `// CROSS-MODE-CONTRACT — Pins the auth.type quartet wiring asymmetry: OAUTH2 + LDAP wire AuthorizationCustomizer; LOGIN_FORM + DISABLED do not. A maintainer changing any one mode's wiring without explicit policy decision will trip this test.` comment block.
+
+  Pair with: (a) DOC-GAP-NNN — live `/enable-security/authorization` page must enumerate the quartet contract; (b) ADR-CANDIDATE-029 ratification — the asymmetry must be a documented decision, not an implicit pattern.
+batch: 2026-05-20-X
+feature_id: F-008

@@ -1,0 +1,266 @@
+name: |-
+  MinioConfig.region(...) never set — LSN-002 primary-source confirmation at MinioConfig.java:19-25 (batch V STRENGTHEN, batch X DIRECT primary source)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-01
+- P-08
+description: |-
+  STRENGTHENED INVARIANT, batch 2026-05-20X — adds the DIRECT MinioConfig sidecar
+  primary source on top of the batch V citation (which was through the
+  DataEntityAttachmentController class-level sidecar). The retrospective LSN-002's
+  named file is now ANCHORED AT THE FILE ITSELF — `MinioConfig` is now a
+  first-class config-class sidecar in the catalog.
+
+  THE LSN-002 ORIGINAL FAILURE:
+
+    retrospectives/LSN-002-minio-region-unset.md captured: the MinioAsyncClient
+    builder is instantiated with .endpoint(url) + .credentials(accessKey,
+    secretKey) but NOT .region(region). The MinIO SDK's default region is
+    'us-east-1' (the SDK uses MinIO's default region resolution — independent
+    of AWS SDK env-var / config-file chains). Operators running ODD against
+    AWS S3 in another region (eu-west-1, us-west-2) see opaque signature/redirect
+    errors at runtime (`AuthorizationHeaderMalformed`, `PermanentRedirect`).
+    The doc was remediated to mention the us-east-1 pin (verified by batch V
+    WebFetch at the live attachment-storage-configuration page; re-confirmed
+    batch X WebFetched 2026-05-20 status 200).
+
+  THE PRIMARY-SOURCE EVIDENCE — batch X DIRECT verification at MinioConfig.java:19-25
+  (MinioConfig sidecar, batch X — config-class layer):
+
+    The MinioAsyncClient builder construction at lines 19-25:
+      MinioAsyncClient.builder()
+        .endpoint(url)
+        .credentials(accessKey, secretKey)
+        .build();
+    The chain has EXACTLY THREE method calls (`.endpoint`, `.credentials`,
+    `.build`). The `.region(...)` call is ABSENT. The `.httpClient(...)`
+    call is ABSENT. The `.credentialsProvider(...)` call is ABSENT (the
+    two-arg `.credentials(accessKey, secretKey)` constructs a `StaticProvider`
+    implicitly — IAM-role / IRSA / DefaultCredentialsProvider unsupported).
+
+    The Gate-5 unset-parameter audit on this builder (per the MinioConfig
+    sidecar's unset_parameter_audit table) classifies:
+      - `.endpoint(String)` — `configured` from attachment.remote.url
+      - `.credentials(String accessKey, String secretKey)` — `configured`
+      - `.region(String)` — `caveat-defaulted`, doc-mitigated, code-unmitigated
+        (LSN-002 canonical anchor; REFACTOR-027)
+      - `.httpClient(OkHttpClient)` — `caveat-defaulted`, neither doc nor
+        code mitigated (REFACTOR-034)
+      - `.credentialsProvider(Provider)` — `caveat-defaulted`, neither doc
+        nor code mitigated (operator-flexibility gap; ADR-CANDIDATE-013 stance)
+
+    Three silent-default findings strengthen the LSN-002 lineage:
+      1. .region(...) — the LSN-002 canonical; code-unmitigated
+      2. .httpClient(...) — the no-knob HTTP timeout/pool gap
+      3. .credentialsProvider(...) — the no-IAM-role gap
+
+  THE OPERATIONAL FAILURE MODE — captured from the original retrospective:
+
+    1. Operator configures attachment.storage=REMOTE with credentials for
+       an S3 bucket in eu-west-1.
+    2. Application boots — bean wiring succeeds (no region check at startup;
+       no boot-time S3 head-bucket check per the asymmetric-validation finding
+       below).
+    3. First file upload triggers MinioAsyncClient.putObject(...) with the
+       SDK default region (us-east-1) baked into the request signature.
+    4. AWS S3 returns 400 / 301 redirect with a 'PermanentRedirect' or
+       'AuthorizationHeaderMalformed' error referencing the bucket's
+       actual region.
+    5. The application's error surface shows an opaque MinIO SDK exception;
+       operators investigate auth credentials, network access, IAM policies
+       — never the region.
+
+  THE BATCH X ASYMMETRIC-VALIDATION FINDING (PRIMARY SOURCE — MinioConfig sidecar):
+
+    RemoteFileUploadServiceImpl.java:45-50 has a `@PostConstruct validate()`
+    that fail-fasts on empty `bucket`. NO equivalent guard exists on `region`,
+    `url`, or `credentials` at the MinioConfig level. The validation pattern
+    WAS established for one parameter; extending it to region (the LSN-002
+    surface) is the natural next step. The asymmetry is itself the finding:
+    BUCKET is required-and-validated, REGION is silently-defaulted, URL is
+    required-but-not-validated-as-reachable, CREDENTIALS are required-but-
+    not-validated-against-the-endpoint.
+
+  THE BATCH X CHUNK-STAGING CROSS-LINK (PRIMARY SOURCE — MinioConfig sidecar):
+
+    Even when an operator follows the LSN-001-remediated doc and switches to
+    `attachment.storage=REMOTE`, FileUtils.java:24 declares
+    `CHUNK_BASE_PATH = "/tmp/odd/chunks"` as a static-final constant that
+    applies to BOTH LOCAL and REMOTE modes. REMOTE persistence covers
+    completed uploads but NOT in-flight chunks. The cross-link is informational —
+    NOT a MinioConfig direct gap, but the natural place an operator following
+    LSN-001 remediation lands. Cross-references:
+    `chunk-base-path-hardcoded-tmp-storage-mode-independent-lsn-001-in-code-residue`
+    invariant.
+
+  THE PATTERN ALIGNMENT with LSN-002-class:
+
+    Same shape as the lsn-002-class-primitive-default-ships-disabled-but-broken-when-enabled
+    invariant: a typed config field (here: region — explicit method call
+    on the builder) with no maintainer-set value ships an SDK-default that
+    is legal at boot but broken at first use. The disciplined counter-example
+    is DataCollaborationConfiguration's explicit fail-fast on empty
+    slack-oauth-token (throws IllegalArgumentException at boot). The batch X
+    MinioConfig sidecar confirms the asymmetric-validation pattern: the
+    bucket-empty fail-fast at RemoteFileUploadServiceImpl is the disciplined
+    example WITHIN THIS SAME FEATURE — extending the discipline to region
+    is the natural one-line fix.
+
+  THE GAP-WIDENING OBSERVATION (batch X confirmation):
+
+    Batch V's primary-source examination was indirect (via DataEntityAttachmentController).
+    Batch X's primary-source examination is DIRECT — MinioConfig is now a
+    first-class config-class sidecar. The LSN-002 case-law is no longer
+    documentation-side-only; it has a DIRECT in-code anchor at MinioConfig.
+    A maintainer auditing the LSN-002 lineage can now cite the MinioConfig
+    sidecar's `unset_parameter_audit` Gate-5 table directly (rather than
+    triangulating through the attachment controller's bugs-corner-cases).
+
+  SEVERITY: MEDIUM — documented externally in the live config doc (the
+  doc-side remediation is healthy); latent in-code with no fail-fast (the
+  code-side remediation is unimplemented). The retrospective's lesson — Gate
+  3 + Gate 4 + Gate 5 (unset-parameter audit for SDK integrations) — fires
+  exactly here: every SDK builder parameter must be classified as
+  configured | safely-defaulted | caveat-defaulted. The region IS
+  caveat-defaulted but the caveat lives only in docs, not in code.
+nodes:
+- odd-platform java MinioConfig config-class:MinioConfig
+- odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController
+- odd-platform yaml application.yml config-prefix:attachment
+contributors:
+- |-
+  MinioConfig (config-class) batch X (NEW DIRECT PRIMARY SOURCE):
+    concepts.invariants.[builder-shape] — the MinioAsyncClient.builder() chain
+    is EXACTLY three method calls; .region/.httpClient/.credentialsProvider
+    absent (LSN-002 canonical anchor)
+    + bugs_limitations_corner_cases.[region-unset] (HIGH severity, the canonical
+    LSN-002 surface; REFACTOR-027 from the YAML angle at MEDIUM, the file-level
+    severity reflects silent-data-failure risk for AWS-deploying operators)
+    + bugs_limitations_corner_cases.[httpclient-unset] (MEDIUM, REFACTOR-034)
+    + bugs_limitations_corner_cases.[no-iam-provider] (MEDIUM, ADR-CANDIDATE-013
+    operator-flexibility gap)
+    + bugs_limitations_corner_cases.[no-boot-validation] (HIGH severity,
+    REFACTOR-028 deferred-failure pattern)
+    + unset_parameter_audit (Gate-5 table — 5 builder parameters classified)
+    + implicit_adrs.[minio-sdk-not-aws-sdk] (HIGH, ADR-CANDIDATE-013) +
+    implicit_adrs.[conditional-bean-wiring] (HIGH, ADR-CANDIDATE-012)
+    + pre_emit_coherence_check explicit confirmation: 'LSN-002 — primary source;
+    primary file the retrospective named matches lines 19-25 verbatim'
+- |-
+  DataEntityAttachmentController batch V (INDIRECT PRIMARY SOURCE — preserved):
+    bugs_limitations_corner_cases.[minio-region-unset] (MinioConfig.java:19-25
+    primary-source citation; canonical LSN-002 surface; documented externally
+    but not surfaced as in-code TODO or comment) +
+    dependencies_semantic.requires-config (attachment.remote.url / access-key
+    / secret-key / bucket — region absent from the consumed config keys)
+evidence:
+- |-
+  MinioConfig.md (batch X — DIRECT PRIMARY SOURCE):concepts.invariants.[builder-shape]
+  + bugs_limitations_corner_cases.[region-unset, httpclient-unset, no-iam-provider,
+  no-boot-validation, actuator-leak] + unset_parameter_audit (the Gate-5 table)
+  + pre_emit_coherence_check (explicit LSN-002 primary-source confirmation)
+- |-
+  DataEntityAttachmentController.md (batch V):bugs_limitations_corner_cases.minio-region-unset
+  — evidence MinioConfig.java:19-25 (the SDK builder lacks .region method call) —
+  PRESERVED as cross-citation
+- |-
+  DataEntityAttachmentController.md:dependencies_semantic.requires-config —
+  enumeration of attachment.remote.* keys consumed at boot — PRESERVED
+- |-
+  retrospectives/LSN-002-minio-region-unset.md (the canonical retrospective)
+- |-
+  Existing invariant: lsn-002-class-primitive-default-ships-disabled-but-broken-when-enabled
+  (the parent pattern shape; this invariant STRENGTHENS it with DIRECT primary-source
+  citation at MinioConfig)
+- |-
+  Live config doc page WebFetched 2026-05-20 status 200 confirming the
+  doc-side remediation is in place (the us-east-1 pin warning visible
+  to operators reading the docs); anchor `#attachment-storage-configuration`
+  resolves
+axes_present:
+- config_classes
+- controllers
+- config_prefixes
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+- LSN-002 retrospective (the canonical doc-side remediation)
+- batch-V (DataEntityAttachmentController — indirect primary-source citation at MinioConfig)
+- batch-X (MinioConfig config-class sidecar — DIRECT primary-source citation; full
+  Gate-5 unset-parameter audit)
+severity: MEDIUM
+severity_dim: configuration-default-failure
+mitigations_unimplemented:
+- |-
+  Add .region(region) to the MinioAsyncClient builder at MinioConfig.java:19-25
+  AND add @Value('${attachment.remote.region}') OR @ConfigurationProperties
+  binding for the region field. Without a default, missing region fails
+  bean wiring at boot (the disciplined fail-fast posture). With a
+  default of 'us-east-1', behaviour matches the SDK default — but
+  operators see the explicit annotation in code.
+- |-
+  @PostConstruct validate() — extend the existing bucket-validation pattern
+  at RemoteFileUploadServiceImpl.java:45-50 to ALSO validate region. Pair
+  the two: 'bucket can not be empty' + 'region can not be empty'. Both
+  are first-class required configuration. The asymmetry between the two
+  validations is itself the LSN-002 case-law evidence.
+- |-
+  Add a startup-time S3 head-bucket check — issue a HEAD on the configured
+  bucket at boot; if the region is wrong, the head fails fast with a clear
+  error. The current behaviour silently boots and fails at the first user
+  action; the fail-fast posture would surface the misconfiguration in
+  container logs immediately.
+- |-
+  Cross-link in MinioConfig.java with a code comment pointing at the
+  retrospective: '// LSN-002 — region is intentionally defaulted to
+  us-east-1 by the SDK; operators outside us-east-1 must configure
+  attachment.remote.region. See retrospectives/LSN-002-minio-region-unset.md'.
+  The comment is the minimum acceptable in-code remediation without
+  refactoring the bean wiring.
+- |-
+  NEW batch X: add .httpClient(...) operator-tunable knobs
+  (attachment.remote.connect-timeout-millis / .read-timeout-millis /
+  .write-timeout-millis). The default 5-minute SDK timeouts on slow-network
+  operators with large file sizes produce unrecoverable socket timeouts
+  (REFACTOR-034).
+- |-
+  NEW batch X: add .credentialsProvider(...) support for AWS EKS / ECS /
+  IRSA operators preferring IAM roles over static keys. The platform's
+  ADR-CANDIDATE-013 stance is MinIO-SDK-only; this support would still
+  use the MinIO SDK's Provider interface (StaticProvider | IamAwsProvider |
+  etc.) and not introduce AWS SDK v2 dependency.
+notes: |-
+  STRENGTHENED batch 2026-05-20X via the MinioConfig config-class sidecar's
+  DIRECT primary-source examination — promoted from indirect (via
+  DataEntityAttachmentController) to direct. The Gate-5 unset-parameter audit
+  is now codified for this file. Three new file-anchored findings:
+    1. Asymmetric @PostConstruct validation between MinioConfig and
+       RemoteFileUploadServiceImpl
+    2. .credentialsProvider(...) NEVER called (third silent-default in
+       addition to .region and .httpClient)
+    3. MinioConfig sidecar is the natural home for the LSN-002 in-code
+       remediation; the chunk-staging gap is FileUtils' problem, the
+       bucket-existence-at-boot gap is RemoteFileUploadServiceImpl's
+       problem, the region-pin gap is MinioConfig's problem
+
+  Cross-cutting connections:
+    - Parent invariant: lsn-002-class-primitive-default-ships-disabled-but-broken-when-enabled
+      (the cross-cutting LSN-002-class pattern — strengthened batch X)
+    - Sibling LSN-001: chunk-base-path-hardcoded-tmp-storage-mode-independent-lsn-001-in-code-residue
+      (same shape: doc-side remediation closed, code-side residue open)
+    - Disciplined counter-example: postMessageInSlack.implicit_adrs[0]
+      (fail-fast on empty slack-oauth-token at boot)
+    - Disciplined counter-example: RemoteFileUploadServiceImpl.@PostConstruct
+      validate() (fail-fast on empty bucket — but NOT on empty region —
+      the asymmetric validation is itself a finding)
+    - plaintext-db-credentials-default-with-actuator-env-exposed-default
+      (batch X) — MinioConfig's S3 credentials surface compounds the
+      actuator-env exposure finding
+
+  Three DOC-NNN candidates flow:
+    (a) Code fix — .region(region) on the builder + @Value config + @PostConstruct
+        validation
+    (b) Code comment cross-referencing the LSN-002 retrospective at the
+        MinioConfig builder line
+    (c) Startup-time S3 head-bucket check for fail-fast surfacing

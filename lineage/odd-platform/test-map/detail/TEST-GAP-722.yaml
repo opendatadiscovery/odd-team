@@ -1,0 +1,56 @@
+gap_id: TEST-GAP-722
+category: missing-performance
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:TermDetails"
+pillars_affected: [P-06]
+surfaced_by:
+  - "TermDetails.md:bugs_limitations_corner_cases.[0] (Double-fetch: shell + Overview both load the same TermDetails — Lines 37-45 dispatch fetchTermDetails({termId}); Overview.tsx:19-21 uses useGetTermByID({termId}) which is an INDEPENDENT fetcher — severity MEDIUM at sidecar, escalated to HIGH at gap-priority due to 12-JOIN per-page-open cost multiplier)"
+  - "TermDetails.md:performance.hot_paths (DOUBLE-FETCH AMPLIFICATION — shell + Overview both fire getTermDetailsDto, TWO 12-JOIN hot-path queries per page-open)"
+  - "TermDetails.md:performance.known_performance_gaps.[0] (Double-fetch with Overview — 2× getTermDetailsDto invocations per page-open; closest TermDetails analog to LSN-017's view_count doubling)"
+behaviour: |-
+  **HIGH — TermDetails cross-component fetch duplication: shell + Overview both fire the 12-JOIN getTermDetailsDto per page-open.** Verified by tracing the render path end-to-end in this sidecar:
+  - `TermDetails.tsx:37-45` (shell) dispatches `fetchTermDetails({termId})` via Redux thunk on mount with `[termId]` deps.
+  - `Overview.tsx:19-21` (default tab) calls `useGetTermByID({termId})` — an INDEPENDENT React-Query / RTK Query hybrid hook reading the SAME endpoint.
+
+  When the user lands on `/terms/:termId/overview` (the default route per `TermDetailsRoutes.tsx:46`), TWO `GET /api/terms/{termId}` requests fire. Each backend GET runs the 12-LEFT-JOIN + 4-countDistinct + 7-jsonArrayAgg hot path in `ReactiveTermRepositoryImpl.getTermDetailsDto` (lines 194-238 — primary-source confirmed in F-002 batch-N sidecar). For typical Term catalogues with <100 linked entities this is sub-200ms per fetch; for a heavily-linked Term (e.g. a "Customer" term linked to 500 datasets across multiple namespaces with 200 tags + 50 owners) the JOIN fan-out before the DISTINCT can materialise N×M×P×Q intermediate rows — the doubled fetch doubles the database load on every page-open.
+
+  **This is NOT the LSN-017 shape** (the trigger isn't a useEffect dep array; it's two independent components both reading the same data) **but it IS a SIBLING class: cross-component fetch duplication on a hot backend path.** Differences from LSN-017:
+  - LSN-017 doubles via useEffect dep-array shape WITHIN one component; this doubles via TWO components fetching the same data.
+  - LSN-017 amplifies a Postgres UPDATE (causing `view_count` to inflate at +2 per page-open); this amplifies a Postgres SELECT (causing 2× JOIN fan-out work per page-open, no side-effect on persisted state).
+
+  Both are user-observable composition failures across cross-component boundaries that no single per-node enrichment would catch — this is exactly the kind of finding that LSN-018's pre-emit coherence check is designed to surface (per Rule 6 / LSN-018: this sidecar's coherence_check section explicitly notes "this is a NEW sibling pattern to F-002 batch-N drift_class `get_term_details_dto_12_join_hot_path_amplification`").
+
+  **Why HIGH not MEDIUM**: while individual page-open cost is bounded by typical catalogue size, the load-bearing concern is the COMPOSITIONAL nature of the bug. A future refactor that adds a third fetcher (e.g., a "Term ownership panel" component using its own `useGetTermOwnership` hook that internally fetches the term-details endpoint) would silently TRIPLE the load. There is no current test gate detecting the cross-component fetch duplication; the only signal is operator-visible page-load latency on heavily-linked terms. The fix is unambiguous (consolidate to ONE fetcher — drop the shell's `fetchTermDetails` and rely on Overview, OR drop Overview's `useGetTermByID` and selector-read from Redux), but without a regression-pin every refactor risks regressing the consolidated state back to a divergent one.
+
+  **Test gap shape**: an integration test that mounts `<TermDetails/>` with a mocked or test-tier backend, navigates to `/terms/100/overview`, and asserts the count of `GET /api/terms/100` invocations is EXACTLY ONE (not two, not zero). The LSN-017 measurement-truth principle applies — only by counting backend invocations during render can the bug be surfaced.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/Terms/TermDetails/TermDetails.test.tsx"
+  name: "termDetailsMount_overviewRouteDefault_assertsFetchTermDetailsFiresExactlyOncePerPageOpen"
+evidence:
+  - "TermDetails.md says (bugs_limitations_corner_cases.[0]): 'Double-fetch: shell + Overview both load the same TermDetails. Lines 37-45 dispatch fetchTermDetails({termId}); Overview.tsx:19-21 uses useGetTermByID({termId}) which is an INDEPENDENT fetcher (verified by reading Overview.tsx end-to-end + Grep'ing useGetTermByID returns it as a separate hook). When the user lands on /terms/:termId/overview (the default route per TermDetailsRoutes.tsx:46), TWO GET /api/terms/{termId} requests fire. **Critically: each backend GET runs the 12-JOIN getTermDetailsDto hot path** (per ReactiveTermRepositoryImpl sidecar known invariant — the 12 LEFT JOIN + 4 countDistinct + 7 jsonArrayAgg amplification).'"
+  - "TermDetails.md says (performance.hot_paths.[1]): 'DOUBLE-FETCH AMPLIFICATION: shell + Overview both fire getTermDetailsDto. TWO 12-JOIN hot-path queries per page-open. For a heavily-linked term, this doubles the per-mount DB cost.'"
+  - "TermDetails.md says (performance.known_performance_gaps.[0]): 'this is the closest TermDetails analog to LSN-017's view_count doubling: BOTH involve a per-page-open multiplier on a backend hot path ... Both are user-observable composition failures across cross-component boundaries that no single per-node enrichment would catch.'"
+  - "TermDetails.md coherence_check section explicitly notes this is a NEW sibling pattern to F-002 batch-N drift_class get_term_details_dto_12_join_hot_path_amplification — the UI half (per-page-open cost multiplier) of the backend-side amplification"
+  - "Verified: /home/raman/work/odd/odd-platform/odd-platform-ui/src/components/Terms/TermDetails/Overview/TermDefinition/TermDefinition.tsx exists; the Glob over Terms/**/*.test.* returns ZERO matches (verified 2026-05-20)"
+cross_references:
+  - "F-002 (drift_class get_term_details_dto_12_join_hot_path_amplification — this gap is the UI-tier consequence layer)"
+  - "LSN-017 (canonical cross-layer composition failure case-law — this gap is a sibling-class instance)"
+  - "LSN-018 (Rule 6 pre-emit coherence check — this gap surfaced via the sidecar's explicit coherence_check section)"
+  - "TEST-GAP-723 (TermSearch broken debouncer — same UI-tier class of per-render multiplier bug; sister gap)"
+  - "TEST-GAP-721 (P-06 pillar-floor — this gap is one of the SPECIFIC instances that the harness would address)"
+  - "F-002 drift facets enumeration — recommend strengthening with this UI-side amplification facet"
+related_features: [F-002]
+related_pillar_features: ["P-06:F-001"]
+proposed_action: |-
+  Add `TermDetails.test.tsx` at `odd-platform-ui/src/components/Terms/TermDetails/`. Three test methods:
+  1. `termDetailsMount_overviewRouteDefault_fetchTermDetailsFiresExactlyOncePerPageOpen` — mount `<TermDetails/>` wrapped in `<MemoryRouter initialEntries={['/terms/100/overview']}>`; spy on the backend invocations; assert exactly ONE `GET /api/terms/100` is fired across both the shell's `fetchTermDetails` dispatch AND Overview's `useGetTermByID` hook. **This test will FAIL today (count=2)** and serves as the regression-pin for any future consolidation fix.
+  2. `termDetailsMount_overviewRouteDefault_redundantBackendInvocationDocumentsCurrentState` — companion test that PINS the current 2-invocation behaviour (asserts `count==2` in the meantime). When the consolidation fix lands, this test becomes the "remove me" marker.
+  3. `termDetails_tabSwitchBetweenOverviewAndLinkedEntities_doesNotRetrigger12JoinFetch` — pin that tab switching does not re-trigger the shell's `fetchTermDetails` (verify the `[termId]` dep array stability across re-renders).
+
+  Pair with a follow-up backlog item proposing the consolidation fix: drop `Overview.tsx:19-21`'s `useGetTermByID` and have Overview selector-read from `state.terms.byId[termId]` populated by the shell's `fetchTermDetails`. When the fix lands, test #1 succeeds, test #2 deletes, test #3 unchanged.
+
+  Cross-pair with a probe (per the LSN-017 measurement-truth principle — `playbooks/dynamic-verification.md`): live-load `/terms/{id}/overview` on a heavily-linked term in a sandboxed instance, capture the backend log, count `GET /api/terms/{id}` invocations per page-open. Probe pins the live truth before and after the consolidation fix.
+batch: 2026-05-20-U
+feature_id: F-002

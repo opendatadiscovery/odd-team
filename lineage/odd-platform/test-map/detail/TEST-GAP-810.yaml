@@ -1,0 +1,71 @@
+gap_id: TEST-GAP-810
+category: missing-unit
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java notification.processor class:PostgresWALMessageProcessor"
+pillars_affected: [P-07]
+surfaced_by:
+  - "PostgresWALMessageProcessor.md:concepts.invariants (interface has exactly ONE implementor in the codebase — AlertNotificationMessageProcessor)"
+  - "PostgresWALMessageProcessor.md:tests_coverage_semantic.uncovered_behaviours.[0] (no test asserts PostgresWALMessageProcessor has exactly one @Component-annotated implementor)"
+  - "PostgresWALMessageProcessor.md:bugs_limitations_corner_cases.[3] MEDIUM (ZERO test coverage for the interface contract)"
+behaviour: |-
+  **MEDIUM — Single-implementor invariant of `PostgresWALMessageProcessor` is structurally unenforced.** The `PostgresWALMessageProcessor` interface (7 lines, single method) is consumed by `NotificationSubscriber.java:36` as `private final PostgresWALMessageProcessor messageProcessor` — a single-bean dependency. Spring resolves this by type at boot.
+
+  **The unenforced invariant**: the interface has exactly ONE implementor in the codebase — `AlertNotificationMessageProcessor` (per `grep 'implements PostgresWALMessageProcessor' <odd-platform-repo>` returning a single match at AlertNotificationMessageProcessor.java:18). No test, no annotation, no architectural-fitness-function pins this.
+
+  **Failure modes if the invariant breaks**:
+  1. **Two implementors both eligible**: a future PR adds `OwnerNotificationMessageProcessor` (also `@Component`, also `@ConditionalOnNotifications`). Spring fails at boot with `NoUniqueBeanDefinitionException`. Loud failure — good. But the failure is at deploy-time, not at compile-time or PR-time.
+  2. **Two implementors, one `@Primary`**: if the second implementor adds `@Primary` to win the resolution, Spring silently picks it. The WAL stream is now decoded by the new implementor — possibly incorrect for ALERT-table rows. Silent failure — bad.
+  3. **Single implementor renamed**: a refactor renaming `AlertNotificationMessageProcessor` to `NotificationMessageRouter` (or splitting it into two beans) without `@Primary` on the target bean breaks ambiguous resolution.
+  4. **Implementor's `@ConditionalOnNotifications` is incorrectly broadened**: if a future maintainer relaxes the conditional (`@ConditionalOnProperty(name = "notifications.enabled", havingValue = "true", matchIfMissing = true)` instead of `false`), the bean materialises even when notifications are off — wasting decoding resources.
+
+  **Compound with the alert-table coupling**: `NotificationSubscriber.java:51` calls `registerPublication(connection, Tables.ALERT)` — the WAL stream is hardwired to the alert table. A future maintainer adding a second processor (e.g. for OWNER-table changes) needs to ALSO add a second publication, a second slot, a second leader election... but the interface itself does NOT signal this requirement. A naive PR adding only the second processor would surface at deploy-time with a confusing error.
+
+  **Test gap shape**: static-analysis regression-pin asserting the single-implementor invariant + the alert-table coupling.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/notification/PostgresWALMessageProcessorSingleImplementorRegressionPinTest.java"
+  name: "postgresWALMessageProcessor_exactlyOneImplementor_pinsSingleImplInvariant"
+evidence:
+  - "PostgresWALMessageProcessor.md says (concepts.invariants): 'interface has exactly ONE implementor in the codebase — AlertNotificationMessageProcessor — verified via grep implements PostgresWALMessageProcessor returning a single match (AlertNotificationMessageProcessor.java:18)'"
+  - "PostgresWALMessageProcessor.md says (tests_coverage_semantic.uncovered_behaviours.[0]): 'the single-implementor invariant — no test asserts PostgresWALMessageProcessor has exactly one @Component-annotated implementor (a future second implementor injected into NotificationSubscriber would silently break the alert-specific assumption)'"
+  - "PostgresWALMessageProcessor.md says (bugs_limitations_corner_cases.[3]): 'ZERO test coverage for the interface contract — no test asserts the single-implementor invariant, no test asserts that an undeclared RuntimeException from process() triggers the 10s-back-off replay loop (the operator-visible behaviour of F-009 poison-message replay). A regression introducing a second processor (Spring @Primary + condition-conflict + ambiguous bean) would surface at runtime in an integration deployment, not at build time.' — severity MEDIUM"
+  - "Verified at primary source: PostgresWALMessageProcessor.java (entire file, 7 lines)"
+  - "Verified at primary source: AlertNotificationMessageProcessor.java:18 (the sole `implements PostgresWALMessageProcessor` declaration)"
+  - "Verified at primary source: NotificationSubscriber.java:36 (`private final PostgresWALMessageProcessor messageProcessor` — single-bean injection)"
+cross_references:
+  - "TEST-GAP-455 (the poison-replay loop — same interface; that test pins runtime contract, THIS gap pins compile/architectural contract)"
+  - "REFACTOR-NNN (proposed): add ArchUnit-style test or Spring `@TestConfiguration` asserting exactly one bean of type `PostgresWALMessageProcessor` is registered at boot"
+  - "REFACTOR-NNN (proposed): change `NotificationSubscriber` field type to `List<PostgresWALMessageProcessor>` with a `@PostConstruct` assertion `assert processors.size() == 1` if the future maintainer wants to keep the single-impl invariant explicit — OR transition to `Map<RelationId, PostgresWALMessageProcessor>` if a multi-processor design is needed"
+  - "concepts.yaml: `single-implementor-invariant-unenforced` — F-009 architectural quirk"
+related_features: [F-009]
+related_pillar_features: ["P-07:F-002 WAL-driven Notification Delivery"]
+proposed_action: |-
+  Add `PostgresWALMessageProcessorSingleImplementorRegressionPinTest`. Two test variants:
+
+  1. `postgresWALMessageProcessor_exactlyOneImplementor_pinsSingleImplInvariant` —
+     - Classpath scan via Reflections (or ArchUnit): find all classes implementing `PostgresWALMessageProcessor`.
+     - Assert `count == 1`.
+     - Assert the single implementor is `AlertNotificationMessageProcessor`.
+     - PINS the single-implementor architectural invariant.
+
+  2. `notificationSubscriber_messageProcessorFieldIsSingleBeanType_pinsAlertOnlyAssumption` —
+     - Reflection on `NotificationSubscriber.class` fields.
+     - Assert the `messageProcessor` field's declared type is `PostgresWALMessageProcessor` (not `List` / `Map`).
+     - PINS the single-bean injection assumption.
+
+  3. `notificationSubscriber_publicationTargetIsAlertTable_pinsAlertTableCoupling` —
+     - Static analysis: assert `registerPublication(connection, Tables.ALERT)` is called at `NotificationSubscriber.java:51` (literal `Tables.ALERT` reference; no variable substitution).
+     - PINS the alert-table coupling.
+
+  4. `springBoot_walMessageProcessorBeanRegistration_singleBeanOnly_confirmsRuntimeInvariant` —
+     - `@SpringBootTest` with `notifications.enabled=true`.
+     - Inject `Map<String, PostgresWALMessageProcessor>` (Spring resolves all bean names).
+     - Assert `map.size() == 1`.
+     - PINS the runtime invariant.
+
+  Pair with REFACTOR-NNN (ArchUnit / Spring fitness-function) if the maintainer wants compile-time enforcement.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. No prior TEST-GAP pins the single-implementor architectural invariant. Sister TEST-GAP-455 covers the runtime contract on the same interface. No contradiction.
+batch: 2026-05-20-Y
+feature_id: F-009

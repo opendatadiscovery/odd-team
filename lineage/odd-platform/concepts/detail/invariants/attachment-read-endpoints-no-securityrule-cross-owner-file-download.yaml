@@ -1,0 +1,200 @@
+name: |-
+  Attachment GET endpoints have NO SecurityRule — any authenticated user can list + download any data entity's files/links (DataEntityAttachmentController HIGH)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20V — surfaced by primary-source
+  examination of the attachment-read endpoints in DataEntityAttachmentController
+  batch V. Three of the controller's ten endpoints are READS (getAttachments,
+  getUploadOptions, downloadFile). NONE of them have a SecurityRule entry in
+  SecurityConstants.java:247-276 (which lists ONLY POST/PUT/DELETE matchers
+  for /files/** and /links/**). The reads fall back to the global authentication
+  filter — any authenticated user (LOGIN_FORM / OAUTH2 / LDAP) can list and
+  download files attached to ANY data entity, regardless of Owner or RBAC
+  permissions.
+
+  THE EVIDENCE — file:line citations from the batch V sidecar:
+
+    Three read endpoints with NO SecurityRule entry:
+      DataEntityAttachmentController.java:31-35 (getAttachments —
+        GET /api/dataentities/{id}/attachments → returns files + links
+        lists for the entity)
+      DataEntityAttachmentController.java:38-42 (getUploadOptions —
+        GET /api/dataentities/{id}/files/uploads → returns max-file-size
+        configuration value)
+      DataEntityAttachmentController.java:73-80 (downloadFile —
+        GET /api/dataentities/{id}/files/{file_id} → streams file contents)
+
+    SecurityConstants.java:247-276 — the six SecurityRule entries cover:
+      POST /api/dataentities/{data_entity_id}/files/** → DATA_ENTITY_ATTACHMENT_MANAGE
+      PUT /api/dataentities/{data_entity_id}/files/** → DATA_ENTITY_ATTACHMENT_MANAGE
+      DELETE /api/dataentities/{data_entity_id}/files/{file_id} → DATA_ENTITY_ATTACHMENT_MANAGE
+      POST /api/dataentities/{data_entity_id}/links → DATA_ENTITY_ATTACHMENT_MANAGE
+      PUT /api/dataentities/{data_entity_id}/links/{link_id} → DATA_ENTITY_ATTACHMENT_MANAGE
+      DELETE /api/dataentities/{data_entity_id}/links/{link_id} → DATA_ENTITY_ATTACHMENT_MANAGE
+    Six write rules; ZERO read rules. The read endpoints fall through to
+    AuthorizationCustomizer's catch-all pathMatchers /** authenticated().
+
+  THE ATTACK SHAPE — cross-owner file download:
+
+    1. User U is authenticated (any UI auth mode) and holds NO RBAC
+       permissions at all (a brand-new user awaiting Owner-association).
+    2. User U calls GET /api/dataentities/{id}/files/{file_id} for some
+       data entity owned by team B in namespace N.
+    3. The catch-all rule passes (U is authenticated); the controller
+       routes to attachmentService.downloadFile(file_id); the file is
+       streamed to U.
+    4. The file may contain: PII (uploaded customer data CSVs as 'sample
+       data' on a customer-data dataset), credentials (a developer
+       accidentally uploaded a .env file), internal documents (uploaded
+       runbook PDFs containing on-call rotation, escalation paths,
+       admin contacts), screenshots (Slack message screenshots with
+       chat-history disclosed).
+
+  THE COMPOUNDING WITH OTHER BATCH-V FINDINGS:
+
+    1. Combined with the cross-entity-privilege-escalation finding (the
+       URL-hierarchy-discard bug): even WRITE access becomes cross-owner.
+       Read access is cross-owner via the catch-all; write access is
+       cross-owner via the URL spoof. Together, ANY authenticated user
+       can list + read + download any file on the platform AND any user
+       with MANAGE on one entity can mutate any file.
+    2. Combined with the no-MIME-validation finding (separate batch-V
+       invariant): the downloaded files may include HTML/JS/SVG that the
+       browser may execute on download. The controller forces application/
+       octet-stream which mitigates browser-side execution at the in-platform
+       download path, but the catch-all read on REMOTE-mode storage means
+       operators who expose the S3 bucket externally enable the MIME-based
+       execution.
+    3. Combined with the LSN-001 chunk staging residue: the catch-all read
+       does NOT extend to /tmp/odd/chunks (the chunks are not exposed via
+       any endpoint), but in-flight chunks visible at /tmp/odd/chunks
+       inside a compromised container could be readable.
+
+  THE INTENT VS THE BUG:
+
+    The platform-wide read-collaborative posture (per
+    read-collaborative-cross-owner-enumeration invariant + system-mission.md
+    line 267) is well-named for DATA ENTITY METADATA — descriptions, tags,
+    terms, business names, ownership labels — content that's intended for
+    cross-team discovery. Attachments are DIFFERENT — they're operator-uploaded
+    binary files with no intrinsic read-collaborative intent. The platform's
+    pattern was applied uniformly without distinguishing the content-class
+    sensitivity.
+
+    Note from the live doc: 'Operators and users can attach files and links
+    to any data entity to carry additional context — runbook PDFs, sample
+    CSVs, dashboard screenshots, links to internal wikis, ticketing references'
+    (data-discovery/attachments.md per batch-V WebFetch 2026-05-20). The
+    doc explicitly enumerates 'runbook PDFs' — operator-uploaded operational
+    documents — which carry sensitivity beyond catalog metadata.
+
+  THE MITIGATION SCOPE:
+
+    Layer 1 — add three SecurityRule entries:
+      GET /api/dataentities/{data_entity_id}/attachments → DATA_ENTITY_ATTACHMENT_VIEW
+      GET /api/dataentities/{data_entity_id}/files/uploads → DATA_ENTITY_ATTACHMENT_VIEW
+      GET /api/dataentities/{data_entity_id}/files/{file_id} → DATA_ENTITY_ATTACHMENT_VIEW
+      Create the new DATA_ENTITY_ATTACHMENT_VIEW permission in
+      PolicyPermissionDto + the live docs.
+
+    Layer 2 — for operators preferring read-collaborative attachments:
+      explicit config flag attachment.read-collaborative=true (default
+      false) — when true, reads remain unrestricted; when false, the
+      VIEW permission is required.
+
+    Layer 3 — file-content sensitivity classification: every file at
+    upload time gets a sensitivity label (PUBLIC / INTERNAL / SECRET) and
+    the read endpoints check the caller's clearance vs the file's label.
+    Substantial design work; deferred.
+
+  SEVERITY: HIGH — direct cross-owner read of operator-uploaded files.
+  The live doc explicitly mentions PDFs / CSVs / screenshots / wiki links
+  — exactly the content classes operators do NOT expect to be cross-owner
+  readable. The catch-all rule is invisible at the docs surface (the live
+  attachment-feature doc does NOT discuss read-side authorization, only
+  the MANAGE permission for writes).
+nodes:
+  - odd-platform java org.opendatadiscovery.oddplatform.controller controller:DataEntityAttachmentController
+contributors:
+  - |-
+    DataEntityAttachmentController batch V (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.no-read-securityrule HIGH (the explicit
+    finding) +
+    security.known_security_gaps.no-SecurityRule-for-GET-endpoints HIGH +
+    security.data_exposure (the three exposure shapes: list, options,
+    file contents — all cross-owner via the catch-all)
+evidence:
+  - |-
+    DataEntityAttachmentController.md:bugs_limitations_corner_cases.no-read-securityrule HIGH
+    — evidence SecurityConstants.java:247-276 (six write rules; ZERO read
+    rules) + DataEntityAttachmentController.java:31-42, 73-80 (the read
+    methods with no annotations)
+  - |-
+    DataEntityAttachmentController.md:security.known_security_gaps[0] HIGH
+    (the explicit gap statement)
+  - |-
+    Live doc data-discovery/attachments.md (WebFetched 2026-05-20 status
+    200) — the doc explicitly lists 'runbook PDFs, sample CSVs, dashboard
+    screenshots' as expected upload content; the silent cross-owner read
+    is a documentation-vs-code contradiction
+axes_present:
+  - controllers
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Layer 1 — add three SecurityRule entries gating the GET endpoints on
+    a new DATA_ENTITY_ATTACHMENT_VIEW permission. Pair with PolicyPermissionDto
+    + live-docs update.
+  - |-
+    Layer 2 — explicit attachment.read-collaborative config flag (default
+    false) — operators who prefer read-collaborative attachments opt-in
+    explicitly; default secure.
+  - |-
+    Live docs admission — disclose the catch-all read posture on the
+    data-discovery/attachments.md page until the fix lands. Operators
+    uploading PDFs / runbooks must know the read is cross-owner.
+  - |-
+    Regression tests — assert a brand-new user with NO permissions can
+    list AND download ANY data entity's files (pin the current behaviour);
+    after the fix, the same assertion fails with 403.
+  - |-
+    File-content sensitivity classification — substantial design work;
+    deferred to a separate feature ticket.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20V from the
+  DataEntityAttachmentController class-level sidecar. The finding identifies
+  a major read-side authorization gap that compounds with the cross-entity
+  write finding to make attachments effectively read-write-collaborative
+  by default.
+
+  Cross-cutting connections:
+    - Companion attachment finding: cross-entity-privilege-escalation-via-discarded-data-entity-id-in-attachment-urls
+      (the WRITE-side compound; the READ-side has NO permission at all)
+    - Companion attachment finding: filename-path-traversal-and-crlf-header-injection
+      (the filename surface compounds: cross-owner reads of files uploaded
+      with malicious filenames)
+    - read-collaborative-cross-owner-enumeration master invariant — this
+      finding is the read-side BLEED to attachments which carry different
+      sensitivity content than catalog metadata
+    - LSN-001 chunk-staging residue: the catch-all read does NOT extend to
+      /tmp/odd/chunks but the residue is a related substrate-exposure
+      surface
+    - F-006 audit-silence: attachment reads are also UNAUDITED — no
+      record of who downloaded which file when
+    - Live doc: data-discovery/attachments.md describes attachments as
+      'runbook PDFs, sample CSVs' — operator-sensitive content; the
+      cross-owner read is contradicted by the implied use case
+
+  Four DOC-NNN candidates flow:
+    (a) Code fix Layer 1 — add three SecurityRule entries
+    (b) New permission — DATA_ENTITY_ATTACHMENT_VIEW
+    (c) Code fix Layer 2 — config flag for read-collaborative opt-in
+    (d) Doc admission on the data-discovery/attachments.md page disclosing
+        the current read-side posture until the fix lands

@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-734
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java ReferenceDataController controller-class:ReferenceDataController"
+pillars_affected: [P-03, P-08]
+surfaced_by:
+  - "ReferenceDataController.md:bugs_limitations_corner_cases.[2] (buildTableName collisions: two tables named `Customer Lookups` and `customer_lookups` in the same namespace both resolve to `n_{namespaceId}__customer_lookups` — severity MEDIUM)"
+  - "ReferenceDataController.md:tests_coverage_semantic.uncovered_behaviours.[4] (Per-namespace buildTableName uniqueness collision (two tables with names that lowercase + space-replace to the same string))"
+  - "ReferenceDataController.md:implicit_adrs.[3] (Row storage is delegated to a physical Postgres table in lookup_tables_schema, not stored as JSON in the catalog)"
+behaviour: |-
+  **HIGH — `buildTableName` lossy normalisation collision: two lookup tables with names differing only in case or whitespace (Customer Lookups vs customer_lookups vs CUSTOMER_LOOKUPS) in the same namespace all resolve to the same physical Postgres table name `n_{namespaceId}__customer_lookups`, producing an opaque 500 `relation already exists` error with no friendly 409 / `BadUserRequestException`.** Primary-source confirmed in the batch-V ReferenceDataController sidecar:
+
+  - **Lossy normalisation**: `ReferenceDataServiceImpl.java:191-194` declares `buildTableName(name, namespacePojo)` as `name.toLowerCase().replace(" ", "_")` — a lossy transformation. The catalog-side name (`lookup_tables.name`) is preserved verbatim; the physical-table name is the lossy version. Operators authoring `Customer Lookups`, `customer_lookups`, `CUSTOMER_LOOKUPS`, and `Customer-Lookups` (last one only if no spaces) get different catalog rows but COLLIDING physical table names.
+  - **No pre-check**: `ReferenceDataServiceImpl.java:73-86` (`createLookupTable`) does NOT check for an existing table with the same `tableName` before calling `referenceDataRepository.createLookupTable`. The downstream `DSL.createTable(tableName)` raises a Postgres `relation already exists` error.
+  - **No graceful translation**: the Postgres error surfaces as a generic 500 with no friendly user-facing message. Operators see a stack-trace dump (per the framework default behaviour).
+
+  **Operator-observable consequences**:
+  - An operator creates `Customer Lookups` in namespace `finance`. Success. Later (perhaps after a typo-correction or after the original operator left), a different operator creates `customer_lookups` in the same namespace. The CATALOG-side validation passes (no `UNIQUE(namespace_id, name)` constraint catches the case-difference). The DDL execution fails with `relation "n_5__customer_lookups" already exists`. The 500 response has no diagnostic message.
+  - In a deployment with a steward-curated tag-cloud naming convention (e.g. `Country Codes`, `Currency Codes`, etc.), an operator inadvertently lowercase-creates `currency_codes` thinking it's a new table. The collision surfaces only at table-create time; the catalog has no warn-on-similar-name preview.
+  - A multi-tenant deployment using `Namespace` for tenant separation (per the canonicalisation candidate `multi-tenant-configuration-odd-tenant-id`) experiences cross-tenant collision risk if the same Namespace ID is shared across tenants (this is NOT the platform's design, but worth noting that the collision is namespace-scoped — same namespace, different tenants would collide).
+
+  **Compound failure with verbatim-storage XSS (TEST-GAP-733)**: a malicious operator can author a lookup table named `<script>alert(1)</script>` in namespace `finance`. The catalog stores the verbatim name. The physical table name resolves to `n_5__<script>alert(1)</script>` — a Postgres identifier that may fail to compile (Postgres identifiers have ASCII + numeric character constraints), surfacing a Postgres parsing error. The error message may itself be rendered in a UI context, potentially propagating the payload (a secondary XSS vector).
+
+  **Why HIGH not MEDIUM**: the bug class is "naming-convention-incompatible silent collision" — operators experience an unfriendly UX (500 on table-create), and the ABSENCE of a friendly 409 message implies the platform has no input-validation pre-check. The compound with the verbatim-storage XSS class (sister gap TEST-GAP-733) extends the consequence beyond UX to potential XSS propagation through error message rendering. Cross-pillar P-03 (the lookup table itself) + P-08 (operator-workflow surface) elevates severity.
+
+  **Test gap shape**: regression-pin asserting (a) the lossy normalisation behaviour (the case- + whitespace-collision class); (b) the absence of a pre-check at the service layer; (c) the resulting 500 vs the expected-401-or-409 contract. Pin the contract so a future maintainer adding the pre-check has a test to invert.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/LookupDataServiceTest.java (service-tier; does NOT exercise the collision class)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ReferenceDataBuildTableNameCollisionTest.java"
+  name: "createLookupTable_caseAndWhitespaceVariantsInSameNamespace_collideOnPhysicalTableName_currentlyReturns500"
+evidence:
+  - "ReferenceDataController.md says (bugs_limitations_corner_cases.[2]): '`buildTableName` collisions: two tables named `Customer Lookups` and `customer_lookups` in the same namespace both resolve to `n_{namespaceId}__customer_lookups`. The downstream `DSL.createTable(tableName)` will raise a Postgres `relation already exists` error surfaced as a generic 500 — no friendly 409 / `BadUserRequestException` path.' — severity MEDIUM"
+  - "ReferenceDataController.md says (tests_coverage_semantic.uncovered_behaviours.[4]): 'Per-namespace `buildTableName` uniqueness collision (two tables with names that lowercase + space-replace to the same string)'"
+  - "ReferenceDataController.md says (implicit_adrs.[3]): 'Row storage is delegated to a physical Postgres table in `lookup_tables_schema`, not stored as JSON in the catalog — reflects an operator-facing read pattern: SQL-joinable from downstream BI.'"
+  - "Source: ReferenceDataServiceImpl.java:191-194 (`name.toLowerCase().replace(\" \", \"_\")` — lossy normalization, no uniqueness pre-check), ReferenceDataServiceImpl.java:73-86 (`createLookupTable` does not check for an existing table with the same `tableName` before calling `referenceDataRepository.createLookupTable`)"
+cross_references:
+  - "TEST-GAP-733 (NEW batch V — ReferenceData verbatim-storage XSS — sister vulnerability on same controller; the two compound)"
+  - "TEST-GAP-744 (NEW batch V — ReferenceData updateLookupTableField discards path's lookupTableId — sister controller-vs-service signature drift)"
+  - "concepts: master-data-table-name-lossy-normalisation (NEW concept candidate)"
+  - "REFACTOR-NNN candidate: at ReferenceDataServiceImpl.createLookupTable, add a pre-check (`SELECT COUNT(*) FROM lookup_tables WHERE namespace_id = ? AND buildTableName(name, namespace) = ?`) before invoking DSL.createTable; surface a 409 BadUserRequestException with a clear message"
+  - "DOC-NNN candidate: surface the lowercased + underscore-replaced naming convention on the Lookup Tables doc page so operators understand how their table-name resolves to the physical schema name"
+related_features: [F-NN-master-data-management]
+related_pillar_features: ["P-03:F-001", "P-08:F-001"]
+proposed_action: |-
+  Add `ReferenceDataBuildTableNameCollisionTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `createLookupTable_lowercaseVsTitleCaseInSameNamespace_collides_returns500WithUnfriendlyMessage` — seed `Customer Lookups` (succeeds); attempt to create `customer_lookups` in the same namespace; assert HTTP 500 (or 5xx with `relation already exists` upstream); PIN the current unfriendly error path.
+  2. `createLookupTable_whitespaceAndUnderscoreVariantsInSameNamespace_collides` — sister test for `Customer Lookups` vs `Customer_Lookups`.
+  3. `createLookupTable_sameNameInDifferentNamespaces_doesNotCollide_currentContractWorks` — pin the POSITIVE contract: `Customer Lookups` in namespace A + `Customer Lookups` in namespace B are independent. The physical table names differ by namespaceId prefix.
+  4. `createLookupTable_scriptTagInName_lossy_normalisationOrPostgresIdentifierError` — pin the compound with TEST-GAP-733: a `<script>` payload in the table name produces either a Postgres identifier error OR a lossy version (depending on identifier rules). Pin the current behaviour; the test will need re-authoring if the fix at the service tier rejects unsafe identifier characters.
+
+  Add a `// REGRESSION-PIN — Lossy buildTableName normalisation is the current contract. A REFACTOR adding a pre-check or surfacing a friendly 409 will break tests #1 and #2; the maintainer must re-author them to assert the 409 message and the absence of physical-table creation.` comment block.
+
+  Pair with: (a) REFACTOR adding the pre-check at ReferenceDataServiceImpl.createLookupTable; (b) DOC-NNN surfacing the lowercased + underscore naming convention on the doc page.
+batch: 2026-05-20-V
+feature_id: null

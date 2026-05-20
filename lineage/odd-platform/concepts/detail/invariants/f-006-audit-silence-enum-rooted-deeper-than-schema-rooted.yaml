@@ -1,0 +1,335 @@
+name: |-
+  F-006 audit-silence is ENUM-ROOTED at ActivityEventTypeDto — deeper than the schema-rooted root cause (Term + Tag + Namespace lifecycle structurally invisible)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-06
+  - P-07
+  - P-08
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20U — REFINES the existing
+  f-006-audit-silence-schema-rooted-data-entity-id-not-null-fk invariant
+  (batch R) by surfacing a DEEPER architectural layer that constrains
+  the audit surface. Where the schema-rooted invariant captured the
+  data_entity_id NOT NULL FK as the row-level structural impossibility,
+  this invariant captures the ActivityEventTypeDto enum as the
+  TYPE-LEVEL structural impossibility — beyond what the schema permits,
+  the enum's value set is the SECOND structural gate that determines
+  which events can fire at all.
+
+  THE ENUM-ROOTED EVIDENCE (TermServiceImpl batch U sidecar — primary source):
+
+    ActivityEventTypeDto.java:3-31 is the enum that every @ActivityLog
+    annotation must reference. Verified by Grep:
+      grep -n 'TERM_CREATED|TERM_UPDATED|TERM_DELETED|TAG_CREATED|NAMESPACE_CREATED'
+      against ActivityEventTypeDto.java returns ZERO matches.
+
+    The enum DEFINES (per the 20-named + 7-categorical = 27 enum
+    reconciliation invariant from batch T):
+      - DATA_ENTITY_* lifecycle events (4 named values)
+      - OWNERSHIP_* events (3)
+      - TAG_ASSIGNMENT_UPDATED (1 — the LINK-changes-on-tags event,
+        NOT the tag-itself lifecycle)
+      - TERM_ASSIGNMENT_UPDATED (1 — the LINK-changes-on-terms event,
+        NOT the term-itself lifecycle)
+      - DATASET_FIELD_* events (5)
+      - CUSTOM_GROUP_* events (2)
+      - ALERT_* events (4)
+      - the 7 hidden internal types (DATA_ENTITY_OVERVIEW_UPDATED,
+        DATA_ENTITY_METADATA_UPDATED, DATA_ENTITY_SCHEMA_UPDATED,
+        DATA_ENTITY_RELATION_UPDATED, CUSTOM_METADATA_CREATED/UPDATED/DELETED)
+
+    The enum DOES NOT DEFINE:
+      - TERM_CREATED, TERM_UPDATED, TERM_DELETED — Term lifecycle events
+      - TERM_DESCRIPTION_UPDATED, TERM_TAGS_UPDATED — Term content events
+      - NAMESPACE_CREATED, NAMESPACE_DELETED — Namespace lifecycle
+      - TAG_CREATED, TAG_DELETED — Tag lifecycle (the bare entity, not
+        the link)
+      - POLICY_CREATED, POLICY_UPDATED, POLICY_DELETED — RBAC events
+      - ROLE_CREATED, ROLE_UPDATED, ROLE_DELETED — RBAC events
+      - OWNER_CREATED, OWNER_UPDATED, OWNER_DELETED — Directory events
+      - COLLECTOR_TOKEN_REGENERATED — Operational events
+      - DATASOURCE_REGISTERED — Ingestion events
+
+  THE TWO STRUCTURAL CONSTRAINTS — distinct but compounded:
+
+    Layer 1 — SCHEMA-ROOTED (batch R primary source):
+      activity.data_entity_id NOT NULL FK at V0_0_48__add_activity.sql:4, 12.
+      Any event without a data_entity_id CANNOT be inserted into the
+      activity table — the row-level structural barrier.
+
+    Layer 2 — ENUM-ROOTED (batch U primary source — THIS INVARIANT):
+      activity.event_type column references ActivityEventTypeDto values
+      via Java enum-to-VARCHAR mapping. Any event whose type is NOT
+      defined in the enum CANNOT be emitted via @ActivityLog (the
+      annotation processor would fail at compile time) AND CANNOT be
+      queried by the activity feed's event_type filter — the type-level
+      structural barrier.
+
+  WHY THIS IS A DISTINCT FINDING (not a duplicate of schema-rooted):
+
+    A maintainer wanting to add Term-lifecycle audit must clear BOTH
+    layers:
+
+      (a) Extend ActivityEventTypeDto with new enum values (TERM_CREATED,
+          TERM_UPDATED, TERM_DELETED, etc.) — adds Java code + OpenAPI
+          components.yaml entry + frontend TypeScript definition (the
+          generated-sources chain).
+
+      (b) Either:
+          (b.i) Provide a data_entity_id for every Term event — but
+                Terms are NOT data entities (they have their own term.id
+                primary key in a separate table). Term lifecycle does
+                NOT correspond to any data_entity row. There is no
+                natural data_entity_id to provide; faking one (e.g.
+                pointing at the data-entity-zero row) corrupts the
+                read-side INNER JOIN to data_entity at
+                ReactiveActivityRepositoryImpl.java:219. NOT a viable
+                path.
+          (b.ii) Make activity.data_entity_id NULLABLE + add a
+                 discriminator column (per the batch-R invariant's
+                 remediation option a). Schema migration that breaks
+                 every existing read path's INNER JOIN assumption.
+          (b.iii) Create a separate audit surface (e.g. catalog_audit
+                  table) with its own FK shape (per batch-R remediation
+                  option b). Means TWO audit surfaces and the Activity
+                  Feed UI needs to merge them.
+
+    Neither (b.i), (b.ii), nor (b.iii) is fixable by just extending the
+    enum. The enum extension is NECESSARY but INSUFFICIENT — any
+    end-to-end audit-coverage fix for Term + Tag + Namespace + RBAC
+    lifecycle requires SIMULTANEOUS work at BOTH the enum AND the
+    schema. This invariant captures the enum-half so future maintainers
+    do not under-scope a 'just add @ActivityLog' fix attempt.
+
+  THE TERM-SPECIFIC MANIFESTATION (batch U primary source):
+
+    TermServiceImpl batch U sidecar — concepts.entities,
+    bugs_limitations_corner_cases.[16] F-006-audit-silence-enum-rooted:
+
+      Six TermServiceImpl mutator methods carry no @ActivityLog:
+        createTerm (TermServiceImpl.java:99-117)
+        updateTerm (TermServiceImpl.java:121-145)
+        delete (TermServiceImpl.java:154-165)
+        upsertTags (TermServiceImpl.java:253-264)
+        linkTermWithTerm (TermServiceImpl.java:289-294)
+        removeTermToLinkedTermRelation (TermServiceImpl.java:297-302)
+
+      Six other TermServiceImpl mutator methods DO carry @ActivityLog
+      (and those compile cleanly):
+        linkTermWithDataEntity, removeTermFromDataEntity (lines 169, 183)
+        handleDataEntityDescriptionTerms (line 200)
+        linkTermWithDatasetField, removeTermFromDatasetField (lines 211, 225)
+        handleDatasetFieldDescriptionTerms (line 243)
+
+    The six annotated methods all use TERM_ASSIGNMENT_UPDATED or
+    DATASET_FIELD_TERM_ASSIGNMENT_UPDATED — both ARE in the enum because
+    they're LINK events between a term and a data-entity (where a
+    data_entity_id is the natural FK target). The six unannotated
+    methods cover Term-itself lifecycle (CRUD), Term-tags upsert,
+    and Term-to-Term linkage — events without a natural data-entity
+    binding AND events whose type values do not exist in the enum.
+
+    A maintainer adding @ActivityLog(TERM_CREATED) to createTerm would
+    FAIL TO COMPILE — TERM_CREATED does not exist as an enum value.
+    The schema absence forces the maintainer to extend the enum first;
+    the schema's NOT NULL FK then forces them to choose a data_entity_id
+    (or extend the schema). The two layers compound; a maintainer
+    discovers them serially, not at once.
+
+  THE BROADER ENUM-ROOTED COVERAGE:
+
+    TAG_CREATED, NAMESPACE_CREATED — NOT in enum. The tag-side door
+    via upsertTags (TermServiceImpl.java:257) and the namespace-side
+    door via createTerm and updateTerm (TermServiceImpl.java:103, 138)
+    therefore have NO audit trail by structural impossibility — even
+    a maintainer wanting to audit them would have to extend the enum
+    AND solve the data_entity_id question.
+
+    POLICY_*, ROLE_*, OWNER_*, COLLECTOR_TOKEN_*, DATASOURCE_* — NOT
+    in enum. The 9-sidecar F-006 audit-silence pattern (master
+    invariant) covers these surfaces with the schema-rooted layer; the
+    enum-rooted layer is the SECOND structural barrier for ALL of
+    them.
+
+  THE COMPLETENESS — three-layer F-006 audit silence model:
+
+    Layer 1 (UI tier — 5 batch-Q sidecars):
+      no console.log, no analytics, no audit affordance.
+    Layer 2 (Service tier — 5 batch-S sidecars + 6 batch-U TermServiceImpl methods):
+      no @ActivityLog annotations on RBAC + Term/Tag/Namespace mutators.
+    Layer 3 (SQL tier — 3 batch-H/N/R sidecars):
+      no audit writes from RBAC repository implementations.
+    Layer 4 (Schema tier — batch-R primary source):
+      activity.data_entity_id NOT NULL FK structurally blocks any
+      event without a data-entity binding.
+    Layer 5 (Type tier — batch-U primary source — THIS INVARIANT):
+      ActivityEventTypeDto enum does not define event values for any
+      of the affected surfaces.
+
+    The five layers together are why the F-006 audit-silence pattern
+    is STRUCTURALLY UNFIXABLE without coordinated work at every layer.
+    A maintainer adding @ActivityLog at Layer 2 hits Layer 5 first
+    (enum value missing — compile fails). Adding the enum value hits
+    Layer 4 next (FK NOT NULL — insert fails). Adding the schema
+    migration hits the existing Layer 3 read paths (INNER JOIN to
+    data_entity — read fails). The fix scope is at MINIMUM:
+      (1) Enum extension.
+      (2) Schema migration (NULL FK + discriminator OR separate audit
+          table).
+      (3) Service-tier annotations.
+      (4) Read-path queries reshaped.
+      (5) UI surfaces extended.
+
+    The five-layer scope explains why retrofitting audit coverage on
+    Term / Tag / Namespace / RBAC mutations is a non-trivial design
+    decision, not a maintenance follow-up.
+
+  SEVERITY HIGH — same severity as the schema-rooted invariant; this
+  invariant ADDS to the existing finding rather than refining its
+  severity. The combined enum+schema barrier explains the operational
+  consequence: an operator who deletes a term has no forensic trace
+  in the Activity feed AT ALL because the platform's architecture
+  forbids the event from existing.
+nodes:
+  - odd-platform java service service:TermServiceImpl
+  - odd-platform java TermController controller-class:TermController
+contributors:
+  - |-
+    TermServiceImpl batch U (PRIMARY SOURCE — Term-lifecycle enum-rooted closure):
+    concepts.entities.[two ActivityEventTypeDto values
+    TERM_ASSIGNMENT_UPDATED + DATASET_FIELD_TERM_ASSIGNMENT_UPDATED;
+    critical-absence on the enum — no TERM_CREATED/UPDATED/DELETED/DESCRIPTION_UPDATED/TAGS_UPDATED/NAMESPACE_CREATED]
+    + implicit_adrs.[5] (Activity events emitted only on mutations
+    affecting data-entity / dataset-field-term links — NOT on Term CRUD
+    itself; the enum has no Term-lifecycle values to use even if a
+    maintainer wanted to) + bugs_limitations_corner_cases.[16]
+    F-006-audit-silence-enum-rooted MEDIUM severity
+  - |-
+    TermController batch U (CORROBORATING):
+    concepts.entities.[TermFormData; all 23 endpoints inherit
+    TermServiceImpl service-tier-zero-permission-checks posture] +
+    audit-silence inheritance — every controller endpoint hits the
+    same enum + schema gating downstream
+evidence:
+  - |-
+    TermServiceImpl.md:bugs_limitations_corner_cases.[16]
+    F-006-audit-silence-enum-rooted-MEDIUM-severity — evidence:
+    TermServiceImpl.java:99-117, 121-145, 154-165 (six unannotated
+    mutator methods) + ActivityEventTypeDto.java:3-31 (enum content;
+    absence verified by grep returning zero matches for
+    TERM_CREATED/TERM_UPDATED/TERM_DELETED/TAG_CREATED/NAMESPACE_CREATED)
+  - |-
+    TermServiceImpl.md:implicit_adrs.[5] activity-event-enum-rooted-asymmetry —
+    intent_anchor: six methods are @ActivityLog-annotated with
+    TERM_ASSIGNMENT_UPDATED/DATASET_FIELD_TERM_ASSIGNMENT_UPDATED; the
+    other six mutator methods cannot be annotated because the enum has
+    no value for them
+  - |-
+    TermServiceImpl.md:concepts.entities (the critical-absence
+    enumeration in the Term-Service entities list)
+  - |-
+    Cross-references existing invariant
+    f-006-audit-silence-schema-rooted-data-entity-id-not-null-fk
+    (batch R — the schema-rooted layer)
+  - |-
+    Cross-references existing invariant
+    f-006-audit-silence-batch-s-9-sidecar-pattern-extension
+    (batch S — the 9-sidecar pattern that this enum-rooted layer
+    explains structurally)
+  - |-
+    Cross-references existing invariant
+    activity-event-enum-20-named-plus-7-categorical-equals-27
+    (batch T — the enum cardinality reconciliation that surfaces the
+    20 named values; this invariant adds the MISSING values list)
+axes_present:
+  - services
+  - schema_migrations
+  - enum_type_layer
+  - controllers
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+  - batch-R (schema-rooted root cause primary source)
+  - batch-S (9-sidecar service-tier closure)
+  - batch-T (enum cardinality reconciliation)
+  - batch-U (TermServiceImpl + TermController — enum-rooted root cause primary source, THIS INVARIANT)
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Coordinated enum + schema extension (the five-layer scope):
+      (1) Add enum values TERM_CREATED, TERM_UPDATED, TERM_DELETED,
+          TERM_DESCRIPTION_UPDATED, TERM_TAGS_UPDATED, NAMESPACE_CREATED,
+          NAMESPACE_DELETED, TAG_CREATED, TAG_DELETED, POLICY_CREATED,
+          POLICY_UPDATED, POLICY_DELETED, ROLE_CREATED, ROLE_UPDATED,
+          ROLE_DELETED, OWNER_CREATED, OWNER_UPDATED, OWNER_DELETED,
+          COLLECTOR_TOKEN_REGENERATED, DATASOURCE_REGISTERED, etc. to
+          ActivityEventTypeDto.java + components.yaml.
+      (2) Schema migration — make activity.data_entity_id NULLABLE +
+          add an event_scope discriminator column (DATA_ENTITY / RBAC /
+          DATASOURCE / COLLECTOR / TERM / NAMESPACE / TAG).
+      (3) Service-tier @ActivityLog annotations on the 6 unannotated
+          TermServiceImpl methods plus the analogous RBAC + Owner +
+          Datasource methods.
+      (4) Read-path queries reshaped to handle the optional FK; the
+          existing INNER JOIN to data_entity at
+          ReactiveActivityRepositoryImpl.java:219 becomes a conditional
+          LEFT JOIN.
+      (5) UI Activity Feed extended to render non-data-entity events
+          (the global Activity Feed page + the per-entity tab).
+  - |-
+    Alternative: separate audit surface (catalog_audit table) with its
+    own FK shape — avoids breaking the existing INNER JOIN read path
+    but means TWO audit surfaces and the operator-facing Activity Feed
+    UI needs to merge them.
+  - |-
+    Document the silent-by-structure framing on the
+    /features/active-platform-features/activity-feed live doc page —
+    operators reading the page currently see 'every platform change is
+    audited' implicit framing; the explicit framing is 'the Activity
+    Feed records data-entity-scoped events; non-data-entity events
+    (term/tag/namespace/RBAC mutations) are NOT recorded by design.'
+  - |-
+    Add a build-time invariant scanner that flags any @ActivityLog
+    annotation referencing an enum value that does not exist in
+    ActivityEventTypeDto. (Currently the compile fails — but the
+    scanner catches the failure earlier and with a clearer message.)
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20U from the
+  TermServiceImpl sidecar's primary-source Grep verification across
+  ActivityEventTypeDto.java + the TermServiceImpl @ActivityLog
+  presence/absence audit. This invariant DEEPENS the batch-R schema-rooted
+  root cause by surfacing the second structural barrier at the enum
+  type layer.
+
+  The combined 5-layer F-006 audit silence model explains why the
+  audit-coverage gap for Term + Tag + Namespace + RBAC + Datasource +
+  Collector lifecycle is NOT a maintenance follow-up. It is a coordinated
+  architectural decision touching enum + schema + service-tier +
+  repository + UI tiers simultaneously.
+
+  Cross-cutting connections:
+    - DEEPENS the batch-R schema-rooted invariant
+      (f-006-audit-silence-schema-rooted-data-entity-id-not-null-fk)
+      with the enum-type-layer evidence
+    - DEEPENS the batch-S 9-sidecar pattern invariant
+      (f-006-audit-silence-batch-s-9-sidecar-pattern-extension) with
+      the type-layer root cause that explains why the 9 sidecars all
+      cluster around the same architectural gap
+    - Pairs with activity-event-enum-20-named-plus-7-categorical-equals-27
+      (batch T) — the 27-value enum CARDINALITY is now augmented with
+      the MISSING-VALUES list at the structural-barrier layer
+    - Pairs with audit-silence-applies-at-webhook-ingress-not-state-transitions
+      (batch S) — the Alert ingress audit gap is at the INGRESS-event-shape
+      layer; this enum-rooted gap is at the TYPE-VALUES layer; two
+      different audit-gap shapes within the same overall pattern
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Five-layer remediation — coordinated work at enum + schema +
+        service + repo + UI tiers
+    (b) Doc admission — disclose on /features/active-platform-features/activity-feed
+        that the audit surface is data-entity-scoped by design
+    (c) Build-time scanner — invariant check for @ActivityLog enum
+        value existence

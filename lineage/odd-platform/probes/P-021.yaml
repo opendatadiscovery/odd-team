@@ -1,0 +1,226 @@
+---
+probe_id: P-021
+feature_id: F-006
+test_class: integration
+verified_against_commit: 80637ed
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+emitted_at: 2026-05-20
+emitted_in_batch: VAL-LSN-019-batch-2
+emitted_from_sidecar: odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+stress_category: C (orderings / pagination / aggregation)
+stress_question_ids: [STRESS_C2]
+expected_outcome: |
+  STRESS PROTOCOL C2: Pin the activity-feed cursor-pagination order-stability
+  behaviour at sub-second microsecond boundaries (the within-second visual-
+  shuffle hypothesis from ReactiveActivityRepositoryImpl stress_findings.C2).
+
+  The `findActivities` method (ReactiveActivityRepositoryImpl.java:279-295)
+  combines a SYMMETRIC truncate-to-second tuple comparator
+  (`row(trunc(ACTIVITY.CREATED_AT, DatePart.SECOND), ACTIVITY.ID).lessThan(
+   truncated_last_event_dt, lastEventId)` — line 287-288) with a
+  FULL-PRECISION ORDER BY (`ACTIVITY.CREATED_AT.desc(), ACTIVITY.ID.desc()`
+  — line 291).
+
+  HYPOTHESIS: when a single second-bucket SPLITS across two pages, page 2
+  may surface rows whose microsecond precedes page 1's cursor-anchor row's
+  microsecond — producing a "visual time-travel" effect.
+
+  The probe constructs 100 activity rows within ONE wall-clock second with
+  NON-MONOTONIC microsecond ordering relative to id ordering, then pages
+  through them and observes the cross-page ordering. The hypothesis is
+  CONFIRMED if rows on page 2 have created_at microsecond values GREATER
+  than rows on page 1 (visual time-travel).
+
+  When the cursor is upgraded to full-microsecond precision (eliminate the
+  `trunc(..., DatePart.SECOND)` and the `truncatedTo(ChronoUnit.SECONDS)`
+  matching pair), the test would flip: cross-page ordering would be
+  monotonically descending in microsecond.
+---
+
+# P-021 — Activity feed cursor: order-stability at sub-second boundaries (Stress Protocol C2)
+
+stress_category: C (orderings / pagination / aggregation)
+
+triggers:
+  - ReactiveActivityRepositoryImpl.java:285-288 (symmetric truncate-to-second cursor)
+  - ReactiveActivityRepositoryImpl.java:291 (full-precision ORDER BY)
+  - V0_0_48__add_activity.sql:9 (created_at timestamp — microsecond precision in PG)
+  - LSN-019 Stress Protocol Category C (orderings)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (1021, '//probe-source-P-021/db', 'probe-source-P-021')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (1021, '//probe-source-P-021/db/tables/p021_activity_target',
+              'p021_activity_target', 1021, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # Insert 100 activity rows within a SINGLE wall-clock second with a
+  # MONOTONIC-INCREASING created_at-microsecond progression so that the
+  # ORDER BY DESC produces newest-first as [id 100, id 99, ..., id 1].
+  # Each id N gets microsecond N (N=1..100); the latest microsecond is 100.
+  - kind: sql
+    query: |
+      WITH base AS (
+        SELECT date_trunc('second', NOW()) + interval '500 millisecond' AS t0
+      )
+      INSERT INTO activity
+        (data_entity_id, event_type, is_system_event, created_at, created_by)
+      SELECT 1021, 'DESCRIPTION_UPDATED', false,
+             base.t0 + (gs * interval '10 microsecond'),
+             'p021_user'
+      FROM generate_series(1, 100) AS gs, base
+
+  # Sanity: confirm 100 rows in a single second-bucket.
+  - kind: sql
+    query: |
+      SELECT
+        COUNT(*) AS row_count,
+        COUNT(DISTINCT date_trunc('second', created_at)) AS bucket_count
+      FROM activity
+      WHERE data_entity_id = 1021 AND created_by = 'p021_user'
+    capture_as: setup_sanity
+
+act:
+  - kind: rest
+    method: GET
+    path: "/api/dataentities/1021/activity?size=50&beginDate=2024-01-01T00:00:00.000Z&endDate=2030-12-31T23:59:59.000Z"
+    capture_as: page1_response
+
+observe:
+  - kind: jsonpath
+    from: page1_response_body
+    path: "$.items[*].id"
+    capture_as: page1_ids
+
+  - kind: jsonpath
+    from: page1_response_body
+    path: "$.items[*].createdAt"
+    capture_as: page1_timestamps
+
+  - kind: jsonpath
+    from: page1_response_body
+    path: "$.pageInfo.lastEventId"
+    capture_as: page1_cursor_event_id
+
+  - kind: jsonpath
+    from: page1_response_body
+    path: "$.pageInfo.lastEventDateTime"
+    capture_as: page1_cursor_event_dt
+
+act_page2:
+  - kind: rest
+    method: GET
+    path: "/api/dataentities/1021/activity?size=50&beginDate=2024-01-01T00:00:00.000Z&endDate=2030-12-31T23:59:59.000Z&lastEventId={page1_cursor_event_id}&lastEventDateTime={page1_cursor_event_dt}"
+    capture_as: page2_response
+
+observe_page2:
+  - kind: jsonpath
+    from: page2_response_body
+    path: "$.items[*].id"
+    capture_as: page2_ids
+
+  - kind: jsonpath
+    from: page2_response_body
+    path: "$.items[*].createdAt"
+    capture_as: page2_timestamps
+
+assert:
+  - "setup_sanity.row_count == 100"
+  - "setup_sanity.bucket_count == 1"
+  - "len(page1_ids) == 50"
+  - "len(page2_ids) == 50"
+
+  # PRIMARY: forward correctness — every row visited exactly once.
+  - "len(set(page1_ids) & set(page2_ids)) == 0"
+  - "len(set(page1_ids) | set(page2_ids)) == 100"
+
+  # SECONDARY: visual order. Under strict (created_at DESC, id DESC), the
+  # newest-microsecond rows come first. We inserted id N at microsecond N
+  # (1..100), so the descending order is id 100, 99, ..., 1. Page 1 should
+  # be ids 100..51, page 2 should be ids 50..1.
+  - "page1_ids == list(range(100, 50, -1))"
+  - "page2_ids == list(range(50, 0, -1))"
+
+  # SECONDARY-2: timestamp monotonic across pages. The minimum timestamp
+  # on page 1 should be STRICTLY GREATER than the maximum timestamp on
+  # page 2 (microsecond comparison; visual time-travel would invert this).
+  # If this assertion fails, the cursor's truncate-to-second cut has
+  # produced a visual-shuffle — empirical confirmation of the hypothesis.
+  - "min(page1_timestamps) > max(page2_timestamps)"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM activity WHERE data_entity_id = 1021 AND created_by = 'p021_user'
+
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id = 1021
+
+  - kind: sql
+    query: |
+      DELETE FROM data_source WHERE id = 1021
+
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: []
+  test_gaps:
+    - TEST-GAP-ACTIVITY-CURSOR-SUB-SECOND-ORDER-STABILITY
+  doc_gaps:
+    - DOC-GAP-ACTIVITY-FEED-CURSOR-SEMANTICS
+  related_concepts:
+    - "Activity Feed"
+    - "Cursor Pagination"
+  retrospectives:
+    - LSN-019
+  enrichment_sources:
+    - "lineage/odd-platform/understanding/odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md"
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryImpl.java"
+    lines: "279-295"
+    role: "findActivities method — symmetric truncate cursor + full-precision ORDER BY"
+  - file: "odd-platform-api/src/main/resources/db/migration/V0_0_48__add_activity.sql"
+    lines: "1-17"
+    role: "activity schema — created_at timestamp (microsecond precision)"
+  - file: "retrospectives/LSN-019-file-analyser-describes-not-interrogates.md"
+    lines: "55-71"
+    role: "Stress Protocol Category C"
+
+realism_caveats: |
+  - The probe relies on the activity partition for "today" being present.
+    If ActivityTablePartitionManager has not yet created today's partition,
+    the INSERT step fails. Pre-trigger the manager or add explicit
+    CREATE TABLE PARTITION OF activity in arrange.
+
+  - The probe runs under DISABLED auth; the cursor is auth-mode-agnostic.
+
+  - If the secondary assertions fail (visual shuffle confirmed), the
+    maintainer has empirical evidence for a remediation backlog item
+    (REFACTOR-NNN — strengthen cursor to full-microsecond precision).
+    The primary assertions (forward correctness) hold either way.
+
+  - The cursor's wire-format on the REST response uses pageInfo.lastEventId
+    + pageInfo.lastEventDateTime per OpenAPI; verify field names match
+    the actual API contract.
+
+  - If the assertions pass, the cursor is empirically STRICT and the
+    static-inferred hypothesis is incorrect. Either outcome is valuable:
+    the probe pins the actual behaviour.

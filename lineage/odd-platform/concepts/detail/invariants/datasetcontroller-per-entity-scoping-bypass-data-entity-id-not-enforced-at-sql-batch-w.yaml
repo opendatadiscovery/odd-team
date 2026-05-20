@@ -1,0 +1,354 @@
+name: |-
+  DatasetController per-entity-scoping BYPASS — data_entity_id URL parameter NOT enforced at SQL on by-version + diff endpoints (HIGH severity, batch W primary source)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-05
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20W — surfaces a
+  per-entity-scoping bypass at TWO of THREE DatasetController
+  structure endpoints. The URL parameter `data_entity_id` is
+  PRESENT in the path but IS NOT enforced against the version_id
+  arguments in the SQL — a client can pass any data_entity_id and
+  receive the structure of a different dataset's version.
+
+  THE BYPASS — what actually happens:
+
+    Endpoint 1 — getDataSetStructureByVersionId
+      URL: GET /api/datasets/{data_entity_id}/structure/{version_id}
+      Controller: DatasetController.java:23-30 — takes BOTH
+        dataEntityId and versionId; calls
+        datasetVersionService.getDatasetVersion(dataEntityId, versionId).
+      Service: DatasetVersionServiceImpl.java:39-45 — passes
+        datasetVersionId to the repo; uses datasetId ONLY in the
+        NotFoundException message text at line 42-43 ('Dataset
+        version with id %s for dataset with id %s not found'
+        .formatted(datasetVersionId, datasetId)).
+      Repository: ReactiveDatasetVersionRepositoryImpl.java:97-144 —
+        filters `WHERE DATASET_VERSION.ID = datasetVersionId` only
+        (line 129). The dataEntityId is NEVER passed to SQL.
+
+      RESULT: A request to GET /api/datasets/{any_id}/structure/{valid_version_id_for_other_dataset}
+      returns the OTHER dataset's structure. The URL implies
+      parent-scoping; the implementation does not enforce it.
+
+    Endpoint 2 — getDataSetStructureDiff
+      URL: GET /api/datasets/{data_entity_id}/structure/diff?first_version_id=A&second_version_id=B
+      Controller: DatasetController.java:43-50 — takes
+        dataEntityId, firstVersionId, secondVersionId.
+      Service: DatasetVersionServiceImpl.java:55-64 — does NOT use
+        datasetId in any query (only in the BadUserRequestException
+        message at line 59-61 for the identical-versions guard).
+      Repository: ReactiveDatasetVersionRepositoryImpl.java:146-157 —
+        filters `WHERE DATASET_VERSION.ID IN (firstVersionId,
+        secondVersionId)` only (line 154).
+
+      RESULT: A client may pass two version_ids belonging to two
+      COMPLETELY DIFFERENT datasets. The diff is computed over the
+      raw column lists keyed by oddrn (DatasetVersionServiceImpl.java:86-106);
+      columns from two unrelated datasets compare by oddrn-mismatch
+      as DELETED+CREATED — producing a nonsensical but well-formed
+      diff payload. No error, no warning.
+
+    Endpoint 3 — getDataSetStructureLatest (THE ONE THAT WORKS)
+      URL: GET /api/datasets/{data_entity_id}/structure
+      Repository: ReactiveDatasetVersionRepositoryImpl.java:160-217 —
+        the subquery `WHERE DATA_ENTITY.ID.eq(datasetId)` at line
+        167 CORRECTLY scopes the latest-version lookup.
+
+      The author of the three SQL shapes (same file) chose to scope
+      `getLatestDatasetVersion` but NOT the other two. This is
+      either an oversight or a deliberate shortcut (the
+      dataset_version.id is a globally unique surrogate, so the
+      join is redundant for correctness). No comment in the file
+      frames the intent. The MAINTAINER must decide the routing:
+      OVERSIGHT (close the bypass) or INTENT (document the
+      shortcut).
+
+  WHY THIS IS HIGH — three converging concerns:
+
+    1. URL implies parent-child scoping that implementation does
+       NOT enforce. Operators wiring RBAC policies + audit-log
+       tagging by `data_entity_id` would assume the parent is
+       scoped. The implementation makes that assumption silently
+       wrong.
+
+    2. Cross-link to F-005 read-collaborative cross-owner
+       enumeration — combined with the no-SecurityRule posture on
+       these endpoints (any authenticated user can hit them), ANY
+       authenticated user can:
+         (a) Enumerate any dataset's version history by guessing
+             version ids (the URL path is cosmetic; the version_id
+             is the actual key).
+         (b) Compare any two datasets' versions via the diff
+             endpoint regardless of parent dataset.
+       The blast radius is the entire catalog of dataset versions.
+
+    3. The bug INCLUDES the F-004 read-side surface for dataset
+       fields. Every DataSetField in the returned structure carries
+       its `internal_description` field — the F-004 stored-XSS
+       write-side surface from DatasetFieldController PUT (batch V).
+       A client bypassing per-entity scoping can read ANY dataset
+       field's user-curated description regardless of permission
+       scope. Combined with the no-rehype-sanitize-anywhere-in-odd-platform-ui-systemic
+       invariant (batch U), the cross-owner-readable XSS payload
+       reaches Markdown.tsx renderers in any user's browser if they
+       happen to load the cross-owner version.
+
+  THE 500-ON-MISSING-VERSION-ID — sibling-shaped finding:
+
+    `DatasetVersionServiceImpl.buildDataSetVersionDiffList` line
+    69-71 throws a generic `RuntimeException` when
+    `versionFields.size() != 2` (i.e., one of the requested version
+    ids does not exist). The runtime exception is NOT translated to
+    BadUserRequestException or NotFoundException — it bubbles as
+    HTTP 500. The other two structure endpoints throw NotFoundException
+    correctly (DatasetVersionServiceImpl.java:41-43, 50-51).
+    Inconsistent error contract within the same controller's
+    surface. Severity MEDIUM (compounds with the per-entity-scoping
+    bypass: a client guessing version_ids gets 200-with-data or
+    500-on-typo, NEVER 404-with-explanation).
+
+  THE PARENT-FIELD CASCADE DELETE+CREATE — sibling-shaped finding:
+
+    DatasetVersionServiceImpl.getParentOddrnChangedPojos (lines
+    156-180) propagates a parent-rename through every descendant
+    via a recursive fixed-point algorithm; the diff payload size
+    grows non-linearly with struct depth. Operators comparing
+    nested-struct datasets see amplified diff output with no
+    doc-side text explaining why. Severity LOW (intentional per
+    versioning-by-reference; surfaces as performance / UX concern
+    on heavily-nested schemas).
+
+  CROSS-OWNER READ AT THE RELATIONSHIPS ENDPOINT — fourth bypass
+  member:
+
+    GET /api/datasets/{data_entity_id}/relationships is ALSO
+    no-SecurityRule + (the dataEntityId IS used in the SQL per
+    RelationshipsServiceImpl, so per-entity scoping is enforced
+    HERE). But the relationships returned can include relationships
+    INTO entities owned by other teams — the relationship graph
+    crosses ownership boundaries. Same read-collaborative posture
+    as the other three endpoints. The OpenAPI tag `dataSet` declares
+    this endpoint at openapi.yaml:1810-1826 but the live
+    /developer-guides/api-reference/relationships page (WebFetched
+    2026-05-20 status 200) EXPLICITLY omits this dataset-scoped
+    variant. Verbatim from the WebFetch: 'Regarding GET
+    /api/datasets/{data_entity_id}/relationships — No, this
+    endpoint is not mentioned on this page.'
+
+  THE UNDOCUMENTED dataSet OPENAPI TAG — NEW MEDIUM finding:
+
+    All four DatasetController endpoints carry the OpenAPI tag
+    `dataSet` (openapi.yaml:1793-1878). The live
+    /developer-guides/api-reference hub (WebFetched 2026-05-20
+    status 200) lists 9 per-feature sub-pages — NONE describe the
+    dataSet tag's endpoints. Operators discovering structure /
+    diff / dataset-relationships endpoints rely on Swagger UI
+    at runtime. Same DOC-NNN gap class as the DataSourceController
+    sub-page absence (THIS BATCH, sibling invariant).
+
+  SEVERITY HIGH — the per-entity-scoping bypass is a security
+  primitive (URL implies scoping that isn't enforced) compounded
+  by the F-004 read-side surface (cross-owner-readable XSS) +
+  the cross-owner enumeration class (read-collaborative posture).
+  Severity climbs to HIGH because operators reasoning about
+  permission scoping via URL paths would be silently wrong.
+
+nodes:
+  - odd-platform java DatasetController controller-class:DatasetController
+  - odd-platform java service service:DatasetVersionServiceImpl
+  - odd-platform java repository reactive repository:ReactiveDatasetVersionRepositoryImpl
+
+contributors:
+  - |-
+    DatasetController batch W (PRIMARY SOURCE — controller-level
+    surface):
+    concepts.invariants[3,4] (getDataSetStructureByVersionId AND
+    getDataSetStructureDiff ignore data_entity_id) +
+    bugs_limitations_corner_cases.[0,1] HIGH severity (per-entity
+    scoping bypass at by-version AND diff endpoints) +
+    bugs_limitations_corner_cases.[2] MEDIUM (500-on-missing-version-id
+    inconsistent error contract) +
+    implicit_adrs.[4] (the three SQL shapes ambiguous — could be
+    intentional shortcut or oversight; routed at MEDIUM confidence)
+  - |-
+    DatasetVersionServiceImpl (CORROBORATING — service-tier
+    primary source): file:line 39-45 (getDatasetVersion does not
+    use datasetId for SQL) + 55-64 (getDatasetVersionDiff does not
+    use datasetId for SQL) + 69-71 (the RuntimeException on missing
+    version_id) + 156-180 (the parent-field cascade)
+  - |-
+    ReactiveDatasetVersionRepositoryImpl (CORROBORATING — SQL-tier
+    primary source): file:line 97-144 (getDatasetVersion WHERE
+    DATASET_VERSION.ID = datasetVersionId only) + 146-157
+    (getDatasetVersionWithFields WHERE DATASET_VERSION.ID IN (...)
+    only) + 160-217 (getLatestDatasetVersion DOES use
+    DATA_ENTITY.ID — the contrast that surfaces the asymmetry)
+
+evidence:
+  - |-
+    DatasetController.md:bugs_limitations_corner_cases.[0] HIGH
+    severity — evidence: DatasetController.java:23-30 +
+    DatasetVersionServiceImpl.java:39-45 +
+    ReactiveDatasetVersionRepositoryImpl.java:97-144
+  - |-
+    DatasetController.md:bugs_limitations_corner_cases.[1] HIGH
+    severity — evidence: DatasetController.java:43-50 +
+    DatasetVersionServiceImpl.java:55-64 +
+    ReactiveDatasetVersionRepositoryImpl.java:146-157
+  - |-
+    DatasetController.md:bugs_limitations_corner_cases.[2] MEDIUM
+    severity — evidence: DatasetVersionServiceImpl.java:69-71
+    (generic RuntimeException; surfaces as 500)
+  - |-
+    DatasetController.md:bugs_limitations_corner_cases.[3] MEDIUM
+    severity — F-004 verbatim-storage read-side surface at the
+    column level via DatasetController
+  - |-
+    DatasetController.md:bugs_limitations_corner_cases.[4] MEDIUM
+    severity — endpoints not documented at the live API-reference
+    surface (the dataSet OpenAPI tag is missing a sub-page)
+  - |-
+    DatasetController.md:bugs_limitations_corner_cases.[5] MEDIUM
+    severity — cross-owner read posture at the dataset structure
+    surface
+  - |-
+    DatasetController.md:implicit_adrs.[4] (intent_ambiguous —
+    the three SQL shapes in the SAME file disagree on data_entity_id
+    enforcement; the maintainer must decide routing)
+  - |-
+    Cross-references concept read-collaborative-cross-owner-enumeration
+    (THIS endpoint family — all 4 GET endpoints — joins the
+    catalogue of 24+ no-SecurityRule read surfaces)
+  - |-
+    Cross-references concept f-004-stored-xss-extends-to-query-example-fourth-markdown-surface
+    + the F-004 master invariant (DatasetController is the read-side
+    closure for the DatasetField description F-004 write-side at
+    batch V)
+
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-R (ReactiveDatasetFieldRepositoryImpl — the dataset-field-versioning-by-reference parent persistence)
+  - batch-V (DatasetFieldController — the F-004 column-level write surface that this controller READS from)
+  - batch-W (DatasetController — THIS INVARIANT, controller-level discovery of the bypass)
+
+severity: HIGH
+severity_dim: security+integrity
+
+mitigations_unimplemented:
+  - |-
+    SIMPLE FIX option A (close the bypass at SQL): modify
+    ReactiveDatasetVersionRepositoryImpl.getDatasetVersion to JOIN
+    DATA_ENTITY on DATA_ENTITY.ID = datasetId AND DATASET_VERSION.ID
+    = datasetVersionId. The query becomes parent-scoped; a
+    cross-dataset request returns Mono.empty (the service-tier
+    wraps as NotFoundException). Same fix for getDatasetVersionWithFields.
+  - |-
+    SIMPLE FIX option B (close the bypass at service): in
+    DatasetVersionServiceImpl.getDatasetVersion, fetch the
+    DatasetVersionDto then assert
+    `pojo.getDatasetVersionPojo().getDatasetOddrn().equals(parentEntityOddrn)`
+    where parentEntityOddrn is resolved from datasetId. If mismatch,
+    throw NotFoundException. Higher-cost (extra DataEntity lookup
+    per request) but localised to the service tier.
+  - |-
+    SIMPLE FIX option C (accept the shortcut, document the intent):
+    add a comment in ReactiveDatasetVersionRepositoryImpl
+    explaining that dataset_version.id is a globally unique
+    surrogate so the URL's parent path is cosmetic. Update the
+    OpenAPI spec to deprecate the parent path (use
+    /api/datasets/versions/{version_id} instead). This is a
+    contract change for downstream SDKs but is the cheapest
+    correctness fix.
+  - |-
+    Add a regression test asserting either bypass behaviour OR
+    closed behaviour:
+      Test A (pins the BUGGY state): authenticate, hit
+        /api/datasets/{wrong_id}/structure/{valid_version_id_for_other_dataset},
+        assert 200 + structure of the OTHER dataset.
+      Test B (after fix): same request, assert 404
+        NotFoundException.
+    Both tests pinned; the fix toggles which passes.
+  - |-
+    Fix the 500-on-missing-version-id in
+    DatasetVersionServiceImpl.buildDataSetVersionDiffList:
+    replace the generic RuntimeException at line 69-71 with
+    NotFoundException("Dataset version", missingVersionId). The
+    error becomes 404 consistent with the other endpoints.
+  - |-
+    Add an /developer-guides/api-reference/datasets sub-page on
+    the live docs site. Document the 4 endpoints. Decide and
+    document the per-entity-scoping policy (bug vs intent).
+    DOC-NNN candidate. Sibling to the DataSource sub-page
+    request (THIS BATCH, sibling invariant).
+  - |-
+    Cross-pillar audit follow-up — enumerate every controller
+    endpoint where the URL implies parent-scoping (`/parent/{parent_id}/child/{child_id}`)
+    AND verify the underlying SQL/service enforces the parent
+    relationship. The DatasetController bypass is unlikely to be
+    unique; the same pattern may exist at other per-data-entity
+    surfaces (e.g., per-data-entity attachments, per-data-entity
+    tags-update, per-data-entity ownership). Close the cross-pillar
+    inventory.
+
+notes: |-
+  This invariant captures the FIRST documented instance of a
+  per-entity-scoping bypass at the controller surface where the
+  URL implies parent-child scoping. The 5-step picture
+  (URL → controller → service → repository → SQL) shows the
+  parent-id is consumed only at the controller method signature
+  and the service-tier error-message-string — but lost before
+  it reaches the SQL. The bug is invisible from any single layer.
+
+  The 3-shape ASYMMETRY within the SAME REPOSITORY file is the
+  load-bearing observation. The author chose to scope ONE of three
+  related SQL queries by data_entity_id; the other two are NOT
+  scoped. Either the asymmetry is INTENTIONAL (the scoped query
+  has a semantic reason — there is no 'single latest version' without
+  a dataset anchor — and the unscoped queries are correct because
+  the version_id is globally unique) OR it is OVERSIGHT (the scoped
+  query is the right shape for ALL three, the unscoped ones are
+  bugs). The maintainer's call.
+
+  Cross-cutting connections:
+    - Pairs with read-collaborative-cross-owner-enumeration (THIS
+      endpoint family — all 4 GET endpoints — joins the catalogue
+      of 24+ no-SecurityRule read surfaces; the cross-owner read
+      class is compounded by the per-entity-scoping bypass on TWO
+      of them)
+    - Pairs with f-004-stored-xss-extends-to-... family (the
+      DatasetController GET endpoints are the read-side closure
+      for the F-004 column-level XSS write surface at
+      DatasetFieldController PUT /api/datasetfields/{id}/description;
+      cross-owner readability + verbatim-store + no-rehype-sanitize
+      compound)
+    - Pairs with dataset-field-versioning-by-reference-no-soft-delete-orphan-accumulation
+      (the parent-field cascade DELETE+CREATE in diff IS the visible
+      surface of the versioning-by-reference persistence model)
+    - Pairs with openapi-200-vs-201-status-code-drift (DatasetController
+      doesn't have a write surface, so it doesn't add new vertices;
+      but the 500-on-missing-version-id is a SIBLING drift class:
+      runtime exceptions surfacing as 500 instead of 404 NotFoundException)
+
+  Four DOC-NNN candidates:
+    (a) /developer-guides/api-reference/datasets NEW page — the 4
+        endpoints + the dataSet OpenAPI tag rendering
+    (b) /features/data-discovery — admonition under 'Dataset schema
+        diff' explicitly noting cross-owner readability + the
+        cross-dataset diff possibility (or, post-fix, the
+        parent-scoping guarantee)
+    (c) /configuration-and-deployment/enable-security/authorization
+        — explicit text on the read-collaborative posture +
+        per-entity-scoping caveats
+    (d) /features/data-discovery + /features/data-lineage — same
+        admonition explaining how dataset_version_id is a global
+        surrogate (or, post-fix, a per-dataset-scoped key)

@@ -1,0 +1,217 @@
+name: |-
+  Audit-table bifurcation — OwnerAssociationRequest workflow HAS a dedicated audit table; RBAC mutations DO NOT (2-tier audit story refined to 3-tier with the bifurcation)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-08
+  - P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20V — REFINES the existing 2-tier audit-story
+  + F-006-audit-silence-pattern with a NEW BIFURCATION: a third category of
+  RBAC-adjacent mutations (the OwnerAssociationRequest workflow) which DOES
+  have full audit-trail coverage via a DEDICATED audit table separate from
+  the platform-wide Activity Feed. This is the POSITIVE half of the 2-tier
+  audit story and was previously under-named in the catalog.
+
+  THE THREE TIERS — refined picture:
+
+    Tier 1 — DataEntity-scoped writes (full audit coverage):
+      Activity table (V0_0_48__add_activity.sql) holds rows keyed on
+      activity.data_entity_id (NOT NULL FK). 27 event types via
+      ActivityEventType enum cover description / business-name / ownership /
+      tags / terms / custom-metadata / dataset-field changes / halt config /
+      alert state transitions. Surfaced via /api/activity and the per-entity
+      Activity tab. The 10-sidecar F-006 audit-silence pattern (batch T)
+      established the SCHEMA-ROOTED scope boundary: this table CANNOT hold
+      non-data-entity events because data_entity_id is NOT NULL with FK to
+      data_entity(id).
+
+    Tier 2 — RBAC mutations (audit-SILENCE — F-006 pattern):
+      Role create / update / delete, Policy create / update / delete, Owner
+      create / update / delete via OwnerController (the directory CRUD —
+      NOT the user-owner mapping), Datasource registration, Collector token
+      rotation, AlertManager webhook ingestion — none carry @ActivityLog,
+      none emit ActivityEvent, none have a sibling audit table. F-006
+      master invariant covers this.
+
+    Tier 3 — OwnerAssociationRequest workflow (audit-PRESENT but in a
+    DEDICATED table — NEW TIER, batch V finding):
+      The user-to-Owner binding workflow exposed by OwnerAssociationRequestController
+      writes to a dedicated owner_association_request_activity table (per
+      V0_0_51__add_owner_association_request.sql schema). Five typed event
+      values via OwnerAssociationRequestActivityType.java:3-8:
+        - REQUEST_CREATED — user submits a self-request
+        - REQUEST_DECLINED — Admin declines a pending self-request
+        - REQUEST_APPROVED — Admin approves a pending self-request
+        - REQUEST_MANUALLY_APPROVED — Admin creates a user-owner mapping
+            directly via POST /api/owners/mapping (bypassing the self-request
+            flow)
+        - REQUEST_MANUALLY_DECLINED — Admin manually revokes a mapping via
+            DELETE /api/owners/mapping/{owner_id}
+      The DEDICATED audit endpoint is GET /api/owner_association_request/activity
+      (controller line 47-53). Operator audit story: 'who approved Alice's
+      mapping to Owner-X at T' IS recoverable from this table. Contrast
+      with Tier 2 where 'who renamed Owner-X from Alice to Bob at T' is NOT
+      recoverable anywhere.
+
+  THE BIFURCATION OBSERVATION:
+
+    The platform's audit story is split across THREE distinct surfaces:
+      (a) activity table (Tier 1 — data-entity-scoped)
+      (b) owner_association_request_activity table (Tier 3 — user-owner-binding)
+      (c) absence (Tier 2 — RBAC mutations)
+
+    The bifurcation is INTENTIONAL design — the OwnerAssociationRequest
+    audit table was specifically built for the binding-workflow (not retrofitted
+    onto the activity-table). The dedicated typed event enum (5 values vs
+    the 27-value ActivityEventType) confirms the separation is intentional.
+
+    Operator surface: an operator looking at 'who did what when' must check
+    BOTH the per-entity Activity tab AND the Associations tab activity-list
+    view. There is NO unified audit surface. Two distinct UIs, two distinct
+    HTTP endpoints, two distinct schemas, two distinct typed enums.
+
+  WHY THE BIFURCATION EXISTS — load-bearing for the F-006 master:
+
+    The OwnerAssociationRequest schema CAN audit because it has its own
+    table; data_entity_id IS NULL FK constraint doesn't apply. The RBAC
+    mutations CANNOT audit into the activity table because of that
+    constraint (per F-006 schema-rooted master). Operators wanting RBAC
+    audit have THREE remediation options (per F-006 mitigations):
+      (a) extend activity table with NULLable data_entity_id + discriminator;
+      (b) create rbac_activity table mirroring owner_association_request_activity;
+      (c) reuse owner_association_request_activity (or extend it) to cover
+          policy / role / owner-directory events.
+
+    Option (c) is the cleanest precedent — the platform ALREADY has the
+    pattern; the existing table covers user-owner mappings; extending it
+    (with renaming + schema additions) to cover the full RBAC story would
+    be the minimum-cost remediation.
+
+  THE F-006 10-SIDECAR PATTERN — REFINED:
+
+    The batch-T extension of F-006 to 10 sidecars stands. The OwnerAssociationRequest
+    finding is COMPLEMENTARY — not a contradiction. F-006's silent surfaces
+    do not include the OwnerAssociationRequest workflow; F-006 covers
+    RBAC mutations (role/policy/owner-directory) which remain audit-silent.
+    The new bifurcation refines the picture by NAMING the positive half
+    (Tier 3) explicitly; F-006's negative half (Tier 2) is unchanged.
+
+  THE READ-SIDE AUDIT EXPOSURE — companion finding:
+
+    The GET /api/owner_association_request/activity endpoint has NO
+    SecurityRule entry (per the OwnerAssociationRequestController batch V
+    sidecar). Any authenticated user can read the full forensic trail of
+    who requested which Owner, who approved/declined, when. The audit-list
+    LIST endpoint (GET /api/owner_association_request) DOES require
+    OWNER_ASSOCIATION_MANAGE; the audit-list HISTORY endpoint does NOT.
+    The asymmetry is unintended — the activity view is a SUPERSET of the
+    list view in sensitivity. Severity: HIGH for this companion finding;
+    handled by a separate invariant (owner-association-request-three-ungated-endpoints).
+
+  SEVERITY: MEDIUM (the bifurcation itself is design; the operator-facing
+  cost of bifurcated audit surfaces is the finding). The companion finding
+  on the ungated /activity endpoint is HIGH-severity and is captured
+  separately.
+nodes:
+  - odd-platform java OwnerAssociationRequestController controller-class:OwnerAssociationRequestController
+contributors:
+  - |-
+    OwnerAssociationRequestController batch V (PRIMARY SOURCE — the dedicated
+    audit table + the typed event enum):
+    coherence_notes.strengthens.[F-006] (the controller IS the POSITIVE half
+    of the 2-tier audit story; 5 typed event values; separate audit table) +
+    concepts.invariants (separate activityService field; OwnerAssociationRequestActivityType
+    5-value enum) +
+    implicit_adrs.[0] (audit-log SEPARATION OF CONCERNS — dedicated audit
+    table with five typed event values rather than reusing ActivityEventType)
+evidence:
+  - |-
+    OwnerAssociationRequestController.md:coherence_notes.strengthens.[F-006] —
+    the controller's mutations write to owner_association_request_activity
+  - |-
+    OwnerAssociationRequestController.md:implicit_adrs.[0] —
+    OwnerAssociationRequestActivityType.java:3-8 (the 5-value enum)
+  - |-
+    OwnerAssociationRequestController.md:concepts.invariants — separate
+    activityService field + 5 typed events
+  - |-
+    V0_0_51__add_owner_association_request.sql (the schema for the dedicated
+    audit table)
+  - |-
+    Cross-references existing invariants:
+      F-006 master: no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f
+      F-006 batch-T 10-sidecar: f-006-audit-silence-batch-t-10-sidecar-extension
+      F-006 schema-rooted: f-006-audit-silence-schema-rooted-data-entity-id-not-null-fk
+      Existing canonicalisation candidate: audit-log-presence-asymmetry-2-tier-audit-story
+        (this invariant REFINES that candidate from 2-tier to 3-tier with the
+        bifurcation)
+axes_present:
+  - controllers
+  - schema_migrations
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-E (initial F-006 finding on RBAC mutations)
+  - batch-F (F-006 refined to 2-tier audit story)
+  - batch-T (F-006 10-sidecar pattern extension)
+  - batch-V (OwnerAssociationRequest 3rd-tier identification, THIS INVARIANT)
+severity: MEDIUM
+severity_dim: audit-completeness
+mitigations_unimplemented:
+  - |-
+    Operator documentation — disclose the THREE audit surfaces on the live
+    docs: (a) /api/activity for data-entity-scoped events; (b)
+    /api/owner_association_request/activity for user-owner-binding events;
+    (c) NONE for RBAC mutations. Operators wanting compliance audit need
+    to know BOTH where to look AND where the gaps are.
+  - |-
+    Code-level remediation — extend the owner_association_request_activity
+    table (or build a sibling rbac_activity table) to cover policy / role /
+    owner-directory mutations. The OwnerAssociationRequest pattern is the
+    precedent. Pair with @ActivityLog (or a new annotation @RbacAuditLog)
+    on the relevant service methods. Estimated effort: a 3-week ticket for
+    a single engineer.
+  - |-
+    Unified audit-feed UI surface — the platform-wide Activity Feed UI page
+    consumes /api/activity; build a sibling page consuming the user-owner
+    + RBAC audit surfaces; OR build a unified endpoint /api/audit/full that
+    surfaces all three tiers in a single feed (cursor-paginated; filterable
+    by tier). Reduces operator surface area.
+  - |-
+    Schema-rooted remediation — extend activity table with NULLable
+    data_entity_id + event_scope discriminator column. Allows the platform-wide
+    activity-feed UI to surface ALL events including RBAC + user-owner
+    mappings. The most invasive option but the most ergonomic for operators.
+notes: |-
+  NEW invariant captured in batch 2026-05-20V from the
+  OwnerAssociationRequestController class-level sidecar. The finding REFINES
+  the existing F-006 audit-silence pattern + the audit-log-presence-asymmetry-2-tier-audit-story
+  canonicalisation candidate from 2-tier to 3-tier with the bifurcation
+  explicit.
+
+  Cross-cutting connections:
+    - F-006 master: no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f
+      (RBAC mutations are audit-silent — UNCHANGED by this finding)
+    - F-006 schema-rooted: f-006-audit-silence-schema-rooted-data-entity-id-not-null-fk
+      (the activity table cannot hold non-data-entity events — UNCHANGED)
+    - F-006 10-sidecar: f-006-audit-silence-batch-t-10-sidecar-extension
+      (the 10-sidecar count is unchanged; OwnerAssociationRequest is NOT a
+      member of the audit-silence set)
+    - Canonicalisation candidate: audit-log-presence-asymmetry-2-tier-audit-story
+      (this invariant promotes the 2-tier framing to 3-tier with the
+      bifurcation as the new evidence)
+    - Companion finding: owner-association-request-three-ungated-endpoints-create-providers-activity
+      (the /activity audit-read endpoint is UNGATED — separate HIGH-severity
+      finding captured in its own invariant)
+    - Companion finding: cross-controller-permission-split-pattern (this
+      controller is the POSITIVE example of dedicated-audit-table pattern;
+      a remediation precedent for RBAC mutations)
+
+  Three DOC-NNN candidates flow:
+    (a) Live docs — disclose the THREE audit surfaces explicitly
+    (b) Code remediation — extend the owner_association_request_activity
+        schema OR build rbac_activity
+    (c) Unified audit surface — operator-facing UI or endpoint that surfaces
+        all three tiers

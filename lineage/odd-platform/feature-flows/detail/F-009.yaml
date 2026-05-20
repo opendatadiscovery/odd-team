@@ -12,8 +12,608 @@ drift_class_summary:
 - empty_senders_silent_db_cost
 - sender_iteration_order_undefined
 - debug_log_full_payload_leak
+- smtp_protocol_case_sensitive_lowercase_trap_doc_vs_code_drift_gmail_example
+- subsystem_off_by_default_conditional_on_notifications_class_level_gate_environment_read_uniform
+- platform_base_url_consumption_asymmetric_email_only_slack_webhook_blind_to_setting
+- smtp_timeouts_unset_javamail_infinite_defaults_config_tier_primary_source
+- poison_message_wal_replay_loop_subscriber_layer_primary_source
+- wal_retention_disk_exhaustion_under_poison_replay
+- publication_name_ddl_injection_string_formatted_unparameterised
+- lazy_create_no_drop_replication_artefacts_operator_owns_cleanup
+- single_implementor_void_return_spi_seam_unconditional_lsn_advance
+- audit_silence_enum_rooted_no_notification_activity_event_constants
+- cross_channel_runtime_exception_abort_email_first_aborts_remainder
+- slack_429_retry_after_ignored_undifferentiated_from_4xx_5xx
+- slack_mrkdwn_injection_via_alert_chunk_description_at_channel_at_here_broadcast
+- webhook_no_hmac_signature_operator_receiver_cannot_verify_origin
+- webhook_cross_tenant_exposure_one_url_receives_every_owner
+- webhook_no_content_type_header_strict_receivers_reject_415
+- webhook_200_only_accept_2xx_success_codes_treated_as_failure
+- webhook_no_custom_auth_header_config_knob_operator_must_run_gateway
+- http_no_connect_timeout_unreachable_endpoint_hangs_wal_consumer_thread
+- thread_death_not_detected_no_future_retention_silent_subscriber_loss
+- proto_version_locked_to_1_no_pg14_streaming_optimisation_headroom
+- only_alert_table_published_hardcoded_no_shared_wal_bus_pattern
 batch_origin: K
 created_in_batch: K
+batch_extensions:
+- batch: X
+  entry_point_added: |-
+    config-class:NotificationConfiguration — the bean factory wiring side
+    of the entire outbound notification subsystem. This is the BOOT-TIME
+    CONFIGURATION ANCHOR pairing with the batch-K runtime
+    AlertNotificationMessageProcessor sidecar; together the two close
+    the F-009 chain at hop-0 (config) + hop-3 (dispatcher). The class is
+    gated by `@ConditionalOnNotifications` (file-level), reading
+    `notifications.enabled` directly from the Environment (default false),
+    and produces five conditionally-instantiated beans — the shared
+    HttpClient, the JavaMailSender, the three NotificationSender beans
+    (Slack / Webhook / Email), plus the AlertNotificationMessageTranslator
+    consumer that hop-3 invokes per WAL event.
+  contributing_nodes_added:
+  - odd-platform java config-class:NotificationConfiguration
+  notes: |-
+    Five new drift facets surface, all primary-source at
+    NotificationConfiguration.java:1-133, anchored on the bean-factory
+    layer:
+
+    (1) **SMTP CASE-SENSITIVITY TRAP (HIGH severity, doc-drift)** —
+    `NotificationConfiguration.java:63` performs a case-sensitive
+    `emailProperties.getProtocol().equals("smtp")` lowercase check. The
+    live ODD docs page (WebFetched 2026-05-20) Gmail example writes
+    `protocol: SMTP` (uppercase, JavaMail's documented convention). An
+    operator copying the live-doc YAML verbatim hits the ELSE branch —
+    `mail.smtp.auth` and `mail.smtp.starttls.enable` are NEVER added to
+    the Properties bag, regardless of how `smtp.starttls: true` and
+    `smtp.auth: true` are configured. Result: STARTTLS does not engage,
+    SMTP AUTH does not negotiate; depending on the relay, the connection
+    either fails plaintext or sends credentials in the clear. No boot
+    warning, no log line — operator discovers the misconfiguration only
+    after the first failed delivery. NEW drift facet for F-009:
+    `smtp_protocol_case_sensitive_lowercase_trap_doc_vs_code_drift_gmail_example`.
+
+    (2) **CHANNEL-KEY-PRESENCE ACTIVATION PRIMARY-SOURCE CONFIRMATION
+    (POSITIVE invariant — refines the empty-senders facet from batch K)** —
+    NotificationConfiguration.java:37 (email mailSender) + L75 (slack
+    sender) + L89 (webhook sender) + L102 (email sender) each carry
+    independent `@ConditionalOnProperty(name = "notifications.receivers.{X}")`.
+    Absence of a key = no bean = silent no-op for that channel. The
+    batch-K `empty_senders_silent_db_cost` drift facet identified the
+    BOOT-AND-RUNTIME consequence of zero channels configured + subsystem
+    on; this batch identifies the structural mechanism that produces it
+    (the per-channel conditional gates + the UN-conditional translator
+    bean at line 121-132 within the subsystem). Together the two close
+    the silent-empty-channels picture. STRENGTHENS batch-K facet
+    `empty_senders_silent_db_cost`.
+
+    (3) **SUBSYSTEM-LEVEL OFF-BY-DEFAULT GATE PRIMARY-SOURCE
+    (POSITIVE invariant)** — NotificationConfiguration.java:27
+    (`@ConditionalOnNotifications` on the @Configuration class itself) +
+    ConditionalOnNotifications.java:8-13 + NotificationsFeatureCondition.java:8-13
+    reading `Boolean.class, false`. The entire subsystem is fully
+    off-by-default — none of the bean methods (including HttpClient,
+    the translator, ALL senders) materialise when `notifications.enabled`
+    is unset. The single-source-of-truth gating uses the Environment
+    directly (NOT the typed NotificationsProperties.enabled field) so
+    the gate is uniform across NotificationConfiguration,
+    NotificationSubscriberStarter, and AlertNotificationMessageProcessor
+    (all three annotated `@ConditionalOnNotifications`). Documents
+    the BOOT-TIME invariant that the F-009 runtime chain depends on.
+    NEW drift facet for F-009 (positive):
+    `subsystem_off_by_default_conditional_on_notifications_class_level_gate_environment_read_uniform`.
+
+    (4) **PLATFORM-BASE-URL ASYMMETRIC CONSUMPTION (LOW severity,
+    operator-trap)** — `NotificationConfiguration.java:105` reads
+    `@Value("${odd.platform-base-url:http://localhost:8080}")` ONLY in
+    the email sender bean (`emailNotificationSender(...)`) — the Slack
+    and Webhook senders do NOT receive this parameter (lines 76-86,
+    88-99). An operator who forgets to set `odd.platform-base-url`
+    will see correctly-rendered Slack messages (no link to ODD UI)
+    + email notifications with broken `http://localhost:8080/...`
+    links pointing at the platform's localhost-of-container. The
+    asymmetry is undocumented. NEW drift facet for F-009:
+    `platform_base_url_consumption_asymmetric_email_only_slack_webhook_blind_to_setting`.
+
+    (5) **SMTP TIMEOUTS UNSET CONFIRMED AT CONFIG TIER (HIGH severity —
+    STRENGTHENS live-doc warning with code-level primary source)** —
+    The live docs page (WebFetched 2026-05-20) warns "SMTP timeouts
+    are unset — an unreachable SMTP server will hang notification
+    delivery"; this batch confirms PRIMARY SOURCE at
+    NotificationConfiguration.java:61-69. The Properties bag is
+    populated with `mail.transport.protocol` + `mail.smtp.auth` +
+    `mail.smtp.starttls.enable` ONLY — none of
+    `mail.smtp.connectiontimeout`, `mail.smtp.timeout`,
+    `mail.smtp.writetimeout` is set; JavaMail defaults (infinite)
+    apply. A hung SMTP relay blocks the notification-subscriber
+    thread indefinitely, stalling delivery on ALL channels (not just
+    email — the subscriber is single-threaded per
+    NotificationSubscriber.java). The live doc warning is HEALTHY;
+    the code-side remediation gap exists. NEW drift facet for F-009:
+    `smtp_timeouts_unset_javamail_infinite_defaults_config_tier_primary_source`.
+
+    Coherence sweep STRENGTHENS=3 (F-009 batch-K
+    `empty_senders_silent_db_cost` extended with config-tier mechanism;
+    F-009 batch-K `pii_passthrough_to_every_channel` extended with the
+    config-tier confirmation that there is NO per-owner / per-namespace
+    scoping bean factory — the wiring choice is COMMITTED at boot here;
+    the SMTP-side caveats in the live doc page each pair with a
+    config-tier file:line citation). SUPERSEDES=0. CONFLICTS=0.
+    Cross-link to F-009 batch-K `no_retry_no_dlq_no_audit` facet — the
+    config-tier choice to register the AlertNotificationMessageTranslator
+    bean unconditionally within the subsystem (line 121-132, no
+    @ConditionalOnProperty on the translator) means even a zero-channel
+    deployment pays the wiring cost of the translator + the DSLContext
+    + the JooqRecordHelper, and the WAL subscriber thread runs without
+    delivering anything; this is the COMPOUND finding of facet 2 + batch-K
+    `empty_senders_silent_db_cost`.
+- batch: Y
+  entry_point_added: |-
+    5-LAYER CLOSURE of the F-009 outbound notification chain. Batch Y
+    promotes FIVE notification-package classes to per-node sidecars,
+    closing the entire WAL → fan-out picture at primary source from
+    hop-1 (NotificationSubscriber — the WAL run-loop) through hop-3
+    (PostgresWALMessageProcessor — the SPI seam) through hop-4a/b/c
+    (SlackNotificationSender + WebhookNotificationSender +
+    EmailNotificationSender — the three terminal channel sinks). The
+    earlier batches anchored the DISPATCHER (batch K
+    NotificationsDispatcher → AlertNotificationMessageProcessor) and
+    the CONFIG TIER (batch X NotificationConfiguration). With batch Y
+    every node in the 8-hop chain has its own sidecar; the F-009
+    contributing_nodes list now PRIMARY-SOURCE COVERS every hop.
+  contributing_nodes_added:
+  - odd-platform java notification class:NotificationSubscriber
+  - odd-platform java notification.processor class:PostgresWALMessageProcessor
+  - odd-platform java notification.sender class:SlackNotificationSender
+  - odd-platform java notification.sender class:WebhookNotificationSender
+  - odd-platform java notification.sender class:EmailNotificationSender
+  notes: |-
+    Eighteen new drift facets surface across the 5-LAYER closure, ALL
+    primary-source at file:line citations from the 5 new sidecars.
+    Grouped by node:
+
+    **Subscriber-tier (NotificationSubscriber.java) — 5 net-new facets:**
+
+    (1) **POISON-MESSAGE WAL REPLAY LOOP — SUBSCRIBER-LAYER PRIMARY
+        SOURCE (HIGH severity)** — The dispatcher-tier batch K facet
+        `poison_message_replay_loop` is now PRIMARY-SOURCE CONFIRMED at
+        the SUBSCRIBER layer. NotificationSubscriber.java:77-91 — the
+        inner `messageProcessor.process(decodedMessage.get())` call at
+        L80 is NOT wrapped in any try/catch. Any RuntimeException
+        (IllegalArgumentException on unknown alert-type code at
+        AlertNotificationMessageTranslator.java:87,
+        IllegalStateException on missing/duplicate alerted-entity rows
+        at lines 94-101) propagates out of the inner while-true, is
+        caught by the outer Exception handler at L90, the lock is
+        released via try-with-resources, the 10s sleep + re-acquire
+        fires (L94-100), the SAME un-advanced LSN re-delivers, the
+        translator throws again, ad infinitum. The dispatcher-tier
+        facet identified the consequence (re-delivery); the subscriber
+        layer identifies the STRUCTURAL CAUSE (no try/catch around the
+        process() call + LSN advance is AFTER process() returns
+        successfully). The remediation surface is at L80-84 — either
+        skip-and-advance on processor failure OR a poison-quarantine
+        helper that advances past a known-bad LSN. STRENGTHENS batch-K
+        facet at the chain's primary entry point. NEW drift facet:
+        `poison_message_wal_replay_loop_subscriber_layer_primary_source`.
+
+    (2) **WAL-RETENTION DISK EXHAUSTION UNDER POISON-REPLAY (HIGH,
+        operator-fatal)** — Compounded from facet 1 + the live-doc
+        Postgres-configuration note (`max_wal_senders=1`,
+        `wal_keep_size=16`). A persistently-bad ALERT row pins the
+        `confirmed_flush_lsn` on `pg_replication_slots` at the poison
+        LSN; Postgres retains ALL WAL produced AFTER that LSN
+        cluster-wide (not just the alert table — the slot pins the
+        WHOLE primary's WAL stream). Disk exhaustion is real, the live
+        doc warns about lazy-create-no-drop but does NOT name the
+        compound disk-exhaustion risk under poison-replay. The only
+        remediations are: (a) clean up the bad alert row in postgres,
+        (b) `pg_drop_replication_slot(<slot>)` (LOSES all in-flight
+        undelivered alerts AND forces re-create on next subscriber
+        boot). No DLQ, no skip-poison API, no operator console for
+        advancing past the bad LSN. NEW drift facet:
+        `wal_retention_disk_exhaustion_under_poison_replay`.
+        Cross-link: DOC-GAP-230 already tracks the doc-side mirror.
+
+    (3) **PUBLICATION-NAME DDL-INJECTION (MEDIUM, latent security
+        surface)** — NotificationSubscriber.java:151 emits
+        `String.formatted("CREATE PUBLICATION %s FOR TABLE %s",
+        walProperties.getPublicationName(), tableName)`. The
+        publication-name is operator-config-sourced
+        (`notifications.wal.publication-name`); the table-name comes
+        from `targetTable.getSchema().getName() + "." +
+        targetTable.getName()` (jOOQ Tables registry — compile-time
+        safe). Postgres BANS parameterised DDL identifiers, so the
+        interpolation is structurally required — but no validation,
+        no identifier-quoting, no allowlist applies. A pathological
+        config value (`odd_alert; DROP TABLE alert; --`) would inject
+        at CREATE PUBLICATION time. The attack surface requires
+        operator-config-modification (already a higher-privilege
+        boundary), bounding severity to MEDIUM. Asymmetric: the
+        sibling existence-probe at L133 IS PreparedStatement-bound
+        (`SELECT EXISTS (SELECT oid FROM pg_publication WHERE pubname
+        = ?)`); only the create path lacks the guard. NEW drift facet:
+        `publication_name_ddl_injection_string_formatted_unparameterised`.
+
+    (4) **LAZY-CREATE-NO-DROP REPLICATION ARTEFACTS — POSITIVE
+        INVARIANT primary source (HIGH operator-trap)** —
+        NotificationSubscriber.java:104-126 (slot create-if-absent) +
+        L128-158 (publication create-if-absent) + live-doc verbatim
+        `'ODD Platform doesn't clean up replication slot it has
+        created.'` (WebFetched 2026-05-20 status 200). The
+        operator-owns-cleanup posture is intentional (durability
+        across crashes — a slot that survives platform restart
+        retains the WAL position) but creates the rename-orphan
+        trap: an operator who changes
+        `notifications.wal.replication-slot-name` between deploys
+        WITHOUT first running `SELECT pg_drop_replication_slot(<old>)`
+        accumulates orphan WAL forever on the primary, with NO
+        application-level signal. The slot becomes invisible to ODD
+        Platform but is still pinned by Postgres. POSITIVE invariant
+        for the architectural ADR; OPERATOR-TRAP for the day-2 ops.
+        NEW drift facet:
+        `lazy_create_no_drop_replication_artefacts_operator_owns_cleanup`.
+
+    (5) **THREAD-DEATH NOT DETECTED — NO FUTURE RETENTION (HIGH,
+        silent-subsystem-loss)** — `NotificationSubscriberStarter`
+        submits the subscriber to a single-thread ExecutorService
+        without retaining the returned `Future`. If
+        `NotificationSubscriber.run()` exits via
+        NotificationSubscriberException at L89 (InterruptedException
+        on inner sleep) or L99 (InterruptedException on outer 10s
+        retry sleep), the executor's sole worker dies and the
+        subscriber is gone for the rest of the JVM lifetime. The
+        platform continues to INSERT alert rows, Postgres continues
+        to retain WAL on the slot, and NO notifications fire —
+        silently. No log line tracks the dead subscriber; operators
+        discover the failure only when an expected alert fails to
+        deliver. NEW drift facet:
+        `thread_death_not_detected_no_future_retention_silent_subscriber_loss`.
+
+    **Bridge-tier (PostgresWALMessageProcessor.java — the SPI seam)
+    — 2 net-new structural facets:**
+
+    (6) **VOID-RETURN / SINGLE-IMPLEMENTOR SPI SEAM (HIGH, the
+        STRUCTURAL ROOT of `no_retry_no_dlq_no_audit`)** — The 7-line
+        SPI interface declares `void process(DecodedWALMessage
+        message) throws InterruptedException`. The contract carries
+        NO return-value channel for the dispatcher to signal
+        partial-failure / requires-replay / poison-message-skip-this-LSN
+        to the caller. NotificationSubscriber.java:80-84 treats every
+        normal process() return as success and advances setAppliedLSN
+        + setFlushedLSN UNCONDITIONALLY. A dispatcher that
+        successfully delivers to Slack but fails Webhook + Email
+        still acknowledges the LSN as fully processed; from the WAL
+        stream's perspective the message is gone. The seam offers no
+        shape on which a retry / DLQ / audit could be expressed
+        without API change. This is the STRUCTURAL ROOT of F-009's
+        existing `no_retry_no_dlq_no_audit` drift facet — the
+        feature-level finding traces to the seam contract here. NEW
+        drift facet:
+        `single_implementor_void_return_spi_seam_unconditional_lsn_advance`.
+
+    (7) **AUDIT-SILENCE ENUM-ROOTED FOR NOTIFICATION_* (HIGH,
+        cross-feature corroboration with F-006)** —
+        `ActivityEventTypeDto.java:3-31` enumerates 26 activity event
+        constants (OWNERSHIP_CREATED, ALERT_STATUS_UPDATED,
+        OPEN_ALERT_RECEIVED, RESOLVED_ALERT_RECEIVED, etc.) but ZERO
+        of them name notification delivery
+        (NO `NOTIFICATION_SENT`, `NOTIFICATION_FAILED`,
+        `NOTIFICATION_DELIVERY_ATTEMPTED`). The bridge-seam sidecar's
+        bugs_limitations_corner_cases[4] establishes that a
+        dispatcher implementor CANNOT emit a notification-delivery
+        activity event — the enum has no constant to name. The
+        F-006 batch K + N batch-S audit-silence pattern (currently
+        9-sidecar cluster) extends here to the OUTBOUND DELIVERY
+        SURFACE. This is structurally equivalent to F-006's batch K
+        finding (`audit_silence_enum_rooted_activity_event_type_dto`)
+        but applied to the notification subsystem rather than the
+        Term / Namespace / Owner lifecycle. STRENGTHENS F-006 enum-
+        root audit-silence pattern; adds notification-subsystem to
+        the 9-sidecar cluster (TEN-sidecar pattern now). NEW drift
+        facet:
+        `audit_silence_enum_rooted_no_notification_activity_event_constants`.
+
+    **Email-channel sender (EmailNotificationSender.java) — 1 net-new
+    primary-source confirmation + 1 cross-channel-abort load-bearing
+    headline:**
+
+    (8) **CROSS-CHANNEL RUNTIME-EXCEPTION ABORT — primary source at
+        the email sender (HIGH, MERGES with batch K's
+        `exception_type_asymmetry_across_senders`)** —
+        EmailNotificationSender.java:58-60 wraps `MessagingException |
+        TemplateException | IOException` as `new
+        RuntimeException(...)` — NOT as NotificationSenderException.
+        The dispatcher (AlertNotificationMessageProcessor.java:31)
+        catches NotificationSenderException ONLY; the
+        RuntimeException propagates upstream, aborting fan-out for
+        ALL SUBSEQUENT senders for that alert. If email is registered
+        before Slack/webhook in `List<NotificationSender>` (Spring
+        bean-discovery-order, undefined per batch K
+        `sender_iteration_order_undefined`), an email failure
+        cross-channel aborts delivery. PostgresWALMessageProcessor
+        sidecar implicit_adrs.[1] anchors the void-return SPI seam as
+        the structural enabler; this sidecar is the email-channel
+        primary source. STRENGTHENS batch-K
+        `exception_type_asymmetry_across_senders` with PRIMARY-SOURCE
+        FILE:LINE evidence + NEW drift facet:
+        `cross_channel_runtime_exception_abort_email_first_aborts_remainder`.
+
+    (9) **Owners-and-downstream OVERPROMISED in live doc — email
+        payload OMITS both fields (MEDIUM, doc-class)** — Live doc
+        bullets 2 + 3 of 4 (verified WebFetch 2026-05-20 status 200)
+        promise the outbound email payload includes (2) "Attached
+        owners" and (3) "Downstream entities (within configurable
+        depth, default 1 level)". EmailNotificationSender.java:64-78
+        + templates/email.ftlh:1-46 — the model HashMap populates
+        NINE fields (dataEntityId, dataEntityName,
+        dataEntityDataSourceName, dataEntityNamespaceName,
+        dataEntityType, link, alertType, alertDescription,
+        eventAtTime) — NONE of which carries owners; NONE of which
+        carries downstream entities. The AlertedDataEntity record
+        DOES carry `Set<OwnershipPair> owners` (AlertNotificationMessage.java:36)
+        and AlertNotificationMessage.downstream (line 30) is computed
+        by the translator — but neither is read by the email
+        template model. The Slack channel carries owners + downstream
+        (SlackMessageGenerator.java:128-140 + resolveDownstreamSections);
+        the email channel does NOT. The doc-side promise of channel
+        parity does not hold for email. DOC-NNN candidate. Cross-
+        link: STRENGTHENS the `pii_passthrough_to_every_channel`
+        batch-K facet by establishing that email's PII surface is
+        STRICTLY SMALLER than Slack's / webhook's (a happy accident
+        — every channel still receives every alert, but the email
+        receives a payload that excludes owners + downstream).
+
+    **Slack-channel sender (SlackNotificationSender.java) — 2 net-new
+    HIGH-severity facets:**
+
+    (10) **SLACK 429 RETRY-AFTER IGNORED — undifferentiated from
+         4xx / 5xx (HIGH)** — AbstractNotificationSender.java:24-29
+         tests only `response.statusCode() != HttpStatus.OK.value()`
+         — every non-200 raises an identical NotificationSenderException.
+         Slack documents 429 with a `Retry-After: N` header on
+         rate-limit excess. The platform never reads
+         `HttpResponse.headers().firstValue(...)` anywhere in the
+         AbstractNotificationSender.send code path. Operators with
+         high-cardinality alert bursts (e.g. a single failed dbt run
+         producing 50+ alerts) silently lose most of them to
+         rate-limiting with no operator-visible signal beyond the
+         log.error lines. No retry, no client-side rate limit, no
+         token bucket. Cross-link: REFACTOR-129 batch-C 'no
+         rate-limiting at any layer' — Slack channel is one
+         invocation site of that broader pattern. NEW drift facet:
+         `slack_429_retry_after_ignored_undifferentiated_from_4xx_5xx`.
+
+    (11) **SLACK MRKDWN-INJECTION via AlertChunkPojo.description
+         (HIGH, security + privilege-escalation-class on Slack
+         workspace)** — SlackMessageGenerator.java:77 + lines 95-101
+         render the latest 3 AlertChunkPojo.description strings
+         (sorted by created_at descending, limit 3) into the primary
+         mrkdwn body section via `markdownText(...)`. Slack
+         interprets `*bold*`, `_italic_`, `~strikethrough~`,
+         `<url|text>`, `@channel`, `@here`, `<!channel>`, `<!here>`
+         as mrkdwn markup. AlertChunkPojo.description is populated
+         from ingestion-side AlertActionResolverImpl.java:162
+         (upstream collector-supplied content — dbt test description,
+         GE expectation result string, schema-diff narrative). An
+         upstream-side actor with control over the description
+         string can inject `@channel` to broadcast-notify the entire
+         Slack channel membership; inject `<https://attacker.example/|click
+         here>` to render a fake-link; inject `<!here>` to alert
+         online users. MrkdwnUtils.java:1-14 has NO `escape(...)`
+         helper — only `bold(...)` and `buildLink(...)` for
+         platform-controlled strings. Operator-supplied /
+         ingestion-supplied strings pass through raw. The remediation
+         is a small MrkdwnUtils.escape helper at SlackMessageGenerator.java:77
+         before markdownText. This is ALSO the 6th XSS surface on F-004's
+         description-XSS family (cross-link F-004 batch Y extension).
+         NEW drift facet:
+         `slack_mrkdwn_injection_via_alert_chunk_description_at_channel_at_here_broadcast`.
+
+    **Webhook-channel sender (WebhookNotificationSender.java) — 5
+    net-new HIGH/MEDIUM-severity facets:**
+
+    (12) **WEBHOOK NO HMAC / SIGNATURE / SHARED-SECRET (HIGH,
+         operator-receiver-cannot-verify-origin)** —
+         WebhookNotificationSender.java:18-23 builds the HttpRequest
+         with `.uri(...)` + `.POST(BodyPublishers.ofString(...))` +
+         `.build()` ONLY. NO `Authorization` header, NO
+         `X-ODD-Signature`, NO HMAC-SHA256 over the body, NO
+         shared-secret config knob. The operator's webhook receiver
+         cannot verify the payload came from ODD. An attacker who
+         learns the webhook URL (via `/actuator/env` exposure, via
+         deployment artefacts, via leaked container images) can POST
+         a forged `AlertNotificationMessage`-shaped payload that the
+         operator's receiver cannot distinguish from a legitimate
+         ODD alert. This is the load-bearing security gap for the
+         generic-webhook channel — the urgent operator-receiver-side
+         posture is "use a private network or VPN for the webhook
+         URL", and the live doc is SILENT on the absence of signing.
+         NEW drift facet:
+         `webhook_no_hmac_signature_operator_receiver_cannot_verify_origin`.
+
+    (13) **WEBHOOK CROSS-TENANT EXPOSURE (HIGH, multi-tenancy
+         posture)** — WebhookNotificationSender.java:11,13-16 binds
+         ONE URL per platform deployment at bean construction; the
+         dispatcher feeds every `AlertNotificationMessage` to it
+         (AlertNotificationMessageProcessor.java:25-36). In a
+         multi-tenant deployment, EVERY tenant's alerts flow to the
+         one operator-configured URL — the receiver cannot route to
+         per-tenant destinations without parsing
+         `dataEntity.namespaceName` / `dataEntity.owners[]` and
+         routing receiver-side. This is the CHANNEL-LEVEL structural
+         reason F-009's `pii_passthrough_to_every_channel` drift
+         exists for webhook. NEW drift facet:
+         `webhook_cross_tenant_exposure_one_url_receives_every_owner`.
+
+    (14) **WEBHOOK NO Content-Type HEADER (MEDIUM,
+         receiver-strictness)** — The HttpRequest at
+         WebhookNotificationSender.java:20-22 calls only `.uri(...)`
+         + `.POST(...)` + `.build()`. NO `.header("Content-Type",
+         "application/json")` invocation. The JDK HttpClient sends
+         no body-content-type header by default; receivers strictly
+         enforcing `Content-Type: application/json` (Discord, many
+         corporate WAFs, async-receive endpoints) reject the request
+         with 415 Unsupported Media Type, surfaced as
+         NotificationSenderException at the dispatcher, alert dropped
+         silently. The fix is a one-line `.header("Content-Type",
+         "application/json")` between lines 21 and 22. NEW drift
+         facet: `webhook_no_content_type_header_strict_receivers_reject_415`.
+
+    (15) **WEBHOOK 200-ONLY HTTP ACCEPT (MEDIUM,
+         async-receive-compatibility)** — The parent's
+         `sendAndValidate` at AbstractNotificationSender.java:26-29
+         checks `response.statusCode() != HttpStatus.OK.value()`
+         — i.e. exactly 200. A webhook receiver that responds 201
+         (Created), 202 (Accepted — common for async receive), 204
+         (No Content) is treated as a failure; the alert is dropped
+         with a misleading "Notification sender response didn't
+         complete with 200 status code" error. Operators integrating
+         with async-accept webhook receivers (queue-backed, batch
+         processors) cannot use ODD's generic webhook without an
+         HTTP gateway that rewrites 2xx to 200. NEW drift facet:
+         `webhook_200_only_accept_2xx_success_codes_treated_as_failure`.
+
+    (16) **WEBHOOK NO CUSTOM AUTH HEADER SUPPORT (MEDIUM,
+         operator-deployment-burden)** — Many webhook receivers
+         (incident management platforms, custom relay services,
+         multi-tenant aggregators) require an `Authorization` header
+         or a tenant-identifier header to route the payload. There
+         is NO configuration knob for `notifications.receivers.webhook.headers.X`,
+         NO `@ConfigurationProperties` mapping for a header map, NO
+         per-call header injection. Operators must place an HTTP
+         gateway in front of their actual receiver to add headers —
+         a deployment burden ODD's docs do not surface. NEW drift
+         facet:
+         `webhook_no_custom_auth_header_config_knob_operator_must_run_gateway`.
+
+    **HTTP-shared (Slack + Webhook senders, both inherit from
+    NotificationConfiguration#httpClient) — 1 net-new HIGH-severity
+    cross-channel-stall facet:**
+
+    (17) **HTTP NO CONNECT TIMEOUT — UNREACHABLE ENDPOINT HANGS THE
+         WAL CONSUMER THREAD (HIGH, structurally identical to batch-X
+         SMTP timeouts-unset)** — NotificationConfiguration.java:31-34
+         constructs `HttpClient.newHttpClient()` — the JDK's default
+         factory method that does NOT set a `connectTimeout`. Neither
+         SlackNotificationSender.java:43-48 NOR
+         WebhookNotificationSender.java:18-23 call
+         `HttpRequest.newBuilder().timeout(Duration)`. The underlying
+         JDK socket-level timeout (system-dependent, typically
+         75-120s on Linux for SYN retries; potentially UNBOUNDED for
+         half-open connections) is the effective ceiling. For an
+         unreachable Slack endpoint (Slack regional outage, DNS
+         hijack, network partition) OR a TCP-accept-then-never-
+         respond webhook (deeply-broken endpoint, DROP firewall
+         rule), the dispatcher thread stalls — blocking ALL
+         subsequent alert delivery (Slack + Webhook + Email) across
+         the WHOLE platform deployment for the duration. This is
+         structurally identical to the SMTP-timeouts-unset finding
+         catalogued on the NotificationConfiguration sidecar
+         (batch X `smtp_timeouts_unset_javamail_infinite_defaults_config_tier_primary_source`,
+         HIGH severity) but applies to outbound HTTP rather than
+         SMTP. SAME HAZARD CLASS at a different transport. NEW drift
+         facet:
+         `http_no_connect_timeout_unreachable_endpoint_hangs_wal_consumer_thread`.
+
+    **Subscriber-tier extra — 1 net-new operator-headroom facet:**
+
+    (18) **proto_version=1 LOCKED + ALERT-TABLE-ONLY PUBLICATION
+         (LOW, architectural-constraint)** —
+         NotificationSubscriber.java:42 hardcodes `"proto_version",
+         "1"` in the streamOptions Properties bag. Postgres
+         logical-decoding supports proto_version 1, 2, 3, 4 — locking
+         to v1 means streaming-decoding optimisations introduced in
+         PG 14+ (e.g. `streaming` parameter for in-progress
+         transactions) are inaccessible without a code change.
+         Separately, NotificationSubscriber.java:51 hardcodes
+         `registerPublication(connection, Tables.ALERT)` — the
+         published-table set is committed at build time, not
+         configurable. Any future WAL-driven sub-feature (e.g.
+         activity-event WAL listener, lookup-table-change listener)
+         must implement its own subscriber + publication + advisory
+         lock; there is no shared-WAL-bus pattern in the platform.
+         Both constraints are intentional (operational simplicity,
+         maximum PG-version compatibility) but committed in code
+         rather than config. Two NEW drift facets:
+         `proto_version_locked_to_1_no_pg14_streaming_optimisation_headroom`
+         + `only_alert_table_published_hardcoded_no_shared_wal_bus_pattern`.
+
+    Coherence sweep (LSN-018 Rule 6):
+      - STRENGTHENS=8 (batch-K `poison_message_replay_loop` ←
+        primary source at subscriber layer L77-91; batch-K
+        `exception_type_asymmetry_across_senders` ← primary source
+        at EmailNotificationSender.java:58-60; batch-K
+        `no_retry_no_dlq_no_audit` ← structural root at the SPI
+        seam's void-return contract; batch-K
+        `pii_passthrough_to_every_channel` ← channel-level structural
+        confirmation at WebhookNotificationSender.java:11; batch-X
+        `smtp_timeouts_unset_javamail_infinite_defaults_config_tier_primary_source`
+        ← HTTP-transport sibling at NotificationConfiguration.java:31-34;
+        F-006 batch-K + batch-N audit-silence ENUM-ROOTED pattern
+        ← notification-subsystem extension at ActivityEventTypeDto;
+        F-004 batch-V markdown XSS family ← Slack mrkdwn-injection
+        as 6th surface; F-007 batch-T alerts-downstream cross-feature
+        ← F-007 OPEN alerts trigger F-009 outbound delivery — the
+        cross-pillar feed P-07 → P-07 inside Active Platform Features).
+      - SUPERSEDES=0.
+      - CONFLICTS=0. No registry artefact contradicts the findings.
+        Cross-batch evidence is uniformly direction-aligned.
+
+    Probe candidates for this batch:
+      (P-W-1) **Poison-message WAL replay regression test** — local
+        docker-compose with PG logical replication + ODD platform;
+        inject an ALERT row with `type_id` referencing a non-existent
+        alert-type-name; observe WAL stream stalls with 10s back-off
+        cycles + verify `pg_replication_slots.confirmed_flush_lsn`
+        does NOT advance + subsequent alerts queue. Pins the
+        load-bearing F-009 fragility.
+      (P-W-2) **Cross-channel email-first abort regression** —
+        Configure all 3 channels; ensure email registered first
+        (force bean order via @Order or position in NotificationConfiguration);
+        inject an alert whose template rendering throws (e.g.
+        invalid Freemarker by corrupting email.ftlh in classpath);
+        assert Slack and Webhook are NEVER called for that alert.
+        Pins the load-bearing exception_type_asymmetry_across_senders
+        contract.
+      (P-W-3) **Slack mrkdwn-injection broadcast** — POST a forged
+        AlertManager webhook payload (cross-link F-007) with
+        `description` containing `@channel <https://attacker.example|click
+        here>`; observe Slack channel sees `@channel` broadcast
+        notification + fake-link rendered as clickable. Pins the
+        F-004 6th-surface + the Slack-channel mrkdwn-injection.
+      (P-W-4) **Webhook HMAC absence + cross-tenant exposure** —
+        Configure webhook URL; observe HTTP POST has no
+        Authorization / X-Signature headers; trigger alerts on data
+        entities owned by Owner-A and Owner-B; verify both reach
+        the one webhook URL identically (no tenant routing).
+      (P-W-5) **HTTP connect-timeout-unset stall** — Configure Slack
+        URL pointing at a non-listening port; trigger an alert;
+        observe the dispatcher thread blocks for the OS-level
+        timeout (~75-120s) + subsequent alerts on Webhook + Email
+        are deferred for the duration. Pins the cross-channel-stall
+        risk.
+
+    Cross-references:
+      - F-004 batch Y adds the Slack mrkdwn-injection as 6th XSS
+        surface (link from F-004 → F-009 facet 11);
+      - F-006 batch Y adds the NOTIFICATION_* enum-rooted
+        audit-silence as 10th-sidecar pattern extension (link from
+        F-006 → F-009 facet 7);
+      - F-007 batch Y adds the downstream notification chain
+        (F-007 AlertManager INGEST → F-009 outbound delivery —
+        the load-bearing P-07-internal cross-feature pipeline)
+        — link from F-007 → F-009.
+
+    Final state: F-009 is now PRIMARY-SOURCE COVERED at every
+    contributing node from boot (NotificationConfiguration batch X)
+    → WAL run-loop (NotificationSubscriber batch Y) → SPI seam
+    (PostgresWALMessageProcessor batch Y) → dispatcher
+    (AlertNotificationMessageProcessor batch K) → translator
+    (referenced from dispatcher) → three sender channels
+    (SlackNotificationSender + WebhookNotificationSender +
+    EmailNotificationSender, all batch Y). The 5-layer closure is
+    COMPLETE. ZERO probes executed in batch Y — primary-source
+    audit only; probe candidates P-W-1 .. P-W-5 logged above.
 feature_name: WAL-driven outbound alert notification fan-out (Slack / Webhook / Email)
 discovered_from_entry_point: wal-event:postgres-logical-replication:ALERT-table-INSERT/UPDATE
 description: |-
@@ -58,6 +658,7 @@ contributing_nodes:
 - odd-platform java sender:EmailNotificationSender
 - odd-platform java PostgreSQLLeaderElectionManager
 - odd-platform java config-properties:NotificationsProperties
+- odd-platform java config-class:NotificationConfiguration
 chain:
 - hop: 1
   node: odd-platform java NotificationSubscriberStarter
@@ -350,14 +951,25 @@ control_summary: |-
   injected ALERT row to drive the WAL stream.
 related_refactoring_scopes:
 - REFACTOR-145
+- REFACTOR-129  # batch-C 'no rate-limiting at any layer' — Slack 429 Retry-After ignored facet is one invocation site
 related_test_gaps: []
-related_doc_gaps: []
+related_doc_gaps:
+- DOC-GAP-230  # WAL delivery semantics + poison-replay-loop doc-side mirror
 related_concepts:
 - Alert
 - Notification Dispatcher (Outbound)
 - WAL-driven Outbound Subsystem
+- exception-type-asymmetry-notification-senders
+- poison-message-wal-replay-loop
+- lazy-create-no-drop-replication-artefacts-operator-owns-cleanup
+related_features:
+- F-004  # Slack mrkdwn-injection is the 6th surface of F-004's description-XSS family
+- F-006  # NOTIFICATION_* enum-rooted audit-silence extends F-006's 9-sidecar pattern to 10
+- F-007  # AlertManager INGEST → F-009 outbound delivery (P-07-internal cross-feature pipeline)
 related_retrospectives:
 - LSN-001
+- LSN-017  # cross-layer cross-half user effects only visible across all 5 notification-package nodes — see batch-Y notes 1+6+8+17
+- LSN-018  # batch-Y coherence-check protocol — 8 STRENGTHENS / 0 SUPERSEDES / 0 CONFLICTS
 related_probes: null
 probe_verifications: []
 maintainer_curated: false

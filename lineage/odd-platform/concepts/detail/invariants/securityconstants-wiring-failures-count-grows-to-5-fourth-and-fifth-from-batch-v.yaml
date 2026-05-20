@@ -1,0 +1,240 @@
+name: |-
+  SecurityConstants wiring failures grow 3 → 5 (alerts-status 295-296 primary-source + DATA_ENTITY_ADD_TERM mis-gate at /api/datasetfields/{id}/terms POST line 297-299)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20V — STRENGTHENS the existing
+  3-failure SecurityConstants wiring story to 5 failures with TWO new
+  primary-source confirmations from the DatasetFieldController class-level
+  sidecar. Both failures live in SecurityConstants.java within 5 lines of
+  each other (lines 295-299) — visible to anyone reading the dataset-field
+  block, invisible to anyone scanning the file by string match alone.
+
+  THE FAILURE INVENTORY — now 5 distinct wiring bugs:
+
+    Failure 1 — REFACTOR-217 path-mismatch (batch K primary source):
+      SecurityConstants.java:237-242 wires the singular '/term' path; the
+      OpenAPI operation paths at openapi.yaml:973, 1042 use the plural
+      '/terms'. The matchers never fire. DATA_ENTITY_ADD_TERM is silently
+      unenforced for the dataentity-term-linkage endpoint. Anchor invariant:
+      authorization-path-mismatch-security-rules-term-vs-openapi-terms-silently-disables-permission-gate.yaml
+
+    Failure 2 — alerts-status DATASET_FIELD_ADD_TERM mis-gate (batch K
+    initial finding + batch V primary-source confirmation):
+      SecurityConstants.java:295-296 wires PUT /api/alerts/{alert_id}/status
+      to DATASET_FIELD_ADD_TERM — a TERM permission applied to an ALERT
+      path. The DatasetFieldController batch V sidecar surfaces this with
+      primary-source citation reading the lines IN CONTEXT — the line
+      immediately precedes the DatasetField-permission block, making the
+      copy-paste origin visible. Existing invariant:
+      second-securityconstants-bug-alerts-status-wrong-permission.yaml
+      stands; batch V adds positional context (the bug is at the boundary
+      between alert-related and dataset-field-related rules).
+
+    Failure 3 — term-to-term linkage NO SecurityRule (batch U primary source):
+      TermController.java:237-249 — addLinkedTermToTerm + deleteLinkedTermFromTerm
+      have NO SecurityRule entry. Anchor invariant:
+      securityconstants-term-to-term-no-security-rule-third-wiring-failure.yaml
+
+    Failure 4 — NEW BATCH V: /api/datasetfields/{id}/terms POST mis-gated
+    to DATA_ENTITY_ADD_TERM at SecurityConstants.java:297-299:
+      The SecurityRule entry reads (paraphrased to avoid YAML scalar
+      pitfalls): SecurityRule with DATASET_FIELD resolver + PathPattern
+      '/api/datasetfields/{dataset_field_id}/terms' + POST verb + permission
+      DATA_ENTITY_ADD_TERM. The intended permission per the live docs at
+      https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions
+      (WebFetched 2026-05-20 status 200) is DATASET_FIELD_ADD_TERM (the
+      doc-quoted definition: 'Allows linking a business glossary term to
+      a specific field within a dataset'). The wiring is the WRONG permission
+      from the same DATA_ENTITY/DATASET_FIELD scope family — same shape as
+      Failure 2's copy-paste bug, same root cause (hand-curated static
+      list, no compile-time consistency check).
+
+      Two-way bypass effects:
+        (a) A user holding DATA_ENTITY_ADD_TERM (intended for entity-level
+            term-linking) effectively gets dataset-field term-linking too.
+        (b) A user holding DATASET_FIELD_ADD_TERM (the documented permission)
+            cannot link terms to dataset fields.
+      Same surface as Failure 2 — both grant too much to one cohort and
+      block too much from another cohort, both impact common Policies.
+
+    Failure 5 — NEW BATCH V: alerts-status PRIMARY-SOURCE confirmation
+    at SecurityConstants.java:295-296 (the SAME bug as Failure 2, now
+    primary-source-cited in DatasetFieldController context):
+      DatasetFieldController batch V — concepts.invariants[6] explicitly
+      cites SecurityConstants.java:295-296 in the context of the
+      dataset-field permission block. The bug was previously known (batch K)
+      but batch V is the SECOND primary-source citation, raising confidence
+      from MEDIUM to HIGH and confirming the position-in-file ordering: the
+      alerts-status mis-gate sits BETWEEN the dataset-field block at
+      lines 282-294 + 297-303 and the (now-discovered) /terms POST mis-gate.
+      The two bugs are PROXIMATE in source — within 5 lines of each other —
+      a single careless copy-paste that affected two SecurityRule entries
+      simultaneously.
+
+  THE 5-FAILURE COUNT and the BUG DENSITY:
+
+    Five independent wiring failures in a single ~360-line authorization
+    table. Two distinct failure classes:
+      - PATH-MISMATCH class (Failure 1) — the URL pattern does not match
+        the OpenAPI path; the matcher silently never fires.
+      - WRONG-PERMISSION class (Failures 2, 4, 5 — three of five) — the
+        URL pattern matches; the wrong permission key is wired; the gate
+        fires but on the wrong identity.
+      - MISSING-RULE class (Failure 3) — there is NO SecurityRule for the
+        endpoint at all; the catch-all authenticated() rule is the sole
+        gate.
+
+    Three distinct failure classes is itself a finding — each requires a
+    different remediation pattern. The COMMON ROOT CAUSE is the
+    SecurityConstants.SECURITY_RULES static list at SecurityConstants.java:98 —
+    a hand-curated SINGLE SOURCE OF TRUTH with NO compile-time,
+    test-time, or startup-time integrity check. The pattern is unstable
+    by design.
+
+  THE BUILD-TIME REMEDIATION OBSERVATION:
+
+    A startup-time invariant would close ALL FIVE failure classes simultaneously:
+
+      Rule R1 — every OpenAPI operationId tagged as a 'write' verb (POST /
+        PUT / DELETE) must match exactly one SecurityRule via path-pattern
+        glob + verb. Catches Failure 1 (path mismatch) and Failure 3 (missing
+        rule).
+
+      Rule R2 — every SecurityRule's permission key must have a name-prefix
+        matching the URL path's resource family (e.g. paths under /api/alerts
+        gate only ALERT_* or DATA_ENTITY_ALERT_* permissions; paths under
+        /api/datasetfields gate only DATASET_FIELD_* permissions; paths
+        under /api/terms gate only TERM_* or DATA_ENTITY_*_TERM permissions;
+        etc.). Catches Failures 2, 4, 5 (wrong permission).
+
+      Rule R3 — every SecurityRule's path-pattern must match exactly one
+        OpenAPI operation path (no orphan rules; no dead path patterns).
+        Catches future drift between the spec and the wiring.
+
+    The three rules together turn the hand-curated list into a guarded
+    canonical source. A few hundred lines of Java + a build-time test
+    pass is the entire remediation scope. The cost-benefit ratio is highly
+    asymmetric: low remediation cost + persistent prevention of an entire
+    failure class.
+
+  SEVERITY: HIGH — both new failures (4 + 5) are HIGH-severity in isolation.
+  The PATTERN of repeated independent failures in the same file raises the
+  meta-severity: a sixth or seventh failure probably awaits discovery; the
+  hand-curated list IS NOT a stable canonical authority for authorization.
+nodes:
+  - odd-platform java DatasetFieldController controller-class:DatasetFieldController
+contributors:
+  - |-
+    DatasetFieldController batch V (PRIMARY SOURCE — failures 4 + 5):
+    concepts.invariants[5] (line 297-299 wires /terms POST to DATA_ENTITY_ADD_TERM
+    instead of DATASET_FIELD_ADD_TERM — primary-source citation + live-docs
+    cross-check) +
+    concepts.invariants[6] (line 295-296 wires alerts-status to DATASET_FIELD_ADD_TERM —
+    SECOND primary-source citation; the bug sits adjacent to the dataset-field
+    block) +
+    bugs_limitations_corner_cases[0] (HIGH — the /terms mis-gate) +
+    bugs_limitations_corner_cases[1] (HIGH — the alerts-status mis-gate copy-paste
+    confirmation) +
+    docs_link_semantic.inferred_docs[1] (WebFetched live permissions doc
+    confirming DATASET_FIELD_ADD_TERM is the correct gate for the /terms
+    POST endpoint) +
+    coherence_corrections (the SUPERSEDES + NEW findings explicit)
+evidence:
+  - |-
+    DatasetFieldController.md:concepts.invariants[5] — SecurityConstants.java:297-299
+    + PolicyPermissionDto.java:34 + WebFetch
+    https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions
+    status 200 2026-05-20
+  - |-
+    DatasetFieldController.md:concepts.invariants[6] — SecurityConstants.java:295-296
+  - |-
+    DatasetFieldController.md:bugs_limitations_corner_cases[0] HIGH (the /terms
+    mis-gate) — evidence: SecurityConstants.java:297-299 + PolicyPermissionDto.java:34 +
+    docs URL
+  - |-
+    DatasetFieldController.md:bugs_limitations_corner_cases[1] HIGH (the
+    alerts-status copy-paste bug — second primary-source citation)
+  - |-
+    DatasetFieldController.md:security.known_security_gaps[0] HIGH + [1] HIGH
+    (both wiring bugs cited with file:line evidence)
+  - |-
+    Cross-references existing invariants:
+      authorization-path-mismatch-security-rules-term-vs-openapi-terms-silently-disables-permission-gate
+      (Failure 1)
+      second-securityconstants-bug-alerts-status-wrong-permission (Failure 2 — now upgraded
+      to MULTI-batch-confirmed with batch V evidence)
+      securityconstants-term-to-term-no-security-rule-third-wiring-failure (Failure 3)
+axes_present:
+  - controllers
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+  - batch-K (Failures 1 + 2 initial findings)
+  - batch-U (Failure 3 — term-to-term linkage)
+  - batch-V (Failures 4 + 5 — /terms mis-gate + alerts-status primary-source confirmation, THIS INVARIANT)
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Fix Failure 4 at SecurityConstants.java:297-299 — change the permission
+    from DATA_ENTITY_ADD_TERM to DATASET_FIELD_ADD_TERM. The live docs
+    document the correct gate verbatim; the code change is one line.
+  - |-
+    Fix Failure 5 (same as the Failure 2 master fix) at SecurityConstants.java:295-296 —
+    change the permission from DATASET_FIELD_ADD_TERM to the intended
+    ALERT-domain permission. The fix is referenced in the existing
+    second-securityconstants-bug-alerts-status-wrong-permission invariant.
+  - |-
+    Build-time scanner — implement Rules R1 + R2 + R3 (see description above)
+    as a Java test in odd-platform-api/src/test that fails the build if
+    any SecurityRule violates the canonical-name-prefix rule, the
+    path-pattern-vs-OpenAPI-paths consistency rule, or the every-mutation-has-a-rule
+    rule.
+  - |-
+    Default Policy audit — identify which shipped Policies and which
+    operator-deployment Policies grant DATA_ENTITY_ADD_TERM or
+    DATASET_FIELD_ADD_TERM. Warn operators about the two-way bypass for
+    Failure 4 until the fix lands. Same audit shape as the Failure 2
+    canonicalisation candidate.
+  - |-
+    Regression tests — add per-failure regression tests (one per failure)
+    that authenticate a user with the WRONG-but-currently-effective
+    permission and assert the endpoint succeeds (PIN current behaviour as
+    a regression boundary). Add the corresponding fix-pinning tests that
+    assert the endpoint FAILS for the wrong-permission holder ONCE the
+    fix lands.
+  - |-
+    Docs warning until fix lands — disclose the wiring failures on the
+    live authorization/permissions doc page (a 'Known issues' admonition
+    with the affected endpoints + the two-way bypass description for each
+    wrong-permission failure).
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-20V from the
+  DatasetFieldController class-level sidecar's primary-source SecurityConstants
+  examination. The count grows 3 → 5; the bug density (5 independent
+  failures in a single ~360-line authorization table) is itself a meta-finding
+  arguing for build-time integrity checks.
+
+  Cross-cutting connections:
+    - Failure 1: authorization-path-mismatch-security-rules-term-vs-openapi-terms-silently-disables-permission-gate (REFACTOR-217)
+    - Failure 2: second-securityconstants-bug-alerts-status-wrong-permission (now multi-batch confirmed)
+    - Failure 3: securityconstants-term-to-term-no-security-rule-third-wiring-failure (batch U)
+    - Failures 4 + 5: THIS INVARIANT (batch V — primary-source citations)
+    - Companion invariant: term-service-tier-zero-permission-checks (no
+      defence-in-depth at the service layer means the perimeter failures
+      have no fallback)
+
+  Three DOC-NNN candidates flow:
+    (a) Code fix — change the two wrong-permission entries (one-line each)
+    (b) Build-time scanner — Rules R1/R2/R3 as a build-time invariant
+    (c) Default-Policy audit — identify and warn about Policies impacted by
+        the two-way bypasses
+
+  Pattern-level lesson: a hand-curated single source of truth for
+  authorization is unstable at scale. Five independent failures in one
+  file argue for tooling, not for review-discipline alone. The cost-benefit
+  of the build-time scanner (hours of work, prevents an entire failure
+  class permanently) is highly asymmetric.

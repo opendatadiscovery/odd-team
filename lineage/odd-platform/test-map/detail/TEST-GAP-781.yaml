@@ -1,0 +1,70 @@
+gap_id: TEST-GAP-781
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java SessionConfiguration config-class:SessionConfiguration"
+pillars_affected: [P-10, P-09]
+surfaced_by:
+  - "SessionConfiguration.md:bugs_limitations_corner_cases.[1] HIGH (cluster-deployment fragility on IN_MEMORY default — the /ingestion/datasources flow's collector-identity bridge DOES NOT REPLICATE across instances)"
+  - "SessionConfiguration.md:dependencies_semantic.coupling-with-other-config-classes.[SecurityConstants.WHITELIST_PATHS — /ingestion/** is permitted without SecurityContext, so the WebSession state this class wires is the SOLE identity carrier for collector requests]"
+  - "SessionConfiguration.md:concepts.invariants.[IN_MEMORY is the SHIPPED DEFAULT; operators upgrading from single-instance to multi-instance must EXPLICITLY change the provider — the platform does not fail-fast or warn]"
+behaviour: |-
+  **HIGH — SessionConfiguration's IN_MEMORY default (the shipped value `session.provider: IN_MEMORY` per application.yml:30) breaks the `/ingestion/datasources` collector-identity bridge in multi-instance deployments WITHOUT sticky sessions. The platform does NOT fail-fast or warn on this misconfiguration class.** This is the THIRD-tier primary source (after the controller + repository tiers — REFACTOR-419) of the cluster-fragility finding.
+
+  **Concretely**:
+  1. `IngestionDataSourceFilter.java:36-38` writes `SessionConstants.COLLECTOR_ID_SESSION_KEY` into the WebSession backed by whichever provider SessionConfiguration wires.
+  2. `IngestionController.createDataSource` at IngestionController.java:50-58 reads the same key back.
+  3. Under `session.provider=IN_MEMORY` (the shipped default), the WebSession lives in the JVM's `ConcurrentHashMap` — per-process, NOT replicated across instances.
+  4. A load balancer WITHOUT sticky sessions routes the second request (the controller's read) to a DIFFERENT instance than the first (the filter's write).
+  5. The second instance sees a NULL `collectorId` session attribute and throws `IllegalStateException("Collector id is null")` at line 54 — propagating as HTTP 500.
+  6. The collector retries → may hit a third instance → same failure → exponential backoff → operator-visible collector outage.
+
+  **The ADR is implicit**: this sidecar's `related_implicit_adrs` block names ADR-CANDIDATE-141 (Collector identity via WebSession attribute, not Spring Security Principal). That ADR's THIRD facet is rooted at SessionConfiguration.java:46-49 — the IN_MEMORY default. Together with REFACTOR-419 (cluster-fragility, HIGH severity, batch P + strengthen-batch-R), the cluster-fragility surface is the canonical operator-cliff scenario.
+
+  **Compound risk** (cross-batch composition):
+  - This is the SAME class as LSN-001 (LOCAL ephemeral attachment storage default — silent insecure default) and LSN-002 (us-east-1 region default — silent operational failure). All three are "shipped-as-default" choices with no boot-time warning when the operator's deployment-shape contradicts the default's assumption.
+  - The `/ingestion/datasources` path is also UNAUTHENTICATED (whitelisted in `SecurityConstants.WHITELIST_PATHS:95-96` — verified at primary source by the SessionConfiguration sidecar's `dependencies_semantic.coupling-with-other-config-classes` block + the LoginForm sidecar's permit-all paths block). The combination means: the collector's identity-carrying mechanism is BOTH (a) provider-dependent (cluster-fragile) AND (b) unauthenticated (no SecurityContext fallback).
+
+  **STRENGTHENS REFACTOR-419 with the CONFIG-CLASS PRIMARY SOURCE.** Prior batches surfaced this from the filter + controller tiers; this sidecar pins the shipped DEFAULT that drives the fragility (application.yml:30 `provider: IN_MEMORY`). The three-tier triangulation (controller + repository + config-class) is now complete.
+
+  **Test gap shape**: integration test running the full flow on a SIMULATED multi-instance deployment (two `@SpringBootTest` ApplicationContexts in the same JVM sharing a load-balancer-style request router). Confirm:
+  - Under `session.provider=IN_MEMORY` + non-sticky routing: `/ingestion/datasources` 2nd request → HTTP 500.
+  - Under `session.provider=INTERNAL_POSTGRESQL` + non-sticky routing: succeeds (cluster-safe).
+  - Under `session.provider=REDIS` + non-sticky routing: succeeds (cluster-safe).
+
+  The test PINS the cluster-fragility shape AND documents the cluster-safe providers as alternatives.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/CollectorIdSessionBridgeMultiInstanceContractTest.java"
+  name: "ingestionDataSources_underInMemoryProviderAndNonStickyLB_secondHopReturns500_pinsClusterFragility_pinsRefactor419"
+evidence:
+  - "SessionConfiguration.md says (bugs_limitations_corner_cases.[1]): 'cluster-deployment fragility on IN_MEMORY default — the /ingestion/datasources flow's collector-identity bridge (SessionConstants.COLLECTOR_ID_SESSION_KEY written by IngestionDataSourceFilter, read by IngestionController.createDataSource) DOES NOT REPLICATE across instances. The default IN_MEMORY provider is per-process; a load balancer without sticky sessions routes the second request to a different instance which sees a NULL session attribute and throws IllegalStateException(\"Collector id is null\") propagating as HTTP 500. Cross-reference: REFACTOR-419 (cluster-fragility, HIGH severity), ADR-CANDIDATE-141 (the WebSession-attribute identity choice that this provider backs), F-008 (datasource registration flow), F-020 (collector management flow)'"
+  - "SessionConfiguration.md says (related_refactoring_scopes): 'REFACTOR-419 (HIGH, batch P + strengthen-batch-R) — Cluster-fragility on the COLLECTOR_ID_SESSION_KEY bridge; this sidecar provides the CONFIG-CLASS primary source for the default that drives the fragility (application.yml:30 provider: IN_MEMORY). Strengthens the existing 2-sidecar triangulation to 3 (controller + repository + config-class)'"
+  - "Verified at primary source: application.yml:28-30 (`session: # INTERNAL_POSTGRESQL, REDIS, IN_MEMORY \\n provider: IN_MEMORY`)"
+  - "Verified at primary source: SessionConfiguration.java:46-49 (IN_MEMORY wiring)"
+  - "Verified at primary source: IngestionDataSourceFilter.java:36-38 (session-write) + IngestionController.java:50-58 (session-read) + line 54 (IllegalStateException)"
+  - "WebFetch https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform 2026-05-20 status 200 — confirms doc mentions multi-instance support without cross-linking to the /ingestion/datasources bridge"
+cross_references:
+  - "REFACTOR-419 (STRENGTHENED — third tier of primary source: controller + repository + config-class)"
+  - "ADR-CANDIDATE-141 (this sidecar wires the WebSession backing store that ADR-141 depends on — facet 3 of the trade-off)"
+  - "F-008 (Batch-Ingestion-S2S-API) — the /ingestion/datasources flow"
+  - "F-020 (Collectors-tab Management) — the issuing+rotating tokens flow"
+  - "TEST-GAP-779 (compound — never-expiring sessions + IN_MEMORY = unbounded heap growth before the cluster split-brain manifests)"
+  - "DOC-GAP-NNN (proposed — live `/configuration-and-deployment/odd-platform#select-session-provider` should explicitly cross-link to the /ingestion/datasources bridge consequence)"
+  - "LSN-001 / LSN-002 family — silent insecure / silent operationally-broken defaults"
+related_features: [F-008, F-020]
+related_pillar_features: ["P-10:F-002 Batch-Ingestion-S2S-API", "P-08:F-004 Collectors-tab Management"]
+proposed_action: |-
+  Add `CollectorIdSessionBridgeMultiInstanceContractTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods asserting cluster-safety per provider:
+
+  1. `ingestionDataSources_underInMemoryAndNonStickyLB_secondHop_returns500_pinsClusterFragility` — two `@SpringBootTest` ApplicationContexts sharing a TestContainer PG (but NOT sharing JVM state), `session.provider=IN_MEMORY`; a custom load-balancer-style filter alternates routing 1st/2nd hops to different contexts; submit a token-bearing `POST /ingestion/datasources`; assert HTTP 500 with `IllegalStateException("Collector id is null")` in the second context's logs. PINS the cluster-fragility.
+
+  2. `ingestionDataSources_underInternalPostgresqlAndNonStickyLB_succeeds_pinsClusterSafeAlternative` — same fixture but `session.provider=INTERNAL_POSTGRESQL`; assert HTTP 200 on both hops.
+
+  3. `ingestionDataSources_underRedisAndNonStickyLB_succeeds_pinsClusterSafeAlternative` — same fixture but `session.provider=REDIS` with Testcontainers Redis; assert HTTP 200 on both hops.
+
+  Add a `// CLUSTER-FRAGILITY-PIN — REFACTOR-419 third tier of primary source: the shipped default session.provider=IN_MEMORY in application.yml:30 drives the cluster-split-brain in /ingestion/datasources. This test pins the fragility under IN_MEMORY AND documents the cluster-safe providers as alternatives. Cross-link: ADR-CANDIDATE-141 facet 3.` comment block.
+
+  Pair with: (a) DOC-GAP-NNN — live `/configuration-and-deployment/odd-platform#select-session-provider` MUST cross-link to the /ingestion/datasources bridge consequence; (b) REFACTOR-419 implementation (the actual fix is either to (1) move collector identity out of WebSession into a per-request token, OR (2) make INTERNAL_POSTGRESQL the shipped default for non-dev deployments via a deployment-profile mechanism).
+batch: 2026-05-20-X
+feature_id: F-008

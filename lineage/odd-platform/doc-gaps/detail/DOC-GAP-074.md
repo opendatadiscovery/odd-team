@@ -33,3 +33,46 @@
   - This converges on REST conventions on both sides and closes the class-wide drift.
 - Tracked as **DOC-GAP-184** for back-link convenience; the PUT-update side's batch-P confirmation is recorded under DOC-GAP-184 as a standalone finding for traceability. DOC-GAP-074 remains the canonical class-level finding; DOC-GAP-184 is the 5th instance.
 - Doc-side action unchanged: no central-docs-site page-level surface; the spec/codegen surface is the only consumer-visible drift. Severity stays MEDIUM at the class level.
+
+## Batch Z append
+
+## Batch Z append
+
+#### Batch 2026-05-20-Z STRENGTHENS — openapi-spec PRIMARY SOURCE enumerates 31 `'201':` declarations + 4 spec-internal copy-paste defects + the directional-fix question
+
+Batch Z's `odd-platform__openapi__spec__odd-platform-public-api.md` sidecar provides the FIRST spec-axis primary source for DOC-GAP-074. The 5-instance class-wide pattern that batch P established (POST owners + POST roles + POST policies + POST /ingestion/entities + PUT updateOwner) is now enumerated at the SPEC layer at a much larger scale:
+
+- **Spec-side enumeration (per sidecar `bugs_limitations_corner_cases.[2]`)** — Grep'd `'201':` across `openapi.yaml` returns 31 occurrences (vs `'200':` at 137 occurrences). The drift class spans 7+ controllers and 9+ endpoint-level instances explicitly enumerated:
+  - Owner (createOwner — batch E; updateOwner — batch P)
+  - Role (createRole — batch E)
+  - Policy (createPolicy — batch E cross-link)
+  - Ingestion postDataEntityList (batch F)
+  - Term createTerm + updateTerm (batch U)
+  - Alert changeAlertStatus (cross-ref)
+  - **DataSource registerDataSource + updateDataSource (NEW batch Z at openapi.yaml:454 + 482)**
+  - **Collector registerCollector + updateCollector (NEW batch Z at openapi.yaml:558 + 586)**
+  - **Tag createTag + updateTag (NEW batch Z at openapi.yaml:372 + 400)**
+  - **QueryExample updateQueryExample (NEW batch Z at openapi.yaml:2156-2157)**
+
+- **Spec-internal copy-paste defect class (per sidecar `bugs_limitations_corner_cases.[3]`)** — five specific instances at `openapi.yaml:2797-2799` (updateTerm — 201 + "successfully modified" description), `openapi.yaml:400` (updateTag — 201 + "successfully updated"), `openapi.yaml:482` (updateDataSource — 201 + "successfully updated"), `openapi.yaml:586` (updateCollector — 201 + "successfully updated"), `openapi.yaml:2156-2157` (updateQueryExample — 201 + "successfully modified"). The shape is consistent: the spec carries the 201 status code (canonically Created — a POST shape) with description text matching an Update operation. The spec authors themselves treated 201 as the platform-wide convention for both Create AND Update, demonstrating the convention was confused at authoring time.
+
+- **The directional-fix question** (per sidecar `bugs_limitations_corner_cases.[2]` related framing): the platform-wide convention spans 9+ endpoint-level instances and is consistent in shape — controllers uniformly return `ResponseEntity::ok` (200); tests uniformly assert `isOk()` (locking in 200); the spec uniformly declares 201 (mismatching the implementation). A single cluster-fix PR per direction can close this drift class:
+  - **Option A — Align spec → impl**: change every `'201':` to `'200':` (or `'204':` for PUT operations with no response body); this matches the existing impl + tests. Bounded ~30-50 line spec change.
+  - **Option B — Align impl → spec**: change every `ResponseEntity::ok` on POST methods to `ResponseEntity.status(HttpStatus.CREATED).body(...)`; PUT methods stay 200 (the spec's 201 declaration on PUT is the anomalous side). Bounded ~20-30 line code change + update existing `isOk()` test assertions to `isCreated()`. Aligns with REST conventions (POST → 201, PUT → 200).
+  - **Recommended**: Option B (align impl to canonical REST convention) — but the directional choice is the maintainer's. Either direction closes the drift cluster in one PR.
+
+- **The DOC-GAP-099 META cluster framing**: the status-code-drift failure shape is one of 6 (per DOC-GAP-242 NEW batch Z) failure shapes in the OpenAPI authoring-quality cluster. The other shapes:
+  - Inverse-semantic (DOC-GAP-099)
+  - OperationId-misnamed (DOC-GAP-098)
+  - Response-shape-contradiction (DOC-GAP-198)
+  - Coverage-gap (DOC-GAP-009 + DOC-GAP-244 NEW)
+  - No-security-model (DOC-GAP-242 NEW)
+  - **Status-code-drift (DOC-GAP-074 — THIS finding, strengthened to 9+ endpoints)**
+
+- **Doc-side action expansion**: in addition to the original spec-vs-impl reconciliation PR, the doc action expands to:
+  - Add a "Contract conformance" note to `developer-guides/api-reference.md` (per DOC-GAP-209's note already pending) that names the directional question explicitly.
+  - Add a CI gate (per DOC-GAP-099 META's batch-U promotion candidate) that exercises every operation against a running test container and asserts status-code parity.
+
+- **Cross-reference additions**: DOC-GAP-099 META (this finding is the COVERAGE-GAP failure shape's primary source) + DOC-GAP-242 NEW (the no-security-model failure shape; sibling spec-authoring-quality) + DOC-GAP-244 NEW (the coverage-gap failure shape; sibling spec-vs-doc-hub gap).
+
+- **Severity stays MEDIUM** — the 9+-endpoint enumeration is more comprehensive than batch P's 5-instance framing but doesn't change the operational severity (impact: SDK clients with strict `isCreated()` checks fail on POST endpoints; clients with `2xx` checks succeed). The cluster-wide PR is bounded; the closeable-in-one-PR property holds at the larger scope. Coherence: strengthens DOC-GAP-074 with spec-axis primary source + 4 NEW endpoint-level instances (DataSource × 2 + Collector × 2 + Tag × 2 + QueryExample × 1 — at openapi.yaml:372, 400, 454, 482, 558, 586, 2156-2157, 2797-2799) + the directional-fix framing. No conflicts with existing batch-E/P framing.

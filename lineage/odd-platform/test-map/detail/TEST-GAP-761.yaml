@@ -1,0 +1,55 @@
+gap_id: TEST-GAP-761
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform java NamespaceController controller-class:NamespaceController"
+pillars_affected: [P-08]
+surfaced_by:
+  - "NamespaceController.md:bugs_limitations_corner_cases.[5 — LOW Soft-delete reincarnation is undocumented. Deleting a namespace marks deleted_at = NOW(); the partial unique index excludes that row. A subsequent create-by-same-name succeeds and yields a NEW namespace id with NEW history.]"
+  - "NamespaceController.md:implicit_adrs.[3] (Name uniqueness is enforced via PARTIAL unique index keyed on (name) WHERE deleted_at IS NULL, enabling soft-delete reincarnation)"
+  - "NamespaceController.md:tests_coverage_semantic.uncovered_behaviours.[Soft-delete reincarnation: deleting finance, then create({name: 'finance'}) succeeds and returns a NEW id (the old row's deleted_at IS NOT NULL excludes it from the unique-index scope)]"
+behaviour: |-
+  **LOW — Soft-delete reincarnation: deleting a namespace marks `deleted_at = NOW()`; the partial unique index `namespace_unique` excludes that row; a subsequent `create({name: 'X'})` succeeds and yields a NEW namespace id with NEW history. Any operator-side bookmarks / external references using the old id break silently; tag / term assignments to the soft-deleted namespace persist in the DB but are filtered out of all reads.** Primary-source confirmed in batch-W NamespaceController sidecar:
+
+  - **Schema tier**: V0_0_31__add_deleted_at_field.sql:25 — `CREATE UNIQUE INDEX IF NOT EXISTS namespace_unique ON namespace (name) WHERE deleted_at IS NULL`. The `WHERE deleted_at IS NULL` predicate excludes soft-deleted rows from the unique constraint.
+  - **Repository tier**: `ReactiveAbstractSoftDeleteCRUDRepository.delete` (lines 50-58, the inherited soft-delete): `UPDATE namespace SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL`.
+  - **Reincarnation sequence**: (1) operator creates `finance` → id=42; (2) operator deletes `finance` → row 42 gets `deleted_at = NOW()`; (3) operator (or any of the 8 side-door callers) creates `finance` again → new row, new id=43; (4) the new row's name=`finance` doesn't collide with row 42 because the partial-unique-index excludes deleted rows.
+
+  **Operator-visible consequences**:
+  - **External references break silently**: a BI tool that hardcoded `namespace_id=42` for `finance` reports against the soft-deleted row's referents. The new `finance` namespace has id=43; the BI tool sees nothing.
+  - **Audit confusion**: the activity feed (if it captured the original namespace creation by user A at timestamp T) shows row 42's creation. The new row 43 has its own creation event by user B at timestamp T'. The audit story is "namespace `finance` was created twice" — operator must investigate.
+  - **Orphan tag/term assignments**: tags scoped to namespace 42 still have `namespace_id=42` in `tag.namespace_id`. The new namespace 43 has no inherited tags. Operators expecting "I deleted and recreated `finance` and my tags still work" are surprised.
+  - **GDPR right-to-erasure ambiguity**: the soft-deleted row still holds the original creator's audit metadata. A "delete my data" request must hard-delete the row + all referents — not a single button in the UI.
+
+  **Why LOW not MEDIUM**:
+  - The behaviour is intentional (per implicit_adrs.[3]): "The partial-index syntax `WHERE deleted_at IS NULL` is a DELIBERATE pattern repeated across data_source_name_unique / collector_name_unique / data_source_oddrn_unique (same migration lines 27, 29, 31). The pattern explicitly enables 'delete then recreate' semantics."
+  - Operator-impact is RECOVERABLE — operator can examine the soft-deleted row's referents and migrate them manually.
+  - The reincarnation enables a useful workflow (delete a typo'd namespace, recreate it without conflict).
+
+  **Test gap shape**: regression-pin asserting: (a) deleting `finance` succeeds (HTTP 204); (b) the soft-deleted row's `deleted_at IS NOT NULL`; (c) creating `finance` again succeeds and returns a NEW id; (d) the new namespace has NO inherited tag/term assignments; (e) the partial unique index's WHERE clause is verifiable via `pg_indexes`. The current state is PINNED — failures land if a future maintainer hard-deletes (instead of soft-deletes) or changes the unique-index expression.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/NamespaceServiceImplTest.java (service-tier; does NOT exercise reincarnation)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/NamespaceSoftDeleteReincarnationTest.java"
+  name: "deleteThenCreateSameName_succeedsWithNewId_pinsReincarnationContract"
+evidence:
+  - "NamespaceController.md says (bugs_limitations_corner_cases.[5]): 'LOW — Soft-delete reincarnation is undocumented. Deleting a namespace marks deleted_at = NOW() (via ReactiveAbstractSoftDeleteCRUDRepository.delete:50-59); the partial unique index excludes that row. A subsequent create-by-same-name succeeds and yields a NEW namespace id with NEW history. Any operator-side bookmarks / external references using the old id break silently; tag / term assignments to the soft-deleted namespace persist in the DB but are filtered out of all reads. No doc-side mention of this lifecycle.' — severity: LOW"
+  - "NamespaceController.md says (implicit_adrs.[3]): 'Name uniqueness is enforced via PARTIAL unique index keyed on (name) WHERE deleted_at IS NULL, enabling soft-delete reincarnation. evidence: V0_0_31__add_deleted_at_field.sql:25 (CREATE UNIQUE INDEX IF NOT EXISTS namespace_unique ON namespace (name) WHERE deleted_at IS NULL) + ExceptionUtils.java:42-44 (the index-name string match in formatMessage returning the operator-friendly 400 message) — intent_anchor: the partial-index syntax WHERE deleted_at IS NULL is a DELIBERATE pattern repeated across data_source_name_unique / collector_name_unique / data_source_oddrn_unique (same migration lines 27, 29, 31). The pattern explicitly enables delete then recreate semantics.' — confidence: HIGH"
+  - "Verified at primary source: V0_0_31__add_deleted_at_field.sql:25 + ReactiveAbstractSoftDeleteCRUDRepository.java:50-59"
+cross_references:
+  - "TEST-GAP-759 (NEW batch W — TOCTOU race — sister Namespace gap)"
+  - "TEST-GAP-760 (NEW batch W — case-sensitivity — sister Namespace gap)"
+  - "concepts: three-soft-delete-mechanisms-across-the-repository-layer (existing concept)"
+  - "DOC-NNN candidate: surface the soft-delete reincarnation behaviour in the Management → Namespaces doc; explain operator-impact on external references"
+related_features: []
+related_pillar_features: ["P-08:F-NN-namespaces-tab"]
+proposed_action: |-
+  Add `NamespaceSoftDeleteReincarnationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `deleteNamespace_thenCreateSameName_succeedsWithNewDistinctId_pinsReincarnation` — POST `/api/namespaces` `{name: 'finance'}` → id_first; DELETE `/api/namespaces/{id_first}`; POST again `{name: 'finance'}` → id_second; assert `id_first != id_second`.
+  2. `softDeletedNamespaceRow_deletedAtIsNotNull_pinsSoftDeleteSemantic` — after the DELETE in #1, query `SELECT deleted_at FROM namespace WHERE id = ?` and assert NON-NULL.
+  3. `reincarnatedNamespace_doesNotInheritTagsFromSoftDeletedPredecessor_pinsOrphanAssignmentSemantic` — seed namespace with tags before delete; after reincarnation, query tags for the new namespace id; assert tags are NOT inherited (the old row's tags remain at the old namespace_id).
+  4. `partialUniqueIndexExpression_isOverNameWhereDeletedAtIsNull_pinsDbConstraint` — query `pg_indexes` for `namespace_unique`; assert the index definition includes `WHERE deleted_at IS NULL`.
+
+  Pair with DOC-NNN: surface the soft-delete reincarnation behaviour in the Management → Namespaces doc; explain the operator-impact on external references (BI tools, bookmarks).
+batch: 2026-05-20-W
+feature_id: null

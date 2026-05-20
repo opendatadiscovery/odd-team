@@ -1,0 +1,53 @@
+gap_id: TEST-GAP-753
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataSourceController controller-class:DataSourceController"
+pillars_affected: [P-08]
+surfaced_by:
+  - "DataSourceController.md:downstream_side_effects.deleteDataSource (calls dataEntityRepository.existsNonDeletedByDataSourceId(id) — if the datasource has ANY non-soft-deleted data_entity children, throws CascadeDeleteException → HTTP 400 via ControllerAdvice.java:42-46)"
+  - "DataSourceController.md:bugs_limitations_corner_cases.[Cascade-delete blocks at first non-deleted data_entity, no operator hint about WHICH children block deletion]"
+  - "DataSourceController.md:implicit_adrs.[Cascade-delete guard on data_source delete — operator cannot delete a datasource with live data_entities]"
+behaviour: |-
+  **MEDIUM — `DELETE /api/datasources/{id}` cascade-delete behaviour is unverified at the HTTP boundary. The block-on-live-children path AND the allow-when-no-children-or-all-deleted path are both uncovered by tests.** Primary-source confirmed in batch-W DataSourceController sidecar:
+
+  - `DataSourceServiceImpl.delete` (lines 85-96, `@ReactiveTransactional`) line 88: calls `dataEntityRepository.existsNonDeletedByDataSourceId(id)` (per batch-D `ReactiveDataEntityRepositoryImpl.java:158` sidecar).
+  - If TRUE → throws `CascadeDeleteException("Data source cannot be deleted: there are still data entities attached")` (line 93-94) → mapped to HTTP 400 via `ControllerAdvice.java:42-46`.
+  - If FALSE → calls `dataSourceRepository.delete(id)` → soft-delete via `ReactiveAbstractSoftDeleteCRUDRepository.delete` lines 50-58 → `UPDATE data_source SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL`.
+
+  **Behaviour to pin**:
+  - **Cascade-delete block**: a datasource with ANY non-soft-deleted data_entity child returns HTTP 400. The error message is a literal string "Data source cannot be deleted: there are still data entities attached" — the operator gets NO hint about WHICH children block deletion (boolean check, not list).
+  - **Cascade-delete allow**: a datasource with NO data_entity children OR all-soft-deleted children returns HTTP 204 No Content.
+  - **Soft-delete verification**: after a successful delete, `data_source.deleted_at IS NOT NULL`; the row is excluded from `GET /api/datasources` by the soft-delete filter.
+  - **Orphan-children semantic**: the delete does NOT cascade — soft-deleted data_entity children remain with `data_entity.data_source_id = soft-deleted data_source.id`. The FK is NOT cascaded by Postgres (no `ON DELETE CASCADE` in the schema), NOT nulled by application logic. (Per the sidecar's downstream_side_effects.deleteDataSource: "the data_entity.data_source_id remains the soft-deleted data_source.id; the FK is NOT cascaded by Postgres, NOT nulled by application logic.")
+
+  **Why MEDIUM not HIGH**: cascade-delete is a non-destructive failure mode (operator gets a clear 400 with a message). The behaviour is consistent with FOUR other cascade-delete guards in the codebase (Collector, Namespace, Policy, Role, Owner — all use the same `existsByX` + `CascadeDeleteException` pattern). The MEDIUM rating reflects the operator-experience-friction (operator must use Discovery UI to find and remove children) and the un-cascaded orphan semantics — but no security or correctness issue.
+
+  **Test gap shape**: regression-pin asserting: (a) DELETE for a datasource with live data_entity children returns HTTP 400 with the canonical message; (b) DELETE for a datasource with no children returns HTTP 204; (c) post-delete, `data_source.deleted_at IS NOT NULL`; (d) post-delete, a fresh registerDataSource with the same ODDRN succeeds (the partial unique index `data_source_oddrn_unique WHERE deleted_at IS NULL` excludes the soft-deleted row).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceCascadeDeleteTest.java"
+  name: "deleteDataSource_withLiveDataEntityChildren_returns400_withoutChildren_returns204_softDeletePersists"
+evidence:
+  - "DataSourceController.md says (downstream_side_effects.deleteDataSource): 'calls dataSourceService.delete(id) → DataSourceServiceImpl.java:85-96 (@ReactiveTransactional). The service: (1) calls dataEntityRepository.existsNonDeletedByDataSourceId(id) — if the datasource has ANY non-soft-deleted data_entity children, throws CascadeDeleteException(Data source cannot be deleted: there are still data entities attached) → HTTP 400 via ControllerAdvice.java:42-46; (2) otherwise calls dataSourceRepository.delete(id) → inherited soft-delete → UPDATE data_source SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL.'"
+  - "DataSourceController.md says (bugs_limitations_corner_cases.[Cascade-delete blocks at first non-deleted data_entity]): 'the existence check returns boolean, not a list; the CascadeDeleteException message says only there are still data entities attached'"
+  - "DataSourceController.md says (implicit_adrs.[Cascade-delete guard]): 'the design choice is consistent with FOUR other cascade-delete guards in the codebase (Collector, Namespace, Policy, Role, Owner — all with existsByX repository methods + CascadeDeleteException service-tier throws). The reasoning: the platform's persistence model uses soft-deletes (deleted_at IS NULL filter) and FK relationships with NO ON DELETE CASCADE — so cascade behaviour must be enforced at the service tier OR a hard-delete would fail with FK violation.'"
+  - "Verified at primary source: DataSourceServiceImpl.java:85-96 + ControllerAdvice.java:42-46 + ReactiveAbstractSoftDeleteCRUDRepository.java:50-58"
+cross_references:
+  - "TEST-GAP-749 (NEW batch W — sister DataSource gap on regenerateDataSourceToken)"
+  - "TEST-GAP-751 (NEW batch W — sister DataSource gap on implicit namespace creation)"
+  - "TEST-GAP-752 (NEW batch W — sister DataSource gap on cross-path silent overwrite)"
+  - "concepts: three-soft-delete-mechanisms-across-the-repository-layer (existing concept)"
+  - "DOC-NNN candidate: surface the cascade-delete behaviour in the Datasources tab doc — operators must know they cannot delete a datasource with live data_entities"
+related_features: [F-008]
+related_pillar_features: ["P-08:F-NN-Datasources-tab"]
+proposed_action: |-
+  Add `DataSourceCascadeDeleteTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `deleteDataSource_withLiveDataEntityChildren_returns400_pinsCascadeBlock` — seed a datasource + ingest data_entities (live, not soft-deleted); DELETE `/api/datasources/{id}`; assert HTTP 400 with the canonical message "Data source cannot be deleted: there are still data entities attached".
+  2. `deleteDataSource_withNoDataEntityChildren_returns204_pinsCascadeAllow` — seed a fresh datasource (no children); DELETE; assert HTTP 204 No Content.
+  3. `deleteDataSource_withOnlySoftDeletedChildren_returns204_pinsSoftDeleteExclusion` — seed a datasource + ingest data_entities + soft-delete all children; DELETE; assert HTTP 204 (the existsNonDeletedByDataSourceId check filters out soft-deleted rows).
+  4. `deleteDataSource_softDeletePersists_oddrnReusable_pinsReincarnation` — DELETE; assert `data_source.deleted_at IS NOT NULL` via raw DB query; assert a fresh `POST /api/datasources` with the same ODDRN succeeds (the partial unique index excludes the soft-deleted row).
+
+  Pair with DOC-NNN: surface the cascade-delete behaviour in the Datasources tab doc page so operators know the workflow (delete data_entities first, then the datasource).
+batch: 2026-05-20-W
+feature_id: F-008

@@ -1,0 +1,230 @@
+name: customConnectionPool exists solely for Lookup Tables — ?schema=lookup_tables_schema URL injection
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-03
+- P-08
+description: |-
+  NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-20X — surfaces the architectural
+  fact that the platform runs TWO R2DBC ConnectionPool beans per replica, where
+  the second exists exclusively to scope the Lookup Tables subsystem to a
+  dedicated PostgreSQL schema. The pattern is unique in the codebase and was
+  not previously catalogued as a load-bearing invariant.
+
+  **THE PRIMARY SOURCE — R2DBCConfiguration.java:54-87 + 24-25 + 113-119**:
+    The bean `customConnectionPool` (`@Bean(name = "customConnectionPool",
+    destroyMethod = "dispose")` at line 54) is a second `io.r2dbc.pool.ConnectionPool`
+    structurally identical to the primary `@Primary` pool at line 27 PLUS one
+    crucial difference: at line 113-119 the URL is rewritten via
+    `UriComponentsBuilder.fromUriString(jdbcUrl).queryParam("schema",
+    "lookup_tables_schema").build().toUriString()` THEN stripped of the `jdbc:`
+    prefix and prepended with `r2dbc:`. Every connection borrowed from
+    customConnectionPool lands inside the `lookup_tables_schema` PostgreSQL
+    schema via the URL-level `?schema=lookup_tables_schema` parameter.
+
+  **THE LOAD-BEARING CONSTANTS — R2DBCConfiguration.java:24-25**:
+    public static final String SCHEMA_PART_FOR_CUSTOM_DB_URL = "schema";
+    public static final String VALUE_PART_FOR_CUSTOM_DB_URL = "lookup_tables_schema";
+  The schema name `lookup_tables_schema` is a HARD-CODED constant, NOT operator-
+  configurable. Live doc verbatim (WebFetched 2026-05-20):
+    "you can specify any {database_host}, {database_port} or {database_name}
+    but schema, where Lookup Tables are stored always is lookup_tables_schema"
+  The schema name is a CONTRACT SURFACE for downstream consumers (BI tools,
+  ETL jobs, ad-hoc queries connecting directly to PostgreSQL to read Lookup
+  Tables — the recommended operator path per the live docs).
+
+  **THE THREE-LOCATION CONSTANT-MIRRORING RISK**:
+    The literal `lookup_tables_schema` string appears in three locations that
+    must agree:
+      1. R2DBCConfiguration.java:25 — Java constant
+      2. ReferenceDataRepositoryImpl.java:57 — Java constant
+      3. V0_0_86__create_schema_and_tables_for_custom_tables.sql:53 — migration
+         `CREATE SCHEMA IF NOT EXISTS lookup_tables_schema`
+    Drift in any one location would cause schema-not-found errors at runtime
+    for every Lookup-Table operation but compile / boot fine. No central
+    constant module / no test asserts alignment.
+
+  **THE THREE-KEY OPTIONAL FALLBACK**:
+    The custom-datasource is OPT-IN via three `@Value` parameters at lines
+    56-58 with empty-string defaults:
+      `@Value("${spring.custom-datasource.url:}")` etc.
+    The fallback at lines 61-62 + line 113 uses `StringUtils.isBlank(...)` to
+    revert to the primary `DataSourceProperties.getUrl/Username/Password()`.
+    When ALL three keys are unset (the shipped default — commented out at
+    application.yml:8-11), the customConnectionPool opens a SECOND R2DBC pool
+    against the SAME PostgreSQL database as the primary, only differing by
+    the `?schema=lookup_tables_schema` URL query-param. The result: every
+    deployment opens two R2DBC pools regardless of whether the operator
+    configures custom-datasource or uses Lookup Tables.
+
+  **OPERATIONAL CONSEQUENCES**:
+    - Every replica × every deployment opens 2 R2DBC pools (not 1)
+    - With Spring Boot default `maxSize=10` per pool, the practical concurrency
+      ceiling is 2 pools × 10 = 20 connections per replica before backpressure
+    - On a 5-replica deployment: 5 × 20 = 100 PG connections (PG default
+      max_connections is 100 — the platform alone consumes the whole budget
+      before any collector or operator-side tooling)
+    - The customConnectionPool is INSTANTIATED UNCONDITIONALLY — no
+      `@ConditionalOnProperty` on the bean factory; deployments that never
+      create a Lookup Table still hold the pool
+    - The platform's `application.yml` ships ZERO `spring.r2dbc.pool.*` keys
+      — pool size / timeouts / validation are at Spring Boot's framework
+      defaults, not platform-curated
+
+  **THE DOC GAPS** (verified WebFetched 2026-05-20 status 200):
+    - The live `/configuration-and-deployment/odd-platform` page does NOT
+      publish any of the 10 `spring.r2dbc.pool.*` keys as operator-tunable
+    - The page does NOT mention that customConnectionPool is ALWAYS
+      instantiated (the operator-facing description frames `spring.custom-datasource.*`
+      as opt-in)
+    - The page does NOT mention the `?schema=lookup_tables_schema` URL
+      query-param injection — an operator pointing the custom datasource
+      at a separate database may not understand that the connection's
+      search_path is being silently rewritten
+
+  **WHY THIS IS A LOAD-BEARING INVARIANT** (NOT just an implementation detail):
+    The schema-isolation pattern is the platform's ONE mechanism for
+    Lookup-Table data isolation. It is the substrate for:
+      - Direct PostgreSQL access from BI tools (the recommended operator path
+        per the live Lookup Tables feature docs)
+      - The Lookup Tables sub-pillar of P-03 Master Data Management
+      - The `ReactiveCustomTransactional` annotation contract — 9 methods in
+        ReferenceDataRepositoryImpl carry it; renaming the bean breaks the
+        annotation
+    Renaming the schema OR removing the customConnectionPool wiring would
+    require updating multiple files AND breaking the downstream-consumer
+    contract.
+
+  **SEVERITY**: MEDIUM — operational-knowledge gap (operators need to
+  understand the two-pool topology to size their PostgreSQL deployment).
+  Not security-relevant; not correctness-relevant; entirely an architectural-
+  documentation and operational-tuning gap.
+nodes:
+- odd-platform java R2DBCConfiguration config-class:R2DBCConfiguration
+- odd-platform yaml application.yml config-prefix:spring.datasource
+contributors:
+- |-
+  R2DBCConfiguration batch X (PRIMARY SOURCE for the custom-pool topology):
+    concepts.entities.[ConnectionPool-custom, SCHEMA_PART_FOR_CUSTOM_DB_URL,
+    VALUE_PART_FOR_CUSTOM_DB_URL] — the dedicated bean + the two load-bearing
+    constants
+    + concepts.invariants.[lookup_tables_schema-hardcoded] — the constant
+    mirrored at three locations across two files + one migration
+    + concepts.invariants.[custom-fallback] — the three-key optional fallback
+    pattern
+    + implicit_adrs.[two-pool-one-schema-isolation] (HIGH confidence — the
+    constants + dedicated bean + custom transactional annotation form a
+    complete subsystem)
+    + implicit_adrs.[schema-name-as-hard-coded-constant] (HIGH confidence —
+    the docs verbatim 'always is lookup_tables_schema' encodes the contract)
+    + bugs_limitations_corner_cases.[2] (no @ConditionalOnProperty — second
+    pool always instantiated)
+    + bugs_limitations_corner_cases.[5] (schema-name drift across three
+    locations risk)
+    + docs_link_semantic.doc_drift_findings.[1,2] (doc silence on the
+    always-two-pools fact and the URL query-param injection)
+- |-
+  Cross-link: ReferenceDataRepositoryImpl is the SOLE consumer of
+  @ReactiveCustomTransactional + customDataClient bean; 9 methods carry the
+  annotation
+- |-
+  Cross-link: V0_0_86__create_schema_and_tables_for_custom_tables.sql:53 —
+  the migration creating the schema; the only out-of-Java location carrying
+  the schema name constant
+evidence:
+- |-
+  R2DBCConfiguration.md:concepts.entities.[ConnectionPool-custom +
+  SCHEMA_PART_FOR_CUSTOM_DB_URL + VALUE_PART_FOR_CUSTOM_DB_URL] — the
+  primary-source citations
+- |-
+  R2DBCConfiguration.md:concepts.invariants.[lookup_tables_schema-hardcoded
+  + custom-fallback] — the two load-bearing invariants
+- |-
+  R2DBCConfiguration.md:implicit_adrs.[two-pool-one-schema-isolation +
+  schema-name-as-hard-coded-constant] — the architectural decisions
+- |-
+  R2DBCConfiguration.md:bugs_limitations_corner_cases.[2,4,5] — the
+  customConnectionPool-always-instantiated gap + the docs-published
+  pool-tuning absence + the schema-name drift risk
+- |-
+  R2DBCConfiguration.md:docs_link_semantic.doc_drift_findings.[0-2] — the
+  three doc-drift findings (pool sizing absent; secondary pool always
+  instantiated; URL query-param injection unmentioned)
+- |-
+  Live doc /configuration-and-deployment/odd-platform — WebFetched
+  2026-05-20 status 200 confirming `always is lookup_tables_schema`
+- |-
+  Live doc /features/master-data-management/lookup-tables — WebFetched
+  2026-05-20 status 200 confirming direct PostgreSQL access as the
+  recommended downstream-consumer path
+- |-
+  V0_0_86__create_schema_and_tables_for_custom_tables.sql:53 — schema
+  creation migration
+axes_present:
+- config_classes
+- config_prefixes
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: operational-architecture-knowledge-gap
+mitigations_unimplemented:
+- |-
+  Code-side (refactor): extract the schema-name constant
+  `lookup_tables_schema` to a single shared constant module
+  (e.g., `org.opendatadiscovery.oddplatform.referencedata.SchemaConstants.LOOKUP_TABLES_SCHEMA`)
+  consumed by R2DBCConfiguration.java:25, ReferenceDataRepositoryImpl.java:57,
+  AND referenced in V0_0_86 migration via Flyway placeholders. Closes the
+  three-location drift risk.
+- |-
+  Code-side: extract the duplicated PropertyMapper pool-tuning blocks
+  (R2DBCConfiguration.java:38-50 vs 72-84 are byte-identical) into a
+  shared helper `applyPoolDefaults(R2dbcProperties.Pool pool,
+  ConnectionPoolConfiguration.Builder builder)`. Improves maintainability;
+  a future tuning change requires updating only one site.
+- |-
+  Code-side: add a `@ConditionalOnProperty` gate on customConnectionPool —
+  e.g., only instantiate when `spring.custom-datasource.url` is set OR when
+  `feature.lookup-tables.enabled=true` (a new feature flag). Saves the
+  always-on second pool on deployments that never use Lookup Tables.
+- |-
+  Doc-side: publish the `spring.r2dbc.pool.*` keys as operator-tunable on
+  `/configuration-and-deployment/odd-platform`. At minimum document
+  `spring.r2dbc.pool.max-size` (the saturation bound called out in the
+  concept catalog's authorization-hot-path entry).
+- |-
+  Doc-side: extend the Lookup Tables page with a 'PostgreSQL connection
+  topology' section explaining the two-pool architecture, the
+  `?schema=lookup_tables_schema` URL injection, the always-on second pool,
+  and the implication for `max_connections` sizing.
+- |-
+  Code-side: add a unit test asserting the schema-name constant alignment
+  across R2DBCConfiguration + ReferenceDataRepositoryImpl + (Flyway-resolved)
+  V0_0_86. A drift in any location should fail the test at compile time.
+notes: |-
+  NEW MEDIUM-SEVERITY INVARIANT captured in batch 2026-05-20X via the
+  R2DBCConfiguration sidecar's primary-source examination. The two-pool
+  topology is an architectural decision that operators need to understand
+  to deploy at scale (PG `max_connections` sizing), but the docs surface
+  it only obliquely.
+
+  Cross-cutting connections:
+    - master-data-management-lookup-table-pillar-p-03-anchored (existing
+      entity) — this invariant is the persistence-layer substrate for that
+      feature pillar
+    - lookup-table-rename-via-alter-table-breaks-downstream-sql-consumers
+      (existing canonicalisation_candidate) — sibling concept; renaming the
+      schema would break downstream consumers (direct PG access by BI tools);
+      this invariant explicitly names the contract
+    - authorization-hot-path-getcurrentuserroles-per-request-no-cache
+      (existing invariant) — references R2DBC pool size as the upper bound
+      on the per-request authorization cost; this invariant pinpoints where
+      that bound is set (or rather, NOT set — at Spring Boot defaults)
+    - reference-data-lookup-table-crud (existing operation) — the user-facing
+      surface that depends on this substrate
+
+  Three DOC-NNN candidates:
+    (a) PG connection topology / pool sizing section on the deployment docs
+    (b) Two-pool architecture note on the Lookup Tables feature page
+    (c) Schema-name-as-contract-surface admonition on the Lookup Tables page
+        warning operators that direct-PG queries to `lookup_tables_schema`
+        are a stable surface

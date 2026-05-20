@@ -1,0 +1,66 @@
+gap_id: TEST-GAP-816
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java IngestionController controller-method:getDataEntitiesByDEGOddrn"
+pillars_affected: [P-09, P-10]
+surfaced_by:
+  - "getDataEntitiesByDEGOddrn.md:bugs_limitations_corner_cases.[1] HIGH"
+  - "getDataEntitiesByDEGOddrn.md:security.known_security_gaps.[1] HIGH (sequential id enumeration)"
+  - "getDataEntitiesByDEGOddrn.md:security.known_security_gaps.[2] HIGH (cross-owner enumeration)"
+behaviour: |-
+  **CRITICAL — Sequential ODDRN id enumeration + cross-owner read = full DEG-membership graph harvestable in O(N) requests with no rate-limit, no audit-log, no metric counter.**
+
+  The DEG ODDRN generator at `DataEntityGroupServiceImpl.java:191-200` produces `ODDPlatformDataEntityGroupPath.builder().id(pojo.getId()).build()` — the `{id}` segment is the row's monotonically-increasing primary key. An attacker iterating `id ∈ [1..N]` and submitting `GET /ingestion/entities/<odd_oddrn>/?id=$id` for each value receives:
+  - **200 with members** for live DEGs (the member-list contract — TEST-GAP-815 establishes anonymous reach).
+  - **200 with empty items** for unused / soft-deleted DEG ids (TEST-GAP-817 establishes the 404-vs-empty silent conflation that prevents an attacker from telling which case applies but does NOT prevent the harvest).
+
+  **Cross-owner dimension**: the controller / service / repository chain applies NO owner-scoping filter (verified: `DataEntityGroupServiceImpl.java:47-59` constructor has no AuthIdentityProvider; `ReactiveDataEntityRepositoryImpl.java:318-326` does no `OWNERSHIP` join). Any caller reads ANY DEG owned by ANY owner — extending the REFACTOR-024 / REFACTOR-203 / REFACTOR-340 read-collaborative posture to the S2S surface as a 6th surface in the family.
+
+  **Defence absences**:
+  - **No rate-limit at the controller** (verified: no `@RateLimiter` annotation, no per-IP throttle in the WebFlux pipeline).
+  - **No audit-log entry on access** (verified: no `activityService.create(...)` call in controller or service; no `log.info/warn` line; no `meterRegistry.counter(...)`).
+  - **No anomaly detection on burst-rate enumeration**.
+  - **No marker on the response that the caller hit a "no such DEG" vs "DEG exists with no members"** — so probing is undetectable from response content alone.
+
+  **Result chain**:
+  1. Attacker (unauthenticated under default, authenticated-as-anyone otherwise) enumerates `id ∈ [1..N]` with a small script.
+  2. For each live DEG, collects the member ODDRNs + DataEntityType.
+  3. Combines with downstream `GET /api/dataentities/{id}` (only reachable when UI auth is permissive) for full metadata — but even without it, the ODDRN string contains the parent datasource path + entity name + namespace, leaking the catalog's data-product taxonomy.
+  4. A post-incident question "which DEGs did the attacker enumerate?" has NO operational answer from application logs.
+
+  **Why CRITICAL** (over the HIGH severity the sidecar rates): the enumeration is **trivially scriptable** + **defence-absent across all five mechanisms** (auth, rate, audit, anomaly, content-marker). Combined with TEST-GAP-815 (unauthenticated reach) this is the same shape as a public-API catalog dump but advertised as "ingestion" so operators do not include it in their attack-surface model.
+
+  **Test gap shape**: probe-test that submits N=100 sequential-id GETs in <1s and asserts (a) zero 429 Too Many Requests responses; (b) zero entries in `activity_event` table after the burst; (c) zero `meterRegistry` counter increments. PINS the current open-by-default + audit-silent behaviour.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/GetDataEntitiesByDEGOddrnSequentialIdEnumerationDoSAuditSilentTest.java"
+  name: "get_100SequentialIdRequestsBurst_noRateLimit_noAuditLog_noMetricCounter_pinsHarvestable"
+evidence:
+  - "getDataEntitiesByDEGOddrn.md says (bugs_limitations_corner_cases.[1]): 'Cross-owner enumeration of DEG membership: any caller can read the member list of ANY DEG — owned by ANY owner — with no participation predicate, no role check, no ownership join. ODDRN values for DEGs include the platform's host + DEG id (per ODDPlatformDataEntityGroupPath generation at DataEntityGroupServiceImpl.java:193-195) — sequential numeric DEG ids enable trivial enumeration. No rate-limit, no audit-log entry, no metric counter on the GET path.' (severity HIGH)"
+  - "getDataEntitiesByDEGOddrn.md says (security.known_security_gaps.[1]): 'DEG catalog enumerable via sequential ODDRN id iteration. The ODDRN generator produces urn:oddrn:odd:dataentitygroup:{platform_host}/{id} shapes; the {id} component is the DEG row's primary key, monotonically increasing. An attacker iterating ids 1..N + probing the GET endpoint collects the full membership graph in O(N) requests.' (severity HIGH)"
+  - "Verified at primary source: DataEntityGroupServiceImpl.java:191-200 (sequential id ODDRN construction) + IngestionController.java:76-79 (no rate-limit annotation, no @Slf4j call site) + ReactiveDataEntityRepositoryImpl.java:318-326 (no OWNERSHIP join)"
+cross_references:
+  - "TEST-GAP-815 (sister — unauthenticated reach across all auth modes; together with this entry forms the full CRITICAL blast-radius)"
+  - "TEST-GAP-834 (sister — @Slf4j unused at IngestionServiceImpl, mirrored absence here)"
+  - "REFACTOR-024 (cross-owner read posture, 6-surface family — this is the 6th surface; the others are alerts, search, search-facets, DEG-lineage, batch alerts)"
+  - "REFACTOR-203 (lineage-CTE cross-owner enumeration; sibling architecture decision in the DEG namespace)"
+  - "concepts/detail/entities/dataentity.security_aggregate.weaknesses (already lists cross-owner read; extended to the S2S surface)"
+related_features: [F-008, F-016]
+related_pillar_features: ["P-09:Security & Access Control", "P-10:F-001 Batch Ingestion (S2S API)"]
+proposed_action: |-
+  Add `GetDataEntitiesByDEGOddrnSequentialIdEnumerationDoSAuditSilentTest`. Testcontainers-Postgres test:
+
+  1. **Seed**: create 100 DEGs (ids 1-100) owned by 3 different owners (A, B, C); add 5-10 members to each DEG.
+  2. **Burst**: as anonymous (no auth) caller, fire 100 GET /ingestion/entities/{construct_DEG_oddrn(id)} requests in <1s.
+  3. **Assert**:
+     - All 100 return 200 (no rate-limiting kicked in).
+     - All cross-owner DEGs returned full member lists (no owner-filter applied).
+     - `activity_event` table has ZERO new rows attributable to these reads.
+     - Application log has ZERO `log.info/warn/error` lines from `IngestionController` or `DataEntityGroupServiceImpl`.
+     - Prometheus metrics show NO `http_requests_total{path="/ingestion/entities/*"}` counter increment beyond the request-level instrumentation (no domain-specific counter).
+  4. **Pair with the REFACTOR-NNN candidates**: (a) rate-limit at controller; (b) audit-log on suspicious read patterns; (c) owner-scoping at service tier.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Sister to TEST-GAP-815 (which pins unauthenticated reach across auth modes); this entry pins the cross-owner + sequential-id + audit-silent COMPOSITION. Together they specify the full DEG-member-enumeration blast radius. STRENGTHENS REFACTOR-024 by adding a 6th surface; the existing REFACTOR-024 detail YAML should gain `surface_6: getDataEntitiesByDEGOddrn (S2S read)` per LSN-018 backlink protocol.
+batch: 2026-05-20-Z
+feature_id: F-008

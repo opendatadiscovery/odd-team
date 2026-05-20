@@ -1,0 +1,96 @@
+gap_id: TEST-GAP-864
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveTagRepositoryImpl"
+  - "odd-platform java TagController controller-class:TagController"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "ReactiveTagRepositoryImpl.md:stress_findings.A1 (page=N parameter handling at page=0, page=-1, page=null — autoboxing → NumberFormatException upstream; page=0 → LIMIT size OFFSET -size → PostgreSQL rejects negative OFFSET with SQL state 22023)"
+  - "ReactiveTagRepositoryImpl.md:stress_findings.A2 (size=N parameter handling at size=0, size=-1, size=100000 — size=0 → LIMIT 0 → empty result; size=-1 → PostgreSQL rejects; size=100000 → executes a full-directory UNION-ALL CTE with no upper bound)"
+  - "TagController.md:stress_findings.tunables[size].questions (what at N=0/N=1; what at N=tunable+1/tunable×100; what at null/negative/non-numeric)"
+  - "TagServiceImpl.md:stress_findings.C.S-C-5 (listMostPopular with size=0 — caller responsibility per OpenAPI's SizeParam minimum=1, but the service layer does not enforce)"
+  - "TagServiceImpl.md:stress_findings.C.S-C-6 (listMostPopular with page=0 or negative — Postgres rejects negative offsets; service does NOT validate)"
+behaviour: |-
+  **MEDIUM — `listMostPopular(page, size)` has UNGUARDED boundary parameters at every layer (controller, service, repository). The page and size arguments flow directly into `paginate(...)` which constructs `LIMIT size OFFSET (page-1)*size` SQL. Degenerate inputs surface as: size=0 → empty page (with `total` correctly reflecting underlying count); size=-1 → PostgreSQL SQL state 22023; page=0 → `(0-1)*size = -size` → negative OFFSET → SQL state 22023; size=100000 → executes full-directory UNION-ALL CTE with no upper bound (DoS-amp); page=null / size=null → NumberFormatException at autoboxing.** No test pins the boundary contract; an SDK consumer submitting `size=0` (legitimate "I want the total count") gets an empty data array — possibly unexpected. An attacker submitting `size=100000` triggers a full directory aggregation per call.
+
+  **Boundary behavior catalogue** (per the three sidecars' stress_findings):
+
+  | Input | Behavior | Source |
+  |---|---|---|
+  | `size=0` | `LIMIT 0` → empty data; `_total` (COUNT() OVER()) correctly reflects underlying count | A2 + S-C-5 |
+  | `size=-1` | `LIMIT -1` → PG raises SQL state 22023 → 500 to caller | A2 |
+  | `size=100000` | Full-directory UNION-ALL CTE; no upper bound; DoS amp | A2 + performance.known_performance_gaps.[no-size-clamp] |
+  | `size=null` | NumberFormatException at WebFlux parameter binding → 400 to caller | tunables[size] + A1 |
+  | `page=0` | `OFFSET = -size` → PG raises SQL state 22023 → 500 to caller | A1 + S-C-6 |
+  | `page=-1` | `OFFSET = -2*size` → same as page=0 | A1 |
+  | `page=null` | Autobox throws NumberFormatException → 400 | A1 |
+  | `size=N+1` (N = total tags) | Full directory returned in correct count-DESC order (LSN-019 only manifests when N > size) | tunables[size].questions[1].a |
+
+  **Why the test pins MEDIUM not HIGH**:
+  - The boundary failures surface as either 400 (validation-shaped) or 500 (SQL error leaked) — the latter is a UX problem (operator sees stack trace) but not a corruption surface.
+  - The `size=100000` DoS-amp is real but bounded by single-request latency (the CTE runs in <1s for typical platforms).
+  - The pinning catches a future refactor that adds clamping (HIGH-impact if it changes API behavior silently) OR removes the OpenAPI `minimum: 1` constraint (LOW-impact but operator-visible).
+
+  **Connection to LSN-019**:
+  - The size=N+1 boundary is the threshold where the LSN-019 drift VANISHES (the inner paginate selects ALL tags, so the outer count-DESC sort IS effective).
+  - The test that asserts "size > total_tag_count returns correct popularity order" PINS the threshold semantics. A future LSN-019 fix should make this test stronger (NOT weaker) by pushing correctness to all sizes.
+test_class: integration
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:239-267 (testListMostPopular — happy path only; does NOT exercise page=0, page=-1, size=0, size=-1, size=100000, or any boundary)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplListMostPopularBoundaryTest.java"
+  name: "listMostPopular_pageAndSizeBoundaryParameters_returnExpectedShapeOrSqlError_pinsCurrentBoundaryContract"
+evidence:
+  - "ReactiveTagRepositoryImpl.md says (stress_findings.A1): 'page=N parameter handling in listMostPopular(query, ids, page, size) (line 138). Question: what does the code do at page=0, page=-1, page=null (autoboxing)? page=0 → (0-1)*size = -size → LIMIT size OFFSET -size → PostgreSQL rejects negative OFFSET with SQL state 22023, OFFSET must not be negative; page=-1 → OFFSET -2*size → same error. No defensive guard in this file.' confidence: STATIC-INFERRED"
+  - "ReactiveTagRepositoryImpl.md says (stress_findings.A2): 'size=N parameter handling. size=0 → LIMIT 0 → empty result with _total correctly reflecting underlying row count (via count() OVER ()); size=-1 → LIMIT -1 → PostgreSQL semantics: negative LIMIT raises SQL error; size=100000 → executes a full-directory UNION-ALL CTE with no upper bound. No size cap anywhere in the file.' confidence: STATIC-INFERRED"
+  - "TagController.md says (stress_findings.tunables[size].questions[0]): 'size=0: paginate(...) emits LIMIT 0 → empty list; pageifyResult hits the records.isEmpty() branch and returns Page.builder().data([]).total(fetchCount()).hasNext(false). size=1: paginate selects 1 row by TAG.ID ASC = the OLDEST tag; outer cteSelect returns it with usage count.'"
+  - "TagController.md says (stress_findings.tunables[size].questions[1]): 'size=31 with 35 tags: same drift as size=30 — selects ids 1..31 (oldest 31), youngest 4 (ids 32..35) still missing. size=3000 with 35 tags: paginate LIMIT 3000 returns all 35; the outer count-DESC then orders all 35 by usage count correctly (the drift only manifests when total > size). size=100000: no validation rejects; the SQL plan runs the inner paginate over the entire TAG table sorted by TAG.ID ASC, then the UNION-ALL CTE aggregates over the full result set — large in-memory aggregation, no protection.'"
+  - "TagServiceImpl.md says (stress_findings.C.S-C-5): 'listMostPopular with size=0 — the path goes to reactiveTagRepository.listMostPopular(query, ids, page, 0) → paginate(...., 0, 0). The exact behaviour of paginate with limit=0 is in the abstract repository (not this file); likely returns an empty page. This service does NOT validate size is positive.' confidence: MEDIUM — caller responsibility per OpenAPI's SizeParam minimum=1, but the service layer does not enforce."
+  - "TagController.md says (performance.known_performance_gaps.[no-size-clamp]): 'No size parameter clamp on getPopularTagList — size=100000 is permitted at the controller layer.' severity: LOW"
+  - "Verified at primary source: TagController.java:37-42 (no @Max, no @Valid) + TagServiceImpl.java:72-77 (no clamp) + ReactiveTagRepositoryImpl.java:138-167 (no clamp) + JooqQueryHelper.java:63-90 (paginate passes verbatim)"
+cross_references:
+  - "TEST-GAP-547 (existing batch-N — listMostPopular pagination boundary at page=2 + DoS-amp size=100000; this gap is the BROADER boundary contract test, covering all 7 boundaries)"
+  - "TEST-GAP-855 / TEST-GAP-856 (NEW VAL-LSN-019 — LSN-019 ranking drift; this gap pins the THRESHOLD where the drift vanishes (size > total))"
+  - "TEST-GAP-548 (existing batch-N — tag-name length / charset / pattern; sister boundary-coverage test at the input-shape layer)"
+  - "REFACTOR-NNN candidate: add OpenAPI `minimum: 1, maximum: 100` to size parameter; add @Min(1)/@Max(100) at the controller; OR clamp at the service layer. Coordinate with the docs."
+  - "DOC-NNN candidate: surface the size cap on the API Reference page; document the empty-page semantic for size=0 (useful for total counts)"
+related_features: [F-001, F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-08:F-NN-tags-tab"]
+proposed_action: |-
+  Add `TagRepositoryImplListMostPopularBoundaryTest extends BaseIntegrationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/`. Seven test methods covering each boundary:
+
+  1. **`listMostPopular_sizeZero_returnsEmptyDataWithCorrectTotal_pinsCountWindowSemantic`**:
+     - Arrange: seed 10 tags.
+     - Act: `listMostPopular(null, List.of(), 1, 0)`.
+     - Assert: data is empty, total = 10, hasNext = false. PIN: size=0 is the "I want only the total count" semantic.
+
+  2. **`listMostPopular_sizeNegativeOne_throwsDataAccessExceptionWithSqlState22023_pinsPostgresRejection`**:
+     - Act: `listMostPopular(null, List.of(), 1, -1)`.
+     - Assert: `StepVerifier.expectError(DataAccessException.class)`. PIN: the SQL state 22023.
+
+  3. **`listMostPopular_sizeLargerThanTotalTagCount_returnsAllInCountDescOrder_pinsLSN019DriftThreshold`**:
+     - Arrange: 10 tags with usage counts [1, 5, 3, 4, 2, 8, 6, 9, 7, 10].
+     - Act: `listMostPopular(null, List.of(), 1, 30)`.
+     - Assert: data has 10 elements in count-DESC order. PIN: when size > total, the inner paginate selects all rows, and the outer count-DESC is effective. This is the LSN-019 threshold pin.
+
+  4. **`listMostPopular_sizeOneHundredThousand_returnsAllTagsNoSizeCap_pinsDoSAmpSurface`**:
+     - Arrange: 100 tags.
+     - Act: measure latency of `listMostPopular(null, List.of(), 1, 100000)`.
+     - Assert: completes successfully; data has 100 elements. PIN: the size parameter is unguarded. NOTE: do NOT assert latency (too flaky); the gap is structural.
+
+  5. **`listMostPopular_pageZero_throwsDataAccessExceptionFromNegativeOffset_pinsPostgresRejection`**:
+     - Act: `listMostPopular(null, List.of(), 0, 30)`.
+     - Assert: `StepVerifier.expectError(DataAccessException.class)`. PIN: page=0 → SQL state 22023.
+
+  6. **`listMostPopular_pageNegative_throwsDataAccessExceptionFromNegativeOffset_pinsPostgresRejection`**:
+     - Sister test for page=-1.
+
+  7. **`listMostPopular_sizeOne_returnsOldestTagSingleRow_pinsLowerBoundaryWithLSN019Behavior`**:
+     - Arrange: 5 tags with distinct usage counts.
+     - Act: `listMostPopular(null, List.of(), 1, 1)`.
+     - Assert: data has 1 element, and that element is the OLDEST tag (by tag.id ASC) — NOT the most-popular. PIN: at size=1, the LSN-019 drift is the OLDEST-1 selection.
+
+  Cross-pair with REFACTOR-NNN: when the maintainer adds `@Max(100)` and OpenAPI `maximum: 100`, tests #4 INVERTS (HTTP 400 instead of full response). Cross-pair with DOC-NNN to surface the size semantic.
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

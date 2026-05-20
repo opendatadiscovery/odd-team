@@ -1,0 +1,76 @@
+gap_id: TEST-GAP-862
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java service:TagServiceImpl"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "TagServiceImpl.md:stress_findings.D.S-D-1 (CANARY HEADLINE — SERVICE-LAYER AUTH POSTURE: zero @PreAuthorize, zero permissionService calls, zero OwnerAuthorizationFacade invocations, zero SecurityContextHolder reads across all 9 public methods)"
+  - "TagServiceImpl.md:implicit_adrs.[Tag-directory writes have NO service-tier authorisation — the controller perimeter is the SOLE auth defence]"
+  - "TagServiceImpl.md:security.authorization_assertions: [] (verified absence)"
+  - "TagServiceImpl.md:security.known_security_gaps.[Service-tier has ZERO authorisation checks]"
+behaviour: |-
+  **HIGH — `TagServiceImpl` (lines 1-168) has ZERO service-tier authorization checks: zero `@PreAuthorize` annotations, zero `permissionService.hasPermission(...)` programmatic calls, zero `OwnerAuthorizationFacade` invocations, zero `SecurityContextHolder` reads. The controller perimeter is the SOLE auth defence for the canonical `POST /api/tags` path; the FOUR side-door write paths (TermServiceImpl, DataEntityServiceImpl, DatasetFieldServiceImpl, ExternalTagIngestionRequestProcessor) reach this service WITHOUT holding `TAG_CREATE`. The absence-of-gates IS the architectural posture; the absence has NEVER been pinned by a test. A future regression that ADDS `@PreAuthorize` to ANY method here would silently change exposure (likely BREAKING a side-door for the legitimate Collector path).**
+
+  **Per-method auth posture** (from TagServiceImpl.md:stress_findings.D.S-D-1):
+
+  | Method | Service @PreAuthorize? | Controller-perimeter auth | Side-door bypass? |
+  |---|---|---|---|
+  | `bulkCreate` (:37) | NO | `TAG_CREATE` | NO (only called by TagController) |
+  | `update` (:45) | NO | `TAG_UPDATE` | NO |
+  | `delete` (:57) | NO | `TAG_DELETE` | NO |
+  | `listMostPopular` (:73) | NO | `authenticated()` catch-all | NO (only TagController calls) |
+  | `getOrCreateTagsByName` (:80) | NO | varies per side-door | **YES — never TAG_CREATE** |
+  | `getOrInjectTagByName` (:89) | NO | S2S ingestion filter | **YES — never TAG_CREATE** |
+  | `updateRelationsWithDataEntity` (:97) | NO | `DATA_ENTITY_TAGS_UPDATE` | YES |
+  | `deleteRelationsWithTerm` (:124) | NO | `TERM_TAGS_UPDATE` | YES |
+  | `createRelationsWithTerm` (:137) | NO | `TERM_TAGS_UPDATE` | YES |
+
+  **Why this is HIGH** (not LOW as one might expect for "absence is the architecture"):
+  - **The absence is invisible to grep on the canonical perimeter**: a future maintainer auditing "where does Tag CREATE happen?" sees `TagController.createTag` gated by `TAG_CREATE` — and reasonably concludes that's the only path. The 4 side-door paths are NOT marked with `@PreAuthorize(TAG_CREATE)` because they're gated by a DIFFERENT permission (DATA_ENTITY_TAGS_UPDATE etc.). The architectural design is documented in `TagServiceImpl.md:implicit_adrs` but not in code.
+  - **A future "security hardening" PR** that adds `@PreAuthorize("hasAuthority('TAG_CREATE')")` to `getOrCreateTagsByName` would silently BREAK every side-door (UI users with only DATA_ENTITY_TAGS_UPDATE would suddenly get 403 on PUT /api/dataentities/{id}/tags). This is a HIGH-impact, NON-OBVIOUS regression.
+  - **The test pins the INTENT**: zero service-tier checks. Any test that ASSERTS the absence forces a future maintainer adding gates to coordinate the addition with the side-door behavior change.
+
+  **Why this is the canary headline finding** (per TagServiceImpl.md):
+  - The S-D-1 finding states: "Tag directory writes via the side-door surfaces (5 of 9 methods) bypass TAG_CREATE entirely. This is logged in implicit_adrs as intentional (the per-feature permission model) but is recorded here as the per-method enumeration that the Stress Protocol mandates."
+  - The probe `P-LSN019-service-auth-zero` was emitted to "confirm zero auth gates at the service layer via grep" — this gap converts the grep probe into a CI-runnable test.
+test_class: security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TagServiceImplServiceLayerAuthZeroTest.java"
+  name: "tagServiceImpl_hasZeroServiceLayerAuthorizationGates_pinsAbsenceOfAtPreAuthorizeAndPermissionServiceCalls"
+evidence:
+  - "TagServiceImpl.md says (stress_findings.D.S-D-1 CANARY HEADLINE): 'Across all 9 public methods (:37, 45, 57, 73, 80, 89, 97, 124, 137), the service has: ZERO @PreAuthorize annotations; ZERO permissionService.hasPermission(...) programmatic calls; ZERO OwnerAuthorizationFacade invocations; ZERO SecurityContextHolder reads; ZERO programmatic permission checks of any kind. Finding: the service-tier has zero auth posture. Tag directory writes via the side-door surfaces (5 of 9 methods) bypass TAG_CREATE entirely.' confidence: HIGH (every method verified by reading the line)"
+  - "TagServiceImpl.md says (security.authorization_assertions): '[] — No @PreAuthorize, no permissionService.* calls, no OwnerAuthorizationFacade invocations across all 168 lines. Verified by reading line-by-line.'"
+  - "TagServiceImpl.md says (security.known_security_gaps): 'Service-tier has ZERO authorisation checks. The controller perimeter is the SOLE auth defence for HTTP traffic; the four side-door write paths (TermServiceImpl.upsertTags, DataEntityServiceImpl.upsertTags, DatasetFieldServiceImpl, ExternalTagIngestionRequestProcessor) each apply their own per-feature permission (TERM_TAGS_UPDATE, DATA_ENTITY_TAGS_UPDATE, DATASET_FIELD_TAGS_UPDATE, S2S filter) and BYPASS TAG_CREATE entirely while still minting tag directory rows.' severity: MEDIUM (intentional design per the existing TagController sidecar's REFACTOR-223 finding; recorded here as the service-tier confirmation)"
+  - "TagServiceImpl.md says (implicit_adrs.[Tag-directory writes have NO service-tier authorisation]): 'the controller perimeter is the SOLE auth defence; the four side-door write paths intentionally use their own per-feature permission rather than TAG_CREATE. No explicit comment defending the absence; the consistent pattern across the file is itself the convention.' confidence: MEDIUM (intent is inferable from consistency of the pattern + the explicit external-ownership guard, but no comment explicitly defends the absence)"
+  - "Verified at primary source: TagServiceImpl.java:1-168 (no @PreAuthorize annotation anywhere, verified by reading the file) + grep would return zero matches for permissionService / OwnerAuthorizationFacade / SecurityContextHolder"
+  - "Probe shape: lineage/odd-platform/probes/P-LSN019-service-auth-zero.md"
+cross_references:
+  - "TEST-GAP-763 (existing batch-W — Tag directory read+write bypass at the controller; this gap is the SERVICE-LAYER complement pinning that the service layer enforces NOTHING; the two gaps together capture the full architectural posture)"
+  - "TEST-GAP-540 (existing — TOCTOU race in getOrCreateTagsByName; the side-door path this gap pins as auth-less)"
+  - "TEST-GAP-859 (NEW VAL-LSN-019 — getOrInjectTagByName upsert-silenced race; the S2S side-door path this gap pins as auth-less)"
+  - "REFACTOR-223 (Tag side-door — the architectural design this gap pins as INTENTIONAL)"
+  - "REFACTOR-NNN candidate: split TagServiceImpl into a perimeter-defended subset (bulkCreate, update, delete, listMostPopular) and a side-door subset (getOrCreate, getOrInject, updateRelations*, deleteRelations*, createRelations*); the side-door subset would carry @PreAuthorize for the CORRECT per-feature permission to prevent accidental over-gating"
+  - "DOC-NNN candidate: surface the service-tier-auth-zero design on the Authorization doc; explain that operators authoring RBAC see the controller-perimeter permission map, NOT the service-tier (which would be misleading anyway)"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-09:F-001"]
+proposed_action: |-
+  Add `TagServiceImplServiceLayerAuthZeroTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/`. Pure JUnit test using reflection (no Spring boot required for the grep-style probe). Three test methods:
+
+  1. **`tagServiceImpl_hasZeroPreAuthorizeAnnotations_pinsAbsenceOfDeclarativeServiceLayerAuth`** (HEADLINE):
+     - Use reflection on `TagServiceImpl.class`. Enumerate ALL public methods declared on the class. For each method, assert `method.getDeclaredAnnotation(org.springframework.security.access.prepost.PreAuthorize.class) == null`.
+     - PIN: the implicit ADR — the service has zero declarative auth at the service layer.
+
+  2. **`tagServiceImpl_classSourceContainsZeroPermissionServiceReferences_pinsAbsenceOfProgrammaticAuth`**:
+     - Read the source file content of `TagServiceImpl.java` via the test fixture (or use a Compile-time annotation processor).
+     - Assert: the source does NOT contain the strings `permissionService.hasPermission`, `OwnerAuthorizationFacade`, `SecurityContextHolder`, `@PreAuthorize`, `@Secured`.
+     - PIN: the grep-style absence is structurally verified.
+
+  3. **`tagServiceImpl_allNineMethodsAreCallableFromAnyService_documentsArchitecturalIntent`**:
+     - For each of the 9 public methods (per TagService interface), assert it can be invoked on a `TagServiceImpl` instance without any Spring Security context (i.e., the method does not require an authenticated principal at the service layer).
+     - This is a documentation-test that captures the architectural intent. PIN: the service is a callable-by-any-caller bean; auth lives upstream.
+
+  Cross-pair with REFACTOR-NNN: if the maintainer decides to ADD service-tier auth (e.g. extract a "perimeter-defended" subset + a "side-door" subset), tests #1-2 INVERT — the @PreAuthorize annotations appear on specific methods, and the test reflects the new architectural shape. The inversion forces the maintainer to make the change explicit + coordinated. Cross-pair with DOC-NNN: surface this design on the Authorization doc page.
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

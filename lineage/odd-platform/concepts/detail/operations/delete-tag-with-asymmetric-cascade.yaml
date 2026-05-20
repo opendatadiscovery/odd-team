@@ -1,0 +1,233 @@
+name: Delete Tag (with asymmetric cascade — two of three relation tables cleaned up)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-08
+description: |-
+  NEW OPERATION, batch VAL-LSN-019 (2026-05-20) — captures the
+  `DELETE /api/tags/{tag_id}` endpoint at the operation-concept level.
+  Previously the operation was only visible inside the Tag entity +
+  the cascade-asymmetry invariant; minting this concept entry promotes
+  it to a first-class catalog citizen for cross-axis reasoning.
+
+  THE ENDPOINT:
+    DELETE /api/tags/{tag_id} → 204 No Content (happy path)
+    Gated by TAG_DELETE permission (Management scope, NO_CONTEXT)
+    via SecurityConstants.SECURITY_RULES at SecurityConstants.java:141-142.
+
+  THE CHAIN:
+
+    TagController.deleteTag (TagController.java:30-34) — 3-line
+    reactive delegation to tagService.delete(tagId).
+
+    TagServiceImpl.delete (TagServiceImpl.java:57-70,
+    @ReactiveTransactional) — 6-step pipeline:
+
+      Step 1: `getDto(tagId)` — 404 if absent.
+      Step 2: `!external` filter — BadUserRequestException
+              ("Can't delete tag which has external relations") if
+              any data-entity relation is Collector-set. See the
+              `external-relations-immutable-to-ui-users-cross-method-guard-tagserviceimpl`
+              invariant.
+      Step 3: `Flux.zip(deleteTermRelations(tagId), deleteDataEntityRelations(tagId))`
+              — concurrent HARD-deletes of `tag_to_term` and
+              `tag_to_data_entity` rows.
+              **`tag_to_dataset_field` is NOT touched** — the
+              repository method `deleteDatasetFieldRelations(long)`
+              EXISTS at ReactiveTagRepositoryImpl.java:299-306 but
+              is UNCALLED here. The cascade is ASYMMETRIC. See the
+              `deletetag-cascade-asymmetric-orphans-tag-to-dataset-field`
+              invariant.
+      Step 4: `repository.delete(tagId)` — SOFT-delete the `tag`
+              row via the inherited
+              `ReactiveAbstractSoftDeleteCRUDRepository.delete`
+              (UPDATE tag SET deleted_at = NOW()).
+      Step 5: `reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId)`
+              — refresh ONLY the term-search FTS vectors. The main
+              `search_entrypoint` + `search_entrypoint_structure`
+              vectors are NOT refreshed despite the parallel `update`
+              method refreshing all three. See the
+              `tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1`
+              invariant.
+
+    ReactiveTagRepositoryImpl — the inherited soft-delete +
+    hard-delete relation primitives. Per the batch-N invariant:
+    tag rows soft-delete; relation rows hard-delete; the
+    deleted_at filter mediates the partial unique index re-creation
+    semantic.
+
+  THE TWO ASYMMETRIES — compound failure of the delete path:
+
+    Asymmetry 1 — relation cascade incomplete:
+      `tag_to_term` deleted, `tag_to_data_entity` deleted,
+      `tag_to_dataset_field` ORPHANED. Operator-visible: a tag
+      attached via the DATASET_FIELD_TAGS_UPDATE side-door cannot
+      be cleaned up by `TAG_DELETE`. Orphan rows persist
+      indefinitely (no housekeeping job).
+
+    Asymmetry 2 — search-vector refresh incomplete:
+      `term_search_entrypoint` refreshed; `search_entrypoint` +
+      `search_entrypoint_structure` STALE. Operator-visible: the
+      deleted tag's tokens persist in the main FTS index until the
+      next entity-level write that touches the search refresh path.
+
+    Both asymmetries live in the SAME method (TagServiceImpl.java:57-70).
+    The recommended fix is COMPOUND — touch both omissions in one
+    commit (per the LSN-019 batch's cross-method enumeration).
+
+  OPERATOR-VISIBLE BEHAVIOR vs PROMISED BEHAVIOR:
+
+    The operator (with TAG_DELETE) expects "delete this tag and
+    remove all references to it". The implementation delivers:
+      (a) Tag is soft-deleted (UI-invisible on reads).
+      (b) Most relation rows cleaned up (data-entity + term).
+      (c) Dataset-field relation rows persist invisibly.
+      (d) Main search index keeps showing the deleted tag's name
+          until next entity write.
+
+    The operator has NO way to know about (c) or (d) without
+    examining the database directly. The live tagging doc page
+    does not mention any cascade behavior. The operator-facing
+    promise is broken.
+
+  THE STRESS PROTOCOL FINDINGS (LSN-019):
+
+    Stress-finding S-B-6 (TagServiceImpl sidecar): `delete(tagId)`
+    name-vs-behavior pair — Promise: "delete the tag"; Implementation:
+    soft-deletes the tag row, hard-deletes 2 of 3 relation tables,
+    refreshes only 1 of 3 search vectors. DRIFT severity: MEDIUM.
+
+    Stress-finding S-B-2 from TagController sidecar: deleteTag MINOR
+    drift class — operator expects "tag and all its references
+    removed"; gets "tag row removed + 2 of 3 relation tables
+    cleaned + 1 of 3 search indexes refreshed".
+
+    The empirical reproduction is straightforward:
+      (1) Create tag T.
+      (2) Bind T to a dataset field via DATASET_FIELD_TAGS_UPDATE.
+      (3) Delete T via TAG_DELETE.
+      (4) Query the database: `tag_to_dataset_field` rows pointing
+          to T persist with their `tag_id` referencing the now-
+          soft-deleted T.id.
+      (5) Search the catalog for T's name: it still appears in the
+          search FTS index until the next entity-level write.
+
+nodes:
+  - odd-platform java TagController controller-class:TagController
+  - odd-platform java service:TagServiceImpl
+  - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+
+contributors:
+  - |-
+    TagController batch W (PRIMARY SOURCE — controller-tier):
+    concepts.operations[deleteTag (lines 30-34) — soft-delete-with-cascade;
+    tagService.delete(tagId) → 204 No Content]
+  - |-
+    TagServiceImpl batch VAL-LSN-019 (PRIMARY SOURCE — service-tier
+    orchestrator):
+    concepts.operations[delete(long tagId) (:57-70,
+    @ReactiveTransactional) — six-step pipeline] +
+    concepts.invariants[The delete cascade is ASYMMETRIC] +
+    stress_findings.S-B-6 (deleteTag promise vs implementation drift)
+  - |-
+    ReactiveTagRepositoryImpl batch N (CORROBORATING — repository-tier
+    primitives):
+    concepts.operations[deleteDatasetFieldRelations defined at :299-306
+    but UNCALLED from TagServiceImpl.delete] +
+    concepts.operations[Four delete*Relations overloads — all hard-delete] +
+    concepts.invariants[soft-delete on tag; hard-delete on relations]
+
+evidence:
+  - 'TagController.java:30-34 (the 3-line reactive delegation)'
+  - 'TagController.md:concepts.operations[deleteTag]'
+  - 'TagServiceImpl.java:57-70 (the 6-step pipeline with @ReactiveTransactional)'
+  - 'TagServiceImpl.md:concepts.operations[delete (long tagId) :57-70]'
+  - 'TagServiceImpl.md:stress_findings.S-B-6 (name-vs-behavior drift)'
+  - 'ReactiveTagRepositoryImpl.java:299-306 (deleteDatasetFieldRelations — defined but uncalled)'
+  - 'SecurityConstants.java:141-142 (TAG_DELETE permission gate)'
+  - 'Cross-references: deletetag-cascade-asymmetric-orphans-tag-to-dataset-field invariant (the cascade asymmetry)'
+  - 'Cross-references: tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1 invariant (the search-vector refresh asymmetry)'
+  - 'Cross-references: external-relations-immutable-to-ui-users-cross-method-guard-tagserviceimpl invariant (the !external guard at step 2)'
+
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      Gated at the controller perimeter via SecurityConstants.SECURITY_RULES
+      (TAG_DELETE permission). NO service-tier authorisation check.
+      Per the audit pattern, controller-perimeter-only is the
+      consistent platform shape for write endpoints.
+  owner_scoping:
+    verdict: N/A
+    detail: Tag directory has no per-tag owner concept.
+  strengths:
+    - |-
+      `!external` guard prevents UI users from deleting Collector-set
+      tags (cross-method consistent with update + updateRelationsWithDataEntity).
+    - |-
+      @ReactiveTransactional boundary — the 6-step orchestration runs
+      atomically.
+  weaknesses:
+    - |-
+      **HIGH — cascade asymmetry**: tag_to_dataset_field rows NOT
+      cleaned up; orphans persist indefinitely. See the
+      `deletetag-cascade-asymmetric-orphans-tag-to-dataset-field`
+      invariant.
+    - |-
+      **LOW — search-vector asymmetry**: main FTS vectors not
+      refreshed; deleted tag's tokens persist until next entity write.
+      See the
+      `tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1`
+      invariant.
+    - |-
+      No audit-log emission — deleteTag produces NO Activity Feed
+      entry. See the
+      `no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f`
+      invariant.
+
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+    - |-
+      Operator-explicit single-tag delete — typically low-frequency.
+      Not a hot path under normal operation.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      The endpoint accepts a single tag_id; no bulk-delete shape
+      exists. An operator deleting many tags issues one request per
+      tag, each entering its own @ReactiveTransactional boundary.
+  weaknesses:
+    - |-
+      The Flux.zip for the 2 relation deletes is concurrent — latency
+      is max(deleteTermRelations, deleteDataEntityRelations) rather
+      than sum. After the cascade-asymmetry fix lands, the zip would
+      grow to 3 concurrent deletes — same architecture, one more arm.
+
+notes: |-
+  CAPTURED batch VAL-LSN-019 (2026-05-20). The delete operation is
+  the most-asymmetric method in TagServiceImpl — TWO independent
+  code-omissions live in the same method. The compound fix is the
+  recommended remediation (touch both omissions in one commit).
+
+  Cross-cutting connections:
+    - Pairs with the Tag entity (lifecycle)
+    - Pairs with `deletetag-cascade-asymmetric-orphans-tag-to-dataset-field`
+      (cascade asymmetry)
+    - Pairs with `tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1`
+      (search-vector asymmetry)
+    - Pairs with `external-relations-immutable-to-ui-users-cross-method-guard-tagserviceimpl`
+      (the !external guard at step 2)
+    - Pairs with `no-audit-log-on-rbac-mutations` (the audit
+      silence)

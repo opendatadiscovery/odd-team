@@ -1,18 +1,22 @@
 name: |-
   Tag TOCTOU race — listByNames then bulkCreate auto-create-on-miss (STRENGTHENED
-  batch R — MetadataField sibling primary source; bug class confirmed at SECOND site)
+  batch R — MetadataField sibling primary source; STRENGTHENED batch VAL-LSN-019
+  — TagServiceImpl primary source for service-tier read-then-write pattern)
 canonical_in_docs: false
 canonical_candidate: true
 pillar_affinity:
 - P-01
 - P-09
 description: |-
-  **NEW HIGH-SEVERITY INVARIANT, batch 2026-05-19N — SQL-LAYER PRIMARY
+  **HIGH-SEVERITY INVARIANT, batch 2026-05-19N — SQL-LAYER PRIMARY
   SOURCE from ReactiveTagRepositoryImpl; STRENGTHENED batch R with
-  MetadataField SIBLING INSTANCE at ReactiveMetadataFieldRepositoryImpl** —
-  the auto-create-on-miss UX for tag-relations has a Time-Of-Check /
-  Time-Of-Use race window between `TagServiceImpl.getOrCreateTagsByName`
-  and the underlying repository primitives.
+  MetadataField SIBLING INSTANCE at ReactiveMetadataFieldRepositoryImpl;
+  STRENGTHENED batch VAL-LSN-019 with TagServiceImpl SERVICE-TIER
+  PRIMARY SOURCE pinning the read-then-write pattern at the
+  service-orchestration layer** — the auto-create-on-miss UX for
+  tag-relations has a Time-Of-Check / Time-Of-Use race window between
+  `TagServiceImpl.getOrCreateTagsByName` and the underlying repository
+  primitives.
 
   **The race window** (TAG instance):
     1. `TagServiceImpl.divideTagsByExistence` (TagServiceImpl.java:144-159)
@@ -38,6 +42,33 @@ description: |-
        re-attempt. The user sees a 5xx-level error on a normal-looking
        PUT request (the OpenAPI shape is `200 OK` for happy path; the
        race surfaces as the global ControllerAdvice catch-all).
+
+  **NEW BATCH VAL-LSN-019 — SERVICE-TIER CONFIRMATION**: the
+  TagServiceImpl sidecar confirms the race pattern at the
+  service-orchestration layer:
+    - `getOrCreateTagsByName` (TagServiceImpl.java:79-86) has NO
+      `@ReactiveTransactional` annotation, so the read+write pair is
+      NOT atomic. The lack of TX is INTENTIONAL per the maintainer's
+      dual-method design (the TX should not span the listBy/bulkCreate
+      pair because the design accepts the race-exception-driven
+      resolution).
+    - Companion finding NEW batch VAL-LSN-019: TagServiceImpl
+      enumerates THE FULL CALL-SITE GRAPH for the side-door write
+      surface that triggers the TOCTOU window: the 4 side-doors are
+      (a) DATA_ENTITY_TAGS_UPDATE via DataEntityServiceImpl.upsertTags,
+      (b) TERM_TAGS_UPDATE via TermServiceImpl.upsertTags,
+      (c) DATASET_FIELD_TAGS_UPDATE via DatasetFieldServiceImpl
+          (multiple call sites), and (d) S2S ingestion via
+      ExternalTagIngestionRequestProcessor (which goes through
+      `getOrInjectTagByName`, the SAFE upsert variant — not the
+      race-prone `getOrCreateTagsByName`).
+    - The dual-method design (`getOrCreateTagsByName` race-prone
+      vs `getOrInjectTagByName` race-safe) is now triple-anchored:
+      ReactiveTagRepositoryImpl.implicit_adrs.[6] (repository tier)
+      + TagServiceImpl.implicit_adrs[bulk-create-as-side-door]
+      (service tier confirms the deliberate split) + TagController
+      sidecar implicit_adrs.[5] (controller tier observes the dual
+      shape).
 
   **The ingestData upsert path is SAFE**: the parallel write path used by
   `ExternalTagIngestionRequestProcessor` calls `tagRepository.ingestData`
@@ -88,10 +119,10 @@ description: |-
   collision should surface as an error; ingestion writes must be
   idempotent.
 
-  **Two-sidecar primary source for the same bug class**: the
+  **Three-sidecar primary source for the same bug class**: the
   identification of the bug as a CROSS-CUTTING pattern (not a Tag-specific
-  bug) is now SECOND-INSTANCE confirmed. The pair (Tag + metadata_field)
-  share:
+  bug) is now THIRD-INSTANCE confirmed (Tag + metadata_field + service-tier).
+  The pair (Tag + metadata_field) share:
     - The listBy → bulkCreate two-step at the service tier
     - The race-window-resolves-via-UniqueConstraintException at the
       partial-unique-index
@@ -135,22 +166,26 @@ description: |-
       TermServiceImpl.upsertTags transitive path);
       `namespace_name_unique` partial index per V0_0_64.
     - Title auto-create at OwnershipServiceImpl path (similar shape).
-    - **NEW batch R**: MetadataField INTERNAL auto-create at
-      MetadataFieldServiceImpl.getOrCreateMetadataFields (this batch's
-      sibling instance).
+    - **MetadataField INTERNAL auto-create at
+      MetadataFieldServiceImpl.getOrCreateMetadataFields (batch R —
+      primary source).**
   **The TOCTOU race shape applies to every "auto-create-on-miss"
   service-tier method that does listBy → bulkCreate without the
-  DB-side ON CONFLICT protection.** This invariant now captures TWO
-  PRIMARY SOURCES for the class — the Tag instance (batch N) and the
-  MetadataField INTERNAL instance (batch R). The cross-cutting
+  DB-side ON CONFLICT protection.** This invariant now captures THREE
+  PRIMARY SOURCES for the class — the Tag instance (batch N + batch
+  VAL-LSN-019 service-tier confirmation), the MetadataField INTERNAL
+  instance (batch R), and the service-tier orchestration evidence
+  (TagServiceImpl batch VAL-LSN-019). The cross-cutting
   auto-create-class finding is captured at the
   spec-documented-auto-create-with-scope-asymmetry invariant.
 nodes:
 - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
 - odd-platform java repository reactive repository:ReactiveMetadataFieldRepositoryImpl
+- odd-platform java service:TagServiceImpl
 contributors:
 - |-
-  ReactiveTagRepositoryImpl batch N (PRIMARY SOURCE — first instance):
+  ReactiveTagRepositoryImpl batch N (PRIMARY SOURCE — first instance,
+  SQL tier):
   concepts.invariants.[hard-delete vs soft-delete asymmetry; tag-name
   partial-unique-index as race protection] + implicit_adrs.[0]
   (partial-unique-index-as-race-protection — the platform's only locking
@@ -180,6 +215,31 @@ contributors:
   MetadataFieldServiceImpl.getOrCreateMetadataFields with overlapping
   keys; the race-window-resolves-via-UniqueConstraintException behaviour
   is unverified)
+- |-
+  TagServiceImpl batch VAL-LSN-019 (PRIMARY SOURCE — third instance,
+  SERVICE-TIER orchestration evidence):
+  concepts.operations[getOrCreateTagsByName at :79-86 — TOCTOU upsert
+  via divideTagsByExistence split then bulkCreate +
+  ListUtils.union(createdTags, existingTags); NO @ReactiveTransactional;
+  the listByNames + bulkCreate pair is read-then-write WITHOUT a
+  transactional boundary] +
+  concepts.invariants[Methods that issue MULTI-step reads-then-writes
+  WITHOUT @ReactiveTransactional: bulkCreate (inherited TX),
+  getOrCreateTagsByName, getOrInjectTagByName, deleteRelationsWithTerm] +
+  bugs_limitations_corner_cases.[HIGH severity TOCTOU window between
+  listByNames at :145 and bulkCreate at :82 — TWO concurrent callers
+  submitting the same novel name will both find it missing and both
+  attempt bulkCreate; one will succeed; the other will hit
+  UniqueConstraintException; CRITICAL: this is invoked from
+  TermServiceImpl.upsertTags, DataEntityServiceImpl.upsertTags,
+  DatasetFieldServiceImpl twice — the side-door write paths; a
+  Collector + UI concurrent submission of the same novel name will
+  fail the UI write while succeeding the Collector ingest] +
+  stress_findings.S-B-4 (getOrCreateTagsByName vs getOrInjectTagByName
+  — same shape, different race semantics — naming does NOT advertise
+  the race difference) +
+  implicit_adrs[the dual-method design is deliberate per the consistent
+  pattern at TagServiceImpl.java:79-94]
 evidence:
 - |-
   ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[0] (PRIMARY
@@ -214,11 +274,31 @@ evidence:
   ReactiveMetadataFieldRepositoryImpl.md:implicit_adrs.[2] (the
   intentional split between ingestData [race-tolerant] and
   bulkCreate [race-exception-driven] — identical design intent to Tag)
+- |-
+  **TagServiceImpl.md (PRIMARY SOURCE — third instance, service-tier
+  orchestration):
+  concepts.operations[getOrCreateTagsByName at :79-86] +
+  concepts.invariants[multi-step reads-then-writes WITHOUT
+  @ReactiveTransactional] +
+  bugs_limitations_corner_cases[HIGH severity TOCTOU window — invoked
+  from FOUR side-door call sites; a Collector + UI concurrent
+  submission produces silent 400-on-loser behaviour] +
+  stress_findings.S-B-4 (the dual-method design's race-semantic
+  asymmetry is NOT advertised in the method names)
+- |-
+  TagServiceImpl.java:79-86 (the source code — no @ReactiveTransactional
+  on the read+write pair)
+- |-
+  TagServiceImpl.java:144-159 (divideTagsByExistence — the read step
+  with case-sensitive existing-set check)
+- |-
+  TagServiceImpl.java:88-94 (getOrInjectTagByName — the SAFE upsert
+  variant, race-tolerant)
 axes_present:
 - repositories_reactive
 - services
 - schema_migrations
-triangulation_count: 2
+triangulation_count: 3
 cross_batch: true
 severity: HIGH
 severity_dim: availability-and-UX
@@ -264,16 +344,16 @@ mitigations_unimplemented:
   endpoint — operators can plan retry strategies client-side until
   the server fix lands.
 notes: |-
-  STRENGTHENED batch 2026-05-20R — MetadataField SIBLING INSTANCE
-  PINNED AT SQL PRIMARY SOURCE. Same bug class, same architectural
-  shape, same dual-method intentional split (ingestData
-  race-tolerant; bulkCreate race-exception-driven). The triangulation
-  across TWO repositories confirms the class is CROSS-CUTTING, not
-  a Tag-specific defect.
+  STRENGTHENED batch 2026-05-20-VAL-LSN-019 — TagServiceImpl
+  SERVICE-TIER PRIMARY SOURCE pins the read-then-write pattern at
+  the service-orchestration layer. The maintainer's deliberate
+  design choice (no @ReactiveTransactional on the
+  getOrCreateTagsByName pair) is now triple-anchored across all
+  three sidecars (controller + service + repository).
 
-  Original batch N notes (preserved):
-  NEW HIGH-severity invariant captured in batch 2026-05-19N. Primary
-  source is the ReactiveTagRepositoryImpl repository sidecar's
+  Original batch N notes (preserved): NEW HIGH-severity invariant
+  captured in batch 2026-05-19N. Primary source is the
+  ReactiveTagRepositoryImpl repository sidecar's
   bugs_limitations_corner_cases.[0] — the TOCTOU between
   TagServiceImpl.divideTagsByExistence (listByNames) and the subsequent
   TagServiceImpl.upsertTags (bulkCreate). The race is at the SERVICE
@@ -288,7 +368,7 @@ notes: |-
     - Owner auto-create (batch F finding)
     - Namespace auto-create (batch K finding via TermServiceImpl)
     - Title auto-create (similar shape)
-    - **MetadataField INTERNAL auto-create (NEW batch R — primary source)**
+    - **MetadataField INTERNAL auto-create (batch R — primary source)**
 
   Cross-cutting connections:
     - Pairs with spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
@@ -309,11 +389,21 @@ notes: |-
       INTERNAL TOCTOU race surface is exactly the side that gets the
       fail-on-duplicate ergonomic; the EXTERNAL side gets the
       race-tolerant ingestData
+    - **NEW batch VAL-LSN-019** — service-tier orchestration evidence:
+      TagServiceImpl confirms the design intent (no
+      @ReactiveTransactional) AND the call-site graph (4 side-doors).
+      The dual-method design (getOrCreateTagsByName race-prone vs
+      getOrInjectTagByName race-safe) is now operating evidence rather
+      than reasoned-about-but-untraced.
 
   Companion testing gap: BOTH batch-N + batch-R sidecars'
   tests_coverage_semantic.uncovered_behaviours blocks name the race
   as a HIGH-severity uncovered test case. Neither repository has
-  direct test coverage for the concurrent-race scenario.
+  direct test coverage for the concurrent-race scenario. Batch
+  VAL-LSN-019's TagServiceImpl sidecar additionally names the
+  service-tier-test-coverage gap: there is NO TagServiceImplTest.java
+  in the test corpus, so even the service-tier orchestration is
+  unverified.
 
   Three DOC-NNN candidates flow from this invariant:
     (a) Document the auto-create-on-miss race window for tag-assignment

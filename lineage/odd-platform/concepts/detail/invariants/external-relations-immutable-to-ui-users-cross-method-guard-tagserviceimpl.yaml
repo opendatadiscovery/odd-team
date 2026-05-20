@@ -1,0 +1,255 @@
+name: |-
+  EXTERNAL relations are immutable to UI users — cross-method `!external` guard pattern (TagServiceImpl)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-09
+  - P-10
+description: |-
+  NEW INVARIANT, batch VAL-LSN-019 (2026-05-20) — captures a
+  three-method consistency pattern in TagServiceImpl that defends
+  Collector-set EXTERNAL tags from UI-driven mutation. The pattern
+  is INTENTIONAL (per the explicit BadUserRequestException messages
+  in the source code) but NOT documented anywhere operator-facing
+  — and the pattern has a SUBTLE GAP (the `!external` check is
+  computed from `tag_to_data_entity` only, ignoring the
+  `tag_to_dataset_field` origin enum).
+
+  THE THREE-METHOD GUARD PATTERN:
+
+    TagServiceImpl carries THREE guards across distinct methods, all
+    reading the same `TagDto.external()` aggregate value to decide
+    whether the operation is permitted:
+
+      Guard 1 — `update` method (TagServiceImpl.java:49-50):
+        `.filter(tagDto -> !tagDto.external())`
+        `.switchIfEmpty(Mono.error(new BadUserRequestException(
+        "Can't update tag which has external relations")))`
+        Rejects UI tag-rename / important-flag toggle on
+        Collector-set tags.
+
+      Guard 2 — `delete` method (TagServiceImpl.java:62-63):
+        `.filter(tagDto -> !tagDto.external())`
+        `.switchIfEmpty(Mono.error(new BadUserRequestException(
+        "Can't delete tag which has external relations")))`
+        Rejects UI tag-delete on Collector-set tags.
+
+      Guard 3 — `updateRelationsWithDataEntity` method
+      (TagServiceImpl.java:102 + :109):
+        Line 102: filter the read-side current relations to
+          `!pojo.getExternal()` BEFORE the diff. The diff sees
+          ONLY non-Collector-set relations.
+        Line 109: every new relation written is hardcoded with
+          `.setExternal(false)`. The UI cannot impersonate a
+          Collector via this path.
+
+    The three guards work together: Guard 1 + Guard 2 protect the
+    DIRECTORY-VOCABULARY layer (the tag name/flag); Guard 3 protects
+    the per-entity ASSIGNMENT layer (the tag_to_data_entity rows).
+    A user with TAG_UPDATE / TAG_DELETE / DATA_ENTITY_TAGS_UPDATE
+    cannot mutate any Collector-set state via the UI surface.
+
+  THE MAINTAINER'S DESIGN INTENT (load-bearing):
+
+    The maintainer-authored exception messages name the contract in
+    user-visible language:
+      - "Can't update tag which has external relations"
+      - "Can't delete tag which has external relations"
+    Three independent guards aligned across three methods (with
+    matching code shapes) = INTENTIONAL pattern, not coincidence.
+
+    The architectural statement is: the Collector OWNS its EXTERNAL
+    bit; the UI cannot impersonate. This is the equivalent of an
+    ownership model — but the "owner" is the Collector subsystem,
+    not a User or a Policy.
+
+  THE SUBTLE GAP — what the !external guard DOES NOT see:
+
+    The `TagDto.external()` aggregate is computed at
+    ReactiveTagRepositoryImpl.getDto by aggregating
+    `boolOr(tag_to_data_entity.external)` across the tag's
+    data-entity relations. It DOES NOT consult the
+    `tag_to_dataset_field.origin` enum field — even though
+    `tag_to_dataset_field` has a parallel `TagOrigin` enum
+    (`INTERNAL | EXTERNAL | EXTERNAL_STATISTICS`) that carries
+    the same semantic.
+
+    A tag with ONLY INTERNAL data-entity relations but EXTERNAL
+    dataset-field relations would have `external()=false` from the
+    aggregate; the !external guard would PERMIT update / delete on
+    such a tag — silently mutating dataset-field-side Collector-set
+    state.
+
+    The gap is a code-omission bug at the AGGREGATE-COMPUTATION
+    layer, not at the guard layer. The fix is one of:
+      (a) Extend the aggregate to also fold in
+          `boolOr(tag_to_dataset_field.origin <> 'INTERNAL')`.
+      (b) Add a parallel `dataset_field_external` field to TagDto
+          and check both in each guard.
+
+    Operator-visible: a Collector that uses `tag_to_dataset_field`
+    with `origin=EXTERNAL` (the schema-stat tags) does NOT get the
+    same protection as the data-entity-side Collector tags. The
+    gap is INVISIBLE unless an operator notices that a dataset-field-
+    tagged-as-EXTERNAL got mutated by the UI.
+
+  THE PERMISSION-LIKE BEHAVIOUR (architectural class):
+
+    The !external guard pattern is functionally a permission check
+    expressed at the DATA-LAYER, not at the AUTH-LAYER:
+      - Standard permission check: "does the user hold permission P?"
+        Implemented via SecurityRule path-matching or @PreAuthorize.
+      - The !external guard: "does the operand data carry the
+        Collector-ownership bit?" Implemented via a row-aggregate
+        filter at the service tier.
+
+    The two mechanisms COMBINE to produce the operator-facing
+    behaviour: a user holding TAG_UPDATE can update a tag UNLESS
+    a Collector has marked it. The combination is NOT documented
+    anywhere — operators reading the Permissions doc see ONLY the
+    TAG_* permissions; they do not see the !external guard's
+    second-axis defence.
+
+  THE TEST COVERAGE GAP (CRITICAL):
+
+    Per the TagServiceImpl sidecar's uncovered_behaviours:
+      - `testUpdate_ExternalTag_ThrowsBadUserRequest` — HIGH
+      - `testDelete_ExternalTag_ThrowsBadUserRequest` — HIGH
+      - `testUpdateRelationsWithDataEntity_PreservesExternalRelations` — HIGH
+      - `testUpdateRelationsWithDataEntity_NewRelationsExternalFalse` — MEDIUM
+
+    There is NO TagServiceImplTest.java in the test corpus. A future
+    refactor that REMOVES the `.filter(tagDto -> !tagDto.external())`
+    guard would compile, pass all existing tests, and silently let
+    UI users mutate Collector-owned tags. This is a
+    permission-bypass regression with ZERO CI signal.
+
+    The maintainer's intent (the three explicit BadUserRequestException
+    messages) IS the architectural statement — but the test corpus
+    has not pinned the intent. A regression is not detectable today.
+
+nodes:
+  - odd-platform java service:TagServiceImpl
+
+contributors:
+  - |-
+    TagServiceImpl batch VAL-LSN-019 (PRIMARY SOURCE — three-method
+    consistency pattern):
+    concepts.invariants[The !external guard pattern — TagServiceImpl.update
+    and TagServiceImpl.delete both refuse to mutate a tag whose
+    boolOr(tag_to_data_entity.external) aggregate is true; the
+    updateRelationsWithDataEntity diff filters current relations to
+    !external before the diff, and new relations are hardcoded
+    external=false] +
+    concepts.invariants[NOTE: the guard reads tagDto.external() which
+    is the AGGREGATE across all data-entity relations; it does NOT
+    consult tag_to_dataset_field origins — a tag with INTERNAL
+    data-entity relations + EXTERNAL dataset-field relations would
+    NOT be blocked] +
+    implicit_adrs.[EXTERNAL relations are immutable to UI users — both
+    update and delete reject tags with external=true aggregate;
+    updateRelationsWithDataEntity reads only !external relations for
+    the diff; new relations are hardcoded external=false; the Collector
+    owns the EXTERNAL bit and the UI cannot impersonate] +
+    tests_coverage_semantic.uncovered_behaviours[update !external
+    guard, delete !external guard, preserves external relations,
+    new relations external false] +
+    bugs_limitations_corner_cases[the !external check is computed
+    from tag_to_data_entity only — silent gap on tag_to_dataset_field
+    EXTERNAL origins]
+
+evidence:
+  - 'TagServiceImpl.java:49-50 (update guard — BadUserRequestException("Can''t update tag which has external relations"))'
+  - 'TagServiceImpl.java:62-63 (delete guard — BadUserRequestException("Can''t delete tag which has external relations"))'
+  - 'TagServiceImpl.java:102 (updateRelationsWithDataEntity — filter currentRelations to !pojo.getExternal())'
+  - 'TagServiceImpl.java:109 (updateRelationsWithDataEntity — new relations setExternal(false))'
+  - 'TagServiceImpl.md:concepts.invariants[The !external guard pattern]'
+  - 'TagServiceImpl.md:implicit_adrs[EXTERNAL relations are immutable to UI users]'
+  - 'TagServiceImpl.md:tests_coverage_semantic.uncovered_behaviours (4 uncovered guard tests)'
+  - 'ReactiveTagRepositoryImpl.java:80 (TagDto.external is computed via boolOr(tag_to_data_entity.external) only — the silent gap)'
+  - 'TagOrigin.java:4-6 (INTERNAL / EXTERNAL / EXTERNAL_STATISTICS — the dataset-field-side enum that the aggregate ignores)'
+  - 'TagDto.java:5 (the three-field record (TagPojo, Long, Boolean) — the boolean is the external flag from the data-entity-side aggregate only)'
+
+axes_present:
+  - services
+
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-N (ReactiveTagRepositoryImpl — the SQL-tier source of TagDto.external())
+  - batch-VAL-LSN-019 (TagServiceImpl — the service-tier consumer; three-method consistency pinned)
+
+severity: MEDIUM
+severity_dim: security+data-integrity
+
+mitigations_unimplemented:
+  - |-
+    Add the missing tests pinning the three-method guard pattern.
+    The tests are sketched in TagServiceImpl.md:tests_coverage_semantic.uncovered_behaviours;
+    converting them to Testcontainers-backed @SpringBootTest pins
+    the maintainer's intent permanently. A future refactor that
+    removes the guard would FAIL the tests rather than silently
+    bypassing the protection.
+  - |-
+    Extend `TagDto.external()` aggregation to fold in
+    `boolOr(tag_to_dataset_field.origin <> 'INTERNAL')`. The fix
+    closes the silent gap between data-entity-side and
+    dataset-field-side EXTERNAL semantics. Cost: an additional
+    LEFT JOIN in ReactiveTagRepositoryImpl.getDto (and
+    listDataEntityDtos / listDatasetFieldDtos if those should
+    expose the same aggregate).
+  - |-
+    Document the !external guard on the live
+    /features/data-discovery/tagging doc page — explicit text:
+    "Tags applied by Collectors during ingestion are protected from
+    UI-driven modification. Operators with TAG_UPDATE / TAG_DELETE
+    can mutate vocabulary entries that are PURELY operator-set;
+    Collector-managed tags require de-registering the Collector to
+    modify." Adds a second-axis check the operator can reason about.
+  - |-
+    Document the dataset-field-EXTERNAL gap until the aggregate fix
+    lands. Operators using `tag_to_dataset_field` with
+    `origin=EXTERNAL_STATISTICS` need to know the UI can mutate those
+    even though "they're external".
+  - |-
+    Consider promoting the !external mechanism to an explicit
+    architectural concept rather than three independent ad-hoc
+    guards. A `TagOwnershipBoundary` class (or
+    `@CollectorOwnedTagsCheck` aspect) would centralise the rule
+    + the dataset-field-aware aggregate; the three methods would
+    invoke a single helper. Reduces the surface for future
+    refactor-bypass.
+
+notes: |-
+  CAPTURED batch VAL-LSN-019 (2026-05-20). The three-method guard
+  pattern is the maintainer's intentional defence against UI-driven
+  Collector-set tag mutation. The pattern is INTENTIONAL (named in
+  three independent exception messages + consistent code shape) but
+  fragile (no test corpus pins it; a refactor could remove it
+  silently).
+
+  Cross-cutting connections:
+    - Pairs with the entity `Tag` (the carrier of the external bit)
+    - Pairs with `tag-with-internal-vs-external-distinction` (the
+      vocabulary-level naming of the INTERNAL/EXTERNAL split)
+    - Pairs with the LSN-019 drift class — the LSN-019 surfacing
+      methodology is what surfaced THIS pattern as a coherent
+      cross-method finding (the Stress Protocol's D-category +
+      E-category questions on each method made the consistency
+      visible)
+    - Pairs with `audit-log-presence-asymmetry-2-tier-audit-story`
+      — the !external guard's BadUserRequestException emits NO
+      Activity event; operators who repeatedly attempt to mutate
+      Collector-set tags via the UI leave no audit trail
+    - Pairs with `s2s-composes-not-mutex-privilege-escalation-across-auth-modes`
+      — the !external guard is the second-axis check the platform
+      uses to compose UI authorities with S2S authorities; this
+      pattern is the architectural ledger entry
+
+  Two DOC-NNN candidates:
+    (a) /features/data-discovery/tagging — admonition on the
+        Collector-owned EXTERNAL tag protection
+    (b) /developer-guides/api-reference/tagging NEW page — explicit
+        documentation of the 4xx surface when an operator attempts
+        to update/delete an EXTERNAL tag via the UI

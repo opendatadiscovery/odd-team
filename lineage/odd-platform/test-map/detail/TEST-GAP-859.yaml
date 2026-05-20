@@ -1,0 +1,71 @@
+gap_id: TEST-GAP-859
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java service:TagServiceImpl"
+  - "odd-platform java repository_reactive repository:ReactiveTagRepositoryImpl"
+pillars_affected: [P-01, P-10]
+surfaced_by:
+  - "TagServiceImpl.md:stress_findings.B.S-B-4 (getOrCreateTagsByName vs getOrInjectTagByName — same shape but different race semantics; sibling methods do NOT advertise the race difference)"
+  - "TagServiceImpl.md:tests_coverage_semantic.uncovered_behaviours.[getOrInjectTagByName TOCTOU — symmetric concern but the upsert silences the race; the test should assert both callers receive the SAME tag id (not two different ids)]"
+  - "ReactiveTagRepositoryImpl.md:stress_findings.E1 (ingestData upsert race — race-safe by construction via partial unique index + ON CONFLICT DO UPDATE)"
+behaviour: |-
+  **HIGH — `TagServiceImpl.getOrInjectTagByName` (lines 88-94) is the SIBLING of `getOrCreateTagsByName` (lines 79-86) with IDENTICAL signature but FUNDAMENTALLY DIFFERENT race semantics: `getOrCreateTagsByName` uses `bulkCreate` (fail-on-duplicate → `UniqueConstraintException`), `getOrInjectTagByName` uses `ingestData` (upsert with `ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE` → silent race resolution returning the existing row). The contract: under concurrent novel-name submissions, BOTH callers of `getOrInjectTagByName` must receive the SAME tag id; the race is silenced.** No test pins the upsert-silenced contract. A future refactor that "unifies" the two paths into `bulkCreate` (perhaps for code-deduplication) would break the Collector ingestion path: every concurrent Collector pushing the same novel tag name would surface `UniqueConstraintException`, with no caller-side retry.
+
+  **Primary-source chain**:
+  - `TagServiceImpl.java:88-94` (`getOrInjectTagByName`): `divideTagsByExistence` → `reactiveTagRepository.ingestData(tagsToCreate)` → union with existing tags.
+  - `ReactiveTagRepositoryImpl.java:180-213` (`ingestData`): `INSERT INTO tag (name, ...) VALUES (?), (?), ... ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET name = excluded.name RETURNING *`.
+  - **Conflict-target**: `Indexes.TAG_NAME_UNIQUE.getFields()` (`:199-202`) — dynamically resolved from the jOOQ-generated handle.
+  - **Conflict predicate**: hardcoded `WHERE TAG.DELETED_AT.isNull()` (`:207`) — matches the partial-index predicate at `V0_0_64__remove_is_deleted_field.sql:105`.
+  - **Race protection** (per ReactiveTagRepositoryImpl.md:stress_findings.E1): the partial unique index `tag_name_unique` serialises by-name conflicts at the PostgreSQL B-tree level. Two parallel TXs inserting the same novel name: one wins, one routes to `DO UPDATE`. Both callers get the SAME `tag.id` via RETURNING.
+
+  **Why the test is HIGH**:
+  - **Critical for the Collector path** (`ExternalTagIngestionRequestProcessor.java:104` calls `getOrInjectTagByName` for every batch).
+  - A concurrent UI write + Collector ingest of the same novel name: `getOrCreateTagsByName` (UI path) surfaces `UniqueConstraintException` (per TEST-GAP-540); `getOrInjectTagByName` (Collector path) silently returns the existing id. The TWO PATHS ARE INTENTIONALLY ASYMMETRIC — this is the architectural choice that the test must lock in.
+  - **The methods have identical names + Java signatures**: a maintainer reading the interface (`TagService.java:14-36`) cannot distinguish which has which race semantic without reading both implementations. The CI test is the only stable contract documentation.
+
+  **The bridging contract**:
+  - Two parallel `getOrInjectTagByName(Set.of("novelTag"))` calls → BOTH return a `Flux<TagPojo>` containing ONE TagPojo with the SAME id. The partial unique index serialises; one INSERT, one UPDATE; both have the same RETURNING.
+  - The sister `getOrCreateTagsByName(Set.of("novelTag"))` under the same concurrency → ONE caller returns the tag id; the OTHER caller surfaces `UniqueConstraintException` (per TEST-GAP-540).
+  - This asymmetry IS the design; the test pins it.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TagServiceImplGetOrInjectRaceTest.java"
+  name: "getOrInjectTagByName_concurrentNovelName_bothCallersReceiveSameId_pinsUpsertSilencedRace"
+evidence:
+  - "TagServiceImpl.md says (stress_findings.B.S-B-4): 'getOrCreateTagsByName (:79-86) vs getOrInjectTagByName (:88-94) — same shape (Flux<TagPojo> from Set<String>); difference is in race semantics. getOrCreateTagsByName uses bulkCreate (fail-on-duplicate → UniqueConstraintException); getOrInjectTagByName uses ingestData (upsert with ON CONFLICT DO UPDATE — silent race resolution). Method names do NOT advertise the race difference.' confidence: HIGH — naming-drift severity: LOW (the methods do work as documented in the interface; the issue is the lack of documentation distinguishing them) — probe-id: P-LSN019-getOrCreate-vs-getOrInject-toctou (skeleton emitted)"
+  - "TagServiceImpl.md says (tests_coverage_semantic.uncovered_behaviours.[getOrInjectTagByName TOCTOU]): 'symmetric concern but the upsert silences the race; the test should assert both callers receive the SAME tag id (not two different ids).' severity: HIGH"
+  - "ReactiveTagRepositoryImpl.md says (stress_findings.E1): 'ingestData upsert race — the partial unique index tag_name_unique serialises by-name conflicts at the PostgreSQL B-tree level. Two parallel TXs inserting the same novel name: one wins, one routes to DO UPDATE. Result: both callers get back the same tag.id via RETURNING — ingestData is race-safe by construction. No advisory lock, no SELECT ... FOR UPDATE, no synchronized block — the partial unique index is the entire locking mechanism.' confidence: STATIC-INFERRED"
+  - "ReactiveTagRepositoryImpl.md says (implicit_adrs.[partial-unique-index-as-race-protection]): 'tag_name_unique ON tag (name) WHERE tag.deleted_at IS NULL is the platform's only locking mechanism for the auto-create-on-miss path. The ingestData upsert leans on ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET name = EXCLUDED.name to make concurrent novel-name inserts idempotent without an application-level lock; the same mechanism does NOT protect the bulkCreate path used by TagServiceImpl.getOrCreateTagsByName.' confidence: HIGH"
+  - "Verified at primary source: TagServiceImpl.java:79-86 (getOrCreateTagsByName) vs TagServiceImpl.java:88-94 (getOrInjectTagByName) + ReactiveTagRepositoryImpl.java:180-213 (ingestData with ON CONFLICT DO UPDATE) + ReactiveAbstractCRUDRepository.java:113-126 (bulkCreate without onConflict)"
+  - "Probe shape: lineage/odd-platform/probes/P-LSN019-getOrCreate-vs-getOrInject-toctou.md"
+cross_references:
+  - "TEST-GAP-540 (existing — TOCTOU race in getOrCreateTagsByName → bulkCreate raises UniqueConstraintException; this gap is the SISTER pinning the OPPOSITE upsert-silenced behavior on getOrInjectTagByName)"
+  - "TEST-GAP-539 (existing — ingestData upsert path uncovered; this gap exercises it under concurrency)"
+  - "REFACTOR-223 (Tag side-door — Collector path uses getOrInjectTagByName as the silent race-safe write)"
+  - "ExternalTagIngestionRequestProcessor.java:104 (the production call site that depends on this race-safe behavior)"
+  - "concepts: tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race (existing concept candidate)"
+related_features: [F-001, F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-10:F-001-collector-push-ingestion"]
+proposed_action: |-
+  Add `TagServiceImplGetOrInjectRaceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/` using Testcontainers + `@SpringBootTest`. Three test methods:
+
+  1. **`getOrInjectTagByName_concurrentNovelName_bothCallersReceiveSameId_pinsUpsertSilencedRace`** (HEADLINE):
+     - Arrange: empty tag directory.
+     - Act: launch two parallel reactive pipelines (e.g. `Mono.zip(getOrInjectTagByName(Set.of("raceTag")).collectList(), getOrInjectTagByName(Set.of("raceTag")).collectList()).block()`).
+     - Assert: both lists contain exactly 1 `TagPojo`; both have the SAME `id` value. Query raw DB: `SELECT COUNT(*) FROM tag WHERE name = 'raceTag'` → exactly 1. PIN: the partial unique index + ON CONFLICT DO UPDATE silences the race.
+
+  2. **`getOrCreateTagsByName_concurrentNovelName_oneCallerThrowsUniqueConstraintException_pinsBulkCreateNoSilencing`**:
+     - Arrange: empty tag directory.
+     - Act: launch two parallel reactive pipelines `getOrCreateTagsByName(Set.of("raceTag"))`; capture both outcomes via `Mono.zip` with `.materialize()` or `StepVerifier`-equivalent.
+     - Assert: ONE pipeline succeeds with a non-empty `TagPojo` list; the OTHER pipeline surfaces `UniqueConstraintException` (the unsilenced TOCTOU). Query raw DB: `SELECT COUNT(*) FROM tag WHERE name = 'raceTag'` → exactly 1. PIN: the bulkCreate path does NOT silence the race (sister to TEST-GAP-540).
+
+  3. **`getOrInjectAndGetOrCreate_mixedConcurrency_demonstratesPathSpecificRaceSemantic_pinsTwoSiblingMethodsBehavingDifferently`**:
+     - Arrange: empty tag directory.
+     - Act: launch one `getOrInjectTagByName(Set.of("raceTag"))` AND one `getOrCreateTagsByName(Set.of("raceTag"))` IN PARALLEL.
+     - Assert: BOTH callers receive a non-empty `TagPojo` list AND BOTH have the SAME id (the inject path silences; the create path may succeed first OR may surface UniqueConstraintException — but if it succeeds, both ids match because the index protects). Document the test as "the two paths converge to the same row identity, but via different race resolution strategies".
+
+  Cross-pair with REFACTOR-NNN: if the maintainer decides to UNIFY the two methods (under `ON CONFLICT DO NOTHING / RETURNING` semantics), tests #1 + #2 INVERT — both methods become race-safe. The test pinning is the explicit gate. Cross-pair with DOC-NNN: surface the sibling-method asymmetry on the developer-guides API page; explain why a Collector author should call `getOrInjectTagByName` and a UI author should handle `UniqueConstraintException` from `getOrCreateTagsByName`.
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

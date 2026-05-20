@@ -1,0 +1,78 @@
+gap_id: TEST-GAP-867
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveTagRepositoryImpl"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "ReactiveTagRepositoryImpl.md:stress_findings.C1 (the OUTER .orderBy(field(COUNT_FIELD).desc()) at line 158 has NO secondary ORDER BY clause; ties are broken by PostgreSQL's natural-row-order semantics — practically inherits from the CTE's tag.id ASC)"
+  - "TagController.md:stress_findings.orderings (the OUTER ordering does NOT affect WHICH rows are returned; only the INNER ordering does. The tie-breaker when sort-key values are equal: outer ORDER BY count DESC has NO secondary sort key; equal-count rows are in PostgreSQL's implementation-defined order)"
+behaviour: |-
+  **HIGH — `listMostPopular`'s outer `.orderBy(field(COUNT_FIELD).desc())` (`ReactiveTagRepositoryImpl.java:158`) has NO secondary ORDER BY clause. When two tags have EQUAL aggregated usage_count, the order between them is determined by PostgreSQL's natural-row-order semantics within the GROUP BY result — practically, this inherits from the CTE's row order, which is `tag.id ASC` per the inner `paginate(...)` (line 148). The absence of a secondary tiebreaker IS the design — but it is NOT pinned by any test, and the implementation-defined PostgreSQL order is the only guarantee.** A future refactor that adds a different ORDER BY (or that changes the underlying CTE's row order via a different join strategy) would silently change the tie-break — potentially observable to operators paginating through equal-count tags.
+
+  **The empirical scenario** (per LSN-019 retrospective):
+  - 35 tags, all with EQUAL usage_count (every entity tagged by all 35).
+  - `size=30, page=1`: response contains IDs 1..30 in tag.id ASC order (the inner CTE's natural order).
+  - Verified empirically 2026-05-20 against demo.oddp.io.
+
+  **Why this is a SEPARATE gap from TEST-GAP-855**:
+  - TEST-GAP-855 pins the LSN-019 PRIMARY effect: when N > size, the inner paginate selects the OLDEST `size` tags before counting.
+  - **This gap (867)** pins the SECONDARY effect: WHEN N ≤ size (no inner paginate exclusion), but multiple tags have EQUAL counts (a degenerate but real case — every entity tagged by all N tags), the OUTER count-DESC sort has NO tie-break and the result inherits the CTE row order = tag.id ASC.
+  - Together they fully characterise the response shape:
+    - **N > size**: inner paginate selects OLDEST `size` by tag.id ASC; outer re-orders by count DESC within page (effective when counts differ within page).
+    - **N ≤ size with unique counts**: outer count-DESC is effective; result is by count DESC.
+    - **N ≤ size with equal counts**: outer count-DESC has no tie-break; result is by tag.id ASC (inherited from the CTE).
+
+  **What the test pins**:
+  - At equal counts, the SQL's secondary-sort behavior IS implementation-defined.
+  - The current implementation-defined order on PostgreSQL happens to be tag.id ASC.
+  - A future refactor that switches the inner CTE join order, adds an EXPLICIT `.orderBy(field(COUNT_FIELD).desc(), TAG.ID.asc())`, or changes the database vendor would CHANGE the observed order.
+  - The test forces the maintainer to COORDINATE that change.
+
+  **Operator-visible consequences if the tie-break changes**:
+  - **Pagination consistency**: a paged tag list with equal counts could shift across page reloads if the implementation-defined order is not stable across queries (it usually is, but the GUARANTEE is implementation-defined).
+  - **Display fidelity**: a tag-cloud showing "Top tags" with equal counts would have an apparent stability that changes when the upstream changes.
+
+  **Why HIGH not MEDIUM**:
+  - The implementation-defined tie-break IS load-bearing for the UI's "Top tags" stability across pagination.
+  - The absence of a secondary sort is a structural defect waiting to surface (a Postgres minor-version planner change could shift the tie-break observed order).
+  - The HIGH rating aligns with the LSN-019 family (PRIMARY at CRITICAL; SECONDARY tie-break gap at HIGH).
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTiebreakAbsenceTest.java"
+  name: "listMostPopular_equalUsageCountsWithinSize_orderInheritsTagIdAscFromCte_pinsTiebreakAbsence"
+evidence:
+  - "ReactiveTagRepositoryImpl.md says (stress_findings.C1): 'The ORDER BY count DESC is applied at the OUTERMOST select, AFTER the UNION-ALL has been wrapped as union_usages and the per-tag count has been summed across both arms (lines 153-156). Tie-break: there is NO secondary ORDER BY clause. When two tags have equal aggregated count, the order between them is determined by PostgreSQL's natural-row-order semantics within the GROUP BY result — practically, this inherits from the CTE's row order, which is tag.id ASC per the inner paginate(...). For LSN-019's empirical scenario (every tag tagged by all entities, all counts equal), the tie-break dominates — and the result order is tag.id ASC. The ORDER BY count DESC at line 158 has no effective discriminating power.' confidence: STATIC-INFERRED; pinned by probe P-010 (emitted)"
+  - "TagController.md says (stress_findings.orderings): 'q: What is the tie-breaker when sort-key values are equal? a: Inner: TAG.ID ASC is deterministic (id is a serial PK, never tied). Outer: ORDER BY count DESC has NO secondary sort key; equal-count rows are in PostgreSQL's implementation-defined order (typically heap-physical order, but plan-dependent). The maintainer's 2026-05-20 test (35 equal-count tags) reported the OLDEST 30 emerged — consistent with the INNER selection step's TAG.ID ASC selection, then the OUTER count-DESC being a stable no-op for equal counts.'"
+  - "Verified at primary source: ReactiveTagRepositoryImpl.java:158 (the outer .orderBy with no secondary clause) + ReactiveTagRepositoryImpl.java:148 (the inner paginate by TAG.ID ASC)"
+  - "Empirical reproduction: retrospectives/LSN-019-file-analyser-describes-not-interrogates.md:23-32"
+cross_references:
+  - "TEST-GAP-855 (NEW VAL-LSN-019 — LSN-019 PRIMARY effect: oldest-30-by-id when N > size; this gap is the SECONDARY tie-break effect)"
+  - "TEST-GAP-856 (NEW VAL-LSN-019 — HTTP-tier LSN-019 PRIMARY)"
+  - "TEST-GAP-547 (existing batch-N — listMostPopular pagination boundary; complementary at LOW for page=2 + size cap)"
+  - "REFACTOR-NNN candidate: add EXPLICIT secondary ORDER BY tag.id ASC after the count DESC (1-line fix). PIN: a future maintainer making this fix has the test that ASSERTS the current behavior as the gate"
+  - "DOC-NNN candidate: surface the tie-break behavior on the API Reference page; explain that equal-count tags are ordered by creation time (tag.id ASC)"
+related_features: [F-001, F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-08:F-NN-tags-tab"]
+proposed_action: |-
+  Add `TagRepositoryImplTiebreakAbsenceTest extends BaseIntegrationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/`. Three test methods:
+
+  1. **`listMostPopular_equalUsageCountsWithinSize_orderInheritsTagIdAscFromCte_pinsTiebreakAbsence`** (HEADLINE):
+     - Arrange: seed 10 tags (tag-001..tag-010) with serial IDs. Tag every entity with all 10 (every tag has usage_count = N entities).
+     - Act: `reactiveTagRepository.listMostPopular(null, List.of(), 1, 30)`. (size > total, so no LSN-019 exclusion.)
+     - Assert: response contains 10 elements in tag.id ASC order — i.e. IDs [1, 2, ..., 10]. PIN: the secondary sort defaults to CTE row order = tag.id ASC.
+
+  2. **`listMostPopular_mixedEqualAndDistinctCounts_distinctCountsRankFirst_equalCountsTiebreakByIdAsc_pinsHybridSort`**:
+     - Arrange: 5 tags with counts [3, 5, 3, 5, 3] respectively (IDs 1..5).
+     - Act: `listMostPopular(null, List.of(), 1, 30)`.
+     - Assert: response order is [tag-002 (count=5), tag-004 (count=5), tag-001 (count=3), tag-003 (count=3), tag-005 (count=3)] — count DESC first, tag.id ASC tiebreak within each equal-count group. PIN: the tiebreak is observable in practice.
+
+  3. **`listMostPopular_equalCountsAcrossPagination_stableOrderAcrossPages_pinsImplementationDefinedStability`**:
+     - Arrange: 60 tags all with usage_count = 1.
+     - Act: `listMostPopular(null, List.of(), 1, 30)` + `listMostPopular(null, List.of(), 2, 30)`.
+     - Assert: page 1 contains IDs 1..30 in ascending order; page 2 contains IDs 31..60 in ascending order. PIN: the tiebreak is STABLE across pagination (no random shuffling).
+
+  Cross-pair with REFACTOR-NNN: add EXPLICIT secondary ORDER BY (1-line fix). When the fix lands, tests #1-3 still pass (the explicit ORDER BY ASC matches the current implementation-defined behavior); the test now PINS the explicit guarantee. Cross-pair with DOC-NNN to surface the tie-break behavior on the API Reference page.
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

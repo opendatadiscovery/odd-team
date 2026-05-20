@@ -1,0 +1,346 @@
+name: |-
+  LSN-019 — listMostPopular NAME-vs-BEHAVIOR drift (pagination precedes ranking; outer count-DESC cannot reach excluded rows)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-08
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch VAL-LSN-019 (2026-05-20) — the
+  CANARY headline finding from the LSN-019 Stress Protocol validation
+  batch. Captures a NAME-vs-BEHAVIOR DRIFT where the operation's name
+  + the OpenAPI description + the UI surface label all PROMISE
+  popularity-ranked global selection, but the SQL truth is
+  pagination-precedes-ranking: pre-truncate by TAG.ID ASC then
+  re-order the window by count DESC. The outer count-DESC cannot
+  reach tags excluded by the inner LIMIT.
+
+  THE PROMISE (three independent surfaces promise the same thing):
+
+    Surface 1 — Java method name (controller + service):
+      TagController.getPopularTagList (TagController.java:36-44)
+      TagServiceImpl.listMostPopular (TagServiceImpl.java:72-77)
+      ReactiveTagRepositoryImpl.listMostPopular (ReactiveTagRepositoryImpl.java:137-167)
+      All three name the operation by POPULARITY.
+
+    Surface 2 — OpenAPI description:
+      odd-platform-specification/openapi.yaml:345 verbatim:
+      `description: 'Gets the list of existing tags sorted by popularity'`.
+
+    Surface 3 — UI surface label:
+      The Catalog Overview surface renders this response as "Top Tags"
+      (UI inheritance from previous batch-W sidecar analysis); the
+      tag-search facet uses the same endpoint with `query`; the
+      Management → Tags tab uses it for listing. ALL THREE UI surfaces
+      LIE to the operator about what's actually returned.
+
+  THE IMPLEMENTATION (the smoking gun chain):
+
+    ReactiveTagRepositoryImpl.listMostPopular (lines 137-167):
+
+      Step a (lines 144-145): build homogeneous select:
+        `selectFrom(TAG).where(conditions)` where conditions includes
+        the inherited soft-delete filter + optional listCondition(query)
+        case-insensitive substring + optional `TAG.ID.in(ids)`.
+        **NO ORDER BY at this layer**.
+
+      Step b (LINE 148 — THE LOAD-BEARING SMOKING GUN):
+        `paginate(homogeneousQuery, List.of(new OrderByField(TAG.ID, SortOrder.ASC)),
+        (page - 1) * size, size)`.
+        The `paginate` helper (JooqQueryHelper.java:63-90) wraps the
+        homogeneous select and emits:
+        ```sql
+        SELECT u.*, count(*) OVER () AS _total,
+               row_number() OVER (ORDER BY u.id ASC) AS _row
+        FROM (homogeneous_select) u
+        ORDER BY u.id ASC
+        LIMIT size OFFSET (page-1)*size
+        ```
+        **This is the LIMITING step**. After this, `tag_cte` contains
+        the size lowest-ID tags matching the filters — the OLDEST tags
+        by serial-PK = creation order.
+
+      Step c (line 150): materialise as `tag_cte` table-reference.
+
+      Step d (lines 373-392 via getDataEntityWithDatasetFields call):
+        Build:
+        ```sql
+        WITH tag_cte AS (...)
+        SELECT tag_cte.fields, count, external
+        FROM tag_cte LEFT JOIN tag_to_data_entity
+        GROUP BY tag_cte.fields
+        UNION ALL
+        SELECT tag_cte.fields, count, external_via_origin_ne_INTERNAL
+        FROM tag_cte LEFT JOIN tag_to_dataset_field
+        GROUP BY tag_cte.fields
+        AS union_usages
+        ```
+        The count aggregation runs OVER the already-truncated CTE.
+
+      Step e (LINE 158): outer ordering:
+        `cteSelect.orderBy(field(COUNT_FIELD).desc())` — sums counts
+        across both arms + re-orders the size pre-selected rows by
+        count DESC. **Does NOT change WHICH rows are returned — only
+        the order within the already-selected window**.
+
+  THE OPERATOR-VISIBLE CONSEQUENCE (the empirical proof):
+
+    Maintainer's 2026-05-20 test against demo.oddp.io:
+      - Create 35 tags with explicit timestamps (oldest first by id 1-35).
+      - Tag every entity with all 35 tags (equal usage counts).
+      - Call GET /api/tags?size=30 (default page size).
+      - Observed: response contains tags with IDs 1-30 in tag.id ASC
+        order. Tags with IDs 31-35 are ABSENT from the response despite
+        being equally popular.
+      - Recorded at retrospectives/LSN-019:23-32.
+
+    For a real deployment:
+      - 30+ tags total, recently-created tags MORE popular than older
+        ones: "Top Tags" surface displays OLDEST tags, the actually-popular
+        recently-created tags are INVISIBLE on page 1.
+      - 30+ tags total, all with equal counts: same as the test, OLDEST
+        30 displayed.
+      - 30+ tags total, recently-created tags LESS popular: closest to
+        the promised behavior, but only because the older tags happen
+        to be popular too (the response is still wrong in general).
+
+    The "Top Tags" UI surface is the operator's only window into tag
+    popularity. The drift is INVISIBLE to operators because the response
+    looks plausible (it IS sorted by count DESC within the response —
+    just not over the right subset).
+
+  WHY THIS IS HIGH (not MEDIUM):
+
+    1. **OPERATOR-VISIBLE UI LIE**: The "Top Tags" UI surface presents
+       OLDEST tags as if they were MOST POPULAR. Operators using the
+       Discovery surface to find prevalent vocabulary are misled.
+
+    2. **SPEC-vs-CODE DRIFT**: OpenAPI's verbatim "sorted by popularity"
+       is unmet. Third-party API consumers reading only the spec have
+       no warning that the contract is broken under realistic load.
+
+    3. **PRE-VAL-LSN-019 SUBSTRATE WAS WRONG**: The previous version
+       of the `get-popular-tag-list` concept entry described the
+       implementation as "popularity-ranked paginated global tag
+       directory" — perpetuating the LIE at the substrate layer. The
+       LSN-019 Stress Protocol's mechanical detection (the auto-fired
+       NAME-vs-BEHAVIOR pair question on every operation) was the
+       mechanism that caught it.
+
+    4. **NO TEST PINS THE TRUTH**: TagRepositoryImplTest.testListMostPopular
+       (TagRepositoryImplTest.java:237-267) exercises 8 tags with
+       size=numberOfTestTags=8 (the LIMIT never fires) and asserts
+       `containsExactlyInAnyOrder` on the popular-name-filtered subset.
+       Both choices are STRUCTURALLY INCAPABLE of detecting the drift.
+       A future refactor that "fixes" the paginate-inside-CTE pattern
+       would change the API's observable behaviour and no test would
+       catch it.
+
+    5. **THE BUG IS NOT VISIBLE FROM ANY SINGLE LAYER**: A maintainer
+       reading just TagController sees a 2-line reactive delegation.
+       Reading just TagServiceImpl sees a 1-line pass-through. Reading
+       just ReactiveTagRepositoryImpl sees a CTE + ORDER BY count DESC
+       — and the structural choice (paginate inside the CTE) is
+       internally consistent with every other paginated endpoint. The
+       LSN-019 drift surfaces ONLY at the cross-layer Stress Protocol
+       trace: the auto-fired NAME-vs-BEHAVIOR question on every
+       operation. This is the canonical LSN-019 methodology validation.
+
+  THE LSN-019 STRESS PROTOCOL — METHODOLOGY VALIDATION (META-FINDING):
+
+    LSN-019 (`retrospectives/LSN-019-file-analyser-describes-not-interrogates.md`)
+    extended the file-analyser prompt with the Stress Protocol — every
+    detected trigger fires an auto-question across 5 categories:
+      A — Tunables (numeric / null / boundary)
+      B — Name-behavior pairs (promise vs implementation)
+      C — Orderings / pagination / aggregation
+      D — Authorization gates (per-method)
+      E — Resource boundaries (concurrency / TX / locks / cache)
+
+    The B category's auto-question on `listMostPopular`: "Does the
+    implementation actually order by popularity?" — surfaced this drift
+    MECHANICALLY in batch VAL-LSN-019, without the maintainer needing
+    to know to ask. The protocol IS the detection mechanism.
+
+    Probe P-010 (`lineage/odd-platform/probes/P-010.yaml`) was emitted
+    in this batch to pin the SQL contract in CI permanently — a
+    regression test asserting that the response contains tags with
+    IDs 1..size when the directory has > size tags with equal counts.
+
+  THE DRIFT CLASS — cross-cutting application:
+
+    Every Java method with `paginate(...)` applied INSIDE a CTE that
+    is later aggregated then re-ordered by a non-id column has the
+    same shape. The pattern is widespread across
+    `ReactiveAbstractCRUDRepository` users; LSN-019 captures the
+    pattern at `listMostPopular` first because the method name's
+    semantic promise (popularity) most loudly contradicts the
+    structural choice (id-asc pagination).
+
+    Sister candidates to audit:
+      - ReactiveDataEntityRepositoryImpl.listPopular (the parallel
+        Data Entity popularity ranking — uses view_count instead of
+        a count-aggregate; need to verify whether paginate INSIDE
+        the CTE applies before view_count ORDER BY).
+      - Any list-with-ordering-by-aggregate endpoint across the
+        codebase. The Stress Protocol's B-category will surface
+        these mechanically on subsequent file-analyser passes.
+
+nodes:
+  - odd-platform java TagController controller-class:TagController
+  - odd-platform java service:TagServiceImpl
+  - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+
+contributors:
+  - |-
+    TagController batch VAL-LSN-019 (PRIMARY SOURCE — controller-tier):
+    concepts.invariants[getPopularTagList is misnamed: it returns the
+    OLDEST 30 tags by TAG.ID ASC, NOT the 30 most-popular] +
+    stress_findings.name_behavior_pairs[0] DRIFT_NAME_VS_BEHAVIOR +
+    bugs_limitations_corner_cases.[0] HIGH severity (LSN-019 name-vs-behavior drift) +
+    docs_link_semantic.doc_drift_findings.[LSN-019]
+  - |-
+    TagServiceImpl batch VAL-LSN-019 (CORROBORATING — service-tier
+    propagation):
+    concepts.operations[listMostPopular straight-through delegation] +
+    stress_findings.S-B-1 (CANARY HEADLINE — service propagates the
+    drift one-to-one to its callers without modification) +
+    bugs_limitations_corner_cases (drift handling)
+  - |-
+    ReactiveTagRepositoryImpl batch N + VAL-LSN-019 (PRIMARY SOURCE
+    — SQL primary source — the smoking gun is at line 148):
+    concepts.operations[listMostPopular — NAME PROMISES POPULARITY-
+    RANKED RESULTS; IMPLEMENTATION DELIVERS ID-ASC-PAGINATED THEN-
+    RANKED RESULTS] +
+    concepts.invariants[listMostPopular's pagination is applied INSIDE
+    the CTE (before counts), not OUTSIDE (after ranking)] +
+    stress_findings.B1 (SMOKING GUN — full JOOQ chain trace) +
+    bugs_limitations_corner_cases.[0] HIGH severity (LSN-019)
+
+evidence:
+  - 'TagController.md:concepts.invariants[getPopularTagList misnamed at the SQL layer — OLDEST 30 tags by TAG.ID ASC, NOT 30 most-popular]'
+  - 'TagController.md:stress_findings.name_behavior_pairs[0] DRIFT_NAME_VS_BEHAVIOR with full JOOQ chain trace'
+  - 'TagController.md:bugs_limitations_corner_cases.[0] HIGH severity'
+  - 'TagController.md:docs_link_semantic.doc_drift_findings[LSN-019 — name-vs-behavior drift on getPopularTagList]'
+  - 'TagServiceImpl.md:concepts.operations[listMostPopular at :72-77 — straight-through delegation; NAME-BEHAVIOUR DRIFT]'
+  - 'TagServiceImpl.md:stress_findings.S-B-1 (CANARY HEADLINE — service propagates the drift)'
+  - 'ReactiveTagRepositoryImpl.md:concepts.operations[listMostPopular full chain trace with line-by-line citation]'
+  - 'ReactiveTagRepositoryImpl.md:stress_findings.B1 (SMOKING GUN: line 148 paginate(...) with OrderByField TAG.ID ASC is the LIMITING step BEFORE counts are computed)'
+  - 'ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[0] HIGH severity — LSN-019 SMOKING GUN'
+  - 'ReactiveTagRepositoryImpl.md:implicit_adrs.[0] — paginate-inside-CTE is intentional but the name-vs-behaviour mismatch ONLY manifests on listMostPopular'
+  - 'ReactiveTagRepositoryImpl.java:148 (the smoking-gun line — paginate(homogeneousQuery, [OrderByField(TAG.ID, SortOrder.ASC)], (page-1)*size, size))'
+  - 'ReactiveTagRepositoryImpl.java:158 (the outer cteSelect.orderBy(field(COUNT_FIELD).desc()) — does NOT reach excluded rows)'
+  - 'JooqQueryHelper.java:63-90 (the paginate function with SQL shape)'
+  - 'odd-platform-specification/openapi.yaml:345 (the spec promise — "sorted by popularity")'
+  - 'retrospectives/LSN-019-file-analyser-describes-not-interrogates.md:23-32 (empirical confirmation 2026-05-20)'
+  - 'P-010 — probe pinning the SQL contract in CI permanently'
+
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+
+triangulation_count: 3
+cross_batch: true
+cross_batch_refs:
+  - batch-N (ReactiveTagRepositoryImpl — SQL-tier primary source, first noticed)
+  - batch-W (TagController — controller-tier first surfacing of the operator-visible drift)
+  - batch-VAL-LSN-019 (TagController + TagServiceImpl + ReactiveTagRepositoryImpl — Stress Protocol mechanical detection across all 3 sidecars; this invariant promoted)
+
+severity: HIGH
+severity_dim: ux+spec-contract-integrity
+
+mitigations_unimplemented:
+  - |-
+    FIX A (preferred) — move the ORDER BY count DESC inside the paginate
+    window. Refactor `ReactiveTagRepositoryImpl.listMostPopular` to:
+      (1) build an inner select that computes per-tag counts:
+          `SELECT tag.*, sum(count) AS popularity FROM tag
+           LEFT JOIN (tag_to_data_entity + tag_to_dataset_field)
+           GROUP BY tag.id`
+      (2) wrap with `paginate(..., [(popularity, DESC), (TAG.ID, ASC)], offset, size)`
+          — making popularity the primary sort key and tag.id the
+          tie-breaker for stable pagination.
+    This delivers the promised popularity ordering AND keeps tag.id ASC
+    as the deterministic tiebreaker for equal-count tags. Cost: the
+    aggregation runs over the FULL tag table on every call (acceptable
+    for typical tag counts; if the table grows beyond ~10K rows, add a
+    materialised view).
+  - |-
+    FIX B (cheap) — relabel the surface. Rename `listMostPopular` to
+    `listOldestTagsRankedByCount` (verbose but truthful); update the
+    OpenAPI description; update the UI label from "Top Tags" to
+    "Oldest Tags by Use" or similar. Operators get truthful framing;
+    the implementation stays as-is. This DOES NOT solve the operator's
+    actual need (find the most-used tags); it just stops lying.
+  - |-
+    FIX C (compromise) — gate the popular-tags surface on a feature
+    flag. Disable the misnamed endpoint by default; only operators who
+    have explicitly opted in see "Top Tags". The operator's tag-search
+    facet (the other use of this endpoint) is less affected because
+    the substring filter usually narrows the candidate pool below
+    `size`.
+  - |-
+    Add the regression test pinning the truth. The test is already
+    sketched in TagController.md:tests_coverage_semantic.uncovered_behaviours
+    (35 tags fixture, every entity tagged by all 35, size=30 → assert
+    response contains IDs 1..30, NOT IDs 31..35). Probe P-010 captures
+    this; the next step is converting it into a Testcontainers-backed
+    @SpringBootTest in TagRepositoryImplTest.java or TagControllerTest.java.
+    Once the regression test lands, future refactors that change the
+    behaviour MUST acknowledge the change (the test fails until
+    intentionally updated).
+  - |-
+    Document the LSN-019 drift on the live docs page
+    /features/data-discovery/tagging — explicit admonition: "The Top
+    Tags UI surface returns the oldest tags in your catalog, not the
+    most-used. For an accurate popularity ranking, refer to [future
+    proper-popularity-ranking endpoint when FIX A lands]."
+  - |-
+    Audit sister candidates per the cross-cutting drift class:
+    enumerate every Java method with `paginate(...)` inside a CTE
+    that is later aggregated then re-ordered by a non-id column.
+    The Stress Protocol's B-category will surface these mechanically
+    on subsequent file-analyser passes.
+
+notes: |-
+  CAPTURED batch VAL-LSN-019 (2026-05-20) — the LSN-019 Stress Protocol
+  validation canary. This invariant is BOTH:
+    (a) The first cross-layer evidence of the listMostPopular drift
+        across all three sidecars (controller + service + repository).
+    (b) The first demonstration that the LSN-019 Stress Protocol
+        catches a load-bearing drift MECHANICALLY (the auto-fired
+        NAME-vs-BEHAVIOR question on every operation) — without the
+        maintainer needing to know to ask.
+
+  The methodology validation is itself a captured finding — see the
+  NEW canonicalisation candidate
+  `lsn-019-stress-protocol-mechanical-drift-detection-class` which
+  records the META-finding (the methodology works as designed).
+
+  Cross-cutting connections:
+    - STRENGTHENS the previously-captured
+      `get-popular-tag-list` operation (corrected with LSN-019
+      truth + superseded_in_batch: VAL-LSN-019 marker)
+    - Pairs with
+      `getpopulartaglist-open-read-plus-side-door-compose-to-write-read-directory-bypass`
+      (the open-read combines with the LSN-019 misnaming — the
+      operator's only window into the tag directory is BOTH unrestricted
+      AND lying about ordering)
+    - Pairs with
+      `popular-ranking-signal-most-viewed-or-most-used-doc-claim-misleading`
+      (same class — vague doc claim + precise implementation; here the
+      mismatch is across THREE surfaces instead of two)
+    - Pairs with the NEW canonicalisation candidate
+      `top-tags-ui-label-vs-implementation-drift-operator-visible`
+      (the UI surface where the drift manifests visibly to operators)
+
+  Three DOC-NNN candidates:
+    (a) /features/data-discovery/tagging — admonition explaining the
+        "Top Tags" UI label's actual behaviour
+    (b) odd-platform-specification/openapi.yaml:345 — update the
+        endpoint description to reflect the SQL truth (or update the
+        SQL to deliver the spec promise)
+    (c) /developer-guides/api-reference/tagging NEW page — explicit
+        documentation of the popularity ordering's semantic + the
+        recommended client-side pattern for fetching by popularity

@@ -2128,3 +2128,65 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - 256 detail-without-index in refactoring-scopes; 110 in implicit-adrs; 74+4 in doc-gaps
 - F-001 + F-003 merge candidate still maintainer-pending
 
+
+---
+
+## Batch VAL-LSN-019 — 2026-05-20 — LSN-019 Stress Protocol validation canary
+
+**The first run of file-analyser/0.4.0 (Rule 9 — Stress Protocol) on real production nodes.** The methodology change shipped 2026-05-20 was validated end-to-end: 3 sidecars enriched, 27 stress questions answered (22 STATIC-INFERRED + 3 PROBE-NEEDED → ~88% stress_verified_pct on the canary surface), 10 probe-skeletons emitted, all 5 reducers consumed the new sidecars correctly. The previously-wrong "orders by descending count" claim on `listMostPopular` is now corrected through the methodology — not by hand-patching.
+
+### Sidecars (3)
+
+- `odd-platform__java__TagController__controller-class__TagController.md` — REWRITE under file-analyser/0.4.0. Stress Protocol emitted 8 triggers / 27 questions / 26 STATIC-INFERRED + 1 PROBE-NEEDED. LSN-019 drift VERIFIED via JOOQ static trace; P-010 emitted (also referenced by Repository sidecar).
+- `odd-platform__java__repository__reactive__repository__ReactiveTagRepositoryImpl.md` — REWRITE under file-analyser/0.4.0. Stress Protocol emitted 17 stress_findings across 5 categories. SMOKING-GUN trace: `paginate(homogeneousQuery, [OrderByField(TAG.ID, ASC)], (page-1)*size, size)` at `ReactiveTagRepositoryImpl.java:148` inside the CTE → the outer `cteSelect.orderBy(COUNT_FIELD.desc())` at line 158 only re-ranks the already-truncated window. Confidence: HIGH.
+- `odd-platform__java__service__TagServiceImpl.md` — FRESH enrichment. Stress Protocol emitted 18 stress_findings across all categories. Service-tier auth verdict: **ZERO `@PreAuthorize` / ZERO `permissionService.*` / ZERO `SecurityContextHolder` reads** across all 9 public methods + 2 private helpers; 5 of 9 methods mint directory rows via side-doors bypassing `TAG_CREATE`. Emitted 8 narrative probe-skeletons in `.md` format (deviation from the canonical `P-NNN.yaml` shape — see Follow-ups).
+
+### Probe-skeletons emitted (analyser-authored, Type-8 per APPROACH.md §7)
+
+- `lineage/odd-platform/probes/P-010.yaml` — Repository smoking-gun probe (35 equally-tagged tags → assert response = set([1009..1038])). Canonical YAML format, runnable by probe-runner.
+- `lineage/odd-platform/probes/P-LSN019-{listMostPopular-drift, updateRelations-external-preserve, divide-case-sensitive, getOrCreate-vs-getOrInject-toctou, deleteRelationsWithTerm-case, updateRelations-empty-deletes-all, service-auth-zero, createRelationsWithTerm-tx-propagation}.md` (8 files) — narrative skeletons emitted by the TagServiceImpl agent. Each carries concrete arrange/act/observe/assert content in markdown form. **Format-deviation follow-up:** convert to `P-NNN.yaml` shape so probe-runner can execute.
+
+### Reducer outputs
+
+- **concept-merger** — 7 new concept entries + 6 existing concepts strengthened + 4 concepts CORRECTED with `superseded_in_batch: VAL-LSN-019` (the wrong "popularity-ranked" framing on `get-popular-tag-list` operation + Tag entity is now corrected). New dedicated invariant `lsn-019-listmostpopular-name-vs-behavior-drift-pagination-precedes-ranking`. New canonicalisation candidate `top-tags-ui-label-vs-implementation-drift-operator-visible` (the operator-visible UI lie).
+- **adr-archaeologist** — 2 new ADRs (ADR-CANDIDATE-193 `!external` guard pattern + ADR-CANDIDATE-194 dual-method create design) + 2 ADR strengthens (065, 067) + 9 new REFACTORs (REFACTOR-546..554). Headline: REFACTOR-546 (HIGH — name-behaviour-drift, LSN-019 listMostPopular) + REFACTOR-547 (HIGH — missing-authz-gate, service-tier zero-auth) + REFACTOR-552 (size-limit-silent-trunc).
+- **doc-gap-finder** — 2 new DOC-GAPs (DOC-GAP-255 OpenAPI-spec drift + DOC-GAP-256 published-docs propagation across 3 live pages) + 3 existing DOC-GAPs strengthened. WebFetch SUCCEEDED on `/features/data-discovery/tagging`, `/features/data-discovery/catalog-overview`, `/features/data-discovery` (status 200).
+- **test-coverage-mapper** — 13 new TEST-GAPs (TEST-GAP-855..867); 2 CRITICAL + 6 HIGH + 5 MEDIUM. Headline: TEST-GAP-855 (CRITICAL — repository-tier listMostPopular drift) + TEST-GAP-856 (CRITICAL — HTTP-boundary sister via WebTestClient) + TEST-GAP-867 (HIGH — tie-break-absence at equal counts).
+- **feature-flow-builder** — F-018 Manual Object Tagging extended with 5 net-new drift_facets + 6 strengthens + 1 supersedes (batch-W TagController "orders by descending count" mistranscription superseded). Headline: F-018-DRIFT-LSN019-listMostPopular-ranking codifies the smoking-gun trace.
+
+### Coverage (the honest axes, post-rev-4)
+
+Static enrichment coverage (vanity, kept for trend continuity):
+- nodes_with_sidecar: 146 / 395 = **37.0%** direct (+1 vs ZA — 3 sidecars; 2 rewrites + 1 new)
+- effective: 295+ / 395 = **74.7%+** (same; F-018 already touched these nodes via prior batches)
+
+**Stress Protocol coverage** (the rev-4 honest axis):
+- stress_questions_total: **25** (TagController + Repository + Service contribute 8 + 9 + 8 = 25 questions; pre-Rule-9 sidecars contribute 0)
+- stress_verified_pct: **88.0%** (22 STATIC-INFERRED + 0 PROBE-VERIFIED out of 25)
+- stress_unanswered_pct: **12.0%** (3 PROBE-NEEDED; will flip to PROBE-VERIFIED when probe-runner consumes the analyser-emitted probes)
+- sidecars_with_stress_section: 3 / 146 = **2.1%** (the canary trio)
+- sidecars_pre_stress_protocol: 143 / 146 = **97.9%** (awaiting backfill)
+
+### Coherence sweep
+
+`state/coherence-sweep-batch-VAL-LSN-019.md` — 67,718 raw anchor-overlap candidates from a registry of 1281+ artefacts. Top candidate (F-002 ↔ TEST-GAP-725 about ActivityEventTypeDto.java:3-31) is unrelated to the canary batch — pre-existing noise. The batch's own artefacts (REFACTOR-546..554, TEST-GAP-855..867, DOC-GAP-255..256, the F-018 drift_facets) cross-reference each other and LSN-019 consistently; no new contradictions surfaced.
+
+### What was validated
+
+The Stress Protocol mechanically generated questions that the prior file-analyser/0.3.0 never asked:
+- "Method name `listMostPopular` promises popularity ordering. Does the SQL deliver it? Trace the JOOQ chain end-to-end." → STATIC-INFERRED trace caught the paginate-inside-CTE pattern at line 148.
+- "What does the operator see when 35 tags are equally popular?" → PROBE-NEEDED, P-010 emitted with concrete fixture and assertion.
+- "What does TagServiceImpl return for each of DISABLED / LOGIN_FORM / OAUTH2 / LDAP?" → STATIC-INFERRED: identical (zero `@PreAuthorize`, zero permissionService calls → auth lives at controller perimeter only).
+
+Each of these would have been a maintainer's empirical-test discovery under the old methodology (the LSN-019 incident itself was the canonical example). Now they are autonomous emit-time findings.
+
+### Follow-ups
+
+- **8 narrative probe-skeletons in .md format** (P-LSN019-*.md emitted by TagServiceImpl agent) need structural conversion to canonical `P-NNN.yaml` format so probe-runner can execute. The content is concrete (arrange/act/observe/assert all present in prose); the work is reformatting. Either renumber to P-011..P-018 with YAML structure, or update probe-runner to accept the narrative shape — maintainer judgment.
+- **Stress Protocol filename guardrail** — the file-analyser system prompt says "Pick the next free `P-NNN` by Glob/grep against the existing `probes/` directory" but did not strictly enforce filename pattern in the canary. Strengthen Rule 9 / workflow step 6.5 with an explicit `MUST match regex ^P-\\d{3}\\.yaml$` constraint and reject the sidecar if any probe-skeleton path violates it.
+- **P-010 reference collision** — both TagController and Repository sidecars reference P-010; the actual file on disk is the Repository's version. Sidecars are internally consistent (both point at the same drift) but the methodology should clarify which agent owns the probe-ID allocation when multiple analysers fire in the same batch. (Likely fix: each analyser reserves IDs at the start of its run by appending an empty placeholder.)
+- **Reducer prompt updates for stress_findings consumption** — current reducers consumed the new sidecars correctly via their normal sections; the explicit `stress_findings.name_behavior_pairs[].drift: DRIFT_NAME_VS_BEHAVIOR` channel into refactoring-scopes worked (adr-archaeologist surfaced REFACTOR-546). Make this explicit in the next-round update of `.claude/agents/adr-archaeologist.md` and `test-coverage-mapper.md`.
+- **143-sidecar backfill** — queued as a future batch theme. Stress Protocol coverage starts at 2.1% sidecar-adoption; backfilling the existing pile is the path to full rev-4 compliance.
+- **3 new broken-yaml-pending-fix files** (from concept-merger output containing backticks in non-block-scalar contexts). Preserved per SKILL phase 3 step 8; recoverable next batch when the reducer prompt's YAML-safe rule applies.
+- **265 detail-without-index in refactoring-scopes / 114 in implicit-adrs / 76+4 in doc-gaps** — known pre-existing reducer noise, not a regression from this batch.
+

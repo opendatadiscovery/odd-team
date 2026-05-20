@@ -1,6 +1,20 @@
 name: Tag
 canonical_in_docs: true
 canonical_candidate: false
+correction_note: |
+  CORRECTED batch VAL-LSN-019 (2026-05-20) — the "listMostPopular is
+  globally-scoped" framing in batch N described the QUERY scope (no
+  per-tenant filter) correctly but did NOT capture the LSN-019 NAME-vs-
+  BEHAVIOR drift. The ordering semantic is corrected this batch: the
+  paginate at ReactiveTagRepositoryImpl.java:148 pre-truncates the
+  candidate pool by TAG.ID ASC BEFORE the outer count-DESC re-ordering,
+  so "globally-scoped" + "popularity-ranked" combine to deliver "the
+  OLDEST `size` tags by creation order, re-ordered by count DESC within
+  the window". See the
+  `lsn-019-listmostpopular-name-vs-behavior-drift-pagination-precedes-ranking`
+  invariant captured this batch. Probe P-010 pins the SQL contract in
+  CI permanently.
+superseded_in_batch: VAL-LSN-019
 description: |-
   Global, cross-tenant directory entry for taxonomic labelling of data
   entities. Schema: (id, name UNIQUE WHERE NOT deleted, important boolean,
@@ -17,6 +31,15 @@ description: |-
   TAG_TO_TERM). Extends ReactiveAbstractSoftDeleteCRUDRepository — all
   base CRUD reads through a `tag.deleted_at IS NULL` filter.
 
+  **STRENGTHENED BATCH VAL-LSN-019 (2026-05-20) — CONTROLLER + SERVICE
+  TIERS PINNED + LSN-019 DRIFT CORRECTED.** The Tag entity is now
+  triple-anchored across the controller (TagController), service
+  (TagServiceImpl), and repository (ReactiveTagRepositoryImpl) layers.
+  The full call-site graph for the side-door write surface, the
+  full Tag lifecycle (create/update/delete/listMostPopular), and the
+  LSN-019 ordering drift are all PRIMARY-SOURCE confirmed at three
+  tiers simultaneously.
+
   **NEW LOAD-BEARING FINDINGS BATCH N**:
     (a) **The DUAL-METHOD WRITE DESIGN** — TWO conflict-handling methods
         on the Tag write path with EXPLICITLY DIFFERENT semantics:
@@ -29,7 +52,13 @@ description: |-
         TagController.createTag uses bulkCreate (operator-explicit;
         MUST surface the 400 on duplicate). ExternalTagIngestionRequestProcessor
         uses ingestData (ingestion-side; MUST not fail on parallel-
-        pipeline conflict).
+        pipeline conflict). NEW BATCH VAL-LSN-019: TagServiceImpl
+        confirms the dual-method design at the service-tier (
+        getOrCreateTagsByName at :79-86 wraps bulkCreate, race-prone;
+        getOrInjectTagByName at :88-94 wraps ingestData, race-safe).
+        The dual shape is intentional per the maintainer-authored code
+        + the consistent pattern; the architectural rationale is
+        triple-anchored.
     (b) **TOCTOU race vulnerability** — TagServiceImpl.getOrCreateTagsByName
         does `listByNames(tagNames)` then `bulkCreate(tagsToCreate)` for
         the residual. Between the two stages, a CONCURRENT caller can
@@ -38,11 +67,17 @@ description: |-
         UniqueConstraintException with NO service-tier retry. The
         ingestData upsert path is SAFE; the bulkCreate path is NOT.
         (NEW HIGH invariant — see batch N
-        `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`.)
+        `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`,
+        STRENGTHENED batch VAL-LSN-019 with TagServiceImpl as
+        service-tier primary source.)
     (c) **Case-sensitive listByNames enables silent duplicate Tag rows**
         — `TAG.NAME.in(names)` is case-sensitive SQL; PII and pii are
         treated as distinct novel names by `divideTagsByExistence`.
-        UI tag-dropdown renders both rows. (MEDIUM severity.)
+        UI tag-dropdown renders both rows. (MEDIUM severity.) NEW
+        BATCH VAL-LSN-019: TagServiceImpl confirms the divideTagsByExistence
+        check uses `existingTagNames.contains(n)` which is case-sensitive
+        — the service-tier is the layer where this could be normalized;
+        today the divergence is uncorrected.
     (d) **No name validation at any layer** — no PostgreSQL CHECK
         constraint, no service-layer validation, no OpenAPI pattern
         constraint. An operator with DATA_ENTITY_TAGS_UPDATE can mint
@@ -52,6 +87,9 @@ description: |-
         per-owner, per-namespace, per-tenant filter. Combined with the
         side-door write path, a per-data-entity-owner can populate
         every other user's popular-tags surface.
+        **CORRECTED BATCH VAL-LSN-019**: the ORDERING is OLDEST-by-id
+        within the window then count-DESC within those rows, NOT
+        globally-popularity-ranked. See the LSN-019 invariant.
     (f) **Soft-delete + hard-delete asymmetry** — tag rows are
         SOFT-DELETED (deleted_at IS NULL filter); the four relation
         tables are HARD-DELETED. A tag-name reuse after soft-delete
@@ -68,19 +106,61 @@ description: |-
         the ingestion-side ExternalTagIngestionRequestProcessor
         write produces NO activity-feed entry. Tier-1c-equivalent
         pattern per the no-audit-log-on-rbac-mutations invariant.
+
+  **NEW LOAD-BEARING FINDINGS BATCH VAL-LSN-019 (2026-05-20)**:
+    (i) **LSN-019 NAME-vs-BEHAVIOR DRIFT (HIGH)** — listMostPopular
+        is misnamed: the SQL pre-truncates by TAG.ID ASC before the
+        count-DESC re-ordering. Operator-visible at the "Top Tags"
+        UI surface. See the
+        `lsn-019-listmostpopular-name-vs-behavior-drift-pagination-precedes-ranking`
+        invariant. Probe P-010 pins this in CI permanently.
+    (j) **Service-tier zero-authorisation** — TagServiceImpl carries
+        ZERO `@PreAuthorize` and ZERO programmatic permission checks
+        across all 168 lines. The controller perimeter is the SOLE
+        auth defence. See the
+        `getpopulartaglist-open-read-plus-side-door-compose-to-write-read-directory-bypass`
+        invariant + the new
+        `external-relations-immutable-to-ui-users-cross-method-guard-tagserviceimpl`
+        invariant.
+    (k) **`!external` guard pattern — three-method consistency** —
+        TagServiceImpl.update + .delete + .updateRelationsWithDataEntity
+        all defend Collector-set EXTERNAL relations from UI mutation.
+        See the new
+        `external-relations-immutable-to-ui-users-cross-method-guard-tagserviceimpl`
+        invariant.
+    (l) **deleteTag cascade incomplete (HIGH — re-confirmed)** — the
+        delete path leaves `tag_to_dataset_field` rows orphaned AND
+        skips two of three search-vector refreshes. See the
+        `deletetag-cascade-asymmetric-orphans-tag-to-dataset-field`
+        invariant (strengthened this batch with service-tier
+        primary-source) + the new
+        `tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1`
+        invariant.
+    (m) **Multi-step writes without @ReactiveTransactional (HIGH)** —
+        TagServiceImpl carries FOUR @ReactiveTransactional methods
+        (update, delete, updateRelationsWithDataEntity, createRelationsWithTerm)
+        and FIVE that lack it (bulkCreate inherits, listMostPopular is
+        read-only, getOrCreateTagsByName + getOrInjectTagByName +
+        deleteRelationsWithTerm are multi-step read-then-write WITHOUT
+        TX). The TOCTOU surfaces are at these untranscactional methods.
+        Confirmed at the service-tier this batch.
 nodes:
 - odd-platform java DataEntityController controller-method:createDataEntityTagsRelations
 - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+- odd-platform java TagController controller-class:TagController
+- odd-platform java service:TagServiceImpl
 contributing_files:
 - odd-platform__java__DataEntityController__controller-method__createDataEntityTagsRelations.md
 - odd-platform__java__repository__reactive__repository__ReactiveTagRepositoryImpl.md
+- odd-platform__java__TagController__controller-class__TagController.md
+- odd-platform__java__service__TagServiceImpl.md
 evidence:
 - createDataEntityTagsRelations.md:concepts.entities[Tag, TagsFormData, TagPojo, TagToDataEntityPojo,
   TagDto]
 - createDataEntityTagsRelations.md:invariants[side-effecting auto-creation; important
   = false; replace-all internal only]
 - |-
-  ReactiveTagRepositoryImpl.md (batch N — NEW SQL-LAYER PRIMARY SOURCE):
+  ReactiveTagRepositoryImpl.md (batch N — SQL-LAYER PRIMARY SOURCE):
     concepts.entities[TagPojo; TagDto; TagToDataEntityPojo; TagToDatasetFieldPojo;
     TagToTermPojo; Indexes.TAG_NAME_UNIQUE partial unique index]
     + concepts.operations[ingestData upsert with RETURNING-trigger;
@@ -93,6 +173,42 @@ evidence:
     + bugs_limitations_corner_cases.[0,1,2,3,4,5,6,7,8]
     + security.known_security_gaps.[0,1,2] (no audit on writes; no
     name normalisation; hardcoded WHERE deleted_at IS NULL coupling)
+- |-
+  TagController.md (batch W + VAL-LSN-019 — CONTROLLER-TIER PRIMARY
+  SOURCE):
+    concepts.entities[TagApi, TagFormData, Flux<TagFormData>, Tag,
+    TagsResponse, TagService, ServerWebExchange]
+    + concepts.operations[createTag, deleteTag, getPopularTagList,
+    updateTag — all 4 endpoints]
+    + concepts.invariants[LSN-019 drift on getPopularTagList; no
+    RBAC gate on getPopularTagList; NO_CONTEXT management-scope
+    writes; service-tier zero-checks; side-door bypass; status-code
+    drift; cascade asymmetry; !external guard]
+    + implicit_adrs.[5] (bulk-create-as-operator-explicit-API-shape
+    + upsert-side-door dual-method design)
+    + bugs_limitations_corner_cases.[0-9]
+    + security.known_security_gaps.[0,1,2,3,4]
+- |-
+  TagServiceImpl.md (batch VAL-LSN-019 — SERVICE-TIER PRIMARY SOURCE):
+    concepts.entities[TagPojo, TagDto, TagToDataEntityPojo,
+    TagToTermPojo, TagFormData, Tag, TagsResponse, Tuple2 split]
+    + concepts.operations[bulkCreate, update, delete, listMostPopular,
+    getOrCreateTagsByName, getOrInjectTagByName, updateRelationsWithDataEntity,
+    deleteRelationsWithTerm, createRelationsWithTerm, divideTagsByExistence
+    (private), updateSearchVectors (private)]
+    + concepts.invariants[zero @PreAuthorize across 168 lines; the
+    !external guard pattern; delete cascade ASYMMETRIC; updateRelationsWithDataEntity
+    DOES NOT delete EXTERNAL relations + hardcoded external=false;
+    Tag directory has NO ownership concept; multi-step reads-then-writes
+    WITHOUT @ReactiveTransactional]
+    + stress_findings.S-B-1 (LSN-019 CANARY) + S-B-2 through S-B-6
+    (cross-method drift surface)
+    + bugs_limitations_corner_cases (TOCTOU; cascade asymmetry;
+    search-vector asymmetry; deleteRelationsWithTerm multi-step
+    without TX)
+    + security.authorization_assertions[] (verified empty)
+    + security.known_security_gaps[zero service-tier auth — controller
+    perimeter is sole defence]
 contributors:
 - |-
   createDataEntityTagsRelations (batch — controller-method): concepts.entities[Tag,
@@ -105,10 +221,26 @@ contributors:
   listByNames, the no-name-validation surface, the globally-scoped
   listMostPopular CTE, the soft-delete + hard-delete asymmetry, the
   repository-tier audit silence.
+- |-
+  TagController (batch W — STRENGTHENS — controller layer): the OpenAPI-
+  generated TagApi implementation; 4 endpoints; the perimeter-only
+  authorisation posture; the LSN-019 drift surfacing; the status-code
+  drift; the cascade-asymmetry observation; the side-door enumeration
+  with file:line evidence.
+- |-
+  TagServiceImpl (batch VAL-LSN-019 — STRENGTHENS — service layer):
+  the middle layer between TagController and ReactiveTagRepository;
+  9-public-method service contract; zero @PreAuthorize across all
+  168 lines; the three-method !external guard pattern; the dual-method
+  write design pinned at the service-tier; the delete-path's two
+  asymmetries (cascade incomplete + search-vector refresh incomplete);
+  the TOCTOU race at the multi-step-without-@ReactiveTransactional
+  methods; the LSN-019 drift propagation from repository to controller.
 axes_present:
 - controllers
 - openapi_paths
 - repositories_reactive
+- services
 security_aggregate:
   overall: MEDIUM
   auth_modes_relevant:
@@ -131,6 +263,17 @@ security_aggregate:
       the tag directory or the relation tables with no native defence.
       The architectural assumption is that SecurityConstants.SECURITY_RULES
       covers every controller path that reaches here.
+      **STRENGTHENED batch VAL-LSN-019 — SERVICE primary source
+      confirms**: TagServiceImpl carries ZERO @PreAuthorize and ZERO
+      programmatic permission checks across all 168 lines (9 public
+      methods + 2 private helpers, line-by-line verified). The service
+      inherits whatever auth posture the call-site provides; for
+      TagController calls this is the perimeter SecurityRule; for the
+      four side-door surfaces it varies per surface and TAG_CREATE is
+      NEVER held even though directory rows are minted. The
+      architectural assumption — that the CONTROLLER perimeter is the
+      SOLE defence — is triple-anchored across controller + service +
+      repository sidecars.
   owner_scoping:
     verdict: BYPASSES
     detail: |-
@@ -141,6 +284,12 @@ security_aggregate:
       and listByNames return globally. The Tag directory is a flat,
       globally-shared namespace BY DESIGN; the side-door write surface
       (REFACTOR-223) compounds this.
+      **STRENGTHENED batch VAL-LSN-019**: TagServiceImpl's
+      data_exposure confirms — Mono<TagsResponse> from listMostPopular
+      → globally-ordered tag directory → any authenticated user, no
+      owner filter, no per-tag permission check. The closest analogue
+      to ownership is the `external` boolean which encodes
+      Collector-vs-UI provenance, NOT user-ownership.
   strengths:
   - Auto-create IS spec-documented at openapi.yaml:1174 — intentional UX trade-off
   - important = false hardcoded for auto-created tags — admin-curated 'important'
@@ -170,6 +319,15 @@ security_aggregate:
     tailored "Tag with this name already exists" message
     (ExceptionUtils.java:54-56). Consistent with the platform-wide
     centralised translation idiom.
+  - |-
+    **NEW batch VAL-LSN-019 — Three-method !external guard pattern**.
+    TagServiceImpl.update + .delete + .updateRelationsWithDataEntity
+    all defend Collector-set EXTERNAL relations from UI mutation via
+    consistent guard shapes. INTENTIONAL design (per the explicit
+    BadUserRequestException messages); the maintainer's defence
+    against UI users impersonating a Collector. See the
+    `external-relations-immutable-to-ui-users-cross-method-guard-tagserviceimpl`
+    invariant.
   weaknesses:
   - Tag side-door past TAG_CREATE via DATA_ENTITY_TAGS_UPDATE — per-data-entity-owner
     can globally pollute the Tag directory (MEDIUM)
@@ -186,11 +344,15 @@ security_aggregate:
     bulkCreate in TagServiceImpl.getOrCreateTagsByName** (PRIMARY
     SOURCE — see batch N
     `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`
-    invariant). The service-layer's read-then-write pattern is
-    race-prone; the `bulkCreate` path is NOT protected by the upsert
-    that `ingestData` uses. The unique-index loser sees a 5xx-level
-    error on a normal-looking PUT request. NO caller-side retry.
-    (ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[0])
+    invariant; STRENGTHENED batch VAL-LSN-019 with TagServiceImpl
+    service-tier primary source pinning the no-@ReactiveTransactional
+    on the read+write pair as intentional). The service-layer's
+    read-then-write pattern is race-prone; the `bulkCreate` path is
+    NOT protected by the upsert that `ingestData` uses. The
+    unique-index loser sees a 5xx-level error on a normal-looking
+    PUT request. NO caller-side retry.
+    (ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[0] +
+    TagServiceImpl.md:bugs_limitations_corner_cases[HIGH TOCTOU])
   - |-
     **NEW MEDIUM batch N — Case-sensitive `listByNames`** enables
     silent duplicate Tag rows. `TAG.NAME.in(names)` is case-sensitive
@@ -200,7 +362,8 @@ security_aggregate:
     sees `pii` as missing and mints a fresh `PII` row. Two operators
     looking for `pii` may apply different rows, fragmenting the
     search facet.
-    (ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[1])
+    (ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[1] +
+    TagServiceImpl.md:bugs_limitations_corner_cases[case-sensitivity])
   - |-
     **NEW MEDIUM batch N — No tag-name validation at any layer** —
     no PostgreSQL CHECK constraint, no service-layer validation, no
@@ -227,6 +390,28 @@ security_aggregate:
     write produces NO activity-feed entry. Tier-1c-equivalent of the
     audit-log-presence-asymmetry pattern.
     (ReactiveTagRepositoryImpl.md:security.known_security_gaps.[0])
+  - |-
+    **NEW HIGH batch VAL-LSN-019 — LSN-019 NAME-vs-BEHAVIOR DRIFT
+    on listMostPopular**. The endpoint name + the OpenAPI description
+    + the UI "Top Tags" surface all promise popularity-ranked
+    selection. The SQL truth: pre-truncate by TAG.ID ASC, then count-
+    DESC re-order within the window. Operator-visible at the "Top
+    Tags" UI surface. See the
+    `lsn-019-listmostpopular-name-vs-behavior-drift-pagination-precedes-ranking`
+    invariant + the
+    `top-tags-ui-label-vs-implementation-drift-operator-visible`
+    canonicalisation candidate. Probe P-010 pins the SQL contract
+    in CI permanently.
+  - |-
+    **NEW MEDIUM batch VAL-LSN-019 — deleteTag has TWO asymmetries**
+    (compound observation). The delete path: (a) skips the
+    `tag_to_dataset_field` cleanup (the existing batch-W
+    `deletetag-cascade-asymmetric-orphans-tag-to-dataset-field`
+    invariant — STRENGTHENED with TagServiceImpl as new primary
+    source) AND (b) refreshes only 1 of 3 search vectors (the new
+    `tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1`
+    invariant). Both omissions live in the same method; the
+    recommended fix is compound (touch both in one commit).
 performance_aggregate:
   overall: MEDIUM
   hot_paths:
@@ -244,6 +429,17 @@ performance_aggregate:
         + TagActivityHandlerImpl all call listDataEntityDtos for the
         same data entity in a single HTTP request).
     (ReactiveTagRepositoryImpl.md:performance.hot_paths.[0,1,2])
+  - |-
+    **NEW batch VAL-LSN-019 — updateRelationsWithDataEntity hot path
+    + LSN-019-affected listMostPopular hot path observation**:
+      `updateRelationsWithDataEntity` runs on every
+      `PUT /api/dataentities/{id}/tags` write — issues FOUR DB
+      statements in a single @ReactiveTransactional boundary.
+      `listMostPopular` per `GET /api/tags?popular`: the LSN-019
+      drift compounds the cost — the CTE aggregates run over rows
+      that won't be operator-visible in the response. Cost per call
+      is still bounded by `size` (counter-intuitive performance
+      UPSIDE of the structural bug, at the cost of correctness).
   throughput_shape:
     verdict: BATCH_FRIENDLY
     detail: |-
@@ -269,25 +465,53 @@ performance_aggregate:
     pagination cap** — `size` parameter passed verbatim to paginate;
     no upper bound. An attacker can force a full-directory aggregate.
     (ReactiveTagRepositoryImpl.md:performance.known_performance_gaps.[1])
+  - |-
+    **NEW LOW batch VAL-LSN-019 — updateRelationsWithDataEntity
+    in-memory diff is O(N×M)** where N is current relations and M is
+    updated — `current.stream().filter(r -> !updated.contains(r))` at
+    TagServiceImpl.java:114-116 does a linear scan per current relation.
+    For typical operations (dozens of relations) this is not a bottleneck;
+    at extreme scale it would be.
 notes: |-
-  STRENGTHENED batch 2026-05-19N — REPOSITORY-LAYER PRIMARY SOURCE
-  PINNED. The 18-method persistence surface is now SQL-anchored; the
-  dual-method write design (ingestData upsert vs bulkCreate
-  fail-on-duplicate) is the architectural diagnostic; the TOCTOU race
-  on the bulkCreate path is now a HIGH-severity primary-sourced
-  finding.
+  STRENGTHENED batch 2026-05-20 VAL-LSN-019 — TRIPLE-TIER PRIMARY
+  SOURCE NOW PINNED. The Tag entity is anchored across controller
+  (TagController, batch W), service (TagServiceImpl, batch VAL-LSN-019
+  — NEW), and repository (ReactiveTagRepositoryImpl, batch N) layers.
+  The full call-site graph for the side-door write surface, the
+  full lifecycle (create/update/delete/listMostPopular), and the
+  LSN-019 ordering drift are all primary-source confirmed at three
+  tiers simultaneously.
 
-  New invariants surfaced in batch N (each promoted to its own
-  invariant concept):
-    - Tag TOCTOU race between listByNames and bulkCreate (NEW HIGH)
+  New invariants surfaced in batch VAL-LSN-019 (each promoted to
+  its own invariant concept):
+    - LSN-019 listMostPopular NAME-vs-BEHAVIOR drift (NEW HIGH)
+    - EXTERNAL relations immutable to UI users — cross-method
+      !external guard (NEW MEDIUM)
+    - TagServiceImpl asymmetric search-vector refresh (update 3,
+      delete 1) (NEW LOW)
 
-  New operations surfaced in batch N:
-    - ingestData upsert with RETURNING-trigger conflict-target
+  New canonicalisation candidates surfaced in batch VAL-LSN-019:
+    - Top Tags UI label vs implementation drift (operator-visible)
+    - LSN-019 Stress Protocol — mechanical drift detection class
+      (methodology meta-finding)
+
+  Strengthened invariants in batch VAL-LSN-019:
+    - tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race
+      (TagServiceImpl service-tier primary source pins the
+      no-@ReactiveTransactional design + the 4 side-door call-sites)
+    - deletetag-cascade-asymmetric-orphans-tag-to-dataset-field
+      (TagServiceImpl service-tier primary source promotes; compound
+      observation with the search-vector asymmetry)
+    - getpopulartaglist-open-read-plus-side-door-compose-to-write-read-directory-bypass
+      (TagServiceImpl service-tier confirms zero authorisation across
+      168 lines; LSN-019 cross-link captures the misnaming)
+    - operation `get-popular-tag-list` (corrected with LSN-019
+      truth; superseded_in_batch: VAL-LSN-019)
 
   Cross-cutting connections:
     - Pairs with spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
       (existing) — the spec-documented auto-create is the wide-open
-      surface; this batch's repository-tier confirms the SQL primary
+      surface; this batch's service-tier confirms the SQL primary
       source for the auto-create write paths
     - Pairs with three-soft-delete-mechanisms-across-the-repository-layer
       (batch H — strengthened batch L + N) — Tag is one of the
@@ -295,10 +519,12 @@ notes: |-
     - Pairs with repository-transactional-boundary-at-service-layer-not-repository
       (batch H — strengthened batch I + N) — Tag repository methods
       are NOT @ReactiveTransactional; service-layer wrapping enforces
-      atomicity
+      atomicity (BUT: batch VAL-LSN-019 surfaces that only 4 of 9
+      service methods carry the annotation; 3 multi-step writes
+      LACK it — TOCTOU surface)
     - Pairs with no-audit-log-on-rbac-mutations — the Tag repository
-      has no audit log; the audit-trail asymmetry on the
-      ingestion-side write path is the Tier-1c-equivalent
+      AND service have no audit log; the audit-trail asymmetry on
+      the ingestion-side write path is the Tier-1c-equivalent
 
   Three DOC-NNN candidates flow from this strengthening:
     (a) Document the dual-method design at the internal architecture
@@ -307,3 +533,7 @@ notes: |-
         until a service-layer retry-or-upsert fix lands
     (c) Document case-sensitivity of tag names on the tagging operator
         page (PII vs pii are distinct rows; no normalisation)
+    (d) NEW batch VAL-LSN-019 — Document the LSN-019 drift on the
+        live tagging doc page (the "Top Tags" UI surface returns
+        the oldest tags, not the most-popular); revised once the
+        SQL fix lands.

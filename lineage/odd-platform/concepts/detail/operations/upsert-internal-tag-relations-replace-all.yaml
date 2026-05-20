@@ -1,22 +1,106 @@
 name: Upsert Internal Tag Relations (Replace-All)
 canonical_in_docs: false
 canonical_candidate: true
-description: 'PUT /api/dataentities/{id}/tags — replace-all the INTERNAL tag relations
-  for a data entity (external/ingested tag relations are PROTECTED via filter !external).
-  Side-effects: auto-creates Tag directory rows for novel names (important=false);
-  refreshes search vector; emits TAG_ASSIGNMENT_UPDATED. Despite the create*-shaped
-  operationId, the underlying semantic is REPLACE-ALL diff (delete missing + insert
-  new).'
+description: |-
+  PUT /api/dataentities/{id}/tags — replace-all the INTERNAL tag relations
+  for a data entity (external/ingested tag relations are PROTECTED via
+  filter !external). Side-effects: auto-creates Tag directory rows for
+  novel names (important=false); refreshes search vector; emits
+  TAG_ASSIGNMENT_UPDATED. Despite the create*-shaped operationId, the
+  underlying semantic is REPLACE-ALL diff (delete missing + insert new).
+
+  **STRENGTHENED BATCH VAL-LSN-019 (2026-05-20) — SERVICE-TIER PRIMARY
+  SOURCE NOW PINNED.** TagServiceImpl.updateRelationsWithDataEntity
+  (TagServiceImpl.java:96-121, @ReactiveTransactional) is the
+  service-tier orchestrator. The end-to-end flow is:
+
+    (1) `currentRelations` Mono: `listTagRelations(List.of(dataEntityId))`
+        filtered to `!pojo.getExternal()` (line 102) — leaves
+        Collector-set EXTERNAL relations untouched.
+    (2) `getOrCreateTagsByName(tagNames)` mints missing tags via the
+        race-prone bulkCreate path (TOCTOU window — see the
+        `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`
+        invariant).
+    (3) Build `TagToDataEntityPojo`s with `setExternal(false)` (line 109)
+        — hardcoded; UI cannot impersonate a Collector.
+    (4) `Mono.zip(current, updated).flatMap` computes
+        `pojosToDelete = current \ updated` via
+        `.filter(r -> !updated.contains(r))` on the relation rows.
+    (5) Concurrent deletes + creates: `deleteDataEntityRelations(pojosToDelete)`
+        + `createDataEntityRelations(updated)` + final
+        `listDataEntityDtos(dataEntityId)` for the response.
+
+  The diff is implemented in-memory (collection-difference, O(N×M))
+  — relies on the `TagToDataEntityPojo` jOOQ-generated `equals()`
+  covering `tagId + dataEntityId + external`.
+
+  **NEW LOAD-BEARING FINDINGS BATCH VAL-LSN-019**:
+
+    (a) **!external GUARD INTERACTS WITH THIS OPERATION** — the
+        operation is one of three TagServiceImpl methods carrying the
+        `!external` guard pattern (along with update and delete). See
+        the
+        `external-relations-immutable-to-ui-users-cross-method-guard-tagserviceimpl`
+        invariant. The relations-filter at line 102 + the hardcoded
+        external=false at line 109 together defend Collector-set
+        relations from UI mutation.
+
+    (b) **TOCTOU RACE AT THE getOrCreateTagsByName CALL-SITE** — this
+        operation is the (a) call-site of the 4-side-door write surface
+        (DATA_ENTITY_TAGS_UPDATE permission). Two concurrent calls to
+        this method with overlapping novel tag names race at the
+        getOrCreateTagsByName stage; one wins, the other receives
+        UniqueConstraintException with NO service-tier retry. See the
+        `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`
+        invariant.
+
+    (c) **DESTRUCTIVE-ON-EMPTY-INPUT** — Stress-finding S-C-2: empty
+        `tagNames` Set is INTERPRETED as "remove all non-external tags
+        from this data entity". A caller passing `{}` to mean "no
+        change requested" triggers a destructive operation. The trap
+        is real if a caller treats `{}` as "no-op".
+
+    (d) **PERFORMANCE — O(N×M) DIFF** — the in-memory diff is linear
+        in current × updated. For typical operations (dozens of
+        relations per entity), this is not a bottleneck; at extreme
+        scale (1000+ relations per entity) it would be.
+
+    (e) **OPERATIONID DRIFT (existing — STRENGTHENED)** — the operation's
+        OpenAPI operationId is `createDataEntityTagsRelations` (CREATE-
+        shaped) for what is REPLACE-ALL semantically. See the
+        `operation-name-vs-behaviour-drift-create-shaped-operationid-for-replace-all-semantic-tag-relations`
+        invariant.
+
+  **The operation is a major side-door write into the Tag directory**:
+  via `getOrCreateTagsByName`, this operation can mint NEW global Tag
+  rows for any caller holding DATA_ENTITY_TAGS_UPDATE on a single
+  entity. The Tag directory grows from per-entity-tag-editor actions.
+  See the `getpopulartaglist-open-read-plus-side-door-compose-to-write-read-directory-bypass`
+  invariant.
 nodes:
 - odd-platform java DataEntityController controller-method:createDataEntityTagsRelations
+- odd-platform java service:TagServiceImpl
 contributing_files:
 - odd-platform__java__DataEntityController__controller-method__createDataEntityTagsRelations.md
+- odd-platform__java__service__TagServiceImpl.md
 evidence:
 - createDataEntityTagsRelations.md:concepts.operations[upsert-internal-tag-relations-for-data-entity]
 - createDataEntityTagsRelations.md:implicit_adrs.[4] (EXTERNAL tag protection)
+- |-
+  TagServiceImpl.md (batch VAL-LSN-019 — SERVICE-TIER PRIMARY SOURCE):
+    concepts.operations[updateRelationsWithDataEntity (:96-121,
+    @ReactiveTransactional) — DIFF semantics] +
+    concepts.invariants[The updateRelationsWithDataEntity diff DOES NOT
+    delete EXTERNAL relations; new relations are hardcoded external=false] +
+    stress_findings.S-B-2 (subtle name-vs-behavior — the method name
+    doesn't advertise the asymmetric handling of EXTERNAL relations) +
+    stress_findings.S-C-2 (destructive-on-empty-input) +
+    bugs_limitations_corner_cases (the TOCTOU race at getOrCreateTagsByName) +
+    performance.known_performance_gaps.[O(N×M) diff]
 axes_present:
 - controllers
 - openapi_paths
+- services
 security_aggregate:
   overall: MEDIUM
   auth_modes_relevant:
@@ -25,11 +109,64 @@ security_aggregate:
   - LDAP
   authorization_consistency:
     verdict: INCONSISTENT
-    detail: DATA_ENTITY_TAGS_UPDATE correctly enforced at the data-entity layer, but
-      writes into MANAGEMENT-scoped Tag directory (side-doors past TAG_CREATE)
+    detail: |-
+      DATA_ENTITY_TAGS_UPDATE correctly enforced at the data-entity
+      layer, but writes into MANAGEMENT-scoped Tag directory (side-doors
+      past TAG_CREATE).
+      **STRENGTHENED batch VAL-LSN-019** — the service-tier
+      (TagServiceImpl) carries zero authorization checks; the
+      controller perimeter at DataEntityController is the SOLE auth
+      defence for the relations-write path. The getOrCreateTagsByName
+      call inside this operation IS the side-door — it mints Tag
+      directory rows without TAG_CREATE.
   owner_scoping:
     verdict: MIXED
-    detail: RESPECTS at data-entity layer; BYPASSES at Tag directory layer (global)
+    detail: |-
+      RESPECTS at data-entity layer; BYPASSES at Tag directory layer
+      (global). The !external guard pattern protects Collector-set
+      relations from UI mutation but does NOT scope the directory
+      mint by owner.
+  strengths:
+  - |-
+    **NEW batch VAL-LSN-019 — !external guard pattern protects
+    Collector-set relations** from UI mutation. The diff filters
+    `currentRelations` to `!external` (TagServiceImpl.java:102) before
+    the diff; new relations are hardcoded `setExternal(false)` (line 109).
+    The UI cannot impersonate a Collector via this path. See the
+    `external-relations-immutable-to-ui-users-cross-method-guard-tagserviceimpl`
+    invariant.
+  - |-
+    **NEW batch VAL-LSN-019 — @ReactiveTransactional boundary** — the
+    operation IS transactional. The 4-statement orchestration runs
+    atomically; a failure mid-flow rolls back.
   weaknesses:
   - Tag side-door past TAG_CREATE (MEDIUM)
   - Operation name vs behaviour drift (create* operationId for replace-all semantic)
+  - |-
+    **NEW HIGH batch VAL-LSN-019 — TOCTOU race at getOrCreateTagsByName
+    call-site** — two concurrent calls with overlapping novel tag
+    names race; one wins, the other surfaces UniqueConstraintException
+    to the UI user. NO service-tier retry. See the
+    `tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race`
+    invariant.
+  - |-
+    **NEW MEDIUM batch VAL-LSN-019 — destructive-on-empty-input** —
+    empty `tagNames` Set is interpreted as "remove all non-external
+    tags from this data entity". A caller treating `{}` as "no-op"
+    triggers a destructive operation. Stress-finding S-C-2.
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    **NEW batch VAL-LSN-019** — runs on every `PUT /api/dataentities/{id}/tags`
+    write. Issues FOUR DB statements (listTagRelations, listByNames
+    inside divideTagsByExistence, optional bulkCreate, deleteDataEntityRelations
+    + createDataEntityRelations) within a single @ReactiveTransactional
+    boundary.
+  weaknesses:
+  - |-
+    **NEW LOW batch VAL-LSN-019 — O(N×M) in-memory diff** —
+    `current.stream().filter(r -> !updated.contains(r))` at
+    TagServiceImpl.java:114-116 does a linear scan per current relation.
+    For typical operations (dozens of relations) this is not a bottleneck;
+    at 1000+ relations per entity it would be.

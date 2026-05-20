@@ -7,11 +7,11 @@ source_monolith_frontmatter:
   sidecar_count: 65
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 851
+  total_test_gaps: 864
   gaps_by_criticality:
-    CRITICAL: 144
-    HIGH: 269
-    MEDIUM: 317
+    CRITICAL: 146
+    HIGH: 275
+    MEDIUM: 322
     LOW: 121
   gaps_by_category:
     missing-integration: 164
@@ -21,6 +21,9 @@ source_monolith_frontmatter:
     sidecar-stale: 3
     missing-performance: 34
     missing-binding: 10
+    integration: 9
+    unit: 3
+    security: 1
   batch_history:
   - '2026-05-08: TEST-GAP-001..069 — initial 15-sidecar reduction'
   - '2026-05-10: TEST-GAP-070..100 — refresh after batch 2026-05-10A (5 method-level
@@ -210,7 +213,7 @@ source_monolith_frontmatter:
   - odd-platform java notification.sender class:SlackNotificationSender
   - odd-platform java notification.sender class:WebhookNotificationSender
   - odd-platform java notification.processor class:PostgresWALMessageProcessor
-total_entries: 851
+total_entries: 864
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -22457,3 +22460,906 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-854.yaml
+- gap_id: TEST-GAP-855
+  behaviour: '**CRITICAL — `listMostPopular` does NOT order results by popularity
+    when the tag directory exceeds `size` tags. The method name + the OpenAPI description
+    (`''Gets the list of existing tags sorted by popularity''` at `openapi.yaml:345`)
+    + the UI label (''Top Tags'') all promise count-ranked results. The implementation
+    truncates the candidate pool by `TAG.ID ASC` (= creation order, since `tag.id`
+    is a serial column) BEFORE counts are computed.** No integration test exists that
+    pins the ACTUAL ranking semantics (oldest-window selection, then count-DESC re-sort
+    INSIDE that window) under the equal-usage-count degenerate case. The existing
+    `testListMostPopular` at `TagRepositoryImplTest.java:239-267` is STRUCTURALLY
+    BLIND to the drift: (a) it creates only 8 tags with `size = numberOfTestTags =
+    8`, so the LIMIT never fires; (b) it uses `containsExactlyInAnyOrder` (line 264),
+    so any order would pass; (c) it gives 4 of the 8 distinct, sortable usage counts
+    via the renamed `PopularName0..3` subset, so the drift is MASKED. A future test
+    that ASSUMED the name''s promise (e.g. "create 35 tags with the 5 youngest having
+    HIGHER counts; assert response contains the 5 youngest") would FAIL on a real
+    platform — empirically reproduced 2026-05-20.
+
+
+    **The chain trace** (per ReactiveTagRepositoryImpl.md:stress_findings.B1):
+
+    - `ReactiveTagRepositoryImpl.java:144-145`: `final Select<TagRecord> homogeneousQuery
+    = DSL.selectFrom(TAG).where(conditions);` — base select, soft-delete filter +
+    optional name-substring + optional id-list.
+
+    - **`ReactiveTagRepositoryImpl.java:148`**: `paginate(homogeneousQuery, List.of(new
+    OrderByField(TAG.ID, SortOrder.ASC)), (page - 1) * size, size)` — load-bearing
+    INNER pagination by `TAG.ID ASC` BEFORE count aggregation.
+
+    - `JooqQueryHelper.java:63-90` (paginate): emits SQL `SELECT u.*, count(*) OVER
+    () _total, row_number() OVER (ORDER BY u.id ASC) _row FROM (homogeneous) u ORDER
+    BY u.id ASC LIMIT size OFFSET (page-1)*size`.
+
+    - `ReactiveTagRepositoryImpl.java:150`: `tag_cte` materialised over the OLDEST
+    `size` tags by tag.id.
+
+    - `ReactiveTagRepositoryImpl.java:151 + 373-391` (`getDataEntityWithDatasetFields`):
+    WITH tag_cte AS (...) LEFT JOIN tag_to_data_entity GROUP BY tag_cte.fields UNION
+    ALL LEFT JOIN tag_to_dataset_field GROUP BY tag_cte.fields AS union_usages — count
+    aggregation OVER the CTE rows ONLY.
+
+    - **`ReactiveTagRepositoryImpl.java:158`**: outer `cteSelect.orderBy(field(COUNT_FIELD).desc())`
+    — re-orders ALREADY-SELECTED `size` rows by count DESC, but cannot reach excluded
+    tags.
+
+    - **Tie-break absence**: outer ORDER BY count DESC has NO secondary sort key (per
+    ReactiveTagRepositoryImpl.md:stress_findings.C1). When two tags have equal aggregated
+    count, PostgreSQL preserves the GROUP BY''s natural row order — inherited from
+    the CTE = tag.id ASC. So at equal-counts, the result is tag.id ASC = oldest-first.
+
+
+    **Empirical confirmation** (`retrospectives/LSN-019:23-32`, 2026-05-20 maintainer
+    test against demo.oddp.io): 35 tags created with known IDs, every entity tagged
+    by all 35, size=30, page=1 → response contains tags with IDs 1..30 in tag.id ASC
+    order; tags with IDs 31..35 are MISSING from the response despite being EQUALLY
+    POPULAR. The "Top Tags" UI surface renders 30 OLDEST tags, NOT 5 youngest-and-popular.
+
+
+    **Operator-visible consequences**:
+
+    - The Catalog Overview "Top Tags" chip strip + the tag-search facet + the data-entity
+    detail tag-dropdown all render the OLDEST 30 tags. Recently-created popular tags
+    are INVISIBLE on page 1.
+
+    - On a directory with >30 tags, the operator-meaningful "what''s trending" semantics
+    is broken at the application layer; only by paging through every page can a user
+    discover newer tags.
+
+    - The OpenAPI promise — `''Gets the list of existing tags sorted by popularity''`
+    — is silently unmet. SDK consumers building against the spec build wrong expectations.
+
+
+    **Why CRITICAL not HIGH**: this is a structural correctness defect on a user-facing
+    surface (`/api/tags`, `/api/tags/popular`); empirically reproducible; widely-affected
+    (every operator-visible "Top Tags" surface); no test gate at any layer; a future
+    "fix" that pushes ORDER BY count INSIDE the paginate window would silently CHANGE
+    observable behavior with no CI signal. The previous batch-W sidecar transcribed
+    the SQL as "orders by descending count" — the WRONG claim, the canonical LSN-019
+    failure mode (file-analyser describes-not-interrogates). A regression-pin probe
+    (P-010) is emitted as a yaml skeleton; this test gap converts the probe into a
+    CI-runnable Testcontainers-backed `@SpringBootTest`.'
+  test_class: integration
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-855.yaml
+- gap_id: TEST-GAP-856
+  behaviour: '**CRITICAL — `GET /api/tags?page=1&size=30` returns the OLDEST 30 tags
+    by `tag.id` ASC (creation order), NOT the 30 most-popular tags. This is the HTTP-boundary
+    surface of the same LSN-019 drift that TEST-GAP-855 pins at the repository tier
+    — but here the assertion is at the controller perimeter, the same level an integration
+    / SDK consumer would observe.** No test exists for the controller; the repository-tier
+    `testListMostPopular` is structurally blind (see TEST-GAP-855). The HTTP surface
+    is the OpenAPI contract: an SDK consumer building against `openapi.yaml:344-346`
+    (''Gets the list of existing tags sorted by popularity'') and asserting `assertThat(response.items.get(0).usedCount).isGreaterThanOrEqualTo(response.items.get(1).usedCount)`
+    across pages will FAIL the moment the directory exceeds `size`.
+
+
+    **Why a SEPARATE gap from TEST-GAP-855**:
+
+    - TEST-GAP-855 is the repository-tier (TagRepositoryImplTest using `@ExtendWith(BaseIntegrationTest)`);
+    it pins the SQL behavior.
+
+    - This gap (856) is the HTTP-boundary tier (`WebTestClient` against a full `@SpringBootTest`);
+    it pins the END-TO-END behavior — the JSON response shape, the path-mapping wiring,
+    the `TagsResponse.items` ordering, and the (absence of) authorisation gate on
+    `GET /api/tags`.
+
+    - A future refactor that fixes the repository BUT breaks the controller-tier serialisation,
+    OR a future refactor that adds a UI-side re-sort to mask the repository drift,
+    would be caught by ONE but not the OTHER. Both layers need pinning.
+
+
+    **Operator-visible chain at the HTTP boundary**:
+
+    - `TagController.getPopularTagList` (`TagController.java:36-44`): delegates straight-through
+    to `tagService.listMostPopular(query, ids, page, size).map(ResponseEntity::ok)`.
+    No re-sort, no transformation.
+
+    - `TagsResponse.items` is serialised as a JSON array; the array order IS the response
+    order.
+
+    - The OpenAPI spec describes this as ''sorted by popularity'' — but the JSON array
+    is sorted by `tag.id` ASC when the directory exceeds `size`.
+
+    - Combined with the absence of `@PreAuthorize` on the read endpoint (per `SecurityConstants.java:138-142`
+    no GET entry), ANY authenticated user under LOGIN_FORM/OAUTH2/LDAP — and ANY unauthenticated
+    user under DISABLED — can issue this request and observe the LSN-019 response
+    shape.
+
+
+    **Why CRITICAL**:
+
+    - This is the SAME structural defect as TEST-GAP-855 but at the END-TO-END SDK-consumer-observable
+    layer.
+
+    - It corroborates the docs/spec drift (TagController.md:doc_drift_findings.[LSN-019]):
+    the live page mentions a ''Top tags'' surface; the API spec promises popularity;
+    the controller returns oldest by id. The triple gap (spec vs code vs UI label)
+    makes this a HIGHEST-VISIBILITY defect.
+
+    - A regression-pin probe at the HTTP boundary catches BOTH spec-side and code-side
+    regressions.'
+  test_class: integration
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-856.yaml
+- gap_id: TEST-GAP-857
+  behaviour: '**HIGH — `TagServiceImpl.updateRelationsWithDataEntity` (lines 96-121,
+    `@ReactiveTransactional`) implements a DIFF that filters CURRENT relations to
+    `!external` only (line 102), then hardcodes `external = false` (line 109) on all
+    new relations. The architectural invariant: the Collector OWNS its `external=true`
+    relations; the UI cannot delete them, modify them, or impersonate them. No test
+    pins this invariant. A future refactor that removes the `.filter(!external)` clause
+    at line 102 would compile, pass all existing tests, and silently let UI users
+    overwrite Collector-pushed external tag relations on the next PUT.**
+
+
+    **Primary-source chain** (per TagServiceImpl.md:stress_findings.B.S-B-2):
+
+    - **Line 102**: `Mono<List<TagToDataEntityPojo>> currentRelations = reactiveTagRepository.listTagRelations(List.of(dataEntityId)).map(rs
+    -> rs.stream().filter(r -> !r.getExternal()).toList());` — the diff input is restricted
+    to non-external relations.
+
+    - **Line 109**: `.map(tag -> new TagToDataEntityPojo().setTagId(tag.getId()).setDataEntityId(dataEntityId).setExternal(false))`
+    — new relations created with `external = false` HARDCODED.
+
+    - **Lines 112-119**: `Mono.zip(currentRelations, updatedRelations).flatMap(function((current,
+    updated) -> { List<TagToDataEntityPojo> toDelete = current.stream().filter(r ->
+    !updated.contains(r)).toList(); ... }))` — diff via `.contains()` on the relation
+    rows.
+
+
+    **What this protects** (the contract the test must pin):
+
+    - **Symmetric immutability for external rows**: a tag with both EXTERNAL and INTERNAL
+    relations to the same data entity stays EXTERNAL after a UI-driven PUT.
+
+    - **External-relation count invariant**: PUT `/api/dataentities/{id}/tags` with
+    `tagNames = [''A'']` against an entity with `[(tagA, external=false), (tagB, external=true)]`
+    ends with `[(tagA, external=false), (tagB, external=true)]` — NOT just `[(tagA,
+    external=false)]`.
+
+    - **UI cannot impersonate a Collector**: there is no way through this surface
+    to write a row with `external = true`. The OpenAPI spec accepts only tag names,
+    not the external flag — and even if a malicious caller posted JSON like `{"tags":
+    [{"name": "x", "external": true}]}`, the unmarshalling discards unknown fields,
+    and the service hardcodes `false`.
+
+
+    **Operator-visible consequences if the invariant breaks**:
+
+    - **Collector-pushed tags silently overwritten**: a Collector pushes tag "PII"
+    with `external = true` on entity X; an analyst PUTs `tagNames: [''public'']` on
+    entity X via the UI; the "PII" relation is silently deleted. On the Collector''s
+    next push, "PII" is re-created — but only after the operator already shipped wrong
+    governance signal downstream.
+
+    - **Audit-trail inversion**: an investigator chasing "who removed PII tag from
+    entity X?" finds the UI user — but the architectural intent was that UI users
+    cannot remove Collector-owned tags. The investigator''s mental model is broken.
+
+    - **The dual-write coordination breaks**: REFACTOR-223 (Tag side-door) catalogues
+    5 paths into the Tag directory; this gap is the CASCADE-side complement. If the
+    `!external` filter is removed, the UI suddenly has the ability to mutate Collector-owned
+    relations at the per-entity level, even though the directory-level TAG_UPDATE
+    remains gated.
+
+
+    **Why HIGH not MEDIUM**:
+
+    - The defense is a 1-line `.filter()` (line 102) + a 1-line `.setExternal(false)`
+    (line 109). Both are easy targets for an "innocent" refactor that consolidates
+    create paths.
+
+    - The architectural intent is captured in the implicit_adr (TagServiceImpl.md:implicit_adrs.[EXTERNAL
+    relations are immutable to UI users]) — explicitly. But there is no test gate.
+
+    - A regression here cross-pillar drains: P-01 governance signal correctness +
+    P-10 ingestion-source-of-truth + P-07 audit-feed semantics. Three pillars affected
+    at once.'
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-857.yaml
+- gap_id: TEST-GAP-858
+  behaviour: '**HIGH — `TagServiceImpl.updateRelationsWithDataEntity(dataEntityId,
+    Set.of())` is DESTRUCTIVE: with an empty `tagNames` Set, the diff computes `pojosToDelete
+    = currentRelations \ updated = currentRelations` (every non-external relation
+    goes into the delete set), then issues `deleteDataEntityRelations(pojosToDelete)
+    + createDataEntityRelations(empty)`. The empty input is INTERPRETED as "remove
+    all non-external tags from this entity" — a destructive operation triggered by
+    what callers might intuitively read as "no change requested".** No test pins this
+    contract; a future caller (`DataEntityServiceImpl.upsertTags`) that mistakenly
+    passes `Set.of()` when meaning "no-op" will silently strip all non-external relations
+    from the entity.
+
+
+    **Primary-source chain** (per TagServiceImpl.md:stress_findings.C.S-C-2):
+
+    - `TagServiceImpl.java:96-121` (`updateRelationsWithDataEntity`): the diff method.
+
+    - `:102` reads `currentRelations` filtered to `!external`.
+
+    - `:107-110` builds `updatedRelations` from `tagNames`. If `tagNames = Set.of()`,
+    `getOrCreateTagsByName(Set.of())` returns `Flux.empty()` → `updatedRelations =
+    []`.
+
+    - `:114-116`: `pojosToDelete = current.stream().filter(r -> !updated.contains(r)).toList()`
+    → `pojosToDelete = current` (everything goes into delete set).
+
+    - `:117-118`: `deleteDataEntityRelations(pojosToDelete)` hard-deletes all non-external
+    `tag_to_data_entity` rows.
+
+    - `:119`: `createDataEntityRelations(updated)` is a no-op (empty list short-circuits
+    per repository''s empty-batch guard).
+
+    - `:120-121`: `listDataEntityDtos(dataEntityId)` returns the post-state — which
+    is ONLY the external relations.
+
+
+    **What this CAN do operationally**:
+
+    - **The path is reachable from `PUT /api/dataentities/{id}/tags` with `tagNames:
+    []`**: an SDK consumer passing an empty array (perhaps as part of a multi-form-field
+    UI''s serialisation when the user clears all chips) triggers the destructive cascade.
+    No client-side warning, no server-side warning.
+
+    - **The doc page DOES NOT advertise this semantic**: the live tagging page describes
+    the per-entity assignment as "select from existing vocabulary or create new labels
+    on the spot"; nothing names the empty-array-deletes-all behavior.
+
+    - **The test corpus does NOT pin this**: no `TagServiceImplTest` exists at all
+    (per TagServiceImpl.md:tests_coverage_semantic.covered_behaviours = []).
+
+
+    **Why HIGH not MEDIUM**:
+
+    - The empty-input destructive operation is a SILENT data-loss surface. A user
+    clicking "remove all tags" in a UI followed by Save triggers it intentionally;
+    a UI bug submitting empty list when the user navigated away triggers it accidentally.
+
+    - The pattern is shared with REFACTOR-NNN class "empty-input destructive operations"
+    — sister cases include other diff-style endpoints where empty means "remove all".
+
+    - The defense against it (cap empty-list to a UI confirmation or an explicit `removeAll:
+    true` flag) requires either a contract change or a guard at the service layer.
+
+
+    **The OpenAPI side** — `openapi.yaml` documents `tag_name_list: List<String>`
+    with no `minItems` constraint. Future SDK consumers building against the spec
+    see the field as a regular list and submit empty lists for "no tags" / "clear
+    all" / "no change" — three semantically distinct operator intents, ONE behavior.'
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-858.yaml
+- gap_id: TEST-GAP-859
+  behaviour: '**HIGH — `TagServiceImpl.getOrInjectTagByName` (lines 88-94) is the
+    SIBLING of `getOrCreateTagsByName` (lines 79-86) with IDENTICAL signature but
+    FUNDAMENTALLY DIFFERENT race semantics: `getOrCreateTagsByName` uses `bulkCreate`
+    (fail-on-duplicate → `UniqueConstraintException`), `getOrInjectTagByName` uses
+    `ingestData` (upsert with `ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE`
+    → silent race resolution returning the existing row). The contract: under concurrent
+    novel-name submissions, BOTH callers of `getOrInjectTagByName` must receive the
+    SAME tag id; the race is silenced.** No test pins the upsert-silenced contract.
+    A future refactor that "unifies" the two paths into `bulkCreate` (perhaps for
+    code-deduplication) would break the Collector ingestion path: every concurrent
+    Collector pushing the same novel tag name would surface `UniqueConstraintException`,
+    with no caller-side retry.
+
+
+    **Primary-source chain**:
+
+    - `TagServiceImpl.java:88-94` (`getOrInjectTagByName`): `divideTagsByExistence`
+    → `reactiveTagRepository.ingestData(tagsToCreate)` → union with existing tags.
+
+    - `ReactiveTagRepositoryImpl.java:180-213` (`ingestData`): `INSERT INTO tag (name,
+    ...) VALUES (?), (?), ... ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE
+    SET name = excluded.name RETURNING *`.
+
+    - **Conflict-target**: `Indexes.TAG_NAME_UNIQUE.getFields()` (`:199-202`) — dynamically
+    resolved from the jOOQ-generated handle.
+
+    - **Conflict predicate**: hardcoded `WHERE TAG.DELETED_AT.isNull()` (`:207`) —
+    matches the partial-index predicate at `V0_0_64__remove_is_deleted_field.sql:105`.
+
+    - **Race protection** (per ReactiveTagRepositoryImpl.md:stress_findings.E1): the
+    partial unique index `tag_name_unique` serialises by-name conflicts at the PostgreSQL
+    B-tree level. Two parallel TXs inserting the same novel name: one wins, one routes
+    to `DO UPDATE`. Both callers get the SAME `tag.id` via RETURNING.
+
+
+    **Why the test is HIGH**:
+
+    - **Critical for the Collector path** (`ExternalTagIngestionRequestProcessor.java:104`
+    calls `getOrInjectTagByName` for every batch).
+
+    - A concurrent UI write + Collector ingest of the same novel name: `getOrCreateTagsByName`
+    (UI path) surfaces `UniqueConstraintException` (per TEST-GAP-540); `getOrInjectTagByName`
+    (Collector path) silently returns the existing id. The TWO PATHS ARE INTENTIONALLY
+    ASYMMETRIC — this is the architectural choice that the test must lock in.
+
+    - **The methods have identical names + Java signatures**: a maintainer reading
+    the interface (`TagService.java:14-36`) cannot distinguish which has which race
+    semantic without reading both implementations. The CI test is the only stable
+    contract documentation.
+
+
+    **The bridging contract**:
+
+    - Two parallel `getOrInjectTagByName(Set.of("novelTag"))` calls → BOTH return
+    a `Flux<TagPojo>` containing ONE TagPojo with the SAME id. The partial unique
+    index serialises; one INSERT, one UPDATE; both have the same RETURNING.
+
+    - The sister `getOrCreateTagsByName(Set.of("novelTag"))` under the same concurrency
+    → ONE caller returns the tag id; the OTHER caller surfaces `UniqueConstraintException`
+    (per TEST-GAP-540).
+
+    - This asymmetry IS the design; the test pins it.'
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-859.yaml
+- gap_id: TEST-GAP-860
+  behaviour: "**MEDIUM — `TagServiceImpl.deleteRelationsWithTerm(termId, tagsToKeep)`\
+    \ (lines 123-134) is a multi-statement READ-then-WRITE without `@ReactiveTransactional`.\
+    \ The method reads current term-tag relations via `listByTerm(termId)` then issues\
+    \ `deleteTermRelations(termId, idsToDelete)` for the set difference. A concurrent\
+    \ write to `tag_to_term` between the read and the write will NOT be detected;\
+    \ if a tag is added to the term concurrently, the just-added relation will not\
+    \ be in the `currentTags` collection and will not be deleted (a \"lost addition\"\
+    \ — survives). If a tag is removed concurrently, the read sees it but the delete\
+    \ is a no-op (idempotent).** No test pins this race window; no comment defends\
+    \ the choice; the choice is ambiguous (deliberate or oversight).\n\n**Primary-source\
+    \ chain**:\n- `TagServiceImpl.java:123-134` (`deleteRelationsWithTerm`):\n  -\
+    \ Line 124: NO `@ReactiveTransactional` annotation (verified by reading the file).\n\
+    \  - Line 126: `reactiveTagRepository.listByTerm(termId).collectList()` (read\
+    \ step).\n  - Line 128-131: in-memory diff `.filter(t -> !tagsToKeep.contains(t.getName()))`\
+    \ to compute `idsToDelete`.\n  - Line 132: `reactiveTagRepository.deleteTermRelations(termId,\
+    \ idsToDelete)` (write step).\n- The read and write run in SEPARATE query roundtrips\
+    \ and possibly different TXs depending on caller context.\n\n**Race characterisation**\
+    \ (per TagServiceImpl.md:bugs_limitations_corner_cases.[deleteRelationsWithTerm-no-tx]):\n\
+    - **A concurrent write to tag_to_term between the read at :126 and the write at\
+    \ :132 will not be detected.**\n- If a tag is added to the term concurrently →\
+    \ the just-added relation will not be in `currentTags` → will NOT be deleted (the\
+    \ addition SURVIVES the keep-only operation).\n- The other multi-statement non-TX\
+    \ methods (`getOrCreateTagsByName`, `getOrInjectTagByName`) have race protections\
+    \ in the underlying repository (unique-constraint OR `ON CONFLICT DO UPDATE`);\
+    \ `deleteRelationsWithTerm` has NEITHER — there is no constraint preventing the\
+    \ race, and the read/write are not atomic.\n- No comment defends the choice. The\
+    \ intent is ambiguous: deliberate (to allow concurrent additions to survive a\
+    \ keep-only-this-set operation) OR oversight (the maintainer forgot the annotation\
+    \ on a method that resembles its `@ReactiveTransactional` sibling `createRelationsWithTerm`\
+    \ at :137).\n\n**Operator-visible consequences if the race is exercised**:\n-\
+    \ **Lost-deletion intent**: an operator submits \"keep only tagA\" via the Term\
+    \ Tag UI; concurrently, another operator adds tagB to the term; the result is\
+    \ \"keep tagA AND tagB\" (NOT \"keep only tagA\"). The operator's intent is silently\
+    \ violated.\n- **Audit confusion**: the Activity Feed shows \"operator X kept\
+    \ only tagA\"; the term state shows tagA + tagB. The two diverge.\n- **The race\
+    \ window is small in practice**: term tag updates are not concurrent in normal\
+    \ operation (a term has typically <10 tags and is edited by one operator at a\
+    \ time). But the test pinning forces the maintainer to make the choice EXPLICIT.\n\
+    \n**Why MEDIUM not HIGH**:\n- The practical race surface is narrow (terms are\
+    \ not high-concurrency objects).\n- The failure mode is non-corrupting (the addition\
+    \ survives; nothing is lost).\n- The criticality is anchored to the policy: a\
+    \ future refactor that adds `@ReactiveTransactional` SHOULD be a coordinated decision,\
+    \ not a silent change. The test pins the current behavior."
+  test_class: integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-860.yaml
+- gap_id: TEST-GAP-861
+  behaviour: "**MEDIUM — `TagServiceImpl.update(tagId, formData)` (lines 44-55, `@ReactiveTransactional`)\
+    \ triggers THREE concurrent search-vector refreshes via `Mono.zip` in `updateSearchVectors`\
+    \ (lines 161-167): (1) `reactiveSearchEntrypointRepository.updateChangedTagVectors`,\
+    \ (2) `reactiveSearchEntrypointRepository.updateChangedTagStructureVector`, (3)\
+    \ `reactiveTermSearchEntrypointRepository.updateChangedTagVectors`. The triple-zip\
+    \ is intentional parallelism for latency; it is ALSO synchronously awaited as\
+    \ part of the TX, meaning a failure in any of the three rolls back the entire\
+    \ `update` operation. A regression replacing the zip with a single call (or with\
+    \ `.subscribe()` fire-and-forget) would silently break the term-search FTS index\
+    \ AND/OR change the TX-rollback semantics.** No test pins the triple-zip contract;\
+    \ no test pins that the THREE calls fire on every update.\n\n**Primary-source\
+    \ chain**:\n- `TagServiceImpl.java:44-55` (`update`): five-step flow (getDto →\
+    \ external check → applyToPojo → repository.update → updateSearchVectors).\n-\
+    \ **Line 53**: `.flatMap(this::updateSearchVectors)` — synchronously awaited,\
+    \ IN the `@ReactiveTransactional` boundary.\n- `TagServiceImpl.java:161-167` (`updateSearchVectors`,\
+    \ private):\n  ```\n  private Mono<TagPojo> updateSearchVectors(final TagPojo\
+    \ tag) {\n    return Mono.zip(\n      reactiveSearchEntrypointRepository.updateChangedTagVectors(tag.getId()),\n\
+    \      reactiveSearchEntrypointRepository.updateChangedTagStructureVector(tag.getId()),\n\
+    \      reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tag.getId())\n\
+    \    ).thenReturn(tag);\n  }\n  ```\n- **Implicit ADR** (per TagServiceImpl.md:implicit_adrs.[Search-vector\
+    \ refresh is part of the update / delete contract]): the `flatMap` placement (vs\
+    \ `subscribe` for fire-and-forget) shows the maintainer explicitly chose to make\
+    \ search-index consistency PART OF the synchronous transaction boundary. A user\
+    \ who updates a tag and immediately searches sees the refreshed index. The triple-zip\
+    \ is concurrent (not sequential) — intentional parallelism for latency.\n\n**Operator-visible\
+    \ consequences if the contract regresses**:\n- **search-index drift**: if the\
+    \ refresh becomes fire-and-forget, an immediate search after an update may return\
+    \ stale results (the tag's old name still indexed).\n- **term-search drift**:\
+    \ if `reactiveTermSearchEntrypointRepository.updateChangedTagVectors` is dropped\
+    \ specifically, the term-search FTS surface lags behind tag renames. Terms tagged\
+    \ with the renamed tag still show the old tag's tokens.\n- **TX-rollback semantic\
+    \ change**: if any of the three is removed from the zip, the `@ReactiveTransactional`\
+    \ rollback boundary shrinks — a user who renames a tag and a downstream failure\
+    \ occurs would see a partial state.\n\n**Why MEDIUM not LOW**:\n- The triple-zip\
+    \ is a coordinated three-table write; \"refactoring\" to reduce redundancy is\
+    \ a plausible future change that could silently break one of the three.\n- The\
+    \ asymmetry vs `delete` (which only calls #3 — the term-side refresh — at line\
+    \ 68-69, per TagServiceImpl.md:bugs_limitations_corner_cases.[delete-search-vector-incomplete])\
+    \ reveals that the search-vector refresh is NOT uniform across mutations. The\
+    \ test for `update` pins the triple-call contract; a sister test for `delete`\
+    \ (separately) would surface the asymmetry."
+  test_class: unit
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-861.yaml
+- gap_id: TEST-GAP-862
+  behaviour: '**HIGH — `TagServiceImpl` (lines 1-168) has ZERO service-tier authorization
+    checks: zero `@PreAuthorize` annotations, zero `permissionService.hasPermission(...)`
+    programmatic calls, zero `OwnerAuthorizationFacade` invocations, zero `SecurityContextHolder`
+    reads. The controller perimeter is the SOLE auth defence for the canonical `POST
+    /api/tags` path; the FOUR side-door write paths (TermServiceImpl, DataEntityServiceImpl,
+    DatasetFieldServiceImpl, ExternalTagIngestionRequestProcessor) reach this service
+    WITHOUT holding `TAG_CREATE`. The absence-of-gates IS the architectural posture;
+    the absence has NEVER been pinned by a test. A future regression that ADDS `@PreAuthorize`
+    to ANY method here would silently change exposure (likely BREAKING a side-door
+    for the legitimate Collector path).**
+
+
+    **Per-method auth posture** (from TagServiceImpl.md:stress_findings.D.S-D-1):
+
+
+    | Method | Service @PreAuthorize? | Controller-perimeter auth | Side-door bypass?
+    |
+
+    |---|---|---|---|
+
+    | `bulkCreate` (:37) | NO | `TAG_CREATE` | NO (only called by TagController) |
+
+    | `update` (:45) | NO | `TAG_UPDATE` | NO |
+
+    | `delete` (:57) | NO | `TAG_DELETE` | NO |
+
+    | `listMostPopular` (:73) | NO | `authenticated()` catch-all | NO (only TagController
+    calls) |
+
+    | `getOrCreateTagsByName` (:80) | NO | varies per side-door | **YES — never TAG_CREATE**
+    |
+
+    | `getOrInjectTagByName` (:89) | NO | S2S ingestion filter | **YES — never TAG_CREATE**
+    |
+
+    | `updateRelationsWithDataEntity` (:97) | NO | `DATA_ENTITY_TAGS_UPDATE` | YES
+    |
+
+    | `deleteRelationsWithTerm` (:124) | NO | `TERM_TAGS_UPDATE` | YES |
+
+    | `createRelationsWithTerm` (:137) | NO | `TERM_TAGS_UPDATE` | YES |
+
+
+    **Why this is HIGH** (not LOW as one might expect for "absence is the architecture"):
+
+    - **The absence is invisible to grep on the canonical perimeter**: a future maintainer
+    auditing "where does Tag CREATE happen?" sees `TagController.createTag` gated
+    by `TAG_CREATE` — and reasonably concludes that''s the only path. The 4 side-door
+    paths are NOT marked with `@PreAuthorize(TAG_CREATE)` because they''re gated by
+    a DIFFERENT permission (DATA_ENTITY_TAGS_UPDATE etc.). The architectural design
+    is documented in `TagServiceImpl.md:implicit_adrs` but not in code.
+
+    - **A future "security hardening" PR** that adds `@PreAuthorize("hasAuthority(''TAG_CREATE'')")`
+    to `getOrCreateTagsByName` would silently BREAK every side-door (UI users with
+    only DATA_ENTITY_TAGS_UPDATE would suddenly get 403 on PUT /api/dataentities/{id}/tags).
+    This is a HIGH-impact, NON-OBVIOUS regression.
+
+    - **The test pins the INTENT**: zero service-tier checks. Any test that ASSERTS
+    the absence forces a future maintainer adding gates to coordinate the addition
+    with the side-door behavior change.
+
+
+    **Why this is the canary headline finding** (per TagServiceImpl.md):
+
+    - The S-D-1 finding states: "Tag directory writes via the side-door surfaces (5
+    of 9 methods) bypass TAG_CREATE entirely. This is logged in implicit_adrs as intentional
+    (the per-feature permission model) but is recorded here as the per-method enumeration
+    that the Stress Protocol mandates."
+
+    - The probe `P-LSN019-service-auth-zero` was emitted to "confirm zero auth gates
+    at the service layer via grep" — this gap converts the grep probe into a CI-runnable
+    test.'
+  test_class: security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-862.yaml
+- gap_id: TEST-GAP-863
+  behaviour: '**MEDIUM — The Tag service+repository chain has FIVE empty-input entry
+    points that all short-circuit DIFFERENTLY: (1) `listByNames(empty)` has NO guard
+    and emits `TAG.NAME IN ()` SQL (PG evaluates as FALSE; zero matches); (2) `ingestData(empty)`
+    has explicit empty-collection short-circuit (`Flux.just()`) at `ReactiveTagRepositoryImpl.java:181-183`;
+    (3) inherited `bulkCreate(empty)` ALSO short-circuits at `ReactiveAbstractCRUDRepository.java:115-117`;
+    (4) `getOrCreateTagsByName(empty Set)` / `getOrInjectTagByName(empty Set)` propagate
+    through `divideTagsByExistence(empty)` → `Tuples.of([], [])` → no-op. (5) `updateRelationsWithDataEntity(entity.id,
+    empty Set)` is DESTRUCTIVE per TEST-GAP-858. The shapes are NOT consistent: jOOQ
+    does NOT accept zero-record INSERT statements, so the empty-batch guard on `ingestData`
+    and `bulkCreate` is LOAD-BEARING. A future change removing the guard would produce
+    a runtime SQL error on every empty bulk call.** No test asserts the empty-input
+    contract on any of the five entry points.
+
+
+    **Primary-source map**:
+
+    - **`listByNames(empty)`** — `ReactiveTagRepositoryImpl.java:120-125`, no guard.
+    `TAG.NAME.in([])` → SQL `IN ()` (jOOQ emits an equivalent that PG evaluates as
+    FALSE).
+
+    - **`ingestData(empty)`** — `ReactiveTagRepositoryImpl.java:181-183`, EXPLICIT
+    empty short-circuit: `if (CollectionUtils.isEmpty(tags)) return Flux.just();`.
+
+    - **`bulkCreate(empty)`** — `ReactiveAbstractCRUDRepository.java:115-117` (inherited),
+    EXPLICIT short-circuit.
+
+    - **`getOrCreateTagsByName(empty Set)`** — `TagServiceImpl.java:79-86` — propagates
+    through divideTagsByExistence → returns empty Flux.
+
+    - **`getOrInjectTagByName(empty Set)`** — `TagServiceImpl.java:88-94` — same shape.
+
+
+    **Why MEDIUM**:
+
+    - The empty-batch guard on `ingestData` and `bulkCreate` is LOAD-BEARING: removing
+    it produces a runtime SQL error (jOOQ rejects empty-record INSERTs) on every empty
+    bulk call. A bug here would be discovered in production on first empty-array submission.
+
+    - The asymmetry between methods (some have explicit guards, some have NO guard
+    but rely on SQL semantics) is invisible to reviewers; a maintainer reading `listByNames`
+    and seeing no guard might "add one" for consistency — but it would change behavior
+    under the SQL semantic of `IN ()` (PG-specific FALSE evaluation that the guard
+    would shadow).
+
+    - The empty input contracts ARE NOT documented in the service interface (`TagService.java:14-36`);
+    they''re implementation-defined.
+
+
+    **What the test pins**:
+
+    - Each entry point''s empty-input behavior (empty output, no exception, no DB
+    roundtrip beyond `listByNames`).
+
+    - The asymmetric guard placement (some have explicit guards, some don''t).
+
+    - The contract that a future refactor must NOT regress: `ingestData(empty)` does
+    not issue an empty INSERT SQL.'
+  test_class: unit
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-863.yaml
+- gap_id: TEST-GAP-864
+  behaviour: '**MEDIUM — `listMostPopular(page, size)` has UNGUARDED boundary parameters
+    at every layer (controller, service, repository). The page and size arguments
+    flow directly into `paginate(...)` which constructs `LIMIT size OFFSET (page-1)*size`
+    SQL. Degenerate inputs surface as: size=0 → empty page (with `total` correctly
+    reflecting underlying count); size=-1 → PostgreSQL SQL state 22023; page=0 → `(0-1)*size
+    = -size` → negative OFFSET → SQL state 22023; size=100000 → executes full-directory
+    UNION-ALL CTE with no upper bound (DoS-amp); page=null / size=null → NumberFormatException
+    at autoboxing.** No test pins the boundary contract; an SDK consumer submitting
+    `size=0` (legitimate "I want the total count") gets an empty data array — possibly
+    unexpected. An attacker submitting `size=100000` triggers a full directory aggregation
+    per call.
+
+
+    **Boundary behavior catalogue** (per the three sidecars'' stress_findings):
+
+
+    | Input | Behavior | Source |
+
+    |---|---|---|
+
+    | `size=0` | `LIMIT 0` → empty data; `_total` (COUNT() OVER()) correctly reflects
+    underlying count | A2 + S-C-5 |
+
+    | `size=-1` | `LIMIT -1` → PG raises SQL state 22023 → 500 to caller | A2 |
+
+    | `size=100000` | Full-directory UNION-ALL CTE; no upper bound; DoS amp | A2 +
+    performance.known_performance_gaps.[no-size-clamp] |
+
+    | `size=null` | NumberFormatException at WebFlux parameter binding → 400 to caller
+    | tunables[size] + A1 |
+
+    | `page=0` | `OFFSET = -size` → PG raises SQL state 22023 → 500 to caller | A1
+    + S-C-6 |
+
+    | `page=-1` | `OFFSET = -2*size` → same as page=0 | A1 |
+
+    | `page=null` | Autobox throws NumberFormatException → 400 | A1 |
+
+    | `size=N+1` (N = total tags) | Full directory returned in correct count-DESC
+    order (LSN-019 only manifests when N > size) | tunables[size].questions[1].a |
+
+
+    **Why the test pins MEDIUM not HIGH**:
+
+    - The boundary failures surface as either 400 (validation-shaped) or 500 (SQL
+    error leaked) — the latter is a UX problem (operator sees stack trace) but not
+    a corruption surface.
+
+    - The `size=100000` DoS-amp is real but bounded by single-request latency (the
+    CTE runs in <1s for typical platforms).
+
+    - The pinning catches a future refactor that adds clamping (HIGH-impact if it
+    changes API behavior silently) OR removes the OpenAPI `minimum: 1` constraint
+    (LOW-impact but operator-visible).
+
+
+    **Connection to LSN-019**:
+
+    - The size=N+1 boundary is the threshold where the LSN-019 drift VANISHES (the
+    inner paginate selects ALL tags, so the outer count-DESC sort IS effective).
+
+    - The test that asserts "size > total_tag_count returns correct popularity order"
+    PINS the threshold semantics. A future LSN-019 fix should make this test stronger
+    (NOT weaker) by pushing correctness to all sizes.'
+  test_class: integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-864.yaml
+- gap_id: TEST-GAP-865
+  behaviour: '**HIGH — CROSS-CUTTING META: `TagServiceImpl` has ZERO test coverage
+    at the service tier. NO `TagServiceImplTest.java` exists; Glob `**/TagServiceImpl*Test*.java`
+    returns 0 matches; Glob `**/Tag*Test*.java` returns ONLY `TagRepositoryImplTest.java`
+    (the repository-tier test) — verified by 2 independent Globs. The service-tier
+    orchestration is the LARGEST untested surface in the Tag chain: the `!external`
+    guards (lines 49-50, 62-63), the in-memory diff in `updateRelationsWithDataEntity`
+    (lines 96-121), the asymmetric cascade in `delete` (lines 57-70 — only 2 of 3
+    relation tables hard-deleted), the TOCTOU race window in `getOrCreateTagsByName`
+    (lines 79-86), the case-sensitivity drift in `divideTagsByExistence` (lines 144-159),
+    the triple search-vector refresh on `update` (lines 161-167), the asymmetric search-vector
+    refresh on `delete` (lines 68-69), the absence of service-tier auth gates (5 of
+    9 methods are side-door surfaces) — NONE of these are tested.**
+
+
+    **What the absence means** (per TagServiceImpl.md:tests_coverage_semantic.gaps):
+    "A future refactor that, e.g., removes the `.filter(tagDto -> !tagDto.external())`
+    guard (lines 49-50, 62-63) would compile, pass all existing tests, and silently
+    let UI users mutate Collector-owned tags — a permission-bypass regression with
+    zero CI signal."
+
+
+    **The 12 individual uncovered behaviors** (per TagServiceImpl.md:tests_coverage_semantic.uncovered_behaviours)
+    split between this META gap and the per-finding gaps:
+
+
+    | Behavior | Pinned by |
+
+    |---|---|
+
+    | `update` !external guard | partially TEST-GAP-765 (controller-tier); not service-tier
+    |
+
+    | `delete` !external guard | partially TEST-GAP-765 (controller-tier) |
+
+    | `delete` cascade asymmetry | TEST-GAP-762 (controller-tier) |
+
+    | `update` triple-zip search-vector | **TEST-GAP-861 (NEW VAL-LSN-019)** |
+
+    | `getOrCreateTagsByName` TOCTOU | TEST-GAP-540 (existing) |
+
+    | `getOrInjectTagByName` TOCTOU silenced | **TEST-GAP-859 (NEW VAL-LSN-019)**
+    |
+
+    | `divideTagsByExistence` case-sensitivity | TEST-GAP-541 (repository) — sister
+    at service tier still untested |
+
+    | `updateRelationsWithDataEntity` diff correctness | NOT YET COVERED (this META
+    anchor) |
+
+    | `updateRelationsWithDataEntity` !external invariant | **TEST-GAP-857 (NEW VAL-LSN-019)**
+    |
+
+    | `updateRelationsWithDataEntity` hardcoded external=false | **TEST-GAP-857 (NEW
+    VAL-LSN-019)** |
+
+    | `listMostPopular` drift | **TEST-GAP-855, TEST-GAP-856 (NEW VAL-LSN-019)** |
+
+    | `bulkCreate` duplicate-name | NOT YET COVERED (this META anchor) |
+
+    | `deleteRelationsWithTerm` case-sensitive | NOT YET COVERED (sister to TEST-GAP-860
+    race) |
+
+
+    **This gap is the META-ANCHOR** for the service-layer test-pillar effort. The
+    individual gaps above pin the highest-risk surfaces. This entry pins the META-finding:
+    NONE of the cross-cutting service-layer orchestration is tested.
+
+
+    **Why HIGH not CRITICAL**:
+
+    - Sister META findings (TEST-GAP-814 F-009 notification, TEST-GAP-835 F-008 ingestion,
+    TEST-GAP-854 batch-ZA UI) are HIGH for similar cross-cutting absences.
+
+    - CRITICAL is reserved for security-flagged uncovered behaviors with concept-aggregate
+    HIGH severity. The Tag concept''s security_aggregate.overall = MEDIUM (per concepts.yaml:3282)
+    — so the absence is HIGH, not CRITICAL.
+
+    - The individual gaps (855, 856) carry CRITICAL where appropriate (LSN-019 drift);
+    this META gap carries the cross-cutting anchor at HIGH.
+
+
+    **Authoring effort estimate**: ~3-5 sprint-weeks to author the full TagServiceImpl
+    test suite. The individual gaps cover ~50% of the surface; the remaining surface
+    (`updateRelationsWithDataEntity` diff correctness, `bulkCreate` duplicate handling,
+    `divideTagsByExistence` case-sensitivity at the SERVICE tier, `deleteRelationsWithTerm`
+    case-sensitivity, `getDto` for soft-deleted, `update` happy path, `delete` happy
+    path) needs a comprehensive `TagServiceImplTest`.'
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-865.yaml
+- gap_id: TEST-GAP-866
+  behaviour: "**MEDIUM — `TagServiceImpl.delete` (lines 57-70, `@ReactiveTransactional`)\
+    \ updates ONLY the term-side search vectors (`reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId)`\
+    \ at lines 68-69); it DOES NOT call `reactiveSearchEntrypointRepository.updateChangedTagVectors`\
+    \ or `reactiveSearchEntrypointRepository.updateChangedTagStructureVector` despite\
+    \ `update` calling ALL THREE (per the triple-zip at lines 161-167). After a tag\
+    \ delete, the main `search_entrypoint` table still contains the deleted tag's\
+    \ tokens until the next entity-level refresh. The UI tag-search facet may surface\
+    \ the deleted tag's name until the index naturally refreshes via the next data-entity\
+    \ write.** This asymmetry is documented as a bug per the sidecar — severity LOW\
+    \ per the file-analyser; we elevate to MEDIUM because the test pinning forces\
+    \ the maintainer to make the asymmetry an EXPLICIT design choice OR fix it.\n\n\
+    **Primary-source chain**:\n- `TagServiceImpl.java:57-70` (`delete`):\n  - Line\
+    \ 60: `getDto` (read step)\n  - Line 62-63: `!external` filter\n  - Line 64-65:\
+    \ `Flux.zip(deleteTermRelations, deleteDataEntityRelations)` (concurrent hard-deletes)\n\
+    \  - Line 66: `repository.delete(tagId)` (soft-delete)\n  - **Line 68-69**: `reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId)`\
+    \ — **ONLY ONE search-vector call**, despite `update` calling THREE.\n- `TagServiceImpl.java:161-167`\
+    \ (`updateSearchVectors`, called from `update`):\n  - `Mono.zip(reactiveSearchEntrypointRepository.updateChangedTagVectors(tag.getId()),\
+    \ reactiveSearchEntrypointRepository.updateChangedTagStructureVector(tag.getId()),\
+    \ reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tag.getId()))`.\n\
+    \n**The asymmetry**:\n- **Update** refreshes: search_entrypoint vectors + tag-structure\
+    \ vectors + term-search vectors (THREE).\n- **Delete** refreshes: ONLY term-search\
+    \ vectors (ONE).\n- The main `search_entrypoint` and `search_entrypoint_structure`\
+    \ tables retain the deleted tag's tokens.\n\n**Operator-visible consequences**:\n\
+    - **Stale search results after delete**: a user searches for \"PII\" after the\
+    \ operator deleted the \"PII\" tag — the search returns entities tagged \"PII\"\
+    \ until the next per-entity write triggers the refresh. The deleted tag's name\
+    \ lingers in search index.\n- **Asymmetric UX**: a user renames \"PII\" to \"\
+    Sensitive-PII\" via `update` (3 indexes refreshed → immediate); a user deletes\
+    \ \"PII\" via `delete` (1 index refreshed → stale for hours/days). The two operations\
+    \ have different freshness guarantees.\n- **Search-result fidelity**: search engine\
+    \ consumers (e.g., a tag-cloud visualisation) re-rank by frequency. A deleted\
+    \ tag still counted in `search_entrypoint` skews the visualisation.\n\n**Why MEDIUM\
+    \ not LOW** (the sidecar's own rating):\n- The sidecar rates this LOW: \"After\
+    \ a tag delete, the main search-entrypoint table still contains the deleted tag's\
+    \ tokens until the next entity-level refresh.\"\n- We elevate to MEDIUM because\
+    \ the asymmetry is a SUBTLE design intent (deliberate or oversight). The test\
+    \ pinning forces a coordinated decision. A future maintainer who \"fixes\" the\
+    \ asymmetry by adding the two missing calls to delete would change the freshness\
+    \ guarantee — a UX-visible change that should be a coordinated decision.\n\n**Connection\
+    \ to TEST-GAP-861** (the sister update gap):\n- TEST-GAP-861 pins that `update`\
+    \ calls ALL THREE search-vector refreshes.\n- This gap pins that `delete` calls\
+    \ ONLY ONE.\n- Together they pin the asymmetry as the EXPLICIT current contract."
+  test_class: unit
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-866.yaml
+- gap_id: TEST-GAP-867
+  behaviour: "**HIGH — `listMostPopular`'s outer `.orderBy(field(COUNT_FIELD).desc())`\
+    \ (`ReactiveTagRepositoryImpl.java:158`) has NO secondary ORDER BY clause. When\
+    \ two tags have EQUAL aggregated usage_count, the order between them is determined\
+    \ by PostgreSQL's natural-row-order semantics within the GROUP BY result — practically,\
+    \ this inherits from the CTE's row order, which is `tag.id ASC` per the inner\
+    \ `paginate(...)` (line 148). The absence of a secondary tiebreaker IS the design\
+    \ — but it is NOT pinned by any test, and the implementation-defined PostgreSQL\
+    \ order is the only guarantee.** A future refactor that adds a different ORDER\
+    \ BY (or that changes the underlying CTE's row order via a different join strategy)\
+    \ would silently change the tie-break — potentially observable to operators paginating\
+    \ through equal-count tags.\n\n**The empirical scenario** (per LSN-019 retrospective):\n\
+    - 35 tags, all with EQUAL usage_count (every entity tagged by all 35).\n- `size=30,\
+    \ page=1`: response contains IDs 1..30 in tag.id ASC order (the inner CTE's natural\
+    \ order).\n- Verified empirically 2026-05-20 against demo.oddp.io.\n\n**Why this\
+    \ is a SEPARATE gap from TEST-GAP-855**:\n- TEST-GAP-855 pins the LSN-019 PRIMARY\
+    \ effect: when N > size, the inner paginate selects the OLDEST `size` tags before\
+    \ counting.\n- **This gap (867)** pins the SECONDARY effect: WHEN N ≤ size (no\
+    \ inner paginate exclusion), but multiple tags have EQUAL counts (a degenerate\
+    \ but real case — every entity tagged by all N tags), the OUTER count-DESC sort\
+    \ has NO tie-break and the result inherits the CTE row order = tag.id ASC.\n-\
+    \ Together they fully characterise the response shape:\n  - **N > size**: inner\
+    \ paginate selects OLDEST `size` by tag.id ASC; outer re-orders by count DESC\
+    \ within page (effective when counts differ within page).\n  - **N ≤ size with\
+    \ unique counts**: outer count-DESC is effective; result is by count DESC.\n \
+    \ - **N ≤ size with equal counts**: outer count-DESC has no tie-break; result\
+    \ is by tag.id ASC (inherited from the CTE).\n\n**What the test pins**:\n- At\
+    \ equal counts, the SQL's secondary-sort behavior IS implementation-defined.\n\
+    - The current implementation-defined order on PostgreSQL happens to be tag.id\
+    \ ASC.\n- A future refactor that switches the inner CTE join order, adds an EXPLICIT\
+    \ `.orderBy(field(COUNT_FIELD).desc(), TAG.ID.asc())`, or changes the database\
+    \ vendor would CHANGE the observed order.\n- The test forces the maintainer to\
+    \ COORDINATE that change.\n\n**Operator-visible consequences if the tie-break\
+    \ changes**:\n- **Pagination consistency**: a paged tag list with equal counts\
+    \ could shift across page reloads if the implementation-defined order is not stable\
+    \ across queries (it usually is, but the GUARANTEE is implementation-defined).\n\
+    - **Display fidelity**: a tag-cloud showing \"Top tags\" with equal counts would\
+    \ have an apparent stability that changes when the upstream changes.\n\n**Why\
+    \ HIGH not MEDIUM**:\n- The implementation-defined tie-break IS load-bearing for\
+    \ the UI's \"Top tags\" stability across pagination.\n- The absence of a secondary\
+    \ sort is a structural defect waiting to surface (a Postgres minor-version planner\
+    \ change could shift the tie-break observed order).\n- The HIGH rating aligns\
+    \ with the LSN-019 family (PRIMARY at CRITICAL; SECONDARY tie-break gap at HIGH)."
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-867.yaml

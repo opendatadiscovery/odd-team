@@ -1,0 +1,240 @@
+name: |-
+  TagServiceImpl asymmetric search-vector refresh — update triggers 3 vectors, delete triggers 1
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+description: |-
+  NEW INVARIANT, batch VAL-LSN-019 (2026-05-20) — captures an
+  asymmetry in the search-vector refresh discipline across the
+  `update` and `delete` methods of TagServiceImpl. Operator-visible
+  consequence: after a tag delete, the platform's main search-entrypoint
+  table still contains the deleted tag's tokens until the next
+  entity-level refresh; the UI tag-search facet may surface the
+  deleted tag's name until the index naturally refreshes.
+
+  THE THREE SEARCH VECTORS — global registry:
+
+    The platform maintains THREE search-vector tables that index
+    tag-related text for FTS lookup:
+
+      Vector 1 — `search_entrypoint` (main entity-search FTS):
+        Updated via `reactiveSearchEntrypointRepository.updateChangedTagVectors`.
+        Surfaces tag tokens on the main Catalog search.
+
+      Vector 2 — `search_entrypoint_structure` (structure search FTS):
+        Updated via `reactiveSearchEntrypointRepository.updateChangedTagStructureVector`.
+        Surfaces tag tokens on the structure-search side (column /
+        dataset-field tag context).
+
+      Vector 3 — `term_search_entrypoint` (term-search FTS):
+        Updated via `reactiveTermSearchEntrypointRepository.updateChangedTagVectors`.
+        Surfaces tag tokens on the Glossary term-search side.
+
+  THE ASYMMETRIC REFRESH — what the code actually does:
+
+    Update path (TagServiceImpl.update at :44-55):
+      Line 53: `.flatMap(this::updateSearchVectors)` — invokes the
+      private helper.
+      updateSearchVectors at :161-167: `Mono.zip` of all THREE
+      vector-refresh calls (concurrent, awaited). Latency is
+      max(v1, v2, v3) rather than sum.
+
+    Delete path (TagServiceImpl.delete at :57-70):
+      Line 68-69: `.flatMap(... -> reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId))`
+      — invokes ONLY vector 3 (term-search). Does NOT call
+      `updateChangedTagVectors` or `updateChangedTagStructureVector`
+      on the main `search_entrypoint` repository.
+
+    Create path (TagServiceImpl.bulkCreate at :37-42):
+      NO search vector refresh. The newly-created tags are not
+      indexed for FTS until the next entity-level write that
+      touches them.
+
+    Side-door write paths (getOrCreateTagsByName / getOrInjectTagByName
+    at :79-94):
+      NO search vector refresh. The novel tags minted via the
+      side-doors are not FTS-indexed until the next entity-level
+      write.
+
+  THE OPERATOR-VISIBLE CONSEQUENCES:
+
+    Consequence 1 — Deleted-tag stale FTS tokens:
+      After `DELETE /api/tags/{id}`, the main entity-search FTS
+      vector still contains tokens from the deleted tag. The UI
+      tag-search facet (which queries the main `search_entrypoint`)
+      may auto-suggest the deleted tag's name from the FTS index.
+      The drift resolves only on the NEXT data-entity write that
+      touches the search_entrypoint refresh path.
+
+    Consequence 2 — Created-tag missing FTS tokens:
+      After `POST /api/tags` or any side-door create, the new tag's
+      name is NOT in the FTS vectors. A user typing the new tag's
+      name into the search box gets ZERO hits until the next
+      entity-level write triggers a refresh. Behaviour-by-design
+      consequence: tag-vocabulary writes are NOT search-visible
+      until they are also applied to an entity.
+
+    Consequence 3 — Side-door-mint visible only in DB:
+      A user with DATA_ENTITY_TAGS_UPDATE who mints a novel tag via
+      the per-entity side-door gets the tag attached to the entity,
+      but the global FTS index is updated only by the
+      `updateRelationsWithDataEntity` flow's downstream calls (which
+      DO include a search-vector refresh at the relations-create
+      path; the directory-side mint via getOrCreateTagsByName itself
+      does NOT update the vectors directly — the refresh comes from
+      the per-entity-relations refresh).
+
+  WHY THE ASYMMETRY MIGHT BE INTENTIONAL — alternate interpretation:
+
+    The delete path's single-vector refresh COULD be intentional under
+    the assumption that:
+      - The main `search_entrypoint` vector is refreshed by the
+        downstream `tag_to_data_entity` cleanup (Step 3 of the
+        delete cascade — hard-deletes the relations) which ITSELF
+        should trigger an entity-side refresh on every affected
+        entity.
+      - The dataset-field-side relations are NOT cleaned up (per the
+        `deletetag-cascade-asymmetric-orphans-tag-to-dataset-field`
+        invariant) — so the structure-search vector intentionally
+        does not refresh for a no-op.
+      - The term-search vector IS refreshed because `tag_to_term`
+        relations are cleaned up but the Term row itself is not
+        modified — the cleanup happens at a tier that doesn't
+        cascade to term-side FTS automatically.
+
+    However: NO COMMENT in the source code defends this rationale.
+    The asymmetry could equally be a code-omission — the maintainer
+    wrote the update path with three refreshes, then wrote the delete
+    path by referring to the update path, then forgot two of the three.
+
+    Without source-code commentary, we cannot distinguish "intentional"
+    from "code-omission". The architectural risk is the same in either
+    case: a future maintainer adding a fourth search-vector would
+    need to know which-path-refreshes-which.
+
+  THE COMPOUND WITH THE CASCADE ASYMMETRY:
+
+    The delete path has TWO known asymmetries:
+      (a) Three relation tables, two cleaned up, one orphaned
+          (the `deletetag-cascade-asymmetric-orphans-tag-to-dataset-field`
+          invariant).
+      (b) Three search vectors, one refreshed, two stale (THIS
+          invariant).
+
+    Both are code-omissions visible only at the cross-method-vs-helper
+    boundary. The delete method LOOKS coherent in isolation —
+    `Flux.zip` of two deletes + soft-delete + one vector refresh.
+    The asymmetry surfaces only by enumerating ALL relation tables
+    + ALL search vectors and matching the delete method against
+    each.
+
+nodes:
+  - odd-platform java service:TagServiceImpl
+
+contributors:
+  - |-
+    TagServiceImpl batch VAL-LSN-019 (PRIMARY SOURCE):
+    concepts.operations[delete (:57-70) — six-step pipeline; step 6 is
+    reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId)
+    search-vector refresh] +
+    concepts.operations[update (:44-55) — five-step pipeline; step 5 is
+    updateSearchVectors triple-zip] +
+    concepts.operations[updateSearchVectors (:161-167) — Mono.zip of three
+    concurrent search-index refresh calls] +
+    implicit_adrs[Search-vector refresh is part of the update / delete
+    contract — update triggers THREE vector refreshes via Mono.zip;
+    delete triggers one] +
+    bugs_limitations_corner_cases[Search-vector refresh on delete is
+    INCOMPLETE — delete updates only reactiveTermSearchEntrypointRepository;
+    it does NOT call reactiveSearchEntrypointRepository.updateChangedTagVectors
+    or .updateChangedTagStructureVector despite update updating all
+    three. After a tag delete, the main search-entrypoint table still
+    contains the deleted tag's tokens until the next entity-level
+    refresh. The UI tag-search facet may surface the deleted tag's
+    name until the index naturally refreshes] +
+    tests_coverage_semantic.uncovered_behaviours[update triple-zip
+    search-vector refresh — no test asserts that all three
+    updateChangedTag*Vectors calls fire on update]
+
+evidence:
+  - 'TagServiceImpl.java:53 (.flatMap(this::updateSearchVectors) — update path)'
+  - 'TagServiceImpl.java:68-69 (.flatMap(... -> reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId)) — delete path; single-vector refresh)'
+  - 'TagServiceImpl.java:161-167 (updateSearchVectors helper — Mono.zip of three concurrent refreshes)'
+  - 'TagServiceImpl.md:concepts.operations[update; delete; updateSearchVectors]'
+  - 'TagServiceImpl.md:implicit_adrs[Search-vector refresh is part of the update / delete contract]'
+  - 'TagServiceImpl.md:bugs_limitations_corner_cases[Search-vector refresh on delete is INCOMPLETE; LOW severity]'
+
+axes_present:
+  - services
+
+triangulation_count: 1
+cross_batch: false
+
+severity: LOW
+severity_dim: ux+search-freshness
+
+mitigations_unimplemented:
+  - |-
+    SIMPLE FIX — extend the delete path's `.flatMap` chain to invoke
+    all three search-vector refreshes:
+      `.flatMap(deletedTag -> Mono.zip(
+        reactiveSearchEntrypointRepository.updateChangedTagVectors(tagId),
+        reactiveSearchEntrypointRepository.updateChangedTagStructureVector(tagId),
+        reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId))
+        .thenReturn(deletedTag))`
+    Mirrors the update path's `Mono.zip` shape. One-line semantic change.
+  - |-
+    Add the missing regression test pinning the update triple-zip:
+      Use Mockito to assert that all three updateChangedTag*Vectors
+      methods are called when TagServiceImpl.update fires. The test
+      pins the maintainer's intent permanently. A future refactor
+      that collapses the zip to a single call would fail the test.
+  - |-
+    Add a parallel regression test asserting the delete path's
+    vector-refresh shape — pinning the current (BUGGY) single-vector
+    behaviour as the baseline; once the simple fix lands, the test
+    is updated to assert the triple-zip on delete too.
+  - |-
+    OR: invert the test: assert that AFTER a tag delete, the main
+    search_entrypoint table has NO ROWS containing the deleted tag's
+    name. The test would currently FAIL (the FTS tokens persist);
+    once the simple fix lands, the test PASSES.
+  - |-
+    Consider promoting the search-vector refresh into a
+    `TagFTSRefresh` helper class with a single
+    `refreshAllVectorsForTag(tagId)` method. The three methods of
+    TagServiceImpl would invoke a single helper rather than
+    individually composing the zip. Reduces the surface for future
+    asymmetry.
+  - |-
+    Document the search-freshness contract on the
+    /features/discovery/search live doc page — explicit text on
+    when FTS tokens refresh after tag mutations (today: only on
+    entity-level writes; after the fix: immediately on tag-vocabulary
+    writes too).
+
+notes: |-
+  CAPTURED batch VAL-LSN-019 (2026-05-20). The asymmetric search-vector
+  refresh is a LOW-severity code-omission bug visible only by
+  cross-referencing the update + delete methods. The same architectural
+  fingerprint as the `deletetag-cascade-asymmetric-orphans-tag-to-dataset-field`
+  invariant (also a delete-path code-omission).
+
+  Cross-cutting connections:
+    - Pairs with `deletetag-cascade-asymmetric-orphans-tag-to-dataset-field`
+      (both are delete-path code-omissions visible only at
+      cross-method enumeration)
+    - Pairs with the `Tag` entity (this is one of the entity's
+      lifecycle invariants)
+    - The compound observation: the delete method has TWO
+      consistent-with-each-other asymmetries — tag_to_dataset_field
+      NOT cleaned up AND search-entrypoint vectors NOT refreshed.
+      Both are operationally low-cost; together they constitute the
+      "tag delete is not as thorough as tag update" pattern.
+
+  Single DOC-NNN candidate:
+    /features/data-discovery/tagging — admonition on the
+    search-freshness behaviour after tag deletes (deferred update
+    until next entity-level write); revised once the simple fix
+    lands.

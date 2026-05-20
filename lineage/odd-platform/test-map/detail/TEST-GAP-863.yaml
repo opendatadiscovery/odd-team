@@ -1,0 +1,73 @@
+gap_id: TEST-GAP-863
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java repository_reactive repository:ReactiveTagRepositoryImpl"
+  - "odd-platform java service:TagServiceImpl"
+pillars_affected: [P-01]
+surfaced_by:
+  - "ReactiveTagRepositoryImpl.md:stress_findings.A4 (listByNames with empty collection — no empty-collection guard; TAG.NAME.in([]) translates to SQL TAG.NAME IN () — PostgreSQL evaluates as FALSE for every row; zero matches. Behaviour is harmless but inconsistent with the rest of the file)"
+  - "TagServiceImpl.md:stress_findings.C.S-C-1 (getOrCreateTagsByName / getOrInjectTagByName with EMPTY tagNames Set — empty input returns empty output, no DB roundtrip beyond the listByNames. No explicit empty guard at this service layer)"
+  - "ReactiveTagRepositoryImpl.md:bugs_limitations_corner_cases.[Empty-batch contract differs between ingestData and the inherited bulkCreate]"
+behaviour: |-
+  **MEDIUM — The Tag service+repository chain has FIVE empty-input entry points that all short-circuit DIFFERENTLY: (1) `listByNames(empty)` has NO guard and emits `TAG.NAME IN ()` SQL (PG evaluates as FALSE; zero matches); (2) `ingestData(empty)` has explicit empty-collection short-circuit (`Flux.just()`) at `ReactiveTagRepositoryImpl.java:181-183`; (3) inherited `bulkCreate(empty)` ALSO short-circuits at `ReactiveAbstractCRUDRepository.java:115-117`; (4) `getOrCreateTagsByName(empty Set)` / `getOrInjectTagByName(empty Set)` propagate through `divideTagsByExistence(empty)` → `Tuples.of([], [])` → no-op. (5) `updateRelationsWithDataEntity(entity.id, empty Set)` is DESTRUCTIVE per TEST-GAP-858. The shapes are NOT consistent: jOOQ does NOT accept zero-record INSERT statements, so the empty-batch guard on `ingestData` and `bulkCreate` is LOAD-BEARING. A future change removing the guard would produce a runtime SQL error on every empty bulk call.** No test asserts the empty-input contract on any of the five entry points.
+
+  **Primary-source map**:
+  - **`listByNames(empty)`** — `ReactiveTagRepositoryImpl.java:120-125`, no guard. `TAG.NAME.in([])` → SQL `IN ()` (jOOQ emits an equivalent that PG evaluates as FALSE).
+  - **`ingestData(empty)`** — `ReactiveTagRepositoryImpl.java:181-183`, EXPLICIT empty short-circuit: `if (CollectionUtils.isEmpty(tags)) return Flux.just();`.
+  - **`bulkCreate(empty)`** — `ReactiveAbstractCRUDRepository.java:115-117` (inherited), EXPLICIT short-circuit.
+  - **`getOrCreateTagsByName(empty Set)`** — `TagServiceImpl.java:79-86` — propagates through divideTagsByExistence → returns empty Flux.
+  - **`getOrInjectTagByName(empty Set)`** — `TagServiceImpl.java:88-94` — same shape.
+
+  **Why MEDIUM**:
+  - The empty-batch guard on `ingestData` and `bulkCreate` is LOAD-BEARING: removing it produces a runtime SQL error (jOOQ rejects empty-record INSERTs) on every empty bulk call. A bug here would be discovered in production on first empty-array submission.
+  - The asymmetry between methods (some have explicit guards, some have NO guard but rely on SQL semantics) is invisible to reviewers; a maintainer reading `listByNames` and seeing no guard might "add one" for consistency — but it would change behavior under the SQL semantic of `IN ()` (PG-specific FALSE evaluation that the guard would shadow).
+  - The empty input contracts ARE NOT documented in the service interface (`TagService.java:14-36`); they're implementation-defined.
+
+  **What the test pins**:
+  - Each entry point's empty-input behavior (empty output, no exception, no DB roundtrip beyond `listByNames`).
+  - The asymmetric guard placement (some have explicit guards, some don't).
+  - The contract that a future refactor must NOT regress: `ingestData(empty)` does not issue an empty INSERT SQL.
+test_class: unit
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java (10 tests; testCreateRelationsIsEmpty / testDeleteRelationsIsEmpty exercise the empty-relations create/delete; do NOT cover the listByNames empty, ingestData empty, or service-layer empty-input shapes)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TagServiceImplEmptyInputContractTest.java"
+  name: "tagServiceImpl_emptyInputContractAcrossFiveEntryPoints_pinsAsymmetricShortCircuitGuards"
+evidence:
+  - "ReactiveTagRepositoryImpl.md says (stress_findings.A4): 'listByNames(Collection<String> names) (line 120) at names=[] (empty). Question: what at empty collection? Trace-answer: there is NO empty-collection guard in listByNames (unlike listTagsRelations line 103, ingestData line 181, etc.). TAG.NAME.in([]) translates to SQL TAG.NAME IN () — jOOQ emits a SQL-equivalent that PostgreSQL evaluates as FALSE for every row (zero matches). Behaviour is harmless but inconsistent with the rest of the file.' confidence: STATIC-INFERRED"
+  - "TagServiceImpl.md says (stress_findings.C.S-C-1): 'getOrCreateTagsByName (:79-86) and getOrInjectTagByName (:88-94) with EMPTY tagNames Set — the path goes divideTagsByExistence({}) → listByNames({}) (which produces an empty flux per the repository's empty-input guard) → Tuples.of([], []) → bulkCreate([]) or ingestData([]) (both short-circuit to Flux.just()). Net: empty input returns empty output, no DB roundtrip beyond the listByNames. No explicit empty guard at this service layer.' confidence: HIGH"
+  - "ReactiveTagRepositoryImpl.md says (bugs_limitations_corner_cases.[Empty-batch contract differs between ingestData and the inherited bulkCreate]): 'ingestData short-circuits on empty (:181-183); bulkCreate ALSO short-circuits (ReactiveAbstractCRUDRepository.java:115-117). However: jOOQ does not accept zero-record INSERT statements, so the empty-batch guard is load-bearing. A future change to remove the guard would produce a runtime SQL error on every empty bulk call.' severity: LOW"
+  - "Verified at primary source: ReactiveTagRepositoryImpl.java:120-125 (no guard) + :181-183 (explicit guard) + ReactiveAbstractCRUDRepository.java:115-117 (inherited guard) + TagServiceImpl.java:79-94 (service-layer pass-through)"
+cross_references:
+  - "TEST-GAP-858 (NEW VAL-LSN-019 — updateRelationsWithDataEntity with empty tagNames is DESTRUCTIVE; this gap pins the asymmetry — most empty-inputs are no-ops, but updateRelations is destructive)"
+  - "REFACTOR-NNN candidate: standardise empty-input handling across the Tag chain — either explicit guards on all paths OR a documented design that some are no-ops and some are destructive"
+  - "DOC-NNN candidate: surface the empty-input semantic on the developer-guides Tag API page; SDK authors need to know which empty-input meanings differ"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+proposed_action: |-
+  Add `TagServiceImplEmptyInputContractTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/` using Testcontainers + `@SpringBootTest`. Five test methods (one per entry point):
+
+  1. **`listByNames_withEmptyCollection_returnsEmptyFluxNoSqlError_pinsImplicitFalseInSemantic`**:
+     - Act: `reactiveTagRepository.listByNames(Set.of()).collectList().block()`.
+     - Assert: result is empty list. PIN: the SQL `IN ()` evaluation behavior.
+
+  2. **`ingestData_withEmptyList_returnsEmptyFluxAndDoesNotIssueSql_pinsExplicitGuard`**:
+     - Use a SQL logger / hibernate stats hook to capture issued statements during the call.
+     - Act: `reactiveTagRepository.ingestData(List.of()).collectList().block()`.
+     - Assert: result is empty list AND zero INSERT statements were issued. PIN: the explicit guard at line 181-183 is load-bearing.
+
+  3. **`bulkCreate_withEmptyList_returnsEmptyFluxAndDoesNotIssueSql_pinsInheritedGuard`**:
+     - Same shape as #2 for `reactiveTagRepository.bulkCreate(List.of())`.
+     - PIN: the inherited guard at ReactiveAbstractCRUDRepository.java:115-117.
+
+  4. **`getOrCreateTagsByName_withEmptySet_returnsEmptyFluxNoCreateAttempts_pinsServiceLayerShortCircuit`**:
+     - Act: `tagService.getOrCreateTagsByName(Set.of()).collectList().block()`.
+     - Assert: result is empty list. Use a Mockito spy on `reactiveTagRepository.bulkCreate` to verify ZERO invocations. PIN: the service-layer behaves as expected (no bulkCreate call) on empty.
+
+  5. **`getOrInjectTagByName_withEmptySet_returnsEmptyFluxNoIngestAttempts_pinsServiceLayerShortCircuit`**:
+     - Same shape as #4 for `getOrInjectTagByName` and `ingestData` Mockito spy.
+
+  Cross-pair with TEST-GAP-858 (the DESTRUCTIVE empty-input on updateRelationsWithDataEntity): the asymmetry is now explicit — 4 entry points are no-ops, 1 is destructive. Cross-pair with REFACTOR-NNN to standardise OR document explicitly.
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

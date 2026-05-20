@@ -1,0 +1,70 @@
+gap_id: TEST-GAP-860
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java service:TagServiceImpl"
+pillars_affected: [P-01]
+surfaced_by:
+  - "TagServiceImpl.md:stress_findings.E.S-E-1 (i) (deleteRelationsWithTerm is multi-step read+write WITHOUT @ReactiveTransactional — possible race; logged as bug)"
+  - "TagServiceImpl.md:bugs_limitations_corner_cases.[deleteRelationsWithTerm-no-tx] (multi-step read+write without @ReactiveTransactional; race detection absent)"
+  - "TagServiceImpl.md:concepts.invariants.[multi-step writes without @ReactiveTransactional]"
+behaviour: |-
+  **MEDIUM — `TagServiceImpl.deleteRelationsWithTerm(termId, tagsToKeep)` (lines 123-134) is a multi-statement READ-then-WRITE without `@ReactiveTransactional`. The method reads current term-tag relations via `listByTerm(termId)` then issues `deleteTermRelations(termId, idsToDelete)` for the set difference. A concurrent write to `tag_to_term` between the read and the write will NOT be detected; if a tag is added to the term concurrently, the just-added relation will not be in the `currentTags` collection and will not be deleted (a "lost addition" — survives). If a tag is removed concurrently, the read sees it but the delete is a no-op (idempotent).** No test pins this race window; no comment defends the choice; the choice is ambiguous (deliberate or oversight).
+
+  **Primary-source chain**:
+  - `TagServiceImpl.java:123-134` (`deleteRelationsWithTerm`):
+    - Line 124: NO `@ReactiveTransactional` annotation (verified by reading the file).
+    - Line 126: `reactiveTagRepository.listByTerm(termId).collectList()` (read step).
+    - Line 128-131: in-memory diff `.filter(t -> !tagsToKeep.contains(t.getName()))` to compute `idsToDelete`.
+    - Line 132: `reactiveTagRepository.deleteTermRelations(termId, idsToDelete)` (write step).
+  - The read and write run in SEPARATE query roundtrips and possibly different TXs depending on caller context.
+
+  **Race characterisation** (per TagServiceImpl.md:bugs_limitations_corner_cases.[deleteRelationsWithTerm-no-tx]):
+  - **A concurrent write to tag_to_term between the read at :126 and the write at :132 will not be detected.**
+  - If a tag is added to the term concurrently → the just-added relation will not be in `currentTags` → will NOT be deleted (the addition SURVIVES the keep-only operation).
+  - The other multi-statement non-TX methods (`getOrCreateTagsByName`, `getOrInjectTagByName`) have race protections in the underlying repository (unique-constraint OR `ON CONFLICT DO UPDATE`); `deleteRelationsWithTerm` has NEITHER — there is no constraint preventing the race, and the read/write are not atomic.
+  - No comment defends the choice. The intent is ambiguous: deliberate (to allow concurrent additions to survive a keep-only-this-set operation) OR oversight (the maintainer forgot the annotation on a method that resembles its `@ReactiveTransactional` sibling `createRelationsWithTerm` at :137).
+
+  **Operator-visible consequences if the race is exercised**:
+  - **Lost-deletion intent**: an operator submits "keep only tagA" via the Term Tag UI; concurrently, another operator adds tagB to the term; the result is "keep tagA AND tagB" (NOT "keep only tagA"). The operator's intent is silently violated.
+  - **Audit confusion**: the Activity Feed shows "operator X kept only tagA"; the term state shows tagA + tagB. The two diverge.
+  - **The race window is small in practice**: term tag updates are not concurrent in normal operation (a term has typically <10 tags and is edited by one operator at a time). But the test pinning forces the maintainer to make the choice EXPLICIT.
+
+  **Why MEDIUM not HIGH**:
+  - The practical race surface is narrow (terms are not high-concurrency objects).
+  - The failure mode is non-corrupting (the addition survives; nothing is lost).
+  - The criticality is anchored to the policy: a future refactor that adds `@ReactiveTransactional` SHOULD be a coordinated decision, not a silent change. The test pins the current behavior.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TagServiceImplDeleteRelationsWithTermRaceTest.java"
+  name: "deleteRelationsWithTerm_concurrentAdditionDuringRead_additionSurvives_pinsNonTransactionalReadThenWrite"
+evidence:
+  - "TagServiceImpl.md says (stress_findings.E.S-E-1 i): 'deleteRelationsWithTerm is multi-step read+write WITHOUT @ReactiveTransactional — possible race; logged as bug (severity: MEDIUM).'"
+  - "TagServiceImpl.md says (bugs_limitations_corner_cases.[deleteRelationsWithTerm-no-tx]): 'deleteRelationsWithTerm (:124-134) is multi-statement (read listByTerm then deleteTermRelations) but carries NO @ReactiveTransactional. A concurrent write to tag_to_term between the read at :126 and the write at :132 will not be detected; if a tag is added to the term concurrently, the just-added relation will not be in the currentTags collection and will not be deleted. The other multi-statement non-TX methods (getOrCreateTagsByName, getOrInjectTagByName) have race protections in the underlying repository (unique-constraint or ON CONFLICT DO UPDATE); deleteRelationsWithTerm has neither — there is no constraint preventing the race, and the read/write are not atomic. No comment defends the choice.' — evidence: TagServiceImpl.java:123-134 (no @ReactiveTransactional, multi-statement read+write) — severity: MEDIUM"
+  - "TagServiceImpl.md says (concepts.invariants.[multi-step writes without @ReactiveTransactional]): 'Methods that issue MULTI-step reads-then-writes WITHOUT @ReactiveTransactional: bulkCreate (single-step write, inherited TX), getOrCreateTagsByName (read listByNames + write bulkCreate), getOrInjectTagByName (read listByNames + upsert ingestData), deleteRelationsWithTerm (read listByTerm + write deleteTermRelations). These are TOCTOU surfaces.'"
+  - "Verified at primary source: TagServiceImpl.java:123-134 (the method body) + grep for @ReactiveTransactional returns no match on this method"
+  - "Probe shape: lineage/odd-platform/probes/P-LSN019-deleteRelationsWithTerm-case.md (covers the case-sensitivity sibling; this gap covers the TX-boundary sibling)"
+cross_references:
+  - "TEST-GAP-540 (existing — TOCTOU sister gap in getOrCreateTagsByName)"
+  - "TEST-GAP-859 (NEW VAL-LSN-019 — getOrInjectTagByName upsert-silenced race sibling)"
+  - "REFACTOR-NNN candidate: either ADD @ReactiveTransactional to deleteRelationsWithTerm OR document explicitly (via comment + ADR) that the absence is deliberate (allow concurrent additions to survive a keep-only-set operation)"
+  - "DOC-NNN candidate: surface the race window on the Term Tag assignment doc page; explain that concurrent add+keep-only sequences may produce surprising results"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+proposed_action: |-
+  Add `TagServiceImplDeleteRelationsWithTermRaceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/` using Testcontainers + `@SpringBootTest`. Two test methods:
+
+  1. **`deleteRelationsWithTerm_concurrentAdditionDuringRead_additionSurvives_pinsNonTransactionalReadThenWrite`** (HEADLINE):
+     - Arrange: 1 term. Seed `tag_to_term` rows: `(tag-A, term)`, `(tag-B, term)`.
+     - Act: launch a reactive pipeline `tagService.deleteRelationsWithTerm(term.id, Set.of("tag-A"))` (intent: keep ONLY tag-A). Use a Sinks.One + a controlled delay between the read step (line 126) and the write step (line 132) to interleave a CONCURRENT `tagService.createRelationsWithTerm(term.id, [tag-C])` between them (the test fixture can do this by injecting an artificial reactor delay or by spinning a second thread).
+     - Assert: query `SELECT tag_id FROM tag_to_term WHERE term_id = ?`. Result: `[tag-A, tag-C]` (NOT just `[tag-A]`). The keep-only intent was VIOLATED by the concurrent addition. PIN: the non-transactional race window survives.
+
+  2. **`deleteRelationsWithTerm_singleThreadedNoConcurrency_keepsOnlySpecifiedTags_pinsHappyPath`**:
+     - Arrange: 1 term, 3 tag_to_term rows for tag-A, tag-B, tag-C.
+     - Act: `tagService.deleteRelationsWithTerm(term.id, Set.of("tag-A")).block()`.
+     - Assert: only `(tag-A, term)` remains. PIN: the happy path works as expected absent concurrency.
+
+  After landing the test: pair with REFACTOR-NNN — make the explicit decision either (a) add `@ReactiveTransactional` AND serialise (then test #1 inverts to "addition is rejected"), OR (b) keep the current behavior AND document the design intent via a code comment + an ADR. The test forces the choice to be coordinated. Cross-pair with DOC-NNN: surface the race window on the Term Tag assignment doc page.
+batch: 2026-05-20-VAL-LSN-019
+feature_id: F-018

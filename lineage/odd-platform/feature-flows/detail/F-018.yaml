@@ -20,6 +20,11 @@ drift_class_summary:
 - tag_status_code_drift_controller_200_vs_spec_201_create_and_update
 - external_tag_guard_protects_collector_pushed_tags_from_ui_overwrite_positive_invariant
 - tag_controller_write_paths_no_activity_log_asymmetric_with_per_entity_tag_assignment_path
+- name_behavior_drift_list_most_popular_paginate_inside_cte_yields_oldest_by_id_not_most_popular_by_count
+- service_tier_zero_permission_checks_stress_protocol_category_d_pin
+- update_relations_with_data_entity_empty_set_is_delete_all_intentional_diff_semantic_with_misleading_method_name
+- toctou_get_or_create_tags_by_name_listbynames_bulkcreate_without_reactive_transactional_at_service_tier
+- divide_tags_by_existence_case_sensitive_vs_list_most_popular_query_case_insensitive_ux_divergence
 batch_origin: N
 created_in_batch: N
 feature_name: Manual Object Tagging — operator + ingestion-driven Tag directory with side-channel mint paths
@@ -481,6 +486,79 @@ observed_vs_expected:
       F-001 (Popular Ranking) does NOT consume tags as a ranking signal;
       F-017 (Search Filter Facets) is the only F-018 consumer at the
       Search-surface tier. Severity: MEDIUM.
+  - facet_id: F-018-DRIFT-LSN019-listMostPopular-ranking
+    facet: |-
+      listMostPopular: NAME-vs-BEHAVIOUR drift — paginate-inside-CTE yields
+      OLDEST-by-tag.id-ASC, NOT MOST-POPULAR-by-count when directory size
+      exceeds the page size (LSN-019 SMOKING-GUN — Stress Protocol canary
+      batch VAL-LSN-019)
+    category: name-behavior-drift
+    severity: HIGH
+    headline: |-
+      tagService.listMostPopular returns the oldest tags by tag.id ASC,
+      not the most-popular by usage_count, when the directory size exceeds
+      the page size. The OpenAPI spec promises 'sorted by popularity'.
+    operator_visible_consequence: |-
+      UI 'Top Tags' tile on the Catalog Overview shows the OLDEST tags in
+      the directory when N > 30, regardless of usage. A newly-minted
+      high-usage tag is INVISIBLE on /api/tags/popular page 1 until it
+      becomes one of the oldest 30 by serial id — i.e., NEVER unless the
+      directory shrinks. Catalog Search Tag facet (F-017 consumer) inherits
+      the same ranking lie when seeded from this endpoint.
+    observed: |-
+      ReactiveTagRepositoryImpl.listMostPopular (lines 137-167) chain:
+      (a) lines 144-145 build a homogeneous `selectFrom(TAG).where(conditions)`;
+      (b) line 148 wraps with `paginate(homogeneousQuery,
+      [OrderByField(TAG.ID, ASC)], (page-1)*size, size)` — JooqQueryHelper
+      .paginate (`:63-90`) emits inner `ORDER BY tag.id ASC LIMIT size
+      OFFSET (page-1)*size` BEFORE counts are computed; (c) line 150
+      materialises this as `tag_cte`; (d) `getDataEntityWithDatasetFields`
+      (`:373-391`) builds `WITH tag_cte AS (size-truncated-paginated-select)
+      SELECT ... LEFT JOIN tag_to_data_entity GROUP BY tag_cte.fields
+      UNION ALL ... LEFT JOIN tag_to_dataset_field GROUP BY tag_cte.fields
+      AS union_usages`; (e) line 158 the outer `cteSelect.orderBy(field(
+      COUNT_FIELD).desc())` re-ranks among the already-truncated window only.
+      Empirical proof (`retrospectives/LSN-019:23-32`, 2026-05-20 maintainer
+      test against demo.oddp.io): 35 tags created with known IDs; every
+      entity tagged by all 35; size=30 → the 30 oldest tags (IDs 1-30) are
+      returned in tag.id ASC order; the 5 newest tags (IDs 31-35) are
+      missing from the response despite being equally popular.
+    expected: |-
+      Either (a) move ORDER BY usage_count DESC OUTSIDE the paginate
+      (compute the count aggregate over the FULL directory then truncate),
+      OR (b) update the OpenAPI description + UI label to honestly
+      describe the actual behaviour ("Returns up to `size` of the oldest
+      tags, re-ordered by usage_count desc within that window"). The
+      method-name `listMostPopular` and the spec promise
+      `'Gets the list of existing tags sorted by popularity'` ARE the
+      operator-facing contract; the implementation cannot satisfy it.
+    drift_class: name_behavior_drift_list_most_popular_paginate_inside_cte_yields_oldest_by_id_not_most_popular_by_count
+    evidence:
+    - 'ReactiveTagRepositoryImpl.java:148 — paginate(homogeneousQuery, [OrderByField(TAG.ID, ASC)], (page-1)*size, size) — inner pagination orders by tag.id ASC, LIMIT 30'
+    - 'ReactiveTagRepositoryImpl.java:158 — outer cteSelect.orderBy(COUNT_FIELD.desc()) — only re-ranks the already-truncated window'
+    - 'JooqQueryHelper.java:63-90 — the paginate primitive emits ORDER BY tag.id ASC LIMIT size BEFORE the count aggregation; the LIMIT happens on tag.id ASC'
+    - 'odd-platform-specification/openapi.yaml:344-346 — spec promises ''sorted by popularity'''
+    - 'TagController.java:36-44 + TagServiceImpl.java:72-77 — straight-through delegation; no re-sort at controller or service tier'
+    - 'retrospectives/LSN-019:23-32 — maintainer''s 2026-05-20 empirical test: 35 tags all equally popular, size=30 → response = oldest 30 by tag.id ASC; 5 youngest absent'
+    cross_references:
+      retrospectives:
+      - LSN-019
+      probes:
+      - P-010
+      - P-LSN019-listMostPopular-drift
+      refactoring_scopes:
+      - 'REFACTOR-LSN019-listMostPopular-ranking (created by adr-archaeologist this batch — name-vs-behaviour mismatch + paginate-inside-CTE structural anchor)'
+      doc_gaps:
+      - 'DOC-GAP-LSN019-listMostPopular-ranking (created by doc-gap-finder this batch — OpenAPI spec `''sorted by popularity''` promise vs implementation; live tagging.md page silent on Top-Tags semantics)'
+      test_gaps:
+      - 'TEST-GAP-LSN019-listMostPopular-ranking (created by test-coverage-mapper this batch — TagRepositoryImplTest.testListMostPopular is structurally blind: uses containsExactlyInAnyOrder + size=numberOfTestTags so the LIMIT never fires)'
+    provenance: |-
+      MEASURED+STATIC — empirical confirmation 2026-05-20 (LSN-019:23-32);
+      static trace through ReactiveTagRepositoryImpl.java:138-167 + JooqQueryHelper
+      .java:63-90; promoted to F-018 headline drift facet by batch VAL-LSN-019
+      (the LSN-019 Stress Protocol canary). Severity: HIGH — operator-visible
+      ranking lie on the Catalog Overview Top-Tags tile + Catalog Search Tag
+      facet. Pinned permanently by P-010 + P-LSN019-listMostPopular-drift.
 test_matrix:
   unit:
     state: PARTIAL
@@ -528,6 +606,10 @@ test_matrix:
     - Tag-name DoS — assert pathological inputs (very long, control characters, whitespace) are accepted (current behaviour) — pin so the fix is gated by an explicit test edit
     - listMostPopular under DISABLED — anonymous caller sees full directory (current behaviour pin)
     - Cross-Owner enumeration via listMostPopular — assert all tags visible regardless of caller's Owner
+    - LSN-019 listMostPopular ranking lie regression-pin — N > size with equal counts → response = OLDEST size by tag.id ASC; the 5 youngest equally-popular tags are ABSENT. P-010 + P-LSN019-listMostPopular-drift target.
+    - LSN-019 listMostPopular varying-count case — N > size with the YOUNGEST having HIGHER counts than the OLDEST — assert the response STILL contains only the oldest size (i.e. the bug surfaces even when the count signal is unambiguous). Promotes the drift to operator-visible regardless of count distribution.
+    - LSN-019 service-tier zero-permission-checks pin — TagServiceImpl.java:1-167 grep `@PreAuthorize|permissionService.hasPermission` returns ZERO matches; pin the absence so a regression that bypasses the service-tier-zero posture (e.g. adding a programmatic check) surfaces in CI.
+    - LSN-019 updateRelationsWithDataEntity empty-set destruction — assert that `PUT /api/dataentities/{id}/tags` with empty body removes ALL non-external relations on the entity (the diff treats empty as delete-all rather than no-op). P-LSN019-updateRelations-empty-deletes-all target.
 control_summary: |-
   PARTIAL unit + integration (TagRepositoryImplTest covers basic CRUD + relation
   surfaces happy-path); GAP on performance + security cells. Feature emerges
@@ -833,26 +915,205 @@ batch_extensions:
     gap pattern applied to a third sibling endpoint; F-029 (Platform
     Public API Contract) — the sibling ingestion-api spec carries
     the same no-securitySchemes gap as the platform-api spec.
+- batch: VAL-LSN-019
+  entry_point_added: |-
+    NONE — VAL-LSN-019 is the LSN-019 Stress Protocol validation canary
+    batch. The three sidecars re-enriched this batch
+    (ReactiveTagRepositoryImpl, TagServiceImpl, TagController) carry the
+    new `stress_findings` block (rev-4 schema, LSN-019) which surfaces
+    NAME-vs-BEHAVIOUR drift, AUTH-gate enumeration absences, TUNABLE
+    boundary conditions, ORDERING / pagination semantics, and RESOURCE
+    boundary races. No new entry-points; the existing chain composition
+    (UI tag-assign → setDataEntityTags → TagService → ReactiveTagRepository
+    → ingestData/bulkCreate + listMostPopular) is unchanged. What CHANGES
+    is the operator-visible truth at hop 3 (`listMostPopular`) and the
+    repository/service-tier auth posture catalogue.
+  contributing_nodes_added: []
+  contributing_nodes_re_enriched:
+  - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+  - odd-platform java service service:TagServiceImpl
+  - odd-platform java TagController controller-class:TagController
+  notes: |-
+    LSN-019 Stress Protocol canary batch. ONE NEW HEADLINE drift facet
+    + FOUR STRENGTHENS on existing F-018 facets + ONE cross-cutting
+    posture confirmation. Ordered by architectural leverage:
+
+    (1) NEW HEADLINE — **listMostPopular ranking lie — paginate-inside-CTE
+    yields OLDEST-by-tag.id-ASC, NOT MOST-POPULAR-by-count** (HIGH
+    severity, F-018-DRIFT-LSN019-listMostPopular-ranking). The OpenAPI
+    spec promises "sorted by popularity" (`odd-platform-specification/
+    openapi.yaml:344-346`); the implementation truncates the candidate
+    pool by `tag.id ASC` BEFORE counts are computed
+    (ReactiveTagRepositoryImpl.java:148 `paginate(homogeneousQuery,
+    [OrderByField(TAG.ID, ASC)], (page-1)*size, size)`). The outer
+    `cteSelect.orderBy(field(COUNT_FIELD).desc())` at line 158 only
+    re-ranks the already-truncated window. Empirical confirmation:
+    LSN-019:23-32 (2026-05-20 maintainer test against demo.oddp.io — 35
+    tags all equally popular, size=30 → response = oldest 30 by tag.id
+    ASC; 5 youngest absent). Operator-visible consequence: UI 'Top Tags'
+    tile on Catalog Overview shows the OLDEST tags when directory N > 30;
+    a newly-created high-usage tag is INVISIBLE on page 1 of /api/tags
+    /popular. P-010 (file-analyser-emitted) + P-LSN019-listMostPopular-
+    drift (service-sidecar-emitted) pin the SQL contract permanently in
+    CI; REFACTOR-LSN019-listMostPopular-ranking captures the fix-shape
+    options.
+
+    The pre-existing F-018 drift facet
+    `list_most_popular_globally_scoped_no_per_owner_filter` (batch-N) is
+    ORTHOGONAL — that one is about scope (no per-Owner / per-Namespace
+    filter); THIS one is about RANKING SEMANTICS (the rank-by-count
+    promise unmet for N > size). Both facets coexist on the same SQL
+    method but describe distinct drifts.
+
+    (2) STRENGTHENS — **service-tier zero-permission-checks posture pinned
+    by Stress Protocol Category D** (MEDIUM severity, STRENGTHENS the
+    existing F-018 facet `tag_service_tier_zero_permission_checks_
+    controller_perimeter_sole_authorization` — batch-W primary source).
+    TagServiceImpl.java:1-167 verified line-by-line: ZERO `@PreAuthorize`,
+    ZERO `permissionService.hasPermission(...)`, ZERO
+    `OwnerAuthorizationFacade` invocations, ZERO `SecurityContextHolder`
+    reads, ZERO programmatic permission checks of any kind, across all 9
+    public methods + 2 private helpers. The Stress Protocol Category D
+    enumeration confirms the absence is COMPLETE (not just at one method
+    — at every method) and CONSISTENT (not just on read paths — on every
+    write path including the five side-door entry points TermService /
+    DataEntityService / DatasetFieldService / Collector S2S /
+    TagController). This finding is CROSS-CUTTING (also applies to many
+    other ODD services per the prior batch-T 9-SIDECAR audit-silence
+    pattern), but its instantiation on F-018 is captured here; the
+    cross-cutting posture itself is documented under P-09 Security &
+    Access Control as the architectural decision. NO new P-09 feature
+    minted by this batch — the existing F-018 facet is the canonical
+    home for the Tag-directory instance.
+
+    (3) STRENGTHENS — **TagController.getPopularTagList ranking-promise
+    failure pinned at the controller perimeter** (HIGH severity,
+    STRENGTHENS the new headline F-018-DRIFT-LSN019-listMostPopular-
+    ranking from the controller tier). The TagController sidecar's
+    stress_findings.name_behavior_pairs[0] traces the FULL chain
+    (TagController → TagService → ReactiveTagRepository → JooqQueryHelper
+    .paginate semantics) and ANCHORS the operator-visible UI-surface
+    misnaming at the controller layer (`@GetMapping('/popular')`,
+    `getPopularTagList`). The trace closes the picture: NO upstream
+    re-sort at controller or service tier; UI consumes the response
+    verbatim. The previous batch-W TagController sidecar transcribed
+    this as 'orders by descending count' — the WRONG claim, the canonical
+    LSN-019 failure mode that motivated the rev-4 schema. The corrected
+    transcription is the load-bearing pillar of this canary batch.
+
+    (4) STRENGTHENS — **`updateRelationsWithDataEntity` empty-set
+    destructive semantic** (MEDIUM severity, NEW STRENGTHENS on the
+    existing implicit F-018 contract). Stress Protocol Category C
+    finding S-C-2 (TagServiceImpl sidecar): an empty `tagNames` Set
+    passed to `updateRelationsWithDataEntity(dataEntityId, {})` is
+    INTERPRETED as "remove all non-external tag relations from this data
+    entity" via the diff semantic (`pojosToDelete = current \\ updated =
+    current`). The contract is intentional but the trap is real: callers
+    must NOT pass `{}` to mean "no-op"; it is a delete-all. The method
+    name does not advertise the asymmetry. P-LSN019-updateRelations-empty
+    -deletes-all probe-skeleton emitted.
+
+    (5) STRENGTHENS — **case-sensitivity divergence between divideTagsByExistence
+    and listMostPopular's query** (MEDIUM severity, STRENGTHENS existing
+    F-018 facet `case_sensitive_listbynames_silent_duplicate_rows` —
+    batch-N primary source). Stress Protocol Category B finding S-B-3
+    (TagServiceImpl sidecar): `divideTagsByExistence` uses `listByNames`
+    which is case-SENSITIVE; the UI tag-search-facet (`listMostPopular`'s
+    `query` parameter) uses `listCondition`'s `containsIgnoreCase` —
+    case-INSENSITIVE. A user can search "postgres" + see a "Postgres" tag,
+    then submit "postgres" for a new entity, and the service silently
+    mints a SECOND "postgres" tag row distinct from the "Postgres" row
+    because the `tag_name_unique` partial index is byte-exact. The
+    Stress Protocol confirms this is INTENTIONAL at the SQL layer (no
+    LOWER/ILIKE on the dedup primitive) but UNDOCUMENTED at the
+    operator-facing tagging.md page. P-LSN019-divide-case-sensitive
+    probe-skeleton emitted.
+
+    (6) STRENGTHENS — **getOrCreateTagsByName TOCTOU window pinned** (HIGH
+    severity, STRENGTHENS existing F-018 facet
+    `toctou_between_list_by_names_and_bulk_create`). Stress Protocol
+    Category E finding S-E-1 (TagServiceImpl sidecar) provides per-method
+    `@ReactiveTransactional` enumeration: `getOrCreateTagsByName` is
+    multi-step (listByNames + optional bulkCreate) WITHOUT
+    `@ReactiveTransactional` at the service tier; the inherited
+    `ReactiveAbstractCRUDRepository.bulkCreate` annotation wraps the
+    INSERT alone, not the read+write pair. Sibling `getOrInjectTagByName`
+    silences the race via ON CONFLICT DO UPDATE — intentional dual-method
+    design. `deleteRelationsWithTerm` is also multi-step without TX
+    (separate but related shape). P-LSN019-getOrCreate-vs-getOrInject-
+    toctou probe-skeleton emitted.
+
+    Coherence (LSN-018 Rule 6 sweep):
+    STRENGTHENS=6 (existing F-018 facets + the new headline pinned at
+    controller tier).
+    SUPERSEDES=1 (the batch-W TagController sidecar's "orders by
+    descending count" claim about getPopularTagList — SUPERSEDED by the
+    LSN-019 canary's primary-source trace; the canary was AUTHORED to
+    fix exactly this miss).
+    CONFLICTS=0.
+
+    HIGHEST-LEVERAGE remediation: implement the fix at
+    ReactiveTagRepositoryImpl.listMostPopular (move ORDER BY count DESC
+    OUTSIDE the paginate-inside-CTE, OR add an OUTER paginate AFTER count
+    aggregation) — this closes the operator-visible ranking lie. The
+    P-010 probe pins the current behaviour; the fix flips the assertion.
+    Local docker-compose probe stack: ODD platform + Postgres + curl
+    script seeding 35 tags with known IDs + tag-assignment fixture +
+    GET /api/tags/popular?size=30&page=1; assert response IDs ⊆ [1..30]
+    BEFORE fix; assert response IDs ⊄ {1..30} AFTER fix.
+
+    Methodology-meta: this batch is the LSN-019 Stress Protocol
+    VALIDATION CANARY. The rev-4 file-analyser schema (with
+    `stress_findings` block + Category A/B/C/D/E exhaustion + named
+    questions per category + REFERENCE/STATIC-INFERRED/PROBE-NEEDED
+    confidence flags) was designed specifically to catch the
+    name-vs-behaviour drift class that earlier schemas missed (batch-W
+    transcribed `listMostPopular` as "orders by descending count" — the
+    WRONG claim). This canary batch proves the rev-4 schema CAN surface
+    a known-bug at the right severity and with empirical pin (LSN-019:
+    23-32) when applied to the same source file. The headline drift
+    facet F-018-DRIFT-LSN019-listMostPopular-ranking IS the validation
+    success criterion.
 drift_class_summary_batch_z_extensions:
 - tag_create_bypass_via_unauthenticated_post_data_set_stats_list_refactor_223_side_door_fourth_path
 - external_statistics_tag_reconciliation_replace_not_merge_silent_tag_removal_on_partial_reingest
 - tag_service_get_or_create_tags_by_name_fourth_upstream_unauthenticated_dataset_field_stats_path
+drift_class_summary_batch_val_lsn_019_extensions:
+- name_behavior_drift_list_most_popular_paginate_inside_cte_yields_oldest_by_id_not_most_popular_by_count
+- service_tier_zero_permission_checks_stress_protocol_category_d_pin
+- update_relations_with_data_entity_empty_set_is_delete_all_intentional_diff_semantic_with_misleading_method_name
+- toctou_get_or_create_tags_by_name_listbynames_bulkcreate_without_reactive_transactional_at_service_tier
+- divide_tags_by_existence_case_sensitive_vs_list_most_popular_query_case_insensitive_ux_divergence
 related_refactoring_scopes:
 - REFACTOR-223
+- 'REFACTOR-LSN019-listMostPopular-ranking (created by adr-archaeologist this batch — paginate-inside-CTE structural anchor + name-vs-behaviour fix-shape options)'
 related_test_gaps:
 - TEST-GAP-017
+- 'TEST-GAP-LSN019-listMostPopular-ranking (created by test-coverage-mapper this batch — TagRepositoryImplTest.testListMostPopular structurally blind to LSN-019; needs the 35-tag fixture + size=30 assertion)'
 related_doc_gaps:
 - DOC-GAP-001
+- 'DOC-GAP-LSN019-listMostPopular-ranking (created by doc-gap-finder this batch — OpenAPI ''sorted by popularity'' promise vs implementation; live tagging.md page silent on Top-Tags semantics)'
 related_concepts:
 - Tag
 - Tag Origin (INTERNAL vs EXTERNAL vs EXTERNAL_STATISTICS)
 - Permission (Authorization)
 - Manual Object Tagging
 - Audit-log Presence Asymmetry
+- Name-vs-Behaviour Drift (LSN-019)
 related_retrospectives:
 - LSN-017
 - LSN-018
-related_probes: null
+- LSN-019
+related_probes:
+- P-010
+- P-LSN019-listMostPopular-drift
+- P-LSN019-updateRelations-external-preserve
+- P-LSN019-divide-case-sensitive
+- P-LSN019-getOrCreate-vs-getOrInject-toctou
+- P-LSN019-deleteRelationsWithTerm-case
+- P-LSN019-updateRelations-empty-deletes-all
+- P-LSN019-service-auth-zero
+- P-LSN019-createRelationsWithTerm-tx-propagation
 probe_verifications: []
 related_features:
 - F-002   # Term-to-Entity Linkage — TERM_TAGS_UPDATE / TermServiceImpl.upsertTags is the SECOND side-door into the Tag directory
